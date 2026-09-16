@@ -363,6 +363,13 @@ function M.Wardrobe.Creation()
 	return creating
 end
 
+--- The caller the open room belongs to.
+-- @author dop42
+-- @return string|nil
+function M.Wardrobe.Owner()
+	return roomOwner
+end
+
 --- The display name of a record: `Items.Jacket_01_basic` reads 'Jacket 01 basic'.
 local function title(record)
 	local text = tostring(record):gsub('^Items%.', ''):gsub('_', ' '):gsub('(%l)(%u)', '%1 %2')

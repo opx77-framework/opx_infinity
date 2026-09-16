@@ -43,6 +43,7 @@ shared_script "config/downed.lua"
 shared_script "config/weather.lua"
 server_script "config/vehicles.lua"
 shared_script "config/chat.lua"
+shared_script "config/appearance.lua"
 
 shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
@@ -85,6 +86,17 @@ server_script "modules/character/server/groups.lua"
 server_script "modules/character/server/character.lua"
 server_script "modules/character/server/main.lua"
 client_script "modules/character/client/main.lua"
+
+shared_script "modules/appearance/module.lua"
+shared_script "modules/appearance/locales.lua"
+server_script "modules/appearance/server/storage.lua"
+server_script "modules/appearance/server/main.lua"
+client_script "modules/appearance/client/snapshot.lua"
+client_script "modules/appearance/client/main.lua"
+client_script "modules/appearance/client/editor.lua"
+client_script "modules/appearance/client/clothing.lua"
+client_script "modules/appearance/client/presence.lua"
+client_script "modules/appearance/client/wardrobe.lua"
 
 shared_script "modules/needs/module.lua"
 shared_script "modules/needs/locales.lua"
@@ -143,6 +155,16 @@ permissions {
   "players.disconnect",
 
   "players.access",
+
+  "player.appearance.read",
+  "player.appearance.edit",
+  "player.equipment.read",
+  "player.equipment.edit",
+  "puppets.present",
+
+  "camera.preview",
+
+  "input.actions",
 
   "ui.vanilla.hud",
 }

@@ -16,7 +16,14 @@
 OPX.Modules = OPX.Modules or {}
 OPX.Api = OPX.Api or {}
 
-local modules = {}
+-- Two tables on purpose. `records` is the runtime's bookkeeping -- id, side,
+-- dependencies, state, reason -- and `namespaces` is what a module's own files
+-- write into. They used to be one table, and a module that happened to want a
+-- field called `State` silently overwrote its own lifecycle state and never
+-- started, with nothing logged. The only names the runtime reads off a namespace
+-- now are the four phases; everything else there belongs to the module.
+local records = {}
+local namespaces = {}
 local order = {}
 local contracts = {}
 
@@ -40,7 +47,7 @@ function OPX.Modules.Declare(spec)
 	if type(id) ~= 'string' or id == '' then
 		error('a module must declare a string id', 2)
 	end
-	if modules[id] then
+	if records[id] then
 		error(('module %q is declared twice'):format(id), 2)
 	end
 
@@ -50,37 +57,53 @@ function OPX.Modules.Declare(spec)
 	end
 
 	local settings = OPX.Config.MODULES[id] or {}
-	local module = {
+
+	-- What the module's own files write into. `Settings` and the four phase
+	-- functions are the only names the runtime ever looks for here.
+	local namespace = { Settings = settings }
+
+	local record = {
 		Id = id,
 		Side = side,
 		Requires = spec.requires or {},
 		Optional = spec.optional or {},
 		Fatal = spec.fatal == true,
 		Provides = spec.provides,
-		Settings = settings,
+		Module = namespace,
 		State = 'declared',
 		Reason = nil,
 	}
 
 	if settings.enabled == false then
-		module.State = 'disabled'
-		module.Reason = 'disabled in config'
+		record.State = 'disabled'
+		record.Reason = 'disabled in config'
 	elseif not runsHere(side) then
-		module.State = 'absent'
-		module.Reason = 'runs on the ' .. side
+		record.State = 'absent'
+		record.Reason = 'runs on the ' .. side
 	end
 
-	modules[id] = module
+	records[id] = record
+	namespaces[id] = namespace
 	order[#order + 1] = id
-	return module
+	return namespace
 end
 
---- The declared module table, or nil.
+--- The module's own namespace -- what its files write into and read from.
 -- @author dop42
 -- @param id string
 -- @return table|nil
 function OPX.Modules.Get(id)
-	return modules[id]
+	return namespaces[id]
+end
+
+--- The runtime's bookkeeping for a module: id, side, dependencies, state and
+--- reason. Separate from the namespace so that a module writing a field of its
+--- own can never overwrite its own lifecycle state.
+-- @author dop42
+-- @param id string
+-- @return table|nil
+function OPX.Modules.Record(id)
+	return records[id]
 end
 
 --- Every declared module, in declaration order.
@@ -88,7 +111,7 @@ end
 -- @return table[]
 function OPX.Modules.All()
 	local list = {}
-	for index = 1, #order do list[index] = modules[order[index]] end
+	for index = 1, #order do list[index] = records[order[index]] end
 	return list
 end
 
@@ -97,8 +120,8 @@ end
 -- @param id string
 -- @return boolean
 function OPX.Modules.IsRunning(id)
-	local module = modules[id]
-	return module ~= nil and module.State == 'started'
+	local record = records[id]
+	return record ~= nil and record.State == 'started'
 end
 
 --- Publishes a contract. Called from a module's `Api` phase; after that phase no

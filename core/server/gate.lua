@@ -125,12 +125,18 @@ function OPX.Gate.Participate()
 	Open77.log.info(('[gate] declaring a %d ms liveness interval on the readiness gate')
 		:format(liveness))
 
-	local incarnates = false
-	for _, name in ipairs(INCARNATORS) do
-		local state = GetResourceState(name)
-		if state == 'running' or state == 'starting' then
-			incarnates = true
-			break
+	-- This runtime's own appearance module announces it, so ask the registry
+	-- first: a module inside this resource does not appear in `GetResourceState`,
+	-- and checking only the external names would warn that no gate ever opens
+	-- while they all do.
+	local incarnates = OPX.Modules.Record('appearance') ~= nil
+	if not incarnates then
+		for _, name in ipairs(INCARNATORS) do
+			local state = GetResourceState(name)
+			if state == 'running' or state == 'starting' then
+				incarnates = true
+				break
+			end
 		end
 	end
 	if not incarnates then

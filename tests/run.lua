@@ -126,7 +126,7 @@ do
 		check('boot reports no database', env.OPX.BootError == 'no database', env.OPX.BootError)
 		check('diagnostics started',
 			env.OPX.Modules.IsRunning('diagnostics'),
-			env.OPX.Modules.Get('diagnostics') and env.OPX.Modules.Get('diagnostics').Reason)
+			env.OPX.Modules.Get('diagnostics') and env.OPX.Modules.Record('diagnostics').Reason)
 		check('/opx.modules is registered restricted',
 			control.commands['opx.modules'] ~= nil and control.commands['opx.modules'].restricted)
 		check('no thread died', #control.log.error == 0 or not table.concat(control.log.error)
@@ -429,8 +429,8 @@ do
 		control.Pump(60)
 		check('diagnostics started', env.OPX.Modules.IsRunning('diagnostics'))
 		check('a second resource-start does not re-run the phases',
-			env.OPX.Modules.Get('weather').State == 'started',
-			env.OPX.Modules.Get('weather').Reason)
+			env.OPX.Modules.Record('weather').State == 'started',
+			env.OPX.Modules.Record('weather').Reason)
 		check('the scheduler reports itself', #env.OPX.Scheduler.Report() >= 0)
 		check('/opx.client is registered open',
 			control.commands['opx.client'] ~= nil and not control.commands['opx.client'].restricted)
@@ -612,7 +612,7 @@ do
 			declare = function(OPX)
 				OPX.Modules.Declare{ id = 'alpha', requires = { 'nope' } }
 			end,
-			expect = function(OPX) return OPX.Modules.Get('alpha').State == 'unavailable' end,
+			expect = function(OPX) return OPX.Modules.Record('alpha').State == 'unavailable' end,
 		},
 		{
 			label = 'unavailability cascades to the next dependant',
@@ -620,14 +620,14 @@ do
 				OPX.Modules.Declare{ id = 'alpha', requires = { 'nope' } }
 				OPX.Modules.Declare{ id = 'beta', requires = { 'alpha' } }
 			end,
-			expect = function(OPX) return OPX.Modules.Get('beta').State == 'unavailable' end,
+			expect = function(OPX) return OPX.Modules.Record('beta').State == 'unavailable' end,
 		},
 		{
 			label = 'a missing soft dependency does not stop the dependant',
 			declare = function(OPX)
 				OPX.Modules.Declare{ id = 'alpha', optional = { 'nope' } }
 			end,
-			expect = function(OPX) return OPX.Modules.Get('alpha').State == 'started' end,
+			expect = function(OPX) return OPX.Modules.Record('alpha').State == 'started' end,
 		},
 		{
 			label = 'a module disabled in config never runs',
@@ -635,7 +635,7 @@ do
 				OPX.Config.MODULES.alpha = { enabled = false }
 				OPX.Modules.Declare{ id = 'alpha' }
 			end,
-			expect = function(OPX) return OPX.Modules.Get('alpha').State == 'disabled' end,
+			expect = function(OPX) return OPX.Modules.Record('alpha').State == 'disabled' end,
 		},
 		{
 			label = 'a raise in Init fails only that module',
@@ -645,8 +645,26 @@ do
 				OPX.Modules.Declare{ id = 'gamma' }
 			end,
 			expect = function(OPX)
-				return OPX.Modules.Get('alpha').State == 'failed'
-					and OPX.Modules.Get('gamma').State == 'started'
+				return OPX.Modules.Record('alpha').State == 'failed'
+					and OPX.Modules.Record('gamma').State == 'started'
+			end,
+		},
+		{
+			-- The namespace and the lifecycle record used to be one table, so a
+			-- module wanting a field called `State` overwrote its own lifecycle
+			-- state and never started -- silently, because nothing reads a state
+			-- it did not write. `appearance` hit this for real.
+			label = 'a module may use a field named after a lifecycle field',
+			declare = function(OPX)
+				local m = OPX.Modules.Declare{ id = 'alpha' }
+				m.State = { anything = true }
+				m.Id = 'not-the-module-id'
+				m.Reason = 'mine, not the runtime\'s'
+			end,
+			expect = function(OPX)
+				return OPX.Modules.Record('alpha').State == 'started'
+					and OPX.Modules.Record('alpha').Id == 'alpha'
+					and OPX.Modules.Get('alpha').State.anything == true
 			end,
 		},
 		{
@@ -694,7 +712,7 @@ do
 				first.Api = function() OPX.Api.Provide('thing', 1, {}) end
 				second.Api = function() OPX.Api.Provide('thing', 1, {}) end
 			end,
-			expect = function(OPX) return OPX.Modules.Get('beta').State == 'failed' end,
+			expect = function(OPX) return OPX.Modules.Record('beta').State == 'failed' end,
 		},
 		{
 			label = 'Get answers nil below the requested version',

@@ -36,7 +36,7 @@ local function visit(module, seen, out, trail)
 
 	for _, list in ipairs({ module.Requires, module.Optional }) do
 		for _, id in ipairs(list) do
-			local other = OPX.Modules.Get(id)
+			local other = OPX.Modules.Record(id)
 			if other then visit(other, seen, out, trail) end
 		end
 	end
@@ -65,7 +65,7 @@ function OPX.Modules.Resolve()
 		for _, module in ipairs(out) do
 			if module.State == 'declared' then
 				for _, id in ipairs(module.Requires) do
-					local other = OPX.Modules.Get(id)
+					local other = OPX.Modules.Record(id)
 					if other == nil then
 						halt(module, 'unavailable', ('requires %q, which is not installed'):format(id))
 						settling = true
@@ -90,7 +90,10 @@ local function runPhase(phase)
 	local fatal
 	for _, module in ipairs(OPX.Modules.Resolve()) do
 		if module.State == 'declared' then
-			local step = module[phase]
+			-- Phases live on the namespace; everything else the loop reads is on
+			-- the record. The two were one table once, and a module field named
+			-- after a lifecycle field overwrote it, silently.
+			local step = module.Module[phase]
 			if type(step) == 'function' then
 				-- `Provide` reads this to name the owner of a contract; the
 				-- phases never interleave, so a single field is enough.
@@ -152,8 +155,8 @@ function OPX.Modules.Stop()
 	local running = OPX.Modules.Resolve()
 	for index = #running, 1, -1 do
 		local module = running[index]
-		if module.State == 'started' and type(module.Stop) == 'function' then
-			local ok, failure = pcall(module.Stop)
+		if module.State == 'started' and type(module.Module.Stop) == 'function' then
+			local ok, failure = pcall(module.Module.Stop)
 			if not ok then
 				Open77.log.error(('[%s] stop failed: %s'):format(module.Id, tostring(failure)))
 			end

@@ -1008,7 +1008,8 @@ end
 -- @return Result
 function M.Contract.CloseWardrobe(owner)
 	if not M.Wardrobe.IsOpen() then return Result.Err('no_wardrobe_open') end
-	M.Wardrobe.Close(owner ~= nil and 'caller' or 'unknown')
+	if M.Wardrobe.Owner() ~= owner then return Result.Err('not_owner') end
+	M.Wardrobe.Close('caller')
 	return Result.Ok(true)
 end
 
