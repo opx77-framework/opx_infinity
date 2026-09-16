@@ -32,13 +32,25 @@ local Store = M.Storage
 --- One CREATE TABLE IF NOT EXISTS per table this module owns, in foreign-key
 --- order: the container before the stacks that cascade from it.
 --
--- Both foreign keys point at tables another module owns -- `opx77_characters` at
--- `character`, which this module requires, and `opx77_vehicles` at `vehicles`,
--- which it only declares as optional. The registry orders both before this one,
--- so the tables exist whenever their module runs; a server that switches
--- `vehicles` off in `config/vehicles.lua` has no `opx77_vehicles` for the second
--- constraint to name, and the schema stops there rather than carrying on
--- incomplete. That is the same trade the statements were written with.
+-- `citizen_id` keeps its foreign key: `character` is a hard requirement, so
+-- `opx77_characters` exists whenever this module does.
+--
+-- `plate` deliberately has NONE, although the column is still indexed and still
+-- keyed on a vehicle. `vehicles` is only OPTIONAL here, and a server that turns
+-- it off in config has no `opx77_vehicles` for the constraint to name --
+-- `OPX.Schema.Apply` would stop at that statement and set `OPX.BootError`,
+-- degrading the whole runtime because one optional module is off.
+--
+-- Making the constraint conditional on `vehicles` being enabled was the obvious
+-- alternative and is worse: `CREATE TABLE IF NOT EXISTS` never alters a table
+-- that already exists, so a server that enabled vehicles later would keep a
+-- table without the key, and two servers with the same configuration would have
+-- different schemas depending on the order they were switched on. A uniform
+-- schema is worth more than the cascade.
+--
+-- What the cascade gave is covered on the read side instead: `Store.Read`
+-- refuses a plate no owned vehicle carries, so a container for a vehicle that
+-- has gone is never opened. The row outlives the vehicle, which costs a row.
 Store.SCHEMA = {
 	[[
 CREATE TABLE IF NOT EXISTS opx77_inventories (
@@ -56,9 +68,6 @@ CREATE TABLE IF NOT EXISTS opx77_inventories (
     KEY idx_opx77_inventories_plate (plate),
     CONSTRAINT fk_opx77_inventory_character
         FOREIGN KEY (citizen_id) REFERENCES opx77_characters (citizen_id)
-        ON DELETE CASCADE,
-    CONSTRAINT fk_opx77_inventory_vehicle
-        FOREIGN KEY (plate) REFERENCES opx77_vehicles (plate)
         ON DELETE CASCADE
 ) ENGINE=InnoDB
 ]],
@@ -131,6 +140,23 @@ function Store.VehicleExists(plate)
 	return Result.Ok(row.value ~= nil)
 end
 
+--- One container's header by its identity, or nil.
+-- The read half of `Ensure`, and the only way to reach a container that must NOT
+-- be created if it is absent -- deleting one, for instance.
+-- @author dop42
+-- @param kind string
+-- @param owner string
+-- @return Result
+function Store.Find(kind, owner)
+	local row = Storage.Single([[
+SELECT id, kind, owner, slots, max_weight FROM opx77_inventories
+ WHERE kind = @kind AND owner = @owner
+ LIMIT 1
+  ]], { kind = kind, owner = owner })
+	if not row.ok then return row end
+	return Result.Ok(toHeader(row.value))
+end
+
 --- Finds or creates one container keyed on kind and owner.
 -- INSERT IGNORE and then a SELECT, never a SELECT and then an INSERT: two callers
 -- in the same tick both pass a SELECT, and the unique key on `(kind, owner)` is
@@ -159,14 +185,10 @@ VALUES (@kind, @owner, NULLIF(@citizen, ''), NULLIF(@plate, ''), @slots, @maxWei
 	local affected = inserted.value
 	if type(affected) == 'table' then affected = affected.affectedRows end
 
-	local row = Storage.Single([[
-SELECT id, kind, owner, slots, max_weight FROM opx77_inventories
- WHERE kind = @kind AND owner = @owner
- LIMIT 1
-  ]], { kind = entity.kind, owner = entity.owner })
-	if not row.ok then return row end
-	if not row.value then return Result.Err('inventory.noOwner', entity.owner) end
-	return Result.Ok({ header = toHeader(row.value), created = tonumber(affected) == 1 })
+	local found = Store.Find(entity.kind, entity.owner)
+	if not found.ok then return found end
+	if not found.value then return Result.Err('inventory.noOwner', entity.owner) end
+	return Result.Ok({ header = found.value, created = tonumber(affected) == 1 })
 end
 
 --- One container's header by id, or nil.

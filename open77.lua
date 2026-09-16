@@ -240,6 +240,8 @@ permissions {
 
   "world.environment",
 
+  "world.props",
+
   "world.vehicles",
 
   "acl.read",

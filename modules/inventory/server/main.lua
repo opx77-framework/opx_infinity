@@ -346,6 +346,77 @@ function M.GetHeldWeapon(playerId)
 	return { name = held.name, serial = held.serial, slot = Options.WEAPON_SLOT }
 end
 
+--- Changes a stored container's slot count and weight limit.
+-- `Ensure` only writes a size for the row that creates it, so a container keeps
+-- the size it was made with for ever; this is the one way that changes. The copy
+-- in memory is moved with it, or the two would disagree until it was unloaded.
+-- @author dop42
+-- @param kind string
+-- @param owner string
+-- @param slots integer
+-- @param maxWeight integer
+-- @return Result
+function M.ResizeContainer(kind, owner, slots, maxWeight)
+	if M.KIND[kind:upper()] == nil then return Result.Err('bad_argument', 'kind') end
+	owner = Common.Word(owner, 64, '^[%w_%-%.:]+$')
+	slots = Common.Integer(slots, 1, 200)
+	maxWeight = Common.Integer(maxWeight, 0, 4000000000)
+	if not owner or not slots or not maxWeight then
+		return Result.Err('bad_argument', 'owner or size')
+	end
+
+	local held = Containers.Find(kind, owner)
+	local id = held and not held.transient and held.id or nil
+	if id == nil then
+		local loaded, reason = Containers.Load(kind, owner, slots, maxWeight)
+		if not loaded then return Result.Err(reason or 'not_found', owner) end
+		if loaded.transient then return Result.Err('not_found', owner) end
+		held, id = loaded, loaded.id
+	end
+
+	local written = M.Storage.Resize(id, slots, maxWeight)
+	if not written.ok then return written end
+	held.slots = slots
+	held.maxWeight = maxWeight
+	-- Stacks beyond the new slot count are kept, counted and removable; they are
+	-- simply not drawn and nothing new is put there.
+	Containers.Publish(held)
+	OPX.Audit.Log({ event = 'inventory.resize', message = ('%s %s'):format(kind, owner),
+		data = { kind = kind, owner = owner, slots = slots, maxWeight = maxWeight } })
+	return Result.Ok(id)
+end
+
+--- Deletes a stored container. Its stacks go by cascade, and EVERYTHING IN IT
+--- goes with them.
+-- The copy in memory is discarded first and without writing: writing it back
+-- would put the rows that were just deleted straight in again.
+-- @author dop42
+-- @param kind string
+-- @param owner string
+-- @return Result
+function M.DeleteContainer(kind, owner)
+	if M.KIND[kind:upper()] == nil then return Result.Err('bad_argument', 'kind') end
+	owner = Common.Word(owner, 64, '^[%w_%-%.:]+$')
+	if not owner then return Result.Err('bad_argument', 'owner') end
+
+	local held = Containers.Find(kind, owner)
+	if held then
+		if held.transient then return Result.Err('bad_argument', 'kind') end
+		Containers.Discard(held.id)
+	end
+
+	-- `Find` and never `Ensure`: ensuring would CREATE the row it is about to
+	-- delete, and for a linked kind it would create it with no owner column set.
+	local found = M.Storage.Find(kind, owner)
+	if not found.ok then return found end
+	if not found.value then return Result.Err('not_found', owner) end
+	local removed = M.Storage.Delete(found.value.id)
+	if not removed.ok then return removed end
+	OPX.Audit.Log({ event = 'inventory.delete', severity = 'warn',
+		message = ('%s %s'):format(kind, owner), data = { kind = kind, owner = owner } })
+	return Result.Ok(true)
+end
+
 --- The containers holding an item, largest stacks first.
 -- @author dop42
 -- @param name string
@@ -419,6 +490,9 @@ function M.Api()
 		GetItem = M.GetItem,
 		GetItems = M.GetItems,
 		Holders = M.Holders,
+
+		ResizeContainer = M.ResizeContainer,
+		DeleteContainer = M.DeleteContainer,
 
 		OpenStash = M.OpenStash,
 		CloseInventory = M.CloseInventory,

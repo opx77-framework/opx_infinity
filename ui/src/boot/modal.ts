@@ -1,5 +1,6 @@
 import FormView from '@/modules/form/FormView.vue'
 import EntryView from '@/modules/entry/EntryView.vue'
+import InventoryView from '@/modules/inventory/InventoryView.vue'
 import MenuView from '@/modules/menu/MenuView.vue'
 import PanelView from '@/modules/panel/PanelView.vue'
 import TargetView from '@/modules/target/TargetView.vue'
@@ -21,6 +22,7 @@ import SurfaceRoot from './SurfaceRoot.vue'
  * third means answering why it cannot be a module on one of these.
  */
 registerModule({ id: 'entry', surface: 'modal', component: EntryView })
+registerModule({ id: 'inventory', surface: 'modal', component: InventoryView })
 registerModule({ id: 'menu', surface: 'modal', component: MenuView })
 registerModule({ id: 'form', surface: 'modal', component: FormView })
 registerModule({ id: 'panel', surface: 'modal', component: PanelView })
