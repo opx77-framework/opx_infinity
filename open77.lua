@@ -28,8 +28,9 @@
 --                         with no character, for ever. Not a moderation tool
 --   ui.vanilla.hud        hiding the game's own HUD while a player is down
 --
--- `players.access` was declared here and is NOT required: it gates the
--- `Open77.access` door/ban list, and `Open77.players.all` needs no permission.
+-- `players.access` gates `Open77.access`, which is the server-local ban list and
+-- NOT the ACL. It was dropped as unused and is back: `opx.admin.moderate.ban`
+-- calls it. `Open77.players.all` still needs no permission.
 
 resource "opx_infinity"
 version "0.1.0"
@@ -63,6 +64,7 @@ shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
 shared_script "config/entry.lua"
+shared_script "config/admin.lua"
 
 shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
@@ -226,6 +228,44 @@ client_script "modules/elevators/client/main.lua"
 client_script "modules/elevators/client/panel.lua"
 client_script "modules/elevators/client/exports.lua"
 
+-- LAST of the modules, because it reaches into nearly all of them and provides
+-- nothing back. Every contract it uses is optional bar `character`: without the
+-- menu, the form or the target eye it logs one line each and all 50 commands
+-- still work typed.
+shared_script "modules/admin/module.lua"
+shared_script "modules/admin/locales.lua"
+shared_script "modules/admin/data/vehicles.lua"
+-- The catalogue is split four ways only because of its size; `-4` finishes it.
+shared_script "modules/admin/shared/catalog.lua"
+shared_script "modules/admin/shared/catalog-1.lua"
+shared_script "modules/admin/shared/catalog-2.lua"
+shared_script "modules/admin/shared/catalog-3.lua"
+shared_script "modules/admin/shared/catalog-4.lua"
+
+-- `main.lua` is the spine and declares the lifecycle; the rest register into it
+-- and are called at Start. `inventory` before `weapons` and `menu`; `menu` last,
+-- because its access map lists what every other file registered.
+server_script "modules/admin/server/main.lua"
+server_script "modules/admin/server/players.lua"
+server_script "modules/admin/server/vehicles.lua"
+server_script "modules/admin/server/inventory.lua"
+server_script "modules/admin/server/weapons.lua"
+server_script "modules/admin/server/world.lua"
+server_script "modules/admin/server/tags.lua"
+server_script "modules/admin/server/combat.lua"
+server_script "modules/admin/server/doors.lua"
+server_script "modules/admin/server/menu.lua"
+
+client_script "modules/admin/client/main.lua"
+client_script "modules/admin/client/keys.lua"
+client_script "modules/admin/client/controls.lua"
+client_script "modules/admin/client/forms.lua"
+client_script "modules/admin/client/tags.lua"
+client_script "modules/admin/client/combat.lua"
+client_script "modules/admin/client/doors.lua"
+client_script "modules/admin/client/menu.lua"
+client_script "modules/admin/client/target.lua"
+
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
 
@@ -281,4 +321,13 @@ permissions {
   "voice.client",
 
   "ui.vanilla.hud",
+
+  -- The staff module, and only the staff module. Every one of these gates a
+  -- single call; none is reachable without passing the ACL first.
+  "players.life.visibility",
+  "players.life.freeze",
+  "players.access",
+  "clipboard.write",
+  "combat.config",
+  "world.doors",
 }

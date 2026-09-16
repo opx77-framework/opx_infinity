@@ -32,7 +32,9 @@ OPX.Config.MODULES.downed = {
 	-- while their own surface is up. A caller now gives its own name, so both are
 	-- switches rather than boundaries.
 	REVIVERS = '*',
-	SUSPENDERS = { opx77_admin = true },
+	-- `admin` is this runtime's staff module; `opx77_admin` is the resource it
+	-- replaces, kept so a server still running that one is not broken by the move.
+	SUSPENDERS = { admin = true, opx77_admin = true },
 
 	-- Stock HUD components hidden while down.
 	VANILLA_HUD = { 'minimap', 'compass', 'clock', 'health', 'stamina', 'weapon', 'speedometer' },

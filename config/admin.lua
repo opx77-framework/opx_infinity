@@ -1,0 +1,188 @@
+--- The staff tool: keys, rates, placement, tags, vehicles and the linked commands.
+-- @author dop42
+--
+-- No secret and no grant lives here. This file is a shared script that every
+-- client downloads, and the ACL is the host's: the access map the menu is sent
+-- only greys out what the host would refuse anyway.
+--
+-- LINKS names OTHER modules' command names, so that a renamed command is
+-- followed here rather than in code, and `false` removes the row that drives it.
+-- They are command names and not contract calls on purpose: a command is
+-- resolved against `command.<name>` by the host before its handler runs, and a
+-- contract call from a client would be no permission check at all.
+--
+-- The numbers marked "tunable" below are the DEFAULTS of a panel entry. They are
+-- declared from the module's `Init` and read at the moment of use, so an operator
+-- moves them while people are playing; everything else here is read at start.
+
+OPX.Config.MODULES.admin = {
+	enabled = true,
+
+	-- Default keys players rebind in the pause menu; false registers none.
+	KEYS = {
+		MENU = 'F9',
+		SPEED_UP = 'PAGEUP',
+		SPEED_DOWN = 'PAGEDOWN',
+	},
+
+	-- Per-operator floors between two runs of one command, in milliseconds.
+	-- Tunable: ADMIN_RATE_ACTION_MS, ADMIN_RATE_READ_MS, ADMIN_RATE_REFRESH_MS.
+	RATE = {
+		ACTION_MS = 400,
+		READ_MS = 1000,
+		REFRESH_MS = 750,
+	},
+
+	-- Actions `opx.admin.read.audit` looks back over. Tunable: ADMIN_AUDIT_ENTRIES.
+	AUDIT_ENTRIES = 200,
+
+	-- How long a target's staff action toast stays up. Tunable: ADMIN_TOAST_MS.
+	TOAST_MS = 6000,
+
+	-- How a moved player lands. A placement is a kill and a respawn, never a
+	-- transform write, so it always costs a death and always gives health back.
+	-- Tunable: ADMIN_PLACEMENT_GRACE_MS.
+	PLACEMENT = {
+		HEALTH = 1.0,
+		GRACE_MS = 5000,
+		BESIDE = { X = 1.5, Y = 0.0, Z = 0.0 },
+		OBSERVE_HEIGHT = 2.0,
+	},
+
+	-- Noclip speed and its on-screen controls. Client-side: the tunables panel is
+	-- the server's, so these are read at start.
+	NOCLIP = {
+		SPEED = 40.0,
+		MIN_SPEED = 1.0,
+		MAX_SPEED = 500.0,
+		STEP = 0.15,
+		-- Never below RATE.ACTION_MS plus 100: a quieter send would be refused.
+		SEND_AFTER_MS = 500,
+		PROMPTS = true,
+	},
+
+	-- Metres the staff rows on the target eye reach, 1..12.
+	TARGET = {
+		DISTANCE = 10.0,
+	},
+
+	-- Damage between players when the server starts; staff switch it live.
+	COMBAT = {
+		PVP = true,
+	},
+
+	-- Name tags staff see above nearby players. Client-side.
+	-- Tunable: ADMIN_TAGS_REFRESH_MS, which is the server's list interval.
+	TAGS = {
+		DISTANCE = 25.0,
+		FADE_START = 0.55,
+		HEAD_LIFT = 0.35,
+		HEAD_OFFSET_Z = 2.05,
+		UPDATE_MS = 250,
+		REFRESH_MS = 2000,
+		MAX = 32,
+		OWN = false,
+		HIDE_IN_FIRST_PERSON = false,
+		TECHNICAL = true,
+		BADGE = true,
+		COLORS = {
+			TEXT = '#F2F6F8',
+			ACCENT = '#FCEE0A',
+			STAFF = '#22D8E2',
+			BACKGROUND = '#0A1220',
+		},
+	},
+
+	-- How an announcement reaches every player. Tunable: ADMIN_ANNOUNCE_MS.
+	ANNOUNCE = {
+		DURATION_MS = 12000,
+		CHAT = true,
+		MAX_CHARACTERS = 240,
+	},
+
+	-- Durations the ban form offers; a typed ban takes any duration.
+	BAN_DURATIONS = { '1h', '1d', '7d', '30d', 'perm' },
+
+	-- Vehicle spawning, the near search and repairs.
+	-- Tunable: ADMIN_VEHICLE_PER_OWNER, ADMIN_VEHICLE_NEAR_RADIUS.
+	VEHICLES = {
+		SPAWN_OFFSET = { X = 3.0, Y = 0.0, Z = 0.25 },
+		PER_OWNER = 8,
+		NEAR_RADIUS = 30.0,
+		OCCUPIED_REPAIRS = { glass = true, body = true, lights = true, tires = true, visual = true },
+		FLAGS = { 'locked', 'engineOn', 'lightsOn', 'invulnerable' },
+	},
+
+	-- Largest count an item or ammunition give or removal accepts.
+	-- Tunable: ADMIN_INVENTORY_MAX_COUNT.
+	INVENTORY = {
+		MAX_COUNT = 10000,
+		-- The inventory contract does not say what ammunition a weapon loads, so
+		-- ammunition is named by its own item and this is the count a give uses
+		-- when none is typed. See the module header.
+		DEFAULT_AMMO = 60,
+	},
+
+	-- Doors. The official `open77_doors` owns every door while it runs and this
+	-- module stands down; these bound what it does when that resource is absent.
+	DOORS = {
+		-- Doors one routing bucket may hold a staff state for.
+		MAX_PER_BUCKET = 256,
+		-- Milliseconds between two looks at which bucket each player is in.
+		SWEEP_MS = 2000,
+		-- Milliseconds between two looks at the doors streamed around a client.
+		SCAN_MS = 1000,
+		-- Metres around a client doors are looked for, within the native's 100.
+		SCAN_RADIUS = 80,
+	},
+
+	-- Other modules' command names the menu and the eye drive; false removes the
+	-- row. A renamed command is followed here.
+	LINKS = {
+		PLAYERS = 'opx.players',
+		WHERE = 'opx.where',
+		JOB = 'opx.job',
+		GANG = 'opx.gang',
+		MONEY = 'opx.money',
+		SAVE = 'opx.save',
+		INVENTORY_OPEN = 'opx.inventory.open',
+		INVENTORY_HOLDERS = 'opx.inventory.holders',
+		WEATHER_SET = 'opx.weather.set',
+		WEATHER_NEXT = 'opx.weather.next',
+		WEATHER_FREEZE = 'opx.weather.freeze',
+		TIME = 'opx.time',
+		TIME_FREEZE = 'opx.time.freeze',
+	},
+
+	-- Weather names the sky screen offers. They are the NAME column of
+	-- OPX.Config.MODULES.weather.WEATHER.
+	WEATHER_PRESETS = { 'sunny', 'lightclouds', 'cloudy', 'rain', 'heavyclouds', 'fog',
+		'pollution', 'sandstorm' },
+
+	TIMES = { '06:00', '09:00', '12:00', '17:30', '20:30', '23:00', '03:00' },
+
+	-- Saved destinations. `opx.admin.self.pos` copies a row in this shape.
+	LOCATIONS = {
+		{ NAME = 'watson', LABEL = 'Watson, west', X = -667.14, Y = -382.61, Z = 9.16, HEADING = 0.0 },
+		{ NAME = 'heights', LABEL = 'Northwest heights', X = -1441.0, Y = 1269.0, Z = 123.0,
+			HEADING = 180.0 },
+		{ NAME = 'coast', LABEL = 'Southwest coast', X = -1716.38, Y = -2421.28, Z = 62.59,
+			HEADING = 0.0 },
+		{ NAME = 'stoop', LABEL = 'Watson, King Stoop forecourt', X = -410.22, Y = 722.73, Z = 115.0,
+			HEADING = 147.0 },
+		{ NAME = 'northside', LABEL = 'Watson, north promenade', X = -469.47, Y = 930.99, Z = 56.45,
+			HEADING = -68.0 },
+		{ NAME = 'junction', LABEL = 'Watson, lower junction', X = -644.91, Y = 1019.37, Z = 36.56,
+			HEADING = 75.5 },
+		{ NAME = 'underpass', LABEL = 'Watson, lower underpass', X = -701.49, Y = 1033.97, Z = 35.71,
+			HEADING = -104.5 },
+		{ NAME = 'dealer', LABEL = 'Westbrook, vehicle dealership', X = -1442.2, Y = 127.4, Z = 18.0,
+			HEADING = 0.0 },
+		{ NAME = 'racegrid', LABEL = 'Westbrook, race grid', X = -1450.2, Y = 119.9, Z = 14.8,
+			HEADING = 200.0 },
+		{ NAME = 'lab', LABEL = 'East, laboratory', X = 1669.75, Y = -739.12, Z = 49.86,
+			HEADING = 0.0 },
+		{ NAME = 'arena', LABEL = 'Badlands, arena', X = 381.36, Y = -2401.79, Z = 181.99,
+			HEADING = 0.0 },
+	},
+}
