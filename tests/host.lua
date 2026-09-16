@@ -302,7 +302,17 @@ function Host.Environment(side, database)
 		-- the runtime wired to that channel, exactly as the real bridge would.
 		WebUI = {
 			create = function(spec)
-				local page = { spec = spec, sent = {}, handlers = {}, focus = {}, alive = true }
+				-- `visible` starts from the spec, not from a later `show`. The runtime creates
+				-- the surface visible on purpose, and a stub that ignores the flag would
+				-- make a never-painting page look identical to a working one.
+				local page = {
+					spec = spec,
+					sent = {},
+					handlers = {},
+					focus = {},
+					visible = spec.visible == true,
+					alive = true,
+				}
 				page.send = function(_, channel, payload)
 					page.sent[#page.sent + 1] = { channel = channel, payload = payload }
 					return true

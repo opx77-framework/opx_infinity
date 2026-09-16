@@ -1,26 +1,46 @@
 <script setup lang="ts">
 import ModuleHost from './ModuleHost.vue'
 import { modulesFor } from './registry'
-import type { SurfaceName } from '@/stores/ui'
+import { isFocused } from '@/stores/ui'
 
 /**
- * The root of both surfaces. It renders the registry and nothing else.
+ * The root of the one surface. It renders the registry and nothing else.
+ *
+ * There were two CEF pages here, and collapsing them to one removed ~400 kB of
+ * duplication -- the eight woff2 faces alone were 158 kB byte-identical in both, and
+ * the Vue runtime and the whole design system came twice. What it cost is real and
+ * worth knowing:
+ *
+ *   * ONE FRAME RATE. `fps` is fixed at `WebUI.create` and the page handle has no
+ *     setter, so the HUD and a dragged inventory slot share whatever is configured.
+ *     60 is the choice: a pointer that lags feels broken, while a HUD that repaints
+ *     more often than it changes costs only what CEF charges for an undamaged frame.
+ *   * NO CRASH ISOLATION BETWEEN LAYERS. Two pages meant an exception in a shop view
+ *     could not blank the health bar. Now only ModuleHost stands between them, which
+ *     is a boundary in one JS realm rather than two separate ones.
  *
  * Every module is a sibling under its own ModuleHost, deliberately: siblings cannot
- * reach each other, so the failure of one is contained by construction rather than by
- * discipline. Nesting a module inside another module would put the inner one's
- * failures inside the outer one's blast radius.
+ * reach each other, so one failing is contained by construction rather than by
+ * discipline. Nesting a module inside another puts the inner one's failures inside the
+ * outer one's blast radius.
  */
-const props = defineProps<{ surface: SurfaceName }>()
-
-const modules = modulesFor(props.surface)
+const overlay = modulesFor('overlay')
+const interactive = modulesFor('modal')
 </script>
 
 <template>
-  <div class="surface" :class="`surface-${surface}`">
-    <ModuleHost v-for="module in modules" :id="module.id" :key="module.id">
-      <component :is="module.component" />
-    </ModuleHost>
+  <div class="surface">
+    <div class="layer layer-overlay">
+      <ModuleHost v-for="module in overlay" :id="module.id" :key="module.id">
+        <component :is="module.component" />
+      </ModuleHost>
+    </div>
+
+    <div class="layer layer-modal" :class="{ 'is-live': isFocused }">
+      <ModuleHost v-for="module in interactive" :id="module.id" :key="module.id">
+        <component :is="module.component" />
+      </ModuleHost>
+    </div>
   </div>
 </template>
 
@@ -30,12 +50,29 @@ const modules = modulesFor(props.surface)
   inset: 0;
 }
 
-/* The overlay is never focused and never takes a click: it sits at z 700 over live
-   gameplay, and a transparent full-screen div that eats pointer events is a player who
-   cannot shoot. Modules that need a pointer re-enable it on themselves -- and on the
-   overlay, nothing should. */
-.surface-overlay {
+.layer {
+  position: fixed;
+  inset: 0;
+}
+
+/* Never takes a pointer. It sits over live gameplay, and a transparent full-screen div
+   that eats pointer events is a player who cannot shoot. A module needing a pointer on
+   this layer re-enables it on itself -- and nothing here should. */
+.layer-overlay {
   pointer-events: none;
   user-select: none;
+  z-index: 0;
+}
+
+/* Above the HUD, and inert until something on it actually holds focus. Without the
+   `is-live` gate this layer would swallow every click for the whole session, because
+   a closed view still renders an element that fills the screen. */
+.layer-modal {
+  pointer-events: none;
+  z-index: 1;
+}
+
+.layer-modal.is-live {
+  pointer-events: auto;
 }
 </style>

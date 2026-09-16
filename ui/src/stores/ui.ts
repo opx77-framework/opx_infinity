@@ -5,7 +5,7 @@ import type { Payload } from '@/bridge/types'
 /**
  * Surface-wide state. Deliberately not Pinia.
  *
- * Pinia would be one more runtime to bundle into two pages for a store with four
+ * Pinia would be one more runtime in the bundle for a store with four
  * fields and no devtools to inspect it with -- the CEF has no extensions. A module
  * scope plus `reactive` is the same thing minus the ceremony, and it stays portable:
  * `reactive` and `computed` are the whole API and both exist in Vue 2.7.
@@ -14,14 +14,25 @@ import type { Payload } from '@/bridge/types'
  * the render does not have to ask again. The page never writes a value it invented.
  */
 
-export type SurfaceName = 'overlay' | 'modal'
+/**
+ * Which LAYER of the single surface a module draws on. There used to be two CEF pages
+ * and this named them; there is one now, and these are stacking contexts inside it.
+ *
+ * The distinction still earns its keep: `overlay` never takes a pointer or the
+ * keyboard, `modal` does. A module declaring the wrong one either cannot be clicked or
+ * goes inert as soon as nothing holds focus.
+ */
+export type LayerName = 'overlay' | 'modal'
 
 interface UiState {
-  surface: SurfaceName
-  /** Lua has answered at least once. Until then the surface shows nothing at all. */
-  ready: boolean
-  /** The surface is being shown. Separate from `ready`: a ready HUD can still be hidden. */
-  open: boolean
+  /**
+   * Something on the interactive layer holds focus.
+   *
+   * With one surface this drives `pointer-events` on that layer: a full-screen
+   * transparent div that accepts clicks while nothing is open is a player who cannot
+   * shoot. Two pages got this for free by not existing.
+   */
+  focused: boolean
   /** `opx:locale:set`. Keys, never sentences -- see useLocale. */
   strings: Record<string, string>
   /** Modules ModuleHost has unmounted after a throw. Shown in the diag overlay only. */
@@ -29,25 +40,17 @@ interface UiState {
 }
 
 const state = reactive<UiState>({
-  surface: 'overlay',
-  ready: false,
-  open: false,
+  focused: false,
   strings: {},
   failed: []
 })
 
 export const ui = readonly(state)
 
-export const isReady = computed(() => state.ready)
-export const isOpen = computed(() => state.open)
+export const isFocused = computed(() => state.focused)
 
-export function setSurface(surface: SurfaceName): void {
-  state.surface = surface
-}
-
-export function setOpen(open: boolean): void {
-  state.open = open
-  state.ready = true
+export function setFocused(focused: boolean): void {
+  state.focused = focused
 }
 
 /**

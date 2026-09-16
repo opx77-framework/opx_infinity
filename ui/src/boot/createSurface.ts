@@ -5,32 +5,34 @@ import { installDevShimIfMissing } from '@/bridge/devshim'
 import { installDiagnostics, report } from '@/bridge/diag'
 import { configureFocus } from '@/bridge/focus'
 import { configureRpc } from '@/bridge/rpc'
-import { setOpen, setStrings, setSurface } from '@/stores/ui'
-import type { SurfaceName } from '@/stores/ui'
+import { setStrings } from '@/stores/ui'
 import '@/design/fonts.css'
 import '@/design/tokens.css'
 import '@/design/augmented.css'
 
 /**
- * One `createApp` per surface. Everything a surface needs to be different from the
- * other surface is a parameter here and nowhere else.
+ * The one `createApp`, and everything that has to happen around it in order.
+ *
+ * There were two of these, one per CEF page. There is one page now, and `name` is what
+ * is left of that: an identity for diagnostics and for the prefix on rpc refs, not a
+ * choice of surface.
  *
  * The order below is not arbitrary:
  *  1. the dev shim, so a browser has a bridge before anything asks for one;
  *  2. diagnostics, so step 3 onwards has somewhere to report to;
- *  3. rpc and focus identity, so the first request cannot collide with the other
- *     surface's refs and the overlay cannot take focus even by accident;
+ *  3. rpc and focus identity, so refs are prefixed before the first request;
  *  4. mount;
- *  5. `opx:ui:ready` LAST. Lua takes it as permission to start pushing state, and a
+ *  5. `opx:ready` LAST. Lua takes it as permission to start pushing state, and a
  *     payload arriving before the channels are bound is a payload that is simply lost.
  */
 export interface SurfaceOptions {
-  name: SurfaceName
+  /** Identity for diagnostics and rpc refs -- not a layer. */
+  name: string
   root: Component
   rootProps?: Record<string, unknown>
   /**
-   * Only one surface platform-wide may hold focus. The overlay passes false and that
-   * is enforced, not documented: see bridge/focus.ts.
+   * Whether `acquireFocus` is honoured at all. True here: the page as a whole can take
+   * focus, and which modules may ask is now a property of the LAYER they register on.
    */
   allowFocus: boolean
 }
@@ -42,13 +44,11 @@ export function createSurface(options: SurfaceOptions): void {
   installDiagnostics(name)
   configureRpc(name)
   configureFocus(name, allowFocus)
-  setSurface(name)
 
   // Lua owns the player's language and may change it mid-session. Bound at boot and
-  // never released: there is no moment on either surface where a locale change is
+  // never released: there is no moment in the session where a locale change is
   // uninteresting.
   subscribe('opx:locale:set', setStrings)
-  subscribe(`opx:${name}:show`, (payload) => setOpen(payload.visible !== false))
 
   const app = createApp(root, rootProps)
 

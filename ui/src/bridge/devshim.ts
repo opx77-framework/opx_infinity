@@ -3,7 +3,7 @@ import type { Handler, Open77Bridge, Payload } from './types'
 /* =============================================================================
    DEVELOPMENT SHIM -- NOT PART OF THE GAME RUNTIME
    =============================================================================
-   Stands in for `window.Open77` when there isn't one, so both surfaces can be
+   Stands in for `window.Open77` when there isn't one, so the surface can be
    opened in an ordinary browser. It installs ONLY if the real bridge is absent,
    and when it does it puts `data-opx-shim` on <html> and a banner class on the
    page, because a shimmed surface that looks identical to a live one is how you

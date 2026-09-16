@@ -7,13 +7,14 @@ import { noteModuleFailure } from '@/stores/ui'
  * Failure isolation.
  *
  * Today a thrown exception in one page cannot reach another because the twelve pages
- * are twelve separate browsers. Folding them into two Vue apps gives that property up
+ * are twelve separate browsers. Folding them into one Vue app gives that property up
  * for free, and this wrapper buys it back. It does not improve on it: a module that
  * throws still dies. What it guarantees is that only that module dies.
  *
  * `onErrorCaptured` returning `false` stops the error propagating to the parent, which
- * is the entire point -- an uncaught render error unmounts the whole app, and on the
- * overlay surface that means the HUD goes black while the player is being shot at.
+ * is the entire point -- an uncaught render error unmounts the whole app, and the HUD
+ * shares that app with every view now, so it means the health bar goes black while the
+ * player is being shot at.
  *
  * WHAT THIS DOES NOT CATCH, and none of it is theoretical:
  *  - a throw inside an `Open77.on` handler. Vue never sees it; the bridge swallows it.

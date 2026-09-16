@@ -459,27 +459,26 @@ do
 	local env, control, why = boot('client')
 	if why == nil then
 		local OPX = env.OPX
-
-		-- The overlay is created at start and is never focused. The interactive
-		-- layer is created on first use, which is what keeps a player who never
-		-- opens anything from paying for a second CEF page.
-		check('the overlay is up at start', #control.pages == 1,
+		-- ONE page, created at start. It used to be two -- an overlay at start and
+		-- an interactive layer on first focus -- and the merge has to hold the line
+		-- that mattered in the old shape: the surface is never HIDDEN when focus
+		-- drops, because the HUD is on it now.
+		check('one page is up at start', #control.pages == 1,
 			('%d pages'):format(#control.pages))
-		check('the overlay is visible and unfocused',
-			control.pages[1] ~= nil and control.pages[1].spec.visible == true)
+		local page = control.pages[1]
+		check('it is visible and unfocused',
+			page ~= nil and page.spec.visible == true)
+		check('overlay and interactive are the same surface',
+			OPX.UI.Overlay() ~= nil and OPX.UI.Overlay() == OPX.UI.Interactive())
+		check('and asking for them did not build a second page', #control.pages == 1,
+			('%d pages'):format(#control.pages))
 		-- Only one surface may hold focus, so focus is a single arbitrated
 		-- resource. A view opened over another gives it back on release.
 		check('nothing holds focus at rest', OPX.UI.FocusOwner() == nil)
 
 		OPX.UI.AcquireFocus('menu', { keyboard = true })
 		check('acquiring takes it', OPX.UI.FocusOwner() == 'menu')
-		check('the interactive layer is created on first use', #control.pages == 2,
-			('%d pages'):format(#control.pages))
-		local modal = control.pages[2]
-		check('and it reaches the page', modal ~= nil and modal.focus.keyboard == true)
-		check('the two surfaces are different entries',
-			modal ~= nil and modal.spec.entry ~= control.pages[1].spec.entry,
-			modal and modal.spec.entry)
+		check('and it reaches the page', page ~= nil and page.focus.keyboard == true)
 
 		OPX.UI.AcquireFocus('form', { keyboard = true })
 		check('a view opened over it takes it', OPX.UI.FocusOwner() == 'form')
@@ -492,6 +491,12 @@ do
 		OPX.UI.AcquireFocus('menu', { keyboard = true })
 		OPX.UI.ReleaseFocus('menu')
 		check('acquiring twice still releases once', OPX.UI.FocusOwner() == nil)
+		check('the page lost focus with it',
+			page ~= nil and page.focus.keyboard == false and page.focus.cursor == false)
+		-- The regression this merge could introduce, and the reason the check is
+		-- here at all: hiding the surface when the stack empties would blank the
+		-- HUD every time a menu closed.
+		check('but the surface is still shown', page ~= nil and page.visible == true)
 
 		OPX.UI.ReleaseFocus('never-held')
 		check('releasing what never held is safe', OPX.UI.FocusOwner() == nil)

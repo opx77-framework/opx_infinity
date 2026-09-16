@@ -1,4 +1,4 @@
---- The two surfaces, the bridge to them, and the focus stack.
+--- The surface, the bridge to it, and the focus stack.
 -- @author dop42
 --
 -- Twelve resources used to own a full-screen CEF surface each, ranked by a
@@ -7,18 +7,17 @@
 -- one: twelve browsers meant twelve copies of the same stylesheet, because each
 -- WebUI runs on its own isolated origin and cannot load a file from another.
 --
--- Two surfaces, split where the platform already splits:
+-- ONE surface, two layers inside the page. It was two surfaces -- an overlay and
+-- an interactive layer -- and that split cost 400 kB of byte-identical duplication
+-- (the Vue runtime, the design system, eight woff2 faces) for two properties: a
+-- frame rate per layer, and an exception in a heavy view being unable to blank the
+-- HUD. Both are given up knowingly. `fps` is fixed at creation for the whole page,
+-- and the layers are now separated by a component boundary in one JS realm rather
+-- than by two browsers.
 --
---   overlay      z 700, 30 fps, created at start, never focused, never destroyed
---   interactive  z 740, 60 fps, created on first use, takes focus, disposable
---
--- Four reasons for the split rather than one surface: only one surface may hold
--- focus, so putting every focusing view on one gives focus a single owner; the
--- two have genuinely different frame budgets; the interactive layer can be
--- destroyed to give its memory back, and `page.destroy` exists; and an exception
--- in a heavy view must not be able to blank the HUD. That last one is a property
--- twelve separate browsers gave away for free, and this recovers it rather than
--- improving on it.
+-- `Overlay()` and `Interactive()` both answer with that one surface. Callers still
+-- pass a target, because which LAYER a module draws on is still real on the page
+-- side -- the overlay layer never takes a pointer.
 --
 -- Channel names are `opx:<module>:<verb>`. The surface id is `opx` and
 -- `OPX.Surface` prefixes it, so a caller passes `character:loaded` and the page
@@ -29,29 +28,28 @@ OPX.UI = OPX.UI or {}
 local ID = 'opx'
 local REPLY = 'reply'
 
-local surfaces = {}
+-- One surface, built on first use and kept until Teardown.
+local page = nil
 
 local focusStack = {}
 
---- Builds one surface from its configured z-index and frame rate.
-local function create(name)
-	local settings = OPX.Config.CLIENT.SURFACE[name:upper()] or {}
+--- Builds the surface from its configured layer, z-index and frame rate.
+local function create()
+	local settings = OPX.Config.CLIENT.SURFACE or {}
 	local surface, why = OPX.Surface.Create({
 		id = ID,
-		entry = ('web/%s.html'):format(name == 'overlay' and 'index' or 'modal'),
+		entry = 'web/index.html',
 		layer = settings.layer,
 		zIndex = settings.zIndex,
 		fps = settings.fps,
-		-- Both surfaces are created VISIBLE, deliberately. Creation is
-		-- asynchronous, and a `show()` issued straight after `create` loses the
-		-- race against the `visible` flag the request carried -- the surface then
-		-- never paints at all. A transparent page that draws nothing costs a
-		-- compositing layer; a page that never paints costs the whole feature.
+		-- Created VISIBLE, deliberately. Creation is asynchronous, and a `show()`
+		-- issued straight after `create` loses the race against the `visible` flag
+		-- the request carried -- the surface then never paints at all.
 		visible = true,
 	})
 	if surface == nil then
-		Open77.log.error(('[ui] the %s surface failed: %s'):format(name, tostring(why)))
-		Open77.log.error('  nothing on it can be drawn; every view will answer no_surface.')
+		Open77.log.error(('[ui] the surface failed: %s'):format(tostring(why)))
+		Open77.log.error('  nothing can be drawn; every view will answer no_surface.')
 		return nil
 	end
 
@@ -71,29 +69,25 @@ local function create(name)
 	return surface
 end
 
---- The always-on overlay: HUD, toasts, key strip, chat log.
+--- The surface, created on first use and kept for the life of the resource.
 -- @author dop42
 -- @return table|nil
-function OPX.UI.Overlay()
-	if surfaces.overlay == nil then surfaces.overlay = create('overlay') or false end
-	return surfaces.overlay or nil
+function OPX.UI.Surface()
+	if page == nil then page = create() or false end
+	return page or nil
 end
 
---- The interactive layer, created on first use. Anything that takes the keyboard
---- or the cursor lives here.
--- @author dop42
--- @return table|nil
-function OPX.UI.Interactive()
-	if surfaces.interactive == nil then
-		surfaces.interactive = create('interactive') or false
-	end
-	return surfaces.interactive or nil
-end
+-- Two names for one surface. They were two CEF pages; they are two layers of one
+-- page now, and both names still answer so the modules that draw on them did not
+-- have to be touched. The distinction they carry is still true -- `overlay` is the
+-- layer that never takes a pointer -- it is just enforced on the page side.
+OPX.UI.Overlay = OPX.UI.Surface
+OPX.UI.Interactive = OPX.UI.Surface
 
---- Resolves a target name to its surface.
-local function surfaceOf(target)
-	if target == 'interactive' then return OPX.UI.Interactive() end
-	return OPX.UI.Overlay()
+--- Resolves a target name to the surface. There is one, so the name survives as a
+--- layer hint the page reads off the channel rather than as a choice of browser.
+local function surfaceOf()
+	return OPX.UI.Surface()
 end
 
 --- Sends a payload to a surface.
@@ -157,17 +151,21 @@ function OPX.UI.Serve(target, channel, handler)
 end
 
 --- Applies whatever is on top of the focus stack, or drops focus entirely.
+---
+--- It does NOT hide the surface when the stack empties. It used to, back when the
+--- interactive layer was its own page and hiding it was free; the HUD lives on this
+--- surface now, and hiding it would blank the health bar every time a menu closed.
+--- The page inerts its own modal layer instead -- `Focus(false, false)` reaches it
+--- as a focus event, and the layer drops `pointer-events` on it.
 local function applyFocus()
-	local surface = OPX.UI.Interactive()
+	local surface = OPX.UI.Surface()
 	if surface == nil then return end
 
 	local top = focusStack[#focusStack]
 	if top == nil then
 		OPX.Surface.Focus(surface, false, false)
-		OPX.Surface.Visible(surface, false)
 		return
 	end
-	OPX.Surface.Visible(surface, true)
 	OPX.Surface.Focus(surface, top.keyboard == true, top.cursor == true)
 end
 
@@ -212,13 +210,11 @@ function OPX.UI.FocusOwner()
 	return top and top.owner or nil
 end
 
---- Destroys both surfaces. The page is not replaced in place, which is why this
+--- Destroys the surface. The page is not replaced in place, which is why this
 --- resource reloads with `reconnect`; this is the stop path, not a reload path.
 -- @author dop42
 function OPX.UI.Teardown()
 	focusStack = {}
-	for name, surface in pairs(surfaces) do
-		if surface then OPX.Surface.Destroy(surface) end
-		surfaces[name] = nil
-	end
+	if page then OPX.Surface.Destroy(page) end
+	page = nil
 end

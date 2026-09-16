@@ -1,5 +1,6 @@
 import { emit } from './channel'
 import { report } from './diag'
+import { setFocused } from '@/stores/ui'
 
 /**
  * Who currently owns keyboard focus, and where Escape goes.
@@ -9,10 +10,10 @@ import { report } from './diag'
  * is why it is a stack and not a boolean: a confirm dialog opened from a panel must
  * give focus back to the panel when it closes, not to nobody.
  *
- * The overlay surface must never call `acquireFocus`. It runs at 30fps behind
- * everything, it is never destroyed, and a HUD that takes focus takes the player's
- * controls away with it. `configureFocus('overlay')` makes that a reported error
- * rather than a player who cannot move.
+ * There is one surface now, so `mayFocus` is true and nothing here refuses a caller.
+ * The rule it used to enforce still holds -- a HUD that takes focus takes the player's
+ * controls away with it -- but it is carried by the LAYER a module registers on, not
+ * by this module. A HUD module calling `acquireFocus` is no longer stopped anywhere.
  */
 
 export interface FocusOwner {
@@ -46,6 +47,9 @@ function top(): FocusOwner | undefined {
  */
 function announce(): void {
   const owner = top()
+  // One surface now, so this flag is what stops the interactive layer eating clicks
+  // while nothing is open. Set before the emit: Lua's answer is not what decides it.
+  setFocused(stack.length > 0)
   emit('opx:focus:set', {
     surface,
     focus: owner !== undefined,

@@ -10,11 +10,6 @@ const here = dirname(fileURLToPath(import.meta.url))
 // vendor chunk, and a shared chunk is a second file the surface has to fetch at runtime --
 // which is the one thing we cannot promise inside a CEF with no network and an origin we
 // have not identified yet. Two builds, two self-contained pages, nothing to resolve.
-const SURFACES: Record<string, string> = {
-  overlay: 'index.html',
-  modal: 'modal.html'
-}
-
 /**
  * Folds every emitted chunk and stylesheet into its HTML document.
  *
@@ -82,10 +77,7 @@ function copyProbe(): Plugin {
   }
 }
 
-export default defineConfig(({ mode }) => {
-  const entry = SURFACES[mode]
-  if (!entry) throw new Error(`unknown surface "${mode}" -- expected one of ${Object.keys(SURFACES).join(', ')}`)
-
+export default defineConfig(() => {
   return {
     root: resolve(here, 'ui'),
     // Relative, so nothing in the output can ever name an origin.
@@ -101,8 +93,9 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: resolve(here, 'web'),
-      // Only the first build of the pair clears it; the second would otherwise delete the first.
-      emptyOutDir: mode === 'overlay',
+      // Ineffective in practice: outDir sits outside root, and Vite refuses to empty a
+      // directory it does not own. Every file it writes is rewritten anyway.
+      emptyOutDir: true,
       // The engine baseline is unmeasured (see ui/probe). ES2019 predates optional chaining
       // and nullish coalescing, which is where an older CEF actually breaks.
       target: 'es2019',
@@ -113,7 +106,7 @@ export default defineConfig(({ mode }) => {
       modulePreload: { polyfill: false },
       // The Lua side names `web/index.html` literally, so no filename may carry a hash.
       rollupOptions: {
-        input: resolve(here, 'ui', entry),
+        input: resolve(here, 'ui', 'index.html'),
         output: {
           entryFileNames: 'assets/[name].js',
           chunkFileNames: 'assets/[name].js',

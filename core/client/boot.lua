@@ -7,11 +7,9 @@ AddEventHandler(OPX.Host.CLIENT_RESOURCE_START, function(name)
 	if name ~= RESOURCE then return end
 
 	CreateThread(function()
-		-- BEFORE the modules, not after. The overlay is the always-on layer and a
-		-- module's `Start` may well draw on it; creating it afterwards meant the
-		-- first module to touch the interactive surface got the first page, and
-		-- anything the HUD sent during `Start` was dropped for want of a surface.
-		OPX.UI.Overlay()
+		-- BEFORE the modules, not after. A module's `Start` may well draw on the
+		-- surface, and anything sent before it exists is dropped for want of one.
+		OPX.UI.Surface()
 		OPX.Toast.Attach()
 
 		local started, fatal = OPX.Modules.Run()

@@ -53,7 +53,7 @@ let refCount = 0
 let refPrefix = 'ui'
 let replyBound = false
 
-/** Called once per surface at boot, so refs from the overlay cannot collide with the modal's. */
+/** Called once at boot. The prefix goes on every ref this page sends. */
 export function configureRpc(surface: string): void {
   refPrefix = surface
 }

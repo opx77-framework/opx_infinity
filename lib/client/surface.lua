@@ -22,8 +22,9 @@ OPX.Surface = {}
 -- The five layers the host accepts. `system` is the only one that needs a
 -- permission (`webui.system`). This was hardcoded to 'hud' on the evidence that
 -- no other value appeared anywhere in the old tree -- which was true and was the
--- wrong conclusion: the layers exist, and an interactive surface belongs on
--- `modal` rather than stacked on the HUD by z-index.
+-- wrong conclusion: the layers exist and the caller gets to pick. The runtime's own
+-- surface still asks for `hud`, because it carries the HUD and every view at once
+-- and `hud` is the only value the shipped resources are known to use.
 local LAYERS = { hud = true, menu = true, modal = true, system = true, debug = true }
 local DEFAULT_LAYER = 'hud'
 

@@ -9,7 +9,7 @@
  * like a pause menu.
  *
  * `pointer-events` is the load-bearing property, not the colour: this is what makes a
- * surface modal, and only the interactive surface may ever render it.
+ * surface modal, and only the `modal` layer may ever render it.
  */
 withDefaults(defineProps<{ mode?: 'flat' | 'lead'; visible?: boolean }>(), {
   mode: 'flat',

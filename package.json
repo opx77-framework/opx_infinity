@@ -5,9 +5,9 @@
   "description": "Build-time only. The shipped artefact is web/; ui/ never leaves the repo.",
   "type": "module",
   "scripts": {
-    "build": "vite build --mode overlay && vite build --mode modal",
+    "build": "vite build",
     "dev": "vite",
-    "dev:modal": "vite --open /modal.html",
+    
     "typecheck": "tsc --noEmit && vue-tsc --noEmit -p ui/tsconfig.app.json"
   },
   "dependencies": {
