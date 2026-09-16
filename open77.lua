@@ -40,6 +40,9 @@ shared_script "lib/shared/citizenid.lua"
 server_script "lib/server/storage.lua"
 server_script "lib/server/audit.lua"
 
+server_script "core/server/sessions.lua"
+server_script "core/server/answer.lua"
+
 client_script "lib/client/rpc.lua"
 client_script "lib/client/surface.lua"
 client_script "lib/client/keys.lua"

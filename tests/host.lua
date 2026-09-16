@@ -40,6 +40,9 @@ function Host.Environment(side, database)
 	local netEvents = {}
 	local clientEvents = {}
 	local clock = 0
+	-- Forward-declared: the host globals below close over it, and a local declared
+	-- after them would leave those closures pointing at a global instead.
+	local control
 
 	local Open77 = {
 		log = {
@@ -54,6 +57,25 @@ function Host.Environment(side, database)
 		-- Authoritative state that survives a reload. Answers nothing here, which
 		-- is the cold-start case a module has to handle anyway.
 		state = { save = function() return true end, load = function() return nil end },
+
+		notifications = { send = function() return true end },
+
+		-- The readiness gate. `hold` answers ONE value -- the session -- or
+		-- nil plus a reason, which is the shape the runtime has to handle.
+		ready = {
+			participate = function() return true end,
+			hold = function() return 1 end,
+			release = function() return true end,
+			status = function() return nil end,
+			isReady = function() return false end,
+		},
+
+		routingBuckets = {
+			setPlayerBucket = function() return true end,
+			getPlayerBucket = function() return 0 end,
+			setPopulationEnabled = function() return true end,
+			setEntityLockdownMode = function() return true end,
+		},
 
 		environment = {
 			getTime = function() return 0 end,
@@ -76,6 +98,13 @@ function Host.Environment(side, database)
 		GetGameTimer = function() return clock end,
 		GetCurrentResourceName = function() return 'opx-infinity' end,
 		GetResourceState = function() return 'stopped' end,
+
+		-- Identity comes from the host and only from the host. `control.Admit`
+		-- below is how a test says a slot is occupied.
+		GetPlayerIdentifier = function(playerId) return control.accounts[playerId] end,
+		GetPlayerName = function(playerId)
+			return control.accounts[playerId] and ('player-' .. tostring(playerId)) or nil
+		end,
 
 		AddEventHandler = function(name, fn)
 			handlers[name] = handlers[name] or {}
@@ -102,7 +131,7 @@ function Host.Environment(side, database)
 	setmetatable(env, { __index = _G })
 
 	-- What the harness hands back to a test.
-	local control = {
+	control = {
 		log = log,
 		commands = commands,
 		netEvents = netEvents,
@@ -127,6 +156,13 @@ function Host.Environment(side, database)
 				if not alive then return end
 			end
 		end,
+
+		-- Slot -> durable account id. Identity comes from the host and only from
+		-- the host, so this is the only way a test can make a slot real.
+		accounts = {},
+
+		--- Puts an account on a slot, or clears it when `userId` is nil.
+		Admit = function(playerId, userId) control.accounts[playerId] = userId end,
 
 		Fire = function(name, ...)
 			for _, fn in ipairs(handlers[name] or {}) do fn(...) end

@@ -5,6 +5,11 @@
 OPX.Config.SHARED = {
 	LOCALE = 'en',
 
+	SERVER_NAME = 'OPEN//77',
+	-- Where a toast is drawn. Advisory: a client that cannot honour it warns
+	-- rather than dropping the toast.
+	NOTIFY_POSITION = 'top-right',
+
 	MONEY = {
 		DEFAULT = 'EDDIES',
 		TYPES = { EDDIES = 'EDDIES', BANK = 'BANK' },

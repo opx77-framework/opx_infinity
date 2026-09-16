@@ -1,0 +1,26 @@
+{
+  "name": "opx-infinity-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Build-time only. The shipped artefact is web/; ui/ never leaves the repo.",
+  "type": "module",
+  "scripts": {
+    "build": "vite build --mode overlay && vite build --mode modal",
+    "dev": "vite",
+    "dev:modal": "vite --open /modal.html",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-mono": "^5.2.6",
+    "@fontsource/rajdhani": "^5.2.6",
+    "@fontsource/saira": "^5.2.6",
+    "augmented-ui": "^2.0.0",
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0",
+    "vue-tsc": "^2.2.0"
+  }
+}

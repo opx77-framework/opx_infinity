@@ -54,6 +54,11 @@ local CORE_NAMESPACE = {
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
 	Storage = true, Audit = true, Rpc = true, Surface = true, Keys = true,
 	Booted = true, BootError = true,
+	Sessions = true, UserIdOf = true, DisplayNameOf = true, EnsureSession = true,
+	ForgetSession = true, SessionHolds = true,
+	Notify = true, NotifyLocale = true, RefusalKey = true, Refuse = true,
+	CommandResult = true, CommandNotice = true, Cooling = true, ForgetCooldowns = true,
+	Buckets = true, Gate = true,
 }
 
 --- Names a module has hung off `OPX` that do not belong to the runtime.
@@ -168,6 +173,93 @@ do
 		-- because a table is truthy.
 		check('Schema.Apply answers false, not a Result', ok == false, type(ok))
 		check('the failing table is named', failed == 'opx_probe', tostring(failed))
+	end
+end
+
+-- ── sessions ─────────────────────────────────────────────────────────────────
+-- A session is a connected machine; a character is something a module loads onto
+-- one. Core owns the first and must never learn about the second.
+section('sessions')
+do
+	local env, control, why = boot('server')
+	check('server boots for the session tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		check('a slot with no verified account gets no session',
+			OPX.EnsureSession(7) == nil)
+
+		control.Admit(7, 'account-a')
+		local first = OPX.EnsureSession(7)
+		check('a slot with an account gets a session',
+			type(first) == 'table' and first.userId == 'account-a')
+		check('the same slot answers the same session', OPX.EnsureSession(7) == first)
+
+		-- A player id is recycled. Every read re-checks the account behind the
+		-- slot, or the next holder inherits the last one's session.
+		control.Admit(7, 'account-b')
+		local second = OPX.EnsureSession(7)
+		check('a recycled slot evicts and rebuilds',
+			second ~= first and second.userId == 'account-b')
+		check('SessionHolds is true while the account matches', OPX.SessionHolds(7) == true)
+
+		control.Admit(7, 'account-c')
+		check('SessionHolds is false once the account changed', OPX.SessionHolds(7) == false)
+
+		-- The ownership inversion: core announces, it does not call into whatever
+		-- owns characters. If this ever becomes a direct call, core knows about
+		-- modules and the boundary is gone.
+		control.Admit(9, 'account-d')
+		OPX.EnsureSession(9)
+		local sawDeparting, forgotten = nil, false
+		control.handlers[OPX.Event(OPX.Channel.INTERNAL, 'session', 'forgotten')] = {
+			function(playerId)
+				forgotten = playerId
+				local live = OPX.Sessions[playerId]
+				sawDeparting = live ~= nil and live.departing == true
+			end,
+		}
+		OPX.ForgetSession(9)
+		check('ForgetSession announces on the internal channel', forgotten == 9)
+		check('the session is still readable, and marked departing, when it does',
+			sawDeparting == true)
+		check('the session is gone afterwards', OPX.Sessions[9] == nil)
+	end
+end
+
+-- ── cooldowns and refusals ───────────────────────────────────────────────────
+section('answers')
+do
+	local env, control, why = boot('server')
+	if why == nil then
+		local OPX = env.OPX
+
+		check('a first attempt is not cooling', OPX.Cooling(3, 'select', 1000) == false)
+		check('an immediate second attempt is', OPX.Cooling(3, 'select', 1000) == true)
+		check('a different operation has its own window',
+			OPX.Cooling(3, 'create', 1000) == false)
+		-- The console is source 0 and is never cooled.
+		check('the console is never cooled',
+			OPX.Cooling(0, 'select', 1000) == false and OPX.Cooling(0, 'select', 1000) == false)
+
+		OPX.ForgetCooldowns(3)
+		check('forgetting clears the window', OPX.Cooling(3, 'select', 1000) == false)
+
+		-- A code the catalogue does not carry must never reach a player raw.
+		check('an unknown refusal code becomes error.unavailable',
+			OPX.RefusalKey('query-failed') == 'error.unavailable')
+		check('a known refusal code is answered as itself',
+			OPX.RefusalKey('error.tooFast') == 'error.tooFast')
+
+		local before = #control.clientEvents
+		OPX.Refuse(4, 'query-failed', 'selectCharacter')
+		local sent = control.clientEvents[#control.clientEvents]
+		check('a refusal reaches the client', #control.clientEvents == before + 1)
+		check('and carries a renderable code and its operation',
+			sent ~= nil and sent[1] ~= nil and sent[1].code == 'error.unavailable'
+				and sent[1].operation == 'selectCharacter',
+			sent and sent[1] and sent[1].code)
 	end
 end
 

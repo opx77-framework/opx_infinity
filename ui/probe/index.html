@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OPEN//77 CEF capability probe</title>
+<!-- Deliberately ES5, dependency-free and un-bundled: this page must run on a CEF whose
+     baseline is exactly what it exists to measure, so it may assume nothing. -->
+<style>
+  html, body { margin: 0; background: #080e19; color: #f2f6f8;
+               font: 13px/1.5 "Cascadia Mono", Consolas, monospace; }
+  #out { padding: 24px; white-space: pre-wrap; word-break: break-all; }
+  .k { color: #8d99a8; } .y { color: #4fe3a9; } .n { color: #ff5c5c; }
+</style>
+</head>
+<body>
+<div id="out">probe did not run</div>
+<script>
+(function () {
+  "use strict";
+  // `new Function` rather than a bare literal: a syntax this engine lacks is exactly what
+  // we are testing for, and written inline it would kill the parse of the whole probe.
+  function syntax(src) {
+    try { new Function(src); return true; } catch (ignored) { return false; }
+  }
+  function type(name) {
+    try { return typeof window[name]; } catch (ignored) { return "throws"; }
+  }
+  function supports(prop, value) {
+    try { return !!(window.CSS && window.CSS.supports && window.CSS.supports(prop, value)); }
+    catch (ignored) { return false; }
+  }
+
+  var result = {
+    // Vue 3 stands or falls on these two.
+    proxy:            type("Proxy"),
+    reflect:          type("Reflect"),
+    weakmap:          type("WeakMap"),
+    symbol:           type("Symbol"),
+    promise:          type("Promise"),
+    arrayIncludes:    typeof Array.prototype.includes === "function",
+    stringPadStart:   typeof String.prototype.padStart === "function",
+    objectAssign:     typeof Object.assign === "function",
+    // Syntax probes decide the build target, not the framework.
+    letConst:         syntax("const a = 1; let b = 2;"),
+    arrow:            syntax("return (function () { return 0; })();") && syntax("var f = x => x;"),
+    template:         syntax("var s = `x`;"),
+    spread:           syntax("var p = { a: 1 }; var q = { ...p }; var r = [ ...[1] ];"),
+    optionalChain:    syntax("var o = {}; return o?.a?.b;"),
+    nullish:          syntax("var o = null; return o ?? 1;"),
+    asyncAwait:       syntax("return (async function () { await 0; })();"),
+    generator:        syntax("return (function* () { yield 1; })();"),
+    classes:          syntax("class A { constructor() { this.x = 1; } }"),
+    forOf:            syntax("for (var x of [1]) {}"),
+    // Every token in the design system is a custom property; without these nothing ships.
+    customProps:      supports("--x", "1"),
+    clipPath:         supports("clip-path", "polygon(0 0, 100% 0, 100% 100%)"),
+    grid:             supports("display", "grid"),
+    backdropFilter:   supports("backdrop-filter", "blur(4px)"),
+    ua:               navigator.userAgent,
+    chrome:           (/Chrom(?:e|ium)\/(\d+)/.exec(navigator.userAgent || "") || [0, 0])[1],
+    viewport:         (window.innerWidth || 0) + "x" + (window.innerHeight || 0),
+    devicePixelRatio: window.devicePixelRatio || 1
+  };
+
+  function esc(v) { return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function pad(k) { return (k + "                  ").slice(0, 18); }
+  function row(k, cls, v) {
+    return "<span class='k'>" + pad(k) + "</span><span class='" + cls + "'>" + esc(v) + "</span>";
+  }
+
+  var lines = ["OPEN//77 CEF capability probe", ""];
+  for (var key in result) {
+    if (!Object.prototype.hasOwnProperty.call(result, key)) continue;
+    var v = result[key];
+    lines.push(row(key, v === true || v === "object" || v === "function" ? "y"
+                      : v === false || v === "undefined" ? "n" : "k", v));
+  }
+  lines.push("");
+  // Must render with no bridge at all, so the page stays openable in a plain browser.
+  lines.push(window.Open77 ? row("Open77 bridge", "y", "present")
+                           : row("Open77 bridge", "n", "absent (render only)"));
+  var vue3 = result.proxy === "function" && result.reflect === "object";
+  lines.push(row("vue3 viable", vue3 ? "y" : "n", vue3 ? "yes" : "NO"));
+  document.getElementById("out").innerHTML = lines.join("\n");
+
+  // The CEF console never reaches the client log and the bridge swallows throws, so this
+  // emit is the only way the answer leaves the surface.
+  try {
+    if (window.Open77 && typeof window.Open77.emit === "function") {
+      window.Open77.emit("opx:probe:result", result);
+    }
+  } catch (ignored) { /* nowhere left to complain to */ }
+}());
+</script>
+</body>
+</html>
