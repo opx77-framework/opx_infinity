@@ -50,6 +50,19 @@ function Host.Environment(side, database)
 		},
 		time = { monotonic = function() return clock / 1000 end },
 		exports = { call = function() return nil, 'no_host' end },
+
+		-- Authoritative state that survives a reload. Answers nothing here, which
+		-- is the cold-start case a module has to handle anyway.
+		state = { save = function() return true end, load = function() return nil end },
+
+		environment = {
+			getTime = function() return 0 end,
+			setTime = function() return true end,
+			setTimeFrozen = function() return true end,
+			setWeather = function() return true end,
+			setWeatherFrozen = function() return true end,
+			isWeatherFrozen = function() return false end,
+		},
 	}
 
 	Open77.database = database

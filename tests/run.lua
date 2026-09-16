@@ -42,6 +42,30 @@ local function boot(side, database, prelude)
 	return env, control
 end
 
+-- Everything the runtime itself is allowed to publish on `OPX`. A module that
+-- adds a key here has made its internals reachable by every other module, which
+-- is the one thing the module boundary exists to prevent -- so this list is the
+-- boundary, and adding to it should be a deliberate act.
+local CORE_NAMESPACE = {
+	VERSION = true, IsServer = true, IsClient = true, Config = true, Now = true,
+	Channel = true, Event = true, Host = true,
+	Modules = true, Api = true, Schema = true, Scheduler = true,
+	Result = true, Table = true, String = true, Math = true, Text = true,
+	Validate = true, Hooks = true, Locale = true, CitizenId = true,
+	Storage = true, Audit = true, Rpc = true, Surface = true, Keys = true,
+	Booted = true, BootError = true,
+}
+
+--- Names a module has hung off `OPX` that do not belong to the runtime.
+local function namespaceLeaks(OPX)
+	local leaks = {}
+	for key in pairs(OPX) do
+		if not CORE_NAMESPACE[key] then leaks[#leaks + 1] = key end
+	end
+	table.sort(leaks)
+	return leaks
+end
+
 -- ── the sandbox ──────────────────────────────────────────────────────────────
 -- Read straight out of the manifest, so the check covers exactly what ships and
 -- cannot drift from it.
@@ -88,6 +112,19 @@ do
 			control.commands['opx.modules'] ~= nil and control.commands['opx.modules'].restricted)
 		check('no thread died', #control.log.error == 0 or not table.concat(control.log.error)
 			:find('thread died'), table.concat(control.log.error, ' | '))
+
+		local leaks = namespaceLeaks(env.OPX)
+		check('no module hangs its internals off OPX',
+			#leaks == 0, table.concat(leaks, ', '))
+
+		local stalled = {}
+		for _, module in ipairs(env.OPX.Modules.Resolve()) do
+			if module.State ~= 'started' then
+				stalled[#stalled + 1] = ('%s (%s: %s)')
+					:format(module.Id, module.State, module.Reason or '')
+			end
+		end
+		check('every declared module started', #stalled == 0, table.concat(stalled, ', '))
 	end
 end
 
@@ -147,6 +184,19 @@ do
 		check('the scheduler reports itself', #env.OPX.Scheduler.Report() >= 0)
 		check('/opx.client is registered open',
 			control.commands['opx.client'] ~= nil and not control.commands['opx.client'].restricted)
+
+		local leaks = namespaceLeaks(env.OPX)
+		check('no module hangs its internals off OPX',
+			#leaks == 0, table.concat(leaks, ', '))
+
+		local stalled = {}
+		for _, module in ipairs(env.OPX.Modules.Resolve()) do
+			if module.State ~= 'started' then
+				stalled[#stalled + 1] = ('%s (%s: %s)')
+					:format(module.Id, module.State, module.Reason or '')
+			end
+		end
+		check('every declared module started', #stalled == 0, table.concat(stalled, ', '))
 	end
 end
 

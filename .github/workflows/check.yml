@@ -1,0 +1,56 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lua:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua 5.4
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+
+      # open77.lua is the manifest DSL, not Lua: `auto_start true` does not parse.
+      - name: Syntax
+        run: find . -name '*.lua' -not -name 'open77.lua' -exec luac5.4 -p {} +
+
+      - name: Tests
+        run: lua5.4 tests/run.lua
+
+      # Every script the resource ships has to be listed, one per line. A glob
+      # would be worse than useless here: an empty one refuses the whole set it
+      # belongs to, and the failure only shows up after a rename.
+      - name: Every manifest path exists
+        run: |
+          missing=0
+          while read -r file; do
+            [ -f "$file" ] || { echo "manifest lists a file that is not there: $file"; missing=1; }
+          done < <(grep -oE '^\s*(shared|server|client)_script\s+"[^"]+"' open77.lua \
+                   | sed -E 's/.*"([^"]+)"/\1/')
+          exit $missing
+
+      - name: Every Lua file is in the manifest
+        run: |
+          orphans=0
+          listed=$(grep -oE '^\s*(shared|server|client)_script\s+"[^"]+"' open77.lua \
+                   | sed -E 's/.*"([^"]+)"/\1/' | sort -u)
+          while read -r file; do
+            case "$file" in ./tests/*|./open77.lua) continue ;; esac
+            echo "$listed" | grep -qxF "${file#./}" || {
+              echo "not listed in the manifest, so it never loads: $file"; orphans=1; }
+          done < <(find . -name '*.lua' -not -path './.git/*')
+          exit $orphans
+
+      # SQL lives in the storage bridge and in a module's own storage file. A
+      # statement anywhere else is a module writing behind the runtime's back.
+      # tests/ is exempt: it stubs the bridge rather than calling it.
+      - name: SQL stays in storage
+        run: |
+          stray=$(grep -rln 'MySQL\.' --include='*.lua' . \
+                  | grep -vE '^\./(tests/|lib/server/storage\.lua$|modules/[a-z]+/server/storage\.lua$)' \
+                  || true)
+          [ -z "$stray" ] || { echo "SQL outside storage: $stray"; exit 1; }
