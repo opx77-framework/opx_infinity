@@ -35,16 +35,13 @@ local UPKEEP_MS = 250
 -- The keys the page forwards.
 local KEYS = { up = true, down = true, left = true, right = true, enter = true, back = true }
 
--- What each focus owner on this surface is given. The page names an owner and
--- never says what it wants: asking for the cursor is not the page's decision.
--- All three view modules install an identical copy of this table and of the
--- handler below, because one surface channel carries one handler -- whichever
--- module starts last owns it, and every copy answers the same way.
+-- What this module's focus owners are given. The page names an owner and never
+-- says what it wants: asking for the cursor is not the page's decision.
+-- `focus:set` is a broadcast every view module listens to, and each answers for
+-- its own owners only -- a module must not acquire, or release, focus on behalf
+-- of a view it does not own.
 local FOCUS = {
 	menu = { keyboard = true, cursor = false },
-	form = { keyboard = true, cursor = false },
-	panel = { keyboard = true, cursor = true },
-	['panel.confirm'] = { keyboard = true, cursor = true },
 }
 
 -- The one open menu, or nil.
@@ -976,7 +973,8 @@ end
 --- What the page's focus stack now holds on this surface.
 local function onFocus(payload)
 	if payload.focus ~= true then
-		-- The stack emptied: nothing on this surface holds anything.
+		-- The page's stack emptied: nothing on this surface holds anything, so
+		-- this module lets go of its own.
 		for owner in pairs(FOCUS) do OPX.UI.ReleaseFocus(owner) end
 		return
 	end

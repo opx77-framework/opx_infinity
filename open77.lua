@@ -59,6 +59,9 @@ shared_script "config/prompts.lua"
 shared_script "config/target.lua"
 shared_script "config/animations.lua"
 shared_script "config/elevators.lua"
+shared_script "config/menu.lua"
+shared_script "config/form.lua"
+shared_script "config/panel.lua"
 
 shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
@@ -124,6 +127,18 @@ shared_script "modules/downed/locales.lua"
 server_script "modules/downed/server/storage.lua"
 server_script "modules/downed/server/main.lua"
 client_script "modules/downed/client/main.lua"
+
+shared_script "modules/menu/module.lua"
+shared_script "modules/menu/locales.lua"
+client_script "modules/menu/client/main.lua"
+
+shared_script "modules/form/module.lua"
+shared_script "modules/form/locales.lua"
+client_script "modules/form/client/main.lua"
+
+shared_script "modules/panel/module.lua"
+shared_script "modules/panel/locales.lua"
+client_script "modules/panel/client/main.lua"
 
 shared_script "modules/weather/module.lua"
 shared_script "modules/weather/shared/clock.lua"
