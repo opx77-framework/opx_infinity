@@ -63,7 +63,7 @@ local EN = {
 		'loaded comes first; the other reloads the world.',
 	['entry.about.review'] = 'Read it back. Nothing below can be changed later.',
 
-	['entry.hint.firstName'] = 'V',
+	['entry.hint.firstName'] = 'Vee',
 	['entry.hint.lastName'] = 'Vector',
 	['entry.hint.birthDate'] = '2050-01-01',
 
@@ -140,7 +140,7 @@ local FR = {
 		'Celui déjà chargé vient en premier ; l\'autre recharge le monde.',
 	['entry.about.review'] = 'Relisez. Rien de ce qui suit ne pourra être modifié.',
 
-	['entry.hint.firstName'] = 'V',
+	['entry.hint.firstName'] = 'Vee',
 	['entry.hint.lastName'] = 'Vector',
 	['entry.hint.birthDate'] = '2050-01-01',
 

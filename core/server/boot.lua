@@ -88,7 +88,7 @@ CreateThread(function()
 	for _, line in ipairs(OPX.Modules.Report()) do
 		Open77.log.info('[module] ' .. line)
 	end
-	Open77.log.info(('opx-infinity %s up%s')
+	Open77.log.info(('opx_infinity %s up%s')
 		:format(OPX.VERSION, OPX.BootError and (' -- degraded: ' .. OPX.BootError) or ''))
 end)
 

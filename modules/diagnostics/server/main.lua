@@ -28,7 +28,7 @@ local function versionLines()
 	-- pairs has no order, and two runs of a diagnostic should compare line by line.
 	table.sort(contracts)
 
-	local lines = { ('opx-infinity %s'):format(OPX.VERSION) }
+	local lines = { ('opx_infinity %s'):format(OPX.VERSION) }
 	if OPX.BootError then lines[#lines + 1] = ('degraded: %s'):format(OPX.BootError) end
 	for index = 1, #contracts do lines[#lines + 1] = contracts[index] end
 	return lines

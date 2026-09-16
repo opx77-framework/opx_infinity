@@ -43,8 +43,8 @@ local RELEASED = OPX.Event(OPX.Channel.INTERNAL, 'gate', 'released')
 
 -- What the platform log shows against our hold, and the prefix on every release
 -- note, which reaches every resource as the `detail` of `onPlayerReady`.
-local REASON = 'opx-infinity:entry'
-local NOTE_PREFIX = 'opx-infinity:'
+local REASON = 'opx_infinity:entry'
+local NOTE_PREFIX = 'opx_infinity:'
 
 -- Resources known to emit `open77:session:gameplayReady`. Without one of them
 -- the `__platform` hold never clears and no gate ever opens.

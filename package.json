@@ -1,5 +1,5 @@
 {
-  "name": "opx-infinity-ui",
+  "name": "opx_infinity-ui",
   "version": "0.1.0",
   "private": true,
   "description": "Build-time only. The shipped artefact is web/; ui/ never leaves the repo.",

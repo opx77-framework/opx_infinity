@@ -70,13 +70,20 @@ M.Event = {
 	ON_OPENED = OPX.Event(LOCAL, 'inventory', 'opened'),
 	ON_CLOSED = OPX.Event(LOCAL, 'inventory', 'closed'),
 
-	-- Between modules inside one VM, never across the wire. The character
-	-- module's own `module.lua` declares these three as its cross-module bus;
-	-- they are built here with `OPX.Event` rather than read off that module's
+	-- A character arriving and leaving, which is what opens and closes a bag.
+	-- Built here with `OPX.Event` rather than read off the character module's
 	-- namespace, which is the thing a contract exists to prevent.
+	--
+	-- The two halves listen on DIFFERENT CHANNELS, and they are not
+	-- interchangeable. The server raises these on the internal bus, between
+	-- modules inside one VM; the client raises its own on the local bus, which is
+	-- public and which anything may listen to with a bare `AddEventHandler`.
+	-- Listening to the wrong one is a handler nothing ever raises.
 	IN_CHARACTER_LOADED = OPX.Event(INTERNAL, 'character', 'loaded'),
 	IN_CHARACTER_UNLOADED = OPX.Event(INTERNAL, 'character', 'unloaded'),
 	IN_CHARACTER_DELETED = OPX.Event(INTERNAL, 'character', 'deleted'),
+	ON_CHARACTER_LOADED = OPX.Event(LOCAL, 'character', 'loaded'),
+	ON_CHARACTER_UNLOADED = OPX.Event(LOCAL, 'character', 'unloaded'),
 }
 
 --- Which request a refusal answers.

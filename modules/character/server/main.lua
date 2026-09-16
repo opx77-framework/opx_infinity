@@ -17,7 +17,7 @@ local M = OPX.Modules.Get('character')
 local SESSION_FORGOTTEN = OPX.Event(OPX.Channel.INTERNAL, 'session', 'forgotten')
 
 -- What the platform log shows against our hold.
-local HOLD_REASON = 'opx-infinity:character-selection'
+local HOLD_REASON = 'opx_infinity:character-selection'
 
 -- ── the background pass ──────────────────────────────────────────────────────
 

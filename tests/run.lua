@@ -41,7 +41,7 @@ local function boot(side, database, prelude)
 	-- The host always raises this for a starting resource, and the client half
 	-- does all its wiring from it. A helper that skipped it would be testing a
 	-- state the platform never produces.
-	if side == 'client' then control.Fire('onClientResourceStart', 'opx-infinity') end
+	if side == 'client' then control.Fire('onClientResourceStart', 'opx_infinity') end
 
 	control.Pump(60)
 
@@ -425,7 +425,7 @@ do
 	if why == nil then
 		-- `boot` already raised the start event; raising it again is how the
 		-- double-Run bug was found, and `Modules.Run` is idempotent now.
-		control.Fire('onClientResourceStart', 'opx-infinity')
+		control.Fire('onClientResourceStart', 'opx_infinity')
 		control.Pump(60)
 		check('diagnostics started', env.OPX.Modules.IsRunning('diagnostics'))
 		check('a second resource-start does not re-run the phases',

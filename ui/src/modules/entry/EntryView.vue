@@ -458,7 +458,12 @@ onUnmounted(() => {
           <OpSpinner v-if="busy || form.busy" />
         </template>
 
-        <div v-if="mode === 'roster'" class="grid" :class="{ busy }" :style="{ '--columns': columns }">
+        <div
+          v-if="mode === 'roster'"
+          class="grid"
+          :class="{ busy }"
+          :style="{ '--columns': columns }"
+        >
           <RosterCard
             v-for="card in cards"
             :key="card.id"

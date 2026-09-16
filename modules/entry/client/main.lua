@@ -35,7 +35,6 @@ local IN_CHOOSE = 'entry:choose'
 local IN_DISMISS = 'entry:dismiss'
 local IN_STEP = 'entry:step'
 local IN_SUBMIT = 'entry:submit'
-local IN_CANCEL = 'entry:cancel'
 
 -- The character module's public local bus. A bare name would be a typo waiting
 -- to happen, so it is built the same way the module that raises it builds it.
@@ -350,11 +349,6 @@ local function wirePage()
 	OPX.UI.On(SURFACE, IN_SUBMIT, function(payload)
 		if payload.handle ~= handle then return end
 		M.Submit(payload)
-	end)
-
-	OPX.UI.On(SURFACE, IN_CANCEL, function(payload)
-		if payload.handle ~= handle then return end
-		M.CancelCreation('cancelled')
 	end)
 end
 

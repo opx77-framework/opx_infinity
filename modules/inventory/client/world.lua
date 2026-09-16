@@ -310,7 +310,7 @@ function World.Wire()
 		pileKey = nil
 	end)
 
-	AddEventHandler(M.Event.IN_CHARACTER_UNLOADED, function()
+	AddEventHandler(M.Event.ON_CHARACTER_UNLOADED, function()
 		local target = M.Contracts.target
 		local token = pileToken
 		pileToken, pileKey = nil, nil

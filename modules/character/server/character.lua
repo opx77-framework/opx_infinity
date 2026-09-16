@@ -360,7 +360,7 @@ function M.PlaceCharacter(player)
 
 	local killed, killError = Open77.players.kill(source, {
 		cause = 'script',
-		weapon = 'opx-infinity:placement',
+		weapon = 'opx_infinity:placement',
 	})
 	if not killed then return false, tostring(killError) end
 

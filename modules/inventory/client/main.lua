@@ -88,6 +88,10 @@ local function labels()
 		'bag', 'ground', 'trunk', 'glovebox', 'stash', 'drop', 'weight', 'ammo', 'serial',
 		'condition', 'use', 'split', 'dropZone', 'giveTo', 'sortWeight', 'sortName', 'close',
 		'nobody', 'unknown', 'kg', 'g', 'm', 'slots', 'groundHint',
+		-- The two the page needs for its own status line. Every refusal the SERVER
+		-- makes is toasted from there, so the page only ever has to say that a
+		-- round trip failed or never came back.
+		'failed', 'timeout',
 	}
 	local out = {}
 	for index = 1, #keys do out[keys[index]] = locale('inventory.ui.' .. keys[index]) end
@@ -185,10 +189,20 @@ local function settle(entry, ok, code, data)
 	end
 end
 
+--- Whether something says the local player is down.
+-- The `downed` contract answers a Result carrying `{ down, waiting }`, not a
+-- boolean: reading the Result itself as one makes every player permanently down,
+-- because a table is truthy.
+local function isDown()
+	local downed = M.Contracts.downed
+	if downed == nil then return false end
+	local answer = downed.IsDown()
+	return answer ~= nil and answer.ok == true and answer.value.down == true
+end
+
 --- Whether the screen may be up at all: not down, and not dead.
 local function usable()
-	local downed = M.Contracts.downed
-	if downed and downed.IsDown() then return false end
+	if isDown() then return false end
 	local character = Open77.character
 	if type(character) == 'table' and type(character.isAlive) == 'function' then
 		local read, alive = pcall(character.isAlive)
@@ -236,8 +250,7 @@ end
 -- @author dop42
 -- @return boolean
 function Screen.IsDown()
-	local downed = M.Contracts.downed
-	return downed ~= nil and downed.IsDown() == true
+	return isDown()
 end
 
 -- ── opening and closing ──────────────────────────────────────────────────────
@@ -479,7 +492,13 @@ local function registerEvents()
 		-- the animation still plays, and only what it would have moved is lost.
 		local needs = M.Contracts.needs
 		if needs and type(payload.status) == 'table' and next(payload.status) ~= nil then
-			needs.AddNeeds(payload.status)
+			local moved = needs.AddNeeds(payload.status)
+			if moved ~= nil and moved.ok ~= true then
+				-- A need this item names that the operator has not declared is the
+				-- ordinary case; it costs the move, not the use.
+				Open77.log.debug('[inventory] the needs of a use were refused: '
+					.. tostring(moved.error))
+			end
 		end
 
 		local animation = payload.animation
@@ -499,13 +518,13 @@ local function registerEvents()
 	end)
 
 	-- A character leaving takes the screen and the mirror with it.
-	AddEventHandler(M.Event.IN_CHARACTER_UNLOADED, function()
+	AddEventHandler(M.Event.ON_CHARACTER_UNLOADED, function()
 		Screen.Close()
 		own = nil
 		held = nil
 	end)
 
-	AddEventHandler(M.Event.IN_CHARACTER_LOADED, function()
+	AddEventHandler(M.Event.ON_CHARACTER_LOADED, function()
 		TriggerServerEvent(M.Event.HELLO)
 	end)
 end
@@ -553,7 +572,10 @@ function ensureSurface()
 		Screen.Request(payload.action, body, nil, payload.ref)
 	end)
 
-	OPX.UI.On(SURFACE, 'inventory:close', function(payload)
+	-- A channel of its own, and not the one Lua sends `close` on. One name used in
+	-- both directions reads as a loop even where it is not one, and the page
+	-- asking to be closed is not the same message as Lua saying it has been.
+	OPX.UI.On(SURFACE, 'inventory:dismiss', function(payload)
 		if payload.handle ~= nil and not mine(payload) then return end
 		Screen.Close()
 	end)

@@ -279,7 +279,7 @@ function Host.Environment(side, database)
 		CreateThread = function(fn) threads[#threads + 1] = coroutine.create(fn) end,
 		Wait = function() coroutine.yield() end,
 		GetGameTimer = function() return clock end,
-		GetCurrentResourceName = function() return 'opx-infinity' end,
+		GetCurrentResourceName = function() return 'opx_infinity' end,
 		GetResourceState = function() return 'stopped' end,
 
 		-- Identity comes from the host and only from the host. `control.Admit`

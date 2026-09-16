@@ -10,7 +10,7 @@ function M.Start()
 	end)
 
 	RegisterCommand('opx.client', function()
-		Open77.log.info(('opx-infinity %s, client'):format(OPX.VERSION))
+		Open77.log.info(('opx_infinity %s, client'):format(OPX.VERSION))
 		for _, line in ipairs(OPX.Modules.Report()) do Open77.log.info('[module] ' .. line) end
 		for _, line in ipairs(OPX.Scheduler.Report()) do Open77.log.info('[job] ' .. line) end
 	end, false)

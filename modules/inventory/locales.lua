@@ -339,6 +339,16 @@ OPX.Locale.Register('en', {
 	['inventory.item.weapon_tomahawk'] = 'Tomahawk',
 	['inventory.item.weapon_tsumetogi'] = 'Tsumetogi',
 	['inventory.item.weapon_volkodav'] = 'Volkodav',
+	['inventory.ui.failed'] = 'That did not work.',
+	['inventory.ui.timeout'] = 'No answer in time. Try again.',
+	['inventory.error.bad_slot'] = 'That slot cannot take it.',
+	['inventory.error.bad_target'] = 'That is not somebody this can reach.',
+	['inventory.error.bad_argument'] = 'That request was not understood.',
+	['inventory.error.unavailable'] = 'That is unavailable right now.',
+	['inventory.error.too_fast'] = 'Slow down a little.',
+	['inventory.error.load_timeout'] = 'That container did not load in time. Try again.',
+	['inventory.error.no_character'] = 'No living character carries that citizen id.',
+	['inventory.command.error.not_found'] = 'That is no longer there.',
 })
 
 OPX.Locale.Register('fr', {
@@ -663,4 +673,14 @@ OPX.Locale.Register('fr', {
 	['inventory.item.weapon_tomahawk'] = 'Tomahawk',
 	['inventory.item.weapon_tsumetogi'] = 'Tsumetogi',
 	['inventory.item.weapon_volkodav'] = 'Volkodav',
+	['inventory.ui.failed'] = "Ça n'a pas marché.",
+	['inventory.ui.timeout'] = 'Pas de réponse à temps. Réessayez.',
+	['inventory.error.bad_slot'] = 'Cet emplacement ne peut pas le prendre.',
+	['inventory.error.bad_target'] = "Ce n'est pas quelqu'un que cela peut atteindre.",
+	['inventory.error.bad_argument'] = 'Requête incomprise.',
+	['inventory.error.unavailable'] = 'Indisponible pour le moment.',
+	['inventory.error.too_fast'] = 'Doucement.',
+	['inventory.error.load_timeout'] = "Ce conteneur n'a pas chargé à temps. Réessayez.",
+	['inventory.error.no_character'] = 'Aucun personnage vivant ne porte cet identifiant citoyen.',
+	['inventory.command.error.not_found'] = "Ce n'est plus là.",
 })

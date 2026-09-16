@@ -31,7 +31,7 @@
 -- `players.access` was declared here and is NOT required: it gates the
 -- `Open77.access` door/ban list, and `Open77.players.all` needs no permission.
 
-resource "opx-infinity"
+resource "opx_infinity"
 version "0.1.0"
 open77_version ">=2.31.13+op77.67"
 auto_start true
@@ -62,6 +62,7 @@ shared_script "config/elevators.lua"
 shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
+shared_script "config/entry.lua"
 
 shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
@@ -115,6 +116,12 @@ client_script "modules/appearance/client/editor.lua"
 client_script "modules/appearance/client/clothing.lua"
 client_script "modules/appearance/client/presence.lua"
 client_script "modules/appearance/client/wardrobe.lua"
+
+shared_script "modules/entry/module.lua"
+shared_script "modules/entry/locales.lua"
+client_script "modules/entry/client/model.lua"
+client_script "modules/entry/client/stage.lua"
+client_script "modules/entry/client/main.lua"
 
 shared_script "modules/needs/module.lua"
 shared_script "modules/needs/locales.lua"
@@ -254,6 +261,7 @@ permissions {
   "puppets.present",
 
   "camera.preview",
+  "player.travel",
 
   "input.actions",
 
