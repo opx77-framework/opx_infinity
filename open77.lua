@@ -33,7 +33,7 @@
 -- calls it. `Open77.players.all` still needs no permission.
 
 resource "opx_infinity"
-version "0.1.0"
+version "0.1.1"
 open77_version ">=2.31.13+op77.67"
 auto_start true
 
