@@ -24,11 +24,16 @@ OPX.Booted = false
 OPX.BootError = nil
 
 --- Applies every contributed statement, stopping at the first failure.
+--- `OPX.Storage.ApplySchema` answers a Result; this is where it becomes the
+--- plain pair the boot sequence reads.
+-- @author dop42
 -- @return boolean ok
 -- @return string|nil the table that failed
-local function applySchema()
+function OPX.Schema.Apply()
 	if #statements == 0 then return true end
-	return OPX.Storage.ApplySchema(statements)
+	local applied = OPX.Storage.ApplySchema(statements)
+	if applied.ok then return true end
+	return false, applied.detail or applied.error
 end
 
 CreateThread(function()
@@ -42,7 +47,7 @@ CreateThread(function()
 		-- Between api and start: modules have contributed their tables during
 		-- init, and start is the first phase allowed to read them.
 		if OPX.BootError then return end
-		local ok, failed = applySchema()
+		local ok, failed = OPX.Schema.Apply()
 		if not ok then OPX.BootError = ('schema failed: %s'):format(tostring(failed)) end
 	end)
 

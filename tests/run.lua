@@ -27,8 +27,8 @@ local function section(name) print(('\n== %s'):format(name)) end
 -- @return table env
 -- @return table control
 -- @return string|nil the file that failed, and why
-local function boot(side, prelude)
-	local env, control = Host.Environment(side)
+local function boot(side, database, prelude)
+	local env, control = Host.Environment(side, database)
 	if prelude then prelude(env) end
 
 	for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
@@ -88,6 +88,49 @@ do
 			control.commands['opx.modules'] ~= nil and control.commands['opx.modules'].restricted)
 		check('no thread died', #control.log.error == 0 or not table.concat(control.log.error)
 			:find('thread died'), table.concat(control.log.error, ' | '))
+	end
+end
+
+-- ── the schema, which only runs when there is a database ─────────────────────
+-- Without one there are no statements to apply, so the happy path and the
+-- failure path are both invisible to the boot test above. This is the section
+-- that caught `ApplySchema` answering a Result where boot expected (ok, reason).
+section('schema')
+do
+	local PROBE = 'CREATE TABLE IF NOT EXISTS opx_probe (id INT)'
+
+	-- A database that answers the probe and records what the schema ran.
+	local ran = {}
+	local working = Host.Database({
+		scalar = function() return 1 end,
+		update = function(sql) ran[#ran + 1] = sql; return 0 end,
+	})
+	local env, _, why = boot('server', working)
+	check('boot with a database loads', why == nil, why)
+	if why == nil then
+		check('a database clears the boot error', env.OPX.BootError == nil, env.OPX.BootError)
+
+		env.OPX.Schema.Add({ PROBE })
+		local ok = env.OPX.Schema.Apply()
+		check('Schema.Apply answers true when the statements run', ok == true)
+		check('the statement reached the bridge', ran[1] == PROBE, ran[1])
+	end
+
+	-- The same path with a bridge that raises, which is what the real one does.
+	local broken = Host.Database({
+		scalar = function() return 1 end,
+		update = function() error('table is broken', 0) end,
+	})
+	local env2, _, why2 = boot('server', broken)
+	check('boot with a broken schema loads', why2 == nil, why2)
+	if why2 == nil then
+		env2.OPX.Schema.Add({ PROBE })
+		local ok, failed = env2.OPX.Schema.Apply()
+		-- `ApplySchema` answers a Result, and boot reads a plain pair. Treating
+		-- the Result as the boolean makes every failure look like a success,
+		-- because a table is truthy.
+		check('Schema.Apply answers false, not a Result', ok == false, type(ok))
+		check('the failing table is named', failed == 'opx_probe', tostring(failed))
 	end
 end
 

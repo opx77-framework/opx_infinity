@@ -6,12 +6,33 @@
 
 local Host = {}
 
+--- A stand-in for the `MySQL` bridge. `answers` maps a method name to a function
+--- of (sql, params); a method that is absent raises, which is what the real
+--- bridge does and the whole reason `OPX.Storage` wraps every call.
+-- @author dop42
+-- @param answers table<string, function>
+-- @return table
+function Host.Database(answers)
+	local bridge = {}
+	for _, method in ipairs({ 'query', 'single', 'scalar', 'insert', 'update', 'transaction' }) do
+		bridge[method] = {
+			await = function(sql, params)
+				local answer = answers[method]
+				if answer == nil then error(('no stub for MySQL.%s'):format(method), 0) end
+				return answer(sql, params)
+			end,
+		}
+	end
+	return bridge
+end
+
 --- Builds a fresh environment carrying the globals the platform installs.
 -- @author dop42
 -- @param side string 'server' or 'client'
+-- @param database table|nil the `MySQL` bridge, absent by default
 -- @return table env
 -- @return table log every line the runtime wrote, by level
-function Host.Environment(side)
+function Host.Environment(side, database)
 	local log = { debug = {}, info = {}, warn = {}, error = {} }
 	local threads = {}
 	local handlers = {}
@@ -31,8 +52,11 @@ function Host.Environment(side)
 		exports = { call = function() return nil, 'no_host' end },
 	}
 
+	Open77.database = database
+
 	local env = {
 		Open77 = Open77,
+		MySQL = database,
 
 		CreateThread = function(fn) threads[#threads + 1] = coroutine.create(fn) end,
 		Wait = function() coroutine.yield() end,
