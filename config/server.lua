@@ -3,6 +3,11 @@
 -- @author dop42
 
 OPX.Config.SERVER = {
+	-- Resources that also place players. Warned about at boot, because server
+	-- resources cannot call each other: asking the host whether one is running is
+	-- the only way to find out that two things will fight over the same body.
+	CONFLICTING_PLACERS = { 'open77_playerstate', 'freeroam', 'pursuit', 'race' },
+
 	-- Numbers an operator may change while people are playing are re-declared as
 	-- tunables and read through those, not from here. These are the defaults.
 	AUTOSAVE_MS = 300000,

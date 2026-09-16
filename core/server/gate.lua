@@ -263,4 +263,23 @@ function OPX.Gate.Watch(source, timeoutMs, onGiveUp)
 	return true
 end
 
+-- The host opens a gate itself when it decides a holder has vanished, and names
+-- the holders it gave up on. If this runtime is one of them the player is in the
+-- world with the gate open and, very possibly, no character -- which then looks
+-- like a bug in whatever they touch next rather than like what it is.
+--
+-- `liveness_lost:<resource>` is the real detail. `timeout:` and `no_holds` appear
+-- in no shipped assembly despite what the platform site says, so matching on
+-- those would catch nothing.
+AddEventHandler(OPX.Host.PLAYER_READY, function(rawPlayerId, detail)
+	local source = tonumber(rawPlayerId)
+	if source == nil or type(detail) ~= 'string' then return end
+	if detail:sub(1, 14) ~= 'liveness_lost:' then return end
+	if not detail:find(GetCurrentResourceName(), 15, true) then return end
+
+	Open77.log.warn(('[gate] the host gave up on this runtime holding %d (%s)')
+		:format(source, detail))
+	Open77.log.warn('  that player may be in the world with no character loaded.')
+end)
+
 Gate.Participate()

@@ -36,7 +36,30 @@ function OPX.Schema.Apply()
 	return false, applied.detail or applied.error
 end
 
+--- Warns for each running resource that also places players. Asking the host is
+--- the only way to know: server resources cannot call each other, so there is
+--- nobody to ask directly. A `starting` state counts -- a resource coming up will
+--- be placing players in a moment.
+local function warnAboutPlacementConflicts()
+	local names = OPX.Config.SERVER.CONFLICTING_PLACERS or {}
+	local mine = GetCurrentResourceName()
+	for index = 1, #names do
+		local name = names[index]
+		local state = GetResourceState(name)
+		if name ~= mine and (state == 'running' or state == 'starting') then
+			Open77.log.warn(('[boot] %s is running and also places players; see ' ..
+				'CONFLICTING_PLACERS in config/server.lua'):format(name))
+		end
+	end
+end
+
 CreateThread(function()
+	-- Under pcall: a diagnostic must never be what stops the runtime coming up.
+	local warned, why = pcall(warnAboutPlacementConflicts)
+	if not warned then
+		Open77.log.error('[boot] the placement-conflict check raised: ' .. tostring(why))
+	end
+
 	if not OPX.Storage.Ready() then
 		OPX.BootError = 'no database'
 		Open77.log.error('no database: nobody will be able to connect until this is fixed.')
