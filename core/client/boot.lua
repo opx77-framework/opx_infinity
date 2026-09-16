@@ -16,6 +16,7 @@ AddEventHandler(OPX.Host.CLIENT_RESOURCE_START, function(name)
 		-- anything has drawn on it yet. The interactive layer stays lazy: a
 		-- player who never opens anything should not pay for a second CEF page.
 		OPX.UI.Overlay()
+		OPX.Toast.Attach()
 
 		-- After the modules, so a module registering work in `Start` is picked up
 		-- on the first pass rather than a tick later.

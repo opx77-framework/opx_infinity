@@ -190,6 +190,22 @@ function Host.Environment(side, database)
 		--- Puts an account on a slot, or clears it when `userId` is nil.
 		Admit = function(playerId, userId) control.accounts[playerId] = userId end,
 
+		--- Plays the page: invokes whatever the runtime wired to that channel,
+		--- exactly as the real bridge would when the page emits.
+		PageEmit = function(page, channel, payload)
+			local handler = page and page.handlers[channel]
+			if handler then handler(payload) end
+		end,
+
+		--- Reports every created page ready. A real page does this once it has
+		--- loaded, and nothing can be sent to a surface before it does.
+		ReadyPages = function()
+			for _, page in ipairs(control.pages) do
+				local handler = page.handlers['opx:ready']
+				if handler then handler({}) end
+			end
+		end,
+
 		Fire = function(name, ...)
 			for _, fn in ipairs(handlers[name] or {}) do fn(...) end
 		end,

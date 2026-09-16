@@ -48,6 +48,7 @@ client_script "lib/client/surface.lua"
 client_script "lib/client/keys.lua"
 client_script "core/client/scheduler.lua"
 client_script "core/client/ui.lua"
+client_script "core/client/notify.lua"
 
 shared_script "modules/diagnostics/module.lua"
 server_script "modules/diagnostics/server/main.lua"

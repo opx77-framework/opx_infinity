@@ -44,6 +44,10 @@ local function boot(side, database, prelude)
 	if side == 'client' then control.Fire('onClientResourceStart', 'opx-infinity') end
 
 	control.Pump(60)
+
+	-- A surface refuses everything until its page has reported ready, so a test
+	-- that skipped this would be testing the window before the UI exists.
+	control.ReadyPages()
 	return env, control
 end
 
@@ -63,7 +67,7 @@ local CORE_NAMESPACE = {
 	ForgetSession = true, SessionHolds = true,
 	Notify = true, NotifyLocale = true, RefusalKey = true, Refuse = true,
 	CommandResult = true, CommandNotice = true, Cooling = true, ForgetCooldowns = true,
-	Buckets = true, Gate = true, UI = true,
+	Buckets = true, Gate = true, UI = true, Toast = true,
 }
 
 --- Names a module has hung off `OPX` that do not belong to the runtime.
@@ -339,6 +343,51 @@ do
 
 		OPX.UI.ReleaseFocus('never-held')
 		check('releasing what never held is safe', OPX.UI.FocusOwner() == nil)
+	end
+end
+
+section('toasts')
+do
+	local env, control, why = boot('client')
+	if why == nil then
+		local OPX = env.OPX
+		local overlay = control.pages[1]
+		local function lastSent()
+			return overlay and overlay.sent[#overlay.sent] or nil
+		end
+
+		local id = OPX.Toast.Show({ kind = 'success', message = 'saved' })
+		check('a toast is raised and addressable', type(id) == 'string', tostring(id))
+		local sent = lastSent()
+		check('and it reaches the overlay on its own channel',
+			sent ~= nil and sent.channel == 'opx:notify:show', sent and sent.channel)
+		check('with the kind it was given',
+			sent ~= nil and sent.payload.kind == 'success')
+
+		check('an unknown kind falls back to info',
+			(function()
+				OPX.Toast.Show({ kind = 'catastrophe', message = 'x' })
+				return lastSent().payload.kind == 'info'
+			end)())
+
+		-- A toast with no text is nothing to show, and raising it would leave an
+		-- empty box on screen with no way to read what went wrong.
+		check('a toast with no message is refused',
+			OPX.Toast.Show({ kind = 'error' }) == nil)
+
+		check('updating one that is up succeeds',
+			OPX.Toast.Update(id, { message = 'saved twice' }) == true)
+		OPX.Toast.Dismiss(id)
+		check('updating one that has gone answers false',
+			OPX.Toast.Update(id, { message = 'too late' }) == false)
+
+		-- The server guarantees the code is a catalogue key, so a refusal can be
+		-- rendered without leaking an internal storage code to the player.
+		local refusal = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
+		control.netEvents[refusal]({ kind = 'error', code = 'error.tooFast' })
+		check('a refusal from the server is rendered, not shown as its key',
+			lastSent().payload.message == env.OPX.Locale.Text('error.tooFast'),
+			lastSent().payload.message)
 	end
 end
 
