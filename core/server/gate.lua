@@ -12,10 +12,10 @@
 -- the HOLDER, not a limit on the player -- someone may sit in a creator for an
 -- hour as long as the holder refreshes. It fires only on proof that the holder
 -- vanished, and the host then opens the gate itself with the detail
--- `liveness_lost:<resource>` -- `timeout:` and `no_holds` exist in no shipped
--- assembly, whatever the docs say -- possibly with the player still choosing and
--- with no puppet at all. So the watch deadline sits BELOW the declared interval:
--- the runtime gives up first, deliberately, and says why.
+-- `liveness_lost:<resource>` or `timeout:<resource>` (the two sources disagree;
+-- both are matched, see the handler at the foot of this file) -- possibly with
+-- the player still choosing and no puppet at all. So the watch deadline sits
+-- BELOW the declared interval: the runtime gives up first, and says why.
 --
 -- Ours is not the only hold. Every player carries a second one named
 -- `__platform`, with no deadline, that no Lua can take or release: it clears only
@@ -274,14 +274,33 @@ end
 -- world with the gate open and, very possibly, no character -- which then looks
 -- like a bug in whatever they touch next rather than like what it is.
 --
--- `liveness_lost:<resource>` is the real detail. `timeout:` and `no_holds` appear
--- in no shipped assembly despite what the platform site says, so matching on
--- those would catch nothing.
+-- Two sources disagree about what `detail` actually says, so this matches both.
+-- `opx77_core` read the shipped assemblies on op77.11 and found
+-- `liveness_lost:<resource>` and no sign of `timeout:` or `no_holds`. The
+-- platform's own documentation for op77.75 says the set is `cleared`,
+-- `no_holds`, `resource_reloaded`, `resource_stopped` and `timeout:<resource>`,
+-- and never mentions `liveness_lost`. Both were checked; neither is guessed.
+-- Betting on one spelling is how a real timeout goes unnoticed, and the cost of
+-- matching all of them is one extra comparison.
+local GAVE_UP = { 'liveness_lost:', 'timeout:' }
+
 AddEventHandler(OPX.Host.PLAYER_READY, function(rawPlayerId, detail)
 	local source = tonumber(rawPlayerId)
 	if source == nil or type(detail) ~= 'string' then return end
-	if detail:sub(1, 14) ~= 'liveness_lost:' then return end
-	if not detail:find(GetCurrentResourceName(), 15, true) then return end
+
+	if detail == 'no_holds' then
+		-- Nobody was holding at all, which means this runtime never took its
+		-- hold for that player: the entry sequence did not run for them.
+		Open77.log.warn(('[gate] %d was admitted with no hold taken at all'):format(source))
+		return
+	end
+
+	local prefix
+	for index = 1, #GAVE_UP do
+		if detail:sub(1, #GAVE_UP[index]) == GAVE_UP[index] then prefix = GAVE_UP[index] break end
+	end
+	if prefix == nil then return end
+	if not detail:find(GetCurrentResourceName(), #prefix + 1, true) then return end
 
 	Open77.log.warn(('[gate] the host gave up on this runtime holding %d (%s)')
 		:format(source, detail))

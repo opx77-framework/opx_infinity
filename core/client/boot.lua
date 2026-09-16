@@ -7,16 +7,17 @@ AddEventHandler(OPX.Host.CLIENT_RESOURCE_START, function(name)
 	if name ~= RESOURCE then return end
 
 	CreateThread(function()
+		-- BEFORE the modules, not after. The overlay is the always-on layer and a
+		-- module's `Start` may well draw on it; creating it afterwards meant the
+		-- first module to touch the interactive surface got the first page, and
+		-- anything the HUD sent during `Start` was dropped for want of a surface.
+		OPX.UI.Overlay()
+		OPX.Toast.Attach()
+
 		local started, fatal = OPX.Modules.Run()
 		if not started then
 			Open77.log.error(('client module failed: %s'):format(tostring(fatal)))
 		end
-
-		-- The overlay is the always-on layer, so it comes up whether or not
-		-- anything has drawn on it yet. The interactive layer stays lazy: a
-		-- player who never opens anything should not pay for a second CEF page.
-		OPX.UI.Overlay()
-		OPX.Toast.Attach()
 
 		-- After the modules, so a module registering work in `Start` is picked up
 		-- on the first pass rather than a tick later.

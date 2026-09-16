@@ -34,14 +34,20 @@ local surfaces = {}
 local focusStack = {}
 
 --- Builds one surface from its configured z-index and frame rate.
-local function create(name, visible)
+local function create(name)
 	local settings = OPX.Config.CLIENT.SURFACE[name:upper()] or {}
 	local surface, why = OPX.Surface.Create({
 		id = ID,
 		entry = ('web/%s.html'):format(name == 'overlay' and 'index' or 'modal'),
+		layer = settings.layer,
 		zIndex = settings.zIndex,
 		fps = settings.fps,
-		visible = visible,
+		-- Both surfaces are created VISIBLE, deliberately. Creation is
+		-- asynchronous, and a `show()` issued straight after `create` loses the
+		-- race against the `visible` flag the request carried -- the surface then
+		-- never paints at all. A transparent page that draws nothing costs a
+		-- compositing layer; a page that never paints costs the whole feature.
+		visible = true,
 	})
 	if surface == nil then
 		Open77.log.error(('[ui] the %s surface failed: %s'):format(name, tostring(why)))
@@ -69,7 +75,7 @@ end
 -- @author dop42
 -- @return table|nil
 function OPX.UI.Overlay()
-	if surfaces.overlay == nil then surfaces.overlay = create('overlay', true) or false end
+	if surfaces.overlay == nil then surfaces.overlay = create('overlay') or false end
 	return surfaces.overlay or nil
 end
 
@@ -79,7 +85,7 @@ end
 -- @return table|nil
 function OPX.UI.Interactive()
 	if surfaces.interactive == nil then
-		surfaces.interactive = create('interactive', false) or false
+		surfaces.interactive = create('interactive') or false
 	end
 	return surfaces.interactive or nil
 end

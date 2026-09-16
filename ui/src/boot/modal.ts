@@ -1,6 +1,7 @@
 import FormView from '@/modules/form/FormView.vue'
 import MenuView from '@/modules/menu/MenuView.vue'
 import PanelView from '@/modules/panel/PanelView.vue'
+import TargetView from '@/modules/target/TargetView.vue'
 import { createSurface } from './createSurface'
 import { registerModule } from './registry'
 import SurfaceRoot from './SurfaceRoot.vue'
@@ -21,6 +22,7 @@ import SurfaceRoot from './SurfaceRoot.vue'
 registerModule({ id: 'menu', surface: 'modal', component: MenuView })
 registerModule({ id: 'form', surface: 'modal', component: FormView })
 registerModule({ id: 'panel', surface: 'modal', component: PanelView })
+registerModule({ id: 'target', surface: 'modal', component: TargetView })
 
 createSurface({
   name: 'modal',

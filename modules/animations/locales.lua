@@ -1,0 +1,154 @@
+--- Player-facing text for the emotes, the picker and every refusal.
+-- @author dop42
+--
+-- The keys keep the `animations.` prefix they were written under. Log lines and
+-- console answers stay in English whatever the catalogue says.
+
+local EN = {
+	['animations.title'] = 'Animations',
+
+	['animations.category.gestures'] = 'Gestures',
+	['animations.category.social'] = 'Social',
+	['animations.category.emotions'] = 'Emotions',
+	['animations.category.relaxation'] = 'Relaxation',
+	['animations.category.consumables'] = 'Consumables',
+	['animations.category.interactions'] = 'Interactions',
+
+	['animations.name.handsup'] = 'Hands up',
+	['animations.name.clap'] = 'Applaud',
+	['animations.name.dance'] = 'Dance',
+	['animations.name.phone'] = 'Use a phone',
+	['animations.name.cry'] = 'Cry',
+	['animations.name.think'] = 'Think it over',
+	['animations.name.sit'] = 'Sit on the ground',
+	['animations.name.meditate'] = 'Meditate',
+	['animations.name.stretch'] = 'Stretch',
+	['animations.name.smoke'] = 'Smoke a cigarette',
+	['animations.name.cigar'] = 'Smoke a cigar',
+	['animations.name.drink'] = 'Drink from a can',
+	['animations.name.give'] = 'Hold out an item',
+	['animations.name.examine'] = 'Kneel and look closer',
+	['animations.name.wounded'] = 'Sit wounded',
+
+	['animations.picker.title'] = 'ANIMATIONS',
+	['animations.picker.stop'] = 'Stop',
+	['animations.picker.stopHint'] = 'Ends whatever animation you are playing.',
+	['animations.picker.stopHintKey'] = 'Ends whatever animation you are playing. {key} does it too.',
+	['animations.picker.variant'] = 'Variant {index}',
+	['animations.picker.back'] = 'Back',
+	['animations.picker.busy'] = 'Another menu is open. Close it first.',
+	['animations.picker.failed'] = 'The animation picker could not be opened.',
+	['animations.picker.more'] = '{count} more not shown',
+
+	['animations.error.unknownAnimation'] = 'That animation is not available here.',
+	['animations.error.invalidVariant'] = 'That animation has no such variant.',
+	['animations.error.invalidOptions'] = 'That animation request is malformed.',
+	['animations.error.notReady'] = 'Wait until your character has finished loading.',
+	['animations.error.notAlive'] = 'You must be alive to play an animation.',
+	['animations.error.inVehicle'] = 'Get out of the vehicle first.',
+	['animations.error.owned'] = 'Stop what you are doing before starting another one.',
+	['animations.error.locked'] = 'This animation cannot be stopped.',
+	['animations.error.interrupted'] = 'Animation interrupted.',
+	['animations.error.timeout'] = 'The animation did not start in time. Try again.',
+	['animations.error.rateLimited'] = 'Slow down a little.',
+	['animations.error.unavailable'] = 'Animations are unavailable right now.',
+	['animations.error.notSent'] = 'That request could not be sent.',
+	['animations.error.menuNotRunning'] = 'The animation picker is unavailable.',
+	['animations.error.menuNotRunningHint'] = 'The animation picker is unavailable. Type /{command} followed by a name instead.',
+	['animations.error.presentationFailed'] = 'Your animation could not be shown and was stopped.',
+	['animations.error.refused'] = 'That animation could not be played.',
+
+	['animations.hint.list'] = 'Run /{command} to see the list.',
+	['animations.usage'] = 'usage: [name [variant] | category | stop | list]',
+	['animations.usage.none'] = 'usage: no arguments',
+	['animations.list.header'] = 'animations, by category (name, then its variant count):',
+	['animations.list.row'] = '  {category}: {names}',
+	['animations.list.empty'] = 'No animation is offered on this server.',
+
+	['animations.help.anim'] = 'Play an animation, or open the picker with no argument.',
+	['animations.help.name'] = 'dance, smoke, sit... or stop, list, a category',
+	['animations.help.variant'] = 'variant number; omit for the first offered',
+	['animations.help.stop'] = 'Stop your animation.',
+	['animations.help.list'] = 'List the animations you can play.',
+
+	['animations.key.picker'] = 'Animations: open or close the picker',
+	['animations.key.stop'] = 'Animations: stop',
+
+	['animations.prompt.stop'] = 'Stop animation',
+}
+
+local FR = {
+	['animations.title'] = 'Animations',
+
+	['animations.category.gestures'] = 'Gestes',
+	['animations.category.social'] = 'Social',
+	['animations.category.emotions'] = 'Émotions',
+	['animations.category.relaxation'] = 'Détente',
+	['animations.category.consumables'] = 'Consommables',
+	['animations.category.interactions'] = 'Interactions',
+
+	['animations.name.handsup'] = "Mains en l'air",
+	['animations.name.clap'] = 'Applaudir',
+	['animations.name.dance'] = 'Danser',
+	['animations.name.phone'] = 'Utiliser un téléphone',
+	['animations.name.cry'] = 'Pleurer',
+	['animations.name.think'] = 'Réfléchir',
+	['animations.name.sit'] = "S'asseoir par terre",
+	['animations.name.meditate'] = 'Méditer',
+	['animations.name.stretch'] = "S'étirer",
+	['animations.name.smoke'] = 'Fumer une cigarette',
+	['animations.name.cigar'] = 'Fumer un cigare',
+	['animations.name.drink'] = 'Boire une canette',
+	['animations.name.give'] = 'Tendre un objet',
+	['animations.name.examine'] = "S'agenouiller pour examiner",
+	['animations.name.wounded'] = "S'asseoir, blessé",
+
+	['animations.picker.title'] = 'ANIMATIONS',
+	['animations.picker.stop'] = 'Arrêter',
+	['animations.picker.stopHint'] = "Met fin à l'animation en cours.",
+	['animations.picker.stopHintKey'] = "Met fin à l'animation en cours. {key} le fait aussi.",
+	['animations.picker.variant'] = 'Variante {index}',
+	['animations.picker.back'] = 'Retour',
+	['animations.picker.busy'] = "Un autre menu est ouvert. Fermez-le d'abord.",
+	['animations.picker.failed'] = "Le sélecteur d'animations n'a pas pu s'ouvrir.",
+	['animations.picker.more'] = '{count} de plus, non affichées',
+
+	['animations.error.unknownAnimation'] = "Cette animation n'est pas disponible ici.",
+	['animations.error.invalidVariant'] = "Cette animation n'a pas cette variante.",
+	['animations.error.invalidOptions'] = "Cette demande d'animation est mal formée.",
+	['animations.error.notReady'] = 'Attendez que votre personnage ait fini de charger.',
+	['animations.error.notAlive'] = 'Vous devez être en vie pour jouer une animation.',
+	['animations.error.inVehicle'] = "Descendez d'abord du véhicule.",
+	['animations.error.owned'] = "Arrêtez ce que vous faites avant d'en lancer une autre.",
+	['animations.error.locked'] = 'Cette animation ne peut pas être interrompue.',
+	['animations.error.interrupted'] = 'Animation interrompue.',
+	['animations.error.timeout'] = "L'animation n'a pas démarré à temps. Réessayez.",
+	['animations.error.rateLimited'] = 'Doucement, un peu moins vite.',
+	['animations.error.unavailable'] = 'Les animations sont indisponibles pour le moment.',
+	['animations.error.notSent'] = "Cette demande n'a pas pu être envoyée.",
+	['animations.error.menuNotRunning'] = "Le sélecteur d'animations est indisponible.",
+	['animations.error.menuNotRunningHint'] = "Le sélecteur d'animations est indisponible. Tapez plutôt /{command} suivi d'un nom.",
+	['animations.error.presentationFailed'] = "Votre animation n'a pas pu être affichée et a été arrêtée.",
+	['animations.error.refused'] = "Cette animation n'a pas pu être jouée.",
+
+	['animations.hint.list'] = 'Lancez /{command} pour voir la liste.',
+	['animations.usage'] = 'utilisation : [nom [variante] | catégorie | stop | list]',
+	['animations.usage.none'] = 'utilisation : aucun argument',
+	['animations.list.header'] = 'animations, par catégorie (nom, puis son nombre de variantes) :',
+	['animations.list.row'] = '  {category} : {names}',
+	['animations.list.empty'] = "Aucune animation n'est proposée sur ce serveur.",
+
+	['animations.help.anim'] = 'Joue une animation, ou ouvre le sélecteur sans argument.',
+	['animations.help.name'] = 'dance, smoke, sit... ou stop, list, une catégorie',
+	['animations.help.variant'] = 'numéro de variante ; omettre pour la première proposée',
+	['animations.help.stop'] = 'Arrête votre animation.',
+	['animations.help.list'] = 'Liste les animations que vous pouvez jouer.',
+
+	['animations.key.picker'] = 'Animations : ouvrir ou fermer le sélecteur',
+	['animations.key.stop'] = 'Animations : arrêter',
+
+	['animations.prompt.stop'] = "Arrêter l'animation",
+}
+
+OPX.Locale.Register('en', EN)
+OPX.Locale.Register('fr', FR)

@@ -7,7 +7,7 @@ OPX.Config.CLIENT = {
 		-- Two surfaces, not one per feature. The platform allows eight per
 		-- resource, only one surface may hold focus at a time, and an exception
 		-- on the interactive layer must not be able to blank the overlay.
-		OVERLAY = { zIndex = 700, fps = 30 },
-		INTERACTIVE = { zIndex = 740, fps = 60 },
+		OVERLAY = { layer = 'hud', zIndex = 700, fps = 30 },
+		INTERACTIVE = { layer = 'modal', zIndex = 740, fps = 60 },
 	},
 }

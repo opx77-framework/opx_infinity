@@ -19,9 +19,13 @@
 
 OPX.Surface = {}
 
--- Every surface on this platform draws on the 'hud' layer; no other value has
--- ever been used, so it is fixed here rather than taken from the spec.
-local LAYER = 'hud'
+-- The five layers the host accepts. `system` is the only one that needs a
+-- permission (`webui.system`). This was hardcoded to 'hud' on the evidence that
+-- no other value appeared anywhere in the old tree -- which was true and was the
+-- wrong conclusion: the layers exist, and an interactive surface belongs on
+-- `modal` rather than stacked on the HUD by z-index.
+local LAYERS = { hud = true, menu = true, modal = true, system = true, debug = true }
+local DEFAULT_LAYER = 'hud'
 
 local DEFAULT_WIDTH = 1920
 local DEFAULT_HEIGHT = 1080
@@ -43,11 +47,20 @@ local function wire(surface, channel)
 		-- Set here, not in a caller's own ready handler: the flag must be true
 		-- before that handler runs, or its first Send is dropped.
 		if channel == 'ready' then surface.ready = true end
-		local handler = surface.handlers[channel]
-		if handler == nil then return end
-		local ran, raised = pcall(handler, payload)
-		if not ran then
-			Open77.log.error(('[surface %s] %s raised: %s'):format(surface.id, full, tostring(raised)))
+
+		-- Every handler on the channel, not just the last one registered. A
+		-- channel like `focus:set` is a broadcast that several modules listen
+		-- to, and replacing on registration meant only the last module to load
+		-- ever heard it -- silently, since nothing reads a handler it did not
+		-- install. Iterated over a snapshot: a handler may remove itself.
+		local listeners = surface.handlers[channel]
+		if listeners == nil then return end
+		for index = 1, #listeners do
+			local ran, raised = pcall(listeners[index], payload)
+			if not ran then
+				Open77.log.error(('[surface %s] %s raised: %s')
+					:format(surface.id, full, tostring(raised)))
+			end
 		end
 	end)
 
@@ -59,18 +72,36 @@ local function wire(surface, channel)
 	return true
 end
 
---- Attaches a handler to `<id>:<channel>`, replacing any handler it had.
+--- Adds a handler to `<id>:<channel>`. Several may listen to one channel, so
+--- this appends rather than replaces; a nil handler clears the channel instead.
+--- Answers a function that removes just this handler.
 -- @author dop42
 -- @param surface table
 -- @param channel string without the `<id>:` prefix
--- @param handler fun(payload: any)|nil
--- @return boolean
+-- @param handler fun(payload: any)|nil nil clears every handler on the channel
+-- @return function|boolean the remover, or false
 function OPX.Surface.On(surface, channel, handler)
 	if type(surface) ~= 'table' or surface.page == nil then return false end
 	if type(channel) ~= 'string' or channel == '' then return false end
 	if not wire(surface, channel) then return false end
-	surface.handlers[channel] = handler
-	return true
+
+	if handler == nil then
+		surface.handlers[channel] = nil
+		return true
+	end
+
+	local listeners = surface.handlers[channel]
+	if listeners == nil then
+		listeners = {}
+		surface.handlers[channel] = listeners
+	end
+	listeners[#listeners + 1] = handler
+
+	return function()
+		for index = #listeners, 1, -1 do
+			if listeners[index] == handler then table.remove(listeners, index) end
+		end
+	end
 end
 
 --- Creates a WebUI page and wires its ready and diagnostic channels.
@@ -94,7 +125,7 @@ function OPX.Surface.Create(spec)
 
 	local created, page, reason = pcall(webui.create, {
 		entry = spec.entry,
-		layer = LAYER,
+		layer = LAYERS[spec.layer] and spec.layer or DEFAULT_LAYER,
 		width = spec.width or DEFAULT_WIDTH,
 		height = spec.height or DEFAULT_HEIGHT,
 		fps = spec.fps or DEFAULT_FPS,
