@@ -62,6 +62,7 @@ server_script "core/server/answer.lua"
 server_script "core/server/commands.lua"
 server_script "core/server/gate.lua"
 server_script "core/server/buckets.lua"
+server_script "core/server/tunables.lua"
 
 client_script "lib/client/rpc.lua"
 client_script "lib/client/surface.lua"

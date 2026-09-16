@@ -60,6 +60,11 @@ function Host.Environment(side, database)
 
 		notifications = { send = function() return true end },
 
+		-- One declaration per resource, answering a live table the runtime reads
+		-- through. A host that does not install this at all is the other case the
+		-- runtime has to survive, so tests can clear it.
+		tunables = { declare = function(block) return block end },
+
 		-- The readiness gate. `hold` answers ONE value -- the session -- or
 		-- nil plus a reason, which is the shape the runtime has to handle.
 		ready = {

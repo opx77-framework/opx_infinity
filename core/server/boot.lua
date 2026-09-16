@@ -44,8 +44,12 @@ CreateThread(function()
 	end
 
 	local started, fatal = OPX.Modules.Run(function()
-		-- Between api and start: modules have contributed their tables during
-		-- init, and start is the first phase allowed to read them.
+		-- Between api and start: modules contributed their tables and their
+		-- tunables during init, and start is the first phase allowed to read
+		-- either. The panel is declared once for the whole resource -- a second
+		-- declaration would replace the first, losing every other module's block.
+		OPX.Tune.Publish()
+
 		if OPX.BootError then return end
 		local ok, failed = OPX.Schema.Apply()
 		if not ok then OPX.BootError = ('schema failed: %s'):format(tostring(failed)) end

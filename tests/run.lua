@@ -67,7 +67,7 @@ local CORE_NAMESPACE = {
 	ForgetSession = true, SessionHolds = true,
 	Notify = true, NotifyLocale = true, RefusalKey = true, Refuse = true,
 	CommandResult = true, CommandNotice = true, Cooling = true, ForgetCooldowns = true,
-	Buckets = true, Gate = true, UI = true, Toast = true, Command = true,
+	Buckets = true, Gate = true, UI = true, Toast = true, Command = true, Tune = true,
 }
 
 --- Names a module has hung off `OPX` that do not belong to the runtime.
@@ -192,6 +192,78 @@ do
 		check('the failing table is named',
 			type(named) == 'string' and named:match('^opx'), tostring(named))
 	end
+end
+
+-- ── tunables ─────────────────────────────────────────────────────────────────
+-- One declaration per resource: a second would replace the first and lose every
+-- other module's block. Everything that can go wrong with the panel has to
+-- degrade, because none of it is worth a runtime that will not start.
+section('tunables')
+do
+	-- Loaded on its own: boot already published, and `Declare` then correctly
+	-- refuses, so driving it through a booted runtime would only prove that.
+	local function tuneOnly(strip)
+		local env, control = Host.Environment('server')
+		if strip then strip(env) end
+		for _, file in ipairs({
+			'core/shared/main.lua', 'core/shared/channels.lua',
+			'lib/shared/math.lua', 'config/shared.lua', 'config/server.lua',
+			'core/server/tunables.lua',
+		}) do
+			assert(loadfile(file, 't', env), file)()
+		end
+		return env.OPX, control
+	end
+
+	do
+		local OPX = tuneOnly()
+		OPX.Tune.Declare({ PROBE_MS = { value = 5000, type = 'integer', min = 1000 } })
+		check('a declared key is known', OPX.Tune.Known('PROBE_MS') == true)
+		check('and reads its configured default', OPX.Tune.Number('PROBE_MS', 1) == 5000)
+		check('an undeclared key answers the floor', OPX.Tune.Number('NOPE', 42) == 42)
+
+		-- The floor is also the answer for a value that is not a finite number,
+		-- so no caller ever compares a deadline against nil.
+		OPX.Tune.Declare({ BAD = { value = 0 / 0 } })
+		check('a NaN value answers the floor', OPX.Tune.Number('BAD', 7) == 7)
+		OPX.Tune.Declare({ HUGE = { value = math.huge } })
+		check('an infinity answers the floor too', OPX.Tune.Number('HUGE', 7) == 7)
+
+		local twice = pcall(OPX.Tune.Declare, { PROBE_MS = { value = 1 } })
+		check('the same key declared twice is an error, not an overwrite', twice == false)
+
+		check('publishing succeeds against a panel', OPX.Tune.Publish() == true)
+		local late = pcall(OPX.Tune.Declare, { LATE = { value = 1 } })
+		check('declaring after publish is refused', late == false)
+	end
+
+	-- A host with no panel at all. Indexing a nil `Open77.tunables` raises
+	-- OUTSIDE a pcall wrapped around the call, which is how this took boot down
+	-- the first time.
+	do
+		local OPX = tuneOnly(function(env) env.Open77.tunables = nil end)
+		OPX.Tune.Declare({ PROBE_MS = { value = 5000 } })
+		check('no panel does not raise', OPX.Tune.Publish() == false)
+		check('and the values still read their configured defaults',
+			OPX.Tune.Number('PROBE_MS', 1) == 5000)
+	end
+
+	-- A panel that refuses. Losing the panel is not worth losing the runtime, so
+	-- the values fall back and the failure is logged loudly instead.
+	do
+		local OPX, control = tuneOnly(function(env)
+			env.Open77.tunables = { declare = function() error('refused', 0) end }
+		end)
+		OPX.Tune.Declare({ PROBE_MS = { value = 5000 } })
+		check('a refused declaration does not raise', OPX.Tune.Publish() == false)
+		check('the refusal is logged as an error', #control.log.error > 0,
+			table.concat(control.log.error, ' | '))
+		check('and the values still read', OPX.Tune.Number('PROBE_MS', 1) == 5000)
+	end
+
+	-- A booted runtime must survive a host with no panel, end to end.
+	local bare = boot('server', nil, function(e) e.Open77.tunables = nil end)
+	check('a runtime with no tunables panel still boots', bare.OPX.Booted == true)
 end
 
 -- ── sessions ─────────────────────────────────────────────────────────────────
