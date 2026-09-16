@@ -1,0 +1,82 @@
+/* =============================================================================
+   OPEN//77 - bundled faces
+   =============================================================================
+   The three names the token file has always declared, finally resolvable.
+
+   The website self-hosts these through next/font. In-game there is no network:
+   a `<link>` to a font URL silently never resolves, which is exactly what has
+   been happening on all twelve surfaces since they were written. Here the woff2
+   comes from npm (@fontsource), is inlined into the page as a data URI by the
+   build, and is therefore present before the first paint. Nothing is fetched.
+
+   woff2 only, deliberately. @fontsource's own stylesheets list a woff fallback
+   as well; inlined that would double the page weight to serve a format no
+   Chromium-based CEF has needed since 2014.
+
+   Weights are the ones the twelve surfaces actually use. Adding one is cheap
+   (~15 KB) but it is 15 KB on every surface, so do not add one speculatively.
+   ========================================================================== */
+
+/* display - 600 for row labels, 700 for titles and headings */
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url('@fontsource/rajdhani/files/rajdhani-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url('@fontsource/rajdhani/files/rajdhani-latin-700-normal.woff2') format('woff2');
+}
+
+/* body - 400 copy, 600 emphasis, 700 buttons */
+@font-face {
+  font-family: 'Saira';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('@fontsource/saira/files/saira-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Saira';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url('@fontsource/saira/files/saira-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Saira';
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url('@fontsource/saira/files/saira-latin-700-normal.woff2') format('woff2');
+}
+
+/* mono - 400 data, 600 tabs and labels, 700 micro eyebrows and keycaps.
+   The eyebrow asks for 900 and IBM Plex Mono stops at 700; 700 is what it gets,
+   and synthetic bolding is off because a faux-bold mono ruins tabular alignment. */
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url('@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: block;
+  src: url('@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-700-normal.woff2') format('woff2');
+}

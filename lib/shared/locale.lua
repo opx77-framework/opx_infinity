@@ -40,6 +40,20 @@ function OPX.Locale.Current()
 	return active
 end
 
+--- A flat copy of the active catalogue over the fallback, for handing the whole
+--- of it to something that cannot call back -- a WebUI page, which has no way to
+--- resolve a key per render.
+-- @author dop42
+-- @return table<string, string>
+function OPX.Locale.Catalogue()
+	local flat = {}
+	for key, text in pairs(catalogs[FALLBACK] or {}) do flat[key] = text end
+	if active ~= FALLBACK then
+		for key, text in pairs(catalogs[active] or {}) do flat[key] = text end
+	end
+	return flat
+end
+
 --- Whether the active or fallback catalogue carries a key.
 -- @author dop42
 -- @param key string

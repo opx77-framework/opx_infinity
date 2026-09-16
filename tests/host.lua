@@ -114,6 +114,29 @@ function Host.Environment(side, database)
 			for _, fn in ipairs(handlers[name] or {}) do fn(...) end
 		end,
 		RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
+
+		-- A CEF page. `emit` is how a test plays the page: it invokes whatever
+		-- the runtime wired to that channel, exactly as the real bridge would.
+		WebUI = {
+			create = function(spec)
+				local page = { spec = spec, sent = {}, handlers = {}, focus = {}, alive = true }
+				page.send = function(_, channel, payload)
+					page.sent[#page.sent + 1] = { channel = channel, payload = payload }
+					return true
+				end
+				page.on = function(_, channel, handler) page.handlers[channel] = handler end
+				page.setFocus = function(_, keyboard, cursor)
+					page.focus = { keyboard = keyboard, cursor = cursor }
+					return true
+				end
+				page.hasFocus = function() return page.focus.keyboard or page.focus.cursor end
+				page.show = function() page.visible = true; return true end
+				page.hide = function() page.visible = false; return true end
+				page.destroy = function() page.alive = false; return true end
+				control.pages[#control.pages + 1] = page
+				return page
+			end,
+		},
 		RegisterCommand = function(name, fn, restricted)
 			commands[name] = { run = fn, restricted = restricted == true }
 		end,
@@ -160,6 +183,9 @@ function Host.Environment(side, database)
 		-- Slot -> durable account id. Identity comes from the host and only from
 		-- the host, so this is the only way a test can make a slot real.
 		accounts = {},
+
+		-- Every WebUI page the runtime created, newest last.
+		pages = {},
 
 		--- Puts an account on a slot, or clears it when `userId` is nil.
 		Admit = function(playerId, userId) control.accounts[playerId] = userId end,

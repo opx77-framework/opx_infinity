@@ -1,0 +1,60 @@
+/**
+ * The wire between this page and Lua.
+ *
+ * INVARIANT -- THE PAGE SENDS INTENTS, NEVER FACTS.
+ * Every payload leaving here is a request ("the player pressed use on slot 3"), never a
+ * conclusion ("the player now has 4 medkits"). Lua re-derives all of it server-side and
+ * the page is told the result. Nothing computed here is trusted by anything, including
+ * this page: a value is only real once it has come back over a channel.
+ */
+
+/** A channel name. Always `opx:<module>:<verb>`, matching the Lua side exactly. */
+export type Channel = string
+
+/** Anything that survives the Lua <-> JSON boundary. */
+export type Json = string | number | boolean | null | Json[] | { [key: string]: Json }
+export type Payload = Record<string, unknown>
+
+export type Handler = (payload: Payload) => void
+
+/** The two globals the CEF surface is given. There is nothing else. */
+export interface Open77Bridge {
+  on(channel: Channel, handler: Handler): void
+  emit(channel: Channel, payload: Payload): void
+}
+
+declare global {
+  interface Window {
+    Open77?: Open77Bridge
+    /** Set by the dev shim only. Never present in game. See bridge/devshim.ts. */
+    __OPX_DEV_SHIM__?: boolean
+  }
+}
+
+/* -- Lua-shaped coercions ---------------------------------------------------------------
+   An empty Lua table serialises to `{}`, not `[]`, so `value || []` keeps the object and
+   the next `.map` throws inside a handler the bridge then swallows. Every list crossing
+   the wire goes through `list()`, without exception. */
+
+export function list<T = unknown>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : []
+}
+
+export function text(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback
+}
+
+export function num(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+export function bool(value: unknown, fallback = false): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+/** A Lua table used as a map; `{}` and a missing key are the same thing to us. */
+export function table(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}

@@ -38,6 +38,11 @@ local function boot(side, database, prelude)
 		if not ok then return env, control, ('%s: %s'):format(file, failure) end
 	end
 
+	-- The host always raises this for a starting resource, and the client half
+	-- does all its wiring from it. A helper that skipped it would be testing a
+	-- state the platform never produces.
+	if side == 'client' then control.Fire('onClientResourceStart', 'opx-infinity') end
+
 	control.Pump(60)
 	return env, control
 end
@@ -58,7 +63,7 @@ local CORE_NAMESPACE = {
 	ForgetSession = true, SessionHolds = true,
 	Notify = true, NotifyLocale = true, RefusalKey = true, Refuse = true,
 	CommandResult = true, CommandNotice = true, Cooling = true, ForgetCooldowns = true,
-	Buckets = true, Gate = true,
+	Buckets = true, Gate = true, UI = true,
 }
 
 --- Names a module has hung off `OPX` that do not belong to the runtime.
@@ -293,6 +298,50 @@ do
 end
 
 -- ── the registry, against declarations the resource does not ship ────────────
+section('ui focus')
+do
+	local env, control, why = boot('client')
+	if why == nil then
+		local OPX = env.OPX
+
+		-- The overlay is created at start and is never focused. The interactive
+		-- layer is created on first use, which is what keeps a player who never
+		-- opens anything from paying for a second CEF page.
+		check('the overlay is up at start', #control.pages == 1,
+			('%d pages'):format(#control.pages))
+		check('the overlay is visible and unfocused',
+			control.pages[1] ~= nil and control.pages[1].spec.visible == true)
+		-- Only one surface may hold focus, so focus is a single arbitrated
+		-- resource. A view opened over another gives it back on release.
+		check('nothing holds focus at rest', OPX.UI.FocusOwner() == nil)
+
+		OPX.UI.AcquireFocus('menu', { keyboard = true })
+		check('acquiring takes it', OPX.UI.FocusOwner() == 'menu')
+		check('the interactive layer is created on first use', #control.pages == 2,
+			('%d pages'):format(#control.pages))
+		local modal = control.pages[2]
+		check('and it reaches the page', modal ~= nil and modal.focus.keyboard == true)
+		check('the two surfaces are different entries',
+			modal ~= nil and modal.spec.entry ~= control.pages[1].spec.entry,
+			modal and modal.spec.entry)
+
+		OPX.UI.AcquireFocus('form', { keyboard = true })
+		check('a view opened over it takes it', OPX.UI.FocusOwner() == 'form')
+
+		OPX.UI.ReleaseFocus('form')
+		check('releasing gives it back, not away', OPX.UI.FocusOwner() == 'menu')
+
+		-- Acquiring twice must not leave two entries, or one release leaves a
+		-- ghost holding focus that nothing can release.
+		OPX.UI.AcquireFocus('menu', { keyboard = true })
+		OPX.UI.ReleaseFocus('menu')
+		check('acquiring twice still releases once', OPX.UI.FocusOwner() == nil)
+
+		OPX.UI.ReleaseFocus('never-held')
+		check('releasing what never held is safe', OPX.UI.FocusOwner() == nil)
+	end
+end
+
 section('module resolution')
 do
 	local cases = {
