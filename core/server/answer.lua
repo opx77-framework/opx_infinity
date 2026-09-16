@@ -11,6 +11,12 @@ local MAX_TEXTS = 32
 local NOTIFY = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
 local ANSWER = OPX.Event(OPX.Channel.NET, 'runtime', 'commandAnswer')
 
+-- A command's read-back answer -- a list, a dump, a block of configuration -- for
+-- whatever draws a chat log. It is on the runtime channel rather than a chat one
+-- because core must not name a module: anything may listen, and if nothing does
+-- the answer is simply not drawn.
+local RESULT = OPX.Event(OPX.Channel.NET, 'runtime', 'commandResult')
+
 local lastAnswer = {}
 local cooldowns = {}
 
@@ -101,7 +107,7 @@ end
 -- @param message string
 function OPX.CommandResult(source, accepted, message)
 	if source and source > 0 then
-		TriggerClientEvent('chat:addMessage', source, {
+		TriggerClientEvent(RESULT, source, {
 			type = accepted and 'info' or 'error',
 			author = OPX.Config.SHARED.SERVER_NAME,
 			text = message,

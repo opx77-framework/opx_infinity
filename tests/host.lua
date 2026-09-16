@@ -6,6 +6,146 @@
 
 local Host = {}
 
+--- The sandbox installs a `json` global, and every JSON column binding goes
+--- through it. A stub that only pretended to encode would let a round-trip bug
+--- pass, so this one really encodes and really decodes its own output.
+--
+-- An empty Lua table encodes as `{}`, not `[]` -- the same asymmetry the pages
+-- have to guard against, and the reason the runtime's decoders never trust `#`.
+local json = {}
+
+local function encodeValue(value, out)
+	local kind = type(value)
+	if value == nil then
+		out[#out + 1] = 'null'
+	elseif kind == 'boolean' then
+		out[#out + 1] = tostring(value)
+	elseif kind == 'number' then
+		-- NaN and the infinities are not JSON. They arrive from clients and the
+		-- runtime is expected to reject them before they reach a column.
+		if value ~= value or value == math.huge or value == -math.huge then
+			out[#out + 1] = 'null'
+		else
+			out[#out + 1] = (value % 1 == 0) and ('%d'):format(value) or ('%.14g'):format(value)
+		end
+	elseif kind == 'string' then
+		out[#out + 1] = '"' .. value:gsub('[%c"\\]', function(char)
+			local escapes = { ['"'] = '\\"', ['\\'] = '\\\\', ['\n'] = '\\n', ['\r'] = '\\r',
+				['\t'] = '\\t' }
+			return escapes[char] or ('\\u%04x'):format(char:byte())
+		end) .. '"'
+	elseif kind == 'table' then
+		local count = 0
+		for _ in pairs(value) do count = count + 1 end
+		if count > 0 and count == #value then
+			out[#out + 1] = '['
+			for index = 1, count do
+				if index > 1 then out[#out + 1] = ',' end
+				encodeValue(value[index], out)
+			end
+			out[#out + 1] = ']'
+		else
+			-- Keys sorted: two encodings of the same table must compare equal,
+			-- which is what lets a caller skip a write when nothing changed.
+			local keys = {}
+			for key in pairs(value) do keys[#keys + 1] = tostring(key) end
+			table.sort(keys)
+			out[#out + 1] = '{'
+			for index = 1, #keys do
+				if index > 1 then out[#out + 1] = ',' end
+				encodeValue(keys[index], out)
+				out[#out + 1] = ':'
+				encodeValue(value[keys[index]] or value[tonumber(keys[index])], out)
+			end
+			out[#out + 1] = '}'
+		end
+	else
+		out[#out + 1] = 'null'
+	end
+end
+
+function json.encode(value)
+	local out = {}
+	encodeValue(value, out)
+	return table.concat(out)
+end
+
+local decodeValue
+
+local function skip(text, at)
+	return text:find('[^ \t\r\n]', at) or #text + 1
+end
+
+function decodeValue(text, at)
+	at = skip(text, at)
+	local char = text:sub(at, at)
+
+	if char == '{' or char == '[' then
+		local isArray = char == '['
+		local closer = isArray and ']' or '}'
+		local out, index = {}, 0
+		at = skip(text, at + 1)
+		if text:sub(at, at) == closer then return out, at + 1 end
+		while true do
+			local key
+			if isArray then
+				index = index + 1
+				key = index
+			else
+				key, at = decodeValue(text, at)
+				at = skip(text, at)
+				if text:sub(at, at) ~= ':' then return nil, at end
+				at = at + 1
+			end
+			out[key], at = decodeValue(text, at)
+			at = skip(text, at)
+			local next = text:sub(at, at)
+			if next == closer then return out, at + 1 end
+			if next ~= ',' then return nil, at end
+			at = skip(text, at + 1)
+		end
+	elseif char == '"' then
+		local out, index = {}, at + 1
+		while index <= #text do
+			local byte = text:sub(index, index)
+			if byte == '"' then return table.concat(out), index + 1 end
+			if byte == '\\' then
+				local escaped = text:sub(index + 1, index + 1)
+				local plain = { n = '\n', r = '\r', t = '\t', ['"'] = '"', ['\\'] = '\\' }
+				if plain[escaped] then
+					out[#out + 1] = plain[escaped]
+					index = index + 2
+				elseif escaped == 'u' then
+					out[#out + 1] = string.char(tonumber(text:sub(index + 2, index + 5), 16) % 256)
+					index = index + 6
+				else
+					index = index + 2
+				end
+			else
+				out[#out + 1] = byte
+				index = index + 1
+			end
+		end
+		return nil, index
+	end
+
+	local literal = text:match('^[%-%d%.eE%+]+', at)
+	if literal then return tonumber(literal), at + #literal end
+	for word, value in pairs({ ['true'] = true, ['false'] = false, ['null'] = nil }) do
+		if text:sub(at, at + #word - 1) == word then return value, at + #word end
+	end
+	if text:sub(at, at + 3) == 'null' then return nil, at + 4 end
+	return nil, at
+end
+
+function json.decode(text)
+	if type(text) ~= 'string' then return nil end
+	local ok, value = pcall(decodeValue, text, 1)
+	return ok and value or nil
+end
+
+Host.json = json
+
 --- A stand-in for the `MySQL` bridge. `answers` maps a method name to a function
 --- of (sql, params); a method that is absent raises, which is what the real
 --- bridge does and the whole reason `OPX.Storage` wraps every call.
@@ -75,6 +215,21 @@ function Host.Environment(side, database)
 			isReady = function() return false end,
 		},
 
+		-- Spawned vehicles. `create` answers an opaque engine id, which is stored
+		-- as-is and never put through `tonumber`: these are 64-bit and would not
+		-- survive it.
+		vehicles = {
+			create = function() return '0x0000000000000001' end,
+			get = function() return nil end,
+			remove = function() return true end,
+			update = function() return true end,
+			getDamage = function() return {} end,
+			setDamage = function() return true end,
+			flags = function() return {} end,
+		},
+
+		acl = { isAllowed = function() return false end },
+
 		routingBuckets = {
 			setPlayer = function() return true end,
 			getPlayer = function() return 0 end,
@@ -90,12 +245,35 @@ function Host.Environment(side, database)
 			setWeatherFrozen = function() return true end,
 			isWeatherFrozen = function() return false end,
 		},
+
+		players = {
+			all = function() return {} end,
+			name = function(playerId) return control.accounts[playerId] and 'player' or nil end,
+			position = function() return { x = 0, y = 0, z = 0, bucket = 0 } end,
+			getLifeState = function() return 'alive' end,
+			isDead = function() return false end,
+			kill = function() return true end,
+			respawn = function() return true end,
+			revive = function() return true end,
+			setArmor = function() return true end,
+			disconnect = function() return true end,
+		},
+
+		character = {
+			state = function() return { health = 100 } end,
+			position = function() return { x = 0, y = 0, z = 0 } end,
+			yaw = function() return 0 end,
+		},
+
+		hud = { setVisible = function() return true end },
+		resource = { generation = function() return 1 end },
 	}
 
 	Open77.database = database
 
 	local env = {
 		Open77 = Open77,
+		json = json,
 		MySQL = database,
 
 		CreateThread = function(fn) threads[#threads + 1] = coroutine.create(fn) end,

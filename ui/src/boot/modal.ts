@@ -1,4 +1,6 @@
-import PanelDemo from '@/modules/panel/PanelDemo.vue'
+import FormView from '@/modules/form/FormView.vue'
+import MenuView from '@/modules/menu/MenuView.vue'
+import PanelView from '@/modules/panel/PanelView.vue'
 import { createSurface } from './createSurface'
 import { registerModule } from './registry'
 import SurfaceRoot from './SurfaceRoot.vue'
@@ -16,7 +18,9 @@ import SurfaceRoot from './SurfaceRoot.vue'
  * Surfaces are capped at 8 per resource. Two of them are spoken for here; adding a
  * third means answering why it cannot be a module on one of these.
  */
-registerModule({ id: 'panel', surface: 'modal', component: PanelDemo })
+registerModule({ id: 'menu', surface: 'modal', component: MenuView })
+registerModule({ id: 'form', surface: 'modal', component: FormView })
+registerModule({ id: 'panel', surface: 'modal', component: PanelView })
 
 createSurface({
   name: 'modal',

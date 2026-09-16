@@ -68,5 +68,10 @@ export function createSurface(options: SurfaceOptions): void {
 
   if (shimmed) document.documentElement.classList.add('opx-dev-shim')
 
-  emit('opx:ui:ready', { surface: name })
+  // `opx:ready`, not `opx:ui:ready`. `lib/client/surface.lua` owns this handshake
+  // and wires it as `<surface id>:ready`; it sets `surface.ready` from that channel
+  // and nothing else, and `OPX.Surface.Send` refuses everything until it is set.
+  // Emitting any other name leaves the surface permanently unready -- silently,
+  // because a refused send is a `false` return nobody reads.
+  emit('opx:ready', { surface: name })
 }

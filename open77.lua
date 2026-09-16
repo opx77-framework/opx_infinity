@@ -41,6 +41,8 @@ shared_script "config/character.lua"
 shared_script "config/needs.lua"
 shared_script "config/downed.lua"
 shared_script "config/weather.lua"
+server_script "config/vehicles.lua"
+shared_script "config/chat.lua"
 
 shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
@@ -103,6 +105,16 @@ server_script "modules/weather/server/commands.lua"
 server_script "modules/weather/server/main.lua"
 client_script "modules/weather/client/main.lua"
 
+shared_script "modules/vehicles/module.lua"
+shared_script "modules/vehicles/locales.lua"
+server_script "modules/vehicles/server/storage.lua"
+server_script "modules/vehicles/server/main.lua"
+
+shared_script "modules/chat/module.lua"
+shared_script "modules/chat/locales.lua"
+server_script "modules/chat/server/main.lua"
+client_script "modules/chat/client/main.lua"
+
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
 
@@ -116,6 +128,8 @@ permissions {
   "database.access",
 
   "world.environment",
+
+  "world.vehicles",
 
   "acl.read",
 

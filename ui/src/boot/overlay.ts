@@ -1,4 +1,6 @@
-import HudDemo from '@/modules/hud/HudDemo.vue'
+import HudRoot from '@/modules/hud/HudRoot.vue'
+import NotifyRoot from '@/modules/notify/NotifyRoot.vue'
+import PromptsRoot from '@/modules/prompts/PromptsRoot.vue'
 import { createSurface } from './createSurface'
 import { registerModule } from './registry'
 import SurfaceRoot from './SurfaceRoot.vue'
@@ -11,7 +13,9 @@ import SurfaceRoot from './SurfaceRoot.vue'
  * fallible, player-driven work lives on a second surface: an exception in a shop view
  * must not be able to blank the health bar.
  */
-registerModule({ id: 'hud', surface: 'overlay', component: HudDemo })
+registerModule({ id: 'hud', surface: 'overlay', component: HudRoot })
+registerModule({ id: 'notify', surface: 'overlay', component: NotifyRoot })
+registerModule({ id: 'prompts', surface: 'overlay', component: PromptsRoot })
 
 createSurface({
   name: 'overlay',

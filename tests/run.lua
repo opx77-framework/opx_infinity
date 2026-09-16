@@ -70,6 +70,11 @@ local CORE_NAMESPACE = {
 	Buckets = true, Gate = true, UI = true, Toast = true, Command = true, Tune = true,
 }
 
+-- States a module may legitimately rest in. `absent` means it runs on the other
+-- side, `disabled` means the operator turned it off. Only `unavailable` and
+-- `failed` mean something went wrong.
+local RESTING = { started = true, absent = true, disabled = true }
+
 --- Names a module has hung off `OPX` that do not belong to the runtime.
 local function namespaceLeaks(OPX)
 	local leaks = {}
@@ -133,12 +138,15 @@ do
 
 		local stalled = {}
 		for _, module in ipairs(env.OPX.Modules.Resolve()) do
-			if module.State ~= 'started' then
+			-- 'absent' (the module runs on the other side) and 'disabled' (the
+			-- operator turned it off) are resting states, not stalls. Only
+			-- 'unavailable' and 'failed' mean something went wrong.
+			if not RESTING[module.State] then
 				stalled[#stalled + 1] = ('%s (%s: %s)')
 					:format(module.Id, module.State, module.Reason or '')
 			end
 		end
-		check('every declared module started', #stalled == 0, table.concat(stalled, ', '))
+		check('every declared module reached a resting state', #stalled == 0, table.concat(stalled, ', '))
 	end
 end
 
@@ -433,12 +441,15 @@ do
 
 		local stalled = {}
 		for _, module in ipairs(env.OPX.Modules.Resolve()) do
-			if module.State ~= 'started' then
+			-- 'absent' (the module runs on the other side) and 'disabled' (the
+			-- operator turned it off) are resting states, not stalls. Only
+			-- 'unavailable' and 'failed' mean something went wrong.
+			if not RESTING[module.State] then
 				stalled[#stalled + 1] = ('%s (%s: %s)')
 					:format(module.Id, module.State, module.Reason or '')
 			end
 		end
-		check('every declared module started', #stalled == 0, table.concat(stalled, ', '))
+		check('every declared module reached a resting state', #stalled == 0, table.concat(stalled, ', '))
 	end
 end
 
@@ -529,6 +540,67 @@ do
 		check('a refusal from the server is rendered, not shown as its key',
 			lastSent().payload.message == env.OPX.Locale.Text('error.tooFast'),
 			lastSent().payload.message)
+	end
+end
+
+-- ── the Lua/page channel contract ────────────────────────────────────────────
+-- Two halves in two languages agreeing by string literal, with no compiler
+-- between them. Both live boot-level breaks here were exactly this: Lua wired
+-- `opx:ready` while the page emitted `opx:ui:ready`, and Lua sent the catalogue
+-- on `opx:config` while the page listened on `opx:locale:set`. Neither raised
+-- anything -- a refused send is a `false` nobody reads, and a missing string
+-- renders as its own key.
+--
+-- The rest of the suite could not see either, because the harness plays the page
+-- the way Lua expects rather than the way the page behaves. This reads the real
+-- built bundle instead.
+section('lua <-> page channels')
+do
+	local built = io.open('web/index.html', 'r')
+	if built == nil then
+		check('web/index.html is built', false, 'run `npm run build`')
+	else
+		local page = built:read('a')
+		built:close()
+
+		-- The bundle is minified, so the call around a channel name is gone. The
+		-- names themselves survive as literals, which is all this needs.
+		local speaks = {}
+		for name in page:gmatch('"(opx:[%w:_]+)"') do speaks[name] = true end
+
+		-- The two the handshake turns on. Without the first, `surface.ready` is
+		-- never set and every send is refused; without the second, every label
+		-- renders as its own key.
+		check('the page reports ready on the channel the surface wires',
+			speaks['opx:ready'] == true)
+		check('the page takes the catalogue on the channel Lua sends it on',
+			speaks['opx:locale:set'] == true)
+
+		-- Drift detector. A channel the page speaks that no Lua file mentions is
+		-- either a feature whose Lua half is not written yet -- which is fine and
+		-- expected here -- or a name one side has renamed and the other has not,
+		-- which is silent in both directions. Listing them is the point; the
+		-- check only fails on the handshake above.
+		local lua = {}
+		for _, dir in ipairs({ 'core/client', 'lib/client', 'modules' }) do
+			-- Both spellings: the full `opx:` name where a module builds one, and
+			-- the bare channel where `OPX.Surface` adds the prefix for the caller.
+			local pipe = io.popen(('grep -rhoE "opx:[a-z:_]+|\'[a-z][a-z:_]*\'" %s 2>nul')
+				:format(dir))
+			if pipe then
+				for line in pipe:lines() do lua[(line:gsub("'", ''))] = true end
+				pipe:close()
+			end
+		end
+
+		local orphans = {}
+		for name in pairs(speaks) do
+			local bare = name:gsub('^opx:', '')
+			if not lua[name] and not lua[bare] then orphans[#orphans + 1] = bare end
+		end
+		table.sort(orphans)
+		print(('       page channels with no Lua half yet: %s')
+			:format(#orphans > 0 and table.concat(orphans, ' ') or 'none'))
 	end
 end
 

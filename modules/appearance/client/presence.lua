@@ -1,0 +1,266 @@
+--- Publishes this player's look, and dresses every other player's proxy.
+-- @author dop42
+--
+-- The engine replicates a position, a vehicle and an action; it does NOT
+-- replicate a look. A proxy nobody dresses is never drawn at all, so without this
+-- file every other player is simply absent -- while the car they are driving is
+-- not. This is why the module is fatal twice over.
+--
+-- What goes out is the body (the family and its customization groups), the nine
+-- equipment slots, and the active outfit. Nothing is stored anywhere: a look
+-- lives in the server's memory until the player leaves.
+
+local M = OPX.Modules.Get('appearance')
+
+local State = M.Face
+local Runtime = M.Runtime
+local Clothing = M.Clothing
+
+M.Presence = {}
+local Presence = M.Presence
+
+-- Milliseconds a publication or a replay request waits for its answer.
+local RETRY_MS = 3000
+
+local SLOTS = Clothing.SLOTS
+local OUTFIT_SLOTS = Clothing.OUTFIT_SLOTS
+
+-- What observers get when the registry cannot be read: being drawn in the
+-- default record beats not being drawn.
+local DEFAULT_EQUIPMENT = Clothing.DEFAULT.equipment
+
+-- Wardrobe outfits, indexed 0 to 6.
+local OUTFITS = 7
+
+-- The look last sent to the server.
+local sent = nil
+
+-- The request sequence, the last acknowledged, the last sent, and when: an answer
+-- is only ever taken for the last request.
+local sequence, acknowledged, sentSequence, sentAtMs = 0, 0, 0, 0
+
+-- This world entry still needs a replay, the request that asked for it, and when.
+local replayWanted, replaySequence, replayAtMs = true, 0, 0
+
+-- Failures already said in the log, by key.
+local warned = {}
+
+--- Logs a warning once per key.
+local function warnOnce(key, line)
+	if warned[key] then return end
+	warned[key] = true
+	Open77.log.warn('[appearance] ' .. line)
+end
+
+--- Whether this client hands its look out and puts other looks on.
+local function enabled()
+	if M.Settings.PRESENT_BODIES == false then return false end
+	return GetResourceState(M.OFFICIAL) ~= 'running'
+end
+
+--- An item this body can wear, or false.
+local function wearable(record, family)
+	if type(record) ~= 'string' or record == '' then return false end
+	record = Clothing.Resolve(record)
+	local equipment = Open77.equipment
+	if family == nil or type(equipment) ~= 'table' or type(equipment.info) ~= 'function' then
+		return record
+	end
+	local read, info = pcall(equipment.info, record)
+	if not read or type(info) ~= 'table' then return record end
+	return Clothing.Fits(info, family) and record or false
+end
+
+--- Reads every equipment slot and the active outfit for a look.
+local function readClothing(family)
+	local equipment = type(Open77.equipment) == 'table' and Open77.equipment or nil
+	local called, registry, reason = false, nil, 'Open77.equipment is not on this client'
+	if equipment and type(equipment.registry) == 'function' then
+		called, registry, reason = pcall(equipment.registry)
+	end
+	local slots = {}
+	if called and type(registry) == 'table' then
+		for _, slot in ipairs(SLOTS) do slots[slot] = wearable(registry[slot], family) end
+	else
+		warnOnce('equipment', ('the equipment registry cannot be read (%s): observers get the ' ..
+			'default one'):format(tostring(called and reason or registry or reason)))
+		for slot, value in pairs(DEFAULT_EQUIPMENT) do slots[slot] = value end
+	end
+
+	local wardrobe = { outfits = {} }
+	local outfits = type(Open77.wardrobe) == 'table' and Open77.wardrobe or nil
+	if outfits and type(outfits.active) == 'function' then
+		local read, active = pcall(outfits.active)
+		if read and type(active) == 'number' and active % 1 == 0 and active >= 0 and
+			active < OUTFITS then
+			wardrobe.active = active
+			if type(outfits.outfit) == 'function' then
+				local opened, outfit = pcall(outfits.outfit, active)
+				if opened and type(outfit) == 'table' and type(outfit.registry) == 'function' then
+					local listed, overrides = pcall(outfit.registry)
+					if listed and type(overrides) == 'table' then
+						local shown = {}
+						for _, slot in ipairs(OUTFIT_SLOTS) do
+							if overrides[slot] ~= nil then shown[slot] = wearable(overrides[slot], family) end
+						end
+						wardrobe.outfits[tostring(active)] = shown
+					end
+				end
+			end
+		end
+	end
+	return slots, wardrobe
+end
+
+--- Whether this player's look may be published now.
+-- The clothing gate is part of it: publishing before the stored record read back
+-- would draw this player in the pristine puppet's clothes first.
+local function presentable()
+	if not (State.citizenId ~= nil and State.gameplayAnnounced and State.worldEligible and
+		not State.bodyReloading and not State.editing and not State.creatorUp and
+		State.AppearanceSettled() and Runtime.InGameplay()) then
+		return false
+	end
+	if Clothing.Previewing() then return false end
+	return Clothing.Settled()
+end
+
+--- Asks for everybody else's look, once per world entry, until answered.
+-- Asked whatever state this client's own look is in: a player whose own body
+-- cannot be read still has to see the others.
+local function askReplay()
+	if not replayWanted or not State.worldEligible then return end
+	local now = Runtime.NowMs()
+	if replaySequence ~= 0 and now - replayAtMs < RETRY_MS then return end
+	sequence = sequence + 1
+	if TriggerServerEvent(M.Event.REPLAY, sequence) then replaySequence, replayAtMs = sequence, now end
+end
+
+--- Publishes the look when it changed, or when the last one went unanswered.
+local function publish()
+	if not presentable() then return end
+	local read, body, reason = pcall(Open77.appearance.captureBody)
+	if not read or type(body) ~= 'table' then
+		warnOnce('body', ('the body cannot be read (%s): other players cannot draw this one')
+			:format(tostring(read and reason or body)))
+		return
+	end
+	warned.body = nil
+	local equipment, wardrobe = readClothing(body.family)
+	local look = { body = body, equipment = equipment, wardrobe = wardrobe }
+
+	local now = Runtime.NowMs()
+	if sent ~= nil and Clothing.Same(look, sent) and
+		(acknowledged == sentSequence or now - sentAtMs < RETRY_MS) then
+		return
+	end
+	sequence = sequence + 1
+	local dispatched, failure = TriggerServerEvent(M.Event.PRESENT, body, equipment, wardrobe,
+		sequence)
+	if not dispatched then
+		warnOnce('send', 'the look was not sent: ' .. tostring(failure))
+		return
+	end
+	sent, sentSequence, sentAtMs = look, sequence, now
+	Open77.log.debug(('[appearance] look published: %s, %d groups, sequence %d')
+		:format(tostring(body.family), type(body.groups) == 'table' and #body.groups or 0, sequence))
+end
+
+--- Runs one presence pass: the replay request and the publication.
+-- @author dop42
+function M.Presence.Check()
+	if not enabled() then return end
+	askReplay()
+	publish()
+end
+
+--- Starts over for a new world: publish and ask again.
+-- @author dop42
+function M.Presence.Renew()
+	sequence = sequence + 1
+	sent, acknowledged, sentSequence = nil, 0, 0
+	replayWanted, replaySequence, replayAtMs = true, 0, 0
+end
+
+--- Withdraws this player's body until the next publication.
+-- What a body reload and a character unload both do first, so observers drop
+-- their proxy instead of keeping the old body until a new one arrives.
+-- @author dop42
+function M.Presence.Withdraw()
+	if not enabled() then return end
+	sequence = sequence + 1
+	sent, acknowledged, sentSequence = nil, 0, 0
+	TriggerServerEvent(M.Event.ABSENT)
+end
+
+--- Makes one puppets call on a proxy, logging a refusal.
+local function project(name, ...)
+	local puppets = Open77.puppets
+	if type(puppets) ~= 'table' or type(puppets[name]) ~= 'function' then
+		return warnOnce('puppets.' .. name, ('Open77.puppets.%s is not on this client: other ' ..
+			'players are not drawn'):format(name))
+	end
+	local called, accepted, reason = pcall(puppets[name], ...)
+	if not called or not accepted then
+		Open77.log.debug(('[appearance] puppets.%s refused: %s')
+			:format(name, tostring(called and reason or accepted)))
+	end
+end
+
+--- Builds the held state. Never yields.
+-- @author dop42
+function M.Presence.Init()
+	sent = nil
+	sequence, acknowledged, sentSequence, sentAtMs = 0, 0, 0, 0
+	replayWanted, replaySequence, replayAtMs = true, 0, 0
+	warned = {}
+end
+
+--- Registers the look traffic.
+-- @author dop42
+function M.Presence.Wire()
+	RegisterNetEvent(M.Event.PRESENT_ACK, function(value, accepted)
+		if value ~= sentSequence then return end
+		acknowledged = value
+		if accepted == false then
+			warnOnce('refused', "the server could not read this player's body: others cannot draw it")
+		end
+	end)
+
+	RegisterNetEvent(M.Event.REPLAYED, function(value)
+		if value == replaySequence then replayWanted = false end
+	end)
+
+	-- The server half restarted and holds nothing any more.
+	RegisterNetEvent(M.Event.RESEND, Presence.Renew)
+
+	RegisterNetEvent(M.Event.LOOK, function(player, look)
+		player = tonumber(player)
+		if not enabled() or player == nil then return end
+		if look == false then return project('setBody', player, false) end
+		if type(look) ~= 'table' or type(look.body) ~= 'table' then return end
+		local equipment = type(look.equipment) == 'table' and look.equipment or DEFAULT_EQUIPMENT
+		for _, slot in ipairs(SLOTS) do
+			local value = equipment[slot]
+			project('setSlot', player, slot, type(value) == 'string' and value or false)
+		end
+		local wardrobe = type(look.wardrobe) == 'table' and look.wardrobe or {}
+		local outfits = {}
+		for index, items in pairs(type(wardrobe.outfits) == 'table' and wardrobe.outfits or {}) do
+			index = tonumber(index)
+			if index ~= nil and type(items) == 'table' then outfits[index] = items end
+		end
+		project('setWardrobe', player, { active = tonumber(wardrobe.active), outfits = outfits })
+		-- The body goes on LAST: the slots and the wardrobe are what it is dressed
+		-- in, and a body set first is drawn undressed for a frame.
+		project('setBody', player, look.body)
+	end)
+
+	AddEventHandler(OPX.Host.WORLD_READY, Presence.Renew)
+
+	if M.Settings.PRESENT_BODIES ~= false and GetResourceState(M.OFFICIAL) == 'running' then
+		Open77.log.warn(('[appearance] %s is running and hands looks out itself; this module ' ..
+			'does not'):format(M.OFFICIAL))
+	end
+	Presence.Renew()
+end

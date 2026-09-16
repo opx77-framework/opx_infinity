@@ -1,0 +1,33 @@
+--- Player-facing text owned by the vehicles module.
+-- @author dop42
+--
+-- Every key here is a refusal code or a confirmation: it reaches `locale()`
+-- through a variable, never as a literal, so a rename breaks nothing at load and
+-- everything at the moment a player is refused. Both halves need them: the
+-- server renders a toast, and the client renders the code `OPX.Refuse` carries.
+
+OPX.Locale.Register('en', {
+	['vehicle.notFound'] = 'No vehicle carries that plate.',
+	['vehicle.limit'] = 'This character owns as many vehicles as it may.',
+	['vehicle.spawned'] = 'Vehicle {plate} brought out.',
+	['vehicle.stored'] = 'Vehicle {plate} put away.',
+	['vehicle.notSpawned'] = 'That vehicle is not out.',
+	['vehicle.noPosition'] = 'You have no position to spawn beside.',
+	['vehicle.spawnRefused'] = 'The vehicle could not be created.',
+	['vehicle.badRecord'] = 'That vehicle record cannot be used.',
+	['vehicle.plateExhausted'] = 'No free plate could be drawn. Try again.',
+	['vehicle.notLoggedIn'] = 'You have no character loaded.',
+})
+
+OPX.Locale.Register('fr', {
+	['vehicle.notFound'] = 'Aucun véhicule ne porte cette plaque.',
+	['vehicle.limit'] = "Ce personnage possède déjà autant de véhicules qu'il le peut.",
+	['vehicle.spawned'] = 'Véhicule {plate} sorti.',
+	['vehicle.stored'] = 'Véhicule {plate} rangé.',
+	['vehicle.notSpawned'] = "Ce véhicule n'est pas sorti.",
+	['vehicle.noPosition'] = 'Aucune position pour faire apparaître le véhicule.',
+	['vehicle.spawnRefused'] = "Le véhicule n'a pas pu être créé.",
+	['vehicle.badRecord'] = 'Ce modèle de véhicule ne peut pas être utilisé.',
+	['vehicle.plateExhausted'] = "Aucune plaque libre n'a pu être tirée. Réessayez.",
+	['vehicle.notLoggedIn'] = "Vous n'avez aucun personnage chargé.",
+})

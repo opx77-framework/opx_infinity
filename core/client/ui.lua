@@ -51,7 +51,12 @@ local function create(name, visible)
 
 	OPX.Surface.On(surface, 'ready', function()
 		surface.ready = true
-		OPX.Surface.Send(surface, 'config', {
+		-- `locale:set`, which is the channel the page's boot subscribes to. The
+		-- page cannot call back for a string per render, so it gets the whole
+		-- catalogue once; a name nobody listens to leaves every label rendering
+		-- as its own key, which reads as a missing translation rather than as a
+		-- broken channel.
+		OPX.Surface.Send(surface, 'locale:set', {
 			locale = OPX.Locale.Current(),
 			strings = OPX.Locale.Catalogue(),
 		})
