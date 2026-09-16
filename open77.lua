@@ -44,6 +44,8 @@ shared_script "config/weather.lua"
 server_script "config/vehicles.lua"
 shared_script "config/chat.lua"
 shared_script "config/appearance.lua"
+shared_script "config/hud.lua"
+shared_script "config/prompts.lua"
 
 shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
@@ -127,6 +129,15 @@ shared_script "modules/chat/locales.lua"
 server_script "modules/chat/server/main.lua"
 client_script "modules/chat/client/main.lua"
 
+shared_script "modules/hud/module.lua"
+shared_script "modules/hud/locales.lua"
+client_script "modules/hud/client/main.lua"
+
+shared_script "modules/prompts/module.lua"
+shared_script "modules/prompts/locales.lua"
+server_script "modules/prompts/server/main.lua"
+client_script "modules/prompts/client/main.lua"
+
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
 
@@ -165,6 +176,10 @@ permissions {
   "camera.preview",
 
   "input.actions",
+
+  "players.stats.read",
+  "vehicles.read",
+  "voice.client",
 
   "ui.vanilla.hud",
 }
