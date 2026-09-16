@@ -1,0 +1,19 @@
+# Build and local tooling
+dist/
+*.luac
+node_modules/
+
+# Editors
+.idea/
+*.swp
+.DS_Store
+
+# Local server configuration: contains credentials. acl.jsonc is also where the grants for
+# a resource's restricted commands live -- the file that decides who may run them -- so it
+# never belongs in a repository either.
+server.jsonc
+acl.jsonc
+.env
+
+# Agent tooling: 16 MB of skills, two of them nested git repos
+.claude/

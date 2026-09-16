@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "opx-infinity: syntax check",
+      "detail": "luac -p over every file but the manifest, which is not standard Lua.",
+      "type": "shell",
+      "command": "find . -name '*.lua' -not -name 'open77.lua' -not -path './.git/*' -exec luac -p {} +",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "opx-infinity: tests",
+      "detail": "Boots both halves off-platform against a stub host and checks the module lifecycle.",
+      "type": "shell",
+      "command": "lua tests/run.lua",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    }
+  ]
+}
