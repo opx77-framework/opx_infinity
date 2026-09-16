@@ -24,6 +24,7 @@ shared_script "core/shared/lifecycle.lua"
 shared_script "config/shared.lua"
 server_script "config/server.lua"
 client_script "config/client.lua"
+shared_script "config/weather.lua"
 
 shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
@@ -42,6 +43,7 @@ server_script "lib/server/audit.lua"
 
 server_script "core/server/sessions.lua"
 server_script "core/server/answer.lua"
+server_script "core/server/commands.lua"
 
 client_script "lib/client/rpc.lua"
 client_script "lib/client/surface.lua"
@@ -54,6 +56,13 @@ shared_script "modules/diagnostics/module.lua"
 server_script "modules/diagnostics/server/main.lua"
 client_script "modules/diagnostics/client/main.lua"
 
+shared_script "modules/weather/module.lua"
+shared_script "modules/weather/shared/clock.lua"
+server_script "modules/weather/server/state.lua"
+server_script "modules/weather/server/commands.lua"
+server_script "modules/weather/server/main.lua"
+client_script "modules/weather/client/main.lua"
+
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
 
@@ -61,4 +70,8 @@ permissions {
   "network.events",
 
   "database.access",
+
+  "world.environment",
+
+  "acl.read",
 }

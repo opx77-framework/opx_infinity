@@ -67,7 +67,7 @@ local CORE_NAMESPACE = {
 	ForgetSession = true, SessionHolds = true,
 	Notify = true, NotifyLocale = true, RefusalKey = true, Refuse = true,
 	CommandResult = true, CommandNotice = true, Cooling = true, ForgetCooldowns = true,
-	Buckets = true, Gate = true, UI = true, Toast = true,
+	Buckets = true, Gate = true, UI = true, Toast = true, Command = true,
 }
 
 --- Names a module has hung off `OPX` that do not belong to the runtime.
