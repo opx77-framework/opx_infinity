@@ -71,10 +71,10 @@ function Host.Environment(side, database)
 		},
 
 		routingBuckets = {
-			setPlayerBucket = function() return true end,
-			getPlayerBucket = function() return 0 end,
+			setPlayer = function() return true end,
+			getPlayer = function() return 0 end,
 			setPopulationEnabled = function() return true end,
-			setEntityLockdownMode = function() return true end,
+			setLockdownMode = function() return true end,
 		},
 
 		environment = {

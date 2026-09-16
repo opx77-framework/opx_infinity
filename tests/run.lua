@@ -237,6 +237,61 @@ do
 	end
 end
 
+-- ── the entry gate and selection buckets ─────────────────────────────────────
+-- Core owns the mechanism, the caller owns the policy. The one guard core keeps
+-- is `session.departing`, because core owns sessions.
+section('gate and buckets')
+do
+	local env, control, why = boot('server')
+	if why == nil then
+		local OPX = env.OPX
+		local BASE = OPX.Config.SERVER.ENTRY.BUCKET.BASE
+		local WORLD = OPX.Config.SERVER.ENTRY.BUCKET.WORLD
+
+		check('a player-owned bucket is recognised as a selection bucket',
+			OPX.Buckets.IsSelection(BASE + 5) == true)
+		check('the world bucket is not', OPX.Buckets.IsSelection(WORLD) == false)
+
+		-- A selection bucket belongs to whoever holds that player id NOW, never
+		-- to a character. A stored one must never be placed back into.
+		check('a stored selection bucket folds to the world',
+			OPX.Buckets.PlacementOf(BASE + 5) == WORLD)
+		check('a value that is not a bucket id folds to the world',
+			OPX.Buckets.PlacementOf('nonsense') == WORLD)
+		check('a real stored bucket is honoured', OPX.Buckets.PlacementOf(4200) == 4200)
+
+		control.Admit(11, 'account-e')
+		OPX.EnsureSession(11)
+		check('a session with an account can be isolated',
+			OPX.Buckets.Isolate(11) == true)
+
+		-- A leaving player must not be moved: the slot may already belong to
+		-- someone else, who would be dragged into an empty bucket.
+		OPX.Sessions[11].departing = true
+		check('a departing session is refused', OPX.Buckets.Isolate(11) == false)
+
+		-- The gate seam: `onGiveUp` answering false means "this player is mine
+		-- now", and core must NOT release a hold the caller has taken over.
+		control.Admit(12, 'account-f')
+		OPX.EnsureSession(12)
+		OPX.Gate.Hold(12, 'test')
+		check('holding records the gate session on the session',
+			OPX.Sessions[12].gateSession ~= nil)
+
+		local claimed = false
+		OPX.Gate.Watch(12, 1000, function() claimed = true; return false end)
+		control.Pump(60)
+		check('the watch gives up at the deadline and asks', claimed == true)
+		check('and answering false leaves the hold alone',
+			OPX.Sessions[12] ~= nil and OPX.Sessions[12].released ~= true)
+
+		check('releasing is idempotent', OPX.Gate.Release(12, 'done') ~= nil
+			and OPX.Gate.Release(12, 'done') ~= nil)
+		check('releasing a player who never held is safe',
+			OPX.Gate.Release(99, 'never') ~= nil)
+	end
+end
+
 -- ── cooldowns and refusals ───────────────────────────────────────────────────
 section('answers')
 do
