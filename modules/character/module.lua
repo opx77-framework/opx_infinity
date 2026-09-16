@@ -43,8 +43,6 @@ M.Event = {
 	JOB = OPX.Event(NET, 'character', 'job'),
 	GANG = OPX.Event(NET, 'character', 'gang'),
 	ROSTER = OPX.Event(NET, 'character', 'roster'),
-	REFUSED = OPX.Event(NET, 'character', 'refused'),
-	ANSWER = OPX.Event(NET, 'character', 'answer'),
 
 	-- Client to server. Every payload is attacker-controlled; only `source` is not.
 	ANNOUNCE = OPX.Event(NET, 'character', 'announce'),
@@ -62,7 +60,6 @@ M.Event = {
 	ON_JOB = OPX.Event(LOCAL, 'character', 'job'),
 	ON_GANG = OPX.Event(LOCAL, 'character', 'gang'),
 	ON_ROSTER = OPX.Event(LOCAL, 'character', 'roster'),
-	ON_REFUSED = OPX.Event(LOCAL, 'character', 'refused'),
 
 	-- Between modules inside one VM. Never crosses the wire.
 	IN_LOADED = OPX.Event(INTERNAL, 'character', 'loaded'),
@@ -75,8 +72,8 @@ M.Event = {
 }
 
 --- Which request a refusal answers.
--- Indispensable on the refusal channel: without it a client waiting on one of
--- several requests cannot tell which `error.tooFast` is its own.
+-- Passed to `OPX.Refuse`, whose channel is core's: without it a client waiting on
+-- one of several requests cannot tell which `error.tooFast` is its own.
 M.Operation = {
 	ENTRY = 'entry',
 	ROSTER = 'roster',
@@ -84,3 +81,43 @@ M.Operation = {
 	CREATE = 'create',
 	DELETE = 'delete',
 }
+
+-- The three helpers below are here rather than in one half because both halves
+-- need the same answer from them: a name the client accepts and the server
+-- refuses is a form that fails after the player has filled it in.
+
+--- The pattern each half of a character name must match.
+-- A letter is described by a byte range rather than `%a`, which is ASCII only and
+-- would refuse "Eloise" spelled properly. Four-byte lead bytes are excluded:
+-- that is where the emoji live.
+local LETTER = '%a\194-\239\128-\191'
+M.NAME_PATTERN = ("^[%s][%s '%%-]*$"):format(LETTER, LETTER)
+
+--- Validates one half of a character name against the configured bounds.
+-- @author dop42
+-- @param value any
+-- @return Result
+function M.ValidateName(value)
+	local bounds = M.Settings.CHARACTERS.NAME
+	return OPX.Validate.Text(value, {
+		min = bounds.MIN,
+		max = bounds.MAX,
+		pattern = M.NAME_PATTERN,
+	})
+end
+
+--- Reads a configured number with a floor.
+-- The floor is also the answer for a setting that is missing or not a finite
+-- number, so that no caller ever compares a number against nil. The test is
+-- finiteness and not `value ~= value`: an infinity passes a NaN test and would
+-- freeze an interval. This is where a live tunables service plugs in.
+-- @author dop42
+-- @param value any
+-- @param floor number
+-- @return number
+function M.Number(value, floor)
+	value = tonumber(value)
+	if not OPX.Math.IsFinite(value) then return floor end
+	if floor and value < floor then return floor end
+	return value
+end

@@ -8,26 +8,6 @@ local M = OPX.Modules.Get('character')
 
 local Result = OPX.Result
 
---- The pattern each half of a character name must match.
--- A letter is described by a byte range rather than `%a`, which is ASCII only and
--- would refuse "Eloise" spelled properly. Four-byte lead bytes are excluded:
--- that is where the emoji live.
-local LETTER = '%a\194-\239\128-\191'
-M.NAME_PATTERN = ("^[%s][%s '%%-]*$"):format(LETTER, LETTER)
-
---- Validates one half of a character name against the configured bounds.
--- @author dop42
--- @param value any
--- @return Result
-function M.ValidateName(value)
-	local bounds = M.Settings.CHARACTERS.NAME
-	return OPX.Validate.Text(value, {
-		min = bounds.MIN,
-		max = bounds.MAX,
-		pattern = M.NAME_PATTERN,
-	})
-end
-
 --- Answers how many characters an account may hold.
 local function slotsFor(userId)
 	return M.Settings.CHARACTERS.SLOTS_BY_USER[userId]
@@ -62,14 +42,14 @@ end
 -- @param pushed boolean|nil Already rate limited by its caller.
 -- @return Result
 function M.SendCharacters(source, pushed)
-	if not pushed and M.Cooling(source, 'roster', 2000) then
+	if not pushed and OPX.Cooling(source, 'roster', 2000) then
 		return Result.Err('error.tooFast', tostring(source))
 	end
-	local session = M.Core.EnsureSession(source)
+	local session = OPX.EnsureSession(source)
 	if not session then return Result.Err('entry.noIdentity', tostring(source)) end
 
 	if OPX.BootError then
-		M.Refuse(source, 'error.unavailable', M.Operation.ROSTER)
+		OPX.Refuse(source, 'error.unavailable', M.Operation.ROSTER)
 		return Result.Err('error.unavailable', OPX.BootError)
 	end
 
@@ -156,7 +136,7 @@ end
 -- @param payload table
 -- @return Result
 function M.CreateCharacter(source, payload)
-	local session = M.Core.EnsureSession(source)
+	local session = OPX.EnsureSession(source)
 	if not session then return Result.Err('entry.noIdentity', tostring(source)) end
 	if OPX.BootError then return Result.Err('error.unavailable', OPX.BootError) end
 
@@ -166,7 +146,7 @@ function M.CreateCharacter(source, payload)
 
 	-- The cooldown comes AFTER the validation: it protects the write, not a
 	-- mistyped name.
-	if M.Cooling(source, 'create', 3000) then
+	if OPX.Cooling(source, 'create', 3000) then
 		return Result.Err('error.tooFast', tostring(source))
 	end
 
@@ -269,10 +249,10 @@ end
 -- @param citizenId CitizenId
 -- @return Result
 function M.DeleteCharacter(source, citizenId)
-	if M.Cooling(source, 'delete', 3000) then
+	if OPX.Cooling(source, 'delete', 3000) then
 		return Result.Err('error.tooFast', tostring(source))
 	end
-	local session = M.Core.EnsureSession(source)
+	local session = OPX.EnsureSession(source)
 	if not session then return Result.Err('entry.noIdentity', tostring(source)) end
 
 	local parsed = OPX.CitizenId.Parse(citizenId)
@@ -358,7 +338,7 @@ function M.PlaceCharacter(player)
 	end
 	-- Never a selection bucket: that belongs to whoever holds a player id now, and
 	-- never to a character.
-	local bucket = M.Core.PlacementBucket(target.bucket)
+	local bucket = OPX.Buckets.PlacementOf(target.bucket)
 
 	-- The gate is not open yet, and this poll is all that separates placing a
 	-- player from placing one mid-transition -- which lays a respawn on top of
@@ -376,7 +356,7 @@ function M.PlaceCharacter(player)
 	-- Out of the selection bucket BEFORE the kill, as the platform's own modes
 	-- move a player before placing them: the respawn names the same bucket, and
 	-- nothing replicated from the selection bucket is left to carry over.
-	M.Core.MoveBucket(source, bucket, 'placement')
+	OPX.Buckets.Move(source, bucket, 'placement')
 
 	local killed, killError = Open77.players.kill(source, {
 		cause = 'script',
@@ -425,7 +405,7 @@ end
 -- @param citizenId CitizenId
 -- @return Result
 function M.SelectCharacter(source, citizenId)
-	if M.Cooling(source, 'select', 1000) then
+	if OPX.Cooling(source, 'select', 1000) then
 		return Result.Err('error.tooFast', tostring(source))
 	end
 	local parsed = OPX.CitizenId.Parse(citizenId)
@@ -445,7 +425,7 @@ function M.SelectCharacter(source, citizenId)
 	if current then
 		local wanted = M.Storage.FetchOne(parsed.value)
 		if not wanted.ok then return wanted end
-		local session = M.Core.Session(source)
+		local session = OPX.Sessions[source]
 		if not session or wanted.value.userId ~= session.userId then
 			OPX.Audit.Security('character.notYours',
 				('player %d asked to switch to %s'):format(source, parsed.value),
@@ -467,7 +447,7 @@ function M.SelectCharacter(source, citizenId)
 		if saved and saved.ok == false then
 			Open77.log.error(('[character] refusing the switch: %s could not be saved (%s)')
 				:format(current.PlayerData.citizenId, tostring(saved.error)))
-			M.Core.Isolate(source, 'switch-refused')
+			OPX.Buckets.Isolate(source, 'switch-refused')
 			return Result.Err('error.unavailable', tostring(saved.error))
 		end
 	end
@@ -477,7 +457,7 @@ function M.SelectCharacter(source, citizenId)
 	-- choosing, and so out of the world too.
 	local login = M.Login(source, parsed.value)
 	if not login.ok then
-		if current then M.Core.Isolate(source, 'switch-refused') end
+		if current then OPX.Buckets.Isolate(source, 'switch-refused') end
 		return login
 	end
 
@@ -488,8 +468,8 @@ function M.SelectCharacter(source, citizenId)
 		Open77.log.warn(('[character] %s logged in but was not placed: %s')
 			:format(parsed.value, tostring(reason)))
 	end
-	M.Core.ReleaseBucket(source, placed and 'character-placed' or 'character-loaded')
+	OPX.Buckets.Release(source, placed and 'character-placed' or 'character-loaded')
 
-	M.Core.GateRelease(source, placed and 'character-placed' or 'character-loaded')
+	OPX.Gate.Release(source, placed and 'character-placed' or 'character-loaded')
 	return login
 end

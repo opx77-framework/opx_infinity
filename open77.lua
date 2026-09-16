@@ -24,6 +24,9 @@ shared_script "core/shared/lifecycle.lua"
 shared_script "config/shared.lua"
 server_script "config/server.lua"
 client_script "config/client.lua"
+shared_script "config/character.lua"
+shared_script "config/needs.lua"
+shared_script "config/downed.lua"
 shared_script "config/weather.lua"
 
 shared_script "lib/shared/result.lua"
@@ -58,6 +61,27 @@ shared_script "modules/diagnostics/module.lua"
 server_script "modules/diagnostics/server/main.lua"
 client_script "modules/diagnostics/client/main.lua"
 
+shared_script "modules/character/module.lua"
+shared_script "modules/character/locales.lua"
+server_script "modules/character/server/storage.lua"
+server_script "modules/character/server/player.lua"
+server_script "modules/character/server/groups.lua"
+server_script "modules/character/server/character.lua"
+server_script "modules/character/server/main.lua"
+client_script "modules/character/client/main.lua"
+
+shared_script "modules/needs/module.lua"
+shared_script "modules/needs/locales.lua"
+server_script "modules/needs/server/storage.lua"
+server_script "modules/needs/server/main.lua"
+client_script "modules/needs/client/main.lua"
+
+shared_script "modules/downed/module.lua"
+shared_script "modules/downed/locales.lua"
+server_script "modules/downed/server/storage.lua"
+server_script "modules/downed/server/main.lua"
+client_script "modules/downed/client/main.lua"
+
 shared_script "modules/weather/module.lua"
 shared_script "modules/weather/shared/clock.lua"
 server_script "modules/weather/server/state.lua"
@@ -76,4 +100,11 @@ permissions {
   "world.environment",
 
   "acl.read",
+
+  "players.life.read",
+  "players.life.kill",
+  "players.life.respawn",
+  "players.life.revive",
+
+  "ui.vanilla.hud",
 }

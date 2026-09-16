@@ -71,7 +71,8 @@ withDefaults(
   background: var(--op77-text-dim);
 }
 
-.accent .icon, .accent .time { color: var(--op77-accent); background: var(--op77-accent); }
+.accent .icon { color: var(--op77-accent); }
+.accent .time { background: var(--op77-accent); }
 .ok .icon { color: var(--op77-ok); }
 .ok .time { background: var(--op77-ok); }
 .warn .icon { color: var(--op77-warn); }

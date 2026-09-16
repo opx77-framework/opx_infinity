@@ -8,7 +8,7 @@
     "build": "vite build --mode overlay && vite build --mode modal",
     "dev": "vite",
     "dev:modal": "vite --open /modal.html",
-    "typecheck": "vue-tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit && vue-tsc --noEmit -p ui/tsconfig.app.json"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.6",
@@ -18,6 +18,7 @@
     "vue": "^3.5.0"
   },
   "devDependencies": {
+    "@types/node": "^22.20.3",
     "@vitejs/plugin-vue": "^5.2.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",

@@ -210,7 +210,7 @@ function M.Groups.SetJobDuty(identifier, onDuty)
 
 		if not player.Offline then
 			TriggerClientEvent(M.Event.JOB, player.PlayerData.source, job)
-			M.NotifyLocale(player.PlayerData.source, job.onDuty and 'job.onDuty' or 'job.offDuty')
+			OPX.NotifyLocale(player.PlayerData.source, job.onDuty and 'job.onDuty' or 'job.offDuty')
 		end
 		TriggerEvent(M.Event.IN_JOB, player.PlayerData.source, job)
 		return Result.Ok(job.onDuty)

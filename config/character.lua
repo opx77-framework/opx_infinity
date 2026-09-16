@@ -20,6 +20,10 @@ OPX.Config.MODULES.character = {
 	-- killed rather than stopped -- so this is what bounds how much anyone loses.
 	AUTOSAVE_SECONDS = 300,
 
+	-- Milliseconds between two heading reports from a client. Not authoritative:
+	-- only the heading is kept, and x, y and z are re-derived on the server.
+	HEADING_REPORT_MS = 5000,
+
 	MONEY = {
 		-- What a NEW character is endowed with, per money type of
 		-- `OPX.Config.SHARED.MONEY.TYPES`. A missing type on an existing character

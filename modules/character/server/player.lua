@@ -9,9 +9,8 @@
 -- search key: every read re-checks the user id behind the slot. A departure
 -- nobody reported becomes a non-event instead of a hole.
 --
--- Sessions, the readiness gate and routing buckets are runtime singletons that
--- belong to core; everything this file needs from them goes through `M.Core`,
--- which is defined in server/main.lua.
+-- Sessions, the readiness gate and routing buckets belong to core: this module
+-- owns the roster of loaded characters and nothing else about a connection.
 
 local M = OPX.Modules.Get('character')
 
@@ -262,7 +261,7 @@ function M.GetPlayers()
 	local stale, staleCount = nil, 0
 
 	for source, player in pairs(M.Players) do
-		if M.Core.UserIdOf(source) == player.PlayerData.userId then
+		if OPX.UserIdOf(source) == player.PlayerData.userId then
 			n = n + 1
 			out[n] = player
 		else
@@ -273,7 +272,7 @@ function M.GetPlayers()
 	end
 
 	for i = 1, staleCount do
-		M.Core.ForgetSession(stale[i])
+		OPX.ForgetSession(stale[i])
 	end
 	return out
 end
@@ -284,7 +283,7 @@ end
 function M.GetPlayerCount()
 	local n = 0
 	for source, player in pairs(M.Players) do
-		if M.Core.UserIdOf(source) == player.PlayerData.userId then n = n + 1 end
+		if OPX.UserIdOf(source) == player.PlayerData.userId then n = n + 1 end
 	end
 	return n
 end
@@ -512,7 +511,7 @@ function M.SamplePosition(player)
 	local data = player.PlayerData
 	if not data.source then return false end
 	if not player.MaySample then return false end
-	if M.Core.UserIdOf(data.source) ~= data.userId then return false end
+	if OPX.UserIdOf(data.source) ~= data.userId then return false end
 
 	local snapshot = Open77.players.position(data.source)
 	if type(snapshot) ~= 'table' or snapshot.x == nil then return false end
@@ -537,7 +536,7 @@ end
 -- @param citizenId CitizenId
 -- @return Result
 function M.Login(source, citizenId)
-	local session = M.Core.EnsureSession(source)
+	local session = OPX.EnsureSession(source)
 	if not session then return Result.Err('entry.noIdentity', tostring(source)) end
 
 	if OPX.BootError then
@@ -580,7 +579,7 @@ function M.Login(source, citizenId)
 	-- not run again, so the ghost would sit in the roster until the autosave
 	-- evicted it, its reconnecting owner would be told `character.inUse`, and a
 	-- recycled player id would inherit its PlayerData.
-	if M.Core.Session(source) ~= session or session.departing then
+	if OPX.Sessions[source] ~= session or session.departing then
 		return Result.Err('entry.noIdentity', tostring(source))
 	end
 
@@ -631,7 +630,7 @@ local function unload(source)
 
 	M.UnregisterPlayer(player)
 
-	local session = M.Core.Session(source)
+	local session = OPX.Sessions[source]
 	if session then session.citizenId = nil end
 
 	TriggerClientEvent(M.Event.UNLOADED, source)
@@ -654,7 +653,7 @@ function M.Logout(source)
 
 	M.SamplePosition(player)
 	player.MaySample = false
-	M.Core.Isolate(source, 'unloaded')
+	OPX.Buckets.Isolate(source, 'unloaded')
 
 	CreateThread(function()
 		M.Save(player, true)

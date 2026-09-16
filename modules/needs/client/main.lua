@@ -67,8 +67,8 @@ local TONES = {
 	bleed = true, burn = true, shock = true, chem = true,
 }
 
-M.State = {}
-local State = M.State
+M.Effects = {}
+local Effects = M.Effects
 
 M.Needs = {}
 local Needs = M.Needs
@@ -116,7 +116,7 @@ end
 -- @param spec table
 -- @param atMs integer
 -- @return table|nil, string|nil
-function M.State.Normalize(owner, spec, atMs)
+function M.Effects.Normalize(owner, spec, atMs)
 	if type(spec) ~= 'table' then return nil, 'spec_must_be_a_table' end
 
 	local id = spec.id
@@ -168,23 +168,23 @@ end
 
 -- One owner's effect by id, or nil.
 local function get(owner, id)
-	local mine = State.byOwner[owner]
+	local mine = Effects.byOwner[owner]
 	return mine and mine[id] or nil
 end
 
 -- Stores an effect under its owner, replacing one with its id.
 local function put(effect)
-	local mine = State.byOwner[effect.owner]
+	local mine = Effects.byOwner[effect.owner]
 	if mine == nil then
 		mine = {}
-		State.byOwner[effect.owner] = mine
+		Effects.byOwner[effect.owner] = mine
 	end
 	mine[effect.id] = effect
 end
 
 -- How many effects one owner holds.
 local function count(owner)
-	local mine = State.byOwner[owner]
+	local mine = Effects.byOwner[owner]
 	if mine == nil then return 0 end
 	local total = 0
 	for _ in pairs(mine) do total = total + 1 end
@@ -193,7 +193,7 @@ end
 
 -- Removes one owner's effect and answers whether it existed.
 local function remove(owner, id)
-	local mine = State.byOwner[owner]
+	local mine = Effects.byOwner[owner]
 	if mine == nil or mine[id] == nil then return false end
 	mine[id] = nil
 	return true
@@ -201,10 +201,10 @@ end
 
 -- Removes every effect of one owner and answers how many.
 local function removeOwner(owner)
-	local mine = State.byOwner[owner]
+	local mine = Effects.byOwner[owner]
 	if mine == nil then return 0 end
 	local removed = count(owner)
-	State.byOwner[owner] = nil
+	Effects.byOwner[owner] = nil
 	return removed
 end
 
@@ -215,9 +215,9 @@ end
 -- reshuffle the strip between two publications, and the urgent effect is never
 -- pushed past MAX_VISIBLE by the trivial one.
 -- @return table[]
-function M.State.Ordered()
+function M.Effects.Ordered()
 	local all = {}
-	for _, mine in pairs(State.byOwner) do
+	for _, mine in pairs(Effects.byOwner) do
 		for _, effect in pairs(mine) do all[#all + 1] = effect end
 	end
 	table.sort(all, function(a, b)
@@ -232,8 +232,8 @@ end
 -- @author dop42
 -- @param atMs integer
 -- @return table
-function M.State.View(atMs)
-	local all = State.Ordered()
+function M.Effects.View(atMs)
+	local all = Effects.Ordered()
 	local chips = {}
 	local limit = M.Settings.MAX_VISIBLE
 	for index = 1, math.min(#all, limit) do
@@ -255,7 +255,7 @@ end
 -- because almost every pass has nothing to collect.
 local function expired(atMs)
 	local due = nil
-	for _, mine in pairs(State.byOwner) do
+	for _, mine in pairs(Effects.byOwner) do
 		for _, effect in pairs(mine) do
 			if effect.expiresAtMs ~= nil and atMs >= effect.expiresAtMs then
 				due = due or {}
@@ -300,7 +300,7 @@ end
 
 -- Publishes the strip when it changed, or when forced.
 local function draw(force)
-	local view = State.View(OPX.Now())
+	local view = Effects.View(OPX.Now())
 	local current = signature(view)
 	if not force and current == drawn then return end
 	drawn = current
@@ -316,12 +316,14 @@ end
 -- effects when it reloaded. An owner the host does not know -- another module of
 -- this runtime -- carries no generation and is never swept.
 local function noteOwner(owner)
-	local read, generation = pcall(Open77.resource.generation, owner)
+	local resource = Open77.resource
+	if type(resource) ~= 'table' or type(resource.generation) ~= 'function' then return end
+	local read, generation = pcall(resource.generation, owner)
 	if not read or type(generation) ~= 'number' or generation == 0 then return end
-	if State.generations[owner] ~= nil and State.generations[owner] ~= generation then
+	if Effects.generations[owner] ~= nil and Effects.generations[owner] ~= generation then
 		if removeOwner(owner) > 0 then draw() end
 	end
-	State.generations[owner] = generation
+	Effects.generations[owner] = generation
 end
 
 -- Drops the effects of owners that stopped or reloaded. Called before the
@@ -334,7 +336,7 @@ local function sweepOwners(atMs)
 	local generationOf = Open77.resource.generation
 
 	local stopped, stoppedCount = nil, 0
-	for owner, generation in pairs(State.generations) do
+	for owner, generation in pairs(Effects.generations) do
 		local state = GetResourceState(owner)
 		-- `starting` counts as alive: a resource that adds a chip from its own
 		-- start handler is still starting, and keeping only `running` would take
@@ -356,7 +358,7 @@ local function sweepOwners(atMs)
 	for index = 1, stoppedCount do
 		local owner = stopped[index]
 		removeOwner(owner)
-		State.generations[owner] = nil
+		Effects.generations[owner] = nil
 	end
 	return stoppedCount
 end
@@ -640,7 +642,7 @@ end
 local function onResourceStopped(name)
 	if name == GetCurrentResourceName() then return end
 	if removeOwner(name) > 0 then draw() end
-	State.generations[name] = nil
+	Effects.generations[name] = nil
 end
 
 -- Reads the owner of a call and refuses an unusable name.
@@ -660,7 +662,7 @@ end
 -- @return Result
 local function addEffect(owner, spec)
 	if ownerOf(owner) == nil then return Result.Err('invalid_owner') end
-	local effect, reason = State.Normalize(owner, spec, OPX.Now())
+	local effect, reason = Effects.Normalize(owner, spec, OPX.Now())
 	if effect == nil then return Result.Err(reason) end
 	if get(owner, effect.id) == nil and count(owner) >= MAX_PER_OWNER then
 		return Result.Err('owner_limit')
@@ -702,7 +704,7 @@ local function updateEffect(owner, id, patch)
 		data = pick(patch.data, current.data),
 		durationMs = patch.durationMs,
 	}
-	local effect, reason = State.Normalize(owner, merged, OPX.Now())
+	local effect, reason = Effects.Normalize(owner, merged, OPX.Now())
 	if effect == nil then return Result.Err(reason) end
 	if patch.durationMs == nil then
 		effect.expiresAtMs = current.expiresAtMs
@@ -783,10 +785,10 @@ end
 function M.Init()
 	M.ReadSettings()
 
-	--- Live effects by owner, then by effect id, and the generation each owner
-	--- carrying one was last seen at.
-	State.byOwner = {}
-	State.generations = {}
+	-- Live effects by owner, then by effect id, and the generation each owner
+	-- carrying one was last seen at.
+	Effects.byOwner = {}
+	Effects.generations = {}
 
 	Needs.citizenId = nil
 	Needs.ready = false
@@ -849,7 +851,7 @@ end
 -- into a VM that is half stopped.
 function M.Stop()
 	push(OPX.Now(), true)
-	State.byOwner = {}
-	State.generations = {}
+	Effects.byOwner = {}
+	Effects.generations = {}
 	draw(true)
 end

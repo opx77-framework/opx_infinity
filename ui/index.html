@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- No viewport meta: the surface is created at a fixed 1920x1080 by Lua and there is
+       no device to fit. No CSP meta either -- the page loads nothing to restrict, which
+       is enforced by the build, not by policy. -->
+  <title>OPEN//77 overlay</title>
+</head>
+<body>
+  <!-- The overlay surface: z 700, 30fps, transparent, never focused.
+       Everything this page needs is inlined by the build. There is no network inside a
+       CEF surface: a <link> or a <script src> here would silently never resolve. -->
+  <div id="app"></div>
+  <script type="module" src="/src/boot/overlay.ts"></script>
+</body>
+</html>

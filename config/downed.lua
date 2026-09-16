@@ -1,0 +1,39 @@
+--- How long a downed player waits, where they wake, and who may stand them up.
+-- @author dop42
+
+OPX.Config.MODULES.downed = {
+	enabled = true,
+
+	-- Seconds down before GIVE UP unlocks, and how long it is held so that a
+	-- stray click respawns nobody. The server enforces both.
+	GIVE_UP_AFTER_S = 120,
+	GIVE_UP_HOLD_MS = 1500,
+
+	-- How a player who gave up wakes, in the bucket they fell in: a fraction of
+	-- full health, and the spawn protection that follows.
+	RESPAWN = {
+		HEALTH = 0.5,
+		GRACE_MS = 5000,
+	},
+
+	-- Respawn points, the nearest to the fall winning. Replace the starter row
+	-- with your own medical centers.
+	HOSPITALS = {
+		{ LABEL = 'Watson medical center', X = -667.14, Y = -382.61, Z = 9.16, HEADING = 0.0 },
+	},
+
+	-- What a revive through the contract leaves the player with.
+	REVIVE = {
+		HEALTH = 0.35,
+		GRACE_MS = 3000,
+	},
+
+	-- Callers allowed to revive, and callers allowed to set the screen aside
+	-- while their own surface is up. A caller now gives its own name, so both are
+	-- switches rather than boundaries.
+	REVIVERS = '*',
+	SUSPENDERS = { opx77_admin = true },
+
+	-- Stock HUD components hidden while down.
+	VANILLA_HUD = { 'minimap', 'compass', 'clock', 'health', 'stamina', 'weapon', 'speedometer' },
+}

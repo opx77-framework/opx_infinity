@@ -10,6 +10,7 @@
 local PHASES = { 'Init', 'Api', 'Start' }
 
 local resolved
+local ran = false
 
 --- Reports a module out of the running set, keeping the first reason.
 local function halt(module, state, reason)
@@ -116,6 +117,12 @@ end
 -- @return boolean ok
 -- @return string|nil the id of the fatal module that failed
 function OPX.Modules.Run(between)
+	-- Idempotent. The host can raise a resource-start event more than once, and
+	-- running the phases twice publishes every contract twice -- which `Provide`
+	-- correctly refuses, failing every module that owns one.
+	if ran then return true end
+	ran = true
+
 	for _, phase in ipairs(PHASES) do
 		if phase == 'Start' and between then
 			local ok, failure = pcall(between)

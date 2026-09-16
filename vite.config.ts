@@ -48,12 +48,21 @@ function inlineSurface(): Plugin {
         let html = String(item.source)
         html = html.replace(/[ \t]*<script\b[^>]*\bsrc=[^>]*><\/script>\r?\n?/g, '')
         html = html.replace(/[ \t]*<link\b[^>]*\brel="(?:stylesheet|modulepreload)"[^>]*>\r?\n?/g, '')
-        if (css.length) html = html.replace('</head>', `  <style>\n${css.join('\n')}\n  </style>\n</head>`)
-        // `</script` can only ever occur inside a string, regex or comment in valid JS, and
-        // the escape is transparent in all three -- but left alone it ends the element.
+        // Replacer FUNCTIONS, never replacement strings. A string replacement treats
+        // `$&`, `$'` and "$`" as substitution patterns, and minified Vue contains them
+        // as ordinary identifiers -- which splices `</body>` into the middle of the
+        // runtime. The page still builds and still looks right. It just does not parse.
+        if (css.length) {
+          const sheet = `  <style>\n${css.join('\n')}\n  </style>\n</head>`
+          html = html.replace('</head>', () => sheet)
+        }
         if (js.length) {
-          const code = js.join('\n;\n').replace(/<\/script/gi, '<\/script')
-          html = html.replace('</body>', `  <script type="module">\n${code}\n  </script>\n</body>`)
+          // `</script` can only ever occur inside a string, regex or comment in valid
+          // JS, and the escape is transparent in all three -- but left alone it ends
+          // the element and everything after it is parsed as markup.
+          const code = js.join('\n;\n').replace(/<\/script/gi, '<\\/script')
+          const block = `  <script type="module">\n${code}\n  </script>\n</body>`
+          html = html.replace('</body>', () => block)
         }
         item.source = html
       }
@@ -83,7 +92,12 @@ export default defineConfig(({ mode }) => {
     base: './',
     plugins: [vue(), inlineSurface(), copyProbe()],
     resolve: {
-      alias: { '@': resolve(here, 'ui/src') }
+      // Array form, and `@fontsource` FIRST: aliases are matched by prefix in order, so
+      // a bare `@` sitting ahead of it would rewrite `@fontsource/...` to `ui/src/fontsource/...`.
+      alias: [
+        { find: '@fontsource', replacement: resolve(here, 'node_modules/@fontsource') },
+        { find: '@', replacement: resolve(here, 'ui/src') }
+      ]
     },
     build: {
       outDir: resolve(here, 'web'),

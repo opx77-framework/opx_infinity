@@ -52,18 +52,16 @@ end
 -- @return string|nil the loaded id, nil when it could not be confirmed
 -- @return string|nil why, nil when the answer was read and simply did not match
 local function loadedCitizenOf(player)
-	if character == nil or type(character.GetIdentity) ~= 'function' then
+	if character == nil or type(character.GetPlayer) ~= 'function' then
 		return nil, 'no character contract'
 	end
 
-	local answer = character.GetIdentity(player)
-	if type(answer) ~= 'table' then return nil, 'malformed answer' end
-	if answer.ok == false then return nil, tostring(answer.error or 'refused') end
-	-- Read as a Result or as the identity itself, because the character contract
-	-- may answer either shape.
-	local identity = type(answer.value) == 'table' and answer.value or answer
-	if identity.loaded ~= true or type(identity.citizenId) ~= 'string' then return nil end
-	return identity.citizenId
+	-- Nil for a session still at the selection screen, which is not a failure:
+	-- the pull is then refused like any other id that is not the loaded one.
+	local loaded = character.GetPlayer(player)
+	local data = loaded and loaded.PlayerData
+	if type(data) ~= 'table' or type(data.citizenId) ~= 'string' then return nil end
+	return data.citizenId
 end
 
 --- Answers a value shaped like a citizen id that fits the column.
@@ -123,8 +121,8 @@ local function onPull(rawCitizenId)
 			return
 		end
 		if loaded ~= id then
-			OPX.Audit.Security('needs.pull.refused', 'not their loaded character',
-				{ citizenId = OPX.Audit.Safe(id) }, player)
+			OPX.Audit.Security('needs.pull.refused',
+				('%s is not their loaded character'):format(OPX.Audit.Safe(id)), nil, player)
 			return
 		end
 

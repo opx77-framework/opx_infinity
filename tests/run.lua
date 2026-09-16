@@ -164,7 +164,13 @@ do
 		env.OPX.Schema.Add({ PROBE })
 		local ok = env.OPX.Schema.Apply()
 		check('Schema.Apply answers true when the statements run', ok == true)
-		check('the statement reached the bridge', ran[1] == PROBE, ran[1])
+		-- Modules contribute their own tables during Init, so the probe is not
+		-- the only statement and not the first.
+		check('the statement reached the bridge',
+			(function()
+				for index = 1, #ran do if ran[index] == PROBE then return true end end
+				return false
+			end)(), ('%d statements ran'):format(#ran))
 	end
 
 	-- The same path with a bridge that raises, which is what the real one does.
@@ -177,11 +183,14 @@ do
 	if why2 == nil then
 		env2.OPX.Schema.Add({ PROBE })
 		local ok, failed = env2.OPX.Schema.Apply()
+		-- The first statement to fail names itself, whichever module owns it.
+		local named = failed
 		-- `ApplySchema` answers a Result, and boot reads a plain pair. Treating
 		-- the Result as the boolean makes every failure look like a success,
 		-- because a table is truthy.
 		check('Schema.Apply answers false, not a Result', ok == false, type(ok))
-		check('the failing table is named', failed == 'opx_probe', tostring(failed))
+		check('the failing table is named',
+			type(named) == 'string' and named:match('^opx'), tostring(named))
 	end
 end
 
@@ -334,9 +343,14 @@ do
 	check('every manifest script loads', why == nil, why)
 
 	if why == nil then
+		-- `boot` already raised the start event; raising it again is how the
+		-- double-Run bug was found, and `Modules.Run` is idempotent now.
 		control.Fire('onClientResourceStart', 'opx-infinity')
 		control.Pump(60)
 		check('diagnostics started', env.OPX.Modules.IsRunning('diagnostics'))
+		check('a second resource-start does not re-run the phases',
+			env.OPX.Modules.Get('weather').State == 'started',
+			env.OPX.Modules.Get('weather').Reason)
 		check('the scheduler reports itself', #env.OPX.Scheduler.Report() >= 0)
 		check('/opx.client is registered open',
 			control.commands['opx.client'] ~= nil and not control.commands['opx.client'].restricted)

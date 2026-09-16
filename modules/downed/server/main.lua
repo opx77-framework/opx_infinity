@@ -196,15 +196,13 @@ local function inWorld(playerId)
 	if not read then return nil end
 	if open ~= true then return false end
 
-	if character == nil or type(character.GetIdentity) ~= 'function' then return nil end
-	local answer = character.GetIdentity(playerId)
-	if type(answer) ~= 'table' then return nil end
-	if answer.ok == false then return nil end
-	-- Read as a Result or as the identity itself, because the character contract
-	-- may answer either shape.
-	local identity = type(answer.value) == 'table' and answer.value or answer
-	if identity.loaded ~= true then return false end
-	return true, type(identity.citizenId) == 'string' and identity.citizenId or nil
+	if character == nil or type(character.GetPlayer) ~= 'function' then return nil end
+	-- Nil is a session without a character -- the selection screen, or one just
+	-- put down -- and not a failure to read.
+	local loaded = character.GetPlayer(playerId)
+	local data = loaded and loaded.PlayerData
+	if type(data) ~= 'table' then return false end
+	return true, type(data.citizenId) == 'string' and data.citizenId or nil
 end
 
 -- Puts a character stored down back down once, by a kill `goDown` then resumes.
