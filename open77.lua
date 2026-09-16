@@ -324,10 +324,28 @@ permissions {
 
   -- The staff module, and only the staff module. Every one of these gates a
   -- single call; none is reachable without passing the ACL first.
+  --   players.life.visibility  `setVisible`, for `opx.admin.self.invisible`. The
+  --                            `isVisible` READER is players.life.read, which is
+  --                            already declared above
+  --   players.life.freeze      `setFrozen`, for `opx.admin.player.freeze`; the
+  --                            `isFrozen` reader is likewise players.life.read
+  --   players.access           `Open77.access.ban`
+  --   clipboard.write          `Open77.clipboard.setText`, for
+  --                            `opx.admin.self.pos` and the copy-door-id row
+  --   combat.config            `Open77.combat.setFriendlyFire`
+  --   world.doors              the whole `Open77.doors` table the staff door
+  --                            switch reads and writes
+  --   world.transform          NOT a transform write -- there is none, a
+  --                            placement is kill-then-respawn. It gates
+  --                            `Open77.character.bonePosition`, which the staff
+  --                            name tags read to sit a tag above the head slot.
+  --                            Without it every tag falls back to
+  --                            TAGS.HEAD_OFFSET_Z and floats
   "players.life.visibility",
   "players.life.freeze",
   "players.access",
   "clipboard.write",
   "combat.config",
   "world.doors",
+  "world.transform",
 }

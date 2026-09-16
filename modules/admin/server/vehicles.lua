@@ -177,13 +177,46 @@ local function removeOne(vehicleId)
 	return true
 end
 
--- A configured flag's host mask and its exact name, or nil.
+-- The bit values of a vehicle snapshot's `flags` field, as the devkit documents
+-- them for 2.31.13+op77.75.
+--
+-- `Open77.vehicles.flags` is read BOTH WAYS on purpose, because the devkit
+-- disagrees with itself about which it is: the card says "a public constant
+-- table", is marked `constant: true`, and every example indexes it directly
+-- (`Open77.vehicles.flags.locked`), while `open77-server.d.lua` declares it
+-- `function Open77.vehicles.flags()` returning that table. Calling a table or
+-- indexing a function both fail silently here -- the result just is not a table,
+-- the flag is never found, and `vehicle.flag` answers `unknown_flag` for every
+-- flag. So: call it if it is callable, take it if it is a table, and fall back
+-- to the constants below if the host has neither.
+--
+-- The four flags this module offers (locked, engineOn, lightsOn, invulnerable)
+-- resolve by any of the three routes. `frozen` (bit 11) and `paintApplied` are
+-- documented elsewhere and deliberately absent: nothing here offers them.
+local BITS = {
+	engineOn = 1, locked = 2, destroyed = 4, exploded = 8, invulnerable = 16,
+	immortal = 32, lightsOn = 64, highBeams = 128, sirenOn = 256,
+}
+
+-- The host's mask table, or the constants above.
+local function masks()
+	local accessor = Open77.vehicles.flags
+	if type(accessor) == 'function' then
+		local read, answer = pcall(accessor)
+		if read and type(answer) == 'table' then return answer end
+	elseif type(accessor) == 'table' then
+		return accessor
+	end
+	return BITS
+end
+
+-- A configured flag's mask and its exact name, or nil.
 local function maskOf(name)
 	if type(name) ~= 'string' then return nil end
-	local masks = Open77.vehicles.flags
+	local bits = masks()
 	for _, flag in ipairs(M.Section('VEHICLES').FLAGS or {}) do
-		if flag:lower() == name:lower() and type(masks) == 'table' then
-			local mask = Text.Integer(masks[flag])
+		if flag:lower() == name:lower() then
+			local mask = Text.Integer(bits[flag])
 			if mask then return mask, flag end
 		end
 	end
