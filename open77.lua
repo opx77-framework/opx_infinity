@@ -33,8 +33,13 @@
 -- calls it. `Open77.players.all` still needs no permission.
 
 resource "opx_infinity"
-version "0.1.1"
-open77_version ">=2.31.13+op77.67"
+version "0.1.2"
+-- `>=0.0.1`, which is what all 29 shipped system resources and all 21 of the old
+-- opx77_* resources declare -- every resource that has ever installed on this
+-- platform. A real range with build metadata (`>=2.31.13+op77.67`) is accepted by
+-- the SERVER parser and refused by the client at activation, which surfaces only
+-- as `resource_activation_failed` with no server-side trace at all.
+open77_version ">=0.0.1"
 auto_start true
 
 reload_policy "reconnect"
