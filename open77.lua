@@ -8,6 +8,19 @@
 --
 -- `reload_policy "reconnect"` because this resource owns WebUI surfaces, and a
 -- CEF page is never replaced in place.
+--
+-- This header is the only comment the manifest may carry: it is a declarative
+-- DSL, not Lua, and a comment inside a block is unverified here. The permissions
+-- that are not self-evident, in order:
+--   players.damage.apply  armour is re-applied after the respawn, and nothing
+--                         reads it back; it is not a combat permission
+--   players.disconnect    only for a connection with no verified identity.
+--                         Releasing the gate alone would leave them in bucket 0
+--                         with no character, for ever. Not a moderation tool
+--   players.access        `Open77.players.all`, for the downed scan. opx77_medic
+--                         called it without this, and its scan would have found
+--                         nobody, silently, because the call is under a pcall
+--   ui.vanilla.hud        hiding the game's own HUD while a player is down
 
 resource "opx-infinity"
 version "0.1.0"
@@ -92,6 +105,10 @@ client_script "modules/weather/client/main.lua"
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
 
+web_ui_page "web/index.html"
+web_ui_auto_create false
+web_files { "web/**" }
+
 permissions {
   "network.events",
 
@@ -105,6 +122,12 @@ permissions {
   "players.life.kill",
   "players.life.respawn",
   "players.life.revive",
+
+  "players.damage.apply",
+
+  "players.disconnect",
+
+  "players.access",
 
   "ui.vanilla.hud",
 }
