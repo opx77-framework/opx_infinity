@@ -33,15 +33,31 @@ jobs:
                    | sed -E 's/.*"([^"]+)"/\1/')
           exit $missing
 
+      # A parked file is one the manifest names on a commented-out script line:
+      # written, on disk, deliberately not loading yet. Parking stays a one-line
+      # edit in open77.lua rather than a change here, and the job still prints
+      # what is parked so it cannot be forgotten. A file in neither list is
+      # forgotten, and still fails.
       - name: Every Lua file is in the manifest
         run: |
           orphans=0
-          listed=$(grep -oE '^\s*(shared|server|client)_script\s+"[^"]+"' open77.lua \
-                   | sed -E 's/.*"([^"]+)"/\1/' | sort -u)
+          paths() {
+            grep -oE "$1"'(shared|server|client)_script\s+"[^"]+"' open77.lua \
+              | sed -E 's/.*"([^"]+)"/\1/' | sort -u
+          }
+          listed=$(paths '^\s*')
+          parked=$(paths '^\s*--\s*')
           while read -r file; do
-            case "$file" in ./tests/*|./open77.lua) continue ;; esac
-            echo "$listed" | grep -qxF "${file#./}" || {
-              echo "not listed in the manifest, so it never loads: $file"; orphans=1; }
+            rel=${file#./}
+            case "$rel" in tests/*|open77.lua) continue ;; esac
+            if echo "$listed" | grep -qxF "$rel"; then
+              continue
+            elif echo "$parked" | grep -qxF "$rel"; then
+              echo "parked, so it does not load yet: $rel"
+            else
+              echo "not listed in the manifest, so it never loads: $rel"
+              orphans=1
+            fi
           done < <(find . -name '*.lua' -not -path './.git/*')
           exit $orphans
 
