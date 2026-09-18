@@ -184,6 +184,39 @@ function Host.Environment(side, database)
 	-- after them would leave those closures pointing at a global instead.
 	local control
 
+	-- Replicated state bags, by `<kind>:<id>`. A REAL store and not an accepting
+	-- stub: the runtime skips a write whose value has not moved, and a `set` that
+	-- always answered true without keeping anything would make that skip -- and
+	-- every read after it -- untestable.
+	local bags = {}
+
+	-- One bag handle. The five method names shadow the keys of the same name, which
+	-- is the platform's own rule and the one thing a caller can get wrong here.
+	local function bagFor(kind, id)
+		local slot = ('%s:%s'):format(kind, tostring(id))
+		bags[slot] = bags[slot] or {}
+		local methods = {
+			set = function(_, key, value) bags[slot][key] = value; return true end,
+			clear = function(_, key)
+				if key == nil then bags[slot] = {}; return true end
+				if bags[slot][key] == nil then return false, 'unknown_bag' end
+				bags[slot][key] = nil
+				return true
+			end,
+			get = function(_, key) return bags[slot][key] end,
+			all = function()
+				local out = {}
+				for key, value in pairs(bags[slot]) do out[key] = value end
+				return out
+			end,
+			revision = function() return 1 end,
+			selector = function() return { kind = kind, id = tostring(id) } end,
+		}
+		return setmetatable({}, {
+			__index = function(_, key) return methods[key] or bags[slot][key] end,
+		})
+	end
+
 	local Open77 = {
 		log = {
 			debug = function(line) log.debug[#log.debug + 1] = tostring(line) end,
@@ -194,9 +227,25 @@ function Host.Environment(side, database)
 		time = { monotonic = function() return clock / 1000 end },
 		exports = { call = function() return nil, 'no_host' end },
 
-		-- Authoritative state that survives a reload. Answers nothing here, which
-		-- is the cold-start case a module has to handle anyway.
-		state = { save = function() return true end, load = function() return nil end },
+		-- `Open77.state` holds two unrelated things and the platform says so: the
+		-- resource-private blob that survives a reload, and the replicated bags.
+		-- `save`/`load` answer nothing, which is the cold-start case a module has to
+		-- handle anyway.
+		state = {
+			save = function() return true end,
+			load = function() return nil end,
+			clear = function() return true end,
+
+			global = bagFor('global', 0),
+			player = function(id) return bagFor('player', id) end,
+			entity = function(kind, id) return bagFor(kind, id) end,
+			localPlayer = function() return bagFor('player', 1) end,
+
+			-- No delta ever fires here: a change handler is only reached from a
+			-- write on the OTHER side of the wire, and there is no wire.
+			onChange = function() return 1 end,
+			offChange = function() return true end,
+		},
 
 		notifications = { send = function() return true end },
 

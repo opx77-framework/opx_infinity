@@ -94,15 +94,34 @@ export function subscribe(channel: Channel, handler: Handler): () => void {
   }
 }
 
-/**
- * Sends an intent to Lua.
- *
- * INVARIANT: this carries an INTENT, never a FACT. "The player pressed confirm on
- * option 2", not "the player bought the jacket". Lua re-derives the outcome from
- * authoritative state and tells us what actually happened. Nothing computed on this
- * page is trusted by anything downstream, and the page must not act as though it were.
- */
-export function emit(channel: Channel, payload: Payload = {}): void {
+/* -- THE HANDSHAKE GATE ------------------------------------------------------
+   Nothing leaves this page before `opx:ready` has, and that is not tidiness: it
+   is the difference between a view being configured and a view running on its
+   own defaults for the whole session.
+
+   `lib/client/surface.lua` DROPS -- does not queue -- every `Send` made before
+   the page has reported ready. A module view emits its own `opx:<module>:ready`
+   from `onMounted`, which runs during `app.mount()`, and `boot/createSurface.ts`
+   emits `opx:ready` AFTER the mount returns. So the order on the wire was:
+
+       opx:chat:ready   -> Lua answers with the chat's config -> DROPPED
+       opx:ready        -> Lua only now starts accepting sends
+
+   The config is published once, in the reply to `ready`, and is never repeated.
+   It was measured: the chat box reported `anchor=anchor-bottom-left offset=155`
+   -- both page defaults -- while `config/chat.lua` said `top-center` and 48, and
+   every other module that answers a `ready` the same way lost its first payload
+   too.
+
+   So an emit made before the handshake is HELD here and flushed, in order, the
+   moment `handshake()` has gone out. The cost is one array that is emptied once
+   per page load; the alternative is every module's first reply landing in the
+   gap between mount and ready. */
+let opened = false
+const held: Array<{ channel: Channel; payload: Payload }> = []
+
+/** Puts one payload on the wire, handshake or not. */
+function send(channel: Channel, payload: Payload): void {
   const open77 = bridge()
   if (!open77) return
   try {
@@ -110,6 +129,35 @@ export function emit(channel: Channel, payload: Payload = {}): void {
   } catch (error) {
     report(error, `emit ${channel}`)
   }
+}
+
+/**
+ * Sends an intent to Lua.
+ *
+ * INVARIANT: this carries an INTENT, never a FACT. "The player pressed confirm on
+ * option 2", not "the player bought the jacket". Lua re-derives the outcome from
+ * authoritative state and tells us what actually happened. Nothing computed on this
+ * page is trusted by anything downstream, and the page must not act as though it were.
+ *
+ * Held until the handshake has gone out. See the block above.
+ */
+export function emit(channel: Channel, payload: Payload = {}): void {
+  if (!opened) {
+    held.push({ channel, payload })
+    return
+  }
+  send(channel, payload)
+}
+
+/**
+ * The `opx:ready` handshake, and the only emit that goes out before it. Called
+ * once, by `createSurface`, after the app has mounted: it puts the handshake on
+ * the wire and then releases everything the mount queued behind it, in order.
+ */
+export function handshake(channel: Channel, payload: Payload = {}): void {
+  send(channel, payload)
+  opened = true
+  for (const message of held.splice(0)) send(message.channel, message.payload)
 }
 
 /** Diagnostics only: which channels this surface has bound, and how deep. */

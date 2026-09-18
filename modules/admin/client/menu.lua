@@ -17,6 +17,7 @@ local M = OPX.Modules.Get('admin')
 
 local Client = M.Client
 local Catalog = M.Catalog
+local Peds = M.Peds
 local Forms = M.Forms
 local Keys = M.Keys
 local Text = OPX.Text
@@ -95,6 +96,14 @@ local function row(id, label, data, extra)
 	return item
 end
 
+-- Puts a glyph on a row built by a helper that takes no `extra`. The menu module
+-- refuses a name outside `menu.M.ICONS`, so a typo here is a refused menu rather
+-- than a row that quietly loses its picture.
+local function icon(item, name)
+	item.icon = name
+	return item
+end
+
 -- Greys a row with a word beside it.
 local function unavailable(item, key)
 	item.disabled, item.value = true, locale(key or 'admin.menu.unavailable')
@@ -109,7 +118,7 @@ end
 
 -- The one disabled row a list shows when it has none.
 local function empty(key)
-	return row('empty', locale(key), nil, { disabled = true })
+	return row('empty', locale(key), nil, { disabled = true, icon = 'info' })
 end
 
 -- A row running a command line, greyed when the ACL refuses it.
@@ -130,18 +139,141 @@ local function form(id, labelKey, kind, arg, name)
 end
 
 -- A row that pushes another screen.
+--
+-- `submenu = true` IS THE POINT OF THIS HELPER AND NOT A DETAIL. This menu keeps
+-- its own stack and opens one flat screen at a time, so nothing it sends the
+-- contract has `items` under it and the contract could not derive the affordance
+-- itself: every navigation row drew exactly like the rows that fire a command,
+-- and the only way to learn that `Players` was a list and `Heal` was not was to
+-- press one of them. The flag puts the `>` back in the affordance column, and it
+-- rides on THIS function so that a screen added later cannot forget it.
 local function go(id, label, screen, arg, extra)
-	return row(id, text(label), { go = screen, arg = arg }, extra)
+	local item = row(id, text(label), { go = screen, arg = arg }, extra)
+	item.submenu = true
+	return item
 end
 
 -- A row to a picker, greyed when its final command is refused.
-local function goFor(id, labelKey, screen, arg, name)
-	return denied(go(id, labelKey, screen, arg), name)
+local function goFor(id, labelKey, screen, arg, name, extra)
+	return denied(go(id, labelKey, screen, arg, extra), name)
 end
 
 -- A separator row, with a heading when one is given.
 local function section(labelKey)
 	return { separator = true, label = labelKey and locale(labelKey) or nil }
+end
+
+-- ── the filter ──────────────────────────────────────────────────────────────
+--
+-- WHY A LIST THIS LONG NEEDS ONE. The catalogues behind this menu are 271
+-- vehicles under ten classes, every ped family the build ships, and the whole
+-- item catalogue -- paged twenty rows at a time. Finding `quadra` in that meant
+-- walking fourteen pages with an arrow key, and the operator already knew the
+-- word they were looking for.
+--
+-- WHY IT IS A FORM AND NOT A TEXT FIELD ON THE STRIP. The strip reads six keys
+-- and no letters: it is drawn by a page that forwards arrows, Enter and
+-- Backspace and nothing else, on purpose, so that a menu can be open while the
+-- game still has the keyboard. The one surface in this resource that takes typed
+-- text is the form, so the search row opens one, and the answer comes back
+-- through `Menu.Filter`.
+--
+-- WHERE IT APPEARS. Only on a list long enough to be worth searching, or one
+-- already filtered -- see `SEARCH_FROM`. A three-player roster with a search box
+-- over it is a box in the way.
+
+-- Rows a list must hold before it offers to be searched.
+local SEARCH_FROM = 12
+
+-- Whether a row's words match the query. Case-insensitive, plain substring, and
+-- EVERY word of the query has to appear somewhere: `mil tech` finds the
+-- Militech rows without the operator having to remember which field the word is
+-- in. Plain `find`, never a pattern -- a typed `(` is a character, not syntax.
+local function matches(query, ...)
+	if query == nil then return true end
+	local hay = ''
+	for index = 1, select('#', ...) do
+		local part = select(index, ...)
+		if part ~= nil then hay = hay .. ' ' .. tostring(part):lower() end
+	end
+	for word in query:lower():gmatch('%S+') do
+		if not hay:find(word, 1, true) then return false end
+	end
+	return true
+end
+
+-- The stack entry the screen being built belongs to.
+local function building()
+	return stack[#stack]
+end
+
+-- The query the screen on top of the stack is under, or nil. Read off the stack
+-- rather than passed down, because a screen builder is handed its `arg` and
+-- nothing else, and the filter belongs to the SCREEN and not to the argument
+-- that named it -- going back to a list has to bring its filter back with it.
+local function filtering()
+	local current = building()
+	local typed = current and current.filter
+	if type(typed) ~= 'string' or typed == '' then return nil end
+	return typed
+end
+
+-- The block at the top of a list: the search box, what it is holding, whatever
+-- else that list filters by, and the rule under the lot.
+--
+-- Empty for a short unfiltered list carrying no filters of its own, which is
+-- most of them -- so this can be called from EVERY list screen without asking
+-- each one whether it is long enough to deserve it.
+local function searchRows(shown, total, extras)
+	local query = filtering()
+	local items = {}
+	if query ~= nil or total >= SEARCH_FROM then
+		items[1] = row('search', locale('admin.menu.search'), { form = 'search', arg = query },
+			{ icon = 'search', value = query, description = locale('admin.menu.searchHint') })
+		if query ~= nil then
+			items[2] = row('searchClear', locale('admin.menu.searchClear'), { clearFilter = true },
+				{ icon = 'minus', value = ('%d/%d'):format(shown, total) })
+		end
+	end
+	for _, item in ipairs(extras or {}) do items[#items + 1] = item end
+	if #items == 0 then return items end
+	items[#items + 1] = section()
+	return items
+end
+
+-- The states a roster row can be in, in the order the filter cycles them.
+-- `all` is first so the list starts whole.
+local STATES = { 'all', 'up', 'down', 'gate', 'loading' }
+
+-- The words beside the state filter, in the same order.
+local function stateLabels()
+	local labels = {}
+	for index, key in ipairs(STATES) do
+		labels[index] = key == 'all' and locale('admin.menu.stateAll')
+			or locale('admin.state.' .. key)
+	end
+	return labels
+end
+
+-- The state filter: LEFT and RIGHT cycle it where a submenu would have cost a
+-- screen. The row carries the key list, so the dispatch can read the chosen
+-- LABEL back to the key it stands for without either side holding an index.
+local function stateRow(current)
+	local labels = stateLabels()
+	local selected = 1
+	for index, key in ipairs(STATES) do
+		if key == current then selected = index end
+	end
+	return row('state', locale('admin.menu.stateFilter'), { states = true },
+		{ icon = 'filter', choices = labels, selected = selected })
+end
+
+-- The state key a chosen label stands for, or nil for a word from a stale draw.
+local function stateOf(label)
+	for index, word in ipairs(stateLabels()) do
+		if word == label then return STATES[index] end
+	end
+	return nil
 end
 
 -- A checkbox row whose flip runs the command with `on` or `off`. A row whose
@@ -152,6 +284,28 @@ local function switch(id, labelKey, tokens, on)
 	if not item.disabled and type(on) == 'boolean' then
 		item.toggle = on
 		item.data = { switch = tokens }
+	end
+	return item
+end
+
+-- A checkbox that flips a CLIENT flag, with no command line behind it.
+--
+-- `switch` above sends a command to the server dispatcher, which is right for
+-- anything the server decides. This is for the ones it does not: a preference
+-- that changes what this client draws for itself, needs no grant, is audited
+-- nowhere, and would be a round trip for nothing. The row carries the NAME of
+-- the flip and the menu's own dispatch looks it up; nothing about it reaches the
+-- wire.
+--
+-- `enabled` is the condition the preference is only meaningful under. False
+-- greys the row rather than hiding it, which says the option exists and what has
+-- to be true for it to do anything.
+local function flip(id, labelKey, name, on, enabled, offKey)
+	local item = row(id, locale(labelKey), { flip = name })
+	if enabled == false then
+		unavailable(item, offKey)
+	else
+		item.toggle = on == true
 	end
 	return item
 end
@@ -170,7 +324,7 @@ local function paged(list, screen, arg, title, build)
 		for key, value in pairs(arg) do following[key] = value end
 		following.p = page + 1
 		items[#items + 1] = go('more', 'admin.menu.more', screen, following,
-			{ value = ('%d/%d'):format(page + 1, pages) })
+			{ value = ('%d/%d'):format(page + 1, pages), icon = 'arrow' })
 	end
 	if pages > 1 then title = ('%s %d/%d'):format(title, page, pages) end
 	return title, items
@@ -200,10 +354,25 @@ local function append(items, more)
 	return items
 end
 
--- A roster player's name and id, for a title.
+-- A roster player's name and id, for a title. `name` is the CHARACTER's, with the
+-- account behind it as the fallback -- see `World.RosterRow` on the server.
 local function nameOf(id)
 	local entry = rosterById[id]
 	return entry and ('%s [%d]'):format(entry.name, id) or ('[%s]'):format(tostring(id))
+end
+
+-- The other two names a roster row carries: the account playing the character,
+-- and the character's public id. A disabled row, because it is a fact and not an
+-- action, and nil when the row has neither -- a slot with no character loaded has
+-- nothing here that the title is not already saying.
+local function identityRow(entry)
+	if type(entry) ~= 'table' then return nil end
+	local user = type(entry.user) == 'string' and entry.user ~= '' and entry.user or nil
+	local citizen = type(entry.citizenId) == 'string' and entry.citizenId ~= '' and entry.citizenId
+		or nil
+	if user == nil and citizen == nil then return nil end
+	return row('identity', user or locale('admin.menu.noAccount'), nil,
+		{ disabled = true, value = citizen, icon = 'person' })
 end
 
 -- A player sub-screen title: Name [id] - Family.
@@ -225,13 +394,15 @@ end
 -- The weapon rows for a target.
 local function weaponRows(target, giveKey)
 	local items = {
-		goFor('giveWeapon', giveKey, 'weaponList', { t = target }, Command.WEAPON_GIVE),
-		goFor('giveAmmo', 'admin.menu.giveAmmo', 'ammoList', target, Command.WEAPON_GIVEAMMO),
-		command('ammo', 'admin.menu.ammo', { Command.WEAPON_AMMO, target }),
-		command('holster', 'admin.menu.holster', { Command.WEAPON_HOLSTER, target }),
-		guarded('disarm', 'admin.menu.disarm', { Command.WEAPON_REMOVE, target, 'all' },
-			'admin.confirm.disarm'),
-		command('loadout', 'admin.menu.loadout', { Command.WEAPON_READ, target }),
+		goFor('giveWeapon', giveKey, 'weaponList', { t = target }, Command.WEAPON_GIVE,
+			{ icon = 'weapon' }),
+		goFor('giveAmmo', 'admin.menu.giveAmmo', 'ammoList', target, Command.WEAPON_GIVEAMMO,
+			{ icon = 'ammo' }),
+		icon(command('ammo', 'admin.menu.ammo', { Command.WEAPON_AMMO, target }), 'ammo'),
+		icon(command('holster', 'admin.menu.holster', { Command.WEAPON_HOLSTER, target }), 'lock'),
+		icon(guarded('disarm', 'admin.menu.disarm', { Command.WEAPON_REMOVE, target, 'all' },
+			'admin.confirm.disarm'), 'trash'),
+		icon(command('loadout', 'admin.menu.loadout', { Command.WEAPON_READ, target }), 'list'),
 	}
 	for _, item in ipairs(items) do
 		if item.id == 'holster' then
@@ -245,22 +416,43 @@ local function weaponRows(target, giveKey)
 	return items
 end
 
+-- The command line that dresses a target in a ped, or takes one off. The self
+-- command for the operator's own body and the player one for anybody else, so
+-- that a server may grant staff the right to morph themselves and not others.
+local function modelTokens(target, name)
+	if target == nil or target == 'me' then return { Command.SELF_MODEL, name } end
+	return { Command.PLAYER_MODEL, tostring(target), name }
+end
+
+-- The row that opens the ped picker, showing the ped already being worn. Greyed
+-- on a build with no model API: the server says so in the body states, and the
+-- reason is worth reading once rather than on every refused pick.
+local function modelRow(target, worn)
+	local item = goFor('model', 'admin.menu.model', 'pedFamilies', target,
+		modelTokens(target, 'x')[1], { icon = 'person' })
+	if worn ~= nil then item.value = Peds.LabelOf(worn) end
+	if not item.disabled and not M.Target.HasModels() then
+		unavailable(item, 'admin.menu.modelsOff')
+	end
+	return item
+end
+
 -- The bag rows for a target; the open row only for another player.
 local function bagRows(target)
 	local items = {
-		command('invView', 'admin.menu.invView', { Command.INVENTORY_VIEW, target }),
+		icon(command('invView', 'admin.menu.invView', { Command.INVENTORY_VIEW, target }), 'list'),
 	}
 	if target ~= 'me' and links().INVENTORY_OPEN then
-		items[#items + 1] = command('invOpen', 'admin.menu.invOpen',
-			{ links().INVENTORY_OPEN, target })
+		items[#items + 1] = icon(command('invOpen', 'admin.menu.invOpen',
+			{ links().INVENTORY_OPEN, target }), 'box')
 		items[#items].data.closeAfter = true
 	end
 	items[#items + 1] = goFor('invGive', 'admin.menu.invGive', 'itemCategories',
-		{ t = target, m = 'give' }, Command.INVENTORY_GIVE)
+		{ t = target, m = 'give' }, Command.INVENTORY_GIVE, { icon = 'plus' })
 	items[#items + 1] = goFor('invRemove', 'admin.menu.invRemove', 'bag', target,
-		Command.INVENTORY_REMOVE)
-	items[#items + 1] = guarded('invClear', 'admin.menu.invClear',
-		{ Command.INVENTORY_CLEAR, target }, 'admin.confirm.invClear')
+		Command.INVENTORY_REMOVE, { icon = 'minus' })
+	items[#items + 1] = icon(guarded('invClear', 'admin.menu.invClear',
+		{ Command.INVENTORY_CLEAR, target }, 'admin.confirm.invClear'), 'trash')
 	for _, item in ipairs(items) do offline(item) end
 	return items
 end
@@ -269,87 +461,138 @@ end
 
 local SCREENS = {}
 
+-- EVERY ROW CARRIES A GLYPH NOW, and the note that used to stand here said the
+-- opposite: that the root was "the one screen a glyph earns", because a list of
+-- players or vehicles would be the same icon fourteen times. That was true of
+-- the fourteen glyphs the set then had -- `tool` stood for the noclip switch,
+-- the weather presets, the ped families and the vehicle flags at once, so half
+-- the menu was one picture. The set is wider now (see `menu.M.ICONS`) and the
+-- rule is the plain one: a row says what KIND of thing it is, and a list of one
+-- kind repeats its glyph on purpose, which is how the eye finds where that list
+-- ends. Names outside the set are REFUSED by the menu module, not dropped.
 SCREENS.root = function()
 	return locale('admin.menu.title'), {
 		section('admin.menu.section.quick'),
-		switch('noclip', 'admin.menu.noclip', { Command.SELF_NOCLIP }, Client.IsNoclip()),
+		icon(switch('noclip', 'admin.menu.noclip', { Command.SELF_NOCLIP }, Client.IsNoclip()), 'bolt'),
 		section('admin.menu.section.manage'),
-		go('players', 'admin.menu.players', 'players', nil, { value = tostring(#roster) }),
-		go('self', 'admin.menu.self', 'self'),
-		go('vehicles', 'admin.menu.vehicles', 'vehicles'),
-		go('world', 'admin.menu.world', 'world'),
-		go('server', 'admin.menu.server', 'server'),
+		go('players', 'admin.menu.players', 'players', nil,
+			{ value = tostring(#roster), icon = 'person' }),
+		go('self', 'admin.menu.self', 'self', nil, { icon = 'star' }),
+		go('vehicles', 'admin.menu.vehicles', 'vehicles', nil, { icon = 'vehicle' }),
+		go('world', 'admin.menu.world', 'world', nil, { icon = 'world' }),
+		go('server', 'admin.menu.server', 'server', nil, { icon = 'server' }),
 	}
 end
 
 SCREENS.players = function()
-	local items = {}
-	for index = 1, math.min(#roster, MAX_LISTED) do
+	local query = filtering()
+	local current = building()
+	local state = (current and current.state) or 'all'
+
+	-- Filtered before anything is drawn, so the count beside the clear row is the
+	-- count of what the operator is actually looking at. The state word is part of
+	-- the haystack as well as its own filter: typing `down` finds the same rows
+	-- the state filter would, which is the answer to a search box that silently
+	-- ignores the word somebody typed into it.
+	local matched = {}
+	for index = 1, #roster do
 		local entry = roster[index]
+		local word = locale('admin.state.' .. entry.state)
+		if (state == 'all' or entry.state == state)
+			and matches(query, entry.id, entry.name, entry.user, entry.citizenId, word) then
+			matched[#matched + 1] = entry
+		end
+	end
+
+	local extras = {}
+	if #roster >= SEARCH_FROM or state ~= 'all' then extras[1] = stateRow(state) end
+	local items = searchRows(#matched, #roster, extras)
+
+	for index = 1, math.min(#matched, MAX_LISTED) do
+		local entry = matched[index]
 		local value = locale('admin.state.' .. entry.state)
 		if entry.bucket ~= 0 then value = value .. ' b' .. entry.bucket end
 		if entry.distance then value = value .. ' ' .. entry.distance .. 'm' end
 		items[#items + 1] = go('player_' .. entry.id,
 			{ text = ('[%d] %s'):format(entry.id, entry.name) }, 'player', entry.id,
-			{ value = value })
+			{ value = value, icon = entry.state == 'down' and 'heal' or 'person' })
 	end
-	if #items == 0 then items[1] = empty('admin.menu.nobody') end
+	if #matched == 0 then
+		items[#items + 1] = empty(#roster > 0 and 'admin.menu.noMatch' or 'admin.menu.nobody')
+	end
 	return locale('admin.menu.players'), items
 end
 
 SCREENS.player = function(id)
 	local target = tostring(id)
 	local entry = rosterById[id]
-	local items = {
+	local items = {}
+
+	-- Above the first separator on purpose: the title carries the character and the
+	-- slot, and this is who is actually holding the keyboard.
+	local identity = identityRow(entry)
+	if identity then items[#items + 1] = identity end
+
+	append(items, {
 		section('admin.menu.section.quick'),
-		command('goto', 'admin.menu.goto', { Command.PLAYER_GOTO, target }),
-		command('bring', 'admin.menu.bring', { Command.PLAYER_BRING, target }, 'roster'),
-		command('heal', 'admin.menu.heal', { Command.PLAYER_HEAL, target }, 'roster'),
-		command('revive', 'admin.menu.revive', { Command.PLAYER_REVIVE, target }, 'roster',
+		icon(command('goto', 'admin.menu.goto', { Command.PLAYER_GOTO, target }), 'location'),
+		icon(command('bring', 'admin.menu.bring', { Command.PLAYER_BRING, target }, 'roster'),
+			'arrow'),
+		icon(command('heal', 'admin.menu.heal', { Command.PLAYER_HEAL, target }, 'roster'), 'heal'),
+		icon(command('revive', 'admin.menu.revive', { Command.PLAYER_REVIVE, target }, 'roster',
 			entry and entry.state == 'down' and { value = locale('admin.state.down') } or nil),
+			'heart'),
 
 		section('admin.menu.section.actions'),
-		go('move', 'admin.menu.movement', 'playerMove', id),
-		go('health', 'admin.menu.healthActions', 'playerHealth', id),
-	}
+		go('move', 'admin.menu.movement', 'playerMove', id, { icon = 'map' }),
+		go('health', 'admin.menu.healthActions', 'playerHealth', id, { icon = 'heal' }),
+		modelRow(target, M.Target.ModelOf(id)),
+	})
 	local link = links()
 	if link.WHERE or link.JOB or link.GANG or link.MONEY then
-		items[#items + 1] = go('character', 'admin.menu.character', 'playerCharacter', id)
+		items[#items + 1] = go('character', 'admin.menu.character', 'playerCharacter', id,
+			{ icon = 'tag' })
 	end
-	items[#items + 1] = go('items', 'admin.menu.items', 'playerItems', id)
+	items[#items + 1] = go('items', 'admin.menu.items', 'playerItems', id, { icon = 'weapon' })
 	if inventoryUp() then
-		items[#items + 1] = go('inventory', 'admin.menu.inventory', 'playerInventory', id)
+		items[#items + 1] = go('inventory', 'admin.menu.inventory', 'playerInventory', id,
+			{ icon = 'box' })
 	end
 
 	items[#items + 1] = section('admin.menu.section.moderation')
-	items[#items + 1] = form('kick', 'admin.menu.kick', 'kick', id, Command.MODERATE_KICK)
-	items[#items + 1] = form('ban', 'admin.menu.ban', 'ban', id, Command.MODERATE_BAN)
+	items[#items + 1] = icon(form('kick', 'admin.menu.kick', 'kick', id, Command.MODERATE_KICK),
+		'door')
+	items[#items + 1] = icon(form('ban', 'admin.menu.ban', 'ban', id, Command.MODERATE_BAN), 'ban')
 	return nameOf(id), items
 end
 
 SCREENS.playerMove = function(id)
 	local target = tostring(id)
 	return playerTitle(id, 'admin.menu.movement'), {
-		command('goto', 'admin.menu.goto', { Command.PLAYER_GOTO, target }),
-		command('bring', 'admin.menu.bring', { Command.PLAYER_BRING, target }, 'roster'),
-		go('send', 'admin.menu.send', 'locations', id),
-		form('coords', 'admin.menu.coords', 'coords', id, Command.PLAYER_TP),
-		command('observe', 'admin.menu.observe', { Command.PLAYER_OBSERVE, target }),
+		icon(command('goto', 'admin.menu.goto', { Command.PLAYER_GOTO, target }), 'location'),
+		icon(command('bring', 'admin.menu.bring', { Command.PLAYER_BRING, target }, 'roster'),
+			'arrow'),
+		go('send', 'admin.menu.send', 'locations', id, { icon = 'map' }),
+		icon(form('coords', 'admin.menu.coords', 'coords', id, Command.PLAYER_TP), 'location'),
+		icon(command('observe', 'admin.menu.observe', { Command.PLAYER_OBSERVE, target }), 'eye'),
 	}
 end
 
 SCREENS.playerHealth = function(id)
 	local target = tostring(id)
 	return playerTitle(id, 'admin.menu.healthActions'), {
-		command('heal', 'admin.menu.heal', { Command.PLAYER_HEAL, target }, 'roster'),
-		command('revive', 'admin.menu.revive', { Command.PLAYER_REVIVE, target }, 'roster'),
-		switch('god', 'admin.menu.god', { Command.PLAYER_GOD, target }, Client.GodMode(id)),
-		switch('freeze', 'admin.menu.freeze', { Command.PLAYER_FREEZE, target },
-			M.Target.IsFrozen(id)),
-		form('health', 'admin.menu.health', 'health', id, Command.PLAYER_HEALTH),
-		form('armor', 'admin.menu.armor', 'armor', id, Command.PLAYER_ARMOR),
-		section(),
-		guarded('kill', 'admin.menu.kill', { Command.PLAYER_KILL, target }, 'admin.confirm.kill'),
+		icon(command('heal', 'admin.menu.heal', { Command.PLAYER_HEAL, target }, 'roster'), 'heal'),
+		icon(command('revive', 'admin.menu.revive', { Command.PLAYER_REVIVE, target }, 'roster'),
+			'heart'),
+		icon(switch('god', 'admin.menu.god', { Command.PLAYER_GOD, target }, Client.GodMode(id)),
+			'shield'),
+		icon(switch('freeze', 'admin.menu.freeze', { Command.PLAYER_FREEZE, target },
+			M.Target.IsFrozen(id)), 'lock'),
+		icon(form('health', 'admin.menu.health', 'health', id, Command.PLAYER_HEALTH), 'heal'),
+		icon(form('armor', 'admin.menu.armor', 'armor', id, Command.PLAYER_ARMOR), 'shield'),
+		section('admin.menu.section.danger'),
+		icon(guarded('kill', 'admin.menu.kill', { Command.PLAYER_KILL, target },
+			'admin.confirm.kill'), 'warning'),
 	}
 end
 
@@ -358,12 +601,17 @@ SCREENS.playerCharacter = function(id)
 	local link = links()
 	local items = {}
 	if link.WHERE then
-		items[#items + 1] = command('record', 'admin.menu.record', { link.WHERE, target })
+		items[#items + 1] = icon(command('record', 'admin.menu.record', { link.WHERE, target }),
+			'info')
 	end
-	if link.JOB then items[#items + 1] = form('job', 'admin.menu.job', 'job', id, link.JOB) end
-	if link.GANG then items[#items + 1] = form('gang', 'admin.menu.gang', 'gang', id, link.GANG) end
+	if link.JOB then
+		items[#items + 1] = icon(form('job', 'admin.menu.job', 'job', id, link.JOB), 'tag')
+	end
+	if link.GANG then
+		items[#items + 1] = icon(form('gang', 'admin.menu.gang', 'gang', id, link.GANG), 'flag')
+	end
 	if link.MONEY then
-		items[#items + 1] = form('money', 'admin.menu.money', 'money', id, link.MONEY)
+		items[#items + 1] = icon(form('money', 'admin.menu.money', 'money', id, link.MONEY), 'money')
 	end
 	if #items == 0 then items[1] = empty('admin.menu.catalogEmpty') end
 	return playerTitle(id, 'admin.menu.character'), items
@@ -372,7 +620,8 @@ end
 SCREENS.playerItems = function(id)
 	local target = tostring(id)
 	return playerTitle(id, 'admin.menu.items'), append({
-		go('giveVehicle', 'admin.menu.giveVehicle', 'vehicleClasses', id),
+		section('admin.menu.section.vehicles'),
+		go('giveVehicle', 'admin.menu.giveVehicle', 'vehicleClasses', id, { icon = 'vehicle' }),
 		section('admin.menu.section.weapons'),
 	}, weaponRows(target, 'admin.menu.giveWeapon'))
 end
@@ -384,21 +633,28 @@ end
 SCREENS.self = function()
 	local items = append({
 		section('admin.menu.section.movement'),
-		switch('noclip', 'admin.menu.noclip', { Command.SELF_NOCLIP }, Client.IsNoclip()),
-		command('maptravel', 'admin.menu.maptravel', { Command.SELF_MAPTRAVEL }),
-		go('teleport', 'admin.menu.teleport', 'locations', 'me'),
-		form('coords', 'admin.menu.coords', 'coords', 'me', Command.PLAYER_TP),
-		command('pos', 'admin.menu.pos', { Command.SELF_POS }),
+		icon(switch('noclip', 'admin.menu.noclip', { Command.SELF_NOCLIP }, Client.IsNoclip()),
+			'bolt'),
+		icon(command('maptravel', 'admin.menu.maptravel', { Command.SELF_MAPTRAVEL }), 'map'),
+		go('teleport', 'admin.menu.teleport', 'locations', 'me', { icon = 'location' }),
+		icon(form('coords', 'admin.menu.coords', 'coords', 'me', Command.PLAYER_TP), 'location'),
+		icon(command('pos', 'admin.menu.pos', { Command.SELF_POS }), 'info'),
 
 		section('admin.menu.section.view'),
-		switch('tags', 'admin.menu.tags', { Command.SELF_TAGS }, M.Tags.IsShown()),
-		switch('invisible', 'admin.menu.invisible', { Command.SELF_INVISIBLE },
-			M.Target.IsInvisible()),
+		icon(switch('tags', 'admin.menu.tags', { Command.SELF_TAGS }, M.Tags.IsShown()), 'tag'),
+		icon(flip('tagsOwn', 'admin.menu.tagsOwn', 'tagsOwn', M.Tags.IsOwnShown(), M.Tags.IsShown(),
+			'admin.menu.tagsOwnOff'), 'tag'),
+		icon(switch('invisible', 'admin.menu.invisible', { Command.SELF_INVISIBLE },
+			M.Target.IsInvisible()), 'hidden'),
+
+		section('admin.menu.section.body'),
+		modelRow('me', M.Target.SelfModel()),
+		icon(command('modelOff', 'admin.menu.modelOff', { Command.SELF_MODEL, 'off' }), 'refresh'),
 
 		section('admin.menu.section.health'),
-		command('heal', 'admin.menu.heal', { Command.SELF_HEAL }),
-		command('revive', 'admin.menu.revive', { Command.SELF_REVIVE }),
-		switch('god', 'admin.menu.god', { Command.SELF_GOD }, Client.GodMode()),
+		icon(command('heal', 'admin.menu.heal', { Command.SELF_HEAL }), 'heal'),
+		icon(command('revive', 'admin.menu.revive', { Command.SELF_REVIVE }), 'heart'),
+		icon(switch('god', 'admin.menu.god', { Command.SELF_GOD }, Client.GodMode()), 'shield'),
 
 		section('admin.menu.section.weapons'),
 	}, weaponRows('me', 'admin.menu.giveMe'))
@@ -411,112 +667,209 @@ end
 
 SCREENS.vehicles = function()
 	local items = {
-		go('spawn', 'admin.menu.spawn', 'vehicleClasses', 'me'),
+		section('admin.menu.section.spawn'),
+		go('spawn', 'admin.menu.spawn', 'vehicleClasses', 'me', { icon = 'vehicle' }),
 		section('admin.menu.section.nearest'),
-		command('repair', 'admin.menu.repair', { Command.VEHICLE_REPAIR, 'near', 'full' }),
-		command('repairVisual', 'admin.menu.repairVisual',
-			{ Command.VEHICLE_REPAIR, 'near', 'visual' }),
-		command('enter', 'admin.menu.enter', { Command.VEHICLE_ENTER, 'near' }),
+		icon(command('repair', 'admin.menu.repair', { Command.VEHICLE_REPAIR, 'near', 'full' }),
+			'tool'),
+		icon(command('repairVisual', 'admin.menu.repairVisual',
+			{ Command.VEHICLE_REPAIR, 'near', 'visual' }), 'tool'),
+		icon(command('enter', 'admin.menu.enter', { Command.VEHICLE_ENTER, 'near' }), 'door'),
 	}
+	local flags = {}
 	for _, flag in ipairs(M.Section('VEHICLES').FLAGS or {}) do
 		if type(flag) == 'string' and flag:match('^[%w_]+$') then
-			items[#items + 1] = command('flag_' .. flag,
+			flags[#flags + 1] = icon(command('flag_' .. flag,
 				{ text = locale('admin.menu.flag', { flag = flag }) },
-				{ Command.VEHICLE_FLAG, 'near', flag })
+				{ Command.VEHICLE_FLAG, 'near', flag }), 'flag')
 		end
 	end
-	items[#items + 1] = command('remove', 'admin.menu.remove', { Command.VEHICLE_REMOVE, 'near' })
+	-- The flags are a band of their own: they are the only rows on this screen
+	-- that change a state rather than do a thing, and without a rule over them
+	-- they read as five more verbs in the same list.
+	if #flags > 0 then
+		items[#items + 1] = section('admin.menu.section.flags')
+		append(items, flags)
+	end
 	items[#items + 1] = section('admin.menu.section.cleanup')
-	items[#items + 1] = command('removeMine', 'admin.menu.removeMine',
-		{ Command.VEHICLE_REMOVE, 'mine' })
-	items[#items + 1] = guarded('cleanup', 'admin.menu.cleanup', { Command.VEHICLE_CLEANUP },
-		'admin.confirm.cleanup')
+	items[#items + 1] = icon(command('remove', 'admin.menu.remove',
+		{ Command.VEHICLE_REMOVE, 'near' }), 'trash')
+	items[#items + 1] = icon(command('removeMine', 'admin.menu.removeMine',
+		{ Command.VEHICLE_REMOVE, 'mine' }), 'trash')
+	items[#items + 1] = icon(guarded('cleanup', 'admin.menu.cleanup', { Command.VEHICLE_CLEANUP },
+		'admin.confirm.cleanup'), 'warning')
 	return locale('admin.menu.vehicles'), items
 end
 
 SCREENS.vehicleClasses = function(target)
-	local items = {}
+	local classes = {}
 	for _, class in ipairs(Catalog.Classes()) do
-		if #class.members > 0 then
-			items[#items + 1] = go('class_' .. class.key, { text = class.label }, 'vehicleList',
-				{ t = target, c = class.key }, { value = tostring(#class.members) })
-		end
+		if #class.members > 0 then classes[#classes + 1] = class end
 	end
-	if #items == 0 then items[1] = empty('admin.menu.catalogEmpty') end
+	local items = searchRows(#classes, #classes)
+	for _, class in ipairs(classes) do
+		items[#items + 1] = go('class_' .. class.key, { text = class.label }, 'vehicleList',
+			{ t = target, c = class.key }, { value = tostring(#class.members), icon = 'folder' })
+	end
+	if #classes == 0 then items[#items + 1] = empty('admin.menu.catalogEmpty') end
 	return titleFor('admin.menu.vehicles', target), items
 end
 
 SCREENS.vehicleList = function(arg)
 	local target = type(arg) == 'table' and arg.t or 'me'
+	local query = filtering()
 	local found
 	for _, class in ipairs(Catalog.Classes()) do
 		if type(arg) == 'table' and class.key == arg.c then found = class end
 	end
-	local title, items = paged(found and found.members or {}, 'vehicleList',
+	local all = found and found.members or {}
+	local matching = {}
+	for _, entry in ipairs(all) do
+		if matches(query, entry.label, entry.name) then matching[#matching + 1] = entry end
+	end
+	local title, listed = paged(matching, 'vehicleList',
 		type(arg) == 'table' and arg or {}, found and found.label or '?', function(entry)
 			local tokens = target == 'me' and { Command.VEHICLE_SPAWN, entry.name }
 				or { Command.VEHICLE_GIVE, tostring(target), entry.name }
-			return command('entry_' .. entry.name, { text = entry.label }, tokens)
+			local item = icon(command('entry_' .. entry.name, { text = entry.label }, tokens),
+				'vehicle')
+			item.description = entry.name
+			return item
 		end)
-	if #items == 0 then items[1] = empty('admin.menu.catalogEmpty') end
+	local items = append(searchRows(#matching, #all), listed)
+	if #matching == 0 then
+		items[#items + 1] = empty(query and 'admin.menu.noMatch' or 'admin.menu.catalogEmpty')
+	end
+	return title, items
+end
+
+SCREENS.pedFamilies = function(target)
+	local families = {}
+	for _, family in ipairs(Peds.Families()) do
+		if #family.members > 0 then families[#families + 1] = family end
+	end
+	local items = searchRows(#families, #families)
+	for _, family in ipairs(families) do
+		items[#items + 1] = go('family_' .. family.key, { text = family.label }, 'pedList',
+			{ t = target, f = family.key }, { value = tostring(#family.members), icon = 'folder' })
+	end
+	if #families == 0 then items[#items + 1] = empty('admin.menu.catalogEmpty') end
+	items[#items + 1] = section()
+	items[#items + 1] = icon(command('modelOff', 'admin.menu.modelOff', modelTokens(target, 'off')),
+		'refresh')
+	return titleFor('admin.menu.model', target), items
+end
+
+SCREENS.pedList = function(arg)
+	local target = type(arg) == 'table' and arg.t or 'me'
+	local query = filtering()
+	local found
+	for _, family in ipairs(Peds.Families()) do
+		if type(arg) == 'table' and family.key == arg.f then found = family end
+	end
+	local all = found and found.members or {}
+	local matching = {}
+	for _, entry in ipairs(all) do
+		if matches(query, entry.label, entry.name) then matching[#matching + 1] = entry end
+	end
+	local title, listed = paged(matching, 'pedList',
+		type(arg) == 'table' and arg or {}, found and found.label or '?', function(entry)
+			local item = icon(command('ped_' .. entry.name, { text = entry.label },
+				modelTokens(target, entry.name)), 'person')
+			item.description = entry.name
+			return item
+		end)
+	local items = append(searchRows(#matching, #all), listed)
+	if #matching == 0 then
+		items[#items + 1] = empty(query and 'admin.menu.noMatch' or 'admin.menu.catalogEmpty')
+	end
 	return title, items
 end
 
 SCREENS.weaponList = function(arg)
 	local target = type(arg) == 'table' and tostring(arg.t) or 'me'
-	local weapons = {}
+	local query = filtering()
+	local weapons, matching = {}, {}
 	for _, entry in ipairs(catalog.rows) do
-		if entry.weapon then weapons[#weapons + 1] = entry end
+		if entry.weapon then
+			weapons[#weapons + 1] = entry
+			if matches(query, entry.label, entry.name) then matching[#matching + 1] = entry end
+		end
 	end
-	local title, items = paged(weapons, 'weaponList', type(arg) == 'table' and arg or {},
+	local title, listed = paged(matching, 'weaponList', type(arg) == 'table' and arg or {},
 		locale('admin.menu.weapons'), function(entry)
-			local item = offline(command('entry_' .. entry.name, { text = entry.label },
-				{ Command.WEAPON_GIVE, target, entry.name }))
+			local item = offline(icon(command('entry_' .. entry.name, { text = entry.label },
+				{ Command.WEAPON_GIVE, target, entry.name }), 'weapon'))
 			item.description = entry.name
 			return item
 		end)
-	if #items == 0 then items[1] = placeholder(catalog, 'admin.menu.catalogEmpty') end
+	local items = append(searchRows(#matching, #weapons), listed)
+	if #matching == 0 then
+		items[#items + 1] = query and empty('admin.menu.noMatch')
+			or placeholder(catalog, 'admin.menu.catalogEmpty')
+	end
 	return title, items
 end
 
 SCREENS.ammoList = function(target)
-	local items = {}
+	local query = filtering()
+	local kinds, rows = 0, {}
 	for _, entry in ipairs(catalog.rows) do
-		if entry.ammo and #items < MAX_LISTED then
-			local item = form('ammo_' .. entry.name, 'admin.menu.giveAmmo', 'ammoGive',
-				{ t = tostring(target), n = entry.name, l = entry.label }, Command.WEAPON_GIVEAMMO)
-			item.label = entry.label
-			item.description = entry.name
-			items[#items + 1] = offline(item)
+		if entry.ammo then
+			kinds = kinds + 1
+			if matches(query, entry.label, entry.name) and #rows < MAX_LISTED then
+				local item = form('ammo_' .. entry.name, 'admin.menu.giveAmmo', 'ammoGive',
+					{ t = tostring(target), n = entry.name, l = entry.label },
+					Command.WEAPON_GIVEAMMO)
+				item.label = entry.label
+				item.description = entry.name
+				rows[#rows + 1] = offline(icon(item, 'ammo'))
+			end
 		end
 	end
-	if #items == 0 then items[1] = placeholder(catalog, 'admin.menu.catalogEmpty') end
+	local items = append(searchRows(#rows, kinds), rows)
+	if #rows == 0 then
+		items[#items + 1] = query and empty('admin.menu.noMatch')
+			or placeholder(catalog, 'admin.menu.catalogEmpty')
+	end
 	return titleFor('admin.menu.giveAmmo', target), items
 end
 
 SCREENS.itemCategories = function(arg)
+	local query = filtering()
 	local counts, names = {}, {}
 	for _, entry in ipairs(catalog.rows) do
 		if counts[entry.category] == nil then names[#names + 1] = entry.category end
 		counts[entry.category] = (counts[entry.category] or 0) + 1
 	end
 	table.sort(names)
-	local items = {}
+	local matching = {}
 	for _, name in ipairs(names) do
-		items[#items + 1] = go('cat_' .. name, { text = name }, 'itemList',
-			{ t = arg.t, m = arg.m, c = name }, { value = tostring(counts[name]) })
+		if matches(query, name) then matching[#matching + 1] = name end
 	end
-	if #items == 0 then items[1] = placeholder(catalog, 'admin.menu.catalogEmpty') end
+	local items = searchRows(#matching, #names)
+	for _, name in ipairs(matching) do
+		items[#items + 1] = go('cat_' .. name, { text = name }, 'itemList',
+			{ t = arg.t, m = arg.m, c = name }, { value = tostring(counts[name]), icon = 'folder' })
+	end
+	if #matching == 0 then
+		items[#items + 1] = query and empty('admin.menu.noMatch')
+			or placeholder(catalog, 'admin.menu.catalogEmpty')
+	end
 	local titleKey = arg.m == 'holders' and 'admin.menu.invHolders' or 'admin.menu.invGive'
 	return titleFor(titleKey, arg.t), items
 end
 
 SCREENS.itemList = function(arg)
-	local matching = {}
+	local query = filtering()
+	local all, matching = {}, {}
 	for _, entry in ipairs(catalog.rows) do
-		if entry.category == arg.c then matching[#matching + 1] = entry end
+		if entry.category == arg.c then
+			all[#all + 1] = entry
+			if matches(query, entry.label, entry.name) then matching[#matching + 1] = entry end
+		end
 	end
-	local title, items = paged(matching, 'itemList', arg, arg.c, function(entry)
+	local title, listed = paged(matching, 'itemList', arg, arg.c, function(entry)
 		local item
 		if arg.m == 'holders' then
 			item = command('item_' .. entry.name, { text = entry.label },
@@ -527,77 +880,107 @@ SCREENS.itemList = function(arg)
 			item.label = entry.label
 		end
 		item.description = entry.name
-		return item
+		return icon(item, arg.m == 'holders' and 'search' or 'box')
 	end)
-	if #items == 0 then items[1] = placeholder(catalog, 'admin.menu.catalogEmpty') end
+	local items = append(searchRows(#matching, #all), listed)
+	if #matching == 0 then
+		items[#items + 1] = query and empty('admin.menu.noMatch')
+			or placeholder(catalog, 'admin.menu.catalogEmpty')
+	end
 	return title, items
 end
 
 SCREENS.bag = function(target)
-	local items = {}
+	local query = filtering()
+	local held, rows = 0, {}
 	if bag.target == tostring(target) then
 		for _, entry in ipairs(bag.rows) do
-			if #items >= MAX_LISTED then break end
-			local item = form(('slot_%d'):format(entry.slot), 'admin.menu.invRemove', 'itemRemove',
-				{ t = tostring(target), n = entry.name, l = entry.label, c = entry.count },
-				Command.INVENTORY_REMOVE)
-			item.label = ('%d  %s'):format(entry.slot, entry.label)
-			if not item.disabled then item.value = 'x' .. tostring(entry.count) end
-			item.description = entry.name
-			items[#items + 1] = item
+			held = held + 1
+			if matches(query, entry.label, entry.name, entry.slot) and #rows < MAX_LISTED then
+				local item = form(('slot_%d'):format(entry.slot), 'admin.menu.invRemove',
+					'itemRemove',
+					{ t = tostring(target), n = entry.name, l = entry.label, c = entry.count },
+					Command.INVENTORY_REMOVE)
+				item.label = ('%d  %s'):format(entry.slot, entry.label)
+				if not item.disabled then item.value = 'x' .. tostring(entry.count) end
+				item.description = entry.name
+				rows[#rows + 1] = icon(item, 'box')
+			end
 		end
 	end
-	if #items == 0 then
-		items[1] = placeholder(bag.target == tostring(target) and bag or { loaded = false },
-			'admin.menu.bagEmpty')
+	local items = append(searchRows(#rows, held), rows)
+	if #rows == 0 then
+		items[#items + 1] = query and empty('admin.menu.noMatch')
+			or placeholder(bag.target == tostring(target) and bag or { loaded = false },
+				'admin.menu.bagEmpty')
 	end
 	return titleFor('admin.menu.invRemove', target), items
 end
 
 SCREENS.locations = function(target)
-	local items = {}
-	for index = 1, math.min(#locations, MAX_LISTED) do
+	local query = filtering()
+	local rows = {}
+	for index = 1, #locations do
 		local entry = locations[index]
-		local item = command('loc_' .. entry.name, { text = entry.label },
-			{ Command.PLAYER_SEND, tostring(target), entry.name })
-		if not item.disabled and entry.runtime then item.value = locale('admin.menu.runtime') end
-		items[#items + 1] = item
+		if matches(query, entry.label, entry.name) and #rows < MAX_LISTED then
+			local item = icon(command('loc_' .. entry.name, { text = entry.label },
+				{ Command.PLAYER_SEND, tostring(target), entry.name }), 'location')
+			if not item.disabled and entry.runtime then item.value = locale('admin.menu.runtime') end
+			rows[#rows + 1] = item
+		end
 	end
-	if #items == 0 then items[1] = empty('admin.menu.noLocations') end
+	local items = append(searchRows(#rows, #locations), rows)
+	if #rows == 0 then
+		items[#items + 1] = empty(query and 'admin.menu.noMatch' or 'admin.menu.noLocations')
+	end
 	local title = target == 'me' and locale('admin.menu.teleport')
 		or ('%s: %s'):format(locale('admin.menu.send'), nameOf(target))
 	return title, items
 end
 
 SCREENS.saved = function()
-	local items = {}
+	local query = filtering()
+	local runtime, rows = 0, {}
 	for _, entry in ipairs(locations) do
-		if #items >= MAX_LISTED then break end
 		if entry.runtime then
-			items[#items + 1] = command('forget_' .. entry.name,
-				{ text = locale('admin.menu.forget', { label = entry.label }) },
-				{ Command.WORLD_LOC_REMOVE, entry.name }, 'locations')
+			runtime = runtime + 1
+			if matches(query, entry.label, entry.name) and #rows < MAX_LISTED then
+				rows[#rows + 1] = icon(command('forget_' .. entry.name,
+					{ text = locale('admin.menu.forget', { label = entry.label }) },
+					{ Command.WORLD_LOC_REMOVE, entry.name }, 'locations'), 'trash')
+			end
 		end
 	end
-	if #items == 0 then items[1] = empty('admin.menu.noSaved') end
+	local items = append(searchRows(#rows, runtime), rows)
+	if #rows == 0 then
+		items[#items + 1] = empty(query and 'admin.menu.noMatch' or 'admin.menu.noSaved')
+	end
 	return locale('admin.menu.saved'), items
 end
 
 SCREENS.world = function()
 	local link = links()
 	local items = {
-		form('announce', 'admin.menu.announce', 'announce', nil, Command.WORLD_ANNOUNCE),
+		section('admin.menu.section.broadcast'),
+		icon(form('announce', 'admin.menu.announce', 'announce', nil, Command.WORLD_ANNOUNCE),
+			'talk'),
 		section('admin.menu.section.combat'),
-		switch('pvp', 'admin.menu.pvp', { Command.WORLD_PVP }, M.Combat.IsPvp()),
+		icon(switch('pvp', 'admin.menu.pvp', { Command.WORLD_PVP }, M.Combat.IsPvp()), 'weapon'),
 	}
 	if link.WEATHER_SET or link.TIME then
 		items[#items + 1] = section('admin.menu.section.sky')
-		if link.WEATHER_SET then items[#items + 1] = go('weather', 'admin.menu.weather', 'weather') end
-		if link.TIME then items[#items + 1] = go('time', 'admin.menu.time', 'time') end
+		if link.WEATHER_SET then
+			items[#items + 1] = go('weather', 'admin.menu.weather', 'weather', nil,
+				{ icon = 'weather' })
+		end
+		if link.TIME then
+			items[#items + 1] = go('time', 'admin.menu.time', 'time', nil, { icon = 'clock' })
+		end
 	end
 	items[#items + 1] = section('admin.menu.section.locations')
-	items[#items + 1] = form('save', 'admin.menu.saveHere', 'location', nil, Command.WORLD_LOC_ADD)
-	items[#items + 1] = go('saved', 'admin.menu.saved', 'saved')
+	items[#items + 1] = icon(form('save', 'admin.menu.saveHere', 'location', nil,
+		Command.WORLD_LOC_ADD), 'plus')
+	items[#items + 1] = go('saved', 'admin.menu.saved', 'saved', nil, { icon = 'list' })
 	return locale('admin.menu.world'), items
 end
 
@@ -608,19 +991,22 @@ SCREENS.weather = function()
 		local presets = M.Settings.WEATHER_PRESETS
 		for _, preset in ipairs(type(presets) == 'table' and presets or {}) do
 			if type(preset) == 'string' and preset:match('^[%w_%-]+$') then
-				items[#items + 1] = command('preset_' .. preset, { text = preset },
-					{ link.WEATHER_SET, preset })
+				items[#items + 1] = icon(command('preset_' .. preset, { text = preset },
+					{ link.WEATHER_SET, preset }), 'weather')
 			end
 		end
+		if #items > 0 then table.insert(items, 1, section('admin.menu.section.presets')) end
 	end
-	items[#items + 1] = section()
+	items[#items + 1] = section('admin.menu.section.clock')
 	if link.WEATHER_NEXT then
-		items[#items + 1] = command('next', 'admin.menu.weatherNext', { link.WEATHER_NEXT })
+		items[#items + 1] = icon(command('next', 'admin.menu.weatherNext', { link.WEATHER_NEXT }),
+			'refresh')
 	end
 	if link.WEATHER_FREEZE then
-		items[#items + 1] = command('hold', 'admin.menu.weatherHold', { link.WEATHER_FREEZE, 'on' })
-		items[#items + 1] = command('release', 'admin.menu.weatherRelease',
-			{ link.WEATHER_FREEZE, 'off' })
+		items[#items + 1] = icon(command('hold', 'admin.menu.weatherHold',
+			{ link.WEATHER_FREEZE, 'on' }), 'lock')
+		items[#items + 1] = icon(command('release', 'admin.menu.weatherRelease',
+			{ link.WEATHER_FREEZE, 'off' }), 'refresh')
 	end
 	return locale('admin.menu.weather'), items
 end
@@ -632,16 +1018,20 @@ SCREENS.time = function()
 		local times = M.Settings.TIMES
 		for _, clock in ipairs(type(times) == 'table' and times or {}) do
 			if type(clock) == 'string' and clock:match('^%d%d?:%d%d$') then
-				items[#items + 1] = command('at_' .. (clock:gsub(':', '_')), { text = clock },
-					{ link.TIME, clock })
+				items[#items + 1] = icon(command('at_' .. (clock:gsub(':', '_')), { text = clock },
+					{ link.TIME, clock }), 'clock')
 			end
 		end
-		items[#items + 1] = form('custom', 'admin.menu.timeCustom', 'time', nil, link.TIME)
+		if #items > 0 then table.insert(items, 1, section('admin.menu.section.presets')) end
+		items[#items + 1] = icon(form('custom', 'admin.menu.timeCustom', 'time', nil, link.TIME),
+			'clock')
 	end
-	items[#items + 1] = section()
+	items[#items + 1] = section('admin.menu.section.clock')
 	if link.TIME_FREEZE then
-		items[#items + 1] = command('hold', 'admin.menu.clockHold', { link.TIME_FREEZE, 'on' })
-		items[#items + 1] = command('release', 'admin.menu.clockRelease', { link.TIME_FREEZE, 'off' })
+		items[#items + 1] = icon(command('hold', 'admin.menu.clockHold',
+			{ link.TIME_FREEZE, 'on' }), 'lock')
+		items[#items + 1] = icon(command('release', 'admin.menu.clockRelease',
+			{ link.TIME_FREEZE, 'off' }), 'refresh')
 	end
 	return locale('admin.menu.time'), items
 end
@@ -649,26 +1039,29 @@ end
 SCREENS.server = function()
 	local link = links()
 	local items = {
-		command('status', 'admin.menu.status', { Command.READ_STATUS }),
-		command('audit', 'admin.menu.audit', { Command.READ_AUDIT }),
+		section('admin.menu.section.reports'),
+		icon(command('status', 'admin.menu.status', { Command.READ_STATUS }), 'info'),
+		icon(command('audit', 'admin.menu.audit', { Command.READ_AUDIT }), 'list'),
 		section('admin.menu.section.chat'),
-		command('list', 'admin.menu.playerList', { Command.READ_PLAYERS }),
-		command('locations', 'admin.menu.locationList', { Command.READ_LOCATIONS }),
+		icon(command('list', 'admin.menu.playerList', { Command.READ_PLAYERS }), 'person'),
+		icon(command('locations', 'admin.menu.locationList', { Command.READ_LOCATIONS }),
+			'location'),
 	}
 	if link.PLAYERS or link.SAVE then
 		items[#items + 1] = section('admin.menu.section.characters')
 		if link.PLAYERS then
-			items[#items + 1] = command('characters', 'admin.menu.characters', { link.PLAYERS })
+			items[#items + 1] = icon(command('characters', 'admin.menu.characters', { link.PLAYERS }),
+				'person')
 		end
 		if link.SAVE then
-			items[#items + 1] = guarded('save', 'admin.menu.saveAll', { link.SAVE },
-				'admin.confirm.save')
+			items[#items + 1] = icon(guarded('save', 'admin.menu.saveAll', { link.SAVE },
+				'admin.confirm.save'), 'refresh')
 		end
 	end
 	if inventoryUp() and link.INVENTORY_HOLDERS then
 		items[#items + 1] = section('admin.menu.section.inventory')
 		items[#items + 1] = goFor('holders', 'admin.menu.invHolders', 'itemCategories',
-			{ m = 'holders' }, link.INVENTORY_HOLDERS)
+			{ m = 'holders' }, link.INVENTORY_HOLDERS, { icon = 'search' })
 	end
 	return locale('admin.menu.server'), items
 end
@@ -676,9 +1069,9 @@ end
 SCREENS.confirm = function(arg)
 	-- Cancel first, so the cursor starts on the harmless row.
 	return locale(arg.key), {
-		row('cancel', locale('admin.menu.cancel'), { back = true }),
+		row('cancel', locale('admin.menu.cancel'), { back = true }, { icon = 'back' }),
 		row('confirm', locale('admin.menu.confirm'), { confirmed = true },
-			{ description = table.concat(arg.tokens, ' ') }),
+			{ description = table.concat(arg.tokens, ' '), icon = 'warning' }),
 	}
 end
 
@@ -689,6 +1082,26 @@ local onAction
 -- The screen at the top of the stack.
 local function top()
 	return stack[#stack]
+end
+
+-- The ids of the filter block, which is not part of the list it sits over.
+local HEAD_ROWS = { search = true, searchClear = true, state = true }
+
+-- WHERE THE CURSOR STARTS on a screen that has not been visited yet.
+--
+-- The contract's own rule is "the first row it can stand on", which was right
+-- until a filter block appeared above the list: from then on, opening Players
+-- landed the cursor on the search box, and Enter -- the key an operator presses
+-- without looking -- asked them to type instead of opening the first player.
+-- The box is a way INTO a list and not the list, so it is skipped. A screen with
+-- nothing under the block lands on Back, which is the only thing left to do.
+local function firstBelowHead(items)
+	for _, item in ipairs(items) do
+		if not item.separator and not item.disabled and not HEAD_ROWS[item.id] then
+			return item.id
+		end
+	end
+	return nil
 end
 
 -- Puts the top screen up, or rebuilds it in place.
@@ -704,10 +1117,10 @@ local function draw(inPlace)
 	if current.screen ~= 'confirm' then
 		items[#items + 1] = section()
 		if #stack > 1 then
-			items[#items + 1] = row('back', locale('admin.menu.back'), nil, { back = true })
+			items[#items + 1] = row('back', locale('admin.menu.back'), nil, { back = true, icon = 'back' })
 		else
 			local key = Keys.Effective(Keys.MENU)
-			items[#items + 1] = { id = 'close', label = locale('admin.menu.close'), close = true,
+			items[#items + 1] = { id = 'close', label = locale('admin.menu.close'), close = true, icon = 'door',
 				description = key and locale('admin.menu.closeKey', { key = key }) or nil }
 		end
 	end
@@ -726,7 +1139,10 @@ local function draw(inPlace)
 		owner = M.OWNER,
 		id = 'admin.' .. current.screen,
 		title = title,
-		cursor = current.cursor,
+		-- A remembered row first, then the first row UNDER the filter block. Only
+		-- the open path needs it: an update keeps the cursor where the player left
+		-- it, which is the whole point of updating in place.
+		cursor = current.cursor or firstBelowHead(items),
 		status = status and status.text or nil,
 		statusBad = status and status.ok == false or nil,
 		items = items,
@@ -745,7 +1161,14 @@ end
 
 -- Pushes a screen, asks for its data again, and draws it.
 local function push(screen, arg)
-	stack[#stack + 1] = { screen = screen, arg = arg }
+	-- A FILTER SURVIVES A PAGE TURN. `more` pushes the SAME screen with `p + 1`,
+	-- which is a new stack entry -- and a new entry carries no filter, so page two
+	-- of a search came back unfiltered and showed the twenty rows the operator had
+	-- just filtered away. Only the same screen inherits: pushing from a list into
+	-- one of its rows is a different question and starts clean.
+	local current = stack[#stack]
+	local carried = current and current.screen == screen and current.filter or nil
+	stack[#stack + 1] = { screen = screen, arg = arg, filter = carried }
 	-- Leaving the root is the moment to re-check what the ACL still grants.
 	if #stack == 2 then TriggerServerEvent(M.Event.REFRESH, 'access') end
 	if screen:match('^player') then
@@ -822,6 +1245,25 @@ function Menu.Run(tokens, refresh)
 		Wait(1200)
 		TriggerServerEvent(M.Event.REFRESH, refresh, arg)
 	end)
+end
+
+--- Puts a typed query on the open list screen, or clears it.
+-- Called by the search form; nothing else sets a filter. The page number goes
+-- back to one with it, because page four of the unfiltered list is almost never
+-- a page of the filtered one -- and a filter that lands the operator on an empty
+-- page reads as a search that found nothing.
+-- @author dop42
+-- @param query string|nil
+function Menu.Filter(query)
+	suspended = false
+	local current = top()
+	if current == nil then return end
+	local typed = type(query) == 'string' and Text.Bytes(query, 48) or nil
+	if typed ~= nil then typed = typed:match('^%s*(.-)%s*$') end
+	current.filter = (typed ~= nil and typed ~= '') and typed or nil
+	current.cursor = nil
+	if type(current.arg) == 'table' then current.arg.p = 1 end
+	draw()
 end
 
 --- Pushes the confirmation screen for a command line.
@@ -944,6 +1386,26 @@ onAction = function(payload)
 	-- gets that state spelled out rather than a toggle, so a row that was already
 	-- right cannot be flipped by a redraw.
 	if payload.action == 'change' then
+		-- THE STATE FILTER, which is a client flip by another name: it changes what
+		-- THIS screen lists and nothing else, so it is answered here and the list is
+		-- redrawn at once. The chosen LABEL comes back and is read to the key it
+		-- stands for -- a word from a draw that has since been replaced resolves to
+		-- nothing and is dropped rather than filtering to a state nobody picked.
+		if data.states == true then
+			local state = stateOf(payload.value)
+			if state == nil then return end
+			current.cursor = payload.itemId
+			current.state = state ~= 'all' and state or nil
+			return draw()
+		end
+		-- A CLIENT FLIP is answered here and the list is redrawn AT ONCE, rather
+		-- than after the round trip a `switch` waits on -- because there is no
+		-- round trip: the state the next draw reads is already the new one.
+		if type(data.flip) == 'string' and type(payload.value) == 'boolean' then
+			current.cursor = payload.itemId
+			if data.flip == 'tagsOwn' then M.Tags.SetOwnShown(payload.value) end
+			return draw()
+		end
 		if type(data.switch) ~= 'table' or type(payload.value) ~= 'boolean' then return end
 		current.cursor = payload.itemId
 		local tokens = {}
@@ -956,6 +1418,7 @@ onAction = function(payload)
 	current.cursor = payload.itemId
 
 	if data.back then return pop() end
+	if data.clearFilter then return Menu.Filter(nil) end
 	if data.confirmed and current.screen == 'confirm' then
 		local tokens = current.arg.tokens
 		stack[#stack] = nil
@@ -1101,7 +1564,11 @@ function Menu.Start()
 			local id = tonumber(type(entry) == 'table' and entry.id or nil)
 			if id and type(entry.name) == 'string' then
 				rosterIncoming[#rosterIncoming + 1] = {
-					id = id, name = entry.name, bucket = tonumber(entry.bucket) or 0,
+					id = id, name = entry.name,
+					-- Both optional: a slot with no character loaded sends neither.
+					user = type(entry.user) == 'string' and entry.user or nil,
+					citizenId = type(entry.citizenId) == 'string' and entry.citizenId or nil,
+					bucket = tonumber(entry.bucket) or 0,
 					distance = tonumber(entry.distance),
 					state = (entry.state == 'up' or entry.state == 'down' or entry.state == 'gate')
 						and entry.state or 'loading',

@@ -1,11 +1,27 @@
---- The two modal transactions: building a new face, and editing one.
+--- The two modal transactions: building a new character, and editing its face.
 -- @author dop42
 --
--- The engine's own customization mirror is the only face editor there is: an
--- option is `{ part, name, value, choices }` where `name` is an opaque 64-bit
--- catalogue hash with no human label anywhere on the platform. So this file does
--- not draw a face editor, it opens one, and everything after the player confirms
--- -- the capture, the body check, the save -- belongs here again.
+-- The engine's own screens are the only ones there are: an option is
+-- `{ part, name, value, choices }` where `name` is an opaque 64-bit catalogue
+-- hash with no human label anywhere on the platform. So this file does not draw
+-- an editor, it opens one, and everything after the player confirms -- the
+-- capture, the family, the save -- belongs here again.
+--
+-- THE TWO SCREENS ARE NOT THE SAME SCREEN.
+--
+-- * A CREATION opens the game's own character creator, which is the flow the
+--   platform offers for it: the body choice first, then the whole face. It is
+--   what decides the body family, and its answer -- `confirmed:female`,
+--   `confirmed:male` or `cancelled` -- arrives in a mailbox that `Watch` reads
+--   once. Nothing here asks the player which body to build on, and nothing here
+--   reloads one to open it on.
+-- * An EDIT opens the ripperdoc mirror on the body the character already has.
+--   The mirror cannot change a body family, which is exactly why it is the
+--   editor: the family belongs to the character row.
+--
+-- The mirror is also the fallback for a creation the creator refuses. A refused
+-- creator must not be a player who cannot make a character, so the mirror is
+-- opened on whatever body the world loaded and the family is read off it.
 
 local M = OPX.Modules.Get('appearance')
 
@@ -16,8 +32,20 @@ local Runtime = M.Runtime
 M.Editor = {}
 local Editor = M.Editor
 
--- Milliseconds an asked-for creation editor may stay unseen before a log line.
+-- Milliseconds an asked-for creation editor may stay unseen before a log line,
+-- and before a native creator nothing is holding is given up on.
 local CREATOR_UNSEEN_MS = 30000
+
+-- The bootstrap phases that PROVE the platform has a creator on screen. While the
+-- projection reads one of these there is something to wait for, and an unseen
+-- editor is a player deliberating rather than an editor that never came.
+--
+-- `creator_requested` is deliberately NOT one of them: it says the request was
+-- granted, which is exactly what a creator that never comes says too.
+local CREATOR_PHASES = {
+	creator_open = true,
+	awaiting_commit = true,
+}
 
 -- Milliseconds between two passes, matching the watch that drives this file.
 local WATCH_MS = 200
@@ -31,6 +59,11 @@ local creatorOpening = false
 local creatorAskedAtMs = 0
 local creatorShown = false
 
+-- Whether the creation screen on its way up is the game's own creator, which
+-- answers in a mailbox, rather than the mirror, which raises the host's
+-- confirmed and cancelled events like any other edit.
+local creatorNative = false
+
 -- Every code the server answers a face save with. A code outside this set is a
 -- protocol drift worth one log line, and is handled like any other refusal.
 local REFUSALS = {
@@ -42,6 +75,16 @@ local REFUSALS = {
 	['error.tooFast'] = true,
 	['error.unavailable'] = true,
 }
+
+--- Says what a creation just did, on this client's log AND in the server's.
+-- A creation happens before the player is in the world, which is exactly where a
+-- client log is hardest to ask for and where a player who is stuck can say only
+-- that nothing happened. The server's diagnostic channel caps this at 40 lines
+-- per player; a creation spends at most four.
+local function note(text)
+	Open77.log.info('[appearance] ' .. text)
+	TriggerServerEvent(M.Event.DIAGNOSTIC, text)
+end
 
 --- Releases the native transaction a moment later.
 -- Not on this stack: the engine is still settling the face it has just accepted,
@@ -70,8 +113,9 @@ end
 -- The cooldown is WAITED OUT rather than tripped: a save refused for being early
 -- is a save the player has to make again, and they cannot see that it failed.
 -- @param kind string `edit` or `create`
-local function send(payload, kind, onNotSent)
-	State.commit = { kind = kind, deadlineMs = 0 }
+-- @param family string|nil the body a creation was built on, never sent for an edit
+local function send(payload, kind, onNotSent, family)
+	State.commit = { kind = kind, family = family, deadlineMs = 0 }
 	local citizen = State.citizenId
 	local cooldown = M.ConfigMs(M.Settings.SAVE_COOLDOWN_MS) or 2000
 	local commitMs = M.ConfigMs(M.Settings.COMMIT_MS) or 20000
@@ -82,7 +126,7 @@ local function send(payload, kind, onNotSent)
 		lastSaveAtMs = Runtime.NowMs()
 		State.commit.deadlineMs = Runtime.NowMs() + commitMs
 		local sent, reason = TriggerServerEvent(M.Event.SAVE_FACE,
-			{ snapshot = payload, citizenId = citizen })
+			{ snapshot = payload, citizenId = citizen, family = family })
 		if sent then return end
 		State.commit = nil
 		onNotSent(tostring(reason or 'not_sent'))
@@ -93,27 +137,82 @@ end
 -- Nobody is ever left unable to enter: the character exists either way, only its
 -- face does not. It is not reopened for this character again this session, or it
 -- would come straight back up on top of somebody standing in the city.
+--
+-- EVERY CREATION THAT ENDS BADLY ENDS HERE, which is why the bootstrap is
+-- answered here too. Opening the game's own creator arms a bootstrap transaction
+-- and the creator is the only thing that would have answered it; one left armed
+-- is a player behind the loading cover for the rest of the session. Spending it
+-- on the body already loaded costs nothing when none was armed -- a bootstrap
+-- that is already spent ignores this.
 local function enterPristine(reason)
 	State.creating = false
 	State.creatorUp = false
+	creatorNative = false
 	State.commit = nil
 	State.creationRefused = true
+	Runtime.ResolveBootstrap(Runtime.BodyFamily() or Runtime.DefaultFamily())
+	note(('the creation ended with no face stored: %s'):format(tostring(reason)))
 	Runtime.Publish({ ok = false, event = 'created', error = tostring(reason),
 		citizenId = State.citizenId })
 	Runtime.Notify('error', 'appearance.creationNotSaved', { reason = tostring(reason) })
 	Runtime.BeginPristine('creation_ended')
 end
 
---- Opens the creation editor on the character's own body, reloading it first.
+--- Opens the game's own character creator, or the mirror when it cannot be had.
+-- @author dop42
+--
+-- The body is NOT decided here and no body is reloaded to open on: the creator
+-- opens on the body choice itself, and the family it answers is the character's.
+--
+-- THE TWO SCREENS WANT OPPOSITE THINGS. The creator is the pre-game menu's and
+-- needs NO world -- waiting for one before asking for it would be waiting for
+-- the world it is there to decide, a wait nothing ends, since the bootstrap that
+-- would load it is the one the creator answers. The mirror is the opposite: it
+-- dresses a body, so it waits for a world to hold one. Falling back from the
+-- first to the second therefore has to spend the bootstrap on the way.
 local function openCreator()
 	State.creating = true
 	if creatorOpening or State.creatorUp then return end
 	creatorOpening = true
 	local citizen = State.citizenId
+
 	CreateThread(function()
+		local function gone()
+			return not State.creating or State.creatorUp or State.citizenId ~= citizen
+		end
+
+		-- Naming the branch this creation takes. A creation that opens nothing is a
+		-- player who never enters the world, and the only other evidence of which
+		-- door was tried is the absence of a screen.
+		note(('creation for %s: creator natives=%s bootstrap=%s'):format(tostring(citizen),
+			tostring(Runtime.CreatorAvailable()), tostring(Runtime.BootstrapPhase())))
+
+		if Runtime.CreatorReady() and not gone() then
+			local opened, reason = Runtime.RequestCreator()
+			if opened then
+				creatorOpening = false
+				creatorNative = true
+				State.creatorUp = true
+				creatorAskedAtMs, creatorShown = Runtime.NowMs(), false
+				note('the character creator was asked for; the body family is its answer')
+				return
+			end
+			note(('the character creator refused (%s): the mirror takes the creation')
+				:format(tostring(reason)))
+		end
+
+		-- THE MIRROR NEEDS A WORLD, AND A WORLD NEEDS THE BOOTSTRAP ANSWERED. The
+		-- creation holding it open is the only thing that would have answered it,
+		-- so waiting for a world before spending it is a wait nothing ends: the
+		-- player sits in the menu with no creator, no mirror and no world, and the
+		-- platform's readiness gate never opens -- which is what every admin screen
+		-- reads as "joining". Spent here on the body already loaded, and a no-op
+		-- when the creator took the transaction instead.
+		Runtime.ResolveBootstrap(Runtime.BodyFamily() or Runtime.DefaultFamily())
+
 		while not Runtime.Faceable() or Runtime.IsDown() do
 			-- The captured citizen id is what ends this wait: a character change
-			-- must not open a creator for the one that left.
+			-- must not open an editor for the one that left.
 			if not State.creating or State.citizenId ~= citizen then
 				creatorOpening = false
 				return
@@ -121,33 +220,19 @@ local function openCreator()
 			Wait(WATCH_MS)
 		end
 		creatorOpening = false
-		if not State.creating or State.creatorUp or State.citizenId ~= citizen then return end
+		if gone() then return end
 
-		local family = M.IsFamily(State.family) and State.family or nil
-		if family ~= nil and Runtime.BodyFamily() ~= family then
-			if State.familyAttempts >= (tonumber(M.Settings.FAMILY_RETRIES) or 2) then
-				return enterPristine('body_family_mismatch')
-			end
-			local outcome, reason = Runtime.SwitchBody(family, true)
-			if outcome == 'switching' then
-				State.familyAttempts = State.familyAttempts + 1
-				return Runtime.Notify('info', 'appearance.creatorSwitching')
-			end
-			if outcome == nil then
-				Runtime.Notify('error', 'appearance.bodyChangeFailed', { reason = tostring(reason) })
-				return enterPristine('body_family_mismatch')
-			end
-		end
-
-		local opened, reason = Open77.appearance.open({ mode = 'ripperdoc', gender = family })
-		if opened then
+		-- No `gender` is passed: there is no family to ask for yet, and passing one
+		-- would reload the world to open an editor on a body nobody chose.
+		local mirrored, refusal = Open77.appearance.open({ mode = 'ripperdoc' })
+		if mirrored then
+			creatorNative = false
 			State.creatorUp = true
 			creatorAskedAtMs, creatorShown = Runtime.NowMs(), false
-			Open77.log.info(('[appearance] creation editor asked for on the %s body')
-				:format(tostring(family)))
+			note(('the creation mirror is up on the %s body'):format(tostring(Runtime.BodyFamily())))
 			return
 		end
-		Runtime.Notify('error', 'appearance.creatorUnavailable', { reason = tostring(reason) })
+		Runtime.Notify('error', 'appearance.creatorUnavailable', { reason = tostring(refusal) })
 		enterPristine('character_creator_unavailable')
 	end)
 end
@@ -171,31 +256,39 @@ end
 
 --- Completes a creation whose face the server stored.
 -- @author dop42
-function M.Editor.FinishCreation()
+--
+-- The bootstrap the creator was opened for is answered HERE and nowhere earlier:
+-- it is what loads the world on the body that was just built, and answering it
+-- before the server held the face would have loaded a world for a creation that
+-- could still be refused.
+-- @param family string|nil the body it was built on
+function M.Editor.FinishCreation(family)
 	State.creating = false
 	State.creatorUp = false
+	creatorNative = false
+	if M.IsFamily(family) then
+		State.family = family
+		Runtime.ResolveBootstrap(family)
+	end
 	State.Wore()
-	Runtime.Publish({ ok = true, event = 'created', citizenId = State.citizenId })
+	Runtime.Publish({ ok = true, event = 'created', citizenId = State.citizenId,
+		family = State.family })
 	Runtime.Notify('success', 'appearance.created')
 	Runtime.Announce()
 end
 
---- Checks the body, captures the creation and sends it to the server.
-local function confirmCreation()
+--- Captures a confirmed creation and sends it with the body it was built on.
+-- @param family string|nil what the creator answered; the loaded body otherwise
+local function confirmCreation(family)
 	State.creatorUp = false
+	creatorNative = false
 
-	-- The body they built on has to be the body their character is: the family is
-	-- the character's, and nothing here may change it.
-	local family = Runtime.BodyFamily()
-	if M.IsFamily(State.family) and family ~= nil and family ~= State.family then
+	-- The creator names the family in its own answer. The mirror does not, so the
+	-- body the player is standing on is read instead: that is the one they built.
+	if not M.IsFamily(family) then family = Runtime.BodyFamily() end
+	if not M.IsFamily(family) then
 		Runtime.FinishMutation()
-		State.familyAttempts = State.familyAttempts + 1
-		if State.familyAttempts > (tonumber(M.Settings.FAMILY_RETRIES) or 2) then
-			return enterPristine('body_family_mismatch')
-		end
-		Runtime.Notify('warning', 'appearance.wrongBody',
-			{ family = Runtime.FamilyText(State.family) })
-		return openCreator()
+		return enterPristine('body_family_unknown')
 	end
 
 	local payload, why = Snapshot.Capture()
@@ -204,10 +297,34 @@ local function confirmCreation()
 		return enterPristine(tostring(why or 'character_capture_failed'))
 	end
 
+	-- Held here so everything after this reads the body that was built; the
+	-- character row learns it from the server, on this same message, once.
+	State.family = family
+
 	send(payload, 'create', function(reason)
 		Runtime.FinishMutation()
 		enterPristine(reason)
-	end)
+	end, family)
+end
+
+--- Reads the creator's one-shot answer and acts on it, once it has one.
+-- `confirmed:female`, `confirmed:male` and `cancelled` are the platform's own
+-- words for it. A fourth answer is a protocol drift, and ends the creation the
+-- way a cancellation does rather than being guessed at.
+local function takeCreatorResult()
+	local result = Runtime.TakeCreatorResult()
+	if result == nil then return end
+	if result == 'cancelled' then
+		Runtime.FinishMutation()
+		return enterPristine('character_creation_cancelled')
+	end
+
+	local action, family = result:match('^([^:]+):(.+)$')
+	if action == 'confirmed' and M.IsFamily(family) then return confirmCreation(family) end
+
+	Open77.log.warn(('[appearance] the character creator answered %q'):format(result))
+	Runtime.FinishMutation()
+	enterPristine('invalid_creator_result')
 end
 
 --- Asks the server to store a face, by default a capture.
@@ -299,6 +416,7 @@ local function resumeFamilyTransition()
 	if action == 'error' then
 		Runtime.Notify('error', 'appearance.bodyChangeFailed', { reason = tostring(family) })
 		State.bodyReloading = false
+		State.bodyReloadingSince = 0
 		Runtime.LiftCover('body_family_transition_error')
 		Runtime.MarkWorldEligibility('body_family_transition_error')
 		if creationStalled() then return enterPristine('body_family_mismatch') end
@@ -330,17 +448,32 @@ function M.Editor.Watch()
 	Runtime.WarnUnanswered()
 	resumeFamilyTransition()
 
+	-- The creator's answer is a mailbox with exactly one reader, and this is it.
+	if creatorNative and State.creatorUp then takeCreatorResult() end
+
 	if creationStalled() and Runtime.Faceable() then openCreator() end
 
 	if State.creatorUp and creatorAskedAtMs ~= 0 and not creatorShown then
 		local waited = Runtime.NowMs() - creatorAskedAtMs
-		if Runtime.ModalOnScreen() then
+		local phase = Runtime.BootstrapPhase()
+		if Runtime.ModalOnScreen() or CREATOR_PHASES[phase] then
 			creatorShown = true
 		elseif waited >= CREATOR_UNSEEN_MS then
 			creatorShown = true
 			Open77.log.warn(('[appearance] the creation editor asked for %d ms ago is not on ' ..
-				'screen: reset=%s life=%s'):format(waited, tostring(Runtime.PlayerResetPhase()),
-					tostring(Runtime.LifePhase())))
+				'screen: reset=%s life=%s bootstrap=%s'):format(waited,
+					tostring(Runtime.PlayerResetPhase()), tostring(Runtime.LifePhase()), phase))
+			-- Nothing on screen, and the platform's own projection has no creator
+			-- open either. That is not a creation that has to end -- the mirror is
+			-- still there. The bootstrap the creator was asked for is answered
+			-- first, so the next attempt is refused and the mirror is what opens.
+			if creatorNative then
+				creatorNative = false
+				State.creatorUp = false
+				Runtime.ResolveBootstrap(Runtime.BodyFamily() or Runtime.DefaultFamily())
+				Runtime.LiftCover('character_creator_unseen')
+				openCreator()
+			end
 		end
 	end
 
@@ -361,7 +494,13 @@ end
 -- @author dop42
 function M.Editor.Wire()
 	AddEventHandler(M.HostEvent.CONFIRMED, function()
-		if State.creatorUp then return confirmCreation() end
+		-- The game's own creator answers in the mailbox `Watch` reads and not
+		-- here. Anything this event says while it is up is the engine settling
+		-- its own screen, never the player's answer to this module.
+		if State.creatorUp then
+			if creatorNative then return end
+			return confirmCreation()
+		end
 		if not State.editing then
 			-- Not a player confirming anything: the mirror acknowledging the
 			-- restore this world entry queued, which is what the announcement
@@ -398,6 +537,8 @@ function M.Editor.Wire()
 	end)
 
 	AddEventHandler(M.HostEvent.CANCELLED, function()
+		-- As above: a creator that was walked out of says so in its mailbox.
+		if State.creatorUp and creatorNative then return end
 		local creation = State.creatorUp
 		State.editing = false
 		State.creatorUp = false
@@ -411,7 +552,9 @@ function M.Editor.Wire()
 		State.commit = nil
 		State.canonical = snapshot
 
-		if pending ~= nil and pending.kind == 'create' then return Editor.FinishCreation() end
+		if pending ~= nil and pending.kind == 'create' then
+			return Editor.FinishCreation(pending.family)
+		end
 		if pending ~= nil then
 			State.Wore()
 			releaseSoon()

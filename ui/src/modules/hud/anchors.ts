@@ -30,7 +30,13 @@ export function anchorOf(value: unknown, fallback: Anchor): Anchor {
   return ANCHORS.indexOf(name) === -1 ? fallback : (name as Anchor)
 }
 
-/** `op-rail` is a leading-edge marker, and on a right-anchored block the lead is the right. */
+/**
+ * Which screen edge a block reads as its LEADING one -- and on a right-anchored block that
+ * is the right. Design pass 02 spends the answer on three things at once: which pair of
+ * corners the frame chamfers, which corner carries the lit arete, and which way a column of
+ * numbers is justified. (It used to name `op-rail`, the accent rule the house marker drew
+ * down that edge; that rule went with the fill it sat on.)
+ */
 export function railOf(anchor: Anchor): 'start' | 'end' {
   return anchor.indexOf('-right') === -1 ? 'start' : 'end'
 }

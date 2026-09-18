@@ -135,6 +135,9 @@ const fill = computed(() => {
   color: var(--op77-text-faint);
   /* The only place on any surface where a caret and a text selection belong. */
   user-select: text;
+  /* The plate under the pointer asks for `pointer` and `cursor` inherits; a line
+     being typed into is the one child that must not. */
+  cursor: text;
 }
 
 .entry::placeholder {

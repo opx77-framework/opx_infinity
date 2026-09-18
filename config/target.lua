@@ -31,6 +31,25 @@ OPX.Config.MODULES.target = {
 	-- scrolled.
 	MAX_OPTIONS = 32,
 
+	-- ── WHERE A ROW SITS ─────────────────────────────────────────────────────
+	--
+	-- Not a setting: the bands every module's `order` is written in, kept here
+	-- because it is the one file about the eye that every module's author reads
+	-- and because no module may read another module's namespace to find them.
+	--
+	--     0-9    THE THING ITSELF. Opening a door, taking a pile off the floor.
+	--            What the player walked up to it for.
+	--    10-19   ITS STATE. Locking it, turning it on.
+	--    20-39   WHAT IT HOLDS. A boot, a glovebox, a stash.
+	--    40-59   WORK. Gigs, jobs, anything a player took on.
+	--    60-89   LEAVING. Abandoning a run, getting out.
+	--   100-999  STAFF. Always last, always under a folder of its own.
+	--
+	-- A GROUP IS SORTED WHOLE, at the lowest order any of its rows carries, so
+	-- these numbers place a FOLDER as much as they place a row -- and two rows of
+	-- one folder can never be split by a row from another. Rows with no group are
+	-- the group `''` and are placed the same way.
+
 	-- Milliseconds between two looks under the cursor while nothing is picked.
 	HOVER_MS = 90,
 

@@ -233,6 +233,28 @@ FORMS.location = {
 	end,
 }
 
+-- THE SEARCH BOX THE STRIP CANNOT HAVE.
+--
+-- The menu reads six keys and no letters, so the one place an operator can type
+-- a word is here. The form asks for nothing else and runs no command: it hands
+-- the word back to the screen that opened it, which filters itself and redraws.
+-- Submitting it empty is how a filter is cleared without a second row.
+--
+-- `arg` is the query already in force, so reopening the box shows what is in it
+-- rather than a blank field over a filtered list.
+FORMS.search = {
+	build = function(arg)
+		return { title = locale('admin.form.search'),
+			description = locale('admin.form.searchHint'), fields = {
+				text('query', 'admin.field.query',
+					{ value = type(arg) == 'string' and arg ~= '' and arg or nil, maxLength = 48 }),
+			} }
+	end,
+	submit = function(values)
+		menu().Filter(values.query)
+	end,
+}
+
 FORMS.time = {
 	build = function()
 		return { title = locale('admin.form.time'), fields = {

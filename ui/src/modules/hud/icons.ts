@@ -6,8 +6,9 @@
  * rather than markup strings because the original assigned them with `innerHTML`, and
  * `v-html` on a payload-selected key is the same hole with a Vue accent.
  *
- * `currentColor` is what carries OpGauge's tone rules down to the stroke, so nothing here
- * names a colour.
+ * `currentColor` is what carries the gauge's tone down to the stroke, so nothing here names
+ * a colour -- which is also why turning the whole HUD red in design pass 02 did not have to
+ * touch this file.
  */
 export const ICONS: Record<string, string[]> = {
   health: ['M8 13.5S2 10 2 6.2A3.2 3.2 0 0 1 8 4.6 3.2 3.2 0 0 1 14 6.2C14 10 8 13.5 8 13.5Z'],

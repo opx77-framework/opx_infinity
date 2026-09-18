@@ -83,6 +83,21 @@ CREATE TABLE IF NOT EXISTS opx77_character_groups (
         ON DELETE CASCADE
 ) ENGINE=InnoDB
 ]],
+
+	[[
+CREATE TABLE IF NOT EXISTS opx77_active_characters (
+    user_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+    citizen_id VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    locked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_opx77_active_characters_citizen (citizen_id),
+    CONSTRAINT fk_opx77_active_character_user
+        FOREIGN KEY (user_id) REFERENCES opx77_users (user_id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_opx77_active_character_character
+        FOREIGN KEY (citizen_id) REFERENCES opx77_characters (citizen_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB
+]],
 }
 
 --- Turns a character row into the entity the module passes around.
@@ -147,6 +162,54 @@ SELECT citizen_id, user_id, cid, name, char_info, money, job, gang,
 	local out = {}
 	for i = 1, #list do out[i] = toEntity(list[i]) end
 	return Result.Ok(out)
+end
+
+--- The character an account is locked on, or nil when it is on none.
+-- @author dop42
+--
+-- THE LOCK IS WHAT A CONNECTION ENTERS ON. There is no selection screen: a
+-- session loads the character this names, or, when it names none, a new one. The
+-- row goes with the character (ON DELETE CASCADE) and with the account, so a lock
+-- can never name something that is gone -- only a SOFT-deleted character can
+-- still be named here, which is why the living row is read back before it is used.
+-- @param userId UserId
+-- @return Result the citizen id, or nil
+function M.Storage.FetchActive(userId)
+	local row = Storage.Single([[
+SELECT a.citizen_id
+  FROM opx77_active_characters a
+  JOIN opx77_characters c ON c.citizen_id = a.citizen_id
+ WHERE a.user_id = @user AND c.deleted_at IS NULL
+ LIMIT 1
+  ]], { user = userId })
+	if not row.ok then return row end
+	return Result.Ok(row.value and row.value.citizen_id or nil)
+end
+
+--- Locks an account on one character. Ownership is the caller's to have checked.
+-- @author dop42
+-- @param userId UserId
+-- @param citizenId CitizenId
+-- @return Result
+function M.Storage.SetActive(userId, citizenId)
+	return Storage.Execute([[
+INSERT INTO opx77_active_characters (user_id, citizen_id)
+VALUES (@user, @citizen)
+ON DUPLICATE KEY UPDATE
+    citizen_id = VALUES(citizen_id),
+    locked_at = CURRENT_TIMESTAMP
+  ]], { user = userId, citizen = citizenId })
+end
+
+--- Takes an account off whatever character it was locked on.
+-- The next connection builds a new one, which is what `opx.create` asks for.
+-- @author dop42
+-- @param userId UserId
+-- @return Result
+function M.Storage.ClearActive(userId)
+	return Storage.Execute([[
+DELETE FROM opx77_active_characters WHERE user_id = @user
+  ]], { user = userId })
 end
 
 --- Reads one living character by citizen id, whoever owns it.

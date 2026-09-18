@@ -80,6 +80,8 @@ local ERRORS = {
 	doors_networked = 'admin.error.doorsNetworked',
 	doors_unavailable = 'admin.error.doorsUnavailable',
 	combat_unavailable = 'admin.error.combatUnavailable',
+	unknown_ped = 'admin.error.unknownPed',
+	models_unavailable = 'admin.error.modelsUnavailable',
 }
 
 -- Refusal codes about typed input, answered as warnings rather than errors.
@@ -89,7 +91,7 @@ local TYPED = {
 	unknown_vehicle = true, bad_scope = true, unknown_flag = true, unknown_weapon = true,
 	unknown_location = true, bad_location_name = true, bad_holder = true, unknown_citizen = true,
 	unknown_item = true, bad_count = true, not_enough = true, unknown_ammo = true,
-	bad_door = true,
+	bad_door = true, unknown_ped = true,
 }
 
 -- The catalogue key a multi-line report is answered with.
@@ -207,6 +209,69 @@ function Server.UserOf(playerId)
 	local read, identifier = pcall(OPX.UserIdOf, playerId)
 	if not read then return nil end
 	return M.Trimmed(identifier, 64)
+end
+
+--- The name of the CHARACTER a player is playing, or nil.
+--
+-- Read off the replicated state bag and not through the `character` contract, and
+-- that is the point rather than a shortcut: this module then says nothing at all
+-- about who publishes the key. A runtime whose characters come from somewhere
+-- else writes the same `name` and every staff line here follows it; a runtime
+-- with no character module at all loses a name and keeps working.
+--
+-- Nil is an ordinary answer twice over: for somebody still at the selection
+-- screen, and for a character that has not been named yet -- a character is a row
+-- before it is anybody.
+-- @author dop42
+-- @param playerId Source
+-- @return string|nil
+-- One string key off a player's replicated bag, or nil. Reading a bag costs no
+-- permission and no round trip; a host that does not replicate them answers nil
+-- for everything, which is the same answer as a slot with no character on it.
+local function bagKey(playerId, key)
+	local state = Open77.state
+	if type(state) ~= 'table' or type(state.player) ~= 'function' then return nil end
+	if (tonumber(playerId) or 0) <= 0 then return nil end
+	local read, bag = pcall(state.player, playerId)
+	if not read or type(bag) ~= 'table' then return nil end
+	-- `bag:get(key)` and not `bag.key`: five key names are shadowed by the handle's
+	-- own methods, and a reader that used the sugar would answer a function for a
+	-- key called `name` on a platform that ever added one.
+	local got, value = pcall(bag.get, bag, key)
+	if not got then return nil end
+	return value
+end
+
+function Server.CharacterOf(playerId)
+	return M.Trimmed(bagKey(playerId, 'name'), 64)
+end
+
+--- The public id of the character a player is playing, off the same bag.
+-- Seven symbols in a three-dash-four group, and the one thing on a staff line
+-- that survives a rename. Nil before a character is loaded.
+-- @author dop42
+-- @param playerId Source
+-- @return string|nil
+function Server.CitizenBagOf(playerId)
+	return M.Trimmed(bagKey(playerId, 'citizenId'), 32)
+end
+
+--- What a staff line calls a player: the character, and the account behind it.
+--
+-- BOTH, ALWAYS, and never one or the other. A staff line naming only the
+-- character cannot be matched to a ban, an audit row or a support ticket, all of
+-- which are keyed on the account; a line naming only the account says nothing
+-- about the person everybody else in the city was talking to. Nil means not
+-- connected, which is what every caller of `NameOf` used it to mean.
+-- @author dop42
+-- @param playerId Source
+-- @return string|nil
+function Server.LabelOf(playerId)
+	local user = Server.NameOf(playerId)
+	if user == nil then return nil end
+	local character = Server.CharacterOf(playerId)
+	if character == nil then return user end
+	return ('%s (%s)'):format(character, user)
 end
 
 --- The citizen id of the character a player has loaded, or nil.
@@ -404,9 +469,11 @@ function Server.Audit(source, event, ok, target, detail)
 		event = event,
 		ok = ok == true,
 		actor = actor,
-		actorName = actor > 0 and (Server.NameOf(actor) or '?') or 'console',
+		-- The character AND the account, because an audit row that names only one
+		-- of them is a row nobody can act on. See `Server.LabelOf`.
+		actorName = actor > 0 and (Server.LabelOf(actor) or '?') or 'console',
 		target = target,
-		targetName = target and Server.NameOf(target) or nil,
+		targetName = target and Server.LabelOf(target) or nil,
 		detail = M.Trimmed(detail, 120) or '',
 	}
 	ledger[#ledger + 1] = entry
@@ -639,6 +706,7 @@ function M.Start()
 	end
 
 	M.Players.Register()
+	M.Models.Register()
 	M.Vehicles.Register()
 	M.Inventory.Register()
 	M.Weapons.Register()
@@ -657,6 +725,7 @@ end
 -- @author dop42
 function M.Stop()
 	M.Players.Release()
+	M.Models.Release()
 	M.Tags.Release()
 	M.Doors.Release()
 end

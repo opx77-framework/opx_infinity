@@ -31,10 +31,8 @@ local EN = {
 
 	['appearance.bootstrapFailed'] = 'Character bootstrap failed: {reason}',
 	['appearance.creatorUnavailable'] = 'Appearance editor unavailable: {reason}',
-	['appearance.creatorSwitching'] = "Loading your character's body type. The appearance editor will open next.",
 	['appearance.created'] = 'Appearance saved. Welcome to Night City.',
 	['appearance.creationNotSaved'] = 'No appearance was saved ({reason}). You keep the default face for now.',
-	['appearance.wrongBody'] = 'Your character is {family}. Build that body type.',
 
 	['appearance.clothingRestoreFailed'] = 'Your saved clothes could not be put back on. Changes are not saved until you reconnect.',
 	['appearance.clothingNotSaved'] = 'Your clothes are not being saved right now: {reason}',
@@ -130,10 +128,8 @@ local FR = {
 
 	['appearance.bootstrapFailed'] = "L'initialisation du personnage a échoué : {reason}",
 	['appearance.creatorUnavailable'] = "L'éditeur d'apparence est indisponible : {reason}",
-	['appearance.creatorSwitching'] = "Chargement du type de corps de votre personnage. L'éditeur d'apparence s'ouvrira ensuite.",
 	['appearance.created'] = 'Apparence enregistrée. Bienvenue à Night City.',
 	['appearance.creationNotSaved'] = "Aucune apparence n'a été enregistrée ({reason}). Vous gardez le visage par défaut pour l'instant.",
-	['appearance.wrongBody'] = 'Votre personnage est {family}. Construisez ce type de corps.',
 
 	['appearance.clothingRestoreFailed'] = "Vos vêtements enregistrés n'ont pas pu être remis. Les changements ne sont pas enregistrés jusqu'à votre reconnexion.",
 	['appearance.clothingNotSaved'] = "Vos vêtements ne sont pas enregistrés pour le moment : {reason}",

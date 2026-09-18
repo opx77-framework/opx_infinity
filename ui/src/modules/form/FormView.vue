@@ -1,8 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref } from 'vue'
-import OpField from '@/design/components/OpField.vue'
-import OpKeyCap from '@/design/components/OpKeyCap.vue'
-import OpPanel from '@/design/components/OpPanel.vue'
 import OpScrim from '@/design/components/OpScrim.vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
@@ -28,6 +25,33 @@ import { useBridge } from '@/composables/useBridge'
  * to Lua and left every other key to the focused <input>. That is unchanged here, down
  * to the one rule that makes it work: LEFT and RIGHT belong to the caret unless the
  * frame said the focused row spins.
+ *
+ * -- DESIGN PASS 02 -----------------------------------------------------------
+ *
+ * THIS SURFACE NOW DRAWS ITS OWN FRAME, ITS OWN FIELDS AND ITS OWN KEYCAPS. It was the
+ * last view still wearing pass 01: an `OpPanel` bay with `OpField` rows and `OpKeyCap`
+ * caps, all three of them augmented elements filling the chosen row with `--op77-accent`
+ * -- which is Night City yellow under `.op-theme-city`, on a surface whose neighbours
+ * have all gone red and unfilled. It read as a screen from the previous build.
+ *
+ * The three components are not edited and not deleted: `PanelView.vue` and the entry
+ * flow still render them, and changing a shared component changes every surface at once.
+ * So this file carries a local copy of the row while the pass is being settled, exactly
+ * as `MenuView.vue` says it does and for the same reason -- when the pass is agreed the
+ * frame, the row and the cap go back into `design/` together, every surface takes them,
+ * and the local copies are deleted in one go.
+ *
+ * `OpScrim` STAYS, and it is the one shared component left here. `InventoryView.vue`
+ * dropped its scrim on the grounds that it was the largest fill on a surface with no
+ * fills, and it is right about an inventory -- a bag is read at a glance and the player
+ * is still standing in the world. A form is TYPED INTO. The player is reading their own
+ * characters back one at a time to see which ones Lua kept, and a street moving behind
+ * that line is the one backdrop this runtime cannot ask them to read through. The scrim
+ * is also the `dim` flag's only consumer: Lua sends it per form and it still means what
+ * it meant.
+ *
+ * Nothing about the protocol changed. Same channels, same handle guard, same six keys,
+ * same candidate-only edits. Only what the player sees.
  */
 
 type Handle = string | number
@@ -93,10 +117,29 @@ const stripStyle = computed(() => `width: ${width.value}px`)
 
 const focused = computed(() => fields.value.find((field) => field.on))
 
+/** A right-anchored surface reads its leading edge as the right one, so the chamfers,
+    the arete and the focused field's step all mirror. Straight from menu.css. */
+const railEnd = computed(() => anchor.value.endsWith('right'))
+
 /** Lua counts characters and JS counts UTF-16 units: a surrogate pair is one character
     on both sides once its low half is dropped. Straight from input.js. */
 function characters(value: string): number {
   return value.replace(/[\uDC00-\uDFFF]/g, '').length
+}
+
+/** input.js sized the plate to its content so the frame never outran the text, and
+    `OpField` kept doing it. A LENGTH, not a value: nothing derived here is ever sent. */
+function chars(field: Field): number {
+  return Math.max(field.buffer.length, field.placeholder.length) + 1
+}
+
+/** The slider's rule, as a width. Clamped because a frame can legitimately carry a
+    number outside its own bounds for one frame while Lua is still deciding. */
+function fill(field: Field): string {
+  const span = field.max - field.min
+  if (span <= 0) return '0%'
+  const ratio = (field.number - field.min) / span
+  return `${Math.max(0, Math.min(1, ratio)) * 100}%`
 }
 
 function isHandle(value: unknown): value is Handle {
@@ -266,65 +309,166 @@ function focusField(field: Field): void {
 <template>
   <div class="room" :class="{ open }">
     <OpScrim v-if="dim" mode="flat" :visible="open" />
-    <div class="strip" :class="anchor" :style="stripStyle">
-      <OpPanel bay>
-        <template #header>
-          <div class="head-text">
-            <span class="op77-eyebrow">FORM</span>
-            <h1>{{ title }}</h1>
+    <div class="strip" :class="[anchor, { end: railEnd }]" :style="stripStyle">
+      <div class="bay">
+        <div class="bay-inner">
+          <!-- THE HEAD STAYS, where `MenuView.vue` deleted its own. A menu row says what
+               it does; a form field says only what it is CALLED, and "NAME" over an empty
+               line is not a question. The title Lua sends is the question, so it is the
+               one piece of chrome this surface cannot drop. -->
+          <div class="head">
+            <div class="head-text">
+              <!-- The `//` device, drawn locally: `.op77-eyebrow` in tokens.css colours
+                   its own `::before` with `--op77-accent`, which is yellow under
+                   `.op-theme-city`. Otherwise identical, and that is the only reason. -->
+              <span class="eyebrow">FORM</span>
+              <h1>{{ title }}</h1>
+            </div>
           </div>
-        </template>
 
-        <p v-if="note" class="note">{{ note }}</p>
+          <p v-if="note" class="note">{{ note }}</p>
 
-        <ul ref="listEl" class="list">
-          <li
-            v-for="(field, at) in fields"
-            :key="field.id"
-            class="slot"
-            :data-field="field.id"
-            :style="`--slot: ${at}`"
-          >
-            <OpField
-              :label="field.label"
-              :kind="field.kind"
-              :model-value="field.kind === 'text' ? field.buffer : field.kind === 'slider' ? field.number : field.value"
-              :placeholder="field.placeholder"
-              :min="field.min"
-              :max="field.max"
-              :count="field.count"
-              :selected="field.on"
-              @input="edit(field, $event)"
-              @step="step(field, $event)"
-              @focus="focusField(field)"
-            />
-          </li>
-        </ul>
+          <!-- A KEYED v-for on Lua's own row id, so a field that survives a frame keeps
+               its element: the caret stays where the player put it, and the boot-in does
+               not re-run under them while they type. -->
+          <ul ref="listEl" class="list">
+            <li
+              v-for="(field, at) in fields"
+              :key="field.id"
+              class="slot"
+              :data-field="field.id"
+              :style="`--slot: ${at}`"
+            >
+              <div
+                class="field"
+                :class="[`kind-${field.kind}`, { on: field.on }]"
+                @click="focusField(field)"
+              >
+                <span class="label">{{ field.label }}</span>
+                <span class="cell">
+                  <!-- NO `v-model`, here or anywhere on this surface. `:value` is the
+                       buffer Lua ACCEPTED and `@input` reports a candidate; the two are
+                       deliberately not the same string. -->
+                  <input
+                    v-if="field.kind === 'text'"
+                    class="entry"
+                    type="text"
+                    spellcheck="false"
+                    autocomplete="off"
+                    :value="field.buffer"
+                    :placeholder="field.placeholder"
+                    :style="{ '--chars': chars(field) }"
+                    @input="edit(field, ($event.target as HTMLInputElement).value)"
+                  >
+                  <!-- A RULE, NOT A GAUGE: two pixels of red under the number, per
+                       `InventoryView.vue`'s load rule. The filled bar it replaces was a
+                       fill, and there are none left on this surface. -->
+                  <span v-if="field.kind === 'slider'" class="rule">
+                    <i :style="{ width: fill(field) }" />
+                  </span>
+                  <span v-if="field.kind !== 'text'" class="value">{{ field.value }}</span>
+                  <span v-if="field.kind === 'text' && field.count && field.on" class="count">
+                    {{ field.count }}
+                  </span>
+                  <!-- LEFT and RIGHT with a mouse. Lua reads both routes as the same
+                       `step` intent and answers with the value it settled on. -->
+                  <span v-if="field.kind === 'choice'" class="marks">
+                    <button class="mark" type="button" @click.stop="step(field, -1)">&lsaquo;</button>
+                    <button class="mark" type="button" @click.stop="step(field, 1)">&rsaquo;</button>
+                  </span>
+                </span>
+              </div>
+            </li>
+          </ul>
 
-        <template #footer>
-          <div class="lines">
+          <div v-if="hint || status || keys.length" class="foot">
             <p v-if="hint" class="hint">{{ hint }}</p>
             <p v-if="status" class="status" :class="{ bad: statusBad }">{{ status }}</p>
             <div v-if="keys.length" class="keys">
-              <span v-for="cap in keys" :key="cap.key" class="cap">
-                <OpKeyCap :label="cap.key" />
+              <span v-for="cap in keys" :key="cap.key" class="key">
+                <kbd class="cap">{{ cap.key }}</kbd>
                 <span class="cap-label">{{ cap.label }}</span>
               </span>
             </div>
           </div>
-        </template>
-      </OpPanel>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* =============================================================================
+   DESIGN PASS 02 -- RED, OUTLINED, TILTED.
+
+   `MenuView.vue`'s style block is the spec and this is that idiom applied to a
+   form. The two surfaces are the same thing seen twice -- a bounded column of
+   controls the player drives with five keys -- so this one takes the enclosure,
+   the interlace and the row, and the places it differs are the places a field
+   differs from a menu row:
+
+     1. THE FOCUSED FIELD DOES NOT LEAVE THE PLANE. On the strip the chosen row
+        steps `--pop` across AND 14px toward the player, and it is that surface's
+        best move. Here the chosen row is the one being TYPED INTO: a Z step under
+        `perspective` resamples the glyphs a caret is sitting between, and the
+        player is reading those glyphs back one at a time to see which ones Lua
+        kept. The lateral step and the bloom stay, the Z is dropped, and that is
+        the whole of the difference.
+     2. A CENTRED FORM DOES NOT TILT. The tilt's sign and origin are derived from
+        the edge a surface is anchored to, and a form ships centred -- anchored to
+        none. Rotating a centred plane about its own middle sends half of it toward
+        the player and half away, which is paper on a spindle rather than a surface
+        receding; `InventoryView.vue` makes the same call for the same reason. The
+        four menu anchors keep the tilt about their own edge.
+     3. THERE IS ONE FILL LEFT AND IT IS A CARET. The browser draws it, it is one
+        pixel wide, and it is the only thing here allowed to blink.
+   ========================================================================== */
+
+/* --- THE RED --------------------------------------------------------------
+   Copied from `MenuView.vue` verbatim, for the reason given there: `.op-theme-city`
+   on <html> makes `--op77-accent` Night City yellow for EVERY surface, and
+   repainting the HUD is a separate decision from settling these. When the pass is
+   agreed these move into that class and this block is deleted.
+
+   The ramp is dim -> deep -> lit, plus the alarm rung. This surface spends all
+   four: at rest, the pointer, the focused field, and a refusal. `--red-hot` is red
+   pushed toward white without leaving the hue -- an alarm climbs in intensity, it
+   does not change voice -- and `--op77-danger` is not used in this file for exactly
+   the reason `NotifyToast.vue` sets out: a second saturated hue on an unfilled red
+   surface is the yellow-accent mistake with extra steps. */
 .room {
+  --red:      #ff3b47;                    /* focused: lit, and the only bloom  */
+  --red-deep: #c8202e;                    /* HOVER: denser, no bloom           */
+  --red-idle: rgba(232, 67, 79, 0.62);    /* at rest                           */
+  --red-hot:  #ffa8ae;                    /* THE REFUSAL: red pushed to white  */
+  --red-glow: rgba(255, 59, 71, 0.55);
+  --red-text: #e8646d;                    /* type at rest, inside a frame      */
+
+  /* THE 9-SLICE FRAMES. 24x24, 8px corner tiles, the chamfer living entirely
+     inside the top-right tile so stretching an edge can never skew it. A
+     `clip-path` cannot draw this: a clip cuts the painted RESULT, so a bordered
+     box under one loses its stroke along the diagonal and the chamfer arrives as
+     a GAP. One property (`border-image-source`) swaps the whole frame on a state
+     change and the geometry never distorts with the field's width. */
+  --frame-idle: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23e8434f" stroke-opacity="0.7" stroke-width="1.4"/></svg>');
+  --frame-hover: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23c8202e" stroke-width="1.8"/></svg>');
+  --frame-on: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23ff3b47" stroke-width="2.4"/></svg>');
+  /* The keycap frame, at cap scale: `border-image-width` is set BELOW the 8px
+     slice, which scales the corner tile down rather than needing a second sprite.
+     `PromptsRoot.vue` does the same, and its note on why a cap keeps its box when
+     everything around it loses one applies here word for word. */
+  --frame-cap: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23ff3b47" stroke-width="1.8"/></svg>');
+
+  /* A border-image cannot take a shadow, so the black under a cap is a soft OUTSET
+     one on the box -- rectangular where the frame is chamfered, which at this blur
+     and alpha reads as the corner darkening rather than as a second shape. */
+  --cap-shadow: 0 1px 7px rgba(0, 0, 0, 0.55);
+
   position: absolute;
   inset: 0;
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--op77-dur) var(--op77-ease);
+  transition: opacity var(--op77-dur-fast) linear;
 }
 
 .room.open {
@@ -332,28 +476,49 @@ function focusField(field: Field): void {
   pointer-events: auto;
 }
 
+/* =============================================================================
+   THE STRIP -- carries the perspective so the frame inside it is the plane that
+   tilts. On the strip and not the frame: perspective on the frame would give every
+   descendant its own vanishing point. It is declared for every anchor and spent by
+   four of them; a centred form sets `--tilt: 0deg` and the property costs nothing.
+   ========================================================================== */
 .strip {
   position: absolute;
   display: flex;
   max-width: calc(100vw - var(--op77-inset-x) * 2);
+  perspective: var(--op77-persp);
+  /* Nothing inside can affect layout or paint outside it, so the compositor never
+     has to consider the rest of the surface when one field changes. */
+  contain: layout paint style;
 }
 
-/* Where a form ships. The other four are opx77_menu's anchors, for a caller that wants
-   the form where the list before it sat. */
+/* Where a form ships, and the one anchor with no edge to turn about. The focused
+   field still steps, because a step across the column is not a rotation. */
 .anchor-center {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
+  --pop: 10px;
+  --tilt: 0deg;
+  --origin: center center;
 }
 
+/* The other four are opx77_menu's anchors, for a caller that wants the form where
+   the list before it sat -- so they take the menu's tilt about the same edges. */
 .anchor-top-left,
 .anchor-left {
   left: var(--op77-inset-x);
+  --pop: 10px;
+  --tilt: var(--op77-tilt);
+  --origin: left center;
 }
 
 .anchor-top-right,
 .anchor-right {
   right: var(--op77-inset-x);
+  --pop: -10px;
+  --tilt: calc(var(--op77-tilt) * -1);
+  --origin: right center;
 }
 
 .anchor-top-left,
@@ -366,6 +531,115 @@ function focusField(field: Field): void {
   top: 33vh;
 }
 
+/* =============================================================================
+   THE FRAME -- no fill.
+   ========================================================================== */
+.bay {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  /* THE DIAL IS TURNED ON, with this surface's own caveat still standing: the
+     scrim behind a form means it was never the one washing out, and the dial sat
+     at 0 for that reason. It moves anyway, because the owner asked for a ground
+     under everything carrying text and a form that is the one unfilled panel
+     among filled ones is a surface that looks unfinished rather than austere.
+
+     QUIET, not full strength, and that is the difference the scrim earns: a form
+     is already sitting on a dim, so it needs to be told apart from that dim
+     rather than held against daylight. The rgb is `--op77-plate`'s, as with the
+     menu and the toasts, so the three are one ground. */
+  background: rgba(28, 8, 9, var(--op77-form-veil, 0.58));
+  transform-origin: var(--origin, center center);
+  transform: rotateY(var(--tilt, 0deg));
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--op77-cut-lg)) 0,
+    100% var(--op77-cut-lg),
+    100% 100%,
+    var(--op77-cut-lg) 100%,
+    0 calc(100% - var(--op77-cut-lg))
+  );
+  /* The frame is the one place a clip and a stroke can live together, because an
+     INSET shadow is painted over the padding box and the clip then trims it to the
+     chamfer instead of shearing an outset shadow off the element. ONE arete, on the
+     leading corner: the pair was the bevel of a solid panel, and on a frame with
+     nothing inside it the dark half only ever read as a smudge. */
+  box-shadow:
+    inset 1px 1px 0 var(--op77-edge-hi),
+    inset 0 0 0 1px var(--red-idle);
+}
+
+/* Mirrored for a right-anchored strip: the cuts and the arete follow the leading
+   edge, which over there is the right one. */
+.strip.end .bay {
+  clip-path: polygon(
+    var(--op77-cut-lg) 0,
+    100% 0,
+    100% calc(100% - var(--op77-cut-lg)),
+    calc(100% - var(--op77-cut-lg)) 100%,
+    0 100%,
+    0 var(--op77-cut-lg)
+  );
+  box-shadow:
+    inset -1px 1px 0 var(--op77-edge-hi),
+    inset 0 0 0 1px var(--red-idle);
+}
+
+.bay-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* The interlace. It is over the panel in every frame of the reference and it is
+   what stops an unfilled surface reading as a web page floating in the air. One
+   static gradient on a pseudo-element nothing else was using, no transition, so it
+   costs a single paint for the life of the form. `pointer-events: none` is
+   load-bearing here in a way it is not on the menu: the caret is placed by
+   clicking THROUGH this. */
+.bay-inner::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 59, 71, 0.05) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+/* =============================================================================
+   THE HEAD -- type and one rule. The rule is not an enclosure: it is the only
+   thing relating the question to the fields under it.
+   ========================================================================== */
+.head {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--op77-space-3);
+  min-width: 0;
+  /* The trailing edge pays for the chamfer, so a long title never runs under it. */
+  padding: var(--op77-space-3) calc(var(--op77-space-4) + var(--op77-cut-lg))
+    var(--op77-space-2) calc(var(--op77-space-4) + var(--op77-rule));
+  border-bottom: 1px solid var(--red-idle);
+  /* THE BLACK SHADOW, once for the whole surface. A `text-shadow` INHERITS, so this
+     one declaration carries the title, the note, the labels, the typed line, the
+     hint and the caps. It is the honest fix for an unbacked panel: it darkens the
+     two pixels around a letter instead of putting a box behind the row. */
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0 9px rgba(0, 0, 0, 0.8);
+}
+
+/* On a right-anchored form the cut is over the title rather than past it. */
+.strip.end .head {
+  padding-left: calc(var(--op77-space-4) + var(--op77-cut-lg));
+  padding-right: var(--op77-space-4);
+}
+
 .head-text {
   display: flex;
   flex-direction: column;
@@ -373,67 +647,331 @@ function focusField(field: Field): void {
   min-width: 0;
 }
 
-.head-text h1 {
+.eyebrow {
+  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
+  letter-spacing: var(--op77-track-micro);
+  text-transform: uppercase;
+  color: var(--red-deep);
+}
+
+.eyebrow::before {
+  content: "//";
+  margin-right: 0.7em;
+  color: var(--red);
+  font-weight: 700;
+  letter-spacing: -0.06em;
+}
+
+.head h1 {
   margin: 0;
   font: 700 var(--op77-fs-lead) / 1.1 var(--op77-font-display);
   letter-spacing: var(--op77-track-head);
   text-transform: uppercase;
+  color: var(--red-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* The sentence under the question. It is prose and it is the player's, not an
+   instrument's, so it takes the legibility grey rather than a rung of the ramp. */
 .note {
-  margin: 0 0 var(--op77-space-2);
+  margin: 0;
+  padding: var(--op77-space-3) calc(var(--op77-space-4) + var(--op77-cut-lg)) 0
+    calc(var(--op77-space-3) + var(--op77-rule));
   font: 400 var(--op77-fs-body) / 1.35 var(--op77-font-body);
   color: var(--op77-text-dim);
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0 9px rgba(0, 0, 0, 0.8);
 }
 
+/* =============================================================================
+   THE LIST -- it never scrolls: Lua sends every field of the form at once.
+   ========================================================================== */
 .list {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--op77-space-1);
   margin: 0;
-  padding: 0;
+  /* The trailing padding is the focused field's runway: it leaves the column by
+     `--pop` and has to land inside the frame, because the frame is a clip-path. */
+  padding: var(--op77-space-3) var(--op77-space-4) var(--op77-space-3)
+    calc(var(--op77-space-3) + var(--op77-rule));
   list-style: none;
   min-height: 0;
 }
 
-.lines {
+.slot {
+  display: flex;
+  min-width: 0;
+}
+
+/* =============================================================================
+   A FIELD -- a closed 1px frame with a chamfered top-right corner, a label and a
+   value. There is nothing behind it and there never will be.
+
+   `border-image-width` is 8px while `border-width` is 1px: the image draws its 8px
+   corner tiles while layout only reserves one, so the chamfer is full size and the
+   field still sits on a 1px box.
+   ========================================================================== */
+.field {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--op77-space-3);
+  min-width: 0;
+  padding: var(--op77-space-2) var(--op77-space-3) calc(var(--op77-space-2) + 1px);
+  color: var(--red-text);
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-image-source: var(--frame-idle);
+  border-image-slice: 8;
+  border-image-width: 8px;
+  transition:
+    color var(--op77-dur-fast) linear,
+    transform 120ms var(--op77-ease);
+}
+
+.label {
+  flex: 0 1 auto;
+  min-width: 0;
+  font: 700 var(--op77-fs-lead) / 1.25 var(--op77-font-display);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Zero flex-basis so a long typed line scrolls the cell instead of truncating the
+   label: the field's own name is the last thing a player should lose. */
+.cell {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--op77-space-3);
+  min-width: 0;
+}
+
+/* --- THE TYPED LINE -------------------------------------------------------
+   The one input in the runtime. It is a LINE, not a box: a filled entry would be
+   the only fill on the surface and it would be the largest one. What says "you are
+   typing here" is the rule under the text and the caret on it, and both of those
+   light when Lua says this field has the cursor. */
+.entry {
+  flex: 0 1 auto;
+  width: calc(var(--chars, 1) * (1ch + var(--op77-track-label)) + 2px);
+  max-width: 100%;
+  padding: 0 0 2px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--red-idle);
+  border-radius: 0;
+  outline: none;
+  font: 400 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  letter-spacing: var(--op77-track-label);
+  color: inherit;
+  /* THE ONE FILL LEFT, one pixel wide. Left to the browser and simply coloured: a
+     caret is the only blink this design allows, and it is allowed because it is the
+     player's own position and not the surface talking. */
+  caret-color: var(--red);
+  /* The only place on any surface where a caret and a text selection belong. */
+  user-select: text;
+  /* The field under the pointer asks for `pointer` and `cursor` inherits; a line
+     being typed into is the one child that must not. */
+  cursor: text;
+  transition: border-color var(--op77-dur-fast) linear;
+}
+
+/* A selection is a fill, and this is the one the player made themselves. It takes
+   the denser rung so it never out-reads the focused frame around it. */
+.entry::selection {
+  color: var(--op77-text);
+  background: var(--red-deep);
+}
+
+.entry::placeholder {
+  color: var(--op77-text-faint);
+  font-style: italic;
+  opacity: 1;
+}
+
+/* A choice's option and a slider's number, as Lua rendered them, suffix and all. */
+.value {
+  flex: 0 1 auto;
+  font: 500 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  letter-spacing: var(--op77-track-label);
+  opacity: 0.88;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A RULE, NOT A GAUGE, and ahead of the number as input.css had it. Two pixels
+   carrying no text, so they carry no text-shadow either: the tight dark pass is a
+   box-shadow instead, which is `InventoryView.vue`'s load rule exactly. */
+.rule {
+  order: -1;
+  flex: none;
+  width: 48px;
+  height: 2px;
+  background: rgba(232, 67, 79, 0.22);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+}
+
+.rule i {
+  display: block;
+  height: 100%;
+  background: var(--red-idle);
+  transition: width var(--op77-dur-fast) linear;
+}
+
+/* `12/24`, and only under the field being typed into. It is the buffer Lua sent,
+   counted the way Lua counts it. */
+.count {
+  flex: none;
+  font: 400 var(--op77-fs-micro) / 1 var(--op77-font-mono);
+  letter-spacing: var(--op77-track-micro);
+  opacity: 0.72;
+  font-variant-numeric: tabular-nums;
+}
+
+.marks {
+  flex: none;
+  display: flex;
+  gap: 2px;
+}
+
+/* The affordance column, always last so every mark lands at the same x. */
+.mark {
+  padding: 0 2px;
+  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* --- HOVER: denser red, no bloom -------------------------------------------
+   Weaker than the focused state, deliberately: this is only the field the pointer
+   is over, and Lua decides what landing there means. */
+.field:hover:not(.on) {
+  color: var(--red-deep);
+  border-image-source: var(--frame-hover);
+}
+
+.field:hover:not(.on) .entry {
+  border-bottom-color: var(--red-deep);
+}
+
+/* --- FOCUSED: lit, blooming, and one step out of the column -----------------
+   No fill. The frame goes to full red at a heavier stroke, the text lights, the
+   rule under the typed line lights with it, and the field steps across by `--pop`.
+   The bloom is a `box-shadow` and not a `filter`: a filter would give the one field
+   the player is actually reading its own backing store. */
+.field.on {
+  color: var(--red);
+  border-image-source: var(--frame-on);
+  transform: translate3d(var(--pop, 10px), 0, 0);
+  box-shadow: 0 0 18px -4px var(--red-glow);
+  cursor: default;
+}
+
+.field.on .label {
+  letter-spacing: 0.055em;
+  text-shadow: 0 0 10px var(--red-glow);
+}
+
+.field.on .entry {
+  border-bottom-color: var(--red);
+}
+
+.field.on .rule i {
+  background: var(--red);
+}
+
+/* =============================================================================
+   THE FOOT -- what the keys do, and what Lua makes of the answer so far.
+   ========================================================================== */
+.foot {
   display: flex;
   flex-direction: column;
   gap: var(--op77-space-2);
   min-width: 0;
+  padding: var(--op77-space-3) calc(var(--op77-space-3) + var(--op77-cut-lg))
+    calc(var(--op77-space-3) + var(--op77-cut-lg)) calc(var(--op77-space-3) + var(--op77-rule));
+  border-top: 1px solid var(--red-idle);
 }
 
+/* The one place the surface wraps: a hint is a sentence. */
 .hint {
   margin: 0;
   font: 400 var(--op77-fs-meta) / 1.4 var(--op77-font-body);
   color: var(--op77-text-dim);
+  white-space: normal;
 }
 
+/* Lua's reading of the answer so far. At rest it is the surface's own resting red;
+   a REFUSAL takes the alarm rung and the weight, not a second hue -- the same call
+   `TargetView.vue` makes for a pick that failed. */
 .status {
   margin: 0;
-  font: 400 var(--op77-fs-meta) / 1.4 var(--op77-font-mono);
-  color: var(--op77-ok);
+  font: 600 var(--op77-fs-meta) / 1.4 var(--op77-font-mono);
+  letter-spacing: var(--op77-track-label);
+  color: var(--red-idle);
+  white-space: normal;
 }
 
 .status.bad {
-  color: var(--op77-danger);
+  color: var(--red-hot);
+  font-weight: 700;
 }
 
 .keys {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--op77-space-3);
+  /* Wider across than down: the gap between two hints has to out-read the gap
+     between a cap and the words that belong to it. */
+  gap: var(--op77-space-2) var(--op77-space-5);
 }
 
-.cap {
+.key {
   display: inline-flex;
   align-items: center;
   gap: var(--op77-space-2);
 }
 
+/* THE ONE DRAWN EDGE LEFT IN THE FOOTER. A keycap depicts a physical key, so it
+   keeps the house frame at cap size while everything around it loses its box. No
+   fill and no weighted base: `OpKeyCap` built its whole idiom on `inset 0 -2px`
+   going to `-4px` on a hold, and a 2px bottom rule is a fill. */
+.cap {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  /* The chamfer lives in the top-right corner, so the right side pays for it. */
+  padding-right: calc(7px + var(--op77-cut-sm));
+  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  letter-spacing: 0.04em;
+  color: var(--red);
+  border: 1px solid transparent;
+  border-image-source: var(--frame-cap);
+  border-image-slice: 8;
+  border-image-width: 6px;
+  box-shadow: var(--cap-shadow);
+}
+
+/* What the key does. The red is spent on the cap, which is the part that is an
+   instrument; the words carry no state and are legibility only. */
 .cap-label {
   font: 400 var(--op77-fs-micro) / 1 var(--op77-font-mono);
   letter-spacing: var(--op77-track-micro);
@@ -441,15 +979,53 @@ function focusField(field: Field): void {
   color: var(--op77-text-dim);
 }
 
+/* =============================================================================
+   THE BOOT-IN -- a stutter, not a fade. One shot, and only on elements the keyed
+   v-for has just created: a field that survived the last frame does not re-run it,
+   which matters more here than anywhere -- every keystroke brings a new frame, and
+   a line that re-animated under the caret would be unusable. Both keyframes touch
+   `opacity` and `transform` only, which the compositor can run without a repaint.
+   ========================================================================== */
 @keyframes field-in {
-  from {
+  0% {
     opacity: 0;
-    transform: translateX(-12px);
+    transform: translate3d(calc(var(--pop, 10px) * -1), 0, 0);
+  }
+
+  55% {
+    opacity: 1;
+    transform: translate3d(2px, 0, 0);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
   }
 }
 
-.room.open .slot {
-  animation: field-in var(--op77-dur) var(--op77-ease) backwards;
-  animation-delay: calc(var(--slot, 0) * 30ms + 40ms);
+@keyframes field-in-on {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0);
+  }
+
+  55% {
+    opacity: 1;
+    transform: translate3d(calc(var(--pop, 10px) + 2px), 0, 0);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(var(--pop, 10px), 0, 0);
+  }
+}
+
+.room.open .field {
+  animation: field-in 190ms steps(3, end) backwards;
+  animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
+}
+
+.room.open .field.on {
+  animation-name: field-in-on;
 }
 </style>

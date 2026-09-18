@@ -24,6 +24,9 @@ OPX.Locale.Register('en', {
 
 	['chat.placeholder'] = 'Say something, or type / for a command',
 
+	-- The name the pause menu's shortcuts tab lists the open key under.
+	['chat.key.open'] = 'Open the chat',
+
 	['chat.invalidMessage'] = 'That message could not be read.',
 	['chat.noView'] = 'The chat box is not drawn yet.',
 	['chat.invalidCommand'] = 'That command name could not be read.',
@@ -48,6 +51,8 @@ OPX.Locale.Register('fr', {
 	['chat.author.unknown'] = 'joueur {id}',
 
 	['chat.placeholder'] = 'Dites quelque chose, ou tapez / pour une commande',
+
+	['chat.key.open'] = 'Ouvrir le chat',
 
 	['chat.invalidMessage'] = "Ce message n'a pas pu être lu.",
 	['chat.noView'] = "La boîte de chat n'est pas encore dessinée.",

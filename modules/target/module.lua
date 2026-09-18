@@ -11,8 +11,8 @@
 --
 --   * `MAX_PER_OWNER` bounds one owner's rows, because a pick pays for every
 --     registered row that matches;
---   * the screen ray is cast fresh at the CLICK point, never at wherever the
---     cursor has since moved to;
+--   * the screen ray is cast fresh at the PICK point -- where the right button
+--     went down -- never at wherever the cursor has since moved to;
 --   * work is sliced. Asking every matching row's owner in one go is what hit the
 --     per-resume instruction budget on the resource this came from.
 --

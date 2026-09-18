@@ -35,13 +35,35 @@ local UPKEEP_MS = 250
 -- The keys the page forwards.
 local KEYS = { up = true, down = true, left = true, right = true, enter = true, back = true }
 
+-- The same six, in the vocabulary `Open77.input.isDown` speaks, for the modes
+-- where the page does NOT hold the keyboard and therefore never sees them.
+-- Names are the documented set: the four arrows are UP/DOWN/LEFT/RIGHT, and
+-- ENTER and BACKSPACE are spelled out.
+local POLLED = {
+	{ 'UP', 'up' },
+	{ 'DOWN', 'down' },
+	{ 'LEFT', 'left' },
+	{ 'RIGHT', 'right' },
+	{ 'ENTER', 'enter' },
+	{ 'BACKSPACE', 'back' },
+}
+
+-- The repeat machine, at the numbers `opx77_menu/client/input.lua` used. A poll
+-- finer than the repeat interval is what keeps a held arrow even.
+local POLL_MS = 25
+local REPEAT_FIRST_MS = 260
+local REPEAT_NEXT_MS = 55
+
 -- What this module's focus owners are given. The page names an owner and never
 -- says what it wants: asking for the cursor is not the page's decision.
 -- `focus:set` is a broadcast every view module listens to, and each answers for
 -- its own owners only -- a module must not acquire, or release, focus on behalf
 -- of a view it does not own.
+-- Rewritten on every open from the opening menu's `focus` mode, which is why it
+-- is not a constant: what a `full` menu is granted and what a `cursor` menu is
+-- granted are different pairs, and the page asking is the same ask either way.
 local FOCUS = {
-	menu = { keyboard = true, cursor = false },
+	menu = { keyboard = true, cursor = true },
 }
 
 -- The one open menu, or nil.
@@ -173,14 +195,42 @@ local function normalizeItem(item, index, depth, budget)
 	local fault = dataFault(item.data, 'invalid_item_data', 'item_data_too_large')
 	if fault then return nil, fault end
 
+	-- The glyph replaced the row's ordinal. A number told the player which row
+	-- they were on, which the cursor already says; an icon says what the row IS,
+	-- which nothing else on the strip does. Refused rather than dropped when it
+	-- is not in the set: a caller who misspelt `vehcile` wants to hear about it
+	-- now, not to wonder later why one row in ten has no picture.
+	local icon = item.icon
+	if icon ~= nil then
+		if type(icon) ~= 'string' or not M.ICONS[icon] then return nil, 'invalid_item_icon' end
+	end
+
+	-- A ROW THAT LEADS SOMEWHERE WITHOUT CARRYING THE LEVEL BEHIND IT.
+	--
+	-- `arrow` used to be derived from one thing only -- whether the row had an
+	-- `items` list under it -- which was right for a small static tree and wrong
+	-- for everything that actually uses this contract. The staff menu and the
+	-- emote picker both hold their own stack and open ONE FLAT SCREEN at a time,
+	-- because the whole tree in one spec goes past the host's 1024-value bound.
+	-- So every one of their navigation rows was an `action` and drew exactly like
+	-- the rows that fire a command: the player could not tell "this opens a list"
+	-- from "this does something", which is the one thing the affordance column
+	-- exists to say.
+	--
+	-- `submenu = true` is that row saying it. It changes NOTHING else -- the row
+	-- still reports `select` and its owner still decides what that meant -- and a
+	-- row with real `items` under it does not need it, because the arrow is
+	-- derived there anyway.
 	local entry = {
 		id = id,
 		label = label,
+		icon = icon,
 		description = Text.Clean(item.description, MAX_DESCRIPTION),
 		data = item.data,
 		disabled = item.disabled == true,
 		close = item.close == true or nil,
 		act = type(item.act) == 'function' and item.act or nil,
+		leads = item.submenu == true or nil,
 	}
 
 	if item.items ~= nil then
@@ -416,6 +466,47 @@ local function build(owner, spec)
 	local fault = dataFault(spec.data, 'invalid_menu_data', 'menu_data_too_large')
 	if fault then return nil, fault end
 
+	-- HOW THE MENU TAKES INPUT. It used to be one answer for every menu -- the
+	-- page took the keyboard -- and taking the keyboard is taking the movement
+	-- keys, so every menu froze the player where they stood whether or not it
+	-- had any reason to. `cursor` is the mode for a menu that is meant to sit
+	-- open while the player walks; see `M.FOCUS_MODES`.
+	local focus = spec.focus
+	-- THE DEFAULT IS `none`: the menu takes NOTHING, and the player keeps both the
+	-- keyboard and the mouse.
+	--
+	-- It was `full` and the player could not move. It was then `cursor` on the
+	-- strength of the platform's own native card, which says in as many words that
+	-- `setFocus(false, true)` "takes only the mouse" so a page can have the pointer
+	-- "without depriving the game of the movement keys". On this build that is not
+	-- what happens -- taking the cursor alone still froze the player, and the third
+	-- argument that would have kept game input alive needs `webui.keep_input`, a
+	-- permission the build's own catalogue does not contain. Documented, and not
+	-- there. So the mouse is given up rather than the walking.
+	--
+	-- Nothing is lost that the surface needs: Lua reads the six keys itself (see
+	-- `pollKeys`), Escape arrives on `open77:pauseKey`, and a menu is navigated the
+	-- way it always was. `cursor` and `full` remain for a caller that wants them --
+	-- a menu that genuinely owns the player is now a choice somebody makes, rather
+	-- than what happens by not thinking about it.
+	if focus == nil or focus == true then
+		focus = 'none'
+	elseif focus == false then
+		focus = 'none'
+	end
+	if type(focus) ~= 'string' or M.FOCUS_MODES[focus] == nil then
+		return nil, 'invalid_focus'
+	end
+
+	-- WHETHER THE PLAYER MAY DISMISS IT. Default true, because a menu the player
+	-- cannot close is a menu that can trap them, and every menu before this one
+	-- could be escaped. False belongs to a menu whose owner is driving something
+	-- the player must answer -- and the owner is then the only thing that can
+	-- close it, so a `false` here is a promise to call `Close`.
+	if spec.closable ~= nil and type(spec.closable) ~= 'boolean' then
+		return nil, 'invalid_closable'
+	end
+
 	local budget = { nodes = 0 }
 	local items, reason = normalizeItems(spec.items, 1, budget)
 	if items == nil then return nil, reason end
@@ -426,6 +517,8 @@ local function build(owner, spec)
 		title = title,
 		on = spec.on,
 		data = spec.data,
+		focus = focus,
+		closable = spec.closable ~= false,
 		closeOnSelect = spec.closeOnSelect == true,
 		reportFocus = spec.reportFocus == true,
 		items = items,
@@ -532,10 +625,11 @@ local function frame(owned)
 		local toggle = kind == 'toggle'
 		window[index - first + 1] = {
 			label = entry.label,
+			icon = entry.icon,
 			value = shownValue(entry),
 			check = toggle or nil,
 			ticked = (toggle and entry.on) or nil,
-			arrow = kind == 'submenu' or nil,
+			arrow = (kind == 'submenu' or entry.leads == true) or nil,
 			spin = holdsValue(entry) or nil,
 			rule = kind == 'separator' or nil,
 			off = entry.disabled or nil,
@@ -551,8 +645,6 @@ local function frame(owned)
 		first = first,
 		total = total,
 		hint = current(owned).description,
-		status = owned.status and owned.status.text or nil,
-		statusBad = (owned.status ~= nil and owned.status.bad) or nil,
 	}
 end
 
@@ -565,6 +657,11 @@ local function sendOpen()
 	payload.anchor = M.Settings.ANCHOR
 	payload.width = M.Settings.WIDTH
 	payload.maxHeight = M.Settings.MAX_HEIGHT_VH
+	-- The page decides whether to ASK for focus, because only the page can see
+	-- the keystrokes it would be asking for. Lua decides what asking is worth:
+	-- `FOCUS.menu` below is what an ask is actually granted.
+	payload.focus = record.focus
+	payload.closable = record.closable
 	return OPX.UI.Send(SURFACE, 'menu:open', payload)
 end
 
@@ -645,17 +742,32 @@ end
 -- ── opening, closing and patching ───────────────────────────────────────────
 
 local wire
+local setPolling
 
---- Stores or clears the status line without drawing. Answers whether it moved.
+--- Raises a caller's status as a TOAST instead of a line under the list.
+--
+-- THE STATUS LINE IS GONE FROM THE STRIP. It was a second, weaker notification
+-- channel: toggling nametags wrote "nametags on" into the menu's footer, where it
+-- is only visible to a player already looking at the menu, and then expired on a
+-- timer nobody was watching. The runtime already has one channel for "that
+-- worked" and "that failed", and it is the toast.
+--
+-- `SetStatus` is NOT removed, because removing it would mean editing every caller
+-- to say the same thing a different way -- `modules/admin/client/menu.lua` alone
+-- calls it on every command it runs. It is rerouted instead, so a caller writes
+-- the same line and the player actually sees it.
+--
+-- One id per menu, so a player running the same command twice sees one answer
+-- replaced rather than a pile of them.
 local function writeStatus(owned, text, bad)
 	local clean = text ~= nil and Text.Clean(text, MAX_STATUS) or nil
-	if clean == nil or clean == '' then
-		if owned.status == nil then return false end
-		owned.status = nil
-	else
-		owned.status = { text = clean, bad = bad == true, atMs = OPX.Now() }
-	end
-	return true
+	if clean == nil or clean == '' then return false end
+	OPX.Toast.Show({
+		id = 'menu:' .. tostring(owned.id),
+		kind = bad == true and 'error' or 'success',
+		message = clean,
+	})
+	return false
 end
 
 --- Closes the open menu and tells its owner why.
@@ -666,6 +778,7 @@ local function closeNow(handle, reason)
 	local closing = record
 	record = nil
 	pendingOpen = false
+	setPolling(false)
 	OPX.UI.Send(SURFACE, 'menu:close', { handle = closing.handle })
 	-- Released here rather than waited for: the page announces the release on
 	-- `focus:set` too, but a page that is gone never will, and a focus held
@@ -716,6 +829,12 @@ local function Open(spec)
 	nextHandle = nextHandle + 1
 	built.handle = nextHandle
 	record = built
+	-- Set BEFORE the page is told to open: the page announces `focus:set` during
+	-- its own open handler, and `onFocus` reads this to answer it.
+	FOCUS.menu = M.FOCUS_MODES[built.focus]
+	-- A menu the page does not hold the keyboard for is one Lua reads the keys
+	-- of, so the arrows still work while the player walks.
+	setPolling(built.focus ~= 'full')
 	settle(record)
 	if spec.status ~= nil then writeStatus(record, spec.status, spec.statusBad) end
 
@@ -984,6 +1103,102 @@ local function onFocus(payload)
 	OPX.UI.AcquireFocus(owner, wants)
 end
 
+-- ── the keyboard Lua reads itself ───────────────────────────────────────────
+--
+-- THE POINT OF THIS BLOCK. Taking the keyboard is taking the movement keys, so a
+-- menu whose page holds focus is a menu the player cannot walk away from. The
+-- `cursor` mode hands the page the MOUSE only and leaves the game its keys --
+-- which fixes walking and breaks navigating, because the arrows then never reach
+-- the page at all.
+--
+-- So Lua reads them. This is not new ground: it is what `opx77_menu` did before
+-- this surface could be focused, down to the 260/55 ms repeat, and the whole of
+-- that machine is the twenty lines below. `onKey` is shared with the page, so
+-- both routes land in exactly one decision.
+
+-- Key name to when it may next fire, for keys currently held.
+local heldUntil = {}
+
+-- The scheduler handle of the poll, nil when nothing is polling.
+local pollJob
+
+--- Whether this open menu leaves the keyboard to the game.
+local function pagePolls()
+	return record ~= nil and record.focus == 'full'
+end
+
+--- One pass over the six keys: edge, then repeat.
+local function pollKeys()
+	if record == nil or pagePolls() then return end
+	local input = Open77.input
+	if type(input) ~= 'table' or type(input.isDown) ~= 'function' then return end
+
+	local atMs = OPX.Now()
+	for index = 1, #POLLED do
+		local name, key = POLLED[index][1], POLLED[index][2]
+		local read, downNow = pcall(input.isDown, name)
+		if not read then downNow = false end
+
+		if downNow ~= true then
+			heldUntil[name] = nil
+		else
+			local due = heldUntil[name]
+			if due == nil then
+				-- The rising edge. Fires at once and arms the long first repeat.
+				heldUntil[name] = atMs + REPEAT_FIRST_MS
+				onKey({ handle = record.handle, key = key })
+				-- A press may have closed the menu under us.
+				if record == nil then return end
+			elseif atMs >= due then
+				heldUntil[name] = atMs + REPEAT_NEXT_MS
+				onKey({ handle = record.handle, key = key, ['repeat'] = true })
+				if record == nil then return end
+			end
+		end
+	end
+end
+
+--- Starts or stops the poll for the menu that is open now.
+-- Registered on open and cancelled on close rather than left running: a 25 ms
+-- job that answers nothing is still a 25 ms job.
+--- Marks every key that is ALREADY down as held, so starting the poll can never
+--- read an unbroken press as a fresh one.
+--
+-- THIS IS NOT DEFENSIVE, IT IS THE CORRECTNESS OF THE EDGE. Choosing a submenu row
+-- REOPENS the menu -- `Open` closes the live one first -- and that close stops the
+-- poll while the player's finger is still on Enter. Starting again from an empty
+-- table read the same unbroken press as a new rising edge one pass later, and fired
+-- it at whatever row the submenu had just put the cursor on: one press of Enter,
+-- and the player also chose the first row of the level they had only just opened.
+-- `onKey` cannot catch that either -- a fresh edge carries no repeat flag, and its
+-- guard is on repeats.
+--
+-- A key must be RELEASED before it fires again, across a reopen or not.
+local function primeHeld()
+	local atMs = OPX.Now()
+	heldUntil = {}
+	local input = Open77.input
+	if type(input) ~= 'table' or type(input.isDown) ~= 'function' then return end
+	for index = 1, #POLLED do
+		local name = POLLED[index][1]
+		local read, downNow = pcall(input.isDown, name)
+		-- Armed as though it had just been pressed: it does not fire now, and a
+		-- held ARROW still repeats on schedule, which is what holding one is for.
+		if read and downNow == true then heldUntil[name] = atMs + REPEAT_FIRST_MS end
+	end
+end
+
+setPolling = function(wanted)
+	if wanted and pollJob == nil then
+		primeHeld()
+		pollJob = OPX.Scheduler.Every('menu:keys', POLL_MS, pollKeys)
+	elseif not wanted and pollJob ~= nil then
+		OPX.Scheduler.Cancel(pollJob)
+		pollJob = nil
+		heldUntil = {}
+	end
+end
+
 --- Wires the page channels once, on the first open.
 wire = function()
 	if wired then return end
@@ -996,14 +1211,8 @@ end
 
 -- ── upkeep ──────────────────────────────────────────────────────────────────
 
---- Clears the status line once it has been up long enough.
-local function expireStatus(atMs)
-	if record == nil or record.status == nil then return end
-	local life = finite(M.Settings.STATUS_MS) and M.Settings.STATUS_MS or 6000
-	if atMs - record.status.atMs < life then return end
-	record.status = nil
-	draw()
-end
+-- `expireStatus` went with the status line. A toast carries its own lifetime,
+-- so there is nothing here left to time out.
 
 --- Closes a menu whose owner is a module that has stopped.
 -- Only a declared module is swept: an owner this runtime knows nothing about
@@ -1079,8 +1288,13 @@ function M.Start()
 
 	-- Escape is swallowed by the plugin before any surface sees it; when it
 	-- arrives here rather than on `menu:dismiss`, the reason is the pause menu.
+	-- It is also the ONLY route Escape has in `cursor` mode: the page never sees a
+	-- keystroke it does not hold the keyboard for, so `bridge/focus.ts` never runs
+	-- and `menu:dismiss` never arrives. A menu its owner declared unclosable is
+	-- left alone here for the same reason the page withholds its Escape handler --
+	-- otherwise `closable = false` would hold against one key and not the other.
 	AddEventHandler(M.Host.PAUSE_KEY, function()
-		if record ~= nil then closeNow(record.handle, 'pause') end
+		if record ~= nil and record.closable then closeNow(record.handle, 'pause') end
 	end)
 
 	OPX.Scheduler.Every('menu:upkeep', UPKEEP_MS, function()
@@ -1088,7 +1302,6 @@ function M.Start()
 		-- The open is re-sent until the page reports ready: a surface built on
 		-- first use is not ready when the first menu opens on it.
 		if pendingOpen then draw() end
-		expireStatus(OPX.Now())
 		sweepOwner()
 	end)
 

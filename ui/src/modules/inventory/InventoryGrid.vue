@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import InventorySlot from './InventorySlot.vue'
+import { BLEED, CELL, COLUMNS, GAP, GRID_HEIGHT, GRID_WIDTH, ROWS } from './geometry'
 import type { CatalogEntry, Container, ScreenConfig, Stack } from './types'
 
 /**
@@ -11,9 +12,21 @@ import type { CatalogEntry, Container, ScreenConfig, Stack } from './types'
  * thousand slots are five thousand map lookups and about forty elements: the
  * spacer above and below carries the rest of the scroll height.
  *
- * ONE augmented frame lives around this component, not inside it -- see
- * InventorySlot.vue. Nothing here animates an `--aug-*` value, because nothing
- * here has one.
+ * ── CENTRED PASS ────────────────────────────────────────────────────────────
+ *
+ * THE GRID NO LONGER MEASURES ITSELF. It used to read its own `clientWidth` and
+ * choose a column count from it, under a `ResizeObserver` and a window listener.
+ * That is gone: `geometry.ts` fixes five columns of a 90px square and seven rows
+ * before it scrolls, which is `opx77_inventory`'s own geometry, and the view
+ * scales the whole centred pair to fit the surface instead of reflowing it. A
+ * reflowing grid re-columns on every resize and whenever the second panel
+ * appears, so a slot is never twice in the same place; this one always is.
+ *
+ * What is left to watch is the scroll offset, which is the only thing the
+ * virtual window actually depends on now.
+ *
+ * Nothing here draws anything. The panel around it has no frame at all any more,
+ * and the outline belongs to the cell inside it -- see InventorySlot.vue.
  */
 const props = defineProps<{
   container: Container
@@ -34,54 +47,28 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'grab', slot: number, native: PointerEvent): void
   (event: 'open', slot: number, native: MouseEvent): void
-  (event: 'hover', slot: number | null): void
+  (event: 'hover', slot: number | null, native?: MouseEvent): void
   (event: 'broke', name: string): void
 }>()
 
-/* The cell is a fixed box so a row's height is known without measuring one. Both
-   numbers are also in the stylesheet below; they are the same grid. */
-const CELL = 78
-const GAP = 4
-
 /* Rows kept above and below the window. Two is enough to cover a fast wheel
-   between two frames without rendering a screenful of cells nobody sees. */
+   between two frames without rendering a screenful of cells nobody sees. It is
+   also what absorbs the BLEED gutter's shift of the first row. */
 const OVERSCAN = 2
 
 const viewport = ref<HTMLElement | null>(null)
-const columns = ref(1)
-const height = ref(0)
 const scrollTop = ref(0)
-
-let observer: ResizeObserver | null = null
-
-function measure(): void {
-  const element = viewport.value
-  if (!element) return
-  const width = element.clientWidth
-  columns.value = Math.max(1, Math.floor((width + GAP) / (CELL + GAP)))
-  height.value = element.clientHeight
-  scrollTop.value = element.scrollTop
-}
 
 function onScroll(): void {
   scrollTop.value = viewport.value?.scrollTop ?? 0
 }
 
 onMounted(() => {
-  measure()
-  // ResizeObserver, not a window listener: the drawer changes width when the
-  // second panel appears, and the window never moves.
-  if (typeof ResizeObserver === 'function') {
-    observer = new ResizeObserver(measure)
-    if (viewport.value) observer.observe(viewport.value)
-  }
-  window.addEventListener('resize', measure)
+  scrollTop.value = viewport.value?.scrollTop ?? 0
 })
 
 onBeforeUnmount(() => {
-  observer?.disconnect()
-  observer = null
-  window.removeEventListener('resize', measure)
+  scrollTop.value = 0
 })
 
 // A different container is a different scroll position; keeping the old one
@@ -94,14 +81,12 @@ watch(
   }
 )
 
-const rows = computed(() => Math.ceil(props.container.slots / columns.value))
+const rows = computed(() => Math.ceil(props.container.slots / COLUMNS))
 
-const firstRow = computed(() =>
-  Math.max(0, Math.floor(scrollTop.value / (CELL + GAP)) - OVERSCAN)
-)
+const firstRow = computed(() => Math.max(0, Math.floor(scrollTop.value / (CELL + GAP)) - OVERSCAN))
 
 const lastRow = computed(() => {
-  const visible = Math.ceil(height.value / (CELL + GAP)) + OVERSCAN * 2
+  const visible = ROWS + OVERSCAN * 2
   return Math.min(rows.value, firstRow.value + visible)
 })
 
@@ -119,8 +104,8 @@ const wanted = computed(() => new Set(props.categories))
     cell's stack and catalogue entry are each looked up exactly once. */
 const cells = computed<Cell[]>(() => {
   const out: Cell[] = []
-  const from = firstRow.value * columns.value + 1
-  const to = Math.min(props.container.slots, lastRow.value * columns.value)
+  const from = firstRow.value * COLUMNS + 1
+  const to = Math.min(props.container.slots, lastRow.value * COLUMNS)
   const filter = wanted.value
   for (let index = from; index <= to; index += 1) {
     const stack = props.container.bySlot.get(index) ?? null
@@ -140,16 +125,23 @@ const cells = computed<Cell[]>(() => {
 const padTop = computed(() => firstRow.value * (CELL + GAP))
 const padBottom = computed(() => Math.max(0, (rows.value - lastRow.value) * (CELL + GAP)))
 
+/* Every number the grid draws with, handed to CSS in one place. The view sizes
+   the panel from the same module, so the two can never disagree. */
+const frameStyle = computed(() => ({
+  width: `${GRID_WIDTH}px`,
+  height: `${GRID_HEIGHT}px`,
+  padding: `${BLEED}px`
+}))
+
 const gridStyle = computed(() => ({
-  gridTemplateColumns: `repeat(${columns.value}, minmax(0, 1fr))`,
+  gridTemplateColumns: `repeat(${COLUMNS}, ${CELL}px)`,
   gridAutoRows: `${CELL}px`,
   gap: `${GAP}px`
 }))
-
 </script>
 
 <template>
-  <div ref="viewport" class="viewport" @scroll.passive="onScroll">
+  <div ref="viewport" class="viewport" :style="frameStyle" @scroll.passive="onScroll">
     <div :style="{ height: `${padTop}px` }" />
     <div class="grid" :style="gridStyle">
       <InventorySlot
@@ -167,7 +159,7 @@ const gridStyle = computed(() => ({
         :broken="broken"
         @grab="(at, native) => emit('grab', at, native)"
         @open="(at, native) => emit('open', at, native)"
-        @hover="(at) => emit('hover', at)"
+        @hover="(at, native) => emit('hover', at, native)"
         @broke="(name) => emit('broke', name)"
       />
     </div>
@@ -176,10 +168,17 @@ const gridStyle = computed(() => ({
 </template>
 
 <style scoped>
+/* Fixed size, from `geometry.ts`, and bound inline rather than written here: the
+   grid virtualises, so the numbers exist in JS whether or not they are also in a
+   stylesheet, and one copy is better than two that agree by hand. */
 .viewport {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: none;
+  /* GRID_WIDTH and GRID_HEIGHT already include the BLEED gutter on both sides, so
+     the box has to be the one that counts padding inside the size. Declared here
+     because the token file sets no universal `box-sizing`. */
+  box-sizing: border-box;
   overflow: hidden auto;
+  overscroll-behavior: contain;
   /* A CEF scrollbar is a Chromium scrollbar drawn over gameplay. */
   scrollbar-width: none;
 }
@@ -192,5 +191,6 @@ const gridStyle = computed(() => ({
 .grid {
   display: grid;
   align-content: start;
+  justify-content: start;
 }
 </style>

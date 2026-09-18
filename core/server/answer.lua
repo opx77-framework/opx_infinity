@@ -57,6 +57,12 @@ end
 --- Sends a toast, through whatever the host routes notifications to. An exact
 --- repeat inside the dedupe window is swallowed; two different toasts are two
 --- things the player has to learn, so only an exact repeat counts.
+---
+--- NO ICON HERE, and it is not an omission. This one does not reach the runtime's
+--- own overlay at all: it hands the toast to the platform's `open77_notifications`
+--- package, whose `icon` field is a short TEXT badge of at most 16 bytes rather
+--- than a glyph name. The two paths that do reach our page are `OPX.Refuse` and
+--- `OPX.CommandNotice`, below, and those take one.
 -- @author dop42
 -- @param source Source
 -- @param message string
@@ -126,9 +132,17 @@ end
 -- @param kind string success, warning or error
 -- @param message string
 -- @param toasted boolean|nil
-function OPX.CommandNotice(source, raw, kind, message, toasted)
+-- @param icon string|nil a glyph name from `OPX.Toast.ICONS`
+function OPX.CommandNotice(source, raw, kind, message, toasted, icon)
 	if source and source > 0 then
-		TriggerClientEvent(ANSWER, source, raw or '', kind, message, toasted == true)
+		-- `icon` is a trailing argument: every caller that predates it sends five
+		-- and the client half reads a nil sixth. Only its TYPE is checked here --
+		-- the closed set of glyph names lives on the client, where the page that
+		-- draws them does, and core may not reach into a module to borrow one. The
+		-- client drops a name it has no path for and logs it rather than losing
+		-- the sentence it was attached to.
+		TriggerClientEvent(ANSWER, source, raw or '', kind, message, toasted == true,
+			type(icon) == 'string' and icon or nil)
 	else
 		print(message)
 	end
@@ -178,12 +192,18 @@ end
 -- @param source Source
 -- @param code string a locale key
 -- @param operation string|nil
-function OPX.Refuse(source, code, operation)
+-- @param icon string|nil a glyph name from `OPX.Toast.ICONS`
+function OPX.Refuse(source, code, operation, icon)
 	source = tonumber(source)
 	if not source or source <= 0 then return end
 	TriggerClientEvent(NOTIFY, source, {
 		kind = 'error',
 		code = OPX.RefusalKey(code),
 		operation = type(operation) == 'string' and operation or 'unknown',
+		-- A refusal is the one toast a player MUST read, so the glyph is the part
+		-- of it that is allowed to go missing: the client validates the name
+		-- against its closed set and drops one it cannot draw, and the words go up
+		-- either way. Type-checked here only, for the reason `CommandNotice` gives.
+		icon = type(icon) == 'string' and icon or nil,
 	})
 end

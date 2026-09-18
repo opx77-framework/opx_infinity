@@ -120,6 +120,7 @@ M.Command = {
 	SELF_INVISIBLE = 'opx.admin.self.invisible',
 	SELF_POS = 'opx.admin.self.pos',
 	SELF_TAGS = 'opx.admin.self.tags',
+	SELF_MODEL = 'opx.admin.self.model',
 
 	PLAYER_GOTO = 'opx.admin.player.goto',
 	PLAYER_BRING = 'opx.admin.player.bring',
@@ -133,6 +134,7 @@ M.Command = {
 	PLAYER_KILL = 'opx.admin.player.kill',
 	PLAYER_HEALTH = 'opx.admin.player.health',
 	PLAYER_ARMOR = 'opx.admin.player.armor',
+	PLAYER_MODEL = 'opx.admin.player.model',
 
 	MODERATE_KICK = 'opx.admin.moderate.kick',
 	MODERATE_BAN = 'opx.admin.moderate.ban',

@@ -69,6 +69,7 @@ shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
 shared_script "config/entry.lua"
+-- shared_script "config/gigs.lua"   -- parked; see the gigs block below
 shared_script "config/admin.lua"
 
 shared_script "lib/shared/result.lua"
@@ -107,10 +108,12 @@ client_script "modules/diagnostics/client/main.lua"
 shared_script "modules/character/module.lua"
 shared_script "modules/character/locales.lua"
 server_script "modules/character/server/storage.lua"
+server_script "modules/character/server/state.lua"
 server_script "modules/character/server/player.lua"
 server_script "modules/character/server/groups.lua"
 server_script "modules/character/server/character.lua"
 server_script "modules/character/server/main.lua"
+client_script "modules/character/client/state.lua"
 client_script "modules/character/client/main.lua"
 
 shared_script "modules/appearance/module.lua"
@@ -126,8 +129,6 @@ client_script "modules/appearance/client/wardrobe.lua"
 
 shared_script "modules/entry/module.lua"
 shared_script "modules/entry/locales.lua"
-client_script "modules/entry/client/model.lua"
-client_script "modules/entry/client/stage.lua"
 client_script "modules/entry/client/main.lua"
 
 shared_script "modules/needs/module.lua"
@@ -170,6 +171,9 @@ shared_script "modules/chat/module.lua"
 shared_script "modules/chat/locales.lua"
 server_script "modules/chat/server/main.lua"
 client_script "modules/chat/client/main.lua"
+-- The seam's other end. `main.lua` holds the state and draws nothing; this is
+-- the only file that knows the view is a CEF page, and it claims the open key.
+client_script "modules/chat/client/view.lua"
 
 shared_script "modules/inventory/module.lua"
 shared_script "modules/inventory/locales.lua"
@@ -233,6 +237,25 @@ client_script "modules/elevators/client/main.lua"
 client_script "modules/elevators/client/panel.lua"
 client_script "modules/elevators/client/exports.lua"
 
+-- PARKED. `modules/gigs/` and `config/gigs.lua` are written, tested and left on
+-- disk unlisted: a file the manifest does not name never loads. They come back
+-- with these lines, `shared_script "config/gigs.lua"` above, and the
+-- `ui.vanilla.map` permission below -- all three together or not at all.
+--
+-- After `target`, `inventory` and `animations`, all three of which it reads a
+-- contract from, and after `character`, which it requires. `client/run.lua`
+-- before `client/board.lua`: the board's rows call into the run.
+--
+-- shared_script "modules/gigs/module.lua"
+-- shared_script "modules/gigs/locales.lua"
+-- shared_script "modules/gigs/shared/catalog.lua"
+-- server_script "modules/gigs/server/ledger.lua"
+-- server_script "modules/gigs/server/runs.lua"
+-- server_script "modules/gigs/server/main.lua"
+-- client_script "modules/gigs/client/run.lua"
+-- client_script "modules/gigs/client/board.lua"
+-- client_script "modules/gigs/client/main.lua"
+
 -- LAST of the modules, because it reaches into nearly all of them and provides
 -- nothing back. Every contract it uses is optional bar `character`: without the
 -- menu, the form or the target eye it logs one line each and all 50 commands
@@ -240,18 +263,28 @@ client_script "modules/elevators/client/exports.lua"
 shared_script "modules/admin/module.lua"
 shared_script "modules/admin/locales.lua"
 shared_script "modules/admin/data/vehicles.lua"
+shared_script "modules/admin/data/peds.lua"
 -- The catalogue is split four ways only because of its size; `-4` finishes it.
 shared_script "modules/admin/shared/catalog.lua"
 shared_script "modules/admin/shared/catalog-1.lua"
 shared_script "modules/admin/shared/catalog-2.lua"
 shared_script "modules/admin/shared/catalog-3.lua"
 shared_script "modules/admin/shared/catalog-4.lua"
+-- The ped allowlist, split the same way and for the same reason; `-4` finishes it.
+shared_script "modules/admin/shared/peds.lua"
+shared_script "modules/admin/shared/peds-1.lua"
+shared_script "modules/admin/shared/peds-2.lua"
+shared_script "modules/admin/shared/peds-3.lua"
+shared_script "modules/admin/shared/peds-4.lua"
 
 -- `main.lua` is the spine and declares the lifecycle; the rest register into it
 -- and are called at Start. `inventory` before `weapons` and `menu`; `menu` last,
 -- because its access map lists what every other file registered.
 server_script "modules/admin/server/main.lua"
 server_script "modules/admin/server/players.lua"
+-- After `players.lua`: the body states it pushes carry the worn ped, and the two
+-- files call each other by name at run time, never at load.
+server_script "modules/admin/server/models.lua"
 server_script "modules/admin/server/vehicles.lua"
 server_script "modules/admin/server/inventory.lua"
 server_script "modules/admin/server/weapons.lua"
@@ -266,6 +299,7 @@ client_script "modules/admin/client/keys.lua"
 client_script "modules/admin/client/controls.lua"
 client_script "modules/admin/client/forms.lua"
 client_script "modules/admin/client/tags.lua"
+client_script "modules/admin/client/tagsview.lua"
 client_script "modules/admin/client/combat.lua"
 client_script "modules/admin/client/doors.lua"
 client_script "modules/admin/client/menu.lua"
@@ -280,6 +314,20 @@ web_files { "web/**" }
 
 permissions {
   "network.events",
+
+  -- WRITING a replicated state bag; reading one needs nothing, on either side.
+  -- `modules/character/server/state.lua` is the only writer in this resource and
+  -- the only reason this line is here.
+  --
+  -- It is NOT in the op77.76 permission catalogue, and that is expected rather
+  -- than a second unchecked guess like the two model names at the bottom of this
+  -- block: the catalogue lists what a native HANDLER checks, and the bag writer
+  -- checks further down -- `server:Open77.state.player` reports "none checked in
+  -- the handler" while its own card says "requires `state.write` to write". An
+  -- undeclared permission is answered with `permission_denied:<name>`, never with
+  -- a refused manifest, so a host that does not know the name loses the bag and
+  -- nothing else.
+  "state.write",
 
   "database.access",
 
@@ -353,4 +401,18 @@ permissions {
   "combat.config",
   "world.doors",
   "world.transform",
+
+  -- NOT IN THE op77.76 PERMISSION CATALOGUE, and not on the build this ships
+  -- against. `Open77.players.setModel` / `.resetModel` / `.getModel` are
+  -- documented at https://open2077.net/docs/player-models and arrived after
+  -- op77.76, which is the newest build the devkit knows; this server runs
+  -- op77.75. The two names below are the ones that page declares, written
+  -- exactly as it writes them, and they are the ONLY lines in this manifest that
+  -- were not checked against a catalogue.
+  --
+  -- `server/models.lua` never assumes they took: it looks the natives up before
+  -- every call and refuses with `models_unavailable` when they are absent, so an
+  -- older host loses the two model commands and nothing else.
+  "players.model.control",
+  "players.model.read",
 }

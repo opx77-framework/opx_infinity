@@ -297,6 +297,9 @@ function M.Start()
 	M.Keys.Start()
 	M.Controls.Start()
 	M.Tags.Start()
+	-- After the state half: it attaches to `ON_TAGS`, and the first payload that
+	-- event ever carries is the config `Tags.Start` publishes on switch-on.
+	M.TagsView.Start()
 	M.Combat.Start()
 	M.Doors.Start()
 	-- Before the menu: the menu's own handlers hand the access map straight to
@@ -315,6 +318,7 @@ function M.Stop()
 	noclipOn, mapArmed = false, false
 	M.Menu.Close()
 	M.Menu.Stop()
+	M.TagsView.Stop()
 	M.Tags.Stop()
 	M.Doors.Stop()
 	M.Target.Stop()

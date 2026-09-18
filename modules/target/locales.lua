@@ -9,7 +9,7 @@ local M = OPX.Modules.Get('target')
 
 local EN = {
 	['target.key'] = 'Target (hold)',
-	['target.hint'] = 'Click a target',
+	['target.hint'] = 'Right-click a target',
 	['target.looking'] = 'Looking…',
 	['target.back'] = 'Back',
 	['target.unavailable'] = 'Action unavailable',
@@ -17,7 +17,7 @@ local EN = {
 
 local FR = {
 	['target.key'] = 'Cibler (maintenir)',
-	['target.hint'] = 'Cliquez sur une cible',
+	['target.hint'] = 'Clic droit sur une cible',
 	['target.looking'] = 'Recherche…',
 	['target.back'] = 'Retour',
 	['target.unavailable'] = 'Action indisponible',

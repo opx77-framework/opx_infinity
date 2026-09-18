@@ -99,35 +99,56 @@ function Players.IsNoclip(playerId)
 end
 
 --- Sends one staff client the body states behind its checkboxes: whether its own
---- body is hidden, and the ids of the players held still.
+--- body is hidden, the ids of the players held still, and the ped each player
+--- wearing one is wearing.
 -- The host readers come first and this module's own marks are the fallback, so a
 -- build that cannot answer `isFrozen` still draws the right box.
+--
+-- `frozen` and `worn` are both LISTS rather than maps keyed by player id: an
+-- empty table may not survive the trip, and a map of integer keys is not the
+-- shape the wire keeps. None reads as nobody held and nobody wearing, which is
+-- the truthful answer either way.
 -- @author dop42
 -- @param playerId Source
--- @param departed Source|nil a player leaving right now, left off the list
+-- @param departed Source|nil a player leaving right now, left off the lists
 function Players.PushBodies(playerId, departed)
 	if playerId <= 0 then return end
 	local visible = readFlag('isVisible', playerId)
-	local held = {}
+	local held, worn = {}, {}
 	for _, id in ipairs(Server.PlayerIds()) do
 		if id ~= departed then
 			local still = readFlag('isFrozen', id)
 			if still == nil then still = frozen[id] == true end
 			if still then held[#held + 1] = id end
+			local ped = M.Models.Worn(id)
+			if ped ~= nil then worn[#worn + 1] = { id = id, ped = ped } end
 		end
 	end
 	local invisible
 	if visible == nil then invisible = hidden[playerId] == true else invisible = not visible end
-	TriggerClientEvent(M.Event.BODIES, playerId, { invisible = invisible, frozen = held })
+	-- The operator's own ped travels beside the list rather than inside it: the
+	-- menu draws a row for it before the roster has named this client to itself.
+	TriggerClientEvent(M.Event.BODIES, playerId, { invisible = invisible, frozen = held,
+		worn = worn, wornSelf = M.Models.Worn(playerId), models = M.Models.Available() })
 end
 
--- Sends the body states to every client the ACL grants the freeze command.
+-- Sends the body states to every client the ACL grants one of the commands the
+-- states are drawn for.
 local function pushBodiesToStaff(departed)
 	for _, id in ipairs(Server.PlayerIds()) do
-		if id ~= departed and Server.Permitted(id, Command.PLAYER_FREEZE) == true then
+		if id ~= departed and (Server.Permitted(id, Command.PLAYER_FREEZE) == true
+			or Server.Permitted(id, Command.PLAYER_MODEL) == true) then
 			Players.PushBodies(id, departed)
 		end
 	end
+end
+
+--- Sends the body states to every staff client. The seam `server/models.lua`
+--- redraws the checkboxes through after a ped goes on or comes off.
+-- @author dop42
+-- @param departed Source|nil a player leaving right now, left off the lists
+function Players.PushToStaff(departed)
+	pushBodiesToStaff(departed)
 end
 
 -- Heals a player to their maximum health, audited and answered.
@@ -139,7 +160,7 @@ local function heal(source, raw, playerId, event)
 	audit(source, event, true, playerId, ('%.0f'):format(maximum))
 	if playerId ~= source then tell(playerId, 'admin.toast.healed', nil, 'success') end
 	answer(source, raw, true, 'admin.done.healed',
-		{ id = playerId, name = Server.NameOf(playerId) or '?' })
+		{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 end
 
 -- Revives a player where they lie, through `downed` when it is running so that
@@ -167,7 +188,7 @@ local function revive(source, raw, playerId, event)
 	audit(source, event, true, playerId)
 	if playerId ~= source then tell(playerId, 'admin.toast.revived', nil, 'success') end
 	answer(source, raw, true, 'admin.done.revived',
-		{ id = playerId, name = Server.NameOf(playerId) or '?' })
+		{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 end
 
 -- Switches a player's god mode, toggling when no word is typed.
@@ -186,7 +207,7 @@ local function god(source, raw, playerId, word, event)
 		tell(playerId, wanted and 'admin.toast.godOn' or 'admin.toast.godOff')
 	end
 	answer(source, raw, true, wanted and 'admin.done.godOn' or 'admin.done.godOff',
-		{ id = playerId, name = Server.NameOf(playerId) or '?' })
+		{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 end
 
 -- Where to land beside a player, and the bucket they are in.
@@ -337,7 +358,7 @@ function Players.Register()
 				tell(playerId, wanted and 'admin.toast.frozen' or 'admin.toast.unfrozen', nil, 'warning')
 			end
 			answer(source, raw, true, wanted and 'admin.done.frozen' or 'admin.done.unfrozen',
-				{ id = playerId, name = Server.NameOf(playerId) or '?' })
+				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
 	})
 
@@ -367,7 +388,7 @@ function Players.Register()
 			audit(source, 'admin.player.goto', placed, playerId, code)
 			if not placed then return refuse(source, raw, code, { reason = reason }) end
 			answer(source, raw, true, 'admin.done.goto',
-				{ id = playerId, name = Server.NameOf(playerId) or '?', bucket = bucket })
+				{ id = playerId, name = Server.LabelOf(playerId) or '?', bucket = bucket })
 		end,
 	})
 
@@ -385,7 +406,7 @@ function Players.Register()
 			if not placed then return refuse(source, raw, code, { reason = reason, id = playerId }) end
 			tell(playerId, 'admin.toast.brought')
 			answer(source, raw, true, 'admin.done.bring',
-				{ id = playerId, name = Server.NameOf(playerId) or '?' })
+				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
 	})
 
@@ -434,7 +455,7 @@ function Players.Register()
 			if not placed then return refuse(source, raw, code, { reason = reason }) end
 			setNoclip(source, true, Command.PLAYER_OBSERVE)
 			answer(source, raw, true, 'admin.done.observe',
-				{ id = playerId, name = Server.NameOf(playerId) or '?' })
+				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
 	})
 
@@ -480,7 +501,7 @@ function Players.Register()
 			audit(source, 'admin.player.kill', true, playerId)
 			tell(playerId, 'admin.toast.killed', nil, 'warning')
 			answer(source, raw, true, 'admin.done.killed',
-				{ id = playerId, name = Server.NameOf(playerId) or '?' })
+				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
 	})
 
@@ -536,7 +557,7 @@ function Players.Register()
 			local reason = M.Trimmed(Text.Rest(args, 2), 200) or locale('admin.kick.defaultReason')
 			-- Cut in bytes, not characters: the platform's limit is on the wire.
 			reason = Text.Bytes(reason, KICK_REASON_BYTES)
-			local name = Server.NameOf(playerId) or '?'
+			local name = Server.LabelOf(playerId) or '?'
 			local ok, failure = Open77.players.kick(playerId, reason)
 			if not ok then return nativeRefused(source, raw, 'admin.moderate.kick', playerId, failure) end
 			audit(source, 'admin.moderate.kick', true, playerId, ('%s: %s'):format(name, reason))
@@ -575,7 +596,7 @@ function Players.Register()
 
 			local reason = M.Trimmed(Text.Rest(args, reasonFrom), 200)
 				or locale('admin.ban.defaultReason')
-			local name = Server.NameOf(playerId) or '?'
+			local name = Server.LabelOf(playerId) or '?'
 			local ok, failure = access.ban(identifier, reason, seconds, name)
 			if not ok then return nativeRefused(source, raw, 'admin.moderate.ban', playerId, failure) end
 			audit(source, 'admin.moderate.ban', true, playerId,
@@ -616,10 +637,12 @@ function Players.Register()
 		local player = tonumber(playerId) or 0
 		noclip[player], mapPick[player], speedChosen[player] = nil, nil, nil
 		local wasFrozen = frozen[player] ~= nil
+		local wasWorn = M.Models.Worn(player) ~= nil
 		hidden[player], frozen[player] = nil, nil
+		M.Models.Forget(player)
 		-- A departing player must come off every staff member's checkbox, and the
 		-- list is built without them: their slot may already belong to somebody.
-		if wasFrozen then pushBodiesToStaff(player) end
+		if wasFrozen or wasWorn then pushBodiesToStaff(player) end
 	end)
 end
 

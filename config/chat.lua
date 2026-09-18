@@ -7,12 +7,22 @@
 OPX.Config.MODULES.chat = {
 	enabled = true,
 
-	-- bottom-left or top-left; anything else reads as bottom-left.
-	ANCHOR = 'bottom-left',
+	-- bottom-left, bottom-center, top-left or top-center; anything else reads as
+	-- bottom-left.
+	ANCHOR = 'top-center',
 
 	-- Pixels above the anchored inset on a 1080-high surface, and the box width
 	-- on a 1920-wide one.
-	OFFSET = 155,
+	--
+	-- WITH A TOP ANCHOR THE OFFSET IS MEASURED FROM THE TOP EDGE, not the bottom.
+	-- That is the whole reason the box moved up here: the bottom-left corner is
+	-- where `config/hud.lua` puts the vitals and the status chips, and every value
+	-- tried down there -- 155, 300, 460 -- either sat on that stack or floated in
+	-- the middle of the screen. The top edge is empty.
+	--
+	-- This is the one number to move if it lands wrong. Nothing in the code
+	-- depends on it.
+	OFFSET = 48,
 	WIDTH = 620,
 
 	-- Lines kept on screen; older ones fall off the top.
@@ -33,4 +43,15 @@ OPX.Config.MODULES.chat = {
 
 	-- Refused commands as toasts; false puts a red line in the box instead.
 	NOTIFY = true,
+
+	-- The default a player rebinds in the pause menu; false registers none.
+	--
+	-- This runtime binds its own key because the platform's `open77_chat` -- the
+	-- only other thing that raises `open77:chat:open` -- is not in this server's
+	-- `resources.load`. With neither, the box has no way to be opened and never
+	-- appears in the shortcuts tab at all. Loading `open77_chat` alongside this is
+	-- supported: both keys reach the same handler.
+	KEYS = {
+		OPEN = 'T',
+	},
 }

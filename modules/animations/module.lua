@@ -8,8 +8,9 @@
 -- catalogue as config leaves it, a per-player rate and a readiness gate. It
 -- provides no animation of its own and writes nothing to the database.
 --
--- `downed`, `menu` and `prompts` are optional. Without `menu` there is no
--- picker and the commands and the contract still work; without `prompts` the
+-- `downed`, `menu`, `form` and `prompts` are optional. Without `menu` there is no
+-- picker and the commands and the contract still work; without `form` the picker
+-- keeps every screen and loses only its search box; without `prompts` the
 -- stop key is simply not drawn; without `downed` the picker never closes itself.
 -- Each absence costs one logged line and nothing else.
 
@@ -17,7 +18,7 @@ local M = OPX.Modules.Declare{
 	id = 'animations',
 	side = 'both',
 	fatal = false,
-	optional = { 'downed', 'menu', 'prompts' },
+	optional = { 'downed', 'menu', 'form', 'prompts' },
 }
 
 local NET = OPX.Channel.NET

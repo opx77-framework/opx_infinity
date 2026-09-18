@@ -34,7 +34,41 @@ local function versionLines()
 	return lines
 end
 
+-- Page reports one player may put in the journal per window, and the window.
+-- A throwing render loop is capped on the page and again on the client, and this
+-- is the third floor: the two above it live on the machine being diagnosed.
+local REPORTS_PER_WINDOW = 20
+local WINDOW_MS = 60000
+local windows = {}
+
+--- Writes one page failure to the server log, attributed to the player it came
+--- from and cleaned of anything that could forge a line.
+local function onPageReport(text)
+	local player = tonumber(source) or 0
+	if player <= 0 or type(text) ~= 'string' then return end
+
+	local at = OPX.Now()
+	local window = windows[player]
+	if window == nil or at - window.started >= WINDOW_MS then
+		window = { started = at, count = 0 }
+		windows[player] = window
+	end
+	if window.count >= REPORTS_PER_WINDOW then return end
+	window.count = window.count + 1
+
+	-- Through `Clean` before a format string: the text came off the wire and a
+	-- newline in it would forge a whole journal line.
+	Open77.log.warn(('[page] player %d: %s'):format(player, OPX.Text.Clean(text, 400, '...') or ''))
+end
+
 function M.Start()
+	RegisterNetEvent(M.PAGE, onPageReport)
+
+	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, function(playerId)
+		local player = tonumber(playerId) or 0
+		if player > 0 then windows[player] = nil end
+	end)
+
 	-- Restricted: the module list names what is installed and what failed, which
 	-- is a map of the server for anyone deciding where to probe.
 	RegisterCommand('opx.modules', function(source)

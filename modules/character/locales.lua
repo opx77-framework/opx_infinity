@@ -13,15 +13,22 @@ OPX.Locale.Register('en', {
 	['character.rowLimit'] = 'This account has created as many characters as it may.',
 	['character.notFound'] = 'No character carries that citizen ID.',
 	['character.badName'] = 'That name cannot be used.',
-	['character.badOrigin'] = 'That is not a valid lifepath.',
-	['character.badBirthdate'] = 'That birth date cannot be used.',
+	['character.badBody'] = 'That is not a body this game has.',
+	['character.bodySet'] = 'This character is already built on a body.',
+	['character.nameSet'] = 'This character already has a name.',
+	['character.named'] = '{name}. Welcome to Night City.',
+	['character.unnamed'] = 'no name yet',
 	['character.created'] = 'Character created. Your citizen ID is {citizenId}.',
 	['character.deleted'] = 'Character deleted.',
 	['character.inUse'] = 'That character is already in the world.',
+	['character.alreadyPlaying'] = 'You are playing that character right now.',
 
 	['entry.failed'] = 'Could not bring you into Night City. Try reconnecting.',
 	['entry.noIdentity'] = 'Your identity could not be verified.',
-	['entry.timedOut'] = 'You took too long to choose a character.',
+
+	['session.switching'] = 'Switching character. Reconnect to play them.',
+	['session.newCharacter'] = 'Building a new character. Reconnect to make them.',
+	['session.characterDeleted'] = 'That character is gone. Reconnect to play another.',
 
 	['money.insufficient'] = 'You do not have enough {type}.',
 	['money.badType'] = 'That is not a currency on this server.',
@@ -46,8 +53,7 @@ OPX.Locale.Register('en', {
 
 	['command.inGameOnly'] = 'That command has to be run in game.',
 	['command.usage.select'] = 'usage: /opx.select <citizenId>',
-	['command.usage.create'] =
-		'usage: /opx.create <firstName> <lastName> [nomad|streetkid|corpo] [female|male]',
+	['command.usage.create'] = 'usage: /opx.create (no arguments; it disconnects you)',
 	['command.usage.delete'] = 'usage: /opx.delete <citizenId>',
 	['command.usage.money'] =
 		'usage: /opx.money <playerId|citizenId> <TYPE> <amount> (negative removes)',
@@ -60,15 +66,19 @@ OPX.Locale.Register('en', {
 	['command.jobSet'] = '{citizenId} is now {grade} at {job}.',
 	['command.gangSet'] = '{citizenId} is now {grade} in {gang}.',
 	['command.saved'] = 'Saved {saved} of {total} character(s).',
-	['command.entered'] = 'You are in the world as {citizenId}.',
-	['command.characterCount'] = '{count} character(s):',
+	['command.characterCount'] = '{count} character(s), {slots} slot(s). The one marked > is ' ..
+		'the one you enter on:',
+	['command.characterHint'] = 'opx.select <ID> takes another one, opx.create builds a new ' ..
+		'one. Both disconnect you; the character is entered when you reconnect.',
+	['command.locked'] = 'Locked on {name}. Reconnect to play them.',
+	['command.buildingNew'] = 'Your next connection builds a new character.',
 
 	['command.help.players'] = 'List who is in the world.',
 	['command.help.where'] = 'Show what the server holds on a player.',
 	['command.help.here'] = 'Print where you stand as a DEFAULT_SPAWN block.',
 	['command.help.characters'] = 'List your characters.',
-	['command.help.select'] = 'Enter the world as one of your characters.',
-	['command.help.create'] = 'Create a character.',
+	['command.help.select'] = 'Play another of your characters. Disconnects you.',
+	['command.help.create'] = 'Build a new character. Disconnects you.',
 	['command.help.delete'] = 'Delete one of your characters.',
 	['command.help.duty'] = 'Clock in or out of your job.',
 	['command.help.money'] = 'Give a character money, or take it.',
@@ -83,15 +93,21 @@ OPX.Locale.Register('fr', {
 	['character.rowLimit'] = "Ce compte a cree autant de personnages qu'il le peut.",
 	['character.notFound'] = 'Aucun personnage ne porte cet identifiant citoyen.',
 	['character.badName'] = 'Ce nom ne peut pas etre utilise.',
-	['character.badOrigin'] = "Ce parcours de vie n'existe pas.",
-	['character.badBirthdate'] = 'Cette date de naissance ne peut pas etre utilisee.',
+	['character.badBody'] = "Ce corps n'existe pas dans ce jeu.",
+	['character.bodySet'] = 'Ce personnage est deja construit sur un corps.',
+	['character.nameSet'] = 'Ce personnage a deja un nom.',
+	['character.named'] = '{name}. Bienvenue a Night City.',
+	['character.unnamed'] = 'sans nom',
 	['character.created'] = 'Personnage cree. Votre identifiant citoyen est {citizenId}.',
 	['character.deleted'] = 'Personnage supprime.',
 	['character.inUse'] = 'Ce personnage est deja en jeu.',
+	['character.alreadyPlaying'] = 'Vous jouez deja ce personnage.',
 
 	['entry.failed'] = 'Impossible de vous faire entrer dans Night City. Reconnectez-vous.',
 	['entry.noIdentity'] = "Votre identite n'a pas pu etre verifiee.",
-	['entry.timedOut'] = 'Vous avez mis trop de temps a choisir un personnage.',
+	['session.switching'] = 'Changement de personnage. Reconnectez-vous pour le jouer.',
+	['session.newCharacter'] = 'Nouveau personnage. Reconnectez-vous pour le construire.',
+	['session.characterDeleted'] = 'Ce personnage est supprime. Reconnectez-vous.',
 
 	['money.insufficient'] = "Vous n'avez pas assez de {type}.",
 	['money.badType'] = "Ce n'est pas une devise sur ce serveur.",
@@ -116,8 +132,7 @@ OPX.Locale.Register('fr', {
 
 	['command.inGameOnly'] = 'Cette commande doit etre lancee en jeu.',
 	['command.usage.select'] = 'usage : /opx.select <identifiantCitoyen>',
-	['command.usage.create'] =
-		'usage : /opx.create <prenom> <nom> [nomad|streetkid|corpo] [female|male]',
+	['command.usage.create'] = 'usage : /opx.create (sans argument ; vous serez deconnecte)',
 	['command.usage.delete'] = 'usage : /opx.delete <identifiantCitoyen>',
 	['command.usage.money'] =
 		'usage : /opx.money <numeroJoueur|identifiantCitoyen> <TYPE> <montant> (negatif pour retirer)',
@@ -130,15 +145,19 @@ OPX.Locale.Register('fr', {
 	['command.jobSet'] = '{citizenId} est maintenant {grade} chez {job}.',
 	['command.gangSet'] = '{citizenId} est maintenant {grade} chez {gang}.',
 	['command.saved'] = '{saved} personnage(s) sur {total} sauvegarde(s).',
-	['command.entered'] = 'Vous etes en jeu avec {citizenId}.',
-	['command.characterCount'] = '{count} personnage(s) :',
+	['command.characterCount'] = '{count} personnage(s), {slots} emplacement(s). Celui marque ' ..
+		'> est celui avec lequel vous entrez :',
+	['command.characterHint'] = 'opx.select <ID> pour en prendre un autre, opx.create pour en ' ..
+		'construire un. Les deux vous deconnectent ; le personnage est charge a la reconnexion.',
+	['command.locked'] = 'Verrouille sur {name}. Reconnectez-vous pour le jouer.',
+	['command.buildingNew'] = 'Votre prochaine connexion construira un nouveau personnage.',
 
 	['command.help.players'] = 'Liste qui est en jeu.',
 	['command.help.where'] = "Montre ce que le serveur sait d'un joueur.",
 	['command.help.here'] = 'Affiche votre position au format DEFAULT_SPAWN.',
 	['command.help.characters'] = 'Liste vos personnages.',
-	['command.help.select'] = 'Entrer en jeu avec un de vos personnages.',
-	['command.help.create'] = 'Creer un personnage.',
+	['command.help.select'] = 'Jouer un autre de vos personnages. Vous deconnecte.',
+	['command.help.create'] = 'Construire un nouveau personnage. Vous deconnecte.',
 	['command.help.delete'] = 'Supprimer un de vos personnages.',
 	['command.help.duty'] = 'Prendre ou quitter votre service.',
 	['command.help.money'] = "Donner de l'argent a un personnage, ou lui en retirer.",

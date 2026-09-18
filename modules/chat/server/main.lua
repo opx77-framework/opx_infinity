@@ -80,8 +80,15 @@ local function onReady()
 
 	-- Core owns the list, and with it the rule that a restricted command is only
 	-- offered to a player the ACL would let run it.
-	TriggerClientEvent(M.Event.SUGGESTIONS, player,
-		{ suggestions = OPX.Command.Suggestions(player) })
+	local list = OPX.Command.Suggestions(player)
+	TriggerClientEvent(M.Event.SUGGESTIONS, player, { suggestions = list })
+
+	-- Said out loud because the alternative is guessing. An empty completion list
+	-- has two very different causes -- the server had nothing to offer, or the
+	-- page never received what it sent -- and they are indistinguishable from the
+	-- player's side. This line tells them apart from the journal.
+	Open77.log.debug(('[chat] %d completion(s) sent to player %d')
+		:format(type(list) == 'table' and #list or -1, player))
 end
 
 --- Forgets an admitted player's message floor when they leave.

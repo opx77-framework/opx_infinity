@@ -33,6 +33,14 @@ local KEY_STOP = 'opx.animations.stop'
 -- Rows listed on one screen before the rest are left out.
 local MAX_LISTED = 40
 
+-- Emotes a screen must offer before it is worth searching. Under this the list
+-- is shorter than the search box would be useful for, and a box over six rows
+-- is a row in the way.
+local SEARCH_FROM = 8
+
+-- The longest query the box takes.
+local MAX_QUERY = 32
+
 -- How often an open picker checks whether the player has gone down.
 local DOWN_MS = 500
 
@@ -48,23 +56,33 @@ local warned = false
 -- The scheduler handle of the down watch.
 local downJob = nil
 
--- Forward-declared: the menu spec carries this callback, and it is written below
--- the drawing it calls back into.
-local onRow
+-- Handle of the search box while one is up.
+local formHandle
 
--- Calls one function of the menu contract. Answers its value, or a failure code;
+-- Forward-declared: the menu spec carries this callback, and it is written below
+-- the drawing it calls back into. `onForm` is the same for the search box.
+local onRow
+local onForm
+
+-- Calls one function of a contract. Answers its value, or a failure code;
 -- `menu_not_running` is the one the player is told about by name.
-local function call(name, ...)
-	local api = OPX.Api.Get('menu')
-	if api == nil or type(api[name]) ~= 'function' then return nil, 'menu_not_running' end
+local function on(contract, name, ...)
+	local api = OPX.Api.Get(contract)
+	if api == nil or type(api[name]) ~= 'function' then return nil, contract .. '_not_running' end
 	local ran, answer = pcall(api[name], ...)
 	if not ran then
-		Open77.log.error(('[animations] menu %s raised: %s'):format(name, tostring(answer)))
+		Open77.log.error(('[animations] %s %s raised: %s')
+			:format(contract, name, tostring(answer)))
 		return nil, 'menu_raised'
 	end
 	if type(answer) ~= 'table' then return nil, 'malformed_answer' end
 	if answer.ok ~= true then return nil, tostring(answer.error or 'refused') end
 	return answer.value or answer, nil
+end
+
+-- Calls one function of the menu contract.
+local function call(name, ...)
+	return on('menu', name, ...)
 end
 
 -- Whether the menu contract is there to draw with.
@@ -86,7 +104,7 @@ end
 -- The Back row every screen below the root ends with. A screen is its own menu,
 -- so the menu's own back row closes it with `back`, which is what steps us up.
 local function backRow()
-	return { id = 'back', label = locale('animations.picker.back'), back = true }
+	return { id = 'back', label = locale('animations.picker.back'), back = true, icon = 'back' }
 end
 
 -- A row that plays or stops. With CLOSE_ON_SELECT the handler closes the menu
@@ -99,40 +117,118 @@ local function choice(id, label, data, extra)
 end
 
 -- A row that opens another screen.
-local function go(id, label, screen, arg, value)
-	return { id = id, label = label, value = value, data = { go = screen, arg = arg } }
+--
+-- `submenu = true` is what puts the `>` in the affordance column. This picker
+-- holds its own screen stack -- one `Open` per screen, never one nested spec,
+-- for the reason at the top of this file -- so the menu contract cannot see that
+-- these rows lead anywhere and could not derive the arrow itself. Without the
+-- flag, `Gestures` and `Stop` drew identically.
+local function go(id, label, screen, arg, value, icon)
+	return { id = id, label = label, value = value, icon = icon, submenu = true,
+		data = { go = screen, arg = arg } }
+end
+
+-- A separator row, with a heading when one is given.
+local function section(key)
+	return { separator = true, label = key and locale(key) or nil }
 end
 
 -- Cuts a row list to MAX_LISTED, saying how many were left out.
 local function capped(items)
 	if #items <= MAX_LISTED then return items end
 	local kept = table.move(items, 1, MAX_LISTED, 1, {})
-	kept[#kept + 1] = { id = 'more', disabled = true,
+	kept[#kept + 1] = { id = 'more', disabled = true, icon = 'info',
 		label = locale('animations.picker.more', { count = #items - MAX_LISTED }) }
 	return kept
+end
+
+-- ── the search ──────────────────────────────────────────────────────────────
+--
+-- THE SAME ANSWER THE STAFF MENU GIVES, for the same reason. The strip reads six
+-- keys and no letters, so the one surface that takes typed text is the form: the
+-- search row opens one, and the word comes back as a screen of its own rather
+-- than as a filter over the screen underneath -- a search here crosses the
+-- categories, and `smoke` is in one of them and `cigar` in another.
+
+-- Whether an emote's words match the query: case-insensitive, plain substring,
+-- and every word of the query has to appear. Plain `find`, never a pattern -- a
+-- typed `(` is a character and not syntax.
+local function matches(query, ...)
+	if query == nil then return true end
+	local hay = ''
+	for index = 1, select('#', ...) do
+		local part = select(index, ...)
+		if part ~= nil then hay = hay .. ' ' .. tostring(part):lower() end
+	end
+	for word in query:lower():gmatch('%S+') do
+		if not hay:find(word, 1, true) then return false end
+	end
+	return true
+end
+
+-- The search row, or nothing at all on a list too short to need it.
+local function searchRow(total, query)
+	if query == nil and total < SEARCH_FROM then return nil end
+	return { id = 'search', label = locale('animations.picker.search'), icon = 'search',
+		value = query, description = locale('animations.picker.searchHint'),
+		data = { search = true, query = query } }
 end
 
 -- Screen builders, each answering a title and its rows.
 local SCREENS = {}
 
+-- One emote's row: the variant straight away when it has only one, and the
+-- variant screen when it has several. `value` carries the count so a row that
+-- leads somewhere says how far, and the category is named on a screen that mixes
+-- categories -- which is only the search result and `all`.
+local function entryRow(entry, withCategory)
+	local label = locale('animations.name.' .. entry.name)
+	local variants = Runtime.Variants(entry.name)
+	local aside = withCategory and locale('animations.category.' .. entry.category) or nil
+	if #variants == 1 then
+		return choice(entry.name, label, { name = entry.name, variant = variants[1] },
+			{ icon = entry.icon, value = aside })
+	end
+	return go(entry.name, label, 'variants', entry.name,
+		aside and ('%s  %d'):format(aside, #variants) or tostring(#variants), entry.icon)
+end
+
 SCREENS.root = function()
 	local stopKey = Keys.Effective(KEY_STOP)
+	local everything = Runtime.Entries(nil)
 	local items = {
+		section('animations.picker.section.current'),
 		choice('stop', locale('animations.picker.stop'), { stop = true }, {
+			icon = 'ban',
 			description = stopKey and locale('animations.picker.stopHintKey', { key = stopKey })
 				or locale('animations.picker.stopHint'),
 		}),
-		{ separator = true },
 	}
+
+	-- The search box and the flat list stand together above the categories: they
+	-- are the two ways INTO the catalogue that are not a category, and a player
+	-- who knows the word they want should not have to guess which family it is
+	-- filed under first.
+	local search = searchRow(#everything, nil)
+	if search ~= nil or #everything > 0 then
+		items[#items + 1] = section('animations.picker.section.find')
+		if search ~= nil then items[#items + 1] = search end
+		items[#items + 1] = go('all', locale('animations.picker.all'), 'all', nil,
+			tostring(#everything), 'list')
+	end
+
 	local categories = {}
 	for index = 1, #Catalogue.CATEGORIES do
 		local category = Catalogue.CATEGORIES[index]
 		-- A category with nothing offered is not drawn.
-		if #Runtime.Entries(category) > 0 then
+		local offered = Runtime.Entries(category)
+		if #offered > 0 then
 			categories[#categories + 1] = go(category, locale('animations.category.' .. category),
-				'category', category)
+				'category', category, tostring(#offered),
+				Catalogue.CATEGORY_ICONS[category] or 'emote')
 		end
 	end
+	if #categories > 0 then items[#items + 1] = section('animations.picker.section.categories') end
 	for _, item in ipairs(capped(categories)) do items[#items + 1] = item end
 	return locale('animations.picker.title'), items
 end
@@ -141,18 +237,49 @@ SCREENS.category = function(category)
 	local rows = {}
 	local entries = Catalogue.IsCategory(category) and Runtime.Entries(category:lower()) or {}
 	for position = 1, #entries do
-		local entry = entries[position]
-		local label = locale('animations.name.' .. entry.name)
-		local variants = Runtime.Variants(entry.name)
-		if #variants == 1 then
-			rows[#rows + 1] = choice(entry.name, label, { name = entry.name, variant = variants[1] })
-		else
-			rows[#rows + 1] = go(entry.name, label, 'variants', entry.name, #variants)
-		end
+		rows[position] = entryRow(entries[position], false)
 	end
 	local title = Catalogue.IsCategory(category) and
 		locale('animations.category.' .. category:lower()) or locale('animations.picker.title')
 	return title, capped(rows)
+end
+
+SCREENS.all = function()
+	local entries = Runtime.Entries(nil)
+	local rows = {}
+	local search = searchRow(#entries, nil)
+	if search ~= nil then
+		rows[1] = search
+		rows[2] = section()
+	end
+	for _, entry in ipairs(entries) do rows[#rows + 1] = entryRow(entry, true) end
+	return locale('animations.picker.all'), capped(rows)
+end
+
+SCREENS.search = function(query)
+	local entries = Runtime.Entries(nil)
+	local matching = {}
+	for _, entry in ipairs(entries) do
+		-- The category word is part of the haystack: `social` finds what is filed
+		-- under it, which is the answer a player typing a family name expects
+		-- rather than "nothing matches that".
+		if matches(query, entry.name, locale('animations.name.' .. entry.name),
+			locale('animations.category.' .. entry.category)) then
+			matching[#matching + 1] = entry
+		end
+	end
+	-- The box stays at the top of its own result, holding the word it found them
+	-- with and the count it found: searching again is one row away, and Back --
+	-- the row every screen below the root ends with -- is how the search is left.
+	local box = searchRow(#entries, query)
+	box.value = ('%s  %d/%d'):format(query, #matching, #entries)
+	local rows = { box, section() }
+	for _, entry in ipairs(matching) do rows[#rows + 1] = entryRow(entry, true) end
+	if #matching == 0 then
+		rows[#rows + 1] = { id = 'none', label = locale('animations.picker.noMatch'),
+			disabled = true, icon = 'info' }
+	end
+	return ('%s: %s'):format(locale('animations.picker.search'), query), capped(rows)
 end
 
 SCREENS.variants = function(name)
@@ -164,11 +291,29 @@ SCREENS.variants = function(name)
 		rows[number] = choice('v' .. variant,
 			locale('animations.picker.variant', { index = variant }),
 			{ name = entry.name, variant = variant },
-			{ value = Opt.SHOW_VARIANT_WORDS and entry.words[variant] or nil })
+			{ icon = entry.icon,
+				value = Opt.SHOW_VARIANT_WORDS and entry.words[variant] or nil })
 	end
 	local title = entry and locale('animations.name.' .. entry.name)
 		or locale('animations.picker.title')
 	return title, capped(rows)
+end
+
+-- Takes the search box down, if one is up.
+local function closeForm()
+	if formHandle == nil then return end
+	local closing = formHandle
+	formHandle = nil
+	on('form', 'Close', closing)
+end
+
+-- Takes the menu down and KEEPS the screen stack, which is what putting a form
+-- over it needs. The close lands on `onRow` naming a handle this file no longer
+-- holds, and is dropped there rather than emptying the stack.
+local function suspend()
+	local closing = handle
+	handle, shown = nil, nil
+	if closing ~= nil then call('Close', closing, 'picker') end
 end
 
 -- Closes whatever screen of ours is up and forgets the stack. Only ever closes
@@ -176,6 +321,7 @@ end
 local function takeDown()
 	local closing, waiting = handle, #stack > 0
 	handle, shown, stack = nil, nil, {}
+	closeForm()
 	if closing ~= nil then call('Close', closing, 'picker') end
 	return closing ~= nil or waiting
 end
@@ -186,6 +332,17 @@ local function refused(failure)
 	if failure == 'menu_busy' then return Runtime.Notify('info', 'animations.picker.busy') end
 	if failure == 'menu_not_running' then return Runtime.Refuse('menu_not_running') end
 	Runtime.Notify('warning', 'animations.picker.failed')
+end
+
+-- WHERE THE CURSOR STARTS on a screen nothing has been chosen on yet. The
+-- contract's rule is "the first row it can stand on", which lands on the search
+-- box once a screen carries one -- and the box is the way into a list, not the
+-- list. Skipped, so Enter opens the first emote.
+local function firstBelowHead(items)
+	for _, item in ipairs(items) do
+		if not item.separator and not item.disabled and item.id ~= 'search' then return item.id end
+	end
+	return nil
 end
 
 -- Puts the top screen up, or rebuilds the open one in place.
@@ -209,7 +366,7 @@ local function draw(inPlace)
 		id = SPEC_ID,
 		title = title,
 		on = onRow,
-		cursor = current.cursor,
+		cursor = current.cursor or firstBelowHead(items),
 		items = items,
 	})
 	if result == nil then
@@ -244,6 +401,55 @@ local function pop()
 	end
 	stack[#stack] = nil
 	draw()
+end
+
+-- Puts the search box up over the screen that asked for it. A box that cannot
+-- be opened is a logged line and the screen coming straight back: the form
+-- contract is as optional here as the menu one, and the picker still works
+-- without it -- it is one row that does nothing rather than a picker that will
+-- not open.
+local function openSearch(query)
+	suspend()
+	local spec = {
+		owner = OWNER,
+		id = 'animations.search',
+		title = locale('animations.picker.search'),
+		description = locale('animations.picker.searchHint'),
+		fields = {
+			{ id = 'query', label = locale('animations.picker.searchField'),
+				value = query, maxLength = MAX_QUERY },
+		},
+		on = onForm,
+	}
+	local result, failure = on('form', 'Open', spec)
+	if result == nil then
+		formHandle = nil
+		Open77.log.debug('[animations] the search box did not open: ' .. tostring(failure))
+		draw()
+		return
+	end
+	formHandle = result.handle
+end
+
+-- Takes the word the box was given and shows what it found.
+local function filter(query)
+	local typed = type(query) == 'string' and (query:match('^%s*(.-)%s*$') or '') or ''
+	local current = stack[#stack]
+	if current == nil then return end
+	if typed == '' then
+		-- AN EMPTY BOX IS HOW A SEARCH IS LEFT. Submitting nothing from a result
+		-- screen drops it and brings back the screen it was opened from; from
+		-- anywhere else it changes nothing at all.
+		if current.screen == 'search' then stack[#stack] = nil end
+		return draw()
+	end
+	if current.screen == 'search' then
+		-- Searching again REPLACES the result rather than stacking a second one:
+		-- Back has to lead out of the search, not back through every word tried.
+		current.arg, current.cursor = typed, nil
+		return draw()
+	end
+	push('search', typed)
 end
 
 --- Opens the picker at the root, or on a named category.
@@ -284,11 +490,13 @@ function Picker.Close()
 	return { ok = true, queued = true }
 end
 
---- Whether a picker screen of ours is up.
+--- Whether a picker screen of ours, or its search box, is up.
+-- The box counts: while one is up the strip is down and `handle` is nil, and a
+-- key that read only the handle would open a SECOND picker over the form.
 -- @author dop42
 -- @return boolean
 function Picker.IsOpen()
-	return handle ~= nil
+	return handle ~= nil or formHandle ~= nil
 end
 
 -- Navigates, plays or stops for a row the menu raised. The shape is checked
@@ -315,6 +523,10 @@ onRow = function(payload)
 	local current = stack[#stack]
 	if type(data) ~= 'table' or current == nil then return end
 	current.cursor = payload.itemId
+	if data.search == true then
+		return openSearch(type(data.query) == 'string' and data.query or nil)
+	end
+	if data.go == 'all' then return push('all', nil) end
 	if (data.go == 'category' or data.go == 'variants') and type(data.arg) == 'string' then
 		return push(data.go, data.arg)
 	end
@@ -329,6 +541,19 @@ onRow = function(payload)
 	end
 	local result = Runtime.Play(data.name, { variant = data.variant }, 'picker', nil)
 	if not result.ok then Runtime.Refuse(result.error) end
+end
+
+-- What the search box answered. A cancel brings the screen back exactly as it
+-- was; a submit is a query, and an empty one is how a search is left.
+onForm = function(payload)
+	if type(payload) ~= 'table' then return end
+	-- An answer about a box this file no longer holds belongs to whatever
+	-- replaced it, and is not ours to act on.
+	if formHandle ~= nil and payload.handle ~= nil and payload.handle ~= formHandle then return end
+	formHandle = nil
+	if #stack == 0 then return end
+	if payload.action ~= 'submit' or type(payload.values) ~= 'table' then return draw() end
+	filter(payload.values.query)
 end
 
 -- Toggles the picker from its key.
@@ -352,6 +577,7 @@ end
 -- @author dop42
 function Picker.Init()
 	stack, handle, shown, warned, downJob = {}, nil, nil, false, nil
+	formHandle = nil
 end
 
 --- Registers both keys, the row channel and the down watch.

@@ -15,72 +15,45 @@ local HEADING_EPSILON = 2.0
 --- The server's PlayerData, mirrored. Empty until a character loads.
 M.PlayerData = {}
 
---- The roster the server last sent: list, slots and origins.
-M.Characters = {
-	list = {},
-	slots = 0,
-	origins = {},
-}
-
 --- True between loaded and unloaded.
 M.IsLoggedIn = false
 
---- Announces this client to the server, which answers with the roster or with
---- the character already loaded.
+--- Announces this client, which is the whole of what it asks for.
+-- The server answers with the character this account is LOCKED on -- loading it,
+-- or making one when the lock names none. There is nothing to choose here and no
+-- roster to hold: a character is changed with a command, and a command that
+-- changes it ends the session.
 -- @author dop42
 function M.Announce()
 	TriggerServerEvent(M.Event.ANNOUNCE)
 end
 
---- Asks the server to enter the world as one character.
+--- Sends the name a player typed for the character they are loaded on.
+-- Checked here as a courtesy to whatever asked for it; the server checks it
+-- again and accepts it once, because a modified client skips this one.
 -- @author dop42
--- @param citizenId string
+-- @param firstName string
+-- @param lastName string
 -- @return boolean, string|nil
-function M.SelectCharacter(citizenId)
-	if type(citizenId) ~= 'string' then return false, 'error.badRequest' end
-	TriggerServerEvent(M.Event.SELECT, { citizenId = citizenId })
+function M.SetName(firstName, lastName)
+	local first = M.ValidateName(firstName)
+	if not first.ok then return false, 'character.badName' end
+	local last = M.ValidateName(lastName)
+	if not last.ok then return false, 'character.badName' end
+
+	TriggerServerEvent(M.Event.NAME, { firstName = first.value, lastName = last.value })
 	return true
 end
 
---- Checks a registration locally, then asks the server to create it.
--- The local check is a courtesy to the form; the server checks it again, because
--- a modified client skips this one.
+--- Whether the loaded character has been named yet.
+-- A character is a row before it is anybody: it is created with no name at all,
+-- and whatever asks for one asks this first.
 -- @author dop42
--- @param registration table
--- @return boolean, string|nil
-function M.CreateCharacter(registration)
-	if type(registration) ~= 'table' then return false, 'error.badRequest' end
-
-	local firstName = M.ValidateName(registration.firstName)
-	if not firstName.ok then return false, 'character.badName' end
-	local lastName = M.ValidateName(registration.lastName)
-	if not lastName.ok then return false, 'character.badName' end
-	if not M.Settings.ORIGINS[registration.origin] then return false, 'character.badOrigin' end
-
-	TriggerServerEvent(M.Event.CREATE, {
-		firstName = firstName.value,
-		lastName = lastName.value,
-		origin = registration.origin,
-		gender = registration.gender,
-		birthDate = registration.birthDate,
-	})
-	return true
-end
-
---- Asks the server to soft-delete one of this player's characters.
--- @author dop42
--- @param citizenId string
--- @return boolean, string|nil
-function M.DeleteCharacter(citizenId)
-	if type(citizenId) ~= 'string' then return false, 'error.badRequest' end
-	TriggerServerEvent(M.Event.DELETE, { citizenId = citizenId })
-	return true
-end
-
---- Asks the server to send the roster again.
--- @author dop42
-function M.RequestCharacters()
-	TriggerServerEvent(M.Event.ANNOUNCE)
+-- @return boolean
+function M.IsNamed()
+	local charInfo = M.PlayerData.charInfo
+	return type(charInfo) == 'table' and type(charInfo.firstName) == 'string'
+		and charInfo.firstName ~= ''
 end
 
 --- The mirrored PlayerData, an empty table before login.
@@ -95,13 +68,6 @@ end
 -- @return string|nil
 function M.GetCitizenId()
 	return M.PlayerData.citizenId
-end
-
---- The roster the server last sent.
--- @author dop42
--- @return table
-function M.GetCharacters()
-	return M.Characters
 end
 
 --- The live character's primary job, or nil.
@@ -192,22 +158,6 @@ end
 
 --- Mirrors what the server sends, then raises the local event for it.
 local function registerEvents()
-	RegisterNetEvent(M.Event.ROSTER, function(payload)
-		if type(payload) ~= 'table' then return end
-
-		local list = type(payload.characters) == 'table' and payload.characters or {}
-		local slots = tonumber(payload.slots)
-		slots = OPX.Math.IsFinite(slots) and math.floor(slots) or 0
-		if slots < 0 then slots = 0 end
-
-		M.Characters.list = list
-		M.Characters.slots = slots
-		M.Characters.origins = type(payload.origins) == 'table' and payload.origins or {}
-
-		Open77.log.info(('[character] %d character(s) available, %d slot(s)'):format(#list, slots))
-		TriggerEvent(M.Event.ON_ROSTER, M.Characters)
-	end)
-
 	RegisterNetEvent(M.Event.LOADED, function(playerData)
 		if type(playerData) ~= 'table' then return end
 		M.PlayerData = playerData
@@ -286,8 +236,8 @@ function M.Api()
 	OPX.Api.Provide('character', 1, {
 		GetPlayerData = M.GetPlayerData,
 		GetCitizenId = M.GetCitizenId,
-		GetCharacters = M.GetCharacters,
 		IsLoggedIn = function() return M.IsLoggedIn end,
+		IsNamed = M.IsNamed,
 
 		GetJobData = M.GetJobData,
 		GetGangData = M.GetGangData,
@@ -299,10 +249,16 @@ function M.Api()
 		GetMetadata = M.GetMetadata,
 		GetPosition = M.GetPosition,
 
-		SelectCharacter = M.SelectCharacter,
-		CreateCharacter = M.CreateCharacter,
-		DeleteCharacter = M.DeleteCharacter,
-		RequestCharacters = M.RequestCharacters,
+		SetName = M.SetName,
+
+		-- EVERYBODY ELSE, off the replicated bag rather than off this mirror. The
+		-- mirror is the local character and always will be: `M.Event.DATA` carries
+		-- one player's whole row to one client. Anything asking "who is that" asks
+		-- these three, and they answer for anybody in the bucket with no event and
+		-- no permission. See `client/state.lua`.
+		GetPlayerState = M.PlayerState.Of,
+		GetPlayerName = M.PlayerState.NameOf,
+		GetPlayerIdentity = M.PlayerState.IdentityOf,
 	})
 end
 
@@ -310,5 +266,12 @@ end
 function M.Start()
 	registerEvents()
 	headingReporter()
+	M.PlayerState.Start()
 	M.Announce()
+end
+
+--- Retires the bag subscription. The mirror of the local character needs no
+--- winding down: it dies with the VM.
+function M.Stop()
+	M.PlayerState.Stop()
 end

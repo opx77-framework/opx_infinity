@@ -21,10 +21,12 @@
 --    and every publication carries a generation token, and a thread holding an
 --    older one stops instead of finishing work for a character that has gone.
 --
--- The body family is NOT this module's. It is `charInfo.gender` on the character
--- row, chosen when the character was created; this module only reloads the world
--- onto it. That is also why `gender` inside a snapshot is something else
--- entirely: the engine's opaque 64-bit body hash, never the female/male string.
+-- The body family is NOT chosen by a form. The engine's own character creator
+-- asks for it and builds the face in the same flow, and what it answers is
+-- written once to `charInfo.gender` on the character row; from then on this
+-- module only reloads the world onto it. That is also why `gender` inside a
+-- snapshot is something else entirely: the engine's opaque 64-bit body hash,
+-- never the female/male string.
 
 local M = OPX.Modules.Declare{
 	id = 'appearance',

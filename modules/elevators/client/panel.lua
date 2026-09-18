@@ -139,6 +139,11 @@ function Panel.Open(key)
 		items[index] = {
 			id = 'floor_' .. tostring(row.index),
 			label = row.label,
+			-- A FLOOR SAYS WHETHER IT IS OPEN TO THIS PLAYER IN THE GLYPH COLUMN as
+			-- well as in the words beside it: the padlock is read at a glance down
+			-- a column of eight floors, where a greyed row and a reason are read
+			-- one row at a time.
+			icon = row.ok and 'door' or 'lock',
 			value = (not row.ok) and (row.reason or locale('elevators.locked')) or nil,
 			disabled = not row.ok,
 			data = { elevator = listing.elevator, floor = row.index },

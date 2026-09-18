@@ -1,6 +1,6 @@
 import { createApp } from 'vue'
 import type { Component } from 'vue'
-import { emit, subscribe } from '@/bridge/channel'
+import { handshake, subscribe } from '@/bridge/channel'
 import { installDevShimIfMissing } from '@/bridge/devshim'
 import { installDiagnostics, report } from '@/bridge/diag'
 import { configureFocus } from '@/bridge/focus'
@@ -73,5 +73,10 @@ export function createSurface(options: SurfaceOptions): void {
   // and nothing else, and `OPX.Surface.Send` refuses everything until it is set.
   // Emitting any other name leaves the surface permanently unready -- silently,
   // because a refused send is a `false` return nobody reads.
-  emit('opx:ready', { surface: name })
+  //
+  // It also RELEASES the page: every emit a module made from `onMounted` -- and each
+  // of the five `opx:<module>:ready` signals is one -- was held by channel.ts until
+  // this line, because Lua drops its answer to anything that arrives before the
+  // handshake. They go out now, in the order they were made.
+  handshake('opx:ready', { surface: name })
 }

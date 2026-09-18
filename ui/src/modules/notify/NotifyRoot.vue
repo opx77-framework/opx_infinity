@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, shallowRef } from 'vue'
-import OpToast from '@/design/components/OpToast.vue'
+import NotifyToast from './NotifyToast.vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { num, text } from '@/bridge/types'
@@ -28,6 +28,20 @@ import { useLocale } from '@/composables/useLocale'
  * not fire a callback at zero, because a countdown on this platform is normally a smooth
  * animation of a deadline the server is also counting. This one IS the authority, so it
  * needs the one thing that composable refuses to do.
+ *
+ * ── DESIGN PASS 02 ──────────────────────────────────────────────────────────
+ *
+ * THIS MODULE DRAWS ITS OWN TOAST. `design/components/OpToast.vue` had exactly one
+ * consumer -- this file -- and is still there, untouched: `ui/src/design/**` is closed
+ * until the pass lands, and `MenuView.vue` set the precedent when it dropped `OpPanel`
+ * and `OpRow` for local copies. `NotifyToast.vue` beside this file is that copy, and it
+ * says in place what it kept and what it refused. Nothing else on the page imported
+ * `OpToast`, so nothing else moved.
+ *
+ * WHAT THIS FILE OWNS OF THE LOOK: the seven stacks, which is where the PLANE lives.
+ * A stack is the positioned wrapper, so it carries the perspective and names the screen
+ * edge it is anchored to; the toast tilts because its entry does. Nothing about the
+ * protocol changed -- same channels, same clock, same `notify:gone`.
  */
 const { t } = useLocale()
 
@@ -72,6 +86,7 @@ interface Toast {
   kind: Kind
   title: string
   message: string
+  /** A glyph name from the closed set Lua validates against, or '' for none. */
   icon: string
   position: Position
   /** 0 is a PERSISTENT toast: no bar, no expiry, and no `notify:gone` ever. */
@@ -80,7 +95,7 @@ interface Toast {
   endsAt: number
   /** Whether a lifetime bar was asked for at all -- notify.js `row.progress`. */
   bar: boolean
-  /** 0..1, or -1 for "draw no bar", which is what OpToast reads. */
+  /** 0..1, or -1 for "draw no bar", which is what the toast reads. */
   progress: number
   /** On its way out: still mounted so the exit transition can run. */
   out: boolean
@@ -186,7 +201,12 @@ function build(payload: Payload, previous: Toast | undefined): Toast {
     title: payload.title === undefined && previous ? previous.title : t(text(payload.title)),
     message:
       payload.message === undefined && previous ? previous.message : t(text(payload.message)),
-    icon: payload.icon === undefined && previous ? previous.icon : text(payload.icon).slice(0, 16),
+    // A GLYPH NAME, not caller text. The platform's own notification package means a
+    // short badge by `icon` and truncated at 16 characters for it; this is our page and
+    // `core/client/notify.lua` refuses a toast naming a glyph outside the closed set, so
+    // what arrives here is a name or nothing. Carried as the string it is: the component
+    // that draws it is where an unknown name resolves to no icon.
+    icon: payload.icon === undefined && previous ? previous.icon : text(payload.icon),
     position: positionOf(payload.position, previous ? previous.position : fallbackPosition.value),
     durationMs,
     endsAt,
@@ -304,12 +324,13 @@ onUnmounted(stop)
 <template>
   <div class="notify" :class="{ down }" :style="{ '--toast-width': width + 'px' }">
     <div v-for="position in POSITIONS" :key="position" class="stack" :class="position">
-      <!-- A wrapper per toast rather than classes on OpToast itself: the entrance and the
-           exit move `transform`, and OpToast's root carries `filter: drop-shadow` from
-           `.op-lift`. Transforming the element a filter sits on re-rasterises the filter
-           on every frame of the move. -->
+      <!-- A wrapper per toast, and it is the tilted plane: it is the direct child of the
+           stack, which is where the perspective is, so it is the one element whose
+           `rotateY` is actually projected. The entrance and the exit move the same
+           property, so both restate the rotation rather than composing with it -- which
+           is what `MenuView.vue` does in `plate-in-on` for the same reason. -->
       <div v-for="toast in at(position)" :key="toast.id" class="entry" :class="{ out: toast.out }">
-        <OpToast
+        <NotifyToast
           :kind="toast.kind"
           :title="toast.title"
           :message="toast.message"
@@ -322,6 +343,12 @@ onUnmounted(stop)
 </template>
 
 <style scoped>
+/* =============================================================================
+   DESIGN PASS 02 -- the stacks. `MenuView.vue`'s style block is the spec; the toast
+   itself is drawn by `NotifyToast.vue` beside this file, and everything here is the
+   surface it stands on: where a stack sits, which way its plane tilts, and how a
+   toast arrives and leaves.
+   ========================================================================== */
 .notify {
   position: absolute;
   inset: 0;
@@ -334,6 +361,16 @@ onUnmounted(stop)
   visibility: hidden;
 }
 
+/* A STACK IS THE POSITIONED WRAPPER, so it is the element that carries the camera:
+   `perspective` here and `rotateY` on its child, because perspective on the child
+   would give every descendant of it a vanishing point of its own.
+
+   `contain` WITHOUT `paint`, deliberately. Layout and style containment are what the
+   performance rule is after -- the compositor never considers the rest of the surface
+   when one toast repaints -- but paint containment clips to the border box, and every
+   toast here carries an outset black shadow and an error carries a bloom. A clipped
+   shadow is a straight bright-edged line down the side of the stack, which is worse
+   than the frame it was hiding. */
 .stack {
   position: fixed;
   display: flex;
@@ -341,12 +378,26 @@ onUnmounted(stop)
   gap: var(--op77-space-2);
   width: var(--toast-width, 340px);
   max-width: calc(100vw - var(--op77-inset-x) * 2);
+  perspective: var(--op77-persp);
+  contain: layout style;
 }
 
 .top_left,
-.top_center,
-.top_right {
+.top_center {
   top: var(--op77-inset-y);
+}
+
+/* THE READ-OUT IS ALREADY UP THERE. `HudInfo.vue` anchors `top-right` by default --
+   money, job, street cred -- and a toast stack pinned to the same inset landed on
+   top of it, which is where the owner found it.
+
+   A fixed clearance and not a measured one: the two live in different modules on one
+   surface, and the alternative is the read-out publishing its height for the toasts
+   to subscribe to, which is a bridge between two things that have no other reason to
+   know about each other. The read-out is a handful of short lines, so the number is
+   stable; it is a token so that moving it is moving one value. */
+.top_right {
+  top: calc(var(--op77-inset-y) + var(--op77-notify-clear-top, 132px));
 }
 
 /* Bottom stacks grow upward, so the newest toast is nearest the edge. DOM order is the
@@ -358,21 +409,49 @@ onUnmounted(stop)
   flex-direction: column-reverse;
 }
 
+/* THE PLANE IS TILTED, and the sign follows the edge the stack is anchored to: a
+   LEFT-anchored surface takes +7deg about its left edge, a RIGHT-anchored one -7deg
+   about its right. One axis only.
+
+   `--pop` and `--pop-y` are the same edge read again as a direction: a toast arrives
+   from off the edge its stack is pinned to, and leaves the same way. Exactly one of
+   the two is non-zero for any stack, which is what lets all seven positions share one
+   set of keyframes where there were four. */
 .top_left,
 .bottom_left,
 .middle_left {
   left: var(--op77-inset-x);
+  --tilt: var(--op77-tilt);
+  --origin: left center;
+  --pop: -12px;
 }
 
 .top_right,
 .bottom_right {
   right: var(--op77-inset-x);
+  --tilt: calc(var(--op77-tilt) * -1);
+  --origin: right center;
+  --pop: 12px;
 }
 
+/* A CENTRED STACK DOES NOT TILT. The tilt is a surface turning about the screen edge
+   it is anchored to, and these two are anchored to nothing -- a centred plane rotated
+   about its own middle is not a surface receding, it is a sheet of paper twisting.
+   They keep the stutter and enter on the vertical instead. */
 .top_center,
 .bottom_center {
   left: 50%;
   transform: translateX(-50%);
+  --tilt: 0deg;
+  --origin: center;
+}
+
+.top_center {
+  --pop-y: -8px;
+}
+
+.bottom_center {
+  --pop-y: 8px;
 }
 
 /* The one position with no vertical partner in the platform's set. */
@@ -381,50 +460,54 @@ onUnmounted(stop)
   transform: translateY(-50%);
 }
 
+/* =============================================================================
+   ARRIVING AND LEAVING -- it cuts, it does not fade.
+
+   `steps(3, end)` on both, `opacity` and `transform` only, which the compositor runs
+   without a repaint. The entrance overshoots by a sixth of its own travel and settles,
+   so three frames read as a stutter rather than as a slide with a low frame rate.
+
+   NO STAGGER, and that is the one line of the contract this surface answers with a
+   reason instead of a value. The menu's 28ms stagger is for a batch revealed at once;
+   toasts arrive one at a time, when something happens, and the index a stagger would
+   have to key off is a toast's POSITION IN ITS STACK -- so the third toast up would
+   sit invisible for 84ms after the event that raised it, which is exactly the report a
+   player needs soonest.
+   ========================================================================== */
 .entry {
+  transform-origin: var(--origin, center);
+  transform: rotateY(var(--tilt, 0deg));
+  animation: toast-in 190ms steps(3, end);
   transition:
-    opacity var(--op77-dur-slow) var(--op77-ease),
-    transform var(--op77-dur-slow) var(--op77-ease);
+    opacity var(--op77-dur-slow) steps(3, end),
+    transform var(--op77-dur-slow) steps(3, end);
 }
 
+/* Leaving is arriving, played backwards: out the edge it came in by. */
 .entry.out {
   opacity: 0;
-  transform: scale(0.98);
+  transform: translate3d(var(--pop, 0px), var(--pop-y, 0px), 0) rotateY(var(--tilt, 0deg));
 }
 
-/* Each edge enters from its own side. The stack knows the direction; a toast never does. */
-.top_left .entry,
-.bottom_left .entry,
-.middle_left .entry {
-  animation: enter-left var(--op77-dur) var(--op77-ease);
-}
+@keyframes toast-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(var(--pop, 0px), var(--pop-y, 0px), 0) rotateY(var(--tilt, 0deg));
+  }
 
-.top_right .entry,
-.bottom_right .entry {
-  animation: enter-right var(--op77-dur) var(--op77-ease);
-}
+  55% {
+    opacity: 1;
+    transform: translate3d(
+        calc(var(--pop, 0px) * -0.16),
+        calc(var(--pop-y, 0px) * -0.16),
+        0
+      )
+      rotateY(var(--tilt, 0deg));
+  }
 
-.top_center .entry {
-  animation: enter-down var(--op77-dur) var(--op77-ease);
-}
-
-.bottom_center .entry {
-  animation: enter-up var(--op77-dur) var(--op77-ease);
-}
-
-@keyframes enter-left {
-  from { opacity: 0; transform: translateX(-12px); }
-}
-
-@keyframes enter-right {
-  from { opacity: 0; transform: translateX(12px); }
-}
-
-@keyframes enter-down {
-  from { opacity: 0; transform: translateY(-6px); }
-}
-
-@keyframes enter-up {
-  from { opacity: 0; transform: translateY(6px); }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotateY(var(--tilt, 0deg));
+  }
 }
 </style>

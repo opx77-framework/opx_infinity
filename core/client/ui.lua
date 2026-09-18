@@ -33,6 +33,32 @@ local page = nil
 
 local focusStack = {}
 
+--- Wires every channel a view may emit before its own module is running.
+--
+-- THE PAGE IS BUILT BEFORE THE MODULES ARE. `core/client/boot.lua` creates the
+-- surface first -- deliberately, so a module drawing from `Start` has something
+-- to draw on -- and then walks the modules a FRAME AT A TIME, because `Start`
+-- yields between them to reset the instruction budget. That is a window of
+-- twenty-odd frames.
+--
+-- A view emits `opx:<module>:ready` from its `onMounted`, and `ui/src/bridge/
+-- channel.ts` releases all of them in the same tick as `opx:ready`. With warm CEF
+-- assets the page mounts inside the window -- which is every reconnection, and a
+-- character switch ends the session -- so those signals arrived while the module
+-- that answers them was still several frames from registering. There was no host
+-- listener on the channel at all, so nothing was dropped by this resource: it was
+-- never delivered to it. And the page says ready ONCE.
+--
+-- Wiring them here, against the module list rather than a hand-kept one, gives
+-- every `<id>:ready` a listener from the moment the page exists. What arrives
+-- with no handler yet is held by `lib/client/surface.lua` and replayed to the
+-- module when it finally registers.
+local function wireReadyChannels(surface)
+	for _, module in ipairs(OPX.Modules.All()) do
+		OPX.Surface.Wire(surface, module.Id .. ':ready')
+	end
+end
+
 --- Builds the surface from its configured layer, z-index and frame rate.
 local function create()
 	local settings = OPX.Config.CLIENT.SURFACE or {}
@@ -65,6 +91,10 @@ local function create()
 			strings = OPX.Locale.Catalogue(),
 		})
 	end)
+
+	-- Before anything can be emitted, which is the whole point: a channel wired
+	-- after the page mounted is wired too late.
+	wireReadyChannels(surface)
 
 	return surface
 end

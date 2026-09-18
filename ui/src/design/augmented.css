@@ -161,6 +161,37 @@
   color: var(--op77-ink);
 }
 
+/* --- hover ------------------------------------------------------------------
+   The surfaces are driven from the keyboard and were built that way: the only
+   thing any of them said about the pointer was the highlight the arrows moved,
+   so a player using the mouse got no answer at all from a row under it -- and
+   on a form, where the highlight starts on the first row and nothing moves it,
+   that read as a screen stuck on its first button.
+
+   A hover is a WEAKER signal than the highlight, deliberately. `.op-is-active`
+   is the row that Enter would take; this is only the row the pointer is over,
+   so it raises the plate rather than filling it, and an active plate under the
+   pointer peaks to Ice instead of changing state. `:hover` and not a class: the
+   pointer's position is the browser's to know, and a mouseenter round trip
+   through Lua would lag it.
+
+   Scoped to `.op-plate`: a bay or a panel is a container, and a container that
+   lights up under the pointer is noise. */
+.op-plate:hover:not(.op-is-muted) {
+  cursor: pointer;
+}
+
+.op-plate:hover:not(.op-is-active):not(.op-is-muted) {
+  --aug-border-bg: var(--op77-line-hud);
+  background: var(--op77-panel-raised);
+  color: var(--op77-text);
+}
+
+.op-plate.op-is-active:hover {
+  --aug-border-bg: var(--op77-accent-ice);
+  background: var(--op77-accent-ice);
+}
+
 .op-is-muted {
   --aug-border-bg: var(--op77-line);
   color: var(--op77-text-faint);

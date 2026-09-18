@@ -33,6 +33,41 @@ local DEFAULT_HEIGHT = 1080
 local DEFAULT_FPS = 30
 local DEFAULT_Z_INDEX = 700
 
+-- How many payloads are held for a channel that has no handler yet. A view emits
+-- its `<module>:ready` ONCE and never again, so one is normally the whole of it;
+-- the chat emits two, one per layer. The cap is what keeps a channel nobody ever
+-- registers on from growing for the life of the page.
+local MAX_LATCHED = 8
+
+--- Holds a payload that arrived on a channel nothing listens to yet.
+--
+-- The page is built while the modules are still starting, and a module registers
+-- its page handlers in `Start` -- which costs a FRAME per module, by design; see
+-- the `Wait(0)` in `core/shared/lifecycle.lua` and the budget it resets. A page
+-- whose assets are warm in the CEF cache mounts inside that window, which is
+-- exactly what a reconnection is, and a character switch ends the session.
+--
+-- So `<module>:ready` reached a channel whose handler was three modules away and
+-- was DROPPED. The module then waited for a handshake that had already been and
+-- gone -- no HUD, no prompt strip, an inventory that opens on nothing -- for the
+-- rest of the session, because the page reports ready once.
+local function latch(surface, channel, payload)
+	local held = surface.latched[channel]
+	if held == nil then
+		held = {}
+		surface.latched[channel] = held
+	end
+	if #held >= MAX_LATCHED then
+		if not held.full then
+			held.full = true
+			Open77.log.warn(('[surface %s] %s:%s held %d payloads and nothing ever ' ..
+				'registered on it'):format(surface.id, surface.id, channel, MAX_LATCHED))
+		end
+		return
+	end
+	held[#held + 1] = payload
+end
+
 --- Registers the one page listener for a channel, if it has none yet.
 -- One listener per channel, dispatching through `handlers`, is what makes a
 -- handler replaceable and keeps a raised handler from disappearing.
@@ -54,8 +89,13 @@ local function wire(surface, channel)
 		-- to, and replacing on registration meant only the last module to load
 		-- ever heard it -- silently, since nothing reads a handler it did not
 		-- install. Iterated over a snapshot: a handler may remove itself.
+		-- Held rather than dropped while the channel has nobody on it, and
+		-- replayed to the first handler that registers. See `latch`.
 		local listeners = surface.handlers[channel]
-		if listeners == nil then return end
+		if listeners == nil or #listeners == 0 then
+			latch(surface, channel, payload)
+			return
+		end
 		for index = 1, #listeners do
 			local ran, raised = pcall(listeners[index], payload)
 			if not ran then
@@ -97,6 +137,26 @@ function OPX.Surface.On(surface, channel, handler)
 		surface.handlers[channel] = listeners
 	end
 	listeners[#listeners + 1] = handler
+
+	-- Whatever arrived before anyone was listening, in the order it arrived.
+	--
+	-- TO THE FIRST HANDLER ONLY. The later ones on a broadcast channel were not
+	-- there when it was emitted, and replaying to each in turn would hand the
+	-- same payload out as many times as the channel ends up with listeners.
+	-- Cleared before the loop, so a handler that registers another from inside
+	-- its own replay cannot be given the same payloads twice.
+	local held = surface.latched[channel]
+	if held ~= nil and #listeners == 1 then
+		surface.latched[channel] = nil
+		local full = surface.id .. ':' .. channel
+		for index = 1, #held do
+			local ran, raised = pcall(handler, held[index])
+			if not ran then
+				Open77.log.error(('[surface %s] %s raised on a held payload: %s')
+					:format(surface.id, full, tostring(raised)))
+			end
+		end
+	end
 
 	return function()
 		for index = #listeners, 1, -1 do
@@ -146,6 +206,12 @@ function OPX.Surface.Create(spec)
 		failed = false,
 		handlers = {},
 		wired = {},
+		-- Payloads that arrived on a wired channel before anything registered on
+		-- it. A channel that was never wired never reaches this table -- the host
+		-- has no listener to call and the payload is gone before this file sees
+		-- it -- which is why the channels a view emits at mount are wired up
+		-- front, in `core/client/ui.lua`.
+		latched = {},
 	}
 
 	wire(surface, 'ready')
@@ -167,10 +233,32 @@ function OPX.Surface.Send(surface, channel, payload)
 	if type(surface) ~= 'table' or surface.failed or not surface.ready then return false end
 	if surface.page == nil then return false end
 	local full = surface.id .. ':' .. channel
-	local sent, failure = pcall(surface.page.send, surface.page, full, payload or {})
-	if not sent then
-		Open77.log.error(('[surface %s] %s not sent: %s'):format(surface.id, full, tostring(failure)))
+	local called, answer = pcall(surface.page.send, surface.page, full, payload or {})
+	if not called then
+		Open77.log.error(('[surface %s] %s not sent: %s'):format(surface.id, full, tostring(answer)))
 		return false
+	end
+
+	-- THE ANSWER IS SAID OUT LOUD, AND NOT ACTED ON. `WebUI.Page.send` returns a
+	-- boolean and refuses with `invalid_webui_event_payload`: the event name and
+	-- the payload are both bounded, so a table too large or not serialisable is
+	-- REJECTED, not truncated -- and the pcall above succeeds either way. A payload
+	-- the host refused was indistinguishable from one the page drew, which is the
+	-- worst shape a bug can have on a seam, and this line is what tells them apart.
+	--
+	-- IT DOES NOT CHANGE THE ANSWER THIS FUNCTION GIVES. Returning false here looks
+	-- obviously right and is not: callers read this result and branch on it -- the
+	-- inventory parks its open payload in `pendingOpen` and waits for a handshake
+	-- that has already been and gone -- so a refusal that used to be invisible would
+	-- become a screen that takes the keyboard and never draws. The journal line is
+	-- the whole of the improvement; making every caller handle a new failure is a
+	-- separate change, one caller at a time.
+	--
+	-- Only an explicit false is a refusal: a build that answers nothing at all has
+	-- still sent it.
+	if answer == false then
+		Open77.log.warn(('[surface %s] %s refused by the host: the payload is too large ' ..
+			'or not serialisable'):format(surface.id, full))
 	end
 	return true
 end
@@ -218,6 +306,23 @@ function OPX.Surface.HasFocus(surface)
 	return read and held == true
 end
 
+--- Registers the host listener for a channel with no handler behind it yet.
+--
+-- The one thing the latch cannot do for itself. A channel that was never wired
+-- has no listener on the host side at all, so a payload for it is gone before
+-- this file is reached: latching only ever covers a channel something has
+-- already asked for. Wiring a channel AHEAD of the module that owns it is what
+-- turns a lost `<module>:ready` into a held one.
+-- @author dop42
+-- @param surface table
+-- @param channel string without the `<id>:` prefix
+-- @return boolean
+function OPX.Surface.Wire(surface, channel)
+	if type(surface) ~= 'table' or surface.failed or surface.page == nil then return false end
+	if type(channel) ~= 'string' or channel == '' then return false end
+	return wire(surface, channel)
+end
+
 --- Destroys the page and marks the surface gone.
 -- @author dop42
 -- @param surface table
@@ -225,6 +330,7 @@ function OPX.Surface.Destroy(surface)
 	if type(surface) ~= 'table' then return end
 	surface.ready = false
 	surface.failed = true
+	surface.latched = {}
 	local page = surface.page
 	surface.page = nil
 	if page ~= nil then pcall(page.destroy, page) end

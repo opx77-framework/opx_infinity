@@ -223,28 +223,16 @@ function M.BeginEntry(source)
 
 	OPX.Buckets.Isolate(source, 'joined')
 
-	-- Its own thread, for the database read, and no failure path leaves the player
-	-- held. A failed roster and a selection deadline do NOT disconnect: the player
-	-- is isolated, the selector asks for the roster again, and SelectCharacter
-	-- still works afterwards -- a creator left open would otherwise be thrown out.
+	-- Its own thread, for the database reads, and no failure path leaves the
+	-- player held. There is nothing to choose and nothing to wait for: the account
+	-- is locked on a character, or it is about to be locked on a new one.
 	CreateThread(function()
-		local sent = M.SendCharacters(source, true)
-		if not sent.ok then
-			Open77.log.error(('[character] could not send the character list to %d: %s')
-				:format(source, tostring(sent.error)))
-			OPX.Refuse(source, 'entry.failed', M.Operation.ENTRY)
-			OPX.Gate.Release(source, 'roster-failed')
-			return
-		end
-
-		OPX.Gate.Watch(source, nil, function(src)
-			-- A character already chosen makes this player ours: the hold stays, and
-			-- SelectCharacter is what releases it.
-			local live = OPX.Sessions[src]
-			if live and live.citizenId then return false end
-			OPX.Refuse(src, 'entry.timedOut', M.Operation.ENTRY)
-			return true
-		end)
+		local entered = M.EnterSession(source)
+		if entered.ok then return end
+		Open77.log.error(('[character] %d could not be brought into the world: %s (%s)')
+			:format(source, tostring(entered.error), tostring(entered.detail)))
+		OPX.Refuse(source, 'entry.failed', M.Operation.ENTRY)
+		OPX.Gate.Release(source, 'entry-failed')
 	end)
 end
 
@@ -287,11 +275,22 @@ local function registerEvents()
 			message = reason or 'connection_closed',
 		})
 		M.Logout(src)
+		M.ForgetPlacement(src)
 		OPX.ForgetSession(src)
 		-- Both are keyed by source, and a source is recycled. The citizen id read
 		-- earlier covers the audit entries keyed by character instead.
 		OPX.ForgetCooldowns(src)
 		OPX.Audit.Forget(src, citizenId)
+	end)
+
+	-- The platform says this player is incarnated: every hold has cleared, their
+	-- client has announced gameplay-ready, and there is a living body to put the
+	-- character's row on. THIS is where a join places, and nowhere earlier.
+	AddEventHandler(OPX.Host.PLAYER_READY, function(rawPlayerId)
+		local src = tonumber(rawPlayerId)
+		if not src then return end
+		if M.AwaitingPlacement[src] == nil then return end
+		CreateThread(function() M.PlacePending(src) end)
 	end)
 
 	-- Core dropping a session is the safety net for a departure nobody signalled,
@@ -316,8 +315,8 @@ local function registerEvents()
 		local session = OPX.EnsureSession(src)
 		if not session then return end
 
-		-- Somebody who already has a character gets `loaded`: a roster would reopen
-		-- the selection screen.
+		-- Somebody who already has a character is told which one, and nothing else
+		-- happens: this is a client that reloaded, not an arrival.
 		local player = M.GetPlayer(src)
 		if player then
 			TriggerClientEvent(M.Event.LOADED, src, player.PlayerData)
@@ -330,85 +329,33 @@ local function registerEvents()
 		-- are.
 		if not OPX.Gate.IsReady(src) then OPX.Buckets.Isolate(src, 'ready') end
 
-		CreateThread(function() M.SendCharacters(src, true) end)
+		CreateThread(function() M.EnterSession(src) end)
 	end)
 
-	RegisterNetEvent(M.Event.SELECT, function(payload)
+	-- The one thing a player still types about their character. It is accepted
+	-- once: `SetName` refuses a second one, and the client only asks while the row
+	-- it is loaded on has no name.
+	RegisterNetEvent(M.Event.NAME, function(payload)
 		local src = tonumber(source)
 		if not src then return end
 
-		local citizenId = type(payload) == 'table' and payload.citizenId or nil
-		local operation = M.Operation.SELECT
-		if type(citizenId) ~= 'string' then
+		local operation = M.Operation.NAME
+		if type(payload) ~= 'table' then
 			return OPX.Refuse(src, 'error.badRequest', operation)
 		end
-		if OPX.Cooling(src, 'select.request', 1000) then
+		if OPX.Cooling(src, 'name.request', 1000) then
 			return OPX.Refuse(src, 'error.tooFast', operation)
 		end
 
 		CreateThread(function()
-			local selected = M.SelectCharacter(src, citizenId)
-			if not selected.ok then
-				-- The cooldown branch is the one an attacker takes; logging it would
-				-- make the limit write a line per message.
-				if selected.error ~= 'error.tooFast' then
-					Open77.log.warn(('[character] %d could not select %s: %s')
-						:format(src, OPX.Audit.Safe(citizenId), tostring(selected.error)))
-				end
-				-- On the wire only, no toast: a selector renders this in its own
-				-- status line, and the same text as a toast said it twice.
-				OPX.Refuse(src, selected.error, operation)
-			end
-		end)
-	end)
-
-	RegisterNetEvent(M.Event.CREATE, function(payload)
-		local src = tonumber(source)
-		if not src then return end
-
-		local operation = M.Operation.CREATE
-		if OPX.Cooling(src, 'create.request', 1000) then
-			return OPX.Refuse(src, 'error.tooFast', operation)
-		end
-
-		CreateThread(function()
-			local created = M.CreateCharacter(src, payload)
-			if not created.ok then
-				-- A creator keeps its toast beside the refusal: it uses it when its
-				-- form is already closed.
-				OPX.Refuse(src, created.error, operation)
-				OPX.NotifyLocale(src, created.error, { max = created.detail }, 'error')
+			local named = M.SetName(src, payload.firstName, payload.lastName)
+			if not named.ok then
+				OPX.Refuse(src, named.error, operation)
 				return
 			end
-
-			OPX.NotifyLocale(src, 'character.created',
-				{ citizenId = created.value.citizenId }, 'success')
-
-			M.SendCharacters(src, true)
-		end)
-	end)
-
-	RegisterNetEvent(M.Event.DELETE, function(payload)
-		local src = tonumber(source)
-		if not src then return end
-
-		local citizenId = type(payload) == 'table' and payload.citizenId or nil
-		local operation = M.Operation.DELETE
-		if type(citizenId) ~= 'string' then
-			return OPX.Refuse(src, 'error.badRequest', operation)
-		end
-		if OPX.Cooling(src, 'delete.request', 1000) then
-			return OPX.Refuse(src, 'error.tooFast', operation)
-		end
-
-		CreateThread(function()
-			local deleted = M.DeleteCharacter(src, citizenId)
-			if not deleted.ok then
-				OPX.Refuse(src, deleted.error, operation)
-				return
-			end
-			OPX.NotifyLocale(src, 'character.deleted', nil, 'success')
-			M.SendCharacters(src, true)
+			OPX.NotifyLocale(src, 'character.named', {
+				name = ('%s %s'):format(named.value.firstName, named.value.lastName),
+			}, 'success')
 		end)
 	end)
 
@@ -562,62 +509,74 @@ DEFAULT_SPAWN = {
 },]]):format(position.x, position.y, position.z, heading))
 		end)
 
+	-- The three commands the roster screen used to be. A player reads their
+	-- characters, takes one, or asks for a new one -- and the last two end the
+	-- session, because a character is entered at a connection and nowhere else.
 	OPX.Command.Register('opx.characters',
-		{ help = 'command.help.characters', cooldownMs = 2000, key = 'ready' },
+		{ help = 'command.help.characters', cooldownMs = 2000, key = 'characters' },
 		function(source, _, raw)
 			if source <= 0 then
 				return OPX.CommandNotice(source, raw, 'error', locale('command.inGameOnly'))
 			end
 			CreateThread(function()
-				local sent = M.SendCharacters(source)
-				if not sent.ok then
-					return OPX.CommandNotice(source, raw, 'error', locale(OPX.RefusalKey(sent.error)))
+				local listed = M.ListCharacters(source)
+				if not listed.ok then
+					return OPX.CommandNotice(source, raw, 'error',
+						locale(OPX.RefusalKey(listed.error)))
 				end
-				local lines = { locale('command.characterCount', { count = #sent.value }) }
-				for i = 1, #sent.value do
-					local character = sent.value[i]
-					lines[#lines + 1] = ('  %-10s %s %s')
-						:format(character.citizenId, character.firstName, character.lastName)
+				local list = listed.value.characters
+				local lines = { locale('command.characterCount',
+					{ count = #list, slots = listed.value.slots }) }
+				for i = 1, #list do
+					local character = list[i]
+					local name = character.firstName ~= nil
+						and ('%s %s'):format(character.firstName, character.lastName or '')
+						or locale('character.unnamed')
+					lines[#lines + 1] = ('  %s %-10s %-26s %s'):format(
+						character.citizenId == listed.value.active and '>' or ' ',
+						character.citizenId, name, character.gender or '-')
 				end
+				lines[#lines + 1] = locale('command.characterHint')
 				OPX.CommandResult(source, true, table.concat(lines, '\n'))
 			end)
 		end)
 
 	OPX.Command.Register('opx.select',
-		{ help = 'command.help.select', cooldownMs = 1000, key = 'select.request' },
+		{ help = 'command.help.select', cooldownMs = 3000, key = 'select.request' },
 		function(source, args, raw)
 			if source <= 0 or not args[1] then
 				return OPX.CommandNotice(source, raw, 'warning', locale('command.usage.select'))
 			end
 			CreateThread(function()
-				local selected = M.SelectCharacter(source, args[1])
-				OPX.CommandNotice(source, raw, selected.ok and 'success' or 'error',
-					selected.ok and locale('command.entered',
-						{ citizenId = selected.value.PlayerData.citizenId })
-						or locale(OPX.RefusalKey(selected.error)))
+				local switched = M.SwitchTo(source, args[1])
+				if not switched.ok then
+					return OPX.CommandNotice(source, raw, 'error',
+						locale(OPX.RefusalKey(switched.error)))
+				end
+				-- The notice races the disconnect this command asked for, so it is
+				-- sent and not waited on: the reason the player reads is the one
+				-- carried by the disconnect itself.
+				local name = switched.value.firstName ~= nil
+					and ('%s %s'):format(switched.value.firstName, switched.value.lastName or '')
+					or locale('character.unnamed')
+				OPX.CommandNotice(source, raw, 'success',
+					locale('command.locked', { name = name }))
 			end)
 		end)
 
 	-- Only the catalogue line is answered: the command is open, and a detail can
 	-- carry a raw exception from the database.
 	OPX.Command.Register('opx.create',
-		{ help = 'command.help.create', cooldownMs = 1000, key = 'create.request' },
-		function(source, args, raw)
-			if source <= 0 or not (args[1] and args[2]) then
-				return OPX.CommandNotice(source, raw, 'warning', locale('command.usage.create'))
+		{ help = 'command.help.create', cooldownMs = 3000, key = 'create.request' },
+		function(source, _, raw)
+			if source <= 0 then
+				return OPX.CommandNotice(source, raw, 'error', locale('command.inGameOnly'))
 			end
 			CreateThread(function()
-				local created = M.CreateCharacter(source, {
-					firstName = args[1],
-					lastName = args[2],
-					origin = args[3] or 'streetkid',
-					gender = args[4] or 'female',
-					birthDate = args[5],
-				})
-				OPX.CommandNotice(source, raw, created.ok and 'success' or 'error',
-					created.ok
-						and locale('character.created', { citizenId = created.value.citizenId })
-						or locale(OPX.RefusalKey(created.error), { max = created.detail }))
+				local asked = M.NewCharacter(source)
+				OPX.CommandNotice(source, raw, asked.ok and 'success' or 'error',
+					asked.ok and locale('command.buildingNew')
+						or locale(OPX.RefusalKey(asked.error), { max = asked.detail }))
 			end)
 		end)
 
@@ -781,6 +740,8 @@ function M.Api()
 
 		GetMetadata = M.GetMetadata,
 		SetMetadata = M.SetMetadata,
+		SetBodyFamily = M.SetBodyFamily,
+		SetName = M.SetName,
 
 		GetJob = M.Groups.GetJob,
 		GetGang = M.Groups.GetGang,
@@ -799,8 +760,11 @@ function M.Api()
 		GetPlayersByGang = M.Groups.GetPlayersByGang,
 		GetGroupMembers = M.Groups.GetGroupMembers,
 
-		SendCharacters = M.SendCharacters,
+		ListCharacters = M.ListCharacters,
+		EnterSession = M.EnterSession,
 		SelectCharacter = M.SelectCharacter,
+		SwitchTo = M.SwitchTo,
+		NewCharacter = M.NewCharacter,
 		CreateCharacter = M.CreateCharacter,
 		DeleteCharacter = M.DeleteCharacter,
 
@@ -830,6 +794,11 @@ end
 -- is best effort, and the log line says so.
 function M.Stop()
 	stopped = true
+
+	-- Before the saves, which yield: a bag left standing is a name on a client
+	-- with nothing left to change it.
+	M.State.Release()
+
 	local players = M.GetPlayers()
 
 	for i = 1, #players do

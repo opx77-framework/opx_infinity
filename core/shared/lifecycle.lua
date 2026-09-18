@@ -85,9 +85,35 @@ function OPX.Modules.Resolve()
 end
 
 --- Runs one phase over the runnable modules, in order.
+--
+-- `Start` YIELDS BETWEEN MODULES, and that is not politeness to the frame rate.
+--
+-- The host bounds a task by a PER-FRAME instruction budget and stops it dead when
+-- it is passed; a `Wait(0)` moves to the next frame and the budget starts again.
+-- Every module's `Start` used to run in one frame, so the whole client boot spent
+-- ONE budget between them: each module made the next one likelier to trip, and the
+-- one that actually tripped depended on how much the frame had already spent.
+--
+-- That is exactly what was seen. The inventory reported, intermittently:
+--
+--   client module: inventory failed
+--     start failed: modules/target/shared/model.lua:334: script execution budget exceeded
+--
+-- It is not the inventory's fault and it was never reliably the inventory: it
+-- registers its world rows in `Start`, late in dependency order, so it was simply
+-- often the module holding the parcel. And because `Start` raising marks a module
+-- `failed`, the rest of its `Start` never ran -- which is why the symptom was "no
+-- inventory AND no keybinds", with no error anywhere a player could see.
+--
+-- `Init` is NOT given the same treatment: it is documented never to yield, it
+-- builds state rather than touching the world, and a yield there would let an
+-- event reach a module whose state is half built.
 -- @return string|nil the id of a fatal module that failed
 local function runPhase(phase)
 	local fatal
+	-- Guarded on the native rather than on the side: a build without `Wait` must
+	-- still boot, just in one frame, as it did before.
+	local yielding = phase == 'Start' and type(Wait) == 'function'
 	for _, module in ipairs(OPX.Modules.Resolve()) do
 		if module.State == 'declared' then
 			-- Phases live on the namespace; everything else the loop reads is on
@@ -105,6 +131,19 @@ local function runPhase(phase)
 					Open77.log.error(('[%s] %s'):format(module.Id, module.Reason))
 					if module.Fatal then fatal = module.Id end
 				end
+				-- AFTER the module, not before: a fresh budget is worth nothing to
+				-- the module that has already spent it, and this way the last one
+				-- in the list is the only frame that pays for two.
+				--
+				-- UNDER pcall, because the real condition is not "does `Wait`
+				-- exist" but "may this stack yield at all". `Run` is documented
+				-- to be called from a thread and both boot files do -- but a
+				-- caller that does not (the test host calls it straight) would
+				-- otherwise raise `attempt to yield from outside a coroutine` and
+				-- take the whole boot down for the sake of a budget reset. A yield
+				-- that cannot happen just means the frame is shared, which is what
+				-- every build did until now.
+				if yielding then pcall(Wait, 0) end
 			end
 		end
 	end

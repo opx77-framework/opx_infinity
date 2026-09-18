@@ -42,13 +42,16 @@ M.Event = {
 	MONEY = OPX.Event(NET, 'character', 'money'),
 	JOB = OPX.Event(NET, 'character', 'job'),
 	GANG = OPX.Event(NET, 'character', 'gang'),
-	ROSTER = OPX.Event(NET, 'character', 'roster'),
 
 	-- Client to server. Every payload is attacker-controlled; only `source` is not.
+	--
+	-- There is no `select`, no `create` and no `delete` on this wire. A connection
+	-- enters on the character its account is LOCKED on and on no other, and the
+	-- lock is moved by a command, never by a client message -- `announce` is the
+	-- whole of what a client asks for. `name` is the one thing left that a player
+	-- types, and it is accepted once per character.
 	ANNOUNCE = OPX.Event(NET, 'character', 'announce'),
-	SELECT = OPX.Event(NET, 'character', 'select'),
-	CREATE = OPX.Event(NET, 'character', 'create'),
-	DELETE = OPX.Event(NET, 'character', 'delete'),
+	NAME = OPX.Event(NET, 'character', 'name'),
 	HEADING = OPX.Event(NET, 'character', 'heading'),
 
 	-- The client's own bus, raised after the mirror is updated so that a handler
@@ -59,7 +62,6 @@ M.Event = {
 	ON_MONEY = OPX.Event(LOCAL, 'character', 'money'),
 	ON_JOB = OPX.Event(LOCAL, 'character', 'job'),
 	ON_GANG = OPX.Event(LOCAL, 'character', 'gang'),
-	ON_ROSTER = OPX.Event(LOCAL, 'character', 'roster'),
 
 	-- Between modules inside one VM. Never crosses the wire.
 	IN_LOADED = OPX.Event(INTERNAL, 'character', 'loaded'),
@@ -76,10 +78,7 @@ M.Event = {
 -- one of several requests cannot tell which `error.tooFast` is its own.
 M.Operation = {
 	ENTRY = 'entry',
-	ROSTER = 'roster',
-	SELECT = 'select',
-	CREATE = 'create',
-	DELETE = 'delete',
+	NAME = 'name',
 }
 
 -- The three helpers below are here rather than in one half because both halves

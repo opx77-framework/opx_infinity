@@ -545,6 +545,38 @@ do
 		check('a refusal from the server is rendered, not shown as its key',
 			lastSent().payload.message == env.OPX.Locale.Text('error.tooFast'),
 			lastSent().payload.message)
+
+		-- ── the glyph ─────────────────────────────────────────────────────────
+		-- The page selects a local path by this name, so the set is closed on both
+		-- sides. A caller in this process is REFUSED, because a typo they can still
+		-- see a return value for is a bug they will fix; a name off the wire is
+		-- dropped, because the sentence it rode in on matters more than the picture.
+		check('a toast may carry a glyph from the closed set',
+			(function()
+				OPX.Toast.Show({ message = 'locked', icon = 'lock' })
+				return lastSent().payload.icon == 'lock'
+			end)())
+
+		local refused, why = OPX.Toast.Show({ message = 'x', icon = 'vehcile' })
+		check('a glyph outside the set is refused, not dropped',
+			refused == nil and why == 'invalid_toast_icon', tostring(why))
+
+		local iconed = OPX.Toast.Show({ id = 'glyph', message = 'counting', icon = 'money' })
+		check('a patch naming a glyph outside the set is refused too',
+			OPX.Toast.Update(iconed, { icon = 'rocket' }) == false)
+		check('and an empty name takes the glyph back off',
+			OPX.Toast.Update(iconed, { icon = '' }) == true
+				and lastSent().payload.icon == '')
+
+		control.netEvents[refusal]({ kind = 'error', code = 'error.tooFast', icon = 'rocket' })
+		check('a refusal naming a glyph nobody has loses the glyph, never the words',
+			lastSent().payload.icon == nil
+				and lastSent().payload.message == env.OPX.Locale.Text('error.tooFast'))
+
+		local answer = OPX.Event(OPX.Channel.NET, 'runtime', 'commandAnswer')
+		control.netEvents[answer]('/pay', 'success', 'paid', false, 'money')
+		check('a command answer carries its glyph the whole way to the page',
+			lastSent().payload.icon == 'money', tostring(lastSent().payload.icon))
 	end
 end
 
@@ -606,6 +638,79 @@ do
 		table.sort(orphans)
 		print(('       page channels with no Lua half yet: %s')
 			:format(#orphans > 0 and table.concat(orphans, ' ') or 'none'))
+	end
+end
+
+-- The page is BUILT BEFORE THE MODULES ARE. `core/client/boot.lua` creates the
+-- surface first, then walks the modules a frame at a time, because `Start` yields
+-- between them to reset the instruction budget. A view emits `opx:<module>:ready`
+-- from its mount and the bridge releases all of them in the same tick as
+-- `opx:ready`, so a page with warm CEF assets -- every reconnection, and a
+-- character switch ends the session -- mounts inside that window.
+--
+-- `boot()` above cannot see this: it pumps the whole boot out and only then
+-- reports the page ready, which is the polite order and not the one that breaks.
+-- This section plays the rude one.
+section('a page that mounts before the modules have started')
+do
+	local env, control = Host.Environment('client')
+	local broken
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk, why = loadfile(file, 't', env)
+		if not chunk then broken = ('%s: %s'):format(file, why) break end
+		local ok, failure = pcall(chunk)
+		if not ok then broken = ('%s: %s'):format(file, failure) break end
+	end
+
+	if broken then
+		check('the client half loads', false, broken)
+	else
+		control.Fire('onClientResourceStart', 'opx_infinity')
+
+		-- ONE round. The boot thread creates the surface and then yields inside
+		-- the Start phase, so this is the client at its most exposed: a page
+		-- exists, and almost nothing has registered on it.
+		control.Pump(1)
+		local page = control.pages[#control.pages]
+
+		check('the surface exists before the modules do', page ~= nil)
+
+		local hud = env.OPX.Modules.Record('hud')
+		check('and the hud has not started yet',
+			hud ~= nil and hud.State == 'declared',
+			hud and hud.State)
+
+		-- The fix. Wired against the module list at creation, so the channel has
+		-- a host listener before the page can emit on it; without this the emit
+		-- below reaches nothing at all and cannot even be held.
+		check('yet its ready channel is already wired',
+			page ~= nil and page.handlers['opx:hud:ready'] ~= nil)
+
+		-- The page, in the order it really speaks: the handshake, then every
+		-- `<module>:ready` the mount queued behind it, same tick.
+		control.PageEmit(page, 'opx:ready', { surface = 'ui' })
+		control.PageEmit(page, 'opx:hud:ready', {})
+		control.PageEmit(page, 'opx:inventory:ready', {})
+
+		-- The rest of the boot, where the hud finally registers and is handed
+		-- the ready it missed.
+		control.Pump(60)
+
+		local drew = {}
+		for _, message in ipairs(page and page.sent or {}) do drew[message.channel] = true end
+
+		check('the hud draws anyway, on the ready it was handed late',
+			drew['opx:hud:config'] == true)
+		check('including the switch that makes the surface show at all',
+			drew['opx:hud:show'] == true)
+
+		-- Held for the FIRST handler and then forgotten: a broadcast channel must
+		-- not hand the same payload to every module that registers after it.
+		local surface = env.OPX.UI.Surface()
+		local seen = 0
+		env.OPX.Surface.On(surface, 'hud:ready', function() seen = seen + 1 end)
+		check('and a handler registering after the replay is not given it again',
+			seen == 0, seen)
 	end
 end
 

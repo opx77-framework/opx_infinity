@@ -33,6 +33,37 @@
   --op77-panel-quiet:  rgba(10, 18, 32, 0.78);
   --op77-scrim:        rgba(3, 7, 13, 0.72);
 
+  /* --- THE PASS-02 PLATE ----------------------------------------------------
+     THE THREE ABOVE ARE BLUE AND PASS 01. These are what a pass-02 surface puts
+     under its words, and they exist because the pass's own rule broke in the
+     game: "nothing is filled" gives a 1px red outline and a text-shadow over
+     LIVE GAMEPLAY, and the owner read the result as illegible -- "tout ce qui
+     contient du texte, background". Over a blown-out plaza a two-pass ink
+     shadow is not a backing, it is an outline around an outline.
+
+     They are the two grounds `InventorySlot.vue` already carries, promoted from
+     literals in one file to the one address every surface reads, because the
+     owner's instruction was for all of them and a value repeated in fourteen
+     scoped stylesheets is fourteen chances to drift:
+
+       plate  #1c0809  `--red-idle`'s rgb at 12%, for anything holding text
+       lit    #4a1519  the same rgb at 32%, for the one row that is chosen
+
+     RED TAKEN DOWN UNTIL IT IS A BLACK, which is the only way a fill can be red
+     here and still do the job a fill was asked for: at panel area a red anyone
+     can NAME is a red panel, and it swallows the lettering it was added to
+     rescue. The hue went down, not up, and the alphas did not move with it.
+
+     0.78 is the floor for running text over gameplay -- below it a white plaza
+     comes through -- and a small chip or a single row may take it straight. A
+     block covering a quarter of the screen takes it lower (0.55-0.62): at that
+     area the job is to separate a word from the street, not to hold a picture
+     against daylight, and full strength stops being a ground and becomes the
+     panel the pass removed. */
+  --op77-plate:       rgba(28, 8, 9, 0.78);
+  --op77-plate-quiet: rgba(28, 8, 9, 0.58);
+  --op77-plate-lit:   rgba(74, 21, 25, 0.90);
+
   /* --- LINES ---------------------------------------------------------------
      Blue-gray hairlines, never cyan. Depth comes from borders, not shadows. */
   --op77-line:        rgba(174, 211, 224, 0.10);
@@ -142,6 +173,36 @@
      panel from a detailed backdrop, so one shadow is allowed, and only this
      one. It is a separation device, not a depth ramp: there are no levels. */
   --op77-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+
+  /* --- ARETES --------------------------------------------------------------
+     DESIGN PASS 01, and the first thing in this file that draws depth on
+     purpose. The paragraph above says a border is enough on a flat page and
+     that there are no levels; over gameplay, at the size these plates are, a
+     single-alpha hairline reads as nothing at all.
+
+     Two inset shadows per plate -- one lit arete on the leading corner, one
+     shadowed arete on the trailing one -- is the whole budget. It is not a
+     ramp: it is the bevel of a physical panel, which is what the game's own
+     surfaces are pretending to be. `clip-path` paints an inset shadow INSIDE
+     the cut, which is exactly what an outset shadow cannot do and the reason
+     `--op77-shadow` above had to be the only one.
+
+     Used by the menu surface. Promote to the rest once the pass is agreed. */
+  --op77-edge-hi: rgba(255, 255, 255, 0.22);
+  --op77-edge-lo: rgba(0, 0, 0, 0.55);
+
+  /* --- THE CURVE -----------------------------------------------------------
+     CP2077's HUD is curved by a shader -- the designers' own note on the UI art
+     bible says so in as many words. A CSS page cannot warp a plane, but it can
+     BE one: the strip is anchored to the screen edge it belongs to and its far
+     edge recedes, which is what a projection on the inside of a visor does.
+
+     ONE axis, still. The tilt is what carries the retinal read, so the shorter
+     focal length is what was raised rather than a second rotation: at 900px the
+     same 7 degrees recedes visibly instead of politely, and a second axis turns
+     the plane into a box sitting in the room. */
+  --op77-persp: 900px;
+  --op77-tilt:  7deg;
 
   /* --- MOTION --------------------------------------------------------------
      Functional and fast. No glitch loops, no parallax, no idle animation. */

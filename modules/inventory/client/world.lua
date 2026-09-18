@@ -133,7 +133,8 @@ local function syncPileRow(target, near)
 		distance = Options.REACH,
 		canInteract = World.CanTakePile,
 		onSelect = World.TakePile,
-		order = 10,
+		-- The thing itself: a pile on the floor is what the player walked up to.
+		order = 5,
 	})
 	if registered.ok then
 		pileToken = registered.value.token
@@ -220,7 +221,8 @@ local function registerVehicleRows(target)
 			distance = Options.REACH_VEHICLE,
 			canInteract = World.CanOpenTrunk,
 			onSelect = World.OpenTrunk,
-			order = 20,
+			-- What it holds.
+			order = 22,
 		},
 		{
 			id = 'inventory.glovebox',
@@ -229,7 +231,7 @@ local function registerVehicleRows(target)
 			distance = Options.REACH_VEHICLE,
 			canInteract = World.CanOpenGlovebox,
 			onSelect = World.OpenGlovebox,
-			order = 21,
+			order = 23,
 		},
 	})
 	if not registered.ok then
@@ -257,7 +259,7 @@ local function registerStashRows(target)
 				-- `onlyWith`: the screen stays closed when the stash is refused, so
 				-- a player out of reach is not shown their own bag instead.
 				onSelect = function() M.Screen.Open('openStash', { name = name }, true) end,
-				order = 15,
+				order = 20,
 			})
 		if not registered.ok then
 			Open77.log.warn(('[inventory] the row of stash %s was not registered: %s')

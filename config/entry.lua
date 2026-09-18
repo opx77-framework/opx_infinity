@@ -1,37 +1,15 @@
---- The first screen: the stage, the roster retry and the two deadlines.
+--- What is asked of a character the server made empty.
 -- @author dop42
 --
--- Nothing here is authoritative. Every rule the creation form applies is applied
--- again by the server, and a modified client skips this file entirely.
+-- Nothing here is authoritative. The only value a player still types is their
+-- name, and the server checks it again and accepts it exactly once.
+--
+-- There is no roster and no stage in this module any more: an account is locked
+-- on one character, a connection enters on it, and the lock is moved by a
+-- command that disconnects. See `modules/entry/module.lua`.
 
 OPX.Config.MODULES.entry = {
 	enabled = true,
-
-	-- The camera on the player's own character while they choose, the mouse kept
-	-- off it and the character held where it stands.
-	STAGE = {
-		-- false leaves the camera alone and the character free.
-		ENABLED = true,
-		-- -180..180, clamped: 180 faces the character, 0 stands behind it.
-		ORBIT_DEGREES = 180,
-		-- Keeps the native camera and turn restriction on (players.controls).
-		LOCK_CAMERA = true,
-		-- Holds the character in place; false lets it walk.
-		FREEZE = true,
-	},
-
-	-- Milliseconds between two roster requests. The server DROPS a second request
-	-- inside its own 2000 ms cooldown without answering it, so anything under the
-	-- floor the module enforces (2500 ms) buys nothing; the margin covers the
-	-- network between the two clocks.
-	ROSTER_RETRY_MS = 3000,
-
-	-- How long a selection, and a registration, may stay unanswered before the
-	-- screen unlocks itself. Without them a lost answer leaves a player in front
-	-- of a greyed screen with no way out. A value that is not a positive finite
-	-- number turns the deadline off.
-	SELECT_TIMEOUT_MS = 20000,
-	CREATE_TIMEOUT_MS = 20000,
 
 	-- Bounds on each half of a character name, in characters and not bytes. They
 	-- MIRROR the character module's own bounds: this form repeats the server's

@@ -126,6 +126,12 @@ function M.CreatePlayer(entity, offline)
 		self.Revision = self.Revision + 1
 		if self.Offline then return end
 		TriggerClientEvent(M.Event.DATA, self.PlayerData.source, self.PlayerData)
+		-- The whole of PlayerData to its owner above, and the PUBLIC half of it to
+		-- everybody else in the bucket here. Every mutator in this module and in
+		-- `groups.lua` funnels through this function, which is what makes one call
+		-- enough; `State` reads the same PlayerData and decides for itself what is
+		-- fit to replicate, and writes nothing that has not moved.
+		M.State.Publish(self)
 	end
 
 	function Functions.SetPlayerData(key, value)
@@ -204,6 +210,18 @@ function M.RegisterPlayer(player)
 	M.Players[data.source] = player
 	M.Registry.byCitizenId[data.citizenId] = data.source
 	M.Registry.byUserId[data.userId] = data.source
+
+	-- In the roster and on the wire in the same breath: a client that streams this
+	-- body in the next tick reads who it is off the bag rather than waiting for
+	-- somebody to tell it.
+	--
+	-- CLEARED FIRST, and not as a formality. `State` skips writing a key whose value
+	-- has not moved since it last published it, and what it remembers is keyed on
+	-- the player id -- which is recycled. A slot whose previous bag went down with
+	-- its session would otherwise have every key that happens to match skipped, and
+	-- a key skipped onto an empty bag is a key nobody ever sees.
+	M.State.Clear(data.source)
+	M.State.Publish(player)
 end
 
 --- Takes a character out of the roster and its own index entries.
@@ -220,6 +238,12 @@ function M.UnregisterPlayer(player)
 	if M.Registry.byUserId[data.userId] == data.source then
 		M.Registry.byUserId[data.userId] = nil
 	end
+
+	-- A DISCONNECT would not need this -- the bag dies with the session. This is
+	-- the other unload: a character switch, or a logout back to a slot that stays
+	-- connected, where the bag would otherwise go on naming somebody nobody is
+	-- playing.
+	M.State.Clear(data.source)
 end
 
 --- Answers the loaded character at a player id, or nil.
@@ -496,6 +520,85 @@ function M.GetMetadata(identifier, key)
 	local player = resolve(identifier)
 	if not player then return nil end
 	return player.Functions.GetMetaData(key)
+end
+
+--- Writes the two halves of a character's name, once. Coroutine only.
+-- @author dop42
+--
+-- A character is a row before it is anybody: it is created with no name, built in
+-- the game's own creator, and named by its player once they are in the world. So
+-- this is the other half of `SetBodyFamily`, with the same rule -- WRITTEN ONCE.
+-- A name is what everyone else in the city knows somebody by, and a character
+-- that could be renamed is a character nobody can be held to.
+-- @param identifier Player|Source|CitizenId
+-- @param firstName any
+-- @param lastName any
+-- @return Result
+function M.SetName(identifier, firstName, lastName)
+	local player = resolve(identifier)
+	if not player then return Result.Err('error.notLoggedIn', tostring(identifier)) end
+
+	local first = M.ValidateName(firstName)
+	if not first.ok then return Result.Err('character.badName', 'firstName') end
+	local last = M.ValidateName(lastName)
+	if not last.ok then return Result.Err('character.badName', 'lastName') end
+
+	local charInfo = player.PlayerData.charInfo
+	if charInfo.firstName ~= nil or charInfo.lastName ~= nil then
+		return Result.Err('character.nameSet', tostring(charInfo.firstName))
+	end
+
+	charInfo.firstName = first.value
+	charInfo.lastName = last.value
+	player.Functions.UpdatePlayerData()
+
+	OPX.Audit.Player(player, 'character.named', ('%s %s'):format(first.value, last.value))
+	Open77.log.info(('[character] %s is %s %s'):format(player.PlayerData.citizenId,
+		first.value, last.value))
+
+	-- Written through rather than left to the autosave, for the same reason as the
+	-- body: a character that comes back nameless would be asked for its name again
+	-- as though nothing had been typed.
+	local saved = M.Save(player, false)
+	if not saved.ok then return saved end
+	return Result.Ok({ firstName = first.value, lastName = last.value })
+end
+
+--- Writes the body family a character was built on, once. Coroutine only.
+-- @author dop42
+--
+-- `charInfo.gender` is not asked for at creation: the engine's own character
+-- creator asks for it, and this is where its answer lands. It is written ONCE,
+-- because the family is the character -- a second writer would move somebody
+-- already played onto another body, and the face stored against the first one
+-- would then go on the wrong one. A second write is refused by name rather than
+-- ignored, so a caller that thinks it owns the body learns that it does not.
+-- @param identifier Player|Source|CitizenId
+-- @param family string `female` or `male`
+-- @return Result
+function M.SetBodyFamily(identifier, family)
+	local player = resolve(identifier)
+	if not player then return Result.Err('error.notLoggedIn', tostring(identifier)) end
+	if family ~= 'female' and family ~= 'male' then
+		return Result.Err('character.badBody', tostring(family))
+	end
+
+	local charInfo = player.PlayerData.charInfo
+	if charInfo.gender == family then return Result.Ok(family) end
+	if charInfo.gender ~= nil then
+		return Result.Err('character.bodySet', tostring(charInfo.gender))
+	end
+
+	player.Functions.SetCharInfo('gender', family)
+	Open77.log.info(('[character] %s was built on the %s body')
+		:format(player.PlayerData.citizenId, family))
+
+	-- Written through rather than left to the autosave: this is the first thing a
+	-- world entry reads about a character, and a server that stopped between here
+	-- and the next autosave would bring it back with no body at all.
+	local saved = M.Save(player, false)
+	if not saved.ok then return saved end
+	return Result.Ok(family)
 end
 
 --- Re-reads a character's position from the host, with the reported heading.

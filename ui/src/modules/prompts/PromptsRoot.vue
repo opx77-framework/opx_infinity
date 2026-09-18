@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import { onMounted, ref, shallowRef } from 'vue'
-import OpKeyCap from '@/design/components/OpKeyCap.vue'
-import OpPanel from '@/design/components/OpPanel.vue'
 import { emit } from '@/bridge/channel'
 import { list, num, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
@@ -15,12 +13,39 @@ import { useLocale } from '@/composables/useLocale'
  * budget and every key NAME arrive resolved: a cap says what the player's own binding
  * says, and this page has no keyboard layout to map a scancode with.
  *
- * WHAT CHANGED, and it is the one substantial rebuild here: prompts.css drew a
- * content-width plate per row and per group title, each one a `z-index: -1`
- * pseudo-element under an `isolation: isolate` parent. That is twenty-four clipped
- * pseudo-elements for a full strip. Rule 1 of design/augmented.css says augment
- * containers and not cells, so a GROUP is now one `OpPanel` -- one augmented frame -- and
- * its rows are plain boxes inside it. Worst case goes from 24 clipped plates to 8.
+ * ── DESIGN PASS 02 ──────────────────────────────────────────────────────────
+ *
+ * A PROMPT IS A LINE, NOT A BOX. It was an `OpPanel` per group holding padded rows: an
+ * augmented frame, a header with a bottom rule, a body with inner padding, and a
+ * `--op77-accent-soft` fill under every keycap. All of that is gone. What is left is
+ * one inline row -- the key, then what it does -- and nothing drawn around it.
+ *
+ * NO ENCLOSURE, and this is now the house rule rather than a local choice: HudInfo.vue
+ * and HudVoice.vue made the same call, the ALT target and the inventory after them, and
+ * the pre-rebuild `opx77_prompts` drew no enclosure either. A prompt is the most
+ * transient thing on the screen -- it appears because the player walked up to a door --
+ * and a framed panel says "drive me", which is exactly what a prompt is not.
+ *
+ * THE INTERLACE DOES NOT SURVIVE, for the reason spelled out in HudVoice.vue: it exists
+ * to stop an unfilled FRAME reading as a web page floating in the air, and with no frame
+ * a striped rectangle IS that floating rectangle. The strip has no bounds of its own now,
+ * so there is nothing to stripe -- only lines, and each one is lifted off the street by
+ * the black ink shadow instead.
+ *
+ * THE KEYCAP KEEPS ITS EDGE, and it is the only thing here that does. It is a control,
+ * and it depicts a physical key: a key with no edge is a word, and `E OPEN` is two words
+ * where `[E] OPEN` is an instruction. So the cap takes the house 9-slice frame -- the same
+ * sprite MenuView.vue and the HUD draw -- and nothing else does. `OpKeyCap` could not
+ * survive that: it is `data-augmented-ui` plus an `--op77-accent-soft` fill plus a 2px
+ * accent under-rule, and a bottom rule 2px thick IS a fill however thin. The weighted
+ * base goes with it, so a held key no longer reads as a heavier cap -- see below, the
+ * hold tag went the same way.
+ *
+ * THE HOLD TAG IS GONE. Lua still sends `hold` per row and `prompts.hold` in the config,
+ * and this page no longer reads either: a word beside the cap saying HOLD was a caption
+ * on a keycap, and the owner called it what it was. The Lua contract is untouched -- the
+ * field is validated, change-gated and sent exactly as before, and drawn by nobody, the
+ * same standing as `payload.eyebrow` in HudInfo.vue.
  */
 const { t } = useLocale()
 
@@ -47,7 +72,6 @@ interface Row {
   caps: Cap[]
   label: string
   value: string
-  hold: boolean
   dim: boolean
 }
 
@@ -61,8 +85,6 @@ const groups = shallowRef<Group[]>([])
 const anchor = ref<Anchor>('bottom-right')
 const offset = ref(0)
 const maxWidth = ref(420)
-/** Lua owns the player's language, so even the word HOLD arrives from it. */
-const holdText = ref('HOLD')
 /** prompts.js `hide()`: hidden, never emptied -- the next frame usually says the same. */
 const hidden = ref(false)
 
@@ -87,8 +109,7 @@ useBridge('opx:prompts:config', (payload: Payload) => {
   const width = num(payload.maxWidth)
   if (width > 0) maxWidth.value = Math.round(width)
 
-  const hold = text(payload.hold)
-  if (hold) holdText.value = t(hold)
+  // `payload.hold` -- the localised word HOLD -- still arrives and is no longer read.
 })
 
 useBridge('opx:prompts:frame', (payload: Payload) => {
@@ -119,12 +140,12 @@ useBridge('opx:prompts:frame', (payload: Payload) => {
         caps,
         label: t(text(rawRow.label)),
         value: text(rawRow.value),
-        hold: rawRow.hold === true,
+        // `rawRow.hold` is deliberately not read: nothing draws it any more.
         dim: rawRow.dim === true
       })
       rowBudget -= 1
     }
-    // An empty group is a frame, a title and no information.
+    // An empty group is a title and no information.
     if (rows.length === 0) continue
 
     seenGroups[key] = true
@@ -151,60 +172,147 @@ onMounted(() => {
       :class="[anchor, { open: groups.length > 0 && !hidden }]"
       :style="{ '--strip-offset': offset + 'px', '--strip-width': maxWidth + 'px' }"
     >
-      <OpPanel
-        v-for="group in groups"
-        :key="group.key"
-        class="group"
-        :anchor="anchor.indexOf('-right') === -1 ? 'start' : 'end'"
-        :lift="false"
-      >
-        <template v-if="group.title" #header>
-          <span class="op77-eyebrow">{{ group.title }}</span>
-        </template>
+      <!-- A GROUP IS NOT A PANEL. It is a title and its lines: no frame, no header rule,
+           no body padding. It is still the element that TILTS, because the plane a line
+           sits on is the group's, not each row's -- one rotation per group instead of
+           one per row. -->
+      <div v-for="group in groups" :key="group.key" class="group">
+        <div v-if="group.title" class="title">{{ group.title }}</div>
 
-        <!-- Plain rows inside one augmented frame. The caps are augmented by OpKeyCap
-             itself and are the only cells here that are, which is the bound MAX_CAPS and
-             MAX_ROWS exist to keep finite. Nothing animates an --aug-* value, so each cut
-             is computed once and never again. -->
-        <div v-for="row in group.rows" :key="row.key" class="row" :class="{ dim: row.dim }">
+        <div
+          v-for="(row, at) in group.rows"
+          :key="row.key"
+          class="row"
+          :class="{ dim: row.dim }"
+          :style="`--slot: ${at}`"
+        >
           <span class="caps">
-            <span v-for="cap in row.caps" :key="cap.key" class="cap">
+            <span v-for="cap in row.caps" :key="cap.key" class="key">
               <span v-if="cap.join" class="join">+</span>
-              <OpKeyCap :label="cap.label" :hold="row.hold" :muted="row.dim" />
+              <kbd class="cap">{{ cap.label }}</kbd>
             </span>
           </span>
-          <span v-if="row.hold" class="tag">{{ holdText }}</span>
           <span class="label">{{ row.label }}</span>
-          <span v-if="row.value" class="reading">{{ row.value }}</span>
+          <span v-if="row.value" class="value">{{ row.value }}</span>
         </div>
-      </OpPanel>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* =============================================================================
+   DESIGN PASS 02 -- A PROMPT IS A LINE.
+
+   Read MenuView.vue's `<style scoped>` first: it is the agreed reference and this
+   copies its idiom. What this surface does NOT take from it is the enclosure --
+   the menu is a thing the player drives and a control is a closed frame; a prompt
+   is a thing the player is told, and it sits loose on the gameplay plane like the
+   rest of the HUD.
+
+   WHAT A LINE COSTS. Per row: no clip-path, no fill, no filter, no border on the
+   row itself. One `border-image-source` per keycap, from a data URI shared by every
+   cap on screen, and a colour. The strip's whole paint is the type and the caps.
+   ========================================================================== */
+
+/* --- THE RED --------------------------------------------------------------
+   Local to this surface for as long as the pass is local, the same as MenuView.vue
+   and HudRoot.vue carry it. `.op-theme-city` makes `--op77-accent` Night City
+   yellow on <html>, so the accent tokens are not used anywhere in this file.
+
+   The ramp is ordered by BRIGHTNESS and nothing else:
+
+       --red-idle   a pale wash -- present, not pointed at
+       --red-deep   denser, the middle rung
+       --red        lit
+       --red-hi     the lit arete
+       #ffa8ae      the alarm rung, red pushed toward white
+
+   This surface spends two of them. A prompt has exactly two states -- you can do
+   this, or you cannot yet -- so `--red` is the key you may press and
+   `--op77-text-faint` is the key you may not, which is the absence of a state
+   rather than another rung of it (HudVoice.vue's `offline`, same reading). The
+   alarm rung is unspent here on purpose: a prompt never fails, it is only offered
+   or withheld, and borrowing the alarm for "unavailable" would spend the loudest
+   colour on the quietest news. */
+.strip {
+  --red:      #ff3b47;                    /* lit: a key you may press         */
+  --red-idle: rgba(232, 67, 79, 0.62);    /* at rest: the cap edge, the title */
+  --red-glow: rgba(255, 59, 71, 0.55);
+
+  /* THE 9-SLICE KEYCAP FRAME, copied from MenuView.vue. 24x24, 8px corner tiles,
+     the chamfer living entirely inside the top-right tile so stretching an edge
+     can never skew it. A clip-path cannot draw this: a clip cuts the painted
+     result, so a bordered box under one loses its stroke along the diagonal and
+     the chamfer arrives as a GAP.
+
+     `border-image-width` is set BELOW the 8px slice on the cap, which scales the
+     whole corner tile down rather than needing a second sprite at a second size. */
+  --frame-cap: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23ff3b47" stroke-width="1.8"/></svg>');
+  --frame-off: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23aed3e0" stroke-opacity="0.14"/></svg>');
+
+  /* A border-image cannot take a shadow, so the black under a cap is a soft OUTSET
+     one on the box -- rectangular where the frame is chamfered, which at this blur
+     and alpha reads as the corner darkening rather than as a second shape. */
+  --cap-shadow: 0 1px 7px rgba(0, 0, 0, 0.55);
+
+  /* How much room the caps' shadows need inside the strip. `overflow: hidden` clips
+     to the PADDING box, so a shadow landing in the padding survives; the anchor
+     offsets below pay the same amount straight back so the strip does not move. */
+  --bleed: 10px;
+}
+
 .prompts {
   position: absolute;
   inset: 0;
 }
 
+/* ACROSS, NOT DOWN. Prompts are a strip of things the player can do right now,
+   and a column of them is a list to be read; a line of them is a toolbar to be
+   glanced at. `wrap` is the only concession: past the viewport a second line is
+   better than a prompt nobody can see. */
 .strip {
   position: fixed;
+  box-sizing: border-box;
   display: flex;
-  flex-direction: column;
-  gap: var(--op77-space-2);
-  width: var(--strip-width, 420px);
-  max-width: calc(100vw - var(--op77-inset-x) * 2);
-  max-height: calc(100vh - var(--op77-inset-y) * 2 - var(--strip-offset, 0px));
-  overflow: hidden;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  /* Wider across than down: the gap between two GROUPS has to out-read the gap
+     between two rows inside one, and across that is the only separation left. */
+  gap: var(--op77-space-2) var(--op77-space-5);
+  width: auto;
+  max-width: calc(100vw - var(--op77-inset-x) * 2 + var(--bleed) * 2);
+  padding: var(--bleed);
+
+  /* THE PLANE IS TILTED, and this is the wrapper that carries the perspective:
+     perspective on the group itself would give every descendant its own vanishing
+     point. */
+  perspective: var(--op77-persp);
+  /* Nothing inside can affect layout or paint outside it, so the compositor never
+     has to consider the rest of the screen when one prompt arrives. */
+  contain: layout paint style;
+
+  /* THE ONE INK SHADOW FOR THE WHOLE STRIP. There is no backing of any kind now, so
+     every glyph sits directly on whatever the street is doing -- and a text-shadow
+     INHERITS, so this single declaration carries every title, every cap, every label
+     and every reading. It is the honest fix for an unbacked line: it darkens the two
+     pixels around a letter instead of putting a box behind the row.
+
+     Two passes, not one: the tight dark pass gives an edge its contrast, the wide
+     soft pass lifts the line off a blown-out daylight plaza. */
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0 9px rgba(0, 0, 0, 0.8);
+
   /* Opacity and transform, never `display`: a node taken out of layout replays its
-     entrance when it comes back, and the strip is hidden and shown constantly -- every
-     time the chat composer takes the keyboard. */
+     entrance when it comes back, and the strip is hidden and shown constantly --
+     every time the chat composer takes the keyboard. It CUTS, it does not fade. */
   opacity: 0;
   transform: translateY(var(--slide, 8px));
   transition:
-    opacity var(--op77-dur) var(--op77-ease),
-    transform var(--op77-dur) var(--op77-ease);
+    opacity 190ms steps(3, end),
+    transform 190ms steps(3, end);
 }
 
 .strip.open {
@@ -212,16 +320,24 @@ onMounted(() => {
   transform: none;
 }
 
+/* A RIGHT-anchored surface gets -7deg and pivots on the right edge. */
 .bottom-right,
 .top-right {
-  right: var(--op77-inset-x);
+  right: calc(var(--op77-inset-x) - var(--bleed));
   align-items: flex-end;
+  --tilt: calc(var(--op77-tilt) * -1);
+  --origin: right center;
+  --from: 6px;
 }
 
+/* A LEFT-anchored one gets +7deg and pivots on the left. */
 .bottom-left,
 .top-left {
-  left: var(--op77-inset-x);
+  left: calc(var(--op77-inset-x) - var(--bleed));
   align-items: flex-start;
+  --tilt: var(--op77-tilt);
+  --origin: left center;
+  --from: -6px;
 }
 
 /* Bottom anchors grow upward: the first group, the highest priority, sits nearest the
@@ -229,28 +345,82 @@ onMounted(() => {
    in script has to know which way the strip grows. */
 .bottom-right,
 .bottom-left {
-  bottom: calc(var(--op77-inset-y) + var(--strip-offset, 0px));
-  flex-direction: column-reverse;
+  bottom: calc(var(--op77-inset-y) - var(--bleed) + var(--strip-offset, 0px));
   --slide: 8px;
+}
+
+/* A line pinned to the right edge has to grow leftward, which is `justify-content`
+   now rather than the `column-reverse` a stack used -- reversing a ROW would also
+   reverse the reading order, and these are read left to right whatever edge they
+   are pinned to. */
+.bottom-right,
+.top-right {
+  justify-content: flex-end;
+}
+
+.bottom-left,
+.top-left {
+  justify-content: flex-start;
 }
 
 .top-right,
 .top-left {
-  top: calc(var(--op77-inset-y) + var(--strip-offset, 0px));
+  top: calc(var(--op77-inset-y) - var(--bleed) + var(--strip-offset, 0px));
   --slide: -8px;
 }
 
-/* A group is only as wide as it needs to be: the strip's width is a ceiling, not a size.
-   A full-width panel for one "E  OPEN" row reads as a menu the player should be driving. */
+/* =============================================================================
+   A GROUP -- a title and its lines. No frame, no fill, no padding, and the plane
+   that rotates.
+   ========================================================================== */
 .group {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--op77-space-1) var(--op77-space-4);
   max-width: 100%;
+  min-width: 0;
+  /* THE GROUND, on the group and not on the row. A row here is one line as wide
+     as its words -- key, verb, reading -- and plating each of them separately
+     would draw a ragged staircase of rectangles down the edge of the screen. The
+     group is the shape a player actually sees, so it is the shape that gets a
+     floor, and the padding is what stops the floor reading as a highlighter. */
+  padding: var(--op77-space-2) var(--op77-space-3);
+  background: var(--op77-plate);
+  transform-origin: var(--origin, right center);
+  transform: rotateY(var(--tilt, 0deg));
 }
 
+/* THE INTERLACE DOES NOT SURVIVE. It is rule 9 of the contract and it is there to
+   stop an unfilled FRAME reading as a page floating in the air -- with no frame, a
+   striped rectangle IS that floating rectangle, and the rectangle it would stripe
+   is not even a shape this surface owns: it is the bounding box of a handful of
+   lines of different lengths. Same call, same reason, as HudVoice.vue. The black
+   ink shadow on `.strip` is what lifts a line off the street now. */
+
+/* A real caption on a real group, so rule 8 is satisfied without inventing filler:
+   the title is what Lua named the group, localised. */
+.title {
+  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
+  letter-spacing: var(--op77-track-micro);
+  text-transform: uppercase;
+  color: var(--red-idle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* =============================================================================
+   A ROW -- ONE LINE: the key, then what it does, then the reading if there is one.
+   Nothing encloses it. No padding, no border, no background, and it is as wide as
+   its words.
+   ========================================================================== */
 .row {
   display: flex;
   align-items: center;
-  gap: var(--op77-space-3);
-  padding: 3px 0;
+  gap: var(--op77-space-2);
+  min-width: 0;
   white-space: nowrap;
 }
 
@@ -261,7 +431,7 @@ onMounted(() => {
   gap: 3px;
 }
 
-.cap {
+.key {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -270,49 +440,107 @@ onMounted(() => {
 /* Between two caps pressed together. Alternatives and sequences have no joiner. */
 .join {
   font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  color: var(--op77-text-faint);
+  color: var(--red-idle);
 }
 
-.tag {
+/* THE ONE DRAWN EDGE ON THIS SURFACE. A keycap is a control and it depicts a
+   physical key, so it keeps the house frame at cap size while everything around it
+   loses its box. No fill and no weighted base: the shared `OpKeyCap` built its whole
+   idiom on `inset 0 -2px` going to `-4px` on a hold, and a 2px bottom rule is a fill
+   -- which is rule 1, and which HudVoice.vue already dropped for the same reason. */
+.cap {
   flex: none;
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
-  text-transform: uppercase;
-  color: var(--op77-text-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  /* The chamfer lives in the top-right corner, so the right side pays for it. */
+  padding-right: calc(7px + var(--op77-cut-sm));
+  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  letter-spacing: 0.04em;
+  color: var(--red);
+  border: 1px solid transparent;
+  border-image-source: var(--frame-cap);
+  border-image-slice: 8;
+  border-image-width: 6px;
+  box-shadow: var(--cap-shadow);
 }
 
+/* What the key does. `--op77-text` is LEGIBILITY and nothing else on this surface:
+   it carries no state and says nothing about the prompt, it is simply the words the
+   player has to read at a glance while something is happening to them. The red is
+   spent on the cap, which is the part that is an instrument. */
 .label {
   flex: 0 1 auto;
   min-width: 0;
-  font: 600 var(--op77-fs-lead) / 1.2 var(--op77-font-display);
-  letter-spacing: var(--op77-track-head);
+  font: 700 var(--op77-fs-lead) / 1.2 var(--op77-font-display);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--op77-text);
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* A live reading beside the label, set apart by a hairline. */
-.reading {
+/* A live reading beside the label -- the noclip speed is the one in the tree. THE
+   HAIRLINE IS GONE with every other line on this surface: it separated two things
+   that a gap separates. */
+.value {
   flex: none;
   margin-left: auto;
-  padding-left: var(--op77-space-3);
-  border-left: 1px solid var(--op77-line-hud);
+  padding-left: var(--op77-space-2);
   font: 700 var(--op77-fs-meta) / 1.2 var(--op77-font-mono);
   letter-spacing: var(--op77-track-label);
   /* Not upper-cased: a unit is data, and "M/S" is not metres per second. */
-  color: var(--op77-text);
+  color: var(--red);
   font-variant-numeric: tabular-nums;
 }
 
-/* Unavailable for now. The ink carries the state and the frame stays whole -- a row that
-   dropped its plate would read as a row that left. */
+/* --- UNAVAILABLE FOR NOW --------------------------------------------------
+   The absence of a state, not a rung of the ladder, so it leaves the hue: the cap
+   takes the off frame and every glyph on the line goes to the faint grey. There is
+   no plate left to drop, which is what the old note here worried about -- a row
+   that lost its plate read as a row that had left. A row that goes grey reads as a
+   row that is still there and cannot be used, which is the truth. */
+.dim .cap {
+  color: var(--op77-text-faint);
+  border-image-source: var(--frame-off);
+}
+
 .dim .label,
-.dim .reading {
+.dim .value,
+.dim .join {
   color: var(--op77-text-faint);
 }
 
-.dim .reading {
-  border-left-color: var(--op77-line);
+/* =============================================================================
+   THE BOOT-IN -- a stutter, not a fade, one shot per line and keyed by Lua's row
+   id, so a row that survives a frame does not re-run it. That matters here more
+   than anywhere: the noclip speed row is re-sent every time the speed changes and
+   keeps its identity throughout, which is exactly the case a keyed v-for gets
+   right. Both keyframes touch `opacity` and `transform` only.
+   ========================================================================== */
+@keyframes prompt-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(var(--from, 6px), 0, 0);
+  }
+
+  55% {
+    opacity: 1;
+    transform: translate3d(calc(var(--from, 6px) * -0.34), 0, 0);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.strip.open .row {
+  animation: prompt-in 190ms steps(3, end) backwards;
+  animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
 }
 </style>

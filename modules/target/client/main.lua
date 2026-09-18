@@ -3,12 +3,12 @@
 --
 -- WHERE THE WORK IS BOUNDED, because this is the module that proved it matters.
 --
--- Holding the key and clicking asks every row that matches what the ray hit
--- whether it applies. A row whose owner is another resource answers over a host
--- call, and the original did all of them inside one coroutine body. That body
--- exceeded the per-resume instruction budget, which unwinds straight out of the
--- coroutine and never resumes it -- no crash, no repeat, nothing logged. Three
--- things keep that from coming back and none of them is optional:
+-- Holding the key and pressing the RIGHT button asks every row that matches what
+-- the ray hit whether it applies. A row whose owner is another resource answers
+-- over a host call, and the original did all of them inside one coroutine body.
+-- That body exceeded the per-resume instruction budget, which unwinds straight out
+-- of the coroutine and never resumes it -- no crash, no repeat, nothing logged.
+-- Three things keep that from coming back and none of them is optional:
 --
 --   1. a pick is resolved in SLICES of `BATCH` rows, one slice per scheduler pass,
 --      each on its own one-shot thread that ends when the slice does;
@@ -304,7 +304,7 @@ local function finish()
 	if job == nil or not stillHeld(job.request) then return end
 	busy = false
 	if #job.rows == 0 then
-		-- Nothing to offer: the eye goes back to hovering as if the click never
+		-- Nothing to offer: the eye goes back to hovering as if the press never
 		-- happened. Not an empty panel, and not a line saying there is nothing here.
 		listed = {}
 		send('target:empty', { handle = handle })
@@ -395,16 +395,16 @@ local function hover(payload)
 	send('target:hover', { handle = handle, available = context ~= nil and Registry.Any(context) })
 end
 
--- Lists the rows for what is under a click.
+-- Lists the rows for what is under a pick -- the point of the right-button press.
 local function pick(payload)
 	if not opened or busy or payload.handle ~= handle then return end
 	if OPX.Now() - lastPick < PICK_GAP_MS then return end
 	lastPick = OPX.Now()
 	local cursor = OPX.Keys.Cursor()
 	if cursor == nil or not cursor.inBounds then return end
-	-- The CLICK's point, not the cursor's later one: between the click and this
+	-- The PRESS's point, not the cursor's later one: between the press and this
 	-- handler the pointer has already moved, and the ray below is cast fresh at the
-	-- point the player actually clicked.
+	-- point the player actually pressed.
 	local x, y = point(payload)
 	if x == nil then return end
 

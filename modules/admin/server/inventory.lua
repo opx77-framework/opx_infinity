@@ -161,7 +161,7 @@ end
 
 -- Formats a connected player as a name and an id in brackets.
 local function playerLabel(playerId)
-	return ('%s [%d]'):format(Server.NameOf(playerId) or '?', playerId)
+	return ('%s [%d]'):format(Server.LabelOf(playerId) or '?', playerId)
 end
 
 --- Resolves a typed holder: me, a player id, or a citizen id online or not.

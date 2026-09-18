@@ -16,6 +16,20 @@ local QUEUE_ACK = 'queued by '
 -- Most arguments the dispatcher takes, the command name included.
 local MAX_ARGUMENTS = 32
 
+-- How many completion entries travel in one payload.
+--
+-- NOT ONE PAYLOAD FOR THE WHOLE LIST, and the reason is the seam rather than
+-- taste: `WebUI.Page.send` bounds both the event name and the payload, and a
+-- payload over the bound is REFUSED -- not truncated, not split. This server
+-- answers `chat:ready` with every command a player may be shown, each with a
+-- localised help string and its parameter tables, and that is the one payload
+-- on this seam whose size grows with the RUNTIME rather than with anything a
+-- player did: 73 commands today, and nothing stops the next module adding ten.
+--
+-- Eight is small enough that the number of commands stops mattering at all,
+-- and the whole list is nine payloads on local IPC, twice a session.
+local SUGGESTIONS_PER_PAYLOAD = 8
+
 -- Which view has reported ready. Nothing is sent to one that has not: a payload
 -- sent earlier is dropped, not queued.
 local ready
@@ -25,6 +39,15 @@ local opened
 
 -- The one enabled flag for the whole box, not one per caller.
 local enabled
+
+-- The last command list the server answered, held so it can be replayed to a view
+-- that was not ready when it arrived. See `onSuggestions`.
+local suggestions
+
+-- Forward-declared: `openChat` replays the held list and is written above the
+-- function that does it. A `local function` further down would be a DIFFERENT
+-- local, and the call above it would reach for a global that does not exist.
+local republishSuggestions
 
 -- Whether the player is down, kept apart from `enabled`: standing up gives back
 -- whatever `SetEnabled` last said, and `IsEnabled` does not lie meanwhile.
@@ -224,6 +247,9 @@ local function openChat()
 	-- the keyboard.
 	publish('interactive', 'focus', { hold = true })
 	publish('interactive', 'open', {})
+	-- The held list first, so the box opens with completions already in it rather
+	-- than with whatever the cooldown decides to let through.
+	republishSuggestions()
 	TriggerServerEvent(M.Event.READY)
 end
 
@@ -299,12 +325,57 @@ local function onMessage(message)
 	addLine(message)
 end
 
---- Hands a whole list of completion entries to the view.
+--- Hands the held list to the input line, in payloads the host will carry.
+--
+-- The FIRST payload carries `reset`, so the page replaces whatever it holds;
+-- every one after it is appended. A page that receives the first and misses the
+-- rest is short a few completions -- it is never left holding half of one list
+-- and half of another.
+local function sendSuggestions(list)
+	local total = #list
+	if total == 0 then
+		return publish('interactive', 'suggestions', { suggestions = {}, reset = true })
+	end
+
+	local at, first = 1, true
+	while at <= total do
+		local chunk = {}
+		for index = at, math.min(at + SUGGESTIONS_PER_PAYLOAD - 1, total) do
+			chunk[#chunk + 1] = list[index]
+		end
+		if not publish('interactive', 'suggestions', { suggestions = chunk, reset = first }) then
+			return false
+		end
+		first = false
+		at = at + SUGGESTIONS_PER_PAYLOAD
+	end
+	return true
+end
+
+--- Takes a whole list of completion entries and hands it to the view.
+--
+-- KEPT, NOT JUST FORWARDED. `publish` DROPS a payload the layer is not ready
+-- for -- it does not queue it -- and the command list is answered by the server
+-- on its own schedule, behind a five-second cooldown it shares with nothing. So
+-- a list that arrives a frame before the input line reports ready is a list the
+-- player never sees, and the next one cannot be asked for until the cooldown
+-- lets go. That is not a race worth winning once: it is a race worth removing,
+-- so the last list is held here and replayed whenever the view can take it.
 local function onSuggestions(payload)
 	local list = type(payload) == 'table' and payload.suggestions or nil
-	publish('interactive', 'suggestions', {
-		suggestions = type(list) == 'table' and list or {},
-	})
+	suggestions = type(list) == 'table' and list or {}
+	sendSuggestions(suggestions)
+end
+
+--- Replays the held list. Called the moment the input line can receive one, and
+--- again every time the box opens: the second costs a few messages and means a
+--- player who reconnected into a stale list gets the current one.
+--
+-- Nothing held sends nothing: an empty resetting payload would take away a list
+-- the page already has, and this is called on every open.
+republishSuggestions = function()
+	if type(suggestions) ~= 'table' or #suggestions == 0 then return end
+	sendSuggestions(suggestions)
 end
 
 --- Toasts a refused command and prints nothing for an accepted one.
@@ -373,10 +444,24 @@ function M.FromView(action, payload)
 			publish('overlay', 'config', logConfig())
 		else
 			publish('interactive', 'config', inputConfig())
+			-- ASKED FOR BY THE INPUT LINE ONLY, and that is not tidiness.
+			--
+			-- The server rate-limits this signal (`READY_MS`, five seconds), and the
+			-- answer is published to `interactive` -- which is dropped, not queued,
+			-- while that layer has not reported ready. Asking from the overlay's
+			-- ready meant the list arrived before the input line existed, went
+			-- nowhere, and the input line's own ask was then swallowed by the very
+			-- cooldown the first ask had started. The completion list was empty for
+			-- the life of the session.
+			--
+			-- The log has no use for a command list anyway; only the line that can
+			-- be typed into does.
+			-- Whatever the server last answered, before asking for a newer one: the
+			-- ask is behind a cooldown and may go nowhere, and a list held from
+			-- earlier in the session is worth more than an empty box.
+			republishSuggestions()
+			TriggerServerEvent(M.Event.READY)
 		end
-		-- The box has somewhere to put them now, so the suggestions are asked
-		-- for: this is the signal the server answers with the command list.
-		TriggerServerEvent(M.Event.READY)
 	elseif action == 'submit' then
 		submit(tostring(payload.text or ''))
 	elseif action == 'close' then
@@ -394,6 +479,7 @@ function M.Init()
 	ready = { overlay = false, interactive = false }
 	opened = false
 	enabled = true
+	suggestions = {}
 	down = false
 	downHeard = 0
 	toastReported = false
@@ -421,6 +507,12 @@ end
 --- Wires the events and catches up with a player who is already down.
 -- @author dop42
 function M.Start()
+	-- First, so that the seam has somewhere to go before anything below can
+	-- publish on it. `client/view.lua` is the only file that knows the other end
+	-- is a CEF page; without it this module still holds its state and simply
+	-- never draws, which is exactly what it did before that file existed.
+	M.View.Start()
+
 	RegisterNetEvent(M.Event.MESSAGE, onMessage)
 	RegisterNetEvent(M.Event.SUGGESTIONS, onSuggestions)
 	RegisterNetEvent(M.Host.COMMAND_RESULT, onCommandResult)
@@ -451,4 +543,5 @@ function M.Stop()
 	closeChat()
 	ready = { overlay = false, interactive = false }
 	opened = false
+	M.View.Shutdown()
 end

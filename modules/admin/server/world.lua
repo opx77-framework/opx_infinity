@@ -94,8 +94,8 @@ end
 -- @param origin table|nil the operator's position, for the distance
 -- @return table|nil
 function World.RosterRow(playerId, origin)
-	local name = Server.NameOf(playerId)
-	if name == nil then return nil end
+	local user = Server.NameOf(playerId)
+	if user == nil then return nil end
 	local position = Server.PositionOf(playerId)
 	local life = Server.LifeOf(playerId)
 	local state = 'loading'
@@ -109,7 +109,15 @@ function World.RosterRow(playerId, origin)
 	if origin and position and origin.bucket == position.bucket then
 		distance = math.floor(math.sqrt(OPX.Math.DistanceSquared(position, origin)) + 0.5)
 	end
-	return { id = playerId, name = name, state = state,
+	-- THE CHARACTER IS THE NAME. A roster is read to find a person, and the person
+	-- everybody in the city has been talking to is the character, not the account
+	-- behind it. The account is not dropped for it -- it rides beside as `user`, so
+	-- a row can still be matched to a ban or an audit line -- and it is what `name`
+	-- falls back to for a slot that has loaded no character yet, which is every
+	-- slot for the first few seconds.
+	local character = Server.CharacterOf(playerId)
+	return { id = playerId, name = character or user, user = character and user or nil,
+		citizenId = Server.CitizenBagOf(playerId), state = state,
 		bucket = position and position.bucket or 0, distance = distance }
 end
 
@@ -164,7 +172,7 @@ function World.Register()
 			if not placed then return refuse(source, raw, code, { reason = reason, id = playerId }) end
 			if playerId ~= source then tell(playerId, 'admin.toast.sent', { label = location.label }) end
 			answer(source, raw, true, 'admin.done.sent',
-				{ id = playerId, name = Server.NameOf(playerId) or '?', label = location.label })
+				{ id = playerId, name = Server.LabelOf(playerId) or '?', label = location.label })
 		end,
 	})
 

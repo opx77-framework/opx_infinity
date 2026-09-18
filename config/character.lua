@@ -74,14 +74,19 @@ OPX.Config.MODULES.character = {
 		DEFAULT_GANG = 'none',
 	},
 
-	-- Where a character with no stored position is placed. Nobody is placed there
-	-- until SET is true; until then a character is left where the game put them.
+	-- Where a character with no stored position is placed -- which is EVERY brand
+	-- new character, since a row is created before its player has stood anywhere.
+	-- Nobody is placed here until SET is true; until then a new character is left
+	-- wherever the pristine save put them, which on 2026-09-17 was a spot that
+	-- killed them on arrival and took the identity form down with them.
+	--
+	-- Run `opx.here` in game to print this block for the spot you are standing on.
 	DEFAULT_SPAWN = {
-		SET = false,
-		X = 0.0,
-		Y = 0.0,
-		Z = 0.0,
-		HEADING = 0.0,
+		SET = true,
+		X = -1600.137451,
+		Y = -2340.758057,
+		Z = 43.250328,
+		HEADING = 139.650009,
 	},
 
 	JOBS = {

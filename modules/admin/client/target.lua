@@ -53,6 +53,11 @@ local syncing, dirty = false, false
 -- it said are held still. Nil until it has said.
 local invisible, frozenIds = nil, nil
 
+-- The ped each player is wearing, by player id, the one this player is wearing,
+-- and whether the server said this build can change a model at all. Nil until it
+-- has said.
+local wornPeds, wornSelf, modelsUp = nil, nil, nil
+
 -- The scheduler handle for the access poll.
 local job
 
@@ -189,32 +194,61 @@ function Target.IsFrozen(playerId)
 	return frozenIds[playerId] == true
 end
 
+--- The ped the server last said a player is wearing, or nil for their own body.
+-- A row NAME out of `data/peds.lua` where the record is one this module knows,
+-- and the bare record where another resource put it on.
+-- @author dop42
+-- @param playerId integer
+-- @return string|nil
+function Target.ModelOf(playerId)
+	if wornPeds == nil then return nil end
+	return wornPeds[playerId]
+end
+
+--- The ped the server last said THIS player is wearing, or nil.
+-- Beside `ModelOf` rather than through it: the operator's own row is drawn
+-- before the roster has named this client to itself.
+-- @author dop42
+-- @return string|nil
+function Target.SelfModel()
+	return wornSelf
+end
+
+--- Whether the server last said this build can change a player's model.
+-- True before it has said: a row greyed on a guess is worse than one the host
+-- refuses with a reason the operator can read.
+-- @author dop42
+-- @return boolean
+function Target.HasModels()
+	return modelsUp ~= false
+end
+
 -- Builds every row. Called once from Start, so the locale is readable and the
 -- configured presets have been checked.
 local function buildRows()
 	local links = M.Section('LINKS')
 	local rows = {
 		{ id = 'selfNoclip', folder = 'move', kind = 'self', label = 'admin.target.noclip',
-			icon = 'location', grant = Command.SELF_NOCLIP, state = noclipOn,
+			icon = 'bolt', grant = Command.SELF_NOCLIP, state = noclipOn,
 			select = onFlip(noclipOn, Command.SELF_NOCLIP) },
-		{ id = 'selfGod', folder = 'state', kind = 'self', label = 'admin.target.god', icon = 'heal',
+		{ id = 'selfGod', folder = 'state', kind = 'self', label = 'admin.target.god', icon = 'shield',
 			grant = Command.SELF_GOD, state = godOn, select = onFlip(godOn, Command.SELF_GOD) },
 		{ id = 'selfInvisible', folder = 'state', kind = 'self', label = 'admin.target.invisible',
-			icon = 'person', grant = Command.SELF_INVISIBLE, state = invisibleOn,
+			icon = 'hidden', grant = Command.SELF_INVISIBLE, state = invisibleOn,
 			select = onFlip(invisibleOn, Command.SELF_INVISIBLE) },
 		{ id = 'selfHeal', folder = 'state', kind = 'self', label = 'admin.target.heal', icon = 'heal',
 			grant = Command.SELF_HEAL, select = function() return run({ Command.SELF_HEAL }) end },
-		{ id = 'selfAmmo', folder = 'state', kind = 'self', label = 'admin.target.ammo', icon = 'box',
+		{ id = 'selfAmmo', folder = 'state', kind = 'self', label = 'admin.target.ammo', icon = 'ammo',
 			grant = Command.WEAPON_AMMO,
 			select = function() return run({ Command.WEAPON_AMMO, 'me' }) end },
-		{ id = 'selfTags', folder = 'state', kind = 'self', label = 'admin.target.tags', icon = 'info',
+		{ id = 'selfTags', folder = 'state', kind = 'self', label = 'admin.target.tags', icon = 'tag',
 			grant = Command.SELF_TAGS, state = tagsOn, select = onFlip(tagsOn, Command.SELF_TAGS) },
 		{ id = 'selfMap', folder = 'move', kind = 'self', label = 'admin.target.maptravel',
-			icon = 'location', grant = Command.SELF_MAPTRAVEL,
+			icon = 'map', grant = Command.SELF_MAPTRAVEL,
 			select = function() return run({ Command.SELF_MAPTRAVEL }) end },
 		{ id = 'selfPos', folder = 'move', kind = 'self', label = 'admin.target.pos', icon = 'info',
 			grant = Command.SELF_POS, select = function() return run({ Command.SELF_POS }) end },
-		{ id = 'selfMenu', kind = 'self', label = 'admin.target.selfMenu', icon = 'tool',
+		{ id = 'selfMenu', kind = 'self', label = 'admin.target.selfMenu', icon = 'gear',
 			grant = M.OPENER, select = function() return M.Menu.OpenAt('self') end },
 
 		{ id = 'playerManage', kind = 'player', label = 'admin.target.manage', icon = 'person',
@@ -224,7 +258,7 @@ local function buildRows()
 			end },
 		{ id = 'playerHeal', kind = 'player', label = 'admin.target.heal', icon = 'heal',
 			grant = Command.PLAYER_HEAL, select = onPlayer(Command.PLAYER_HEAL) },
-		{ id = 'playerRevive', kind = 'player', label = 'admin.target.revive', icon = 'heal',
+		{ id = 'playerRevive', kind = 'player', label = 'admin.target.revive', icon = 'heart',
 			grant = Command.PLAYER_REVIVE, select = onPlayer(Command.PLAYER_REVIVE) },
 		{ id = 'playerFreeze', kind = 'player', label = 'admin.target.freeze', icon = 'lock',
 			grant = Command.PLAYER_FREEZE, state = frozenOn,
@@ -233,17 +267,17 @@ local function buildRows()
 			grant = links.INVENTORY_OPEN,
 			select = links.INVENTORY_OPEN and onPlayer(links.INVENTORY_OPEN) or nil },
 		{ id = 'playerKick', folder = 'moderation', kind = 'player', label = 'admin.target.kick',
-			icon = 'lock', danger = true, grant = Command.MODERATE_KICK, select = function(context)
+			icon = 'door', danger = true, grant = Command.MODERATE_KICK, select = function(context)
 				local id = idOf(context, 'playerId')
 				return id ~= nil and M.Menu.OpenAt('player', tonumber(id), 'kick')
 			end },
 		{ id = 'playerBan', folder = 'moderation', kind = 'player', label = 'admin.target.ban',
-			icon = 'lock', danger = true, grant = Command.MODERATE_BAN, select = function(context)
+			icon = 'ban', danger = true, grant = Command.MODERATE_BAN, select = function(context)
 				local id = idOf(context, 'playerId')
 				return id ~= nil and M.Menu.OpenAt('player', tonumber(id), 'ban')
 			end },
 
-		{ id = 'vehicleEnter', kind = 'vehicle', label = 'admin.target.enter', icon = 'vehicle',
+		{ id = 'vehicleEnter', kind = 'vehicle', label = 'admin.target.enter', icon = 'door',
 			grant = Command.VEHICLE_ENTER, select = onVehicle(Command.VEHICLE_ENTER) },
 		{ id = 'vehicleRepair', kind = 'vehicle', label = 'admin.target.repair', icon = 'tool',
 			grant = Command.VEHICLE_REPAIR, select = onVehicle(Command.VEHICLE_REPAIR, 'full') },
@@ -252,7 +286,7 @@ local function buildRows()
 		{ id = 'vehicleLock', kind = 'vehicle', label = 'admin.target.vehicleLocked', icon = 'lock',
 			grant = Command.VEHICLE_FLAG, state = lockedOn,
 			select = onFlip(lockedOn, Command.VEHICLE_FLAG, 'vehicleId', 'locked') },
-		{ id = 'vehicleRemove', kind = 'vehicle', label = 'admin.target.removeVehicle', icon = 'tool',
+		{ id = 'vehicleRemove', kind = 'vehicle', label = 'admin.target.removeVehicle', icon = 'trash',
 			danger = true, grant = Command.VEHICLE_REMOVE, select = onVehicle(Command.VEHICLE_REMOVE) },
 
 		{ id = 'doorOpen', kind = 'door', label = 'admin.target.doorOpen', icon = 'door',
@@ -261,14 +295,14 @@ local function buildRows()
 		{ id = 'doorLock', kind = 'door', label = 'admin.target.doorLocked', icon = 'lock',
 			grant = Command.WORLD_DOOR, check = doorThere(true), state = doorReads('locked'),
 			select = onDoorFlip('locked', 'lock', 'unlock') },
-		{ id = 'doorReset', kind = 'door', label = 'admin.target.doorReset', icon = 'door',
+		{ id = 'doorReset', kind = 'door', label = 'admin.target.doorReset', icon = 'refresh',
 			grant = Command.WORLD_DOOR,
 			check = function(context) return doorOf(context) ~= nil end,
 			select = function(context)
 				local door = doorOf(context)
 				return door ~= nil and run({ Command.WORLD_DOOR, door.id, 'reset' })
 			end },
-		{ id = 'doorCopy', kind = 'door', label = 'admin.target.doorCopy', icon = 'info',
+		{ id = 'doorCopy', kind = 'door', label = 'admin.target.doorCopy', icon = 'tag',
 			grant = Command.WORLD_DOOR,
 			check = function(context) return doorOf(context) ~= nil end,
 			select = function(context)
@@ -285,10 +319,10 @@ local function buildRows()
 				return ok
 			end },
 
-		{ id = 'skyNoclip', kind = 'sky', label = 'admin.target.noclip', icon = 'location',
+		{ id = 'skyNoclip', kind = 'sky', label = 'admin.target.noclip', icon = 'bolt',
 			grant = Command.SELF_NOCLIP, state = noclipOn,
 			select = onFlip(noclipOn, Command.SELF_NOCLIP) },
-		{ id = 'skyPvp', folder = 'weather', kind = 'sky', label = 'admin.target.pvp', icon = 'lock',
+		{ id = 'skyPvp', kind = 'sky', label = 'admin.target.pvp', icon = 'weapon',
 			grant = Command.WORLD_PVP, state = pvpOn, select = onFlip(pvpOn, Command.WORLD_PVP) },
 	}
 
@@ -299,7 +333,7 @@ local function buildRows()
 			listed = listed + 1
 			local key = 'admin.weather.' .. preset
 			rows[#rows + 1] = { id = 'skyWeather_' .. preset, folder = 'weather', kind = 'sky',
-				icon = 'location', grant = links.WEATHER_SET,
+				icon = 'weather', grant = links.WEATHER_SET,
 				text = function()
 					local name = locale(key)
 					if name == key then name = preset end
@@ -310,9 +344,10 @@ local function buildRows()
 		end
 	end
 	rows[#rows + 1] = { id = 'skyWeatherNext', folder = 'weather', kind = 'sky',
-		label = 'admin.target.weatherNext', icon = 'location', grant = links.WEATHER_NEXT,
+		label = 'admin.target.weatherNext', icon = 'refresh', grant = links.WEATHER_NEXT,
 		select = links.WEATHER_NEXT and function() return run({ links.WEATHER_NEXT }) end or nil }
-	rows[#rows + 1] = { id = 'skyTime', kind = 'sky', label = 'admin.target.time', icon = 'location',
+	rows[#rows + 1] = { id = 'skyTime', folder = 'weather', kind = 'sky', label = 'admin.target.time',
+		icon = 'clock',
 		grant = links.TIME, select = function() return M.Menu.OpenAt('time') end }
 
 	ROWS, BY_ID = {}, {}
@@ -482,7 +517,15 @@ function Target.Start()
 			local id = math.tointeger(tonumber(value) or 0)
 			if id ~= nil and id > 0 then held[id] = true end
 		end
-		invisible, frozenIds = payload.invisible == true, held
+		local peds = {}
+		for _, row in ipairs(type(payload.worn) == 'table' and payload.worn or {}) do
+			local id = type(row) == 'table' and math.tointeger(tonumber(row.id) or 0) or nil
+			local ped = type(row) == 'table' and M.Trimmed(row.ped, 64) or nil
+			if id ~= nil and id > 0 and ped ~= nil then peds[id] = ped end
+		end
+		invisible, frozenIds, wornPeds = payload.invisible == true, held, peds
+		wornSelf = M.Trimmed(payload.wornSelf, 64)
+		modelsUp = payload.models ~= false
 		M.Menu.Refresh()
 	end)
 

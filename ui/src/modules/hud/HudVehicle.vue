@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
-import OpChip from '@/design/components/OpChip.vue'
 import { num, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
@@ -9,20 +8,38 @@ import { useLocale } from '@/composables/useLocale'
 /**
  * THE VEHICLE DIAL -- shown only while Lua says the character is sitting in one.
  *
- * Outer ring: engine speed, red past the redline. Inner ring: integrity. The gear sits in
- * the dial's open bottom, between the ring's two ends.
+ * Outer ring: engine speed, white past the redline. Inner ring: integrity. The gear sits
+ * in the dial's open bottom, between the ring's two ends.
  *
- * WHY THIS IS STILL AN SVG AND NOT A ROW OF `OpGauge`s. A speedometer is the one read-out
- * on this HUD that is not a quantity in a list -- it is a quantity you glance at without
- * reading, which is what a radial does and what a segmented bar does not. There is no
- * radial in the design system and this is the only caller for one, so it stays module
- * art: two `stroke-dasharray` writes on two leaf paths, which is the cheap case. It is
- * NOT augmented and must never be -- see rule 3 in design/augmented.css.
+ * WHY THIS IS STILL AN SVG AND NOT A ROW OF GAUGES. A speedometer is the one read-out on
+ * this HUD that is not a quantity in a list -- it is a quantity you glance at without
+ * reading, which is what a radial does and what a bar does not. There is no radial in the
+ * design system and this is the only caller for one, so it stays module art: two
+ * `stroke-dasharray` writes on two leaf paths, which is the cheap case.
  *
  * `rpm` and `integrity` are OPTIONAL and their absence is not zero. A vehicle whose engine
  * speed is not reported fills the outer ring from road speed instead, and one whose
  * integrity is not reported draws no inner ring and no integrity line at all: an empty
  * integrity ring is a thing a player brakes for.
+ *
+ * -- DESIGN PASS 02 -----------------------------------------------------------
+ *
+ * THE RING IS AN OUTLINED CHANNEL WITH A FILL IN IT. It was a grey band (a fill) with a
+ * coloured band drawn over it. Now two hairline rails bound an empty channel and the
+ * engine's share is the only painted band between them -- the same division the bar
+ * gauges make, in polar coordinates: the track and the frame are outlines, the fill is
+ * data.
+ *
+ * THE BLACK UNDER THE RINGS IS A PATH, NOT A FILTER. Everything on this HUD carries a
+ * black shadow and an SVG stroke cannot take a text-shadow, so the contract's answer is
+ * `filter: drop-shadow`. Not here: these two rings have their `stroke-dasharray`
+ * rewritten on every frame the car is moving, and a filter on an element that changes
+ * every frame is a backing store re-rasterised every frame. So the shadow is an extra
+ * path under each ring, one stroke wider and black -- a paint the compositor already had
+ * to do, instead of a filter it did not.
+ *
+ * THE GEAR BADGE IS AN OUTLINE. It was `background: var(--op77-accent)` with ink text on
+ * it, which on this surface is both a fill and a yellow.
  */
 const { t } = useLocale()
 
@@ -31,9 +48,20 @@ const REDLINE = 85
 /** Road speed that fills the outer ring when engine speed is not reported. hud.js DIAL_KPH. */
 const DIAL_KPH = 250
 
-/** The arc both rings are drawn on, `pathLength="100"` so a percent is a dash length. */
+/**
+ * The arcs, all struck from (60,60) and all opening 90deg at the bottom, so an endpoint is
+ * (60 -/+ R/sqrt2, 60 + R/sqrt2). `pathLength="100"` on every one of them, so a percentage
+ * is a dash length and nothing here has to know a circumference.
+ *
+ *   OUTER / INNER  the two bands, at r=52 and r=44 -- the fills and their shadows.
+ *   RAIL_*         the outer band's edges, at r=55.5 and r=48.5: the channel the engine's
+ *                  share is painted into, and the only reason it reads as a frame rather
+ *                  than as a stripe floating on the screen.
+ */
 const OUTER = 'M23.2 96.8A52 52 0 1 1 96.8 96.8'
 const INNER = 'M29 91A44 44 0 1 1 91 91'
+const RAIL_OUT = 'M20.7 99.3A55.5 55.5 0 1 1 99.3 99.3'
+const RAIL_IN = 'M25.7 94.3A48.5 48.5 0 1 1 94.3 94.3'
 
 type Tone = 'neutral' | 'warn' | 'bad'
 
@@ -100,33 +128,41 @@ const redlining = computed(() => vehicle.value.rpm >= REDLINE)
 const gearClass = computed(() => {
   const gear = vehicle.value.gear
   if (gear === 'R') return 'reverse'
-  if (gear === 'N') return 'neutral'
-  return ''
+  if (gear === 'N') return 'idle'
+  return 'drive'
 })
 </script>
 
 <template>
-  <div class="vehicle" :class="{ live: vehicle.active }">
+  <div class="vehicle" :class="{ live: vehicle.active, hot: redlining }">
     <div class="dial">
       <svg class="rings" viewBox="0 0 120 120" aria-hidden="true">
-        <path class="track" :d="OUTER" pathLength="100" />
-        <path class="redline" :d="OUTER" pathLength="100" />
+        <!-- The black, as geometry. One stroke wider than the band it sits under. -->
+        <path class="shade" :d="OUTER" pathLength="100" />
+        <!-- The channel: two hairlines, which is the track AND the frame. -->
+        <path class="rail" :d="RAIL_OUT" pathLength="100" />
+        <path class="rail" :d="RAIL_IN" pathLength="100" />
+        <!-- The last stretch of the rim, marked before the band reaches it. White,
+             because on this HUD the alarm is the one thing that is not red. -->
+        <path class="redline" :d="RAIL_OUT" pathLength="100" />
         <path
           class="rpm"
-          :class="{ hot: redlining }"
           :d="OUTER"
           pathLength="100"
           :style="{ strokeDasharray: outerFill + ' 100' }"
         />
-        <path v-if="vehicle.integrity >= 0" class="inner-track" :d="INNER" pathLength="100" />
-        <path
-          v-if="vehicle.integrity >= 0"
-          class="integrity"
-          :class="vehicle.tone"
-          :d="INNER"
-          pathLength="100"
-          :style="{ strokeDasharray: vehicle.integrity + ' 100' }"
-        />
+
+        <template v-if="vehicle.integrity >= 0">
+          <path class="shade-in" :d="INNER" pathLength="100" />
+          <path class="inner-track" :d="INNER" pathLength="100" />
+          <path
+            class="integrity"
+            :class="vehicle.tone"
+            :d="INNER"
+            pathLength="100"
+            :style="{ strokeDasharray: vehicle.integrity + ' 100' }"
+          />
+        </template>
       </svg>
 
       <div class="core">
@@ -141,28 +177,44 @@ const gearClass = computed(() => {
         <span class="label">{{ vehicle.integrityLabel }}</span>
         <b>{{ Math.round(vehicle.integrity) }}%</b>
       </span>
-      <OpChip v-if="vehicle.airborne" :label="vehicle.airborne" icon="!" tone="accent" />
+      <span v-if="vehicle.airborne" class="chip">
+        <span class="chip-icon">!</span>
+        <span class="chip-label">{{ vehicle.airborne }}</span>
+      </span>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* =============================================================================
+   THE BLOCK. `.at` in HudRoot.vue holds the perspective, the paint containment
+   and the tilt sign; this is the plane that rotates in it.
+
+   BY DEFAULT IT DOES NOT ROTATE AT ALL. `vehicleAnchor` is `bottom-center` and a
+   centred cluster gets no tilt, which for this one cluster is a relief as well as
+   the rule: 7deg of rotateY turns a circular dial into an ellipse. If Lua anchors
+   the dial to a screen edge it tilts with everything else and the rings go
+   elliptical -- the contract is one plane per edge, not one plane per shape, and
+   a dial exempted from it would be the only thing on the HUD facing the player
+   square on.
+   ========================================================================== */
 .vehicle {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: var(--op77-space-1);
   opacity: 0;
-  /* The slide is a transform on this block, and the block is not augmented. */
-  transform: translateY(8px);
+  transform-origin: var(--origin, center center);
+  transform: rotateY(var(--tilt, 0deg)) translateY(8px);
+  /* An entrance, so it stutters in three steps rather than fading. */
   transition:
-    opacity var(--op77-dur) var(--op77-ease),
-    transform var(--op77-dur) var(--op77-ease);
+    opacity 190ms steps(3, end),
+    transform 190ms steps(3, end);
 }
 
 .vehicle.live {
   opacity: 1;
-  transform: none;
+  transform: rotateY(var(--tilt, 0deg)) translateY(0);
 }
 
 .dial {
@@ -178,45 +230,79 @@ const gearClass = computed(() => {
   height: 100%;
   fill: none;
   stroke-linecap: butt;
+  /* NO `filter` ANYWHERE ON THIS ELEMENT. Two of its paths have their dash
+     rewritten on every frame the car is moving; a filter here is a backing store
+     re-rasterised at the same rate. The black is the `.shade` paths instead. */
 }
 
-.track,
+/* The shadow, as geometry: the same arc, one stroke wider, black. */
+.shade {
+  stroke: rgba(0, 0, 0, 0.55);
+  stroke-width: 9;
+}
+
+.shade-in {
+  stroke: rgba(0, 0, 0, 0.55);
+  stroke-width: 4.5;
+}
+
+/* The channel the engine's share is painted into. Hairlines -- an outline, not a
+   band, so an empty dial reads as an empty instrument and not as a grey stripe. */
+.rail {
+  stroke: var(--red-idle);
+  stroke-width: 1.2;
+}
+
 .inner-track {
-  stroke: var(--op77-panel-raised);
+  stroke: var(--red-idle);
+  stroke-width: 1.2;
 }
 
-.track,
-.redline,
-.rpm {
-  stroke-width: 7;
-}
-
-.inner-track,
-.integrity {
-  stroke-width: 2.5;
-}
-
-/* The last stretch of the outer ring, tinted, before the needle reaches it. */
+/* The redline zone, marked on the rim. White at low alpha: the alarm on this HUD
+   is the absence of red, and a red warning band on a red ring says nothing. */
 .redline {
-  stroke: var(--op77-danger);
-  opacity: 0.35;
+  stroke: var(--alarm);
+  stroke-opacity: 0.32;
+  stroke-width: 2;
   stroke-dasharray: 15 100;
   stroke-dashoffset: -85;
 }
 
-.rpm,
-.integrity {
+/* THE FILLS. The one painted area per ring, and it is the quantity itself. Both
+   change `stroke-dasharray` and nothing else -- no width, no filter, no fill. */
+.rpm {
+  stroke: var(--red);
+  stroke-width: 6;
   stroke-dasharray: 0 100;
   transition:
     stroke-dasharray var(--op77-dur-fast) linear,
-    stroke var(--op77-dur-fast) var(--op77-ease);
+    stroke var(--op77-dur-fast) linear;
 }
 
-.rpm { stroke: var(--op77-accent); }
-.rpm.hot { stroke: var(--op77-danger); }
-.integrity { stroke: var(--op77-text-dim); }
-.integrity.warn { stroke: var(--op77-warn); }
-.integrity.bad { stroke: var(--op77-danger); }
+/* Redlining is the one moment the dial is telling the player about damage rather
+   than about speed, so the band leaves the hue exactly as a `bad` gauge does. */
+.hot .rpm {
+  stroke: var(--alarm);
+}
+
+.integrity {
+  /* Denser, not lit: integrity is the second read-out on this dial and the
+     engine band is the first. */
+  stroke: var(--red-deep);
+  stroke-width: 2.5;
+  stroke-dasharray: 0 100;
+  transition:
+    stroke-dasharray var(--op77-dur-fast) linear,
+    stroke var(--op77-dur-fast) linear;
+}
+
+.integrity.warn {
+  stroke: var(--red-hi);
+}
+
+.integrity.bad {
+  stroke: var(--alarm);
+}
 
 .core {
   position: absolute;
@@ -231,39 +317,55 @@ const gearClass = computed(() => {
 .speed {
   font: 700 var(--op77-fs-head) / 1 var(--op77-font-display);
   letter-spacing: var(--op77-track-head);
-  color: var(--op77-text);
+  color: var(--red);
   font-variant-numeric: tabular-nums;
+  transition: color var(--op77-dur-fast) linear;
+}
+
+/* The number goes to the brightest red rather than to white: the white is spent
+   on the band, and two white things on one dial is an instrument with two
+   alarms. */
+.hot .speed {
+  color: var(--red-hi);
 }
 
 .unit {
   font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
   letter-spacing: var(--op77-track-label);
-  color: var(--op77-text-dim);
+  color: var(--red-idle);
 }
 
-/* The gear sits in the dial's open bottom, between the ring's ends. A 4px corner on a
-   20px badge: `.op-tag` would put a 6px cut on it and swallow the letter. */
+/* =============================================================================
+   THE GEAR -- in the dial's open bottom, between the ring's ends. An outline
+   now, chamfered from the same 9-slice sprite at a smaller `border-image-width`.
+   ========================================================================== */
 .gear {
   position: absolute;
-  bottom: 8px;
+  bottom: 6px;
   left: 50%;
   transform: translateX(-50%);
-  min-width: 18px;
-  padding: 3px 4px 2px;
-  background: var(--op77-accent);
-  clip-path: polygon(0 0, calc(100% - 4px) 0, 100% 4px, 100% 100%, 0 100%);
+  min-width: 20px;
+  padding: 3px 5px 2px;
   font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
   text-align: center;
-  color: var(--op77-ink);
+  color: var(--red);
+  border: 1px solid transparent;
+  border-image-source: var(--frame-live);
+  border-image-slice: 8;
+  border-image-width: 5px;
 }
 
-.gear.neutral {
-  background: var(--op77-panel-raised);
-  color: var(--op77-text-dim);
+/* Neutral is the quiet rung: the car is in gear for nothing. */
+.gear.idle {
+  color: var(--red-idle);
+  border-image-source: var(--frame-idle);
 }
 
+/* Reverse is not an alarm, so it is not white -- it is the brightest red, the
+   same rung a `warn` gauge takes. */
 .gear.reverse {
-  background: var(--op77-warn);
+  color: var(--red-hi);
+  border-image-source: var(--frame-hot);
 }
 
 .meta {
@@ -271,6 +373,9 @@ const gearClass = computed(() => {
   align-items: center;
   justify-content: center;
   gap: var(--op77-space-2);
+  /* NO GROUND. A plate went under this line and came straight back off on the
+     owner's word, with the rest of the HUD's; the padding went with it, because
+     it was only ever there to keep the plate off the glyphs. */
 }
 
 .integrity-row {
@@ -283,16 +388,50 @@ const gearClass = computed(() => {
   font: 400 var(--op77-fs-micro) / 1 var(--op77-font-mono);
   letter-spacing: var(--op77-track-micro);
   text-transform: uppercase;
-  color: var(--op77-text-faint);
+  color: var(--red-idle);
   white-space: nowrap;
 }
 
 .integrity-row b {
   font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  color: var(--op77-text);
+  color: var(--red);
   font-variant-numeric: tabular-nums;
 }
 
-.integrity-row.warn b { color: var(--op77-warn); }
-.integrity-row.bad b { color: var(--op77-danger); }
+.integrity-row.warn b {
+  color: var(--red-hi);
+}
+
+.integrity-row.bad b {
+  color: var(--alarm);
+}
+
+/* =============================================================================
+   THE AIRBORNE CHIP -- the same object HudStatus.vue draws, and it is local for
+   the same reason: `OpChip` is `.op-tag` plus `data-augmented-ui` plus a panel
+   fill, and it is shared with the admin staff tags. Two small copies live in this
+   folder while the pass is being settled and both go when the frame is promoted
+   back into `design/`.
+   ========================================================================== */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--op77-space-2);
+  padding: 4px var(--op77-space-3);
+  padding-right: calc(var(--op77-space-3) + var(--op77-cut-sm));
+  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
+  letter-spacing: var(--op77-track-label);
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--red);
+  border: 1px solid transparent;
+  border-image-source: var(--frame-live);
+  border-image-slice: 8;
+  border-image-width: 6px;
+}
+
+.chip-icon {
+  flex: none;
+  font: 900 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+}
 </style>

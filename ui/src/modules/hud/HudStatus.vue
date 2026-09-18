@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onUnmounted, shallowRef } from 'vue'
-import OpChip from '@/design/components/OpChip.vue'
 import { guard } from '@/bridge/diag'
 import { list, num, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
@@ -21,6 +20,18 @@ import { useLocale } from '@/composables/useLocale'
  * never have to agree, and a frame that took 40ms to arrive does not make the chip run
  * 40ms long. `remainingMs` is also deliberately not part of Lua's frame signature -- a
  * counter ticking down is not a new image, and the page animates it alone.
+ *
+ * -- DESIGN PASS 02 -----------------------------------------------------------
+ *
+ * THE CHIP IS DRAWN HERE NOW. It was `OpChip`, which is `.op-tag` plus
+ * `data-augmented-ui="tr-clip"` plus a `--op77-panel` fill -- all three banned on this
+ * surface -- and it is shared with the admin staff tags, so it could not simply be
+ * changed. A chip is now a chamfered 1px frame with nothing behind it.
+ *
+ * THE COUNTDOWN MOVES BY `transform`. It was a `width` in percent rewritten every 50ms,
+ * which is a layout and a paint twenty times a second per timed chip; `scaleX` on the
+ * same bar is a composited transform and costs neither. The 20 Hz timer itself is
+ * unchanged, including the 0.002 dead band that stops it writing when nothing moved.
  */
 const { t } = useLocale()
 
@@ -35,8 +46,9 @@ type Tone = 'neutral' | 'accent' | 'ok' | 'warn' | 'bad' | 'shock'
 
 /**
  * The Cyberpunk damage types hud.css drew separately collapse onto the three tones that
- * already meant the same thing. `shock` survives as itself because it is the one colour
- * in the whole system with no token behind it, and OpChip carries it for that reason.
+ * already meant the same thing. `shock` is still carried across the bridge and still has
+ * its own name here -- the payload contract has not changed -- but it no longer has its
+ * own COLOUR: see the tone block in the stylesheet.
  */
 const TONES: Record<string, Tone> = {
   neutral: 'neutral',
@@ -59,7 +71,7 @@ interface Chip {
   endsAt: number
   /** The lifetime the remainder is drawn against; 0 when there is none. */
   totalMs: number
-  /** 0..1, or -1 for "draw no underline", which is what OpChip reads. */
+  /** 0..1, or -1 for "draw no underline". */
   progress: number
 }
 
@@ -139,24 +151,173 @@ onUnmounted(stop)
 
 <template>
   <div v-if="chips.length" class="strip">
-    <OpChip
-      v-for="chip in chips"
+    <span
+      v-for="(chip, at) in chips"
       :key="chip.id"
-      :label="chip.label"
-      :icon="chip.icon"
-      :tone="chip.tone"
-      :progress="chip.progress"
-    />
-    <!-- What did not fit, counted rather than dropped. -->
-    <OpChip v-if="hidden > 0" :label="'+' + hidden" overflow />
+      class="chip"
+      :class="chip.tone"
+      :style="`--slot: ${at}`"
+    >
+      <span v-if="chip.icon" class="icon">{{ chip.icon }}</span>
+      <span class="label">{{ chip.label }}</span>
+      <!-- The remainder. A filled bar, and legitimate for the same reason a gauge's is:
+           it is the quantity itself, not a backdrop for one. -->
+      <span
+        v-if="chip.progress >= 0"
+        class="time"
+        :style="{ transform: `scaleX(${Math.max(0, Math.min(1, chip.progress))})` }"
+      />
+    </span>
+
+    <!-- What did not fit, counted rather than dropped -- and true, which is the only
+         reason a micro-label is allowed to be on this surface at all. -->
+    <span v-if="hidden > 0" class="chip overflow" :style="`--slot: ${chips.length}`">
+      <span class="label">+{{ hidden }}</span>
+    </span>
   </div>
 </template>
 
 <style scoped>
+/* =============================================================================
+   THE STRIP -- the plane that tilts. `.at` in HudRoot.vue holds the perspective,
+   the paint containment and the sign; this rotates in it, pivoting on the screen
+   edge Lua anchored the strip to.
+   ========================================================================== */
 .strip {
   display: flex;
   flex-wrap: wrap;
   gap: var(--op77-space-2);
   max-width: calc(100vw - var(--op77-inset-x) * 2);
+  transform-origin: var(--origin, left center);
+  transform: rotateY(var(--tilt, 0deg));
+}
+
+/* =============================================================================
+   A CHIP -- a closed 1px frame with a chamfered top-right corner, and text.
+   Nothing behind it. `border-image-width` is 6px against the 8px slice, which
+   scales the corner tile down to a chip's size from the same sprite the menu
+   rows use.
+   ========================================================================== */
+.chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--op77-space-2);
+  padding: 5px var(--op77-space-3);
+  padding-right: calc(var(--op77-space-3) + var(--op77-cut-sm));
+  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
+  letter-spacing: var(--op77-track-label);
+  text-transform: uppercase;
+  white-space: nowrap;
+  --tone: var(--red-idle);
+  --frame: var(--frame-idle);
+  color: var(--tone);
+  /* NO GROUND. A plate went under these chips and came straight back off on the
+     owner's word: the HUD is the one surface that keeps the pass's no-fill rule,
+     because it is never read for long and a row of filled pills along the bottom
+     of the screen is a toolbar. The ink shadow inherited from HudRoot.vue is what
+     holds a chip against a bright street, and it is enough at chip size. */
+  border: 1px solid transparent;
+  border-image-source: var(--frame);
+  border-image-slice: 8;
+  border-image-width: 6px;
+  transition: color var(--op77-dur-fast) linear;
+}
+
+/* The icon is a few characters Lua chose, not a glyph set, so it is type and it
+   takes the inherited ink shadow like everything else. */
+.icon {
+  flex: none;
+  font: 900 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+}
+
+.time {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--tone);
+  /* `scaleX` and not `width`: at 20 Hz per timed chip, a percentage width is a
+     layout and a paint each tick and this is neither. */
+  transform-origin: left center;
+  transform: scaleX(0);
+  transition: transform var(--op77-dur-fast) linear;
+}
+
+/* --- THE TONES -----------------------------------------------------------
+   Four rungs of red and then out of it, the same ladder the gauges use:
+
+       neutral  --red-idle   a chip that is simply present
+       ok       --red-deep   benign, denser but not lit
+       accent   --red        lit: the HUD is pointing at this one
+       warn     --red-hi     the brightest red on the surface
+       bad      --alarm      white-hot, and heavier with it
+
+   `shock` FOLDS ONTO THE WARN RUNG. It was the one colour in the whole design
+   system with no token behind it -- a cold #7fb4ff, kept because it names a
+   damage type rather than a UI role -- and on a HUD that is now one hue from
+   edge to edge a single cold blue chip does not read as a damage type, it reads
+   as a rendering fault. The chip's own icon and label already say SHOCK, which
+   is the part a player actually reads. The tone name still crosses the bridge
+   and still has a rule here, so restoring the blue is one declaration. */
+.ok {
+  --tone: var(--red-deep);
+}
+
+.accent {
+  --tone: var(--red);
+  --frame: var(--frame-live);
+}
+
+.warn,
+.shock {
+  --tone: var(--red-hi);
+  --frame: var(--frame-hot);
+}
+
+/* A chip is already 700, so `bad` cannot get heavier -- the white and the
+   heavier frame stroke are the whole of its state, which is the reference's
+   rule for a chosen row applied to an alarming one. */
+.bad {
+  --tone: var(--alarm);
+  --frame: var(--frame-alarm);
+}
+
+/* Square and hairline-dashed on purpose, and the only chip with no chamfer: the
+   overflow chip is a COUNT, not a status, and the house shape is what says
+   "this is one of the things above". */
+.chip.overflow {
+  padding-right: var(--op77-space-3);
+  color: var(--op77-text-faint);
+  border: 1px dashed var(--red-idle);
+  border-image-source: none;
+}
+
+/* =============================================================================
+   THE BOOT-IN -- a stutter, one shot. The v-for is keyed by the status id, so a
+   chip that survives a frame keeps its element and does not re-run it; a chip
+   the status source has just raised does.
+   ========================================================================== */
+@keyframes chip-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(-6px, 0, 0);
+  }
+
+  55% {
+    opacity: 1;
+    transform: translate3d(2px, 0, 0);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.chip {
+  animation: chip-in 190ms steps(3, end) backwards;
+  animation-delay: calc(var(--slot, 0) * 28ms);
 }
 </style>

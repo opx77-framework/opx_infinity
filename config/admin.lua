@@ -66,6 +66,23 @@ OPX.Config.MODULES.admin = {
 		DISTANCE = 10.0,
 	},
 
+	-- Wearing an NPC body. The allowlist is `modules/admin/data/peds.lua`, whose
+	-- 250 rows are the `Character.*` records the official catalogue marks as
+	-- ordinary human rigs; nothing outside it is accepted, by name or by record.
+	--
+	-- This needs `Open77.players.setModel`, which arrived after
+	-- 2.31.13+op77.76. On an older server both commands refuse with
+	-- `models_unavailable` and the menu greys their rows.
+	MODELS = {
+		-- Whether a death gives the player their own body back. False keeps the
+		-- ped on through a respawn, which is what a long-running disguise wants
+		-- and what a quick gag does not.
+		RESET_ON_DEATH = true,
+		-- Milliseconds a ped lasts before the platform takes it off by itself.
+		-- Zero lasts until somebody takes it off; the ceiling is one day.
+		DURATION_MS = 0,
+	},
+
 	-- Damage between players when the server starts; staff switch it live.
 	COMBAT = {
 		PVP = true,
@@ -83,7 +100,15 @@ OPX.Config.MODULES.admin = {
 		MAX = 32,
 		OWN = false,
 		HIDE_IN_FIRST_PERSON = false,
+
+		-- What a tag says, left to right: the id square, the character's name,
+		-- the account playing them, the character's public id. The name is not a
+		-- switch -- a tag with no name on it is not a tag -- and it falls back to
+		-- the account for a slot that has loaded nobody, in which case USERNAME
+		-- draws nothing rather than the same word twice.
 		TECHNICAL = true,
+		USERNAME = true,
+		CITIZEN = true,
 		BADGE = true,
 		COLORS = {
 			TEXT = '#F2F6F8',

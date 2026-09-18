@@ -532,10 +532,23 @@ end
 --- Builds the interactive surface if it does not exist, and wires this module's
 --- page channels once. Answers whether there is a surface at all.
 --
--- Called from the open path and NOT from `Start`: the interactive layer is built
--- on first use, which is what keeps a player who never opens anything from paying
--- for a second CEF page -- and `OPX.UI.On` builds it, so wiring early would build
--- it early too.
+-- CALLED FROM `Start`, and idempotently from the open path after it. It used to be
+-- called ONLY from the open path, to keep a player who never opens anything from
+-- paying for a second CEF page. That reasoning died with the page merge: there is
+-- one surface now and `core/client/boot.lua` creates it BEFORE any module's
+-- `Start`, so nothing is saved by wiring late -- and wiring late broke the screen
+-- outright.
+--
+-- `inventory:ready` is emitted ONCE, from the page's `setup()`, and a channel
+-- event raised before its handler exists is dropped, not queued. Wiring on first
+-- open therefore always missed it: `pageReady` stayed false, `send` refused every
+-- write for the life of the session, and the first open parked its payload in
+-- `pendingOpen` waiting for a handshake that had already been and gone. The player
+-- lost the keyboard and the cursor to a screen that was never drawn.
+--
+-- This is the same idiom `modules/hud/client/main.lua` uses: the ready channel is
+-- wired in `Start`, which is the only phase that is guaranteed to run before the
+-- page mounts.
 -- @return boolean
 function ensureSurface()
 	if surfaceWired then return true end
@@ -639,12 +652,27 @@ function M.Start()
 	M.Contracts.target = OPX.Api.Get('target')
 
 	registerEvents()
-	M.World.Wire()
-	M.Keys.Register()
 
-	-- Nothing touches the interactive surface here. `OPX.UI.On` and `OPX.UI.Send`
-	-- both build it, and building it at start is a second CEF page for a player who
-	-- may never open anything; `ensureSurface` does it on the first open instead.
+	-- FIRST, and before anything that sends. The page emits `inventory:ready` once,
+	-- from its own `setup()`, and a channel event with no handler is dropped rather
+	-- than queued -- so the handler has to exist before the page mounts. `Start` is
+	-- the last phase that is still inside the synchronous boot pass, and
+	-- `core/client/boot.lua` created the surface before that pass began, so there is
+	-- no page here to pay for: it is already up.
+	if not ensureSurface() then
+		Open77.log.error('[inventory] there is no surface: the screen can never be drawn')
+	end
+
+	-- THE KEYS BEFORE THE WORLD ROWS, and the order is load-bearing rather than
+	-- tidy. `Wire` registers rows with the target module, and a raise anywhere in
+	-- there aborts this function -- so with the two the other way round, one bad
+	-- registration cost the player the open key AND the whole hotbar, which is
+	-- every way into the bag at once. It is what the budget overrun did: the
+	-- screen was unreachable by any route and nothing on screen said why.
+	-- Nothing in `Register` needs a world row, so it goes first and survives.
+	M.Keys.Register()
+	M.World.Wire()
+
 	OPX.Scheduler.Every('inventory.screen', 500, pass)
 
 	TriggerServerEvent(M.Event.HELLO)

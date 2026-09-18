@@ -581,8 +581,20 @@ local function voiceView()
 	return {
 		active = true,
 		state = state,
-		caption = 'hud.voice.state.' .. state,
-		mode = modeLabel(),
+		-- RENDERED HERE, NOT ON THE PAGE. These two used to travel as catalogue
+		-- keys for the page's `t()` to resolve, and they reached players as the
+		-- raw keys -- `hud.voice.state.idle` written across the microphone block.
+		-- Every other label in this file already renders through `locale()`
+		-- (`activation` and `distance` below, `unit` in the vehicle block), which
+		-- is why those were the only two that ever showed wrong.
+		--
+		-- `t()` on the page returns its argument unchanged when it is not a
+		-- catalogue key, so rendered text passes straight through it and the page
+		-- needs no change. `modeLabel` may itself answer open-voice's own literal
+		-- rather than a key, and `locale()` returns a miss unchanged too, so that
+		-- case survives the wrapping.
+		caption = locale('hud.voice.state.' .. state),
+		mode = locale(modeLabel()),
 		-- Drawn verbatim, so it is a formatted sentence and not a key.
 		distance = metres ~= nil
 			and locale('hud.voice.distance', { metres = formatDistance(metres) }) or '',
@@ -635,10 +647,12 @@ local function vehicleView()
 		speed = speed,
 		unit = locale('hud.vehicle.unit'),
 		gear = gearLabel(vehicle),
-		integrityLabel = 'hud.vehicle.integrity',
+		-- Rendered here for the same reason as the two in the voice block above:
+		-- sent as a key it reached the player as `hud.vehicle.integrity`.
+		integrityLabel = locale('hud.vehicle.integrity'),
 		tone = 'neutral',
 		airborne = vehicle.onGround == false,
-		airborneLabel = 'hud.vehicle.airborne',
+		airborneLabel = locale('hud.vehicle.airborne'),
 	}
 
 	if finite(vehicle.rpm) and finite(vehicle.rpmMax) and vehicle.rpmMax > 1 then

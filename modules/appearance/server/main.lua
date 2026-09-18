@@ -213,6 +213,39 @@ function M.SaveAppearance(identifier, snapshot)
 	return Result.Ok(canonical)
 end
 
+--- Writes the body a character was built on to its row, once. Coroutine only.
+-- @author dop42
+--
+-- THE ONLY FIELD OF AN IDENTITY THAT ARRIVES WITH A FACE. It has to: the body
+-- family is the engine's own character creator's answer, and the creator runs
+-- after the row exists. The client is trusted to name one of the two families
+-- and with nothing else -- the character module refuses a second write, so the
+-- family that is stored is the one that came with the character's first face and
+-- can never be moved afterwards.
+--
+-- A refusal is logged and goes no further. The face itself IS saved, and a
+-- character whose row kept the body it already had is not a reason to refuse a
+-- player their own face.
+-- @param player Player
+-- @param family any
+-- @return boolean
+function M.AdoptBodyFamily(player, family)
+	if character == nil or type(character.SetBodyFamily) ~= 'function' then return false end
+	local citizen = tostring(player.PlayerData.citizenId)
+
+	if family ~= 'female' and family ~= 'male' then
+		Open77.log.warn(('[appearance] %s named %s as a body family')
+			:format(citizen, tostring(family)))
+		return false
+	end
+
+	local written = character.SetBodyFamily(player, family)
+	if written.ok then return true end
+	Open77.log.warn(('[appearance] the %s body was not written for %s: %s (%s)')
+		:format(family, citizen, tostring(written.error), tostring(written.detail)))
+	return false
+end
+
 --- The stored face of a character, online or not. Coroutine only when offline.
 -- @author dop42
 -- @param identifier Player|Source|CitizenId
@@ -647,13 +680,19 @@ local function registerEvents()
 		end
 
 		local snapshot = payload.snapshot or payload
+		-- Sent by a creation and by nothing else: an edit cannot change a body
+		-- family, so an edit has no reason to name one.
+		local family = payload.family
 		CreateThread(function()
 			local saved = M.SaveAppearance(player, snapshot)
 			if not saved.ok then
 				Open77.log.warn(('[appearance] %d sent an unusable face: %s (%s)')
 					:format(src, tostring(saved.error), tostring(saved.detail)))
-				M.RefuseSave(src, saved.error, operation)
+				return M.RefuseSave(src, saved.error, operation)
 			end
+			-- After the face and never before it: a face the server would not take
+			-- is a creation that did not happen, and its body belongs to nobody.
+			if family ~= nil then M.AdoptBodyFamily(player, family) end
 		end)
 	end)
 

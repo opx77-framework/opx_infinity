@@ -11,8 +11,15 @@
 -- THE WORLD COMES FIRST. The platform's loading cover stays up until the
 -- one-shot character bootstrap is spent, and nothing drawn by a resource shows
 -- through it -- so the bootstrap is spent at join, before any character is
--- chosen, and the roster, the identity form and the face editor all happen in the
--- gameplay world afterwards.
+-- chosen, and the roster, the identity form and the face editor are all drawn in
+-- the gameplay world afterwards.
+--
+-- THE CREATOR IS THE ONE THING THAT GOES BACK. The game's own character creator
+-- is opened for a bootstrap TRANSACTION and not for a world, so a creation that
+-- starts from the roster arms a new one (`RequestCreator`) and answers it with
+-- the body that was built (`Editor.FinishCreation`). Everything that ends a
+-- creation without one puts the bootstrap back where it found it: a transaction
+-- nobody answers is a player behind the cover with no way out.
 
 local M = OPX.Modules.Get('appearance')
 
@@ -28,8 +35,6 @@ local HostEvent = M.HostEvent
 local EVENT_CHARACTER_LOADED = OPX.Event(OPX.Channel.LOCAL, 'character', 'loaded')
 local EVENT_CHARACTER_UNLOADED = OPX.Event(OPX.Channel.LOCAL, 'character', 'unloaded')
 local EVENT_CHARACTER_CHANGED = OPX.Event(OPX.Channel.LOCAL, 'character', 'changed')
-local EVENT_CHARACTER_ROSTER = OPX.Event(OPX.Channel.LOCAL, 'character', 'roster')
-
 -- The downed module's own local bus. Optional: with it stopped nobody is down.
 local EVENT_DOWNED_CHANGED = OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed')
 
@@ -39,12 +44,23 @@ local WATCH_MS = 200
 local ROSTER_POLL_MS = 250
 
 -- Shipped values, for a configuration that lost one.
-local ROSTER_WAIT_MS = 3000
+local CHOICE_WAIT_MS = 15000
+local CHOICE_CEILING_MS = 45000
 local DEFAULT_FAMILY = 'female'
 local RELOAD_SETTLE_MS = 10000
+local RELOAD_TIMEOUT_MS = 30000
 
 -- Life phases a native modal may go up in.
 local LIFE_OPEN = { alive = true, recovering = true }
+
+-- How long a body that is attached but not alive is waited on before gameplay is
+-- announced anyway, and when this world entry's wait started (0 when none).
+local DEAD_ANNOUNCE_MS = 3000
+local notAliveSinceMs = 0
+
+-- How long a restore waits for an attached body to come alive before it settles
+-- this world entry with no face on it.
+local DEAD_WAIT_MS = 5000
 
 -- Apply refusals that mean 'not yet', retried after a short wait.
 local RETRYABLE = {
@@ -65,8 +81,6 @@ local reloadSettleUntilMs = 0
 local bootstrapResolved = false
 local bootstrapPicking = false
 
--- The roster the character module last broadcast, nil until one arrives.
-local rosterSeen = nil
 
 -- Whether the downed module says the player is down, and how many of its events
 -- have been heard, so a stale catch-up answer is dropped.
@@ -125,6 +139,14 @@ function M.Runtime.InGameplay()
 	return ok and type(character) == 'table' and character.attached == true and
 		character.alive == true and (tonumber(character.health) or 0) > 0
 end
+
+--- Whether a puppet is attached at all, alive or not.
+-- @author dop42
+-- @return boolean
+function M.Runtime.Attached()
+	local ok, character = pcall(Open77.character.state)
+	return ok and type(character) == 'table' and character.attached == true
+end
 local inGameplay = Runtime.InGameplay
 
 --- The host's character bootstrap projection, nil when it cannot be read.
@@ -138,6 +160,8 @@ local function bootstrapPhase()
 	local bootstrap = readBootstrap()
 	return bootstrap and tostring(bootstrap.phase) or 'unreadable'
 end
+
+M.Runtime.BootstrapPhase = bootstrapPhase
 
 --- The host's pristine player reset phase, nil where none is projected.
 -- @author dop42
@@ -176,6 +200,22 @@ local lifePhase = Runtime.LifePhase
 --- BODY_RELOAD_SETTLE_MS, or the shipped value for an unusable one.
 local function reloadSettleMs()
 	return M.ConfigMs(M.Settings.BODY_RELOAD_SETTLE_MS) or RELOAD_SETTLE_MS
+end
+
+--- BODY_RELOAD_TIMEOUT_MS, or the shipped value; nil turns the recovery off.
+-- An explicit zero or a negative number is an operator saying "do not do this",
+-- and is the only thing that gets the old no-deadline behaviour back.
+local function reloadTimeoutMs()
+	local wanted = M.Settings.BODY_RELOAD_TIMEOUT_MS
+	if wanted == nil then return RELOAD_TIMEOUT_MS end
+	local value = tonumber(wanted)
+	if not OPX.Math.IsFinite(value) then
+		Open77.log.warn(('[appearance] BODY_RELOAD_TIMEOUT_MS %s is not a number of ms; ' ..
+			'using %d'):format(tostring(wanted), RELOAD_TIMEOUT_MS))
+		return RELOAD_TIMEOUT_MS
+	end
+	if value <= 0 then return nil end
+	return math.floor(value)
 end
 
 --- Whether a face or a native modal may go on the puppet now.
@@ -267,6 +307,7 @@ function M.Runtime.SwitchBody(family, edit)
 		State.bodyReloading = true
 		reloadResetSeen = false
 		reloadSettleUntilMs = 0
+		State.bodyReloadingSince = nowMs()
 		State.Undress()
 		-- The body goes away first, so observers drop their proxy rather than
 		-- keeping the old one until the new body is published.
@@ -306,6 +347,7 @@ function M.Runtime.FinishReload(origin)
 	if not State.bodyReloading then return end
 	State.bodyReloading = false
 	reloadResetSeen = false
+	State.bodyReloadingSince = 0
 	reloadSettleUntilMs = nowMs() + reloadSettleMs()
 	Open77.log.info(('[appearance] the body reload reached its new puppet (%s)'):format(origin))
 	Runtime.LiftCover(origin)
@@ -320,12 +362,35 @@ end
 function M.Runtime.WatchReload()
 	if not State.bodyReloading then return end
 	local reset = playerResetPhase()
-	if reset == nil then return end
-	if reset ~= 'complete' then
-		reloadResetSeen = true
-	elseif reloadResetSeen then
-		Runtime.FinishReload('reset_projection')
+	if reset ~= nil then
+		if reset ~= 'complete' then
+			reloadResetSeen = true
+		elseif reloadResetSeen then
+			Runtime.FinishReload('reset_projection')
+			return
+		end
 	end
+
+	-- THE RELOAD'S COVER IS THE ONE NOBODY ELSE LIFTS. `FinishReload` is the only
+	-- call that takes it down, and until this deadline existed the only route to
+	-- it was the reset projection above: a projection that never leaves
+	-- `complete`, or that cannot be read at all, left the player in front of an
+	-- opaque loading screen for the rest of the session -- no roster, no editor,
+	-- no toast, nothing to say what had happened.
+	--
+	-- So past the deadline the world itself is the evidence: an attached, alive
+	-- puppet in the gameplay world is a reload that landed, whatever the host is
+	-- projecting about it.
+	local timeout = reloadTimeoutMs()
+	local since = tonumber(State.bodyReloadingSince) or 0
+	if timeout == nil or since == 0 then return end
+	if nowMs() - since < timeout then return end
+	if bootstrapPhase() ~= 'ready' or not inGameplay() then return end
+
+	Open77.log.warn(('[appearance] the body reload has run %d ms with the reset projection at ' ..
+		'%s: ending it on the world instead, and lifting its cover')
+		:format(nowMs() - since, tostring(reset)))
+	Runtime.FinishReload('reload_timeout')
 end
 
 --- Reloads onto the character's body family, within FAMILY_RETRIES.
@@ -375,7 +440,35 @@ end
 -- @return boolean whether it went out on this call
 function M.Runtime.Announce()
 	if State.gameplayAnnounced or not State.worldEligible then return false end
-	if not State.AppearanceSettled() or not inGameplay() then return false end
+	if not State.AppearanceSettled() then return false end
+
+	if not inGameplay() then
+		-- A BODY THAT IS ATTACHED AND NOT ALIVE IS STILL A BODY IN THE WORLD, and
+		-- this announcement is what lets anybody reach it: nothing places, revives
+		-- or teleports a player whose platform hold has never cleared. A client
+		-- that waits for `alive` before announcing is therefore a player who
+		-- spawned dead and whom NOBODY can bring back -- not an admin, not the
+		-- downed module, not the server. Seen on 2026-09-17 on a character whose
+		-- stored position put them in the ground: dead on arrival, gate shut, and
+		-- every admin command refused with `gate_closed`.
+		--
+		-- So the wait is kept, because a live body is the honest thing to announce,
+		-- and it is BOUNDED. An attached body that has not come alive in
+		-- DEAD_ANNOUNCE_MS is announced as it is.
+		if not Runtime.Attached() then
+			notAliveSinceMs = 0
+			return false
+		end
+		if notAliveSinceMs == 0 then
+			notAliveSinceMs = nowMs()
+			return false
+		end
+		if nowMs() - notAliveSinceMs < DEAD_ANNOUNCE_MS then return false end
+		Open77.log.warn(('[appearance] the body has been attached and not alive for %d ms: ' ..
+			'announcing anyway, or nothing would ever be able to revive it')
+			:format(nowMs() - notAliveSinceMs))
+	end
+	notAliveSinceMs = 0
 
 	local sent, reason = TriggerServerEvent(OPX.Host.GAMEPLAY_READY)
 	if not sent then
@@ -414,9 +507,40 @@ local applySnapshot = Runtime.ApplySnapshot
 -- There is no deadline on purpose: a player building a face for an hour is a
 -- correct state, and the token is what ends this wait.
 local function awaitWorld(token, label)
+	-- A FACE NEEDS A WORLD, AND A WORLD NEEDS THE BOOTSTRAP ANSWERED. Every caller
+	-- here has a character, so either its own body is known or the one already
+	-- loaded stands in. It is a no-op once the transaction has been spent, and it
+	-- is the one thing standing between a client and a wait for a world that
+	-- nobody is going to ask for -- the creation that was holding the bootstrap
+	-- open has ended by the time anything here runs.
+	Runtime.ResolveBootstrap(State.family or Runtime.BodyFamily() or Runtime.DefaultFamily())
 	local waitedFrom, said = nowMs(), false
+	local notAliveFrom = 0
 	while not faceable() do
 		if not State.Current(token) then return false end
+
+		-- A BODY THAT IS ATTACHED AND NOT ALIVE ENDS NOTHING BY ITSELF. A face
+		-- cannot go on it, this wait is what the readiness announcement sits
+		-- behind, and nothing can revive a player whose platform hold has never
+		-- cleared -- so waiting for it to come alive is waiting for something only
+		-- the announcement would have allowed. Past DEAD_WAIT_MS the face is given
+		-- up on for this world entry: the entry is marked settled so the
+		-- announcement can go out, and the face goes on at the next one, on a body
+		-- that is alive.
+		if Runtime.Attached() then
+			if notAliveFrom == 0 then
+				notAliveFrom = nowMs()
+			elseif nowMs() - notAliveFrom >= DEAD_WAIT_MS then
+				Open77.log.warn(('[appearance] %s token=%d: the body has been attached and not ' ..
+					'alive for %d ms, so this entry settles with no face rather than waiting ' ..
+					'for one nothing can deliver'):format(label, token, nowMs() - notAliveFrom))
+				State.restoreSettledToken = token
+				Runtime.Announce()
+				return false
+			end
+		else
+			notAliveFrom = 0
+		end
 		if not said and nowMs() - waitedFrom > 60000 then
 			said = true
 			Open77.log.warn(('[appearance] %s token=%d is still waiting: eligible=%s reloading=%s ' ..
@@ -516,42 +640,6 @@ function M.Runtime.ResolveBootstrap(family)
 	return true
 end
 
---- The roster the character module already holds, nil while it holds none.
--- Read from what it broadcast, or from its contract -- never REQUESTED: roster
--- requests are cooled at 2000 ms and the excess is dropped, so asking would cost
--- the announce its own answer.
-local function heldRoster()
-	if rosterSeen ~= nil then return rosterSeen end
-	local api = OPX.Api.Get('character')
-	if api == nil or type(api.GetCharacters) ~= 'function' then return nil end
-	local roster = api.GetCharacters()
-	if type(roster) ~= 'table' or type(roster.list) ~= 'table' then return nil end
-	-- Zero characters WITH slots is a real empty roster; zero of both is the
-	-- mirror answering before anything arrived.
-	if #roster.list == 0 and (tonumber(roster.slots) or 0) <= 0 then return nil end
-	return roster.list
-end
-
---- The body family of the most recently played character.
--- Only two timestamps of the same comparable type are compared: the roster
--- already arrives newest first, and this keeps that order rather than inventing
--- one across types.
-local function lastPlayedFamily(characters)
-	local family, latest
-	for index = 1, #characters do
-		local summary = characters[index]
-		local at = type(summary) == 'table' and summary.lastLoggedOut or nil
-		if at ~= nil and M.IsFamily(summary.gender) then
-			local comparable = type(at) == type(latest) and
-				(type(at) == 'string' or type(at) == 'number')
-			if latest == nil or (comparable and at > latest) then
-				family, latest = summary.gender, at
-			end
-		end
-	end
-	return family
-end
-
 --- BOOTSTRAP.DEFAULT_FAMILY, or female with one log line.
 local function defaultFamily()
 	local bootstrap = type(M.Settings.BOOTSTRAP) == 'table' and M.Settings.BOOTSTRAP or {}
@@ -561,20 +649,119 @@ local function defaultFamily()
 	return DEFAULT_FAMILY
 end
 
---- BOOTSTRAP.ROSTER_WAIT_MS, or the shipped value with one log line.
-local function rosterWaitMs()
+M.Runtime.DefaultFamily = defaultFamily
+
+--- Whether this client has the natives the engine's own creator is opened with.
+-- @author dop42
+-- @return boolean
+local function creatorAvailable()
+	return type(Open77.session) == 'table'
+		and type(Open77.session.requestCharacterCreator) == 'function'
+		and type(Open77.session.takeCharacterCreatorResult) == 'function'
+		and type(Open77.session.resetCharacterBootstrap) == 'function'
+end
+M.Runtime.CreatorAvailable = creatorAvailable
+
+--- One attempt at the native creator, with whatever it refused with.
+local function askCreator()
+	local called, opened, reason = pcall(Open77.session.requestCharacterCreator)
+	if not called then return false, tostring(opened) end
+	if opened then return true end
+	return false, tostring(reason or 'character_creator_unavailable')
+end
+
+--- Opens the engine's own character creator, when there is a bootstrap for it.
+-- @author dop42
+--
+-- THE CREATOR IS A JOIN-TIME SCREEN. It is drawn by the game's own main menu and
+-- it is opened for the character-bootstrap TRANSACTION in flight, so it exists
+-- exactly as long as that transaction does -- before this client's first world.
+--
+-- A SPENT BOOTSTRAP IS NOT RESET TO OPEN ONE. `resetCharacterBootstrap` does arm
+-- a fresh transaction and the request that follows IS granted: the phase moves to
+-- `creator_requested`, the shell takes the world down for a bootstrap it now
+-- expects to be answered -- and no creator ever comes, because the game is not in
+-- its main menu any more. Measured on 2026-09-17 against 2.31.13+op77.81: the
+-- player sat under the loading cover until they killed the connection. So a
+-- creation started from the roster, which is drawn in the world and therefore
+-- always after the bootstrap, is refused here and takes the mirror instead.
+-- @return boolean
+-- @return string|nil the refusal
+function M.Runtime.RequestCreator()
+	if not Runtime.CreatorReady() then return false, 'bootstrap_spent' end
+	return askCreator()
+end
+
+--- Whether a bootstrap transaction is still open for a creator to be drawn in.
+-- The one question a creation asks before it decides what to open: with this
+-- true the game's own creator is reachable and needs no world, with it false the
+-- only editor left is the mirror, which needs one.
+-- @author dop42
+-- @return boolean
+function M.Runtime.CreatorReady()
+	if not creatorAvailable() then return false end
+	local phase = bootstrapPhase()
+	return phase ~= 'ready' and phase ~= 'failed' and phase ~= 'unreadable'
+end
+
+--- The native creator's one-shot result, or nil while nothing has been confirmed.
+-- It is a MAILBOX and not an event: reading it consumes it, so exactly one caller
+-- may read it and it is read on this module's own pass.
+-- @author dop42
+-- @return string|nil
+function M.Runtime.TakeCreatorResult()
+	if not creatorAvailable() then return nil end
+	local read, value = pcall(Open77.session.takeCharacterCreatorResult)
+	if not read or type(value) ~= 'string' or value == '' then return nil end
+	return value
+end
+
+--- BOOTSTRAP.CHOICE_CEILING_MS, nil when it is turned off.
+-- The whole hold, screen or no screen. It exists because the screen this waits
+-- for is drawn UNDER the shell's loading cover and asks for that cover to come
+-- down: a screen that is up and not on the player's monitor would otherwise hold
+-- the bootstrap for the rest of the session, which is the one failure the player
+-- cannot tell from a frozen game. A value that is not a positive finite number
+-- turns the ceiling off, and a screen then holds for as long as it is up.
+local function choiceCeilingMs()
 	local bootstrap = type(M.Settings.BOOTSTRAP) == 'table' and M.Settings.BOOTSTRAP or {}
-	local wait = M.ConfigMs(bootstrap.ROSTER_WAIT_MS)
+	local wanted = bootstrap.CHOICE_CEILING_MS
+	if wanted == nil then return CHOICE_CEILING_MS end
+	local ceiling = M.ConfigMs(wanted)
+	if ceiling == nil then
+		Open77.log.warn(('[appearance] BOOTSTRAP.CHOICE_CEILING_MS %s is not a number of ms; ' ..
+			'holding at most %d'):format(tostring(wanted), CHOICE_CEILING_MS))
+		return CHOICE_CEILING_MS
+	end
+	if ceiling <= 0 then return nil end
+	return ceiling
+end
+
+--- BOOTSTRAP.CHOICE_WAIT_MS, or the shipped value with one log line.
+local function choiceWaitMs()
+	local bootstrap = type(M.Settings.BOOTSTRAP) == 'table' and M.Settings.BOOTSTRAP or {}
+	local wait = M.ConfigMs(bootstrap.CHOICE_WAIT_MS)
 	if wait == nil then
-		Open77.log.warn(('[appearance] BOOTSTRAP.ROSTER_WAIT_MS %s is not a number of ms; ' ..
-			'waiting %d'):format(tostring(bootstrap.ROSTER_WAIT_MS), ROSTER_WAIT_MS))
-		return ROSTER_WAIT_MS
+		Open77.log.warn(('[appearance] BOOTSTRAP.CHOICE_WAIT_MS %s is not a number of ms; ' ..
+			'waiting %d'):format(tostring(bootstrap.CHOICE_WAIT_MS), CHOICE_WAIT_MS))
+		return CHOICE_WAIT_MS
 	end
 	return wait
 end
 
---- Spends the join bootstrap on the last played body, or on the default.
+--- Holds the join bootstrap for a choice, and spends it on a guess if none comes.
 -- @author dop42
+--
+-- THE BOOTSTRAP IS THE CHOICE'S TO SPEND. It decides the body the world loads
+-- with, so the character has to be picked before it is answered -- and it is
+-- answered by `ResolveCharacter` for a selection, on that character's own body,
+-- or by the creator for a creation, on the body it was built on. Either way this
+-- waits and spends nothing.
+--
+-- The guess is the FALLBACK, and it is what this used to do at every join: with
+-- no screen up and nothing chosen, a player would sit behind the loading cover
+-- with nothing on it. Spending the bootstrap puts a world under them, and the
+-- roster is then drawn in that world instead -- one reload worse, never stuck.
 -- @param origin string
 function M.Runtime.BeginBootstrap(origin)
 	if bootstrapResolved or bootstrapPicking then return end
@@ -582,23 +769,32 @@ function M.Runtime.BeginBootstrap(origin)
 	bootstrapPicking = true
 
 	CreateThread(function()
-		local deadline = nowMs() + rosterWaitMs()
-		local roster
-		while roster == nil and nowMs() < deadline do
+		local wait = choiceWaitMs()
+		local ceiling = choiceCeilingMs()
+		local startedAt = nowMs()
+		local deadline = startedAt + wait
+		while true do
 			if bootstrapResolved or bootstrapPhase() ~= 'waiting' then break end
-			roster = heldRoster()
-			if roster == nil then Wait(ROSTER_POLL_MS) end
+			-- The character the server is loading, or a creation under way, IS the
+			-- answer: both spend the bootstrap themselves, on the body that belongs
+			-- to the character.
+			if State.citizenId ~= nil or State.creating then break end
+			-- But never past the ceiling: see `choiceCeilingMs`.
+			if ceiling ~= nil and deadline > startedAt + ceiling then
+				deadline = startedAt + ceiling
+			end
+			if nowMs() >= deadline then
+				bootstrapPicking = false
+				local family = defaultFamily()
+				Open77.log.warn(('[appearance] no character reached this client in %d ms (%s): ' ..
+					'the bootstrap is spent on the %s body so that a world comes up at all')
+					:format(nowMs() - startedAt, origin, family))
+				Runtime.ResolveBootstrap(family)
+				return
+			end
+			Wait(ROSTER_POLL_MS)
 		end
 		bootstrapPicking = false
-		if bootstrapResolved or bootstrapPhase() ~= 'waiting' then return end
-
-		local family = roster ~= nil and lastPlayedFamily(roster) or nil
-		local why = family ~= nil and 'the last character played' or
-			(roster ~= nil and 'no character played yet' or 'no roster in time')
-		family = family or defaultFamily()
-		Open77.log.info(('[appearance] bootstrap (%s): loading the %s body, %s')
-			:format(origin, family, why))
-		Runtime.ResolveBootstrap(family)
 	end)
 end
 
@@ -734,9 +930,6 @@ local function registerEvents()
 	end)
 	AddEventHandler(EVENT_CHARACTER_UNLOADED, unloadCharacter)
 
-	AddEventHandler(EVENT_CHARACTER_ROSTER, function(roster)
-		if type(roster) == 'table' and type(roster.list) == 'table' then rosterSeen = roster.list end
-	end)
 
 	AddEventHandler(EVENT_DOWNED_CHANGED, function(payload)
 		if type(payload) ~= 'table' then return end

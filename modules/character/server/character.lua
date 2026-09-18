@@ -24,7 +24,6 @@ local function toSummary(entity)
 		cid = entity.cid,
 		firstName = entity.charInfo.firstName,
 		lastName = entity.charInfo.lastName,
-		origin = entity.charInfo.origin,
 		gender = entity.charInfo.gender,
 		job = entity.job and entity.job.label,
 		gang = entity.gang and entity.gang.name ~= 'none' and entity.gang.label or nil,
@@ -32,26 +31,17 @@ local function toSummary(entity)
 	}
 end
 
---- Records the account and sends its character roster to the client.
--- Calling it twice is harmless. The cooldown sits here rather than at a doorway
--- because the open command reaches this too; a send its caller has already rate
--- limited (`pushed`) is neither cooled nor cooling, or the client's announce a
--- second later would be discarded along with it.
+--- The account's characters, and which one it is locked on. Coroutine only.
 -- @author dop42
+--
+-- Nothing is sent to the client: there is no selection screen to fill. This is
+-- read by the command that prints the list, and by nothing else.
 -- @param source Source
--- @param pushed boolean|nil Already rate limited by its caller.
--- @return Result
-function M.SendCharacters(source, pushed)
-	if not pushed and OPX.Cooling(source, 'roster', 2000) then
-		return Result.Err('error.tooFast', tostring(source))
-	end
+-- @return Result `{ characters, slots, active }`
+function M.ListCharacters(source)
 	local session = OPX.EnsureSession(source)
 	if not session then return Result.Err('entry.noIdentity', tostring(source)) end
-
-	if OPX.BootError then
-		OPX.Refuse(source, 'error.unavailable', M.Operation.ROSTER)
-		return Result.Err('error.unavailable', OPX.BootError)
-	end
+	if OPX.BootError then return Result.Err('error.unavailable', OPX.BootError) end
 
 	local account = M.Storage.UpsertAccount(session.userId, session.displayName)
 	if not account.ok then return account end
@@ -59,93 +49,35 @@ function M.SendCharacters(source, pushed)
 	local characters = M.Storage.FetchAll(session.userId)
 	if not characters.ok then return characters end
 
+	local active = M.Storage.FetchActive(session.userId)
+
 	local list = characters.value
 	local summaries = {}
 	for i = 1, #list do summaries[i] = toSummary(list[i]) end
-	-- The roster is re-checked against the world after the two reads: a roster
-	-- arriving after a character has loaded would reopen the selection screen, its
-	-- camera and its control lock on a character already in the world. The
-	-- summaries are still answered, for the command that asked.
-	if M.Players[source] then return Result.Ok(summaries) end
-
-	session.charactersSent = true
-	TriggerClientEvent(M.Event.ROSTER, source, {
-		characters = summaries,
-		slots = slotsFor(session.userId),
-		origins = M.Settings.ORIGINS,
-	})
-
-	Open77.log.info(('[character] %s has %d character(s)'):format(session.displayName, #list))
-	return Result.Ok(summaries)
-end
-
--- Days per month, February at its leap-year length: the year is not worth
--- resolving for a date written once.
-local MONTH_DAYS = { 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
-
---- Answers whether a YYYY-MM-DD date exists, from year 1900.
--- A well-formed date that does not exist is refused instead of being stored for
--- the life of the character.
-local function realDate(text)
-	local year, month, day = text:match('^(%d%d%d%d)%-(%d%d)%-(%d%d)$')
-	year, month, day = tonumber(year), tonumber(month), tonumber(day)
-	if year == nil or year < 1900 then return false end
-	if month < 1 or month > 12 then return false end
-	return day >= 1 and day <= MONTH_DAYS[month]
-end
-
---- Checks a character registration received from a client.
--- The account is taken from the session and never from the payload: `source` is
--- the only value a client cannot forge.
-local function validateRegistration(payload)
-	if type(payload) ~= 'table' then
-		return Result.Err('error.badRequest', 'payload is not a table')
-	end
-
-	local firstName = M.ValidateName(payload.firstName)
-	if not firstName.ok then return Result.Err('character.badName', 'firstName') end
-
-	local lastName = M.ValidateName(payload.lastName)
-	if not lastName.ok then return Result.Err('character.badName', 'lastName') end
-
-	local origin = OPX.Validate.OneOf(payload.origin, M.Settings.ORIGINS)
-	if not origin.ok then return Result.Err('character.badOrigin', tostring(payload.origin)) end
-
-	local gender = OPX.Validate.OneOf(payload.gender, { female = true, male = true })
-	if not gender.ok then return Result.Err('error.badRequest', 'gender') end
-
-	local birthDate = OPX.Validate.Text(payload.birthDate, {
-		min = 8, max = 10, pattern = '^%d%d%d%d%-%d%d%-%d%d$',
-	})
-	if birthDate.ok and not realDate(birthDate.value) then
-		return Result.Err('character.badBirthdate', birthDate.value)
-	end
 
 	return Result.Ok({
-		firstName = firstName.value,
-		lastName = lastName.value,
-		origin = origin.value,
-		gender = gender.value,
-		birthDate = birthDate.ok and birthDate.value or '2050-01-01',
+		characters = summaries,
+		slots = slotsFor(session.userId),
+		active = active.ok and active.value or nil,
 	})
 end
 
---- Creates a character on the caller's own account.
+--- Creates a character on the caller's own account. Coroutine only.
 -- @author dop42
+--
+-- IT CARRIES NOTHING. A character is a row before it is anybody: the body family
+-- is the game's own creator's answer (`SetBodyFamily`), the name is typed once
+-- the player is in the world (`SetName`), and both are written to this row after
+-- the fact, once each. There is nothing to validate here and nothing a client
+-- could send that would be believed -- the account comes from the session, which
+-- is the only value a client cannot forge.
 -- @param source Source
--- @param payload table
--- @return Result
-function M.CreateCharacter(source, payload)
+-- @return Result the summary of the row that was made
+function M.CreateCharacter(source)
 	local session = OPX.EnsureSession(source)
 	if not session then return Result.Err('entry.noIdentity', tostring(source)) end
 	if OPX.BootError then return Result.Err('error.unavailable', OPX.BootError) end
 
-	local checked = validateRegistration(payload)
-	if not checked.ok then return checked end
-	local registration = checked.value
-
-	-- The cooldown comes AFTER the validation: it protects the write, not a
-	-- mistyped name.
 	if OPX.Cooling(source, 'create', 3000) then
 		return Result.Err('error.tooFast', tostring(source))
 	end
@@ -182,12 +114,11 @@ function M.CreateCharacter(source, payload)
 			userId = session.userId,
 			cid = cid.value,
 			name = session.displayName,
+			-- Names and `gender` are absent ON PURPOSE, and nothing may read either
+			-- as though it were there: the body family is unknown until the creator
+			-- answers one, and the name until the player has typed it. `M.IsFamily`
+			-- is false for nil on both sides, and a nameless row draws as its slot.
 			charInfo = {
-				firstName = registration.firstName,
-				lastName = registration.lastName,
-				origin = registration.origin,
-				gender = registration.gender,
-				birthDate = registration.birthDate,
 				phone = OPX.String.Random('111-111-1111'),
 			},
 			money = money,
@@ -230,15 +161,114 @@ function M.CreateCharacter(source, payload)
 
 	OPX.Audit.Log({
 		event = 'character.create',
-		message = ('%s %s'):format(registration.firstName, registration.lastName),
+		message = ('slot %d'):format(entity.cid),
 		citizenId = entity.citizenId,
 		userId = session.userId,
 		source = source,
 	})
-	Open77.log.info(('[character] %s created %s (%s)'):format(
-		session.displayName, entity.citizenId, registration.firstName))
+	Open77.log.info(('[character] %s created %s, slot %d, with no name and no body yet')
+		:format(session.displayName, entity.citizenId, entity.cid))
 
 	return Result.Ok(toSummary(entity))
+end
+
+--- Ends a session so that the next one enters on the lock as it now stands.
+-- @author dop42
+--
+-- THE DISCONNECT IS THE MECHANISM, not a punishment, and it is why moving the
+-- lock is a command and not a menu. The body a world is loaded with is the
+-- character bootstrap's answer, and that transaction is spent before the world
+-- exists -- so the only honest way to play another character is to arrive as one.
+-- The departure path saves the character that was loaded, exactly as a quit does.
+local function endSession(source, reason)
+	local dropped, why = Open77.players.disconnect(source, reason)
+	if dropped then return true end
+	Open77.log.error(('[character] %d could not be disconnected for a character change: %s')
+		:format(source, tostring(why)))
+	return false
+end
+
+--- Locks the account on another of its characters and ends the session.
+-- @author dop42
+-- @param source Source
+-- @param citizenId CitizenId
+-- @return Result the summary of the character that was locked
+function M.SwitchTo(source, citizenId)
+	local session = OPX.EnsureSession(source)
+	if not session then return Result.Err('entry.noIdentity', tostring(source)) end
+	if OPX.BootError then return Result.Err('error.unavailable', OPX.BootError) end
+
+	local parsed = OPX.CitizenId.Parse(citizenId)
+	if not parsed.ok then return Result.Err('character.notFound', tostring(citizenId)) end
+
+	local wanted = M.Storage.FetchOne(parsed.value)
+	if not wanted.ok then return wanted end
+
+	-- Somebody else's character answers the same code as one that does not exist:
+	-- anything else is an oracle for which citizen ids are real.
+	if wanted.value.userId ~= session.userId then
+		OPX.Audit.Security('character.notYours',
+			('player %d asked to be locked on %s'):format(source, parsed.value),
+			{ userId = session.userId, owner = wanted.value.userId }, source)
+		return Result.Err('character.notFound', parsed.value)
+	end
+
+	local current = M.GetPlayer(source)
+	if current ~= nil and current.PlayerData.citizenId == parsed.value then
+		return Result.Err('character.alreadyPlaying', parsed.value)
+	end
+
+	local already = M.GetPlayerByCitizenId(parsed.value)
+	if already ~= nil and already.PlayerData.source ~= source then
+		return Result.Err('character.inUse', parsed.value)
+	end
+
+	local locked = M.Storage.SetActive(session.userId, parsed.value)
+	if not locked.ok then return locked end
+
+	OPX.Audit.Log({
+		event = 'character.switch',
+		message = parsed.value,
+		citizenId = current and current.PlayerData.citizenId or nil,
+		userId = session.userId,
+		source = source,
+	})
+	endSession(source, locale('session.switching'))
+	return Result.Ok(toSummary(wanted.value))
+end
+
+--- Takes the account off every character, so the next session builds one.
+-- Nothing is created here: the row is made by the connection that needs it, which
+-- is also what hands the player to the creator.
+-- @author dop42
+-- @param source Source
+-- @return Result
+function M.NewCharacter(source)
+	local session = OPX.EnsureSession(source)
+	if not session then return Result.Err('entry.noIdentity', tostring(source)) end
+	if OPX.BootError then return Result.Err('error.unavailable', OPX.BootError) end
+
+	local rows = M.Storage.CountRows(session.userId)
+	if not rows.ok then return rows end
+	local ceiling = M.Number(M.Settings.CHARACTERS.ROW_CEILING, 5)
+	if rows.value >= ceiling then return Result.Err('character.rowLimit', tostring(ceiling)) end
+
+	local characters = M.Storage.FetchAll(session.userId)
+	if not characters.ok then return characters end
+	local slots = slotsFor(session.userId)
+	if #characters.value >= slots then return Result.Err('character.limit', tostring(slots)) end
+
+	local cleared = M.Storage.ClearActive(session.userId)
+	if not cleared.ok then return cleared end
+
+	OPX.Audit.Log({
+		event = 'character.new',
+		message = ('%d of %d slots used'):format(#characters.value, slots),
+		userId = session.userId,
+		source = source,
+	})
+	endSession(source, locale('session.newCharacter'))
+	return Result.Ok({ used = #characters.value, slots = slots })
 end
 
 --- Soft-deletes one of the caller's own characters.
@@ -269,12 +299,21 @@ function M.DeleteCharacter(source, citizenId)
 		return Result.Err('character.notFound', citizenId)
 	end
 
+	-- Read BEFORE the delete: the lock is joined against living characters, so a
+	-- soft-deleted one answers as no lock at all and this would never match.
+	local active = M.Storage.FetchActive(session.userId)
+	local wasActive = active.ok and active.value == citizenId
+
 	-- Out of the world first, or the autosave rewrites the row a minute later.
 	local online = M.GetPlayerByCitizenId(citizenId)
 	if online then M.Logout(online.PlayerData.source) end
 
 	local deleted = M.Storage.SoftDelete(citizenId)
 	if not deleted.ok then return deleted end
+
+	-- A lock naming a character that is gone would cost the next connection a
+	-- failed entry before it gave up on it.
+	if wasActive then M.Storage.ClearActive(session.userId) end
 
 	local cascades = M.Settings.CHARACTERS.CASCADE_TABLES
 	for i = 1, #cascades do
@@ -290,6 +329,12 @@ function M.DeleteCharacter(source, citizenId)
 		source = source,
 	})
 	TriggerEvent(M.Event.IN_DELETED, source, citizenId)
+
+	-- Deleting the character you are playing leaves you in the world as nobody,
+	-- and there is no screen left to choose another one on. The session ends, and
+	-- the next one enters on whatever the lock now says -- a new character, when
+	-- this one was it.
+	if online ~= nil then endSession(source, locale('session.characterDeleted')) end
 	return Result.Ok(citizenId)
 end
 
@@ -397,6 +442,43 @@ function M.PlaceCharacter(player)
 	return true
 end
 
+--- Characters loaded at a join, by player id, waiting for a body to be put on.
+-- Written by `enterCharacter` and spent by `PlacePending`, once each. A slot that
+-- changes hands leaves an entry behind, which is why the citizen id is recorded
+-- and checked again rather than trusted.
+M.AwaitingPlacement = {}
+
+--- Places the character a join loaded, now that the gate has opened.
+-- @author dop42
+-- @param source Source
+-- @return boolean whether anything was placed
+function M.PlacePending(source)
+	local citizenId = M.AwaitingPlacement[source]
+	if citizenId == nil then return false end
+	M.AwaitingPlacement[source] = nil
+
+	local player = M.GetPlayer(source)
+	if not player or player.PlayerData.citizenId ~= citizenId then return false end
+
+	local placed, reason = M.PlaceCharacter(player)
+	if placed then
+		Open77.log.info(('[character] %s was placed once the gate opened'):format(citizenId))
+		return true
+	end
+	-- Not fatal: the player is in the world, on the body the game gave them, and
+	-- their position is sampled from where they stand instead.
+	Open77.log.warn(('[character] %s could not be placed when the gate opened: %s')
+		:format(citizenId, tostring(reason)))
+	return false
+end
+
+--- Forgets a placement nobody is waiting for any more.
+-- @author dop42
+-- @param source Source
+function M.ForgetPlacement(source)
+	M.AwaitingPlacement[source] = nil
+end
+
 --- Logs in, places, then releases the gate for a chosen character.
 -- THE ORDER IS THE CONTRACT: log in, place, then release the gate, last.
 -- The cooldown sits here because the open command reaches this too.
@@ -404,10 +486,7 @@ end
 -- @param source Source
 -- @param citizenId CitizenId
 -- @return Result
-function M.SelectCharacter(source, citizenId)
-	if OPX.Cooling(source, 'select', 1000) then
-		return Result.Err('error.tooFast', tostring(source))
-	end
+local function enterCharacter(source, citizenId)
 	local parsed = OPX.CitizenId.Parse(citizenId)
 	if not parsed.ok then return Result.Err('character.notFound', tostring(citizenId)) end
 
@@ -461,15 +540,98 @@ function M.SelectCharacter(source, citizenId)
 		return login
 	end
 
-	-- A character loaded but not placed still leaves the selection bucket: they
-	-- play where they stand, in the world rather than alone in a bucket.
-	local placed, reason = M.PlaceCharacter(login.value)
-	if not placed then
-		Open77.log.warn(('[character] %s logged in but was not placed: %s')
-			:format(parsed.value, tostring(reason)))
+	-- NOTHING MAY PLACE A PLAYER BEFORE THEIR GATE HAS OPENED, and placement is a
+	-- kill and a respawn -- that is how the platform puts a body somewhere. A kill
+	-- aimed at a client that has not incarnated yet lands on nothing: the body
+	-- that attaches afterwards is DEAD, the client never announces gameplay-ready
+	-- because it has no living body, and nothing can revive it because the hold
+	-- that would let anybody touch it never clears. Measured on 2026-09-17, when
+	-- entry moved from a selection screen to a lock read at the connection: dead
+	-- on arrival, "joining" for ever, every admin command refused `gate_closed`.
+	--
+	-- So a JOIN only loads the character here, and `onPlayerReady` places it once
+	-- the platform says there is a body to place. A character taken up while the
+	-- gate is already open -- a switch in the world -- is placed on the spot,
+	-- because then there is a body right now.
+	if OPX.Gate.IsReady(source) then
+		local placed, reason = M.PlaceCharacter(login.value)
+		if not placed then
+			Open77.log.warn(('[character] %s logged in but was not placed: %s')
+				:format(parsed.value, tostring(reason)))
+		end
+		OPX.Buckets.Release(source, placed and 'character-placed' or 'character-loaded')
+	else
+		M.AwaitingPlacement[source] = parsed.value
+		-- Out of the selection bucket either way: nobody plays alone in one.
+		OPX.Buckets.Release(source, 'character-loaded')
 	end
-	OPX.Buckets.Release(source, placed and 'character-placed' or 'character-loaded')
 
-	OPX.Gate.Release(source, placed and 'character-placed' or 'character-loaded')
+	OPX.Gate.Release(source, 'character-loaded')
+
+	-- The lock follows what actually entered the world, so the next connection
+	-- comes back to this character whatever moved it here.
+	local session = OPX.Sessions[source]
+	if session then
+		local locked = M.Storage.SetActive(session.userId, parsed.value)
+		if not locked.ok then
+			Open77.log.error(('[character] %s entered but the account was not locked on it: %s')
+				:format(parsed.value, tostring(locked.detail)))
+		end
+	end
 	return login
+end
+
+--- Enters the world as one character the caller owns. Coroutine only.
+-- @author dop42
+-- @param source Source
+-- @param citizenId CitizenId
+-- @return Result
+function M.SelectCharacter(source, citizenId)
+	if OPX.Cooling(source, 'select', 1000) then
+		return Result.Err('error.tooFast', tostring(source))
+	end
+	return enterCharacter(source, citizenId)
+end
+
+--- Brings a connection into the world, on the character it is locked on.
+-- @author dop42
+--
+-- THE WHOLE OF ENTRY, and there is no screen in it. An account is locked on one
+-- character; that is the one this loads. An account locked on nothing gets a new
+-- row, locked to it on the spot -- which is what a player sees as "the creator
+-- opened by itself": the row has no body and no name, so the client is handed to
+-- the game's own character creator and then asked to type a name.
+--
+-- The lock is moved by a command (`opx.select`, `opx.create`), and a command that
+-- moves it disconnects the player, because the body a world loads with is decided
+-- before the world exists. Coroutine only.
+-- @param source Source
+-- @return Result
+function M.EnterSession(source)
+	local session = OPX.EnsureSession(source)
+	if not session then return Result.Err('entry.noIdentity', tostring(source)) end
+	if OPX.BootError then return Result.Err('error.unavailable', OPX.BootError) end
+
+	local account = M.Storage.UpsertAccount(session.userId, session.displayName)
+	if not account.ok then return account end
+
+	local locked = M.Storage.FetchActive(session.userId)
+	if not locked.ok then return locked end
+
+	if locked.value ~= nil then
+		local entered = enterCharacter(source, locked.value)
+		if entered.ok then return entered end
+		-- The lock names something this account cannot enter -- deleted between two
+		-- reads, or in play on another connection. It is dropped rather than
+		-- retried, and the connection goes on to a new character.
+		Open77.log.warn(('[character] %s is locked on %s and could not enter it (%s): ' ..
+			'the lock is cleared'):format(session.displayName, locked.value,
+				tostring(entered.error)))
+		local cleared = M.Storage.ClearActive(session.userId)
+		if not cleared.ok then return cleared end
+	end
+
+	local created = M.CreateCharacter(source)
+	if not created.ok then return created end
+	return enterCharacter(source, created.value.citizenId)
 end

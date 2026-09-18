@@ -1,9 +1,5 @@
 <script setup lang="ts">
 import { shallowRef } from 'vue'
-import OpChip from '@/design/components/OpChip.vue'
-import OpGauge from '@/design/components/OpGauge.vue'
-import OpKeyCap from '@/design/components/OpKeyCap.vue'
-import OpPanel from '@/design/components/OpPanel.vue'
 import { num, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
@@ -15,16 +11,23 @@ import { useLocale } from '@/composables/useLocale'
  * Lua decides the state and every word. This lights what it is told and never infers:
  * `talking` is not "the meter is above a threshold", it is what the voice stack said.
  *
- * WHAT CHANGED: hud.css drew a 52px column with a bespoke cut mic plate and a VERTICAL
- * eight-slat meter, hand-clipped, with its own `.voice-key` keycap that the design system
- * explicitly refused to fold into OpKeyCap. That column is a card now: one `OpPanel`
- * frame, a horizontal `OpGauge` for the input level, and real `OpKeyCap`s for the keys.
+ * -- DESIGN PASS 02 -----------------------------------------------------------
  *
- * Folding `.voice-key` into OpKeyCap is the change I am least able to defend from the
- * design system's own notes, which call it "a different, unrelated thing". It is not: it
- * is the name of a key the player presses, drawn next to the thing pressing it does, and
- * the whole point of the exercise is that there is one keycap now. The vertical meter is
- * the real casualty -- see the report.
+ * IT DRAWS ITS OWN EVERYTHING NOW. It was an `OpPanel` holding an `OpGauge`, two
+ * `OpKeyCap`s and an `OpChip` -- four shared components, every one of them either
+ * augmented, filled, or both. The frame, the meter, the keycaps and the counter are all
+ * local, exactly as MenuView.vue carries a local frame and row, and for the same reason:
+ * the four shared ones are used by surfaces nobody has looked at yet.
+ *
+ * THIS BLOCK PINS ITSELF, so unlike the other four it is its own positioned wrapper: it
+ * carries the perspective, the paint containment and the tilt sign itself. It is anchored
+ * to the RIGHT edge, so the sign is negative and the plane pivots on the right.
+ *
+ * THE STATE LADDER IS THE MENU'S THREE STEPS PLUS THE ALARM. The HUD takes no pointer, so
+ * `--red-deep` -- the menu's hover rung -- is free, and `detected` is exactly what it is
+ * for: something is arriving but the player is not through yet. `muted` is the one state
+ * that is a FAILURE to transmit, so it takes the white-hot alarm and not a red, which is
+ * the same rule the gauges follow and the reason the mic has a slash as well.
  */
 const { t } = useLocale()
 
@@ -34,26 +37,13 @@ type State = 'idle' | 'detected' | 'talking' | 'muted' | 'offline'
 
 const STATES: readonly string[] = ['idle', 'detected', 'talking', 'muted', 'offline']
 
-/**
- * OpGauge knows four tones and they are roles, not moods. `talking` takes the accent
- * (`health` is OpGauge's name for it), `muted` takes the danger tone, and the three quiet
- * states share the neutral one -- the mic plate beside the meter is what separates those.
- */
-const METER_TONES: Record<State, 'neutral' | 'health' | 'warn' | 'bad'> = {
-  idle: 'neutral',
-  detected: 'neutral',
-  talking: 'health',
-  muted: 'bad',
-  offline: 'neutral'
-}
-
 interface Voice {
   active: boolean
   state: State
   caption: string
   mode: string
   distance: string
-  /** 0..100, the input level. A percentage, because OpGauge takes percentages. */
+  /** 0..100, the input level. */
   level: number
   /** How many reach modes there are, and which one is current. */
   count: number
@@ -82,8 +72,8 @@ const voice = shallowRef<Voice>(EMPTY)
 
 useBridge('opx:hud:voice', (payload: Payload) => {
   if (payload.active !== true) {
-    // Not emptied: the block fades on `active`, and a cleared payload would make it fade
-    // out with its caption already gone.
+    // Not emptied: the block leaves on `active`, and a cleared payload would make it go
+    // with its caption already gone.
     voice.value = { ...voice.value, active: false }
     return
   }
@@ -105,78 +95,128 @@ useBridge('opx:hud:voice', (payload: Payload) => {
     heard: Math.max(0, Math.round(num(payload.heard)))
   }
 })
+
+/** 0..1, for the meter's `scaleX`. An input level is the fastest-moving number on this
+    block, so it moves the one way that costs neither a layout nor a paint. */
+function share(value: number): number {
+  return Math.max(0, Math.min(100, value)) / 100
+}
 </script>
 
 <template>
   <div class="voice" :class="[voice.state, { live: voice.active }]">
-    <OpPanel anchor="end" :lift="false">
-      <div class="head">
-        <span class="mic">
-          <svg
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M8 10.2a2.5 2.5 0 0 0 2.5-2.5V4.1a2.5 2.5 0 1 0-5 0v3.6A2.5 2.5 0 0 0 8 10.2Z" />
-            <path d="M3.9 7.2v.5a4.1 4.1 0 0 0 8.2 0v-.5M8 11.8v2.4M5.9 14.2h4.2" />
-          </svg>
-          <!-- The slash draws itself on with a scaleX transform on a child, never on the
-               frame: an --aug-* value would recompute the polygon to cross out a mic. -->
-          <i class="slash" />
+    <section class="panel">
+      <div class="inner">
+        <div class="head">
+          <span class="mic">
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M8 10.2a2.5 2.5 0 0 0 2.5-2.5V4.1a2.5 2.5 0 1 0-5 0v3.6A2.5 2.5 0 0 0 8 10.2Z"
+              />
+              <path d="M3.9 7.2v.5a4.1 4.1 0 0 0 8.2 0v-.5M8 11.8v2.4M5.9 14.2h4.2" />
+            </svg>
+            <!-- The slash draws itself on with a scaleX on a child, never on the frame. -->
+            <i class="slash" />
+          </span>
+          <span v-if="voice.caption" class="caption">{{ voice.caption }}</span>
+        </div>
+
+        <!-- THE METER. The same object HudVitals.vue draws: a chamfered 1px track with
+             the configured graduations on it and one filled bar inside, held 3px off the
+             frame so its corner lands on the chamfer. No readout -- a mic level is a
+             shape, not a number. -->
+        <span
+          class="track"
+          :style="{ '--segs': segments }"
+          role="meter"
+          aria-label="voice"
+          :aria-valuenow="Math.round(voice.level)"
+          :aria-valuemin="0"
+          :aria-valuemax="100"
+        >
+          <span class="fill" :style="{ transform: `scaleY(${share(voice.level)})` }" />
         </span>
-        <span v-if="voice.caption" class="caption">{{ voice.caption }}</span>
+
+        <div v-if="voice.mode || voice.distance" class="reach">
+          <span v-if="voice.mode" class="mode">{{ voice.mode }}</span>
+          <span v-if="voice.distance" class="distance">{{ voice.distance }}</span>
+        </div>
+
+        <!-- Which reach mode of the cycle is active. Not a meter: a meter is a quantity
+             and this is a selection, so each one is an outline that goes bright, which is
+             the reference's whole answer for a chosen thing. -->
+        <div v-if="voice.count > 0" class="pips">
+          <i v-for="n in voice.count" :key="n" class="pip" :class="{ on: n <= voice.index }" />
+        </div>
+
+        <div v-if="voice.key || voice.activation" class="keys">
+          <kbd v-if="voice.key" class="cap">{{ voice.key }}</kbd>
+          <!-- The activation key rests at the quiet rung: it is how you talk, not what
+               you press to act. -->
+          <kbd v-if="voice.activation" class="cap quiet">{{ voice.activation }}</kbd>
+        </div>
+
+        <!-- The one live counter here, so the one thing allowed to bloom. -->
+        <span v-if="voice.heard > 0" class="rx">
+          <span class="rx-icon">RX</span>
+          <span>{{ voice.heard }}</span>
+        </span>
       </div>
-
-      <OpGauge
-        :value="voice.level"
-        :segments="segments"
-        :tone="METER_TONES[voice.state]"
-        :readout="false"
-        label="voice"
-      />
-
-      <div v-if="voice.mode || voice.distance" class="reach">
-        <span v-if="voice.mode" class="mode">{{ voice.mode }}</span>
-        <span v-if="voice.distance" class="distance">{{ voice.distance }}</span>
-      </div>
-
-      <!-- Which reach mode of the cycle is active. Not a meter: a meter is a quantity and
-           this is a selection, so it is five lines of CSS and not an OpGauge. -->
-      <div v-if="voice.count > 0" class="pips">
-        <i v-for="n in voice.count" :key="n" class="pip" :class="{ on: n <= voice.index }" />
-      </div>
-
-      <div v-if="voice.key || voice.activation" class="keys">
-        <OpKeyCap v-if="voice.key" :label="voice.key" />
-        <!-- The activation key is `muted`, which in OpKeyCap means outlined rather than
-             filled. It is how you talk, not what you press to act. -->
-        <OpKeyCap v-if="voice.activation" :label="voice.activation" muted />
-      </div>
-
-      <!-- The one live counter here, so the one thing allowed to glow. -->
-      <span v-if="voice.heard > 0" class="rx">
-        <OpChip :label="String(voice.heard)" icon="RX" tone="ok" />
-      </span>
-    </OpPanel>
+    </section>
   </div>
 </template>
 
 <style scoped>
+/* =============================================================================
+   THE WRAPPER -- this block pins itself, so this is the positioned element and it
+   carries what `.at` carries for the other four: the perspective, the paint
+   containment and the bleed the containment needs so a shadow is not clipped off.
+   ========================================================================== */
 .voice {
   position: fixed;
-  right: var(--op77-inset-x);
+  box-sizing: border-box;
+  right: calc(var(--op77-inset-x) - var(--hud-bleed));
   top: 50%;
-  width: 168px;
-  --voice-tone: var(--op77-text-dim);
+  /* IT IS SIZED BY ITS WIDEST LINE, and it was not.
+
+     `opx77_hud/web/hud.css` pinned `.voice` at 52px: a narrow column hugging the
+     right edge, its lines centred and ALLOWED TO RUN PAST IT rather than a box
+     sized to hold them. That is how the original read, and the note kept here
+     said so -- but this block also carries `contain: paint`, and paint
+     containment clips to the padding box. A line running past a 52px column was
+     not running past it. It was being cut off 10px out, and everything wider
+     than the microphone lost its ends: the caption (ellipsised to about 22px of
+     room), the reach mode and its distance, both keycaps, the RX counter.
+
+     So there is no width now. A fixed-position box shrink-to-fits, which sizes
+     this one to its widest line and nothing more, and the column still READS as
+     narrow because `.inner` centres everything in it -- the part of 52px that
+     was ever visible. The floor keeps the mic and the meter where they sat when
+     nothing else is drawn; the ceiling stops a long translation turning an
+     instrument into a banner, and `.caption` keeps its ellipsis for that case. */
+  min-width: calc(52px + var(--hud-bleed) * 2);
+  max-width: calc(220px + var(--hud-bleed) * 2);
+  padding: var(--hud-bleed);
   opacity: 0;
   transform: translate(8px, -50%);
+  perspective: var(--op77-persp);
+  contain: layout paint style;
+  /* An entrance: three steps, not a fade. */
   transition:
-    opacity var(--op77-dur) var(--op77-ease),
-    transform var(--op77-dur) var(--op77-ease);
+    opacity 190ms steps(3, end),
+    transform 190ms steps(3, end);
+  /* The state ladder, resolved once and read by the mic, the caption, the meter,
+     the slash and the frame. */
+  --voice-tone: var(--red-idle);
+  --voice-frame: var(--frame-idle);
 }
 
 .voice.live {
@@ -184,16 +224,89 @@ useBridge('opx:hud:voice', (payload: Payload) => {
   transform: translate(0, -50%);
 }
 
-.idle { --voice-tone: var(--op77-text-dim); }
-.detected { --voice-tone: var(--op77-text); }
-.talking { --voice-tone: var(--op77-accent); }
-.muted { --voice-tone: var(--op77-danger); }
-.offline { --voice-tone: var(--op77-text-faint); }
+/* At rest. */
+.idle {
+  --voice-tone: var(--red-idle);
+}
+
+/* The middle rung -- the menu's hover step, unspent on a HUD that takes no
+   pointer. Something is arriving; the player is not through yet. */
+.detected {
+  --voice-tone: var(--red-deep);
+}
+
+/* Lit, and the only state that blooms. */
+.talking {
+  --voice-tone: var(--red);
+  --voice-frame: var(--frame-live);
+}
+
+/* THE ALARM, AND NOT A RED. Muted is a failure to transmit -- the player is
+   talking and nobody can hear it -- so it takes the white-hot step, for the same
+   reason a `bad` gauge does: red is this surface's voice and cannot also be its
+   alarm. The slash carries it as well, so the state does not depend on colour
+   alone. */
+.muted {
+  --voice-tone: var(--alarm);
+  --voice-frame: var(--frame-alarm);
+}
+
+/* Not a state of the voice so much as the absence of one: no stack, nothing to
+   say, and the only place in this folder where the grey ink is right. */
+.offline {
+  --voice-tone: var(--op77-text-faint);
+  --voice-frame: var(--frame-off);
+}
+
+/* =============================================================================
+   THE FRAME -- no fill, two opposite chamfers, and the plane that tilts. Mirrored
+   for the right edge from the start: this block has only ever lived over there,
+   so the leading edge is the right one and the arete follows it.
+   ========================================================================== */
+.panel {
+  position: relative;
+/* NO ENCLOSURE. It had a chamfered frame with an inset outline; the old
+   `opx77_hud` drew none, and neither does this now. A HUD block is an
+   INSTRUMENT sitting on the gameplay plane, not a panel: the three clusters
+   that never had a box read correctly without one, and boxing these two made
+   them the odd pair out. The tilt, the type, the reds and the shadows stay --
+   only the container loses its edges. */
+  /* Right-anchored, so -7deg, pivoting on the right. */
+  transform-origin: right center;
+  transform: rotateY(calc(var(--op77-tilt) * -1));
+
+  /* NO GROUND. A plate went here and came straight back off on the owner's word,
+     with the rest of the HUD's. The reason it is worth recording rather than
+     just deleting: if one is ever put back it belongs on THIS element and not on
+     `.inner`, which is the one holding the lines and looks like the obvious
+     place. `.track::after` draws the unlit slats of the meter at `z-index: -1`,
+     and a negative child paints below every background in its stacking context
+     except the one belonging to the element that establishes it -- which is this
+     one, because it carries the `rotateY`. A plate one level down eats the
+     slats. */
+}
+
+.inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* Centred and unpadded, as the old stack was: with no frame there is no inner
+     edge to hang off, so every line is centred on one axis and the block is as
+     wide as the widest of them. Each line is still `nowrap` -- none of them is
+     a sentence, and a mode name broken over two lines reads as two modes. */
+  align-items: center;
+  gap: 6px;
+}
+
+/* The interlace went with the frame. It existed to stop an unfilled FRAME
+   reading as a web page floating in the air; with no frame, a striped
+   rectangle IS that floating rectangle. */
 
 .head {
   display: flex;
   align-items: center;
   gap: var(--op77-space-2);
+  width: 100%;
 }
 
 .mic {
@@ -205,17 +318,25 @@ useBridge('opx:hud:voice', (payload: Payload) => {
   width: 22px;
   height: 22px;
   color: var(--voice-tone);
-  transition: color var(--op77-dur-fast) var(--op77-ease);
+  transition:
+    color var(--op77-dur-fast) linear,
+    box-shadow var(--op77-dur-fast) linear;
 }
 
 .mic svg {
   display: block;
   width: 18px;
   height: 18px;
+  /* An SVG stroke takes no text-shadow, so the black is one drop-shadow on an
+     18px glyph -- static, and the only filter on this block. The `talking` bloom
+     that used to be a SECOND drop-shadow here is a `box-shadow` on `.mic` below:
+     swapping a filter on a state change re-rasterises the glyph, and a bloom is a
+     shape behind the icon rather than a property of its strokes. */
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.95));
 }
 
-.talking .mic svg {
-  filter: drop-shadow(0 0 5px var(--op77-accent-line));
+.talking .mic {
+  box-shadow: 0 0 16px -4px var(--red-glow);
 }
 
 .slash {
@@ -226,7 +347,7 @@ useBridge('opx:hud:voice', (payload: Payload) => {
   height: 2px;
   background: var(--voice-tone);
   transform: translate(-50%, -50%) rotate(-45deg) scaleX(0);
-  transition: transform var(--op77-dur-fast) var(--op77-ease);
+  transition: transform var(--op77-dur-fast) linear;
 }
 
 .muted .slash,
@@ -235,6 +356,9 @@ useBridge('opx:hud:voice', (payload: Payload) => {
 }
 
 .caption {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
   font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
   letter-spacing: var(--op77-track-micro);
   text-transform: uppercase;
@@ -244,28 +368,108 @@ useBridge('opx:hud:voice', (payload: Payload) => {
   white-space: nowrap;
 }
 
+.talking .caption {
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0 9px rgba(0, 0, 0, 0.8),
+    0 0 10px var(--red-glow);
+}
+
+/* =============================================================================
+   THE METER -- HudVitals.vue's gauge without the readout. Two small copies of
+   twenty lines, and they are deliberate for the life of this pass: the shared one
+   is `OpGauge`, which the panel module also draws, and both copies go when the
+   frame is promoted back into `design/`.
+   ========================================================================== */
+/* STACKED, AND UPWARDS. `opx77_hud` drew the input level as a column of sheared
+   slats lit from the bottom, and that is the shape the owner wants back -- a
+   horizontal bar reads as a progress bar, which a mic level is not.
+
+   It is still ONE node, not twenty. The old resource toggled a class on up to
+   twenty `.block` children every frame the level moved; the slats here are a
+   STATIC gradient and the level is one `scaleY` on one composited child, so the
+   look comes back without the twenty per-frame class writes coming back with it. */
+.track {
+  position: relative;
+  box-sizing: border-box;
+  width: 22px;
+  height: 46px;
+  padding: 2px;
+}
+
+/* Lua's segment count as hairline graduations on the track: a line, not a fill,
+   and one static gradient however fast the level moves. */
+/* The unlit column: the same slats at rest, under the fill and behind it. One
+   static gradient, painted once, whatever the level does. `--segs` no longer
+   divides it -- a slat is a fixed 4px with a 2px gap, as the original drew it,
+   so the column reads the same height whether Lua says eight or twenty. */
+.track::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  z-index: -1;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to top,
+    var(--red-idle) 0 4px,
+    transparent 4px 6px
+  );
+}
+
+/* The one filled shape on this block, and it is data. `scaleX`, never `width`. */
+.fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--voice-tone);
+  /* Lit from the bottom, like the original. */
+  transform-origin: center bottom;
+  transform: scaleY(0);
+  /* The slat divisions, cut OUT of the fill rather than drawn over it, so the
+     gaps show the night behind instead of a darker red. */
+  -webkit-mask-image: repeating-linear-gradient(to top, #000 0 4px, transparent 4px 6px);
+  mask-image: repeating-linear-gradient(to top, #000 0 4px, transparent 4px 6px);
+  transition:
+    transform var(--op77-dur-fast) linear,
+    background var(--op77-dur-fast) linear;
+}
+
 .reach {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--op77-space-2);
+  width: 100%;
 }
 
 .mode {
   font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
   letter-spacing: var(--op77-track-label);
   text-transform: uppercase;
-  color: var(--op77-accent);
+  color: var(--red);
   white-space: nowrap;
 }
 
 .distance {
   font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
   letter-spacing: var(--op77-track-label);
-  color: var(--op77-text);
+  color: var(--red-idle);
   font-variant-numeric: tabular-nums;
+  /* `.caption` and `.mode` already refuse to wrap; this one is a formatted
+     sentence rather than a bare number ("15 m", and whatever a translation makes
+     of it), so it gets the same refusal rather than being trusted to be short. */
+  white-space: nowrap;
 }
 
+/* =============================================================================
+   THE PIPS -- which reach mode of the cycle is active. Outlines, and the chosen
+   ones go bright: the reference's rule for a selected thing, at 10px.
+
+   NO CHAMFER AND NO CLIP HERE. A 6px cut on a 10px box is not a house shape, it
+   is a triangle, and a `clip-path` on a repeated element is the one thing the
+   performance notes name twice. A plain 1px border is the honest answer at this
+   size.
+   ========================================================================== */
 .pips {
   display: flex;
   gap: 3px;
@@ -273,30 +477,85 @@ useBridge('opx:hud:voice', (payload: Payload) => {
 
 .pip {
   width: 10px;
-  height: 3px;
-  background: var(--op77-panel-raised);
-  clip-path: polygon(2px 0, 100% 0, calc(100% - 2px) 100%, 0 100%);
+  height: 8px;
+  border: 1px solid var(--red-idle);
+  box-shadow: var(--hud-shadow);
+  transition:
+    border-color var(--op77-dur-fast) linear,
+    box-shadow var(--op77-dur-fast) linear;
 }
 
 .pip.on {
-  background: var(--op77-accent);
+  border-color: var(--red);
+  box-shadow:
+    var(--hud-shadow),
+    0 0 10px -2px var(--red-glow);
 }
 
+/* =============================================================================
+   THE KEYCAPS -- local, because `OpKeyCap` is `.op-tag` plus `data-augmented-ui`
+   plus an `--op77-accent-soft` fill and an accent under-rule, and all three are
+   off-spec here. The weighted base the shared one is built around does not
+   survive: a bottom rule 2px thick IS a fill, however thin. What is left is the
+   house frame and the type, which is what a key looks like on this surface now.
+   ========================================================================== */
 .keys {
   display: flex;
   gap: var(--op77-space-1);
 }
 
-/* `--op77-glow` is for live things only, and someone talking in your ear is the most live
-   thing on this surface. The pulse is opacity on a wrapper, never a shape. */
-.rx {
+.cap {
   display: inline-flex;
-  box-shadow: var(--op77-glow);
-  animation: rx 1.1s ease-in-out infinite;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 22px;
+  padding: 0 7px;
+  padding-right: calc(7px + var(--op77-cut-sm));
+  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  letter-spacing: 0.04em;
+  color: var(--red);
+  border: 1px solid transparent;
+  border-image-source: var(--frame-live);
+  border-image-slice: 8;
+  border-image-width: 6px;
 }
 
-@keyframes rx {
-  0%, 100% { opacity: 0.62; }
-  50% { opacity: 1; }
+.cap.quiet {
+  color: var(--red-idle);
+  border-image-source: var(--frame-idle);
+}
+
+/* =============================================================================
+   THE RX COUNTER -- how many players are audible. Lit and blooming, which is the
+   whole of its state.
+
+   THE PULSE IS GONE. It was a 1.1s infinite opacity animation, and an animation
+   that never ends keeps a compositor animation alive for the whole session on the
+   one surface that never stops drawing -- tokens.css says "no idle animation" and
+   means it. A counter that is only there when somebody is talking does not also
+   have to blink to say so.
+   ========================================================================== */
+.rx {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--op77-space-2);
+  padding: 4px var(--op77-space-3);
+  padding-right: calc(var(--op77-space-3) + var(--op77-cut-sm));
+  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
+  letter-spacing: var(--op77-track-label);
+  font-variant-numeric: tabular-nums;
+  color: var(--red);
+  border: 1px solid transparent;
+  border-image-source: var(--frame-live);
+  border-image-slice: 8;
+  border-image-width: 6px;
+  box-shadow: 0 0 18px -6px var(--red-glow);
+}
+
+.rx-icon {
+  flex: none;
+  font-weight: 900;
+  color: var(--red-hi);
 }
 </style>

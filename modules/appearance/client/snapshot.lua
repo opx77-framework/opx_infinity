@@ -137,6 +137,10 @@ function M.Face.Reset()
 	State.buildWarned = false
 	State.familyAttempts = 0
 	State.bodyReloading = false
+	-- When that reload started, 0 when none is running. It is the only thing
+	-- standing between a reset projection that never moves and a player left under
+	-- the loading cover the reload put up.
+	State.bodyReloadingSince = 0
 
 	-- This character's creation ended without a face, when an unanswered
 	-- needsCreation went out (0 when none waits), and whether that wait ran out.

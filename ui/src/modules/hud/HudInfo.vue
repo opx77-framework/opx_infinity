@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { shallowRef } from 'vue'
-import OpPanel from '@/design/components/OpPanel.vue'
+import { computed, shallowRef } from 'vue'
 import { list, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
@@ -15,19 +14,28 @@ import { railOf } from './anchors'
  * exist, in which order, and with which tone; this draws them. It has no idea what a
  * currency is.
  *
- * WHAT CHANGED: hud.css drew these as bare text over gameplay and paid for legibility
- * with a double `text-shadow`, because a shadow was the only thing holding a grey mono
- * line against a blown-out white plaza. That worked and looked like nothing else on the
- * platform. It is an `OpPanel` now -- ONE augmented frame, `--op77-panel` at 0.94 alpha
- * behind it, and the `op-rail` house marker on its leading edge. The panel is what makes
- * it legible, so the shadow is gone with it.
+ * -- DESIGN PASS 02 -----------------------------------------------------------
  *
- * `:lift="false"` is deliberate. `.op-lift` is THE one shadow in the system, a separation
- * device and not a depth ramp, and the toasts already spend it on this surface.
+ * THIS IS THE ONE CLUSTER ON THE HUD THAT IS A FRAME, so it is the one that draws one.
+ * It was an `OpPanel`: an augmented element with `--op77-panel` at 0.94 alpha behind it
+ * and the `op-rail` house marker down its leading edge. All three are gone. The frame is
+ * now two opposite chamfers cut with `clip-path` and a 1px red outline drawn as an INSET
+ * shadow, which is the one place a clip and a stroke can live together -- an inset shadow
+ * is painted over the padding box, so the clip trims it to the chamfer instead of
+ * shearing an outset one off the element.
+ *
+ * THE BACKING IS GONE AND THE SHADOW IS BACK. The pass-01 note in this file said the
+ * panel is what made the read-out legible "so the shadow is gone with it". There is no
+ * panel now, so the double `text-shadow` returns -- once, on `.hud` in HudRoot.vue, where
+ * it is inherited by this file and the other four.
+ *
+ * `--op77-hud-veil` is the escape hatch, the same dial the menu carries under its own
+ * name: 0 by default, raised to about 0.5 if a column of numbers washes out over a
+ * daylight plaza. One number to reverse the decision instead of a rewrite.
  */
 const { t } = useLocale()
 
-withDefaults(defineProps<{ anchor?: Anchor }>(), { anchor: 'top-right' })
+const props = withDefaults(defineProps<{ anchor?: Anchor }>(), { anchor: 'top-right' })
 
 type Tone = 'neutral' | 'on' | 'warn' | 'bad'
 
@@ -40,8 +48,11 @@ interface Line {
   tone: Tone
 }
 
-const eyebrow = shallowRef('')
 const lines = shallowRef<Line[]>([])
+
+/** Which screen edge is the leading one. A right-anchored panel reads the right edge as
+    its lead, so the chamfers, the arete and the column of numbers all mirror. */
+const end = computed(() => railOf(props.anchor) === 'end')
 
 function toneOf(value: unknown): Tone {
   const name = text(value, 'neutral')
@@ -49,7 +60,6 @@ function toneOf(value: unknown): Tone {
 }
 
 useBridge('opx:hud:info', (payload: Payload) => {
-  eyebrow.value = t(text(payload.eyebrow))
   lines.value = list<Payload>(payload.lines)
     .filter((row) => text(row.id) !== '')
     .map((row) => ({
@@ -64,29 +74,75 @@ useBridge('opx:hud:info', (payload: Payload) => {
 </script>
 
 <template>
-  <OpPanel
-    v-if="lines.length"
-    class="info"
-    :anchor="railOf(anchor)"
-    :lift="false"
-    :class="railOf(anchor) === 'end' ? 'to-end' : 'to-start'"
-  >
-    <template v-if="eyebrow" #header>
-      <span class="op77-eyebrow">{{ eyebrow }}</span>
-    </template>
-
-    <div v-for="line in lines" :key="line.id" class="line" :class="line.tone">
-      <span class="label">{{ line.label }}</span>
-      <span v-if="line.value" class="value">{{ line.value }}</span>
+  <section v-if="lines.length" class="info" :class="end ? 'to-end' : 'to-start'">
+    <div class="inner">
+      <div
+        v-for="(line, at) in lines"
+        :key="line.id"
+        class="line"
+        :class="line.tone"
+        :style="`--slot: ${at}`"
+      >
+        <span class="label">{{ line.label }}</span>
+        <span v-if="line.value" class="value">{{ line.value }}</span>
+      </div>
     </div>
-  </OpPanel>
+  </section>
 </template>
 
 <style scoped>
+/* =============================================================================
+   THE FRAME -- no fill. It is also the plane that tilts: `.at` in HudRoot.vue is
+   the positioned wrapper and holds the perspective, the paint containment and
+   the sign, and this rotates in it about whichever edge it is anchored to.
+   ========================================================================== */
 .info {
   min-width: 180px;
   max-width: 34vw;
+  /* NO ENCLOSURE. It had a chamfered frame with an inset outline; the old
+     `opx77_hud` drew none, and neither does this now. A HUD block is an
+     INSTRUMENT sitting on the gameplay plane, not a panel: the three clusters
+     that never had a box read correctly without one, and boxing these two made
+     them the odd pair out. The tilt, the type, the reds and the shadows stay --
+     only the container loses its edges. */
+  transform-origin: var(--origin, right center);
+  transform: rotateY(var(--tilt, 0deg));
 }
+
+/* `.info.to-end` mirrored the chamfers and the arete. With no enclosure there
+   is nothing left for it to mirror -- the tilt already follows the anchor. */
+
+.inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--op77-space-1);
+  min-width: 0;
+  /* NO GROUND. A plate went here and came straight back off on the owner's word.
+     The argument for it -- that money and identity are looked AT rather than
+     glanced at -- was a reason to fill the one HUD block that had padding ready,
+     and the answer in game was that it made a panel of the HUD's corner. The ink
+     shadow on `.hud` carries these lines, as it carries the other four blocks. */
+  padding: var(--op77-space-3) calc(var(--op77-space-3) + var(--op77-cut-lg))
+    calc(var(--op77-space-3) + var(--op77-cut-lg) * 0.5) calc(var(--op77-space-3) + var(--op77-rule));
+}
+
+.to-end .inner {
+  padding: var(--op77-space-3) calc(var(--op77-space-3) + var(--op77-rule))
+    calc(var(--op77-space-3) + var(--op77-cut-lg) * 0.5)
+    calc(var(--op77-space-3) + var(--op77-cut-lg));
+}
+
+/* THE INTERLACE. One static gradient on a pseudo-element nothing else was using,
+   no transition, so it costs a single paint for the life of the block -- and it
+   is what stops an unfilled frame reading as a web page floating in the air.
+   This cluster and the voice block are the only two that get it, because they
+   are the only two with a frame to put it on. */
+/* The interlace went with the frame, for the reason given in HudVoice.vue. */
+
+/* THE EYEBROW IS GONE. It captioned the read-out `STATUS` above a money line
+   that already says what it is, and `payload.eyebrow` is simply no longer read.
+   Lua may keep sending it; nothing here draws it. */
 
 .line {
   display: flex;
@@ -95,25 +151,99 @@ useBridge('opx:hud:info', (payload: Payload) => {
   font: 400 var(--op77-fs-meta) / 1.3 var(--op77-font-mono);
   letter-spacing: var(--op77-track-label);
   text-transform: uppercase;
-  color: var(--op77-text-dim);
   white-space: nowrap;
 }
 
-/* Right-anchored: the value lands on the edge the panel is pinned to, so a column of
-   numbers reads down the outside instead of down the middle. */
+/* Right-anchored: the value lands on the edge the block is pinned to, so a
+   column of numbers reads down the outside instead of down the middle. */
 .to-end .line {
   justify-content: space-between;
+}
+
+.label {
+  color: var(--red-idle);
 }
 
 .value {
   margin-left: auto;
   font-weight: 700;
-  color: var(--op77-text);
   font-variant-numeric: tabular-nums;
+  color: var(--red);
 }
 
-/* Tones are Lua's. `on` is the one the job line uses for on duty. */
-.on .value { color: var(--op77-ok); }
-.warn .value { color: var(--op77-warn); }
-.bad .value { color: var(--op77-danger); }
+/* --- THE TONES -----------------------------------------------------------
+   `on` -- the job line on duty -- is the reference's own answer for a state
+   that matters: it does NOT change hue, it goes lit and it BLOOMS, and that is
+   the whole of it. The bloom restates both black passes because a `text-shadow`
+   override replaces the entire list and this surface has no backing to lose.
+
+   `warn` takes the brightest red, and `bad` leaves the hue for white-hot and
+   700. See HudRoot.vue: red is the voice of this HUD, so it cannot be the
+   alarm as well. */
+.on .value {
+  color: var(--red);
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0 9px rgba(0, 0, 0, 0.8),
+    0 0 10px var(--red-glow);
+}
+
+.warn .value {
+  color: var(--red-hi);
+}
+
+.bad .value {
+  color: var(--alarm);
+  font-weight: 700;
+}
+
+/* =============================================================================
+   THE BOOT-IN -- a stutter, one shot per line, keyed by Lua's line id so a line
+   that survives a frame does not re-run it. The money line changes its VALUE
+   many times a session and its identity almost never, which is exactly the case
+   a keyed v-for gets right.
+   ========================================================================== */
+@keyframes line-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(6px, 0, 0);
+  }
+
+  55% {
+    opacity: 1;
+    transform: translate3d(-2px, 0, 0);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.line {
+  animation: line-in 190ms steps(3, end) backwards;
+  animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
+}
+
+/* A left-anchored read-out arrives from its own edge. */
+.to-start .line {
+  animation-name: line-in-start;
+}
+
+@keyframes line-in-start {
+  0% {
+    opacity: 0;
+    transform: translate3d(-6px, 0, 0);
+  }
+
+  55% {
+    opacity: 1;
+    transform: translate3d(2px, 0, 0);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
 </style>

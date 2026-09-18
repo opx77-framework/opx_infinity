@@ -29,6 +29,10 @@ withDefaults(
 const emit = defineEmits<{
   (event: 'select'): void
   (event: 'toggle'): void
+  /** The pointer is over this row. Whoever owns the highlight decides what that
+      means -- the row does not move it, for the same reason it does not tick its
+      own checkbox. A list driven only by the arrow keys ignores it. */
+  (event: 'point'): void
 }>()
 
 function activate(): void {
@@ -56,6 +60,7 @@ function activate(): void {
     :tabindex="disabled ? -1 : 0"
     :aria-disabled="disabled"
     @click="!disabled && activate()"
+    @mouseenter="!disabled && emit('point')"
     @keydown.enter.prevent="!disabled && activate()"
     @keydown.space.prevent="!disabled && activate()"
   >

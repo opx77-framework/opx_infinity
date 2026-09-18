@@ -23,8 +23,20 @@ local KINDS = { player = true, vehicle = true, npc = true, prop = true, door = t
 -- Icons the page draws. A name outside this set is refused rather than passed
 -- through: the page selects a local glyph by it, and an unknown name would reach
 -- the DOM as an attribute nobody wrote.
+--
+-- The second band is the one that lets a cascade of thirty rows read as thirty
+-- different things; it is kept in step by hand with `ui/src/modules/target/
+-- glyphs.ts`, `menu.M.ICONS` and `Catalog.ICONS`.
 Model.ICONS = { interact = true, person = true, vehicle = true, info = true, lock = true, tool = true,
-	location = true, box = true, door = true, heal = true, money = true, talk = true }
+	location = true, box = true, door = true, heal = true, money = true, talk = true,
+	folder = true, back = true,
+	search = true, filter = true, list = true, star = true,
+	weapon = true, ammo = true, shield = true, ban = true, warning = true,
+	eye = true, hidden = true, tag = true,
+	flag = true, map = true, world = true, clock = true, weather = true,
+	gear = true, refresh = true, bolt = true, server = true, key = true,
+	arrow = true, plus = true, minus = true, trash = true,
+	heart = true, emote = true, food = true, drink = true, smoke = true }
 
 -- Rows every owner together may hold.
 Model.MAX_TOTAL = 128
@@ -486,9 +498,32 @@ function Model.New(alive)
 		for _, row in pairs(rows) do
 			if registry.Matches(row, context) then out[#out + 1] = row end
 		end
+
+		-- A GROUP IS SORTED WHOLE, AT THE RANK OF ITS BEST ROW.
+		--
+		-- `order` came first and the group second, which meant two rows of one
+		-- folder with different orders were separated by every row that ordered
+		-- between them. The page folds a group into a folder wherever its name is
+		-- first seen, so the folder still appeared -- but the rows AROUND it moved
+		-- to wherever those two orders fell, and the column read as a shuffle of
+		-- one owner's rows into another's.
+		--
+		-- Ranking by the group's lowest order keeps both properties that matter:
+		-- every folder is one contiguous run, and a folder still sits where its
+		-- most important row asked to sit. The ungrouped rows are a group like any
+		-- other -- `''` -- so an owner that wants its own row above every folder
+		-- still says so with `order` and nothing else.
+		local rank = {}
+		for _, row in ipairs(out) do
+			local best = rank[row.group]
+			if best == nil or row.order < best then rank[row.group] = row.order end
+		end
+
 		table.sort(out, function(left, right)
-			if left.order ~= right.order then return left.order < right.order end
+			local a, b = rank[left.group], rank[right.group]
+			if a ~= b then return a < b end
 			if left.group ~= right.group then return left.group < right.group end
+			if left.order ~= right.order then return left.order < right.order end
 			if left.label ~= right.label then return left.label < right.label end
 			return left.sequence < right.sequence
 		end)
