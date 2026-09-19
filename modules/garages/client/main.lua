@@ -173,7 +173,7 @@ end
 local function keyLabel()
 	if not keyRegistered then return nil end
 	local declared = keySettings()
-	return OPX.Keys.KeyFor(declared.ID) or declared.DEFAULT
+	return OPX.Lib.Input.KeyFor(declared.ID) or declared.DEFAULT
 end
 
 -- Brings the strip in line with where the player is standing.
