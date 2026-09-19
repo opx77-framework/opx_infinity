@@ -143,6 +143,27 @@ do
 		end
 		check('every server job is on the scheduler', #missing == 0, table.concat(missing, ', '))
 
+		-- A PILE'S PROP MUST BE A CURATED ALIAS. `Open77.props.create` also takes a
+		-- raw depot path, and that is the one form whose failure is invisible: the
+		-- renderer matches a prebuilt host per alias, so a `.mesh` draws as a marker
+		-- on the client AND returns an id, which stops `World.CreateDrop` falling
+		-- back to the crate. An unknown alias is refused with `unknown_alias`, so it
+		-- fails loudly and the crate is drawn. This checks the shipped data rather
+		-- than the validator, because the validator is what someone would edit.
+		local inventory = env.OPX.Modules.Get('inventory')
+		local paths = {}
+		if inventory and inventory.Catalog then
+			for _, name in ipairs(inventory.Catalog.Names()) do
+				local entry = inventory.Catalog.Get(name)
+				local model = entry and entry.model
+				if type(model) == 'string' and (model:find('[\\/]') or model:find('%.mesh$')) then
+					paths[#paths + 1] = ('%s -> %s'):format(name, model)
+				end
+			end
+		end
+		check('every pile model is a props alias, never a depot path',
+			#paths == 0, table.concat(paths, ', '))
+
 		-- A tunable read at registration is frozen for the life of the resource.
 		-- The tag sweep passes the read itself, so its line reports what the
 		-- tunable says now.
