@@ -163,7 +163,7 @@ OPX.Config.MODULES.appearance = {
 		-- boolean. It is never guessed at: 'creation', 'once' and true are each a
 		-- typo, and a typo that silently turned the room off would look exactly
 		-- like the module being broken.
-		OFFER_POLICY = 'always',
+		OFFER_POLICY = 'first',
 
 		-- How long the room is waited for before the join gives up on it, in
 		-- milliseconds.
