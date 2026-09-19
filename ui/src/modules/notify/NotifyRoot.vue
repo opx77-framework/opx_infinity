@@ -73,7 +73,7 @@ const KINDS: readonly string[] = ['info', 'success', 'warning', 'error']
 const MAX_PER_STACK = 8
 const MAX_TOTAL = 32
 
-/** How long a leaving toast stays mounted. Must be >= --op77-dur-slow (220ms). */
+/** How long a leaving toast stays mounted. Must be >= --op-dur-slow (220ms). */
 const EXIT_MS = 260
 
 /** 20 Hz. The bar is 2px of width; under the surface's 30fps and smooth enough for it. */
@@ -375,16 +375,16 @@ onUnmounted(stop)
   position: fixed;
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   width: var(--toast-width, 340px);
-  max-width: calc(100vw - var(--op77-inset-x) * 2);
-  perspective: var(--op77-persp);
+  max-width: calc(100vw - var(--op-inset-x) * 2);
+  perspective: var(--op-persp);
   contain: layout style;
 }
 
 .top_left,
 .top_center {
-  top: var(--op77-inset-y);
+  top: var(--op-inset-y);
 }
 
 /* THE READ-OUT IS ALREADY UP THERE. `HudInfo.vue` anchors `top-right` by default --
@@ -397,7 +397,7 @@ onUnmounted(stop)
    know about each other. The read-out is a handful of short lines, so the number is
    stable; it is a token so that moving it is moving one value. */
 .top_right {
-  top: calc(var(--op77-inset-y) + var(--op77-notify-clear-top, 132px));
+  top: calc(var(--op-inset-y) + var(--op-notify-clear-top, 132px));
 }
 
 /* Bottom stacks grow upward, so the newest toast is nearest the edge. DOM order is the
@@ -405,7 +405,7 @@ onUnmounted(stop)
 .bottom_left,
 .bottom_center,
 .bottom_right {
-  bottom: var(--op77-inset-y);
+  bottom: var(--op-inset-y);
   flex-direction: column-reverse;
 }
 
@@ -420,16 +420,16 @@ onUnmounted(stop)
 .top_left,
 .bottom_left,
 .middle_left {
-  left: var(--op77-inset-x);
-  --tilt: var(--op77-tilt);
+  left: var(--op-inset-x);
+  --tilt: var(--op-tilt);
   --origin: left center;
   --pop: -12px;
 }
 
 .top_right,
 .bottom_right {
-  right: var(--op77-inset-x);
-  --tilt: calc(var(--op77-tilt) * -1);
+  right: var(--op-inset-x);
+  --tilt: calc(var(--op-tilt) * -1);
   --origin: right center;
   --pop: 12px;
 }
@@ -479,8 +479,8 @@ onUnmounted(stop)
   transform: rotateY(var(--tilt, 0deg));
   animation: toast-in 190ms steps(3, end);
   transition:
-    opacity var(--op77-dur-slow) steps(3, end),
-    transform var(--op77-dur-slow) steps(3, end);
+    opacity var(--op-dur-slow) steps(3, end),
+    transform var(--op-dur-slow) steps(3, end);
 }
 
 /* Leaving is arriving, played backwards: out the edge it came in by. */

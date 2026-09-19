@@ -356,15 +356,7 @@ local function pass()
 	ownQuiet = ownMissing ~= nil and ownQuiet + 1 or 0
 	if ownQuiet == math.max(2, math.floor(2000 / tuning.updateMs)) and not reported.own then
 		reported.own = true
-		local message = ('the own name tag is on but not drawn: %s'):format(ownMissing)
-		Open77.log.warn('[admin] ' .. message)
-		-- AND INTO THE SERVER JOURNAL, because `Open77.log` on the client is a file
-		-- on the player's machine and the operator reading it is usually somewhere
-		-- else. The diagnostics module owns the relay and is asked for by name
-		-- rather than depended on: a runtime without it just keeps the line local.
-		local diagnostics = OPX.Modules.Get('diagnostics')
-		local channel = type(diagnostics) == 'table' and diagnostics.PAGE or nil
-		if channel ~= nil then pcall(TriggerServerEvent, channel, '[admin] ' .. message) end
+		M.Client.Journal(('the own name tag is on but not drawn: %s'):format(ownMissing))
 	end
 
 	table.sort(rows, function(left, right) return left.playerId < right.playerId end)

@@ -17,7 +17,11 @@
 OPX.Scheduler = OPX.Scheduler or {}
 
 local jobs = {}
+local byHandle = {}
 local cursor = 0
+local nextHandle = 0
+local dead = 0
+local registered = 0
 local running = false
 
 local MAX_PER_TICK = 4
@@ -25,6 +29,11 @@ local MAX_FAILURES = 3
 local IDLE_MS = 100
 
 --- Registers repeating work. Returns a handle for `Cancel`.
+---
+--- THE HANDLE IS NOT A POSITION. A cancelled job is dropped from the list at the
+--- next pass -- a menu that registers its key poll on open and cancels it on
+--- close would otherwise leave one dead entry per open, for the session -- and
+--- an index would name a different job after the first drop.
 -- @author dop42
 -- @param name string owner and purpose, for the log line if it fails
 -- @param intervalMs integer
@@ -36,24 +45,50 @@ function OPX.Scheduler.Every(name, intervalMs, step)
 	end
 	local interval = math.max(0, math.floor(tonumber(intervalMs) or 0))
 
-	jobs[#jobs + 1] = {
+	nextHandle = nextHandle + 1
+	registered = registered + 1
+
+	local job = {
+		handle = nextHandle,
 		name = name,
 		interval = interval,
 		-- Staggered so that ten jobs sharing an interval spread across it rather
-		-- than colliding on one resume forever.
-		nextAt = OPX.Now() + (interval > 0 and (#jobs * 17) % interval or 0),
+		-- than colliding on one resume forever. Off the count of everything ever
+		-- registered, not of what is live: two jobs landing on the same offset
+		-- because one in between was cancelled is the collision this avoids.
+		nextAt = OPX.Now() + (interval > 0 and (registered * 17) % interval or 0),
 		step = step,
 		failures = 0,
 	}
-	return #jobs
+
+	jobs[#jobs + 1] = job
+	byHandle[nextHandle] = job
+	return nextHandle
 end
 
 --- Stops a registered job. Safe for a handle that is already cancelled.
 -- @author dop42
 -- @param handle integer
 function OPX.Scheduler.Cancel(handle)
-	local job = jobs[handle]
-	if job then job.step = nil end
+	local job = byHandle[handle]
+	if job == nil or job.step == nil then return end
+	job.step = nil
+	byHandle[handle] = nil
+	dead = dead + 1
+end
+
+--- Drops cancelled jobs. Run at the top of a pass rather than inside `Cancel`,
+--- which may itself be called from a job this loop is walking.
+local function compact()
+	if dead == 0 then return end
+	local live = {}
+	for index = 1, #jobs do
+		local job = jobs[index]
+		if job.step then live[#live + 1] = job end
+	end
+	jobs = live
+	cursor = 0
+	dead = 0
 end
 
 --- Runs one job, suspending it after MAX_FAILURES consecutive raises.
@@ -72,7 +107,7 @@ local function runJob(job, atMs)
 			-- discover that thirty times a second.
 			Open77.log.error(('[scheduler] %s suspended after %d failures')
 				:format(job.name, job.failures))
-			job.step = nil
+			OPX.Scheduler.Cancel(job.handle)
 			return
 		end
 	end
@@ -81,23 +116,44 @@ end
 
 --- One pass: runs up to MAX_PER_TICK due jobs, resuming where the last pass left
 --- off so a long list cannot starve its tail.
--- @return boolean whether anything was due
+-- @return integer milliseconds to wait before the next pass is worth making
 local function tick()
+	compact()
+
 	local atMs = OPX.Now()
 	local count = #jobs
-	if count == 0 then return false end
+	if count == 0 then return IDLE_MS end
 
 	local ran, examined = 0, 0
 	while examined < count and ran < MAX_PER_TICK do
 		cursor = cursor % count + 1
 		examined = examined + 1
 		local job = jobs[cursor]
-		if job and job.step and atMs >= job.nextAt then
+		if job.step and atMs >= job.nextAt then
 			runJob(job, atMs)
 			ran = ran + 1
 		end
 	end
-	return ran > 0
+
+	-- WHAT THE LOOP SLEEPS IS THE NEAREST DEADLINE, not a constant. A flat
+	-- hundred is longer than most intervals registered here: the vitals stream
+	-- asks for 33ms and was served every ~116ms whenever the pass before it
+	-- happened to find nothing else due, so the health bar ran at a third of the
+	-- rate its own config names. The cap stays as the idle floor, and a pass that
+	-- hit MAX_PER_TICK with more still due comes straight back.
+	if ran >= MAX_PER_TICK then return 0 end
+
+	local soonest
+	for index = 1, count do
+		local job = jobs[index]
+		if job.step and (soonest == nil or job.nextAt < soonest) then soonest = job.nextAt end
+	end
+	if soonest == nil then return IDLE_MS end
+
+	local waitMs = soonest - atMs
+	if waitMs < 0 then waitMs = 0 end
+	if waitMs > IDLE_MS then waitMs = IDLE_MS end
+	return waitMs
 end
 
 --- Starts the loop. Called once by the client boot; further calls are ignored.
@@ -111,12 +167,12 @@ function OPX.Scheduler.Start()
 			-- The pcall is around the pass, not only around each job: OPX.Now
 			-- is a host read too, and a raise from it would end the loop for the
 			-- whole session.
-			local ok, busy = pcall(tick)
+			local ok, waitMs = pcall(tick)
 			if not ok then
-				Open77.log.error(('[scheduler] pass failed: %s'):format(tostring(busy)))
-				busy = false
+				Open77.log.error(('[scheduler] pass failed: %s'):format(tostring(waitMs)))
+				waitMs = IDLE_MS
 			end
-			Wait(busy and 0 or IDLE_MS)
+			Wait(waitMs)
 		end
 	end)
 end

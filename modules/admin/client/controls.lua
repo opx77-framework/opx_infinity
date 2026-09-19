@@ -231,7 +231,7 @@ local function pass()
 	else
 		offReads = 0
 	end
-	if OPX.Keys.IsCaptured() then held = 0 end
+	if OPX.Lib.Input.IsCaptured() then held = 0 end
 	if held ~= 0 and atMs >= nextRepeatMs then
 		nextRepeatMs = atMs + REPEAT_MS
 		chooseStep(held)

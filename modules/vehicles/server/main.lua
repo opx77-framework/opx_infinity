@@ -479,15 +479,23 @@ function M.Start()
 	AddEventHandler(OPX.Host.VEHICLE_REMOVED, removed)
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, departed)
 
-	-- `OPX.Scheduler` is the client's loop; the server VM has none, so the save
-	-- loop keeps its own thread.
+	-- A DELETED CHARACTER TAKES ITS CARS WITH IT, and this is what does it: the
+	-- table's foreign key never fires, because a character delete is a soft one.
+	-- Left to the cascade, a deleted character's vehicles stayed in the table for
+	-- ever, owned by a citizen id nothing can ever log in as. See
+	-- `character.Event.IN_DELETED`.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'),
+		function(_, citizenId)
+			if type(citizenId) ~= 'string' or citizenId == '' then return end
+			local purged = M.Storage.PurgeCharacter(citizenId)
+			if purged ~= nil and not purged.ok then
+				Open77.log.warn(('[vehicles] the cars of the deleted %s were not removed: %s')
+					:format(citizenId, tostring(purged.detail or purged.error)))
+			end
+		end)
+
 	local everyMs = math.max(1000, math.floor(tonumber(M.Settings.SAVE_SECONDS) or 120) * 1000)
-	CreateThread(function()
-		while true do
-			Wait(everyMs)
-			savePass()
-		end
-	end)
+	OPX.Scheduler.Every('vehicles:save', everyMs, savePass)
 end
 
 --- Writes back everything that is out before the resource goes.

@@ -158,14 +158,18 @@ function share(value: number): number {
         </div>
 
         <div v-if="voice.key || voice.activation" class="keys">
-          <kbd v-if="voice.key" class="cap">{{ voice.key }}</kbd>
+          <kbd v-if="voice.key" class="cap" data-augmented-ui="tr-clip border">{{ voice.key }}</kbd>
           <!-- The activation key rests at the quiet rung: it is how you talk, not what
                you press to act. -->
-          <kbd v-if="voice.activation" class="cap quiet">{{ voice.activation }}</kbd>
+          <kbd
+            v-if="voice.activation"
+            class="cap quiet"
+            data-augmented-ui="tr-clip border"
+          >{{ voice.activation }}</kbd>
         </div>
 
         <!-- The one live counter here, so the one thing allowed to bloom. -->
-        <span v-if="voice.heard > 0" class="rx">
+        <span v-if="voice.heard > 0" class="rx" data-augmented-ui="tr-clip border">
           <span class="rx-icon">RX</span>
           <span>{{ voice.heard }}</span>
         </span>
@@ -183,7 +187,7 @@ function share(value: number): number {
 .voice {
   position: fixed;
   box-sizing: border-box;
-  right: calc(var(--op77-inset-x) - var(--hud-bleed));
+  right: calc(var(--op-inset-x) - var(--hud-bleed));
   top: 50%;
   /* IT IS SIZED BY ITS WIDEST LINE, and it was not.
 
@@ -207,16 +211,18 @@ function share(value: number): number {
   padding: var(--hud-bleed);
   opacity: 0;
   transform: translate(8px, -50%);
-  perspective: var(--op77-persp);
+  perspective: var(--op-persp);
   contain: layout paint style;
   /* An entrance: three steps, not a fade. */
   transition:
     opacity 190ms steps(3, end),
     transform 190ms steps(3, end);
-  /* The state ladder, resolved once and read by the mic, the caption, the meter,
-     the slash and the frame. */
-  --voice-tone: var(--red-idle);
-  --voice-frame: var(--frame-idle);
+  /* The state ladder, resolved once and read by the mic, the caption, the meter
+     and the slash. NOT by the frame: `--voice-frame` sat here for four states
+     and nothing ever read it, so the caps and the rx counter never followed the
+     voice state and do not start now -- reviving a dead variable during a
+     port is a look change nobody asked for. */
+  --voice-tone: var(--op-red-idle);
 }
 
 .voice.live {
@@ -226,19 +232,18 @@ function share(value: number): number {
 
 /* At rest. */
 .idle {
-  --voice-tone: var(--red-idle);
+  --voice-tone: var(--op-red-idle);
 }
 
 /* The middle rung -- the menu's hover step, unspent on a HUD that takes no
    pointer. Something is arriving; the player is not through yet. */
 .detected {
-  --voice-tone: var(--red-deep);
+  --voice-tone: var(--op-red-deep);
 }
 
 /* Lit, and the only state that blooms. */
 .talking {
-  --voice-tone: var(--red);
-  --voice-frame: var(--frame-live);
+  --voice-tone: var(--op-red);
 }
 
 /* THE ALARM, AND NOT A RED. Muted is a failure to transmit -- the player is
@@ -247,15 +252,13 @@ function share(value: number): number {
    alarm. The slash carries it as well, so the state does not depend on colour
    alone. */
 .muted {
-  --voice-tone: var(--alarm);
-  --voice-frame: var(--frame-alarm);
+  --voice-tone: var(--op-alarm);
 }
 
 /* Not a state of the voice so much as the absence of one: no stack, nothing to
    say, and the only place in this folder where the grey ink is right. */
 .offline {
-  --voice-tone: var(--op77-text-faint);
-  --voice-frame: var(--frame-off);
+  --voice-tone: var(--op-text-faint);
 }
 
 /* =============================================================================
@@ -273,7 +276,7 @@ function share(value: number): number {
    only the container loses its edges. */
   /* Right-anchored, so -7deg, pivoting on the right. */
   transform-origin: right center;
-  transform: rotateY(calc(var(--op77-tilt) * -1));
+  transform: rotateY(calc(var(--op-tilt) * -1));
 
   /* NO GROUND. A plate went here and came straight back off on the owner's word,
      with the rest of the HUD's. The reason it is worth recording rather than
@@ -305,7 +308,7 @@ function share(value: number): number {
 .head {
   display: flex;
   align-items: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   width: 100%;
 }
 
@@ -319,8 +322,8 @@ function share(value: number): number {
   height: 22px;
   color: var(--voice-tone);
   transition:
-    color var(--op77-dur-fast) linear,
-    box-shadow var(--op77-dur-fast) linear;
+    color var(--op-dur-fast) linear,
+    box-shadow var(--op-dur-fast) linear;
 }
 
 .mic svg {
@@ -336,7 +339,7 @@ function share(value: number): number {
 }
 
 .talking .mic {
-  box-shadow: 0 0 16px -4px var(--red-glow);
+  box-shadow: 0 0 16px -4px var(--op-red-glow);
 }
 
 .slash {
@@ -347,7 +350,7 @@ function share(value: number): number {
   height: 2px;
   background: var(--voice-tone);
   transform: translate(-50%, -50%) rotate(-45deg) scaleX(0);
-  transition: transform var(--op77-dur-fast) linear;
+  transition: transform var(--op-dur-fast) linear;
 }
 
 .muted .slash,
@@ -359,8 +362,8 @@ function share(value: number): number {
   flex: 1;
   min-width: 0;
   text-align: right;
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
   color: var(--voice-tone);
   overflow: hidden;
@@ -372,7 +375,7 @@ function share(value: number): number {
   text-shadow:
     0 1px 2px rgba(0, 0, 0, 0.95),
     0 0 9px rgba(0, 0, 0, 0.8),
-    0 0 10px var(--red-glow);
+    0 0 10px var(--op-red-glow);
 }
 
 /* =============================================================================
@@ -411,7 +414,7 @@ function share(value: number): number {
   pointer-events: none;
   background-image: repeating-linear-gradient(
     to top,
-    var(--red-idle) 0 4px,
+    var(--op-red-idle) 0 4px,
     transparent 4px 6px
   );
 }
@@ -430,30 +433,30 @@ function share(value: number): number {
   -webkit-mask-image: repeating-linear-gradient(to top, #000 0 4px, transparent 4px 6px);
   mask-image: repeating-linear-gradient(to top, #000 0 4px, transparent 4px 6px);
   transition:
-    transform var(--op77-dur-fast) linear,
-    background var(--op77-dur-fast) linear;
+    transform var(--op-dur-fast) linear,
+    background var(--op-dur-fast) linear;
 }
 
 .reach {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   width: 100%;
 }
 
 .mode {
-  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   text-transform: uppercase;
-  color: var(--red);
+  color: var(--op-red);
   white-space: nowrap;
 }
 
 .distance {
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
-  color: var(--red-idle);
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-red-idle);
   font-variant-numeric: tabular-nums;
   /* `.caption` and `.mode` already refuse to wrap; this one is a formatted
      sentence rather than a bare number ("15 m", and whatever a translation makes
@@ -478,18 +481,18 @@ function share(value: number): number {
 .pip {
   width: 10px;
   height: 8px;
-  border: 1px solid var(--red-idle);
+  border: 1px solid var(--op-red-idle);
   box-shadow: var(--hud-shadow);
   transition:
-    border-color var(--op77-dur-fast) linear,
-    box-shadow var(--op77-dur-fast) linear;
+    border-color var(--op-dur-fast) linear,
+    box-shadow var(--op-dur-fast) linear;
 }
 
 .pip.on {
-  border-color: var(--red);
+  border-color: var(--op-red);
   box-shadow:
     var(--hud-shadow),
-    0 0 10px -2px var(--red-glow);
+    0 0 10px -2px var(--op-red-glow);
 }
 
 /* =============================================================================
@@ -501,7 +504,7 @@ function share(value: number): number {
    ========================================================================== */
 .keys {
   display: flex;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
 }
 
 .cap {
@@ -511,19 +514,19 @@ function share(value: number): number {
   min-width: 24px;
   height: 22px;
   padding: 0 7px;
-  padding-right: calc(7px + var(--op77-cut-sm));
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  padding-right: calc(7px + var(--op-cut-sm));
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
   letter-spacing: 0.04em;
-  color: var(--red);
-  border: 1px solid transparent;
-  border-image-source: var(--frame-live);
-  border-image-slice: 8;
-  border-image-width: 6px;
+  color: var(--op-red);
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
 }
 
 .cap.quiet {
-  color: var(--red-idle);
-  border-image-source: var(--frame-idle);
+  color: var(--op-red-idle);
+  --aug-border-bg: var(--op-red-idle);
+  --aug-border-all: 1px;
 }
 
 /* =============================================================================
@@ -539,23 +542,28 @@ function share(value: number): number {
 .rx {
   display: inline-flex;
   align-items: center;
-  gap: var(--op77-space-2);
-  padding: 4px var(--op77-space-3);
-  padding-right: calc(var(--op77-space-3) + var(--op77-cut-sm));
-  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  gap: var(--op-space-2);
+  padding: 4px var(--op-space-3);
+  padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   font-variant-numeric: tabular-nums;
-  color: var(--red);
-  border: 1px solid transparent;
-  border-image-source: var(--frame-live);
-  border-image-slice: 8;
-  border-image-width: 6px;
-  box-shadow: 0 0 18px -6px var(--red-glow);
+  color: var(--op-red);
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
+  /* THE BLOOM IS A FILTER, on the surface that forbids them -- and this is the
+     exception the rule allows for. `shapes.css` bans a filter on anything whose
+     VALUE changes every frame, because that is what costs a backing store per
+     repaint; the rx counter appears when somebody starts talking and changes
+     when the set of speakers does. A clip shears an outset shadow, so this is
+     the only bloom that follows the cut. */
+  filter: drop-shadow(0 0 5px var(--op-red-glow));
 }
 
 .rx-icon {
   flex: none;
   font-weight: 900;
-  color: var(--red-hi);
+  color: var(--op-red-hi);
 }
 </style>

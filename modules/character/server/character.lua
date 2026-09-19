@@ -172,6 +172,14 @@ function M.CreateCharacter(source)
 	return Result.Ok(toSummary(entity))
 end
 
+-- Forward-declared: `M.SwitchTo` below takes the other character here in the
+-- world when the operator asked for a relog, and the function that does it is
+-- three hundred lines further down. Declared here rather than moving either of
+-- them, because without the `local` the call in `SwitchTo` would compile against
+-- a GLOBAL of the same name -- nil, and a raise inside a command thread rather
+-- than anything a reader would look for.
+local enterCharacter
+
 --- Ends a session so that the next one enters on the lock as it now stands.
 -- @author dop42
 --
@@ -233,6 +241,29 @@ function M.SwitchTo(source, citizenId)
 		userId = session.userId,
 		source = source,
 	})
+
+	-- THE SOFT PATH, when the operator asked for it. `enterCharacter` was written
+	-- for exactly this and had nothing calling it: it awaits the save of the
+	-- character being left, refuses the switch rather than losing it, loads the
+	-- other one, and -- because the gate is already open for somebody standing in
+	-- the world -- places the body on the spot instead of queueing it. It sets the
+	-- lock itself at the end, so the next connection comes back to whatever
+	-- actually entered.
+	--
+	-- Only an EXISTING character can go this way, which is all this function ever
+	-- handles: a new one needs the game's own creator, and that is a join-time
+	-- screen. See `M.Switch` for the measurement behind that.
+	if M.SwitchMode == M.Switch.RELOG then
+		local entered = enterCharacter(source, parsed.value)
+		if entered.ok then return Result.Ok(toSummary(wanted.value)) end
+		-- FALLING BACK RATHER THAN STOPPING. The lock has already moved, so a
+		-- player left standing here is on a character they asked to leave and
+		-- would get the other one on their next connection anyway. The disconnect
+		-- makes that connection now, and saves them again on the way out.
+		Open77.log.warn(('[character] the in-world switch to %s was refused (%s); ' ..
+			'ending the session instead'):format(parsed.value, tostring(entered.error)))
+	end
+
 	endSession(source, locale('session.switching'))
 	return Result.Ok(toSummary(wanted.value))
 end
@@ -271,7 +302,97 @@ function M.NewCharacter(source)
 	return Result.Ok({ used = #characters.value, slots = slots })
 end
 
---- Soft-deletes one of the caller's own characters.
+--- Soft-deletes a character, and removes everything else it owned.
+-- @author dop42
+--
+-- THE WORKER BEHIND BOTH DOORS: a player deleting their own with `/opx.delete`,
+-- and staff deleting somebody else's from the menu. Every check about WHO may do
+-- it belongs to the caller -- ownership and `SELF_DELETE` on one side, the ACL on
+-- the other -- and none of it is repeated here, so the two cannot drift into
+-- removing different amounts of a character.
+--
+-- `owner` is the account the character belongs to, which is NOT the account
+-- asking when staff are the ones asking. Coroutine only.
+-- @param citizenId CitizenId already parsed
+-- @param owner string the user id the character belongs to
+-- @param source Source|nil who asked, for the audit trail
+-- @return Result
+local function removeCharacter(citizenId, owner, source)
+	-- Read BEFORE the delete: the lock is joined against living characters, so a
+	-- soft-deleted one answers as no lock at all and this would never match.
+	local active = M.Storage.FetchActive(owner)
+	local wasActive = active.ok and active.value == citizenId
+
+	-- Out of the world first, or the autosave rewrites the row a minute later.
+	local online = M.GetPlayerByCitizenId(citizenId)
+	if online then M.Logout(online.PlayerData.source) end
+
+	local deleted = M.Storage.SoftDelete(citizenId)
+	if not deleted.ok then return deleted end
+
+	-- A lock naming a character that is gone would cost the next connection a
+	-- failed entry before it gave up on it.
+	if wasActive then M.Storage.ClearActive(owner) end
+
+	-- THIS MODULE'S OWN SATELLITE TABLE, and it is here rather than left to the
+	-- foreign key for the reason the whole block below exists: the delete above is
+	-- SOFT, and a cascade fires for a DELETE and never for an UPDATE. Every job
+	-- and gang membership of a deleted character used to stay, and `group` listings
+	-- counted them.
+	M.Storage.DeleteCascade('opx77_character_groups', 'citizen_id', citizenId)
+
+	-- The operator's escape hatch, for tables this runtime does not own. Every
+	-- table a MODULE owns is purged by that module on the announcement below
+	-- instead, because a list of other people's table names in one config file is
+	-- a list somebody has to remember to extend.
+	local cascades = M.Settings.CHARACTERS.CASCADE_TABLES
+	for i = 1, #cascades do
+		local target = cascades[i]
+		M.Storage.DeleteCascade(target[1], target[2], citizenId)
+	end
+
+	OPX.Audit.Log({
+		event = 'character.delete',
+		severity = 'warn',
+		citizenId = citizenId,
+		userId = owner,
+		source = source,
+	})
+
+	-- THE CASCADE THE FOREIGN KEYS CANNOT DO. Clothes, needs, the down row,
+	-- containers and cars are each removed by the module that owns them; see the
+	-- event's own comment in module.lua for why none of it happens by itself.
+	--
+	-- UNDER pcall, and that is not defensive habit: the audit above has already
+	-- been written and `endSession` below is what gets a player out of a character
+	-- that no longer exists. A handler that raised would skip it and leave them
+	-- standing in the world as nobody, with no screen left to choose on.
+	local announced, failure = pcall(TriggerEvent, M.Event.IN_DELETED, source, citizenId)
+	if not announced then
+		Open77.log.error(('[character] a handler raised while %s was being deleted: %s')
+			:format(citizenId, tostring(failure)))
+	end
+
+	-- Deleting a character somebody is PLAYING leaves them in the world as nobody,
+	-- and there is no screen left to choose another one on. Their session ends,
+	-- and the next one enters on whatever the lock now says -- a new character,
+	-- when this one was it.
+	--
+	-- `online` and not `source`: staff delete other people's characters, so the
+	-- connection that has to end is the one holding the character, which is very
+	-- often not the one that asked.
+	if online ~= nil then
+		endSession(online.PlayerData.source, locale('session.characterDeleted'))
+	end
+	return Result.Ok(citizenId)
+end
+
+--- Whether a player may delete their own character at all.
+local function selfDeleteAllowed()
+	return M.Settings.CHARACTERS.SELF_DELETE ~= false
+end
+
+--- Soft-deletes one of the caller's OWN characters.
 -- The cooldown also protects the audit log, since every refused delete writes a
 -- security line.
 -- @author dop42
@@ -282,6 +403,16 @@ function M.DeleteCharacter(source, citizenId)
 	if OPX.Cooling(source, 'delete', 3000) then
 		return Result.Err('error.tooFast', tostring(source))
 	end
+	-- REFUSED, NOT HIDDEN, AND FIRST. A player who is not allowed to do this is
+	-- told so; a command that silently did nothing would have them trying it again
+	-- and then asking staff whether it had worked. Ahead of the session read and
+	-- the id parse because on a server where this door is shut the answer is the
+	-- same for everybody and for every id -- there is nothing to be learnt from
+	-- which ids are real, and nothing to look up to say no.
+	if not selfDeleteAllowed() then
+		return Result.Err('character.deleteNotAllowed', tostring(source))
+	end
+
 	local session = OPX.EnsureSession(source)
 	if not session then return Result.Err('entry.noIdentity', tostring(source)) end
 
@@ -299,43 +430,145 @@ function M.DeleteCharacter(source, citizenId)
 		return Result.Err('character.notFound', citizenId)
 	end
 
-	-- Read BEFORE the delete: the lock is joined against living characters, so a
-	-- soft-deleted one answers as no lock at all and this would never match.
-	local active = M.Storage.FetchActive(session.userId)
-	local wasActive = active.ok and active.value == citizenId
+	return removeCharacter(citizenId, session.userId, source)
+end
 
-	-- Out of the world first, or the autosave rewrites the row a minute later.
+--- Every character on ANOTHER account, for staff who have passed the ACL.
+-- @author dop42
+--
+-- `M.ListCharacters` beside it reads the CALLER's account out of their session,
+-- which is right for `/opx.characters` and useless to staff: called with the
+-- operator's source it lists the operator's own characters. This one is handed
+-- the account to read, and the ownership question is the access list's rather
+-- than this function's -- the same split as `M.RemoveCharacter`.
+--
+-- It does NOT upsert the account row, which the self-service version does: that
+-- write exists so a player's first connection records them, and staff reading a
+-- roster must not create the thing they are reading.
+-- Coroutine only.
+-- @param userId UserId
+-- @return Result `{ characters, slots, active }`
+function M.ListCharactersFor(userId)
+	if type(userId) ~= 'string' or userId == '' then
+		return Result.Err('character.notFound', tostring(userId))
+	end
+	if OPX.BootError then return Result.Err('error.unavailable', OPX.BootError) end
+
+	local characters = M.Storage.FetchAll(userId)
+	if not characters.ok then return characters end
+
+	local active = M.Storage.FetchActive(userId)
+
+	local list = characters.value
+	local summaries = {}
+	for i = 1, #list do
+		summaries[i] = toSummary(list[i])
+		-- Staff read a row to act on it, and every action takes a citizen id: the
+		-- creation date is what tells two otherwise identical unnamed characters
+		-- apart, and it is the only date this schema has ever held. There is no
+		-- birth date -- lifepath, origin and date of birth were all dropped -- so
+		-- there is nothing here for staff to edit, only a record of what happened.
+		summaries[i].createdAt = list[i].createdAt
+	end
+
+	return Result.Ok({
+		characters = summaries,
+		slots = slotsFor(userId),
+		active = active.ok and active.value or nil,
+	})
+end
+
+--- Renames ANY character, online or not, for staff who have passed the ACL.
+-- @author dop42
+--
+-- `M.SetName` beside it is WRITE-ONCE by design: a character is named by the
+-- player who made it, once, and a second write is refused by name so that a
+-- client which thinks it owns the name learns that it does not. That rule is for
+-- players and it is kept. Staff are the reason a rename has to exist at all --
+-- somebody typed a slur, or a name with a typo in it that the player cannot fix
+-- because the door closed behind them -- so this is a different door with a
+-- different check on it, and it deliberately does not call the other one.
+--
+-- OFFLINE IS THE NORMAL CASE. A character that needs renaming is usually not the
+-- one its account is standing in, so the row is edited directly when nobody is
+-- holding it. The `name` column is the denormalised "First Last" the roster
+-- reads, so it is rewritten with the halves and never left to drift.
+-- Coroutine only.
+-- @param citizenId CitizenId
+-- @param firstName string
+-- @param lastName string
+-- @param source Source|nil the staff member, for the audit trail
+-- @return Result
+function M.RenameCharacter(citizenId, firstName, lastName, source)
+	local parsed = OPX.CitizenId.Parse(citizenId)
+	if not parsed.ok then return Result.Err('character.notFound', tostring(citizenId)) end
+	citizenId = parsed.value
+
+	-- The same bounds a player's own name is held to. Staff get a bigger door,
+	-- not a different alphabet: a name only staff could have written is a name
+	-- every other reader of the column still has to cope with.
+	local first = M.ValidateName(firstName)
+	if not first.ok then return Result.Err('character.badName', 'firstName') end
+	local last = M.ValidateName(lastName)
+	if not last.ok then return Result.Err('character.badName', 'lastName') end
+
+	local full = ('%s %s'):format(first.value, last.value)
 	local online = M.GetPlayerByCitizenId(citizenId)
-	if online then M.Logout(online.PlayerData.source) end
 
-	local deleted = M.Storage.SoftDelete(citizenId)
-	if not deleted.ok then return deleted end
-
-	-- A lock naming a character that is gone would cost the next connection a
-	-- failed entry before it gave up on it.
-	if wasActive then M.Storage.ClearActive(session.userId) end
-
-	local cascades = M.Settings.CHARACTERS.CASCADE_TABLES
-	for i = 1, #cascades do
-		local target = cascades[i]
-		M.Storage.DeleteCascade(target[1], target[2], citizenId)
+	if online ~= nil then
+		-- THROUGH THE LIVE CHARACTER, not the row: an autosave a minute later
+		-- would write the loaded charInfo straight back over a row edited
+		-- underneath it, and the rename would simply undo itself.
+		local charInfo = online.PlayerData.charInfo
+		charInfo.firstName, charInfo.lastName = first.value, last.value
+		online.PlayerData.name = full
+		online.Functions.UpdatePlayerData()
+		local saved = M.Save(online, false)
+		if not saved.ok then return saved end
+	else
+		local fetched = M.Storage.FetchOne(citizenId)
+		if not fetched.ok then return fetched end
+		local entity = fetched.value
+		entity.charInfo.firstName, entity.charInfo.lastName = first.value, last.value
+		entity.name = full
+		local written = M.Storage.Save(entity, false)
+		if not written.ok then return written end
 	end
 
 	OPX.Audit.Log({
-		event = 'character.delete',
+		event = 'character.rename',
 		severity = 'warn',
+		message = full,
 		citizenId = citizenId,
-		userId = session.userId,
 		source = source,
 	})
-	TriggerEvent(M.Event.IN_DELETED, source, citizenId)
+	Open77.log.info(('[character] %s was renamed to %s by staff'):format(citizenId, full))
+	return Result.Ok({ citizenId = citizenId, firstName = first.value, lastName = last.value })
+end
 
-	-- Deleting the character you are playing leaves you in the world as nobody,
-	-- and there is no screen left to choose another one on. The session ends, and
-	-- the next one enters on whatever the lock now says -- a new character, when
-	-- this one was it.
-	if online ~= nil then endSession(source, locale('session.characterDeleted')) end
-	return Result.Ok(citizenId)
+--- Soft-deletes ANY character, for staff who have passed the ACL.
+-- @author dop42
+--
+-- THE OWNERSHIP CHECK IS DELIBERATELY ABSENT and `SELF_DELETE` is deliberately
+-- not consulted: both of those answer "may this PLAYER delete this character",
+-- and the answer here is the access list's instead. Nothing calls this without
+-- having passed it -- which is the one thing a reader has to be able to take on
+-- trust, so it is stated rather than re-checked: re-checking it here with the
+-- wrong permission name would look like protection and be none.
+--
+-- A character nobody owns cannot be deleted by anybody, so the row is still read
+-- first: it is what says which account's lock has to be cleared.
+-- @param citizenId CitizenId
+-- @param source Source|nil the staff member, for the audit trail
+-- @return Result
+function M.RemoveCharacter(citizenId, source)
+	local parsed = OPX.CitizenId.Parse(citizenId)
+	if not parsed.ok then return Result.Err('character.notFound', tostring(citizenId)) end
+
+	local fetched = M.Storage.FetchOne(parsed.value)
+	if not fetched.ok then return fetched end
+
+	return removeCharacter(parsed.value, fetched.value.userId, source)
 end
 
 --- Answers whether a life state is alive or dead, and not in transition.
@@ -466,16 +699,19 @@ function M.PlacePending(source)
 	local player = M.GetPlayer(source)
 	if not player or player.PlayerData.citizenId ~= citizenId then return false end
 
-	-- EVERY JOIN IS ASKED WHERE TO START. The menu is offered whether or not the
-	-- row already holds a position, so a returning player may pick a spot and one
-	-- who picks nothing -- or never opens the menu -- is placed by
-	-- `PlaceCharacter` with no explicit target, which resolves to the row's own
-	-- position (see the target resolution above). Choosing is the exception;
-	-- resuming is still the default.
+	-- EVERY JOIN IS PUT TO THE SPAWN MODULE, and WHICH of them turn into a menu is
+	-- that module's decision and not this one's -- its `OFFER_POLICY` names three
+	-- answers and this block is deliberately blind to all three. A player who is
+	-- asked and picks a spot is placed there; one who is not asked, or who picks
+	-- nothing, or who never opens the menu, falls through to `PlaceCharacter` with
+	-- no explicit target, which resolves to the row's own position (see the target
+	-- resolution above). Choosing is the exception; resuming is still the default.
 	--
-	-- `position` therefore no longer decides WHETHER this question is asked, only
-	-- what the answer falls back to. It used to gate the whole block, which meant
-	-- a character that had ever stood anywhere was never asked again.
+	-- `position` therefore does not gate this block, and must not: it used to,
+	-- which meant a character that had ever stood anywhere was never asked again
+	-- -- a policy, hard-wired into the wrong module, that no operator could turn
+	-- off. It is a hint the spawn module reads for itself under `first`, and here
+	-- it is only what the answer falls back to.
 	--
 	-- Read through `Get` and NOT declared in `requires`: this module is the one
 	-- the spawn module depends on, so a declaration in both directions is a cycle,
@@ -525,7 +761,7 @@ end
 -- @param source Source
 -- @param citizenId CitizenId
 -- @return Result
-local function enterCharacter(source, citizenId)
+enterCharacter = function(source, citizenId)
 	local parsed = OPX.CitizenId.Parse(citizenId)
 	if not parsed.ok then return Result.Err('character.notFound', tostring(citizenId)) end
 
@@ -641,9 +877,12 @@ end
 -- opened by itself": the row has no body and no name, so the client is handed to
 -- the game's own character creator and then asked to type a name.
 --
--- The lock is moved by a command (`opx.select`, `opx.create`), and a command that
--- moves it disconnects the player, because the body a world loads with is decided
--- before the world exists. Coroutine only.
+-- The lock is moved by a command. `opx.create` ALWAYS disconnects, because a new
+-- character needs the game's own creator and that is drawn by the game's main
+-- menu, for a bootstrap transaction spent before the world exists -- see
+-- `M.Switch`. `opx.select` takes an EXISTING character, which needs no creator,
+-- so `CHARACTERS.SWITCH` decides whether it is taken here in the world or at the
+-- next connection. Coroutine only.
 -- @param source Source
 -- @return Result
 function M.EnterSession(source)

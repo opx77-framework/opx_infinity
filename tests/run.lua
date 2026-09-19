@@ -61,7 +61,13 @@ local CORE_NAMESPACE = {
 	Modules = true, Api = true, Schema = true, Scheduler = true,
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
-	Storage = true, Audit = true, Rpc = true, Surface = true, Keys = true,
+	Storage = true, Audit = true, Surface = true,
+	-- `Lib` is the external library, `opx_lib`, loaded once by
+	-- `lib/client/lib.lua` and client-only. It replaced `Rpc` and `Keys`, which
+	-- were the two helpers in `lib/client/` that reached nothing this resource
+	-- owns; everything under `lib/shared/` stays where it is because the
+	-- dedicated-server sandbox has no `require` to load a library with.
+	Lib = true,
 	Booted = true, BootError = true,
 	Sessions = true, UserIdOf = true, DisplayNameOf = true, EnsureSession = true,
 	ForgetSession = true, SessionHolds = true,
@@ -90,29 +96,62 @@ end
 -- cannot drift from it.
 section('sandbox')
 do
-	local shipped = {}
-	for _, side in ipairs({ 'server', 'client' }) do
-		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do shipped[file] = true end
+	-- The two sides are kept APART because the runtimes are not the same. A
+	-- `shared_script` appears in both lists, and that is exactly what makes the
+	-- second check below work: the client-only names are forbidden to anything
+	-- the server loads, so a shared file reaching for `require` is caught here
+	-- rather than at the first server boot on the test machine.
+	local serverSide, clientSide = {}, {}
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'server')) do serverSide[file] = true end
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do clientSide[file] = true end
+
+	--- The file's body with comments stripped: they mention these names
+	--- legitimately, and only a real reach counts.
+	local function body(file)
+		local handle = io.open(file, 'r')
+		if handle == nil then return nil end
+		local text = handle:read('a')
+		handle:close()
+		return text:gsub('%-%-%[%[.-%]%]', ''):gsub('%-%-[^\n]*', '')
+	end
+
+	local function reaches(file, names)
+		local text = body(file)
+		if text == nil then return nil end
+		for _, name in ipairs(names) do
+			if text:find('[^%w_.]' .. name .. '[.(]') then return name end
+		end
+		return nil
 	end
 
 	local offenders = {}
-	for file in pairs(shipped) do
-		local handle = io.open(file, 'r')
-		if handle then
-			local body = handle:read('a')
-			handle:close()
-			-- Comments mention these names legitimately; only a real reach counts.
-			body = body:gsub('%-%-%[%[.-%]%]', ''):gsub('%-%-[^\n]*', '')
-			for _, name in ipairs(Host.Sandbox) do
-				if body:find('[^%w_.]' .. name .. '[.(]') then
-					offenders[#offenders + 1] = ('%s uses %s'):format(file, name)
-				end
-			end
-		end
+	for file in pairs(clientSide) do
+		local name = reaches(file, Host.Sandbox)
+		if name then offenders[#offenders + 1] = ('%s uses %s'):format(file, name) end
+	end
+	for file in pairs(serverSide) do
+		local name = reaches(file, Host.Sandbox)
+		if name then offenders[#offenders + 1] = ('%s uses %s'):format(file, name) end
 	end
 	table.sort(offenders)
-	check('no shipped file reaches a sandboxed global',
+	check('no shipped file reaches a global neither runtime has',
 		#offenders == 0, table.concat(offenders, ', '))
+
+	-- `require` is the only name in this list, and the rule it encodes is the
+	-- reason `lib/client/lib.lua` may exist while `lib/shared/result.lua` may
+	-- never import anything: the dedicated-server sandbox has no module loader,
+	-- so a shared file that imported one would load on the client and fail on
+	-- the server, in production, at boot.
+	local crossed = {}
+	for file in pairs(serverSide) do
+		local name = reaches(file, Host.ClientOnly)
+		if name then
+			crossed[#crossed + 1] = ('%s uses %s, which the server has not'):format(file, name)
+		end
+	end
+	table.sort(crossed)
+	check('nothing the server loads reaches a client-only global',
+		#crossed == 0, table.concat(crossed, ', '))
 end
 
 -- ── server boot ──────────────────────────────────────────────────────────────
@@ -131,6 +170,45 @@ do
 			control.commands['opx.modules'] ~= nil and control.commands['opx.modules'].restricted)
 		check('no thread died', #control.log.error == 0 or not table.concat(control.log.error)
 			:find('thread died'), table.concat(control.log.error, ' | '))
+
+		-- The repeating work is registered rather than hand-rolled: six modules
+		-- used to open their own `while true` loop, one of them with no pcall
+		-- around the pass at all.
+		local report = table.concat(env.OPX.Scheduler.Report(), '\n')
+		local missing = {}
+		for _, job in ipairs({ 'vehicles:save', 'needs:autosave', 'downed:scan',
+			'weather:schedule', 'admin:travel-sweep', 'admin:tag-sweep', 'admin:door-sweep' }) do
+			if not report:find(job, 1, true) then missing[#missing + 1] = job end
+		end
+		check('every server job is on the scheduler', #missing == 0, table.concat(missing, ', '))
+
+		-- A PILE'S PROP MUST BE A CURATED ALIAS. `Open77.props.create` also takes a
+		-- raw depot path, and that is the one form whose failure is invisible: the
+		-- renderer matches a prebuilt host per alias, so a `.mesh` draws as a marker
+		-- on the client AND returns an id, which stops `World.CreateDrop` falling
+		-- back to the crate. An unknown alias is refused with `unknown_alias`, so it
+		-- fails loudly and the crate is drawn. This checks the shipped data rather
+		-- than the validator, because the validator is what someone would edit.
+		local inventory = env.OPX.Modules.Get('inventory')
+		local paths = {}
+		if inventory and inventory.Catalog then
+			for _, name in ipairs(inventory.Catalog.Names()) do
+				local entry = inventory.Catalog.Get(name)
+				local model = entry and entry.model
+				if type(model) == 'string' and (model:find('[\\/]') or model:find('%.mesh$')) then
+					paths[#paths + 1] = ('%s -> %s'):format(name, model)
+				end
+			end
+		end
+		check('every pile model is a props alias, never a depot path',
+			#paths == 0, table.concat(paths, ', '))
+
+		-- A tunable read at registration is frozen for the life of the resource.
+		-- The tag sweep passes the read itself, so its line reports what the
+		-- tunable says now.
+		check('a job may take its cadence from a live tunable',
+			report:find('admin:tag%-sweep%s+500ms') ~= nil,
+			report:match('admin:tag%-sweep[^\n]*'))
 
 		local leaks = namespaceLeaks(env.OPX)
 		check('no module hangs its internals off OPX',
@@ -532,11 +610,17 @@ do
 		--
 		-- `character` is a stub: what is under test here is the decision and the
 		-- handoff, not the placement.
+		--
+		-- `settings` is written in BEFORE the phases run, and for the offer policy
+		-- that is not a convenience but the only route: the policy is resolved once
+		-- in `Init` -- so a typo is journalled at boot rather than on every join --
+		-- and a value set afterwards is a value nothing ever reads.
 		-- @param locations table|nil
 		-- @param character table|nil the contract the stub provides
+		-- @param settings table|nil written over this module's config before boot
 		-- @return table env
 		-- @return table control
-		local function spawnOnly(locations, character)
+		local function spawnOnly(locations, character, settings)
 			local own, ctl = Host.Environment('server')
 			for _, file in ipairs({
 				'core/shared/main.lua', 'core/shared/channels.lua',
@@ -547,6 +631,9 @@ do
 				assert(loadfile(file, 't', own), file)()
 			end
 			own.OPX.Config.MODULES.spawn.LOCATIONS = locations or {}
+			for key, value in pairs(settings or {}) do
+				own.OPX.Config.MODULES.spawn[key] = value
+			end
 			-- `Choose` rate-limits through core's own helper and refuses on core's own
 			-- channel. Neither is part of what this env tests -- the full-boot section
 			-- above covers the refusal -- so both stand in for themselves.
@@ -632,6 +719,141 @@ do
 				gotPoint and ('%s,%s,%s'):format(gotPoint.x, gotPoint.y, gotPoint.z))
 			check('and the id, so a failure can name the place',
 				gotPoint ~= nil and gotPoint.id == 'spot')
+		end
+
+		-- ── the offer policy ──────────────────────────────────────────────────────
+		-- WHICH WORLD ENTERS ARE ASKED, which is `OFFER_POLICY` and is the operator's
+		-- call rather than this module's. Three values and no fourth, and each is
+		-- exercised against the same two characters -- one whose row already holds a
+		-- position and one that has never been placed -- because `position` is the
+		-- whole of what 'first' reads and the whole of what the other two ignore.
+		--
+		-- Driven through probes rather than the booted server above: the policy is
+		-- resolved ONCE, in `Init`, so that a typo is journalled at boot instead of
+		-- on every join -- and a value written into the config after the phases have
+		-- run is a value nothing will ever read again.
+		do
+			local SPOT = {
+				{ id = 'spot', label = 'A Spot', district = 'Watson',
+					x = 1, y = 2, z = 3, heading = 0.0 },
+			}
+
+			-- Two slots, two characters. `PlaceCharacter` answers true and is never
+			-- the point here: what is under test is whether a menu is offered at
+			-- all, which is decided before anything is placed.
+			local STOOD, FRESH = 21, 22
+			local function roster()
+				return {
+					GetPlayer = function(source)
+						if source == STOOD then
+							return { PlayerData = {
+								citizenId = 'citizen-stood',
+								position = { x = 9.0, y = 9.0, z = 9.0, heading = 0.0 },
+							} }
+						end
+						if source == FRESH then
+							return { PlayerData = { citizenId = 'citizen-fresh-2' } }
+						end
+						return nil
+					end,
+					PlaceCharacter = function() return true end,
+				}
+			end
+
+			--- A world with one spot, two characters and the policy under test.
+			-- @param policy any
+			-- @return table module
+			-- @return table control
+			local function under(policy)
+				local own, ctl = spawnOnly(SPOT, roster(), { OFFER_POLICY = policy })
+				return own.OPX.Modules.Get('spawn'), ctl
+			end
+
+			-- ALWAYS: what this module did before the setting existed, and still the
+			-- shipped default. Both characters are asked.
+			do
+				local module = under(spawn.Policy.ALWAYS)
+				check("'always' is resolved as configured",
+					module.OfferPolicy == spawn.Policy.ALWAYS, tostring(module.OfferPolicy))
+				check('and a character that has stood somewhere is asked anyway',
+					module.Offer(STOOD, 'citizen-stood') == true)
+				check('as is one that never has',
+					module.Offer(FRESH, 'citizen-fresh-2') == true)
+			end
+
+			-- FIRST: asked once per character, ever. The row's own position is the
+			-- only thing consulted, so a returning player resumes in silence -- which
+			-- is the behaviour the gate used to hard-wire, offered back as a choice.
+			do
+				local module = under(spawn.Policy.FIRST)
+				check("'first' is resolved as configured",
+					module.OfferPolicy == spawn.Policy.FIRST, tostring(module.OfferPolicy))
+				check('a character that has never stood anywhere is asked',
+					module.Offer(FRESH, 'citizen-fresh-2') == true)
+				check('and its choice is outstanding', module.IsPending(FRESH) == true)
+				check('a character whose row already holds a position is not asked',
+					module.Offer(STOOD, 'citizen-stood') == false)
+				check('and nothing is left outstanding for it',
+					module.IsPending(STOOD) == false)
+			end
+
+			-- NEVER: nobody is asked, and -- the part that matters -- NOTHING IS
+			-- ARMED. A 'never' that offered a menu and closed it again, or that
+			-- recorded a choice nobody would ever make, would hold the character on
+			-- a clock for a screen that is never drawn: on the shipped floors that
+			-- is sixty seconds of a player standing in the pre-game position, with
+			-- no name, waiting for a hold to release a menu that does not exist.
+			do
+				local module, ctl = under(spawn.Policy.NEVER)
+				check("'never' is resolved as configured",
+					module.OfferPolicy == spawn.Policy.NEVER, tostring(module.OfferPolicy))
+
+				local mark = #ctl.clientEvents
+				check('a brand new character is not asked',
+					module.Offer(FRESH, 'citizen-fresh-2') == false)
+				check('nor is a returning one',
+					module.Offer(STOOD, 'citizen-stood') == false)
+				check('and nothing is outstanding for either',
+					module.IsPending(FRESH) == false and module.IsPending(STOOD) == false)
+				check('and no offer reaches the client', #ctl.clientEvents == mark,
+					('%d event(s) sent'):format(#ctl.clientEvents - mark))
+
+				-- Ninety seconds, which is past the sixty-second HOLD floor and far
+				-- past any timeout. A hold armed anywhere would settle here and put a
+				-- `spawn:close` on the wire; the silence is the assertion.
+				ctl.Pump(900)
+				check('no hold is armed: nothing settles once the window would have run',
+					module.IsPending(FRESH) == false and module.IsPending(STOOD) == false)
+				check('and no menu is taken down, because none was ever put up',
+					#ctl.clientEvents == mark,
+					('%d event(s) sent'):format(#ctl.clientEvents - mark))
+			end
+
+			-- AN UNKNOWN VALUE. Refused with a line in the journal and replaced with
+			-- the named default -- never honoured, and never silently taken as "off".
+			-- A typo that quietly stopped offering the menu is indistinguishable from
+			-- the module being broken, which is the failure this check exists for.
+			do
+				local own, ctl = spawnOnly(SPOT, roster(), { OFFER_POLICY = 'sometimes' })
+				local module = own.OPX.Modules.Get('spawn')
+				check('an unknown policy is refused rather than honoured',
+					module.OfferPolicy == spawn.POLICY_DEFAULT, tostring(module.OfferPolicy))
+				check('and it is named in the journal, with what is running instead',
+					table.concat(ctl.log.warn, ' | '):find('OFFER_POLICY sometimes') ~= nil,
+					table.concat(ctl.log.warn, ' | '))
+				check('and the fallback behaves, so a typo costs a log line and no more',
+					module.Offer(STOOD, 'citizen-stood') == true)
+			end
+
+			-- A POLICY THAT IS NOT A STRING AT ALL. `OFFER_POLICY = true` is the shape
+			-- of a mis-edit that turns a named setting into the boolean beside it, and
+			-- it must take the same route rather than raising out of `Init`.
+			do
+				local own = spawnOnly(SPOT, roster(), { OFFER_POLICY = true })
+				local module = own.OPX.Modules.Get('spawn')
+				check('a policy that is not a string is refused the same way',
+					module.OfferPolicy == spawn.POLICY_DEFAULT, tostring(module.OfferPolicy))
+			end
 		end
 
 		-- ── the offer ────────────────────────────────────────────────────────────
@@ -839,10 +1061,21 @@ do
 			check('each carrying a label and a district',
 				places[1] ~= nil and places[1].label ~= nil and places[1].district ~= nil)
 			check('and no coordinates', places[1] ~= nil and places[1].x == nil)
-			-- A duration for the display countdown, which is all it is: the server
-			-- counts the same window itself.
-			check('and a duration to count down',
-				opened.payload.timeoutMs == 5000, tostring(opened.payload.timeoutMs))
+			-- AND NO WINDOW. The page drew a countdown from this and the countdown
+			-- was display only -- it reached zero and did nothing, because the
+			-- server counts the same window against its own clock and only that
+			-- count ends the choice. Sending it was a deadline put in front of a
+			-- one-press decision for no behaviour at all, so the page is not told:
+			-- running out still arrives as `spawn:close` with `reason = 'timeout'`.
+			check('and no window, because the page no longer counts one',
+				opened.payload.timeoutMs == nil, tostring(opened.payload.timeoutMs))
+			-- The controls the page is handed are the question and the hint. There
+			-- is no confirm label because there is no confirm control: a click on a
+			-- card IS the spawn, and a second control for an intent already sent
+			-- read as a step the surface deliberately does not have.
+			check('and the two sentences it draws, and no confirm label',
+				opened.payload.title ~= nil and opened.payload.hint ~= nil
+					and opened.payload.confirm == nil and opened.payload.deadline == nil)
 		end
 
 		-- The page's focus stack, which is what gives the menu the cursor. Acquiring
@@ -875,6 +1108,713 @@ do
 	end
 end
 
+-- ── deleting a character, and everything it owned ────────────────────────────
+-- WHAT A DELETE ACTUALLY REMOVES. Every table keyed on a citizen id carries
+-- `ON DELETE CASCADE` onto `opx77_characters` and NOT ONE OF THEM HAS EVER FIRED
+-- on a player deleting a character, because the delete is SOFT: `deleted_at` is
+-- stamped and the row stays, and a cascade fires for a DELETE and never for an
+-- UPDATE. So the foreign keys are all correct and all beside the point, and what
+-- does the work is `character:deleted` -- a seam that was raised, listened to by
+-- nobody, and left every deleted character's clothes, needs, containers and cars
+-- in the database for ever.
+section('deleting a character')
+do
+	local env, control, why = boot('server')
+	check('server boots for the delete tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+
+		-- THE TWO STAFF DOORS, beside the self-service ones. They do not check
+		-- ownership and do not read `SELF_DELETE`; the access list is the check,
+		-- and it has happened before either is reached.
+		local contract = OPX.Api.Get('character')
+		check('the staff listing is published for the admin menu to read',
+			contract ~= nil and type(contract.ListCharactersFor) == 'function')
+		check('so is the staff rename', contract ~= nil and type(contract.RenameCharacter) == 'function')
+		check('and the staff delete', contract ~= nil and type(contract.RemoveCharacter) == 'function')
+		check('beside the self-service delete, which is a different door',
+			contract ~= nil and type(contract.DeleteCharacter) == 'function'
+				and contract.DeleteCharacter ~= contract.RemoveCharacter)
+
+		-- EVERY MODULE THAT OWNS A PER-CHARACTER TABLE ANSWERS THE ANNOUNCEMENT.
+		-- Spied rather than driven through the database, which this host has none
+		-- of: what is under test is that each module LISTENS and names its own
+		-- rows, not that MySQL then deletes them.
+		local purged = {}
+		local originals = {}
+		for _, owner in ipairs({ 'appearance', 'needs', 'inventory', 'vehicles' }) do
+			local module = OPX.Modules.Get(owner)
+			local storage = module and module.Storage
+			if storage ~= nil and type(storage.PurgeCharacter) == 'function' then
+				originals[owner] = storage.PurgeCharacter
+				storage.PurgeCharacter = function(citizenId)
+					purged[owner] = citizenId
+					return OPX.Result.Ok(true)
+				end
+			end
+		end
+		-- `downed` names its purge `Clear`: it already had the statement, and the
+		-- write it queues is the same one a revive writes.
+		local downed = OPX.Modules.Get('downed')
+		local downedClear = downed and downed.Storage and downed.Storage.Clear
+		if downedClear then
+			downed.Storage.Clear = function(citizenId) purged.downed = citizenId end
+		end
+
+		local before = #control.log.error
+		control.Fire(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'), 12, 'citizen-gone')
+
+		for _, owner in ipairs({ 'appearance', 'needs', 'inventory', 'vehicles', 'downed' }) do
+			check(('%s removes what it stored for a deleted character'):format(owner),
+				purged[owner] == 'citizen-gone', tostring(purged[owner]))
+		end
+		check('and nothing raised doing it', #control.log.error == before,
+			table.concat(control.log.error, ' | '))
+
+		-- A PAYLOAD THAT IS NOT A CITIZEN ID. The announcement is internal and its
+		-- handlers still check, because a handler that ran on nil would issue a
+		-- delete with an empty parameter -- which is a statement that matches
+		-- whatever the column defaults to rather than nothing.
+		purged = {}
+		control.Fire(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'), 12, nil)
+		control.Fire(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'), 12, '')
+		local any = false
+		for _ in pairs(purged) do any = true end
+		check('a delete announcement with no citizen id removes nothing', not any)
+
+		for owner, original in pairs(originals) do
+			OPX.Modules.Get(owner).Storage.PurgeCharacter = original
+		end
+		if downedClear then downed.Storage.Clear = downedClear end
+
+		-- THE ONE TABLE THIS MODULE OWNS ITSELF is purged inline rather than over
+		-- the announcement, and the two config hooks are still there for tables
+		-- nothing in this runtime owns. Read out of the source, because driving it
+		-- needs a database.
+		local handle = io.open('modules/character/server/character.lua', 'r')
+		local body = handle:read('a')
+		handle:close()
+		local worker = body:match('local function removeCharacter.-\nend\n')
+		check('the delete purges the memberships it owns itself',
+			worker ~= nil and worker:find('opx77_character_groups', 1, true) ~= nil)
+		check('and still runs the operator cascade list for tables nothing owns',
+			worker ~= nil and worker:find('CASCADE_TABLES', 1, true) ~= nil)
+		check('and announces the delete so every other module can follow',
+			worker ~= nil and worker:find('IN_DELETED', 1, true) ~= nil)
+		-- UNDER pcall: the audit is already written and the session still has to be
+		-- ended, so a handler that raises must not take either with it.
+		check('under a pcall, so one bad listener cannot strand the player',
+			worker ~= nil and worker:find('pcall(TriggerEvent, M.Event.IN_DELETED', 1, true) ~= nil)
+
+		-- WHETHER A PLAYER MAY DELETE THEIR OWN. Refused rather than hidden: a
+		-- command that silently did nothing would have them trying it again and
+		-- then asking staff whether it had worked.
+		local saved = OPX.Config.MODULES.character.CHARACTERS.SELF_DELETE
+		OPX.Config.MODULES.character.CHARACTERS.SELF_DELETE = false
+		local refused = character.DeleteCharacter(77, 'ABC-1234')
+		check('with SELF_DELETE off, a player deleting their own is refused',
+			refused ~= nil and refused.ok == false, refused and tostring(refused.error))
+		check('by a code a player can be shown, not a silent nothing',
+			refused ~= nil and refused.error == 'character.deleteNotAllowed',
+			refused and tostring(refused.error))
+		check('and the code is a catalogue key, so it reads as a sentence',
+			OPX.Locale.Exists('character.deleteNotAllowed'))
+		OPX.Config.MODULES.character.CHARACTERS.SELF_DELETE = saved
+		check('the shipped configuration answers the question either way',
+			type(OPX.Config.MODULES.character.CHARACTERS.SELF_DELETE) == 'boolean',
+			tostring(OPX.Config.MODULES.character.CHARACTERS.SELF_DELETE))
+
+		-- ── the staff menu's own door ────────────────────────────────────────
+		local admin = OPX.Modules.Get('admin')
+		check('the three character grants are named in one place, as their own area',
+			admin.Command.CHARACTER_LIST == 'opx.admin.character.list'
+				and admin.Command.CHARACTER_RENAME == 'opx.admin.character.rename'
+				and admin.Command.CHARACTER_DELETE == 'opx.admin.character.delete')
+		-- NOT `player.*`, and the distinction is the whole reason for a new area:
+		-- that namespace is the session and the puppet, and both die with the
+		-- connection. These reach rows that outlive it.
+		check('and not under the session namespace, which dies with the connection',
+			admin.Command.CHARACTER_DELETE:find('player', 1, true) == nil)
+
+		for _, name in ipairs({ 'opx.admin.character.list', 'opx.admin.character.rename',
+			'opx.admin.character.delete' }) do
+			local registered = control.commands[name]
+			check(('%s is registered'):format(name), registered ~= nil)
+			-- RESTRICTED, every one: the host refuses the line before a handler
+			-- runs, which is the only permission check this module has.
+			check(('%s is restricted, which is the whole check'):format(name),
+				registered ~= nil and registered.restricted == true)
+		end
+
+		-- A refusal code with no catalogue key behind it reaches a player as the
+		-- key itself, and these two are new.
+		check('the new refusal codes are sentences in both catalogues',
+			OPX.Locale.Exists('admin.error.badName')
+				and OPX.Locale.Exists('admin.error.charactersUnavailable'))
+	end
+end
+
+-- ── taking another character ─────────────────────────────────────────────────
+-- WHETHER `opx.select` KICKS, which is `CHARACTERS.SWITCH` and is the operator's
+-- call. The two values are not a preference between equals: one takes the other
+-- character here in the world, the other ends the session so the next connection
+-- arrives on it. `opx.create` is covered by NEITHER and must always disconnect,
+-- because a new character needs the game's own creator and that is a join-time
+-- screen -- which is a platform fact rather than a decision, so what is asserted
+-- here is that no setting can turn it off.
+section('taking another character')
+do
+	--- A world holding only what settles the switch mode.
+	-- @param ... string|nil the CHARACTERS.SWITCH to write in, or nothing to keep
+	--   what the file ships
+	-- @return table module
+	-- @return table control
+	local function switchOnly(...)
+		local own, ctl = Host.Environment('server')
+		for _, file in ipairs({
+			'core/shared/main.lua', 'core/shared/channels.lua',
+			'core/shared/registry.lua', 'core/shared/lifecycle.lua',
+			'lib/shared/math.lua', 'lib/shared/result.lua', 'lib/shared/validate.lua',
+			'lib/shared/text.lua', 'lib/shared/string.lua', 'lib/shared/table.lua',
+			'config/shared.lua', 'config/character.lua', 'modules/character/module.lua',
+		}) do
+			assert(loadfile(file, 't', own), file)()
+		end
+		local module = own.OPX.Modules.Get('character')
+		if select('#', ...) > 0 then module.Settings.CHARACTERS.SWITCH = (select(1, ...)) end
+		return module, ctl
+	end
+
+	local vocabulary = switchOnly()
+	check('the switch vocabulary is declared in the shared file',
+		type(vocabulary.Switch) == 'table' and type(vocabulary.KnownSwitch) == 'function'
+			and vocabulary.SWITCH_DEFAULT == vocabulary.Switch.RECONNECT)
+
+	check('both switch modes are recognised',
+		vocabulary.KnownSwitch('relog') == 'relog'
+			and vocabulary.KnownSwitch('reconnect') == 'reconnect')
+	-- A NEAR MISS IS A MISS, and the fallback is the one that disconnects: a typo
+	-- that quietly took the safer path costs a player one reconnect, where a typo
+	-- that quietly took the newer one costs whatever it turns out to break.
+	check('anything else is not a switch mode, whatever its shape',
+		vocabulary.KnownSwitch('Relog') == nil and vocabulary.KnownSwitch('soft') == nil
+			and vocabulary.KnownSwitch(true) == nil and vocabulary.KnownSwitch(nil) == nil)
+	check('the shipped configuration names one of the two',
+		vocabulary.KnownSwitch(vocabulary.Settings.CHARACTERS.SWITCH) ~= nil,
+		tostring(vocabulary.Settings.CHARACTERS.SWITCH))
+
+	-- RESOLVED ONCE, AT BOOT, and journalled on a bad value -- so a typo is named
+	-- in the block an operator reads after editing a config file rather than in
+	-- the middle of somebody's switch, where nobody reads it.
+	do
+		local env, control, why = boot('server')
+		check('server boots for the switch tests', why == nil, why)
+		if why == nil then
+			local character = env.OPX.Modules.Get('character')
+			check('the switch mode is settled at boot rather than at the point of use',
+				character.KnownSwitch(character.SwitchMode) ~= nil,
+				tostring(character.SwitchMode))
+			check('and it is the one the file configures',
+				character.SwitchMode == env.OPX.Config.MODULES.character.CHARACTERS.SWITCH,
+				tostring(character.SwitchMode))
+			-- The relog calls `enterCharacter`, which is declared three hundred
+			-- lines below `SwitchTo`. Without the forward declaration that call
+			-- compiles against a GLOBAL of the same name -- nil -- and raises
+			-- inside a command thread, which is exactly where nobody is looking.
+			check('the soft path this depends on is published and is a function',
+				type(env.OPX.Api.Get('character').SelectCharacter) == 'function')
+			check('and the kicking path is still published beside it',
+				type(env.OPX.Api.Get('character').SwitchTo) == 'function')
+			check('no thread died taking either of them up',
+				not table.concat(control.log.error, ' | '):find('thread died'),
+				table.concat(control.log.error, ' | '))
+		end
+	end
+
+	-- AN UNKNOWN VALUE falls back to the disconnect and says so.
+	do
+		local own, ctl = Host.Environment('server')
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'server')) do
+			assert(loadfile(file, 't', own), file)()
+			if file == 'config/character.lua' then
+				own.OPX.Config.MODULES.character.CHARACTERS.SWITCH = 'soft'
+			end
+		end
+		ctl.Pump(20)
+		local character = own.OPX.Modules.Get('character')
+		check('an unknown switch mode is refused rather than honoured',
+			character.SwitchMode == character.SWITCH_DEFAULT, tostring(character.SwitchMode))
+		check('and it is named in the journal, with what is running instead',
+			table.concat(ctl.log.warn, ' | '):find('CHARACTERS.SWITCH soft') ~= nil,
+			table.concat(ctl.log.warn, ' | '))
+	end
+
+	-- THE ONE THING NO SETTING MAY CHANGE. `opx.create` clears the lock and ends
+	-- the session, under either mode, because a new character needs the game's own
+	-- creator and resetting the bootstrap mid-session was measured in game and
+	-- does not draw one -- it strands the player under the loading cover. Asserted
+	-- by reading the function rather than by running it: it needs a session, a
+	-- database and a live slot, none of which this host has.
+	do
+		local handle = io.open('modules/character/server/character.lua', 'r')
+		local body = handle:read('a')
+		handle:close()
+		local newCharacter = body:match('function M%.NewCharacter.-\nend\n')
+		check('opx.create still ends the session in its own body',
+			newCharacter ~= nil and newCharacter:find('endSession', 1, true) ~= nil)
+		check('and never takes the soft path',
+			newCharacter ~= nil and newCharacter:find('enterCharacter', 1, true) == nil)
+		-- And the switch DOES, which is the whole change: the same read, so the two
+		-- cannot drift into agreeing by accident.
+		local switchTo = body:match('function M%.SwitchTo.-\nend\n')
+		check('while opx.select can take the character here instead',
+			switchTo ~= nil and switchTo:find('enterCharacter', 1, true) ~= nil)
+		check('and still falls back to ending the session',
+			switchTo ~= nil and switchTo:find('endSession', 1, true) ~= nil)
+	end
+end
+
+-- ── the fitting room, and the join it sits in the middle of ──────────────────
+-- WHAT A PLAYER WEARS WHEN THEY ARRIVE, and -- the harder half -- WHEN THEY ARE
+-- ASKED. A brand new character answers three questions at one instant: a name, an
+-- outfit and a spawn point. Nothing schedules them. What keeps them apart is one
+-- rule applied twice -- a view stands aside while the view in front of it reports
+-- itself busy -- so the checks below drive the real entry and spawn modules rather
+-- than asserting against a plan.
+section('the fitting room at join time')
+do
+	--- A world holding only what settles the fitting-room policy.
+	-- The vocabulary and its resolution live in the SHARED file, so they can be put
+	-- under test without a client VM full of natives this host does not have.
+	-- Called with NO argument it leaves the shipped block alone; called with one
+	-- -- `nil` included -- it writes that block in. The two are different cases
+	-- and Lua cannot tell them apart from the value, so `select('#', ...)` is what
+	-- separates "test the file" from "test a configuration that lost the block".
+	-- @param ... table|nil the WARDROBE block to write in
+	-- @return table module
+	-- @return table control
+	local function policyOnly(...)
+		local own, ctl = Host.Environment('client')
+		for _, file in ipairs({
+			'core/shared/main.lua', 'core/shared/channels.lua',
+			'core/shared/registry.lua', 'core/shared/lifecycle.lua',
+			'lib/shared/math.lua', 'config/appearance.lua',
+			'modules/appearance/module.lua',
+		}) do
+			assert(loadfile(file, 't', own), file)()
+		end
+		local module = own.OPX.Modules.Get('appearance')
+		if select('#', ...) > 0 then module.Settings.WARDROBE = (select(1, ...)) end
+		return module, ctl
+	end
+
+	local vocabulary = policyOnly(nil)
+	check('the fitting-room policy vocabulary is declared in the shared file',
+		type(vocabulary.WardrobePolicy) == 'table' and
+			type(vocabulary.KnownWardrobePolicy) == 'function')
+
+	-- EACH OF THE THREE, resolved from a configuration rather than from a literal:
+	-- the operator types one of these strings and the branch that reads it compares
+	-- against the same table, so a value the vocabulary carries and the resolver
+	-- refuses cannot happen.
+	for _, policy in ipairs({ 'first', 'always', 'never' }) do
+		local module = policyOnly({ OFFER_POLICY = policy })
+		check(('the fitting-room policy %s is resolved as configured'):format(policy),
+			module.ResolveWardrobePolicy() == policy)
+	end
+
+	-- AN UNKNOWN VALUE. Refused with a line in the journal and replaced with the
+	-- named default -- never honoured, and never silently taken as "off". A typo
+	-- that quietly stopped offering the room is indistinguishable from the room
+	-- being broken, which is the failure this check exists for.
+	do
+		local module, ctl = policyOnly({ OFFER_POLICY = 'creation' })
+		check('an unknown fitting-room policy is refused rather than honoured',
+			module.ResolveWardrobePolicy() == module.WARDROBE_POLICY_DEFAULT,
+			tostring(module.ResolveWardrobePolicy()))
+		check('and it is named in the journal, with what is running instead',
+			table.concat(ctl.log.warn, ' | '):find('OFFER_POLICY creation') ~= nil,
+			table.concat(ctl.log.warn, ' | '))
+	end
+
+	-- NOT A STRING AT ALL. `OFFER_POLICY = true` is the shape of a mis-edit that
+	-- turns a named setting back into the boolean it replaced -- and this setting
+	-- did replace one -- so it has to take the same route rather than raising out
+	-- of the resolution.
+	check('a fitting-room policy that is not a string is refused the same way',
+		policyOnly({ OFFER_POLICY = true }).ResolveWardrobePolicy() ==
+			vocabulary.WARDROBE_POLICY_DEFAULT)
+	check('and so is a configuration with no WARDROBE block at all',
+		policyOnly(nil).ResolveWardrobePolicy() == vocabulary.WARDROBE_POLICY_DEFAULT)
+
+	-- A NEAR MISS IS A MISS. The comparison is exact on purpose: a policy matched
+	-- case-insensitively would accept 'First' here and be compared against 'first'
+	-- at the branch that reads it.
+	check('a near miss is not one of the three fitting-room policies',
+		vocabulary.KnownWardrobePolicy('First') == nil and
+			vocabulary.KnownWardrobePolicy('') == nil and
+			vocabulary.KnownWardrobePolicy({}) == nil)
+
+	-- THE SHIPPED CONFIGURATION, read out of the file rather than named here, so
+	-- this check is wrong the day somebody edits it to something the module
+	-- refuses -- which is the one way an operator would never see the warning.
+	do
+		local module = policyOnly()
+		local block = type(module.Settings.WARDROBE) == 'table' and module.Settings.WARDROBE or {}
+		check('the shipped configuration names one of the three',
+			module.KnownWardrobePolicy(block.OFFER_POLICY) ~= nil,
+			tostring(block.OFFER_POLICY))
+		-- The other half of the shipped block, and it has to be a real duration:
+		-- a zero here is a room that gives up in the tick it was owed, which is a
+		-- join that never draws one and never says why.
+		check('and a positive window to wait for the room in',
+			(tonumber(block.CREATION_WAIT_MS) or 0) > 0, tostring(block.CREATION_WAIT_MS))
+	end
+
+	-- ── the join sequence ────────────────────────────────────────────────────
+	-- A WHOLE CLIENT, with the policy written in between the config file that
+	-- declares it and the `Init` that settles it: the policy is resolved once, at
+	-- boot, so a value set after the phases have run is a value nothing reads.
+	--
+	-- The natives installed below are the minimum that lets the appearance module
+	-- START -- it refuses outright without an appearance, session and character
+	-- namespace -- plus an equipment namespace, which is what makes the fitting
+	-- room's refusal RETRYABLE rather than final. That distinction is the whole of
+	-- what is under test: a room that keeps trying holds the join, and a room that
+	-- can never open has to let it go.
+	-- @param policy string
+	-- @param waitMs integer how long the room is waited for
+	-- @param blind boolean|nil switch the two view modules off
+	-- @return table env
+	-- @return table control
+	local function joinClient(policy, waitMs, blind)
+		local own, ctl = Host.Environment('client')
+		own.Open77.appearance = {
+			captureBody = function() return nil, 'no_host' end,
+			takeBodyFamilyTransition = function() return nil end,
+			finishCommit = function() return true end,
+		}
+		own.Open77.session = {
+			resolveCharacterBootstrap = function() return false, 'no_host' end,
+			isCharacterBootstrapPending = function() return false end,
+			failCharacterBootstrap = function() return true end,
+			hasCharacterBootstrap = function() return false end,
+			gameplayReady = function() return true end,
+		}
+		own.Open77.equipment = {
+			apply = function() return true end,
+			records = function() return {} end,
+			registry = function() return {} end,
+			info = function() return nil end,
+		}
+
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			assert(loadfile(file, 't', own), file)()
+			if file == 'config/appearance.lua' then
+				local block = own.OPX.Config.MODULES.appearance.WARDROBE
+				block.OFFER_POLICY = policy
+				block.CREATION_WAIT_MS = waitMs
+			elseif blind and file == 'config/panel.lua' then
+				own.OPX.Config.MODULES.panel.enabled = false
+			elseif blind and file == 'config/menu.lua' then
+				own.OPX.Config.MODULES.menu.enabled = false
+			end
+		end
+
+		ctl.Fire('onClientResourceStart', 'opx_infinity')
+		ctl.Pump(60)
+		ctl.ReadyPages()
+		return own, ctl
+	end
+
+	--- Every `entry:state` a join raises from here on, as `open/phase`.
+	local function watchEntry(env)
+		local seen = {}
+		env.AddEventHandler(env.OPX.Event(env.OPX.Channel.LOCAL, 'entry', 'state'),
+			function(payload)
+				seen[#seen + 1] = tostring(payload.open) .. '/' .. tostring(payload.phase)
+			end)
+		return seen
+	end
+
+	--- The first payload sent to the surface on a channel, or nil.
+	local function drew(page, channel)
+		for index = 1, #page.sent do
+			if page.sent[index].channel == channel then return page.sent[index] end
+		end
+		return nil
+	end
+
+	--- How many payloads have been sent to the surface on a channel.
+	local function times(page, channel)
+		local count = 0
+		for index = 1, #page.sent do
+			if page.sent[index].channel == channel then count = count + 1 end
+		end
+		return count
+	end
+
+	--- Loads a character over the character module's own bus.
+	local function arrive(env, control, citizenId)
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = citizenId, charInfo = { gender = 'female' } })
+	end
+
+	-- 'first': a brand new character, which is the case this whole seam exists for.
+	do
+		local env, control = joinClient('first', 400)
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+		local spawn = OPX.Modules.Get('spawn')
+		local page = control.pages[1]
+
+		check('the client boots with a fitting-room policy under test',
+			OPX.Modules.IsRunning('appearance') and OPX.Modules.IsRunning('entry')
+				and OPX.Modules.IsRunning('spawn'),
+			OPX.Modules.Record('appearance').Reason)
+		check('and the policy reached the module through Init, not the point of use',
+			appearance.WardrobeOffer == 'first', tostring(appearance.WardrobeOffer))
+
+		arrive(env, control, 'citizen-dress')
+		local states = watchEntry(env)
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'created', citizenId = 'citizen-dress' })
+
+		check('a character the creator has just built is owed a fitting room',
+			appearance.Wardrobe.Owed() == true)
+		-- THE CLAIM IS UP BEFORE THE ROOM IS. Nothing is on screen yet -- this host
+		-- has no playable puppet, and a real client has a name form on the keyboard
+		-- -- and that gap is exactly when the spawn menu would otherwise open.
+		check('and the join reports itself busy, naming the clothes',
+			states[#states] == 'true/wardrobe', table.concat(states, ', '))
+
+		control.netEvents[spawn.Event.OFFER]({ timeoutMs = 5000 })
+		check('so the spawn menu stands aside while the room is owed',
+			drew(page, 'opx:spawn:open') == nil)
+
+		-- THE ROOM NOBODY CAN DRAW. Every try here is refused for a reason that
+		-- means 'not yet', so only the window ends it -- and a join held by a room
+		-- that will never open is the one failure that costs a player their spawn
+		-- choice with nothing going wrong anywhere.
+		control.Pump(12)
+		check('the wait runs out and the claim is withdrawn',
+			appearance.Wardrobe.Owed() == false)
+		check('the join reports itself idle again',
+			states[#states] == 'false/idle', table.concat(states, ', '))
+		check('and the spawn menu opens, late rather than never',
+			drew(page, 'opx:spawn:open') ~= nil)
+	end
+
+	-- 'never': nobody is handed one, and -- the part that matters -- NOTHING IS
+	-- CLAIMED. A 'never' that raised a claim and withdrew it again would hold the
+	-- spawn menu shut for a room that was never coming.
+	do
+		local env, control = joinClient('never', 400)
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+		local spawn = OPX.Modules.Get('spawn')
+		local page = control.pages[1]
+
+		arrive(env, control, 'citizen-plain')
+		local states = watchEntry(env)
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'created', citizenId = 'citizen-plain' })
+
+		check('never owes a brand new character no fitting room',
+			appearance.Wardrobe.Owed() == false)
+		-- The bus still speaks -- `created` is the entry module's own creator
+		-- finishing -- but it never names the clothes, which is what the spawn
+		-- menu waits on.
+		check('and never names the clothes on the join bus',
+			table.concat(states, ', '):find('wardrobe') == nil,
+			table.concat(states, ', '))
+
+		control.netEvents[spawn.Event.OFFER]({ timeoutMs = 5000 })
+		check('so the spawn menu follows the name form directly, as it always did',
+			drew(page, 'opx:spawn:open') ~= nil)
+	end
+
+	-- 'always' AND 'first' ON A RETURNING CHARACTER, which raises no `created` at
+	-- all. The moment one is offered is the stored clothes going ON: opened before
+	-- that, cancelling would put back the pristine puppet's clothes rather than the
+	-- ones the player walked in wearing.
+	do
+		local env, control = joinClient('always', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		arrive(env, control, 'citizen-back')
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'clothingRestored', citizenId = 'citizen-back' })
+		check('always offers a returning character one once its clothes are on',
+			appearance.Wardrobe.Owed() == true)
+	end
+
+	do
+		local env, control = joinClient('first', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		arrive(env, control, 'citizen-back-2')
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'clothingRestored', citizenId = 'citizen-back-2' })
+		check('and first leaves a returning character alone',
+			appearance.Wardrobe.Owed() == false)
+	end
+
+	-- THE CHARACTER THAT LEAVES MID-CLAIM. A disconnect is not visible on a client
+	-- at all; what the client sees is the character unloading. A claim left
+	-- standing for nobody would hold the join open for the rest of the session,
+	-- with nothing to draw and nobody to draw it for.
+	do
+		local env, control = joinClient('first', 60000)
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+
+		arrive(env, control, 'citizen-gone')
+		local states = watchEntry(env)
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'created', citizenId = 'citizen-gone' })
+		check('a long window holds the claim open while the room is retried',
+			appearance.Wardrobe.Owed() == true)
+
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'unloaded'))
+		check('the join is released the moment the character goes',
+			states[#states] == 'false/idle', table.concat(states, ', '))
+		control.Pump(4)
+		check('and the claim is withdrawn rather than waiting out the window',
+			appearance.Wardrobe.Owed() == false)
+	end
+
+	-- ── the view ─────────────────────────────────────────────────────────────
+	-- THE SEAM'S OTHER END. `wardrobe.lua` draws nothing and publishes on
+	-- `ON_VIEW`; `client/view.lua` is the only file that knows the fitting room is
+	-- a `panel` and the appearance panel a `menu`. Driven by publishing on the seam
+	-- rather than by opening a real room, because a real room needs a playable
+	-- puppet and a clothing catalogue, neither of which is what this tests.
+	do
+		local env, control = joinClient('never', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		local page = control.pages[1]
+
+		env.TriggerEvent(appearance.Event.ON_VIEW, {
+			kind = 'room',
+			eyebrow = 'FIRST OUTFIT', title = 'Wardrobe', intro = 'Dress your character.',
+			search = 'Search', loading = true,
+			labels = { count = '{from}-{to} of {total}', empty = 'Nothing.',
+				loading = 'Reading...' },
+			actions = { { id = 'cancel', label = 'Skip' },
+				{ id = 'save', label = 'Wear this', primary = true } },
+			tabs = { { id = 'InnerChest', label = 'Inner chest', marked = false } },
+			tab = 'InnerChest',
+			selected = { InnerChest = false },
+			summary = { label = 'Inner chest', value = 'nothing',
+				action = { id = 'remove', label = 'Take off', disabled = true } },
+			status = false,
+		})
+
+		local opened = drew(page, 'opx:panel:open')
+		check('the fitting room is drawn by the panel module', opened ~= nil)
+		check('carrying the state half own first frame, verbatim',
+			opened ~= nil and opened.payload.eyebrow == 'FIRST OUTFIT'
+				and opened.payload.title == 'Wardrobe',
+			opened and tostring(opened.payload.title))
+		-- The seam's routing field is not part of the panel contract, which refuses
+		-- a spec carrying a field it does not know -- WHOLE, so a `kind` left on
+		-- would have cost the room rather than the field.
+		check('and not the seam own routing field',
+			opened ~= nil and opened.payload.kind == nil)
+
+		env.TriggerEvent(appearance.Event.ON_VIEW, {
+			kind = 'roomItems', final = true,
+			items = { { id = 'Items.Jacket_01', tab = 'InnerChest', label = 'Jacket 01',
+				detail = 'Items.Jacket_01' } },
+		})
+		local batch = drew(page, 'opx:panel:items')
+		check('a catalogue batch reaches the page, marked as the last',
+			batch ~= nil and batch.payload.done == true
+				and batch.payload.items[1].id == 'Items.Jacket_01')
+
+		-- WHAT THE PLAYER DID, coming back through the one function the seam
+		-- documents. Everything on it is re-checked there against state this bridge
+		-- cannot see: the record against the catalogue that was streamed, the
+		-- button against the list that was drawn.
+		local seen = {}
+		local real = appearance.FromView
+		appearance.FromView = function(action, payload)
+			seen[#seen + 1] = action
+			return real(action, payload)
+		end
+		local handle = opened.payload.handle
+		control.PageEmit(page, 'opx:panel:select', { handle = handle, item = 'Items.Jacket_01' })
+		control.PageEmit(page, 'opx:panel:action', { handle = handle, id = 'cancel' })
+		check('a click on a piece comes back as a room selection',
+			seen[1] == 'room.select', table.concat(seen, ', '))
+		check('and a button as a room action', seen[2] == 'room.action',
+			table.concat(seen, ', '))
+
+		-- A PAYLOAD FOR A ROOM THAT IS GONE. The handle is the capability, and a
+		-- payload naming another one is dropped before this bridge ever sees it --
+		-- so a late answer cannot reach the state half.
+		control.PageEmit(page, 'opx:panel:select',
+			{ handle = handle + 99, item = 'Items.Jacket_01' })
+		check('a payload naming another room is dropped', #seen == 2,
+			table.concat(seen, ', '))
+		appearance.FromView = real
+
+		env.TriggerEvent(appearance.Event.ON_VIEW,
+			{ kind = 'roomClosed', reason = 'saved', kept = true })
+		check('the state half taking the room down takes the panel down',
+			drew(page, 'opx:panel:close') ~= nil)
+
+		-- THE OTHER VIEW. Same seam, a different module, because a tree of rows
+		-- carrying values and descriptions is a menu and a searchable grid is not.
+		local tree = { kind = 'panel', title = 'Appearance',
+			items = { { id = 'looks', label = 'Looks', value = 'none',
+				items = { { id = 'wear', label = 'Wear it' } } } } }
+		env.TriggerEvent(appearance.Event.ON_VIEW, tree)
+		local menu = drew(page, 'opx:menu:open')
+		check('the appearance panel is drawn by the menu module',
+			menu ~= nil and menu.payload.title == 'Appearance',
+			menu and tostring(menu.payload.title))
+
+		-- A REFRESH IS A PATCH. The panel is republished after every decision about
+		-- a face, and reopening it would throw a player standing two levels in back
+		-- out to the root each time.
+		env.TriggerEvent(appearance.Event.ON_VIEW, tree)
+		check('and a refresh of it is a patch, not a second open',
+			times(page, 'opx:menu:open') == 1,
+			('%d open(s)'):format(times(page, 'opx:menu:open')))
+	end
+
+	-- A WORLD WITH NEITHER VIEW IN IT. The state machines still run and still
+	-- publish; nothing draws. The answer has to come a TICK LATER and not inline,
+	-- because the state half publishes `room` from inside the function that goes on
+	-- to take the camera and start the catalogue stream -- closing it there would
+	-- tear the room down underneath a function still setting it up.
+	do
+		local env, control = joinClient('never', 400, true)
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+
+		check('a world with the two view modules switched off still runs',
+			OPX.Modules.IsRunning('appearance') and not OPX.Modules.IsRunning('panel'),
+			OPX.Modules.Record('appearance').Reason)
+
+		local seen = {}
+		local real = appearance.FromView
+		appearance.FromView = function(action, payload)
+			seen[#seen + 1] = action
+			return real(action, payload)
+		end
+		env.TriggerEvent(appearance.Event.ON_VIEW, { kind = 'room', title = 'Wardrobe' })
+		check('a room nobody can draw is not answered inside its own publication',
+			#seen == 0, table.concat(seen, ', '))
+		control.Pump(4)
+		check('and is answered on the next pass instead', seen[1] == 'room.close',
+			table.concat(seen, ', '))
+		appearance.FromView = real
+	end
+end
+
 -- ── client boot ──────────────────────────────────────────────────────────────
 section('client boot')
 do
@@ -884,6 +1824,55 @@ do
 	if why == nil then
 		-- `boot` already raised the start event; raising it again is how the
 		-- double-Run bug was found, and `Modules.Run` is idempotent now.
+		-- The external library, loaded for real off the sibling checkout rather
+		-- than stubbed: a stub would pass while the two repositories drifted, and
+		-- the drift is the only thing worth testing here.
+		check('opx_lib loaded, and it is the real one',
+			type(env.OPX.Lib) == 'table' and type(env.OPX.Lib.VERSION) == 'string')
+		check('the two helpers that moved out are reachable',
+			type(env.OPX.Lib.Input) == 'table' and type(env.OPX.Lib.Rpc) == 'table')
+		-- What the migration was for: the old names are gone, not aliased.
+		check('and the names they replaced are gone',
+			env.OPX.Keys == nil and env.OPX.Rpc == nil)
+		-- The manifest has to carry every permission the library's wrappers need,
+		-- because a permission is checked against THIS resource's manifest.
+		local declared = {}
+		for line in io.lines('open77.lua') do
+			local name = line:match('^%s*"([%w%._]+)",%s*$')
+			if name then declared[name] = true end
+		end
+		-- Only the modules this resource CALLS, found by reading the client
+		-- sources. Declaring the library's whole permission set instead would
+		-- hand this resource `world.markers` and `ui.vanilla.map` for code it
+		-- does not run, and a manifest that asks for more than it uses is the
+		-- habit this project does not have.
+		--
+		-- The useful direction is the other one: start calling `OPX.Lib.Blip`
+		-- and this check names the line to add, here, instead of the blip
+		-- silently never appearing on somebody's machine.
+		local used = {}
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			local handle = io.open(file, 'r')
+			if handle then
+				local text = handle:read('a')
+				handle:close()
+				for module in text:gmatch('OPX%.Lib%.(%u%w*)') do used[module] = true end
+			end
+		end
+
+		local undeclared = {}
+		for module in pairs(used) do
+			local permission = env.OPX.Lib.NEEDS[module]
+			if permission ~= nil and not declared[permission] then
+				undeclared[#undeclared + 1] = ('%s needs %s'):format(module, permission)
+			end
+		end
+		table.sort(undeclared)
+		check('every permission the library modules in use need is declared',
+			#undeclared == 0, table.concat(undeclared, ', '))
+		check('and the resource really does call the library',
+			next(used) ~= nil)
+
 		control.Fire('onClientResourceStart', 'opx_infinity')
 		control.Pump(60)
 		check('diagnostics started', env.OPX.Modules.IsRunning('diagnostics'))
@@ -909,6 +1898,88 @@ do
 			end
 		end
 		check('every declared module reached a resting state', #stalled == 0, table.concat(stalled, ', '))
+	end
+end
+
+-- ── the one client loop, on its own ──────────────────────────────────────────
+-- Loaded alone, against a clock and a `Wait` this section owns. Booting the real
+-- client gives thirty-five jobs and a host whose `Wait` discards its argument,
+-- which is exactly what hid both of the bugs below: a list that only ever grew,
+-- and a loop that slept a flat hundred milliseconds while a 33ms job was due.
+section('the client scheduler')
+do
+	local clock = 0
+	local waits = {}
+	local thread
+
+	local env = {
+		OPX = { Scheduler = {}, Now = function() return clock end },
+		Open77 = { log = { error = function() end, warn = function() end, info = function() end } },
+		CreateThread = function(fn) thread = coroutine.create(fn) end,
+		Wait = function(ms) waits[#waits + 1] = ms; coroutine.yield() end,
+		math = math, type = type, tonumber = tonumber, tostring = tostring,
+		pcall = pcall, ipairs = ipairs, string = string, table = table,
+	}
+
+	local chunk, why = loadfile('core/client/scheduler.lua', 't', env)
+	if chunk == nil then
+		check('the scheduler loads', false, why)
+	else
+		chunk()
+		local Scheduler = env.OPX.Scheduler
+
+		local runs = { a = 0, b = 0, c = 0 }
+		local a = Scheduler.Every('a', 100, function() runs.a = runs.a + 1 end)
+		local b = Scheduler.Every('b', 100, function() runs.b = runs.b + 1 end)
+		local c = Scheduler.Every('c', 100, function() runs.c = runs.c + 1 end)
+
+		Scheduler.Start()
+		local function pass()
+			coroutine.resume(thread)
+		end
+
+		clock = 1000
+		pass()
+		check('every registered job runs', runs.a == 1 and runs.b == 1 and runs.c == 1)
+
+		Scheduler.Cancel(b)
+		clock = 2000
+		pass()
+		check('a cancelled job stops running', runs.b == 1)
+		check('and is dropped from the list rather than kept as a hole',
+			#Scheduler.Report() == 2, tostring(#Scheduler.Report()))
+
+		-- The handle was an index into that list until this pass. Dropping `b`
+		-- moved `c` down one, so an index-shaped handle would now cancel `a`.
+		Scheduler.Cancel(c)
+		clock = 3000
+		pass()
+		check('a handle still names its own job after the list moved',
+			runs.a == 3 and runs.c == 2, ('a=%d c=%d'):format(runs.a, runs.c))
+
+		-- Nothing is due for 100ms, so the loop may sleep the floor.
+		check('the loop sleeps the idle floor when nothing is near',
+			waits[#waits] == 100, tostring(waits[#waits]))
+
+		Scheduler.Every('fast', 33, function() end)
+		clock = 3100
+		pass()
+		check('and no longer than the nearest deadline when something is',
+			waits[#waits] <= 33, tostring(waits[#waits]))
+
+		local raises = 0
+		Scheduler.Every('broken', 0, function()
+			raises = raises + 1
+			error('no')
+		end)
+		for step = 1, 6 do
+			clock = 4000 + step * 100
+			pass()
+		end
+		check('a job that keeps raising is suspended, not left to raise every pass',
+			raises == 3, tostring(raises))
+
+		Scheduler.Stop()
 	end
 end
 
@@ -1072,20 +2143,40 @@ do
 		check('the page takes the catalogue on the channel Lua sends it on',
 			speaks['opx:locale:set'] == true)
 
+		-- The theme's pair, and it is the same class of break: a page that never
+		-- says ready is never sent a theme, and a theme sent on a name the page
+		-- does not listen to is applied by nobody. Both fail as "the accent did
+		-- nothing", which is indistinguishable from an accent nobody configured.
+		check('the page asks for its theme on the channel the surface wires',
+			speaks['opx:theme:ready'] == true)
+		check('and takes the theme on the channel Lua sends it on',
+			speaks['opx:theme:set'] == true)
+
 		-- Drift detector. A channel the page speaks that no Lua file mentions is
-		-- either a feature whose Lua half is not written yet -- which is fine and
-		-- expected here -- or a name one side has renamed and the other has not,
-		-- which is silent in both directions. Listing them is the point; the
-		-- check only fails on the handshake above.
+		-- either a feature whose Lua half is not written yet, or a name one side
+		-- has renamed and the other has not -- which is silent in both
+		-- directions. Listing them is the point; the check only fails on the
+		-- handshake above.
+		--
+		-- A CHANNEL NAME RARELY APPEARS WHOLE IN LUA. The house idiom is a
+		-- per-module `send(name, payload)` that builds `'<id>:' .. name`, so the
+		-- file holds the verb alone and the prefix is the directory it sits in.
+		-- Harvesting per module, off the manifest's own load order, is what
+		-- resolves the pair -- without it every module using the idiom is
+		-- reported as drift and the one real break is lost in the noise.
 		local lua = {}
-		for _, dir in ipairs({ 'core/client', 'lib/client', 'modules' }) do
-			-- Both spellings: the full `opx:` name where a module builds one, and
-			-- the bare channel where `OPX.Surface` adds the prefix for the caller.
-			local pipe = io.popen(('grep -rhoE "opx:[a-z:_]+|\'[a-z][a-z:_]*\'" %s 2>nul')
-				:format(dir))
-			if pipe then
-				for line in pipe:lines() do lua[(line:gsub("'", ''))] = true end
-				pipe:close()
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			local source = io.open(file, 'r')
+			if source then
+				local text = source:read('a')
+				source:close()
+
+				local module = file:match('^modules/([%a_]+)/')
+				for literal in text:gmatch("'([%a][%w:_]*)'") do
+					lua[literal] = true
+					if module then lua[module .. ':' .. literal] = true end
+				end
+				for name in text:gmatch('opx:[%a][%w:_]*') do lua[name] = true end
 			end
 		end
 
@@ -1173,6 +2264,279 @@ do
 	end
 end
 
+-- ── the theme ────────────────────────────────────────────────────────────────
+-- An operator's colour is the one piece of configuration in this resource that
+-- reaches a stylesheet, and the three ways that goes wrong are all silent: a
+-- refused value leaves the shipped red, which is what an unconfigured server
+-- looks like; a value out of range leaves a surface nobody can read, on someone
+-- else's machine; and a derivation that has drifted from the shipped ladder
+-- gives every server a slightly broken version of the house design.
+--
+-- The first and the last are what this section is mostly about. The default case
+-- is checked against the REAL `config/theme.lua` rather than against a table
+-- written here, so an owner who uncomments a line in that file to try something
+-- and forgets to comment it back fails the suite rather than shipping it.
+section('theme')
+do
+	local env, control, why = boot('server')
+	if why ~= nil then
+		check('the server half loads', false, why)
+	else
+		local OPX = env.OPX
+		local theme = OPX.Modules.Get('theme')
+		local Palette = theme.Palette
+
+		check('the theme module started', OPX.Modules.IsRunning('theme'),
+			OPX.Modules.Record('theme') and OPX.Modules.Record('theme').Reason)
+
+		-- ── the hex, which is the only text an operator supplies ────────────
+		-- It never becomes CSS -- the page is sent three integers -- but it is
+		-- still the value most likely to be typed wrong, and every shape below
+		-- that is not exactly six hex digits has to be named rather than read as
+		-- something near it.
+		local accepted = {
+			{ '#ff3b47', { 255, 59, 71 } },
+			{ '#FF3B47', { 255, 59, 71 } },
+			{ '#000000', { 0, 0, 0 } },
+			{ '#ffffff', { 255, 255, 255 } },
+		}
+		local goodHex = true
+		for _, case in ipairs(accepted) do
+			local rgb = Palette.Rgb(case[1])
+			if rgb == nil or rgb[1] ~= case[2][1] or rgb[2] ~= case[2][2]
+				or rgb[3] ~= case[2][3] then
+				goodHex = false
+			end
+		end
+		check('#RRGGBB is read, in either case', goodHex)
+
+		local refused = {
+			'#fff', '#ff3b4', '#ff3b477', 'ff3b47', '#ff3b4g', 'red',
+			'rgb(255,59,71)', '#ff3b47 ', ' #ff3b47', '#ff3b47;',
+			-- The shape this would have to have to be an injection, if the wire
+			-- carried text at all. It does not, and it is refused here as well.
+			'#f00;}html{display:none',
+			'', 123, true, {}, nil,
+		}
+		local leaked = {}
+		for _, value in ipairs(refused) do
+			if Palette.Rgb(value) ~= nil then leaked[#leaked + 1] = tostring(value) end
+		end
+		-- `nil` is not reachable through ipairs; checked on its own so the list
+		-- above can say what it means.
+		if Palette.Rgb(nil) ~= nil then leaked[#leaked + 1] = 'nil' end
+		check('everything that is not #RRGGBB is refused', #leaked == 0,
+			table.concat(leaked, ' '))
+
+		-- ── the shipped config paints the shipped surface ────────────────────
+		-- `config/theme.lua` carries LIVE values rather than commented-out ones,
+		-- so the file reads as what it does instead of as an essay about what it
+		-- would do. That trade has a price, and this is where it is paid: the
+		-- page is now handed a full ladder on every boot, so the ladder it is
+		-- handed has to be the one `tokens.css` draws. The check below is the
+		-- only thing standing between an edit to `palette.lua` and every server
+		-- quietly running a design nobody drew.
+		local shipped, shippedNotes = Palette.Resolve(OPX.Config.MODULES.theme)
+		check('the shipped config resolves to a full theme, not an empty one',
+			not Palette.IsEmpty(shipped), '0 keys')
+		check('and to no complaints', #shippedNotes == 0, table.concat(shippedNotes, ' | '))
+		-- An absent block still means "change nothing", which is what an operator
+		-- who deletes the file gets, and what every other resource gets.
+		check('an absent block is still no theme at all', Palette.IsEmpty(Palette.Resolve(nil)))
+
+		-- ── the ladder is the shipped one, restated ──────────────────────────
+		-- The factors in `palette.lua` were measured off these seven literals.
+		-- If the derivation ever stops reproducing them, every themed server is
+		-- running a design nobody drew -- and the surface would still look
+		-- plausible, which is why this is a test and not an eyeball.
+		local LADDER = {
+			accent   = { 255, 59, 71 },   -- #ff3b47
+			hi       = { 255, 107, 120 }, -- #ff6b78
+			deep     = { 200, 32, 46 },   -- #c8202e
+			text     = { 232, 100, 109 }, -- #e8646d
+			idle     = { 232, 67, 79 },   -- --op-red-idle's rgb
+			alarm    = { 255, 168, 174 }, -- #ffa8ae
+			plate    = { 28, 8, 9 },      -- --op-plate's rgb
+			plateLit = { 74, 21, 25 },    -- --op-plate-lit's rgb
+		}
+		local derived = Palette.Ladder({ 255, 59, 71 })
+		local worst, worstKey = 0, nil
+		for key, want in pairs(LADDER) do
+			local got = derived[key]
+			for index = 1, 3 do
+				local off = math.abs((got and got[index] or -999) - want[index])
+				if off > worst then worst, worstKey = off, key end
+			end
+		end
+		-- Four, and the whole of it is on blue: the hand-picked rungs sit within
+		-- 1.6 degrees of the accent's hue and the derivation uses one hue for all
+		-- of them. Tightening this means changing the shipped literals.
+		check('the derived ladder reproduces the shipped one to within 4/255',
+			worst <= 4, ('%d off on %s'):format(worst, tostring(worstKey)))
+		check('and the accent rung is the operator\'s own hex, exactly',
+			derived.accent[1] == 255 and derived.accent[2] == 59 and derived.accent[3] == 71)
+
+		-- A hue nowhere near red, to prove the derivation is not red-shaped.
+		local blue = Palette.Ladder({ 0, 128, 255 })
+		check('a blue accent produces a blue ladder and a blue-black ground',
+			blue.hi[3] > blue.hi[1] and blue.plate[3] > blue.plate[1]
+				and blue.plate[3] < 40,
+			('hi %d,%d,%d plate %d,%d,%d'):format(blue.hi[1], blue.hi[2], blue.hi[3],
+				blue.plate[1], blue.plate[2], blue.plate[3]))
+
+		-- ── the scalars, and their bounds ────────────────────────────────────
+		local wide = Palette.Resolve({
+			ACCENT = '#00ff00',
+			PLATE_OPACITY = 5,
+			INTERLACE = 40,
+			TILT = 90,
+			CUT = 100,
+		})
+		check('a plate opacity above the ceiling is held there', wide.plateAlpha == 0.98,
+			tostring(wide.plateAlpha))
+		check('an interlace nobody could read through is held at 0.15',
+			wide.interlaceAlpha == 0.15, tostring(wide.interlaceAlpha))
+		check('a tilt of 90 degrees is held at 15', wide.tiltDeg == 15, tostring(wide.tiltDeg))
+		check('the three cuts are held at their own ceilings',
+			wide.cutSm == 24 and wide.cutMd == 48 and wide.cutLg == 80,
+			('%s %s %s'):format(tostring(wide.cutSm), tostring(wide.cutMd),
+				tostring(wide.cutLg)))
+
+		local narrow = Palette.Resolve({ PLATE_OPACITY = -3, TILT = -20, CUT = 0 })
+		check('and at their floors from the other side',
+			narrow.plateAlpha == 0.20 and narrow.tiltDeg == 0
+				and narrow.cutSm == 1 and narrow.cutLg == 1,
+			('%s %s %s %s'):format(tostring(narrow.plateAlpha), tostring(narrow.tiltDeg),
+				tostring(narrow.cutSm), tostring(narrow.cutLg)))
+
+		local shipLike = Palette.Resolve({ PLATE_OPACITY = 0.78, INTERLACE = 1, CUT = 1 })
+		check('the shipped numbers written out by hand come back unchanged',
+			shipLike.plateAlpha == 0.78 and shipLike.plateQuietAlpha == 0.58
+				and shipLike.plateLitAlpha == 0.9 and shipLike.interlaceAlpha == 0.05
+				and shipLike.cutSm == 6 and shipLike.cutMd == 12 and shipLike.cutLg == 20,
+			('%s %s %s %s'):format(tostring(shipLike.plateAlpha),
+				tostring(shipLike.plateQuietAlpha), tostring(shipLike.plateLitAlpha),
+				tostring(shipLike.interlaceAlpha)))
+
+		-- A word where a number belongs is a MISTAKE, not a magnitude, so it is
+		-- dropped and named rather than clamped to a floor the operator never
+		-- asked for.
+		local wrong, wrongNotes = Palette.Resolve({
+			ACCENT = 'crimson', ALARM = '#12', TILT = 'a lot', CUT = {},
+		})
+		check('a value of the wrong kind is dropped, not repaired',
+			Palette.IsEmpty(wrong), OPX.Table.Count(wrong) .. ' key(s)')
+		check('and every one of them is named for the journal', #wrongNotes == 4,
+			table.concat(wrongNotes, ' | '))
+
+		-- ── what arrives from the wire ───────────────────────────────────────
+		-- The same bounds, run over a payload this build did not produce: an
+		-- older or newer server, or a key that has since been removed.
+		local fromWire = Palette.Sanitise({
+			accent = { 300, -5, 71.4 },
+			deep = { 1, 2 },
+			tiltDeg = 99,
+			cutSm = 'six',
+			somethingElse = 1,
+		})
+		check('a channel out of range is clamped to a byte',
+			fromWire.accent[1] == 255 and fromWire.accent[2] == 0 and fromWire.accent[3] == 71,
+			table.concat(fromWire.accent, ','))
+		check('a triple that is not three numbers is dropped', fromWire.deep == nil)
+		check('a number out of range is clamped', fromWire.tiltDeg == 15,
+			tostring(fromWire.tiltDeg))
+		check('a number that is not one is dropped', fromWire.cutSm == nil)
+		check('a key this build does not know is dropped', fromWire.somethingElse == nil)
+
+		-- ── the wire itself ──────────────────────────────────────────────────
+		local before = #control.clientEvents
+		env.source = 7
+		control.netEvents[theme.Event.REQUEST]()
+		env.source = nil
+		local sent = control.clientEvents[#control.clientEvents]
+		check('a player who asks is answered, and only that player',
+			#control.clientEvents == before + 1 and sent ~= nil
+				and sent.name == theme.Event.SET and sent.source == 7,
+			sent and tostring(sent.name) or 'nothing sent')
+		check('with the resolved theme, which on a stock server is the full ladder',
+			sent ~= nil and type(sent[1]) == 'table' and not Palette.IsEmpty(sent[1]))
+
+		-- A second ask inside the window is dropped. Not a security boundary --
+		-- the answer is a few hundred bytes -- but anyone can raise the name.
+		local held = #control.clientEvents
+		env.source = 7
+		control.netEvents[theme.Event.REQUEST]()
+		env.source = nil
+		check('a second ask inside the cooldown is not answered',
+			#control.clientEvents == held)
+
+		-- The console has no page and no cooldown bucket; it must not be answered
+		-- as if it were player 0.
+		local console = #control.clientEvents
+		control.netEvents[theme.Event.REQUEST]()
+		check('a request with no player behind it is ignored',
+			#control.clientEvents == console)
+
+		-- The contract hands out a copy: a caller that edits what it is given
+		-- must not be editing what the next player is sent.
+		local published = OPX.Api.Get('theme')
+		local copy = published and published.Current()
+		if copy then copy.accent = { 1, 2, 3 } end
+		env.source = 8
+		control.netEvents[theme.Event.REQUEST]()
+		env.source = nil
+		local after = control.clientEvents[#control.clientEvents]
+		-- Directly now, rather than through emptiness: the caller wrote 1,2,3
+		-- into the table it was handed, and the next player must still be sent
+		-- the real accent.
+		check('the published theme is a copy, not the live one',
+			after ~= nil and type(after[1].accent) == 'table'
+				and after[1].accent[1] == 255 and after[1].accent[2] == 59
+				and after[1].accent[3] == 71,
+			after and after[1] and table.concat(after[1].accent or {}, ','))
+	end
+end
+
+section('theme: the client half')
+do
+	local env, control, why = boot('client')
+	if why ~= nil then
+		check('the client half loads', false, why)
+	else
+		local theme = env.OPX.Modules.Get('theme')
+		local page = control.pages[#control.pages]
+
+		-- `boot` has already reported the page READY, which is the surface-level
+		-- handshake. The theme's own `theme:ready` is a separate signal from the
+		-- page's boot, and until it arrives there is no root to write onto.
+		local wire = { accent = { 0, 128, 255 }, tiltDeg = 3, nonsense = 'x' }
+		control.netEvents[theme.Event.SET](wire)
+
+		local function themeSent()
+			for _, message in ipairs(page and page.sent or {}) do
+				if message.channel == 'opx:theme:set' then return message.payload end
+			end
+			return nil
+		end
+
+		check('a theme that arrives before the page does is held, not dropped',
+			themeSent() == nil)
+
+		control.PageEmit(page, 'opx:theme:ready', {})
+
+		local drawn = themeSent()
+		check('and is sent the moment the page asks for it', drawn ~= nil)
+		check('with the key this build does not know already gone',
+			drawn ~= nil and drawn.nonsense == nil and drawn.tiltDeg == 3
+				and type(drawn.accent) == 'table' and drawn.accent[3] == 255,
+			drawn and tostring(drawn.tiltDeg) or 'nothing')
+
+		-- There is no client-side setter, and that is the whole of the
+		-- server-authoritative claim on this side: the only name that reaches the
+		-- page is the one the server raises, and the only thing the client sends
+		-- is a request with no arguments in it.
+		check('the client asks on a name that carries nothing',
+			theme.Event.REQUEST == 'opx:net:theme:request')
 -- ── garages and AV pads ─────────────────────────────────────────────────────
 -- What is under test is a PLACE and not a menu: a marker stands where an operator
 -- put it, the vehicle is created ON it rather than beside the player, and every
@@ -2140,6 +3504,9 @@ do
 	end
 end
 
+	end
+end
+
 section('module resolution')
 do
 	local cases = {
@@ -2310,6 +3677,44 @@ do
 			end
 		end
 	end
+end
+
+-- ── the staff menu's row vocabulary ─────────────────────────────────────────
+-- READ OUT OF THE SOURCE, because the thing that broke is a collision between
+-- two fields in one table and neither side is reachable from here: `guarded`
+-- and `onRow` are both file-local to a client module.
+--
+-- The delete row shipped carrying `back = true`, meaning "after the confirmed
+-- action, also leave the page it destroyed". But `back` ALREADY means "pressing
+-- me pops the screen" -- that is what Cancel is -- and `onRow` tests it before
+-- it looks for a confirmation. So the row popped on press and never confirmed
+-- and never ran: pressing Delete did nothing, silently, while looking exactly
+-- like a row that had been pressed.
+section('the staff menu: a guarded row confirms rather than pops')
+do
+	local handle = io.open('modules/admin/client/menu.lua', 'r')
+	local body = handle and handle:read('a') or ''
+	if handle then handle:close() end
+
+	local built = body:match('local function guarded%b()(.-)\nend')
+	check('guarded() was found in the source', built ~= nil and built ~= '')
+
+	if built then
+		-- The whole bug in one assertion.
+		check('a guarded row writes no `back` into its row data',
+			built:match('item%.data = .-back%s*=') == nil,
+			built:match('item%.data = [^\n]*'))
+		check('and it does write the confirmation',
+			built:match('item%.data = .-confirm%s*=') ~= nil)
+	end
+
+	-- The order that makes the collision fatal rather than merely untidy. If a
+	-- later edit moves the confirmation test above the pop, this check should be
+	-- revisited rather than deleted: the names would still be two meanings.
+	local popAt = body:find('if data%.back then return pop%(%) end', 1)
+	local confirmAt = body:find("type%(data%.confirm%) == 'table'", 1)
+	check('onRow still tests back before confirm, which is why the names must differ',
+		popAt ~= nil and confirmAt ~= nil and popAt < confirmAt)
 end
 
 print(('\n%d checks, %d failed'):format(checks, failures))

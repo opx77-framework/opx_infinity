@@ -88,16 +88,12 @@ import type { CatalogEntry, ScreenConfig, Stack } from './types'
  * `InventoryView.vue` takes the SAME slab when a drag is over the drop zone, so
  * a stack about to land reads one way wherever it is about to land.
  *
- * THE GROUND IS PAINTED BY THE FRAME ITSELF, which is why there is no
- * `background` property anywhere below. `border-image-slice: 6 fill` paints the
- * ninth, middle tile as well as the eight edge ones, so the ground is the SVG
- * path's own `fill` -- the CHAMFERED shape exactly, registered against its own
- * stroke by construction instead of by arithmetic. A `background` cannot do
- * this: it is a rectangle, and a rectangle under a chamfered frame leaves a 6px
- * triangle of plate sticking out past the diagonal, which cancels the one shape
- * the house owns. It also leaves the idiom below intact -- one property,
- * `border-image-source`, still moves a cell a whole step on BOTH channels at
- * once, with no second declaration to keep in agreement and nothing to animate.
+ * THE GROUND FOLLOWS THE CUT, and a plain `background` is all it takes now:
+ * augmented-ui clips the element, so the background IS the chamfered shape. This
+ * used to be impossible -- a rectangle under a chamfered frame left a 6px
+ * triangle of plate past the diagonal -- which is why the ground was painted into
+ * the sprite as the path's own `fill`. The state idiom survives it: one custom
+ * property moves a cell a whole step on both channels at once.
  *
  * HOW FIVE STATES READ APART IN THE OUTLINE ALONE. This ladder was carrying all
  * five of them before there was a ground beneath it and it still is: the ground
@@ -119,18 +115,17 @@ import type { CatalogEntry, ScreenConfig, Stack } from './types'
  * what is true -- this slot has been vacated and is waiting to be closed again.
  * Its content drops to 0.3 opacity so the brackets are what is left.
  *
- * WHY 9-SLICE AND NOT `clip-path`. A clip cuts the painted result, so a bordered
- * box under one loses its stroke along the diagonal and the chamfer arrives as a
- * GAP. The frames below are 9-slice SVG data URIs: 20x20 with 6px corner tiles,
- * the chamfer living entirely inside the top-right tile so a stretched edge can
- * never skew it, and the BRACKET frame's edge tiles simply empty. A state change
- * swaps `border-image-source` -- one property, no relayout, no new paint node.
+ * FOUR OF THE FIVE STATES ARE AUGMENTED, and the fifth cannot be. A colour and a
+ * weight are `--aug-border-bg` and `--aug-border-all`; the DRAG state is four
+ * corner brackets with no edges, which is a different shape class and not a
+ * different colour, and augmented-ui's border layer is a continuous ring around
+ * the clip path. So the cell's augmentation is bound rather than static: while
+ * it is being dragged the element is un-augmented, unclipped, and the one
+ * surviving sprite in the runtime paints its brackets whole.
  *
- * WHY THE TILES ARE 6px AND NOT THE MENU'S 8px. `border-image-width` paints
- * outside the 1px border box, so an 8px tile would spill 7px into the 8px grid
- * gap and every cell corner would be drawn twice, doubled, against its
- * neighbour's. 6px spills 5px, which the gap absorbs. Same idiom, sized for a
- * grid instead of a column.
+ * THE CUT IS 6px, which is what the old 20x20 sprite's tiles worked out to at
+ * cell size. It asks for the border layer alone, so a forty-slot grid costs one
+ * pseudo-element per cell rather than two.
  *
  * THE COLOURS AND THE SHADOWS ARE NOT DECLARED HERE. They are inherited, from
  * `.room` in `InventoryView.vue`, and that is the mechanism HudRoot.vue settled:
@@ -220,6 +215,7 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
       muted,
       weapon: entry?.weapon === true
     }"
+    :data-augmented-ui="dragging ? undefined : 'tr-clip border'"
     :data-slot="index"
     @pointerdown.prevent="stack && emit('grab', index, $event)"
     @contextmenu.prevent="stack && emit('open', index, $event)"
@@ -251,67 +247,21 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
 
 <style scoped>
 /* =============================================================================
-   THE FIVE FRAMES. 20x20, 6px corner tiles, chamfer inside the top-right tile.
+   THE ONE SPRITE LEFT IN THE RUNTIME -- the DRAG state, four corner brackets and
+   no edges.
 
-   Each carries its colour and its stroke width TOGETHER, because that is what
-   makes one property (`border-image-source`) able to move a cell a whole step
-   along both ramps at once. The hex values are literal and not `var()`: a data
-   URI is a string to the parser and a custom property inside one never resolves.
-   They are the same three reds as `--red-idle / --red-deep / --red` on `.room`,
-   plus `--red-hi` for the brackets.
+   It survives because it is a SHAPE and not a colour: augmented-ui draws a
+   continuous ring around the clip path and cannot open four gaps in it. Every
+   stroke lives inside a corner tile, because anything drawn outside one lands in
+   a stretched edge slice and tiles down the whole side. The top-right bracket IS
+   the chamfer, which keeps the broken frame the same shape as the closed one.
 
-   EACH NOW CARRIES ITS GROUND IN THE SAME STRING, as the path's own `fill`, and
-   `border-image-slice: 6 fill` below is what puts that fill on the screen: three
-   values -- hollow, plate, slab -- across the five frames, reasoned at the top of
-   the file. `fill-opacity` rather than a functional colour, because that is the
-   idiom `stroke-opacity` is already using two attributes along, and because a
-   presentation attribute is the one place an `rgba()` is not certain to parse.
-
-   THE TWO GROUND COLOURS ARE THE SAME RED AS THE STROKES, TAKEN DOWN. #1c0809 is
-   `--red-idle`'s rgb(232, 67, 79) at 12% and #4a1519 is the same rgb at 32%, so
-   the fill and the stroke in any one of these strings are one colour at two
-   depths rather than two colours that have to be kept in agreement. They are
-   literal for the reason the reds above are literal, and they are DARK for the
-   reason set out at the top: the ground is paid for by the item art it makes
-   readable, and a red bright enough to announce itself stops paying.
+   Its ground is the HOLLOW one, and that is not a compromise: a vacated slot is
+   about to be empty, so it stands on what an empty slot stands on. It is a
+   SEPARATE unstroked path ahead of the bracket group -- the brackets are four
+   open strokes and a fill on those would close four shapes meant to stay open.
    ========================================================================== */
 .cell {
-  /* empty -- 1.0px, red at 0.30, on the HOLLOW ground. Present, and saying
-     nothing else: 0.28 of a red-black is a warm shade over the street rather
-     than a plate on it, which is what an empty socket should be next to a full
-     one. At this alpha the hue is barely a cast, and that is correct -- an empty
-     slot is the one cell with nothing to make legible. */
-  --cell-empty: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><path d="M0.5 0.5H13.5L19.5 6.5V19.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="3.5"/><path d="M0.5 0.5H13.5L19.5 6.5V19.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23e8434f" stroke-opacity="0.70" stroke-width="1.4"/></svg>');
-  /* occupied -- 1.4px at rest, the same weight the menu's resting row carries,
-     on the PLATE. The colour is this surface's red at 12%; the 0.78 is
-     `--op77-panel-quiet`'s alpha, kept when the hue changed because it is the
-     token file's own ceiling for a fill that is not carrying body copy -- enough
-     to hold an item picture against a white plaza, not enough to become a panel.
-     This is the ground thirty-nine cells out of forty are standing on, so it is
-     the one value here that had to stay a shadow first and a red second. */
-  --cell-full: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><path d="M0.5 0.5H13.5L19.5 6.5V19.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="3.5"/><path d="M0.5 0.5H13.5L19.5 6.5V19.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23e8434f" stroke-opacity="0.70" stroke-width="1.4"/></svg>');
-  /* hover -- 1.8px, DENSER not brighter, it does not bloom, and its ground is the
-     SAME plate as at rest. The pointer is a frame event, so the frame answers it
-     alone; a ground that also moved would make the two channels one again. */
-  --cell-hover: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><path d="M0.5 0.5H13.5L19.5 6.5V19.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="3.5"/><path d="M0.5 0.5H13.5L19.5 6.5V19.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23c8202e" stroke-width="1.8"/></svg>');
-  /* drop target -- 2.4px, lit, the only cell on the grid that blooms, and the
-     only one standing on the SLAB: the same red as every other ground, carried
-     up to 32% and 0.90. Hue cannot separate it now that the whole grid is red,
-     so DENSITY and DEPTH do: it is the only ground the street does not come
-     through and the only one pitched at the lit frame standing on it, which
-     makes one CLOSED cell on a wall of windows. That is the literal thing being
-     said -- the stack lands here. It is `.ground`'s over-state ground too, and
-     the two must move together if either is ever retuned. */
-  --cell-over: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><path d="M0.5 0.5H13.5L19.5 6.5V19.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="3.5"/><path d="M0.5 0.5H13.5L19.5 6.5V19.5H0.5Z" fill="%234a1519" fill-opacity="0.90" stroke="%23ff3b47" stroke-width="2.4"/></svg>');
-  /* dragged -- four corner brackets and NO edges. Every stroke lives inside a
-     corner tile, because anything drawn outside one lands in a stretched edge
-     slice and would tile down the whole side. The top-right bracket IS the
-     chamfer, which is what keeps the broken frame the same shape as the closed
-     one. Its ground is the HOLLOW one, and that is not a compromise: a vacated
-     slot is about to be empty, so it stands on what an empty slot stands on. It
-     is carried by a SEPARATE unstroked path ahead of the bracket group, because
-     the brackets are four open strokes and a fill on those would close four
-     shapes that are meant to stay open. */
   --cell-drag: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><path d="M0.5 0.5H13.5L19.5 6.5V19.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="3.5"/><path d="M0.5 0.5H13.5L19.5 6.5V19.5H0.5Z" fill="%231c0809" fill-opacity="0.28" stroke="none"/><g fill="none" stroke="%23ff6b78" stroke-width="1.6"><path d="M0.5 5.5V0.5H5.5"/><path d="M13.5 0.5L19.5 6.5"/><path d="M19.5 13.5V19.5H13.5"/><path d="M0.5 14.5V19.5H5.5"/></g></svg>');
 
   position: relative;
@@ -320,12 +270,8 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
   justify-content: flex-end;
   box-sizing: border-box;
   height: 100%;
-  padding: var(--op77-space-1);
-  /* STILL NO `background`, ON ANY STATE -- and a cell is nonetheless no longer
-     transparent. The ground arrives with the frame, through the `fill` keyword
-     on `border-image-slice` below; the header says why it exists, whose call it
-     was and why it is painted this way rather than as a property of its own. */
-  color: var(--red-idle, rgba(232, 67, 79, 0.62));
+  padding: var(--op-space-1);
+  color: var(--op-red-idle);
   /* THE INK STAYS, and the ground does not make it redundant: the plate is a
      low-alpha wash and not an opaque panel, so a glyph in a cell is still half
      on the street. They do different jobs at different scales -- the plate buys
@@ -335,13 +281,9 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
      and the mass all take it from here -- and the value itself comes from the
      surface, so the grid and the panel around it are in the same ink. */
   text-shadow: var(--ink, 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 9px rgba(0, 0, 0, 0.8));
-  border: 1px solid transparent;
-  border-image-source: var(--cell-empty);
-  /* `fill` paints the ninth tile -- the middle one, the ground. Without it the
-     eight edge tiles draw the frame and the centre stays empty, which is what
-     this said before the owner asked for a background. */
-  border-image-slice: 6 fill;
-  border-image-width: 6px;
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: rgba(var(--op-red-idle-rgb), 0.70);
+  background: var(--op-plate);
   /* THE BLACK IS IN THE SPRITE, and this is where it stopped being a box-shadow.
 
      It was an outset `var(--dark)` on the cell box, and the comment here argued
@@ -367,20 +309,21 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
      property, which is exactly right here: the frame swaps on the frame the
      state changes. Only the two continuous values transition. */
   transition:
-    color var(--op77-dur-fast) linear,
-    opacity var(--op77-dur-fast) linear;
+    color var(--op-dur-fast) linear,
+    opacity var(--op-dur-fast) linear;
 }
 
 .cell.filled {
-  color: var(--red-text, #e8646d);
-  border-image-source: var(--cell-full);
+  color: var(--op-red-text);
+  --aug-border-bg: rgba(var(--op-red-idle-rgb), 0.70);
   cursor: grab;
 }
 
 /* --- HOVER: denser red, heavier stroke, no bloom -------------------------- */
 .cell.filled:hover:not(.over):not(.dragging) {
-  color: var(--red-deep, #c8202e);
-  border-image-source: var(--cell-hover);
+  color: var(--op-red-deep);
+  --aug-border-bg: var(--op-red-deep);
+  --aug-border-all: 1.8px;
 }
 
 /* --- TARGET: lit, heaviest, and the one thing on the grid that blooms -----
@@ -389,12 +332,16 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
    eye -- this is where the stack lands. */
 .cell.over,
 .cell.selected {
-  color: var(--red, #ff3b47);
-  border-image-source: var(--cell-over);
-  /* Replaces the dark shadow above; never stacked with it. A box-shadow and not
-     a `filter`, because a filter on a grid cell gives that cell its own backing
-     store inside a surface that repaints over live gameplay -- forty of them. */
-  box-shadow: var(--bloom, 0 0 18px -4px rgba(255, 59, 71, 0.55));
+  color: var(--op-red);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2.4px;
+  background: var(--op-plate-lit);
+  /* A `drop-shadow` AND NOT A `box-shadow`, which is forced by the clip: an
+     outset shadow is sheared along the chamfer. The old note here refused a
+     filter because "forty of them" would each take a backing store -- but only
+     ONE cell is the drop target at a time, and it changes when the pointer moves
+     between cells rather than on a clock. */
+  filter: drop-shadow(0 0 6px var(--op-red-glow));
 }
 
 /* --- DRAGGED: the frame BREAKS. ------------------------------------------
@@ -403,8 +350,12 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
    dark shadow goes with the edges: there is no closed box left to separate. */
 .cell.dragging,
 .cell.dragging:hover {
-  color: var(--red-hi, #ff6b78);
+  color: var(--op-red-hi);
+  /* The drag state is the one that still needs a sprite: see the header. */
+  border: 1px solid transparent;
   border-image-source: var(--cell-drag);
+  border-image-slice: 6 fill;
+  border-image-width: 6px;
   box-shadow: none;
   cursor: grabbing;
 }
@@ -434,8 +385,8 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
   position: absolute;
   top: 3px;
   left: 5px;
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   color: currentcolor;
   opacity: 0.6;
 }
@@ -451,7 +402,7 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
   align-items: center;
   justify-content: center;
   pointer-events: none;
-  transition: opacity var(--op77-dur-fast) linear;
+  transition: opacity var(--op-dur-fast) linear;
 }
 
 /* No drop-shadow on the picture: a `filter` is allowed on an icon and this is a
@@ -464,8 +415,8 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
 
 /* The fallback when a picture will not load. Display face, the cell's colour. */
 .initials {
-  font: 700 var(--op77-fs-title) / 1 var(--op77-font-display);
-  letter-spacing: var(--op77-track-head);
+  font: 700 var(--op-fs-title) / 1 var(--op-font-display);
+  letter-spacing: var(--op-track-head);
   color: currentcolor;
   opacity: 0.75;
 }
@@ -483,22 +434,22 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
   position: absolute;
   top: 3px;
   right: 6px;
-  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
-  color: var(--op77-text);
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-text);
   font-variant-numeric: tabular-nums;
-  transition: opacity var(--op77-dur-fast) linear;
+  transition: opacity var(--op-dur-fast) linear;
 }
 
 .rounds {
   position: absolute;
   right: 6px;
   bottom: 24px;
-  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   color: currentcolor;
   font-variant-numeric: tabular-nums;
-  transition: opacity var(--op77-dur-fast) linear;
+  transition: opacity var(--op-dur-fast) linear;
 }
 
 /* The condition rule. Two pixels of stroke, which is what the menu's separator
@@ -521,19 +472,19 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
   right: 5px;
   bottom: 22px;
   height: 2px;
-  background: var(--red-track, rgba(232, 67, 79, 0.22));
+  background: var(--red-track, rgba(var(--op-red-idle-rgb), 0.22));
   box-shadow: var(--ink-tight, 0 1px 2px rgba(0, 0, 0, 0.95));
-  transition: opacity var(--op77-dur-fast) linear;
+  transition: opacity var(--op-dur-fast) linear;
 }
 
 .wear i {
   display: block;
   height: 100%;
-  background: var(--red-idle, rgba(232, 67, 79, 0.62));
+  background: var(--op-red-idle);
 }
 
 .wear.worn i {
-  background: var(--red-hi, #ff6b78);
+  background: var(--op-red-hi);
 }
 
 /* SPENT READS WHITE, and heavier, for the same reason a failure does: red is the
@@ -541,23 +492,23 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
    hot rung `.room` calls `--red-hot` and the load rule's `full` state uses, and
    it was the one colour in this file still spelling that rung out by hand. */
 .wear.spent i {
-  background: var(--red-hot, #ffa8ae);
+  background: var(--op-alarm);
 }
 
 .foot {
   display: flex;
   align-items: baseline;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   min-width: 0;
   pointer-events: none;
-  transition: opacity var(--op77-dur-fast) linear;
+  transition: opacity var(--op-dur-fast) linear;
 }
 
 .name {
   flex: 1 1 auto;
   min-width: 0;
-  font: 400 var(--op77-fs-micro) / 1.2 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 400 var(--op-fs-micro) / 1.2 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   text-transform: uppercase;
   color: currentcolor;
   overflow: hidden;
@@ -568,12 +519,12 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
 .cell.filled:hover .name,
 .cell.over .name,
 .cell.selected .name {
-  color: var(--op77-text);
+  color: var(--op-text);
 }
 
 .mass {
   flex: none;
-  font: 400 var(--op77-fs-micro) / 1.2 var(--op77-font-mono);
+  font: 400 var(--op-fs-micro) / 1.2 var(--op-font-mono);
   color: currentcolor;
   opacity: 0.75;
   font-variant-numeric: tabular-nums;

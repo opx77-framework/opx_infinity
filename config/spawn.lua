@@ -5,14 +5,12 @@
 -- stood anywhere, so `spawn` is the one module that decides where a brand new
 -- character lands.
 --
--- EVERY WORLD ENTER IS OFFERED THE MENU, a returning character included -- this
--- used to be gated on the row having no position, which meant a character that
--- had ever stood anywhere was never asked again. Choosing is the exception and
--- resuming is still the default: a player who picks a spot is placed there, and
--- one who picks nothing -- or never opens the menu, or lets the window run out
--- -- is placed by `character` with no explicit target, which resolves to the
--- row's own position. Only a character whose row holds nowhere reaches
--- `character.DEFAULT_SPAWN`.
+-- WHICH WORLD ENTERS ARE ASKED IS THE OPERATOR'S CALL, and it is `OFFER_POLICY`
+-- below. Whatever that says, the answer to a choice nobody makes is the same one:
+-- a player who picks a spot is placed there, and one who picks nothing -- or
+-- never opens the menu, or lets the window run out -- is placed by `character`
+-- with no explicit target, which resolves to the row's own position. Only a
+-- character whose row holds nowhere reaches `character.DEFAULT_SPAWN`.
 --
 -- The module reads this as `M.Settings`.
 --
@@ -30,6 +28,45 @@
 
 OPX.Config.MODULES.spawn = {
 	enabled = true,
+
+	-- WHICH WORLD ENTERS ARE OFFERED THE MENU. Three values, and no fourth:
+	--
+	--   'first'   only a character that has never stood anywhere. The row's
+	--             position is what says so -- it is NULL until the first save
+	--             after the first placement -- so this is "ask once per
+	--             character, ever", and a returning player resumes in silence.
+	--   'always'  every world enter, a returning character included. Choosing is
+	--             the exception and resuming is still the default: a returning
+	--             player who picks nothing is placed back where their row says.
+	--   'never'   nobody is ever asked. The character starts where it already is,
+	--             and only a row holding nowhere reaches `character.DEFAULT_SPAWN`.
+	--
+	-- WHY THIS IS A SETTING AND NOT A GUESS. The two defensible answers are
+	-- opposite and both are somebody's server: a roleplay server asks once, at
+	-- character creation, and never interrupts a returning player again; a
+	-- freeroam server asks every time because starting somewhere new is the point
+	-- of the session. This module shipped hard-wired to the second, which cost the
+	-- first an unskippable modal on every join.
+	--
+	-- 'never' IS NOT THE SAME AS `enabled = false`, and the difference is worth
+	-- the two words: switched off, the module does not load, its catalogue is not
+	-- read and its locales are not registered. Set to 'never' it is loaded and
+	-- silent -- the catalogue is still validated at start, so a typo in a
+	-- coordinate is still named in the journal on a server that intends to turn
+	-- the menu on next week.
+	--
+	-- UNDER 'never' NO CLOCK IS ARMED AT ALL. Neither TIMEOUT_SECONDS nor
+	-- HOLD_MAX_SECONDS below runs, because nothing is held: the module declines
+	-- the placement outright and `character` performs it in the same tick. A
+	-- character held by a deadline for a menu that will never be drawn would be a
+	-- player standing in the pre-game position until the hold ran out.
+	--
+	-- An unknown value is REFUSED WITH A LINE IN THE JOURNAL and falls back to
+	-- 'always', which is what this module did before the setting existed. It is
+	-- never guessed at: 'firstspawn', 'once' and true are each a typo, and a typo
+	-- that silently turned the menu off would look exactly like the module being
+	-- broken.
+	OFFER_POLICY = 'always',
 
 	-- How long a player has to pick before the server places them at
 	-- `character.DEFAULT_SPAWN` and takes the menu down. This is the ONLY thing
@@ -63,6 +100,16 @@ OPX.Config.MODULES.spawn = {
 	-- is the other case -- a client that never draws the menu at all, which would
 	-- otherwise leave a character standing in the pre-game position for the whole
 	-- session, with no name and no way to be placed. Sixty seconds is the floor.
+	--
+	-- IT IS ALSO THE BOUND ON EVERYTHING AHEAD OF THE MENU, and that is the part
+	-- worth reading before shortening it. The menu is the LAST of three questions
+	-- a new character answers -- a name, then an outfit, then this -- and it
+	-- stands aside for the whole of the first two (see WAIT_FOR_ENTRY below, and
+	-- WARDROBE.OFFER_POLICY in config/appearance.lua). All of that happens inside
+	-- this hold, because the player's own window has not started yet. A number
+	-- below the time somebody plausibly spends naming a character and dressing it
+	-- is a number that settles their spawn from the row while they are still in
+	-- the fitting room, with no menu ever drawn and nothing on screen to say why.
 	HOLD_MAX_SECONDS = 300,
 
 	-- Rate limit on the choice itself, in milliseconds. The menu is one shot; a
@@ -73,12 +120,15 @@ OPX.Config.MODULES.spawn = {
 	-- Whether the menu waits for the entry module to stop asking its own
 	-- questions before it opens.
 	--
-	-- A brand new character is asked TWO things at once -- the name form, which
-	-- lives in the world, and this, which is decided at the same moment the
-	-- platform announces a living body. Drawn together they are two modals
-	-- fighting for one keyboard, so with this true the menu waits for entry to
-	-- report itself idle. The wait is bounded by TIMEOUT_SECONDS above: a name
-	-- form nobody answers costs the player the choice, not the session.
+	-- A brand new character is asked THREE things at once -- the name form, which
+	-- lives in the world; the fitting room, which the appearance module offers on
+	-- its own policy; and this, which is decided at the same moment the platform
+	-- announces a living body. Drawn together they are three modals fighting for
+	-- one keyboard, so with this true the menu waits for entry to report itself
+	-- idle -- and entry reports the join busy for the fitting room too, which is
+	-- why there is one setting here and not two. The wait is bounded by
+	-- HOLD_MAX_SECONDS above: a question nobody answers costs the player the
+	-- choice, not the session.
 	WAIT_FOR_ENTRY = true,
 
 	-- The places a new character may start.

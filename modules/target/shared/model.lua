@@ -112,7 +112,7 @@ end
 --
 -- Three accepted shapes, and the middle one is why this exists. A FUNCTION is
 -- called in-process and is what a module registers. A TABLE naming a resource and
--- an export goes over `OPX.Rpc.Call`, for an owner that is a genuinely separate
+-- an export goes over `OPX.Lib.Rpc.Call`, for an owner that is a genuinely separate
 -- resource. A bare STRING is the shape every caller written before this runtime
 -- used -- an export on the owner's own resource -- and is normalised into the
 -- second, so those definitions register unchanged.

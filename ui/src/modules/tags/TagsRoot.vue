@@ -39,10 +39,11 @@ import { useBridge } from '@/composables/useBridge'
  *
  * A TAG IS A BUTTON'S SHAPE, ON THE OWNER'S INSTRUCTION: an id square on the left
  * and the name to the right of it, with the square standing PROUD of the name
- * plate so its corners break the plate's edge. Both halves take the menu row's
- * own sprite -- the same 24x24 9-slice, the same ground painted by
- * `border-image-slice: 8 fill` -- so a tag reads as part of the same object
- * family as everything else on screen rather than as a label.
+ * plate so its corners break the plate's edge. Both halves are drawn by
+ * augmented-ui with the same chamfer and the same ground every control in the
+ * runtime wears, so a tag reads as part of that object family rather than as a
+ * label. It is NOT tilted, and that needs no argument: a tag is pinned to a body
+ * in the world, and the world is already supplying its perspective.
  *
  * THREE NAMES ON ONE LINE, and the line is the whole of the design problem. They
  * are not three equal things and drawing them as three would make a tag unreadable
@@ -276,8 +277,12 @@ useBridge('open77:anchors', (payload: Payload) => {
     <!-- Keyed on the ANCHOR and not the player id: an anchor is re-pointed when a
          body respawns, so the element survives exactly as long as the tag does. -->
     <div v-for="entry in drawn" :key="entry.row.anchor" class="tag" :style="styleFor(entry)">
-      <span v-if="technical" class="id">{{ entry.row.playerId }}</span>
-      <span class="plate" :class="{ staff: entry.row.staff, bare: !technical }">
+      <span v-if="technical" class="id" data-augmented-ui="tr-clip border">{{ entry.row.playerId }}</span>
+      <span
+        class="plate"
+        :class="{ staff: entry.row.staff, bare: !technical }"
+        data-augmented-ui="tr-clip border"
+      >
         <span class="name">{{ entry.row.name }}</span>
 
         <!-- Each run brings its own rule. Written as one `v-if` per pair rather
@@ -326,25 +331,6 @@ useBridge('open77:anchors', (payload: Payload) => {
 }
 
 .tag {
-  /* --- THE RED, verbatim from HudRoot.vue and MenuView.vue ------------------
-     Repeated rather than imported for the reason the chat states: this is its
-     own registration with no common ancestor. It goes when the pass folds back
-     into `design/`. */
-  --red: #ff3b47;
-  --red-idle: rgba(232, 67, 79, 0.62);
-  --red-hi: #ff6b78;
-  --red-text: #e8646d;
-  /* The alarm, which is not red: a staff tag is the one that must not be read as
-     the surface talking about itself. */
-  --alarm: #ffa8ae;
-
-  /* The menu row's sprites, verbatim, so a tag is the same object as a button.
-     The black under-stroke is the separation: an outset shadow follows the
-     border box and would square off the chamfer. */
-  --frame-idle: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23e8434f" stroke-opacity="0.7" stroke-width="1.4"/></svg>');
-  --frame-on: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%234a1519" fill-opacity="0.9" stroke="%23ff3b47" stroke-width="2.4"/></svg>');
-  --frame-staff: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%234a1519" fill-opacity="0.9" stroke="%23ffa8ae" stroke-width="2.4"/></svg>');
-
   position: absolute;
   /* The origin the transform moves FROM. Both are zero and neither is ever
      written again: the whole position is the transform, which is what keeps a tag
@@ -374,7 +360,7 @@ useBridge('open77:anchors', (payload: Payload) => {
      rounds to a tenth precisely so it steps rather than streams. */
   transition:
     transform 70ms linear,
-    opacity var(--op77-dur-fast) linear;
+    opacity var(--op-dur-fast) linear;
 
   /* It is the one thing on this surface that moves every frame, so it says so:
      the compositor gives it a layer up front instead of promoting it on the
@@ -411,15 +397,18 @@ useBridge('open77:anchors', (payload: Payload) => {
   height: 26px;
   padding: 0 4px;
 
-  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   font-variant-numeric: tabular-nums;
-  color: var(--red);
+  color: var(--op-red);
 
-  border: 1px solid transparent;
-  border-image-source: var(--frame-on);
-  border-image-slice: 8 fill;
-  border-image-width: 6px;
+  /* The lit ground and the full-red edge: a square with an id in it is the one
+     part of a tag that is an instrument. The cut is the house small one, which
+     is what the 6px `border-image-width` on the old sprite worked out to. */
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2.4px;
+  background: var(--op-plate-lit);
 }
 
 /* =============================================================================
@@ -432,32 +421,31 @@ useBridge('open77:anchors', (payload: Payload) => {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   box-sizing: border-box;
   height: 20px;
   /* The overlap. The left padding pays it back so the first glyph is not under
      the square. */
   margin-left: -6px;
-  padding: 0 var(--op77-space-3) 0 calc(var(--op77-space-3) + 6px);
+  padding: 0 var(--op-space-3) 0 calc(var(--op-space-3) + 6px);
 
-  border: 1px solid transparent;
-  border-image-source: var(--frame-idle);
-  border-image-slice: 8 fill;
-  border-image-width: 6px;
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red-idle);
+  background: var(--op-plate);
 }
 
 /* With no square there is nothing to tuck under, and the plate is the whole tag:
    it takes the padding back and stands on its own. */
 .plate.bare {
   margin-left: 0;
-  padding-left: var(--op77-space-3);
+  padding-left: var(--op-space-3);
 }
 
 .name {
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-display);
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-display);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--red-text);
+  color: var(--op-red-text);
 }
 
 /* THE PAUSE BETWEEN TWO RUNS. A 1px column at 45% of the plate's own height, so
@@ -468,7 +456,7 @@ useBridge('open77:anchors', (payload: Payload) => {
   flex: none;
   width: 1px;
   height: 9px;
-  background: var(--red-idle);
+  background: var(--op-red-idle);
   opacity: 0.55;
 }
 
@@ -476,9 +464,9 @@ useBridge('open77:anchors', (payload: Payload) => {
    name somebody was given, and the mono face is this tree's whole convention for
    that. NOT uppercased, for the same reason: the casing belongs to its owner. */
 .user {
-  font: 600 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
-  color: var(--red-idle);
+  font: 600 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
+  color: var(--op-red-idle);
 }
 
 /* THE CITIZEN ID. Read one symbol at a time -- its alphabet is chosen so no two
@@ -486,10 +474,10 @@ useBridge('open77:anchors', (payload: Payload) => {
    set in tabular figures, which is what keeps `4A7-KM9C` from jittering as the
    roster changes under it. */
 .cid {
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
+  font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
   letter-spacing: 0.12em;
   font-variant-numeric: tabular-nums;
-  color: var(--red-idle);
+  color: var(--op-red-idle);
   opacity: 0.8;
 }
 
@@ -502,32 +490,34 @@ useBridge('open77:anchors', (payload: Payload) => {
    of red is not.
    ========================================================================== */
 .plate.staff {
-  border-image-source: var(--frame-staff);
+  --aug-border-bg: var(--op-alarm);
+  --aug-border-all: 2.4px;
+  background: var(--op-plate-lit);
 }
 
 .plate.staff .name {
-  color: var(--alarm);
+  color: var(--op-alarm);
 }
 
 /* The whole line changes family with the plate, or the staff outline would frame
    two runs that still belong to the other palette. */
 .plate.staff .user,
 .plate.staff .cid {
-  color: var(--alarm);
+  color: var(--op-alarm);
   opacity: 0.72;
 }
 
 .plate.staff .rule {
-  background: var(--alarm);
+  background: var(--op-alarm);
 }
 
 /* The word itself, after the name and quieter than it: what is being said is
    that this person is staff, and the name is still the part being read. */
 .badge {
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
-  color: var(--alarm);
+  color: var(--op-alarm);
   opacity: 0.85;
 }
 </style>

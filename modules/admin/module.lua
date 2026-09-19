@@ -44,7 +44,13 @@ local M = OPX.Modules.Declare{
 	-- surfaces; `inventory` is the bag and weapon rows; `vehicles` proves a plate;
 	-- `downed` keeps the menu usable while the operator is on the floor; `prompts`
 	-- draws the travel strip.
-	optional = { 'menu', 'form', 'target', 'inventory', 'vehicles', 'downed', 'prompts' },
+	-- `diagnostics` is the odd one out: it carries no feature, it carries the
+	-- relay that puts a client-side fault in the SERVER journal, which is the
+	-- only copy an operator can read. Declared so the dependency is visible and
+	-- ordered rather than discovered at the call site; `Client.Journal` still
+	-- checks, because an optional module may be disabled.
+	optional = { 'menu', 'form', 'target', 'inventory', 'vehicles', 'downed', 'prompts',
+		'diagnostics' },
 }
 
 -- The three prefixes are disjoint by construction (core/shared/channels.lua):
@@ -61,6 +67,10 @@ M.Event = {
 	LOCATIONS = OPX.Event(NET, 'admin', 'locations'),
 	ITEMS = OPX.Event(NET, 'admin', 'items'),
 	BAG = OPX.Event(NET, 'admin', 'bag'),
+	-- One account's characters, chunked like every other list and tagged with the
+	-- player they were read for, so an answer that arrives after the operator has
+	-- moved on to somebody else is dropped rather than drawn as theirs.
+	CHARACTERS = OPX.Event(NET, 'admin', 'characters'),
 	ANSWER = OPX.Event(NET, 'admin', 'answer'),
 	TRAVEL = OPX.Event(NET, 'admin', 'travel'),
 	BODIES = OPX.Event(NET, 'admin', 'bodies'),
@@ -140,6 +150,16 @@ M.Command = {
 	PLAYER_HEALTH = 'opx.admin.player.health',
 	PLAYER_ARMOR = 'opx.admin.player.armor',
 	PLAYER_MODEL = 'opx.admin.player.model',
+
+	-- The ACCOUNT's characters, not the body in the world. `opx.admin.player.*` is
+	-- the session and the puppet -- freeze it, heal it, move it -- and every one
+	-- of those dies with the connection. These three reach the ROWS behind it,
+	-- which outlive it, so they are a namespace of their own: an operator trusted
+	-- to unfreeze somebody is not automatically trusted to rename or delete a
+	-- character they will still own tomorrow.
+	CHARACTER_LIST = 'opx.admin.character.list',
+	CHARACTER_RENAME = 'opx.admin.character.rename',
+	CHARACTER_DELETE = 'opx.admin.character.delete',
 
 	MODERATE_KICK = 'opx.admin.moderate.kick',
 	MODERATE_BAN = 'opx.admin.moderate.ban',

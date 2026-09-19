@@ -1,14 +1,16 @@
 import { createApp } from 'vue'
 import type { Component } from 'vue'
-import { handshake, subscribe } from '@/bridge/channel'
+import { emit, handshake, subscribe } from '@/bridge/channel'
 import { installDevShimIfMissing } from '@/bridge/devshim'
 import { installDiagnostics, report } from '@/bridge/diag'
 import { configureFocus } from '@/bridge/focus'
 import { configureRpc } from '@/bridge/rpc'
 import { setStrings } from '@/stores/ui'
-import '@/design/fonts.css'
-import '@/design/tokens.css'
-import '@/design/augmented.css'
+import { applyTheme } from '@/design-system/theme'
+import '@/design-system/fonts.css'
+import '@/design-system/tokens.css'
+import '@/design-system/shapes.css'
+import '@/design-system/surface.css'
 
 /**
  * The one `createApp`, and everything that has to happen around it in order.
@@ -49,6 +51,27 @@ export function createSurface(options: SurfaceOptions): void {
   // never released: there is no moment in the session where a locale change is
   // uninteresting.
   subscribe('opx:locale:set', setStrings)
+
+  // THE THEME IS NOT A MODULE, and that is why it is bound here beside the
+  // catalogue rather than in `boot/registry.ts`. It draws nothing, owns no layer
+  // and has no component: it is a set of custom properties on the document root,
+  // which is above every module and outlives all of them. Binding it in a module
+  // would also tie the whole surface's palette to that module not having thrown.
+  //
+  // Bound BEFORE the mount, so the first payload cannot arrive with nowhere to
+  // go, and the properties are written before the first module paints if Lua
+  // already has the answer in hand.
+  subscribe('opx:theme:set', applyTheme)
+
+  // The other half of the handshake the rest of the surface uses: Lua wires
+  // `opx:<module>:ready` for every declared module when it builds the page, and
+  // holds what arrives on one until that module registers. `emit` queues this
+  // behind the handshake below and it goes out in the same tick.
+  //
+  // WITHOUT IT NOTHING IS EVER SENT. `lib/client/surface.lua` drops rather than
+  // queues, so the theme cannot simply be pushed at the page and hoped for: the
+  // page has to say it exists, exactly as the HUD, the chat and the inventory do.
+  emit('opx:theme:ready', {})
 
   const app = createApp(root, rootProps)
 

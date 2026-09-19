@@ -108,8 +108,8 @@ local handlers = {}
 
 --- Answers the bag, whatever is open beside it, and whether piles are on.
 handlers.open = function(source)
-	if not Players.GateOpen(source) then return false, 'not_ready' end
-	if not Players.Alive(source) then return false, 'dead' end
+	local may, refusal = Players.MayAct(source)
+	if not may then return false, refusal end
 
 	local bag, reason = Players.Bag(source)
 	-- Nothing held for this connection yet: ask the character contract once more
@@ -147,7 +147,8 @@ handlers.move = function(source, payload)
 	local toValid = payload.toSlot == nil or slotOf(payload.toSlot) ~= nil
 	local countValid, count = countOf(payload.count)
 	if not fromSlot or not toValid or not countValid then return false, 'bad_request' end
-	if not Players.GateOpen(source) then return false, 'not_ready' end
+	local may, refusal = Players.MayAct(source)
+	if not may then return false, refusal end
 	local from = resolve(source, payload.from)
 	local to = resolve(source, payload.to)
 	if not from or not to then return false, 'not_found' end
@@ -160,7 +161,8 @@ handlers.split = function(source, payload)
 	local slot = slotOf(payload.slot)
 	local countValid, count = countOf(payload.count)
 	if not slot or not countValid or not count then return false, 'bad_request' end
-	if not Players.GateOpen(source) then return false, 'not_ready' end
+	local may, refusal = Players.MayAct(source)
+	if not may then return false, refusal end
 	local container = resolve(source, payload.container)
 	if not container then return false, 'not_found' end
 	return Containers.Split(container, slot, count)
@@ -169,7 +171,8 @@ end
 --- Packs a container the player may reach, by weight or by name.
 handlers.sort = function(source, payload)
 	if type(payload) ~= 'table' then return false, 'bad_request' end
-	if not Players.GateOpen(source) then return false, 'not_ready' end
+	local may, refusal = Players.MayAct(source)
+	if not may then return false, refusal end
 	local container = resolve(source, payload.container)
 	if not container then return false, 'not_found' end
 	return Containers.Sort(container, payload.mode)

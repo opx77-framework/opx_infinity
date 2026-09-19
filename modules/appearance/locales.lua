@@ -86,7 +86,12 @@ local EN = {
 	['wardrobe.ui.nothing'] = 'nothing',
 	['wardrobe.ui.remove'] = 'Take off',
 	['wardrobe.ui.search'] = 'Search',
-	['wardrobe.ui.count'] = '{count} pieces',
+	-- THE PLACEHOLDERS ARE THE PANEL'S, not this catalogue's, and they are filled
+	-- by the page rather than here: `panel.count` ships `{from}-{to} of {total}`
+	-- and the page substitutes all three as the player scrolls. This read
+	-- `{count} pieces`, which no view has ever been able to fill -- so the plate
+	-- under the grid would have drawn the word `{count}` verbatim.
+	['wardrobe.ui.count'] = '{from}-{to} of {total}',
 	['wardrobe.ui.empty'] = 'Nothing here for this slot.',
 	['wardrobe.ui.loading'] = 'Reading the catalogue...',
 	['wardrobe.ui.failed'] = 'That did not work: {reason}',
@@ -183,7 +188,7 @@ local FR = {
 	['wardrobe.ui.nothing'] = 'rien',
 	['wardrobe.ui.remove'] = 'Retirer',
 	['wardrobe.ui.search'] = 'Rechercher',
-	['wardrobe.ui.count'] = '{count} pièces',
+	['wardrobe.ui.count'] = '{from}-{to} sur {total}',
 	['wardrobe.ui.empty'] = 'Rien ici pour cet emplacement.',
 	['wardrobe.ui.loading'] = 'Lecture du catalogue...',
 	['wardrobe.ui.failed'] = "Cela n'a pas fonctionné : {reason}",

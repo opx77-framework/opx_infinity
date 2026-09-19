@@ -208,27 +208,23 @@ function M.Start()
 		Open77.log.warn('no character contract: no needs will be loaded or saved')
 	end
 
+	-- A DELETED CHARACTER TAKES ITS NEEDS WITH IT. This table carries no foreign
+	-- key at all -- the header in `storage.lua` says why -- and one would not have
+	-- helped anyway, because a character delete is a soft one and no cascade fires
+	-- for an UPDATE. See `character.Event.IN_DELETED`, whose name is rebuilt here
+	-- the way every module rebuilds another's.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'),
+		function(_, citizenId)
+			if type(citizenId) ~= 'string' or citizenId == '' then return end
+			M.Storage.PurgeCharacter(citizenId)
+		end)
+
 	RegisterNetEvent(EVENT_PULL, onPull)
 	RegisterNetEvent(EVENT_PUSH, onPush)
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, departed)
 
-	-- `OPX.Scheduler` is the client's loop; the server VM has none, so the
-	-- autosave keeps its own thread. Each pass is guarded: a raise from a host
-	-- call ends the pass, not the loop, and a run of failures is logged once.
-	CreateThread(function()
-		local interval = math.max(1000, math.floor(tonumber(M.Settings.AUTOSAVE_MS) or 300000))
-		local failing = false
-		while true do
-			Wait(interval)
-			local ok, failure = pcall(autosave)
-			if ok then
-				failing = false
-			elseif not failing then
-				failing = true
-				Open77.log.error(('the autosave failed: %s'):format(tostring(failure)))
-			end
-		end
-	end)
+	local interval = math.max(1000, math.floor(tonumber(M.Settings.AUTOSAVE_MS) or 300000))
+	OPX.Scheduler.Every('needs:autosave', interval, autosave)
 end
 
 --- Writes every held push on this stack.

@@ -80,6 +80,23 @@ OPX.Config.MODULES.inventory = {
 	TRUNK = { SLOTS = 30, MAX_WEIGHT = 80000 },
 	GLOVEBOX = { SLOTS = 10, MAX_WEIGHT = 10000 },
 
+	-- WHO MAY OPEN A BOOT THAT BELONGS TO SOMEBODY. `true` is the owner and
+	-- nobody else; `false` is anyone who can stand next to it.
+	--
+	-- This is a server decision and not a rule of the runtime, which is why it is
+	-- here. It defaults to the closed answer because the open one is a surprise:
+	-- until now the only checks were 4.5 metres and "not sitting in it", so a
+	-- stranger could empty a parked, owned car. There is no lock in the vehicles
+	-- module to consult and no lockpicking to reward, so the choice is binary
+	-- today -- a server that wants theft should turn this off deliberately rather
+	-- than inherit it.
+	--
+	-- A vehicle nobody owns is unaffected: its storage is transient and open to
+	-- whoever reaches it. The GLOVEBOX is unaffected too, and that is deliberate:
+	-- it opens only while SEATED, so a passenger in a friend's car has already
+	-- been let in.
+	TRUNK_OWNER_ONLY = true,
+
 	-- A record carrying one of these fragments is a two-wheeler: no glovebox,
 	-- and a trunk divided by TRUNK_DIVISOR.
 	BIKES = { PATTERNS = { 'sportbike', '_bike_' }, TRUNK_DIVISOR = 3 },

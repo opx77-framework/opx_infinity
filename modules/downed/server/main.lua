@@ -512,6 +512,17 @@ function M.Start()
 		Open77.log.warn('no character contract: nobody will be seen going down')
 	end
 
+	-- A DELETED CHARACTER TAKES ITS DOWN ROW WITH IT. This table carries no
+	-- foreign key -- the header in `storage.lua` says why -- and one would not
+	-- have helped anyway, because a character delete is a soft one and no cascade
+	-- fires for an UPDATE. `Clear` is the write this module already had; it queues
+	-- behind whatever else is in flight, which is right: nothing is waiting on it.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'),
+		function(_, citizenId)
+			if type(citizenId) ~= 'string' or citizenId == '' then return end
+			M.Storage.Clear(citizenId)
+		end)
+
 	RegisterNetEvent(EVENT_READY, onReady)
 	RegisterNetEvent(EVENT_WAIT, onWait)
 	RegisterNetEvent(EVENT_GIVE_UP, onGiveUp)
@@ -524,25 +535,20 @@ function M.Start()
 		CreateThread(function() observe(id) end)
 	end)
 
-	-- `OPX.Scheduler` is the client's loop; the server VM has none, so the scan
-	-- keeps its own thread. Each pass is guarded: a raise from a host call ends
-	-- the pass, not the loop, and a run of failures is logged once.
-	CreateThread(function()
-		local failing = false
-		while true do
-			local ok, failure = pcall(function()
-				for _, playerId in ipairs(playerIds()) do observe(playerId) end
-				for playerId in pairs(down) do
-					if nameOf(playerId) == nil then getUp(playerId, 'gone', true) end
-				end
-			end)
-			if not ok and not failing then
-				Open77.log.error('life scan failed: ' .. tostring(failure))
-			end
-			failing = not ok
-			Wait(SCAN_MS)
+	local function scan()
+		for _, playerId in ipairs(playerIds()) do observe(playerId) end
+		for playerId in pairs(down) do
+			if nameOf(playerId) == nil then getUp(playerId, 'gone', true) end
 		end
-	end)
+	end
+
+	-- The first scan runs here rather than a second from now: a reload with
+	-- players already dead has to see them, and the scheduler's first pass is
+	-- always one interval away.
+	local seen, failure = pcall(scan)
+	if not seen then Open77.log.error('life scan failed: ' .. tostring(failure)) end
+
+	OPX.Scheduler.Every('downed:scan', SCAN_MS, scan)
 
 	checkLocales()
 

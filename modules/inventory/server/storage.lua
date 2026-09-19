@@ -191,20 +191,6 @@ VALUES (@kind, @owner, NULLIF(@citizen, ''), NULLIF(@plate, ''), @slots, @maxWei
 	return Result.Ok({ header = found.value, created = tonumber(affected) == 1 })
 end
 
---- One container's header by id, or nil.
--- @author dop42
--- @param id integer
--- @return Result
-function Store.Header(id)
-	local row = Storage.Single([[
-SELECT id, kind, owner, slots, max_weight FROM opx77_inventories
- WHERE id = @id
- LIMIT 1
-  ]], { id = id })
-	if not row.ok then return row end
-	return Result.Ok(toHeader(row.value))
-end
-
 --- One page of a container's stacks, after a slot.
 -- Paged by SLOT NUMBER and never by offset: a save landing between two pages
 -- shifts every offset after it, and a stack would come out in both pages or in
@@ -313,6 +299,22 @@ end
 -- @return Result
 function Store.Delete(id)
 	return Storage.Execute('DELETE FROM opx77_inventories WHERE id = @id', { id = id })
+end
+
+--- Removes every container a deleted character owned, and their stacks with them.
+-- @author dop42
+--
+-- THE STACKS REALLY DO GO BY CASCADE HERE, and that one works: the foreign key
+-- that carries them is `opx77_inventory_items.inventory_id`, and this is a real
+-- DELETE on the parent. What does NOT work is the other cascade, the one from
+-- `opx77_characters` -- a character delete is a SOFT delete, `deleted_at` on a
+-- row that stays, and no cascade fires for an UPDATE. So the containers have to
+-- be named here, and their contents then follow by themselves.
+-- @param citizenId CitizenId
+-- @return Result
+function Store.PurgeCharacter(citizenId)
+	return Storage.Execute('DELETE FROM opx77_inventories WHERE citizen_id = @citizen',
+		{ citizen = citizenId })
 end
 
 --- The containers holding an item, largest stacks first.
@@ -442,14 +444,6 @@ end
 -- @param id integer
 function Store.Forget(id)
 	dirty[id] = nil
-end
-
---- Whether a container is waiting to be written.
--- @author dop42
--- @param id integer
--- @return boolean
-function Store.IsDirty(id)
-	return dirty[id] ~= nil
 end
 
 --- The containers holding an unwritten change.

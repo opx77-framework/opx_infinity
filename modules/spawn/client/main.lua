@@ -81,8 +81,6 @@ local function strings()
 		title = locale('spawn.title'),
 		about = locale('spawn.about'),
 		hint = locale('spawn.hint'),
-		confirm = locale('spawn.confirm'),
-		deadline = locale('spawn.deadline'),
 	}
 end
 
@@ -110,11 +108,15 @@ local function entryHoldsTheFloor()
 end
 
 --- Puts the open payload on the wire, or answers false while the page is not up.
+-- THE WINDOW IS NOT ON IT, and that is deliberate rather than an omission. The
+-- page used to be handed the duration so it could draw a countdown beside the
+-- title; that countdown was display only -- it reached zero and did nothing,
+-- because the server counts the same window against its own clock and only that
+-- count ends the choice -- so it put a deadline in front of a one-press decision
+-- and bought nothing. Running out is still handled, and always was, by the
+-- `spawn:close` the server sends with `reason = 'timeout'`.
 local function sendOpen()
-	local payload = {
-		timeoutMs = offer and offer.timeoutMs or 0,
-		locations = places(),
-	}
+	local payload = { locations = places() }
 	local labels = strings()
 	for key, value in pairs(labels) do payload[key] = value end
 	return OPX.UI.Send(SURFACE, 'spawn:open', payload)
@@ -188,9 +190,11 @@ local function onOffered(payload)
 	-- a normal path -- and replacing the first would move its deadline.
 	if offer ~= nil then return end
 
-	local timeoutMs = tonumber(payload.timeoutMs)
-	if not OPX.Math.IsFinite(timeoutMs) or timeoutMs <= 0 then timeoutMs = 0 end
-	offer = { timeoutMs = timeoutMs }
+	-- A MARKER, not a copy of the offer. The payload carries the window the server
+	-- granted and nothing here reads it any more: the page draws no clock, and the
+	-- window is the SERVER's to count -- see `sendOpen`. What this side needs to
+	-- know is only that a choice is outstanding, which is this table existing.
+	offer = {}
 	tryOpen()
 end
 

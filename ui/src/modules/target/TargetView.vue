@@ -183,7 +183,7 @@ const EDGE = 12
  * RE-JUDGED once the columns lost their outlines. With a frame, the gap only had to
  * be a gap between two drawn edges and 8px did it. With no frame there is no drawn
  * edge at all: the space is the ONLY thing saying where one level ends, so it has to
- * be legible on its own. 16px (`--op77-space-4`) is what it is now, and the eye reads
+ * be legible on its own. 16px (`--op-space-4`) is what it is now, and the eye reads
  * more than that -- the rows are inset 12px from each column's box, so the distance
  * between the last row frame of one level and the first of the next is 12 + 16 + 12 =
  * 40px, against a 4px gap between two rows of the SAME level. An order of magnitude
@@ -1048,6 +1048,7 @@ onUnmounted(() => {
               <div
                 v-if="entry.kind === 'folder'"
                 class="row"
+                data-augmented-ui="tr-clip border"
                 :class="{ off: busy, open: col.openName === entry.name }"
                 :style="`--slot: ${at}`"
                 :data-folder="entry.name"
@@ -1075,6 +1076,7 @@ onUnmounted(() => {
               <div
                 v-else
                 class="row"
+                data-augmented-ui="tr-clip border"
                 :class="{
                   danger: entry.row.danger,
                   pending: entry.row.token === pendingToken,
@@ -1143,29 +1145,23 @@ onUnmounted(() => {
         left, and it would be one nobody asked for. It goes with the box. What
         holds a column together now is that its rows share an x and a tilt, and
         what keeps them legible over a blown-out plaza is the black underlay in
-        each row's sprite and the two-pass text-shadow -- both per row, both
-        already there.
+        the plate under each row and the two-pass text-shadow -- both per
+        row, both already there.
      4. NO RETICLE. The state Lua reports about the point under the pointer is on
         the CURSOR now (`default` / `pointer` / `progress`), which is what a cursor
         is for and one fewer thing drawn over the street.
 
-   WHY `border-image` AND NOT `clip-path` FOR A ROW. A clip cuts the painted
-   result, so a bordered box under one loses its stroke exactly along the diagonal
-   and the chamfer arrives as a GAP. The reference solves it with 9-slice sprites
-   and so does this: one SVG data URI per state, 8px corner tiles carrying the
-   chamfer at a fixed size while the edge tiles stretch. A state change swaps
-   `border-image-source` and `color` and nothing else -- no fill, no clip and no
-   filter per row, because this page composites over live gameplay at a frame rate
-   fixed when the surface was created.
+   THE ROW IS AUGMENTED. Five SVG data URIs used to live here, one per state, each
+   a copy of the same chamfer path; the shape is `--aug-tr` now and a state is
+   `--aug-border-bg` plus `color`. Still no fill beyond the plate and still no
+   filter per row at rest, because this page composites over live gameplay at a
+   frame rate fixed when the surface was created.
 
-   AND WHY THE SHADOW IS INSIDE THE SPRITE. An outset `box-shadow` follows the
-   BORDER BOX, never the `border-image` painted over it, so on a chamfered control
-   the blur ran straight past the diagonal and squared off the one corner the shape
-   is about. Every sprite here carries a wide black stroke on the same path under
-   the coloured one instead: it traces the chamfer exactly, it rasterises once when
-   the image decodes, and a state change is still one property. The 4.5px underlay
-   reaches ~2.25px either side of the path and the corner tile is 8px, so it lands
-   inside the tile and is never stretched down an edge.
+   THE TWO BLOOMS ARE `drop-shadow`, NOT `box-shadow`, and that is forced: the
+   element is clipped, and a clip shears an outset shadow along the diagonal --
+   the same mismatch that used to square off the corner the whole shape is about.
+   They are on `danger:hover` and `pending`, which change when the player points
+   at something or Lua starts working, never on a clock.
    ========================================================================== */
 
 /* The room owns the whole screen while it is up: it reads the pointer everywhere.
@@ -1182,37 +1178,6 @@ onUnmounted(() => {
   inset: 0;
   cursor: default;
   user-select: none;
-
-  /* --- THE RED -------------------------------------------------------------
-     Local to this surface for exactly as long as it is local to the menu:
-     `.op-theme-city` on <html> makes `--op77-accent` Night City yellow for every
-     surface, and repainting the HUD is a separate decision. When the pass is
-     agreed these move into that class and this block is deleted.
-
-     dim -> deep -> lit, and the middle one is the pointer. `--red-hot` is the
-     fourth rung and it is still red: an alarm on this surface climbs in INTENSITY
-     rather than changing hue, because a white alarm beside a red frame reads as a
-     different system talking. White is legibility here and never a meaning. */
-  --red:      #ff3b47;                    /* chosen: lit, and the only bloom  */
-  --red-deep: #c8202e;                    /* HOVER: denser, no bloom          */
-  --red-idle: rgba(232, 67, 79, 0.62);    /* at rest                          */
-  --red-glow: rgba(255, 59, 71, 0.55);
-  --red-text: #e8646d;
-  --red-hot:  #ffa8ae;                    /* the alarm: red pushed to white   */
-
-  /* The 9-slice frames. 24x24, 8px corner tiles, the chamfer living entirely
-     inside the top-right tile so stretching an edge can never skew it.
-
-     TWO PATHS EACH, and the first one is the shadow. It is identical across the
-     whole set -- same path, same 4.5px black at 0.8 -- so the five states differ in
-     exactly one thing, the coloured stroke laid over it. See the header for why the
-     shadow cannot be a `box-shadow`. */
-  --frame-idle: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23e8434f" stroke-opacity="0.7" stroke-width="1.4"/></svg>');
-  --frame-hover: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23c8202e" stroke-width="1.8"/></svg>');
-  --frame-on: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%234a1519" fill-opacity="0.9" stroke="%23ff3b47" stroke-width="2.4"/></svg>');
-  --frame-off: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23aed3e0" stroke-opacity="0.14"/></svg>');
-  /* A FIFTH, for the alarm: the hot rung of the same red, at a heavier stroke. */
-  --frame-hot: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23ffa8ae" stroke-opacity="0.82" stroke-width="1.7"/></svg>');
 }
 
 /* Lua says whether the point under the pointer can be acted on, and whether it is
@@ -1245,7 +1210,7 @@ onUnmounted(() => {
   /* THE ONLY SEPARATION THERE IS, now that a column has no outline. See COLUMN_GAP
      in the script: it must match `span`, which is arithmetic, so the number is
      declared in both places and neither may drift. */
-  gap: var(--op77-space-4);
+  gap: var(--op-space-4);
   pointer-events: none;
 }
 
@@ -1266,19 +1231,19 @@ onUnmounted(() => {
   display: flex;
   cursor: default;
   pointer-events: auto;
-  perspective: var(--op77-persp);
+  perspective: var(--op-persp);
   /* Nothing inside can affect layout or paint outside it, so one row changing never
      asks the compositor to consider the other columns. */
   contain: layout paint style;
   --pop: 7px;
-  --tilt: var(--op77-tilt);
+  --tilt: var(--op-tilt);
   --origin: left center;
   animation: cut-in 120ms steps(3, end);
 }
 
 .cascade.flip .column {
   --pop: -7px;
-  --tilt: calc(var(--op77-tilt) * -1);
+  --tilt: calc(var(--op-tilt) * -1);
   --origin: right center;
 }
 
@@ -1314,11 +1279,11 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   /* The side padding is the chosen row's runway: it leaves the column by `--pop`
      and the perspective widens it slightly on the way out, and both have to land
      inside a frame that is a clip-path. */
-  padding: var(--op77-space-2) var(--op77-space-3);
+  padding: var(--op-space-2) var(--op-space-3);
   min-height: 0;
 }
 
@@ -1340,11 +1305,11 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   flex-wrap: wrap;
   min-width: 0;
-  padding: var(--op77-space-1) var(--op77-space-2) calc(var(--op77-space-1) + 1px);
-  color: var(--red-text);
+  padding: var(--op-space-1) var(--op-space-2) calc(var(--op-space-1) + 1px);
+  color: var(--op-red-text);
   white-space: nowrap;
   cursor: pointer;
   /* THE GROUND IS IN THE SPRITE, not behind it. A `background` fills the BORDER
@@ -1361,17 +1326,16 @@ onUnmounted(() => {
   text-shadow:
     0 1px 2px rgba(0, 0, 0, 0.95),
     0 0 9px rgba(0, 0, 0, 0.8);
-  border: 1px solid transparent;
-  border-image-source: var(--frame-idle);
-  border-image-slice: 8 fill;
-  border-image-width: 8px;
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red-idle);
+  background: var(--op-plate);
   /* NO `box-shadow` HERE. There was one -- `0 1px 7px` black, to keep a 1.4px stroke
      alive over a daylight plaza -- and it was the bug the owner spotted: an outset
      shadow follows the BORDER BOX, so it ran past the diagonal and squared off the
      chamfer. The shadow is a stroke inside the sprite now. */
   transition:
-    color var(--op77-dur-fast) linear,
-    transform 110ms var(--op77-ease);
+    color var(--op-dur-fast) linear,
+    transform 110ms var(--op-ease);
 }
 
 .row:focus {
@@ -1407,7 +1371,7 @@ onUnmounted(() => {
 .label {
   flex: 0 1 auto;
   min-width: 0;
-  font: 700 var(--op77-fs-lead) / 1.25 var(--op77-font-display);
+  font: 700 var(--op-fs-lead) / 1.25 var(--op-font-display);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   overflow: hidden;
@@ -1424,8 +1388,8 @@ onUnmounted(() => {
   flex: none;
   margin-left: auto;
   max-width: 45%;
-  font: 500 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   opacity: 0.88;
   font-variant-numeric: tabular-nums;
   overflow: hidden;
@@ -1435,14 +1399,14 @@ onUnmounted(() => {
 /* The affordance column, always last so every mark lands at the same x. */
 .mark {
   flex: none;
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
 }
 
 .hint {
   /* The one place a row wraps. A description is a sentence, not a label. */
   flex: 1 0 100%;
-  font: 400 var(--op77-fs-meta) / 1.35 var(--op77-font-body);
-  color: var(--op77-text-dim);
+  font: 400 var(--op-fs-meta) / 1.35 var(--op-font-body);
+  color: var(--op-text-dim);
   white-space: normal;
 }
 
@@ -1454,11 +1418,11 @@ onUnmounted(() => {
   width: 13px;
   height: 13px;
   border: 1px solid currentcolor;
-  transition: background var(--op77-dur-fast) linear;
+  transition: background var(--op-dur-fast) linear;
 }
 
 .value + .check {
-  margin-left: var(--op77-space-1);
+  margin-left: var(--op-space-1);
 }
 
 .check svg {
@@ -1471,7 +1435,7 @@ onUnmounted(() => {
   stroke-linecap: square;
   stroke-dasharray: 13;
   stroke-dashoffset: 13;
-  transition: stroke-dashoffset var(--op77-dur) var(--op77-ease) var(--op77-dur-fast);
+  transition: stroke-dashoffset var(--op-dur) var(--op-ease) var(--op-dur-fast);
 }
 
 .check.ticked svg {
@@ -1484,8 +1448,9 @@ onUnmounted(() => {
    the column it opened had closed. */
 .row:hover:not(.off):not(.pending):not(.open),
 .plane.keyboard .row:focus:not(.off):not(.pending):not(.open) {
-  color: var(--red-deep);
-  border-image-source: var(--frame-hover);
+  color: var(--op-red-deep);
+  --aug-border-bg: var(--op-red-deep);
+  --aug-border-all: 1.5px;
 }
 
 /* --- OPEN: the folder whose column is up beside this one. Lit and blooming, and
@@ -1494,21 +1459,23 @@ onUnmounted(() => {
        committing row's, and a folder that stepped out of the plane would break the
        line its own column is aligned to.
 
-   THE BLOOM STAYS AN OUTSET `box-shadow`, and this is a judgement rather than an
-   oversight. It is rectangular like the shadow that was removed, but that is only a
-   fault when the shape has an EDGE to disagree with: at 18px of blur on a box pulled
-   in 6px, the corner's falloff is spread over the full blur radius and there is no
-   line anywhere for the diagonal to fail to follow. It reads as light in the air,
-   which has no corners. Baking a halo into the sprite would trade that for a glow
-   clipped to a 24px tile. ---------------------------------------------------- */
+   THE BLOOM IS A `drop-shadow`, AND IT HAD TO CHANGE. It was an outset
+   `box-shadow`, defended here on the grounds that a soft glow has no edge for the
+   diagonal to disagree with -- true while the row was a `border-image` on an
+   unclipped box. The row is clipped now, and a clip shears an outset shadow
+   whatever its blur, so the glow is a filter that follows the cut. One row is
+   open at a time and it changes when the player points somewhere else.
+   ---------------------------------------------------------------------------- */
 .row.open {
-  color: var(--red);
-  border-image-source: var(--frame-on);
-  box-shadow: 0 0 18px -6px var(--red-glow);
+  color: var(--op-red);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2.4px;
+  background: var(--op-plate-lit);
+  filter: drop-shadow(0 0 6px var(--op-red-glow));
 }
 
 .row.open .label {
-  text-shadow: 0 0 10px var(--red-glow);
+  text-shadow: 0 0 10px var(--op-red-glow);
 }
 
 .row.open .mark {
@@ -1518,8 +1485,9 @@ onUnmounted(() => {
 /* --- DANGER: the hot rung of the red, heavier. NOT white and not a second hue:
        an alarm here climbs in intensity inside the one voice the surface has. ---- */
 .row.danger {
-  color: var(--red-hot);
-  border-image-source: var(--frame-hot);
+  color: var(--op-alarm);
+  --aug-border-bg: var(--op-alarm);
+  --aug-border-all: 2px;
 }
 
 .row.danger .label {
@@ -1529,9 +1497,10 @@ onUnmounted(() => {
 
 .row.danger:hover:not(.off):not(.pending),
 .plane.keyboard .row.danger:focus:not(.off):not(.pending) {
-  color: var(--red-hot);
-  border-image-source: var(--frame-hot);
-  box-shadow: 0 0 16px -5px rgba(255, 168, 174, 0.55);
+  color: var(--op-alarm);
+  --aug-border-bg: var(--op-alarm);
+  --aug-border-all: 2px;
+  filter: drop-shadow(0 0 5px var(--op-alarm-glow));
 }
 
 /* --- PENDING: the row Lua is working on. Lit, blooming, and the one thing that
@@ -1539,36 +1508,38 @@ onUnmounted(() => {
        is a box-shadow and not a filter: a filter here would give one row its own
        backing store inside a surface that repaints over live gameplay. ---------- */
 .row.pending {
-  color: var(--red);
-  border-image-source: var(--frame-on);
+  color: var(--op-red);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2.4px;
+  background: var(--op-plate-lit);
   transform: translate3d(var(--pop), 0, 12px);
-  box-shadow: 0 0 18px -4px var(--red-glow);
+  filter: drop-shadow(0 0 6px var(--op-red-glow));
   cursor: default;
 }
 
 .row.pending .label {
-  text-shadow: 0 0 10px var(--red-glow);
+  text-shadow: 0 0 10px var(--op-red-glow);
 }
 
 .row.pending .check.ticked {
-  background: var(--red);
+  background: var(--op-red);
 }
 
 /* The one place the tick is not `currentcolor`: on the filled box it would be red
    on red. */
 .row.pending .check.ticked svg {
-  stroke: var(--op77-void);
+  stroke: var(--op-ink-on);
 }
 
 /* --- OFF: every other row, while one is committing --------------------------- */
 .row.off {
-  color: var(--op77-text-faint);
+  color: var(--op-text-faint);
   cursor: default;
-  border-image-source: var(--frame-off);
+  --aug-border-bg: rgba(174, 211, 224, 0.14);
 }
 
 .row.off .hint {
-  color: var(--op77-text-faint);
+  color: var(--op-text-faint);
 }
 
 /* =============================================================================
@@ -1577,16 +1548,16 @@ onUnmounted(() => {
 .status {
   display: flex;
   align-items: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   margin: 0;
-  padding: var(--op77-space-3);
+  padding: var(--op-space-3);
   /* The ground, the same one the rows take: this line stands in for them and is
      read in the same place, against the same street. */
-  background: var(--op77-plate);
-  font: 600 var(--op77-fs-micro) / 1.3 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  background: var(--op-plate);
+  font: 600 var(--op-fs-micro) / 1.3 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
-  color: var(--red-text);
+  color: var(--op-red-text);
   text-shadow:
     0 1px 2px rgba(0, 0, 0, 0.95),
     0 0 9px rgba(0, 0, 0, 0.8);
@@ -1594,7 +1565,7 @@ onUnmounted(() => {
 
 /* A FAILED status takes the hot rung and the weight, not a second colour. */
 .status.bad {
-  color: var(--red-hot);
+  color: var(--op-alarm);
   font-weight: 700;
 }
 
@@ -1606,8 +1577,8 @@ onUnmounted(() => {
   display: block;
   width: 10px;
   height: 10px;
-  border: 1px solid var(--red-idle);
-  border-top-color: var(--red);
+  border: 1px solid var(--op-red-idle);
+  border-top-color: var(--op-red);
   animation: scan 0.72s steps(8, end) infinite;
 }
 

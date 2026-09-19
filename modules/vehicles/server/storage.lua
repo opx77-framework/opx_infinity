@@ -187,6 +187,25 @@ function M.Storage.Delete(plate)
 	return Storage.Execute('DELETE FROM opx77_vehicles WHERE plate = @plate', { plate = plate })
 end
 
+--- Removes every vehicle a deleted character owned.
+-- @author dop42
+--
+-- THE FOREIGN KEY DOES NOT DO THIS, although `citizen_id` above really does
+-- carry `ON DELETE CASCADE`: a character delete is a SOFT delete -- `deleted_at`
+-- is stamped and the row stays -- and no cascade fires for an UPDATE. Left to
+-- the cascade, a deleted character's cars stayed in the table for ever, owned by
+-- a citizen id nothing could ever log in as.
+--
+-- ALL OF THEM, wherever they are. A vehicle that was out in the world when its
+-- owner was deleted is still that owner's row; the state column is not consulted
+-- because there is no owner left for any state of it to belong to.
+-- @param citizenId CitizenId
+-- @return Result
+function M.Storage.PurgeCharacter(citizenId)
+	return Storage.Execute('DELETE FROM opx77_vehicles WHERE citizen_id = @citizen',
+		{ citizen = citizenId })
+end
+
 --- Counts the vehicles one character owns, for the ceiling.
 -- @author dop42
 -- @param citizenId CitizenId

@@ -11,14 +11,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # THE SUITE LOADS THE REAL LIBRARY, not a stub -- a stub would pass while
+      # the two repositories drifted apart, which is the one thing it is there
+      # to catch. So the runner needs opx_lib on disk.
+      #
+      # It is cloned INTO the workspace rather than beside it, because
+      # actions/checkout refuses a path outside the workspace; every Lua scan
+      # below excludes ./opx_lib so the library is not mistaken for files of
+      # ours that nobody listed in the manifest.
+      #
+      # While opx_lib is PRIVATE this needs a token that can read it, as the
+      # OPX_LIB_TOKEN secret: github.token is scoped to this repository alone.
+      # Making opx_lib public removes the need for the secret entirely.
+      - name: The library the client half imports
+        uses: actions/checkout@v4
+        with:
+          repository: opx77-framework/opx_lib
+          path: opx_lib
+          token: ${{ secrets.OPX_LIB_TOKEN || github.token }}
+
       - name: Install Lua 5.4
         run: sudo apt-get update && sudo apt-get install -y lua5.4
 
       # open77.lua is the manifest DSL, not Lua: `auto_start true` does not parse.
       - name: Syntax
-        run: find . -name '*.lua' -not -name 'open77.lua' -exec luac5.4 -p {} +
+        run: find . -name '*.lua' -not -name 'open77.lua' -not -path './opx_lib/*' -exec luac5.4 -p {} +
 
       - name: Tests
+        env:
+          OPX_LIB_PATH: opx_lib
         run: lua5.4 tests/run.lua
 
       # Every script the resource ships has to be listed, one per line. A glob
@@ -58,7 +79,7 @@ jobs:
               echo "not listed in the manifest, so it never loads: $rel"
               orphans=1
             fi
-          done < <(find . -name '*.lua' -not -path './.git/*')
+          done < <(find . -name '*.lua' -not -path './.git/*' -not -path './opx_lib/*')
           exit $orphans
 
       # SQL lives in the storage bridge and in a module's own storage file. A

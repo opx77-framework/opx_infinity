@@ -536,7 +536,12 @@ DEFAULT_SPAWN = {
 						character.citizenId == listed.value.active and '>' or ' ',
 						character.citizenId, name, character.gender or '-')
 				end
-				lines[#lines + 1] = locale('command.characterHint')
+				-- The hint says what the two commands DO, and under a relog only one
+				-- of them still disconnects. Chosen from the resolved mode rather
+				-- than written once: a player told they will be kicked and then not
+				-- kicked stops believing the next thing the line says.
+				lines[#lines + 1] = locale(M.SwitchMode == M.Switch.RELOG
+					and 'command.characterHintRelog' or 'command.characterHint')
 				OPX.CommandResult(source, true, table.concat(lines, '\n'))
 			end)
 		end)
@@ -553,14 +558,20 @@ DEFAULT_SPAWN = {
 					return OPX.CommandNotice(source, raw, 'error',
 						locale(OPX.RefusalKey(switched.error)))
 				end
-				-- The notice races the disconnect this command asked for, so it is
-				-- sent and not waited on: the reason the player reads is the one
-				-- carried by the disconnect itself.
+				-- Under `reconnect` this notice races the disconnect the command
+				-- asked for, so it is sent and not waited on: the reason the player
+				-- reads is then the one carried by the disconnect itself. Under
+				-- `relog` nothing races it and it is the only thing they are told,
+				-- which is the point -- the switch has already happened around them.
 				local name = switched.value.firstName ~= nil
 					and ('%s %s'):format(switched.value.firstName, switched.value.lastName or '')
 					or locale('character.unnamed')
+				-- `locked` tells them to reconnect; under a relog there is nothing
+				-- to reconnect to, because they are already standing in the world
+				-- as the character they asked for.
 				OPX.CommandNotice(source, raw, 'success',
-					locale('command.locked', { name = name }))
+					locale(M.SwitchMode == M.Switch.RELOG and 'command.switched'
+						or 'command.locked', { name = name }))
 			end)
 		end)
 
@@ -717,6 +728,22 @@ function M.Init()
 		M.PaycheckType = OPX.Config.SHARED.MONEY.DEFAULT
 	end
 
+	-- HOW `opx.select` MOVES AN ACCOUNT, settled once here for the same reason as
+	-- the paycheck type above it: a setting read at the point of use is a setting
+	-- whose typo is reported in the middle of somebody's switch, where nobody
+	-- reads it. Resolved at boot it is said once, in the block an operator scans
+	-- after editing a config file.
+	M.SwitchMode = M.KnownSwitch(M.Settings.CHARACTERS.SWITCH)
+	if M.SwitchMode == nil then
+		-- NAMED, NOT SILENT. Both values are on the line so the journal says what
+		-- was refused and what is running instead: a typo that quietly went back
+		-- to disconnecting people is indistinguishable from the relog not working.
+		Open77.log.warn(('[character] CHARACTERS.SWITCH %s is not relog or reconnect; ' ..
+			'switching by %s instead')
+			:format(tostring(M.Settings.CHARACTERS.SWITCH), M.SWITCH_DEFAULT))
+		M.SwitchMode = M.SWITCH_DEFAULT
+	end
+
 	OPX.Schema.Add(M.Storage.SCHEMA)
 end
 
@@ -775,6 +802,15 @@ function M.Api()
 		NewCharacter = M.NewCharacter,
 		CreateCharacter = M.CreateCharacter,
 		DeleteCharacter = M.DeleteCharacter,
+		-- THE THREE STAFF DOORS, beside the self-service ones. None of them checks
+		-- ownership and none reads `SELF_DELETE`; whoever calls them has passed the
+		-- access list, and that is the check. They are here rather than in `admin`
+		-- because what a character IS belongs to this module -- `admin` reads them
+		-- through the contract on the SERVER, where a caller has been through the
+		-- ACL, and never from a client, where a contract call is no check at all.
+		ListCharactersFor = M.ListCharactersFor,
+		RenameCharacter = M.RenameCharacter,
+		RemoveCharacter = M.RemoveCharacter,
 
 		Save = M.Save,
 		Logout = M.Logout,

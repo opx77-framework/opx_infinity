@@ -155,6 +155,7 @@ onUnmounted(stop)
       v-for="(chip, at) in chips"
       :key="chip.id"
       class="chip"
+      data-augmented-ui="tr-clip border"
       :class="chip.tone"
       :style="`--slot: ${at}`"
     >
@@ -171,7 +172,14 @@ onUnmounted(stop)
 
     <!-- What did not fit, counted rather than dropped -- and true, which is the only
          reason a micro-label is allowed to be on this surface at all. -->
-    <span v-if="hidden > 0" class="chip overflow" :style="`--slot: ${chips.length}`">
+    <!-- NOT augmented, and it is the one chip that is not: the overflow count is
+         square and dashed on purpose, because the house shape is what says "this
+         is one of the things above" and a count is not one of them. -->
+    <span
+      v-if="hidden > 0"
+      class="chip overflow"
+      :style="`--slot: ${chips.length}`"
+    >
       <span class="label">+{{ hidden }}</span>
     </span>
   </div>
@@ -186,49 +194,46 @@ onUnmounted(stop)
 .strip {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--op77-space-2);
-  max-width: calc(100vw - var(--op77-inset-x) * 2);
+  gap: var(--op-space-2);
+  max-width: calc(100vw - var(--op-inset-x) * 2);
   transform-origin: var(--origin, left center);
   transform: rotateY(var(--tilt, 0deg));
 }
 
 /* =============================================================================
    A CHIP -- a closed 1px frame with a chamfered top-right corner, and text.
-   Nothing behind it. `border-image-width` is 6px against the 8px slice, which
-   scales the corner tile down to a chip's size from the same sprite the menu
-   rows use.
+   Nothing behind it. The cut is `--op-cut-sm`, a token rather than a sprite
+   scaled down by its slice, so a chip and a menu row are the same shape at two
+   sizes rather than two drawings that have to be kept in step.
    ========================================================================== */
 .chip {
   position: relative;
+  --aug-tr: var(--op-cut-sm);
   display: inline-flex;
   align-items: center;
-  gap: var(--op77-space-2);
-  padding: 5px var(--op77-space-3);
-  padding-right: calc(var(--op77-space-3) + var(--op77-cut-sm));
-  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  gap: var(--op-space-2);
+  padding: 5px var(--op-space-3);
+  padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   text-transform: uppercase;
   white-space: nowrap;
-  --tone: var(--red-idle);
-  --frame: var(--frame-idle);
+  --tone: var(--op-red-idle);
+  --aug-border-bg: var(--op-red-idle);
   color: var(--tone);
   /* NO GROUND. A plate went under these chips and came straight back off on the
      owner's word: the HUD is the one surface that keeps the pass's no-fill rule,
      because it is never read for long and a row of filled pills along the bottom
      of the screen is a toolbar. The ink shadow inherited from HudRoot.vue is what
      holds a chip against a bright street, and it is enough at chip size. */
-  border: 1px solid transparent;
-  border-image-source: var(--frame);
-  border-image-slice: 8;
-  border-image-width: 6px;
-  transition: color var(--op77-dur-fast) linear;
+  transition: color var(--op-dur-fast) linear;
 }
 
 /* The icon is a few characters Lua chose, not a glyph set, so it is type and it
    takes the inherited ink shadow like everything else. */
 .icon {
   flex: none;
-  font: 900 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  font: 900 var(--op-fs-meta) / 1 var(--op-font-mono);
 }
 
 .time {
@@ -242,7 +247,7 @@ onUnmounted(stop)
      layout and a paint each tick and this is neither. */
   transform-origin: left center;
   transform: scaleX(0);
-  transition: transform var(--op77-dur-fast) linear;
+  transition: transform var(--op-dur-fast) linear;
 }
 
 /* --- THE TONES -----------------------------------------------------------
@@ -262,36 +267,39 @@ onUnmounted(stop)
    is the part a player actually reads. The tone name still crosses the bridge
    and still has a rule here, so restoring the blue is one declaration. */
 .ok {
-  --tone: var(--red-deep);
+  --tone: var(--op-red-deep);
 }
 
 .accent {
-  --tone: var(--red);
-  --frame: var(--frame-live);
+  --tone: var(--op-red);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
 }
 
 .warn,
 .shock {
-  --tone: var(--red-hi);
-  --frame: var(--frame-hot);
+  --tone: var(--op-red-hi);
+  --aug-border-bg: var(--op-red-hi);
+  --aug-border-all: 2px;
 }
 
 /* A chip is already 700, so `bad` cannot get heavier -- the white and the
    heavier frame stroke are the whole of its state, which is the reference's
    rule for a chosen row applied to an alarming one. */
 .bad {
-  --tone: var(--alarm);
-  --frame: var(--frame-alarm);
+  --tone: var(--op-alarm);
+  --aug-border-bg: var(--op-alarm);
+  --aug-border-all: 2.6px;
 }
 
 /* Square and hairline-dashed on purpose, and the only chip with no chamfer: the
    overflow chip is a COUNT, not a status, and the house shape is what says
    "this is one of the things above". */
 .chip.overflow {
-  padding-right: var(--op77-space-3);
-  color: var(--op77-text-faint);
-  border: 1px dashed var(--red-idle);
-  border-image-source: none;
+  padding-right: var(--op-space-3);
+  color: var(--op-text-faint);
+  border: 1px dashed var(--op-red-idle);
+
 }
 
 /* =============================================================================

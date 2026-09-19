@@ -36,6 +36,7 @@ local ICONS = OPX.Toast.ICONS
 
 local live = {}
 local nextId = 0
+local hidden = false
 
 --- Whether a value is a glyph this runtime will draw. `nil` and `''` are both
 --- "no glyph": a Lua patch cannot carry nil, so `''` is how an update takes one
@@ -161,6 +162,20 @@ function OPX.Toast.Clear()
 	OPX.UI.Send('overlay', 'notify:clear', {})
 end
 
+--- Takes the stacks off screen, keeping every toast, and puts them back.
+---
+--- The player being down is the only thing that does this, and the module that
+--- owns that state calls it: core cannot listen for `opx:on:downed:changed`
+--- without depending on a module. The flag is held so a page that remounts is
+--- told again -- a view that came back up would otherwise draw toasts over a
+--- death screen.
+-- @author dop42
+-- @param down boolean
+function OPX.Toast.SetDown(down)
+	hidden = down == true
+	OPX.UI.Send('overlay', 'notify:down', { down = hidden })
+end
+
 --- Wires the server's two answer channels and the page's own expiry report.
 -- @author dop42
 function OPX.Toast.Attach()
@@ -168,6 +183,27 @@ function OPX.Toast.Attach()
 	-- does not grow for the session with toasts that are long gone.
 	OPX.UI.On('overlay', 'notify:gone', function(payload)
 		if type(payload.id) == 'string' then live[payload.id] = nil end
+	end)
+
+	-- The view's own handshake, raised from its mount -- which is NOT once per
+	-- session. The page is built before the modules are, and a page whose assets
+	-- are warm in the CEF cache mounts inside the boot window; a reconnection is
+	-- exactly that, and a character switch ends the session. So this can arrive
+	-- before this handler exists, which is what `lib/client/surface.lua` latches
+	-- payloads for, and it can arrive with toasts already live.
+	--
+	-- Everything the page cannot know for itself is (re)stated here: its
+	-- geometry, whether the player is down, and the toasts Lua still holds. A
+	-- replayed toast restarts its countdown on the page, which is the honest
+	-- answer: the page owns the clock and this one is new.
+	OPX.UI.On('overlay', 'notify:ready', function()
+		local settings = (OPX.Config.CLIENT and OPX.Config.CLIENT.TOASTS) or {}
+		OPX.UI.Send('overlay', 'notify:config', {
+			position = settings.position,
+			width = settings.width,
+		})
+		if hidden then OPX.UI.Send('overlay', 'notify:down', { down = true }) end
+		for _, toast in pairs(live) do OPX.UI.Send('overlay', 'notify:show', toast) end
 	end)
 
 	-- A GLYPH TRAVELS THIS FAR, and no further. Both of these are tables and

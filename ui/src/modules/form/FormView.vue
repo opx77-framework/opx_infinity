@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref } from 'vue'
-import OpScrim from '@/design/components/OpScrim.vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
@@ -41,7 +40,7 @@ import { useBridge } from '@/composables/useBridge'
  * frame, the row and the cap go back into `design/` together, every surface takes them,
  * and the local copies are deleted in one go.
  *
- * `OpScrim` STAYS, and it is the one shared component left here. `InventoryView.vue`
+ * THE SCRIM STAYS, and it is drawn here rather than imported. `InventoryView.vue`
  * dropped its scrim on the grounds that it was the largest fill on a surface with no
  * fills, and it is right about an inventory -- a bag is read at a glance and the player
  * is still standing in the world. A form is TYPED INTO. The player is reading their own
@@ -308,9 +307,13 @@ function focusField(field: Field): void {
 
 <template>
   <div class="room" :class="{ open }">
-    <OpScrim v-if="dim" mode="flat" :visible="open" />
+    <div v-if="dim" class="scrim" :class="{ shown: open }" />
     <div class="strip" :class="[anchor, { end: railEnd }]" :style="stripStyle">
-      <div class="bay">
+      <div
+        class="bay op-bay op-arete"
+        :class="{ 'is-end': railEnd }"
+        data-augmented-ui="tr-clip bl-clip border"
+      >
         <div class="bay-inner">
           <!-- THE HEAD STAYS, where `MenuView.vue` deleted its own. A menu row says what
                it does; a form field says only what it is CALLED, and "NAME" over an empty
@@ -341,6 +344,7 @@ function focusField(field: Field): void {
             >
               <div
                 class="field"
+                data-augmented-ui="tr-clip border"
                 :class="[`kind-${field.kind}`, { on: field.on }]"
                 @click="focusField(field)"
               >
@@ -386,7 +390,7 @@ function focusField(field: Field): void {
             <p v-if="status" class="status" :class="{ bad: statusBad }">{{ status }}</p>
             <div v-if="keys.length" class="keys">
               <span v-for="cap in keys" :key="cap.key" class="key">
-                <kbd class="cap">{{ cap.key }}</kbd>
+                <kbd class="cap" data-augmented-ui="tr-clip border">{{ cap.key }}</kbd>
                 <span class="cap-label">{{ cap.label }}</span>
               </span>
             </div>
@@ -424,51 +428,24 @@ function focusField(field: Field): void {
         pixel wide, and it is the only thing here allowed to blink.
    ========================================================================== */
 
-/* --- THE RED --------------------------------------------------------------
-   Copied from `MenuView.vue` verbatim, for the reason given there: `.op-theme-city`
-   on <html> makes `--op77-accent` Night City yellow for EVERY surface, and
-   repainting the HUD is a separate decision from settling these. When the pass is
-   agreed these move into that class and this block is deleted.
+.scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--op-plate-quiet);
+  opacity: 0;
+  transition: opacity var(--op-dur) var(--op-ease);
+}
 
-   The ramp is dim -> deep -> lit, plus the alarm rung. This surface spends all
-   four: at rest, the pointer, the focused field, and a refusal. `--red-hot` is red
-   pushed toward white without leaving the hue -- an alarm climbs in intensity, it
-   does not change voice -- and `--op77-danger` is not used in this file for exactly
-   the reason `NotifyToast.vue` sets out: a second saturated hue on an unfilled red
-   surface is the yellow-accent mistake with extra steps. */
+.scrim.shown {
+  opacity: 1;
+}
+
 .room {
-  --red:      #ff3b47;                    /* focused: lit, and the only bloom  */
-  --red-deep: #c8202e;                    /* HOVER: denser, no bloom           */
-  --red-idle: rgba(232, 67, 79, 0.62);    /* at rest                           */
-  --red-hot:  #ffa8ae;                    /* THE REFUSAL: red pushed to white  */
-  --red-glow: rgba(255, 59, 71, 0.55);
-  --red-text: #e8646d;                    /* type at rest, inside a frame      */
-
-  /* THE 9-SLICE FRAMES. 24x24, 8px corner tiles, the chamfer living entirely
-     inside the top-right tile so stretching an edge can never skew it. A
-     `clip-path` cannot draw this: a clip cuts the painted RESULT, so a bordered
-     box under one loses its stroke along the diagonal and the chamfer arrives as
-     a GAP. One property (`border-image-source`) swaps the whole frame on a state
-     change and the geometry never distorts with the field's width. */
-  --frame-idle: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23e8434f" stroke-opacity="0.7" stroke-width="1.4"/></svg>');
-  --frame-hover: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23c8202e" stroke-width="1.8"/></svg>');
-  --frame-on: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23ff3b47" stroke-width="2.4"/></svg>');
-  /* The keycap frame, at cap scale: `border-image-width` is set BELOW the 8px
-     slice, which scales the corner tile down rather than needing a second sprite.
-     `PromptsRoot.vue` does the same, and its note on why a cap keeps its box when
-     everything around it loses one applies here word for word. */
-  --frame-cap: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23ff3b47" stroke-width="1.8"/></svg>');
-
-  /* A border-image cannot take a shadow, so the black under a cap is a soft OUTSET
-     one on the box -- rectangular where the frame is chamfered, which at this blur
-     and alpha reads as the corner darkening rather than as a second shape. */
-  --cap-shadow: 0 1px 7px rgba(0, 0, 0, 0.55);
-
   position: absolute;
   inset: 0;
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--op77-dur-fast) linear;
+  transition: opacity var(--op-dur-fast) linear;
 }
 
 .room.open {
@@ -485,8 +462,8 @@ function focusField(field: Field): void {
 .strip {
   position: absolute;
   display: flex;
-  max-width: calc(100vw - var(--op77-inset-x) * 2);
-  perspective: var(--op77-persp);
+  max-width: calc(100vw - var(--op-inset-x) * 2);
+  perspective: var(--op-persp);
   /* Nothing inside can affect layout or paint outside it, so the compositor never
      has to consider the rest of the surface when one field changes. */
   contain: layout paint style;
@@ -507,23 +484,23 @@ function focusField(field: Field): void {
    the list before it sat -- so they take the menu's tilt about the same edges. */
 .anchor-top-left,
 .anchor-left {
-  left: var(--op77-inset-x);
+  left: var(--op-inset-x);
   --pop: 10px;
-  --tilt: var(--op77-tilt);
+  --tilt: var(--op-tilt);
   --origin: left center;
 }
 
 .anchor-top-right,
 .anchor-right {
-  right: var(--op77-inset-x);
+  right: var(--op-inset-x);
   --pop: -10px;
-  --tilt: calc(var(--op77-tilt) * -1);
+  --tilt: calc(var(--op-tilt) * -1);
   --origin: right center;
 }
 
 .anchor-top-left,
 .anchor-top-right {
-  top: var(--op77-inset-y);
+  top: var(--op-inset-y);
 }
 
 .anchor-left,
@@ -546,44 +523,24 @@ function focusField(field: Field): void {
 
      QUIET, not full strength, and that is the difference the scrim earns: a form
      is already sitting on a dim, so it needs to be told apart from that dim
-     rather than held against daylight. The rgb is `--op77-plate`'s, as with the
+     rather than held against daylight. The rgb is `--op-plate`'s, as with the
      menu and the toasts, so the three are one ground. */
-  background: rgba(28, 8, 9, var(--op77-form-veil, 0.58));
+  background: rgba(var(--op-plate-rgb), var(--op-form-veil, 0.58));
   transform-origin: var(--origin, center center);
   transform: rotateY(var(--tilt, 0deg));
-  clip-path: polygon(
-    0 0,
-    calc(100% - var(--op77-cut-lg)) 0,
-    100% var(--op77-cut-lg),
-    100% 100%,
-    var(--op77-cut-lg) 100%,
-    0 calc(100% - var(--op77-cut-lg))
-  );
-  /* The frame is the one place a clip and a stroke can live together, because an
-     INSET shadow is painted over the padding box and the clip then trims it to the
-     chamfer instead of shearing an outset shadow off the element. ONE arete, on the
-     leading corner: the pair was the bevel of a solid panel, and on a frame with
-     nothing inside it the dark half only ever read as a smudge. */
-  box-shadow:
-    inset 1px 1px 0 var(--op77-edge-hi),
-    inset 0 0 0 1px var(--red-idle);
+  /* THE SHAPE AND THE ARETE ARE augmented-ui NOW. This was a six-point
+     `clip-path` plus a pair of inset shadows -- an arete on the leading corner
+     and the red ring -- because an inset shadow is the only stroke a clip does
+     not shear. `.op-bay` cuts the two corners and `.op-arete` lights the leading
+     run across the border layer, which is the same picture with no polygon to
+     keep in step with `--op-cut-lg`. */
 }
 
 /* Mirrored for a right-anchored strip: the cuts and the arete follow the leading
    edge, which over there is the right one. */
-.strip.end .bay {
-  clip-path: polygon(
-    var(--op77-cut-lg) 0,
-    100% 0,
-    100% calc(100% - var(--op77-cut-lg)),
-    calc(100% - var(--op77-cut-lg)) 100%,
-    0 100%,
-    0 var(--op77-cut-lg)
-  );
-  box-shadow:
-    inset -1px 1px 0 var(--op77-edge-hi),
-    inset 0 0 0 1px var(--red-idle);
-}
+/* Mirrored for a right-anchored strip: `.op-arete.is-end` turns the gradient
+   round so the lit run follows the leading edge, which over there is the right
+   one. The cut corners are the same two either way. */
 
 .bay-inner {
   position: relative;
@@ -607,7 +564,7 @@ function focusField(field: Field): void {
   pointer-events: none;
   background: repeating-linear-gradient(
     to bottom,
-    rgba(255, 59, 71, 0.05) 0 1px,
+    var(--op-interlace) 0 1px,
     transparent 1px 3px
   );
 }
@@ -619,12 +576,12 @@ function focusField(field: Field): void {
 .head {
   display: flex;
   align-items: flex-end;
-  gap: var(--op77-space-3);
+  gap: var(--op-space-3);
   min-width: 0;
   /* The trailing edge pays for the chamfer, so a long title never runs under it. */
-  padding: var(--op77-space-3) calc(var(--op77-space-4) + var(--op77-cut-lg))
-    var(--op77-space-2) calc(var(--op77-space-4) + var(--op77-rule));
-  border-bottom: 1px solid var(--red-idle);
+  padding: var(--op-space-3) calc(var(--op-space-4) + var(--op-cut-lg))
+    var(--op-space-2) calc(var(--op-space-4) + var(--op-rule));
+  border-bottom: 1px solid var(--op-red-idle);
   /* THE BLACK SHADOW, once for the whole surface. A `text-shadow` INHERITS, so this
      one declaration carries the title, the note, the labels, the typed line, the
      hint and the caps. It is the honest fix for an unbacked panel: it darkens the
@@ -636,38 +593,38 @@ function focusField(field: Field): void {
 
 /* On a right-anchored form the cut is over the title rather than past it. */
 .strip.end .head {
-  padding-left: calc(var(--op77-space-4) + var(--op77-cut-lg));
-  padding-right: var(--op77-space-4);
+  padding-left: calc(var(--op-space-4) + var(--op-cut-lg));
+  padding-right: var(--op-space-4);
 }
 
 .head-text {
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   min-width: 0;
 }
 
 .eyebrow {
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
-  color: var(--red-deep);
+  color: var(--op-red-deep);
 }
 
 .eyebrow::before {
   content: "//";
   margin-right: 0.7em;
-  color: var(--red);
+  color: var(--op-red);
   font-weight: 700;
   letter-spacing: -0.06em;
 }
 
 .head h1 {
   margin: 0;
-  font: 700 var(--op77-fs-lead) / 1.1 var(--op77-font-display);
-  letter-spacing: var(--op77-track-head);
+  font: 700 var(--op-fs-lead) / 1.1 var(--op-font-display);
+  letter-spacing: var(--op-track-head);
   text-transform: uppercase;
-  color: var(--red-text);
+  color: var(--op-red-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -677,10 +634,10 @@ function focusField(field: Field): void {
    instrument's, so it takes the legibility grey rather than a rung of the ramp. */
 .note {
   margin: 0;
-  padding: var(--op77-space-3) calc(var(--op77-space-4) + var(--op77-cut-lg)) 0
-    calc(var(--op77-space-3) + var(--op77-rule));
-  font: 400 var(--op77-fs-body) / 1.35 var(--op77-font-body);
-  color: var(--op77-text-dim);
+  padding: var(--op-space-3) calc(var(--op-space-4) + var(--op-cut-lg)) 0
+    calc(var(--op-space-3) + var(--op-rule));
+  font: 400 var(--op-fs-body) / 1.35 var(--op-font-body);
+  color: var(--op-text-dim);
   text-shadow:
     0 1px 2px rgba(0, 0, 0, 0.95),
     0 0 9px rgba(0, 0, 0, 0.8);
@@ -693,12 +650,12 @@ function focusField(field: Field): void {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   margin: 0;
   /* The trailing padding is the focused field's runway: it leaves the column by
-     `--pop` and has to land inside the frame, because the frame is a clip-path. */
-  padding: var(--op77-space-3) var(--op77-space-4) var(--op77-space-3)
-    calc(var(--op77-space-3) + var(--op77-rule));
+     `--pop` and has to land inside the bay, which clips. */
+  padding: var(--op-space-3) var(--op-space-4) var(--op-space-3)
+    calc(var(--op-space-3) + var(--op-rule));
   list-style: none;
   min-height: 0;
 }
@@ -721,25 +678,23 @@ function focusField(field: Field): void {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: var(--op77-space-3);
+  gap: var(--op-space-3);
   min-width: 0;
-  padding: var(--op77-space-2) var(--op77-space-3) calc(var(--op77-space-2) + 1px);
-  color: var(--red-text);
+  padding: var(--op-space-2) var(--op-space-3) calc(var(--op-space-2) + 1px);
+  color: var(--op-red-text);
   white-space: nowrap;
   cursor: pointer;
-  border: 1px solid transparent;
-  border-image-source: var(--frame-idle);
-  border-image-slice: 8;
-  border-image-width: 8px;
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red-idle);
   transition:
-    color var(--op77-dur-fast) linear,
-    transform 120ms var(--op77-ease);
+    color var(--op-dur-fast) linear,
+    transform 120ms var(--op-ease);
 }
 
 .label {
   flex: 0 1 auto;
   min-width: 0;
-  font: 700 var(--op77-fs-lead) / 1.25 var(--op77-font-display);
+  font: 700 var(--op-fs-lead) / 1.25 var(--op-font-display);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   overflow: hidden;
@@ -753,7 +708,7 @@ function focusField(field: Field): void {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: var(--op77-space-3);
+  gap: var(--op-space-3);
   min-width: 0;
 }
 
@@ -764,38 +719,38 @@ function focusField(field: Field): void {
    light when Lua says this field has the cursor. */
 .entry {
   flex: 0 1 auto;
-  width: calc(var(--chars, 1) * (1ch + var(--op77-track-label)) + 2px);
+  width: calc(var(--chars, 1) * (1ch + var(--op-track-label)) + 2px);
   max-width: 100%;
   padding: 0 0 2px;
   background: none;
   border: 0;
-  border-bottom: 1px solid var(--red-idle);
+  border-bottom: 1px solid var(--op-red-idle);
   border-radius: 0;
   outline: none;
-  font: 400 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 400 var(--op-fs-meta) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   color: inherit;
   /* THE ONE FILL LEFT, one pixel wide. Left to the browser and simply coloured: a
      caret is the only blink this design allows, and it is allowed because it is the
      player's own position and not the surface talking. */
-  caret-color: var(--red);
+  caret-color: var(--op-red);
   /* The only place on any surface where a caret and a text selection belong. */
   user-select: text;
   /* The field under the pointer asks for `pointer` and `cursor` inherits; a line
      being typed into is the one child that must not. */
   cursor: text;
-  transition: border-color var(--op77-dur-fast) linear;
+  transition: border-color var(--op-dur-fast) linear;
 }
 
 /* A selection is a fill, and this is the one the player made themselves. It takes
    the denser rung so it never out-reads the focused frame around it. */
 .entry::selection {
-  color: var(--op77-text);
-  background: var(--red-deep);
+  color: var(--op-text);
+  background: var(--op-red-deep);
 }
 
 .entry::placeholder {
-  color: var(--op77-text-faint);
+  color: var(--op-text-faint);
   font-style: italic;
   opacity: 1;
 }
@@ -803,8 +758,8 @@ function focusField(field: Field): void {
 /* A choice's option and a slider's number, as Lua rendered them, suffix and all. */
 .value {
   flex: 0 1 auto;
-  font: 500 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   opacity: 0.88;
   font-variant-numeric: tabular-nums;
   overflow: hidden;
@@ -819,23 +774,23 @@ function focusField(field: Field): void {
   flex: none;
   width: 48px;
   height: 2px;
-  background: rgba(232, 67, 79, 0.22);
+  background: rgba(var(--op-red-idle-rgb), 0.22);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
 }
 
 .rule i {
   display: block;
   height: 100%;
-  background: var(--red-idle);
-  transition: width var(--op77-dur-fast) linear;
+  background: var(--op-red-idle);
+  transition: width var(--op-dur-fast) linear;
 }
 
 /* `12/24`, and only under the field being typed into. It is the buffer Lua sent,
    counted the way Lua counts it. */
 .count {
   flex: none;
-  font: 400 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  font: 400 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   opacity: 0.72;
   font-variant-numeric: tabular-nums;
 }
@@ -849,7 +804,7 @@ function focusField(field: Field): void {
 /* The affordance column, always last so every mark lands at the same x. */
 .mark {
   padding: 0 2px;
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
   color: inherit;
   background: none;
   border: 0;
@@ -860,12 +815,13 @@ function focusField(field: Field): void {
    Weaker than the focused state, deliberately: this is only the field the pointer
    is over, and Lua decides what landing there means. */
 .field:hover:not(.on) {
-  color: var(--red-deep);
-  border-image-source: var(--frame-hover);
+  color: var(--op-red-deep);
+  --aug-border-bg: var(--op-red-deep);
+  --aug-border-all: 1.8px;
 }
 
 .field:hover:not(.on) .entry {
-  border-bottom-color: var(--red-deep);
+  border-bottom-color: var(--op-red-deep);
 }
 
 /* --- FOCUSED: lit, blooming, and one step out of the column -----------------
@@ -874,24 +830,25 @@ function focusField(field: Field): void {
    The bloom is a `box-shadow` and not a `filter`: a filter would give the one field
    the player is actually reading its own backing store. */
 .field.on {
-  color: var(--red);
-  border-image-source: var(--frame-on);
+  color: var(--op-red);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2.4px;
   transform: translate3d(var(--pop, 10px), 0, 0);
-  box-shadow: 0 0 18px -4px var(--red-glow);
+  box-shadow: 0 0 18px -4px var(--op-red-glow);
   cursor: default;
 }
 
 .field.on .label {
   letter-spacing: 0.055em;
-  text-shadow: 0 0 10px var(--red-glow);
+  text-shadow: 0 0 10px var(--op-red-glow);
 }
 
 .field.on .entry {
-  border-bottom-color: var(--red);
+  border-bottom-color: var(--op-red);
 }
 
 .field.on .rule i {
-  background: var(--red);
+  background: var(--op-red);
 }
 
 /* =============================================================================
@@ -900,18 +857,18 @@ function focusField(field: Field): void {
 .foot {
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   min-width: 0;
-  padding: var(--op77-space-3) calc(var(--op77-space-3) + var(--op77-cut-lg))
-    calc(var(--op77-space-3) + var(--op77-cut-lg)) calc(var(--op77-space-3) + var(--op77-rule));
-  border-top: 1px solid var(--red-idle);
+  padding: var(--op-space-3) calc(var(--op-space-3) + var(--op-cut-lg))
+    calc(var(--op-space-3) + var(--op-cut-lg)) calc(var(--op-space-3) + var(--op-rule));
+  border-top: 1px solid var(--op-red-idle);
 }
 
 /* The one place the surface wraps: a hint is a sentence. */
 .hint {
   margin: 0;
-  font: 400 var(--op77-fs-meta) / 1.4 var(--op77-font-body);
-  color: var(--op77-text-dim);
+  font: 400 var(--op-fs-meta) / 1.4 var(--op-font-body);
+  color: var(--op-text-dim);
   white-space: normal;
 }
 
@@ -920,14 +877,14 @@ function focusField(field: Field): void {
    `TargetView.vue` makes for a pick that failed. */
 .status {
   margin: 0;
-  font: 600 var(--op77-fs-meta) / 1.4 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
-  color: var(--red-idle);
+  font: 600 var(--op-fs-meta) / 1.4 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-red-idle);
   white-space: normal;
 }
 
 .status.bad {
-  color: var(--red-hot);
+  color: var(--op-alarm);
   font-weight: 700;
 }
 
@@ -936,13 +893,13 @@ function focusField(field: Field): void {
   flex-wrap: wrap;
   /* Wider across than down: the gap between two hints has to out-read the gap
      between a cap and the words that belong to it. */
-  gap: var(--op77-space-2) var(--op77-space-5);
+  gap: var(--op-space-2) var(--op-space-5);
 }
 
 .key {
   display: inline-flex;
   align-items: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
 }
 
 /* THE ONE DRAWN EDGE LEFT IN THE FOOTER. A keycap depicts a physical key, so it
@@ -959,24 +916,22 @@ function focusField(field: Field): void {
   height: 22px;
   padding: 0 7px;
   /* The chamfer lives in the top-right corner, so the right side pays for it. */
-  padding-right: calc(7px + var(--op77-cut-sm));
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  padding-right: calc(7px + var(--op-cut-sm));
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
   letter-spacing: 0.04em;
-  color: var(--red);
-  border: 1px solid transparent;
-  border-image-source: var(--frame-cap);
-  border-image-slice: 8;
-  border-image-width: 6px;
-  box-shadow: var(--cap-shadow);
+  color: var(--op-red);
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 1.8px;
 }
 
 /* What the key does. The red is spent on the cap, which is the part that is an
    instrument; the words carry no state and are legibility only. */
 .cap-label {
-  font: 400 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  font: 400 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
-  color: var(--op77-text-dim);
+  color: var(--op-text-dim);
 }
 
 /* =============================================================================

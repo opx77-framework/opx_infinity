@@ -34,17 +34,21 @@ import type { Anchor } from './anchors'
  *
  * -- DESIGN PASS 02 -----------------------------------------------------------
  *
- * THIS FILE IS ALSO THE HUD'S PALETTE. The five blocks below are five scoped
- * stylesheets and a scoped rule cannot reach into a child component, but a CUSTOM
- * PROPERTY set on `.hud` inherits down the whole tree regardless of scoping. So the
- * three red steps, the alarm, the five 9-slice frames and the black ink shadow are
- * declared once, here, and every block reads them. One place to change the voice of the
- * surface, and no `:deep()` anywhere.
+ * THIS FILE IS NO LONGER THE HUD'S PALETTE, and that is the point of the port. It
+ * carried the three red steps, the alarm, five 9-slice frame sprites and the ink
+ * shadow, because a scoped rule cannot reach into a child component and a custom
+ * property on `.hud` can. Every one of those is a `design-system/` token now, which
+ * the five blocks read the same way and which eleven other surfaces read too -- so
+ * the HUD stopped being a second place where the voice of the runtime is decided.
  *
- * THE HUD IS NO LONGER CYAN. tokens.css says "the HUD stays cyan deliberately: cyan is
- * the platform speaking, yellow is the world speaking", and that distinction is over --
- * `--op77-accent` is not read by any file in this folder any more, which also means
- * `.op-theme-city` can no longer turn a health bar Night City yellow.
+ * WHAT IS STILL DECLARED HERE is what is true of THIS cluster and nothing else: the
+ * bleed its wrappers need, the interlace its two enclosed blocks share, and the
+ * layout below.
+ *
+ * NO FILTERS IN THIS FOLDER, with one written exception. A filter gives an element
+ * its own backing store, and the vitals stream repaints thirty times a second; the
+ * exception is `HudVoice`'s rx counter, which appears when somebody talks rather
+ * than on a clock, and which needs a bloom that follows a cut corner.
  *
  * THE INK SHADOW IS ONE DECLARATION. `text-shadow` inherits, and this surface has no
  * backing of any kind, so every glyph under `.hud` -- in every block -- is carried by the
@@ -164,66 +168,10 @@ onMounted(() => {
    ========================================================================== */
 
 .hud {
-  /* --- THE RED -------------------------------------------------------------
-     The menu's three steps, verbatim, meaning the same things in the same
-     order: dim at rest, denser in the middle, lit at the top.
-
-     THE HUD HAS NO HOVER. `.layer-overlay` in SurfaceRoot.vue sets
-     `pointer-events: none` and nothing in this folder re-enables it, so
-     `--red-deep` -- the menu's pointer step -- is unspent here, and it goes on
-     the middle rung of a STATE ladder instead: voice `detected` sits between
-     `idle` and `talking` exactly where hover sat between rest and chosen. */
-  --red:      #ff3b47;                    /* lit: live, on, talking           */
-  --red-deep: #c8202e;                    /* denser: the middle rung          */
-  --red-idle: rgba(232, 67, 79, 0.62);    /* at rest                          */
-  --red-hi:   #ff6b78;                    /* the lit arete, and `warn`        */
-  --red-glow: rgba(255, 59, 71, 0.55);
-
-  /* --- THE ALARM, WHICH IS NOT RED ----------------------------------------
-     Rule 4 of the contract, carried from a menu's status line to a gauge: red
-     is the VOICE of this surface, so it cannot also be its alarm. A red bar
-     going redder inside a red frame on an all-red HUD says nothing.
-
-     The escalation is therefore LUMINANCE inside one hue, and then out of it:
-
-         rest   --red-idle   a pale wash
-         live   --red        lit
-         warn   --red-hi     the brightest red on the surface
-         bad    --alarm      WHITE-HOT, and heavier with it
-
-     White is the one thing on this HUD that cannot be mistaken for the HUD
-     talking about itself; it is the highest contrast the palette owns
-     (16.2:1); and a bar that goes white changes FAMILY rather than shade,
-     which is what an alarm has to do to be read without being looked at.
-     `--op77-danger` is not used anywhere in this folder. */
-  --alarm: #ffa8ae;
-
-  /* --- THE 9-SLICE FRAMES --------------------------------------------------
-     Copied from MenuView.vue and extended by two, because the HUD needs two
-     rungs a menu has no use for. 24x24, 8px corner tiles, the chamfer living
-     entirely inside the top-right tile so stretching an edge can never skew
-     it.
-
-     `clip-path` cannot draw this: a clip cuts the painted result, so a
-     bordered box under one loses its stroke along the diagonal and the chamfer
-     arrives as a GAP. A state change swaps `border-image-source` -- one
-     property -- and the geometry never distorts with the element's width.
-
-     A small item (a chip, a keycap, a gauge track) sets `border-image-width`
-     BELOW the 8px slice, which scales the whole corner tile down rather than
-     needing a second set of sprites at a second size. */
-  --frame-idle: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23e8434f" stroke-opacity="0.7" stroke-width="1.4"/></svg>');
-  --frame-live: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23ff3b47" stroke-width="2"/></svg>');
-  --frame-hot: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23ff6b78" stroke-width="2"/></svg>');
-  --frame-alarm: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23ffa8ae" stroke-width="2.6"/></svg>');
-  --frame-off: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23aed3e0" stroke-opacity="0.14"/></svg>');
-
-  /* A border-image cannot take a shadow, so the black under a frame is a soft
-     OUTSET one on the box -- rectangular where the frame is chamfered, which
-     at this blur and alpha reads as the corner darkening rather than as a
-     second shape. Named because nine elements across five files want the same
-     one. */
-  --hud-shadow: 0 1px 7px rgba(0, 0, 0, 0.55);
+  /* THE BLACK UNDER AN UNCHAMFERED BOX. A cut shape needs a `drop-shadow`,
+     which follows the diagonal; this is the plain outset one, and its two
+     remaining users are both on the voice meter, which has no chamfer. */
+  --hud-shadow: var(--op-shadow);
 
   /* How much room a cluster's shadows and blooms need INSIDE its wrapper. The
      wrapper clips (see `.at`), so the bleed is padding and the anchor offsets
@@ -231,10 +179,12 @@ onMounted(() => {
   --hud-bleed: 10px;
 
   /* The interlace, for the two clusters that have an enclosing frame to put it
-     on. Declared here so both draw the same one. */
+     on. `.op-interlace` is the same gradient on a free `::before`; this stays a
+     variable because both of its users paint it into a composite background
+     rather than onto a pseudo-element of their own. */
   --hud-interlace: repeating-linear-gradient(
     to bottom,
-    rgba(255, 59, 71, 0.05) 0 1px,
+    var(--op-interlace) 0 1px,
     transparent 1px 3px
   );
 
@@ -284,26 +234,26 @@ onMounted(() => {
   box-sizing: border-box;
   display: flex;
   padding: var(--hud-bleed);
-  max-width: calc(100vw - var(--op77-inset-x) * 2 + var(--hud-bleed) * 2);
-  perspective: var(--op77-persp);
+  max-width: calc(100vw - var(--op-inset-x) * 2 + var(--hud-bleed) * 2);
+  perspective: var(--op-persp);
   contain: layout paint style;
 }
 
 .bottom-left,
 .top-left {
-  left: calc(var(--op77-inset-x) - var(--hud-bleed));
+  left: calc(var(--op-inset-x) - var(--hud-bleed));
   justify-content: flex-start;
   /* A LEFT-anchored surface gets +7deg and pivots on the left edge. */
-  --tilt: var(--op77-tilt);
+  --tilt: var(--op-tilt);
   --origin: left center;
 }
 
 .bottom-right,
 .top-right {
-  right: calc(var(--op77-inset-x) - var(--hud-bleed));
+  right: calc(var(--op-inset-x) - var(--hud-bleed));
   justify-content: flex-end;
   /* A RIGHT-anchored one gets -7deg and pivots on the right. */
-  --tilt: calc(var(--op77-tilt) * -1);
+  --tilt: calc(var(--op-tilt) * -1);
   --origin: right center;
 }
 
@@ -322,12 +272,12 @@ onMounted(() => {
 .bottom-left,
 .bottom-right,
 .bottom-center {
-  bottom: calc(var(--op77-inset-y) + var(--block-offset, 0px) - var(--hud-bleed));
+  bottom: calc(var(--op-inset-y) + var(--block-offset, 0px) - var(--hud-bleed));
 }
 
 .top-left,
 .top-right,
 .top-center {
-  top: calc(var(--op77-inset-y) + var(--block-offset, 0px) - var(--hud-bleed));
+  top: calc(var(--op-inset-y) + var(--block-offset, 0px) - var(--hud-bleed));
 }
 </style>

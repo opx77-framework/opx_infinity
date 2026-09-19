@@ -93,7 +93,7 @@ function seed(send: (channel: string, payload: Payload) => void, surface: string
       message: 'Shimmed payload. No Lua is running.',
       durationMs: 60000
     })
-    send('opx:hud:gauges', {
+    send('opx:hud:vitals', {
       gauges: [
         { id: 'health', label: 'demo.gauge.health', value: 78, tone: 'health' },
         { id: 'armour', label: 'demo.gauge.armour', value: 34, tone: 'warn' }

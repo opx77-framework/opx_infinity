@@ -189,7 +189,7 @@ onMounted(() => {
           <span class="caps">
             <span v-for="cap in row.caps" :key="cap.key" class="key">
               <span v-if="cap.join" class="join">+</span>
-              <kbd class="cap">{{ cap.label }}</kbd>
+              <kbd class="cap op-cap" data-augmented-ui="tr-clip border">{{ cap.label }}</kbd>
             </span>
           </span>
           <span class="label">{{ row.label }}</span>
@@ -210,57 +210,10 @@ onMounted(() => {
    is a thing the player is told, and it sits loose on the gameplay plane like the
    rest of the HUD.
 
-   WHAT A LINE COSTS. Per row: no clip-path, no fill, no filter, no border on the
-   row itself. One `border-image-source` per keycap, from a data URI shared by every
-   cap on screen, and a colour. The strip's whole paint is the type and the caps.
+   WHAT A LINE COSTS. Per row: no fill, no filter, no frame on the row itself.
+   One augmented keycap, whose shape is CSS and whose whole state is one custom
+   property. The strip's entire paint is the type and the caps.
    ========================================================================== */
-
-/* --- THE RED --------------------------------------------------------------
-   Local to this surface for as long as the pass is local, the same as MenuView.vue
-   and HudRoot.vue carry it. `.op-theme-city` makes `--op77-accent` Night City
-   yellow on <html>, so the accent tokens are not used anywhere in this file.
-
-   The ramp is ordered by BRIGHTNESS and nothing else:
-
-       --red-idle   a pale wash -- present, not pointed at
-       --red-deep   denser, the middle rung
-       --red        lit
-       --red-hi     the lit arete
-       #ffa8ae      the alarm rung, red pushed toward white
-
-   This surface spends two of them. A prompt has exactly two states -- you can do
-   this, or you cannot yet -- so `--red` is the key you may press and
-   `--op77-text-faint` is the key you may not, which is the absence of a state
-   rather than another rung of it (HudVoice.vue's `offline`, same reading). The
-   alarm rung is unspent here on purpose: a prompt never fails, it is only offered
-   or withheld, and borrowing the alarm for "unavailable" would spend the loudest
-   colour on the quietest news. */
-.strip {
-  --red:      #ff3b47;                    /* lit: a key you may press         */
-  --red-idle: rgba(232, 67, 79, 0.62);    /* at rest: the cap edge, the title */
-  --red-glow: rgba(255, 59, 71, 0.55);
-
-  /* THE 9-SLICE KEYCAP FRAME, copied from MenuView.vue. 24x24, 8px corner tiles,
-     the chamfer living entirely inside the top-right tile so stretching an edge
-     can never skew it. A clip-path cannot draw this: a clip cuts the painted
-     result, so a bordered box under one loses its stroke along the diagonal and
-     the chamfer arrives as a GAP.
-
-     `border-image-width` is set BELOW the 8px slice on the cap, which scales the
-     whole corner tile down rather than needing a second sprite at a second size. */
-  --frame-cap: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23ff3b47" stroke-width="1.8"/></svg>');
-  --frame-off: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23aed3e0" stroke-opacity="0.14"/></svg>');
-
-  /* A border-image cannot take a shadow, so the black under a cap is a soft OUTSET
-     one on the box -- rectangular where the frame is chamfered, which at this blur
-     and alpha reads as the corner darkening rather than as a second shape. */
-  --cap-shadow: 0 1px 7px rgba(0, 0, 0, 0.55);
-
-  /* How much room the caps' shadows need inside the strip. `overflow: hidden` clips
-     to the PADDING box, so a shadow landing in the padding survives; the anchor
-     offsets below pay the same amount straight back so the strip does not move. */
-  --bleed: 10px;
-}
 
 .prompts {
   position: absolute;
@@ -280,15 +233,15 @@ onMounted(() => {
   align-items: center;
   /* Wider across than down: the gap between two GROUPS has to out-read the gap
      between two rows inside one, and across that is the only separation left. */
-  gap: var(--op77-space-2) var(--op77-space-5);
+  gap: var(--op-space-2) var(--op-space-5);
   width: auto;
-  max-width: calc(100vw - var(--op77-inset-x) * 2 + var(--bleed) * 2);
-  padding: var(--bleed);
+  max-width: calc(100vw - var(--op-inset-x) * 2 + var(--op-bleed) * 2);
+  padding: var(--op-bleed);
 
   /* THE PLANE IS TILTED, and this is the wrapper that carries the perspective:
      perspective on the group itself would give every descendant its own vanishing
      point. */
-  perspective: var(--op77-persp);
+  perspective: var(--op-persp);
   /* Nothing inside can affect layout or paint outside it, so the compositor never
      has to consider the rest of the screen when one prompt arrives. */
   contain: layout paint style;
@@ -323,9 +276,9 @@ onMounted(() => {
 /* A RIGHT-anchored surface gets -7deg and pivots on the right edge. */
 .bottom-right,
 .top-right {
-  right: calc(var(--op77-inset-x) - var(--bleed));
+  right: calc(var(--op-inset-x) - var(--op-bleed));
   align-items: flex-end;
-  --tilt: calc(var(--op77-tilt) * -1);
+  --tilt: calc(var(--op-tilt) * -1);
   --origin: right center;
   --from: 6px;
 }
@@ -333,9 +286,9 @@ onMounted(() => {
 /* A LEFT-anchored one gets +7deg and pivots on the left. */
 .bottom-left,
 .top-left {
-  left: calc(var(--op77-inset-x) - var(--bleed));
+  left: calc(var(--op-inset-x) - var(--op-bleed));
   align-items: flex-start;
-  --tilt: var(--op77-tilt);
+  --tilt: var(--op-tilt);
   --origin: left center;
   --from: -6px;
 }
@@ -345,7 +298,7 @@ onMounted(() => {
    in script has to know which way the strip grows. */
 .bottom-right,
 .bottom-left {
-  bottom: calc(var(--op77-inset-y) - var(--bleed) + var(--strip-offset, 0px));
+  bottom: calc(var(--op-inset-y) - var(--op-bleed) + var(--strip-offset, 0px));
   --slide: 8px;
 }
 
@@ -365,7 +318,7 @@ onMounted(() => {
 
 .top-right,
 .top-left {
-  top: calc(var(--op77-inset-y) - var(--bleed) + var(--strip-offset, 0px));
+  top: calc(var(--op-inset-y) - var(--op-bleed) + var(--strip-offset, 0px));
   --slide: -8px;
 }
 
@@ -378,7 +331,7 @@ onMounted(() => {
   flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--op77-space-1) var(--op77-space-4);
+  gap: var(--op-space-1) var(--op-space-4);
   max-width: 100%;
   min-width: 0;
   /* THE GROUND, on the group and not on the row. A row here is one line as wide
@@ -386,8 +339,8 @@ onMounted(() => {
      would draw a ragged staircase of rectangles down the edge of the screen. The
      group is the shape a player actually sees, so it is the shape that gets a
      floor, and the padding is what stops the floor reading as a highlighter. */
-  padding: var(--op77-space-2) var(--op77-space-3);
-  background: var(--op77-plate);
+  padding: var(--op-space-2) var(--op-space-3);
+  background: var(--op-plate);
   transform-origin: var(--origin, right center);
   transform: rotateY(var(--tilt, 0deg));
 }
@@ -402,10 +355,10 @@ onMounted(() => {
 /* A real caption on a real group, so rule 8 is satisfied without inventing filler:
    the title is what Lua named the group, localised. */
 .title {
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
-  color: var(--red-idle);
+  color: var(--op-red-idle);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -419,7 +372,7 @@ onMounted(() => {
 .row {
   display: flex;
   align-items: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   min-width: 0;
   white-space: nowrap;
 }
@@ -439,8 +392,8 @@ onMounted(() => {
 
 /* Between two caps pressed together. Alternatives and sequences have no joiner. */
 .join {
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  color: var(--red-idle);
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
+  color: var(--op-red-idle);
 }
 
 /* THE ONE DRAWN EDGE ON THIS SURFACE. A keycap is a control and it depicts a
@@ -458,28 +411,23 @@ onMounted(() => {
   height: 22px;
   padding: 0 7px;
   /* The chamfer lives in the top-right corner, so the right side pays for it. */
-  padding-right: calc(7px + var(--op77-cut-sm));
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  padding-right: calc(7px + var(--op-cut-sm));
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
   letter-spacing: 0.04em;
-  color: var(--red);
-  border: 1px solid transparent;
-  border-image-source: var(--frame-cap);
-  border-image-slice: 8;
-  border-image-width: 6px;
-  box-shadow: var(--cap-shadow);
+  color: var(--op-red);
 }
 
-/* What the key does. `--op77-text` is LEGIBILITY and nothing else on this surface:
+/* What the key does. `--op-text` is LEGIBILITY and nothing else on this surface:
    it carries no state and says nothing about the prompt, it is simply the words the
    player has to read at a glance while something is happening to them. The red is
    spent on the cap, which is the part that is an instrument. */
 .label {
   flex: 0 1 auto;
   min-width: 0;
-  font: 700 var(--op77-fs-lead) / 1.2 var(--op77-font-display);
+  font: 700 var(--op-fs-lead) / 1.2 var(--op-font-display);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--op77-text);
+  color: var(--op-text);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -490,11 +438,11 @@ onMounted(() => {
 .value {
   flex: none;
   margin-left: auto;
-  padding-left: var(--op77-space-2);
-  font: 700 var(--op77-fs-meta) / 1.2 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  padding-left: var(--op-space-2);
+  font: 700 var(--op-fs-meta) / 1.2 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   /* Not upper-cased: a unit is data, and "M/S" is not metres per second. */
-  color: var(--red);
+  color: var(--op-red);
   font-variant-numeric: tabular-nums;
 }
 
@@ -505,14 +453,14 @@ onMounted(() => {
    that lost its plate read as a row that had left. A row that goes grey reads as a
    row that is still there and cannot be used, which is the truth. */
 .dim .cap {
-  color: var(--op77-text-faint);
-  border-image-source: var(--frame-off);
+  color: var(--op-text-faint);
+  --aug-border-bg: rgba(174, 211, 224, 0.14);
 }
 
 .dim .label,
 .dim .value,
 .dim .join {
-  color: var(--op77-text-faint);
+  color: var(--op-text-faint);
 }
 
 /* =============================================================================
