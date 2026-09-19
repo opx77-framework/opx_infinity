@@ -133,13 +133,20 @@ local function command(id, label, tokens, refresh, extra)
 end
 
 -- A command row that goes through a confirmation screen first.
-local function guarded(id, labelKey, tokens, confirmKey, refresh, back)
+local function guarded(id, labelKey, tokens, confirmKey, refresh, popAfter)
 	local item = command(id, labelKey, tokens)
-	-- `refresh` and `back` are carried through the confirmation the same way the
-	-- tokens are: a row that destroys what the screen under it draws has to say so
-	-- HERE, where the caller knows, rather than have the dispatch guess from the
-	-- screen's name.
-	item.data = { confirm = tokens, key = confirmKey, refresh = refresh, back = back }
+	-- `refresh` and `popAfter` are carried through the confirmation the same way
+	-- the tokens are: a row that destroys what the screen under it draws has to
+	-- say so HERE, where the caller knows, rather than have the dispatch guess
+	-- from the screen's name.
+	--
+	-- IT IS `popAfter` AND NOT `back`, and that is the whole bug this name fixes.
+	-- `back` already means something on a row -- "pressing me pops the screen",
+	-- which is what Cancel is -- and `onRow` tests it FIRST, before it ever looks
+	-- for a confirmation. A guarded row carrying `back = true` therefore popped on
+	-- press and never confirmed and never ran: the delete row did nothing at all,
+	-- silently, while looking exactly like a row that had been pressed.
+	item.data = { confirm = tokens, key = confirmKey, refresh = refresh, popAfter = popAfter }
 	return item
 end
 
@@ -1426,12 +1433,12 @@ end
 -- @author dop42
 -- @param tokens table
 -- @param key string
-function Menu.Confirm(tokens, key, refresh, back)
+function Menu.Confirm(tokens, key, refresh, popAfter)
 	suspended = false
 	if #stack == 0 then return end
 	top().cursor = nil
 	stack[#stack + 1] = { screen = 'confirm',
-		arg = { tokens = tokens, key = key, refresh = refresh, back = back == true } }
+		arg = { tokens = tokens, key = key, refresh = refresh, back = popAfter == true } }
 	draw()
 end
 
@@ -1595,7 +1602,7 @@ onAction = function(payload)
 		return
 	end
 	if type(data.confirm) == 'table' and type(data.key) == 'string' then
-		return Menu.Confirm(data.confirm, data.key, data.refresh, data.back)
+		return Menu.Confirm(data.confirm, data.key, data.refresh, data.popAfter)
 	end
 	if type(data.form) == 'string' then return Forms.Open(data.form, data.arg) end
 end

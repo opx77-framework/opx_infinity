@@ -2712,5 +2712,43 @@ do
 	end
 end
 
+-- ── the staff menu's row vocabulary ─────────────────────────────────────────
+-- READ OUT OF THE SOURCE, because the thing that broke is a collision between
+-- two fields in one table and neither side is reachable from here: `guarded`
+-- and `onRow` are both file-local to a client module.
+--
+-- The delete row shipped carrying `back = true`, meaning "after the confirmed
+-- action, also leave the page it destroyed". But `back` ALREADY means "pressing
+-- me pops the screen" -- that is what Cancel is -- and `onRow` tests it before
+-- it looks for a confirmation. So the row popped on press and never confirmed
+-- and never ran: pressing Delete did nothing, silently, while looking exactly
+-- like a row that had been pressed.
+section('the staff menu: a guarded row confirms rather than pops')
+do
+	local handle = io.open('modules/admin/client/menu.lua', 'r')
+	local body = handle and handle:read('a') or ''
+	if handle then handle:close() end
+
+	local built = body:match('local function guarded%b()(.-)\nend')
+	check('guarded() was found in the source', built ~= nil and built ~= '')
+
+	if built then
+		-- The whole bug in one assertion.
+		check('a guarded row writes no `back` into its row data',
+			built:match('item%.data = .-back%s*=') == nil,
+			built:match('item%.data = [^\n]*'))
+		check('and it does write the confirmation',
+			built:match('item%.data = .-confirm%s*=') ~= nil)
+	end
+
+	-- The order that makes the collision fatal rather than merely untidy. If a
+	-- later edit moves the confirmation test above the pop, this check should be
+	-- revisited rather than deleted: the names would still be two meanings.
+	local popAt = body:find('if data%.back then return pop%(%) end', 1)
+	local confirmAt = body:find("type%(data%.confirm%) == 'table'", 1)
+	check('onRow still tests back before confirm, which is why the names must differ',
+		popAt ~= nil and confirmAt ~= nil and popAt < confirmAt)
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
