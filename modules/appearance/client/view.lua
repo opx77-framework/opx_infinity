@@ -82,6 +82,22 @@ local function later(action, payload)
 	undrawn = { action = action, payload = payload }
 end
 
+-- What the catalogue batches did since the last upkeep pass: entries the view
+-- took, and the first refusal among them.
+--
+-- SUMMED, NOT HELD LIKE `undrawn`. A catalogue is twenty-odd batches and the
+-- stream yields between them, so a whole room's worth arrives between two
+-- upkeep passes; "last one wins" is right for a failure to draw the room and
+-- wrong for a count, which would come out as the size of whichever batch
+-- happened to be last.
+local batchAdded, batchError = 0, nil
+
+--- Records what one batch did.
+local function countBatch(added, failure)
+	batchAdded = batchAdded + added
+	if failure ~= nil and batchError == nil then batchError = failure end
+end
+
 -- ── the appearance panel, drawn by `menu` ───────────────────────────────────
 
 --- What the player did to the appearance panel.
@@ -213,14 +229,23 @@ local function showRoom(spec)
 	roomHandle = opened.value.handle
 end
 
---- Adds a batch of catalogue entries to the open room.
+--- Adds a batch of catalogue entries to the open room, and says what it did.
+--
+-- THE ANSWER IS DEFERRED FOR THE SAME REASON THE OPEN'S IS. This runs inside the
+-- state half's own publication, on the stream thread, and `room.items` sets the
+-- status line and refreshes -- which publishes again, into a handler still on
+-- this stack. See `later` and the header.
 local function showItems(payload)
-	if Panel == nil or roomHandle == nil then return end
-	local added = Panel.Append(roomHandle, payload.items or {}, payload.final == true)
-	if not added.ok then
-		Open77.log.warn(('[appearance] a catalogue batch was refused: %s')
-			:format(tostring(added.error)))
+	if Panel == nil or roomHandle == nil then
+		return later('room.items', { added = 0, error = 'no_view' })
 	end
+	local items = payload.items or {}
+	local added = Panel.Append(roomHandle, items, payload.final == true)
+	-- A REFUSED BATCH IS NOT A DELIVERED ONE, and it used to be reported as one:
+	-- a warn on a log the operator cannot read was the entire consequence, with
+	-- the room going on saying it was reading. `Append` already answers honestly;
+	-- this is the caller finally reading the answer.
+	countBatch(added.ok and #items or 0, (not added.ok) and tostring(added.error) or nil)
 	-- The catalogue read can fail, and when it does the state half sends its
 	-- reason on the same publication as the empty final batch.
 	if payload.status ~= nil then
@@ -301,6 +326,15 @@ end
 -- the state half is never torn down from inside its own publication.
 -- @author dop42
 function View.Check()
+	if batchAdded ~= 0 or batchError ~= nil then
+		local added, failure = batchAdded, batchError
+		batchAdded, batchError = 0, nil
+		local told, why = pcall(M.FromView, 'room.items', { added = added, error = failure })
+		if not told then
+			Open77.log.error('[appearance] view batch answer: ' .. tostring(why))
+		end
+	end
+
 	local held = undrawn
 	if held == nil then return end
 	undrawn = nil
@@ -346,6 +380,7 @@ end
 -- @author dop42
 function View.Stop()
 	undrawn = nil
+	batchAdded, batchError = 0, nil
 	closing = true
 	if Panel ~= nil and roomHandle ~= nil then Panel.Close(roomHandle, 'stopped') end
 	if Menu ~= nil and menuHandle ~= nil then Menu.Close(menuHandle, 'stopped') end

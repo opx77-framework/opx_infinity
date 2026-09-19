@@ -50,6 +50,7 @@ local Wardrobe = M.Wardrobe
 --        'room.hover'         a piece is pointed at: `payload.item`, `payload.tab`
 --        'room.leave'         nothing is pointed at any more
 --        'room.select'        a piece was chosen: `payload.item`, `payload.tab`
+--        'room.items'         what a batch did: `payload.added`, `payload.error`
 --        'room.tab'           another slot's tab was opened: `payload.tab`
 --        'room.action'        a button was pressed: `payload.value`
 --        'room.dismiss'       the player asked to leave the room
@@ -305,14 +306,44 @@ for index = 1, #SLOTS do IS_SLOT[SLOTS[index]] = true end
 -- The tab the room opens on.
 local FIRST_SLOT = 'InnerChest'
 
--- Catalogue entries carried by one batch, and records handled between two yields.
+-- Catalogue entries carried by one batch, and entries FORMATTED between two
+-- yields.
+--
+-- THE STRIDE COUNTS FORMATS AND NOT RECORDS, because the records are what is
+-- cheap. A record that fails the slot test or is non-visual costs a table index;
+-- one that passes costs `title` (four pattern passes) and `sortKey` (a lower and
+-- a substitution with a Lua callback per digit run), so a slice of 256 records
+-- is somewhere between nothing and two thousand pattern passes depending on what
+-- the catalogue happens to hold. The client's instruction budget is per resume
+-- and an overrun unwinds the coroutine silently -- no crash, no repeat, nothing
+-- logged, which is this room's exact symptom -- so the slice has to be bounded by
+-- the WORK, the way `modules/target` bounds its pick.
+--
+-- The number itself is not derived from a published budget: there is none in the
+-- devkit for this build, and anybody who tells you there is has read a different
+-- channel's. It is a guess, and `LOADING_DEADLINE_MS` below is what makes a wrong
+-- guess a line in the journal and a message on the screen instead of a spinner.
 local CATALOGUE_PART = 100
-local CATALOGUE_STRIDE = 256
+local CATALOGUE_STRIDE = 64
 
 -- Milliseconds between two tries at opening the room after a creation, and how
 -- long a kept outfit's save is listened for.
 local RETRY_MS = 500
 local SAVE_WAIT_MS = 30000
+
+-- How long an open room may say it is reading the catalogue before it stops
+-- saying so and tells the player it could not.
+--
+-- A REFUSAL THE PLAYER CAN SEE BEATS A SPINNER, and until this existed there was
+-- no third outcome: the stream either reached its final batch or it did not, and
+-- every way it could fail to -- the coroutine dying on the instruction budget, a
+-- payload the host refused, a batch `panel` parsed and rejected, a generation
+-- check taken on a room that is somehow still open -- left `view.loading` true
+-- for the life of the room with nothing written anywhere the operator reads. The
+-- deadline is checked from the UPKEEP pass and not from the stream thread, which
+-- is the point: it is the one thing that still runs when the stream is the thing
+-- that went.
+local LOADING_DEADLINE_MS = 20000
 
 -- Degrees one turn of the camera moves.
 local TURN_DEGREES = 45
@@ -357,6 +388,11 @@ local outfitCleared, savedPerspective, orbit = false, nil, 180
 -- Creation handoff generation, so an older wait stops, and the kept outfit whose
 -- save is listened for.
 local creationWatch, awaitSave = 0, nil
+
+-- When the open room stops being allowed to say it is reading (0 when it is not
+-- reading), how many entries the stream has handed the view, and how many
+-- batches the view refused.
+local loadingUntilMs, streamed, refusedBatches = 0, 0, 0
 
 -- This module's own name when it opens the room for the JOIN rather than for a
 -- caller. `Clothing.BeginPreview` refuses an unnamed borrower and the upkeep pass
@@ -621,16 +657,26 @@ local function streamCatalogue(mine)
 			{ family = family, restricted = false, limit = 2000 })
 		if not called or type(records) ~= 'table' then
 			local failure = tostring(called and reason or records)
-			Open77.log.warn('[appearance] the clothing catalogue could not be read: ' .. failure)
-			TriggerServerEvent(M.Event.DIAGNOSTIC, 'wardrobe catalogue: ' .. failure)
+			Runtime.Note('the clothing catalogue could not be read: ' .. failure)
 			statusText = locale('wardrobe.ui.failed', { reason = failure })
 			publish('roomItems', { items = {}, final = true, status = statusText })
 			return
 		end
+		-- THE FIRST HALF OF THE ONLY EVIDENCE THERE IS about this stream. It is
+		-- one line per room, and it separates "the catalogue answered nothing"
+		-- from "the catalogue answered and the entries did not arrive" -- which
+		-- were indistinguishable, and which two diagnoses argued about from the
+		-- wrong log.
+		Runtime.Note(('the clothing catalogue answered %d record(s) for %s')
+			:format(#records, tostring(family)))
 
 		local buckets = {}
 		for index = 1, #SLOTS do buckets[SLOTS[index]] = {} end
 
+		-- Counted rather than the loop index: see CATALOGUE_STRIDE. A run of
+		-- records this room does not show costs nothing and must not spend a
+		-- slice, and a run that it does show must not overrun one.
+		local formatted = 0
 		for index = 1, #records do
 			local entry = records[index]
 			if type(entry) == 'table' and type(entry.record) == 'string' and IS_SLOT[entry.slot] then
@@ -639,11 +685,12 @@ local function streamCatalogue(mine)
 					local name, bucket = title(entry.record), buckets[entry.slot]
 					bucket[#bucket + 1] = { id = entry.record, tab = entry.slot, label = name,
 						detail = entry.record, key = sortKey(name) }
+					formatted = formatted + 1
+					if formatted % CATALOGUE_STRIDE == 0 then
+						Wait(0)
+						if mine ~= generation or phase ~= 'open' then return end
+					end
 				end
-			end
-			if index % CATALOGUE_STRIDE == 0 then
-				Wait(0)
-				if mine ~= generation or phase ~= 'open' then return end
 			end
 		end
 
@@ -675,6 +722,14 @@ local function streamCatalogue(mine)
 		-- to have something in it is a fitting room that never finishes reading
 		-- for one body family and does for another.
 		publish('roomItems', { items = {}, final = true })
+		-- The other half of the evidence, and the two together are the whole
+		-- answer: `streamed` is what the VIEW accepted, `refusedBatches` what it
+		-- would not parse. A room that read two thousand records and streamed
+		-- none of them is a different defect from one that never read any, and
+		-- the operator could not tell them apart before this line.
+		loadingUntilMs = 0
+		Runtime.Note(('the clothing catalogue finished: %d entry(ies) drawn, %d batch(es) refused')
+			:format(streamed, refusedBatches))
 	end)
 end
 
@@ -740,6 +795,10 @@ local function begin(owner, creation, expected)
 	known, outfitCleared, hovered, statusText, tab = {}, false, nil, nil, FIRST_SLOT
 	citizen, family, creating = State.citizenId, Runtime.BodyFamily(), creation == true
 	roomOwner = owner
+	-- Armed before the first frame goes out, because the first frame is what
+	-- carries `loading = true`: a deadline armed after it would be a deadline on
+	-- a state the page had already entered.
+	loadingUntilMs, streamed, refusedBatches = Runtime.NowMs() + LOADING_DEADLINE_MS, 0, 0
 
 	phase = 'open'
 	publish('room', roomSpec())
@@ -767,6 +826,7 @@ local function release(keep, reason)
 	local mine, wasCreation, worn, owner = citizen, creating, draft, roomOwner
 	baseline, draft, known, citizen, family, creating = nil, nil, {}, nil, nil, false
 	hovered, statusText, outfitCleared, roomOwner = nil, nil, false, nil
+	loadingUntilMs = 0
 
 	publish('roomClosed', { reason = reason, kept = keep })
 	-- The registry reads pieces back as TweakDB ids: the names go with them so the
@@ -899,7 +959,13 @@ local function awaitRoom(owner, creation, citizenId)
 			ok, reason = begin(owner, creation, citizenId)
 			if ok or reason == 'wardrobe_busy' then return end
 			if not RETRYABLE[reason] and reason ~= 'superseded' then
-				Open77.log.info(('[appearance] no fitting room for %s: %s')
+				-- A REFUSAL THAT IS NOT RETRIED IS THE END OF THE OFFER, once and
+				-- for this world entry, so it is the single most important line
+				-- this module can write -- and it was written to the client's own
+				-- log, which is a file on the player's machine. That is precisely
+				-- how `invalid_caller` refused every creation's fitting room for
+				-- as long as it did without anybody being able to see it.
+				Runtime.Note(('no fitting room for %s: %s')
 					:format(tostring(citizenId), tostring(reason)))
 				return claim(false, reason)
 			end
@@ -914,8 +980,8 @@ local function awaitRoom(owner, creation, citizenId)
 		-- owns it now, and both of the things that do -- a new character and a new
 		-- offer -- settle it themselves.
 		if mine == creationWatch then
-			Open77.log.info(('[appearance] no fitting room for %s: still %s')
-				:format(tostring(citizenId), tostring(reason)))
+			Runtime.Note(('no fitting room for %s: still %s after %d ms')
+				:format(tostring(citizenId), tostring(reason), creationWaitMs()))
 			claim(false, reason or 'timeout')
 		end
 	end)
@@ -932,7 +998,15 @@ local function offerRoom(creation, citizenId)
 	if roomOffered then return end
 	local policy = M.WardrobeOffer or M.WARDROBE_POLICY_DEFAULT
 	if policy == M.WardrobePolicy.NEVER then return end
-	if policy == M.WardrobePolicy.FIRST and not creation then return end
+	if policy == M.WardrobePolicy.FIRST and not creation then
+		-- Said, not silent, and said where the operator reads. 'first' declining a
+		-- returning character is the CORRECT behaviour and is also exactly what a
+		-- broken fitting room looks like from the outside; one line tells them
+		-- apart without anybody having to reason about which policy is loaded.
+		Runtime.Note(('no fitting room for %s: the policy is first and this is not a creation')
+			:format(tostring(citizenId)))
+		return
+	end
 
 	roomOffered = true
 	-- THE CLAIM GOES UP BEFORE THE FIRST TRY, and that ordering is the whole
@@ -941,8 +1015,7 @@ local function offerRoom(creation, citizenId)
 	-- room was up would leave the retry window unguarded, which is the window the
 	-- spawn menu would open in.
 	claim(true)
-	Open77.log.info(('[appearance] a fitting room is owed to %s (%s)')
-		:format(tostring(citizenId), policy))
+	Runtime.Note(('a fitting room is owed to %s (%s)'):format(tostring(citizenId), policy))
 	awaitRoom(OWNER, creation, citizenId)
 end
 
@@ -990,6 +1063,22 @@ function M.FromView(action, payload)
 		return Panel.Close(payload.reason == 'player' and 'player' or 'view_closed')
 	end
 
+	-- THE ONE PUBLICATION THAT IS ANSWERED, and it has to be: everything else the
+	-- state half sends is a whole view, so a view that did not draw it is a view
+	-- that draws the next one instead. A BATCH is cumulative -- one lost batch is
+	-- a hundred pieces the player will never see and nothing on screen says so --
+	-- and the state half cannot see the loss, because `panel` parses an item by
+	-- rules this module does not know and must not learn.
+	if action == 'room.items' then
+		if phase ~= 'open' then return end
+		local added = tonumber(payload.added)
+		if added ~= nil and added > 0 then streamed = streamed + added end
+		if payload.error == nil then return end
+		refusedBatches = refusedBatches + 1
+		statusText = locale('wardrobe.ui.partial', { reason = tostring(payload.error) })
+		return refresh()
+	end
+
 	if action == 'room.hover' then return hover(payload.item, payload.tab) end
 	if action == 'room.leave' then return unhover() end
 	if action == 'room.select' then return choose(payload.tab, payload.item) end
@@ -1031,6 +1120,23 @@ function M.Wardrobe.Check()
 		if roomOwed and State.citizenId == nil then
 			roomOffered = false
 			claim(false, 'no_character')
+		end
+
+		-- THE ROOM STOPS CLAIMING TO BE READING. Outside the `phase == 'open'`
+		-- block below and before it, because this is the one check here whose
+		-- whole reason for living is that the thing it watches may have died: the
+		-- stream runs on its own coroutine, an overrun of the per-resume budget
+		-- unwinds it with nothing logged, and every other end of the stream is
+		-- written inside the coroutine that is gone.
+		if loadingUntilMs ~= 0 and phase == 'open' and Runtime.NowMs() >= loadingUntilMs then
+			loadingUntilMs = 0
+			Runtime.Note(('the clothing catalogue never finished: %d entry(ies) drawn, ' ..
+				'%d batch(es) refused'):format(streamed, refusedBatches))
+			statusText = locale('wardrobe.ui.stalled')
+			-- `final` ends the page's loading state whatever else happened, so the
+			-- grid says 'nothing here' and the status says why, instead of a line
+			-- that promises pieces that are not coming.
+			publish('roomItems', { items = {}, final = true, status = statusText })
 		end
 
 		if phase == 'open' then

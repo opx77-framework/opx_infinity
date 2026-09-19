@@ -1895,6 +1895,149 @@ do
 			table.concat(seen, ', '))
 		appearance.FromView = real
 	end
+
+	-- ── the clothes that never go on, and never say so ───────────────────────
+	-- THE DEFECT THIS CATCHES IS AN ABSENCE, which is why it was survivable for so
+	-- long. Step 1 of the clothing half is a gate -- the face settled, gameplay
+	-- announced, no native modal, a puppet a face could go on -- and everything
+	-- after it is reached only through a put-on. A gate that never opens therefore
+	-- produces no attempt, no read-back, no `diagnose`, no refusal and no decision
+	-- on the bus: the module does nothing, and nothing anywhere records that it did
+	-- nothing. The fitting room under 'always' waits on `clothingRestored`, so it
+	-- waited on a decision that could not be reached; `Report` said 'waiting' to
+	-- nobody; and the only lines that existed at all went to `Open77.log`, which on
+	-- a client is a file on the PLAYER's machine.
+	--
+	-- This host has no playable puppet and never announces gameplay, so its gate is
+	-- shut exactly the way a stuck client's is. Before the bound, the assertions
+	-- below could not be written: there was nothing to assert on.
+	do
+		local env, control = joinClient('always', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+
+		-- `false` is 'no record stored yet', which is the ordinary case for a new
+		-- character and the one that DRESSES: nil is 'the server could not say',
+		-- and that one stands down on purpose.
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'citizen-stuck', charInfo = { gender = 'female' }, clothing = false })
+
+		local decisions = {}
+		env.AddEventHandler(appearance.Event.ON_DECISION, function(payload)
+			if type(payload) == 'table' and payload.event == 'clothingRestored' then
+				decisions[#decisions + 1] = tostring(payload.ok) .. '/' .. tostring(payload.error)
+			end
+		end)
+
+		check('a character carrying a stored record waits to be dressed',
+			appearance.Clothing.Report() == 'waiting', appearance.Clothing.Report())
+		-- The clause itself, named. A boolean here is what made every one of these
+		-- look identical from outside, and identical to each other.
+		check('and the gate that holds it up can be named',
+			appearance.Clothing.Shut() ~= nil, tostring(appearance.Clothing.Shut()))
+
+		--- Every diagnostic this client has sent the server, as one string.
+		local function toldServer()
+			local said = {}
+			for index = 1, #control.serverEvents do
+				local sent = control.serverEvents[index]
+				if sent.name == appearance.Event.DIAGNOSTIC then said[#said + 1] = tostring(sent[1]) end
+			end
+			return table.concat(said, ' | ')
+		end
+
+		-- Past GATE_REPORT_MS and well short of the give-up.
+		control.Pump(180)
+		check('a gate shut too long is reported to the SERVER, where it can be read',
+			toldServer():find('is waiting', 1, true) ~= nil, toldServer())
+		check('and the line names the clause rather than saying it is waiting',
+			toldServer():find('not_announced', 1, true) ~= nil, toldServer())
+		check('the world entry has not given up yet', #decisions == 0,
+			table.concat(decisions, ', '))
+
+		-- Past GATE_GIVEUP_MS. The decision has to go out even though the clothes
+		-- never went on: the join is BEHIND it.
+		control.Pump(300)
+		check('a gate that never opens settles the world entry rather than waiting on',
+			appearance.Clothing.Report() == 'failed', appearance.Clothing.Report())
+		check('and publishes the decision the fitting room is waiting for',
+			decisions[1] == 'false/clothing_gate_shut', table.concat(decisions, ', '))
+		check('naming it in the journal as well', toldServer():find('was never put on', 1, true) ~= nil,
+			toldServer())
+	end
+
+	-- ── a catalogue batch the view would not take ────────────────────────────
+	-- THE OTHER HALF OF THE SAME SHAPE. `Panel.Append` refuses a batch it cannot
+	-- parse and answers so; the bridge logged that answer to the client's log and
+	-- told the state half nothing, so a hundred pieces vanished with the room still
+	-- saying it was reading and the player with no way to know. The state half
+	-- cannot see the loss itself and must not try -- `panel` parses an item by
+	-- rules that are its own -- so the answer has to come back over the seam.
+	do
+		local env, control = joinClient('never', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		local page = control.pages[1]
+
+		env.TriggerEvent(appearance.Event.ON_VIEW, {
+			kind = 'room', title = 'Wardrobe', loading = true,
+			tabs = { { id = 'InnerChest', label = 'Inner chest', marked = false } },
+			tab = 'InnerChest', selected = { InnerChest = false },
+			summary = { label = 'Inner chest', value = 'nothing' },
+			labels = { loading = 'Reading...' },
+		})
+		check('a room is up to stream into', drew(page, 'opx:panel:open') ~= nil)
+
+		local answered = {}
+		local real = appearance.FromView
+		appearance.FromView = function(action, payload)
+			if action == 'room.items' then answered[#answered + 1] = payload end
+			return real(action, payload)
+		end
+
+		-- One unparseable item in a batch of two, which is how this really happens:
+		-- `parseItems` refuses the WHOLE batch for any malformed one, so a single
+		-- over-long label costs a hundred pieces.
+		local mark = #page.sent
+		env.TriggerEvent(appearance.Event.ON_VIEW, { kind = 'roomItems', final = false, items = {
+			{ id = 'Items.Jacket_01', tab = 'InnerChest', label = 'Jacket 01',
+				detail = 'Items.Jacket_01' },
+			{ id = 'Items.' .. ('Jacket_02_'):rep(30), tab = 'InnerChest', label = 'Jacket 02',
+				detail = 'Items.Jacket_02' },
+		} })
+		local reached = 0
+		for index = mark + 1, #page.sent do
+			if page.sent[index].channel == 'opx:panel:items' then reached = reached + 1 end
+		end
+		check('a batch the panel cannot parse reaches the page as nothing at all',
+			reached == 0, ('%d send(s)'):format(reached))
+
+		-- The answer is deferred to the upkeep pass for the same reason the
+		-- undrawn-room answer is: this runs inside the state half's own
+		-- publication, on the stream's thread.
+		control.Pump(4)
+		check('and the state half is told, instead of the refusal being swallowed',
+			#answered == 1 and answered[1].error ~= nil,
+			('%d answer(s), error=%s'):format(#answered,
+				answered[1] and tostring(answered[1].error) or '-'))
+		check('with nothing counted as drawn for a batch that was not',
+			#answered == 1 and answered[1].added == 0,
+			answered[1] and tostring(answered[1].added) or '-')
+
+		-- SUMMED ACROSS THE PASS, NOT LAST-ONE-WINS. A catalogue is twenty-odd
+		-- batches and the stream yields between them, so a whole room's worth
+		-- lands between two upkeep passes; the bridge's other deferral holds ONE
+		-- answer, and reusing it here would have reported the size of whichever
+		-- batch happened to be last as the size of the catalogue.
+		for index = 1, 3 do
+			env.TriggerEvent(appearance.Event.ON_VIEW, { kind = 'roomItems', final = false,
+				items = { { id = ('Items.Boot_%d'):format(index), tab = 'Feet',
+					label = 'Boot ' .. index, detail = 'Items.Boot' } } })
+		end
+		control.Pump(4)
+		check('and three batches in one pass are counted as three, not as one',
+			#answered == 2 and answered[2].added == 3,
+			answered[2] and tostring(answered[2].added) or '-')
+		appearance.FromView = real
+	end
 end
 
 -- ── client boot ──────────────────────────────────────────────────────────────

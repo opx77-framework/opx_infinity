@@ -199,6 +199,7 @@ function Host.Environment(side, database)
 	local commands = {}
 	local netEvents = {}
 	local clientEvents = {}
+	local serverEvents = {}
 	local clock = 0
 	-- Forward-declared: the host globals below close over it, and a local declared
 	-- after them would leave those closures pointing at a global instead.
@@ -424,7 +425,18 @@ function Host.Environment(side, database)
 			clientEvents[#clientEvents + 1] = { name = name, source = source, ... }
 		end
 	else
-		env.TriggerServerEvent = function() end
+		-- RECORDED, NOT SWALLOWED. This used to be an empty function, which made
+		-- the one channel a client half has to the operator the one channel the
+		-- suite could not see: `modules/appearance` reports every clothing and
+		-- fitting-room decision over it, precisely because `Open77.log` on a
+		-- client writes to a file on the player's machine. A test that cannot read
+		-- this cannot tell a module that decided nothing from one that decided and
+		-- said so, which is the distinction two diagnoses of the fitting room both
+		-- got wrong.
+		env.TriggerServerEvent = function(name, ...)
+			serverEvents[#serverEvents + 1] = { name = name, ... }
+			return true
+		end
 	end
 
 	-- `require` exists in the CLIENT VM and nowhere else: the dedicated-server
@@ -447,6 +459,7 @@ function Host.Environment(side, database)
 		commands = commands,
 		netEvents = netEvents,
 		clientEvents = clientEvents,
+		serverEvents = serverEvents,
 		handlers = handlers,
 
 		--- Resumes every queued thread up to `rounds` times, so a `while true`
