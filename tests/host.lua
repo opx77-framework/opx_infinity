@@ -480,9 +480,18 @@ Host.Sandbox = { 'io', 'os', 'debug', 'package', 'dofile', 'loadfile' }
 --- either forbid a legal import or permit an illegal one.
 Host.ClientOnly = { 'require' }
 
---- Where a published dependency library lives, relative to this resource.
---- A sibling checkout, which is how they sit in the workspace.
-Host.Providers = { opx_lib = '../opx_lib' }
+--- Where a published dependency library lives.
+---
+--- A sibling checkout by default, which is how they sit on a workstation.
+--- `OPX_LIB_PATH` overrides it, and CI needs that: `actions/checkout` refuses a
+--- path outside the workspace, so the runner clones the library INTO the
+--- workspace and points this at it. Without the override, CI cannot see the
+--- sibling at all and every client boot dies on the first `require`.
+---
+--- The suite loads the REAL library rather than a stub on purpose -- a stub
+--- would pass while the two repositories drifted apart -- so a missing checkout
+--- has to be loud rather than skipped.
+Host.Providers = { opx_lib = os.getenv('OPX_LIB_PATH') or '../opx_lib' }
 
 local imported = {}
 
