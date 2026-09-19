@@ -3,10 +3,16 @@
 --
 -- There is no selection screen, and that is the whole design. An account is
 -- LOCKED on one character and a connection enters on it; the lock is moved by a
--- command (`opx.characters`, `opx.select`, `opx.create`) and a command that moves
--- it disconnects the player. It has to: the body a world loads with is the
--- character bootstrap's answer, and that transaction is spent before the world
--- exists, so the only honest way to play another character is to arrive as one.
+-- command (`opx.characters`, `opx.select`, `opx.create`).
+--
+-- `opx.create` DISCONNECTS AND HAS TO. A new character has no body, so it needs
+-- the game's own creator -- and that creator is drawn by the game's main menu,
+-- for a bootstrap transaction spent before the world exists. Resetting that
+-- transaction mid-session was measured and does not work: the request is granted
+-- and no creator is ever drawn. So the only honest way to BUILD a character is to
+-- arrive as one. `opx.select` takes an EXISTING character, which needs no creator
+-- and can be taken in the world; `CHARACTERS.SWITCH` in `config/character.lua`
+-- decides which of the two it does.
 --
 -- What is left for a client to do is the two things a player still answers for a
 -- character the server made empty:

@@ -105,6 +105,65 @@ function M.ValidateName(value)
 	})
 end
 
+--- The two ways `opx.select` can move an account onto another character.
+-- @author dop42
+--
+-- A CLOSED SET, NAMED HERE RATHER THAN SPELLED OUT AT THE COMPARISON, the same
+-- shape `spawn.Policy` is and for the same reason: the server branches on these
+-- strings, the suite asserts against them and the operator types one into
+-- `config/character.lua`.
+--
+-- THE DIFFERENCE BETWEEN THEM IS NOT A PREFERENCE, and neither covers
+-- `opx.create`. A NEW character has no body, so it needs the game's own
+-- character creator -- and that creator is drawn by the game's MAIN MENU, for
+-- the character-bootstrap transaction, which is spent before the world exists.
+-- Measured in game on 2026-09-17 against 2.31.13+op77.81: resetting the
+-- bootstrap mid-session does arm a fresh transaction and the creator request IS
+-- granted, but no creator is ever drawn -- the shell takes the world down for a
+-- bootstrap it now expects answered and the player sits under the loading cover
+-- until they kill the connection. The platform has `Open77.network.disconnect`
+-- and no reconnect, so there is no soft path to offer either. `opx.create`
+-- therefore ends the session whatever this says, and always will.
+--
+-- An EXISTING character is a different question, because it needs no creator:
+-- it needs the right body, which is a body reload the appearance module already
+-- performs on its own whenever the loaded character's family differs from the
+-- one in play (`ensureFamily`). That is what makes `relog` possible at all.
+M.Switch = {
+	-- Take the other character here, in the world, with no disconnect: save the
+	-- one being left, load the other, place it, and let the client reload the
+	-- body, the face and the clothes onto it. The whole of this already existed
+	-- as `M.SelectCharacter`; it simply had nothing calling it.
+	RELOG = 'relog',
+	-- Move the lock and end the session, so the next connection arrives on the
+	-- new character. What this module did before the setting existed, and still
+	-- the honest fallback: a relog that is refused for any reason falls back to
+	-- it rather than leaving the player on a character they asked to leave.
+	RECONNECT = 'reconnect',
+}
+
+--- What an unreadable `CHARACTERS.SWITCH` falls back to.
+-- RECONNECT, because it is what this module did before the setting existed: a
+-- fallback that changed behaviour would make a typo in the configuration look
+-- like a feature somebody had asked for.
+M.SWITCH_DEFAULT = M.Switch.RECONNECT
+
+--- Whether a value is one of the two switch modes.
+-- Answers the value itself rather than a boolean, so a caller reads
+-- `M.KnownSwitch(raw) or M.SWITCH_DEFAULT` in one line -- but the refusal is
+-- still the caller's to journal, because a warning belongs where it can be said
+-- once at start rather than on every switch.
+-- @author dop42
+-- @param value any
+-- @return string|nil
+function M.KnownSwitch(value)
+	if type(value) ~= 'string' then return nil end
+	for _, known in pairs(M.Switch) do
+		if value == known then return known end
+	end
+	return nil
+end
+
 --- Reads a configured number with a floor.
 -- The floor is also the answer for a setting that is missing or not a finite
 -- number, so that no caller ever compares a number against nil. The test is

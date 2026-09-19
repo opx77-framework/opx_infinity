@@ -70,14 +70,21 @@ OPX.Locale.Register('en', {
 		'the one you enter on:',
 	['command.characterHint'] = 'opx.select <ID> takes another one, opx.create builds a new ' ..
 		'one. Both disconnect you; the character is entered when you reconnect.',
+	-- The same two sentences under CHARACTERS.SWITCH = 'relog', where only the
+	-- second one still disconnects: a new body is built in the game's own menu,
+	-- which there is no way back to without a new connection.
+	['command.characterHintRelog'] = 'opx.select <ID> takes another one here and now. ' ..
+		'opx.create builds a new one and disconnects you, because a new body is built ' ..
+		'in the game menu.',
 	['command.locked'] = 'Locked on {name}. Reconnect to play them.',
+	['command.switched'] = 'You are now playing {name}.',
 	['command.buildingNew'] = 'Your next connection builds a new character.',
 
 	['command.help.players'] = 'List who is in the world.',
 	['command.help.where'] = 'Show what the server holds on a player.',
 	['command.help.here'] = 'Print where you stand as a DEFAULT_SPAWN block.',
 	['command.help.characters'] = 'List your characters.',
-	['command.help.select'] = 'Play another of your characters. Disconnects you.',
+	['command.help.select'] = 'Play another of your characters.',
 	['command.help.create'] = 'Build a new character. Disconnects you.',
 	['command.help.delete'] = 'Delete one of your characters.',
 	['command.help.duty'] = 'Clock in or out of your job.',
@@ -149,14 +156,18 @@ OPX.Locale.Register('fr', {
 		'> est celui avec lequel vous entrez :',
 	['command.characterHint'] = 'opx.select <ID> pour en prendre un autre, opx.create pour en ' ..
 		'construire un. Les deux vous deconnectent ; le personnage est charge a la reconnexion.',
+	['command.characterHintRelog'] = 'opx.select <ID> pour en prendre un autre tout de suite. ' ..
+		'opx.create en construit un nouveau et vous deconnecte, car un nouveau corps se ' ..
+		'construit dans le menu du jeu.',
 	['command.locked'] = 'Verrouille sur {name}. Reconnectez-vous pour le jouer.',
+	['command.switched'] = 'Vous jouez maintenant {name}.',
 	['command.buildingNew'] = 'Votre prochaine connexion construira un nouveau personnage.',
 
 	['command.help.players'] = 'Liste qui est en jeu.',
 	['command.help.where'] = "Montre ce que le serveur sait d'un joueur.",
 	['command.help.here'] = 'Affiche votre position au format DEFAULT_SPAWN.',
 	['command.help.characters'] = 'Liste vos personnages.',
-	['command.help.select'] = 'Jouer un autre de vos personnages. Vous deconnecte.',
+	['command.help.select'] = 'Jouer un autre de vos personnages.',
 	['command.help.create'] = 'Construire un nouveau personnage. Vous deconnecte.',
 	['command.help.delete'] = 'Supprimer un de vos personnages.',
 	['command.help.duty'] = 'Prendre ou quitter votre service.',

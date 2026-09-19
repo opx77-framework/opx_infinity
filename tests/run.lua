@@ -1108,6 +1108,126 @@ do
 	end
 end
 
+-- ── taking another character ─────────────────────────────────────────────────
+-- WHETHER `opx.select` KICKS, which is `CHARACTERS.SWITCH` and is the operator's
+-- call. The two values are not a preference between equals: one takes the other
+-- character here in the world, the other ends the session so the next connection
+-- arrives on it. `opx.create` is covered by NEITHER and must always disconnect,
+-- because a new character needs the game's own creator and that is a join-time
+-- screen -- which is a platform fact rather than a decision, so what is asserted
+-- here is that no setting can turn it off.
+section('taking another character')
+do
+	--- A world holding only what settles the switch mode.
+	-- @param ... string|nil the CHARACTERS.SWITCH to write in, or nothing to keep
+	--   what the file ships
+	-- @return table module
+	-- @return table control
+	local function switchOnly(...)
+		local own, ctl = Host.Environment('server')
+		for _, file in ipairs({
+			'core/shared/main.lua', 'core/shared/channels.lua',
+			'core/shared/registry.lua', 'core/shared/lifecycle.lua',
+			'lib/shared/math.lua', 'lib/shared/result.lua', 'lib/shared/validate.lua',
+			'lib/shared/text.lua', 'lib/shared/string.lua', 'lib/shared/table.lua',
+			'config/shared.lua', 'config/character.lua', 'modules/character/module.lua',
+		}) do
+			assert(loadfile(file, 't', own), file)()
+		end
+		local module = own.OPX.Modules.Get('character')
+		if select('#', ...) > 0 then module.Settings.CHARACTERS.SWITCH = (select(1, ...)) end
+		return module, ctl
+	end
+
+	local vocabulary = switchOnly()
+	check('the switch vocabulary is declared in the shared file',
+		type(vocabulary.Switch) == 'table' and type(vocabulary.KnownSwitch) == 'function'
+			and vocabulary.SWITCH_DEFAULT == vocabulary.Switch.RECONNECT)
+
+	check('both switch modes are recognised',
+		vocabulary.KnownSwitch('relog') == 'relog'
+			and vocabulary.KnownSwitch('reconnect') == 'reconnect')
+	-- A NEAR MISS IS A MISS, and the fallback is the one that disconnects: a typo
+	-- that quietly took the safer path costs a player one reconnect, where a typo
+	-- that quietly took the newer one costs whatever it turns out to break.
+	check('anything else is not a switch mode, whatever its shape',
+		vocabulary.KnownSwitch('Relog') == nil and vocabulary.KnownSwitch('soft') == nil
+			and vocabulary.KnownSwitch(true) == nil and vocabulary.KnownSwitch(nil) == nil)
+	check('the shipped configuration names one of the two',
+		vocabulary.KnownSwitch(vocabulary.Settings.CHARACTERS.SWITCH) ~= nil,
+		tostring(vocabulary.Settings.CHARACTERS.SWITCH))
+
+	-- RESOLVED ONCE, AT BOOT, and journalled on a bad value -- so a typo is named
+	-- in the block an operator reads after editing a config file rather than in
+	-- the middle of somebody's switch, where nobody reads it.
+	do
+		local env, control, why = boot('server')
+		check('server boots for the switch tests', why == nil, why)
+		if why == nil then
+			local character = env.OPX.Modules.Get('character')
+			check('the switch mode is settled at boot rather than at the point of use',
+				character.KnownSwitch(character.SwitchMode) ~= nil,
+				tostring(character.SwitchMode))
+			check('and it is the one the file configures',
+				character.SwitchMode == env.OPX.Config.MODULES.character.CHARACTERS.SWITCH,
+				tostring(character.SwitchMode))
+			-- The relog calls `enterCharacter`, which is declared three hundred
+			-- lines below `SwitchTo`. Without the forward declaration that call
+			-- compiles against a GLOBAL of the same name -- nil -- and raises
+			-- inside a command thread, which is exactly where nobody is looking.
+			check('the soft path this depends on is published and is a function',
+				type(env.OPX.Api.Get('character').SelectCharacter) == 'function')
+			check('and the kicking path is still published beside it',
+				type(env.OPX.Api.Get('character').SwitchTo) == 'function')
+			check('no thread died taking either of them up',
+				not table.concat(control.log.error, ' | '):find('thread died'),
+				table.concat(control.log.error, ' | '))
+		end
+	end
+
+	-- AN UNKNOWN VALUE falls back to the disconnect and says so.
+	do
+		local own, ctl = Host.Environment('server')
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'server')) do
+			assert(loadfile(file, 't', own), file)()
+			if file == 'config/character.lua' then
+				own.OPX.Config.MODULES.character.CHARACTERS.SWITCH = 'soft'
+			end
+		end
+		ctl.Pump(20)
+		local character = own.OPX.Modules.Get('character')
+		check('an unknown switch mode is refused rather than honoured',
+			character.SwitchMode == character.SWITCH_DEFAULT, tostring(character.SwitchMode))
+		check('and it is named in the journal, with what is running instead',
+			table.concat(ctl.log.warn, ' | '):find('CHARACTERS.SWITCH soft') ~= nil,
+			table.concat(ctl.log.warn, ' | '))
+	end
+
+	-- THE ONE THING NO SETTING MAY CHANGE. `opx.create` clears the lock and ends
+	-- the session, under either mode, because a new character needs the game's own
+	-- creator and resetting the bootstrap mid-session was measured in game and
+	-- does not draw one -- it strands the player under the loading cover. Asserted
+	-- by reading the function rather than by running it: it needs a session, a
+	-- database and a live slot, none of which this host has.
+	do
+		local handle = io.open('modules/character/server/character.lua', 'r')
+		local body = handle:read('a')
+		handle:close()
+		local newCharacter = body:match('function M%.NewCharacter.-\nend\n')
+		check('opx.create still ends the session in its own body',
+			newCharacter ~= nil and newCharacter:find('endSession', 1, true) ~= nil)
+		check('and never takes the soft path',
+			newCharacter ~= nil and newCharacter:find('enterCharacter', 1, true) == nil)
+		-- And the switch DOES, which is the whole change: the same read, so the two
+		-- cannot drift into agreeing by accident.
+		local switchTo = body:match('function M%.SwitchTo.-\nend\n')
+		check('while opx.select can take the character here instead',
+			switchTo ~= nil and switchTo:find('enterCharacter', 1, true) ~= nil)
+		check('and still falls back to ending the session',
+			switchTo ~= nil and switchTo:find('endSession', 1, true) ~= nil)
+	end
+end
+
 -- ── the fitting room, and the join it sits in the middle of ──────────────────
 -- WHAT A PLAYER WEARS WHEN THEY ARRIVE, and -- the harder half -- WHEN THEY ARE
 -- ASKED. A brand new character answers three questions at one instant: a name, an

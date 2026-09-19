@@ -43,6 +43,48 @@ OPX.Config.MODULES.character = {
 	},
 
 	CHARACTERS = {
+		-- HOW `opx.select` MOVES AN ACCOUNT ONTO ANOTHER CHARACTER. Two values,
+		-- and no third:
+		--
+		--   'relog'      take the other character here, in the world. The one
+		--                being left is saved and waited on, the other is loaded
+		--                and placed, and the client reloads the body family, the
+		--                face and the clothes onto the puppet it already has. No
+		--                disconnect, no loading screen, no re-queue.
+		--   'reconnect'  move the lock and end the session, so the next connection
+		--                arrives on the new character. What this did before the
+		--                setting existed.
+		--
+		-- A REFUSED RELOG FALLS BACK TO THE RECONNECT rather than leaving the
+		-- player on the character they asked to leave. The save of the outgoing
+		-- character is the one thing that can refuse it -- the switch is abandoned
+		-- rather than losing what was not written -- and the player is then
+		-- disconnected, which saves it again on the way out.
+		--
+		-- `opx.create` IS NOT COVERED BY THIS AND CANNOT BE. A new character has
+		-- no body, so it needs the game's own character creator, and that creator
+		-- belongs to the game's MAIN MENU: it is drawn for the character-bootstrap
+		-- transaction, which is spent before the world exists. Resetting the
+		-- bootstrap mid-session was measured in game on 2026-09-17 (2.31.13+op77.81)
+		-- -- the request is granted, the phase moves on, and NO CREATOR IS EVER
+		-- DRAWN, because the game is no longer in its main menu. The shell takes
+		-- the world down for a bootstrap it now expects answered and the player
+		-- sits under the loading cover until they kill the connection. The
+		-- platform has a disconnect native and no reconnect, so there is nothing
+		-- softer to offer. `opx.create` ends the session whatever is written here.
+		--
+		-- WHY 'relog' IS NOT OBVIOUSLY RIGHT, and is a setting rather than the
+		-- only behaviour: a switch in the world is a save, a load, a kill-respawn
+		-- placement and -- when the two characters are not the same body family --
+		-- a covered body reload, all while the player is incarnated and other
+		-- players can see them. 'reconnect' does all of that behind a join, where
+		-- it has always run. If a switch ever leaves somebody in the wrong body or
+		-- under a cover that does not lift, this is the one word to change back.
+		--
+		-- An unknown value is REFUSED WITH A LINE IN THE JOURNAL and falls back to
+		-- 'reconnect'.
+		SWITCH = 'relog',
+
 		DEFAULT_SLOTS = 3,
 
 		-- Per-account overrides, keyed by user id.

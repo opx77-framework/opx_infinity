@@ -172,6 +172,14 @@ function M.CreateCharacter(source)
 	return Result.Ok(toSummary(entity))
 end
 
+-- Forward-declared: `M.SwitchTo` below takes the other character here in the
+-- world when the operator asked for a relog, and the function that does it is
+-- three hundred lines further down. Declared here rather than moving either of
+-- them, because without the `local` the call in `SwitchTo` would compile against
+-- a GLOBAL of the same name -- nil, and a raise inside a command thread rather
+-- than anything a reader would look for.
+local enterCharacter
+
 --- Ends a session so that the next one enters on the lock as it now stands.
 -- @author dop42
 --
@@ -233,6 +241,29 @@ function M.SwitchTo(source, citizenId)
 		userId = session.userId,
 		source = source,
 	})
+
+	-- THE SOFT PATH, when the operator asked for it. `enterCharacter` was written
+	-- for exactly this and had nothing calling it: it awaits the save of the
+	-- character being left, refuses the switch rather than losing it, loads the
+	-- other one, and -- because the gate is already open for somebody standing in
+	-- the world -- places the body on the spot instead of queueing it. It sets the
+	-- lock itself at the end, so the next connection comes back to whatever
+	-- actually entered.
+	--
+	-- Only an EXISTING character can go this way, which is all this function ever
+	-- handles: a new one needs the game's own creator, and that is a join-time
+	-- screen. See `M.Switch` for the measurement behind that.
+	if M.SwitchMode == M.Switch.RELOG then
+		local entered = enterCharacter(source, parsed.value)
+		if entered.ok then return Result.Ok(toSummary(wanted.value)) end
+		-- FALLING BACK RATHER THAN STOPPING. The lock has already moved, so a
+		-- player left standing here is on a character they asked to leave and
+		-- would get the other one on their next connection anyway. The disconnect
+		-- makes that connection now, and saves them again on the way out.
+		Open77.log.warn(('[character] the in-world switch to %s was refused (%s); ' ..
+			'ending the session instead'):format(parsed.value, tostring(entered.error)))
+	end
+
 	endSession(source, locale('session.switching'))
 	return Result.Ok(toSummary(wanted.value))
 end
@@ -528,7 +559,7 @@ end
 -- @param source Source
 -- @param citizenId CitizenId
 -- @return Result
-local function enterCharacter(source, citizenId)
+enterCharacter = function(source, citizenId)
 	local parsed = OPX.CitizenId.Parse(citizenId)
 	if not parsed.ok then return Result.Err('character.notFound', tostring(citizenId)) end
 
@@ -644,9 +675,12 @@ end
 -- opened by itself": the row has no body and no name, so the client is handed to
 -- the game's own character creator and then asked to type a name.
 --
--- The lock is moved by a command (`opx.select`, `opx.create`), and a command that
--- moves it disconnects the player, because the body a world loads with is decided
--- before the world exists. Coroutine only.
+-- The lock is moved by a command. `opx.create` ALWAYS disconnects, because a new
+-- character needs the game's own creator and that is drawn by the game's main
+-- menu, for a bootstrap transaction spent before the world exists -- see
+-- `M.Switch`. `opx.select` takes an EXISTING character, which needs no creator,
+-- so `CHARACTERS.SWITCH` decides whether it is taken here in the world or at the
+-- next connection. Coroutine only.
 -- @param source Source
 -- @return Result
 function M.EnterSession(source)
