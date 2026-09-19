@@ -354,13 +354,18 @@ end
 -- the stored position survives for the next attempt.
 -- @author dop42
 -- @param player Player
+-- @param target table|nil an explicit position to use instead of the row's
 -- @return boolean, string|nil
-function M.PlaceCharacter(player)
+function M.PlaceCharacter(player, target)
 	local data = player.PlayerData
 	local source = data.source
 	if not source then return false, 'offline' end
 
-	local target = data.position
+	-- AN EXPLICIT TARGET WINS, and there is no fallback behind it. It is a
+	-- position the caller has already decided on -- the spawn module's answer for
+	-- a player who picked a place to start -- and quietly falling back to the row
+	-- or to the default here would put somebody where they did not ask to go.
+	target = type(target) == 'table' and target or data.position
 	if not target then
 		local spawn = M.Settings.DEFAULT_SPAWN
 		if spawn.SET then
@@ -451,7 +456,8 @@ M.AwaitingPlacement = {}
 --- Places the character a join loaded, now that the gate has opened.
 -- @author dop42
 -- @param source Source
--- @return boolean whether anything was placed
+-- @return boolean whether the placement was taken care of -- which includes the
+-- case where the spawn menu has taken it over and will place it itself
 function M.PlacePending(source)
 	local citizenId = M.AwaitingPlacement[source]
 	if citizenId == nil then return false end
@@ -459,6 +465,39 @@ function M.PlacePending(source)
 
 	local player = M.GetPlayer(source)
 	if not player or player.PlayerData.citizenId ~= citizenId then return false end
+
+	-- EVERY JOIN IS ASKED WHERE TO START. The menu is offered whether or not the
+	-- row already holds a position, so a returning player may pick a spot and one
+	-- who picks nothing -- or never opens the menu -- is placed by
+	-- `PlaceCharacter` with no explicit target, which resolves to the row's own
+	-- position (see the target resolution above). Choosing is the exception;
+	-- resuming is still the default.
+	--
+	-- `position` therefore no longer decides WHETHER this question is asked, only
+	-- what the answer falls back to. It used to gate the whole block, which meant
+	-- a character that had ever stood anywhere was never asked again.
+	--
+	-- Read through `Get` and NOT declared in `requires`: this module is the one
+	-- the spawn module depends on, so a declaration in both directions is a cycle,
+	-- which the registry refuses at boot. Absent -- or switched off, or configured
+	-- with nowhere to go -- it answers nil and everything past this block is
+	-- exactly what happened before it existed.
+	local spawn = OPX.Api.Get('spawn')
+	if spawn ~= nil and type(spawn.Offer) == 'function' then
+		-- `Offer` must not yield, which it does not: it records the choice and
+		-- starts a thread. The pcall is here so that a spawn module that raises
+		-- costs the player the MENU and not the body -- a raise falling out of
+		-- here would kill this thread and leave the character unplaced for the
+		-- session.
+		local asked, taken = pcall(spawn.Offer, source, citizenId)
+		if not asked then
+			Open77.log.error(('[character] the spawn module raised for %s: %s')
+				:format(citizenId, tostring(taken)))
+		elseif taken == true then
+			Open77.log.info(('[character] %s is choosing where to start'):format(citizenId))
+			return true
+		end
+	end
 
 	local placed, reason = M.PlaceCharacter(player)
 	if placed then

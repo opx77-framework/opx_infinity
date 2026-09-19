@@ -7,6 +7,7 @@ import MenuView from '@/modules/menu/MenuView.vue'
 import NotifyRoot from '@/modules/notify/NotifyRoot.vue'
 import PanelView from '@/modules/panel/PanelView.vue'
 import PromptsRoot from '@/modules/prompts/PromptsRoot.vue'
+import SpawnView from '@/modules/spawn/SpawnView.vue'
 import TagsRoot from '@/modules/tags/TagsRoot.vue'
 import TargetView from '@/modules/target/TargetView.vue'
 import { createSurface } from './createSurface'
@@ -51,6 +52,12 @@ registerModule({ id: 'menu', surface: 'modal', component: MenuView })
 registerModule({ id: 'form', surface: 'modal', component: FormView })
 registerModule({ id: 'panel', surface: 'modal', component: PanelView })
 registerModule({ id: 'target', surface: 'modal', component: TargetView })
+
+// The one screen a player is given rather than offered: a brand new character has no
+// position, so where it starts is a question the server must have an answer to. It is
+// on `modal` for the cursor, not for the style -- a spawn list nobody can click is the
+// same as no choice at all.
+registerModule({ id: 'spawn', surface: 'modal', component: SpawnView })
 
 createSurface({
   name: 'ui',

@@ -731,6 +731,14 @@ function M.Api()
 		ResolvePlayer = M.ResolvePlayer,
 		GetCharacter = M.GetCharacter,
 
+		-- The placement primitive, and not a transform: a placement is a kill and a
+		-- respawn, which is what carries the fade, the streaming preload and the
+		-- grace window. Published because the spawn module decides WHERE a brand new
+		-- character starts and this module owns HOW every character is put
+		-- anywhere. The optional second argument is that decision; omitted, the
+		-- character's own row decides, as it always did.
+		PlaceCharacter = M.PlaceCharacter,
+
 		AddMoney = M.AddMoney,
 		RemoveMoney = M.RemoveMoney,
 		SetMoney = M.SetMoney,
