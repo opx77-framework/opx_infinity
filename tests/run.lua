@@ -1733,6 +1733,88 @@ do
 			batch ~= nil and batch.payload.done == true
 				and batch.payload.items[1].id == 'Items.Jacket_01')
 
+		-- THE CATALOGUE AT THE SIZE IT ACTUALLY ARRIVES AT. The one-item batch
+		-- above passed on every build and proved nothing: the fitting room streams
+		-- a hundred pieces at a time, and a hundred parsed items is 1207 value
+		-- nodes against a host bound of 1024. The host refused every batch,
+		-- `WebUI.Page.send` answered false, `panel` never read that answer and
+		-- reported the refusal to its caller as a delivery -- so the room sat on
+		-- 'Reading the catalogue' for good with no error anywhere. `tests/host.lua`
+		-- models the bound now, so this is the check that fails if the split goes.
+		local mark, turned = #page.sent, #page.refused
+		local bulk = {}
+		for index = 1, 100 do
+			local record = ('Items.Jacket_%03d_basic_variant'):format(index)
+			bulk[index] = { id = record, tab = 'InnerChest',
+				label = ('Jacket %03d basic variant'):format(index), detail = record }
+		end
+		env.TriggerEvent(appearance.Event.ON_VIEW,
+			{ kind = 'roomItems', final = true, items = bulk })
+
+		local drawn, sends, dones = 0, 0, 0
+		for index = mark + 1, #page.sent do
+			local sent = page.sent[index]
+			if sent.channel == 'opx:panel:items' then
+				sends = sends + 1
+				drawn = drawn + #sent.payload.items
+				if sent.payload.done == true then dones = dones + 1 end
+			end
+		end
+
+		-- Counted from `turned` rather than from zero, and NOT because a refusal
+		-- before this point is acceptable. `opx:locale:set` is one: the page is
+		-- handed the whole string catalogue in a single payload from
+		-- `core/client/ui.lua`, which is 2539 nodes here and more on a live server,
+		-- so every page that reads a string through `useLocale` renders its keys.
+		-- That is a real defect, it is not this one, and chunking a catalogue is
+		-- not a change to make inside a fitting-room fix.
+		check('the host turns away no catalogue batch',
+			#page.refused == turned,
+			#page.refused > turned
+				and ('%s at %d nodes'):format(page.refused[turned + 1].channel,
+					page.refused[turned + 1].nodes) or '')
+		check('a hundred-piece batch reaches the page whole', drawn == 100,
+			('%d of 100, over %d send(s)'):format(drawn, sends))
+		check('over more than one send, because one would not have fitted',
+			sends > 1, ('%d send(s)'):format(sends))
+		check('and exactly one of them says the catalogue has ended',
+			dones == 1, ('%d done flag(s)'):format(dones))
+
+		-- THE CONTRACT'S OWN MAXIMUM HAS TO WORK. `MAX_APPEND` is what a caller is
+		-- told it may hand over at once, and it was two hundred while two hundred
+		-- was a payload of 2407 -- a bound that refused nothing and delivered
+		-- nothing.
+		local wide = #page.sent
+		local full = {}
+		for index = 1, 200 do
+			local record = ('Items.Shoe_%03d'):format(index)
+			full[index] = { id = record, tab = 'Feet', label = 'Shoe ' .. index, detail = record }
+		end
+		env.TriggerEvent(appearance.Event.ON_VIEW,
+			{ kind = 'roomItems', final = false, items = full })
+		local reached = 0
+		for index = wide + 1, #page.sent do
+			if page.sent[index].channel == 'opx:panel:items' then
+				reached = reached + #page.sent[index].payload.items
+			end
+		end
+		check('and a batch at the append bound arrives whole as well',
+			reached == 200 and #page.refused == turned, ('%d of 200'):format(reached))
+
+		-- THE STREAM'S LAST WORD IS AN EMPTY BATCH. The catalogue is sorted in
+		-- seven piles now and the seventh is free to be empty, so a `final` hung
+		-- on the last piece sent would leave the room loading forever for a body
+		-- whose last slot has nothing in it.
+		local tail = #page.sent
+		env.TriggerEvent(appearance.Event.ON_VIEW,
+			{ kind = 'roomItems', final = true, items = {} })
+		local ended
+		for index = tail + 1, #page.sent do
+			if page.sent[index].channel == 'opx:panel:items' then ended = page.sent[index] end
+		end
+		check('an empty final batch still lands, so the room stops reading',
+			ended ~= nil and #ended.payload.items == 0 and ended.payload.done == true)
+
 		-- WHAT THE PLAYER DID, coming back through the one function the seam
 		-- documents. Everything on it is re-checked there against state this bridge
 		-- cannot see: the record against the catalogue that was streamed, the

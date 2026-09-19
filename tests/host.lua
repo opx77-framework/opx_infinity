@@ -146,6 +146,26 @@ end
 
 Host.json = json
 
+-- Value nodes the host accepts in one WebUI payload, and the rule it counts by:
+-- the value itself, and both halves of every pair under a table. `modules/menu`
+-- and `modules/panel` both count against this, and this file is the third copy
+-- on purpose -- a stub that shared the runtime's counter could not catch the
+-- runtime's counter being wrong.
+Host.MAX_PAYLOAD_NODES = 1024
+
+--- The nodes one payload comes to.
+-- @author dop42
+-- @param value any
+-- @return integer
+function Host.PayloadNodes(value)
+	local nodes = 1
+	if type(value) ~= 'table' then return nodes end
+	for key, nested in pairs(value) do
+		nodes = nodes + Host.PayloadNodes(key) + Host.PayloadNodes(nested)
+	end
+	return nodes
+end
+
 --- A stand-in for the `MySQL` bridge. `answers` maps a method name to a function
 --- of (sql, params); a method that is absent raises, which is what the real
 --- bridge does and the whole reason `OPX.Storage` wraps every call.
@@ -357,12 +377,27 @@ function Host.Environment(side, database)
 				local page = {
 					spec = spec,
 					sent = {},
+					-- Every send the host turned away, newest last.
+					refused = {},
 					handlers = {},
 					focus = {},
 					visible = spec.visible == true,
 					alive = true,
 				}
 				page.send = function(_, channel, payload)
+					-- THE HOST BOUNDS A WebUI PAYLOAD AND REFUSES AN OVERSIZED ONE
+					-- WHOLE. This stub used to answer true to everything, which is
+					-- why the fitting room's catalogue could be lost on the wire for
+					-- a release with a green suite behind it: every batch it sent was
+					-- past the bound, `WebUI.Page.send` answered false on the real
+					-- host, and nothing here ever said so. Modelled rather than
+					-- asserted per test, so the whole suite is the check.
+					local nodes = Host.PayloadNodes(payload)
+					if nodes > Host.MAX_PAYLOAD_NODES then
+						page.refused[#page.refused + 1] =
+							{ channel = channel, nodes = nodes }
+						return false
+					end
 					page.sent[#page.sent + 1] = { channel = channel, payload = payload }
 					return true
 				end

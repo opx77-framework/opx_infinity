@@ -229,6 +229,7 @@ end
 -- @param channel string without the `<id>:` prefix
 -- @param payload table|nil
 -- @return boolean false while the page is not ready, or gone
+-- @return boolean true when the HOST refused the payload -- see below
 function OPX.Surface.Send(surface, channel, payload)
 	if type(surface) ~= 'table' or surface.failed or not surface.ready then return false end
 	if surface.page == nil then return false end
@@ -246,21 +247,28 @@ function OPX.Surface.Send(surface, channel, payload)
 	-- the host refused was indistinguishable from one the page drew, which is the
 	-- worst shape a bug can have on a seam, and this line is what tells them apart.
 	--
-	-- IT DOES NOT CHANGE THE ANSWER THIS FUNCTION GIVES. Returning false here looks
-	-- obviously right and is not: callers read this result and branch on it -- the
-	-- inventory parks its open payload in `pendingOpen` and waits for a handshake
+	-- IT DOES NOT CHANGE THE FIRST ANSWER THIS FUNCTION GIVES. Returning false there
+	-- looks obviously right and is not: callers read that result and branch on it --
+	-- the inventory parks its open payload in `pendingOpen` and waits for a handshake
 	-- that has already been and gone -- so a refusal that used to be invisible would
-	-- become a screen that takes the keyboard and never draws. The journal line is
-	-- the whole of the improvement; making every caller handle a new failure is a
-	-- separate change, one caller at a time.
+	-- become a screen that takes the keyboard and never draws. Making every caller
+	-- handle a new failure is a separate change, one caller at a time.
+	--
+	-- THE SECOND RETURN IS THAT CHANGE, FOR A CALLER THAT IS READY FOR IT. One that
+	-- reads a single value is untouched, because Lua drops the rest; one that reads
+	-- two learns what the journal line was only ever telling a human. `modules/panel`
+	-- is the first, and it had to be: a refused batch of clothes was reported to the
+	-- fitting room as delivered, so the room sat on 'Reading the catalogue' for good
+	-- with nothing wrong anywhere a player or a caller could see.
 	--
 	-- Only an explicit false is a refusal: a build that answers nothing at all has
 	-- still sent it.
 	if answer == false then
 		Open77.log.warn(('[surface %s] %s refused by the host: the payload is too large ' ..
 			'or not serialisable'):format(surface.id, full))
+		return true, true
 	end
-	return true
+	return true, false
 end
 
 --- Gives the page the keyboard, the cursor, both or neither.

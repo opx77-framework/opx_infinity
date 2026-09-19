@@ -596,10 +596,23 @@ local function sortKey(name)
 	return (name:lower():gsub('%d+', function(digits) return ('%010d'):format(tonumber(digits)) end))
 end
 
+--- A record's sort order, hoisted so seven sorts share one closure.
+local function byKey(left, right)
+	return left.key < right.key
+end
+
 --- Reads the body's clothing catalogue and hands it to the view in batches.
 -- On its own thread and yielding every CATALOGUE_STRIDE records: two thousand
 -- entries sorted and formatted in one resume is exactly the shape that exceeds
 -- the per-resume instruction budget.
+--
+-- WHICH IS WHY THE SORT IS PER SLOT. `table.sort` cannot yield, so whatever it
+-- is handed has to fit one resume whole -- and one sort over the entire
+-- catalogue was precisely the two thousand entries the paragraph above warns
+-- about, written by the same hand that warned about them. Seven sorts of a
+-- seventh each cost the same work with six yields through the middle, and
+-- nothing is given up: the page filters the grid by slot, so the order within a
+-- slot is the only order anybody ever reads.
 local function streamCatalogue(mine)
 	CreateThread(function()
 		Wait(0)
@@ -615,14 +628,16 @@ local function streamCatalogue(mine)
 			return
 		end
 
-		local entries = {}
+		local buckets = {}
+		for index = 1, #SLOTS do buckets[SLOTS[index]] = {} end
+
 		for index = 1, #records do
 			local entry = records[index]
 			if type(entry) == 'table' and type(entry.record) == 'string' and IS_SLOT[entry.slot] then
 				known[entry.record] = entry.slot
 				if entry.nonvisual ~= true then
-					local name = title(entry.record)
-					entries[#entries + 1] = { id = entry.record, tab = entry.slot, label = name,
+					local name, bucket = title(entry.record), buckets[entry.slot]
+					bucket[#bucket + 1] = { id = entry.record, tab = entry.slot, label = name,
 						detail = entry.record, key = sortKey(name) }
 				end
 			end
@@ -631,23 +646,35 @@ local function streamCatalogue(mine)
 				if mine ~= generation or phase ~= 'open' then return end
 			end
 		end
-		table.sort(entries, function(left, right) return left.key < right.key end)
-		Wait(0)
 
-		local first = 1
-		repeat
-			if mine ~= generation or phase ~= 'open' then return end
-			local last = math.min(#entries, first + CATALOGUE_PART - 1)
-			local part = {}
-			for index = first, last do
-				local entry = entries[index]
-				part[#part + 1] = { id = entry.id, tab = entry.tab, label = entry.label,
-					detail = entry.detail }
-			end
-			publish('roomItems', { items = part, final = last >= #entries })
-			first = last + 1
+		for slotIndex = 1, #SLOTS do
+			local bucket = buckets[SLOTS[slotIndex]]
+			table.sort(bucket, byKey)
 			Wait(0)
-		until first > #entries
+			local first = 1
+			while first <= #bucket do
+				if mine ~= generation or phase ~= 'open' then return end
+				local last = math.min(#bucket, first + CATALOGUE_PART - 1)
+				local part = {}
+				for index = first, last do
+					local entry = bucket[index]
+					part[#part + 1] = { id = entry.id, tab = entry.tab, label = entry.label,
+						detail = entry.detail }
+				end
+				publish('roomItems', { items = part, final = false })
+				first = last + 1
+				Wait(0)
+			end
+		end
+
+		if mine ~= generation or phase ~= 'open' then return end
+		-- THE END IS ITS OWN BATCH rather than a flag on the last full one. With
+		-- the catalogue in seven piles, the last pile is free to be empty -- no
+		-- body in the game has a Face piece by default -- and hanging the room's
+		-- only way out of its loading state on whether the seventh slot happened
+		-- to have something in it is a fitting room that never finishes reading
+		-- for one body family and does for another.
+		publish('roomItems', { items = {}, final = true })
 	end)
 end
 
