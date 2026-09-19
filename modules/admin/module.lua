@@ -71,6 +71,11 @@ M.Event = {
 	-- player they were read for, so an answer that arrives after the operator has
 	-- moved on to somebody else is dropped rather than drawn as theirs.
 	CHARACTERS = OPX.Event(NET, 'admin', 'characters'),
+	-- One page of the find screen. Tagged like the list above it, but with the
+	-- QUESTION rather than a player id: the tag is the mode, the term and the
+	-- cursor the page was read for, because an operator who has typed a second
+	-- term must not have the first one's answer drawn under it.
+	FOUND = OPX.Event(NET, 'admin', 'found'),
 	ANSWER = OPX.Event(NET, 'admin', 'answer'),
 	TRAVEL = OPX.Event(NET, 'admin', 'travel'),
 	BODIES = OPX.Event(NET, 'admin', 'bodies'),
@@ -155,6 +160,20 @@ M.Command = {
 	CHARACTER_LIST = 'opx.admin.character.list',
 	CHARACTER_RENAME = 'opx.admin.character.rename',
 	CHARACTER_DELETE = 'opx.admin.character.delete',
+	-- THE SAME AREA AND A SEPARATE GRANT, and the split is deliberate both ways.
+	-- The area is `character` for the reason above: what this finds is a row that
+	-- outlives every connection, and putting a second noun beside it -- an
+	-- `opx.admin.offline.*` -- would spell one thing two ways in `acl.jsonc`.
+	--
+	-- The grant is its own because the BLAST RADIUS is not the same. `.list` is
+	-- bounded by an account somebody is holding: whatever it answers, it is one
+	-- person's rows, and the operator is already dealing with that person. This
+	-- one is a directory of everybody who has ever played -- names, account
+	-- names, when each was last here -- and reads it out of the table rather than
+	-- out of a session. An operator trusted to look at the person in front of
+	-- them is not automatically trusted to enumerate the player base, so the two
+	-- are granted and revoked apart.
+	CHARACTER_FIND = 'opx.admin.character.find',
 
 	MODERATE_KICK = 'opx.admin.moderate.kick',
 	MODERATE_BAN = 'opx.admin.moderate.ban',

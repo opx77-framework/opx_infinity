@@ -58,6 +58,14 @@ local bag = { target = nil, rows = {}, incoming = {}, loaded = false, error = ni
 -- somebody else is dropped rather than drawn as theirs.
 local chars = { target = nil, rows = {}, incoming = {}, loaded = false, error = nil }
 
+-- THE PEOPLE WHO ARE NOT HERE. The same shape again, and tagged for the same
+-- reason -- but with the QUESTION rather than a player id, because this screen
+-- has no player: it reads the character table, and what makes a late answer
+-- harmless is which question it is answering. `mode`, `term` and `cursor` are
+-- the question; `more`, `cursor` and `seenAt` are where the next page starts.
+local absent = { tag = nil, rows = {}, incoming = {}, loaded = false, error = nil,
+	mode = 'recent', term = nil, cursor = nil, seenAt = nil, more = false }
+
 -- Screen, argument and cursor from the root down.
 local stack = {}
 
@@ -494,6 +502,12 @@ SCREENS.root = function()
 		section('admin.menu.section.manage'),
 		go('players', 'admin.menu.players', 'players', nil,
 			{ value = tostring(#roster), icon = 'person' }),
+		-- Beside `Players` and not under it, because it is the same question asked
+		-- of the other set: that row is everybody the server is holding, and this
+		-- one is everybody it is not. Greyed rather than hidden when the ACL
+		-- refuses the find, so an operator can see that the door exists.
+		goFor('offline', 'admin.menu.offlinePlayers', 'offlineChars', nil,
+			Command.CHARACTER_FIND, { icon = 'clock' }),
 		go('self', 'admin.menu.self', 'self', nil, { icon = 'star' }),
 		go('vehicles', 'admin.menu.vehicles', 'vehicles', nil, { icon = 'vehicle' }),
 		go('world', 'admin.menu.world', 'world', nil, { icon = 'world' }),
@@ -648,12 +662,24 @@ end
 -- served by the server against the ACL and arrives tagged with the player it was
 -- read for, so this draws nothing until the tag matches the screen's own target.
 
---- One character out of the list the server sent, or nil.
+--- One character out of a list the server sent, and which list it came from.
+--
+-- TWO STORES AND ONE PAGE. `SCREENS.character` is reached two ways now -- down
+-- from an account's list, and out of the find screen -- and it is deliberately
+-- the SAME screen both times: the readouts, the rename and the delete are the
+-- same three things about the same row, and a second copy of them would be a
+-- second copy to keep in step. What differs is only which list the page has to
+-- ask for again afterwards, so that is what this answers alongside the row.
+-- @return table|nil the row
+-- @return string|nil the refresh topic the list it came from is served by
 local function characterRow(citizenId)
 	for _, entry in ipairs(chars.rows) do
-		if entry.citizenId == citizenId then return entry end
+		if entry.citizenId == citizenId then return entry, 'characters' end
 	end
-	return nil
+	for _, entry in ipairs(absent.rows) do
+		if entry.citizenId == citizenId then return entry, 'found' end
+	end
+	return nil, nil
 end
 
 --- A character's display name, or the word for one that was never named.
@@ -698,7 +724,7 @@ SCREENS.playerCharacters = function(id)
 end
 
 SCREENS.character = function(citizenId)
-	local entry = characterRow(citizenId)
+	local entry, from = characterRow(citizenId)
 	local items = {}
 
 	-- WHAT THE ROW IS, as readouts and not as controls: a readout is a line of
@@ -732,6 +758,29 @@ SCREENS.character = function(citizenId)
 		items[#items + 1] = row('seen', locale('admin.menu.charSeen'), nil,
 			{ value = entry.lastLoggedOut, disabled = true, icon = 'clock' })
 	end
+	-- ONLY THE FIND CARRIES THESE, and the account row is why a find is worth
+	-- having: a row reached from the roster already knows whose it is -- the
+	-- screen above it is that player -- and one reached by searching the table
+	-- does not, so the account and the slot holding it are said here or nowhere.
+	if entry ~= nil and entry.account then
+		items[#items + 1] = row('account', locale('admin.menu.charAccount'), nil,
+			{ value = entry.account, disabled = true, icon = 'person' })
+	end
+	-- A NUMBER AND NOT A FLAG, and the test is `type` rather than truthiness for a
+	-- reason that would otherwise be a crash: the per-account list carries `live`
+	-- as a BOOLEAN -- down there the player is the screen above and there is
+	-- nothing to name -- and formatting `true` with `%d` raises inside the builder,
+	-- which loses the whole screen rather than one row.
+	local slot = type(entry) == 'table'
+		and (type(entry.live) == 'number' and entry.live
+			or type(entry.online) == 'number' and entry.online)
+		or nil
+	if slot then
+		items[#items + 1] = row('here', locale('admin.menu.charHere'), nil,
+			{ value = ('[%d] %s'):format(slot, locale(type(entry.live) == 'number'
+				and 'admin.menu.charLive' or 'admin.menu.charOnline')),
+				disabled = true, icon = 'star' })
+	end
 
 	-- THE ONE EDITABLE THING. Job, gang and money are the modules that own them,
 	-- reachable a screen away on the character being played; the name is the only
@@ -742,13 +791,111 @@ SCREENS.character = function(citizenId)
 		Command.CHARACTER_RENAME), 'tool')
 
 	items[#items + 1] = section('admin.menu.section.danger')
-	-- `back` because this page is about to be about nothing, and `characters`
-	-- because the list above it has one row fewer.
+	-- `back` because this page is about to be about nothing, and the list it came
+	-- from because that list has one row fewer. Which list is `from`: the same
+	-- page hangs under an account's characters and under the find, and refreshing
+	-- the one the operator is not standing on would leave the stale one under them.
 	items[#items + 1] = icon(guarded('delete', 'admin.menu.charDelete',
 		{ Command.CHARACTER_DELETE, tostring(citizenId) }, 'admin.confirm.charDelete',
-		'characters', true), 'trash')
+		from, true), 'trash')
 
 	return ('%s: %s'):format(locale('admin.menu.charList'), characterName(entry)), items
+end
+
+-- ── the people who are not here ─────────────────────────────────────────────
+-- WHAT THIS SCREEN IS HONEST ABOUT. It lists CHARACTER ROWS out of the database
+-- and not sessions, because a session is the one thing an offline player does
+-- not have. Nothing is hidden: a row whose character is being played right now
+-- says so, because a directory that silently dropped the people who happened to
+-- be online would have staff searching for a name that is there and not finding
+-- it. See `server/offline.lua` for the argument in full.
+--
+-- NOTHING IS FILTERED HERE EITHER, which is the other half of it and the half
+-- that costs. Every other list on this menu arrives whole and `matches()` cuts
+-- it down in the client; there is no whole to arrive here, so the search box
+-- goes to the SERVER and comes back as a page. The screen therefore draws
+-- exactly what it was sent, in the order it was sent, and the `search` row is
+-- always up rather than appearing at `SEARCH_FROM` rows -- on this screen it is
+-- not a convenience over a list, it IS the way to the list.
+
+-- The fewest characters the server will run a search for. The floor is checked
+-- there and is the authority; this copy exists so that a term too short is a
+-- sentence on the screen instead of a request that comes back refused.
+local FIND_MIN_TERM = 3
+
+--- The tag a find page is answered under. Its twin is `findTag` in
+--- `server/menu.lua`, and the two are kept in step by hand: a tag built
+--- differently on either side drops every answer instead of the late ones.
+local function findTag(request)
+	return ('%s|%s|%s'):format(request.mode, request.term or '', request.cursor or '')
+end
+
+--- Asks the server for one find page, and remembers which one was asked for.
+-- The store is emptied and re-tagged BEFORE the request goes, so the screen
+-- draws `loading` rather than the previous question's rows while it waits -- and
+-- so the answer to the previous question, arriving late, no longer matches.
+local function askFind(request)
+	absent.tag = findTag(request)
+	absent.rows, absent.incoming = {}, {}
+	absent.loaded, absent.error = false, nil
+	absent.mode, absent.term = request.mode, request.term
+	absent.more, absent.cursor, absent.seenAt = false, nil, nil
+	-- Kept whole, so that a refresh after a rename or a delete re-asks the SAME
+	-- question -- including the page the operator was on -- rather than dropping
+	-- them back on the first page of the recent list.
+	absent.request = request
+	TriggerServerEvent(M.Event.REFRESH, 'found', request)
+end
+
+SCREENS.offlineChars = function()
+	local searching = absent.mode == 'search' and absent.term or nil
+	local items = {
+		row('search', locale('admin.menu.findSearch'), { form = 'search', arg = searching },
+			{ icon = 'search', value = searching,
+				description = locale('admin.menu.findHint') }),
+	}
+	if searching ~= nil then
+		items[#items + 1] = row('searchClear', locale('admin.menu.findRecent'),
+			{ clearFilter = true }, { icon = 'clock' })
+	end
+	items[#items + 1] = section()
+
+	for _, entry in ipairs(absent.rows) do
+		local name = characterName(entry)
+		local item = go('found_' .. entry.citizenId, { text = name }, 'character',
+			entry.citizenId, { icon = entry.live and 'star' or 'person' })
+		-- The three states this screen exists to tell apart, in the order they
+		-- matter: somebody is playing this very character, somebody is on this
+		-- account playing another of theirs, or nobody is here at all and the
+		-- value is when they last were.
+		item.value = entry.live and locale('admin.menu.charLive')
+			or entry.online and locale('admin.menu.charOnline')
+			or entry.lastLoggedOut or locale('admin.menu.charNever')
+		-- The account rather than the citizen id, unlike the per-account list: down
+		-- there every row belongs to the player named in the title, and up here
+		-- knowing WHOSE a character is is most of what an operator came to find out.
+		item.description = entry.account
+			and ('%s  %s'):format(entry.citizenId, entry.account) or entry.citizenId
+		items[#items + 1] = item
+	end
+
+	if #absent.rows == 0 then
+		items[#items + 1] = empty(not absent.loaded and 'admin.menu.loading'
+			or absent.error and 'admin.menu.findError'
+			or searching and 'admin.menu.findNoMatch' or 'admin.menu.findNone')
+	elseif absent.more then
+		-- A SEEK AND NOT A PAGE NUMBER. The row carries the sort key of the last
+		-- row above it, so the next page is "what comes after this one" -- there is
+		-- no page four to ask for, and a roster reordered by somebody logging out
+		-- while the operator reads it cannot make this repeat a row or step over
+		-- one below the cursor.
+		items[#items + 1] = row('more', locale('admin.menu.more'),
+			{ seek = { mode = absent.mode, term = absent.term,
+				cursor = absent.cursor, seenAt = absent.seenAt } },
+			{ icon = 'arrow' })
+	end
+
+	return locale(searching and 'admin.menu.findResults' or 'admin.menu.findRecentTitle'), items
 end
 
 SCREENS.playerItems = function(id)
@@ -1309,7 +1456,12 @@ local function push(screen, arg)
 	-- branch would win the chain and ask only for the roster, and the list would
 	-- sit on 'loading' for ever. The roster is asked for here as well, because the
 	-- screen's title names the player.
-	if screen == 'playerCharacters' then
+	if screen == 'offlineChars' then
+		-- Opened on the recent list, never on the last search: a screen that came
+		-- back holding somebody else's name is a screen the operator has to clear
+		-- before it is useful.
+		askFind({ mode = 'recent' })
+	elseif screen == 'playerCharacters' then
 		chars.target, chars.rows, chars.incoming = tostring(arg), {}, {}
 		chars.loaded, chars.error = false, nil
 		TriggerServerEvent(M.Event.REFRESH, 'characters', tostring(arg))
@@ -1369,7 +1521,7 @@ end
 -- The refresh topics that are read FOR somebody, and are dropped by the server
 -- without one. Everything else -- the roster, the locations, the catalogue -- is
 -- the whole world's and takes no argument.
-local PER_TARGET = { bag = true, characters = true }
+local PER_TARGET = { bag = true, characters = true, found = true }
 
 --- Who a per-target topic is asked for, or nil.
 -- The two are read from different places on purpose. A bag is read off the
@@ -1383,6 +1535,10 @@ local function refreshArg(topic)
 		return current and current.screen == 'bag' and tostring(current.arg) or nil
 	end
 	if topic == 'characters' then return chars.target end
+	-- A TABLE and not a token, which `PER_TARGET` above is happy with: it only
+	-- asks whether there is one. The find's argument is the question it asked
+	-- last, so a refresh brings back the same page rather than the first one.
+	if topic == 'found' then return absent.request end
 	return nil
 end
 
@@ -1423,6 +1579,27 @@ function Menu.Filter(query)
 	if current == nil then return end
 	local typed = type(query) == 'string' and Text.Bytes(query, 48) or nil
 	if typed ~= nil then typed = typed:match('^%s*(.-)%s*$') end
+
+	-- THE ONE SCREEN WHOSE FILTER IS NOT A FILTER. Every other list on this menu
+	-- has already arrived in full and `matches()` cuts it down without touching
+	-- the server. The find has no full list to cut -- that is the point of it --
+	-- so the typed words are a QUERY: they go to the database, and what comes
+	-- back is the page. Which also means the floor: a one-letter term is a table
+	-- scan, so it is refused HERE with a sentence rather than sent and refused
+	-- there with a code.
+	if current.screen == 'offlineChars' then
+		current.cursor = nil
+		if typed ~= nil and typed ~= '' and #typed < FIND_MIN_TERM then
+			Menu.Status(locale('admin.menu.findShort', { least = FIND_MIN_TERM }), false)
+			return draw()
+		end
+		-- An empty box is how a filter is cleared everywhere else on this menu, so
+		-- here it is how the operator gets back to the recent list.
+		askFind((typed == nil or typed == '') and { mode = 'recent' }
+			or { mode = 'search', term = typed })
+		return draw()
+	end
+
 	current.filter = (typed ~= nil and typed ~= '') and typed or nil
 	current.cursor = nil
 	if type(current.arg) == 'table' then current.arg.p = 1 end
@@ -1488,6 +1665,20 @@ end
 -- @return boolean
 function Menu.IsOpen()
 	return handle ~= nil or Forms.IsOpen()
+end
+
+--- Which list a character is currently drawn out of, as a refresh topic.
+-- @author dop42
+--
+-- For the forms, which act on a citizen id and then have to ask the list it came
+-- from for itself again. There are two lists now -- an account's characters and
+-- the find -- and a form that named one of them outright refreshed the wrong one
+-- half the time. Nil when the row is in neither, which means nothing to refresh.
+-- @param citizenId CitizenId
+-- @return string|nil
+function Menu.ListOf(citizenId)
+	local _, from = characterRow(citizenId)
+	return from
 end
 
 --- The name of the screen at the top of the stack.
@@ -1594,6 +1785,16 @@ onAction = function(payload)
 		if held.back and #stack > 1 then stack[#stack] = nil end
 		draw()
 		return Menu.Run(held.tokens, held.refresh)
+	end
+	-- A SEEK STAYS ON THE SCREEN. `paged()` turns a page by PUSHING the same
+	-- screen with `p + 1`, which is right for a list the client already holds --
+	-- going Back is then a page back. This one is a new request to the server, and
+	-- pushing would grow a stack entry per page and leave every one of them
+	-- pointing at a store that has moved on. So the store turns the page and the
+	-- one screen is redrawn in place.
+	if type(data.seek) == 'table' then
+		askFind(data.seek)
+		return draw()
 	end
 	if type(data.go) == 'string' and SCREENS[data.go] then return push(data.go, data.arg) end
 	if type(data.run) == 'table' then
@@ -1755,6 +1956,45 @@ function Menu.Start()
 		-- row out of the same store, so a refresh after a rename redraws either.
 		local screen = Menu.Screen()
 		if done and (screen == 'playerCharacters' or screen == 'character') then draw(true) end
+	end)
+
+	RegisterNetEvent(M.Event.FOUND, function(payload)
+		if type(payload) ~= 'table' or type(payload.rows) ~= 'table' then return end
+		-- THE TAG, and here it is the question rather than a player: an answer to
+		-- a term the operator has already retyped, or to the page they have already
+		-- turned past, is dropped rather than drawn under the one they are on.
+		if payload.tag ~= absent.tag then return end
+		local done = collect(absent, payload, function(entry)
+			if type(entry.citizenId) ~= 'string' or entry.citizenId == '' then return nil end
+			-- Rebuilt field by field, as the character list above is and for the
+			-- same reason: a table where a label belongs reaches the menu contract
+			-- and is refused there, taking the whole screen with it.
+			return {
+				citizenId = entry.citizenId,
+				account = type(entry.account) == 'string' and entry.account or nil,
+				firstName = type(entry.firstName) == 'string' and entry.firstName or nil,
+				lastName = type(entry.lastName) == 'string' and entry.lastName or nil,
+				gender = type(entry.gender) == 'string' and entry.gender or nil,
+				job = type(entry.job) == 'string' and entry.job or nil,
+				gang = type(entry.gang) == 'string' and entry.gang or nil,
+				createdAt = type(entry.createdAt) == 'string' and entry.createdAt or nil,
+				lastLoggedOut = type(entry.lastLoggedOut) == 'string' and entry.lastLoggedOut or nil,
+				-- Slot numbers, not flags: the page draws the id of whoever is
+				-- holding the row so an operator can go and deal with them.
+				live = tonumber(entry.live),
+				online = tonumber(entry.online),
+			}
+		end)
+		if not done then return end
+		-- Read off the completing chunk and only once the swap has happened, so a
+		-- half-arrived page can never leave a `more` row pointing past its own list.
+		absent.more = payload.more == true
+		absent.cursor = type(payload.cursor) == 'string' and payload.cursor or nil
+		absent.seenAt = type(payload.seenAt) == 'string' and payload.seenAt or nil
+		-- Both screens, as the character list does: the page below this one draws
+		-- a single row out of the same store.
+		local screen = Menu.Screen()
+		if screen == 'offlineChars' or screen == 'character' then draw(true) end
 	end)
 
 	RegisterNetEvent(M.Event.ROSTER, function(payload)

@@ -809,6 +809,11 @@ function M.Api()
 		-- through the contract on the SERVER, where a caller has been through the
 		-- ACL, and never from a client, where a contract call is no check at all.
 		ListCharactersFor = M.ListCharactersFor,
+		-- The fourth, and the one that is handed no account: it searches EVERY
+		-- account, because the person staff are looking for is not connected and
+		-- there is no session to read one out of. Bounded in the SQL rather than
+		-- by its caller -- see the function.
+		FindCharacters = M.FindCharacters,
 		RenameCharacter = M.RenameCharacter,
 		RemoveCharacter = M.RemoveCharacter,
 

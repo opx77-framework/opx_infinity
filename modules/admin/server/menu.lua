@@ -24,7 +24,13 @@ local CHUNK = 20
 
 -- The refresh topics a client may ask for. Anything else is dropped.
 local TOPICS = { roster = true, locations = true, access = true, items = true, bag = true,
-	characters = true }
+	characters = true, found = true }
+
+-- The longest term and cursor halves this will pass on. The contract checks them
+-- again and is the authority; these only keep a forged payload from being carried
+-- as far as a thread.
+local FIND_MAX_TERM = 64
+local FIND_MAX_CURSOR = 32
 
 -- Every command name the menu may issue, this module's own and the linked ones.
 local function menuCommands()
@@ -115,6 +121,55 @@ local function pushCharacters(playerId, token)
 	pushChunks(playerId, M.Event.CHARACTERS, rows or {}, { target = token, error = code })
 end
 
+--- The tag a find page is answered under: the QUESTION and not a target.
+-- The find screen has no player to tag with -- that is the point of it -- so what
+-- makes a late answer harmless is the request itself. An operator who has typed a
+-- second term, or pressed for the next page, is holding a different tag and drops
+-- whatever the first question is still answering.
+local function findTag(request)
+	return ('%s|%s|%s'):format(request.mode, request.term or '', request.cursor or '')
+end
+
+--- Reads a find request off the wire, or nil for one that is not one.
+-- Shape first and length second, both before a thread is spent on it.
+local function findRequest(arg)
+	if type(arg) ~= 'table' then return nil end
+	-- Named outright rather than defaulted: a mode nobody offers is a client
+	-- asking for something, and quietly answering a different question instead
+	-- would hide whatever made it ask.
+	local mode = arg.mode
+	if mode ~= 'recent' and mode ~= 'search' then return nil end
+	local request = { mode = mode }
+	if mode == 'search' then
+		if type(arg.term) ~= 'string' or #arg.term > FIND_MAX_TERM then return nil end
+		request.term = arg.term
+	end
+	if type(arg.cursor) == 'string' and #arg.cursor <= FIND_MAX_CURSOR then
+		request.cursor = arg.cursor
+	end
+	if type(arg.seenAt) == 'string' and #arg.seenAt <= FIND_MAX_CURSOR then
+		request.seenAt = arg.seenAt
+	end
+	return request
+end
+
+--- One page of the find, tagged with the question it answers. Coroutine only.
+local function pushFound(playerId, request)
+	local rows, code, page = M.Offline.Page(request)
+	pushChunks(playerId, M.Event.FOUND, rows or {}, {
+		tag = findTag(request),
+		error = code,
+		-- The page state rides on EVERY chunk rather than the last: the client
+		-- swaps a list in whole and reads the state off the chunk that completes
+		-- it, and a field that only existed on one of them would be the field that
+		-- went missing the day a one-chunk page arrived.
+		mode = page and page.mode or request.mode,
+		more = page and page.more or nil,
+		cursor = page and page.cursor or nil,
+		seenAt = page and page.seenAt or nil,
+	})
+end
+
 --- Registers the opener command and the refresh event.
 -- @author dop42
 function Menu.Register()
@@ -143,6 +198,15 @@ function Menu.Register()
 		if (topic == 'bag' or topic == 'characters') and
 			(type(arg) ~= 'string' or #arg > 32) then
 			return
+		end
+		-- `found` is the one topic whose argument is a TABLE: a find is a question
+		-- with three parts -- the mode, the term and the seek cursor -- and packing
+		-- them into one string only to take it apart again would be a parser in the
+		-- middle of a trust boundary.
+		local request
+		if topic == 'found' then
+			request = findRequest(arg)
+			if request == nil then return end
 		end
 
 		-- Named, so a client waiting on one of several lists can tell which
@@ -183,6 +247,12 @@ function Menu.Register()
 			-- delete.
 			if Server.Permitted(player, Command.CHARACTER_LIST) ~= true then return end
 			CreateThread(function() pushCharacters(player, arg) end)
+		elseif topic == 'found' then
+			-- The find is its own grant and is checked as its own grant: an operator
+			-- who may read the characters of the person in front of them has not
+			-- thereby been given the directory of everybody who has ever played.
+			if Server.Permitted(player, Command.CHARACTER_FIND) ~= true then return end
+			CreateThread(function() pushFound(player, request) end)
 		else
 			local access, known = accessOf(player)
 			TriggerClientEvent(M.Event.ACCESS, player,

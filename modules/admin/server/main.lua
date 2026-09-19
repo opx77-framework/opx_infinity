@@ -84,6 +84,8 @@ local ERRORS = {
 	models_unavailable = 'admin.error.modelsUnavailable',
 	bad_name = 'admin.error.badName',
 	characters_unavailable = 'admin.error.charactersUnavailable',
+	search_short = 'admin.error.searchShort',
+	bad_request = 'admin.error.badRequest',
 }
 
 -- Refusal codes about typed input, answered as warnings rather than errors.
@@ -93,7 +95,7 @@ local TYPED = {
 	unknown_vehicle = true, bad_scope = true, unknown_flag = true, unknown_weapon = true,
 	unknown_location = true, bad_location_name = true, bad_holder = true, unknown_citizen = true,
 	unknown_item = true, bad_count = true, not_enough = true, unknown_ammo = true,
-	bad_door = true, unknown_ped = true, bad_name = true,
+	bad_door = true, unknown_ped = true, bad_name = true, search_short = true,
 }
 
 -- The catalogue key a multi-line report is answered with.
@@ -717,6 +719,7 @@ function M.Start()
 	M.Combat.Register()
 	M.Doors.Register()
 	M.Characters.Register()
+	M.Offline.Register()
 	-- Last: the access map it sends lists what every other file registered.
 	M.Menu.Register()
 

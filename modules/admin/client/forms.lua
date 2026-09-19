@@ -185,11 +185,13 @@ FORMS.charRename = {
 		}
 	end,
 	submit = function(values, arg)
-		-- `characters` and not `roster`: what changed is a row in the list the
-		-- screen behind this form is drawing, and the roster's own copy of the name
-		-- follows on its next pass anyway.
+		-- Not `roster`: what changed is a row in the list the screen behind this
+		-- form is drawing, and the roster's own copy of the name follows on its next
+		-- pass anyway. WHICH list is the menu's to say -- the same character page
+		-- hangs under an account's characters and under the find, and a form that
+		-- named one outright refreshed the wrong one half the time.
 		menu().Run({ Command.CHARACTER_RENAME, tostring(arg), values.firstName, values.lastName },
-			'characters')
+			menu().ListOf(tostring(arg)))
 	end,
 }
 
