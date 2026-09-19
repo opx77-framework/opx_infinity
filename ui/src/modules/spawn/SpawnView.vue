@@ -3,10 +3,9 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
-import { list, num, text } from '@/bridge/types'
+import { list, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
-import { useCountdown } from '@/composables/useCountdown'
 
 /**
  * THE SPAWN MENU -- where a character starts.
@@ -21,8 +20,21 @@ import { useCountdown } from '@/composables/useCountdown'
  * ONE PRESS IS THE CHOICE. Clicking a card sends it -- you do not select and then
  * confirm, because "spawn me at the coast" is one intent and asking for it twice is
  * a menu pretending the first click did not count. The arrow keys plus Enter take the
- * same route for a keyboard, and the confirm control under the grid is the same call
- * again, so the three input paths cannot drift apart.
+ * same route, so the two input paths cannot drift apart.
+ *
+ * SO THERE IS NO CONFIRM CONTROL, and there was one. It sat under the grid and did
+ * exactly what a click already did: a second control for an intent the first press
+ * had already sent. It read as a step -- pick, then press SPAWN -- which is the one
+ * thing the whole surface is built not to be, and a player who had clicked a card and
+ * then looked at a lit button reasonably wondered whether the click had counted. It
+ * existed for the keyboard; Enter goes straight to `confirm()` instead.
+ *
+ * AND NO CLOCK. The page used to draw the window counting down beside the title. It
+ * was display only -- it reached zero and did nothing, because the server counts the
+ * same window against its own clock and only that count ends the choice -- so all it
+ * ever did was put a deadline in front of somebody making a one-press decision. The
+ * duration is not sent to this page any more; running out is still handled, on
+ * `spawn:close` with `reason = 'timeout'`, which is where it always was.
  *
  * THE MENU DOES NOT CLOSE ON THAT PRESS. It closes when Lua says so -- `spawn:close`,
  * carrying what actually happened -- for the same reason a panel does not select its
@@ -30,12 +42,6 @@ import { useCountdown } from '@/composables/useCountdown'
  * refused, and there is no second chance at this one. The one thing this page decides
  * for itself is which card is highlighted, and that is a receipt for a press already
  * sent rather than a fact about the world.
- *
- * THE COUNTDOWN IS DISPLAY ONLY. It counts down to `Date.now() + timeoutMs` -- the
- * duration the server gave, turned into a local deadline -- and when it reaches zero it
- * does nothing at all. The server is counting the same duration against its own clock,
- * and only that count ends the choice. A page that acted on its own zero would act early
- * on a fast clock and late on a surface the CEF has throttled.
  *
  * ── THE RESTYLE ─────────────────────────────────────────────────────────────
  *
@@ -70,16 +76,13 @@ const open = ref(false)
 const title = ref('')
 const about = ref('')
 const hint = ref('')
-const confirmLabel = ref('')
-/** Lua's own caption for the clock. Sent since the module shipped and never drawn. */
-const deadlineLabel = ref('')
 const places = ref<Place[]>([])
-/** Empty until a card is chosen: confirming is deliberate, never a default. */
+/**
+ * The card the press landed on, or empty. A RECEIPT, not a step: it is set by the
+ * press that has already gone to Lua, and by the arrow keys moving the keyboard's
+ * place in the list. Nothing waits on it.
+ */
 const chosen = ref('')
-const hasTimer = ref(false)
-const deadline = ref(0)
-
-const { clock } = useCountdown(deadline)
 
 let release: (() => void) | undefined
 
@@ -101,10 +104,6 @@ function blank(): void {
   title.value = ''
   about.value = ''
   hint.value = ''
-  confirmLabel.value = ''
-  deadlineLabel.value = ''
-  hasTimer.value = false
-  deadline.value = 0
 }
 
 /** Moves the highlight, wrapping. From nothing, it starts at the end it came from. */
@@ -142,9 +141,12 @@ function pick(id: string): void {
 
 function onKeyDown(event: KeyboardEvent): void {
   if (!open.value) return
-  // A control that has DOM focus handles Enter and Space itself and has already
-  // prevented the default by the time this sees the event -- so this is what stops
-  // one Enter from confirming twice.
+  // Kept now that the confirm button is gone, which is what it used to guard
+  // against: a control with DOM focus handles Enter itself and has prevented the
+  // default by the time this sees it, so one press could otherwise spawn twice.
+  // Nothing on this surface takes DOM focus today -- a card is a `role="button"`
+  // div with no tabindex -- but this is a window-level listener, so the first
+  // focusable thing anybody adds would reintroduce the double send silently.
   if (event.defaultPrevented) return
 
   if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
@@ -181,12 +183,6 @@ useBridge('opx:spawn:open', (payload: Payload) => {
       title.value = text(payload.title)
       about.value = text(payload.about)
       hint.value = text(payload.hint)
-      confirmLabel.value = text(payload.confirm)
-      deadlineLabel.value = text(payload.deadline)
-
-      const ms = num(payload.timeoutMs)
-      hasTimer.value = ms > 0
-      deadline.value = ms > 0 ? Date.now() + ms : 0
 
       chosen.value = ''
       open.value = true
@@ -247,14 +243,6 @@ onUnmounted(() => {
               <span class="eyebrow op-eyebrow">SPAWN</span>
               <h1>{{ title }}</h1>
             </div>
-            <!-- A READOUT IS A LINE OF TYPE, not a control, so it takes no frame:
-                 rule 2. Muted, because it is a deadline and not a warning -- and red
-                 is this runtime's voice, so a clock in the voice would be shouting
-                 from the moment it appeared. -->
-            <p v-if="hasTimer" class="clock">
-              <span v-if="deadlineLabel" class="clock-label op-eyebrow">{{ deadlineLabel }}</span>
-              <span class="clock-value">{{ clock }}</span>
-            </p>
           </div>
 
           <p v-if="about" class="note op-copy">{{ about }}</p>
@@ -292,23 +280,13 @@ onUnmounted(() => {
             </li>
           </ul>
 
-          <div v-if="hint || confirmLabel" class="foot">
-            <p v-if="hint" class="hint op-copy">{{ hint }}</p>
-            <!-- THE KEYBOARD'S CARD. A click is already the whole choice, so this
-                 exists for the arrow keys: it is where Enter goes, and it says so by
-                 lighting the moment the highlight lands on something. Iced until then,
-                 because a control that does nothing must not look like one that does. -->
-            <button
-              v-if="confirmLabel"
-              class="confirm op-frame"
-              type="button"
-              data-augmented-ui="tr-clip border"
-              :class="chosen === '' ? 'is-off' : 'is-on'"
-              :disabled="chosen === ''"
-              @click="confirm"
-            >
-              {{ confirmLabel }}
-            </button>
+          <!-- WHAT THE KEYS DO, and nothing else. There is no control down here:
+               a click on a card IS the spawn, so a button beside it would be a
+               second way to send an intent that has already gone -- and a frame
+               means "press this" (rule 2), which would have made the grid look
+               like a selection waiting on a confirmation. -->
+          <div v-if="hint" class="foot">
+            <p class="hint op-copy">{{ hint }}</p>
           </div>
         </div>
       </div>
@@ -420,9 +398,8 @@ onUnmounted(() => {
 }
 
 /* =============================================================================
-   THE HEAD -- the question, and the clock that ends it. One rule under both,
-   which is not an enclosure: it is the only thing relating the question to the
-   grid beneath it.
+   THE HEAD -- the question. One rule under it, which is not an enclosure: it is
+   the only thing relating the question to the grid beneath it.
    ========================================================================== */
 .head {
   display: flex;
@@ -466,30 +443,6 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-/* The auto-spawn clock: Lua's caption over Lua's number, both as type. */
-.clock {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: var(--op-space-1);
-  margin: 0;
-}
-
-.clock-label {
-  color: var(--op-text-faint);
-}
-
-/* Tabular so the digits do not shuffle the header as they tick, and grey rather
-   than red: this is context, and grey is what red means when it stops meaning
-   anything. */
-.clock-value {
-  font: 700 var(--op-fs-title) / 1 var(--op-font-mono);
-  letter-spacing: var(--op-track-label);
-  color: var(--op-text-dim);
-  font-variant-numeric: tabular-nums;
 }
 
 /* The sentence under the question. Prose, and the player's rather than an
@@ -606,12 +559,14 @@ onUnmounted(() => {
 }
 
 /* =============================================================================
-   THE FOOT -- what the keys do, and where Enter goes.
+   THE FOOT -- one line of type saying what the keys do, and no control. The
+   trailing padding still pays for the bay's bottom-left chamfer even though
+   nothing sits out there now: the cut is on the ENCLOSURE, so a sentence that
+   wrapped far enough would still run under it.
    ========================================================================== */
 .foot {
   display: flex;
   align-items: center;
-  gap: var(--op-space-4);
   min-width: 0;
   padding: var(--op-space-3) calc(var(--op-space-3) + var(--op-cut-lg))
     calc(var(--op-space-3) + var(--op-cut-lg)) calc(var(--op-space-3) + var(--op-rule));
@@ -620,28 +575,10 @@ onUnmounted(() => {
 
 /* The one place this surface wraps: a hint is a sentence. */
 .hint {
-  margin-right: auto;
+  margin: 0;
   color: var(--op-text-faint);
   letter-spacing: var(--op-track-label);
   font-family: var(--op-font-mono);
   white-space: normal;
-}
-
-.confirm {
-  flex: none;
-  /* The chamfer lives in the top-right corner, so the right side pays for it. */
-  padding: var(--op-space-2) calc(var(--op-space-5) + var(--op-cut-sm))
-    calc(var(--op-space-2) + 1px) var(--op-space-5);
-  font: 700 var(--op-fs-lead) / 1.25 var(--op-font-display);
-  letter-spacing: var(--op-track-lead);
-  text-transform: uppercase;
-  cursor: pointer;
-  transition: color var(--op-dur-fast) linear;
-}
-
-/* `.op-frame.is-off` already ices the stroke and the type; this is the pointer,
-   which a disabled <button> would not change on its own in every engine. */
-.confirm:disabled {
-  cursor: default;
 }
 </style>

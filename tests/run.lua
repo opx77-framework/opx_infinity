@@ -1061,10 +1061,21 @@ do
 			check('each carrying a label and a district',
 				places[1] ~= nil and places[1].label ~= nil and places[1].district ~= nil)
 			check('and no coordinates', places[1] ~= nil and places[1].x == nil)
-			-- A duration for the display countdown, which is all it is: the server
-			-- counts the same window itself.
-			check('and a duration to count down',
-				opened.payload.timeoutMs == 5000, tostring(opened.payload.timeoutMs))
+			-- AND NO WINDOW. The page drew a countdown from this and the countdown
+			-- was display only -- it reached zero and did nothing, because the
+			-- server counts the same window against its own clock and only that
+			-- count ends the choice. Sending it was a deadline put in front of a
+			-- one-press decision for no behaviour at all, so the page is not told:
+			-- running out still arrives as `spawn:close` with `reason = 'timeout'`.
+			check('and no window, because the page no longer counts one',
+				opened.payload.timeoutMs == nil, tostring(opened.payload.timeoutMs))
+			-- The controls the page is handed are the question and the hint. There
+			-- is no confirm label because there is no confirm control: a click on a
+			-- card IS the spawn, and a second control for an intent already sent
+			-- read as a step the surface deliberately does not have.
+			check('and the two sentences it draws, and no confirm label',
+				opened.payload.title ~= nil and opened.payload.hint ~= nil
+					and opened.payload.confirm == nil and opened.payload.deadline == nil)
 		end
 
 		-- The page's focus stack, which is what gives the menu the cursor. Acquiring

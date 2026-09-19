@@ -12,8 +12,6 @@ local EN = {
 	['spawn.title'] = 'CHOOSE A SPAWN',
 	['spawn.about'] = 'Pick where you start, or pick nothing to keep your last position.',
 	['spawn.hint'] = 'Click a location to spawn there.',
-	['spawn.confirm'] = 'SPAWN',
-	['spawn.deadline'] = 'Auto-spawn in',
 	['spawn.placed'] = 'Spawned at {place}.',
 	['spawn.timeout'] = 'No choice was made: the server placed you.',
 
@@ -24,8 +22,6 @@ local FR = {
 	['spawn.title'] = 'CHOISIR UN POINT D APPARTION',
 	['spawn.about'] = 'Choisissez ou vous commencez, ou ne choisissez rien pour garder votre position.',
 	['spawn.hint'] = 'Cliquez sur un lieu pour y apparaitre.',
-	['spawn.confirm'] = 'APPARAITRE',
-	['spawn.deadline'] = 'Apparition automatique dans',
 	['spawn.placed'] = 'Apparition a {place}.',
 	['spawn.timeout'] = 'Aucun choix : le serveur vous a place.',
 
