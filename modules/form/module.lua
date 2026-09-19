@@ -9,6 +9,11 @@
 -- buffer stays as it was and the page is told to put it back, because a field
 -- that kept its own text would be showing a value that has already been refused.
 --
+-- Every edit carries a sequence and every frame carries the last sequence each
+-- field was ruled on. That is what makes the round trip survivable at typing
+-- speed: a frame older than the keystroke in the player's hand is one the page
+-- must not put back, and without the stamp it cannot tell.
+--
 -- The page keeps the keyboard throughout and forwards five keys; every other
 -- key belongs to the focused input. LEFT and RIGHT are the exception that makes
 -- a typed line and an arrow-stepped list share one surface: they belong to the

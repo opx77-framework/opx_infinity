@@ -2203,6 +2203,154 @@ end
 -- The rest of the suite could not see either, because the harness plays the page
 -- the way Lua expects rather than the way the page behaves. This reads the real
 -- built bundle instead.
+-- WHAT A FRAME ANSWERS, AND WHY IT HAS TO SAY SO.
+--
+-- The page reports a CANDIDATE keystroke and goes on drawing it, because it has
+-- to: erasing the character and waiting out the round trip is a line that blinks
+-- back to its placeholder under every letter, and under the FIRST letter that
+-- placeholder is the whole field -- which is the bug this section exists for.
+-- The page's binding re-applies Lua's buffer to the element on every frame, so
+-- any frame landing inside the round trip writes the buffer from BEFORE the
+-- character and takes it off the line.
+--
+-- So the page has to tell the frame that ANSWERS the character under the caret
+-- from a frame built before that character was reported, and a bare frame says
+-- nothing about which it is. This is the Lua half of the answer: every edit
+-- naming a real field is answered with exactly one frame, the frame carries the
+-- sequence of the keystroke it ruled on, and a frame drawn for any other reason
+-- carries the older one.
+section('the form answers the keystroke it was asked about')
+do
+	local env, control, why = boot('client')
+	check('client boots for the form tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local form = OPX.Api.Get('form')
+
+		-- Two fields, because the name form has two and the second is where a
+		-- keystroke can race the caret.
+		local opened = form.Open{
+			owner = 'entry',
+			id = 'entry.name',
+			title = 'WHO ARE YOU',
+			fields = {
+				{ id = 'firstName', label = 'First name', maxLength = 8, required = true },
+				{ id = 'lastName', label = 'Last name', maxLength = 8, required = true },
+			},
+			on = function() end,
+		}
+		check('a two-field name form opens', opened.ok, opened.error)
+
+		-- The channels are wired on the first open, so the page is only findable
+		-- by them afterwards.
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:form:edit'] then page = candidate end
+		end
+		check('and wires the page channels it reads keystrokes on', page ~= nil)
+
+		if opened.ok and page ~= nil then
+			local handle = opened.value.handle
+
+			--- The newest thing the page was drawn, open or frame.
+			local function latest()
+				for index = #page.sent, 1, -1 do
+					local sent = page.sent[index]
+					if sent.channel == 'opx:form:frame' or sent.channel == 'opx:form:open' then
+						return sent
+					end
+				end
+				return nil
+			end
+
+			--- One field's row of it.
+			local function row(id)
+				local sent = latest()
+				for _, one in ipairs(sent and sent.payload.rows or {}) do
+					if one.id == id then return one end
+				end
+				return {}
+			end
+
+			--- Plays one keystroke and answers how many frames it drew.
+			local function typed(id, seq, text)
+				local before = #page.sent
+				control.PageEmit(page, 'opx:form:edit',
+					{ handle = handle, id = id, seq = seq, text = text })
+				return #page.sent - before
+			end
+
+			check('the open carries no acknowledgement, nothing having been typed',
+				row('firstName').ack == nil, tostring(row('firstName').ack))
+
+			-- ONE. The character comes back stamped with its own keystroke. Without
+			-- the stamp this frame is indistinguishable from the one carrying the
+			-- empty buffer the field had a moment ago, and putting THAT one back is
+			-- the empty line under the first letter.
+			local frames = typed('firstName', 1, 'J')
+			check('a keystroke is answered with exactly one frame', frames == 1, frames)
+			check('carrying the buffer Lua kept', row('firstName').text == 'J',
+				tostring(row('firstName').text))
+			check('and the sequence of the keystroke it answers',
+				row('firstName').ack == 1, tostring(row('firstName').ack))
+
+			-- TWO. A refusal is an answer as much as an acceptance is: the page is
+			-- holding a character that only this frame takes back off the line.
+			frames = typed('firstName', 2, 'Jonathanx')
+			check('a refused keystroke is answered too', frames == 1, frames)
+			check('with the accepted buffer untouched', row('firstName').text == 'J',
+				tostring(row('firstName').text))
+			check('and acknowledged, so the line goes back rather than keeping it',
+				row('firstName').ack == 2, tostring(row('firstName').ack))
+			check('and the refusal is said out loud',
+				type(latest().payload.status) == 'string')
+
+			-- THREE. THE SECOND NAME. A keystroke that raced a focus change used to
+			-- be discarded with no frame at all, which left a character sitting in a
+			-- field Lua never accepted and no answer that would ever take it out.
+			frames = typed('lastName', 3, 'S')
+			check('a keystroke on the field Lua does not hold is answered as well',
+				frames == 1, frames)
+			check('that field keeping the buffer it had', row('lastName').text == '',
+				tostring(row('lastName').text))
+			check('and acknowledged, so the page puts its line back',
+				row('lastName').ack == 3, tostring(row('lastName').ack))
+			check('while the focused field keeps its own acknowledgement',
+				row('firstName').ack == 2, tostring(row('firstName').ack))
+
+			-- FOUR. A frame drawn for something OTHER than a keystroke -- here the
+			-- caret moving between the two names -- must not claim to answer one.
+			-- This is the frame that lands inside the round trip, and it is the one
+			-- the page has to be able to ignore.
+			local before = #page.sent
+			control.PageEmit(page, 'opx:form:key', { handle = handle, key = 'down' })
+			check('moving between the names draws a frame', #page.sent > before)
+			check('and it answers no keystroke it was not asked about',
+				row('firstName').ack == 2 and row('lastName').ack == 3,
+				('%s %s'):format(tostring(row('firstName').ack), tostring(row('lastName').ack)))
+
+			-- FIVE. Two edits crossing on the wire. The older one arriving second
+			-- must not un-answer the newer one, or the page waits for an
+			-- acknowledgement that has already been and gone and holds its candidate
+			-- for the rest of the form.
+			typed('lastName', 9, 'Si')
+			typed('lastName', 4, 'S')
+			check('an acknowledgement never goes backwards',
+				row('lastName').ack == 9, tostring(row('lastName').ack))
+
+			-- SIX. A payload naming no field of this form is not a race; it is a
+			-- page talking about something else, and answering would tell it that it
+			-- was heard.
+			before = #page.sent
+			control.PageEmit(page, 'opx:form:edit',
+				{ handle = handle, id = 'nobody', seq = 20, text = 'x' })
+			check('a field this form does not have is not answered at all',
+				#page.sent == before, #page.sent - before)
+		end
+	end
+end
+
 section('lua <-> page channels')
 do
 	local built = io.open('web/index.html', 'r')
