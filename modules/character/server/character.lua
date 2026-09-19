@@ -466,16 +466,19 @@ function M.PlacePending(source)
 	local player = M.GetPlayer(source)
 	if not player or player.PlayerData.citizenId ~= citizenId then return false end
 
-	-- EVERY JOIN IS ASKED WHERE TO START. The menu is offered whether or not the
-	-- row already holds a position, so a returning player may pick a spot and one
-	-- who picks nothing -- or never opens the menu -- is placed by
-	-- `PlaceCharacter` with no explicit target, which resolves to the row's own
-	-- position (see the target resolution above). Choosing is the exception;
-	-- resuming is still the default.
+	-- EVERY JOIN IS PUT TO THE SPAWN MODULE, and WHICH of them turn into a menu is
+	-- that module's decision and not this one's -- its `OFFER_POLICY` names three
+	-- answers and this block is deliberately blind to all three. A player who is
+	-- asked and picks a spot is placed there; one who is not asked, or who picks
+	-- nothing, or who never opens the menu, falls through to `PlaceCharacter` with
+	-- no explicit target, which resolves to the row's own position (see the target
+	-- resolution above). Choosing is the exception; resuming is still the default.
 	--
-	-- `position` therefore no longer decides WHETHER this question is asked, only
-	-- what the answer falls back to. It used to gate the whole block, which meant
-	-- a character that had ever stood anywhere was never asked again.
+	-- `position` therefore does not gate this block, and must not: it used to,
+	-- which meant a character that had ever stood anywhere was never asked again
+	-- -- a policy, hard-wired into the wrong module, that no operator could turn
+	-- off. It is a hint the spawn module reads for itself under `first`, and here
+	-- it is only what the answer falls back to.
 	--
 	-- Read through `Get` and NOT declared in `requires`: this module is the one
 	-- the spawn module depends on, so a declaration in both directions is a cycle,

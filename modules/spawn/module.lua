@@ -67,6 +67,54 @@ M.Event = {
 	OPENED = OPX.Event(NET, 'spawn', 'opened'),
 }
 
+--- The three answers to "which world enters are offered the menu?".
+-- @author dop42
+--
+-- A CLOSED SET, NAMED HERE RATHER THAN SPELLED OUT AT THE COMPARISON. The server
+-- half branches on these three strings, the suite asserts against them and the
+-- operator types one of them into `config/spawn.lua`; a literal `'never'` written
+-- at each of those places is three copies of a value with nothing keeping them in
+-- step, and a typo in any one of them is a branch that is simply never taken.
+--
+-- Declared in module.lua and not in the server half because the NAMES are shared
+-- even though the decision is not: the client never reads a policy -- it draws
+-- whatever offer it is sent -- but the tests load this file to name the values
+-- they configure, and a vocabulary that lives inside the half it steers cannot be
+-- named from outside it.
+M.Policy = {
+	-- Only a character that has never stood anywhere, which the row's own
+	-- position is what decides: it is nil until the first save after the first
+	-- placement, so this is "once per character, ever".
+	FIRST = 'first',
+	-- Every world enter, a returning character included.
+	ALWAYS = 'always',
+	-- Nobody, ever. No offer, no hold and no deadline: `character` places the body
+	-- in the same tick, from the row.
+	NEVER = 'never',
+}
+
+--- What an unreadable `OFFER_POLICY` falls back to.
+-- ALWAYS, because it is what this module did before the setting existed: a
+-- fallback that changed behaviour would make a typo in the configuration look
+-- like a feature somebody had asked for.
+M.POLICY_DEFAULT = M.Policy.ALWAYS
+
+--- Whether a value is one of the three policies.
+-- Answers the value itself rather than a boolean, so a caller reads
+-- `M.KnownPolicy(raw) or M.POLICY_DEFAULT` in one line -- but the refusal is
+-- still the caller's to journal, because a warning belongs where it can be said
+-- once at start rather than on every join.
+-- @author dop42
+-- @param value any
+-- @return string|nil
+function M.KnownPolicy(value)
+	if type(value) ~= 'string' then return nil end
+	for _, known in pairs(M.Policy) do
+		if value == known then return known end
+	end
+	return nil
+end
+
 --- Which request a refusal answers.
 -- Passed to `OPX.Refuse`, whose channel is core's: without it a client waiting on
 -- one of several requests cannot tell which `error.tooFast` is its own.

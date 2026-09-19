@@ -610,11 +610,17 @@ do
 		--
 		-- `character` is a stub: what is under test here is the decision and the
 		-- handoff, not the placement.
+		--
+		-- `settings` is written in BEFORE the phases run, and for the offer policy
+		-- that is not a convenience but the only route: the policy is resolved once
+		-- in `Init` -- so a typo is journalled at boot rather than on every join --
+		-- and a value set afterwards is a value nothing ever reads.
 		-- @param locations table|nil
 		-- @param character table|nil the contract the stub provides
+		-- @param settings table|nil written over this module's config before boot
 		-- @return table env
 		-- @return table control
-		local function spawnOnly(locations, character)
+		local function spawnOnly(locations, character, settings)
 			local own, ctl = Host.Environment('server')
 			for _, file in ipairs({
 				'core/shared/main.lua', 'core/shared/channels.lua',
@@ -625,6 +631,9 @@ do
 				assert(loadfile(file, 't', own), file)()
 			end
 			own.OPX.Config.MODULES.spawn.LOCATIONS = locations or {}
+			for key, value in pairs(settings or {}) do
+				own.OPX.Config.MODULES.spawn[key] = value
+			end
 			-- `Choose` rate-limits through core's own helper and refuses on core's own
 			-- channel. Neither is part of what this env tests -- the full-boot section
 			-- above covers the refusal -- so both stand in for themselves.
@@ -710,6 +719,141 @@ do
 				gotPoint and ('%s,%s,%s'):format(gotPoint.x, gotPoint.y, gotPoint.z))
 			check('and the id, so a failure can name the place',
 				gotPoint ~= nil and gotPoint.id == 'spot')
+		end
+
+		-- ── the offer policy ──────────────────────────────────────────────────────
+		-- WHICH WORLD ENTERS ARE ASKED, which is `OFFER_POLICY` and is the operator's
+		-- call rather than this module's. Three values and no fourth, and each is
+		-- exercised against the same two characters -- one whose row already holds a
+		-- position and one that has never been placed -- because `position` is the
+		-- whole of what 'first' reads and the whole of what the other two ignore.
+		--
+		-- Driven through probes rather than the booted server above: the policy is
+		-- resolved ONCE, in `Init`, so that a typo is journalled at boot instead of
+		-- on every join -- and a value written into the config after the phases have
+		-- run is a value nothing will ever read again.
+		do
+			local SPOT = {
+				{ id = 'spot', label = 'A Spot', district = 'Watson',
+					x = 1, y = 2, z = 3, heading = 0.0 },
+			}
+
+			-- Two slots, two characters. `PlaceCharacter` answers true and is never
+			-- the point here: what is under test is whether a menu is offered at
+			-- all, which is decided before anything is placed.
+			local STOOD, FRESH = 21, 22
+			local function roster()
+				return {
+					GetPlayer = function(source)
+						if source == STOOD then
+							return { PlayerData = {
+								citizenId = 'citizen-stood',
+								position = { x = 9.0, y = 9.0, z = 9.0, heading = 0.0 },
+							} }
+						end
+						if source == FRESH then
+							return { PlayerData = { citizenId = 'citizen-fresh-2' } }
+						end
+						return nil
+					end,
+					PlaceCharacter = function() return true end,
+				}
+			end
+
+			--- A world with one spot, two characters and the policy under test.
+			-- @param policy any
+			-- @return table module
+			-- @return table control
+			local function under(policy)
+				local own, ctl = spawnOnly(SPOT, roster(), { OFFER_POLICY = policy })
+				return own.OPX.Modules.Get('spawn'), ctl
+			end
+
+			-- ALWAYS: what this module did before the setting existed, and still the
+			-- shipped default. Both characters are asked.
+			do
+				local module = under(spawn.Policy.ALWAYS)
+				check("'always' is resolved as configured",
+					module.OfferPolicy == spawn.Policy.ALWAYS, tostring(module.OfferPolicy))
+				check('and a character that has stood somewhere is asked anyway',
+					module.Offer(STOOD, 'citizen-stood') == true)
+				check('as is one that never has',
+					module.Offer(FRESH, 'citizen-fresh-2') == true)
+			end
+
+			-- FIRST: asked once per character, ever. The row's own position is the
+			-- only thing consulted, so a returning player resumes in silence -- which
+			-- is the behaviour the gate used to hard-wire, offered back as a choice.
+			do
+				local module = under(spawn.Policy.FIRST)
+				check("'first' is resolved as configured",
+					module.OfferPolicy == spawn.Policy.FIRST, tostring(module.OfferPolicy))
+				check('a character that has never stood anywhere is asked',
+					module.Offer(FRESH, 'citizen-fresh-2') == true)
+				check('and its choice is outstanding', module.IsPending(FRESH) == true)
+				check('a character whose row already holds a position is not asked',
+					module.Offer(STOOD, 'citizen-stood') == false)
+				check('and nothing is left outstanding for it',
+					module.IsPending(STOOD) == false)
+			end
+
+			-- NEVER: nobody is asked, and -- the part that matters -- NOTHING IS
+			-- ARMED. A 'never' that offered a menu and closed it again, or that
+			-- recorded a choice nobody would ever make, would hold the character on
+			-- a clock for a screen that is never drawn: on the shipped floors that
+			-- is sixty seconds of a player standing in the pre-game position, with
+			-- no name, waiting for a hold to release a menu that does not exist.
+			do
+				local module, ctl = under(spawn.Policy.NEVER)
+				check("'never' is resolved as configured",
+					module.OfferPolicy == spawn.Policy.NEVER, tostring(module.OfferPolicy))
+
+				local mark = #ctl.clientEvents
+				check('a brand new character is not asked',
+					module.Offer(FRESH, 'citizen-fresh-2') == false)
+				check('nor is a returning one',
+					module.Offer(STOOD, 'citizen-stood') == false)
+				check('and nothing is outstanding for either',
+					module.IsPending(FRESH) == false and module.IsPending(STOOD) == false)
+				check('and no offer reaches the client', #ctl.clientEvents == mark,
+					('%d event(s) sent'):format(#ctl.clientEvents - mark))
+
+				-- Ninety seconds, which is past the sixty-second HOLD floor and far
+				-- past any timeout. A hold armed anywhere would settle here and put a
+				-- `spawn:close` on the wire; the silence is the assertion.
+				ctl.Pump(900)
+				check('no hold is armed: nothing settles once the window would have run',
+					module.IsPending(FRESH) == false and module.IsPending(STOOD) == false)
+				check('and no menu is taken down, because none was ever put up',
+					#ctl.clientEvents == mark,
+					('%d event(s) sent'):format(#ctl.clientEvents - mark))
+			end
+
+			-- AN UNKNOWN VALUE. Refused with a line in the journal and replaced with
+			-- the named default -- never honoured, and never silently taken as "off".
+			-- A typo that quietly stopped offering the menu is indistinguishable from
+			-- the module being broken, which is the failure this check exists for.
+			do
+				local own, ctl = spawnOnly(SPOT, roster(), { OFFER_POLICY = 'sometimes' })
+				local module = own.OPX.Modules.Get('spawn')
+				check('an unknown policy is refused rather than honoured',
+					module.OfferPolicy == spawn.POLICY_DEFAULT, tostring(module.OfferPolicy))
+				check('and it is named in the journal, with what is running instead',
+					table.concat(ctl.log.warn, ' | '):find('OFFER_POLICY sometimes') ~= nil,
+					table.concat(ctl.log.warn, ' | '))
+				check('and the fallback behaves, so a typo costs a log line and no more',
+					module.Offer(STOOD, 'citizen-stood') == true)
+			end
+
+			-- A POLICY THAT IS NOT A STRING AT ALL. `OFFER_POLICY = true` is the shape
+			-- of a mis-edit that turns a named setting into the boolean beside it, and
+			-- it must take the same route rather than raising out of `Init`.
+			do
+				local own = spawnOnly(SPOT, roster(), { OFFER_POLICY = true })
+				local module = own.OPX.Modules.Get('spawn')
+				check('a policy that is not a string is refused the same way',
+					module.OfferPolicy == spawn.POLICY_DEFAULT, tostring(module.OfferPolicy))
+			end
 		end
 
 		-- ── the offer ────────────────────────────────────────────────────────────
