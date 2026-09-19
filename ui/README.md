@@ -140,6 +140,21 @@ written into three separate gradients.
   values, with no token behind them), type scale (fixed pixel layouts are configured
   elsewhere), and the neutral ramp, which is neutral on purpose.
 
+### The join screen is outside all of this
+
+`web/loading.html` is the server's declared load screen. It runs **before the bundle
+exists**, so `theme.ts` is not loaded and no custom property ever reaches it — an
+operator who changes `ACCENT` recolours everything except this page.
+
+It is therefore the one file allowed to declare tokens of its own: a hand copy in
+`:root`, labelled as a copy, listing only what the page uses. augmented-ui is inlined
+into it for the same reason, and because the client has no guaranteed internet.
+
+Two consequences worth knowing before you touch it. **A change to `tokens.css` does not
+reach it** — mirror it by hand or the two drift. And `ui/public/` is a Vite public
+directory, so **`npm run build` copies `ui/public/loading.html` over `web/loading.html`**:
+edit the one under `ui/public/`, and expect the built copy to follow.
+
 ---
 
 ## The one sprite left
