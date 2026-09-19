@@ -226,6 +226,7 @@ local function pass()
 		offReads = offReads + 1
 		if offReads >= OFF_READS and atMs - noclipSinceMs >= OFF_SETTLE_MS then
 			noclipOn, held, wanted = false, 0, nil
+			M.Noclip.Changed(false)
 		end
 	else
 		offReads = 0
@@ -256,9 +257,12 @@ end
 -- @author dop42
 -- @param on boolean
 function Controls.Noclip(on)
+	local was = noclipOn
 	noclipOn = on == true
 	noclipSinceMs, offReads = Client.NowMs(), 0
 	if not noclipOn then held, wanted = 0, nil end
+	-- Only a real transition, so a repeated `on` does not pop again.
+	if noclipOn ~= was then M.Noclip.Changed(noclipOn) end
 	sync()
 end
 

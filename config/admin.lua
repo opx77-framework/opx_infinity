@@ -59,6 +59,40 @@ OPX.Config.MODULES.admin = {
 		-- Never below RATE.ACTION_MS plus 100: a quieter send would be refused.
 		SEND_AFTER_MS = 500,
 		PROMPTS = true,
+
+		-- The pop: what is played where the operator is standing when noclip goes
+		-- on, and again when it goes off. This is this engine's stand-in for the
+		-- particle `txadmin` plays on the ped both ways -- the FiveM asset cannot
+		-- be loaded here, so the name comes out of the engine's own catalogue
+		-- (`Open77.vfx.catalog()`, 51 aliases).
+		--
+		-- A depot path is accepted too; nothing else is. A name the catalogue does
+		-- not carry is answered `nil, invalid_argument` and draws nothing.
+		--
+		-- `fire.large` is the default for one reason: of the aliases tried from
+		-- Lua on 2.31 it is the one with an actual frame captured
+		-- (`docs/research/vfx-sfx-runtime.md`, "Full template and world-effect
+		-- live probes", 2026-09-05 -- a tall flame and a refractive plume).
+		-- `electric.emp` and `electric.arc` were tried in the same probe and
+		-- produced no identifiable visual, `neon.holo_zone` renders only at its
+		-- authored yaw, and nothing else in the catalogue is recorded as seen at
+		-- all -- so a prettier-looking dematerialise here would be a guess that
+		-- probably draws nothing. Change this line to taste; it is one line.
+		EFFECT = 'fire.large',
+		-- Seconds the effect lives, 0..600 (the engine's own ceiling). 0 hands the
+		-- rest of its life to the effect itself.
+		EFFECT_SECONDS = 1.5,
+		-- A Wwise event name, or '' for silence. Left empty because a wrong name
+		-- is answered with a handle and discarded in silence rather than refused,
+		-- so an invented event is indistinguishable from no sound -- and no event
+		-- name is confirmed for this build.
+		SOUND = '',
+
+		-- Whether the body is despawned while the operator is flying. What it
+		-- means: the same native the Invisible switch uses, hidden from every
+		-- other player, and given back the moment noclip ends -- or when the
+		-- Invisible switch is turned back on, whichever comes last.
+		HIDE_BODY = true,
 	},
 
 	-- Metres the staff rows on the target eye reach, 1..12.

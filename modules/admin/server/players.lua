@@ -83,11 +83,44 @@ local function defaultSpeed()
 	return M.Bounded('NOCLIP.SPEED', M.Section('NOCLIP').SPEED, 0.1, 500, 40.0)
 end
 
+--- The one writer of a body: whether it is hidden from every other player, and
+--- why.
+-- TWO THINGS MAY WANT A BODY HIDDEN -- the Invisible switch and the noclip -- and
+-- they are reasons rather than one flag, because whichever is switched off first
+-- must not hand back a body the other one is still hiding. Every path that hides
+-- or shows a body ends here, so there is one call to the native and one place to
+-- read about it when a body is in the wrong state.
+-- @author dop42
+-- @param playerId Source
+-- @return boolean whether the native took it
+-- @return string|nil why it did not
+local function applyVeil(playerId)
+	local wanted = hidden[playerId] == true or noclip[playerId] ~= nil
+	local ok, reason = Open77.players.setVisible(playerId, not wanted)
+	if not ok then return false, reason end
+	return true
+end
+
 -- Switches a player's noclip, sending the starting speed the first time.
+-- Answers the body's verdict and not the flight's: the native is the operator's
+-- and always takes, but the veil can fail on a host without the API -- and a
+-- function that answered nothing would leave the two indistinguishable to the
+-- caller that has to tell the operator.
+-- @author dop42
+-- @return boolean whether the body followed
+-- @return string|nil why it did not
 local function setNoclip(playerId, on, grant)
 	noclip[playerId] = on and grant or nil
 	travel(playerId, 'noclip', on == true)
 	if on and speedChosen[playerId] == nil then travel(playerId, 'speed', defaultSpeed()) end
+	-- The body follows the flight: hidden on the way up, given back on the way
+	-- down unless the switch still wants it hidden.
+	local ok, reason = applyVeil(playerId)
+	if not ok then
+		Open77.log.warn(('[admin] the body of player %d could not follow noclip: %s')
+			:format(playerId, tostring(reason)))
+	end
+	return ok, reason
 end
 
 --- Whether this module has noclip on for a player, for the eye's checkbox.
@@ -245,7 +278,13 @@ function Players.Register()
 			local wanted, invalid = Text.Switch(args[1])
 			if invalid then return refuse(source, raw, 'bad_switch') end
 			if wanted == nil then wanted = noclip[source] == nil end
-			setNoclip(source, wanted, Command.SELF_NOCLIP)
+			local veiled, veilReason = setNoclip(source, wanted, Command.SELF_NOCLIP)
+			-- The flight took, so the answer is still the success it is; the body
+			-- did not, and a toast names the cause rather than leaving the operator
+			-- to wonder why they are still on screen.
+			if not veiled then
+				tell(source, 'admin.toast.veilFailed', { reason = tostring(veilReason) }, 'warning')
+			end
 			audit(source, 'admin.self.noclip', true, nil, wanted and 'on' or 'off')
 			answer(source, raw, true, wanted and 'admin.done.noclipOn' or 'admin.done.noclipOff')
 		end,
@@ -321,15 +360,22 @@ function Players.Register()
 			local wanted, invalid = Text.Switch(args[1])
 			if invalid then return refuse(source, raw, 'bad_switch') end
 			if wanted == nil then
-				local visible = readFlag('isVisible', source)
-				if visible == nil then visible = hidden[source] == nil end
-				wanted = visible
+				-- THIS MODULE'S OWN INTENT DECIDES THE DIRECTION, not the body it
+				-- reads back: the noclip hides the body too, so asking the host
+				-- whether the body is visible would flip the switch the wrong way
+				-- for an operator who is flying.
+				wanted = hidden[source] == nil
 			end
-			local ok, reason = Open77.players.setVisible(source, not wanted)
-			if not ok then return nativeRefused(source, raw, 'admin.self.invisible', source, reason) end
 			hidden[source] = wanted or nil
+			local ok, reason = applyVeil(source)
+			if not ok then return nativeRefused(source, raw, 'admin.self.invisible', source, reason) end
 			Players.PushBodies(source)
 			audit(source, 'admin.self.invisible', true, nil, wanted and 'on' or 'off')
+			-- A body the noclip is hiding as well stays hidden, and "you are
+			-- visible again" over a body nobody can see would be a lie.
+			if not wanted and noclip[source] ~= nil then
+				return answer(source, raw, true, 'admin.done.invisibleDeferred')
+			end
 			answer(source, raw, true, wanted and 'admin.done.invisibleOn' or 'admin.done.invisibleOff')
 		end,
 	})
@@ -633,6 +679,20 @@ function Players.Register()
 		end
 	end)
 
+	-- The one thing a client half says about noclip: the native went off under it,
+	-- because the operator pressed its own key. Without this the server's idea of
+	-- who is flying stays on for the rest of the session and their body stays
+	-- hidden for it. Only the OFF direction is accepted, and only for the
+	-- connection that sent it: this event can hand a body back, never take one.
+	RegisterNetEvent(M.Event.NOCLIP_BODY, function(on)
+		local playerId = tonumber(source)
+		if playerId == nil or playerId <= 0 or on == true then return end
+		if noclip[playerId] == nil then return end
+		setNoclip(playerId, false)
+		Open77.log.info(('[admin] noclip off for player %d: the native was switched off')
+			:format(playerId))
+	end)
+
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, function(playerId)
 		local player = tonumber(playerId) or 0
 		noclip[player], mapPick[player], speedChosen[player] = nil, nil, nil
@@ -652,7 +712,10 @@ end
 function Players.Release()
 	for playerId in pairs(noclip) do travel(playerId, 'noclip', false) end
 	for playerId in pairs(mapPick) do travel(playerId, 'mapPick', false) end
+	-- Both reasons: a body hidden by the flying is as much this module's doing as
+	-- one hidden by the switch, and a stop hands both back.
 	for playerId in pairs(hidden) do pcall(Open77.players.setVisible, playerId, true) end
+	for playerId in pairs(noclip) do pcall(Open77.players.setVisible, playerId, true) end
 	for playerId in pairs(frozen) do pcall(Open77.players.setFrozen, playerId, false) end
 	noclip, mapPick, speedChosen, hidden, frozen = {}, {}, {}, {}, {}
 end

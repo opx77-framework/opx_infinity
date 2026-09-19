@@ -179,10 +179,17 @@ function Host.Environment(side, database)
 	local commands = {}
 	local netEvents = {}
 	local clientEvents = {}
+	local clientToServer = {}
 	local clock = 0
-	-- Forward-declared: the host globals below close over it, and a local declared
-	-- after them would leave those closures pointing at a global instead.
+	-- Forward-declared: the host globals below close over them, and a local
+	-- declared after them would leave those closures pointing at a global
+	-- instead. The marker, keyboard and ACL stubs close over these four, and so
+	-- does `vehicles`: a spawn stub that read a global `vehicles` recorded the
+	-- creation and then raised, so every bring-out was answered as a refusal
+	-- while the vehicle it created sat in the world.
 	local control
+	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves
+	local bodies, effects, travels, notices, placement
 
 	-- Replicated state bags, by `<kind>:<id>`. A REAL store and not an accepting
 	-- stub: the runtime skips a write whose value has not moved, and a `set` that
@@ -267,8 +274,16 @@ function Host.Environment(side, database)
 		-- Spawned vehicles. `create` answers an opaque engine id, which is stored
 		-- as-is and never put through `tonumber`: these are 64-bit and would not
 		-- survive it.
+		--
+		-- Every creation is recorded, because WHERE a vehicle was created is the
+		-- whole point of a garage marker: a test that only saw an id could not
+		-- tell a vehicle placed on the marker from one placed beside the player.
 		vehicles = {
-			create = function() return '0x0000000000000001' end,
+			create = function(options)
+				vehicleCreates[#vehicleCreates + 1] = options
+				if vehicles.refuse ~= nil then return nil, tostring(vehicles.refuse) end
+				return '0x0000000000000001'
+			end,
 			get = function() return nil end,
 			remove = function() return true end,
 			update = function() return true end,
@@ -277,7 +292,86 @@ function Host.Environment(side, database)
 			flags = function() return {} end,
 		},
 
-		acl = { isAllowed = function() return false end },
+		-- World markers. The stub validates exactly what `client/src/api/Markers.cpp`
+		-- validates -- four styles, two shapes, radius 0.1..50, maximumDistance
+		-- 1..500 -- so a marker the engine would refuse under `unsupported_style`
+		-- fails here rather than silently in a live session. A marker that is never
+		-- removed is the other half of the same class of bug, so `list` is real.
+		markers = {
+			create = function(options)
+				if type(options) ~= 'table' or type(options.position) ~= 'table' then
+					return nil, 'invalid_argument'
+				end
+				local styles = { interaction = true, objective = true, spawn = true, danger = true }
+				local shapes = { ring = true, cylinder = true }
+				if not styles[tostring(options.style)] then return nil, 'unsupported_style' end
+				if not shapes[tostring(options.shape)] then return nil, 'unsupported_shape' end
+				local radius = tonumber(options.radius)
+				if radius == nil or radius < 0.1 or radius > 50.0 then
+					return nil, 'invalid_argument'
+				end
+				local maxDistance = tonumber(options.maxDistance)
+				if maxDistance == nil or maxDistance < 1.0 or maxDistance > 500.0 then
+					return nil, 'invalid_argument'
+				end
+				if markers.refuse ~= nil then return nil, tostring(markers.refuse) end
+				markers.next = (markers.next or 0) + 1
+				local id = 'marker-' .. tostring(markers.next)
+				markers.byId[id] = options
+				markers.created[#markers.created + 1] = id
+				return id
+			end,
+			update = function(id, patch)
+				if markers.byId[id] == nil then return false, 'unknown_marker' end
+				if type(patch) == 'table' then
+					for key, value in pairs(patch) do markers.byId[id][key] = value end
+				end
+				return true
+			end,
+			remove = function(id)
+				if markers.byId[id] == nil then return false, 'unknown_marker' end
+				markers.byId[id] = nil
+				markers.removed[#markers.removed + 1] = id
+				return true
+			end,
+			clear = function()
+				for id in pairs(markers.byId) do markers.byId[id] = nil end
+				return true
+			end,
+			list = function()
+				local out = {}
+				for id in pairs(markers.byId) do out[#out + 1] = id end
+				table.sort(out)
+				return out
+			end,
+		},
+
+		-- The keyboard. `isCaptured` answers what the test set, so a player typing
+		-- into the chat box is a case a caller can actually be exercised against.
+		input = {
+			isCaptured = function() return input.captured == true end,
+			keyFor = function(id) return input.keys[id] end,
+			mappings = function()
+				local out = {}
+				for id, key in pairs(input.keys) do
+					out[#out + 1] = { resource = 'opx_infinity', id = id, key = key }
+				end
+				return out
+			end,
+			isDown = function(key) return input.down[key] == true end,
+		},
+
+		-- `acl.read` is granted in the manifest, and the capture door asks the same
+		-- question the command gate asks. Empty means refused, which is the shape
+		-- every caller has to survive; `control.Allow` is how a test grants one.
+		acl = {
+			isAllowed = function(playerId, permission)
+				local granted = acl.granted
+				if granted == nil then return false end
+				local player = granted[tostring(playerId)]
+				return player ~= nil and player[tostring(permission)] == true
+			end,
+		},
 
 		routingBuckets = {
 			setPlayer = function() return true end,
@@ -296,7 +390,19 @@ function Host.Environment(side, database)
 		},
 
 		players = {
-			all = function() return {} end,
+			-- The admitted slots, which is what a server-side fan-out walks. An
+			-- always-empty list would make "every client in the bucket was told"
+			-- untestable, and a capture that told nobody would look the same as one
+			-- that told everybody.
+			all = function()
+				local ids = {}
+				for slot in pairs(control.accounts or {}) do
+					local id = tonumber(slot)
+					if id ~= nil then ids[#ids + 1] = id end
+				end
+				table.sort(ids)
+				return ids
+			end,
 			name = function(playerId) return control.accounts[playerId] and 'player' or nil end,
 			position = function() return { x = 0, y = 0, z = 0, bucket = 0 } end,
 			getLifeState = function() return 'alive' end,
@@ -305,13 +411,134 @@ function Host.Environment(side, database)
 			respawn = function() return true end,
 			revive = function() return true end,
 			setArmor = function() return true end,
+			-- The one native that hides a body. Recorded rather than accepted: on
+			-- the server a veil is a REASON and here it is a boolean, and a test
+			-- that could not read the boolean could not tell a body that was
+			-- handed back from one that was never hidden. `bodies.refuse` answers
+			-- a reason instead, the way a host without the API does.
+			setVisible = function(playerId, visible)
+				if bodies.refuse ~= nil then return false, bodies.refuse end
+				local id = tonumber(playerId) or playerId
+				bodies.visible[id] = visible == true
+				bodies.writes[#bodies.writes + 1] = { playerId = id, visible = visible == true }
+				return true
+			end,
+			setFrozen = function(playerId, held)
+				local id = tonumber(playerId) or playerId
+				bodies.frozen[id] = held == true
+				return true
+			end,
+			-- The reader the veil is asked through. nil, not false, when nothing
+			-- has ever written it: the module falls back to its own mark on nil.
+			isVisible = function(playerId) return bodies.visible[tonumber(playerId) or playerId] end,
+			isFrozen = function(playerId) return bodies.frozen[tonumber(playerId) or playerId] end,
 			disconnect = function() return true end,
 		},
 
 		character = {
 			state = function() return { health = 100 } end,
-			position = function() return { x = 0, y = 0, z = 0 } end,
+			-- THREE NUMBERS, not a table: `Open77.character.position()` answers
+			-- x, y, z, and every client module reads it that way. A stub that
+			-- answered a table made every one of those reads nil -- a marker
+			-- module drew nothing, with no error to say why.
+			position = function() return placement.x, placement.y, placement.z end,
 			yaw = function() return 0 end,
+		},
+
+		-- The travel natives. Recorded, because the staff half READS BACK what it
+		-- set -- `isNoclip` is how the client notices the native was switched off
+		-- underneath it, which is the one edge the server cannot see -- and a
+		-- no-op stub would make that read always false, a state this client never
+		-- produces. `travels.refuse` is a build without the natives.
+		travel = {
+			setNoclip = function(on)
+				if travels.refuse ~= nil then return false, travels.refuse end
+				travels.noclip = on == true
+				travels.calls[#travels.calls + 1] = { name = 'setNoclip', value = on == true }
+				return true
+			end,
+			isNoclip = function() return travels.noclip end,
+			setMapPick = function(on)
+				travels.mapPick = on == true
+				travels.calls[#travels.calls + 1] = { name = 'setMapPick', value = on == true }
+				return true
+			end,
+			isMapPick = function() return travels.mapPick end,
+		},
+
+		-- The effect layer, in the shape the native answers with. `play` RESOLVES
+		-- a name against the engine's own catalogue and answers `handle, reason`
+		-- -- it never raises -- so a stub that raised would leave the refused
+		-- path untested, and one that always answered a handle would hide a
+		-- typo'd alias that draws nothing. `effects.refuse` forces the refusal.
+		--
+		-- The catalogue is a COPY of `kVfxCatalog` in
+		-- `client/src/api/Effects.cpp` (51 aliases, counted 2026-09-19). It is
+		-- here for one question a suite should be able to ask without the game:
+		-- is the effect a config names one the engine actually carries?
+		vfx = {
+			catalog = function() return effects.catalogue end,
+			play = function(effect, options)
+				local call = { effect = effect, options = options }
+				if effects.refuse ~= nil then
+					call.refused = effects.refuse
+					effects.calls[#effects.calls + 1] = call
+					return nil, effects.refuse
+				end
+				effects.next = effects.next + 1
+				call.id = effects.next
+				effects.plays[#effects.plays + 1] = call
+				effects.live[effects.next] = effect
+				return effects.next
+			end,
+			-- The move, in the shape the native answers with: `bool, reason`, and
+			-- refused outright for a handle this resource does not hold -- which
+			-- is what ends the follow loop, so `effects.updates` is also the
+			-- evidence that it stopped rather than spun.
+			update = function(id, options)
+				if effects.live[id] == nil then return false, 'effect_not_found' end
+				if options == nil or type(options.position) ~= 'table' then
+					return false, 'invalid_position'
+				end
+				effects.updates[#effects.updates + 1] = { id = id, options = options }
+				return true
+			end,
+			playEntity = function(effect, options)
+				effects.entityPlays[#effects.entityPlays + 1] = { effect = effect, options = options }
+				effects.next = effects.next + 1
+				return effects.next
+			end,
+			stop = function(id)
+				effects.stopped[#effects.stopped + 1] = id
+				effects.live[id] = nil
+				return true
+			end,
+			list = function()
+				local out = {}
+				for id, effect in pairs(effects.live) do
+					out[#out + 1] = { id = id, effect = effect }
+				end
+				return out
+			end,
+		},
+
+		sfx = {
+			play = function(event, options)
+				effects.sfx[#effects.sfx + 1] = { event = event, options = options }
+				return #effects.sfx
+			end,
+		},
+
+		-- Player notifications, in the shape the runtime sends them: the toast is
+		-- how a staff action explains itself in game, and a stub that swallowed
+		-- one would leave "was the operator told?" unanswerable off-platform.
+		notifications = {
+			send = function(playerId, message)
+			local payload = type(message) == 'table' and message or { message = message }
+			notices[#notices + 1] = { playerId = tonumber(playerId) or playerId,
+				type = payload.type, message = payload.message }
+			return true
+		end,
 		},
 
 		hud = { setVisible = function() return true end },
@@ -319,6 +546,56 @@ function Host.Environment(side, database)
 	}
 
 	Open77.database = database
+
+	-- Recorded by the marker and key stubs above, and read by the tests.
+	markers = { byId = {}, created = {}, removed = {}, next = 0 }
+	input = { captured = false, keys = {}, down = {} }
+	acl = { granted = {} }
+	-- Set `refuse` to make the engine refuse a creation, the way an unsupported
+	-- record or a full world would.
+	vehicles = { refuse = nil }
+	vehicleCreates = {}
+	vehicleRemoves = {}
+
+	-- Bodies the server half hid or gave back, keyed by player id, with every
+	-- write in order -- a veil applied twice reads differently from one that
+	-- moved, which is the difference between a fix and a coincidence.
+	bodies = { visible = {}, frozen = {}, writes = {}, refuse = nil }
+
+	-- The travel natives' own state, and every write to them.
+	travels = { noclip = false, mapPick = false, calls = {}, refuse = nil }
+
+	-- Notifications the runtime sent, oldest first.
+	notices = {}
+
+	-- Where the local operator is standing. Movable, because an effect that is
+	-- placed once and left behind and one that follows the operator read
+	-- identically unless the suite can move the operator between pumps.
+	placement = { x = 0.0, y = 0.0, z = 0.0 }
+
+	-- Effects the client half asked the engine for. `plays` is the world ones,
+	-- `calls` every attempt including the refusals, and `live` the handles still
+	-- held -- a pop that was never stopped shows up there.
+	effects = {
+		catalogue = {
+			'blood.puddle', 'electric.arc', 'electric.destruction', 'electric.device',
+			'electric.emp', 'electric.industrial_arm', 'explosion.frag', 'explosion.fuel',
+			'explosion.grenade', 'explosion.nuclear', 'explosion.steam', 'explosion.turret',
+			'fire.gas', 'fire.large', 'fire.medium', 'fire.small', 'fire.tiny',
+			'glass.shatter', 'impact.concrete', 'impact.default', 'impact.metal',
+			'impact.water', 'laser.mine', 'neon.holo_zone', 'neon.loot_drop',
+			'race.firework.burst', 'race.flare.smoke', 'smoke.ambient',
+			'smoke.column.black', 'smoke.exterior', 'smoke.machine', 'smoke.poison_gas',
+			'smoke.steam', 'sparks.burst.large', 'sparks.burst.small', 'sparks.cable',
+			'sparks.welding', 'steam.column', 'steam.sewer', 'vehicle.exhaust',
+			'vehicle.fire', 'vehicle.police_lights', 'vehicle.skid', 'vehicle.skid.mark',
+			'vehicle.skid.smoke', 'water.drip', 'water.hydrant', 'water.sprinkler',
+			'weather.dust', 'weather.rain', 'weather.sandstorm',
+		},
+		plays = {}, calls = {}, entityPlays = {}, stopped = {}, live = {}, sfx = {},
+		updates = {},
+		next = 0, refuse = nil,
+	}
 
 	local env = {
 		Open77 = Open77,
@@ -382,14 +659,36 @@ function Host.Environment(side, database)
 		RegisterCommand = function(name, fn, restricted)
 			commands[name] = { run = fn, restricted = restricted == true }
 		end,
+
+		-- Two answer shapes are documented for the host call: the effective key,
+		-- or `true, key`. Both are produced here, because reading only one of them
+		-- is a bug this suite has already caught once.
+		RegisterKeyMapping = function(id, name, key, onPressed)
+			if keyMappings.refuse then return false, keyMappings.refuse end
+			if key == false then return false, 'no_key' end
+			local effective = type(key) == 'string' and key ~= '' and key or 'E'
+			input.keys[id] = effective
+			keyMappings.byId[id] = { name = name, key = effective, pressed = onPressed }
+			if keyMappings.secondShape then return true, effective end
+			return effective
+		end,
 	}
+
+	keyMappings = { byId = {}, refuse = false, secondShape = false }
 
 	if side == 'server' then
 		env.TriggerClientEvent = function(name, source, ...)
 			clientEvents[#clientEvents + 1] = { name = name, source = source, ... }
 		end
 	else
-		env.TriggerServerEvent = function() end
+		-- Recorded rather than swallowed: a client half's whole job is what it
+		-- sends -- the ask for its list, the request a key raises, the heading a
+		-- capture answers with -- and a no-op stub would leave every one of those
+		-- untestable.
+		env.TriggerServerEvent = function(name, ...)
+			clientToServer[#clientToServer + 1] = { name = name, ... }
+			return true
+		end
 	end
 
 	env._G = env
@@ -401,6 +700,11 @@ function Host.Environment(side, database)
 		commands = commands,
 		netEvents = netEvents,
 		clientEvents = clientEvents,
+
+		-- Every `TriggerServerEvent` a client half raised, oldest first. Only the
+		-- client side fills this: on the server the call is not a thing that
+		-- exists, which is why the branch above leaves it undefined there.
+		clientToServer = clientToServer,
 		handlers = handlers,
 
 		--- Resumes every queued thread up to `rounds` times, so a `while true`
@@ -428,6 +732,55 @@ function Host.Environment(side, database)
 
 		-- Every WebUI page the runtime created, newest last.
 		pages = {},
+
+		-- World markers the runtime created and removed. `markers.refuse` makes the
+		-- next creation fail, which is how "the API is there but said no" is
+		-- exercised.
+		markers = markers,
+
+		-- The keyboard: `input.captured` is another surface holding it, `input.keys`
+		-- is what each mapping answers to after a rebind.
+		input = input,
+
+		-- Key mappings the runtime declared, by id.
+		keyMappings = keyMappings,
+
+		-- Every argument list `Open77.vehicles.create` was called with, and every
+		-- id `remove` was called with.
+		vehicleCreates = vehicleCreates,
+		vehicleRemoves = vehicleRemoves,
+
+		-- Bodies the server half hid, by player id, and every write in order.
+		bodies = bodies,
+
+		-- Where the local operator stands; move it to test anything that follows
+		-- the operator rather than the spot they were in.
+		placement = placement,
+
+		-- Effects the client half asked the engine for, in order, refusals too.
+		effects = effects,
+
+		-- Travel native state and every write to it.
+		travels = travels,
+
+		-- Notifications the runtime sent, oldest first.
+		notices = notices,
+
+		--- Grants one permission to one player, as an ACL entry would.
+		Allow = function(playerId, permission)
+			local player = acl.granted[tostring(playerId)]
+			if player == nil then
+				player = {}
+				acl.granted[tostring(playerId)] = player
+			end
+			player[tostring(permission)] = true
+		end,
+
+		--- Takes one back off, so a refusal can be exercised after a grant.
+		Deny = function(playerId, permission)
+			local player = acl.granted[tostring(playerId)]
+			if player ~= nil then player[tostring(permission)] = nil end
+		end,
 
 		--- Puts an account on a slot, or clears it when `userId` is nil.
 		Admit = function(playerId, userId) control.accounts[playerId] = userId end,

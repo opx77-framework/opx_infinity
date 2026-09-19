@@ -57,6 +57,9 @@ shared_script "config/needs.lua"
 shared_script "config/downed.lua"
 shared_script "config/weather.lua"
 server_script "config/vehicles.lua"
+-- Shared, unlike the vehicles config above: the client draws the markers and so
+-- reads the radii, the kinds and the marker vocabulary here.
+shared_script "config/garages.lua"
 shared_script "config/chat.lua"
 shared_script "config/appearance.lua"
 shared_script "config/inventory.lua"
@@ -175,6 +178,19 @@ shared_script "modules/vehicles/module.lua"
 shared_script "modules/vehicles/locales.lua"
 server_script "modules/vehicles/server/storage.lua"
 server_script "modules/vehicles/server/main.lua"
+
+-- Garages and AV pads. After `vehicles`, which it requires: what comes out of a
+-- marker is a vehicle that module already owns, and this one creates none of its
+-- own. After `character`, which proves the ownership it asks about.
+shared_script "modules/garages/module.lua"
+shared_script "modules/garages/locales.lua"
+shared_script "modules/garages/shared/access.lua"
+server_script "modules/garages/server/storage.lua"
+server_script "modules/garages/server/main.lua"
+client_script "modules/garages/client/main.lua"
+-- The lifecycle: the registry calls the module, and `Runtime` is what does the
+-- work. Without this file the client half is never built.
+client_script "modules/garages/client/exports.lua"
 
 shared_script "modules/chat/module.lua"
 shared_script "modules/chat/locales.lua"
@@ -305,6 +321,8 @@ server_script "modules/admin/server/menu.lua"
 
 client_script "modules/admin/client/main.lua"
 client_script "modules/admin/client/keys.lua"
+-- Before the controls: they are the only caller of its transition.
+client_script "modules/admin/client/noclip.lua"
 client_script "modules/admin/client/controls.lua"
 client_script "modules/admin/client/forms.lua"
 client_script "modules/admin/client/tags.lua"
@@ -369,6 +387,13 @@ permissions {
 
   "world.props",
 
+  -- `Open77.vfx.play`/`stop`/`catalog` and `Open77.sfx.play` are gated on this
+  -- one name, and its refusal is SILENT: the native answers `nil,
+  -- permission_denied:world.effects`, logs nothing, and the effect simply never
+  -- appears. The staff noclip pop is the reason this line is here -- without it
+  -- there was no pop at all, and nothing on the server said why.
+  "world.effects",
+
   "world.vehicles",
 
   "acl.read",
@@ -402,6 +427,10 @@ permissions {
 
   "world.elevators",
   "elevators.read",
+
+  -- `Open77.markers.create`/`remove`: the glowing garage and AV pad markers.
+  -- One declaration per native handler, and this is the handler's own name.
+  "world.markers",
 
   "players.stats.read",
   "vehicles.read",

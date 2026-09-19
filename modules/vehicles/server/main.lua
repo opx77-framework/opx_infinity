@@ -157,12 +157,18 @@ function M.Get(plateId)
 	return fetched
 end
 
---- Spawns a loaded character's own vehicle beside them.
+--- Spawns a loaded character's own vehicle beside them, or at a named place.
+-- `at` is the marker path: a caller that names a position has already decided
+-- where the vehicle belongs -- a garage or a pad, validated by whoever owns that
+-- spot -- and it is created THERE and turned to `at.yaw`, with no offset, so a
+-- marker puts the vehicle on the marker rather than a car's width to one side.
+-- A caller that names nothing keeps the beside-the-player behaviour.
 -- @author dop42
 -- @param source Source
 -- @param plateId string
+-- @param at table|nil position { x, y, z }, yaw, bucket
 -- @return Result
-function M.Spawn(source, plateId)
+function M.Spawn(source, plateId, at)
 	local data = characterOf(source)
 	if not data then return Result.Err('vehicle.notLoggedIn', tostring(source)) end
 	if type(plateId) ~= 'string' then return Result.Err('error.badRequest', 'plate') end
@@ -183,15 +189,32 @@ function M.Spawn(source, plateId)
 	local position = Open77.players.position(source)
 	if position == nil then return Result.Err('vehicle.noPosition', tostring(source)) end
 
-	local id, reason = Open77.vehicles.create({
-		record = vehicle.record,
-		appearance = vehicle.appearance,
-		position = {
+	-- A named place is read through the same coercions as the player's own, so a
+	-- NaN or a string from a caller cannot reach the engine as a coordinate.
+	local place, yaw, bucket = nil, nil, finite(position.bucket)
+	if type(at) == 'table' then
+		local x, y, z = finite(at.x), finite(at.y), finite(at.z)
+		if x ~= nil and y ~= nil and z ~= nil then
+			place = { x = x, y = y, z = z }
+		end
+		yaw = finite(at.yaw)
+		local atBucket = finite(at.bucket)
+		if place ~= nil and atBucket ~= nil then bucket = math.floor(atBucket) end
+	end
+	if place == nil then
+		place = {
 			x = position.x + M.Settings.SPAWN_OFFSET,
 			y = position.y,
 			z = position.z + 0.25,
-		},
-		bucket = position.bucket,
+		}
+	end
+
+	local id, reason = Open77.vehicles.create({
+		record = vehicle.record,
+		appearance = vehicle.appearance,
+		position = place,
+		yaw = yaw,
+		bucket = bucket,
 		health = vehicle.health,
 		primaryColor = vehicle.paint and vehicle.paint.primary or nil,
 		secondaryColor = vehicle.paint and vehicle.paint.secondary or nil,

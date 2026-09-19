@@ -295,6 +295,8 @@ function M.Start()
 	end)
 
 	M.Keys.Start()
+	-- Before the controls: its first transition reads what this read.
+	M.Noclip.Start()
 	M.Controls.Start()
 	M.Tags.Start()
 	-- After the state half: it attaches to `ON_TAGS`, and the first payload that
@@ -323,4 +325,5 @@ function M.Stop()
 	M.Doors.Stop()
 	M.Target.Stop()
 	M.Controls.Stop()
+	M.Noclip.Stop()
 end

@@ -1173,6 +1173,973 @@ do
 	end
 end
 
+-- ── garages and AV pads ─────────────────────────────────────────────────────
+-- What is under test is a PLACE and not a menu: a marker stands where an operator
+-- put it, the vehicle is created ON it rather than beside the player, and every
+-- claim a client makes is re-derived on the server. So these checks drive the
+-- real net events and the real vehicles contract, and read the marker options and
+-- the created vehicle's position back out of the host -- a test that only saw an
+-- id could not tell a vehicle placed on the marker from one placed beside the
+-- player, which is the whole feature.
+section('garages')
+do
+	-- The vehicle roster the bridge answers with. The SQL is the real storage
+	-- module's; this is only the bridge half.
+	local function bridge(rows, wrote)
+		return Host.Database({
+			scalar = function() return 1 end,
+			update = function(sql)
+				-- Only the INSERT: the schema runs `CREATE TABLE IF NOT EXISTS`
+				-- through the same bridge method, and counting that would make
+				-- "nothing was written" true of a boot rather than of a refusal.
+				if wrote ~= nil and sql:find('INSERT INTO opx77_garages', 1, true) then
+					wrote[#wrote + 1] = sql
+				end
+				return 0
+			end,
+			query = function(sql, params)
+				-- Filtered by the citizen the statement binds, exactly as the real
+				-- storage does: a stub that answered every row to every caller would
+				-- make a character who owns nothing look like an owner, which is one
+				-- of the refusals under test.
+				if sql:find('opx77_vehicles', 1, true) then
+					local citizen = type(params) == 'table' and params.citizen or nil
+					local mine = {}
+					for index = 1, #rows do
+						if citizen == nil or rows[index].citizen_id == citizen then
+							mine[#mine + 1] = rows[index]
+						end
+					end
+					return mine
+				end
+				return {}
+			end,
+			-- One vehicle by its plate, and the count behind the ceiling. Both are
+			-- read through `single`; answering nil to the first is a refusal the
+			-- vehicles module reports as `vehicle.notFound`, which is how a bring-out
+			-- check can pass while no vehicle is ever created.
+			single = function(sql, params)
+				if sql:find('COUNT(%*)') ~= nil then return { total = #rows } end
+				local plate = type(params) == 'table' and params.plate or nil
+				if plate ~= nil then
+					for index = 1, #rows do
+						if rows[index].plate == plate then return rows[index] end
+					end
+				end
+				return nil
+			end,
+		})
+	end
+
+	local function row(plate, record)
+		return {
+			plate = plate, citizen_id = 'citizen-garage', record = record,
+			appearance = nil, garage = 'impound', state = 1, health = 1.0,
+			body = nil, paint = nil, metadata = '{}',
+		}
+	end
+
+	local wrote = {}
+	local env, control, why = boot('server', bridge({ row('AA111AA', 'Vehicle.v_standard2_archer_hella_player'),
+		row('AA222AA', 'Vehicle.av_militech_manticore') }, wrote))
+	check('the server boots with the garages module', why == nil, why)
+
+	-- The last client event with one name, or nil. Every verdict below is asserted
+	-- off the wire rather than off a return value, because the wire is what the
+	-- player's client actually reads.
+	local function lastEvent(name)
+		for index = #control.clientEvents, 1, -1 do
+			if control.clientEvents[index].name == name then return control.clientEvents[index] end
+		end
+		return nil
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local garages = OPX.Modules.Get('garages')
+		local Access = garages.Access
+		local contract = OPX.Api.Get('garages')
+
+		check('the garages module is running', OPX.Modules.IsRunning('garages'),
+			OPX.Modules.Record('garages').Reason)
+		check('and publishes its half of the contract',
+			contract ~= nil and type(contract.Bring) == 'function' and type(contract.Spots) == 'function')
+		check('the shipped config reports no problems', #Access.Problems() == 0,
+			table.concat(Access.Problems(), ' | '))
+
+		-- ── the AV rule, which decides what a pad will take ────────────────
+		check('an AV record is an AV', Access.IsAv('Vehicle.av_militech_manticore') == true)
+		check('a max-tac AV record is an AV', Access.IsAv('Vehicle.max_tac_av') == true)
+		check('a ground car is not', Access.IsAv('Vehicle.v_standard2_archer_hella_player') == false)
+		check('and neither is nothing at all', Access.IsAv(nil) == false)
+		check('case is not the caller\'s problem', Access.IsAv('VEHICLE.AV_RAYFIELD_EXCALIBUR') == true)
+
+		-- ── the marker vocabulary ─────────────────────────────────────────
+		-- Both markers GLOW, which is the request: the engine's four styles are
+		-- the only glowing looks there are, and a resource-declared style is not
+		-- something this build can mount.
+		local garageLook = Access.Marker('garage')
+		check('a garage marker is the glowing spawn cylinder',
+			garageLook.shape == 'cylinder' and garageLook.style == 'spawn' and garageLook.radius == 2.5,
+			('%s/%s/%s'):format(tostring(garageLook.shape), tostring(garageLook.style),
+				tostring(garageLook.radius)))
+		local padLook = Access.Marker('avpad')
+		check('a pad marker is the glowing objective ring',
+			padLook.shape == 'ring' and padLook.style == 'objective' and padLook.radius == 3.5,
+			('%s/%s/%s'):format(tostring(padLook.shape), tostring(padLook.style),
+				tostring(padLook.radius)))
+
+		-- ── the lift, which is the difference between a glow and an empty pad
+		-- A ring is the marker mesh flattened to 0.04 m: left on the floor it is
+		-- co-planar with it and draws nothing at all. Both kinds are lifted, and
+		-- the lift travels with the look so no call site can forget it.
+		check('both markers are lifted off the floor',
+			garageLook.lift == 0.06 and padLook.lift == 0.06,
+			('%s/%s'):format(tostring(garageLook.lift), tostring(padLook.lift)))
+
+		local shippedOffset = OPX.Config.MODULES.garages.GROUND_OFFSET
+		OPX.Config.MODULES.garages.GROUND_OFFSET = 0.0
+		check('a lift of zero is a choice and not a mistake',
+			Access.Marker('avpad').lift == 0.0)
+		OPX.Config.MODULES.garages.GROUND_OFFSET = 9000.0
+		check('an unbounded lift is clamped to the default, not carried to the engine',
+			Access.Marker('avpad').lift == 0.06)
+		check('and a lift the config got wrong is reported at boot',
+			#Access.Problems() == 1, table.concat(Access.Problems(), ' | '))
+		OPX.Config.MODULES.garages.GROUND_OFFSET = shippedOffset
+
+		local MARKER = OPX.Config.MODULES.garages.MARKER
+		local shippedStyle = MARKER.garage.style
+		MARKER.garage.style = 'glow'
+		check('a style the engine does not have falls back rather than being sent',
+			Access.Marker('garage').style == 'spawn')
+		MARKER.garage.style = shippedStyle
+
+		local shippedDistance = OPX.Config.MODULES.garages.MAX_DISTANCE
+		OPX.Config.MODULES.garages.MAX_DISTANCE = 9000.0
+		check('a draw distance the engine would refuse is clamped to its ceiling',
+			Access.MaxDistance() == 150.0)
+		OPX.Config.MODULES.garages.MAX_DISTANCE = shippedDistance
+
+		-- ── what a spot has to be ─────────────────────────────────────────
+		local good = Access.FromWire({ key = 'x', kind = 'garage', x = 0.0, y = 0.0, z = 0.0 })
+		check('a spot off the wire is accepted', good ~= nil and good.heading == 0.0 and good.bucket == 0)
+		check('and takes its key as its label when it has none', good ~= nil and good.label == 'x')
+		check('an unknown kind is refused',
+			Access.FromWire({ key = 'x', kind = 'garage2', x = 0.0, y = 0.0, z = 0.0 }) == nil)
+		check('a NaN coordinate is refused, not carried to the engine',
+			Access.FromWire({ key = 'x', kind = 'garage', x = 0 / 0, y = 0.0, z = 0.0 }) == nil)
+		check('an over-long key is refused',
+			Access.FromWire({ key = string.rep('k', 200), kind = 'garage', x = 0.0, y = 0.0, z = 0.0 }) == nil)
+
+		-- ── distance, and the tie ─────────────────────────────────────────
+		local spots = {
+			left = Access.FromDefinition('left', { KIND = 'garage', X = 3.0, Y = 0.0, Z = 0.0 }),
+			right = Access.FromDefinition('right', { KIND = 'garage', X = -3.0, Y = 0.0, Z = 0.0 }),
+			far = Access.FromDefinition('far', { KIND = 'garage', X = 100.0, Y = 0.0, Z = 0.0 }),
+		}
+		local nearest = Access.Nearest(spots, 0.0, 0.0)
+		check('two markers a metre apart are decided by name, not by pairs order',
+			nearest ~= nil and nearest.key == 'left', nearest and nearest.key)
+		check('a radius the caller names is what is measured against',
+			select(1, Access.Nearest(spots, 0.0, 0.0, 4.0)) == nil)
+		check('a spot beyond the radius is not offered',
+			select(1, Access.Nearest({ far = spots.far }, 0.0, 0.0)) == nil)
+
+		-- ── the capture round-trip ─────────────────────────────────────────
+		-- A character that owns the two rows above, on a slot the host admitted.
+		local function load(id, citizenId)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local character = OPX.Modules.Get('character')
+			character.Players[id] = { PlayerData = { citizenId = citizenId } }
+			return character
+		end
+
+		local src = 41
+		load(src, 'citizen-garage')
+
+		check('the capture command is registered and ACL-gated',
+			control.commands['opx.garages.add'] ~= nil
+				and control.commands['opx.garages.add'].restricted == true)
+		check('and its routeway to the client exists',
+			type(control.netEvents[garages.Event.CAPTURED]) == 'function')
+
+		-- The command asks the CLIENT where it is looking, because a chat command
+		-- has no facing of its own.
+		local mark = #control.clientEvents
+		control.commands['opx.garages.add'].run(src, { 'garage', 'garage_dock' })
+		local asked = lastEvent(garages.Event.CAPTURE)
+		check('the add command asks the client for its facing',
+			asked ~= nil and #control.clientEvents > mark and asked.source == src)
+		check('naming the kind and the key it was given',
+			asked ~= nil and asked[1] == 'garage' and asked[2] == 'garage_dock')
+
+		-- ── the bare form the config file advertises ─────────────────────
+		-- `config/garages.lua` has always said `/opx.garages.add` prints the line to
+		-- check in, while the handler demanded two positionals and answered the
+		-- bare command with a string no player saw and no line in the server log.
+		-- A command the documentation advertises and the handler refuses is a door
+		-- with no handle, so the kind and the key are now both optional.
+		control.commands['opx.garages.add'].run(src, {})
+		local bare = lastEvent(garages.Event.CAPTURE)
+		check('the bare add command asks the client too, as a garage',
+			bare ~= nil and bare[1] == 'garage', bare and tostring(bare[1]))
+		check('under a key it generated, so the spot can be named again afterwards',
+			bare ~= nil and bare[2] == 'garage1', bare and tostring(bare[2]))
+
+		-- The generated key steps past what is already placed, so a second bare
+		-- capture cannot land on the first one's name.
+		control.commands['opx.garages.add'].run(src, { 'avpad' })
+		local pad = lastEvent(garages.Event.CAPTURE)
+		check('a bare AV pad add is an avpad with its own generated key',
+			pad ~= nil and pad[1] == 'avpad' and pad[2] == 'avpad1',
+			pad and ('%s/%s'):format(tostring(pad[1]), tostring(pad[2])))
+
+		-- A first word that is not a kind is the KEY, which is what somebody
+		-- typing `add watson` means; the label still travels as the label.
+		control.commands['opx.garages.add'].run(src, { 'watson', 'THE DOCKS' })
+		local named = lastEvent(garages.Event.CAPTURE)
+		check('and a first word that is not a kind is the key',
+			named ~= nil and named[1] == 'garage' and named[2] == 'watson'
+				and named[3] == 'THE DOCKS',
+			named and ('%s/%s/%s'):format(tostring(named[1]), tostring(named[2]),
+				tostring(named[3])))
+
+		-- A CLIENT THAT FIRES THE ROUTEWAY ITSELF. The net event has no host-side
+		-- ACL check -- that gate runs for commands only -- so the module asks the
+		-- same question here. Without this, anybody could place markers.
+		env.source = src
+		local before = #control.clientEvents
+		control.netEvents[garages.Event.CAPTURED]('garage', 'sneaky', 'SNEAKY', 0.0)
+		local denied = control.clientEvents[#control.clientEvents]
+		check('a capture from someone without the permission is refused',
+			#control.clientEvents > before and denied ~= nil and denied[1] ~= nil
+				and denied[1].code == 'error.noPermission',
+			denied and denied[1] and tostring(denied[1].code))
+		check('and the refusal names the operation, so a client can tell it apart',
+			denied ~= nil and denied[1] ~= nil and denied[1].operation == garages.Operation.CAPTURE)
+		check('and nothing was placed', contract.Spots()['sneaky'] == nil)
+		check('and nothing was written', #wrote == 0, #wrote)
+
+		-- With the permission, the same routeway lands a spot.
+		control.Allow(src, 'command.opx.garages.add')
+		control.netEvents[garages.Event.CAPTURED]('garage', 'garage_dock', 'THE DOCK', 90.0)
+		control.Pump(8)
+		local held = contract.Spots()
+		check('a permitted capture lands', held['garage_dock'] ~= nil)
+		check('at the position the SERVER read and the heading the client gave',
+			held['garage_dock'] ~= nil and held['garage_dock'].x == 0.0
+				and held['garage_dock'].y == 0.0 and held['garage_dock'].z == 0.0
+				and held['garage_dock'].heading == 90.0,
+			held['garage_dock'] and ('%s,%s,%s yaw %s'):format(held['garage_dock'].x,
+				held['garage_dock'].y, held['garage_dock'].z, tostring(held['garage_dock'].heading)))
+		check('and its label is the operator\'s own words', held['garage_dock'].label == 'THE DOCK')
+		check('and the row was written through the bridge', #wrote == 1, #wrote)
+		local synced = lastEvent(garages.Event.SYNC)
+		check('and the client was told what is there now',
+			synced ~= nil and type(synced[1]) == 'table' and type(synced[1].spots) == 'table'
+				and #synced[1].spots == 1)
+
+		-- ── bringing out what the character owns ──────────────────────────
+		local created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		local options = control.vehicleCreates[#control.vehicleCreates]
+		check('the request creates one vehicle', #control.vehicleCreates == created + 1)
+		check('ON the marker, never a car\'s width to one side',
+			options ~= nil and type(options.position) == 'table' and options.position.x == 0.0
+				and options.position.y == 0.0 and options.position.z == 0.0,
+			options and options.position and ('%s,%s,%s'):format(options.position.x,
+				options.position.y, options.position.z))
+		check('facing the heading the spot was captured with',
+			options ~= nil and options.yaw == 90.0, options and tostring(options.yaw))
+		-- The wire is (key, ok, failure, plate): the failure slot is nil on a
+		-- success, so the plate is the FOURTH argument and not the third. Read
+		-- positionally, the same shape the client's own handler reads.
+		local answer = lastEvent(garages.Event.ANSWER)
+		check('and the player is told which of their own vehicles came out',
+			answer ~= nil and answer[1] == 'garage_dock' and answer[2] == true
+				and answer[4] == 'AA111AA',
+			answer and tostring(answer[4]))
+		check('a ground car is what a ground marker takes',
+			options ~= nil and options.record == 'Vehicle.v_standard2_archer_hella_player')
+
+		-- ── the AV pad ────────────────────────────────────────────────────
+		-- Added through the table the server itself holds, so the validation
+		-- under test is the real one rather than a fixture's copy.
+		held['pad_dock'] = Access.FromDefinition('pad_dock', {
+			KIND = 'avpad', LABEL = 'THE PAD', X = 0.0, Y = 0.0, Z = 2.0, HEADING = 0.0, BUCKET = 0,
+		})
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('pad_dock')
+		control.Pump(8)
+		options = control.vehicleCreates[#control.vehicleCreates]
+		check('a pad takes the AV and not the car',
+			#control.vehicleCreates == created + 1 and options ~= nil
+				and options.record == 'Vehicle.av_militech_manticore',
+			options and tostring(options.record))
+		check('and it is lifted clear of the pad it materialises on',
+			options ~= nil and options.position.z == 2.0 + 1.2, options and tostring(options.position.z))
+		check('the pad\'s own answer names the AV',
+			lastEvent(garages.Event.ANSWER) ~= nil
+				and lastEvent(garages.Event.ANSWER)[4] == 'AA222AA',
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[4]))
+
+		-- ── what is refused, and why ──────────────────────────────────────
+		local walker = 42
+		load(walker, 'citizen-garage')
+		env.source = walker
+
+		local far = 40.0
+		held['far_dock'] = Access.FromDefinition('far_dock', {
+			KIND = 'garage', LABEL = 'FAR', X = far, Y = 0.0, Z = 0.0, HEADING = 0.0, BUCKET = 0,
+		})
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('far_dock')
+		control.Pump(8)
+		check('standing 40 metres from a marker creates nothing',
+			#control.vehicleCreates == created)
+		check('and says it was the distance',
+			lastEvent(garages.Event.ANSWER) ~= nil and lastEvent(garages.Event.ANSWER)[3] == 'garages.tooFar',
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+
+		held['other_bucket'] = Access.FromDefinition('other_bucket', {
+			KIND = 'garage', LABEL = 'ELSEWHERE', X = 0.0, Y = 0.0, Z = 0.0, BUCKET = 7,
+		})
+		control.netEvents[garages.Event.REQUEST]('other_bucket')
+		control.Pump(8)
+		check('a marker in another routing bucket is refused',
+			lastEvent(garages.Event.ANSWER) ~= nil
+				and lastEvent(garages.Event.ANSWER)[3] == 'garages.wrongBucket')
+
+		control.netEvents[garages.Event.REQUEST]('no_such_marker')
+		control.Pump(8)
+		check('a marker that does not exist is refused',
+			lastEvent(garages.Event.ANSWER) ~= nil
+				and lastEvent(garages.Event.ANSWER)[3] == 'garages.noSuchSpot')
+
+		-- A character who owns nothing: the roster answers no rows for them.
+		local pauper = 44
+		load(pauper, 'citizen-penniless')
+		env.source = pauper
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		check('standing on a marker owning nothing creates nothing',
+			#control.vehicleCreates == created)
+		check('and says so rather than handing out a car',
+			lastEvent(garages.Event.ANSWER) ~= nil
+				and lastEvent(garages.Event.ANSWER)[3] == 'garages.nothingHere',
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+
+		-- ── the window ────────────────────────────────────────────────────
+		local spammer = 43
+		load(spammer, 'citizen-garage')
+		env.source = spammer
+		local limit = OPX.Config.MODULES.garages.REQUESTS_PER_WINDOW
+		for _ = 1, limit do
+			control.netEvents[garages.Event.REQUEST]('garage_dock')
+			control.Pump(6)
+		end
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(6)
+		check(('the request after %d in one window is rate-limited'):format(limit),
+			lastEvent(garages.Event.ANSWER) ~= nil
+				and lastEvent(garages.Event.ANSWER)[3] == 'garages.rateLimited',
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+
+		-- ── a capture the client never answers ────────────────────────────
+		-- The one failure that used to be silent at both ends: the command asks
+		-- for a facing, no answer ever comes, and neither half says anything -- so
+		-- the operator walks away believing a spot was placed where there is none.
+		-- Last in this section because it leaves a spot behind and moves `source`.
+		local function asksFor(player)
+			local asked = 0
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == garages.Event.CAPTURE and event.source == player then
+					asked = asked + 1
+				end
+			end
+			return asked
+		end
+
+		local quiet = 42
+		load(quiet, 'citizen-garage-quiet')
+		control.Allow(quiet, 'command.opx.garages.add')
+		local warnsBefore, noticesBefore = #control.log.warn, #control.notices
+		local logsBefore = #control.log.info
+		local previousSource = env.source
+		control.commands['opx.garages.add'].run(quiet, { 'garage', 'garage_never' })
+		check('an unanswered capture is asked for exactly once', asksFor(quiet) == 1,
+			asksFor(quiet))
+		check('and the request is logged when it goes out',
+			#control.log.info > logsBefore
+				and control.log.info[#control.log.info]:find('garage_never', 1, true) ~= nil,
+			control.log.info[#control.log.info])
+
+		-- Young: the answer may still be on its way, so nothing is said yet.
+		control.Pump(10)
+		check('nothing is said while the answer may still come',
+			#control.log.warn == warnsBefore and #control.notices == noticesBefore)
+
+		-- Past its lifetime it settles itself, once -- not once per pump.
+		control.Pump(80)
+		control.Pump(80)
+		check('a capture that is never answered is reported, once',
+			#control.log.warn == warnsBefore + 1, #control.log.warn - warnsBefore)
+		check('naming the spot and saying nothing was saved',
+			control.log.warn[#control.log.warn] ~= nil
+				and control.log.warn[#control.log.warn]:find('garage_never', 1, true) ~= nil
+				and control.log.warn[#control.log.warn]:find('nothing was saved', 1, true) ~= nil,
+			control.log.warn[#control.log.warn])
+		local told = control.notices[#control.notices]
+		check('and the operator is told in game, not only in the log',
+			#control.notices == noticesBefore + 1 and told ~= nil and told.playerId == quiet
+				and told.type == 'error',
+			told and ('%s: %s'):format(tostring(told.type), tostring(told.message)))
+		check('and no spot was placed by it', contract.Spots()['garage_never'] == nil)
+
+		-- A late answer is still an answer. The request is gone, so the ordinary
+		-- path runs and the spot lands: slowness is not a refusal, and a client
+		-- that was still loading must not need the command run again.
+		local lateWarns = #control.log.warn
+		env.source = quiet
+		control.netEvents[garages.Event.CAPTURED]('garage', 'garage_never', 'LATE', 12.0)
+		control.Pump(8)
+		control.Pump(40)
+		check('an answer that arrives after the warning still lands',
+			contract.Spots()['garage_never'] ~= nil)
+		check('and it raises no second "did not answer"',
+			#control.log.warn == lateWarns, #control.log.warn - lateWarns)
+
+		-- An answer that is unusable is a different failure with its own line:
+		-- the client DID answer, so "did not answer" would be a lie.
+		local badWarns = #control.log.warn
+		control.netEvents[garages.Event.CAPTURED]('not-a-kind', 'garage_bad', 'X', 0.0)
+		check('an unusable answer is reported as one',
+			#control.log.warn == badWarns + 1
+				and control.log.warn[#control.log.warn]:find('unusable spot', 1, true) ~= nil,
+			control.log.warn[#control.log.warn])
+		env.source = previousSource
+	end
+end
+
+-- ── the client half of the markers ───────────────────────────────────────────
+-- The spots come from the server and never from the config, so everything below
+-- arrives over `SYNC`. What is asserted is what the ENGINE was asked for: the
+-- shape, the style, the radius and the distance, read back out of the host's
+-- marker stub, which validates them the way `Markers.cpp` does.
+section('garages, client side')
+do
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots with the garages module', cwhy == nil, cwhy)
+
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local garages = OPX.Modules.Get('garages')
+		local Runtime = garages.Runtime
+		local prompts = OPX.Api.Get('prompts')
+
+		check('the client half is running, not just loaded', OPX.Modules.IsRunning('garages'),
+			OPX.Modules.Record('garages').Reason)
+
+		-- ── the key ───────────────────────────────────────────────────────
+		local mapping = cctl.keyMappings.byId['opx.garages.use']
+		check('the key is declared to the host, so a player can rebind it', mapping ~= nil)
+		check('and defaults to E', mapping ~= nil and mapping.key == 'E',
+			mapping and tostring(mapping.key))
+		check('and the pause menu is given a name for it, not a key',
+			mapping ~= nil and type(mapping.name) == 'string' and mapping.name ~= ''
+				and mapping.name:find('key', 1, true) == nil, mapping and tostring(mapping.name))
+
+		-- The list is asked for on start, so a marker already in range does not
+		-- wait for the poll.
+		local asked = false
+		for index = 1, #cctl.clientToServer do
+			if cctl.clientToServer[index].name == garages.Event.ASK then asked = true end
+		end
+		check('the client asks for its spots on start', asked)
+
+		-- ── the markers ───────────────────────────────────────────────────
+		cctl.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'garage_dock', label = 'THE DOCK', kind = 'garage',
+				x = 0.0, y = 0.0, z = 0.0, heading = 90.0, bucket = 0 },
+			{ key = 'pad_dock', label = 'THE PAD', kind = 'avpad',
+				x = 6.0, y = 0.0, z = 2.0, heading = 0.0, bucket = 0 },
+		} })
+		cctl.Pump(6)
+
+		local drawn = cenv.Open77.markers.list()
+		check('one marker is drawn per spot in range', #drawn == 2, #drawn)
+
+		local looks = {}
+		for index = 1, #drawn do
+			local options = cctl.markers.byId[drawn[index]]
+			looks[options.position.x] = options
+		end
+		local garageMarker = looks[0.0]
+		local padMarker = looks[6.0]
+		check('the garage marker is the glowing cylinder on its spot',
+			garageMarker ~= nil and garageMarker.shape == 'cylinder'
+				and garageMarker.style == 'spawn' and garageMarker.radius == 2.5,
+			garageMarker and ('%s/%s/%s'):format(tostring(garageMarker.shape),
+				tostring(garageMarker.style), tostring(garageMarker.radius)))
+		check('the pad marker is the glowing ring on its own spot',
+			padMarker ~= nil and padMarker.shape == 'ring' and padMarker.style == 'objective'
+				and padMarker.radius == 3.5,
+			padMarker and ('%s/%s/%s'):format(tostring(padMarker.shape),
+				tostring(padMarker.style), tostring(padMarker.radius)))
+		-- The spot's OWN height, not the player's, and lifted by the look's own
+		-- offset: a pad on a roof at 2.0 is drawn at 2.06, and one that was not
+		-- lifted would be co-planar with that roof and invisible.
+		local padLift = garages.Access.Marker('avpad').lift
+		check('and its own height, not the player\'s, lifted clear of the surface',
+			padMarker ~= nil and math.abs(padMarker.position.z - (2.0 + padLift)) < 1e-9,
+			padMarker and tostring(padMarker.position.z))
+		check('and the ground marker is lifted off the floor it stands on',
+			garageMarker ~= nil
+				and math.abs(garageMarker.position.z - garages.Access.Marker('garage').lift) < 1e-9,
+			garageMarker and tostring(garageMarker.position.z))
+
+		-- ── the strip row ─────────────────────────────────────────────────
+		check('standing on a marker posts its row', Runtime.Report().nearest == 'garage_dock',
+			Runtime.Report().nearest)
+		local listed = prompts ~= nil and prompts.List('garages') or nil
+		check('and the strip holds exactly one row for it',
+			listed ~= nil and listed.ok == true and listed.value.count == 1
+				and listed.value.prompts[1] == 'spot',
+			listed and listed.ok and tostring(listed.value.count))
+		check('and names the key it is bound to', Runtime.Report().key == 'E',
+			Runtime.Report().key)
+
+		-- ── the key sends the request ─────────────────────────────────────
+		local before = #cctl.clientToServer
+		mapping.pressed()
+		local sent = cctl.clientToServer[#cctl.clientToServer]
+		check('the key sends a request for the marker underfoot',
+			#cctl.clientToServer == before + 1 and sent ~= nil
+				and sent.name == garages.Event.REQUEST and sent[1] == 'garage_dock',
+			sent and tostring(sent[1]))
+
+		-- A keyboard held elsewhere is not a key: a row that stayed up while
+		-- somebody typed would fire as they typed.
+		cctl.input.captured = true
+		cctl.Pump(6)
+		listed = prompts ~= nil and prompts.List('garages') or nil
+		check('the row steps aside while another surface holds the keyboard',
+			listed ~= nil and listed.ok == true and listed.value.count == 0,
+			listed and listed.ok and tostring(listed.value.count))
+		local mark = #cctl.clientToServer
+		mapping.pressed()
+		check('and the key does nothing while it does', #cctl.clientToServer == mark)
+		cctl.input.captured = false
+		cctl.Pump(6)
+
+		-- ── the capture round-trip ────────────────────────────────────────
+		mark = #cctl.clientToServer
+		local infoMark = #cctl.log.info
+		cctl.netEvents[garages.Event.CAPTURE]('avpad', 'pad_dock', 'THE PAD')
+		local answered = cctl.clientToServer[#cctl.clientToServer]
+		check('the client answers a capture ask', #cctl.clientToServer > mark)
+		check('with the operator\'s own facing, which only this half can read',
+			answered ~= nil and answered.name == garages.Event.CAPTURED
+				and answered[1] == 'avpad' and answered[2] == 'pad_dock')
+		-- Both ends of the round trip say their half, so a capture that dies in
+		-- the middle is a hole in a log rather than silence from everywhere.
+		check('and names the spot it answered, so the round trip reads from here',
+			#cctl.log.info > infoMark
+				and cctl.log.info[#cctl.log.info]:find('pad_dock', 1, true) ~= nil,
+			cctl.log.info[#cctl.log.info])
+
+		-- ── taking them down ──────────────────────────────────────────────
+		cctl.netEvents[garages.Event.SYNC]({ spots = {} })
+		cctl.Pump(6)
+		check('a list the server clears takes every marker with it',
+			#cenv.Open77.markers.list() == 0, #cenv.Open77.markers.list())
+		listed = prompts ~= nil and prompts.List('garages') or nil
+		check('and the row comes down with it',
+			listed ~= nil and listed.ok == true and listed.value.count == 0)
+
+		-- A MARKER THE ENGINE REFUSES. It must be one logged line and no marker,
+		-- rather than a raise inside the scan or a marker nobody can see.
+		local warned = #cctl.log.warn
+		cctl.markers.refuse = 'unsupported_style'
+		cctl.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'garage_dock', label = 'THE DOCK', kind = 'garage',
+				x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+		} })
+		cctl.Pump(6)
+		check('a refused marker is not drawn', #cenv.Open77.markers.list() == 0)
+		check('and it is said once, in the log', #cctl.log.warn > warned
+			and table.concat(cctl.log.warn, ' | '):find('no marker is drawn', 1, true) ~= nil,
+			table.concat(cctl.log.warn, ' | '))
+		cctl.markers.refuse = nil
+
+		-- A SPOT THE CLIENT CANNOT READ is dropped and named, never taken as a
+		-- marker at 0,0,0 -- which is the failure a NaN or a bad kind would give.
+		cctl.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'broken', label = 'BROKEN', kind = 'garage', x = 0 / 0, y = 0.0, z = 0.0 },
+		} })
+		cctl.Pump(6)
+		check('a spot the client cannot read is dropped, not placed at the origin',
+			#cenv.Open77.markers.list() == 0 and Runtime.Report().spots == 0,
+			('%d drawn, %d held'):format(#cenv.Open77.markers.list(), Runtime.Report().spots))
+
+		-- ── the local refusal ─────────────────────────────────────────────
+		-- No marker underfoot: refused locally, and nothing leaves the client.
+		local decisions = {}
+		cenv.AddEventHandler(garages.Event.ON_DECISION, function(payload)
+			decisions[#decisions + 1] = payload
+		end)
+		mark = #cctl.clientToServer
+		local answer = Runtime.Use('test')
+		check('using a marker nobody is standing on answers no spot',
+			answer.ok == false and answer.error == 'garages.noSuchSpot')
+		check('and nothing is sent', #cctl.clientToServer == mark)
+		check('and the verdict is published on the local bus',
+			#decisions == 1 and decisions[1].error == 'garages.noSuchSpot')
+	end
+end
+
+section('permissions the code needs')
+do
+	-- A permission a resource does not declare is answered `nil, permission_denied:<name>`
+	-- by the native, and NOTHING ELSE HAPPENS: no refusal the platform journals, no
+	-- error the caller must handle, no line anywhere. The feature simply does
+	-- nothing, silently, until somebody reads the reason off the return value --
+	-- which is how the noclip pop was dead on arrival (`Open77.vfx.play` with no
+	-- `world.effects` in the manifest). This is the cheapest net for that: the call
+	-- sites are in the files the manifest lists, and the permission names are the
+	-- native handlers' own strings, in `scripting/src/ResourceHost.cpp`.
+	-- The namespaces, not the calls: a module that binds `local markers = Open77.markers`
+	-- at the top and calls through the local would slip past a call-site search,
+	-- and a false positive here only ever demands a permission a file already
+	-- mentions -- which for the three the resource declares is no demand at all.
+	local GATED = {
+		{ 'Open77.vfx', 'world.effects', 'every world effect' },
+		{ 'Open77.sfx', 'world.effects', 'every sound' },
+		{ 'Open77.markers', 'world.markers', 'the glowing garage and pad markers' },
+		{ 'Open77.props', 'world.props', 'world props' },
+		{ 'Open77.clipboard.setText', 'clipboard.write', 'writing the clipboard' },
+		{ 'Open77.players.setVisible', 'players.life.visibility', 'hiding a body' },
+		{ 'Open77.players.setFrozen', 'players.life.freeze', 'holding a player still' },
+		{ 'Open77.doors', 'world.doors', 'the staff door switch' },
+	}
+
+	local handle = io.open('open77.lua', 'r')
+	local manifest = handle and handle:read('a') or ''
+	if handle then handle:close() end
+	check('the manifest is readable', #manifest > 0)
+
+	-- Every quoted lowercase name in the file, which is how a permission is
+	-- written and nothing else in the manifest is.
+	local declared = {}
+	for name in manifest:gmatch('"([a-z][a-z0-9._]*)"') do declared[name] = true end
+
+	local seen, files = {}, {}
+	for _, side in ipairs({ 'shared', 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if not seen[file] then
+				seen[file] = true
+				files[#files + 1] = file
+			end
+		end
+	end
+	check('the manifest lists the files to scan', #files > 0, #files)
+
+	for index = 1, #GATED do
+		local call, permission, what = GATED[index][1], GATED[index][2], GATED[index][3]
+		local used
+		for position = 1, #files do
+			local input = io.open(files[position], 'r')
+			if input then
+				local body = input:read('a')
+				input:close()
+				if body:find(call, 1, true) then
+					used = files[position]
+					break
+				end
+			end
+		end
+		if used == nil then
+			-- Nothing calls it, so nothing needs the grant: an unread permission
+			-- is not a failure, and this line says which ones are unread.
+			check(('%s is not needed yet (%s)'):format(permission, what), true)
+		else
+			check(('%s is declared, because %s calls it (%s)'):format(permission, used, what),
+				declared[permission] == true, 'not declared in open77.lua')
+		end
+	end
+end
+
+section('noclip, server side')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the admin module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local Players = admin.Players
+		local src = 12
+
+		control.Admit(src, 'account-noclip')
+		OPX.EnsureSession(src)
+		control.Allow(src, 'command.' .. admin.Command.SELF_NOCLIP)
+		control.Allow(src, 'command.' .. admin.Command.SELF_INVISIBLE)
+
+		-- The newest travel instruction sent to a client, or nil. Filtered by the
+		-- mode, because arming noclip also sends the starting speed and the last
+		-- message on the wire is therefore not the one under test.
+		local function lastTravel(action)
+			for index = #control.clientEvents, 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == admin.Event.TRAVEL and (action == nil or event[1] == action) then
+					return event
+				end
+			end
+			return nil
+		end
+
+		check('nothing has touched the body yet', control.bodies.visible[src] == nil,
+			tostring(control.bodies.visible[src]))
+
+		-- ── the way up ────────────────────────────────────────────────────
+		control.commands[admin.Command.SELF_NOCLIP].run(src, {})
+		control.Pump(4)
+		local on = lastTravel('noclip')
+		check('noclip on is sent to the operator',
+			on ~= nil and on[2] == true,
+			on and ('%s=%s'):format(tostring(on[1]), tostring(on[2])))
+		check('and the body goes with it -- this is the despawn the pop accompanies',
+			control.bodies.visible[src] == false, tostring(control.bodies.visible[src]))
+		check('and noclip is recorded as on, for the checkbox', Players.IsNoclip(src) == true)
+		local writes = #control.bodies.writes
+		check('and the hide is the only body write so far', writes == 1, writes)
+
+		-- ── the way down, as the CLIENT sees it ───────────────────────────
+		-- The native being switched off underneath the server. This event is the
+		-- only thing that can say so, and without it the body stays hidden for
+		-- the rest of the session.
+		env.source = src
+		control.netEvents[admin.Event.NOCLIP_BODY](false)
+		control.Pump(4)
+		check('the native going off underneath the server is honoured',
+			Players.IsNoclip(src) == false)
+		check('and the body is given back', control.bodies.visible[src] == true,
+			tostring(control.bodies.visible[src]))
+
+		-- ── and the direction a client must NOT be able to claim ──────────
+		control.commands[admin.Command.SELF_NOCLIP].run(src, {})
+		control.Pump(4)
+		env.source = src
+		env.source = src
+		control.netEvents[admin.Event.NOCLIP_BODY](true)
+		control.Pump(4)
+		check('a client claiming noclip is ON cannot drive its own body',
+			Players.IsNoclip(src) == true and control.bodies.visible[src] == false,
+			('%s/%s'):format(tostring(Players.IsNoclip(src)),
+				tostring(control.bodies.visible[src])))
+
+		-- ── two reasons, one body ─────────────────────────────────────────
+		-- The Invisible switch and the flying are separate reasons, and whichever
+		-- is switched off first must not hand back a body the other still hides.
+		control.commands[admin.Command.SELF_INVISIBLE].run(src, { 'on' })
+		control.Pump(4)
+		check('the Invisible switch hides the body too', control.bodies.visible[src] == false)
+		control.commands[admin.Command.SELF_NOCLIP].run(src, { 'off' })
+		control.Pump(4)
+		check('noclip off does not give back a body the switch still hides',
+			control.bodies.visible[src] == false, tostring(control.bodies.visible[src]))
+		check('and the travel instruction says off', (function()
+			local off = lastTravel('noclip')
+			return off ~= nil and off[2] == false
+		end)())
+		control.commands[admin.Command.SELF_INVISIBLE].run(src, { 'off' })
+		control.Pump(4)
+		check('and the switch off is what gives it back',
+			control.bodies.visible[src] == true, tostring(control.bodies.visible[src]))
+
+		-- A host that cannot hide a body says so instead of pretending. The flight
+		-- still takes -- the native is the operator's -- so the operator is told
+		-- the body did not follow, with the reason, rather than left to wonder.
+		control.bodies.refuse = 'no_such_native'
+		control.commands[admin.Command.SELF_NOCLIP].run(src, {})
+		control.Pump(4)
+		local toast = control.notices[#control.notices]
+		check('a host that cannot hide the body tells the operator why',
+			toast ~= nil and toast.playerId == src and toast.type == 'warning'
+				and tostring(toast.message):find('no_such_native', 1, true) ~= nil,
+			toast and ('%s: %s'):format(tostring(toast.type), tostring(toast.message)))
+		check('and the flight still took, so the answer is not a lie about noclip',
+			Players.IsNoclip(src) == true)
+		control.bodies.refuse = nil
+	end
+end
+
+section('noclip, the pop')
+do
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots with the admin module', cwhy == nil, cwhy)
+
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local admin = OPX.Modules.Get('admin')
+		local Noclip = admin.Noclip
+		local travel = admin.Event.TRAVEL
+
+		-- The advertised effect catalogue, in the shape a config can check against.
+		local carried = {}
+		for _, alias in ipairs(cenv.Open77.vfx.catalog()) do carried[alias] = true end
+
+		check('the pop owns one transition point and nothing else',
+			type(Noclip.Changed) == 'function' and type(Noclip.Pop) == 'function')
+		local report = Noclip.Report()
+		check('it starts with the effect the config names, and no handle',
+			report.handle == nil and report.effect == OPX.Config.MODULES.admin.NOCLIP.EFFECT,
+			report.effect)
+		-- The one failure a suite can catch without the game: an alias the engine
+		-- does not carry is answered `nil, invalid_argument` and draws NOTHING, so
+		-- a typo here would be a noclip that pops only in the log.
+		check('and that effect is one the engine actually carries',
+			carried[report.effect] == true, report.effect)
+		check('and its duration is inside the engine\'s own ceiling',
+			report.seconds >= 0.0 and report.seconds <= 600.0, tostring(report.seconds))
+
+		-- ── the way up ────────────────────────────────────────────────────
+		local mark = #cctl.clientToServer
+		cctl.netEvents[travel]('noclip', true)
+		cctl.Pump(4)
+		check('the way up plays the pop exactly once', #cctl.effects.plays == 1,
+			#cctl.effects.plays)
+		local first = cctl.effects.plays[1]
+		check('with the configured effect and duration',
+			first ~= nil and first.effect == report.effect
+				and first.options.duration == report.seconds,
+			first and ('%s/%s'):format(tostring(first.effect), tostring(first.options.duration)))
+		check('where the operator is standing, because a depot alias is resolved in the world',
+			first ~= nil and type(first.options.position) == 'table'
+				and first.options.position.x == 0.0 and first.options.position.y == 0.0
+				and first.options.position.z == 0.0)
+		check('and it is NOT sent to the entity-bound call, which would resolve it as a CName',
+			#cctl.effects.entityPlays == 0, #cctl.effects.entityPlays)
+		check('and the noclip native was really switched on', cctl.travels.noclip == true)
+		check('and the body is NOT reported on the way up -- the server already knew',
+			#cctl.clientToServer == mark)
+
+		-- ── and it RIDES the operator ─────────────────────────────────────
+		-- A world effect is placed once and then stays where it was put. An
+		-- operator noclips at 40 m/s, so a pop left at the spot the toggle
+		-- happened in is behind them before it has drawn a frame -- drawn
+		-- correctly, and visible to nobody, which is exactly what "the pop does
+		-- not show" looks like from inside the game. The effect is therefore
+		-- re-placed at the operator while it lives, and this is the check that
+		-- the suite can move the operator and watch it follow.
+		local riding = Noclip.Report().handle
+		check('the drawn pop was taken as a handle to move', riding ~= nil, tostring(riding))
+		cctl.placement.x, cctl.placement.y, cctl.placement.z = 12.5, -4.0, 2.25
+		cctl.Pump(3)
+		local moved = cctl.effects.updates[#cctl.effects.updates]
+		check('and it is re-placed where the operator IS, not where they were',
+			moved ~= nil and moved.id == riding and moved.options.position.x == 12.5
+				and moved.options.position.y == -4.0 and moved.options.position.z == 2.25,
+			moved and ('handle %s at (%s, %s, %s)'):format(tostring(moved.id),
+				tostring(moved.options.position.x), tostring(moved.options.position.y),
+				tostring(moved.options.position.z)) or 'never moved')
+		check('and it moved more than once, so this is a follow and not one nudge',
+			#cctl.effects.updates >= 2, #cctl.effects.updates)
+		check('and it is still never the entity-bound call', #cctl.effects.entityPlays == 0,
+			#cctl.effects.entityPlays)
+
+		-- Bounded by the effect's own life: past it the loop ends instead of
+		-- moving a dead handle for the rest of the session.
+		cctl.Pump(30)
+		local settled = #cctl.effects.updates
+		cctl.Pump(10)
+		check('and it stops when the effect expires instead of spinning a dead handle',
+			#cctl.effects.updates == settled,
+			('%d -> %d'):format(settled, #cctl.effects.updates))
+		cctl.placement.x, cctl.placement.y, cctl.placement.z = 0.0, 0.0, 0.0
+
+		-- A repeated `on` is not a transition, so it must not pop again.
+		cctl.netEvents[travel]('noclip', true)
+		cctl.Pump(4)
+		check('a repeated on does not pop again', #cctl.effects.plays == 1, #cctl.effects.plays)
+
+		-- ── the way down ──────────────────────────────────────────────────
+		cctl.netEvents[travel]('noclip', false)
+		cctl.Pump(4)
+		check('the way down plays the pop again', #cctl.effects.plays == 2, #cctl.effects.plays)
+		check('and this is the edge the server is told about',
+			#cctl.clientToServer > mark
+				and cctl.clientToServer[#cctl.clientToServer].name == admin.Event.NOCLIP_BODY
+				and cctl.clientToServer[#cctl.clientToServer][1] == false,
+			cctl.clientToServer[#cctl.clientToServer][1] == nil and 'nothing sent'
+				or tostring(cctl.clientToServer[#cctl.clientToServer][1]))
+
+		-- ── a pop the engine turns down ───────────────────────────────────
+		-- The native answers `nil, reason` here rather than raising, and a name the
+		-- catalogue does not carry arrives exactly this way.
+		local drawn = #cctl.effects.plays
+		local heldThen = Noclip.Report().handle
+		cctl.effects.refuse = 'invalid_argument'
+		cctl.netEvents[travel]('noclip', true)
+		cctl.Pump(4)
+		cctl.netEvents[travel]('noclip', false)
+		cctl.Pump(4)
+		local function popWarnings()
+			local found = {}
+			for _, line in ipairs(cctl.log.warn) do
+				if tostring(line):find('the noclip pop', 1, true) then found[#found + 1] = line end
+			end
+			return found
+		end
+		local warned = popWarnings()
+		check('a refused pop is reported once with the engine\'s own reason',
+			#warned == 1 and tostring(warned[1]):find('invalid_argument', 1, true) ~= nil,
+			#warned .. ': ' .. table.concat(warned, ' | '))
+		check('and nothing was drawn, so no handle was taken',
+			#cctl.effects.plays == drawn and #cctl.effects.calls == 2
+				and Noclip.Report().handle == heldThen,
+			('%d/%d'):format(#cctl.effects.plays, #cctl.effects.calls))
+		cctl.effects.refuse = nil
+
+		-- ── the handle is owned, not leaked ───────────────────────────────
+		cctl.netEvents[travel]('noclip', true)
+		cctl.Pump(4)
+		local held = Noclip.Report().handle
+		check('and the next drawn pop takes a fresh handle', held ~= nil and held ~= heldThen,
+			tostring(held))
+		check('a pop that was drawn is held', held ~= nil, tostring(held))
+		Noclip.Stop()
+		check('and stopping the module takes it down',
+			#cctl.effects.stopped >= 1
+				and cctl.effects.stopped[#cctl.effects.stopped] == held
+				and Noclip.Report().handle == nil,
+			table.concat(cctl.effects.stopped, ','))
+
+		-- ── a client with no effect layer at all ──────────────────────────
+		-- The half must still work: the state moves, the body is still reported,
+		-- and the missing layer is named once rather than every toggle.
+		local mark2 = #cctl.clientToServer
+		cenv.Open77.vfx = nil
+		cctl.netEvents[travel]('noclip', false)
+		cctl.Pump(4)
+		cctl.netEvents[travel]('noclip', true)
+		cctl.Pump(4)
+		local missing = 0
+		for _, line in ipairs(cctl.log.info) do
+			if tostring(line):find('no Open77.vfx', 1, true) then missing = missing + 1 end
+		end
+		check('a client without the effect layer says so once, not once per toggle',
+			missing == 1, missing)
+		check('and the half keeps working: the native still moves and the edge is still reported',
+			cctl.travels.noclip == true and #cctl.clientToServer > mark2)
+	end
+end
+
 section('module resolution')
 do
 	local cases = {

@@ -74,6 +74,11 @@ M.Event = {
 	-- not, and no payload mutates anything: the five below ask for a list, ask
 	-- for a switch back, or report. Every mutation is a command.
 	REFRESH = OPX.Event(NET, 'admin', 'refresh'),
+	-- The one thing a client can say about noclip: the native went off under it,
+	-- so the server's own idea of who is flying is stale. It carries a boolean
+	-- and nothing else -- there is no payload here that could hide a body the
+	-- operator did not ask to hide, and the off direction is the safe one.
+	NOCLIP_BODY = OPX.Event(NET, 'admin', 'noclipBody'),
 	TAGS_RESTORE = OPX.Event(NET, 'admin', 'tagsRestore'),
 	DOORS_HELLO = OPX.Event(NET, 'admin', 'doorsHello'),
 	PVP_REQUEST = OPX.Event(NET, 'admin', 'pvpRequest'),
