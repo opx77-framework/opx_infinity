@@ -168,6 +168,18 @@ do
 			env.OPX.Modules.Get('diagnostics') and env.OPX.Modules.Record('diagnostics').Reason)
 		check('/opx.modules is registered restricted',
 			control.commands['opx.modules'] ~= nil and control.commands['opx.modules'].restricted)
+
+		-- THE OTHER HALF OF THE FITTING-ROOM POLICY, and until it existed there
+		-- was no other half. `OFFER_POLICY` decides which world enters are HANDED
+		-- a room; the contract has carried `OpenPanel` and `OpenWardrobe` since
+		-- they were written and NOTHING IN THIS RUNTIME CALLED EITHER, so under
+		-- 'first' or 'never' a player who closed the room could not reach it
+		-- again for the life of the character. Unrestricted, because it opens
+		-- nothing but the asking player's own clothes.
+		check('/opx.appearance is registered, and open to everybody',
+			control.commands['opx.appearance'] ~= nil
+				and not control.commands['opx.appearance'].restricted,
+			control.commands['opx.appearance'] == nil and 'not registered' or 'restricted')
 		check('no thread died', #control.log.error == 0 or not table.concat(control.log.error)
 			:find('thread died'), table.concat(control.log.error, ' | '))
 
