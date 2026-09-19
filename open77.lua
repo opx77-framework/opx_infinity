@@ -69,6 +69,7 @@ shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
 shared_script "config/entry.lua"
+shared_script "config/spawn.lua"
 -- shared_script "config/gigs.lua"   -- parked; see the gigs block below
 shared_script "config/admin.lua"
 
@@ -130,6 +131,14 @@ client_script "modules/appearance/client/wardrobe.lua"
 shared_script "modules/entry/module.lua"
 shared_script "modules/entry/locales.lua"
 client_script "modules/entry/client/main.lua"
+
+-- Where a character starts, asked on every join. Depends on `character`, which owns
+-- placement; `character` reaches back for it through the contract at the moment it
+-- needs it, because declaring the dependency both ways is a cycle.
+shared_script "modules/spawn/module.lua"
+shared_script "modules/spawn/locales.lua"
+server_script "modules/spawn/server/main.lua"
+client_script "modules/spawn/client/main.lua"
 
 shared_script "modules/needs/module.lua"
 shared_script "modules/needs/locales.lua"

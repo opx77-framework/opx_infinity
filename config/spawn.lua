@@ -1,0 +1,103 @@
+--- Where a player may choose to start, and how long they have to say so.
+-- @author dop42
+--
+-- A character is born with no position: the row exists before its player has
+-- stood anywhere, so `spawn` is the one module that decides where a brand new
+-- character lands.
+--
+-- EVERY WORLD ENTER IS OFFERED THE MENU, a returning character included -- this
+-- used to be gated on the row having no position, which meant a character that
+-- had ever stood anywhere was never asked again. Choosing is the exception and
+-- resuming is still the default: a player who picks a spot is placed there, and
+-- one who picks nothing -- or never opens the menu, or lets the window run out
+-- -- is placed by `character` with no explicit target, which resolves to the
+-- row's own position. Only a character whose row holds nowhere reaches
+-- `character.DEFAULT_SPAWN`.
+--
+-- The module reads this as `M.Settings`.
+--
+-- THE COORDINATES ARE NOT INVENTED. Every entry below is copied verbatim --
+-- position and heading both -- from `resources/gamemodes/freeroam/shared/config.lua`
+-- in open77-base, whose `locations` table is documented there as "repository
+-- captures ... safe landing spots" from the platform's own entity and respawn
+-- captures. A made-up coordinate is a player who lands inside geometry, falls
+-- through the world, or arrives dead, so nothing here is guessed: to add a spot,
+-- stand on it in game, read the position, and copy the numbers.
+--
+-- `heading` is degrees, and 0.0 is a legitimate facing rather than "unset": it is
+-- north. The heading is what the kill-then-respawn transaction uses, so a spot
+-- without a considered one arrives facing whatever direction that number means.
+
+OPX.Config.MODULES.spawn = {
+	enabled = true,
+
+	-- How long a player has to pick before the server places them at
+	-- `character.DEFAULT_SPAWN` and takes the menu down. This is the ONLY thing
+	-- that ends a spawn choice the player never makes: without it a disconnected
+	-- client or a surface that never draws would leave a character standing in
+	-- the pre-game position, unnamed and unplaceable, for the session.
+	--
+	-- Long enough to read eleven cards, short enough that a player who has walked
+	-- away is not held. The page draws its own countdown from this number, and
+	-- that countdown is display only -- the server's own clock is the one that
+	-- ends the choice.
+	--
+	-- Five seconds is the floor, and it is enforced rather than suggested: a zero
+	-- from a typo would end the choice in the tick it was offered. So an operator
+	-- may shorten this, but not past five, and not to nothing.
+	--
+	-- THIS CLOCK STARTS WHEN THE MENU IS ON SCREEN, not when the offer is queued.
+	-- The two are not the same moment and used to differ by tens of seconds: a
+	-- brand new character is asked for a NAME at the same instant the server
+	-- offers the spawn, so the menu stands aside behind that form. Measured on a
+	-- live server, the offer was queued at 16:09:33 and the name was answered at
+	-- 16:10:14 -- a forty-five second window that left four seconds of menu, and
+	-- none at all if the form had run a little longer. The server starts this
+	-- clock when the client reports the menu up.
+	TIMEOUT_SECONDS = 45,
+
+	-- How long an offer NOBODY OPENS may hold a character unplaced, in seconds.
+	--
+	-- A bound on the runtime, not on the player: waiting on someone who is
+	-- choosing is the normal case and lasts as long as TIMEOUT_SECONDS says. This
+	-- is the other case -- a client that never draws the menu at all, which would
+	-- otherwise leave a character standing in the pre-game position for the whole
+	-- session, with no name and no way to be placed. Sixty seconds is the floor.
+	HOLD_MAX_SECONDS = 300,
+
+	-- Rate limit on the choice itself, in milliseconds. The menu is one shot; a
+	-- client that sends twice is a stutter or a modified client, and either way
+	-- it gets the one it asked for first.
+	CHOOSE_COOLDOWN_MS = 1000,
+
+	-- Whether the menu waits for the entry module to stop asking its own
+	-- questions before it opens.
+	--
+	-- A brand new character is asked TWO things at once -- the name form, which
+	-- lives in the world, and this, which is decided at the same moment the
+	-- platform announces a living body. Drawn together they are two modals
+	-- fighting for one keyboard, so with this true the menu waits for entry to
+	-- report itself idle. The wait is bounded by TIMEOUT_SECONDS above: a name
+	-- form nobody answers costs the player the choice, not the session.
+	WAIT_FOR_ENTRY = true,
+
+	-- The places a new character may start.
+	--
+	-- `id` is what the wire carries and what the server looks the spot up by, so
+	-- an id is permanent: renaming one refuses every client that still knows the
+	-- old name. `label` and `district` are drawn; `district` is the hint line
+	-- under the label, which is why it is the district and not the coordinates.
+	LOCATIONS = {
+		{ id = 'stoop',      label = 'King Stoop forecourt',   district = 'Watson',      x = -410.22,  y = 722.73,   z = 115.0, heading = 147.0 },
+		{ id = 'northside',  label = 'North promenade',        district = 'Watson',      x = -469.47,  y = 930.99,   z = 56.45, heading = -68.0 },
+		{ id = 'junction',   label = 'Lower Watson junction',  district = 'Watson',      x = -644.91,  y = 1019.37,  z = 36.56, heading = 75.5 },
+		{ id = 'underpass',  label = 'Lower Watson underpass', district = 'Watson',      x = -701.49,  y = 1033.97,  z = 35.71, heading = -104.5 },
+		{ id = 'city',       label = 'City west',              district = 'City Center', x = -667.14,  y = -382.61,  z = 9.16,  heading = 0.0 },
+		{ id = 'lab',        label = 'Open77 laboratory',      district = 'East',        x = 1669.75,  y = -739.12,  z = 49.86, heading = 0.0 },
+		{ id = 'dealer',     label = 'Vehicle dealership',     district = 'Westbrook',   x = -1442.2,  y = 127.4,    z = 18.0,  heading = 0.0 },
+		{ id = 'racegrid',   label = 'Westbrook race grid',    district = 'Westbrook',   x = -1450.2,  y = 119.9,    z = 14.8,  heading = 200.0 },
+		{ id = 'heights',    label = 'Northwest heights',      district = 'North Oak',   x = -1441.0,  y = 1269.0,   z = 123.0, heading = 180.0 },
+		{ id = 'arena',      label = 'Freeroam arena',         district = 'Badlands',    x = 381.358826, y = -2401.794189, z = 181.988541, heading = 0.0 },
+		{ id = 'coast',      label = 'Southwest coast',        district = 'Badlands',    x = -1716.38, y = -2421.28, z = 62.59, heading = 0.0 },
+	},
+}
