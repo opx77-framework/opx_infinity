@@ -346,7 +346,11 @@ local function normalizeField(field, index)
 		if description == nil then return nil, 'invalid_field_description' end
 	end
 
-	local entry = { id = id, label = label, description = description }
+	-- `ack` is the last keystroke this field has been RULED ON, and it rides back
+	-- on every frame. Without it a frame is anonymous: the page cannot tell the
+	-- answer to the character under the caret from the answer to the one before
+	-- it, and putting the older buffer back erases what the player just typed.
+	local entry = { id = id, label = label, description = description, ack = 0 }
 
 	if field.options ~= nil then
 		local choice, reason = normalizeOptions(field)
@@ -604,6 +608,10 @@ local function frame(owned)
 			row.placeholder = entry.placeholder
 			-- The field's own bound, which the page counts the buffer against.
 			row.max = entry.maxLength
+			-- Elided while nothing has been typed, like `spin` and `on`: a form
+			-- nobody has touched carries no acknowledgement and the page reads
+			-- the absence as zero.
+			row.ack = entry.ack > 0 and entry.ack or nil
 		else
 			row.value = shownValue(entry)
 		end
@@ -668,9 +676,13 @@ local function writeStatus(owned, text, bad)
 end
 
 --- Shows one of this module's own refusals, in the player's language.
+-- Drawn whether or not the line itself moved. A refusal is also the ONLY answer
+-- the page will get to the keystroke it refused, and the page is sitting on a
+-- character that nothing but this frame takes back.
 local function notice(key, params)
 	if record == nil then return end
-	if writeStatus(record, locale(key, params), true) then draw() end
+	writeStatus(record, locale(key, params), true)
+	draw()
 end
 
 --- Answers the open form once and takes it down.
@@ -812,16 +824,53 @@ local function fromPage(payload)
 	return record
 end
 
---- A candidate buffer the page reported for the focused field.
--- The page is answered with a frame either way, even when the text came back
--- unchanged: the page holds no buffer of its own and has to be told what was
--- kept.
+--- The field of the open form a page payload names, or nil for one it does not.
+local function fieldOf(owned, id)
+	for index = 1, #owned.fields do
+		if owned.fields[index].id == id then return owned.fields[index] end
+	end
+	return nil
+end
+
+--- A candidate buffer the page reported for one field.
+-- The page is answered with a frame in EVERY case that names a real field --
+-- accepted, refused, or aimed at a field this form does not have focused --
+-- and the frame carries the sequence of the keystroke it is answering.
+--
+-- The sequence is the whole of the fix for a line that went empty under the
+-- first character. The page reports a candidate and goes on showing it, because
+-- erasing it and waiting for Lua is a field that blinks back to its placeholder
+-- on every keystroke. What it may not do is show a candidate Lua has already
+-- ruled on, and a bare frame does not say which keystroke it answers: a frame
+-- built before the report lands carries the buffer from BEFORE the character
+-- and puts the field back to empty. With the sequence the page can tell the two
+-- apart -- an older frame leaves the line alone, the answering frame replaces
+-- it, and a refusal is an answering frame, so a refused character still goes.
+--
+-- A silent drop is what this cannot do. An edit that raced a focus change used
+-- to be discarded with no frame at all, which left a character in a field Lua
+-- never accepted and no answer that would ever take it out again.
 local function onEdit(payload)
 	if fromPage(payload) == nil then return end
+	local field = fieldOf(record, payload.id)
+	-- A payload naming no field of this form is not a race, it is a page talking
+	-- about something else, and answering it would teach it that it was heard.
+	if field == nil then return end
+
+	local seq = finite(payload.seq) and math.floor(payload.seq) or nil
+	-- Never backwards: two edits can cross on the wire, and the older one
+	-- arriving second must not un-answer the newer one.
+	if seq ~= nil and seq > field.ack then field.ack = seq end
+
 	local entry = entryOf(record)
 	-- The focused field only. The page blurs every other input, so an edit for
-	-- one of them is a keystroke that raced a focus change.
-	if entry.id ~= payload.id then return end
+	-- one of them is a keystroke that raced a focus change: it is refused, and
+	-- refused visibly, by the frame that goes back with the accepted buffer.
+	if entry.id ~= payload.id then
+		draw()
+		return
+	end
+
 	local refusal, params = edit(entry, payload.text)
 	if refusal ~= nil then
 		notice(refusal, params)

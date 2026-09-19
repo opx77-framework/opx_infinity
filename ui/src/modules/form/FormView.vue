@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref } from 'vue'
+import type { ObjectDirective } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
@@ -51,6 +52,30 @@ import { useBridge } from '@/composables/useBridge'
  *
  * Nothing about the protocol changed. Same channels, same handle guard, same six keys,
  * same candidate-only edits. Only what the player sees.
+ *
+ * -- THE ROUND TRIP IS NOT INSTANT, AND THE FIELD USED TO PAY FOR IT ------------
+ *
+ * `:value` is re-applied to the DOM on EVERY re-render of this input, unconditionally:
+ * Vue forces the `value` prop through even when the bound string has not changed, and
+ * `patchDOMProp` then writes it whenever the element disagrees. So between the `input`
+ * event and Lua's answer -- one page-to-Lua-to-page trip, which at creator framerates
+ * is longer than the gap between two keystrokes -- ANY frame that lands rewrites the
+ * line to the buffer Lua held BEFORE the character. Under the first character that
+ * buffer is the empty string, the placeholder comes back, and the field reads as empty
+ * while the player is typing into it.
+ *
+ * The answer is not to let the page own the buffer -- it must not, Lua truncates and
+ * filters and the line has to end up showing exactly what Lua kept. It is to make the
+ * frames distinguishable. Every edit leaves here stamped with a sequence; every frame
+ * carries back the last sequence each field was RULED ON. A frame that has caught up
+ * is the answer to what the player last typed and replaces the line, refusal included.
+ * A frame that has not is older than the caret and leaves the line alone -- the page
+ * goes on drawing the candidate it reported, which is already on screen, so nothing is
+ * written and the caret does not move.
+ *
+ * A candidate is a string this page HOLDS, never one it answers with. It lives for at
+ * most one round trip, it is dropped the instant Lua rules on it, and `values` on the
+ * submit is built by Lua out of its own buffers -- nothing here is ever read back.
  */
 
 type Handle = string | number
@@ -59,8 +84,12 @@ interface Field {
   id: string
   kind: 'text' | 'choice' | 'slider'
   label: string
-  /** Text kind: the buffer Lua accepted. */
+  /** Text kind: the buffer Lua accepted. The count under the line is this, and only
+      this: it is a statement about what Lua kept, so it may never count a candidate. */
   buffer: string
+  /** Text kind: what the line must show right now -- `buffer`, or the candidate this
+      page reported while Lua has not yet ruled on it. Never sent anywhere. */
+  shown: string
   /** Choice and slider: the value as Lua rendered it, suffix and all. */
   value: string
   /** Slider: the number, for the track. See the note on `suffix` in the report. */
@@ -112,6 +141,15 @@ const dim = ref(true)
 
 const listEl = ref<HTMLElement | null>(null)
 
+/* The keystrokes this page has reported and Lua has not yet ruled on: field id ->
+   the sequence it went out under and the candidate it carried. Deliberately not
+   reactive -- reporting a candidate must NOT re-render, because a re-render is what
+   writes the line, and the line already holds the character the player typed. */
+const pending = new Map<string, { seq: number; text: string }>()
+
+/** Monotonic across the whole surface. Only the ordering matters, not the value. */
+let stamp = 0
+
 const stripStyle = computed(() => `width: ${width.value}px`)
 
 const focused = computed(() => fields.value.find((field) => field.on))
@@ -129,7 +167,9 @@ function characters(value: string): number {
 /** input.js sized the plate to its content so the frame never outran the text, and
     `OpField` kept doing it. A LENGTH, not a value: nothing derived here is ever sent. */
 function chars(field: Field): number {
-  return Math.max(field.buffer.length, field.placeholder.length) + 1
+  // `shown`, not `buffer`: the plate sizes to the text that is actually on it, or the
+  // frame trails a round trip behind the caret sitting inside it.
+  return Math.max(field.shown.length, field.placeholder.length) + 1
 }
 
 /** The slider's rule, as a width. Clamped because a frame can legitimately carry a
@@ -168,19 +208,37 @@ function readFrame(payload: Payload): void {
     label: text(cap.label)
   }))
 
+  const drawn = new Set<string>()
+
   fields.value = list<Payload>(payload.rows).map((row) => {
     const named = text(row.kind, 'text')
     const kind: Field['kind'] = named === 'choice' || named === 'slider' ? named : 'text'
+    const id = text(row.id)
     const buffer = text(row.text)
+    drawn.add(id)
+
+    // THE RECONCILIATION. `ack` is the last keystroke Lua ruled on for this field; a
+    // frame that has reached the sequence still in flight IS the answer to it, so the
+    // candidate is dropped and the line snaps to what Lua kept -- shorter, filtered,
+    // or unchanged because the character was refused. A frame that has not reached it
+    // is older than the caret, and re-drawing the candidate leaves the DOM untouched.
+    const ack = num(row.ack)
+    const held = pending.get(id)
+    let shown = buffer
+    if (held !== undefined) {
+      if (ack >= held.seq) pending.delete(id)
+      else shown = held.text
+    }
     // `max` is the field's own bound either way: `maxLength` on a text field, the top of
     // the range on a slider. A row has one kind, so the two never meet.
     const min = num(row.min)
     const max = num(row.max, kind === 'slider' ? 100 : 0)
     return {
-      id: text(row.id),
+      id,
       kind,
       label: text(row.label),
       buffer,
+      shown,
       value: text(row.value),
       // `fill` is what opx77_input already sends; `number` is preferred when Lua sends
       // it, because a value re-derived from a rounded ratio would not step evenly.
@@ -196,6 +254,12 @@ function readFrame(payload: Payload): void {
     }
   })
 
+  // A candidate for a field this frame no longer draws can never be answered, and a
+  // stuck entry would freeze that line against every frame after it.
+  for (const id of pending.keys()) {
+    if (!drawn.has(id)) pending.delete(id)
+  }
+
   // input.js put the caret in the focused text field and blurred everything otherwise,
   // so the document -- not a field -- keeps the keyboard and keydown still fires.
   void nextTick(syncCaret)
@@ -208,7 +272,15 @@ function syncCaret(): void {
     const field = focused.value
     if (field && field.kind === 'text') {
       const input = root.querySelector<HTMLInputElement>(`[data-field="${field.id}"] input`)
-      if (input && document.activeElement !== input) input.focus()
+      if (input && document.activeElement !== input) {
+        input.focus()
+        // DOWN onto the second name lands the caret wherever that element was last
+        // left, which for a field carrying a draft is the front of it -- so the next
+        // character is typed in front of the name instead of after it. The end is the
+        // only position arriving at a line by keyboard can mean.
+        const end = input.value.length
+        input.setSelectionRange(end, end)
+      }
       return
     }
     const active = document.activeElement
@@ -218,6 +290,9 @@ function syncCaret(): void {
 
 function blank(): void {
   open.value = false
+  // Nothing in flight survives the form it was typed into: the next form's fields may
+  // carry the same ids, and a candidate held over would draw one form's text on another.
+  pending.clear()
   fields.value = []
   keys.value = []
   note.value = ''
@@ -250,6 +325,9 @@ useBridge('opx:form:open', (payload: Payload) => {
   guard('form:open', () => {
     if (!isHandle(payload.handle)) return
     release?.()
+    // Lua cancels the live form when a caller re-opens on the same surface, and the
+    // acknowledgements start again from whatever the new form's fields carry.
+    pending.clear()
     handle.value = payload.handle
     readConfig(payload)
     readFrame(payload)
@@ -288,9 +366,41 @@ onUnmounted(() => {
 })
 
 /** A CANDIDATE buffer, never an accepted one. Lua answers with a frame carrying the
-    text it kept, which may be shorter, unchanged, or the same string back. */
+    text it kept, which may be shorter, unchanged, or the same string back -- and the
+    sequence this went out under, which is how that frame is told from an older one. */
 function edit(field: Field, value: string): void {
-  emit('opx:form:edit', { handle: handle.value, id: field.id, text: value })
+  stamp += 1
+  pending.set(field.id, { seq: stamp, text: value })
+  emit('opx:form:edit', { handle: handle.value, id: field.id, seq: stamp, text: value })
+}
+
+/* -- THE CARET, WHEN LUA'S ANSWER IS NOT WHAT IS ON THE LINE -------------------
+   Writing `value` on a focused input drops the caret at the end, so a refusal or a
+   truncation arriving mid-word would throw the player to the end of their own name.
+   Vue owns the write -- `:value` is the binding and it stays -- so the caret is put
+   back around it: captured before the element is patched, restored after, and only
+   when the patch actually moved the text.
+
+   The rule is the length delta, not the old offset. Lua refusing the character just
+   typed shortens the line by one and the caret goes back one, which is where the
+   refused character would have been; Lua truncating a tail leaves the caret where it
+   was unless it was inside the part that went. */
+const carets = new WeakMap<HTMLInputElement, { was: string; at: number }>()
+
+const vCaret: ObjectDirective<HTMLInputElement> = {
+  beforeUpdate(el) {
+    if (document.activeElement !== el) return
+    carets.set(el, { was: el.value, at: el.selectionStart ?? el.value.length })
+  },
+  updated(el) {
+    const held = carets.get(el)
+    carets.delete(el)
+    if (held === undefined || document.activeElement !== el) return
+    if (held.was === el.value) return
+    const at = held.at - (held.was.length - el.value.length)
+    const to = Math.max(0, Math.min(el.value.length, at))
+    el.setSelectionRange(to, to)
+  }
 }
 
 /** The choice arrows, which are LEFT and RIGHT by another name. */
@@ -350,16 +460,20 @@ function focusField(field: Field): void {
               >
                 <span class="label">{{ field.label }}</span>
                 <span class="cell">
-                  <!-- NO `v-model`, here or anywhere on this surface. `:value` is the
-                       buffer Lua ACCEPTED and `@input` reports a candidate; the two are
-                       deliberately not the same string. -->
+                  <!-- NO `v-model`, here or anywhere on this surface. `:value` is what
+                       Lua's last word on this field allows the line to show and `@input`
+                       reports a candidate; the two are deliberately not the same string.
+                       `shown` is `buffer` except across the one round trip in which Lua
+                       has not yet ruled on the character under the caret -- see the
+                       header. The input stays fully controlled either way. -->
                   <input
                     v-if="field.kind === 'text'"
+                    v-caret
                     class="entry"
                     type="text"
                     spellcheck="false"
                     autocomplete="off"
-                    :value="field.buffer"
+                    :value="field.shown"
                     :placeholder="field.placeholder"
                     :style="{ '--chars': chars(field) }"
                     @input="edit(field, ($event.target as HTMLInputElement).value)"
