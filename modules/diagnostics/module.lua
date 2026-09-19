@@ -25,3 +25,9 @@ local M = OPX.Modules.Declare{
 -- written look identical from the server, and both look like "it does not work"
 -- from the player. This carries the line to the journal instead.
 M.PAGE = OPX.Event(OPX.Channel.NET, 'diagnostics', 'page')
+
+--- The answer to a diagnostic command, server to client, one line per entry.
+-- Declared here with `PAGE` rather than built in each half, which is how every
+-- other module keeps its wires: a rename then happens once, and the two halves
+-- cannot drift into two different names without the file saying so.
+M.LINES = OPX.Event(OPX.Channel.NET, 'diagnostics', 'lines')

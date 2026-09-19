@@ -169,7 +169,7 @@ const gearClass = computed(() => {
         <span class="speed">{{ vehicle.speed }}</span>
         <span v-if="vehicle.unit" class="unit">{{ vehicle.unit }}</span>
       </div>
-      <span class="gear" :class="gearClass">{{ vehicle.gear }}</span>
+      <span class="gear" :class="gearClass" data-augmented-ui="tr-clip border">{{ vehicle.gear }}</span>
     </div>
 
     <div class="meta">
@@ -177,7 +177,7 @@ const gearClass = computed(() => {
         <span class="label">{{ vehicle.integrityLabel }}</span>
         <b>{{ Math.round(vehicle.integrity) }}%</b>
       </span>
-      <span v-if="vehicle.airborne" class="chip">
+      <span v-if="vehicle.airborne" class="chip" data-augmented-ui="tr-clip border">
         <span class="chip-icon">!</span>
         <span class="chip-label">{{ vehicle.airborne }}</span>
       </span>
@@ -202,7 +202,7 @@ const gearClass = computed(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   opacity: 0;
   transform-origin: var(--origin, center center);
   transform: rotateY(var(--tilt, 0deg)) translateY(8px);
@@ -249,19 +249,19 @@ const gearClass = computed(() => {
 /* The channel the engine's share is painted into. Hairlines -- an outline, not a
    band, so an empty dial reads as an empty instrument and not as a grey stripe. */
 .rail {
-  stroke: var(--red-idle);
+  stroke: var(--op-red-idle);
   stroke-width: 1.2;
 }
 
 .inner-track {
-  stroke: var(--red-idle);
+  stroke: var(--op-red-idle);
   stroke-width: 1.2;
 }
 
 /* The redline zone, marked on the rim. White at low alpha: the alarm on this HUD
    is the absence of red, and a red warning band on a red ring says nothing. */
 .redline {
-  stroke: var(--alarm);
+  stroke: var(--op-alarm);
   stroke-opacity: 0.32;
   stroke-width: 2;
   stroke-dasharray: 15 100;
@@ -271,37 +271,37 @@ const gearClass = computed(() => {
 /* THE FILLS. The one painted area per ring, and it is the quantity itself. Both
    change `stroke-dasharray` and nothing else -- no width, no filter, no fill. */
 .rpm {
-  stroke: var(--red);
+  stroke: var(--op-red);
   stroke-width: 6;
   stroke-dasharray: 0 100;
   transition:
-    stroke-dasharray var(--op77-dur-fast) linear,
-    stroke var(--op77-dur-fast) linear;
+    stroke-dasharray var(--op-dur-fast) linear,
+    stroke var(--op-dur-fast) linear;
 }
 
 /* Redlining is the one moment the dial is telling the player about damage rather
    than about speed, so the band leaves the hue exactly as a `bad` gauge does. */
 .hot .rpm {
-  stroke: var(--alarm);
+  stroke: var(--op-alarm);
 }
 
 .integrity {
   /* Denser, not lit: integrity is the second read-out on this dial and the
      engine band is the first. */
-  stroke: var(--red-deep);
+  stroke: var(--op-red-deep);
   stroke-width: 2.5;
   stroke-dasharray: 0 100;
   transition:
-    stroke-dasharray var(--op77-dur-fast) linear,
-    stroke var(--op77-dur-fast) linear;
+    stroke-dasharray var(--op-dur-fast) linear,
+    stroke var(--op-dur-fast) linear;
 }
 
 .integrity.warn {
-  stroke: var(--red-hi);
+  stroke: var(--op-red-hi);
 }
 
 .integrity.bad {
-  stroke: var(--alarm);
+  stroke: var(--op-alarm);
 }
 
 .core {
@@ -315,29 +315,29 @@ const gearClass = computed(() => {
 }
 
 .speed {
-  font: 700 var(--op77-fs-head) / 1 var(--op77-font-display);
-  letter-spacing: var(--op77-track-head);
-  color: var(--red);
+  font: 700 var(--op-fs-head) / 1 var(--op-font-display);
+  letter-spacing: var(--op-track-head);
+  color: var(--op-red);
   font-variant-numeric: tabular-nums;
-  transition: color var(--op77-dur-fast) linear;
+  transition: color var(--op-dur-fast) linear;
 }
 
 /* The number goes to the brightest red rather than to white: the white is spent
    on the band, and two white things on one dial is an instrument with two
    alarms. */
 .hot .speed {
-  color: var(--red-hi);
+  color: var(--op-red-hi);
 }
 
 .unit {
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
-  color: var(--red-idle);
+  font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-red-idle);
 }
 
 /* =============================================================================
-   THE GEAR -- in the dial's open bottom, between the ring's ends. An outline
-   now, chamfered from the same 9-slice sprite at a smaller `border-image-width`.
+   THE GEAR -- in the dial's open bottom, between the ring's ends. An outline,
+   chamfered at 5px: the same shape as everything else, at the size this one is.
    ========================================================================== */
 .gear {
   position: absolute;
@@ -346,33 +346,33 @@ const gearClass = computed(() => {
   transform: translateX(-50%);
   min-width: 20px;
   padding: 3px 5px 2px;
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
   text-align: center;
-  color: var(--red);
-  border: 1px solid transparent;
-  border-image-source: var(--frame-live);
-  border-image-slice: 8;
-  border-image-width: 5px;
+  color: var(--op-red);
+  --aug-tr: 5px;
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
 }
 
 /* Neutral is the quiet rung: the car is in gear for nothing. */
 .gear.idle {
-  color: var(--red-idle);
-  border-image-source: var(--frame-idle);
+  color: var(--op-red-idle);
+  --aug-border-bg: var(--op-red-idle);
+  --aug-border-all: 1px;
 }
 
 /* Reverse is not an alarm, so it is not white -- it is the brightest red, the
    same rung a `warn` gauge takes. */
 .gear.reverse {
-  color: var(--red-hi);
-  border-image-source: var(--frame-hot);
+  color: var(--op-red-hi);
+  --aug-border-bg: var(--op-red-hi);
 }
 
 .meta {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   /* NO GROUND. A plate went under this line and came straight back off on the
      owner's word, with the rest of the HUD's; the padding went with it, because
      it was only ever there to keep the plate off the glyphs. */
@@ -381,29 +381,29 @@ const gearClass = computed(() => {
 .integrity-row {
   display: flex;
   align-items: baseline;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
 }
 
 .integrity-row .label {
-  font: 400 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  font: 400 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
-  color: var(--red-idle);
+  color: var(--op-red-idle);
   white-space: nowrap;
 }
 
 .integrity-row b {
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  color: var(--red);
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
+  color: var(--op-red);
   font-variant-numeric: tabular-nums;
 }
 
 .integrity-row.warn b {
-  color: var(--red-hi);
+  color: var(--op-red-hi);
 }
 
 .integrity-row.bad b {
-  color: var(--alarm);
+  color: var(--op-alarm);
 }
 
 /* =============================================================================
@@ -416,22 +416,21 @@ const gearClass = computed(() => {
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--op77-space-2);
-  padding: 4px var(--op77-space-3);
-  padding-right: calc(var(--op77-space-3) + var(--op77-cut-sm));
-  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  gap: var(--op-space-2);
+  padding: 4px var(--op-space-3);
+  padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   text-transform: uppercase;
   white-space: nowrap;
-  color: var(--red);
-  border: 1px solid transparent;
-  border-image-source: var(--frame-live);
-  border-image-slice: 8;
-  border-image-width: 6px;
+  color: var(--op-red);
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
 }
 
 .chip-icon {
   flex: none;
-  font: 900 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  font: 900 var(--op-fs-meta) / 1 var(--op-font-mono);
 }
 </style>

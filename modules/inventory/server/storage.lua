@@ -191,20 +191,6 @@ VALUES (@kind, @owner, NULLIF(@citizen, ''), NULLIF(@plate, ''), @slots, @maxWei
 	return Result.Ok({ header = found.value, created = tonumber(affected) == 1 })
 end
 
---- One container's header by id, or nil.
--- @author dop42
--- @param id integer
--- @return Result
-function Store.Header(id)
-	local row = Storage.Single([[
-SELECT id, kind, owner, slots, max_weight FROM opx77_inventories
- WHERE id = @id
- LIMIT 1
-  ]], { id = id })
-	if not row.ok then return row end
-	return Result.Ok(toHeader(row.value))
-end
-
 --- One page of a container's stacks, after a slot.
 -- Paged by SLOT NUMBER and never by offset: a save landing between two pages
 -- shifts every offset after it, and a stack would come out in both pages or in
@@ -442,14 +428,6 @@ end
 -- @param id integer
 function Store.Forget(id)
 	dirty[id] = nil
-end
-
---- Whether a container is waiting to be written.
--- @author dop42
--- @param id integer
--- @return boolean
-function Store.IsDirty(id)
-	return dirty[id] ~= nil
 end
 
 --- The containers holding an unwritten change.

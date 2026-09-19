@@ -350,8 +350,18 @@ OPX.Config.MODULES.character = {
 		},
 	},
 
-	-- Lifepaths offered at creation, validated against this list, stored in
-	-- `PlayerData.charInfo.origin` and never read back by the module.
+	-- Lifepaths, and NOTHING READS THIS YET. The claim that used to stand here --
+	-- "offered at creation, validated against this list" -- was not true: no file
+	-- in the runtime reads `ORIGINS`, and nothing writes `charInfo.origin`, so the
+	-- field replicated on the state bag is always empty. The creator this would be
+	-- offered in belongs to the platform and runs at join, before this runtime has
+	-- a character to put a lifepath on.
+	--
+	-- It is kept rather than deleted because it is the list an owner would edit
+	-- the moment the creation path exists, and because the bag field is already a
+	-- published shape. Whoever wires it: validate the chosen key against this
+	-- table on the SERVER before writing `charInfo.origin`, the way
+	-- `player.lua`'s name setter validates, and delete this note.
 	ORIGINS = {
 		nomad = {
 			label = 'Nomad',

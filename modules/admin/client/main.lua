@@ -23,6 +23,22 @@ local Text = OPX.Text
 M.Client = {}
 local Client = M.Client
 
+--- Writes a line to the client log AND to the server journal.
+---
+--- `Open77.log` on the client is a file on the player's machine, and the
+--- operator reading it is somewhere else, so a fault nobody can see is a fault
+--- nobody fixes. The relay belongs to `diagnostics`, which is declared optional:
+--- a runtime without it keeps the line local rather than failing.
+-- @author dop42
+-- @param message string
+function Client.Journal(message)
+	Open77.log.warn('[admin] ' .. message)
+
+	local diagnostics = OPX.Modules.Get('diagnostics')
+	local channel = type(diagnostics) == 'table' and diagnostics.PAGE or nil
+	if channel ~= nil then pcall(TriggerServerEvent, channel, '[admin] ' .. message) end
+end
+
 -- Fragment both known queue acknowledgement wordings share. The dispatcher
 -- answers an accepted command with one, and it is not something to show.
 local QUEUE_ACK = 'queued by '

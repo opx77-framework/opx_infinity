@@ -44,7 +44,13 @@ local M = OPX.Modules.Declare{
 	-- surfaces; `inventory` is the bag and weapon rows; `vehicles` proves a plate;
 	-- `downed` keeps the menu usable while the operator is on the floor; `prompts`
 	-- draws the travel strip.
-	optional = { 'menu', 'form', 'target', 'inventory', 'vehicles', 'downed', 'prompts' },
+	-- `diagnostics` is the odd one out: it carries no feature, it carries the
+	-- relay that puts a client-side fault in the SERVER journal, which is the
+	-- only copy an operator can read. Declared so the dependency is visible and
+	-- ordered rather than discovered at the call site; `Client.Journal` still
+	-- checks, because an optional module may be disabled.
+	optional = { 'menu', 'form', 'target', 'inventory', 'vehicles', 'downed', 'prompts',
+		'diagnostics' },
 }
 
 -- The three prefixes are disjoint by construction (core/shared/channels.lua):

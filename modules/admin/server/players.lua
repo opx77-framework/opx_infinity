@@ -609,27 +609,20 @@ function Players.Register()
 
 	-- A travel mode is not a command, so nothing re-resolves its grant on its
 	-- own: a staff member whose grant is taken away mid-session would keep
-	-- flying. `OPX.Scheduler` is the client's loop; the server VM has none, so
-	-- this keeps its own thread and each pass is guarded.
-	CreateThread(function()
-		while true do
-			Wait(SWEEP_MS)
-			local swept, failure = pcall(function()
-				for playerId, grant in pairs(noclip) do
-					if Server.Permitted(playerId, grant) == false then
-						setNoclip(playerId, false)
-						Open77.log.info(('[admin] noclip off for player %d: %s is no longer granted')
-							:format(playerId, grant))
-					end
-				end
-				for playerId, grant in pairs(mapPick) do
-					if Server.Permitted(playerId, grant) == false then
-						mapPick[playerId] = nil
-						travel(playerId, 'mapPick', false)
-					end
-				end
-			end)
-			if not swept then Open77.log.warn('[admin] travel sweep failed: ' .. tostring(failure)) end
+	-- flying.
+	OPX.Scheduler.Every('admin:travel-sweep', SWEEP_MS, function()
+		for playerId, grant in pairs(noclip) do
+			if Server.Permitted(playerId, grant) == false then
+				setNoclip(playerId, false)
+				Open77.log.info(('[admin] noclip off for player %d: %s is no longer granted')
+					:format(playerId, grant))
+			end
+		end
+		for playerId, grant in pairs(mapPick) do
+			if Server.Permitted(playerId, grant) == false then
+				mapPick[playerId] = nil
+				travel(playerId, 'mapPick', false)
+			end
 		end
 	end)
 

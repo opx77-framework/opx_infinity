@@ -132,6 +132,24 @@ do
 		check('no thread died', #control.log.error == 0 or not table.concat(control.log.error)
 			:find('thread died'), table.concat(control.log.error, ' | '))
 
+		-- The repeating work is registered rather than hand-rolled: six modules
+		-- used to open their own `while true` loop, one of them with no pcall
+		-- around the pass at all.
+		local report = table.concat(env.OPX.Scheduler.Report(), '\n')
+		local missing = {}
+		for _, job in ipairs({ 'vehicles:save', 'needs:autosave', 'downed:scan',
+			'weather:schedule', 'admin:travel-sweep', 'admin:tag-sweep', 'admin:door-sweep' }) do
+			if not report:find(job, 1, true) then missing[#missing + 1] = job end
+		end
+		check('every server job is on the scheduler', #missing == 0, table.concat(missing, ', '))
+
+		-- A tunable read at registration is frozen for the life of the resource.
+		-- The tag sweep passes the read itself, so its line reports what the
+		-- tunable says now.
+		check('a job may take its cadence from a live tunable',
+			report:find('admin:tag%-sweep%s+500ms') ~= nil,
+			report:match('admin:tag%-sweep[^\n]*'))
+
 		local leaks = namespaceLeaks(env.OPX)
 		check('no module hangs its internals off OPX',
 			#leaks == 0, table.concat(leaks, ', '))
@@ -453,6 +471,88 @@ do
 	end
 end
 
+-- ── the one client loop, on its own ──────────────────────────────────────────
+-- Loaded alone, against a clock and a `Wait` this section owns. Booting the real
+-- client gives thirty-five jobs and a host whose `Wait` discards its argument,
+-- which is exactly what hid both of the bugs below: a list that only ever grew,
+-- and a loop that slept a flat hundred milliseconds while a 33ms job was due.
+section('the client scheduler')
+do
+	local clock = 0
+	local waits = {}
+	local thread
+
+	local env = {
+		OPX = { Scheduler = {}, Now = function() return clock end },
+		Open77 = { log = { error = function() end, warn = function() end, info = function() end } },
+		CreateThread = function(fn) thread = coroutine.create(fn) end,
+		Wait = function(ms) waits[#waits + 1] = ms; coroutine.yield() end,
+		math = math, type = type, tonumber = tonumber, tostring = tostring,
+		pcall = pcall, ipairs = ipairs, string = string, table = table,
+	}
+
+	local chunk, why = loadfile('core/client/scheduler.lua', 't', env)
+	if chunk == nil then
+		check('the scheduler loads', false, why)
+	else
+		chunk()
+		local Scheduler = env.OPX.Scheduler
+
+		local runs = { a = 0, b = 0, c = 0 }
+		local a = Scheduler.Every('a', 100, function() runs.a = runs.a + 1 end)
+		local b = Scheduler.Every('b', 100, function() runs.b = runs.b + 1 end)
+		local c = Scheduler.Every('c', 100, function() runs.c = runs.c + 1 end)
+
+		Scheduler.Start()
+		local function pass()
+			coroutine.resume(thread)
+		end
+
+		clock = 1000
+		pass()
+		check('every registered job runs', runs.a == 1 and runs.b == 1 and runs.c == 1)
+
+		Scheduler.Cancel(b)
+		clock = 2000
+		pass()
+		check('a cancelled job stops running', runs.b == 1)
+		check('and is dropped from the list rather than kept as a hole',
+			#Scheduler.Report() == 2, tostring(#Scheduler.Report()))
+
+		-- The handle was an index into that list until this pass. Dropping `b`
+		-- moved `c` down one, so an index-shaped handle would now cancel `a`.
+		Scheduler.Cancel(c)
+		clock = 3000
+		pass()
+		check('a handle still names its own job after the list moved',
+			runs.a == 3 and runs.c == 2, ('a=%d c=%d'):format(runs.a, runs.c))
+
+		-- Nothing is due for 100ms, so the loop may sleep the floor.
+		check('the loop sleeps the idle floor when nothing is near',
+			waits[#waits] == 100, tostring(waits[#waits]))
+
+		Scheduler.Every('fast', 33, function() end)
+		clock = 3100
+		pass()
+		check('and no longer than the nearest deadline when something is',
+			waits[#waits] <= 33, tostring(waits[#waits]))
+
+		local raises = 0
+		Scheduler.Every('broken', 0, function()
+			raises = raises + 1
+			error('no')
+		end)
+		for step = 1, 6 do
+			clock = 4000 + step * 100
+			pass()
+		end
+		check('a job that keeps raising is suspended, not left to raise every pass',
+			raises == 3, tostring(raises))
+
+		Scheduler.Stop()
+	end
+end
+
 -- ── the registry, against declarations the resource does not ship ────────────
 section('ui focus')
 do
@@ -614,19 +714,30 @@ do
 			speaks['opx:locale:set'] == true)
 
 		-- Drift detector. A channel the page speaks that no Lua file mentions is
-		-- either a feature whose Lua half is not written yet -- which is fine and
-		-- expected here -- or a name one side has renamed and the other has not,
-		-- which is silent in both directions. Listing them is the point; the
-		-- check only fails on the handshake above.
+		-- either a feature whose Lua half is not written yet, or a name one side
+		-- has renamed and the other has not -- which is silent in both
+		-- directions. Listing them is the point; the check only fails on the
+		-- handshake above.
+		--
+		-- A CHANNEL NAME RARELY APPEARS WHOLE IN LUA. The house idiom is a
+		-- per-module `send(name, payload)` that builds `'<id>:' .. name`, so the
+		-- file holds the verb alone and the prefix is the directory it sits in.
+		-- Harvesting per module, off the manifest's own load order, is what
+		-- resolves the pair -- without it every module using the idiom is
+		-- reported as drift and the one real break is lost in the noise.
 		local lua = {}
-		for _, dir in ipairs({ 'core/client', 'lib/client', 'modules' }) do
-			-- Both spellings: the full `opx:` name where a module builds one, and
-			-- the bare channel where `OPX.Surface` adds the prefix for the caller.
-			local pipe = io.popen(('grep -rhoE "opx:[a-z:_]+|\'[a-z][a-z:_]*\'" %s 2>nul')
-				:format(dir))
-			if pipe then
-				for line in pipe:lines() do lua[(line:gsub("'", ''))] = true end
-				pipe:close()
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			local source = io.open(file, 'r')
+			if source then
+				local text = source:read('a')
+				source:close()
+
+				local module = file:match('^modules/([%a_]+)/')
+				for literal in text:gmatch("'([%a][%w:_]*)'") do
+					lua[literal] = true
+					if module then lua[module .. ':' .. literal] = true end
+				end
+				for name in text:gmatch('opx:[%a][%w:_]*') do lua[name] = true end
 			end
 		end
 

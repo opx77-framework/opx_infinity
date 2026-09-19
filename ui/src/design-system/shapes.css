@@ -1,0 +1,162 @@
+/* =============================================================================
+   OPEN//77 DESIGN SYSTEM -- SHAPES, ON AUGMENTED-UI
+   =============================================================================
+   augmented-ui draws every cut corner and every frame in this runtime. What
+   lives here is the OPX vocabulary on top of it: three presets that say what a
+   thing IS, and the state hooks that repaint them.
+
+   WHAT THIS REPLACED, and why it is not a smaller version of the same thing.
+   Every pass-02 surface drew its frame as a 9-slice `border-image` from an SVG
+   data URI: one URI per state, four or five states per surface, eleven surfaces
+   -- around fifty inline sprites, each a copy of the same path with one number
+   changed. The geometry was baked into the image, so a corner size needed a new
+   sprite, and `border-image-width` had to be tuned against the slice on every
+   small element. Here the geometry is `--aug-tr` and the paint is
+   `--aug-border-bg`: a state change writes ONE custom property and the shape is
+   untouched.
+
+   THE THREE OBJECTIONS THE OLD CODE RAISED, answered against the source in
+   `node_modules/augmented-ui/augmented-ui.css`:
+
+   1. "`--aug-border-bg` is one colour on four sides with no per-side form."
+      It is assigned to `background` (line 645), so it takes any gradient, and
+      the per-side WIDTHS `--aug-border-top/right/bottom/left` are first-class
+      (lines 215-218). `.op-arete` below is the lit leading edge, as a gradient.
+   2. "It confiscates the element's two pseudo-elements."
+      Only when both layers are on. `::after` is the border and `::before` is
+      the inlay, and each is `content: none` while its layer is off (631, 667).
+      Every preset here asks for `border` and NOT `inlay`, so `::before` is
+      still the element's own -- which is what the interlace uses.
+   3. "It re-clips on resize."
+      The clip is CSS custom properties resolved by the engine. There is no
+      JavaScript and no observer. What remains true is the DOM cost, so rule 1
+      still stands: augment the container, not forty cells.
+
+   THE ONE REAL CONSTRAINT. augmented-ui clips the element, and a clip cuts an
+   outset `box-shadow` off along the diagonal. A shape that must bloom uses
+   `.op-lift` (a `drop-shadow` filter, which follows the cut) and accepts the
+   filter's cost, or puts the glow on a child. Nothing that repaints every frame
+   may take a filter: see the note on `.op-lift`.
+   ========================================================================== */
+
+@import 'augmented-ui/augmented-ui.min.css';
+
+/* --- shared defaults --------------------------------------------------------
+   Set once for every augmented element, so a preset only says what is
+   different about it. The border is the house 1px stroke at rest. */
+[data-augmented-ui] {
+  --aug-border-all: 1px;
+  --aug-border-bg: var(--op-red-idle);
+}
+
+/* =============================================================================
+   .op-frame -- A CONTROL.
+   A closed 1px outline with the top-right corner chamfered. On this surface a
+   frame means "you can press this", so what is not a control does not get one:
+   a readout is a line of type, a separator is a 1px rule.
+   ========================================================================== */
+.op-frame {
+  --aug-tr: var(--op-cut-sm);
+  background: var(--op-plate);
+  color: var(--op-red-text);
+}
+
+/* The bay: the same idea one step up, for anything holding a list or a grid.
+   Two opposite corners, never adjacent: a box cut top-right and bottom-left
+   reads as a plate slid into place, which is the house idiom. */
+.op-bay {
+  --aug-tr: var(--op-cut-lg);
+  --aug-bl: var(--op-cut-lg);
+}
+
+/* A keycap. It depicts a physical key, and a key with no edge is a word:
+   `E OPEN` is two words where `[E] OPEN` is an instruction. The one framed
+   thing on a surface that otherwise draws no enclosure at all. */
+.op-cap {
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-all: 1px;
+  --aug-border-bg: var(--op-red);
+  /* NO GROUND. A cap is a mark on a strip that has no enclosure of its own, and
+     a plate behind each one would draw a row of little boxes down the edge of
+     the screen -- which is what the ground on a GROUP exists to avoid. The ink
+     shadow is what holds the letter. */
+}
+
+/* =============================================================================
+   STATE -- one property per change.
+   `--aug-border-bg` is the paint of the border layer, so a state is a repaint
+   of one layer and never a change of geometry.
+   ========================================================================== */
+
+/* Denser, not darker: a red that loses brightness on a night street loses the
+   row with it. This is the pointer, and it never blooms. */
+.op-frame.is-hover,
+.op-frame:hover:not(.is-off):not(.is-on) {
+  --aug-border-bg: var(--op-red-deep);
+  --aug-border-all: 1.5px;
+  color: var(--op-red);
+}
+
+/* Chosen: the frame goes to full red at a heavier stroke and the ground lifts.
+   The bloom is NOT here -- it is `.op-lift`, which a surface adds only when it
+   is not repainting every frame. */
+.op-frame.is-on {
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
+  background: var(--op-plate-lit);
+  color: var(--op-red);
+}
+
+/* Refused, or simply unavailable. Off the red family entirely: this is the
+   absence of a state rather than another rung of it. */
+.op-frame.is-off {
+  --aug-border-bg: rgba(174, 211, 224, 0.14);
+  color: var(--op-text-faint);
+  cursor: default;
+}
+
+/* The alarm rung, and the only thing here that leaves the hue. */
+.op-frame.is-alarm {
+  --aug-border-bg: var(--op-alarm);
+  --aug-border-all: 2.6px;
+  color: var(--op-alarm);
+}
+
+/* --- .op-arete : the lit leading edge ---------------------------------------
+   The whole depth of an unfilled design is one lit edge and one that is not,
+   and this is the pair augmented-ui was said not to be able to express. It is a
+   gradient across the border layer: the top-left run takes the lit tone, the
+   bottom-right run the base one, and the hand-off sits on the diagonal the
+   chamfer already implies.
+
+   Mirrored for a surface anchored to the right, where the leading edge is the
+   other one. */
+.op-arete {
+  --aug-border-bg: linear-gradient(135deg,
+    var(--op-red-hi) 0%,
+    var(--op-red-hi) 42%,
+    var(--op-red-idle) 58%,
+    var(--op-red-idle) 100%);
+}
+
+.op-arete.is-end {
+  --aug-border-bg: linear-gradient(225deg,
+    var(--op-red-hi) 0%,
+    var(--op-red-hi) 42%,
+    var(--op-red-idle) 58%,
+    var(--op-red-idle) 100%);
+}
+
+/* --- .op-lift : the bloom that survives a clip -------------------------------
+   An outset `box-shadow` is cut off along the chamfer by the element's own clip
+   -- the same shape mismatch that took the corner off the old sprite's shadow.
+   `drop-shadow` follows the clipped result instead, so it is the only bloom
+   that traces this shape.
+
+   IT IS A FILTER, so it gives the element its own backing store. Never put it
+   on anything whose value changes every frame: the HUD's gauges and readouts
+   repaint at 30Hz and must not carry one. One chosen row, one failed toast --
+   things that change when the player does something -- are what this is for. */
+.op-lift {
+  filter: drop-shadow(0 0 6px var(--op-red-glow));
+}

@@ -70,7 +70,7 @@ import type { CatalogEntry, Container, Handle, NearbyPlayer, ScreenConfig, TabSp
  *
  *   * ONE CENTRED PAIR. `.screen` is `inset: 0` with `align-items: center` and
  *     `justify-content: center`; `.frame` is two panels, `align-items:
- *     flex-start`, `gap: --op77-space-7`. Both axes, dead centre.
+ *     flex-start`, `gap: --op-space-7`. Both axes, dead centre.
  *   * PANELS ARE A FIXED WIDTH DERIVED FROM THE GRID, not `flex: 1`. Five columns
  *     of a 90px square, seven rows before it scrolls -- see `geometry.ts`.
  *   * THE PAIR SCALES, IT DOES NOT REFLOW. `fit()` is reproduced verbatim,
@@ -758,7 +758,7 @@ try {
             </div>
             <!-- The key the player actually has, rebinds included: Lua reads it
                  back off the host at send time rather than trusting the config. -->
-            <kbd v-if="config.openKey" class="cap">{{ config.openKey }}</kbd>
+            <kbd v-if="config.openKey" class="cap" data-augmented-ui="tr-clip border">{{ config.openKey }}</kbd>
           </header>
 
           <nav v-if="tabs.length" class="tabs">
@@ -767,6 +767,7 @@ try {
               :key="spec.key"
               type="button"
               class="tab"
+              data-augmented-ui="tr-clip border"
               :class="{ on: spec.key === currentTab }"
               @click="tab = spec.key"
             >
@@ -804,6 +805,7 @@ try {
             <button
               type="button"
               class="row grow"
+              data-augmented-ui="tr-clip border"
               :class="{ off: !primary || busy }"
               :disabled="!primary || busy"
               @click="primary && doSort(primary.id, 'weight')"
@@ -813,13 +815,19 @@ try {
             <button
               type="button"
               class="row grow"
+              data-augmented-ui="tr-clip border"
               :class="{ off: !primary || busy }"
               :disabled="!primary || busy"
               @click="primary && doSort(primary.id, 'name')"
             >
               {{ label('sortName') }}
             </button>
-            <button type="button" class="row grow" @click="close">
+            <button
+              type="button"
+              class="row grow"
+              data-augmented-ui="tr-clip border"
+              @click="close"
+            >
               {{ label('close') }}
             </button>
           </footer>
@@ -870,13 +878,19 @@ try {
               <button
                 type="button"
                 class="row grow"
+                data-augmented-ui="tr-clip border"
                 :class="{ off: busy }"
                 :disabled="busy"
                 @click="doSort(secondary!.id, 'weight')"
               >
                 {{ label('sortWeight') }}
               </button>
-              <button type="button" class="row grow" @click="closeSecondary">
+              <button
+                type="button"
+                class="row grow"
+                data-augmented-ui="tr-clip border"
+                @click="closeSecondary"
+              >
                 {{ label('close') }}
               </button>
             </footer>
@@ -889,6 +903,7 @@ try {
           <div
             v-else
             class="ground"
+            data-augmented-ui="tr-clip bl-clip border"
             :class="{ over: drag.overGround, armed: config.drops }"
             :data-ground="config.drops ? 'drop' : undefined"
           >
@@ -1094,36 +1109,22 @@ try {
    here. Three steps dim -> deep -> lit, plus the lit arete, plus the HOT rung.
 
    `--red-hot` is the alarm, and it is red: an alarm stays in the hue and climbs
-   in intensity rather than leaving for white. `--op77-text` is now ONLY
+   in intensity rather than leaving for white. `--op-text` is now ONLY
    legibility -- a stack count, a data value, the label under the pointer --
    and never a meaning.
 
-   These inherit. `InventoryGrid.vue` and `InventorySlot.vue` read them from here
-   through the DOM, and each carries a literal fallback so the components are not
-   broken when read on their own. */
+   THE LADDER ITSELF IS GONE FROM HERE: the six rungs this file used to declare
+   are `design-system/tokens.css` now, and the grid and the cell read them from
+   the document rather than from this subtree. What is left below is the two
+   rung that is TRUE OF THIS SURFACE and of nothing else. */
 .room {
-  --red:      #ff3b47;                    /* chosen: lit, and the only bloom  */
-  --red-deep: #c8202e;                    /* HOVER: denser, no bloom          */
-  --red-hi:   #ff6b78;                    /* the lit arete                    */
-  --red-hot:  #ffa8ae;                    /* THE ALARM: red pushed to white   */
-  --red-idle: rgba(232, 67, 79, 0.62);    /* at rest                          */
-  --red-glow: rgba(255, 59, 71, 0.55);
 
-  /* TWO RUNGS THE LADDER ABOVE HAD NO NAME FOR, and this surface leans on both
-     harder than any other one does, which is why they get named here and not in
-     MenuView.vue.
-
-     `--red-text` is the resting colour of a control's LETTERING, and it is a
-     step brighter than the resting colour of that control's FRAME: a heading, a
-     tab, a footer button, a menu row and an occupied cell were each spelling the
-     same hex out by hand, five times over and across two files. It is one rung,
-     so it is one declaration.
-
-     `--red-track` is the unfilled part of a rule. The load bar in a panel head,
+  /* ONE RUNG THE DESIGN SYSTEM HAS NO NAME FOR, because only this surface has
+     the shape. `--red-track` is the unfilled part of a rule. The load bar in a panel head,
      the condition bar in the detail plate and the wear bar inside a cell are ONE
      object drawn at three sizes; they were three copies of one rgba that nothing
      kept in agreement. */
-  --red-text:  #e8646d;
+
   --red-track: rgba(232, 67, 79, 0.22);
 
   /* THE SHADOWS, NAMED FOR THE REASON HudRoot.vue NAMES ITS ONE: more elements,
@@ -1152,22 +1153,18 @@ try {
   --ink-tight: 0 1px 2px rgba(0, 0, 0, 0.95);
   --ink: var(--ink-tight), 0 0 9px rgba(0, 0, 0, 0.8);
   --dark: 0 1px 7px rgba(0, 0, 0, 0.55);
-  --bloom: 0 0 18px -4px var(--red-glow);
+  --bloom: 0 0 18px -4px var(--op-red-glow);
 
   /* The control frames. 24x24, 8px corner tiles, the chamfer living entirely
      inside the top-right tile so stretching an edge can never skew it. Copied
      from MenuView.vue verbatim. A tab, a footer button, a menu row and the
      ground plate are the same control the menu's row is. */
-  --frame-idle: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23e8434f" stroke-opacity="0.7" stroke-width="1.4"/></svg>');
-  --frame-hover: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23c8202e" stroke-width="1.8"/></svg>');
-  --frame-on: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%234a1519" fill-opacity="0.9" stroke="%23ff3b47" stroke-width="2.4"/></svg>');
-  --frame-off: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23aed3e0" stroke-opacity="0.14"/></svg>');
 
   position: absolute;
   inset: 0;
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--op77-dur-fast) linear;
+  transition: opacity var(--op-dur-fast) linear;
 }
 
 .room.open {
@@ -1225,8 +1222,8 @@ try {
 .frame {
   display: flex;
   align-items: flex-start;
-  gap: var(--op77-space-7);
-  perspective: var(--op77-persp);
+  gap: var(--op-space-7);
+  perspective: var(--op-persp);
   transform-origin: center center;
 }
 
@@ -1257,7 +1254,7 @@ try {
 /* `--from` is the entrance offset, and it is the old resource's: each panel comes
    in from its own side toward the centre. */
 .lead {
-  --tilt: var(--op77-tilt);
+  --tilt: var(--op-tilt);
   --origin: left center;
   --from: -14px;
 }
@@ -1268,7 +1265,7 @@ try {
    the cross axis here is the vertical one -- this has to be on the panel and not
    on the plate inside it, where the cross axis is horizontal instead. */
 .trail {
-  --tilt: calc(var(--op77-tilt) * -1);
+  --tilt: calc(var(--op-tilt) * -1);
   --origin: right center;
   --from: 14px;
   align-self: stretch;
@@ -1284,17 +1281,17 @@ try {
 .head {
   display: flex;
   align-items: flex-end;
-  gap: var(--op77-space-3);
+  gap: var(--op-space-3);
   min-width: 0;
   min-height: 46px;
-  padding-bottom: var(--op77-space-2);
-  border-bottom: 1px solid var(--red-idle);
+  padding-bottom: var(--op-space-2);
+  border-bottom: 1px solid var(--op-red-idle);
 }
 
 .head-text {
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   margin-right: auto;
   min-width: 0;
 }
@@ -1303,26 +1300,26 @@ try {
    `::before` with `--op77-accent`, which is yellow under `.op-theme-city`; the
    class is otherwise exactly this, and that is the only reason not to use it. */
 .eyebrow {
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
-  color: var(--red-deep);
+  color: var(--op-red-deep);
 }
 
 .eyebrow::before {
   content: "//";
   margin-right: 0.7em;
-  color: var(--red);
+  color: var(--op-red);
   font-weight: 700;
   letter-spacing: -0.06em;
 }
 
 .head h1 {
   margin: 0;
-  font: 700 var(--op77-fs-head) / 1 var(--op77-font-display);
-  letter-spacing: var(--op77-track-head);
+  font: 700 var(--op-fs-head) / 1 var(--op-font-display);
+  letter-spacing: var(--op-track-head);
   text-transform: uppercase;
-  color: var(--red-text);
+  color: var(--op-red-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1330,23 +1327,21 @@ try {
 
 .head h2 {
   margin: 0;
-  font: 700 var(--op77-fs-title) / 1.15 var(--op77-font-display);
-  letter-spacing: var(--op77-track-head);
+  font: 700 var(--op-fs-title) / 1.15 var(--op-font-display);
+  letter-spacing: var(--op-track-head);
   text-transform: uppercase;
-  color: var(--red-text);
+  color: var(--op-red-text);
 }
 
 /* The open key. A frame and a letter, in the surface's own red. */
 .cap {
   flex: none;
   padding: 3px 6px 4px;
-  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
-  color: var(--red-idle);
-  border: 1px solid transparent;
-  border-image-source: var(--frame-idle);
-  border-image-slice: 8;
-  border-image-width: 8px;
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-red-idle);
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red-idle);
 }
 
 /* =============================================================================
@@ -1355,43 +1350,43 @@ try {
 .tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--op77-space-2);
-  padding: var(--op77-space-3) 0 var(--op77-space-2);
+  gap: var(--op-space-2);
+  padding: var(--op-space-3) 0 var(--op-space-2);
 }
 
 .tab {
   flex: none;
   margin: 0;
-  padding: var(--op77-space-2) var(--op77-space-3);
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  padding: var(--op-space-2) var(--op-space-3);
+  font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
-  color: var(--red-text);
+  color: var(--op-red-text);
   cursor: pointer;
-  border: 1px solid transparent;
-  border-image-source: var(--frame-idle);
-  /* THE GROUND IS IN THE SPRITE. A `background` fills the BORDER BOX, so on a
-     chamfered control it repaints the corner the chamfer just cut. `fill` makes
-     the border-image paint its middle tile too, so the ground IS the cut shape --
-     the same mechanism the grid cells have always used (`6 fill`), now on the
-     controls beside them. Each state changes ground by changing sprite. */
-  border-image-slice: 8 fill;
-  border-image-width: 8px;
-  transition: color var(--op77-dur-fast) linear;
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red-idle);
+  /* THE GROUND FOLLOWS THE CUT because augmented-ui clips the element: a plain
+     `background` is the chamfered shape, where on an unclipped box it would
+     repaint the very corner the chamfer removed. Each state changes ground by
+     changing one property. */
+  background: var(--op-plate);
+  transition: color var(--op-dur-fast) linear;
 }
 
 .tab:hover:not(.on) {
-  color: var(--red-deep);
-  border-image-source: var(--frame-hover);
+  color: var(--op-red-deep);
+  --aug-border-bg: var(--op-red-deep);
+  --aug-border-all: 1.8px;
 }
 
 /* The active tab is the same outline as every other one. It goes bright and it
    blooms, and that is the whole of its state -- no fill, and the bloom REPLACES
    the dark shadow rather than stacking a second one on it. */
 .tab.on {
-  color: var(--red);
-  border-image-source: var(--frame-on);
-  box-shadow: var(--bloom);
+  color: var(--op-red);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2.4px;
+  filter: drop-shadow(0 0 7px var(--op-red-glow));
 }
 
 /* =============================================================================
@@ -1403,16 +1398,16 @@ try {
 .meter {
   display: flex;
   align-items: center;
-  gap: var(--op77-space-3);
+  gap: var(--op-space-3);
   min-width: 0;
-  padding: 0 0 var(--op77-space-3);
+  padding: 0 0 var(--op-space-3);
 }
 
 /* In the detail plate the caption sits above its rule rather than beside it. */
 .meter.stack {
   display: grid;
-  gap: var(--op77-space-2);
-  padding: var(--op77-space-2) 0 0;
+  gap: var(--op-space-2);
+  padding: var(--op-space-2) 0 0;
 }
 
 /* A bar is the one mark on this surface that carries no text-shadow, because it
@@ -1446,7 +1441,7 @@ try {
   /* A token, and it is a step up from the 2px this was: at 2px a 1px notch reads
      as a dotted line rather than as a division. The condition bar in the detail
      plate takes it too -- they are one instrument at two sizes. */
-  height: var(--op77-space-1);
+  height: var(--op-space-1);
   background: var(--red-track);
   box-shadow: var(--ink-tight);
   -webkit-mask-image: repeating-linear-gradient(
@@ -1464,38 +1459,38 @@ try {
 .rule i {
   display: block;
   height: 100%;
-  background: var(--red-idle);
-  transition: width var(--op77-dur) linear;
+  background: var(--op-red-idle);
+  transition: width var(--op-dur) linear;
 }
 
 .rule.high i {
-  background: var(--red-hi);
+  background: var(--op-red-hi);
 }
 
 /* THE ALARM, and it is red. The hot rung is red pushed toward white without
    leaving the hue: intensity climbs, the voice does not change. */
 .rule.full i {
-  background: var(--red-hot);
+  background: var(--op-alarm);
 }
 
 .cap-mono {
   flex: none;
-  font: 700 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
-  color: var(--red-deep);
+  color: var(--op-red-deep);
 }
 
 .figure {
   flex: none;
-  font: 400 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
-  color: var(--op77-text-dim);
+  font: 400 var(--op-fs-meta) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-text-dim);
   font-variant-numeric: tabular-nums;
 }
 
 .figure.quiet {
-  color: var(--red-idle);
+  color: var(--op-red-idle);
 }
 
 /* =============================================================================
@@ -1541,22 +1536,19 @@ try {
   /* 24x24 and 8px tiles, as `--frame-idle` / `--frame-on`, with the ground in the
      path's own `fill` -- the same red as the stroke beside it, two depths down;
      `border-image-slice: 8 fill` paints the middle tile. */
-  --ground-idle: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23e8434f" stroke-opacity="0.7" stroke-width="1.4"/></svg>');
-  --ground-on: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%234a1519" fill-opacity="0.90" stroke="%23ff3b47" stroke-width="2.4"/></svg>');
 
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--op77-space-3);
+  gap: var(--op-space-3);
   min-height: 0;
-  padding: var(--op77-space-5);
-  color: var(--red-idle);
-  border: 1px solid transparent;
-  border-image-source: var(--ground-idle);
-  border-image-slice: 8 fill;
-  border-image-width: 8px;
+  padding: var(--op-space-5);
+  color: var(--op-red-idle);
+  --aug-tr: var(--op-cut-md);
+  --aug-border-bg: var(--op-red-idle);
+  background: var(--op-plate-quiet);
   /* No outset black: it followed the border box and squared the chamfer. The
      separation is the sprite's own under-stroke now, as everywhere else. */
   /* Faint until something is actually being dragged, straight from the old
@@ -1565,8 +1557,8 @@ try {
      reason the plate can afford to be a plate when the drag starts. */
   opacity: 0.45;
   transition:
-    color var(--op77-dur-fast) linear,
-    opacity var(--op77-dur-fast) linear;
+    color var(--op-dur-fast) linear,
+    opacity var(--op-dur-fast) linear;
 }
 
 .room.dragging .ground.armed {
@@ -1576,14 +1568,16 @@ try {
 /* The slab, the bloom and the lit frame arrive together: this is the same event a
    cell's `.over` is, drawn at panel size. */
 .ground.over {
-  color: var(--red);
-  border-image-source: var(--ground-on);
-  box-shadow: var(--bloom);
+  color: var(--op-red);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2.4px;
+  background: var(--op-plate-lit);
+  filter: drop-shadow(0 0 7px var(--op-red-glow));
   opacity: 1;
 }
 
 .ground-word {
-  font: 700 var(--op77-fs-lead) / 1 var(--op77-font-display);
+  font: 700 var(--op-fs-lead) / 1 var(--op-font-display);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   text-align: center;
@@ -1591,8 +1585,8 @@ try {
 
 .ground-hint {
   max-width: 24ch;
-  font: 400 var(--op77-fs-meta) / 1.4 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 400 var(--op-fs-meta) / 1.4 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   text-align: center;
   opacity: 0.8;
 }
@@ -1611,19 +1605,19 @@ try {
 .told {
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   min-width: 0;
-  padding-bottom: var(--op77-space-2);
+  padding-bottom: var(--op-space-2);
   /* The divider between what the thing IS and what can be DONE with it. The same
      hairline the footer uses, so the card reads as one panel with two halves
      rather than as the two boxes it replaces. */
-  border-bottom: 1px solid var(--red-idle);
+  border-bottom: 1px solid var(--op-red-idle);
 }
 
 .told-top {
   display: flex;
   align-items: baseline;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   min-width: 0;
 }
 
@@ -1632,19 +1626,19 @@ try {
 .told-name {
   flex: 1 1 auto;
   min-width: 0;
-  font: 700 var(--op77-fs-lead) / 1.15 var(--op77-font-display);
-  letter-spacing: var(--op77-track-head);
+  font: 700 var(--op-fs-lead) / 1.15 var(--op-font-display);
+  letter-spacing: var(--op-track-head);
   text-transform: uppercase;
-  color: var(--red);
+  color: var(--op-red);
   overflow-wrap: anywhere;
 }
 
 /* LEGIBILITY, not meaning: it is a number the player has to read off, so white. */
 .told-times {
   flex: none;
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
-  color: var(--op77-text);
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-text);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1655,24 +1649,24 @@ try {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
   overflow: hidden;
-  font: 400 var(--op77-fs-meta) / 1.35 var(--op77-font-body);
+  font: 400 var(--op-fs-meta) / 1.35 var(--op-font-body);
 }
 
 .fact {
   display: flex;
   align-items: baseline;
-  gap: var(--op77-space-3);
+  gap: var(--op-space-3);
   min-width: 0;
-  padding-bottom: var(--op77-space-1);
+  padding-bottom: var(--op-space-1);
   border-bottom: 1px solid var(--red-track);
 }
 
 .fact .value {
   margin-left: auto;
   min-width: 0;
-  font: 500 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
-  color: var(--op77-text);
+  font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-text);
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1681,8 +1675,8 @@ try {
 
 .prose {
   margin: 0;
-  font: 400 var(--op77-fs-body) / 1.35 var(--op77-font-body);
-  color: var(--op77-text-dim);
+  font: 400 var(--op-fs-body) / 1.35 var(--op-font-body);
+  color: var(--op-text-dim);
 }
 
 /* =============================================================================
@@ -1692,22 +1686,22 @@ try {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: var(--op77-inset-y);
+  bottom: var(--op-inset-y);
   margin: 0;
-  font: 600 var(--op77-fs-meta) / 1.4 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 600 var(--op-fs-meta) / 1.4 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   text-align: center;
   text-transform: uppercase;
-  color: var(--red-hot);
+  color: var(--op-alarm);
   text-shadow: var(--ink);
 }
 
 .hint {
-  margin: var(--op77-space-2) 0 0;
-  font: 400 var(--op77-fs-meta) / 1.4 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  margin: var(--op-space-2) 0 0;
+  font: 400 var(--op-fs-meta) / 1.4 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   text-align: center;
-  color: var(--red-idle);
+  color: var(--op-red-idle);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1723,26 +1717,24 @@ try {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--op77-space-3);
+  gap: var(--op-space-3);
   min-width: 0;
   margin: 0;
-  padding: var(--op77-space-2) var(--op77-space-3) calc(var(--op77-space-2) + 1px);
-  font: 700 var(--op77-fs-lead) / 1.25 var(--op77-font-display);
+  padding: var(--op-space-2) var(--op-space-3) calc(var(--op-space-2) + 1px);
+  font: 700 var(--op-fs-lead) / 1.25 var(--op-font-display);
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--red-text);
+  color: var(--op-red-text);
   white-space: nowrap;
   cursor: pointer;
-  border: 1px solid transparent;
-  border-image-source: var(--frame-idle);
-  /* THE GROUND IS IN THE SPRITE. A `background` fills the BORDER BOX, so on a
-     chamfered control it repaints the corner the chamfer just cut. `fill` makes
-     the border-image paint its middle tile too, so the ground IS the cut shape --
-     the same mechanism the grid cells have always used (`6 fill`), now on the
-     controls beside them. Each state changes ground by changing sprite. */
-  border-image-slice: 8 fill;
-  border-image-width: 8px;
-  transition: color var(--op77-dur-fast) linear;
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red-idle);
+  /* THE GROUND FOLLOWS THE CUT because augmented-ui clips the element: a plain
+     `background` is the chamfered shape, where on an unclipped box it would
+     repaint the very corner the chamfer removed. Each state changes ground by
+     changing one property. */
+  background: var(--op-plate);
+  transition: color var(--op-dur-fast) linear;
 }
 
 .grow {
@@ -1759,48 +1751,50 @@ try {
 .row-value {
   flex: none;
   margin-left: auto;
-  font: 500 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   opacity: 0.88;
   font-variant-numeric: tabular-nums;
 }
 
 .row:hover:not(.off):not(.on) {
-  color: var(--red-deep);
-  border-image-source: var(--frame-hover);
+  color: var(--op-red-deep);
+  --aug-border-bg: var(--op-red-deep);
+  --aug-border-all: 1.8px;
 }
 
 /* Lit and blooming, and no fill. The bloom replaces the dark shadow. */
 .row.on {
-  color: var(--red);
-  border-image-source: var(--frame-on);
-  box-shadow: var(--bloom);
+  color: var(--op-red);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2.4px;
+  filter: drop-shadow(0 0 7px var(--op-red-glow));
 }
 
 .row.off {
-  color: var(--op77-text-faint);
+  color: var(--op-text-faint);
   cursor: default;
-  border-image-source: var(--frame-off);
+  --aug-border-bg: rgba(174, 211, 224, 0.14);
 }
 
 /* A captioned separator: a mono eyebrow and a rule, no frame. */
 .sep {
   display: flex;
   align-items: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   min-width: 0;
-  padding: var(--op77-space-3) 0 var(--op77-space-1) var(--op77-space-1);
-  font: 600 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
+  padding: var(--op-space-3) 0 var(--op-space-1) var(--op-space-1);
+  font: 600 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
-  color: var(--red-deep);
+  color: var(--op-red-deep);
 }
 
 .sep::after {
   content: "";
   flex: 1;
   height: 1px;
-  background: var(--red-idle);
+  background: var(--op-red-idle);
 }
 
 /* =============================================================================
@@ -1808,11 +1802,11 @@ try {
    ========================================================================== */
 .foot {
   display: flex;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   min-width: 0;
-  padding-top: var(--op77-space-3);
-  margin-top: var(--op77-space-3);
-  border-top: 1px solid var(--red-idle);
+  padding-top: var(--op-space-3);
+  margin-top: var(--op-space-3);
+  border-top: 1px solid var(--op-red-idle);
 }
 
 /* =============================================================================
@@ -1846,18 +1840,18 @@ try {
      both are here. */
   width: 200px;
   max-height: 72vh;
-  gap: var(--op77-space-2);
-  padding: var(--op77-space-3);
+  gap: var(--op-space-2);
+  padding: var(--op-space-3);
   /* THE GROUND AND THE LEADING RULE, off the plate this absorbed. The two grounds
      the owner asked for are the cell and the drop bay, and this is neither -- but
      it is the one box on the surface that opens over the street rather than over
      a panel, and the plate is what the detail text was already reading against.
      No chamfer on this one, so a plain background is the right shape. */
-  background: var(--op77-plate);
-  border-left: var(--op77-rule) solid var(--red);
+  background: var(--op-plate);
+  border-left: var(--op-rule) solid var(--op-red);
   /* Placed by `placeCard`, which offsets and flips in viewport pixels -- so no
      transform here, or the flip would be measured from the wrong corner. */
-  animation: card-in var(--op77-dur-fast) steps(2, end) backwards;
+  animation: card-in var(--op-dur-fast) steps(2, end) backwards;
 }
 
 .dialog {
@@ -1874,17 +1868,16 @@ try {
 .menu .row,
 .dialog .row {
   justify-content: flex-start;
-  gap: var(--op77-space-2);
-  padding: var(--op77-space-1) var(--op77-space-2) calc(var(--op77-space-1) + 1px);
-  font: 700 var(--op77-fs-meta) / 1.2 var(--op77-font-display);
+  gap: var(--op-space-2);
+  padding: var(--op-space-1) var(--op-space-2) calc(var(--op-space-1) + 1px);
+  font: 700 var(--op-fs-meta) / 1.2 var(--op-font-display);
   letter-spacing: 0.06em;
-  border-image-width: 6px;
 }
 
 .list {
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   min-width: 0;
   max-height: 44vh;
   overflow: hidden auto;
@@ -1898,15 +1891,15 @@ try {
 .stepper {
   display: flex;
   align-items: center;
-  gap: var(--op77-space-2);
-  padding-top: var(--op77-space-3);
+  gap: var(--op-space-2);
+  padding-top: var(--op-space-3);
 }
 
 .stepper .count {
   flex: 1;
   text-align: center;
-  font: 700 var(--op77-fs-head) / 1 var(--op77-font-mono);
-  color: var(--op77-text);
+  font: 700 var(--op-fs-head) / 1 var(--op-font-mono);
+  color: var(--op-text);
   font-variant-numeric: tabular-nums;
 }
 

@@ -1,0 +1,198 @@
+/* =============================================================================
+   OPEN//77 DESIGN SYSTEM -- TOKENS
+   =============================================================================
+   The one place a value is decided. Everything below is read by
+   `shapes.css`, `surface.css`, the components, and the feature modules.
+
+   This file replaced `design/tokens.css`, which had become half a design: it
+   still carried the pass-01 cyan/yellow signal family and blue panel fills that
+   no surface had read since the red pass landed, next to the pass-02 plates
+   that every surface does read. A token file that describes two designs cannot
+   tell you which one is live, so the dead half is gone and what is left is what
+   ships.
+
+   THE LOOK IS UNCHANGED. Same reds, same chamfer, same tilt, same ink, same
+   spacing. What changed is where the shapes come from: augmented-ui draws them
+   now, instead of eleven copies of a 9-slice SVG sprite.
+   ========================================================================== */
+
+:root {
+  /* --- THE RED LADDER ------------------------------------------------------
+     Ordered by brightness, and every surface spends the rungs it needs:
+
+       idle   present, not pointed at        deep   denser, the middle rung
+       lit    chosen, live, on               hi     the lit arete
+       text   running type inside a frame
+
+     This was declared as literals on eleven separate root elements, each with a
+     "delete when the pass is agreed" note. The pass is agreed. */
+  --op-red-idle: rgba(232, 67, 79, 0.62);
+  --op-red-deep: #c8202e;
+  --op-red:      #ff3b47;
+  --op-red-hi:   #ff6b78;
+  --op-red-text: #e8646d;
+  --op-red-glow: rgba(255, 59, 71, 0.55);
+
+  /* --- THE NEUTRAL RAMP ----------------------------------------------------
+     Not every word on this surface is the surface talking about itself. A
+     secondary line, a disabled row, a reading that is only context: those are
+     grey, and grey is what red means when it stops meaning anything.
+
+     Contrast is measured against the plate, not against a page: `text` is the
+     white a refusal is allowed to reach, `dim` carries a sentence under a
+     heading, `faint` is decoration and disabled type and is never body copy. */
+  --op-text:       #f2f6f8;
+  --op-text-dim:   #8d99a8;
+  --op-text-faint: rgba(141, 153, 168, 0.72);
+
+  /* A hairline that has to survive any backdrop. Depth on this surface comes
+     from borders, never from a shadow ramp. */
+  --op-line: rgba(174, 211, 224, 0.30);
+
+  /* A MARK ON A FILL, and never white. Almost nothing here is filled, so this
+     has one shape to serve: the tick inside a checkbox whose box has gone red.
+     `currentcolor` is the row's own red there, which is a red tick on a red
+     square -- `TargetView` fixed that with a near-black and `MenuView` never
+     did, which is why a chosen row's tick was invisible. */
+  --op-ink-on: #071013;
+
+  /* THE ALARM IS NOT RED. Red is this runtime's voice, so it cannot also be its
+     alarm: a red bar going redder inside a red frame on an all-red HUD says
+     nothing. The escalation climbs in luminance and then leaves the hue --
+     white-hot is the highest contrast the palette owns and it changes FAMILY,
+     which is what an alarm must do to be read without being looked at. */
+  --op-alarm: #ffa8ae;
+
+  /* --- THE GROUND ----------------------------------------------------------
+     Red taken down until it is a black, which is the only way a fill can be red
+     here and still do the job: at panel area a red anyone can NAME is a red
+     panel, and it swallows the lettering it was added to rescue.
+
+     0.78 is the floor for running text over gameplay. A block covering a
+     quarter of the screen takes it lower -- at that area the job is to separate
+     a word from the street, not to hold a picture against daylight. */
+  --op-plate:       rgba(28, 8, 9, 0.78);
+  --op-plate-quiet: rgba(28, 8, 9, 0.58);
+  --op-plate-lit:   rgba(74, 21, 25, 0.90);
+
+  /* The ink under every glyph. Two passes: the tight dark one gives a letter
+     its edge, the wide soft one lifts it off a blown-out plaza. Declared once
+     per surface root and inherited; an override replaces the whole list, so a
+     block wanting a bloom restates both passes plus the bloom. */
+  --op-ink:
+    0 1px 2px rgba(0, 0, 0, 0.95),
+    0 0 9px rgba(0, 0, 0, 0.8);
+
+  /* A border-image could not take a shadow, so this used to be an outset one on
+     the box -- rectangular where the frame was chamfered. augmented-ui clips the
+     element, so an outset shadow is SHEARED instead: see `.op-lift` in
+     shapes.css for the one that follows the cut. */
+  --op-shadow: 0 1px 7px rgba(0, 0, 0, 0.55);
+
+  /* --- TYPE ----------------------------------------------------------------
+     Three faces, bundled as woff2 and inlined by the build: there is no network
+     inside a CEF surface, and a `<link>` to a font silently never resolves.
+     The fallbacks are faces Windows ships, in the same voice. */
+  --op-font-display: 'Rajdhani', 'Bahnschrift Condensed', 'Arial Narrow', sans-serif;
+  --op-font-body:    'Saira', 'Bahnschrift', 'Segoe UI', system-ui, sans-serif;
+  --op-font-mono:    'IBM Plex Mono', 'Cascadia Mono', 'Consolas', ui-monospace, monospace;
+
+  /* Larger than a web page's scale: read at arm's length over a moving image. */
+  --op-fs-micro: 9px;
+  --op-fs-label: 10px;
+  --op-fs-meta:  11px;
+  --op-fs-body:  14px;
+  --op-fs-lead:  16px;
+  --op-fs-title: 18px;
+  --op-fs-head:  26px;
+  --op-fs-hero:  40px;
+
+  --op-track-micro: 0.18em;
+  --op-track-label: 0.12em;
+  --op-track-lead:  0.04em;
+  --op-track-head:  0.02em;
+
+  /* --- SPACE ---------------------------------------------------------------
+     Base-4. Density lives inside a surface, not between surfaces. */
+  --op-space-1: 4px;
+  --op-space-2: 8px;
+  --op-space-3: 12px;
+  --op-space-4: 16px;
+  --op-space-5: 24px;
+  --op-space-6: 32px;
+  --op-space-7: 48px;
+  --op-space-8: 64px;
+
+  /* Distance from the viewport edge, so every anchored surface lines up
+     instead of each picking its own vh/vw. */
+  --op-inset-x: 32px;
+  --op-inset-y: 28px;
+
+  /* How much room a cluster's shadows and blooms need INSIDE a wrapper that
+     clips. The wrapper pads by this and the anchor offsets pay it back. */
+  --op-bleed: 10px;
+
+  /* --- SHAPE ---------------------------------------------------------------
+     Three cut sizes, and they are SIZES, not shapes: which corner is cut is the
+     preset's business. Nine hand-rolled numbers across nine stylesheets became
+     these three. */
+  --op-cut-sm: 6px;    /* chips, tags, keycaps, single rows */
+  --op-cut-md: 12px;   /* panels, toasts                    */
+  --op-cut-lg: 20px;   /* bays, drawers, strip frames       */
+
+  /* The accent rule down a leading edge: the house marker for "this is ours". */
+  --op-rule: 3px;
+
+  /* --- THE PLANE -----------------------------------------------------------
+     CP2077's HUD is curved by a shader. A CSS page cannot warp a plane, but it
+     can BE one: a surface is anchored to a screen edge and its far edge
+     recedes, which is what a projection on the inside of a visor does.
+
+     ONE axis. A second turns the plane into a box sitting in the room. */
+  --op-persp: 900px;
+  --op-tilt: 7deg;
+
+  /* --- MOTION --------------------------------------------------------------
+     It cuts, it does not fade. No glitch loops, no parallax, no idle animation. */
+  --op-ease: cubic-bezier(0.2, 0, 0, 1);
+  --op-dur-fast: 90ms;   /* colour and border changes */
+  --op-dur: 150ms;       /* enter, leave, hover       */
+  --op-dur-slow: 220ms;  /* a whole surface arriving  */
+  --op-stutter: steps(3, end);
+}
+
+/* Every surface is transparent: the game renders behind it, and a page that
+   paints a background paints over the game. `opacity` belongs on <body> and
+   never on <html> -- on <html> it creates a stacking context that drags the
+   fixed-position layers into it. */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: transparent;
+  color: var(--op-red-text);
+  font: 400 var(--op-fs-body) / 1.4 var(--op-font-body);
+  /* Synthetic bold of a mono face destroys tabular alignment, and every number
+     on this surface is tabular. */
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* Animation enhances, it never gates. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+  }
+}

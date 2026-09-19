@@ -124,34 +124,28 @@ function Tags.Register()
 		watching[tonumber(playerId) or 0] = nil
 	end)
 
-	-- `OPX.Scheduler` is the client's loop; the server VM has none, so the sweep
-	-- keeps its own thread and each pass is guarded: a raise from a host read must
-	-- end the pass, not the loop.
-	CreateThread(function()
-		while true do
-			Wait(math.floor(OPX.Tune.Number('ADMIN_TAGS_REFRESH_MS', 500)))
-			local swept, failure = pcall(function()
-				local rows, sent
-				for playerId in pairs(watching) do
-					if not granted(playerId) then
-						watching[playerId] = nil
-						TriggerClientEvent(M.Event.TAGS_STATE, playerId, false, false)
-						Open77.log.info(('[admin] name tags off for player %d: %s is no longer granted')
-							:format(playerId, Command.SELF_TAGS))
-					else
-						if rows == nil then
-							rows = nameRows()
-							sent = signature(rows)
-						end
-						push(playerId, rows, sent)
+	-- The cadence is a live tunable, so the scheduler is handed the read rather
+	-- than its answer: a number resolved here would be frozen for the life of
+	-- the resource and `/opx.tune ADMIN_TAGS_REFRESH_MS` would change nothing.
+	OPX.Scheduler.Every('admin:tag-sweep',
+		function() return OPX.Tune.Number('ADMIN_TAGS_REFRESH_MS', 500) end,
+		function()
+			local rows, sent
+			for playerId in pairs(watching) do
+				if not granted(playerId) then
+					watching[playerId] = nil
+					TriggerClientEvent(M.Event.TAGS_STATE, playerId, false, false)
+					Open77.log.info(('[admin] name tags off for player %d: %s is no longer granted')
+						:format(playerId, Command.SELF_TAGS))
+				else
+					if rows == nil then
+						rows = nameRows()
+						sent = signature(rows)
 					end
+					push(playerId, rows, sent)
 				end
-			end)
-			if not swept then
-				Open77.log.warn('[admin] name tag sweep failed: ' .. tostring(failure))
 			end
-		end
-	end)
+		end)
 end
 
 --- Turns every operator's tags off, so a stop leaves no stale list drawn.

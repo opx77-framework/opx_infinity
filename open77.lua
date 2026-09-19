@@ -69,7 +69,6 @@ shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
 shared_script "config/entry.lua"
--- shared_script "config/gigs.lua"   -- parked; see the gigs block below
 shared_script "config/admin.lua"
 
 shared_script "lib/shared/result.lua"
@@ -87,6 +86,7 @@ shared_script "lib/shared/citizenid.lua"
 server_script "lib/server/storage.lua"
 server_script "lib/server/audit.lua"
 
+server_script "core/server/scheduler.lua"
 server_script "core/server/sessions.lua"
 server_script "core/server/answer.lua"
 server_script "core/server/commands.lua"
@@ -236,26 +236,6 @@ client_script "modules/elevators/client/state.lua"
 client_script "modules/elevators/client/main.lua"
 client_script "modules/elevators/client/panel.lua"
 client_script "modules/elevators/client/exports.lua"
-
--- PARKED. `modules/gigs/` and `config/gigs.lua` are written, tested and left on
--- disk unlisted: a file the manifest does not name never loads. They come back
--- with these lines, `shared_script "config/gigs.lua"` above, and the
--- `ui.vanilla.map` permission below -- all three together or not at all.
---
--- After `target`, `inventory` and `animations`, all three of which it reads a
--- contract from, and after `character`, which it requires. `client/run.lua`
--- before `client/board.lua`: the board's rows call into the run.
---
--- shared_script "modules/gigs/module.lua"
--- shared_script "modules/gigs/locales.lua"
--- shared_script "modules/gigs/shared/catalog.lua"
--- server_script "modules/gigs/server/ledger.lua"
--- server_script "modules/gigs/server/runs.lua"
--- server_script "modules/gigs/server/main.lua"
--- client_script "modules/gigs/client/run.lua"
--- client_script "modules/gigs/client/board.lua"
--- client_script "modules/gigs/client/main.lua"
-
 -- LAST of the modules, because it reaches into nearly all of them and provides
 -- nothing back. Every contract it uses is optional bar `character`: without the
 -- menu, the form or the target eye it logs one line each and all 50 commands

@@ -16,4 +16,14 @@ OPX.Config.CLIENT = {
 	-- shipped resources use, including `opx77_chat` and `opx77_target`, which both
 	-- take focus on it. `modal` is real but unproven here.
 	SURFACE = { layer = 'hud', zIndex = 700, fps = 60 },
+
+	-- Where a toast that names no position of its own goes, and how wide the
+	-- stacks are. The page holds the same two defaults and takes these on its
+	-- own handshake, so an owner who deletes this block gets `top_right` at
+	-- 340px rather than a broken surface.
+	--
+	-- One of seven the page draws: top_left, top_center, top_right, middle_left,
+	-- bottom_left, bottom_center, bottom_right. An unknown name is refused by
+	-- the page and the default stands.
+	TOASTS = { position = 'top_right', width = 340 },
 }

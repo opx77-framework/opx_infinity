@@ -6,9 +6,10 @@ import { installDiagnostics, report } from '@/bridge/diag'
 import { configureFocus } from '@/bridge/focus'
 import { configureRpc } from '@/bridge/rpc'
 import { setStrings } from '@/stores/ui'
-import '@/design/fonts.css'
-import '@/design/tokens.css'
-import '@/design/augmented.css'
+import '@/design-system/fonts.css'
+import '@/design-system/tokens.css'
+import '@/design-system/shapes.css'
+import '@/design-system/surface.css'
 
 /**
  * The one `createApp`, and everything that has to happen around it in order.

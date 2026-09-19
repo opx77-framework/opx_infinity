@@ -95,13 +95,6 @@ local function registerKey(key)
 	return true
 end
 
---- The key the open mapping answers to now, rebinds included, or nil.
--- @author dop42
--- @return string|nil
-function View.Key()
-	return bound
-end
-
 -- Answers the surface-wide focus broadcast for this module's own owner.
 local function onFocus(payload)
 	if type(payload) ~= 'table' then return end

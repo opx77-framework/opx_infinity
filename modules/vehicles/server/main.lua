@@ -456,15 +456,8 @@ function M.Start()
 	AddEventHandler(OPX.Host.VEHICLE_REMOVED, removed)
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, departed)
 
-	-- `OPX.Scheduler` is the client's loop; the server VM has none, so the save
-	-- loop keeps its own thread.
 	local everyMs = math.max(1000, math.floor(tonumber(M.Settings.SAVE_SECONDS) or 120) * 1000)
-	CreateThread(function()
-		while true do
-			Wait(everyMs)
-			savePass()
-		end
-	end)
+	OPX.Scheduler.Every('vehicles:save', everyMs, savePass)
 end
 
 --- Writes back everything that is out before the resource goes.

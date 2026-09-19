@@ -123,7 +123,7 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
            A `clip-path` on `.fill` would be scaled by the `scaleX` that moves the
            bar -- the corner would stretch open as the gauge fills and close as it
            empties. The clip belongs on a box that never transforms. -->
-      <span class="track">
+      <span class="track" data-augmented-ui="tr-clip border">
         <span class="bar">
           <span class="fill" :style="{ transform: `scaleX(${share(vital.value)})` }" />
         </span>
@@ -144,9 +144,9 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
 .vitals {
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   width: var(--vitals-width, 210px);
-  max-width: calc(100vw - var(--op77-inset-x) * 2);
+  max-width: calc(100vw - var(--op-inset-x) * 2);
   /* NO GROUND, and no padding with it. A plate went behind this column and came
      straight back off on the owner's word, with the rest of the HUD's: the
      padding only existed to stop the plate reading as a highlighter, and
@@ -163,11 +163,12 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
 .gauge {
   display: flex;
   align-items: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   /* Every tone resolves through these two, so a state change is exactly two
      custom properties and the browser repaints one bar and one number. */
-  --tone: var(--red-idle);
-  --frame: var(--frame-idle);
+  --tone: var(--op-red-idle);
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: var(--op-red-idle);
   color: var(--tone);
 }
 
@@ -193,7 +194,7 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
      frame carries one, which is why the bar, the readout and the vehicle rings
      do not. */
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.95));
-  transition: stroke var(--op77-dur-fast) linear;
+  transition: stroke var(--op-dur-fast) linear;
 }
 
 .track {
@@ -209,12 +210,6 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
      frame -- and the alternative, clipping the bar, is a `clip-path` on the one
      element that changes every frame. */
   padding: 3px;
-  border: 1px solid transparent;
-  border-image-source: var(--frame);
-  border-image-slice: 8;
-  /* 6px, not the 8px of the slice: the corner tile scales down with it, so one
-     set of sprites serves a 30px menu row and a 16px gauge track. */
-  border-image-width: 6px;
 }
 
 /* THE GRADUATIONS. Lua's segment count, drawn as hairlines on the track instead
@@ -227,7 +222,7 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
   position: absolute;
   inset: 3px;
   pointer-events: none;
-  background-image: linear-gradient(to left, var(--red-idle) 0 1px, transparent 1px);
+  background-image: linear-gradient(to left, var(--op-red-idle) 0 1px, transparent 1px);
   background-size: calc(100% / var(--segs, 10)) 100%;
 }
 
@@ -262,18 +257,18 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
   transform-origin: left center;
   transform: scaleX(0);
   transition:
-    transform var(--op77-dur-fast) linear,
-    background var(--op77-dur-fast) linear;
+    transform var(--op-dur-fast) linear,
+    background var(--op-dur-fast) linear;
 }
 
 .readout {
   flex: none;
   min-width: 22px;
   text-align: right;
-  font: 700 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   font-variant-numeric: tabular-nums;
-  transition: color var(--op77-dur-fast) linear;
+  transition: color var(--op-dur-fast) linear;
 }
 
 /* --- THE TONES, and the ladder is luminance ------------------------------
@@ -283,18 +278,21 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
    and a bar that goes white-hot with a white frame and a heavier readout is the
    only thing here that cannot be read as the HUD talking about itself. */
 .health {
-  --tone: var(--red);
-  --frame: var(--frame-live);
+  --tone: var(--op-red);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
 }
 
 .warn {
-  --tone: var(--red-hi);
-  --frame: var(--frame-hot);
+  --tone: var(--op-red-hi);
+  --aug-border-bg: var(--op-red-hi);
+  --aug-border-all: 2px;
 }
 
 .bad {
-  --tone: var(--alarm);
-  --frame: var(--frame-alarm);
+  --tone: var(--op-alarm);
+  --aug-border-bg: var(--op-alarm);
+  --aug-border-all: 2.6px;
 }
 
 .bad .readout {

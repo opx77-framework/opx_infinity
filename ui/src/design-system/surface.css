@@ -1,0 +1,135 @@
+/* =============================================================================
+   OPEN//77 DESIGN SYSTEM -- THE SURFACE ITSELF
+   =============================================================================
+   What every OPX surface shares that is not a shape: the plane it sits on, the
+   ink under its type, the interlace over its frames, and the room its shadows
+   need. Each of these was written out by hand in every one of eleven files.
+   ========================================================================== */
+
+/* --- .op-plane : the tilt ---------------------------------------------------
+   THE PERSPECTIVE GOES ON THE WRAPPER, never on the thing that tilts: on the
+   plane itself every descendant gets its own vanishing point.
+
+   The sign and the origin come from the edge the surface is anchored to, and a
+   surface anchored to nothing does not tilt at all -- rotating a centred plane
+   about its own middle sends half toward the player and half away, which is
+   paper on a spindle rather than a surface receding. */
+.op-plane {
+  perspective: var(--op-persp);
+  /* Nothing inside can affect layout or paint outside it, so the compositor
+     never has to consider the rest of the screen when one row changes. The
+     bleed is padding, because paint containment clips to the padding box and a
+     bloom landing outside it would simply be gone. */
+  contain: layout paint style;
+  padding: var(--op-bleed);
+}
+
+.op-plane > * {
+  transform-origin: var(--op-origin, left center);
+  transform: rotateY(var(--op-tilt-signed, 0deg));
+}
+
+.op-anchor-left {
+  --op-tilt-signed: var(--op-tilt);
+  --op-origin: left center;
+  --op-pop: 10px;
+}
+
+.op-anchor-right {
+  --op-tilt-signed: calc(var(--op-tilt) * -1);
+  --op-origin: right center;
+  --op-pop: -10px;
+}
+
+/* A CENTRED SURFACE TAKES NEITHER CLASS, and that is the whole of how it is
+   said: `.op-plane > *` defaults the tilt to 0deg, so a surface anchored to no
+   edge simply does not rotate. Rotating a centred plane about its own middle
+   sends half of it toward the player and half away, which is paper on a spindle
+   rather than a surface receding. A name tag is the same case for a different
+   reason: it is pinned to a body in the world, which already has a perspective. */
+
+/* --- .op-ink : the one text shadow ------------------------------------------
+   Declared once on a surface root and inherited by every glyph under it. There
+   is no backing behind most of this UI, so this is what holds a letter against
+   whatever the street is doing. An override replaces the whole list. */
+.op-ink {
+  text-shadow: var(--op-ink);
+}
+
+/* --- .op-interlace : the scanline over an enclosure --------------------------
+   One static gradient, no transition, so it costs a single paint for the life
+   of the surface. It is what stops an unfilled FRAME reading as a web page
+   floating in the air.
+
+   ONLY ON SOMETHING ENCLOSED. A surface with no frame does not take it: a
+   striped rectangle with nothing around it IS that floating rectangle, and the
+   rectangle it would stripe is not even a shape the surface owns.
+
+   On `::before`, which is free because every preset in `shapes.css` asks
+   augmented-ui for the border layer and not the inlay. */
+.op-interlace {
+  position: relative;
+}
+
+.op-interlace::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 59, 71, 0.05) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+/* --- type roles -------------------------------------------------------------
+   Four, and every surface in the runtime is written out of them. */
+.op-label {
+  font: 700 var(--op-fs-lead) / 1.25 var(--op-font-display);
+  letter-spacing: var(--op-track-lead);
+  text-transform: uppercase;
+}
+
+.op-value {
+  font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  font-variant-numeric: tabular-nums;
+}
+
+.op-eyebrow {
+  font: 600 var(--op-fs-micro) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-micro);
+  text-transform: uppercase;
+}
+
+.op-copy {
+  font: 400 var(--op-fs-meta) / 1.4 var(--op-font-body);
+}
+
+/* --- the entrance -----------------------------------------------------------
+   A stutter, not a fade, and only on elements a keyed v-for has just created.
+   Both keyframes touch opacity and transform only, which the compositor runs
+   without a repaint. */
+@keyframes op-plate-in {
+  0% {
+    opacity: 0;
+    transform: translate3d(calc(var(--op-pop, 10px) * -1), 0, 0);
+  }
+
+  55% {
+    opacity: 1;
+    transform: translate3d(2px, 0, 0);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.op-enter {
+  animation: op-plate-in 190ms var(--op-stutter) backwards;
+  animation-delay: calc(var(--op-slot, 0) * 28ms + 40ms);
+}

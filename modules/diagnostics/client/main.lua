@@ -74,7 +74,7 @@ function M.Start()
 		forwardModuleFaults()
 	end)
 
-	RegisterNetEvent(OPX.Event(OPX.Channel.NET, 'diagnostics', 'lines'), function(lines)
+	RegisterNetEvent(M.LINES, function(lines)
 		if type(lines) ~= 'table' then return end
 		for index = 1, #lines do Open77.log.info(tostring(lines[index])) end
 	end)
