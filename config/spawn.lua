@@ -100,6 +100,16 @@ OPX.Config.MODULES.spawn = {
 	-- is the other case -- a client that never draws the menu at all, which would
 	-- otherwise leave a character standing in the pre-game position for the whole
 	-- session, with no name and no way to be placed. Sixty seconds is the floor.
+	--
+	-- IT IS ALSO THE BOUND ON EVERYTHING AHEAD OF THE MENU, and that is the part
+	-- worth reading before shortening it. The menu is the LAST of three questions
+	-- a new character answers -- a name, then an outfit, then this -- and it
+	-- stands aside for the whole of the first two (see WAIT_FOR_ENTRY below, and
+	-- WARDROBE.OFFER_POLICY in config/appearance.lua). All of that happens inside
+	-- this hold, because the player's own window has not started yet. A number
+	-- below the time somebody plausibly spends naming a character and dressing it
+	-- is a number that settles their spawn from the row while they are still in
+	-- the fitting room, with no menu ever drawn and nothing on screen to say why.
 	HOLD_MAX_SECONDS = 300,
 
 	-- Rate limit on the choice itself, in milliseconds. The menu is one shot; a
@@ -110,12 +120,15 @@ OPX.Config.MODULES.spawn = {
 	-- Whether the menu waits for the entry module to stop asking its own
 	-- questions before it opens.
 	--
-	-- A brand new character is asked TWO things at once -- the name form, which
-	-- lives in the world, and this, which is decided at the same moment the
-	-- platform announces a living body. Drawn together they are two modals
-	-- fighting for one keyboard, so with this true the menu waits for entry to
-	-- report itself idle. The wait is bounded by TIMEOUT_SECONDS above: a name
-	-- form nobody answers costs the player the choice, not the session.
+	-- A brand new character is asked THREE things at once -- the name form, which
+	-- lives in the world; the fitting room, which the appearance module offers on
+	-- its own policy; and this, which is decided at the same moment the platform
+	-- announces a living body. Drawn together they are three modals fighting for
+	-- one keyboard, so with this true the menu waits for entry to report itself
+	-- idle -- and entry reports the join busy for the fitting room too, which is
+	-- why there is one setting here and not two. The wait is bounded by
+	-- HOLD_MAX_SECONDS above: a question nobody answers costs the player the
+	-- choice, not the session.
 	WAIT_FOR_ENTRY = true,
 
 	-- The places a new character may start.

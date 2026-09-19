@@ -19,6 +19,20 @@
 -- 2. THE NAME, typed once the player is in the world, through the form module.
 --    It is asked again as long as it is unanswered -- a cancelled form is not a
 --    character that stays nameless -- and the server accepts it exactly once.
+-- 3. THE CLOTHES, which this module neither opens nor decides. The appearance
+--    module owns the fitting room and `WARDROBE.OFFER_POLICY` says whose join
+--    gets one; all that is here is the CLAIM, on this module's public bus,
+--    because that bus is what the spawn menu already stands aside for.
+--
+-- THE ORDER IS THE POINT, AND NOTHING SCHEDULES IT. A brand new character is
+-- asked all three at one instant -- the creator spends the join bootstrap, the
+-- name form is put up the moment the face settles, and the server offers a spawn
+-- point as soon as the platform announces a living body. What keeps them apart
+-- is one rule applied twice: a view stands aside while the view in front of it
+-- reports itself busy. The fitting room cannot open while the name form holds
+-- the keyboard, and the spawn menu cannot open while this module reports the
+-- join busy -- which it does for the whole time a fitting room is owed, open or
+-- not. Name, then clothes, then where you land.
 --
 -- Nothing here is authoritative. The name is re-checked by the server, which
 -- refuses a second one whatever a modified client sends.

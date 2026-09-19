@@ -1097,6 +1097,445 @@ do
 	end
 end
 
+-- ── the fitting room, and the join it sits in the middle of ──────────────────
+-- WHAT A PLAYER WEARS WHEN THEY ARRIVE, and -- the harder half -- WHEN THEY ARE
+-- ASKED. A brand new character answers three questions at one instant: a name, an
+-- outfit and a spawn point. Nothing schedules them. What keeps them apart is one
+-- rule applied twice -- a view stands aside while the view in front of it reports
+-- itself busy -- so the checks below drive the real entry and spawn modules rather
+-- than asserting against a plan.
+section('the fitting room at join time')
+do
+	--- A world holding only what settles the fitting-room policy.
+	-- The vocabulary and its resolution live in the SHARED file, so they can be put
+	-- under test without a client VM full of natives this host does not have.
+	-- Called with NO argument it leaves the shipped block alone; called with one
+	-- -- `nil` included -- it writes that block in. The two are different cases
+	-- and Lua cannot tell them apart from the value, so `select('#', ...)` is what
+	-- separates "test the file" from "test a configuration that lost the block".
+	-- @param ... table|nil the WARDROBE block to write in
+	-- @return table module
+	-- @return table control
+	local function policyOnly(...)
+		local own, ctl = Host.Environment('client')
+		for _, file in ipairs({
+			'core/shared/main.lua', 'core/shared/channels.lua',
+			'core/shared/registry.lua', 'core/shared/lifecycle.lua',
+			'lib/shared/math.lua', 'config/appearance.lua',
+			'modules/appearance/module.lua',
+		}) do
+			assert(loadfile(file, 't', own), file)()
+		end
+		local module = own.OPX.Modules.Get('appearance')
+		if select('#', ...) > 0 then module.Settings.WARDROBE = (select(1, ...)) end
+		return module, ctl
+	end
+
+	local vocabulary = policyOnly(nil)
+	check('the fitting-room policy vocabulary is declared in the shared file',
+		type(vocabulary.WardrobePolicy) == 'table' and
+			type(vocabulary.KnownWardrobePolicy) == 'function')
+
+	-- EACH OF THE THREE, resolved from a configuration rather than from a literal:
+	-- the operator types one of these strings and the branch that reads it compares
+	-- against the same table, so a value the vocabulary carries and the resolver
+	-- refuses cannot happen.
+	for _, policy in ipairs({ 'first', 'always', 'never' }) do
+		local module = policyOnly({ OFFER_POLICY = policy })
+		check(('the fitting-room policy %s is resolved as configured'):format(policy),
+			module.ResolveWardrobePolicy() == policy)
+	end
+
+	-- AN UNKNOWN VALUE. Refused with a line in the journal and replaced with the
+	-- named default -- never honoured, and never silently taken as "off". A typo
+	-- that quietly stopped offering the room is indistinguishable from the room
+	-- being broken, which is the failure this check exists for.
+	do
+		local module, ctl = policyOnly({ OFFER_POLICY = 'creation' })
+		check('an unknown fitting-room policy is refused rather than honoured',
+			module.ResolveWardrobePolicy() == module.WARDROBE_POLICY_DEFAULT,
+			tostring(module.ResolveWardrobePolicy()))
+		check('and it is named in the journal, with what is running instead',
+			table.concat(ctl.log.warn, ' | '):find('OFFER_POLICY creation') ~= nil,
+			table.concat(ctl.log.warn, ' | '))
+	end
+
+	-- NOT A STRING AT ALL. `OFFER_POLICY = true` is the shape of a mis-edit that
+	-- turns a named setting back into the boolean it replaced -- and this setting
+	-- did replace one -- so it has to take the same route rather than raising out
+	-- of the resolution.
+	check('a fitting-room policy that is not a string is refused the same way',
+		policyOnly({ OFFER_POLICY = true }).ResolveWardrobePolicy() ==
+			vocabulary.WARDROBE_POLICY_DEFAULT)
+	check('and so is a configuration with no WARDROBE block at all',
+		policyOnly(nil).ResolveWardrobePolicy() == vocabulary.WARDROBE_POLICY_DEFAULT)
+
+	-- A NEAR MISS IS A MISS. The comparison is exact on purpose: a policy matched
+	-- case-insensitively would accept 'First' here and be compared against 'first'
+	-- at the branch that reads it.
+	check('a near miss is not one of the three fitting-room policies',
+		vocabulary.KnownWardrobePolicy('First') == nil and
+			vocabulary.KnownWardrobePolicy('') == nil and
+			vocabulary.KnownWardrobePolicy({}) == nil)
+
+	-- THE SHIPPED CONFIGURATION, read out of the file rather than named here, so
+	-- this check is wrong the day somebody edits it to something the module
+	-- refuses -- which is the one way an operator would never see the warning.
+	do
+		local module = policyOnly()
+		local block = type(module.Settings.WARDROBE) == 'table' and module.Settings.WARDROBE or {}
+		check('the shipped configuration names one of the three',
+			module.KnownWardrobePolicy(block.OFFER_POLICY) ~= nil,
+			tostring(block.OFFER_POLICY))
+		-- The other half of the shipped block, and it has to be a real duration:
+		-- a zero here is a room that gives up in the tick it was owed, which is a
+		-- join that never draws one and never says why.
+		check('and a positive window to wait for the room in',
+			(tonumber(block.CREATION_WAIT_MS) or 0) > 0, tostring(block.CREATION_WAIT_MS))
+	end
+
+	-- ── the join sequence ────────────────────────────────────────────────────
+	-- A WHOLE CLIENT, with the policy written in between the config file that
+	-- declares it and the `Init` that settles it: the policy is resolved once, at
+	-- boot, so a value set after the phases have run is a value nothing reads.
+	--
+	-- The natives installed below are the minimum that lets the appearance module
+	-- START -- it refuses outright without an appearance, session and character
+	-- namespace -- plus an equipment namespace, which is what makes the fitting
+	-- room's refusal RETRYABLE rather than final. That distinction is the whole of
+	-- what is under test: a room that keeps trying holds the join, and a room that
+	-- can never open has to let it go.
+	-- @param policy string
+	-- @param waitMs integer how long the room is waited for
+	-- @param blind boolean|nil switch the two view modules off
+	-- @return table env
+	-- @return table control
+	local function joinClient(policy, waitMs, blind)
+		local own, ctl = Host.Environment('client')
+		own.Open77.appearance = {
+			captureBody = function() return nil, 'no_host' end,
+			takeBodyFamilyTransition = function() return nil end,
+			finishCommit = function() return true end,
+		}
+		own.Open77.session = {
+			resolveCharacterBootstrap = function() return false, 'no_host' end,
+			isCharacterBootstrapPending = function() return false end,
+			failCharacterBootstrap = function() return true end,
+			hasCharacterBootstrap = function() return false end,
+			gameplayReady = function() return true end,
+		}
+		own.Open77.equipment = {
+			apply = function() return true end,
+			records = function() return {} end,
+			registry = function() return {} end,
+			info = function() return nil end,
+		}
+
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			assert(loadfile(file, 't', own), file)()
+			if file == 'config/appearance.lua' then
+				local block = own.OPX.Config.MODULES.appearance.WARDROBE
+				block.OFFER_POLICY = policy
+				block.CREATION_WAIT_MS = waitMs
+			elseif blind and file == 'config/panel.lua' then
+				own.OPX.Config.MODULES.panel.enabled = false
+			elseif blind and file == 'config/menu.lua' then
+				own.OPX.Config.MODULES.menu.enabled = false
+			end
+		end
+
+		ctl.Fire('onClientResourceStart', 'opx_infinity')
+		ctl.Pump(60)
+		ctl.ReadyPages()
+		return own, ctl
+	end
+
+	--- Every `entry:state` a join raises from here on, as `open/phase`.
+	local function watchEntry(env)
+		local seen = {}
+		env.AddEventHandler(env.OPX.Event(env.OPX.Channel.LOCAL, 'entry', 'state'),
+			function(payload)
+				seen[#seen + 1] = tostring(payload.open) .. '/' .. tostring(payload.phase)
+			end)
+		return seen
+	end
+
+	--- The first payload sent to the surface on a channel, or nil.
+	local function drew(page, channel)
+		for index = 1, #page.sent do
+			if page.sent[index].channel == channel then return page.sent[index] end
+		end
+		return nil
+	end
+
+	--- How many payloads have been sent to the surface on a channel.
+	local function times(page, channel)
+		local count = 0
+		for index = 1, #page.sent do
+			if page.sent[index].channel == channel then count = count + 1 end
+		end
+		return count
+	end
+
+	--- Loads a character over the character module's own bus.
+	local function arrive(env, control, citizenId)
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = citizenId, charInfo = { gender = 'female' } })
+	end
+
+	-- 'first': a brand new character, which is the case this whole seam exists for.
+	do
+		local env, control = joinClient('first', 400)
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+		local spawn = OPX.Modules.Get('spawn')
+		local page = control.pages[1]
+
+		check('the client boots with a fitting-room policy under test',
+			OPX.Modules.IsRunning('appearance') and OPX.Modules.IsRunning('entry')
+				and OPX.Modules.IsRunning('spawn'),
+			OPX.Modules.Record('appearance').Reason)
+		check('and the policy reached the module through Init, not the point of use',
+			appearance.WardrobeOffer == 'first', tostring(appearance.WardrobeOffer))
+
+		arrive(env, control, 'citizen-dress')
+		local states = watchEntry(env)
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'created', citizenId = 'citizen-dress' })
+
+		check('a character the creator has just built is owed a fitting room',
+			appearance.Wardrobe.Owed() == true)
+		-- THE CLAIM IS UP BEFORE THE ROOM IS. Nothing is on screen yet -- this host
+		-- has no playable puppet, and a real client has a name form on the keyboard
+		-- -- and that gap is exactly when the spawn menu would otherwise open.
+		check('and the join reports itself busy, naming the clothes',
+			states[#states] == 'true/wardrobe', table.concat(states, ', '))
+
+		control.netEvents[spawn.Event.OFFER]({ timeoutMs = 5000 })
+		check('so the spawn menu stands aside while the room is owed',
+			drew(page, 'opx:spawn:open') == nil)
+
+		-- THE ROOM NOBODY CAN DRAW. Every try here is refused for a reason that
+		-- means 'not yet', so only the window ends it -- and a join held by a room
+		-- that will never open is the one failure that costs a player their spawn
+		-- choice with nothing going wrong anywhere.
+		control.Pump(12)
+		check('the wait runs out and the claim is withdrawn',
+			appearance.Wardrobe.Owed() == false)
+		check('the join reports itself idle again',
+			states[#states] == 'false/idle', table.concat(states, ', '))
+		check('and the spawn menu opens, late rather than never',
+			drew(page, 'opx:spawn:open') ~= nil)
+	end
+
+	-- 'never': nobody is handed one, and -- the part that matters -- NOTHING IS
+	-- CLAIMED. A 'never' that raised a claim and withdrew it again would hold the
+	-- spawn menu shut for a room that was never coming.
+	do
+		local env, control = joinClient('never', 400)
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+		local spawn = OPX.Modules.Get('spawn')
+		local page = control.pages[1]
+
+		arrive(env, control, 'citizen-plain')
+		local states = watchEntry(env)
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'created', citizenId = 'citizen-plain' })
+
+		check('never owes a brand new character no fitting room',
+			appearance.Wardrobe.Owed() == false)
+		-- The bus still speaks -- `created` is the entry module's own creator
+		-- finishing -- but it never names the clothes, which is what the spawn
+		-- menu waits on.
+		check('and never names the clothes on the join bus',
+			table.concat(states, ', '):find('wardrobe') == nil,
+			table.concat(states, ', '))
+
+		control.netEvents[spawn.Event.OFFER]({ timeoutMs = 5000 })
+		check('so the spawn menu follows the name form directly, as it always did',
+			drew(page, 'opx:spawn:open') ~= nil)
+	end
+
+	-- 'always' AND 'first' ON A RETURNING CHARACTER, which raises no `created` at
+	-- all. The moment one is offered is the stored clothes going ON: opened before
+	-- that, cancelling would put back the pristine puppet's clothes rather than the
+	-- ones the player walked in wearing.
+	do
+		local env, control = joinClient('always', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		arrive(env, control, 'citizen-back')
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'clothingRestored', citizenId = 'citizen-back' })
+		check('always offers a returning character one once its clothes are on',
+			appearance.Wardrobe.Owed() == true)
+	end
+
+	do
+		local env, control = joinClient('first', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		arrive(env, control, 'citizen-back-2')
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'clothingRestored', citizenId = 'citizen-back-2' })
+		check('and first leaves a returning character alone',
+			appearance.Wardrobe.Owed() == false)
+	end
+
+	-- THE CHARACTER THAT LEAVES MID-CLAIM. A disconnect is not visible on a client
+	-- at all; what the client sees is the character unloading. A claim left
+	-- standing for nobody would hold the join open for the rest of the session,
+	-- with nothing to draw and nobody to draw it for.
+	do
+		local env, control = joinClient('first', 60000)
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+
+		arrive(env, control, 'citizen-gone')
+		local states = watchEntry(env)
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'created', citizenId = 'citizen-gone' })
+		check('a long window holds the claim open while the room is retried',
+			appearance.Wardrobe.Owed() == true)
+
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'unloaded'))
+		check('the join is released the moment the character goes',
+			states[#states] == 'false/idle', table.concat(states, ', '))
+		control.Pump(4)
+		check('and the claim is withdrawn rather than waiting out the window',
+			appearance.Wardrobe.Owed() == false)
+	end
+
+	-- ── the view ─────────────────────────────────────────────────────────────
+	-- THE SEAM'S OTHER END. `wardrobe.lua` draws nothing and publishes on
+	-- `ON_VIEW`; `client/view.lua` is the only file that knows the fitting room is
+	-- a `panel` and the appearance panel a `menu`. Driven by publishing on the seam
+	-- rather than by opening a real room, because a real room needs a playable
+	-- puppet and a clothing catalogue, neither of which is what this tests.
+	do
+		local env, control = joinClient('never', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		local page = control.pages[1]
+
+		env.TriggerEvent(appearance.Event.ON_VIEW, {
+			kind = 'room',
+			eyebrow = 'FIRST OUTFIT', title = 'Wardrobe', intro = 'Dress your character.',
+			search = 'Search', loading = true,
+			labels = { count = '{from}-{to} of {total}', empty = 'Nothing.',
+				loading = 'Reading...' },
+			actions = { { id = 'cancel', label = 'Skip' },
+				{ id = 'save', label = 'Wear this', primary = true } },
+			tabs = { { id = 'InnerChest', label = 'Inner chest', marked = false } },
+			tab = 'InnerChest',
+			selected = { InnerChest = false },
+			summary = { label = 'Inner chest', value = 'nothing',
+				action = { id = 'remove', label = 'Take off', disabled = true } },
+			status = false,
+		})
+
+		local opened = drew(page, 'opx:panel:open')
+		check('the fitting room is drawn by the panel module', opened ~= nil)
+		check('carrying the state half own first frame, verbatim',
+			opened ~= nil and opened.payload.eyebrow == 'FIRST OUTFIT'
+				and opened.payload.title == 'Wardrobe',
+			opened and tostring(opened.payload.title))
+		-- The seam's routing field is not part of the panel contract, which refuses
+		-- a spec carrying a field it does not know -- WHOLE, so a `kind` left on
+		-- would have cost the room rather than the field.
+		check('and not the seam own routing field',
+			opened ~= nil and opened.payload.kind == nil)
+
+		env.TriggerEvent(appearance.Event.ON_VIEW, {
+			kind = 'roomItems', final = true,
+			items = { { id = 'Items.Jacket_01', tab = 'InnerChest', label = 'Jacket 01',
+				detail = 'Items.Jacket_01' } },
+		})
+		local batch = drew(page, 'opx:panel:items')
+		check('a catalogue batch reaches the page, marked as the last',
+			batch ~= nil and batch.payload.done == true
+				and batch.payload.items[1].id == 'Items.Jacket_01')
+
+		-- WHAT THE PLAYER DID, coming back through the one function the seam
+		-- documents. Everything on it is re-checked there against state this bridge
+		-- cannot see: the record against the catalogue that was streamed, the
+		-- button against the list that was drawn.
+		local seen = {}
+		local real = appearance.FromView
+		appearance.FromView = function(action, payload)
+			seen[#seen + 1] = action
+			return real(action, payload)
+		end
+		local handle = opened.payload.handle
+		control.PageEmit(page, 'opx:panel:select', { handle = handle, item = 'Items.Jacket_01' })
+		control.PageEmit(page, 'opx:panel:action', { handle = handle, id = 'cancel' })
+		check('a click on a piece comes back as a room selection',
+			seen[1] == 'room.select', table.concat(seen, ', '))
+		check('and a button as a room action', seen[2] == 'room.action',
+			table.concat(seen, ', '))
+
+		-- A PAYLOAD FOR A ROOM THAT IS GONE. The handle is the capability, and a
+		-- payload naming another one is dropped before this bridge ever sees it --
+		-- so a late answer cannot reach the state half.
+		control.PageEmit(page, 'opx:panel:select',
+			{ handle = handle + 99, item = 'Items.Jacket_01' })
+		check('a payload naming another room is dropped', #seen == 2,
+			table.concat(seen, ', '))
+		appearance.FromView = real
+
+		env.TriggerEvent(appearance.Event.ON_VIEW,
+			{ kind = 'roomClosed', reason = 'saved', kept = true })
+		check('the state half taking the room down takes the panel down',
+			drew(page, 'opx:panel:close') ~= nil)
+
+		-- THE OTHER VIEW. Same seam, a different module, because a tree of rows
+		-- carrying values and descriptions is a menu and a searchable grid is not.
+		local tree = { kind = 'panel', title = 'Appearance',
+			items = { { id = 'looks', label = 'Looks', value = 'none',
+				items = { { id = 'wear', label = 'Wear it' } } } } }
+		env.TriggerEvent(appearance.Event.ON_VIEW, tree)
+		local menu = drew(page, 'opx:menu:open')
+		check('the appearance panel is drawn by the menu module',
+			menu ~= nil and menu.payload.title == 'Appearance',
+			menu and tostring(menu.payload.title))
+
+		-- A REFRESH IS A PATCH. The panel is republished after every decision about
+		-- a face, and reopening it would throw a player standing two levels in back
+		-- out to the root each time.
+		env.TriggerEvent(appearance.Event.ON_VIEW, tree)
+		check('and a refresh of it is a patch, not a second open',
+			times(page, 'opx:menu:open') == 1,
+			('%d open(s)'):format(times(page, 'opx:menu:open')))
+	end
+
+	-- A WORLD WITH NEITHER VIEW IN IT. The state machines still run and still
+	-- publish; nothing draws. The answer has to come a TICK LATER and not inline,
+	-- because the state half publishes `room` from inside the function that goes on
+	-- to take the camera and start the catalogue stream -- closing it there would
+	-- tear the room down underneath a function still setting it up.
+	do
+		local env, control = joinClient('never', 400, true)
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+
+		check('a world with the two view modules switched off still runs',
+			OPX.Modules.IsRunning('appearance') and not OPX.Modules.IsRunning('panel'),
+			OPX.Modules.Record('appearance').Reason)
+
+		local seen = {}
+		local real = appearance.FromView
+		appearance.FromView = function(action, payload)
+			seen[#seen + 1] = action
+			return real(action, payload)
+		end
+		env.TriggerEvent(appearance.Event.ON_VIEW, { kind = 'room', title = 'Wardrobe' })
+		check('a room nobody can draw is not answered inside its own publication',
+			#seen == 0, table.concat(seen, ', '))
+		control.Pump(4)
+		check('and is answered on the next pass instead', seen[1] == 'room.close',
+			table.concat(seen, ', '))
+		appearance.FromView = real
+	end
+end
+
 -- ── client boot ──────────────────────────────────────────────────────────────
 section('client boot')
 do

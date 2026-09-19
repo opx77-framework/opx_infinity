@@ -119,10 +119,63 @@ OPX.Config.MODULES.appearance = {
 	},
 
 	WARDROBE = {
-		-- Open the fitting room once a new character's face is stored.
-		OPEN_AFTER_CREATION = true,
+		-- WHICH WORLD ENTERS ARE HANDED THE FITTING ROOM. Three values, and no
+		-- fourth:
+		--
+		--   'first'   only a character the game's own creator has just built.
+		--             `created` on the decision bus is what says so, and it is
+		--             raised once per character ever -- so this is "dress the new
+		--             one, and never interrupt anybody else".
+		--   'always'  every world enter, a returning character included, once its
+		--             stored clothes are on. The room opens over a DRESSED puppet
+		--             and not a pristine one, so cancelling really does put back
+		--             what the player walked in wearing.
+		--   'never'   nobody is ever handed one. The room is still reachable from
+		--             the appearance panel; it is only the join that stops
+		--             offering it.
+		--
+		-- WHY THIS IS A SETTING AND NOT A GUESS. The two defensible answers are
+		-- opposite and both are somebody's server: a roleplay server dresses a
+		-- character once, at creation, and never interrupts a returning player
+		-- again; a server whose sessions are one-offs may want the choice every
+		-- time. This shipped hard-wired to the first, as the boolean
+		-- `OPEN_AFTER_CREATION`, which could say no but could not say 'always'.
+		--
+		-- IT IS PART OF THE JOIN SEQUENCE, which is the thing to know before
+		-- changing it. A brand new character is asked for a NAME by the entry
+		-- module and for a SPAWN POINT by the spawn module, and all three are
+		-- answers to the same instant. The order is name -> fitting room -> spawn
+		-- menu, and it is held by one rule: the spawn menu stands aside while the
+		-- entry module reports the join still busy, and the entry module reports
+		-- the join busy while a fitting room is owed. Set this to 'never' and the
+		-- spawn menu simply follows the name form, as it did before.
+		--
+		-- THE SPAWN MODULE'S HOLD BOUNDS THE WHOLE OF IT. `HOLD_MAX_SECONDS` in
+		-- `config/spawn.lua` is how long an offer nobody has opened may hold a
+		-- character unplaced, and a player deliberating in the fitting room is
+		-- inside that hold. Past it the spawn choice is settled from the
+		-- character's own row and the menu is never drawn -- so an operator who
+		-- shortens that number below the time a player plausibly spends dressing
+		-- has taken the spawn choice away from them, silently.
+		--
+		-- An unknown value is REFUSED WITH A LINE IN THE JOURNAL and falls back
+		-- to 'first', which is what this module did when the setting was a
+		-- boolean. It is never guessed at: 'creation', 'once' and true are each a
+		-- typo, and a typo that silently turned the room off would look exactly
+		-- like the module being broken.
+		OFFER_POLICY = 'first',
 
-		-- How long a created character's starting clothes are waited for.
+		-- How long the room is waited for before the join gives up on it, in
+		-- milliseconds.
+		--
+		-- The room cannot open the instant it is owed and is not meant to: the
+		-- puppet has to be alive on foot, the stored clothes have to be ON it
+		-- (there is nothing to put back otherwise), and the name form is holding
+		-- the keyboard. Every one of those is a 'not yet' that is retried, and
+		-- this is the bound on retrying -- the one thing that stops a character
+		-- who can never be dressed from holding the spawn menu shut for the
+		-- session. Past it the join moves on and the player keeps the clothes the
+		-- platform gave them.
 		CREATION_WAIT_MS = 60000,
 	},
 }

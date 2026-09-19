@@ -34,6 +34,14 @@ local M = OPX.Modules.Declare{
 	-- Every face and every clothing record is keyed on the citizen id, and only
 	-- the character module knows which character a player has loaded.
 	requires = { 'character' },
+	-- THE TWO VIEWS, and neither is a requirement. This module owns the state
+	-- machines behind the appearance panel and the fitting room and draws
+	-- neither; `client/view.lua` hands the first to `menu` and the second to
+	-- `panel`. With them absent the state machines still run, still refuse
+	-- correctly and still publish -- nothing draws, which is exactly what
+	-- happened before this seam had an other end. Declared so the two are
+	-- ordered ahead of this module rather than because anything breaks.
+	optional = { 'menu', 'panel' },
 	fatal = true,
 }
 
@@ -99,6 +107,89 @@ M.Operation = {
 -- its own looks, so both halves of this module stand down while it runs rather
 -- than fighting it over the same puppet.
 M.OFFICIAL = 'open77_appearance'
+
+--- The three answers to "which world enters are handed the fitting room?".
+-- @author dop42
+--
+-- A CLOSED SET, NAMED HERE RATHER THAN SPELLED OUT AT THE COMPARISON, and the
+-- same shape `spawn.Policy` is for the same reason: the client half branches on
+-- these three strings, the suite asserts against them and the operator types one
+-- of them into `config/appearance.lua`. A literal `'never'` written at each of
+-- those places is three copies of a value with nothing keeping them in step, and
+-- a typo in any one of them is a branch that is simply never taken.
+--
+-- Declared in module.lua and not in the client half because this file is the one
+-- both sides and the test host load: the vocabulary has to be nameable from
+-- outside the half that acts on it.
+M.WardrobePolicy = {
+	-- Only a character the game's own creator has just built. `created` on the
+	-- decision bus is what says so, and it is raised once per character ever --
+	-- so this is "dress the new one, never interrupt anybody else".
+	FIRST = 'first',
+	-- Every world enter, a returning character included, once its stored clothes
+	-- are on. The room opens over a dressed puppet rather than a pristine one,
+	-- so 'cancel' really does put back what the player was wearing.
+	ALWAYS = 'always',
+	-- Nobody, ever. No room, no retry thread, and nothing on the bus for the join
+	-- sequence to wait behind: the spawn menu follows the name form directly.
+	NEVER = 'never',
+}
+
+--- What an unreadable `WARDROBE.OFFER_POLICY` falls back to.
+-- FIRST, because it is what this module did when the setting was the boolean
+-- `OPEN_AFTER_CREATION` and that boolean shipped true: a fallback that changed
+-- behaviour would make a typo in the configuration look like a feature somebody
+-- had asked for.
+M.WARDROBE_POLICY_DEFAULT = M.WardrobePolicy.FIRST
+
+--- Whether a value is one of the three fitting-room policies.
+-- Answers the value itself rather than a boolean, so a caller reads
+-- `M.KnownWardrobePolicy(raw) or M.WARDROBE_POLICY_DEFAULT` in one line -- but
+-- the refusal is still the caller's to journal, because a warning belongs where
+-- it can be said once at start rather than on every join.
+-- @author dop42
+-- @param value any
+-- @return string|nil
+function M.KnownWardrobePolicy(value)
+	if type(value) ~= 'string' then return nil end
+	for _, known in pairs(M.WardrobePolicy) do
+		if value == known then return known end
+	end
+	return nil
+end
+
+--- Settles the configured fitting-room policy, naming a bad one in the journal.
+-- @author dop42
+--
+-- RESOLVED ONCE, at `Init`, for the reason `spawn.Init` resolves its own: a
+-- setting read at the point of use is a setting whose typo is reported on every
+-- join, in the middle of a join's own log lines, where nobody reads it. Resolved
+-- at boot it is said once, in the block an operator scans after editing a config
+-- file, and every join afterwards reads a value already known to be one of three.
+--
+-- A NAMED FUNCTION rather than the handful of lines inlined in the client's
+-- `Init`, which is where `spawn` puts its own, because this module is `both` and
+-- its client half REFUSES TO START at all on a host with no native appearance
+-- API. Here, the suite can put a value in front of it without standing up a
+-- client VM full of natives the test host does not have -- and the journal line
+-- about a typo is exactly the line an operator on such a host still needs.
+-- @return string one of `M.WardrobePolicy`
+function M.ResolveWardrobePolicy()
+	local config = type(M.Settings.WARDROBE) == 'table' and M.Settings.WARDROBE or {}
+	local configured = config.OFFER_POLICY
+	local policy = M.KnownWardrobePolicy(configured)
+	if policy ~= nil then return policy end
+
+	-- NAMED, NOT SILENT. An unknown policy that quietly became 'first' would be
+	-- indistinguishable from an operator who meant 'first', and one that quietly
+	-- became 'never' would look exactly like the fitting room being broken. Both
+	-- values are on the line so the journal says what was refused and what is
+	-- running instead.
+	Open77.log.warn(('[appearance] WARDROBE.OFFER_POLICY %s is not one of ' ..
+		'first/always/never; offering on %s instead')
+		:format(tostring(configured), M.WARDROBE_POLICY_DEFAULT))
+	return M.WARDROBE_POLICY_DEFAULT
+end
 
 -- The two body families the engine and `charInfo.gender` know. Both halves read
 -- this, so a family one accepts and the other refuses cannot happen.

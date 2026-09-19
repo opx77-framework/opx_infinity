@@ -151,6 +151,12 @@ client_script "modules/appearance/client/editor.lua"
 client_script "modules/appearance/client/clothing.lua"
 client_script "modules/appearance/client/presence.lua"
 client_script "modules/appearance/client/wardrobe.lua"
+-- The seam's other end. `wardrobe.lua` holds both state machines and draws
+-- nothing; this is the only file that knows the appearance panel is a `menu` and
+-- the fitting room a `panel`. Both contracts are resolved at Start, so this file
+-- has no load-order relationship with either of those modules -- only with
+-- `wardrobe.lua`, whose seam it reads.
+client_script "modules/appearance/client/view.lua"
 
 shared_script "modules/entry/module.lua"
 shared_script "modules/entry/locales.lua"
