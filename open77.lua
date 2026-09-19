@@ -315,6 +315,10 @@ server_script "modules/admin/server/doors.lua"
 -- `players.lua` acts on. Before `menu.lua`, like every other register: the access
 -- map that file sends lists what this one registered.
 server_script "modules/admin/server/characters.lua"
+-- The same door onto people who are NOT connected, which is a query over every
+-- account rather than a read of one. Beside `characters.lua` and before
+-- `menu.lua` for the same reason: the access map lists what both registered.
+server_script "modules/admin/server/offline.lua"
 server_script "modules/admin/server/menu.lua"
 
 client_script "modules/admin/client/main.lua"

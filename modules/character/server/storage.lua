@@ -35,6 +35,23 @@ end
 -- There are no migrations, and that is deliberate while the project is in
 -- development: a table that exists is never touched by IF NOT EXISTS, so a
 -- changed table is dropped and recreated rather than migrated.
+--
+-- WHICH IS WHY `idx_opx77_characters_seen` REACHES A FRESH INSTALL AND NOTHING
+-- ELSE, and saying so is the only honest thing to do about it. The staff find
+-- screen reads the whole table by last-played, and that index is what makes the
+-- read a backward range scan over 26 entries instead of a filesort over every
+-- living character. A database where `opx77_characters` already exists will not
+-- grow it from here -- IF NOT EXISTS sees a table and does nothing at all, key
+-- list included -- so on an existing server it is one line run by hand:
+--
+--   ALTER TABLE opx77_characters
+--     ADD KEY idx_opx77_characters_seen (deleted_at, last_logged_out, citizen_id);
+--
+-- A bare `CREATE INDEX` in the list below would not do it either: MySQL has no
+-- `CREATE INDEX IF NOT EXISTS`, so it would raise on every fresh install -- where
+-- the key is already in the CREATE TABLE -- and `ApplySchema` stops at the first
+-- failure, which would cost the whole boot. Without the index the find screen
+-- still ANSWERS; it answers by walking the table.
 M.Storage.SCHEMA = {
 	[[
 CREATE TABLE IF NOT EXISTS opx77_users (
@@ -63,6 +80,7 @@ CREATE TABLE IF NOT EXISTS opx77_characters (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     deleted_at TIMESTAMP NULL DEFAULT NULL,
     KEY idx_opx77_characters_user (user_id, deleted_at),
+    KEY idx_opx77_characters_seen (deleted_at, last_logged_out, citizen_id),
     CONSTRAINT fk_opx77_character_user
         FOREIGN KEY (user_id) REFERENCES opx77_users (user_id)
         ON DELETE CASCADE
@@ -459,6 +477,157 @@ function M.Storage.RemoveGroup(citizenId, groupType, groupName)
 DELETE FROM opx77_character_groups
  WHERE citizen_id = @citizen AND group_type = @type AND group_name = @name
   ]], { citizen = citizenId, type = groupType, name = groupName })
+end
+
+-- ── finding a character on an account nobody is sitting in ───────────────────
+--
+-- THE READS THAT DO NOT START FROM AN ACCOUNT. Everything above this line is
+-- keyed on a `user_id` or a `citizen_id` the caller already holds, which is what
+-- a session can always answer. The staff find screen has neither: the person it
+-- is looking for is not connected, so there is no session to ask, and the only
+-- thing left is the table itself. That makes these the two widest statements in
+-- the module and the two that had to be bounded hardest.
+--
+-- NEITHER TAKES A ROW COUNT. `LIMIT 26` is written into the statement rather
+-- than bound, exactly as `MembersOf` writes its 200, so the ceiling is a
+-- property of the SQL and not of whoever calls it -- a caller cannot ask for ten
+-- thousand rows because there is no argument with which to ask. 26 is
+-- `FIND_PAGE` plus the probe row described on it.
+--
+-- NEITHER USES OFFSET. A page past the first is a SEEK: it is handed the sort
+-- key of the last row the reader saw and asks for what comes after it. OFFSET
+-- would make page four hundred read 10,000 index entries to throw 9,975 of them
+-- away, and -- worse on a roster ordered by last-played, which is reordered by
+-- every logout while the operator reads it -- a row that moves to the top pushes
+-- one row down across the page boundary, so OFFSET shows it twice. A seek is
+-- stable for everything BELOW the cursor, which is the only part the reader has
+-- not seen yet.
+
+--- Rows one find answers. The statements carry LIMIT 26, one more than this, and
+--- the extra row is the PROBE: it is never shown, and it is the only way a seek
+--- can say whether a next page exists -- there is no count to subtract from.
+M.Storage.FIND_PAGE = 25
+
+-- Escapes the two LIKE metacharacters and the escape itself, so a term of `%`
+-- searches for a per-cent sign instead of matching every row in the table. The
+-- statements rely on MySQL's default LIKE escape, a backslash, rather than
+-- naming it with ESCAPE: under NO_BACKSLASH_ESCAPES the literal `'\\'` an ESCAPE
+-- clause needs is two characters and the server refuses the clause outright.
+local function likeTerm(term)
+	local escaped = term:gsub('\\', '\\\\'):gsub('%%', '\\%%'):gsub('_', '\\_')
+	return '%' .. escaped .. '%'
+end
+
+--- Turns a find row into what the staff screen draws.
+-- Wider than `ToEntity` by the account's display name and narrower by everything
+-- a character CARRIES: money, position, metadata and appearance are not read at
+-- all, so no amount of paging through this screen ever puts them on the wire.
+local function toFound(row)
+	local info = decode(row.char_info, {})
+	local job = decode(row.job, {})
+	local gang = decode(row.gang, {})
+	return {
+		citizenId = row.citizen_id,
+		userId = row.user_id,
+		cid = row.cid,
+		account = row.display_name,
+		firstName = info.firstName,
+		lastName = info.lastName,
+		gender = info.gender,
+		job = job.label,
+		gang = gang.name ~= 'none' and gang.label or nil,
+		lastLoggedOut = row.last_logged_out,
+		createdAt = row.created_at,
+	}
+end
+
+--- Shapes a find result, or passes the failure through.
+local function toFoundList(rows)
+	if not rows.ok then return rows end
+	local list = rows.value or {}
+	local out = {}
+	for i = 1, #list do out[i] = toFound(list[i]) end
+	return Result.Ok(out)
+end
+
+--- The most recently played characters, newest first; the first page.
+-- @author dop42
+--
+-- `last_logged_out IS NOT NULL` drops characters that have never been played at
+-- all. They have no place in an order BY when somebody was last here, and they
+-- are not lost: the search below reads them like any other row.
+-- @return Result up to FIND_PAGE + 1 rows
+function M.Storage.FindRecent()
+	return toFoundList(Storage.Query([[
+SELECT c.citizen_id, c.user_id, c.cid, c.char_info, c.job, c.gang,
+       c.last_logged_out, c.created_at, u.display_name
+  FROM opx77_characters c
+  JOIN opx77_users u ON u.user_id = c.user_id
+ WHERE c.deleted_at IS NULL AND c.last_logged_out IS NOT NULL
+ ORDER BY c.last_logged_out DESC, c.citizen_id DESC
+ LIMIT 26
+  ]]))
+end
+
+--- The page of most recently played characters after one the reader has seen.
+-- @author dop42
+--
+-- A WHOLE SECOND STATEMENT rather than the one above with a predicate that is
+-- sometimes true, which is the same choice `SAVE_PRIMARY` makes one screen up:
+-- the first page has no cursor to compare against and there is no sentinel to
+-- invent -- a TIMESTAMP stops at 2038, so there is no value above every row.
+--
+-- The comparison is a ROW CONSTRUCTOR and not two ANDed halves, because the sort
+-- key is the PAIR: two characters logged out in the same second are ordered by
+-- citizen id, and a seek that only compared the timestamp would either repeat
+-- them or step over them.
+-- @param seenAt string the last row's last_logged_out
+-- @param cursor CitizenId the last row's citizen id
+-- @return Result up to FIND_PAGE + 1 rows
+function M.Storage.FindRecentAfter(seenAt, cursor)
+	return toFoundList(Storage.Query([[
+SELECT c.citizen_id, c.user_id, c.cid, c.char_info, c.job, c.gang,
+       c.last_logged_out, c.created_at, u.display_name
+  FROM opx77_characters c
+  JOIN opx77_users u ON u.user_id = c.user_id
+ WHERE c.deleted_at IS NULL AND c.last_logged_out IS NOT NULL
+   AND (c.last_logged_out, c.citizen_id) < (@seenAt, @cursor)
+ ORDER BY c.last_logged_out DESC, c.citizen_id DESC
+ LIMIT 26
+  ]], { seenAt = seenAt, cursor = cursor }))
+end
+
+--- Characters whose name, account name or citizen id carries a term.
+-- @author dop42
+--
+-- ONE STATEMENT FOR EVERY PAGE, unlike the pair above, because the sort key here
+-- is the primary key: `citizen_id` is ascii_bin, never null and never rewritten,
+-- and the empty string is below every value it can hold. So the first page is
+-- the seek with `''` for a cursor and there is no special case to write.
+--
+-- THE LIKE IS NOT INDEXED AND CANNOT BE. A contains-match has a leading wildcard,
+-- which no B-tree serves; anchoring it to a prefix would index it and would stop
+-- finding anybody by their family name, since `name` is "First Last". So this
+-- walks the primary key from the cursor and STOPS at 26 matches -- which is a
+-- handful of rows for a term anybody actually types, and one pass over the table
+-- for a term that matches nothing. What bounds how often that pass is paid is
+-- not here: it is the three-character floor and the operator's read cooldown,
+-- both in the caller.
+-- @param term string already trimmed and length-checked by the caller
+-- @param cursor CitizenId the last citizen id seen, or '' for the first page
+-- @return Result up to FIND_PAGE + 1 rows
+function M.Storage.FindByTerm(term, cursor)
+	return toFoundList(Storage.Query([[
+SELECT c.citizen_id, c.user_id, c.cid, c.char_info, c.job, c.gang,
+       c.last_logged_out, c.created_at, u.display_name
+  FROM opx77_characters c
+  JOIN opx77_users u ON u.user_id = c.user_id
+ WHERE c.deleted_at IS NULL
+   AND c.citizen_id > @cursor
+   AND (c.name LIKE @like OR u.display_name LIKE @like OR c.citizen_id = @exact)
+ ORDER BY c.citizen_id ASC
+ LIMIT 26
+  ]], { cursor = cursor, like = likeTerm(term), exact = term }))
 end
 
 --- Lists at most 200 living members of a group, highest grade first.

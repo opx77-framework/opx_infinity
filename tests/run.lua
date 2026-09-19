@@ -2832,5 +2832,585 @@ do
 		popAt ~= nil and confirmAt ~= nil and popAt < confirmAt)
 end
 
+-- ── finding somebody who is not connected ────────────────────────────────────
+-- THE READ THAT DOES NOT START FROM A SESSION, and the only one in this runtime.
+-- Everything else about a character is reached through the account holding it;
+-- an offline player has no account to hold it with, so the find goes to the
+-- table. That makes it the one query that could return ten thousand rows, and
+-- every check below is about a bound on it: the page ceiling, the probe row that
+-- says whether there is a next page without a COUNT, the seek that replaces
+-- OFFSET, and the floor under a search term.
+--
+-- NONE OF THIS IS MEASURED. There is no database here and there never will be in
+-- this harness; what is under test is which statement runs, what is bound into
+-- it and what comes back out. Whether the index is used is a claim about MySQL
+-- and is argued in `storage.lua`, not proved here.
+section('finding somebody who is not connected')
+do
+	-- Every statement the find runs, in order, with what was bound into it. The
+	-- three SELECTs are otherwise indistinguishable from outside: a first page, a
+	-- seek and a search all answer a list of rows.
+	local asked = {}
+	local answered = {}
+
+	--- `count` rows as the SELECT answers them, numbered from `from`.
+	local function rowsFrom(count, from)
+		local out = {}
+		for index = 1, count do
+			local seq = (from or 0) + index
+			out[index] = {
+				citizen_id = ('CIT-%04d'):format(seq),
+				user_id = ('user-%04d'):format(seq),
+				cid = 1,
+				-- Tables rather than encoded strings: `Storage.Decode` takes either,
+				-- because one bridge version answers each.
+				char_info = { firstName = 'Vee', lastName = ('Number%d'):format(seq) },
+				job = { label = 'Unemployed' },
+				gang = { name = 'none' },
+				last_logged_out = ('2026-01-%02d 10:00:00'):format(((seq - 1) % 28) + 1),
+				created_at = '2025-01-01 00:00:00',
+				display_name = ('account-%04d'):format(seq),
+			}
+		end
+		return out
+	end
+
+	local database = Host.Database({
+		scalar = function() return 1 end,
+		update = function() return 0 end,
+		single = function() return nil end,
+		query = function(sql, params)
+			asked[#asked + 1] = { sql = sql, params = params or {} }
+			return answered
+		end,
+	})
+
+	local env, control, why = boot('server', database)
+	check('server boots with a database for the find tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local admin = OPX.Modules.Get('admin')
+		local storage = character.Storage
+
+		--- The statement the find last ran, and what was bound into it.
+		local function last()
+			return asked[#asked] or { sql = '', params = {} }
+		end
+
+		--- Runs one find with the boot's statements forgotten first.
+		local function find(request)
+			asked = {}
+			return character.FindCharacters(request)
+		end
+
+		-- THE CONTRACT. Published beside the other three staff doors, and reached
+		-- by `admin` through the contract rather than by touching the module.
+		local contract = OPX.Api.Get('character')
+		check('the find is published for the staff menu to read',
+			contract ~= nil and type(contract.FindCharacters) == 'function')
+		check('and it is not the account listing wearing a different name',
+			contract ~= nil and contract.FindCharacters ~= contract.ListCharactersFor)
+
+		-- THE CEILING, and it is in the SQL rather than in an argument, so no
+		-- caller can raise it. The statement asks for one row more than a page:
+		-- that row is the probe and it is what answers `more` without a COUNT.
+		check('a find page is 25 rows', storage.FIND_PAGE == 25)
+		answered = rowsFrom(1)
+		find({ mode = 'recent' })
+		check('and the statement asks for exactly one row more than a page',
+			tonumber(last().sql:match('LIMIT (%d+)')) == storage.FIND_PAGE + 1,
+			last().sql:match('LIMIT %d+'))
+		check('the page size is nowhere in the bound parameters, so nobody can raise it',
+			last().params.limit == nil)
+
+		-- EMPTY. The whole point of a `more` flag that is false rather than absent:
+		-- a client reads a row off it, and nil would read as "not answered yet".
+		answered = {}
+		local none = find({ mode = 'recent' })
+		check('an empty table answers an empty page rather than a failure',
+			none.ok == true and #none.value.characters == 0)
+		check('and says plainly that there is no next page',
+			none.value.more == false and none.value.cursor == nil)
+
+		-- THE BOUNDARY, both sides of it. Exactly a page is the last page; a page
+		-- plus the probe is not, and the probe is dropped rather than shown.
+		answered = rowsFrom(storage.FIND_PAGE)
+		local full = find({ mode = 'recent' })
+		check('exactly one page of rows is the last page',
+			full.ok and #full.value.characters == storage.FIND_PAGE
+				and full.value.more == false,
+			tostring(full.ok and #full.value.characters))
+		check('so it offers no cursor to seek past', full.value.cursor == nil)
+
+		answered = rowsFrom(storage.FIND_PAGE + 1)
+		local over = find({ mode = 'recent' })
+		check('a page plus the probe row says there is more',
+			over.ok and over.value.more == true)
+		check('and the probe itself is dropped rather than drawn',
+			#over.value.characters == storage.FIND_PAGE,
+			tostring(#over.value.characters))
+		check('the cursor is the last row SHOWN, not the probe',
+			over.value.cursor == ('CIT-%04d'):format(storage.FIND_PAGE),
+			tostring(over.value.cursor))
+		check('and a recent page carries the other half of its sort key',
+			type(over.value.seenAt) == 'string' and over.value.seenAt ~= '',
+			tostring(over.value.seenAt))
+
+		-- THE SEEK. There is no OFFSET anywhere: page two is "what comes after the
+		-- row you last saw", which is a different statement from page one because
+		-- a TIMESTAMP has no value above every row to start from.
+		answered = rowsFrom(2)
+		find({ mode = 'recent' })
+		check('the first recent page compares against nothing',
+			last().sql:find('c.citizen_id) <', 1, true) == nil)
+		find({ mode = 'recent', seenAt = '2026-01-10 10:00:00', cursor = 'CIT-0007' })
+		check('a page past the first is a seek on the whole sort key',
+			last().sql:find('(c.last_logged_out, c.citizen_id) < (@seenAt, @cursor)', 1, true) ~= nil)
+		check('and neither statement uses OFFSET',
+			last().sql:upper():find('OFFSET', 1, true) == nil)
+		check('the seek binds both halves it was handed',
+			last().params.seenAt == '2026-01-10 10:00:00' and last().params.cursor == 'CIT-0007')
+
+		-- HALF A CURSOR IS NO CURSOR. A seek needs both halves of the sort key, and
+		-- reading page one again beats reading a page nobody asked for.
+		find({ mode = 'recent', cursor = 'CIT-0007' })
+		check('a cursor with no timestamp falls back to the first page',
+			last().sql:find('c.citizen_id) <', 1, true) == nil)
+
+		-- THE FLOOR UNDER A SEARCH, which is half the rate limit: a one-letter term
+		-- that matches nothing reads the whole table before it can say so.
+		check('the floor is three characters', character.FIND_MIN_TERM == 3)
+		asked = {}
+		for _, short in ipairs({ '', 'a', 'ab', '  b  ' }) do
+			local refused = character.FindCharacters({ mode = 'search', term = short })
+			check(('a search for %q is refused'):format(short),
+				refused.ok == false and refused.error == 'character.searchShort',
+				tostring(refused.error))
+		end
+		check('and not one of them reached the database', #asked == 0,
+			('%d statement(s)'):format(#asked))
+
+		answered = rowsFrom(3)
+		local hit = find({ mode = 'search', term = 'vee' })
+		check('three characters is enough to run', hit.ok == true, tostring(hit.error))
+		check('a search is a seek on the primary key, with no OFFSET',
+			last().sql:find('c.citizen_id > @cursor', 1, true) ~= nil
+				and last().sql:upper():find('OFFSET', 1, true) == nil)
+		check("and its first page starts at the empty string, which is below every id",
+			last().params.cursor == '')
+		check('a search page carries no timestamp half, because it is not sorted by one',
+			hit.value.seenAt == nil)
+
+		-- THE WILDCARDS. A term of `%` that reached LIKE unescaped would match every
+		-- row in the table, which is the one query the whole screen exists to avoid.
+		find({ mode = 'search', term = '100%_x' })
+		check('a per-cent sign in a term is a per-cent sign, not every row',
+			last().params.like == '%100\\%\\_x%', tostring(last().params.like))
+		find({ mode = 'search', term = 'a\\b' })
+		check('and the escape character escapes itself',
+			last().params.like == '%a\\\\b%', tostring(last().params.like))
+		check('the term is also matched against a citizen id exactly',
+			last().params.exact == 'a\\b')
+
+		-- A MODE NOBODY OFFERS. There is deliberately no "everybody" -- staff have
+		-- no use for page 187 of ten thousand strangers, and that is the query that
+		-- falls over.
+		asked = {}
+		for _, mode in ipairs({ 'all', '', 'RECENT' }) do
+			local refused = character.FindCharacters({ mode = mode })
+			check(('a find in mode %q is refused'):format(mode), refused.ok == false)
+		end
+		check('a find that is not a table at all is refused too',
+			character.FindCharacters('recent').ok == false)
+		check('and none of those reached the database', #asked == 0)
+
+		-- THE INDEX. It is in the CREATE TABLE and therefore reaches a fresh install
+		-- and nothing else; the comment above the schema says so, and this holds
+		-- both halves of that together so neither can be edited away alone.
+		local schema = table.concat(storage.SCHEMA, '\n')
+		check('the find order is indexed in the schema',
+			schema:find('idx_opx77_characters_seen (deleted_at, last_logged_out, citizen_id)',
+				1, true) ~= nil)
+		local handle = io.open('modules/character/server/storage.lua', 'r')
+		local source = handle:read('a')
+		handle:close()
+		check('and the schema says plainly that it will not reach a live database',
+			source:find('ALTER TABLE opx77_characters', 1, true) ~= nil)
+
+		-- ── the staff half ───────────────────────────────────────────────────
+		-- WHAT THE ADMIN MODULE ADDS: who is connected, and who may ask. It adds no
+		-- SQL and no character data, which is the standing rule for the whole module.
+		check('the find is its own ACL grant',
+			admin.Command.CHARACTER_FIND == 'opx.admin.character.find')
+		check('in the `character` area, because what it finds outlives a connection',
+			admin.Command.CHARACTER_FIND:find('opx.admin.character.', 1, true) == 1)
+		check('and separate from the per-account listing, which has a smaller blast radius',
+			admin.Command.CHARACTER_FIND ~= admin.Command.CHARACTER_LIST)
+		check('it is registered, and restricted like every other staff command',
+			control.commands['opx.admin.character.find'] ~= nil
+				and control.commands['opx.admin.character.find'].restricted == true)
+
+		answered = rowsFrom(2)
+		local rows, code, page = admin.Offline.Page({ mode = 'recent' })
+		check('the staff half answers the rows the contract found',
+			rows ~= nil and #rows == 2, tostring(code))
+		check('with nobody connected, no row claims to be online',
+			rows ~= nil and rows[1].live == nil and rows[1].online == nil)
+		check('and it passes the page state through for the menu to page on',
+			page ~= nil and page.mode == 'recent' and page.more == false)
+		check('a row carries the account, which is what a found row is for',
+			rows ~= nil and rows[1].account == 'account-0001')
+		check('and carries no money, position or metadata, which were never read',
+			rows ~= nil and rows[1].money == nil and rows[1].position == nil
+				and rows[1].metadata == nil)
+
+		local refusedRows, refusedCode = admin.Offline.Page({ mode = 'search', term = 'a' })
+		check('a term under the floor is refused in the staff half too',
+			refusedRows == nil and refusedCode == 'search_short', tostring(refusedCode))
+
+		-- EVERY CODE THIS FILE CAN ANSWER HAS A SENTENCE. `Server.Refuse` falls back
+		-- to `failed` for a code it does not know, so a new code with no entry in
+		-- `ERRORS` does not raise: it silently answers "that could not be done" and
+		-- the operator never learns that their search was two letters long.
+		local offlineSource = io.open('modules/admin/server/offline.lua', 'r'):read('a')
+		local mainSource = io.open('modules/admin/server/main.lua', 'r'):read('a')
+		local mapped = mainSource:match('local ERRORS = %b{}') or ''
+		local unmapped = {}
+		local function mustMap(code)
+			if mapped:find('\n\t' .. code .. ' = ', 1, true) == nil then
+				unmapped[#unmapped + 1] = code
+			end
+		end
+		for code in offlineSource:gmatch("refuse%(source, raw, '([%w_]+)'%)") do mustMap(code) end
+		for code in offlineSource:gmatch("%] = '([%w_]+)',") do mustMap(code) end
+		mustMap('failed')
+		mustMap('refused')
+		table.sort(unmapped)
+		check('every refusal the find can answer maps to a sentence rather than to "failed"',
+			#unmapped == 0, table.concat(unmapped, ', '))
+
+		-- THE WIRE. A page of 25 rows crosses in chunks under the host's own limit,
+		-- and every chunk carries the tag and the page state -- the tag because a
+		-- late answer has to be droppable, the state because the client reads it off
+		-- whichever chunk completes the list.
+		env.Open77.acl.isAllowed = function() return true end
+		env.Open77.players.all = function() return {} end
+		answered = rowsFrom(storage.FIND_PAGE + 1)
+		local before = #control.clientEvents
+		env.source = 5
+		control.netEvents[admin.Event.REFRESH]('found', { mode = 'recent' })
+		control.Pump(10)
+		env.source = nil
+
+		local sent = {}
+		for index = before + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == admin.Event.FOUND then sent[#sent + 1] = event[1] end
+		end
+		check('the page reaches the client', #sent > 0, ('%d event(s)'):format(#sent))
+
+		local widest, total = 0, 0
+		for _, payload in ipairs(sent) do
+			widest = math.max(widest, #payload.rows)
+			total = total + #payload.rows
+		end
+		-- 20 is this module's own chunk, set because the client's JSON decoder
+		-- refuses an event past 1,024 value nodes; a found row is about a dozen.
+		check('and no single event carries more than 20 rows',
+			widest <= 20, ('%d rows in the widest'):format(widest))
+		check('the whole page arrives, probe dropped, across those events',
+			total == storage.FIND_PAGE, ('%d rows'):format(total))
+		check('every chunk is tagged with the question it answers',
+			(function()
+				for _, payload in ipairs(sent) do
+					if payload.tag ~= 'recent||' then return false end
+				end
+				return #sent > 0
+			end)(), sent[1] and tostring(sent[1].tag))
+		check('and every chunk carries the page state, not just the last one',
+			(function()
+				for _, payload in ipairs(sent) do
+					if payload.more ~= true or type(payload.cursor) ~= 'string' then return false end
+				end
+				return true
+			end)())
+		check('exactly one of them says the list is complete',
+			(function()
+				local done = 0
+				for _, payload in ipairs(sent) do if payload.done then done = done + 1 end end
+				return done == 1
+			end)())
+
+		-- A REQUEST THAT IS NOT ONE. The argument for this topic is a table, which
+		-- is the only topic where it is, so the shape is checked before a thread is
+		-- spent on it.
+		for _, bad in ipairs({ 'recent', 42, { mode = 'search' },
+			{ mode = 'search', term = string.rep('x', 65) } }) do
+			local mark = #control.clientEvents
+			env.source = 5
+			control.netEvents[admin.Event.REFRESH]('found', bad)
+			control.Pump(10)
+			env.source = nil
+			local answeredBack = false
+			for index = mark + 1, #control.clientEvents do
+				if control.clientEvents[index].name == admin.Event.FOUND then answeredBack = true end
+			end
+			check(('a malformed find request is dropped rather than run (%s)'):format(type(bad)),
+				not answeredBack)
+		end
+	end
+end
+
+-- ── the find screen drops a late answer ──────────────────────────────────────
+-- THE ONE SCREEN WITH NO TARGET TO TAG WITH. Every other per-target list on this
+-- menu is read FOR a player and tagged with that player's id, so an answer for
+-- somebody the operator has moved on from is dropped. The find is read for a
+-- QUESTION -- a mode, a term and a cursor -- so the question is the tag, and an
+-- answer to a term that has since been retyped has to be dropped exactly as
+-- readily.
+section('the staff find screen')
+do
+	local env, control, why = boot('client')
+	check('client boots for the find screen', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+
+		-- What the screen asked the server for. The host's client half throws
+		-- these away; the whole test is about which one was sent and when.
+		local asked = {}
+		env.TriggerServerEvent = function(name, topic, arg)
+			asked[#asked + 1] = { name = name, topic = topic, arg = arg }
+		end
+
+		-- THE SPEC AND NOT THE SURFACE. What reaches the CEF page is a rendered
+		-- window of labels with the ids and the row data already stripped off, so
+		-- the thing worth asserting on is what this module HANDED the menu module.
+		-- The contract is wrapped rather than replaced: the real one still runs,
+		-- so a spec the menu module would refuse still fails here.
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		check('the menu contract is there to wrap', type(realMenu) == 'table')
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(handle, spec)
+				specs[#specs + 1] = spec
+				return realMenu.Update(handle, spec)
+			end,
+		}, { __index = realMenu })
+
+		--- Whether the last spec built carries a row with an id.
+		local function hasRow(id)
+			local spec = specs[#specs]
+			for _, item in ipairs(spec and spec.items or {}) do
+				if item.id == id then return item end
+			end
+			return nil
+		end
+
+		-- The menu opens against an access map that grants everything, which is
+		-- only a drawing hint: the host refuses what it refuses whatever this says.
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = false })
+		control.Pump(10)
+		check('the staff menu opens', admin.Menu.IsOpen())
+
+		asked = {}
+		check('the find screen can be opened', admin.Menu.OpenAt('offlineChars') == true)
+		control.Pump(10)
+		check('and it lands on the recent list', admin.Menu.Screen() == 'offlineChars')
+
+		local first = nil
+		for _, entry in ipairs(asked) do
+			if entry.topic == 'found' then first = entry end
+		end
+		check('opening it asks the server for a page rather than filtering locally',
+			first ~= nil and type(first.arg) == 'table' and first.arg.mode == 'recent',
+			first and tostring(first.arg))
+		check('and it opens on recent, never on the last search somebody typed',
+			first ~= nil and first.arg.term == nil)
+
+		--- One page as the server sends it, in a single chunk.
+		local function answer(tag, count, more)
+			local rows = {}
+			for index = 1, count do
+				rows[index] = { citizenId = ('CIT-%04d'):format(index),
+					firstName = 'Vee', lastName = ('Number%d'):format(index),
+					account = ('account-%04d'):format(index),
+					lastLoggedOut = '2026-01-01 10:00:00' }
+			end
+			control.netEvents[admin.Event.FOUND]({ rows = rows, offset = 0, total = count,
+				done = true, tag = tag, mode = 'recent', more = more,
+				cursor = more and ('CIT-%04d'):format(count) or nil,
+				seenAt = more and '2026-01-01 10:00:00' or nil })
+			control.Pump(10)
+		end
+
+		-- THE LATE ANSWER. A page tagged with a question this screen is not asking
+		-- must not be drawn, and the difference between the two calls below is the
+		-- tag and nothing else.
+		answer('recent|stale-question|', 3, false)
+		check('a page answering a question the screen is not asking is dropped',
+			hasRow('found_CIT-0001') == nil)
+		check('and the screen is still waiting rather than showing another question answer',
+			hasRow('empty') ~= nil)
+
+		answer('recent||', 3, false)
+		check('a page answering the question it IS asking is drawn',
+			hasRow('found_CIT-0001') ~= nil)
+		check('the placeholder goes with it', hasRow('empty') == nil)
+		check('a row is a way into the SAME character page the roster reaches',
+			(function()
+				local item = hasRow('found_CIT-0001')
+				return item ~= nil and type(item.data) == 'table' and item.data.go == 'character'
+					and item.data.arg == 'CIT-0001'
+			end)())
+		check('and a last page offers nothing to seek past', hasRow('more') == nil)
+
+		-- THE SEEK ROW, which only exists when the server said there is more.
+		answer('recent||', 3, true)
+		local more = hasRow('more')
+		check('a page with more behind it offers a seek', more ~= nil)
+		check('and the seek carries the sort key rather than a page number',
+			more ~= nil and type(more.data) == 'table' and type(more.data.seek) == 'table'
+				and more.data.seek.cursor == 'CIT-0003'
+				and more.data.seek.seenAt == '2026-01-01 10:00:00'
+				and more.data.seek.p == nil)
+
+		-- THE FLOOR, mirrored on the client so that a term too short is a sentence
+		-- rather than a round trip that comes back refused. The server checks it
+		-- again and is the authority.
+		asked = {}
+		admin.Menu.Filter('ab')
+		control.Pump(10)
+		check('a two-letter search is not sent to the server at all',
+			(function()
+				for _, entry in ipairs(asked) do
+					if entry.topic == 'found' then return false end
+				end
+				return true
+			end)())
+
+		admin.Menu.Filter('silverhand')
+		control.Pump(10)
+		local searched = nil
+		for _, entry in ipairs(asked) do
+			if entry.topic == 'found' then searched = entry end
+		end
+		check('a long enough search goes to the server, because there is no local list',
+			searched ~= nil and searched.arg.mode == 'search'
+				and searched.arg.term == 'silverhand')
+		check('and it starts the seek over rather than carrying the old cursor',
+			searched ~= nil and searched.arg.cursor == nil)
+		check('the screen shows it is waiting, not the recent rows under a new title',
+			hasRow('found_CIT-0001') == nil)
+
+		-- And the answer to the OLD question, arriving now, is dropped -- which is
+		-- the whole reason the tag is the question and not a player id.
+		answer('recent||', 3, false)
+		check('the answer to the previous question, arriving late, is still dropped',
+			hasRow('found_CIT-0001') == nil)
+
+		asked = {}
+		admin.Menu.Filter(nil)
+		control.Pump(10)
+		local cleared = nil
+		for _, entry in ipairs(asked) do
+			if entry.topic == 'found' then cleared = entry end
+		end
+		check('clearing the box goes back to the recent list',
+			cleared ~= nil and cleared.arg.mode == 'recent' and cleared.arg.term == nil)
+
+		-- ── the ONE character page, reached from both lists ──────────────────
+		-- `live` IS A PLAYER ID ON ONE LIST AND A BOOLEAN ON THE OTHER, which is
+		-- right both times -- under an account's characters the player is the
+		-- screen above and there is nothing to name, and on the find there is --
+		-- and it is exactly the sort of difference that puts a `true` through a
+		-- `%d` and loses the whole screen, because a builder that raises takes the
+		-- page with it rather than one row.
+		control.netEvents[admin.Event.FOUND]({
+			rows = { { citizenId = 'CIT-0009', firstName = 'Vee', lastName = 'Nine',
+				account = 'account-nine', live = 7 } },
+			offset = 0, total = 1, done = true, tag = 'recent||', mode = 'recent' })
+		control.Pump(10)
+		check('the find page can be opened on a found row',
+			admin.Menu.OpenAt('character', 'CIT-0009') == true)
+		control.Pump(10)
+		check('and it names the slot holding the character it just found',
+			(function()
+				local item = hasRow('here')
+				return item ~= nil and tostring(item.value):find('[7]', 1, true) ~= nil
+			end)(), (function() local i = hasRow('here') return i and tostring(i.value) end)())
+		check('it carries the account, which only a found row knows',
+			hasRow('account') ~= nil)
+		check('and the delete row refreshes the list it actually came from',
+			(function()
+				local item = hasRow('delete')
+				return item ~= nil and type(item.data) == 'table' and item.data.refresh == 'found'
+			end)())
+
+		-- The same page for a row off the OTHER list, where `live` is a boolean.
+		control.netEvents[admin.Event.CHARACTERS]({
+			rows = { { citizenId = 'CIT-0100', firstName = 'Vee', lastName = 'Hundred',
+				live = true } },
+			offset = 0, total = 1, done = true, target = nil })
+		control.Pump(10)
+		local built = admin.Menu.OpenAt('character', 'CIT-0100')
+		control.Pump(10)
+		check('the same page builds for a row off the account list', built == true)
+		check('and it draws the name rather than raising on a boolean slot',
+			(function()
+				local item = hasRow('name')
+				return item ~= nil and tostring(item.value):find('Hundred', 1, true) ~= nil
+			end)(), (function() local i = hasRow('name') return i and tostring(i.value) end)())
+	end
+end
+
+-- ── both languages, in step ─────────────────────────────────────────────────
+-- A KEY IS ONLY TRANSLATED WHEN IT IS TRANSLATED EVERYWHERE. A missing French
+-- key is not a missing sentence: `locale()` answers the key itself, so the
+-- player reads `admin.menu.findHint` off the screen. Read out of the SOURCE and
+-- not out of a booted catalogue, because half these files need their module
+-- declared first and none of that is what is under test.
+section('every locale key is in both languages')
+do
+	local files = { 'locales/en.lua', 'locales/fr.lua' }
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'shared')) do
+		if file:match('locales%.lua$') then files[#files + 1] = file end
+	end
+	check('the locale files were found', #files > 2, ('%d file(s)'):format(#files))
+
+	local keys = { en = {}, fr = {} }
+	for _, file in ipairs(files) do
+		local handle = io.open(file, 'r')
+		if handle then
+			local language
+			for line in handle:lines() do
+				language = line:match("OPX%.Locale%.Register%('(%a%a)'") or language
+				local key = line:match("^%s*%['([%w%.%-_]+)'%]%s*=")
+				if key and keys[language] then keys[language][key] = file end
+			end
+			handle:close()
+		end
+	end
+
+	local gaps = {}
+	for key, file in pairs(keys.en) do
+		if keys.fr[key] == nil then gaps[#gaps + 1] = ('fr is missing %s (%s)'):format(key, file) end
+	end
+	for key, file in pairs(keys.fr) do
+		if keys.en[key] == nil then gaps[#gaps + 1] = ('en is missing %s (%s)'):format(key, file) end
+	end
+	table.sort(gaps)
+
+	local counted = 0
+	for _ in pairs(keys.en) do counted = counted + 1 end
+	check('there are keys to compare', counted > 400, ('%d English keys'):format(counted))
+	check('and every one of them is written in both languages',
+		#gaps == 0, table.concat(gaps, '; '))
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

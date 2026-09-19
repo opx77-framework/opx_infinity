@@ -478,6 +478,127 @@ function M.ListCharactersFor(userId)
 	})
 end
 
+--- The fewest characters a search term may carry.
+-- @author dop42
+--
+-- THREE, AND THE NUMBER IS THE WHOLE RATE LIMIT ARGUMENT. A contains-search over
+-- the character table is a scan that stops at the first 26 matches, so its cost
+-- is inversely proportional to how common the term is: `a` matches nearly every
+-- row and is answered off the front of the primary key almost for free, while a
+-- term that matches NOTHING reads the whole table before it can say so. One
+-- character is a term an operator types by accident on the way to typing a name,
+-- and each of those is a full pass. Three is the shortest term somebody means.
+M.FIND_MIN_TERM = 3
+
+-- The longest one. Past this it is not a name, and a `LIKE` pattern that long
+-- matches nothing while costing the same scan as one that does.
+local FIND_MAX_TERM = 48
+
+-- The longest cursor halves that may come back off the wire. A citizen id is
+-- VARCHAR(16) and a MySQL timestamp is 19 characters; both are bound as
+-- parameters, so the caps are a sanity floor on a forged cursor and not the
+-- thing that stops an injection -- nothing here is concatenated into SQL.
+local FIND_MAX_CURSOR = 16
+local FIND_MAX_SEEN = 32
+
+--- Whether a value is a usable non-empty string no longer than a cap.
+local function shortText(value, cap)
+	return type(value) == 'string' and value ~= '' and #value <= cap
+end
+
+--- Finds characters across EVERY account, for staff who have passed the ACL.
+-- @author dop42
+--
+-- WHY THE MODULE THAT OWNS ONE ACCOUNT ALSO OWNS THIS. `ListCharactersFor` above
+-- reads the characters of an account somebody is holding, and the account is the
+-- bound: whatever it answers, it is one person's rows. This one is handed no
+-- account at all, because the person it is looking for is NOT CONNECTED and
+-- there is no session to read an account out of. It is still a question about
+-- what a character is, so it is answered here and reached through the contract,
+-- and `admin` calls it from the server where the caller has been through the
+-- access list.
+--
+-- IT NEVER ANSWERS THE WHOLE TABLE. Two modes, and both are bounded in the SQL
+-- rather than here:
+--
+--   recent   the most recently played characters, newest first, paged by a SEEK
+--            on (last_logged_out, citizen_id). This is the landing view and it
+--            is what staff open the screen for -- "who was just here".
+--   search   a term of at least `M.FIND_MIN_TERM` characters against the
+--            character's name, the account's display name and the citizen id,
+--            paged by a seek on the primary key.
+--
+-- THERE IS NO "EVERYBODY" MODE, and leaving it out is the design. A staff member
+-- has no use for page 187 of ten thousand strangers sorted by nothing, and the
+-- query that would serve it is exactly the one that falls over. Everything this
+-- answers is either recent or asked for by name.
+--
+-- IT DOES NOT KNOW WHO IS ONLINE and must not: whether a character is being
+-- played is a fact about the runtime that is already stale by the time a row
+-- crosses the wire, and a WHERE clause that filtered on it would be a lie with a
+-- precise-looking count attached. The caller stamps that, from memory, at the
+-- moment it sends.
+-- Coroutine only.
+-- @param request table `{ mode, term, seenAt, cursor }`
+-- @return Result `{ characters, mode, more, seenAt, cursor }`
+function M.FindCharacters(request)
+	if type(request) ~= 'table' then return Result.Err('error.badRequest', 'request') end
+	if OPX.BootError then return Result.Err('error.unavailable', OPX.BootError) end
+
+	local mode = request.mode
+	if mode ~= 'recent' and mode ~= 'search' then
+		return Result.Err('error.badRequest', tostring(mode))
+	end
+
+	local found
+	if mode == 'search' then
+		local term = request.term
+		if type(term) ~= 'string' then return Result.Err('character.searchShort', 'term') end
+		term = term:gsub('%c', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+		-- Bytes and not characters, and deliberately the stricter reading: a
+		-- two-character term in a multi-byte script would pass a character count
+		-- and cost the same full scan the floor exists to refuse.
+		if #term < M.FIND_MIN_TERM then
+			return Result.Err('character.searchShort', tostring(#term))
+		end
+		if #term > FIND_MAX_TERM then term = term:sub(1, FIND_MAX_TERM) end
+		-- The empty string is below every citizen id, so the first page needs no
+		-- branch of its own -- see `FindByTerm`.
+		local cursor = shortText(request.cursor, FIND_MAX_CURSOR) and request.cursor or ''
+		found = M.Storage.FindByTerm(term, cursor)
+	elseif shortText(request.cursor, FIND_MAX_CURSOR)
+		and shortText(request.seenAt, FIND_MAX_SEEN) then
+		found = M.Storage.FindRecentAfter(request.seenAt, request.cursor)
+	else
+		-- Half a cursor is no cursor. A seek needs both halves of the sort key, and
+		-- reading page one again beats reading a page nobody asked for.
+		found = M.Storage.FindRecent()
+	end
+	if not found.ok then return found end
+
+	-- THE PROBE ROW IS DROPPED HERE AND NEVER SENT. The statements ask for one row
+	-- past the page so that `more` can be answered at all; sending it would put a
+	-- row on the operator's screen that the next page then shows again.
+	local rows = found.value
+	local more = #rows > M.Storage.FIND_PAGE
+	while #rows > M.Storage.FIND_PAGE do rows[#rows] = nil end
+
+	local last = rows[#rows]
+	return Result.Ok({
+		characters = rows,
+		mode = mode,
+		-- False rather than absent when the page is the last one: the caller draws
+		-- a row from this and `nil` would read as "not answered yet".
+		more = more,
+		-- The cursor of the LAST ROW SHOWN, which is what the next seek starts
+		-- after. Nil when the page is the last one, so a client cannot ask for a
+		-- page that was already said not to exist.
+		cursor = more and last and last.citizenId or nil,
+		seenAt = more and last and mode == 'recent'
+			and last.lastLoggedOut and tostring(last.lastLoggedOut) or nil,
+	})
+end
+
 --- Renames ANY character, online or not, for staff who have passed the ACL.
 -- @author dop42
 --
