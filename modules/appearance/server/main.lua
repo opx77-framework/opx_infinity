@@ -873,6 +873,25 @@ function M.Start()
 
 	registerEvents()
 
+	-- THE OTHER HALF OF THE OFFER POLICY. `WARDROBE.OFFER_POLICY` decides which
+	-- world enters are HANDED a fitting room; this is how a player asks for one
+	-- that was not handed to them, which under 'first' and 'never' is every
+	-- session after the first. Open to everybody, because it opens nothing but
+	-- the asking player's own appearance -- the client half re-checks the whole
+	-- of it, and the ACL has nothing to say about a player looking at their own
+	-- clothes. The cooldown is the whole of the abuse surface: the panel is one
+	-- outgoing event and the client refuses a second one anyway.
+	OPX.Command.Register('opx.appearance',
+		{ help = 'command.help.appearance', cooldownMs = 2000, key = 'appearance.panel' },
+		function(source)
+			local player = tonumber(source) or 0
+			if player <= 0 then
+				return Open77.log.warn('[appearance] the appearance panel is opened by a player, ' ..
+					'not the console')
+			end
+			TriggerClientEvent(M.Event.OPEN_PANEL, player)
+		end)
+
 	-- The seam the character module left exactly where its own clothing read used
 	-- to be: it yields where that read yielded, which is what makes the session
 	-- re-check below it meaningful. Whatever is put in `extras.data` is merged

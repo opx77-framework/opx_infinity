@@ -67,6 +67,16 @@ M.Event = {
 	CLOTHING_SAVED = OPX.Event(NET, 'appearance', 'clothingSaved'),
 	REFUSED = OPX.Event(NET, 'appearance', 'refused'),
 	PRESENT_ACK = OPX.Event(NET, 'appearance', 'presentAck'),
+	-- THE PLAYER ASKING FOR THEIR OWN APPEARANCE PANEL, and it is the only way in
+	-- that is not the join. The panel and the fitting room have had a contract
+	-- (`OpenPanel`, `OpenWardrobe`) since they were written and NOTHING IN THIS
+	-- RUNTIME EVER CALLED EITHER -- so 'offer it at creation and otherwise only
+	-- when the player asks' had no second half at all: a policy of 'first' or
+	-- 'never' meant the room was unreachable for the rest of the character's life.
+	-- A command rather than a key: `open77_pause` owns Escape, the menu owns F1,
+	-- and a third binding for a screen a player opens twice a session is a key
+	-- taken away from something they use every minute.
+	OPEN_PANEL = OPX.Event(NET, 'appearance', 'openPanel'),
 	REPLAYED = OPX.Event(NET, 'appearance', 'replayed'),
 	LOOK = OPX.Event(NET, 'appearance', 'look'),
 	RESEND = OPX.Event(NET, 'appearance', 'resend'),

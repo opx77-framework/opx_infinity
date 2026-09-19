@@ -157,12 +157,21 @@ local function tryOpen()
 	open = true
 	pendingOpen = true
 	draw()
+	-- After `draw`, so a listener that reads the page sees what is on it. Raised
+	-- from here and from `takeDown` and nowhere else: those are the only two
+	-- places `open` moves.
+	TriggerEvent(M.Event.ON_STATE, { open = true, phase = 'spawn' })
 end
 
 --- Takes the menu down and gives the keyboard back.
 local function takeDown()
+	local was = open
 	offer, open, pendingOpen, announcedOpen = nil, false, false, false
 	OPX.UI.Send(SURFACE, 'spawn:close', {})
+	-- Only when there was one. `takeDown` is reached from a close for an offer
+	-- that was never drawn and from `Stop`, and an idle said twice is a listener
+	-- being told the screen is free by something that never took it.
+	if was then TriggerEvent(M.Event.ON_STATE, { open = false, phase = 'idle' }) end
 	-- Released here rather than waited for: the page announces the release on
 	-- `focus:set` too, but a page that is gone never will, and a focus held across
 	-- a close is a player who cannot move.

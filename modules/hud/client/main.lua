@@ -54,6 +54,23 @@ local EVENT_NEEDS_EFFECTS = OPX.Event(OPX.Channel.LOCAL, 'needs', 'effects')
 -- The downed module's public bus.
 local EVENT_DOWNED_CHANGED = OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed')
 
+-- THE THREE SCREENS THAT OWN THE DISPLAY INSTEAD OF THIS ONE, each on its own
+-- module's public bus. Read with a bare AddEventHandler and nothing is required:
+-- a world without one of these modules simply never raises its name, which is
+-- the right answer rather than a HUD that hides for a screen nobody can open.
+--
+--   entry      the join: the name form, the character creator, and a fitting
+--              room that is owed but not yet drawn. It already resolves all
+--              three into one `open`, which is why this module does not have to.
+--   spawn      the spawn menu, which stands aside behind `entry` and then has
+--              the screen to itself.
+--   appearance the fitting room once it IS drawn -- including one the player
+--              asked for from the appearance panel, long after the join, which
+--              `entry` knows nothing about and should not.
+local EVENT_ENTRY_STATE = OPX.Event(OPX.Channel.LOCAL, 'entry', 'state')
+local EVENT_SPAWN_STATE = OPX.Event(OPX.Channel.LOCAL, 'spawn', 'state')
+local EVENT_APPEARANCE_DECISION = OPX.Event(OPX.Channel.LOCAL, 'appearance', 'decision')
+
 -- This module's own public bus, raised after the surface was told, so a handler
 -- reading the contract sees the visibility it was just told about. It must stay
 -- on the LOCAL channel: the host dispatcher matches on the name alone.
@@ -94,6 +111,21 @@ local SURFACE_HEIGHT = 1080
 -- are down, so standing them back up restores exactly what they had.
 local visible = true
 local down = false
+
+-- WHO ELSE OWNS THE DISPLAY, by name, and how many of them there are.
+--
+-- The same mechanism as `down` and not a second one: a boolean beside the
+-- player's own choice that takes the surface off without touching it. What
+-- `down` could not be is SHARED -- being down is one module's answer, and the
+-- character creator, the spawn menu and the fitting room are three, each
+-- starting and ending on its own clock and any two of them able to overlap at
+-- join. A single flag written by three owners is whichever of them finished
+-- last; a set is the question actually being asked, which is "is anybody".
+--
+-- It stays out of `down` because the two are not the same fact. Down is a
+-- condition of the character and the HUD is hidden BECAUSE of it; this is a
+-- screen in front of the HUD, and the vitals under it are still true.
+local owners, covered = {}, false
 
 -- Live health, armour and stamina as percents, or nil where unreadable. A value
 -- that cannot be read is never drawn as zero: an empty hunger bar is a thing a
@@ -759,7 +791,7 @@ end
 -- the page would come back holding the picture it had before the player went
 -- down.
 local function drawShow(force)
-	local shown = visible and not down
+	local shown = visible and not down and not covered
 	push(CHANNEL_SHOW, { visible = shown }, shown and '1' or '0', force)
 	if shown then
 		drawVitals(true)
@@ -776,9 +808,9 @@ local function setVisible(value)
 	if visible ~= wanted then
 		visible = wanted
 		drawShow()
-		TriggerEvent(EVENT_VISIBILITY, { visible = visible, down = down })
+		TriggerEvent(EVENT_VISIBILITY, { visible = visible, down = down, covered = covered })
 	end
-	return Result.Ok({ visible = visible, down = down })
+	return Result.Ok({ visible = visible, down = down, covered = covered })
 end
 
 --- Takes the surface off screen while the player is down, and back after. The
@@ -790,13 +822,30 @@ local function setDown(value)
 	drawShow()
 end
 
+--- Records that a named screen has the display, or has given it back.
+-- The player's own choice is never touched, exactly as `setDown` does not touch
+-- it: what the player asked for is restored the moment the last screen closes.
+local function setCovered(owner, value)
+	local wanted = value == true or nil
+	if owners[owner] == wanted then return end
+	owners[owner] = wanted
+	local anybody = next(owners) ~= nil
+	if covered == anybody then return end
+	covered = anybody
+	drawShow()
+	-- On the public bus as well, because `hud:visibility` is what a listener
+	-- reads to know whether the HUD is on screen, and a HUD hidden behind the
+	-- creator is as hidden as one the player switched off.
+	TriggerEvent(EVENT_VISIBILITY, { visible = visible, down = down, covered = covered })
+end
+
 -- ── the contract ─────────────────────────────────────────────────────────────
 
 --- Whether the HUD is chosen shown, and whether the player is down.
 -- @author dop42
 -- @return Result
 local function isVisible()
-	return Result.Ok({ visible = visible, down = down })
+	return Result.Ok({ visible = visible, down = down, covered = covered })
 end
 
 --- What became of the game's own HUD. Read-only, and deliberately without a
@@ -842,6 +891,7 @@ end
 function M.Init()
 	visible = true
 	down = false
+	owners, covered = {}, false
 	live = {}
 	needs = nil
 	chips = {}
@@ -911,6 +961,29 @@ function M.Start()
 		setDown(payload.down == true)
 	end)
 
+	AddEventHandler(EVENT_ENTRY_STATE, function(payload)
+		if type(payload) ~= 'table' then return end
+		setCovered('entry', payload.open == true)
+	end)
+
+	AddEventHandler(EVENT_SPAWN_STATE, function(payload)
+		if type(payload) ~= 'table' then return end
+		setCovered('spawn', payload.open == true)
+	end)
+
+	-- A room that is DRAWN. `entry` already covers one that is merely owed, and
+	-- the two overlap on purpose: the join holds the cover across the gap between
+	-- the offer and the room, and this holds it for a room `entry` never heard of
+	-- because the player opened it from the appearance panel.
+	AddEventHandler(EVENT_APPEARANCE_DECISION, function(payload)
+		if type(payload) ~= 'table' then return end
+		if payload.event == 'wardrobeOpened' then
+			-- `ok = false` is a room that was refused, which is not a room.
+			return setCovered('wardrobe', payload.ok == true)
+		end
+		if payload.event == 'wardrobeClosed' then return setCovered('wardrobe', false) end
+	end)
+
 	-- The engine reports a pool moving, so the change is drawn now rather than
 	-- at the next sample.
 	AddEventHandler(HOST_STATS_CHANGED, function()
@@ -948,7 +1021,7 @@ function M.Start()
 	end)
 
 	OPX.Scheduler.Every('hud.vitals', Settings.VITALS_MS or 33, function()
-		if not ready or not visible or down then return end
+		if not ready or not visible or down or covered then return end
 		sampleVitals()
 		drawVitals()
 	end)

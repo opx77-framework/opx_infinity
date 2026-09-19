@@ -121,6 +121,29 @@ function M.Runtime.Notify(kind, key, params)
 	OPX.Toast.Locale(key, params, kind)
 end
 
+--- Says something to the OPERATOR, in the server journal, not only here.
+-- @author dop42
+--
+-- `Open77.log` on a client writes to a file on the PLAYER's machine. The devkit
+-- card for it says so in as many words, and three days of this server's journal
+-- confirm it: the only `[appearance]` lines in it are the ones that came through
+-- this event. Every other line this module's client half writes -- the fitting
+-- room being owed, the clothes going on, the clothes failing to read back, a
+-- payload the host refused -- has never once reached the person running the
+-- server, so a join that silently did nothing and a join that worked look
+-- identical from the outside. That is why two separate diagnoses of the fitting
+-- room were argued from lines that were never going to be there.
+--
+-- `modules/diagnostics` says the same thing about a client module that fails, and
+-- opened the same kind of door for it. This one is the appearance module's, was
+-- already here for the clothing read-back, and is bounded on the server at forty
+-- lines per player per session -- so it carries DECISIONS, never a tick.
+-- @param text string
+function M.Runtime.Note(text)
+	Open77.log.info('[appearance] ' .. text)
+	pcall(TriggerServerEvent, M.Event.DIAGNOSTIC, text)
+end
+
 --- The player-facing name of a body family.
 -- @author dop42
 -- @param family any
@@ -943,6 +966,17 @@ local function registerEvents()
 		markWorldEligibility('worldReady')
 		Runtime.BeginBootstrap('worldReady')
 		Runtime.ResolveCharacter('worldReady')
+	end)
+
+	-- The player asked for their own appearance panel. Nothing is trusted from
+	-- the wire here -- there is nothing ON the wire -- and the panel refuses
+	-- itself for every reason it already knows: no character, a native modal, a
+	-- panel another caller holds. The refusal is shown, because a command that
+	-- silently does nothing is the complaint this whole change answers.
+	RegisterNetEvent(M.Event.OPEN_PANEL, function()
+		local ok, reason = M.Panel.Open('appearance')
+		if ok then return end
+		Runtime.Notify('error', 'appearance.panelUnavailable', { reason = tostring(reason) })
 	end)
 
 	-- One door for both refusals, dispatched by the operation each one names.

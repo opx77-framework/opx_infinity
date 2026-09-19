@@ -16,6 +16,13 @@
 -- `PlayerData.clothing` is a record, `false` for 'none stored yet', or nil for
 -- 'the server could not say'. Nil dresses nothing and saves nothing: writing now
 -- would replace a record nobody was ever shown.
+--
+-- STEP 1's GATE IS BOUNDED, and that is not a detail. Everything below it is
+-- reached only through a put-on, so a gate that never opens produces no attempt,
+-- no read-back, no failure and no decision -- nothing happens and nothing says
+-- so, on a client whose log the operator cannot read anyway. That silence held
+-- the join-time fitting room open on a decision that could never arrive. `shut`
+-- names the clause, and `stalled` reports it and then settles the world entry.
 
 local M = OPX.Modules.Get('appearance')
 
@@ -29,6 +36,25 @@ local Clothing = M.Clothing
 -- to read back before the next.
 local RESTORE_ATTEMPTS = 5
 local VERIFY_MS = 2000
+
+-- How long the gate of step 1 may be shut before the operator is told which
+-- clause is holding it, and before this world entry gives up on dressing at all.
+--
+-- BOTH NUMBERS EXIST BECAUSE THE WAIT USED TO BE UNBOUNDED, and an unbounded
+-- wait here is not just clothes that never go on. Nothing publishes
+-- `clothingRestored` until a put-on has been read back, so a gate that never
+-- opens is also a fitting room offer that never comes, a `Settled` that only
+-- ever times out, and a `Report` of 'waiting' that nobody reads -- all of it
+-- with no line anywhere, because a put-on that never happened cannot fail.
+--
+-- The report comes first and by a wide margin, because the ordinary case is a
+-- gate shut for a second or two while the face settles and a native modal comes
+-- down. The give-up is under `WARDROBE.CREATION_WAIT_MS` (60s shipped) on
+-- purpose: the join asks for a fitting room and waits that long for one, and a
+-- decision that arrived after the room had given up would be a decision nobody
+-- was left to act on.
+local GATE_REPORT_MS = 12000
+local GATE_GIVEUP_MS = 40000
 
 -- Longest the published look waits for the clothes, so the player is not drawn in
 -- the pristine puppet's clothes first.
@@ -76,6 +102,10 @@ local wanted, pending, lastSentAtMs, strikes, told = nil, nil, nil, 0, false
 local phase = 'idle'
 local target = nil
 local attempts, appliedAtMs, holdFromMs = 0, 0, 0
+
+-- Since when the gate of step 1 has been shut this world entry (0 while it is
+-- open), and the clause that was reported, so one stall is one line.
+local gateSinceMs, gateSaid = 0, nil
 
 -- A changed record seen on the puppet and since when, and the module holding the
 -- puppet for a fitting room.
@@ -316,16 +346,37 @@ local function debounceMs()
 	return M.ConfigMs(config.SAVE_DEBOUNCE_MS) or SAVE_DEBOUNCE_MS
 end
 
---- Whether the puppet may be dressed, or read for a save, now.
+--- WHY the puppet may not be dressed, or read for a save, now -- or nil.
+-- @author dop42
+--
 -- This is the gate of step 1, and it is deliberately the strictest thing here.
+-- It answers the NAME of the clause that is shut rather than a boolean, and that
+-- is the whole difference between a fitting room that could not be diagnosed and
+-- one that can: a shut gate produces no put-on, so it produces no read-back, so
+-- it produces no `diagnose` line and no `clothingRestored` on the bus. The
+-- symptom of every clause below is therefore identical and is *nothing at all* --
+-- no clothes, no error, no journal line, and a join-time fitting room waiting on
+-- a decision that is never reached. `Check` reports this name once the gate has
+-- been shut long enough to be a fault rather than a moment.
+-- @return string|nil
+local function shut()
+	if State.citizenId == nil then return 'no_character' end
+	if State.citizenId ~= citizen then return 'character_changed' end
+	if not State.gameplayAnnounced then return 'not_announced' end
+	if not State.AppearanceSettled() then return 'appearance_unsettled' end
+	if State.editing then return 'editing' end
+	if State.creating then return 'creating' end
+	if State.creatorUp then return 'creator_up' end
+	if State.commit ~= nil then return 'committing' end
+	if Runtime.ModalOnScreen() then return 'native_modal' end
+	if not Runtime.Faceable() then return 'not_faceable' end
+	return nil
+end
+M.Clothing.Shut = shut
+
+--- Whether the puppet may be dressed, or read for a save, now.
 local function ready()
-	if State.citizenId == nil or State.citizenId ~= citizen then return false end
-	if not State.gameplayAnnounced or not State.AppearanceSettled() then return false end
-	if State.editing or State.creating or State.creatorUp or State.commit ~= nil then
-		return false
-	end
-	if Runtime.ModalOnScreen() then return false end
-	return Runtime.Faceable()
+	return shut() == nil
 end
 M.Clothing.Ready = ready
 
@@ -406,7 +457,10 @@ local function verify()
 		phase = 'worn'
 		wanted = target
 		candidate = nil
-		Open77.log.info(('[appearance] clothing of %s is on (%s)'):format(tostring(citizen),
+		-- In the SERVER's journal, not only this client's log. One line per world
+		-- entry, and it is the line that answers "did the restore run at all" --
+		-- the question two diagnoses of the fitting room both had to guess at.
+		Runtime.Note(('clothing of %s is on (%s)'):format(tostring(citizen),
 			stored == false and 'the default record' or 'the stored record'))
 		return publish('clothingRestored', true)
 	end
@@ -419,8 +473,8 @@ local function verify()
 	-- Nothing is saved for the rest of this world entry: a save read off a puppet
 	-- that never wore the record would store whatever it is wearing instead.
 	phase = 'failed'
-	Open77.log.warn(('[appearance] the clothing of %s did not read back after %d put-ons; it is ' ..
-		'not saved until the next world entry'):format(tostring(citizen), attempts))
+	Runtime.Note(('the clothing of %s did not read back after %d put-ons; it is not saved ' ..
+		'until the next world entry'):format(tostring(citizen), attempts))
 	publish('clothingRestored', false, 'clothing_not_restored')
 	tell('appearance.clothingRestoreFailed', 'clothing_not_restored')
 end
@@ -494,6 +548,7 @@ end
 function M.Clothing.EnterWorld()
 	target, attempts, appliedAtMs, holdFromMs = nil, 0, 0, 0
 	candidate, previewOwner = nil, nil
+	gateSinceMs, gateSaid = 0, nil
 	phase = (citizen ~= nil and stored ~= nil and enabled()) and 'waiting' or 'idle'
 end
 
@@ -512,8 +567,14 @@ function M.Clothing.Adopt(playerData)
 	wanted, pending, lastSentAtMs, strikes, told = nil, nil, nil, 0, false
 	Clothing.EnterWorld()
 	if stored == nil then
-		Open77.log.debug(('[appearance] %s: no clothing came with the character; it is left as ' ..
-			'it is'):format(tostring(citizen)))
+		-- NOT A DEBUG LINE. This is the whole clothing half standing down for the
+		-- session -- nothing is put on, nothing is read back, nothing is saved and
+		-- no decision is ever published, so a fitting room offered on
+		-- `clothingRestored` is offered to nobody. It was written at debug level to
+		-- a log on the player's machine, which is two reasons nobody has ever seen
+		-- it happen.
+		Runtime.Note(('%s: no clothing came with the character; nothing is put on and nothing ' ..
+			'is saved this session'):format(tostring(citizen)))
 	end
 end
 
@@ -604,17 +665,54 @@ function M.Clothing.EndPreview(owner, keep, records)
 	return true
 end
 
+--- Reports a gate that has been shut too long, and settles one that never opens.
+-- @author dop42
+--
+-- Answers whether the caller should stop: a world entry that has given up on
+-- dressing is over, exactly as a read-back that ran out of put-ons is.
+-- @param reason string the clause `shut` named
+-- @return boolean
+local function stalled(reason)
+	local now = Runtime.NowMs()
+	if gateSinceMs == 0 then gateSinceMs = now end
+	local held = now - gateSinceMs
+
+	if held >= GATE_GIVEUP_MS then
+		-- SETTLED, NOT LEFT WAITING. Nothing saves after this -- a save read off a
+		-- puppet that never wore the record would store whatever it is wearing --
+		-- but the decision does go out, because the join is behind it: the fitting
+		-- room offer waits on `clothingRestored`, and a world entry that can never
+		-- be dressed has to say so rather than hold the offer open for ever.
+		phase = 'failed'
+		Runtime.Note(('the clothing of %s was never put on: %s for %d ms')
+			:format(tostring(citizen), reason, held))
+		publish('clothingRestored', false, 'clothing_gate_shut')
+		tell('appearance.clothingRestoreFailed', 'clothing_gate_shut')
+		return true
+	end
+
+	if held >= GATE_REPORT_MS and gateSaid ~= reason then
+		gateSaid = reason
+		Runtime.Note(('the clothing of %s is waiting: %s (%d ms)')
+			:format(tostring(citizen), reason, held))
+	end
+	return false
+end
+
 --- Runs one clothing pass: deadline, put-on, read-back or save.
 -- @author dop42
 function M.Clothing.Check()
 	expire()
 	if previewOwner ~= nil then return end
 	if phase == 'idle' or phase == 'failed' then return end
-	if not ready() then
+	local closed = shut()
+	if closed ~= nil then
 		-- A change seen before the gate closed has to hold again once it opens.
 		candidate = nil
+		stalled(closed)
 		return
 	end
+	gateSinceMs, gateSaid = 0, nil
 	if phase == 'waiting' then return restore() end
 	if phase == 'restoring' then return verify() end
 	capture()
@@ -652,6 +750,7 @@ function M.Clothing.Init()
 	phase, target = 'idle', nil
 	attempts, appliedAtMs, holdFromMs = 0, 0, 0
 	candidate, candidateAtMs, previewOwner = nil, 0, nil
+	gateSinceMs, gateSaid = 0, nil
 	names, learned = {}, {}
 end
 

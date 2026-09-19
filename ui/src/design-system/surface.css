@@ -16,11 +16,19 @@
    paper on a spindle rather than a surface receding. */
 .op-plane {
   perspective: var(--op-persp);
-  /* Nothing inside can affect layout or paint outside it, so the compositor
-     never has to consider the rest of the screen when one row changes. The
-     bleed is padding, because paint containment clips to the padding box and a
-     bloom landing outside it would simply be gone. */
-  contain: layout paint style;
+  /* Nothing inside can affect the LAYOUT or the style resolution outside it, so
+     the compositor never has to consider the rest of the screen when one row
+     changes.
+     PAINT IS NOT CONTAINED, AND CANNOT BE. It was, and it clipped the thing this
+     class exists to draw: a plane rotated about one edge projects its far edge
+     OUTSIDE its own layout box, by a fraction of the plane's width -- so the
+     overflow grows with the surface and no fixed padding can hold it. The bleed
+     is sized for a bloom, a few pixels, and the fitting room's camera cluster is
+     four buttons wide, so its leftmost button was cut off by the containment of
+     the very element that tilted it. Adding to `--op-bleed` would have moved the
+     cut, not removed it. The bleed stays, because a `drop-shadow` still wants
+     room and every offset in here still pays it back. */
+  contain: layout style;
   padding: var(--op-bleed);
 }
 

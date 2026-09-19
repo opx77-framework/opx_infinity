@@ -76,15 +76,14 @@ local REFUSALS = {
 	['error.unavailable'] = true,
 }
 
---- Says what a creation just did, on this client's log AND in the server's.
--- A creation happens before the player is in the world, which is exactly where a
--- client log is hardest to ask for and where a player who is stuck can say only
--- that nothing happened. The server's diagnostic channel caps this at 40 lines
--- per player; a creation spends at most four.
-local function note(text)
-	Open77.log.info('[appearance] ' .. text)
-	TriggerServerEvent(M.Event.DIAGNOSTIC, text)
-end
+-- Says what a creation just did, in the SERVER's journal as well as this
+-- client's log. A creation happens before the player is in the world, which is
+-- exactly where a client log is hardest to ask for and where a player who is
+-- stuck can say only that nothing happened. It used to be written out here; it
+-- is `Runtime.Note` now, because the clothing half and the fitting room needed
+-- the same door and three copies of it would have been three chances to forget
+-- the server half of the line. A creation spends at most four of its forty.
+local note = Runtime.Note
 
 --- Releases the native transaction a moment later.
 -- Not on this stack: the engine is still settling the face it has just accepted,
