@@ -569,7 +569,12 @@ function filter(value: string): void {
          tilt +7deg about the left edge rather than a spin about the middle. -->
     <section class="column op-plane op-anchor-left op-ink">
       <div class="bay op-bay op-arete" data-augmented-ui="tr-clip bl-clip border">
-        <div class="bay-inner op-interlace">
+        <!-- NO INTERLACE. It exists to stop an unfilled frame reading as a web
+             page floating in the air, and it earned its place over a plate. With
+             the plate gone it is stripes over the player's own body, which is the
+             fill this pass is removing -- the frame and the lit leading edge are
+             what hold the surface down now. -->
+        <div class="bay-inner">
           <!-- THE TAB STRIP IS THE HEADING. Seven named slots, each saying
                whether something is on it, is a better answer to "what is this
                screen" than the word WARDROBE was. -->
@@ -819,18 +824,29 @@ function filter(value: string): void {
    pointer for the whole surface, and a second transition on each would be two
    curves running the same change at different speeds. */
 
+/* NO GROUND ON THE ENCLOSURE, and this is the last of the three passes that
+   argument has taken. The scrim went first, then the wash over the whole
+   surface, and the plate on this bay was what was left: the body is the content
+   of this screen and a filled column stands in front of it. The frame stays --
+   the cut corners and the lit leading edge are what say this is a surface rather
+   than text lying on the street -- and the ground goes where the contract puts
+   it, under the type: every row, tab and button here is an `.op-frame` and
+   carries its own. */
 .bay {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+}
+
+/* THE ONE FILL LEFT, and the file already says why: a yes-or-no question over a
+   live street is the one thing here that must not be read through. It is scoped
+   to the dialog now, because the bay above no longer has one to inherit. */
+.dialog .bay {
   background: var(--op-plate);
 }
 
-/* The interlace goes on what is ENCLOSED, and it owns `::before`, which is why
-   it is an inner element rather than the bay: the bay is asking for the border
-   layer, and that is `::after`. */
 .bay-inner {
   display: flex;
   flex: 1;
@@ -841,13 +857,15 @@ function filter(value: string): void {
   padding-top: calc(var(--op-space-4) + var(--op-cut-lg));
 }
 
+/* Unfilled for the same reason the column is, and more so: this cluster sits in
+   the corner the body is framed against. Its four buttons each carry the ground
+   the contract allows. */
 .tool-row {
   flex: none;
   display: flex;
   gap: var(--op-space-2);
   padding: var(--op-space-3);
   padding-right: calc(var(--op-space-3) + var(--op-cut-lg));
-  background: var(--op-plate);
 }
 
 .tool {

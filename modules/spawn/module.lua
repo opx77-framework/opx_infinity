@@ -34,13 +34,13 @@ local M = OPX.Modules.Declare{
 }
 
 local NET = OPX.Channel.NET
+local LOCAL = OPX.Channel.LOCAL
 
---- Every event name this module puts on the wire.
--- NET only, all three of them: this module has no public local bus and no
--- intra-VM channel, because nothing else needs to watch a spawn choice being
--- made. The host dispatcher matches on the name alone, so a verb repeated across
--- channels would be a re-entrant handler; there is one channel here, so there is
--- nothing to keep apart.
+--- Every event name this module raises.
+-- Four across the wire and one on this VM's public bus. There is no intra-VM
+-- channel: both halves of this module talk over the wire and nothing here is
+-- private. The host dispatcher matches on the name alone, so a verb repeated
+-- across channels would be a re-entrant handler; no verb below is.
 M.Event = {
 	-- Server to client. "Pick one, and you have this many milliseconds."
 	OFFER = OPX.Event(NET, 'spawn', 'offer'),
@@ -65,6 +65,19 @@ M.Event = {
 	-- is the player's time to CHOOSE, so it starts when there is something to
 	-- choose from.
 	OPENED = OPX.Event(NET, 'spawn', 'opened'),
+
+	-- THIS MODULE'S OWN STATE, ON THE LOCAL BUS, and the reason the header above
+	-- is wrong about there being nothing to watch. It was: this menu only ever
+	-- had to WAIT on somebody, and `entry` published what it was waiting behind.
+	-- But the spawn menu is itself one of the three screens that owns the display
+	-- at join -- the creator, the fitting room and this -- and the HUD must not
+	-- draw over any of them. `entry` already says so for the other two; a module
+	-- that stands aside for the whole join and then says nothing when its own
+	-- turn comes is the one gap in that sequence.
+	--
+	-- Same shape as `entry:state` deliberately, so a listener holds one rule for
+	-- both rather than a special case per publisher.
+	ON_STATE = OPX.Event(LOCAL, 'spawn', 'state'),
 }
 
 --- The three answers to "which world enters are offered the menu?".

@@ -2634,6 +2634,64 @@ do
 		env.OPX.Surface.On(surface, 'hud:ready', function() seen = seen + 1 end)
 		check('and a handler registering after the replay is not given it again',
 			seen == 0, seen)
+
+		-- ── the three screens that own the display instead ───────────────────
+		-- A HUD drawn over the character creator, the spawn menu or the fitting
+		-- room is a gauge column standing in front of the one thing the player is
+		-- being asked to look at. The mechanism is the one that already exists --
+		-- a flag beside the player's own choice, the way `down` is -- and the
+		-- three owners are counted rather than collapsed into one boolean,
+		-- because they overlap at join and a boolean is whichever finished last.
+		local hudApi = env.OPX.Api.Get('hud')
+
+		--- Whether the last `hud:show` the page was sent said to draw.
+		local function showing()
+			local last
+			for _, message in ipairs(page.sent) do
+				if message.channel == 'opx:hud:show' then last = message.payload end
+			end
+			return last ~= nil and last.visible == true
+		end
+
+		check('the hud is on screen with nothing else up', showing())
+
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'entry', 'state'),
+			{ open = true, phase = 'creator' })
+		check('the character creator takes the hud off screen', not showing())
+
+		-- OVERLAPPING, WHICH IS WHY THIS IS A SET. The join hands the screen from
+		-- the creator to the spawn menu without a gap, and a single flag written
+		-- by both would come back on the moment the first one finished.
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'spawn', 'state'),
+			{ open = true, phase = 'spawn' })
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'entry', 'state'),
+			{ open = false, phase = 'idle' })
+		check('and it stays off while the spawn menu still has it', not showing())
+
+		-- A room the player opened themselves, which the join knows nothing about.
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'appearance', 'decision'),
+			{ ok = true, event = 'wardrobeOpened' })
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'spawn', 'state'),
+			{ open = false, phase = 'idle' })
+		check('the fitting room holds it on its own', not showing())
+
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'appearance', 'decision'),
+			{ ok = true, event = 'wardrobeClosed', reason = 'saved' })
+		check('and the last one to close gives it back', showing())
+
+		-- The player's own choice is never touched by any of this: it is recorded
+		-- underneath, exactly as it is while they are down.
+		hudApi.SetVisible(false)
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'spawn', 'state'),
+			{ open = true, phase = 'spawn' })
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'spawn', 'state'),
+			{ open = false, phase = 'idle' })
+		check('a screen closing does not switch a hud back on that the player switched off',
+			not showing())
+		local state = hudApi.IsVisible()
+		check('and the contract says which of the two is holding it',
+			state.ok and state.value.visible == false and state.value.covered == false,
+			state.ok and tostring(state.value.covered) or tostring(state.error))
 	end
 end
 
