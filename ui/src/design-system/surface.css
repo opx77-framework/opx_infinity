@@ -66,7 +66,13 @@
    rectangle it would stripe is not even a shape the surface owns.
 
    On `::before`, which is free because every preset in `shapes.css` asks
-   augmented-ui for the border layer and not the inlay. */
+   augmented-ui for the border layer and not the inlay.
+
+   THE COLOUR IS `--op-interlace` AND NOT AN RGBA WRITTEN HERE. It is the accent
+   at `--op-interlace-a`, so it follows a themed accent, and an operator may take
+   the alpha to zero -- which turns the texture off and leaves the frame, rather
+   than leaving a striped rectangle behind. Two module stylesheets drew their own
+   copy of this gradient and each had its own literal; both read the token now. */
 .op-interlace {
   position: relative;
 }
@@ -79,7 +85,7 @@
   pointer-events: none;
   background: repeating-linear-gradient(
     to bottom,
-    rgba(255, 59, 71, 0.05) 0 1px,
+    var(--op-interlace) 0 1px,
     transparent 1px 3px
   );
 }

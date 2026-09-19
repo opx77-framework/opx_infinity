@@ -25,13 +25,31 @@
        text   running type inside a frame
 
      This was declared as literals on eleven separate root elements, each with a
-     "delete when the pass is agreed" note. The pass is agreed. */
-  --op-red-idle: rgba(232, 67, 79, 0.62);
-  --op-red-deep: #c8202e;
-  --op-red:      #ff3b47;
-  --op-red-hi:   #ff6b78;
-  --op-red-text: #e8646d;
-  --op-red-glow: rgba(255, 59, 71, 0.55);
+     "delete when the pass is agreed" note. The pass is agreed.
+
+     EACH RUNG IS NOW A CHANNEL TRIPLE AND A COMPOSITION OF IT, and the split is
+     not decoration: the runtime theme (`modules/theme`, `design-system/theme.ts`)
+     overrides the TRIPLES at run time, and everything below follows because it
+     is written in terms of them. Five surfaces also wanted one of these reds at
+     an alpha of their own -- a 0.22 wear track, a 0.70 cell frame -- and each had
+     copied the three channels out as a literal, which is exactly the copy that
+     stops following the accent. There is nowhere left to copy them to.
+
+     THE SHIPPED VALUES ARE UNCHANGED. Every composition below resolves to the
+     literal it replaced, to the byte, and a server that configures no theme
+     overrides nothing at all -- so this file is still what decides the look. */
+  --op-red-rgb:      255, 59, 71;
+  --op-red-idle-rgb: 232, 67, 79;
+  --op-red-deep-rgb: 200, 32, 46;
+  --op-red-hi-rgb:   255, 107, 120;
+  --op-red-text-rgb: 232, 100, 109;
+
+  --op-red-idle: rgba(var(--op-red-idle-rgb), 0.62);
+  --op-red-deep: rgb(var(--op-red-deep-rgb));
+  --op-red:      rgb(var(--op-red-rgb));
+  --op-red-hi:   rgb(var(--op-red-hi-rgb));
+  --op-red-text: rgb(var(--op-red-text-rgb));
+  --op-red-glow: rgba(var(--op-red-rgb), 0.55);
 
   /* --- THE NEUTRAL RAMP ----------------------------------------------------
      Not every word on this surface is the surface talking about itself. A
@@ -60,8 +78,17 @@
      alarm: a red bar going redder inside a red frame on an all-red HUD says
      nothing. The escalation climbs in luminance and then leaves the hue --
      white-hot is the highest contrast the palette owns and it changes FAMILY,
-     which is what an alarm must do to be read without being looked at. */
-  --op-alarm: #ffa8ae;
+     which is what an alarm must do to be read without being looked at.
+
+     It is the ONE rung an operator may set outright rather than derive. A server
+     whose voice is blue has nothing white-hot to escalate to that a blue HUD
+     will not read as another blue; left alone it is the accent hue, 21 points of
+     lightness up, which is what this is to the shipped red. */
+  --op-alarm-rgb: 255, 168, 174;
+  --op-alarm: rgb(var(--op-alarm-rgb));
+
+  /* The alarm's own bloom. `TargetView` had the only copy of it, inline. */
+  --op-alarm-glow: rgba(var(--op-alarm-rgb), 0.55);
 
   /* --- THE GROUND ----------------------------------------------------------
      Red taken down until it is a black, which is the only way a fill can be red
@@ -70,10 +97,31 @@
 
      0.78 is the floor for running text over gameplay. A block covering a
      quarter of the screen takes it lower -- at that area the job is to separate
-     a word from the street, not to hold a picture against daylight. */
-  --op-plate:       rgba(28, 8, 9, 0.78);
-  --op-plate-quiet: rgba(28, 8, 9, 0.58);
-  --op-plate-lit:   rgba(74, 21, 25, 0.90);
+     a word from the street, not to hold a picture against daylight.
+
+     THE ALPHA IS ITS OWN TOKEN because the three washes are one ground at three
+     weights, not three decisions: quiet is 0.20 under the base and lit is 0.12
+     over it, and an operator who darkens the surface moves all three together.
+     A theme sets the alphas; the three surfaces that wanted this ground at a
+     weight of their own -- two veils and the chat line -- now set only the alpha
+     and take the channels from here. */
+  --op-plate-rgb:     28, 8, 9;
+  --op-plate-lit-rgb: 74, 21, 25;
+  --op-plate-a:       0.78;
+  --op-plate-quiet-a: 0.58;
+  --op-plate-lit-a:   0.90;
+
+  --op-plate:       rgba(var(--op-plate-rgb), var(--op-plate-a));
+  --op-plate-quiet: rgba(var(--op-plate-rgb), var(--op-plate-quiet-a));
+  --op-plate-lit:   rgba(var(--op-plate-lit-rgb), var(--op-plate-lit-a));
+
+  /* The scanline over an enclosure, as a colour rather than as a gradient: three
+     files drew the same `repeating-linear-gradient` and each had its own copy of
+     this rgba. `--op-interlace-a` is what a theme moves; 0 turns it off, which is
+     a real identity choice and not a broken surface. See `.op-interlace` in
+     surface.css for what it is for and where it may go. */
+  --op-interlace-a: 0.05;
+  --op-interlace: rgba(var(--op-red-rgb), var(--op-interlace-a));
 
   /* The ink under every glyph. Two passes: the tight dark one gives a letter
      its edge, the wide soft one lifts it off a blown-out plaza. Declared once
@@ -135,7 +183,12 @@
   /* --- SHAPE ---------------------------------------------------------------
      Three cut sizes, and they are SIZES, not shapes: which corner is cut is the
      preset's business. Nine hand-rolled numbers across nine stylesheets became
-     these three. */
+     these three.
+
+     A theme scales all three at once and never one of them: a chip, a toast and
+     a bay are the same chamfer at three scales, and pulling them apart would
+     make a surface out of two different frames. Never to zero -- augmented-ui
+     wants a cut before it will draw a border at all. */
   --op-cut-sm: 6px;    /* chips, tags, keycaps, single rows */
   --op-cut-md: 12px;   /* panels, toasts                    */
   --op-cut-lg: 20px;   /* bays, drawers, strip frames       */
@@ -148,7 +201,12 @@
      can BE one: a surface is anchored to a screen edge and its far edge
      recedes, which is what a projection on the inside of a visor does.
 
-     ONE axis. A second turns the plane into a box sitting in the room. */
+     ONE axis. A second turns the plane into a box sitting in the room.
+
+     A theme may set the angle, including to 0: surface.css already draws a
+     surface with no tilt, because a centred one takes none. The perspective is
+     not offered -- it is the distance to the plane and moving it without the
+     angle changes how hard the far edge is, not how far it leans. */
   --op-persp: 900px;
   --op-tilt: 7deg;
 

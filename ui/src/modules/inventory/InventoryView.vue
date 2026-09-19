@@ -1125,7 +1125,7 @@ try {
      object drawn at three sizes; they were three copies of one rgba that nothing
      kept in agreement. */
 
-  --red-track: rgba(232, 67, 79, 0.22);
+  --red-track: rgba(var(--op-red-idle-rgb), 0.22);
 
   /* THE SHADOWS, NAMED FOR THE REASON HudRoot.vue NAMES ITS ONE: more elements,
      across more files, want each of these than can be held in agreement by hand.

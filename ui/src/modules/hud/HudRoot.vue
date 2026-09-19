@@ -184,7 +184,7 @@ onMounted(() => {
      rather than onto a pseudo-element of their own. */
   --hud-interlace: repeating-linear-gradient(
     to bottom,
-    rgba(255, 59, 71, 0.05) 0 1px,
+    var(--op-interlace) 0 1px,
     transparent 1px 3px
   );
 

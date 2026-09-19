@@ -71,7 +71,7 @@ function Keys.Register(id, nameKey, key, onPressed, onReleased, whileCaptured)
 		-- while the player is DOWN: the down screen holds the keyboard for as long
 		-- as they are on the floor, and a staff member has to be able to open the
 		-- menu that gets them up again.
-		if OPX.Keys.IsCaptured() and not (whileCaptured ~= nil and whileCaptured() == true) then
+		if OPX.Lib.Input.IsCaptured() and not (whileCaptured ~= nil and whileCaptured() == true) then
 			return
 		end
 		local ran, failure = pcall(onPressed)
@@ -106,7 +106,7 @@ end
 function Keys.Effective(id)
 	local known = registered[id]
 	if known == nil then return nil end
-	return OPX.Keys.KeyFor(id) or known
+	return OPX.Lib.Input.KeyFor(id) or known
 end
 
 --- Runs a listener whenever a player rebinds or resets a mapping.

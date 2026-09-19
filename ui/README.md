@@ -21,6 +21,10 @@ modules/<name>/       what is true of THAT surface and of nothing else
 
 ## The look: red, outlined, tilted
 
+Red by default, and **default is the operative word**: the accent is an operator
+setting now. See [The theme](#the-theme). Everything below is written as though the
+accent were red because on an unconfigured server it is, to the byte.
+
 Pass 01 was cyan and yellow, filled, and built on shared Vue components. Pass 02 is
 red, unfilled except for a dark ground under type, chamfered, and tilted on a
 perspective. It was drawn against IDEDARY/Bevypunk and settled on the menu.
@@ -43,9 +47,12 @@ perspective. It was drawn against IDEDARY/Bevypunk and settled on the menu.
    pinned to a body in the world and takes no tilt at all: the world supplies one.
 6. **ONE INK SHADOW PER SURFACE**, declared on the root and inherited. An override
    replaces the whole list, so a block wanting a bloom restates both passes plus it.
-7. **NO SECOND HUE.** There is no accent, no green, no yellow. Each would have solved
-   some problem in one line, and each puts a second saturated hue on an unfilled red
-   surface over live gameplay.
+7. **NO SECOND HUE.** There is no second accent, no green, no yellow. Each would have
+   solved some problem in one line, and each puts a second saturated hue on an unfilled
+   red surface over live gameplay. The **alarm** is the single sanctioned exception, and
+   only because its whole job is to be unlike the voice: an operator may set it outright
+   (`ALARM` in `config/theme.lua`) where the derived white-hot rung would read as one
+   more shade of their own accent.
 8. **TECHNICAL FILLER IS CONTENT.** A mono micro-label is part of the look and must
    state something the surface knows -- a row index, a toast's kind. Never invented
    chrome text.
@@ -100,6 +107,41 @@ right-anchored surface. `.op-lift` is the bloom.
 
 ---
 
+## The theme
+
+The accent is the server's, not this repo's. `config/theme.lua` on the server holds one
+hex and five knobs; `modules/theme` validates them, derives the rest and sends the
+result to the page; `design-system/theme.ts` writes it onto `:root` as custom
+properties. Nothing is rebuilt -- the tokens were already the one place a value is
+decided, so overriding them is the whole mechanism.
+
+**An unconfigured server overrides nothing.** A knob the operator did not set produces no
+key on the wire, the page writes no property, and `tokens.css` stands. That is why
+there are no defaults on the Lua side or in `theme.ts`: the stylesheet is the default.
+
+**What this changed in here.** Every themeable colour is now a channel triple plus a
+composition of it -- `--op-red-rgb` and `--op-red: rgb(var(--op-red-rgb))` -- because
+nine surfaces wanted one of the reds at an alpha of their own and each had copied the
+channels out as a literal. Those copies are gone; a surface that wants the idle red at
+0.22 writes `rgba(var(--op-red-idle-rgb), 0.22)`. The plate alphas are tokens for the
+same reason, and the interlace is a colour token (`--op-interlace`) rather than an rgba
+written into three separate gradients.
+
+**The rules that follow from it:**
+
+- **Never write an accent channel as a literal.** `rgba(232, 67, 79, 0.7)` does not
+  follow a theme and nothing warns you; `rgba(var(--op-red-idle-rgb), 0.7)` does.
+- **Never write a cut or a tilt as a literal** for the same reason. `--aug-tr: 6px` was
+  the one cell in the runtime that did, and it stopped scaling with everything else.
+- **The wire carries numbers, never CSS.** A colour is three integers; `theme.ts` is the
+  only thing that produces `rgb()`, `px` or `deg`. Adding a themeable value means an
+  entry in `KNOBS` and a bound in `palette.lua`, and the entry is the allowlist.
+- **What is not themed:** border weights (thirty-nine component-local declarations at six
+  values, with no token behind them), type scale (fixed pixel layouts are configured
+  elsewhere), and the neutral ramp, which is neutral on purpose.
+
+---
+
 ## The one sprite left
 
 `InventorySlot.vue` keeps a single SVG data URI, for the **drag** state: four corner
@@ -120,6 +162,7 @@ under-stroke baked in because a `border-image` cannot take a shadow.
 | File | What it decides |
 |---|---|
 | `design-system/tokens.css` | every value: the red ladder, the grounds, the neutral ramp, type, space, shape, motion |
+| `design-system/theme.ts` | the operator's overrides, written onto `:root` at runtime |
 | `design-system/shapes.css` | the three presets, the states, `.op-arete`, `.op-lift` |
 | `design-system/surface.css` | the plane and tilt, the ink, the interlace, four type roles, the entrance |
 | `design-system/fonts.css` | the three faces, inlined by the build |

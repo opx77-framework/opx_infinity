@@ -349,7 +349,7 @@ const gearClass = computed(() => {
   font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
   text-align: center;
   color: var(--op-red);
-  --aug-tr: 5px;
+  --aug-tr: calc(var(--op-cut-sm) - 1px);
   --aug-border-bg: var(--op-red);
   --aug-border-all: 2px;
 }

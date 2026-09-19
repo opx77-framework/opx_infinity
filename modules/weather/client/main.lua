@@ -94,7 +94,7 @@ local function onNotice(raw, kind, message)
 	if kind == 'report' then return chatLine(kind, message) end
 	CreateThread(function()
 		-- Its own thread: the call yields on the remote's promise.
-		local _, failure = OPX.Rpc.Call(NOTIFY, 'show', {
+		local shown = OPX.Lib.Rpc.Call(NOTIFY, 'show', {
 			id = 'opx.weather.answer',
 			replace = true,
 			type = kind,
@@ -102,10 +102,10 @@ local function onNotice(raw, kind, message)
 			message = message,
 			durationMs = 6000,
 		})
-		if failure == nil then return end
+		if shown.ok then return end
 		if not notifyReported then
 			notifyReported = true
-			Open77.log.warn(('no toast (%s): answers go to the chat box instead'):format(failure))
+			Open77.log.warn(('no toast (%s): answers go to the chat box instead'):format(shown.error))
 		end
 		chatLine(kind, message)
 	end)

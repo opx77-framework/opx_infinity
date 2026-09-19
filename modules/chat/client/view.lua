@@ -74,7 +74,7 @@ local function registerKey(key)
 		-- A key pressed while another surface holds the keyboard -- a form, the
 		-- inventory, the pause menu -- does nothing, so that typing the open key
 		-- into a text field does not raise the box behind it.
-		if OPX.Keys.IsCaptured() then return end
+		if OPX.Lib.Input.IsCaptured() then return end
 		-- The host's own name, raised by us. `client/main.lua` listens for it and
 		-- has no idea who pressed what, which is the point.
 		local ran, failure = pcall(TriggerEvent, M.Host.CHAT_KEY)

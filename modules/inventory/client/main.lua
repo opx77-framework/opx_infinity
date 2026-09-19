@@ -421,9 +421,9 @@ end
 local function tell(resource, name, ...)
 	local args = table.pack(...)
 	CreateThread(function()
-		local _, failure = OPX.Rpc.Call(resource, name, table.unpack(args, 1, args.n))
-		if failure and failure ~= 'not_running' and failure ~= 'no_exports' then
-			Open77.log.info(('[inventory] %s.%s answered %s'):format(resource, name, failure))
+		local sent = OPX.Lib.Rpc.Call(resource, name, table.unpack(args, 1, args.n))
+		if not sent.ok and sent.error ~= 'not_running' and sent.error ~= 'no_exports' then
+			Open77.log.info(('[inventory] %s.%s answered %s'):format(resource, name, sent.error))
 		end
 	end)
 end

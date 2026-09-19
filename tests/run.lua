@@ -61,7 +61,13 @@ local CORE_NAMESPACE = {
 	Modules = true, Api = true, Schema = true, Scheduler = true,
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
-	Storage = true, Audit = true, Rpc = true, Surface = true, Keys = true,
+	Storage = true, Audit = true, Surface = true,
+	-- `Lib` is the external library, `opx_lib`, loaded once by
+	-- `lib/client/lib.lua` and client-only. It replaced `Rpc` and `Keys`, which
+	-- were the two helpers in `lib/client/` that reached nothing this resource
+	-- owns; everything under `lib/shared/` stays where it is because the
+	-- dedicated-server sandbox has no `require` to load a library with.
+	Lib = true,
 	Booted = true, BootError = true,
 	Sessions = true, UserIdOf = true, DisplayNameOf = true, EnsureSession = true,
 	ForgetSession = true, SessionHolds = true,
@@ -90,29 +96,62 @@ end
 -- cannot drift from it.
 section('sandbox')
 do
-	local shipped = {}
-	for _, side in ipairs({ 'server', 'client' }) do
-		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do shipped[file] = true end
+	-- The two sides are kept APART because the runtimes are not the same. A
+	-- `shared_script` appears in both lists, and that is exactly what makes the
+	-- second check below work: the client-only names are forbidden to anything
+	-- the server loads, so a shared file reaching for `require` is caught here
+	-- rather than at the first server boot on the test machine.
+	local serverSide, clientSide = {}, {}
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'server')) do serverSide[file] = true end
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do clientSide[file] = true end
+
+	--- The file's body with comments stripped: they mention these names
+	--- legitimately, and only a real reach counts.
+	local function body(file)
+		local handle = io.open(file, 'r')
+		if handle == nil then return nil end
+		local text = handle:read('a')
+		handle:close()
+		return text:gsub('%-%-%[%[.-%]%]', ''):gsub('%-%-[^\n]*', '')
+	end
+
+	local function reaches(file, names)
+		local text = body(file)
+		if text == nil then return nil end
+		for _, name in ipairs(names) do
+			if text:find('[^%w_.]' .. name .. '[.(]') then return name end
+		end
+		return nil
 	end
 
 	local offenders = {}
-	for file in pairs(shipped) do
-		local handle = io.open(file, 'r')
-		if handle then
-			local body = handle:read('a')
-			handle:close()
-			-- Comments mention these names legitimately; only a real reach counts.
-			body = body:gsub('%-%-%[%[.-%]%]', ''):gsub('%-%-[^\n]*', '')
-			for _, name in ipairs(Host.Sandbox) do
-				if body:find('[^%w_.]' .. name .. '[.(]') then
-					offenders[#offenders + 1] = ('%s uses %s'):format(file, name)
-				end
-			end
-		end
+	for file in pairs(clientSide) do
+		local name = reaches(file, Host.Sandbox)
+		if name then offenders[#offenders + 1] = ('%s uses %s'):format(file, name) end
+	end
+	for file in pairs(serverSide) do
+		local name = reaches(file, Host.Sandbox)
+		if name then offenders[#offenders + 1] = ('%s uses %s'):format(file, name) end
 	end
 	table.sort(offenders)
-	check('no shipped file reaches a sandboxed global',
+	check('no shipped file reaches a global neither runtime has',
 		#offenders == 0, table.concat(offenders, ', '))
+
+	-- `require` is the only name in this list, and the rule it encodes is the
+	-- reason `lib/client/lib.lua` may exist while `lib/shared/result.lua` may
+	-- never import anything: the dedicated-server sandbox has no module loader,
+	-- so a shared file that imported one would load on the client and fail on
+	-- the server, in production, at boot.
+	local crossed = {}
+	for file in pairs(serverSide) do
+		local name = reaches(file, Host.ClientOnly)
+		if name then
+			crossed[#crossed + 1] = ('%s uses %s, which the server has not'):format(file, name)
+		end
+	end
+	table.sort(crossed)
+	check('nothing the server loads reaches a client-only global',
+		#crossed == 0, table.concat(crossed, ', '))
 end
 
 -- ── server boot ──────────────────────────────────────────────────────────────
@@ -464,6 +503,55 @@ do
 	if why == nil then
 		-- `boot` already raised the start event; raising it again is how the
 		-- double-Run bug was found, and `Modules.Run` is idempotent now.
+		-- The external library, loaded for real off the sibling checkout rather
+		-- than stubbed: a stub would pass while the two repositories drifted, and
+		-- the drift is the only thing worth testing here.
+		check('opx_lib loaded, and it is the real one',
+			type(env.OPX.Lib) == 'table' and type(env.OPX.Lib.VERSION) == 'string')
+		check('the two helpers that moved out are reachable',
+			type(env.OPX.Lib.Input) == 'table' and type(env.OPX.Lib.Rpc) == 'table')
+		-- What the migration was for: the old names are gone, not aliased.
+		check('and the names they replaced are gone',
+			env.OPX.Keys == nil and env.OPX.Rpc == nil)
+		-- The manifest has to carry every permission the library's wrappers need,
+		-- because a permission is checked against THIS resource's manifest.
+		local declared = {}
+		for line in io.lines('open77.lua') do
+			local name = line:match('^%s*"([%w%._]+)",%s*$')
+			if name then declared[name] = true end
+		end
+		-- Only the modules this resource CALLS, found by reading the client
+		-- sources. Declaring the library's whole permission set instead would
+		-- hand this resource `world.markers` and `ui.vanilla.map` for code it
+		-- does not run, and a manifest that asks for more than it uses is the
+		-- habit this project does not have.
+		--
+		-- The useful direction is the other one: start calling `OPX.Lib.Blip`
+		-- and this check names the line to add, here, instead of the blip
+		-- silently never appearing on somebody's machine.
+		local used = {}
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			local handle = io.open(file, 'r')
+			if handle then
+				local text = handle:read('a')
+				handle:close()
+				for module in text:gmatch('OPX%.Lib%.(%u%w*)') do used[module] = true end
+			end
+		end
+
+		local undeclared = {}
+		for module in pairs(used) do
+			local permission = env.OPX.Lib.NEEDS[module]
+			if permission ~= nil and not declared[permission] then
+				undeclared[#undeclared + 1] = ('%s needs %s'):format(module, permission)
+			end
+		end
+		table.sort(undeclared)
+		check('every permission the library modules in use need is declared',
+			#undeclared == 0, table.concat(undeclared, ', '))
+		check('and the resource really does call the library',
+			next(used) ~= nil)
+
 		control.Fire('onClientResourceStart', 'opx_infinity')
 		control.Pump(60)
 		check('diagnostics started', env.OPX.Modules.IsRunning('diagnostics'))
@@ -734,6 +822,15 @@ do
 		check('the page takes the catalogue on the channel Lua sends it on',
 			speaks['opx:locale:set'] == true)
 
+		-- The theme's pair, and it is the same class of break: a page that never
+		-- says ready is never sent a theme, and a theme sent on a name the page
+		-- does not listen to is applied by nobody. Both fail as "the accent did
+		-- nothing", which is indistinguishable from an accent nobody configured.
+		check('the page asks for its theme on the channel the surface wires',
+			speaks['opx:theme:ready'] == true)
+		check('and takes the theme on the channel Lua sends it on',
+			speaks['opx:theme:set'] == true)
+
 		-- Drift detector. A channel the page speaks that no Lua file mentions is
 		-- either a feature whose Lua half is not written yet, or a name one side
 		-- has renamed and the other has not -- which is silent in both
@@ -843,6 +940,282 @@ do
 		env.OPX.Surface.On(surface, 'hud:ready', function() seen = seen + 1 end)
 		check('and a handler registering after the replay is not given it again',
 			seen == 0, seen)
+	end
+end
+
+-- ── the theme ────────────────────────────────────────────────────────────────
+-- An operator's colour is the one piece of configuration in this resource that
+-- reaches a stylesheet, and the three ways that goes wrong are all silent: a
+-- refused value leaves the shipped red, which is what an unconfigured server
+-- looks like; a value out of range leaves a surface nobody can read, on someone
+-- else's machine; and a derivation that has drifted from the shipped ladder
+-- gives every server a slightly broken version of the house design.
+--
+-- The first and the last are what this section is mostly about. The default case
+-- is checked against the REAL `config/theme.lua` rather than against a table
+-- written here, so an owner who uncomments a line in that file to try something
+-- and forgets to comment it back fails the suite rather than shipping it.
+section('theme')
+do
+	local env, control, why = boot('server')
+	if why ~= nil then
+		check('the server half loads', false, why)
+	else
+		local OPX = env.OPX
+		local theme = OPX.Modules.Get('theme')
+		local Palette = theme.Palette
+
+		check('the theme module started', OPX.Modules.IsRunning('theme'),
+			OPX.Modules.Record('theme') and OPX.Modules.Record('theme').Reason)
+
+		-- ── the hex, which is the only text an operator supplies ────────────
+		-- It never becomes CSS -- the page is sent three integers -- but it is
+		-- still the value most likely to be typed wrong, and every shape below
+		-- that is not exactly six hex digits has to be named rather than read as
+		-- something near it.
+		local accepted = {
+			{ '#ff3b47', { 255, 59, 71 } },
+			{ '#FF3B47', { 255, 59, 71 } },
+			{ '#000000', { 0, 0, 0 } },
+			{ '#ffffff', { 255, 255, 255 } },
+		}
+		local goodHex = true
+		for _, case in ipairs(accepted) do
+			local rgb = Palette.Rgb(case[1])
+			if rgb == nil or rgb[1] ~= case[2][1] or rgb[2] ~= case[2][2]
+				or rgb[3] ~= case[2][3] then
+				goodHex = false
+			end
+		end
+		check('#RRGGBB is read, in either case', goodHex)
+
+		local refused = {
+			'#fff', '#ff3b4', '#ff3b477', 'ff3b47', '#ff3b4g', 'red',
+			'rgb(255,59,71)', '#ff3b47 ', ' #ff3b47', '#ff3b47;',
+			-- The shape this would have to have to be an injection, if the wire
+			-- carried text at all. It does not, and it is refused here as well.
+			'#f00;}html{display:none',
+			'', 123, true, {}, nil,
+		}
+		local leaked = {}
+		for _, value in ipairs(refused) do
+			if Palette.Rgb(value) ~= nil then leaked[#leaked + 1] = tostring(value) end
+		end
+		-- `nil` is not reachable through ipairs; checked on its own so the list
+		-- above can say what it means.
+		if Palette.Rgb(nil) ~= nil then leaked[#leaked + 1] = 'nil' end
+		check('everything that is not #RRGGBB is refused', #leaked == 0,
+			table.concat(leaked, ' '))
+
+		-- ── the shipped config paints the shipped surface ────────────────────
+		-- `config/theme.lua` carries LIVE values rather than commented-out ones,
+		-- so the file reads as what it does instead of as an essay about what it
+		-- would do. That trade has a price, and this is where it is paid: the
+		-- page is now handed a full ladder on every boot, so the ladder it is
+		-- handed has to be the one `tokens.css` draws. The check below is the
+		-- only thing standing between an edit to `palette.lua` and every server
+		-- quietly running a design nobody drew.
+		local shipped, shippedNotes = Palette.Resolve(OPX.Config.MODULES.theme)
+		check('the shipped config resolves to a full theme, not an empty one',
+			not Palette.IsEmpty(shipped), '0 keys')
+		check('and to no complaints', #shippedNotes == 0, table.concat(shippedNotes, ' | '))
+		-- An absent block still means "change nothing", which is what an operator
+		-- who deletes the file gets, and what every other resource gets.
+		check('an absent block is still no theme at all', Palette.IsEmpty(Palette.Resolve(nil)))
+
+		-- ── the ladder is the shipped one, restated ──────────────────────────
+		-- The factors in `palette.lua` were measured off these seven literals.
+		-- If the derivation ever stops reproducing them, every themed server is
+		-- running a design nobody drew -- and the surface would still look
+		-- plausible, which is why this is a test and not an eyeball.
+		local LADDER = {
+			accent   = { 255, 59, 71 },   -- #ff3b47
+			hi       = { 255, 107, 120 }, -- #ff6b78
+			deep     = { 200, 32, 46 },   -- #c8202e
+			text     = { 232, 100, 109 }, -- #e8646d
+			idle     = { 232, 67, 79 },   -- --op-red-idle's rgb
+			alarm    = { 255, 168, 174 }, -- #ffa8ae
+			plate    = { 28, 8, 9 },      -- --op-plate's rgb
+			plateLit = { 74, 21, 25 },    -- --op-plate-lit's rgb
+		}
+		local derived = Palette.Ladder({ 255, 59, 71 })
+		local worst, worstKey = 0, nil
+		for key, want in pairs(LADDER) do
+			local got = derived[key]
+			for index = 1, 3 do
+				local off = math.abs((got and got[index] or -999) - want[index])
+				if off > worst then worst, worstKey = off, key end
+			end
+		end
+		-- Four, and the whole of it is on blue: the hand-picked rungs sit within
+		-- 1.6 degrees of the accent's hue and the derivation uses one hue for all
+		-- of them. Tightening this means changing the shipped literals.
+		check('the derived ladder reproduces the shipped one to within 4/255',
+			worst <= 4, ('%d off on %s'):format(worst, tostring(worstKey)))
+		check('and the accent rung is the operator\'s own hex, exactly',
+			derived.accent[1] == 255 and derived.accent[2] == 59 and derived.accent[3] == 71)
+
+		-- A hue nowhere near red, to prove the derivation is not red-shaped.
+		local blue = Palette.Ladder({ 0, 128, 255 })
+		check('a blue accent produces a blue ladder and a blue-black ground',
+			blue.hi[3] > blue.hi[1] and blue.plate[3] > blue.plate[1]
+				and blue.plate[3] < 40,
+			('hi %d,%d,%d plate %d,%d,%d'):format(blue.hi[1], blue.hi[2], blue.hi[3],
+				blue.plate[1], blue.plate[2], blue.plate[3]))
+
+		-- ── the scalars, and their bounds ────────────────────────────────────
+		local wide = Palette.Resolve({
+			ACCENT = '#00ff00',
+			PLATE_OPACITY = 5,
+			INTERLACE = 40,
+			TILT = 90,
+			CUT = 100,
+		})
+		check('a plate opacity above the ceiling is held there', wide.plateAlpha == 0.98,
+			tostring(wide.plateAlpha))
+		check('an interlace nobody could read through is held at 0.15',
+			wide.interlaceAlpha == 0.15, tostring(wide.interlaceAlpha))
+		check('a tilt of 90 degrees is held at 15', wide.tiltDeg == 15, tostring(wide.tiltDeg))
+		check('the three cuts are held at their own ceilings',
+			wide.cutSm == 24 and wide.cutMd == 48 and wide.cutLg == 80,
+			('%s %s %s'):format(tostring(wide.cutSm), tostring(wide.cutMd),
+				tostring(wide.cutLg)))
+
+		local narrow = Palette.Resolve({ PLATE_OPACITY = -3, TILT = -20, CUT = 0 })
+		check('and at their floors from the other side',
+			narrow.plateAlpha == 0.20 and narrow.tiltDeg == 0
+				and narrow.cutSm == 1 and narrow.cutLg == 1,
+			('%s %s %s %s'):format(tostring(narrow.plateAlpha), tostring(narrow.tiltDeg),
+				tostring(narrow.cutSm), tostring(narrow.cutLg)))
+
+		local shipLike = Palette.Resolve({ PLATE_OPACITY = 0.78, INTERLACE = 1, CUT = 1 })
+		check('the shipped numbers written out by hand come back unchanged',
+			shipLike.plateAlpha == 0.78 and shipLike.plateQuietAlpha == 0.58
+				and shipLike.plateLitAlpha == 0.9 and shipLike.interlaceAlpha == 0.05
+				and shipLike.cutSm == 6 and shipLike.cutMd == 12 and shipLike.cutLg == 20,
+			('%s %s %s %s'):format(tostring(shipLike.plateAlpha),
+				tostring(shipLike.plateQuietAlpha), tostring(shipLike.plateLitAlpha),
+				tostring(shipLike.interlaceAlpha)))
+
+		-- A word where a number belongs is a MISTAKE, not a magnitude, so it is
+		-- dropped and named rather than clamped to a floor the operator never
+		-- asked for.
+		local wrong, wrongNotes = Palette.Resolve({
+			ACCENT = 'crimson', ALARM = '#12', TILT = 'a lot', CUT = {},
+		})
+		check('a value of the wrong kind is dropped, not repaired',
+			Palette.IsEmpty(wrong), OPX.Table.Count(wrong) .. ' key(s)')
+		check('and every one of them is named for the journal', #wrongNotes == 4,
+			table.concat(wrongNotes, ' | '))
+
+		-- ── what arrives from the wire ───────────────────────────────────────
+		-- The same bounds, run over a payload this build did not produce: an
+		-- older or newer server, or a key that has since been removed.
+		local fromWire = Palette.Sanitise({
+			accent = { 300, -5, 71.4 },
+			deep = { 1, 2 },
+			tiltDeg = 99,
+			cutSm = 'six',
+			somethingElse = 1,
+		})
+		check('a channel out of range is clamped to a byte',
+			fromWire.accent[1] == 255 and fromWire.accent[2] == 0 and fromWire.accent[3] == 71,
+			table.concat(fromWire.accent, ','))
+		check('a triple that is not three numbers is dropped', fromWire.deep == nil)
+		check('a number out of range is clamped', fromWire.tiltDeg == 15,
+			tostring(fromWire.tiltDeg))
+		check('a number that is not one is dropped', fromWire.cutSm == nil)
+		check('a key this build does not know is dropped', fromWire.somethingElse == nil)
+
+		-- ── the wire itself ──────────────────────────────────────────────────
+		local before = #control.clientEvents
+		env.source = 7
+		control.netEvents[theme.Event.REQUEST]()
+		env.source = nil
+		local sent = control.clientEvents[#control.clientEvents]
+		check('a player who asks is answered, and only that player',
+			#control.clientEvents == before + 1 and sent ~= nil
+				and sent.name == theme.Event.SET and sent.source == 7,
+			sent and tostring(sent.name) or 'nothing sent')
+		check('with the resolved theme, which on a stock server is the full ladder',
+			sent ~= nil and type(sent[1]) == 'table' and not Palette.IsEmpty(sent[1]))
+
+		-- A second ask inside the window is dropped. Not a security boundary --
+		-- the answer is a few hundred bytes -- but anyone can raise the name.
+		local held = #control.clientEvents
+		env.source = 7
+		control.netEvents[theme.Event.REQUEST]()
+		env.source = nil
+		check('a second ask inside the cooldown is not answered',
+			#control.clientEvents == held)
+
+		-- The console has no page and no cooldown bucket; it must not be answered
+		-- as if it were player 0.
+		local console = #control.clientEvents
+		control.netEvents[theme.Event.REQUEST]()
+		check('a request with no player behind it is ignored',
+			#control.clientEvents == console)
+
+		-- The contract hands out a copy: a caller that edits what it is given
+		-- must not be editing what the next player is sent.
+		local published = OPX.Api.Get('theme')
+		local copy = published and published.Current()
+		if copy then copy.accent = { 1, 2, 3 } end
+		env.source = 8
+		control.netEvents[theme.Event.REQUEST]()
+		env.source = nil
+		local after = control.clientEvents[#control.clientEvents]
+		-- Directly now, rather than through emptiness: the caller wrote 1,2,3
+		-- into the table it was handed, and the next player must still be sent
+		-- the real accent.
+		check('the published theme is a copy, not the live one',
+			after ~= nil and type(after[1].accent) == 'table'
+				and after[1].accent[1] == 255 and after[1].accent[2] == 59
+				and after[1].accent[3] == 71,
+			after and after[1] and table.concat(after[1].accent or {}, ','))
+	end
+end
+
+section('theme: the client half')
+do
+	local env, control, why = boot('client')
+	if why ~= nil then
+		check('the client half loads', false, why)
+	else
+		local theme = env.OPX.Modules.Get('theme')
+		local page = control.pages[#control.pages]
+
+		-- `boot` has already reported the page READY, which is the surface-level
+		-- handshake. The theme's own `theme:ready` is a separate signal from the
+		-- page's boot, and until it arrives there is no root to write onto.
+		local wire = { accent = { 0, 128, 255 }, tiltDeg = 3, nonsense = 'x' }
+		control.netEvents[theme.Event.SET](wire)
+
+		local function themeSent()
+			for _, message in ipairs(page and page.sent or {}) do
+				if message.channel == 'opx:theme:set' then return message.payload end
+			end
+			return nil
+		end
+
+		check('a theme that arrives before the page does is held, not dropped',
+			themeSent() == nil)
+
+		control.PageEmit(page, 'opx:theme:ready', {})
+
+		local drawn = themeSent()
+		check('and is sent the moment the page asks for it', drawn ~= nil)
+		check('with the key this build does not know already gone',
+			drawn ~= nil and drawn.nonsense == nil and drawn.tiltDeg == 3
+				and type(drawn.accent) == 'table' and drawn.accent[3] == 255,
+			drawn and tostring(drawn.tiltDeg) or 'nothing')
+
+		-- There is no client-side setter, and that is the whole of the
+		-- server-authoritative claim on this side: the only name that reaches the
+		-- page is the one the server raises, and the only thing the client sends
+		-- is a request with no arguments in it.
+		check('the client asks on a name that carries nothing',
+			theme.Event.REQUEST == 'opx:net:theme:request')
 	end
 end
 

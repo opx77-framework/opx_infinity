@@ -398,7 +398,7 @@ local function refusal()
 	end
 	if Runtime.IsDown() then return 'player_down' end
 	if not playable() then return 'player_unavailable' end
-	if OPX.Keys.IsCaptured() then return 'input_captured' end
+	if OPX.Lib.Input.IsCaptured() then return 'input_captured' end
 	return nil
 end
 

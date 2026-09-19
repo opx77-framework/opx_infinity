@@ -392,6 +392,17 @@ function Host.Environment(side, database)
 		env.TriggerServerEvent = function() end
 	end
 
+	-- `require` exists in the CLIENT VM and nowhere else: the dedicated-server
+	-- sandbox has no module loader at all. Installing it on the client side only
+	-- is what lets a shared_script that reached for it fail here, which is the
+	-- one place that mistake is cheap to find.
+	--
+	-- It resolves `@opx_lib/...` against the sibling checkout, so these tests
+	-- exercise the REAL library rather than a stand-in -- a stub would pass while
+	-- the two repositories drifted apart, which is the failure this is meant to
+	-- catch.
+	if side == 'client' then env.require = Host.Require end
+
 	env._G = env
 	setmetatable(env, { __index = _G })
 
@@ -456,9 +467,65 @@ function Host.Environment(side, database)
 	return env, control
 end
 
---- Names the sandbox removes. Loading code that reaches for one is a failure the
---- test should report here rather than on the test server.
-Host.Sandbox = { 'io', 'os', 'debug', 'package', 'dofile', 'loadfile', 'require' }
+--- Names the sandbox removes on BOTH runtimes. Loading code that reaches for one
+--- is a failure the test should report here rather than on the test server.
+Host.Sandbox = { 'io', 'os', 'debug', 'package', 'dofile', 'loadfile' }
+
+--- Names the CLIENT VM has and the dedicated server does not.
+---
+--- `require` is the whole list, and it is separated from `Host.Sandbox` rather
+--- than dropped from it because the distinction is real and load-bearing: a
+--- `client_script` may import a library, and a `shared_script` that did the same
+--- would break the moment the server loaded it. Merging the two lists would
+--- either forbid a legal import or permit an illegal one.
+Host.ClientOnly = { 'require' }
+
+--- Where a published dependency library lives, relative to this resource.
+--- A sibling checkout, which is how they sit in the workspace.
+Host.Providers = { opx_lib = '../opx_lib' }
+
+local imported = {}
+
+--- The client VM's `require`, resolving a provider-qualified name against a
+--- sibling checkout. Caches per resolved file, as the platform does.
+-- @author dop42
+-- @param name string
+-- @return any, string|nil
+function Host.Require(name)
+	if type(name) ~= 'string' then return nil, 'invalid_module_name' end
+
+	local provider, module = name:match('^@([%w_]+)/?(.*)$')
+	if provider == nil then
+		-- A bare name resolves inside the CALLING resource on the platform. This
+		-- resource ships no importable modules, so reaching for one is a mistake
+		-- rather than something to support.
+		return nil, ('unqualified require(%q)'):format(name)
+	end
+
+	local root = Host.Providers[provider]
+	if root == nil then return nil, 'module_dependency_not_declared' end
+	if module == '' then module = 'init' end
+
+	local path = ('%s/%s.lua'):format(root, (module:gsub('%.', '/')))
+	if imported[path] ~= nil then return imported[path] end
+
+	local chunk, why = loadfile(path)
+	if chunk == nil then
+		-- The sibling is genuinely absent, rather than the import being wrong.
+		return nil, ('module_dependency_not_running: %s'):format(tostring(why))
+	end
+
+	-- The library imports its own siblings, and it does so through the caller's
+	-- `require` -- which, in a running client, is this same resolver.
+	local previous = _G.require
+	_G.require = Host.Require
+	local value = chunk()
+	_G.require = previous
+
+	if value == nil then value = true end
+	imported[path] = value
+	return value
+end
 
 --- Reads the manifest and answers the scripts for one side, in load order.
 --- Parsing the real manifest rather than a copy means a file added to the

@@ -3,7 +3,8 @@
 --
 -- Files still load in manifest order, because the platform has no module system:
 -- a file that is both listed in the manifest and reached by `require` executes
--- twice, and `require` cannot leave the resource anyway. What this file adds is
+-- twice, and `require` is client-only -- the dedicated server has no module
+-- loader at all, so it can never order a shared registry. What this file adds is
 -- ordering *between* modules, so that a module never depends on another module
 -- having happened to run a particular file first.
 --

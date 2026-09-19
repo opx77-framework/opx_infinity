@@ -480,17 +480,17 @@ local function pullVoice()
 	local voice = voiceSettings()
 	if voice == nil then return end
 
-	local state = OPX.Rpc.Call(voice.OPEN_VOICE, 'getState')
-	if state ~= nil and state.configured == true then
-		setReach(state.mode, state.distance, state.label)
-		cycleKey = keyName(state.cycleKey)
+	local state = OPX.Lib.Rpc.Call(voice.OPEN_VOICE, 'getState')
+	if state.ok and state.value.configured == true then
+		setReach(state.value.mode, state.value.distance, state.value.label)
+		cycleKey = keyName(state.value.cycleKey)
 	end
 
-	local list = OPX.Rpc.Call(voice.OPEN_VOICE, 'getModes')
-	if type(list) == 'table' and type(list.modes) == 'table' then adoptModes(list.modes) end
+	local list = OPX.Lib.Rpc.Call(voice.OPEN_VOICE, 'getModes')
+	if list.ok and type(list.value.modes) == 'table' then adoptModes(list.value.modes) end
 
-	local driver = OPX.Rpc.Call(voice.DRIVER, 'getPushToTalkKey')
-	local key = driver ~= nil and keyName(driver.key) or nil
+	local driver = OPX.Lib.Rpc.Call(voice.DRIVER, 'getPushToTalkKey')
+	local key = driver.ok and keyName(driver.value.key) or nil
 	if key ~= nil then pushToTalkKey = key end
 end
 
@@ -503,7 +503,7 @@ local function setOpenVoiceHud(shown)
 	pcall(TriggerEvent, VOICE_HUD_VISIBLE, shown == true)
 	local exports = Open77.exports
 	if type(exports) ~= 'table' or type(exports.call) ~= 'function' then return end
-	if not OPX.Rpc.IsRunning(voice.OPEN_VOICE) then return end
+	if not OPX.Lib.Rpc.IsRunning(voice.OPEN_VOICE) then return end
 	pcall(exports.call, voice.OPEN_VOICE, 'setHudVisible', shown == true)
 end
 

@@ -281,9 +281,9 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
      and the mass all take it from here -- and the value itself comes from the
      surface, so the grid and the panel around it are in the same ink. */
   text-shadow: var(--ink, 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 9px rgba(0, 0, 0, 0.8));
-  --aug-tr: 6px;
-  --aug-border-bg: rgba(232, 67, 79, 0.70);
-  background: rgba(28, 8, 9, 0.78);
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: rgba(var(--op-red-idle-rgb), 0.70);
+  background: var(--op-plate);
   /* THE BLACK IS IN THE SPRITE, and this is where it stopped being a box-shadow.
 
      It was an outset `var(--dark)` on the cell box, and the comment here argued
@@ -315,7 +315,7 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
 
 .cell.filled {
   color: var(--op-red-text);
-  --aug-border-bg: rgba(232, 67, 79, 0.70);
+  --aug-border-bg: rgba(var(--op-red-idle-rgb), 0.70);
   cursor: grab;
 }
 
@@ -335,7 +335,7 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
   color: var(--op-red);
   --aug-border-bg: var(--op-red);
   --aug-border-all: 2.4px;
-  background: rgba(74, 21, 25, 0.90);
+  background: var(--op-plate-lit);
   /* A `drop-shadow` AND NOT A `box-shadow`, which is forced by the clip: an
      outset shadow is sheared along the chamfer. The old note here refused a
      filter because "forty of them" would each take a backing store -- but only
@@ -472,7 +472,7 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
   right: 5px;
   bottom: 22px;
   height: 2px;
-  background: var(--red-track, rgba(232, 67, 79, 0.22));
+  background: var(--red-track, rgba(var(--op-red-idle-rgb), 0.22));
   box-shadow: var(--ink-tight, 0 1px 2px rgba(0, 0, 0, 0.95));
   transition: opacity var(--op-dur-fast) linear;
 }

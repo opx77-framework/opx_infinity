@@ -66,7 +66,7 @@ end
 -- @param resource string
 -- @return boolean
 function Client.Running(resource)
-	return OPX.Rpc.IsRunning(resource)
+	return OPX.Lib.Rpc.IsRunning(resource)
 end
 
 --- One optional contract, or nil.

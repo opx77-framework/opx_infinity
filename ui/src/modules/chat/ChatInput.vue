@@ -681,7 +681,7 @@ onUnmounted(() => {
      line being composed sits under the caret, is re-read letter by letter, and
      the street behind it is moving. It is the one surface where the ground is
      worth more than the openness. */
-  background: rgba(28, 8, 9, 0.92);
+  background: rgba(var(--op-plate-rgb), 0.92);
   --aug-border-all: 2px;
 }
 

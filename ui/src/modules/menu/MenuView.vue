@@ -59,8 +59,11 @@ type Handle = string | number
 interface Slot {
   /** The row's ABSOLUTE index in the level, which is also the v-for key. */
   index: number
-  /** Position within the window, for the open stagger. */
-  at: number
+  /** The row's place in the OPEN stagger, and 0 on every frame after it: the walk
+      down the column belongs to the menu arriving. A row that scrolled into the
+      window one keypress later would otherwise sit invisible through a delay
+      measured for nine rows before it faded in. */
+  stagger: number
   label: string
   /** A glyph name from the closed set Lua validates against, or '' for none. */
   icon: string
@@ -148,7 +151,7 @@ function readConfig(payload: Payload): void {
   if (tall > 0) maxHeight.value = Math.round(tall)
 }
 
-function readFrame(payload: Payload): void {
+function readFrame(payload: Payload, stagger = false): void {
   hint.value = text(payload.hint)
   first.value = Math.max(1, num(payload.first, 1))
   total.value = num(payload.total)
@@ -159,7 +162,7 @@ function readFrame(payload: Payload): void {
     const label = text(row.label)
     return {
       index: first.value + at,
-      at,
+      stagger: stagger ? at : 0,
       label,
       icon: rule ? '' : text(row.icon),
       value: rule ? '' : text(row.value),
@@ -210,7 +213,7 @@ useBridge('opx:menu:open', (payload: Payload) => {
     release?.()
     handle.value = payload.handle
     readConfig(payload)
-    readFrame(payload)
+    readFrame(payload, true)
     open.value = true
 
     // HOW THIS MENU TAKES INPUT. `full` is what every menu did before the option
@@ -290,16 +293,16 @@ function choose(row: Slot): void {
           <li
             v-for="row in slots"
             :key="row.index"
-            class="slot"
+            class="slot op-enter"
             :class="{ gap: row.blank }"
-            :style="`--op-slot: ${row.at}`"
+            :style="`--op-slot: ${row.stagger}`"
           >
             <!-- A separator with no caption draws nothing at all: the <li> is the space. -->
             <div v-if="row.rule && !row.blank" class="sep op-eyebrow">{{ row.label }}</div>
 
             <div
               v-else-if="!row.blank"
-              class="row op-frame op-enter"
+              class="row op-frame"
               :class="{ on: row.on && !row.off, 'is-on': row.on && !row.off, 'op-lift': row.on && !row.off, 'is-off': row.off }"
               role="button"
               :aria-disabled="row.off"
@@ -433,7 +436,7 @@ function choose(row: Slot): void {
      carries nothing and turns the strip into a window. One number to turn if a
      bay ever has to be closed over a plaza, on the same rgb as `--op-plate` so
      turning it up lands on the ground the rows already sit on. */
-  background: rgba(28, 8, 9, var(--op-menu-veil, 0));
+  background: rgba(var(--op-plate-rgb), var(--op-menu-veil, 0));
 }
 
 .bay-inner {
@@ -463,6 +466,15 @@ function choose(row: Slot): void {
   min-height: 0;
 }
 
+/* THE ENTRANCE IS ON THE SLOT, NOT ON THE ROW, and that is the whole of why this
+   strip felt slow to move through. A row's classes change on every keypress --
+   `.on` arrives on one and leaves another -- and an `animation-name` that differs
+   between those two states is CANCELLED AND RESTARTED by the change, so both
+   rows replayed the 190ms stutter from behind a delay of up to 264ms and were
+   invisible for the whole wait. The <li> is what the keyed v-for creates, its
+   classes say nothing about the cursor, and its transform composes with the
+   chosen row's step out of the column -- so the open still lands that row
+   popped, and moving the cursor replays nothing. */
 .slot {
   display: flex;
   min-width: 0;
@@ -488,9 +500,13 @@ function choose(row: Slot): void {
   padding: var(--op-space-2) var(--op-space-3) calc(var(--op-space-2) + 1px);
   white-space: nowrap;
   cursor: pointer;
+  /* The step out of the column is the ONLY thing that moves when the cursor
+     does, so it is the cursor's travel rather than an entrance and is timed
+     like one: long enough to read as a step, short enough that a held arrow key
+     never queues. */
   transition:
     color var(--op-dur-fast) linear,
-    transform 120ms var(--op-ease);
+    transform 80ms var(--op-ease);
 }
 
 /* The column is held open by the span whether or not a glyph is inside it, so a
@@ -642,28 +658,5 @@ function choose(row: Slot): void {
   margin: 0;
   /* The one place the strip wraps: a description is a sentence. */
   opacity: 0.78;
-}
-
-/* The chosen row's entrance overrides the shared one: it has to land on the
-   popped position rather than at rest, or the row would step out twice. */
-@keyframes menu-row-in-on {
-  0% {
-    opacity: 0;
-    transform: translate3d(0, 0, 0);
-  }
-
-  55% {
-    opacity: 1;
-    transform: translate3d(calc(var(--op-pop, 10px) + 2px), 0, 14px);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translate3d(var(--op-pop, 10px), 0, 14px);
-  }
-}
-
-.strip.open .row.on {
-  animation-name: menu-row-in-on;
 }
 </style>

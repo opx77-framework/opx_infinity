@@ -42,6 +42,13 @@ version "0.1.2"
 open77_version ">=0.0.1"
 auto_start true
 
+-- The external client library. DECLARED, not optional: `require("@opx_lib")`
+-- answers `module_dependency_not_declared` without this line and
+-- `module_dependency_not_running` if the resource is not up, and the platform
+-- will not start this resource until it is. `lib/client/lib.lua` loads it once
+-- and puts it on `OPX.Lib`; see that file for why only the client half uses it.
+dependency "opx_lib"
+
 reload_policy "reconnect"
 
 shared_script "core/shared/main.lua"
@@ -70,6 +77,13 @@ shared_script "config/form.lua"
 shared_script "config/panel.lua"
 shared_script "config/entry.lua"
 shared_script "config/admin.lua"
+-- SERVER ONLY, unlike every other module's config above it. The theme is the
+-- one operator block a client must not hold a copy of: the client is told its
+-- colours over the wire, and a local copy would be a second answer to "what does
+-- this server look like" sitting on the machine least able to be trusted with
+-- one. `Settings` is therefore empty on the client, and the client half reads
+-- none of it.
+server_script "config/theme.lua"
 
 shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
@@ -94,9 +108,8 @@ server_script "core/server/gate.lua"
 server_script "core/server/buckets.lua"
 server_script "core/server/tunables.lua"
 
-client_script "lib/client/rpc.lua"
+client_script "lib/client/lib.lua"
 client_script "lib/client/surface.lua"
-client_script "lib/client/keys.lua"
 client_script "core/client/scheduler.lua"
 client_script "core/client/ui.lua"
 client_script "core/client/notify.lua"
@@ -104,6 +117,17 @@ client_script "core/client/notify.lua"
 shared_script "modules/diagnostics/module.lua"
 server_script "modules/diagnostics/server/main.lua"
 client_script "modules/diagnostics/client/main.lua"
+
+-- EARLY, and the position is the whole of its scheduling. `Start` yields between
+-- modules to reset the instruction budget, so a module twenty places down the
+-- list asks its question twenty frames later -- and this one's question is what
+-- colour the page is. Asked here, the answer is normally in the client's hands
+-- before the page has finished mounting. It depends on nothing and provides one
+-- read-only contract, so nothing depends on it being later either.
+shared_script "modules/theme/module.lua"
+shared_script "modules/theme/shared/palette.lua"
+server_script "modules/theme/server/main.lua"
+client_script "modules/theme/client/main.lua"
 
 shared_script "modules/character/module.lua"
 shared_script "modules/character/locales.lua"

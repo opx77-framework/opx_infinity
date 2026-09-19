@@ -525,7 +525,7 @@ function focusField(field: Field): void {
      is already sitting on a dim, so it needs to be told apart from that dim
      rather than held against daylight. The rgb is `--op-plate`'s, as with the
      menu and the toasts, so the three are one ground. */
-  background: rgba(28, 8, 9, var(--op-form-veil, 0.58));
+  background: rgba(var(--op-plate-rgb), var(--op-form-veil, 0.58));
   transform-origin: var(--origin, center center);
   transform: rotateY(var(--tilt, 0deg));
   /* THE SHAPE AND THE ARETE ARE augmented-ui NOW. This was a six-point
@@ -564,7 +564,7 @@ function focusField(field: Field): void {
   pointer-events: none;
   background: repeating-linear-gradient(
     to bottom,
-    rgba(255, 59, 71, 0.05) 0 1px,
+    var(--op-interlace) 0 1px,
     transparent 1px 3px
   );
 }
@@ -774,7 +774,7 @@ function focusField(field: Field): void {
   flex: none;
   width: 48px;
   height: 2px;
-  background: rgba(232, 67, 79, 0.22);
+  background: rgba(var(--op-red-idle-rgb), 0.22);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
 }
 

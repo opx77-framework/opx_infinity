@@ -286,8 +286,21 @@ function World.CreateDrop(source, citizenId, position, name)
 	container.touchedAt = OPX.Now()
 
 	local item = M.Catalog.Get(name)
-	local propId = item and item.model and createProp(item.model, position) or nil
-	if propId == nil then propId = createProp(Options.DROP_MODEL, position) end
+	local wanted = item and item.model or nil
+	local propId = wanted and createProp(wanted, position) or nil
+	local fellBack = propId == nil
+	if fellBack then propId = createProp(Options.DROP_MODEL, position) end
+
+	-- SAID OUT LOUD, because the failure this diagnoses is silent by
+	-- construction. A pile draws the wrong thing for three different reasons --
+	-- the item has no MODEL, the alias was refused, or the alias was accepted
+	-- and the client still drew a marker -- and from the game all three look
+	-- identical: a crate. The first two are distinguishable here and nowhere
+	-- else. The third is not, and the line says which model to go and check.
+	Open77.log.debug(('[inventory] drop %s: wanted %s, drew %s%s')
+		:format(tostring(name), tostring(wanted or 'nothing'),
+			tostring(fellBack and Options.DROP_MODEL or wanted),
+			propId == nil and ' (no prop at all)' or ''))
 
 	drops[container.id] = {
 		id = container.id,

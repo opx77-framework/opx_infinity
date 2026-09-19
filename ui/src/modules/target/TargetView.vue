@@ -1500,7 +1500,7 @@ onUnmounted(() => {
   color: var(--op-alarm);
   --aug-border-bg: var(--op-alarm);
   --aug-border-all: 2px;
-  filter: drop-shadow(0 0 5px rgba(255, 168, 174, 0.55));
+  filter: drop-shadow(0 0 5px var(--op-alarm-glow));
 }
 
 /* --- PENDING: the row Lua is working on. Lit, blooming, and the one thing that
