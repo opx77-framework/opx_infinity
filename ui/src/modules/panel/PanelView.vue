@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
@@ -12,24 +12,54 @@ import { useBridge } from '@/composables/useBridge'
 interface Tab {
   id: string
   label: string
+  marked: boolean
+  disabled: boolean
 }
 
 /**
- * THE PANEL -- port of `opx77_panel/web/{index.html,panel.css,panel.js}`.
+ * THE PANEL -- and, in practice, the fitting room, because nothing else opens one.
  *
- * The mouse-driven one, and the resource the handle pattern was taken from: Lua opens
- * with a spec and keeps the handle, every payload in either direction carries it, and a
- * message whose handle is not the open one is dropped rather than applied. That is what
- * lets five systems share one surface without a late reply from a closed panel landing
- * in the one that replaced it.
+ * The mouse-driven surface, and the resource the handle pattern was taken from: Lua
+ * opens with a spec and keeps the handle, every payload in either direction carries it,
+ * and a message whose handle is not the open one is dropped rather than applied.
  *
  * Three things the page decides for itself, and only these three, because none of them
  * is a fact about the world:
  *  - the search filter, over items Lua has already sent;
- *  - the page of that filtered list;
+ *  - where the dial is standing, and therefore which slice of the list is drawn;
  *  - whether the confirm dialog is on screen.
  * Everything else is Lua's answer, applied verbatim. The panel does not select an item
  * because it was clicked; it says it was clicked and waits for `selected` to come back.
+ *
+ * ── WHAT THIS SCREEN IS, AND WHY IT IS LAID OUT LIKE THIS ───────────────────────────
+ *
+ * A player dressing a character is looking at the character. Everything here is
+ * arranged around that one fact, which the previous layout did not concede: it filled
+ * the screen with a scrim, put a 600px drawer down the middle-left with a title block
+ * on top of it, and paged a two-column wall of names. The body was behind all of it.
+ *
+ * So: NO SCRIM -- the room is transparent and the player watches their own character
+ * through it. NO HEADER -- the tab strip is the first thing in the column and it says
+ * what the screen is by naming the seven slots, which is more than 'WARDROBE' ever
+ * said. `eyebrow`, `title` and `subtitle` still arrive and are simply not drawn; that
+ * is `MenuView`'s precedent for the same decision, and the cost is the same -- the
+ * panel no longer names itself, and a second caller would have to live with that.
+ * `intro` IS drawn, because it is the one of the four that states something the screen
+ * cannot show: that nothing is kept until you save.
+ *
+ * ── THE DIAL, WHICH IS WHERE THE SLIDER WENT ────────────────────────────────────────
+ *
+ * Browsing a slot's pieces is one-dimensional and ordered, every step has a visible
+ * consequence on the body, and the seam already carries a preview -- `hover` shows a
+ * piece without choosing it and `select` chooses it. That is a slider, exactly: drag,
+ * and the body wears what is under the thumb; let go, and that is your choice.
+ * `@input` previews through the same debounced hover a pointer uses, `@change` commits.
+ * A keyboard does both per arrow press, which is the behaviour you want.
+ *
+ * It replaced the pager, not the list. The list is still under the dial as a window
+ * that follows the thumb, because a slider with no names beside it tells the player
+ * nothing about where they are, and clicking a row is still the precise way to land on
+ * one. `columns` keeps meaning what it meant: how many of that window sit abreast.
  */
 
 type Handle = string | number
@@ -68,6 +98,7 @@ interface Dialog {
 }
 
 interface PanelView {
+  /** Arrives and is not drawn. See the header. */
   eyebrow: string
   title: string
   subtitle: string
@@ -90,8 +121,8 @@ interface PanelView {
   columns: 1 | 2
 }
 
-/* panel.js's numbers, kept: the grid pages by measured height, so a drawer that is short
-   on one screen and tall on another does not paginate differently from what fits. */
+/* panel.js's numbers, kept: the window is sized by measured height, so a column that is
+   short on one screen and tall on another shows what fits rather than a fixed count. */
 const ROW_HEIGHT = 58
 const ROW_GAP = 4
 const HOVER_MS = 110
@@ -123,7 +154,8 @@ const handle = ref<Handle | null>(null)
 const open = ref(false)
 const view = reactive<PanelView>(emptyView())
 const items = ref<Item[]>([])
-const page = ref(0)
+/** Where the dial is standing, as an index into the filtered list. */
+const cursor = ref(0)
 const query = ref('')
 const dialog = ref<Dialog | null>(null)
 
@@ -183,6 +215,9 @@ function readSummary(value: unknown): Summary | null {
  */
 function apply(payload: Payload): void {
   const given = (key: string): boolean => payload[key] !== undefined
+  // Kept, and not drawn. The three of them are the header this screen no longer has;
+  // holding them means a caller is not silently refused and a later surface may draw
+  // them again without a contract change.
   if (given('eyebrow')) view.eyebrow = text(payload.eyebrow)
   if (given('title')) view.title = text(payload.title)
   if (given('subtitle')) view.subtitle = text(payload.subtitle)
@@ -241,24 +276,33 @@ const shown = computed(() => {
   })
 })
 
-const pageSize = computed(() => {
+/** The dial's real position. `cursor` is clamped here rather than on write, because the
+    list shrinks under it: a batch arriving, a tab changing and a keystroke in the search
+    field all move the floor without the player touching the dial. */
+const at = computed(() => Math.max(0, Math.min(cursor.value, shown.value.length - 1)))
+
+const windowSize = computed(() => {
   const rows = Math.max(1, Math.floor((gridHeight.value + ROW_GAP) / (ROW_HEIGHT + ROW_GAP)))
   return rows * (view.columns === 1 ? 1 : 2)
 })
 
-const lastPage = computed(() => Math.max(0, Math.ceil(shown.value.length / pageSize.value) - 1))
-
-const visible = computed(() => {
-  const at = Math.min(page.value, lastPage.value)
-  return shown.value.slice(at * pageSize.value, (at + 1) * pageSize.value)
+/* The window follows the thumb instead of jumping a page at a time, and it stops at both
+   ends rather than centring on a position the list does not have. */
+const windowStart = computed(() => {
+  const size = windowSize.value
+  const last = Math.max(0, shown.value.length - size)
+  return Math.max(0, Math.min(at.value - Math.floor(size / 2), last))
 })
+
+const visible = computed(() =>
+  shown.value.slice(windowStart.value, windowStart.value + windowSize.value)
+)
 
 const count = computed(() => {
   if (shown.value.length === 0) return ''
-  const at = Math.min(page.value, lastPage.value)
   return label('count', {
-    from: at * pageSize.value + 1,
-    to: Math.min(shown.value.length, (at + 1) * pageSize.value),
+    from: windowStart.value + 1,
+    to: Math.min(shown.value.length, windowStart.value + windowSize.value),
     total: shown.value.length
   })
 })
@@ -270,6 +314,26 @@ const gridStyle = computed(() => `--columns: ${view.columns}`)
 const searchPlaceholder = computed(() => (view.search === false ? '' : view.search))
 
 const summaryAction = computed(() => view.summary?.action ?? null)
+
+/** Where in the filtered list Lua's own choice sits, or the top when it is not in it. */
+function indexOfChosen(): number {
+  if (chosen.value === '') return 0
+  const found = shown.value.findIndex((item) => item.id === chosen.value)
+  return found < 0 ? 0 : found
+}
+
+/* THE DIAL FOLLOWS LUA, NOT THE OTHER WAY ROUND. A tab the player opened, and a choice
+   Lua made -- including `remove`, which sets the slot to nothing -- both move the thumb
+   to where the truth now is. Without this the dial would still be standing over the
+   jacket the player just took off. */
+watch([currentTab, chosen], () => {
+  cursor.value = indexOfChosen()
+})
+
+/* A new filter is a new list, and an index into the old one means nothing in it. */
+watch(query, () => {
+  cursor.value = 0
+})
 
 function measure(): void {
   gridHeight.value = gridEl.value?.clientHeight ?? 0
@@ -283,7 +347,9 @@ function clearHoverTimers(): void {
 }
 
 /** Debounced both ways: a pointer crossing a grid must not raise an event per row, and
-    a pointer that left for two frames on its way to the next row has not left. */
+    a pointer that left for two frames on its way to the next row has not left. A dial
+    dragged across four hundred pieces is the same problem with a different input, so it
+    goes through the same gate. */
 function pointAt(id: string): void {
   if (!view.hover || handle.value === null) return
   clearHoverTimers()
@@ -327,7 +393,7 @@ function blank(): void {
   hovered = null
   open.value = false
   items.value = []
-  page.value = 0
+  cursor.value = 0
   query.value = ''
   closeDialog()
   Object.assign(view, emptyView())
@@ -356,12 +422,10 @@ useBridge('opx:panel:update', (payload: Payload) => {
     const before = currentTab.value
     apply(payload)
     if (payload.clearItems === true) items.value = []
-    // A tab Lua switched under us resets the page and the filter, exactly as a tab the
-    // player switched does: the query belonged to the list that is no longer shown.
-    if (currentTab.value !== before) {
-      page.value = 0
-      query.value = ''
-    }
+    // A tab Lua switched under us resets the filter, exactly as a tab the player
+    // switched does: the query belonged to the list that is no longer shown. The dial
+    // is moved by the watcher above, which sees the same change.
+    if (currentTab.value !== before) query.value = ''
   }, undefined)
 })
 
@@ -383,10 +447,14 @@ useBridge('opx:panel:items', (payload: Payload) => {
         search: `${itemLabel} ${detail} ${id}`.toLowerCase()
       })
     }
-    // Appended: `opx:panel:items` is a batch, and a panel of 5000 rows arrives in
-    // several. `clearItems` on an update is what empties the list.
+    // Appended: `opx:panel:items` is a batch, and a catalogue of five thousand rows
+    // arrives in many. `clearItems` on an update is what empties the list.
     items.value = items.value.concat(batch)
-    if (payload.done === true) view.loading = false
+    if (payload.done === true) {
+      view.loading = false
+      // The dial could not stand on Lua's choice while the piece had not arrived yet.
+      cursor.value = indexOfChosen()
+    }
   }, undefined)
 })
 
@@ -442,7 +510,6 @@ function chooseTab(id: string): void {
   // The page shows the new tab at once because the tab strip is a view of items it
   // already holds; `selected` -- what the tab CONTAINS -- still comes from Lua.
   view.tab = id
-  page.value = 0
   query.value = ''
   clearHoverTimers()
   hovered = null
@@ -454,197 +521,234 @@ function choose(item: Item): void {
   emit('opx:panel:select', { handle: handle.value, item: item.id })
 }
 
+/** A row clicked: the dial moves to it as well, so the two never disagree. */
+function pick(item: Item, offset: number): void {
+  cursor.value = windowStart.value + offset
+  choose(item)
+}
+
+/** The thumb moved: preview only. Committing on every intermediate value of a drag
+    would put four hundred selections through the seam for one gesture. */
+function scrub(raw: string): void {
+  const length = shown.value.length
+  if (length === 0) return
+  const index = Math.max(0, Math.min(length - 1, Math.trunc(Number(raw)) || 0))
+  cursor.value = index
+  const item = shown.value[index]
+  if (item && !item.disabled) pointAt(item.id)
+}
+
+/** The thumb let go, or an arrow key pressed: that is the choice. */
+function settle(): void {
+  const item = shown.value[at.value]
+  if (item) choose(item)
+}
+
 function press(button: Button): void {
   if (button.disabled || view.busy) return
   emit('opx:panel:action', { handle: handle.value, id: button.id })
 }
 
-function turn(delta: number): void {
-  page.value = Math.max(0, Math.min(lastPage.value, page.value + delta))
-}
-
 function filter(value: string): void {
   query.value = value
-  page.value = 0
 }
 </script>
 
 <template>
   <div class="room" :class="{ open }">
-    <!-- THE SCRIM. The largest fill on a surface that otherwise has none, and it
-         stays: a panel is read for as long as it takes to choose something, and
-         the street moving behind a list of names is the one backdrop this
-         runtime cannot ask a player to read through. `InventoryView` dropped its
-         scrim for the opposite reason -- a bag is read at a glance. -->
-    <div class="scrim" :class="{ shown: open }" />
+    <!-- NO SCRIM, AND THAT IS THE POINT OF THE SCREEN. The old one covered the
+         whole surface with `--op-plate-quiet` and defended it: "a panel is read
+         for as long as it takes to choose something". True of a list of elevator
+         floors; false of a fitting room, where the thing being chosen is only
+         visible THROUGH the panel. The body is the content. If a second caller
+         ever needs a wash behind a long read, it belongs on that caller's spec,
+         not on every panel. -->
 
-    <div class="stage">
-      <div class="drawer">
-        <section
-          class="panel op-bay op-arete op-interlace op-ink"
-          data-augmented-ui="tr-clip bl-clip border"
-        >
-          <header class="head">
-            <div class="head-text">
-              <span v-if="view.eyebrow" class="eyebrow op-eyebrow">{{ view.eyebrow }}</span>
-              <h1>{{ view.title }}</h1>
-            </div>
-            <span v-if="view.subtitle" class="family">{{ view.subtitle }}</span>
+    <!-- THE COLUMN IS ON THE LEFT AND HINGED THERE. `.op-plane` carries the
+         perspective and the containment; `.op-anchor-left` is what makes the
+         tilt +7deg about the left edge rather than a spin about the middle. -->
+    <section class="column op-plane op-anchor-left op-ink">
+      <div class="bay op-bay op-arete" data-augmented-ui="tr-clip bl-clip border">
+        <div class="bay-inner op-interlace">
+          <!-- THE TAB STRIP IS THE HEADING. Seven named slots, each saying
+               whether something is on it, is a better answer to "what is this
+               screen" than the word WARDROBE was. -->
+          <nav v-if="view.tabs.length" class="tabs">
+            <button
+              v-for="tab in view.tabs"
+              :key="tab.id"
+              type="button"
+              class="tab op-frame"
+              :class="{ 'is-on': tab.id === currentTab, 'is-off': tab.disabled }"
+              :disabled="tab.disabled"
+              data-augmented-ui="tr-clip border"
+              @click="chooseTab(tab.id)"
+            >
+              {{ tab.label }}
+              <!-- A slot with something on it. A mark, not a frame: what is not a
+                   control does not get one. -->
+              <span v-if="tab.marked" class="mark" aria-hidden="true">&bull;</span>
+            </button>
+          </nav>
+
+          <p v-if="view.intro" class="intro op-copy">{{ view.intro }}</p>
+
+          <label
+            v-if="view.search !== false"
+            class="field op-frame"
+            data-augmented-ui="tr-clip border"
+          >
+            <span class="field-label op-eyebrow">{{ label('search') }}</span>
+            <input
+              class="field-entry"
+              type="text"
+              :value="query"
+              :placeholder="searchPlaceholder"
+              @input="filter(($event.target as HTMLInputElement).value)"
+            >
+          </label>
+
+          <!-- THE DIAL. Only drawn when there is somewhere to travel: one piece
+               is not a range, and a track with a thumb that cannot move is a
+               control that lies about what it does. -->
+          <div
+            v-if="shown.length > 1"
+            class="dial op-frame"
+            :class="{ 'is-off': view.busy }"
+            data-augmented-ui="tr-clip border"
+          >
+            <input
+              class="dial-track"
+              type="range"
+              min="0"
+              :max="shown.length - 1"
+              step="1"
+              :value="at"
+              :disabled="view.busy"
+              :aria-label="view.summary?.label ?? ''"
+              :aria-valuetext="shown[at]?.label ?? ''"
+              @input="scrub(($event.target as HTMLInputElement).value)"
+              @change="settle"
+            >
+          </div>
+
+          <div ref="gridEl" class="grid" :class="{ busy: view.busy }" :style="gridStyle">
+            <button
+              v-for="(item, offset) in visible"
+              :key="item.id"
+              type="button"
+              class="row op-frame"
+              :class="{
+                'is-on': item.id === chosen,
+                'op-lift': item.id === chosen,
+                'is-hover': item.id !== chosen && windowStart + offset === at,
+                'is-off': item.disabled || view.busy
+              }"
+              :disabled="item.disabled || view.busy"
+              data-augmented-ui="tr-clip border"
+              @click="pick(item, offset)"
+              @mouseenter="pointAt(item.id)"
+              @mouseleave="pointAway"
+            >
+              <span class="row-label op-label">{{ item.label }}</span>
+              <span v-if="item.detail" class="row-hint op-copy">{{ item.detail }}</span>
+            </button>
+
+            <p v-if="!visible.length" class="empty op-copy">
+              {{ label(view.loading ? 'loading' : 'empty') }}
+            </p>
+          </div>
+
+          <!-- A READOUT, SO NO FRAME. Where the window sits in the list, and the
+               one mark that says the runtime is still working. -->
+          <div v-if="count || view.busy" class="readout">
+            <span class="count op-value">{{ count }}</span>
             <!-- NOT augmented, and never will be: a clip is recomputed as the
                  element turns, so a spinner is the one shape that pays for the
                  cut on every frame of its animation. -->
             <span v-if="view.busy" class="spinner" aria-hidden="true" />
-          </header>
-
-          <div class="body">
-            <p v-if="view.intro" class="intro op-copy">{{ view.intro }}</p>
-
-            <nav v-if="view.tabs.length" class="tabs">
-              <button
-                v-for="tab in view.tabs"
-                :key="tab.id"
-                type="button"
-                class="tab op-frame"
-                :class="{ 'is-on': tab.id === currentTab }"
-                data-augmented-ui="tr-clip border"
-                @click="chooseTab(tab.id)"
-              >
-                {{ tab.label }}
-              </button>
-            </nav>
-
-            <div v-if="view.summary" class="summary">
-              <div class="row op-frame" data-augmented-ui="tr-clip border">
-                <span class="row-label op-label">{{ view.summary.label }}</span>
-                <span class="row-value op-value">{{ view.summary.value }}</span>
-              </div>
-              <button
-                v-if="summaryAction"
-                type="button"
-                class="row button op-frame"
-                :class="{ 'is-off': summaryAction.disabled || view.busy }"
-                :disabled="summaryAction.disabled || view.busy"
-                data-augmented-ui="tr-clip border"
-                @click="press(summaryAction)"
-              >
-                <span class="row-label op-label">{{ summaryAction.label }}</span>
-              </button>
-            </div>
-
-            <label v-if="view.search !== false" class="field op-frame" data-augmented-ui="tr-clip border">
-              <span class="field-label op-eyebrow">{{ label('search') }}</span>
-              <input
-                class="field-entry"
-                type="text"
-                :value="query"
-                :placeholder="searchPlaceholder"
-                @input="filter(($event.target as HTMLInputElement).value)"
-              >
-            </label>
-
-            <div ref="gridEl" class="grid" :class="{ busy: view.busy }" :style="gridStyle">
-              <button
-                v-for="item in visible"
-                :key="item.id"
-                type="button"
-                class="row op-frame"
-                :class="{
-                  'is-on': item.id === chosen,
-                  'op-lift': item.id === chosen,
-                  'is-off': item.disabled || view.busy
-                }"
-                :disabled="item.disabled || view.busy"
-                data-augmented-ui="tr-clip border"
-                @click="choose(item)"
-                @mouseenter="pointAt(item.id)"
-                @mouseleave="pointAway"
-              >
-                <span class="row-label op-label">{{ item.label }}</span>
-                <span v-if="item.detail" class="row-hint op-copy">{{ item.detail }}</span>
-              </button>
-
-              <p v-if="!visible.length" class="empty op-copy">
-                {{ label(view.loading ? 'loading' : 'empty') }}
-              </p>
-            </div>
-
-            <div v-if="shown.length > pageSize" class="pager">
-              <button
-                type="button"
-                class="row button op-frame"
-                :class="{ 'is-off': page === 0 }"
-                :disabled="page === 0"
-                data-augmented-ui="tr-clip border"
-                @click="turn(-1)"
-              >
-                <span class="row-label op-label">&larr;</span>
-              </button>
-              <span class="count op-value">{{ count }}</span>
-              <button
-                type="button"
-                class="row button op-frame"
-                :class="{ 'is-off': page >= lastPage }"
-                :disabled="page >= lastPage"
-                data-augmented-ui="tr-clip border"
-                @click="turn(1)"
-              >
-                <span class="row-label op-label">&rarr;</span>
-              </button>
-            </div>
-
-            <p v-if="view.status" class="status op-copy" :class="view.status.kind">
-              {{ view.status.text }}
-            </p>
           </div>
 
-          <footer v-if="view.actions.length" class="foot">
+          <!-- WHAT IS ON THE SLOT, next to the buttons that commit it, because
+               this is the line a player reads before pressing Save. It used to
+               sit above the search field, which is where you look when you have
+               not chosen yet. -->
+          <div v-if="view.summary" class="summary">
+            <div class="plate">
+              <span class="plate-label op-eyebrow">{{ view.summary.label }}</span>
+              <span class="plate-value op-value">{{ view.summary.value }}</span>
+            </div>
             <button
-              v-for="button in view.actions"
-              :key="button.id"
-              type="button"
-              class="row button grow op-frame"
-              :class="{
-                'is-on': button.primary,
-                'is-off': button.disabled || view.busy
-              }"
-              :disabled="button.disabled || view.busy"
-              data-augmented-ui="tr-clip border"
-              @click="press(button)"
-            >
-              <span class="row-label op-label">{{ button.label }}</span>
-            </button>
-          </footer>
-        </section>
-      </div>
-
-      <div v-if="view.tools.length" class="tools">
-        <section class="panel op-bay op-arete op-ink" data-augmented-ui="tr-clip bl-clip border">
-          <div class="body">
-            <button
-              v-for="button in view.tools"
-              :key="button.id"
+              v-if="summaryAction"
               type="button"
               class="row button op-frame"
-              :class="{ 'is-off': button.disabled || view.busy }"
-              :disabled="button.disabled || view.busy"
+              :class="{ 'is-off': summaryAction.disabled || view.busy }"
+              :disabled="summaryAction.disabled || view.busy"
               data-augmented-ui="tr-clip border"
-              @click="press(button)"
+              @click="press(summaryAction)"
             >
-              <span class="row-label op-label">{{ button.label }}</span>
+              <span class="row-label op-label">{{ summaryAction.label }}</span>
             </button>
           </div>
-        </section>
+
+          <p v-if="view.status" class="status op-copy" :class="view.status.kind">
+            {{ view.status.text }}
+          </p>
+        </div>
+
+        <footer v-if="view.actions.length" class="foot">
+          <button
+            v-for="button in view.actions"
+            :key="button.id"
+            type="button"
+            class="row button grow op-frame"
+            :class="{
+              'is-on': button.primary,
+              'op-lift': button.primary && !button.disabled && !view.busy,
+              'is-off': button.disabled || view.busy
+            }"
+            :disabled="button.disabled || view.busy"
+            data-augmented-ui="tr-clip border"
+            @click="press(button)"
+          >
+            <span class="row-label op-label">{{ button.label }}</span>
+          </button>
+        </footer>
+      </div>
+    </section>
+
+    <!-- THE CAMERA, BOTTOM RIGHT, IN ONE ROW. It is the only cluster on this
+         screen that does not change what the character wears, so it is the only
+         one that belongs away from the column -- and the far corner is the one
+         place a control can sit without standing in front of the body. Hinged on
+         the right edge, so `.is-end` mirrors the lit edge to match. -->
+    <div v-if="view.tools.length" class="tools op-plane op-anchor-right op-ink">
+      <div class="tool-row op-bay op-arete is-end" data-augmented-ui="tr-clip bl-clip border">
+        <button
+          v-for="button in view.tools"
+          :key="button.id"
+          type="button"
+          class="row button tool op-frame"
+          :class="{ 'is-off': button.disabled || view.busy }"
+          :disabled="button.disabled || view.busy"
+          data-augmented-ui="tr-clip border"
+          @click="press(button)"
+        >
+          <span class="row-label op-label">{{ button.label }}</span>
+        </button>
       </div>
     </div>
 
     <div v-if="dialog" class="confirm">
-      <div class="scrim shown flat" />
-      <div class="dialog">
-        <section class="panel op-bay op-arete op-ink" data-augmented-ui="tr-clip bl-clip border">
-          <header class="head">
+      <!-- THE ONE FILL LEFT ON THIS SURFACE, and it stays. A yes-or-no question
+           over a live street is the one thing here that must not be read
+           through. It is also the one surface that takes no tilt: rotating a
+           centred plane about its middle is paper on a spindle. -->
+      <div class="scrim" />
+      <div class="dialog op-ink">
+        <section class="bay op-bay op-arete" data-augmented-ui="tr-clip bl-clip border">
+          <div class="bay-inner">
             <h2>{{ dialog.title }}</h2>
-          </header>
-          <div class="body">
             <p class="ask op-copy">{{ dialog.text }}</p>
           </div>
           <footer class="foot">
@@ -685,68 +789,175 @@ function filter(value: string): void {
   pointer-events: auto;
 }
 
-.stage {
-  position: absolute;
-  left: var(--op-inset-x);
-  top: var(--op-inset-y);
-  bottom: var(--op-inset-y);
-  right: var(--op-inset-x);
-  display: flex;
-  align-items: stretch;
-  gap: var(--op-space-3);
-}
+/* =============================================================================
+   THE TWO CLUSTERS.
 
-.drawer {
-  flex: 0 0 600px;
+   Both are positioned wrappers carrying `.op-plane`, which owns the perspective
+   and the paint containment; the anchor class only says which edge it is hinged
+   on. EVERY OFFSET PAYS THE BLEED BACK -- `.op-plane` pads by `--op-bleed` so a
+   bloom has room inside the containment, and padding moves the wrapper, so each
+   offset subtracts exactly what it added.
+   ========================================================================== */
+.column {
+  position: absolute;
+  left: calc(var(--op-inset-x) - var(--op-bleed));
+  top: calc(var(--op-inset-y) - var(--op-bleed));
+  bottom: calc(var(--op-inset-y) - var(--op-bleed));
+  /* Narrow on purpose. The drawer was 600px and the body was behind it. */
+  width: 420px;
   display: flex;
-  min-height: 0;
 }
 
 .tools {
-  flex: 0 0 200px;
+  position: absolute;
+  right: calc(var(--op-inset-x) - var(--op-bleed));
+  bottom: calc(var(--op-inset-y) - var(--op-bleed));
   display: flex;
-  align-items: flex-start;
 }
 
-.head-text {
+/* Neither cluster fades on its own: `.room` above owns the opacity and the
+   pointer for the whole surface, and a second transition on each would be two
+   curves running the same change at different speeds. */
+
+.bay {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: var(--op-space-1);
-  margin-right: auto;
+  min-height: 0;
   min-width: 0;
+  background: var(--op-plate);
 }
 
-.head-text h1 {
-  margin: 0;
-  font: 700 var(--op-fs-head) / 1 var(--op-font-display);
-  letter-spacing: var(--op-track-head);
-  text-transform: uppercase;
+/* The interlace goes on what is ENCLOSED, and it owns `::before`, which is why
+   it is an inner element rather than the bay: the bay is asking for the border
+   layer, and that is `::after`. */
+.bay-inner {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--op-space-3);
+  min-height: 0;
+  padding: var(--op-space-4);
+  padding-top: calc(var(--op-space-4) + var(--op-cut-lg));
 }
 
-.family {
-  font: 400 var(--op-fs-label) / 1 var(--op-font-mono);
+.tool-row {
+  flex: none;
+  display: flex;
+  gap: var(--op-space-2);
+  padding: var(--op-space-3);
+  padding-right: calc(var(--op-space-3) + var(--op-cut-lg));
+  background: var(--op-plate);
+}
+
+.tool {
+  flex: none;
+  min-width: 78px;
+  justify-content: center;
+}
+
+.foot {
+  display: flex;
+  gap: var(--op-space-2);
+  padding: var(--op-space-3) var(--op-space-4)
+    calc(var(--op-space-3) + var(--op-cut-lg)) var(--op-space-4);
+  border-top: 1px solid var(--op-red-idle);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--op-space-2);
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: var(--op-space-1);
+  padding: var(--op-space-2) var(--op-space-3);
+  padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
   letter-spacing: var(--op-track-label);
   text-transform: uppercase;
-  color: var(--op-text-dim);
+  cursor: pointer;
+}
+
+.mark {
+  color: var(--op-red);
 }
 
 .intro {
-  margin: 0 0 var(--op-space-2);
-  font: 400 var(--op-fs-body) / 1.35 var(--op-font-body);
+  margin: 0;
+  font: 400 var(--op-fs-meta) / 1.4 var(--op-font-body);
   color: var(--op-text-dim);
 }
 
-.summary {
+/* =============================================================================
+   THE DIAL.
+
+   The container carries the shape, as everything here does: augmented-ui needs
+   a real element and a slider's track and thumb are user-agent pseudo-elements,
+   so the frame is the box around the control and the parts inside it are drawn
+   with the tokens by hand. That is the same exception the spinner takes, for the
+   same kind of reason.
+   ========================================================================== */
+.dial {
   display: flex;
-  gap: var(--op-space-1);
+  align-items: center;
+  padding: var(--op-space-2) var(--op-space-3);
+  padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
 }
 
-.summary > *:first-child {
-  flex: 1;
+.dial-track {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: var(--op-space-5);
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
-/* The grid is the one place items are laid out two abreast. The frame around it is
-   OpPanel's; every cell inside is a plain row. */
+.dial-track:disabled {
+  cursor: default;
+}
+
+/* A 1px rule, not a filled bar: nothing on this surface is filled. */
+.dial-track::-webkit-slider-runnable-track {
+  height: 1px;
+  background: var(--op-red-idle);
+}
+
+/* The thumb is a control, so it is a closed box with the top-right corner taken
+   off -- by `clip-path` off the same cut token, because a pseudo-element cannot
+   carry `data-augmented-ui`. No literal: change `--op-cut-sm` and this follows. */
+.dial-track::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--op-space-4);
+  height: var(--op-space-5);
+  margin-top: calc(var(--op-space-5) / -2);
+  border: 2px solid var(--op-red);
+  background: var(--op-plate-lit);
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--op-cut-sm)) 0,
+    100% var(--op-cut-sm),
+    100% 100%,
+    0 100%
+  );
+}
+
+.dial-track:focus-visible::-webkit-slider-thumb {
+  border-color: var(--op-red-hi);
+}
+
+.dial-track:disabled::-webkit-slider-thumb {
+  border-color: var(--op-text-faint);
+}
+
+/* The window of names under the dial. One place items are laid out abreast; the
+   frame around it is the bay's, and every cell inside is a plain row. */
 .grid {
   display: grid;
   grid-template-columns: repeat(var(--columns, 2), minmax(0, 1fr));
@@ -771,7 +982,7 @@ function filter(value: string): void {
   color: var(--op-text-faint);
 }
 
-.pager {
+.readout {
   display: flex;
   align-items: center;
   gap: var(--op-space-2);
@@ -779,11 +990,39 @@ function filter(value: string): void {
 
 .count {
   flex: 1;
-  text-align: center;
   font: 400 var(--op-fs-label) / 1 var(--op-font-mono);
   letter-spacing: var(--op-track-label);
   color: var(--op-text-dim);
   font-variant-numeric: tabular-nums;
+}
+
+/* The chosen piece: a readout and a rule, no frame, because it is not a control.
+   The one button beside it is. */
+.summary {
+  display: flex;
+  align-items: stretch;
+  gap: var(--op-space-2);
+  padding-top: var(--op-space-2);
+  border-top: 1px solid var(--op-red-idle);
+}
+
+.plate {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--op-space-1);
+  min-width: 0;
+  justify-content: center;
+}
+
+.plate-label {
+  color: var(--op-red-idle);
+}
+
+.plate-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status {
@@ -815,6 +1054,12 @@ function filter(value: string): void {
   justify-content: center;
 }
 
+.scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--op-plate-quiet);
+}
+
 .dialog {
   position: relative;
   display: flex;
@@ -826,96 +1071,13 @@ function filter(value: string): void {
   font: 700 var(--op-fs-title) / 1.15 var(--op-font-display);
   letter-spacing: var(--op-track-head);
   text-transform: uppercase;
+  color: var(--op-red);
 }
 
 .ask {
   margin: 0;
   font: 400 var(--op-fs-body) / 1.4 var(--op-font-body);
   color: var(--op-text-dim);
-}
-
-/* =============================================================================
-   THE PIECES THIS SURFACE USED TO IMPORT.
-
-   `PanelView` was the last file on `design/components/*` -- `OpPanel`, `OpRow`,
-   `OpField`, `OpTabs`, `OpScrim` and `OpSpinner`, six shared Vue components on
-   the pass-01 idiom: filled, `--op77-accent` (which the Night City theme turned
-   yellow), and augmented through a wrapper rather than by the element that
-   needs the shape.
-
-   They are not replaced by six new shared components. Every other surface in
-   this runtime draws its own row, because a menu row, a target row, an
-   inventory cell and a panel row look alike and behave nothing alike -- one
-   shared row is what coupled five surfaces together last time, and unpicking it
-   is most of what this rebuild was. What IS shared is the design system:
-   `.op-frame`, `.op-bay`, `.op-arete`, the states, the type roles and the ink.
-   A row here is that vocabulary plus the twenty lines below that are true of a
-   panel row and of nothing else.
-   ========================================================================== */
-
-/* The wash behind the drawer. The one large fill on the surface, and the reason
-   is in the template. */
-.scrim {
-  position: absolute;
-  inset: 0;
-  background: var(--op-plate-quiet);
-  opacity: 0;
-  transition: opacity var(--op-dur) var(--op-ease);
-}
-
-.scrim.shown {
-  opacity: 1;
-}
-
-/* Under the confirm dialog: flat and immediate, because the question is already
-   on screen by the time it paints. */
-.scrim.flat {
-  opacity: 1;
-  transition: none;
-}
-
-.panel {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
-  background: var(--op-plate);
-}
-
-.head {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--op-space-3);
-  padding: var(--op-space-4) calc(var(--op-space-4) + var(--op-cut-lg))
-    var(--op-space-3) var(--op-space-4);
-  border-bottom: 1px solid var(--op-red-idle);
-}
-
-.head h2 {
-  margin: 0;
-  font: 700 var(--op-fs-title) / 1.15 var(--op-font-display);
-  letter-spacing: var(--op-track-head);
-  text-transform: uppercase;
-  color: var(--op-red);
-}
-
-.body {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: var(--op-space-3);
-  min-height: 0;
-  padding: var(--op-space-4);
-  overflow-y: auto;
-}
-
-.foot {
-  display: flex;
-  gap: var(--op-space-2);
-  padding: var(--op-space-3) var(--op-space-4)
-    calc(var(--op-space-3) + var(--op-cut-lg)) var(--op-space-4);
-  border-top: 1px solid var(--op-red-idle);
 }
 
 /* The spinner: a stroke that turns, and the one shape here that is not cut. */
@@ -935,23 +1097,15 @@ function filter(value: string): void {
   }
 }
 
-.tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--op-space-2);
-}
+/* =============================================================================
+   A ROW -- label, optional hint. The states come from `.op-frame` and nothing
+   about them is restated here.
 
-.tab {
-  padding: var(--op-space-2) var(--op-space-3);
-  padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
-  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
-  letter-spacing: var(--op-track-label);
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-/* A ROW. Label, optional hint, optional value -- the states come from
-   `.op-frame` and nothing about them is restated here. */
+   There is no shared row component and that is deliberate: a menu row, a target
+   row, an inventory cell and a panel row look alike and behave nothing alike.
+   What is shared is the vocabulary -- `.op-frame`, `.op-bay`, `.op-arete`, the
+   states, the type roles and the ink -- not the markup.
+   ========================================================================== */
 .row {
   display: flex;
   align-items: center;
@@ -983,11 +1137,6 @@ function filter(value: string): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.row-value {
-  flex: none;
-  margin-left: auto;
 }
 
 /* THE ONE FIELD. The caret is the only thing on this surface allowed to blink,

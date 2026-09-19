@@ -121,14 +121,19 @@ local function surfaceOf()
 end
 
 --- Sends a payload to a surface.
+-- Both of `OPX.Surface.Send`'s answers are forwarded, and the second is the one
+-- worth knowing about: the host bounds a WebUI payload and REFUSES an oversized
+-- one whole rather than truncating it, while the send itself still reports
+-- success. A caller that reads one value behaves exactly as it always did.
 -- @author dop42
 -- @param target string 'overlay' or 'interactive'
 -- @param channel string `<module>:<verb>`
 -- @param payload table|nil
--- @return boolean
+-- @return boolean sent
+-- @return boolean refused by the host
 function OPX.UI.Send(target, channel, payload)
 	local surface = surfaceOf(target)
-	if surface == nil then return false end
+	if surface == nil then return false, false end
 	return OPX.Surface.Send(surface, channel, payload)
 end
 

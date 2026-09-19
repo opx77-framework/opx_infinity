@@ -10,11 +10,25 @@ local SURFACE = 'interactive'
 local OWNER = 'panel'
 local CONFIRM_OWNER = 'panel.confirm'
 
--- Items one append may carry, and items one panel may hold. The batch bound is
--- a payload bound: the host discards an event carrying more than 1024 value
--- nodes and says nothing about it.
+-- Items one append may carry, and items one panel may hold.
+--
+-- MAX_APPEND IS A CALLER'S BOUND AND NOT THE WIRE'S, AND IT USED TO CLAIM TO BE
+-- BOTH. The comment here read "the batch bound is a payload bound: the host
+-- discards an event carrying more than 1024 value nodes"; the number under it
+-- was never derived from that bound and nothing in this file ever counted a
+-- node. A parsed item is eleven nodes -- the table, five keys, five values --
+-- so two hundred of them is a payload of 2407 against a ceiling of 1024, and
+-- even the fitting room's hundred-item batches came to 1207. The host refused
+-- every one of them and `WebUI.Page.send` answered false, which this module
+-- never read: the batch was reported to its caller as delivered and the clothes
+-- never arrived. See `fits`, `chunkItems` and `push`.
 local MAX_APPEND = 200
 local MAX_ITEMS = 5000
+
+-- Value nodes the host accepts in one WebUI payload. `modules/menu` counts
+-- against the same ceiling for the same reason; the counting rule is its
+-- `fitsInPayload`, and the two must not drift.
+local MAX_PAYLOAD_NODES = 1024
 
 -- Messages one panel may hold back while its open has not reached the page.
 local MAX_QUEUED = 256
@@ -86,6 +100,34 @@ local function isList(value, maximum)
 	local count = 0
 	for _ in pairs(value) do count = count + 1 end
 	return count <= maximum and count == #value
+end
+
+--- Counts a payload's value nodes the way the host counts them: the value
+--- itself, and both halves of every pair under a table.
+-- The rule is `modules/menu`'s `fitsInPayload` and the two must not drift. It
+-- stops at the ceiling, so a runaway table costs a bounded walk.
+local function countNodes(value, budget)
+	budget.nodes = budget.nodes + 1
+	if budget.nodes > budget.ceiling then return false end
+	if type(value) ~= 'table' then return true end
+	for key, nested in pairs(value) do
+		if not countNodes(key, budget) then return false end
+		if not countNodes(nested, budget) then return false end
+	end
+	return true
+end
+
+--- Whether a payload fits the host's bound, and the nodes counted getting there.
+local function fits(payload)
+	local budget = { nodes = 0, ceiling = MAX_PAYLOAD_NODES }
+	return countNodes(payload, budget), budget.nodes
+end
+
+--- What one value costs, counted whole.
+local function nodeCost(value)
+	local budget = { nodes = 0, ceiling = math.huge }
+	countNodes(value, budget)
+	return budget.nodes
 end
 
 --- Text that may be absent, answering the text or a refusal code.
@@ -284,6 +326,29 @@ local function parsePatch(patch)
 	return out
 end
 
+--- Splits a parsed batch into sends the host will accept, one at least.
+-- Sized by counting rather than by a constant, because an item is five optional
+-- fields: a batch of bare ids fits several times as many as a batch carrying a
+-- detail line each, and a constant chosen for one of those is quietly wrong for
+-- the other. An empty batch answers one empty chunk, which is how a caller with
+-- nothing to add still gets to say `done`.
+local function chunkItems(parsed)
+	local room = MAX_PAYLOAD_NODES - nodeCost({ handle = 0, items = {}, done = false })
+	local chunks, current, used = {}, {}, 0
+	for index = 1, #parsed do
+		-- Plus the array index the item sits under, which is a node of its own.
+		local cost = nodeCost(parsed[index]) + 1
+		if #current > 0 and used + cost > room then
+			chunks[#chunks + 1] = current
+			current, used = {}, 0
+		end
+		current[#current + 1] = parsed[index]
+		used = used + cost
+	end
+	chunks[#chunks + 1] = current
+	return chunks
+end
+
 --- Parses a batch of items, or refuses it for any malformed one.
 local function parseItems(items)
 	if not isList(items, MAX_APPEND) then return nil, 'invalid_items' end
@@ -330,10 +395,38 @@ end
 --- Sends one message for the open panel, holding it back until the open lands.
 -- Items arrive in batches and a lost batch is a row the player never sees, so a
 -- message sent into the gap is queued rather than dropped.
+--
+-- THE SIZE IS CHECKED BEFORE THE SEND, not after, because after is too late to
+-- do anything about: the host refuses an oversized payload whole and
+-- `OPX.Surface.Send` still answers that it sent it. Everything this module puts
+-- on the wire goes through here, so this is the one place that can be sure.
+-- @return boolean
+-- @return string|nil the refusal
 local function push(channel, payload)
-	if record == nil then return false end
+	if record == nil then return false, 'no_panel_open' end
+
+	local within, nodes = fits(payload)
+	if not within then
+		Open77.log.error(('[panel] %s: %s came to %d+ value nodes against a host bound of %d; ' ..
+			'not sent'):format(record.owner, channel, nodes, MAX_PAYLOAD_NODES))
+		return false, 'payload_too_large'
+	end
+
 	flush()
-	if not pendingOpen then return OPX.UI.Send(SURFACE, channel, payload) end
+	if not pendingOpen then
+		local sent, refused = OPX.UI.Send(SURFACE, channel, payload)
+		-- The count above is this module's MODEL of the host's rule. A refusal
+		-- that got past it means the model is wrong, and this line is the only
+		-- way anybody would find out -- the symptom on the page is a surface that
+		-- simply never changes.
+		if refused then
+			Open77.log.error(('[panel] %s: the host refused %s although it counted %d nodes; ' ..
+				'MAX_PAYLOAD_NODES is wrong'):format(record.owner, channel, nodes))
+			return false, 'payload_refused'
+		end
+		if not sent then return false, 'page_not_ready' end
+		return true
+	end
 
 	local waiting = record.queued
 	if #waiting >= MAX_QUEUED then
@@ -342,7 +435,7 @@ local function push(channel, payload)
 			Open77.log.error(('[panel] %s wrote %d messages before the page was ready')
 				:format(record.owner, MAX_QUEUED))
 		end
-		return false
+		return false, 'queue_full'
 	end
 	waiting[#waiting + 1] = { channel = channel, payload = payload }
 	return true
@@ -434,6 +527,15 @@ local function Open(spec)
 	local view, reason = buildView(spec)
 	if view == nil then return Result.Err(reason) end
 
+	-- THE OPEN IS NOT COUNTED, AND THAT IS AN ARGUMENT RATHER THAN AN OVERSIGHT.
+	-- `buildView` bounds every field it accepts -- twelve tabs, four actions,
+	-- eight tools, sixty-four choices, six labels, and every string cut to a
+	-- character count -- which puts the largest spec this module will build at
+	-- something under five hundred value nodes. A check here could not fire, and
+	-- a refusal nothing can reach is a branch a reader has to disprove. Only
+	-- `panel:items` is unbounded by its parser, and that is where the counting
+	-- is: see `push` and `chunkItems`.
+
 	if record ~= nil then
 		closeNow(record.handle, record.owner == owner and 'reopened' or 'superseded')
 	end
@@ -506,7 +608,8 @@ local function Update(handle, patch)
 	end
 
 	parsed.handle = panel.handle
-	if not push('panel:update', parsed) then return Result.Err('page_not_ready') end
+	local sent, refused = push('panel:update', parsed)
+	if not sent then return Result.Err(refused or 'page_not_ready') end
 	return Result.Ok(true)
 end
 
@@ -529,8 +632,20 @@ local function Append(handle, items, done)
 		panel.items[item.id] = item.tab or ''
 	end
 	if done == true then panel.view.loading = false end
-	if not push('panel:items', { handle = panel.handle, items = parsed, done = done == true }) then
-		return Result.Err('page_not_ready')
+
+	-- ONE APPEND IS AS MANY SENDS AS THE HOST NEEDS, and `done` rides the last.
+	-- Refusing an oversized batch back at the caller was the other option and it
+	-- is the wrong one: a caller cannot compute this bound without knowing how
+	-- this module parses an item, and the fitting room -- which does not, and
+	-- should not -- is the whole reason the defect existed.
+	local chunks = chunkItems(parsed)
+	for index = 1, #chunks do
+		local last = index == #chunks
+		local sent, refused = push('panel:items',
+			{ handle = panel.handle, items = chunks[index], done = last and done == true })
+		-- A batch that failed part way has already put rows on the page, and the
+		-- caller is told so it can decide; this module cannot un-send them.
+		if not sent then return Result.Err(refused or 'page_not_ready') end
 	end
 	return Result.Ok(true)
 end
@@ -568,7 +683,8 @@ local function Confirm(handle, question)
 	end
 
 	panel.dialog = question.id
-	if not push('panel:confirm', shown) then return Result.Err('page_not_ready') end
+	local sent, refused = push('panel:confirm', shown)
+	if not sent then return Result.Err(refused or 'page_not_ready') end
 	return Result.Ok(true)
 end
 
