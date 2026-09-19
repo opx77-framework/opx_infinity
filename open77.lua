@@ -317,6 +317,31 @@ client_script "modules/admin/client/target.lua"
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
 
+-- Server-provided loading screen (FiveM-style). The client renders this page from
+-- this resource's verified pack files, in a sandboxed surface over the built-in
+-- cover, for the whole of the join -- so this server shows its own screen with its
+-- own film on it. It runs before any Lua in this resource does and is driven only by
+-- the progress events the client forwards to it.
+--
+-- THE FILM HAS TO BE A WEBM, AND THAT IS NOT A PREFERENCE. The browser this page runs
+-- in (CEF) carries Chromium's free codec set only: no H.264 and no AAC. An MP4 handed
+-- to it demuxes and then dies with `DEMUXER_ERROR_NO_SUPPORTED_STREAMS`, which is the
+-- demuxer saying the container is fine and no stream in it is playable -- so neither
+-- `canPlayType` nor the filename is any guide. VP8/VP9/AV1 plus Opus/Vorbis is what
+-- plays, and the page's poster and gradient cover for a clip that cannot.
+--
+-- `web/**` IS ALSO SIZED. scripting/src/ResourceHost.cpp refuses any web file over
+-- 16 MiB with `invalid_web_file:<name>`, and that fails the WHOLE RESOURCE rather than
+-- the one file -- an oversized video would not just lose the screen, it would stop this
+-- resource loading at all. Both limits are checked by byte count and never trusted.
+--
+-- THE CLIENT PICKS THE FIRST RESOURCE THAT DECLARES ONE, BY DIRECTORY NAME, so a
+-- world that also ships a resource sorting earlier than `opx_infinity` -- anything
+-- named `open77_*`, `opx_*`, or `a*` -- supplies the screen instead of this one.
+-- Both pages are valid; the losing one is simply never mounted. `web/**` above
+-- already ships the page and its video.
+loadscreen "web/loading.html"
+
 web_ui_page "web/index.html"
 web_ui_auto_create false
 web_files { "web/**" }
