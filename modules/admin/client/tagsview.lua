@@ -74,10 +74,7 @@ local localTick, localJob = nil, nil
 local function warnOnce(key, message)
 	if reported[key] then return end
 	reported[key] = true
-	Open77.log.warn('[admin] ' .. message)
-	local diagnostics = OPX.Modules.Get('diagnostics')
-	local channel = type(diagnostics) == 'table' and diagnostics.PAGE or nil
-	if channel ~= nil then pcall(TriggerServerEvent, channel, '[admin] ' .. message) end
+	M.Client.Journal(message)
 end
 
 --- Whether this client build has the anchor backend at all.

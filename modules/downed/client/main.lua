@@ -139,6 +139,7 @@ local function apply(payload)
 	end
 
 	draw()
+	if state.down ~= wasDown then OPX.Toast.SetDown(state.down) end
 	if state.down ~= wasDown or state.waiting ~= wasWaiting then
 		TriggerEvent(EVENT_CHANGED, { down = state.down, waiting = state.waiting })
 	end
@@ -278,6 +279,9 @@ end
 function M.Stop()
 	release()
 	hideVanillaHud(false)
-	if state.down then TriggerEvent(EVENT_CHANGED, { down = false, waiting = false }) end
+	if state.down then
+		OPX.Toast.SetDown(false)
+		TriggerEvent(EVENT_CHANGED, { down = false, waiting = false })
+	end
 	state.down, state.waiting = false, false
 end

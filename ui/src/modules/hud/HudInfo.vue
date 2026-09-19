@@ -116,21 +116,21 @@ useBridge('opx:hud:info', (payload: Payload) => {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   min-width: 0;
   /* NO GROUND. A plate went here and came straight back off on the owner's word.
      The argument for it -- that money and identity are looked AT rather than
      glanced at -- was a reason to fill the one HUD block that had padding ready,
      and the answer in game was that it made a panel of the HUD's corner. The ink
      shadow on `.hud` carries these lines, as it carries the other four blocks. */
-  padding: var(--op77-space-3) calc(var(--op77-space-3) + var(--op77-cut-lg))
-    calc(var(--op77-space-3) + var(--op77-cut-lg) * 0.5) calc(var(--op77-space-3) + var(--op77-rule));
+  padding: var(--op-space-3) calc(var(--op-space-3) + var(--op-cut-lg))
+    calc(var(--op-space-3) + var(--op-cut-lg) * 0.5) calc(var(--op-space-3) + var(--op-rule));
 }
 
 .to-end .inner {
-  padding: var(--op77-space-3) calc(var(--op77-space-3) + var(--op77-rule))
-    calc(var(--op77-space-3) + var(--op77-cut-lg) * 0.5)
-    calc(var(--op77-space-3) + var(--op77-cut-lg));
+  padding: var(--op-space-3) calc(var(--op-space-3) + var(--op-rule))
+    calc(var(--op-space-3) + var(--op-cut-lg) * 0.5)
+    calc(var(--op-space-3) + var(--op-cut-lg));
 }
 
 /* THE INTERLACE. One static gradient on a pseudo-element nothing else was using,
@@ -147,9 +147,9 @@ useBridge('opx:hud:info', (payload: Payload) => {
 .line {
   display: flex;
   align-items: baseline;
-  gap: var(--op77-space-3);
-  font: 400 var(--op77-fs-meta) / 1.3 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  gap: var(--op-space-3);
+  font: 400 var(--op-fs-meta) / 1.3 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -161,14 +161,14 @@ useBridge('opx:hud:info', (payload: Payload) => {
 }
 
 .label {
-  color: var(--red-idle);
+  color: var(--op-red-idle);
 }
 
 .value {
   margin-left: auto;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--red);
+  color: var(--op-red);
 }
 
 /* --- THE TONES -----------------------------------------------------------
@@ -181,19 +181,19 @@ useBridge('opx:hud:info', (payload: Payload) => {
    700. See HudRoot.vue: red is the voice of this HUD, so it cannot be the
    alarm as well. */
 .on .value {
-  color: var(--red);
+  color: var(--op-red);
   text-shadow:
     0 1px 2px rgba(0, 0, 0, 0.95),
     0 0 9px rgba(0, 0, 0, 0.8),
-    0 0 10px var(--red-glow);
+    0 0 10px var(--op-red-glow);
 }
 
 .warn .value {
-  color: var(--red-hi);
+  color: var(--op-red-hi);
 }
 
 .bad .value {
-  color: var(--alarm);
+  color: var(--op-alarm);
   font-weight: 700;
 }
 

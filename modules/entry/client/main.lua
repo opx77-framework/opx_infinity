@@ -72,6 +72,25 @@ local sentAtMs = 0
 local draft = { firstName = '', lastName = '' }
 local refusal
 
+-- Whether the appearance module still owes this character a fitting room.
+--
+-- THE THIRD THING A NEW CHARACTER ANSWERS FOR, and the reason it is held here
+-- rather than in the module that owns it. This module is already what speaks for
+-- "the player is still being asked something": it raises `M.Event.ON_STATE`, and
+-- the spawn menu stands aside for the whole time that says open, because two
+-- modals on one keyboard is one modal losing its focus. The clothes are a third
+-- modal on the same keyboard at the same instant, so they belong in the same
+-- answer -- which is all this flag does. Nothing here opens a fitting room or
+-- decides whether one is owed: `WARDROBE.OFFER_POLICY` decides that, the
+-- appearance module acts on it, and this listens.
+--
+-- The ORDER falls out of it. The name form takes the keyboard, so the appearance
+-- module's own retry loop cannot open the room until the form is answered; the
+-- room then reports itself through here, so the spawn menu cannot open until the
+-- room is closed. Name, then clothes, then where you land -- held by two modules
+-- each standing aside for the one in front, and by nothing else.
+local wardrobeOwed = false
+
 -- Milliseconds before a form that was cancelled, or refused, is offered again.
 local RETRY_MS = 1500
 
@@ -87,7 +106,12 @@ local CREATION_RETRY_MS = 2000
 local SENT_WAIT_MS = 8000
 
 --- Announces what this module is waiting for, on the public local bus.
+-- A nil `what` means "nothing of MINE is up", which is not the same as idle: a
+-- fitting room still owed is the join still asking, so it is resolved here
+-- rather than at each of the five call sites -- every one of which would
+-- otherwise have to remember the third question exists.
 local function announce(what)
+	if what == nil and wardrobeOwed then what = 'wardrobe' end
 	TriggerEvent(M.Event.ON_STATE, { open = what ~= nil, phase = what or 'idle' })
 end
 
@@ -129,6 +153,23 @@ end
 --- Records that a character is owed a body and a face, or that it no longer is.
 local function onAppearance(payload)
 	if type(payload) ~= 'table' then return end
+
+	-- THE FITTING ROOM'S CLAIM. One event carrying both states, because what is
+	-- held here is a boolean and a pair of event names would have to be kept in
+	-- step by whoever read them. `ok` is true from the moment the appearance
+	-- module decides a room is coming -- before it can open one, which is the
+	-- gap that matters: the room is refused while the name form holds the
+	-- keyboard, and the spawn menu would otherwise walk into that gap.
+	if payload.event == 'wardrobeWanted' then
+		local owed = payload.ok == true
+		if wardrobeOwed == owed then return end
+		wardrobeOwed = owed
+		-- Only when nothing of this module's own is on screen. A form up now is
+		-- still the honest answer, and re-announcing under it would say the join
+		-- had moved on to the clothes while the player was typing a name.
+		if naming == nil and not creating then announce(nil) end
+		return
+	end
 
 	if payload.event == 'created' or payload.event == 'settled' then
 		creationAsked, creating = false, false
@@ -307,6 +348,9 @@ local function onLoaded(playerData)
 	creationAsked, creating, creationRetryAtMs = false, false, 0
 	draft.firstName, draft.lastName = '', ''
 	refusal, retryAtMs, sentAtMs = nil, 0, 0
+	-- The claim belongs to the character that left. The appearance module raises
+	-- its own for this one, and until it does the join is not waiting on clothes.
+	wardrobeOwed = false
 end
 
 --- Forgets the character that left, and the question it had not answered.
@@ -315,6 +359,11 @@ local function onUnloaded()
 	creationAsked, creating, creationRetryAtMs = false, false, 0
 	refusal, retryAtMs, sentAtMs = nil, 0, 0
 	draft.firstName, draft.lastName = '', ''
+	-- Cleared before the announce below, so the join is reported IDLE rather than
+	-- still waiting on a fitting room for a character that has gone. A claim left
+	-- standing here is the one failure that costs a player their spawn choice
+	-- without anything going wrong anywhere: the menu would stand aside for ever.
+	wardrobeOwed = false
 	if naming ~= nil and Form ~= nil and type(Form.Close) == 'function' then
 		pcall(Form.Close, naming)
 	end
@@ -333,6 +382,10 @@ local function state()
 		creating = creating,
 		naming = naming ~= nil,
 		named = citizenId ~= nil and Character.IsNamed() or false,
+		-- Not this module's to answer for, and reported anyway: this is the
+		-- contract for "what is the join still waiting on", and the clothes are
+		-- part of that answer whoever owns them.
+		wardrobe = wardrobeOwed,
 	})
 end
 
@@ -369,6 +422,7 @@ function M.Init()
 	creationAsked, creating, running = false, false, false
 	retryAtMs, creationRetryAtMs, sentAtMs = 0, 0, 0
 	draft = { firstName = '', lastName = '' }
+	wardrobeOwed = false
 end
 
 --- Publishes what this module knows and what it can be asked to redo.

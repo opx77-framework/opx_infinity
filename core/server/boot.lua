@@ -94,5 +94,8 @@ end)
 
 AddEventHandler(OPX.Host.RESOURCE_STOP, function(name)
 	if name ~= GetCurrentResourceName() then return end
+	-- Jobs first: a sweep that woke between here and the last module's `Stop`
+	-- would run against state that is being torn down.
+	OPX.Scheduler.Stop()
 	OPX.Modules.Stop()
 end)

@@ -69,6 +69,27 @@ M.Event = {
 	IN_MONEY = OPX.Event(INTERNAL, 'character', 'money'),
 	IN_JOB = OPX.Event(INTERNAL, 'character', 'job'),
 	IN_GANG = OPX.Event(INTERNAL, 'character', 'gang'),
+	-- `(source, citizenId)`. THE CASCADE, AND THE ONLY ONE THERE IS.
+	--
+	-- Every table keyed on a citizen id carries `ON DELETE CASCADE` onto
+	-- `opx77_characters` and NOT ONE OF THEM HAS EVER FIRED on a player deleting
+	-- a character, because the delete is SOFT: `deleted_at` is stamped and the
+	-- row stays, so the slot is freed without losing the history, and a cascade
+	-- fires for a DELETE and never for an UPDATE. The foreign keys are correct
+	-- and they answer a different question -- what happens if a row is really
+	-- removed, which only the rollback of a failed create ever does.
+	--
+	-- So this is what removes a deleted character's clothes, needs, down row,
+	-- containers and cars, and each of those modules answers for its OWN tables:
+	-- a list of table names in one module's config -- which is what
+	-- `CHARACTERS.CASCADE_TABLES` is, and it ships empty -- is a list somebody
+	-- has to remember to extend every time a module gains a table, and the one
+	-- that was forgotten leaves rows nothing will ever read again and nothing
+	-- will ever find.
+	--
+	-- Raised INSIDE the deleting coroutine, so a handler may yield and the purge
+	-- has finished before the player is told. It is raised after the row is
+	-- stamped, so a handler that reads the character back sees it gone.
 	IN_DELETED = OPX.Event(INTERNAL, 'character', 'deleted'),
 	IN_PAYCHECK = OPX.Event(INTERNAL, 'character', 'paycheck'),
 }
@@ -103,6 +124,65 @@ function M.ValidateName(value)
 		max = bounds.MAX,
 		pattern = M.NAME_PATTERN,
 	})
+end
+
+--- The two ways `opx.select` can move an account onto another character.
+-- @author dop42
+--
+-- A CLOSED SET, NAMED HERE RATHER THAN SPELLED OUT AT THE COMPARISON, the same
+-- shape `spawn.Policy` is and for the same reason: the server branches on these
+-- strings, the suite asserts against them and the operator types one into
+-- `config/character.lua`.
+--
+-- THE DIFFERENCE BETWEEN THEM IS NOT A PREFERENCE, and neither covers
+-- `opx.create`. A NEW character has no body, so it needs the game's own
+-- character creator -- and that creator is drawn by the game's MAIN MENU, for
+-- the character-bootstrap transaction, which is spent before the world exists.
+-- Measured in game on 2026-09-17 against 2.31.13+op77.81: resetting the
+-- bootstrap mid-session does arm a fresh transaction and the creator request IS
+-- granted, but no creator is ever drawn -- the shell takes the world down for a
+-- bootstrap it now expects answered and the player sits under the loading cover
+-- until they kill the connection. The platform has `Open77.network.disconnect`
+-- and no reconnect, so there is no soft path to offer either. `opx.create`
+-- therefore ends the session whatever this says, and always will.
+--
+-- An EXISTING character is a different question, because it needs no creator:
+-- it needs the right body, which is a body reload the appearance module already
+-- performs on its own whenever the loaded character's family differs from the
+-- one in play (`ensureFamily`). That is what makes `relog` possible at all.
+M.Switch = {
+	-- Take the other character here, in the world, with no disconnect: save the
+	-- one being left, load the other, place it, and let the client reload the
+	-- body, the face and the clothes onto it. The whole of this already existed
+	-- as `M.SelectCharacter`; it simply had nothing calling it.
+	RELOG = 'relog',
+	-- Move the lock and end the session, so the next connection arrives on the
+	-- new character. What this module did before the setting existed, and still
+	-- the honest fallback: a relog that is refused for any reason falls back to
+	-- it rather than leaving the player on a character they asked to leave.
+	RECONNECT = 'reconnect',
+}
+
+--- What an unreadable `CHARACTERS.SWITCH` falls back to.
+-- RECONNECT, because it is what this module did before the setting existed: a
+-- fallback that changed behaviour would make a typo in the configuration look
+-- like a feature somebody had asked for.
+M.SWITCH_DEFAULT = M.Switch.RECONNECT
+
+--- Whether a value is one of the two switch modes.
+-- Answers the value itself rather than a boolean, so a caller reads
+-- `M.KnownSwitch(raw) or M.SWITCH_DEFAULT` in one line -- but the refusal is
+-- still the caller's to journal, because a warning belongs where it can be said
+-- once at start rather than on every switch.
+-- @author dop42
+-- @param value any
+-- @return string|nil
+function M.KnownSwitch(value)
+	if type(value) ~= 'string' then return nil end
+	for _, known in pairs(M.Switch) do
+		if value == known then return known end
+	end
+	return nil
 end
 
 --- Reads a configured number with a floor.

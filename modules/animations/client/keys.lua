@@ -17,7 +17,7 @@ local registered = {}
 local listeners = {}
 
 -- Whether another surface holds the keyboard: the chat box, a form, the pause
--- menu. Kept module-local rather than folded into `OPX.Keys.IsCaptured`, which
+-- menu. Kept module-local rather than folded into `OPX.Lib.Input.IsCaptured`, which
 -- answers captured when the read itself raises where this answers free.
 local function captured()
 	local input = Open77.input
@@ -69,7 +69,7 @@ end
 function Keys.Effective(id)
 	local known = registered[id]
 	if known == nil then return nil end
-	return OPX.Keys.KeyFor(id) or known
+	return OPX.Lib.Input.KeyFor(id) or known
 end
 
 --- Runs a function whenever a player rebinds or resets a mapping.

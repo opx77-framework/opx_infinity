@@ -526,6 +526,23 @@ function M.Start()
 	Requests.Wire()
 	Commands.Register()
 
+	-- A DELETED CHARACTER TAKES ITS CONTAINERS WITH IT, and their stacks with
+	-- them: the item rows really do cascade off `inventory_id`, and this is a real
+	-- DELETE on the parent, so that one fires. The cascade that does NOT fire is
+	-- the one from the character table, because a character delete is a soft one.
+	-- Left to it, every bag, every trunk and every glovebox of a deleted character
+	-- stayed, full, owned by a citizen id nothing can log in as. See
+	-- `character.Event.IN_DELETED`.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'),
+		function(_, citizenId)
+			if type(citizenId) ~= 'string' or citizenId == '' then return end
+			local purged = M.Storage.PurgeCharacter(citizenId)
+			if purged ~= nil and not purged.ok then
+				Open77.log.warn(('[inventory] the containers of the deleted %s were not ' ..
+					'removed: %s'):format(citizenId, tostring(purged.detail or purged.error)))
+			end
+		end)
+
 	Open77.log.info(('[inventory] ready: %d item(s), %d stash(es), bag %d slots / %d g')
 		:format(#Catalog.Names(), #Options.STASH_LIST, Options.BAG_SLOTS, Options.BAG_MAX_WEIGHT))
 

@@ -184,7 +184,7 @@ end
 -- rebind reaches the strip without a call from the caller.
 local function capText(cap)
 	if cap.literal ~= nil then return keyLabel(cap.literal) end
-	local key = OPX.Keys.KeyFor(cap.action) or cap.fallback
+	local key = OPX.Lib.Input.KeyFor(cap.action) or cap.fallback
 	if key == nil then return nil end
 	return keyLabel(key)
 end
@@ -653,7 +653,7 @@ end
 --- Whether another surface holds the keyboard.
 local function keyboardTaken()
 	if not settings.hideWhenCaptured then return false end
-	return OPX.Keys.IsCaptured()
+	return OPX.Lib.Input.IsCaptured()
 end
 
 --- Takes the strip down while the player is down, or back up. No group moves.

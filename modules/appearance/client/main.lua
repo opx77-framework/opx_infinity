@@ -1155,6 +1155,11 @@ function M.Contract.State()
 	report.body = unavailable and nil or Runtime.BodyFamily()
 	report.panel = M.Panel.IsOpen()
 	report.wardrobe = M.Wardrobe.IsOpen()
+	-- Not the same question, and the difference is the one a "why is the spawn
+	-- menu not up" report needs: a room that is OWED but not open is a join still
+	-- waiting, which is invisible in every other field here.
+	report.wardrobeOwed = M.Wardrobe.Owed()
+	report.wardrobePolicy = M.WardrobeOffer
 	report.clothing = M.Clothing.Report()
 	report.available = not unavailable
 	return Result.Ok(report)
@@ -1244,6 +1249,13 @@ function M.Init()
 	State.Reset()
 	M.Clothing.Init()
 	M.Presence.Init()
+
+	-- WHICH WORLD ENTERS ARE HANDED THE FITTING ROOM, settled once here rather
+	-- than read at the point of use. `M.ResolveWardrobePolicy` says why it lives
+	-- in the shared file; what belongs here is the timing -- a typo is named in
+	-- the block an operator scans after editing a config, not in the middle of
+	-- every join's own log lines.
+	M.WardrobeOffer = M.ResolveWardrobePolicy()
 end
 
 --- Publishes the contract. Nothing may read one before this phase ends.
@@ -1284,6 +1296,15 @@ end
 -- and every scheduler pass would raise on the first tick and be suspended. The
 -- module still starts and still answers its contract -- with a refusal.
 function M.Start()
+	-- BEFORE THE NATIVE CHECK, and deliberately. The view bridge calls no native
+	-- and reads nothing this check guards: it is two contract lookups and one
+	-- handler on a local bus. Attaching it first is what guarantees it is
+	-- listening before anything can publish, which is the same ordering
+	-- `chat/client/view.lua` documents -- and on a client with no appearance API
+	-- nothing ever publishes, so the placement costs one handler and two log
+	-- lines there.
+	M.View.Start()
+
 	if type(Open77.appearance) ~= 'table' or type(Open77.session) ~= 'table' or
 		type(Open77.character) ~= 'table' then
 		unavailable = true
@@ -1332,7 +1353,17 @@ function M.Start()
 
 	OPX.Scheduler.Every('appearance.wardrobe', 250, function()
 		M.Wardrobe.Check()
+		-- After it, and never before: this is where a view that could not be
+		-- drawn answers the state half, and the answer closes a room the pass
+		-- above may have only just opened.
+		M.View.Check()
 	end)
+
+	-- WHICH WORLD ENTERS ARE HANDED THE ROOM, said on every start rather than
+	-- only on the unusual values. It is the first thing anybody debugging "the
+	-- fitting room did not appear" needs, and a policy visible only by its
+	-- absence from the journal is a policy nobody can confirm is theirs.
+	Open77.log.info(('[appearance] WARDROBE.OFFER_POLICY is %s'):format(tostring(M.WardrobeOffer)))
 end
 
 --- Releases the native transaction and takes both views down.
@@ -1342,6 +1373,10 @@ end
 -- until the player closes it. The transaction is released and the state forgets
 -- the edit, so its confirmation stores nothing.
 function M.Stop()
+	-- Outside the availability guard, like `M.View.Start` above it and for the
+	-- same reason: whatever this bridge put up has to come down whether or not
+	-- the native half ever ran.
+	M.View.Stop()
 	if unavailable then return end
 	M.Wardrobe.Close('stopped')
 	M.Panel.Close('stopped')

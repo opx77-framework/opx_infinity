@@ -3,8 +3,11 @@
 --
 -- Data, and nothing else: `shared/catalog.lua` normalises every row once at load
 -- and a malformed row becomes a boot warning rather than an error in the middle
--- of a request. MODEL is optional and draws a pile made for that item -- an
--- `Open77.props` alias, or a raw `base\...\name.mesh` path.
+-- of a request. MODEL is optional and draws a pile made for that item, and it is
+-- a CURATED `Open77.props` alias. NOT a depot path: the API accepts a raw
+-- `.mesh`, but the renderer matches a prebuilt host per alias, so the mesh draws
+-- as a marker AND suppresses the crate fallback -- an id came back, so nothing
+-- looks wrong anywhere. `shared/catalog.lua` refuses one at load.
 
 local M = OPX.Modules.Get('inventory')
 

@@ -155,23 +155,16 @@ function Doors.Register()
 		return
 	end
 
-	-- `OPX.Scheduler` is the client's loop; the server VM has none. A player who
-	-- moves between buckets has to be given that bucket's list, and there is no
-	-- host event for a bucket change, so this is a poll.
+	-- A player who moves between buckets has to be given that bucket's list, and
+	-- there is no host event for a bucket change, so this is a poll.
 	local sweepMs = math.floor(M.Bounded('DOORS.SWEEP_MS', M.Section('DOORS').SWEEP_MS,
 		250, 60000, 2000))
-	CreateThread(function()
-		while true do
-			Wait(sweepMs)
-			local swept, failure = pcall(function()
-				for _, playerId in ipairs(Server.PlayerIds()) do
-					local position = Server.PositionOf(playerId)
-					if position and sentBucket[playerId] ~= position.bucket then
-						pushAll(playerId, position.bucket)
-					end
-				end
-			end)
-			if not swept then Open77.log.warn('[admin] door sweep failed: ' .. tostring(failure)) end
+	OPX.Scheduler.Every('admin:door-sweep', sweepMs, function()
+		for _, playerId in ipairs(Server.PlayerIds()) do
+			local position = Server.PositionOf(playerId)
+			if position and sentBucket[playerId] ~= position.bucket then
+				pushAll(playerId, position.bucket)
+			end
 		end
 	end)
 end

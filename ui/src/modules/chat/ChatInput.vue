@@ -518,7 +518,12 @@ onUnmounted(() => {
     :class="anchor"
     :style="{ '--chat-offset': `${offset}px`, '--chat-width': `${width}px` }"
   >
-    <ul v-if="matches.length > 0" class="chat-suggestions" :class="{ 'is-signature': signature }">
+    <ul
+      v-if="matches.length > 0"
+      class="chat-suggestions op-frame"
+      :class="{ 'is-signature': signature }"
+      data-augmented-ui="tr-clip border"
+    >
       <li
         v-for="(entry, index) in matches"
         :key="entry.name"
@@ -547,7 +552,7 @@ onUnmounted(() => {
          rather than `OpKeyCap` because that component fills its plate with
          `--op77-accent`, which pass 02 forbids and `.op-theme-city` turns
          yellow; every pass-02 surface draws its own for the same reason. -->
-    <div class="chat-field">
+    <div class="chat-field op-frame op-arete op-lift" data-augmented-ui="tr-clip border">
       <span class="chat-caret" aria-hidden="true">&gt;</span>
       <input
         ref="field"
@@ -565,9 +570,9 @@ onUnmounted(() => {
            `212/240`: a budget is read when it starts to bind, not before. -->
       <span v-if="crowded" class="chat-count">{{ maxLength - draft.length }}</span>
       <span class="chat-hints">
-        <kbd v-if="matches.length > 0" class="cap">Tab</kbd>
-        <kbd class="cap">Enter</kbd>
-        <kbd class="cap">Esc</kbd>
+        <kbd v-if="matches.length > 0" class="cap op-cap" data-augmented-ui="tr-clip border">Tab</kbd>
+        <kbd class="cap op-cap" data-augmented-ui="tr-clip border">Enter</kbd>
+        <kbd class="cap op-cap" data-augmented-ui="tr-clip border">Esc</kbd>
       </span>
     </div>
   </div>
@@ -591,47 +596,20 @@ onUnmounted(() => {
    neighbouring reason, and the first version of this file leaned at 7deg and was
    rejected on sight.
 
-   THE FRAME IS `border-image`, NOT `clip-path`. A clip cuts the painted result,
-   so a bordered box under one loses its stroke along the diagonal and the
-   chamfer arrives as a GAP rather than a cut corner. A state change swaps
-   `border-image-source` -- one property -- and the geometry never distorts with
-   the element's width, which matters here because the box is as wide as the
-   operator configured it.
+   THE FRAME IS AUGMENTED-UI, like every other frame in the runtime. The field,
+   the suggestion list and the three keycaps are one attribute each; the state
+   is `--aug-border-bg`, and the geometry never distorts with the element's
+   width, which matters here because the box is as wide as the operator
+   configured it.
    ========================================================================== */
 
 .chat-input {
-  /* --- THE RED, verbatim from HudRoot.vue -----------------------------------
-     Repeated rather than imported: see the same block in `ChatLog.vue`. The two
-     halves are separate registrations on separate layers and share no ancestor. */
-  --red:      #ff3b47;                    /* lit: holding the keyboard        */
-  --red-deep: #c8202e;                    /* denser: the middle rung          */
-  --red-idle: rgba(232, 67, 79, 0.62);    /* at rest                          */
-  --red-hi:   #ff6b78;                    /* the lit arete                    */
-  --red-glow: rgba(255, 59, 71, 0.55);
-
-  /* The lettering red. Sits below `--red` on purpose: a full-strength stroke is
-     right for a 1px frame and too hot for a line of running text, which is read
-     rather than glanced at. Same value the inventory uses for its resting
-     lettering. */
-  --red-text: #e8646d;
-
-  /* 24x24, 8px corner tiles, the chamfer living entirely inside the top-right
-     tile so stretching an edge can never skew it. Copied from MenuView.vue. */
-  --frame-idle: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.92" stroke="%23e8434f" stroke-opacity="0.7" stroke-width="1.4"/></svg>');
-  --frame-live: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.92" stroke="%23ff3b47" stroke-width="2"/></svg>');
-
-  /* A border-image cannot take a shadow, so the black under a frame is a soft
-     OUTSET one on the box -- rectangular where the frame is chamfered, which at
-     this blur and alpha reads as the corner darkening rather than a second
-     shape. */
-  --chat-shadow: 0 1px 7px rgba(0, 0, 0, 0.55);
-
   position: absolute;
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   width: var(--chat-width);
-  max-width: calc(100vw - var(--op77-inset-x) * 2);
+  max-width: calc(100vw - var(--op-inset-x) * 2);
 
   /* NO PERSPECTIVE, AND NO TILT ON ANYTHING BELOW. Pass 02 leans a surface about
      the screen edge it is anchored to, and that is right for a HUD cluster read
@@ -647,8 +625,8 @@ onUnmounted(() => {
 }
 
 .anchor-bottom-left {
-  left: var(--op77-inset-x);
-  bottom: calc(var(--chat-offset) - var(--op77-space-6));
+  left: var(--op-inset-x);
+  bottom: calc(var(--chat-offset) - var(--op-space-6));
 }
 
 /* Centred on the screen's axis rather than pinned to the left inset, so the box
@@ -657,7 +635,7 @@ onUnmounted(() => {
 .anchor-bottom-center {
   left: 50%;
   transform: translateX(-50%);
-  bottom: calc(var(--chat-offset) - var(--op77-space-6));
+  bottom: calc(var(--chat-offset) - var(--op-space-6));
 }
 
 /* AT THE TOP THE INPUT LINE SITS ON THE OFFSET ITSELF and the log is pushed
@@ -666,7 +644,7 @@ onUnmounted(() => {
    `offset - space-6`, log at `offset`) puts a 40px-tall row at 16px and the log
    at 48px, and the two overlap. */
 .anchor-top-left {
-  left: var(--op77-inset-x);
+  left: var(--op-inset-x);
   top: var(--chat-offset);
 }
 
@@ -695,41 +673,22 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--op77-space-2);
-  padding: var(--op77-space-2) var(--op77-space-3);
+  gap: var(--op-space-2);
+  padding: var(--op-space-2) var(--op-space-3);
 
-  border: 1px solid transparent;
-  border-image-source: var(--frame-live);
-  /* `fill`: the sprite paints its MIDDLE tile too, so the ground is part of the
-     chamfered shape instead of a rectangle behind it.
-
-     0.92 AND NOT THE HOUSE 0.78. This is the only box on the runtime that is
+  /* 0.92 AND NOT THE HOUSE 0.78. This is the only box in the runtime that is
      TYPED INTO, and the owner still read it as unbacked at plate strength -- a
      line being composed sits under the caret, is re-read letter by letter, and
      the street behind it is moving. It is the one surface where the ground is
      worth more than the openness. */
-  border-image-slice: 8 fill;
-  border-image-width: 8px;
-  box-shadow: 0 0 18px var(--red-glow);
-
-}
-
-/* The lit arete down the leading edge. A `border-image` cannot carry a per-side
-   colour, so the one edge that reads as lit is drawn as a separate rule. */
-.chat-field::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--red-hi);
+  background: rgba(var(--op-plate-rgb), 0.92);
+  --aug-border-all: 2px;
 }
 
 .chat-caret {
-  font-family: var(--op77-font-mono);
-  font-size: var(--op77-fs-body);
-  color: var(--red);
+  font-family: var(--op-font-mono);
+  font-size: var(--op-fs-body);
+  color: var(--op-red);
 }
 
 .chat-entry {
@@ -741,24 +700,24 @@ onUnmounted(() => {
   background: transparent;
   outline: none;
 
-  font-family: var(--op77-font-body);
-  font-size: var(--op77-fs-body);
-  color: var(--red-text);
+  font-family: var(--op-font-body);
+  font-size: var(--op-fs-body);
+  color: var(--op-red-text);
   /* The native caret takes the colour of the text unless told otherwise, and a
      white bar in a red line is the one pixel that would not belong. */
-  caret-color: var(--red);
+  caret-color: var(--op-red);
 }
 
 .chat-entry::placeholder {
-  color: var(--red-idle);
+  color: var(--op-red-idle);
   opacity: 0.7;
 }
 
 .chat-count {
-  font-family: var(--op77-font-mono);
-  font-size: var(--op77-fs-label);
-  letter-spacing: var(--op77-track-label);
-  color: var(--red-idle);
+  font-family: var(--op-font-mono);
+  font-size: var(--op-fs-label);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-red-idle);
 }
 
 /* The list leans with the field rather than standing square behind it: one plane,
@@ -767,17 +726,13 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   margin: 0;
-  padding: var(--op77-space-1) 0;
+  padding: var(--op-space-1) 0;
   list-style: none;
 
-  border: 1px solid transparent;
-  border-image-source: var(--frame-idle);
-  /* THE GROUND IS IN THE SPRITE. It was `background: var(--op77-plate)`, and a
-     background fills the BORDER BOX -- so it painted the very corner the chamfer
-     had just cut off and squared it back up. `fill` makes the border-image paint
-     its middle tile as well, so the ground is part of the cut shape. */
-  border-image-slice: 8 fill;
-  border-image-width: 8px;
+  /* THE GROUND FOLLOWS THE CUT. A plain `background` fills the BORDER BOX and
+     would square the chamfer back up; augmented-ui clips the element, so the
+     ground is the cut shape and nothing has to be painted into a sprite. */
+  background: var(--op-plate);
 }
 
 /* Nothing is filled, so the marked row is marked by its leading rule going lit
@@ -790,40 +745,40 @@ onUnmounted(() => {
 .chat-suggestion {
   display: flex;
   align-items: baseline;
-  gap: var(--op77-space-2);
-  padding: var(--op77-space-1) var(--op77-space-3);
+  gap: var(--op-space-2);
+  padding: var(--op-space-1) var(--op-space-3);
   border-left: 2px solid transparent;
 }
 
 .chat-suggestion.is-selected {
-  border-left-color: var(--red);
+  border-left-color: var(--op-red);
 }
 
 .chat-suggestion-name {
-  font-family: var(--op77-font-mono);
-  font-size: var(--op77-fs-meta);
-  color: var(--red-idle);
+  font-family: var(--op-font-mono);
+  font-size: var(--op-fs-meta);
+  color: var(--op-red-idle);
 }
 
 .chat-suggestion.is-selected .chat-suggestion-name {
-  color: var(--red);
+  color: var(--op-red);
 }
 
 .chat-suggestion-params {
   display: inline-flex;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
 
-  font-family: var(--op77-font-mono);
-  font-size: var(--op77-fs-label);
-  color: var(--op77-text-dim);
+  font-family: var(--op-font-mono);
+  font-size: var(--op-fs-label);
+  color: var(--op-text-dim);
 }
 
 /* The argument the caret is in. Lit and underscored rather than filled: on this
    surface a fill would be the only one, and an underscore is what a form field
    looks like in a monospace line anyway. */
 .chat-param.is-here {
-  color: var(--red);
-  border-bottom: 1px solid var(--red);
+  color: var(--op-red);
+  border-bottom: 1px solid var(--op-red);
 }
 
 /* A signature is a readout, not a menu: nothing in it is selectable, so the
@@ -835,9 +790,9 @@ onUnmounted(() => {
 .chat-suggestion-help {
   flex: 1;
   min-width: 0;
-  font-family: var(--op77-font-body);
-  font-size: var(--op77-fs-meta);
-  color: var(--op77-text-faint);
+  font-family: var(--op-font-body);
+  font-size: var(--op-fs-meta);
+  color: var(--op-text-faint);
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -851,28 +806,21 @@ onUnmounted(() => {
 .chat-hints {
   display: inline-flex;
   align-items: center;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   flex: none;
 }
 
-/* A cap is a small frame, so it sets `border-image-width` BELOW the 8px slice --
-   that scales the whole corner tile down rather than needing a second sprite at a
-   second size. Same trick the HUD uses for chips and gauge tracks. */
+/* A cap is a small frame, and its cut is a token rather than a second sprite. */
 .cap {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 18px;
-  padding: 1px var(--op77-space-1);
+  padding: 1px var(--op-space-1);
 
-  border: 1px solid transparent;
-  border-image-source: var(--frame-idle);
-  border-image-slice: 8;
-  border-image-width: 4px;
-
-  font-family: var(--op77-font-mono);
-  font-size: var(--op77-fs-micro);
-  letter-spacing: var(--op77-track-micro);
-  color: var(--red);
+  font-family: var(--op-font-mono);
+  font-size: var(--op-fs-micro);
+  letter-spacing: var(--op-track-micro);
+  color: var(--op-red);
 }
 </style>

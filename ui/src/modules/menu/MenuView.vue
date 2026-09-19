@@ -26,32 +26,31 @@ import { GLYPHS } from '@/modules/target/glyphs'
  * repeat machine is gone with it: the browser's own key repeat is the same edge
  * detector, and `event.repeat` rides along so Lua can still tell a press from a hold.
  *
- * ── DESIGN PASS 01 ──────────────────────────────────────────────────────────
+ * ── THE REFERENCE SURFACE ───────────────────────────────────────────────────
  *
- * THIS SURFACE DRAWS ITS OWN FRAME AND ITS OWN ROWS. It used `OpPanel` and `OpRow`,
- * and they are gone from here on purpose, not by accident: those two are shared with
- * prompts, target, panel and the entry form, and changing them changes every surface
- * at once. The menu is the surface the new look is being settled on, so it carries a
- * local copy while that happens. When the pass is agreed the frame and the row go back
- * into `design/`, every surface takes them, and this local copy is deleted. A duplicate
- * that nobody has decided to keep is the cheapest thing in this file to remove.
+ * This file settled the look, so it is the one the rest of the runtime copies. It
+ * carried a local frame, a local row, a local red ladder, a local ink shadow and a
+ * local interlace while that was being settled; all five are in `design-system/` now
+ * and this file keeps only what is true of a MENU.
  *
- * AUGMENTED UI IS NOT USED HERE, for three reasons that are structural rather than
- * aesthetic:
+ * IT IS DRAWN BY AUGMENTED-UI, and the three reasons this file used to give for not
+ * using it were checked against `node_modules/augmented-ui/augmented-ui.css` and two
+ * of them were wrong:
  *
- *   1. `--aug-border-bg` is ONE colour on all four sides with no per-side form, so a
- *      lit leading arete and a shadowed trailing one -- which is the entire depth of
- *      this design -- cannot be expressed as its border at all.
- *   2. It draws with the element's own `::before` and `::after`. This file already
- *      said so, about the scroll rail: "an augmented element's own pseudo-elements
- *      belong to Augmented UI". Those two are now spent on the accent rule and the
- *      registration ticks, which is a better use of them.
- *   3. `clip-path` does the corners in one property, needs no pseudo-element, and --
- *      the part that matters -- CONTAINS an inset shadow instead of shearing it off,
- *      which is the documented failure of an outset shadow under a clip.
+ *   1. "`--aug-border-bg` is one colour on four sides." It is assigned to
+ *      `background`, so it takes a gradient, and the per-side WIDTHS are separate
+ *      properties. The lit leading arete is `.op-arete`, a gradient across the
+ *      border layer.
+ *   2. "It spends both pseudo-elements." Only with both layers on. `::after` is the
+ *      border and `::before` is the inlay, each `content: none` while its layer is
+ *      off -- so asking for `border` alone leaves `::before` free, which is what
+ *      `.op-interlace` uses here.
+ *   3. "A clip shears an outset shadow." TRUE, and it is the one thing that changed:
+ *      the chosen row's bloom is `.op-lift`, a `drop-shadow` that follows the cut.
  *
  * Nothing about the protocol changed. Same channels, same handle guard, same keys,
- * same `choose` intent. Only what the player sees.
+ * same `choose` intent. The player sees the same surface; it is drawn with four
+ * fewer sprites and no local copy of anything.
  */
 
 /** Lua's handle, echoed back untouched. Never coerced -- an integer must stay one. */
@@ -60,8 +59,11 @@ type Handle = string | number
 interface Slot {
   /** The row's ABSOLUTE index in the level, which is also the v-for key. */
   index: number
-  /** Position within the window, for the open stagger. */
-  at: number
+  /** The row's place in the OPEN stagger, and 0 on every frame after it: the walk
+      down the column belongs to the menu arriving. A row that scrolled into the
+      window one keypress later would otherwise sit invisible through a delay
+      measured for nine rows before it faded in. */
+  stagger: number
   label: string
   /** A glyph name from the closed set Lua validates against, or '' for none. */
   icon: string
@@ -128,6 +130,10 @@ function paths(name: string): string[] {
 
 const stripStyle = computed(() => `width: ${width.value}px; max-height: ${maxHeight.value}vh`)
 
+/** Which edge the plane is hinged on. The tilt's sign, its origin and the
+    chosen row's step all derive from it, in `design-system/surface.css`. */
+const plane = computed(() => (railEnd.value ? 'op-anchor-right' : 'op-anchor-left'))
+
 function isHandle(value: unknown): value is Handle {
   return typeof value === 'string' || typeof value === 'number'
 }
@@ -145,7 +151,7 @@ function readConfig(payload: Payload): void {
   if (tall > 0) maxHeight.value = Math.round(tall)
 }
 
-function readFrame(payload: Payload): void {
+function readFrame(payload: Payload, stagger = false): void {
   hint.value = text(payload.hint)
   first.value = Math.max(1, num(payload.first, 1))
   total.value = num(payload.total)
@@ -156,7 +162,7 @@ function readFrame(payload: Payload): void {
     const label = text(row.label)
     return {
       index: first.value + at,
-      at,
+      stagger: stagger ? at : 0,
       label,
       icon: rule ? '' : text(row.icon),
       value: rule ? '' : text(row.value),
@@ -207,7 +213,7 @@ useBridge('opx:menu:open', (payload: Payload) => {
     release?.()
     handle.value = payload.handle
     readConfig(payload)
-    readFrame(payload)
+    readFrame(payload, true)
     open.value = true
 
     // HOW THIS MENU TAKES INPUT. `full` is what every menu did before the option
@@ -268,14 +274,14 @@ function choose(row: Slot): void {
 </script>
 
 <template>
-  <div class="strip" :class="[anchor, { open, end: railEnd }]" :style="stripStyle">
-    <div class="bay">
+  <div class="strip op-plane op-ink" :class="[anchor, plane, { open, end: railEnd }]" :style="stripStyle">
+    <div class="bay op-bay op-arete" :class="{ 'is-end': railEnd }" data-augmented-ui="tr-clip bl-clip border">
       <!-- NO HEADER. The reference has none: its main menu is a bare column of
            framed rows under a logo, and its character panel is a bare column of
            framed rows under nothing at all. The title and the breadcrumb Lua
            sends still arrive and are simply not drawn -- so a nested screen no
            longer says where it is, which is the cost of this and is deliberate. -->
-      <div class="bay-inner">
+      <div class="bay-inner op-interlace">
         <ul class="list">
           <!-- A KEYED v-for, where the original reused a fixed window of <li> slots.
                Its reason -- "a fresh element has no previous computed style, so menu.css
@@ -287,17 +293,17 @@ function choose(row: Slot): void {
           <li
             v-for="row in slots"
             :key="row.index"
-            class="slot"
+            class="slot op-enter"
             :class="{ gap: row.blank }"
-            :style="`--slot: ${row.at}`"
+            :style="`--op-slot: ${row.stagger}`"
           >
             <!-- A separator with no caption draws nothing at all: the <li> is the space. -->
-            <div v-if="row.rule && !row.blank" class="sep">{{ row.label }}</div>
+            <div v-if="row.rule && !row.blank" class="sep op-eyebrow">{{ row.label }}</div>
 
             <div
               v-else-if="!row.blank"
-              class="row"
-              :class="{ on: row.on && !row.off, off: row.off }"
+              class="row op-frame"
+              :class="{ on: row.on && !row.off, 'is-on': row.on && !row.off, 'op-lift': row.on && !row.off, 'is-off': row.off }"
               role="button"
               :aria-disabled="row.off"
               @click="choose(row)"
@@ -312,8 +318,8 @@ function choose(row: Slot): void {
                   <path v-for="(d, at) in paths(row.icon)" :key="at" :d="d" />
                 </svg>
               </span>
-              <span class="label">{{ row.label }}</span>
-              <span v-if="row.value" class="value">{{ row.value }}</span>
+              <span class="label op-label">{{ row.label }}</span>
+              <span v-if="row.value" class="value op-value">{{ row.value }}</span>
               <span
                 v-if="row.checked !== undefined"
                 class="check"
@@ -337,89 +343,54 @@ function choose(row: Slot): void {
              the player -- somewhere they are actually looking. The hint stays:
              it describes the row under the cursor and belongs to the strip. -->
         <div v-if="hint" class="foot">
-          <p v-if="hint" class="hint">{{ hint }}</p>
+          <p v-if="hint" class="hint op-copy">{{ hint }}</p>
         </div>
       </div>
     </div>
   </div>
 </template>
-
 <style scoped>
 /* =============================================================================
-   DESIGN PASS 02 -- RED, OUTLINED, TILTED.
+   THE MENU -- the reference surface, on the design system.
 
-   Drawn against IDEDARY/Bevypunk, a Cyberpunk UI recreation whose screenshots
-   settle three things this surface had wrong:
+   This file settled the look, so it is the file the rest of the runtime copies.
+   What it carried until now, and no longer does: four inline SVG frame sprites,
+   its own copy of the red ladder, its own ink shadow, its own interlace
+   gradient, its own perspective and tilt maths, its own stutter keyframes. All
+   six were duplicated verbatim across ten other surfaces. They live in
+   `design-system/` now and this file says only what is true of a MENU.
 
-     1. NOTHING IS FILLED. Not even the chosen row. In the reference the active
-        item is the same 1px outline as every other one -- it goes bright and it
-        BLOOMS, and that is the whole of its state. Pass 01 filled the chosen row
-        with accent; that fill was the last background on the surface and it is
-        gone.
-     2. A ROW IS A CLOSED BOX, not a left rule. Every control in the reference is
-        a full thin frame with the top-right corner chamfered.
-     3. The technical filler is not decoration. The reference ships
-        `UNAUTHORIZED ACCESS / PLEASE CONTACT LOCAL NETRUNNER / DO NOT PROCEED
-        FURTHER` under a real menu. The row index and the window readout here do
-        the same job while being true.
+   THE LOOK IS UNCHANGED, deliberately and checkably: same three reds, same
+   20px bay cut and 6px row cut, same 7deg tilt hinged on the anchored edge,
+   same interlace, same stutter, same `--pop` step out of the column for the
+   chosen row.
 
-   WHY `border-image` AND NOT `clip-path` FOR A ROW. A clip cuts the painted
-   result, so a bordered box under one loses its stroke exactly along the
-   diagonal -- the chamfer arrives as a GAP in the outline. Bevypunk solves it
-   with 9-slice sprites; this solves it the same way, with a 9-slice SVG data URI
-   whose corner tiles carry the chamfer at a fixed size while the edge tiles
-   stretch. One property (`border-image-source`) swaps the whole frame's colour
-   on a state change, and the geometry never distorts with the row's width.
+   WHAT THE SHAPES COST NOW. A row is `data-augmented-ui="tr-clip border"`: one
+   attribute, and its state is `--aug-border-bg` plus `color`. Before, a row
+   held a `border-image-source` pointing at one of four data URIs, each a copy
+   of the same path, and `border-image-width: 8px` against a `border-width: 1px`
+   so the corner tile would not shrink. The geometry is CSS now, so the cut size
+   is a token rather than a redrawn sprite.
 
-   WHY IT IS ALSO FASTER THAN PASS 01. Per row, pass 01 paid for a `clip-path`
-   mask, a two-shadow bevel, a background fill and a `transform-style:
-   preserve-3d` that gave every row its own 3D rendering context. All four are
-   gone. What a row changes now is `border-image-source` and `color`. The whole
-   surface holds ONE clip-path (the frame), ONE composited rotation, and ZERO
-   fills.
+   THE ONE THING THAT HAD TO CHANGE. augmented-ui clips the element, and a clip
+   shears an outset `box-shadow` along the diagonal -- so the chosen row's bloom
+   is `.op-lift`, a `drop-shadow` that follows the cut. A filter is allowed here
+   and forbidden on the HUD for the reason `shapes.css` gives: a menu repaints
+   when a key is pressed, the vitals stream repaints thirty times a second.
    ========================================================================== */
 
-/* --- THE RED --------------------------------------------------------------
-   Local to this surface on purpose. `.op-theme-city` on <html> makes
-   `--op77-accent` Night City yellow for EVERY surface, and repainting the whole
-   HUD is a separate decision from settling the menu. When this pass is agreed,
-   these move into that class and this block is deleted.
-
-   The three steps are dim -> deep -> lit, and the middle one is the pointer.
-   "Darker on hover" taken as DENSER: a red that loses brightness on a night
-   street loses the row with it, so hover drops the pale wash of the resting
-   state for a saturated blood red, and the chosen row is the only one that
-   blooms. Invert `--red-deep` and `--red` if the literal reading was wanted. */
-.strip {
-  --red:      #ff3b47;                    /* chosen: lit, and the only bloom  */
-  --red-deep: #c8202e;                    /* HOVER: denser, no bloom          */
-  --red-idle: rgba(232, 67, 79, 0.62);    /* at rest                          */
-  --red-glow: rgba(255, 59, 71, 0.55);
-
-  /* The 9-slice frames. 24x24, 8px corner tiles, the chamfer living entirely
-     inside the top-right tile so stretching an edge can never skew it. */
-  --frame-idle: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23e8434f" stroke-opacity="0.7" stroke-width="1.4"/></svg>');
-  --frame-hover: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23c8202e" stroke-width="1.8"/></svg>');
-  --frame-on: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%234a1519" fill-opacity="0.9" stroke="%23ff3b47" stroke-width="2.4"/></svg>');
-  --frame-off: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="none" stroke="%23000" stroke-opacity="0.8" stroke-width="4.5"/><path d="M0.5 0.5H15.5L23.5 8.5V23.5H0.5Z" fill="%231c0809" fill-opacity="0.78" stroke="%23aed3e0" stroke-opacity="0.14"/></svg>');
-}
-
 /* =============================================================================
-   THE STRIP -- carries the perspective so the frame inside it is the plane that
-   tilts. On the strip and not the frame: perspective on the frame would give
-   every descendant its own vanishing point.
+   THE STRIP -- the positioned wrapper, so it carries the perspective and the
+   containment. `.op-plane` owns both; the anchor classes below only say which
+   edge this strip is hinged on.
    ========================================================================== */
 .strip {
   position: absolute;
   display: flex;
-  max-width: calc(100vw - var(--op77-inset-x) * 2);
+  max-width: calc(100vw - var(--op-inset-x) * 2 + var(--op-bleed) * 2);
   opacity: 0;
   pointer-events: none;
-  perspective: var(--op77-persp);
-  /* Nothing inside can affect layout or paint outside it, so the compositor
-     never has to consider the rest of the surface when one row changes. */
-  contain: layout paint style;
-  transition: opacity var(--op77-dur-fast) linear;
+  transition: opacity var(--op-dur-fast) linear;
 }
 
 .strip.open {
@@ -427,88 +398,45 @@ function choose(row: Slot): void {
   pointer-events: auto;
 }
 
+/* EVERY OFFSET PAYS THE BLEED BACK. `.op-plane` pads by `--op-bleed` so that a
+   bloom has room inside the paint containment, and padding moves the strip; the
+   anchors subtract exactly what it added, so the bay lands where `--op-inset-*`
+   says and the 10px of room is invisible. */
 .anchor-top-left,
 .anchor-left {
-  left: var(--op77-inset-x);
-  --pop: 10px;
-  --tilt: var(--op77-tilt);
-  --origin: left center;
+  left: calc(var(--op-inset-x) - var(--op-bleed));
 }
 
 .anchor-top-right,
 .anchor-right {
-  right: var(--op77-inset-x);
-  --pop: -10px;
-  --tilt: calc(var(--op77-tilt) * -1);
-  --origin: right center;
+  right: calc(var(--op-inset-x) - var(--op-bleed));
 }
 
 .anchor-top-left,
 .anchor-top-right {
-  top: var(--op77-inset-y);
+  top: calc(var(--op-inset-y) - var(--op-bleed));
 }
 
 /* The mid band: below the minimap and above the control hints. */
 .anchor-left,
 .anchor-right {
-  top: 33vh;
+  top: calc(33vh - var(--op-bleed));
 }
 
 /* =============================================================================
-   THE FRAME -- no fill.
+   THE BAY -- the enclosure. Two opposite corners cut, which reads as a plate
+   slid into place; `.op-bay` says that and `.op-arete` lights the leading run.
    ========================================================================== */
 .bay {
   position: relative;
   flex: 1;
   min-width: 0;
-  /* THE DIAL IS BACK AT 0, AND THE GROUND MOVED TO THE ROWS. It was turned up
-     to the house plate and the owner answer was precise: not the panel, the
-     buttons. That is the better read anyway -- a plate behind the whole bay
-     fills the gaps between the rows and the empty space under the last one, so
-     the menu becomes a window; a plate per row fills exactly what carries words
-     and leaves the surface open between them.
-
-     The dial stays, and it stays at 0: it is still one number to turn if a bay
-     ever has to be closed over a plaza. Its rgb moves to the 28,8,9 of
-     `--op77-plate` so that turning it up lands on the same ground the rows are
-     already on, instead of on a near-match. */
-  background: rgba(28, 8, 9, var(--op77-menu-veil, 0));
-  transform-origin: var(--origin, left center);
-  transform: rotateY(var(--tilt, 0deg));
-  clip-path: polygon(
-    0 0,
-    calc(100% - var(--op77-cut-lg)) 0,
-    100% var(--op77-cut-lg),
-    100% 100%,
-    var(--op77-cut-lg) 100%,
-    0 calc(100% - var(--op77-cut-lg))
-  );
-  /* The frame is the one place a clip and a stroke can live together, because
-     an INSET shadow is painted over the padding box and the clip then trims it
-     to the chamfer instead of shearing an outset shadow off the element. The
-     two aretes are the entire depth of the design. */
-  /* ONE arete, on the leading corner, and nothing on the trailing one. The pair
-     was the bevel of a solid panel; on a frame with nothing inside it the dark
-     half only ever read as a smudge down the right edge. */
-  box-shadow:
-    inset 1px 1px 0 var(--op77-edge-hi),
-    inset 0 0 0 1px var(--red-idle);
-}
-
-/* Mirrored for a right-anchored strip: the cuts and the aretes follow the
-   leading edge, which over there is the right one. */
-.strip.end .bay {
-  clip-path: polygon(
-    var(--op77-cut-lg) 0,
-    100% 0,
-    100% calc(100% - var(--op77-cut-lg)),
-    calc(100% - var(--op77-cut-lg)) 100%,
-    0 100%,
-    0 var(--op77-cut-lg)
-  );
-  box-shadow:
-    inset -1px 1px 0 var(--op77-edge-hi),
-    inset 0 0 0 1px var(--red-idle);
+  /* THE DIAL, AND IT STAYS AT 0. The ground belongs on the ROWS, not on the
+     bay: a bay is mostly the space BETWEEN rows, so a plate here fills what
+     carries nothing and turns the strip into a window. One number to turn if a
+     bay ever has to be closed over a plaza, on the same rgb as `--op-plate` so
+     turning it up lands on the ground the rows already sit on. */
+  background: rgba(var(--op-plate-rgb), var(--op-menu-veil, 0));
 }
 
 .bay-inner {
@@ -520,23 +448,6 @@ function choose(row: Slot): void {
   max-height: inherit;
 }
 
-/* The interlace. It is over the panel in every frame of the reference and it is
-   what stops an unfilled surface reading as a web page floating in the air. One
-   static gradient on a pseudo-element nothing else was using, no transition, so
-   it costs a single paint for the life of the menu. */
-.bay-inner::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    to bottom,
-    rgba(255, 59, 71, 0.05) 0 1px,
-    transparent 1px 3px
-  );
-}
-
 /* =============================================================================
    THE LIST -- it never scrolls: Lua sends the window it wants drawn.
    ========================================================================== */
@@ -544,17 +455,26 @@ function choose(row: Slot): void {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   margin: 0;
   /* The trailing padding is the chosen row's runway: it leaves the column by
-     `--pop` and the perspective scales it slightly wider on the way out, and
-     both have to land inside the frame, because the frame is a clip-path. */
-  padding: var(--op77-space-3) var(--op77-space-4) var(--op77-space-3)
-    calc(var(--op77-space-3) + var(--op77-rule));
+     `--op-pop` and the perspective scales it slightly wider on the way out, and
+     both have to land inside the bay, which clips. */
+  padding: var(--op-space-3) var(--op-space-4) var(--op-space-3)
+    calc(var(--op-space-3) + var(--op-rule));
   list-style: none;
   min-height: 0;
 }
 
+/* THE ENTRANCE IS ON THE SLOT, NOT ON THE ROW, and that is the whole of why this
+   strip felt slow to move through. A row's classes change on every keypress --
+   `.on` arrives on one and leaves another -- and an `animation-name` that differs
+   between those two states is CANCELLED AND RESTARTED by the change, so both
+   rows replayed the 190ms stutter from behind a delay of up to 264ms and were
+   invisible for the whole wait. The <li> is what the keyed v-for creates, its
+   classes say nothing about the cursor, and its transform composes with the
+   chosen row's step out of the column -- so the open still lands that row
+   popped, and moving the cursor replays nothing. */
 .slot {
   display: flex;
   min-width: 0;
@@ -562,74 +482,32 @@ function choose(row: Slot): void {
 
 /* A separator with no caption is pure space: the gap, doubled. */
 .slot.gap {
-  height: var(--op77-space-1);
+  height: var(--op-space-1);
 }
 
 /* =============================================================================
-   A ROW -- a closed 1px frame with a chamfered top-right corner, and text.
-   There is nothing behind it and there never will be.
-
-   `border-image-width` is 8px while `border-width` is 1px: the image draws its
-   8px corner tiles while layout only reserves one, so the chamfer is full size
-   and the row still sits on a 1px box.
+   A ROW -- a closed frame with a chamfered top-right corner, and text. The
+   frame, the ground and all four states come from `.op-frame`; what is here is
+   what a menu row is shaped like.
    ========================================================================== */
 .row {
   position: relative;
   flex: 1;
   display: flex;
   align-items: center;
-  gap: var(--op77-space-3);
+  gap: var(--op-space-3);
   min-width: 0;
-  padding: var(--op77-space-2) var(--op77-space-3) calc(var(--op77-space-2) + 1px);
-  color: #e8646d;
+  padding: var(--op-space-2) var(--op-space-3) calc(var(--op-space-2) + 1px);
   white-space: nowrap;
   cursor: pointer;
-  /* THE GROUND, AND IT IS HERE RATHER THAN ON THE BAY. This is the owner's call
-     and it is the right one: the bay is mostly the space BETWEEN rows, so a
-     plate on it fills what carries nothing and turns the strip into a window.
-     A row is a button -- it has an outline, it has padding, it is the shape the
-     eye lands on -- so the floor goes exactly under the words and the surface
-     stays open around them.
-
-     The chosen row goes up to `--op77-plate-lit` and nothing else changes: with
-     a fill on every row, a brighter fill is what "chosen" now means, on top of
-     the lit frame and the pop it already had. */
-  /* THE GROUND IS IN THE SPRITE, not behind it. A `background` fills the BORDER
-     BOX, so it painted the very corner the chamfer had just cut off and squared
-     it back up -- the same shape mismatch an outset shadow has, and the reason
-     both are gone from every chamfered element. `fill` makes the border-image
-     paint its middle tile too, so the ground IS the cut shape. The chosen row
-     changes ground by changing sprite, like every other state on this row. */
-  /* The ink stays, plate or no plate: the plate holds the row against a bright
-     street, the shadow keeps each glyph's own edge crisp on top of it. A
-     text-shadow INHERITS, so this one declaration carries the label, the value
-     and the affordance mark.
-
-     Two passes, not one: the tight dark pass gives an edge its contrast, the wide
-     soft pass lifts the row off a blown-out backdrop. */
-  text-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.95),
-    0 0 9px rgba(0, 0, 0, 0.8);
-  border: 1px solid transparent;
-  border-image-source: var(--frame-idle);
-  border-image-slice: 8 fill;
-  border-image-width: 8px;
+  /* The step out of the column is the ONLY thing that moves when the cursor
+     does, so it is the cursor's travel rather than an entrance and is timed
+     like one: long enough to read as a step, short enough that a held arrow key
+     never queues. */
   transition:
-    color var(--op77-dur-fast) linear,
-    transform 120ms var(--op77-ease);
+    color var(--op-dur-fast) linear,
+    transform 80ms var(--op-ease);
 }
-
-/* THE FRAME'S SHADOW LIVES IN THE SPRITE, not on the box. It was an outset
-   `box-shadow` here, and an outset shadow follows the BORDER BOX -- so on a row
-   whose visible edge is a `border-image` with a cut corner, the blur ran straight
-   past the diagonal and squared off the one corner the whole shape is about. The
-   comment that used to sit here called that "the corner darkening rather than a
-   second shape". It was not: the owner spotted it immediately.
-
-   A wide black stroke under the coloured one, on the same path inside the sprite,
-   traces the chamfer exactly. It is rasterised once when the image decodes, so it
-   costs less than the shadow it replaces, and a state change still swaps exactly
-   one property. */
 
 /* The column is held open by the span whether or not a glyph is inside it, so a
    menu that ices half its rows still has every label on one x. */
@@ -651,18 +529,11 @@ function choose(row: Slot): void {
   stroke-width: 1.9;
   stroke-linecap: round;
   stroke-linejoin: round;
-  /* A stroke takes no text-shadow. One drop-shadow on a 16px icon, nine of them
-     on screen at the very most, is the cheapest filter this surface could be
-     asked to carry. */
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.95));
 }
 
 .label {
   flex: 0 1 auto;
   min-width: 0;
-  font: 700 var(--op77-fs-lead) / 1.25 var(--op77-font-display);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -671,10 +542,7 @@ function choose(row: Slot): void {
   flex: none;
   margin-left: auto;
   max-width: 45%;
-  font: 500 var(--op77-fs-meta) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
   opacity: 0.88;
-  font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -682,7 +550,7 @@ function choose(row: Slot): void {
 /* The affordance column, always last so every mark lands at the same x. */
 .mark {
   flex: none;
-  font: 700 var(--op77-fs-meta) / 1 var(--op77-font-mono);
+  font: 700 var(--op-fs-meta) / 1 var(--op-font-mono);
 }
 
 /* The checkbox is a frame too, and the tick is a stroke -- the one fill left on
@@ -692,20 +560,15 @@ function choose(row: Slot): void {
   width: 13px;
   height: 13px;
   border: 1px solid currentcolor;
-  transition: background var(--op77-dur-fast) linear;
+  transition: background var(--op-dur-fast) linear;
 }
 
-/* With no value beside it the checkbox takes the value column's job of pushing right. */
+/* With no value beside it the checkbox takes the value column's job of pushing
+   right -- and with neither, the mark does. Without this an arrow sits against
+   the last letter of its own label, where it reads as punctuation rather than
+   as the column that says this row opens a list. */
 .value + .check,
-.glyph + .label + .check {
-  margin-left: auto;
-}
-
-/* AND WITH NEITHER, THE MARK DOES. A row that only leads somewhere carries a
-   glyph, a label and a `>` and nothing else, and without this the arrow sits
-   against the last letter of its own label -- where it reads as punctuation
-   rather than as the column that says this row opens a list. Every mark on the
-   strip lands at the same x whether or not the row beside it has a value. */
+.glyph + .label + .check,
 .glyph + .label + .mark {
   margin-left: auto;
 }
@@ -720,36 +583,25 @@ function choose(row: Slot): void {
   stroke-linecap: square;
   stroke-dasharray: 13;
   stroke-dashoffset: 13;
-  transition: stroke-dashoffset var(--op77-dur) var(--op77-ease) var(--op77-dur-fast);
+  transition: stroke-dashoffset var(--op-dur) var(--op-ease) var(--op-dur-fast);
 }
 
 .check.ticked svg {
   stroke-dashoffset: 0;
 }
 
-/* --- HOVER: denser red, no bloom ------------------------------------------- */
-.row:hover:not(.off):not(.on) {
-  color: var(--red-deep);
-  border-image-source: var(--frame-hover);
-}
-
 /* --- ON: lit, blooming, and the one thing that leaves the plane -------------
-   No fill. The frame goes to full red at a heavier stroke, the text lights, and
-   the row steps out of the column by `--pop` and 14px toward the player -- the
-   surface's only 3D transform besides the frame's rotation. The bloom is a
-   `box-shadow` and not a `filter`: a filter on a row would give that row its own
-   backing store inside a surface that repaints over live gameplay. */
+   `.op-frame.is-on` lights the frame and the ground. What is local is the step
+   out of the column: `--op-pop` across and 14px toward the player, which is
+   this surface's best move and the only 3D transform on it besides the bay's
+   rotation. */
 .row.on {
-  color: var(--red);
-  border-image-source: var(--frame-on);
-  transform: translate3d(var(--pop, 10px), 0, 14px);
-  box-shadow: 0 0 18px -4px var(--red-glow);
+  transform: translate3d(var(--op-pop, 10px), 0, 14px);
 }
 
 .row.on .label {
-  font-weight: 700;
   letter-spacing: 0.055em;
-  text-shadow: 0 0 10px var(--red-glow);
+  text-shadow: var(--op-ink), 0 0 10px var(--op-red-glow);
 }
 
 .row.on .value {
@@ -757,29 +609,25 @@ function choose(row: Slot): void {
 }
 
 .row.on .check.ticked {
-  background: var(--red);
+  background: var(--op-red);
 }
 
-/* --- OFF ---------------------------------------------------------------- */
-.row.off {
-  color: var(--op77-text-faint);
-  cursor: default;
-  border-image-source: var(--frame-off);
+/* The one place the tick is not `currentcolor`: on the filled box it would be
+   red on red, and the tick simply did not appear. `TargetView` had the answer
+   for its own checkbox and this file never took it. */
+.row.on .check.ticked svg {
+  stroke: var(--op-ink-on);
 }
 
-/* --- a captioned separator: a mono eyebrow and a rule, no frame ---------- */
+/* --- a captioned separator: a mono eyebrow and a rule, no frame ----------- */
 .sep {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
   min-width: 0;
-  padding: var(--op77-space-3) 0 var(--op77-space-1) var(--op77-space-1);
-  font: 600 var(--op77-fs-micro) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-micro);
-  text-transform: uppercase;
-  color: var(--red-deep);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 9px rgba(0, 0, 0, 0.8);
+  padding: var(--op-space-3) 0 var(--op-space-1) var(--op-space-1);
+  color: var(--op-red-deep);
 }
 
 .slot:first-child .sep {
@@ -787,10 +635,10 @@ function choose(row: Slot): void {
 }
 
 .sep::after {
-  content: "";
+  content: '';
   flex: 1;
   height: 1px;
-  background: var(--red-idle);
+  background: var(--op-red-idle);
 }
 
 /* =============================================================================
@@ -799,67 +647,16 @@ function choose(row: Slot): void {
 .foot {
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   min-width: 0;
-  padding: var(--op77-space-2) calc(var(--op77-space-3) + var(--op77-cut-lg))
-    calc(var(--op77-space-2) + var(--op77-cut-lg)) calc(var(--op77-space-3) + var(--op77-rule));
-  border-top: 1px solid var(--red-idle);
+  padding: var(--op-space-2) calc(var(--op-space-3) + var(--op-cut-lg))
+    calc(var(--op-space-2) + var(--op-cut-lg)) calc(var(--op-space-3) + var(--op-rule));
+  border-top: 1px solid var(--op-red-idle);
 }
 
 .hint {
   margin: 0;
   /* The one place the strip wraps: a description is a sentence. */
-  font: 400 var(--op77-fs-meta) / 1.4 var(--op77-font-body);
-  color: var(--op77-text-dim);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 9px rgba(0, 0, 0, 0.8);
-}
-
-/* =============================================================================
-   THE BOOT-IN -- a stutter, not a fade. One shot, and only on elements the keyed
-   v-for has just created: a row that survived the last frame does not re-run it.
-   Both keyframes touch `opacity` and `transform` only, which the compositor can
-   run without a repaint.
-   ========================================================================== */
-@keyframes plate-in {
-  0% {
-    opacity: 0;
-    transform: translate3d(calc(var(--pop, 10px) * -1), 0, 0);
-  }
-
-  55% {
-    opacity: 1;
-    transform: translate3d(2px, 0, 0);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
-}
-
-@keyframes plate-in-on {
-  0% {
-    opacity: 0;
-    transform: translate3d(0, 0, 0);
-  }
-
-  55% {
-    opacity: 1;
-    transform: translate3d(calc(var(--pop, 10px) + 2px), 0, 14px);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translate3d(var(--pop, 10px), 0, 14px);
-  }
-}
-
-.strip.open .row {
-  animation: plate-in 190ms steps(3, end) backwards;
-  animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
-}
-
-.strip.open .row.on {
-  animation-name: plate-in-on;
+  opacity: 0.78;
 }
 </style>

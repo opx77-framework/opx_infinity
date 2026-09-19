@@ -121,6 +121,11 @@ function M.Storage.ToEntity(row)
 		metadata = decode(row.metadata, {}),
 		appearance = decode(row.appearance, nil),
 		lastLoggedOut = row.last_logged_out,
+		-- Nil unless the statement asked for it, which only the account listing
+		-- does. A read that did not select it leaves this absent rather than
+		-- inventing a date, so nothing downstream can mistake "not read" for
+		-- "never created".
+		createdAt = row.created_at,
 	}
 end
 
@@ -149,9 +154,13 @@ end
 -- @param userId UserId
 -- @return Result
 function M.Storage.FetchAll(userId)
+	-- `created_at` is read here and not by `FetchOne`: it is what tells two unnamed
+	-- characters on one account apart in a staff listing, which is the only place
+	-- anything reads it. A character that has been loaded is identified by its
+	-- name and its citizen id instead.
 	local rows = Storage.Query([[
 SELECT citizen_id, user_id, cid, name, char_info, money, job, gang,
-       position, metadata, appearance, last_logged_out
+       position, metadata, appearance, last_logged_out, created_at
   FROM opx77_characters
  WHERE user_id = @user AND deleted_at IS NULL
  ORDER BY last_logged_out IS NULL DESC, last_logged_out DESC, cid ASC

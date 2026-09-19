@@ -153,12 +153,12 @@ end
 
 -- The key the player bound, or the configured one.
 local function key()
-	return OPX.Keys.KeyFor(KEY_ID) or KEY
+	return OPX.Lib.Input.KeyFor(KEY_ID) or KEY
 end
 
 -- Whether the target key is down.
 local function held()
-	return OPX.Keys.IsDown(key())
+	return OPX.Lib.Input.IsDown(key())
 end
 
 -- The character state when it stands in the world alive, or nil.
@@ -280,7 +280,7 @@ end
 -- A FUNCTION is called here, in this VM: no promise, no host call, no yield, and
 -- it is the reason a module's rows cost the budget almost nothing. A
 -- `{ resource, export }` pair is a genuinely separate resource and goes over
--- `OPX.Rpc.Call`, which yields on the promise -- which is why every caller of
+-- `OPX.Lib.Rpc.Call`, which yields on the promise -- which is why every caller of
 -- this runs on a one-shot thread and never on a scheduler job.
 local function ask(row, callback, context)
 	local observation = {}
@@ -292,9 +292,11 @@ local function ask(row, callback, context)
 		return answer
 	end
 	if type(callback) ~= 'table' then return nil, 'no_callback' end
-	local answer, failure = OPX.Rpc.Call(callback.resource, callback.export, observation)
-	if answer == nil then return nil, failure end
-	return answer.value
+	-- `answer.value` is the remote's whole reply table; its payload is the
+	-- `value` inside that, which is why this reads twice.
+	local answer = OPX.Lib.Rpc.Call(callback.resource, callback.export, observation)
+	if not answer.ok then return nil, answer.error end
+	return answer.value.value
 end
 
 -- Draws the resolved list, or nothing at all.
@@ -400,7 +402,7 @@ local function pick(payload)
 	if not opened or busy or payload.handle ~= handle then return end
 	if OPX.Now() - lastPick < PICK_GAP_MS then return end
 	lastPick = OPX.Now()
-	local cursor = OPX.Keys.Cursor()
+	local cursor = OPX.Lib.Input.Cursor()
 	if cursor == nil or not cursor.inBounds then return end
 	-- The PRESS's point, not the cursor's later one: between the press and this
 	-- handler the pointer has already moved, and the ray below is cast fresh at the
@@ -483,11 +485,11 @@ local function open()
 	armed = false
 	if opened or down or not targetingEnabled() or not canPick() then return end
 	-- A key that fires while another surface owns the keyboard types into someone
-	-- else's text box. `OPX.Keys.IsCaptured` answers CAPTURED when the read itself
+	-- else's text box. `OPX.Lib.Input.IsCaptured` answers CAPTURED when the read itself
 	-- raises, which is the safe answer, so this is a refusal and not a warning.
-	if OPX.Keys.IsCaptured() then return end
+	if OPX.Lib.Input.IsCaptured() then return end
 	if living() == nil then return end
-	local cursor = OPX.Keys.Cursor()
+	local cursor = OPX.Lib.Input.Cursor()
 	if cursor == nil or cursor.captured then return end
 
 	request = request + 1
@@ -899,9 +901,9 @@ function M.Start()
 	end)
 
 	if BLOCK_WEAPON_WHEEL then
-		local blocked, reason = OPX.Keys.BlockNativeAction('WeaponWheel', true)
-		if not blocked then
-			Open77.log.warn('the weapon wheel stays on the key: ' .. tostring(reason))
+		local blocked = OPX.Lib.Input.Block('WeaponWheel', true)
+		if not blocked.ok then
+			Open77.log.warn('the weapon wheel stays on the key: ' .. tostring(blocked.detail))
 		end
 	end
 
@@ -936,5 +938,5 @@ function M.Stop()
 	close('module_stopped')
 	for _, handleId in ipairs(jobs) do OPX.Scheduler.Cancel(handleId) end
 	jobs = {}
-	if BLOCK_WEAPON_WHEEL then OPX.Keys.BlockNativeAction('WeaponWheel', false) end
+	if BLOCK_WEAPON_WHEEL then OPX.Lib.Input.Block('WeaponWheel', false) end
 end

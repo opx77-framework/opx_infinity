@@ -857,6 +857,20 @@ function M.Start()
 		return
 	end
 
+	-- A DELETED CHARACTER TAKES ITS CLOTHES WITH IT, and this is what does it: the
+	-- table's foreign key never fires, because a character delete is a soft one.
+	-- See `character.Event.IN_DELETED`, whose name is rebuilt here the way every
+	-- module rebuilds another's -- a bare string would be a typo waiting to happen.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'),
+		function(_, citizenId)
+			if type(citizenId) ~= 'string' or citizenId == '' then return end
+			local purged = M.Storage.PurgeCharacter(citizenId)
+			if purged ~= nil and not purged.ok then
+				Open77.log.warn(('[appearance] the clothing of the deleted %s was not removed: %s')
+					:format(citizenId, tostring(purged.detail or purged.error)))
+			end
+		end)
+
 	registerEvents()
 
 	-- The seam the character module left exactly where its own clothing read used

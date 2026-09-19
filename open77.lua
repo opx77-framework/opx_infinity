@@ -42,6 +42,13 @@ version "0.1.2"
 open77_version ">=0.0.1"
 auto_start true
 
+-- The external client library. DECLARED, not optional: `require("@opx_lib")`
+-- answers `module_dependency_not_declared` without this line and
+-- `module_dependency_not_running` if the resource is not up, and the platform
+-- will not start this resource until it is. `lib/client/lib.lua` loads it once
+-- and puts it on `OPX.Lib`; see that file for why only the client half uses it.
+dependency "opx_lib"
+
 reload_policy "reconnect"
 
 shared_script "core/shared/main.lua"
@@ -69,8 +76,15 @@ shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
 shared_script "config/entry.lua"
--- shared_script "config/gigs.lua"   -- parked; see the gigs block below
+shared_script "config/spawn.lua"
 shared_script "config/admin.lua"
+-- SERVER ONLY, unlike every other module's config above it. The theme is the
+-- one operator block a client must not hold a copy of: the client is told its
+-- colours over the wire, and a local copy would be a second answer to "what does
+-- this server look like" sitting on the machine least able to be trusted with
+-- one. `Settings` is therefore empty on the client, and the client half reads
+-- none of it.
+server_script "config/theme.lua"
 
 shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
@@ -87,6 +101,7 @@ shared_script "lib/shared/citizenid.lua"
 server_script "lib/server/storage.lua"
 server_script "lib/server/audit.lua"
 
+server_script "core/server/scheduler.lua"
 server_script "core/server/sessions.lua"
 server_script "core/server/answer.lua"
 server_script "core/server/commands.lua"
@@ -94,9 +109,8 @@ server_script "core/server/gate.lua"
 server_script "core/server/buckets.lua"
 server_script "core/server/tunables.lua"
 
-client_script "lib/client/rpc.lua"
+client_script "lib/client/lib.lua"
 client_script "lib/client/surface.lua"
-client_script "lib/client/keys.lua"
 client_script "core/client/scheduler.lua"
 client_script "core/client/ui.lua"
 client_script "core/client/notify.lua"
@@ -104,6 +118,17 @@ client_script "core/client/notify.lua"
 shared_script "modules/diagnostics/module.lua"
 server_script "modules/diagnostics/server/main.lua"
 client_script "modules/diagnostics/client/main.lua"
+
+-- EARLY, and the position is the whole of its scheduling. `Start` yields between
+-- modules to reset the instruction budget, so a module twenty places down the
+-- list asks its question twenty frames later -- and this one's question is what
+-- colour the page is. Asked here, the answer is normally in the client's hands
+-- before the page has finished mounting. It depends on nothing and provides one
+-- read-only contract, so nothing depends on it being later either.
+shared_script "modules/theme/module.lua"
+shared_script "modules/theme/shared/palette.lua"
+server_script "modules/theme/server/main.lua"
+client_script "modules/theme/client/main.lua"
 
 shared_script "modules/character/module.lua"
 shared_script "modules/character/locales.lua"
@@ -126,10 +151,24 @@ client_script "modules/appearance/client/editor.lua"
 client_script "modules/appearance/client/clothing.lua"
 client_script "modules/appearance/client/presence.lua"
 client_script "modules/appearance/client/wardrobe.lua"
+-- The seam's other end. `wardrobe.lua` holds both state machines and draws
+-- nothing; this is the only file that knows the appearance panel is a `menu` and
+-- the fitting room a `panel`. Both contracts are resolved at Start, so this file
+-- has no load-order relationship with either of those modules -- only with
+-- `wardrobe.lua`, whose seam it reads.
+client_script "modules/appearance/client/view.lua"
 
 shared_script "modules/entry/module.lua"
 shared_script "modules/entry/locales.lua"
 client_script "modules/entry/client/main.lua"
+
+-- Where a character starts, asked on every join. Depends on `character`, which owns
+-- placement; `character` reaches back for it through the contract at the moment it
+-- needs it, because declaring the dependency both ways is a cycle.
+shared_script "modules/spawn/module.lua"
+shared_script "modules/spawn/locales.lua"
+server_script "modules/spawn/server/main.lua"
+client_script "modules/spawn/client/main.lua"
 
 shared_script "modules/needs/module.lua"
 shared_script "modules/needs/locales.lua"
@@ -236,26 +275,6 @@ client_script "modules/elevators/client/state.lua"
 client_script "modules/elevators/client/main.lua"
 client_script "modules/elevators/client/panel.lua"
 client_script "modules/elevators/client/exports.lua"
-
--- PARKED. `modules/gigs/` and `config/gigs.lua` are written, tested and left on
--- disk unlisted: a file the manifest does not name never loads. They come back
--- with these lines, `shared_script "config/gigs.lua"` above, and the
--- `ui.vanilla.map` permission below -- all three together or not at all.
---
--- After `target`, `inventory` and `animations`, all three of which it reads a
--- contract from, and after `character`, which it requires. `client/run.lua`
--- before `client/board.lua`: the board's rows call into the run.
---
--- shared_script "modules/gigs/module.lua"
--- shared_script "modules/gigs/locales.lua"
--- shared_script "modules/gigs/shared/catalog.lua"
--- server_script "modules/gigs/server/ledger.lua"
--- server_script "modules/gigs/server/runs.lua"
--- server_script "modules/gigs/server/main.lua"
--- client_script "modules/gigs/client/run.lua"
--- client_script "modules/gigs/client/board.lua"
--- client_script "modules/gigs/client/main.lua"
-
 -- LAST of the modules, because it reaches into nearly all of them and provides
 -- nothing back. Every contract it uses is optional bar `character`: without the
 -- menu, the form or the target eye it logs one line each and all 50 commands
@@ -292,6 +311,10 @@ server_script "modules/admin/server/world.lua"
 server_script "modules/admin/server/tags.lua"
 server_script "modules/admin/server/combat.lua"
 server_script "modules/admin/server/doors.lua"
+-- The staff door onto an ACCOUNT'S CHARACTERS, which outlive the session that
+-- `players.lua` acts on. Before `menu.lua`, like every other register: the access
+-- map that file sends lists what this one registered.
+server_script "modules/admin/server/characters.lua"
 server_script "modules/admin/server/menu.lua"
 
 client_script "modules/admin/client/main.lua"
@@ -307,6 +330,31 @@ client_script "modules/admin/client/target.lua"
 
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
+
+-- Server-provided loading screen (FiveM-style). The client renders this page from
+-- this resource's verified pack files, in a sandboxed surface over the built-in
+-- cover, for the whole of the join -- so this server shows its own screen with its
+-- own film on it. It runs before any Lua in this resource does and is driven only by
+-- the progress events the client forwards to it.
+--
+-- THE FILM HAS TO BE A WEBM, AND THAT IS NOT A PREFERENCE. The browser this page runs
+-- in (CEF) carries Chromium's free codec set only: no H.264 and no AAC. An MP4 handed
+-- to it demuxes and then dies with `DEMUXER_ERROR_NO_SUPPORTED_STREAMS`, which is the
+-- demuxer saying the container is fine and no stream in it is playable -- so neither
+-- `canPlayType` nor the filename is any guide. VP8/VP9/AV1 plus Opus/Vorbis is what
+-- plays, and the page's poster and gradient cover for a clip that cannot.
+--
+-- `web/**` IS ALSO SIZED. scripting/src/ResourceHost.cpp refuses any web file over
+-- 16 MiB with `invalid_web_file:<name>`, and that fails the WHOLE RESOURCE rather than
+-- the one file -- an oversized video would not just lose the screen, it would stop this
+-- resource loading at all. Both limits are checked by byte count and never trusted.
+--
+-- THE CLIENT PICKS THE FIRST RESOURCE THAT DECLARES ONE, BY DIRECTORY NAME, so a
+-- world that also ships a resource sorting earlier than `opx_infinity` -- anything
+-- named `open77_*`, `opx_*`, or `a*` -- supplies the screen instead of this one.
+-- Both pages are valid; the losing one is simply never mounted. `web/**` above
+-- already ships the page and its video.
+loadscreen "web/loading.html"
 
 web_ui_page "web/index.html"
 web_ui_auto_create false

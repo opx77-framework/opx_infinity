@@ -1,18 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
-import OpField from '@/design/components/OpField.vue'
-import OpPanel from '@/design/components/OpPanel.vue'
-import OpRow from '@/design/components/OpRow.vue'
-import OpScrim from '@/design/components/OpScrim.vue'
-import OpSpinner from '@/design/components/OpSpinner.vue'
-import OpTabs from '@/design/components/OpTabs.vue'
-import type { Tab } from '@/design/components/OpTabs.vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
 import { list, num, table, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
+
+/** A tab as this surface draws it. It was imported from `OpTabs`; the component
+    is gone and the shape is three fields, so it lives where it is used. */
+interface Tab {
+  id: string
+  label: string
+}
 
 /**
  * THE PANEL -- port of `opx77_panel/web/{index.html,panel.css,panel.js}`.
@@ -471,122 +471,201 @@ function filter(value: string): void {
 
 <template>
   <div class="room" :class="{ open }">
-    <OpScrim mode="lead" :visible="open" />
+    <!-- THE SCRIM. The largest fill on a surface that otherwise has none, and it
+         stays: a panel is read for as long as it takes to choose something, and
+         the street moving behind a list of names is the one backdrop this
+         runtime cannot ask a player to read through. `InventoryView` dropped its
+         scrim for the opposite reason -- a bag is read at a glance. -->
+    <div class="scrim" :class="{ shown: open }" />
 
     <div class="stage">
       <div class="drawer">
-        <OpPanel bay>
-          <template #header>
+        <section
+          class="panel op-bay op-arete op-interlace op-ink"
+          data-augmented-ui="tr-clip bl-clip border"
+        >
+          <header class="head">
             <div class="head-text">
-              <span v-if="view.eyebrow" class="op77-eyebrow">{{ view.eyebrow }}</span>
+              <span v-if="view.eyebrow" class="eyebrow op-eyebrow">{{ view.eyebrow }}</span>
               <h1>{{ view.title }}</h1>
             </div>
             <span v-if="view.subtitle" class="family">{{ view.subtitle }}</span>
-            <OpSpinner v-if="view.busy" />
-          </template>
+            <!-- NOT augmented, and never will be: a clip is recomputed as the
+                 element turns, so a spinner is the one shape that pays for the
+                 cut on every frame of its animation. -->
+            <span v-if="view.busy" class="spinner" aria-hidden="true" />
+          </header>
 
-          <p v-if="view.intro" class="intro">{{ view.intro }}</p>
+          <div class="body">
+            <p v-if="view.intro" class="intro op-copy">{{ view.intro }}</p>
 
-          <OpTabs
-            v-if="view.tabs.length"
-            :tabs="view.tabs"
-            :selected="currentTab"
-            @select="chooseTab"
-          />
+            <nav v-if="view.tabs.length" class="tabs">
+              <button
+                v-for="tab in view.tabs"
+                :key="tab.id"
+                type="button"
+                class="tab op-frame"
+                :class="{ 'is-on': tab.id === currentTab }"
+                data-augmented-ui="tr-clip border"
+                @click="chooseTab(tab.id)"
+              >
+                {{ tab.label }}
+              </button>
+            </nav>
 
-          <div v-if="view.summary" class="summary">
-            <OpRow :label="view.summary.label" :value="view.summary.value" />
-            <OpRow
-              v-if="summaryAction"
-              class="button"
-              :label="summaryAction.label"
-              :disabled="summaryAction.disabled || view.busy"
-              @select="press(summaryAction)"
-            />
-          </div>
+            <div v-if="view.summary" class="summary">
+              <div class="row op-frame" data-augmented-ui="tr-clip border">
+                <span class="row-label op-label">{{ view.summary.label }}</span>
+                <span class="row-value op-value">{{ view.summary.value }}</span>
+              </div>
+              <button
+                v-if="summaryAction"
+                type="button"
+                class="row button op-frame"
+                :class="{ 'is-off': summaryAction.disabled || view.busy }"
+                :disabled="summaryAction.disabled || view.busy"
+                data-augmented-ui="tr-clip border"
+                @click="press(summaryAction)"
+              >
+                <span class="row-label op-label">{{ summaryAction.label }}</span>
+              </button>
+            </div>
 
-          <OpField
-            v-if="view.search !== false"
-            :label="label('search')"
-            kind="text"
-            :model-value="query"
-            :placeholder="searchPlaceholder"
-            @input="filter"
-          />
+            <label v-if="view.search !== false" class="field op-frame" data-augmented-ui="tr-clip border">
+              <span class="field-label op-eyebrow">{{ label('search') }}</span>
+              <input
+                class="field-entry"
+                type="text"
+                :value="query"
+                :placeholder="searchPlaceholder"
+                @input="filter(($event.target as HTMLInputElement).value)"
+              >
+            </label>
 
-          <div ref="gridEl" class="grid" :class="{ busy: view.busy }" :style="gridStyle">
-            <OpRow
-              v-for="item in visible"
-              :key="item.id"
-              :label="item.label"
-              :hint="item.detail"
-              :selected="item.id === chosen"
-              :disabled="item.disabled || view.busy"
-              @select="choose(item)"
-              @mouseenter="pointAt(item.id)"
-              @mouseleave="pointAway"
-            />
-            <p v-if="!visible.length" class="empty">
-              {{ label(view.loading ? 'loading' : 'empty') }}
+            <div ref="gridEl" class="grid" :class="{ busy: view.busy }" :style="gridStyle">
+              <button
+                v-for="item in visible"
+                :key="item.id"
+                type="button"
+                class="row op-frame"
+                :class="{
+                  'is-on': item.id === chosen,
+                  'op-lift': item.id === chosen,
+                  'is-off': item.disabled || view.busy
+                }"
+                :disabled="item.disabled || view.busy"
+                data-augmented-ui="tr-clip border"
+                @click="choose(item)"
+                @mouseenter="pointAt(item.id)"
+                @mouseleave="pointAway"
+              >
+                <span class="row-label op-label">{{ item.label }}</span>
+                <span v-if="item.detail" class="row-hint op-copy">{{ item.detail }}</span>
+              </button>
+
+              <p v-if="!visible.length" class="empty op-copy">
+                {{ label(view.loading ? 'loading' : 'empty') }}
+              </p>
+            </div>
+
+            <div v-if="shown.length > pageSize" class="pager">
+              <button
+                type="button"
+                class="row button op-frame"
+                :class="{ 'is-off': page === 0 }"
+                :disabled="page === 0"
+                data-augmented-ui="tr-clip border"
+                @click="turn(-1)"
+              >
+                <span class="row-label op-label">&larr;</span>
+              </button>
+              <span class="count op-value">{{ count }}</span>
+              <button
+                type="button"
+                class="row button op-frame"
+                :class="{ 'is-off': page >= lastPage }"
+                :disabled="page >= lastPage"
+                data-augmented-ui="tr-clip border"
+                @click="turn(1)"
+              >
+                <span class="row-label op-label">&rarr;</span>
+              </button>
+            </div>
+
+            <p v-if="view.status" class="status op-copy" :class="view.status.kind">
+              {{ view.status.text }}
             </p>
           </div>
 
-          <div v-if="shown.length > pageSize" class="pager">
-            <OpRow class="button" label="&larr;" :disabled="page === 0" @select="turn(-1)" />
-            <span class="count">{{ count }}</span>
-            <OpRow
-              class="button"
-              label="&rarr;"
-              :disabled="page >= lastPage"
-              @select="turn(1)"
-            />
-          </div>
-
-          <p v-if="view.status" class="status" :class="view.status.kind">
-            {{ view.status.text }}
-          </p>
-
-          <template v-if="view.actions.length" #footer>
-            <OpRow
+          <footer v-if="view.actions.length" class="foot">
+            <button
               v-for="button in view.actions"
               :key="button.id"
-              class="button grow"
-              :label="button.label"
-              :selected="button.primary"
+              type="button"
+              class="row button grow op-frame"
+              :class="{
+                'is-on': button.primary,
+                'is-off': button.disabled || view.busy
+              }"
               :disabled="button.disabled || view.busy"
-              @select="press(button)"
-            />
-          </template>
-        </OpPanel>
+              data-augmented-ui="tr-clip border"
+              @click="press(button)"
+            >
+              <span class="row-label op-label">{{ button.label }}</span>
+            </button>
+          </footer>
+        </section>
       </div>
 
       <div v-if="view.tools.length" class="tools">
-        <OpPanel>
-          <OpRow
-            v-for="button in view.tools"
-            :key="button.id"
-            class="button"
-            :label="button.label"
-            :disabled="button.disabled || view.busy"
-            @select="press(button)"
-          />
-        </OpPanel>
+        <section class="panel op-bay op-arete op-ink" data-augmented-ui="tr-clip bl-clip border">
+          <div class="body">
+            <button
+              v-for="button in view.tools"
+              :key="button.id"
+              type="button"
+              class="row button op-frame"
+              :class="{ 'is-off': button.disabled || view.busy }"
+              :disabled="button.disabled || view.busy"
+              data-augmented-ui="tr-clip border"
+              @click="press(button)"
+            >
+              <span class="row-label op-label">{{ button.label }}</span>
+            </button>
+          </div>
+        </section>
       </div>
     </div>
 
     <div v-if="dialog" class="confirm">
-      <OpScrim mode="flat" />
+      <div class="scrim shown flat" />
       <div class="dialog">
-        <OpPanel>
-          <template #header>
+        <section class="panel op-bay op-arete op-ink" data-augmented-ui="tr-clip bl-clip border">
+          <header class="head">
             <h2>{{ dialog.title }}</h2>
-          </template>
-          <p class="ask">{{ dialog.text }}</p>
-          <template #footer>
-            <OpRow class="button grow" :label="dialog.no" @select="answer(false)" />
-            <OpRow class="button grow" :label="dialog.yes" selected @select="answer(true)" />
-          </template>
-        </OpPanel>
+          </header>
+          <div class="body">
+            <p class="ask op-copy">{{ dialog.text }}</p>
+          </div>
+          <footer class="foot">
+            <button
+              type="button"
+              class="row button grow op-frame"
+              data-augmented-ui="tr-clip border"
+              @click="answer(false)"
+            >
+              <span class="row-label op-label">{{ dialog.no }}</span>
+            </button>
+            <button
+              type="button"
+              class="row button grow op-frame is-on op-lift"
+              data-augmented-ui="tr-clip border"
+              @click="answer(true)"
+            >
+              <span class="row-label op-label">{{ dialog.yes }}</span>
+            </button>
+          </footer>
+        </section>
       </div>
     </div>
   </div>
@@ -598,7 +677,7 @@ function filter(value: string): void {
   inset: 0;
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--op77-dur) var(--op77-ease);
+  transition: opacity var(--op-dur) var(--op-ease);
 }
 
 .room.open {
@@ -608,13 +687,13 @@ function filter(value: string): void {
 
 .stage {
   position: absolute;
-  left: var(--op77-inset-x);
-  top: var(--op77-inset-y);
-  bottom: var(--op77-inset-y);
-  right: var(--op77-inset-x);
+  left: var(--op-inset-x);
+  top: var(--op-inset-y);
+  bottom: var(--op-inset-y);
+  right: var(--op-inset-x);
   display: flex;
   align-items: stretch;
-  gap: var(--op77-space-3);
+  gap: var(--op-space-3);
 }
 
 .drawer {
@@ -632,34 +711,34 @@ function filter(value: string): void {
 .head-text {
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   margin-right: auto;
   min-width: 0;
 }
 
 .head-text h1 {
   margin: 0;
-  font: 700 var(--op77-fs-head) / 1 var(--op77-font-display);
-  letter-spacing: var(--op77-track-head);
+  font: 700 var(--op-fs-head) / 1 var(--op-font-display);
+  letter-spacing: var(--op-track-head);
   text-transform: uppercase;
 }
 
 .family {
-  font: 400 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
+  font: 400 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
   text-transform: uppercase;
-  color: var(--op77-text-dim);
+  color: var(--op-text-dim);
 }
 
 .intro {
-  margin: 0 0 var(--op77-space-2);
-  font: 400 var(--op77-fs-body) / 1.35 var(--op77-font-body);
-  color: var(--op77-text-dim);
+  margin: 0 0 var(--op-space-2);
+  font: 400 var(--op-fs-body) / 1.35 var(--op-font-body);
+  color: var(--op-text-dim);
 }
 
 .summary {
   display: flex;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
 }
 
 .summary > *:first-child {
@@ -671,12 +750,12 @@ function filter(value: string): void {
 .grid {
   display: grid;
   grid-template-columns: repeat(var(--columns, 2), minmax(0, 1fr));
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   align-content: start;
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
-  transition: opacity var(--op77-dur-fast) var(--op77-ease);
+  transition: opacity var(--op-dur-fast) var(--op-ease);
 }
 
 .grid.busy {
@@ -685,36 +764,36 @@ function filter(value: string): void {
 
 .empty {
   grid-column: 1 / -1;
-  margin: var(--op77-space-4) 0;
+  margin: var(--op-space-4) 0;
   text-align: center;
-  font: 400 var(--op77-fs-meta) / 1.4 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
-  color: var(--op77-text-faint);
+  font: 400 var(--op-fs-meta) / 1.4 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-text-faint);
 }
 
 .pager {
   display: flex;
   align-items: center;
-  gap: var(--op77-space-2);
+  gap: var(--op-space-2);
 }
 
 .count {
   flex: 1;
   text-align: center;
-  font: 400 var(--op77-fs-label) / 1 var(--op77-font-mono);
-  letter-spacing: var(--op77-track-label);
-  color: var(--op77-text-dim);
+  font: 400 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  color: var(--op-text-dim);
   font-variant-numeric: tabular-nums;
 }
 
 .status {
   margin: 0;
-  font: 400 var(--op77-fs-meta) / 1.4 var(--op77-font-mono);
-  color: var(--op77-text-dim);
+  font: 400 var(--op-fs-meta) / 1.4 var(--op-font-mono);
+  color: var(--op-text-dim);
 }
 
 .status.error {
-  color: var(--op77-danger);
+  color: var(--op-alarm);
 }
 
 /* A button is a row with nothing on its right: the label centres and the plate shrinks
@@ -744,14 +823,203 @@ function filter(value: string): void {
 
 .dialog h2 {
   margin: 0;
-  font: 700 var(--op77-fs-title) / 1.15 var(--op77-font-display);
-  letter-spacing: var(--op77-track-head);
+  font: 700 var(--op-fs-title) / 1.15 var(--op-font-display);
+  letter-spacing: var(--op-track-head);
   text-transform: uppercase;
 }
 
 .ask {
   margin: 0;
-  font: 400 var(--op77-fs-body) / 1.4 var(--op77-font-body);
-  color: var(--op77-text-dim);
+  font: 400 var(--op-fs-body) / 1.4 var(--op-font-body);
+  color: var(--op-text-dim);
+}
+
+/* =============================================================================
+   THE PIECES THIS SURFACE USED TO IMPORT.
+
+   `PanelView` was the last file on `design/components/*` -- `OpPanel`, `OpRow`,
+   `OpField`, `OpTabs`, `OpScrim` and `OpSpinner`, six shared Vue components on
+   the pass-01 idiom: filled, `--op77-accent` (which the Night City theme turned
+   yellow), and augmented through a wrapper rather than by the element that
+   needs the shape.
+
+   They are not replaced by six new shared components. Every other surface in
+   this runtime draws its own row, because a menu row, a target row, an
+   inventory cell and a panel row look alike and behave nothing alike -- one
+   shared row is what coupled five surfaces together last time, and unpicking it
+   is most of what this rebuild was. What IS shared is the design system:
+   `.op-frame`, `.op-bay`, `.op-arete`, the states, the type roles and the ink.
+   A row here is that vocabulary plus the twenty lines below that are true of a
+   panel row and of nothing else.
+   ========================================================================== */
+
+/* The wash behind the drawer. The one large fill on the surface, and the reason
+   is in the template. */
+.scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--op-plate-quiet);
+  opacity: 0;
+  transition: opacity var(--op-dur) var(--op-ease);
+}
+
+.scrim.shown {
+  opacity: 1;
+}
+
+/* Under the confirm dialog: flat and immediate, because the question is already
+   on screen by the time it paints. */
+.scrim.flat {
+  opacity: 1;
+  transition: none;
+}
+
+.panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--op-plate);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--op-space-3);
+  padding: var(--op-space-4) calc(var(--op-space-4) + var(--op-cut-lg))
+    var(--op-space-3) var(--op-space-4);
+  border-bottom: 1px solid var(--op-red-idle);
+}
+
+.head h2 {
+  margin: 0;
+  font: 700 var(--op-fs-title) / 1.15 var(--op-font-display);
+  letter-spacing: var(--op-track-head);
+  text-transform: uppercase;
+  color: var(--op-red);
+}
+
+.body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--op-space-3);
+  min-height: 0;
+  padding: var(--op-space-4);
+  overflow-y: auto;
+}
+
+.foot {
+  display: flex;
+  gap: var(--op-space-2);
+  padding: var(--op-space-3) var(--op-space-4)
+    calc(var(--op-space-3) + var(--op-cut-lg)) var(--op-space-4);
+  border-top: 1px solid var(--op-red-idle);
+}
+
+/* The spinner: a stroke that turns, and the one shape here that is not cut. */
+.spinner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--op-red-idle);
+  border-top-color: var(--op-red);
+  border-radius: 50%;
+  animation: panel-spin 700ms linear infinite;
+}
+
+@keyframes panel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--op-space-2);
+}
+
+.tab {
+  padding: var(--op-space-2) var(--op-space-3);
+  padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
+  font: 700 var(--op-fs-label) / 1 var(--op-font-mono);
+  letter-spacing: var(--op-track-label);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+/* A ROW. Label, optional hint, optional value -- the states come from
+   `.op-frame` and nothing about them is restated here. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--op-space-3);
+  width: 100%;
+  padding: var(--op-space-2) var(--op-space-3);
+  padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
+  text-align: left;
+  cursor: pointer;
+  transition: color var(--op-dur-fast) linear;
+}
+
+.row:disabled {
+  cursor: default;
+}
+
+.row-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-value {
+  flex: none;
+  margin-left: auto;
+}
+
+/* THE ONE FIELD. The caret is the only thing on this surface allowed to blink,
+   and the input itself is transparent: the frame and the ground belong to the
+   label that wraps it, which is the element that carries the shape. */
+.field {
+  display: flex;
+  align-items: baseline;
+  gap: var(--op-space-3);
+  padding: var(--op-space-2) var(--op-space-3);
+  padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
+}
+
+.field-label {
+  flex: none;
+  color: var(--op-red-idle);
+}
+
+.field-entry {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font: 400 var(--op-fs-body) / 1.3 var(--op-font-body);
+  color: var(--op-text);
+  caret-color: var(--op-red);
+}
+
+.field-entry::placeholder {
+  color: var(--op-text-faint);
 }
 </style>

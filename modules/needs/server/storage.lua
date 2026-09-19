@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS opx77_character_status (
 
 local SELECT_NEEDS = 'SELECT needs FROM opx77_character_status WHERE citizen_id = @citizen'
 
+local DELETE_NEEDS = 'DELETE FROM opx77_character_status WHERE citizen_id = @citizen'
+
 local UPSERT_NEEDS = [[
 INSERT INTO opx77_character_status (citizen_id, needs) VALUES (@citizen, @needs)
 ON DUPLICATE KEY UPDATE needs = @needs
@@ -67,6 +69,30 @@ function M.Storage.Save(citizenId, values)
 	if not written.ok then
 		Open77.log.warn(('%s not saved: %s')
 			:format(OPX.Audit.Safe(citizenId), tostring(written.detail or written.error)))
+		return false
+	end
+	return true
+end
+
+--- Removes the needs of a character that has been deleted.
+-- @author dop42
+--
+-- NOTHING ELSE WOULD. The header above explains why this table carries no
+-- foreign key onto `opx77_characters`, and that reasoning still holds -- but it
+-- left the row with nothing at all to remove it, and a foreign key would not
+-- have removed it either: a character delete is a SOFT delete, `deleted_at` on a
+-- row that stays, and no cascade fires for an UPDATE. So this is called from the
+-- character module's own delete announcement instead, which is the seam that
+-- exists for exactly this and had nobody listening to it.
+--
+-- Yields, so it runs on a thread and never at file scope.
+-- @param citizenId string
+-- @return boolean
+function M.Storage.PurgeCharacter(citizenId)
+	local removed = OPX.Storage.Update(DELETE_NEEDS, { citizen = citizenId })
+	if not removed.ok then
+		Open77.log.warn(('%s: needs not removed on delete: %s')
+			:format(OPX.Audit.Safe(citizenId), tostring(removed.detail or removed.error)))
 		return false
 	end
 	return true

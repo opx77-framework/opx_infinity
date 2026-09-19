@@ -32,7 +32,7 @@ local function register(id, name, key, onPressed)
 		-- A key pressed while another surface holds the keyboard -- the chat box, a
 		-- form, the pause menu -- does nothing here, so that typing an `I` into a
 		-- text field does not open a screen behind it.
-		if OPX.Keys.IsCaptured() then return end
+		if OPX.Lib.Input.IsCaptured() then return end
 		local ran, failure = pcall(onPressed)
 		if not ran then Open77.log.error(('[inventory] key %s: %s'):format(id, tostring(failure))) end
 	end
@@ -59,7 +59,7 @@ end
 function Keys.Effective(id)
 	local known = registered[id]
 	if known == nil then return nil end
-	return OPX.Keys.KeyFor(id) or known
+	return OPX.Lib.Input.KeyFor(id) or known
 end
 
 --- Toggles the screen: a glovebox first from a seat, a pile first beside one.

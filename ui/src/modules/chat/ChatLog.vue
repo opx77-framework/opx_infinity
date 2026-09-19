@@ -55,8 +55,8 @@ let sequence = 0
 
 /**
  * THE ROOM THE STYLESHEET ALREADY LEAVES FOR THE INPUT LINE, in pixels: one
- * field row at the top anchors (`--op77-space-7`), and the distance the input
- * hangs below the log's own edge at the bottom ones (`--op77-space-6`).
+ * field row at the top anchors (`--op-space-7`), and the distance the input
+ * hangs below the log's own edge at the bottom ones (`--op-space-6`).
  *
  * Written as numbers because what is computed from them is compared against a
  * height measured in pixels on the other layer; they are the same two tokens the
@@ -65,7 +65,7 @@ let sequence = 0
 const RESTING_TOP = 48
 const RESTING_BOTTOM = 32
 
-/** The gap left between the input block and the log. `--op77-space-2`. */
+/** The gap left between the input block and the log. `--op-space-2`. */
 const CLEARANCE = 8
 
 const atTop = computed(
@@ -219,34 +219,17 @@ onUnmounted(() => {
    ========================================================================== */
 
 .chat-log {
-  /* --- THE RED, verbatim from HudRoot.vue -----------------------------------
-     Repeated rather than imported because the chat is TWO registrations on two
-     layers with no common ancestor in the DOM: `ChatInput.vue` declares the
-     same block for the same reason. A shared stylesheet would be the fix if a
-     third ever appeared. */
-  --red:      #ff3b47;                    /* lit: the author of a said line   */
-  --red-idle: rgba(232, 67, 79, 0.62);    /* at rest: the arete               */
-  --red-hi:   #ff6b78;                    /* warnings                         */
-
-  /* The lettering red. Below `--red` on purpose: full strength is right for a
-     1px frame and too hot for running text, which is read rather than glanced
-     at. Same value the inventory uses for its resting lettering. */
-  --red-text: #e8646d;
-
-  /* The alarm, which is not red. See the header. */
-  --alarm: #ffa8ae;
-
   position: absolute;
   display: flex;
   flex-direction: column;
-  gap: var(--op77-space-1);
+  gap: var(--op-space-1);
   width: var(--chat-width);
-  max-width: calc(100vw - var(--op77-inset-x) * 2);
-  padding: var(--op77-space-1) 0 var(--op77-space-1) var(--op77-space-3);
+  max-width: calc(100vw - var(--op-inset-x) * 2);
+  padding: var(--op-space-1) 0 var(--op-space-1) var(--op-space-3);
   pointer-events: none;
 
   /* The leading edge, and the only mark this block carries. */
-  border-left: 1px solid var(--red-idle);
+  border-left: 1px solid var(--op-red-idle);
 
   /* THE GROUND. The header above says this block has no backing because it sits
      on live gameplay -- that was the pass's rule and the game overruled it: a
@@ -259,13 +242,14 @@ onUnmounted(() => {
      -- the exact thing the veil and the `backdrop-filter` were removed to avoid.
      The right-hand padding is new: a plate needs room past the last glyph or it
      reads as a highlighter rather than a ground. */
-  padding-right: var(--op77-space-3);
-  background: var(--op77-plate-quiet);
+  padding-right: var(--op-space-3);
+  background: var(--op-plate-quiet);
 
-  /* Declared once, inherited by every line. A `text-shadow` is the one way to
-     hold text legible over arbitrary gameplay without painting a surface under
-     it; two passes because one wide blur greys out and one tight offset alone
-     fails against a bright sky. */
+  /* LIGHTER THAN `--op-ink`, and deliberately: the house pair is tuned for a
+     glyph sitting on nothing, and this column sits on a plate AND runs to sixty
+     lines. The full pair over that much backed text greys the whole block --
+     what lifts one unbacked readout off a plaza smothers a paragraph. Declared
+     once here and inherited by every line. */
   text-shadow:
     0 1px 0 rgba(0, 0, 0, 0.92),
     0 0 6px rgba(0, 0, 0, 0.65);
@@ -282,7 +266,7 @@ onUnmounted(() => {
    because the list grows a row at a time as the player types, and a column of
    text snapping by 30px per keystroke is harder to read than one that slides. */
 .anchor-bottom-left {
-  left: var(--op77-inset-x);
+  left: var(--op-inset-x);
   bottom: calc(var(--chat-offset) + var(--chat-lift, 0px));
 }
 
@@ -304,39 +288,39 @@ onUnmounted(() => {
    there: the bottom-left corner is the vitals and the status chips, and a log
    pinned down there sits on the numbers the player is reading. */
 .anchor-top-left {
-  left: var(--op77-inset-x);
-  top: calc(var(--chat-offset) + var(--op77-space-7) + var(--chat-lift, 0px));
+  left: var(--op-inset-x);
+  top: calc(var(--chat-offset) + var(--op-space-7) + var(--chat-lift, 0px));
 }
 
 .anchor-top-center {
   left: 50%;
   transform: translateX(-50%);
-  top: calc(var(--chat-offset) + var(--op77-space-7) + var(--chat-lift, 0px));
+  top: calc(var(--chat-offset) + var(--op-space-7) + var(--chat-lift, 0px));
 }
 
 .chat-line {
   margin: 0;
-  font-family: var(--op77-font-body);
-  font-size: var(--op77-fs-body);
+  font-family: var(--op-font-body);
+  font-size: var(--op-fs-body);
   line-height: 1.35;
-  color: var(--red-text);
+  color: var(--op-red-text);
   overflow-wrap: anywhere;
 }
 
 .chat-author {
-  margin-right: var(--op77-space-2);
-  font-family: var(--op77-font-mono);
-  font-size: var(--op77-fs-label);
-  letter-spacing: var(--op77-track-label);
+  margin-right: var(--op-space-2);
+  font-family: var(--op-font-mono);
+  font-size: var(--op-fs-label);
+  letter-spacing: var(--op-track-label);
   text-transform: uppercase;
-  color: var(--red);
+  color: var(--op-red);
 }
 
 /* White-hot, and heavier with it: an alarm has to be readable without being
    looked at, and weight is the second channel after luminance. */
 .is-error .chat-author,
 .is-error .chat-text {
-  color: var(--alarm);
+  color: var(--op-alarm);
 }
 
 .is-error .chat-author {
@@ -344,13 +328,13 @@ onUnmounted(() => {
 }
 
 .is-warning .chat-author {
-  color: var(--red-hi);
+  color: var(--op-red-hi);
 }
 
 /* A line the runtime wrote about itself, rather than one a player said. It
    steps back out of the red entirely: this surface's voice is for voices. */
 .is-system .chat-author,
 .is-info .chat-author {
-  color: var(--op77-text-dim);
+  color: var(--op-text-dim);
 }
 </style>

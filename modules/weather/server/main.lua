@@ -17,24 +17,6 @@ local lastRequestMs = {}
 -- When the next heartbeat is due, on the monotonic clock.
 local nextHeartbeatMs = 0
 
--- Loop labels whose last slice failed, logged once per run.
-local failing = {}
-
--- Runs one loop slice under pcall. A raise from a host call inside a bare
--- `CreateThread` would end that loop for the session, and a native that raises
--- every slice would otherwise fill the log, so a run of failures is logged once
--- and logged again after a success. The client half gets the same treatment from
--- `OPX.Scheduler`.
-local function guarded(label, fn, ...)
-	local ok, failure = pcall(fn, ...)
-	if ok then
-		failing[label] = nil
-	elseif not failing[label] then
-		failing[label] = true
-		Open77.log.warn(('%s slice failed: %s'):format(label, tostring(failure)))
-	end
-end
-
 -- Seeds the random rolls from the wall clock and arms the heartbeat. Drawn on
 -- the first turn of the loop, never at load: the monotonic clock still reads
 -- zero there, it only moves in steps of a millisecond, and the module always
@@ -117,15 +99,14 @@ function M.Start()
 
 	M.Commands.Register()
 
-	-- `OPX.Scheduler` is the client's loop; the server VM has none, so the roll
-	-- schedule keeps its own thread.
-	CreateThread(function()
-		guarded('weather:seed', seed)
-		while true do
-			Wait(SYNC.SCHEDULER_MS)
-			guarded('weather:schedule', schedule)
-		end
-	end)
+	-- The seed runs here, the rolls run on a job. Under pcall because this one is
+	-- on the boot stack: a raise from a host read at seed time would take the
+	-- module's whole `Start` with it, and a session with no weather authority is
+	-- worse than one that starts on the configured sky.
+	local seeded, why = pcall(seed)
+	if not seeded then Open77.log.warn('weather:seed failed: ' .. tostring(why)) end
+
+	OPX.Scheduler.Every('weather:schedule', SYNC.SCHEDULER_MS, schedule)
 
 	if Authority.restored then
 		Open77.log.info('authority resumed across a reload -- ' .. Authority.StatusText())

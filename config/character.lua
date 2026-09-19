@@ -43,6 +43,48 @@ OPX.Config.MODULES.character = {
 	},
 
 	CHARACTERS = {
+		-- HOW `opx.select` MOVES AN ACCOUNT ONTO ANOTHER CHARACTER. Two values,
+		-- and no third:
+		--
+		--   'relog'      take the other character here, in the world. The one
+		--                being left is saved and waited on, the other is loaded
+		--                and placed, and the client reloads the body family, the
+		--                face and the clothes onto the puppet it already has. No
+		--                disconnect, no loading screen, no re-queue.
+		--   'reconnect'  move the lock and end the session, so the next connection
+		--                arrives on the new character. What this did before the
+		--                setting existed.
+		--
+		-- A REFUSED RELOG FALLS BACK TO THE RECONNECT rather than leaving the
+		-- player on the character they asked to leave. The save of the outgoing
+		-- character is the one thing that can refuse it -- the switch is abandoned
+		-- rather than losing what was not written -- and the player is then
+		-- disconnected, which saves it again on the way out.
+		--
+		-- `opx.create` IS NOT COVERED BY THIS AND CANNOT BE. A new character has
+		-- no body, so it needs the game's own character creator, and that creator
+		-- belongs to the game's MAIN MENU: it is drawn for the character-bootstrap
+		-- transaction, which is spent before the world exists. Resetting the
+		-- bootstrap mid-session was measured in game on 2026-09-17 (2.31.13+op77.81)
+		-- -- the request is granted, the phase moves on, and NO CREATOR IS EVER
+		-- DRAWN, because the game is no longer in its main menu. The shell takes
+		-- the world down for a bootstrap it now expects answered and the player
+		-- sits under the loading cover until they kill the connection. The
+		-- platform has a disconnect native and no reconnect, so there is nothing
+		-- softer to offer. `opx.create` ends the session whatever is written here.
+		--
+		-- WHY 'relog' IS NOT OBVIOUSLY RIGHT, and is a setting rather than the
+		-- only behaviour: a switch in the world is a save, a load, a kill-respawn
+		-- placement and -- when the two characters are not the same body family --
+		-- a covered body reload, all while the player is incarnated and other
+		-- players can see them. 'reconnect' does all of that behind a join, where
+		-- it has always run. If a switch ever leaves somebody in the wrong body or
+		-- under a cover that does not lift, this is the one word to change back.
+		--
+		-- An unknown value is REFUSED WITH A LINE IN THE JOURNAL and falls back to
+		-- 'reconnect'.
+		SWITCH = 'relog',
+
 		DEFAULT_SLOTS = 3,
 
 		-- Per-account overrides, keyed by user id.
@@ -54,8 +96,32 @@ OPX.Config.MODULES.character = {
 		ROW_CEILING = 60,
 
 		-- Extra { TABLE, COLUMN } pairs whose rows really go when a character is
-		-- deleted. A table with an ON DELETE CASCADE foreign key needs no entry.
+		-- deleted. FOR TABLES THIS RUNTIME DOES NOT OWN -- another resource's, or
+		-- one added by hand. Every table a module in here owns is purged by that
+		-- module, on `character:deleted`, so nothing belongs on this list twice.
+		--
+		-- AN ON DELETE CASCADE FOREIGN KEY DOES **NOT** EXCUSE AN ENTRY, which is
+		-- what this comment used to say and it was wrong. A character delete is a
+		-- SOFT delete -- `deleted_at` is stamped and the row stays, which is what
+		-- frees the slot without losing the history -- and a cascade fires for a
+		-- DELETE and never for an UPDATE. So the foreign keys in this schema are
+		-- all correct and not one of them has ever run on a player deleting a
+		-- character. If a table out there has to be emptied, name it here.
 		CASCADE_TABLES = {},
+
+		-- Whether a player may delete their OWN character with `/opx.delete`.
+		--
+		-- Staff are never affected by this: the staff menu deletes through the ACL
+		-- and answers to that instead. This is only the self-service door, and it
+		-- is a door worth being able to shut -- a delete takes the character's
+		-- clothes, needs, containers and cars with it, and there is no undo. On a
+		-- roleplay server that is a ticket for an admin; on a test server it is
+		-- how you get a clean slate in one command.
+		--
+		-- False refuses the command with `character.deleteNotAllowed` and writes
+		-- nothing. It does not hide the command: a player who tries is told no,
+		-- rather than left wondering whether it silently worked.
+		SELF_DELETE = true,
 
 		-- Bounds on each half of a character name, in characters and not bytes.
 		NAME = { MIN = 2, MAX = 32 },
@@ -350,8 +416,18 @@ OPX.Config.MODULES.character = {
 		},
 	},
 
-	-- Lifepaths offered at creation, validated against this list, stored in
-	-- `PlayerData.charInfo.origin` and never read back by the module.
+	-- Lifepaths, and NOTHING READS THIS YET. The claim that used to stand here --
+	-- "offered at creation, validated against this list" -- was not true: no file
+	-- in the runtime reads `ORIGINS`, and nothing writes `charInfo.origin`, so the
+	-- field replicated on the state bag is always empty. The creator this would be
+	-- offered in belongs to the platform and runs at join, before this runtime has
+	-- a character to put a lifepath on.
+	--
+	-- It is kept rather than deleted because it is the list an owner would edit
+	-- the moment the creation path exists, and because the bag field is already a
+	-- published shape. Whoever wires it: validate the chosen key against this
+	-- table on the SERVER before writing `charInfo.origin`, the way
+	-- `player.lua`'s name setter validates, and delete this note.
 	ORIGINS = {
 		nomad = {
 			label = 'Nomad',

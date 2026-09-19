@@ -101,13 +101,31 @@ local function useOf(name, use, where)
 	return out
 end
 
---- The prop a pile of this item is drawn with: a props alias or a .mesh path.
+--- The prop a pile of this item is drawn with: a CURATED ALIAS, and nothing else.
+--
+-- `Open77.props.create` does accept a raw cooked depot path as well, and this
+-- used to allow one. It must not, and the reason is that the failure is silent
+-- BOTH WAYS:
+--
+--   * the prop renderer matches a prebuilt host entity per registered alias, so
+--     a raw `.mesh` reaches the marker fallback on the client. Receiving a prop
+--     id does not prove the model drew;
+--   * and because an id came back, `World.CreateDrop` never falls through to
+--     `DROP_MODEL`. A pile that would have been an honest crate is a marker
+--     instead, with nothing logged on either side.
+--
+-- An unknown ALIAS is refused by the server with `unknown_alias`, which is the
+-- behaviour we want: no id, the crate is drawn, and the warning names the model
+-- once. So the alias is the only form that fails loudly, and it is the only one
+-- taken here. A weapon that needs its own geometry needs a host shipped for it
+-- first -- see the catalogue's note on integrating a decorative weapon.
 local function modelOf(name, value, where)
 	if value == nil then return nil end
-	local model = Common.Word(value, 256, '^[%w_%-%.\\/]+$')
-	if model == nil or (model:find('[\\/]') and not model:lower():match('%.mesh$')) then
-		problem(('%s %s: MODEL must be a prop alias or a .mesh path; the pile model is used')
-			:format(where, name))
+	local model = Common.Word(value, 256, '^[%w_%-%.]+$')
+	if model == nil or model:find('%.mesh$') then
+		problem(('%s %s: MODEL must be a curated Open77.props alias, not a depot ' ..
+			'path -- a raw mesh draws as a marker and suppresses the pile fallback; ' ..
+			'the pile model is used'):format(where, name))
 		return nil
 	end
 	return model

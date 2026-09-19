@@ -3,8 +3,17 @@
 -- @author dop42
 --
 -- Neither of these drew itself: the panel was a list drawn by a menu resource and
--- the fitting room a page drawn by a panel resource, and neither exists in this
--- runtime yet. The state machines are here; the drawing is not, and must not be.
+-- the fitting room a page drawn by a panel resource. Both of those resources have
+-- since been rebuilt as modules in here, and `client/view.lua` is what attaches
+-- the seam below to them -- the panel to `menu`, the fitting room to `panel`. The
+-- state machines are here; the drawing is not, and must not be.
+--
+-- THE JOIN ALSO WAITS ON THIS FILE, which is the one thing here that is not a
+-- view. A brand new character is asked for a name, an outfit and a spawn point at
+-- one instant, and the order between them is held by each view standing aside for
+-- the one in front: `roomOwed` is what this module reports on its decision bus,
+-- the entry module folds it into its own "the join is busy", and the spawn menu
+-- already waits on that. See `claim`.
 
 local M = OPX.Modules.Get('appearance')
 
@@ -349,6 +358,31 @@ local outfitCleared, savedPerspective, orbit = false, nil, 180
 -- save is listened for.
 local creationWatch, awaitSave = 0, nil
 
+-- This module's own name when it opens the room for the JOIN rather than for a
+-- caller. `Clothing.BeginPreview` refuses an unnamed borrower and the upkeep pass
+-- closes a room whose owner has stopped, so the borrow has to be under a name the
+-- registry knows -- and until this constant existed the join-time open passed
+-- `M.Id`, which nothing ever assigns: the registry hands a module a namespace
+-- carrying `Settings` and the four phase functions and no id at all. Every
+-- fitting room a creation ever asked for was therefore refused with
+-- `invalid_caller` before it reached the puppet, once, silently, because that
+-- code is not retryable.
+local OWNER = 'appearance'
+
+-- Whether this world entry has already been offered a fitting room, and whether
+-- one is still owed to the player.
+--
+-- THE SECOND IS THE JOIN SEQUENCE'S ONLY HANDLE ON THIS MODULE. A brand new
+-- character is asked three things at one instant -- a name, an outfit and a
+-- spawn point -- and the order between them is not held by a scheduler anywhere:
+-- each view stands aside while the one before it reports itself busy. `owed` is
+-- what this module reports, from the moment the policy says a room is coming
+-- until the room has closed or been given up on, and it covers the gap the room
+-- being OPEN does not: the retry window, where the room is owed and nothing is
+-- on screen, is exactly when the spawn menu would otherwise take the keyboard
+-- and make the room unopenable for the rest of the window.
+local roomOffered, roomOwed = false, false
+
 --- Whether the room is up or opening.
 -- @author dop42
 -- @return boolean
@@ -361,6 +395,28 @@ end
 -- @return boolean
 function M.Wardrobe.Creation()
 	return creating
+end
+
+--- Whether the join is still owed a fitting room nobody has closed yet.
+-- True from the moment the policy says one is coming until it has been closed or
+-- given up on -- open or not. Read by anything sequencing the join.
+-- @author dop42
+-- @return boolean
+function M.Wardrobe.Owed()
+	return roomOwed
+end
+
+--- Says on the public bus that a fitting room is owed, or is not any more.
+-- One event with two states rather than two events: a listener holding a boolean
+-- wants one name to watch, and a pair would have to be kept in step by whoever
+-- reads them. Deduplicated, because it is reached from a retry loop.
+-- @param owed boolean
+-- @param reason string|nil why it is no longer owed
+local function claim(owed, reason)
+	if roomOwed == owed then return end
+	roomOwed = owed
+	Runtime.Publish({ ok = owed, event = 'wardrobeWanted', citizenId = State.citizenId,
+		error = (not owed) and tostring(reason or 'done') or nil })
 end
 
 --- The caller the open room belongs to.
@@ -398,7 +454,7 @@ local function refusal()
 	end
 	if Runtime.IsDown() then return 'player_down' end
 	if not playable() then return 'player_unavailable' end
-	if OPX.Keys.IsCaptured() then return 'input_captured' end
+	if OPX.Lib.Input.IsCaptured() then return 'input_captured' end
 	return nil
 end
 
@@ -697,6 +753,11 @@ local function release(keep, reason)
 
 	Runtime.Publish({ ok = true, event = 'wardrobeClosed', reason = reason, kept = keep,
 		creation = wasCreation, citizenId = mine })
+	-- WHATEVER TOOK IT DOWN, THE JOIN IS NO LONGER WAITING. A room the player
+	-- saved, cancelled, was pulled out of by a body reload or lost to a stopped
+	-- owner is a room that has been had: holding the claim open past any of those
+	-- would hold the spawn menu shut with nothing left to draw.
+	claim(false, reason)
 	Open77.log.info(('[appearance] the fitting room closed (%s, %s)')
 		:format(reason, keep and 'kept' or 'restored'))
 end
@@ -795,20 +856,25 @@ local function creationWaitMs()
 	return M.ConfigMs(config.CREATION_WAIT_MS) or CREATION_WAIT_MS
 end
 
---- Opens the room once a created character's starting clothes are on.
-local function awaitCreation(owner, citizenId)
+--- Opens the join's room once the character's clothes are on, or gives up.
+-- Every exit either leaves a room on screen or withdraws the claim, because the
+-- claim is what the rest of the join is waiting behind: a thread that returned
+-- without doing one of the two would hold the spawn menu shut for the session.
+-- The one exception is `wardrobe_busy` -- a room is already up, and its own close
+-- withdraws the claim.
+local function awaitRoom(owner, creation, citizenId)
 	creationWatch = creationWatch + 1
 	local mine = creationWatch
 	CreateThread(function()
 		local deadline, reason, said = Runtime.NowMs() + creationWaitMs(), nil, nil
 		while mine == creationWatch and Runtime.NowMs() < deadline do
 			local ok
-			ok, reason = begin(owner, true, citizenId)
+			ok, reason = begin(owner, creation, citizenId)
 			if ok or reason == 'wardrobe_busy' then return end
 			if not RETRYABLE[reason] and reason ~= 'superseded' then
-				Open77.log.info(('[appearance] no fitting room after the creation of %s: %s')
+				Open77.log.info(('[appearance] no fitting room for %s: %s')
 					:format(tostring(citizenId), tostring(reason)))
-				return
+				return claim(false, reason)
 			end
 			if reason ~= said then
 				said = reason
@@ -817,11 +883,40 @@ local function awaitCreation(owner, citizenId)
 			end
 			Wait(RETRY_MS)
 		end
+		-- Superseded watches leave the claim alone: whatever bumped the generation
+		-- owns it now, and both of the things that do -- a new character and a new
+		-- offer -- settle it themselves.
 		if mine == creationWatch then
-			Open77.log.info(('[appearance] no fitting room after the creation of %s: still %s')
+			Open77.log.info(('[appearance] no fitting room for %s: still %s')
 				:format(tostring(citizenId), tostring(reason)))
+			claim(false, reason or 'timeout')
 		end
 	end)
+end
+
+--- Offers this world entry a fitting room, if the policy says this entry is one.
+-- @param creation boolean whether the game's own creator has just built this body
+-- @param citizenId string|nil the character the room must be for
+local function offerRoom(creation, citizenId)
+	-- Once per world entry. A creation publishes `created` and then, seconds
+	-- later, `clothingRestored`; under 'always' both are an offer, and without
+	-- this the second would supersede the first -- restarting the retry window
+	-- and, worse, restarting it AFTER the first had already given up.
+	if roomOffered then return end
+	local policy = M.WardrobeOffer or M.WARDROBE_POLICY_DEFAULT
+	if policy == M.WardrobePolicy.NEVER then return end
+	if policy == M.WardrobePolicy.FIRST and not creation then return end
+
+	roomOffered = true
+	-- THE CLAIM GOES UP BEFORE THE FIRST TRY, and that ordering is the whole
+	-- sequencing: the first try is normally refused -- the name form has the
+	-- keyboard, or the clothes are not on yet -- so a claim raised only once the
+	-- room was up would leave the retry window unguarded, which is the window the
+	-- spawn menu would open in.
+	claim(true)
+	Open77.log.info(('[appearance] a fitting room is owed to %s (%s)')
+		:format(tostring(citizenId), policy))
+	awaitRoom(OWNER, creation, citizenId)
 end
 
 -- ── the other half of the seam ──────────────────────────────────────────────
@@ -902,6 +997,15 @@ function M.Wardrobe.Check()
 	if not ok then Open77.log.error('[appearance] panel: ' .. tostring(failure)) end
 
 	local ran, reason = pcall(function()
+		-- A CHARACTER THAT LEFT WITHOUT BEING REPLACED. `characterChanged` covers
+		-- a switch and `release` covers a room that was up, but an unload with no
+		-- room drawn reaches neither -- and a claim left standing for nobody is a
+		-- join sequence waiting on a player who is not there.
+		if roomOwed and State.citizenId == nil then
+			roomOffered = false
+			claim(false, 'no_character')
+		end
+
 		if phase == 'open' then
 			if not playable() then
 				release(false, 'player_unavailable')
@@ -928,14 +1032,32 @@ function M.Wardrobe.Wire()
 		if event == 'characterChanged' then
 			creationWatch = creationWatch + 1
 			awaitSave = nil
+			roomOffered = false
 			Panel.Close('character_changed')
-			return release(false, 'character_changed')
+			release(false, 'character_changed')
+			-- After the release, which withdraws the claim itself when a room was
+			-- up. This is the other case: a claim raised for a character that has
+			-- gone, with no room ever drawn for it.
+			return claim(false, 'character_changed')
 		end
 
+		-- THE TWO MOMENTS A JOIN IS OFFERED A ROOM, and they are different moments
+		-- for a reason. `created` is the game's own creator having just built a
+		-- body, which is the whole of what 'first' means and is raised before the
+		-- character has any clothes at all -- the retry window is what waits for
+		-- them. `clothingRestored` is the stored record actually being ON the
+		-- puppet, which is the only honest moment to offer a RETURNING player the
+		-- room: opened before it, 'cancel' would put back the pristine puppet's
+		-- clothes rather than the ones they walked in wearing.
 		if event == 'created' then
-			local config = type(M.Settings.WARDROBE) == 'table' and M.Settings.WARDROBE or {}
-			if decision.ok ~= true or config.OPEN_AFTER_CREATION == false then return end
-			return awaitCreation(M.Id, type(decision.citizenId) == 'string' and
+			if decision.ok ~= true then return end
+			return offerRoom(true, type(decision.citizenId) == 'string' and
+				decision.citizenId or nil)
+		end
+
+		if event == 'clothingRestored' then
+			if decision.ok ~= true then return end
+			return offerRoom(false, type(decision.citizenId) == 'string' and
 				decision.citizenId or nil)
 		end
 
@@ -954,8 +1076,13 @@ function M.Wardrobe.Wire()
 		end
 	end)
 
-	-- A new world entry dresses the puppet again, so the room goes down first.
+	-- A new world entry dresses the puppet again, so the room goes down first --
+	-- and is offerable again, because under 'always' a world enter is exactly
+	-- what this policy is counted in. The clothes go back on from scratch after
+	-- one, so `clothingRestored` will come round again and make the offer; under
+	-- 'first' nothing raises `created` twice and this changes nothing.
 	AddEventHandler(OPX.Host.WORLD_READY, function()
 		release(false, 'world_changed')
+		roomOffered = false
 	end)
 end
