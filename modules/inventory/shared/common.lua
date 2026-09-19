@@ -306,6 +306,9 @@ Options.DROP_PROMPT_RADIUS = distance('DROPS.PROMPT_RADIUS', drops.PROMPT_RADIUS
 Options.TRUNK = size('TRUNK', Config.TRUNK, 30, 80000)
 Options.GLOVEBOX = size('GLOVEBOX', Config.GLOVEBOX, 10, 10000)
 
+--- Whether an owned vehicle's boot answers only to its owner. See the config.
+Options.TRUNK_OWNER_ONLY = Config.TRUNK_OWNER_ONLY ~= false
+
 local bikes = section(Config.BIKES, 'BIKES')
 
 --- Lowercased record fragments that mark a two-wheeler.

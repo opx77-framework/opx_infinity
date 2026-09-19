@@ -419,7 +419,13 @@ function World.VehicleContainer(vehicleId, kind)
 	if not capacity then return nil, 'no_storage' end
 
 	local vehicles = M.Contracts.vehicles
-	local plate = vehicles and Common.Word(vehicles.PlateOf(vehicleId), 12) or nil
+	-- `PlateOf` answers the plate AND the citizen it belongs to. The owner was
+	-- dropped here, which is why nothing downstream could tell whose boot this
+	-- is; `Actions.OpenVehicle` needs it.
+	local rawPlate, rawOwner = nil, nil
+	if vehicles then rawPlate, rawOwner = vehicles.PlateOf(vehicleId) end
+	local plate = rawPlate and Common.Word(rawPlate, 12) or nil
+	local owner = rawOwner and Common.Word(rawOwner, 64) or nil
 
 	local container, reason
 	if plate then
@@ -435,6 +441,9 @@ function World.VehicleContainer(vehicleId, kind)
 	end
 	if not container then return nil, reason end
 	container.vehicleId = vehicleId
+	-- Whose boot this is, or nil for a vehicle nobody owns. Re-stated on every
+	-- open rather than kept from the first: a plate can change hands.
+	container.ownerCitizenId = owner
 	-- The load yielded; the vehicle may have gone while it did.
 	if not World.Vehicle(vehicleId) then return nil, 'no_vehicle' end
 	return container, nil

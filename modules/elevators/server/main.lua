@@ -159,6 +159,27 @@ local function adopt(key, entity, x, y, z, bucket, floorCount, activeFloor)
 	if not ok then return { ok = false, error = 'adopt_raised', reason = tostring(id) } end
 	if id == nil then return { ok = false, error = 'adopt_refused', reason = tostring(reason) } end
 
+	-- WHERE THE LIFT ACTUALLY IS, asked of the host rather than taken from the
+	-- client. The hash and the position both came off the wire, and
+	-- `Open77.elevators.adopt` validates neither -- its only refusals are
+	-- `elevators_unavailable` and a permission. So a client could pair one lift's
+	-- hash with another lift's coordinates and have this key adopt, and lock, the
+	-- wrong cabin. The re-claim branch above has always checked this; a first
+	-- adoption never did.
+	--
+	-- Released rather than kept: an adoption pointing at the wrong cabin is worse
+	-- than none, because `applyLock` would then freeze a lift nobody asked about.
+	--
+	-- ONLY WHEN THE HOST ANSWERS. A `get` that says nothing is not a disagreement
+	-- and must not undo a legitimate adoption -- `applyLock` below already treats
+	-- the same silence as a line rather than a rollback. A forged hash cannot use
+	-- that door: it names a lift that DOES exist, somewhere else.
+	local settled = Open77.elevators.get(id)
+	if type(settled) == 'table' and not atElevator(key, settled) then
+		pcall(Open77.elevators.remove, id)
+		return { ok = false, error = 'wrong_place' }
+	end
+
 	owned[key] = { id = id, floorCount = floorCount, atMs = OPX.Now() }
 	if not applyLock(id) then
 		Open77.log.warn(('[elevators] %s adopted as %s but could not be locked')

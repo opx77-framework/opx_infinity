@@ -101,8 +101,8 @@ function Actions.Use(source, slot)
 	if now - (lastUse[source] or -math.huge) < OPX.Tune.Number('INVENTORY_USE_COOLDOWN_MS', 0) then
 		return false, 'too_fast'
 	end
-	if not Players.GateOpen(source) then return false, 'not_ready' end
-	if not Players.Alive(source) then return false, 'dead' end
+	local may, refusal = Players.MayAct(source)
+	if not may then return false, refusal end
 
 	local bag, reason = Players.Bag(source)
 	if not bag then return false, reason end
@@ -177,10 +177,9 @@ function Actions.Give(source, target, slot, count)
 	target = Common.Integer(target, 1, 2147483647)
 	slot = Common.Integer(slot, 1, 65535)
 	if not target or not slot or target == source then return false, 'bad_request' end
-	if not Players.GateOpen(source) or not Players.GateOpen(target) then
-		return false, 'not_ready'
-	end
-	if not Players.Alive(source) then return false, 'dead' end
+	local may, refusal = Players.MayAct(source)
+	if not may then return false, refusal end
+	if not Players.GateOpen(target) then return false, 'not_ready' end
 
 	local from, reason = Players.Bag(source)
 	if not from then return false, reason end
@@ -219,7 +218,8 @@ function Actions.Drop(source, slot, count, yaw)
 	if not Options.DROPS then return nil, 'drops_disabled' end
 	slot = Common.Integer(slot, 1, 65535)
 	if not slot then return nil, 'bad_request' end
-	if not Players.GateOpen(source) then return nil, 'not_ready' end
+	local may, refusal = Players.MayAct(source)
+	if not may then return nil, refusal end
 
 	local bag, reason = Players.Bag(source)
 	if not bag then return nil, reason end
@@ -263,7 +263,8 @@ function Actions.TakeDrop(source, id)
 	-- A pile's id is always negative: it is a memory-only container.
 	id = Common.Integer(id, -2147483647, -1)
 	if not id or not World.Drop(id) then return false, 'not_found' end
-	if not Players.GateOpen(source) then return false, 'not_ready' end
+	local may, refusal = Players.MayAct(source)
+	if not may then return false, refusal end
 	if World.Seat(source) then return false, 'in_vehicle' end
 	local pile = Containers.Get(id)
 	if not pile then return false, 'not_found' end
@@ -294,7 +295,8 @@ end
 function Actions.OpenConfiguredStash(source, name)
 	local stash = type(name) == 'string' and Options.STASHES[name] or nil
 	if not stash then return nil, 'not_found' end
-	if not Players.GateOpen(source) then return nil, 'not_ready' end
+	local may, refusal = Players.MayAct(source)
+	if not may then return nil, refusal end
 	local anchor = { x = stash.position.x, y = stash.position.y, z = stash.position.z,
 		bucket = stash.bucket }
 	if not World.InReach(World.Position(source), anchor) then return nil, 'too_far' end
@@ -316,7 +318,8 @@ end
 -- @return table|nil
 -- @return string|nil
 function Actions.OpenVehicle(source, kind, vehicleId)
-	if not Players.GateOpen(source) then return nil, 'not_ready' end
+	local may, refusal = Players.MayAct(source)
+	if not may then return nil, refusal end
 	if kind == KIND.GLOVEBOX then
 		vehicleId = World.Seat(source)
 		if not vehicleId then return nil, 'not_seated' end
@@ -331,6 +334,20 @@ function Actions.OpenVehicle(source, kind, vehicleId)
 
 	local container, reason = World.VehicleContainer(vehicleId, kind)
 	if not container then return nil, reason end
+
+	-- A BOOT THAT BELONGS TO SOMEBODY ANSWERS TO THEM. Reach and "not sitting in
+	-- it" were the only checks, so a stranger could empty a parked owned car; the
+	-- vehicles module has no lock to consult, so ownership is the whole of the
+	-- rule. Off by configuration for a server that wants theft.
+	--
+	-- The glovebox is exempt: it opens only while SEATED, and somebody sitting in
+	-- the car has already been let into it.
+	if kind ~= KIND.GLOVEBOX and Options.TRUNK_OWNER_ONLY and container.ownerCitizenId then
+		if container.ownerCitizenId ~= Players.Citizen(source) then
+			return nil, 'not_yours'
+		end
+	end
+
 	if not World.WithinReach(source, container) then return nil, 'too_far' end
 	Containers.View(source, container)
 	return container, nil

@@ -90,6 +90,28 @@ function Players.Alive(source)
 	return true
 end
 
+--- Whether the player may act on a container at all, and the refusal if not.
+---
+--- ONE DOOR, BECAUSE THERE WERE SEVEN. `GateOpen` and `Alive` were written out
+--- as two separate lines at every handler, and four of them carried only the
+--- first: `drop`, `takeDrop`, `openStash` and `openTrunk`/`openGlovebox`. A
+--- player on the floor could therefore empty their bag into a pile or into a
+--- boot -- the down screen is drawn by the CLIENT, so closing it proves nothing
+--- about what the connection can still send. Dumping contraband before a staff
+--- search is the obvious use.
+---
+--- Anything a player drives has to come through here, so that a handler added
+--- later cannot half-remember the pair.
+-- @author dop42
+-- @param source Source
+-- @return boolean
+-- @return string|nil the refusal code, when it is false
+function Players.MayAct(source)
+	if not Players.GateOpen(source) then return false, 'not_ready' end
+	if not Players.Alive(source) then return false, 'dead' end
+	return true
+end
+
 --- Records a citizen id on a connection, dropping a stale binding of the same
 --- character somewhere else.
 local function bind(source, citizenId)
