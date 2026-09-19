@@ -802,6 +802,15 @@ function M.Api()
 		NewCharacter = M.NewCharacter,
 		CreateCharacter = M.CreateCharacter,
 		DeleteCharacter = M.DeleteCharacter,
+		-- THE THREE STAFF DOORS, beside the self-service ones. None of them checks
+		-- ownership and none reads `SELF_DELETE`; whoever calls them has passed the
+		-- access list, and that is the check. They are here rather than in `admin`
+		-- because what a character IS belongs to this module -- `admin` reads them
+		-- through the contract on the SERVER, where a caller has been through the
+		-- ACL, and never from a client, where a contract call is no check at all.
+		ListCharactersFor = M.ListCharactersFor,
+		RenameCharacter = M.RenameCharacter,
+		RemoveCharacter = M.RemoveCharacter,
 
 		Save = M.Save,
 		Logout = M.Logout,

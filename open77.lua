@@ -311,6 +311,10 @@ server_script "modules/admin/server/world.lua"
 server_script "modules/admin/server/tags.lua"
 server_script "modules/admin/server/combat.lua"
 server_script "modules/admin/server/doors.lua"
+-- The staff door onto an ACCOUNT'S CHARACTERS, which outlive the session that
+-- `players.lua` acts on. Before `menu.lua`, like every other register: the access
+-- map that file sends lists what this one registered.
+server_script "modules/admin/server/characters.lua"
 server_script "modules/admin/server/menu.lua"
 
 client_script "modules/admin/client/main.lua"

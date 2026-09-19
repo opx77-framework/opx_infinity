@@ -23,7 +23,8 @@ local Menu = M.Menu
 local CHUNK = 20
 
 -- The refresh topics a client may ask for. Anything else is dropped.
-local TOPICS = { roster = true, locations = true, access = true, items = true, bag = true }
+local TOPICS = { roster = true, locations = true, access = true, items = true, bag = true,
+	characters = true }
 
 -- Every command name the menu may issue, this module's own and the linked ones.
 local function menuCommands()
@@ -99,6 +100,21 @@ local function pushBag(playerId, token)
 	pushChunks(playerId, M.Event.BAG, rows, { target = token, error = targetCode or code })
 end
 
+--- One player's characters, tagged with the player they were read for.
+-- The tag is what makes a late answer harmless: an operator who has moved on to
+-- somebody else drops it rather than drawing another account's rows as theirs.
+-- Coroutine only.
+local function pushCharacters(playerId, token)
+	local target = tonumber(token)
+	local rows, code
+	if target ~= nil and target > 0 then
+		rows, code = M.Characters.Rows(target)
+	else
+		code = 'bad_target'
+	end
+	pushChunks(playerId, M.Event.CHARACTERS, rows or {}, { target = token, error = code })
+end
+
 --- Registers the opener command and the refresh event.
 -- @author dop42
 function Menu.Register()
@@ -124,7 +140,10 @@ function Menu.Register()
 	RegisterNetEvent(M.Event.REFRESH, function(topic, arg)
 		local player = tonumber(source) or 0
 		if player <= 0 or not TOPICS[topic] then return end
-		if topic == 'bag' and (type(arg) ~= 'string' or #arg > 32) then return end
+		if (topic == 'bag' or topic == 'characters') and
+			(type(arg) ~= 'string' or #arg > 32) then
+			return
+		end
 
 		-- Named, so a client waiting on one of several lists can tell which
 		-- `error.tooFast` is its own.
@@ -156,6 +175,14 @@ function Menu.Register()
 				return
 			end
 			CreateThread(function() pushBag(player, arg) end)
+		elseif topic == 'characters' then
+			-- The same idiom the bag uses one branch up: a list is served only to an
+			-- operator who is granted something it feeds. Without the read grant
+			-- there is no reason for them to be looking at another account's rows at
+			-- all, and the list is a roster of what they could then rename or
+			-- delete.
+			if Server.Permitted(player, Command.CHARACTER_LIST) ~= true then return end
+			CreateThread(function() pushCharacters(player, arg) end)
 		else
 			local access, known = accessOf(player)
 			TriggerClientEvent(M.Event.ACCESS, player,

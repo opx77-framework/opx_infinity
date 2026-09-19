@@ -512,6 +512,17 @@ function M.Start()
 		Open77.log.warn('no character contract: nobody will be seen going down')
 	end
 
+	-- A DELETED CHARACTER TAKES ITS DOWN ROW WITH IT. This table carries no
+	-- foreign key -- the header in `storage.lua` says why -- and one would not
+	-- have helped anyway, because a character delete is a soft one and no cascade
+	-- fires for an UPDATE. `Clear` is the write this module already had; it queues
+	-- behind whatever else is in flight, which is right: nothing is waiting on it.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'),
+		function(_, citizenId)
+			if type(citizenId) ~= 'string' or citizenId == '' then return end
+			M.Storage.Clear(citizenId)
+		end)
+
 	RegisterNetEvent(EVENT_READY, onReady)
 	RegisterNetEvent(EVENT_WAIT, onWait)
 	RegisterNetEvent(EVENT_GIVE_UP, onGiveUp)

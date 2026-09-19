@@ -96,8 +96,32 @@ OPX.Config.MODULES.character = {
 		ROW_CEILING = 60,
 
 		-- Extra { TABLE, COLUMN } pairs whose rows really go when a character is
-		-- deleted. A table with an ON DELETE CASCADE foreign key needs no entry.
+		-- deleted. FOR TABLES THIS RUNTIME DOES NOT OWN -- another resource's, or
+		-- one added by hand. Every table a module in here owns is purged by that
+		-- module, on `character:deleted`, so nothing belongs on this list twice.
+		--
+		-- AN ON DELETE CASCADE FOREIGN KEY DOES **NOT** EXCUSE AN ENTRY, which is
+		-- what this comment used to say and it was wrong. A character delete is a
+		-- SOFT delete -- `deleted_at` is stamped and the row stays, which is what
+		-- frees the slot without losing the history -- and a cascade fires for a
+		-- DELETE and never for an UPDATE. So the foreign keys in this schema are
+		-- all correct and not one of them has ever run on a player deleting a
+		-- character. If a table out there has to be emptied, name it here.
 		CASCADE_TABLES = {},
+
+		-- Whether a player may delete their OWN character with `/opx.delete`.
+		--
+		-- Staff are never affected by this: the staff menu deletes through the ACL
+		-- and answers to that instead. This is only the self-service door, and it
+		-- is a door worth being able to shut -- a delete takes the character's
+		-- clothes, needs, containers and cars with it, and there is no undo. On a
+		-- roleplay server that is a ticket for an admin; on a test server it is
+		-- how you get a clean slate in one command.
+		--
+		-- False refuses the command with `character.deleteNotAllowed` and writes
+		-- nothing. It does not hide the command: a player who tries is told no,
+		-- rather than left wondering whether it silently worked.
+		SELF_DELETE = true,
 
 		-- Bounds on each half of a character name, in characters and not bytes.
 		NAME = { MIN = 2, MAX = 32 },

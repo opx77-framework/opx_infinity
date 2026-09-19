@@ -105,3 +105,23 @@ VALUES (@citizen, @clothing)
 ON DUPLICATE KEY UPDATE clothing = VALUES(clothing)
   ]], { citizen = citizenId, clothing = encoded })
 end
+
+--- Removes everything this module stores for a character that has been deleted.
+-- @author dop42
+--
+-- THE FOREIGN KEY DOES NOT DO THIS, and the row above it says why it looks as
+-- though it should: `opx77_character_clothing.citizen_id` really does carry
+-- `ON DELETE CASCADE` onto `opx77_characters`. But a character delete is a SOFT
+-- delete -- `deleted_at` is stamped and the row stays, so the slot is freed
+-- without losing the history -- and no cascade fires for an UPDATE. So every
+-- cascade in this schema is correct and none of them has ever run on a player
+-- deleting a character.
+--
+-- The face is not here and needs nothing: it is a column on the character row
+-- itself, so it goes when that row does.
+-- @param citizenId CitizenId
+-- @return Result
+function M.Storage.PurgeCharacter(citizenId)
+	return Storage.Execute('DELETE FROM opx77_character_clothing WHERE citizen_id = @citizen',
+		{ citizen = citizenId })
+end

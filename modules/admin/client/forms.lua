@@ -156,6 +156,43 @@ FORMS.itemGive = countForm('admin.form.itemGive', Command.INVENTORY_GIVE)
 FORMS.itemRemove = countForm('admin.form.itemRemove', Command.INVENTORY_REMOVE, 'bag')
 FORMS.ammoGive = countForm('admin.form.ammoGive', Command.WEAPON_GIVEAMMO)
 
+-- RENAMING A CHARACTER. A player names theirs once and cannot change it, which
+-- is the rule and is kept; this is the other door, and the reason one has to
+-- exist -- a slur, or a typo the player cannot fix because their own door shut
+-- behind them.
+--
+-- `charset = 'name'` is the form module's own closed set, the same one the entry
+-- form asks the player for: staff get a bigger door, not a different alphabet. A
+-- name only staff could have written is a name every other reader of the column
+-- still has to cope with. The server validates both halves again whatever
+-- arrives here, so this is the courtesy and not the check.
+--
+-- It does NOT go through a confirmation: a rename is visible, reversible by
+-- another rename, and loses nothing. The delete beside it in the menu does, and
+-- is a `guarded` row rather than a form.
+FORMS.charRename = {
+	build = function(arg)
+		if type(arg) ~= 'string' or arg == '' then return nil end
+		return {
+			title = locale('admin.form.charRename'),
+			description = locale('admin.form.charRenameHint', { citizenId = arg }),
+			fields = {
+				text('firstName', 'admin.field.firstName',
+					{ charset = 'name', maxLength = 24, required = true }),
+				text('lastName', 'admin.field.lastName',
+					{ charset = 'name', maxLength = 24, required = true }),
+			},
+		}
+	end,
+	submit = function(values, arg)
+		-- `characters` and not `roster`: what changed is a row in the list the
+		-- screen behind this form is drawing, and the roster's own copy of the name
+		-- follows on its next pass anyway.
+		menu().Run({ Command.CHARACTER_RENAME, tostring(arg), values.firstName, values.lastName },
+			'characters')
+	end,
+}
+
 FORMS.kick = {
 	build = function()
 		return { title = locale('admin.form.kick'), fields = {

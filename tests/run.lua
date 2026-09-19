@@ -1108,6 +1108,154 @@ do
 	end
 end
 
+-- ── deleting a character, and everything it owned ────────────────────────────
+-- WHAT A DELETE ACTUALLY REMOVES. Every table keyed on a citizen id carries
+-- `ON DELETE CASCADE` onto `opx77_characters` and NOT ONE OF THEM HAS EVER FIRED
+-- on a player deleting a character, because the delete is SOFT: `deleted_at` is
+-- stamped and the row stays, and a cascade fires for a DELETE and never for an
+-- UPDATE. So the foreign keys are all correct and all beside the point, and what
+-- does the work is `character:deleted` -- a seam that was raised, listened to by
+-- nobody, and left every deleted character's clothes, needs, containers and cars
+-- in the database for ever.
+section('deleting a character')
+do
+	local env, control, why = boot('server')
+	check('server boots for the delete tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+
+		-- THE TWO STAFF DOORS, beside the self-service ones. They do not check
+		-- ownership and do not read `SELF_DELETE`; the access list is the check,
+		-- and it has happened before either is reached.
+		local contract = OPX.Api.Get('character')
+		check('the staff listing is published for the admin menu to read',
+			contract ~= nil and type(contract.ListCharactersFor) == 'function')
+		check('so is the staff rename', contract ~= nil and type(contract.RenameCharacter) == 'function')
+		check('and the staff delete', contract ~= nil and type(contract.RemoveCharacter) == 'function')
+		check('beside the self-service delete, which is a different door',
+			contract ~= nil and type(contract.DeleteCharacter) == 'function'
+				and contract.DeleteCharacter ~= contract.RemoveCharacter)
+
+		-- EVERY MODULE THAT OWNS A PER-CHARACTER TABLE ANSWERS THE ANNOUNCEMENT.
+		-- Spied rather than driven through the database, which this host has none
+		-- of: what is under test is that each module LISTENS and names its own
+		-- rows, not that MySQL then deletes them.
+		local purged = {}
+		local originals = {}
+		for _, owner in ipairs({ 'appearance', 'needs', 'inventory', 'vehicles' }) do
+			local module = OPX.Modules.Get(owner)
+			local storage = module and module.Storage
+			if storage ~= nil and type(storage.PurgeCharacter) == 'function' then
+				originals[owner] = storage.PurgeCharacter
+				storage.PurgeCharacter = function(citizenId)
+					purged[owner] = citizenId
+					return OPX.Result.Ok(true)
+				end
+			end
+		end
+		-- `downed` names its purge `Clear`: it already had the statement, and the
+		-- write it queues is the same one a revive writes.
+		local downed = OPX.Modules.Get('downed')
+		local downedClear = downed and downed.Storage and downed.Storage.Clear
+		if downedClear then
+			downed.Storage.Clear = function(citizenId) purged.downed = citizenId end
+		end
+
+		local before = #control.log.error
+		control.Fire(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'), 12, 'citizen-gone')
+
+		for _, owner in ipairs({ 'appearance', 'needs', 'inventory', 'vehicles', 'downed' }) do
+			check(('%s removes what it stored for a deleted character'):format(owner),
+				purged[owner] == 'citizen-gone', tostring(purged[owner]))
+		end
+		check('and nothing raised doing it', #control.log.error == before,
+			table.concat(control.log.error, ' | '))
+
+		-- A PAYLOAD THAT IS NOT A CITIZEN ID. The announcement is internal and its
+		-- handlers still check, because a handler that ran on nil would issue a
+		-- delete with an empty parameter -- which is a statement that matches
+		-- whatever the column defaults to rather than nothing.
+		purged = {}
+		control.Fire(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'), 12, nil)
+		control.Fire(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'), 12, '')
+		local any = false
+		for _ in pairs(purged) do any = true end
+		check('a delete announcement with no citizen id removes nothing', not any)
+
+		for owner, original in pairs(originals) do
+			OPX.Modules.Get(owner).Storage.PurgeCharacter = original
+		end
+		if downedClear then downed.Storage.Clear = downedClear end
+
+		-- THE ONE TABLE THIS MODULE OWNS ITSELF is purged inline rather than over
+		-- the announcement, and the two config hooks are still there for tables
+		-- nothing in this runtime owns. Read out of the source, because driving it
+		-- needs a database.
+		local handle = io.open('modules/character/server/character.lua', 'r')
+		local body = handle:read('a')
+		handle:close()
+		local worker = body:match('local function removeCharacter.-\nend\n')
+		check('the delete purges the memberships it owns itself',
+			worker ~= nil and worker:find('opx77_character_groups', 1, true) ~= nil)
+		check('and still runs the operator cascade list for tables nothing owns',
+			worker ~= nil and worker:find('CASCADE_TABLES', 1, true) ~= nil)
+		check('and announces the delete so every other module can follow',
+			worker ~= nil and worker:find('IN_DELETED', 1, true) ~= nil)
+		-- UNDER pcall: the audit is already written and the session still has to be
+		-- ended, so a handler that raises must not take either with it.
+		check('under a pcall, so one bad listener cannot strand the player',
+			worker ~= nil and worker:find('pcall(TriggerEvent, M.Event.IN_DELETED', 1, true) ~= nil)
+
+		-- WHETHER A PLAYER MAY DELETE THEIR OWN. Refused rather than hidden: a
+		-- command that silently did nothing would have them trying it again and
+		-- then asking staff whether it had worked.
+		local saved = OPX.Config.MODULES.character.CHARACTERS.SELF_DELETE
+		OPX.Config.MODULES.character.CHARACTERS.SELF_DELETE = false
+		local refused = character.DeleteCharacter(77, 'ABC-1234')
+		check('with SELF_DELETE off, a player deleting their own is refused',
+			refused ~= nil and refused.ok == false, refused and tostring(refused.error))
+		check('by a code a player can be shown, not a silent nothing',
+			refused ~= nil and refused.error == 'character.deleteNotAllowed',
+			refused and tostring(refused.error))
+		check('and the code is a catalogue key, so it reads as a sentence',
+			OPX.Locale.Exists('character.deleteNotAllowed'))
+		OPX.Config.MODULES.character.CHARACTERS.SELF_DELETE = saved
+		check('the shipped configuration answers the question either way',
+			type(OPX.Config.MODULES.character.CHARACTERS.SELF_DELETE) == 'boolean',
+			tostring(OPX.Config.MODULES.character.CHARACTERS.SELF_DELETE))
+
+		-- ── the staff menu's own door ────────────────────────────────────────
+		local admin = OPX.Modules.Get('admin')
+		check('the three character grants are named in one place, as their own area',
+			admin.Command.CHARACTER_LIST == 'opx.admin.character.list'
+				and admin.Command.CHARACTER_RENAME == 'opx.admin.character.rename'
+				and admin.Command.CHARACTER_DELETE == 'opx.admin.character.delete')
+		-- NOT `player.*`, and the distinction is the whole reason for a new area:
+		-- that namespace is the session and the puppet, and both die with the
+		-- connection. These reach rows that outlive it.
+		check('and not under the session namespace, which dies with the connection',
+			admin.Command.CHARACTER_DELETE:find('player', 1, true) == nil)
+
+		for _, name in ipairs({ 'opx.admin.character.list', 'opx.admin.character.rename',
+			'opx.admin.character.delete' }) do
+			local registered = control.commands[name]
+			check(('%s is registered'):format(name), registered ~= nil)
+			-- RESTRICTED, every one: the host refuses the line before a handler
+			-- runs, which is the only permission check this module has.
+			check(('%s is restricted, which is the whole check'):format(name),
+				registered ~= nil and registered.restricted == true)
+		end
+
+		-- A refusal code with no catalogue key behind it reaches a player as the
+		-- key itself, and these two are new.
+		check('the new refusal codes are sentences in both catalogues',
+			OPX.Locale.Exists('admin.error.badName')
+				and OPX.Locale.Exists('admin.error.charactersUnavailable'))
+	end
+end
+
 -- ── taking another character ─────────────────────────────────────────────────
 -- WHETHER `opx.select` KICKS, which is `CHARACTERS.SWITCH` and is the operator's
 -- call. The two values are not a preference between equals: one takes the other

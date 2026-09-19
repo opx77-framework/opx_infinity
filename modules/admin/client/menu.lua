@@ -52,6 +52,12 @@ local locations, locationsIncoming = {}, {}
 local catalog = { rows = {}, incoming = {}, loaded = false, error = nil }
 local bag = { target = nil, rows = {}, incoming = {}, loaded = false, error = nil }
 
+-- The characters of the one account the roster screen is looking into. Same
+-- shape as `bag` and for the same reason: it is a per-target list fetched from
+-- the server, so it carries the target it was read for and a late answer for
+-- somebody else is dropped rather than drawn as theirs.
+local chars = { target = nil, rows = {}, incoming = {}, loaded = false, error = nil }
+
 -- Screen, argument and cursor from the root down.
 local stack = {}
 
@@ -127,9 +133,13 @@ local function command(id, label, tokens, refresh, extra)
 end
 
 -- A command row that goes through a confirmation screen first.
-local function guarded(id, labelKey, tokens, confirmKey)
+local function guarded(id, labelKey, tokens, confirmKey, refresh, back)
 	local item = command(id, labelKey, tokens)
-	item.data = { confirm = tokens, key = confirmKey }
+	-- `refresh` and `back` are carried through the confirmation the same way the
+	-- tokens are: a row that destroys what the screen under it draws has to say so
+	-- HERE, where the caller knows, rather than have the dispatch guess from the
+	-- screen's name.
+	item.data = { confirm = tokens, key = confirmKey, refresh = refresh, back = back }
 	return item
 end
 
@@ -553,6 +563,13 @@ SCREENS.player = function(id)
 		items[#items + 1] = go('character', 'admin.menu.character', 'playerCharacter', id,
 			{ icon = 'tag' })
 	end
+	-- THE ACCOUNT'S CHARACTERS, which is a different question from the row above
+	-- it: that one acts on the character being PLAYED -- its job, its gang, its
+	-- money -- and this one lists every character the person owns, played or not.
+	-- Greyed rather than hidden when the ACL refuses the listing, so an operator
+	-- can see that the door exists and is not theirs.
+	items[#items + 1] = goFor('characters', 'admin.menu.charList', 'playerCharacters', id,
+		Command.CHARACTER_LIST, { icon = 'folder' })
 	items[#items + 1] = go('items', 'admin.menu.items', 'playerItems', id, { icon = 'weapon' })
 	if inventoryUp() then
 		items[#items + 1] = go('inventory', 'admin.menu.inventory', 'playerInventory', id,
@@ -615,6 +632,116 @@ SCREENS.playerCharacter = function(id)
 	end
 	if #items == 0 then items[1] = empty('admin.menu.catalogEmpty') end
 	return playerTitle(id, 'admin.menu.character'), items
+end
+
+-- ── an account's characters ─────────────────────────────────────────────────
+-- EVERY CHARACTER THE PERSON OWNS, played or not, which is a different question
+-- from the screen above: that one acts on the body in the world and dies with
+-- the connection, these are the rows behind it and outlive it. The list is
+-- served by the server against the ACL and arrives tagged with the player it was
+-- read for, so this draws nothing until the tag matches the screen's own target.
+
+--- One character out of the list the server sent, or nil.
+local function characterRow(citizenId)
+	for _, entry in ipairs(chars.rows) do
+		if entry.citizenId == citizenId then return entry end
+	end
+	return nil
+end
+
+--- A character's display name, or the word for one that was never named.
+local function characterName(entry)
+	if entry == nil or entry.firstName == nil then return locale('admin.menu.charUnnamed') end
+	return ('%s %s'):format(entry.firstName, entry.lastName or '')
+end
+
+SCREENS.playerCharacters = function(id)
+	local query = filtering()
+	local held, rows = 0, {}
+	if chars.target == tostring(id) then
+		for _, entry in ipairs(chars.rows) do
+			held = held + 1
+			local name = characterName(entry)
+			if matches(query, name, entry.citizenId, entry.job, entry.gang)
+				and #rows < MAX_LISTED then
+				local item = go('char_' .. entry.citizenId, { text = name }, 'character',
+					entry.citizenId, { icon = entry.live and 'star' or 'person' })
+				-- `live` is the one being played right now and `active` the one the
+				-- ACCOUNT is locked on. They are usually the same and are not while a
+				-- switch is in flight, so the value says which claim is being made.
+				item.value = entry.live and locale('admin.menu.charLive')
+					or (entry.active and locale('admin.menu.charActive'))
+					or entry.gender or nil
+				-- The citizen id is what every command here takes, so it is on the
+				-- row rather than a level in; the date is what tells two unnamed
+				-- characters apart.
+				item.description = entry.createdAt
+					and ('%s  %s'):format(entry.citizenId, entry.createdAt) or entry.citizenId
+				rows[#rows + 1] = item
+			end
+		end
+	end
+	local items = append(searchRows(#rows, held), rows)
+	if #rows == 0 then
+		items[#items + 1] = query and empty('admin.menu.noMatch')
+			or placeholder(chars.target == tostring(id) and chars or { loaded = false },
+				'admin.menu.charNone')
+	end
+	return titleFor('admin.menu.charList', id), items
+end
+
+SCREENS.character = function(citizenId)
+	local entry = characterRow(citizenId)
+	local items = {}
+
+	-- WHAT THE ROW IS, as readouts and not as controls: a readout is a line of
+	-- type and takes no frame. None of it is editable and that is the point --
+	-- the dates are a RECORD of what happened, and a date this menu could rewrite
+	-- is an audit trail nobody can trust. There is no birth date in this schema;
+	-- lifepath, origin and date of birth were dropped from it.
+	append(items, {
+		row('id', locale('admin.menu.charId'), nil,
+			{ value = tostring(citizenId), disabled = true, icon = 'info' }),
+		row('name', locale('admin.menu.charName'), nil,
+			{ value = characterName(entry), disabled = true, icon = 'person' }),
+	})
+	if entry ~= nil and entry.gender then
+		items[#items + 1] = row('body', locale('admin.menu.charBody'), nil,
+			{ value = entry.gender, disabled = true, icon = 'person' })
+	end
+	if entry ~= nil and entry.job then
+		items[#items + 1] = row('job', locale('admin.menu.charJob'), nil,
+			{ value = entry.job, disabled = true, icon = 'tag' })
+	end
+	if entry ~= nil and entry.gang then
+		items[#items + 1] = row('gang', locale('admin.menu.charGang'), nil,
+			{ value = entry.gang, disabled = true, icon = 'flag' })
+	end
+	if entry ~= nil and entry.createdAt then
+		items[#items + 1] = row('created', locale('admin.menu.charCreated'), nil,
+			{ value = entry.createdAt, disabled = true, icon = 'clock' })
+	end
+	if entry ~= nil and entry.lastLoggedOut then
+		items[#items + 1] = row('seen', locale('admin.menu.charSeen'), nil,
+			{ value = entry.lastLoggedOut, disabled = true, icon = 'clock' })
+	end
+
+	-- THE ONE EDITABLE THING. Job, gang and money are the modules that own them,
+	-- reachable a screen away on the character being played; the name is the only
+	-- part of a character's identity this module writes, and it is here because a
+	-- player may only write it once and cannot fix a typo afterwards.
+	items[#items + 1] = section('admin.menu.section.actions')
+	items[#items + 1] = icon(form('rename', 'admin.menu.charRename', 'charRename', citizenId,
+		Command.CHARACTER_RENAME), 'tool')
+
+	items[#items + 1] = section('admin.menu.section.danger')
+	-- `back` because this page is about to be about nothing, and `characters`
+	-- because the list above it has one row fewer.
+	items[#items + 1] = icon(guarded('delete', 'admin.menu.charDelete',
+		{ Command.CHARACTER_DELETE, tostring(citizenId) }, 'admin.confirm.charDelete',
+		'characters', true), 'trash')
+
+	return ('%s: %s'):format(locale('admin.menu.charList'), characterName(entry)), items
 end
 
 SCREENS.playerItems = function(id)
@@ -1171,7 +1298,16 @@ local function push(screen, arg)
 	stack[#stack + 1] = { screen = screen, arg = arg, filter = carried }
 	-- Leaving the root is the moment to re-check what the ACL still grants.
 	if #stack == 2 then TriggerServerEvent(M.Event.REFRESH, 'access') end
-	if screen:match('^player') then
+	-- BEFORE the `^player` prefix test below, which this name also matches: that
+	-- branch would win the chain and ask only for the roster, and the list would
+	-- sit on 'loading' for ever. The roster is asked for here as well, because the
+	-- screen's title names the player.
+	if screen == 'playerCharacters' then
+		chars.target, chars.rows, chars.incoming = tostring(arg), {}, {}
+		chars.loaded, chars.error = false, nil
+		TriggerServerEvent(M.Event.REFRESH, 'characters', tostring(arg))
+		TriggerServerEvent(M.Event.REFRESH, 'roster')
+	elseif screen:match('^player') then
 		TriggerServerEvent(M.Event.REFRESH, 'roster')
 	elseif screen == 'locations' or screen == 'saved' then
 		TriggerServerEvent(M.Event.REFRESH, 'locations')
@@ -1223,6 +1359,26 @@ function Menu.Status(line, ok)
 	if contract ~= nil then contract.SetStatus(handle, one, ok == false) end
 end
 
+-- The refresh topics that are read FOR somebody, and are dropped by the server
+-- without one. Everything else -- the roster, the locations, the catalogue -- is
+-- the whole world's and takes no argument.
+local PER_TARGET = { bag = true, characters = true }
+
+--- Who a per-target topic is asked for, or nil.
+-- The two are read from different places on purpose. A bag is read off the
+-- screen the operator is standing on, because that screen IS the bag. A
+-- character list is read off the list's own tag, because the screen asking for
+-- it is usually the single-character page BELOW the list, whose own argument is
+-- a citizen id rather than the player the account belongs to.
+local function refreshArg(topic)
+	if topic == 'bag' then
+		local current = top()
+		return current and current.screen == 'bag' and tostring(current.arg) or nil
+	end
+	if topic == 'characters' then return chars.target end
+	return nil
+end
+
 --- Runs a command line and asks for a list again a moment later.
 -- @author dop42
 -- @param tokens table
@@ -1235,10 +1391,10 @@ function Menu.Run(tokens, refresh)
 		return
 	end
 	if refresh == nil then return end
-	local current = top()
-	local arg = refresh == 'bag' and current and current.screen == 'bag' and tostring(current.arg)
-		or nil
-	if refresh == 'bag' and arg == nil then return end
+	local arg = refreshArg(refresh)
+	-- A per-target topic with no target is a request the server drops anyway, so
+	-- it is not sent: the list stays as it was rather than silently not arriving.
+	if PER_TARGET[refresh] and arg == nil then return end
 	-- A one-shot thread, not a scheduler job: the list is asked for once, after
 	-- the server has had time to do the thing that changes it.
 	CreateThread(function()
@@ -1270,11 +1426,12 @@ end
 -- @author dop42
 -- @param tokens table
 -- @param key string
-function Menu.Confirm(tokens, key)
+function Menu.Confirm(tokens, key, refresh, back)
 	suspended = false
 	if #stack == 0 then return end
 	top().cursor = nil
-	stack[#stack + 1] = { screen = 'confirm', arg = { tokens = tokens, key = key } }
+	stack[#stack + 1] = { screen = 'confirm',
+		arg = { tokens = tokens, key = key, refresh = refresh, back = back == true } }
 	draw()
 end
 
@@ -1420,10 +1577,16 @@ onAction = function(payload)
 	if data.back then return pop() end
 	if data.clearFilter then return Menu.Filter(nil) end
 	if data.confirmed and current.screen == 'confirm' then
-		local tokens = current.arg.tokens
+		local held = current.arg
 		stack[#stack] = nil
+		-- `back` LEAVES THE PAGE THE ACTION DESTROYED. A confirmed delete drops the
+		-- thing the screen underneath was drawing -- a deleted character's own page
+		-- would come back reading its id and a blank name out of a list that no
+		-- longer holds it -- so the caller that knows that says so, and the list
+		-- above is what the operator lands on and what the refresh then redraws.
+		if held.back and #stack > 1 then stack[#stack] = nil end
 		draw()
-		return Menu.Run(tokens)
+		return Menu.Run(held.tokens, held.refresh)
 	end
 	if type(data.go) == 'string' and SCREENS[data.go] then return push(data.go, data.arg) end
 	if type(data.run) == 'table' then
@@ -1432,7 +1595,7 @@ onAction = function(payload)
 		return
 	end
 	if type(data.confirm) == 'table' and type(data.key) == 'string' then
-		return Menu.Confirm(data.confirm, data.key)
+		return Menu.Confirm(data.confirm, data.key, data.refresh, data.back)
 	end
 	if type(data.form) == 'string' then return Forms.Open(data.form, data.arg) end
 end
@@ -1555,6 +1718,36 @@ function Menu.Start()
 				label = tostring(entry.label or entry.name) }
 		end)
 		if done and Menu.Screen() == 'bag' then draw(true) end
+	end)
+
+	RegisterNetEvent(M.Event.CHARACTERS, function(payload)
+		if type(payload) ~= 'table' or type(payload.rows) ~= 'table' then return end
+		-- The tag, exactly as the bag above it: an answer for a player the operator
+		-- has already moved on from is dropped rather than drawn as this one's.
+		if payload.target ~= chars.target then return end
+		local done = collect(chars, payload, function(entry)
+			if type(entry.citizenId) ~= 'string' or entry.citizenId == '' then return nil end
+			-- Rebuilt field by field rather than kept: everything on this payload
+			-- is drawn, and a row that carried a table where a label belongs would
+			-- reach the menu contract and be refused there -- taking the whole
+			-- screen with it, because a spec is refused whole.
+			return {
+				citizenId = entry.citizenId,
+				firstName = type(entry.firstName) == 'string' and entry.firstName or nil,
+				lastName = type(entry.lastName) == 'string' and entry.lastName or nil,
+				gender = type(entry.gender) == 'string' and entry.gender or nil,
+				job = type(entry.job) == 'string' and entry.job or nil,
+				gang = type(entry.gang) == 'string' and entry.gang or nil,
+				createdAt = type(entry.createdAt) == 'string' and entry.createdAt or nil,
+				lastLoggedOut = type(entry.lastLoggedOut) == 'string' and entry.lastLoggedOut or nil,
+				active = entry.active == true or nil,
+				live = entry.live == true or nil,
+			}
+		end)
+		-- Both screens: the list draws the rows and the one below it draws a single
+		-- row out of the same store, so a refresh after a rename redraws either.
+		local screen = Menu.Screen()
+		if done and (screen == 'playerCharacters' or screen == 'character') then draw(true) end
 	end)
 
 	RegisterNetEvent(M.Event.ROSTER, function(payload)

@@ -20,6 +20,7 @@ OPX.Locale.Register('en', {
 	['character.unnamed'] = 'no name yet',
 	['character.created'] = 'Character created. Your citizen ID is {citizenId}.',
 	['character.deleted'] = 'Character deleted.',
+	['character.deleteNotAllowed'] = 'Deleting your own character is turned off on this server. Ask a member of staff.',
 	['character.inUse'] = 'That character is already in the world.',
 	['character.alreadyPlaying'] = 'You are playing that character right now.',
 
@@ -107,6 +108,7 @@ OPX.Locale.Register('fr', {
 	['character.unnamed'] = 'sans nom',
 	['character.created'] = 'Personnage cree. Votre identifiant citoyen est {citizenId}.',
 	['character.deleted'] = 'Personnage supprime.',
+	['character.deleteNotAllowed'] = "La suppression de votre propre personnage est desactivee sur ce serveur. Demandez a un membre du staff.",
 	['character.inUse'] = 'Ce personnage est deja en jeu.',
 	['character.alreadyPlaying'] = 'Vous jouez deja ce personnage.',
 

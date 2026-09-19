@@ -208,6 +208,17 @@ function M.Start()
 		Open77.log.warn('no character contract: no needs will be loaded or saved')
 	end
 
+	-- A DELETED CHARACTER TAKES ITS NEEDS WITH IT. This table carries no foreign
+	-- key at all -- the header in `storage.lua` says why -- and one would not have
+	-- helped anyway, because a character delete is a soft one and no cascade fires
+	-- for an UPDATE. See `character.Event.IN_DELETED`, whose name is rebuilt here
+	-- the way every module rebuilds another's.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'deleted'),
+		function(_, citizenId)
+			if type(citizenId) ~= 'string' or citizenId == '' then return end
+			M.Storage.PurgeCharacter(citizenId)
+		end)
+
 	RegisterNetEvent(EVENT_PULL, onPull)
 	RegisterNetEvent(EVENT_PUSH, onPush)
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, departed)

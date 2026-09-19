@@ -301,6 +301,22 @@ function Store.Delete(id)
 	return Storage.Execute('DELETE FROM opx77_inventories WHERE id = @id', { id = id })
 end
 
+--- Removes every container a deleted character owned, and their stacks with them.
+-- @author dop42
+--
+-- THE STACKS REALLY DO GO BY CASCADE HERE, and that one works: the foreign key
+-- that carries them is `opx77_inventory_items.inventory_id`, and this is a real
+-- DELETE on the parent. What does NOT work is the other cascade, the one from
+-- `opx77_characters` -- a character delete is a SOFT delete, `deleted_at` on a
+-- row that stays, and no cascade fires for an UPDATE. So the containers have to
+-- be named here, and their contents then follow by themselves.
+-- @param citizenId CitizenId
+-- @return Result
+function Store.PurgeCharacter(citizenId)
+	return Storage.Execute('DELETE FROM opx77_inventories WHERE citizen_id = @citizen',
+		{ citizen = citizenId })
+end
+
 --- The containers holding an item, largest stacks first.
 -- The limit is a caller constant formatted into the statement, as in `Contents`.
 -- @author dop42

@@ -69,6 +69,27 @@ M.Event = {
 	IN_MONEY = OPX.Event(INTERNAL, 'character', 'money'),
 	IN_JOB = OPX.Event(INTERNAL, 'character', 'job'),
 	IN_GANG = OPX.Event(INTERNAL, 'character', 'gang'),
+	-- `(source, citizenId)`. THE CASCADE, AND THE ONLY ONE THERE IS.
+	--
+	-- Every table keyed on a citizen id carries `ON DELETE CASCADE` onto
+	-- `opx77_characters` and NOT ONE OF THEM HAS EVER FIRED on a player deleting
+	-- a character, because the delete is SOFT: `deleted_at` is stamped and the
+	-- row stays, so the slot is freed without losing the history, and a cascade
+	-- fires for a DELETE and never for an UPDATE. The foreign keys are correct
+	-- and they answer a different question -- what happens if a row is really
+	-- removed, which only the rollback of a failed create ever does.
+	--
+	-- So this is what removes a deleted character's clothes, needs, down row,
+	-- containers and cars, and each of those modules answers for its OWN tables:
+	-- a list of table names in one module's config -- which is what
+	-- `CHARACTERS.CASCADE_TABLES` is, and it ships empty -- is a list somebody
+	-- has to remember to extend every time a module gains a table, and the one
+	-- that was forgotten leaves rows nothing will ever read again and nothing
+	-- will ever find.
+	--
+	-- Raised INSIDE the deleting coroutine, so a handler may yield and the purge
+	-- has finished before the player is told. It is raised after the row is
+	-- stamped, so a handler that reads the character back sees it gone.
 	IN_DELETED = OPX.Event(INTERNAL, 'character', 'deleted'),
 	IN_PAYCHECK = OPX.Event(INTERNAL, 'character', 'paycheck'),
 }
