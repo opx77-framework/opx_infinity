@@ -36,10 +36,12 @@ local M = OPX.Modules.Declare{
 	-- `character` for the money and the job; `appearance` for the fitting room
 	-- and the look that is worn.
 	requires = { 'character', 'appearance' },
-	-- The eye that puts a row on the shop floor, and the menu the looks are
-	-- listed in. Without them the shop is unreachable rather than broken, which
-	-- is the whole difference between optional and required.
-	optional = { 'target', 'menu' },
+	-- The eye that puts a row on the shop floor, the menu the looks and the saved
+	-- outfits are listed in, and the form an outfit name and a share code are
+	-- typed into. Without them the shop is unreachable, or reachable with fewer
+	-- screens, rather than broken -- which is the whole difference between
+	-- optional and required.
+	optional = { 'target', 'menu', 'form' },
 }
 
 local NET, LOCAL = OPX.Channel.NET, OPX.Channel.LOCAL

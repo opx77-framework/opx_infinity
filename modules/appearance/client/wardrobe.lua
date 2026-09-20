@@ -421,6 +421,28 @@ local outfitCleared, savedPerspective, orbit = false, nil, 180
 -- a player running a custom FOV gets their own value back and not ours.
 local savedFov = nil
 
+-- Whether the room took the camera off the body with `Open77.camera.detach`.
+--
+-- A FLAG AND NOT A RE-READ, because there is nothing to read: the platform will
+-- say where the camera IS, not who moved it, and a room that put the camera back
+-- on the strength of "it looks detached" would fight any other resource that had
+-- detached it for its own reasons. This is set by the one call that detaches and
+-- cleared by the one that undoes it, so the room only ever puts back what it
+-- itself took.
+local detached = false
+
+-- The category buttons other modules have offered this room, keyed by the name
+-- of the module that offered them, and the flattened row the view is sent.
+--
+-- OFFERED INWARDS, WHICH IS THE ONLY DIRECTION THAT WORKS. Saved outfits and
+-- share codes live in `modules/shops` -- the table, the codes and the job gate
+-- are all there -- and `shops` already REQUIRES `appearance` for the fitting
+-- room. Reaching back the other way for its outfit list would be a dependency
+-- cycle between two modules the registry starts in one order. So the room offers
+-- a strip and `shops` fills it: this half knows only that somebody has rows and
+-- wants to be told when one is pressed, and could not name an outfit if it tried.
+local groupsBy, groupRows = {}, {}
+
 -- Creation handoff generation, so an older wait stops, and the kept outfit whose
 -- save is listened for.
 local creationWatch, awaitSave = 0, nil
@@ -691,10 +713,29 @@ local function hasOrbit()
 	return OPX.Lib.Native.Reach('camera.orbit') ~= nil
 end
 
+--- Whether this client can take the camera off the body and frame the puppet.
+local function hasDetach()
+	return OPX.Lib.Native.Reach('camera.detach') ~= nil
+end
+
+--- Whether the room can point its view at the puppet from a chosen side at all.
+-- EITHER MECHANISM COUNTS, which is why this is not `hasOrbit` any more. A build
+-- that can detach turns the puppet by moving the camera around it and never
+-- touches `orbit`; a build that cannot falls back to the yaw. The turn buttons
+-- are drawn when either one is there, and used to be drawn only for the yaw --
+-- so on a host with `detach` and no `orbit` the room silently lost them.
+local function canTurn()
+	return hasOrbit() or hasDetach()
+end
+
+--- The WARDROBE block of this module's settings, never nil.
+local function wardrobeConfig()
+	return type(M.Settings.WARDROBE) == 'table' and M.Settings.WARDROBE or {}
+end
+
 --- WARDROBE.CAMERA_FOV, or nil to leave the player's lens alone.
 local function wardrobeFov()
-	local config = type(M.Settings.WARDROBE) == 'table' and M.Settings.WARDROBE or {}
-	local wanted = tonumber(config.CAMERA_FOV)
+	local wanted = tonumber(wardrobeConfig().CAMERA_FOV)
 	-- The platform validates the degrees itself; this only refuses a value that
 	-- is not a number at all, so a mistyped config leaves the lens untouched
 	-- rather than sending nonsense at the backend once per room.
@@ -702,21 +743,105 @@ local function wardrobeFov()
 	return wanted
 end
 
---- Remembers the perspective, goes third person and faces the puppet.
-local function holdCamera()
-	orbit = 180
+-- How far from the puppet a configured offset may put the camera, in metres. A
+-- BOUND ON A TYPO AND NOTHING ELSE: `Open77.camera.detach` is happy to place the
+-- view in the next district, and a stray zero in `CAMERA_OFFSET` would then look
+-- exactly like the room failing to open -- a black frame with a working menu on
+-- it. Twelve metres is further back than any clothing shot wants and near enough
+-- that the puppet is still on screen.
+local FRAMING_REACH = 12.0
 
-	-- THE LENS IS WIDENED, WHICH IS NOT THE SAME AS STANDING BACK. `camera.orbit`
-	-- below is a yaw inside the third-person rig and cannot move the view off the
-	-- player -- see the note on `WARDROBE.CAMERA_FOV` for why the alternative is
-	-- a permission this room does not need. Read first so the player's own value
-	-- goes back exactly on the way out, rather than being restored to a guess.
-	local fov = wardrobeFov()
-	if fov ~= nil then
-		local view = OPX.Lib.Native.Call('camera.view', nil)
-		savedFov = view.ok and type(view.value) == 'table' and tonumber(view.value.fov) or nil
-		OPX.Lib.Native.Call('camera.setFov', nil, fov)
+-- The orbit the configured offset is written for. `CAMERA_OFFSET.Y` is metres IN
+-- FRONT of the puppet, and the room's own `orbit` calls the front 180 -- because
+-- orbit is a yaw against a rig that sits BEHIND the player and 180 swings it
+-- round. So the rotation applied below is `orbit - FRAMING_FRONT`, which is zero
+-- for the front view and leaves the configured numbers meaning what they say.
+local FRAMING_FRONT = 180
+
+--- Where the camera stands to see the puppet from `degrees` around it.
+-- @author dop42
+--
+-- PURE, AND SEPARATE FROM THE NATIVE, because this is the arithmetic that was
+-- wrong and arithmetic is the one part of a camera a test can hold. It answers
+-- an offset in the puppet's own space -- X across, Y in front, Z up -- or nil
+-- when the operator has said not to move the camera at all.
+--
+-- THE TURN IS A ROTATION OF THE OFFSET, not a yaw of a rig. Once the camera is
+-- off the body there is no third-person rig left for `camera.orbit` to yaw, so
+-- the front/left/right/back buttons walk the camera around the puppet instead:
+-- the offset is rotated about the puppet's own up axis by however far round the
+-- room has been turned. Z is untouched -- turning around somebody does not
+-- change how high you are standing.
+-- @param config table|nil the WARDROBE settings block
+-- @param degrees number|nil the room's orbit, 180 being the front
+-- @return number|nil x, number y, number z
+function Wardrobe.Framing(config, degrees)
+	if type(config) ~= 'table' then return nil end
+	local offset = config.CAMERA_OFFSET
+	if type(offset) ~= 'table' then return nil end
+
+	local x, y, z = tonumber(offset.X), tonumber(offset.Y), tonumber(offset.Z)
+	-- ALL THREE OR NONE. A half-written offset is a mistake and not a request for
+	-- two of the axes: filling the third in with a zero would answer a shot
+	-- nobody asked for, and the operator would have no way to tell which of the
+	-- three numbers the runtime actually read.
+	if x == nil or y == nil or z == nil then return nil end
+	if math.abs(x) > FRAMING_REACH or math.abs(y) > FRAMING_REACH or
+		math.abs(z) > FRAMING_REACH then
+		return nil
 	end
+
+	-- A camera standing INSIDE the puppet is not a shot, it is the bug with extra
+	-- steps, so an all-but-zero offset is read as "leave the camera on the body"
+	-- and takes the lens-widening fallback instead of rendering the inside of
+	-- somebody's chest.
+	if math.abs(x) < 0.01 and math.abs(y) < 0.01 and math.abs(z) < 0.01 then return nil end
+
+	local radians = math.rad((tonumber(degrees) or FRAMING_FRONT) - FRAMING_FRONT)
+	local cos, sin = math.cos(radians), math.sin(radians)
+	return x * cos - y * sin, x * sin + y * cos, z
+end
+
+--- Puts the camera where the framing says, for the orbit the room is on.
+-- Answers whether the camera is now off the body.
+local function standCamera()
+	local x, y, z = Wardrobe.Framing(wardrobeConfig(), orbit)
+	if x == nil then return false end
+
+	-- THE ANSWER IS CHECKED, and it is the one answer in this file that has to
+	-- be. A refused detach is the difference between the centred shot the owner
+	-- asked for and the off-centre one they reported, and it is otherwise
+	-- completely silent -- the room still opens, the sliders still work, and the
+	-- character is still standing in the wrong third of the screen.
+	local moved = OPX.Lib.Native.Call('camera.detach', nil, x, y, z)
+	if not moved.ok then
+		-- Once per room and not once per turn: `detached` is already true by the
+		-- time a turn button is pressed, so a refusal here on a later call leaves
+		-- the camera where it was rather than re-announcing itself every press.
+		if detached then return true end
+		Open77.log.warn(('[appearance] the fitting room could not stand the camera ' ..
+			'off the body (%s); falling back to a wider lens'):format(tostring(moved.error)))
+		return false
+	end
+	detached = true
+	return true
+end
+
+--- Points the room's view at the puppet from whichever side `orbit` names.
+-- The dolly first, the yaw only when there is no dolly: see `Wardrobe.Framing`.
+local function faceCamera()
+	if standCamera() then return true end
+	return orbitCamera()
+end
+
+--- Remembers the perspective, goes third person and frames the puppet.
+local function holdCamera()
+	orbit = FRAMING_FRONT
+
+	-- THIRD PERSON FIRST. `detach` moves the view off the body; the perspective
+	-- is what decides there is a body to look at in the first place, and a room
+	-- that detached out of a first-person view would frame a puppet the client
+	-- was not drawing.
 	local perspective = Open77.perspective
 	if type(perspective) == 'table' then
 		local requested
@@ -731,17 +856,48 @@ local function holdCamera()
 		savedPerspective = requested
 		if type(perspective.set) == 'function' then pcall(perspective.set, 'tps') end
 	end
-	orbitCamera()
+
+	-- THE LENS IS ONLY WIDENED WHEN THE CAMERA COULD NOT STAND BACK, and that
+	-- ordering is the fix. Widening used to be unconditional and was the whole of
+	-- the framing; on a rig still pinned over the player's shoulder it pushed the
+	-- character further towards the edge rather than nearer the middle, which is
+	-- the defect that was reported. A camera that really has stood back needs no
+	-- help from the lens, so the player's own FOV is left exactly alone -- and
+	-- `savedFov` stays nil, which is what tells the way out not to touch it.
+	if not standCamera() then
+		local fov = wardrobeFov()
+		if fov ~= nil then
+			-- Read first so the player's own value goes back exactly on the way out,
+			-- rather than being restored to a guess.
+			local view = OPX.Lib.Native.Call('camera.view', nil)
+			savedFov = view.ok and type(view.value) == 'table' and tonumber(view.value.fov) or nil
+			OPX.Lib.Native.Call('camera.setFov', nil, fov)
+		end
+		orbitCamera()
+	end
 end
 
---- Lets go of the orbit and puts the remembered perspective back.
+--- Puts the camera back on the body and the remembered perspective back on.
 local function freeCamera()
+	-- THE SAME NATIVE PUTS IT BACK, with a zero offset: the puppet's own space
+	-- offset by nothing IS the body, so this is "the camera goes back where it
+	-- was" written in the only call that needs no permission. The inverse the
+	-- platform names for it -- `Open77.camera.attach()` with no arguments -- is
+	-- gated on `camera.script`, and a room that had to ask for a permission in
+	-- order to LET GO of the view is a room that can strand a player behind a
+	-- camera they cannot get out from behind. Guarded on the flag so a room that
+	-- never moved the camera does not move it on the way out.
+	if detached then
+		OPX.Lib.Native.Call('camera.detach', nil, 0.0, 0.0, 0.0)
+		detached = false
+	end
 	-- The answer is dropped on purpose: this runs on the way out, and there is
 	-- nothing a caller could do about a preview it has already stopped wanting.
 	OPX.Lib.Native.Call('camera.clearOrbit', 'camera.preview')
 	-- The player's own lens, read on the way in rather than assumed. Nil means
-	-- the room never touched it, or the read failed -- and in that case leaving
-	-- it alone is right: the room does not know what to put back.
+	-- the room never touched it -- which is now the ordinary case, because a
+	-- camera that stood back never widened anything -- or the read failed, and in
+	-- both cases leaving it alone is right: the room does not know what to put back.
 	if savedFov ~= nil then
 		OPX.Lib.Native.Call('camera.setFov', nil, savedFov)
 		savedFov = nil
@@ -760,6 +916,87 @@ local function place(slot, index)
 	shown[slot] = index
 	local record = index > 0 and pieces[slot][index] or nil
 	shownName[slot] = record ~= nil and title(record) or locale('wardrobe.ui.nothing')
+end
+
+-- How many category rows one module may put on the strip, and how many
+-- characters one of their labels may be. THE STRIP IS A ROW OF BUTTONS ACROSS
+-- THE TOP OF A PANEL, not a menu: past about half a dozen it wraps into a second
+-- line and stops reading as one control. Bounded here rather than trusted,
+-- because the offer comes from another module and a module with a loop in it
+-- would otherwise push a thousand buttons through `roomState` on every slider
+-- move -- which is the publish this room was rewritten to keep cheap.
+local MAX_GROUPS, MAX_GROUP_LABEL = 6, 32
+
+-- Forward-declared because `OfferGroups` below has to republish the room and
+-- `refresh` is written further down, next to the state it sends. A STRIP THAT IS
+-- STORED AND NOT PUBLISHED IS A STRIP NOBODY EVER SEES, and that is not
+-- hypothetical: the offer lands AFTER the room has drawn its first frame, always
+-- -- `shops` cannot offer until it hears `wardrobeOpened`, and the room publishes
+-- that only once the frame has gone out -- so without this the categories would
+-- have appeared on the second fitting and never on the first.
+local refresh
+
+--- Flattens the offered categories into the row the view is sent.
+-- Sorted by the offering module's name so two modules offering rows produce the
+-- same strip on every boot; a strip that reordered itself between two opens
+-- would move a button out from under a player's cursor for no reason.
+local function rebuildGroups()
+	local owners = {}
+	for owner in pairs(groupsBy) do owners[#owners + 1] = owner end
+	table.sort(owners)
+
+	local rows = {}
+	for index = 1, #owners do
+		local offered = groupsBy[owners[index]]
+		for entry = 1, #offered do rows[#rows + 1] = offered[entry] end
+	end
+	groupRows = rows
+end
+
+--- Offers the open room a strip of category buttons under one module's name.
+-- @author dop42
+--
+-- Replaces whatever that module offered before, so the caller states its whole
+-- strip every time rather than having to withdraw a row it no longer wants. An
+-- empty list is how a module takes its strip down.
+-- @param owner string the offering module's own name
+-- @param groups table|nil an array of { id, label, disabled }
+-- @return boolean, string|nil
+function Wardrobe.OfferGroups(owner, groups)
+	if type(owner) ~= 'string' or owner == '' then return false, 'invalid_caller' end
+	if groups ~= nil and type(groups) ~= 'table' then return false, 'invalid_groups' end
+
+	local offered = groups or {}
+	local kept = {}
+	for index = 1, math.min(#offered, MAX_GROUPS) do
+		local row = offered[index]
+		local id = type(row) == 'table' and row.id or nil
+		local label = type(row) == 'table' and row.label or nil
+		-- ID AND LABEL BOTH, OR THE ROW IS DROPPED. An id-less button cannot be
+		-- reported back when it is pressed and a label-less one is a blank
+		-- rectangle the player is invited to click: neither is worth drawing, and
+		-- dropping the row is better than drawing a broken one over a room that
+		-- otherwise works.
+		if type(id) == 'string' and id ~= '' and type(label) == 'string' then
+			label = OPX.String.Trim(label)
+			if label ~= '' then
+				kept[#kept + 1] = {
+					-- NAMESPACED BY ITS OFFERER, so two modules may both call a button
+					-- `save` and the press still reaches the right one. The caller never
+					-- sees this: it is unwrapped again before the press is reported.
+					id = owner .. ':' .. id,
+					label = OPX.Text.Bytes(label, MAX_GROUP_LABEL),
+					disabled = row.disabled == true,
+				}
+			end
+		end
+	end
+
+	if #kept == 0 then groupsBy[owner] = nil else groupsBy[owner] = kept end
+	rebuildGroups()
+	-- Published straight away, because the offer always arrives after the frame.
+	refresh()
+	return true
 end
 
 --- The part of the room that follows the draft: seven sliders and the status.
@@ -785,12 +1022,20 @@ local function roomState()
 	end
 	return {
 		sliders = sliders,
+		-- ON EVERY STATE AND NOT ONLY THE FIRST FRAME, because the strip changes
+		-- while the room is open: `shops` cannot offer its rows until the server
+		-- has answered which looks this player's job may take, and that answer
+		-- arrives after the room has already drawn. A `groups` that rode only on
+		-- `roomSpec` would mean the categories appeared on the SECOND fitting.
+		groups = groupRows,
 		status = statusText and { text = statusText, kind = 'error' } or false,
 	}
 end
 
 --- Sends the view the current draft.
-local function refresh()
+-- Not `local function`: the name is declared above `OfferGroups`, which needs to
+-- call it. See the forward declaration there.
+function refresh()
 	if phase ~= 'open' or draft == nil then return end
 	publish('roomState', roomState())
 end
@@ -893,7 +1138,7 @@ local function roomSpec()
 		{ id = 'save', label = locale(creating and 'wardrobe.ui.saveCreation' or 'wardrobe.ui.save'),
 			primary = true },
 	}
-	if hasOrbit() then
+	if canTurn() then
 		opened.tools = {
 			{ id = 'front', label = locale('wardrobe.ui.front') },
 			{ id = 'left', label = 'left' },
@@ -1025,6 +1270,12 @@ local function release(keep, reason)
 	pieces, known, at, shown, shownName = {}, {}, {}, {}, {}
 	hoverSlot, hoverRecord, statusText, outfitCleared, roomOwner = nil, nil, nil, false, nil
 	openingUntilMs = 0
+	-- THE STRIP GOES WITH THE ROOM. An offer is made against the room that is
+	-- open -- `shops` offers its rows when it hears `wardrobeOpened`, and the rows
+	-- it offers are gated on the shop the player is standing in -- so carrying
+	-- them into the next room would put a uniform category on a fitting the
+	-- player opened from their own appearance panel, miles from the shop.
+	groupsBy, groupRows = {}, {}
 
 	publish('roomClosed', { reason = reason, kept = keep })
 	-- The registry reads pieces back as TweakDB ids: the names go with them so the
@@ -1114,6 +1365,78 @@ local function choose(slot, record)
 	refresh()
 end
 
+--- Lays a whole saved look onto the open room's draft.
+-- @author dop42
+--
+-- THE DRAFT AND NOT THE BODY, which is the whole reason this exists rather than
+-- `shops` putting the look on itself. `shops.putOn` borrows the puppet through
+-- `BeginClothingPreview` -- and while this room is open the puppet is ALREADY
+-- borrowed, by this module, so that borrow is refused and loading a saved outfit
+-- from inside the fitting room did nothing at all. Coming in through the draft
+-- also gets the three things a player expects of a fitting room for free: the
+-- sliders move to where the outfit put them, Cancel still puts back what they
+-- walked in wearing, and the slots the outfit moved are on `wardrobeClosed` when
+-- the room shuts -- so a shop bills a loaded outfit exactly as it bills a
+-- hand-picked one, which is what `modules/shops/server/main.lua` already says
+-- should happen ("loading a saved look at a shop is a change like any other").
+--
+-- ONE PUT-ON FOR THE WHOLE LOOK. Seven `Open77.equipment.apply` calls in one
+-- resume is the shape of thing this file has an instruction budget note about;
+-- the draft is assembled first and applied once.
+-- @param records table slot name to record name, or false for an empty slot
+-- @return boolean, string|nil
+function Wardrobe.Dress(records)
+	if phase ~= 'open' or draft == nil then return false, 'wardrobe_closed' end
+	if type(records) ~= 'table' then return false, 'invalid_look' end
+
+	local wanted, moved, dressed = copy(draft), {}, false
+	for index = 1, #SLOTS do
+		local slot = SLOTS[index]
+		local record = records[slot]
+		if record == false then
+			wanted[slot] = false
+			moved[#moved + 1] = slot
+		elseif type(record) == 'string' and known[record] == slot then
+			-- CHECKED AGAINST THE CATALOGUE THIS BODY READ, exactly as `choose` is.
+			-- A share code is read out by another player and their character may not
+			-- be this one's build -- so a code can perfectly legitimately name a
+			-- jacket this body has no record for. Silently skipping it dresses the
+			-- player in as much of the look as fits, which is better than refusing
+			-- the whole outfit over one garment, and the count below is what lets
+			-- the caller say so.
+			wanted[slot] = record
+			moved[#moved + 1] = slot
+			dressed = true
+		end
+	end
+	if #moved == 0 then return false, 'nothing_wearable' end
+
+	-- THE FULL-BODY SUIT RULE, the same one `wearing` applies to a single piece:
+	-- a suit covers everything under it, so putting a garment on takes the suit
+	-- off. An outfit that names the suit itself keeps it; one that names anything
+	-- else and does not mention the suit clears it, or the player would be handed
+	-- a look they cannot see.
+	if dressed and records.Outfit == nil then wanted.Outfit = false end
+
+	local ok, failure = putOn(wanted)
+	hoverSlot, hoverRecord = nil, nil
+	if not ok then
+		putOn(draft)
+		statusText = locale('wardrobe.ui.failed', { reason = tostring(failure):gsub('_', ' ') })
+		refresh()
+		return false, tostring(failure)
+	end
+
+	draft, statusText = wanted, nil
+	for index = 1, #SLOTS do
+		local slot = SLOTS[index]
+		local worn = wanted[slot]
+		place(slot, worn ~= false and at[worn] or 0)
+	end
+	refresh()
+	return true
+end
+
 --- Moves one slot's slider: a preview under the thumb, or the player's choice.
 -- @param slot string
 -- @param index any 0 for nothing, 1..count for a piece
@@ -1159,11 +1482,38 @@ end
 local ACTIONS = {
 	save = function() release(true, 'saved') end,
 	cancel = ask,
-	front = function() orbit = 180 orbitCamera() end,
-	back = function() orbit = 0 orbitCamera() end,
-	left = function() orbit = ((orbit - TURN_DEGREES + 180) % 360) - 180 orbitCamera() end,
-	right = function() orbit = ((orbit + TURN_DEGREES + 180) % 360) - 180 orbitCamera() end,
+	front = function() orbit = FRAMING_FRONT faceCamera() end,
+	back = function() orbit = 0 faceCamera() end,
+	left = function() orbit = ((orbit - TURN_DEGREES + 180) % 360) - 180 faceCamera() end,
+	right = function() orbit = ((orbit + TURN_DEGREES + 180) % 360) - 180 faceCamera() end,
 }
+
+--- Reports a pressed category button to the module that offered it.
+--
+-- ON THE DECISION BUS AND NOT THROUGH A CALLBACK, which keeps the offer one-way.
+-- A callback would mean this module holding a function belonging to another
+-- module across the life of a room -- and a room outlives a module stop, which
+-- is the exact shape of the stale-owner bug the upkeep pass already exists to
+-- clean up. A published decision is read by whoever is still listening and by
+-- nobody who is not.
+--
+-- Answers whether the id was one of ours, so an unknown button is a no-op rather
+-- than a decision nothing will ever answer.
+local function pressGroup(value)
+	if type(value) ~= 'string' then return false end
+	for index = 1, #groupRows do
+		if groupRows[index].id == value then
+			-- Unwrapped back into the offerer's own id: the namespace this module
+			-- added is bookkeeping and was never the caller's word for the button.
+			local owner, id = value:match('^([^:]+):(.+)$')
+			if owner == nil then return false end
+			Runtime.Publish({ ok = true, event = 'wardrobeGroup', owner = owner, group = id,
+				citizenId = citizen })
+			return true
+		end
+	end
+	return false
+end
 
 --- WARDROBE.CREATION_WAIT_MS, or the shipped value for an unusable one.
 local function creationWaitMs()
@@ -1517,7 +1867,12 @@ function M.FromView(action, payload)
 	end
 	if action == 'room.action' then
 		local run = ACTIONS[payload.value]
-		if run then run() end
+		if run then return run() end
+		-- The category strip rides on the same channel: the view draws one row of
+		-- buttons and reports a press the same way whichever row it was in, so a
+		-- value that is not one of this module's own buttons is offered to the
+		-- strip before it is dropped.
+		pressGroup(payload.value)
 		return
 	end
 	if action == 'room.dismiss' then return ask() end

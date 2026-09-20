@@ -248,7 +248,15 @@ local function onView(payload)
 
 	if kind == 'roomState' then
 		if Panel == nil or roomHandle == nil then return end
-		Panel.Update(roomHandle, { sliders = payload.sliders, status = payload.status })
+		-- THE CATEGORY STRIP IS FORWARDED TOO, and it is named here rather than
+		-- the payload being passed straight through because this list is the
+		-- contract: a `roomState` field that is not written down on this line does
+		-- not reach the page, silently, and the panel refuses a patch carrying any
+		-- field it does not know. The strip HAS to ride on state and not only on
+		-- the first frame -- whoever fills it cannot do so until it has heard the
+		-- room open, which happens after the frame has gone out.
+		Panel.Update(roomHandle, { sliders = payload.sliders, status = payload.status,
+			groups = payload.groups })
 		return
 	end
 

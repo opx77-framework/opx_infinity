@@ -2236,6 +2236,62 @@ do
 	-- open gate; this host never announces gameplay so its gate never opens, which
 	-- the block above tests on purpose. Standing in for the two preview calls is
 	-- what lets everything AFTER them be the real thing.
+	-- ── where the camera is told to stand ────────────────────────────────────
+	-- THE ARITHMETIC ON ITS OWN, because the arithmetic is what was wrong. The
+	-- room's whole framing used to be `Open77.camera.orbit`, a yaw INSIDE the
+	-- third-person rig which the platform says in as many words "cannot move the
+	-- view off the player" -- so the character stayed pinned off the centreline
+	-- and the reported defect ("le perso est a droite") could not be fixed by
+	-- turning anything. `Framing` is the offset that replaces it, and a camera
+	-- offset is the one part of a camera a test without a screen can hold.
+	do
+		local env = boot('client')
+		local appearance = env.OPX.Modules.Get('appearance')
+		local Framing = appearance.Wardrobe.Framing
+		local SHOT = { CAMERA_OFFSET = { X = 0.0, Y = 2.6, Z = 1.1 } }
+
+		-- A room facing the front stands the camera where the operator said: in
+		-- front, at chest height, and -- the fix -- on the centreline.
+		local x, y, z = Framing(SHOT, 180)
+		check('the front view stands the camera on the body\'s centreline',
+			x == 0.0, tostring(x))
+		check('and in front of it, at the height it was given',
+			y == 2.6 and z == 1.1, ('y=%s z=%s'):format(tostring(y), tostring(z)))
+
+		-- Turning walks the camera AROUND the puppet, because with the camera off
+		-- the body there is no rig left for a yaw to yaw. Back is the front offset
+		-- negated; the height never changes, because walking round somebody does
+		-- not change how tall you are.
+		local bx, by, bz = Framing(SHOT, 0)
+		check('the back view is the same distance on the other side',
+			math.abs(bx) < 1e-9 and math.abs(by + 2.6) < 1e-9 and bz == 1.1,
+			('x=%.4f y=%.4f z=%s'):format(bx, by, tostring(bz)))
+
+		-- A QUARTER TURN SWAPS THE AXES AND KEEPS THE DISTANCE. This is the check
+		-- that would catch the rotation being written with a sign or a pair of
+		-- terms the wrong way round -- the two mistakes that look right at 0 and
+		-- 180 degrees and are wrong everywhere else.
+		local sx, sy = Framing(SHOT, 90)
+		check('a quarter turn stands the camera off to the side, same distance out',
+			math.abs(math.abs(sx) - 2.6) < 1e-9 and math.abs(sy) < 1e-9,
+			('x=%.4f y=%.4f'):format(sx, sy))
+
+		-- ── what is refused, and why each one has to be ──
+		check('no offset at all leaves the camera on the body',
+			Framing({}, 180) == nil)
+		check('and so does a half-written one: two axes are not a request',
+			Framing({ CAMERA_OFFSET = { X = 0.0, Y = 2.6 } }, 180) == nil)
+		-- A camera standing inside the puppet is the bug with extra steps, and a
+		-- stray zero in a config would otherwise render the inside of a chest --
+		-- which looks exactly like the room failing to open.
+		check('an offset of nothing is not a shot',
+			Framing({ CAMERA_OFFSET = { X = 0.0, Y = 0.0, Z = 0.0 } }, 180) == nil)
+		-- The platform will happily put the view in the next district. A typo
+		-- there is a black frame with a working menu on it.
+		check('and an offset past any clothing shot is a typo, not a wish',
+			Framing({ CAMERA_OFFSET = { X = 0.0, Y = 400.0, Z = 1.1 } }, 180) == nil)
+	end
+
 	do
 		local env, control = joinClient('never', 400)
 		local appearance = env.OPX.Modules.Get('appearance')
@@ -2283,11 +2339,63 @@ do
 			return true
 		end
 
+		-- THE CAMERA, WHICH THE BASE HOST DOES NOT INSTALL. Without it every
+		-- camera call in the room takes its native-absent path, which is a real
+		-- case but the one that proves nothing: the defect being fixed here is
+		-- that the room never moved the camera off the player at all, and only a
+		-- host that HAS `detach` can show that it now does.
+		local shots, fovs = {}, {}
+		env.Open77.camera = {
+			detach = function(x, y, z)
+				shots[#shots + 1] = { x = x, y = y, z = z }
+				return true
+			end,
+			view = function() return { fov = 68.0 } end,
+			setFov = function(degrees) fovs[#fovs + 1] = degrees return true end,
+			orbit = function() return true end,
+			clearOrbit = function() return true end,
+		}
+
 		local opened, reason = appearance.Wardrobe.Open('appearance')
 		check('the fitting room is asked for', opened, tostring(reason))
 		control.Pump(30)
 		check('and the puppet was borrowed for it', lent == 'appearance', tostring(lent))
 		check('the room is open', appearance.Wardrobe.IsOpen())
+
+		-- ── the camera stands off the body, centred ──────────────────────────
+		-- THE REPORTED DEFECT, PINNED. "la camera n'est pas centrer sur le perso,
+		-- le perso est a droite" -- the third-person rig is pinned over the
+		-- player's shoulder and `camera.orbit` is a yaw INSIDE that rig, so no
+		-- amount of orbiting centres anything. What must be true now is that the
+		-- room CALLS `detach`, and that the lateral offset it detaches to is zero
+		-- -- zero across is the body's own centreline, and the centreline is the
+		-- middle of the frame.
+		check('the room took the camera off the body', #shots == 1,
+			('%d detach call(s)'):format(#shots))
+		check('and stood it on the puppet\'s centreline, in front and at chest height',
+			#shots == 1 and shots[1].x == 0.0 and shots[1].y > 0 and shots[1].z > 0,
+			#shots == 1 and ('x=%s y=%s z=%s'):format(shots[1].x, shots[1].y, shots[1].z) or 'none')
+
+		-- AND THE LENS IS LEFT ALONE. Widening was the previous attempt at this
+		-- and it made the framing worse rather than better -- a wider lens on a
+		-- rig that is still pinned off-centre pushes the subject further towards
+		-- the edge. A camera that really stood back must not also widen, or the
+		-- fix and the defect ship together.
+		check('and did not widen the lens on top of it', #fovs == 0,
+			table.concat(fovs, ', '))
+
+		-- The turn buttons walk the camera AROUND the puppet now, because with the
+		-- camera off the body there is no rig left for a yaw to yaw. Back is 180
+		-- degrees from the front, so the offset in front becomes the same distance
+		-- behind -- and the height does not change, because walking round somebody
+		-- does not change how tall you are.
+		appearance.FromView('room.action', { value = 'back' })
+		local front, behind = shots[1], shots[#shots]
+		check('turning the room round walks the camera round the puppet',
+			#shots == 2 and math.abs(behind.y + front.y) < 0.001
+			and math.abs(behind.z - front.z) < 0.001,
+			('%d shot(s)'):format(#shots))
+		appearance.FromView('room.action', { value = 'front' })
 
 		-- ONE QUERY PER SLOT is the whole of the fix, so it is the first thing
 		-- asserted: the old room asked once, unfiltered, for up to two thousand
@@ -2387,9 +2495,101 @@ do
 		check('previewing nothing on one slot does not leave another undressed',
 			worn.Feet == 'Items.Feet_02', tostring(worn.Feet))
 
+		-- ── the category strip, and what gates each row ──────────────────────
+		-- WIRED, NOT BUILT. Saved outfits, share codes and the job gate all
+		-- already existed in `modules/shops` -- the table, the codes, `looksFor`
+		-- -- and not one client in this resource ever sent `SAVE`, `LIST`, `LOAD`,
+		-- `DELETE`, `SHARE` or `REDEEM`. What is asserted here is the door: the
+		-- strip reaches the page, and which rows are on it.
+		--- The category row the page was last sent.
+		local function groups()
+			local latest
+			for index = 1, #page.sent do
+				if page.sent[index].payload.groups ~= nil then
+					latest = page.sent[index].payload.groups
+				end
+			end
+			return latest
+		end
+
+		--- Whether the strip carries a button whose id ends in `name`.
+		local function hasGroup(name)
+			for _, row in ipairs(groups() or {}) do
+				if row.id == 'shops:' .. name then return true end
+			end
+			return false
+		end
+
+		check('the fitting room carries a category strip', groups() ~= nil,
+			'no groups ever reached the page')
+		local ids = {}
+		for _, row in ipairs(groups() or {}) do ids[#ids + 1] = row.id end
+		check('and saved outfits, saving and codes are all reachable from it',
+			hasGroup('outfits') and hasGroup('save') and hasGroup('code'),
+			('strip: [%s]'):format(table.concat(ids, ', ')))
+
+		-- THE GATE IS WHICH BUTTONS EXIST. This room was opened from the
+		-- appearance panel and not from a shop counter, so there is no shop being
+		-- served -- and a Uniforms category with nothing behind it is a button
+		-- that can only ever refuse. The server applies the job gate before it
+		-- sends the list; this is the same rule one screen further out.
+		check('but a room opened away from a counter offers no uniforms',
+			not hasGroup('looks'))
+
+		-- Even once a look list arrives: without a shop being served there is
+		-- still nothing this player could be sold.
+		local shopsModule = env.OPX.Modules.Get('shops')
+		control.netEvents[shopsModule.Event.LOOKS]({ shop = 'jinguji',
+			looks = { { id = 'corpo', label = 'Corpo suit', cost = 0 } } })
+		check('and a look list alone does not conjure the category',
+			not hasGroup('looks'))
+
+		-- ── a shared code, all the way onto the sliders ──────────────────────
+		-- THE ROUND TRIP THAT WAS BROKEN. A redeemed code comes back as `PUT_ON`,
+		-- and `shops.putOn` borrows the puppet through `BeginClothingPreview` --
+		-- which, with this very room open, is refused, because the puppet is
+		-- already lent to it. So redeeming a code inside the clothing screen used
+		-- to do nothing at all: no clothes, no toast, no log line. It goes through
+		-- the room's draft now, which means the SLIDER MOVES -- and the slider
+		-- moving is the only thing the player can actually see.
+		local wasFeet = slider('Feet')
+		control.netEvents[shopsModule.Event.PUT_ON]({ look = 'shared',
+			wear = { Feet = 'Items.Feet_03' } })
+		local nowFeet = slider('Feet')
+		check('a code redeemed inside the room moves the room\'s own slider',
+			nowFeet ~= nil and nowFeet.value == 'Feet 03',
+			nowFeet and tostring(nowFeet.value) or 'no Feet slider')
+		check('and it is a different position from the one it stood on',
+			wasFeet ~= nil and nowFeet ~= nil and wasFeet.index ~= nowFeet.index)
+		check('and the puppet is actually wearing it',
+			worn.Feet == 'Items.Feet_03', tostring(worn.Feet))
+
+		-- A GARMENT THIS BODY HAS NO RECORD FOR IS SKIPPED, NOT OBEYED. A code is
+		-- read out by another player whose character may be a different build, so
+		-- half its records may be ones this catalogue never offered. Dressing in
+		-- as much of the look as fits beats refusing the whole outfit over one
+		-- jacket -- and putting a record the room cannot place under a thumb would
+		-- leave the slider lying about what is on the body.
+		control.netEvents[shopsModule.Event.PUT_ON]({ look = 'foreign',
+			wear = { Feet = 'Items.NotInThisCatalogue' } })
+		check('a record this body has no catalogue entry for is skipped',
+			slider('Feet').value == 'Feet 03', tostring(slider('Feet').value))
+
+		local before = #shots
 		appearance.Wardrobe.Close('caller')
 		check('closing the room gives the puppet back unkept',
 			gaveBack == 'appearance/false', tostring(gaveBack))
+
+		-- THE CAMERA IS GIVEN BACK, and this is the check that matters most of the
+		-- three: a stuck camera is, in the platform's own words, indistinguishable
+		-- from a crash. A zero offset is the body's own position, so `detach` with
+		-- three zeroes IS "put it back" -- and it is the same permission-free call
+		-- that took it, rather than `camera.attach()`, which is gated on
+		-- `camera.script` and would mean needing a permission in order to LET GO.
+		local last = shots[#shots]
+		check('and puts the camera back on the body on the way out',
+			#shots == before + 1 and last.x == 0.0 and last.y == 0.0 and last.z == 0.0,
+			last and ('x=%s y=%s z=%s'):format(last.x, last.y, last.z) or 'no release')
 	end
 
 	-- ── the one bound still in play ──────────────────────────────────────────
