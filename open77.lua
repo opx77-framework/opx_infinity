@@ -393,7 +393,6 @@ server_script "modules/admin/server/offline.lua"
 
 -- The staff door onto a character's PURSE, beside the one onto their account:
 -- both reach rows that outlive the session, so both are their own namespace.
-server_script "modules/admin/server/recovery.lua"
 server_script "modules/admin/server/menu.lua"
 
 client_script "modules/admin/client/main.lua"

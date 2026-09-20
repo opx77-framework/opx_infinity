@@ -144,33 +144,6 @@ FORMS.money = {
 		menu().Run({ link, tostring(arg), values.type, values.amount })
 	end,
 }
-
--- THE RECOVERY FORM. The same two answers as the money form above and one
--- difference: it ends in this module's own command, which is the one that takes
--- `me` -- so the row that says "give myself" needs no player id from the client,
--- and a grant can be given for handing money out without the whole character
--- screen coming with it. The target is named in the description, because the
--- row that opened this is gone by the time it is read.
-FORMS.recoveryMoney = {
-	build = function(arg)
-		local options = moneyOptions()
-		if options == nil then return nil end
-		local mine = arg == nil or arg == 'me'
-		return {
-			title = locale(mine and 'admin.form.recoverySelf' or 'admin.form.recoveryPlayer'),
-			description = mine and locale('admin.form.recoveryHintSelf')
-				or locale('admin.form.recoveryHint', { id = tostring(arg) }),
-			fields = moneyFields(options),
-		}
-	end,
-	submit = function(values, arg)
-		-- `arg` is the target the row carried and never a field the operator typed:
-		-- the server resolves `me` from the connection, so a stale id here is
-		-- refused rather than silently paying the wrong character.
-		menu().Run({ Command.RECOVERY_MONEY, tostring(arg), values.type, values.amount })
-	end,
-}
-
 -- A count form for giving or removing items of a picked row.
 local function countForm(titleKey, commandName, refresh)
 	return {

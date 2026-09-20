@@ -195,7 +195,6 @@ M.Command = {
 	-- above it: an operator who may unfreeze somebody is not automatically an
 	-- operator who may write a balance. `me` is the caller, resolved from the
 	-- server-side source and never from anything a client sends.
-	RECOVERY_MONEY = 'opx.admin.recovery.money',
 
 	VEHICLE_SPAWN = 'opx.admin.vehicle.spawn',
 	VEHICLE_GIVE = 'opx.admin.vehicle.give',
