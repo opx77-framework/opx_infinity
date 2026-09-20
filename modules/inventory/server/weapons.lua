@@ -105,10 +105,47 @@ local function lower(source, held, total)
 	Containers.Publish(bag)
 end
 
---- States the item's rounds to the engine, split into magazine and reserve.
--- A magazine above the weapon's capacity is refused by the engine, so it is never
--- guessed: a reload keeps what is already loaded and the magazine read at that
--- moment decides the split, which is why the snapshot is asked for first.
+--- How an item's rounds are split between the magazine and the reserve.
+--
+-- PURE, AND SEPARATE FROM THE RELAY BELOW, because the arithmetic is where the
+-- defect was and the relay is what made it hard to see.
+--
+-- BOTH HALVES ARE ALWAYS STATED. `setAmmo` changes only what it is told about,
+-- and the fallback here used to name the reserve and say nothing of the
+-- magazine -- so the engine kept the one it loaded when the weapon was
+-- assigned, a full one, and an item holding ZERO rounds came out of the bag
+-- shooting. Rounds nobody paid for, which is the one thing the header of this
+-- file says must never happen.
+--
+-- A magazine ABOVE the weapon's capacity is refused by the engine, which is why
+-- one is never guessed upward: a reload keeps what is already chambered and the
+-- reading taken at that moment decides the split. But zero is always safe --
+-- no capacity is below it -- so when the capacity is unknown the rounds go to
+-- the reserve and the player chambers them. That is honest: we know how many
+-- rounds they own and not how many fit.
+-- @author dop42
+-- @param ammo integer rounds the item holds
+-- @param capacity integer|nil the weapon's magazine, when the engine said
+-- @param magazine integer|nil what is chambered now, when the engine said
+-- @param keepMagazine boolean whether to leave what is chambered alone
+-- @return table the amounts for `Open77.weapons.setAmmo`
+function Weapons.Amounts(ammo, capacity, magazine, keepMagazine)
+	local amounts = { activate = true }
+	if keepMagazine and magazine then
+		local kept = math.min(magazine, ammo)
+		amounts.magazine = kept
+		amounts.reserve = ammo - kept
+	elseif capacity then
+		amounts.magazine = math.min(ammo, capacity)
+		amounts.reserve = ammo - amounts.magazine
+	else
+		amounts.magazine = 0
+		amounts.reserve = ammo
+	end
+	return amounts
+end
+
+--- States the item's rounds to the engine.
 local function load(source, held, state, keepMagazine)
 	local citizenId = Players.Citizen(source)
 	local bag = citizenId and Containers.Find(KIND.CHARACTER, citizenId)
@@ -116,19 +153,9 @@ local function load(source, held, state, keepMagazine)
 	if not entry then return end
 	local ammo = math.min(Common.Integer(entry.metadata.ammo, 0, 1000000) or 0, held.max)
 
-	local amounts = { activate = true }
 	local capacity = type(state) == 'table' and Common.Integer(state.capacity, 1, 100000) or nil
 	local magazine = type(state) == 'table' and Common.Integer(state.magazine, 0, 100000) or nil
-	if keepMagazine and magazine then
-		magazine = math.min(magazine, ammo)
-		amounts.reserve = ammo - magazine
-		amounts.magazine = magazine
-	elseif capacity then
-		amounts.magazine = math.min(ammo, capacity)
-		amounts.reserve = ammo - amounts.magazine
-	else
-		amounts.reserve = ammo
-	end
+	local amounts = Weapons.Amounts(ammo, capacity, magazine, keepMagazine)
 
 	local requestId, reason = Open77.weapons.setAmmo(source, Options.WEAPON_SLOT, amounts)
 	if not requestId then
