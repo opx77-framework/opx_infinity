@@ -147,6 +147,12 @@ interface PanelView {
   summary: Summary | null
   actions: Button[]
   tools: Button[]
+  /** Other parts of this same screen, drawn as a strip above the slot bar. Not
+      `tools` (which adjust the view) and not `actions` (which finish with the
+      panel): the fitting room's saved outfits, share codes and ready-made looks
+      are none of those, and a button that means "go somewhere else in here"
+      reads wrong in either of the other two rows. */
+  groups: Button[]
   /** Per tab: the id of the item Lua considers chosen there. */
   selected: Record<string, string>
   status: { text: string; kind: string } | null
@@ -178,6 +184,7 @@ function emptyView(): PanelView {
     summary: null,
     actions: [],
     tools: [],
+    groups: [],
     selected: {},
     status: null,
     busy: false,
@@ -296,6 +303,7 @@ function apply(payload: Payload): void {
   if (given('summary')) view.summary = readSummary(payload.summary)
   if (given('actions')) view.actions = readButtons(payload.actions)
   if (given('tools')) view.tools = readButtons(payload.tools)
+  if (given('groups')) view.groups = readButtons(payload.groups)
   if (given('selected')) {
     // Merged, not replaced: an update naming one tab's choice must not forget the others.
     const incoming = table(payload.selected)
@@ -923,6 +931,26 @@ function filter(value: string): void {
            the cut corner on every slot are what hold it together. -->
       <section class="bar op-plane op-ink">
         <div class="bar-inner">
+          <!-- THE CATEGORY STRIP. It sits above the slot bar and not beside the
+               tools, because it is not a tool: the tools turn the body round and
+               these go somewhere else inside the same screen. Same button, same
+               chamfer -- a caller that can build a `tools` row can build this
+               one, and a player who has learned one row has learned both. -->
+          <div v-if="view.groups.length" class="cats">
+            <button
+              v-for="button in view.groups"
+              :key="button.id"
+              type="button"
+              class="row button cat op-frame"
+              :class="{ 'is-off': button.disabled || view.busy }"
+              :disabled="button.disabled || view.busy"
+              data-augmented-ui="tr-clip border"
+              @click="press(button)"
+            >
+              <span class="row-label op-label">{{ button.label }}</span>
+            </button>
+          </div>
+
           <p v-if="view.intro" class="lead op-copy">{{ view.intro }}</p>
           <p v-if="view.status" class="status op-copy" :class="view.status.kind">
             {{ view.status.text }}
@@ -939,8 +967,14 @@ function filter(value: string): void {
               }"
               data-augmented-ui="tr-clip border"
             >
+              <!-- NAME, TRACK, LABEL, READOUT -- in that order in the DOM and not
+                   just in the grid. The four columns are laid out by the grid, so
+                   the source order is free to be the one that reads correctly to
+                   a keyboard and a screen reader: the slot's name, then the
+                   control it names, then what the control is currently standing
+                   on. Reordering with `order` instead would leave the tab order
+                   walking the line backwards. -->
               <span class="slot-name op-eyebrow">{{ slider.label }}</span>
-              <span class="slot-value op-value">{{ slider.value }}</span>
               <input
                 class="slot-track"
                 type="range"
@@ -954,6 +988,7 @@ function filter(value: string): void {
                 @input="scrubSlot(slider, ($event.target as HTMLInputElement).value)"
                 @change="settleSlot(slider)"
               >
+              <span class="slot-value op-value">{{ slider.value }}</span>
               <!-- THE READOUT IS NOW A WAY IN. It was required technical filler
                    under rule 8 -- where the thumb stands, in a range the player
                    cannot otherwise see the size of -- and it still states that.
@@ -1293,6 +1328,24 @@ function filter(value: string): void {
   gap: var(--op-space-2);
 }
 
+/* The category strip. Centred over the slot bar, wrapping rather than shrinking
+   -- the same bargain the slots used to make -- and with no enclosure round the
+   row: `ui/README.md` rule 2 says a control is a closed box and a row OF
+   controls is not one, which is the argument `.bar` below already lost once. */
+.cats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--op-space-2);
+}
+
+.cats .cat {
+  flex: none;
+  width: auto;
+  min-width: 120px;
+  justify-content: center;
+}
+
 /* Centred readouts, no frame: neither of them is a control. */
 .lead,
 .bar .status {
@@ -1301,29 +1354,46 @@ function filter(value: string): void {
   color: var(--op-text-dim);
 }
 
+/* ONE SLIDER PER LINE, WHICH IS WHAT WAS ASKED FOR: "juste les slider en ligne".
+   This was seven cards side by side, each a stacked block of name, value, track
+   and readout -- so a player comparing two slots read two little columns rather
+   than two rows of the same instrument, and each track was a seventh of the bar
+   wide and impossible to place a piece on. Stacked vertically the tracks are the
+   full width of the panel, and the four parts of every line sit in the same four
+   places down the list, which is what makes it scannable. */
 .slots {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--op-space-2);
-}
-
-/* Every slot the same width, so the row reads as one control repeated rather
-   than as seven things that happen to be next to each other. They wrap rather
-   than shrink past legibility on a narrow surface. */
-.slot {
-  flex: 1 1 130px;
-  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--op-space-1);
-  padding: var(--op-space-2) var(--op-space-3);
+}
+
+/* THE FOUR COLUMNS ARE FIXED AND NOT CONTENT-SIZED. A grid and not a flex row
+   because the names and the piece labels are different lengths on every line,
+   and a flex row would put each line's track at its own x -- seven ragged
+   tracks, which is exactly the "not one line" the layout is being changed to
+   fix. The track is the only column that takes the slack. */
+.slot {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr) 11rem auto;
+  align-items: center;
+  gap: var(--op-space-2);
+  min-width: 0;
+  padding: var(--op-space-1) var(--op-space-3);
   padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
 }
 
 .slot-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--op-red-idle);
 }
 
+/* AFTER THE TRACK AND NOT UNDER THE NAME. The label is what the thumb is
+   standing on, so it belongs next to the thumb's own instrument; ellipsised
+   because a record name is longer than any column that leaves room for a
+   usable track. */
 .slot-value {
   min-width: 0;
   overflow: hidden;
@@ -1331,12 +1401,26 @@ function filter(value: string): void {
   white-space: nowrap;
 }
 
+/* Narrow enough that the four columns do not fit: the line folds into two, name
+   and readout on the first, track and label on the second. Still one line per
+   slot in the sense that matters -- one slot is one block and the blocks are
+   stacked -- and no horizontal scroll. */
+@media (max-width: 720px) {
+  .slot {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .slot-track {
+    grid-column: 1 / -1;
+  }
+}
+
 /* Now a control, so it is a closed box like every other one (rule 2). Kept to
-   the width of its content and pushed to the slot's right edge, which is where
-   the readout already sat -- a player who never types into it should not be
-   able to tell it changed. */
+   the width of its content and last on the line, which is where the readout
+   already sat -- a player who never types into it should not be able to tell it
+   changed. */
 .slot-step {
-  align-self: flex-end;
+  justify-self: end;
   display: flex;
   align-items: baseline;
   gap: var(--op-space-1);

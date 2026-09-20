@@ -55,7 +55,7 @@ local PATCHABLE = {
 	eyebrow = true, title = true, subtitle = true, intro = true, tabs = true, tab = true,
 	search = true, summary = true, actions = true, tools = true, selected = true,
 	status = true, busy = true, labels = true, loading = true, clearItems = true,
-	sliders = true,
+	sliders = true, groups = true,
 }
 
 -- Fields only a spec may carry.
@@ -312,6 +312,15 @@ local PARSERS = {
 	summary = summary,
 	actions = function(value) return buttons(value, 4, 'actions') end,
 	tools = function(value) return buttons(value, 8, 'tools') end,
+	-- A THIRD ROW OF BUTTONS, AND IT IS NOT A FOURTH KIND OF THING. `actions` is
+	-- the commit row -- what finishes with this panel -- and `tools` adjusts the
+	-- view the panel is drawn over; neither describes "another part of this same
+	-- screen", which is what a category is. The fitting room needed one: saved
+	-- outfits, share codes and a shop's ready-made looks are all reachable from
+	-- the clothing screen and none of them is a tool or a commit. Same shape as
+	-- the other two on purpose -- a caller that can build a `tools` row can build
+	-- this one, and the page draws it with the same button.
+	groups = function(value) return buttons(value, 8, 'groups') end,
 	selected = selected,
 	status = status,
 	busy = function(value) return value == true end,
@@ -767,7 +776,11 @@ end
 --- Whether a button id is one this panel currently draws.
 local function isButton(panel, id)
 	local view = panel.view
-	for _, list in ipairs({ view.actions, view.tools }) do
+	-- THE CATEGORY ROW IS IN THIS LIST, and forgetting it is the whole bug this
+	-- shape invites: a button the page draws but this function does not know
+	-- about is a button that does nothing at all when it is pressed, silently,
+	-- with the panel still up and the caller still waiting to be told.
+	for _, list in ipairs({ view.actions, view.tools, view.groups }) do
 		for index = 1, #list do
 			if list[index].id == id then return list[index] end
 		end

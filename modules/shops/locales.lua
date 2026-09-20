@@ -41,6 +41,37 @@ local EN = {
 	['shops.badCode'] = 'That is not a code.',
 	['shops.noSuchCode'] = 'No outfit answers that code.',
 	['shops.codeFailed'] = 'A code could not be minted. Try again.',
+
+	-- The category strip on the fitting-room screen, and the two lists and two
+	-- forms behind it. Four words at most each: these are buttons in a row and
+	-- the row wraps rather than shrinks.
+	['shops.group.looks'] = 'Uniforms',
+	['shops.group.outfits'] = 'My outfits',
+	['shops.group.save'] = 'Save outfit',
+	['shops.group.code'] = 'Outfit code',
+
+	['shops.looks.title'] = 'Ready-made looks',
+	['shops.outfits.title'] = 'Your saved outfits',
+	['shops.outfits.empty'] = 'You have not saved an outfit yet.',
+	['shops.outfits.wear'] = 'Put it on',
+	['shops.outfits.share'] = 'Get a share code',
+	['shops.outfits.delete'] = 'Forget it',
+	['shops.outfits.code'] = 'Code {code}',
+	['shops.outfits.shared'] = 'Share code: {code}',
+
+	['shops.save.title'] = 'Save what you are wearing',
+	['shops.save.field'] = 'Name',
+	-- SAID WHEN THE SAVE IS QUEUED AND NOT WHEN IT LANDS, because those are
+	-- different moments here: the server writes down what a character IS wearing,
+	-- and inside an open fitting room that is still the look they walked in with.
+	['shops.save.queued'] = 'It will be saved as {name} when you finish here.',
+
+	['shops.code.title'] = 'Wear a shared outfit',
+	['shops.code.field'] = 'Code',
+	['shops.code.hint'] = '{length} characters, read out by another player.',
+
+	['shops.noSurface'] = 'That screen is not available right now.',
+	['shops.dressFailed'] = 'That outfit would not go on: {reason}.',
 }
 
 local FR = {
@@ -74,6 +105,31 @@ local FR = {
 	['shops.badCode'] = "Ce n'est pas un code.",
 	['shops.noSuchCode'] = 'Aucune tenue ne répond à ce code.',
 	['shops.codeFailed'] = "Un code n'a pas pu être généré. Réessayez.",
+
+	['shops.group.looks'] = 'Uniformes',
+	['shops.group.outfits'] = 'Mes tenues',
+	['shops.group.save'] = 'Enregistrer',
+	['shops.group.code'] = 'Code tenue',
+
+	['shops.looks.title'] = 'Tenues prêtes à porter',
+	['shops.outfits.title'] = 'Vos tenues enregistrées',
+	['shops.outfits.empty'] = "Vous n'avez encore enregistré aucune tenue.",
+	['shops.outfits.wear'] = 'La mettre',
+	['shops.outfits.share'] = 'Obtenir un code de partage',
+	['shops.outfits.delete'] = "L'oublier",
+	['shops.outfits.code'] = 'Code {code}',
+	['shops.outfits.shared'] = 'Code de partage : {code}',
+
+	['shops.save.title'] = 'Enregistrer votre tenue actuelle',
+	['shops.save.field'] = 'Nom',
+	['shops.save.queued'] = 'Elle sera enregistrée sous {name} quand vous aurez fini.',
+
+	['shops.code.title'] = 'Porter une tenue partagée',
+	['shops.code.field'] = 'Code',
+	['shops.code.hint'] = "{length} caractères, dictés par un autre joueur.",
+
+	['shops.noSurface'] = "Cet écran n'est pas disponible pour le moment.",
+	['shops.dressFailed'] = "Cette tenue ne s'est pas mise : {reason}.",
 }
 
 M.Catalogs = { en = EN, fr = FR }

@@ -1381,6 +1381,52 @@ function M.Contract.CloseWardrobe(owner)
 	return Result.Ok(true)
 end
 
+--- Offers the open fitting room a strip of category buttons.
+-- @author dop42
+--
+-- FOR THE MODULE THAT OWNS THE OUTFITS, AND ONLY WHILE A ROOM IS OPEN. The
+-- saved outfits, the share codes and the job-gated ready-made looks all live in
+-- `modules/shops`, which already requires this module; this is how it reaches
+-- into a fitting room without this module having to learn that shops exist. A
+-- press comes back on the decision bus as `wardrobeGroup`, carrying the owner
+-- and the caller's own button id.
+--
+-- The strip is dropped when the room closes, so a caller offers per room rather
+-- than once at start-up. Passing an empty list takes a caller's strip down.
+-- @param owner string the caller's own name
+-- @param groups table|nil an array of { id, label, disabled }
+-- @return Result
+function M.Contract.OfferWardrobeGroups(owner, groups)
+	if not M.Wardrobe.IsOpen() then return Result.Err('no_wardrobe_open') end
+	local ok, reason = M.Wardrobe.OfferGroups(owner, groups)
+	if not ok then return Result.Err(tostring(reason)) end
+	return Result.Ok(true)
+end
+
+--- Lays a saved look onto the open fitting room's draft.
+-- @author dop42
+--
+-- THE FITTING ROOM'S OWN PATH, not a second way to dress somebody. While the
+-- room is open the puppet is lent to it, so `BeginClothingPreview` -- the way a
+-- shop dresses a player standing on the shop floor -- is refused, and a caller
+-- that tried it did nothing at all. This puts the look on the DRAFT instead: the
+-- sliders move, Cancel still undoes it, and the slots it moved are reported on
+-- `wardrobeClosed` so a shop bills them like any other change.
+--
+-- Slots the body's own catalogue does not carry are skipped rather than
+-- refused -- a share code was read out by somebody whose character may be
+-- another build -- so the answer says how much of the look went on.
+-- @param records table slot name to record name, or false for an empty slot
+-- @return Result
+function M.Contract.DressWardrobe(records)
+	local gone = guard()
+	if gone then return gone end
+	if not M.Wardrobe.IsOpen() then return Result.Err('no_wardrobe_open') end
+	local ok, reason = M.Wardrobe.Dress(records)
+	if not ok then return Result.Err(tostring(reason)) end
+	return Result.Ok(true)
+end
+
 --- Lends the puppet to a fitting room, answering what it wears.
 -- Nothing is saved and no look is published while it is lent, so a jacket a player
 -- is only trying on never reaches the database or anybody else.
@@ -1453,6 +1499,8 @@ function M.Api()
 		ClosePanel = M.Contract.ClosePanel,
 		OpenWardrobe = M.Contract.OpenWardrobe,
 		CloseWardrobe = M.Contract.CloseWardrobe,
+		OfferWardrobeGroups = M.Contract.OfferWardrobeGroups,
+		DressWardrobe = M.Contract.DressWardrobe,
 
 		BeginClothingPreview = M.Contract.BeginClothingPreview,
 		EndClothingPreview = M.Contract.EndClothingPreview,
