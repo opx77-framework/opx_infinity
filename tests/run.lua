@@ -82,6 +82,11 @@ local CORE_NAMESPACE = {
 	-- and 14 -- are what a shared name is for.
 	Glyphs = true,
 	Modules = true, Api = true, Schema = true, Scheduler = true,
+	-- The one job gate, in `lib/shared/jobgate.lua`. On `OPX` and not inside a
+	-- module for the same reason `Glyphs` is: `elevators` and `teleports` both
+	-- decide who may pass, on both halves, and the copy that drifted would be
+	-- the one saying somebody may.
+	JobGate = true,
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
 	Storage = true, Audit = true, Surface = true,
@@ -10198,5 +10203,598 @@ do
 	end
 end
 
+
+-- ── teleports ────────────────────────────────────────────────────────────────
+-- A TELEPORT IS A DOOR THAT DOES NOT CHECK ITSELF, so every check below is
+-- about the thing that does. The client sends a key and a leg; the server looks
+-- the destination up in its own catalogue, re-derives the job gate, re-reads the
+-- position and only then asks the platform to move a body. What is asserted is
+-- therefore always two things at once: that the wire answer said no, AND that
+-- `control.trips.calls` is still empty -- a refusal that had already moved the
+-- player is not a refusal.
+section('teleports: the destination and the gate are the server\'s, and pure')
+do
+	-- WHERE THE PLAYER IS STANDING, movable between requests. The stub's fixed
+	-- origin is nowhere near any of the points below, so a test that could not
+	-- move the body could only ever exercise `too_far`.
+	local WHERE = { x = 100.0, y = 200.0, z = 10.0, bucket = 0 }
+
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.players.position = function()
+			return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = WHERE.bucket }
+		end
+	end)
+	check('the server boots with the teleports module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('teleports')
+		local Access = M.Access
+		local contract = OPX.Api.Get('teleports')
+
+		check('the teleports module is running', OPX.Modules.IsRunning('teleports'),
+			OPX.Modules.Record('teleports').Reason)
+		check('and publishes its half of the contract',
+			contract ~= nil and type(contract.IsAllowed) == 'function'
+				and type(contract.Entrances) == 'function'
+				and type(contract.State) == 'function')
+		check('the shipped config reports no problems', #Access.Problems() == 0,
+			table.concat(Access.Problems(), ' | '))
+		check('and ships no teleport switched on, because every coordinate in it ' ..
+			'is an example', OPX.Table.Count(Access.POINTS) == 0,
+			OPX.Table.Count(Access.POINTS))
+
+		-- ── the catalogue the rest of this section runs against ──────────────
+		-- INSTALLED INTO THE LIVE TABLE, and that is not a trick: `M.Init` binds
+		-- the server half's `points` to `Access.POINTS` itself, so writing into it
+		-- is exactly what loading a config with these rows would have done. It has
+		-- to be done here because the shipped config deliberately enables nothing
+		-- -- the check directly above is the one that keeps it that way -- and a
+		-- suite that needed a real point would otherwise be an argument for
+		-- shipping a fake one.
+		local FIXTURES = {
+			-- A two-way with no gate: the plain case the owner asked for.
+			roof = { LABEL = 'ROOF', BUCKET = 0, RETURN = true,
+				ENTRY = { LABEL = 'Street', X = 100.0, Y = 200.0, Z = 10.0, HEADING = 0.0 },
+				EXIT = { LABEL = 'Rooftop', X = 100.0, Y = 205.0, Z = 40.0, HEADING = 180.0 } },
+			-- A one-way: you drop through it and walk out.
+			hatch = { LABEL = 'HATCH', BUCKET = 0,
+				ENTRY = { LABEL = 'Hatch', X = 300.0, Y = 400.0, Z = 5.0 },
+				EXIT = { LABEL = 'Sublevel', X = 300.0, Y = 400.0, Z = -8.0 } },
+			-- A locked two-way, with the operator's own words on the refusal.
+			vault = { LABEL = 'VAULT', BUCKET = 0, RETURN = true,
+				JOBS = { arasaka = 2 }, ON_DUTY = true, REASON = 'Arasaka Counterintel',
+				ENTRY = { LABEL = 'Lobby', X = 500.0, Y = 600.0, Z = 2.0 },
+				EXIT = { LABEL = 'Vault', X = 505.0, Y = 600.0, Z = 2.0 } },
+			-- Switched off by the operator.
+			shelved = { enabled = false, LABEL = 'SHELVED', BUCKET = 0,
+				ENTRY = { X = 700.0, Y = 800.0, Z = 1.0 },
+				EXIT = { X = 701.0, Y = 800.0, Z = 1.0 } },
+			-- In another routing bucket entirely.
+			elsewhere = { LABEL = 'ELSEWHERE', BUCKET = 7,
+				ENTRY = { X = 100.0, Y = 200.0, Z = 10.0 },
+				EXIT = { X = 900.0, Y = 900.0, Z = 9.0 } },
+		}
+		local installed = Access.Coerce(FIXTURES, nil)
+		for key, point in pairs(installed) do Access.POINTS[key] = point end
+
+		check('a point switched off is dropped from the catalogue, not merely hidden',
+			Access.POINTS.shelved == nil)
+		check('and the four live ones are installed', OPX.Table.Count(Access.POINTS) == 4,
+			OPX.Table.Count(Access.POINTS))
+
+		-- ── destination validation, as a pure function ───────────────────────
+		-- `Access.Lookup` is the whole of "may this client name this place". It
+		-- takes the two strings a client is allowed to send and nothing else, and
+		-- every way of getting it wrong ends at nil.
+		local points = Access.POINTS
+		check('a configured teleport resolves on its outbound leg',
+			Access.Lookup(points, 'roof', 'out') ~= nil)
+		check('a key nobody configured resolves to nothing',
+			Access.Lookup(points, 'no_such_key', 'out') == nil)
+		check('and so does a point the operator switched off',
+			Access.Lookup(points, 'shelved', 'out') == nil)
+		check('a leg that is not one of the two resolves to nothing',
+			Access.Lookup(points, 'roof', 'sideways') == nil)
+		check('and a leg that is not a string at all',
+			Access.Lookup(points, 'roof', { leg = 'out' }) == nil)
+		check('and a key that is not a string at all',
+			Access.Lookup(points, { key = 'roof' }, 'out') == nil)
+
+		-- ONE-WAY MEANS ONE WAY. Without this the `RETURN` flag is decoration: a
+		-- client naming `back` on the hatch would be lifted out of the sublevel
+		-- the operator meant them to walk out of.
+		check('the back leg of a one-way teleport does not exist',
+			Access.Lookup(points, 'hatch', 'back') == nil)
+		check('and the back leg of a two-way does, reversed',
+			(function()
+				local back = Access.Lookup(points, 'roof', 'back')
+				return back ~= nil and back.x == 100.0 and back.z == 40.0
+					and back.to.x == 100.0 and back.to.z == 10.0
+			end)())
+		check('a row names where it is GOING and not where it stands',
+			Access.Lookup(points, 'roof', 'out').label == 'Rooftop' and
+			Access.Lookup(points, 'roof', 'back').label == 'Street')
+		check('and carries the destination heading the operator wrote',
+			Access.Lookup(points, 'roof', 'out').to.heading == 180.0)
+
+		-- ── the definitions themselves ───────────────────────────────────────
+		check('a teleport with no ENTRY is refused',
+			Access.FromDefinition('x', { EXIT = { X = 0.0, Y = 0.0, Z = 0.0 } }) == nil)
+		check('and one with no EXIT',
+			Access.FromDefinition('x', { ENTRY = { X = 0.0, Y = 0.0, Z = 0.0 } }) == nil)
+		check('a coordinate that is not a number is refused',
+			Access.FromDefinition('x', { ENTRY = { X = 'there', Y = 0.0, Z = 0.0 },
+				EXIT = { X = 0.0, Y = 0.0, Z = 0.0 } }) == nil)
+		check('and a NaN is refused, because it passes every comparison',
+			Access.FromDefinition('x', { ENTRY = { X = 0 / 0, Y = 0.0, Z = 0.0 },
+				EXIT = { X = 0.0, Y = 0.0, Z = 0.0 } }) == nil)
+		check('a key over the column width is refused',
+			Access.FromDefinition(string.rep('k', Access.MAX_KEY + 1),
+				{ ENTRY = { X = 0.0, Y = 0.0, Z = 0.0 },
+					EXIT = { X = 0.0, Y = 0.0, Z = 0.0 } }) == nil)
+		check('RETURN is two-way only when it is written as true, never coerced',
+			(function()
+				local loose = Access.FromDefinition('loose', { RETURN = 'yes',
+					ENTRY = { X = 0.0, Y = 0.0, Z = 0.0 }, EXIT = { X = 1.0, Y = 0.0, Z = 0.0 } })
+				return loose ~= nil and loose.twoWay == false
+			end)())
+		check('a heading is wrapped rather than refused, because 370 is a bearing',
+			Access.FromDefinition('turn', { ENTRY = { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 370.0 },
+				EXIT = { X = 1.0, Y = 0.0, Z = 0.0 } }).entry.heading == 10.0)
+
+		-- ── job eligibility, as a pure function ──────────────────────────────
+		-- The rule is `lib/shared/jobgate.lua`, shared with the elevators module;
+		-- these drive it through THIS module's own adapter, because the adapter is
+		-- what decides which leg carries a gate.
+		local now = 1000000
+		local function snap(name, level, onDuty, jobs)
+			return { job = name and { name = name, grade = { level = level },
+				onDuty = onDuty } or nil, jobs = jobs, atMs = now }
+		end
+		local open = Access.Lookup(points, 'roof', 'out')
+		local gated = Access.Lookup(points, 'vault', 'out')
+		local homeward = Access.Lookup(points, 'vault', 'back')
+
+		check('an ungated teleport is open to a character that could not be read',
+			(Access.Evaluate(open, nil, now)) == true)
+		local ok, refusal = Access.Evaluate(gated, nil, now)
+		check('a gated one is shut to the same character', ok == false and
+			refusal == 'no_character', tostring(refusal))
+		ok, refusal = Access.Evaluate(gated, snap('arasaka', 1, true), now)
+		check('and to the right job at too low a grade', ok == false and
+			refusal == 'grade_too_low', tostring(refusal))
+		ok, refusal = Access.Evaluate(gated, snap('militech', 9, true), now)
+		check('and to the wrong job at any grade', ok == false and
+			refusal == 'job_required', tostring(refusal))
+		ok, refusal = Access.Evaluate(gated, snap('arasaka', 3, false), now)
+		check('and to the right rank off duty, because ON_DUTY was written',
+			ok == false and refusal == 'off_duty', tostring(refusal))
+		check('and open at the grade it asks for, on duty',
+			(Access.Evaluate(gated, snap('arasaka', 2, true), now)) == true)
+
+		local stale = now + Access.JOB_MAX_AGE_MS + 1
+		ok, refusal = Access.Evaluate(gated, snap('arasaka', 3, true), stale)
+		check('a stale snapshot shuts a gated teleport', ok == false and
+			refusal == 'job_stale', tostring(refusal))
+		check('and leaves an ungated one open, because a broken read must not ' ..
+			'wall off a shortcut', (Access.Evaluate(open, snap('arasaka', 3, true), stale)) == true)
+
+		-- THE WAY BACK IS NEVER GATED, and this is the check that keeps somebody
+		-- from being stranded on the far side of their own revoked job -- in a
+		-- place that, by this module's whole premise, has no walkable way out.
+		check('the way back out of a locked teleport is open to nobody at all',
+			(Access.Evaluate(homeward, nil, now)) == true)
+		check('and carries no gate to be read', homeward.jobs == nil and
+			homeward.onDuty == false)
+		check('while the way in still carries the operator\'s own reason',
+			gated.reason == 'Arasaka Counterintel')
+
+		-- ── standing on it, as a pure function ───────────────────────────────
+		local at = Access.Lookup(points, 'roof', 'out')
+		check('a body on the mark is standing on the entrance',
+			(Access.AtEntrance(at, 100.0, 200.0, 10.0, 0)) == true)
+		check('a body across the street is not',
+			select(2, Access.AtEntrance(at, 140.0, 200.0, 10.0, 0)) == 'too_far')
+		check('nor is one in another routing bucket standing in the same spot',
+			select(2, Access.AtEntrance(at, 100.0, 200.0, 10.0, 7)) == 'wrong_bucket')
+		-- THE VERTICAL BAND, which is the measurement the elevators deliberately
+		-- do not have. A lift is called from every floor of its shaft; a pad is a
+		-- disc. The case this really guards is a body FALLING through the marker's
+		-- column, which passes a flat-only test for the whole of the fall.
+		check('a body on the walkway overhead is not standing on the pad below it',
+			select(2, Access.AtEntrance(at, 100.0, 200.0, 10.0 + Access.USE_HEIGHT + 0.5, 0))
+				== 'too_far')
+		check('and neither is one falling past it from underneath',
+			select(2, Access.AtEntrance(at, 100.0, 200.0, 10.0 - Access.USE_HEIGHT - 0.5, 0))
+				== 'too_far')
+		check('a position that is not a number is no position',
+			select(2, Access.AtEntrance(at, 'here', 200.0, 10.0, 0)) == 'no_position')
+
+		-- ── the wire: every refusal is the server\'s, and nothing moves ───────
+		local USE = M.Event.USE
+		check('the request door is on the net channel', type(control.netEvents[USE]) == 'function')
+
+		--- One client pressing the key, and the thread the trip runs on.
+		local function use(player, key, leg)
+			env.source = player
+			control.netEvents[USE](key, leg)
+			env.source = nil
+			-- The handler hands the trip to a `CreateThread`, because `:await()`
+			-- needs a managed coroutine; without the pump nothing would have run.
+			control.Pump(8)
+		end
+
+		--- The last ANSWER put on the wire: key, leg, ok, code, reason.
+		local function answer()
+			for index = #control.clientEvents, 1, -1 do
+				if control.clientEvents[index].name == M.Event.ANSWER then
+					return control.clientEvents[index]
+				end
+			end
+			return nil
+		end
+
+		local trips = control.trips
+		local function moved() return #trips.calls end
+
+		-- A PLAYER ID PER CASE, and not one player pressing the key eight times.
+		-- The request window is four in ten seconds and the pump advances the
+		-- clock a tenth of a second a round, so a suite that reused one slot would
+		-- start answering `rate_limited` halfway down -- which is the limiter
+		-- working and every check below it testing nothing.
+		WHERE.x, WHERE.y, WHERE.z, WHERE.bucket = 100.0, 200.0, 10.0, 0
+
+		-- A key nobody configured.
+		use(11, 'no_such_key', 'out')
+		local last = answer()
+		check('a teleport nobody configured is refused', last ~= nil and last[3] == false and
+			last[4] == 'no_such_teleport', last and tostring(last[4]))
+		check('and no body was asked to move', moved() == 0, moved())
+
+		-- The back leg of a one-way, standing at its exit.
+		WHERE.x, WHERE.y, WHERE.z = 300.0, 400.0, -8.0
+		use(12, 'hatch', 'back')
+		last = answer()
+		check('the back leg of a one-way is refused by the server, not by the page',
+			last ~= nil and last[3] == false and last[4] == 'no_such_teleport',
+			last and tostring(last[4]))
+		check('and still nothing moved', moved() == 0, moved())
+
+		-- A gated teleport with no character loaded.
+		WHERE.x, WHERE.y, WHERE.z = 500.0, 600.0, 2.0
+		use(13, 'vault', 'out')
+		last = answer()
+		check('a locked teleport is refused to a character the server cannot read',
+			last ~= nil and last[3] == false and last[4] == 'no_character',
+			last and tostring(last[4]))
+		check('and the refusal carries the operator\'s own words, so it says why',
+			last ~= nil and last[5] == 'Arasaka Counterintel', last and tostring(last[5]))
+		check('and nothing moved', moved() == 0, moved())
+
+		-- Standing nowhere near it.
+		WHERE.x, WHERE.y, WHERE.z = 100.0, 200.0, 10.0
+		use(14, 'hatch', 'out')
+		last = answer()
+		check('a teleport asked for from across the map is refused too_far',
+			last ~= nil and last[3] == false and last[4] == 'too_far',
+			last and tostring(last[4]))
+		check('and nothing moved', moved() == 0, moved())
+
+		-- Standing directly above it: the mid-fall case, on the wire.
+		WHERE.x, WHERE.y, WHERE.z = 100.0, 200.0, 10.0 + Access.USE_HEIGHT + 5.0
+		use(15, 'roof', 'out')
+		last = answer()
+		check('a body falling past the marker is refused, not carried',
+			last ~= nil and last[3] == false and last[4] == 'too_far',
+			last and tostring(last[4]))
+		check('and nothing moved', moved() == 0, moved())
+
+		-- ── a trip that is allowed ───────────────────────────────────────────
+		WHERE.x, WHERE.y, WHERE.z, WHERE.bucket = 100.0, 200.0, 10.0, 0
+		use(16, 'roof', 'out')
+		last = answer()
+		check('a player standing on an ungated entrance is carried',
+			last ~= nil and last[3] == true, last and tostring(last[4]))
+		check('and exactly one body was asked to move', moved() == 1, moved())
+		local call = trips.calls[1]
+		check('to the EXIT the operator wrote, and never to anything off the wire',
+			call ~= nil and call.position.x == 100.0 and call.position.y == 205.0
+				and call.position.z == 40.0)
+		check('facing the way the operator wrote',
+			call ~= nil and call.options.heading == 180.0, call and tostring(call.options.heading))
+		check('in the teleport\'s own routing bucket',
+			call ~= nil and call.options.bucket == 0)
+		check('with the arrival watch given the configured budget',
+			call ~= nil and call.options.timeoutMs == M.Settings.SETTLE_MS,
+			call and tostring(call.options.timeoutMs))
+		-- A PLAYER IN A VEHICLE IS REFUSED AND NOT EJECTED, by default: `dismount`
+		-- accepts LOSING the car, which leaves it parked across the pad.
+		check('and dismount off, so a driver is refused rather than losing their car',
+			call ~= nil and call.options.dismount == false,
+			call and tostring(call.options.dismount))
+
+		-- ── the arrival is checked, not assumed ──────────────────────────────
+		-- The platform's watch rejects `settle_timeout` when the body never stood
+		-- at the mark. A module that took the promise and walked away would report
+		-- that trip as a success, and the player would be inside a hillside being
+		-- told they had arrived.
+		trips.reject = 'settle_timeout'
+		use(17, 'roof', 'out')
+		last = answer()
+		check('a trip whose body never arrived is reported as a failure',
+			last ~= nil and last[3] == false and last[4] == 'settle_timeout',
+			last and tostring(last[4]))
+		check('and the destination is named in the journal, because a timeout ' ..
+			'means there is no floor there',
+			(function()
+				for _, line in ipairs(control.log.warn) do
+					if tostring(line):find('roof', 1, true) and
+						tostring(line):find('never arrived', 1, true) then return true end
+				end
+				return false
+			end)())
+		trips.reject = nil
+
+		-- A refusal from the native itself, before anything moved.
+		trips.refuse = 'player_in_vehicle'
+		use(18, 'roof', 'out')
+		last = answer()
+		check('the platform\'s own refusal reaches the player in its own words',
+			last ~= nil and last[3] == false and last[4] == 'player_in_vehicle',
+			last and tostring(last[4]))
+		trips.refuse = nil
+
+		-- ── the gate, re-derived at the moment of the press ──────────────────
+		-- The contract table is the one the server half reaches through
+		-- `OPX.Api.Get`, so replacing its reader is exactly what a loaded
+		-- character would change and nothing else.
+		local character = OPX.Api.Get('character')
+		local heldJob = { name = 'arasaka', grade = { level = 3 }, onDuty = true }
+		local realGetPlayer = character.GetPlayer
+		character.GetPlayer = function()
+			return { PlayerData = { job = heldJob, jobs = {} } }
+		end
+
+		WHERE.x, WHERE.y, WHERE.z = 500.0, 600.0, 2.0
+		use(19, 'vault', 'out')
+		last = answer()
+		check('the right job at the right grade, on duty, is carried through the lock',
+			last ~= nil and last[3] == true, last and tostring(last[4]))
+
+		heldJob = { name = 'arasaka', grade = { level = 3 }, onDuty = false }
+		use(19, 'vault', 'out')
+		last = answer()
+		check('and the same rank off duty is refused at the moment of the press',
+			last ~= nil and last[3] == false and last[4] == 'off_duty',
+			last and tostring(last[4]))
+
+		-- AND THE WAY BACK IS STILL OPEN TO THEM. This is the stranding case end
+		-- to end: their duty ended while they were inside.
+		WHERE.x, WHERE.y, WHERE.z = 505.0, 600.0, 2.0
+		use(19, 'vault', 'back')
+		last = answer()
+		check('but the way back out is not, so nobody is stranded by a duty toggle',
+			last ~= nil and last[3] == true, last and tostring(last[4]))
+
+		-- ── the list a client draws from ─────────────────────────────────────
+		heldJob = { name = 'militech', grade = { level = 9 }, onDuty = true }
+		WHERE.x, WHERE.y, WHERE.z, WHERE.bucket = 100.0, 200.0, 10.0, 0
+		env.source = 15
+		control.netEvents[M.Event.ASK]()
+		env.source = nil
+		local sync = nil
+		for index = #control.clientEvents, 1, -1 do
+			if control.clientEvents[index].name == M.Event.SYNC then
+				sync = control.clientEvents[index][1]
+				break
+			end
+		end
+		check('a client is sent the entrances of its own bucket', type(sync) == 'table' and
+			type(sync.entrances) == 'table')
+
+		local byId = {}
+		if type(sync) == 'table' and type(sync.entrances) == 'table' then
+			for _, row in ipairs(sync.entrances) do byId[row.key .. ':' .. row.leg] = row end
+		end
+		check('a two-way teleport is sent as two entrances',
+			byId['roof:out'] ~= nil and byId['roof:back'] ~= nil)
+		check('and a one-way as one', byId['hatch:out'] ~= nil and byId['hatch:back'] == nil)
+		check('a teleport in another bucket is not sent at all', byId['elsewhere:out'] == nil)
+
+		-- WHAT IS *NOT* ON THE WIRE is the point of this pair. A client that never
+		-- learns where a teleport goes cannot name the place it wants to go to,
+		-- which is why the request carries a key and a leg and nothing else.
+		check('an entrance carries the position of the mark it is standing on',
+			byId['roof:out'] ~= nil and byId['roof:out'].x == 100.0
+				and byId['roof:out'].z == 10.0)
+		check('and never the coordinates of where it leads',
+			(function()
+				for _, row in ipairs(sync.entrances) do
+					for _, field in ipairs({ 'to', 'exit', 'destination', 'heading' }) do
+						if row[field] ~= nil then return false end
+					end
+				end
+				return true
+			end)())
+
+		check('a locked entrance is marked refused for the client to colour',
+			byId['vault:out'] ~= nil and byId['vault:out'].allowed == false)
+		check('and carries the operator\'s reason, so the marker can say why',
+			byId['vault:out'] ~= nil and byId['vault:out'].reason == 'Arasaka Counterintel')
+		check('while its way back out is marked open',
+			byId['vault:back'] ~= nil and byId['vault:back'].allowed == true)
+		check('and an ungated one is open to the same character',
+			byId['roof:out'] ~= nil and byId['roof:out'].allowed == true)
+
+		-- ── the request window ───────────────────────────────────────────────
+		-- The limit governs the CABIN, not the answer: a request past it is still
+		-- answered, so a player sees why nothing happened.
+		local allowance = M.Settings.REQUESTS_PER_WINDOW
+		local before = moved()
+		for _ = 1, allowance + 2 do use(21, 'roof', 'out') end
+		last = answer()
+		check('a player past their request window is refused rather than carried',
+			last ~= nil and last[3] == false and last[4] == 'rate_limited',
+			last and tostring(last[4]))
+		check('and no more bodies moved than the window allowed',
+			moved() - before <= allowance, moved() - before)
+
+		character.GetPlayer = realGetPlayer
+	end
+end
+
+section('teleports, client side')
+do
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots with the teleports module', cwhy == nil, cwhy)
+
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local teleports = OPX.Modules.Get('teleports')
+		local Runtime = teleports.Runtime
+		local Access = teleports.Access
+
+		check('the client half is running, not just loaded',
+			OPX.Modules.IsRunning('teleports'), OPX.Modules.Record('teleports').Reason)
+		check('and publishes its half of the contract',
+			(function()
+				local api = OPX.Api.Get('teleports')
+				return api ~= nil and type(api.Use) == 'function'
+					and type(api.Nearest) == 'function' and type(api.State) == 'function'
+			end)())
+
+		-- Every other marker module draws on the SAME engine list, so their spots
+		-- come down before anything here is counted: otherwise every count below
+		-- is off by however many they had placed.
+		cctl.netEvents[OPX.Modules.Get('garages').Event.SYNC]({ spots = {} })
+		cctl.netEvents[OPX.Modules.Get('dealership').Event.SYNC]({ spots = {} })
+		cctl.netEvents[OPX.Modules.Get('clothing').Event.SYNC]({ spots = {} })
+		cctl.Pump(6)
+
+		local mapping = cctl.keyMappings.byId['opx.teleports.use']
+		check('the key is declared to the host, so a player can rebind it', mapping ~= nil)
+		check('and defaults to E, the same gesture as a garage, a dealer or a store',
+			mapping ~= nil and mapping.key == 'E', mapping and tostring(mapping.key))
+
+		local asked = false
+		for index = 1, #cctl.serverEvents do
+			if cctl.serverEvents[index].name == teleports.Event.ASK then asked = true end
+		end
+		check('the client asks the server for its entrances on start', asked)
+
+		-- ── the markers ───────────────────────────────────────────────────────
+		-- The client stands at the origin (`placement` in the host), so the open
+		-- entrance is underfoot and the locked one is a few metres away.
+		local function sync(rows)
+			cctl.netEvents[teleports.Event.SYNC]({ entrances = rows })
+			cctl.Pump(6)
+		end
+
+		sync({
+			{ key = 'roof', leg = 'out', label = 'Rooftop', x = 0.0, y = 0.0, z = 0.0,
+				allowed = true },
+			{ key = 'vault', leg = 'out', label = 'Vault', x = 8.0, y = 0.0, z = 0.0,
+				allowed = false, error = 'off_duty', reason = 'Arasaka Counterintel' },
+			{ key = 'far', leg = 'out', label = 'Far', x = 5000.0, y = 0.0, z = 0.0,
+				allowed = true },
+		})
+		settle(cctl, function() return Runtime.Report().markers == 2 end)
+
+		check('one marker is drawn per entrance in range',
+			Runtime.Report().entrances == 3 and Runtime.Report().markers == 2,
+			('%d held, %d drawn'):format(Runtime.Report().entrances, Runtime.Report().markers))
+
+		local styles = {}
+		for _, id in ipairs(cenv.Open77.markers.list()) do
+			local options = cctl.markers.byId[id]
+			if options ~= nil then styles[#styles + 1] = options.style end
+		end
+		table.sort(styles)
+		-- A LOCKED SHORTCUT IS VISIBLY LOCKED FROM ACROSS THE STREET, which is the
+		-- whole reason `allowed` is on the wire at all. It decides a colour and
+		-- nothing else -- the server refuses the trip either way.
+		check('a refused entrance is drawn in the locked style and an open one is not',
+			#styles == 2 and styles[1] == 'danger' and styles[2] == 'interaction',
+			table.concat(styles, '/'))
+
+		-- A PROMOTION ARRIVING ON THE POLL REMAKES THE MARKER. The style is fixed
+		-- when a marker is created, so a client that left it alone would keep
+		-- drawing a red ring on a shortcut the player may now take -- which reads
+		-- as the server refusing them, and is the opposite of the truth.
+		sync({
+			{ key = 'roof', leg = 'out', label = 'Rooftop', x = 0.0, y = 0.0, z = 0.0,
+				allowed = true },
+			{ key = 'vault', leg = 'out', label = 'Vault', x = 8.0, y = 0.0, z = 0.0,
+				allowed = true },
+			{ key = 'far', leg = 'out', label = 'Far', x = 5000.0, y = 0.0, z = 0.0,
+				allowed = true },
+		})
+		settle(cctl, function()
+			for _, id in ipairs(cenv.Open77.markers.list()) do
+				local options = cctl.markers.byId[id]
+				if options ~= nil and options.style == 'danger' then return false end
+			end
+			return true
+		end)
+		local stillLocked = false
+		for _, id in ipairs(cenv.Open77.markers.list()) do
+			local options = cctl.markers.byId[id]
+			if options ~= nil and options.style == 'danger' then stillLocked = true end
+		end
+		check('an entrance that was unlocked underneath the player is redrawn open',
+			not stillLocked)
+
+		-- ── a malformed payload is dropped, not drawn ─────────────────────────
+		check('an entrance with no usable key is refused off the wire',
+			Access.FromWire({ leg = 'out', x = 0.0, y = 0.0, z = 0.0 }) == nil)
+		check('and one naming a leg that does not exist',
+			Access.FromWire({ key = 'k', leg = 'sideways', x = 0.0, y = 0.0, z = 0.0 }) == nil)
+		check('and one whose position is a NaN, which would poison every distance',
+			Access.FromWire({ key = 'k', leg = 'out', x = 0 / 0, y = 0.0, z = 0.0 }) == nil)
+
+		-- ── the key sends two strings and nothing else ────────────────────────
+		local before = #cctl.serverEvents
+		local pressed = Runtime.Use('test')
+		check('the key press is accepted while standing on an entrance',
+			pressed.ok == true, tostring(pressed.error))
+
+		local sent = nil
+		for index = before + 1, #cctl.serverEvents do
+			if cctl.serverEvents[index].name == teleports.Event.USE then
+				sent = cctl.serverEvents[index]
+			end
+		end
+		check('and it reaches the server as a key and a leg', sent ~= nil and
+			sent[1] == 'roof' and sent[2] == 'out',
+			sent and ('%s/%s'):format(tostring(sent[1]), tostring(sent[2])))
+		-- THE REQUEST CARRIES NO COORDINATE, and this is the one check that makes
+		-- "the server decides" true rather than merely intended: a client that
+		-- could name a position could name any position.
+		check('and carries nothing else at all -- no position for the server to trust',
+			sent ~= nil and sent[3] == nil, sent and tostring(sent[3]))
+
+		-- A SECOND PRESS WHILE THE FIRST IS UNANSWERED IS HELD BACK. The server
+		-- keeps the real lock; this only stops a held key filling the request
+		-- window with duplicates of a trip already under way.
+		local again = Runtime.Use('test')
+		check('a second press before the answer arrives is held back locally',
+			again.ok ~= true and again.error == 'teleports.inFlight', tostring(again.error))
+
+		cctl.netEvents[teleports.Event.ANSWER]('roof', 'out', true, nil, 'Rooftop')
+		cctl.Pump(2)
+		check('and the answer releases it', Runtime.Report().asking == false)
+
+		-- ── standing on nothing ───────────────────────────────────────────────
+		sync({})
+		settle(cctl, function() return Runtime.Report().markers == 0 end)
+		check('a list that was cleared takes its markers down with it',
+			Runtime.Report().markers == 0, Runtime.Report().markers)
+		local nowhere = Runtime.Use('test')
+		check('and the key on empty ground refuses locally rather than asking',
+			nowhere.ok ~= true and nowhere.error == 'teleports.noSuchTeleport',
+			tostring(nowhere.error))
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

@@ -87,6 +87,12 @@ shared_script "config/target.lua"
 shared_script "config/shops.lua"
 shared_script "config/animations.lua"
 shared_script "config/elevators.lua"
+-- Shared like the garages, dealership and clothing configs above, and for the
+-- same reason: the client draws an entrance's marker and reads the radius, the
+-- marker vocabulary and the key here. The DESTINATIONS are in it too and the
+-- client half never reads them -- it is sent the entrances it may see, already
+-- judged, and names a key and a leg back. See modules/teleports/module.lua.
+shared_script "config/teleports.lua"
 shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
@@ -105,6 +111,11 @@ shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
 shared_script "lib/shared/string.lua"
 shared_script "lib/shared/math.lua"
+-- The one job gate, ahead of every module that asks it a question. It was
+-- `modules/elevators/shared/access.lua`'s own five branches until
+-- `modules/teleports` wanted the same rule; a second hand-kept copy of an
+-- access decision is how two surfaces end up disagreeing about who may pass.
+shared_script "lib/shared/jobgate.lua"
 shared_script "lib/shared/text.lua"
 shared_script "lib/shared/validate.lua"
 shared_script "lib/shared/hooks.lua"
@@ -352,6 +363,20 @@ client_script "modules/elevators/client/main.lua"
 client_script "modules/elevators/client/panel.lua"
 client_script "modules/elevators/client/exports.lua"
 
+-- Teleports: operator-placed shortcuts to the parts of the map nobody can walk
+-- to, some of them locked to a job. After `elevators`, whose job gate it shares
+-- through `lib/shared/jobgate.lua` and whose config vocabulary it copies, and
+-- after `downed` and `prompts`, both of which it asks and neither of which it
+-- requires. Before `admin`, which stays last.
+shared_script "modules/teleports/module.lua"
+shared_script "modules/teleports/locales.lua"
+shared_script "modules/teleports/shared/access.lua"
+server_script "modules/teleports/server/main.lua"
+client_script "modules/teleports/client/main.lua"
+-- The lifecycle: the registry calls the module, and `Runtime` is what does the
+-- work. Without this file the client half is never built.
+client_script "modules/teleports/client/exports.lua"
+
 -- Clothing shops. After `appearance`, whose fitting room it opens, and after
 -- `target`, whose eye carries its row -- both are ordered above. Before
 -- `admin`, which stays last.
@@ -496,6 +521,22 @@ permissions {
   "players.life.revive",
 
   "players.stats.apply",
+
+  -- `Open77.players.teleport`, the ONLY thing in this resource that moves a
+  -- living body without killing it. `modules/teleports` is its only caller.
+  --
+  -- CHECKED IN THE DEVKIT, unlike the two model names at the bottom of this
+  -- block: `open77_permissions players.teleport` answers with a card of its own
+  -- and prints this exact manifest line, so the name is the catalogue's and not
+  -- a guess. The catalogue also says it "gates 0 natives", which is the same
+  -- shape `state.write` has above -- the listing counts what a native HANDLER
+  -- checks, and this one checks further down. The native's own card says
+  -- "Requires `players.teleport`" in as many words.
+  --
+  -- The native arrived in 2.31.13+op77.67. `modules/teleports/server/main.lua`
+  -- never assumes it: it looks the function up before every call and refuses
+  -- every trip with `unavailable` when it is absent, saying so once at start.
+  "players.teleport",
 
   "players.disconnect",
 
