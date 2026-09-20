@@ -52,6 +52,10 @@ dependency "opx_lib"
 reload_policy "reconnect"
 
 shared_script "core/shared/main.lua"
+-- The glyph vocabulary, before anything that validates a name against it: the
+-- toast in `core/client/notify.lua`, `Model.ICONS` and `menu.M.ICONS` all point
+-- at this one table rather than each carrying a copy.
+shared_script "core/shared/glyphs.lua"
 shared_script "core/shared/channels.lua"
 shared_script "core/shared/registry.lua"
 shared_script "core/shared/lifecycle.lua"

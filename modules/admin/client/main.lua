@@ -89,8 +89,14 @@ end
 -- @param kind string info, success, warning or error
 -- @param message string
 function Client.Notice(kind, message)
-	OPX.Toast.Show({ id = 'opx.admin', kind = kind, message = message,
+	-- THE ANSWER IS CHECKED, because it can be refused. `OPX.Toast.Show` answers
+	-- nil for a surface that is not up, and this used to discard that: the notice
+	-- went nowhere and said so to nobody. Six other modules already fall back to
+	-- the client journal on this exact path; these three did not, and the toast's
+	-- own docstring claimed they did.
+	local raised = OPX.Toast.Show({ id = 'opx.admin', kind = kind, message = message,
 		title = locale('admin.toast.title') })
+	if raised == nil then Open77.log.info('[admin] ' .. tostring(message)) end
 end
 
 --- Raises a notice whose text comes from a catalogue key.

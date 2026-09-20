@@ -17,21 +17,20 @@ local ANSWER = OPX.Event(OPX.Channel.NET, 'runtime', 'commandAnswer')
 local KINDS = { info = true, success = true, warning = true, error = true }
 local DEFAULT_MS = 5000
 
---- The glyphs a toast may carry, as a CLOSED set.
--- RECOPIED from `modules/target/shared/model.lua` -- and from `M.ICONS` in
--- `modules/menu/module.lua`, which recopied it for the same reason: the page
--- selects a LOCAL path by this name, so an unknown one would reach the DOM as an
--- attribute nobody wrote. Core may not read a module's namespace, so the lists
--- are kept in step by hand; a name that drifts costs a toast its glyph, never a
--- toast.
+--- The glyphs a toast may carry: `OPX.Glyphs`, and not a list of its own.
 --
--- IT IS A SET OF DOMAINS, NOT OF VERDICTS. There is no tick in it and no
--- exclamation mark, which is why no kind has a default glyph: see `Show`.
-OPX.Toast.ICONS = {
-	interact = true, person = true, vehicle = true, info = true, lock = true,
-	tool = true, location = true, box = true, door = true, heal = true,
-	money = true, talk = true, folder = true, back = true,
-}
+-- THIS LINE USED TO BE THE COPY THAT DRIFTED FURTHEST. It held fourteen names
+-- under a comment saying core may not read a module's namespace, so the lists
+-- are kept in step by hand -- and by the time anyone counted, the page drew 45,
+-- `Model.ICONS` named 47 and this named 14. The premise was true and the
+-- conclusion was wrong: core may not read a MODULE, but a module can read CORE,
+-- so the set belongs here, one level down, in `core/shared/glyphs.lua`.
+--
+-- Nothing had broken, and that is worth saying plainly rather than dressing the
+-- fix up: no caller in this resource passes a toast an icon, so the thirty-one
+-- names missing from this table could not refuse anything. It was a trap set for
+-- whoever first wrote `icon = 'warning'`.
+OPX.Toast.ICONS = OPX.Glyphs
 local ICONS = OPX.Toast.ICONS
 
 local live = {}
@@ -111,12 +110,24 @@ end
 --- already on screen rather than stacking another under it -- a player who runs
 --- the same command twice should see one answer, not a pile.
 ---
---- `icon` is a name from `OPX.Toast.ICONS` and is REFUSED rather than dropped
---- when it is not one, exactly as the menu refuses an item naming a glyph it
---- does not have: a caller who misspelt `vehcile` wants to hear about it now,
---- not to wonder later why one toast in ten has no picture. Every caller of this
---- already treats `nil` as "the toast did not go up" and falls back to a chat
---- line, so a refused toast is still a message the player reads.
+--- `icon` is a name from `OPX.Glyphs` and is REFUSED rather than dropped when it
+--- is not one, exactly as the menu refuses an item naming a glyph it does not
+--- have: a caller who misspelt `vehcile` wants to hear about it now, not to
+--- wonder later why one toast in ten has no picture. This holds because the set
+--- IS the page's set -- a name outside it is a typo and not a stale copy, which
+--- is the whole reason `OPX.Glyphs` exists.
+---
+--- IT WAS NOT TRUE THAT EVERY CALLER CHECKED. This paragraph used to assert
+--- that they all treat `nil` as "the toast did not go up" and fall back, and six
+--- of them did -- animations, chat, clothing, dealership, elevators and garages.
+--- Three called and discarded: `admin/client/main.lua`, `inventory/client/
+--- main.lua` and `menu/client/main.lua`. None of the three passed an icon, so
+--- none could be refused for one; what they lost was a refusal for
+--- `invalid_toast_message` or `surface_unavailable` -- a notice that went nowhere
+--- and said so to nobody. The three now fall back like the other six, so the
+--- sentence above is true again. It was written as though it were an argument
+--- for refusing strictly; it was a claim about nine call sites, and claims about
+--- call sites go stale.
 ---
 --- THERE IS NO DEFAULT GLYPH PER KIND. The set above names domains -- a door, a
 --- lock, money -- and holds no tick and no warning mark, so a default would have

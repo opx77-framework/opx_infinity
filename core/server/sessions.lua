@@ -29,7 +29,7 @@ local identifierOf
 -- @return UserId|nil
 function OPX.UserIdOf(playerId)
 	if identifierOf then return identifierOf(playerId) end
-	local fn = rawget(_G, 'GetPlayerIdentifier')
+	local fn = GetPlayerIdentifier
 	if not fn then return nil end
 	identifierOf = fn
 	return fn(playerId)
@@ -40,7 +40,7 @@ end
 -- @param playerId Source
 -- @return string|nil
 function OPX.DisplayNameOf(playerId)
-	local fn = rawget(_G, 'GetPlayerName')
+	local fn = GetPlayerName
 	return fn and fn(playerId) or nil
 end
 

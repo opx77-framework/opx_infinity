@@ -76,6 +76,11 @@ end
 local CORE_NAMESPACE = {
 	VERSION = true, IsServer = true, IsClient = true, Config = true, Now = true,
 	Channel = true, Event = true, Host = true,
+	-- The one glyph vocabulary, in `core/shared/glyphs.lua`. It is on `OPX`
+	-- rather than inside the toast because `target` and `menu` validate
+	-- against it too, and the three copies that preceded it -- 47 names, 45
+	-- and 14 -- are what a shared name is for.
+	Glyphs = true,
 	Modules = true, Api = true, Schema = true, Scheduler = true,
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
@@ -8386,6 +8391,90 @@ do
 	check('the manifest states one', manifest ~= nil, tostring(manifest))
 	check('and they are the same number', literal == manifest,
 		('core %s vs manifest %s'):format(tostring(literal), tostring(manifest)))
+end
+
+-- ── one glyph vocabulary, and the page can draw every name in it ────────────
+-- WRITTEN AFTER COUNTING THREE COPIES THAT DISAGREED. `Model.ICONS`,
+-- `menu.M.ICONS` and `OPX.Toast.ICONS` were three hand-kept lists, each under a
+-- comment telling the next author to change all of them in the same change. On
+-- disk they held 47 names, 45 and 14. Nothing had broken, because no caller
+-- passes a toast an icon -- it was a trap, not a fault, and the only reason it
+-- was ever found is that somebody read the three tables side by side.
+--
+-- So the set now lives once, in `core/shared/glyphs.lua`, and two things are
+-- checked here. First that the three names really are THE SAME TABLE and not
+-- three fresh copies again: identity, not equality, because a copy made today
+-- would pass an equality check and drift tomorrow. Second that every name in it
+-- has a path in `ui/src/modules/target/glyphs.ts` and every path has a name --
+-- the one seam a shared Lua file cannot close, since a `.ts` file is not
+-- loadable from Lua, and the seam the two dropped names (`inside`, `named`)
+-- came through. Lua promising a glyph the page has no path for is a row that
+-- validates, reaches the DOM and draws the fallback.
+section('the glyph vocabulary')
+do
+	local env, _, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local glyphs = OPX.Glyphs
+		check('core declares one glyph set', type(glyphs) == 'table')
+
+		local names = {}
+		for name in pairs(glyphs or {}) do names[#names + 1] = name end
+		table.sort(names)
+		check('and it is not empty', #names > 0, #names)
+
+		check('the toast draws from it, not from a copy',
+			OPX.Toast.ICONS == glyphs)
+
+		local target = OPX.Modules.Get('target')
+		check('target validates against it, not against a copy',
+			target ~= nil and target.Model ~= nil and target.Model.ICONS == glyphs)
+
+		local menu = OPX.Modules.Get('menu')
+		check('the menu validates against it, not against a copy',
+			menu ~= nil and menu.ICONS == glyphs)
+
+		-- The page's own keys, read out of the source. Two spaces of indent and
+		-- a colon is how a key of `GLYPHS` is written and nothing else in that
+		-- object is; the paths themselves are quoted and bracketed.
+		local handle = io.open('ui/src/modules/target/glyphs.ts', 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		check('the page glyph table is readable', #body > 0)
+
+		local LF = string.char(10)
+		local drawn = {}
+		local object = body:match('export const GLYPHS[^\n]*\n(.-)\n}')
+		-- The leading newline is put back because `object` begins one character
+		-- past it, and without it the FIRST key -- `interact` -- has no separator
+		-- in front of it and is missed. The check went red on that alone the
+		-- first time it ran, which is the check working.
+		for name in (LF .. (object or '')):gmatch('\n  ([%a][%w]*):') do
+			drawn[name] = true
+		end
+
+		local drawnCount = 0
+		for _ in pairs(drawn) do drawnCount = drawnCount + 1 end
+		check('and it names some glyphs', drawnCount > 0, drawnCount)
+
+		local missing = {}
+		for index = 1, #names do
+			local name = names[index]
+			if not drawn[name] then missing[#missing + 1] = name end
+		end
+		check('every name Lua accepts has a path on the page',
+			#missing == 0, table.concat(missing, ', '))
+
+		local extra = {}
+		for name in pairs(drawn) do
+			if not glyphs[name] then extra[#extra + 1] = name end
+		end
+		table.sort(extra)
+		check('and every path on the page has a name Lua accepts',
+			#extra == 0, table.concat(extra, ', '))
+	end
 end
 
 -- ── every item picture the catalogue names is actually shipped ──────────────

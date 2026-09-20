@@ -30,7 +30,7 @@ local readyReason = 'not probed'
 
 --- Runs one bridge method, turning a raise into a Result.
 local function run(method, sql, params)
-	local api = rawget(_G, 'MySQL')
+	local api = MySQL
 	local fn = api and api[method]
 	if not fn or type(fn.await) ~= 'function' then
 		return Result.Err('no-database', ('MySQL.%s.await is unavailable'):format(method))
@@ -95,7 +95,7 @@ function OPX.Storage.Execute(sql, params) return run('update', sql, params) end
 -- @param statements table a list of { query, parameters } pairs
 -- @return Result
 function OPX.Storage.Transaction(statements)
-	local api = rawget(_G, 'MySQL')
+	local api = MySQL
 	local fn = api and api.transaction
 	if not fn or type(fn.await) ~= 'function' then
 		return Result.Err('no-database', 'MySQL.transaction.await is unavailable')

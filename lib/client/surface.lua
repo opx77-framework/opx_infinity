@@ -179,7 +179,7 @@ function OPX.Surface.Create(spec)
 
 	-- Read at call time, not at load: a client build without the plugin has no
 	-- WebUI global, and a resource that only sometimes draws must still load.
-	local webui = rawget(_G, 'WebUI')
+	local webui = WebUI
 	if type(webui) ~= 'table' or type(webui.create) ~= 'function' then
 		return nil, 'no_webui'
 	end
