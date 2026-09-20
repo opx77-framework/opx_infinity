@@ -515,6 +515,9 @@ local MAX_CLOTHING_BYTES = 4096
 -- was already logged.
 local looks, absent, lastAt, warned = {}, {}, {}, {}
 
+-- Whether the "this half drops every look" warning has been said.
+local saidPresentingOff = false
+
 --- Whether this half hands looks out at all.
 local function presenting()
 	return M.Settings.PRESENT_BODIES ~= false
@@ -618,22 +621,37 @@ local function everybody()
 	return playerIds(read and type(list) == 'table' and list or {})
 end
 
---- Sends one player's look, or its absence, to one other viewer.
--- Never to its owner: that player's own look is the engine's.
+--- The looks this half is holding, and for whom.
+-- The single answer to "why can nobody see that player": a player who is not in
+-- this list is drawn by nobody, wherever the fault actually lies.
+local function heldLooks()
+	local ids = {}
+	for id in pairs(looks) do ids[#ids + 1] = tostring(id) end
+	table.sort(ids)
+	return #ids, table.concat(ids, ' ')
+end
+
+--- Sends one player's look, or its absence, to one other viewer, and says
+-- whether it went out. Never to its owner: that player's own look is the engine's.
 local function deliver(viewer, player)
-	if viewer == player then return end
+	if viewer == player then return false end
 	local look = looks[player]
-	if look == nil then return end
+	if look == nil then return false end
 	if absent[player] then
 		TriggerClientEvent(M.Event.LOOK, viewer, player, false)
 	else
 		TriggerClientEvent(M.Event.LOOK, viewer, player, look)
 	end
+	return true
 end
 
---- Sends a player's look to everybody else.
+--- Sends a player's look to everybody else, and answers how many got it.
 local function broadcast(player)
-	for _, other in ipairs(everybody()) do deliver(other, player) end
+	local handed = 0
+	for _, other in ipairs(everybody()) do
+		if deliver(other, player) then handed = handed + 1 end
+	end
+	return handed
 end
 
 --- The players in a routing bucket, or everybody when it cannot be read.
@@ -731,7 +749,15 @@ local function registerEvents()
 	RegisterNetEvent(M.Event.PRESENT, function(body, equipment, wardrobe, sequence)
 		local player = tonumber(source)
 		if not player or player <= 0 or not isInteger(sequence) or sequence < 1 then return end
-		if not presenting() or cooled('present', player) then return end
+		if not presenting() then
+			if not saidPresentingOff then
+				saidPresentingOff = true
+				Open77.log.warn('[appearance] PRESENT_BODIES is false: every look is being dropped, ' ..
+					'so no player can be drawn by anybody. Set it true, or leave it unset.')
+			end
+			return
+		end
+		if cooled('present', player) then return end
 
 		if not validBody(body) then
 			if not warned[player] then
@@ -752,15 +778,28 @@ local function registerEvents()
 		warned[player] = nil
 		looks[player] = look
 		absent[player] = nil
-		broadcast(player)
+		local handed = broadcast(player)
+		-- Said on every acceptance, because the alternative is a player nobody can
+		-- see and a server log that says nothing at all about it.
+		local held, who = heldLooks()
+		Open77.log.info(('[appearance] look stored for player %d (%s, %d group(s)): handed to %d ' ..
+			'peer(s); holding %d [%s]'):format(player, tostring(body.family),
+			type(body.groups) == 'table' and #body.groups or 0, handed, held, who))
 		TriggerClientEvent(M.Event.PRESENT_ACK, player, sequence, true)
 	end)
 
 	RegisterNetEvent(M.Event.REPLAY, function(sequence)
 		local player = tonumber(source)
 		if not player or player <= 0 or not isInteger(sequence) then return end
-		if not presenting() or cooled('replay', player) then return end
-		for other in pairs(looks) do deliver(player, other) end
+		if not presenting() then return end
+		if cooled('replay', player) then return end
+		local handed = 0
+		for other in pairs(looks) do
+			if deliver(player, other) then handed = handed + 1 end
+		end
+		local held, who = heldLooks()
+		Open77.log.info(('[appearance] player %d asked for looks: holding %d [%s], handed over %d')
+			:format(player, held, who, handed))
 		TriggerClientEvent(M.Event.REPLAYED, player, sequence)
 	end)
 
