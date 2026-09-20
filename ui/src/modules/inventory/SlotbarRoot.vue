@@ -123,8 +123,8 @@ const cells = computed(() =>
         draggable="false"
         @error="onBroken(cell.name)"
       />
-      <span v-else-if="cell.filled" class="mark">{{ cell.mark }}</span>
-      <span v-else class="mark faint">{{ t('inventory.slotbar.empty') }}</span>
+      <span v-else-if="cell.filled" class="mark op-truncate">{{ cell.mark }}</span>
+      <span v-else class="mark faint op-truncate">{{ t('inventory.slotbar.empty') }}</span>
 
       <span v-if="cell.count > 1" class="count">{{ cell.count }}</span>
     </span>
@@ -178,7 +178,12 @@ const cells = computed(() =>
   object-fit: contain;
 }
 
+/* `.op-truncate` in the template does the cut; this is the width it cuts TO. A
+   grid item under `place-items: center` is sized by its content, so `overflow:
+   hidden` on its own clips nothing -- a long mark simply drew past a 56px cell.
+   `max-width` is what gives the ellipsis an edge to land on. */
 .mark {
+  max-width: 100%;
   font-size: 13px;
   letter-spacing: 0.06em;
   color: var(--op-red-text);

@@ -268,6 +268,22 @@ resource hands them `command.client.exec` with it. The file is the server's
 `acl.jsonc`, named by `accessControl.file`; `acl.jsonc` is not in this repository, so
 the list above is the thing to copy into it.
 
+**The eye is stricter than the panel about all of this, and it is the surface the
+question usually arrives from.** The staff menu DRAWS a row it cannot run and greys it
+with *Refusé*, so a missing grant reads as a missing permission. The target eye has no
+greyed state — a row it cannot run is a row it does not register — so the same missing
+grant reads as a missing feature. That is how `command.opx.weather.*` and
+`command.opx.time` were first reported: an operator interacted with the sky, found
+Noclip and PvP there and nothing else, and wrote in that the weather controls did not
+exist. They existed; the role did not hold the weather module's commands, and the two
+rows that were there are the two whose commands are `admin`'s own. The eye's rows that
+end in another module's command are the weather presets, the weather roll and the clock
+on the sky, and *Open their bag* on a player. **The eye now names the grants it dropped
+rows for** in the line it already writes to the server journal per registration —
+`[admin] target rows, player 3: 25 staff rows on the eye; 12 hidden, this ACL does not
+grant: opx.inventory.open opx.weather.set opx.weather.next opx.time` — and each name in
+it is a `command.<name>` to add here.
+
 ### The staff panel's spawn list
 
 The staff menu's spawn screen is one folder per class, and **Air is the first of them**:

@@ -346,8 +346,8 @@ function choose(row: Slot): void {
                   <path v-for="(d, at) in paths(row.icon)" :key="at" :d="d" />
                 </svg>
               </span>
-              <span class="label op-label">{{ row.label }}</span>
-              <span v-if="row.value" class="value op-value">{{ row.value }}</span>
+              <span class="label op-label op-truncate">{{ row.label }}</span>
+              <span v-if="row.value" class="value op-value op-truncate">{{ row.value }}</span>
               <span
                 v-if="row.checked !== undefined"
                 class="check"
@@ -585,11 +585,10 @@ function choose(row: Slot): void {
   stroke-linejoin: round;
 }
 
+/* Both take `.op-truncate` in the template: one line, cut with an ellipsis, per
+   `design-system/surface.css`. This file says only where they sit. */
 .label {
   flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .value {
@@ -597,8 +596,6 @@ function choose(row: Slot): void {
   margin-left: auto;
   max-width: 45%;
   opacity: 0.88;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* The affordance column, always last so every mark lands at the same x. */

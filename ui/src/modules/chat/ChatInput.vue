@@ -542,7 +542,7 @@ onUnmounted(() => {
             :class="{ 'is-here': signature && at === argIndex }"
           >{{ param }}</span>
         </span>
-        <span v-if="entry.help" class="chat-suggestion-help">{{ entry.help }}</span>
+        <span v-if="entry.help" class="chat-suggestion-help op-truncate">{{ entry.help }}</span>
       </li>
     </ul>
 
@@ -789,14 +789,10 @@ onUnmounted(() => {
 
 .chat-suggestion-help {
   flex: 1;
-  min-width: 0;
   font-family: var(--op-font-body);
   font-size: var(--op-fs-meta);
   color: var(--op-text-faint);
   text-align: right;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Inside the field row now, hard right, and wordless. Enter and Escape in a text
