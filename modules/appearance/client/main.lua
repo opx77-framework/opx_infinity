@@ -1064,61 +1064,6 @@ local function onShow(kind)
 	if not ran then Open77.log.error('[appearance] show ' .. tostring(kind) .. ': ' .. tostring(failure)) end
 end
 
---- Declares the panel's key to the host, logging a refusal once.
--- @author dop42
---
--- WHY THIS MODULE HAS A KEY AT ALL. It owns two state machines and draws
--- neither, and the contract that opens them is exported -- but until this
--- existed nothing called it, so a returning player could not reach either one.
--- The key is the door; `/opx.appearance` is the second door, for anyone who has
--- rebound this away or turned it off.
---
--- Two answer shapes are documented for `RegisterKeyMapping` -- the effective key,
--- or `true, key` -- and reading only one of them logs a working mapping as
--- refused. A refusal costs one log line and nothing else.
--- @return boolean
-local function registerPanelKey()
-	local declared = type(M.Settings.KEY) == 'table' and M.Settings.KEY or {}
-	local id, nameKey, key = declared.ID, declared.NAME, declared.DEFAULT
-
-	if type(id) ~= 'string' or id == '' or type(nameKey) ~= 'string' or nameKey == '' then
-		Open77.log.warn('[appearance] KEY.ID and KEY.NAME are not both declared: the appearance ' ..
-			'panel has no key, and /opx.appearance still opens it')
-		return false
-	end
-	if type(key) ~= 'string' or key == '' then
-		-- Off on purpose rather than broken: `false` is how an operator turns a
-		-- key off, and the two commands are unaffected by it.
-		Open77.log.info('[appearance] KEY.DEFAULT is off: the appearance panel has no key, ' ..
-			'and /opx.appearance still opens it')
-		return false
-	end
-	if type(RegisterKeyMapping) ~= 'function' then
-		Open77.log.warn(('[appearance] key mapping %s not registered: this client build has ' ..
-			'no RegisterKeyMapping'):format(id))
-		return false
-	end
-
-	local function pressed()
-		-- A key pressed while another surface holds the keyboard -- a form, the
-		-- inventory, the pause menu -- does nothing, so that typing the key into a
-		-- text field does not raise the panel behind it.
-		if captured() then return end
-		local ran, failure = pcall(toggleView, 'panel')
-		if not ran then Open77.log.error(('[appearance] key %s: %s'):format(id, tostring(failure))) end
-	end
-
-	local called, ok, answer = pcall(RegisterKeyMapping, id, locale(nameKey), key, pressed)
-	local effective = type(ok) == 'string' and ok ~= '' and ok or
-		(ok == true and type(answer) == 'string' and answer ~= '' and answer) or nil
-	if not called or (ok ~= true and effective == nil) then
-		Open77.log.warn(('[appearance] key mapping %s (%s) not registered: %s')
-			:format(id, key, tostring(called and answer or ok)))
-		return false
-	end
-	return true
-end
-
 --- Registers everything this half listens to.
 local function registerEvents()
 	AddEventHandler(EVENT_CHARACTER_LOADED, function(playerData)
@@ -1543,7 +1488,6 @@ function M.Start()
 	M.Clothing.Wire()
 	M.Presence.Wire()
 	M.Wardrobe.Wire()
-	registerPanelKey()
 
 	adoptDownedState()
 
