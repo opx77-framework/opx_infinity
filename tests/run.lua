@@ -11458,6 +11458,9 @@ do
 		local Catalog = inventory.Catalog
 		local Options = inventory.Options
 		local KIND = inventory.KIND
+		-- For the boot-of-an-unowned-car block at the end: the sweep that
+		-- actually destroys a memory-only container lives here.
+		local World = inventory.World
 
 		-- The gate answers false and the life reader answers a STRING in the bare
 		-- harness, and `Players.MayAct` reads both. Without these two every
@@ -11496,6 +11499,14 @@ do
 			character.Registry.byUserId[userId] = id
 			local bag = Containers.Transient(KIND.CHARACTER, citizenId,
 				Options.BAG_SLOTS, Options.BAG_MAX_WEIGHT)
+			-- AND THEN TOLD IT IS NOT MEMORY-ONLY, which is not a fiddle: a real
+			-- character bag comes from `Containers.Load` and is written, and
+			-- `transient` now means something -- a container that may not be
+			-- handed anything carrying `DROP = false`, because it is going to be
+			-- discarded unwritten. A stand-in left flagged transient would refuse
+			-- every eddies move below, and it would be right to: what it would be
+			-- refusing is the stand-in, not the code under test.
+			bag.transient = nil
 			Players.Attach(id)
 			return bag
 		end
@@ -11687,6 +11698,99 @@ do
 				tostring(character.GetMoney(ALICE, 'EDDIES'))))
 		check('and after every one of these, the economy is the size it started',
 			total() == START, tostring(total()))
+
+		-- ── the boot of a car nobody owns ─────────────────────────────────────
+		-- THE OTHER WAY OUT, and until `Containers.Move` learned about `DROP` it
+		-- was wide open. `droppable` was read in `Actions.Drop` and nowhere else,
+		-- so the floor was shut and every other memory-only container was not:
+		-- open the boot of a vehicle this resource did not spawn -- ambient
+		-- traffic, an admin `/car`, anything with no plate in `live`, which also
+		-- skips the owner check because `ownerCitizenId` is nil -- move the notes
+		-- in, and walk away. The container is transient, nothing marks it dirty,
+		-- nothing ever writes it, and the sweep discards it five seconds after
+		-- the car goes. Balance gone, no row, no audit line.
+		--
+		-- WHAT IS ASSERTED IS CONSERVATION, before and after, across both halves
+		-- of it: the move and the sweep. A refusal that had already taken the
+		-- notes out of the bag would pass a check that only read the refusal.
+		local VEHICLE = 770011
+		local carGone = false
+		env.Open77.vehicles.get = function(id)
+			if carGone or id ~= VEHICLE then return nil end
+			return { record = 'Vehicle.v_standard2_villefort_cortes_player',
+				x = 0.0, y = 0.0, z = 0.0, bucket = 0 }
+		end
+		env.Open77.vehicles.getPlayerSeat = function() return nil end
+		env.Open77.players.position = function() return { x = 0.0, y = 0.0, z = 0.0, bucket = 0 } end
+
+		local boot9, bootWhy = Actions.OpenVehicle(ALICE, KIND.TRUNK, VEHICLE)
+		check('the boot of an unowned car opens, which is the door the exploit used',
+			boot9 ~= nil, tostring(bootWhy))
+		check('and it is a container nothing will ever write',
+			boot9 ~= nil and boot9.transient == true)
+
+		if boot9 ~= nil then
+			-- The deposit above banked every note Alice had, so a stack is put
+			-- back to carry into the boot. It is MINTED and not moved, which is
+			-- why the economy is `START + MINTED` from here on and why `before`
+			-- is read after it: what the checks below are about is conservation
+			-- across the boot, not the size of the float.
+			local MINTED = 120
+			Containers.Add(aliceBag, 'eddies', MINTED)
+			local notes = nil
+			for index, stack in pairs(aliceBag.items) do
+				if stack.name == 'eddies' then notes = index end
+			end
+			local before = total()
+			check('the notes to be carried into the boot are in the bag',
+				notes ~= nil and before == START + MINTED, tostring(before))
+
+			local moved, moveWhy = Containers.Move(aliceBag, notes, boot9, nil, nil)
+			check('eddies cannot be moved into a boot that is never written',
+				moved == false and moveWhy == 'no_drop', tostring(moveWhy))
+			check('and the refused move left every note where it was',
+				total() == before, ('%d was %d'):format(total(), before))
+			check('and put nothing in the boot',
+				next(boot9.items) == nil)
+
+			-- The refusal is about THIS item and not about boots being shut: an
+			-- ordinary thing still goes in one, or the fix would be a feature
+			-- deleted rather than a hole closed.
+			Containers.Add(aliceBag, 'bandage', 1)
+			local gauze = nil
+			for index, stack in pairs(aliceBag.items) do
+				if stack.name == 'bandage' then gauze = index end
+			end
+			check('while an ordinary item still goes in the boot',
+				(Containers.Move(aliceBag, gauze, boot9, nil, nil)) == true)
+
+			-- ── and then the car is gone ───────────────────────────────────────
+			-- The sweep is the second half: it is what actually destroys the
+			-- container, and the money must not be in it when it does.
+			carGone = true
+			local warnings = #control.log.warn
+			World.SweepVehicles()
+			check('the swept boot is discarded, as a memory-only container must be',
+				Containers.Get(boot9.id) == nil)
+
+			-- AND IT SAID SO. Destroying a container used to be the one thing this
+			-- module did in complete silence -- no audit line, no log line, not
+			-- even the `log.warn` in `Unload`, which sits inside the branch a
+			-- transient skips. Money cannot get in here any more, but a boot full
+			-- of somebody's things still goes with a despawned car, and staff
+			-- asking where it went had nothing whatsoever to read.
+			local said = nil
+			for index = warnings + 1, #control.log.warn do
+				local line = tostring(control.log.warn[index])
+				if line:find('inventory.discarded', 1, true) then said = line end
+			end
+			check('and what it destroyed is on the record',
+				said ~= nil and said:find('bandage', 1, true) ~= nil, tostring(said))
+			check('and the economy is still the size it was before the boot opened',
+				total() == before, ('%d was %d'):format(total(), before))
+			check('which is every eddie the section ever created, and not one fewer',
+				total() == START + MINTED, tostring(total()))
+		end
 	end
 end
 
