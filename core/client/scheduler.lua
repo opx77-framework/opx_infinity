@@ -24,6 +24,11 @@ local dead = 0
 local registered = 0
 local running = false
 
+-- Bumped by every `Start`, and each loop holds the value it was started with. It
+-- is what lets a `Stop` retire a thread that is asleep inside `Wait` -- see
+-- `Start`.
+local generation = 0
+
 local MAX_PER_TICK = 4
 local MAX_FAILURES = 3
 local IDLE_MS = 100
@@ -103,12 +108,24 @@ end
 local function compact()
 	if dead == 0 then return end
 	local live = {}
+	-- THE CURSOR MOVES WITH THE LIST INSTEAD OF BEING RESET, and it was set to 0.
+	-- `tick` promises to resume "where the last pass left off so a long list
+	-- cannot starve its tail", and a reset sent the next pass back to the head:
+	-- with more than MAX_PER_TICK jobs registered and anything cancelling on a
+	-- cycle -- a menu registering its key poll on open and cancelling it on close
+	-- does exactly that -- the tail of the list was never reached at all. The new
+	-- position is the count of survivors at or before the old one, so the pass
+	-- carries on from the same place in the same order.
+	local resumeAt = 0
 	for index = 1, #jobs do
 		local job = jobs[index]
-		if job.step then live[#live + 1] = job end
+		if job.step then
+			live[#live + 1] = job
+			if index <= cursor then resumeAt = #live end
+		end
 	end
 	jobs = live
-	cursor = 0
+	cursor = resumeAt
 	dead = 0
 end
 
@@ -183,8 +200,17 @@ function OPX.Scheduler.Start()
 	if running then return end
 	running = true
 
+	-- THE LOOP IS FENCED TO ITS OWN GENERATION. `running` alone is not enough:
+	-- `Stop` sets it false but the thread is asleep inside `Wait`, and a `Start`
+	-- before it next wakes finds `running` true again -- so it carries on, beside
+	-- the new one, and two loops walk one list. On the client that is the one
+	-- thing this file exists to avoid: both halves spend the same per-resume
+	-- budget and every job runs twice as often as its own config says.
+	generation = generation + 1
+	local mine = generation
+
 	CreateThread(function()
-		while running do
+		while running and generation == mine do
 			-- The pcall is around the pass, not only around each job: OPX.Now
 			-- is a host read too, and a raise from it would end the loop for the
 			-- whole session.
@@ -198,10 +224,21 @@ function OPX.Scheduler.Start()
 	end)
 end
 
---- Stops the loop at the next tick.
+--- Stops the loop at the next tick and drops every registered job.
 -- @author dop42
+--
+-- THE JOB LIST GOES TOO, which is what the server half has always done and this
+-- half did not -- an asymmetry between two functions that share a name, a
+-- signature and a docstring, with nothing written down about it. `Stop` is called
+-- from `core/client/boot.lua` on `onClientResourceStop`, where the VM can outlive
+-- the resource: a job left in the list is a closure over state that is being torn
+-- down, waiting for anything that resumes the loop.
 function OPX.Scheduler.Stop()
 	running = false
+	jobs = {}
+	byHandle = {}
+	cursor = 0
+	dead = 0
 end
 
 --- One line per job: name, interval and state. For the diagnostic command.

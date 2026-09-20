@@ -82,9 +82,16 @@ end
 -- hiccup from turning every ungated surface on the server into a wall.
 --
 -- A gated requirement closes on every doubt: no snapshot, a snapshot older than
--- `maxAgeMs`, a clock that cannot be read, a snapshot with no job table. The
--- asymmetry is the point. Refusing a public floor costs a player nothing they
--- had; granting a gated one costs the operator the gate.
+-- `maxAgeMs`, a clock that cannot be read, a snapshot with no job table, and a
+-- minimum grade that is not a number. The asymmetry is the point. Refusing a
+-- public floor costs a player nothing they had; granting a gated one costs the
+-- operator the gate.
+--
+-- THE CALLERS MUST AGREE ON THE FAIL DIRECTION TOO. A `{ jobs = nil }` reaches
+-- here as PUBLIC, which is correct for an armoury or a floor that genuinely has
+-- no JOBS block and catastrophic for one that could not be read at all. Every
+-- adapter therefore answers closed for a subject that is not a table, BEFORE it
+-- builds a requirement -- see the three `Access.Evaluate` functions.
 --
 -- @param requirement table|nil { jobs = { name = minimumGrade }, onDuty = boolean }
 -- @param snapshot table|nil { job, jobs, atMs }
@@ -117,7 +124,24 @@ function OPX.JobGate.Evaluate(requirement, snapshot, nowMs, policy)
 	for name, minimum in pairs(required) do
 		local held = heldGrade(snapshot, name, policy.membership)
 		if held ~= nil then
-			if held < (finiteNumber(minimum) or 0) then
+			-- A MALFORMED MINIMUM CLOSES THE GATE; it used to OPEN it. This read
+			-- was `finiteNumber(minimum) or 0`, so `JOBS = { ncpd = true }` -- a
+			-- config typo, an operator writing `= "2"` badly, a row that came
+			-- through a serialiser -- became a floor of 0 and every member of the
+			-- job walked through. It was the one coercion in this file whose
+			-- fallback REMOVED a guard, under a docstring saying "a gated
+			-- requirement closes on every doubt".
+			--
+			-- It is not repaired to a number either: `modules/gunsmith` carries a
+			-- malformed minimum through untouched on purpose, so the typo is named
+			-- by `Problems` instead of being hidden behind a gate that works.
+			-- Treating it as unsatisfiable is what makes that decision hold.
+			local floor = finiteNumber(minimum)
+			if floor == nil then
+				if RANK.grade_too_low > worstRank then
+					worst, worstRank = 'grade_too_low', RANK.grade_too_low
+				end
+			elseif held < floor then
 				if RANK.grade_too_low > worstRank then
 					worst, worstRank = 'grade_too_low', RANK.grade_too_low
 				end

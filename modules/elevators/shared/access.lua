@@ -182,6 +182,12 @@ end
 -- @return boolean
 -- @return string|nil
 function Access.Evaluate(floor, snapshot, nowMs)
+	-- CLOSED FOR A FLOOR THAT IS NOT A TABLE, and this line was missing. Reading
+	-- `floor.JOBS` off a nil RAISED, out of whichever net handler was asking,
+	-- while `modules/teleports` answered closed and `modules/gunsmith` answered
+	-- OPEN for the same input -- three answers to one question. They agree now,
+	-- and they agree on closed.
+	if type(floor) ~= 'table' then return false, 'no_such_floor' end
 	return OPX.JobGate.Evaluate({ jobs = floor.JOBS, onDuty = floor.ON_DUTY }, snapshot, nowMs,
 		{ maxAgeMs = Access.JOB_MAX_AGE_MS, membership = Config.MEMBERSHIP })
 end

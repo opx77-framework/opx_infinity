@@ -6,9 +6,18 @@
  * markup strings because the original built them with `createElementNS`, and `v-html` on
  * a payload-selected key is the same hole with a Vue accent.
  *
- * The set is CLOSED and Lua validates against the same names (`Model.ICONS`), so an
- * unknown name is a bug on one side or the other and falls back to `interact` rather
- * than travelling into an attribute nobody wrote.
+ * The set is CLOSED and Lua validates against the same names, so an unknown name is a
+ * bug on one side or the other and falls back to `interact` rather than travelling
+ * into an attribute nobody wrote.
+ *
+ * LUA HAS ONE LIST AND IT IS `core/shared/glyphs.lua`. `Model.ICONS` and `menu.M.ICONS`
+ * are now ALIASES of that one table -- literally `= OPX.Glyphs` -- and the third name
+ * this header used to send you to was deleted outright. It instructed the next author
+ * to keep three hand-kept Lua lists in step in the same change, which is exactly the
+ * regime that produced 47 names, 45 and 14 with no test looking. There is one Lua list,
+ * it is generated from THIS file because the page is what can actually draw a path, and
+ * `tests/` reads both files and holds them together -- the one seam no shared file can
+ * close, a `.ts` being unloadable from Lua.
  *
  * `currentColor` is what carries the tone rules down to the stroke, so nothing here
  * names a colour.
@@ -38,9 +47,9 @@ export const GLYPHS: Record<string, string[]> = {
 
      Same rules as above, and they are why this is one flat object and not a
      second one: 24x24, stroke only, no fill, no colour, paths and not markup.
-     A name added here is added to `menu.M.ICONS`, `Model.ICONS` and
-     `Catalog.ICONS` in the same change -- three lists Lua validates against,
-     and a name in this file that is in none of them can never reach a row. */
+     A name added here is added to `core/shared/glyphs.lua` in the same change --
+     the single list every Lua validator reads -- and a name in this file that is
+     not in it can never reach a row. The suite fails if the two drift. */
 
   /* Finding something in a long list. */
   search: ['M11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14Z', 'M16.2 16.2 21 21'],

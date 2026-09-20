@@ -83,12 +83,29 @@ local function toLine(entry)
 	}
 	if entry.citizenId then parts[#parts + 1] = ('citizen=%s'):format(entry.citizenId) end
 	if entry.userId then parts[#parts + 1] = ('user=%s'):format(entry.userId) end
-	if entry.source then parts[#parts + 1] = ('player=%d'):format(entry.source) end
+	if entry.source then
+		-- `%d` RAISES ON ANYTHING THAT IS NOT A WHOLE NUMBER -- a float, a string
+		-- the host handed over, a table -- and a source arrives from every caller
+		-- in the runtime, several of which never normalise it. The line is worth
+		-- more than the digit: an unusable source is printed as it came so an
+		-- operator can see WHAT was passed.
+		local id = tonumber(entry.source)
+		if id and id % 1 == 0 then
+			parts[#parts + 1] = ('player=%d'):format(id)
+		else
+			parts[#parts + 1] = ('player=%s'):format(bounded(entry.source, 32))
+		end
+	end
 	if entry.message and entry.message ~= '' then
 		parts[#parts + 1] = ('message=%q'):format(entry.message)
 	end
 	if entry.data then
-		parts[#parts + 1] = ('data=%s'):format(bounded(json.encode(entry.data), MAX_MESSAGE))
+		-- `json.encode` raises on a cyclic table, and a `data` block is assembled
+		-- by a caller that may well have put a live record in it.
+		local ok, encoded = pcall(json.encode, entry.data)
+		parts[#parts + 1] = ('data=%s'):format(ok
+			and bounded(encoded, MAX_MESSAGE)
+			or ('<unencodable: %s>'):format(bounded(encoded, 64)))
 	end
 	return table.concat(parts, ' ')
 end
@@ -154,21 +171,42 @@ end
 --
 -- The first entry written after a closed window carries `[+N suppressed]`.
 -- @param entry table event, severity, message, data, source, citizenId, userId
+--
+-- IT CANNOT TAKE ITS CALLER DOWN. Every audit call sits inside somebody else's
+-- net handler, and this whole body used to be unprotected: `('player=%d')
+-- :format` raised on a float source, `json.encode` raised on a cyclic `data`
+-- table, `tostring` raises on a `__tostring` that does -- and each of those
+-- lost the ENTRY and then the OPERATION that was being audited. For a file about
+-- what an operator will have to account for later, losing both is the wrong
+-- direction; losing neither is the point, so a failure here degrades to a line
+-- naming the event and the raise.
 function OPX.Audit.Log(entry)
 	if type(entry) ~= 'table' or type(entry.event) ~= 'string' then return end
-	entry.severity = SEVERITIES[entry.severity] and entry.severity or 'info'
-	entry.message = entry.message ~= nil and bounded(entry.message, MAX_MESSAGE) or nil
 
-	if not isLedger(entry) then
-		local owner = tostring(entry.source or entry.citizenId or '-')
-		local again, carried = repeated(entry.event .. '\1' .. owner, owner)
-		if again then return end
-		if carried > 0 then
-			entry.message = ('%s [+%d suppressed]'):format(entry.message or '', carried)
+	local ok, failure = pcall(function()
+		entry.severity = SEVERITIES[entry.severity] and entry.severity or 'info'
+		entry.message = entry.message ~= nil and bounded(entry.message, MAX_MESSAGE) or nil
+
+		if not isLedger(entry) then
+			local owner = tostring(entry.source or entry.citizenId or '-')
+			local again, carried = repeated(entry.event .. '\1' .. owner, owner)
+			if again then return end
+			if carried > 0 then
+				entry.message = ('%s [+%d suppressed]'):format(entry.message or '', carried)
+			end
 		end
-	end
 
-	Open77.log[entry.severity](('[audit] %s'):format(toLine(entry)))
+		Open77.log[entry.severity](('[audit] %s'):format(toLine(entry)))
+	end)
+
+	if not ok then
+		-- Degraded, not dropped: the event name is the part a `grep` is looking
+		-- for, and it is a string this function has already checked.
+		pcall(function()
+			Open77.log.error(('[audit] event=%s could not be written: %s')
+				:format(entry.event, tostring(failure)))
+		end)
+	end
 end
 
 --- Writes an audit entry attributed to a loaded character.

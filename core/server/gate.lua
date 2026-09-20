@@ -187,8 +187,36 @@ function OPX.Gate.Release(source, note)
 	local session = OPX.Sessions[source]
 	local gateSession = session and session.gateSession
 	if gateSession == nil then
-		local read, status = pcall(Open77.ready.status, source)
-		gateSession = read and status and status.session or nil
+		-- THE INDEX IS INSIDE THE PCALL. `pcall(Open77.ready.status, source)`
+		-- resolves `Open77.ready.status` BEFORE pcall is called, so a host that
+		-- does not install it raised on the index, outside the protection written
+		-- for exactly that. Same correction as `IsReady` below and as `permitted`
+		-- in `core/server/commands.lua`.
+		local read, status = pcall(function() return Open77.ready.status(source) end)
+		gateSession = read and type(status) == 'table' and status.session or nil
+	end
+
+	-- THE HOST'S ANSWER IS READ, and it was not. `release` answers true, or false
+	-- plus a reason -- "a session that no longer matches is dropped rather than
+	-- releasing a newer hold" -- and this function returned a hard-coded `true`
+	-- whatever came back. `Hold` twenty lines above has always read its refusal;
+	-- the two halves of one mechanism disagreed.
+	--
+	-- Only an explicit `false` counts as a refusal. A host that answers nothing
+	-- at all is not refusing, and reading nil as a refusal would turn every
+	-- release on such a build into a player stuck behind the gate -- the exact
+	-- failure this is here to prevent.
+	local opened, refused = Open77.ready.release(source, gateSession, NOTE_PREFIX .. (note or 'done'))
+	if opened == false then
+		-- OUR STATE IS CLEARED ONLY ON SUCCESS, and it was cleared BEFORE the
+		-- call. `session.released = true` with the host still holding is the one
+		-- combination nothing recovers from: `Watch` exits on `released`, so the
+		-- hold then belongs to nobody, and the player waits behind a shut gate
+		-- until the host's own liveness interval expires. Leaving the session
+		-- marked held lets the watch, or a later release, try again.
+		Open77.log.error(('[gate] the release for %d was refused: %s')
+			:format(source, tostring(refused)))
+		return false
 	end
 
 	if session then
@@ -196,7 +224,6 @@ function OPX.Gate.Release(source, note)
 		session.released = true
 	end
 
-	Open77.ready.release(source, gateSession, NOTE_PREFIX .. (note or 'done'))
 	Open77.log.debug(('[gate] released for %d (%s)'):format(source, note or 'done'))
 
 	TriggerEvent(RELEASED, source, note or 'done')
@@ -210,7 +237,10 @@ end
 -- @param source Source
 -- @return boolean
 function OPX.Gate.IsReady(source)
-	local read, open = pcall(Open77.ready.isReady, source)
+	-- The index is inside the pcall, for the reason spelled out in `Release`: a
+	-- host with no `Open77.ready.isReady` raised on the index rather than being
+	-- caught here.
+	local read, open = pcall(function() return Open77.ready.isReady(source) end)
 	return not read or open == true
 end
 

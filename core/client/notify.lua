@@ -37,6 +37,10 @@ local live = {}
 local nextId = 0
 local hidden = false
 
+-- Stands for "this key was not on the toast" in `Update`'s rollback. A private
+-- table, so no value a caller could ever put in a patch can collide with it.
+local ABSENT = {}
+
 --- Whether a value is a glyph this runtime will draw. `nil` and `''` are both
 --- "no glyph": a Lua patch cannot carry nil, so `''` is how an update takes one
 --- back off a toast that is already up.
@@ -117,17 +121,22 @@ end
 --- IS the page's set -- a name outside it is a typo and not a stale copy, which
 --- is the whole reason `OPX.Glyphs` exists.
 ---
---- IT WAS NOT TRUE THAT EVERY CALLER CHECKED. This paragraph used to assert
---- that they all treat `nil` as "the toast did not go up" and fall back, and six
---- of them did -- animations, chat, clothing, dealership, elevators and garages.
---- Three called and discarded: `admin/client/main.lua`, `inventory/client/
---- main.lua` and `menu/client/main.lua`. None of the three passed an icon, so
---- none could be refused for one; what they lost was a refusal for
---- `invalid_toast_message` or `surface_unavailable` -- a notice that went nowhere
---- and said so to nobody. The three now fall back like the other six, so the
---- sentence above is true again. It was written as though it were an argument
---- for refusing strictly; it was a claim about nine call sites, and claims about
---- call sites go stale.
+--- THE RULE, NOT THE ROLL-CALL: every caller reads the pair and does something
+--- with a `nil`. This paragraph used to NAME the callers -- six that checked,
+--- three that discarded, "so the sentence above is true again" -- and it was
+--- wrong within a day of being written: two more checking callers appeared
+--- (`modules/teleports`, `modules/admin/client/announce.lua`) and the two net
+--- handlers at the foot of THIS file were discarding the whole time, which is
+--- every server-originated refusal and every command answer. Its own closing
+--- line said claims about call sites go stale; it was describing itself.
+---
+--- So the invariant is stated once and enforced once, and no list is kept. What
+--- a discarded `nil` costs is not the glyph refusal -- a caller who misspells
+--- `vehcile` finds out in testing -- it is `surface_unavailable` and
+--- `payload_refused`, which mean the player was told NOTHING and nobody knows.
+--- The handlers below relay that to the server's journal rather than to a log
+--- file on the player's machine, because from the server a client whose overlay
+--- never came up is indistinguishable from a quiet one.
 ---
 --- THERE IS NO DEFAULT GLYPH PER KIND. The set above names domains -- a door, a
 --- lock, money -- and holds no tick and no warning mark, so a default would have
@@ -214,7 +223,11 @@ end
 -- @return string|nil why it was refused
 function OPX.Toast.Update(id, patch)
 	local toast = live[id]
-	if toast == nil or type(patch) ~= 'table' then return false end
+	-- BOTH VALUES, as the `@return` above has always promised. This answered a
+	-- bare `false`, so the one caller that distinguished "gone" from "refused"
+	-- could not.
+	if toast == nil then return false, 'no_such_toast' end
+	if type(patch) ~= 'table' then return false, 'patch_must_be_a_table' end
 
 	-- The same gate as `Show`, because this is the other door into the same
 	-- payload: a patch reaching the page unchecked would carry a glyph name the
@@ -222,6 +235,24 @@ function OPX.Toast.Update(id, patch)
 	-- takes a glyph back off, which is the only way a patch can, a Lua table
 	-- being unable to carry a nil.
 	if not drawableIcon(patch.icon) then return false, 'invalid_toast_icon' end
+
+	-- THE PRIOR VALUES, SO A REFUSED PATCH CAN BE PUT BACK. The comment below
+	-- named this failure and nothing undid it: Lua's copy went ahead of the
+	-- page's, `Toast.Attach`'s `notify:ready` handler replays `live` on the next
+	-- page mount, and the player then finally saw text that had already been
+	-- refused once -- out of order, and for a progress line, out of date.
+	--
+	-- `ABSENT` stands in for "this key was not there", because a Lua table cannot
+	-- hold a nil and the rollback has to be able to REMOVE a key the patch added.
+	-- A sentinel and not `false`: `false` is a value a field could legitimately
+	-- hold, and the rollback would then delete it instead of restoring it.
+	local prior = {}
+	for key in pairs(patch) do
+		if key ~= 'id' then
+			local was = toast[key]
+			prior[key] = was == nil and ABSENT or was
+		end
+	end
 
 	for key, value in pairs(patch) do
 		if key == 'id' then
@@ -236,10 +267,14 @@ function OPX.Toast.Update(id, patch)
 			toast[key] = value
 		end
 	end
+
 	-- Both answers, for the reason spelled out in `Show`: a patch the host
 	-- refused leaves Lua believing the page is showing the new text.
 	local sent, refused = OPX.UI.Send('overlay', 'notify:update', toast)
 	if not sent or refused then
+		for key, was in pairs(prior) do
+			toast[key] = was ~= ABSENT and was or nil
+		end
 		return false, refused and 'payload_refused' or 'surface_unavailable'
 	end
 	return true
@@ -264,6 +299,30 @@ end
 function OPX.Toast.SetDown(down)
 	hidden = down == true
 	OPX.UI.Send('overlay', 'notify:down', { down = hidden })
+end
+
+-- Whether the operator has already been told that toasts are not reaching this
+-- player. ONE note per session on purpose: a refused toast is a structural
+-- failure -- the overlay never came up, or the page rejected the payload -- so
+-- the first one says everything the next two hundred would, and `OPX.Note`
+-- spends a net event per call against a budget of sixty for the whole session.
+local reportedUndrawn = false
+
+--- Reports a toast the page never drew, to the SERVER's journal and not only to
+--- a log file on the player's machine.
+---
+--- This is the pair the two handlers below used to discard, which made them the
+--- only callers of `Toast.Show` that did. It matters more here than anywhere
+--- else: these two carry every server-originated refusal and every command
+--- answer, so a player whose overlay is refusing them is a player who is told
+--- nothing at all, and from the server that is indistinguishable from a player
+--- who simply never did anything wrong.
+local function undrawn(what, why)
+	Open77.log.warn(('[notify] %s was not drawn: %s'):format(what, tostring(why)))
+	if reportedUndrawn then return end
+	reportedUndrawn = true
+	OPX.Note('notify', ('%s was not drawn (%s): no toast is reaching this player')
+		:format(what, tostring(why)))
 end
 
 --- Wires the server's two answer channels and the page's own expiry report.
@@ -308,11 +367,12 @@ function OPX.Toast.Attach()
 		-- RefusalKey, so rendering it raw is never a leak of an internal code.
 		local code = payload.code
 		if type(code) ~= 'string' then return end
-		OPX.Toast.Show({
+		local raised, why = OPX.Toast.Show({
 			kind = payload.kind or 'error',
 			message = locale(code),
 			icon = wireIcon(payload.icon, 'a refusal'),
 		})
+		if raised == nil then undrawn('a server refusal', why) end
 	end)
 
 	RegisterNetEvent(ANSWER, function(_, kind, message, toasted, icon)
@@ -320,11 +380,12 @@ function OPX.Toast.Attach()
 		-- the flag a command that notifies on success would answer twice.
 		if toasted == true then return end
 		if type(message) ~= 'string' or message == '' then return end
-		OPX.Toast.Show({
+		local raised, why = OPX.Toast.Show({
 			kind = kind,
 			message = message,
 			icon = wireIcon(icon, 'a command answer'),
 			id = 'opx.command',
 		})
+		if raised == nil then undrawn('a command answer', why) end
 	end)
 end

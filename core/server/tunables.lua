@@ -49,10 +49,13 @@ function OPX.Tune.Publish()
 	if declared then return live ~= nil end
 	declared = true
 
-	-- Resolved before the pcall can help: indexing a nil `Open77.tunables` raises
-	-- outside it, so a host that does not install the panel would take boot down
-	-- rather than degrade. The same reason `lib/server/storage.lua` reaches the
-	-- MySQL bridge through rawget.
+	-- Read and TYPE-CHECKED before anything is called through it: indexing a nil
+	-- `Open77.tunables` raises outside the pcall below, so a host that does not
+	-- install the panel would take boot down rather than degrade. Same shape as
+	-- `lib/server/storage.lua`, which reads `MySQL` into a local and answers
+	-- `no-database` -- an ordinary global read in both places. This comment used
+	-- to cite that file for a `rawget` it had stopped using some time before, and
+	-- `core/shared/main.lua` says why nothing in this runtime uses one.
 	local panel = Open77.tunables
 	if type(panel) ~= 'table' or type(panel.declare) ~= 'function' then
 		Open77.log.warn('[tune] no tunables panel on this host; configured defaults are used')

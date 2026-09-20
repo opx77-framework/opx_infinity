@@ -256,6 +256,13 @@ end
 -- @return boolean
 -- @return string|nil
 function Access.Evaluate(armoury, snapshot, nowMs, atMinimum)
+	-- CLOSED FOR AN ARMOURY THAT IS NOT A TABLE, and this was the worst of the
+	-- three adapters. `Requirement` answers `{ jobs = nil }` for one -- correct
+	-- for a public bench, and `OPX.JobGate.Evaluate` reads `jobs = nil` as PUBLIC
+	-- -- so an armoury that could not be read at all OPENED, with every gated
+	-- bench on the server behind it. `modules/teleports` answered closed for the
+	-- same input and `modules/elevators` raised. All three answer closed now.
+	if type(armoury) ~= 'table' then return false, 'no_such_bench' end
 	return OPX.JobGate.Evaluate(Access.Requirement(armoury, atMinimum), snapshot, nowMs,
 		{ maxAgeMs = Access.JOB_MAX_AGE_MS, membership = Config.MEMBERSHIP })
 end

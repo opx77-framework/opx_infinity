@@ -39,6 +39,10 @@ local DEFAULT_Z_INDEX = 700
 -- registers on from growing for the life of the page.
 local MAX_LATCHED = 8
 
+-- Channels the operator has already been told the host refuses, so `Send` puts
+-- one note in the journal per channel rather than one per call. See `Send`.
+local reportedRefusal = {}
+
 --- Holds a payload that arrived on a channel nothing listens to yet.
 --
 -- The page is built while the modules are still starting, and a module registers
@@ -266,6 +270,17 @@ function OPX.Surface.Send(surface, channel, payload)
 	if answer == false then
 		Open77.log.warn(('[surface %s] %s refused by the host: the payload is too large ' ..
 			'or not serialisable'):format(surface.id, full))
+		-- AND IN THE SERVER'S JOURNAL, ONCE. The warning above goes to a log file
+		-- on the PLAYER's machine -- which is the one place nobody diagnosing this
+		-- can read -- so the single refusal this whole seam exists to make visible
+		-- was visible to nobody. One note per channel per session: a channel the
+		-- host refuses once it will refuse every time, so the first says all of
+		-- it, and `OPX.Note` spends a net event per call.
+		if not reportedRefusal[full] then
+			reportedRefusal[full] = true
+			OPX.Note('surface', ('%s was refused by the host: the payload is too large or '
+				.. 'not serialisable'):format(full))
+		end
 		return true, true
 	end
 	return true, false
