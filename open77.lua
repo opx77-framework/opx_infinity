@@ -93,6 +93,13 @@ shared_script "config/elevators.lua"
 -- client half never reads them -- it is sent the entrances it may see, already
 -- judged, and names a key and a leg back. See modules/teleports/module.lua.
 shared_script "config/teleports.lua"
+-- Shared: the client reads the refusal windows and the handover bar's length
+-- here, and the server re-derives every bound the client thinks it knows.
+shared_script "config/crafting.lua"
+-- Shared like the crafting config above it: the client draws the two spheres of
+-- every armoury and reads their positions here, and both halves must refuse the
+-- same rows.
+shared_script "config/gunsmith.lua"
 shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
@@ -385,6 +392,29 @@ shared_script "modules/shops/locales.lua"
 server_script "modules/shops/server/storage.lua"
 server_script "modules/shops/server/main.lua"
 client_script "modules/shops/client/main.lua"
+
+-- The shared crafting service. AFTER `inventory`, whose bag the materials come
+-- out of and whose catalogue says what a recipe may name, and after `character`,
+-- which owns the citizen id an order is filed under and the purse a fee comes
+-- from -- both are `requires`. After `menu` and `progress`, which are optional
+-- and which the dependency walk would order correctly wherever this block sat;
+-- it is written here so the file reads in the order it runs.
+shared_script "modules/crafting/module.lua"
+shared_script "modules/crafting/locales.lua"
+shared_script "modules/crafting/shared/recipes.lua"
+server_script "modules/crafting/server/storage.lua"
+server_script "modules/crafting/server/main.lua"
+client_script "modules/crafting/client/main.lua"
+
+-- The gunsmith, which is the crafting service's first consumer. AFTER
+-- `crafting`, whose benches it registers, and after `target`, whose eye carries
+-- its two rows. Before `admin`, which stays last.
+shared_script "modules/gunsmith/module.lua"
+shared_script "modules/gunsmith/locales.lua"
+shared_script "modules/gunsmith/shared/access.lua"
+server_script "modules/gunsmith/server/main.lua"
+client_script "modules/gunsmith/client/main.lua"
+
 -- LAST of the modules, because it reaches into nearly all of them and provides
 -- nothing back. Every contract it uses is optional bar `character`: without the
 -- menu, the form or the target eye it logs one line each and all 50 commands
