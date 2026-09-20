@@ -209,7 +209,7 @@ function Host.Environment(side, database)
 	-- while the vehicle it created sat in the world.
 	local control
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
-	local bodies, effects, travels, notices, placement, lifts
+	local bodies, effects, travels, notices, placement, lifts, trips
 
 	-- The live tunable values, by key: what `Open77.tunables.declare` hands back
 	-- and what `control.tunables` lets a test move while the runtime is up.
@@ -599,6 +599,36 @@ function Host.Environment(side, database)
 			isVisible = function(playerId) return bodies.visible[tonumber(playerId) or playerId] end,
 			isFrozen = function(playerId) return bodies.frozen[tonumber(playerId) or playerId] end,
 			disconnect = function() return true end,
+
+			-- Moves a living body with no life transition, and answers a PROMISE
+			-- for whether it got there. See `trips` above for why the two are not
+			-- the same answer. The promise is already settled when it is handed
+			-- back, which is a simplification the caller cannot observe: it awaits
+			-- either way, and awaiting a settled promise is legal.
+			teleport = function(playerId, position, options)
+				trips.calls[#trips.calls + 1] = {
+					playerId = tonumber(playerId) or playerId,
+					position = position,
+					options = options,
+				}
+				if trips.refuse ~= nil then return nil, trips.refuse end
+				local rejection = trips.reject
+				local landed = {
+					x = type(position) == 'table' and position.x or nil,
+					y = type(position) == 'table' and position.y or nil,
+					z = type(position) == 'table' and position.z or nil,
+					state = trips.state or 'settled',
+				}
+				return {
+					await = function()
+						if rejection ~= nil then return nil, rejection end
+						return landed
+					end,
+					status = function()
+						return rejection ~= nil and 'rejected' or 'resolved'
+					end,
+				}
+			end,
 		},
 
 		character = {
@@ -744,6 +774,25 @@ function Host.Environment(side, database)
 
 	-- The travel natives' own state, and every write to them.
 	travels = { noclip = false, mapPick = false, calls = {}, refuse = nil }
+
+	-- Every `Open77.players.teleport` the server half asked for, and what the
+	-- platform is to answer.
+	--
+	-- THE NATIVE ANSWERS A PROMISE AND NOT A BOOLEAN, and the distinction is the
+	-- whole reason this stub is not a one-liner. A trip that is refused OUTRIGHT
+	-- -- a player in a vehicle, a body that is not alive -- answers `nil, reason`
+	-- and no move is ever issued. A trip that is ACCEPTED answers a promise that
+	-- settles later: it RESOLVES `{ x, y, z, state }` when the client reports the
+	-- body on the point, grounded and not falling for three frames, and REJECTS
+	-- with `settle_timeout` when it never did. A stub that answered true for both
+	-- would make "the body arrived" and "the body was asked to move" the same
+	-- observation, and the second is the one that was already true before
+	-- anybody wrote a settle watch.
+	--
+	--   trips.refuse  a string: the native refuses outright, nothing moves
+	--   trips.reject  a string: the move is issued and the arrival never comes
+	--   trips.state   'settled' (the default) or 'near', for a resolution
+	trips = { calls = {}, refuse = nil, reject = nil, state = 'settled' }
 
 	-- Notifications the runtime sent, oldest first.
 	notices = {}
@@ -1001,6 +1050,11 @@ function Host.Environment(side, database)
 
 		-- Travel native state and every write to it.
 		travels = travels,
+
+		-- Every server-side teleport asked for, and the answer the platform is
+		-- to give: see the block where it is built for what `refuse`, `reject`
+		-- and `state` each mean.
+		trips = trips,
 
 		-- Notifications the runtime sent, oldest first.
 		notices = notices,
