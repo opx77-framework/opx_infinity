@@ -47,8 +47,23 @@ OPX.VERSION = manifestVersion()
 -- Both globals are installed by the bootstrap before the first script, and each
 -- exists in exactly one runtime. `Open77.database` cannot be used for this: it is
 -- only installed with the `database.access` permission.
-OPX.IsServer = rawget(_G, 'TriggerClientEvent') ~= nil
-OPX.IsClient = rawget(_G, 'TriggerServerEvent') ~= nil
+--
+-- AN ORDINARY GLOBAL READ, and `rawget` being absent is the point. These were
+-- `rawget(_G, 'TriggerClientEvent')`, which is wrong twice over: `rawget` skips
+-- a metatable, so a host exposing a global through an `__index` accessor answers
+-- nil; and `_G` is not necessarily the chunk's `_ENV`, so a host that hands a
+-- resource its own environment answers nil again. Either way BOTH of these go
+-- false, `runsHere` in the registry then answers false for 'server' and for
+-- 'client', and every side-specific module is marked absent -- a resource that
+-- boots, logs a clean module report, and does nothing.
+--
+-- It bought nothing. Reading a global that is not there yields nil in Lua and
+-- never raises, which is the only thing `rawget` could have been guarding. This
+-- is the same defect `opx_lib/client/native.lua` was fixed for, and that library
+-- carries a regression test for it; the eight other sites in `core/` and `lib/`
+-- were corrected with this one.
+OPX.IsServer = TriggerClientEvent ~= nil
+OPX.IsClient = TriggerServerEvent ~= nil
 
 --- Configuration roots, filled by `config/`. `SERVER` is nil on a client and
 --- `CLIENT` is nil on the server, so reading the wrong one fails loudly.
@@ -63,7 +78,7 @@ function OPX.Now()
 	-- Resolved on first use, not at load: during boot the global may not be
 	-- installed yet, and a fallback captured now would be captured forever.
 	if resolvedTimer == nil then
-		resolvedTimer = rawget(_G, 'GetGameTimer') or false
+		resolvedTimer = GetGameTimer or false
 	end
 	if resolvedTimer then return resolvedTimer() end
 	return math.floor(Open77.time.monotonic() * 1000)

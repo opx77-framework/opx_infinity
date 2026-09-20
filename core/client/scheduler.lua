@@ -36,14 +36,35 @@ local IDLE_MS = 100
 --- an index would name a different job after the first drop.
 -- @author dop42
 -- @param name string owner and purpose, for the log line if it fails
--- @param intervalMs integer
+-- @param intervalMs integer milliseconds; NOT a function, unlike the server
 -- @param step function
 -- @return integer handle
 function OPX.Scheduler.Every(name, intervalMs, step)
 	if type(name) ~= 'string' or type(step) ~= 'function' then
 		error('Every(name, intervalMs, step)', 2)
 	end
-	local interval = math.max(0, math.floor(tonumber(intervalMs) or 0))
+	-- A BAD INTERVAL IS REFUSED, not rounded down to zero. This read used to be
+	-- `math.max(0, math.floor(tonumber(intervalMs) or 0))`, which turned every
+	-- mistake -- a nil, a string, a function -- into an interval of 0, and an
+	-- interval of 0 on this scheduler means the job runs on every single pass.
+	-- On a client with a per-resume instruction budget that is the worst thing a
+	-- typo can do: the resource does not crash, it quietly eats the budget until
+	-- something unrelated is cut off mid-coroutine with no log line.
+	--
+	-- A FUNCTION IS THE CASE WORTH NAMING. The SERVER'S `Every` takes
+	-- `integer|function` and re-reads a function every pass, which is how a job
+	-- follows a live tunable; the two functions share a name and a signature on
+	-- paper. This one cannot do it and should not pretend to -- `OPX.Tune` is
+	-- server-only, so there is no live number on the client to follow -- so a
+	-- function is refused here rather than silently becoming frame-rate.
+	--
+	-- Zero itself stays legal: a caller that means "every pass" may say so.
+	local interval = tonumber(intervalMs)
+	if type(intervalMs) == 'function' or interval == nil or interval < 0 then
+		error(('Every(%q, intervalMs, step): intervalMs must be a number of '
+			.. 'milliseconds, got %s'):format(name, type(intervalMs)), 2)
+	end
+	interval = math.floor(interval)
 
 	nextHandle = nextHandle + 1
 	registered = registered + 1

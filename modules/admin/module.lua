@@ -400,7 +400,7 @@ M.TUNABLES = {
 function M.Trimmed(value, maximum)
 	if type(value) == 'number' then value = tostring(value) end
 	if type(value) ~= 'string' then return nil end
-	value = value:gsub('%c', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+	value = OPX.String.Trim((value:gsub('%c', ' ')))
 	if value == '' then return nil end
 	if #value > maximum then value = value:sub(1, OPX.Text.Span(value, maximum)) end
 	return value

@@ -81,7 +81,7 @@ end
 function Common.Clean(value, maximum)
 	if type(value) == 'number' then value = tostring(value) end
 	if type(value) ~= 'string' then return nil end
-	value = value:gsub('%c', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+	value = OPX.String.Trim((value:gsub('%c', ' ')))
 	if value == '' then return nil end
 	if #value > maximum then value = value:sub(1, span(value, maximum)) end
 	return value

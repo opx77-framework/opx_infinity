@@ -305,8 +305,7 @@ function M.Start()
 		-- A player who connected while the database was being read asked too
 		-- early and was told nothing; they ask again on their own cadence.
 		syncAll()
-		local fromConfig = 0
-		for _ in pairs(configSpots) do fromConfig = fromConfig + 1 end
+		local fromConfig = OPX.Table.Count(configSpots)
 		Open77.log.info(('[clothing] ready: %d config, %d captured, %d refused')
 			:format(fromConfig, accepted, refused))
 	end)

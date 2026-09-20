@@ -76,6 +76,11 @@ end
 local CORE_NAMESPACE = {
 	VERSION = true, IsServer = true, IsClient = true, Config = true, Now = true,
 	Channel = true, Event = true, Host = true,
+	-- The one glyph vocabulary, in `core/shared/glyphs.lua`. It is on `OPX`
+	-- rather than inside the toast because `target` and `menu` validate
+	-- against it too, and the three copies that preceded it -- 47 names, 45
+	-- and 14 -- are what a shared name is for.
+	Glyphs = true,
 	Modules = true, Api = true, Schema = true, Scheduler = true,
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
@@ -532,6 +537,28 @@ do
 end
 
 -- ── cooldowns and refusals ───────────────────────────────────────────────────
+-- ── a source that arrives as a string ────────────────────────────────────────
+-- Four functions in `core/server/answer.lua` open with `source = tonumber(source)`
+-- and two did not: `CommandResult` and `CommandNotice` went straight to
+-- `source > 0`, so a source handed over as a string -- which is how a console and
+-- some host paths do it -- raised `attempt to compare string with number` instead
+-- of answering. The two that raised are the two a COMMAND answers through.
+section('a source that arrives as a string')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		check('CommandResult takes a string source without raising',
+			(pcall(OPX.CommandResult, '1', true, 'hello')))
+		check('CommandNotice takes one too',
+			(pcall(OPX.CommandNotice, '1', 'test', 'success', 'done', false)))
+		check('and the console path still works on a nil source',
+			(pcall(OPX.CommandResult, nil, true, 'console')))
+	end
+end
+
 section('answers')
 do
 	local env, control, why = boot('server')
@@ -2641,6 +2668,9 @@ do
 		Wait = function(ms) waits[#waits + 1] = ms; coroutine.yield() end,
 		math = math, type = type, tonumber = tonumber, tostring = tostring,
 		pcall = pcall, ipairs = ipairs, string = string, table = table,
+		-- The refusals below call it, and a scheduler that cannot raise would
+		-- pass the interval checks by accident.
+		error = error,
 	}
 
 	local chunk, why = loadfile('core/client/scheduler.lua', 't', env)
@@ -2701,7 +2731,159 @@ do
 		check('a job that keeps raising is suspended, not left to raise every pass',
 			raises == 3, tostring(raises))
 
+		-- A BAD INTERVAL IS REFUSED RATHER THAN RUN EVERY PASS.
+		-- `math.max(0, math.floor(tonumber(intervalMs) or 0))` used to turn a
+		-- nil, a string or a function into 0, and 0 on this scheduler means
+		-- every single pass. On a client with a per-resume instruction budget
+		-- that is a typo quietly eating the budget until something unrelated is
+		-- cut off mid-coroutine with nothing in the log.
+		--
+		-- A FUNCTION IS THE CASE WORTH ITS OWN LINE. The SERVER'S `Every` takes
+		-- `integer|function` and re-reads it every pass, which is how a job
+		-- follows a live tunable. The two share a name and a signature on paper
+		-- and cannot share this, because `OPX.Tune` is server-only; so it is
+		-- refused here instead of silently becoming frame-rate.
+		local noop = function() end
+		check('a function interval is refused, not turned into every frame',
+			select(1, pcall(Scheduler.Every, 'fn', function() return 250 end, noop)) == false)
+		check('so is a nil interval',
+			select(1, pcall(Scheduler.Every, 'nope', nil, noop)) == false)
+		check('so is a string that is not a number',
+			select(1, pcall(Scheduler.Every, 'str', 'soon', noop)) == false)
+		check('and so is a negative one',
+			select(1, pcall(Scheduler.Every, 'neg', -1, noop)) == false)
+		check('zero stays legal, because a caller may mean every pass',
+			select(1, pcall(Scheduler.Every, 'zero', 0, noop)) == true)
+
 		Scheduler.Stop()
+	end
+end
+
+-- ── the ACL read that raised outside the pcall written to catch it ───────────
+-- `permitted` decides whether a restricted command is SUGGESTED, and its comment
+-- says a read that raises counts as a refusal -- suggested to nobody rather than
+-- to everybody. It did not do that. `pcall(Open77.acl.isAllowed, ...)` resolves
+-- the field BEFORE pcall runs, so a host without `Open77.acl` -- no `acl.read`
+-- grant, or an older build -- raised on the index, outside the protection.
+--
+-- Loaded into an env of its own rather than through `boot`, because the whole
+-- point is a host that does NOT install the table, and the harness always does.
+section('suggestions when the ACL is not installed')
+do
+	local env = {
+		OPX = { Command = {}, Refuse = function() end, Cooling = function() return false end },
+		Open77 = { log = { error = function() end, warn = function() end } },
+		RegisterCommand = function() end,
+		type = type, tonumber = tonumber, tostring = tostring, pcall = pcall,
+		ipairs = ipairs, pairs = pairs, error = error, table = table, string = string,
+	}
+
+	local chunk, why = loadfile('core/server/commands.lua', 't', env)
+	check('commands loads without an ACL table', chunk ~= nil, why)
+
+	if chunk ~= nil then
+		local ok = pcall(chunk)
+		check('and runs', ok)
+
+		env.OPX.Command.Register('staffonly', { restricted = true }, function() end)
+		env.OPX.Command.Register('anyone', {}, function() end)
+
+		-- The raise used to happen here, on the index, and took the whole
+		-- suggestion list with it.
+		local listed, suggestions = pcall(env.OPX.Command.Suggestions, 1)
+		check('asking for suggestions does not raise with no ACL installed',
+			listed, not listed and tostring(suggestions) or nil)
+
+		if listed then
+			local names = {}
+			for _, row in ipairs(suggestions or {}) do names[tostring(row.name)] = true end
+			check('the open command is still suggested', names.anyone == true)
+			check('and the restricted one is suggested to nobody',
+				names.staffonly ~= true)
+		end
+
+		-- A DUPLICATE IS REFUSED HERE, NAMED, AND LEAVES NOTHING BEHIND.
+		-- `RegisterCommand` raises on a name it already has, so a duplicate was
+		-- always fatal -- it happened to `opx.appearance` and took the
+		-- clothing-load hook down with it -- but the raise came out of the host
+		-- with no idea which two callers collided. Worse, the suggestion row was
+		-- written BEFORE the host was asked, so the loser's help text stayed in
+		-- the list for a command the host had just refused it.
+		local again, why = pcall(env.OPX.Command.Register, 'anyone', { help = 'second' },
+			function() end)
+		check('registering a name twice is refused', again == false)
+		check('and the refusal names the command',
+			again == false and tostring(why):find('anyone', 1, true) ~= nil,
+			tostring(why))
+
+		local kept
+		for _, row in ipairs(env.OPX.Command.Suggestions(1) or {}) do
+			if row.name == 'anyone' then kept = row end
+		end
+		check('and the first registration is what stayed in the list',
+			kept ~= nil and kept.help ~= 'second', kept and tostring(kept.help))
+
+		-- A COOLDOWN THAT IS NOT A NUMBER TOOK THE RATE LIMIT AWAY.
+		-- `tonumber(opts.cooldownMs) or 0` met a gate of `if cooldownMs > 0`, so
+		-- a misspelt config value did not fail loudly -- it removed the limit
+		-- from a command that had explicitly asked for one, which is the one
+		-- direction a typo must never be allowed to go on its own.
+		check('a cooldown that is not a number is refused',
+			select(1, pcall(env.OPX.Command.Register, 'slowish',
+				{ cooldownMs = 'later' }, function() end)) == false)
+		check('no cooldown at all is still fine',
+			select(1, pcall(env.OPX.Command.Register, 'free', {}, function() end)) == true)
+		check('and a real one is too',
+			select(1, pcall(env.OPX.Command.Register, 'paced',
+				{ cooldownMs = 5000 }, function() end)) == true)
+	end
+end
+
+-- ── showing a page must never hide it ────────────────────────────────────────
+-- `OPX.Surface.Visible` read `pcall(visible and page.show or page.hide, page)`,
+-- which is the and/or trap doing something worse than raising. Ask it to SHOW a
+-- page whose host has no `show` -- an older build, a surface kind without it --
+-- and the first half answers nil, the `or` takes over, and the page is hidden.
+-- A missing method has to fail the call, not perform its opposite.
+--
+-- Loaded into an env of its own: the point is a page missing a method, and no
+-- real surface in the harness is missing one.
+section('showing a page never hides it')
+do
+	local env = {
+		OPX = { Surface = {} },
+		Open77 = { log = { error = function() end, warn = function() end } },
+		type = type, tostring = tostring, pcall = pcall, pairs = pairs,
+		ipairs = ipairs, error = error, table = table, string = string,
+		tonumber = tonumber, math = math,
+	}
+
+	local chunk, why = loadfile('lib/client/surface.lua', 't', env)
+	check('the surface helper loads', chunk ~= nil, why)
+
+	if chunk ~= nil and pcall(chunk) then
+		local Surface = env.OPX.Surface
+		local calls = {}
+
+		local lame = { page = { hide = function() calls[#calls + 1] = 'hide' end } }
+		check('showing a page whose host has no show answers false',
+			Surface.Visible(lame, true) == false)
+		check('and did NOT hide it instead', #calls == 0,
+			table.concat(calls, ', '))
+
+		check('hiding that same page still works', Surface.Visible(lame, false) == true)
+		check('and hid it exactly once', #calls == 1, table.concat(calls, ', '))
+
+		local whole = {
+			page = {
+				show = function() calls[#calls + 1] = 'show' end,
+				hide = function() calls[#calls + 1] = 'hide' end,
+			},
+		}
+		check('a page with both is shown when asked to show',
+			Surface.Visible(whole, true) == true and calls[#calls] == 'show')
+		check('and hidden when asked to hide',
+			Surface.Visible(whole, false) == true and calls[#calls] == 'hide')
 	end
 end
 
@@ -8386,6 +8568,160 @@ do
 	check('the manifest states one', manifest ~= nil, tostring(manifest))
 	check('and they are the same number', literal == manifest,
 		('core %s vs manifest %s'):format(tostring(literal), tostring(manifest)))
+end
+
+-- ── one glyph vocabulary, and the page can draw every name in it ────────────
+-- WRITTEN AFTER COUNTING THREE COPIES THAT DISAGREED. `Model.ICONS`,
+-- `menu.M.ICONS` and `OPX.Toast.ICONS` were three hand-kept lists, each under a
+-- comment telling the next author to change all of them in the same change. On
+-- disk they held 47 names, 45 and 14. Nothing had broken, because no caller
+-- passes a toast an icon -- it was a trap, not a fault, and the only reason it
+-- was ever found is that somebody read the three tables side by side.
+--
+-- So the set now lives once, in `core/shared/glyphs.lua`, and two things are
+-- checked here. First that the three names really are THE SAME TABLE and not
+-- three fresh copies again: identity, not equality, because a copy made today
+-- would pass an equality check and drift tomorrow. Second that every name in it
+-- has a path in `ui/src/modules/target/glyphs.ts` and every path has a name --
+-- the one seam a shared Lua file cannot close, since a `.ts` file is not
+-- loadable from Lua, and the seam the two dropped names (`inside`, `named`)
+-- came through. Lua promising a glyph the page has no path for is a row that
+-- validates, reaches the DOM and draws the fallback.
+-- ── a payload the host refused is not a toast that went up ───────────────────
+-- `OPX.Surface.Send` answers `(sent, refused)`. The second is true when the host
+-- TOOK the call and rejected the payload as too large or not serialisable -- a
+-- pcall cannot see that, and `notify.lua` read only the first value. `live[id]`
+-- then held a toast the page had never drawn, and every later `Update` and
+-- `Dismiss` addressed something that was not there. `modules/panel` found this
+-- the expensive way: a refused batch of clothes was reported to the fitting room
+-- as delivered and the room sat on "Reading the catalogue" for good.
+section('a refused payload is not a toast')
+do
+	local env, _, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local real = OPX.UI.Send
+
+		-- Delivered, then refused, then delivered again: the middle one is the
+		-- case, and the two around it prove the gate is not simply shut.
+		local raised = OPX.Toast.Show({ id = 'ok', message = 'first' })
+		check('a toast the host accepts goes up', raised == 'ok', tostring(raised))
+
+		OPX.UI.Send = function() return true, true end
+		local refusedId, reason = OPX.Toast.Show({ id = 'big', message = 'second' })
+		check('a toast whose payload the host refused does NOT go up',
+			refusedId == nil, tostring(refusedId))
+		check('and says why', reason == 'payload_refused', tostring(reason))
+
+		OPX.UI.Send = real
+		check('and Lua is not holding it: an update finds nothing to patch',
+			OPX.Toast.Update('big', { message = 'third' }) == false)
+		check('while the one that did go up is still addressable',
+			OPX.Toast.Update('ok', { message = 'third' }) == true)
+
+		-- The other door into the same payload.
+		OPX.UI.Send = function() return true, true end
+		local patched, patchWhy = OPX.Toast.Update('ok', { message = 'fourth' })
+		check('a refused UPDATE answers false rather than true', patched == false)
+		check('and says why too', patchWhy == 'payload_refused', tostring(patchWhy))
+		OPX.UI.Send = real
+	end
+end
+
+-- ── the page does not outlive the resource ───────────────────────────────────
+-- `OPX.UI.Teardown` says in its own docstring that this is the stop path. The
+-- stop path -- `onClientResourceStop` in `core/client/boot.lua` -- called
+-- `Scheduler.Stop` and `Modules.Stop` and never called it, so the CEF page the
+-- resource built was left alive behind it.
+section('the page goes down with the resource')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local before = 0
+		for _, page in ipairs(control.pages) do
+			if page.alive ~= false then before = before + 1 end
+		end
+		check('a page was built', before > 0, before)
+
+		control.Fire('onClientResourceStop', 'opx_infinity')
+
+		local after = 0
+		for _, page in ipairs(control.pages) do
+			if page.alive ~= false then after = after + 1 end
+		end
+		check('and none is left alive after the resource stops', after == 0, after)
+	end
+end
+
+section('the glyph vocabulary')
+do
+	local env, _, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local glyphs = OPX.Glyphs
+		check('core declares one glyph set', type(glyphs) == 'table')
+
+		local names = {}
+		for name in pairs(glyphs or {}) do names[#names + 1] = name end
+		table.sort(names)
+		check('and it is not empty', #names > 0, #names)
+
+		check('the toast draws from it, not from a copy',
+			OPX.Toast.ICONS == glyphs)
+
+		local target = OPX.Modules.Get('target')
+		check('target validates against it, not against a copy',
+			target ~= nil and target.Model ~= nil and target.Model.ICONS == glyphs)
+
+		local menu = OPX.Modules.Get('menu')
+		check('the menu validates against it, not against a copy',
+			menu ~= nil and menu.ICONS == glyphs)
+
+		-- The page's own keys, read out of the source. Two spaces of indent and
+		-- a colon is how a key of `GLYPHS` is written and nothing else in that
+		-- object is; the paths themselves are quoted and bracketed.
+		local handle = io.open('ui/src/modules/target/glyphs.ts', 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		check('the page glyph table is readable', #body > 0)
+
+		local LF = string.char(10)
+		local drawn = {}
+		local object = body:match('export const GLYPHS[^\n]*\n(.-)\n}')
+		-- The leading newline is put back because `object` begins one character
+		-- past it, and without it the FIRST key -- `interact` -- has no separator
+		-- in front of it and is missed. The check went red on that alone the
+		-- first time it ran, which is the check working.
+		for name in (LF .. (object or '')):gmatch('\n  ([%a][%w]*):') do
+			drawn[name] = true
+		end
+
+		local drawnCount = 0
+		for _ in pairs(drawn) do drawnCount = drawnCount + 1 end
+		check('and it names some glyphs', drawnCount > 0, drawnCount)
+
+		local missing = {}
+		for index = 1, #names do
+			local name = names[index]
+			if not drawn[name] then missing[#missing + 1] = name end
+		end
+		check('every name Lua accepts has a path on the page',
+			#missing == 0, table.concat(missing, ', '))
+
+		local extra = {}
+		for name in pairs(drawn) do
+			if not glyphs[name] then extra[#extra + 1] = name end
+		end
+		table.sort(extra)
+		check('and every path on the page has a name Lua accepts',
+			#extra == 0, table.concat(extra, ', '))
+	end
 end
 
 -- ── every item picture the catalogue names is actually shipped ──────────────

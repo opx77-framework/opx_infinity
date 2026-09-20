@@ -126,6 +126,15 @@ end
 -- `Init` is NOT given the same treatment: it is documented never to yield, it
 -- builds state rather than touching the world, and a yield there would let an
 -- event reach a module whose state is half built.
+--
+-- NEITHER IS `Api`, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT -- it read
+-- as one, so it is written down. The same objection applies and applies harder:
+-- `Api` is where contracts are published, so a yield in the middle of it is a
+-- frame in which some modules have published and some have not, and an event
+-- arriving in that frame gets nil from `OPX.Api.Get` for a contract that exists.
+-- The budget argument does not weigh much against it either, because an `Api`
+-- body is a handful of `Provide` calls and no world reads; `Start` is where the
+-- work is, and `Start` is what yields.
 -- @return string|nil the id of a fatal module that failed
 local function runPhase(phase)
 	local fatal

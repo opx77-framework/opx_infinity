@@ -838,11 +838,17 @@ local setPolling
 local function writeStatus(owned, text, bad)
 	local clean = text ~= nil and Text.Clean(text, MAX_STATUS) or nil
 	if clean == nil or clean == '' then return false end
-	OPX.Toast.Show({
+	-- THE ANSWER IS CHECKED, because it can be refused. `OPX.Toast.Show` answers
+	-- nil for a surface that is not up, and this used to discard that: the notice
+	-- went nowhere and said so to nobody. Six other modules already fall back to
+	-- the client journal on this exact path; these three did not, and the toast's
+	-- own docstring claimed they did.
+	local raised = OPX.Toast.Show({
 		id = 'menu:' .. tostring(owned.id),
 		kind = bad == true and 'error' or 'success',
 		message = clean,
 	})
+	if raised == nil then Open77.log.info('[menu] ' .. clean) end
 	return false
 end
 

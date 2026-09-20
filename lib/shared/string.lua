@@ -5,7 +5,7 @@ OPX.String = {}
 
 -- Absent on runtimes that do not install the 5.3 utf8 library, so every use
 -- below is guarded rather than assumed.
-local utf8lib = rawget(_G, 'utf8')
+local utf8lib = utf8
 
 --- Measures text in characters, nil when it is not UTF-8.
 -- @author dop42

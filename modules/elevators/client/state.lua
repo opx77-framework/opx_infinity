@@ -91,11 +91,13 @@ end
 -- @param nowMs integer
 -- @return table
 function State.Report(nowMs)
-	local seen, bound = 0, 0
+	local seen = 0
 	for _, lift in pairs(State.seen) do
 		if current(lift, nowMs) then seen = seen + 1 end
 	end
-	for _ in pairs(State.bound) do bound = bound + 1 end
+	-- The lifts are counted by hand above because only the CURRENT ones
+	-- count; the bindings are a plain size and the library says so.
+	local bound = OPX.Table.Count(State.bound)
 	local snapshot = State.snapshot
 	return {
 		job = snapshot and snapshot.job and snapshot.job.name or nil,

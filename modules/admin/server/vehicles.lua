@@ -235,8 +235,7 @@ end
 -- @return integer
 function Vehicles.SpawnedCount()
 	prune()
-	local total = 0
-	for _ in pairs(spawned) do total = total + 1 end
+	local total = OPX.Table.Count(spawned)
 	return total
 end
 

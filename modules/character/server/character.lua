@@ -554,7 +554,7 @@ function M.FindCharacters(request)
 	if mode == 'search' then
 		local term = request.term
 		if type(term) ~= 'string' then return Result.Err('character.searchShort', 'term') end
-		term = term:gsub('%c', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+		term = OPX.String.Trim((term:gsub('%c', ' ')))
 		-- Bytes and not characters, and deliberately the stricter reading: a
 		-- two-character term in a multi-byte script would pass a character count
 		-- and cost the same full scan the floor exists to refuse.

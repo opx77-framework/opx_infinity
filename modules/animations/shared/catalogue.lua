@@ -113,7 +113,7 @@ for index = 1, #Catalogue.CATEGORIES do isCategory[Catalogue.CATEGORIES[index]] 
 -- Reduces a clip suffix to the words shown beside a variant:
 -- 'rub_forehead__ 01' reads 'rub forehead 1'.
 local function words(suffix)
-	local spoken = suffix:gsub('[_%s]+', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+	local spoken = OPX.String.Trim((suffix:gsub('[_%s]+', ' ')))
 	spoken = spoken:gsub('%f[%d]0+(%d)', '%1')
 	return spoken
 end

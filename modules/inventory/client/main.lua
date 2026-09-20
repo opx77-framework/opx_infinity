@@ -408,11 +408,18 @@ local function announce(changes)
 			:format(change.delta > 0 and '+' or '', change.delta, Catalog.Label(change.name))
 	end
 	if #lines == 0 then return end
-	OPX.Toast.Show({
+	-- THE ANSWER IS CHECKED, because it can be refused. `OPX.Toast.Show` answers
+	-- nil for a surface that is not up, and this used to discard that: the notice
+	-- went nowhere and said so to nobody. Six other modules already fall back to
+	-- the client journal on this exact path; these three did not, and the toast's
+	-- own docstring claimed they did.
+	local line = table.concat(lines, '   ')
+	local raised = OPX.Toast.Show({
 		id = 'inventory.change',
 		kind = 'info',
-		message = table.concat(lines, '   '),
+		message = line,
 	})
+	if raised == nil then Open77.log.info('[inventory] ' .. line) end
 end
 
 --- Sends another resource's client half a message, from a thread of its own.

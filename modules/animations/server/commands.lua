@@ -80,8 +80,7 @@ local function list(player)
 		for position = 1, #entries do
 			local entry, variants = Service.Offered(entries[position].name)
 			if entry ~= nil and entry.category == category then
-				local offered = 0
-				for _ in pairs(variants) do offered = offered + 1 end
+				local offered = OPX.Table.Count(variants)
 				names[#names + 1] = offered > 1 and ('%s (%d)'):format(entry.name, offered) or entry.name
 			end
 		end

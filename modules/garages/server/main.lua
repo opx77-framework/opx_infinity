@@ -731,8 +731,7 @@ function M.Start()
 		syncAll()
 		Open77.log.info(('[garages] ready: %d config, %d captured, %d refused'):format(
 			(function()
-				local count = 0
-				for _ in pairs(configSpots) do count = count + 1 end
+				local count = OPX.Table.Count(configSpots)
 				return count
 			end)(), accepted, refused))
 	end)
