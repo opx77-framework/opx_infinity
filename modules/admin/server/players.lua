@@ -15,7 +15,8 @@ local Server = M.Server
 local Text = OPX.Text
 local Command = M.Command
 
-local answer, refuse, audit, tell = Server.Answer, Server.Refuse, Server.Audit, Server.Tell
+local answer, refuse, audit = Server.Answer, Server.Refuse, Server.Audit
+local tell, inform = Server.Tell, Server.Inform
 local count = Server.Count
 
 M.Players = {}
@@ -191,7 +192,7 @@ local function heal(source, raw, playerId, event)
 	local ok, reason = Open77.players.setHealth(playerId, maximum)
 	if not ok then return nativeRefused(source, raw, event, playerId, reason) end
 	audit(source, event, true, playerId, ('%.0f'):format(maximum))
-	if playerId ~= source then tell(playerId, 'admin.toast.healed', nil, 'success') end
+	inform(source, playerId, 'admin.toast.healed', nil, 'success')
 	answer(source, raw, true, 'admin.done.healed',
 		{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 end
@@ -219,7 +220,7 @@ local function revive(source, raw, playerId, event)
 	end
 
 	audit(source, event, true, playerId)
-	if playerId ~= source then tell(playerId, 'admin.toast.revived', nil, 'success') end
+	inform(source, playerId, 'admin.toast.revived', nil, 'success')
 	answer(source, raw, true, 'admin.done.revived',
 		{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 end
@@ -236,9 +237,7 @@ local function god(source, raw, playerId, word, event)
 	local ok, reason = Open77.players.setGodMode(playerId, wanted)
 	if not ok then return nativeRefused(source, raw, event, playerId, reason) end
 	audit(source, event, true, playerId, wanted and 'on' or 'off')
-	if playerId ~= source then
-		tell(playerId, wanted and 'admin.toast.godOn' or 'admin.toast.godOff')
-	end
+	inform(source, playerId, wanted and 'admin.toast.godOn' or 'admin.toast.godOff')
 	answer(source, raw, true, wanted and 'admin.done.godOn' or 'admin.done.godOff',
 		{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 end
@@ -400,9 +399,8 @@ function Players.Register()
 			frozen[playerId] = wanted or nil
 			pushBodiesToStaff()
 			audit(source, 'admin.player.freeze', true, playerId, wanted and 'on' or 'off')
-			if playerId ~= source then
-				tell(playerId, wanted and 'admin.toast.frozen' or 'admin.toast.unfrozen', nil, 'warning')
-			end
+			inform(source, playerId, wanted and 'admin.toast.frozen' or 'admin.toast.unfrozen',
+				nil, 'warning')
 			answer(source, raw, true, wanted and 'admin.done.frozen' or 'admin.done.unfrozen',
 				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
@@ -450,7 +448,7 @@ function Players.Register()
 			local placed, code, reason = Server.Place(playerId, point, 0.0, bucket, 'bring')
 			audit(source, 'admin.player.bring', placed, playerId, code)
 			if not placed then return refuse(source, raw, code, { reason = reason, id = playerId }) end
-			tell(playerId, 'admin.toast.brought')
+			inform(source, playerId, 'admin.toast.brought')
 			answer(source, raw, true, 'admin.done.bring',
 				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
@@ -476,7 +474,7 @@ function Players.Register()
 			audit(source, 'admin.player.tp', placed, playerId,
 				('%.0f %.0f %.0f %s'):format(point.x, point.y, point.z, code or ''))
 			if not placed then return refuse(source, raw, code, { reason = reason, id = playerId }) end
-			if playerId ~= source then tell(playerId, 'admin.toast.moved') end
+			inform(source, playerId, 'admin.toast.moved')
 			answer(source, raw, true, 'admin.done.moved',
 				{ x = ('%.1f'):format(point.x), y = ('%.1f'):format(point.y),
 					z = ('%.1f'):format(point.z) })
@@ -537,7 +535,7 @@ function Players.Register()
 			if not ok then return nativeRefused(source, raw, event, playerId, reason) end
 
 			audit(source, event, true, playerId, 'asked')
-			if playerId ~= source then tell(playerId, 'admin.toast.wardrobe', nil, 'info') end
+			inform(source, playerId, 'admin.toast.wardrobe', nil, 'info')
 			answer(source, raw, true, 'admin.done.wardrobe',
 				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
@@ -583,7 +581,10 @@ function Players.Register()
 			})
 			if not ok then return nativeRefused(source, raw, 'admin.player.kill', playerId, reason) end
 			audit(source, 'admin.player.kill', true, playerId)
-			tell(playerId, 'admin.toast.killed', nil, 'warning')
+			-- A staff member who kills themselves gets the command's own answer and
+			-- nothing else: "a staff member killed you" is a line only the player on
+			-- the other end of it has anything to learn from.
+			inform(source, playerId, 'admin.toast.killed', nil, 'warning')
 			answer(source, raw, true, 'admin.done.killed',
 				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
