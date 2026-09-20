@@ -57,6 +57,24 @@ function OPX.Modules.Resolve()
 		visit(module, seen, out, trail)
 	end
 
+	-- Every script has run and no phase has, which is the one moment a module may be
+	-- told what its config says -- `config/vehicles.lua` and its two siblings are
+	-- `server_script`s and had not run when their modules declared themselves. See
+	-- `OPX.Modules.Rebind`.
+	OPX.Modules.Rebind()
+
+	-- THE `enabled` FLAG, ANSWERED WHERE IT CAN BE. `Declare` reads it too and can
+	-- only answer for a module whose config is a `shared_script`: the platform runs
+	-- every shared script before any server script, so a config that is one of the
+	-- three `server_script` ones has not run when its module declares itself, and a
+	-- module switched off there was switched off for nobody. Every script has run by
+	-- the time this is called, and no phase has.
+	for _, module in ipairs(out) do
+		if module.State == 'declared' and OPX.Modules.Settings(module.Id).enabled == false then
+			halt(module, 'disabled', 'disabled in config')
+		end
+	end
+
 	-- A module is only runnable once every module it requires is runnable, and
 	-- that answer has to settle: dropping one module can drop its dependants.
 	local settling = true

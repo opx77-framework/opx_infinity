@@ -46,6 +46,55 @@ local function drawableIcon(value)
 	return type(value) == 'string' and ICONS[value] == true
 end
 
+--- A stinger clip name, as the page will accept one: a BARE FILE NAME.
+--
+-- NO SLASH, NO `..`, NO DRIVE, NO SCHEME, and that is a boundary rather than a
+-- tidiness rule. The page resolves a name against its own `audio/` directory and
+-- nothing else is reachable from it, so a name able to climb out would be a name
+-- able to make every client in the city fetch from anywhere this server named --
+-- from a number a client is handed at join. `nil` and `''` are both "no clip":
+-- a config cannot carry a nil, so `''` is how one of the two is turned off.
+local CLIP_NAME = '^[%w_%-]+%.%w+$'
+
+--- The stinger a toast may carry, normalised, or nil when it carries none.
+--
+-- A BAD NAME IS DROPPED, NOT REFUSED, which is the opposite of how a glyph name
+-- is treated one function up -- and deliberately so. A glyph is chosen by the
+-- same code that wrote the sentence it sits beside, so a typo there is the
+-- author's to hear about; a stinger is a PRESENTATION setting in a config file,
+-- and a server that mistyped a file name must still get its announcement to
+-- every player. The cost of dropping one is a silent toast; the cost of refusing
+-- the toast is a message nobody receives.
+--
+-- The volume is clamped rather than refused for the same reason, and a value that
+-- is not a number at all -- a NaN, a table, nil -- becomes full volume.
+local function stingerOf(value, from)
+	if value == nil then return nil end
+	if type(value) ~= 'table' then
+		Open77.log.warn(('[notify] %s sent a stinger that is not a table; playing none'):format(from))
+		return nil
+	end
+
+	local function clip(name, which)
+		if name == nil or name == '' then return '' end
+		if type(name) == 'string' and name:match(CLIP_NAME) then return name end
+		Open77.log.warn(('[notify] %s named stinger %s %q, which is not a bare file name; ' ..
+			'playing none'):format(from, which, tostring(name)))
+		return ''
+	end
+
+	local open = clip(value.OPEN or value.open, 'open')
+	local close = clip(value.CLOSE or value.close, 'close')
+	if open == '' and close == '' then return nil end
+
+	local volume = tonumber(value.VOLUME or value.volume)
+	-- NaN is the one number that survives `tonumber` and fails every comparison.
+	if volume == nil or volume ~= volume then volume = 1 end
+	if volume < 0 then volume = 0 elseif volume > 1 then volume = 1 end
+
+	return { open = open, close = close, volume = volume }
+end
+
 --- The icon of a payload that crossed the WIRE, which is a different bargain
 --- from an icon a caller in this process passed. A developer's typo is refused
 --- where they can see the return value; a server's typo must not cost a player
@@ -74,8 +123,12 @@ end
 --- to draw a padlock on `error.tooFast`. The kind already reaches the player as
 --- the frame, the tone and the toast's own kind tag; a glyph that guessed would
 --- be the one thing on the surface saying something untrue.
+-- `stinger` is what plays around the message rather than with it: `open` runs
+-- first and holds the toast back until it ends, `close` runs once the toast has
+-- gone. It is the one field here a CONFIG supplies, so a name that does not fit
+-- the rule is dropped and logged rather than refused -- see `stingerOf`.
 -- @author dop42
--- @param definition table kind, title, message, icon, durationMs, id
+-- @param definition table kind, title, message, icon, durationMs, id, stinger
 -- @return string|nil
 -- @return string|nil why it was refused
 function OPX.Toast.Show(definition)
@@ -99,6 +152,7 @@ function OPX.Toast.Show(definition)
 		message = message,
 		icon = definition.icon,
 		durationMs = tonumber(definition.durationMs) or DEFAULT_MS,
+		stinger = stingerOf(definition.stinger, 'a toast'),
 	}
 
 	live[id] = toast
@@ -150,7 +204,17 @@ function OPX.Toast.Update(id, patch)
 	if not drawableIcon(patch.icon) then return false, 'invalid_toast_icon' end
 
 	for key, value in pairs(patch) do
-		if key ~= 'id' then toast[key] = value end
+		if key == 'id' then
+			-- The id is the handle, not a field: a patch renaming a toast would
+			-- leave Lua holding one it can no longer address.
+		elseif key == 'stinger' then
+			-- Through the same validator as `Show`, for the same reason the icon
+			-- above is: this is the other door into the payload the page reads, and
+			-- a patch is how a live call changes a toast it already raised.
+			toast.stinger = stingerOf(value, 'a toast update')
+		else
+			toast[key] = value
+		end
 	end
 	return OPX.UI.Send('overlay', 'notify:update', toast)
 end

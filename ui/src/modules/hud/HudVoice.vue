@@ -6,7 +6,22 @@ import { useBridge } from '@/composables/useBridge'
 import { useLocale } from '@/composables/useLocale'
 
 /**
- * THE VOICE BLOCK -- right edge, vertically centred, as it has always been.
+ * THE VOICE BLOCK -- bottom-right corner, on the same insets as every anchored cluster.
+ *
+ * IT WAS MID-RIGHT, AND THE MIDDLE OF AN EDGE IS THE WORST PLACE A BLOCK OF THIS SHAPE
+ * CAN SIT. Vertically centred, a 52-to-220px column of mic, meter, mode, pips, keycaps
+ * and counter lands exactly at eye level -- over the road, over the crosshair's
+ * neighbours, over whatever the player is actually looking at -- and it is the one
+ * block on this HUD that is TALLER THAN IT IS WIDE, so at eye level it is a stripe
+ * across the middle of the view rather than a read-out in a corner. Every other cluster
+ * already reads its own corner. This one now does too.
+ *
+ * The corner is `bottom-right`, and for two reasons it is that one and not `bottom-left`:
+ * the block is right-anchored (its chamfers, its lit arete and the sign of its tilt all
+ * follow the right edge, and `railOf` has answered `end` for it since the port), and
+ * voting in `HudRoot.vue` puts the vitals column and the chip strip in the bottom-left
+ * and the vehicle chip at the bottom centre -- so the bottom-right was the free corner
+ * on an already-full edge.
  *
  * Lua decides the state and every word. This lights what it is told and never infers:
  * `talking` is not "the meter is above a threshold", it is what the voice stack said.
@@ -21,7 +36,9 @@ import { useLocale } from '@/composables/useLocale'
  *
  * THIS BLOCK PINS ITSELF, so unlike the other four it is its own positioned wrapper: it
  * carries the perspective, the paint containment and the tilt sign itself. It is anchored
- * to the RIGHT edge, so the sign is negative and the plane pivots on the right.
+ * to the RIGHT edge, so the sign is negative and the plane pivots on the right -- and it
+ * stays right-anchored in its new corner, which is why the tilt and the transform origin
+ * did not change with the position and only the vertical anchor did.
  *
  * THE STATE LADDER IS THE MENU'S THREE STEPS PLUS THE ALARM. The HUD takes no pointer, so
  * `--red-deep` -- the menu's hover rung -- is free, and `detected` is exactly what it is
@@ -188,7 +205,14 @@ function share(value: number): number {
   position: fixed;
   box-sizing: border-box;
   right: calc(var(--op-inset-x) - var(--hud-bleed));
-  top: 50%;
+  /* THE BOTTOM-RIGHT CORNER, on `.at`'s own offsets: the same inset token and the same
+     bleed payback every anchored cluster uses, so this block lines up with the vitals
+     column's baseline and the vehicle chip's, and a change to --op-inset-y moves all
+     three together. `bottom` and not `top`, so the block GROWS UPWARD as its lines
+     arrive -- the meter, the reach mode, the pips and the keycaps are all conditional,
+     and a top-anchored block would slide its own mic down the screen every time a line
+     appeared above it. */
+  bottom: calc(var(--op-inset-y) - var(--hud-bleed));
   /* IT IS SIZED BY ITS WIDEST LINE, and it was not.
 
      `opx77_hud/web/hud.css` pinned `.voice` at 52px: a narrow column hugging the
@@ -210,7 +234,9 @@ function share(value: number): number {
   max-width: calc(220px + var(--hud-bleed) * 2);
   padding: var(--hud-bleed);
   opacity: 0;
-  transform: translate(8px, -50%);
+  /* In from the corner it lives in: the horizontal 8px is the original, the vertical
+     one replaces the -50% that used to centre it. */
+  transform: translate(8px, 8px);
   perspective: var(--op-persp);
   contain: layout paint style;
   /* An entrance: three steps, not a fade. */
@@ -227,7 +253,7 @@ function share(value: number): number {
 
 .voice.live {
   opacity: 1;
-  transform: translate(0, -50%);
+  transform: translate(0, 0);
 }
 
 /* At rest. */
