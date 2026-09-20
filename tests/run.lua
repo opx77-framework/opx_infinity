@@ -3667,15 +3667,21 @@ section('garages')
 do
 	-- The vehicle roster the bridge answers with. The SQL is the real storage
 	-- module's; this is only the bridge half.
-	local function bridge(rows, wrote)
+	local function bridge(rows, wrote, vehicleWrites)
 		return Host.Database({
 			scalar = function() return 1 end,
-			update = function(sql)
+			update = function(sql, params)
 				-- Only the INSERT: the schema runs `CREATE TABLE IF NOT EXISTS`
 				-- through the same bridge method, and counting that would make
 				-- "nothing was written" true of a boot rather than of a refusal.
 				if wrote ~= nil and sql:find('INSERT INTO opx77_garages', 1, true) then
 					wrote[#wrote + 1] = sql
+				end
+				-- Every write to a vehicle row, with its parameters. Which marker a
+				-- put-away files the vehicle UNDER is only observable here: the
+				-- roster this bridge answers from is never touched by an UPDATE.
+				if vehicleWrites ~= nil and sql:find('UPDATE opx77_vehicles', 1, true) then
+					vehicleWrites[#vehicleWrites + 1] = type(params) == 'table' and params or {}
 				end
 				return 0
 			end,
@@ -3721,9 +3727,9 @@ do
 		}
 	end
 
-	local wrote = {}
+	local wrote, vehicleWrites = {}, {}
 	local env, control, why = boot('server', bridge({ row('AA111AA', 'Vehicle.v_standard2_archer_hella_player'),
-		row('AA222AA', 'Vehicle.av_militech_manticore') }, wrote))
+		row('AA222AA', 'Vehicle.av_militech_manticore') }, wrote, vehicleWrites))
 	check('the server boots with the garages module', why == nil, why)
 
 	-- The last client event with one name, or nil. Every verdict below is asserted
@@ -3741,6 +3747,9 @@ do
 		local garages = OPX.Modules.Get('garages')
 		local Access = garages.Access
 		local contract = OPX.Api.Get('garages')
+		-- The vehicles half, read the way any other module reads it: the plate a
+		-- player is sitting in is proved through this contract and nothing else.
+		local vehicleApi = OPX.Api.Get('vehicles')
 
 		check('the garages module is running', OPX.Modules.IsRunning('garages'),
 			OPX.Modules.Record('garages').Reason)
@@ -3830,11 +3839,23 @@ do
 
 		-- ── the capture round-trip ─────────────────────────────────────────
 		-- A character that owns the two rows above, on a slot the host admitted.
+		--
+		-- THE INDEX AS WELL AS THE ROSTER. `character.RegisterPlayer` fills both,
+		-- and the difference is not cosmetic: "is this character still loaded?"
+		-- is answered from `Registry.byCitizenId`, and the vehicles module asks it
+		-- before saving a live vehicle in place. A roster entry with no index
+		-- entry reads as an owner who left, so the save pass put every car away --
+		-- which meant no vehicle in this file was ever still out one pump later,
+		-- and "a vehicle that is already out" could not be tested at all.
 		local function load(id, citizenId)
 			control.Admit(id, 'account-' .. tostring(id))
 			OPX.EnsureSession(id)
 			local character = OPX.Modules.Get('character')
-			character.Players[id] = { PlayerData = { citizenId = citizenId } }
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = { PlayerData = { citizenId = citizenId, source = id,
+				userId = userId } }
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
 			return character
 		end
 
@@ -3979,6 +4000,103 @@ do
 			lastEvent(garages.Event.ANSWER) ~= nil
 				and lastEvent(garages.Event.ANSWER)[4] == 'AA222AA',
 			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[4]))
+
+		-- ── a vehicle that is already out is BROUGHT TO THE MARKER ───────
+		-- The bug this pins: the door answered `Ok` with the id the vehicle
+		-- already had, wherever it was, so the player was told "brought out",
+		-- stood on an empty marker and pressed the key again -- six times in one
+		-- recorded session. The vehicle is put away and created again AT the
+		-- spot now, which is what the marker promised in the first place.
+		created = #control.vehicleCreates
+		local removals = #control.vehicleRemoves
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		check('a vehicle that is already out is removed and created again',
+			#control.vehicleCreates == created + 1 and #control.vehicleRemoves == removals + 1,
+			('%d created, %d removed'):format(#control.vehicleCreates - created,
+				#control.vehicleRemoves - removals))
+		options = control.vehicleCreates[#control.vehicleCreates]
+		check('and the second creation is ON the marker, not beside the player',
+			options ~= nil and options.position.x == 0.0 and options.position.y == 0.0,
+			options and ('%s,%s'):format(tostring(options.position.x), tostring(options.position.y)))
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and the answer says it was moved rather than brought from the roster',
+			answer ~= nil and answer[2] == true and answer[5] == 'recalled',
+			answer and tostring(answer[5]))
+
+		-- SOMEBODY IS SITTING IN IT. The occupant is not necessarily the player
+		-- who pressed the key -- a marker is a public place -- so the vehicle is
+		-- refused rather than taken out of a driver's hands.
+		control.vehicles.snapshot = { occupants = { { playerId = 99 } } }
+		created = #control.vehicleCreates
+		removals = #control.vehicleRemoves
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		check('a vehicle somebody is sitting in is neither moved nor removed',
+			#control.vehicleCreates == created and #control.vehicleRemoves == removals,
+			('%d created, %d removed'):format(#control.vehicleCreates - created,
+				#control.vehicleRemoves - removals))
+		check('and the refusal names the occupant',
+			lastEvent(garages.Event.ANSWER) ~= nil
+				and lastEvent(garages.Event.ANSWER)[3] == 'vehicle.occupied',
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+		control.vehicles.snapshot = nil
+
+		-- ── the same key, seated: PUT IT AWAY ────────────────────────────
+		-- The id is read the way any caller reads it -- the seat assignment names a
+		-- runtime id and this contract is what says which plate owns it -- and the
+		-- plate is the roster fixture the bring-out above just produced.
+		local outPlate = 'AA111AA'
+		local live = vehicleApi.Get(outPlate)
+		check('the plate out at the marker answers its runtime id',
+			live.ok == true and live.value.spawned == true and live.value.id ~= nil,
+			live.ok and tostring(live.value.id) or tostring(live.detail))
+		control.Seat(src, { vehicleId = live.value.id, seat = 'driver' })
+
+		created = #control.vehicleCreates
+		removals = #control.vehicleRemoves
+		local wroteVehicles = #vehicleWrites
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		check('seated on a marker, the key puts the vehicle away and creates nothing',
+			#control.vehicleCreates == created and #control.vehicleRemoves == removals + 1,
+			('%d created, %d removed'):format(#control.vehicleCreates - created,
+				#control.vehicleRemoves - removals))
+		check('and it is filed UNDER the marker the player is standing on',
+			#vehicleWrites > wroteVehicles
+				and vehicleWrites[#vehicleWrites].garage == 'garage_dock'
+				and tonumber(vehicleWrites[#vehicleWrites].state) == 1,
+			#vehicleWrites > wroteVehicles and ('garage=%s state=%s'):format(
+				tostring(vehicleWrites[#vehicleWrites].garage),
+				tostring(vehicleWrites[#vehicleWrites].state)) or 'nothing was written')
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and the answer says STORED, which is not the same thing as brought out',
+			answer ~= nil and answer[2] == true and answer[5] == 'stored',
+			answer and tostring(answer[5]))
+		check('and the character is on foot again as far as the contract is concerned',
+			vehicleApi.Occupied(src).value == nil)
+
+		-- On foot, the same key brings it back -- out of the roster, at the spot
+		-- it was just filed under. Both halves of one key, one marker.
+		--
+		-- THE MARKER'S OWN WINDOW HAS TO EXPIRE FIRST, and deliberately rather
+		-- than by widening it: this section has now asked it as many times as one
+		-- window allows, and the refusal that follows is the subject of the test
+		-- at the end of the file. Clock ticks are 100 ms in this harness.
+		control.Pump(math.ceil(OPX.Config.MODULES.garages.REQUEST_WINDOW_MS / 100) + 2)
+		control.Seat(src, nil)
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and on foot the same key brings it back out at that marker',
+			#control.vehicleCreates == created + 1 and answer ~= nil
+				and answer[2] == true and answer[5] == 'brought',
+			('%d created, answer ok=%s action=%s error=%s'):format(
+				#control.vehicleCreates - created,
+				answer and tostring(answer[2]) or 'none',
+				answer and tostring(answer[5]) or 'none',
+				answer and tostring(answer[3]) or 'none'))
 
 		-- ── what is refused, and why ──────────────────────────────────────
 		local walker = 42
@@ -4245,6 +4363,20 @@ do
 			listed and listed.ok and tostring(listed.value.count))
 		check('and names the key it is bound to', Runtime.Report().key == 'E',
 			Runtime.Report().key)
+
+		-- ONE KEY, TWO JOBS, so the row has to name the job it is about to do:
+		-- a row that still read "bring out a vehicle" while the player sat in one
+		-- would be labelling the key with the wrong half of what it does.
+		check('on foot, the row names the bring-out',
+			Runtime.Report().label == 'garages.prompt.garage', Runtime.Report().label)
+		cctl.Seat(1, { seat = 'driver' })
+		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.putAway' end)
+		check('seated in a vehicle, the same row says put away',
+			Runtime.Report().label == 'garages.prompt.putAway', Runtime.Report().label)
+		cctl.Seat(1, nil)
+		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.garage' end)
+		check('and it goes back to the bring-out once the player is out of it',
+			Runtime.Report().label == 'garages.prompt.garage', Runtime.Report().label)
 
 		-- ── the key sends the request ─────────────────────────────────────
 		local before = #cctl.serverEvents
@@ -4620,11 +4752,18 @@ do
 		local function load(id, citizenId, eddies)
 			control.Admit(id, 'account-' .. tostring(id))
 			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
 			character.Players[id] = {
-				PlayerData = { citizenId = citizenId, source = id,
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
 					money = { EDDIES = eddies or 0 } },
 				Functions = { UpdatePlayerData = function() end },
 			}
+			-- The roster AND the index, the way `character.RegisterPlayer` fills
+			-- them: the vehicles module asks the index whether an owner is still
+			-- loaded before it saves a live vehicle in place, and a hand-loaded
+			-- roster without it reads as an owner who left.
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
 			return character.Players[id]
 		end
 
@@ -7894,11 +8033,15 @@ do
 		local function load(id, citizenId, eddies)
 			control.Admit(id, 'account-' .. tostring(id))
 			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
 			character.Players[id] = {
-				PlayerData = { citizenId = citizenId, source = id,
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
 					money = { EDDIES = eddies or 0 } },
 				Functions = { UpdatePlayerData = function() end },
 			}
+			-- The roster and the index, as `character.RegisterPlayer` fills them.
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
 			return character.Players[id]
 		end
 
