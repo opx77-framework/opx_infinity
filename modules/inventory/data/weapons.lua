@@ -115,7 +115,12 @@ M.Data.WEAPONS = {
 		weapon_mancinella = { RECORD = 'Items.Preset_Nova_Hitman', CLASS = 'revolver', WEIGHT = 1600 },
 		weapon_metel = { RECORD = 'Items.Preset_Metel_Default', CLASS = 'revolver', WEIGHT = 2000 },
 		weapon_nova = { RECORD = 'Items.Preset_Nova_Default', CLASS = 'revolver', WEIGHT = 1600 },
-		weapon_old_pal = { RECORD = 'Items.Preset_Overture_Dante', CLASS = 'revolver', WEIGHT = 1800 },
+		-- A SUBSTITUTION, AND IT IS SAID SO RATHER THAN LEFT TO BE NOTICED. Old Pal
+		-- is `Preset_Overture_Dante` and the wiki carries no Dante icon; this is
+		-- the Overture's own. Same gun, different variant -- the silhouette is
+		-- right and the trim is not. Replace it the day an exact one exists.
+		weapon_old_pal = { RECORD = 'Items.Preset_Overture_Dante', CLASS = 'revolver', WEIGHT = 1800,
+			IMAGE = 'weapon_old_pal.webp' },
 		weapon_overture = { RECORD = 'Items.Preset_Overture_Default', CLASS = 'revolver',
 			WEIGHT = 1800 },
 		weapon_pygargue = { RECORD = 'Items.Preset_Metel_Kurt', CLASS = 'revolver', WEIGHT = 2000 },
@@ -284,7 +289,11 @@ M.Data.WEAPONS = {
 		weapon_machete = { RECORD = 'Items.Preset_Machete_Default', CLASS = 'melee', WEIGHT = 1100 },
 		weapon_machete_borg = { RECORD = 'Items.Preset_Machete_Borg_Default', CLASS = 'melee',
 			WEIGHT = 1300 },
-		weapon_murphys_law = { RECORD = 'Items.Preset_Baton_Murphy', CLASS = 'melee', WEIGHT = 800 },
+		-- An exact match: the wiki names its file after the TweakDB record, so
+		-- `Preset_Baton_Murphy` is `Baton Murphy.png`. That pattern is how the
+		-- other twelve were looked for, and why eleven of them were not found.
+		weapon_murphys_law = { RECORD = 'Items.Preset_Baton_Murphy', CLASS = 'melee', WEIGHT = 800,
+			IMAGE = 'weapon_murphys_law.webp' },
 		weapon_nehan = { RECORD = 'Items.Preset_Tanto_Saburo', CLASS = 'melee', WEIGHT = 400 },
 		weapon_neurotoxin_knife = { RECORD = 'Items.Preset_Neurotoxin_Knife_Default', CLASS = 'melee',
 			WEIGHT = 350 },
