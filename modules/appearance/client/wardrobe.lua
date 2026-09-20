@@ -416,6 +416,14 @@ local watchCitizen = nil
 -- opening.
 local openingUntilMs = 0
 
+-- HOW FAR `begin` GOT, for the watchdog below it. The 10 s watchdog has now
+-- fired on a real creation -- "the fitting room never finished opening after
+-- 10000 ms" -- which proves the open enters and never completes, but says
+-- nothing about where. `begin` has a dozen steps and exactly one of them yields
+-- (`readCatalogue`, a frame per slot), so naming the step turns the next
+-- occurrence from a fact into a location.
+local openingStage = nil
+
 -- This module's own name when it opens the room for the JOIN rather than for a
 -- caller. `Clothing.BeginPreview` refuses an unnamed borrower and the upkeep pass
 -- closes a room whose owner has stopped, so the borrow has to be under a name the
@@ -735,6 +743,11 @@ local function readCatalogue(mine)
 	local total = 0
 	for index = 1, #SLOTS do
 		local slot = SLOTS[index]
+		-- Per slot, because this loop is the ONLY place in the whole open that
+		-- yields -- one frame each, at `Wait(0)` below -- so it is the only place
+		-- an open can stop without returning. If the watchdog ever names a slot,
+		-- it names the frame the worker was never resumed on.
+		openingStage = 'catalogue: ' .. tostring(slot)
 		local called, records, reason = pcall(Open77.equipment.records,
 			{ slot = slot, family = family, restricted = false, limit = RECORD_LIMIT })
 		if not called or type(records) ~= 'table' then
@@ -844,7 +857,9 @@ local function begin(owner, creation, expected)
 	-- with every count already in it. The old order was the other way round and
 	-- is what made a spinner possible at all.
 	pieces, known, at, shown, shownName = {}, {}, {}, {}, {}
+	openingStage = 'body family'
 	family = Runtime.BodyFamily()
+	openingStage = 'catalogue'
 	local total, failure = readCatalogue(mine)
 	if total == nil then
 		if failure == 'superseded' then return give('superseded') end
@@ -852,6 +867,7 @@ local function begin(owner, creation, expected)
 		return give('catalogue_unreadable')
 	end
 
+	openingStage = 'borrowing the puppet'
 	local answer, reason = Clothing.BeginPreview(owner)
 	if answer == nil then return give(reason) end
 
@@ -865,6 +881,7 @@ local function begin(owner, creation, expected)
 		return give(stale and 'superseded' or 'player_unavailable')
 	end
 
+	openingStage = 'dressing the sliders'
 	baseline = slotsOf(answer)
 	draft = copy(baseline)
 	outfitCleared, hoverSlot, hoverRecord, statusText = false, nil, nil, nil
@@ -882,6 +899,7 @@ local function begin(owner, creation, expected)
 
 	phase = 'open'
 	openingUntilMs = 0
+	openingStage = nil
 	-- One line per room, and it is the whole of the evidence now: a room that
 	-- opened on nothing and a room that never opened are different failures, and
 	-- there is no stream left to tell them apart afterwards.
@@ -1089,7 +1107,16 @@ local retryBeat, retryLive, retryRevivals = 0, nil, 0
 -- retry intervals: long enough that a slow frame or a catalogue read is never
 -- mistaken for a death, short enough that the player is not left looking at an
 -- empty screen for long.
-local RETRY_STALL_MS = 3000
+-- MEASURED AND RAISED FROM 3000, which was wrong and made things worse. On a
+-- real creation the worker started, reported itself, and its first `begin` did
+-- not answer for 3.1 s -- not because it was dead but because the WORLD WAS
+-- LOADING and the client was not resuming scripts. The supervisor called that a
+-- death and started a second worker; the two then raced, and one of them stood
+-- down on `wardrobe_busy` against the other's half-open room. Eight seconds is
+-- past the observed load stall with room to spare, and the `phase` guard below
+-- is the real protection: a stall inside an open is the 10 s opening watchdog's
+-- business, not this one's.
+local RETRY_STALL_MS = 8000
 
 -- How many times a dead retry is started again before the join is handed back.
 -- A second attempt covers the world-load transition, which is the one moment a
@@ -1141,6 +1168,16 @@ local function superviseRetry()
 	if live == nil then return end
 	-- Somebody else owns the claim now; the thread will notice and say so.
 	if live.mine ~= creationWatch then return end
+
+	-- NEVER WHILE AN OPEN IS IN FLIGHT. A worker inside `begin` does not beat --
+	-- the beat is written once per iteration -- and `begin` legitimately spans
+	-- several frames reading the catalogue. Starting a second worker there is
+	-- how the first real creation ended up with two of them racing, one standing
+	-- down on `wardrobe_busy` against the other's half-open room. That window
+	-- already has an owner: the 10 s watchdog in `Wardrobe.Check`, which puts
+	-- `phase` back and lets the retry come round again.
+	if phase ~= 'closed' then return end
+
 	if Runtime.NowMs() - retryBeat < RETRY_STALL_MS then return end
 
 	if retryRevivals < MAX_REVIVALS then
@@ -1441,8 +1478,9 @@ function M.Wardrobe.Check()
 			openingUntilMs = 0
 			generation = generation + 1
 			phase = 'closed'
-			Runtime.Note(('the fitting room never finished opening after %d ms')
-				:format(OPENING_DEADLINE_MS))
+			Runtime.Note(('the fitting room never finished opening after %d ms; it was at: %s')
+				:format(OPENING_DEADLINE_MS, tostring(openingStage or 'the very first step')))
+			openingStage = nil
 		end
 
 		if phase == 'open' then
