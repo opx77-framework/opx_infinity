@@ -304,6 +304,27 @@ for index = 1, #SLOTS do IS_SLOT[SLOTS[index]] = true end
 -- nobody is told about is the class of defect this room was.
 local RECORD_LIMIT = 2000
 
+-- Catalogue entries handled between two frames.
+--
+-- THE NUMBER THIS WHOLE EPISODE WAS ABOUT, and the owner is the one who found
+-- it: their client raised `Open77 script execution budget exceeded` at the
+-- `readCatalogue` call. That error is written on the PLAYER'S machine and never
+-- reaches the server journal, which is why five diagnoses ran on a silence that
+-- was not silent at all -- somebody was just reading it in the wrong place.
+--
+-- `readCatalogue` yielded once per SLOT, so one slot's work had to fit in one
+-- resume: up to 2000 records filtered, sorted, then indexed twice. The largest
+-- slot is around 650 and that is already past the per-resume budget. Exceeding
+-- it "unwinds straight out of the coroutine body -- it does not crash the
+-- resource, it does not repeat, and it logs nothing" (`core/client/scheduler.lua`).
+-- So `begin` never returned, `phase` stayed 'opening', and the fitting room was
+-- a feature that silently did not exist.
+--
+-- 64 is deliberately small. The cost of an extra frame here is invisible -- the
+-- room is opening, the player is looking at a loading world -- and the cost of
+-- being wrong the other way is this bug.
+local CATALOGUE_CHUNK = 64
+
 -- Milliseconds between two tries at opening the room after a creation, and how
 -- long a kept outfit's save is listened for.
 local RETRY_MS = 500
@@ -322,7 +343,13 @@ local SAVE_WAIT_MS = 30000
 -- room neither open nor closed and every later open refused `wardrobe_busy` for
 -- the session. Checked from the UPKEEP pass for the same reason as before -- it
 -- is the thing that still runs when the thread is what went.
-local OPENING_DEADLINE_MS = 10000
+-- RAISED WITH THE CHUNKING ABOVE. The catalogue now takes a frame per 64
+-- entries instead of one per slot -- roughly a hundred frames rather than seven
+-- -- and those frames are spent during the world load, where a frame is not
+-- 16 ms. Ten seconds was a comfortable ceiling for the old shape and a trap for
+-- this one: it would fire on an open that was working. The watchdog exists to
+-- unstick `phase`, not to race the thing it is watching.
+local OPENING_DEADLINE_MS = 25000
 
 -- Degrees one turn of the camera moves.
 local TURN_DEGREES = 45
@@ -338,6 +365,11 @@ local RETRYABLE = {
 	player_down = true,
 	input_captured = true,
 	no_view = true,
+	-- RETRIED, AND ITS CLOCK DOES NOT RUN -- see `awaitRoom`. The spawn selector
+	-- gives the player forty-five seconds to choose and the room's own window is
+	-- sixty, so a room that merely waited would be timed out by somebody else's
+	-- deliberation rather than by anything about the room.
+	spawn_up = true,
 }
 
 -- closed, opening while the puppet is asked for, or open; and the room
@@ -384,13 +416,45 @@ local statusText, creating, citizen, family = nil, false, nil, nil
 -- it took the camera, and the camera's orbit in degrees.
 local outfitCleared, savedPerspective, orbit = false, nil, 180
 
+-- The field of view the player had before the room widened it, or nil when the
+-- room never touched it. Read from `Open77.camera.view` rather than assumed, so
+-- a player running a custom FOV gets their own value back and not ours.
+local savedFov = nil
+
 -- Creation handoff generation, so an older wait stops, and the kept outfit whose
 -- save is listened for.
 local creationWatch, awaitSave = 0, nil
 
+-- Whether the spawn selector owns the screen right now.
+--
+-- THE JOIN HAS THREE SCREENS AND THEY WERE NEVER SEQUENCED. `modules/spawn`
+-- already writes this problem down in its own manifest, about the other two:
+-- "a brand new character is asked for a name and a spawn at the same moment,
+-- and two modals on one keyboard is one modal losing its focus". The fitting
+-- room is the third, and nothing ordered it against the spawn menu -- so a
+-- creation offered its room into a screen that was already up, every time.
+--
+-- Tracked rather than asked, because `spawn` publishes the state and exposes no
+-- reader; the event is on the local bus and carries `{ open, phase }`.
+local spawnUp = false
+
+-- The character the live retry watch is owed to, or nil when none is running.
+-- Read by the `characterChanged` handler, which otherwise cannot tell the
+-- character it is ANNOUNCING from a different one ARRIVING -- see the comment
+-- there, and `WORLD_READY` below it for the same mistake one event over.
+local watchCitizen = nil
+
 -- When `begin` stops being allowed to still be working, or 0 when nothing is
 -- opening.
 local openingUntilMs = 0
+
+-- HOW FAR `begin` GOT, for the watchdog below it. The 10 s watchdog has now
+-- fired on a real creation -- "the fitting room never finished opening after
+-- 10000 ms" -- which proves the open enters and never completes, but says
+-- nothing about where. `begin` has a dozen steps and exactly one of them yields
+-- (`readCatalogue`, a frame per slot), so naming the step turns the next
+-- occurrence from a fact into a location.
+local openingStage = nil
 
 -- This module's own name when it opens the room for the JOIN rather than for a
 -- caller. `Clothing.BeginPreview` refuses an unnamed borrower and the upkeep pass
@@ -494,17 +558,48 @@ local function playable()
 	return true
 end
 
+-- Reasons `refusal()` has already named this world entry, so a gate polled four
+-- times a second costs one journal line rather than a note budget.
+local refusalTold = {}
+
+--- Forgets what the gate has reported, for a new world entry.
+local function forgetRefusals()
+	refusalTold = {}
+end
+
 --- Why the room cannot open now, or nil.
+---
+--- EVERY BRANCH REPORTS ITSELF, once. This gate is the first line of `begin`,
+--- and until now a refusal here returned with nothing written anywhere: the
+--- journal showed a room owed, the clothes going on, and then silence, because
+--- the retry was being turned away by a door that never said which one it was.
+--- That is the shape of failure this whole module has now been debugged out of
+--- three times, and the cure each time was a line naming the clause.
+---
+--- `input_captured` is the one to suspect first, and it is worth knowing why.
+--- `OPX.Lib.Input.IsCaptured` answers CAPTURED when its own read raises -- the
+--- safe value for a keybind, because a key firing while another surface owns
+--- the keyboard types into somebody else's box. For this gate that safe value
+--- is the blocking one: it means the room can never open. The library is right
+--- and so is this caller; they just want opposite defaults, which is exactly
+--- why `modules/animations/client/keys.lua` keeps a local reader of its own.
+-- @return string|nil
 local function refusal()
-	if phase ~= 'closed' then return 'wardrobe_busy' end
-	if type(Open77.equipment) ~= 'table' or type(Open77.equipment.apply) ~= 'function' or
-		type(Open77.equipment.records) ~= 'function' then
-		return 'equipment_api_unavailable'
+	local why = nil
+	if phase ~= 'closed' then why = 'wardrobe_busy'
+	elseif type(Open77.equipment) ~= 'table' or type(Open77.equipment.apply) ~= 'function' or
+		type(Open77.equipment.records) ~= 'function' then why = 'equipment_api_unavailable'
+	elseif Runtime.IsDown() then why = 'player_down'
+	elseif not playable() then why = 'player_unavailable'
+	elseif spawnUp then why = 'spawn_up'
+	elseif OPX.Lib.Input.IsCaptured() then why = 'input_captured'
 	end
-	if Runtime.IsDown() then return 'player_down' end
-	if not playable() then return 'player_unavailable' end
-	if OPX.Lib.Input.IsCaptured() then return 'input_captured' end
-	return nil
+
+	if why ~= nil and not refusalTold[why] then
+		refusalTold[why] = true
+		Runtime.Note(('the fitting room cannot open: %s'):format(why))
+	end
+	return why
 end
 
 --- The nine equipment slots of a clothing record, false for empty.
@@ -528,14 +623,30 @@ local function copy(slots)
 end
 
 --- Whether the player chose something other than what was worn when it opened.
+--- Which slots the draft moved, in the canonical order.
+--
+-- PUBLISHED ON `wardrobeClosed`, because a caller that wants to BILL for a
+-- change cannot work this out for itself: the baseline and the draft live here
+-- and are gone the moment the room closes. A clothing shop asking "what did
+-- they change" from outside would have to re-read the body and race the save.
+--
+-- `outfitCleared` is not a slot and is deliberately not folded in here. It says
+-- a covering wardrobe outfit was switched off, which is a change -- `changed`
+-- below still answers true for it -- but it is not a garment anybody bought.
+local function changedSlots()
+	local moved = {}
+	if baseline == nil or draft == nil then return moved end
+	for index = 1, #EQUIPMENT_SLOTS do
+		local slot = EQUIPMENT_SLOTS[index]
+		if baseline[slot] ~= draft[slot] then moved[#moved + 1] = slot end
+	end
+	return moved
+end
+
 local function changed()
 	if baseline == nil or draft == nil then return false end
 	if outfitCleared then return true end
-	for index = 1, #EQUIPMENT_SLOTS do
-		local slot = EQUIPMENT_SLOTS[index]
-		if baseline[slot] ~= draft[slot] then return true end
-	end
-	return false
+	return #changedSlots() > 0
 end
 
 --- States the nine slots on the puppet, turning a covering outfit off first.
@@ -580,9 +691,32 @@ local function hasOrbit()
 	return OPX.Lib.Native.Reach('camera.orbit') ~= nil
 end
 
+--- WARDROBE.CAMERA_FOV, or nil to leave the player's lens alone.
+local function wardrobeFov()
+	local config = type(M.Settings.WARDROBE) == 'table' and M.Settings.WARDROBE or {}
+	local wanted = tonumber(config.CAMERA_FOV)
+	-- The platform validates the degrees itself; this only refuses a value that
+	-- is not a number at all, so a mistyped config leaves the lens untouched
+	-- rather than sending nonsense at the backend once per room.
+	if wanted == nil or wanted < 5 or wanted > 170 then return nil end
+	return wanted
+end
+
 --- Remembers the perspective, goes third person and faces the puppet.
 local function holdCamera()
 	orbit = 180
+
+	-- THE LENS IS WIDENED, WHICH IS NOT THE SAME AS STANDING BACK. `camera.orbit`
+	-- below is a yaw inside the third-person rig and cannot move the view off the
+	-- player -- see the note on `WARDROBE.CAMERA_FOV` for why the alternative is
+	-- a permission this room does not need. Read first so the player's own value
+	-- goes back exactly on the way out, rather than being restored to a guess.
+	local fov = wardrobeFov()
+	if fov ~= nil then
+		local view = OPX.Lib.Native.Call('camera.view', nil)
+		savedFov = view.ok and type(view.value) == 'table' and tonumber(view.value.fov) or nil
+		OPX.Lib.Native.Call('camera.setFov', nil, fov)
+	end
 	local perspective = Open77.perspective
 	if type(perspective) == 'table' then
 		local requested
@@ -605,6 +739,13 @@ local function freeCamera()
 	-- The answer is dropped on purpose: this runs on the way out, and there is
 	-- nothing a caller could do about a preview it has already stopped wanting.
 	OPX.Lib.Native.Call('camera.clearOrbit', 'camera.preview')
+	-- The player's own lens, read on the way in rather than assumed. Nil means
+	-- the room never touched it, or the read failed -- and in that case leaving
+	-- it alone is right: the room does not know what to put back.
+	if savedFov ~= nil then
+		OPX.Lib.Native.Call('camera.setFov', nil, savedFov)
+		savedFov = nil
+	end
 	local perspective = Open77.perspective
 	if savedPerspective ~= nil and type(perspective) == 'table' and
 		type(perspective.set) == 'function' then
@@ -678,13 +819,22 @@ end
 -- record this is removing.
 local function readCatalogue(mine)
 	local total = 0
+
+	--- One frame, and whether this attempt still owns the room.
+	local function breathe()
+		Wait(0)
+		return mine == generation
+	end
+
 	for index = 1, #SLOTS do
 		local slot = SLOTS[index]
+		openingStage = 'catalogue: ' .. tostring(slot)
 		local called, records, reason = pcall(Open77.equipment.records,
 			{ slot = slot, family = family, restricted = false, limit = RECORD_LIMIT })
 		if not called or type(records) ~= 'table' then
 			return nil, tostring(called and reason or records)
 		end
+		if not breathe() then return nil, 'superseded' end
 
 		local names = {}
 		for entry = 1, #records do
@@ -693,12 +843,19 @@ local function readCatalogue(mine)
 				record.nonvisual ~= true then
 				names[#names + 1] = record.record
 			end
+			if entry % CATALOGUE_CHUNK == 0 and not breathe() then return nil, 'superseded' end
 		end
+
+		-- On its own frame. `table.sort` is C and costs the VM little, but it is
+		-- the one step here that cannot be cut in half, so it is given a clean
+		-- budget rather than the remains of the filter's.
 		table.sort(names)
+		if not breathe() then return nil, 'superseded' end
 
 		for position = 1, #names do
 			known[names[position]] = slot
 			at[names[position]] = position
+			if position % CATALOGUE_CHUNK == 0 and not breathe() then return nil, 'superseded' end
 		end
 		pieces[slot] = names
 		total = total + #records
@@ -713,8 +870,7 @@ local function readCatalogue(mine)
 				'it is being truncated'):format(slot, #records, RECORD_LIMIT))
 		end
 
-		Wait(0)
-		if mine ~= generation then return nil, 'superseded' end
+		if not breathe() then return nil, 'superseded' end
 	end
 	return total
 end
@@ -764,6 +920,21 @@ local function begin(owner, creation, expected)
 			phase = 'closed'
 			openingUntilMs = 0
 		end
+		-- EVERY WAY OUT OF `begin` THAT IS NOT A ROOM comes through here, which is
+		-- what makes this the one place worth a line. There were five of them and
+		-- all five were silent: a catalogue that superseded, a puppet the clothing
+		-- half would not lend and its nine separate reasons for that, a character
+		-- that changed under the borrow, a body that stopped being playable. The
+		-- caller retries on most of them and logs the rest to the client's own
+		-- file, on the player's machine, where nobody operating the server can
+		-- read it.
+		--
+		-- Deduped per world entry, like `refusal` above and for the same reason:
+		-- the retry loop calls this twice a second.
+		if reason ~= nil and not refusalTold[reason] then
+			refusalTold[reason] = true
+			Runtime.Note(('the fitting room did not open: %s'):format(tostring(reason)))
+		end
 		return false, reason
 	end
 
@@ -774,7 +945,9 @@ local function begin(owner, creation, expected)
 	-- with every count already in it. The old order was the other way round and
 	-- is what made a spinner possible at all.
 	pieces, known, at, shown, shownName = {}, {}, {}, {}, {}
+	openingStage = 'body family'
 	family = Runtime.BodyFamily()
+	openingStage = 'catalogue'
 	local total, failure = readCatalogue(mine)
 	if total == nil then
 		if failure == 'superseded' then return give('superseded') end
@@ -782,6 +955,7 @@ local function begin(owner, creation, expected)
 		return give('catalogue_unreadable')
 	end
 
+	openingStage = 'borrowing the puppet'
 	local answer, reason = Clothing.BeginPreview(owner)
 	if answer == nil then return give(reason) end
 
@@ -795,6 +969,7 @@ local function begin(owner, creation, expected)
 		return give(stale and 'superseded' or 'player_unavailable')
 	end
 
+	openingStage = 'dressing the sliders'
 	baseline = slotsOf(answer)
 	draft = copy(baseline)
 	outfitCleared, hoverSlot, hoverRecord, statusText = false, nil, nil, nil
@@ -812,6 +987,7 @@ local function begin(owner, creation, expected)
 
 	phase = 'open'
 	openingUntilMs = 0
+	openingStage = nil
 	-- One line per room, and it is the whole of the evidence now: a room that
 	-- opened on nothing and a room that never opened are different failures, and
 	-- there is no stream left to tell them apart afterwards.
@@ -839,6 +1015,11 @@ local function release(keep, reason)
 	generation = generation + 1
 	freeCamera()
 
+	-- CAPTURED BEFORE THE STATE IS DROPPED on the next line, which is the only
+	-- moment this list can be taken: `changedSlots` reads `baseline` and `draft`
+	-- and both are about to be nil. It rides on `wardrobeClosed` for whoever
+	-- needs to bill for a change -- see `changedSlots`.
+	local moved = keep and changedSlots() or {}
 	local mine, wasCreation, worn, owner = citizen, creating, draft, roomOwner
 	baseline, draft, citizen, family, creating = nil, nil, nil, nil, false
 	pieces, known, at, shown, shownName = {}, {}, {}, {}, {}
@@ -856,7 +1037,7 @@ local function release(keep, reason)
 	end
 
 	Runtime.Publish({ ok = true, event = 'wardrobeClosed', reason = reason, kept = keep,
-		creation = wasCreation, citizenId = mine })
+		creation = wasCreation, citizenId = mine, slots = moved })
 	-- WHATEVER TOOK IT DOWN, THE JOIN IS NO LONGER WAITING. A room the player
 	-- saved, cancelled, was pulled out of by a body reload or lost to a stopped
 	-- owner is a room that has been had: holding the claim open past any of those
@@ -990,59 +1171,233 @@ local function creationWaitMs()
 	return M.ConfigMs(config.CREATION_WAIT_MS) or CREATION_WAIT_MS
 end
 
---- Opens the join's room once the character's clothes are on, or gives up.
+-- The retry's heartbeat, the offer it is working on, and how many times it has
+-- been started again.
+--
+-- WHY A SUPERVISOR EXISTS AT ALL. `core/client/scheduler.lua` opens by saying
+-- modules register work there "instead of spawning threads", and by naming the
+-- exact failure this module spent five diagnoses on: exceeding the per-resume
+-- instruction budget "unwinds straight out of the coroutine body ... it does not
+-- crash the resource, it does not repeat, and it logs nothing. A loop that
+-- quietly stopped is almost always this."
+--
+-- This retry is a raw `CreateThread`, and it is queued from inside the
+-- synchronous handler chain of `created` -- which `FinishCreation` publishes
+-- immediately before spending the bootstrap, and spending the bootstrap is what
+-- LOADS THE WORLD. So the one thread the join depends on is started microseconds
+-- before the client tears the pre-game context down. Whether it dies to the
+-- budget, to a raise, or is simply never resumed across that transition, the
+-- symptom is identical and the journal is empty: the owed line prints and
+-- nothing follows it, which is exactly what five creations have now shown.
+--
+-- It cannot simply move into the scheduler. `runJob` wraps a step in `pcall` and
+-- `begin` yields -- `readCatalogue` waits a frame per slot -- and a yield across
+-- a pcall boundary is not safe on this runtime. So the thread stays, and the
+-- scheduler job WATCHES it.
+local retryBeat, retryLive, retryRevivals = 0, nil, 0
+
+-- How long the supervisor waits for a beat before calling the thread dead. Six
+-- retry intervals: long enough that a slow frame or a catalogue read is never
+-- mistaken for a death, short enough that the player is not left looking at an
+-- empty screen for long.
+-- MEASURED AND RAISED FROM 3000, which was wrong and made things worse. On a
+-- real creation the worker started, reported itself, and its first `begin` did
+-- not answer for 3.1 s -- not because it was dead but because the WORLD WAS
+-- LOADING and the client was not resuming scripts. The supervisor called that a
+-- death and started a second worker; the two then raced, and one of them stood
+-- down on `wardrobe_busy` against the other's half-open room. Eight seconds is
+-- past the observed load stall with room to spare, and the `phase` guard below
+-- is the real protection: a stall inside an open is the 10 s opening watchdog's
+-- business, not this one's.
+local RETRY_STALL_MS = 8000
+
+-- How many times a dead retry is started again before the join is handed back.
+-- A second attempt covers the world-load transition, which is the one moment a
+-- thread is known to be at risk. Past that, something is wrong that another
+-- thread will not fix, and THE JOIN MUST NOT STAY SHUT: the claim is what the
+-- spawn menu waits behind, so it is withdrawn under a reason of its own rather
+-- than held for a worker that is never coming back.
+local MAX_REVIVALS = 2
+
+local runRetry
+
+--- Starts the retry thread for the live offer, beating once so the supervisor
+--- does not immediately judge it dead.
+local function spawnRetry()
+	local live = retryLive
+	if live == nil then return end
+	retryBeat = Runtime.NowMs()
+	CreateThread(function() runRetry(live) end)
+end
+
+--- Offers a fitting room and keeps trying until it opens, is refused for good,
+--- or the window closes.
+--
 -- Every exit either leaves a room on screen or withdraws the claim, because the
--- claim is what the rest of the join is waiting behind: a thread that returned
--- without doing one of the two would hold the spawn menu shut for the session.
--- The one exception is `wardrobe_busy` -- a room is already up, and its own close
+-- claim is what the rest of the join is waiting behind: a worker that stopped
+-- without doing one of the two holds the spawn menu shut for the session. The
+-- one exception is `wardrobe_busy` -- a room is already up, and its own close
 -- withdraws the claim.
 -- @param resumed boolean this offer is itself the retry of one that expired
 local function awaitRoom(owner, creation, citizenId, resumed)
 	creationWatch = creationWatch + 1
-	local mine = creationWatch
-	CreateThread(function()
-		local deadline, reason, said = Runtime.NowMs() + creationWaitMs(), nil, nil
-		while mine == creationWatch and Runtime.NowMs() < deadline do
-			local ok
-			ok, reason = begin(owner, creation, citizenId)
-			if ok or reason == 'wardrobe_busy' then return end
-			if not RETRYABLE[reason] and reason ~= 'superseded' then
-				-- A REFUSAL THAT IS NOT RETRIED IS THE END OF THE OFFER, once and
-				-- for this world entry, so it is the single most important line
-				-- this module can write -- and it was written to the client's own
-				-- log, which is a file on the player's machine. That is precisely
-				-- how `invalid_caller` refused every creation's fitting room for
-				-- as long as it did without anybody being able to see it.
-				Runtime.Note(('no fitting room for %s: %s')
-					:format(tostring(citizenId), tostring(reason)))
-				return claim(false, reason)
-			end
-			if reason ~= said then
-				said = reason
-				Open77.log.debug(('[appearance] fitting room for %s not yet: %s')
-					:format(tostring(citizenId), tostring(reason)))
-			end
-			Wait(RETRY_MS)
+	watchCitizen = citizenId
+	retryLive = {
+		owner = owner, creation = creation, citizenId = citizenId, resumed = resumed,
+		mine = creationWatch,
+		deadline = Runtime.NowMs() + creationWaitMs(),
+	}
+	retryRevivals = 0
+	spawnRetry()
+end
+
+--- Watches the retry thread and starts it again if it stopped without saying so.
+--
+-- Called from `Wardrobe.Check`, which the `appearance.wardrobe` scheduler job
+-- drives every 250 ms. That job is the one part of this machinery already proven
+-- to survive the world load, which is precisely why the watch lives there.
+local function superviseRetry()
+	local live = retryLive
+	if live == nil then return end
+	-- Somebody else owns the claim now; the thread will notice and say so.
+	if live.mine ~= creationWatch then return end
+
+	-- NEVER WHILE AN OPEN IS IN FLIGHT. A worker inside `begin` does not beat --
+	-- the beat is written once per iteration -- and `begin` legitimately spans
+	-- several frames reading the catalogue. Starting a second worker there is
+	-- how the first real creation ended up with two of them racing, one standing
+	-- down on `wardrobe_busy` against the other's half-open room. That window
+	-- already has an owner: the 10 s watchdog in `Wardrobe.Check`, which puts
+	-- `phase` back and lets the retry come round again.
+	if phase ~= 'closed' then return end
+
+	if Runtime.NowMs() - retryBeat < RETRY_STALL_MS then return end
+
+	if retryRevivals < MAX_REVIVALS then
+		retryRevivals = retryRevivals + 1
+		Runtime.Note(('the retry for %s stopped without a word after %d ms; '
+			.. 'starting it again (%d)')
+			:format(tostring(live.citizenId), RETRY_STALL_MS, retryRevivals))
+		return spawnRetry()
+	end
+
+	-- THE JOIN IS GIVEN BACK, and this is the ending that was missing. With the
+	-- worker dead and the claim standing, the spawn menu stands aside for a room
+	-- that will never be drawn, and the player is left with an empty screen and
+	-- no way forward -- which is the whole of what the owner reported. A named
+	-- withdrawal is worse than a fitting room and far better than a dead end.
+	retryLive, watchCitizen = nil, nil
+	if live.creation then
+		roomExpired = { citizenId = live.citizenId, reason = 'retry_stopped',
+			resumed = live.resumed }
+	end
+	Runtime.Note(('no fitting room for %s: the retry stopped %d times and is not coming '
+		.. 'back; the join is released')
+		:format(tostring(live.citizenId), retryRevivals + 1))
+	claim(false, 'retry_stopped')
+end
+
+runRetry = function(live)
+	local owner, creation, citizenId, resumed =
+		live.owner, live.creation, live.citizenId, live.resumed
+	local mine = live.mine
+	local reason, said = nil, nil
+	local traced = false
+
+	retryBeat = Runtime.NowMs()
+
+	-- THE TRACE, and it is here because five rounds of elimination have run out
+	-- of things to eliminate. The owed line prints and then nothing does: not a
+	-- refusal, not a supersede, not the expiry -- and the expiry is only reached
+	-- once `begin` has RETURNED, so its silence says the loop is not coming back
+	-- round rather than that the window is still open. That leaves "the thread
+	-- never started" and "the first attempt never finished", which are
+	-- indistinguishable from outside and are told apart by exactly two lines.
+	Runtime.Note(('the retry for %s is running; it has %d ms')
+		:format(tostring(citizenId), creationWaitMs()))
+
+	while mine == creationWatch and Runtime.NowMs() < live.deadline do
+		retryBeat = Runtime.NowMs()
+
+		local ok
+		ok, reason = begin(owner, creation, citizenId)
+		if not traced then
+			traced = true
+			Runtime.Note(('the first attempt for %s answered ok=%s, %s')
+				:format(tostring(citizenId), tostring(ok), tostring(reason or 'no reason')))
 		end
-		-- Superseded watches leave the claim alone: whatever bumped the generation
-		-- owns it now, and both of the things that do -- a new character and a new
-		-- offer -- settle it themselves.
-		if mine == creationWatch then
-			-- RECORDED AS AN EXPIRY, and withdrawn under that name rather than under
-			-- whatever the last try was refused with. The window ending and the room
-			-- being refused are different endings: one is a clock, the other is a
-			-- state, and `wardrobeWanted` carries only the one string. See
-			-- `roomExpired` -- this is what stops the retry being re-decided by a
-			-- policy that never declined anything.
-			if creation then
-				roomExpired = { citizenId = citizenId, reason = tostring(reason or 'timeout'),
-					resumed = resumed }
+
+		-- THE CLOCK DOES NOT RUN WHILE ANOTHER JOIN SCREEN IS UP, which is the
+		-- rule `clothing.lua` already applies to the creator. The spawn menu
+		-- gives the player 45s and this window is 60s, so without this a room
+		-- could be withdrawn for a delay that was somebody else's by design.
+		if reason == 'spawn_up' then live.deadline = Runtime.NowMs() + creationWaitMs() end
+
+		if ok or reason == 'wardrobe_busy' then
+			if not ok then
+				-- Silent until recently, and one of three ways out of this loop
+				-- that wrote nothing. A room already up withdraws the claim when
+				-- it closes, so this exit is legitimate -- but "legitimate" and
+				-- "invisible" are different things, and telling the two busy
+				-- endings apart afterwards was impossible.
+				Runtime.Note(('the fitting room owed to %s stood down: one is already open')
+					:format(tostring(citizenId)))
 			end
-			Runtime.Note(('the fitting room owed to %s expired after %d ms: still %s')
-				:format(tostring(citizenId), creationWaitMs(), tostring(reason)))
-			claim(false, 'expired')
+			retryLive, watchCitizen = nil, nil
+			return
 		end
-	end)
+
+		if not RETRYABLE[reason] and reason ~= 'superseded' then
+			-- A REFUSAL THAT IS NOT RETRIED IS THE END OF THE OFFER, once and for
+			-- this world entry, so it is the single most important line this
+			-- module can write -- and it was written to the client's own log,
+			-- which is a file on the player's machine. That is precisely how
+			-- `invalid_caller` refused every creation's fitting room for as long
+			-- as it did without anybody being able to see it.
+			retryLive, watchCitizen = nil, nil
+			Runtime.Note(('no fitting room for %s: %s')
+				:format(tostring(citizenId), tostring(reason)))
+			return claim(false, reason)
+		end
+
+		if reason ~= said then
+			said = reason
+			Open77.log.debug(('[appearance] fitting room for %s not yet: %s')
+				:format(tostring(citizenId), tostring(reason)))
+		end
+		Wait(RETRY_MS)
+	end
+
+	-- Superseded watches leave the claim alone: whatever bumped the generation
+	-- owns it now, and both of the things that do -- a new character and a new
+	-- offer -- settle it themselves.
+	if mine == creationWatch then
+		-- RECORDED AS AN EXPIRY, and withdrawn under that name rather than under
+		-- whatever the last try was refused with. The window ending and the room
+		-- being refused are different endings: one is a clock, the other is a
+		-- state, and `wardrobeWanted` carries only the one string. See
+		-- `roomExpired` -- this is what stops the retry being re-decided by a
+		-- policy that never declined anything.
+		if creation then
+			roomExpired = { citizenId = citizenId, reason = tostring(reason or 'timeout'),
+				resumed = resumed }
+		end
+		retryLive, watchCitizen = nil, nil
+		Runtime.Note(('the fitting room owed to %s expired after %d ms: still %s')
+			:format(tostring(citizenId), creationWaitMs(), tostring(reason)))
+		claim(false, 'expired')
+	else
+		-- THE EXIT THAT ATE A CREATION'S FITTING ROOM, and it wrote nothing at
+		-- all. `mine ~= creationWatch` means something bumped the generation
+		-- under this worker; it then returned without opening a room, without
+		-- withdrawing the claim and without a line anywhere.
+		--
+		-- It is a legitimate ending -- whoever bumped the generation owns the
+		-- claim now -- but it is never again an invisible one.
+		if retryLive == live then retryLive = nil end
+		Runtime.Note(('the fitting room owed to %s was superseded while waiting (last: %s)')
+			:format(tostring(citizenId), tostring(reason or 'no attempt')))
+	end
 end
 
 --- Offers this world entry a fitting room, if the policy says this entry is one.
@@ -1184,6 +1539,17 @@ function M.Wardrobe.Check()
 	local ok, failure = pcall(panelTick)
 	if not ok then Open77.log.error('[appearance] panel: ' .. tostring(failure)) end
 
+	-- THE RETRY IS WATCHED FROM HERE, and this is the only place in the module
+	-- that can watch it: the `appearance.wardrobe` job driving this function is
+	-- the one piece of the machinery proven to survive the world load, while the
+	-- retry itself is a raw thread started microseconds before that load. See
+	-- `superviseRetry`. Outside the pcall below because it must run even if the
+	-- panel tick or the sweep is failing -- a dead retry holds the whole join.
+	local watched, watchFailure = pcall(superviseRetry)
+	if not watched then
+		Open77.log.error('[appearance] retry watch: ' .. tostring(watchFailure))
+	end
+
 	local ran, reason = pcall(function()
 		-- A CHARACTER THAT LEFT WITHOUT BEING REPLACED. `characterChanged` covers
 		-- a switch and `release` covers a room that was up, but an unload with no
@@ -1205,8 +1571,9 @@ function M.Wardrobe.Check()
 			openingUntilMs = 0
 			generation = generation + 1
 			phase = 'closed'
-			Runtime.Note(('the fitting room never finished opening after %d ms')
-				:format(OPENING_DEADLINE_MS))
+			Runtime.Note(('the fitting room never finished opening after %d ms; it was at: %s')
+				:format(OPENING_DEADLINE_MS, tostring(openingStage or 'the very first step')))
+			openingStage = nil
 		end
 
 		if phase == 'open' then
@@ -1228,11 +1595,54 @@ end
 --- Wires both views to the decisions this module reaches.
 -- @author dop42
 function M.Wardrobe.Wire()
+	-- THE THIRD JOIN SCREEN, ordered against the second. `spawn` publishes its
+	-- own up/down on the local bus and exposes no reader, so it is tracked here.
+	--
+	-- ASKED FOR BY NAME AND NOT DEPENDED ON: a runtime without the spawn module
+	-- simply never sets this, `refusal` never returns `spawn_up`, and the room
+	-- behaves exactly as it did before. That is the same shape as the optional
+	-- `diagnostics` relay, and it is why this is not a hard cross-module import.
+	local spawn = OPX.Modules.Get('spawn')
+	local channel = type(spawn) == 'table' and type(spawn.Event) == 'table'
+		and spawn.Event.ON_STATE or nil
+	if channel ~= nil then
+		AddEventHandler(channel, function(state)
+			spawnUp = type(state) == 'table' and state.open == true
+		end)
+	end
+
 	AddEventHandler(M.Event.ON_DECISION, function(decision)
 		if type(decision) ~= 'table' then return end
 		local event = decision.event
 
 		if event == 'characterChanged' then
+			-- THE CHARACTER IT ANNOUNCES IS NOT A CHARACTER ARRIVING, and telling
+			-- those two apart is the whole of this branch. A CREATION raises
+			-- `characterChanged` for the body the creator has just built -- the
+			-- same citizen the retry watch three lines down was started for,
+			-- seconds earlier, by that very creation. Bumping the generation here
+			-- killed that thread where it stood: no room, no claim withdrawn, no
+			-- line in the journal. The join then waited behind a claim nobody
+			-- owned until the spawn selector gave up on its own, and the only
+			-- evidence was the spawn module reporting that the player chose
+			-- nothing -- which is true, and says nothing about why.
+			--
+			-- This is the SAME MISTAKE as the one written up on `WORLD_READY`
+			-- below, one event over: an event that is structurally part of every
+			-- creation, treated as though it could only mean a new character. The
+			-- guard is the same shape -- ask whether this is the character already
+			-- being waited for -- and the answer is a citizen id both sides have.
+			--
+			-- A DIFFERENT character still tears everything down, which is what
+			-- this branch is for: the room, the offer and the expiry all belong to
+			-- whoever has gone.
+			if watchCitizen ~= nil and decision.citizenId == watchCitizen then
+				Runtime.Note(('%s is the character its own fitting room is waiting for; ' ..
+					'the offer stands'):format(tostring(watchCitizen)))
+				return
+			end
+
+			watchCitizen = nil
 			creationWatch = creationWatch + 1
 			awaitSave = nil
 			roomOffered = false
@@ -1289,6 +1699,12 @@ function M.Wardrobe.Wire()
 	-- 'first' nothing raises `created` twice and this changes nothing.
 	AddEventHandler(OPX.Host.WORLD_READY, function()
 		release(false, 'world_changed')
+
+		-- One journal line per distinct refusal PER WORLD ENTRY. The gate below is
+		-- consulted by a retry loop several times a second; without this reset it
+		-- would either flood the note budget or, deduped for the whole session, go
+		-- quiet after the first join and tell a second join nothing.
+		forgetRefusals()
 
 		-- NOT WHILE ONE IS STILL OWED, and this is the half of the fitting-room
 		-- defect that lived here. A CREATION'S OWN BOOTSTRAP ANSWER IS WHAT LOADS

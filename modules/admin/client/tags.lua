@@ -87,10 +87,50 @@ local reported = {}
 -- See the probe at the end of `pass`.
 local ownQuiet = 0
 
+
+-- The last pass outcome put in the journal, and how many have been. See
+-- `outcome` below for why both bounds are here rather than one.
+local lastOutcome, outcomes = nil, 0
+
+-- Outcomes one session will report. `OPX.Note` is bounded at sixty a session for
+-- the whole client, and this pass runs four times a second: a fault that flaps
+-- between two outcomes would spend the entire runtime's budget in fifteen
+-- seconds and leave every other module unable to say anything. Twelve is enough
+-- to see a boot, a switch-on, a fault and its recovery.
+local MAX_OUTCOMES = 12
+
+--- One line in the OPERATOR's journal, once per key.
+--
+-- THROUGH `OPX.Note` AND NOT `Open77.log`. A client's log is a file on the
+-- player's machine, in a folder they have to be talked into finding, on a PC
+-- that is not the one the server runs on -- so every refusal this file could
+-- report was written where the only person who could act on it cannot read it.
+-- That is not hypothetical here: the name tags stopped drawing entirely after
+-- the `opx_lib` migration and produced not one diagnosable line, because every
+-- line they produce goes there. `Note` keeps the local copy and relays.
 local function warnOnce(key, message)
 	if reported[key] then return end
 	reported[key] = true
-	Open77.log.warn('[admin] ' .. message)
+	OPX.Note('admin', 'tags: ' .. message)
+end
+
+--- Reports what a pass DECIDED, when that decision changes.
+--
+-- The pass is a tick and `Note` is for decisions, so this reports neither every
+-- pass nor only the first: it reports each distinct OUTCOME once. "The switch is
+-- on, the library answered ok, four bodies were near, three rows were built" is
+-- one outcome and says itself once however many thousand passes hold it; the
+-- moment any part of that sentence changes it is news and is said again.
+--
+-- That is the shape the last three diagnoses of this file needed and did not
+-- have. A pass producing nothing and a pass never running are identical from the
+-- journal, and so are "nobody is near" and "the library refused" -- each pair
+-- differs by a sentence nobody was writing.
+local function outcome(text)
+	if text == lastOutcome or outcomes >= MAX_OUTCOMES then return end
+	lastOutcome = text
+	outcomes = outcomes + 1
+	OPX.Note('admin', 'tags: ' .. text)
 end
 
 --- Saves the own-tag preference on this machine.
@@ -264,13 +304,28 @@ end
 
 -- One pass: works out the tags to draw and publishes them when they changed.
 local function pass()
-	if not shown then return end
+	if not shown then
+		-- THE SILENT OUTCOME, and the one that cost the most. A pass that returns
+		-- here and a pass that never runs at all are the same absence in the
+		-- journal, so "the tags are gone" could mean the switch never came on, the
+		-- module never started, or the rows came out empty -- three faults with
+		-- nothing to tell them apart. It says which.
+		outcome('the switch is off, so no pass computes anything')
+		return
+	end
 	-- The early return is the point, not the check: without the native there are
 	-- no rows to compute and publishing an empty frame would TAKE DOWN tags that
 	-- are on screen. `Native.Reach` is the same two-level lookup written once.
-	if OPX.Lib.Native.Reach('players.nearby') == nil then
-		return warnOnce('nearby', 'Open77.players.nearby is not on this client: name tags cannot ' ..
-			'be drawn')
+	--
+	-- THE SECOND RETURN IS THE WHOLE DIAGNOSIS and was being thrown away.
+	-- `open77_unavailable` means the library cannot see the `Open77` namespace at
+	-- all -- a library-side fault affecting every wrapper this resource owns --
+	-- while `native_not_found` means this client build simply lacks the native.
+	-- The two want opposite fixes and the line said neither.
+	local native, missing = OPX.Lib.Native.Reach('players.nearby')
+	if native == nil then
+		return warnOnce('nearby', ('Open77.players.nearby is not reachable (%s): name tags '
+			.. 'cannot be drawn'):format(tostring(missing)))
 	end
 
 	local third = thirdPerson()
@@ -278,14 +333,34 @@ local function pass()
 	-- Why the operator's own tag was left out, for the one line below. Nil means
 	-- it was drawn, or was never asked for.
 	local ownMissing = nil
-	if not down and not (tuning.hideFirstPerson and third == false) then
+	-- What the pass decided, for `outcome` at the end. Counted rather than
+	-- narrated: the three ways an entry is dropped are the three candidates for
+	-- "the list arrives and nothing draws", and which of them is non-zero names
+	-- the half at fault -- the server's name list, the engine's entity, or the
+	-- distance.
+	local reach, near = nil, 0
+	local nameless, bodiless, far = 0, 0, 0
+	if down or (tuning.hideFirstPerson and third == false) then
+		reach = down and 'the operator is down' or 'the view is first person'
+	else
 		-- A Result, not `(entries, reason)`. `Nearby` folds the three ways the old
 		-- call could come back empty -- raised, refused, nobody near -- into two:
 		-- Ok with a list that may be empty, or a refusal carrying the reason. It
 		-- also bounds the radius, which this site never did.
-		local found = OPX.Lib.Players.Nearby(tuning.distance + CULL_MARGIN,
+		local radius = tuning.distance + CULL_MARGIN
+		local found = OPX.Lib.Players.Nearby(radius,
 			{ includeSelf = ownShown, limit = tuning.max })
 		local entries = found.ok and type(found.value) == 'table' and found.value or {}
+		-- THE ARGUMENTS ARE IN THE LINE, not only the answer. The library bounds
+		-- the radius and refuses an options table it does not like, and both
+		-- refusals answer the same shape as "nobody is near" once this site has
+		-- folded them into an empty list -- so the values that were sent are what
+		-- separates a bad call from an empty world.
+		reach = ('radius=%.1f limit=%s includeSelf=%s -> %s'):format(radius,
+			tostring(tuning.max), tostring(ownShown),
+			found.ok and ('ok, %d near'):format(#entries)
+				or ('%s (%s)'):format(tostring(found.error), tostring(found.detail)))
+		near = #entries
 		if ownShown then
 			ownMissing = ('the local body is not in players.nearby (%d entries, %s)')
 				:format(found.ok and #entries or -1,
@@ -346,6 +421,17 @@ local function pass()
 					offsetZ = headOffset(entry.entity, entry.position),
 					alpha = alphaFor(distance),
 				}
+			elseif row == nil then
+				-- The server's name list has not reached this client, or has and does
+				-- not carry this id. It is the one half of a tag a client cannot work
+				-- out for itself, so a full list of nearby bodies and no names at all
+				-- is `TAG_ROWS` never arriving -- a server-side or grant fault, and
+				-- nothing to do with the natives.
+				nameless = nameless + 1
+			elseif entry.entity == nil then
+				bodiless = bodiless + 1
+			elseif distance == nil then
+				far = far + 1
 			end
 		end
 	end
@@ -364,6 +450,17 @@ local function pass()
 		reported.own = true
 		M.Client.Journal(('the own name tag is on but not drawn: %s'):format(ownMissing))
 	end
+
+	-- WHAT THIS PASS DECIDED, in one sentence, once per distinct decision. Every
+	-- number in it answers one of the questions a "the tags do not work" report
+	-- cannot otherwise be taken past: whether the pass ran, what the library was
+	-- asked and what it answered, how many bodies came back, how many became rows,
+	-- and which of the three drops ate the rest. `outcome` is what keeps it off
+	-- the note budget while nothing changes.
+	outcome(('%s | %d near, %d drawn (no name %d, no entity %d, no distance %d)%s')
+		:format(reach or 'not asked', near, #rows, nameless, bodiless, far,
+			ownShown and (', own ' .. (ownMissing and ('missing: ' .. ownMissing) or 'drawn'))
+				or ''))
 
 	table.sort(rows, function(left, right) return left.playerId < right.playerId end)
 
@@ -422,6 +519,11 @@ function Tags.Start()
 	RegisterNetEvent(M.Event.TAGS_STATE, function(on, persist)
 		answered = true
 		shown = on == true
+		-- The server is the only thing that can turn these on, so this is the
+		-- moment the feature becomes the client's problem. Without it, a switch
+		-- the server never granted and a pass that computed nothing are the same
+		-- silence -- and one of them is not this file's fault at all.
+		outcome(('the server says the switch is %s'):format(shown and 'on' or 'off'))
 		if persist == true then remember(shown) end
 		if shown then
 			published = nil
@@ -453,7 +555,30 @@ function Tags.Start()
 		down = payload.down == true
 	end)
 
-	job = OPX.Scheduler.Every('admin.tags', tuning.updateMs, pass)
+	-- GUARDED, BECAUSE THE JOURNAL SAYS THE PASS STOPS. The switch goes on, the
+	-- server's answer is reported, and then the outcome line at the end of `pass`
+	-- -- which reports every pass whose decision changed, and had ten of its
+	-- twelve reports left -- is never written again. No `warnOnce` fires either,
+	-- and `appearance`'s own scheduler jobs keep reporting through the same
+	-- minutes, so the scheduler itself is alive. A pass that ran and decided
+	-- nothing would still have said so. The remaining reading is that `pass`
+	-- RAISES, somewhere past the switch check, and the raise goes wherever an
+	-- error inside a scheduler job goes -- which is not this journal.
+	--
+	-- So it is caught here and named. The job survives a raising pass instead of
+	-- being taken down by it, and the first raise is a line an operator can read
+	-- with the message and the traceback's own text in it. `warnOnce` keys it, so
+	-- a fault that repeats four times a second costs exactly one note.
+	--
+	-- This is a diagnostic AND a fix: a per-frame tick that can be killed by one
+	-- bad frame -- an entity that stopped streaming between two reads is enough --
+	-- should not stay dead for the rest of the session.
+	job = OPX.Scheduler.Every('admin.tags', tuning.updateMs, function()
+		local ran, failure = pcall(pass)
+		if not ran then
+			warnOnce('passRaised', ('the pass raised and was caught: %s'):format(tostring(failure)))
+		end
+	end)
 
 	-- The own-tag preference: `TAGS.OWN` is the DEFAULT, not the value. It is what
 	-- a machine that has never been asked starts at, and the store wins after
@@ -467,7 +592,16 @@ function Tags.Start()
 	-- `ownShown` at its initialiser and silently discarding `TAGS.OWN`.
 	ownShown = OPX.Lib.Store.Get(KVP_OWN_KEY, settings.OWN == true) == true
 
-	if OPX.Lib.Store.Get(KVP_KEY, false) ~= true then return end
+	local remembered = OPX.Lib.Store.Get(KVP_KEY, false) == true
+	-- ONE LINE PER SESSION, AND IT IS THE FLOOR OF EVERY OTHER DIAGNOSIS. Until
+	-- this arrives there is no evidence the module started at all -- and a module
+	-- that did not start, a pass that was never registered and a pass that drew
+	-- nothing are three different faults that produce the same empty journal. It
+	-- also states the two values every later line is read against.
+	OPX.Note('admin', ('tags: pass registered at %dms, own=%s, remembered=%s')
+		:format(tuning.updateMs, tostring(ownShown), tostring(remembered)))
+
+	if not remembered then return end
 	restoresLeft = RESTORE_TRIES
 	OPX.Scheduler.Every('admin.tags.restore', RESTORE_DELAY_MS, restorePass)
 end

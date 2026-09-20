@@ -162,6 +162,7 @@ M.Command = {
 	PLAYER_HEALTH = 'opx.admin.player.health',
 	PLAYER_ARMOR = 'opx.admin.player.armor',
 	PLAYER_MODEL = 'opx.admin.player.model',
+	PLAYER_WARDROBE = 'opx.admin.player.wardrobe',
 
 	-- The ACCOUNT's characters, not the body in the world. `opx.admin.player.*` is
 	-- the session and the puppet -- freeze it, heal it, move it -- and every one

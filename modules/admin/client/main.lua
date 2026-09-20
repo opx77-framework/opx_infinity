@@ -27,16 +27,23 @@ local Client = M.Client
 ---
 --- `Open77.log` on the client is a file on the player's machine, and the
 --- operator reading it is somewhere else, so a fault nobody can see is a fault
---- nobody fixes. The relay belongs to `diagnostics`, which is declared optional:
---- a runtime without it keeps the line local rather than failing.
+--- nobody fixes.
+---
+--- THROUGH `OPX.Note`, AND IT USED TO GO THROUGH `diagnostics.PAGE`. That module
+--- is declared optional, so every line this function has ever written was
+--- conditional on a module nobody checks the state of -- which means a silent
+--- journal proved nothing at all: the fault could be absent, or the relay could
+--- be. The name tags were diagnosed twice from that silence. `OPX.Note` is core,
+--- is always there, is bounded at sixty a session and keeps the local copy
+--- regardless, so a missing line is now evidence rather than an unknown.
+---
+--- It is also the end of the second relay that `core/client/note.lua` was
+--- written to replace: two channels competing for one journal is how a line ends
+--- up on neither.
 -- @author dop42
 -- @param message string
 function Client.Journal(message)
-	Open77.log.warn('[admin] ' .. message)
-
-	local diagnostics = OPX.Modules.Get('diagnostics')
-	local channel = type(diagnostics) == 'table' and diagnostics.PAGE or nil
-	if channel ~= nil then pcall(TriggerServerEvent, channel, '[admin] ' .. message) end
+	OPX.Note('admin', message)
 end
 
 -- Fragment both known queue acknowledgement wordings share. The dispatcher
@@ -125,6 +132,11 @@ local function underList(raw, accepted, message)
 	local sentAt = awaiting[name]
 	if sentAt == nil or Client.NowMs() - sentAt > AWAITING_MS then return false end
 	M.Menu.Status(message, accepted == true)
+	-- THE ANSWER IS THE SIGNAL, and it was being read for its text alone. The
+	-- menu had already sent whatever list read the line makes necessary, on a
+	-- fixed 1200ms sleep, because nothing told it the server was done -- while
+	-- this function was holding exactly that. It is told now.
+	M.Menu.Answered(name, accepted == true)
 	-- A refused switch flipped its own box already; the redraw puts back the
 	-- state that actually holds.
 	if accepted ~= true then M.Menu.Refresh() end

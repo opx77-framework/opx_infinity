@@ -646,6 +646,39 @@ function settleSlot(slider: Slider): void {
     { handle: handle.value, id: slider.id, index: standing(slider), commit: true })
 }
 
+/** A number typed straight in: the same choice an arrow press makes, without the
+    walk. Committed at once rather than previewed, because typing a number is a
+    destination and not a browse -- there is no intermediate value to show.
+
+    THE FIELD IS WRITTEN BACK after clamping. `:value` follows `standing`, so Vue
+    repaints whenever the thumb actually moves -- but typing 900 into a range of
+    12 lands on 12, and if the thumb was ALREADY on 12 nothing changed and the
+    box would sit there reading 900. */
+function jumpSlot(slider: Slider, field: HTMLInputElement): void {
+  if (view.busy || slider.disabled) return
+  const raw = field.value.trim()
+  // An empty box is somebody mid-edit, not a request to wear nothing: `Number('')`
+  // is 0, which would silently undress the slot on a backspace.
+  if (raw === '') {
+    field.value = String(standing(slider))
+    return
+  }
+  const wanted = Math.trunc(Number(raw))
+  if (!Number.isFinite(wanted)) {
+    field.value = String(standing(slider))
+    return
+  }
+
+  const next = Math.max(0, Math.min(slider.count, wanted))
+  field.value = String(next)
+  thumb[slider.id] = next
+  if (slideTimer !== undefined) clearTimeout(slideTimer)
+  slideTimer = undefined
+  dragging = null
+  if (handle.value === null) return
+  emit('opx:panel:slide', { handle: handle.value, id: slider.id, index: next, commit: true })
+}
+
 function press(button: Button): void {
   if (button.disabled || view.busy) return
   emit('opx:panel:action', { handle: handle.value, id: button.id })
@@ -921,11 +954,31 @@ function filter(value: string): void {
                 @input="scrubSlot(slider, ($event.target as HTMLInputElement).value)"
                 @change="settleSlot(slider)"
               >
-              <!-- REQUIRED TECHNICAL FILLER, which rule 8 sanctions and rule 8
-                   also bounds: it states something the surface knows -- where
-                   the thumb is standing in a range the player cannot otherwise
-                   see the size of -- rather than being chrome text. -->
-              <span class="slot-step op-eyebrow">{{ standing(slider) }} / {{ slider.count }}</span>
+              <!-- THE READOUT IS NOW A WAY IN. It was required technical filler
+                   under rule 8 -- where the thumb stands, in a range the player
+                   cannot otherwise see the size of -- and it still states that.
+                   But a track is a poor instrument for "piece 47 of 300": a
+                   pointer drag overshoots and an arrow key takes forty-seven
+                   presses, so the number you are already being shown is the
+                   number you can type.
+                   A CONTROL IS A CLOSED BOX (rule 2), so it takes the frame and
+                   the chamfer, exactly like `.field` does. -->
+              <label class="slot-step op-frame" data-augmented-ui="tr-clip border">
+                <input
+                  class="slot-number op-eyebrow"
+                  type="number"
+                  inputmode="numeric"
+                  min="0"
+                  :max="slider.count"
+                  :value="standing(slider)"
+                  :disabled="slider.disabled || view.busy || slider.count === 0"
+                  :aria-label="slider.label"
+                  @keydown.stop
+                  @keyup.enter="jumpSlot(slider, $event.target as HTMLInputElement)"
+                  @change="jumpSlot(slider, $event.target as HTMLInputElement)"
+                >
+                <span class="slot-of op-eyebrow">/ {{ slider.count }}</span>
+              </label>
             </div>
           </div>
         </div>
@@ -1278,10 +1331,56 @@ function filter(value: string): void {
   white-space: nowrap;
 }
 
+/* Now a control, so it is a closed box like every other one (rule 2). Kept to
+   the width of its content and pushed to the slot's right edge, which is where
+   the readout already sat -- a player who never types into it should not be
+   able to tell it changed. */
 .slot-step {
   align-self: flex-end;
+  display: flex;
+  align-items: baseline;
+  gap: var(--op-space-1);
+  padding: 0 calc(var(--op-space-2) + var(--op-cut-sm)) 0 var(--op-space-2);
   color: var(--op-text-faint);
   font-variant-numeric: tabular-nums;
+}
+
+/* Three digits' worth and no spinners: the arrows a number input draws are a
+   second, worse slider sitting beside the real one, and on this surface they
+   are also the one piece of chrome nothing in the theme can style. */
+.slot-number {
+  width: 3ch;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  text-align: right;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  color: var(--op-text);
+  caret-color: var(--op-red);
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.slot-number::-webkit-outer-spin-button,
+.slot-number::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.slot-number:disabled {
+  color: var(--op-text-faint);
+}
+
+/* The frame answers the keyboard, because the box is small and the caret alone
+   is not enough to say which of seven slots is taking the digits. */
+.slot-step:focus-within {
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
+  color: var(--op-text-dim);
 }
 
 /* The commit row. It takes the rule and not the bay's bottom cut, because there
