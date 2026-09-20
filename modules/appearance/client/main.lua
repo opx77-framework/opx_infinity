@@ -81,6 +81,16 @@ local reloadSettleUntilMs = 0
 local bootstrapResolved = false
 local bootstrapPicking = false
 
+-- The clauses that have already been reported as holding the announcement back
+-- this world entry.
+--
+-- A SET AND NOT A LAST-VALUE, because `Announce` runs five times a second and
+-- the clauses it reads flap: `AppearanceSettled` goes false again on every new
+-- restore generation, and a last-value would then write one note per flap
+-- against a budget of sixty for the whole session. Cleared at each world entry,
+-- so the ceiling is the number of clauses -- five -- per entry.
+local announceSaid = {}
+
 
 -- Whether the downed module says the player is down, and how many of its events
 -- have been heard, so a stale catch-up answer is dropped.
@@ -278,6 +288,9 @@ local faceable = Runtime.Faceable
 function M.Runtime.MarkWorldEligibility(reason)
 	local phase = bootstrapPhase()
 	State.worldEligible = phase == 'ready'
+	-- The three callers of this are exactly the three world entries, which is
+	-- what `announceSaid` is counted in.
+	announceSaid = {}
 	Open77.log.debug(('[appearance] world entry (%s): bootstrap phase=%s -> %s'):format(reason,
 		phase, State.worldEligible and 'gameplay world' or 'menu, not announcing'))
 end
@@ -453,6 +466,27 @@ local function ensureFamily()
 	return not reloadOntoFamily()
 end
 
+--- Records WHY the announcement did not go out, and answers false for the caller.
+-- @author dop42
+--
+-- THE ONE THING NOBODY COULD SEE. Every `return false` below used to be silent,
+-- and the whole of the evidence that a client was stuck behind the platform hold
+-- was an absence: no line here, no clothes, no fitting room, no spawn. The
+-- clothing half's own gate then reported `not_announced`, which is true and says
+-- nothing -- it is this function's answer, not its reason.
+--
+-- On `OPX.Note` and not `Open77.log`, for the reason written at `Runtime.Note`:
+-- a client log is a file on the player's machine. Deduplicated per clause per
+-- world entry -- see `announceSaid` -- because this runs on a 200 ms pass and a
+-- note costs a net event.
+local function held(clause)
+	if not announceSaid[clause] then
+		announceSaid[clause] = true
+		Runtime.Note(('gameplay-ready is held by %s'):format(clause))
+	end
+	return false
+end
+
 --- Sends `open77:session:gameplayReady`, once per settled gameplay world entry.
 -- @author dop42
 --
@@ -467,8 +501,14 @@ end
 --   * `InGameplay` -- a puppet really attached and alive
 -- @return boolean whether it went out on this call
 function M.Runtime.Announce()
-	if State.gameplayAnnounced or not State.worldEligible then return false end
-	if not State.AppearanceSettled() then return false end
+	if State.gameplayAnnounced then return false end
+	if not State.worldEligible then return held('no_gameplay_world') end
+	-- NAMED SEPARATELY THOUGH `AppearanceSettled` ALREADY REFUSES IT, and that is
+	-- the point: a creation is the one hold here with no deadline on it, and
+	-- reporting it as `appearance_unsettled` is reporting a player standing in
+	-- front of the game's own creator as a fault in this module.
+	if State.creating or State.creatorUp then return held('creation_in_progress') end
+	if not State.AppearanceSettled() then return held('appearance_unsettled') end
 
 	if not inGameplay() then
 		-- A BODY THAT IS ATTACHED AND NOT ALIVE IS STILL A BODY IN THE WORLD, and
@@ -485,11 +525,11 @@ function M.Runtime.Announce()
 		-- DEAD_ANNOUNCE_MS is announced as it is.
 		if not Runtime.Attached() then
 			notAliveSinceMs = 0
-			return false
+			return held('no_body')
 		end
 		if notAliveSinceMs == 0 then
 			notAliveSinceMs = nowMs()
-			return false
+			return held('body_not_alive')
 		end
 		if nowMs() - notAliveSinceMs < DEAD_ANNOUNCE_MS then return false end
 		Open77.log.warn(('[appearance] the body has been attached and not alive for %d ms: ' ..
@@ -501,13 +541,17 @@ function M.Runtime.Announce()
 	local sent, reason = TriggerServerEvent(OPX.Host.GAMEPLAY_READY)
 	if not sent then
 		Open77.log.warn('[appearance] gameplay-ready not sent: ' .. tostring(reason))
-		return false
+		return held('not_sent')
 	end
 
 	State.gameplayAnnounced = true
 	Runtime.FinishMutation()
 	Runtime.Publish({ ok = true, event = 'gameplayReady', citizenId = State.citizenId })
-	Open77.log.info('[appearance] gameplay-ready announced; the platform hold can clear')
+	-- IN THE JOURNAL AND NOT ONLY IN THE CLIENT'S LOG. It is the one moment that
+	-- decides whether this player ever enters the world, and every clause that
+	-- held it is noted above, so the line that says it finally went out has to
+	-- land in the same place or the chain reads as though it never ended.
+	Runtime.Note('gameplay-ready announced; the platform hold can clear')
 	return true
 end
 
