@@ -209,7 +209,7 @@ function Host.Environment(side, database)
 	-- while the vehicle it created sat in the world.
 	local control
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
-	local bodies, effects, travels, notices, placement
+	local bodies, effects, travels, notices, placement, lifts
 
 	-- Replicated state bags, by `<kind>:<id>`. A REAL store and not an accepting
 	-- stub: the runtime skips a write whose value has not moved, and a `set` that
@@ -279,7 +279,23 @@ function Host.Environment(side, database)
 		-- One declaration per resource, answering a live table the runtime reads
 		-- through. A host that does not install this at all is the other case the
 		-- runtime has to survive, so tests can clear it.
-		tunables = { declare = function(block) return block end },
+		-- A LIVE PROXY OF VALUES, which is what the real `declare` answers -- not
+		-- the declaration it was handed. Returning the block made `live[key]` a
+		-- spec TABLE where `OPX.Tune.Get` expects the number, so every
+		-- `OPX.Tune.Number` in the resource found a non-finite value and quietly
+		-- returned its floor instead. Whole behaviours read as dead in this harness
+		-- for that reason alone: an elevator's REQUESTS_PER_WINDOW came out 0, so
+		-- the first floor request any player made was rate-limited before it was
+		-- looked at.
+		tunables = {
+			declare = function(block)
+				local proxy = {}
+				for key, spec in pairs(block) do
+					proxy[key] = type(spec) == 'table' and spec.value or spec
+				end
+				return proxy
+			end,
+		},
 
 		-- The readiness gate. `hold` answers ONE value -- the session -- or
 		-- nil plus a reason, which is the shape the runtime has to handle.
@@ -329,6 +345,97 @@ function Host.Environment(side, database)
 			-- key is about to take a vehicle out or put one away. Slot 1 is the
 			-- local player here, the same convention `state.localPlayer` uses.
 			getPlayerSeat = function() return seats[1] end,
+		},
+
+		-- Network elevators. A REAL flag store and not an accepting stub, because
+		-- the one thing this module's job gate rests on is that an adopted cabin
+		-- comes up LOCKED: the platform turns a press of the vanilla in-cabin floor
+		-- button into a player request, and `locked` is the only bit that refuses
+		-- one. A `setFlags` that answered true without keeping anything would make
+		-- the difference between a gated lift and an ungated one invisible here,
+		-- which is exactly the bug the tests below exist to catch.
+		--
+		-- The constants carry the platform's own values -- powered 1, locked 2,
+		-- interactionAllowed 4, doorsClosed 8 -- from the `setFlags` card, so a mask
+		-- assembled by the runtime is compared against the numbers the engine uses
+		-- and not against a private set that would agree with any of them.
+		elevators = {
+			flags = { powered = 1, locked = 2, interactionAllowed = 4, doorsClosed = 8 },
+
+			-- Engine hashes are opaque 64-bit values and never go through
+			-- `tonumber`; the id the host hands back for one is a plain integer, and
+			-- the two are different things the runtime must not confuse.
+			adopt = function(definition)
+				lifts.adopts[#lifts.adopts + 1] = definition
+				if lifts.refuse ~= nil then return nil, tostring(lifts.refuse) end
+				lifts.next = lifts.next + 1
+				local id = lifts.next
+				lifts.byId[id] = {
+					id = id,
+					engineEntity = definition.engineEntity,
+					bucket = definition.bucket or 0,
+					floorCount = definition.floorCount,
+					activeFloor = definition.initialFloor or 0,
+					phase = 'idle',
+					x = definition.position and definition.position.x,
+					y = definition.position and definition.position.y,
+					z = definition.position and definition.position.z,
+					-- The host's OWN default when the caller names none: powered plus
+					-- interaction allowed, per the `adopt` card. A stub that defaulted
+					-- to locked would have passed the runtime as it stood before this
+					-- change, which is the whole point of writing it out.
+					--
+					-- `ignoreAdoptFlags` is the build that predates the field and drops
+					-- it in silence. That is not a hypothetical: it is the reason the
+					-- runtime reads the mask back instead of trusting its own request,
+					-- and without it here that read-back could never be exercised.
+					flags = (not lifts.ignoreAdoptFlags and definition.flags) or 5,
+				}
+				return id
+			end,
+
+			get = function(id) return lifts.byId[id] end,
+
+			all = function(bucket)
+				local rows = {}
+				for _, lift in pairs(lifts.byId) do
+					if bucket == nil or lift.bucket == bucket then rows[#rows + 1] = lift end
+				end
+				-- Sorted, because `pairs` order would reshuffle which lift the
+				-- runtime's re-claim scan meets first between runs.
+				table.sort(rows, function(left, right) return left.id < right.id end)
+				return rows
+			end,
+
+			-- REPLACES the mask, the way the real one documents itself. Set
+			-- `lifts.refuseFlags` to answer false, which is how a cabin owned by
+			-- another resource refuses a lock it does not own.
+			setFlags = function(id, flags)
+				local lift = lifts.byId[id]
+				if lift == nil then return false, 'no_such_elevator' end
+				if lifts.refuseFlags then return false, 'not_owner' end
+				lift.flags = flags
+				lifts.flagWrites[#lifts.flagWrites + 1] = { id = id, flags = flags }
+				return true
+			end,
+
+			goTo = function(id, floor)
+				local lift = lifts.byId[id]
+				if lift == nil then return false end
+				lifts.trips[#lifts.trips + 1] = { id = id, floor = floor }
+				lift.targetFloor = floor
+				return true
+			end,
+
+			remove = function(id)
+				lifts.removes[#lifts.removes + 1] = id
+				lifts.byId[id] = nil
+				return true
+			end,
+
+			-- What a client's scan sees. Empty by default: a world with no streamed
+			-- lift in it is the honest answer for a harness with no world.
+			nearby = function() return lifts.nearby end,
 		},
 
 		-- World markers. The stub validates exactly what `client/src/api/Markers.cpp`
@@ -604,6 +711,14 @@ function Host.Environment(side, database)
 	vehicleCreates = {}
 	vehicleRemoves = {}
 
+	-- Adopted elevators, and every mutation in order. `refuse` makes `adopt`
+	-- answer nil the way a host with no elevator authority does, and `refuseFlags`
+	-- makes `setFlags` answer false the way a cabin another resource owns does --
+	-- the two paths on which an adoption must NOT be kept.
+	lifts = { byId = {}, next = 0, adopts = {}, flagWrites = {}, trips = {},
+		removes = {}, nearby = {}, refuse = nil, refuseFlags = false,
+		ignoreAdoptFlags = false }
+
 	-- Who is sitting in what, by player id. Empty is "everybody is on foot",
 	-- which is the answer most of the suite wants and one caller has to survive.
 	seats = {}
@@ -851,6 +966,12 @@ function Host.Environment(side, database)
 		-- id `remove` was called with.
 		vehicleCreates = vehicleCreates,
 		vehicleRemoves = vehicleRemoves,
+
+		-- Every adopted lift, every flag mask written to one, every trip scheduled
+		-- and every release -- plus the two refusal switches. A lift's `flags` here
+		-- is the engine's own bitmask, so a test asserts on `locked` being set and
+		-- not on the runtime having meant to set it.
+		lifts = lifts,
 
 		-- Bodies the server half hid, by player id, and every write in order.
 		bodies = bodies,
