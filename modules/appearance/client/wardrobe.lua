@@ -39,19 +39,15 @@ local Wardrobe = M.Wardrobe
 --        kind = 'panelClosed' take the panel down, with a `reason`
 --        kind = 'status'      a transient line under the open panel
 --        kind = 'room'        the fitting room's first frame; draw it
---        kind = 'roomItems'   another batch of catalogue entries, `final` on the last
---        kind = 'roomState'   the room's tabs, choices and summary changed
+--        kind = 'roomState'   the room's sliders or its status line changed
 --        kind = 'roomClosed'  take the room down, with a `reason`
 --        kind = 'confirm'     ask the player a yes/no question
 --
 --   in   'ready'              the view can be drawn on; answers config and state
 --        'panel.select'       a panel row was chosen: `payload.item`
 --        'panel.close'        the player took the panel down: `payload.reason`
---        'room.hover'         a piece is pointed at: `payload.item`, `payload.tab`
---        'room.leave'         nothing is pointed at any more
---        'room.select'        a piece was chosen: `payload.item`, `payload.tab`
---        'room.items'         what a batch did: `payload.added`, `payload.error`
---        'room.tab'           another slot's tab was opened: `payload.tab`
+--        'room.slide'         a slot's slider moved: `payload.slot`, `payload.index`,
+--                             `payload.commit` -- false previews, true chooses
 --        'room.action'        a button was pressed: `payload.value`
 --        'room.dismiss'       the player asked to leave the room
 --        'room.confirm'       an answer to a confirm: `payload.item`, `payload.value`
@@ -77,8 +73,7 @@ local TEXT_KEYS = {
 	'appearance.panel.alreadyWorn', 'appearance.panel.busy',
 	'wardrobe.title', 'wardrobe.ui.heading', 'wardrobe.ui.eyebrow',
 	'wardrobe.ui.eyebrowCreation', 'wardrobe.ui.intro', 'wardrobe.ui.introCreation',
-	'wardrobe.ui.female', 'wardrobe.ui.male', 'wardrobe.ui.nothing', 'wardrobe.ui.remove',
-	'wardrobe.ui.search', 'wardrobe.ui.count', 'wardrobe.ui.empty', 'wardrobe.ui.loading',
+	'wardrobe.ui.female', 'wardrobe.ui.male', 'wardrobe.ui.nothing',
 	'wardrobe.ui.save', 'wardrobe.ui.saveCreation', 'wardrobe.ui.cancel', 'wardrobe.ui.skip',
 	'wardrobe.ui.front', 'wardrobe.ui.back', 'wardrobe.ui.confirmTitle',
 	'wardrobe.ui.confirmText', 'wardrobe.ui.confirmTitleCreation',
@@ -303,47 +298,31 @@ local EQUIPMENT_SLOTS = Clothing.SLOTS
 local IS_SLOT = {}
 for index = 1, #SLOTS do IS_SLOT[SLOTS[index]] = true end
 
--- The tab the room opens on.
-local FIRST_SLOT = 'InnerChest'
-
--- Catalogue entries carried by one batch, and entries FORMATTED between two
--- yields.
---
--- THE STRIDE COUNTS FORMATS AND NOT RECORDS, because the records are what is
--- cheap. A record that fails the slot test or is non-visual costs a table index;
--- one that passes costs `title` (four pattern passes) and `sortKey` (a lower and
--- a substitution with a Lua callback per digit run), so a slice of 256 records
--- is somewhere between nothing and two thousand pattern passes depending on what
--- the catalogue happens to hold. The client's instruction budget is per resume
--- and an overrun unwinds the coroutine silently -- no crash, no repeat, nothing
--- logged, which is this room's exact symptom -- so the slice has to be bounded by
--- the WORK, the way `modules/target` bounds its pick.
---
--- The number itself is not derived from a published budget: there is none in the
--- devkit for this build, and anybody who tells you there is has read a different
--- channel's. It is a guess, and `LOADING_DEADLINE_MS` below is what makes a wrong
--- guess a line in the journal and a message on the screen instead of a spinner.
-local CATALOGUE_PART = 100
-local CATALOGUE_STRIDE = 64
+-- Records asked of the catalogue per slot. `Open77.equipment.records` caps its
+-- `limit` at this, so it is the API's ceiling and not a choice of ours -- which
+-- is why an answer that REACHES it is written to the journal below: a truncation
+-- nobody is told about is the class of defect this room was.
+local RECORD_LIMIT = 2000
 
 -- Milliseconds between two tries at opening the room after a creation, and how
 -- long a kept outfit's save is listened for.
 local RETRY_MS = 500
 local SAVE_WAIT_MS = 30000
 
--- How long an open room may say it is reading the catalogue before it stops
--- saying so and tells the player it could not.
+-- How long `begin` may be part way through before the upkeep pass decides its
+-- thread is gone.
 --
--- A REFUSAL THE PLAYER CAN SEE BEATS A SPINNER, and until this existed there was
--- no third outcome: the stream either reached its final batch or it did not, and
--- every way it could fail to -- the coroutine dying on the instruction budget, a
--- payload the host refused, a batch `panel` parsed and rejected, a generation
--- check taken on a room that is somehow still open -- left `view.loading` true
--- for the life of the room with nothing written anywhere the operator reads. The
--- deadline is checked from the UPKEEP pass and not from the stream thread, which
--- is the point: it is the one thing that still runs when the stream is the thing
--- that went.
-local LOADING_DEADLINE_MS = 20000
+-- THIS IS WHAT IS LEFT OF THE LOADING DEADLINE, and it is pointed at the risk
+-- that is still here rather than at the one that was. The room used to stream a
+-- formatted catalogue to the page over some sixty resumes and could die in any
+-- of them, silently, leaving a spinner; it now reads seven slot queries in seven
+-- and publishes one finished frame, so there is no loading state left to be
+-- stuck in. What remains is `begin` itself, which runs on a coroutine and holds
+-- `phase = 'opening'` while it works: a resume that unwinds there leaves the
+-- room neither open nor closed and every later open refused `wardrobe_busy` for
+-- the session. Checked from the UPKEEP pass for the same reason as before -- it
+-- is the thing that still runs when the thread is what went.
+local OPENING_DEADLINE_MS = 10000
 
 -- Degrees one turn of the camera moves.
 local TURN_DEGREES = 45
@@ -373,9 +352,29 @@ local roomOwner = nil
 -- chose. The difference between them is what `save` means.
 local baseline, draft = nil, nil
 
--- The record pointed at and put on over the draft, the slot whose tab is shown,
--- and every catalogue record read this room, to its slot.
-local hovered, tab, known = nil, FIRST_SLOT, {}
+-- The slot and the record put on over the draft without being chosen, or nil for
+-- nothing tried on.
+--
+-- THE SLOT IS HALF OF THE KEY AND HAS TO BE. The record may legitimately be
+-- `false` -- a slider standing on 0 is a preview of an EMPTY slot, which is a
+-- thing to try on like any other -- so a record alone cannot say whether
+-- anything is being tried, and two slots previewing `false` in turn would read
+-- as the same preview twice.
+local hoverSlot, hoverRecord = nil, nil
+
+-- THE CATALOGUE, AND IT IS NOT A LIST OF ROWS. Per visible slot: the record
+-- names this body may wear, sorted; where that slot's slider is standing, 0 for
+-- nothing; and the label under it. Plus two reverse lookups -- record to its
+-- slot, and record to its position in that slot's list -- because both the
+-- put-on check and the slider need to go the other way in constant time.
+--
+-- `shownName` IS FORMATTED WHEN THE SLIDER MOVES AND AT NO OTHER TIME. It is the
+-- only human-readable string this room produces once it is open, and holding it
+-- rather than computing it in `roomState` is what keeps a publish free of
+-- `title`: the room publishes its whole state on every move, and formatting
+-- seven labels to change one is seven times the work for no answer anybody reads.
+local pieces, shown, shownName = {}, {}, {}
+local known, at = {}, {}
 
 -- The status line under the grid, whether this room follows a creation, the
 -- character the puppet was lent for, and the family the catalogue is read for.
@@ -389,10 +388,9 @@ local outfitCleared, savedPerspective, orbit = false, nil, 180
 -- save is listened for.
 local creationWatch, awaitSave = 0, nil
 
--- When the open room stops being allowed to say it is reading (0 when it is not
--- reading), how many entries the stream has handed the view, and how many
--- batches the view refused.
-local loadingUntilMs, streamed, refusedBatches = 0, 0, 0
+-- When `begin` stops being allowed to still be working, or 0 when nothing is
+-- opening.
+local openingUntilMs = 0
 
 -- This module's own name when it opens the room for the JOIN rather than for a
 -- caller. `Clothing.BeginPreview` refuses an unnamed borrower and the upkeep pass
@@ -600,25 +598,37 @@ local function freeCamera()
 	savedPerspective = nil
 end
 
---- The part of the room that follows the draft: tabs, choices and summary.
+--- Stands one slot's slider on an index and formats the label under it.
+-- The one place `title` is called after the room has opened. See `shownName`.
+local function place(slot, index)
+	shown[slot] = index
+	local record = index > 0 and pieces[slot][index] or nil
+	shownName[slot] = record ~= nil and title(record) or locale('wardrobe.ui.nothing')
+end
+
+--- The part of the room that follows the draft: seven sliders and the status.
+--
+-- SEVEN INTEGERS AND SEVEN LABELS, which is the whole of what crosses the seam
+-- now. It used to be 1968 rows, formatted, sorted and pushed over some
+-- twenty-six batches into a page that then re-parsed and re-counted every one of
+-- them; the player reached one tab of the seven before the stream died and the
+-- room said nothing. A slider needs a COUNT, not a list: the names live in Lua,
+-- the page draws a track from 0 to the count, and the only name it is ever told
+-- is the one under the thumb.
 local function roomState()
-	local tabs, selected = {}, {}
+	local sliders = {}
 	for index = 1, #SLOTS do
 		local slot = SLOTS[index]
-		tabs[index] = { id = slot, label = locale('wardrobe.slot.' .. slot),
-			marked = draft[slot] ~= false }
-		selected[slot] = draft[slot]
+		sliders[index] = {
+			id = slot,
+			label = locale('wardrobe.slot.' .. slot),
+			count = #pieces[slot],
+			index = shown[slot],
+			value = shownName[slot],
+		}
 	end
-	local worn = draft[tab]
 	return {
-		tabs = tabs,
-		tab = tab,
-		selected = selected,
-		summary = {
-			label = locale('wardrobe.slot.' .. tab),
-			value = worn and title(worn) or locale('wardrobe.ui.nothing'),
-			action = { id = 'remove', label = locale('wardrobe.ui.remove'), disabled = worn == false },
-		},
+		sliders = sliders,
 		status = statusText and { text = statusText, kind = 'error' } or false,
 	}
 end
@@ -629,110 +639,69 @@ local function refresh()
 	publish('roomState', roomState())
 end
 
---- A record's sort key, numbers padded so 2 comes before 10.
-local function sortKey(name)
-	return (name:lower():gsub('%d+', function(digits) return ('%010d'):format(tonumber(digits)) end))
-end
-
---- A record's sort order, hoisted so seven sorts share one closure.
-local function byKey(left, right)
-	return left.key < right.key
-end
-
---- Reads the body's clothing catalogue and hands it to the view in batches.
--- On its own thread and yielding every CATALOGUE_STRIDE records: two thousand
--- entries sorted and formatted in one resume is exactly the shape that exceeds
--- the per-resume instruction budget.
+--- Reads the body's catalogue, one slot at a time, into seven sorted lists.
+-- Answers the records read, or nil and a failure.
 --
--- WHICH IS WHY THE SORT IS PER SLOT. `table.sort` cannot yield, so whatever it
--- is handed has to fit one resume whole -- and one sort over the entire
--- catalogue was precisely the two thousand entries the paragraph above warns
--- about, written by the same hand that warned about them. Seven sorts of a
--- seventh each cost the same work with six yields through the middle, and
--- nothing is given up: the page filters the grid by slot, so the order within a
--- slot is the only order anybody ever reads.
-local function streamCatalogue(mine)
-	CreateThread(function()
-		Wait(0)
-		if mine ~= generation or phase ~= 'open' then return end
+-- ONE QUERY PER SLOT, AND THAT IS THE FIX. `Open77.equipment.records` takes a
+-- `slot`, so the room never has to hold the whole catalogue: the largest answer
+-- here is the outer chest at 677 rather than 1968 at once, and nothing is
+-- formatted, bucketed or pushed anywhere. What the old stream did between the
+-- read and the page -- `title` and a padded sort key per record, a Lua
+-- comparator per comparison, a hundred-row batch per publish into a synchronous
+-- `TriggerEvent` that re-parsed and re-counted the lot on this very thread -- is
+-- gone rather than smaller.
+--
+-- THE SORT TAKES NO COMPARATOR ON PURPOSE. `table.sort(names)` over plain
+-- strings compares in C at about one VM instruction a time; the comparator it
+-- replaces was a Lua function, so 677 records cost some 6,400 CALLS in a single
+-- resume that `table.sort` cannot yield out of. That was the heaviest unyieldable
+-- thing in the room by a factor of forty, in the one place it could not be
+-- broken up. The order is plain byte order rather than the old numeric-aware
+-- one, and that is the price: `Jacket_10` sorts before `Jacket_2`. A slider is
+-- travelled by dragging and not read as a list, so nobody is looking for a
+-- particular name in it -- and a numeric key is exactly the Lua callback per
+-- record this is removing.
+local function readCatalogue(mine)
+	local total = 0
+	for index = 1, #SLOTS do
+		local slot = SLOTS[index]
 		local called, records, reason = pcall(Open77.equipment.records,
-			{ family = family, restricted = false, limit = 2000 })
+			{ slot = slot, family = family, restricted = false, limit = RECORD_LIMIT })
 		if not called or type(records) ~= 'table' then
-			local failure = tostring(called and reason or records)
-			Runtime.Note('the clothing catalogue could not be read: ' .. failure)
-			statusText = locale('wardrobe.ui.failed', { reason = failure })
-			publish('roomItems', { items = {}, final = true, status = statusText })
-			return
+			return nil, tostring(called and reason or records)
 		end
-		-- THE FIRST HALF OF THE ONLY EVIDENCE THERE IS about this stream. It is
-		-- one line per room, and it separates "the catalogue answered nothing"
-		-- from "the catalogue answered and the entries did not arrive" -- which
-		-- were indistinguishable, and which two diagnoses argued about from the
-		-- wrong log.
-		Runtime.Note(('the clothing catalogue answered %d record(s) for %s')
-			:format(#records, tostring(family)))
 
-		local buckets = {}
-		for index = 1, #SLOTS do buckets[SLOTS[index]] = {} end
-
-		-- Counted rather than the loop index: see CATALOGUE_STRIDE. A run of
-		-- records this room does not show costs nothing and must not spend a
-		-- slice, and a run that it does show must not overrun one.
-		local formatted = 0
-		for index = 1, #records do
-			local entry = records[index]
-			if type(entry) == 'table' and type(entry.record) == 'string' and IS_SLOT[entry.slot] then
-				known[entry.record] = entry.slot
-				if entry.nonvisual ~= true then
-					local name, bucket = title(entry.record), buckets[entry.slot]
-					bucket[#bucket + 1] = { id = entry.record, tab = entry.slot, label = name,
-						detail = entry.record, key = sortKey(name) }
-					formatted = formatted + 1
-					if formatted % CATALOGUE_STRIDE == 0 then
-						Wait(0)
-						if mine ~= generation or phase ~= 'open' then return end
-					end
-				end
+		local names = {}
+		for entry = 1, #records do
+			local record = records[entry]
+			if type(record) == 'table' and type(record.record) == 'string' and
+				record.nonvisual ~= true then
+				names[#names + 1] = record.record
 			end
 		end
+		table.sort(names)
 
-		for slotIndex = 1, #SLOTS do
-			local bucket = buckets[SLOTS[slotIndex]]
-			table.sort(bucket, byKey)
-			Wait(0)
-			local first = 1
-			while first <= #bucket do
-				if mine ~= generation or phase ~= 'open' then return end
-				local last = math.min(#bucket, first + CATALOGUE_PART - 1)
-				local part = {}
-				for index = first, last do
-					local entry = bucket[index]
-					part[#part + 1] = { id = entry.id, tab = entry.tab, label = entry.label,
-						detail = entry.detail }
-				end
-				publish('roomItems', { items = part, final = false })
-				first = last + 1
-				Wait(0)
-			end
+		for position = 1, #names do
+			known[names[position]] = slot
+			at[names[position]] = position
+		end
+		pieces[slot] = names
+		total = total + #records
+
+		-- A SILENT TRUNCATION IS THIS WHOLE EPISODE'S SHAPE, so the one bound
+		-- still in play is watched. The catalogue was at 98.4% of a 2000 ceiling
+		-- when it was read whole; per slot the largest is a third of that, so
+		-- this cannot fire today -- which is the point of writing it down rather
+		-- than deciding it will never matter.
+		if #records >= RECORD_LIMIT then
+			Runtime.Note(('the %s catalogue answered %d record(s) against a limit of %d: ' ..
+				'it is being truncated'):format(slot, #records, RECORD_LIMIT))
 		end
 
-		if mine ~= generation or phase ~= 'open' then return end
-		-- THE END IS ITS OWN BATCH rather than a flag on the last full one. With
-		-- the catalogue in seven piles, the last pile is free to be empty -- no
-		-- body in the game has a Face piece by default -- and hanging the room's
-		-- only way out of its loading state on whether the seventh slot happened
-		-- to have something in it is a fitting room that never finishes reading
-		-- for one body family and does for another.
-		publish('roomItems', { items = {}, final = true })
-		-- The other half of the evidence, and the two together are the whole
-		-- answer: `streamed` is what the VIEW accepted, `refusedBatches` what it
-		-- would not parse. A room that read two thousand records and streamed
-		-- none of them is a different defect from one that never read any, and
-		-- the operator could not tell them apart before this line.
-		loadingUntilMs = 0
-		Runtime.Note(('the clothing catalogue finished: %d entry(ies) drawn, %d batch(es) refused')
-			:format(streamed, refusedBatches))
-	end)
+		Wait(0)
+		if mine ~= generation then return nil, 'superseded' end
+	end
+	return total
 end
 
 --- The first frame of the room.
@@ -743,13 +712,11 @@ local function roomSpec()
 	opened.subtitle = family == 'male' and locale('wardrobe.ui.male') or
 		(family == 'female' and locale('wardrobe.ui.female') or nil)
 	opened.intro = locale(creating and 'wardrobe.ui.introCreation' or 'wardrobe.ui.intro')
-	opened.search = locale('wardrobe.ui.search')
-	opened.loading = true
-	opened.labels = {
-		count = locale('wardrobe.ui.count'),
-		empty = locale('wardrobe.ui.empty'),
-		loading = locale('wardrobe.ui.loading'),
-	}
+	-- NO SEARCH PLATE AND NO LOADING STATE. A search is a query over rows on the
+	-- page, and the rows on the page are exactly the stream this change removes;
+	-- putting them back to filter them would put the defect back behind a new
+	-- face. The loading state went with the stream: the catalogue is read before
+	-- the first frame goes out, so the first frame is already the finished one.
 	opened.actions = {
 		{ id = 'cancel', label = locale(creating and 'wardrobe.ui.skip' or 'wardrobe.ui.cancel') },
 		{ id = 'save', label = locale(creating and 'wardrobe.ui.saveCreation' or 'wardrobe.ui.save'),
@@ -774,38 +741,69 @@ local function begin(owner, creation, expected)
 	phase = 'opening'
 	generation = generation + 1
 	local mine = generation
+	openingUntilMs = Runtime.NowMs() + OPENING_DEADLINE_MS
 
-	local answer, reason = Clothing.BeginPreview(owner)
-	if answer == nil then
-		if mine == generation then phase = 'closed' end
+	--- Puts `phase` back when this attempt is still the live one.
+	local function give(reason)
+		if mine == generation then
+			phase = 'closed'
+			openingUntilMs = 0
+		end
 		return false, reason
 	end
 
-	-- Everything is re-checked after the borrow: it is the first thing here that
-	-- can have taken time.
+	-- THE CATALOGUE IS READ BEFORE THE PUPPET IS BORROWED, and the order is the
+	-- argument. A read that fails now costs nothing -- there is no puppet out on
+	-- loan to hand back and no room on screen to take down -- and a read that
+	-- succeeds means the first frame this room publishes is its finished one,
+	-- with every count already in it. The old order was the other way round and
+	-- is what made a spinner possible at all.
+	pieces, known, at, shown, shownName = {}, {}, {}, {}, {}
+	family = Runtime.BodyFamily()
+	local total, failure = readCatalogue(mine)
+	if total == nil then
+		if failure == 'superseded' then return give('superseded') end
+		Runtime.Note('the clothing catalogue could not be read: ' .. failure)
+		return give('catalogue_unreadable')
+	end
+
+	local answer, reason = Clothing.BeginPreview(owner)
+	if answer == nil then return give(reason) end
+
+	-- Everything is re-checked after the borrow: the read above took frames and
+	-- the borrow can take more.
 	local stale = mine ~= generation or phase ~= 'opening'
 	local wrong = expected ~= nil and State.citizenId ~= expected
 	if stale or wrong or not playable() then
 		Clothing.EndPreview(owner, false)
-		if mine == generation then phase = 'closed' end
-		if wrong then return false, 'character_changed' end
-		return false, stale and 'superseded' or 'player_unavailable'
+		if wrong then return give('character_changed') end
+		return give(stale and 'superseded' or 'player_unavailable')
 	end
 
 	baseline = slotsOf(answer)
 	draft = copy(baseline)
-	known, outfitCleared, hovered, statusText, tab = {}, false, nil, nil, FIRST_SLOT
-	citizen, family, creating = State.citizenId, Runtime.BodyFamily(), creation == true
+	outfitCleared, hoverSlot, hoverRecord, statusText = false, nil, nil, nil
+	citizen, creating = State.citizenId, creation == true
 	roomOwner = owner
-	-- Armed before the first frame goes out, because the first frame is what
-	-- carries `loading = true`: a deadline armed after it would be a deadline on
-	-- a state the page had already entered.
-	loadingUntilMs, streamed, refusedBatches = Runtime.NowMs() + LOADING_DEADLINE_MS, 0, 0
+	-- Each slider starts on what the puppet is already wearing, which `at` gives
+	-- in one lookup: 0 when the slot is empty, and 0 as well for a worn record
+	-- the catalogue did not offer this body, because a thumb cannot stand on a
+	-- position the track does not have.
+	for index = 1, #SLOTS do
+		local slot = SLOTS[index]
+		local worn = baseline[slot]
+		place(slot, worn ~= false and at[worn] or 0)
+	end
 
 	phase = 'open'
+	openingUntilMs = 0
+	-- One line per room, and it is the whole of the evidence now: a room that
+	-- opened on nothing and a room that never opened are different failures, and
+	-- there is no stream left to tell them apart afterwards.
+	Runtime.Note(('the fitting room opened for %s on %d record(s) over %d slot(s)')
+		:format(tostring(family), total, #SLOTS))
 	publish('room', roomSpec())
 	holdCamera()
-	streamCatalogue(mine)
 	Runtime.Publish({ ok = true, event = 'wardrobeOpened', creation = creating,
 		citizenId = citizen })
 	return true
@@ -816,6 +814,7 @@ local function release(keep, reason)
 	if phase == 'opening' then
 		generation = generation + 1
 		phase = 'closed'
+		openingUntilMs = 0
 		return
 	end
 	if phase ~= 'open' then return end
@@ -826,9 +825,10 @@ local function release(keep, reason)
 	freeCamera()
 
 	local mine, wasCreation, worn, owner = citizen, creating, draft, roomOwner
-	baseline, draft, known, citizen, family, creating = nil, nil, {}, nil, nil, false
-	hovered, statusText, outfitCleared, roomOwner = nil, nil, false, nil
-	loadingUntilMs = 0
+	baseline, draft, citizen, family, creating = nil, nil, nil, nil, false
+	pieces, known, at, shown, shownName = {}, {}, {}, {}, {}
+	hoverSlot, hoverRecord, statusText, outfitCleared, roomOwner = nil, nil, nil, false, nil
+	openingUntilMs = 0
 
 	publish('roomClosed', { reason = reason, kept = keep })
 	-- The registry reads pieces back as TweakDB ids: the names go with them so the
@@ -876,23 +876,22 @@ function M.Wardrobe.Open(owner)
 	return true
 end
 
---- Puts the piece pointed at on the puppet, over what the player chose.
-local function hover(record, slot)
-	if phase ~= 'open' or not IS_SLOT[slot] or type(record) ~= 'string' or
-		known[record] ~= slot then
-		return
-	end
-	if hovered == record or draft[slot] == record then return end
+--- Puts what is under a thumb on the puppet without making it the choice.
+-- Answers whether the puppet took it; a refusal puts the draft straight back.
+--
+-- NOTHING HAS TO UNDO A PREVIEW. Every put-on states all nine slots from the
+-- DRAFT with one override, so previewing another slot restores the last one on
+-- its way past, and giving the puppet back restores the lot.
+local function tryOn(slot, record)
+	if hoverSlot == slot and hoverRecord == record then return true end
 	local ok = putOn(wearing(slot, record))
-	hovered = ok and record or nil
-	if not ok then putOn(draft) end
-end
-
---- Puts back what the player chose once nothing is pointed at.
-local function unhover()
-	if phase ~= 'open' or hovered == nil then return end
-	hovered = nil
-	putOn(draft)
+	if ok then
+		hoverSlot, hoverRecord = slot, record
+	else
+		hoverSlot, hoverRecord = nil, nil
+		putOn(draft)
+	end
+	return ok
 end
 
 --- Makes a piece, or an empty slot, the player's choice for that slot.
@@ -903,15 +902,45 @@ local function choose(slot, record)
 	if record ~= false and (type(record) ~= 'string' or known[record] ~= slot) then return end
 	local wanted = wearing(slot, record)
 	local ok, failure = putOn(wanted)
-	hovered = nil
+	hoverSlot, hoverRecord = nil, nil
 	if ok then
 		draft, statusText = wanted, nil
+		place(slot, record ~= false and at[record] or 0)
 	else
 		Open77.log.debug(('[appearance] %s refused on %s: %s')
 			:format(tostring(record), slot, tostring(failure)))
 		statusText = locale('wardrobe.ui.failed', { reason = tostring(failure):gsub('_', ' ') })
 		putOn(draft)
 	end
+	-- Published either way, and the refusal is the interesting half: the page
+	-- holds its own thumb position while the player drags, and this patch is what
+	-- puts it back where the truth is when the piece would not go on.
+	refresh()
+end
+
+--- Moves one slot's slider: a preview under the thumb, or the player's choice.
+-- @param slot string
+-- @param index any 0 for nothing, 1..count for a piece
+-- @param commit boolean whether the player has let go
+local function slide(slot, index, commit)
+	if phase ~= 'open' or not IS_SLOT[slot] then return end
+	local names = pieces[slot]
+	if names == nil then return end
+	-- The view names an INDEX and never a record, so this is where an index
+	-- becomes one. The bound is the list this module read, not a number the page
+	-- sent with it.
+	local wanted = tonumber(index)
+	if wanted == nil or wanted % 1 ~= 0 or wanted < 0 or wanted > #names then return end
+	local record = wanted > 0 and names[wanted] or false
+
+	if commit == true then return choose(slot, record) end
+
+	-- A PREVIEW THAT WOULD NOT GO ON SAYS NOTHING AND MOVES NOTHING. A drag is a
+	-- run of these, so a status line here would flicker one error per frame for
+	-- a piece the player is only passing over -- and the commit at the end of the
+	-- drag is what puts a refusal on screen.
+	if not tryOn(slot, record) then return end
+	place(slot, wanted)
 	refresh()
 end
 
@@ -928,9 +957,10 @@ local function ask()
 	})
 end
 
--- What each button of the room does.
+-- What each button of the room does. There is no 'remove': index 0 on a slot's
+-- own slider is what taking a piece off means now, which is one control fewer
+-- and one less thing that can disagree with the thumb.
 local ACTIONS = {
-	remove = function() choose(tab, false) end,
 	save = function() release(true, 'saved') end,
 	cancel = ask,
 	front = function() orbit = 180 orbitCamera() end,
@@ -1029,7 +1059,7 @@ end
 -- `ready` says the view can be drawn on and answers with every string it draws
 -- plus whatever is currently up; everything else is an intent, and every one of
 -- them is re-checked here against state this module owns. Nothing a view computes
--- is trusted -- not a record name, not a slot, not a tab.
+-- is trusted -- not a record name, not a slot, not an index.
 -- @param action string
 -- @param payload table|nil
 function M.FromView(action, payload)
@@ -1065,30 +1095,14 @@ function M.FromView(action, payload)
 		return Panel.Close(payload.reason == 'player' and 'player' or 'view_closed')
 	end
 
-	-- THE ONE PUBLICATION THAT IS ANSWERED, and it has to be: everything else the
-	-- state half sends is a whole view, so a view that did not draw it is a view
-	-- that draws the next one instead. A BATCH is cumulative -- one lost batch is
-	-- a hundred pieces the player will never see and nothing on screen says so --
-	-- and the state half cannot see the loss, because `panel` parses an item by
-	-- rules this module does not know and must not learn.
-	if action == 'room.items' then
-		if phase ~= 'open' then return end
-		local added = tonumber(payload.added)
-		if added ~= nil and added > 0 then streamed = streamed + added end
-		if payload.error == nil then return end
-		refusedBatches = refusedBatches + 1
-		statusText = locale('wardrobe.ui.partial', { reason = tostring(payload.error) })
-		return refresh()
-	end
-
-	if action == 'room.hover' then return hover(payload.item, payload.tab) end
-	if action == 'room.leave' then return unhover() end
-	if action == 'room.select' then return choose(payload.tab, payload.item) end
-	if action == 'room.tab' then
-		if not IS_SLOT[payload.tab] then return end
-		unhover()
-		tab, statusText = payload.tab, nil
-		return refresh()
+	-- NOTHING HERE IS ANSWERED ANY MORE, and that is the size of the change.
+	-- `room.items` used to be the one publication a view had to report on,
+	-- because a batch was cumulative and a lost one was a hundred pieces the
+	-- player never saw with nothing on screen saying so. There are no batches: a
+	-- view either drew the seven sliders or it did not, and a view that did not
+	-- draw them draws whatever the next `roomState` carries instead.
+	if action == 'room.slide' then
+		return slide(payload.slot, payload.index, payload.commit)
 	end
 	if action == 'room.action' then
 		local run = ACTIONS[payload.value]
@@ -1124,21 +1138,19 @@ function M.Wardrobe.Check()
 			claim(false, 'no_character')
 		end
 
-		-- THE ROOM STOPS CLAIMING TO BE READING. Outside the `phase == 'open'`
-		-- block below and before it, because this is the one check here whose
-		-- whole reason for living is that the thing it watches may have died: the
-		-- stream runs on its own coroutine, an overrun of the per-resume budget
-		-- unwinds it with nothing logged, and every other end of the stream is
-		-- written inside the coroutine that is gone.
-		if loadingUntilMs ~= 0 and phase == 'open' and Runtime.NowMs() >= loadingUntilMs then
-			loadingUntilMs = 0
-			Runtime.Note(('the clothing catalogue never finished: %d entry(ies) drawn, ' ..
-				'%d batch(es) refused'):format(streamed, refusedBatches))
-			statusText = locale('wardrobe.ui.stalled')
-			-- `final` ends the page's loading state whatever else happened, so the
-			-- grid says 'nothing here' and the status says why, instead of a line
-			-- that promises pieces that are not coming.
-			publish('roomItems', { items = {}, final = true, status = statusText })
+		-- AN OPEN THAT NEVER FINISHED. Outside the `phase == 'open'` block below
+		-- and before it, because this is the one check here whose whole reason
+		-- for living is that the thing it watches may have died: `begin` runs on
+		-- a coroutine, an overrun of the per-resume instruction budget unwinds it
+		-- with nothing logged, and every other way out of `begin` is written
+		-- inside the coroutine that is gone. Left alone, `phase` would sit on
+		-- 'opening' and refuse every later open `wardrobe_busy` for the session.
+		if openingUntilMs ~= 0 and phase == 'opening' and Runtime.NowMs() >= openingUntilMs then
+			openingUntilMs = 0
+			generation = generation + 1
+			phase = 'closed'
+			Runtime.Note(('the fitting room never finished opening after %d ms')
+				:format(OPENING_DEADLINE_MS))
 		end
 
 		if phase == 'open' then

@@ -297,10 +297,19 @@ local COOLDOWN_MS = 2000
 --- Answers a worn record name, false for an empty slot, nil otherwise.
 -- There is no catalogue on a server, so this is a shape and not a lookup -- the
 -- same shape the look distribution below accepts.
+--
+-- ANCHORED TO `Items.`, WHICH IS AS FAR AS A SHAPE CAN GO. The pattern used to be
+-- `[%w_%.%-]+` and nothing else, so `Character.Judy` and `Vehicle.Cthulhu` were
+-- accepted as things to wear; every clothing record the equipment service knows
+-- is in the `Items` namespace, so one anchor turns a whole family of nonsense
+-- into a refusal. It is NOT membership validation and must not grow into one:
+-- `Open77.equipment.records` and `.info` are client-only, there is no catalogue
+-- on this side to check against, and asking the client for one would be trusting
+-- the thing the check exists to distrust.
 local function recordOf(value)
 	if value == false then return false end
 	if type(value) ~= 'string' or #value < 1 or #value > MAX_RECORD_BYTES then return nil end
-	if value:match('^[%w_%.%-]+$') == nil then return nil end
+	if value:match('^Items%.[%w_%.%-]+$') == nil then return nil end
 	return value
 end
 
