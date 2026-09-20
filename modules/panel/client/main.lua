@@ -55,6 +55,7 @@ local PATCHABLE = {
 	eyebrow = true, title = true, subtitle = true, intro = true, tabs = true, tab = true,
 	search = true, summary = true, actions = true, tools = true, selected = true,
 	status = true, busy = true, labels = true, loading = true, clearItems = true,
+	sliders = true,
 }
 
 -- Fields only a spec may carry.
@@ -176,6 +177,53 @@ local function tabs(value)
 	return out
 end
 
+-- Positions one slider may offer. It is `MAX_ITEMS` and not a number of its own
+-- on purpose: a slider is a list the CALLER kept, so the ceiling on what it may
+-- point into is the same ceiling as on a list this module holds.
+local MAX_STEPS = MAX_ITEMS
+
+--- Whether a value is a whole count within the slider bound.
+local function counted(value)
+	return type(value) == 'number' and value >= 0 and value <= MAX_STEPS and value % 1 == 0
+end
+
+--- The sliders: one control per named range, each standing somewhere in it.
+--
+-- A SLIDER IS A COUNT AND NOT A LIST, which is the whole reason this field
+-- exists next to `items`. A caller with two thousand rows to offer either sends
+-- two thousand rows -- which is `Append`, and which costs a parse, a chunking
+-- and a payload per hundred of them -- or it keeps the rows and sends the
+-- LENGTH. The page then draws a track from 0 to `count`, reports the index the
+-- player put the thumb on, and is told back the one label that belongs under it.
+-- Nothing else about the list crosses.
+--
+-- `index` is 0-based and 0 is a real position: a slider standing on nothing is
+-- how a caller offers "none of them" without a second control beside it.
+local function sliders(value)
+	if value == nil or value == false then return {} end
+	if not isList(value, 12) then return nil, 'invalid_sliders' end
+	local out, seen = {}, {}
+	for index = 1, #value do
+		local entry = value[index]
+		if type(entry) ~= 'table' or not validId(entry.id, MAX_ID) or seen[entry.id] then
+			return nil, 'invalid_sliders'
+		end
+		local label = clean(entry.label, 40)
+		local shown = clean(entry.value or '', 120)
+		if label == nil or shown == nil then return nil, 'invalid_sliders' end
+		-- A thumb outside its own track is a caller that has lost track of its
+		-- list, and drawing it would put the page's idea of the position and the
+		-- caller's permanently out of step.
+		if not counted(entry.count) or not counted(entry.index) or entry.index > entry.count then
+			return nil, 'invalid_sliders'
+		end
+		seen[entry.id] = true
+		out[index] = { id = entry.id, label = label, count = entry.count,
+			index = entry.index, value = shown, disabled = entry.disabled == true }
+	end
+	return out
+end
+
 --- The summary plate: a label, a value and one optional button.
 local function summary(value)
 	if value == nil or value == false then return false end
@@ -249,6 +297,7 @@ local PARSERS = {
 	subtitle = function(value) return optionalText(value, 40, 'subtitle') end,
 	intro = function(value) return optionalText(value, 240, 'intro') end,
 	tabs = tabs,
+	sliders = sliders,
 	tab = function(value)
 		if value == nil or value == false then return nil end
 		if not validId(value, MAX_ID) then return nil, 'invalid_tab' end
@@ -528,10 +577,12 @@ local function Open(spec)
 	if view == nil then return Result.Err(reason) end
 
 	-- THE OPEN IS NOT COUNTED, AND THAT IS AN ARGUMENT RATHER THAN AN OVERSIGHT.
-	-- `buildView` bounds every field it accepts -- twelve tabs, four actions,
-	-- eight tools, sixty-four choices, six labels, and every string cut to a
-	-- character count -- which puts the largest spec this module will build at
-	-- something under five hundred value nodes. A check here could not fire, and
+	-- `buildView` bounds every field it accepts -- twelve tabs, twelve sliders,
+	-- four actions, eight tools, sixty-four choices, six labels, and every string
+	-- cut to a character count -- which puts the largest spec this module will
+	-- build at something under five hundred value nodes. A slider is six fields
+	-- and costs thirteen nodes, so the seven a fitting room sends come to under a
+	-- hundred. A check here could not fire, and
 	-- a refusal nothing can reach is a branch a reader has to disprove. Only
 	-- `panel:items` is unbounded by its parser, and that is where the counting
 	-- is: see `push` and `chunkItems`.
@@ -771,6 +822,31 @@ local function onTab(payload)
 	end
 end
 
+--- A slider the player moved, previewing or letting go.
+--
+-- CHECKED AGAINST THE TRACK THIS MODULE DREW, the same way a click is checked
+-- against the items it sent. The caller is handed an index it can trust to be a
+-- whole number inside the range it declared, so the one thing it still has to do
+-- is turn that index into whatever its own list holds there.
+local function onSlide(payload)
+	local panel = fromPage(payload)
+	if panel == nil or panel.view.busy then return end
+	if not validId(payload.id, MAX_ID) then return end
+	for _, slider in ipairs(panel.view.sliders) do
+		if slider.id == payload.id then
+			if slider.disabled then return end
+			local at = tonumber(payload.index)
+			if at == nil or at % 1 ~= 0 or at < 0 or at > slider.count then return end
+			-- The page's own thumb position, held while the player drags, is the
+			-- one thing this module does NOT write back into the view: the caller
+			-- answers with a `sliders` patch and that patch is the truth.
+			raise(panel, 'slide',
+				{ id = slider.id, index = at, commit = payload.commit == true })
+			return
+		end
+	end
+end
+
 --- A button the player pressed.
 local function onAction(payload)
 	local panel = fromPage(payload)
@@ -831,6 +907,7 @@ wire = function()
 	OPX.UI.On(SURFACE, 'panel:hover', onHover)
 	OPX.UI.On(SURFACE, 'panel:leave', onLeave)
 	OPX.UI.On(SURFACE, 'panel:tab', onTab)
+	OPX.UI.On(SURFACE, 'panel:slide', onSlide)
 	OPX.UI.On(SURFACE, 'panel:action', onAction)
 	OPX.UI.On(SURFACE, 'panel:answer', onAnswer)
 	OPX.UI.On(SURFACE, 'panel:dismiss', onDismiss)

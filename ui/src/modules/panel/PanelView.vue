@@ -60,6 +60,29 @@ interface Tab {
  * that follows the thumb, because a slider with no names beside it tells the player
  * nothing about where they are, and clicking a row is still the precise way to land on
  * one. `columns` keeps meaning what it meant: how many of that window sit abreast.
+ *
+ * ── THE SLOT BAR, WHICH IS THE DIAL WITHOUT THE LIST ────────────────────────────────
+ *
+ * A caller that sends `sliders` instead of items gets a different screen: a row of
+ * tracks along the bottom, one per slot, all of them on screen at once. Everything
+ * above -- the column, the tabs, the window, the search plate -- is not drawn, because
+ * there is nothing in it. The caller kept its lists; what crossed is a COUNT per
+ * slider and the one label under the thumb.
+ *
+ * WHY THERE IS NO TAB STRIP AND NO ENCLOSURE. Seven sliders are seven controls and a
+ * tab strip exists to show one of seven things at a time, so the strip has nothing
+ * left to switch between. And `ui/README.md` rule 2 settles the frame: a control is a
+ * closed box, and what is NOT a control does not get one. The bar is not a control --
+ * it is a row of them -- so the `.op-bay` goes, and rule 9 takes the interlace with it,
+ * since the interlace belongs to what is enclosed. What holds the row together is the
+ * row itself, a rule above it, and the cut corner each control carries. Rule 5 keeps it
+ * flat: a centred surface takes no tilt.
+ *
+ * THE THUMB IS THE PAGE'S, THE INDEX IS THE CALLER'S. `@input` previews through a
+ * debounce and `@change` commits, exactly as the dial does -- but a drag outruns the
+ * answers, so the page holds its own position per slot while the player is on it and
+ * lets the caller's index win again the moment they let go. That is how a refused
+ * piece puts the thumb back: the caller answers with the index it still believes in.
  */
 
 type Handle = string | number
@@ -87,6 +110,17 @@ interface Summary {
   action: Button | null
 }
 
+/** One named range. `count` is how many positions it has past 0, and 0 is a real
+    position -- it is how a caller offers "none of them" without a second control. */
+interface Slider {
+  id: string
+  label: string
+  count: number
+  index: number
+  value: string
+  disabled: boolean
+}
+
 /** The confirm step. Parsed on arrival rather than kept as a raw payload, so the
     template never reaches into an `unknown` and a malformed dialog cannot render. */
 interface Dialog {
@@ -105,6 +139,9 @@ interface PanelView {
   intro: string
   tabs: Tab[]
   tab: string
+  /** One control per named range. Non-empty is what puts the slot bar on screen
+      instead of the column; see the header. */
+  sliders: Slider[]
   /** `false` hides the search plate; a string is its placeholder. */
   search: string | false
   summary: Summary | null
@@ -136,6 +173,7 @@ function emptyView(): PanelView {
     intro: '',
     tabs: [],
     tab: '',
+    sliders: [],
     search: false,
     summary: null,
     actions: [],
@@ -159,12 +197,21 @@ const cursor = ref(0)
 const query = ref('')
 const dialog = ref<Dialog | null>(null)
 
+/** Where the player is holding each slot's thumb, for slots they have touched. It
+    is dropped for a slot as soon as the caller answers about it -- unless they are
+    still dragging that one, because a drag outruns the answers and a thumb yanked
+    back under a finger is worse than a label a frame behind. */
+const thumb = reactive<Record<string, number>>({})
+
 const gridEl = ref<HTMLElement | null>(null)
 const gridHeight = ref(0)
 
 let hovered: string | null = null
 let hoverTimer: ReturnType<typeof setTimeout> | undefined
 let leaveTimer: ReturnType<typeof setTimeout> | undefined
+let slideTimer: ReturnType<typeof setTimeout> | undefined
+/** The slot whose thumb is under the pointer, or null. */
+let dragging: string | null = null
 let release: (() => void) | undefined
 let releaseDialog: (() => void) | undefined
 
@@ -231,6 +278,20 @@ function apply(payload: Payload): void {
     }))
   }
   if (given('tab')) view.tab = text(payload.tab)
+  if (given('sliders')) {
+    const incoming = list<Payload>(payload.sliders).map((entry) => ({
+      id: text(entry.id),
+      label: text(entry.label),
+      count: Math.max(0, num(entry.count)),
+      index: Math.max(0, num(entry.index)),
+      value: text(entry.value),
+      disabled: entry.disabled === true
+    }))
+    // The caller has spoken about these slots, so its index is the truth again --
+    // for every one of them except the slot still under the player's finger.
+    for (const entry of incoming) if (dragging !== entry.id) delete thumb[entry.id]
+    view.sliders = incoming
+  }
   if (given('search')) view.search = payload.search === false ? false : text(payload.search)
   if (given('summary')) view.summary = readSummary(payload.summary)
   if (given('actions')) view.actions = readButtons(payload.actions)
@@ -342,8 +403,10 @@ function measure(): void {
 function clearHoverTimers(): void {
   if (hoverTimer !== undefined) clearTimeout(hoverTimer)
   if (leaveTimer !== undefined) clearTimeout(leaveTimer)
+  if (slideTimer !== undefined) clearTimeout(slideTimer)
   hoverTimer = undefined
   leaveTimer = undefined
+  slideTimer = undefined
 }
 
 /** Debounced both ways: a pointer crossing a grid must not raise an event per row, and
@@ -391,6 +454,8 @@ function answer(value: boolean): void {
 function blank(): void {
   clearHoverTimers()
   hovered = null
+  dragging = null
+  for (const key of Object.keys(thumb)) delete thumb[key]
   open.value = false
   items.value = []
   cursor.value = 0
@@ -544,6 +609,43 @@ function settle(): void {
   if (item) choose(item)
 }
 
+/* ── the slot bar ───────────────────────────────────────────────────────────── */
+
+/** Where one slot's thumb is drawn: the player's hold on it, or the caller's index.
+    Clamped against the caller's count, because a track can shrink under a hold. */
+function standing(slider: Slider): number {
+  const held = thumb[slider.id]
+  return held === undefined ? Math.min(slider.index, slider.count) : Math.min(held, slider.count)
+}
+
+/** One slot's thumb moved: preview only, and debounced through the same gate the
+    pointer uses. Committing every intermediate value of a drag would put four
+    hundred choices across the seam for one gesture. */
+function scrubSlot(slider: Slider, raw: string): void {
+  if (view.busy || slider.disabled) return
+  const next = Math.max(0, Math.min(slider.count, Math.trunc(Number(raw)) || 0))
+  thumb[slider.id] = next
+  dragging = slider.id
+  if (slideTimer !== undefined) clearTimeout(slideTimer)
+  slideTimer = setTimeout(() => {
+    slideTimer = undefined
+    if (handle.value === null) return
+    emit('opx:panel:slide',
+      { handle: handle.value, id: slider.id, index: next, commit: false })
+  }, HOVER_MS)
+}
+
+/** Let go, or an arrow key pressed: that is the choice, and it does not wait. */
+function settleSlot(slider: Slider): void {
+  if (view.busy || slider.disabled) return
+  if (slideTimer !== undefined) clearTimeout(slideTimer)
+  slideTimer = undefined
+  dragging = null
+  if (handle.value === null) return
+  emit('opx:panel:slide',
+    { handle: handle.value, id: slider.id, index: standing(slider), commit: true })
+}
+
 function press(button: Button): void {
   if (button.disabled || view.busy) return
   emit('opx:panel:action', { handle: handle.value, id: button.id })
@@ -566,8 +668,13 @@ function filter(value: string): void {
 
     <!-- THE COLUMN IS ON THE LEFT AND HINGED THERE. `.op-plane` carries the
          perspective and the containment; `.op-anchor-left` is what makes the
-         tilt +7deg about the left edge rather than a spin about the middle. -->
-    <section class="column op-plane op-anchor-left op-ink">
+         tilt +7deg about the left edge rather than a spin about the middle.
+
+         It is the screen for a caller that sent ITEMS. A caller that sent
+         sliders kept its lists, so there is no window to draw, no tab to
+         switch, nothing to search and no summary to read: the slot bar below
+         is that caller's whole screen. -->
+    <section v-if="!view.sliders.length" class="column op-plane op-anchor-left op-ink">
       <div class="bay op-bay op-arete" data-augmented-ui="tr-clip bl-clip border">
         <!-- NO INTERLACE. It exists to stop an unfilled frame reading as a web
              page floating in the air, and it earned its place over a plate. With
@@ -727,7 +834,8 @@ function filter(value: string): void {
          one that belongs away from the column -- and the far corner is the one
          place a control can sit without standing in front of the body. Hinged on
          the right edge, so `.is-end` mirrors the lit edge to match. -->
-    <div v-if="view.tools.length" class="tools op-plane op-anchor-right op-ink">
+    <div v-if="view.tools.length && !view.sliders.length"
+         class="tools op-plane op-anchor-right op-ink">
       <div class="tool-row op-bay op-arete is-end" data-augmented-ui="tr-clip bl-clip border">
         <button
           v-for="button in view.tools"
@@ -742,6 +850,105 @@ function filter(value: string): void {
           <span class="row-label op-label">{{ button.label }}</span>
         </button>
       </div>
+    </div>
+
+    <!-- =====================================================================
+         THE SLOT BAR. One control per slot, all of them along the bottom, and
+         nothing above them: the body is what the player is looking at and this
+         screen exists to stay out of its way.
+
+         THE DOCK IS A STACK, NOT A CORNER. The camera cluster used to sit
+         bottom-right on its own, which is a place a centred bar reaches on a
+         narrow screen -- so it is lifted into the same column, right-aligned
+         above the bar. It keeps its own plane and its own -7deg hinge; the bar
+         under it is centred and therefore takes neither.
+         ================================================================== -->
+    <div v-if="view.sliders.length" class="dock">
+      <div v-if="view.tools.length" class="tools op-plane op-anchor-right op-ink">
+        <div class="tool-row op-bay op-arete is-end" data-augmented-ui="tr-clip bl-clip border">
+          <button
+            v-for="button in view.tools"
+            :key="button.id"
+            type="button"
+            class="row button tool op-frame"
+            :class="{ 'is-off': button.disabled || view.busy }"
+            :disabled="button.disabled || view.busy"
+            data-augmented-ui="tr-clip border"
+            @click="press(button)"
+          >
+            <span class="row-label op-label">{{ button.label }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- NO ENCLOSURE AND NO INTERLACE. `ui/README.md` rule 2: a control is a
+           closed box and what is not a control does not get a frame. This bar
+           is a row OF controls, not one, so the `.op-bay` goes -- and rule 9
+           takes the interlace with it, because the interlace belongs to what is
+           enclosed and a striped rectangle with nothing round it is exactly the
+           floating rectangle it exists to prevent. The rule above the row and
+           the cut corner on every slot are what hold it together. -->
+      <section class="bar op-plane op-ink">
+        <div class="bar-inner">
+          <p v-if="view.intro" class="lead op-copy">{{ view.intro }}</p>
+          <p v-if="view.status" class="status op-copy" :class="view.status.kind">
+            {{ view.status.text }}
+          </p>
+
+          <div class="slots">
+            <div
+              v-for="slider in view.sliders"
+              :key="slider.id"
+              class="slot op-frame"
+              :class="{
+                'is-on': standing(slider) > 0 && !slider.disabled && !view.busy,
+                'is-off': slider.disabled || view.busy || slider.count === 0
+              }"
+              data-augmented-ui="tr-clip border"
+            >
+              <span class="slot-name op-eyebrow">{{ slider.label }}</span>
+              <span class="slot-value op-value">{{ slider.value }}</span>
+              <input
+                class="slot-track"
+                type="range"
+                min="0"
+                :max="slider.count"
+                step="1"
+                :value="standing(slider)"
+                :disabled="slider.disabled || view.busy || slider.count === 0"
+                :aria-label="slider.label"
+                :aria-valuetext="slider.value"
+                @input="scrubSlot(slider, ($event.target as HTMLInputElement).value)"
+                @change="settleSlot(slider)"
+              >
+              <!-- REQUIRED TECHNICAL FILLER, which rule 8 sanctions and rule 8
+                   also bounds: it states something the surface knows -- where
+                   the thumb is standing in a range the player cannot otherwise
+                   see the size of -- rather than being chrome text. -->
+              <span class="slot-step op-eyebrow">{{ standing(slider) }} / {{ slider.count }}</span>
+            </div>
+          </div>
+        </div>
+
+        <footer v-if="view.actions.length" class="foot acts">
+          <button
+            v-for="button in view.actions"
+            :key="button.id"
+            type="button"
+            class="row button act op-frame"
+            :class="{
+              'is-on': button.primary,
+              'op-lift': button.primary && !button.disabled && !view.busy,
+              'is-off': button.disabled || view.busy
+            }"
+            :disabled="button.disabled || view.busy"
+            data-augmented-ui="tr-clip border"
+            @click="press(button)"
+          >
+            <span class="row-label op-label">{{ button.label }}</span>
+          </button>
+        </footer>
+      </section>
     </div>
 
     <div v-if="dialog" class="confirm">
@@ -926,7 +1133,12 @@ function filter(value: string): void {
   padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
 }
 
-.dial-track {
+/* The track itself is written once for both sliders on this surface -- the
+   column's dial and every slot on the bar. It is the vocabulary being shared,
+   not the markup: the two are laid out differently, labelled differently and
+   answered differently, and only the four pseudo-elements are the same. */
+.dial-track,
+.slot-track {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
@@ -936,12 +1148,14 @@ function filter(value: string): void {
   cursor: pointer;
 }
 
-.dial-track:disabled {
+.dial-track:disabled,
+.slot-track:disabled {
   cursor: default;
 }
 
 /* A 1px rule, not a filled bar: nothing on this surface is filled. */
-.dial-track::-webkit-slider-runnable-track {
+.dial-track::-webkit-slider-runnable-track,
+.slot-track::-webkit-slider-runnable-track {
   height: 1px;
   background: var(--op-red-idle);
 }
@@ -949,7 +1163,8 @@ function filter(value: string): void {
 /* The thumb is a control, so it is a closed box with the top-right corner taken
    off -- by `clip-path` off the same cut token, because a pseudo-element cannot
    carry `data-augmented-ui`. No literal: change `--op-cut-sm` and this follows. */
-.dial-track::-webkit-slider-thumb {
+.dial-track::-webkit-slider-thumb,
+.slot-track::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: var(--op-space-4);
@@ -966,12 +1181,119 @@ function filter(value: string): void {
   );
 }
 
-.dial-track:focus-visible::-webkit-slider-thumb {
+.dial-track:focus-visible::-webkit-slider-thumb,
+.slot-track:focus-visible::-webkit-slider-thumb {
   border-color: var(--op-red-hi);
 }
 
-.dial-track:disabled::-webkit-slider-thumb {
+.dial-track:disabled::-webkit-slider-thumb,
+.slot-track:disabled::-webkit-slider-thumb {
   border-color: var(--op-text-faint);
+}
+
+/* =============================================================================
+   THE SLOT BAR.
+
+   A row of controls along the bottom and no box round them. `ui/README.md` rule
+   2 is what decides that: a control is a closed box, and what is not a control
+   does not get a frame -- so each slot keeps its `.op-frame` and the thing
+   holding them together does not get one. Rule 9 takes the interlace with the
+   enclosure, since the interlace is what stops an unfilled FRAME floating and
+   there is no longer a frame here to float. Rule 5 keeps the bar flat: it is
+   centred, and a centred plane rotated about its middle is paper on a spindle.
+
+   What is left to give it structure is the row itself -- seven cut boxes on one
+   baseline read as one thing -- and the 1px rule between browsing and
+   committing. That rule is `.foot`, which the column uses for the same job.
+   ========================================================================== */
+.dock {
+  position: absolute;
+  left: calc(var(--op-inset-x) - var(--op-bleed));
+  right: calc(var(--op-inset-x) - var(--op-bleed));
+  bottom: calc(var(--op-inset-y) - var(--op-bleed));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* THE CAMERA CLUSTER IS IN THE STACK, NOT IN THE CORNER. On its own it is
+   absolutely placed bottom-right, which is a place a centred bar reaches as soon
+   as the screen is narrow. Here it is a row above the bar and still hinged on
+   its own right edge, so `.op-anchor-right` and `.is-end` still say what they
+   said. */
+.dock .tools {
+  position: static;
+  align-self: flex-end;
+}
+
+.bar {
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1120px;
+}
+
+.bar-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--op-space-2);
+}
+
+/* Centred readouts, no frame: neither of them is a control. */
+.lead,
+.bar .status {
+  margin: 0;
+  text-align: center;
+  color: var(--op-text-dim);
+}
+
+.slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--op-space-2);
+}
+
+/* Every slot the same width, so the row reads as one control repeated rather
+   than as seven things that happen to be next to each other. They wrap rather
+   than shrink past legibility on a narrow surface. */
+.slot {
+  flex: 1 1 130px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--op-space-1);
+  padding: var(--op-space-2) var(--op-space-3);
+  padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
+}
+
+.slot-name {
+  color: var(--op-red-idle);
+}
+
+.slot-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slot-step {
+  align-self: flex-end;
+  color: var(--op-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The commit row. It takes the rule and not the bay's bottom cut, because there
+   is no bay under it to leave room for. */
+.acts {
+  justify-content: center;
+  padding: var(--op-space-3) 0 0;
+}
+
+.acts .row {
+  width: auto;
+  min-width: 150px;
 }
 
 /* The window of names under the dial. One place items are laid out abreast; the

@@ -86,19 +86,13 @@ local EN = {
 	['wardrobe.ui.female'] = 'female body',
 	['wardrobe.ui.male'] = 'male body',
 	['wardrobe.ui.nothing'] = 'nothing',
-	['wardrobe.ui.remove'] = 'Take off',
-	['wardrobe.ui.search'] = 'Search',
-	-- THE PLACEHOLDERS ARE THE PANEL'S, not this catalogue's, and they are filled
-	-- by the page rather than here: `panel.count` ships `{from}-{to} of {total}`
-	-- and the page substitutes all three as the player scrolls. This read
-	-- `{count} pieces`, which no view has ever been able to fill -- so the plate
-	-- under the grid would have drawn the word `{count}` verbatim.
-	['wardrobe.ui.count'] = '{from}-{to} of {total}',
-	['wardrobe.ui.empty'] = 'Nothing here for this slot.',
-	['wardrobe.ui.loading'] = 'Reading the catalogue...',
+	-- SEVEN WORDS THE ROOM NO LONGER SAYS went with the catalogue stream: a search
+	-- placeholder, a window count, an empty-grid line, a loading line, a 'take
+	-- off' button and the two failures only a batched stream could have. The room
+	-- draws seven sliders over lists it holds in Lua, so there is no grid to be
+	-- empty, no window to count, no batch to half-arrive, and index 0 on a slot's
+	-- own slider is what taking a piece off means.
 	['wardrobe.ui.failed'] = 'That did not work: {reason}',
-	['wardrobe.ui.partial'] = 'Some pieces did not arrive: {reason}',
-	['wardrobe.ui.stalled'] = 'The catalogue did not finish loading. Close and try again.',
 	['wardrobe.ui.save'] = 'Save',
 	['wardrobe.ui.saveCreation'] = 'Wear this',
 	['wardrobe.ui.cancel'] = 'Cancel',
@@ -192,14 +186,7 @@ local FR = {
 	['wardrobe.ui.female'] = 'corps féminin',
 	['wardrobe.ui.male'] = 'corps masculin',
 	['wardrobe.ui.nothing'] = 'rien',
-	['wardrobe.ui.remove'] = 'Retirer',
-	['wardrobe.ui.search'] = 'Rechercher',
-	['wardrobe.ui.count'] = '{from}-{to} sur {total}',
-	['wardrobe.ui.empty'] = 'Rien ici pour cet emplacement.',
-	['wardrobe.ui.loading'] = 'Lecture du catalogue...',
 	['wardrobe.ui.failed'] = "Cela n'a pas fonctionné : {reason}",
-	['wardrobe.ui.partial'] = "Certaines pièces ne sont pas arrivées : {reason}",
-	['wardrobe.ui.stalled'] = "Le catalogue n'a pas fini de charger. Fermez et réessayez.",
 	['wardrobe.ui.save'] = 'Enregistrer',
 	['wardrobe.ui.saveCreation'] = 'Porter ceci',
 	['wardrobe.ui.cancel'] = 'Annuler',

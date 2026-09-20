@@ -16,10 +16,9 @@
 -- against them. `panelSpec()` publishes a title and a tree of rows carrying
 -- `separator`, `value`, `description` and nested `items` -- which is the menu
 -- contract field for field -- and `roomSpec()` publishes `eyebrow`, `title`,
--- `subtitle`, `intro`, `search`, `loading`, `labels`, `actions`, `tools`, `tabs`,
--- `tab`, `selected`, `summary` and `status`, which is the panel contract's
--- PATCHABLE set field for field, down to the batched `roomItems` that `Append`
--- takes and the `confirm` that `Confirm` takes. The wardrobe's own header records
+-- `subtitle`, `intro`, `actions`, `tools`, `sliders` and `status`, which is a
+-- subset of the panel contract's PATCHABLE set field for field, down to the
+-- `confirm` that `Confirm` takes. The wardrobe's own header records
 -- where that came from: "the panel was a list drawn by a menu resource and the
 -- fitting room a page drawn by a panel resource". Both of those resources have
 -- since been rebuilt as modules in here. Writing a third Vue view would be a
@@ -29,18 +28,20 @@
 --
 -- NOTHING HERE DECIDES ANYTHING. Every action is forwarded verbatim and every
 -- one of them is re-checked on the other side against state this file cannot
--- see: a record name is checked against the catalogue the state half streamed,
--- a slot against the seven it dresses, a button against the list it drew. A
--- modified page that named a jacket nobody offered gets the same nothing a
--- mistyped one does -- and what a character may actually WEAR is settled further
--- out still, by the server, when the clothing half saves the record.
+-- see: a slider index against the length of the list the state half read for
+-- that slot, a slot against the seven it dresses, a button against the list it
+-- drew. A modified page that asked for the four-thousandth jacket gets the same
+-- nothing a mistyped slot does -- and what a character may actually WEAR is
+-- settled further out still, by the server, when the clothing half saves the
+-- record. THE PAGE NEVER NAMES A RECORD AT ALL NOW: it sends an index, and the
+-- only side that can turn one into a record name is the side that holds the list.
 --
 -- THE FAILURE PATH IS DEFERRED ON PURPOSE. When a view refuses to open there is
 -- nothing to draw and the state half has to be told -- but it publishes `room`
--- from inside `begin`, which goes on to take the camera and start the catalogue
--- stream afterwards. Answering inline would tear the room down underneath a
--- function still setting it up, so the answer is left for the upkeep pass one
--- tick later. See `undrawn`.
+-- from inside `begin`, which goes on to take the camera and announce the room on
+-- its decision bus afterwards. Answering inline would tear the room down
+-- underneath a function still setting it up, so the answer is left for the
+-- upkeep pass one tick later. See `undrawn`.
 
 local M = OPX.Modules.Get('appearance')
 
@@ -80,22 +81,6 @@ local PLAYER_CLOSED = { dismissed = true, back = true, pause = true, item = true
 -- only has one room to be told about.
 local function later(action, payload)
 	undrawn = { action = action, payload = payload }
-end
-
--- What the catalogue batches did since the last upkeep pass: entries the view
--- took, and the first refusal among them.
---
--- SUMMED, NOT HELD LIKE `undrawn`. A catalogue is twenty-odd batches and the
--- stream yields between them, so a whole room's worth arrives between two
--- upkeep passes; "last one wins" is right for a failure to draw the room and
--- wrong for a count, which would come out as the size of whichever batch
--- happened to be last.
-local batchAdded, batchError = 0, nil
-
---- Records what one batch did.
-local function countBatch(added, failure)
-	batchAdded = batchAdded + added
-	if failure ~= nil and batchError == nil then batchError = failure end
 end
 
 -- ── the appearance panel, drawn by `menu` ───────────────────────────────────
@@ -164,14 +149,15 @@ local function fromPanel(payload)
 	if type(payload) ~= 'table' or payload.handle ~= roomHandle then return end
 	local action = payload.action
 
-	if action == 'select' then
-		return M.FromView('room.select', { item = payload.item, tab = payload.tab })
+	-- The room draws no rows and no tabs, so the panel contract's `select`,
+	-- `hover`, `leave` and `tab` cannot be raised for it -- `panel` checks a
+	-- clicked item against the items it was sent and a tab against the tabs it
+	-- drew, and there are none of either. Forwarding them would be four branches
+	-- nothing can reach.
+	if action == 'slide' then
+		return M.FromView('room.slide',
+			{ slot = payload.id, index = payload.index, commit = payload.commit })
 	end
-	if action == 'hover' then
-		return M.FromView('room.hover', { item = payload.item, tab = payload.tab })
-	end
-	if action == 'leave' then return M.FromView('room.leave') end
-	if action == 'tab' then return M.FromView('room.tab', { tab = payload.tab }) end
 	if action == 'action' then return M.FromView('room.action', { value = payload.id }) end
 	if action == 'confirm' then
 		return M.FromView('room.confirm', { item = payload.item, value = payload.value })
@@ -213,9 +199,8 @@ local function showRoom(spec)
 	view.owner = OWNER
 	view.id = ROOM_ID
 	view.on = fromPanel
-	-- The room previews a piece under the pointer before it is chosen, which is
-	-- the whole reason the seam has a `room.hover`.
-	view.hover = true
+	-- No `hover`: the preview is the slider's own uncommitted position now, which
+	-- rides `slide` rather than a pointer resting on a row there are none of.
 	-- Escape is put to the state half rather than taken as a close, because
 	-- leaving a room with unsaved changes asks first.
 	view.dismiss = 'ask'
@@ -227,30 +212,6 @@ local function showRoom(spec)
 		return later('room.close', { reason = 'no_view' })
 	end
 	roomHandle = opened.value.handle
-end
-
---- Adds a batch of catalogue entries to the open room, and says what it did.
---
--- THE ANSWER IS DEFERRED FOR THE SAME REASON THE OPEN'S IS. This runs inside the
--- state half's own publication, on the stream thread, and `room.items` sets the
--- status line and refreshes -- which publishes again, into a handler still on
--- this stack. See `later` and the header.
-local function showItems(payload)
-	if Panel == nil or roomHandle == nil then
-		return later('room.items', { added = 0, error = 'no_view' })
-	end
-	local items = payload.items or {}
-	local added = Panel.Append(roomHandle, items, payload.final == true)
-	-- A REFUSED BATCH IS NOT A DELIVERED ONE, and it used to be reported as one:
-	-- a warn on a log the operator cannot read was the entire consequence, with
-	-- the room going on saying it was reading. `Append` already answers honestly;
-	-- this is the caller finally reading the answer.
-	countBatch(added.ok and #items or 0, (not added.ok) and tostring(added.error) or nil)
-	-- The catalogue read can fail, and when it does the state half sends its
-	-- reason on the same publication as the empty final batch.
-	if payload.status ~= nil then
-		Panel.Update(roomHandle, { status = { text = tostring(payload.status), kind = 'error' } })
-	end
 end
 
 -- ── the seam ────────────────────────────────────────────────────────────────
@@ -284,17 +245,10 @@ local function onView(payload)
 	end
 
 	if kind == 'room' then return showRoom(payload) end
-	if kind == 'roomItems' then return showItems(payload) end
 
 	if kind == 'roomState' then
 		if Panel == nil or roomHandle == nil then return end
-		Panel.Update(roomHandle, {
-			tabs = payload.tabs,
-			tab = payload.tab,
-			selected = payload.selected,
-			summary = payload.summary,
-			status = payload.status,
-		})
+		Panel.Update(roomHandle, { sliders = payload.sliders, status = payload.status })
 		return
 	end
 
@@ -326,15 +280,6 @@ end
 -- the state half is never torn down from inside its own publication.
 -- @author dop42
 function View.Check()
-	if batchAdded ~= 0 or batchError ~= nil then
-		local added, failure = batchAdded, batchError
-		batchAdded, batchError = 0, nil
-		local told, why = pcall(M.FromView, 'room.items', { added = added, error = failure })
-		if not told then
-			Open77.log.error('[appearance] view batch answer: ' .. tostring(why))
-		end
-	end
-
 	local held = undrawn
 	if held == nil then return end
 	undrawn = nil
@@ -380,7 +325,6 @@ end
 -- @author dop42
 function View.Stop()
 	undrawn = nil
-	batchAdded, batchError = 0, nil
 	closing = true
 	if Panel ~= nil and roomHandle ~= nil then Panel.Close(roomHandle, 'stopped') end
 	if Menu ~= nil and menuHandle ~= nil then Menu.Close(menuHandle, 'stopped') end

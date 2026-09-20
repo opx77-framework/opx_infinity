@@ -187,6 +187,25 @@ do
 		check('no thread died', #control.log.error == 0 or not table.concat(control.log.error)
 			:find('thread died'), table.concat(control.log.error, ' | '))
 
+		-- WHAT A CHARACTER MAY BE SAID TO BE WEARING. There is no catalogue on a
+		-- server, so the canonical form is a SHAPE check and can never be a
+		-- lookup -- the equipment natives are client-only and asking the client
+		-- would be trusting the thing this distrusts. But the shape was
+		-- `[%w_%.%-]+`, which is every TweakDB id there is: a client could report
+		-- its outer chest as `Character.Judy` and the server would store it.
+		-- Every clothing record is in the `Items` namespace, so the anchor is one
+		-- pattern and a whole family of nonsense stops passing.
+		local clothing = env.OPX.Modules.Get('appearance').Clothing
+		local function canonical(record)
+			return clothing.Canonical({ schemaVersion = clothing.VERSION,
+				equipment = { OuterChest = record }, wardrobe = {} })
+		end
+		check('a clothing record outside the Items namespace is refused',
+			canonical('Character.Judy') == nil and canonical('Vehicle.Cthulhu') == nil)
+		check('and one inside it still is not', canonical('Items.Jacket_01') ~= nil)
+		check('the namespace has to be the whole prefix, not a substring',
+			canonical('NotItems.Jacket_01') == nil and canonical('Items') == nil)
+
 		-- The repeating work is registered rather than hand-rolled: six modules
 		-- used to open their own `while true` loop, one of them with no pcall
 		-- around the pass at all.
@@ -1714,16 +1733,14 @@ do
 		env.TriggerEvent(appearance.Event.ON_VIEW, {
 			kind = 'room',
 			eyebrow = 'FIRST OUTFIT', title = 'Wardrobe', intro = 'Dress your character.',
-			search = 'Search', loading = true,
-			labels = { count = '{from}-{to} of {total}', empty = 'Nothing.',
-				loading = 'Reading...' },
 			actions = { { id = 'cancel', label = 'Skip' },
 				{ id = 'save', label = 'Wear this', primary = true } },
-			tabs = { { id = 'InnerChest', label = 'Inner chest', marked = false } },
-			tab = 'InnerChest',
-			selected = { InnerChest = false },
-			summary = { label = 'Inner chest', value = 'nothing',
-				action = { id = 'remove', label = 'Take off', disabled = true } },
+			sliders = {
+				{ id = 'InnerChest', label = 'Inner chest', count = 270, index = 0,
+					value = 'nothing' },
+				{ id = 'OuterChest', label = 'Outer chest', count = 677, index = 4,
+					value = 'Jacket 04' },
+			},
 			status = false,
 		})
 
@@ -1739,34 +1756,53 @@ do
 		check('and not the seam own routing field',
 			opened ~= nil and opened.payload.kind == nil)
 
-		env.TriggerEvent(appearance.Event.ON_VIEW, {
-			kind = 'roomItems', final = true,
-			items = { { id = 'Items.Jacket_01', tab = 'InnerChest', label = 'Jacket 01',
-				detail = 'Items.Jacket_01' } },
-		})
-		local batch = drew(page, 'opx:panel:items')
-		check('a catalogue batch reaches the page, marked as the last',
-			batch ~= nil and batch.payload.done == true
-				and batch.payload.items[1].id == 'Items.Jacket_01')
+		-- SEVEN INTEGERS, NOT 1968 ROWS, and the first frame is the finished one.
+		-- The room used to publish `loading = true` and then stream its catalogue
+		-- over some twenty-six batches; every one of them was a payload, a parse
+		-- and an append, and the run died part way through with nothing said.
+		check('the room first frame carries its sliders, counts and all',
+			opened ~= nil and #opened.payload.sliders == 2
+				and opened.payload.sliders[2].count == 677
+				and opened.payload.sliders[2].index == 4,
+			opened and tostring(#opened.payload.sliders))
+		check('and says nothing about loading, because there is nothing to wait for',
+			opened ~= nil and opened.payload.loading ~= true)
+		check('and asks for no search plate over rows it no longer sends',
+			opened ~= nil and opened.payload.search == false,
+			opened and tostring(opened.payload.search))
+		check('THE STREAM IS GONE: the room appends no items at all',
+			times(page, 'opx:panel:items') == 0,
+			('%d batch(es)'):format(times(page, 'opx:panel:items')))
 
-		-- THE CATALOGUE AT THE SIZE IT ACTUALLY ARRIVES AT. The one-item batch
-		-- above passed on every build and proved nothing: the fitting room streams
-		-- a hundred pieces at a time, and a hundred parsed items is 1207 value
-		-- nodes against a host bound of 1024. The host refused every batch,
-		-- `WebUI.Page.send` answered false, `panel` never read that answer and
-		-- reported the refusal to its caller as a delivery -- so the room sat on
-		-- 'Reading the catalogue' for good with no error anywhere. `tests/host.lua`
-		-- models the bound now, so this is the check that fails if the split goes.
+		-- A SLIDER OUT OF STEP WITH ITS OWN TRACK IS REFUSED WHOLE, the way every
+		-- other field of this contract is: a thumb past the end of the range is a
+		-- caller that has lost its list, and drawing it would leave the page's
+		-- idea of the position and the caller's permanently apart.
+		local Panel = env.OPX.Api.Get('panel')
+		local handle = opened.payload.handle
+		local badThumb = Panel.Update(handle,
+			{ sliders = { { id = 'Legs', label = 'Legs', count = 3, index = 9, value = 'x' } } })
+		check('a thumb outside its own track is refused',
+			not badThumb.ok and badThumb.error == 'invalid_sliders', tostring(badThumb.error))
+		local badCount = Panel.Update(handle,
+			{ sliders = { { id = 'Legs', label = 'Legs', count = -1, index = 0, value = 'x' } } })
+		check('and so is a range of less than nothing',
+			not badCount.ok and badCount.error == 'invalid_sliders', tostring(badCount.error))
+
+		-- THE APPEND PATH STILL HAS TO WORK, and it is tested against the contract
+		-- rather than through the fitting room now, because the fitting room no
+		-- longer uses it. The defect it guards is the panel module's own: a
+		-- hundred parsed items is 1207 value nodes against a host bound of 1024,
+		-- the host refused every batch, `WebUI.Page.send` answered false and this
+		-- module reported the refusal to its caller as a delivery.
 		local mark, turned = #page.sent, #page.refused
 		local bulk = {}
-		for index = 1, 100 do
+		for index = 1, 200 do
 			local record = ('Items.Jacket_%03d_basic_variant'):format(index)
 			bulk[index] = { id = record, tab = 'InnerChest',
 				label = ('Jacket %03d basic variant'):format(index), detail = record }
 		end
-		env.TriggerEvent(appearance.Event.ON_VIEW,
-			{ kind = 'roomItems', final = true, items = bulk })
-
+		local appended = Panel.Append(handle, bulk, true)
 		local drawn, sends, dones = 0, 0, 0
 		for index = mark + 1, #page.sent do
 			local sent = page.sent[index]
@@ -1776,84 +1812,63 @@ do
 				if sent.payload.done == true then dones = dones + 1 end
 			end
 		end
-
 		-- Counted from `turned` rather than from zero, and NOT because a refusal
 		-- before this point is acceptable. `opx:locale:set` is one: the page is
 		-- handed the whole string catalogue in a single payload from
 		-- `core/client/ui.lua`, which is 2539 nodes here and more on a live server,
 		-- so every page that reads a string through `useLocale` renders its keys.
-		-- That is a real defect, it is not this one, and chunking a catalogue is
-		-- not a change to make inside a fitting-room fix.
+		-- That is a real defect and it is not this one.
+		check('a batch at the append bound is taken', appended.ok, tostring(appended.error))
 		check('the host turns away no catalogue batch',
 			#page.refused == turned,
 			#page.refused > turned
 				and ('%s at %d nodes'):format(page.refused[turned + 1].channel,
 					page.refused[turned + 1].nodes) or '')
-		check('a hundred-piece batch reaches the page whole', drawn == 100,
-			('%d of 100, over %d send(s)'):format(drawn, sends))
+		check('and it reaches the page whole', drawn == 200,
+			('%d of 200, over %d send(s)'):format(drawn, sends))
 		check('over more than one send, because one would not have fitted',
 			sends > 1, ('%d send(s)'):format(sends))
-		check('and exactly one of them says the catalogue has ended',
+		check('and exactly one of them says the batch has ended',
 			dones == 1, ('%d done flag(s)'):format(dones))
-
-		-- THE CONTRACT'S OWN MAXIMUM HAS TO WORK. `MAX_APPEND` is what a caller is
-		-- told it may hand over at once, and it was two hundred while two hundred
-		-- was a payload of 2407 -- a bound that refused nothing and delivered
-		-- nothing.
-		local wide = #page.sent
-		local full = {}
-		for index = 1, 200 do
-			local record = ('Items.Shoe_%03d'):format(index)
-			full[index] = { id = record, tab = 'Feet', label = 'Shoe ' .. index, detail = record }
-		end
-		env.TriggerEvent(appearance.Event.ON_VIEW,
-			{ kind = 'roomItems', final = false, items = full })
-		local reached = 0
-		for index = wide + 1, #page.sent do
-			if page.sent[index].channel == 'opx:panel:items' then
-				reached = reached + #page.sent[index].payload.items
-			end
-		end
-		check('and a batch at the append bound arrives whole as well',
-			reached == 200 and #page.refused == turned, ('%d of 200'):format(reached))
-
-		-- THE STREAM'S LAST WORD IS AN EMPTY BATCH. The catalogue is sorted in
-		-- seven piles now and the seventh is free to be empty, so a `final` hung
-		-- on the last piece sent would leave the room loading forever for a body
-		-- whose last slot has nothing in it.
-		local tail = #page.sent
-		env.TriggerEvent(appearance.Event.ON_VIEW,
-			{ kind = 'roomItems', final = true, items = {} })
-		local ended
-		for index = tail + 1, #page.sent do
-			if page.sent[index].channel == 'opx:panel:items' then ended = page.sent[index] end
-		end
-		check('an empty final batch still lands, so the room stops reading',
-			ended ~= nil and #ended.payload.items == 0 and ended.payload.done == true)
 
 		-- WHAT THE PLAYER DID, coming back through the one function the seam
 		-- documents. Everything on it is re-checked there against state this bridge
-		-- cannot see: the record against the catalogue that was streamed, the
-		-- button against the list that was drawn.
-		local seen = {}
+		-- cannot see: the index against the track that was drawn, the button
+		-- against the list that was drawn.
+		local seen, carried = {}, {}
 		local real = appearance.FromView
 		appearance.FromView = function(action, payload)
 			seen[#seen + 1] = action
+			carried[#carried + 1] = payload
 			return real(action, payload)
 		end
-		local handle = opened.payload.handle
-		control.PageEmit(page, 'opx:panel:select', { handle = handle, item = 'Items.Jacket_01' })
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle, id = 'OuterChest', index = 12, commit = true })
 		control.PageEmit(page, 'opx:panel:action', { handle = handle, id = 'cancel' })
-		check('a click on a piece comes back as a room selection',
-			seen[1] == 'room.select', table.concat(seen, ', '))
+		check('a slider let go comes back as a room slide',
+			seen[1] == 'room.slide', table.concat(seen, ', '))
+		check('carrying the slot, the index and that it was committed',
+			carried[1] ~= nil and carried[1].slot == 'OuterChest'
+				and carried[1].index == 12 and carried[1].commit == true,
+			carried[1] and tostring(carried[1].slot) .. '/' .. tostring(carried[1].index))
 		check('and a button as a room action', seen[2] == 'room.action',
 			table.concat(seen, ', '))
+
+		-- NEITHER END TRUSTS THE INDEX. `panel` checks it against the track it
+		-- drew, which is what stops a modified page naming a position the caller's
+		-- own list does not have.
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle, id = 'OuterChest', index = 4000, commit = true })
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle, id = 'Nonesuch', index = 1, commit = true })
+		check('an index past the end of the track never reaches the state half',
+			#seen == 2, table.concat(seen, ', '))
 
 		-- A PAYLOAD FOR A ROOM THAT IS GONE. The handle is the capability, and a
 		-- payload naming another one is dropped before this bridge ever sees it --
 		-- so a late answer cannot reach the state half.
-		control.PageEmit(page, 'opx:panel:select',
-			{ handle = handle + 99, item = 'Items.Jacket_01' })
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle + 99, id = 'OuterChest', index = 1, commit = true })
 		check('a payload naming another room is dropped', #seen == 2,
 			table.concat(seen, ', '))
 		appearance.FromView = real
@@ -1986,78 +2001,219 @@ do
 			toldServer())
 	end
 
-	-- ── a catalogue batch the view would not take ────────────────────────────
-	-- THE OTHER HALF OF THE SAME SHAPE. `Panel.Append` refuses a batch it cannot
-	-- parse and answers so; the bridge logged that answer to the client's log and
-	-- told the state half nothing, so a hundred pieces vanished with the room still
-	-- saying it was reading and the player with no way to know. The state half
-	-- cannot see the loss itself and must not try -- `panel` parses an item by
-	-- rules that are its own -- so the answer has to come back over the seam.
+	-- ── the catalogue, read per slot, standing behind seven sliders ──────────
+	-- A REAL ROOM, OPENED. The blocks above drive the seam by hand, which proves
+	-- the bridge and proves nothing about the read: the defect that cost this room
+	-- its catalogue lived entirely in the state half, between the one unfiltered
+	-- `records` call and the page. So this one puts a puppet under it -- a
+	-- playable character, an equipment namespace answering per slot, and a
+	-- clothing half that lends the body -- and opens the room for real.
+	--
+	-- The lend is stubbed and the rest is not. `Clothing.BeginPreview` is step
+	-- four of a state machine that wants a stored record, a completed save and an
+	-- open gate; this host never announces gameplay so its gate never opens, which
+	-- the block above tests on purpose. Standing in for the two preview calls is
+	-- what lets everything AFTER them be the real thing.
 	do
 		local env, control = joinClient('never', 400)
 		local appearance = env.OPX.Modules.Get('appearance')
 		local page = control.pages[1]
 
-		env.TriggerEvent(appearance.Event.ON_VIEW, {
-			kind = 'room', title = 'Wardrobe', loading = true,
-			tabs = { { id = 'InnerChest', label = 'Inner chest', marked = false } },
-			tab = 'InnerChest', selected = { InnerChest = false },
-			summary = { label = 'Inner chest', value = 'nothing' },
-			labels = { loading = 'Reading...' },
-		})
-		check('a room is up to stream into', drew(page, 'opx:panel:open') ~= nil)
-
-		local answered = {}
-		local real = appearance.FromView
-		appearance.FromView = function(action, payload)
-			if action == 'room.items' then answered[#answered + 1] = payload end
-			return real(action, payload)
+		-- How many pieces each slot answers. Uneven on purpose: the buckets the old
+		-- stream sorted were assumed to be "roughly a seventh each" and the live
+		-- catalogue is 677 in one slot against 38 in another, which is what made
+		-- the one unyieldable sort the heaviest thing in the room.
+		local COUNTS = { Head = 3, Face = 0, InnerChest = 2, OuterChest = 5, Legs = 1,
+			Feet = 4, Outfit = 0 }
+		local asked = {}
+		env.Open77.equipment.records = function(options)
+			if type(options) ~= 'table' or type(options.slot) ~= 'string' then
+				return nil, 'invalid_options'
+			end
+			asked[#asked + 1] = options.slot
+			local out = {}
+			for index = 1, (COUNTS[options.slot] or 0) do
+				-- Answered out of order, so the sort has something to do, and with
+				-- one non-visual entry the room must drop rather than count.
+				out[index] = { record = ('Items.%s_%02d'):format(options.slot,
+					(COUNTS[options.slot] + 1) - index) }
+			end
+			out[#out + 1] = { record = ('Items.%s_hidden'):format(options.slot), nonvisual = true }
+			return out
 		end
 
-		-- One unparseable item in a batch of two, which is how this really happens:
-		-- `parseItems` refuses the WHOLE batch for any malformed one, so a single
-		-- over-long label costs a hundred pieces.
-		local mark = #page.sent
-		env.TriggerEvent(appearance.Event.ON_VIEW, { kind = 'roomItems', final = false, items = {
-			{ id = 'Items.Jacket_01', tab = 'InnerChest', label = 'Jacket 01',
-				detail = 'Items.Jacket_01' },
-			{ id = 'Items.' .. ('Jacket_02_'):rep(30), tab = 'InnerChest', label = 'Jacket 02',
-				detail = 'Items.Jacket_02' },
-		} })
-		local reached = 0
-		for index = mark + 1, #page.sent do
-			if page.sent[index].channel == 'opx:panel:items' then reached = reached + 1 end
+		local worn = {}
+		env.Open77.equipment.apply = function(slots)
+			for slot, item in pairs(slots) do worn[slot] = item end
+			return true
 		end
-		check('a batch the panel cannot parse reaches the page as nothing at all',
-			reached == 0, ('%d send(s)'):format(reached))
-
-		-- The answer is deferred to the upkeep pass for the same reason the
-		-- undrawn-room answer is: this runs inside the state half's own
-		-- publication, on the stream's thread.
-		control.Pump(4)
-		check('and the state half is told, instead of the refusal being swallowed',
-			#answered == 1 and answered[1].error ~= nil,
-			('%d answer(s), error=%s'):format(#answered,
-				answered[1] and tostring(answered[1].error) or '-'))
-		check('with nothing counted as drawn for a batch that was not',
-			#answered == 1 and answered[1].added == 0,
-			answered[1] and tostring(answered[1].added) or '-')
-
-		-- SUMMED ACROSS THE PASS, NOT LAST-ONE-WINS. A catalogue is twenty-odd
-		-- batches and the stream yields between them, so a whole room's worth
-		-- lands between two upkeep passes; the bridge's other deferral holds ONE
-		-- answer, and reusing it here would have reported the size of whichever
-		-- batch happened to be last as the size of the catalogue.
-		for index = 1, 3 do
-			env.TriggerEvent(appearance.Event.ON_VIEW, { kind = 'roomItems', final = false,
-				items = { { id = ('Items.Boot_%d'):format(index), tab = 'Feet',
-					label = 'Boot ' .. index, detail = 'Items.Boot' } } })
+		env.Open77.character.state = function()
+			return { health = 100, alive = true, attached = true }
 		end
-		control.Pump(4)
-		check('and three batches in one pass are counted as three, not as one',
-			#answered == 2 and answered[2].added == 3,
-			answered[2] and tostring(answered[2].added) or '-')
-		appearance.FromView = real
+
+		local lent, gaveBack = nil, nil
+		appearance.Clothing.BeginPreview = function(owner)
+			lent = owner
+			return { equipment = { OuterChest = 'Items.OuterChest_02' } }
+		end
+		appearance.Clothing.EndPreview = function(owner, keep)
+			gaveBack = tostring(owner) .. '/' .. tostring(keep)
+			return true
+		end
+
+		local opened, reason = appearance.Wardrobe.Open('appearance')
+		check('the fitting room is asked for', opened, tostring(reason))
+		control.Pump(30)
+		check('and the puppet was borrowed for it', lent == 'appearance', tostring(lent))
+		check('the room is open', appearance.Wardrobe.IsOpen())
+
+		-- ONE QUERY PER SLOT is the whole of the fix, so it is the first thing
+		-- asserted: the old room asked once, unfiltered, for up to two thousand
+		-- records and did the slotting itself.
+		check('the catalogue is read one slot at a time, each slot named',
+			table.concat(asked, ',') == 'Head,Face,InnerChest,OuterChest,Legs,Feet,Outfit',
+			('%d read(s): %s'):format(#asked, table.concat(asked, ', ')))
+
+		local frame = drew(page, 'opx:panel:open')
+		check('the room drew its first frame', frame ~= nil)
+		check('and no catalogue batch was ever appended to it',
+			times(page, 'opx:panel:items') == 0,
+			('%d batch(es)'):format(times(page, 'opx:panel:items')))
+
+		--- The slider drawn for one slot, out of the last frame or patch.
+		local function slider(slot)
+			local latest
+			for index = 1, #page.sent do
+				local sent = page.sent[index]
+				if sent.payload.sliders ~= nil then
+					for _, entry in ipairs(sent.payload.sliders) do
+						if entry.id == slot then latest = entry end
+					end
+				end
+			end
+			return latest
+		end
+
+		check('one slider per visible slot, and seven of them',
+			frame ~= nil and #frame.payload.sliders == 7,
+			frame and tostring(#frame.payload.sliders))
+		-- THE COUNT IS THE SLOT'S OWN, which is the thing seven queries buy: the
+		-- room holds seven lists and the page is told seven lengths.
+		check('each slider counts that slot pieces, and only that slot',
+			slider('OuterChest').count == 5 and slider('Head').count == 3
+				and slider('Legs').count == 1,
+			('OuterChest=%d Head=%d Legs=%d'):format(slider('OuterChest').count,
+				slider('Head').count, slider('Legs').count))
+		-- A record the room will not show is not a position on the track either.
+		check('a non-visual record is not a position anybody can stand on',
+			slider('Feet').count == 4, tostring(slider('Feet').count))
+		-- A SLOT WITH NOTHING IN IT IS STILL A SLIDER. The old room hid an empty
+		-- slot behind a tab that said 'Nothing here for this slot'; a track of
+		-- length nought says the same thing without a tab to find it behind.
+		check('an empty slot is a track with one position on it',
+			slider('Face').count == 0 and slider('Face').index == 0)
+
+		-- INDEX 0 IS 'NOTHING', everywhere: it is where an empty slot starts, it
+		-- is what a slot the body is not wearing reports, and it is what taking a
+		-- piece off means now that there is no 'Take off' button.
+		check('a slot the puppet is not wearing starts on nothing',
+			slider('InnerChest').index == 0 and slider('InnerChest').value == 'nothing',
+			tostring(slider('InnerChest').value))
+		-- Sorted, so `Items.OuterChest_02` is the second position although the
+		-- catalogue answered it fourth.
+		check('and a slot the puppet IS wearing starts on that piece',
+			slider('OuterChest').index == 2 and slider('OuterChest').value == 'Outer Chest 02',
+			('%d/%s'):format(slider('OuterChest').index, tostring(slider('OuterChest').value)))
+
+		-- THE SLIDER SELECTS BY INDEX, and the index is all the page ever sends:
+		-- turning one into a record name is the state half's job, because it is
+		-- the only side holding the list.
+		local handle = frame.payload.handle
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle, id = 'Head', index = 3, commit = true })
+		check('a committed index puts that position piece on the puppet',
+			worn.Head == 'Items.Head_03', tostring(worn.Head))
+		check('and the slider follows it, with the one label the page is told',
+			slider('Head').index == 3 and slider('Head').value == 'Head 03',
+			('%d/%s'):format(slider('Head').index, tostring(slider('Head').value)))
+
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle, id = 'Head', index = 0, commit = true })
+		check('index 0 takes the piece off rather than naming one',
+			worn.Head == false and slider('Head').index == 0
+				and slider('Head').value == 'nothing',
+			tostring(worn.Head))
+
+		-- An uncommitted move is a fitting, not a choice: the body wears it and
+		-- the save would not keep it.
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle, id = 'Legs', index = 1, commit = false })
+		check('an uncommitted move still dresses the puppet',
+			worn.Legs == 'Items.Legs_01', tostring(worn.Legs))
+
+		-- TWO SLOTS PREVIEWING 'NOTHING' ARE TWO PREVIEWS, and the fitting is keyed
+		-- on the slot as well as the record to say so: `false` is a legitimate
+		-- thing to try on, so a record on its own cannot tell one empty slot from
+		-- another and the second preview would be skipped as a repeat of the
+		-- first -- leaving the first slot's piece off the body for good.
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle, id = 'Feet', index = 2, commit = true })
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle, id = 'Feet', index = 0, commit = false })
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle, id = 'InnerChest', index = 0, commit = false })
+		check('previewing nothing on one slot does not leave another undressed',
+			worn.Feet == 'Items.Feet_02', tostring(worn.Feet))
+
+		appearance.Wardrobe.Close('caller')
+		check('closing the room gives the puppet back unkept',
+			gaveBack == 'appearance/false', tostring(gaveBack))
+	end
+
+	-- ── the one bound still in play ──────────────────────────────────────────
+	-- `Open77.equipment.records` caps `limit` at 2000 and the live catalogue was
+	-- at 98.4% of it when it was read whole. Per slot the largest is a third of
+	-- that, so this cannot fire today -- which is exactly why it is written down
+	-- and tested: a silent truncation is the shape of the whole episode.
+	do
+		local env, control = joinClient('never', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+
+		env.Open77.equipment.records = function(options)
+			local out = {}
+			if options.slot == 'OuterChest' then
+				for index = 1, 2000 do out[index] = { record = ('Items.Coat_%04d'):format(index) } end
+			end
+			return out
+		end
+		env.Open77.equipment.apply = function() return true end
+		env.Open77.character.state = function()
+			return { health = 100, alive = true, attached = true }
+		end
+		appearance.Clothing.BeginPreview = function() return { equipment = {} } end
+		appearance.Clothing.EndPreview = function() return true end
+
+		--- Every note this client has sent the server, as one string.
+		local function toldServer()
+			local note = env.OPX.Event(env.OPX.Channel.NET, 'runtime', 'note')
+			local said = {}
+			for index = 1, #control.serverEvents do
+				local sent = control.serverEvents[index]
+				if sent.name == note and sent[1] == 'appearance' then
+					said[#said + 1] = tostring(sent[2])
+				end
+			end
+			return table.concat(said, ' | ')
+		end
+
+		appearance.Wardrobe.Open('appearance')
+		control.Pump(30)
+		check('an answer that reaches the limit is reported, not swallowed',
+			toldServer():find('being truncated', 1, true) ~= nil, toldServer())
+		check('and the line names the slot and both numbers',
+			toldServer():find('OuterChest catalogue answered 2000 record(s) against a limit of 2000',
+				1, true) ~= nil, toldServer())
+		appearance.Wardrobe.Close('caller')
 	end
 end
 
