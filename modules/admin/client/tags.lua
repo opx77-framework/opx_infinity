@@ -98,15 +98,14 @@ end
 -- written above that one, and a `local function` further down the file is a
 -- DIFFERENT local: the call above it would reach for a global that is never set.
 local function rememberOwn(on)
-	local kvp = Open77.kvp
-	if type(kvp) ~= 'table' or type(kvp.set) ~= 'function' then
-		return warnOnce('kvp', 'Open77.kvp is not on this client: the name tag switch lasts this ' ..
-			'session only')
-	end
-	local called, ok, reason = pcall(kvp.set, KVP_OWN_KEY, on)
-	if not called or not ok then
+	-- `Store.Set` folds the absent-namespace check, the pcall and the two-return
+	-- unwrap into one Result, so the missing store and the refused write arrive
+	-- the same way: the distinction never changed what this function does, which
+	-- is warn once and carry on with a session-only switch.
+	local saved = OPX.Lib.Store.Set(KVP_OWN_KEY, on)
+	if not saved.ok then
 		warnOnce('kvpSetOwn', ('the own-tag preference was not saved: %s')
-			:format(tostring(called and reason or ok)))
+			:format(tostring(saved.detail)))
 	end
 end
 
@@ -266,8 +265,10 @@ end
 -- One pass: works out the tags to draw and publishes them when they changed.
 local function pass()
 	if not shown then return end
-	local players = Open77.players
-	if type(players) ~= 'table' or type(players.nearby) ~= 'function' then
+	-- The early return is the point, not the check: without the native there are
+	-- no rows to compute and publishing an empty frame would TAKE DOWN tags that
+	-- are on screen. `Native.Reach` is the same two-level lookup written once.
+	if OPX.Lib.Native.Reach('players.nearby') == nil then
 		return warnOnce('nearby', 'Open77.players.nearby is not on this client: name tags cannot ' ..
 			'be drawn')
 	end
@@ -278,14 +279,19 @@ local function pass()
 	-- it was drawn, or was never asked for.
 	local ownMissing = nil
 	if not down and not (tuning.hideFirstPerson and third == false) then
-		local read, entries, why = pcall(players.nearby, tuning.distance + CULL_MARGIN,
+		-- A Result, not `(entries, reason)`. `Nearby` folds the three ways the old
+		-- call could come back empty -- raised, refused, nobody near -- into two:
+		-- Ok with a list that may be empty, or a refusal carrying the reason. It
+		-- also bounds the radius, which this site never did.
+		local found = OPX.Lib.Players.Nearby(tuning.distance + CULL_MARGIN,
 			{ includeSelf = ownShown, limit = tuning.max })
+		local entries = found.ok and type(found.value) == 'table' and found.value or {}
 		if ownShown then
 			ownMissing = ('the local body is not in players.nearby (%d entries, %s)')
-				:format(type(entries) == 'table' and #entries or -1,
-					read and tostring(why or 'no reason given') or tostring(entries))
+				:format(found.ok and #entries or -1,
+					found.ok and 'no reason given' or tostring(found.detail))
 		end
-		for _, entry in ipairs(read and type(entries) == 'table' and entries or {}) do
+		for _, entry in ipairs(entries) do
 			local id = type(entry) == 'table' and tonumber(entry.playerId) or nil
 			local row = id and known[id] or nil
 			local distance = row and Text.Finite(entry.distance) or nil
@@ -377,15 +383,9 @@ end
 
 -- Saves the switch on this machine for this server.
 local function remember(on)
-	local kvp = Open77.kvp
-	if type(kvp) ~= 'table' or type(kvp.set) ~= 'function' then
-		return warnOnce('kvp', 'Open77.kvp is not on this client: the name tag switch lasts this ' ..
-			'session only')
-	end
-	local called, ok, reason = pcall(kvp.set, KVP_KEY, on)
-	if not called or not ok then
-		warnOnce('kvpSet', ('the name tag switch was not saved: %s')
-			:format(tostring(called and reason or ok)))
+	local saved = OPX.Lib.Store.Set(KVP_KEY, on)
+	if not saved.ok then
+		warnOnce('kvpSet', ('the name tag switch was not saved: %s'):format(tostring(saved.detail)))
 	end
 end
 
@@ -455,18 +455,19 @@ function Tags.Start()
 
 	job = OPX.Scheduler.Every('admin.tags', tuning.updateMs, pass)
 
-	local kvp = Open77.kvp
-	if type(kvp) ~= 'table' or type(kvp.get) ~= 'function' then return end
-
 	-- The own-tag preference: `TAGS.OWN` is the DEFAULT, not the value. It is what
 	-- a machine that has never been asked starts at, and the store wins after
 	-- that, because from then on it is the operator's own answer. Read before the
 	-- switch below, which may return early.
-	local readOwn, savedOwn = pcall(kvp.get, KVP_OWN_KEY, settings.OWN == true)
-	ownShown = readOwn and savedOwn == true or (not readOwn and settings.OWN == true)
+	--
+	-- `Store.Get` takes the fallback rather than answering a Result, so the
+	-- unreadable store and the unset key land on the same line the way they
+	-- always meant to. The hand-rolled version did not quite manage that: an
+	-- absent `Open77.kvp` returned out of `Start` before this line, leaving
+	-- `ownShown` at its initialiser and silently discarding `TAGS.OWN`.
+	ownShown = OPX.Lib.Store.Get(KVP_OWN_KEY, settings.OWN == true) == true
 
-	local read, saved = pcall(kvp.get, KVP_KEY, false)
-	if not read or saved ~= true then return end
+	if OPX.Lib.Store.Get(KVP_KEY, false) ~= true then return end
 	restoresLeft = RESTORE_TRIES
 	OPX.Scheduler.Every('admin.tags.restore', RESTORE_DELAY_MS, restorePass)
 end
