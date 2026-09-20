@@ -1528,6 +1528,14 @@ end
 -- the whole world's and takes no argument.
 local PER_TARGET = { bag = true, characters = true, found = true }
 
+-- GAPS, not instants: the settle after a switch waits each of these in turn, so
+-- the screen is rebuilt about 120 ms, 250 ms, 500 ms and 1 s after the command
+-- went out. Front-loaded because a client-side switch has usually landed within
+-- one frame and the operator is looking straight at the row; the tail is for a
+-- command that goes to the server and answers nothing back. Four redraws of a
+-- nine-row list, once per deliberate keypress.
+local SWITCH_SETTLE_MS = { 120, 130, 250, 500 }
+
 --- Who a per-target topic is asked for, or nil.
 -- The two are read from different places on purpose. A bag is read off the
 -- screen the operator is standing on, because that screen IS the bag. A
@@ -1860,7 +1868,37 @@ onAction = function(payload)
 		local tokens = {}
 		for index, token in ipairs(data.switch) do tokens[index] = token end
 		tokens[#tokens + 1] = payload.value and 'on' or 'off'
-		return Menu.Run(tokens)
+		Menu.Run(tokens)
+		-- AND THEN REDRAW, WHICH THIS BRANCH ALONE DID NOT DO. The two branches
+		-- above both end in `draw()` and both explain themselves by saying a
+		-- switch is the case that "waits on the round trip". Some switches do:
+		-- `tags` is answered by the server and its answer calls `Menu.Refresh`.
+		-- Many do not. `noclip` is decided on this client, by this client, and
+		-- nothing echoes -- so the row, and every OTHER row whose `disabled` is
+		-- computed from it, kept whatever the last draw had decided. The operator
+		-- saw a live checkbox beside a row that should have greyed out, and the
+		-- screen only told the truth again when some unrelated event happened to
+		-- redraw it. That is the "I have to move once for it to update" the owner
+		-- reported, and it was never about the cursor: the menu module does not
+		-- dispatch on a move, so moving cannot rebuild anything. It was about
+		-- which event got there first.
+		--
+		-- A COMMAND IS NOT SYNCHRONOUS, so one redraw here would read the state
+		-- the switch has not changed yet. A short bounded settle is what covers
+		-- both kinds without the menu having to know which kind it just ran: the
+		-- builder re-reads whatever it reads, four more times, over a second. An
+		-- in-place update is a rebuild and one frame, the menu is open and already
+		-- interactive, and a redundant frame costs a page repaint of nine rows.
+		--
+		-- A switch the SERVER answers keeps working exactly as before: its echo
+		-- still calls `Menu.Refresh`, and landing on an unchanged frame is free.
+		return CreateThread(function()
+			for _, delay in ipairs(SWITCH_SETTLE_MS) do
+				Wait(delay)
+				if handle == nil then return end
+				Menu.Refresh()
+			end
+		end)
 	end
 
 	if payload.action ~= 'select' then return end

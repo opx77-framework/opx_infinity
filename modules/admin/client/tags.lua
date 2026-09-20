@@ -87,6 +87,7 @@ local reported = {}
 -- See the probe at the end of `pass`.
 local ownQuiet = 0
 
+
 -- The last pass outcome put in the journal, and how many have been. See
 -- `outcome` below for why both bounds are here rather than one.
 local lastOutcome, outcomes = nil, 0
@@ -554,7 +555,30 @@ function Tags.Start()
 		down = payload.down == true
 	end)
 
-	job = OPX.Scheduler.Every('admin.tags', tuning.updateMs, pass)
+	-- GUARDED, BECAUSE THE JOURNAL SAYS THE PASS STOPS. The switch goes on, the
+	-- server's answer is reported, and then the outcome line at the end of `pass`
+	-- -- which reports every pass whose decision changed, and had ten of its
+	-- twelve reports left -- is never written again. No `warnOnce` fires either,
+	-- and `appearance`'s own scheduler jobs keep reporting through the same
+	-- minutes, so the scheduler itself is alive. A pass that ran and decided
+	-- nothing would still have said so. The remaining reading is that `pass`
+	-- RAISES, somewhere past the switch check, and the raise goes wherever an
+	-- error inside a scheduler job goes -- which is not this journal.
+	--
+	-- So it is caught here and named. The job survives a raising pass instead of
+	-- being taken down by it, and the first raise is a line an operator can read
+	-- with the message and the traceback's own text in it. `warnOnce` keys it, so
+	-- a fault that repeats four times a second costs exactly one note.
+	--
+	-- This is a diagnostic AND a fix: a per-frame tick that can be killed by one
+	-- bad frame -- an entity that stopped streaming between two reads is enough --
+	-- should not stay dead for the rest of the session.
+	job = OPX.Scheduler.Every('admin.tags', tuning.updateMs, function()
+		local ran, failure = pcall(pass)
+		if not ran then
+			warnOnce('passRaised', ('the pass raised and was caught: %s'):format(tostring(failure)))
+		end
+	end)
 
 	-- The own-tag preference: `TAGS.OWN` is the DEFAULT, not the value. It is what
 	-- a machine that has never been asked starts at, and the store wins after

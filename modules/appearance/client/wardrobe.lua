@@ -388,6 +388,12 @@ local outfitCleared, savedPerspective, orbit = false, nil, 180
 -- save is listened for.
 local creationWatch, awaitSave = 0, nil
 
+-- The character the live retry watch is owed to, or nil when none is running.
+-- Read by the `characterChanged` handler, which otherwise cannot tell the
+-- character it is ANNOUNCING from a different one ARRIVING -- see the comment
+-- there, and `WORLD_READY` below it for the same mistake one event over.
+local watchCitizen = nil
+
 -- When `begin` stops being allowed to still be working, or 0 when nothing is
 -- opening.
 local openingUntilMs = 0
@@ -794,6 +800,21 @@ local function begin(owner, creation, expected)
 			phase = 'closed'
 			openingUntilMs = 0
 		end
+		-- EVERY WAY OUT OF `begin` THAT IS NOT A ROOM comes through here, which is
+		-- what makes this the one place worth a line. There were five of them and
+		-- all five were silent: a catalogue that superseded, a puppet the clothing
+		-- half would not lend and its nine separate reasons for that, a character
+		-- that changed under the borrow, a body that stopped being playable. The
+		-- caller retries on most of them and logs the rest to the client's own
+		-- file, on the player's machine, where nobody operating the server can
+		-- read it.
+		--
+		-- Deduped per world entry, like `refusal` above and for the same reason:
+		-- the retry loop calls this twice a second.
+		if reason ~= nil and not refusalTold[reason] then
+			refusalTold[reason] = true
+			Runtime.Note(('the fitting room did not open: %s'):format(tostring(reason)))
+		end
 		return false, reason
 	end
 
@@ -1030,12 +1051,25 @@ end
 local function awaitRoom(owner, creation, citizenId, resumed)
 	creationWatch = creationWatch + 1
 	local mine = creationWatch
+	watchCitizen = citizenId
 	CreateThread(function()
 		local deadline, reason, said = Runtime.NowMs() + creationWaitMs(), nil, nil
 		while mine == creationWatch and Runtime.NowMs() < deadline do
 			local ok
 			ok, reason = begin(owner, creation, citizenId)
-			if ok or reason == 'wardrobe_busy' then return end
+			if ok or reason == 'wardrobe_busy' then
+				if not ok then
+					-- Silent until now, and one of only three ways out of this loop
+					-- that wrote nothing. A room already up withdraws the claim when
+					-- it closes, so this exit is legitimate -- but "legitimate" and
+					-- "invisible" are different things, and telling the two busy
+					-- endings apart afterwards was impossible.
+					Runtime.Note(('the fitting room owed to %s stood down: one is already open')
+						:format(tostring(citizenId)))
+				end
+				watchCitizen = nil
+				return
+			end
 			if not RETRYABLE[reason] and reason ~= 'superseded' then
 				-- A REFUSAL THAT IS NOT RETRIED IS THE END OF THE OFFER, once and
 				-- for this world entry, so it is the single most important line
@@ -1068,9 +1102,23 @@ local function awaitRoom(owner, creation, citizenId, resumed)
 				roomExpired = { citizenId = citizenId, reason = tostring(reason or 'timeout'),
 					resumed = resumed }
 			end
+			watchCitizen = nil
 			Runtime.Note(('the fitting room owed to %s expired after %d ms: still %s')
 				:format(tostring(citizenId), creationWaitMs(), tostring(reason)))
 			claim(false, 'expired')
+		else
+			-- THE EXIT THAT ATE A CREATION'S FITTING ROOM, and it wrote nothing at
+			-- all. `mine ~= creationWatch` means something bumped the generation
+			-- under this thread; the thread then returned without opening a room,
+			-- without withdrawing the claim and without a line anywhere. The join
+			-- sat behind a claim nobody owned until the spawn selector timed out
+			-- five minutes later, and the only trace in the journal was the spawn
+			-- module saying the player chose nothing.
+			--
+			-- It is a legitimate ending -- whoever bumped the generation owns the
+			-- claim now -- but it is never again an invisible one.
+			Runtime.Note(('the fitting room owed to %s was superseded while waiting (last: %s)')
+				:format(tostring(citizenId), tostring(reason or 'no attempt')))
 		end
 	end)
 end
@@ -1263,6 +1311,33 @@ function M.Wardrobe.Wire()
 		local event = decision.event
 
 		if event == 'characterChanged' then
+			-- THE CHARACTER IT ANNOUNCES IS NOT A CHARACTER ARRIVING, and telling
+			-- those two apart is the whole of this branch. A CREATION raises
+			-- `characterChanged` for the body the creator has just built -- the
+			-- same citizen the retry watch three lines down was started for,
+			-- seconds earlier, by that very creation. Bumping the generation here
+			-- killed that thread where it stood: no room, no claim withdrawn, no
+			-- line in the journal. The join then waited behind a claim nobody
+			-- owned until the spawn selector gave up on its own, and the only
+			-- evidence was the spawn module reporting that the player chose
+			-- nothing -- which is true, and says nothing about why.
+			--
+			-- This is the SAME MISTAKE as the one written up on `WORLD_READY`
+			-- below, one event over: an event that is structurally part of every
+			-- creation, treated as though it could only mean a new character. The
+			-- guard is the same shape -- ask whether this is the character already
+			-- being waited for -- and the answer is a citizen id both sides have.
+			--
+			-- A DIFFERENT character still tears everything down, which is what
+			-- this branch is for: the room, the offer and the expiry all belong to
+			-- whoever has gone.
+			if watchCitizen ~= nil and decision.citizenId == watchCitizen then
+				Runtime.Note(('%s is the character its own fitting room is waiting for; ' ..
+					'the offer stands'):format(tostring(watchCitizen)))
+				return
+			end
+
+			watchCitizen = nil
 			creationWatch = creationWatch + 1
 			awaitSave = nil
 			roomOffered = false
