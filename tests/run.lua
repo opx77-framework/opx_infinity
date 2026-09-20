@@ -2149,28 +2149,26 @@ do
 		-- two-level `type()` dance in five places. It answers the function or
 		-- nil, and it must not raise on a namespace that is wholly absent.
 		--
-		-- IT IS PROBED AGAINST THE REAL `_G`, and that is not a shortcut. The
-		-- library is loaded by `Host.Require` through a bare `loadfile`, so its
-		-- chunks run in the real global environment and `rawget(_G, 'Open77')`
-		-- never sees the harness's stubbed namespace. Every library wrapper is
-		-- therefore on its absent-native path for the whole of this suite -- true
-		-- of `Input` and `Rpc` before this migration and of `Store`, `Players`
-		-- and `Native` after it. Planting a namespace here for three lines is the
-		-- only way to exercise the FOUND branch at all, and restoring it is what
-		-- keeps the rest of the suite reading the absent one.
-		local hadOpen77 = rawget(_G, 'Open77')
-		_G.Open77 = { players = { all = function() return {} end } }
+		-- IT IS PROBED AGAINST THE ENVIRONMENT THE RESOURCE RUNS IN, which is
+		-- what `Host.RequireFor` made possible: the library is loaded INTO `env`
+		-- now, so `rawget(_G, 'Open77')` inside it reads the same stub every
+		-- other client file reads. Before that it was loaded with a bare
+		-- `loadfile` and ran in the real global table, so every wrapper took its
+		-- absent-native path for the whole suite and only refusals were covered.
+		local stub = env.Open77
 		local found = Lib.Native.Reach('players.all')
-		local missingLeaf = Lib.Native.Reach('players.nearby')
-		local missingRoot = Lib.Native.Reach('kvp.get')
-		_G.Open77 = hadOpen77
+		local missingLeaf = Lib.Native.Reach('players.nope')
+		local missingRoot = Lib.Native.Reach('nosuch.thing')
+		env.Open77 = nil
+		local withoutPlatform = Lib.Native.Reach('players.all')
+		env.Open77 = stub
 
-		check('Native.Reach answers the function it finds',
-			type(found) == 'function')
+		check('Native.Reach answers a function off the live stub',
+			type(found) == 'function', type(found))
 		check('and nil for a missing leaf and a missing namespace alike',
 			missingLeaf == nil and missingRoot == nil)
 		check('and nil, rather than raising, when there is no Open77 at all',
-			Lib.Native.Reach('players.all') == nil)
+			withoutPlatform == nil)
 
 		-- The structural half: nobody may put a Result straight into a boolean
 		-- position. Line-scoped, which is enough because every such call in this

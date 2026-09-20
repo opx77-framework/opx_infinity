@@ -448,7 +448,7 @@ function Host.Environment(side, database)
 	-- exercise the REAL library rather than a stand-in -- a stub would pass while
 	-- the two repositories drifted apart, which is the failure this is meant to
 	-- catch.
-	if side == 'client' then env.require = Host.Require end
+	if side == 'client' then env.require = Host.RequireFor(env) end
 
 	env._G = env
 	setmetatable(env, { __index = _G })
@@ -541,14 +541,29 @@ Host.ClientOnly = { 'require' }
 --- has to be loud rather than skipped.
 Host.Providers = { opx_lib = os.getenv('OPX_LIB_PATH') or '../opx_lib' }
 
-local imported = {}
-
---- The client VM's `require`, resolving a provider-qualified name against a
---- sibling checkout. Caches per resolved file, as the platform does.
+--- Builds the client VM's `require` for ONE environment.
+---
+--- A FACTORY rather than a plain function, and the environment is the whole
+--- reason. `loadfile(path)` runs a module in the REAL global table -- which is
+--- not where the harness's stubbed `Open77` lives; that is in the sandbox
+--- `env`. So every library wrapper resolved its natives against a table that
+--- was never there, took its absent-native path for the entire suite, and the
+--- SUCCESS paths of `Input`, `Rpc`, `Store` and `Players` went untested while
+--- their refusals were covered. The suite loads the real library precisely so
+--- the two repositories cannot drift; loading it blind to the stub gave up
+--- most of that.
+---
+--- The cache moves inside for the same reason. It was module-level and shared
+--- across every environment the suite builds, where the platform caches per
+--- caller generation -- two consumers get two copies. Per environment is both
+--- the faithful shape and what lets the stub differ between tests.
 -- @author dop42
--- @param name string
--- @return any, string|nil
-function Host.Require(name)
+-- @param env table the sandbox the importing resource runs in
+-- @return function
+function Host.RequireFor(env)
+	local imported = {}
+
+	local function resolve(name)
 	if type(name) ~= 'string' then return nil, 'invalid_module_name' end
 
 	local provider, module = name:match('^@([%w_]+)/?(.*)$')
@@ -566,22 +581,28 @@ function Host.Require(name)
 	local path = ('%s/%s.lua'):format(root, (module:gsub('%.', '/')))
 	if imported[path] ~= nil then return imported[path] end
 
-	local chunk, why = loadfile(path)
+	-- IN `env`, which is the point of the factory: the module resolves its
+	-- natives against the stub the test installed, not against the real global
+	-- table where there is no platform at all.
+	local chunk, why = loadfile(path, 't', env)
 	if chunk == nil then
 		-- The sibling is genuinely absent, rather than the import being wrong.
 		return nil, ('module_dependency_not_running: %s'):format(tostring(why))
 	end
 
-	-- The library imports its own siblings, and it does so through the caller's
-	-- `require` -- which, in a running client, is this same resolver.
-	local previous = _G.require
-	_G.require = Host.Require
+	-- The library imports its own siblings through the caller's `require`,
+	-- which in a running client is this same resolver. It already IS
+	-- `env.require` and the module runs in `env`, so the lookup finds it with
+	-- no global swap -- the swap this replaced was only ever needed because the
+	-- module was running somewhere `env` could not be seen from.
 	local value = chunk()
-	_G.require = previous
 
 	if value == nil then value = true end
 	imported[path] = value
 	return value
+	end
+
+	return resolve
 end
 
 --- Reads the manifest and answers the scripts for one side, in load order.
