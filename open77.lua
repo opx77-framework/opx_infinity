@@ -302,6 +302,7 @@ server_script "modules/inventory/server/main.lua"
 client_script "modules/inventory/client/main.lua"
 client_script "modules/inventory/client/world.lua"
 client_script "modules/inventory/client/keys.lua"
+client_script "modules/inventory/client/slotbar.lua"
 
 shared_script "modules/hud/module.lua"
 shared_script "modules/hud/locales.lua"

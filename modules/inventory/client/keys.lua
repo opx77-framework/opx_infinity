@@ -74,6 +74,12 @@ local function pressOpen()
 end
 
 --- Uses the item in one bag slot, with the screen closed and the player up.
+--- Shows the hotbar row for a few seconds. It uses nothing: a player who wants
+--- to know what slot three holds should not have to eat it to find out.
+local function pressPeek()
+	M.Slotbar.Peek()
+end
+
 local function pressHotbar(index)
 	local Screen = M.Screen
 	if Screen.IsOpen() or Screen.IsDown() or Screen.Own() == nil then return end
@@ -89,6 +95,8 @@ function Keys.Register()
 			locale('inventory.key.hotbar', { slot = index }),
 			Options.KEYS_HOTBAR[index], function() pressHotbar(index) end)
 	end
+
+	register('opx.inventory.peek', locale('inventory.key.peek'), Options.KEY_PEEK, pressPeek)
 
 	-- Nothing in the catalogue depends on a key, so a rebind only resends the
 	-- configuration.

@@ -260,6 +260,12 @@ local hotbar = section(Config.HOTBAR, 'HOTBAR')
 Options.HOTBAR = hotbar.ENABLED ~= false
 Options.HOTBAR_SLOTS = Options.HOTBAR and bounded('HOTBAR.SLOTS', hotbar.SLOTS, 0, 9, 5) or 0
 
+-- How long the peek key holds the hotbar row on screen. The floor is there
+-- because a row shown for a quarter of a second is a flicker nobody reads, and
+-- the ceiling because a row held for half a minute is not a peek, it is a HUD
+-- element the operator should be asked for on purpose.
+Options.HOTBAR_PEEK_MS = bounded('HOTBAR.PEEK_MS', hotbar.PEEK_MS, 500, 30000, 4000)
+
 local keys = section(Config.KEYS, 'KEYS')
 Options.KEY_OPEN = keyName('KEYS.OPEN', keys.OPEN, 'I')
 
@@ -277,6 +283,27 @@ for index = 1, Options.HOTBAR_SLOTS do
 		key = false
 	end
 	Options.KEYS_HOTBAR[index] = key
+end
+
+--- The key that shows the hotbar row, or false where none is registered.
+--
+-- CHECKED AGAINST THE KEYS IT WOULD SHADOW, exactly as each hotbar key is
+-- checked against the open key above. A peek bound to the same key as a hotbar
+-- slot would draw the row and use the item in the same press, which is the one
+-- thing this key must not do; bound to the open key it would fight the bag.
+Options.KEY_PEEK = Options.HOTBAR_SLOTS > 0
+	and keyName('KEYS.PEEK', keys.PEEK, 'TAB') or false
+if Options.KEY_PEEK and Options.KEY_PEEK == Options.KEY_OPEN then
+	problem(('KEYS.PEEK is the open key %q; the peek key is not registered')
+		:format(Options.KEY_PEEK))
+	Options.KEY_PEEK = false
+end
+for index = 1, Options.HOTBAR_SLOTS do
+	if Options.KEY_PEEK and Options.KEY_PEEK == Options.KEYS_HOTBAR[index] then
+		problem(('KEYS.PEEK is hotbar key %d (%q); the peek key is not registered')
+			:format(index, Options.KEY_PEEK))
+		Options.KEY_PEEK = false
+	end
 end
 
 Options.USE_COOLDOWN_MS = bounded('USE_COOLDOWN_MS', Config.USE_COOLDOWN_MS, 0, 60000, 750)

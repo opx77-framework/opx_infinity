@@ -36,13 +36,20 @@ OPX.Config.MODULES.inventory = {
 	},
 
 	-- Bag slots a key uses straight, without opening the screen.
-	HOTBAR = { ENABLED = true, SLOTS = 5 },
+	-- PEEK_MS is how long the peek key holds the hotbar row on screen. The row
+	-- exists because the hotbar keys work with the bag SHUT, which is the point
+	-- of them and also the problem: nothing says what they are bound to until
+	-- you open the bag, by which time you did not need the key.
+	HOTBAR = { ENABLED = true, SLOTS = 5, PEEK_MS = 4000 },
 
 	-- Defaults a player rebinds in the pause menu. `false` registers no mapping
 	-- at all, which is how an operator turns a key off.
 	KEYS = {
 		OPEN = 'I',
 		HOTBAR = { '4', '5', '6', '7', '8' },
+		-- Shows the hotbar row for PEEK_MS and nothing else: it uses nothing,
+		-- takes no focus and cannot be clicked. `false` turns it off.
+		PEEK = 'TAB',
 	},
 
 	-- Least time between two uses by one player, and how long a use handler has

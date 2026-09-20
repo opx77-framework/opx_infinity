@@ -7,6 +7,7 @@ import MenuView from '@/modules/menu/MenuView.vue'
 import NotifyRoot from '@/modules/notify/NotifyRoot.vue'
 import PanelView from '@/modules/panel/PanelView.vue'
 import ProgressRoot from '@/modules/progress/ProgressRoot.vue'
+import SlotbarRoot from '@/modules/inventory/SlotbarRoot.vue'
 import PromptsRoot from '@/modules/prompts/PromptsRoot.vue'
 import SpawnView from '@/modules/spawn/SpawnView.vue'
 import TagsRoot from '@/modules/tags/TagsRoot.vue'
@@ -36,6 +37,12 @@ registerModule({ id: 'hud', surface: 'overlay', component: HudRoot })
 registerModule({ id: 'notify', surface: 'overlay', component: NotifyRoot })
 registerModule({ id: 'prompts', surface: 'overlay', component: PromptsRoot })
 registerModule({ id: 'progress', surface: 'overlay', component: ProgressRoot })
+
+// THE INVENTORY IS TWO REGISTRATIONS for the same reason the chat is: two
+// concerns on two layers. `InventoryView` below is the bag the player drives and
+// takes focus; this is the few-second peek at the hotbar row, which is drawn
+// over whatever the player is aiming at and must never take a pointer.
+registerModule({ id: 'inventory-slotbar', surface: 'overlay', component: SlotbarRoot })
 
 // Name tags draw over bodies in the world, so they are on the overlay and must
 // never take focus: one that captured the keyboard would stop the player moving.

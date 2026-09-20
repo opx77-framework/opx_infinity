@@ -56,6 +56,8 @@ OPX.Locale.Register('en', {
 
 	['inventory.key.open'] = 'Inventory: open or close',
 	['inventory.key.hotbar'] = 'Inventory: use hotbar slot {slot}',
+	['inventory.key.peek'] = 'Inventory: show the hotbar row',
+	['inventory.slotbar.empty'] = 'Empty',
 	['inventory.prompt.stash'] = 'Open the storage',
 	['inventory.context.pile'] = 'Pick up',
 	['inventory.context.trunk'] = 'Open the trunk',
@@ -391,6 +393,8 @@ OPX.Locale.Register('fr', {
 
 	['inventory.key.open'] = 'Inventaire : ouvrir ou fermer',
 	['inventory.key.hotbar'] = "Inventaire : utiliser l'emplacement rapide {slot}",
+	['inventory.key.peek'] = 'Inventaire : afficher la barre rapide',
+	['inventory.slotbar.empty'] = 'Vide',
 	['inventory.prompt.stash'] = 'Ouvrir le rangement',
 	['inventory.context.pile'] = 'Ramasser',
 	['inventory.context.trunk'] = 'Ouvrir le coffre',
