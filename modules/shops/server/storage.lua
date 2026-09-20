@@ -26,6 +26,15 @@ M.Storage = {}
 -- stores the worn record the same way -- and because nothing ever queries
 -- inside it: a look is read whole, written whole, and shown whole.
 --
+-- `citizen_id` IS `ascii` / `ascii_bin`, MATCHING THE COLUMN IT POINTS AT, and
+-- this is not decoration. A foreign key between two columns of different
+-- character sets is refused by InnoDB with SQL 1005 -- "can't create table" and
+-- nothing else -- which is exactly how this table failed on its first deploy.
+-- `opx77_characters.citizen_id` is ascii/ascii_bin and so is every column in
+-- this resource that points at it; `share_code` takes the same treatment
+-- because a code is A-Z and 2-9 by construction, and a binary collation is what
+-- makes its UNIQUE index case-exact.
+--
 -- `share_code` IS THE INDEX A REDEEM READS, so it is unique and nullable: a
 -- look nobody has shared has none, and two looks may not answer the same code.
 -- MySQL lets any number of rows hold NULL in a UNIQUE column, which is exactly
@@ -39,17 +48,17 @@ M.Storage.SCHEMA = {
 	[[
 		CREATE TABLE IF NOT EXISTS opx77_saved_outfits (
 			outfit_id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-			citizen_id VARCHAR(16) NOT NULL,
+			citizen_id VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
 			name VARCHAR(64) NOT NULL,
 			look JSON NOT NULL,
-			share_code VARCHAR(16) NULL,
+			share_code VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (outfit_id),
 			UNIQUE KEY uq_share_code (share_code),
 			KEY ix_citizen (citizen_id),
 			CONSTRAINT fk_saved_outfit_character FOREIGN KEY (citizen_id)
 				REFERENCES opx77_characters (citizen_id) ON DELETE CASCADE
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+		) ENGINE=InnoDB
 	]],
 }
 
