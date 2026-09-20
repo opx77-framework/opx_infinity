@@ -45,6 +45,25 @@ local replayWanted, replaySequence, replayAtMs = true, 0, 0
 -- Failures already said in the log, by key.
 local warned = {}
 
+-- The players this client has dressed a proxy for, in this world.
+local drawn = {}
+
+-- When the look request was answered, and whether the "nothing to draw" verdict
+-- has been said for this world entry. A look is the only thing that draws a peer
+-- and its absence is otherwise silent, so this is the one line that separates
+-- "the server holds nothing for me" from "the body was refused".
+local replayAnsweredAtMs, verdictSaid = 0, false
+
+-- How long after the answer to wait before concluding the server holds nothing.
+local VERDICT_MS = 10000
+
+-- How long between roster reports, when the last was said, and whether the
+-- missing library has already been reported.
+local ROSTER_MS = 5000
+local ROSTER_RADIUS = 60.0
+local rosterAtMs = 0
+local rosterWarned = false
+
 --- Logs a warning once per key.
 local function warnOnce(key, line)
 	if warned[key] then return end
@@ -166,12 +185,75 @@ local function publish()
 		:format(tostring(body.family), type(body.groups) == 'table' and #body.groups or 0, sequence))
 end
 
+--- Says what this client can actually see, because "nobody is drawn" has three
+-- different faults and this is the only line that separates them: how many
+-- players are near, how many of them have an entity this client was given, and
+-- how many this client has dressed a body on. Nobody near is the transport or
+-- the routing bucket; near with no entity is a proxy that never spawned;
+-- dressed and still invisible is a rendering or visibility flag.
+--
+-- IT CALLS THE HOST, NOT `OPX.Lib`. The library's validator calls `getmetatable`,
+-- which this resource's sandbox does not expose, so every `OPX.Lib` call that
+-- validates raised here -- once a second, from inside this pass, which aborted
+-- the rest of the pass with it. A diagnostic may never be what breaks what it
+-- measures, so this reads the host surface directly and is called under `pcall`.
+local function reportRoster()
+	local players = Open77.players
+	local nearby = type(players) == 'table' and players.nearby or nil
+	if type(nearby) ~= 'function' then
+		if not rosterWarned then
+			rosterWarned = true
+			Open77.log.warn('[appearance] Open77.players.nearby is not on this client: the remote ' ..
+				'roster cannot be read, so "nobody is drawn" cannot be told from "nobody is near"')
+		end
+		return false
+	end
+	local called, list, reason = pcall(nearby, ROSTER_RADIUS, { includeSelf = false, limit = 32 })
+	if not called or type(list) ~= 'table' then
+		Open77.log.warn(('[appearance] the roster could not be read: %s')
+			:format(tostring(called and reason or list)))
+		return false
+	end
+	local near, bodied, dressed = 0, 0, 0
+	for _, entry in ipairs(list) do
+		if type(entry) == 'table' then
+			near = near + 1
+			if entry.entity ~= nil then bodied = bodied + 1 end
+			if drawn[tonumber(entry.playerId)] then dressed = dressed + 1 end
+		end
+	end
+	Open77.log.info(('[appearance] roster: %d near, %d with an entity, %d dressed by this client')
+		:format(near, bodied, dressed))
+	return true
+end
+
 --- Runs one presence pass: the replay request and the publication.
 -- @author dop42
 function M.Presence.Check()
 	if not enabled() then return end
 	askReplay()
 	publish()
+	local nowMs = Runtime.NowMs()
+	if nowMs - rosterAtMs >= ROSTER_MS then
+		rosterAtMs = nowMs
+		-- Under `pcall` once more, and switched off when it raises: a report that
+		-- repeats an error every five seconds is worse than no report at all.
+		local reported, failure = pcall(reportRoster)
+		if not reported then
+			rosterAtMs = math.huge
+			Open77.log.warn('[appearance] the roster report is off: ' .. tostring(failure))
+		end
+	end
+	-- The answer to the look request is the last thing that can explain a world
+	-- with nobody in it: the server says how many looks it holds, and this says
+	-- whether any of them ever reached this client.
+	if replayAnsweredAtMs ~= 0 and not verdictSaid and next(drawn) == nil and
+		Runtime.NowMs() - replayAnsweredAtMs > VERDICT_MS then
+		verdictSaid = true
+		Open77.log.warn('[appearance] the look request was answered and no look has arrived: ' ..
+			'this client can draw nobody else. Compare the server line "asked for looks: holding ' ..
+			'N": if N counts only this player, nobody has published a body for others to draw.')
+	end
 end
 
 --- Starts over for a new world: publish and ask again.
@@ -180,6 +262,8 @@ function M.Presence.Renew()
 	sequence = sequence + 1
 	sent, acknowledged, sentSequence = nil, 0, 0
 	replayWanted, replaySequence, replayAtMs = true, 0, 0
+	drawn = {}
+	replayAnsweredAtMs, verdictSaid = 0, false
 end
 
 --- Withdraws this player's body until the next publication.
@@ -197,14 +281,17 @@ end
 local function project(name, ...)
 	local puppets = Open77.puppets
 	if type(puppets) ~= 'table' or type(puppets[name]) ~= 'function' then
-		return warnOnce('puppets.' .. name, ('Open77.puppets.%s is not on this client: other ' ..
+		warnOnce('puppets.' .. name, ('Open77.puppets.%s is not on this client: other ' ..
 			'players are not drawn'):format(name))
+		return false
 	end
 	local called, accepted, reason = pcall(puppets[name], ...)
 	if not called or not accepted then
 		Open77.log.debug(('[appearance] puppets.%s refused: %s')
 			:format(name, tostring(called and reason or accepted)))
+		return false
 	end
+	return true
 end
 
 --- Builds the held state. Never yields.
@@ -214,6 +301,8 @@ function M.Presence.Init()
 	sequence, acknowledged, sentSequence, sentAtMs = 0, 0, 0, 0
 	replayWanted, replaySequence, replayAtMs = true, 0, 0
 	warned = {}
+	drawn = {}
+	replayAnsweredAtMs, verdictSaid = 0, false
 end
 
 --- Registers the look traffic.
@@ -228,7 +317,10 @@ function M.Presence.Wire()
 	end)
 
 	RegisterNetEvent(M.Event.REPLAYED, function(value)
-		if value == replaySequence then replayWanted = false end
+		if value == replaySequence then
+			replayWanted = false
+			replayAnsweredAtMs = Runtime.NowMs()
+		end
 	end)
 
 	-- The server half restarted and holds nothing any more.
@@ -237,12 +329,18 @@ function M.Presence.Wire()
 	RegisterNetEvent(M.Event.LOOK, function(player, look)
 		player = tonumber(player)
 		if not enabled() or player == nil then return end
-		if look == false then return project('setBody', player, false) end
+		if look == false then
+			drawn[player] = nil
+			return project('setBody', player, false)
+		end
 		if type(look) ~= 'table' or type(look.body) ~= 'table' then return end
+		local refused = 0
 		local equipment = type(look.equipment) == 'table' and look.equipment or DEFAULT_EQUIPMENT
 		for _, slot in ipairs(SLOTS) do
 			local value = equipment[slot]
-			project('setSlot', player, slot, type(value) == 'string' and value or false)
+			if not project('setSlot', player, slot, type(value) == 'string' and value or false) then
+				refused = refused + 1
+			end
 		end
 		local wardrobe = type(look.wardrobe) == 'table' and look.wardrobe or {}
 		local outfits = {}
@@ -250,10 +348,17 @@ function M.Presence.Wire()
 			index = tonumber(index)
 			if index ~= nil and type(items) == 'table' then outfits[index] = items end
 		end
-		project('setWardrobe', player, { active = tonumber(wardrobe.active), outfits = outfits })
+		if not project('setWardrobe', player, { active = tonumber(wardrobe.active), outfits = outfits }) then
+			refused = refused + 1
+		end
 		-- The body goes on LAST: the slots and the wardrobe are what it is dressed
 		-- in, and a body set first is drawn undressed for a frame.
-		project('setBody', player, look.body)
+		local bodied = project('setBody', player, look.body)
+		if bodied then drawn[player] = true end
+		Open77.log.debug(('[appearance] look received for player %d: %s, %d group(s), body %s, ' ..
+			'%d refusal(s)'):format(player, tostring(look.body.family),
+			type(look.body.groups) == 'table' and #look.body.groups or 0,
+			bodied and 'drawn' or 'REFUSED', refused))
 	end)
 
 	AddEventHandler(OPX.Host.WORLD_READY, Presence.Renew)
