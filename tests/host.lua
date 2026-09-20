@@ -211,6 +211,10 @@ function Host.Environment(side, database)
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
 	local bodies, effects, travels, notices, placement
 
+	-- The live tunable values, by key: what `Open77.tunables.declare` hands back
+	-- and what `control.tunables` lets a test move while the runtime is up.
+	local tunables = {}
+
 	-- Replicated state bags, by `<kind>:<id>`. A REAL store and not an accepting
 	-- stub: the runtime skips a write whose value has not moved, and a `set` that
 	-- always answered true without keeping anything would make that skip -- and
@@ -279,7 +283,26 @@ function Host.Environment(side, database)
 		-- One declaration per resource, answering a live table the runtime reads
 		-- through. A host that does not install this at all is the other case the
 		-- runtime has to survive, so tests can clear it.
-		tunables = { declare = function(block) return block end },
+		--
+		-- THE PROXY ANSWERS VALUES, AND THIS ANSWERED THE DECLARATION. `declare`
+		-- takes `{ KEY = { value = 750, type = 'integer', ... } }` and the real
+		-- host hands back a proxy where `proxy.KEY` is 750; this stub handed back
+		-- the block itself, so `proxy.KEY` was the SPEC TABLE. `OPX.Tune.Number`
+		-- tests what it reads with `IsFinite`, a table is not finite, and so every
+		-- tunable in the suite quietly read as the caller's floor -- which for
+		-- every rate limit in this runtime is 0, meaning OFF. That is why a staff
+		-- menu shipped tripping its own refresh floor on ordinary navigation with
+		-- a green suite behind it: no test could see a floor at all.
+		--
+		-- The table is the live one and is handed to the test through
+		-- `control.tunables`, so a test can move a value the way an operator moves
+		-- it from the panel.
+		tunables = {
+			declare = function(block)
+				for key, spec in pairs(block) do tunables[key] = spec.value end
+				return tunables
+			end,
+		},
 
 		-- The readiness gate. `hold` answers ONE value -- the session -- or
 		-- nil plus a reason, which is the shape the runtime has to handle.
@@ -803,6 +826,8 @@ function Host.Environment(side, database)
 		netEvents = netEvents,
 		clientEvents = clientEvents,
 		serverEvents = serverEvents,
+		-- The live tunables, so a test can move one the way the Warden panel does.
+		tunables = tunables,
 		handlers = handlers,
 
 		--- Resumes every queued thread up to `rounds` times, so a `while true`

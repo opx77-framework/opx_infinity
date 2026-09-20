@@ -209,11 +209,35 @@ function Menu.Register()
 			if request == nil then return end
 		end
 
-		-- Named, so a client waiting on one of several lists can tell which
-		-- `error.tooFast` is its own.
+		-- DROPPED IN SILENCE, AND IT USED TO RAISE `error.tooFast` AT THE PLAYER.
+		-- That one line is half of the owner's "des fois je recois des message du
+		-- style slow down dans le menu admin mais cela marche quand meme": a Slow
+		-- down toast on a staff action that went through anyway.
+		--
+		-- It went through because THE REFUSAL WAS NEVER ABOUT THE ACTION. A
+		-- refresh is not something an operator does; it is this menu asking for a
+		-- list again, and the client fires several of them while somebody walks
+		-- from the root to a player's health screen (see `askFor` in
+		-- `client/menu.lua`, which now asks once per question per floor). The
+		-- navigation, or the command, did exactly what it was told -- and then a
+		-- request the operator never made was turned away and told them to slow
+		-- down. Two outcomes for one press, one of them about something else.
+		--
+		-- The `operation` name did not help either, and the comment that used to
+		-- stand here claimed it would: it said the refusal is named so a client
+		-- waiting on one of several lists can tell which `error.tooFast` is its
+		-- own. Nothing reads it. `OPX.Refuse` puts the operation on the wire and
+		-- the handler in `core/client/notify.lua` reads the kind, the code and the
+		-- glyph -- it toasts every refusal whatever it names. So `adminRefresh`
+		-- distinguished nothing and the toast reached the operator regardless.
+		--
+		-- THE GUARD STAYS. It is what stops a client asking for the roster in a
+		-- loop, and it is per player and per topic so one list never starves
+		-- another. What goes is the sentence: a background list read that the
+		-- floor turns away is a request not served, not a player told off.
 		if Server.Cooled(player, 'refresh:' .. topic,
 			OPX.Tune.Number('ADMIN_RATE_REFRESH_MS', 0)) then
-			return OPX.Refuse(player, 'error.tooFast', 'adminRefresh')
+			return
 		end
 
 		if Server.Permitted(player, M.OPENER) ~= true then

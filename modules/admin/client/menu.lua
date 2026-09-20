@@ -1494,6 +1494,62 @@ local function draw(inPlace)
 	handle = opened.value.handle
 end
 
+-- THE SERVER'S REFRESH FLOOR, mirrored. `ADMIN_RATE_REFRESH_MS` is 750 out of
+-- the box and the server remains the authority; this copy exists so the menu
+-- does not SEND a request the server would only turn away. It is the same
+-- bargain `FIND_MIN_TERM` strikes with the search floor a few hundred lines up.
+local REFRESH_FLOOR_MS = 750
+
+-- When each refresh question was last put to the server, by question.
+local askedAt = {}
+
+--- Asks the server for one list because the operator WALKED ONTO a screen that
+--- draws it, and drops the ask when the same question went out a moment ago.
+-- @author dop42
+--
+-- THE OWNER'S REPORT WAS "des fois je recois des message du style slow down
+-- dans le menu admin mais cela marche quand meme" -- a Slow down toast on a
+-- staff action that worked anyway -- and this was one of its two halves.
+--
+-- Walking root -> Players -> a player -> Health is three keypresses, and `push`
+-- below asks for the ROSTER on every screen whose name starts with `player`. So
+-- three deliberate presses put three identical roster requests on the wire
+-- inside about 300ms, the server's 750ms floor turned the second and the third
+-- away, and `OPX.Refuse` raised `error.tooFast` at the operator for each. The
+-- navigation itself worked perfectly -- the screens draw from the roster this
+-- client already holds -- so what the operator saw was a menu that worked while
+-- telling them to slow down. The limit was not wrong; asking three times for
+-- one list in a third of a second was.
+--
+-- ONLY THE INCIDENTAL ASKS COME THROUGH HERE. A refresh sent because a COMMAND
+-- was answered goes straight out (see `Menu.Answered`): that one is the single
+-- case where the list has actually changed and a stale answer is the wrong
+-- answer. So are the per-target asks -- a bag, an account's characters, a find
+-- page -- because each empties its store to `loading` before it asks, and a
+-- dropped request would leave that screen waiting for ever.
+-- @param topic string
+-- @param arg any
+-- @return boolean whether it was sent
+local function askFor(topic, arg)
+	local now = Client.NowMs()
+	-- Swept on the way in rather than on a timer: an entry past the floor can
+	-- never suppress anything again, so the table only ever holds the questions
+	-- asked in the last three quarters of a second.
+	for question, at in pairs(askedAt) do
+		if now - at >= REFRESH_FLOOR_MS then askedAt[question] = nil end
+	end
+
+	-- Keyed by the question and not by the topic. None of the topics that reach
+	-- here carries an argument today, but one that did -- and was keyed by its
+	-- topic alone -- would answer a second target's question with the first's
+	-- silence, which is the exact failure this whole change is about.
+	local question = topic .. '|' .. tostring(arg)
+	if askedAt[question] ~= nil then return false end
+	askedAt[question] = now
+	TriggerServerEvent(M.Event.REFRESH, topic, arg)
+	return true
+end
+
 -- Pushes a screen, asks for its data again, and draws it.
 local function push(screen, arg)
 	-- A FILTER SURVIVES A PAGE TURN. `more` pushes the SAME screen with `p + 1`,
@@ -1505,7 +1561,7 @@ local function push(screen, arg)
 	local carried = current and current.screen == screen and current.filter or nil
 	stack[#stack + 1] = { screen = screen, arg = arg, filter = carried }
 	-- Leaving the root is the moment to re-check what the ACL still grants.
-	if #stack == 2 then TriggerServerEvent(M.Event.REFRESH, 'access') end
+	if #stack == 2 then askFor('access') end
 	-- BEFORE the `^player` prefix test below, which this name also matches: that
 	-- branch would win the chain and ask only for the roster, and the list would
 	-- sit on 'loading' for ever. The roster is asked for here as well, because the
@@ -1519,14 +1575,14 @@ local function push(screen, arg)
 		chars.target, chars.rows, chars.incoming = tostring(arg), {}, {}
 		chars.loaded, chars.error = false, nil
 		TriggerServerEvent(M.Event.REFRESH, 'characters', tostring(arg))
-		TriggerServerEvent(M.Event.REFRESH, 'roster')
+		askFor('roster')
 	elseif screen:match('^player') then
-		TriggerServerEvent(M.Event.REFRESH, 'roster')
+		askFor('roster')
 	elseif screen == 'locations' or screen == 'saved' then
-		TriggerServerEvent(M.Event.REFRESH, 'locations')
+		askFor('locations')
 	elseif (screen == 'itemCategories' or screen == 'weaponList' or screen == 'ammoList') and
 		(not catalog.loaded or catalog.error) then
-		TriggerServerEvent(M.Event.REFRESH, 'items')
+		askFor('items')
 	elseif screen == 'bag' then
 		bag.target, bag.rows, bag.incoming, bag.loaded, bag.error = tostring(arg), {}, {}, false, nil
 		TriggerServerEvent(M.Event.REFRESH, 'bag', tostring(arg))
@@ -1693,6 +1749,15 @@ function Menu.Answered(name, accepted)
 		if dropCharacter(tostring(held.tokens[2])) then draw(true) end
 	end
 
+	-- SENT, NEVER FLOORED -- `askFor` is deliberately not used here. This is the
+	-- one refresh that knows the list it asks for has CHANGED: the operator just
+	-- healed somebody, or renamed a character, and the server has said it
+	-- happened. Dropping it because walking onto the screen asked for the same
+	-- list half a second ago would leave the menu drawing the world as it was
+	-- before the action -- which is the failure the answer-driven refetch was
+	-- written to end. If it trips the server's floor the server drops it in
+	-- silence; it does not tell the operator their action was too fast, because
+	-- it was not.
 	TriggerServerEvent(M.Event.REFRESH, held.topic, held.arg)
 end
 
@@ -2079,7 +2144,7 @@ function Menu.Start()
 		local hadInventory = session.inventory
 		adopt(payload)
 		if session.inventory and not hadInventory then
-			TriggerServerEvent(M.Event.REFRESH, 'items')
+			askFor('items')
 		end
 		draw(true)
 	end)

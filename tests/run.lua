@@ -264,8 +264,15 @@ do
 		-- A tunable read at registration is frozen for the life of the resource.
 		-- The tag sweep passes the read itself, so its line reports what the
 		-- tunable says now.
+		--
+		-- 2000ms IS `ADMIN_TAGS_REFRESH_MS`, and this used to expect 500 -- which
+		-- is the FLOOR that `server/tags.lua` passes to `OPX.Tune.Number` for the
+		-- case where the key cannot be read. The tunables stub in `host.lua`
+		-- answered the declaration instead of a live proxy, so every tunable in
+		-- the suite read as its caller's floor and this check was asserting that
+		-- the harness was broken. See the note on the stub.
 		check('a job may take its cadence from a live tunable',
-			report:find('admin:tag%-sweep%s+500ms') ~= nil,
+			report:find('admin:tag%-sweep%s+2000ms') ~= nil,
 			report:match('admin:tag%-sweep[^\n]*'))
 
 		-- A MODULE MUST SEE THE CONFIG THE MANIFEST LOADED. `module.lua` is a
@@ -7324,6 +7331,183 @@ do
 				return item and ('disabled=%s toggle=%s')
 					:format(tostring(item.disabled), tostring(item.toggle))
 			end)())
+	end
+end
+
+-- ── one press, one outcome ───────────────────────────────────────────────────
+-- The owner's report was "des fois aussi je recois des message du style slow
+-- down dans le menu admin mais cela marche quand meme": a Slow down toast on a
+-- staff action that went through anyway. It went through because the refusal was
+-- never about the action -- the menu's own navigation asked the server for the
+-- SAME list three times in a third of a second, the 750ms refresh floor turned
+-- the repeats away, and each one raised `error.tooFast` at the operator.
+--
+-- The two halves are held apart here on purpose. The client must stop asking
+-- three times for one list, and the server must stop telling a player off for a
+-- background read they never asked for. Either one alone leaves the report half
+-- true, and only the pair of them gives one press one outcome.
+section('the staff menu never says slow down about a press that worked')
+do
+	-- ── the server half ──────────────────────────────────────────────────────
+	local env, control, why = boot('server')
+	check('the server boots for the refresh floor', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local NOTIFY = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
+
+		-- READ FIRST, because a floor of 0 would make every check below pass
+		-- without the guard ever running. This is also the check that holds the
+		-- tunables stub honest: it answered the declaration rather than a live
+		-- proxy, every `OPX.Tune.Number` in the suite read as its caller's floor,
+		-- and that is why a menu that trips its own rate limit on ordinary
+		-- navigation shipped with a green suite behind it.
+		check('the refresh floor is the configured 750ms, not the 0 of a tunable ' ..
+			'that cannot be read',
+			OPX.Tune.Number('ADMIN_RATE_REFRESH_MS', 0) == 750,
+			tostring(OPX.Tune.Number('ADMIN_RATE_REFRESH_MS', 0)))
+
+		--- Everything sent to one player since a mark, split into the lists that
+		--- were served and the refusals that were raised.
+		local function since(mark)
+			local served, refused = 0, {}
+			for index = mark + 1, #control.clientEvents do
+				local entry = control.clientEvents[index]
+				if entry.name == NOTIFY then
+					local payload = entry[1]
+					refused[#refused + 1] = type(payload) == 'table'
+						and ('%s/%s'):format(tostring(payload.code), tostring(payload.operation))
+						or tostring(payload)
+				elseif entry.name == admin.Event.ROSTER then
+					served = served + 1
+				end
+			end
+			return served, refused
+		end
+
+		-- The refresh event re-checks the opener grant on every ask, so without
+		-- this the roster is never served and the checks below would pass on a
+		-- refusal rather than on a list.
+		control.Allow(7, 'command.' .. admin.OPENER)
+
+		local mark = #control.clientEvents
+		env.source = 7
+		control.netEvents[admin.Event.REFRESH]('roster')
+		control.netEvents[admin.Event.REFRESH]('roster')
+		env.source = nil
+		local served, refused = since(mark)
+
+		-- THE GUARD STILL GUARDS. Two asks, one answer: the floor is doing its
+		-- job, and the fix is not the guard going away.
+		check('a repeated list request inside the floor is served once',
+			served == 1, ('%d served'):format(served))
+		-- AND THE WHOLE BUG. The operator asked for nothing here -- this is the
+		-- menu re-reading a list -- so being turned away must cost them no words.
+		check('and the one that was turned away says nothing to the operator',
+			#refused == 0, table.concat(refused, ', '))
+
+		-- Past the floor it is a new request and is served, so the silence above
+		-- is a dropped repeat and not a gate that closed for good.
+		control.Pump(10)
+		local later = #control.clientEvents
+		env.source = 7
+		control.netEvents[admin.Event.REFRESH]('roster')
+		env.source = nil
+		local again, stillQuiet = since(later)
+		check('a request past the floor is served again',
+			again == 1, ('%d served'):format(again))
+		check('and it too is served without a word of refusal',
+			#stillQuiet == 0, table.concat(stillQuiet, ', '))
+	end
+
+	-- ── the client half ──────────────────────────────────────────────────────
+	-- The cadence, which is the other half: three deliberate keypresses used to
+	-- put three identical roster requests on the wire inside 300ms, and the two
+	-- the server dropped are the two that toasted.
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots for the menu cadence', cwhy == nil, cwhy)
+
+	if cwhy == nil then
+		local admin = cenv.OPX.Modules.Get('admin')
+
+		local asked = {}
+		cenv.TriggerServerEvent = function(name, topic, arg)
+			asked[#asked + 1] = { name = name, topic = topic, arg = arg }
+			-- The host answers whether the line left, and `Client.Execute` refuses
+			-- to believe a nil.
+			return true
+		end
+
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(handle, spec)
+				specs[#specs + 1] = spec
+				return realMenu.Update(handle, spec)
+			end,
+		}, { __index = realMenu })
+
+		local function rowOf(id)
+			for _, item in ipairs((specs[#specs] or {}).items or {}) do
+				if item.id == id then return item end
+			end
+			return nil
+		end
+		local function act(itemId)
+			local item = rowOf(itemId)
+			if item == nil then return false end
+			local on
+			for index = #specs, 1, -1 do
+				if specs[index].on then on = specs[index].on break end
+			end
+			if on == nil then return false end
+			on({ action = 'select', itemId = itemId, handle = 1, data = item.data })
+			return true
+		end
+		local function refreshes(topic)
+			local seen = 0
+			for _, entry in ipairs(asked) do
+				if entry.name == admin.Event.REFRESH and entry.topic == topic then seen = seen + 1 end
+			end
+			return seen
+		end
+
+		cctl.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = true, inventory = false })
+		cctl.Pump(10)
+		cctl.netEvents[admin.Event.ROSTER]({ rows = {
+			{ id = 3, name = 'Vee One', state = 'up', bucket = 0 },
+			{ id = 4, name = 'Vee Two', state = 'up', bucket = 0 },
+		}, offset = 0, total = 2, done = true })
+		cctl.Pump(10)
+		check('the staff menu is open on the root', admin.Menu.Screen() == 'root')
+
+		-- ONE PUMP BETWEEN PRESSES, which is 100ms of host clock: this is somebody
+		-- walking into a player's health screen at a normal pace, well inside the
+		-- 750ms floor. A test that pumped ten rounds between presses would be
+		-- asserting nothing -- it would have waited the floor out.
+		asked = {}
+		local walked = act('players')
+		cctl.Pump(1)
+		walked = walked and act('player_3')
+		cctl.Pump(1)
+		walked = walked and act('health')
+		cctl.Pump(1)
+		check('the operator walks root -> Players -> a player -> Health', walked
+			and admin.Menu.Screen() == 'playerHealth', tostring(admin.Menu.Screen()))
+		check('and the three screens ask for the roster ONCE between them',
+			refreshes('roster') == 1, ('%d asked'):format(refreshes('roster')))
+
+		-- Past the floor the same screen asks again: the list is re-read, it is
+		-- simply not re-read three times a second. Without this the fix could be
+		-- "never ask twice", which is a menu that goes stale.
+		cctl.Pump(10)
+		asked = {}
+		admin.Menu.OpenAt('player', 4)
+		cctl.Pump(1)
+		check('stepping onto a player screen past the floor asks for the roster again',
+			refreshes('roster') == 1, ('%d asked'):format(refreshes('roster')))
 	end
 end
 
