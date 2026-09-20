@@ -446,8 +446,11 @@ local function diagnose(worn, reason)
 	else
 		text = text .. 'worn|target ' .. differences(worn, target)
 	end
-	Open77.log.warn('[appearance] clothing read-back: ' .. text)
-	TriggerServerEvent(M.Event.DIAGNOSTIC, text)
+	-- Through `Runtime.Note` rather than raising the event itself, which is what
+	-- this did: an unprotected `TriggerServerEvent` on the one path that runs
+	-- while the clothing is already failing, outside the module's own bound and
+	-- outside the local log line every other note writes.
+	Runtime.Note('clothing read-back: ' .. text)
 end
 
 --- Reads the put-on record back, retrying or giving up.

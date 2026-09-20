@@ -60,7 +60,10 @@ M.Event = {
 	PRESENT = OPX.Event(NET, 'appearance', 'present'),
 	ABSENT = OPX.Event(NET, 'appearance', 'absent'),
 	REPLAY = OPX.Event(NET, 'appearance', 'replay'),
-	DIAGNOSTIC = OPX.Event(NET, 'appearance', 'diagnostic'),
+	-- `DIAGNOSTIC` was here, with its own forty-line bound on the server. It is
+	-- `OPX.Note` now: `modules/diagnostics` had opened the same door for the same
+	-- reason, and two independent inventions of one thing belong a level down.
+	-- One bound and one counter, rather than two racing for the same journal.
 
 	-- Server to client.
 	FACE_SAVED = OPX.Event(NET, 'appearance', 'faceSaved'),

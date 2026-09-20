@@ -101,6 +101,10 @@ shared_script "lib/shared/citizenid.lua"
 server_script "lib/server/storage.lua"
 server_script "lib/server/audit.lua"
 
+-- FIRST in the core server block, because it is the far end of a wire the client
+-- half wants available before anything else: `core/client/note.lua` says why a
+-- client log line nobody can read is worse than no line at all.
+server_script "core/server/note.lua"
 server_script "core/server/scheduler.lua"
 server_script "core/server/sessions.lua"
 server_script "core/server/answer.lua"
@@ -111,6 +115,9 @@ server_script "core/server/tunables.lua"
 
 client_script "lib/client/lib.lua"
 client_script "lib/client/surface.lua"
+-- Before anything a module can reach, so `OPX.Note` is already there for a module
+-- that fails while it is still coming up.
+client_script "core/client/note.lua"
 client_script "core/client/scheduler.lua"
 client_script "core/client/ui.lua"
 client_script "core/client/notify.lua"
