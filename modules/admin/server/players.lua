@@ -459,6 +459,44 @@ function Players.Register()
 		end,
 	})
 
+	-- THE FITTING ROOM, OPENED ON SOMEBODY ELSE'S SCREEN, and free in the sense
+	-- that matters: no shop, no till, no garment list -- the whole catalogue the
+	-- player's own body can wear. It is the staff answer to "my clothes are
+	-- wrong" that does not need a shop to exist yet.
+	--
+	-- THE SERVER ONLY ASKS. Every reason a room may not open -- the puppet not
+	-- alive on foot, another surface holding the keyboard, a save in flight -- is
+	-- knowable on that player's client and nowhere else, so `true` here means the
+	-- ask went out and not that a room appeared. The operator is told exactly
+	-- that, rather than a success that might be a lie.
+	Server.Command(Command.PLAYER_WARDROBE, {
+		help = 'admin.help.playerWardrobe',
+		params = { { name = 'playerId|me', help = 'admin.help.playerOrMe' } },
+		handler = function(source, args, raw)
+			local playerId = Server.Target(source, raw, args[1])
+			if playerId == nil then return end
+			local event = 'admin.player.wardrobe'
+			if not Server.Admitted(source, raw, playerId, event) then return end
+
+			-- Both refusals go through `nativeRefused`, which is the house path for
+			-- "something below said no": it words the refusal, audits the attempt
+			-- as failed, and carries the reason. A missing contract is exactly that
+			-- -- a runtime without the appearance module cannot dress anybody.
+			local appearance = Server.Contract('appearance')
+			if appearance == nil or type(appearance.OpenWardrobe) ~= 'function' then
+				return nativeRefused(source, raw, event, playerId, 'appearance_unavailable')
+			end
+
+			local ok, reason = appearance.OpenWardrobe(playerId)
+			if not ok then return nativeRefused(source, raw, event, playerId, reason) end
+
+			audit(source, event, true, playerId, 'asked')
+			if playerId ~= source then tell(playerId, 'admin.toast.wardrobe', nil, 'info') end
+			answer(source, raw, true, 'admin.done.wardrobe',
+				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
+		end,
+	})
+
 	Server.Command(Command.PLAYER_HEAL, {
 		help = 'admin.help.heal', params = { { name = 'playerId|me', help = 'admin.help.playerOrMe' } },
 		handler = function(source, args, raw)

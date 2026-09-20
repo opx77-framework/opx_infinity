@@ -80,6 +80,14 @@ M.Event = {
 	-- and a third binding for a screen a player opens twice a session is a key
 	-- taken away from something they use every minute.
 	OPEN_PANEL = OPX.Event(NET, 'appearance', 'openPanel'),
+
+	-- The fitting room, opened on a player from the server. A DIFFERENT SCREEN
+	-- from `OPEN_PANEL` above, which is the appearance panel: this one borrows
+	-- the puppet and puts the slot sliders up. Staff reach it through the admin
+	-- menu; nothing a player can raise reaches it, because the gate that decides
+	-- whether a room may open at all lives on their client and is not something
+	-- the wire should be able to talk past.
+	OPEN_WARDROBE = OPX.Event(NET, 'appearance', 'openWardrobe'),
 	REPLAYED = OPX.Event(NET, 'appearance', 'replayed'),
 	LOOK = OPX.Event(NET, 'appearance', 'look'),
 	RESEND = OPX.Event(NET, 'appearance', 'resend'),

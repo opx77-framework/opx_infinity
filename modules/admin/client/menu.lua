@@ -582,6 +582,10 @@ SCREENS.player = function(id)
 		section('admin.menu.section.actions'),
 		go('move', 'admin.menu.movement', 'playerMove', id, { icon = 'map' }),
 		go('health', 'admin.menu.healthActions', 'playerHealth', id, { icon = 'heal' }),
+		-- Beside the ped picker, because they are the same question one layer
+		-- apart: that one changes the body, this one changes what is on it.
+		icon(command('wardrobe', 'admin.menu.wardrobe', { Command.PLAYER_WARDROBE, target },
+			'roster'), 'person'),
 		modelRow(target, M.Target.ModelOf(id)),
 	})
 	local link = links()
