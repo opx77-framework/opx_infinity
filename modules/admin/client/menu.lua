@@ -517,12 +517,6 @@ SCREENS.root = function()
 		go('vehicles', 'admin.menu.vehicles', 'vehicles', nil, { icon = 'vehicle' }),
 		go('world', 'admin.menu.world', 'world', nil, { icon = 'world' }),
 		go('server', 'admin.menu.server', 'server', nil, { icon = 'server' }),
-		-- RECOVERY SITS ON ITS OWN, under everything that acts on a body. What it
-		-- reaches is a balance, which is the one thing in this panel that outlives
-		-- the session and the character it belonged to.
-		section('admin.menu.section.recovery'),
-		goFor('recovery', 'admin.menu.recovery', 'recovery', nil, Command.RECOVERY_MONEY,
-			{ icon = 'money' }),
 	}
 end
 
@@ -959,63 +953,6 @@ SCREENS.self = function()
 		append(items, bagRows('me'))
 	end
 	return locale('admin.menu.self'), items
-end
-
--- ── recovery ────────────────────────────────────────────────────────────────
--- MONEY BACK TO A CHARACTER, which is the one thing an operator is asked for
--- that the player cannot do for themselves: a purchase that ate a paycheque, a
--- balance zeroed by a bug, a truck of somebody's eddies that went to the wrong
--- citizen id. Two rows and no third: give it, to me or to somebody here.
---
--- EVERY ROW ENDS IN THE SAME COMMAND, and the only difference between them is
--- the target it carries -- `me`, resolved by the SERVER from the connection,
--- or a player id picked out of the roster. A client that could name its own
--- target would be a client deciding whose balance it is.
-SCREENS.recovery = function()
-	return locale('admin.menu.recovery'), {
-		icon(form('recoverySelf', 'admin.menu.recoverySelf', 'recoveryMoney', 'me',
-			Command.RECOVERY_MONEY), 'money'),
-		goFor('recoveryPlayer', 'admin.menu.recoveryPlayer', 'recoveryPlayers', nil,
-			Command.RECOVERY_MONEY, { icon = 'person', value = tostring(#roster) }),
-	}
-end
-
--- The picker the second row opens: the roster, and every row puts the player it
--- names into the same money form. Not a copy of the players screen -- that one
--- leads to everything that can be done to a body, and picking a target here
--- leads to one field and a confirm-free amount.
-SCREENS.recoveryPlayers = function()
-	local query = filtering()
-	local matched = {}
-	for index = 1, #roster do
-		local entry = roster[index]
-		local word = locale('admin.state.' .. entry.state)
-		if matches(query, entry.id, entry.name, entry.user, entry.citizenId, word) then
-			matched[#matched + 1] = entry
-		end
-	end
-
-	local items = searchRows(#matched, #roster)
-	for index = 1, math.min(#matched, MAX_LISTED) do
-		local entry = matched[index]
-		local value = locale('admin.state.' .. entry.state)
-		if entry.bucket ~= 0 then value = value .. ' b' .. entry.bucket end
-		if entry.distance then value = value .. ' ' .. entry.distance .. 'm' end
-		-- THE LABEL IS A STRING AND NOT A `{ text = ... }` TABLE. The `go`/`form`
-		-- helpers unwrap that shape for the rows they build; a row assembled by hand
-		-- has to do it itself, and the contract refuses the WHOLE SCREEN when one
-		-- label is a table -- `invalid_item_label`, which is how the picker drew
-		-- nothing at all while the rest of the panel worked.
-		items[#items + 1] = denied(row('recoveryPlayer_' .. entry.id,
-			('[%d] %s'):format(entry.id, entry.name),
-			{ form = 'recoveryMoney', arg = entry.id },
-			{ value = value, icon = entry.state == 'down' and 'heal' or 'person' }),
-			Command.RECOVERY_MONEY)
-	end
-	if #matched == 0 then
-		items[#items + 1] = empty(#roster > 0 and 'admin.menu.noMatch' or 'admin.menu.nobody')
-	end
-	return locale('admin.menu.recoveryPlayer'), items
 end
 
 SCREENS.vehicles = function()

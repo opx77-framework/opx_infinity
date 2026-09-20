@@ -25,10 +25,10 @@ OPX.Config.MODULES.admin = {
 	-- its point: the place you set up a server from is one press away. It is a
 	-- second key and not a chord because the host takes a key name and no
 	-- modifier of its own. F10 out of the box, because everything under F9 is
-	-- spoken for: F9 here, F7 the appearance panel, F3 the emote picker, and F5
-	-- and F8 belong to the media resource's panel and cursor on an install that
-	-- has it. The dealership is NOT in this list: a dealer is a place you stand
-	-- on, like a garage spot, and it takes that key -- E.
+	-- spoken for: F9 here, F3 the emote picker, and F5 and F8 belong to the media
+	-- resource's panel and cursor on an install that has it. The dealership is
+	-- NOT in this list: a dealer is a place you stand on, like a garage spot, and
+	-- it takes that key -- E.
 	KEYS = {
 		MENU = 'F9',
 		DEV = 'F10',

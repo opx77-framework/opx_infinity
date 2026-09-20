@@ -66,7 +66,6 @@ local EN = {
 	['appearance.panel.wornNow'] = 'Your saved look is back on.',
 	['appearance.panel.alreadyWorn'] = 'You are already wearing it.',
 	['appearance.panel.busy'] = 'Not right now.',
-	['appearance.key.panel'] = 'Appearance: open the panel',
 	['appearance.command.panel'] = 'Open the appearance panel',
 	['appearance.command.wardrobe'] = 'Open the fitting room',
 
@@ -169,7 +168,6 @@ local FR = {
 	['appearance.panel.wornNow'] = 'Votre look enregistré est de nouveau porté.',
 	['appearance.panel.alreadyWorn'] = 'Vous le portez déjà.',
 	['appearance.panel.busy'] = 'Pas maintenant.',
-	['appearance.key.panel'] = "Apparence : ouvrir le panneau",
 	['appearance.command.panel'] = "Ouvrir le panneau d'apparence",
 	['appearance.command.wardrobe'] = "Ouvrir la cabine d'essayage",
 

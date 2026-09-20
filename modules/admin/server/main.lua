@@ -730,7 +730,6 @@ function M.Start()
 	M.Doors.Register()
 	M.Characters.Register()
 	M.Offline.Register()
-	M.Recovery.Register()
 	-- Last: the access map it sends lists what every other file registered.
 	M.Menu.Register()
 
