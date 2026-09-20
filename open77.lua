@@ -78,6 +78,7 @@ shared_script "config/appearance.lua"
 shared_script "config/inventory.lua"
 shared_script "config/hud.lua"
 shared_script "config/prompts.lua"
+shared_script "config/progress.lua"
 shared_script "config/target.lua"
 shared_script "config/shops.lua"
 shared_script "config/animations.lua"
@@ -327,6 +328,14 @@ client_script "modules/animations/client/keys.lua"
 client_script "modules/animations/client/picker.lua"
 client_script "modules/animations/client/prompt.lua"
 client_script "modules/animations/client/exports.lua"
+
+-- The timed-action bar. AFTER `animations`, whose gesture it starts and stops
+-- together with the bar, and after `downed`, which takes it away. Both are
+-- declared optional, so the dependency walk would order it correctly wherever
+-- this block sat -- it is written here so the file reads in the order it runs.
+shared_script "modules/progress/module.lua"
+shared_script "modules/progress/locales.lua"
+client_script "modules/progress/client/main.lua"
 
 shared_script "modules/elevators/module.lua"
 shared_script "modules/elevators/locales.lua"

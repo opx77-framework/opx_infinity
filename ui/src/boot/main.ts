@@ -6,6 +6,7 @@ import InventoryView from '@/modules/inventory/InventoryView.vue'
 import MenuView from '@/modules/menu/MenuView.vue'
 import NotifyRoot from '@/modules/notify/NotifyRoot.vue'
 import PanelView from '@/modules/panel/PanelView.vue'
+import ProgressRoot from '@/modules/progress/ProgressRoot.vue'
 import PromptsRoot from '@/modules/prompts/PromptsRoot.vue'
 import SpawnView from '@/modules/spawn/SpawnView.vue'
 import TagsRoot from '@/modules/tags/TagsRoot.vue'
@@ -34,6 +35,7 @@ import SurfaceRoot from './SurfaceRoot.vue'
 registerModule({ id: 'hud', surface: 'overlay', component: HudRoot })
 registerModule({ id: 'notify', surface: 'overlay', component: NotifyRoot })
 registerModule({ id: 'prompts', surface: 'overlay', component: PromptsRoot })
+registerModule({ id: 'progress', surface: 'overlay', component: ProgressRoot })
 
 // Name tags draw over bodies in the world, so they are on the overlay and must
 // never take focus: one that captured the keyboard would stop the player moving.
