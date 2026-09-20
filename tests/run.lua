@@ -7653,5 +7653,99 @@ do
 	end
 end
 
+
+-- ── the magazine, and whether the gun is actually in hand ───────────────────
+-- TWO DEFECTS THE OWNER FOUND BY PLAYING, and both are the same mistake in
+-- different clothes: a number read from the wrong place, and a state read from
+-- the wrong place.
+section('weapons: the magazine and the hand')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	local inventory = why == nil and env.OPX.Modules.Get('inventory') or nil
+	check('the inventory module is there', type(inventory) == 'table')
+
+	if type(inventory) == 'table' then
+		local Catalog = inventory.Catalog
+
+		-- ── the magazine ──
+		-- `AMMO.MAX` is how many rounds fit in a BOX. The weapon half read it as
+		-- how many fit in the GUN, so a pistol took the whole crate and never
+		-- reloaded. These two numbers must not be the same one.
+		local pistol = Catalog.Get('weapon_chao')
+		check('a weapon carries a magazine', pistol ~= nil
+			and type(pistol.weapon) == 'table' and pistol.weapon.magazine ~= nil,
+			pistol and tostring(pistol.weapon and pistol.weapon.magazine))
+
+		local box = Catalog.Get('ammo_handgun')
+		check('and it is NOT the ammunition box its class loads',
+			pistol ~= nil and box ~= nil
+				and pistol.weapon.magazine ~= box.ammo.max,
+			box and ('magazine %s vs box %s'):format(
+				tostring(pistol and pistol.weapon.magazine), tostring(box.ammo.max)))
+
+		check('and it is a handful of rounds rather than a crateful',
+			pistol ~= nil and pistol.weapon.magazine > 0 and pistol.weapon.magazine <= 50,
+			pistol and tostring(pistol.weapon.magazine))
+
+		-- Every class that loads ammunition states one, checked across the whole
+		-- catalogue: one missing is one weapon that silently loads nothing.
+		local missing = {}
+		local armed = 0
+		for _, name in ipairs(Catalog.Names()) do
+			local item = Catalog.Get(name)
+			if type(item) == 'table' and type(item.weapon) == 'table'
+				and item.weapon.ammo ~= nil then
+				armed = armed + 1
+				if item.weapon.magazine == nil then missing[#missing + 1] = name end
+			end
+		end
+		check('some weapons load ammunition at all', armed > 0, tostring(armed))
+		check('and every one of them states a magazine', #missing == 0,
+			table.concat(missing, ',', 1, math.min(#missing, 6)))
+
+		-- ── the hand ──
+		-- `armed[source]` is OUR record of what we last put there. The game
+		-- holsters on its own -- a vehicle, a knockdown -- and then Use, which
+		-- reads as a toggle, put away something already away.
+		local Weapons = inventory.Weapons
+		check('the in-hand question is askable', type(Weapons.InHand) == 'function')
+
+		if type(Weapons.InHand) == 'function' then
+			local answer = nil
+			env.Open77.weapons = env.Open77.weapons or {}
+			env.Open77.weapons.get = function() return answer end
+
+			answer = { drawn = true, fresh = true }
+			check('a fresh answer saying drawn is believed', Weapons.InHand(1) == true)
+
+			answer = { drawn = false, fresh = true }
+			check('and a fresh answer saying holstered is believed too',
+				Weapons.InHand(1) == false)
+
+			-- DO-NOT-KNOW KEEPS THE OLD BEHAVIOUR, and these three are why the
+			-- default is `true` rather than `false`. The platform calls this a
+			-- cache and says to read it to decide, never to assert: a stale
+			-- reading, a player the host has heard nothing from, and a build
+			-- without the call are all "cannot say". Answering "not in hand" to
+			-- any of them would trade a rare wrong holster for a constant wrong
+			-- draw.
+			answer = { drawn = false, fresh = false }
+			check('a STALE answer is not taken as holstered', Weapons.InHand(1) == true)
+
+			answer = nil
+			check('and neither is a refusal', Weapons.InHand(1) == true)
+
+			env.Open77.weapons.get = nil
+			check('nor a build that cannot be asked', Weapons.InHand(1) == true)
+
+			env.Open77.weapons.get = function() error('boom') end
+			check('and a reader that raises does not take the caller with it',
+				Weapons.InHand(1) == true)
+			env.Open77.weapons.get = nil
+		end
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

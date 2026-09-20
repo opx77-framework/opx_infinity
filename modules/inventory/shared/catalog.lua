@@ -238,7 +238,22 @@ function Catalog.IndexWeapons(count)
 				entry.category = 'weapon'
 				entry.stackable = false
 				entry.usable = true
-				entry.weapon = { record = record, class = raw.CLASS, ammo = ammo }
+				-- THE MAGAZINE, AND IT IS NOT THE AMMO ITEM'S STACK. `AMMO.MAX` is
+				-- how many rounds fit in a BOX -- five hundred for a handgun --
+				-- and the weapon half was reading it as how many fit in the gun,
+				-- so a player could load a pistol with the whole crate. The
+				-- weapon's own value wins, its class's is the default, and a
+				-- class with none loads nothing rather than everything: a
+				-- magazine nobody stated is a magazine nobody has thought about,
+				-- and refusing is the answer that gets noticed.
+				local magazine = Common.Integer(raw.MAGAZINE, 1, 9999)
+					or Common.Integer(class.MAGAZINE, 1, 9999)
+				if ammo ~= nil and magazine == nil then
+					problem(('data/weapons.lua %s: neither it nor class %s states a MAGAZINE, so '
+						.. 'it loads nothing'):format(name, tostring(raw.CLASS)))
+				end
+				entry.weapon = { record = record, class = raw.CLASS, ammo = ammo,
+					magazine = magazine }
 				add(entry, 'data/weapons.lua')
 			end
 		end

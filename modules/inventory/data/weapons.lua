@@ -18,15 +18,31 @@ M.Data.WEAPONS = {
 		ammo_sniper = { WEIGHT = 25, MAX = 170, MODEL = 'crate.ammo_box' },
 	},
 
+	-- MAGAZINE IS NOT `AMMO.MAX`, and conflating the two is the defect this field
+	-- exists to end. `AMMO.MAX` above is how many rounds fit in a BOX -- five
+	-- hundred for a handgun, because that is a sensible thing to carry -- and the
+	-- weapon half was reading it as how many fit in the GUN. A player could load
+	-- a pistol with the entire crate and never reload.
+	--
+	-- Stated per CLASS because that is the granularity the truth actually has:
+	-- one hundred and ninety weapons share nine behaviours, and a per-weapon
+	-- number for each would be a hundred and ninety guesses. A weapon that really
+	-- is different says so with its own `MAGAZINE`, which wins.
+	--
+	-- These are game-feel numbers, not Cyberpunk's own: the engine owns the real
+	-- magazine and we do not read it. What this bounds is how much ammunition a
+	-- player may pour in at once.
 	CLASSES = {
-		handgun = { AMMO = 'ammo_handgun', MODEL = 'military.case' },
-		revolver = { AMMO = 'ammo_handgun', MODEL = 'military.case' },
-		smg = { AMMO = 'ammo_rifle', MODEL = 'military.case' },
-		rifle = { AMMO = 'ammo_rifle', MODEL = 'military.case.large' },
-		precision = { AMMO = 'ammo_rifle', MODEL = 'military.case.large' },
-		lmg = { AMMO = 'ammo_rifle', MODEL = 'military.case.large' },
-		sniper = { AMMO = 'ammo_sniper', MODEL = 'military.case.large' },
-		shotgun = { AMMO = 'ammo_shotgun', MODEL = 'military.case.large' },
+		handgun = { AMMO = 'ammo_handgun', MODEL = 'military.case', MAGAZINE = 15 },
+		revolver = { AMMO = 'ammo_handgun', MODEL = 'military.case', MAGAZINE = 8 },
+		smg = { AMMO = 'ammo_rifle', MODEL = 'military.case', MAGAZINE = 35 },
+		rifle = { AMMO = 'ammo_rifle', MODEL = 'military.case.large', MAGAZINE = 30 },
+		precision = { AMMO = 'ammo_rifle', MODEL = 'military.case.large', MAGAZINE = 20 },
+		lmg = { AMMO = 'ammo_rifle', MODEL = 'military.case.large', MAGAZINE = 100 },
+		sniper = { AMMO = 'ammo_sniper', MODEL = 'military.case.large', MAGAZINE = 5 },
+		shotgun = { AMMO = 'ammo_shotgun', MODEL = 'military.case.large', MAGAZINE = 8 },
+		-- No AMMO, so no MAGAZINE: a blade loads nothing and the catalogue only
+		-- complains about a missing magazine for a class that names ammunition.
 		melee = { MODEL = 'military.case' },
 	},
 
