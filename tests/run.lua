@@ -11640,5 +11640,666 @@ do
 	check('the shipped page is readable', #built > 0)
 	check('and the cut is in it', built:find('%.op%-truncate{') ~= nil)
 end
+-- ── crafting: the half that is pure ─────────────────────────────────────────
+-- WHAT A CRAFT COSTS, HOW LONG IT TAKES AND WHO MAY ORDER IT need no world, no
+-- bag and no database, so all of it lives in `shared/recipes.lua` as functions
+-- over plain tables and is checked here directly. What is NOT checked here is
+-- whether a player is standing at the bench: that needs a body and a position,
+-- and it is the one part of the decision the server makes against the engine.
+section('crafting: recipes, bills and the queue')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		update = function() return 0 end,
+		query = function() return {} end,
+		single = function() return nil end,
+		insert = function() return 1 end,
+	}))
+	check('the server boots with the crafting module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('crafting')
+		local Recipes = M.Recipes
+		local Refusal = M.Refusal
+
+		check('the crafting module is running', OPX.Modules.IsRunning('crafting'),
+			OPX.Modules.Record('crafting').Reason)
+
+		local contract = OPX.Api.Get('crafting')
+		check('and publishes the doors a consumer calls',
+			contract ~= nil and type(contract.RegisterBench) == 'function'
+				and type(contract.UnregisterBenches) == 'function'
+				and type(contract.View) == 'function'
+				and type(contract.Order) == 'function'
+				and type(contract.Collect) == 'function')
+
+		-- ── one recipe, validated ────────────────────────────────────────
+		-- `NONE` is how an override REMOVES a field. `{ OUTPUT = nil }` puts
+		-- nothing in the override table at all, so a merge walked with `pairs`
+		-- never sees it -- which is how three of these checks first passed while
+		-- testing the unmodified recipe.
+		local NONE = {}
+		local function rounds(over)
+			local row = { KEY = 'rounds', OUTPUT = 'ammo_handgun', COUNT = 30, SECONDS = 120,
+				INPUTS = { scrap_metal = 2, electronics = 1 }, PRICE = 40, MONEY = 'EDDIES',
+				ICON = 'ammo' }
+			for name, value in pairs(over or {}) do
+				row[name] = (value ~= NONE) and value or nil
+			end
+			return row
+		end
+
+		local recipe, problem = Recipes.Recipe('rounds', rounds())
+		check('a well-formed recipe is accepted', recipe ~= nil, problem)
+		check('and its inputs are SORTED, so a bill reads the same on every boot',
+			recipe ~= nil and recipe.inputs[1].item == 'electronics'
+				and recipe.inputs[2].item == 'scrap_metal',
+			recipe and (recipe.inputs[1].item .. ',' .. recipe.inputs[2].item))
+		check('and the units survive the flattening',
+			recipe ~= nil and recipe.inputs[1].count == 1 and recipe.inputs[2].count == 2)
+
+		check('a recipe with no OUTPUT is refused',
+			(Recipes.Recipe('r', rounds{ OUTPUT = NONE })) == nil)
+		check('a recipe with no INPUTS table is refused',
+			(Recipes.Recipe('r', rounds{ INPUTS = NONE })) == nil)
+		check('and one whose INPUTS name nothing is refused, because it costs nothing',
+			(Recipes.Recipe('r', rounds{ INPUTS = {} })) == nil)
+		check('an INPUTS key that is not an item name is refused',
+			(Recipes.Recipe('r', rounds{ INPUTS = { [1] = 2 } })) == nil)
+		check('an INPUTS count of zero is refused',
+			(Recipes.Recipe('r', rounds{ INPUTS = { scrap_metal = 0 } })) == nil)
+		check('a SECONDS under the floor is refused',
+			(Recipes.Recipe('r', rounds{ SECONDS = 1 })) == nil)
+		check('and a SECONDS over the ceiling is refused',
+			(Recipes.Recipe('r', rounds{ SECONDS = 999999 })) == nil)
+		check('a COUNT that is not a whole number is refused',
+			(Recipes.Recipe('r', rounds{ COUNT = 1.5 })) == nil)
+		check('a PRICE with no MONEY behind it is refused',
+			(Recipes.Recipe('r', rounds{ MONEY = NONE })) == nil)
+		check('and a free recipe needs no MONEY at all',
+			(Recipes.Recipe('r', rounds{ PRICE = 0, MONEY = NONE })) ~= nil)
+		check('an ICON that is not in OPX.Glyphs is refused rather than dropped',
+			(Recipes.Recipe('r', rounds{ ICON = 'wepaon' })) == nil)
+		check('and one that is survives', (Recipes.Recipe('r', rounds{ ICON = 'weapon' })) ~= nil)
+		check('a NaN duration is refused', (Recipes.Recipe('r', rounds{ SECONDS = 0 / 0 })) == nil)
+		check('a key with a space in it is refused', (Recipes.Recipe('two words', rounds())) == nil)
+
+		-- THE CATALOGUE IS ASKED WHEN THERE IS ONE, which is what stops a recipe
+		-- naming an item nobody can ever hold.
+		local only = function(name) return name == 'scrap_metal' or name == 'ammo_handgun' end
+		check('an OUTPUT the catalogue does not carry is refused',
+			(Recipes.Recipe('r', rounds{ OUTPUT = 'ammo_plasma',
+				INPUTS = { scrap_metal = 1 } }, only)) == nil)
+		check('an INPUT the catalogue does not carry is refused',
+			(Recipes.Recipe('r', rounds{ INPUTS = { unobtainium = 1 } }, only)) == nil)
+		check('and a recipe naming only catalogue items passes the same check',
+			(Recipes.Recipe('r', rounds{ INPUTS = { scrap_metal = 1 } }, only)) ~= nil)
+
+		-- ── a bench, and what one broken row does to it ──────────────────
+		local rifle = { KEY = 'rifle', OUTPUT = 'ammo_rifle', COUNT = 30, SECONDS = 180,
+			INPUTS = { scrap_metal = 3 } }
+
+		local bench, problems = Recipes.Bench('test:bench', {
+			label = 'TEST BENCH', owner = 'tests', queue = 2, reach = 2.0,
+			position = { x = 10.0, y = 20.0, z = 3.0 },
+			recipes = { rounds(), rifle },
+		})
+		check('a bench with two good recipes is accepted', bench ~= nil,
+			table.concat(problems, ' | '))
+		check('and reports no problems', #problems == 0, table.concat(problems, ' | '))
+		check('its materials are DEDUPED and sorted, so a bag is counted once per name',
+			bench ~= nil and #bench.materials == 2 and bench.materials[1] == 'electronics'
+				and bench.materials[2] == 'scrap_metal',
+			bench and table.concat(bench.materials, ','))
+		check('and its position keeps a bucket of zero when none is named',
+			bench ~= nil and bench.position.bucket == 0)
+
+		local partial, partialProblems = Recipes.Bench('test:partial', {
+			owner = 'tests', recipes = { rounds(), { KEY = 'broken' }, rifle },
+		})
+		check('ONE BROKEN ROW DOES NOT TAKE THE BENCH DOWN', partial ~= nil,
+			table.concat(partialProblems, ' | '))
+		check('the two good ones are still carried', partial ~= nil and #partial.recipes == 2,
+			partial and #partial.recipes)
+		check('and the broken one is named in the problems',
+			#partialProblems == 1 and partialProblems[1]:find('broken', 1, true) ~= nil,
+			table.concat(partialProblems, ' | '))
+
+		check('a bench whose every row is broken is refused, because it would open empty',
+			(Recipes.Bench('test:empty', { owner = 'tests', recipes = { { KEY = 'broken' } } })) == nil)
+		check('a bench with no owner is refused',
+			(Recipes.Bench('test:unowned', { recipes = { rounds() } })) == nil)
+		check('a bench whose position has no z is refused',
+			(Recipes.Bench('test:flat', { owner = 'tests', position = { x = 1, y = 2 },
+				recipes = { rounds() } })) == nil)
+		check('a bench with no position at all is accepted, and is reachable anywhere',
+			(function()
+				local free = Recipes.Bench('test:free', { owner = 'tests', recipes = { rounds() } })
+				return free ~= nil and free.position == nil
+			end)())
+		check('a recipe declared twice keeps the first and says so',
+			(function()
+				local twice, said = Recipes.Bench('test:twice', { owner = 'tests',
+					recipes = { rounds(), rounds{ COUNT = 99 } } })
+				return twice ~= nil and #twice.recipes == 1 and twice.recipes[1].count == 30
+					and #said == 1
+			end)())
+
+		-- ── what a bag is short of ───────────────────────────────────────
+		local made = bench.byKey['rounds']
+		check('nothing is short when the bag holds enough',
+			#Recipes.Missing(made, { scrap_metal = 2, electronics = 1 }) == 0)
+		local short = Recipes.Missing(made, { scrap_metal = 1 })
+		check('and what is short is reported in the recipe\'s own order',
+			#short == 2 and short[1].item == 'electronics' and short[2].item == 'scrap_metal',
+			('%d short'):format(#short))
+		check('with what is held beside what is needed',
+			short[2].held == 1 and short[2].need == 2,
+			('%d/%d'):format(short[2].held, short[2].need))
+		check('an empty bag is short of everything, and does not raise',
+			#Recipes.Missing(made, nil) == 2)
+
+		-- ── the order the refusals come in ───────────────────────────────
+		-- Cheapest to fix first: a full bench is a minute's wait, materials are an
+		-- errand, the fee is the one a player can do least about.
+		local full, fullWhy = Recipes.Allowed(made, {}, 0, 2, 2)
+		check('a full bench is the first thing said, even to an empty bag',
+			full == false and fullWhy == Refusal.QUEUE_FULL, tostring(fullWhy))
+		local poor, poorWhy, poorShort = Recipes.Allowed(made, {}, 0, 0, 2)
+		check('then the materials', poor == false and poorWhy == Refusal.SHORT,
+			tostring(poorWhy))
+		check('and the refusal carries what is missing', #poorShort == 2, #poorShort)
+		local broke, brokeWhy = Recipes.Allowed(made, { scrap_metal = 2, electronics = 1 }, 39,
+			0, 2)
+		check('then the fee', broke == false and brokeWhy == Refusal.CANNOT_PAY,
+			tostring(brokeWhy))
+		check('and the exact price is enough',
+			(Recipes.Allowed(made, { scrap_metal = 2, electronics = 1 }, 40, 0, 2)) == true)
+		check('a free recipe is never refused for money',
+			(Recipes.Allowed(bench.byKey['rifle'], { scrap_metal = 3 }, nil, 0, 2)) == true)
+
+		-- ── the queue is sequential ──────────────────────────────────────
+		check('a bench with nothing on it starts now', Recipes.StartOffset(0) == 0)
+		check('a bench whose last order is already finished also starts now',
+			Recipes.StartOffset(-90) == 0, Recipes.StartOffset(-90))
+		check('and one with no answer at all starts now rather than raising',
+			Recipes.StartOffset(nil) == 0)
+		check('a bench busy for another 30 seconds starts in 30',
+			Recipes.StartOffset(30) == 30)
+		check('SO THE SECOND ORDER TAKES ITS OWN TIME ON TOP OF THE FIRST',
+			Recipes.ReadyIn(30, 120) == 150, Recipes.ReadyIn(30, 120))
+		check('and a fresh bench is ready in exactly the recipe\'s own time',
+			Recipes.ReadyIn(0, 120) == 120)
+		check('a finished tail does not shorten the next one',
+			Recipes.ReadyIn(-500, 120) == 120, Recipes.ReadyIn(-500, 120))
+
+		-- ── readiness is the database's word ─────────────────────────────
+		check('an order with time left is not ready', Recipes.IsReady({ remaining = 1 }) == false)
+		check('one on the second is ready', Recipes.IsReady({ remaining = 0 }) == true)
+		check('one overdue is ready', Recipes.IsReady({ remaining = -600 }) == true)
+		check('AND ONE THE DATABASE COULD NOT DESCRIBE IS NOT',
+			Recipes.IsReady({ remaining = nil }) == false)
+		check('nor is something that is not an order at all', Recipes.IsReady(nil) == false)
+
+		-- ── the shelf, in order ──────────────────────────────────────────
+		local shelf = { { id = 4, recipe = 'rounds', remaining = 20 },
+			{ id = 9, recipe = 'rifle', remaining = -3 },
+			{ id = 2, recipe = 'rifle', remaining = 20 } }
+		local sorted = Recipes.Order(shelf)
+		check('the soonest order is first', sorted[1].id == 9, sorted[1].id)
+		check('and a tie is broken by id, so two reads never disagree',
+			sorted[2].id == 2 and sorted[3].id == 4,
+			('%d,%d'):format(sorted[2].id, sorted[3].id))
+		check('the caller\'s own list is left alone', shelf[1].id == 4, shelf[1].id)
+
+		-- ── the clock a player reads ─────────────────────────────────────
+		check('under a minute is seconds', Recipes.Clock(45) == '45s', Recipes.Clock(45))
+		check('a part second rounds UP, so a cooking order never reads as done',
+			Recipes.Clock(0.2) == '1s', Recipes.Clock(0.2))
+		check('minutes and seconds', Recipes.Clock(150) == '2:30', Recipes.Clock(150))
+		check('hours and minutes', Recipes.Clock(11040) == '3h 04m', Recipes.Clock(11040))
+		check('and nothing left is nothing left', Recipes.Clock(-5) == '0s', Recipes.Clock(-5))
+
+		-- ── the screen, built on this side ───────────────────────────────
+		local names = function(item) return item:upper() end
+		local gate = function(recipeKey)
+			if recipeKey == 'rifle' then return false, 'job_required' end
+			return true
+		end
+
+		local view = Recipes.View(bench, { scrap_metal = 5, electronics = 1 },
+			{ EDDIES = 1000 }, {}, names, gate)
+		check('the view names the bench it is for',
+			view.bench == 'test:bench' and view.label == 'TEST BENCH')
+		check('an empty shelf leaves the whole queue free',
+			view.cooking == 0 and view.free == 2, ('%d/%d'):format(view.cooking, view.free))
+		check('a recipe the player may make and afford is not greyed',
+			view.recipes[1].key == 'rounds' and view.recipes[1].ok == true,
+			tostring(view.recipes[1].error))
+		check('THE CONSUMER\'S GATE WINS OVER EVERY OTHER REASON',
+			view.recipes[2].key == 'rifle' and view.recipes[2].ok == false
+				and view.recipes[2].error == 'job_required',
+			tostring(view.recipes[2].error))
+		check('and the labels come from the function, not from the item name',
+			view.recipes[1].outputLabel == 'AMMO_HANDGUN', view.recipes[1].outputLabel)
+		check('every input carries what is held beside what is needed',
+			view.recipes[1].inputs[2].item == 'scrap_metal'
+				and view.recipes[1].inputs[2].held == 5
+				and view.recipes[1].inputs[2].need == 2)
+
+		local lean = Recipes.View(bench, {}, {}, {}, nil, nil)
+		check('with no gate at all every row is judged on the bag alone',
+			lean.recipes[1].ok == false and lean.recipes[1].error == Refusal.SHORT,
+			tostring(lean.recipes[1].error))
+		check('and an unlabelled view falls back to the item name',
+			lean.recipes[1].outputLabel == 'ammo_handgun', lean.recipes[1].outputLabel)
+
+		local busy = Recipes.View(bench, { scrap_metal = 5, electronics = 1 },
+			{ EDDIES = 1000 }, { { id = 9, recipe = 'rifle', remaining = -3 },
+				{ id = 4, recipe = 'rounds', remaining = 20 } }, names, nil)
+		check('a full shelf leaves nothing free', busy.free == 0, busy.free)
+		check('and every recipe is then refused for the queue, not for the bag',
+			busy.recipes[1].ok == false and busy.recipes[1].error == Refusal.QUEUE_FULL,
+			tostring(busy.recipes[1].error))
+		check('the shelf is sorted on the way to the screen', busy.orders[1].id == 9,
+			busy.orders[1].id)
+		check('a finished order says so', busy.orders[1].ready == true)
+		check('and a cooking one carries its own remaining time, floored at zero',
+			busy.orders[2].ready == false and busy.orders[2].remaining == 20,
+			busy.orders[2].remaining)
+		check('an overdue order is drawn at zero rather than at a negative',
+			busy.orders[1].remaining == 0, busy.orders[1].remaining)
+		check('and each shelf row carries the recipe\'s yield and its rendered label',
+			busy.orders[1].count == 30 and busy.orders[1].label == 'AMMO_RIFLE',
+			('%s x%s'):format(tostring(busy.orders[1].label), tostring(busy.orders[1].count)))
+		check('an order naming a recipe the bench no longer carries still draws, as itself',
+			(function()
+				local orphan = Recipes.View(bench, {}, {}, { { id = 3, recipe = 'deleted',
+					remaining = -1 } }, names, nil)
+				return orphan.orders[1].label == 'deleted' and orphan.orders[1].count == nil
+			end)())
+
+		-- ── the doors refuse what they cannot prove ──────────────────────
+		local missing = contract.View(1, 'nobody:here')
+		check('a bench nobody registered is refused by name',
+			missing.ok == false and missing.error == Refusal.NO_SUCH_BENCH,
+			tostring(missing.error))
+		local unnamed = contract.Order(1, 'nobody:here', 'rounds')
+		check('and so is an order at one', unnamed.ok == false
+			and unnamed.error == Refusal.NO_SUCH_BENCH, tostring(unnamed.error))
+		local nothing = contract.Collect(1, 'not a number')
+		check('an order id that is not a number is refused before any read',
+			nothing.ok == false and nothing.error == Refusal.NO_SUCH_ORDER,
+			tostring(nothing.error))
+
+		-- THE CATALOGUE IS REACHED THROUGH THE CONTRACT AT REGISTRATION, which is
+		-- the wiring the pure checks above cannot see: they hand `Recipes.Recipe`
+		-- a stub. This one goes through the live door, so it fails if the module
+		-- ever stops asking the inventory what a real item name is.
+		check('a bench naming an item the catalogue does not carry is refused at registration',
+			(function()
+				local bogus = contract.RegisterBench('tests:bogus', { owner = 'tests',
+					recipes = { { KEY = 'x', OUTPUT = 'ammo_plasma', SECONDS = 60,
+						INPUTS = { scrap_metal = 1 } } } })
+				return bogus.ok == false
+			end)())
+		check('and one naming only real items is accepted through the same door',
+			(function()
+				local real = contract.RegisterBench('tests:real', { owner = 'tests',
+					recipes = { { KEY = 'x', OUTPUT = 'ammo_handgun', SECONDS = 60,
+						INPUTS = { scrap_metal = 1 } } } })
+				return real.ok == true
+			end)())
+
+		check('registering a bench twice is refused rather than silently replacing it',
+			(function()
+				local first = contract.RegisterBench('tests:once', { owner = 'tests',
+					recipes = { rounds() } })
+				local second = contract.RegisterBench('tests:once', { owner = 'tests',
+					recipes = { rounds() } })
+				return first.ok == true and second.ok == false and second.error == 'bench_taken'
+			end)())
+		check('and an owner takes back exactly its own benches',
+			(function()
+				local gone = contract.UnregisterBenches('tests')
+				return gone.ok and gone.value == 2
+			end)())
+	end
+end
+
+-- ── crafting: the statements, and the one that makes a collection exactly-once
+-- THE DELETE IS THE CLAIM. Everything about handing an order over hangs off
+-- whether it affected a row, so the bridge is stubbed rather than the storage:
+-- the SQL below is the shipped statement and only the answer is a test's.
+section('crafting: the shelf is the database\'s, and so is the clock')
+do
+	local seen = {}
+	local affected = 1
+	local db = Host.Database({
+		scalar = function() return 1 end,
+		update = function(sql, params)
+			seen[#seen + 1] = { sql = sql, params = params }
+			if sql:find('CREATE TABLE', 1, true) then return 0 end
+			return affected
+		end,
+		query = function() return {
+			{ id = 7, recipe = 'rounds', remaining = -3 },
+			{ id = 9, recipe = 'rifle', remaining = 120 },
+		} end,
+		single = function(sql)
+			if sql:find('COUNT(*)', 1, true) then return { cooking = 2, tail = 90 } end
+			return { id = 7, bench = 'tests:bench', recipe = 'rounds', remaining = -3 }
+		end,
+		insert = function(sql, params)
+			seen[#seen + 1] = { sql = sql, params = params }
+			return 4242
+		end,
+	})
+
+	local env, control, why = boot('server', db)
+	check('the server boots for the storage checks', why == nil, why)
+
+	if why == nil then
+		local Storage = env.OPX.Modules.Get('crafting').Storage
+
+		-- ── the schema ───────────────────────────────────────────────────
+		local ddl = Storage.SCHEMA[1]
+		check('the module owns exactly one table', #Storage.SCHEMA == 1, #Storage.SCHEMA)
+		check('AND ITS FOREIGN KEY COLUMN DECLARES ascii_bin, or InnoDB refuses it with 1005',
+			ddl:find('citizen_id VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin', 1, true) ~= nil)
+		check('the deadline is a DATETIME and not a TIMESTAMP, which the session would shift',
+			ddl:find('ready_at DATETIME NOT NULL', 1, true) ~= nil)
+		check('and the row goes with the character it belongs to',
+			ddl:find('REFERENCES opx77_characters (citizen_id)', 1, true) ~= nil
+				and ddl:find('ON DELETE CASCADE', 1, true) ~= nil)
+
+		-- NO COMMENT MAY APPEAR INSIDE A SQL STRING and every parameter is bound BY
+		-- NAME: the bridge rewrites `?` by walking the query text, so a comment in
+		-- it is not seen as one and a positional parameter is rewritten wherever
+		-- the walk happens to land. Read out of the SOURCE rather than off the
+		-- statements the tests happened to run, so a statement no test calls is
+		-- held to the same rule.
+		local sql = {}
+		do
+			local handle = io.open('modules/crafting/server/storage.lua', 'r')
+			check('the crafting storage file was found', handle ~= nil)
+			if handle then
+				for block in handle:read('a'):gmatch('%[%[(.-)%]%]') do sql[#sql + 1] = block end
+				handle:close()
+			end
+		end
+		check('every statement in the module was read', #sql >= 6, #sql)
+
+		local commented, positional = nil, nil
+		for _, statement in ipairs(sql) do
+			if statement:find('%-%-') then commented = statement end
+			if statement:find('?', 1, true) then positional = statement end
+		end
+		check('no statement carries a comment inside it', commented == nil, commented)
+		check('and none of them binds a positional parameter', positional == nil, positional)
+
+		-- ── the shelf read ───────────────────────────────────────────────
+		local shelf = Storage.Shelf('ABC12345', 'tests:bench')
+		check('the shelf answers a count and a tail in one round trip',
+			shelf.ok and shelf.value.cooking == 2 and shelf.value.tail == 90,
+			shelf.ok and ('%d/%d'):format(shelf.value.cooking, shelf.value.tail) or shelf.error)
+
+		local orders = Storage.Orders('ABC12345', 'tests:bench', 5)
+		check('the orders come back with their remaining seconds, negatives included',
+			orders.ok and #orders.value == 2 and orders.value[1].remaining == -3,
+			orders.ok and #orders.value or orders.error)
+
+		-- ── placing one ──────────────────────────────────────────────────
+		local placed = Storage.Place('ABC12345', 'tests:bench', 'rounds', 150)
+		check('placing an order answers the id the database minted',
+			placed.ok and placed.value == 4242, placed.ok and placed.value or placed.error)
+		local insert = seen[#seen]
+		check('and the deadline is computed by the DATABASE from a relative second count',
+			insert.sql:find('DATE_ADD(UTC_TIMESTAMP(), INTERVAL @seconds SECOND)', 1, true) ~= nil)
+		check('with the seconds bound by name, never spliced into the text',
+			insert.params['@seconds'] == 150, tostring(insert.params['@seconds']))
+
+		-- ── the claim ────────────────────────────────────────────────────
+		affected = 1
+		local claimed = Storage.Claim('ABC12345', 7)
+		check('a DELETE that took a row IS the collection',
+			claimed.ok and claimed.value == true, claimed.ok and tostring(claimed.value)
+				or claimed.error)
+		local delete = seen[#seen]
+		check('AND THE DEADLINE IS TESTED IN THE WHERE CLAUSE, by the thing holding the row',
+			delete.sql:find('ready_at <= UTC_TIMESTAMP()', 1, true) ~= nil)
+		check('beside the owner, so an id somebody guessed reaches nothing',
+			delete.sql:find('citizen_id = @citizen', 1, true) ~= nil)
+
+		affected = 0
+		local lost = Storage.Claim('ABC12345', 7)
+		check('AND A DELETE THAT TOOK NOTHING IS NOT: somebody else already had it',
+			lost.ok and lost.value == false, lost.ok and tostring(lost.value) or lost.error)
+
+		-- ── the compensation ─────────────────────────────────────────────
+		local back = Storage.Reshelve('ABC12345', 'tests:bench', 'rounds')
+		check('a delivery that failed after the claim puts the order back',
+			back.ok and back.value == 4242, back.ok and back.value or back.error)
+		check('and puts it back FINISHED, because the waiting was already done',
+			seen[#seen].sql:find('VALUES (@citizen, @bench, @recipe, UTC_TIMESTAMP())', 1, true)
+				~= nil)
+
+		-- ── a database that will not answer ──────────────────────────────
+		local blind = boot('server', Host.Database({ scalar = function() return 1 end }))
+		local BlindStorage = blind.OPX.Modules.Get('crafting').Storage
+		local refused = BlindStorage.Claim('ABC12345', 7)
+		check('a bridge that raises is a refusal and never a claim',
+			refused.ok == false, tostring(refused.value))
+	end
+end
+
+-- ── the gunsmith: the first consumer, and the gate crafting does not have ────
+section('the gunsmith: three armouries, one gate')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		update = function() return 0 end,
+		query = function() return {} end,
+		single = function() return nil end,
+		insert = function() return 1 end,
+	}))
+	check('the server boots with the gunsmith module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('gunsmith')
+		local Access = M.Access
+
+		check('the gunsmith module is running', OPX.Modules.IsRunning('gunsmith'),
+			OPX.Modules.Record('gunsmith').Reason)
+		check('the shipped config reports no problems', #Access.Problems() == 0,
+			table.concat(Access.Problems(), ' | '))
+
+		-- EVERY SHIPPED ARMOURY GOT A BENCH. This is the whole claim of the
+		-- consumer: the crafting module accepted the recipes as written, which
+		-- means every OUTPUT and every INPUT in `config/gunsmith.lua` is a real
+		-- catalogue item and every duration is inside the bounds.
+		local crafting = OPX.Api.Get('crafting')
+		local listed = crafting.Benches()
+		local mine = {}
+		for _, row in ipairs(listed.value) do
+			if row.owner == 'gunsmith' then mine[#mine + 1] = row end
+		end
+		check('every configured armoury registered a bench',
+			#mine == #Access.List(), ('%d of %d'):format(#mine, #Access.List()))
+		check('and each is namespaced by its owner, so no other module can collide',
+			mine[1] ~= nil and mine[1].key:sub(1, #M.BENCH_PREFIX) == M.BENCH_PREFIX,
+			mine[1] and mine[1].key)
+		check('a bench carries the armoury\'s own queue rather than the default',
+			(function()
+				for _, row in ipairs(mine) do
+					if row.key == M.BENCH_PREFIX .. 'ncpd_watson_armoury' then
+						return row.queue == 4
+					end
+				end
+				return false
+			end)())
+		check('and every one of them is anchored to a position',
+			(function()
+				for _, row in ipairs(mine) do
+					if not row.anchored then return false end
+				end
+				return #mine > 0
+			end)())
+
+		-- ── the chest is a stash and nothing else ────────────────────────
+		local chest = Access.Chest('arasaka_armoury')
+		check('an armoury names its chest by a storage key',
+			chest ~= nil and chest.name == 'gunsmith_arasaka_armoury', chest and chest.name)
+		check('and the chest stands somewhere other than the bench, because it is furniture',
+			chest ~= nil and Access.Bench('arasaka_armoury') ~= nil
+				and chest.x ~= Access.Bench('arasaka_armoury').x)
+		check('an armoury nobody configured has no chest', Access.Chest('nothing_here') == nil)
+
+		-- THE CHEST NAME RULE IS THE INVENTORY MODULE'S AND NOT CRAFTING'S, which
+		-- is the one place the two vocabularies differ: a colon is legal in a bench
+		-- key and illegal in a stash name, and a name refused at the far end would
+		-- otherwise be a chest that opens for nobody with nothing said.
+		local WHERE = { X = 1.0, Y = 2.0, Z = 3.0 }
+		local function chestFrom(over)
+			local raw = { NAME = 'good_name', X = WHERE.X, Y = WHERE.Y, Z = WHERE.Z }
+			for name, value in pairs(over) do raw[name] = value end
+			return Access.ChestFrom(raw)
+		end
+		check('a plain chest name is accepted', chestFrom{} ~= nil)
+		check('a chest NAME with a colon in it is refused',
+			chestFrom{ NAME = 'gunsmith:chest' } == nil)
+		check('and one with a space in it', chestFrom{ NAME = 'two words' } == nil)
+		check('and one past the column width', chestFrom{ NAME = string.rep('n', 49) } == nil)
+		check('and an empty one', chestFrom{ NAME = '   ' } == nil)
+		check('a chest with no z is refused', chestFrom{ Z = 'floor' } == nil)
+		check('and one whose z is a NaN', chestFrom{ Z = 0 / 0 } == nil)
+		check('a chest with no SLOTS falls back rather than being dropped',
+			(function()
+				local plain = chestFrom{}
+				return plain ~= nil and plain.slots == 50 and plain.bucket == 0
+			end)())
+
+		-- ── the gate, which is the elevators gate ────────────────────────
+		local now = 1000000
+		local function snap(name, level, onDuty, jobs)
+			return { job = name and { name = name, grade = { level = level },
+				onDuty = onDuty } or nil, jobs = jobs, atMs = now }
+		end
+		local gated = Access.Armoury('arasaka_armoury')
+		local public = Access.Armoury('kabuki_workshop')
+
+		check('a public bench is open to nobody at all',
+			(Access.Evaluate(public, nil, now, nil)) == true)
+		local ok, refusal = Access.Evaluate(gated, nil, now, nil)
+		check('a gated armoury is shut to a character that never read',
+			ok == false and refusal == 'no_character', tostring(refusal))
+		ok, refusal = Access.Evaluate(gated, snap('militech', 9, true), now, nil)
+		check('and to the wrong job at any grade', ok == false and refusal == 'job_required',
+			tostring(refusal))
+		ok, refusal = Access.Evaluate(gated, snap('arasaka', 0, false), now, nil)
+		check('an ON_DUTY armoury is shut to the right job off duty',
+			ok == false and refusal == 'off_duty', tostring(refusal))
+		check('and open on duty',
+			(Access.Evaluate(gated, snap('arasaka', 0, true), now, nil)) == true)
+
+		local stale = now + Access.JOB_MAX_AGE_MS + 1
+		ok, refusal = Access.Evaluate(gated, snap('arasaka', 3, true), stale, nil)
+		check('A STALE SNAPSHOT SHUTS A GATED ARMOURY', ok == false and refusal == 'job_stale',
+			tostring(refusal))
+		check('AND LEAVES A PUBLIC ONE OPEN, exactly as a public floor stays open',
+			(Access.Evaluate(public, snap('arasaka', 3, true), stale, nil)) == true)
+
+		-- THE REFUSAL CODE IS THE ASSERTION AND NOT THE BOOLEAN, because the
+		-- boolean cannot tell the two policies apart: this armoury is ON_DUTY, so
+		-- a bare arasaka MEMBERSHIP is refused either way -- `job_required` under
+		-- `primary`, where the membership is not seen at all, and `off_duty` under
+		-- `any`, where it is seen and then fails the clock. Asserted on `== false`
+		-- alone, this check stayed green with MEMBERSHIP flipped to `any`, which
+		-- is a check that cannot go red.
+		ok, refusal = Access.Evaluate(gated, snap('militech', 9, true, { arasaka = 5 }), now, nil)
+		check('a membership is not the worked job under MEMBERSHIP = primary',
+			ok == false and refusal == 'job_required', tostring(refusal))
+
+		-- ── the per-recipe bar, which crafting has no word for ───────────
+		local junior = snap('arasaka', 0, true)
+		local senior = snap('arasaka', 2, true)
+		check('a grade 0 recipe is open to the bottom rung',
+			(Access.MayMake('arasaka_armoury', 'handgun_rounds', junior, now)) == true)
+		ok, refusal = Access.MayMake('arasaka_armoury', 'sidearm', junior, now)
+		check('and a grade 2 recipe is not', ok == false and refusal == 'grade_too_low',
+			tostring(refusal))
+		check('the same recipe is open to the rank it asks for',
+			(Access.MayMake('arasaka_armoury', 'sidearm', senior, now)) == true)
+
+		-- THE ARMOURY'S OWN REFUSAL WINS, so a stranger is told it is not their
+		-- armoury rather than invited to seek a promotion in a job they do not hold.
+		ok, refusal = Access.MayMake('arasaka_armoury', 'sidearm', snap('militech', 9, true), now)
+		check('a stranger is refused the ARMOURY and not the rank',
+			ok == false and refusal == 'job_required', tostring(refusal))
+		-- AND THE ARMOURY GATE IS ASKED EVEN OF A RECIPE THAT ASKS FOR NO RANK,
+		-- which is the whole load-bearing half of it: a grade 0 recipe with the
+		-- armoury check taken out would be open to every stranger in Night City.
+		ok, refusal = Access.MayMake('arasaka_armoury', 'handgun_rounds',
+			snap('militech', 9, true), now)
+		check('a grade 0 recipe is still shut to somebody who does not work there',
+			ok == false and refusal == 'job_required', tostring(refusal))
+
+		ok, refusal = Access.MayMake('arasaka_armoury', 'not_a_recipe', senior, now)
+		check('a recipe the armoury does not carry is refused by name',
+			ok == false and refusal == 'no_such_recipe', tostring(refusal))
+		ok, refusal = Access.MayMake('nowhere', 'sidearm', senior, now)
+		check('and so is an armoury that does not exist',
+			ok == false and refusal == 'no_such_bench', tostring(refusal))
+
+		check('a grade on a PUBLIC bench changes nothing, because there is no rank to hold',
+			(Access.MayMake('kabuki_workshop', 'lockpick', nil, now)) == true)
+
+		-- ── the requirement handed to the shared gate ────────────────────
+		-- THE RECIPE BAR IS A FLOOR RAISED UNDER THE ARMOURY'S OWN GRADES and not
+		-- a second gate, which is the one thing this module adds to
+		-- `lib/shared/jobgate.lua`. Checked on the requirement itself, because
+		-- that is what makes a recipe rank and an armoury door incapable of
+		-- disagreeing about staleness, duty or membership.
+		local ncpd = Access.Armoury('ncpd_watson_armoury')
+		check('with no bar the armoury\'s own grades go through untouched',
+			Access.Requirement(gated, nil).jobs.arasaka == 0,
+			Access.Requirement(gated, nil).jobs.arasaka)
+		check('a bar raises every grade to it',
+			Access.Requirement(gated, 2).jobs.arasaka == 2,
+			Access.Requirement(gated, 2).jobs.arasaka)
+		check('AND NEVER LOWERS ONE, so a junior recipe cannot open a senior armoury',
+			Access.Requirement(ncpd, 0).jobs.ncpd == 1,
+			Access.Requirement(ncpd, 0).jobs.ncpd)
+		check('a bar lifts every job the armoury names, not just the first',
+			Access.Requirement(ncpd, 3).jobs.ncpd == 3
+				and Access.Requirement(ncpd, 3).jobs.maxtac == 3)
+		check('the duty flag is carried across with it',
+			Access.Requirement(gated, 2).onDuty == true)
+		check('and a public armoury stays public however high the bar',
+			Access.Requirement(public, 9).jobs == nil)
+
+		-- ── the list the eye is given ────────────────────────────────────
+		local rows = Access.List()
+		check('the armouries are listed sorted, so a sphere index means the same thing twice',
+			#rows == 3 and rows[1].key == 'arasaka_armoury'
+				and rows[2].key == 'kabuki_workshop' and rows[3].key == 'ncpd_watson_armoury',
+			('%d rows'):format(#rows))
+
+		-- ── the bench definition handed to crafting ──────────────────────
+		local definition = Access.BenchDefinition('arasaka_armoury', function() return true end)
+		check('the definition names this module as the owner',
+			definition ~= nil and definition.owner == 'gunsmith')
+		check('and carries a gate, which is the whole of what crafting knows about jobs',
+			definition ~= nil and type(definition.canUse) == 'function')
+		check('an armoury nobody configured has no definition to hand over',
+			Access.BenchDefinition('nowhere', nil) == nil)
+		check('and the definition carries the armoury\'s own label and its recipes',
+			definition ~= nil and definition.label == 'ARASAKA ARMOURY'
+				and #definition.recipes == 4, definition and #definition.recipes)
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
