@@ -88,6 +88,27 @@ local function rows(bag)
 	return list
 end
 
+--- Says a refusal out loud, once per reason per session.
+--
+-- WRITTEN BECAUSE THE FIRST VERSION COULD NOT BE DIAGNOSED. The owner pressed the
+-- key and nothing happened, and every refusal here answered a string to a caller
+-- that discarded it: no toast, no log, and `Open77.log` on a client writes to the
+-- PLAYER'S machine rather than the operator's journal, so even a log line would
+-- not have reached anyone who could act on it. `OPX.Note` is the bounded relay
+-- that does -- sixty per session, decisions and failures only, which is exactly
+-- what this is.
+--
+-- Once per REASON, not once per press: a player leaning on the key must not be
+-- able to spend the session's whole allowance in a second.
+local reported = {}
+local function refuse(reason)
+	if not reported[reason] then
+		reported[reason] = true
+		OPX.Note('inventory', ('the hotbar peek refused: %s'):format(reason))
+	end
+	return false, reason
+end
+
 --- Puts the row on screen for the configured time, or refuses and says why.
 --
 -- The guard is `pressHotbar`'s, word for word, and deliberately: a peek is the
@@ -99,20 +120,31 @@ end
 -- @return boolean
 -- @return string|nil why it was refused
 function Slotbar.Peek()
-	if Options.HOTBAR_SLOTS <= 0 then return false, 'no_hotbar' end
+	if Options.HOTBAR_SLOTS <= 0 then return refuse('no_hotbar') end
 
 	local Screen = M.Screen
-	if Screen.IsOpen() or Screen.IsDown() then return false, 'busy' end
+	if Screen.IsOpen() or Screen.IsDown() then return refuse('busy') end
 
+	-- NO BAG IS NOT A REFUSAL ANY MORE, IT IS A QUESTION. The mirror is filled by
+	-- `M.Event.OWN`, which the server pushes from `Containers.Publish` -- at the
+	-- HELLO handshake through `Players.Attach`, and on every later change. A
+	-- player whose attach answered `not_loaded` because the character was not up
+	-- yet therefore holds nil until the first pickup, and the peek is exactly the
+	-- gesture such a player makes first. Asking costs one event and is rate
+	-- limited server-side to one every two seconds; the row appears on the next
+	-- press rather than never.
 	local bag = Screen.Own()
-	if bag == nil then return false, 'no_bag' end
+	if bag == nil then
+		TriggerServerEvent(M.Event.HELLO)
+		return refuse('no_bag')
+	end
 
 	local holdMs = Options.HOTBAR_PEEK_MS
 	local sent = OPX.UI.Send('overlay', CHANNEL,
 		{ slots = rows(bag), holdMs = holdMs })
 	if not sent then
 		dueAt = 0
-		return false, 'surface_unavailable'
+		return refuse('surface_unavailable')
 	end
 
 	-- A second press RESTARTS the hold rather than being ignored, because the
