@@ -490,6 +490,13 @@ permissions {
   "player.appearance.edit",
   "player.equipment.read",
   "player.equipment.edit",
+  -- `Open77.weapons.get` on the server, which is the only thing that can answer
+  -- WHETHER A WEAPON IS ACTUALLY IN HAND. The inventory used to answer that from
+  -- its own bookkeeping, and the game holsters a weapon by itself often enough
+  -- that the two drifted: pressing Use on a weapon the game had already put away
+  -- put it away again. The other four weapon calls this resource makes need no
+  -- permission; this one does, and the catalogue confirms the name.
+  "player.weapons.read",
   "puppets.present",
 
   "camera.preview",

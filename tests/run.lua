@@ -8338,5 +8338,209 @@ do
 	end
 end
 
+
+-- ── the magazine, and whether the gun is actually in hand ───────────────────
+-- TWO DEFECTS THE OWNER FOUND BY PLAYING, and both are the same mistake in
+-- different clothes: a number read from the wrong place, and a state read from
+-- the wrong place.
+section('weapons: the magazine and the hand')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	local inventory = why == nil and env.OPX.Modules.Get('inventory') or nil
+	check('the inventory module is there', type(inventory) == 'table')
+
+	if type(inventory) == 'table' then
+		local Catalog = inventory.Catalog
+
+		-- ── the magazine ──
+		-- `AMMO.MAX` is how many rounds fit in a BOX. The weapon half read it as
+		-- how many fit in the GUN, so a pistol took the whole crate and never
+		-- reloaded. These two numbers must not be the same one.
+		local pistol = Catalog.Get('weapon_chao')
+		check('a weapon carries a magazine', pistol ~= nil
+			and type(pistol.weapon) == 'table' and pistol.weapon.magazine ~= nil,
+			pistol and tostring(pistol.weapon and pistol.weapon.magazine))
+
+		local box = Catalog.Get('ammo_handgun')
+		check('and it is NOT the ammunition box its class loads',
+			pistol ~= nil and box ~= nil
+				and pistol.weapon.magazine ~= box.ammo.max,
+			box and ('magazine %s vs box %s'):format(
+				tostring(pistol and pistol.weapon.magazine), tostring(box.ammo.max)))
+
+		check('and it is a handful of rounds rather than a crateful',
+			pistol ~= nil and pistol.weapon.magazine > 0 and pistol.weapon.magazine <= 50,
+			pistol and tostring(pistol.weapon.magazine))
+
+		-- Every class that loads ammunition states one, checked across the whole
+		-- catalogue: one missing is one weapon that silently loads nothing.
+		local missing = {}
+		local armed = 0
+		for _, name in ipairs(Catalog.Names()) do
+			local item = Catalog.Get(name)
+			if type(item) == 'table' and type(item.weapon) == 'table'
+				and item.weapon.ammo ~= nil then
+				armed = armed + 1
+				if item.weapon.magazine == nil then missing[#missing + 1] = name end
+			end
+		end
+		check('some weapons load ammunition at all', armed > 0, tostring(armed))
+		check('and every one of them states a magazine', #missing == 0,
+			table.concat(missing, ',', 1, math.min(#missing, 6)))
+
+		-- ── the hand ──
+		-- `armed[source]` is OUR record of what we last put there. The game
+		-- holsters on its own -- a vehicle, a knockdown -- and then Use, which
+		-- reads as a toggle, put away something already away.
+		local Weapons = inventory.Weapons
+		check('the in-hand question is askable', type(Weapons.InHand) == 'function')
+
+		if type(Weapons.InHand) == 'function' then
+			local answer = nil
+			env.Open77.weapons = env.Open77.weapons or {}
+			env.Open77.weapons.get = function() return answer end
+
+			answer = { drawn = true, fresh = true }
+			check('a fresh answer saying drawn is believed', Weapons.InHand(1) == true)
+
+			answer = { drawn = false, fresh = true }
+			check('and a fresh answer saying holstered is believed too',
+				Weapons.InHand(1) == false)
+
+			-- DO-NOT-KNOW KEEPS THE OLD BEHAVIOUR, and these three are why the
+			-- default is `true` rather than `false`. The platform calls this a
+			-- cache and says to read it to decide, never to assert: a stale
+			-- reading, a player the host has heard nothing from, and a build
+			-- without the call are all "cannot say". Answering "not in hand" to
+			-- any of them would trade a rare wrong holster for a constant wrong
+			-- draw.
+			answer = { drawn = false, fresh = false }
+			check('a STALE answer is not taken as holstered', Weapons.InHand(1) == true)
+
+			answer = nil
+			check('and neither is a refusal', Weapons.InHand(1) == true)
+
+			env.Open77.weapons.get = nil
+			check('nor a build that cannot be asked', Weapons.InHand(1) == true)
+
+			env.Open77.weapons.get = function() error('boom') end
+			check('and a reader that raises does not take the caller with it',
+				Weapons.InHand(1) == true)
+			env.Open77.weapons.get = nil
+		end
+	end
+end
+
+-- ── the rounds a drawn weapon comes out with ────────────────────────────────
+-- THE OWNER DREW A WEAPON HOLDING ZERO ROUNDS AND IT CAME OUT SHOOTING. The
+-- cause is one missing field rather than a wrong sum: `setAmmo` changes only
+-- what it is TOLD about, and the fallback split named the reserve and said
+-- nothing of the magazine -- so the engine kept the full one it loaded when the
+-- weapon was assigned. Every case below therefore asserts that BOTH halves are
+-- stated, not only that they add up.
+section('weapons: the rounds a draw comes out with')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	local inventory = why == nil and env.OPX.Modules.Get('inventory') or nil
+	local Weapons = type(inventory) == 'table' and inventory.Weapons or nil
+	check('the split is askable on its own', type(Weapons) == 'table'
+		and type(Weapons.Amounts) == 'function')
+
+	if type(Weapons) == 'table' and type(Weapons.Amounts) == 'function' then
+		-- THE BUG, AS A CHECK. No capacity reading, no rounds on the item: the
+		-- weapon must be stated empty rather than left as the engine loaded it.
+		local empty = Weapons.Amounts(0, nil, nil, false)
+		check('an empty item states an empty magazine rather than staying silent',
+			empty.magazine == 0, tostring(empty.magazine))
+		check('and an empty reserve with it', empty.reserve == 0, tostring(empty.reserve))
+
+		-- Every other shape has to state both as well, or the same hole reopens
+		-- somewhere else.
+		local known = Weapons.Amounts(0, 30, nil, false)
+		check('an empty item with a known capacity is empty too',
+			known.magazine == 0 and known.reserve == 0)
+
+		local full = Weapons.Amounts(50, 30, nil, false)
+		check('a known capacity fills the magazine and reserves the rest',
+			full.magazine == 30 and full.reserve == 20,
+			('%s / %s'):format(tostring(full.magazine), tostring(full.reserve)))
+
+		local under = Weapons.Amounts(12, 30, nil, false)
+		check('fewer rounds than the magazine holds all go in it',
+			under.magazine == 12 and under.reserve == 0)
+
+		-- UNKNOWN CAPACITY IS NOT UNKNOWN MAGAZINE. Zero is the one value that is
+		-- always safe to state -- no capacity is below it -- so the rounds go to
+		-- the reserve and the player chambers them. Stating nothing was what let
+		-- the engine answer instead.
+		local blind = Weapons.Amounts(40, nil, nil, false)
+		check('with no capacity reading the rounds go to the reserve',
+			blind.magazine == 0 and blind.reserve == 40,
+			('%s / %s'):format(tostring(blind.magazine), tostring(blind.reserve)))
+
+		-- A reload keeps what is already chambered: the split is taken from the
+		-- reading rather than guessed, which is why the snapshot is asked first.
+		local reload = Weapons.Amounts(40, 30, 7, true)
+		check('a reload keeps what is chambered and reserves the rest',
+			reload.magazine == 7 and reload.reserve == 33)
+
+		local overdrawn = Weapons.Amounts(3, 30, 7, true)
+		check('and never chambers more rounds than the item actually holds',
+			overdrawn.magazine == 3 and overdrawn.reserve == 0,
+			('%s / %s'):format(tostring(overdrawn.magazine), tostring(overdrawn.reserve)))
+
+		-- Whatever the branch, the two halves are the item's rounds and no more.
+		-- This is the invariant the whole function exists to hold: the engine is
+		-- never handed a round the item did not have.
+		local shapes = {
+			{ 0, nil, nil, false }, { 0, 30, nil, false }, { 50, 30, nil, false },
+			{ 12, 30, nil, false }, { 40, nil, nil, false }, { 40, 30, 7, true },
+			{ 3, 30, 7, true },
+		}
+		local kept = true
+		for index = 1, #shapes do
+			local s = shapes[index]
+			local out = Weapons.Amounts(s[1], s[2], s[3], s[4])
+			if out.magazine == nil or out.reserve == nil
+				or out.magazine + out.reserve ~= s[1] then kept = false end
+		end
+		check('every split states both halves and invents no rounds', kept)
+	end
+end
+
+-- ── the version is one number, in three places ──────────────────────────────
+-- THE SERVER REPORTED 0.1.0 WHILE THE MANIFEST SAID 0.1.2, for two releases,
+-- and the only symptom was the owner reading the wrong number off a boot line
+-- while chasing something else. `core/shared/main.lua` now ASKS the platform --
+-- `Open77.resource.version()` on the client, `resource.metadata` on the server,
+-- neither needing a permission -- so on a real host nothing can drift.
+--
+-- The literal in that file is the last resort for a host that answers neither,
+-- and this is what stops the last resort from being the next stale number. Read
+-- out of the SOURCE, because the suite rightly forbids publishing it on `OPX`
+-- just so a test can see it. `opx_lib` carries the same check for the same
+-- reason; there it was written after the drift, and here after it happened
+-- again in the other repository.
+section('the version')
+do
+	local function grab(path, pattern)
+		local handle = io.open(path, 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		return body:match(pattern)
+	end
+
+	local literal = grab('core/shared/main.lua', "local DECLARED = '([%d%.]+)'")
+	local manifest = grab('open77.lua', '\nversion "([%d%.]+)"')
+
+	check('core states a fallback version', literal ~= nil, tostring(literal))
+	check('the manifest states one', manifest ~= nil, tostring(manifest))
+	check('and they are the same number', literal == manifest,
+		('core %s vs manifest %s'):format(tostring(literal), tostring(manifest)))
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

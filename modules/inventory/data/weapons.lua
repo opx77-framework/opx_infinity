@@ -18,15 +18,31 @@ M.Data.WEAPONS = {
 		ammo_sniper = { WEIGHT = 25, MAX = 170, MODEL = 'crate.ammo_box' },
 	},
 
+	-- MAGAZINE IS NOT `AMMO.MAX`, and conflating the two is the defect this field
+	-- exists to end. `AMMO.MAX` above is how many rounds fit in a BOX -- five
+	-- hundred for a handgun, because that is a sensible thing to carry -- and the
+	-- weapon half was reading it as how many fit in the GUN. A player could load
+	-- a pistol with the entire crate and never reload.
+	--
+	-- Stated per CLASS because that is the granularity the truth actually has:
+	-- one hundred and ninety weapons share nine behaviours, and a per-weapon
+	-- number for each would be a hundred and ninety guesses. A weapon that really
+	-- is different says so with its own `MAGAZINE`, which wins.
+	--
+	-- These are game-feel numbers, not Cyberpunk's own: the engine owns the real
+	-- magazine and we do not read it. What this bounds is how much ammunition a
+	-- player may pour in at once.
 	CLASSES = {
-		handgun = { AMMO = 'ammo_handgun', MODEL = 'military.case' },
-		revolver = { AMMO = 'ammo_handgun', MODEL = 'military.case' },
-		smg = { AMMO = 'ammo_rifle', MODEL = 'military.case' },
-		rifle = { AMMO = 'ammo_rifle', MODEL = 'military.case.large' },
-		precision = { AMMO = 'ammo_rifle', MODEL = 'military.case.large' },
-		lmg = { AMMO = 'ammo_rifle', MODEL = 'military.case.large' },
-		sniper = { AMMO = 'ammo_sniper', MODEL = 'military.case.large' },
-		shotgun = { AMMO = 'ammo_shotgun', MODEL = 'military.case.large' },
+		handgun = { AMMO = 'ammo_handgun', MODEL = 'military.case', MAGAZINE = 15 },
+		revolver = { AMMO = 'ammo_handgun', MODEL = 'military.case', MAGAZINE = 8 },
+		smg = { AMMO = 'ammo_rifle', MODEL = 'military.case', MAGAZINE = 35 },
+		rifle = { AMMO = 'ammo_rifle', MODEL = 'military.case.large', MAGAZINE = 30 },
+		precision = { AMMO = 'ammo_rifle', MODEL = 'military.case.large', MAGAZINE = 20 },
+		lmg = { AMMO = 'ammo_rifle', MODEL = 'military.case.large', MAGAZINE = 100 },
+		sniper = { AMMO = 'ammo_sniper', MODEL = 'military.case.large', MAGAZINE = 5 },
+		shotgun = { AMMO = 'ammo_shotgun', MODEL = 'military.case.large', MAGAZINE = 8 },
+		-- No AMMO, so no MAGAZINE: a blade loads nothing and the catalogue only
+		-- complains about a missing magazine for a class that names ammunition.
 		melee = { MODEL = 'military.case' },
 	},
 
@@ -99,7 +115,12 @@ M.Data.WEAPONS = {
 		weapon_mancinella = { RECORD = 'Items.Preset_Nova_Hitman', CLASS = 'revolver', WEIGHT = 1600 },
 		weapon_metel = { RECORD = 'Items.Preset_Metel_Default', CLASS = 'revolver', WEIGHT = 2000 },
 		weapon_nova = { RECORD = 'Items.Preset_Nova_Default', CLASS = 'revolver', WEIGHT = 1600 },
-		weapon_old_pal = { RECORD = 'Items.Preset_Overture_Dante', CLASS = 'revolver', WEIGHT = 1800 },
+		-- A SUBSTITUTION, AND IT IS SAID SO RATHER THAN LEFT TO BE NOTICED. Old Pal
+		-- is `Preset_Overture_Dante` and the wiki carries no Dante icon; this is
+		-- the Overture's own. Same gun, different variant -- the silhouette is
+		-- right and the trim is not. Replace it the day an exact one exists.
+		weapon_old_pal = { RECORD = 'Items.Preset_Overture_Dante', CLASS = 'revolver', WEIGHT = 1800,
+			IMAGE = 'weapon_old_pal.webp' },
 		weapon_overture = { RECORD = 'Items.Preset_Overture_Default', CLASS = 'revolver',
 			WEIGHT = 1800 },
 		weapon_pygargue = { RECORD = 'Items.Preset_Metel_Kurt', CLASS = 'revolver', WEIGHT = 2000 },
@@ -268,7 +289,11 @@ M.Data.WEAPONS = {
 		weapon_machete = { RECORD = 'Items.Preset_Machete_Default', CLASS = 'melee', WEIGHT = 1100 },
 		weapon_machete_borg = { RECORD = 'Items.Preset_Machete_Borg_Default', CLASS = 'melee',
 			WEIGHT = 1300 },
-		weapon_murphys_law = { RECORD = 'Items.Preset_Baton_Murphy', CLASS = 'melee', WEIGHT = 800 },
+		-- An exact match: the wiki names its file after the TweakDB record, so
+		-- `Preset_Baton_Murphy` is `Baton Murphy.png`. That pattern is how the
+		-- other twelve were looked for, and why eleven of them were not found.
+		weapon_murphys_law = { RECORD = 'Items.Preset_Baton_Murphy', CLASS = 'melee', WEIGHT = 800,
+			IMAGE = 'weapon_murphys_law.webp' },
 		weapon_nehan = { RECORD = 'Items.Preset_Tanto_Saburo', CLASS = 'melee', WEIGHT = 400 },
 		weapon_neurotoxin_knife = { RECORD = 'Items.Preset_Neurotoxin_Knife_Default', CLASS = 'melee',
 			WEIGHT = 350 },
