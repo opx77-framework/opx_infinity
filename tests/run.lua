@@ -8248,5 +8248,54 @@ do
 	check('and they are the same number', literal == manifest,
 		('core %s vs manifest %s'):format(tostring(literal), tostring(manifest)))
 end
+
+-- ── every item picture the catalogue names is actually shipped ──────────────
+-- WRITTEN AFTER LOSING TWO OF THEM. A `git add -A` on a working tree that had
+-- been through three branch switches staged a deletion nobody asked for: the
+-- two icons went out of the tree while `data/weapons.lua` kept naming them, and
+-- the suite passed, and the deploy went out. The page falls back to a monogram
+-- on a broken image, so nothing crashed and nothing said anything either.
+--
+-- That is the hole. A missing picture is invisible from Lua, invisible from the
+-- tests and invisible in the log; the only reporter is somebody looking at the
+-- slot. So the catalogue's own claim is checked against the filesystem: every
+-- `IMAGE` it names must exist, and the default `<name>.png` is checked too for
+-- the items that state no override.
+section('every item picture the catalogue names is shipped')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	local inventory = why == nil and env.OPX.Modules.Get('inventory') or nil
+	check('the inventory module is there', type(inventory) == 'table')
+
+	if type(inventory) == 'table' then
+		local Catalog = inventory.Catalog
+
+		local function shipped(file)
+			local handle = io.open('web/images/' .. file, 'rb')
+			if handle == nil then return false end
+			handle:close()
+			return true
+		end
+
+		local named, missing = 0, {}
+		for _, name in ipairs(Catalog.Names()) do
+			local item = Catalog.Get(name)
+			-- Only what the catalogue explicitly NAMES. An item with no `IMAGE`
+			-- and no `<name>.png` is a deliberate monogram, and there are enough
+			-- of those that asserting on them would be asserting a wish.
+			local file = type(item) == 'table' and item.image or nil
+			if type(file) == 'string' and file ~= '' then
+				named = named + 1
+				if not shipped(file) then missing[#missing + 1] = name .. ' -> ' .. file end
+			end
+		end
+
+		check('some items name a picture of their own', named > 0, tostring(named))
+		check('and every one of those files is in web/images', #missing == 0,
+			table.concat(missing, ', '))
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
