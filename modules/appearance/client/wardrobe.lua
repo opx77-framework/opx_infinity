@@ -494,17 +494,47 @@ local function playable()
 	return true
 end
 
+-- Reasons `refusal()` has already named this world entry, so a gate polled four
+-- times a second costs one journal line rather than a note budget.
+local refusalTold = {}
+
+--- Forgets what the gate has reported, for a new world entry.
+local function forgetRefusals()
+	refusalTold = {}
+end
+
 --- Why the room cannot open now, or nil.
+---
+--- EVERY BRANCH REPORTS ITSELF, once. This gate is the first line of `begin`,
+--- and until now a refusal here returned with nothing written anywhere: the
+--- journal showed a room owed, the clothes going on, and then silence, because
+--- the retry was being turned away by a door that never said which one it was.
+--- That is the shape of failure this whole module has now been debugged out of
+--- three times, and the cure each time was a line naming the clause.
+---
+--- `input_captured` is the one to suspect first, and it is worth knowing why.
+--- `OPX.Lib.Input.IsCaptured` answers CAPTURED when its own read raises -- the
+--- safe value for a keybind, because a key firing while another surface owns
+--- the keyboard types into somebody else's box. For this gate that safe value
+--- is the blocking one: it means the room can never open. The library is right
+--- and so is this caller; they just want opposite defaults, which is exactly
+--- why `modules/animations/client/keys.lua` keeps a local reader of its own.
+-- @return string|nil
 local function refusal()
-	if phase ~= 'closed' then return 'wardrobe_busy' end
-	if type(Open77.equipment) ~= 'table' or type(Open77.equipment.apply) ~= 'function' or
-		type(Open77.equipment.records) ~= 'function' then
-		return 'equipment_api_unavailable'
+	local why = nil
+	if phase ~= 'closed' then why = 'wardrobe_busy'
+	elseif type(Open77.equipment) ~= 'table' or type(Open77.equipment.apply) ~= 'function' or
+		type(Open77.equipment.records) ~= 'function' then why = 'equipment_api_unavailable'
+	elseif Runtime.IsDown() then why = 'player_down'
+	elseif not playable() then why = 'player_unavailable'
+	elseif OPX.Lib.Input.IsCaptured() then why = 'input_captured'
 	end
-	if Runtime.IsDown() then return 'player_down' end
-	if not playable() then return 'player_unavailable' end
-	if OPX.Lib.Input.IsCaptured() then return 'input_captured' end
-	return nil
+
+	if why ~= nil and not refusalTold[why] then
+		refusalTold[why] = true
+		Runtime.Note(('the fitting room cannot open: %s'):format(why))
+	end
+	return why
 end
 
 --- The nine equipment slots of a clothing record, false for empty.
@@ -1289,6 +1319,12 @@ function M.Wardrobe.Wire()
 	-- 'first' nothing raises `created` twice and this changes nothing.
 	AddEventHandler(OPX.Host.WORLD_READY, function()
 		release(false, 'world_changed')
+
+		-- One journal line per distinct refusal PER WORLD ENTRY. The gate below is
+		-- consulted by a retry loop several times a second; without this reset it
+		-- would either flood the note budget or, deduped for the whole session, go
+		-- quiet after the first join and tell a second join nothing.
+		forgetRefusals()
 
 		-- NOT WHILE ONE IS STILL OWED, and this is the half of the fitting-room
 		-- defect that lived here. A CREATION'S OWN BOOTSTRAP ANSWER IS WHAT LOADS
