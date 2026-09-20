@@ -137,6 +137,33 @@ OPX.Config.MODULES.inventory = {
 		{ KEY = 'misc', REST = true },
 	},
 
+	-- EDDIES AS A THING YOU CAN HAND OVER, and the one piece of configuration
+	-- here that can mint money if it is wrong.
+	--
+	-- THE BALANCE STAYS THE SINGLE AUTHORITY and the item is a BEARER NOTE drawn
+	-- against it: withdrawing debits MONEY_TYPE and puts that many units of ITEM
+	-- in the bag, and using the stack destroys it and credits the balance back.
+	-- Nothing SPENDS the item -- a shop, a dealership and a garage all read the
+	-- balance and none of them reads a bag -- so a note sitting in a bag, a boot
+	-- or a stash is money that is out of circulation until somebody deposits it,
+	-- and is never spendable twice. That is the whole reason the item is not
+	-- itself the money: the alternative makes every existing reader of the
+	-- balance wrong on the day a player leaves their wages in a car.
+	--
+	-- ITEM must be a real row in data/items.lua and MONEY_TYPE a real key of
+	-- `OPX.Config.SHARED.MONEY.TYPES`. Either one wrong turns the bridge OFF
+	-- with a boot warning rather than half-wiring it: a withdraw that debits
+	-- into an item nothing can deposit is money destroyed on the first use.
+	--
+	-- MAX_WITHDRAW bounds ONE withdraw and not what anybody may hold, so that a
+	-- fat-fingered amount is a refusal rather than a bag full of notes.
+	CURRENCY = {
+		ENABLED = true,
+		ITEM = 'eddies',
+		MONEY_TYPE = 'EDDIES',
+		MAX_WITHDRAW = 1000000,
+	},
+
 	-- Largest count one staff command accepts.
 	MAX_COMMAND_COUNT = 10000,
 }

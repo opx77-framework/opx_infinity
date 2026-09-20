@@ -407,3 +407,44 @@ end
 
 Options.MAX_COMMAND_COUNT =
 	bounded('MAX_COMMAND_COUNT', Config.MAX_COMMAND_COUNT, 1, Options.MAX_STACK, 10000)
+
+--- The money-to-item bridge: whether it is wired, what it trades and how much.
+--
+-- RESOLVED HERE AND NOT AT THE MOMENT OF USE, because every one of these
+-- mistakes has the same shape -- half a bridge -- and half a bridge is where
+-- money goes missing. A withdraw that debits `EDIES` (a typo) into an item
+-- nothing can deposit destroys the balance on the first use, and it would not be
+-- noticed until a player complained; refusing to wire the bridge at all is a
+-- line in the boot log that somebody reads the same day.
+--
+-- THE ITEM IS NOT CHECKED HERE. `shared/catalog.lua` loads after this file, so
+-- there is no catalogue to ask yet. `server/currency.lua` asks at `Start`, where
+-- there is, and turns the bridge off the same way.
+local currency = section(Config.CURRENCY, 'CURRENCY')
+Options.CURRENCY_ENABLED = currency.ENABLED ~= false
+Options.CURRENCY_ITEM = Common.Word(currency.ITEM, 48, '^[%w_%-%.]+$')
+Options.CURRENCY_MONEY_TYPE = nil
+Options.CURRENCY_MAX_WITHDRAW =
+	bounded('CURRENCY.MAX_WITHDRAW', currency.MAX_WITHDRAW, 1, Options.MAX_STACK, 1000000)
+
+if Options.CURRENCY_ENABLED then
+	if Options.CURRENCY_ITEM == nil then
+		problem('CURRENCY.ITEM must be an item name; no money can be withdrawn as an item')
+		Options.CURRENCY_ENABLED = false
+	end
+
+	-- A money type the server does not have is the typo that costs the most:
+	-- `AddMoney` and `RemoveMoney` both answer `money.badType` for it, so the
+	-- withdraw would refuse and the deposit would refuse -- but only AFTER the
+	-- deposit had already taken the notes out of the bag. Off is the safe state.
+	local types = type(OPX.Config.SHARED) == 'table' and type(OPX.Config.SHARED.MONEY) == 'table'
+		and OPX.Config.SHARED.MONEY.TYPES or nil
+	local named = Common.Word(currency.MONEY_TYPE, 32, '^[%w_]+$')
+	if type(types) ~= 'table' or named == nil or types[named] == nil then
+		problem(('CURRENCY.MONEY_TYPE %q is not a money type this server declares; no money ' ..
+			'can be withdrawn as an item'):format(tostring(currency.MONEY_TYPE)))
+		Options.CURRENCY_ENABLED = false
+	else
+		Options.CURRENCY_MONEY_TYPE = named
+	end
+end

@@ -987,8 +987,14 @@ try {
           >
             {{ label('split') }}
           </button>
+<!-- `droppable` is the server's own answer, carried on the catalogue entry, and
+               the row is hidden rather than disabled: a greyed-out Drop invites the
+               question "why", and the honest answer -- a pile is memory-only, so
+               dropping eddies would delete them at the next restart -- does not fit on
+               a menu row. Dragging to the ground zone is still offered and still
+               refused by the server, with a toast that says so. -->
           <button
-            v-if="isBag && config.drops"
+            v-if="isBag && config.drops && menuEntry?.droppable !== false"
             type="button"
             class="row"
             :class="{ off: busy }"
