@@ -5049,5 +5049,117 @@ do
 			shops.CleanCode(minted, length) == minted)
 	end
 end
+
+-- ── walking through an emote ────────────────────────────────────────────────
+-- THE LEASE IS THE RISK, not the feature. `Open77.movement.setWalkMode` is a
+-- request held on the PLAYER, not a property of the animation: if an emote ends
+-- and nothing releases, that player walks for the rest of their session with
+-- nothing on screen to explain it and no way to undo it. So what is tested here
+-- is almost entirely the giving back.
+section('animations: walking through an emote')
+do
+	local env, _, why = boot('client')
+	check('the client boots with the walk half', why == nil, why)
+
+	local animations = why == nil and env.OPX.Modules.Get('animations') or nil
+	local Walk = type(animations) == 'table' and animations.Walk or nil
+	check('the walk half declared itself', type(Walk) == 'table')
+
+	if type(Walk) == 'table' then
+		-- A recorder in place of the native, so every ask and every release is
+		-- counted rather than inferred.
+		local asked = {}
+		env.Open77.movement = {
+			setWalkMode = function(enabled, speed)
+				asked[#asked + 1] = { enabled = enabled, speed = speed }
+				return true
+			end,
+		}
+
+		local Catalogue = animations.Catalogue
+
+		-- ── the catalogue rule ──
+		-- EVERY WALKABLE EMOTE IS A STANDING ONE, asserted across the whole
+		-- catalogue rather than on one row. `sit`, `examine` and `wounded` are
+		-- authored against the ground: walking out of one does not produce a
+		-- player strolling while seated, it produces a body sliding across the
+		-- pavement in a pose that stopped meaning anything.
+		local entries = Catalogue.Entries()
+		local offenders = {}
+		local walkable = 0
+		for index = 1, #entries do
+			local entry = entries[index]
+			if entry.walk ~= nil then
+				walkable = walkable + 1
+				if entry.placement ~= 'standing' then
+					offenders[#offenders + 1] = entry.name
+				end
+				if entry.walk < 0.5 or entry.walk > 2.5 then
+					offenders[#offenders + 1] = entry.name .. '(speed)'
+				end
+			end
+		end
+		check('some emotes are walkable at all', walkable > 0, tostring(walkable))
+		check('and every one of them is a standing pose within the speed bounds',
+			#offenders == 0, table.concat(offenders, ','))
+
+		-- ── taking and giving back ──
+		check('nothing is held before an emote plays', Walk.Held() == nil)
+
+		Walk.Follow(true, 'smoke')
+		check('a walkable emote takes the lease at its own speed', Walk.Held() == 1.3,
+			tostring(Walk.Held()))
+		check('and it asked the platform exactly once',
+			#asked == 1 and asked[1].enabled == true and asked[1].speed == 1.3)
+
+		-- ASKED ONCE, NOT ONCE A FRAME. The state funnel fires on every change and
+		-- a re-ask at the same speed would be a native call per event for nothing.
+		Walk.Follow(true, 'smoke')
+		check('holding it again at the same speed asks nothing more', #asked == 1)
+
+		Walk.Follow(true, 'drink')
+		check('a different emote moves the lease rather than stacking one',
+			Walk.Held() == 1.2 and #asked == 2 and asked[2].speed == 1.2)
+
+		Walk.Follow(true, 'dance')
+		check('an emote that does not walk gives the lease back',
+			Walk.Held() == nil and asked[#asked].enabled == false)
+
+		Walk.Follow(true, 'smoke')
+		Walk.Follow(false, nil)
+		check('and so does the emote ending', Walk.Held() == nil
+			and asked[#asked].enabled == false)
+
+		Walk.Follow(true, 'no_such_emote')
+		check('an emote this client does not know holds nothing', Walk.Held() == nil)
+
+		-- ── the watchdog ──
+		-- The reason it exists: the release above is a promise about every exit
+		-- path, and a promise about every path is the kind that is kept until
+		-- somebody adds a path. This is what makes it survive that.
+		animations.Presenter.State = function() return { active = false } end
+		Walk.Follow(true, 'smoke')
+		check('the lease is held before the sweep', Walk.Held() == 1.3)
+		Walk.Check()
+		check('a lease with no emote under it is swept', Walk.Held() == nil)
+
+		animations.Presenter.State = function()
+			return { active = true, animation = 'smoke' }
+		end
+		Walk.Follow(true, 'smoke')
+		Walk.Check()
+		check('and a lease that still has one is left alone', Walk.Held() == 1.3)
+
+		-- ── a host that cannot do it ──
+		-- op77.75 is recent. A client older than that is not broken; it simply
+		-- cannot walk through an emote, and must not raise trying.
+		Walk.Release()
+		env.Open77.movement = nil
+		check('a build without the native reports it', Walk.Available() == false)
+		local safe = pcall(Walk.Follow, true, 'smoke')
+		check('and asking for a walk on one neither holds nor raises',
+			safe and Walk.Held() == nil)
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
