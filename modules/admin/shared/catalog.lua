@@ -61,6 +61,34 @@ do
 	end
 end
 
+-- The AV prefixes, lower-cased, read once from the config.
+local avPrefixes
+
+--- Whether a record is an AV, by the one rule: `VEHICLES.AV_PREFIXES`.
+-- The same rule the garages module, the dealership and the platform's own
+-- gamemodes use, so a record is in the air category everywhere or nowhere. The
+-- catalogue marks the row with the answer, and no row declares its own category:
+-- one owner, and a row cannot disagree with itself.
+-- @author dop42
+-- @param record string
+-- @return boolean
+local function isAir(record)
+	if avPrefixes == nil then
+		avPrefixes = {}
+		for _, prefix in ipairs(M.Section('VEHICLES').AV_PREFIXES or {}) do
+			if type(prefix) == 'string' and prefix ~= '' then
+				avPrefixes[#avPrefixes + 1] = prefix:lower()
+			end
+		end
+	end
+	local lowered = record:lower()
+	for index = 1, #avPrefixes do
+		local prefix = avPrefixes[index]
+		if lowered:sub(1, #prefix) == prefix then return true end
+	end
+	return false
+end
+
 --- Indexes the next `count` rows into their classes and both lookups.
 -- @author dop42
 -- @param count integer
@@ -86,6 +114,8 @@ function Catalog.IndexVehicles(count)
 				label = M.Trimmed(row.LABEL, 48) or name,
 				record = record,
 				class = class.key,
+				-- Derived from the record, never declared by the row (see `isAir`).
+				av = isAir(record),
 			}
 			class.members[#class.members + 1] = entry
 			byName[name] = entry

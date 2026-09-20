@@ -17,3 +17,6 @@ acl.jsonc
 
 # Agent tooling: 16 MB of skills, two of them nested git repos
 .claude/
+
+# Work-in-progress scratch: local tools, capture dumps and deploy helpers.
+.open77-scratch/
