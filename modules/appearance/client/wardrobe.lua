@@ -416,6 +416,11 @@ local statusText, creating, citizen, family = nil, false, nil, nil
 -- it took the camera, and the camera's orbit in degrees.
 local outfitCleared, savedPerspective, orbit = false, nil, 180
 
+-- The field of view the player had before the room widened it, or nil when the
+-- room never touched it. Read from `Open77.camera.view` rather than assumed, so
+-- a player running a custom FOV gets their own value back and not ours.
+local savedFov = nil
+
 -- Creation handoff generation, so an older wait stops, and the kept outfit whose
 -- save is listened for.
 local creationWatch, awaitSave = 0, nil
@@ -670,9 +675,32 @@ local function hasOrbit()
 	return OPX.Lib.Native.Reach('camera.orbit') ~= nil
 end
 
+--- WARDROBE.CAMERA_FOV, or nil to leave the player's lens alone.
+local function wardrobeFov()
+	local config = type(M.Settings.WARDROBE) == 'table' and M.Settings.WARDROBE or {}
+	local wanted = tonumber(config.CAMERA_FOV)
+	-- The platform validates the degrees itself; this only refuses a value that
+	-- is not a number at all, so a mistyped config leaves the lens untouched
+	-- rather than sending nonsense at the backend once per room.
+	if wanted == nil or wanted < 5 or wanted > 170 then return nil end
+	return wanted
+end
+
 --- Remembers the perspective, goes third person and faces the puppet.
 local function holdCamera()
 	orbit = 180
+
+	-- THE LENS IS WIDENED, WHICH IS NOT THE SAME AS STANDING BACK. `camera.orbit`
+	-- below is a yaw inside the third-person rig and cannot move the view off the
+	-- player -- see the note on `WARDROBE.CAMERA_FOV` for why the alternative is
+	-- a permission this room does not need. Read first so the player's own value
+	-- goes back exactly on the way out, rather than being restored to a guess.
+	local fov = wardrobeFov()
+	if fov ~= nil then
+		local view = OPX.Lib.Native.Call('camera.view', nil)
+		savedFov = view.ok and type(view.value) == 'table' and tonumber(view.value.fov) or nil
+		OPX.Lib.Native.Call('camera.setFov', nil, fov)
+	end
 	local perspective = Open77.perspective
 	if type(perspective) == 'table' then
 		local requested
@@ -695,6 +723,13 @@ local function freeCamera()
 	-- The answer is dropped on purpose: this runs on the way out, and there is
 	-- nothing a caller could do about a preview it has already stopped wanting.
 	OPX.Lib.Native.Call('camera.clearOrbit', 'camera.preview')
+	-- The player's own lens, read on the way in rather than assumed. Nil means
+	-- the room never touched it, or the read failed -- and in that case leaving
+	-- it alone is right: the room does not know what to put back.
+	if savedFov ~= nil then
+		OPX.Lib.Native.Call('camera.setFov', nil, savedFov)
+		savedFov = nil
+	end
 	local perspective = Open77.perspective
 	if savedPerspective ~= nil and type(perspective) == 'table' and
 		type(perspective.set) == 'function' then
