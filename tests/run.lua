@@ -9086,9 +9086,47 @@ do
 
 		-- NO BAG IS A REFUSAL, not an empty row. A player who has not loaded a
 		-- character has no hotbar to look at.
+		local before = 0
+		for _, sent in ipairs(control.serverEvents) do
+			if sent.name == inventory.Event.HELLO then before = before + 1 end
+		end
+
 		local ok, reason = Slotbar.Peek()
 		check('a peek with no bag is refused', ok == false and reason == 'no_bag', tostring(reason))
 		check('and nothing was drawn', drew() == nil)
+
+		-- IT ASKS RATHER THAN JUST REFUSING. The mirror is filled by
+		-- `M.Event.OWN`, pushed from `Containers.Publish` at the HELLO handshake
+		-- through `Players.Attach`. A player whose attach answered `not_loaded`
+		-- because the character was not up yet holds nil until their first
+		-- pickup -- and the peek is exactly the gesture such a player makes
+		-- first. This is the check the shipped version did not have: it asserted
+		-- the refusal and stopped there, so a key that did nothing for a whole
+		-- class of player passed.
+		-- COUNTED ACROSS THE PRESS, not searched for. The client half already
+		-- sends one HELLO from `Start`, so a check that merely looked for one
+		-- passed whether the peek asked or not -- it stayed green under the
+		-- mutant that removed the ask, which makes it not a check.
+		local function hellos()
+			local n = 0
+			for _, sent in ipairs(control.serverEvents) do
+				if sent.name == inventory.Event.HELLO then n = n + 1 end
+			end
+			return n
+		end
+		check('and the client asks the server for its bag instead of giving up',
+			hellos() > before, ('%d hello(s), was %d'):format(hellos(), before))
+
+		-- AND IT SAYS SO WHERE THE OPERATOR CAN READ IT. `Open77.log` on a client
+		-- writes to the PLAYER'S machine; `OPX.Note` is the bounded relay that
+		-- reaches the server journal. A refusal nobody can see is how this bug
+		-- survived a deploy.
+		local NOTE = OPX.Event(OPX.Channel.NET, 'runtime', 'note')
+		local told = false
+		for _, sent in ipairs(control.serverEvents) do
+			if sent.name == NOTE and tostring(sent[2]):find('no_bag', 1, true) then told = true end
+		end
+		check('and the refusal reaches the operator, not just the player', told)
 
 		-- The bag, pushed the way the server pushes it.
 		control.netEvents[inventory.Event.OWN]({
