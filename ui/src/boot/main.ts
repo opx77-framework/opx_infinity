@@ -1,5 +1,6 @@
 import ChatInput from '@/modules/chat/ChatInput.vue'
 import ChatLog from '@/modules/chat/ChatLog.vue'
+import DownedView from '@/modules/downed/DownedView.vue'
 import FormView from '@/modules/form/FormView.vue'
 import HudRoot from '@/modules/hud/HudRoot.vue'
 import InventoryView from '@/modules/inventory/InventoryView.vue'
@@ -67,6 +68,12 @@ registerModule({ id: 'target', surface: 'modal', component: TargetView })
 // on `modal` for the cursor, not for the style -- a spawn list nobody can click is the
 // same as no choice at all.
 registerModule({ id: 'spawn', surface: 'modal', component: SpawnView })
+
+// The other screen a player is given rather than offered, and the one that MUST be
+// `modal`: it is two controls, one of them held down for a second and a half, and the
+// overlay layer is `pointer-events: none` for its whole height -- a death screen
+// registered there would draw perfectly and refuse every press.
+registerModule({ id: 'downed', surface: 'modal', component: DownedView })
 
 createSurface({
   name: 'ui',

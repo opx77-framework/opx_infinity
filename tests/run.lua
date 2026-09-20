@@ -10044,6 +10044,290 @@ do
 		check('and taking it down does not raise', pcall(contract.Stop, 'eat'))
 	end
 end
+-- ── the down screen, and the seam it hangs on ───────────────────────────────
+-- `modules/downed` OWNS THE STATE MACHINE AND DRAWS NOTHING, deliberately: it
+-- says everything on one local event and takes everything back through
+-- `M.FromView`, so that the half that decides can be tested without a browser.
+-- It shipped with nothing on either end of that seam -- no view module and no
+-- page -- so a player who died lost their input, lost the whole stock HUD, and
+-- looked at a black screen for as long as they could stand it.
+--
+-- What is checked here is the contract ACROSS the seam, both ways, and the one
+-- rule on it that neither side enforced: GIVE_UP_HOLD_MS. The server checks the
+-- two-minute delay, that the body is still dead and that the gate is open, and
+-- nothing else -- so before `press` existed, ONE call on that action respawned
+-- the player, which is exactly the stray click the setting is there to refuse.
+section('the down screen')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the downed module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local downed = OPX.Modules.Get('downed')
+		local page = control.pages[1]
+
+		check('the downed module is running', OPX.Modules.IsRunning('downed'),
+			OPX.Modules.Record('downed').Reason)
+		check('and the view half attached to the page', type(downed.View) == 'table')
+
+		local STATE = OPX.Event(OPX.Channel.NET, 'downed', 'state')
+		local WAIT = OPX.Event(OPX.Channel.NET, 'downed', 'wait')
+		local GIVE_UP = OPX.Event(OPX.Channel.NET, 'downed', 'giveup')
+
+		-- The last payload of a kind the page was sent, or nil. One channel
+		-- carrying a `kind`, which is the shape the seam already had.
+		local function drew(kind)
+			for index = #page.sent, 1, -1 do
+				local one = page.sent[index]
+				if one.channel == 'opx:downed:view' and one.payload.kind == kind then
+					return one.payload
+				end
+			end
+			return nil
+		end
+
+		local function forget() page.sent = {} end
+
+		--- How many times the client has asked the server for something.
+		local function asked(name)
+			local count = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == name then count = count + 1 end
+			end
+			return count
+		end
+
+		--- One report that the GIVE UP button is still down, `gaps` x 100ms apart.
+		-- The page repeats itself while the button is held; this is that run, at
+		-- the rate the seam has to tolerate rather than at the rate it prefers.
+		local function stillHolding(gaps)
+			control.Pump(gaps)
+			downed.FromView('giveUp', { holding = true })
+		end
+
+		-- ── the page reports ready ──
+		forget()
+		control.PageEmit(page, 'opx:downed:ready', {})
+		local config = drew('config')
+		check('the page reporting ready is answered with the catalogue', config ~= nil)
+		local strings = config ~= nil and OPX.Table.Count(config.text) or 0
+		check('carrying every string the screen draws', strings == 17, strings)
+		check('and sentences rather than keys',
+			config ~= nil
+				and config.text['medic.screen.title'] == env.locale('medic.screen.title')
+				and config.text['medic.giveUp.locked'] == env.locale('medic.giveUp.locked'))
+		check('a player who is not down is shown nothing',
+			drew('hide') ~= nil and drew('show') == nil)
+
+		-- ── going down ──
+		forget()
+		control.netEvents[STATE]({ down = true, waiting = false,
+			giveUpInMs = 120000, downForMs = 0 })
+		local shown = drew('show')
+		check('a player who is down is shown the screen', shown ~= nil)
+		-- THE DEADLINES AND NOT A PERCENTAGE, for `ProgressRoot`'s reason: the
+		-- page animates off a number it is given once, so nothing about the lock
+		-- or the hold is on the wire per frame.
+		check('with the lock the server is counting',
+			shown ~= nil and shown.giveUpInMs == 120000 and shown.downForMs == 0,
+			shown and tostring(shown.giveUpInMs))
+		check('and the hold a press has to last',
+			shown ~= nil and shown.holdMs == 1500, shown and tostring(shown.holdMs))
+		check('and the keyboard and cursor are asked for',
+			(drew('focus') or {}).hold == true)
+
+		-- ── the hold ──
+		downed.FromView('giveUp')
+		check('a click on GIVE UP respawns nobody', asked(GIVE_UP) == 0, asked(GIVE_UP))
+
+		downed.FromView('giveUp', { holding = true })
+		downed.FromView('giveUp', { holding = true })
+		check('and neither does a press that has only just started',
+			asked(GIVE_UP) == 0, asked(GIVE_UP))
+
+		-- 1.4 seconds is not 1.5.
+		for _ = 1, 7 do stillHolding(2) end
+		check('a press 100ms short of the hold is still nothing',
+			asked(GIVE_UP) == 0, asked(GIVE_UP))
+
+		-- LETTING GO PUTS THE CLOCK BACK TO NOTHING, which is what makes it a
+		-- hold rather than a budget spent over several taps.
+		downed.FromView('giveUp', { holding = false })
+		stillHolding(2)
+		check('and letting go starts the next press from zero',
+			asked(GIVE_UP) == 0, asked(GIVE_UP))
+
+		for _ = 1, 8 do stillHolding(2) end
+		check('a press held for the whole 1.5 seconds is the one that goes',
+			asked(GIVE_UP) == 1, asked(GIVE_UP))
+
+		-- Sent once and forgotten, so a finger left on the button does not ask
+		-- again every tenth of a second for as long as the respawn takes.
+		for _ = 1, 4 do stillHolding(2) end
+		check('and it goes once, however long the button stays down',
+			asked(GIVE_UP) == 1, asked(GIVE_UP))
+
+		-- A GAP IN THE RUN ENDS THE PRESS. The page repeats itself several times
+		-- a second; a second of silence is a button let go, a view unmounted or a
+		-- surface the host stopped resuming, and a press abandoned at 1.4s must
+		-- not complete itself the next time the button is touched.
+		downed.FromView('giveUp', { holding = false })
+		downed.FromView('giveUp', { holding = true })
+		stillHolding(20)
+		check('a press that went quiet does not finish itself later',
+			asked(GIVE_UP) == 1, asked(GIVE_UP))
+
+		-- ── held aside ──
+		-- A downed staff member driving the staff menu is not holding this.
+		local contract = OPX.Api.Get('downed')
+		check('a suspender may set the screen aside',
+			contract ~= nil and contract.Suspend('admin', true).ok == true)
+		downed.FromView('giveUp', { holding = false })
+		for _ = 1, 10 do stillHolding(2) end
+		check('and a press on a screen that is aside sends nothing',
+			asked(GIVE_UP) == 1, asked(GIVE_UP))
+		check('letting it back is the same switch', contract.Suspend('admin', false).ok == true)
+
+		-- ── the page's own end of the seam ──
+		forget()
+		control.PageEmit(page, 'opx:downed:wait', {})
+		check('the page asking for help reaches the server', asked(WAIT) == 1, asked(WAIT))
+		control.PageEmit(page, 'opx:downed:giveUp', {})
+		check('and a bare click from the page still respawns nobody',
+			asked(GIVE_UP) == 1, asked(GIVE_UP))
+		control.PageEmit(page, 'opx:focus:set',
+			{ surface = 'ui', focus = true, owner = 'downed' })
+		check('the screen takes the focus the page hands it',
+			OPX.UI.FocusOwner() == 'downed', tostring(OPX.UI.FocusOwner()))
+
+		-- ── standing back up ──
+		forget()
+		control.netEvents[STATE]({ down = false })
+		check('being revived takes the screen down',
+			drew('hide') ~= nil and drew('show') == nil)
+		check('and hands the keyboard back', (drew('focus') or {}).hold == false)
+
+		downed.FromView('giveUp', { holding = true })
+		for _ = 1, 20 do stillHolding(2) end
+		check('a press on a screen that is gone sends nothing at all',
+			asked(GIVE_UP) == 1, asked(GIVE_UP))
+	end
+end
+
+-- ── the two ways up, and the one that is refused ────────────────────────────
+-- EVERY RULE BEHIND GIVE UP IS THE SERVER'S. The screen draws a countdown and
+-- disables its own button, and neither of those is a check: a page can be told
+-- anything. This is the check -- the delay measured on the server's clock,
+-- against a record the server opened because it read the body as dead.
+section('giving up, before the delay and after it')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the downed module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local PLAYER = 1
+		local GIVE_UP = OPX.Event(OPX.Channel.NET, 'downed', 'giveup')
+		local REFUSED = OPX.Event(OPX.Channel.NET, 'downed', 'refused')
+
+		control.Admit(PLAYER, 'user-down')
+
+		-- A DEAD BODY WITH A CHARACTER IN IT, which is the only thing the module
+		-- opens a record for: the join body and the roster body belong to nobody
+		-- and a record opened on one would never close.
+		env.Open77.ready.isReady = function() return true end
+		env.Open77.players.getLifeState = function()
+			return { phase = 'dead', position = { x = 0, y = 0, z = 0, bucket = 0 } }
+		end
+		env.Open77.players.isDead = function() return true end
+
+		-- The character contract is the table the module already holds, so the
+		-- field is replaced on it rather than the contract being swapped out.
+		local character = OPX.Api.Get('character')
+		if character ~= nil then
+			character.GetPlayer = function()
+				return { PlayerData = { citizenId = 'CIT-DOWN-1' } }
+			end
+		end
+
+		local respawns, revives = {}, {}
+		env.Open77.players.respawn = function(playerId, options)
+			respawns[#respawns + 1] = { playerId = playerId, options = options }
+			return true
+		end
+		env.Open77.players.revive = function(playerId, options)
+			revives[#revives + 1] = { playerId = playerId, options = options }
+			return true
+		end
+
+		local function refusals()
+			local out = {}
+			for index = 1, #control.clientEvents do
+				local one = control.clientEvents[index]
+				if one.name == REFUSED then out[#out + 1] = one[1] end
+			end
+			return out
+		end
+
+		local function giveUp()
+			env.source = PLAYER
+			control.netEvents[GIVE_UP]()
+			env.source = nil
+		end
+
+		local contract = OPX.Api.Get('downed')
+		check('the server published the downed contract',
+			type(contract) == 'table' and type(contract.Revive) == 'function')
+
+		-- The fast path: the host says a life state changed and the module reads
+		-- the body. It runs on a thread, because reading the identity may yield.
+		control.Fire('onPlayerLifeStateChanged', PLAYER)
+		check('a dead body with a character in it opens a record',
+			settle(control, function()
+				local answer = contract.IsDown(PLAYER)
+				return answer.ok == true and answer.value.down == true
+			end, 20))
+
+		giveUp()
+		check('a give up inside the two minutes respawns nobody',
+			#respawns == 0, #respawns)
+		local why1 = refusals()
+		check('and says which rule refused it',
+			#why1 == 1 and why1[1] == 'too_soon', why1[1])
+		check('and the player is still down',
+			contract.IsDown(PLAYER).value.down == true)
+
+		-- Two minutes, at the hundred milliseconds a pass costs.
+		control.Pump(1250)
+
+		giveUp()
+		check('the same press after the delay is granted', #respawns == 1, #respawns)
+		check('at a medical center, in the bucket they fell in',
+			respawns[1] ~= nil and respawns[1].options.position ~= nil
+				and respawns[1].options.bucket == 0)
+		check('at the configured share of full health',
+			respawns[1] ~= nil and respawns[1].options.health == 0.5,
+			respawns[1] and tostring(respawns[1].options.health))
+		check('and the record is closed', contract.IsDown(PLAYER).value.down == false)
+		check('with nothing new refused', #refusals() == 1, #refusals())
+
+		-- ── the other way up ──
+		control.Fire('onPlayerLifeStateChanged', PLAYER)
+		check('the same player can go down again',
+			settle(control, function()
+				return contract.IsDown(PLAYER).value.down == true
+			end, 20))
+
+		local revived = contract.Revive(PLAYER, 'admin')
+		check('a caller REVIVERS allows may stand them up', revived.ok == true,
+			revived.error)
+		check('the body was revived and not respawned',
+			#revives == 1 and #respawns == 1)
+		check('and being revived closes the record, which is what takes the screen down',
+			contract.IsDown(PLAYER).value.down == false)
+	end
+end
 -- ── one staff action, one message ───────────────────────────────────────────
 -- THREE NOTIFICATIONS FOR ONE GIVE, reported by the owner: giving themselves an
 -- item as staff put the same sentence on screen twice -- once titled STAFF and

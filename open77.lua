@@ -221,6 +221,9 @@ shared_script "modules/downed/locales.lua"
 server_script "modules/downed/server/storage.lua"
 server_script "modules/downed/server/main.lua"
 client_script "modules/downed/client/main.lua"
+-- The seam's other end. `main.lua` owns the state machine and draws nothing;
+-- this is the only file that knows the down screen is a CEF page.
+client_script "modules/downed/client/view.lua"
 
 shared_script "modules/menu/module.lua"
 shared_script "modules/menu/locales.lua"
