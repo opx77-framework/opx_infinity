@@ -8398,8 +8398,7 @@ end
 -- That is the hole. A missing picture is invisible from Lua, invisible from the
 -- tests and invisible in the log; the only reporter is somebody looking at the
 -- slot. So the catalogue's own claim is checked against the filesystem: every
--- `IMAGE` it names must exist, and the default `<name>.png` is checked too for
--- the items that state no override.
+-- `IMAGE` it names must exist in the SOURCE tree the build copies from.
 section('every item picture the catalogue names is shipped')
 do
 	local env, _, why = boot('server')
@@ -8411,10 +8410,16 @@ do
 	if type(inventory) == 'table' then
 		local Catalog = inventory.Catalog
 
+		-- CHECKED IN THE SOURCE, NOT IN THE BUILD, and the first version of this
+		-- test got that wrong and let the same file go missing twice.
+		-- `ui/public/images` is what a picture IS; `web/images` is where the vite
+		-- build copies it, and a file dropped into `web` alone survives exactly
+		-- until the next `npm run build` rewrites that tree. Asserting on the
+		-- output is asserting on a cache.
 		local function shipped(file)
-			local handle = io.open('web/images/' .. file, 'rb')
-			if handle == nil then return false end
-			handle:close()
+			local source = io.open('ui/public/images/' .. file, 'rb')
+			if source == nil then return false end
+			source:close()
 			return true
 		end
 
@@ -8432,7 +8437,7 @@ do
 		end
 
 		check('some items name a picture of their own', named > 0, tostring(named))
-		check('and every one of those files is in web/images', #missing == 0,
+		check('and every one of those files is in ui/public/images', #missing == 0,
 			table.concat(missing, ', '))
 	end
 end

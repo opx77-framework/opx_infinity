@@ -222,8 +222,6 @@ M.Command = {
 	WORLD_PVP = 'opx.admin.world.pvp',
 	WORLD_DOOR = 'opx.admin.world.door',
 
-	READ_PLAYERS = 'opx.admin.read.players',
-	READ_LOCATIONS = 'opx.admin.read.locations',
 	READ_STATUS = 'opx.admin.read.status',
 	READ_AUDIT = 'opx.admin.read.audit',
 

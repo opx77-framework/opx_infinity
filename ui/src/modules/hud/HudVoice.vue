@@ -113,8 +113,10 @@ useBridge('opx:hud:voice', (payload: Payload) => {
   }
 })
 
-/** 0..1, for the meter's `scaleX`. An input level is the fastest-moving number on this
-    block, so it moves the one way that costs neither a layout nor a paint. */
+/** 0..1, for the meter's `clip-path`. An input level is the fastest-moving number on
+    this block, so it moves the one way that costs neither a layout nor a paint --
+    and it is a clip rather than a scale because a scale takes the fill's slat mask
+    with it, which is what used to draw a second set of bars over the first. */
 function share(value: number): number {
   return Math.max(0, Math.min(100, value)) / 100
 }
@@ -159,7 +161,17 @@ function share(value: number): number {
           :aria-valuemin="0"
           :aria-valuemax="100"
         >
-          <span class="fill" :style="{ transform: `scaleY(${share(voice.level)})` }" />
+          <!-- CLIPPED, NOT SCALED, and the difference is the whole of the bug the
+               owner reported as "it draws bars over the bars". The fill carries a
+               mask cut to the same 4px-on, 2px-off rhythm as the unlit column
+               behind it -- but `transform: scaleY()` scales an element's PAINTING,
+               and a mask is part of that. At half level the 6px pitch became 3px,
+               so the lit slats stopped landing on the unlit ones and the eye read
+               a second, denser set of bars laid over the first.
+               `clip-path` reveals part of an unscaled element instead, so the
+               rhythm is fixed and the lit slats sit exactly in the unlit ones. It
+               is composited like a transform, so nothing here touches layout. -->
+          <span class="fill" :style="{ clipPath: `inset(${(1 - share(voice.level)) * 100}% 0 0 0)` }" />
         </span>
 
         <div v-if="voice.mode || voice.distance" class="reach">
@@ -249,6 +261,9 @@ function share(value: number): number {
      voice state and do not start now -- reviving a dead variable during a
      port is a look change nobody asked for. */
   --voice-tone: var(--op-red-idle);
+  /* The dead slats behind the fill. Its own variable so `.talking` can drop it
+     away without touching the lit tone -- see that state for why. */
+  --voice-unlit: var(--op-red-idle);
 }
 
 .voice.live {
@@ -267,9 +282,25 @@ function share(value: number): number {
   --voice-tone: var(--op-red-deep);
 }
 
-/* Lit, and the only state that blooms. */
+/* TALKING HAS TO BE UNMISTAKABLE, and a shade of red against a shade of red was
+   not. This state used to change one thing -- `--voice-tone` from `--op-red-idle`
+   to `--op-red` -- and both are the same hue at 62% and 100%, sitting in a column
+   of unlit slats painted in the first of them. The owner's words were that you
+   cannot really tell you are talking, and they were right: the lit bars and the
+   dead ones were nearly the same colour.
+
+   THE BLOOM IS NOT THE ANSWER, whatever the old comment here claimed. `.op-lift`
+   is a `drop-shadow` filter and `design-system/shapes.css` says outright that
+   nothing repainting every frame may take one. A voice meter repaints while
+   somebody is speaking, which is precisely when this state is on.
+
+   So the answer is CONTRAST, which costs nothing: the unlit column drops away
+   while talking, so the lit slats stand alone instead of being a slightly
+   brighter red among red. Same hue, same shapes, no filter, no second colour --
+   the rung the contract already gives for "this one, not those". */
 .talking {
   --voice-tone: var(--op-red);
+  --voice-unlit: rgba(var(--op-red-idle-rgb), 0.16);
 }
 
 /* THE ALARM, AND NOT A RED. Muted is a failure to transmit -- the player is
@@ -440,7 +471,7 @@ function share(value: number): number {
   pointer-events: none;
   background-image: repeating-linear-gradient(
     to top,
-    var(--op-red-idle) 0 4px,
+    var(--voice-unlit) 0 4px,
     transparent 4px 6px
   );
 }
@@ -451,15 +482,17 @@ function share(value: number): number {
   width: 100%;
   height: 100%;
   background: var(--voice-tone);
-  /* Lit from the bottom, like the original. */
-  transform-origin: center bottom;
-  transform: scaleY(0);
+  /* Lit from the bottom, like the original -- now by revealing the bottom of a
+     full-height element rather than by squashing it. `inset(100% 0 0 0)` hides
+     it entirely, which is the rest state. */
+  clip-path: inset(100% 0 0 0);
   /* The slat divisions, cut OUT of the fill rather than drawn over it, so the
-     gaps show the night behind instead of a darker red. */
+     gaps show the night behind instead of a darker red. The mask is NOT scaled
+     with the level any more -- see the note on the element. */
   -webkit-mask-image: repeating-linear-gradient(to top, #000 0 4px, transparent 4px 6px);
   mask-image: repeating-linear-gradient(to top, #000 0 4px, transparent 4px 6px);
   transition:
-    transform var(--op-dur-fast) linear,
+    clip-path var(--op-dur-fast) linear,
     background var(--op-dur-fast) linear;
 }
 

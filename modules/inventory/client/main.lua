@@ -503,15 +503,39 @@ local function registerEvents()
 
 		local animation = payload.animation
 		if type(animation) == 'table' and type(animation.name) == 'string' then
-			-- Animations still live in a resource of their own; there is no contract
-			-- to read, so this is an ordinary cross-resource call that costs nothing
-			-- when it is not running.
-			tell('opx77_animations', 'play', animation.name, {
-				variant = animation.variant,
-				loop = false,
-				durationMs = animation.durationMs,
-				cancelable = false,
-			})
+			-- THROUGH OUR OWN CONTRACT, AND IT USED TO BE A CALL INTO NOTHING. This
+			-- read `tell('opx77_animations', 'play', ...)` -- the external resource
+			-- `modules/animations` was written to replace, which this server does
+			-- not load and which the manifest does not name. A cross-resource call
+			-- to a resource that is not running costs nothing and says nothing, so
+			-- eating an item played no animation at all and nobody could tell the
+			-- difference between "the config is wrong" and "the call went nowhere".
+			--
+			-- The comment that was here said there was no contract to read. There
+			-- is: `animations` publishes one, it takes the same four options under
+			-- the same names, and it is in this runtime.
+			local animations = OPX.Api.Get('animations')
+			if animations == nil then
+				-- Optional, like every other contract this module reaches for: the
+				-- item is still used and its needs still move, and only the gesture
+				-- is lost. Said once rather than silently, because a missing
+				-- animation is exactly what the old call failed to report.
+				Open77.log.debug('[inventory] no animations contract: ' .. animation.name
+					.. ' is not played')
+			else
+				local played = animations.Play(animation.name, {
+					variant = animation.variant,
+					loop = false,
+					durationMs = animation.durationMs,
+					-- The player may not walk out of eating. `Runtime.Play` reads
+					-- this and the lock is what holds them to it.
+					cancelable = false,
+				}, FOCUS_OWNER)
+				if type(played) == 'table' and played.ok ~= true then
+					Open77.log.debug(('[inventory] %s was refused: %s')
+						:format(animation.name, tostring(played.error)))
+				end
+			end
 		end
 
 		TriggerEvent(M.Event.ON_USED, payload)
