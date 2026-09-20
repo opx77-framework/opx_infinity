@@ -86,13 +86,41 @@ local function jobSnapshot(player)
 	}
 end
 
+-- The host's flag constants, read at the moment of use and never cached: the
+-- table belongs to the native layer, and a reference kept across a resource
+-- reload would outlive the layer that published it. Nil when the build has no
+-- usable `flags` table, which every caller below reads as "this lift cannot be
+-- gated" and refuses on.
+--
+-- `Open77.elevators.flags` -- powered 1, locked 2, interactionAllowed 4,
+-- doorsClosed 8 -- is documented in the op77.76 elevator guide and named by the
+-- `setFlags` card, but a constant TABLE is not a native, so the devkit's native
+-- catalogue has no entry for it and cannot confirm it. Unverified is not absent.
+-- What must not happen either way is the thing this replaces: indexing it blind
+-- inside a network handler, where a missing table is a raise that takes the
+-- handler down mid-adoption and leaves the lift adopted and ungated.
+local function flagBits()
+	local lifts = Open77.elevators
+	local flags = type(lifts) == 'table' and lifts.flags or nil
+	if type(flags) ~= 'table' then return nil end
+	local locked, powered = tonumber(flags.locked), tonumber(flags.powered)
+	if locked == nil or powered == nil then return nil end
+	return locked, powered
+end
+
 -- Sets the host's locked flag on one lift, keeping the others: `powered` stays
 -- as the host put it. The elevator authority then refuses a request a client
--- sends directly. A lock that fails is a line, not a rollback.
+-- sends directly.
+--
+-- `setFlags` REPLACES the mask rather than merging into it, which is why the
+-- snapshot is read first: writing a bare `locked` would clear `powered` and
+-- leave a dead cabin the server could still schedule trips on.
 local function applyLock(id)
+	local locked = flagBits()
+	if locked == nil then return false end
 	local lift = Open77.elevators.get(id)
 	if lift == nil then return false end
-	local flags = (lift.flags or 0) | Open77.elevators.flags.locked
+	local flags = (lift.flags or 0) | locked
 	if flags == lift.flags then return true end
 	return Open77.elevators.setFlags(id, flags) == true
 end
@@ -138,15 +166,54 @@ local function adopt(key, entity, x, y, z, bucket, floorCount, activeFloor)
 					return { ok = false, error = 'already_owned', reason = otherKey }
 				end
 			end
-			owned[key] = { id = existing.id, floorCount = existing.floorCount, atMs = OPX.Now() }
 			-- Re-locked because the flag did not survive the restart and `adopt`
 			-- does not run again.
+			--
+			-- AND THE RE-CLAIM IS ABANDONED WHEN THE LOCK WILL NOT TAKE, where it
+			-- used to be kept with a warning beside it. `all(bucket)` reports every
+			-- adopted lift in the bucket and not only this module's, so the lift
+			-- matched here may belong to `open77_elevators` -- which is exactly the
+			-- conflict the module header describes -- and `setFlags` on another
+			-- owner's cabin is refused. Binding it anyway produced the worst of the
+			-- three outcomes: a shaft this module advertises a job-gated panel for,
+			-- that the other owner leaves unlocked, and that therefore rides to any
+			-- floor off the vanilla button. Refusing leaves the panel shut and the
+			-- warning is the sighting log line a floor below.
 			if not applyLock(existing.id) then
-				Open77.log.warn(('[elevators] %s re-claimed as %s but could not be locked')
-					:format(key, tostring(existing.id)))
+				return { ok = false, error = 'not_locked' }
 			end
+			owned[key] = { id = existing.id, floorCount = existing.floorCount, atMs = OPX.Now() }
 			return { ok = true, id = existing.id, already = true }
 		end
+	end
+
+	-- LOCKED BY THE ADOPTION ITSELF, and not by the `setFlags` that follows it.
+	--
+	-- `Open77.elevators.adopt` defaults a lift it takes over to `powered` plus
+	-- `interactionAllowed`, which is a cabin that ACCEPTS PLAYER REQUESTS -- and
+	-- the platform converts a press of the vanilla in-cabin floor button into
+	-- exactly such a request before the game's own local movement runs. So every
+	-- millisecond between the adopt and the lock was a window in which anyone
+	-- standing in the cabin rode to a job-gated floor by pressing the button
+	-- Cyberpunk already draws, with this module never asked and the whole JOBS
+	-- block in `config/elevators.lua` reduced to advice about which buttons the
+	-- panel greys out. Handing the mask to `adopt` closes the window rather than
+	-- narrowing it.
+	--
+	-- `powered | locked` and not `locked` alone: an unpowered lift is refused the
+	-- server's own scheduled trips too, and this module is the only thing that is
+	-- supposed to be able to move the cabin. It is the idiom the `setFlags` card
+	-- gives for precisely this -- keep it powered, make it not usable.
+	--
+	-- `interactionAllowed` is deliberately NOT set. `locked` is what refuses a
+	-- request, and dropping the bit that invites one as well means a build that
+	-- reads the two flags in the other order still ends up refusing.
+	local locked, powered = flagBits()
+	if locked == nil then
+		-- Refused rather than adopted bare. An adoption with no reachable lock is
+		-- an ungated cabin wearing this module's name, which is strictly worse
+		-- than the untouched vanilla lift standing there now.
+		return { ok = false, error = 'no_flag_constants' }
 	end
 
 	local ok, id, reason = pcall(Open77.elevators.adopt, {
@@ -155,6 +222,7 @@ local function adopt(key, entity, x, y, z, bucket, floorCount, activeFloor)
 		bucket = bucket,
 		floorCount = floorCount,
 		initialFloor = activeFloor,
+		flags = powered | locked,
 	})
 	if not ok then return { ok = false, error = 'adopt_raised', reason = tostring(id) } end
 	if id == nil then return { ok = false, error = 'adopt_refused', reason = tostring(reason) } end
@@ -180,11 +248,24 @@ local function adopt(key, entity, x, y, z, bucket, floorCount, activeFloor)
 		return { ok = false, error = 'wrong_place' }
 	end
 
-	owned[key] = { id = id, floorCount = floorCount, atMs = OPX.Now() }
+	-- The mask went in with the adoption above, so this READS BACK whether it took
+	-- rather than being the thing that applies it. `flags` is a field a host that
+	-- predates it ignores in silence, and the answer to "did the lift come up
+	-- locked" is not something this module may assume from its own request.
+	--
+	-- A rollback and not a line, which is the change from the warning that used to
+	-- stand here. An adopted lift that is not locked is the one state worse than
+	-- no adoption: this module has taken the cabin, told the client its id and
+	-- drawn a panel that greys floors, while the lift underneath rides anywhere
+	-- off the vanilla button. Releasing it gives the shaft back to Cyberpunk --
+	-- a working lift that gates nothing, which is what it is either way, minus the
+	-- false assurance.
 	if not applyLock(id) then
-		Open77.log.warn(('[elevators] %s adopted as %s but could not be locked')
-			:format(key, tostring(id)))
+		pcall(Open77.elevators.remove, id)
+		return { ok = false, error = 'not_locked' }
 	end
+
+	owned[key] = { id = id, floorCount = floorCount, atMs = OPX.Now() }
 	return { ok = true, id = id }
 end
 
