@@ -1729,7 +1729,7 @@ function Menu.Filter(query)
 	local current = top()
 	if current == nil then return end
 	local typed = type(query) == 'string' and Text.Bytes(query, 48) or nil
-	if typed ~= nil then typed = typed:match('^%s*(.-)%s*$') end
+	if typed ~= nil then typed = OPX.String.Trim(typed) end
 
 	-- THE ONE SCREEN WHOSE FILTER IS NOT A FILTER. Every other list on this menu
 	-- has already arrived in full and `matches()` cuts it down without touching

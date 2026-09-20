@@ -530,8 +530,7 @@ function Access.Problems()
 	stock(lines)
 
 	if type(Config.STOCK) == 'table' then
-		local total = 0
-		for _ in pairs(Access.STOCK) do total = total + 1 end
+		local total = OPX.Table.Count(Access.STOCK)
 		if total > 0 and #Access.For(M.KIND.GARAGE) + #Access.For(M.KIND.AVPAD) == 0 then
 			lines[#lines + 1] = 'STOCK has rows but no dealer kind can sell any of them'
 		end

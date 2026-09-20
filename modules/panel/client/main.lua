@@ -98,8 +98,7 @@ end
 -- stop at the hole and report a length that hides half the table.
 local function isList(value, maximum)
 	if type(value) ~= 'table' then return false end
-	local count = 0
-	for _ in pairs(value) do count = count + 1 end
+	local count = OPX.Table.Count(value)
 	return count <= maximum and count == #value
 end
 

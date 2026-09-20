@@ -376,8 +376,7 @@ end
 
 --- The groups held across every owner.
 local function count()
-	local total = 0
-	for _ in pairs(groups) do total = total + 1 end
+	local total = OPX.Table.Count(groups)
 	return total
 end
 

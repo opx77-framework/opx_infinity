@@ -172,8 +172,7 @@ end
 -- @return Result
 function M.ClearInventory(target)
 	return withBag(target, function(bag)
-		local stacks = 0
-		for _ in pairs(bag.items) do stacks = stacks + 1 end
+		local stacks = OPX.Table.Count(bag.items)
 		local ok, code = Containers.Clear(bag)
 		OPX.Audit.Log({ event = 'inventory.clear', severity = ok and 'info' or 'warn',
 			message = ('%d stack(s)'):format(stacks), citizenId = bag.owner,

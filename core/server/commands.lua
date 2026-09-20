@@ -57,7 +57,21 @@ function OPX.Command.Register(name, opts, handler)
 		error(('Register(%q): that command is already registered'):format(name), 2)
 	end
 
-	local cooldownMs = tonumber(opts.cooldownMs) or 0
+	-- A COOLDOWN THAT IS NOT A NUMBER IS REFUSED, not quietly turned off. This
+	-- read `tonumber(opts.cooldownMs) or 0` and the gate below is `if cooldownMs
+	-- > 0`, so `cooldownMs = '5000'` worked by accident while `cooldownMs =
+	-- Config.SOMETHING_MISSPELLED` silently removed the rate limit from a
+	-- command that had asked for one. Absent is the normal case and stays legal;
+	-- present and not a number is a typo, and the only thing it can do here is
+	-- take a guard away.
+	local cooldownMs = 0
+	if opts.cooldownMs ~= nil then
+		cooldownMs = tonumber(opts.cooldownMs)
+		if cooldownMs == nil or cooldownMs < 0 then
+			error(('Register(%q): cooldownMs must be a number of milliseconds, got %s')
+				:format(name, type(opts.cooldownMs)), 2)
+		end
+	end
 	local key = opts.key or ('command.' .. name)
 
 	registered[name] = {

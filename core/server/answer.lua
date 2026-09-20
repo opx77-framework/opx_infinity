@@ -35,8 +35,7 @@ local function repeated(source, text)
 	-- the whole session. Closed windows go first; only if that frees nothing does
 	-- the oldest open one go, because clearing the table wholesale would let an
 	-- identical toast through before its window had passed.
-	local count = 0
-	for _ in pairs(bucket) do count = count + 1 end
+	local count = OPX.Table.Count(bucket)
 	if count >= MAX_TEXTS then
 		local oldestKey, oldestAt
 		for key, at in pairs(bucket) do

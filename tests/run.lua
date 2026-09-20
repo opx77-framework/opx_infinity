@@ -2822,6 +2822,20 @@ do
 		end
 		check('and the first registration is what stayed in the list',
 			kept ~= nil and kept.help ~= 'second', kept and tostring(kept.help))
+
+		-- A COOLDOWN THAT IS NOT A NUMBER TOOK THE RATE LIMIT AWAY.
+		-- `tonumber(opts.cooldownMs) or 0` met a gate of `if cooldownMs > 0`, so
+		-- a misspelt config value did not fail loudly -- it removed the limit
+		-- from a command that had explicitly asked for one, which is the one
+		-- direction a typo must never be allowed to go on its own.
+		check('a cooldown that is not a number is refused',
+			select(1, pcall(env.OPX.Command.Register, 'slowish',
+				{ cooldownMs = 'later' }, function() end)) == false)
+		check('no cooldown at all is still fine',
+			select(1, pcall(env.OPX.Command.Register, 'free', {}, function() end)) == true)
+		check('and a real one is too',
+			select(1, pcall(env.OPX.Command.Register, 'paced',
+				{ cooldownMs = 5000 }, function() end)) == true)
 	end
 end
 

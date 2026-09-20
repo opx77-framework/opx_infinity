@@ -542,7 +542,7 @@ end
 --- The display name of a record: `Items.Jacket_01_basic` reads 'Jacket 01 basic'.
 local function title(record)
 	local text = tostring(record):gsub('^Items%.', ''):gsub('_', ' '):gsub('(%l)(%u)', '%1 %2')
-	return (text:gsub('%s+', ' '):gsub('^%s+', ''):gsub('%s+$', ''))
+	return OPX.String.Trim((text:gsub('%s+', ' ')))
 end
 
 --- Whether the puppet is alive on foot in the world and the player is not down.

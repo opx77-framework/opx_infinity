@@ -202,8 +202,7 @@ function Commands.Register()
 			local bag, borrowed, reason = bagOf(target)
 			if not bag then return reply(source, raw, false, errorKey(reason)) end
 
-			local stacks = 0
-			for _ in pairs(bag.items) do stacks = stacks + 1 end
+			local stacks = OPX.Table.Count(bag.items)
 			Containers.Clear(bag)
 			audit(source, 'inventory.clear', true, ('%d stack(s)'):format(stacks),
 				{ citizenId = target.citizenId, target = target.source, stacks = stacks })

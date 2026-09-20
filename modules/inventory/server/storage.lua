@@ -450,8 +450,7 @@ end
 -- @author dop42
 -- @return integer
 function Store.Pending()
-	local count = 0
-	for _ in pairs(dirty) do count = count + 1 end
+	local count = OPX.Table.Count(dirty)
 	return count
 end
 

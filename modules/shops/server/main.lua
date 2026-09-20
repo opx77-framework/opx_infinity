@@ -383,7 +383,7 @@ local function onSave(source, payload)
 
 	local name = type(payload) == 'table' and payload.name or nil
 	name = type(name) == 'string' and OPX.Text.Bytes(name, tuning.maxNameBytes) or nil
-	if name ~= nil then name = name:match('^%s*(.-)%s*$') end
+	if name ~= nil then name = OPX.String.Trim(name) end
 	if name == nil or name == '' then return refuse(source, 'shops.nameNeeded') end
 
 	local counted = M.Storage.Count(citizen)
@@ -574,10 +574,9 @@ function M.Start()
 			end
 		end)
 
-	local count = 0
-	for _ in pairs(shops) do count = count + 1 end
+	local count = OPX.Table.Count(shops)
 	Open77.log.info(('[shops] %d shop(s) and %d ready-made look(s); charging is %s')
-		:format(count, (function() local n = 0 for _ in pairs(looks) do n = n + 1 end return n end)(),
+		:format(count, OPX.Table.Count(looks),
 			tuning.charge and 'on' or 'off'))
 end
 

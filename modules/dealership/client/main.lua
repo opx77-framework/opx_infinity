@@ -621,9 +621,8 @@ end
 -- @author XEROX710
 -- @return table
 function Runtime.Report()
-	local count, drawn = 0, 0
-	for _ in pairs(spots) do count = count + 1 end
-	for _ in pairs(markers) do drawn = drawn + 1 end
+	local count = OPX.Table.Count(spots)
+	local drawn = OPX.Table.Count(markers)
 	local current = stack[#stack]
 	return {
 		spots = count,

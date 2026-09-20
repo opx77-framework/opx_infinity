@@ -672,8 +672,7 @@ function M.Api()
 				dealers[key] = { kind = spot.kind, label = spot.label,
 					captured = captured[key] ~= nil }
 			end
-			local total = 0
-			for _ in pairs(Access.STOCK) do total = total + 1 end
+			local total = OPX.Table.Count(Access.STOCK)
 			return Result.Ok({ dealers = dealers, stock = total, currency = currency })
 		end,
 	})
@@ -822,8 +821,7 @@ function M.Start()
 		-- A player who connected while the database was being read asked too
 		-- early and was told nothing; they ask again on their own cadence.
 		syncAll()
-		local inConfig = 0
-		for _ in pairs(configSpots) do inConfig = inConfig + 1 end
+		local inConfig = OPX.Table.Count(configSpots)
 		Open77.log.info(('[dealership] ready: %d config, %d captured, %d refused; ' ..
 			'%d garage row(s) and %d avpad row(s) for sale in %s'):format(
 			inConfig, accepted, refused, #Access.For(M.KIND.GARAGE), #Access.For(M.KIND.AVPAD),

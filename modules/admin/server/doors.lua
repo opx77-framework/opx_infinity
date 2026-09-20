@@ -119,8 +119,7 @@ function Doors.Register()
 				door = nil
 			else
 				if door == nil then
-					local held = 0
-					for _ in pairs(bucket) do held = held + 1 end
+					local held = OPX.Table.Count(bucket)
 					if held >= limit then return refuse(source, raw, 'door_limit', { max = limit }) end
 					door = {}
 				end
