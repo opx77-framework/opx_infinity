@@ -12585,5 +12585,973 @@ do
 	end
 end
 
+
+section('hauling: a site whose points are still the placeholder 0,0,0 is disabled, loudly')
+do
+	-- THE ONE FAILURE MODE THIS MODULE WAS MOST LIKELY TO REPEAT. `config/elevators.lua`
+	-- in this same tree shipped four lifts whose positions were samples nobody had
+	-- stood at; they passed every shape check that validator made -- finite, in range,
+	-- fully formed -- and matched nothing in Night City. No lift was adopted and no
+	-- panel opened, for weeks, with a green suite behind it. A hauling site whose
+	-- crates never appear looks exactly like a site nobody has walked past, so the
+	-- blank has to be refused rather than merely warned about.
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.props = { create = function() return nil, 'world_unavailable' end }
+	end)
+	check('the server boots for the hauling config case', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('hauling')
+		local Access = M.Access
+
+		check('the hauling module is running on the server',
+			OPX.Modules.IsRunning('hauling'), OPX.Modules.Record('hauling').Reason)
+
+		local problems = table.concat(Access.Problems(), '\n')
+		check('the shipped docks site is reported as a placeholder',
+			problems:find('docks: 4 of 4 POINTS ARE STILL THE PLACEHOLDER', 1, true) ~= nil,
+			problems)
+		check('and so is the badlands one',
+			problems:find('badlands: 3 of 3 POINTS ARE STILL THE PLACEHOLDER', 1, true) ~= nil)
+		check('and the drop-offs are named separately, because they are surveyed separately',
+			problems:find('DROPOFFS ARE STILL THE PLACEHOLDER', 1, true) ~= nil)
+
+		-- The whole point: not one of them may be spawned on.
+		check('not one shipped site is usable', #Access.UsableKeys() == 0,
+			table.concat(Access.UsableKeys(), ', '))
+
+		local said = table.concat(control.log.error, '\n')
+		check('and the server says so at boot in one loud line',
+			said:find('NOT ONE SITE IS USABLE', 1, true) ~= nil, said)
+
+		-- A PLACEHOLDER IS ALL THREE AXES EXACTLY ZERO and nothing looser. A
+		-- tolerance would eventually condemn a real point somebody stood on.
+		check('a point at the exact origin is a placeholder',
+			Access.IsPlaceholder({ X = 0.0, Y = 0.0, Z = 0.0 }))
+		check('a point one centimetre off it is not',
+			not Access.IsPlaceholder({ X = 0.0, Y = 0.0, Z = 0.01 }))
+		check('nor is a surveyed position',
+			not Access.IsPlaceholder({ X = -1442.2, Y = 127.4, Z = 18.0 }))
+
+		-- ── the other two ways a site is unusable ────────────────────────────
+		-- Surveyed, but into a heap. Two crates closer than MIN_POINT_GAP overlap,
+		-- and the eye can only ever pick whichever mesh the ray meets first, so the
+		-- other is unreachable for the life of the site.
+		local DOCKS = OPX.Config.MODULES.hauling.SITES.docks
+		for index = 1, #DOCKS.POINTS do
+			DOCKS.POINTS[index].X = -1440.0
+			DOCKS.POINTS[index].Y = 120.0 + index * 0.5
+			DOCKS.POINTS[index].Z = 18.0
+		end
+		DOCKS.DROPOFFS.warehouse.X, DOCKS.DROPOFFS.warehouse.Y, DOCKS.DROPOFFS.warehouse.Z =
+			-1500.0, 200.0, 18.0
+		DOCKS.DROPOFFS.yard.X, DOCKS.DROPOFFS.yard.Y, DOCKS.DROPOFFS.yard.Z =
+			-1520.0, 210.0, 18.0
+		local crowded = table.concat(Access.Problems(), '\n')
+		check('points half a metre apart are refused as a heap',
+			crowded:find('closer than MIN_POINT_GAP', 1, true) ~= nil, crowded)
+		check('and that site is not usable either', not Access.Usable('docks'))
+
+		-- Spread out properly it is fine, and then losing its destinations is not.
+		for index = 1, #DOCKS.POINTS do DOCKS.POINTS[index].Y = 120.0 + index * 4.0 end
+		Access.Problems()
+		check('spread out, the same site is usable', Access.Usable('docks'))
+		DOCKS.DROPOFFS.warehouse = nil
+		DOCKS.DROPOFFS.yard = nil
+		local nowhere = table.concat(Access.Problems(), '\n')
+		check('a site with nowhere to deliver to is refused',
+			nowhere:find('no DROPOFFS', 1, true) ~= nil, nowhere)
+		check('and is not usable', not Access.Usable('docks'))
+	end
+end
+
+section('hauling: two players claiming one crate in the same tick produce exactly one winner')
+do
+	-- THE HEART OF THE MODULE. The server Lua runtime is single-threaded and
+	-- coroutines interleave only at a yield, so `Claim.Take` -- whose body cannot
+	-- yield -- serves two simultaneous claims strictly one after the other. The
+	-- invariant is the runtime's and is invisible at the call site, which is why it
+	-- is tested here rather than trusted: one inserted `Wait` and both players walk
+	-- away with the same crate, with nothing in the log to say it happened.
+	--
+	-- The clock is the test's own, because the reap pass, the bar and the rate limit
+	-- are all measured in milliseconds and `Pump` only moves time while a thread is
+	-- suspended.
+	local at = 1000000
+	local props = { byId = {}, next = 0, creates = {}, attaches = {}, detaches = {},
+		removes = {}, transforms = {}, refuse = nil, refuseAttach = nil, unknown = nil }
+	local positions = {}
+	local vehicles = {}
+
+	--- A prop registry that behaves the way the platform's own does on the two
+	--- points this module leans on: `attach` honours `expectedRevision` and bumps the
+	--- revision, and `setTransform` REFUSES A BOUND PROP with `prop_attached` -- which
+	--- is what makes "detach before you stand it back up" a testable ordering rather
+	--- than a style preference.
+	local function propApi()
+		return {
+			create = function(definition)
+				props.creates[#props.creates + 1] = definition
+				if props.refuse ~= nil then return nil, props.refuse end
+				if props.unknown ~= nil and definition.model == props.unknown then
+					return nil, 'unknown_alias'
+				end
+				props.next = props.next + 1
+				local id = tostring(props.next)
+				props.byId[id] = { id = id, model = definition.model,
+					bucket = definition.bucket or 0, revision = 1, attachment = nil,
+					x = definition.position.x, y = definition.position.y,
+					z = definition.position.z }
+				return id
+			end,
+			get = function(id) return props.byId[id] end,
+			remove = function(id)
+				props.removes[#props.removes + 1] = id
+				props.byId[id] = nil
+				return true
+			end,
+			attach = function(id, binding, expectedRevision)
+				local prop = props.byId[id]
+				if prop == nil then return nil, 'invalid_prop_id' end
+				if expectedRevision ~= nil and prop.revision ~= expectedRevision then
+					return nil, 'invalid_revision'
+				end
+				if props.refuseAttach ~= nil then return nil, props.refuseAttach end
+				prop.attachment = binding
+				prop.revision = prop.revision + 1
+				props.attaches[#props.attaches + 1] = { id = id, binding = binding,
+					expected = expectedRevision }
+				return true
+			end,
+			detach = function(id)
+				local prop = props.byId[id]
+				if prop == nil then return nil, 'invalid_prop_id' end
+				props.detaches[#props.detaches + 1] = id
+				if prop.attachment ~= nil then prop.revision = prop.revision + 1 end
+				prop.attachment = nil
+				return true
+			end,
+			setTransform = function(id, definition)
+				local prop = props.byId[id]
+				if prop == nil then return false, 'not_found' end
+				if prop.attachment ~= nil then return false, 'prop_attached' end
+				prop.x = definition.position.x
+				prop.y = definition.position.y
+				prop.z = definition.position.z
+				props.transforms[#props.transforms + 1] = { id = id,
+					position = definition.position }
+				return true
+			end,
+			update = function() return true end,
+			-- Always empty on the server, which is the platform's own behaviour and
+			-- the reason the module validates a model by trying rather than by looking.
+			catalog = function() return {} end,
+		}
+	end
+
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.GetGameTimer = function() return at end
+		sandbox.Open77.props = propApi()
+		sandbox.Open77.players.position = function(id) return positions[id] end
+		sandbox.Open77.vehicles.get = function(id) return vehicles[id] end
+	end)
+	check('the server boots for the hauling claim tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('hauling')
+		local Access, Claim = M.Access, M.Claim
+		local Where, Step = M.Where, M.Step
+
+		-- SURVEYING THE SITE, which is exactly what an operator has to do before a
+		-- single crate appears. The config table is the live one, so writing into it
+		-- and re-running the validator is the same thing as shipping real numbers.
+		local SITE = OPX.Config.MODULES.hauling.SITES.docks
+		local BASE = { x = -1440.0, y = 120.0, z = 18.0 }
+		for index = 1, #SITE.POINTS do
+			SITE.POINTS[index].X = BASE.x + index * 4.0
+			SITE.POINTS[index].Y = BASE.y
+			SITE.POINTS[index].Z = BASE.z
+		end
+		SITE.DROPOFFS.warehouse.X, SITE.DROPOFFS.warehouse.Y, SITE.DROPOFFS.warehouse.Z =
+			-1500.0, 200.0, 18.0
+		SITE.DROPOFFS.yard.X, SITE.DROPOFFS.yard.Y, SITE.DROPOFFS.yard.Z =
+			-1520.0, 210.0, 18.0
+		-- The badlands site stays a placeholder, so the two live side by side and one
+		-- disabled site does not take the other down with it.
+		local problems = table.concat(Access.Problems(), '\n')
+		check('a surveyed site becomes usable', Access.Usable('docks'), problems)
+		check('while the one still full of blanks does not', not Access.Usable('badlands'))
+
+		check('the refill pass is on the scheduler',
+			table.concat(OPX.Scheduler.Report(), '\n'):find('hauling:refill', 1, true) ~= nil)
+
+		-- One pass puts SPAWN_PER_PASS crates on free points.
+		local before = #props.creates
+		control.Pump(1)
+		check('a refill pass puts crates on the surveyed points',
+			#props.creates - before == SITE.SPAWN_PER_PASS, #props.creates - before)
+
+		-- THE SITE'S BUCKET AND NEVER THE PLAYER'S. `rp_nomade` creates its crates in
+		-- the accepting driver's bucket, which is why nothing in it is ever contested:
+		-- nobody outside that instance can see a crate at all.
+		local created = props.creates[#props.creates]
+		check('a crate is created in the SITE bucket', created.bucket == SITE.BUCKET,
+			tostring(created.bucket))
+		check('and from a curated alias rather than a mesh path',
+			created.model == 'crate.small' and created.model:find('%.mesh$') == nil,
+			tostring(created.model))
+
+		local CRATE = nil
+		for id in pairs(props.byId) do
+			if CRATE == nil or id < CRATE then CRATE = id end
+		end
+		check('and the server holds a crate to race for', CRATE ~= nil)
+
+		local crateAt = props.byId[CRATE]
+		positions[7] = { x = crateAt.x, y = crateAt.y, z = crateAt.z, bucket = 0 }
+		positions[8] = { x = crateAt.x, y = crateAt.y, z = crateAt.z, bucket = 0 }
+
+		local function sentTo(recorder, name)
+			local out = {}
+			for index = 1, #recorder do
+				if recorder[index].name == name then out[#out + 1] = recorder[index] end
+			end
+			return out
+		end
+
+		local function fire(player, event, ...)
+			env.source = player
+			control.netEvents[event](...)
+			env.source = nil
+		end
+
+		fire(7, M.Event.HELLO)
+		fire(8, M.Event.HELLO)
+		check('the begin door is on the net channel',
+			type(control.netEvents[M.Event.BEGIN]) == 'function')
+
+		-- ── the race, at one instant on one clock ────────────────────────────
+		local was = #control.clientEvents
+		fire(7, M.Event.BEGIN, Step.PICKUP, CRATE)
+		fire(8, M.Event.BEGIN, Step.PICKUP, CRATE)
+
+		local answers = {}
+		for index = was + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.name == M.Event.ANSWER then answers[#answers + 1] = sent end
+		end
+		local winners, losers, reason = 0, 0, nil
+		for _, sent in ipairs(answers) do
+			if sent[1] == true then winners = winners + 1 else
+				losers = losers + 1
+				reason = sent[2]
+			end
+		end
+		check('exactly one of two simultaneous claims is granted', winners == 1, winners)
+		check('and exactly one is refused', losers == 1, losers)
+		check('and the loser is told it was already taken', reason == 'already_claimed',
+			tostring(reason))
+
+		-- Only the winner is asked to run a bar: the refusal must not draw one.
+		local bars = sentTo(control.clientEvents, M.Event.RUN)
+		check('and only one bar was asked for', #bars == 1, #bars)
+
+		local claimed = OPX.Api.Get('hauling').State()
+		check('the site reports exactly one claimed crate',
+			claimed.ok and claimed.value.sites.docks.claimed == 1,
+			claimed.ok and claimed.value.sites.docks.claimed)
+
+		-- ── the claim function itself, with nothing around it ────────────────
+		-- A registry the test owns, so the two refusals below are the function's and
+		-- not the wire's.
+		local bare = { ['9'] = { id = '9', site = 'docks', index = 1, where = Where.GROUND,
+			x = 0, y = 0, z = 0, revision = 4 } }
+		check('a claim on a free crate is granted',
+			(Claim.Take(bare, '9', 1, Step.PICKUP, 4, 100)) == true)
+		local ok, refusal = Claim.Take(bare, '9', 2, Step.PICKUP, 4, 100)
+		check('and the very next one is refused', ok == false and refusal == 'already_claimed',
+			tostring(refusal))
+		check('the crate is the first claimer\'s', bare['9'].owner == 1)
+
+		-- A REVISION OLDER THAN THE ONE THE REGISTRY HOLDS is a caller whose read of
+		-- the prop is stale, so the `expectedRevision` it would hand to
+		-- `Open77.props.attach` is stale too and the attach would be refused AFTER the
+		-- bar had already run. Refused now, with the crate left on the ground.
+		local fresh = { ['9'] = { id = '9', site = 'docks', index = 1, where = Where.GROUND,
+			x = 0, y = 0, z = 0, revision = 7 } }
+		ok, refusal = Claim.Take(fresh, '9', 1, Step.PICKUP, 3, 100)
+		check('a claim carrying a stale revision is refused',
+			ok == false and refusal == 'stale_revision', tostring(refusal))
+		check('and the rollback left the crate exactly as it found it',
+			fresh['9'].where == Where.GROUND and fresh['9'].owner == nil
+				and fresh['9'].revision == 7)
+
+		-- ── one pair of hands, one crate ─────────────────────────────────────
+		local two = {
+			['1'] = { id = '1', where = Where.GROUND, revision = 1 },
+			['2'] = { id = '2', where = Where.GROUND, revision = 1 },
+		}
+		check('a first crate is granted', (Claim.Take(two, '1', 5, Step.PICKUP, 1, 100)) == true)
+		ok, refusal = Claim.Take(two, '2', 5, Step.PICKUP, 1, 100)
+		check('and a second to the same hands is refused',
+			ok == false and refusal == 'already_carrying', tostring(refusal))
+
+		-- ── the claim expires ────────────────────────────────────────────────
+		-- NEITHER SHIPPED EXAMPLE DOES THIS. Both release on disconnect and on nothing
+		-- else, so a player who claims and then stands in a menu holds the crate until
+		-- the process restarts -- a quarter of a four-point site, permanently, to
+		-- somebody who alt-tabbed.
+		local expiring = { ['9'] = { id = '9', where = Where.CLAIMED, owner = 1,
+			step = Step.PICKUP, claimedAtMs = 1000 } }
+		local stepMs = Access.StepMs
+		check('a fresh claim is not expired',
+			#Claim.Expired(expiring, 1000 + Access.PICKUP_MS, Access.CLAIM_GRACE_MS, stepMs) == 0)
+		local dead = Claim.Expired(expiring,
+			1000 + Access.PICKUP_MS + Access.CLAIM_GRACE_MS + 1, Access.CLAIM_GRACE_MS, stepMs)
+		check('one past its bar plus the grace is', #dead == 1 and dead[1] == '9', #dead)
+
+		-- A CARRY IS NOT A RESERVATION WAITING ON A BAR. Expiring one would teleport a
+		-- crate out of a player's hands, or out of a moving truck.
+		local carried = { ['9'] = { id = '9', where = Where.CARRIED, owner = 1,
+			step = Step.PICKUP, claimedAtMs = 1000 } }
+		check('a crate already in somebody\'s hands never expires',
+			#Claim.Expired(carried, 1000 + 99999999, Access.CLAIM_GRACE_MS, stepMs) == 0)
+
+		-- ── and the live one expires on the reap pass ────────────────────────
+		at = at + Access.PICKUP_MS + Access.CLAIM_GRACE_MS + 1
+		control.Pump(1)
+		local after = OPX.Api.Get('hauling').State()
+		check('the reap pass releases a claim nobody finished',
+			after.ok and after.value.sites.docks.claimed == 0,
+			after.ok and after.value.sites.docks.claimed)
+
+		-- And the loser of the original race can now have it.
+		at = at + 10000
+		fire(8, M.Event.BEGIN, Step.PICKUP, CRATE)
+		local retry = sentTo(control.clientEvents, M.Event.ANSWER)
+		check('so the crate is free for whoever asks next',
+			retry[#retry] ~= nil and retry[#retry][1] == true,
+			retry[#retry] and tostring(retry[#retry][2]))
+	end
+end
+
+section('hauling: the server owns the clock, and a carry that ends puts the crate back')
+do
+	local at = 1000000
+	local props = { byId = {}, next = 0, creates = {}, attaches = {}, detaches = {},
+		removes = {}, transforms = {}, refuse = nil, refuseAttach = nil }
+	local positions = {}
+	local vehicles = {}
+
+	local function propApi()
+		return {
+			create = function(definition)
+				props.creates[#props.creates + 1] = definition
+				if props.refuse ~= nil then return nil, props.refuse end
+				props.next = props.next + 1
+				local id = tostring(props.next)
+				props.byId[id] = { id = id, model = definition.model,
+					bucket = definition.bucket or 0, revision = 1, attachment = nil,
+					x = definition.position.x, y = definition.position.y,
+					z = definition.position.z }
+				return id
+			end,
+			get = function(id) return props.byId[id] end,
+			remove = function(id)
+				props.removes[#props.removes + 1] = id
+				props.byId[id] = nil
+				return true
+			end,
+			attach = function(id, binding, expectedRevision)
+				local prop = props.byId[id]
+				if prop == nil then return nil, 'invalid_prop_id' end
+				if expectedRevision ~= nil and prop.revision ~= expectedRevision then
+					return nil, 'invalid_revision'
+				end
+				if props.refuseAttach ~= nil then return nil, props.refuseAttach end
+				prop.attachment = binding
+				prop.revision = prop.revision + 1
+				props.attaches[#props.attaches + 1] = { id = id, binding = binding,
+					expected = expectedRevision }
+				return true
+			end,
+			detach = function(id)
+				local prop = props.byId[id]
+				if prop == nil then return nil, 'invalid_prop_id' end
+				props.detaches[#props.detaches + 1] = id
+				if prop.attachment ~= nil then prop.revision = prop.revision + 1 end
+				prop.attachment = nil
+				return true
+			end,
+			setTransform = function(id, definition)
+				local prop = props.byId[id]
+				if prop == nil then return false, 'not_found' end
+				-- The native's own refusal for a bound prop. It is what makes the
+				-- detach-then-place ordering in `putBack` a checkable thing.
+				if prop.attachment ~= nil then return false, 'prop_attached' end
+				prop.x = definition.position.x
+				prop.y = definition.position.y
+				prop.z = definition.position.z
+				props.transforms[#props.transforms + 1] = { id = id,
+					position = definition.position }
+				return true
+			end,
+			update = function() return true end,
+			catalog = function() return {} end,
+		}
+	end
+
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.GetGameTimer = function() return at end
+		sandbox.Open77.props = propApi()
+		sandbox.Open77.players.position = function(id) return positions[id] end
+		sandbox.Open77.vehicles.get = function(id) return vehicles[id] end
+	end)
+	check('the server boots for the hauling carry tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('hauling')
+		local Access, Claim = M.Access, M.Claim
+		local Where, Step = M.Where, M.Step
+
+		local SITE = OPX.Config.MODULES.hauling.SITES.docks
+		for index = 1, #SITE.POINTS do
+			SITE.POINTS[index].X = -1440.0 + index * 4.0
+			SITE.POINTS[index].Y = 120.0
+			SITE.POINTS[index].Z = 18.0
+		end
+		SITE.DROPOFFS.warehouse.X, SITE.DROPOFFS.warehouse.Y, SITE.DROPOFFS.warehouse.Z =
+			-1500.0, 200.0, 18.0
+		SITE.DROPOFFS.yard.X, SITE.DROPOFFS.yard.Y, SITE.DROPOFFS.yard.Z =
+			-1520.0, 210.0, 18.0
+		Access.Problems()
+		control.Pump(1)
+
+		local CRATE = nil
+		for id in pairs(props.byId) do
+			if CRATE == nil or id < CRATE then CRATE = id end
+		end
+		local home = { x = props.byId[CRATE].x, y = props.byId[CRATE].y,
+			z = props.byId[CRATE].z }
+		positions[3] = { x = home.x, y = home.y, z = home.z, bucket = 0 }
+
+		local function sentTo(name)
+			local out = {}
+			for index = 1, #control.clientEvents do
+				if control.clientEvents[index].name == name then
+					out[#out + 1] = control.clientEvents[index]
+				end
+			end
+			return out
+		end
+		local function fire(player, event, ...)
+			env.source = player
+			control.netEvents[event](...)
+			env.source = nil
+		end
+		-- An EMPTY TABLE and never nil when nothing was answered: a check that
+		-- raises on a nil index reports which line blew up, not which guard went,
+		-- and the whole value of a mutation run is in the second of those.
+		local function lastAnswer()
+			local answers = sentTo(M.Event.ANSWER)
+			return answers[#answers] or {}
+		end
+
+		fire(3, M.Event.HELLO)
+
+		-- A SNAPSHOT IN PARTS, the way `modules/inventory` sends its piles: one
+		-- message per crate is a packet storm at login and one message for every
+		-- crate is a payload the host may refuse whole.
+		local parts = sentTo(M.Event.SNAPSHOT)
+		check('a hello is answered with a snapshot that says when it is complete',
+			#parts >= 1 and parts[#parts][1].done == true, #parts)
+
+		-- ── the clock is the server's ────────────────────────────────────────
+		fire(3, M.Event.BEGIN, Step.PICKUP, CRATE)
+		check('the pickup is granted', lastAnswer()[1] == true, tostring(lastAnswer()[2]))
+
+		-- `modules/progress` counts down on the PLAYER'S machine, so a `finish` that
+		-- arrives instantly is a client claiming work it did not do.
+		fire(3, M.Event.FINISH)
+		check('a completion that arrives instantly is refused',
+			lastAnswer()[1] == false and lastAnswer()[2] == 'too_soon',
+			tostring(lastAnswer()[2]))
+		check('and nothing was attached for it', #props.attaches == 0, #props.attaches)
+		check('while the claim is still the player\'s, so nobody else took it meanwhile',
+			OPX.Api.Get('hauling').State().value.sites.docks.claimed == 1)
+
+		-- Just inside the tolerance is still refused; the bar itself is honoured.
+		at = at + Access.PICKUP_MS - Access.CLOCK_TOLERANCE_MS - 1
+		fire(3, M.Event.FINISH)
+		check('one millisecond short of the tolerance is still too soon',
+			lastAnswer()[2] == 'too_soon', tostring(lastAnswer()[2]))
+
+		at = at + Access.CLOCK_TOLERANCE_MS + 2
+		fire(3, M.Event.FINISH)
+		check('and a bar that really ran is accepted', lastAnswer()[1] == true,
+			tostring(lastAnswer()[2]))
+		check('the crate is attached to the player', #props.attaches == 1, #props.attaches)
+
+		-- THE PLATFORM'S OWN COMPARE-AND-SWAP. The revision read at claim time is
+		-- handed to `attach` as `expectedRevision`, so anything that re-bound the prop
+		-- while the bar ran is refused by the host before any mutation.
+		local bound = props.attaches[1] or { binding = {} }
+		check('and the attach carried the revision read at claim time',
+			bound.expected == 1, tostring(bound.expected))
+		check('to the configured bone, as a curated alias can be and a mesh cannot',
+			bound.binding.parentType == 'player' and bound.binding.bone == 'Chest',
+			tostring(bound.binding.bone))
+
+		-- ── a carry that ends puts the crate back, and does not delete it ────
+		-- The platform detaches on death, disconnect, parent removal and bucket
+		-- change. If any of those DELETED the crate then disconnecting would be how a
+		-- player denies a crate to the competition.
+		local removedBefore = #props.removes
+		control.Fire(M.PROP_ATTACHMENT_CHANGED, CRATE, nil, bound.binding, 'player_died', 3)
+		check('a carry that ended stands the crate back up', #props.transforms == 1,
+			#props.transforms)
+		local stood = props.transforms[1] and props.transforms[1].position or nil
+		check('at its own point and not wherever the body fell',
+			stood ~= nil and math.abs(stood.x - home.x) < 0.001
+				and math.abs(stood.y - home.y) < 0.001,
+			stood ~= nil and ('%.1f,%.1f'):format(stood.x, stood.y) or 'nothing was placed')
+		check('and the crate is NOT removed, so dying is not how you deny one',
+			#props.removes == removedBefore, #props.removes)
+		check('it was detached before it was placed, because the native refuses a bound prop',
+			#props.detaches >= 1, #props.detaches)
+		check('and it is on the ground again for whoever is next',
+			OPX.Api.Get('hauling').State().value.sites.docks.carried == 0)
+
+		-- ── the same, on a disconnect ────────────────────────────────────────
+		at = at + 10000
+		fire(3, M.Event.BEGIN, Step.PICKUP, CRATE)
+		at = at + Access.PICKUP_MS + 1
+		fire(3, M.Event.FINISH)
+		check('the crate can be picked up again', lastAnswer()[1] == true,
+			tostring(lastAnswer()[2]))
+		local placedBefore, removedNow = #props.transforms, #props.removes
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, 3, 'quit')
+		check('a carrier who disconnects leaves the crate standing on its point',
+			#props.transforms == placedBefore + 1, #props.transforms)
+		check('and it is still in the world', #props.removes == removedNow, #props.removes)
+
+		-- ── getting into a car is not a way to load a crate ──────────────────
+		-- The platform's automatic detach list is death, disconnect, parent removal
+		-- and bucket change. A SEAT IS NONE OF THOSE, so without this the carrier
+		-- drives off with the crate stuck to their chest inside the cabin and the load
+		-- action -- the only thing that puts it in the bed where everybody sees it --
+		-- is bypassed.
+		at = at + 10000
+		positions[4] = { x = home.x, y = home.y, z = home.z, bucket = 0 }
+		fire(4, M.Event.HELLO)
+		fire(4, M.Event.BEGIN, Step.PICKUP, CRATE)
+		at = at + Access.PICKUP_MS + 1
+		fire(4, M.Event.FINISH)
+		check('a fresh carrier has the crate',
+			OPX.Api.Get('hauling').State().value.sites.docks.carried == 1)
+		local standing = #props.transforms
+		control.Fire(M.PLAYER_ENTERED_VEHICLE, 4, 'vehicle-1', 0)
+		check('getting into a vehicle drops the crate rather than smuggling it',
+			#props.transforms == standing + 1, #props.transforms)
+		check('and the carrier is told why',
+			lastAnswer()[1] == false and lastAnswer()[2] == 'carry_dropped',
+			tostring(lastAnswer()[2]))
+
+		-- ── reach and bucket are the server's readings, not the client's ─────
+		at = at + 10000
+		positions[5] = { x = home.x + 40.0, y = home.y, z = home.z, bucket = 0 }
+		fire(5, M.Event.HELLO)
+		fire(5, M.Event.BEGIN, Step.PICKUP, CRATE)
+		check('a player standing forty metres away is refused',
+			lastAnswer()[2] == 'too_far', tostring(lastAnswer()[2]))
+
+		at = at + 10000
+		positions[6] = { x = home.x, y = home.y, z = home.z, bucket = 4 }
+		fire(6, M.Event.HELLO)
+		fire(6, M.Event.BEGIN, Step.PICKUP, CRATE)
+		check('and one standing on it in another instance is too',
+			lastAnswer()[2] == 'wrong_bucket', tostring(lastAnswer()[2]))
+	end
+end
+
+section('hauling: loading, delivering, and the site the engine will not draw')
+do
+	local at = 1000000
+	local props = { byId = {}, next = 0, creates = {}, attaches = {}, detaches = {},
+		removes = {}, transforms = {}, refuse = nil, unknown = nil }
+	local positions = {}
+	local vehicles = {}
+	local paid = {}
+
+	local function propApi()
+		return {
+			create = function(definition)
+				props.creates[#props.creates + 1] = definition
+				if props.unknown ~= nil and definition.model == props.unknown then
+					return nil, 'unknown_alias'
+				end
+				props.next = props.next + 1
+				local id = tostring(props.next)
+				props.byId[id] = { id = id, model = definition.model,
+					bucket = definition.bucket or 0, revision = 1, attachment = nil,
+					x = definition.position.x, y = definition.position.y,
+					z = definition.position.z }
+				return id
+			end,
+			get = function(id) return props.byId[id] end,
+			remove = function(id)
+				props.removes[#props.removes + 1] = id
+				props.byId[id] = nil
+				return true
+			end,
+			attach = function(id, binding, expectedRevision)
+				local prop = props.byId[id]
+				if prop == nil then return nil, 'invalid_prop_id' end
+				if expectedRevision ~= nil and prop.revision ~= expectedRevision then
+					return nil, 'invalid_revision'
+				end
+				prop.attachment = binding
+				prop.revision = prop.revision + 1
+				props.attaches[#props.attaches + 1] = { id = id, binding = binding,
+					expected = expectedRevision }
+				return true
+			end,
+			detach = function(id)
+				local prop = props.byId[id]
+				if prop == nil then return nil, 'invalid_prop_id' end
+				props.detaches[#props.detaches + 1] = id
+				if prop.attachment ~= nil then prop.revision = prop.revision + 1 end
+				prop.attachment = nil
+				return true
+			end,
+			setTransform = function(id, definition)
+				local prop = props.byId[id]
+				if prop == nil then return false, 'not_found' end
+				if prop.attachment ~= nil then return false, 'prop_attached' end
+				prop.x, prop.y, prop.z =
+					definition.position.x, definition.position.y, definition.position.z
+				props.transforms[#props.transforms + 1] = { id = id,
+					position = definition.position }
+				return true
+			end,
+			update = function() return true end,
+			catalog = function() return {} end,
+		}
+	end
+
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.GetGameTimer = function() return at end
+		sandbox.Open77.props = propApi()
+		sandbox.Open77.players.position = function(id) return positions[id] end
+		sandbox.Open77.vehicles.get = function(id) return vehicles[id] end
+	end)
+	check('the server boots for the hauling delivery tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('hauling')
+		local Access = M.Access
+		local Where, Step = M.Where, M.Step
+
+		local SITE = OPX.Config.MODULES.hauling.SITES.docks
+		for index = 1, #SITE.POINTS do
+			SITE.POINTS[index].X = -1440.0 + index * 4.0
+			SITE.POINTS[index].Y = 120.0
+			SITE.POINTS[index].Z = 18.0
+		end
+		SITE.DROPOFFS.warehouse.X, SITE.DROPOFFS.warehouse.Y, SITE.DROPOFFS.warehouse.Z =
+			-1500.0, 200.0, 18.0
+		SITE.DROPOFFS.yard.X, SITE.DROPOFFS.yard.Y, SITE.DROPOFFS.yard.Z =
+			-1520.0, 210.0, 18.0
+		Access.Problems()
+		control.Pump(1)
+
+		local CRATE = nil
+		for id in pairs(props.byId) do
+			if CRATE == nil or id < CRATE then CRATE = id end
+		end
+		local home = { x = props.byId[CRATE].x, y = props.byId[CRATE].y,
+			z = props.byId[CRATE].z }
+		local SECOND = nil
+		for id in pairs(props.byId) do
+			if id ~= CRATE and (SECOND == nil or id < SECOND) then SECOND = id end
+		end
+
+		local function fire(player, event, ...)
+			env.source = player
+			control.netEvents[event](...)
+			env.source = nil
+		end
+		local function lastAnswer()
+			local out = nil
+			for index = 1, #control.clientEvents do
+				if control.clientEvents[index].name == M.Event.ANSWER then
+					out = control.clientEvents[index]
+				end
+			end
+			return out
+		end
+
+		-- A truck standing beside the crate, away from every drop-off.
+		vehicles['veh-1'] = { id = 'veh-1', record = 'Vehicle.v_standard3_thorton_mackinaw_player',
+			position = { x = home.x + 2.0, y = home.y, z = home.z } }
+		positions[2] = { x = home.x, y = home.y, z = home.z, bucket = 0 }
+		fire(2, M.Event.HELLO)
+
+		fire(2, M.Event.BEGIN, Step.PICKUP, CRATE)
+		at = at + Access.PICKUP_MS + 1
+		fire(2, M.Event.FINISH)
+		check('the crate is carried', lastAnswer()[1] == true, tostring(lastAnswer()[2]))
+
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.LOAD, 'veh-1')
+		check('the load is granted', lastAnswer()[1] == true, tostring(lastAnswer()[2]))
+		at = at + Access.LOAD_MS + 1
+		fire(2, M.Event.FINISH)
+		check('and the crate goes into the bed', lastAnswer()[1] == true,
+			tostring(lastAnswer()[2]))
+		local bed = props.attaches[#props.attaches]
+		check('attached to the vehicle at its root, which is where a bed slot is measured',
+			bed.binding.parentType == 'vehicle' and bed.binding.bone == '',
+			tostring(bed.binding.parentType))
+
+		-- LOADING RELEASES OWNERSHIP, on purpose: the loader's hands are free to fetch
+		-- another and whoever drives the truck delivers. That is the convoy, and it
+		-- comes out of one line in `complete`.
+		local loaded = OPX.Api.Get('hauling').State()
+		check('the crate is loaded and nobody\'s', loaded.value.sites.docks.loaded == 1,
+			loaded.value.sites.docks.loaded)
+
+		-- ── a delivery away from every drop-off is refused ───────────────────
+		at = at + 10000
+		positions[2] = { x = home.x + 2.0, y = home.y, z = home.z, bucket = 0 }
+		fire(2, M.Event.BEGIN, Step.DELIVER, CRATE)
+		check('a delivery from the middle of the yard is refused',
+			lastAnswer()[2] == 'not_at_dropoff', tostring(lastAnswer()[2]))
+
+		-- ── at a drop-off, and the money has to work ─────────────────────────
+		vehicles['veh-1'].position = { x = -1500.0, y = 200.0, z = 18.0 }
+		positions[2] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, CRATE)
+		check('a delivery at a drop-off is begun', lastAnswer()[1] == true,
+			tostring(lastAnswer()[2]))
+
+		-- NOBODY IS LOGGED IN HERE, so the real character contract refuses the pay.
+		-- The crate MUST survive that: the other order loses a crate and pays nothing,
+		-- and there is then nothing left to retry with.
+		local removedBefore = #props.removes
+		at = at + Access.DELIVER_MS + 1
+		fire(2, M.Event.FINISH)
+		check('a delivery that could not be paid is refused',
+			lastAnswer()[2] == 'not_paid', tostring(lastAnswer()[2]))
+		check('and the crate is still in the world, so nothing was lost for nothing',
+			#props.removes == removedBefore, #props.removes)
+
+		-- ── now with a contract that pays ────────────────────────────────────
+		-- The lookup is replaced and not the module: `complete` asks
+		-- `OPX.Api.Get('character')` for the one function it needs, and this is the
+		-- smallest thing that can stand in for a logged-in wallet.
+		local realGet = OPX.Api.Get
+		OPX.Api.Get = function(name)
+			if name == 'character' then
+				return { AddMoney = function(player, kind, amount, reason)
+					paid[#paid + 1] = { player = player, kind = kind, amount = amount,
+						reason = reason }
+					return true
+				end }
+			end
+			return realGet(name)
+		end
+
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, CRATE)
+		at = at + Access.DELIVER_MS + 1
+		fire(2, M.Event.FINISH)
+		OPX.Api.Get = realGet
+
+		check('a paid delivery is accepted', lastAnswer()[1] == true,
+			tostring(lastAnswer()[2]))
+		check('the driver is paid the site\'s rate in the configured currency',
+			#paid == 1 and paid[1].amount == Access.Pay('docks')
+				and paid[1].kind == Access.CURRENCY,
+			#paid == 1 and tostring(paid[1].amount))
+		check('and the reason names the site and the destination it went to',
+			#paid == 1 and paid[1].reason:find('hauling:docks:warehouse', 1, true) ~= nil,
+			#paid == 1 and paid[1].reason)
+		check('and only then is the crate taken out of the world',
+			#props.removes == removedBefore + 1, #props.removes)
+
+		-- ── a driver who quits mid-delivery leaves the cargo in the truck ───
+		-- A DELIVERY BAR OWNS THE CRATE ONLY FOR ITS OWN LENGTH. Releasing it the
+		-- way a reservation is released would set the crate back to `ground` while
+		-- it is still bolted into a bed three districts away -- the refill pass
+		-- would then count its point as occupied by a crate nobody can reach, and
+		-- the row would vanish from the next driver's eye.
+		at = at + 10000
+		-- The truck is driven back to the yard, and the driver stands at the next
+		-- crate: everything below is checked against the server's own reading of
+		-- where they are, so the test has to put them somewhere real.
+		local secondAt = props.byId[SECOND]
+		positions[2] = { x = secondAt.x, y = secondAt.y, z = secondAt.z, bucket = 0 }
+		vehicles['veh-1'].position = { x = secondAt.x + 2.0, y = secondAt.y, z = secondAt.z }
+		fire(2, M.Event.BEGIN, Step.PICKUP, SECOND)
+		at = at + Access.PICKUP_MS + 1
+		fire(2, M.Event.FINISH)
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.LOAD, 'veh-1')
+		at = at + Access.LOAD_MS + 1
+		fire(2, M.Event.FINISH)
+		check('a second crate rides in the bed',
+			OPX.Api.Get('hauling').State().value.sites.docks.loaded == 1)
+		at = at + 10000
+		vehicles['veh-1'].position = { x = -1500.0, y = 200.0, z = 18.0 }
+		positions[2] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
+		fire(2, M.Event.BEGIN, Step.DELIVER, SECOND)
+		check('the delivery bar is running', lastAnswer()[1] == true,
+			tostring(lastAnswer()[2]))
+		local placedBefore = #props.transforms
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, 2, 'quit')
+		check('the driver leaving mid-delivery leaves the crate in the truck',
+			OPX.Api.Get('hauling').State().value.sites.docks.loaded == 1,
+			OPX.Api.Get('hauling').State().value.sites.docks.loaded)
+		check('and nothing was stood back up on a point it is nowhere near',
+			#props.transforms == placedBefore, #props.transforms - placedBefore)
+
+		-- ── a subject that is not a name never reaches a native ──────────────
+		-- A client is free to put a table on the wire, and `Open77.vehicles.get({})`
+		-- is a raise INSIDE a network handler.
+		at = at + 10000
+		positions[11] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
+		fire(11, M.Event.HELLO)
+		local survived = pcall(function()
+			fire(11, M.Event.BEGIN, Step.LOAD, { nope = true })
+		end)
+		check('a subject that is a table is refused rather than handed to a native',
+			survived and lastAnswer()[2] == 'invalid_subject',
+			tostring(lastAnswer()[2]))
+
+		-- ── the bed stacks rather than overlapping ───────────────────────────
+		local first = Access.BedSlot('Vehicle.nothing', 1)
+		local fifth = Access.BedSlot('Vehicle.nothing', 5)
+		check('the fifth crate reuses the first slot',
+			first ~= nil and fifth ~= nil and first.x == fifth.x and first.y == fifth.y)
+		check('and sits a layer higher rather than inside it', fifth.z > first.z,
+			fifth and tostring(fifth.z))
+
+		-- ── a model the engine does not know disables its site ───────────────
+		-- `Open77.props.catalog()` is ALWAYS an empty table on the server, so an alias
+		-- cannot be checked against a list; the only way to find out is to try. A site
+		-- whose crates silently never appear is indistinguishable from one nobody has
+		-- visited, which is why this is a disabled site and a loud line rather than a
+		-- warning.
+		props.unknown = 'crate.small'
+		Access.Problems()
+		check('the site is usable again after a fresh validation', Access.Usable('docks'))
+		local before = #control.log.error
+		control.Pump(1)
+		check('a site whose model the engine refuses is disabled', not Access.Usable('docks'))
+		local said = table.concat(control.log.error, '\n')
+		check('and the operator is told the alias is the problem',
+			said:find('SITE docks IS DISABLED', 1, true) ~= nil
+				and said:find('never a .mesh path', 1, true) ~= nil,
+			#control.log.error - before)
+
+		-- And it is NOT retried for ever: a second pass writes no second line.
+		local lines = #control.log.error
+		control.Pump(1)
+		check('and it is not retried once a pass for the rest of the session',
+			#control.log.error == lines, #control.log.error - lines)
+	end
+end
+
+section('hauling: the client holds three rows and not one loop')
+do
+	-- THE BUDGET IS THE REASON THIS BLOCK EXISTS. The platform gives Lua 2000
+	-- microseconds a frame DIVIDED BY the number of running resources, floor 50, and
+	-- this runtime is one resource sharing that slice between every module it has.
+	-- A loop that trips the per-resume instruction budget does not crash and does
+	-- not log: it unwinds out of the coroutine body and is never resumed again for
+	-- the session. So the claim being pinned here is a negative one -- this module
+	-- registers NO repeating work at all -- and the only way to keep a negative
+	-- claim true is to assert it.
+	local env, control, why = boot('client')
+	check('the client boots for the hauling rows', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('hauling')
+		check('the hauling module is running on the client', OPX.Modules.IsRunning('hauling'),
+			OPX.Modules.Record('hauling').Reason)
+
+		local report = table.concat(OPX.Scheduler.Report(), '\n')
+		check('and it registers no repeating client work whatsoever',
+			report:find('hauling', 1, true) == nil, report)
+
+		local target = OPX.Api.Get('target')
+		local held = target.List('hauling')
+		check('the target rows were accepted', held.ok, held.ok or tostring(held.error))
+
+		local ids = {}
+		for _, row in ipairs(held.ok and held.value.options or {}) do ids[#ids + 1] = row.id end
+		table.sort(ids)
+		check('three rows: pick up, load, hand over', #ids == 3, table.concat(ids, ', '))
+		check('and they are the three this module names',
+			table.concat(ids, ',') == 'hauling.deliver,hauling.load,hauling.pickup',
+			table.concat(ids, ','))
+
+		-- REGISTERED ONCE AND NEVER AGAIN. The crate id-set changes on every pickup,
+		-- every delivery and every refill pass, and NOT ONE of those re-registers
+		-- anything: the rows name a KIND and the predicate reads a table. That is the
+		-- whole reason the target-eye question was worth answering before writing the
+		-- client, and it is what this asserts.
+		--
+		-- THE TOKENS ARE WHAT IS COMPARED, and not the row count, which cannot see
+		-- this at all: `Model.Register` REPLACES an owner's row of the same id, so a
+		-- client re-registering on every delta still holds exactly three rows. It
+		-- mints a fresh token each time, which is the visible trace of the churn --
+		-- and of the token list this module would then grow without bound. Counting
+		-- rows was the first version of this check and a mutant walked straight
+		-- through it.
+		local function tokensOf()
+			local held = target.List('hauling')
+			local out = {}
+			for _, row in ipairs(held.ok and held.value.options or {}) do
+				out[#out + 1] = ('%s=%s'):format(row.id, row.token)
+			end
+			table.sort(out)
+			return table.concat(out, ',')
+		end
+		local quiet = tokensOf()
+		local snapshot = { first = true, done = true, crates = {} }
+		for index = 1, 40 do
+			snapshot.crates[index] = { id = tostring(index), site = 'docks',
+				x = index * 5.0, y = 0.0, z = 18.0, bucket = 0, where = 'ground' }
+		end
+		control.netEvents[M.Event.SNAPSHOT](snapshot)
+		for index = 1, 40 do
+			control.netEvents[M.Event.CRATE]({ id = tostring(index), site = 'docks',
+				x = index * 5.0, y = 0.0, z = 18.0, bucket = 0, where = 'carried' })
+			control.netEvents[M.Event.GONE](tostring(index))
+		end
+		local after = target.List('hauling')
+		check('forty crates arriving, changing and leaving still leave three rows',
+			after.ok and #after.value.options == 3,
+			after.ok and #after.value.options)
+		check('and not one of them was re-registered: the tokens never moved',
+			tokensOf() == quiet, tokensOf() .. ' was ' .. quiet)
+
+		-- A refusal corrects a client that had drifted: `carrying` is only ever what
+		-- the server last said, never inferred from a request that seemed to work.
+		control.netEvents[M.Event.ANSWER](false, 'already_claimed', false)
+		check('a refusal does not take the rows down',
+			(target.List('hauling')).value ~= nil)
+		check('and the client survives a refusal code nobody wrote a sentence for',
+			pcall(control.netEvents[M.Event.ANSWER], false, 'invalid_attachment_bone', false))
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

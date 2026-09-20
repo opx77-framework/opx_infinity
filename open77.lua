@@ -100,6 +100,7 @@ shared_script "config/crafting.lua"
 -- every armoury and reads their positions here, and both halves must refuse the
 -- same rows.
 shared_script "config/gunsmith.lua"
+shared_script "config/hauling.lua"
 shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
@@ -386,6 +387,17 @@ client_script "modules/teleports/client/main.lua"
 -- The lifecycle: the registry calls the module, and `Runtime` is what does the
 -- work. Without this file the client half is never built.
 client_script "modules/teleports/client/exports.lua"
+-- Hauling. After `target`, whose eye is the ENTIRE entry -- there is no command
+-- and no key -- and after `character`, which pays for a delivery. `progress`,
+-- `inventory` and `animations` are optional and are all ordered above anyway.
+-- Needs no permission of its own: `world.props` and `players.animations.control`
+-- are already declared for other modules, and this one adds nothing.
+shared_script "modules/hauling/module.lua"
+shared_script "modules/hauling/locales.lua"
+shared_script "modules/hauling/shared/access.lua"
+server_script "modules/hauling/server/claim.lua"
+server_script "modules/hauling/server/main.lua"
+client_script "modules/hauling/client/main.lua"
 
 -- Clothing shops. After `appearance`, whose fitting room it opens, and after
 -- `target`, whose eye carries its row -- both are ordered above. Before
