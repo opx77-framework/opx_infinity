@@ -623,14 +623,30 @@ local function copy(slots)
 end
 
 --- Whether the player chose something other than what was worn when it opened.
+--- Which slots the draft moved, in the canonical order.
+--
+-- PUBLISHED ON `wardrobeClosed`, because a caller that wants to BILL for a
+-- change cannot work this out for itself: the baseline and the draft live here
+-- and are gone the moment the room closes. A clothing shop asking "what did
+-- they change" from outside would have to re-read the body and race the save.
+--
+-- `outfitCleared` is not a slot and is deliberately not folded in here. It says
+-- a covering wardrobe outfit was switched off, which is a change -- `changed`
+-- below still answers true for it -- but it is not a garment anybody bought.
+local function changedSlots()
+	local moved = {}
+	if baseline == nil or draft == nil then return moved end
+	for index = 1, #EQUIPMENT_SLOTS do
+		local slot = EQUIPMENT_SLOTS[index]
+		if baseline[slot] ~= draft[slot] then moved[#moved + 1] = slot end
+	end
+	return moved
+end
+
 local function changed()
 	if baseline == nil or draft == nil then return false end
 	if outfitCleared then return true end
-	for index = 1, #EQUIPMENT_SLOTS do
-		local slot = EQUIPMENT_SLOTS[index]
-		if baseline[slot] ~= draft[slot] then return true end
-	end
-	return false
+	return #changedSlots() > 0
 end
 
 --- States the nine slots on the puppet, turning a covering outfit off first.
@@ -999,6 +1015,11 @@ local function release(keep, reason)
 	generation = generation + 1
 	freeCamera()
 
+	-- CAPTURED BEFORE THE STATE IS DROPPED on the next line, which is the only
+	-- moment this list can be taken: `changedSlots` reads `baseline` and `draft`
+	-- and both are about to be nil. It rides on `wardrobeClosed` for whoever
+	-- needs to bill for a change -- see `changedSlots`.
+	local moved = keep and changedSlots() or {}
 	local mine, wasCreation, worn, owner = citizen, creating, draft, roomOwner
 	baseline, draft, citizen, family, creating = nil, nil, nil, nil, false
 	pieces, known, at, shown, shownName = {}, {}, {}, {}, {}
@@ -1016,7 +1037,7 @@ local function release(keep, reason)
 	end
 
 	Runtime.Publish({ ok = true, event = 'wardrobeClosed', reason = reason, kept = keep,
-		creation = wasCreation, citizenId = mine })
+		creation = wasCreation, citizenId = mine, slots = moved })
 	-- WHATEVER TOOK IT DOWN, THE JOIN IS NO LONGER WAITING. A room the player
 	-- saved, cancelled, was pulled out of by a body reload or lost to a stopped
 	-- owner is a room that has been had: holding the claim open past any of those

@@ -4952,5 +4952,102 @@ do
 		#gaps == 0, table.concat(gaps, '; '))
 end
 
+
+-- ── clothing shops: the half that is pure ───────────────────────────────────
+-- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
+-- module was written for. Whether a player is standing at a counter needs a
+-- server, a body and a position; what their change COSTS needs none of those,
+-- so it lives in `module.lua` as plain functions over plain tables and is held
+-- to account here.
+section('shops')
+do
+	local env, _, why = boot('client')
+	check('the client boots with the shops module', why == nil, why)
+
+	local shops = why == nil and env.OPX.Modules.Get('shops') or nil
+	check('the module declared itself', type(shops) == 'table')
+
+	if type(shops) == 'table' then
+		-- THE COPY THAT MUST NOT DRIFT. `shops.SLOTS` is a hand-written mirror of
+		-- `appearance`'s list, because a shared file cannot reach a client-only
+		-- table and a module may not read another's settings. The comment on it
+		-- promises this test exists; here it is.
+		local appearance = env.OPX.Modules.Get('appearance')
+		local theirs = type(appearance) == 'table' and type(appearance.Clothing) == 'table'
+			and appearance.Clothing.SLOTS or nil
+		check('the slot list is the same one appearance uses',
+			type(theirs) == 'table' and #theirs == #shops.SLOTS
+			and table.concat(theirs, ',') == table.concat(shops.SLOTS, ','),
+			type(theirs) == 'table' and table.concat(theirs, ',') or 'appearance has no SLOTS')
+
+		check('a slot name is recognised', shops.IsSlot('Legs') == true)
+		check('and anything else is not',
+			shops.IsSlot('Trousers') == false and shops.IsSlot(nil) == false)
+
+		-- ── what changed ──
+		check('an untouched look owes nothing',
+			#shops.Changed({ Legs = 'Items.A' }, { Legs = 'Items.A' }) == 0)
+		check('a swapped garment is one slot',
+			table.concat(shops.Changed({ Legs = 'Items.A' }, { Legs = 'Items.B' }), ',') == 'Legs')
+
+		-- TAKING SOMETHING OFF IS A CHANGE. It is the case a naive diff misses,
+		-- and a shop that did not bill it would let anybody re-dress for free by
+		-- emptying a slot and filling it on a second visit.
+		check('emptying a slot is a change',
+			table.concat(shops.Changed({ Head = 'Items.Hat' }, { Head = false }), ',') == 'Head')
+
+		-- ...AND nil IS NOT. An absent key and an explicitly empty slot are the
+		-- same state wearing two spellings; charging for the difference between
+		-- them would bill a player for how the record happened to be encoded.
+		check('nil and false are the same emptiness',
+			#shops.Changed({ Head = nil }, { Head = false }) == 0)
+
+		check('the answer is in the canonical order, not the table order',
+			table.concat(shops.Changed({}, { Feet = 'Items.B', Head = 'Items.A' }), ',')
+				== 'Head,Feet')
+
+		-- ── what it costs ──
+		local prices = shops.Prices({ Legs = 450, Feet = 300, Head = 250 }, { Legs = 140 })
+		check('a shop overrides one price and inherits the rest',
+			prices.Legs == 140 and prices.Feet == 300 and prices.Head == 250)
+		check('a key that is not a slot never becomes a price',
+			shops.Prices({ Trousers = 900 }, nil).Trousers == nil)
+
+		check('the bill is the sum of the slots that moved',
+			shops.Bill(prices, { 'Legs', 'Feet' }) == 440)
+		check('a slot with no price is free rather than an error',
+			shops.Bill(prices, { 'Outfit' }) == 0)
+		check('changing nothing costs nothing', shops.Bill(prices, {}) == 0)
+
+		-- ── codes ──
+		local length = 8
+		check('a code survives being read out badly',
+			shops.CleanCode('  abcd-2345 ', length) == 'ABCD2345')
+		check('a code of the wrong length is refused',
+			shops.CleanCode('ABCD234', length) == nil)
+
+		-- NOTHING IS GUESSED, and this is the check that holds that decision.
+		-- Crockford's base32 reads a typed `I` as `1`; this alphabet contains
+		-- neither, so there is no correct target and a guess would hand somebody
+		-- a different look than the one they were read out.
+		check('a character the alphabet excludes is refused, not remapped',
+			shops.CleanCode('ABCD2I45', length) == nil
+			and shops.CleanCode('ABCD2O45', length) == nil)
+
+		local step = 0
+		local minted = shops.MintCode(length, function(_, high)
+			step = step + 1
+			return ((step - 1) % high) + 1
+		end)
+		check('a minted code is the length asked for', #minted == length)
+		local clean = true
+		for index = 1, #minted do
+			if not shops.CODE_ALPHABET:find(minted:sub(index, index), 1, true) then clean = false end
+		end
+		check('and every character of it is in the alphabet', clean, minted)
+		check('and a minted code reads back as itself',
+			shops.CleanCode(minted, length) == minted)
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

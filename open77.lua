@@ -70,6 +70,7 @@ shared_script "config/inventory.lua"
 shared_script "config/hud.lua"
 shared_script "config/prompts.lua"
 shared_script "config/target.lua"
+shared_script "config/shops.lua"
 shared_script "config/animations.lua"
 shared_script "config/elevators.lua"
 shared_script "config/menu.lua"
@@ -282,6 +283,15 @@ client_script "modules/elevators/client/state.lua"
 client_script "modules/elevators/client/main.lua"
 client_script "modules/elevators/client/panel.lua"
 client_script "modules/elevators/client/exports.lua"
+
+-- Clothing shops. After `appearance`, whose fitting room it opens, and after
+-- `target`, whose eye carries its row -- both are ordered above. Before
+-- `admin`, which stays last.
+shared_script "modules/shops/module.lua"
+shared_script "modules/shops/locales.lua"
+server_script "modules/shops/server/storage.lua"
+server_script "modules/shops/server/main.lua"
+client_script "modules/shops/client/main.lua"
 -- LAST of the modules, because it reaches into nearly all of them and provides
 -- nothing back. Every contract it uses is optional bar `character`: without the
 -- menu, the form or the target eye it logs one line each and all 50 commands
