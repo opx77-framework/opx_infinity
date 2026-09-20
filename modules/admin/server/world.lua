@@ -242,9 +242,20 @@ function World.Register()
 			local title = locale('admin.announce.title')
 			local delivered = 0
 			for _, playerId in ipairs(Server.PlayerIds()) do
+				-- OUR OWN OVERLAY, NOT THE PLATFORM'S NOTIFICATION PACKAGE, and the
+				-- reason is the stingers: they play before and after the message, and
+				-- only the page that owns the toast's clock can hold the message back
+				-- until the first has finished. `OPX.Notify` hands the sentence to a
+				-- package this runtime does not draw, so it could be told when to
+				-- appear but never when to wait.
+				--
+				-- Nothing about the presentation crosses the wire: the text and how long
+				-- it stays are facts every client needs, and which clips sit around it
+				-- is a local config, so a client with no clips still gets the message.
 				-- Best effort per player: one client that cannot be reached must not
 				-- stop the announcement reaching the rest.
-				local sent = pcall(OPX.Notify, playerId, text, 'warning', lifetime)
+				local sent = pcall(TriggerClientEvent, M.Event.ANNOUNCE, playerId,
+					{ text = text, durationMs = lifetime })
 				if sent then delivered = delivered + 1 end
 				-- The chat line goes out on core's own answer channel rather than a
 				-- chat module's, so that whatever draws a chat log draws it and this

@@ -200,4 +200,22 @@ OPX.Config.MODULES.appearance = {
 		-- normal on foot; raise this to see more, lower it to fill the frame.
 		CAMERA_FOV = 95,
 	},
+
+	-- THE PANEL'S OWN DOOR. `ID` is stable because a player's rebind is stored
+	-- under it; `NAME` is the catalogue key of the pause-menu label; `DEFAULT`
+	-- is the key out of the box. `false` declares no mapping at all, which is
+	-- how an operator turns the key off -- `/opx.appearance` still opens the
+	-- panel, and the fitting room is still behind it.
+	--
+	-- THIS KEY IS THE FIX FOR A HOLE, NOT A CONVENIENCE. The module owns two
+	-- state machines -- the appearance panel and the fitting room -- and draws
+	-- neither: `client/view.lua` hands the first to `menu` and the second to
+	-- `panel`, and the contract that opens them (`OpenPanel`, `OpenWardrobe`) is
+	-- exported on the API. Until now NOTHING CALLED IT. `WARDROBE.OFFER_POLICY`
+	-- hands the room to a character the game's own creator has just built and to
+	-- nobody else, so for a RETURNING player the fitting room had no door at
+	-- all: the state machines ran, the catalogue streamed, and nothing was ever
+	-- drawn on anybody's screen. F7 because the other modules hold F3, F9, I, T,
+	-- X, E, ALT and the page keys, and a player's rebind lands here.
+	KEY = { ID = 'opx.appearance.panel', NAME = 'appearance.key.panel', DEFAULT = 'F7' },
 }

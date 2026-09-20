@@ -108,26 +108,66 @@ end
 FORMS.job = groupForm('JOBS', 'admin.form.job', 'JOB')
 FORMS.gang = groupForm('GANGS', 'admin.form.gang', 'GANG')
 
+-- The account list a money form offers, and the two fields it asks for.
+-- SHARED BY BOTH MONEY FORMS and not copied by the second one: a type the server
+-- is not configured to have, or an amount field one of them let run longer than
+-- the other, is a form that offers an answer that will be refused.
+local function moneyOptions()
+	local money = OPX.Config.SHARED.MONEY
+	local types = type(money) == 'table' and money.TYPES or nil
+	if type(types) ~= 'table' then return nil end
+	local options = {}
+	for name in pairs(types) do options[#options + 1] = name end
+	table.sort(options)
+	if #options == 0 then return nil end
+	return options
+end
+
+local function moneyFields(options)
+	return {
+		{ id = 'type', label = locale('admin.field.moneyType'), options = options },
+		text('amount', 'admin.field.amount', { pattern = INTEGER, maxLength = 10,
+			required = true }),
+	}
+end
+
 FORMS.money = {
 	build = function()
-		local money = OPX.Config.SHARED.MONEY
-		local types = type(money) == 'table' and money.TYPES or nil
-		if type(types) ~= 'table' then return nil end
-		local options = {}
-		for name in pairs(types) do options[#options + 1] = name end
-		table.sort(options)
-		if #options == 0 then return nil end
+		local options = moneyOptions()
+		if options == nil then return nil end
 		return { title = locale('admin.form.money'), description = locale('admin.form.moneyHint'),
-			fields = {
-				{ id = 'type', label = locale('admin.field.moneyType'), options = options },
-				text('amount', 'admin.field.amount', { pattern = INTEGER, maxLength = 10,
-					required = true }),
-			} }
+			fields = moneyFields(options) }
 	end,
 	submit = function(values, arg)
 		local link = links().MONEY
 		if type(link) ~= 'string' then return end
 		menu().Run({ link, tostring(arg), values.type, values.amount })
+	end,
+}
+
+-- THE RECOVERY FORM. The same two answers as the money form above and one
+-- difference: it ends in this module's own command, which is the one that takes
+-- `me` -- so the row that says "give myself" needs no player id from the client,
+-- and a grant can be given for handing money out without the whole character
+-- screen coming with it. The target is named in the description, because the
+-- row that opened this is gone by the time it is read.
+FORMS.recoveryMoney = {
+	build = function(arg)
+		local options = moneyOptions()
+		if options == nil then return nil end
+		local mine = arg == nil or arg == 'me'
+		return {
+			title = locale(mine and 'admin.form.recoverySelf' or 'admin.form.recoveryPlayer'),
+			description = mine and locale('admin.form.recoveryHintSelf')
+				or locale('admin.form.recoveryHint', { id = tostring(arg) }),
+			fields = moneyFields(options),
+		}
+	end,
+	submit = function(values, arg)
+		-- `arg` is the target the row carried and never a field the operator typed:
+		-- the server resolves `me` from the connection, so a stale id here is
+		-- refused rather than silently paying the wrong character.
+		menu().Run({ Command.RECOVERY_MONEY, tostring(arg), values.type, values.amount })
 	end,
 }
 
@@ -305,6 +345,138 @@ FORMS.time = {
 		local link = links().TIME
 		if type(link) ~= 'string' then return end
 		menu().Run({ link, values.time })
+	end,
+}
+
+-- ── the Dev forms ───────────────────────────────────────────────────────────
+--
+-- WHAT THESE ARE FOR. The Dev screen runs the `garages` and `dealership`
+-- commands, and every one of them takes an argument a row cannot hold: a kind, a
+-- durable key, a label. So each row opens a form here and the form's answer IS
+-- the command line -- the same words, in the same order, that the operator would
+-- have typed. Nothing here can do something the chat command cannot, and the
+-- ACL is still the server's: a form is a way to fill in arguments, never a way
+-- around a grant.
+--
+-- THE KIND IS A PICKER AND NOT A TYPED WORD. The vocabulary is exactly two
+-- words, a `garage` sells ground vehicles and an `avpad` sells AVs, and a
+-- mistyped one is refused by the command with a message about keys rather than
+-- about kinds. A choice cannot be mistyped.
+--
+-- THE OPTIONAL FIELDS ARE APPENDED ONLY WHEN FILLED. An empty token is an empty
+-- POSITIONAL argument, and the command reads positionals: a blank label would
+-- land as the next argument along, and a blank plate would ask for a vehicle
+-- whose plate is the empty string.
+
+-- Key and label lengths, from the columns that own them: a spot key and a stock
+-- key are 48 characters in both modules, a label 64, a plate 16.
+local MAX_KEY, MAX_LABEL, MAX_PLATE = 48, 64, 16
+
+-- The two kinds, as the picker draws them.
+local function kindOptions()
+	return {
+		{ label = locale('admin.field.kindGarage'), value = 'garage' },
+		{ label = locale('admin.field.kindAvpad'), value = 'avpad' },
+	}
+end
+
+local function kindField()
+	return { id = 'kind', label = locale('admin.field.kind'), options = kindOptions() }
+end
+
+local function keyField()
+	return text('key', 'admin.field.key', { charset = 'name', maxLength = MAX_KEY, required = true })
+end
+
+local function labelField()
+	return text('label', 'admin.field.label', { charset = 'name', maxLength = MAX_LABEL })
+end
+
+-- Appends a value only when it was filled in.
+local function with(tokens, value)
+	if type(value) == 'string' and value ~= '' then tokens[#tokens + 1] = value end
+	return tokens
+end
+
+FORMS.garageAdd = {
+	build = function()
+		return { title = locale('admin.form.garageAdd'),
+			description = locale('admin.form.garageAddHint'),
+			fields = { kindField(), keyField(), labelField() } }
+	end,
+	submit = function(values)
+		local tokens = { Command.GARAGES_ADD, values.kind }
+		with(tokens, values.key)
+		with(tokens, M.Trimmed(values.label, MAX_LABEL))
+		menu().Run(tokens)
+	end,
+}
+
+FORMS.garageRemove = {
+	build = function()
+		return { title = locale('admin.form.garageRemove'),
+			description = locale('admin.form.garageRemoveHint'),
+			fields = { keyField() } }
+	end,
+	submit = function(values)
+		menu().Run({ Command.GARAGES_REMOVE, values.key })
+	end,
+}
+
+FORMS.garageBring = {
+	build = function()
+		return { title = locale('admin.form.garageBring'),
+			description = locale('admin.form.garageBringHint'),
+			fields = { keyField(),
+				text('plate', 'admin.field.plate', { charset = 'name', maxLength = MAX_PLATE }) } }
+	end,
+	submit = function(values)
+		local tokens = { Command.GARAGES_BRING, values.key }
+		with(tokens, M.Trimmed(values.plate, MAX_PLATE))
+		menu().Run(tokens)
+	end,
+}
+
+FORMS.dealerAdd = {
+	build = function()
+		return { title = locale('admin.form.dealerAdd'),
+			description = locale('admin.form.dealerAddHint'),
+			fields = { kindField(), keyField(), labelField() } }
+	end,
+	submit = function(values)
+		local tokens = { Command.DEALERSHIP_ADD, values.kind }
+		with(tokens, values.key)
+		with(tokens, M.Trimmed(values.label, MAX_LABEL))
+		menu().Run(tokens)
+	end,
+}
+
+FORMS.dealerRemove = {
+	build = function()
+		return { title = locale('admin.form.dealerRemove'),
+			description = locale('admin.form.dealerRemoveHint'),
+			fields = { keyField() } }
+	end,
+	submit = function(values)
+		menu().Run({ Command.DEALERSHIP_REMOVE, values.key })
+	end,
+}
+
+FORMS.dealerBuy = {
+	build = function()
+		return { title = locale('admin.form.dealerBuy'),
+			description = locale('admin.form.dealerBuyHint'),
+			fields = {
+				text('entry', 'admin.field.entry',
+					{ charset = 'name', maxLength = MAX_KEY, required = true }),
+				text('garage', 'admin.field.garage',
+					{ charset = 'name', maxLength = MAX_KEY }),
+			} }
+	end,
+	submit = function(values)
+		local tokens = { Command.DEALERSHIP_BUY, values.entry }
+		with(tokens, M.Trimmed(values.garage, MAX_KEY))
+		menu().Run(tokens)
 	end,
 }
 

@@ -91,6 +91,11 @@ M.Event = {
 	REPLAYED = OPX.Event(NET, 'appearance', 'replayed'),
 	LOOK = OPX.Event(NET, 'appearance', 'look'),
 	RESEND = OPX.Event(NET, 'appearance', 'resend'),
+	-- A command asked for one of the two views, and `kind` names which. The
+	-- server owns the command and the client owns the state machine, so this is
+	-- how the first reaches the second -- the same shape `admin` uses for its
+	-- own travel doors.
+	SHOW = OPX.Event(NET, 'appearance', 'show'),
 
 	-- The client's own bus. `decision` is what this module says after every
 	-- decision it reaches, and is public: a bare AddEventHandler listens to it.

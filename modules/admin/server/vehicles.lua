@@ -141,13 +141,20 @@ local function spawnFor(source, raw, owner, entry, event)
 	local position = Server.PositionOf(owner)
 	if position == nil then return refuse(source, raw, 'no_position') end
 
-	local offset = M.Section('VEHICLES').SPAWN_OFFSET or {}
+	local settings = M.Section('VEHICLES')
+	local offset = settings.SPAWN_OFFSET or {}
+	-- AN AV IS LIFTED, and only an AV: its record's pivot is the chassis centre,
+	-- so the ground offset that puts a car's wheels on the road leaves an AV
+	-- half-buried in it. `entry.av` is the catalogue's own answer, derived from the
+	-- record (see `Catalog.isAir`), so this is the same rule by which the row is
+	-- in the Air class and not a second list that could disagree with it.
+	local lift = entry.av and Server.Setting(settings.AV_LIFT, 1.2) or 0.0
 	local vehicleId, reason = Open77.vehicles.create({
 		record = entry.record,
 		position = {
 			x = position.x + Server.Setting(offset.X, 3.0),
 			y = position.y + Server.Setting(offset.Y, 0.0),
-			z = position.z + Server.Setting(offset.Z, 0.25),
+			z = position.z + Server.Setting(offset.Z, 0.25) + lift,
 		},
 		yaw = 0.0,
 		bucket = position.bucket,

@@ -136,6 +136,218 @@ a CEF page. `modules/chat/client/view.lua` is the reference. Before writing a ne
 page, check whether `menu` or `panel` already draws what you need; the wardrobe's
 whole fitting room is drawn by `panel` through such a bridge.
 
+### How a player opens one
+
+A bridge that nothing calls draws nothing, so the appearance module declares its own
+doors: `KEYS.PANEL` in `config/appearance.lua` — F7 out of the box — toggles the
+appearance panel, `/opx.appearance` does the same from chat, and
+`/opx.appearance.wardrobe` opens the fitting room directly. The commands are
+unrestricted because both act on the caller alone.
+
+The fitting-room command is not a convenience: `WARDROBE.OFFER_POLICY` ships `first`,
+which hands the room to a character the game's own creator has just built and to
+nobody else — so for a **returning** player the key, the panel's own `outfits →
+wardrobe` row and that command are the whole of the way in.
+
+### Buying a vehicle
+
+`dealership` sells what `vehicles` owns. A **dealer is a place**, like a garage spot:
+stand on its marker, press its key — **E**, the garages key, rebindable — and the list is
+the `menu` module's, drawn one screen at a time. The first screen is the stock of that
+dealer's category, grouped by class and priced with the currency table the server
+owns; the second is the garage the bought vehicle is filed under, read from the
+`garages` contract rather than kept as a copy. With no garages module the second
+screen still offers one row — the vehicles module's own default — so a dealership on a
+server without garages is a working dealership with one fewer choice.
+
+The two categories are the garages ones, and they decide what may be sold where: a
+`garage` dealer sells ground vehicles, an `avpad` dealer sells AVs, and a row whose
+record disagrees with the dealer's kind is refused rather than redirected. The rules
+are re-derived on the server — the distance across the ground, the routing bucket,
+whether THAT dealer sells THAT row, and whether the money is really there — and the
+charge goes first, because the vehicles contract can refund and cannot uncreate. A
+registration that is refused after payment is refunded in full and the failure is
+logged with what was bought; a hand-over that is refused is *not* a failed sale: the
+vehicle is owned and filed, and only the convenience of driving it away is reported.
+
+It ships with **no dealers**, exactly as garages ships with no spots: `/opx.dealership.add`
+captures one where the operator is standing, under the kind and key it is given (both
+optional), and prints the line to check into `config/dealership.lua` so the dealer
+survives a database reset. `/opx.dealership.remove` deletes a captured one and refuses
+a configured one. `/opx.dealership.list` names every dealer and its origin;
+`/opx.dealership.stock` lists what is for sale and which kind sells it; and
+`/opx.dealership.buy <key> [garage]` buys from chat, which is what a player uses on a
+client whose list could not open. The three placement commands are ACL-gated — they
+write a place every player uses — and the two that act on the caller alone are not.
+
+### Getting dressed
+
+`clothing` is a **place**, like a garage spot and a dealer: stand on the marker, press
+its key — **E** again, and again a separate mapping — and the **fitting room** opens.
+No clothing is reimplemented here. `appearance` already streams this body's whole
+catalogue into a room a player may browse, try pieces on and keep
+(`Open77.equipment.records`, unrestricted, every slot, batched onto its own thread),
+and it owns the puppet, the save and the rules about who is offered the room at all. A
+store that drew its own list would be a second catalogue with its own idea of what a
+body may wear, so it has none: this module owns the place and the door, and the room
+behind the door stays the appearance module's.
+
+That is also why a store carries **no kind and no heading**, and why `/opx.clothing.add`
+asks the client for **nothing at all**. The garages and the dealership ask their own
+client back for a facing, because a chat line has none and a vehicle needs one; a store
+has no facing, so the position — read from the connection running the command, never
+off the wire — is the whole of what a capture needs. There is no capture round-trip in
+this module, no deadline waiting for its answer and no "did not answer" warning,
+because there is nothing to ask.
+
+It ships with **no stores**, exactly as garages and dealerships ship with no spots:
+`/opx.clothing.add [key] [label]` captures one where the operator is standing, names a
+key back when it is given none, and prints the line to check into `config/clothing.lua`
+so the store survives a database reset. `/opx.clothing.remove <key>` deletes a captured
+one and refuses a configured one, and `/opx.clothing.list` names every store, its
+position, its bucket and its origin. All three are ACL-gated, and they are the only
+commands this module has.
+
+**What a player is told when the door will not open.** The room refuses for reasons
+that are about the player and not the store — `player_down`, `no_character`,
+`appearance_busy` — and those reach the key as the room's own words rather than a
+generic failure. On a server running the platform's own `open77_appearance` package the
+contract is simply absent, and the key says that out loud instead of doing nothing: the
+markers draw and the row posts either way, so silence would be the one answer nobody
+could read.
+
+### The grants a staff panel needs
+
+**Opening the panel and using it are two different permissions, and the difference is
+one dot.** The host decides a line's permission from the word actually typed —
+`command.<word>` — so the opener is `command.opx.admin` and every action behind it is
+`command.opx.admin.<action>`. The module registers 56 restricted commands: the opener,
+and 55 actions under it (`opx.admin.self.noclip`, `opx.admin.player.goto`,
+`opx.admin.vehicle.spawn`, `opx.admin.recovery.money`, …). The matcher keeps the dot
+and only a rule ENDING in `.*` is a prefix, so a role holding `command.opx.admin`
+alone opens the menu and is then refused by every row inside it — the operator watches
+a panel they cannot use, and no log line says why, because a refused command is not an
+error the resource ever sees.
+
+**A role for an operator therefore needs both spellings, and the same shape repeats
+wherever a module owns a namespace:** `command.opx.admin` *and* `command.opx.admin.*`
+to open the panel and use it, `command.opx.garages.*`, `command.opx.dealership.*` and
+`command.opx.clothing.*` for the Dev screen's placement commands, and `command.opx.weather.*`,
+`command.opx.time` and `command.opx.time.*` for the world controls. Only the `admin`
+and `owner` roles the server supplies avoid the question — they are `command.*` and
+`*` — which is also why granting a human `admin` on a server that loads a diagnostic
+resource hands them `command.client.exec` with it. The file is the server's
+`acl.jsonc`, named by `accessControl.file`; `acl.jsonc` is not in this repository, so
+the list above is the thing to copy into it.
+
+### The staff panel's spawn list
+
+The staff menu's spawn screen is one folder per class, and **Air is the first of them**:
+the six `Vehicle.av_*` records a staff member looks for by name. Which class a record
+is in is not written down twice — a row's category is DERIVED from its record by
+`VEHICLES.AV_PREFIXES`, the same rule the garages module and the dealership use, so a
+record is in the air category for every part of the server or for none of it, and a
+row cannot disagree with itself. A spawned AV is lifted clear of the ground by
+`VEHICLES.AV_LIFT`, because an AV record's pivot is its chassis centre and the offset
+that puts a car's wheels on the road leaves one half-buried; a car is not.
+
+The list itself is `data/vehicles.lua`, indexed in parts because of its size — the
+Air class is why there are five parts now — and a row that is malformed (a name or
+record declared twice, a class that is not a class) is a boot warning rather than a
+spawn that refuses in front of a player.
+
+**A screen change UPDATES the open menu rather than replacing it.** The menu contract
+owns both, and they are not the same thing: an update rebuilds the open menu from a
+fresh spec and costs one frame, while an open closes the live menu first — a new
+handle, a blank surface for the round trip, the configuration re-sent, and the page's
+arrival walk re-run for a screen that did not arrive, it replaced one. The handle is
+also the capability every intent from the page names, so a click landing inside that
+window was dropped and the press had to be repeated. So `draw` updates in place
+whenever its own menu is up, and passes a cursor only when the SCREEN changed: a
+redraw keeps the player's position, a screen that replaced another gets the landing an
+open would have given it.
+
+### Recovery: money to a character
+
+The staff panel has a **Recovery** category, and it is two rows: give yourself eddies,
+or give them to a player you pick out of the roster. Both end in one command,
+`opx.admin.recovery.money <playerId|me> <TYPE> <amount>`, which is ACL-gated under its
+own name — `command.opx.admin.recovery.money` — because an operator trusted to unfreeze
+somebody is not automatically an operator trusted to write a balance.
+
+The command **owns no money**. Every call is one call into the `character` contract's
+`AddMoney`/`RemoveMoney`, so the balance, the `money:beforeAdd` hook that can veto the
+transaction and the audit row all stay in the module that owns them, and the answer
+names the balance the character holds *after* the mutation rather than one this file
+worked out. `me` is resolved from the connection, never from the line, so the row that
+says "give myself" cannot be aimed at anybody else; a lower-case account is upper-cased
+rather than refused; an amount is a whole number, may be negative — which takes money
+back through the same door — and is capped at ten digits, which is what the amount
+field beside it accepts. A refused transaction answers with the contract's own reason
+(`not_enough`, `bad_type`, `vetoed`, …) and moves nothing.
+
+The typed line works wherever a chat line does: `/opx.admin.recovery.money me EDDIES
+5000` pays the caller, and `/opx.admin.recovery.money 4 BANK 2500` pays player 4.
+
+**The panel asks for a taller window than the menu module's default.** Its root screen
+now has ten rows (the Recovery category is its own block) and the module's own window
+is nine, which drew the last row only after the operator scrolled — a category nobody
+finds. The staff panel therefore names `rows = 12` and `maxHeight = 72` at open, in
+`modules/admin/client/menu.lua`'s `draw`, and nothing else in the pack is affected.
+
+### A broadcast announcement, and the two clips around it
+
+The staff panel's **Announce** row sends a sentence to every player, and it is wrapped
+by two stingers: one that plays **before the message appears** and one that plays **once
+it has gone**. They are `ANNOUNCE.STINGER.OPEN` and `.CLOSE` in `config/admin.lua`,
+next to the volume, and they ship in this resource — `ui/public/audio/` in the repo,
+`web/audio/` in the pack.
+
+**The announcement is drawn on this runtime's own overlay**, not by the platform's
+`open77_notifications` package, and that move is what makes the stingers possible at
+all: only the page that owns a toast's clock can hold a message back until the first
+clip has finished. `OPX.Notify` hands the sentence to a surface this runtime does not
+draw, so it could be told when to appear and never when to wait. The chat line still
+goes out on core's own result channel, exactly as before.
+
+**Nothing about the presentation crosses the wire.** The server sends the sentence and
+its lifetime; each RECEIVING client reads its own config for the clips. A client with
+no clips still gets the message, a client that turned one off by naming `''` gets the
+message and one clip, and neither can make an announcement fail to arrive. The
+delivery is the same best-effort fan-out the command always had — one client that
+cannot be reached does not stop the rest — and the operator is told how many received
+it.
+
+**A clip name is a BARE FILE NAME, and that is a boundary rather than tidiness.** The
+page resolves a name under its own `audio/` and nothing else is reachable from it, so a
+name able to climb out (`../`, a slash, a scheme, a drive) would be a name able to make
+every client in the city fetch from wherever a served config pointed. `core/client/
+notify.lua` is the one place that decides what a toast may carry and it DROPS a name
+that does not fit — the clip, never the message — because a typo in a presentation
+setting must not cost a player the sentence an operator sent them. The page repeats the
+test, because a page does not trust the wire.
+
+**No stinger is ever load-bearing.** The clip helper answers on `ended`, on a decode
+error, on a refused playback and on a deadline, and every one of those answers draws
+the message; a page whose message never appeared because a file was missing would be a
+worse fault than a silent stinger. The deadline is what stops a longer or a stalling
+clip from holding an announcement hostage.
+
+The two clips that ship are MP3, which is worth stating because this runtime's other
+media path is `.webm` (VP9 + Opus) — an MP4 never plays in this CEF at all. MP3 is in
+the free codec set this build carries, and it is **checked against the deployed
+binary** rather than assumed: `Open77.WebHost.exe --open77-self-test-probe=<out>
+--open77-self-test-url=<page>` loads a page in the shipping CEF and reports the PCM it
+received, and the run that chose this format reported `packets 335, frames 343040,
+peak 0.66` with no user gesture anywhere — so the clips play, and they play without a
+click.
+
+The order itself is proven in a browser rather than argued: `ui/harness/
+notify-stinger.html` mounts the real page on a fake bridge and a stubbed decoder and
+asserts the sequence — the message is not in the document while the opening clip plays,
+it appears when that clip ends, it goes when its lifetime ends, and only then does the
+closing clip start, with a refused playback still drawing the message.
+
 ---
 
 ## The library

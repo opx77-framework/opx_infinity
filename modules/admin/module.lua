@@ -84,11 +84,23 @@ M.Event = {
 	DOORS = OPX.Event(NET, 'admin', 'doors'),
 	DOOR = OPX.Event(NET, 'admin', 'door'),
 	PVP = OPX.Event(NET, 'admin', 'pvp'),
+	-- The world announcement. It used to ride `OPX.Notify`, which is the platform's
+	-- own notification package -- a surface this runtime does not draw. It is this
+	-- module's event now because the message is wrapped in two stingers, and only
+	-- the page that owns a toast's clock can hold it back until the first has
+	-- played. The server sends the sentence and its lifetime and nothing else: how
+	-- it is wrapped is the receiving client's own config.
+	ANNOUNCE = OPX.Event(NET, 'admin', 'announce'),
 
 	-- Client to server. Every payload is attacker-controlled; only `source` is
 	-- not, and no payload mutates anything: the five below ask for a list, ask
 	-- for a switch back, or report. Every mutation is a command.
 	REFRESH = OPX.Event(NET, 'admin', 'refresh'),
+	-- The one thing a client can say about noclip: the native went off under it,
+	-- so the server's own idea of who is flying is stale. It carries a boolean
+	-- and nothing else -- there is no payload here that could hide a body the
+	-- operator did not ask to hide, and the off direction is the safe one.
+	NOCLIP_BODY = OPX.Event(NET, 'admin', 'noclipBody'),
 	TAGS_RESTORE = OPX.Event(NET, 'admin', 'tagsRestore'),
 	DOORS_HELLO = OPX.Event(NET, 'admin', 'doorsHello'),
 	PVP_REQUEST = OPX.Event(NET, 'admin', 'pvpRequest'),
@@ -179,6 +191,12 @@ M.Command = {
 	MODERATE_KICK = 'opx.admin.moderate.kick',
 	MODERATE_BAN = 'opx.admin.moderate.ban',
 
+	-- MONEY BACK TO A CHARACTER, which is a separate trust from every command
+	-- above it: an operator who may unfreeze somebody is not automatically an
+	-- operator who may write a balance. `me` is the caller, resolved from the
+	-- server-side source and never from anything a client sends.
+	RECOVERY_MONEY = 'opx.admin.recovery.money',
+
 	VEHICLE_SPAWN = 'opx.admin.vehicle.spawn',
 	VEHICLE_GIVE = 'opx.admin.vehicle.give',
 	VEHICLE_REMOVE = 'opx.admin.vehicle.remove',
@@ -209,7 +227,63 @@ M.Command = {
 	READ_LOCATIONS = 'opx.admin.read.locations',
 	READ_STATUS = 'opx.admin.read.status',
 	READ_AUDIT = 'opx.admin.read.audit',
+
+	-- THE DEV GROUP IS A SECOND VOCABULARY, and it is the only one above that this
+	-- module does not register. These are the commands of `garages` and
+	-- `dealership` -- the ones that PLACE something in the world -- and the Dev
+	-- screen runs them so an operator does not have to keep a chat line in their
+	-- head. The values here are the FALLBACK: the loop below takes the live name
+	-- out of each owner's own config, so a rename there lands on the Dev screen
+	-- without an edit here, and a row can never name a command nobody registers.
+	GARAGES_ADD = 'opx.garages.add',
+	GARAGES_REMOVE = 'opx.garages.remove',
+	GARAGES_LIST = 'opx.garages.list',
+	GARAGES_BRING = 'opx.garages.bring',
+	DEALERSHIP_ADD = 'opx.dealership.add',
+	DEALERSHIP_REMOVE = 'opx.dealership.remove',
+	DEALERSHIP_LIST = 'opx.dealership.list',
+	DEALERSHIP_STOCK = 'opx.dealership.stock',
+	DEALERSHIP_BUY = 'opx.dealership.buy',
 }
+
+-- The live names of the Dev group, read from the modules that own them.
+--
+-- THIS BREAKS THE ONE RULE `config/entry.lua` STATES OUTRIGHT -- "a module may
+-- not read another module's settings, so the two are kept in step by hand" --
+-- and it is written down here rather than left for the next reader to notice.
+-- It is a considered exception, not an oversight, and these are its terms:
+--
+--   * the names are needed at LOAD, to build `M.Command`, and a contract is not
+--     resolvable until Start. Fixing it properly means moving the Dev group's
+--     rows to Start-time resolution, which is a change to the admin menu and
+--     not to this block.
+--   * every `config/*.lua` is a manifest script ahead of every
+--     `modules/*/module.lua`, so both COMMANDS tables exist by the time this
+--     file runs. A module switched off or absent still HAS its config: the
+--     platform loads the file, and `enabled = false` stops the module.
+--   * a config that lost its COMMANDS block leaves the fallback above standing,
+--     so the worst case is a row that runs the documented name.
+--
+-- What it costs is the thing the rule protects: rename a command in
+-- `config/garages.lua` and this table silently keeps pointing at the old name
+-- until somebody presses the row. `garages` and `dealership` both publish a
+-- contract; when the Dev group next needs work, that is where these belong.
+do
+	local groups = {
+		garages = { add = 'GARAGES_ADD', remove = 'GARAGES_REMOVE', list = 'GARAGES_LIST',
+			bring = 'GARAGES_BRING' },
+		dealership = { add = 'DEALERSHIP_ADD', remove = 'DEALERSHIP_REMOVE',
+			list = 'DEALERSHIP_LIST', stock = 'DEALERSHIP_STOCK', buy = 'DEALERSHIP_BUY' },
+	}
+	for moduleId, wanted in pairs(groups) do
+		local owner = OPX.Config.MODULES[moduleId]
+		local commands = type(owner) == 'table' and owner.COMMANDS or nil
+		for key, name in pairs(wanted) do
+			local value = type(commands) == 'table' and commands[key] or nil
+			if type(value) == 'string' and value ~= '' then M.Command[name] = value end
+		end
+	end
+end
 
 --- The tunables this module contributes to the operator panel.
 -- Declared once, from the server's `Init`, with the configured value as the

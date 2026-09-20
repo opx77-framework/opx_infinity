@@ -17,6 +17,10 @@ local Keys = M.Keys
 
 --- The mapping ids, listed once so a rename is followed here and nowhere else.
 Keys.MENU = 'opx.admin.menu'
+-- Opens the menu on the Dev screen rather than the root. A SECOND id and not the
+-- menu's own: a player rebinds each one separately, and folding them together
+-- would take the Dev key away from anyone who moved the menu key.
+Keys.DEV = 'opx.admin.dev'
 Keys.FASTER = 'opx.admin.noclipFaster'
 Keys.SLOWER = 'opx.admin.noclipSlower'
 

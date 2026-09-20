@@ -517,6 +517,12 @@ SCREENS.root = function()
 		go('vehicles', 'admin.menu.vehicles', 'vehicles', nil, { icon = 'vehicle' }),
 		go('world', 'admin.menu.world', 'world', nil, { icon = 'world' }),
 		go('server', 'admin.menu.server', 'server', nil, { icon = 'server' }),
+		-- RECOVERY SITS ON ITS OWN, under everything that acts on a body. What it
+		-- reaches is a balance, which is the one thing in this panel that outlives
+		-- the session and the character it belonged to.
+		section('admin.menu.section.recovery'),
+		goFor('recovery', 'admin.menu.recovery', 'recovery', nil, Command.RECOVERY_MONEY,
+			{ icon = 'money' }),
 	}
 end
 
@@ -953,6 +959,63 @@ SCREENS.self = function()
 		append(items, bagRows('me'))
 	end
 	return locale('admin.menu.self'), items
+end
+
+-- ── recovery ────────────────────────────────────────────────────────────────
+-- MONEY BACK TO A CHARACTER, which is the one thing an operator is asked for
+-- that the player cannot do for themselves: a purchase that ate a paycheque, a
+-- balance zeroed by a bug, a truck of somebody's eddies that went to the wrong
+-- citizen id. Two rows and no third: give it, to me or to somebody here.
+--
+-- EVERY ROW ENDS IN THE SAME COMMAND, and the only difference between them is
+-- the target it carries -- `me`, resolved by the SERVER from the connection,
+-- or a player id picked out of the roster. A client that could name its own
+-- target would be a client deciding whose balance it is.
+SCREENS.recovery = function()
+	return locale('admin.menu.recovery'), {
+		icon(form('recoverySelf', 'admin.menu.recoverySelf', 'recoveryMoney', 'me',
+			Command.RECOVERY_MONEY), 'money'),
+		goFor('recoveryPlayer', 'admin.menu.recoveryPlayer', 'recoveryPlayers', nil,
+			Command.RECOVERY_MONEY, { icon = 'person', value = tostring(#roster) }),
+	}
+end
+
+-- The picker the second row opens: the roster, and every row puts the player it
+-- names into the same money form. Not a copy of the players screen -- that one
+-- leads to everything that can be done to a body, and picking a target here
+-- leads to one field and a confirm-free amount.
+SCREENS.recoveryPlayers = function()
+	local query = filtering()
+	local matched = {}
+	for index = 1, #roster do
+		local entry = roster[index]
+		local word = locale('admin.state.' .. entry.state)
+		if matches(query, entry.id, entry.name, entry.user, entry.citizenId, word) then
+			matched[#matched + 1] = entry
+		end
+	end
+
+	local items = searchRows(#matched, #roster)
+	for index = 1, math.min(#matched, MAX_LISTED) do
+		local entry = matched[index]
+		local value = locale('admin.state.' .. entry.state)
+		if entry.bucket ~= 0 then value = value .. ' b' .. entry.bucket end
+		if entry.distance then value = value .. ' ' .. entry.distance .. 'm' end
+		-- THE LABEL IS A STRING AND NOT A `{ text = ... }` TABLE. The `go`/`form`
+		-- helpers unwrap that shape for the rows they build; a row assembled by hand
+		-- has to do it itself, and the contract refuses the WHOLE SCREEN when one
+		-- label is a table -- `invalid_item_label`, which is how the picker drew
+		-- nothing at all while the rest of the panel worked.
+		items[#items + 1] = denied(row('recoveryPlayer_' .. entry.id,
+			('[%d] %s'):format(entry.id, entry.name),
+			{ form = 'recoveryMoney', arg = entry.id },
+			{ value = value, icon = entry.state == 'down' and 'heal' or 'person' }),
+			Command.RECOVERY_MONEY)
+	end
+	if #matched == 0 then
+		items[#items + 1] = empty(#roster > 0 and 'admin.menu.noMatch' or 'admin.menu.nobody')
+	end
+	return locale('admin.menu.recoveryPlayer'), items
 end
 
 SCREENS.vehicles = function()
@@ -1395,6 +1458,21 @@ local function firstBelowHead(items)
 end
 
 -- Puts the top screen up, or rebuilds it in place.
+-- HOW MUCH OF A SCREEN THIS PANEL ASKS TO SEE AT ONCE.
+--
+-- Named here and not in a config, because it is the size of THIS surface and
+-- nothing else reads it. The menu module's own window is nine rows, which the
+-- root filled exactly until the Recovery category was added -- the tenth row was
+-- drawn only after the operator scrolled, which is a category nobody finds. The
+-- staff tree is full of ten- and twenty-row screens, so the panel names a window
+-- that shows them, and a height that fits it on a 900-pixel screen: twelve rows
+-- draw about 590 pixels with the frame and the hint.
+--
+-- Settled at open, like the rest of a menu's geometry: an update rebuilds rows
+-- and never moves the surface under the player.
+local VISIBLE_ROWS = 12
+local MAX_HEIGHT_VH = 72
+
 local function draw(inPlace)
 	local current = top()
 	if current == nil or suspended then return end
@@ -1420,9 +1498,41 @@ local function draw(inPlace)
 	local status = queuedStatus
 	queuedStatus = nil
 
-	if inPlace and handle ~= nil then
-		local patched = contract.Update(handle, { title = title, items = items })
+	-- IN PLACE, WHETHER THE SCREEN CHANGED OR ONLY ITS ROWS.
+	--
+	-- An update is the contract's own "rebuild the open menu from a fresh spec,
+	-- keeping the player where they are", and it costs one frame. An OPEN closes the
+	-- live menu first, and every one of the four things that costs is paid per
+	-- keystroke: a new handle, a blank page for the round trip (the strip vanishes
+	-- and comes back -- the flicker), the configuration re-sent, and the page's
+	-- nine-row arrival walk re-run for a screen that did not arrive, it replaced
+	-- one. The handle is also the capability every intent from the page names, so a
+	-- click landing inside that window carried a dead handle, was dropped, and the
+	-- press had to be repeated. That was one reopen per descend.
+	--
+	-- The cursor is pinned only when the SCREEN changed. A redraw of the screen the
+	-- player is already on keeps their position, which is the point of an update; a
+	-- screen that replaced it has no position to keep, so it gets the landing an
+	-- open would have given it -- the row under the filter block, or the row the
+	-- operator left.
+	-- Assigned by presence, never folded through `and`/`or`: `inPlace and nil or x`
+	-- is `x`, which is how a redraw would jump the player back to the top of the
+	-- screen they were standing in.
+	local landing
+	if not inPlace then landing = current.cursor or firstBelowHead(items) end
+	if handle ~= nil and not suspended then
+		local patched = contract.Update(handle, {
+			title = title,
+			items = items,
+			cursor = landing,
+			status = status and status.text or nil,
+			statusBad = status and status.ok == false or nil,
+		})
 		if patched.ok then return end
+		-- The live menu is no longer ours to patch (it was closed under us, or
+		-- another owner has the surface). Refuse rather than guess, and open a
+		-- fresh one below.
+		handle = nil
 	end
 
 	local opened = contract.Open({
@@ -1435,6 +1545,8 @@ local function draw(inPlace)
 		cursor = current.cursor or firstBelowHead(items),
 		status = status and status.text or nil,
 		statusBad = status and status.ok == false or nil,
+		rows = VISIBLE_ROWS,
+		maxHeight = MAX_HEIGHT_VH,
 		items = items,
 		on = onAction,
 	})
