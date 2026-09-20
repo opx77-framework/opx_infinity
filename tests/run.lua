@@ -271,6 +271,8 @@ do
 		-- answered the declaration instead of a live proxy, so every tunable in
 		-- the suite read as its caller's floor and this check was asserting that
 		-- the harness was broken. See the note on the stub.
+		-- The old assertion passed whether the tunable worked or not, which is
+		-- the one thing it existed to tell apart.
 		check('a job may take its cadence from a live tunable',
 			report:find('admin:tag%-sweep%s+2000ms') ~= nil,
 			report:match('admin:tag%-sweep[^\n]*'))
@@ -9462,6 +9464,236 @@ do
 		end
 		check('a multi-line answer is still raised in full', full,
 			('%d toasts'):format(#long))
+	end
+end
+
+section('elevators: an adopted cabin is locked before anyone can ride it')
+do
+	-- The job gate rests entirely on the host's `locked` flag. Open77 intercepts a
+	-- press of the vanilla in-cabin floor button and converts it into a player
+	-- request BEFORE the game's own local movement runs, and `locked` is the only
+	-- bit that refuses one. So a cabin this module has adopted and not locked is a
+	-- cabin anybody rides to any floor by pressing the button Cyberpunk already
+	-- draws, with the panel's greyed rows and the server's `Access.Evaluate` never
+	-- consulted. That is what these checks are about; the panel is not.
+	local WHERE = { x = -1521.40, y = 892.75, z = 42.10 }
+	local LIFT = '0x00000000000000ab'
+
+	local env, control, why = boot('server', nil, function(sandbox)
+		-- The reporting player has to stand at the shaft, in the elevator's own
+		-- bucket, or `onSighted` drops the report before adoption is reached. The
+		-- stub's fixed origin is nowhere near any configured elevator.
+		sandbox.Open77.players.position = function()
+			return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = 0 }
+		end
+	end)
+	check('the server boots for the elevator tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('elevators')
+		local lifts = control.lifts
+		local SIGHTED = M.Event.SIGHTED
+		local REQUEST = M.Event.REQUEST
+
+		--- One client reporting a streamed native lift, as the host delivers it.
+		local function sight(player, entity)
+			env.source = player
+			control.netEvents[SIGHTED](entity, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+			env.source = nil
+		end
+
+		check('the sighting door is on the net channel',
+			type(control.netEvents[SIGHTED]) == 'function')
+
+		sight(4, LIFT)
+
+		check('a lift reported at a configured shaft is adopted', #lifts.adopts == 1,
+			#lifts.adopts)
+
+		-- THE MASK GOES IN WITH THE ADOPTION. Asserted on the adopt call itself and
+		-- not on the lift afterwards: a `setFlags` a moment later leaves the same
+		-- end state and still leaves the window this closes.
+		local asked = lifts.adopts[1]
+		check('the adoption itself asks for the locked bit',
+			asked ~= nil and type(asked.flags) == 'number' and (asked.flags & 2) ~= 0,
+			asked and tostring(asked.flags))
+		check('and keeps the cabin powered, so the server can still move it',
+			asked ~= nil and type(asked.flags) == 'number' and (asked.flags & 1) ~= 0,
+			asked and tostring(asked.flags))
+		check('and does not invite the request it would then refuse',
+			asked ~= nil and type(asked.flags) == 'number' and (asked.flags & 4) == 0,
+			asked and tostring(asked.flags))
+
+		local adopted = nil
+		for _, lift in pairs(lifts.byId) do adopted = lift end
+		check('the lift the host holds is locked', adopted ~= nil and (adopted.flags & 2) ~= 0,
+			adopted and tostring(adopted.flags))
+
+		--- Every client event of one name, in order. `clientEvents` is one flat
+		--- list of every send, so a test that wants one channel filters it.
+		local function sentTo(recorder, name)
+			local out = {}
+			for index = 1, #recorder do
+				if recorder[index].name == name then out[#out + 1] = recorder[index] end
+			end
+			return out
+		end
+
+		-- The client is only handed an id once the cabin is gated; a BOUND carrying
+		-- an id for an unlocked lift is the panel opening over a free ride.
+		local bound = sentTo(control.clientEvents, M.Event.BOUND)
+		check('and only then is the client told its id', #bound == 1, #bound)
+
+		-- ── a host that drops the flags field ────────────────────────────────
+		-- `flags` is an argument to `adopt`, and an older build ignores a field it
+		-- does not know rather than refusing the call. This is why the mask is read
+		-- back afterwards instead of assumed from the request, and why a lock that
+		-- will not take is now a rollback where it used to be a warning: an adopted
+		-- cabin nobody locked is a shaft wearing this module's job-gated panel that
+		-- rides anywhere off the vanilla button.
+		local env2, control2, why2 = boot('server', nil, function(sandbox)
+			sandbox.Open77.players.position = function()
+				return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = 0 }
+			end
+		end)
+		check('the server boots again for the dropped-flags case', why2 == nil, why2)
+
+		if why2 == nil then
+			local M2 = env2.OPX.Modules.Get('elevators')
+			control2.lifts.ignoreAdoptFlags = true
+			control2.lifts.refuseFlags = true
+			env2.source = 5
+			control2.netEvents[M2.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+			env2.source = nil
+
+			check('the adoption was attempted', #control2.lifts.adopts == 1,
+				#control2.lifts.adopts)
+			check('a cabin that came up unlocked is released, not kept',
+				next(control2.lifts.byId) == nil)
+			check('the host was actually asked to take it back',
+				#control2.lifts.removes == 1, #control2.lifts.removes)
+			check('and no client was handed an id for it',
+				#sentTo(control2.clientEvents, M2.Event.BOUND) == 0)
+
+			-- The proof that the release is real and not only a log line: a floor
+			-- request for that shaft has nothing left to move.
+			env2.source = 5
+			control2.netEvents[M2.Event.REQUEST]('arasaka_tower', 0)
+			env2.source = nil
+			local answers = sentTo(control2.clientEvents, M2.Event.ANSWER)
+			local last = answers[#answers]
+			check('so a floor request for it is refused not_adopted',
+				last ~= nil and last[4] == 'not_adopted', last and tostring(last[4]))
+		end
+
+		-- ── a cabin another resource already owns ────────────────────────────
+		-- `all(bucket)` reports every adopted lift in the bucket and not only this
+		-- module's, so the cabin met on the re-claim path may belong to
+		-- `open77_elevators` -- the conflict the module header names -- and
+		-- `setFlags` on another owner's lift is refused. It must not be bound, and
+		-- it must NOT be removed either: it is not this module's to take away.
+		local env4, control4, why4 = boot('server', nil, function(sandbox)
+			sandbox.Open77.players.position = function()
+				return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = 0 }
+			end
+		end)
+		check('the server boots for the foreign-owner case', why4 == nil, why4)
+
+		if why4 == nil then
+			local M4 = env4.OPX.Modules.Get('elevators')
+			-- The other owner's cabin, as `all(0)` would report it: powered and
+			-- accepting requests, and not locked.
+			control4.lifts.byId[77] = { id = 77, engineEntity = LIFT, bucket = 0,
+				floorCount = 12, activeFloor = 0, phase = 'idle',
+				x = WHERE.x, y = WHERE.y, z = WHERE.z, flags = 5 }
+			control4.lifts.refuseFlags = true
+
+			env4.source = 7
+			control4.netEvents[M4.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+			env4.source = nil
+
+			check('a foreign cabin is not re-adopted', #control4.lifts.adopts == 0,
+				#control4.lifts.adopts)
+			check('nor bound to a client', #sentTo(control4.clientEvents, M4.Event.BOUND) == 0)
+			check('and it is left standing, not removed', #control4.lifts.removes == 0,
+				#control4.lifts.removes)
+			check('the other owner still has it',
+				control4.lifts.byId[77] ~= nil and control4.lifts.byId[77].flags == 5)
+		end
+
+		-- ── a build with no flag constants ───────────────────────────────────
+		-- `Open77.elevators.flags` is documented by the op77.76 guide but a constant
+		-- table is not a native, so the devkit catalogue cannot confirm it: it is
+		-- unverified rather than known absent. Indexing it blind used to raise
+		-- inside this very handler, which took the handler down AFTER the adopt had
+		-- already succeeded -- the one outcome worse than not adopting at all.
+		local env3, control3, why3 = boot('server', nil, function(sandbox)
+			sandbox.Open77.players.position = function()
+				return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = 0 }
+			end
+			sandbox.Open77.elevators.flags = nil
+		end)
+		check('the server boots for the missing-constants case', why3 == nil, why3)
+
+		if why3 == nil then
+			local M3 = env3.OPX.Modules.Get('elevators')
+			env3.source = 6
+			local survived = pcall(control3.netEvents[M3.Event.SIGHTED],
+				LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+			env3.source = nil
+			check('a host with no flag constants does not take the handler down', survived)
+			check('and nothing is adopted that could not have been gated',
+				#control3.lifts.adopts == 0, #control3.lifts.adopts)
+		end
+
+		-- ── the gate itself ──────────────────────────────────────────────────
+		-- `Access.Evaluate` is the one decision both halves make, and the server
+		-- re-derives it from its own roster before it moves a cabin. Checked
+		-- directly: it is a pure function of a floor and a job snapshot.
+		local Access = M.Access
+		local now = 1000000
+		local function snap(name, level, onDuty, jobs)
+			return { job = name and { name = name, grade = { level = level },
+				onDuty = onDuty } or nil, jobs = jobs, atMs = now }
+		end
+		local public = { INDEX = 0, LABEL = 'Plaza' }
+		local gated = { INDEX = 8, LABEL = 'Counterintel', JOBS = { arasaka = 2 } }
+		local duty = { INDEX = 11, LABEL = 'Executive', JOBS = { arasaka = 3 }, ON_DUTY = true }
+
+		check('a public floor is open to nobody at all',
+			(Access.Evaluate(public, nil, now)) == true)
+		local ok, refusal = Access.Evaluate(gated, nil, now)
+		check('a gated floor is shut to a character that never read', ok == false and
+			refusal == 'no_character', tostring(refusal))
+		ok, refusal = Access.Evaluate(gated, snap('arasaka', 1), now)
+		check('and to the right job at too low a grade', ok == false and
+			refusal == 'grade_too_low', tostring(refusal))
+		ok, refusal = Access.Evaluate(gated, snap('militech', 9), now)
+		check('and to the wrong job at any grade', ok == false and
+			refusal == 'job_required', tostring(refusal))
+		check('and open at the grade it asks for',
+			(Access.Evaluate(gated, snap('arasaka', 2), now)) == true)
+		ok, refusal = Access.Evaluate(duty, snap('arasaka', 3, false), now)
+		check('an ON_DUTY floor is shut to the same rank off duty', ok == false and
+			refusal == 'off_duty', tostring(refusal))
+		check('and open on duty',
+			(Access.Evaluate(duty, snap('arasaka', 3, true), now)) == true)
+
+		-- A SNAPSHOT THAT AGED OUT CLOSES THE GATED FLOOR AND NOT THE LOBBY. A
+		-- broken character read must not lock someone out of a public floor.
+		local stale = now + Access.JOB_MAX_AGE_MS + 1
+		ok, refusal = Access.Evaluate(gated, snap('arasaka', 3), stale)
+		check('a stale job snapshot shuts a gated floor', ok == false and
+			refusal == 'job_stale', tostring(refusal))
+		check('and leaves a public floor open',
+			(Access.Evaluate(public, snap('arasaka', 3), stale)) == true)
+
+		-- MEMBERSHIP is `primary` in the shipped config: a job merely held, with no
+		-- clock behind it, is not the job being worked.
+		ok = Access.Evaluate(gated, snap('militech', 9, false, { arasaka = 5 }), now)
+		check('a membership is not the worked job under MEMBERSHIP = primary',
+			ok == false)
 	end
 end
 

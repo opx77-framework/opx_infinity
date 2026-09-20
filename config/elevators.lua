@@ -15,6 +15,31 @@
 --
 -- TRAVEL_MS, REQUEST_WINDOW_MS and REQUESTS_PER_WINDOW are also declared as
 -- tunables by the server half; the values below are what they fall back to.
+--
+-- THE FOUR ELEVATORS BELOW ARE SAMPLES AND THEIR X/Y/Z ARE PLACEHOLDERS. They
+-- were carried over verbatim from the standalone `opx77_elevators`, whose README
+-- said so and whose warning did not survive the port -- so the config has since
+-- read as a description of this server's world when it never was one. Not one of
+-- the four positions was surveyed against a real shaft, and FLOOR_COUNT and every
+-- FLOORS INDEX are guesses in the same way: a floor index is the NATIVE per-lift
+-- index, which no one can know without standing at the lift.
+--
+-- Nothing here is wrong in a way `Access.Problems` can see. It checks shape --
+-- finite coordinates, whole indexes inside FLOOR_COUNT, a LABEL on every row --
+-- and a placeholder passes all of it. The failure is silent and it is total:
+-- `Access.Locate` matches a sighted lift to a key only within MATCH_RADIUS metres
+-- of the position declared here, so a position that is off by more than six
+-- metres matches nothing, no lift is ever adopted, and no panel ever opens.
+--
+-- To make these real, stand at each shaft and read the lift off the client
+-- developer console:
+--
+--   resource.emit open77:elevators:nearby 100
+--
+-- which lists every streamed native LiftDevice -- unmanaged ones included -- with
+-- its engine hash and its exact position. Put that position in X/Y/Z, put the
+-- hash in ENTITY when two shafts share a lobby, and take FLOOR_COUNT from the
+-- device rather than from the storey count of the building.
 
 OPX.Config.MODULES.elevators = {
 	enabled = true,
