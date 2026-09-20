@@ -61,8 +61,14 @@ local VERDICT_MS = 10000
 -- missing library has already been reported.
 local ROSTER_MS = 5000
 local ROSTER_RADIUS = 60.0
+-- How long before this client asks for the looks again on behalf of a peer the
+-- platform reports and it still cannot draw. Bounds the retry a player held in
+-- another routing bucket costs.
+local HEAL_MS = 30000
 local rosterAtMs = 0
 local rosterWarned = false
+-- When each undrawable peer was last asked about.
+local healedAt = {}
 
 --- Logs a warning once per key.
 local function warnOnce(key, line)
@@ -214,16 +220,39 @@ local function reportRoster()
 			:format(tostring(called and reason or list)))
 		return false
 	end
-	local near, bodied, dressed = 0, 0, 0
+	local near, bodied, dressed, undrawn = 0, 0, 0, 0
+	local nowMs = Runtime.NowMs()
 	for _, entry in ipairs(list) do
 		if type(entry) == 'table' then
 			near = near + 1
+			local id = tonumber(entry.playerId)
 			if entry.entity ~= nil then bodied = bodied + 1 end
-			if drawn[tonumber(entry.playerId)] then dressed = dressed + 1 end
+			local isDrawn = id ~= nil and drawn[id] == true
+			if isDrawn then dressed = dressed + 1 end
+			-- A peer this client cannot actually draw: no look ever reached it, or
+			-- one did and the platform held no place for them -- a routing bucket,
+			-- an interest edge -- so every `puppets` call was a no-op on a player
+			-- this world does not carry. `project` cannot see that: it reports
+			-- accepted for a call that stored nothing. The two cases look identical
+			-- from here and want the same answer.
+			if (not isDrawn or entry.entity == nil) and id ~= nil then
+				undrawn = undrawn + 1
+				-- ASK AGAIN, SLOWLY, RATHER THAN TRUSTING `drawn`. One look is not
+				-- evidence the peer is drawable, and this is the only state from which
+				-- the peer was previously never asked for again: the client marked
+				-- them drawn off a call that landed nowhere and stayed silent until a
+				-- world re-enter. Bounded to HEAL_MS per peer so a player the platform
+				-- genuinely holds elsewhere costs two requests a minute, not a flood,
+				-- and the asking stops the moment that peer has an entity.
+				if nowMs - (healedAt[id] or 0) >= HEAL_MS then
+					healedAt[id] = nowMs
+					replayWanted = true
+				end
+			end
 		end
 	end
-	Open77.log.info(('[appearance] roster: %d near, %d with an entity, %d dressed by this client')
-		:format(near, bodied, dressed))
+	Open77.log.info(('[appearance] roster: %d near, %d with an entity, %d dressed by this ' ..
+		'client, %d undrawn'):format(near, bodied, dressed, undrawn))
 	return true
 end
 
@@ -263,6 +292,7 @@ function M.Presence.Renew()
 	sent, acknowledged, sentSequence = nil, 0, 0
 	replayWanted, replaySequence, replayAtMs = true, 0, 0
 	drawn = {}
+	healedAt = {}
 	replayAnsweredAtMs, verdictSaid = 0, false
 end
 
@@ -302,6 +332,7 @@ function M.Presence.Init()
 	replayWanted, replaySequence, replayAtMs = true, 0, 0
 	warned = {}
 	drawn = {}
+	healedAt = {}
 	replayAnsweredAtMs, verdictSaid = 0, false
 end
 
