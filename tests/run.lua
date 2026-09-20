@@ -3053,6 +3053,565 @@ do
 	end
 end
 
+
+-- ── a short alias is a second spelling and never a second privilege ──────────
+-- Every staff command is `opx.something`, and typing that prefix forty times an
+-- evening is the complaint the aliases answer. The dangerous version of the
+-- answer is renaming the commands, or registering a bare `noclip` that anybody
+-- may run; this section is the proof that neither happened.
+--
+-- Loaded into an env of its own rather than through `boot`, because the whole
+-- subject is what the HOST does with a name -- a name another resource already
+-- owns, a name outside the grammar, an ACL that cannot be read -- and the booted
+-- harness comes with every real module's names already registered in it.
+section('short command aliases')
+do
+	--- One isolated `core/server/commands.lua` with a host the test controls.
+	--- Returns the env, the chunk's own error if it would not load, and a handle
+	--- on everything the host recorded.
+	local function commandEnv(aliases, options)
+		options = options or {}
+		local host = {
+			commands = {}, warnings = {}, granted = {}, cooldowns = {},
+			runs = {}, refusals = {}, now = 0,
+		}
+
+		local function trim(text)
+			return (tostring(text):gsub('^%s+', ''):gsub('%s+$', ''))
+		end
+
+		local env = {
+			OPX = {
+				Config = { SERVER = { COMMAND_ALIASES = aliases } },
+				Command = {},
+				String = { Trim = trim },
+				Table = {
+					Count = function(source)
+						local n = 0
+						for _ in pairs(source) do n = n + 1 end
+						return n
+					end,
+				},
+				Refuse = function(source, code, operation)
+					host.refusals[#host.refusals + 1] =
+						{ source = source, code = code, operation = operation }
+				end,
+				-- The real one, in miniature: per player AND per key, and the
+				-- console is never cooled.
+				Cooling = function(source, key, everyMs)
+					local player = tonumber(source) or 0
+					if player <= 0 then return false end
+					local at = host.cooldowns[player .. '|' .. key]
+					if at ~= nil and host.now - at < everyMs then return true end
+					host.cooldowns[player .. '|' .. key] = host.now
+					return false
+				end,
+			},
+			Open77 = {
+				log = {
+					warn = function(line) host.warnings[#host.warnings + 1] = tostring(line) end,
+					error = function() end,
+				},
+			},
+			-- The host's own rules, copied from `tests/host.lua`: the grammar, the
+			-- 64-character bound, and a duplicate raising `duplicate command`
+			-- case-insensitively.
+			RegisterCommand = function(name, fn, restricted)
+				if type(name) ~= 'string' or #name < 1 or #name > 64
+					or name:match('^[%w_%.:%-]+$') == nil then
+					error(('invalid command name %q'):format(tostring(name)), 2)
+				end
+				local key = name:lower()
+				if host.commands[key] ~= nil then error('duplicate command', 2) end
+				host.commands[key] = { run = fn, restricted = restricted == true }
+			end,
+			locale = function(key) return tostring(key) end,
+			type = type, tonumber = tonumber, tostring = tostring, pcall = pcall,
+			ipairs = ipairs, pairs = pairs, error = error, table = table, string = string,
+		}
+
+		-- `acl.read` is granted in this resource's manifest, so the real server
+		-- has this table. `options.noAcl` is the host that does not -- an older
+		-- build, or the grant withdrawn -- which is the case the fail-closed rule
+		-- exists for.
+		if not options.noAcl then
+			env.Open77.acl = {
+				isAllowed = function(playerId, permission)
+					local player = host.granted[tostring(playerId)]
+					return player ~= nil and player[tostring(permission)] == true
+				end,
+			}
+		end
+
+		-- The session-wide registry. `options.noRegistry` is the build that does
+		-- not publish it, where the pcall is the only check left.
+		if not options.noRegistry then
+			env.GetRegisteredCommands = function()
+				if options.registryRaises then error('no registry') end
+				local rows = {}
+				for name, entry in pairs(host.commands) do
+					rows[#rows + 1] = { name = name, resource = entry.owner or 'opx_infinity' }
+				end
+				return rows
+			end
+		end
+
+		host.Allow = function(playerId, permission)
+			local player = host.granted[tostring(playerId)]
+			if player == nil then
+				player = {}
+				host.granted[tostring(playerId)] = player
+			end
+			player[tostring(permission)] = true
+		end
+
+		--- Registers a name as ANOTHER resource in the session would have.
+		host.Claim = function(name, owner)
+			host.commands[tostring(name):lower()] =
+				{ run = function() end, restricted = false, owner = owner }
+		end
+
+		--- Types a command line, as the host dispatcher would.
+		host.Type = function(name, source, args)
+			local entry = host.commands[tostring(name):lower()]
+			if entry == nil then return false, 'not registered' end
+			return pcall(entry.run, source, args or {}, name)
+		end
+
+		local chunk, why = loadfile('core/server/commands.lua', 't', env)
+		if chunk == nil then return nil, host, why end
+		local ok, failure = pcall(chunk)
+		if not ok then return nil, host, failure end
+		return env, host, nil
+	end
+
+	-- ── the alias runs the same handler, on the same terms ────────────────────
+	do
+		local env, host, why = commandEnv({ ['opx.admin.self.noclip'] = 'noclip' })
+		check('commands loads with an alias table', env ~= nil, why)
+
+		local seen = {}
+		env.OPX.Command.Register('opx.admin.self.noclip', { restricted = true },
+			function(source, args) seen[#seen + 1] = { source = source, arg = args[1] } end)
+
+		check('the long name is registered', host.commands['opx.admin.self.noclip'] ~= nil)
+		check('and the alias is registered beside it', host.commands['noclip'] ~= nil)
+
+		host.Allow(7, 'command.opx.admin.self.noclip')
+		check('the alias reaches the handler', select(1, host.Type('noclip', 7, { 'on' })))
+		check('with the arguments the player typed',
+			#seen == 1 and seen[1].source == 7 and seen[1].arg == 'on',
+			#seen == 0 and 'never ran' or tostring(seen[1] and seen[1].arg))
+
+		host.Type('opx.admin.self.noclip', 7, { 'off' })
+		check('and the long name still reaches the same handler',
+			#seen == 2 and seen[2].arg == 'off')
+	end
+
+	-- ── an alias of a restricted command is itself restricted ─────────────────
+	-- THIS IS THE ONE THAT MATTERS. An unrestricted alias to a restricted
+	-- command is a privilege escalation, and it is the failure that would make
+	-- this change a security bug rather than a convenience.
+	do
+		local env, host = commandEnv({ ['opx.admin.self.god'] = 'god' })
+		local ran = 0
+		env.OPX.Command.Register('opx.admin.self.god', { restricted = true },
+			function() ran = ran + 1 end)
+
+		host.Type('god', 11, {})
+		check('a player with no grant cannot run the alias', ran == 0)
+		check('and is told why rather than ignored',
+			#host.refusals == 1 and host.refusals[1].code == 'error.noPermission',
+			#host.refusals == 0 and 'no refusal' or tostring(host.refusals[1].code))
+		check('the refusal names the COMMAND, so the player can look it up',
+			host.refusals[1] ~= nil and host.refusals[1].operation == 'opx.admin.self.god')
+
+		host.Allow(11, 'command.opx.admin.self.god')
+		host.Type('god', 11, {})
+		check('and the same player with the grant can', ran == 1)
+
+		-- THE ALIAS IS GATED ON THE COMMAND'S ENTRY, NOT ITS OWN NAME, and this
+		-- is what makes the sentence above true rather than merely likely. The
+		-- host resolves a restricted registration against `command.<the name it
+		-- was registered under>`, so a `restricted = true` alias would be gated
+		-- on `command.god` -- a second ACL key for one power, revocable out of
+		-- step with the first. The day somebody removes the long grant and
+		-- leaves the short one, that is an escalation with a paper trail saying
+		-- the access was revoked.
+		local other, otherHost = commandEnv({ ['opx.admin.self.god'] = 'god' })
+		local otherRan = 0
+		other.OPX.Command.Register('opx.admin.self.god', { restricted = true },
+			function() otherRan = otherRan + 1 end)
+		otherHost.Allow(12, 'command.god')
+		otherHost.Type('god', 12, {})
+		check('holding command.god alone does NOT open the alias', otherRan == 0)
+		check('the alias is not registered restricted with the host, deliberately',
+			otherHost.commands['god'] ~= nil and otherHost.commands['god'].restricted == false)
+		check('while the long name is',
+			otherHost.commands['opx.admin.self.god'].restricted == true)
+	end
+
+	-- ── an unreadable ACL costs the alias, never opens it ─────────────────────
+	do
+		local env, host = commandEnv({ ['opx.admin.self.god'] = 'god' }, { noAcl = true })
+		local ran = 0
+		env.OPX.Command.Register('opx.admin.self.god', { restricted = true },
+			function() ran = ran + 1 end)
+		host.Type('god', 11, {})
+		check('with no Open77.acl installed the restricted alias refuses everyone',
+			ran == 0)
+		host.Type('opx.admin.self.god', 11, {})
+		check('and the long name is untouched -- the host still gates it',
+			ran == 1)
+	end
+
+	-- ── an unrestricted command keeps an unrestricted alias ───────────────────
+	do
+		local env, host = commandEnv({ ['opx.duty'] = 'duty' })
+		local ran = 0
+		env.OPX.Command.Register('opx.duty', {}, function() ran = ran + 1 end)
+		host.Type('duty', 11, {})
+		check('an alias of an open command runs for a player with no grants',
+			ran == 1)
+		check('and is not registered restricted either',
+			host.commands['duty'].restricted == false)
+	end
+
+	-- ── the console keeps every alias ─────────────────────────────────────────
+	-- Source 0 is the server console, which the host lets run any restricted
+	-- command. `isAllowed` answers `invalid_player_id` for it rather than yes, so
+	-- asking the ACL about player 0 would lock the console out of every alias
+	-- while leaving it every long name.
+	do
+		local env, host = commandEnv({ ['opx.admin.world.announce'] = 'announce' })
+		local ran = 0
+		env.OPX.Command.Register('opx.admin.world.announce', { restricted = true },
+			function() ran = ran + 1 end)
+		host.Type('announce', 0, { 'hello' })
+		check('the console may run a restricted alias', ran == 1)
+	end
+
+	-- ── one operation, one cooldown window ────────────────────────────────────
+	-- A command registered twice must not get two independent floors. The window
+	-- is keyed on the operation and closed over once, so both spellings share it;
+	-- deriving the key from the name the caller typed would let an operator halve
+	-- every rate limit in the resource by alternating the two.
+	do
+		local env, host = commandEnv({ ['opx.characters'] = 'chars' })
+		local ran = 0
+		env.OPX.Command.Register('opx.characters',
+			{ cooldownMs = 2000, key = 'characters' }, function() ran = ran + 1 end)
+
+		host.Type('opx.characters', 9, {})
+		check('the first run of the long name goes through', ran == 1)
+		host.Type('chars', 9, {})
+		check('and the alias is cooled by it, not given a window of its own',
+			ran == 1)
+		check('the player is told which operation refused them',
+			#host.refusals == 1 and host.refusals[1].code == 'error.tooFast'
+				and host.refusals[1].operation == 'opx.characters')
+
+		host.now = host.now + 2000
+		host.Type('chars', 9, {})
+		check('and once the window passes the alias runs', ran == 2)
+		host.Type('opx.characters', 9, {})
+		check('at which point the long name is cooled by the ALIAS', ran == 2)
+
+		host.Type('chars', 10, {})
+		check('the window is still per player', ran == 3)
+	end
+
+	-- ── a collision costs the alias and never the boot ────────────────────────
+	-- The session also runs open77_shell, open77_pause, open77_voice,
+	-- open-voice, open77_weapons, open77_interactions and open77_props. A bare
+	-- word is a far likelier collision than a prefixed one, so the one thing
+	-- that must never happen is the raise coming out mid-`Start` -- which is
+	-- exactly what `opx.appearance` did when it took the clothing-load hook with
+	-- it.
+	do
+		local env, host = commandEnv({ ['opx.admin.self.noclip'] = 'noclip' })
+		host.Claim('noclip', 'open77_shell')
+
+		local ran = 0
+		local started = pcall(env.OPX.Command.Register, 'opx.admin.self.noclip',
+			{ restricted = true }, function() ran = ran + 1 end)
+		check('registering a command whose alias is taken does NOT raise', started)
+		check('and the long name is registered and restricted',
+			host.commands['opx.admin.self.noclip'] ~= nil
+				and host.commands['opx.admin.self.noclip'].restricted == true)
+
+		host.Allow(5, 'command.opx.admin.self.noclip')
+		host.Type('opx.admin.self.noclip', 5, {})
+		check('and it works', ran == 1)
+
+		check('the alias is not claimed from its owner',
+			host.commands['noclip'].run ~= nil and select(2, env.OPX.Command.Aliases()) == 0)
+
+		check('an operator is told, by name', #host.warnings == 1
+			and host.warnings[1]:find('noclip', 1, true) ~= nil
+			and host.warnings[1]:find('opx.admin.self.noclip', 1, true) ~= nil,
+			host.warnings[1])
+		check('and told who has it', #host.warnings == 1
+			and host.warnings[1]:find('open77_shell', 1, true) ~= nil,
+			host.warnings[1])
+	end
+
+	-- ── the registry is a courtesy; the host is the authority ─────────────────
+	-- `Open77.runtime.commands` names the culprit, but its own card says the
+	-- ACL, ban, routing-bucket and phantom verbs are absent from it, because
+	-- they live in a hand-written dispatcher with no registry to read. So a name
+	-- can be free there and taken by the host, and the pcall has to be the check
+	-- that actually holds.
+	do
+		local env, host = commandEnv({ ['opx.admin.self.noclip'] = 'noclip' },
+			{ noRegistry = true })
+		host.Claim('noclip', 'open77_shell')
+		local ran = 0
+		local started = pcall(env.OPX.Command.Register, 'opx.admin.self.noclip',
+			{ restricted = true }, function() ran = ran + 1 end)
+		check('with no registry to read, the collision still costs only the alias',
+			started and select(2, env.OPX.Command.Aliases()) == 0)
+		host.Allow(5, 'command.opx.admin.self.noclip')
+		host.Type('opx.admin.self.noclip', 5, {})
+		check('and the long name still works', ran == 1)
+		check('and the skip says the host refused it',
+			#host.warnings == 1 and host.warnings[1]:find('host refused', 1, true) ~= nil,
+			host.warnings[1])
+
+		local raising = commandEnv({ ['opx.admin.self.noclip'] = 'noclip' },
+			{ registryRaises = true })
+		check('a registry read that RAISES does not take the boot either',
+			select(1, pcall(raising.OPX.Command.Register, 'opx.admin.self.noclip',
+				{ restricted = true }, function() end)))
+	end
+
+	-- ── an alias may not be spelt inside our own namespace ────────────────────
+	-- This is the one way the feature could kill a boot rather than an alias.
+	-- Aliases are taken as each module starts, so an alias spelt `opx.something`
+	-- could take a name a module registers LATER -- and a long name's
+	-- registration is deliberately fatal. There is no way back: the host's
+	-- `unregisterCommand` is on the client runtime only.
+	do
+		local env, host = commandEnv({ ['opx.duty'] = 'opx.d' })
+		env.OPX.Command.Register('opx.duty', {}, function() end)
+		check('an alias inside the opx. namespace is refused',
+			host.commands['opx.d'] == nil and select(2, env.OPX.Command.Aliases()) == 0)
+		check('and the refusal says so', #host.warnings == 1
+			and host.warnings[1]:find('opx. namespace', 1, true) ~= nil,
+			host.warnings[1])
+
+		-- Which closes the hole: `opx.selfish` can never be sitting in the host
+		-- when the module that owns it starts.
+		check('so a later command can still take its own name',
+			select(1, pcall(env.OPX.Command.Register, 'opx.d', {}, function() end)))
+	end
+
+	-- ── a name the host would not accept at all ───────────────────────────────
+	-- `RegisterCommand` raises `invalid command name` outside 1..64 characters of
+	-- letters, digits, `_`, `.`, `:` or `-`. A space in a config value is the
+	-- easy way to write one, and the raise would come out mid-`Start`.
+	--
+	-- THE ASSERTION IS ON THE REASON AND NOT ONLY ON THE OUTCOME, because the
+	-- outcome alone cannot tell the two mechanisms apart: delete the grammar
+	-- check in `aliasRefusal` and the pcall around `RegisterCommand` catches the
+	-- raise, the alias is skipped exactly as before, and every check that looked
+	-- only at "is it registered" stays green over a guard that is no longer
+	-- there. What the grammar check is FOR is telling an operator, in their own
+	-- terms, that the value they typed in `config/server.lua` is not a name --
+	-- rather than handing them a host error string to decode. So that is what is
+	-- checked.
+	do
+		local env, host = commandEnv({
+			['opx.duty'] = 'on duty',
+			['opx.characters'] = ('c'):rep(65),
+			['opx.withdraw'] = '   ',
+		})
+		check('an alias with a space in it is refused, not registered',
+			select(1, pcall(env.OPX.Command.Register, 'opx.duty', {}, function() end))
+				and host.commands['on duty'] == nil)
+		check('and the operator is told it is not a name, not handed a host error',
+			#host.warnings == 1
+				and host.warnings[1]:find('not a legal command name', 1, true) ~= nil,
+			host.warnings[1])
+		check('so is one past the 64-character bound',
+			select(1, pcall(env.OPX.Command.Register, 'opx.characters', {}, function() end))
+				and select(2, env.OPX.Command.Aliases()) == 0)
+		check('and that one is named as a name too',
+			#host.warnings == 2
+				and host.warnings[2]:find('not a legal command name', 1, true) ~= nil,
+			host.warnings[2])
+		-- Blank is a config line an operator half-deleted, not a name: it is
+		-- ignored in silence rather than warned about, because there is nothing
+		-- for them to fix.
+		check('a blank alias is simply not an alias',
+			select(1, pcall(env.OPX.Command.Register, 'opx.withdraw', {}, function() end)))
+		check('and only the two real mistakes were reported', #host.warnings == 2,
+			table.concat(host.warnings, ' | '))
+	end
+
+	-- ── two commands asking for one alias ─────────────────────────────────────
+	-- A derived rule would produce this constantly -- `opx.admin.self.heal` and
+	-- `opx.admin.player.heal` both derive to `heal`, and so do the `.god`,
+	-- `.revive` and `.model` pairs -- which is why the aliases are written out
+	-- rather than computed. An operator can still write it by hand, so the loser
+	-- is named rather than dropped.
+	do
+		local env, host = commandEnv({
+			['opx.admin.self.heal'] = 'heal',
+			['opx.admin.player.heal'] = 'heal',
+		})
+		local selfRan, playerRan = 0, 0
+		env.OPX.Command.Register('opx.admin.self.heal', { restricted = true },
+			function() selfRan = selfRan + 1 end)
+		env.OPX.Command.Register('opx.admin.player.heal', { restricted = true },
+			function() playerRan = playerRan + 1 end)
+
+		check('only one of the two took the alias',
+			select(2, env.OPX.Command.Aliases()) == 1)
+		check('and the warning names both commands', #host.warnings == 1
+			and host.warnings[1]:find('opx.admin.player.heal', 1, true) ~= nil
+			and host.warnings[1]:find('opx.admin.self.heal', 1, true) ~= nil,
+			host.warnings[1])
+
+		host.Allow(3, 'command.opx.admin.player.heal')
+		host.Type('opx.admin.player.heal', 3, {})
+		check('the loser keeps its long name and its own handler', playerRan == 1)
+	end
+
+	-- ── two spellings of one command, one restricted flag ─────────────────────
+	do
+		local env = commandEnv({ ['opx.admin.self.noclip'] = 'noclip' })
+		env.OPX.Command.Register('opx.admin.self.noclip', { restricted = true },
+			function() end)
+
+		local knownLong, restrictedLong = env.OPX.Command.Known('opx.admin.self.noclip')
+		local knownShort, restrictedShort = env.OPX.Command.Known('noclip')
+		check('Known answers for the long name', knownLong and restrictedLong)
+		check('and for the alias, with the COMMAND\'s restricted flag',
+			knownShort and restrictedShort)
+		check('case-blind, because the host matches names that way',
+			select(2, env.OPX.Command.Known('NoClip')) == true)
+		check('and still says no to a name nobody registered',
+			env.OPX.Command.Known('flyaround') == false)
+	end
+
+	-- ── a long name that differs only in case ─────────────────────────────────
+	-- `RegisterCommand` matches case-insensitively, so `opx.Foo` and `opx.foo`
+	-- are one name to the host. The duplicate check here was an exact-match
+	-- index, so those two got past the legible refusal and raised inside the
+	-- host instead, naming neither caller.
+	do
+		local env = commandEnv({})
+		env.OPX.Command.Register('opx.foo', {}, function() end)
+		local again, why = pcall(env.OPX.Command.Register, 'opx.FOO', {}, function() end)
+		check('a long name differing only in case is refused here, not by the host',
+			again == false)
+		check('and the refusal names the command that already holds it',
+			again == false and tostring(why):find('opx.foo', 1, true) ~= nil,
+			tostring(why))
+	end
+
+	-- ── what the chat box is offered ──────────────────────────────────────────
+	-- One row per command, under the alias when there is one. Both spellings
+	-- work whatever this list says -- it is a typing aid, not the dispatcher --
+	-- so two rows per command would only turn an eighty-row list into a hundred
+	-- and sixty and bury the short spelling among the long ones, which is the
+	-- problem the aliases were added to solve.
+	do
+		local env, host = commandEnv({
+			['opx.admin.self.noclip'] = 'noclip',
+			['opx.duty'] = 'duty',
+		})
+		env.OPX.Command.Register('opx.admin.self.noclip', { restricted = true },
+			function() end)
+		env.OPX.Command.Register('opx.duty', {}, function() end)
+		env.OPX.Command.Register('opx.where', { restricted = true }, function() end)
+
+		local offered = {}
+		for _, row in ipairs(env.OPX.Command.Suggestions(4)) do offered[row.name] = true end
+		check('an open command is offered under its alias', offered.duty == true)
+		check('and its long name is not offered as well',
+			offered['opx.duty'] ~= true)
+		check('a restricted one is offered to nobody without the grant',
+			offered.noclip ~= true and offered['opx.where'] ~= true)
+
+		host.Allow(4, 'command.opx.admin.self.noclip')
+		host.Allow(4, 'command.opx.where')
+		local names = {}
+		for _, row in ipairs(env.OPX.Command.Suggestions(4)) do names[#names + 1] = row.name end
+		check('with the grant the staff command appears, under its alias',
+			table.concat(names, ',') == 'duty,noclip,opx.where',
+			table.concat(names, ','))
+		check('so a command with no alias is still offered in full',
+			names[3] == 'opx.where')
+	end
+
+	-- ── the shipped table, against the commands this resource really registers ─
+	-- The config is a PARTIAL INDEX INTO the command list and not a copy of it,
+	-- so nothing has to be added here when a command is. What can still rot is a
+	-- key naming a command that was renamed or removed, which is inert but
+	-- misleading -- so the boot is the thing that says so.
+	do
+		local env, control, why = boot('server')
+		check('the server boots with the shipped aliases', why == nil, why)
+
+		local aliases, count = env.OPX.Command.Aliases()
+		local configured = env.OPX.Table.Count(env.OPX.Config.SERVER.COMMAND_ALIASES)
+		check('every configured alias is in force', count == configured,
+			('%d of %d'):format(count, configured))
+
+		local unknown = {}
+		for name in pairs(env.OPX.Config.SERVER.COMMAND_ALIASES) do
+			if control.commands[name] == nil then unknown[#unknown + 1] = name end
+		end
+		check('and every one of them names a command that exists',
+			#unknown == 0, table.concat(unknown, ', '))
+
+		for alias, name in pairs(aliases) do
+			if control.commands[alias] == nil then unknown[#unknown + 1] = alias end
+			if control.commands[alias] ~= nil and control.commands[alias].restricted then
+				unknown[#unknown + 1] = alias .. ' is host-restricted on its own name'
+			end
+			if control.commands[name] == nil then unknown[#unknown + 1] = name end
+		end
+		check('each is registered with the host, gated on its command and not itself',
+			#unknown == 0, table.concat(unknown, ', '))
+
+		-- The one the owner asked for, end to end, through the real admin module
+		-- and the real ACL: `noclip` has to fly a body, and only the right body.
+		local admin = env.OPX.Modules.Get('admin')
+		local src = 14
+		control.Admit(src, 'account-noclip-alias')
+		env.OPX.EnsureSession(src)
+
+		local flying = control.commands['noclip']
+		check('`noclip` is registered by the real boot', flying ~= nil)
+
+		flying.run(src, { 'on' })
+		control.Pump(10)
+		check('a player with no staff grant does not fly',
+			admin.Players.IsNoclip(src) ~= true)
+
+		control.Allow(src, 'command.' .. admin.Command.SELF_NOCLIP)
+		flying.run(src, { 'on' })
+		control.Pump(10)
+		check('and the same player, granted, does', admin.Players.IsNoclip(src) == true)
+
+		-- And back down, so the next line starts from a body on the ground: the
+		-- sweep revokes a flight whose grant went away by itself, and a test that
+		-- did not put the body down first would be watching the sweep rather than
+		-- the alias.
+		flying.run(src, { 'off' })
+		control.Pump(10)
+		check('the alias puts it down again', admin.Players.IsNoclip(src) ~= true)
+
+		control.Deny(src, 'command.' .. admin.Command.SELF_NOCLIP)
+		flying.run(src, { 'on' })
+		control.Pump(10)
+		check('and once the grant is taken back the alias goes with it',
+			admin.Players.IsNoclip(src) ~= true)
+	end
+end
 -- ── showing a page must never hide it ────────────────────────────────────────
 -- `OPX.Surface.Visible` read `pcall(visible and page.show or page.hide, page)`,
 -- which is the and/or trap doing something worse than raising. Ask it to SHOW a
