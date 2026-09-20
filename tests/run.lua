@@ -3990,6 +3990,255 @@ do
 	end
 end
 
+-- ── what the screen does once the server has answered ────────────────────────
+-- The owner's report was "deleting a character takes seconds to leave the
+-- screen". The cause was a fixed 1200ms sleep standing in for an answer the
+-- client was already being sent, so these hold the causal chain rather than a
+-- duration: the command goes out and NOTHING is asked for until the answer
+-- lands, a refusal asks for nothing at all, and a confirmation both drops the
+-- row and refetches. A timer cannot be asserted on; a cause can.
+section('the staff menu answers the server, not a clock')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the menu feedback tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+
+		local asked = {}
+		env.TriggerServerEvent = function(name, topic, arg)
+			asked[#asked + 1] = { name = name, topic = topic, arg = arg }
+			-- The host answers whether the line left, and `Client.Execute` refuses to
+			-- believe a nil: a stub that forgot this aborts every command silently.
+			return true
+		end
+
+		-- The spec and not the surface, for the reason the find screen's wrapper
+		-- gives: what reaches the page has the ids and the row data stripped off.
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(handle, spec)
+				specs[#specs + 1] = spec
+				return realMenu.Update(handle, spec)
+			end,
+		}, { __index = realMenu })
+
+		local function rowOf(id)
+			for _, item in ipairs((specs[#specs] or {}).items or {}) do
+				if item.id == id then return item end
+			end
+			return nil
+		end
+		local function act(itemId, extra)
+			local item = rowOf(itemId)
+			if item == nil then return false end
+			local payload = { action = 'select', itemId = itemId, handle = 1, data = item.data }
+			for key, value in pairs(extra or {}) do payload[key] = value end
+			local on
+			for index = #specs, 1, -1 do
+				if specs[index].on then on = specs[index].on break end
+			end
+			if on == nil then return false end
+			on(payload)
+			return true
+		end
+		local function refreshes(topic)
+			local seen = 0
+			for _, entry in ipairs(asked) do
+				if entry.name == admin.Event.REFRESH and entry.topic == topic then seen = seen + 1 end
+			end
+			return seen
+		end
+
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = true, inventory = false })
+		control.Pump(10)
+
+		--- Opens an account's character list holding two rows and lands on the
+		--- confirmation screen for deleting the second.
+		local function armDelete()
+			admin.Menu.OpenAt('playerCharacters', 2)
+			control.Pump(10)
+			control.netEvents[admin.Event.CHARACTERS]({ rows = {
+				{ citizenId = 'CIT-0001', firstName = 'V', lastName = 'One' },
+				{ citizenId = 'CIT-0002', firstName = 'V', lastName = 'Two' },
+			}, offset = 0, total = 2, done = true, target = '2' })
+			control.Pump(10)
+			act('char_CIT-0002')
+			control.Pump(10)
+			act('delete')
+			control.Pump(10)
+			asked = {}
+			act('confirm')
+			control.Pump(6)
+		end
+
+		armDelete()
+		check('a confirmed delete sends the command line', (function()
+			for _, entry in ipairs(asked) do
+				if entry.name == OPX.Modules.Get('admin').Host.COMMAND_EXECUTE then return true end
+			end
+			return false
+		end)())
+		-- THE POINT OF THE WHOLE CHANGE. Six pumps is well past the 1200ms the old
+		-- code slept for, and the list must still not have been asked for: until
+		-- the server has answered there is nothing to ask it about.
+		check('and asks for no list at all until the server has answered',
+			refreshes('characters') == 0, ('%d asked'):format(refreshes('characters')))
+		check('so the row is still drawn, because nothing has confirmed it is gone',
+			rowOf('char_CIT-0002') ~= nil)
+
+		control.netEvents['open77:command:result'](
+			'/opx.admin.character.delete CIT-0002', true, 'deleted')
+		control.Pump(4)
+		check('the answer is what asks for the list again',
+			refreshes('characters') == 1, ('%d asked'):format(refreshes('characters')))
+		check('and the row goes on the confirmation rather than on the refetch',
+			rowOf('char_CIT-0002') == nil)
+
+		-- A REFUSED DELETE IS THE CASE THAT MATTERS. Nothing was deleted, so the row
+		-- stays and no list is read: a UI that removed it and quietly put it back is
+		-- how somebody deletes the wrong character twice.
+		asked = {}
+		armDelete()
+		control.netEvents['open77:command:result'](
+			'/opx.admin.character.delete CIT-0002', false, 'permission_denied: refused')
+		control.Pump(4)
+		check('a REFUSED delete leaves the row exactly where it was',
+			rowOf('char_CIT-0002') ~= nil)
+		check('and spends no list read on a command the server turned down',
+			refreshes('characters') == 0, ('%d asked'):format(refreshes('characters')))
+
+		-- THE GREYED ROW. `tagsOwn` is only meaningful while the name tags are on,
+		-- and the switch above it is a server round trip -- so the row is greyed
+		-- until `TAGS_STATE` lands. What must never come back is the version where
+		-- nothing asked for a rebuild and the row stayed greyed until the operator
+		-- moved the cursor: this asserts the rebuild, not the delay.
+		admin.Menu.OpenAt('self')
+		control.Pump(10)
+		check('the own-tag row is greyed while the name tags are off',
+			(function()
+				local item = rowOf('tagsOwn')
+				return item ~= nil and item.disabled == true
+			end)())
+		local before = #specs
+		control.netEvents[admin.Event.TAGS_STATE](true, false)
+		control.Pump(4)
+		check('the name tags arriving rebuilds the screen by itself',
+			#specs > before, ('%d rebuilds'):format(#specs - before))
+		check('and the own-tag row is a live checkbox in the rebuilt screen',
+			(function()
+				local item = rowOf('tagsOwn')
+				return item ~= nil and not item.disabled and type(item.toggle) == 'boolean'
+			end)(), (function()
+				local item = rowOf('tagsOwn')
+				return item and ('disabled=%s toggle=%s')
+					:format(tostring(item.disabled), tostring(item.toggle))
+			end)())
+	end
+end
+
+-- ── the name tags say what the pass decided ──────────────────────────────────
+-- The tags stopped drawing after the `opx_lib` migration and produced not one
+-- diagnosable line, because every line the pass can write went to a file on the
+-- player's machine. These hold the evidence open: a pass that draws nothing has
+-- to say WHY through `OPX.Note`, and the four ways it can draw nothing have to
+-- be four different sentences.
+section('the name tag pass reports what it decided')
+do
+	-- What the stubbed native answers: a list, or a reason string for a refusal.
+	local answer = {}
+
+	local env, control = Host.Environment('client')
+	local notes = {}
+	env.TriggerServerEvent = function(name, module, text)
+		if tostring(name):find('runtime:note', 1, true) then notes[#notes + 1] = tostring(text) end
+		return true
+	end
+	-- The host stubs no `players.nearby` and no `kvp`, which is right for every
+	-- other test and is exactly what this one is about.
+	env.Open77.players.nearby = function()
+		if type(answer) == 'string' then return nil, answer end
+		return answer
+	end
+	env.Open77.kvp = { get = function(_, fallback) return fallback end,
+		set = function() return true end }
+
+	local why
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk, failure = loadfile(file, 't', env)
+		if not chunk then why = failure break end
+		local ok, raised = pcall(chunk)
+		if not ok then why = raised break end
+	end
+	check('the client boots for the tag pass tests', why == nil, why)
+
+	if why == nil then
+		control.Fire('onClientResourceStart', 'opx_infinity')
+		control.Pump(60)
+		control.ReadyPages()
+
+		local admin = env.OPX.Modules.Get('admin')
+
+		local function said(fragment)
+			for _, note in ipairs(notes) do
+				if note:find(fragment, 1, true) then return note end
+			end
+			return nil
+		end
+
+		check('starting says the pass was registered, and on what settings',
+			said('pass registered at') ~= nil, table.concat(notes, ' | '))
+		-- THE SILENCE THAT COST TWO DIAGNOSES. A switch that never came on and a
+		-- pass that computed nothing were the same empty journal.
+		check('and a switch that is off says so rather than saying nothing',
+			said('the switch is off') ~= nil, table.concat(notes, ' | '))
+
+		notes = {}
+		control.netEvents[admin.Event.TAGS_STATE](true, false)
+		control.Pump(4)
+		check('the switch coming on is reported, so the grant can be ruled out',
+			said('the switch is on') ~= nil, table.concat(notes, ' | '))
+		check('and an empty world names the call it made and the answer it got',
+			said('radius=') ~= nil and said('0 near') ~= nil, table.concat(notes, ' | '))
+
+		-- BODIES BUT NO NAMES is the server's list failing, not a native, and the
+		-- line has to be able to say which: they want opposite fixes.
+		notes = {}
+		answer = {
+			{ playerId = 2, entity = 20, distance = 5.0, position = { x = 0, y = 0, z = 0 } },
+		}
+		control.Pump(4)
+		check('bodies with no name list are counted as a naming fault, not a native one',
+			said('no name 1') ~= nil, table.concat(notes, ' | '))
+
+		notes = {}
+		control.netEvents[admin.Event.TAG_ROWS]({
+			rows = { { id = 2, name = 'vee' } }, offset = 0, done = true })
+		control.Pump(4)
+		check('and once the names arrive the pass reports a row drawn',
+			said('1 drawn') ~= nil, table.concat(notes, ' | '))
+
+		-- A REFUSAL FROM THE NATIVE reads as an empty list at the call site, so the
+		-- reason has to be carried out or it is indistinguishable from "nobody near".
+		notes = {}
+		answer = 'no_local_position'
+		control.Pump(4)
+		check('a refusal from the native carries its reason into the journal',
+			said('no_local_position') ~= nil, table.concat(notes, ' | '))
+
+		-- An absent native and an unreachable NAMESPACE are a build fault and a
+		-- library fault. The code that tells them apart was being thrown away.
+		notes = {}
+		env.Open77.players.nearby = nil
+		control.Pump(4)
+		check('and an unreachable native says which of the two kinds it is',
+			said('native_not_found') ~= nil, table.concat(notes, ' | '))
+	end
+end
+
 -- ── the note door ────────────────────────────────────────────────────────────
 -- `OPX.Note` and `core/server/note.lua`. THE ONE THING THIS RUNTIME HAS THAT AN
 -- OPERATOR CAN READ about what a client decided, so the suite holds both ends of
