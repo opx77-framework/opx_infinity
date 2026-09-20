@@ -45,10 +45,15 @@ import { useBridge } from '@/composables/useBridge'
  * label. It is NOT tilted, and that needs no argument: a tag is pinned to a body
  * in the world, and the world is already supplying its perspective.
  *
- * THREE NAMES ON ONE LINE, and the line is the whole of the design problem. They
- * are not three equal things and drawing them as three would make a tag unreadable
- * across a street, so they are RANKED, and the ranking is carried by three
- * dimensions at once rather than by size alone:
+ * THREE NAMES, ONE PER LINE. They were on one line until the owner asked for the
+ * column, and the column is the better shape for a reason worth keeping: three
+ * runs abreast make a tag as wide as a body is tall, and at any distance the
+ * whole thing is a smear with a name somewhere in it. Stacked, a tag is the width
+ * of its widest run, and the eye reads down it the way it reads a label.
+ *
+ * They are still not three equal things, and the RANKING is what stops a column
+ * from reading as a list of three addresses. It is carried by three dimensions at
+ * once rather than by size alone:
  *
  *   THE CHARACTER   display face, uppercase, the brightest red. It is what the
  *                   city calls this person and it is the only run meant to be read
@@ -59,13 +64,16 @@ import { useBridge } from '@/composables/useBridge'
  *   THE CITIZEN ID  mono, smallest, tracked wide, dimmest. It is a code and it is
  *                   read one symbol at a time, which is what the tracking is for.
  *
- * The runs are separated by a HAIRLINE RULE and not by a bullet or a slash. A
- * glyph would be a fourth thing to read at the same weight as a name; a 1px rule
- * at 45% is a pause. It is the same reason this surface has no punctuation on it
- * anywhere else.
+ * THE LINE BREAK IS THE SEPARATOR, and nothing is drawn on top of it. On one
+ * line the runs were divided by a 1px hairline at 45% height -- a pause rather
+ * than a glyph, because a bullet or a slash would be a fourth thing to read at a
+ * name's weight. Turned on its side for a column that rule becomes a full-width
+ * hairline, which reads as the plate being divided into CELLS: exactly what the
+ * vertical one was shaped to avoid. So it is gone rather than rotated. This
+ * surface still has no punctuation on it anywhere.
  *
- * A RUN THAT IS EMPTY DRAWS NOTHING, rule and all -- a tag over somebody still
- * loading is the name and the square and no hanging separators.
+ * A RUN THAT IS EMPTY DRAWS NOTHING -- a tag over somebody still loading is the
+ * name and the square, and the plate shrinks back to the one-line strip it was.
  *
  * `TAGS.COLORS` IN `config/admin.lua` IS NOT READ. It is `#F2F6F8` / `#FCEE0A` /
  * `#22D8E2` / `#0A1220`: the pass-01 palette, and `.op-theme-city` turns the
@@ -283,21 +291,20 @@ useBridge('open77:anchors', (payload: Payload) => {
         :class="{ staff: entry.row.staff, bare: !technical }"
         data-augmented-ui="tr-clip border"
       >
+        <!-- ONE RUN PER LINE. It used to be one line with 1px rules between the
+             runs, and the rules are gone with the change rather than turned on
+             their side: a horizontal hairline across a stacked plate reads as
+             the plate being divided into cells, which is the exact thing the
+             old vertical rule was shaped to avoid. Stacked, the line break IS
+             the pause, and a separator on top of it is punctuation for a gap
+             that is already there. -->
         <span class="name">{{ entry.row.name }}</span>
 
-        <!-- Each run brings its own rule. Written as one `v-if` per pair rather
-             than as a separator computed between them: the pairs are known at
-             author time, and a `<template>` wrapper per run would cost a fragment
-             on every tag, on a surface that re-renders with the roster. -->
-        <template v-if="showUser && entry.row.user">
-          <span class="rule" aria-hidden="true" />
-          <span class="user">{{ entry.row.user }}</span>
-        </template>
+        <span v-if="showUser && entry.row.user" class="user">{{ entry.row.user }}</span>
 
-        <template v-if="showCitizen && entry.row.citizenId">
-          <span class="rule" aria-hidden="true" />
-          <span class="cid">{{ entry.row.citizenId }}</span>
-        </template>
+        <span v-if="showCitizen && entry.row.citizenId" class="cid">
+          {{ entry.row.citizenId }}
+        </span>
 
         <span v-if="entry.row.staff && staffLabel" class="badge">{{ staffLabel }}</span>
       </span>
@@ -338,7 +345,11 @@ useBridge('open77:anchors', (payload: Payload) => {
   left: 0;
   top: 0;
   display: flex;
-  align-items: center;
+  /* THE SQUARE SITS ON THE FIRST LINE, not in the middle of the column. Centred
+     against a three-run plate it would float beside the account name, which is
+     the one run it has nothing to do with -- it marks the player, and the player
+     is the name on the top line. */
+  align-items: flex-start;
   white-space: nowrap;
 
   /* THE SMOOTHING, and it is worth being exact about what it is for.
@@ -417,17 +428,31 @@ useBridge('open77:anchors', (payload: Payload) => {
    square's four corners sit outside the plate's outline on every side that
    matters, and the plate's leading edge disappears behind it.
    ========================================================================== */
+/* A COLUMN, NOT A ROW, and the height goes with it. The plate used to be a
+   fixed 20px strip holding name, account and id side by side, which reads well
+   for one short name and badly for everything else: three runs on one line make
+   a tag as wide as the body is tall, and at any distance the whole thing is a
+   smear. Stacked, the tag is the width of its widest run and the eye reads down
+   it the way it reads a label.
+
+   `align-items: flex-start` so the runs share a left edge -- centred, the three
+   lines would each start somewhere different and the column would have no spine
+   to read down. */
 .plate {
   position: relative;
   display: inline-flex;
-  align-items: center;
-  gap: var(--op-space-2);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   box-sizing: border-box;
-  height: 20px;
+  /* A floor rather than a height: one run is still the strip it always was, and
+     the second and third grow it. */
+  min-height: 20px;
   /* The overlap. The left padding pays it back so the first glyph is not under
      the square. */
   margin-left: -6px;
-  padding: 0 var(--op-space-3) 0 calc(var(--op-space-3) + 6px);
+  padding: var(--op-space-1) var(--op-space-3) var(--op-space-1)
+    calc(var(--op-space-3) + 6px);
 
   --aug-tr: var(--op-cut-sm);
   --aug-border-bg: var(--op-red-idle);
@@ -446,18 +471,6 @@ useBridge('open77:anchors', (payload: Payload) => {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--op-red-text);
-}
-
-/* THE PAUSE BETWEEN TWO RUNS. A 1px column at 45% of the plate's own height, so
-   it sits inside the lettering rather than spanning the frame: a full-height rule
-   would read as the plate being divided into cells. `flex: none` because a plate
-   that has to shrink shrinks the names, never the punctuation. */
-.rule {
-  flex: none;
-  width: 1px;
-  height: 9px;
-  background: var(--op-red-idle);
-  opacity: 0.55;
 }
 
 /* THE ACCOUNT. Mono, because it is an identifier somebody typed rather than a
@@ -505,10 +518,6 @@ useBridge('open77:anchors', (payload: Payload) => {
 .plate.staff .cid {
   color: var(--op-alarm);
   opacity: 0.72;
-}
-
-.plate.staff .rule {
-  background: var(--op-alarm);
 }
 
 /* The word itself, after the name and quieter than it: what is being said is
