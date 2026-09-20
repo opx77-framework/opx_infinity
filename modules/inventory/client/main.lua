@@ -514,8 +514,33 @@ local function registerEvents()
 			-- The comment that was here said there was no contract to read. There
 			-- is: `animations` publishes one, it takes the same four options under
 			-- the same names, and it is in this runtime.
+			-- THE BAR OWNS THE GESTURE, and that is why this asks `progress` rather
+			-- than `animations`. A timed action is three things -- a picture of how
+			-- long is left, a hold on the player, and a gesture -- and they have to
+			-- begin and end together or the player is left standing in an animation
+			-- with no bar, or held by a lock with nothing on screen to explain it.
+			-- `progress` starts both and `finish` takes both down on every exit.
+			--
+			-- A DURATION IS WHAT MAKES IT A BAR. An item whose `USE.ANIMATION` names
+			-- no `DURATION_MS` is a gesture and not a timed action, so it goes
+			-- straight to `animations` as before -- there is nothing to count.
+			local progress = OPX.Api.Get('progress')
 			local animations = OPX.Api.Get('animations')
-			if animations == nil then
+
+			if progress ~= nil and animation.durationMs ~= nil then
+				local shown = progress.Start(FOCUS_OWNER, {
+					label = payload.label or payload.name or '',
+					durationMs = animation.durationMs,
+					animation = { name = animation.name, variant = animation.variant },
+					-- Eating is the case this was written for, and the owner's words
+					-- were that the player must not be able to stop it.
+					cancelable = false,
+				})
+				if type(shown) == 'table' and shown.ok ~= true then
+					Open77.log.debug(('[inventory] the bar for %s was refused: %s')
+						:format(animation.name, tostring(shown.error)))
+				end
+			elseif animations == nil then
 				-- Optional, like every other contract this module reaches for: the
 				-- item is still used and its needs still move, and only the gesture
 				-- is lost. Said once rather than silently, because a missing
@@ -527,8 +552,6 @@ local function registerEvents()
 					variant = animation.variant,
 					loop = false,
 					durationMs = animation.durationMs,
-					-- The player may not walk out of eating. `Runtime.Play` reads
-					-- this and the lock is what holds them to it.
 					cancelable = false,
 				}, FOCUS_OWNER)
 				if type(played) == 'table' and played.ok ~= true then

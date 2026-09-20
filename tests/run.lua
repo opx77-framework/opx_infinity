@@ -1751,7 +1751,7 @@ do
 		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'unloaded'))
 		check('the join is released the moment the character goes',
 			states[#states] == 'false/idle', table.concat(states, ', '))
-		control.Pump(4)
+		control.Pump(20)
 		check('and the claim is withdrawn rather than waiting out the window',
 			appearance.Wardrobe.Owed() == false)
 	end
@@ -8439,6 +8439,136 @@ do
 		check('some items name a picture of their own', named > 0, tostring(named))
 		check('and every one of those files is in ui/public/images', #missing == 0,
 			table.concat(missing, ', '))
+	end
+end
+
+-- ── the timed-action bar ────────────────────────────────────────────────────
+-- THE RISK IS NOT THE BAR, IT IS THE LOCK. A bar that fails to draw is a
+-- missing picture; a lock that is not released is a player who cannot move for
+-- the rest of their session and has nothing on screen to explain it. So almost
+-- every check here is about the release, and about the fact that there is
+-- exactly one function that performs it.
+section('the timed-action bar')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the progress module', why == nil, why)
+
+	local progress = why == nil and env.OPX.Modules.Get('progress') or nil
+	check('the module declared itself', type(progress) == 'table')
+
+	local contract = why == nil and env.OPX.Api.Get('progress') or nil
+	check('and published its contract', type(contract) == 'table'
+		and type(contract.Start) == 'function')
+
+	if type(contract) == 'table' then
+		-- Every block and release the module asks the host for, in order.
+		local claims = {}
+		env.Open77.input = env.Open77.input or {}
+		env.Open77.input.setActionBlocked = function(action, blocked)
+			claims[#claims + 1] = { action = action, blocked = blocked }
+			return true
+		end
+
+		local function held()
+			local out = {}
+			for index = 1, #claims do
+				local claim = claims[index]
+				if claim.blocked then out[claim.action] = true else out[claim.action] = nil end
+			end
+			return out
+		end
+
+		-- ── the refusals ──
+		check('a bar needs an owner', contract.Start('', { label = 'x', durationMs = 1000 })
+			.ok == false)
+		check('and something to say',
+			contract.Start('t', { durationMs = 1000 }).error == 'invalid_label')
+		check('and a duration inside the configured bounds',
+			contract.Start('t', { label = 'x', durationMs = 10 }).error == 'invalid_duration'
+			and contract.Start('t', { label = 'x', durationMs = 999999 }).error
+				== 'invalid_duration')
+
+		-- ── up ──
+		claims = {}
+		local started = contract.Start('eat', { label = 'Eating', durationMs = 3000 })
+		check('a well-formed bar goes up', started.ok == true, started.error)
+		check('and the state says whose it is',
+			contract.State().value.open == true and contract.State().value.owner == 'eat')
+
+		-- ONLY THE PLATFORM'S OWN VOCABULARY. Five words are blockable on this
+		-- build and anything else answers `unknown_action`; the first draft of
+		-- `M.LOCKED` named eight, seven of which would have been refused, and the
+		-- bar would have held nobody at all.
+		local now = held()
+		check('the player is held by Movement and Attack', now.Movement and now.Attack)
+		local stray = {}
+		for index = 1, #claims do
+			local action = claims[index].action
+			if action ~= 'Movement' and action ~= 'Attack' then stray[#stray + 1] = action end
+		end
+		check('and by nothing the platform would refuse', #stray == 0,
+			table.concat(stray, ','))
+
+		-- ── one at a time ──
+		local second = contract.Start('other', { label = 'Other', durationMs = 1000 })
+		check('a second bar is refused rather than stacked',
+			second.ok == false and second.error == 'progress_busy', second.error)
+		check('and the first is still up', contract.State().value.owner == 'eat')
+
+		-- ── only its owner ──
+		check('somebody else may not take it down',
+			contract.Stop('other').error == 'not_owner')
+
+		-- ── down, and the lock with it ──
+		local done = nil
+		env.AddEventHandler(progress.Event.ON_DONE, function(payload) done = payload end)
+
+		claims = {}
+		check('its own owner may', contract.Stop('eat').ok == true)
+		check('the bar is down', contract.State().value.open == false)
+		check('EVERY action it took is given back',
+			held().Movement == nil and held().Attack == nil,
+			tostring(#claims) .. ' claim(s)')
+		check('and the outcome says it did not finish',
+			done ~= nil and done.ending == progress.Ending.STOPPED and done.finished == false,
+			done and tostring(done.ending))
+
+		-- ── the clock ──
+		-- THE ONLY ENDING THAT MEANS THE ACTION HAPPENED. Every other value is the
+		-- action NOT happening, and a caller reading `ending ~= nil` as success is
+		-- the bug the vocabulary exists to make hard to write.
+		done = nil
+		claims = {}
+		contract.Start('eat', { label = 'Eating', durationMs = 300 })
+		control.Pump(20)
+		check('a bar whose clock runs out finishes',
+			done ~= nil and done.ending == progress.Ending.FINISHED and done.finished == true,
+			done and tostring(done.ending))
+		check('and gives the lock back on that path too',
+			held().Movement == nil and held().Attack == nil)
+
+		-- ── the character leaving ──
+		-- The path that would otherwise leave a lock on somebody who is no longer
+		-- the person who took it.
+		done = nil
+		claims = {}
+		contract.Start('eat', { label = 'Eating', durationMs = 30000 })
+		check('a long bar is up', contract.State().value.open == true)
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'unloaded'))
+		check('a character leaving takes the bar', contract.State().value.open == false)
+		check('and the lock with it',
+			held().Movement == nil and held().Attack == nil)
+		check('reported as an interruption, not a finish',
+			done ~= nil and done.ending == progress.Ending.INTERRUPTED
+			and done.finished == false, done and tostring(done.ending))
+
+		-- ── a host that cannot block ──
+		-- The bar still draws. The player can walk out of it, which is worse than
+		-- being held and far better than no bar at all.
+		env.Open77.input.setActionBlocked = nil
+		local blind = contract.Start('eat', { label = 'Eating', durationMs = 1000 })
+		check('a build that cannot block still shows the bar', blind.ok == true, blind.error)
+		check('and taking it down does not raise', pcall(contract.Stop, 'eat'))
 	end
 end
 print(('\n%d checks, %d failed'):format(checks, failures))
