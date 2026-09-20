@@ -53,8 +53,41 @@ local VERIFY_MS = 2000
 -- purpose: the join asks for a fitting room and waits that long for one, and a
 -- decision that arrived after the room had given up would be a decision nobody
 -- was left to act on.
+--
+-- BOTH ARE COUNTED FROM THE GATE, NOT FROM THE JOIN. See `HELD`: the clock
+-- restarts while a screen the player is standing in front of is up, so the two
+-- numbers keep the same relation to `CREATION_WAIT_MS` -- both are measured from
+-- the first moment the clothes could have gone on -- and neither is spent on a
+-- creation, which is where they used to go.
 local GATE_REPORT_MS = 12000
 local GATE_GIVEUP_MS = 40000
+
+-- The clauses of `shut` that are a SCREEN THE PLAYER IS STANDING IN FRONT OF,
+-- and against which neither number above may be counted.
+--
+-- No value of GATE_GIVEUP_MS is right for these. A creation is human-paced and
+-- has no deadline anywhere in this module on purpose -- `awaitWorld` says so in
+-- as many words, "a player building a face for an hour is a correct state" --
+-- so a fixed budget measured from the character arriving is a budget that
+-- expires mid-creation and then reports the player's own deliberation as a
+-- fault. Measured on 2026-09-20: creator up at 14:46:47, the face stored at
+-- 14:47:57, and this gate gave up at 14:47:27 -- thirty seconds before the
+-- creation it was waiting for had ended.
+--
+-- THE SAFETY NET IS NOT WEAKENED, IT IS AIMED. The forty seconds exist so a
+-- character is not held undressed and unplaced for a session by a gate nothing
+-- is doing anything about; a modal on screen is the opposite of that, and every
+-- one of these clauses ends in something bounded elsewhere -- the creator by
+-- `CREATOR_UNSEEN_MS`, a commit by its own deadline, an edit by the player
+-- closing it. So the clock is RESTARTED while one of them holds, and the full
+-- forty seconds are then available from the moment the screen comes down, which
+-- is the first moment the clothes could have gone on at all.
+local HELD = {
+	editing = true,
+	creating = true,
+	creator_up = true,
+	committing = true,
+}
 
 -- Longest the published look waits for the clothes, so the player is not drawn in
 -- the pristine puppet's clothes first.
@@ -358,16 +391,25 @@ end
 -- no clothes, no error, no journal line, and a join-time fitting room waiting on
 -- a decision that is never reached. `Check` reports this name once the gate has
 -- been shut long enough to be a fault rather than a moment.
+--
+-- THE CAUSES COME BEFORE THEIR CONSEQUENCES, and the order below is nothing but
+-- that. `not_announced` and `appearance_unsettled` are both DOWNSTREAM of a
+-- creation -- `AppearanceSettled` is false for as long as `creating` is true, by
+-- design, and the announcement waits on `AppearanceSettled` -- so a creation
+-- reported itself as `not_announced`, which is the symptom and names nothing a
+-- reader can act on. Measured on 2026-09-20: forty seconds of `not_announced` on
+-- ZXX-GAE6 that were forty seconds of a player standing in the character
+-- creator, and two earlier diagnoses were argued from that word.
 -- @return string|nil
 local function shut()
 	if State.citizenId == nil then return 'no_character' end
 	if State.citizenId ~= citizen then return 'character_changed' end
-	if not State.gameplayAnnounced then return 'not_announced' end
-	if not State.AppearanceSettled() then return 'appearance_unsettled' end
 	if State.editing then return 'editing' end
 	if State.creating then return 'creating' end
 	if State.creatorUp then return 'creator_up' end
 	if State.commit ~= nil then return 'committing' end
+	if not State.gameplayAnnounced then return 'not_announced' end
+	if not State.AppearanceSettled() then return 'appearance_unsettled' end
 	if Runtime.ModalOnScreen() then return 'native_modal' end
 	if not Runtime.Faceable() then return 'not_faceable' end
 	return nil
@@ -677,6 +719,22 @@ end
 -- @return boolean
 local function stalled(reason)
 	local now = Runtime.NowMs()
+
+	-- See `HELD`. Said once per clause per world entry -- `gateSaid` is cleared
+	-- when the gate opens -- because it is a decision about what this module is
+	-- doing, and because a line per pass would spend the note budget five times
+	-- a second.
+	if HELD[reason] then
+		if gateSaid ~= reason then
+			gateSaid = reason
+			Runtime.Note(('the clothing of %s waits on %s; the give-up clock does not run ' ..
+				'while a screen the player is standing in front of is up')
+				:format(tostring(citizen), reason))
+		end
+		gateSinceMs = 0
+		return false
+	end
+
 	if gateSinceMs == 0 then gateSinceMs = now end
 	local held = now - gateSinceMs
 

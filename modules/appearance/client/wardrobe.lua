@@ -417,6 +417,21 @@ local OWNER = 'appearance'
 -- and make the room unopenable for the rest of the window.
 local roomOffered, roomOwed = false, false
 
+-- A CREATION'S ROOM THAT RAN OUT OF ITS WINDOW WITHOUT EVER OPENING:
+-- `{ citizenId, reason, resumed }`, or nil for no such thing.
+--
+-- AN EXPIRY IS NOT A POLICY DECISION, and holding nothing to say which one
+-- happened is how the two were confused on the wire. Under 'first' the policy
+-- test reads a single boolean -- was this a creation -- so the offer that comes
+-- round again after an expiry answers "the policy is first and this is not a
+-- creation", which is a sentence about the OPERATOR'S CHOICE describing a
+-- timeout. Measured on 2026-09-20: owed to ZXX-GAE6 at 14:47:57, declined as
+-- "not a creation" at 14:48:10, same character, same join, same creation.
+--
+-- `resumed` is what keeps this from being a loop: a resumed offer that expires
+-- again is recorded, reported and never resumed a second time.
+local roomExpired = nil
+
 --- Whether the room is up or opening.
 -- @author dop42
 -- @return boolean
@@ -981,7 +996,8 @@ end
 -- without doing one of the two would hold the spawn menu shut for the session.
 -- The one exception is `wardrobe_busy` -- a room is already up, and its own close
 -- withdraws the claim.
-local function awaitRoom(owner, creation, citizenId)
+-- @param resumed boolean this offer is itself the retry of one that expired
+local function awaitRoom(owner, creation, citizenId, resumed)
 	creationWatch = creationWatch + 1
 	local mine = creationWatch
 	CreateThread(function()
@@ -1012,9 +1028,19 @@ local function awaitRoom(owner, creation, citizenId)
 		-- owns it now, and both of the things that do -- a new character and a new
 		-- offer -- settle it themselves.
 		if mine == creationWatch then
-			Runtime.Note(('no fitting room for %s: still %s after %d ms')
-				:format(tostring(citizenId), tostring(reason), creationWaitMs()))
-			claim(false, reason or 'timeout')
+			-- RECORDED AS AN EXPIRY, and withdrawn under that name rather than under
+			-- whatever the last try was refused with. The window ending and the room
+			-- being refused are different endings: one is a clock, the other is a
+			-- state, and `wardrobeWanted` carries only the one string. See
+			-- `roomExpired` -- this is what stops the retry being re-decided by a
+			-- policy that never declined anything.
+			if creation then
+				roomExpired = { citizenId = citizenId, reason = tostring(reason or 'timeout'),
+					resumed = resumed }
+			end
+			Runtime.Note(('the fitting room owed to %s expired after %d ms: still %s')
+				:format(tostring(citizenId), creationWaitMs(), tostring(reason)))
+			claim(false, 'expired')
 		end
 	end)
 end
@@ -1023,13 +1049,43 @@ end
 -- @param creation boolean whether the game's own creator has just built this body
 -- @param citizenId string|nil the character the room must be for
 local function offerRoom(creation, citizenId)
+	local policy = M.WardrobeOffer or M.WARDROBE_POLICY_DEFAULT
+	if policy == M.WardrobePolicy.NEVER then return end
+
+	-- THE OFFER THAT EXPIRED IS STILL THIS CREATION'S OFFER, and it is answered
+	-- ABOVE the once-per-entry guard because it is the one thing that is not a
+	-- second offer: it is the first one, resumed. `clothingRestored` carries
+	-- `creation = false` -- it is the stored record going on, not the creator
+	-- finishing -- which is true of a returning player and true here, where it is
+	-- the same join finally reaching the clothes the creation's own room was
+	-- waiting for. Judging it by `creation` at this point asks the policy question
+	-- twice and answers the second one wrongly.
+	--
+	-- ONCE. A resumed offer that expires again is recorded, reported and left
+	-- alone; the alternative is a world entry that re-offers the same room for as
+	-- long as anything keeps publishing.
+	local expired = roomExpired
+	local resumed = false
+	if expired ~= nil and expired.citizenId == citizenId then
+		roomExpired = nil
+		if expired.resumed then
+			Runtime.Note(('no fitting room for %s: the one owed to its creation expired twice ' ..
+				'(%s), so it is not offered again this entry')
+				:format(tostring(citizenId), expired.reason))
+			return
+		end
+		Runtime.Note(('the fitting room owed to %s expired (%s) before the clothes were on; ' ..
+			'they are on now, so the creation is offered its room again')
+			:format(tostring(citizenId), expired.reason))
+		creation, resumed, roomOffered = true, true, false
+	end
+
 	-- Once per world entry. A creation publishes `created` and then, seconds
 	-- later, `clothingRestored`; under 'always' both are an offer, and without
 	-- this the second would supersede the first -- restarting the retry window
 	-- and, worse, restarting it AFTER the first had already given up.
 	if roomOffered then return end
-	local policy = M.WardrobeOffer or M.WARDROBE_POLICY_DEFAULT
-	if policy == M.WardrobePolicy.NEVER then return end
+
 	if policy == M.WardrobePolicy.FIRST and not creation then
 		-- Said, not silent, and said where the operator reads. 'first' declining a
 		-- returning character is the CORRECT behaviour and is also exactly what a
@@ -1048,7 +1104,7 @@ local function offerRoom(creation, citizenId)
 	-- spawn menu would open in.
 	claim(true)
 	Runtime.Note(('a fitting room is owed to %s (%s)'):format(tostring(citizenId), policy))
-	awaitRoom(OWNER, creation, citizenId)
+	awaitRoom(OWNER, creation, citizenId, resumed)
 end
 
 -- ── the other half of the seam ──────────────────────────────────────────────
@@ -1134,7 +1190,7 @@ function M.Wardrobe.Check()
 		-- room drawn reaches neither -- and a claim left standing for nobody is a
 		-- join sequence waiting on a player who is not there.
 		if roomOwed and State.citizenId == nil then
-			roomOffered = false
+			roomOffered, roomExpired = false, nil
 			claim(false, 'no_character')
 		end
 
@@ -1180,6 +1236,9 @@ function M.Wardrobe.Wire()
 			creationWatch = creationWatch + 1
 			awaitSave = nil
 			roomOffered = false
+			-- An expiry belongs to the character it expired for; the one arriving
+			-- has its own offer to be made.
+			roomExpired = nil
 			Panel.Close('character_changed')
 			release(false, 'character_changed')
 			-- After the release, which withdraws the claim itself when a room was
@@ -1230,6 +1289,22 @@ function M.Wardrobe.Wire()
 	-- 'first' nothing raises `created` twice and this changes nothing.
 	AddEventHandler(OPX.Host.WORLD_READY, function()
 		release(false, 'world_changed')
-		roomOffered = false
+
+		-- NOT WHILE ONE IS STILL OWED, and this is the half of the fitting-room
+		-- defect that lived here. A CREATION'S OWN BOOTSTRAP ANSWER IS WHAT LOADS
+		-- THE WORLD: the creator is the pre-game menu's screen, `FinishCreation`
+		-- spends the bootstrap on the body it built, and the world that comes up
+		-- afterwards raises this event. So every creation reaches here seconds
+		-- after `created`, with its offer live and its retry window still running
+		-- -- and clearing `roomOffered` there is not "a new world entry may be
+		-- offered a room", it is throwing away the offer this join is in the
+		-- middle of. `clothingRestored` then walked through the guard that exists
+		-- to stop exactly that and was re-decided by policy.
+		--
+		-- `release` above withdraws the claim for a room that was UP; a room that
+		-- was only owed is untouched by it, which is why the test is `roomOwed`
+		-- and why it has to come after. Under 'always' a genuine later world
+		-- change owes nothing and is offerable again exactly as before.
+		if not roomOwed then roomOffered = false end
 	end)
 end

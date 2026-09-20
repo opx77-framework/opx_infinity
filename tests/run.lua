@@ -1999,6 +1999,164 @@ do
 			decisions[1] == 'false/clothing_gate_shut', table.concat(decisions, ', '))
 		check('naming it in the journal as well', toldServer():find('was never put on', 1, true) ~= nil,
 			toldServer())
+		-- THE ANNOUNCEMENT'S OWN SILENCE. `not_announced` above is this module's
+		-- answer to the clothing half and says nothing about why; every `return
+		-- false` in `Announce` used to be silent, so the chain ended at the word
+		-- and three diagnoses were argued from it.
+		check('and the announcement that is holding it names its own clause',
+			toldServer():find('gameplay-ready is held by no_gameplay_world', 1, true) ~= nil,
+			toldServer())
+	end
+
+	--- Every note a client has sent the server under this module's id, as one
+	--- string. The block above has its own copy, scoped to itself; this is the one
+	--- the blocks below share.
+	local function notesOf(env, control)
+		local note = env.OPX.Event(env.OPX.Channel.NET, 'runtime', 'note')
+		local said = {}
+		for index = 1, #control.serverEvents do
+			local sent = control.serverEvents[index]
+			if sent.name == note and sent[1] == 'appearance' then said[#said + 1] = tostring(sent[2]) end
+		end
+		return table.concat(said, ' | ')
+	end
+
+	-- ── the forty seconds that were somebody building a face ─────────────────
+	-- THE CLOTHING GIVE-UP MEASURED THE WRONG THING. Its clock started when the
+	-- character arrived, and on a join-time creation the character arrives BEFORE
+	-- the creator opens: the player then stands in the game's own screen for as
+	-- long as they like -- which this module has no deadline for anywhere, on
+	-- purpose -- while forty seconds of budget meant for "a gate nothing is doing
+	-- anything about" run out underneath them. Measured on the live server on
+	-- 2026-09-20: creator up at 14:46:47, face stored at 14:47:57, this gate gave
+	-- up at 14:47:27.
+	do
+		local env, control = joinClient('always', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'citizen-creating', charInfo = { gender = 'female' }, clothing = false })
+
+		local decisions = {}
+		env.AddEventHandler(appearance.Event.ON_DECISION, function(payload)
+			if type(payload) == 'table' and payload.event == 'clothingRestored' then
+				decisions[#decisions + 1] = tostring(payload.ok) .. '/' .. tostring(payload.error)
+			end
+		end)
+
+		-- The creator on screen, which is the whole of the difference.
+		appearance.Face.creating = true
+		check('a creation names itself, rather than the announcement it is holding up',
+			appearance.Clothing.Shut() == 'creating', tostring(appearance.Clothing.Shut()))
+
+		-- Well past GATE_GIVEUP_MS: 48 seconds against a budget of 40.
+		control.Pump(480)
+		check('and a creation longer than the give-up window does not spend it',
+			appearance.Clothing.Report() == 'waiting', appearance.Clothing.Report())
+		check('so nothing is published saying the clothes can never go on',
+			#decisions == 0, table.concat(decisions, ', '))
+		check('the operator is told what is holding it, once',
+			select(2, notesOf(env, control):gsub('waits on creating', '')) == 1,
+			notesOf(env, control))
+
+		-- THE NET IS AIMED, NOT REMOVED. The moment the screen comes down the full
+		-- window is available again -- and it still runs out.
+		appearance.Face.creating = false
+		control.Pump(480)
+		check('and the give-up still fires once the screen the player was in comes down',
+			appearance.Clothing.Report() == 'failed', appearance.Clothing.Report())
+		check('naming the clause that is left rather than the creation that ended',
+			notesOf(env, control):find('was never put on: not_announced', 1, true) ~= nil,
+			notesOf(env, control))
+	end
+
+	-- ── an expiry is not a policy refusal ────────────────────────────────────
+	-- THE TWO OUTCOMES THE JOURNAL COULD NOT TELL APART. Under 'first' the offer
+	-- test is one boolean -- was this a creation -- and `clothingRestored` carries
+	-- `creation = false` because it is the stored record going on. So a creation
+	-- whose room ran out of its window and came round again on the clothes was
+	-- answered "the policy is first and this is not a creation": a sentence about
+	-- the operator's choice, describing a clock. Only one of those two is
+	-- anybody's decision.
+	do
+		local env, control = joinClient('first', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+
+		arrive(env, control, 'citizen-expired')
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'created', citizenId = 'citizen-expired' })
+		check('a creation is owed its room', appearance.Wardrobe.Owed() == true)
+
+		control.Pump(12)
+		check('the window runs out with no room ever drawn',
+			appearance.Wardrobe.Owed() == false)
+		check('and the journal calls that an expiry, not a refusal',
+			notesOf(env, control):find('expired after', 1, true) ~= nil, notesOf(env, control))
+
+		-- A world entry with nothing owed clears the once-per-entry guard, exactly
+		-- as it is meant to -- which is what puts the expired offer back in front
+		-- of the policy test at all. Without this the guard hides the defect
+		-- rather than fixing it, and the check below would pass on a module that
+		-- still cannot tell the two outcomes apart.
+		control.Fire(env.OPX.Host.WORLD_READY)
+
+		-- The clothes finally go on, seconds later, exactly as they did on the
+		-- server: same character, same join, same creation.
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'clothingRestored', citizenId = 'citizen-expired' })
+		check('THE EXPIRY IS NOT RE-DECIDED AS A POLICY REFUSAL',
+			notesOf(env, control):find('is not a creation', 1, true) == nil,
+			notesOf(env, control))
+		check('it is resumed as the creation offer it always was',
+			appearance.Wardrobe.Owed() == true, notesOf(env, control))
+
+		-- And once only: a resumed offer that expires again is reported and left
+		-- alone, or a world entry could offer the same room for ever.
+		control.Pump(12)
+		check('a second expiry withdraws the claim again',
+			appearance.Wardrobe.Owed() == false)
+		control.Fire(env.OPX.Host.WORLD_READY)
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'clothingRestored', citizenId = 'citizen-expired' })
+		check('and is not resumed a second time',
+			appearance.Wardrobe.Owed() == false,
+			notesOf(env, control))
+		check('still without ever calling it a policy refusal',
+			notesOf(env, control):find('is not a creation', 1, true) == nil,
+			notesOf(env, control))
+	end
+
+	-- ── the world a creation's own bootstrap answer loads ────────────────────
+	-- THE OTHER HALF, AND IT IS STRUCTURAL RATHER THAN A RACE. The game's creator
+	-- is the pre-game menu's screen: `FinishCreation` spends the character
+	-- bootstrap on the body it built, and the world that comes up afterwards
+	-- raises `worldReady`. Every creation therefore reaches that handler seconds
+	-- after `created`, with its offer live -- and the handler used to clear
+	-- `roomOffered` unconditionally, which threw away the offer this join was in
+	-- the middle of and let `clothingRestored` walk through the guard that exists
+	-- to stop precisely that.
+	do
+		local env, control = joinClient('first', 60000)
+		local appearance = env.OPX.Modules.Get('appearance')
+
+		arrive(env, control, 'citizen-bootstrapped')
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'created', citizenId = 'citizen-bootstrapped' })
+		check('the creation is owed a room with a long window to open in',
+			appearance.Wardrobe.Owed() == true)
+
+		control.Fire(env.OPX.Host.WORLD_READY)
+		check('the world the creation itself loaded does not withdraw the claim',
+			appearance.Wardrobe.Owed() == true, notesOf(env, control))
+
+		env.TriggerEvent(appearance.Event.ON_DECISION,
+			{ ok = true, event = 'clothingRestored', citizenId = 'citizen-bootstrapped' })
+		check('and the clothes going on do not re-decide the live offer by policy',
+			notesOf(env, control):find('is not a creation', 1, true) == nil,
+			notesOf(env, control))
+		check('the offer that is still running is the one that stands',
+			select(2, notesOf(env, control):gsub('a fitting room is owed', '')) == 1,
+			notesOf(env, control))
 	end
 
 	-- ── the catalogue, read per slot, standing behind seven sliders ──────────
