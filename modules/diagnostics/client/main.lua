@@ -34,13 +34,21 @@ local REPORT_AFTER_MS = 2000
 
 --- Puts every client module that did not come up in the SERVER journal.
 --
--- WHY THIS EXISTS, and it is the same reason as the page relay above. A client
--- module that fails is written to `Open77.log` -- a file on the player's machine,
--- which the operator cannot read -- so from the server a module that failed and a
--- module that was never written look identical, and from the player both look
--- like "it does not work". The owner's words for it were that the inventory
--- "sometimes starts, sometimes not", which is a sentence nobody can act on: this
--- turns it into a line naming the module, its state and its reason.
+-- WHY THIS EXISTS. A client module that fails is written to `Open77.log` -- a file
+-- on the player's machine, which the operator cannot read -- so from the server a
+-- module that failed and a module that was never written look identical, and from
+-- the player both look like "it does not work". The owner's words for it were that
+-- the inventory "sometimes starts, sometimes not", which is a sentence nobody can
+-- act on: this turns it into a line naming the module, its state and its reason.
+--
+-- THIS IS THE HALF OF THIS MODULE THAT CONVERGED ON `OPX.Note`, and the page relay
+-- above is the half that did not. The difference is real. A boot fault is a
+-- handful of one-off DECISIONS, which is precisely what a note is; it was
+-- borrowing the page's wire, so it landed in the journal mislabelled `[page]`, and
+-- it bypassed even that wire's client-side cap -- it called `TriggerServerEvent`
+-- directly rather than going through `forwardPageReport`, so the only thing
+-- bounding it was the server's window. Going through core fixes the label and the
+-- bound at once.
 --
 -- Only the faults travel. A healthy boot sends nothing at all, so this costs one
 -- pass over a dozen records and no traffic on the normal path.
@@ -56,10 +64,10 @@ local function forwardModuleFaults()
 	end
 	if #faults == 0 then return end
 
-	-- One line per fault, through the page relay: it is capped and attributed to
-	-- the player, which is exactly what this wants too.
+	-- One note per fault, filed under the module system rather than under this
+	-- module: the line is about `inventory` failing, not about `diagnostics`.
 	for index = 1, #faults do
-		pcall(TriggerServerEvent, M.PAGE, ('client module: %s'):format(faults[index]))
+		OPX.Note('modules', ('client module: %s'):format(faults[index]))
 	end
 end
 

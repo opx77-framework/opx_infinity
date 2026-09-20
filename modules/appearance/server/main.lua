@@ -506,9 +506,6 @@ local MAX_CLOTHING_BYTES = 4096
 -- was already logged.
 local looks, absent, lastAt, warned = {}, {}, {}, {}
 
--- Clothing diagnostics logged per player, bounded against a flooding client.
-local diagnostics = {}
-
 --- Whether this half hands looks out at all.
 local function presenting()
 	return M.Settings.PRESENT_BODIES ~= false
@@ -643,10 +640,9 @@ local function bucketOf(player)
 	return read and tonumber(bucket) or nil
 end
 
---- Forgets a departed player's look, absence, warning, floors and diagnostics.
+--- Forgets a departed player's look, absence, warning and floors.
 local function forget(player)
 	looks[player], absent[player], warned[player] = nil, nil, nil
-	diagnostics[player] = nil
 	local prefix = ':' .. player
 	for key in pairs(lastAt) do
 		if key:sub(-#prefix) == prefix then lastAt[key] = nil end
@@ -766,18 +762,11 @@ local function registerEvents()
 		if looks[player] ~= nil then broadcast(player) end
 	end)
 
-	-- Evidence, never authority: this is what a client says about why its clothes
-	-- did not read back, and it is bounded because a flooding client would
-	-- otherwise own the log.
-	RegisterNetEvent(M.Event.DIAGNOSTIC, function(text)
-		local player = tonumber(source)
-		if not player or player <= 0 or type(text) ~= 'string' then return end
-		local count = (diagnostics[player] or 0) + 1
-		if count > 40 then return end
-		diagnostics[player] = count
-		Open77.log.info(('[appearance] diagnostic from player %d: %s')
-			:format(player, OPX.Audit.Safe(text, 1500)))
-	end)
+	-- The `DIAGNOSTIC` handler was here: forty lines per player per session, its
+	-- own counter, its own truncation. `core/server/note.lua` is that door now,
+	-- with one budget, one rate window and one counter for every module -- which
+	-- is the point, since two separate bounds on the same journal each think they
+	-- are the only one.
 
 	-- The native roster retires the replicas of a player who changes bucket, and
 	-- a character being placed moves them out of their selection bucket. So both
@@ -828,7 +817,7 @@ end
 
 --- Builds state and contributes this module's table. Never yields.
 function M.Init()
-	looks, absent, lastAt, warned, diagnostics = {}, {}, {}, {}, {}
+	looks, absent, lastAt, warned = {}, {}, {}, {}
 
 	-- Resolved once: a ceiling read per save would let a changed setting measure a
 	-- half-finished save against something else.
@@ -920,5 +909,5 @@ end
 --- Drops the looks held in memory. Nothing here is stored, so there is nothing
 --- to write: the next publication rebuilds all of it.
 function M.Stop()
-	looks, absent, lastAt, warned, diagnostics = {}, {}, {}, {}, {}
+	looks, absent, lastAt, warned = {}, {}, {}, {}
 end

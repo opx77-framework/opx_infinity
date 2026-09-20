@@ -71,6 +71,10 @@ local CORE_NAMESPACE = {
 	Booted = true, BootError = true,
 	Sessions = true, UserIdOf = true, DisplayNameOf = true, EnsureSession = true,
 	ForgetSession = true, SessionHolds = true,
+	-- CLIENT ONLY, and deliberately: `Note` is a client saying something to the
+	-- operator's journal, and the server already has one. The server half of it
+	-- is a net handler, which hangs off nothing.
+	Note = true,
 	Notify = true, NotifyLocale = true, RefusalKey = true, Refuse = true,
 	CommandResult = true, CommandNotice = true, Cooling = true, ForgetCooldowns = true,
 	Buckets = true, Gate = true, UI = true, Toast = true, Command = true, Tune = true,
@@ -1947,12 +1951,17 @@ do
 		check('and the gate that holds it up can be named',
 			appearance.Clothing.Shut() ~= nil, tostring(appearance.Clothing.Shut()))
 
-		--- Every diagnostic this client has sent the server, as one string.
+		--- Every note this client has sent the server, as one string.
+		--- On the CORE event now, and filed under this module's id: the module's own
+		--- relay converged on `OPX.Note`, so a note is `(module, text)`.
 		local function toldServer()
+			local note = env.OPX.Event(env.OPX.Channel.NET, 'runtime', 'note')
 			local said = {}
 			for index = 1, #control.serverEvents do
 				local sent = control.serverEvents[index]
-				if sent.name == appearance.Event.DIAGNOSTIC then said[#said + 1] = tostring(sent[1]) end
+				if sent.name == note and sent[1] == 'appearance' then
+					said[#said + 1] = tostring(sent[2])
+				end
 			end
 			return table.concat(said, ' | ')
 		end
@@ -3822,6 +3831,298 @@ do
 				local item = hasRow('name')
 				return item ~= nil and tostring(item.value):find('Hundred', 1, true) ~= nil
 			end)(), (function() local i = hasRow('name') return i and tostring(i.value) end)())
+	end
+end
+
+-- ── the note door ────────────────────────────────────────────────────────────
+-- `OPX.Note` and `core/server/note.lua`. THE ONE THING THIS RUNTIME HAS THAT AN
+-- OPERATOR CAN READ about what a client decided, so the suite holds both ends of
+-- it: that an honest note arrives, that a hostile one does not, and -- the reason
+-- the feature exists at all -- that a door which has closed SAYS SO. A budget
+-- that ran out quietly would put an operator back in front of exactly the absence
+-- that caused three failed diagnoses of the fitting room in one day.
+section('the note door: the client half')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the note tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local NOTE = OPX.Event(OPX.Channel.NET, 'runtime', 'note')
+
+		--- Every note this client put on the wire, newest last.
+		local function notes()
+			local out = {}
+			for index = 1, #control.serverEvents do
+				local sent = control.serverEvents[index]
+				if sent.name == NOTE then out[#out + 1] = { sent[1], sent[2] } end
+			end
+			return out
+		end
+
+		check('`Note` is on the namespace and is a function',
+			type(OPX.Note) == 'function', type(OPX.Note))
+
+		-- NOT ZERO AT BOOT, and that is the converged door working: this harness
+		-- brings up a client where most modules are unavailable, and
+		-- `modules/diagnostics` now files each of those faults as a note. A real
+		-- client that came up clean sends none.
+		local base = #notes()
+		check('a degraded boot files its module faults as notes', base > 0, base)
+
+		local crossed = OPX.Note('appearance', 'a fitting room is owed')
+		local said = notes()
+		check('a note crosses the wire, and says so',
+			crossed == true and #said == base + 1, #said - base)
+		check('carrying the module it was filed under and the words',
+			said[#said][1] == 'appearance' and said[#said][2] == 'a fitting room is owed',
+			tostring(said[#said][1]) .. '/' .. tostring(said[#said][2]))
+
+		-- The local copy is not the point of the feature, but it is the complete
+		-- trail for whoever DOES have the player's machine.
+		local lastLocal = control.log.info[#control.log.info]
+		check('and it is written to the client log as well',
+			type(lastLocal) == 'string' and
+				lastLocal:find('[note] appearance: a fitting room is owed', 1, true) ~= nil,
+			tostring(lastLocal))
+
+		local before = #notes()
+		check('a note with no words does not cross', OPX.Note('appearance', '') == false)
+		check('nor does one whose text is not text', OPX.Note('appearance', { 1 }) == false)
+		check('nor does one whose text is missing entirely', OPX.Note('appearance') == false)
+		check('and none of the three reached the wire', #notes() == before, #notes() - before)
+
+		-- FORGIVING IN ONE DIRECTION ONLY. A caller who passed the wrong module
+		-- still gets their evidence into the journal; the server is what decides
+		-- whether the id is one it will print.
+		OPX.Note(nil, 'the module id was lost')
+		said = notes()
+		check('a note with no module id still crosses, under a placeholder',
+			said[#said][1] == 'unnamed', tostring(said[#said][1]))
+
+		-- The client cut is a courtesy to the wire; the server enforces its own.
+		OPX.Note('appearance', ('x'):rep(900))
+		said = notes()
+		check('an over-long note is cut before it is sent',
+			#said[#said][2] == 403, #said[#said][2])
+
+		OPX.Note('appearance', 'first\n[2026-01-01] [info] player was banned')
+		said = notes()
+		check('a newline is gone before the text leaves the client',
+			said[#said][2]:find('\n') == nil, said[#said][2])
+
+		-- A DIAGNOSTIC THAT CAN BREAK THE THING IT IS DIAGNOSING IS WORSE THAN
+		-- NONE. The whole body is under a `pcall`, so a wire that raises is a
+		-- `false` and not a stack trace out of whatever was already going wrong.
+		local realSend = env.TriggerServerEvent
+		env.TriggerServerEvent = function() error('the wire is down', 0) end
+		local raised = not pcall(OPX.Note, 'appearance', 'sent while the wire is down')
+		env.TriggerServerEvent = realSend
+		check('a wire that raises does not raise out of `Note`', raised == false)
+	end
+end
+
+section('the note door: the client budget announces itself')
+do
+	-- A FRESH CLIENT, because the budget is per session and the tests above have
+	-- already spent some of it.
+	local env, control, why = boot('client')
+	if why == nil then
+		local OPX = env.OPX
+		local NOTE = OPX.Event(OPX.Channel.NET, 'runtime', 'note')
+
+		for index = 1, 200 do OPX.Note('appearance', ('decision %d'):format(index)) end
+
+		local crossed, suppression, lastModule = 0, {}, nil
+		for index = 1, #control.serverEvents do
+			local sent = control.serverEvents[index]
+			if sent.name == NOTE then
+				crossed = crossed + 1
+				lastModule = sent[1]
+				if type(sent[2]) == 'string' and sent[2]:find('budget', 1, true) then
+					suppression[#suppression + 1] = sent[2]
+				end
+			end
+		end
+
+		check('two hundred notes cost exactly the budget on the wire', crossed == 60, crossed)
+		check('and the budget spends its LAST slot saying that it is spent',
+			#suppression == 1, #suppression)
+		check('exactly once, and not once per dropped note',
+			suppression[1] ~= nil and
+				suppression[1]:find('budget of 60 is spent', 1, true) ~= nil,
+			tostring(suppression[1]))
+		check('filed under the runtime, not under whichever module was last',
+			lastModule == 'runtime', tostring(lastModule))
+
+		-- The client log keeps everything. It is the JOURNAL that has the hole,
+		-- and the point of the line above is that the hole is labelled.
+		local kept = 0
+		for index = 1, #control.log.info do
+			if control.log.info[index]:find('[note] appearance:', 1, true) then kept = kept + 1 end
+		end
+		check('while the client log still has all two hundred', kept == 200, kept)
+	end
+end
+
+section('the note door: the server half')
+do
+	-- A CLOCK THE TEST OWNS. `Pump` only advances time while a thread is still
+	-- suspended, and both ceilings under test are measured in milliseconds.
+	local at = 0
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.GetGameTimer = function() return at end
+	end)
+	check('the server boots for the note tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local NOTE = OPX.Event(OPX.Channel.NET, 'runtime', 'note')
+
+		--- One note arriving from a player, exactly as the host would deliver it.
+		local function say(player, module, text)
+			env.source = player
+			control.netEvents[NOTE](module, text)
+			env.source = nil
+		end
+
+		--- Journal lines this door has written, at one level.
+		local function journal(level)
+			local out = {}
+			local lines = control.log[level]
+			for index = 1, #lines do
+				if lines[index]:find('[note]', 1, true) then out[#out + 1] = lines[index] end
+			end
+			return out
+		end
+
+		local function count(level) return #journal(level) end
+
+		check('the door is registered on the net channel',
+			type(control.netEvents[NOTE]) == 'function')
+
+		say(3, 'appearance', 'a fitting room is owed to citizen-7')
+		local written = journal('info')
+		check('an honest note reaches the journal', #written == 1, #written)
+		check('attributed to the player and the module it came from',
+			written[1] ~= nil and
+				written[1]:find('[note] appearance from player 3:', 1, true) ~= nil,
+			tostring(written[1]))
+
+		-- ── what the door refuses ────────────────────────────────────────────
+		local was = count('info')
+
+		-- Only `source` is not chosen by the client, and the console is not a
+		-- client: a note attributed to nobody is a line an operator would read as
+		-- if the server itself had written it.
+		say(0, 'appearance', 'from nobody')
+		check('a note from no player is refused', count('info') == was)
+
+		say(3, 'appearance', 42)
+		say(3, 42, 'the module id is a number')
+		say(3, nil, nil)
+		say(3, { 'appearance' }, 'the module id is a table')
+		check('a payload of the wrong types is refused', count('info') == was, count('info') - was)
+
+		say(3, 'Appearance', 'a capital')
+		say(3, 'appearance two', 'a space')
+		say(3, '../../etc', 'a path')
+		say(3, '[audit] event=ban', 'a module id dressed as a log line')
+		say(3, ('a'):rep(40), 'a module id past the ceiling')
+		say(3, '', 'no module id at all')
+		check('a module id that is not a module id is refused',
+			count('info') == was, count('info') - was)
+
+		-- REFUSED WHOLE, not truncated: cleaning a payload a client made large on
+		-- purpose is the work the attacker wanted done.
+		say(3, 'appearance', ('x'):rep(4000))
+		check('a note past the byte ceiling is refused whole', count('info') == was)
+
+		-- `pure/string.lua` makes this argument at length: a newline in text that
+		-- reaches a format string writes a second line indistinguishable from one
+		-- the runtime wrote.
+		say(3, 'appearance', 'harmless\n[2026-01-01] [info] player 3 was granted admin\r\tmore')
+		written = journal('info')
+		local forged = written[#written]
+		check('a control character cannot forge a second journal line',
+			forged ~= nil and forged:find('\n') == nil and forged:find('\r') == nil and
+				forged:find('\t') == nil, (forged or ''):gsub('%c', '?'))
+		check('and the words themselves still arrive',
+			forged ~= nil and forged:find('granted admin', 1, true) ~= nil, tostring(forged))
+
+		-- Cut to the same figure the client cuts to, so text that got under the
+		-- byte ceiling still cannot own the line.
+		say(3, 'appearance', ('y'):rep(900))
+		written = journal('info')
+		check('an over-long note that fits the byte ceiling is truncated',
+			#written[#written] < 500, #written[#written])
+
+		-- ── the window ───────────────────────────────────────────────────────
+		local burst = 21
+		was = count('info')
+		for index = 1, 30 do say(burst, 'appearance', ('burst %d'):format(index)) end
+		check('a burst is cut off at the window allowance', count('info') - was == 12,
+			count('info') - was)
+
+		at = at + 10000
+		say(burst, 'appearance', 'the window came round')
+		check('and the window is RENEWABLE, not a second budget',
+			count('info') - was == 13, count('info') - was)
+
+		-- ── the budget, and the line that says it went ───────────────────────
+		local talker = 22
+		was = count('info')
+		local wasWarn = count('warn')
+
+		--- One note per window, so the window never bites and only the budget can.
+		local function paced(text)
+			at = at + 10000
+			say(talker, 'appearance', text)
+		end
+
+		for index = 1, 100 do paced(('decision %d'):format(index)) end
+		check('a hundred notes cost exactly the budget in the journal',
+			count('info') - was == 60, count('info') - was)
+
+		local warned = journal('warn')
+		local announcements = 0
+		for index = 1, #warned do
+			if warned[index]:find('spent their budget', 1, true) then
+				announcements = announcements + 1
+			end
+		end
+		check('AN EXHAUSTED BUDGET IS VISIBLE, not silence', announcements == 1, announcements)
+		check('and it names the player and the figure',
+			warned[#warned] ~= nil and
+				warned[#warned]:find('player 22 has spent their budget of 60', 1, true) ~= nil,
+			tostring(warned[#warned]))
+		check('one alarm only, however long the flood runs',
+			count('warn') - wasWarn == 1, count('warn') - wasWarn)
+
+		-- The alarm says the budget went; the tally says how much went with it,
+		-- which is the difference between a trail with a known hole and a trail
+		-- nobody can size.
+		wasWarn = count('warn')
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, talker)
+		warned = journal('warn')
+		check('a departure reports how many notes were lost',
+			warned[#warned] ~= nil and
+				warned[#warned]:find('player 22: 40 further notes suppressed', 1, true) ~= nil,
+			tostring(warned[#warned]))
+		check('exactly one tally line', count('warn') - wasWarn == 1, count('warn') - wasWarn)
+
+		-- A player id is recycled, and a spent budget left behind would silence
+		-- the next holder of the slot before they had said anything.
+		was = count('info')
+		at = at + 10000
+		say(talker, 'appearance', 'the slot has a new holder')
+		check('and the slot starts clean for whoever holds it next',
+			count('info') - was == 1, count('info') - was)
+
+		-- Nothing dropped, nothing said: the ordinary departure costs no line.
+		wasWarn = count('warn')
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, 3)
+		check('a departure that lost nothing says nothing', count('warn') == wasWarn)
 	end
 end
 

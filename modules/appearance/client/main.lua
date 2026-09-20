@@ -134,14 +134,19 @@ end
 -- identical from the outside. That is why two separate diagnoses of the fitting
 -- room were argued from lines that were never going to be there.
 --
--- `modules/diagnostics` says the same thing about a client module that fails, and
--- opened the same kind of door for it. This one is the appearance module's, was
--- already here for the clothing read-back, and is bounded on the server at forty
--- lines per player per session -- so it carries DECISIONS, never a tick.
+-- `modules/diagnostics` said the same thing about a client module that fails and
+-- opened the same kind of door for it, and this module opened a second one for
+-- the clothing read-back. Two independent inventions of one thing, which is why
+-- it now lives in core: `OPX.Note` is the same relay with ONE bound, ONE counter
+-- and one rate window, rather than two of each competing for the same journal.
+-- This is kept as the module's own spelling of it -- every caller here reads
+-- better as `Runtime.Note` than as a core call with the module id spelled out at
+-- each of the seventeen sites, and the id can then be wrong in only one place.
+--
+-- It still carries DECISIONS, never a tick: it costs a net event per call.
 -- @param text string
 function M.Runtime.Note(text)
-	Open77.log.info('[appearance] ' .. text)
-	pcall(TriggerServerEvent, M.Event.DIAGNOSTIC, text)
+	OPX.Note('appearance', text)
 end
 
 --- The player-facing name of a body family.
