@@ -75,6 +75,11 @@ local handle, suspended = nil, false
 -- A status line to write when the next screen opens.
 local queuedStatus
 
+-- Lists to ask for again once the line that changes them has been ANSWERED, by
+-- command name. See `Menu.Run`, which used to sleep 1200ms instead of waiting
+-- for the answer it was already being sent.
+local pending = {}
+
 -- Bumped by every draw, so a stale open claims nothing.
 local drawn = 0
 
@@ -1542,8 +1547,27 @@ local function refreshArg(topic)
 	return nil
 end
 
---- Runs a command line and asks for a list again a moment later.
+--- Runs a command line and asks for a list again once the server has answered.
 -- @author dop42
+--
+-- THIS USED TO BE A 1200 ms SLEEP, and that number was the whole bug the owner
+-- reported as "deleting a character takes seconds to leave the screen". The
+-- client already learns the outcome of every line it sends -- the dispatcher
+-- answers on `COMMAND_RESULT` and `onCommandResult` in `main.lua` reads it -- and
+-- the old code threw that away and guessed instead. Measured, the guess cost a
+-- fixed 1200 ms on top of the command's own round trip, the refresh's, and the
+-- two database reads behind the list.
+--
+-- IT WAS ALSO A CORRECTNESS BUG AND NOT ONLY A SLOW ONE. 1200 ms is a bet that
+-- the server finishes first, and a character delete is the heaviest write in
+-- this runtime: it ends a session and fans out across five modules. Lose the
+-- bet and the refetch reads the list BEFORE the row goes, the answer redraws the
+-- deleted row as though it were still there, and nothing asks again -- so the
+-- row stays until the operator navigates away. A guess cannot be tuned out of
+-- that; only the answer can.
+--
+-- A REFUSED LINE NOW ASKS FOR NOTHING. The old thread fired whatever the server
+-- said, which spent a list read on a delete the ACL had just refused.
 -- @param tokens table
 -- @param refresh string|nil
 function Menu.Run(tokens, refresh)
@@ -1558,12 +1582,82 @@ function Menu.Run(tokens, refresh)
 	-- A per-target topic with no target is a request the server drops anyway, so
 	-- it is not sent: the list stays as it was rather than silently not arriving.
 	if PER_TARGET[refresh] and arg == nil then return end
-	-- A one-shot thread, not a scheduler job: the list is asked for once, after
-	-- the server has had time to do the thing that changes it.
-	CreateThread(function()
-		Wait(1200)
-		TriggerServerEvent(M.Event.REFRESH, refresh, arg)
-	end)
+
+	-- Keyed by the command NAME, because that is what comes back on the answer.
+	-- A second run of the same line replaces the first: both want the same list,
+	-- and the later answer is the one that knows what is in it.
+	pending[tostring(tokens[1]):lower()] =
+		{ topic = refresh, arg = arg, tokens = tokens, atMs = Client.NowMs() }
+end
+
+-- Takes one character out of whichever list is holding it, answering whether it
+-- was there. Both stores are swept: the same citizen id can be in an account's
+-- list and in the find at once, and a row left in either is a row the operator
+-- can open a page on.
+local function dropCharacter(citizenId)
+	local gone = false
+	for _, store in ipairs({ chars, absent }) do
+		for index = #store.rows, 1, -1 do
+			if store.rows[index].citizenId == citizenId then
+				table.remove(store.rows, index)
+				gone = true
+			end
+		end
+	end
+	return gone
+end
+
+--- What the server said about a line this menu sent, and what follows from it.
+-- @author dop42
+--
+-- NOT OPTIMISM. Nothing here runs until the server has answered, and a refusal
+-- takes the other branch: the row stays, and the refusal is the line under the
+-- list. Removing a row before the server agreed would be worse than the delay it
+-- saves -- the case that matters is the delete that gets REFUSED, and a list
+-- that silently put the row back is how somebody deletes the wrong character
+-- twice.
+-- @param name string the command name, lowercased
+-- @param accepted boolean
+function Menu.Answered(name, accepted)
+	local held = pending[name]
+	if held == nil then return end
+	pending[name] = nil
+
+	-- A refused line changed nothing, so there is nothing to ask for. The redraw
+	-- `onCommandResult` already does puts back whatever state actually holds.
+	if accepted ~= true then return end
+
+	-- THE ROW GOES NOW, not a list read later. A confirmed delete is the server
+	-- saying the character is gone; the refetch below is still sent, because the
+	-- delete moves things this client cannot derive -- the account's active lock
+	-- among them -- but the operator does not wait on it to see the thing they
+	-- asked for happen.
+	if held.tokens[1] == Command.CHARACTER_DELETE and held.tokens[2] ~= nil then
+		if dropCharacter(tostring(held.tokens[2])) then draw(true) end
+	end
+
+	TriggerServerEvent(M.Event.REFRESH, held.topic, held.arg)
+end
+
+-- How long a pending refresh waits for an answer that may never come.
+--
+-- The dispatcher answers every line it accepts, but "every" is a claim about
+-- code this module does not own, and the failure it would cause is the list
+-- never refreshing at all -- the exact symptom this change exists to end. So the
+-- old blind delay is kept as a FLOOR rather than the mechanism: past this the
+-- refresh is sent unanswered, which is no worse than what shipped before.
+local ANSWER_GRACE_MS = 3000
+
+-- Sends any refresh whose answer never arrived. On the upkeep pass, so a
+-- forgotten entry cannot outlive the menu.
+local function sweepPending()
+	local now = Client.NowMs()
+	for name, held in pairs(pending) do
+		if now - held.atMs > ANSWER_GRACE_MS then
+			pending[name] = nil
+			TriggerServerEvent(M.Event.REFRESH, held.topic, held.arg)
+		end
+	end
 end
 
 --- Puts a typed query on the open list screen, or clears it.
@@ -1814,8 +1908,10 @@ local function pressed()
 	Client.Execute({ M.OPENER })
 end
 
--- Sets the down screen aside while a downed operator has the menu or a form up.
+-- Sets the down screen aside while a downed operator has the menu or a form up,
+-- and sends any refresh whose answer never came.
 local function syncSuspend()
+	sweepPending()
 	local downed = Client.Contract('downed')
 	if downed == nil then
 		suspending = false
