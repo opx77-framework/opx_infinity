@@ -552,16 +552,19 @@ local function wearing(slot, record)
 end
 
 --- States the camera's orbit around the puppet; the host may have reset its rig.
+-- NOT the library's camera module, and the manifest is the reason. That one
+-- wraps the `camera.script` rig -- create, attach, shake, the held shot -- and
+-- never touches `orbit`, which belongs to the `camera.preview` family. Adopting
+-- it would oblige this resource to declare `camera.script` for natives it does
+-- not call. `Native` is the half that does apply: one lookup-and-guard written
+-- once, and a `permission_denied` rewritten into the line to add.
 local function orbitCamera()
-	local camera = Open77.camera
-	if type(camera) ~= 'table' or type(camera.orbit) ~= 'function' then return false end
-	local called, ok = pcall(camera.orbit, orbit)
-	return called and ok == true
+	return OPX.Lib.Native.Call('camera.orbit', 'camera.preview', orbit).ok
 end
 
 --- Whether this client can orbit the camera around the puppet.
 local function hasOrbit()
-	return type(Open77.camera) == 'table' and type(Open77.camera.orbit) == 'function'
+	return OPX.Lib.Native.Reach('camera.orbit') ~= nil
 end
 
 --- Remembers the perspective, goes third person and faces the puppet.
@@ -586,10 +589,9 @@ end
 
 --- Lets go of the orbit and puts the remembered perspective back.
 local function freeCamera()
-	local camera = Open77.camera
-	if type(camera) == 'table' and type(camera.clearOrbit) == 'function' then
-		pcall(camera.clearOrbit)
-	end
+	-- The answer is dropped on purpose: this runs on the way out, and there is
+	-- nothing a caller could do about a preview it has already stopped wanting.
+	OPX.Lib.Native.Call('camera.clearOrbit', 'camera.preview')
 	local perspective = Open77.perspective
 	if savedPerspective ~= nil and type(perspective) == 'table' and
 		type(perspective.set) == 'function' then

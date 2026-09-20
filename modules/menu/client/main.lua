@@ -1130,14 +1130,16 @@ end
 --- One pass over the six keys: edge, then repeat.
 local function pollKeys()
 	if record == nil or pagePolls() then return end
-	local input = Open77.input
-	if type(input) ~= 'table' or type(input.isDown) ~= 'function' then return end
 
 	local atMs = OPX.Now()
 	for index = 1, #POLLED do
 		local name, key = POLLED[index][1], POLLED[index][2]
-		local read, downNow = pcall(input.isDown, name)
-		if not read then downNow = false end
+		-- A plain boolean, on purpose: a Result per key per 25 ms pass is garbage
+		-- for nothing. `IsDown` answers false for the missing namespace, the raise
+		-- and the `(nil, reason)` a key name it does not poll comes back with --
+		-- the third of which this loop only got right by accident, reading nil as
+		-- "not down" without ever knowing the key was unpollable.
+		local downNow = OPX.Lib.Input.IsDown(name)
 
 		if downNow ~= true then
 			heldUntil[name] = nil
@@ -1177,14 +1179,11 @@ end
 local function primeHeld()
 	local atMs = OPX.Now()
 	heldUntil = {}
-	local input = Open77.input
-	if type(input) ~= 'table' or type(input.isDown) ~= 'function' then return end
 	for index = 1, #POLLED do
 		local name = POLLED[index][1]
-		local read, downNow = pcall(input.isDown, name)
 		-- Armed as though it had just been pressed: it does not fire now, and a
 		-- held ARROW still repeats on schedule, which is what holding one is for.
-		if read and downNow == true then heldUntil[name] = atMs + REPEAT_FIRST_MS end
+		if OPX.Lib.Input.IsDown(name) then heldUntil[name] = atMs + REPEAT_FIRST_MS end
 	end
 end
 

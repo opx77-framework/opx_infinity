@@ -174,10 +174,8 @@ end
 -- Whether this client can pick at all. Without a screen ray there is no eye, and
 -- the registry is the only half of the module that still works.
 local function canPick()
-	local camera = Open77.camera
-	local input = Open77.input
-	return type(camera) == 'table' and type(camera.screenRaycast) == 'function'
-		and type(input) == 'table' and type(input.cursor) == 'function'
+	return OPX.Lib.Native.Reach('camera.screenRaycast') ~= nil
+		and OPX.Lib.Native.Reach('input.cursor') ~= nil
 end
 
 -- Holds or hands back aim, shooting, interaction and the camera. Every one of
@@ -224,10 +222,14 @@ end
 local function contextAt(x, y)
 	local state = living()
 	if state == nil then return nil end
-	local camera = Open77.camera
-	if type(camera) ~= 'table' or type(camera.screenRaycast) ~= 'function' then return nil end
-	local called, hit = pcall(camera.screenRaycast, x, y, RAY_DISTANCE, { self = true })
-	if not called or type(hit) ~= 'table' then return nil end
+	-- `world.query` is named so an operator who dropped it from the manifest gets
+	-- the line to add rather than an eye that silently never opens. The Result is
+	-- unwrapped straight back to nil: this is a per-frame read and every caller
+	-- already treats "nothing under the cursor" the same as "could not ask".
+	local cast = OPX.Lib.Native.Call('camera.screenRaycast', 'world.query',
+		x, y, RAY_DISTANCE, { self = true })
+	if not cast.ok or type(cast.value) ~= 'table' then return nil end
+	local hit = cast.value
 	hit.screen = { x = x, y = y }
 	if not hit.hit then
 		hit.target = { kind = 'sky', networked = false }

@@ -2110,6 +2110,104 @@ do
 		check('and the resource really does call the library',
 			next(used) ~= nil)
 
+		-- ── the two answer shapes, and the bug that lives between them ───────
+		--
+		-- The library splits its answers on purpose: a WRITER answers a Result
+		-- so a caller can branch on a real failure, a READER on a hot path
+		-- answers the plain value because a table per tick is garbage the
+		-- collector did not need. Both are right, and mixing them up is silent:
+		-- a Result is a TABLE, so `if not writer() then` is never true and the
+		-- branch behind it can never be taken again.
+		--
+		-- That is not hypothetical. `Input.Block` answers a Result where the
+		-- native it replaced answered `(boolean, reason)`, and the warning behind
+		-- `if not blocked then` was dead from the day it was migrated. The two
+		-- checks below pin the shapes the client half now depends on, so the next
+		-- migration is told rather than discovering it in somebody's game.
+		local Lib = env.OPX.Lib
+
+		-- Readers. The host installs no `Open77.input`, which is exactly the case
+		-- a reader has to answer safely rather than crash on.
+		check('a library reader answers a plain value, never a Result',
+			Lib.Input.IsDown('UP') == false and Lib.Input.IsCaptured() == false)
+
+		-- Writers. No `Open77.kvp` on this host either, so `Set` takes the
+		-- native-absent path -- the one `modules/admin/client/tags.lua` relies on
+		-- to warn once instead of raising.
+		local wrote = Lib.Store.Set('opx.tests.shape', true)
+		check('a library writer answers a Result, refusal and all',
+			type(wrote) == 'table' and wrote.ok == false and type(wrote.error) == 'string')
+
+		-- And the reader half of the same module takes a fallback rather than
+		-- making the caller unwrap. `tags.lua` reads its own-tag default through
+		-- this: before the migration an absent store returned out of `Start`
+		-- early and the configured `TAGS.OWN` was silently dropped.
+		check('and its reader answers the fallback when the store is not there',
+			Lib.Store.Get('opx.tests.shape', 'fallback') == 'fallback')
+
+		-- `Native.Reach` is the capability probe the client hand-rolled as a
+		-- two-level `type()` dance in five places. It answers the function or
+		-- nil, and it must not raise on a namespace that is wholly absent.
+		--
+		-- IT IS PROBED AGAINST THE REAL `_G`, and that is not a shortcut. The
+		-- library is loaded by `Host.Require` through a bare `loadfile`, so its
+		-- chunks run in the real global environment and `rawget(_G, 'Open77')`
+		-- never sees the harness's stubbed namespace. Every library wrapper is
+		-- therefore on its absent-native path for the whole of this suite -- true
+		-- of `Input` and `Rpc` before this migration and of `Store`, `Players`
+		-- and `Native` after it. Planting a namespace here for three lines is the
+		-- only way to exercise the FOUND branch at all, and restoring it is what
+		-- keeps the rest of the suite reading the absent one.
+		local hadOpen77 = rawget(_G, 'Open77')
+		_G.Open77 = { players = { all = function() return {} end } }
+		local found = Lib.Native.Reach('players.all')
+		local missingLeaf = Lib.Native.Reach('players.nearby')
+		local missingRoot = Lib.Native.Reach('kvp.get')
+		_G.Open77 = hadOpen77
+
+		check('Native.Reach answers the function it finds',
+			type(found) == 'function')
+		check('and nil for a missing leaf and a missing namespace alike',
+			missingLeaf == nil and missingRoot == nil)
+		check('and nil, rather than raising, when there is no Open77 at all',
+			Lib.Native.Reach('players.all') == nil)
+
+		-- The structural half: nobody may put a Result straight into a boolean
+		-- position. Line-scoped, which is enough because every such call in this
+		-- resource is written on one line, and allowlisted by the readers the
+		-- library documents as answering plain values.
+		local plain = {
+			['Input.IsDown'] = true, ['Input.IsCaptured'] = true,
+			['Input.Cursor'] = true, ['Input.KeyFor'] = true,
+			['Input.Mappings'] = true, ['Store.Get'] = true, ['Store.Has'] = true,
+			['Native.Reach'] = true, ['Rpc.IsRunning'] = true,
+			['Timer.After'] = true, ['Timer.Cancel'] = true, ['Timer.Until'] = true,
+			['Timer.Debounce'] = true, ['Timer.Throttle'] = true,
+			['Camera.Why'] = true,
+		}
+		local unwrapped = {}
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			local handle = io.open(file, 'r')
+			if handle then
+				local number = 0
+				for line in handle:lines() do
+					number = number + 1
+					-- Only a call standing alone as the condition. A comment is not
+					-- a branch, and neither is a call whose answer is compared or
+					-- unwrapped further along the line.
+					local module, fn = line:match('^%s*if%s+n?o?t?%s*OPX%.Lib%.(%u%w*)%.(%u%w*)%(')
+					if module and not plain[module .. '.' .. fn]
+						and not line:find('%.ok') and not line:find('[=~<>]=') then
+						unwrapped[#unwrapped + 1] = ('%s:%d %s.%s'):format(file, number, module, fn)
+					end
+				end
+				handle:close()
+			end
+		end
+		table.sort(unwrapped)
+		check('no client file branches on a library Result as though it were a boolean',
+			#unwrapped == 0, table.concat(unwrapped, ', '))
+
 		control.Fire('onClientResourceStart', 'opx_infinity')
 		control.Pump(60)
 		check('diagnostics started', env.OPX.Modules.IsRunning('diagnostics'))
