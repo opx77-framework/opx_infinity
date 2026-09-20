@@ -352,7 +352,11 @@ function Currency.Register()
 			-- that already resolves is used as it stands; anything else is a
 			-- code and is prefixed.
 			local key = (type(why) == 'string' and OPX.Locale.Exists(why)) and why or errorKey(why)
-			OPX.CommandNotice(source, raw, 'error', locale(key))
+			-- One parameter table covers every code either vocabulary answers --
+			-- `money.insufficient` names the currency and the rest name nothing --
+			-- and a spare parameter is ignored. The same shape `opx.money` uses.
+			OPX.CommandNotice(source, raw, 'error',
+				locale(key, { type = Options.CURRENCY_MONEY_TYPE }))
 		end)
 	end)
 
