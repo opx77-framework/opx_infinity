@@ -31,4 +31,9 @@ AddEventHandler(OPX.Host.CLIENT_RESOURCE_STOP, function(name)
 	if name ~= RESOURCE then return end
 	OPX.Scheduler.Stop()
 	OPX.Modules.Stop()
+	-- AFTER the modules, and it was missing entirely. `OPX.UI.Teardown` says in
+	-- its own docstring that this is the stop path, and nothing called it: the
+	-- CEF page outlived the resource that built it. After `Modules.Stop` because
+	-- a module stopping may still want to tell its page it is going.
+	OPX.UI.Teardown()
 end)

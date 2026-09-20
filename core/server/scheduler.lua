@@ -100,6 +100,18 @@ function OPX.Scheduler.Cancel(handle)
 	if job == nil then return end
 	job.live = false
 	jobs[handle] = nil
+	-- DROPPED FROM `order` TOO, and it was not. `order` is the registration
+	-- sequence `Report` walks; cancelling cleared `jobs[handle]` and left the
+	-- handle in it forever, so a caller that registers and cancels on a cycle --
+	-- a sweep that follows a session, say -- grew a list nothing ever shortened
+	-- for the life of the resource. `Report` reads correctly either way, which
+	-- is why nothing ever noticed.
+	for index = 1, #order do
+		if order[index] == handle then
+			table.remove(order, index)
+			break
+		end
+	end
 end
 
 --- Stops every job. The resource is going down; the tasks go with it either way,
@@ -110,6 +122,9 @@ function OPX.Scheduler.Stop()
 		job.live = false
 		jobs[handle] = nil
 	end
+	-- And the sequence with them: leaving it behind would have `Report` walk a
+	-- list of handles to nothing after a stop.
+	order = {}
 end
 
 --- One line per live job: name and interval. For the diagnostic command.

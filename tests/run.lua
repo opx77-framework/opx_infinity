@@ -8573,6 +8573,76 @@ end
 -- loadable from Lua, and the seam the two dropped names (`inside`, `named`)
 -- came through. Lua promising a glyph the page has no path for is a row that
 -- validates, reaches the DOM and draws the fallback.
+-- ── a payload the host refused is not a toast that went up ───────────────────
+-- `OPX.Surface.Send` answers `(sent, refused)`. The second is true when the host
+-- TOOK the call and rejected the payload as too large or not serialisable -- a
+-- pcall cannot see that, and `notify.lua` read only the first value. `live[id]`
+-- then held a toast the page had never drawn, and every later `Update` and
+-- `Dismiss` addressed something that was not there. `modules/panel` found this
+-- the expensive way: a refused batch of clothes was reported to the fitting room
+-- as delivered and the room sat on "Reading the catalogue" for good.
+section('a refused payload is not a toast')
+do
+	local env, _, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local real = OPX.UI.Send
+
+		-- Delivered, then refused, then delivered again: the middle one is the
+		-- case, and the two around it prove the gate is not simply shut.
+		local raised = OPX.Toast.Show({ id = 'ok', message = 'first' })
+		check('a toast the host accepts goes up', raised == 'ok', tostring(raised))
+
+		OPX.UI.Send = function() return true, true end
+		local refusedId, reason = OPX.Toast.Show({ id = 'big', message = 'second' })
+		check('a toast whose payload the host refused does NOT go up',
+			refusedId == nil, tostring(refusedId))
+		check('and says why', reason == 'payload_refused', tostring(reason))
+
+		OPX.UI.Send = real
+		check('and Lua is not holding it: an update finds nothing to patch',
+			OPX.Toast.Update('big', { message = 'third' }) == false)
+		check('while the one that did go up is still addressable',
+			OPX.Toast.Update('ok', { message = 'third' }) == true)
+
+		-- The other door into the same payload.
+		OPX.UI.Send = function() return true, true end
+		local patched, patchWhy = OPX.Toast.Update('ok', { message = 'fourth' })
+		check('a refused UPDATE answers false rather than true', patched == false)
+		check('and says why too', patchWhy == 'payload_refused', tostring(patchWhy))
+		OPX.UI.Send = real
+	end
+end
+
+-- ── the page does not outlive the resource ───────────────────────────────────
+-- `OPX.UI.Teardown` says in its own docstring that this is the stop path. The
+-- stop path -- `onClientResourceStop` in `core/client/boot.lua` -- called
+-- `Scheduler.Stop` and `Modules.Stop` and never called it, so the CEF page the
+-- resource built was left alive behind it.
+section('the page goes down with the resource')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local before = 0
+		for _, page in ipairs(control.pages) do
+			if page.alive ~= false then before = before + 1 end
+		end
+		check('a page was built', before > 0, before)
+
+		control.Fire('onClientResourceStop', 'opx_infinity')
+
+		local after = 0
+		for _, page in ipairs(control.pages) do
+			if page.alive ~= false then after = after + 1 end
+		end
+		check('and none is left alive after the resource stops', after == 0, after)
+	end
+end
+
 section('the glyph vocabulary')
 do
 	local env, _, why = boot('client')

@@ -167,9 +167,18 @@ function OPX.Toast.Show(definition)
 	}
 
 	live[id] = toast
-	if not OPX.UI.Send('overlay', 'notify:show', toast) then
+	-- BOTH ANSWERS ARE READ. `OPX.Surface.Send` returns `(sent, refused)`: the
+	-- second is true when the host took the call but REJECTED the payload as too
+	-- large or not serialisable, which a pcall cannot see and which used to be
+	-- invisible here. `live[id]` then held a toast the page had never drawn, and
+	-- every later `Update` and `Dismiss` addressed something that was not there.
+	-- `modules/panel` learned this the expensive way -- a refused batch of
+	-- clothes was reported to the fitting room as delivered and the room sat on
+	-- "Reading the catalogue" for good.
+	local sent, refused = OPX.UI.Send('overlay', 'notify:show', toast)
+	if not sent or refused then
 		live[id] = nil
-		return nil, 'surface_unavailable'
+		return nil, refused and 'payload_refused' or 'surface_unavailable'
 	end
 	return id
 end
@@ -227,7 +236,13 @@ function OPX.Toast.Update(id, patch)
 			toast[key] = value
 		end
 	end
-	return OPX.UI.Send('overlay', 'notify:update', toast)
+	-- Both answers, for the reason spelled out in `Show`: a patch the host
+	-- refused leaves Lua believing the page is showing the new text.
+	local sent, refused = OPX.UI.Send('overlay', 'notify:update', toast)
+	if not sent or refused then
+		return false, refused and 'payload_refused' or 'surface_unavailable'
+	end
+	return true
 end
 
 --- Clears everything on screen.
