@@ -537,6 +537,28 @@ do
 end
 
 -- ── cooldowns and refusals ───────────────────────────────────────────────────
+-- ── a source that arrives as a string ────────────────────────────────────────
+-- Four functions in `core/server/answer.lua` open with `source = tonumber(source)`
+-- and two did not: `CommandResult` and `CommandNotice` went straight to
+-- `source > 0`, so a source handed over as a string -- which is how a console and
+-- some host paths do it -- raised `attempt to compare string with number` instead
+-- of answering. The two that raised are the two a COMMAND answers through.
+section('a source that arrives as a string')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		check('CommandResult takes a string source without raising',
+			(pcall(OPX.CommandResult, '1', true, 'hello')))
+		check('CommandNotice takes one too',
+			(pcall(OPX.CommandNotice, '1', 'test', 'success', 'done', false)))
+		check('and the console path still works on a nil source',
+			(pcall(OPX.CommandResult, nil, true, 'console')))
+	end
+end
+
 section('answers')
 do
 	local env, control, why = boot('server')
@@ -2646,6 +2668,9 @@ do
 		Wait = function(ms) waits[#waits + 1] = ms; coroutine.yield() end,
 		math = math, type = type, tonumber = tonumber, tostring = tostring,
 		pcall = pcall, ipairs = ipairs, string = string, table = table,
+		-- The refusals below call it, and a scheduler that cannot raise would
+		-- pass the interval checks by accident.
+		error = error,
 	}
 
 	local chunk, why = loadfile('core/client/scheduler.lua', 't', env)
@@ -2706,7 +2731,145 @@ do
 		check('a job that keeps raising is suspended, not left to raise every pass',
 			raises == 3, tostring(raises))
 
+		-- A BAD INTERVAL IS REFUSED RATHER THAN RUN EVERY PASS.
+		-- `math.max(0, math.floor(tonumber(intervalMs) or 0))` used to turn a
+		-- nil, a string or a function into 0, and 0 on this scheduler means
+		-- every single pass. On a client with a per-resume instruction budget
+		-- that is a typo quietly eating the budget until something unrelated is
+		-- cut off mid-coroutine with nothing in the log.
+		--
+		-- A FUNCTION IS THE CASE WORTH ITS OWN LINE. The SERVER'S `Every` takes
+		-- `integer|function` and re-reads it every pass, which is how a job
+		-- follows a live tunable. The two share a name and a signature on paper
+		-- and cannot share this, because `OPX.Tune` is server-only; so it is
+		-- refused here instead of silently becoming frame-rate.
+		local noop = function() end
+		check('a function interval is refused, not turned into every frame',
+			select(1, pcall(Scheduler.Every, 'fn', function() return 250 end, noop)) == false)
+		check('so is a nil interval',
+			select(1, pcall(Scheduler.Every, 'nope', nil, noop)) == false)
+		check('so is a string that is not a number',
+			select(1, pcall(Scheduler.Every, 'str', 'soon', noop)) == false)
+		check('and so is a negative one',
+			select(1, pcall(Scheduler.Every, 'neg', -1, noop)) == false)
+		check('zero stays legal, because a caller may mean every pass',
+			select(1, pcall(Scheduler.Every, 'zero', 0, noop)) == true)
+
 		Scheduler.Stop()
+	end
+end
+
+-- ── the ACL read that raised outside the pcall written to catch it ───────────
+-- `permitted` decides whether a restricted command is SUGGESTED, and its comment
+-- says a read that raises counts as a refusal -- suggested to nobody rather than
+-- to everybody. It did not do that. `pcall(Open77.acl.isAllowed, ...)` resolves
+-- the field BEFORE pcall runs, so a host without `Open77.acl` -- no `acl.read`
+-- grant, or an older build -- raised on the index, outside the protection.
+--
+-- Loaded into an env of its own rather than through `boot`, because the whole
+-- point is a host that does NOT install the table, and the harness always does.
+section('suggestions when the ACL is not installed')
+do
+	local env = {
+		OPX = { Command = {}, Refuse = function() end, Cooling = function() return false end },
+		Open77 = { log = { error = function() end, warn = function() end } },
+		RegisterCommand = function() end,
+		type = type, tonumber = tonumber, tostring = tostring, pcall = pcall,
+		ipairs = ipairs, pairs = pairs, error = error, table = table, string = string,
+	}
+
+	local chunk, why = loadfile('core/server/commands.lua', 't', env)
+	check('commands loads without an ACL table', chunk ~= nil, why)
+
+	if chunk ~= nil then
+		local ok = pcall(chunk)
+		check('and runs', ok)
+
+		env.OPX.Command.Register('staffonly', { restricted = true }, function() end)
+		env.OPX.Command.Register('anyone', {}, function() end)
+
+		-- The raise used to happen here, on the index, and took the whole
+		-- suggestion list with it.
+		local listed, suggestions = pcall(env.OPX.Command.Suggestions, 1)
+		check('asking for suggestions does not raise with no ACL installed',
+			listed, not listed and tostring(suggestions) or nil)
+
+		if listed then
+			local names = {}
+			for _, row in ipairs(suggestions or {}) do names[tostring(row.name)] = true end
+			check('the open command is still suggested', names.anyone == true)
+			check('and the restricted one is suggested to nobody',
+				names.staffonly ~= true)
+		end
+
+		-- A DUPLICATE IS REFUSED HERE, NAMED, AND LEAVES NOTHING BEHIND.
+		-- `RegisterCommand` raises on a name it already has, so a duplicate was
+		-- always fatal -- it happened to `opx.appearance` and took the
+		-- clothing-load hook down with it -- but the raise came out of the host
+		-- with no idea which two callers collided. Worse, the suggestion row was
+		-- written BEFORE the host was asked, so the loser's help text stayed in
+		-- the list for a command the host had just refused it.
+		local again, why = pcall(env.OPX.Command.Register, 'anyone', { help = 'second' },
+			function() end)
+		check('registering a name twice is refused', again == false)
+		check('and the refusal names the command',
+			again == false and tostring(why):find('anyone', 1, true) ~= nil,
+			tostring(why))
+
+		local kept
+		for _, row in ipairs(env.OPX.Command.Suggestions(1) or {}) do
+			if row.name == 'anyone' then kept = row end
+		end
+		check('and the first registration is what stayed in the list',
+			kept ~= nil and kept.help ~= 'second', kept and tostring(kept.help))
+	end
+end
+
+-- ── showing a page must never hide it ────────────────────────────────────────
+-- `OPX.Surface.Visible` read `pcall(visible and page.show or page.hide, page)`,
+-- which is the and/or trap doing something worse than raising. Ask it to SHOW a
+-- page whose host has no `show` -- an older build, a surface kind without it --
+-- and the first half answers nil, the `or` takes over, and the page is hidden.
+-- A missing method has to fail the call, not perform its opposite.
+--
+-- Loaded into an env of its own: the point is a page missing a method, and no
+-- real surface in the harness is missing one.
+section('showing a page never hides it')
+do
+	local env = {
+		OPX = { Surface = {} },
+		Open77 = { log = { error = function() end, warn = function() end } },
+		type = type, tostring = tostring, pcall = pcall, pairs = pairs,
+		ipairs = ipairs, error = error, table = table, string = string,
+		tonumber = tonumber, math = math,
+	}
+
+	local chunk, why = loadfile('lib/client/surface.lua', 't', env)
+	check('the surface helper loads', chunk ~= nil, why)
+
+	if chunk ~= nil and pcall(chunk) then
+		local Surface = env.OPX.Surface
+		local calls = {}
+
+		local lame = { page = { hide = function() calls[#calls + 1] = 'hide' end } }
+		check('showing a page whose host has no show answers false',
+			Surface.Visible(lame, true) == false)
+		check('and did NOT hide it instead', #calls == 0,
+			table.concat(calls, ', '))
+
+		check('hiding that same page still works', Surface.Visible(lame, false) == true)
+		check('and hid it exactly once', #calls == 1, table.concat(calls, ', '))
+
+		local whole = {
+			page = {
+				show = function() calls[#calls + 1] = 'show' end,
+				hide = function() calls[#calls + 1] = 'hide' end,
+			},
+		}
+		check('a page with both is shown when asked to show',
+			Surface.Visible(whole, true) == true and calls[#calls] == 'show')
+		check('and hidden when asked to hide',
+			Surface.Visible(whole, false) == true and calls[#calls] == 'hide')
 	end
 end
 

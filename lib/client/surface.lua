@@ -299,8 +299,16 @@ end
 function OPX.Surface.Visible(surface, visible)
 	if type(surface) ~= 'table' or surface.failed or surface.page == nil then return false end
 	local page = surface.page
-	local ok = pcall(visible and page.show or page.hide, page)
-	return ok
+	-- WRITTEN OUT RATHER THAN `visible and page.show or page.hide`, which is the
+	-- and/or trap doing real damage. When `visible` is true and the host's page
+	-- has no `show` -- an older build, a surface kind that does not support it --
+	-- the first half answers nil, the `or` takes over, and the page is HIDDEN in
+	-- answer to a request to show it. A missing method should fail the call, not
+	-- silently perform its opposite.
+	local method = visible and page.show or nil
+	if not visible then method = page.hide end
+	if type(method) ~= 'function' then return false end
+	return (pcall(method, page))
 end
 
 --- Whether the page currently holds focus. A surface that lost it while open has

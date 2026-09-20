@@ -17,8 +17,16 @@ local registered = {}
 --- Whether the ACL would let this player run a restricted command. A read that
 --- raises counts as a refusal: the command is then suggested to nobody rather
 --- than to everybody.
+---
+--- THE INDEX IS INSIDE THE PCALL, and it was not. `pcall(Open77.acl.isAllowed,
+--- ...)` resolves `Open77.acl.isAllowed` BEFORE pcall is called, so a host that
+--- does not install `Open77.acl` -- one without the `acl.read` grant, or an
+--- older build -- raised on the index, outside the protection written for
+--- exactly that. The paragraph above described behaviour the code did not have.
 local function permitted(source, name)
-	local read, allowed = pcall(Open77.acl.isAllowed, source, 'command.' .. name)
+	local read, allowed = pcall(function()
+		return Open77.acl.isAllowed(source, 'command.' .. name)
+	end)
 	return read and allowed == true
 end
 
@@ -36,15 +44,28 @@ function OPX.Command.Register(name, opts, handler)
 	end
 	opts = opts or {}
 
+	-- REFUSED HERE RATHER THAN BY THE HOST, and named. `RegisterCommand` raises
+	-- on a name it already has, so a duplicate was always fatal; what it was not
+	-- was legible. The raise came out of the host with no idea which two callers
+	-- collided, unwinding whichever module's `Start` was halfway through -- and
+	-- it happened, to `opx.appearance`, taking the clothing-load hook with it.
+	--
+	-- The row is also written AFTER the host agrees, not before. It used to be
+	-- written first, so the loser's help text and restricted flag stayed in the
+	-- suggestion list for a command the host had just refused to give it.
+	if registered[name] ~= nil then
+		error(('Register(%q): that command is already registered'):format(name), 2)
+	end
+
+	local cooldownMs = tonumber(opts.cooldownMs) or 0
+	local key = opts.key or ('command.' .. name)
+
 	registered[name] = {
 		name = name,
 		restricted = opts.restricted == true,
 		help = opts.help,
 		params = opts.params or {},
 	}
-
-	local cooldownMs = tonumber(opts.cooldownMs) or 0
-	local key = opts.key or ('command.' .. name)
 
 	RegisterCommand(name, function(source, args, raw)
 		-- The gate cooldown is checked before anything the handler might do,

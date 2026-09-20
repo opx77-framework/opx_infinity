@@ -112,6 +112,12 @@ end
 -- @param accepted boolean
 -- @param message string
 function OPX.CommandResult(source, accepted, message)
+	-- NORMALISED LIKE EVERY OTHER SOURCE IN THIS FILE, and it was not. Four
+	-- functions here open with `source = tonumber(source)` and this one went
+	-- straight to the comparison, so a source arriving as a string -- which is
+	-- how a console and some host paths hand it over -- raised `attempt to
+	-- compare string with number` instead of printing to the console.
+	source = tonumber(source)
 	if source and source > 0 then
 		TriggerClientEvent(RESULT, source, {
 			type = accepted and 'info' or 'error',
@@ -134,15 +140,21 @@ end
 -- @param toasted boolean|nil
 -- @param icon string|nil a glyph name from `OPX.Toast.ICONS`
 function OPX.CommandNotice(source, raw, kind, message, toasted, icon)
+	-- Normalised for the same reason as `CommandResult` above.
+	source = tonumber(source)
 	if source and source > 0 then
 		-- `icon` is a trailing argument: every caller that predates it sends five
-		-- and the client half reads a nil sixth. Only its TYPE is checked here --
-		-- the closed set of glyph names lives on the client, where the page that
-		-- draws them does, and core may not reach into a module to borrow one. The
-		-- client drops a name it has no path for and logs it rather than losing
-		-- the sentence it was attached to.
+		-- and the client half reads a nil sixth.
+		--
+		-- THE NAME IS CHECKED HERE NOW. It used to be type-checked only, because
+		-- the closed set lived on the client and core could not reach into a
+		-- module to borrow one -- true when it was written, and no longer: the
+		-- set is `OPX.Glyphs`, in a shared script, so the server holds the same
+		-- list the page draws from. Checking at the SENDING side is what names
+		-- the culprit; the client still drops an unknown name and logs it rather
+		-- than losing the sentence, because this is not the only door in.
 		TriggerClientEvent(ANSWER, source, raw or '', kind, message, toasted == true,
-			type(icon) == 'string' and icon or nil)
+			type(icon) == 'string' and OPX.Glyphs[icon] and icon or nil)
 	else
 		print(message)
 	end
