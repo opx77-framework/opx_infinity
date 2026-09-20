@@ -1060,110 +1060,214 @@ local function creationWaitMs()
 	return M.ConfigMs(config.CREATION_WAIT_MS) or CREATION_WAIT_MS
 end
 
---- Opens the join's room once the character's clothes are on, or gives up.
+-- The retry's heartbeat, the offer it is working on, and how many times it has
+-- been started again.
+--
+-- WHY A SUPERVISOR EXISTS AT ALL. `core/client/scheduler.lua` opens by saying
+-- modules register work there "instead of spawning threads", and by naming the
+-- exact failure this module spent five diagnoses on: exceeding the per-resume
+-- instruction budget "unwinds straight out of the coroutine body ... it does not
+-- crash the resource, it does not repeat, and it logs nothing. A loop that
+-- quietly stopped is almost always this."
+--
+-- This retry is a raw `CreateThread`, and it is queued from inside the
+-- synchronous handler chain of `created` -- which `FinishCreation` publishes
+-- immediately before spending the bootstrap, and spending the bootstrap is what
+-- LOADS THE WORLD. So the one thread the join depends on is started microseconds
+-- before the client tears the pre-game context down. Whether it dies to the
+-- budget, to a raise, or is simply never resumed across that transition, the
+-- symptom is identical and the journal is empty: the owed line prints and
+-- nothing follows it, which is exactly what five creations have now shown.
+--
+-- It cannot simply move into the scheduler. `runJob` wraps a step in `pcall` and
+-- `begin` yields -- `readCatalogue` waits a frame per slot -- and a yield across
+-- a pcall boundary is not safe on this runtime. So the thread stays, and the
+-- scheduler job WATCHES it.
+local retryBeat, retryLive, retryRevivals = 0, nil, 0
+
+-- How long the supervisor waits for a beat before calling the thread dead. Six
+-- retry intervals: long enough that a slow frame or a catalogue read is never
+-- mistaken for a death, short enough that the player is not left looking at an
+-- empty screen for long.
+local RETRY_STALL_MS = 3000
+
+-- How many times a dead retry is started again before the join is handed back.
+-- A second attempt covers the world-load transition, which is the one moment a
+-- thread is known to be at risk. Past that, something is wrong that another
+-- thread will not fix, and THE JOIN MUST NOT STAY SHUT: the claim is what the
+-- spawn menu waits behind, so it is withdrawn under a reason of its own rather
+-- than held for a worker that is never coming back.
+local MAX_REVIVALS = 2
+
+local runRetry
+
+--- Starts the retry thread for the live offer, beating once so the supervisor
+--- does not immediately judge it dead.
+local function spawnRetry()
+	local live = retryLive
+	if live == nil then return end
+	retryBeat = Runtime.NowMs()
+	CreateThread(function() runRetry(live) end)
+end
+
+--- Offers a fitting room and keeps trying until it opens, is refused for good,
+--- or the window closes.
+--
 -- Every exit either leaves a room on screen or withdraws the claim, because the
--- claim is what the rest of the join is waiting behind: a thread that returned
--- without doing one of the two would hold the spawn menu shut for the session.
--- The one exception is `wardrobe_busy` -- a room is already up, and its own close
+-- claim is what the rest of the join is waiting behind: a worker that stopped
+-- without doing one of the two holds the spawn menu shut for the session. The
+-- one exception is `wardrobe_busy` -- a room is already up, and its own close
 -- withdraws the claim.
 -- @param resumed boolean this offer is itself the retry of one that expired
 local function awaitRoom(owner, creation, citizenId, resumed)
 	creationWatch = creationWatch + 1
-	local mine = creationWatch
 	watchCitizen = citizenId
-	CreateThread(function()
-		local deadline, reason, said = Runtime.NowMs() + creationWaitMs(), nil, nil
-		local traced = false
+	retryLive = {
+		owner = owner, creation = creation, citizenId = citizenId, resumed = resumed,
+		mine = creationWatch,
+		deadline = Runtime.NowMs() + creationWaitMs(),
+	}
+	retryRevivals = 0
+	spawnRetry()
+end
 
-		-- THE TRACE, and it is here because four rounds of elimination have now
-		-- run out of things to eliminate. The owed line prints, and then nothing
-		-- does: not a refusal, not a supersede, not the expiry -- and the expiry
-		-- is only reached once `begin` has RETURNED, so its silence says the loop
-		-- is not coming back round rather than that the window is still open.
-		-- That leaves "the thread never started" and "the first attempt never
-		-- finished", which are indistinguishable from outside and are told apart
-		-- by exactly two lines. They come out on the first pass only.
-		Runtime.Note(('the retry for %s is running; it has %d ms')
-			:format(tostring(citizenId), creationWaitMs()))
+--- Watches the retry thread and starts it again if it stopped without saying so.
+--
+-- Called from `Wardrobe.Check`, which the `appearance.wardrobe` scheduler job
+-- drives every 250 ms. That job is the one part of this machinery already proven
+-- to survive the world load, which is precisely why the watch lives there.
+local function superviseRetry()
+	local live = retryLive
+	if live == nil then return end
+	-- Somebody else owns the claim now; the thread will notice and say so.
+	if live.mine ~= creationWatch then return end
+	if Runtime.NowMs() - retryBeat < RETRY_STALL_MS then return end
 
-		while mine == creationWatch and Runtime.NowMs() < deadline do
-			local ok
-			ok, reason = begin(owner, creation, citizenId)
-			if not traced then
-				traced = true
-				Runtime.Note(('the first attempt for %s answered ok=%s, %s')
-					:format(tostring(citizenId), tostring(ok), tostring(reason or 'no reason')))
-			end
+	if retryRevivals < MAX_REVIVALS then
+		retryRevivals = retryRevivals + 1
+		Runtime.Note(('the retry for %s stopped without a word after %d ms; '
+			.. 'starting it again (%d)')
+			:format(tostring(live.citizenId), RETRY_STALL_MS, retryRevivals))
+		return spawnRetry()
+	end
 
-			-- THE CLOCK DOES NOT RUN WHILE ANOTHER JOIN SCREEN IS UP, which is the
-			-- rule `clothing.lua` already applies to the creator. The spawn menu
-			-- gives the player 45s and this window is 60s, so without this a room
-			-- could be withdrawn for a delay that was somebody else's by design.
-			if reason == 'spawn_up' then deadline = Runtime.NowMs() + creationWaitMs() end
-			if ok or reason == 'wardrobe_busy' then
-				if not ok then
-					-- Silent until now, and one of only three ways out of this loop
-					-- that wrote nothing. A room already up withdraws the claim when
-					-- it closes, so this exit is legitimate -- but "legitimate" and
-					-- "invisible" are different things, and telling the two busy
-					-- endings apart afterwards was impossible.
-					Runtime.Note(('the fitting room owed to %s stood down: one is already open')
-						:format(tostring(citizenId)))
-				end
-				watchCitizen = nil
-				return
-			end
-			if not RETRYABLE[reason] and reason ~= 'superseded' then
-				-- A REFUSAL THAT IS NOT RETRIED IS THE END OF THE OFFER, once and
-				-- for this world entry, so it is the single most important line
-				-- this module can write -- and it was written to the client's own
-				-- log, which is a file on the player's machine. That is precisely
-				-- how `invalid_caller` refused every creation's fitting room for
-				-- as long as it did without anybody being able to see it.
-				Runtime.Note(('no fitting room for %s: %s')
-					:format(tostring(citizenId), tostring(reason)))
-				return claim(false, reason)
-			end
-			if reason ~= said then
-				said = reason
-				Open77.log.debug(('[appearance] fitting room for %s not yet: %s')
-					:format(tostring(citizenId), tostring(reason)))
-			end
-			Wait(RETRY_MS)
+	-- THE JOIN IS GIVEN BACK, and this is the ending that was missing. With the
+	-- worker dead and the claim standing, the spawn menu stands aside for a room
+	-- that will never be drawn, and the player is left with an empty screen and
+	-- no way forward -- which is the whole of what the owner reported. A named
+	-- withdrawal is worse than a fitting room and far better than a dead end.
+	retryLive, watchCitizen = nil, nil
+	if live.creation then
+		roomExpired = { citizenId = live.citizenId, reason = 'retry_stopped',
+			resumed = live.resumed }
+	end
+	Runtime.Note(('no fitting room for %s: the retry stopped %d times and is not coming '
+		.. 'back; the join is released')
+		:format(tostring(live.citizenId), retryRevivals + 1))
+	claim(false, 'retry_stopped')
+end
+
+runRetry = function(live)
+	local owner, creation, citizenId, resumed =
+		live.owner, live.creation, live.citizenId, live.resumed
+	local mine = live.mine
+	local reason, said = nil, nil
+	local traced = false
+
+	retryBeat = Runtime.NowMs()
+
+	-- THE TRACE, and it is here because five rounds of elimination have run out
+	-- of things to eliminate. The owed line prints and then nothing does: not a
+	-- refusal, not a supersede, not the expiry -- and the expiry is only reached
+	-- once `begin` has RETURNED, so its silence says the loop is not coming back
+	-- round rather than that the window is still open. That leaves "the thread
+	-- never started" and "the first attempt never finished", which are
+	-- indistinguishable from outside and are told apart by exactly two lines.
+	Runtime.Note(('the retry for %s is running; it has %d ms')
+		:format(tostring(citizenId), creationWaitMs()))
+
+	while mine == creationWatch and Runtime.NowMs() < live.deadline do
+		retryBeat = Runtime.NowMs()
+
+		local ok
+		ok, reason = begin(owner, creation, citizenId)
+		if not traced then
+			traced = true
+			Runtime.Note(('the first attempt for %s answered ok=%s, %s')
+				:format(tostring(citizenId), tostring(ok), tostring(reason or 'no reason')))
 		end
-		-- Superseded watches leave the claim alone: whatever bumped the generation
-		-- owns it now, and both of the things that do -- a new character and a new
-		-- offer -- settle it themselves.
-		if mine == creationWatch then
-			-- RECORDED AS AN EXPIRY, and withdrawn under that name rather than under
-			-- whatever the last try was refused with. The window ending and the room
-			-- being refused are different endings: one is a clock, the other is a
-			-- state, and `wardrobeWanted` carries only the one string. See
-			-- `roomExpired` -- this is what stops the retry being re-decided by a
-			-- policy that never declined anything.
-			if creation then
-				roomExpired = { citizenId = citizenId, reason = tostring(reason or 'timeout'),
-					resumed = resumed }
+
+		-- THE CLOCK DOES NOT RUN WHILE ANOTHER JOIN SCREEN IS UP, which is the
+		-- rule `clothing.lua` already applies to the creator. The spawn menu
+		-- gives the player 45s and this window is 60s, so without this a room
+		-- could be withdrawn for a delay that was somebody else's by design.
+		if reason == 'spawn_up' then live.deadline = Runtime.NowMs() + creationWaitMs() end
+
+		if ok or reason == 'wardrobe_busy' then
+			if not ok then
+				-- Silent until recently, and one of three ways out of this loop
+				-- that wrote nothing. A room already up withdraws the claim when
+				-- it closes, so this exit is legitimate -- but "legitimate" and
+				-- "invisible" are different things, and telling the two busy
+				-- endings apart afterwards was impossible.
+				Runtime.Note(('the fitting room owed to %s stood down: one is already open')
+					:format(tostring(citizenId)))
 			end
-			watchCitizen = nil
-			Runtime.Note(('the fitting room owed to %s expired after %d ms: still %s')
-				:format(tostring(citizenId), creationWaitMs(), tostring(reason)))
-			claim(false, 'expired')
-		else
-			-- THE EXIT THAT ATE A CREATION'S FITTING ROOM, and it wrote nothing at
-			-- all. `mine ~= creationWatch` means something bumped the generation
-			-- under this thread; the thread then returned without opening a room,
-			-- without withdrawing the claim and without a line anywhere. The join
-			-- sat behind a claim nobody owned until the spawn selector timed out
-			-- five minutes later, and the only trace in the journal was the spawn
-			-- module saying the player chose nothing.
-			--
-			-- It is a legitimate ending -- whoever bumped the generation owns the
-			-- claim now -- but it is never again an invisible one.
-			Runtime.Note(('the fitting room owed to %s was superseded while waiting (last: %s)')
-				:format(tostring(citizenId), tostring(reason or 'no attempt')))
+			retryLive, watchCitizen = nil, nil
+			return
 		end
-	end)
+
+		if not RETRYABLE[reason] and reason ~= 'superseded' then
+			-- A REFUSAL THAT IS NOT RETRIED IS THE END OF THE OFFER, once and for
+			-- this world entry, so it is the single most important line this
+			-- module can write -- and it was written to the client's own log,
+			-- which is a file on the player's machine. That is precisely how
+			-- `invalid_caller` refused every creation's fitting room for as long
+			-- as it did without anybody being able to see it.
+			retryLive, watchCitizen = nil, nil
+			Runtime.Note(('no fitting room for %s: %s')
+				:format(tostring(citizenId), tostring(reason)))
+			return claim(false, reason)
+		end
+
+		if reason ~= said then
+			said = reason
+			Open77.log.debug(('[appearance] fitting room for %s not yet: %s')
+				:format(tostring(citizenId), tostring(reason)))
+		end
+		Wait(RETRY_MS)
+	end
+
+	-- Superseded watches leave the claim alone: whatever bumped the generation
+	-- owns it now, and both of the things that do -- a new character and a new
+	-- offer -- settle it themselves.
+	if mine == creationWatch then
+		-- RECORDED AS AN EXPIRY, and withdrawn under that name rather than under
+		-- whatever the last try was refused with. The window ending and the room
+		-- being refused are different endings: one is a clock, the other is a
+		-- state, and `wardrobeWanted` carries only the one string. See
+		-- `roomExpired` -- this is what stops the retry being re-decided by a
+		-- policy that never declined anything.
+		if creation then
+			roomExpired = { citizenId = citizenId, reason = tostring(reason or 'timeout'),
+				resumed = resumed }
+		end
+		retryLive, watchCitizen = nil, nil
+		Runtime.Note(('the fitting room owed to %s expired after %d ms: still %s')
+			:format(tostring(citizenId), creationWaitMs(), tostring(reason)))
+		claim(false, 'expired')
+	else
+		-- THE EXIT THAT ATE A CREATION'S FITTING ROOM, and it wrote nothing at
+		-- all. `mine ~= creationWatch` means something bumped the generation
+		-- under this worker; it then returned without opening a room, without
+		-- withdrawing the claim and without a line anywhere.
+		--
+		-- It is a legitimate ending -- whoever bumped the generation owns the
+		-- claim now -- but it is never again an invisible one.
+		if retryLive == live then retryLive = nil end
+		Runtime.Note(('the fitting room owed to %s was superseded while waiting (last: %s)')
+			:format(tostring(citizenId), tostring(reason or 'no attempt')))
+	end
 end
 
 --- Offers this world entry a fitting room, if the policy says this entry is one.
@@ -1304,6 +1408,17 @@ end
 function M.Wardrobe.Check()
 	local ok, failure = pcall(panelTick)
 	if not ok then Open77.log.error('[appearance] panel: ' .. tostring(failure)) end
+
+	-- THE RETRY IS WATCHED FROM HERE, and this is the only place in the module
+	-- that can watch it: the `appearance.wardrobe` job driving this function is
+	-- the one piece of the machinery proven to survive the world load, while the
+	-- retry itself is a raw thread started microseconds before that load. See
+	-- `superviseRetry`. Outside the pcall below because it must run even if the
+	-- panel tick or the sweep is failing -- a dead retry holds the whole join.
+	local watched, watchFailure = pcall(superviseRetry)
+	if not watched then
+		Open77.log.error('[appearance] retry watch: ' .. tostring(watchFailure))
+	end
 
 	local ran, reason = pcall(function()
 		-- A CHARACTER THAT LEFT WITHOUT BEING REPLACED. `characterChanged` covers
