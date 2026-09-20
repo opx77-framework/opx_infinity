@@ -8841,6 +8841,155 @@ do
 	end
 end
 
+-- ── the hotbar peek ─────────────────────────────────────────────────────────
+-- The hotbar keys work with the bag SHUT, which is the point of them and also
+-- the problem: nothing on screen says what they are bound to until you open the
+-- bag and look, by which time you did not need the key. One key shows the row
+-- for a few seconds.
+--
+-- WHAT IS ACTUALLY CHECKED HERE is that it costs nothing it should not. The
+-- client already holds the whole bag -- `Screen.Own()` is the mirror the server
+-- pushes on every change -- so a peek must be a read of a table this runtime
+-- already has and NOT a round trip; and Lua must keep no timer, because a
+-- `Wait` loop for a thing on screen four seconds at a time is a cost every
+-- client pays forever. Both of those are invisible from the screen, which is
+-- why they are asserted rather than eyeballed.
+section('the hotbar peek')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local Slotbar = inventory.Slotbar
+		local page = control.pages[1]
+
+		check('the peek module is loaded', type(Slotbar) == 'table')
+
+		check('the peek key is registered',
+			control.keyMappings.byId['opx.inventory.peek'] ~= nil)
+		check('and it is not one of the hotbar keys it would shadow',
+			control.keyMappings.byId['opx.inventory.peek'] ~= nil
+				and control.keyMappings.byId['opx.inventory.peek'].key
+					~= control.keyMappings.byId['opx.inventory.hotbar1'].key)
+
+		local function drew()
+			local found
+			for index = 1, #page.sent do
+				if page.sent[index].channel == 'opx:inventory:slotbar' then found = page.sent[index] end
+			end
+			return found
+		end
+
+		-- NO BAG IS A REFUSAL, not an empty row. A player who has not loaded a
+		-- character has no hotbar to look at.
+		local ok, reason = Slotbar.Peek()
+		check('a peek with no bag is refused', ok == false and reason == 'no_bag', tostring(reason))
+		check('and nothing was drawn', drew() == nil)
+
+		-- The bag, pushed the way the server pushes it.
+		control.netEvents[inventory.Event.OWN]({
+			id = 1, kind = 'player', slots = 50, maxWeight = 100000, weight = 500,
+			items = {
+				{ slot = 1, name = 'bandage', count = 3, metadata = {} },
+				{ slot = 3, name = 'water', count = 1, metadata = {} },
+			},
+		})
+
+		check('a peek with a bag goes up', Slotbar.Peek() == true)
+
+		local shown = drew()
+		check('and something was drawn', shown ~= nil)
+
+		if shown ~= nil then
+			local slots = shown.payload and shown.payload.slots or {}
+			check('one row per hotbar slot, gaps included',
+				#slots == inventory.Options.HOTBAR_SLOTS,
+				('%d vs %d'):format(#slots, inventory.Options.HOTBAR_SLOTS))
+
+			-- EVERY SLOT IS DRAWN, EMPTY OR NOT. Closing the gap would renumber
+			-- the row the player is trying to memorise.
+			check('slot 2 is drawn even though it holds nothing',
+				slots[2] ~= nil and slots[2].slot == 2 and slots[2].name == nil)
+
+			check('a filled slot carries its name and count',
+				slots[1] ~= nil and slots[1].name == 'bandage' and slots[1].count == 3,
+				slots[1] and tostring(slots[1].name))
+			check('and a label the overlay can draw without a catalogue',
+				slots[1] ~= nil and type(slots[1].label) == 'string' and slots[1].label ~= '')
+			check('the sparse payload is read by SLOT and not by position',
+				slots[3] ~= nil and slots[3].name == 'water',
+				slots[3] and tostring(slots[3].name))
+
+			check('every row carries the key that uses it',
+				slots[1] ~= nil and slots[1].key ==
+					control.keyMappings.byId['opx.inventory.hotbar1'].key,
+				slots[1] and tostring(slots[1].key))
+
+			check('the page is told how long to hold it, and times itself',
+				tonumber(shown.payload and shown.payload.holdMs) == inventory.Options.HOTBAR_PEEK_MS,
+				shown.payload and tostring(shown.payload.holdMs))
+		end
+
+		-- LUA KEEPS NO TIMER. If it did, a job would be registered for it, and
+		-- the scheduler report is where one would show up.
+		local ticking = false
+		for _, line in ipairs(OPX.Scheduler.Report()) do
+			if tostring(line):find('slotbar', 1, true) or tostring(line):find('peek', 1, true) then
+				ticking = true
+			end
+		end
+		check('and no scheduler job was registered to take it down', not ticking)
+
+		-- A REFRESH KEEPS THE COUNTDOWN. A bag that changes twice a second while
+		-- the row is up would otherwise hold it there for as long as the player
+		-- keeps picking things up.
+		--
+		-- `Pump` is the clock: one round is 100ms.
+		control.Pump(10)
+		Slotbar.Refresh()
+		local again = drew()
+		check('a refresh while the row is up redraws it',
+			again ~= nil and again.payload ~= nil)
+		check('and does NOT restart the hold',
+			again ~= nil and tonumber(again.payload.holdMs) < inventory.Options.HOTBAR_PEEK_MS,
+			again and tostring(again.payload.holdMs))
+
+		-- Counted rather than compared against `#page.sent`: pumping the clock
+		-- runs every other module's jobs too, and one of them drawing something
+		-- unrelated would fail a check about this row.
+		local function slotbarSends()
+			local count = 0
+			for index = 1, #page.sent do
+				if page.sent[index].channel == 'opx:inventory:slotbar' then count = count + 1 end
+			end
+			return count
+		end
+
+		-- Once it has fallen, a refresh is silent rather than a fresh row.
+		control.Pump(math.ceil(inventory.Options.HOTBAR_PEEK_MS / 100) + 1)
+		check('the row is down once its hold has run out', Slotbar.IsUp() == false)
+		local before = slotbarSends()
+		Slotbar.Refresh()
+		check('and refreshing a row that has gone draws nothing',
+			slotbarSends() == before, ('%d vs %d'):format(slotbarSends(), before))
+
+		-- WIRED, and not merely written. `Refresh` and `Hide` above were called
+		-- by hand; these two check that the module actually subscribes to the
+		-- local events `client/main.lua` raises, which is the difference between
+		-- a feature and a pair of functions nobody calls.
+		check('a fresh peek goes up again', Slotbar.Peek() == true)
+		local mark = slotbarSends()
+		control.Fire(inventory.Event.ON_CHANGED, { inventory = {}, changes = {} })
+		check('a bag change under a live row redraws it', slotbarSends() > mark)
+
+		control.Fire(inventory.Event.ON_OPENED)
+		check('and opening the bag takes the row down rather than doubling it',
+			Slotbar.IsUp() == false)
+	end
+end
+
 section('the glyph vocabulary')
 do
 	local env, _, why = boot('client')

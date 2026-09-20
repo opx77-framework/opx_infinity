@@ -725,6 +725,7 @@ function M.Start()
 	-- screen was unreachable by any route and nothing on screen said why.
 	-- Nothing in `Register` needs a world row, so it goes first and survives.
 	M.Keys.Register()
+	M.Slotbar.Wire()
 	M.World.Wire()
 
 	OPX.Scheduler.Every('inventory.screen', 500, pass)

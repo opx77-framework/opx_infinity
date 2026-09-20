@@ -11,10 +11,22 @@ import type { CatalogEntry, ScreenConfig, Stack } from './types'
 /** Where the 195 item pictures live once the build has copied `ui/public`. */
 const IMAGE_BASE = 'images/'
 
+/**
+ * The picture for an item whose catalogue file name is already known.
+ *
+ * Split out of `imageFor` for the hotbar peek, which draws on the OVERLAY layer
+ * and has no catalogue: the interactive screen holds it, the overlay does not,
+ * so Lua resolves the five rows and sends the file name with them. Both callers
+ * go through this so the base path is written once -- a second copy of
+ * `images/` is the kind of thing that survives a folder rename by half.
+ */
+export function imageFromFile(name: string, file: string): string {
+  return `${IMAGE_BASE}${file || `${name}.png`}`
+}
+
 /** Relative, and served by the resource itself: the surface has no network. */
 export function imageFor(name: string, entry: CatalogEntry | undefined): string {
-  const file = entry && entry.image ? entry.image : `${name}.png`
-  return `${IMAGE_BASE}${file}`
+  return imageFromFile(name, entry && entry.image ? entry.image : '')
 }
 
 /** The fallback a picture that will not load leaves behind. */
