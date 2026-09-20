@@ -16,6 +16,9 @@ M.Data = M.Data or {}
 
 M.Data.VEHICLES = {
 	CLASSES = {
+		-- Air FIRST: it is the one class an operator opens the spawn menu looking
+		-- for by name, and it was the one class the catalogue did not have at all.
+		{ KEY = 'air', LABEL = 'Air (AV)' },
 		{ KEY = 'street', LABEL = 'Street' },
 		{ KEY = 'sport', LABEL = 'Sport' },
 		{ KEY = 'hyper', LABEL = 'Hypercars' },
@@ -580,5 +583,25 @@ M.Data.VEHICLES = {
 			CLASS = 'police', RECORD = 'Vehicle.v_standard2_villefort_cortes_police_border_patrol' },
 		{ NAME = 'cortes_police_sheriff', LABEL = 'Villefort Cortes sheriff', CLASS = 'police',
 			RECORD = 'Vehicle.v_standard2_villefort_cortes_police_sheriff' },
+
+		-- Air. EVERY record here starts with one of `VEHICLES.AV_PREFIXES`, which
+		-- is what makes the class air in the first place: the module neither
+		-- declares a record's category nor lets a row disagree with it, and the
+		-- server lifts a spawned one. The names are prefixed so a staff member can
+		-- see at a glance which records are the AVs, and every record below is in
+		-- the platform's own validated `Vehicle.av_*` set -- a record that is not
+		-- fails at the spawn, not here.
+		{ NAME = 'av_manticore', LABEL = 'Militech Manticore', CLASS = 'air',
+			RECORD = 'Vehicle.av_militech_manticore' },
+		{ NAME = 'av_excalibur', LABEL = 'Rayfield Excalibur', CLASS = 'air',
+			RECORD = 'Vehicle.av_rayfield_excalibur' },
+		{ NAME = 'av_atlus', LABEL = 'Zetatech Atlus', CLASS = 'air',
+			RECORD = 'Vehicle.av_zetatech_atlus' },
+		{ NAME = 'av_octant', LABEL = 'Zetatech Octant', CLASS = 'air',
+			RECORD = 'Vehicle.av_zetatech_octant' },
+		{ NAME = 'av_surveyor', LABEL = 'Zetatech Surveyor', CLASS = 'air',
+			RECORD = 'Vehicle.av_zetatech_surveyor' },
+		{ NAME = 'av_valgus', LABEL = 'Zetatech Valgus', CLASS = 'air',
+			RECORD = 'Vehicle.av_zetatech_valgus' },
 	},
 }

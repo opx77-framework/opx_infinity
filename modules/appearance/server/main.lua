@@ -847,6 +847,51 @@ function M.Api()
 	})
 end
 
+--- Registers the two commands that put a view up.
+-- @author dop42
+--
+-- WHY THE SERVER AND NOT THE CLIENT. A chat command is a server-side door on
+-- every framework this pack runs on, and the state machine it opens lives on the
+-- client -- so all this does is name a view and hand it to the caller's own
+-- client. Neither command takes an argument: what a player may edit is checked
+-- by the state half against the catalogue it streamed, which is where a modified
+-- page is refused and a mistyped one is refused alike.
+--
+-- UNRESTRICTED ON PURPOSE. Both act on the caller alone and there is nothing for
+-- the ACL to protect, so a player who has been granted nothing still has to be
+-- able to reach their own clothes. The fitting room's door is here as well as
+-- behind the panel because `WARDROBE.OFFER_POLICY` only ever offers the room to
+-- a character the game's own creator has just built -- so for everybody else
+-- these two commands and the key are the whole of the way in.
+-- The two doors, as data: the command's name, the catalogue key its help line
+-- comes from, and the view it names. One list rather than two registrations, so
+-- the boot line below cannot fall out of step with what was registered.
+local VIEW_COMMANDS = {
+	{ name = 'opx.appearance', help = 'appearance.command.panel', kind = 'panel' },
+	{ name = 'opx.appearance.wardrobe', help = 'appearance.command.wardrobe', kind = 'wardrobe' },
+}
+
+function M.RegisterCommands()
+	local names = {}
+	for index = 1, #VIEW_COMMANDS do
+		local entry = VIEW_COMMANDS[index]
+		OPX.Command.Register(entry.name, {
+			restricted = false,
+			help = entry.help,
+			cooldownMs = 500,
+		}, function(source)
+			TriggerClientEvent(M.Event.SHOW, source, entry.kind)
+		end)
+		names[index] = entry.name .. ' [open]'
+	end
+
+	-- Said once, at boot, in the shape the other modules say it. It is the line an
+	-- operator reads when a player reports that the panel will not open, and
+	-- without it a pack whose commands failed to register looks exactly like one
+	-- whose client half is not listening.
+	Open77.log.info(('[appearance] commands: %s'):format(table.concat(names, ', ')))
+end
+
 --- Wires the doors and hooks the character load. Runs on a coroutine.
 function M.Start()
 	character = OPX.Api.Get('character')
@@ -870,6 +915,7 @@ function M.Start()
 		end)
 
 	registerEvents()
+	M.RegisterCommands()
 
 	-- THE OTHER HALF OF THE OFFER POLICY. `WARDROBE.OFFER_POLICY` decides which
 	-- world enters are HANDED a fitting room; this is how a player asks for one

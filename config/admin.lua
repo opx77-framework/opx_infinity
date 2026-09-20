@@ -19,8 +19,19 @@ OPX.Config.MODULES.admin = {
 	enabled = true,
 
 	-- Default keys players rebind in the pause menu; false registers none.
+	--
+	-- DEV opens the staff menu on the Dev screen -- the commands that place a
+	-- garage, a pad or a dealer -- instead of on the root, which is the whole of
+	-- its point: the place you set up a server from is one press away. It is a
+	-- second key and not a chord because the host takes a key name and no
+	-- modifier of its own. F10 out of the box, because everything under F9 is
+	-- spoken for: F9 here, F7 the appearance panel, F3 the emote picker, and F5
+	-- and F8 belong to the media resource's panel and cursor on an install that
+	-- has it. The dealership is NOT in this list: a dealer is a place you stand
+	-- on, like a garage spot, and it takes that key -- E.
 	KEYS = {
 		MENU = 'F9',
+		DEV = 'F10',
 		SPEED_UP = 'PAGEUP',
 		SPEED_DOWN = 'PAGEDOWN',
 	},
@@ -59,6 +70,40 @@ OPX.Config.MODULES.admin = {
 		-- Never below RATE.ACTION_MS plus 100: a quieter send would be refused.
 		SEND_AFTER_MS = 500,
 		PROMPTS = true,
+
+		-- The pop: what is played where the operator is standing when noclip goes
+		-- on, and again when it goes off. This is this engine's stand-in for the
+		-- particle `txadmin` plays on the ped both ways -- the FiveM asset cannot
+		-- be loaded here, so the name comes out of the engine's own catalogue
+		-- (`Open77.vfx.catalog()`, 51 aliases).
+		--
+		-- A depot path is accepted too; nothing else is. A name the catalogue does
+		-- not carry is answered `nil, invalid_argument` and draws nothing.
+		--
+		-- `fire.large` is the default for one reason: of the aliases tried from
+		-- Lua on 2.31 it is the one with an actual frame captured
+		-- (`docs/research/vfx-sfx-runtime.md`, "Full template and world-effect
+		-- live probes", 2026-09-05 -- a tall flame and a refractive plume).
+		-- `electric.emp` and `electric.arc` were tried in the same probe and
+		-- produced no identifiable visual, `neon.holo_zone` renders only at its
+		-- authored yaw, and nothing else in the catalogue is recorded as seen at
+		-- all -- so a prettier-looking dematerialise here would be a guess that
+		-- probably draws nothing. Change this line to taste; it is one line.
+		EFFECT = 'fire.large',
+		-- Seconds the effect lives, 0..600 (the engine's own ceiling). 0 hands the
+		-- rest of its life to the effect itself.
+		EFFECT_SECONDS = 1.5,
+		-- A Wwise event name, or '' for silence. Left empty because a wrong name
+		-- is answered with a handle and discarded in silence rather than refused,
+		-- so an invented event is indistinguishable from no sound -- and no event
+		-- name is confirmed for this build.
+		SOUND = '',
+
+		-- Whether the body is despawned while the operator is flying. What it
+		-- means: the same native the Invisible switch uses, hidden from every
+		-- other player, and given back the moment noclip ends -- or when the
+		-- Invisible switch is turned back on, whichever comes last.
+		HIDE_BODY = true,
 	},
 
 	-- Metres the staff rows on the target eye reach, 1..12.
@@ -123,6 +168,31 @@ OPX.Config.MODULES.admin = {
 		DURATION_MS = 12000,
 		CHAT = true,
 		MAX_CHARACTERS = 240,
+
+		-- THE TWO STINGERS THAT WRAP THE MESSAGE, by BARE FILE NAME.
+		--
+		-- They are files in this resource -- `ui/public/audio/` here, `web/audio/`
+		-- once built -- and the page resolves a name against ITS OWN origin, which
+		-- is why a name may hold no slash and no `..`: the client that honours one
+		-- is a machine this server does not own, and a config able to point it at
+		-- another origin would be a config able to make every client fetch from
+		-- somewhere else.
+		--
+		-- `OPEN` plays BEFORE the message appears and holds it back while it runs;
+		-- `CLOSE` plays once the message has gone. Either may be `''`, which is how
+		-- a server turns one off without turning the announcement off.
+		--
+		-- A NAME THAT DOES NOT FIT THE RULE IS DROPPED, with a log line, and the
+		-- announcement still arrives. A typo in a presentation setting must never
+		-- cost a player the sentence an operator sent them.
+		STINGER = {
+			OPEN = 'announce-open.mp3',
+			CLOSE = 'announce-close.mp3',
+
+			-- 0..1. An announcement is not a gunfight, and this is the number an
+			-- operator turns down when it is louder than the city.
+			VOLUME = 0.8,
+		},
 	},
 
 	-- Durations the ban form offers; a typed ban takes any duration.
@@ -132,6 +202,19 @@ OPX.Config.MODULES.admin = {
 	-- Tunable: ADMIN_VEHICLE_PER_OWNER, ADMIN_VEHICLE_NEAR_RADIUS.
 	VEHICLES = {
 		SPAWN_OFFSET = { X = 3.0, Y = 0.0, Z = 0.25 },
+
+		-- An AV record starts with one of these, lower-cased. The SAME rule the
+		-- garages module, the dealership and the platform's own gamemodes use, so
+		-- a record is in the air category for every part of the server or for none
+		-- of it. It decides two things and nothing else: the lift below, and which
+		-- rows the spawn menu's Air class holds.
+		AV_PREFIXES = { 'vehicle.av_', 'vehicle.max_tac_av' },
+
+		-- Metres a spawned AV is lifted above the spawn offset. An AV record's
+		-- pivot is the chassis centre, so one created at ground level starts
+		-- half-buried -- the same reason the dealership lifts one 1.2 m.
+		AV_LIFT = 1.2,
+
 		PER_OWNER = 8,
 		NEAR_RADIUS = 30.0,
 		OCCUPIED_REPAIRS = { glass = true, body = true, lights = true, tires = true, visual = true },

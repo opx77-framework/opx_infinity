@@ -1006,6 +1006,119 @@ local function adoptDownedState()
 	setDown(type(asked.value) == 'table' and asked.value.down == true)
 end
 
+-- ── the panel's own door ────────────────────────────────────────────────────
+
+-- The name both state machines know this module's own door by. The panel
+-- remembers WHO opened it and refuses to close for anybody else, so the key, the
+-- two commands and `view.lua`'s own bridge all claim it under this one name.
+local OWNER = 'appearance'
+
+--- Whether another surface holds the keyboard: the chat box, a form, the pause
+--- menu. Kept module-local rather than folded into `OPX.Lib.Input.IsCaptured`,
+--- which answers captured when the read itself raises where this answers free.
+-- @author dop42
+-- @return boolean
+local function captured()
+	local input = Open77.input
+	if type(input) ~= 'table' or type(input.isCaptured) ~= 'function' then return false end
+	local read, answer = pcall(input.isCaptured)
+	return read and answer == true
+end
+
+--- Puts one of the two views up, or takes it down when it is already up.
+-- @author dop42
+--
+-- WHY THERE IS A TOGGLE AT ALL. `OpenPanel` for a caller who already owns the
+-- open panel refreshes it rather than refusing, so a key wired straight to it
+-- could put the panel up and never take it down -- leaving Escape as the only
+-- way out of a surface the player opened by accident.
+-- @param kind string 'panel' or 'wardrobe'
+-- @return Result
+local function toggleView(kind)
+	local room = kind == 'wardrobe'
+	local open = room and M.Wardrobe.IsOpen() or M.Panel.IsOpen()
+	local answer
+	if room then
+		answer = open and M.Contract.CloseWardrobe(OWNER) or M.Contract.OpenWardrobe(OWNER)
+	else
+		answer = open and M.Contract.ClosePanel(OWNER) or M.Contract.OpenPanel(OWNER)
+	end
+	if not answer.ok then
+		-- NAMED, NOT SILENT. This is the line that answers "I pressed the key and
+		-- nothing happened": every refusal here is one a player can be in
+		-- (`no_character`, `player_down`, `appearance_busy`) and none of them is a
+		-- fault in the module, which is exactly why they have to be sayable.
+		Open77.log.warn(('[appearance] the %s was not %s: %s'):format(
+			room and 'fitting room' or 'appearance panel',
+			open and 'taken down' or 'put up', tostring(answer.error)))
+	end
+	return answer
+end
+
+--- Puts a view up because a COMMAND asked for it; a second run takes it down.
+-- @author dop42
+-- @param kind any the payload crosses the wire, so it is checked and not trusted
+local function onShow(kind)
+	if kind ~= 'panel' and kind ~= 'wardrobe' then return end
+	local ran, failure = pcall(toggleView, kind)
+	if not ran then Open77.log.error('[appearance] show ' .. tostring(kind) .. ': ' .. tostring(failure)) end
+end
+
+--- Declares the panel's key to the host, logging a refusal once.
+-- @author dop42
+--
+-- WHY THIS MODULE HAS A KEY AT ALL. It owns two state machines and draws
+-- neither, and the contract that opens them is exported -- but until this
+-- existed nothing called it, so a returning player could not reach either one.
+-- The key is the door; `/opx.appearance` is the second door, for anyone who has
+-- rebound this away or turned it off.
+--
+-- Two answer shapes are documented for `RegisterKeyMapping` -- the effective key,
+-- or `true, key` -- and reading only one of them logs a working mapping as
+-- refused. A refusal costs one log line and nothing else.
+-- @return boolean
+local function registerPanelKey()
+	local declared = type(M.Settings.KEY) == 'table' and M.Settings.KEY or {}
+	local id, nameKey, key = declared.ID, declared.NAME, declared.DEFAULT
+
+	if type(id) ~= 'string' or id == '' or type(nameKey) ~= 'string' or nameKey == '' then
+		Open77.log.warn('[appearance] KEY.ID and KEY.NAME are not both declared: the appearance ' ..
+			'panel has no key, and /opx.appearance still opens it')
+		return false
+	end
+	if type(key) ~= 'string' or key == '' then
+		-- Off on purpose rather than broken: `false` is how an operator turns a
+		-- key off, and the two commands are unaffected by it.
+		Open77.log.info('[appearance] KEY.DEFAULT is off: the appearance panel has no key, ' ..
+			'and /opx.appearance still opens it')
+		return false
+	end
+	if type(RegisterKeyMapping) ~= 'function' then
+		Open77.log.warn(('[appearance] key mapping %s not registered: this client build has ' ..
+			'no RegisterKeyMapping'):format(id))
+		return false
+	end
+
+	local function pressed()
+		-- A key pressed while another surface holds the keyboard -- a form, the
+		-- inventory, the pause menu -- does nothing, so that typing the key into a
+		-- text field does not raise the panel behind it.
+		if captured() then return end
+		local ran, failure = pcall(toggleView, 'panel')
+		if not ran then Open77.log.error(('[appearance] key %s: %s'):format(id, tostring(failure))) end
+	end
+
+	local called, ok, answer = pcall(RegisterKeyMapping, id, locale(nameKey), key, pressed)
+	local effective = type(ok) == 'string' and ok ~= '' and ok or
+		(ok == true and type(answer) == 'string' and answer ~= '' and answer) or nil
+	if not called or (ok ~= true and effective == nil) then
+		Open77.log.warn(('[appearance] key mapping %s (%s) not registered: %s')
+			:format(id, key, tostring(called and answer or ok)))
+		return false
+	end
+	return true
+end
+
 --- Registers everything this half listens to.
 local function registerEvents()
 	AddEventHandler(EVENT_CHARACTER_LOADED, function(playerData)
@@ -1050,6 +1163,10 @@ local function registerEvents()
 		M.Editor.OnRefused(code, operation)
 		M.Clothing.OnRefused(code, operation)
 	end)
+
+	-- A command asked for one of the two views. The payload is the server's, and
+	-- `onShow` checks it rather than believing it.
+	RegisterNetEvent(M.Event.SHOW, onShow)
 
 	AddEventHandler(HostEvent.RESET_COMPLETE, function()
 		Runtime.FinishReload('playerReset')
@@ -1415,6 +1532,7 @@ function M.Start()
 	M.Clothing.Wire()
 	M.Presence.Wire()
 	M.Wardrobe.Wire()
+	registerPanelKey()
 
 	adoptDownedState()
 

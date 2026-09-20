@@ -42,6 +42,15 @@ jobs:
           OPX_LIB_PATH: opx_lib
         run: lua5.4 tests/run.lua
 
+      # THE SUITE CANNOT SEE THIS ONE. It runs plain `lua5.4`, where every global
+      # exists; the client's sandbox removes `setmetatable` and the server's removes
+      # `require`, and a shared script runs in both. A metatable in a shared file
+      # therefore passes every test above and then refuses the whole resource at
+      # activation, taking the session with it. This step reads the manifest's own
+      # script kinds and refuses a global the named runtime does not have.
+      - name: Sandbox globals
+        run: python3 tools/check-sandbox-globals.py
+
       # Every script the resource ships has to be listed, one per line. A glob
       # would be worse than useless here: an empty one refuses the whole set it
       # belongs to, and the failure only shows up after a rename.

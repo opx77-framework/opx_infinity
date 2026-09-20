@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import NotifyToast from './NotifyToast.vue'
+import { playClip, stingerOf, type Stinger } from './stinger'
 import { emit } from '@/bridge/channel'
-import { guard } from '@/bridge/diag'
+import { guard, report as diagReport } from '@/bridge/diag'
 import { num, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
@@ -28,6 +29,19 @@ import { useLocale } from '@/composables/useLocale'
  * not fire a callback at zero, because a countdown on this platform is normally a smooth
  * animation of a deadline the server is also counting. This one IS the authority, so it
  * needs the one thing that composable refuses to do.
+ *
+ * ── THE STINGERS ──────────────────────────────────────────────────────────
+ *
+ * A toast may carry two clips, and they are the reason this page owns the reveal as
+ * well as the clock. `open` plays first and the message is HELD until it ends: the
+ * toast is live and addressable by Lua, and it is not drawn, and its lifetime has not
+ * begun -- a message that is not on screen is not being read. `close` plays once the
+ * message has gone, which is why it starts after the exit transition rather than with
+ * it. A toast dismissed while still held plays neither: nothing ever appeared.
+ *
+ * NO STINGER IS EVER LOAD-BEARING. The clip helper answers on a deadline and on every
+ * failure, so a missing file, a decoder that refuses it and a machine that will not
+ * play audio all end the same way -- with the message drawn.
  *
  * ── DESIGN PASS 02 ──────────────────────────────────────────────────────────
  *
@@ -99,6 +113,13 @@ interface Toast {
   progress: number
   /** On its way out: still mounted so the exit transition can run. */
   out: boolean
+  /** The two clips that wrap the message, or null for a toast carrying none. */
+  stinger: Stinger | null
+  /** Waiting on the opening clip: ALIVE and addressable, and not drawn. */
+  held: boolean
+  /** Whether the message was ever drawn. A toast dismissed while it was still held
+   *  has no closing clip to play, because nothing went out to close. */
+  revealed: boolean
 }
 
 /**
@@ -127,9 +148,13 @@ function kindOf(value: unknown): Kind {
   return KINDS.indexOf(name) === -1 ? 'info' : (name as Kind)
 }
 
-/** The toasts of one stack, in arrival order. Bottom stacks reverse in CSS. */
+/** The toasts of one stack, in arrival order. Bottom stacks reverse in CSS.
+ *
+ * A HELD toast is filtered out: the opening clip has not finished, so the message
+ * it carries has not appeared yet. It stays in `toasts`, which is how a dismiss or
+ * a clear from Lua can still address it. */
 function at(position: Position): Toast[] {
-  return toasts.value.filter((toast) => toast.position === position)
+  return toasts.value.filter((toast) => toast.position === position && !toast.held)
 }
 
 function liveCount(): number {
@@ -155,14 +180,29 @@ function leave(id: string, report: boolean): void {
   )
   if (report) emit('opx:notify:gone', { id })
 
+  // The closing clip starts when the exit has FINISHED, which is what "after it has
+  // gone" means, and only for a message that was actually drawn.
+  const closing = toast.revealed && toast.stinger ? toast.stinger.close : ''
+  const volume = toast.stinger ? toast.stinger.volume : 1
+
   window.setTimeout(() => {
     toasts.value = toasts.value.filter((entry) => entry.id !== id || !entry.out)
+    if (closing) void playStinger(closing, volume, 'close')
   }, EXIT_MS)
+}
+
+/** Plays one clip and leaves a line behind when it produced no sound. */
+async function playStinger(name: string, volume: number, which: string): Promise<void> {
+  const played = await playClip(name, volume)
+  if (!played.played && played.reason) diagReport(played.reason, `notify ${which} stinger ${name}`)
 }
 
 /** Unmounts immediately, with no exit transition. The eviction path only. */
 function evict(position: Position): void {
-  const oldest = toasts.value.find((toast) => toast.position === position && !toast.out)
+  // A held toast is skipped: it has not been seen, so evicting it would drop an
+  // announcement nobody has read yet. The stack may run one over its ceiling while a
+  // clip plays, which the total below still bounds.
+  const oldest = toasts.value.find((toast) => toast.position === position && !toast.out && !toast.held)
   if (!oldest) return
   // Told to Lua: it is holding this id, and from here on nothing can address it.
   emit('opx:notify:gone', { id: oldest.id })
@@ -212,8 +252,52 @@ function build(payload: Payload, previous: Toast | undefined): Toast {
     endsAt,
     bar,
     progress: bar ? 1 : -1,
+    // A patch that carries no stinger keeps the one the toast already had, exactly
+    // as a patch that carries no kind keeps its kind.
+    stinger:
+      payload.stinger === undefined && previous ? previous.stinger : stingerOf(payload.stinger),
+    // Both of these belong to the toast that is already on screen, not to the patch:
+    // a caller updating a progress line must not put a revealed message back into
+    // the hold, nor make it forget it was ever drawn.
+    held: previous ? previous.held : false,
+    revealed: previous ? previous.revealed : false,
     out: false
   }
+}
+
+/** Plays a toast's opening clip and draws the message when it has finished. */
+async function openThenReveal(id: string, stinger: Stinger): Promise<void> {
+  const name = stinger.open
+  if (!name) {
+    reveal(id)
+    return
+  }
+  await playStinger(name, stinger.volume, 'open')
+  reveal(id)
+}
+
+/**
+ * Draws a held toast and starts its lifetime, which had not begun.
+ *
+ * A no-op for a toast that has already been drawn, was dismissed, or was cleared
+ * while the clip was playing -- all three are ordinary, because dismissing a toast
+ * does not stop audio that has already been sent to the device.
+ */
+function reveal(id: string): void {
+  const toast = toasts.value.find((entry) => entry.id === id && entry.held && !entry.out)
+  if (!toast) return
+
+  // The life comes from `durationMs` and not from the bar: a caller asking for no bar
+  // is asking for no METER, and the toast still expires. 0 is a persistent toast, and
+  // it stays one.
+  const lifetime = toast.durationMs
+  toasts.value = toasts.value.map((entry) =>
+    entry === toast
+      ? { ...entry, held: false, revealed: true, endsAt: lifetime > 0 ? Date.now() + lifetime : 0,
+          progress: entry.bar && lifetime > 0 ? 1 : -1 }
+      : entry
+  )
+  pump()
 }
 
 /**
@@ -243,7 +327,20 @@ function put(payload: Payload): void {
   if (at(next.position).filter((toast) => !toast.out).length >= MAX_PER_STACK) {
     evict(next.position)
   }
+  // A toast with an opening clip is HELD before it is added, and never after: the
+  // stack is a `shallowRef`, so a field written on a record that is already in it
+  // would be a mutation nothing redraws. It is added held -- so a second announcement
+  // replaces it, and an operator can dismiss it -- and `reveal` puts it on screen when
+  // the clip ends. Nothing about its lifetime is running yet.
+  const held = next.stinger !== null && next.stinger.open !== ''
+  if (held) {
+    next.held = true
+    next.endsAt = 0
+    next.progress = -1
+  }
+
   toasts.value = [...toasts.value, next]
+  if (held && next.stinger) void openThenReveal(next.id, next.stinger)
   pump()
 }
 

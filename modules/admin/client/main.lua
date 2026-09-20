@@ -311,6 +311,8 @@ function M.Start()
 	end)
 
 	M.Keys.Start()
+	-- Before the controls: its first transition reads what this read.
+	M.Noclip.Start()
 	M.Controls.Start()
 	M.Tags.Start()
 	-- After the state half: it attaches to `ON_TAGS`, and the first payload that
@@ -318,6 +320,10 @@ function M.Start()
 	M.TagsView.Start()
 	M.Combat.Start()
 	M.Doors.Start()
+	-- The world announcement. Registered here with the rest so a client that
+	-- joins late is listening before an operator's next line, and NOT tied to the
+	-- menu: an announcement reaches a player who has never opened the panel.
+	M.Announce.Start()
 	-- Before the menu: the menu's own handlers hand the access map straight to
 	-- the eye, and a map that arrived before the rows were built would register
 	-- an empty set and never be asked again.
@@ -339,4 +345,5 @@ function M.Stop()
 	M.Doors.Stop()
 	M.Target.Stop()
 	M.Controls.Stop()
+	M.Noclip.Stop()
 end
