@@ -37,13 +37,26 @@ import { useBridge } from '@/composables/useBridge'
  *
  * -- DESIGN PASS 02 -----------------------------------------------------------
  *
- * A TAG IS A BUTTON'S SHAPE, ON THE OWNER'S INSTRUCTION: an id square on the left
- * and the name to the right of it, with the square standing PROUD of the name
- * plate so its corners break the plate's edge. Both halves are drawn by
- * augmented-ui with the same chamfer and the same ground every control in the
- * runtime wears, so a tag reads as part of that object family rather than as a
- * label. It is NOT tilted, and that needs no argument: a tag is pinned to a body
- * in the world, and the world is already supplying its perspective.
+ * A MARKER AND SOME TYPE. An id square on the left, drawn by augmented-ui with
+ * the chamfer and the lit ground every control in the runtime wears, and the
+ * names to the right of it wearing nothing at all.
+ *
+ * THE NAMES USED TO HAVE A PLATE and it has been taken off, on the owner's
+ * instruction and for a reason that holds: nine tags on a street corner were
+ * nine filled rectangles over the world, and the thing making the lettering
+ * legible was never the ground -- it was the ink shadow on `.tag`, which is
+ * still there and whose own comment always said so. Rule 2 of the contract
+ * gives a closed box to what can be pressed; nothing on this layer can be
+ * pressed. The square keeps its box because a square with an id in it IS a
+ * marker. The names beside it are type.
+ *
+ * The square is centred against the column rather than sitting on its first
+ * line. It rode the top edge while there was a plate for its corners to break;
+ * with no edge to meet, a marker beside a block of type sits level with the
+ * block's middle.
+ *
+ * It is NOT tilted, and that needs no argument: a tag is pinned to a body in the
+ * world, and the world is already supplying its perspective.
  *
  * THREE NAMES, ONE PER LINE. They were on one line until the owner asked for the
  * column, and the column is the better shape for a reason worth keeping: three
@@ -285,12 +298,18 @@ useBridge('open77:anchors', (payload: Payload) => {
     <!-- Keyed on the ANCHOR and not the player id: an anchor is re-pointed when a
          body respawns, so the element survives exactly as long as the tag does. -->
     <div v-for="entry in drawn" :key="entry.row.anchor" class="tag" :style="styleFor(entry)">
-      <span v-if="technical" class="id" data-augmented-ui="tr-clip border">{{ entry.row.playerId }}</span>
       <span
-        class="plate"
-        :class="{ staff: entry.row.staff, bare: !technical }"
+        v-if="technical"
+        class="id"
+        :class="{ staff: entry.row.staff }"
         data-augmented-ui="tr-clip border"
-      >
+      >{{ entry.row.playerId }}</span>
+      <!-- NO FRAME AND NO GROUND on this one, which is why it carries no
+           `data-augmented-ui`. It is not a control and never was -- rule 2 of
+           the contract gives a closed box to things you can press, and nothing
+           on this layer can be pressed. The square keeps its box because a
+           square with an id in it IS a marker; the names beside it are type. -->
+      <span class="plate" :class="{ staff: entry.row.staff, bare: !technical }">
         <!-- ONE RUN PER LINE. It used to be one line with 1px rules between the
              runs, and the rules are gone with the change rather than turned on
              their side: a horizontal hairline across a stacked plate reads as
@@ -345,11 +364,12 @@ useBridge('open77:anchors', (payload: Payload) => {
   left: 0;
   top: 0;
   display: flex;
-  /* THE SQUARE SITS ON THE FIRST LINE, not in the middle of the column. Centred
-     against a three-run plate it would float beside the account name, which is
-     the one run it has nothing to do with -- it marks the player, and the player
-     is the name on the top line. */
-  align-items: flex-start;
+  /* THE SQUARE IS CENTRED AGAINST THE WHOLE COLUMN. It sat on the first line
+     while the names had a plate behind them, because the square's job was then
+     to break that plate's leading edge and the edge started at the top. With
+     the plate gone there is no edge to meet: the square is a marker beside a
+     block of type, and a marker beside a block sits level with its middle. */
+  align-items: center;
   white-space: nowrap;
 
   /* THE SMOOTHING, and it is worth being exact about what it is for.
@@ -438,6 +458,17 @@ useBridge('open77:anchors', (payload: Payload) => {
    `align-items: flex-start` so the runs share a left edge -- centred, the three
    lines would each start somewhere different and the column would have no spine
    to read down. */
+/* TYPE, NOT A BOX. The ground and the outline are gone: what is left is three
+   lines of lettering held by the ink shadow declared on `.tag`, which was
+   already carrying them ("even with a ground under the lettering, a tag is the
+   text on this page most likely to be read against a blown-out sky"). The
+   shadow was the thing making them legible; the plate was making them heavy.
+   Nine tags on a street corner were nine filled rectangles over the world.
+
+   With no outline there is nothing for the square's corners to break, so the
+   overlap goes with it -- the `-6px` pull and the padding that paid it back
+   were both in service of a frame that is no longer drawn. What remains is one
+   gap between the marker and the words. */
 .plate {
   position: relative;
   display: inline-flex;
@@ -445,25 +476,14 @@ useBridge('open77:anchors', (payload: Payload) => {
   align-items: flex-start;
   gap: 2px;
   box-sizing: border-box;
-  /* A floor rather than a height: one run is still the strip it always was, and
-     the second and third grow it. */
-  min-height: 20px;
-  /* The overlap. The left padding pays it back so the first glyph is not under
-     the square. */
-  margin-left: -6px;
-  padding: var(--op-space-1) var(--op-space-3) var(--op-space-1)
-    calc(var(--op-space-3) + 6px);
-
-  --aug-tr: var(--op-cut-sm);
-  --aug-border-bg: var(--op-red-idle);
-  background: var(--op-plate);
+  padding-left: var(--op-space-2);
 }
 
 /* With no square there is nothing to tuck under, and the plate is the whole tag:
    it takes the padding back and stands on its own. */
+/* With no square there is no gap to leave for one. */
 .plate.bare {
-  margin-left: 0;
-  padding-left: var(--op-space-3);
+  padding-left: 0;
 }
 
 .name {
@@ -498,22 +518,30 @@ useBridge('open77:anchors', (payload: Payload) => {
    STAFF -- WHITE-HOT, AND NOT A REDDER RED. Rule 4 of the contract, the same
    call the gauges and the chat's refusals make: red is this runtime's voice, so
    it cannot also be its one thing that must stand out. A staff tag changes
-   FAMILY -- the plate goes to the lit ground behind a white outline, and the
-   name with it -- which is legible across a street in a way that a second shade
-   of red is not.
+   FAMILY, which is legible across a street in a way that a second shade of red
+   is not.
+
+   IT MOVED ONTO THE SQUARE when the name plate came off. The family change used
+   to be carried by the plate going to a lit ground behind a white outline, with
+   the lettering following it; with no plate, colour on type would have been all
+   that was left, and three white words at distance are three red words that
+   happen to be pale. The square is the one box still drawn and the heaviest mark
+   on the tag, so it is what goes white-hot -- an outlined white box over a head
+   reads as "staff" from further away than any lettering does, and the names
+   change with it exactly as they did before.
    ========================================================================== */
-.plate.staff {
+.id.staff {
   --aug-border-bg: var(--op-alarm);
   --aug-border-all: 2.4px;
-  background: var(--op-plate-lit);
+  color: var(--op-alarm);
 }
 
 .plate.staff .name {
   color: var(--op-alarm);
 }
 
-/* The whole line changes family with the plate, or the staff outline would frame
-   two runs that still belong to the other palette. */
+/* The whole column changes family with the square, or a white marker would sit
+   beside two runs still wearing the other palette. */
 .plate.staff .user,
 .plate.staff .cid {
   color: var(--op-alarm);
