@@ -149,6 +149,34 @@ which hands the room to a character the game's own creator has just built and to
 nobody else — so for a **returning** player the key, the panel's own `outfits →
 wardrobe` row and that command are the whole of the way in.
 
+### The garage key: out, and away
+
+`garages` is a **place**, like a dealer and a store: stand on the marker, press its
+key — **E** by default and rebindable — and it does one of two things. On foot it
+brings one of the character's own vehicles out AT the spot; **sitting in one of them,
+the same key puts it away**, filed under the spot the player is standing on, which is
+what makes it come out there next time. Which of the two is decided on the SERVER, from
+the seat the host reports and the plate the `vehicles` contract holds: a client that
+said "I am in my car" would be a client deciding what gets stored. The client's half of
+the decision is only which of the two texts the row shows.
+
+**A vehicle that is already out is MOVED to the marker, not answered.** It used to be
+answered with the id it already had — `Ok`, "Brought out XX", and an empty spot in
+front of the player, because the car was parked on the other side of the map, which is
+what a player found and reported by pressing the key six times in one session. The
+`vehicles` contract recalls it instead: put away first, which writes its condition
+back, then created again on the marker and facing the marker's own heading. It refuses
+with `vehicle.occupied` when somebody is sitting in it, because the occupant is not
+necessarily the player who asked. A request that names no place — the module's own
+spawn event, and the nearby-the-player path — keeps the old answer: moving a car for
+"somewhere near me" would be a surprise rather than a service.
+
+It ships with **no spots**: `/opx.garages.add` captures one where the operator is
+standing (the heading comes from their client, because a chat line has none) and prints
+the line to check into `config/garages.lua`; `/opx.garages.remove`, `/opx.garages.list`
+and `/opx.garages.bring <key> [plate]` delete one, list them and take one out from chat.
+All four are ACL-gated under `command.opx.garages.*`.
+
 ### Buying a vehicle
 
 `dealership` sells what `vehicles` owns. A **dealer is a place**, like a garage spot:

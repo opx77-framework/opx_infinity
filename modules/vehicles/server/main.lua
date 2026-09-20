@@ -163,6 +163,11 @@ end
 -- spot -- and it is created THERE and turned to `at.yaw`, with no offset, so a
 -- marker puts the vehicle on the marker rather than a car's width to one side.
 -- A caller that names nothing keeps the beside-the-player behaviour.
+--
+-- A NAMED PLACE IS ALSO A PROMISE ABOUT A VEHICLE THAT IS ALREADY OUT. See the
+-- block below: the vehicle is put away and created again AT the place, so a
+-- marker delivers what it says it delivered. Beside-the-player carries no such
+-- promise, so it keeps answering with the id the vehicle already has.
 -- @author dop42
 -- @param source Source
 -- @param plateId string
@@ -184,7 +189,42 @@ function M.Spawn(source, plateId, at)
 			{ owner = vehicle.citizenId }, source)
 		return Result.Err('vehicle.notFound', plateId)
 	end
-	if live[plateId] then return Result.Ok({ plate = plateId, id = live[plateId].id }) end
+
+	-- ── already out: recalled to the named place, or answered as it is ────
+	-- WHAT HAPPENS NEXT IS THE WHOLE OF A MARKER'S PROMISE. Answering `Ok` with
+	-- the id the vehicle already has, while it sits on the other side of the map,
+	-- is a marker that spawns nothing and says it did: the player is told "brought
+	-- out", stands there looking at an empty spot, and presses the key again.
+	-- That is the bug this block exists for.
+	--
+	-- So a caller that NAMED a place -- a garage marker, a pad, a dealer handing
+	-- a bought car over -- gets the vehicle THERE: it is put away first, which is
+	-- what writes its condition back, and created again below, on the marker and
+	-- facing the marker's heading. A caller that named nothing keeps the old
+	-- answer, because moving a player's car for a request that said "somewhere
+	-- near me" would be a surprise rather than a service.
+	local recalled = false
+	if live[plateId] ~= nil then
+		if type(at) ~= 'table' then
+			return Result.Ok({ plate = plateId, id = live[plateId].id, alreadyOut = true })
+		end
+		-- NOTHING IS YANKED OUT FROM UNDER ANYBODY. The occupant of a live vehicle
+		-- is not necessarily the player who asked -- a marker is a public place --
+		-- and removing it would take the car out of a driver's hands.
+		local snapshot = Open77.vehicles.get(live[plateId].id)
+		local occupants = type(snapshot) == 'table' and snapshot.occupants or nil
+		if type(occupants) == 'table' and #occupants > 0 then
+			return Result.Err('vehicle.occupied', plateId)
+		end
+		local put = M.Store(plateId)
+		if not put.ok then return put end
+		-- Read again, because putting it away is what wrote the condition back:
+		-- the vehicle created below has to be the row as it now stands.
+		fetched = Store.FetchOne(plateId)
+		if not fetched.ok then return fetched end
+		vehicle = fetched.value
+		recalled = true
+	end
 
 	local position = Open77.players.position(source)
 	if position == nil then return Result.Err('vehicle.noPosition', tostring(source)) end
@@ -243,7 +283,39 @@ function M.Spawn(source, plateId, at)
 	Store.SetState(plateId, STATE.OUT)
 	OPX.Audit.Player(character.GetPlayer(source), 'vehicle.spawn', plateId,
 		{ id = tostring(id) })
-	return Result.Ok({ plate = plateId, id = id })
+	return Result.Ok({ plate = plateId, id = id, recalled = recalled or nil })
+end
+
+--- Answers the plate of a vehicle this connection is sitting in, when it OWNS it.
+-- The oracle for "put this away": the seat assignment names the vehicle and the
+-- plate table names its owner, so nothing on the wire is consulted -- a plate in
+-- a payload is a claim, and this is the one door where the claim would be worth
+-- making. A vehicle this module never spawned has no plate and answers nothing;
+-- neither does one the connection is only riding in.
+-- @author XEROX710
+-- @param source Source
+-- @return Result Ok({ plate, id }) | Ok(nil) when the connection is on foot
+function M.Occupied(source)
+	local data = characterOf(source)
+	if data == nil then return Result.Err('vehicle.notLoggedIn', tostring(source)) end
+
+	local players = Open77.players
+	if type(players) ~= 'table' or type(players.getVehicleSeat) ~= 'function' then
+		return Result.Ok(nil)
+	end
+	local read, assignment = pcall(players.getVehicleSeat, source)
+	if not read or type(assignment) ~= 'table' then return Result.Ok(nil) end
+
+	-- Compared as text on purpose: the id is opaque to Lua and the host answers
+	-- it as an integer, so an equality test would refuse a vehicle it just made.
+	local id = assignment.vehicleId
+	if id == nil then return Result.Ok(nil) end
+	for plateId, record in pairs(live) do
+		if tostring(record.id) == tostring(id) and record.citizenId == data.citizenId then
+			return Result.Ok({ plate = plateId, id = record.id })
+		end
+	end
+	return Result.Ok(nil)
 end
 
 --- Removes a spawned vehicle and writes its condition back.
@@ -459,6 +531,7 @@ function M.Api()
 		List = M.List,
 		Get = M.Get,
 		PlateOf = M.PlateOf,
+		Occupied = M.Occupied,
 		Spawn = M.Spawn,
 		Store = M.Store,
 		StoreAll = M.StoreAll,

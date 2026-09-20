@@ -197,6 +197,35 @@ local function choose(rows, spot, wanted)
 	return nil, 'vehicle.notFound'
 end
 
+--- The spot a request names, resolved against where the connection is standing.
+-- THE ONE RESOLVER. The spot underfoot, the routing bucket and the reach are the
+-- same three questions whether the key is about to take a vehicle out or put one
+-- away, and a second copy for the second job would be a second answer to them.
+-- @author XEROX710
+-- @param source Source
+-- @param key string|nil the spot name; the nearest one when omitted
+-- @return spot|nil
+-- @return Result|nil the refusal, when there is one
+local function resolve(source, key)
+	local at = pointOf(source)
+	if at == nil then return nil, Result.Err('garages.noPosition') end
+
+	local spot = nil
+	if key == nil or key == '' then
+		spot = Access.Nearest(spots, at.x, at.y)
+	else
+		spot = Access.Spot(spots, key)
+	end
+	if spot == nil then return nil, Result.Err('garages.noSuchSpot') end
+	if spot.bucket ~= at.bucket then return nil, Result.Err('garages.wrongBucket') end
+
+	local flat = Access.FlatDistanceSquared(spot, at.x, at.y)
+	if flat == nil or flat > Access.USE_RADIUS_SQ then
+		return nil, Result.Err('garages.tooFar', spot.key)
+	end
+	return spot, nil
+end
+
 --- Brings one of the connection's own vehicles out at a spot it stands on.
 -- @author XEROX710
 -- @param source Source
@@ -210,22 +239,8 @@ function M.Bring(source, key, wanted)
 	if data == nil or type(data.citizenId) ~= 'string' then
 		return Result.Err('garages.noCharacter')
 	end
-	local at = pointOf(source)
-	if at == nil then return Result.Err('garages.noPosition') end
-
-	local spot = nil
-	if key == nil or key == '' then
-		spot = Access.Nearest(spots, at.x, at.y)
-	else
-		spot = Access.Spot(spots, key)
-	end
-	if spot == nil then return Result.Err('garages.noSuchSpot') end
-	if spot.bucket ~= at.bucket then return Result.Err('garages.wrongBucket') end
-
-	local flat = Access.FlatDistanceSquared(spot, at.x, at.y)
-	if flat == nil or flat > Access.USE_RADIUS_SQ then
-		return Result.Err('garages.tooFar', spot.key)
-	end
+	local spot, refusal = resolve(source, key)
+	if spot == nil then return refusal end
 
 	local owned = vehicles.List(data.citizenId)
 	if not owned.ok then return owned end
@@ -253,7 +268,54 @@ function M.Bring(source, key, wanted)
 		label = spot.label,
 		plate = pick.plate,
 		id = spawned.value and spawned.value.id or nil,
+		-- Forwarded, not decided here: whether the vehicle had to be moved is
+		-- the vehicles contract's answer, and this half only repeats it.
+		recalled = spawned.value and spawned.value.recalled or nil,
 	})
+end
+
+--- The marker's one door: PUT AWAY when the connection is sitting in its own
+--- vehicle, and BRING OUT otherwise.
+-- ONE DECISION, MADE HERE. The player presses one key on one marker, and which
+-- of the two things that key does is not something the client may claim: it is
+-- read from the seat the host reports and the plate this module's own table
+-- holds, both through the vehicles contract. A client that said "I am in my car"
+-- would be a client deciding what gets stored.
+--
+-- Putting away is filed UNDER THE SPOT the player is standing on, because that is
+-- what makes it come out there next time: `choose` prefers a row whose garage is
+-- the spot it is standing on, and a car put away at a marker that then treated it
+-- as a stranger would be a marker that forgets where you left it.
+-- @author XEROX710
+-- @param source Source
+-- @param key string|nil the spot name; the nearest one when omitted
+-- @param wanted string|nil a plate the caller claims, for the bring-out half
+-- @return Result
+function M.Use(source, key, wanted)
+	if vehicles == nil then return Result.Err('garages.noVehicles') end
+
+	local data = characterOf(source)
+	if data == nil or type(data.citizenId) ~= 'string' then
+		return Result.Err('garages.noCharacter')
+	end
+
+	-- Read without trusting it: a contract too old to answer is "on foot", which
+	-- is the bring-out half -- the behaviour every marker had before this.
+	local seated = type(vehicles.Occupied) == 'function' and vehicles.Occupied(source) or nil
+	if seated ~= nil and seated.ok and seated.value ~= nil then
+		local spot, refusal = resolve(source, key)
+		if spot == nil then return refusal end
+		local put = vehicles.Store(seated.value.plate, spot.key)
+		if not put.ok then return put end
+		return Result.Ok({
+			spot = spot.key,
+			label = spot.label,
+			plate = seated.value.plate,
+			stored = true,
+		})
+	end
+
+	return M.Bring(source, key, wanted)
 end
 
 -- ── the doors ───────────────────────────────────────────────────────────────
@@ -288,21 +350,32 @@ local function onRequested(key, plate)
 	end
 
 	CreateThread(function()
-		local brought = M.Bring(src, key, plate)
-		if not brought.ok then
+		local used = M.Use(src, key, plate)
+		if not used.ok then
 			-- The refusal AND a toast of the same code: without the toast the
 			-- player would not know why nothing happened.
-			OPX.Refuse(src, brought.error, M.Operation.BRING)
-			OPX.NotifyLocale(src, brought.error, nil, 'error')
-			TriggerClientEvent(M.Event.ANSWER, src, key, false, brought.error)
+			OPX.Refuse(src, used.error, M.Operation.BRING)
+			OPX.NotifyLocale(src, used.error, nil, 'error')
+			TriggerClientEvent(M.Event.ANSWER, src, key, false, used.error)
 			Open77.log.info(('[garages] player %d refused %s: %s'):format(src, safe(key),
-				tostring(brought.error)))
+				tostring(used.error)))
 			return
 		end
-		OPX.NotifyLocale(src, 'garages.broughtOut', { plate = brought.value.plate }, 'success')
-		TriggerClientEvent(M.Event.ANSWER, src, key, true, nil, brought.value.plate)
-		Open77.log.info(('[garages] player %d brought %s out at %s'):format(src,
-			safe(brought.value.plate), safe(brought.value.spot)))
+		-- The action travels with the answer and into the line, because the three
+		-- outcomes read the same from the outside and do not mean the same thing:
+		-- a car that came from the roster, one that had to be moved to this
+		-- marker first, and one the player just handed over.
+		local value = used.value
+		local action = value.stored and 'stored' or (value.recalled and 'recalled' or 'brought')
+		if value.stored then
+			OPX.NotifyLocale(src, 'garages.storedAway', { plate = value.plate }, 'success')
+		else
+			OPX.NotifyLocale(src, 'garages.broughtOut', { plate = value.plate }, 'success')
+		end
+		TriggerClientEvent(M.Event.ANSWER, src, key, true, nil, value.plate, action)
+		Open77.log.info(('[garages] player %d %s %s at %s'):format(src,
+			action == 'stored' and 'put away' or (action == 'recalled' and 'moved' or 'brought out'),
+			safe(value.plate), safe(value.spot)))
 	end)
 end
 
@@ -541,6 +614,7 @@ end
 function M.Api()
 	OPX.Api.Provide('garages', 1, {
 		Bring = M.Bring,
+		Use = M.Use,
 		Spots = function() return spots end,
 		State = function()
 			local listed = {}
