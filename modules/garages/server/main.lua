@@ -265,6 +265,23 @@ local function onRequested(key, plate)
 	if key ~= nil and type(key) ~= 'string' then key = nil end
 	if plate ~= nil and type(plate) ~= 'string' then plate = nil end
 
+	-- THE DECLARED COOLDOWN, WHICH WAS DECLARED AND NOT ENFORCED. `COOLDOWN_MS`
+	-- is written in `config/garages.lua`, read into `Access.COOLDOWN_MS` and
+	-- validated at boot -- and then nothing anywhere applied it. Only the
+	-- six-per-ten-seconds window ran, so six bring-outs could land in one tick.
+	--
+	-- That is not merely untidy. `Store.FetchOne` YIELDS before the already-out
+	-- guard in `modules/vehicles/server/main.lua`, so two `M.Bring` threads for
+	-- the same plate both pass it and both reach `vehicles.create` -- two cars
+	-- from one row. The race lives in `vehicles` and wants fixing there; this is
+	-- the caller that can drive it, and the floor its own config already asked
+	-- for is what stops it being driven.
+	--
+	-- Same shape and same reason as the dealership's, which did apply its own.
+	if Access.COOLDOWN_MS > 0 and OPX.Cooling(src, 'garages.bring', Access.COOLDOWN_MS) then
+		TriggerClientEvent(M.Event.ANSWER, src, key, false, 'garages.rateLimited')
+		return
+	end
 	if not within(src, Access.REQUESTS_PER_WINDOW, Access.REQUEST_WINDOW_MS) then
 		TriggerClientEvent(M.Event.ANSWER, src, key, false, 'garages.rateLimited')
 		return

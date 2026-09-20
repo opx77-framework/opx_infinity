@@ -691,8 +691,29 @@ function Host.Environment(side, database)
 				return page
 			end,
 		},
+		-- RAISES ON A DUPLICATE, because the host does and this stub did not.
+		--
+		-- The devkit card for build 2.31.13+op77.76 is exact: "Names are 1 to 64
+		-- characters ... registering one twice raises `duplicate command`." This
+		-- was a silent overwrite, and the cost of that was measured rather than
+		-- imagined: the appearance module registered `opx.appearance` twice, the
+		-- raise took the rest of its `Start` with it -- including the hook that
+		-- loads a character's clothing at login -- and all 1012 checks passed
+		-- over it. A stub that accepts what the engine refuses is a stub that
+		-- certifies a broken server.
+		--
+		-- Names are checked too, for the same reason: a name with a space in it
+		-- is a command nobody can ever type, and the suite should say so here
+		-- rather than let an operator find out.
 		RegisterCommand = function(name, fn, restricted)
-			commands[name] = { run = fn, restricted = restricted == true }
+			if type(name) ~= 'string' or #name < 1 or #name > 64
+				or name:match('^[%w_%.:%-]+$') == nil then
+				error(('invalid command name %q'):format(tostring(name)), 2)
+			end
+			-- Case-insensitively, as the host matches them.
+			local key = name:lower()
+			if commands[key] ~= nil then error('duplicate command', 2) end
+			commands[key] = { run = fn, restricted = restricted == true }
 		end,
 
 		-- Two answer shapes are documented for the host call: the effective key,

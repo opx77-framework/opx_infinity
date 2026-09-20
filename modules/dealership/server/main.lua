@@ -269,6 +269,16 @@ function M.Buy(source, dealerKey, entryKey, destKey)
 		Open77.log.error(('[dealership] %s: vehicles.Register threw for %s: %s')
 			:format(tostring(data.citizenId), entry.key, tostring(made)))
 		made = Result.Err('dealership.registerFailed')
+	elseif type(made) ~= 'table' then
+		-- THE OTHER WAY THE SAME MONEY GETS LOST. The pcall above guards a THROW;
+		-- this guards a RETURN that is not a Result. `made.ok` on a nil raises
+		-- here, three lines after `RemoveMoney` and before the refund that the
+		-- comment above exists to protect -- so the throw the pcall was added to
+		-- survive would simply move down the function. A contract that answers
+		-- the wrong shape is a refusal like any other.
+		Open77.log.error(('[dealership] %s: vehicles.Register answered a %s for %s')
+			:format(tostring(data.citizenId), type(made), entry.key))
+		made = Result.Err('dealership.registerFailed')
 	end
 	if not made.ok then
 		-- THE HALF THAT CAN BE UNDONE. Nothing was owned, so the money goes

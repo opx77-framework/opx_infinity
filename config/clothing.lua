@@ -2,10 +2,22 @@
 -- @author XEROX710
 --
 -- A STORE IS A PLACE, exactly as a garage spot and a dealer are: the marker is
--- drawn where the operator put it, and the server re-derives the player's
--- distance to the DECLARED position before the list is sent. A store captured in
--- game lives in the database and is merged over this table key by key --
--- `/opx.clothing.add` is what writes it.
+-- drawn where the operator put it. A store captured in game lives in the
+-- database and is merged over this table key by key -- `/opx.clothing.add` is
+-- what writes it.
+--
+-- THE DISTANCE IS CHECKED ON THE CLIENT AND NOWHERE ELSE, and this note used to
+-- claim otherwise. It said "the server re-derives the player's distance to the
+-- DECLARED position before the list is sent", and the server does no such thing
+-- -- `sync()` filters by ROUTING BUCKET only, and the door itself never reaches
+-- the server at all: the key calls the appearance contract locally.
+--
+-- Which is fine for what this costs today, and is not fine for what it will.
+-- Opening a free fitting room from the wrong place is a cosmetic lie. Opening a
+-- PRICED one is the price being optional, and `modules/shops` prices it. When
+-- the two are joined, this door has to become a request the server answers
+-- after measuring the distance itself -- the shape `modules/shops/server/main.lua`
+-- already uses in `shopAt`. Until then this comment says what the code does.
 --
 -- WHAT IS BEHIND THE KEY IS THE FITTING ROOM, not a shop of our own. The
 -- `appearance` module already streams this body's whole clothing catalogue

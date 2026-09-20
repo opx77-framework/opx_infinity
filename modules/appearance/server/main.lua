@@ -866,9 +866,27 @@ end
 -- The two doors, as data: the command's name, the catalogue key its help line
 -- comes from, and the view it names. One list rather than two registrations, so
 -- the boot line below cannot fall out of step with what was registered.
+-- THE FITTING ROOM IS NOT ON THIS LIST, and its absence is the point.
+--
+-- It was, as `opx.appearance.wardrobe`, open to everybody, from anywhere, twice
+-- a second. The argument for it was sound when it was written -- under a policy
+-- of 'first' or 'never' the room was unreachable for the rest of a character's
+-- life -- but it stopped being sound the moment the room acquired a price.
+-- `modules/shops` charges per changed slot, and it can only charge for a room
+-- IT opened: a player who types a command instead changes all nine slots
+-- standing in the street and pays nothing. A free door onto a priced room is
+-- not a convenience, it is the price being optional.
+--
+-- The two halves of the original argument both have doors now, and neither is
+-- this one: a player reaches the room at a clothing store, and staff reach it
+-- for anybody through `opx.admin.player.wardrobe`. Putting this command back
+-- means deciding that clothes are free.
 local VIEW_COMMANDS = {
-	{ name = 'opx.appearance', help = 'appearance.command.panel', kind = 'panel' },
-	{ name = 'opx.appearance.wardrobe', help = 'appearance.command.wardrobe', kind = 'wardrobe' },
+	-- The panel keeps the 2 s it always had. It was briefly 500 ms when the two
+	-- doors shared one number, which is looser than the thing it replaced for no
+	-- reason anybody chose.
+	{ name = 'opx.appearance', help = 'appearance.command.panel', kind = 'panel',
+		cooldownMs = 2000 },
 }
 
 function M.RegisterCommands()
@@ -878,7 +896,7 @@ function M.RegisterCommands()
 		OPX.Command.Register(entry.name, {
 			restricted = false,
 			help = entry.help,
-			cooldownMs = 500,
+			cooldownMs = entry.cooldownMs or 500,
 		}, function(source)
 			TriggerClientEvent(M.Event.SHOW, source, entry.kind)
 		end)
@@ -916,25 +934,6 @@ function M.Start()
 
 	registerEvents()
 	M.RegisterCommands()
-
-	-- THE OTHER HALF OF THE OFFER POLICY. `WARDROBE.OFFER_POLICY` decides which
-	-- world enters are HANDED a fitting room; this is how a player asks for one
-	-- that was not handed to them, which under 'first' and 'never' is every
-	-- session after the first. Open to everybody, because it opens nothing but
-	-- the asking player's own appearance -- the client half re-checks the whole
-	-- of it, and the ACL has nothing to say about a player looking at their own
-	-- clothes. The cooldown is the whole of the abuse surface: the panel is one
-	-- outgoing event and the client refuses a second one anyway.
-	OPX.Command.Register('opx.appearance',
-		{ help = 'command.help.appearance', cooldownMs = 2000, key = 'appearance.panel' },
-		function(source)
-			local player = tonumber(source) or 0
-			if player <= 0 then
-				return Open77.log.warn('[appearance] the appearance panel is opened by a player, ' ..
-					'not the console')
-			end
-			TriggerClientEvent(M.Event.OPEN_PANEL, player)
-		end)
 
 	-- The seam the character module left exactly where its own clothing read used
 	-- to be: it yields where that read yielded, which is what makes the session

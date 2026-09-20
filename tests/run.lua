@@ -3705,6 +3705,18 @@ do
 				and #synced[1].spots == 1)
 
 		-- ── bringing out what the character owns ──────────────────────────
+
+		-- THE COOLDOWN IS SWITCHED OFF FOR THE CASES THAT ARE NOT ABOUT IT, and
+		-- turned back on for the one that is, below. `COOLDOWN_MS` is a real
+		-- floor between two bring-outs -- three seconds, which is thirty pumps --
+		-- and every check from here to the rate-limit block fires a second
+		-- request immediately to test something else entirely: which vehicle a
+		-- pad takes, that another bucket is refused, that an unknown marker is.
+		-- Making each of them wait would be thirty pumps of nothing, three times,
+		-- to assert something already asserted once.
+		local cooldown = Access.COOLDOWN_MS
+		Access.COOLDOWN_MS = 0
+
 		local created = #control.vehicleCreates
 		control.netEvents[garages.Event.REQUEST]('garage_dock')
 		control.Pump(8)
@@ -3795,6 +3807,44 @@ do
 			lastEvent(garages.Event.ANSWER) ~= nil
 				and lastEvent(garages.Event.ANSWER)[3] == 'garages.nothingHere',
 			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+
+		-- ── the floor between two bring-outs ──────────────────────────────
+		-- DECLARED IN CONFIG, VALIDATED AT BOOT, AND FOR A WHILE NOT APPLIED.
+		-- `COOLDOWN_MS` was read into `Access.COOLDOWN_MS` and nothing anywhere
+		-- used it, so only the six-per-ten-seconds window ran and six bring-outs
+		-- could land in the same tick. That matters past tidiness: `FetchOne`
+		-- yields before the already-out guard in `modules/vehicles`, so two
+		-- threads for one plate both pass it and both create a vehicle.
+		local hasty = 45
+		load(hasty, 'citizen-garage')
+		env.source = hasty
+		Access.COOLDOWN_MS = cooldown > 0 and cooldown or 3000
+
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		check('the first bring-out of a pair is served',
+			#control.vehicleCreates == created + 1)
+
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		check('and a second inside the floor creates nothing',
+			#control.vehicleCreates == created)
+		check('and is refused rather than dropped',
+			lastEvent(garages.Event.ANSWER) ~= nil
+				and lastEvent(garages.Event.ANSWER)[3] == 'garages.rateLimited',
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+
+		-- Past the floor -- thirty pumps is three seconds -- it is served again.
+		created = #control.vehicleCreates
+		control.Pump(31)
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		check('and once the floor has passed it is served again',
+			#control.vehicleCreates == created + 1)
+
+		Access.COOLDOWN_MS = 0
 
 		-- ── the window ────────────────────────────────────────────────────
 		local spammer = 43
