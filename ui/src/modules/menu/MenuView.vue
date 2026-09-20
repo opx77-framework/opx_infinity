@@ -93,7 +93,12 @@ const ANCHORS: Record<string, string> = {
   'top-left': 'anchor-top-left',
   'top-right': 'anchor-top-right',
   'left': 'anchor-left',
-  'right': 'anchor-right'
+  'right': 'anchor-right',
+  // THE PANEL, for a menu whose owner asked for one: centred, and centred is the
+  // ONLY anchor a menu may take per open -- see `readConfig`. A menu down an edge
+  // is a strip; a menu in the middle of the screen is a panel, and a caller that
+  // wants the second says so here.
+  'center': 'anchor-center'
 }
 
 const handle = ref<Handle | null>(null)
@@ -107,6 +112,12 @@ const focusMode = ref('full')
 const closable = ref(true)
 const width = ref(340)
 const maxHeight = ref(56)
+/** A HEIGHT IN PIXELS, or 0 for none -- which is every menu but a panel. A strip's
+    height is its rows; a caller that asked for a panel named a height as well, because
+    a four-row level at a reading width would otherwise draw a bar rather than the
+    square it asked for. Read and CLEARED on every open: the key is absent when the
+    caller named none, and a panel's height must not survive into the next menu. */
+const height = ref(0)
 
 /** Right-anchored strips read the leading edge as the right edge, per menu.css. The
     curve follows it: a strip on the right recedes the other way. */
@@ -128,11 +139,24 @@ function paths(name: string): string[] {
   return (name && GLYPHS[name]) || []
 }
 
-const stripStyle = computed(() => `width: ${width.value}px; max-height: ${maxHeight.value}vh`)
+const stripStyle = computed(() => {
+  const box = `width: ${width.value}px; max-height: ${maxHeight.value}vh`
+  // `max-height` still wins over this, so a window too short for the panel clips it
+  // rather than drawing off the screen -- the guard stays the guard.
+  return height.value > 0 ? `${box}; height: ${height.value}px` : box
+})
 
 /** Which edge the plane is hinged on. The tilt's sign, its origin and the
-    chosen row's step all derive from it, in `design-system/surface.css`. */
-const plane = computed(() => (railEnd.value ? 'op-anchor-right' : 'op-anchor-left'))
+    chosen row's step all derive from it, in `design-system/surface.css`.
+
+    A CENTRED MENU TAKES NEITHER, and that is the design system's own rule for a
+    centred surface: rotating about the middle sends half the panel toward the
+    player and half away, which is paper on a spindle rather than a surface
+    receding. `.op-plane` is still on the strip, so the perspective and the
+    containment stay; only the hinge goes. */
+const plane = computed(() =>
+  anchor.value === 'anchor-center' ? '' : railEnd.value ? 'op-anchor-right' : 'op-anchor-left'
+)
 
 function isHandle(value: unknown): value is Handle {
   return typeof value === 'string' || typeof value === 'number'
@@ -149,6 +173,10 @@ function readConfig(payload: Payload): void {
   if (wide > 0) width.value = Math.round(wide)
   const tall = num(payload.maxHeight)
   if (tall > 0) maxHeight.value = Math.round(tall)
+  // Reset rather than keep: an absent key means the caller named no height, and the
+  // panel before this one must not decide this one's shape.
+  const box = num(payload.height)
+  height.value = box > 0 ? Math.round(box) : 0
 }
 
 function readFrame(payload: Payload, stagger = false): void {
@@ -423,6 +451,20 @@ function choose(row: Slot): void {
   top: calc(33vh - var(--op-bleed));
 }
 
+/* THE CENTRED MENU -- the panel a caller asked for, rather than a strip down an
+   edge. Nothing to pay back here: the bleed is symmetric padding, so it cancels
+   against itself and the bay lands dead centre. The tilt is absent on purpose,
+   per `design-system/surface.css`, and the hinge vars are set to what the two
+   plane classes would have set so a centred menu steps its chosen row exactly
+   like an anchored one. */
+.anchor-center {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  --op-pop: 10px;
+  --op-origin: center center;
+}
+
 /* =============================================================================
    THE BAY -- the enclosure. Two opposite corners cut, which reads as a plate
    slid into place; `.op-bay` says that and `.op-arete` lights the leading run.
@@ -431,6 +473,11 @@ function choose(row: Slot): void {
   position: relative;
   flex: 1;
   min-width: 0;
+  /* A COLUMN SO A FIXED HEIGHT FALLS THROUGH. When the caller named a height the strip
+     is taller than its rows, and without this the bay would keep its content height
+     and leave the panel's bottom empty instead of holding the hint down on it. */
+  display: flex;
+  flex-direction: column;
   /* THE DIAL, AND IT STAYS AT 0. The ground belongs on the ROWS, not on the
      bay: a bay is mostly the space BETWEEN rows, so a plate here fills what
      carries nothing and turns the strip into a window. One number to turn if a
@@ -444,7 +491,10 @@ function choose(row: Slot): void {
   z-index: 1;
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
+  /* In a bay taller than its rows, the LIST takes the room and the hint keeps its
+     own at the foot, which is where a panel's last line belongs. */
   max-height: inherit;
 }
 
@@ -455,6 +505,10 @@ function choose(row: Slot): void {
   position: relative;
   display: flex;
   flex-direction: column;
+  /* The free room of a bay taller than its rows, so the foot is pinned to the panel's
+     bottom rather than floating under the last row. The rows keep their own height at
+     the top either way: this is what grows, not they. */
+  flex: 1;
   gap: var(--op-space-1);
   margin: 0;
   /* The trailing padding is the chosen row's runway: it leaves the column by

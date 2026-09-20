@@ -305,9 +305,28 @@ for index = 1, #SLOTS do IS_SLOT[SLOTS[index]] = true end
 -- The tab the room opens on.
 local FIRST_SLOT = 'InnerChest'
 
--- Catalogue entries carried by one batch, and records handled between two yields.
-local CATALOGUE_PART = 100
-local CATALOGUE_STRIDE = 256
+-- Catalogue entries carried by one batch, and records formatted between two yields.
+--
+-- BOTH NUMBERS ARE MEASURED, NOT CHOSEN. The host raises out of a resume that spends
+-- longer than its share of the frame budget -- `frameBudget` (2000us) over the running
+-- resources, so about 100-125us with sixteen of them -- and the raise ends the thread,
+-- leaving the room reading a catalogue that will never arrive.
+--
+-- THE WALL CLOCK IS THE ONLY LIMIT THAT MATTERS HERE, and that is worth stating
+-- because it is not the obvious one. The instruction limit is 500,000 per resume and
+-- the hook steps every 10,000 -- measured, one stride of 256 records costs 10,000 of
+-- them `.open77-scratch/budget-shapes.lua`. Nothing in this file can ever trip it. The
+-- clock is what fired: 256 records of `title` and `sortKey` measured 750us against a
+-- share of ~100-125us, and the error landed inside the first stride.
+--
+-- One record measured 2.9us, so eight is ~24us per resume: inside the share, with room
+-- for a machine several times slower -- and a slower machine is exactly the case a
+-- wall-clock share punishes. The platform's own wardrobe streams this same list at a
+-- stride of 64, but it formats nothing; the per-record work here is what makes the
+-- equivalent number eight. A part is 32 for the same reason: 32 rows is ~30us of table
+-- building, and 128 values, well inside the 1024 an event may carry.
+local CATALOGUE_PART = 32
+local CATALOGUE_STRIDE = 8
 
 -- Milliseconds between two tries at opening the room after a creation, and how
 -- long a kept outfit's save is listened for.
@@ -596,10 +615,98 @@ local function sortKey(name)
 	return (name:lower():gsub('%d+', function(digits) return ('%010d'):format(tonumber(digits)) end))
 end
 
+--- Splits a packed row back into the three fields the view draws.
+-- @return string record, string slot, string label
+local function unpackRow(row)
+	local first = row:find('\0', 1, true)
+	local second = row:find('\0', first + 1, true)
+	local third = row:find('\0', second + 1, true)
+	return row:sub(second + 1, third - 1), row:sub(first + 1, second - 1), row:sub(third + 1)
+end
+
+--- Formats the engine's records into rows that C can sort, yielding per stride of them.
+--
+-- THE SORT IS C'S, AND THAT IS THE POINT. Sorting entries through a comparator measured
+-- 825us of LUA calls for two thousand rows -- 44,000 comparator calls -- against a share
+-- of ~100-125us, so that sort died of the wall clock just as the stride did. Sorting
+-- plain STRINGS is `lua_sort` on its fast path: string compares in C, and a C call is
+-- the one thing the host's clock cannot look into, so it is over in one go instead of
+-- raising on the next hook. So a row is PACKED into one string, key first, and unpacked
+-- as it is handed out:
+--
+--     <sort key>\0<slot>\0<record>\0<label>
+--
+-- A zero byte is below every byte a key can hold, so the first field orders the row and
+-- nothing behind it can interfere, and two records whose labels match still separate on
+-- the record. It also stops the list being keyed twice -- once for the sort, once for the
+-- batch -- which is what the old shape did.
+--
+-- The rows being strings is load-bearing, not incidental: it is the whole reason the sort
+-- above them is safe, and the suite pins it.
+--
+-- The pass ends with a yield on purpose: the sort that runs on these rows then starts in a
+-- resume of its own, because a C call overrunning its share must not land on a pass that
+-- is still counting toward one.
+-- @param records table the engine's list
+-- @param pause function() yields to the host, and lets the suite count the chunks
+-- @param alive function() true while this room is still the current one
+-- @return table|nil packed rows, or nil once `alive` has gone false
+local function catalogueRows(records, pause, alive)
+	local rows = {}
+	for index = 1, #records do
+		local entry = records[index]
+		if type(entry) == 'table' and type(entry.record) == 'string' and IS_SLOT[entry.slot] then
+			known[entry.record] = entry.slot
+			if entry.nonvisual ~= true then
+				local label = title(entry.record)
+				rows[#rows + 1] = sortKey(label) .. '\0' .. entry.slot .. '\0' ..
+					entry.record .. '\0' .. label
+			end
+		end
+		if index % CATALOGUE_STRIDE == 0 then
+			pause()
+			if not alive() then return nil end
+		end
+	end
+	pause()
+	return rows
+end
+
+-- The pass, named on the API for the suite. Not a second way in: `Stream` is the only
+-- caller in the resource, and this exists so the suite can assert the shape the sort
+-- depends on -- every row a string -- without a room and a puppet to open one.
+M.Wardrobe.Catalogue = catalogueRows
+
+--- Hands a catalogue to the view: formats, orders, then publishes it in parts.
+-- Split out of the thread below so the suite can drive the WHOLE pass with stubbed
+-- records and a counting `pause`, because the property that broke is not what a batch
+-- contains but how much of the pass rides on one resume -- and only a driven pass
+-- can show that.
+-- @return boolean true once every part has been published
+function M.Wardrobe.Stream(records, pause, alive, emit)
+	local rows = catalogueRows(records, pause, alive)
+	if rows == nil then return false end
+	table.sort(rows)
+	pause()
+
+	local first = 1
+	repeat
+		if not alive() then return false end
+		local last = math.min(#rows, first + CATALOGUE_PART - 1)
+		local part = {}
+		for index = first, last do
+			local record, slot, label = unpackRow(rows[index])
+			part[#part + 1] = { id = record, tab = slot, label = label, detail = record }
+		end
+		emit(part, last >= #rows)
+		first = last + 1
+		pause()
+	until first > #rows
+	return true
+end
+
 --- Reads the body's clothing catalogue and hands it to the view in batches.
--- On its own thread and yielding every CATALOGUE_STRIDE records: two thousand
--- entries sorted and formatted in one resume is exactly the shape that exceeds
--- the per-resume instruction budget.
+-- On its own thread, with every pass over the list bounded (see CATALOGUE_STRIDE).
 local function streamCatalogue(mine)
 	CreateThread(function()
 		Wait(0)
@@ -615,39 +722,22 @@ local function streamCatalogue(mine)
 			return
 		end
 
-		local entries = {}
-		for index = 1, #records do
-			local entry = records[index]
-			if type(entry) == 'table' and type(entry.record) == 'string' and IS_SLOT[entry.slot] then
-				known[entry.record] = entry.slot
-				if entry.nonvisual ~= true then
-					local name = title(entry.record)
-					entries[#entries + 1] = { id = entry.record, tab = entry.slot, label = name,
-						detail = entry.record, key = sortKey(name) }
-				end
-			end
-			if index % CATALOGUE_STRIDE == 0 then
-				Wait(0)
-				if mine ~= generation or phase ~= 'open' then return end
-			end
-		end
-		table.sort(entries, function(left, right) return left.key < right.key end)
-		Wait(0)
+		local handed = 0
+		local complete = M.Wardrobe.Stream(records,
+			function() Wait(0) end,
+			function() return mine == generation and phase == 'open' end,
+			function(part, final)
+				handed = handed + #part
+				publish('roomItems', { items = part, final = final })
+			end)
+		if not complete then return end
 
-		local first = 1
-		repeat
-			if mine ~= generation or phase ~= 'open' then return end
-			local last = math.min(#entries, first + CATALOGUE_PART - 1)
-			local part = {}
-			for index = first, last do
-				local entry = entries[index]
-				part[#part + 1] = { id = entry.id, tab = entry.tab, label = entry.label,
-					detail = entry.detail }
-			end
-			publish('roomItems', { items = part, final = last >= #entries })
-			first = last + 1
-			Wait(0)
-		until first > #entries
+		-- One line naming the size of what was just streamed. The failure this
+		-- replaces was silent -- a dead thread and a room that reads a catalogue
+		-- forever -- and the first question anybody asks it is how many records
+		-- there were.
+		Open77.log.info(('[appearance] the clothing catalogue: %d records read, %d wearables shown')
+			:format(#records, handed))
 	end)
 end
 

@@ -320,6 +320,10 @@ function M.Start()
 	M.TagsView.Start()
 	M.Combat.Start()
 	M.Doors.Start()
+	-- The world announcement. Registered here with the rest so a client that
+	-- joins late is listening before an operator's next line, and NOT tied to the
+	-- menu: an announcement reaches a player who has never opened the panel.
+	M.Announce.Start()
 	-- Before the menu: the menu's own handlers hand the access map straight to
 	-- the eye, and a map that arrived before the rows were built would register
 	-- an empty set and never be asked again.

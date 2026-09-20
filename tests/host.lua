@@ -896,14 +896,35 @@ end
 -- @param path string
 -- @param side string 'server' or 'client'
 -- @return string[]
+--- THE PLATFORM'S ORDER, NOT THE MANIFEST'S.
+--
+-- `SharedScripts.Concat(ServerScripts)` is literally what both loaders execute before
+-- any phase runs -- `ServerResourceHost.cs` and `LuaResourceRuntime.cs` in
+-- `Open77.Server.Scripting` -- so every SHARED script runs before any script of the
+-- side's own, whatever order the manifest lists them in. A harness that reads the
+-- manifest top to bottom is a harness that can only ever agree with the platform by
+-- accident, and it disagreed about exactly the thing that mattered: a module is
+-- declared by a `shared_script` and three configs are `server_script`s, so the suite
+-- had the config loaded before the module declared itself while a real server had it
+-- the other way round. The module's settings were empty in production and populated
+-- here, which is a whole class of fault this file existed to catch and did not.
+-- @author XEROX710
+-- @param path string
+-- @param side string 'server' or 'client'
+-- @return string[]
 function Host.LoadOrder(path, side)
-	local wanted = { shared_script = true, [side .. '_script'] = true }
-	local files = {}
+	local own = side .. '_script'
+	local shared, mine = {}, {}
 	for line in io.lines(path) do
 		local kind, file = line:match('^%s*([%a_]+)%s+"([^"]+)"')
-		if kind and wanted[kind] then files[#files + 1] = file end
+		if kind == 'shared_script' then
+			shared[#shared + 1] = file
+		elseif kind == own then
+			mine[#mine + 1] = file
+		end
 	end
-	return files
+	for _, file in ipairs(mine) do shared[#shared + 1] = file end
+	return shared
 end
 
 return Host

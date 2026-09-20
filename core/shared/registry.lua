@@ -37,6 +37,54 @@ local function runsHere(side)
 	return OPX.IsClient
 end
 
+--- One module's settings, as the config stands AT THIS MOMENT.
+--
+-- RESOLVED WHEN IT IS READ, NEVER CAPTURED, and that is not a style preference.
+-- A module is declared by `modules/<id>/module.lua`, which is a `shared_script`, and
+-- the platform's loaders run `SharedScripts.Concat(ServerScripts)` -- EVERY shared
+-- script before ANY server script. So a table captured at declare time is the empty
+-- fallback for every module whose config is a SERVER script, and it stays empty for
+-- the life of the resource: the config assigns its table afterwards, and the module
+-- is still holding the `{}` it was handed.
+--
+-- Three configs are server scripts (`config/server.lua`, `config/vehicles.lua`,
+-- `config/theme.lua`). The cost was not theoretical. `vehicles` reads
+-- `M.Settings.PER_CHARACTER`, which arrived as nil, and `Register` threw on
+-- `nil > 0` -- inside a dealership purchase, after the money had been taken and
+-- before any row was written. So a player was charged and owned nothing, and every
+-- garage then answered, correctly, "you own nothing that comes out here".
+--
+-- The offline suite could not see it: it loaded the manifest in FILE order, where
+-- every config sits above every module. That is fixed beside this in `tests/host.lua`.
+--
+-- THIS FILE IS A `shared_script`, SO IT RUNS IN BOTH SANDBOXES, and the two do not
+-- offer the same globals: the client's `OpenSandbox` (scripting/src/ResourceHost.cpp)
+-- removes `setmetatable` and `getmetatable` outright, while the server's
+-- (`LuaResourceRuntime.Sandbox`) keeps them. Nothing here may therefore use either,
+-- or a metatable that works on the server refuses the whole resource on the client --
+-- the session ends with `resource_activation_failed` before a single module starts.
+-- `OPX.Modules.Rebind` is what answers the same question without one.
+-- @author XEROX710
+-- @param id string
+-- @return table the module's settings, never nil
+function OPX.Modules.Settings(id)
+	return OPX.Config.MODULES[id] or {}
+end
+
+--- Re-points every declared module's `Settings` at its live config.
+--
+-- Call it ONCE, from `OPX.Modules.Resolve`, which is the moment every script has run
+-- and no phase has: the only point at which a module whose config is a
+-- `server_script` can be told what that config says. `Declare` has already handed out
+-- the table that existed then, and a module never assigns this field itself, so the
+-- re-point is the whole of the fix and no read can be left holding the old one.
+-- @author XEROX710
+function OPX.Modules.Rebind()
+	for _, record in ipairs(OPX.Modules.All()) do
+		record.Module.Settings = OPX.Modules.Settings(record.Id)
+	end
+end
+
 --- Declares a module and returns its table. Call once, from `module.lua`, before
 --- any of the module's own files. The returned table is where those files hang
 --- `Init`, `Api`, `Start` and `Stop`.
@@ -57,10 +105,20 @@ function OPX.Modules.Declare(spec)
 		error(('module %q declares an unknown side %q'):format(id, tostring(side)), 2)
 	end
 
-	local settings = OPX.Config.MODULES[id] or {}
+	local settings = OPX.Modules.Settings(id)
 
 	-- What the module's own files write into. `Settings` and the four phase
 	-- functions are the only names the runtime ever looks for here.
+	--
+	-- `Settings` here is the config as it stands AT DECLARE TIME, which for the three
+	-- `server_script` configs is the empty fallback: the platform runs every shared
+	-- script before any server script, so `config/vehicles.lua` has not run yet when
+	-- `modules/vehicles/module.lua` declares itself. `OPX.Modules.Rebind` re-points
+	-- this field once everything has run, which is why a module may read `M.Settings`
+	-- freely in its own phases and must NOT capture it into a file-scope local.
+	--
+	-- A `__index` metatable would answer the same question, and is not available:
+	-- the client sandbox has no `setmetatable`. See `OPX.Modules.Settings` above.
 	local namespace = { Settings = settings }
 
 	local record = {
@@ -75,6 +133,10 @@ function OPX.Modules.Declare(spec)
 		Reason = nil,
 	}
 
+	-- THE FAST PATH. At declare time the answer is only knowable for a config that
+	-- has already run, which is every `shared_script` config and neither of the two
+	-- MODULES-shaped server scripts. `OPX.Modules.Resolve` answers for the rest, once
+	-- every script has run and before any phase does.
 	if settings.enabled == false then
 		record.State = 'disabled'
 		record.Reason = 'disabled in config'

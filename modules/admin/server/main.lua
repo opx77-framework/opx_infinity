@@ -70,6 +70,9 @@ local ERRORS = {
 	unknown_item = 'admin.error.unknownItem',
 	bad_count = 'admin.error.badCount',
 	not_enough = 'admin.error.notEnough',
+	bad_amount = 'admin.error.badAmount',
+	bad_type = 'admin.error.badType',
+	vetoed = 'admin.error.vetoed',
 	bag_no_room = 'admin.error.bagNoRoom',
 	bag_too_heavy = 'admin.error.bagTooHeavy',
 	unknown_location = 'admin.error.unknownLocation',
@@ -94,6 +97,7 @@ local TYPED = {
 	unknown_location = true, bad_location_name = true, bad_holder = true, unknown_citizen = true,
 	unknown_item = true, bad_count = true, not_enough = true, unknown_ammo = true,
 	bad_door = true, unknown_ped = true, bad_name = true,
+	bad_amount = true, bad_type = true,
 }
 
 -- The catalogue key a multi-line report is answered with.
@@ -717,6 +721,7 @@ function M.Start()
 	M.Combat.Register()
 	M.Doors.Register()
 	M.Characters.Register()
+	M.Recovery.Register()
 	-- Last: the access map it sends lists what every other file registered.
 	M.Menu.Register()
 

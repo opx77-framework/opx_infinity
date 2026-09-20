@@ -138,10 +138,12 @@ onMounted(() => {
       <HudVehicle />
     </div>
 
-    <!-- The voice block pins itself: it is the one read-out with no anchor, because the
-         right edge at eye level is the only place a mic has ever been on this HUD. It
-         therefore carries its own perspective and its own tilt sign; every other block
-         gets both from the `.at` it sits in. -->
+    <!-- The voice block pins itself: it is the one read-out with no anchor, because it is
+         the only one that is not a cluster of one edge but a single tall column, and it
+         reads the bottom-right corner -- the one corner voting leaves free (vitals and the
+         chip strip are bottom-left, the vehicle chip is bottom-centre, the info block is
+         top-right). It therefore carries its own perspective and its own tilt sign; every
+         other block gets both from the `.at` it sits in. -->
     <HudVoice :segments="layout.voiceSegments" />
   </div>
 </template>

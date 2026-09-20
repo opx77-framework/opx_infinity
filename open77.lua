@@ -67,6 +67,12 @@ server_script "config/vehicles.lua"
 -- Shared, unlike the vehicles config above: the client draws the markers and so
 -- reads the radii, the kinds and the marker vocabulary here.
 shared_script "config/garages.lua"
+-- Shared like the garages config, and for the same reason: the client draws the
+-- markers and reads the prices here, and both halves must refuse the same rows.
+shared_script "config/dealership.lua"
+-- Shared like the two above: the client draws a store's marker and reads the
+-- radius and the key here, and both halves must refuse the same rows.
+shared_script "config/clothing.lua"
 shared_script "config/chat.lua"
 shared_script "config/appearance.lua"
 shared_script "config/inventory.lua"
@@ -222,6 +228,36 @@ client_script "modules/garages/client/main.lua"
 -- work. Without this file the client half is never built.
 client_script "modules/garages/client/exports.lua"
 
+-- Dealerships. After `vehicles`, which owns what a character owns, and after
+-- `garages`, whose spots are the destinations a purchase may name. Neither is
+-- required: without `vehicles` nothing can be sold and without `garages` a
+-- purchase is filed under the vehicles module's own default garage.
+shared_script "modules/dealership/module.lua"
+shared_script "modules/dealership/locales.lua"
+shared_script "modules/dealership/shared/access.lua"
+server_script "modules/dealership/server/storage.lua"
+server_script "modules/dealership/server/main.lua"
+client_script "modules/dealership/client/main.lua"
+-- The lifecycle: the registry calls the module, and `Runtime` is what does the
+-- work. Without this file the client half is never built.
+client_script "modules/dealership/client/exports.lua"
+
+-- Clothing stores: a marker whose key puts the appearance module's own fitting
+-- room up, with the game's whole clothing catalogue in it. After `garages` and
+-- `dealership` because it is the third place-shaped module and shares their
+-- vocabulary rather than their subject. `appearance` and `prompts` are optional
+-- and not required: without either, the markers still draw and the key still
+-- answers -- out loud -- that the room is not there.
+shared_script "modules/clothing/module.lua"
+shared_script "modules/clothing/locales.lua"
+shared_script "modules/clothing/shared/access.lua"
+server_script "modules/clothing/server/storage.lua"
+server_script "modules/clothing/server/main.lua"
+client_script "modules/clothing/client/main.lua"
+-- The lifecycle: the registry calls the module, and `Runtime` is what does the
+-- work. Without this file the client half is never built.
+client_script "modules/clothing/client/exports.lua"
+
 shared_script "modules/chat/module.lua"
 shared_script "modules/chat/locales.lua"
 server_script "modules/chat/server/main.lua"
@@ -299,12 +335,13 @@ shared_script "modules/admin/module.lua"
 shared_script "modules/admin/locales.lua"
 shared_script "modules/admin/data/vehicles.lua"
 shared_script "modules/admin/data/peds.lua"
--- The catalogue is split four ways only because of its size; `-4` finishes it.
+-- The catalogue is split five ways only because of its size; `-5` finishes it.
 shared_script "modules/admin/shared/catalog.lua"
 shared_script "modules/admin/shared/catalog-1.lua"
 shared_script "modules/admin/shared/catalog-2.lua"
 shared_script "modules/admin/shared/catalog-3.lua"
 shared_script "modules/admin/shared/catalog-4.lua"
+shared_script "modules/admin/shared/catalog-5.lua"
 -- The ped allowlist, split the same way and for the same reason; `-4` finishes it.
 shared_script "modules/admin/shared/peds.lua"
 shared_script "modules/admin/shared/peds-1.lua"
@@ -331,6 +368,9 @@ server_script "modules/admin/server/doors.lua"
 -- `players.lua` acts on. Before `menu.lua`, like every other register: the access
 -- map that file sends lists what this one registered.
 server_script "modules/admin/server/characters.lua"
+-- The staff door onto a character's PURSE, beside the one onto their account:
+-- both reach rows that outlive the session, so both are their own namespace.
+server_script "modules/admin/server/recovery.lua"
 server_script "modules/admin/server/menu.lua"
 
 client_script "modules/admin/client/main.lua"
@@ -343,6 +383,7 @@ client_script "modules/admin/client/tags.lua"
 client_script "modules/admin/client/tagsview.lua"
 client_script "modules/admin/client/combat.lua"
 client_script "modules/admin/client/doors.lua"
+client_script "modules/admin/client/announce.lua"
 client_script "modules/admin/client/menu.lua"
 client_script "modules/admin/client/target.lua"
 

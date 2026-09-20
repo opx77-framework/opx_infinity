@@ -333,11 +333,19 @@
 
      IT RUNS BEFORE ANY LUA OF OURS DOES. The resource's scripts are not running during
      the join, so this page cannot ask for anything -- it is told, by the client, over
-     exactly two events:
+     two events:
        progress { phase, label, fraction, detail, server }
        server   { name }
      `fraction` is 0..1, or negative for "no idea yet" (the bar sweeps). `label` is
-     what to print over `phase`, and Lua is not involved in either. */
+     what to print over `phase`, and Lua is not involved in either.
+
+     THE SERVER'S NAME IS NOT DRAWN, AND THAT IS THE EDIT. It had a line of its own in
+     the bay, under `ENTERING THE CITY` -- and it prints in the display face at the
+     head step, which made it a SECOND `OPEN//77` in the same enclosure as the brand
+     mark, one above the other, saying the same word twice. On a server that kept the
+     default name that is all it ever said; on a renamed one it is a line the player
+     has already read in the launcher. `p.server` and the `server` event are still
+     consumed and dropped, so a client that sends them is sending nothing wrong. */
 
   *{ box-sizing: border-box; margin: 0; padding: 0; }
   html, body{ width: 100%; height: 100%; overflow: hidden; }
@@ -438,15 +446,6 @@
   /* --- what is loading ------------------------------------------------------- */
   .status{ display: grid; gap: var(--op-space-2); }
   .kicker{ color: var(--op-text-dim); }
-  /* `.op-label` is sized for a row in a strip; this is the largest true statement on
-     a full-screen page and takes the head step instead. Everything else about the
-     role -- the face, the tracking, the case -- is unchanged. */
-  .server{
-    font-size: var(--op-fs-head);
-    line-height: 1.05;
-    color: var(--op-text);
-    overflow-wrap: anywhere;
-  }
 
   /* --- the progress bar ------------------------------------------------------
      A gauge, drawn the way `HudVitals` draws one: the TRACK is the enclosure and
@@ -606,7 +605,6 @@
 
         <div class="status">
           <div class="kicker op-eyebrow">Entering the city</div>
-          <div class="server op-label" id="server">Open//77</div>
         </div>
 
         <div class="progress">
@@ -659,7 +657,7 @@
   "use strict";
   var $=function(id){return document.getElementById(id)};
   var phaseEl=$("phase"),pctEl=$("pct"),barEl=$("bar"),fillEl=$("fill"),
-      detailEl=$("detail"),serverEl=$("server"),videoEl=$("video"),
+      detailEl=$("detail"),videoEl=$("video"),
       playEl=$("play"),muteEl=$("mute"),volEl=$("vol"),volValEl=$("volVal");
 
   /* ── the player ────────────────────────────────────────────────────────────── */
@@ -798,7 +796,6 @@
 
   function onProgress(p){
     if(!p) return;
-    if(p.server) serverEl.textContent=p.server;
     var label=p.label||PHASES[p.phase]||String(p.phase||"").replace(/_/g," ")||"Loading";
     phaseEl.textContent=label;
     // The alarm is keyed off the PHASE and never off the label: the label is free
@@ -827,7 +824,6 @@
 
   if(window.Open77){
     try{ Open77.on("progress",onProgress); }catch(e){}
-    try{ Open77.on("server",function(v){ if(v&&v.name) serverEl.textContent=v.name; }); }catch(e){}
     // The handshake. Until this goes out the client is holding its own events, and a
     // page that never reports simply never hears anything.
     try{ Open77.ready(); }catch(e){}

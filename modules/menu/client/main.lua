@@ -445,6 +445,58 @@ local function rawValue(entry)
 	return entry.value
 end
 
+-- ── geometry ───────────────────────────────────────────────────────────────
+
+--- The anchors a caller may name, and the bounds each block is held to.
+-- A menu down an edge is a strip and a menu in the middle is a panel, and only the
+-- caller knows which one it needs: a dealer's stock list is read at a glance from
+-- across the shop floor, while a two-row confirm wants none of that room. The
+-- module's own settings are the default, so a caller that names nothing gets
+-- exactly what it got before this block existed.
+local ANCHORS = { ['top-left'] = true, ['top-right'] = true, left = true, right = true, center = true }
+local WIDTH_BOUNDS = { 240, 1200 }
+local HEIGHT_BOUNDS = { 20, 100 }
+local ROW_BOUNDS = { 3, 24 }
+-- A HEIGHT IN PIXELS, which is the one geometry a caller may leave unsaid -- and the
+-- one that is not a cap. Height usually follows the list, so `maxHeight` is enough for
+-- every menu that is a strip of rows. A caller that names this one gets a panel whose
+-- height is its own rather than its rows', which is what makes a SQUARE panel possible:
+-- at a width wide enough to read a price list, a four-row level would otherwise draw a
+-- bar. Clamped like the rest, and absent by default, so a caller that names nothing
+-- back there with the module's own shape rather than being padded to a square.
+local PANEL_BOUNDS = { 120, 1200 }
+
+--- A whole number inside its bounds, or the fallback when there is no number.
+-- Clamped rather than refused: a menu that opens at the wrong size is better than
+-- a menu that does not open, and the caller is in the client's own runtime.
+-- A NIL fallback is a geometry the caller may leave unsaid at all (`height`), and a
+-- caller that left it unsaid is handed nil rather than a default: the page has to see
+-- the key ABSENT to draw a strip its rows make.
+local function held(value, bounds, fallback)
+	local number = finite(value) and math.floor(value) or nil
+	if number == nil then number = fallback end
+	if number == nil then return nil end
+	if number < bounds[1] then return bounds[1] end
+	if number > bounds[2] then return bounds[2] end
+	return number
+end
+
+--- The size and anchor this open draws at: the caller's, else the configured one.
+local function geometry(spec)
+	local settings = M.Settings
+	local anchor = spec.anchor
+	if type(anchor) ~= 'string' or not ANCHORS[anchor] then
+		anchor = type(settings.ANCHOR) == 'string' and ANCHORS[settings.ANCHOR] and settings.ANCHOR or 'top-left'
+	end
+	return {
+		anchor = anchor,
+		width = held(spec.width, WIDTH_BOUNDS, held(settings.WIDTH, WIDTH_BOUNDS, 340)),
+		maxHeight = held(spec.maxHeight, HEIGHT_BOUNDS, held(settings.MAX_HEIGHT_VH, HEIGHT_BOUNDS, 56)),
+		height = held(spec.height, PANEL_BOUNDS, nil),
+		rows = held(spec.rows, ROW_BOUNDS, held(settings.VISIBLE_ROWS, ROW_BOUNDS, 9)),
+	}
+end
+
 -- ── building and rebuilding ─────────────────────────────────────────────────
 
 --- Builds a menu record from a caller's spec, or refuses it whole.
@@ -507,6 +559,10 @@ local function build(owner, spec)
 		return nil, 'invalid_closable'
 	end
 
+	-- WHERE IT DRAWS AND HOW MUCH OF IT. Settled once, at open: an update rebuilds
+	-- the rows of the menu that is up and is not the moment to move it.
+	local where = geometry(spec)
+
 	local budget = { nodes = 0 }
 	local items, reason = normalizeItems(spec.items, 1, budget)
 	if items == nil then return nil, reason end
@@ -515,6 +571,11 @@ local function build(owner, spec)
 		owner = owner,
 		id = id,
 		title = title,
+		anchor = where.anchor,
+		width = where.width,
+		maxHeight = where.maxHeight,
+		height = where.height,
+		rows = where.rows,
 		on = spec.on,
 		data = spec.data,
 		focus = focus,
@@ -584,6 +645,17 @@ local function rebuild(owned, spec)
 	if spec.reportFocus ~= nil then owned.reportFocus = spec.reportFocus == true end
 
 	owned.stack = rewalk(owned, owned.items, owned.title)
+
+	-- WHERE THE CURSOR LANDS, for a caller that replaced the SCREEN rather than
+	-- redrew it. `rewalk` keeps the player's position, which is exactly right for a
+	-- redraw of the screen they are standing on and meaningless for one that has
+	-- just taken its place: the row at that position is a different row, and a
+	-- caller that put a whole level up deserves the same landing an `Open` would
+	-- have given it. Absent, nothing moves -- every existing caller is unchanged.
+	if spec.cursor ~= nil then
+		local screenAt = owned.stack[#owned.stack]
+		screenAt.index = cursorIndex(screenAt.items, spec.cursor)
+	end
 	return true
 end
 
@@ -605,9 +677,9 @@ local function trail(owned)
 	return table.concat(parts, ' / ')
 end
 
---- How many rows the page draws at once.
-local function visibleRows()
-	local rows = M.Settings.VISIBLE_ROWS
+--- How many rows the page draws at once: the menu's own, else the configured one.
+local function visibleRows(owned)
+	local rows = owned and owned.rows or M.Settings.VISIBLE_ROWS
 	if finite(rows) and rows >= 1 then return math.floor(rows) end
 	return 9
 end
@@ -615,7 +687,7 @@ end
 --- The window of rows the page draws, and everything around it.
 local function frame(owned)
 	local screenAt = top(owned)
-	local rows = visibleRows()
+	local rows = visibleRows(owned)
 	local total = #screenAt.items
 	local first = windowFirst(screenAt.index, total, rows)
 	local window = {}
@@ -654,9 +726,13 @@ end
 --- is what the page's open handler reads.
 local function sendOpen()
 	local payload = frame(record)
-	payload.anchor = M.Settings.ANCHOR
-	payload.width = M.Settings.WIDTH
-	payload.maxHeight = M.Settings.MAX_HEIGHT_VH
+	-- The record's own geometry, not the settings again: the settings are only what
+	-- a caller that named nothing was given.
+	payload.anchor = record.anchor
+	payload.width = record.width
+	payload.maxHeight = record.maxHeight
+	-- Absent when the caller named none, so the page draws the panel its rows make.
+	payload.height = record.height
 	-- The page decides whether to ASK for focus, because only the page can see
 	-- the keystrokes it would be asking for. Lua decides what asking is worth:
 	-- `FOCUS.menu` below is what an ask is actually granted.
