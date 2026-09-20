@@ -10472,8 +10472,11 @@ do
 			last ~= nil and last[5] == 'Arasaka Counterintel', last and tostring(last[5]))
 		check('and nothing moved', moved() == 0, moved())
 
-		-- Standing nowhere near it.
-		WHERE.x, WHERE.y, WHERE.z = 100.0, 200.0, 10.0
+		-- Standing nowhere near it, but at EXACTLY ITS HEIGHT. The Z is deliberate:
+		-- with any other the vertical band would refuse this first and the check
+		-- below would pass with the flat radius deleted, which is how a suite ends
+		-- up asserting the same guard twice and none of the other one.
+		WHERE.x, WHERE.y, WHERE.z = 100.0, 200.0, 5.0
 		use(14, 'hatch', 'out')
 		last = answer()
 		check('a teleport asked for from across the map is refused too_far',
@@ -10576,6 +10579,23 @@ do
 		last = answer()
 		check('but the way back out is not, so nobody is stranded by a duty toggle',
 			last ~= nil and last[3] == true, last and tostring(last[4]))
+
+		-- THE JOB TAKEN AWAY ENTIRELY, which is the case a duty toggle does not
+		-- reach: off duty still HOLDS `arasaka` at grade 3, so a gate copied onto
+		-- the back leg would let them out anyway and the check above would pass
+		-- over the bug. Staff moving somebody to another payroll while they stand
+		-- on the secure floor is the case that actually strands a player.
+		heldJob = { name = 'militech', grade = { level = 9 }, onDuty = true }
+		use(20, 'vault', 'back')
+		last = answer()
+		check('nor by the job being taken off them while they stand on the far side',
+			last ~= nil and last[3] == true, last and tostring(last[4]))
+		check('though the way IN is shut to them now', (function()
+			WHERE.x, WHERE.y, WHERE.z = 500.0, 600.0, 2.0
+			use(20, 'vault', 'out')
+			local shut = answer()
+			return shut ~= nil and shut[3] == false and shut[4] == 'job_required'
+		end)())
 
 		-- ── the list a client draws from ─────────────────────────────────────
 		heldJob = { name = 'militech', grade = { level = 9 }, onDuty = true }
