@@ -51,4 +51,37 @@ M.Data.ITEMS = {
 	phone = { WEIGHT = 180, STACK = false },
 	id_card = { WEIGHT = 10, STACK = false },
 	shard = { WEIGHT = 20 },
+
+	-- MONEY YOU CAN HAND OVER. One unit is one eddie, and the stack is a BEARER
+	-- NOTE drawn against the EDDIES balance: `/withdraw` debits the balance and
+	-- puts the units here, using the stack destroys it and credits the balance
+	-- back. See `CURRENCY` in config/inventory.lua for why it is a note and not
+	-- the money itself.
+	--
+	-- Three fields here are load-bearing and none of them is a taste decision.
+	--
+	-- WEIGHT = 0, because weight is the one limit that can refuse HALF a move.
+	-- `Containers.Move` splits a stack across slots, and a bag that fills up
+	-- mid-transfer would leave a give or a deposit partly done with money on
+	-- both sides of it. Slots still bound what anyone can carry, and a slot
+	-- either takes the stack or does not. It is also the honest reading: an
+	-- eddie is a number on a chip and a million of them weigh what one does.
+	--
+	-- USE with CONSUME = 0, because the CONSUME the catalogue performs happens
+	-- AFTER the handler has returned, and a consume that failed there would
+	-- have credited the balance and left the notes in the bag -- money minted,
+	-- once per failure. `server/currency.lua` takes the units out ITSELF, before
+	-- it credits anything, so the only failure left destroys nothing and mints
+	-- nothing. The entry exists at all because it is what makes the screen draw
+	-- a Use row for the stack.
+	--
+	-- DROP = false, because a pile on the ground is MEMORY ONLY: it is swept
+	-- after DROPS.LIFETIME_MINUTES and nothing about it survives a restart. Any
+	-- other item dropped and lost is an item; this one is somebody's wages,
+	-- deleted with no line anywhere saying so. An operator who wants cash that
+	-- can be robbed off the floor deletes this one word and accepts that.
+	eddies = {
+		WEIGHT = 0, CATEGORY = 'money', DROP = false,
+		USE = { CONSUME = 0, CLOSE = false },
+	},
 }

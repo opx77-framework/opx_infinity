@@ -9935,5 +9935,268 @@ do
 	end
 end
 
+-- ── eddies as an item ───────────────────────────────────────────────────────
+-- ONE PROPERTY, ASSERTED OVER EVERY PATH: total money before == total money
+-- after. A player's total is their EDDIES balance plus every note they are
+-- carrying, and no operation -- a withdraw, a deposit, a hand-over, or any of
+-- those REFUSED halfway -- may change the sum across everybody involved.
+--
+-- The reason it is stated that way rather than as "the withdraw works" is that
+-- the failure this bridge exists to avoid is not a broken withdraw. It is a
+-- withdraw that works and a mint that does not, or a credit that lands and a
+-- removal that does not: both halves individually correct, the pair minting or
+-- destroying money. So every check below reads the TOTAL, and the interesting
+-- ones are the failures.
+section('eddies: the balance and the notes always add up to the same number')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local inventory = OPX and OPX.Modules.Get('inventory') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	check('the inventory and character modules are both there',
+		type(inventory) == 'table' and type(character) == 'table')
+
+	if type(inventory) == 'table' and type(character) == 'table' then
+		local Currency = inventory.Currency
+		local Containers = inventory.Containers
+		local Players = inventory.Players
+		local Actions = inventory.Actions
+		local Catalog = inventory.Catalog
+		local Options = inventory.Options
+		local KIND = inventory.KIND
+
+		-- The gate answers false and the life reader answers a STRING in the bare
+		-- harness, and `Players.MayAct` reads both. Without these two every
+		-- conversion below would refuse before it reached any money, and the
+		-- section would pass by never doing anything.
+		env.Open77.ready.isReady = function() return true end
+		env.Open77.players.getLifeState = function() return {} end
+
+		local wired, item, moneyType = Currency.Wired()
+		check('the money-to-item bridge wired itself at start', wired == true)
+		check('and it names the eddies item and the EDDIES balance',
+			item == 'eddies' and moneyType == 'EDDIES',
+			('%s / %s'):format(tostring(item), tostring(moneyType)))
+
+		local eddies = Catalog.Get('eddies')
+		check('the item is in the catalogue and stacks', eddies ~= nil
+			and eddies.stackable == true)
+
+		-- WEIGHTLESS ON PURPOSE. Weight is the one limit that can refuse HALF a
+		-- move, and half a move of money is the bug this whole file is about.
+		check('and it weighs nothing, so no transfer can be refused part-way',
+			eddies ~= nil and eddies.weight == 0, eddies and tostring(eddies.weight))
+
+		-- A loaded character in the shape the character contract reads, with a
+		-- MEMORY-ONLY bag registered under the same identity its own loader would
+		-- use -- so `Players.Bag` finds it in the cache and the suite needs no
+		-- database to move real stacks through the real code.
+		local function load(id, citizenId, balance)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					money = { EDDIES = balance, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+			local bag = Containers.Transient(KIND.CHARACTER, citizenId,
+				Options.BAG_SLOTS, Options.BAG_MAX_WEIGHT)
+			Players.Attach(id)
+			return bag
+		end
+
+		local ALICE, BOB = 401, 402
+		local aliceBag = load(ALICE, 'citizen-eddies-a', 1000)
+		local bobBag = load(BOB, 'citizen-eddies-b', 0)
+		check('both bags are held for their characters',
+			Players.Bag(ALICE) == aliceBag and Players.Bag(BOB) == bobBag)
+
+		--- What one player is worth: the balance plus every note they carry.
+		local function worth(source, bag)
+			local balance = character.GetMoney(source, 'EDDIES')
+			return (type(balance) == 'number' and balance or 0) + Currency.CountIn(bag)
+		end
+		local function total()
+			return worth(ALICE, aliceBag) + worth(BOB, bobBag)
+		end
+
+		local START = 1000
+		check('the economy starts at a known size', total() == START, tostring(total()))
+
+		-- ── the mint ──────────────────────────────────────────────────────────
+		local drew, refusal = Currency.Withdraw(ALICE, 300)
+		check('a withdraw inside the balance is accepted', drew == true, tostring(refusal))
+		check('and it moved the money out of the balance',
+			character.GetMoney(ALICE, 'EDDIES') == 700,
+			tostring(character.GetMoney(ALICE, 'EDDIES')))
+		check('and into notes in the bag', Currency.CountIn(aliceBag) == 300,
+			tostring(Currency.CountIn(aliceBag)))
+		check('and the total is what it was', total() == START, tostring(total()))
+
+		-- ── the refusals, which must cost nothing ─────────────────────────────
+		local over
+		over, refusal = Currency.Withdraw(ALICE, 5000)
+		check('a withdraw past the balance is refused', over == false)
+		-- Refused by the courtesy read of the balance, BEFORE anything is
+		-- charged -- the same shape the dealership uses. `RemoveMoney` would
+		-- refuse it too; this one just means the common mistake never reaches a
+		-- mutator at all.
+		check('and refused before a single unit of it was charged',
+			refusal == 'not_enough_money', tostring(refusal))
+		check('and the total is unchanged by the refusal', total() == START, tostring(total()))
+
+		check('a withdraw of nothing is refused',
+			(Currency.Withdraw(ALICE, 0)) == false)
+		check('and so is a fractional one, which would round into free money',
+			(Currency.Withdraw(ALICE, 1.5)) == false)
+		check('and so is a NaN, which passes every comparison it is put through',
+			(Currency.Withdraw(ALICE, 0 / 0)) == false)
+		check('and none of them moved anything', total() == START
+			and character.GetMoney(ALICE, 'EDDIES') == 700, tostring(total()))
+
+		-- ── handing it over, which is the whole point ─────────────────────────
+		local slot = nil
+		for index, stack in pairs(aliceBag.items) do
+			if stack.name == 'eddies' then slot = index end
+		end
+		check('the notes are in a slot that can be handed over', slot ~= nil)
+
+		local gave, giveWhy = Actions.Give(ALICE, BOB, slot, 120)
+		check('a stack of eddies hands over like any other item', gave == true,
+			tostring(giveWhy))
+		check('the giver is down the notes', Currency.CountIn(aliceBag) == 180,
+			tostring(Currency.CountIn(aliceBag)))
+		check('the taker has them', Currency.CountIn(bobBag) == 120,
+			tostring(Currency.CountIn(bobBag)))
+
+		-- THE CHECK THE OWNER ASKED FOR, and the reason the item exists: handing
+		-- somebody the item has handed them the money, and no balance moved to do
+		-- it. Neither player can spend a note until they bank it, so nothing here
+		-- is spendable twice.
+		check('handing over eddies moved the money without touching a balance',
+			character.GetMoney(ALICE, 'EDDIES') == 700
+				and character.GetMoney(BOB, 'EDDIES') == 0)
+		check('and the economy is still the same size', total() == START, tostring(total()))
+
+		-- ── the burn ──────────────────────────────────────────────────────────
+		local bobSlot = nil
+		for index, stack in pairs(bobBag.items) do
+			if stack.name == 'eddies' then bobSlot = index end
+		end
+		local banked, bankWhy = Currency.Deposit(BOB, bobSlot, nil)
+		check('using the stack banks it', banked == true, tostring(bankWhy))
+		check('the notes are gone', Currency.CountIn(bobBag) == 0,
+			tostring(Currency.CountIn(bobBag)))
+		check('and the balance carries them instead',
+			character.GetMoney(BOB, 'EDDIES') == 120,
+			tostring(character.GetMoney(BOB, 'EDDIES')))
+		check('and the economy is STILL the same size', total() == START, tostring(total()))
+
+		-- A deposit of somebody else's slot number, of an empty slot, or of a slot
+		-- holding something that is not money: each is money credited for nothing
+		-- if it is not refused.
+		check('depositing an empty slot is refused',
+			(Currency.Deposit(BOB, 39, nil)) == false)
+		Containers.Add(bobBag, 'bandage', 2)
+		local bandageSlot = nil
+		for index, stack in pairs(bobBag.items) do
+			if stack.name == 'bandage' then bandageSlot = index end
+		end
+		local notMoney, notMoneyWhy = Currency.Deposit(BOB, bandageSlot, nil)
+		check('and depositing a slot that is not money is refused, not credited',
+			notMoney == false and notMoneyWhy == 'empty_slot', tostring(notMoneyWhy))
+		check('and the economy is untouched by either', total() == START, tostring(total()))
+
+		-- ── the ground ────────────────────────────────────────────────────────
+		-- A pile is memory-only: swept after DROPS.LIFETIME_MINUTES and gone at the
+		-- next restart. Dropping a note is therefore not losing an item, it is
+		-- deleting a balance, so the server refuses it whatever the screen offers.
+		local pile, dropWhy = Actions.Drop(ALICE, slot, 10, 0.0)
+		check('eddies cannot be left on the ground', pile == nil and dropWhy == 'no_drop',
+			tostring(dropWhy))
+		check('and the refused drop left the notes where they were',
+			Currency.CountIn(aliceBag) == 180 and total() == START, tostring(total()))
+
+		-- ...and the refusal is about THIS item, not about drops being off.
+		Containers.Add(aliceBag, 'bandage', 1)
+		local aliceBandage = nil
+		for index, stack in pairs(aliceBag.items) do
+			if stack.name == 'bandage' then aliceBandage = index end
+		end
+		check('while an ordinary item still drops',
+			(Actions.Drop(ALICE, aliceBandage, 1, 0.0)) ~= nil)
+
+		-- ── the half that fails, which is the whole reason for the ordering ───
+		-- THE MINT REFUSES AFTER THE DEBIT HAS LANDED. This is the case the
+		-- refund exists for, and the only way to reach it is to make the second
+		-- half fail on purpose: every ordinary cause is already refused by the
+		-- `CanCarry` read that runs before the debit.
+		local realAdd = Containers.Add
+		Containers.Add = function() return false, 'no_room' end
+		local minted, mintWhy = Currency.Withdraw(ALICE, 250)
+		Containers.Add = realAdd
+		check('a withdraw whose mint fails is refused', minted == false, tostring(mintWhy))
+		check('and the debit was given back rather than pocketed',
+			character.GetMoney(ALICE, 'EDDIES') == 700,
+			tostring(character.GetMoney(ALICE, 'EDDIES')))
+		check('so the economy did not shrink', total() == START, tostring(total()))
+
+		-- ...AND IT THREW rather than answering. A raise out of the mint would
+		-- unwind past the refund and out of the caller, leaving a player charged
+		-- for notes they never got.
+		Containers.Add = function() error('the mint blew up') end
+		local threw = Currency.Withdraw(ALICE, 250)
+		Containers.Add = realAdd
+		check('a withdraw whose mint RAISES is refused rather than taken', threw == false)
+		check('and that debit came back too',
+			character.GetMoney(ALICE, 'EDDIES') == 700 and total() == START,
+			tostring(total()))
+
+		-- THE CREDIT REFUSES AFTER THE NOTES ARE GONE, which is the mirror of it.
+		-- A `money:beforeAdd` veto is how a real module refuses a credit, so it is
+		-- what the failure is made of here rather than a patched function.
+		local veto = OPX.Hooks.Register('money:beforeAdd', function() return false end)
+		local aliceSlot = nil
+		for index, stack in pairs(aliceBag.items) do
+			if stack.name == 'eddies' then aliceSlot = index end
+		end
+		local vetoed, vetoWhy = Currency.Deposit(ALICE, aliceSlot, 50)
+		OPX.Hooks.Remove(veto)
+		check('a deposit whose credit is vetoed is refused', vetoed == false,
+			tostring(vetoWhy))
+		check('and the notes were put back rather than burnt',
+			Currency.CountIn(aliceBag) == 180, tostring(Currency.CountIn(aliceBag)))
+		check('so the economy did not shrink there either', total() == START,
+			tostring(total()))
+
+		-- ── the door the client actually knocks on ────────────────────────────
+		-- `Actions.Use` is what the Use row calls, and the whole reason the
+		-- deposit does its own removal is what happens on this path: the catalogue
+		-- consume runs AFTER the handler, so a handler that answered a consume
+		-- would have credited the balance before the units were gone.
+		local usedSlot = nil
+		for index, stack in pairs(aliceBag.items) do
+			if stack.name == 'eddies' then usedSlot = index end
+		end
+		-- On a thread, because `Actions.Use` runs a use handler on a thread of its
+		-- own and waits on its deadline -- it yields, and the platform only ever
+		-- reaches it from a coroutine.
+		local used, useWhy
+		env.CreateThread(function() used, useWhy = Actions.Use(ALICE, usedSlot) end)
+		check('the use settles', settle(control, function() return used ~= nil end, 60))
+		check('using the stack from the bag deposits it', used == true, tostring(useWhy))
+		check('the notes are gone and the balance has them',
+			Currency.CountIn(aliceBag) == 0
+				and character.GetMoney(ALICE, 'EDDIES') == 880,
+			('%d notes / %s balance'):format(Currency.CountIn(aliceBag),
+				tostring(character.GetMoney(ALICE, 'EDDIES'))))
+		check('and after every one of these, the economy is the size it started',
+			total() == START, tostring(total()))
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

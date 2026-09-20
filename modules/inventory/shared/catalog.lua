@@ -132,11 +132,20 @@ local function modelOf(name, value, where)
 end
 
 --- The fields every kind of catalogue entry shares.
+--
+-- `droppable` is the one that is not a display detail. A pile on the ground is a
+-- MEMORY-ONLY container: it is swept after `DROPS.LIFETIME_MINUTES` and nothing
+-- about it survives a restart. That is a fair price for a bandage and a wrong one
+-- for a stack of eddies, which is somebody's balance in transit -- dropped and
+-- forgotten, it is money deleted with nothing anywhere saying so. `DROP = false`
+-- is therefore enforced by `Actions.Drop` on the SERVER; the flag is carried into
+-- `ViewOf` only so the screen stops offering a row it is about to be refused for.
 local function base(name, raw, where)
 	return {
 		name = name,
 		weight = weightOf(name, raw, where),
 		stackable = raw.STACK ~= false,
+		droppable = raw.DROP ~= false,
 		category = Common.Word(raw.CATEGORY, 32, '^[%w_]+$') or 'misc',
 		label = textField(raw.LABEL),
 		description = textField(raw.DESCRIPTION),
@@ -359,6 +368,7 @@ function Catalog.ViewOf(name)
 		image = entry.image,
 		usable = entry.usable == true,
 		stackable = entry.stackable,
+		droppable = entry.droppable ~= false,
 		category = entry.category,
 		weapon = entry.weapon ~= nil,
 		ammo = entry.ammo ~= nil,

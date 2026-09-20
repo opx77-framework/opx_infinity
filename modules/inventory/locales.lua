@@ -102,6 +102,11 @@ OPX.Locale.Register('en', {
 	['inventory.error.weapon_refused'] = 'That weapon could not be drawn.',
 	['inventory.error.no_weapon_for_ammo'] = 'Draw a weapon that takes this ammunition first.',
 	['inventory.error.weapon_full'] = 'That weapon is fully loaded.',
+	['inventory.error.no_drop'] = 'That cannot be left on the ground.',
+	['inventory.error.not_enough_money'] = 'You do not have that much on you.',
+
+	['inventory.notify.withdrew'] = 'You drew {count}x {item}.',
+	['inventory.notify.deposited'] = 'You banked {count}x {item}.',
 
 	['inventory.command.lines'] = '{lines}',
 	['inventory.command.help.give'] = "Give items to a character's bag.",
@@ -109,6 +114,8 @@ OPX.Locale.Register('en', {
 	['inventory.command.help.clear'] = "Empty a character's bag.",
 	['inventory.command.help.open'] = "Search a character's bag, and take from it.",
 	['inventory.command.help.holders'] = 'List which containers hold an item.',
+	['inventory.command.help.withdraw'] = 'Take money out of your balance and carry it as an item.',
+	['inventory.command.param.amount'] = 'how much to draw, 1 to {max}',
 	['inventory.command.param.target'] = 'a player id, or a citizen id online or not',
 	['inventory.command.param.item'] = 'an item name from data/items.lua or data/weapons.lua',
 	['inventory.command.param.count'] = 'how many, 1 to {max}; 1 when omitted',
@@ -117,6 +124,7 @@ OPX.Locale.Register('en', {
 	['inventory.command.done.cleared'] = 'Emptied the bag of {citizenId}: {stacks} stack(s).',
 	['inventory.command.done.opened'] = 'Searching the bag of {citizenId}.',
 	['inventory.command.done.holders'] = '{item}: {count} container(s) hold it, largest first.',
+	['inventory.command.done.withdrew'] = 'Drew {count}x {item}. Use the stack to bank it again.',
 	['inventory.command.holder'] = '  {kind} {owner}  slot {slot}  x{count}',
 	['inventory.command.error.failed'] = 'That did not work.',
 	['inventory.command.error.unknown_item'] = 'No item called {item} in the catalogue.',
@@ -130,6 +138,7 @@ OPX.Locale.Register('en', {
 	['inventory.command.error.not_enough'] = 'That bag does not hold that many.',
 	['inventory.command.error.in_game_only'] = 'That command has to be run in game.',
 	['inventory.command.error.self'] = 'Open your own bag with the inventory key.',
+	['inventory.command.error.bad_amount'] = 'The amount must be a whole number from 1 to {max}.',
 
 	['inventory.item.water'] = 'Water',
 	['inventory.item.water.description'] = 'A bottle of filtered water.',
@@ -147,6 +156,9 @@ OPX.Locale.Register('en', {
 	['inventory.item.phone'] = 'Phone',
 	['inventory.item.id_card'] = 'ID card',
 	['inventory.item.shard'] = 'Data shard',
+	['inventory.item.eddies'] = 'Eddies',
+	['inventory.item.eddies.description'] =
+		'Cash off the books. Hand it over to pay somebody; use it to bank it again.',
 
 	['inventory.item.ammo_handgun'] = 'Handgun rounds',
 	['inventory.item.ammo_rifle'] = 'Rifle rounds',
@@ -439,6 +451,11 @@ OPX.Locale.Register('fr', {
 	['inventory.error.weapon_refused'] = "Cette arme n'a pas pu être dégainée.",
 	['inventory.error.no_weapon_for_ammo'] = "Dégainez d'abord une arme qui prend ces munitions.",
 	['inventory.error.weapon_full'] = 'Cette arme est déjà pleine.',
+	['inventory.error.no_drop'] = 'Ça ne se pose pas au sol.',
+	['inventory.error.not_enough_money'] = "Vous n'avez pas autant sur vous.",
+
+	['inventory.notify.withdrew'] = 'Vous avez retiré {count}x {item}.',
+	['inventory.notify.deposited'] = 'Vous avez déposé {count}x {item}.',
 
 	['inventory.command.lines'] = '{lines}',
 	['inventory.command.help.give'] = "Donner des objets au sac d'un personnage.",
@@ -446,6 +463,8 @@ OPX.Locale.Register('fr', {
 	['inventory.command.help.clear'] = "Vider le sac d'un personnage.",
 	['inventory.command.help.open'] = "Fouiller le sac d'un personnage, et y prendre.",
 	['inventory.command.help.holders'] = 'Lister les contenants qui détiennent un objet.',
+	['inventory.command.help.withdraw'] = 'Retirer de votre solde et le porter comme un objet.',
+	['inventory.command.param.amount'] = 'combien retirer, de 1 à {max}',
 	['inventory.command.param.target'] = 'un id de joueur, ou un citizen id, en ligne ou non',
 	['inventory.command.param.item'] = "un nom d'objet de data/items.lua ou data/weapons.lua",
 	['inventory.command.param.count'] = 'combien, de 1 à {max} ; 1 si omis',
@@ -454,6 +473,7 @@ OPX.Locale.Register('fr', {
 	['inventory.command.done.cleared'] = 'Sac de {citizenId} vidé : {stacks} pile(s).',
 	['inventory.command.done.opened'] = 'Fouille du sac de {citizenId}.',
 	['inventory.command.done.holders'] = "{item} : {count} contenant(s) le détiennent, les plus grosses piles d'abord.",
+	['inventory.command.done.withdrew'] = 'Retiré {count}x {item}. Utilisez la pile pour la redéposer.',
 	['inventory.command.holder'] = '  {kind} {owner}  emplacement {slot}  x{count}',
 	['inventory.command.error.failed'] = "Ça n'a pas marché.",
 	['inventory.command.error.unknown_item'] = 'Aucun objet nommé {item} dans le catalogue.',
@@ -467,6 +487,7 @@ OPX.Locale.Register('fr', {
 	['inventory.command.error.not_enough'] = "Ce sac n'en contient pas autant.",
 	['inventory.command.error.in_game_only'] = 'Cette commande se lance en jeu.',
 	['inventory.command.error.self'] = "Ouvrez votre propre sac avec la touche d'inventaire.",
+	['inventory.command.error.bad_amount'] = 'Le montant doit être un nombre entier de 1 à {max}.',
 
 	['inventory.item.water'] = 'Eau',
 	['inventory.item.water.description'] = "Une bouteille d'eau filtrée.",
@@ -484,6 +505,9 @@ OPX.Locale.Register('fr', {
 	['inventory.item.phone'] = 'Téléphone',
 	['inventory.item.id_card'] = "Carte d'identité",
 	['inventory.item.shard'] = 'Éclat de données',
+	['inventory.item.eddies'] = 'Eddies',
+	['inventory.item.eddies.description'] =
+		'Du liquide hors des registres. Donnez-le pour payer ; utilisez-le pour le redéposer.',
 
 	['inventory.item.ammo_handgun'] = 'Munitions de pistolet',
 	['inventory.item.ammo_rifle'] = 'Munitions de fusil',

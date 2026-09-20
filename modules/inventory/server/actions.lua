@@ -228,6 +228,15 @@ function Actions.Drop(source, slot, count, yaw)
 	count = count == nil and entry.count or Common.Integer(count, 1, entry.count)
 	if not count then return nil, 'bad_count' end
 
+	-- WHAT MAY NOT BE LEFT ON THE FLOOR, and it is checked here rather than on
+	-- the screen because the screen is a suggestion. A pile is memory-only: it is
+	-- swept after `DROPS.LIFETIME_MINUTES` and nothing about it survives a
+	-- restart. For a stack of eddies -- a bearer note drawn against a balance --
+	-- that is not a lost item, it is a balance deleted, with no row, no audit line
+	-- and nothing for staff to settle from. See `DROP` in shared/catalog.lua.
+	local item = Catalog.Get(entry.name)
+	if item and item.droppable == false then return nil, 'no_drop' end
+
 	if World.Seat(source) then return nil, 'in_vehicle' end
 	local position = World.Position(source)
 	if not position then return nil, 'no_position' end
