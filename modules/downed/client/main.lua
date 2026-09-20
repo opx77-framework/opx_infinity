@@ -26,8 +26,22 @@ local EVENT_KEY = OPX.Event(OPX.Channel.LOCAL, 'downed', 'key')
 -- How often, while down, the view is told to take the keyboard and mouse back.
 local HOLD_MS = 500
 
+-- A GIVE UP press is a RUN of reports and not one message, and this is how long
+-- a gap in that run may be before the press is taken to have ended. The page
+-- repeats itself several times a second while the button is down, so a second of
+-- silence is a button let go, a view unmounted, or a surface the host stopped
+-- resuming -- none of which is a player still pressing. Without it a press
+-- abandoned at 1.4s would complete itself the next time the button was touched,
+-- however many minutes later.
+local HOLD_LAPSE_MS = 1000
+
 -- What the server last said.
 local state = { down = false, waiting = false, giveUpInMs = 0, downForMs = 0 }
+
+-- When the live GIVE UP press began and when it was last reported, by this
+-- client's clock. Both nil while nothing is pressed.
+local holdingSinceMs = nil
+local holdingSeenMs = nil
 
 -- Every string a view draws, read from the active catalogue when it reports
 -- ready.
@@ -90,6 +104,22 @@ local function hideVanillaHud(hidden)
 	end
 end
 
+-- How long the GIVE UP press must last. Floored, because a misconfigured zero
+-- would turn the hold into a click, which is the one thing GIVE_UP_HOLD_MS
+-- exists to prevent. The view is told this number so that its fill takes exactly
+-- as long as the press it depicts, and the press itself is timed against the
+-- same one below -- one setting, read in one place.
+local function holdMs()
+	return math.floor(math.max(300, tonumber(M.Settings.GIVE_UP_HOLD_MS) or 1500))
+end
+
+-- Forgets a press in flight. Called wherever the screen stops being a thing the
+-- player is holding a button on: a press left half-finished across a revive
+-- would otherwise be a press already 1.5 seconds old at the next death.
+local function forgetPress()
+	holdingSinceMs, holdingSeenMs = nil, nil
+end
+
 -- Shows the screen with the held state, or hides it.
 local function draw()
 	if not state.down then
@@ -101,7 +131,7 @@ local function draw()
 		waiting = state.waiting,
 		giveUpInMs = state.giveUpInMs,
 		downForMs = state.downForMs,
-		holdMs = math.floor(math.max(300, tonumber(M.Settings.GIVE_UP_HOLD_MS) or 1500)),
+		holdMs = holdMs(),
 	})
 end
 
@@ -119,6 +149,7 @@ local function apply(payload)
 	state.waiting = state.down and payload.waiting == true
 	state.giveUpInMs = math.max(0, math.floor(tonumber(payload.giveUpInMs) or 0))
 	state.downForMs = math.max(0, math.floor(tonumber(payload.downForMs) or 0))
+	if not state.down then forgetPress() end
 
 	if state.down then
 		hold()
@@ -155,6 +186,36 @@ local function onRefused(code)
 	publish('notice', { text = line })
 end
 
+-- Times a GIVE UP press and sends the one that lasted long enough.
+--
+-- THE HOLD IS TIMED HERE, AND UNTIL THIS IT WAS TIMED NOWHERE. `GIVE_UP_HOLD_MS`
+-- was published to a view and the server never looks at it: `onGiveUp` checks
+-- the two-minute delay, that the body is still dead, and that the readiness gate
+-- is open, and nothing else. So one call on this action respawned the player the
+-- instant the delay was up, and a stray click on a screen that has been in front
+-- of a bored player for two minutes is exactly what the setting exists to refuse.
+--
+-- THE PAGE REPORTS AN INTENT, NEVER A FACT: `holding = true` when the button
+-- goes down and again while it is still down, `holding = false` when it is let
+-- go. The elapsed time is read off THIS clock from the first report of a run, so
+-- a page with a fast clock, a throttled timer or a rewritten payload cannot
+-- shorten the hold -- the most it can do is fail to say the button is still down,
+-- which ends the press. Everything after this is the server's: it re-checks the
+-- delay, the body and the gate, and refuses on its own authority.
+local function press(holding)
+	if holding ~= true or not state.down or suspended() then return forgetPress() end
+
+	local atMs = OPX.Now()
+	if holdingSinceMs == nil or atMs - (holdingSeenMs or atMs) > HOLD_LAPSE_MS then
+		holdingSinceMs = atMs
+	end
+	holdingSeenMs = atMs
+
+	if atMs - holdingSinceMs < holdMs() then return end
+	forgetPress()
+	TriggerServerEvent(EVENT_GIVE_UP)
+end
+
 -- Raises a host-vocabulary key the view caught while holding the keyboard: no
 -- key mapping fires while it does, so this is the only way another module hears
 -- one.
@@ -173,6 +234,10 @@ end
 -- checked in full on the server; `key` reports a key heard while the keyboard is
 -- held; `diag` carries a view-side failure to the client log, which it could not
 -- otherwise reach.
+--
+-- `giveUp` carries `holding`, which is the state of the BUTTON and not a
+-- decision: see `press`. A call with no payload is therefore a click, and a
+-- click respawns nobody.
 -- @param action string
 -- @param payload table|nil
 function M.FromView(action, payload)
@@ -185,7 +250,7 @@ function M.FromView(action, payload)
 	elseif action == 'wait' then
 		if state.down and not state.waiting then TriggerServerEvent(EVENT_WAIT) end
 	elseif action == 'giveUp' then
-		if state.down then TriggerServerEvent(EVENT_GIVE_UP) end
+		press(type(payload) == 'table' and payload.holding == true)
 	elseif action == 'key' then
 		forwardKey(type(payload) == 'table' and payload.key or nil)
 	elseif action == 'diag' then
@@ -212,6 +277,9 @@ local function suspend(owner, on)
 	local now = suspended()
 	if was == now then return Result.Ok(true) end
 	if now then
+		-- The screen is going aside under somebody else's surface, so whatever
+		-- was being held on it is not being held any more.
+		forgetPress()
 		release()
 	elseif state.down then
 		hold()
@@ -242,6 +310,7 @@ function M.Init()
 	state = { down = false, waiting = false, giveUpInMs = 0, downForMs = 0 }
 	suspenders = {}
 	hudHidden = false
+	forgetPress()
 end
 
 --- Publishes the local player's state and the suspend switch.
@@ -256,6 +325,12 @@ end
 --- Wires the events and starts the hold loop.
 -- @author dop42
 function M.Start()
+	-- FIRST, so that the seam has somewhere to go before anything below can
+	-- publish on it. `client/view.lua` is the only file that knows the other end
+	-- is a CEF page; without it this module still holds its state and simply
+	-- never draws, which is exactly what it did before that file existed.
+	M.View.Start()
+
 	RegisterNetEvent(EVENT_STATE, function(payload)
 		if type(payload) ~= 'table' then return end
 		apply(payload)
@@ -278,6 +353,8 @@ end
 -- @author dop42
 function M.Stop()
 	release()
+	forgetPress()
+	M.View.Shutdown()
 	hideVanillaHud(false)
 	if state.down then
 		OPX.Toast.SetDown(false)
