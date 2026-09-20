@@ -215,21 +215,6 @@ function World.Register()
 		end,
 	})
 
-	Server.Command(Command.READ_LOCATIONS, {
-		help = 'admin.help.readLocations', read = true,
-		handler = function(source, _, raw)
-			local list = World.Locations()
-			local lines = { locale('admin.locations.header', { count = #list }) }
-			for _, row in ipairs(list) do
-				lines[#lines + 1] = locale(row.runtime and 'admin.locations.runtime'
-					or 'admin.locations.row',
-					{ name = row.name, label = row.label, x = ('%.1f'):format(row.x),
-						y = ('%.1f'):format(row.y), z = ('%.1f'):format(row.z) })
-			end
-			answer(source, raw, true, 'admin.text.lines', { lines = table.concat(lines, '\n') })
-		end,
-	})
-
 	Server.Command(Command.WORLD_ANNOUNCE, {
 		help = 'admin.help.announce', params = { { name = 'text', help = 'admin.help.announceText' } },
 		handler = function(source, args, raw)
@@ -266,21 +251,6 @@ function World.Register()
 			end
 			audit(source, 'admin.world.announce', true, nil, text)
 			answer(source, raw, true, 'admin.done.announced', { count = delivered })
-		end,
-	})
-
-	Server.Command(Command.READ_PLAYERS, {
-		help = 'admin.help.readPlayers', read = true,
-		handler = function(source, _, raw)
-			local rows = World.Roster(source)
-			local lines = { locale('admin.players.header', { count = #rows }) }
-			for _, row in ipairs(rows) do
-				lines[#lines + 1] = locale('admin.players.row', {
-					id = row.id, name = row.name, state = locale('admin.state.' .. row.state),
-					bucket = row.bucket, distance = row.distance and (row.distance .. 'm') or '-',
-				})
-			end
-			answer(source, raw, true, 'admin.text.lines', { lines = table.concat(lines, '\n') })
 		end,
 	})
 

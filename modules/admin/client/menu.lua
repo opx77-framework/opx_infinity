@@ -1332,10 +1332,6 @@ SCREENS.server = function()
 		section('admin.menu.section.reports'),
 		icon(command('status', 'admin.menu.status', { Command.READ_STATUS }), 'info'),
 		icon(command('audit', 'admin.menu.audit', { Command.READ_AUDIT }), 'list'),
-		section('admin.menu.section.chat'),
-		icon(command('list', 'admin.menu.playerList', { Command.READ_PLAYERS }), 'person'),
-		icon(command('locations', 'admin.menu.locationList', { Command.READ_LOCATIONS }),
-			'location'),
 	}
 	if link.PLAYERS or link.SAVE then
 		items[#items + 1] = section('admin.menu.section.characters')
