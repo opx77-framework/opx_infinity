@@ -212,6 +212,26 @@ OPX.Config.MODULES.appearance = {
 		-- at the game's normal lens; raise it to stand further back, lower it for
 		-- head and shoulders. Z = 1.1 is about chest height, so the shot is level
 		-- with the clothes rather than looking down on them.
+		--
+		-- AND X STAYS AT ZERO NOW THAT THE PANEL HAS THE WHOLE LEFT SIDE. The
+		-- obvious other half of "the menu takes the left of the screen" is "so
+		-- push the character into the right of the frame", and the temptation is
+		-- to do it here, with a lateral offset. IT CANNOT BE DONE FROM THIS FILE.
+		-- `Open77.camera.detach` takes a POSITION in the body's own space and
+		-- nothing else -- no aim point -- and `Open77.camera.orbit` is a yaw
+		-- inside the third-person rig, which the platform says in as many words
+		-- "cannot move the view off the player". The only native that could aim a
+		-- shot somewhere other than at the subject is the `camera.script` rig,
+		-- which is exactly the permission the paragraphs above refuse to take for
+		-- a clothing shop. A lateral X here changes which SIDE the camera stands
+		-- on; it does not move the puppet across the frame.
+		--
+		-- So the framing and the layout are one decision taken in the other file.
+		-- `.rail` in `ui/src/modules/panel/PanelView.vue` is bounded at 38vw for
+		-- this reason and says so: a whole-body shot at Y = 2.6 puts the figure in
+		-- the middle fifth of a 16:9 frame, and the panel stops short of it. If
+		-- this Y is lowered -- a closer shot, a bigger figure -- that width is the
+		-- number that has to come down with it.
 		CAMERA_OFFSET = { X = 0.0, Y = 2.6, Z = 1.1 },
 
 		-- The field of view the fitting room borrows, in degrees, or nil to

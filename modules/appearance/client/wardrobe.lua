@@ -39,7 +39,8 @@ local Wardrobe = M.Wardrobe
 --        kind = 'panelClosed' take the panel down, with a `reason`
 --        kind = 'status'      a transient line under the open panel
 --        kind = 'room'        the fitting room's first frame; draw it
---        kind = 'roomState'   the room's sliders or its status line changed
+--        kind = 'roomState'   the room's sliders, tabs or status line changed
+--        kind = 'roomTiles'   one window of the open category's grid: `payload.tiles`
 --        kind = 'roomClosed'  take the room down, with a `reason`
 --        kind = 'confirm'     ask the player a yes/no question
 --
@@ -48,6 +49,9 @@ local Wardrobe = M.Wardrobe
 --        'panel.close'        the player took the panel down: `payload.reason`
 --        'room.slide'         a slot's slider moved: `payload.slot`, `payload.index`,
 --                             `payload.commit` -- false previews, true chooses
+--        'room.tab'           a category was opened: `payload.slot`
+--        'room.tiles'         the grid wants the window starting at `payload.from`
+--                             of `payload.slot`
 --        'room.action'        a button was pressed: `payload.value`
 --        'room.dismiss'       the player asked to leave the room
 --        'room.confirm'       an answer to a confirm: `payload.item`, `payload.value`
@@ -75,7 +79,8 @@ local TEXT_KEYS = {
 	'wardrobe.ui.eyebrowCreation', 'wardrobe.ui.intro', 'wardrobe.ui.introCreation',
 	'wardrobe.ui.female', 'wardrobe.ui.male', 'wardrobe.ui.nothing',
 	'wardrobe.ui.save', 'wardrobe.ui.saveCreation', 'wardrobe.ui.cancel', 'wardrobe.ui.skip',
-	'wardrobe.ui.front', 'wardrobe.ui.back', 'wardrobe.ui.confirmTitle',
+	'wardrobe.ui.front', 'wardrobe.ui.left', 'wardrobe.ui.right', 'wardrobe.ui.back',
+	'wardrobe.ui.confirmTitle',
 	'wardrobe.ui.confirmText', 'wardrobe.ui.confirmTitleCreation',
 	'wardrobe.ui.confirmTextCreation', 'wardrobe.ui.confirmYes', 'wardrobe.ui.confirmNo',
 }
@@ -407,6 +412,27 @@ local hoverSlot, hoverRecord = nil, nil
 -- seven labels to change one is seven times the work for no answer anybody reads.
 local pieces, shown, shownName = {}, {}, {}
 local known, at = {}, {}
+
+-- The category the player has open, and how far down its grid they have asked to
+-- see. `category` is one of `SLOTS`; `tileTo` is the LAST index the page has been
+-- sent for it.
+--
+-- WHY THE ROOM HOLDS A SCROLL POSITION AT ALL, given that nothing else about the
+-- page is its business. The screen is no longer seven tracks along the bottom: it
+-- is one category at a time, drawn as a grid of boxes the player scrolls, which
+-- is what the owner asked for -- "des box avec l'image du vetement uniquement, de
+-- sorte a rendre le choix plus facile". A grid needs NAMES, and the largest
+-- category is 677 of them. Sending all 677 is the stream this room was rewritten
+-- to delete; sending none is a grid of blanks. So the page is sent a WINDOW and
+-- asks for the next one when it reaches the bottom of what it has, and this is
+-- how far that has got. It is reset whenever the category changes, because the
+-- new grid starts at the top.
+--
+-- THE SLIDER MECHANISM IS UNTOUCHED UNDERNEATH. A box carries the index it would
+-- have had on the track, a press comes back as the same `slide` a thumb sends,
+-- and `slide` still turns an index into a record against the list THIS side
+-- holds. The grid is a new way to point at a position, not a new way to choose.
+local category, tileTo = nil, 0
 
 -- The status line under the grid, whether this room follows a creation, the
 -- character the puppet was lent for, and the family the catalogue is read for.
@@ -999,6 +1025,41 @@ function Wardrobe.OfferGroups(owner, groups)
 	return true
 end
 
+-- How many boxes one window of the grid carries. It is `panel`'s own `MAX_TILES`
+-- and it has to be: that module refuses a longer window whole, and a room that
+-- sent 61 would have its grid silently refused rather than half drawn. Written
+-- down here rather than reached for because a module may not read another's
+-- internals -- the same bargain `shops.SLOTS` is on, and `tests/` holds this one
+-- against the panel's the same way.
+local TILE_CHUNK = 60
+
+--- One window of the open category's records, or false when there is no grid.
+--
+-- THE NAMES AND NOTHING ELSE. A box shows a picture and, when there is no
+-- picture, the record's own name -- so the record name is the whole payload, and
+-- the page derives both the image path and the caption from it. `from` is what
+-- ties a box back to a position on the track, which is what a press is reported
+-- as.
+--
+-- FROM A SLICE AND NOT A FILTER, so the cost of answering a scroll is the sixty
+-- entries copied and nothing else: no `title`, no sort, no walk of the 677 this
+-- category may hold. `readCatalogue` already sorted the list once, at open time,
+-- on its own frames.
+-- @param from integer the 1-based index the window starts at
+local function tileWindow(from)
+	if category == nil then return false end
+	local names = pieces[category]
+	if type(names) ~= 'table' or #names == 0 then return false end
+	if from < 1 then from = 1 end
+	if from > #names then return false end
+
+	local entries = {}
+	local last = math.min(from + TILE_CHUNK - 1, #names)
+	for index = from, last do entries[#entries + 1] = names[index] end
+	if last > tileTo then tileTo = last end
+	return { slot = category, from = from, entries = entries }
+end
+
 --- The part of the room that follows the draft: seven sliders and the status.
 --
 -- SEVEN INTEGERS AND SEVEN LABELS, which is the whole of what crosses the seam
@@ -1009,7 +1070,7 @@ end
 -- the page draws a track from 0 to the count, and the only name it is ever told
 -- is the one under the thumb.
 local function roomState()
-	local sliders = {}
+	local sliders, tabs = {}, {}
 	for index = 1, #SLOTS do
 		local slot = SLOTS[index]
 		sliders[index] = {
@@ -1019,9 +1080,23 @@ local function roomState()
 			index = shown[slot],
 			value = shownName[slot],
 		}
+		-- THE SEVEN SLOTS ARE THE CATEGORIES. They were seven tracks along the
+		-- bottom of the screen; they are now seven tabs down the left of it, one
+		-- open at a time with its own grid under it. `marked` is the dot that says
+		-- something is on that slot, which is the one fact a closed category still
+		-- has to state -- otherwise a player has to open all seven to find out what
+		-- they are wearing.
+		tabs[index] = {
+			id = slot,
+			label = locale('wardrobe.slot.' .. slot),
+			marked = shown[slot] > 0,
+			disabled = #pieces[slot] == 0,
+		}
 	end
 	return {
 		sliders = sliders,
+		tabs = tabs,
+		tab = category,
 		-- ON EVERY STATE AND NOT ONLY THE FIRST FRAME, because the strip changes
 		-- while the room is open: `shops` cannot offer its rows until the server
 		-- has answered which looks this player's job may take, and that answer
@@ -1038,6 +1113,49 @@ end
 function refresh()
 	if phase ~= 'open' or draft == nil then return end
 	publish('roomState', roomState())
+end
+
+--- Sends the grid one window, starting where it asked.
+--
+-- ITS OWN PUBLICATION AND NOT PART OF `roomState`, which is the whole reason the
+-- grid can be scrolled at all. The room republishes its state on every slider
+-- move -- a drag is a run of them -- and a state carrying the FIRST window would
+-- throw a player who had scrolled to the four hundredth jacket back to the top
+-- on the next preview. A window travels only when the category changes or the
+-- page asks for the next one, and the page appends what it is sent; nothing else
+-- touches the grid.
+local function sendTiles(from)
+	if phase ~= 'open' or category == nil then return end
+	local window = tileWindow(from)
+	if window == false then return end
+	publish('roomTiles', { tiles = window })
+end
+
+--- Opens one category, resetting its grid to the top.
+-- A tab the room does not dress, or the one already open, is not a change.
+local function openCategory(slot)
+	if phase ~= 'open' or not IS_SLOT[slot] then return end
+	if category == slot then return end
+	category, tileTo = slot, 0
+	-- THE STATE FIRST AND THE WINDOW SECOND. The page keys its grid by the slot
+	-- the window names, so a window that arrived before the tab moved would be
+	-- filed under the category the player just left and then thrown away.
+	refresh()
+	sendTiles(1)
+end
+
+--- Answers the grid asking for the window after the one it holds.
+-- BOUNDED BY WHAT WAS ALREADY SENT, and not by the number on the message. The
+-- page may ask for anything inside the track -- `panel` checks that much -- but
+-- a grid that appends can only use the slice that follows what it has, and
+-- honouring a leap would leave a hole in the middle of it that nothing would
+-- ever fill.
+local function moreTiles(slot, from)
+	if phase ~= 'open' or slot ~= category then return end
+	local wanted = tonumber(from)
+	if wanted == nil or wanted % 1 ~= 0 then return end
+	if wanted ~= tileTo + 1 then return end
+	sendTiles(wanted)
 end
 
 --- Reads the body's catalogue, one slot at a time, into seven sorted lists.
@@ -1138,12 +1256,30 @@ local function roomSpec()
 		{ id = 'save', label = locale(creating and 'wardrobe.ui.saveCreation' or 'wardrobe.ui.save'),
 			primary = true },
 	}
+	-- THE GRID'S FIRST WINDOW RIDES ON THE FIRST FRAME. A room that opened with an
+	-- empty grid and filled it a tick later would show the player an empty shop
+	-- for exactly as long as one round trip takes, for no reason: the catalogue is
+	-- already read by the time this is built.
+	opened.tiles = tileWindow(1)
 	if canTurn() then
+		-- THE TURN BUTTONS CARRY GLYPHS, AND THAT IS THE FIX. They were four text
+		-- buttons in a row, two of which -- `left` and `right` -- were not even
+		-- localised: the literal English word went to the page in both languages.
+		-- They now sit above the categories as picture buttons, which is what the
+		-- owner asked for, and every name here is out of `OPX.Glyphs` because a
+		-- name the page has no path for draws `interact` and tells nobody.
+		--
+		-- WHY THESE FOUR. `person` is the figure seen face on. `back` and `arrow`
+		-- are the two chevrons the vocabulary already has, pointing the way the
+		-- puppet turns -- and using the two DIFFERENT glyphs rather than one arrow
+		-- twice is the point: two identical pictures side by side is the state the
+		-- second glyph band was added to end. `refresh` is the turn all the way
+		-- round, which is what the back view is.
 		opened.tools = {
-			{ id = 'front', label = locale('wardrobe.ui.front') },
-			{ id = 'left', label = 'left' },
-			{ id = 'right', label = 'right' },
-			{ id = 'back', label = locale('wardrobe.ui.back') },
+			{ id = 'front', label = locale('wardrobe.ui.front'), icon = 'person' },
+			{ id = 'left', label = locale('wardrobe.ui.left'), icon = 'back' },
+			{ id = 'right', label = locale('wardrobe.ui.right'), icon = 'arrow' },
+			{ id = 'back', label = locale('wardrobe.ui.back'), icon = 'refresh' },
 		}
 	end
 	return opened
@@ -1230,6 +1366,16 @@ local function begin(owner, creation, expected)
 		place(slot, worn ~= false and at[worn] or 0)
 	end
 
+	-- THE FIRST CATEGORY WITH SOMETHING IN IT, and not simply `SLOTS[1]`. A body
+	-- family the catalogue has nothing for on the head opens on an empty grid and
+	-- reads as a broken room; the tab for such a slot is drawn disabled, so
+	-- opening on one would also put the tab strip's own cursor on a tab the
+	-- player cannot press.
+	category, tileTo = nil, 0
+	for index = 1, #SLOTS do
+		if #pieces[SLOTS[index]] > 0 then category = SLOTS[index] break end
+	end
+
 	phase = 'open'
 	openingUntilMs = 0
 	openingStage = nil
@@ -1269,6 +1415,7 @@ local function release(keep, reason)
 	baseline, draft, citizen, family, creating = nil, nil, nil, nil, false
 	pieces, known, at, shown, shownName = {}, {}, {}, {}, {}
 	hoverSlot, hoverRecord, statusText, outfitCleared, roomOwner = nil, nil, nil, false, nil
+	category, tileTo = nil, 0
 	openingUntilMs = 0
 	-- THE STRIP GOES WITH THE ROOM. An offer is made against the room that is
 	-- open -- `shops` offers its rows when it hears `wardrobeOpened`, and the rows
@@ -1865,6 +2012,12 @@ function M.FromView(action, payload)
 	if action == 'room.slide' then
 		return slide(payload.slot, payload.index, payload.commit)
 	end
+	-- THE CATEGORY AND ITS GRID. Both are re-checked here against the seven slots
+	-- and the list this side read, exactly as a slide is: a view that named an
+	-- eighth category, or asked for the window after a window nobody sent, gets
+	-- the same nothing a mistyped slot has always got.
+	if action == 'room.tab' then return openCategory(payload.slot) end
+	if action == 'room.tiles' then return moreTiles(payload.slot, payload.from) end
 	if action == 'room.action' then
 		local run = ACTIONS[payload.value]
 		if run then return run() end

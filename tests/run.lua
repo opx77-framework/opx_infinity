@@ -1867,6 +1867,62 @@ do
 		check('and so is a range of less than nothing',
 			not badCount.ok and badCount.error == 'invalid_sliders', tostring(badCount.error))
 
+		-- ── a button's picture ───────────────────────────────────────────────
+		-- THE SAME RULE `menu` APPLIES TO A ROW ICON, and for the reason
+		-- `core/shared/glyphs.lua` writes down: a name the page has no path for is
+		-- a promise Lua cannot keep -- the button validates, reaches the DOM and
+		-- draws nothing, with nobody told. So the set is closed and a miss is a
+		-- refusal rather than a silent blank.
+		local goodIcon = Panel.Update(handle,
+			{ tools = { { id = 'front', label = 'Front', icon = 'person' } } })
+		check('a view button may carry a glyph out of the one vocabulary', goodIcon.ok,
+			tostring(goodIcon.error))
+		local badIcon = Panel.Update(handle,
+			{ tools = { { id = 'front', label = 'Front', icon = 'arow' } } })
+		check('and a glyph the page cannot draw is refused, not dropped',
+			not badIcon.ok and badIcon.error == 'invalid_tools', tostring(badIcon.error))
+		-- A button with no picture at all is still a button: `actions` are words.
+		check('a button with no glyph is still a button',
+			Panel.Update(handle, { actions = { { id = 'save', label = 'Save' } } }).ok)
+
+		-- ── the grid window ──────────────────────────────────────────────────
+		-- A WINDOW IS BOUNDED BY THE WIRE AND NOT BY TASTE. A tile is a string
+		-- under an array index, so it costs two value nodes; sixty of them is 120
+		-- against the host's ceiling of 1024, which is what leaves room for the
+		-- rest of a spec. Sixty-one is refused whole rather than truncated,
+		-- because a silently shortened grid is a category the player cannot reach
+		-- the end of with nothing on screen saying why.
+		local sixty, sixtyOne = {}, {}
+		for index = 1, 60 do sixty[index] = ('Items.Coat_%03d'):format(index) end
+		for index = 1, 61 do sixtyOne[index] = ('Items.Coat_%03d'):format(index) end
+		check('a window of sixty is accepted',
+			Panel.Update(handle,
+				{ tiles = { slot = 'OuterChest', from = 1, entries = sixty } }).ok)
+		local tooMany = Panel.Update(handle,
+			{ tiles = { slot = 'OuterChest', from = 1, entries = sixtyOne } })
+		check('and one of sixty-one is refused whole rather than cut',
+			not tooMany.ok and tooMany.error == 'invalid_tiles', tostring(tooMany.error))
+		-- `from` IS 1-BASED AND 0 IS NOT A TILE: index 0 on a slider is "nothing on
+		-- this slot", which the page draws as a box of its own rather than as the
+		-- first entry of a window that may have scrolled away.
+		local fromZero = Panel.Update(handle,
+			{ tiles = { slot = 'OuterChest', from = 0, entries = { 'Items.Coat_001' } } })
+		check('a window starting at nought is refused, because nought is not a piece',
+			not fromZero.ok and fromZero.error == 'invalid_tiles', tostring(fromZero.error))
+		local noSlot = Panel.Update(handle,
+			{ tiles = { from = 1, entries = { 'Items.Coat_001' } } })
+		check('and so is one that does not say which category it belongs to',
+			not noSlot.ok and noSlot.error == 'invalid_tiles', tostring(noSlot.error))
+		check('and `false` takes the grid down, the way every other field clears',
+			Panel.Update(handle, { tiles = false }).ok)
+
+		-- The rows above were replaced whole by the checks that accepted, so the
+		-- spec's own are put back before the block goes on to press one of them:
+		-- a patch states a field entirely, which is the contract these very checks
+		-- were exercising.
+		Panel.Update(handle, { actions = { { id = 'cancel', label = 'Skip' },
+			{ id = 'save', label = 'Wear this', primary = true } }, tools = false })
+
 		-- THE APPEND PATH STILL HAS TO WORK, and it is tested against the contract
 		-- rather than through the fitting room now, because the fitting room no
 		-- longer uses it. The defect it guards is the panel module's own: a
@@ -1949,6 +2005,39 @@ do
 			{ handle = handle + 99, id = 'OuterChest', index = 1, commit = true })
 		check('a payload naming another room is dropped', #seen == 2,
 			table.concat(seen, ', '))
+
+		-- ── the two messages the grid added to the seam ──────────────────────
+		-- THE ROOM DRAWS TABS NOW. `client/view.lua` used to say in as many words
+		-- that it did not -- "the room draws no rows and no tabs, so the panel
+		-- contract's `select`, `hover`, `leave` and `tab` cannot be raised for it"
+		-- -- and that comment was a branch that did not exist. The seven slots are
+		-- the categories, so a tab is a real message, and a window request is the
+		-- other half of a grid the page scrolls.
+		Panel.Update(handle, { tabs = { { id = 'InnerChest', label = 'Inner chest' },
+			{ id = 'OuterChest', label = 'Outer chest' } }, tab = 'InnerChest' })
+		control.PageEmit(page, 'opx:panel:tab', { handle = handle, tab = 'OuterChest' })
+		check('a category the player opened comes back as a room tab',
+			seen[3] == 'room.tab' and carried[3] ~= nil and carried[3].slot == 'OuterChest',
+			table.concat(seen, ', '))
+
+		control.PageEmit(page, 'opx:panel:tiles',
+			{ handle = handle, slot = 'OuterChest', from = 61 })
+		check('and the grid asking for its next window comes back as room tiles',
+			seen[4] == 'room.tiles' and carried[4] ~= nil
+				and carried[4].slot == 'OuterChest' and carried[4].from == 61,
+			table.concat(seen, ', '))
+
+		-- NEITHER END TRUSTS THE CATEGORY EITHER. `panel` checks a window request
+		-- against the track it drew -- the same check a slide takes -- so a page
+		-- asking past the end of a category, or about a category that is not on
+		-- this screen, is dropped before the state half hears of it.
+		control.PageEmit(page, 'opx:panel:tiles',
+			{ handle = handle, slot = 'OuterChest', from = 4000 })
+		control.PageEmit(page, 'opx:panel:tiles',
+			{ handle = handle, slot = 'Nonesuch', from = 1 })
+		control.PageEmit(page, 'opx:panel:tab', { handle = handle, tab = 'Nonesuch' })
+		check('a window past the end of a category never reaches the state half',
+			#seen == 4, table.concat(seen, ', '))
 		appearance.FromView = real
 
 		env.TriggerEvent(appearance.Event.ON_VIEW,
@@ -2457,6 +2546,96 @@ do
 		check('an empty slot is a track with one position on it',
 			slider('Face').count == 0 and slider('Face').index == 0)
 
+		-- ── the categories, and the grid under the open one ──────────────────
+		-- THE SCREEN THE OWNER ASKED FOR: "mettre des box avec l'image du vetement
+		-- uniquement, de sorte a rendre le choix plus facile -- donc il scroll pour
+		-- descendre et voir plus." Seven tracks along the bottom became seven tabs
+		-- down the left with a scrolling grid of boxes under the open one. The
+		-- slider mechanism is untouched underneath -- a box carries the index a
+		-- thumb would have reported -- so what is asserted here is the WINDOW: the
+		-- page is never handed a whole category.
+		--- The last tab strip, and the last grid window, the page was sent.
+		local function lastOf(field)
+			local latest
+			for index = 1, #page.sent do
+				if page.sent[index].payload[field] ~= nil then
+					latest = page.sent[index].payload[field]
+				end
+			end
+			return latest
+		end
+		local function tabOf(slot)
+			for _, entry in ipairs(lastOf('tabs') or {}) do
+				if entry.id == slot then return entry end
+			end
+			return nil
+		end
+
+		check('the room draws one category per slot', #(lastOf('tabs') or {}) == 7,
+			tostring(#(lastOf('tabs') or {})))
+		-- A CLOSED CATEGORY STILL STATES THE ONE FACT ABOUT ITSELF THAT MATTERS.
+		-- Six of the seven are shut at any moment, so without the mark a player
+		-- would have to open all seven to find out what they are wearing.
+		check('and marks the ones with something on them',
+			tabOf('OuterChest') ~= nil and tabOf('OuterChest').marked == true
+				and tabOf('Head') ~= nil and tabOf('Head').marked == false,
+			tabOf('OuterChest') and tostring(tabOf('OuterChest').marked))
+		-- A category the catalogue answered nothing for cannot be browsed, so it
+		-- is not a tab the cursor may land on.
+		check('and shuts a category this body has nothing for',
+			tabOf('Face') ~= nil and tabOf('Face').disabled == true
+				and tabOf('Head').disabled == false)
+		-- NOT SIMPLY `SLOTS[1]`. `Head` is first here because it has pieces; a body
+		-- family whose head list were empty would open on an empty grid behind a
+		-- tab the player cannot press.
+		check('the room opens on the first category with something in it',
+			lastOf('tab') == 'Head', tostring(lastOf('tab')))
+
+		local window = lastOf('tiles')
+		check('and the first frame already carries that category grid',
+			type(window) == 'table' and window.slot == 'Head' and window.from == 1,
+			type(window) == 'table' and tostring(window.slot) or 'no window')
+		-- SORTED, and the same order the track is in: the box at offset n is
+		-- position n on that slider, which is the whole reason a press can be
+		-- reported as a slide.
+		check('the grid carries the record names in track order',
+			type(window) == 'table'
+				and table.concat(window.entries, ',')
+					== 'Items.Head_01,Items.Head_02,Items.Head_03',
+			type(window) == 'table' and table.concat(window.entries, ',') or 'no window')
+
+		-- ── the view buttons ─────────────────────────────────────────────────
+		-- WHAT WAS BROKEN: four word-buttons in a corner cluster, two of which were
+		-- not translated at all -- the literal strings `left` and `right` went to
+		-- the page in both languages. They are picture buttons above the categories
+		-- now, and every glyph has to be a name the page can actually draw.
+		local tools = lastOf('tools') or {}
+		check('the room offers the four view buttons', #tools == 4,
+			('%d tool(s)'):format(#tools))
+		local iconed, named = 0, 0
+		local seenIcon = {}
+		for _, button in ipairs(tools) do
+			if type(button.icon) == 'string' and env.OPX.Glyphs[button.icon] then
+				iconed = iconed + 1
+				seenIcon[button.icon] = true
+			end
+			-- The label is a translated word and not the button's own id. `front`
+			-- and `back` always were; `left` and `right` were the raw ids.
+			if type(button.label) == 'string' and button.label ~= button.id then
+				named = named + 1
+			end
+		end
+		check('every one of them carries a glyph out of the one vocabulary',
+			iconed == 4, ('%d of %d'):format(iconed, #tools))
+		-- FOUR DIFFERENT PICTURES. Two identical arrows side by side is the state
+		-- the second glyph band was added to end: a row that says `tool` four times
+		-- is a row with no pictures on it.
+		check('and no two of them are the same picture',
+			env.OPX.Table.Count(seenIcon) == 4, tostring(env.OPX.Table.Count(seenIcon)))
+		check('and every label is a word rather than the button id',
+			named == 4, ('%d of %d'):format(named, #tools))
+
+
 		-- INDEX 0 IS 'NOTHING', everywhere: it is where an empty slot starts, it
 		-- is what a slot the body is not wearing reports, and it is what taking a
 		-- piece off means now that there is no 'Take off' button.
@@ -2480,6 +2659,14 @@ do
 		check('and the slider follows it, with the one label the page is told',
 			slider('Head').index == 3 and slider('Head').value == 'Head 03',
 			('%d/%s'):format(slider('Head').index, tostring(slider('Head').value)))
+		-- AND THE STRIP FOLLOWS IT TOO, which is the half of the tab that has to
+		-- travel on every state and not only on the first frame: six categories
+		-- are shut at any moment and the mark is the only thing they say about
+		-- themselves. A seam that forwarded `tab` and forgot `tabs` would leave
+		-- the dots frozen at whatever the room opened wearing.
+		check('and the category strip marks the slot that was just dressed',
+			tabOf('Head') ~= nil and tabOf('Head').marked == true,
+			tabOf('Head') and tostring(tabOf('Head').marked))
 
 		control.PageEmit(page, 'opx:panel:slide',
 			{ handle = handle, id = 'Head', index = 0, commit = true })
@@ -2487,6 +2674,9 @@ do
 			worn.Head == false and slider('Head').index == 0
 				and slider('Head').value == 'nothing',
 			tostring(worn.Head))
+		check('and the mark comes off the category with the piece',
+			tabOf('Head') ~= nil and tabOf('Head').marked == false,
+			tabOf('Head') and tostring(tabOf('Head').marked))
 
 		-- An uncommitted move is a fitting, not a choice: the body wears it and
 		-- the save would not keep it.
@@ -2508,6 +2698,34 @@ do
 			{ handle = handle, id = 'InnerChest', index = 0, commit = false })
 		check('previewing nothing on one slot does not leave another undressed',
 			worn.Feet == 'Items.Feet_02', tostring(worn.Feet))
+
+		-- ── switching category ───────────────────────────────────────────────
+		control.PageEmit(page, 'opx:panel:tab', { handle = handle, tab = 'OuterChest' })
+		window = lastOf('tiles')
+		check('opening another category sends that category grid',
+			type(window) == 'table' and window.slot == 'OuterChest' and window.from == 1
+				and #window.entries == 5,
+			type(window) == 'table'
+				and ('%s from %s, %d'):format(tostring(window.slot), tostring(window.from),
+					#window.entries) or 'no window')
+		check('and the strip says which one is open now',
+			lastOf('tab') == 'OuterChest', tostring(lastOf('tab')))
+
+		-- A CATEGORY THE ROOM DOES NOT DRESS IS NOT A CATEGORY. The page names a
+		-- tab and this side checks it against the seven it holds, exactly as it
+		-- checks a slide's slot -- `panel` drops it first, and the room would drop
+		-- it again.
+		control.PageEmit(page, 'opx:panel:tab', { handle = handle, tab = 'Wrists' })
+		check('and a category the room does not dress changes nothing',
+			lastOf('tab') == 'OuterChest', tostring(lastOf('tab')))
+
+		-- A BOX IS A SLIDE. Nothing new decides anything: the page reports the
+		-- index the box carries and the room turns it into a record against its own
+		-- list, which is the one path a thumb has always taken.
+		control.PageEmit(page, 'opx:panel:slide',
+			{ handle = handle, id = 'OuterChest', index = 5, commit = true })
+		check('a box clicked in the grid dresses the puppet like a thumb does',
+			worn.OuterChest == 'Items.OuterChest_05', tostring(worn.OuterChest))
 
 		-- ── the category strip, and what gates each row ──────────────────────
 		-- WIRED, NOT BUILT. Saved outfits, share codes and the job gate all
@@ -2678,6 +2896,123 @@ do
 		check('and the line names the slot and both numbers',
 			toldServer():find('OuterChest catalogue answered 2000 record(s) against a limit of 2000',
 				1, true) ~= nil, toldServer())
+		appearance.Wardrobe.Close('caller')
+	end
+
+	-- ── the grid is a window, and it is asked for one screen at a time ───────
+	-- THE DEFECT THIS EXISTS TO PREVENT IS THE ONE THIS ROOM ALREADY HAD ONCE.
+	-- The old screen sent the whole catalogue as rows -- 1968 of them, formatted,
+	-- over twenty-six batches -- and the player reached one category of seven
+	-- before the stream died. The new screen is a grid of boxes the player
+	-- scrolls, which needs NAMES, so the same mistake is one careless `entries =
+	-- names` away. A hundred and thirty records is past the sixty-a-window bound
+	-- and small enough to walk to the end of, which is what makes the append
+	-- testable at all.
+	do
+		local env, control = joinClient('never', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		local page = control.pages[1]
+		local TOTAL = 130
+
+		env.Open77.equipment.records = function(options)
+			local out = {}
+			if options.slot == 'OuterChest' then
+				for index = 1, TOTAL do out[index] = { record = ('Items.Coat_%03d'):format(index) } end
+			end
+			return out
+		end
+		env.Open77.equipment.apply = function() return true end
+		env.Open77.character.state = function()
+			return { health = 100, alive = true, attached = true }
+		end
+		appearance.Clothing.BeginPreview = function() return { equipment = {} } end
+		appearance.Clothing.EndPreview = function() return true end
+
+		appearance.Wardrobe.Open('appearance')
+		control.Pump(60)
+		check('the room opened on the one category with anything in it',
+			appearance.Wardrobe.IsOpen())
+
+		--- Every grid window the page has been sent, in order.
+		local windows = {}
+		for index = 1, #page.sent do
+			local given = page.sent[index].payload.tiles
+			if type(given) == 'table' then windows[#windows + 1] = given end
+		end
+		local handle = nil
+		for index = 1, #page.sent do
+			if page.sent[index].channel == 'opx:panel:open' then
+				handle = page.sent[index].payload.handle
+			end
+		end
+
+		-- NOT `SLOTS[1]`, and this dataset is the one that can tell the difference:
+		-- only the outer chest has anything in it, so a room that opened on the
+		-- first slot in the list would open on an empty grid behind a tab the
+		-- player cannot press.
+		local openedOn
+		for index = 1, #page.sent do
+			if page.sent[index].payload.tab ~= nil then openedOn = page.sent[index].payload.tab end
+		end
+		check('the room opens on the first category with anything in it',
+			openedOn == 'OuterChest', tostring(openedOn))
+
+		check('the first frame carries one window and not the category',
+			#windows == 1 and windows[1].from == 1 and #windows[1].entries == 60,
+			#windows == 1 and ('%d entries'):format(#windows[1].entries)
+				or ('%d window(s)'):format(#windows))
+
+		--- Asks for the window after everything sent so far, and answers the new one.
+		local function scrollOn(from)
+			local before = #page.sent
+			control.PageEmit(page, 'opx:panel:tiles',
+				{ handle = handle, slot = 'OuterChest', from = from })
+			for index = before + 1, #page.sent do
+				local given = page.sent[index].payload.tiles
+				if type(given) == 'table' then return given end
+			end
+			return nil
+		end
+
+		local second = scrollOn(61)
+		check('scrolling to the bottom asks for the next window and gets it',
+			type(second) == 'table' and second.from == 61 and #second.entries == 60,
+			type(second) == 'table' and ('from %s, %d'):format(tostring(second.from),
+				#second.entries) or 'nothing came back')
+		check('and it starts exactly where the last one ended, so the grid has no hole',
+			type(second) == 'table' and second.entries[1] == 'Items.Coat_061',
+			type(second) == 'table' and tostring(second.entries[1]) or 'nothing came back')
+
+		-- The tail is short, and short is correct: the window is a slice and not a
+		-- fixed-size page, so the last one carries whatever is left.
+		local third = scrollOn(121)
+		check('the last window carries what is left rather than a padded sixty',
+			type(third) == 'table' and #third.entries == TOTAL - 120,
+			type(third) == 'table' and tostring(#third.entries) or 'nothing came back')
+
+		-- A LEAP IS REFUSED, and it has to be. The grid appends, so a window that
+		-- started past the end of what it holds would leave a hole -- and every box
+		-- after the hole would carry an index off by the size of it, which is a
+		-- player clicking one jacket and being dressed in another.
+		check('a window that would skip past what the grid holds is not answered',
+			scrollOn(5) == nil)
+		-- Past the end of the track entirely: `panel` drops this before the room
+		-- ever hears about it, against the count the room itself declared.
+		check('and neither is one past the end of the category',
+			scrollOn(TOTAL + 1) == nil)
+
+		-- ONE PAYLOAD NEVER CARRIES THE CATEGORY. This is the check that would go
+		-- red if somebody answered a scroll with the rest of the list.
+		local biggest = 0
+		for index = 1, #page.sent do
+			local given = page.sent[index].payload.tiles
+			if type(given) == 'table' and #given.entries > biggest then
+				biggest = #given.entries
+			end
+		end
+		check('and no single window ever carried more than the wire bound',
+			biggest == 60, tostring(biggest))
+
 		appearance.Wardrobe.Close('caller')
 	end
 end
@@ -4166,6 +4501,15 @@ do
 			speaks['opx:theme:ready'] == true)
 		check('and takes the theme on the channel Lua sends it on',
 			speaks['opx:theme:set'] == true)
+
+		-- THE GRID'S OWN CHANNEL, and it is worth a line of its own because it is
+		-- the message on this surface with no other symptom. The fitting room's
+		-- picker asks for its next window when the scroll reaches the bottom of
+		-- what it holds; if the page emits on a name the panel module never wired,
+		-- the boxes still draw, the first sixty are still right, and the grid
+		-- simply stops -- which reads as a category with sixty garments in it.
+		check('the page asks for the next grid window on the channel the panel wires',
+			speaks['opx:panel:tiles'] == true)
 
 		-- Drift detector. A channel the page speaks that no Lua file mentions is
 		-- either a feature whose Lua half is not written yet, or a name one side
@@ -8816,6 +9160,186 @@ do
 		check('and every character of it is in the alphabet', clean, minted)
 		check('and a minted code reads back as itself',
 			shops.CleanCode(minted, length) == minted)
+	end
+end
+
+-- ── the shop row, and the screen that said it did not exist ─────────────────
+-- TWO DEFECTS THAT SHARE A SHAPE: a module answering a question nobody asked it,
+-- and getting silence back. The row read `payload.index` off a target context
+-- that has never carried one, and `showOutfits` handed `menu.Open` a list of
+-- length zero, which that contract refuses outright. Neither said anything: one
+-- returned, the other toasted "That screen is not available right now."
+section('shops: the row resolves by position, and an empty shelf is still a shelf')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the shops module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local shops = OPX.Modules.Get('shops')
+		local target = OPX.Modules.Get('target')
+		local menu = OPX.Api.Get('menu')
+
+		-- ── the row ───────────────────────────────────────────────────────
+		-- The registry is reached directly because the alternative is a screen
+		-- ray: `commit` re-casts the ray twice before it calls a row, and the
+		-- thing under test is what the row does with the context it is handed,
+		-- not how the eye builds one. `Registry.Get(token).onSelect` IS the
+		-- callback `commit` calls, resolved the same way.
+		local rows = target ~= nil and target.Registry.List('shops') or {}
+		check('the shops module put a row on the eye', #rows == 1,
+			('%d row(s)'):format(#rows))
+
+		local row = #rows == 1 and target.Registry.Get(rows[1].token) or nil
+		check('and the row carries a callback', row ~= nil and type(row.onSelect) == 'function')
+		check('and a sphere per configured shop', row ~= nil and type(row.spheres) == 'table'
+			and #row.spheres == 2, row and row.spheres and #row.spheres or 'none')
+
+		--- The shop key the last OPEN this client sent names, or nil.
+		local function openedShop()
+			local latest
+			for index = 1, #control.serverEvents do
+				local sent = control.serverEvents[index]
+				if sent.name == shops.Event.OPEN then latest = sent[1] end
+			end
+			return latest
+		end
+
+		-- THE CONTEXT THE EYE ACTUALLY SENDS. `contextAt` builds `screen`,
+		-- `position`, `playerDistance`, `target` and `kind`, and `commit` adds
+		-- `option`; there is no `index` in it and there never was, which is why
+		-- every press on a shop row used to return silently. Written out here in
+		-- full so the shape this row reads is the shape the eye builds.
+		if row ~= nil then
+			row.onSelect({
+				screen = { x = 0.5, y = 0.5 },
+				position = { x = -1180.4, y = 1550.2, z = 25.1 },
+				playerDistance = 1.2,
+				kind = 'world',
+				target = { kind = 'world', networked = false },
+				option = { id = 'shops.fitting', owner = 'shops', token = rows[1].token },
+			})
+		end
+		check('a press resolves the shop from where the eye landed',
+			openedShop() == 'thrift_watson', tostring(openedShop()))
+
+		-- THE OTHER SHOP, to prove the answer is the position and not the first
+		-- entry of a sorted list. `jinguji` sorts FIRST, so an implementation that
+		-- fell back to `shops[1]` would pass the check above and fail this one --
+		-- and one that read `payload.index` would fail both.
+		if row ~= nil then
+			row.onSelect({ position = { x = -1631.0, y = -1012.0, z = 8.0 } })
+		end
+		check('and the other shop from a press at the other end of the city',
+			openedShop() == 'jinguji', tostring(openedShop()))
+
+		-- A ray that landed nowhere near a counter is not a shop being opened.
+		-- The eye can only put this row up inside a sphere, but the position it
+		-- reports is where the RAY hit, which is a surface and not the centre.
+		local before = openedShop()
+		if row ~= nil then
+			row.onSelect({ position = { x = 0.0, y = 0.0, z = 0.0 } })
+		end
+		check('a press that landed outside every counter opens nothing',
+			openedShop() == before, tostring(openedShop()))
+
+		-- A context with no position at all -- an older eye, or a refused raycast
+		-- -- is dropped rather than resolved against a nil.
+		if row ~= nil then
+			row.onSelect({ screen = { x = 0.5, y = 0.5 } })
+			row.onSelect(nil)
+			row.onSelect({ position = { x = 0 / 0, y = 0.0, z = 0.0 } })
+		end
+		check('and a context with no usable position opens nothing either',
+			openedShop() == before, tostring(openedShop()))
+
+		-- ── the empty shelf ───────────────────────────────────────────────
+		-- WHAT THE PLAYER DID. Pressed My outfits having saved nothing, and was
+		-- told the screen was not available. `showOutfits` built `items = {}` and
+		-- `menu.Open` refuses a zero-length list with `empty_menu` -- so the
+		-- `status` line the caller wrote for exactly this case never drew, because
+		-- the menu was refused before it could carry one.
+		--
+		-- Driven through the fitting room's own category bus, because that is the
+		-- only door into `showOutfits`: `shops` listens for `wardrobeGroup` on the
+		-- appearance decision bus and runs the handler the pressed id names.
+		local appearance = OPX.Modules.Get('appearance')
+		local ON_DECISION = OPX.Event(OPX.Channel.LOCAL, 'appearance', 'decision')
+
+		--- The list the menu is holding, or nil for none.
+		local function listed()
+			if menu == nil then return nil end
+			local held = menu.State()
+			if not held.ok or type(held.value) ~= 'table' or held.value.open ~= true then
+				return nil
+			end
+			return held.value
+		end
+
+		check('nothing is on the menu to begin with', listed() == nil)
+
+		-- The room has to be open for the strip to be offered, and the strip has to
+		-- have been offered for a press on it to be answered.
+		control.Fire(ON_DECISION, { ok = true, event = 'wardrobeOpened' })
+		control.Fire(ON_DECISION,
+			{ ok = true, event = 'wardrobeGroup', owner = 'shops', group = 'outfits' })
+		control.Pump(2)
+
+		local held = listed()
+		check('My outfits opens a list although nothing has been saved', held ~= nil,
+			'the menu refused to open')
+		check('and it belongs to the shops module', held ~= nil and held.owner == 'shops',
+			held and tostring(held.owner))
+		-- ONE ROW AND IT CANNOT BE PRESSED. `normalizeItems` refuses a level of
+		-- nothing but separators as well (`only_separators`) because the cursor
+		-- would have nowhere to stand, so the placeholder has to be a real row
+		-- that is disabled -- which the same function calls "a real menu".
+		check('the shelf is drawn as one row saying it is empty',
+			held ~= nil and held.total == 1, held and tostring(held.total))
+
+		-- AND THE WORDS ARE THE ONES WRITTEN FOR THIS CASE, not the refusal. The
+		-- symptom was `shops.noSurface`; what the player must read is
+		-- `shops.outfits.empty`.
+		local empty = OPX.Locale.Text('shops.outfits.empty')
+		local refusal = OPX.Locale.Text('shops.noSurface')
+		check('and the words are the empty shelf, not the missing screen',
+			empty ~= refusal and empty:find('saved', 1, true) ~= nil, empty)
+
+		-- The other list in that file built the same way and failed the same way.
+		-- A counter with no ready-made look configured -- or a press that lands
+		-- after `wardrobeClosed` has cleared the offer -- reaches it.
+		--
+		-- ASKED OF THE TITLE AND NOT OF THE ROW COUNT, and the difference is a
+		-- check that works. Both lists open under the same menu id, so a refused
+		-- Ready-made looks leaves the My outfits list from the block above still
+		-- standing -- with exactly one row on it. A count alone therefore passed
+		-- with the fix taken back out, which is a check that cannot go red. The
+		-- title is the one thing on screen that says WHICH of the two lists the
+		-- player is looking at.
+		control.Fire(ON_DECISION,
+			{ ok = true, event = 'wardrobeGroup', owner = 'shops', group = 'looks' })
+		control.Pump(2)
+		held = listed()
+		check('and a counter with no ready-made looks opens its own list too',
+			held ~= nil and held.title == OPX.Locale.Text('shops.looks.title')
+				and held.total == 1,
+			held and ('%s / %d rows'):format(tostring(held.title), held.total)
+				or 'the menu refused to open')
+
+		-- With outfits to show it is a list of outfits, so the placeholder is not
+		-- standing in front of anything.
+		control.netEvents[shops.Event.SAVED]({ outfits = {
+			{ id = 1, name = 'Work' },
+			{ id = 2, name = 'Nightcity' },
+		} })
+		control.Fire(ON_DECISION,
+			{ ok = true, event = 'wardrobeGroup', owner = 'shops', group = 'outfits' })
+		control.Pump(2)
+		held = listed()
+		check('and a player who has saved two outfits is shown two rows',
+			held ~= nil and held.total == 2,
+			held and tostring(held.total) or 'the menu refused to open')
+		if appearance ~= nil then control.Fire(ON_DECISION, { event = 'wardrobeClosed' }) end
 	end
 end
 

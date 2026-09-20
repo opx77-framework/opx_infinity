@@ -51,6 +51,7 @@ local EN = {
 	['shops.group.code'] = 'Outfit code',
 
 	['shops.looks.title'] = 'Ready-made looks',
+	['shops.looks.empty'] = 'This counter has nothing ready to wear.',
 	['shops.outfits.title'] = 'Your saved outfits',
 	['shops.outfits.empty'] = 'You have not saved an outfit yet.',
 	['shops.outfits.wear'] = 'Put it on',
@@ -112,6 +113,7 @@ local FR = {
 	['shops.group.code'] = 'Code tenue',
 
 	['shops.looks.title'] = 'Tenues prêtes à porter',
+	['shops.looks.empty'] = "Ce comptoir n'a rien de prêt à porter.",
 	['shops.outfits.title'] = 'Vos tenues enregistrées',
 	['shops.outfits.empty'] = "Vous n'avez encore enregistré aucune tenue.",
 	['shops.outfits.wear'] = 'La mettre',
