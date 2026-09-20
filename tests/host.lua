@@ -925,6 +925,28 @@ function Host.Environment(side, database)
 			commands[key] = { run = fn, restricted = restricted == true }
 		end,
 
+		-- The host's command registry, which `core/server/commands.lua` reads
+		-- before it takes a short alias: a bare word like `noclip` is far likelier
+		-- to be owned by another resource in the session than a prefixed one is.
+		--
+		-- The shape is the card's -- `name`, `resource`, `restricted`, `source` --
+		-- and it answers for the whole session and not just this resource, which
+		-- is the only reason the runtime bothers to ask. `control.Claim` is how a
+		-- test puts another resource's command in it.
+		GetRegisteredCommands = function()
+			local rows = {}
+			for name, entry in pairs(commands) do
+				rows[#rows + 1] = {
+					name = name,
+					resource = entry.resource or 'opx_infinity',
+					restricted = entry.restricted,
+					source = 'resource',
+				}
+			end
+			table.sort(rows, function(left, right) return left.name < right.name end)
+			return rows
+		end,
+
 		-- Two answer shapes are documented for the host call: the effective key,
 		-- or `true, key`. Both are produced here, because reading only one of them
 		-- is a bug this suite has already caught once.
@@ -1067,6 +1089,15 @@ function Host.Environment(side, database)
 				acl.granted[tostring(playerId)] = player
 			end
 			player[tostring(permission)] = true
+		end,
+
+		--- Registers a command as ANOTHER resource in the session, so a collision
+		--- with `open77_shell` or `open77_weapons` can be exercised. The runtime
+		--- has no way to tell this apart from a real one, which is the point: a
+		--- short alias competes for one session-wide namespace.
+		Claim = function(name, resourceName)
+			commands[tostring(name):lower()] =
+				{ run = function() end, restricted = false, resource = resourceName }
 		end,
 
 		--- Takes one back off, so a refusal can be exercised after a grant.
