@@ -25,7 +25,8 @@ local Server = M.Server
 local Inventory = M.Inventory
 local Command = M.Command
 
-local answer, refuse, audit, tell = Server.Answer, Server.Refuse, Server.Audit, Server.Tell
+local answer, refuse, audit = Server.Answer, Server.Refuse, Server.Audit
+local tell, inform = Server.Tell, Server.Inform
 
 M.Weapons = {}
 local Weapons = M.Weapons
@@ -185,11 +186,10 @@ function Weapons.Register()
 
 				audit(source, event, true, playerId, ('%s to %s, %dx %s'):format(entry.name, who, count,
 					ammo and ammo.name or '-'))
-				if playerId and playerId ~= source then
-					tell(playerId, 'admin.toast.weapon', { label = entry.label }, 'success')
-					if count > 0 then
-						tell(playerId, 'admin.toast.itemGiven', { count = count, label = ammo.label }, 'info')
-					end
+				inform(source, playerId, 'admin.toast.weapon', { label = entry.label }, 'success')
+				if count > 0 then
+					inform(source, playerId, 'admin.toast.itemGiven',
+						{ count = count, label = ammo.label }, 'info')
 				end
 				answer(source, raw, true, ammo and 'admin.done.weaponGivenAmmo' or 'admin.done.weaponGiven',
 					{ label = entry.label, who = who, count = count, ammo = ammo and ammo.label or '' })
@@ -227,9 +227,8 @@ function Weapons.Register()
 					return
 				end
 				audit(source, event, true, playerId, ('%dx %s to %s'):format(count, ammo.name, who))
-				if playerId and playerId ~= source then
-					tell(playerId, 'admin.toast.itemGiven', { count = count, label = ammo.label }, 'info')
-				end
+				inform(source, playerId, 'admin.toast.itemGiven',
+					{ count = count, label = ammo.label }, 'info')
 				answer(source, raw, true, 'admin.done.ammoGiven',
 					{ count = count, label = ammo.label, who = who })
 			end)
@@ -291,9 +290,8 @@ function Weapons.Register()
 					if added then
 						given[#given + 1] = ('%dx %s'):format(count, ammo.label)
 						audit(source, event, true, playerId, ('%dx %s to %s'):format(count, ammo.name, who))
-						if playerId and playerId ~= source then
-							tell(playerId, 'admin.toast.itemGiven', { count = count, label = ammo.label }, 'info')
-						end
+						inform(source, playerId, 'admin.toast.itemGiven',
+							{ count = count, label = ammo.label }, 'info')
 					else
 						failure = failure or { code = addCode, reason = addReason, label = ammo.label }
 					end
@@ -351,9 +349,7 @@ function Weapons.Register()
 				end
 				audit(source, event, true, playerId, ('%d weapon(s) from %s%s'):format(removed, who,
 					failure and (', then ' .. tostring(failure.reason)) or ''))
-				if playerId and playerId ~= source then
-					tell(playerId, 'admin.toast.weaponsTaken', { count = removed }, 'warning')
-				end
+				inform(source, playerId, 'admin.toast.weaponsTaken', { count = removed }, 'warning')
 				answer(source, raw, true, 'admin.done.weaponsRemoved', { count = removed, who = who })
 			end)
 		end,

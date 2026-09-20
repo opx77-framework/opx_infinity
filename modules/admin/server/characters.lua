@@ -37,7 +37,8 @@ local M = OPX.Modules.Get('admin')
 local Server = M.Server
 local Command = M.Command
 
-local answer, refuse, audit, tell = Server.Answer, Server.Refuse, Server.Audit, Server.Tell
+local answer, refuse, audit = Server.Answer, Server.Refuse, Server.Audit
+local inform = Server.Inform
 
 M.Characters = {}
 local Characters = M.Characters
@@ -235,9 +236,7 @@ function Characters.Register()
 				-- The holder is disconnected by the delete itself, so this races the
 				-- kick and is sent rather than waited on -- exactly as the character
 				-- module's own switch notice is.
-				if holder ~= nil and holder ~= source then
-					tell(holder, 'admin.toast.charDeleted', nil, 'warning')
-				end
+				inform(source, holder, 'admin.toast.charDeleted', nil, 'warning')
 				answer(source, raw, true, 'admin.done.charDeleted', { citizenId = citizenId })
 			end)
 		end,

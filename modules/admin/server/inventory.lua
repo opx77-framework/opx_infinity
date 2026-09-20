@@ -20,7 +20,8 @@ local Server = M.Server
 local Text = OPX.Text
 local Command = M.Command
 
-local answer, refuse, audit, tell = Server.Answer, Server.Refuse, Server.Audit, Server.Tell
+local answer, refuse, audit = Server.Answer, Server.Refuse, Server.Audit
+local inform = Server.Inform
 
 M.Inventory = {}
 local Inventory = M.Inventory
@@ -431,9 +432,8 @@ function Inventory.Register()
 					return
 				end
 				audit(source, event, true, playerId, ('%dx %s to %s'):format(wanted, item.name, who))
-				if playerId and playerId ~= source then
-					tell(playerId, 'admin.toast.itemGiven', { count = wanted, label = item.label }, 'info')
-				end
+				inform(source, playerId, 'admin.toast.itemGiven',
+					{ count = wanted, label = item.label }, 'info')
 				answer(source, raw, true, 'admin.done.itemGiven',
 					{ count = wanted, label = item.label, who = who })
 			end)
@@ -463,9 +463,8 @@ function Inventory.Register()
 						{ item = label, count = wanted })
 				end
 				audit(source, event, true, playerId, ('%dx %s from %s'):format(wanted, name, who))
-				if playerId and playerId ~= source then
-					tell(playerId, 'admin.toast.itemTaken', { count = wanted, label = label }, 'warning')
-				end
+				inform(source, playerId, 'admin.toast.itemTaken',
+					{ count = wanted, label = label }, 'warning')
 				answer(source, raw, true, 'admin.done.itemRemoved',
 					{ count = wanted, label = label, who = who })
 			end)
@@ -485,9 +484,7 @@ function Inventory.Register()
 					return Inventory.Fail(source, raw, event, playerId, who, code, reason)
 				end
 				audit(source, event, true, playerId, who)
-				if playerId and playerId ~= source then
-					tell(playerId, 'admin.toast.bagCleared', nil, 'warning')
-				end
+				inform(source, playerId, 'admin.toast.bagCleared', nil, 'warning')
 				answer(source, raw, true, 'admin.done.bagCleared', { who = who })
 			end)
 		end,

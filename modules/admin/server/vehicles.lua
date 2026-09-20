@@ -13,7 +13,8 @@ local Catalog = M.Catalog
 local Text = OPX.Text
 local Command = M.Command
 
-local answer, refuse, audit, tell = Server.Answer, Server.Refuse, Server.Audit, Server.Tell
+local answer, refuse, audit = Server.Answer, Server.Refuse, Server.Audit
+local inform = Server.Inform
 local count = Server.Count
 
 M.Vehicles = {}
@@ -165,7 +166,7 @@ local function spawnFor(source, raw, owner, entry, event)
 	end
 	spawned[vehicleId] = { owner = owner }
 	audit(source, event, true, owner, ('%s %s'):format(tostring(vehicleId), entry.record))
-	if owner ~= source then tell(owner, 'admin.toast.vehicle', { label = entry.label }) end
+	inform(source, owner, 'admin.toast.vehicle', { label = entry.label })
 	answer(source, raw, true, 'admin.done.spawned',
 		{ vehicle = tostring(vehicleId), label = entry.label, id = owner })
 end

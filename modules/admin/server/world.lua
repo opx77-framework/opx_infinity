@@ -7,7 +7,8 @@ local Server = M.Server
 local Text = OPX.Text
 local Command = M.Command
 
-local answer, refuse, audit, tell = Server.Answer, Server.Refuse, Server.Audit, Server.Tell
+local answer, refuse, audit = Server.Answer, Server.Refuse, Server.Audit
+local inform = Server.Inform
 local count = Server.Count
 
 M.World = {}
@@ -170,7 +171,7 @@ function World.Register()
 			audit(source, 'admin.player.send', placed, playerId,
 				('%s %s'):format(location.name, code or ''))
 			if not placed then return refuse(source, raw, code, { reason = reason, id = playerId }) end
-			if playerId ~= source then tell(playerId, 'admin.toast.sent', { label = location.label }) end
+			inform(source, playerId, 'admin.toast.sent', { label = location.label })
 			answer(source, raw, true, 'admin.done.sent',
 				{ id = playerId, name = Server.LabelOf(playerId) or '?', label = location.label })
 		end,

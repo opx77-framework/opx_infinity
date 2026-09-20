@@ -8907,5 +8907,230 @@ do
 		check('and taking it down does not raise', pcall(contract.Stop, 'eat'))
 	end
 end
+-- ── one staff action, one message ───────────────────────────────────────────
+-- THREE NOTIFICATIONS FOR ONE GIVE, reported by the owner: giving themselves an
+-- item as staff put the same sentence on screen twice -- once titled STAFF and
+-- once bare -- and then told them a staff member had put something in their bag.
+--
+-- The two halves are separate faults and are held apart here.
+--
+-- SERVER: the inbound notice is the one the TARGET reads, and a staff member
+-- acting on themselves is not a target. That comparison used to be written out
+-- at every call site; it is `Server.Inform` now, so it is one thing to get right
+-- and one thing to break.
+--
+-- CLIENT: `modules/menu` reroutes `SetStatus` to a toast, so writing the menu
+-- status and raising the module's own toast are the same lane. `onAnswer` did
+-- both. It now raises its own only when the status did not land -- the menu shut
+-- -- or when the answer spans lines the single status line cannot hold, which is
+-- the rule `onCommandResult` beside it already kept.
+section('one staff action, one message')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the staff give', why == nil, why)
+
+	local inventory = why == nil and env.OPX.Modules.Get('inventory') or nil
+	local admin = why == nil and env.OPX.Modules.Get('admin') or nil
+
+	if type(inventory) == 'table' and type(admin) == 'table' then
+		local OPX = env.OPX
+
+		-- The bag comes from memory rather than a column: what is under test is
+		-- who gets told, not how a row is read.
+		local nextId = 100
+		inventory.Storage.Read = function(kind, owner, slots, maxWeight)
+			nextId = nextId + 1
+			return { id = nextId, kind = kind, owner = tostring(owner), slots = slots,
+				maxWeight = maxWeight, items = {} }
+		end
+		inventory.Storage.Write = function() return true end
+
+		local function playerOf(source, citizenId)
+			return { PlayerData = { citizenId = citizenId, source = source } }
+		end
+		local people = { [1] = playerOf(1, 'CIT-0001'), [2] = playerOf(2, 'CIT-0002') }
+		local character = {
+			GetPlayer = function(source) return people[source] end,
+			GetPlayerByCitizenId = function(citizenId)
+				for _, person in pairs(people) do
+					if person.PlayerData.citizenId == citizenId then return person end
+				end
+				return nil
+			end,
+			GetCharacter = function() return OPX.Result.Err('character.notFound') end,
+		}
+		inventory.Contracts.character = character
+		admin.Contracts.character = character
+
+		env.CreateThread(function() inventory.Players.Attach(1) end)
+		env.CreateThread(function() inventory.Players.Attach(2) end)
+		control.Pump(30)
+		control.Admit(1, 'user-1')
+		control.Admit(2, 'user-2')
+		check('both staff and player hold a character',
+			inventory.Players.Citizen(1) ~= nil and inventory.Players.Citizen(2) ~= nil)
+
+		-- Everything either of them could be told, counted per player: the answer
+		-- to the command rides this module's own event, the inbound notice rides
+		-- the platform's notification package, and a fault in either half shows up
+		-- as a number that is not one.
+		local told = {}
+		local function countFor(playerId)
+			return (told[playerId] or {}).answers or 0, (told[playerId] or {}).notices or 0
+		end
+		local function bump(playerId, field)
+			playerId = tonumber(playerId) or 0
+			told[playerId] = told[playerId] or { answers = 0, notices = 0 }
+			told[playerId][field] = told[playerId][field] + 1
+		end
+
+		local realTrigger = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, source, ...)
+			if name == admin.Event.ANSWER then bump(source, 'answers') end
+			return realTrigger(name, source, ...)
+		end
+		local realNotify = OPX.Notify
+		OPX.Notify = function(source, message, kind, durationMs)
+			bump(source, 'notices')
+			return realNotify(source, message, kind, durationMs)
+		end
+
+		local give = control.commands['opx.admin.inventory.give']
+		check('the staff give command is registered', type(give) == 'table')
+
+		local function run(source, target)
+			told = {}
+			local ran, failure = pcall(give.run, source,
+				{ target, 'bandage', '1' },
+				('opx.admin.inventory.give %s bandage 1'):format(tostring(target)))
+			control.Pump(30)
+			return ran, failure
+		end
+
+		if type(give) == 'table' then
+			-- ── to somebody else ──
+			local ran, failure = run(1, '2')
+			check('a staff give to another player runs', ran, failure)
+			local staffAnswers, staffNotices = countFor(1)
+			local heldAnswers, heldNotices = countFor(2)
+			check('the giver is answered exactly once', staffAnswers == 1,
+				('%d answers'):format(staffAnswers))
+			check('and is not also told somebody gave them something',
+				staffNotices == 0, ('%d notices'):format(staffNotices))
+			check('the player is told exactly once', heldNotices == 1,
+				('%d notices'):format(heldNotices))
+			check('and is not sent the command answer as well', heldAnswers == 0,
+				('%d answers'):format(heldAnswers))
+
+			-- ── to themselves ──
+			-- One message in total. The `me` spelling, their own player id and
+			-- their own citizen id are three doors into the same place, and the
+			-- guard has to hold on all three.
+			for _, spelling in ipairs({ 'me', '1', 'CIT-0001' }) do
+				local selfRan, selfFailure = run(1, spelling)
+				check(('a staff give to self by %q runs'):format(spelling), selfRan, selfFailure)
+				local answers, notices = countFor(1)
+				check(('and produces exactly one message in total, not two'):format(spelling),
+					answers + notices == 1, ('%d answers, %d notices'):format(answers, notices))
+				check('the one message being the command answer', answers == 1,
+					('%d answers'):format(answers))
+			end
+
+			-- A SOURCE THAT ARRIVES AS A STRING is how a console and some host
+			-- paths hand one over -- see the section of that name above, and the
+			-- two functions in `core/server/answer.lua` it was written for.
+			local stringRan, stringFailure = run('1', 'me')
+			check('a staff give whose source arrived as a string runs', stringRan, stringFailure)
+			local answers, notices = countFor(1)
+			check('and still says one thing, not two', answers + notices == 1,
+				('%d answers, %d notices'):format(answers, notices))
+		end
+
+		-- THE SEAM ITSELF, asked directly, because no command can reach it with a
+		-- string today: `Server.Command` normalises the source before a handler
+		-- sees one, so the whole-command check above cannot tell a comparison that
+		-- normalises from one that does not. `'1'` is not `1` in Lua, and the day a
+		-- caller arrives that is not a command -- a net handler, the console -- an
+		-- un-normalised comparison sends the inbound notice to the very player it
+		-- exists to spare.
+		told = {}
+		check('an inbound notice is dropped when the target IS the actor',
+			admin.Server.Inform(1, 1, 'admin.toast.healed') == false)
+		check('and when the actor arrived as a string spelling of the same player',
+			admin.Server.Inform('1', 1, 'admin.toast.healed') == false)
+		check('and when the target did, too',
+			admin.Server.Inform(1, '1', 'admin.toast.healed') == false)
+		check('nothing was sent on any of the three', select(2, countFor(1)) == 0,
+			('%d notices'):format(select(2, countFor(1))))
+		check('while a real target is told', admin.Server.Inform(1, 2, 'admin.toast.healed') == true)
+		check('and nobody at all is not', admin.Server.Inform(1, nil, 'admin.toast.healed') == false)
+
+		env.TriggerClientEvent = realTrigger
+		OPX.Notify = realNotify
+	end
+end
+
+-- The client half of the same action: how many toasts one answer comes to.
+section('one staff answer, one toast')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the staff answer', why == nil, why)
+
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		local overlay = control.pages[1]
+		env.TriggerServerEvent = function() return true end
+
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = true, inventory = true })
+		control.Pump(10)
+
+		--- Runs the give the way the menu does and answers the toasts it drew.
+		local function toastsFor(menuOpen, message)
+			if menuOpen then admin.Menu.OpenAt('self') else admin.Menu.Close() end
+			control.Pump(10)
+			local mark = #overlay.sent
+			admin.Client.Execute({ 'opx.admin.inventory.give', 'me', 'bandage', '1' })
+			control.Pump(2)
+			control.netEvents[admin.Event.ANSWER]('opx.admin.inventory.give me bandage 1', true,
+				message, 'success')
+			control.Pump(6)
+			local drawn = {}
+			for index = mark + 1, #overlay.sent do
+				local sent = overlay.sent[index]
+				if sent.channel == 'opx:notify:show' then drawn[#drawn + 1] = sent.payload end
+			end
+			return drawn
+		end
+
+		local ANSWER_LINE = 'Put 1x Bandage in the bag of me [1].'
+
+		local open = toastsFor(true, ANSWER_LINE)
+		check('a staff give answered with the menu open raises ONE toast',
+			#open == 1, ('%d toasts'):format(#open))
+		check('and it carries the whole sentence',
+			open[1] ~= nil and open[1].message == ANSWER_LINE, open[1] and open[1].message)
+
+		-- The keybinds and the map pick both run commands with the menu shut, and
+		-- the status line only queues for a screen that is not there: dropping the
+		-- module's toast on this path would lose the answer altogether.
+		local shut = toastsFor(false, ANSWER_LINE)
+		check('with the menu shut the module still raises its own',
+			#shut == 1, ('%d toasts'):format(#shut))
+		check('titled, because nothing else says who is talking',
+			shut[1] ~= nil and shut[1].title == env.OPX.Locale.Text('admin.toast.title'),
+			shut[1] and tostring(shut[1].title))
+
+		-- The status lane is one truncated line. An answer that spans several is
+		-- unreadable there, which is why `onCommandResult` has always excepted it.
+		local long = toastsFor(true, 'line one\nline two')
+		local full = false
+		for _, payload in ipairs(long) do
+			if payload.message == 'line one\nline two' then full = true end
+		end
+		check('a multi-line answer is still raised in full', full,
+			('%d toasts'):format(#long))
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

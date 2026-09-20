@@ -1557,19 +1557,36 @@ end
 -- ── what another file calls ─────────────────────────────────────────────────
 
 --- Writes the line under the list, or keeps it for the next screen.
+---
+--- THE ANSWER SAYS WHETHER THE PLAYER CAN READ IT NOW, and it used to say
+--- nothing at all. `modules/menu` no longer draws a status line: `SetStatus` is
+--- rerouted to a TOAST, because a line under a list is a line nobody watches. So
+--- a caller that writes the status and then raises a toast of its own is putting
+--- the same sentence on screen twice, in the same lane -- which is exactly what
+--- the owner saw when they gave themselves an item as staff: one untitled toast
+--- from here and one titled STAFF from `Client.Notice`. A caller cannot avoid
+--- that without being told whether this call landed, so this answers.
+---
+--- Queued is NOT landed. With no menu open the line is kept for the next screen
+--- and the player sees nothing now, so the caller's own toast is the only thing
+--- that will say anything -- the keybinds and the map pick both run commands
+--- with the menu shut.
 -- @author dop42
 -- @param line string
 -- @param ok boolean
+-- @return boolean whether the line is on screen now
 function Menu.Status(line, ok)
-	if type(line) ~= 'string' then return end
+	if type(line) ~= 'string' then return false end
 	local one = line:match('^[^\n]*') or line
 	if #one > 116 then one = Text.Bytes(one, 113) .. '...' end
 	if handle == nil then
 		queuedStatus = { text = one, ok = ok }
-		return
+		return false
 	end
 	local contract = Client.Contract('menu')
-	if contract ~= nil then contract.SetStatus(handle, one, ok == false) end
+	if contract == nil then return false end
+	local wrote = contract.SetStatus(handle, one, ok == false)
+	return type(wrote) == 'table' and wrote.ok == true
 end
 
 -- The refresh topics that are read FOR somebody, and are dropped by the server

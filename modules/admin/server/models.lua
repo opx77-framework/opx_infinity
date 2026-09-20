@@ -26,7 +26,8 @@ local Server = M.Server
 local Peds = M.Peds
 local Command = M.Command
 
-local answer, refuse, audit, tell = Server.Answer, Server.Refuse, Server.Audit, Server.Tell
+local answer, refuse, audit = Server.Answer, Server.Refuse, Server.Audit
+local inform = Server.Inform
 
 M.Models = {}
 local Models = M.Models
@@ -143,15 +144,13 @@ local function setModel(source, raw, playerId, token, event)
 	local name = Server.LabelOf(playerId) or '?'
 	if off then
 		audit(source, event, true, playerId, 'off')
-		if playerId ~= source then tell(playerId, 'admin.toast.modelOff', nil, 'info') end
+		inform(source, playerId, 'admin.toast.modelOff', nil, 'info')
 		answer(source, raw, true, 'admin.done.modelOff', { id = playerId, name = name })
 		return
 	end
 
 	audit(source, event, true, playerId, entry.name)
-	if playerId ~= source then
-		tell(playerId, 'admin.toast.model', { label = entry.label }, 'info')
-	end
+	inform(source, playerId, 'admin.toast.model', { label = entry.label }, 'info')
 	answer(source, raw, true, 'admin.done.model',
 		{ id = playerId, name = name, label = entry.label, ped = entry.name })
 end

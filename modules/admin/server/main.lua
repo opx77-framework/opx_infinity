@@ -197,6 +197,40 @@ function Server.Tell(playerId, key, params, kind)
 		math.floor(OPX.Tune.Number('ADMIN_TOAST_MS', 1000)))
 end
 
+--- Raises the INBOUND notice -- "a staff member did this to you" -- on the
+--- target, and on nobody else. A staff member acting on themselves is told
+--- nothing: they already have the command's own answer, and a second line
+--- telling them what they just did is noise.
+---
+--- ONE DOOR, BECAUSE THERE WERE FOURTEEN. Every inbound notice in this module
+--- was written as `if playerId ~= source then tell(playerId, ...) end` at its own
+--- call site, fourteen times across six files, and the comparison is not part of
+--- the sentence -- it is part of what an inbound notice IS. `admin.player.kill`
+--- had already dropped it, so a staff member who killed themselves was told that
+--- "a staff member killed you"; the owner reported the same shape on the give,
+--- where giving themselves an item answered the command AND warned them that a
+--- staff member had put something in their bag.
+---
+--- The comparison is on NUMBERS on both sides. A source arrives as a string on
+--- some host paths -- see `core/server/answer.lua`, where four functions
+--- normalise and two had to be fixed for exactly that -- and `'1' ~= 1` is true
+--- in Lua, so an un-normalised comparison would let the notice through on the one
+--- door it exists to close.
+-- @author dop42
+-- @param source Source the staff member who acted
+-- @param playerId Source|nil the player it happened to, nil when nobody is there
+-- @param key string catalogue key
+-- @param params table|nil
+-- @param kind string|nil
+-- @return boolean whether the notice went out
+function Server.Inform(source, playerId, key, params, kind)
+	local target = tonumber(playerId)
+	if target == nil or target <= 0 then return false end
+	if target == (tonumber(source) or 0) then return false end
+	Server.Tell(target, key, params, kind)
+	return true
+end
+
 --- The Master-verified display name, cleaned for a log line or a row.
 -- @author dop42
 -- @param playerId Source
