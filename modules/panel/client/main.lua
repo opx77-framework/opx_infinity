@@ -55,7 +55,7 @@ local PATCHABLE = {
 	eyebrow = true, title = true, subtitle = true, intro = true, tabs = true, tab = true,
 	search = true, summary = true, actions = true, tools = true, selected = true,
 	status = true, busy = true, labels = true, loading = true, clearItems = true,
-	sliders = true, groups = true,
+	sliders = true, groups = true, tiles = true,
 }
 
 -- Fields only a spec may carry.
@@ -138,7 +138,16 @@ local function optionalText(value, maximum, field)
 	return text
 end
 
---- A list of buttons: id, label, and the primary and disabled flags.
+--- A list of buttons: id, label, an optional glyph, and the two flags.
+--
+-- THE GLYPH IS VALIDATED AND NOT PASSED THROUGH, exactly as `menu` does with a
+-- row icon, and for the reason `core/shared/glyphs.lua` writes down: a name the
+-- page has no path for is a promise Lua cannot keep -- the button validates,
+-- reaches the DOM, and draws `interact` or nothing, with nobody told. `OPX.Glyphs`
+-- is the one vocabulary and `tests/` holds it against what the page can actually
+-- draw, so refusing an unknown name here is refusing it against the page's own
+-- set. Refused rather than dropped: a caller who misspelt `arow` wants to hear
+-- about it now, not to wonder later why one button in four has no picture.
 local function buttons(value, maximum, field)
 	if value == nil or value == false then return {} end
 	if not isList(value, maximum) then return nil, 'invalid_' .. field end
@@ -150,8 +159,14 @@ local function buttons(value, maximum, field)
 		end
 		local label = clean(entry.label, 40)
 		if label == nil then return nil, 'invalid_' .. field end
+		local icon = entry.icon
+		if icon ~= nil then
+			if type(icon) ~= 'string' or not OPX.Glyphs[icon] then
+				return nil, 'invalid_' .. field
+			end
+		end
 		seen[entry.id] = true
-		out[index] = { id = entry.id, label = label,
+		out[index] = { id = entry.id, label = label, icon = icon,
 			primary = entry.primary == true, disabled = entry.disabled == true }
 	end
 	return out
@@ -223,6 +238,58 @@ local function sliders(value)
 	return out
 end
 
+-- How many tiles one window may carry, and it IS derived from the wire rather
+-- than chosen. A tile is one string under an array index, so it costs two nodes:
+-- sixty of them is 120 against the host's 1024, which leaves the rest of a spec
+-- -- twelve tabs, twelve sliders, three rows of buttons, every string -- the
+-- room `Open` says it has. It is also the page's bound: a grid the player
+-- scrolls is drawn whole, so a caller that answered one scroll with eight
+-- hundred boxes would put eight hundred elements on a surface that has to stay
+-- at frame rate while a body turns behind it.
+local MAX_TILES = 60
+
+--- One window of a category's pieces: which category, where it starts, the names.
+--
+-- WHY A WINDOW AND NOT A LIST, which is the same argument `sliders` makes one
+-- field up and the reason this is a third field rather than `items`. The fitting
+-- room's largest category is 677 records and the whole catalogue is about 1968;
+-- sending them as `items` is what the slider replaced, and it cost a parse, a
+-- chunking and a payload per hundred, with the player reaching one category of
+-- seven before the stream died. But a slider is a poor way to CHOOSE a garment:
+-- the player is looking for a jacket, not for position 412.
+--
+-- So the page draws a scrolling grid of boxes and asks for the next window when
+-- it reaches the bottom of what it holds. The caller keeps its list exactly as
+-- the slider left it; what crosses is the slice the player can actually see,
+-- and the index a box carries is `from` plus its offset -- which is the same
+-- index a slider thumb would have reported, so a press comes back through
+-- `slide` and nothing new decides anything.
+--
+-- `from` IS 1-BASED AND 0 IS NOT A TILE. Index 0 on a slider means "nothing on
+-- this slot", and the page draws that as a box of its own that is always there
+-- rather than as the first entry of a window that may have scrolled away.
+local function tiles(value)
+	if value == nil or value == false then return false end
+	if type(value) ~= 'table' then return nil, 'invalid_tiles' end
+	if not validId(value.slot, MAX_ID) then return nil, 'invalid_tiles' end
+	local from = tonumber(value.from)
+	if from == nil or from % 1 ~= 0 or from < 1 or from > MAX_STEPS then
+		return nil, 'invalid_tiles'
+	end
+	local entries = value.entries
+	if not isList(entries, MAX_TILES) then return nil, 'invalid_tiles' end
+	local out = {}
+	for index = 1, #entries do
+		-- A RECORD NAME AND NOT A LABEL, and the page needs it whole: it is both
+		-- what is written under the box and what the picture is looked up by, so
+		-- trimming it to a display length would break the second use silently.
+		local name = clean(entries[index], 120)
+		if name == nil then return nil, 'invalid_tiles' end
+		out[index] = name
+	end
+	return { slot = value.slot, from = from, entries = out }
+end
+
 --- The summary plate: a label, a value and one optional button.
 local function summary(value)
 	if value == nil or value == false then return false end
@@ -273,6 +340,7 @@ local function labels(value)
 		empty = locale('panel.empty'),
 		loading = locale('panel.loading'),
 		search = locale('panel.search'),
+		nothing = locale('panel.nothing'),
 		confirmYes = locale('panel.confirmYes'),
 		confirmNo = locale('panel.confirmNo'),
 	}
@@ -297,6 +365,7 @@ local PARSERS = {
 	intro = function(value) return optionalText(value, 240, 'intro') end,
 	tabs = tabs,
 	sliders = sliders,
+	tiles = tiles,
 	tab = function(value)
 		if value == nil or value == false then return nil end
 		if not validId(value, MAX_ID) then return nil, 'invalid_tab' end
@@ -586,11 +655,13 @@ local function Open(spec)
 
 	-- THE OPEN IS NOT COUNTED, AND THAT IS AN ARGUMENT RATHER THAN AN OVERSIGHT.
 	-- `buildView` bounds every field it accepts -- twelve tabs, twelve sliders,
-	-- four actions, eight tools, sixty-four choices, six labels, and every string
+	-- four actions, eight tools, sixty-four choices, seven labels, and every string
 	-- cut to a character count -- which puts the largest spec this module will
 	-- build at something under five hundred value nodes. A slider is six fields
 	-- and costs thirteen nodes, so the seven a fitting room sends come to under a
-	-- hundred. A check here could not fire, and
+	-- hundred, and a `tiles` window is sixty strings under sixty indices, which is
+	-- the largest single field a spec can carry and still only 120. A check here
+	-- could not fire, and
 	-- a refusal nothing can reach is a branch a reader has to disprove. Only
 	-- `panel:items` is unbounded by its parser, and that is where the counting
 	-- is: see `push` and `chunkItems`.
@@ -859,6 +930,28 @@ local function onSlide(payload)
 	end
 end
 
+--- The grid asking for the window that follows the one it holds.
+--
+-- CHECKED AGAINST THE TRACK, exactly as a slide is, because a tile window and a
+-- slider thumb point into the same list: the caller declared how long it is, so
+-- a request that starts past the end is a page that has lost count and is
+-- dropped rather than forwarded. The caller is handed a whole number inside the
+-- range it named and nothing else -- how many it answers with is its own bound,
+-- not the page's, which is why there is no `count` on this message.
+local function onTiles(payload)
+	local panel = fromPage(payload)
+	if panel == nil then return end
+	if not validId(payload.slot, MAX_ID) then return end
+	for _, slider in ipairs(panel.view.sliders) do
+		if slider.id == payload.slot then
+			local from = tonumber(payload.from)
+			if from == nil or from % 1 ~= 0 or from < 1 or from > slider.count then return end
+			raise(panel, 'tiles', { slot = slider.id, from = from })
+			return
+		end
+	end
+end
+
 --- A button the player pressed.
 local function onAction(payload)
 	local panel = fromPage(payload)
@@ -920,6 +1013,7 @@ wire = function()
 	OPX.UI.On(SURFACE, 'panel:leave', onLeave)
 	OPX.UI.On(SURFACE, 'panel:tab', onTab)
 	OPX.UI.On(SURFACE, 'panel:slide', onSlide)
+	OPX.UI.On(SURFACE, 'panel:tiles', onTiles)
 	OPX.UI.On(SURFACE, 'panel:action', onAction)
 	OPX.UI.On(SURFACE, 'panel:answer', onAnswer)
 	OPX.UI.On(SURFACE, 'panel:dismiss', onDismiss)

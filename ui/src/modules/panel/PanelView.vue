@@ -6,6 +6,8 @@ import { acquireFocus } from '@/bridge/focus'
 import { list, num, table, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
+import { GLYPHS } from '@/modules/target/glyphs'
+import { imageFromFile, monogram } from '@/modules/inventory/format'
 
 /** A tab as this surface draws it. It was imported from `OpTabs`; the component
     is gone and the shape is three fields, so it lives where it is used. */
@@ -61,22 +63,42 @@ interface Tab {
  * nothing about where they are, and clicking a row is still the precise way to land on
  * one. `columns` keeps meaning what it meant: how many of that window sit abreast.
  *
- * ── THE SLOT BAR, WHICH IS THE DIAL WITHOUT THE LIST ────────────────────────────────
+ * ── THE RAIL, WHICH IS WHAT A `sliders` CALLER GETS ─────────────────────────────────
  *
- * A caller that sends `sliders` instead of items gets a different screen: a row of
- * tracks along the bottom, one per slot, all of them on screen at once. Everything
- * above -- the column, the tabs, the window, the search plate -- is not drawn, because
- * there is nothing in it. The caller kept its lists; what crossed is a COUNT per
- * slider and the one label under the thumb.
+ * A caller that sends `sliders` instead of items gets a different screen: the whole
+ * left side of the surface, floor to ceiling, holding the view buttons, the other
+ * screens reachable from this one, the categories, a scrolling grid of the open
+ * category, and one track. The items column, the search plate and the paged window are
+ * not drawn, because that caller kept its lists.
  *
- * WHY THERE IS NO TAB STRIP AND NO ENCLOSURE. Seven sliders are seven controls and a
- * tab strip exists to show one of seven things at a time, so the strip has nothing
- * left to switch between. And `ui/README.md` rule 2 settles the frame: a control is a
- * closed box, and what is NOT a control does not get one. The bar is not a control --
- * it is a row of them -- so the `.op-bay` goes, and rule 9 takes the interlace with it,
- * since the interlace belongs to what is enclosed. What holds the row together is the
- * row itself, a rule above it, and the cut corner each control carries. Rule 5 keeps it
- * flat: a centred surface takes no tilt.
+ * WHAT IT REPLACED, AND WHY TWICE OVER. It was a bar of tracks along the bottom of the
+ * screen. The owner, on the fitting room: "je le veux sur la gauche, plus en bas au
+ * centre car cela cache le joueur", and then "tu peux prendre tout le cote gauche de
+ * l'ecran". And on the picker: "mettre des box avec l'image du vetement uniquement, de
+ * sorte a rendre le choix plus facile -- donc il scroll pour descendre et voir plus."
+ * A grid the player scrolls needs height, and the bottom of the screen is where the
+ * legs are.
+ *
+ * SEVEN TRACKS BECAME SEVEN TABS AND ONE TRACK. A tab strip exists to show one of
+ * seven things at a time, which is exactly what a category picker is; a player
+ * dressing a character is on one slot at a time anyway, and the mark on a closed tab
+ * says whether that slot has anything on it. And `ui/README.md` rule 2 now points the
+ * other way from the bar it replaced: a row of controls took no enclosure, but a
+ * column that is the screen's whole left edge is a surface, so it keeps the `.op-bay`,
+ * the `.op-arete` leading edge and the left hinge the items column has always had.
+ *
+ * THE GRID IS A WINDOW, NOT A LIST. The largest clothing category is 677 records and
+ * the whole catalogue about 1968; streaming them as `items` is the defect the slider
+ * was introduced to delete, and a grid that asked for all of them again would put it
+ * straight back. The page holds the slice it has been sent and asks for the next one
+ * on the way down. A box carries the index it would have had on the track, so a click
+ * is the same `slide` a thumb sends and nothing new decides anything. See `Tiles`.
+ *
+ * AND THE TRACK STAYS, for the open category only. It is not leftover: sixty boxes at
+ * a time means position 412 is seven windows of scrolling, while the track and the
+ * number box beside it get there in one gesture -- and it is the control for a
+ * category whose boxes are all monograms, which, until the garment pictures are
+ * shipped, is every category.
  *
  * THE THUMB IS THE PAGE'S, THE INDEX IS THE CALLER'S. `@input` previews through a
  * debounce and `@change` commits, exactly as the dial does -- but a drag outruns the
@@ -90,6 +112,10 @@ type Handle = string | number
 interface Button {
   id: string
   label: string
+  /** A name out of `OPX.Glyphs`, or '' for a button that is words alone. Lua validates
+      it against the same set, so an unknown name here is a bug on one side or the
+      other and draws nothing rather than reaching into `GLYPHS` for a missing key. */
+  icon: string
   primary: boolean
   disabled: boolean
 }
@@ -119,6 +145,25 @@ interface Slider {
   index: number
   value: string
   disabled: boolean
+}
+
+/**
+ * THE PICKER GRID, one category's worth of boxes.
+ *
+ * A caller that sends `sliders` is offering ranges it keeps the contents of; `tiles`
+ * is how it lends the page the SLICE of one of those ranges the player can see. The
+ * page never learns the whole list -- the fitting room's largest category is 677
+ * records -- it holds what it has been sent, draws a box per entry, and asks for the
+ * next window when the scroll reaches the bottom of what it holds.
+ *
+ * `slot` is the slider the window belongs to, so a window that arrives after the
+ * player has moved on is filed against the category it names and dropped. `entries`
+ * is record names in index order starting at 1: the box at offset `n` is position
+ * `n + 1` on that slider's track, which is what a press reports.
+ */
+interface Tiles {
+  slot: string
+  entries: string[]
 }
 
 /** The confirm step. Parsed on arrival rather than kept as a raw payload, so the
@@ -171,6 +216,17 @@ const ROW_GAP = 4
 const HOVER_MS = 110
 const LEAVE_MS = 160
 
+/* How close to the end of the grid the scroll gets before the next window is asked
+   for, in pixels. A little over one row of boxes: the window is in flight while the
+   player is still reading the row above the last one, so a steady scroll never stops
+   at a bottom that has not filled in yet. */
+const TILE_LOOKAHEAD = 160
+
+/* How long a window request waits before the grid is free to ask again. Long
+   enough that an ordinary answer lands first, short enough that a dropped one
+   costs a pause rather than the rest of the category. */
+const TILE_WAIT_MS = 2000
+
 function emptyView(): PanelView {
   return {
     eyebrow: '',
@@ -213,10 +269,27 @@ const thumb = reactive<Record<string, number>>({})
 const gridEl = ref<HTMLElement | null>(null)
 const gridHeight = ref(0)
 
+/** The window of the open category the page is holding. See `Tiles`. */
+const tiles = reactive<Tiles>({ slot: '', entries: [] })
+
+/** Record names whose picture would not load, so the box draws a monogram from then
+    on for every box holding that record rather than retrying the image per box. It is
+    the same bookkeeping `InventorySlot` does, kept here because this page has no
+    catalogue and no parent to report a broken picture up to. */
+const broken = reactive<Record<string, true>>({})
+
+/** True between asking for the next window and it arriving. A grid the player flicks
+    fires a scroll event per frame, and without this every one of them would ask for
+    the same window again -- sixty names a frame across the seam for one gesture. */
+const fetching = ref(false)
+
+const tilesEl = ref<HTMLElement | null>(null)
+
 let hovered: string | null = null
 let hoverTimer: ReturnType<typeof setTimeout> | undefined
 let leaveTimer: ReturnType<typeof setTimeout> | undefined
 let slideTimer: ReturnType<typeof setTimeout> | undefined
+let tilesTimer: ReturnType<typeof setTimeout> | undefined
 /** The slot whose thumb is under the pointer, or null. */
 let dragging: string | null = null
 let release: (() => void) | undefined
@@ -242,12 +315,21 @@ function label(key: string, vars?: Record<string, number | string>): string {
 }
 
 function readButtons(value: unknown): Button[] {
-  return list<Payload>(value).map((entry) => ({
-    id: text(entry.id),
-    label: text(entry.label),
-    primary: entry.primary === true,
-    disabled: entry.disabled === true
-  }))
+  return list<Payload>(value).map((entry) => {
+    const icon = text(entry.icon)
+    return {
+      id: text(entry.id),
+      label: text(entry.label),
+      // CHECKED AGAINST THE PATHS THIS FILE CAN ACTUALLY DRAW. Lua validates the
+      // same name against `OPX.Glyphs`, which is generated from this very table --
+      // but the two files cannot import each other, so a name that got past Lua and
+      // has no path here is dropped rather than turned into an empty `<svg>` with
+      // no `<path>` in it, which is a blank box the player is invited to click.
+      icon: icon !== '' && Object.prototype.hasOwnProperty.call(GLYPHS, icon) ? icon : '',
+      primary: entry.primary === true,
+      disabled: entry.disabled === true
+    }
+  })
 }
 
 function readSummary(value: unknown): Summary | null {
@@ -323,8 +405,41 @@ function apply(payload: Payload): void {
     for (const key of Object.keys(incoming)) next[key] = text(incoming[key], key)
     view.labels = next
   }
+  if (given('tiles')) applyTiles(payload.tiles)
   if (given('hover')) view.hover = payload.hover === true
   if (given('columns')) view.columns = num(payload.columns) === 1 ? 1 : 2
+}
+
+/**
+ * One window of the grid, replacing what is held or extending it.
+ *
+ * THE THREE CASES, AND THE THIRD IS THE ONE THAT MATTERS. A window for another
+ * category, or one starting at 1, REPLACES -- that is a new grid. A window starting
+ * exactly where the held one ends EXTENDS it. Anything else is dropped: a window that
+ * skipped ahead would leave a hole in the middle of the grid that nothing would ever
+ * fill, and every box after the hole would carry an index that is off by the size of
+ * it -- which is a player clicking a jacket and being dressed in a different one.
+ */
+function applyTiles(value: unknown): void {
+  if (tilesTimer !== undefined) clearTimeout(tilesTimer)
+  tilesTimer = undefined
+  fetching.value = false
+  const source = table(value)
+  const slot = text(source.slot)
+  if (slot === '') {
+    tiles.slot = ''
+    tiles.entries = []
+    return
+  }
+  const entries = list<unknown>(source.entries).map((entry) => text(entry))
+  const from = num(source.from)
+  if (slot !== tiles.slot || from === 1) {
+    tiles.slot = slot
+    tiles.entries = entries
+    return
+  }
+  if (from !== tiles.entries.length + 1) return
+  tiles.entries = tiles.entries.concat(entries)
 }
 
 /** The tab actually drawn: the one Lua named if it still exists, else the first. */
@@ -412,9 +527,11 @@ function clearHoverTimers(): void {
   if (hoverTimer !== undefined) clearTimeout(hoverTimer)
   if (leaveTimer !== undefined) clearTimeout(leaveTimer)
   if (slideTimer !== undefined) clearTimeout(slideTimer)
+  if (tilesTimer !== undefined) clearTimeout(tilesTimer)
   hoverTimer = undefined
   leaveTimer = undefined
   slideTimer = undefined
+  tilesTimer = undefined
 }
 
 /** Debounced both ways: a pointer crossing a grid must not raise an event per row, and
@@ -468,6 +585,13 @@ function blank(): void {
   items.value = []
   cursor.value = 0
   query.value = ''
+  tiles.slot = ''
+  tiles.entries = []
+  fetching.value = false
+  // The broken-picture set goes with the panel and not with the session: a file that
+  // was missing when the last room opened may have been shipped since, and a page that
+  // never forgot would draw monograms for the rest of the client's life.
+  for (const key of Object.keys(broken)) delete broken[key]
   closeDialog()
   Object.assign(view, emptyView())
 }
@@ -586,6 +710,14 @@ function chooseTab(id: string): void {
   query.value = ''
   clearHoverTimers()
   hovered = null
+  // THE OLD GRID GOES AT ONCE. It belongs to the category the player just left, and
+  // leaving it up until the new window lands would show them a screen of the wrong
+  // garments with the new category's name over it -- and a click on one of those boxes
+  // would carry an index into a list that is no longer the open one.
+  tiles.slot = ''
+  tiles.entries = []
+  fetching.value = false
+  if (tilesEl.value) tilesEl.value.scrollTop = 0
   emit('opx:panel:tab', { handle: handle.value, tab: id })
 }
 
@@ -624,6 +756,85 @@ function settle(): void {
 function standing(slider: Slider): number {
   const held = thumb[slider.id]
   return held === undefined ? Math.min(slider.index, slider.count) : Math.min(held, slider.count)
+}
+
+/* ── the picker grid ────────────────────────────────────────────────────────── */
+
+/** The slider the open category belongs to, or null when there is no such slot. */
+const openSlider = computed<Slider | null>(
+  () => view.sliders.find((slider) => slider.id === currentTab.value) ?? null
+)
+
+/** The boxes to draw, each carrying the track position a press reports. */
+const boxes = computed(() => {
+  if (tiles.slot !== currentTab.value) return []
+  return tiles.entries.map((name, offset) => ({ index: offset + 1, name }))
+})
+
+/** Whether the category holds more than the page has been sent. */
+const moreToLoad = computed(() => {
+  const slider = openSlider.value
+  if (slider === null || tiles.slot !== slider.id) return false
+  return tiles.entries.length < slider.count
+})
+
+/** The garment's picture. `imageFromFile` is the one place the `images/` base lives --
+    `ui/public/images` is the source and `web/images` the build's copy of it -- so this
+    borrows it rather than writing a second copy of the path. The garments have a
+    folder of their own under it: a record name is not an item name and the two sets
+    must not be able to collide. */
+function art(name: string): string {
+  return imageFromFile(name, `clothing/${name}.png`)
+}
+
+/** A picture that will not load, recorded once so every box holding that record draws
+    the monogram from then on instead of asking for the file again. Most records have
+    no picture today, which is exactly why this is the ordinary path and not the sad
+    one: the grid works with zero images and improves on its own as images land. */
+function artBroken(name: string): void {
+  broken[name] = true
+}
+
+/** Where the grid has got to. `Math.round` because a fractional `scrollTop` on a
+    zoomed surface never reaches the exact bottom, and a threshold of one box's height
+    asks for the next window slightly before the player runs out of grid. */
+function onTilesScroll(event: Event): void {
+  const el = event.target as HTMLElement
+  if (el.scrollTop + el.clientHeight < el.scrollHeight - TILE_LOOKAHEAD) return
+  askForTiles()
+}
+
+function askForTiles(): void {
+  if (fetching.value || !moreToLoad.value || handle.value === null) return
+  fetching.value = true
+  // A REQUEST THE CALLER DOES NOT ANSWER MUST NOT END THE SCROLLING. Every
+  // message across this seam may be dropped -- by a stale handle, by a category
+  // that changed under the request, by a caller that simply decided not to --
+  // and a flag that is only ever cleared by an answer would leave the grid stuck
+  // at the sixtieth box for the rest of the room, with nothing on screen saying
+  // why. The next scroll event after the window asks again.
+  if (tilesTimer !== undefined) clearTimeout(tilesTimer)
+  tilesTimer = setTimeout(() => {
+    tilesTimer = undefined
+    fetching.value = false
+  }, TILE_WAIT_MS)
+  emit('opx:panel:tiles',
+    { handle: handle.value, slot: tiles.slot, from: tiles.entries.length + 1 })
+}
+
+/** A box clicked: the same choice the thumb makes when it is let go on that position,
+    reported through the same message. The grid is a way to POINT at an index, not a
+    second way to choose -- everything about what an index means is still Lua's. */
+function pickTile(index: number): void {
+  const slider = openSlider.value
+  if (slider === null || slider.disabled || view.busy) return
+  if (index < 0 || index > slider.count) return
+  thumb[slider.id] = index
+  if (slideTimer !== undefined) clearTimeout(slideTimer)
+  slideTimer = undefined
+  dragging = null
+  if (handle.value === null) return
+  emit('opx:panel:slide', { handle: handle.value, id: slider.id, index, commit: true })
 }
 
 /** One slot's thumb moved: preview only, and debounced through the same gate the
@@ -870,11 +1081,11 @@ function filter(value: string): void {
       </div>
     </section>
 
-    <!-- THE CAMERA, BOTTOM RIGHT, IN ONE ROW. It is the only cluster on this
-         screen that does not change what the character wears, so it is the only
-         one that belongs away from the column -- and the far corner is the one
-         place a control can sit without standing in front of the body. Hinged on
-         the right edge, so `.is-end` mirrors the lit edge to match. -->
+    <!-- THE TOOL CLUSTER FOR AN ITEMS CALLER, BOTTOM RIGHT. The fitting room no
+         longer comes through here -- its view buttons are the row at the top of
+         the rail below -- but `tools` is a contract field and a second caller may
+         still send one, so the cluster stays where it was. It draws the same
+         glyph the rail does when a button carries one. -->
     <div v-if="view.tools.length && !view.sliders.length"
          class="tools op-plane op-anchor-right op-ink">
       <div class="tool-row op-bay op-arete is-end" data-augmented-ui="tr-clip bl-clip border">
@@ -888,54 +1099,106 @@ function filter(value: string): void {
           data-augmented-ui="tr-clip border"
           @click="press(button)"
         >
+          <svg v-if="button.icon" class="row-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              v-for="(d, n) in GLYPHS[button.icon]"
+              :key="n"
+              :d="d"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
           <span class="row-label op-label op-truncate">{{ button.label }}</span>
         </button>
       </div>
     </div>
 
     <!-- =====================================================================
-         THE SLOT BAR. One control per slot, all of them along the bottom, and
-         nothing above them: the body is what the player is looking at and this
-         screen exists to stay out of its way.
+         THE RAIL. The whole left side of the screen, floor to ceiling, for a
+         caller that sent sliders.
 
-         THE DOCK IS A STACK, NOT A CORNER. The camera cluster used to sit
-         bottom-right on its own, which is a place a centred bar reaches on a
-         narrow screen -- so it is lifted into the same column, right-aligned
-         above the bar. It keeps its own plane and its own -7deg hinge; the bar
-         under it is centred and therefore takes neither.
+         WHY THE LEFT SIDE AND NOT THE BOTTOM, which is where this was. The
+         owner: "pour le menu de custom perso des vetements je le veux sur la
+         gauche, plus en bas au centre car cela cache le joueur" -- and then,
+         asked how much room it could have, "tu peux prendre tout le cote gauche
+         de l'ecran". A bar along the bottom is the one place that cannot grow:
+         a grid of garments needs HEIGHT to scroll in, and the bottom of the
+         screen is where the body's legs are.
+
+         AND THIS IS ALSO THE CAMERA DECISION, not a separate one. The obvious
+         other half of "the panel takes the left" is "so move the character to
+         the right", and on this build that cannot be done: `Open77.camera.detach`
+         places the camera at an offset in the body's own space and frames the
+         body from there, `Open77.camera.orbit` is a yaw inside the third-person
+         rig, and neither takes an aim point -- the only native that would is the
+         `camera.script` rig, which `config/appearance.lua` deliberately refuses
+         to take a permission for in a clothing shop. A centred subject is what
+         the fitting room gets. So the framing is settled HERE instead: the rail
+         is bounded at `38vw` rather than half the screen, which on a 16:9 frame
+         stops short of where a whole-body shot at 2.6 m begins. Widening this
+         past the shot is the same bug as putting the panel over the body, in a
+         different file.
          ================================================================== -->
-    <div v-if="view.sliders.length" class="dock">
-      <div v-if="view.tools.length" class="tools op-plane op-anchor-right op-ink">
-        <div class="tool-row op-bay op-arete is-end" data-augmented-ui="tr-clip bl-clip border">
-          <button
-            v-for="button in view.tools"
-            :key="button.id"
-            type="button"
-            class="row button tool op-frame"
-            :class="{ 'is-off': button.disabled || view.busy }"
-            :disabled="button.disabled || view.busy"
-            data-augmented-ui="tr-clip border"
-            @click="press(button)"
-          >
-            <span class="row-label op-label op-truncate">{{ button.label }}</span>
-          </button>
-        </div>
-      </div>
+    <section v-if="view.sliders.length" class="rail op-plane op-anchor-left op-ink">
+      <div class="rail-bay op-bay op-arete" data-augmented-ui="tr-clip bl-clip border">
+        <div class="rail-inner">
+          <!-- THE VIEW BUTTONS, AT THE TOP AND ABOVE THE CATEGORIES, which is
+               where the owner put them: "refait completement les buttons pour
+               changer la view du perso, front etc... place les en forme de
+               buttons avec icon au dessus des categories."
 
-      <!-- NO ENCLOSURE AND NO INTERLACE. `ui/README.md` rule 2: a control is a
-           closed box and what is not a control does not get a frame. This bar
-           is a row OF controls, not one, so the `.op-bay` goes -- and rule 9
-           takes the interlace with it, because the interlace belongs to what is
-           enclosed and a striped rectangle with nothing round it is exactly the
-           floating rectangle it exists to prevent. The rule above the row and
-           the cut corner on every slot are what hold it together. -->
-      <section class="bar op-plane op-ink">
-        <div class="bar-inner">
-          <!-- THE CATEGORY STRIP. It sits above the slot bar and not beside the
-               tools, because it is not a tool: the tools turn the body round and
-               these go somewhere else inside the same screen. Same button, same
-               chamfer -- a caller that can build a `tools` row can build this
-               one, and a player who has learned one row has learned both. -->
+               WHAT WAS BROKEN. They were four word-buttons in a `.tool-row`
+               pinned to the bottom-right corner of the screen, laid out by
+               `.tool { min-width: 78px }` inside a cluster that had its own
+               plane, its own hinge and an `.is-end` mirror -- three coordinate
+               systems for four buttons, in the one corner a centred bar reaches
+               on a narrow screen. Two of the four were not even translated: the
+               literal strings `left` and `right` went to the page in both
+               languages. This is a rebuild and not a patch: one row, at the top
+               of the one column, each button a square with the glyph over the
+               word, and nothing positioned absolutely. -->
+          <div v-if="view.tools.length" class="views">
+            <button
+              v-for="button in view.tools"
+              :key="button.id"
+              type="button"
+              class="view-btn op-frame"
+              :class="{ 'is-off': button.disabled || view.busy }"
+              :disabled="button.disabled || view.busy"
+              data-augmented-ui="tr-clip border"
+              :title="button.label"
+              @click="press(button)"
+            >
+              <!-- 24x24, stroke only, `currentColor`: the glyph contract. No
+                   `filter` anywhere near it -- see `.op-lift`. -->
+              <svg
+                v-if="button.icon"
+                class="view-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  v-for="(d, n) in GLYPHS[button.icon]"
+                  :key="n"
+                  :d="d"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <span class="view-label op-eyebrow op-truncate">{{ button.label }}</span>
+            </button>
+          </div>
+
+          <!-- THE OTHER SCREENS IN HERE: saved outfits, share codes, a shop's
+               ready-made looks. Under the view buttons because that is the order
+               the owner named them in, and because these LEAVE this screen while
+               the row above only turns the body round. -->
           <div v-if="view.groups.length" class="cats">
             <button
               v-for="button in view.groups"
@@ -951,83 +1214,162 @@ function filter(value: string): void {
             </button>
           </div>
 
+          <!-- THE CATEGORIES. One slot open at a time, which is the change: seven
+               tracks stacked down a bar is seven instruments to read, and a
+               player dressing a character is doing one slot at a time anyway. The
+               dot says the slot has something on it, so the six that are closed
+               still state the one fact about themselves that matters. -->
+          <nav v-if="view.tabs.length" class="tabs">
+            <button
+              v-for="tab in view.tabs"
+              :key="tab.id"
+              type="button"
+              class="tab op-frame"
+              :class="{ 'is-on': tab.id === currentTab, 'is-off': tab.disabled }"
+              :disabled="tab.disabled"
+              data-augmented-ui="tr-clip border"
+              @click="chooseTab(tab.id)"
+            >
+              {{ tab.label }}
+              <span v-if="tab.marked" class="mark" aria-hidden="true">&bull;</span>
+            </button>
+          </nav>
+
           <p v-if="view.intro" class="lead op-copy">{{ view.intro }}</p>
           <p v-if="view.status" class="status op-copy" :class="view.status.kind">
             {{ view.status.text }}
           </p>
 
-          <div class="slots">
-            <div
-              v-for="slider in view.sliders"
-              :key="slider.id"
-              class="slot op-frame"
+          <!-- =============================================================
+               THE PICKER. "mettre des box avec l'image du vetement uniquement,
+               de sorte a rendre le choix plus facile -- donc il scroll pour
+               descendre et voir plus."
+
+               A BOX IS A PICTURE AND A NAME UNDER IT, and the name is not
+               decoration: almost no garment has a picture shipped today, so the
+               ordinary box is a monogram over the record's own name. That is the
+               same fallback `InventorySlot` takes for an item whose file is
+               missing, and it is what lets this ship before a single image
+               exists and improve on its own as they land.
+
+               IT IS NOT THE WHOLE CATEGORY. The page holds the window it has
+               been sent and asks for the next one on the way down; see `Tiles`.
+               ========================================================== -->
+          <div
+            v-if="openSlider"
+            ref="tilesEl"
+            class="tiles"
+            :class="{ busy: view.busy }"
+            @scroll.passive="onTilesScroll"
+          >
+            <!-- NOTHING IS A BOX LIKE ANY OTHER, and it is first and always
+                 there. Index 0 on the track is how a slot is emptied, and a
+                 player looking at a wall of jackets has nowhere else to say "none
+                 of them" -- the track can do it, but the track is not what they
+                 are looking at. -->
+            <button
+              type="button"
+              class="tile none op-frame"
               :class="{
-                'is-on': standing(slider) > 0 && !slider.disabled && !view.busy,
-                'is-off': slider.disabled || view.busy || slider.count === 0
+                'is-on': standing(openSlider) === 0,
+                'is-off': openSlider.disabled || view.busy
               }"
+              :disabled="openSlider.disabled || view.busy"
               data-augmented-ui="tr-clip border"
+              @click="pickTile(0)"
             >
-              <!-- NAME, TRACK, LABEL, READOUT -- in that order in the DOM and not
-                   just in the grid. The four columns are laid out by the grid, so
-                   the source order is free to be the one that reads correctly to
-                   a keyboard and a screen reader: the slot's name, then the
-                   control it names, then what the control is currently standing
-                   on. Reordering with `order` instead would leave the tab order
-                   walking the line backwards. -->
-              <span class="slot-name op-eyebrow op-truncate">{{ slider.label }}</span>
-              <input
-                class="slot-track"
-                type="range"
-                min="0"
-                :max="slider.count"
-                step="1"
-                :value="standing(slider)"
-                :disabled="slider.disabled || view.busy || slider.count === 0"
-                :aria-label="slider.label"
-                :aria-valuetext="slider.value"
-                @input="scrubSlot(slider, ($event.target as HTMLInputElement).value)"
-                @change="settleSlot(slider)"
-              >
-              <!-- AFTER THE TRACK AND NOT UNDER THE NAME. The label is what the
-                   thumb is standing on, so it belongs next to the thumb's own
-                   instrument; `.op-truncate` because a record name is longer than
-                   any column that leaves room for a usable track. -->
-              <span class="slot-value op-value op-truncate">{{ slider.value }}</span>
-              <!-- THE READOUT IS NOW A WAY IN. It was required technical filler
-                   under rule 8 -- where the thumb stands, in a range the player
-                   cannot otherwise see the size of -- and it still states that.
-                   But a track is a poor instrument for "piece 47 of 300": a
-                   pointer drag overshoots and an arrow key takes forty-seven
-                   presses, so the number you are already being shown is the
-                   number you can type.
-                   A CONTROL IS A CLOSED BOX (rule 2), so it takes the frame and
-                   the chamfer, exactly like `.field` does. -->
-              <label class="slot-step op-frame" data-augmented-ui="tr-clip border">
-                <input
-                  class="slot-number op-eyebrow"
-                  type="number"
-                  inputmode="numeric"
-                  min="0"
-                  :max="slider.count"
-                  :value="standing(slider)"
-                  :disabled="slider.disabled || view.busy || slider.count === 0"
-                  :aria-label="slider.label"
-                  @keydown.stop
-                  @keyup.enter="jumpSlot(slider, $event.target as HTMLInputElement)"
-                  @change="jumpSlot(slider, $event.target as HTMLInputElement)"
+              <span class="tile-art"><span class="tile-mono">&minus;</span></span>
+              <span class="tile-name op-eyebrow">{{ label('nothing') }}</span>
+            </button>
+
+            <button
+              v-for="box in boxes"
+              :key="box.index"
+              type="button"
+              class="tile op-frame"
+              :class="{
+                'is-on': standing(openSlider) === box.index,
+                'is-off': openSlider.disabled || view.busy
+              }"
+              :disabled="openSlider.disabled || view.busy"
+              data-augmented-ui="tr-clip border"
+              :title="box.name"
+              @click="pickTile(box.index)"
+            >
+              <span class="tile-art">
+                <img
+                  v-if="!broken[box.name]"
+                  :src="art(box.name)"
+                  alt=""
+                  draggable="false"
+                  loading="lazy"
+                  @error="artBroken(box.name)"
                 >
-                <span class="slot-of op-eyebrow">/ {{ slider.count }}</span>
-              </label>
-            </div>
+                <span v-else class="tile-mono">{{ monogram(box.name) }}</span>
+              </span>
+              <span class="tile-name op-eyebrow">{{ box.name }}</span>
+            </button>
+
+            <p v-if="moreToLoad" class="tile-more op-copy">
+              {{ label('loading') }}
+            </p>
+          </div>
+
+          <!-- THE TRACK STAYS, AND IT IS NOT LEFTOVER SLIDER. A category holds up
+               to 677 records and the grid reaches them sixty at a time, so
+               "position 412" is a scroll of seven windows -- while the track and
+               the number box beside it get there in one gesture. It is also the
+               control for a category whose boxes are all monograms, which today
+               is all of them. One track, for the open category only: seven of
+               them down a column is the bar this screen replaced. -->
+          <div
+            v-if="openSlider && openSlider.count > 0"
+            class="slot op-frame"
+            :class="{
+              'is-on': standing(openSlider) > 0 && !openSlider.disabled && !view.busy,
+              'is-off': openSlider.disabled || view.busy
+            }"
+            data-augmented-ui="tr-clip border"
+          >
+            <span class="slot-value op-value op-truncate">{{ openSlider.value }}</span>
+            <input
+              class="slot-track"
+              type="range"
+              min="0"
+              :max="openSlider.count"
+              step="1"
+              :value="standing(openSlider)"
+              :disabled="openSlider.disabled || view.busy"
+              :aria-label="openSlider.label"
+              :aria-valuetext="openSlider.value"
+              @input="scrubSlot(openSlider, ($event.target as HTMLInputElement).value)"
+              @change="settleSlot(openSlider)"
+            >
+            <label class="slot-step op-frame" data-augmented-ui="tr-clip border">
+              <input
+                class="slot-number op-eyebrow"
+                type="number"
+                inputmode="numeric"
+                min="0"
+                :max="openSlider.count"
+                :value="standing(openSlider)"
+                :disabled="openSlider.disabled || view.busy"
+                :aria-label="openSlider.label"
+                @keydown.stop
+                @keyup.enter="jumpSlot(openSlider, $event.target as HTMLInputElement)"
+                @change="jumpSlot(openSlider, $event.target as HTMLInputElement)"
+              >
+              <span class="slot-of op-eyebrow">/ {{ openSlider.count }}</span>
+            </label>
           </div>
         </div>
 
-        <footer v-if="view.actions.length" class="foot acts">
+        <footer v-if="view.actions.length" class="foot">
           <button
             v-for="button in view.actions"
             :key="button.id"
             type="button"
-            class="row button act op-frame"
+            class="row button grow op-frame"
             :class="{
               'is-on': button.primary,
               'op-lift': button.primary && !button.disabled && !view.busy,
@@ -1040,8 +1382,8 @@ function filter(value: string): void {
             <span class="row-label op-label op-truncate">{{ button.label }}</span>
           </button>
         </footer>
-      </section>
-    </div>
+      </div>
+    </section>
 
     <div v-if="dialog" class="confirm">
       <!-- THE ONE FILL LEFT ON THIS SURFACE, and it stays. A yes-or-no question
@@ -1284,101 +1626,289 @@ function filter(value: string): void {
 }
 
 /* =============================================================================
-   THE SLOT BAR.
+   THE RAIL: the whole left side of the screen.
 
-   A row of controls along the bottom and no box round them. `ui/README.md` rule
-   2 is what decides that: a control is a closed box, and what is not a control
-   does not get a frame -- so each slot keeps its `.op-frame` and the thing
-   holding them together does not get one. Rule 9 takes the interlace with the
-   enclosure, since the interlace is what stops an unfilled FRAME floating and
-   there is no longer a frame here to float. Rule 5 keeps the bar flat: it is
-   centred, and a centred plane rotated about its middle is paper on a spindle.
+   WHAT IT REPLACED. A bar of seven slider rows pinned along the bottom of the
+   screen, with the camera buttons stacked above its right end. The owner's two
+   messages settle both halves of the change: "je le veux sur la gauche, plus en
+   bas au centre car cela cache le joueur", and "tu peux prendre tout le cote
+   gauche de l'ecran". A bottom bar cannot hold a grid, because a grid needs
+   height and the bottom of the screen is where the legs are.
 
-   What is left to give it structure is the row itself -- seven cut boxes on one
-   baseline read as one thing -- and the 1px rule between browsing and
-   committing. That rule is `.foot`, which the column uses for the same job.
+   RULE 2 STILL APPLIES AND IT POINTS THE OTHER WAY NOW. The bar was a ROW of
+   controls and took no enclosure. This is a column that HOLDS controls, a search
+   of the screen's whole left edge, and the thing that says where it ends is the
+   frame -- the same `.op-bay` the items column has carried all along, with the
+   same `.op-arete` leading edge and the same +7deg hinge about the left edge.
+   Rule 9's interlace still stays off: the body is behind this surface and
+   stripes over it are the fill three passes have now removed.
+
+   THE WIDTH IS THE CAMERA DECISION. `38vw` is not a taste: a whole-body shot at
+   `CAMERA_OFFSET.Y = 2.6` puts the figure in the middle fifth of a 16:9 frame,
+   and the camera cannot be told to aim anywhere else -- `Open77.camera.detach`
+   takes a position and no aim point, `Open77.camera.orbit` is a yaw inside the
+   third-person rig, and the one native that could is behind the `camera.script`
+   permission `config/appearance.lua` refuses to take for a clothing shop. So the
+   panel is what moves. `min(38vw, 620px)` keeps the right edge clear of the
+   figure on every aspect ratio a player is likely to have, and `28rem` is the
+   floor below which the grid stops fitting two boxes abreast.
    ========================================================================== */
-.dock {
+.rail {
   position: absolute;
   left: calc(var(--op-inset-x) - var(--op-bleed));
-  right: calc(var(--op-inset-x) - var(--op-bleed));
+  top: calc(var(--op-inset-y) - var(--op-bleed));
   bottom: calc(var(--op-inset-y) - var(--op-bleed));
+  width: clamp(28rem, 38vw, 620px);
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
 }
 
-/* THE CAMERA CLUSTER IS IN THE STACK, NOT IN THE CORNER. On its own it is
-   absolutely placed bottom-right, which is a place a centred bar reaches as soon
-   as the screen is narrow. Here it is a row above the bar and still hinged on
-   its own right edge, so `.op-anchor-right` and `.is-end` still say what they
-   said. */
-.dock .tools {
-  position: static;
-  align-self: flex-end;
+.rail-bay {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
 }
 
-.bar {
-  align-self: center;
+.rail-inner {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  width: 100%;
-  max-width: 1120px;
+  gap: var(--op-space-3);
+  min-height: 0;
+  padding: var(--op-space-4);
+  padding-top: calc(var(--op-space-4) + var(--op-cut-lg));
 }
 
-.bar-inner {
-  display: flex;
-  flex-direction: column;
+/* =============================================================================
+   THE VIEW BUTTONS.
+
+   A row of square picture buttons at the top of the rail, above everything that
+   changes what the character wears. They are the only controls here that do not
+   touch the clothes, so they read as a header rather than as the first category.
+
+   WHY A GRID AND NOT A FLEX ROW. Four buttons of identical size is the whole
+   affordance -- they are one instrument with four positions -- and a flex row
+   sizes each one to its own word, so `Front` and `Right` came out different
+   widths and the row read as four unrelated buttons. `repeat(4, 1fr)` is what
+   makes them a set. The glyph is over the word and not beside it because the
+   word is the caption: at this size the picture is what is scanned.
+
+   NO `filter` ANYWHERE. `.op-lift` is a drop-shadow and these sit over a live
+   3D view that repaints every frame. The state is the border, which is what
+   `--aug-border-bg` is for. */
+.views {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--op-space-2);
 }
 
-/* The category strip. Centred over the slot bar, wrapping rather than shrinking
-   -- the same bargain the slots used to make -- and with no enclosure round the
-   row: `ui/README.md` rule 2 says a control is a closed box and a row OF
-   controls is not one, which is the argument `.bar` below already lost once. */
+.view-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--op-space-1);
+  min-width: 0;
+  padding: var(--op-space-2);
+  padding-right: calc(var(--op-space-2) + var(--op-cut-sm));
+  border: 0;
+  background: transparent;
+  color: var(--op-text-dim);
+  cursor: pointer;
+  transition: color var(--op-dur-fast) linear;
+}
+
+.view-btn:hover:not(:disabled),
+.view-btn:focus-visible {
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
+  color: var(--op-text);
+  outline: none;
+}
+
+.view-btn:disabled {
+  color: var(--op-text-faint);
+  cursor: default;
+}
+
+.view-icon {
+  width: 24px;
+  height: 24px;
+  flex: none;
+}
+
+/* The cut is `.op-truncate` on the element and not four declarations here: that
+   class exists because these four were written out by hand in twenty-one places
+   and had already drifted. What is left is only what is particular to this
+   button -- the label may not push the square wider than its grid column. */
+.view-label {
+  max-width: 100%;
+}
+
+/* The other screens reachable from this one. Full width in the column now rather
+   than centred over a bar, and wrapping rather than shrinking: a category with a
+   long name is still readable on the second line, and an ellipsised one is not. */
 .cats {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
   gap: var(--op-space-2);
 }
 
 .cats .cat {
-  flex: none;
+  flex: 1 1 auto;
   width: auto;
-  min-width: 120px;
+  min-width: 9rem;
   justify-content: center;
 }
 
-/* Centred readouts, no frame: neither of them is a control. */
+/* Readouts, no frame: neither of them is a control. Left-aligned, because they
+   are now in a column of left-aligned things rather than over a centred bar. */
 .lead,
-.bar .status {
+.rail .status {
   margin: 0;
-  text-align: center;
   color: var(--op-text-dim);
 }
 
-/* ONE SLIDER PER LINE, WHICH IS WHAT WAS ASKED FOR: "juste les slider en ligne".
-   This was seven cards side by side, each a stacked block of name, value, track
-   and readout -- so a player comparing two slots read two little columns rather
-   than two rows of the same instrument, and each track was a seventh of the bar
-   wide and impossible to place a piece on. Stacked vertically the tracks are the
-   full width of the panel, and the four parts of every line sit in the same four
-   places down the list, which is what makes it scannable. */
-.slots {
-  display: flex;
-  flex-direction: column;
+/* =============================================================================
+   THE PICKER GRID.
+
+   "des box avec l'image du vetement uniquement, de sorte a rendre le choix plus
+   facile -- donc il scroll pour descendre et voir plus."
+
+   `auto-fill` and not a fixed column count: the rail is `38vw`, so how many
+   boxes fit is a property of the player's screen and not of this file. The grid
+   is the one part of the column that takes the slack, and it is the only thing
+   here that scrolls -- the categories, the view buttons and the track stay put
+   while it moves, which is what makes them reachable at the four-hundredth
+   jacket. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
   gap: var(--op-space-1);
+  align-content: start;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: var(--op-space-1);
 }
 
-/* THE FOUR COLUMNS ARE FIXED AND NOT CONTENT-SIZED. A grid and not a flex row
-   because the names and the piece labels are different lengths on every line,
-   and a flex row would put each line's track at its own x -- seven ragged
-   tracks, which is exactly the "not one line" the layout is being changed to
-   fix. The track is the only column that takes the slack. */
+.tiles.busy {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--op-space-1);
+  min-width: 0;
+  padding: var(--op-space-2);
+  padding-right: calc(var(--op-space-2) + var(--op-cut-sm));
+  border: 0;
+  background: transparent;
+  color: var(--op-text-dim);
+  cursor: pointer;
+  text-align: left;
+  transition: color var(--op-dur-fast) linear;
+}
+
+.tile:hover:not(:disabled),
+.tile:focus-visible {
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
+  color: var(--op-text);
+  outline: none;
+}
+
+/* The one on the body. The border says it, not a fill and not a shadow: a fill
+   would be the plate this screen spent three passes removing, and a shadow is a
+   `filter` over a view that repaints every frame. */
+.tile.is-on {
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
+  color: var(--op-text);
+}
+
+.tile.is-off {
+  color: var(--op-text-faint);
+  cursor: default;
+}
+
+/* A FIXED SQUARE AND NOT THE PICTURE'S OWN SIZE. Almost no garment has an image
+   today, so most boxes are a monogram -- and a grid whose cells were sized by
+   their contents would have every row a different height as the images land one
+   at a time. The square is the box; what goes in it is centred and contained. */
+.tile-art {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  min-height: 0;
+}
+
+/* No drop-shadow on the picture, for the reason `InventorySlot` gives for the
+   same rule: a `filter` is affordable on one icon and not on a scrolling grid of
+   them over a live 3D view. */
+.tile-art img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* The fallback, and today it is the ordinary case rather than the sad one. */
+.tile-mono {
+  font: 700 var(--op-fs-title) / 1 var(--op-font-display);
+  letter-spacing: var(--op-track-head);
+  color: currentcolor;
+  opacity: 0.7;
+}
+
+/* THE NAME IS DRAWN, AND THE OWNER ASKED FOR "l'image du vetement uniquement".
+   It is here because the images are not: a wall of identical monograms is not a
+   choice, and the record name is the only thing that tells two of them apart.
+   TWO LINES AND THEN ELLIPSIS, WHICH IS WHY IT IS NOT `.op-truncate`. That rule
+   cuts at one line and is right everywhere it is used -- a label that wrapped
+   would move every row under it while the pointer was still on the one above.
+   Nothing here is aimed at while it moves: a grid row is laid out once and the
+   clamp is what stops it growing, so two lines is a bound and not a wrap. One
+   line would not do: a record name is `Items.OuterChest_Jacket_02` and the box
+   is six and a half rem, which leaves about four characters before the ellipsis
+   and no way to tell two of them apart. `overflow-wrap: anywhere` because a
+   record name has no spaces to break at. */
+.tile-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  color: currentcolor;
+}
+
+/* The line that says the grid has not reached the end of the category. It spans
+   every column so it sits under the last row rather than in it. */
+.tile-more {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: var(--op-space-2) 0;
+  text-align: center;
+  color: var(--op-text-faint);
+}
+
+/* =============================================================================
+   THE TRACK, FOR THE OPEN CATEGORY ONLY.
+
+   Three columns rather than the bar's four: the slot's own name is the tab above
+   it now, so the line is the piece under the thumb, the track, and the readout
+   you can type into. It keeps the frame, the chamfer and every part of the
+   slider's own styling, because it is the same control -- what changed is that
+   there is one of it instead of seven.
+   ========================================================================== */
 .slot {
   display: grid;
-  grid-template-columns: 8.5rem minmax(0, 1fr) 11rem auto;
+  grid-template-columns: minmax(0, 10rem) minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--op-space-2);
   min-width: 0;
@@ -1386,14 +1916,14 @@ function filter(value: string): void {
   padding-right: calc(var(--op-space-3) + var(--op-cut-sm));
 }
 
-.slot-name {
-  color: var(--op-red-idle);
-}
+/* What the thumb is standing on, first on the line. The truncation is
+   `.op-truncate` in `design-system/surface.css` and not a rule of its own: the
+   ellipsis was factored out of eight copies while this was being written, and a
+   ninth here would be the drift that change removed. */
 
-/* Narrow enough that the four columns do not fit: the line folds into two, name
-   and readout on the first, track and label on the second. Still one line per
-   slot in the sense that matters -- one slot is one block and the blocks are
-   stacked -- and no horizontal scroll. */
+/* Narrow enough that the three columns do not fit: the line folds, the name and
+   the readout on the first row and the track across the second. No horizontal
+   scroll at any width. */
 @media (max-width: 720px) {
   .slot {
     grid-template-columns: minmax(0, 1fr) auto;
@@ -1401,6 +1931,10 @@ function filter(value: string): void {
 
   .slot-track {
     grid-column: 1 / -1;
+  }
+
+  .views {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1449,23 +1983,11 @@ function filter(value: string): void {
 }
 
 /* The frame answers the keyboard, because the box is small and the caret alone
-   is not enough to say which of seven slots is taking the digits. */
+   is not enough to say what is taking the digits. */
 .slot-step:focus-within {
   --aug-border-bg: var(--op-red);
   --aug-border-all: 2px;
   color: var(--op-text-dim);
-}
-
-/* The commit row. It takes the rule and not the bay's bottom cut, because there
-   is no bay under it to leave room for. */
-.acts {
-  justify-content: center;
-  padding: var(--op-space-3) 0 0;
-}
-
-.acts .row {
-  width: auto;
-  min-width: 150px;
 }
 
 /* The window of names under the dial. One place items are laid out abreast; the
@@ -1630,6 +2152,15 @@ function filter(value: string): void {
 
 .row-label {
   flex: 0 1 auto;
+}
+
+/* A glyph beside a row's words, for the one cluster that still draws buttons in
+   a line. Slightly under the 24px the paths are drawn at, so it sits on the cap
+   height of the label rather than towering over it. */
+.row-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
 }
 
 .row-hint {

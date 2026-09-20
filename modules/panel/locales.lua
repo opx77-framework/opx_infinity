@@ -10,6 +10,11 @@ OPX.Locale.Register('en', {
 	['panel.empty'] = 'Nothing to show here.',
 	['panel.loading'] = 'Loading...',
 	['panel.search'] = 'Search',
+	-- What the picker grid writes under the box that empties a slot. It is the
+	-- page's word and not a caller's because index 0 is the CONTRACT's meaning of
+	-- "none of them" -- every `sliders` caller has that position whether it thought
+	-- about it or not -- and a caller may still override it like any other label.
+	['panel.nothing'] = 'Nothing',
 	['panel.confirmYes'] = 'Confirm',
 	['panel.confirmNo'] = 'Back',
 })
@@ -19,6 +24,7 @@ OPX.Locale.Register('fr', {
 	['panel.empty'] = 'Rien à afficher ici.',
 	['panel.loading'] = 'Chargement...',
 	['panel.search'] = 'Rechercher',
+	['panel.nothing'] = 'Rien',
 	['panel.confirmYes'] = 'Confirmer',
 	['panel.confirmNo'] = 'Retour',
 })

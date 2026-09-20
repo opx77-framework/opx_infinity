@@ -101,8 +101,11 @@ local function shopList()
 				label = type(raw.LABEL) == 'string' and raw.LABEL or key }
 		end
 	end
-	-- Sorted so the sphere index a row carries is stable between two boots; the
-	-- eye answers with the index it matched and nothing else would tie it back.
+	-- Sorted by key so the list is the same list on every boot. It used to be
+	-- sorted so that a SPHERE INDEX would mean the same shop twice -- an index the
+	-- eye never sends, which is the bug `onSelect` below now records. The order is
+	-- kept anyway, because it is what makes two shops standing on top of each
+	-- other resolve the same way every time instead of by `pairs` order.
 	table.sort(out, function(left, right) return left.key < right.key end)
 	return out
 end
@@ -136,14 +139,39 @@ local function placeRows()
 		icon = 'person',
 		distance = reach(),
 		order = 20,
-		onSelect = function(payload)
-			-- The eye answers with the sphere it matched; the order above is what
-			-- makes that index mean the same shop it meant when it was registered.
-			local at = tonumber(type(payload) == 'table' and payload.index or nil)
-			local shop = at and shops[at] or nil
-			if shop == nil then return end
-			serving = shop.key
-			TriggerServerEvent(M.Event.OPEN, shop.key)
+		onSelect = function(context)
+			-- THE EYE NEVER ANSWERED WITH A SPHERE INDEX, and this row spent its
+			-- whole life reading one. `contextAt` in `modules/target/client/main.lua`
+			-- builds `screen`, `playerDistance`, `position`, `target` and `kind`, and
+			-- `commit` adds `option = { id, owner, token, data }` -- there is no
+			-- `index` anywhere in it and never was. So `payload.index` was nil, the
+			-- lookup answered nil, and every press on a shop row returned silently:
+			-- no room, no toast, no log line. Registering the spheres in sorted key
+			-- order was bookkeeping for an answer that does not exist.
+			--
+			-- THE POSITION IS THE ANSWER, which is the idiom `inventory`'s pile row
+			-- already uses (`World.TakePile`): the eye says WHERE on the world it
+			-- landed, and the module matches that against the things it put there.
+			-- A shop is a sphere of `reach()` metres, so the nearest shop within
+			-- that radius of the hit is the shop the player pressed -- and when two
+			-- shops overlap, the nearer one is the one under the crosshair.
+			local at = type(context) == 'table' and context.position or nil
+			if type(at) ~= 'table' then return end
+			if not (OPX.Math.IsFinite(at.x) and OPX.Math.IsFinite(at.y)
+				and OPX.Math.IsFinite(at.z)) then
+				return
+			end
+
+			local best, bestGap = nil, reach()
+			for index = 1, #shops do
+				local shop = shops[index]
+				local dx, dy, dz = at.x - shop.x, at.y - shop.y, at.z - shop.z
+				local away = math.sqrt(dx * dx + dy * dy + dz * dz)
+				if away <= bestGap then best, bestGap = shop, away end
+			end
+			if best == nil then return end
+			serving = best.key
+			TriggerServerEvent(M.Event.OPEN, best.key)
 		end,
 	})
 
@@ -302,6 +330,36 @@ local function closeScreens()
 	menuHandle, formHandle = nil, nil
 end
 
+-- The id the empty-state row carries. Named rather than inline because it is the
+-- one row in this file a press must do nothing with, and `showOutfits`'s handler
+-- reads `data` to decide -- a row with no `data` falls out of every branch there.
+local EMPTY_ROW = 'empty'
+
+--- A list that is never empty: the caller's rows, or one row saying there are none.
+--
+-- WHY THIS EXISTS, AND WHY THE COMMENT IT RESTORES WAS RIGHT ALL ALONG.
+-- `showOutfits` has always said, directly above the list it builds, that "an
+-- empty list is still a list... a menu that refused to open would look like the
+-- button was broken rather than like the shelf was empty" -- and then handed
+-- `menu.Open` a list of length zero, which `normalizeItems` refuses outright
+-- (`empty_menu`). `showMenu` turned that refusal into `shops.noSurface` -- "That
+-- screen is not available right now." -- so a player who had saved no outfits
+-- pressed My outfits and was told the screen did not exist. The `status` line the
+-- caller wrote for exactly this case never drew, because the menu was refused
+-- before it could carry one. The comment and the code disagreed, and the
+-- disagreement WAS the bug.
+--
+-- A DISABLED ACTION ROW AND NOT A SEPARATOR, which is the second half of the
+-- fix. `normalizeItems` refuses a level of nothing but separators too
+-- (`only_separators`) because the cursor would have nowhere to stand; it says in
+-- the same breath that "a level of nothing but disabled rows is a real menu". So
+-- the placeholder is a real row that cannot be chosen: it draws, it dims, and
+-- `cursorIndex` parks the cursor on it without it ever reporting a press.
+local function orEmpty(items, text)
+	if #items > 0 then return items end
+	return { { id = EMPTY_ROW, label = text, disabled = true } }
+end
+
 --- Draws one list, reporting a refusal rather than failing silently.
 local function showMenu(spec)
 	if menu == nil then return OPX.Toast.Locale('shops.noSurface', nil, 'error') end
@@ -315,7 +373,15 @@ local function showMenu(spec)
 	if not drawn.ok then
 		menuHandle = nil
 		OPX.Toast.Locale('shops.noSurface', nil, 'error')
-		return Open77.log.warn(('[shops] the outfit list was refused: %s')
+		Open77.log.warn(('[shops] the outfit list was refused: %s')
+			:format(tostring(drawn.error)))
+		-- AND WHERE THE OPERATOR CAN READ IT. `Open77.log.warn` writes to the
+		-- PLAYER's machine, which is precisely why `empty_menu` went unfound: the
+		-- only record of the refusal was on the one computer nobody running the
+		-- server can look at, and what reached the operator was a player saying a
+		-- button says the screen is not available. A refusal that ends in a toast
+		-- the player cannot act on is a refusal the operator has to hear about.
+		return OPX.Note('shops', ('the outfit list was refused: %s')
 			:format(tostring(drawn.error)))
 	end
 	menuHandle = type(drawn.value) == 'table' and drawn.value.handle or nil
@@ -336,7 +402,9 @@ local function showForm(spec)
 	if not drawn.ok then
 		formHandle = nil
 		OPX.Toast.Locale('shops.noSurface', nil, 'error')
-		return Open77.log.warn(('[shops] the outfit form was refused: %s')
+		Open77.log.warn(('[shops] the outfit form was refused: %s')
+			:format(tostring(drawn.error)))
+		return OPX.Note('shops', ('the outfit form was refused: %s')
 			:format(tostring(drawn.error)))
 	end
 	formHandle = type(drawn.value) == 'table' and drawn.value.handle or nil
@@ -359,7 +427,16 @@ local function showLooks()
 			close = true,
 		}
 	end
-	showMenu{ title = locale('shops.looks.title'), items = items, focus = 'cursor',
+	-- THE SAME SHAPE AS `showOutfits`, AND IT FAILED THE SAME WAY. The Uniforms
+	-- category is only offered when the server sent at least one look, so this
+	-- list is normally non-empty -- but `offered` is cleared on `wardrobeClosed`
+	-- and the strip is republished from two racing places, so a press that lands
+	-- between the two built a list of nothing and was answered with "that screen
+	-- is not available". A counter configured with no ready-made looks at all
+	-- reaches it the same way.
+	showMenu{ title = locale('shops.looks.title'),
+		items = orEmpty(items, locale('shops.looks.empty')), focus = 'cursor',
+		status = #items == 0 and locale('shops.looks.empty') or nil,
 		on = function(payload)
 			local data = type(payload) == 'table' and payload.data or nil
 			if type(data) ~= 'table' or data.verb ~= 'wear' then return end
@@ -396,10 +473,17 @@ local function showOutfits()
 	end
 
 	showMenu{
-		title = locale('shops.outfits.title'), items = items, focus = 'cursor',
+		title = locale('shops.outfits.title'), focus = 'cursor',
 		-- AN EMPTY LIST IS STILL A LIST. A player who has saved nothing pressed the
 		-- button on purpose, and a menu that refused to open would look like the
 		-- button was broken rather than like the shelf was empty.
+		--
+		-- AND NOW THE CODE SAYS SO TOO. `orEmpty` is what makes the sentence above
+		-- true: it puts one dimmed row where the outfits would be, so the menu has
+		-- a list to open and the shelf is visibly empty. Handing `items` straight
+		-- through was the bug -- `menu.Open` refused the zero-length list with
+		-- `empty_menu` and the player was told the screen did not exist.
+		items = orEmpty(items, locale('shops.outfits.empty')),
 		status = #items == 0 and locale('shops.outfits.empty') or nil,
 		on = function(payload)
 			local data = type(payload) == 'table' and payload.data or nil
