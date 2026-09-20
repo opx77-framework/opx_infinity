@@ -7826,5 +7826,36 @@ do
 		check('every split states both halves and invents no rounds', kept)
 	end
 end
+
+-- ── the version is one number, in three places ──────────────────────────────
+-- THE SERVER REPORTED 0.1.0 WHILE THE MANIFEST SAID 0.1.2, for two releases,
+-- and the only symptom was the owner reading the wrong number off a boot line
+-- while chasing something else. `core/shared/main.lua` now ASKS the platform --
+-- `Open77.resource.version()` on the client, `resource.metadata` on the server,
+-- neither needing a permission -- so on a real host nothing can drift.
+--
+-- The literal in that file is the last resort for a host that answers neither,
+-- and this is what stops the last resort from being the next stale number. Read
+-- out of the SOURCE, because the suite rightly forbids publishing it on `OPX`
+-- just so a test can see it. `opx_lib` carries the same check for the same
+-- reason; there it was written after the drift, and here after it happened
+-- again in the other repository.
+section('the version')
+do
+	local function grab(path, pattern)
+		local handle = io.open(path, 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		return body:match(pattern)
+	end
+
+	local literal = grab('core/shared/main.lua', "local DECLARED = '([%d%.]+)'")
+	local manifest = grab('open77.lua', '\nversion "([%d%.]+)"')
+
+	check('core states a fallback version', literal ~= nil, tostring(literal))
+	check('the manifest states one', manifest ~= nil, tostring(manifest))
+	check('and they are the same number', literal == manifest,
+		('core %s vs manifest %s'):format(tostring(literal), tostring(manifest)))
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

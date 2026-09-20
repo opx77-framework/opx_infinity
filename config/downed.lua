@@ -37,5 +37,19 @@ OPX.Config.MODULES.downed = {
 	SUSPENDERS = { admin = true, opx77_admin = true },
 
 	-- Stock HUD components hidden while down.
-	VANILLA_HUD = { 'minimap', 'compass', 'clock', 'health', 'stamina', 'weapon', 'speedometer' },
+	--
+	-- ALL THIRTEEN, WHICH IS NOT WHAT `config/hud.lua` DOES, and the difference
+	-- is the point. That list is a steady state and leaves the crosshair, the
+	-- scanner and the phone to the game, because a player who is up needs to aim
+	-- and scan. This is a player bleeding out: they cannot aim, cannot scan, and
+	-- are not taking a call. Every stock component is chrome over a screen that
+	-- has one thing to say.
+	--
+	-- Seven of these were named and six were absent, which read as a decision and
+	-- was a gap. `Open77.hud.components()` is the authority on the set; a name
+	-- this build does not know is refused per component and costs nothing.
+	VANILLA_HUD = {
+		'minimap', 'compass', 'clock', 'health', 'stamina', 'weapon', 'speedometer',
+		'questTracker', 'phone', 'scanner', 'vanillaNotifications', 'crosshair', 'hubMenu',
+	},
 }
