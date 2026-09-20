@@ -44,6 +44,44 @@ local offered = {}
 local OWNER = 'shops'
 local ROW = 'shops.fitting'
 
+-- The list and the form, resolved in Start. Both optional: a runtime without
+-- them keeps the shop floor and loses the outfit screens, which is a missing
+-- feature and not a broken shop -- the same bargain `target` is on.
+local menu, form = nil, nil
+
+-- Whether a fitting room is open right now, and the saved outfits the server
+-- last sent. `roomOpen` is TRACKED RATHER THAN ASKED because the answer decides
+-- which of two completely different paths an outfit takes on: through the room's
+-- draft when one is open, and through a fresh puppet borrow when none is.
+local roomOpen, saved = false, {}
+
+-- A name the player typed for a save that cannot be sent yet, or nil.
+--
+-- WHY A SAVE HAS TO WAIT. The server writes down what the character IS wearing,
+-- read from its own stored record -- `onSave` says why, and it is right: a
+-- client that named the garments could name a restricted uniform's record and
+-- load it back later past every gate. But inside an open fitting room the stored
+-- record is still what the player walked in wearing, so a save sent then would
+-- write down the OLD look under the new name, silently, and the player would
+-- find the wrong outfit in their list days later. So the name is held and sent
+-- when `clothingSaved` says the new look has actually landed.
+local pendingSave = nil
+
+-- The ids of the category buttons this module offers the fitting room. Short,
+-- because they are namespaced by the room before they reach the page and
+-- unwrapped before they come back.
+local GROUP_LOOKS, GROUP_OUTFITS = 'looks', 'outfits'
+local GROUP_SAVE, GROUP_CODE = 'save', 'code'
+
+-- The ids the two screens carry, and the handles they were opened under.
+--
+-- THE HANDLE IS NOT OPTIONAL. Both contracts refuse a `Close` with no handle --
+-- `handle_required` -- so "close whatever we have up" has to be written down as
+-- the handle we were given, or the close is a call that answers a refusal
+-- nobody reads and leaves the screen exactly where it was.
+local MENU_ID, FORM_ID = 'shops.outfits', 'shops.outfit'
+local menuHandle, formHandle = nil, nil
+
 --- The shops, read from config on this side too.
 --
 -- THE SAME LIST, READ TWICE, and that is correct rather than duplicated state:
@@ -171,11 +209,287 @@ local function putOn(wear)
 	wardrobe.EndClothingPreview(OWNER, true, records)
 end
 
+-- ── the outfit screens ──────────────────────────────────────────────────────
+-- NOTHING BELOW IS NEW MACHINERY. The saved-outfit table, the per-character
+-- limit, the job gate and the share codes were all already written -- in
+-- `module.lua`, `server/main.lua` and `server/storage.lua` -- and every one of
+-- their net events already existed. What was missing was any way for a player to
+-- REACH them: no client in this resource ever sent `SAVE`, `LIST`, `LOAD`,
+-- `DELETE`, `SHARE` or `REDEEM`, so a finished feature sat behind no door. This
+-- section is the door, and it is deliberately thin: a category strip on the
+-- fitting-room screen, a list, and two one-field forms.
+
+--- The OUTFITS block of the shop settings, never nil.
+-- READ ON THIS SIDE TOO, and legitimately: `config/shops.lua` is a shared
+-- script, so both halves read the same file. What the client uses it for is the
+-- SHAPE of a form -- how long a code is, whether to offer sharing at all -- and
+-- never the decision, which the server takes again from the same numbers.
+local function outfitConfig()
+	local settings = type(M.Settings) == 'table' and M.Settings or {}
+	return type(settings.OUTFITS) == 'table' and settings.OUTFITS or {}
+end
+
+--- How many characters a share code is, mirrored from the server's own bound.
+local function codeLength()
+	local wanted = tonumber(outfitConfig().CODE_LENGTH)
+	if wanted == nil or wanted < 4 or wanted > 16 then return 8 end
+	return math.floor(wanted)
+end
+
+--- Whether this server mints and takes share codes at all.
+local function sharing()
+	return outfitConfig().SHARING ~= false
+end
+
+--- Offers the open fitting room the categories this player may reach from it.
+--
+-- THE GATE IS WHICH BUTTONS EXIST, not which ones refuse when pressed. That is
+-- the same rule `looksFor` states on the server -- "a uniform nobody may wear is
+-- not a row somebody has to be refused at" -- applied one screen further out.
+-- So:
+--
+--   Uniforms   only at a shop, and only when the SERVER sent at least one look
+--              for this player. The job gate is already applied by then, so an
+--              empty list means "your job entitles you to nothing here" and the
+--              category is simply not there.
+--   Outfit code only when sharing is on.
+--   My outfits / Save outfit are always offered: a saved look is the player's
+--              own bookmark, it costs nothing, and the server's own comment says
+--              loading one does not need a shop.
+local function offerGroups()
+	if wardrobe == nil or not roomOpen then return end
+
+	local rows = {}
+	if serving ~= nil and #offered > 0 then
+		rows[#rows + 1] = { id = GROUP_LOOKS, label = locale('shops.group.looks') }
+	end
+	rows[#rows + 1] = { id = GROUP_OUTFITS, label = locale('shops.group.outfits') }
+	rows[#rows + 1] = { id = GROUP_SAVE, label = locale('shops.group.save') }
+	if sharing() then
+		rows[#rows + 1] = { id = GROUP_CODE, label = locale('shops.group.code') }
+	end
+
+	local told = wardrobe.OfferWardrobeGroups(OWNER, rows)
+	if not told.ok then
+		Open77.log.warn(('[shops] the fitting room refused the category strip: %s')
+			:format(tostring(told.error)))
+	end
+end
+
+--- Puts a look on, whichever of the two ways is the right one right now.
+--
+-- THE FORK THAT MAKES THE WHOLE FEATURE WORK. With a fitting room open the
+-- puppet is lent to `appearance`, so `putOn`'s `BeginClothingPreview` is refused
+-- and loading an outfit from the clothing screen did nothing whatsoever -- no
+-- toast, no log line, no clothes. `DressWardrobe` goes in through the room's
+-- draft instead, which moves the sliders, keeps Cancel working, and puts the
+-- moved slots on `wardrobeClosed` so the shop bills them like any other change.
+local function dress(wear)
+	if type(wear) ~= 'table' then return end
+	if not roomOpen or wardrobe == nil then return putOn(wear) end
+
+	local dressed = wardrobe.DressWardrobe(wear)
+	if not dressed.ok then
+		OPX.Toast.Locale('shops.dressFailed',
+			{ reason = tostring(dressed.error):gsub('_', ' ') }, 'error')
+	end
+end
+
+--- Takes down whichever outfit screens this module put up.
+local function closeScreens()
+	if menu ~= nil and menuHandle ~= nil then pcall(menu.Close, menuHandle, 'caller') end
+	if form ~= nil and formHandle ~= nil then pcall(form.Close, formHandle) end
+	menuHandle, formHandle = nil, nil
+end
+
+--- Draws one list, reporting a refusal rather than failing silently.
+local function showMenu(spec)
+	if menu == nil then return OPX.Toast.Locale('shops.noSurface', nil, 'error') end
+	spec.owner = OWNER
+	spec.id = MENU_ID
+	-- `steal`, because the only menu this could be taking over is one of ours: a
+	-- player who pressed My outfits, read a code and pressed it again should get
+	-- the list, not `menu_busy`.
+	spec.steal = true
+	local drawn = menu.Open(spec)
+	if not drawn.ok then
+		menuHandle = nil
+		OPX.Toast.Locale('shops.noSurface', nil, 'error')
+		return Open77.log.warn(('[shops] the outfit list was refused: %s')
+			:format(tostring(drawn.error)))
+	end
+	menuHandle = type(drawn.value) == 'table' and drawn.value.handle or nil
+end
+
+--- Draws one form, reporting a refusal rather than failing silently.
+local function showForm(spec)
+	if form == nil then return OPX.Toast.Locale('shops.noSurface', nil, 'error') end
+	spec.owner = OWNER
+	spec.id = FORM_ID
+	-- The form has no `steal`, so anything already up has to go first -- and it
+	-- can only be ours: nothing else on this screen opens one.
+	if menu ~= nil and menuHandle ~= nil then
+		pcall(menu.Close, menuHandle, 'caller')
+		menuHandle = nil
+	end
+	local drawn = form.Open(spec)
+	if not drawn.ok then
+		formHandle = nil
+		OPX.Toast.Locale('shops.noSurface', nil, 'error')
+		return Open77.log.warn(('[shops] the outfit form was refused: %s')
+			:format(tostring(drawn.error)))
+	end
+	formHandle = type(drawn.value) == 'table' and drawn.value.handle or nil
+end
+
+--- The ready-made looks this shop carries for this player.
+local function showLooks()
+	local items = {}
+	for index = 1, #offered do
+		local look = offered[index]
+		items[index] = {
+			id = 'look.' .. tostring(look.id),
+			label = tostring(look.label or look.id),
+			-- The cost is stated because it is CHARGED: unlike a saved outfit,
+			-- a ready-made look is a purchase and the server takes the money before
+			-- it sends the garments.
+			value = tonumber(look.cost) and tonumber(look.cost) > 0
+				and tostring(look.cost) or nil,
+			data = { verb = 'wear', look = look.id },
+			close = true,
+		}
+	end
+	showMenu{ title = locale('shops.looks.title'), items = items, focus = 'cursor',
+		on = function(payload)
+			local data = type(payload) == 'table' and payload.data or nil
+			if type(data) ~= 'table' or data.verb ~= 'wear' then return end
+			TriggerServerEvent(M.Event.WEAR, { shop = serving, look = data.look })
+		end }
+end
+
+--- The player's own saved outfits, each with the three things they can do to one.
+local function showOutfits()
+	local items = {}
+	for index = 1, #saved do
+		local outfit = saved[index]
+		local rows = {
+			{ id = 'wear', label = locale('shops.outfits.wear'),
+				data = { verb = 'load', id = outfit.id }, close = true },
+		}
+		if sharing() then
+			rows[#rows + 1] = { id = 'share', label = locale('shops.outfits.share'),
+				data = { verb = 'share', id = outfit.id } }
+		end
+		rows[#rows + 1] = { id = 'delete', label = locale('shops.outfits.delete'),
+			data = { verb = 'delete', id = outfit.id } }
+
+		items[index] = {
+			id = 'outfit.' .. tostring(outfit.id),
+			label = tostring(outfit.name),
+			-- A code already minted is shown on the row rather than behind the
+			-- share button: the player asked for it so they could read it out, and
+			-- making them press through to it again every time is the one thing a
+			-- code is not for.
+			value = type(outfit.code) == 'string' and outfit.code or nil,
+			items = rows,
+		}
+	end
+
+	showMenu{
+		title = locale('shops.outfits.title'), items = items, focus = 'cursor',
+		-- AN EMPTY LIST IS STILL A LIST. A player who has saved nothing pressed the
+		-- button on purpose, and a menu that refused to open would look like the
+		-- button was broken rather than like the shelf was empty.
+		status = #items == 0 and locale('shops.outfits.empty') or nil,
+		on = function(payload)
+			local data = type(payload) == 'table' and payload.data or nil
+			if type(data) ~= 'table' then return end
+			if data.verb == 'load' then
+				TriggerServerEvent(M.Event.LOAD, { id = data.id })
+			elseif data.verb == 'share' then
+				TriggerServerEvent(M.Event.SHARE, { id = data.id })
+			elseif data.verb == 'delete' then
+				TriggerServerEvent(M.Event.DELETE, { id = data.id })
+			end
+		end,
+	}
+end
+
+--- Asks for a name, then saves what the character is wearing under it.
+local function askSave()
+	showForm{
+		title = locale('shops.save.title'),
+		fields = { { id = 'name', label = locale('shops.save.field'), required = true,
+			maxLength = tonumber(outfitConfig().MAX_NAME_BYTES) or 48 } },
+		on = function(payload)
+			if type(payload) ~= 'table' or payload.action ~= 'submit' then return end
+			local name = type(payload.values) == 'table' and payload.values.name or nil
+			name = type(name) == 'string' and OPX.String.Trim(name) or ''
+			if name == '' then return end
+
+			-- HELD, NOT SENT, while a room is open. See `pendingSave`: the server
+			-- writes down the STORED look, and inside a fitting room that is still
+			-- the one walked in with.
+			if roomOpen then
+				pendingSave = name
+				return OPX.Toast.Locale('shops.save.queued', { name = name }, 'info')
+			end
+			TriggerServerEvent(M.Event.SAVE, { name = name })
+		end,
+	}
+end
+
+--- Asks for a code somebody read out, and wears whatever answers it.
+local function askCode()
+	local length = codeLength()
+	showForm{
+		title = locale('shops.code.title'),
+		description = locale('shops.code.hint', { length = length }),
+		fields = { { id = 'code', label = locale('shops.code.field'), required = true,
+			-- LONGER THAN A CODE ON PURPOSE. `M.CleanCode` forgives dashes, spaces
+			-- and case -- because somebody WILL read one out with the dashes in the
+			-- wrong places -- and a field cut to exactly eight characters would eat
+			-- the forgiveness before the parser ever saw the text.
+			maxLength = length * 2 } },
+		on = function(payload)
+			if type(payload) ~= 'table' or payload.action ~= 'submit' then return end
+			local typed = type(payload.values) == 'table' and payload.values.code or nil
+			if type(typed) ~= 'string' then return end
+			-- CLEANED HERE AND AGAIN ON THE SERVER, and the double is the point: this
+			-- one is so an obvious typo is answered on the spot instead of after a
+			-- round trip, and the server's is the one that decides.
+			local code = M.CleanCode(typed, length)
+			if code == nil then return OPX.Toast.Locale('shops.badCode', nil, 'error') end
+			TriggerServerEvent(M.Event.REDEEM, { code = code })
+		end,
+	}
+end
+
+-- What each category button does. Keyed by the id this module offered, which is
+-- what the fitting room hands back after unwrapping its own namespace.
+local GROUPS = {
+	[GROUP_LOOKS] = showLooks,
+	[GROUP_OUTFITS] = function()
+		-- ASKED FOR EVERY TIME RATHER THAN CACHED. The list is short, it changes
+		-- whenever a save or a delete lands, and a stale one would offer a
+		-- Put-it-on for an outfit that is no longer there.
+		TriggerServerEvent(M.Event.LIST)
+		showOutfits()
+	end,
+	[GROUP_SAVE] = askSave,
+	[GROUP_CODE] = askCode,
+}
+
 --- Wires the doors.
 -- @author dop42
 function M.Start()
 	wardrobe = OPX.Api.Get('appearance')
 	target = OPX.Api.Get('target')
+	menu = OPX.Api.Get('menu')
+	form = OPX.Api.Get('form')
+	if menu == nil or form == nil then
+		Open77.log.warn('[shops] no list or no form contract: the outfit screens are off')
+	end
 	if target == nil then
 		Open77.log.warn('[shops] no target contract: the shops are on the map but unreachable')
 	else
@@ -188,10 +502,51 @@ function M.Start()
 	-- cleared here whatever the outcome, so a later close cannot be billed twice.
 	AddEventHandler(ON_DECISION, function(decision)
 		if type(decision) ~= 'table' then return end
-		if decision.event ~= 'wardrobeClosed' then return end
+		local event = decision.event
+
+		-- THE STRIP IS OFFERED WHEN THE ROOM OPENS, and offered again when the
+		-- server's look list lands, because the two race: `onOpen` sends `LOOKS`
+		-- and then asks `appearance` to open the room, and which of those reaches
+		-- this client first is not something either side promises.
+		if event == 'wardrobeOpened' and decision.ok ~= false then
+			roomOpen = true
+			return offerGroups()
+		end
+
+		-- A PRESSED CATEGORY, reported by the room after it has unwrapped its own
+		-- namespace. Checked against the offering module's name because the room
+		-- publishes every module's presses on the one bus.
+		if event == 'wardrobeGroup' then
+			if decision.owner ~= OWNER then return end
+			local run = GROUPS[decision.group]
+			if run then run() end
+			return
+		end
+
+		-- THE QUEUED SAVE, LANDING. `clothingSaved` is raised once the new look has
+		-- actually been written, which is the first moment the server's own record
+		-- of what this character wears agrees with what the player just chose --
+		-- and that record is what `onSave` writes down.
+		if event == 'clothingSaved' then
+			local name = pendingSave
+			pendingSave = nil
+			if name ~= nil and decision.ok ~= false then
+				TriggerServerEvent(M.Event.SAVE, { name = name })
+			end
+			return
+		end
+
+		if event ~= 'wardrobeClosed' then return end
+
+		roomOpen = false
+		closeScreens()
+		-- A CANCELLED ROOM DROPS THE QUEUED SAVE. The player named a look they
+		-- then decided not to keep; writing the one they walked in with down under
+		-- that name is exactly the confusion the queue exists to avoid.
+		if decision.kept ~= true then pendingSave = nil end
 
 		local shop = serving
-		serving, offered = nil, {}
+		serving, offered, saved = nil, {}, {}
 		if shop == nil or decision.kept ~= true then return end
 
 		local slots = type(decision.slots) == 'table' and decision.slots or {}
@@ -202,11 +557,14 @@ function M.Start()
 	RegisterNetEvent(M.Event.LOOKS, function(payload)
 		offered = type(payload) == 'table' and type(payload.looks) == 'table'
 			and payload.looks or {}
+		-- Offered again: this may have arrived after the room opened, and the
+		-- Uniforms category exists only when this list is not empty.
+		offerGroups()
 	end)
 
 	RegisterNetEvent(M.Event.PUT_ON, function(payload)
 		if type(payload) ~= 'table' then return end
-		putOn(payload.wear)
+		dress(payload.wear)
 	end)
 
 	-- THE BILL COULD NOT BE TAKEN, so the clothes go back. The record comes from
@@ -218,13 +576,33 @@ function M.Start()
 	end)
 
 	RegisterNetEvent(M.Event.SAVED, function(payload)
-		TriggerEvent(M.Event.ON_STATE, { saved = type(payload) == 'table'
-			and payload.outfits or {} })
+		saved = type(payload) == 'table' and type(payload.outfits) == 'table'
+			and payload.outfits or {}
+		TriggerEvent(M.Event.ON_STATE, { saved = saved })
+		-- REDRAWN AND NOT JUST STORED. This arrives after a save, a delete and the
+		-- `LIST` the category button sends -- and in all three cases the list on
+		-- screen is the one that just went out of date.
+		if menu ~= nil and menuHandle ~= nil then
+			local held = menu.State()
+			local state = held.ok and held.value or nil
+			if type(state) == 'table' and state.open == true and state.owner == OWNER then
+				showOutfits()
+			end
+		end
 	end)
 
 	RegisterNetEvent(M.Event.CODE, function(payload)
 		if type(payload) ~= 'table' or type(payload.code) ~= 'string' then return end
 		TriggerEvent(M.Event.ON_STATE, { code = payload.code, id = payload.id })
+		-- SHOWN AS A TOAST AND NOT ONLY ON THE ROW. A code exists to be read out
+		-- loud to somebody else, so the moment it is minted is the moment it has to
+		-- be legible -- not two presses back inside a list.
+		OPX.Toast.Locale('shops.outfits.shared', { code = payload.code }, 'success')
+		-- And written onto the row, so it survives the toast fading.
+		local id = tonumber(payload.id)
+		for index = 1, #saved do
+			if tonumber(saved[index].id) == id then saved[index].code = payload.code end
+		end
 	end)
 end
 
@@ -232,5 +610,10 @@ end
 -- @author dop42
 function M.Stop()
 	if target ~= nil then pcall(target.Clear, OWNER) end
-	serving, offered = nil, {}
+	-- THE SCREENS GO TOO. A list or a form left up by a stopped module is a page
+	-- holding the player's cursor with nothing behind it to answer a press.
+	closeScreens()
+	serving, offered, saved = nil, {}, {}
+	roomOpen, pendingSave = false, nil
+	menuHandle, formHandle = nil, nil
 end
