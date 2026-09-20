@@ -292,7 +292,15 @@ function Menu.Register()
 		if player <= 0 or type(text) ~= 'string' then return end
 		if Server.Cooled(player, 'target:report', 1000) then return end
 		if Server.Permitted(player, M.OPENER) ~= true then return end
+		-- 640 AND NOT 160, because the line now carries the grants the eye DROPPED
+		-- rows for and that is the half an operator writes an ACL from. 160 bytes
+		-- held the count and about four command names, so the one report that
+		-- would have answered "why is there no weather on the sky" was cut in the
+		-- middle of the third name it was naming. The cap is still a cap -- this is
+		-- a client sentence reaching the server journal -- but it is sized for what
+		-- it now has to say: this module has 56 commands and a role can refuse all
+		-- of them at once.
 		Open77.log.info(('[admin] target rows, player %d: %s')
-			:format(player, M.Trimmed(text, 160) or '?'))
+			:format(player, M.Trimmed(text, 640) or '?'))
 	end)
 end

@@ -86,7 +86,7 @@ onUnmounted(clearRaise)
 <template>
   <div v-if="open" class="progress">
     <section class="plate op-plane op-ink">
-      <p class="label op-eyebrow">{{ label }}</p>
+      <p class="label op-eyebrow op-truncate">{{ label }}</p>
 
       <span class="track op-frame" data-augmented-ui="tr-clip border">
         <span
@@ -128,8 +128,15 @@ onUnmounted(clearRaise)
   width: 280px;
 }
 
+/* `.op-truncate` in the template keeps it to one line; `max-width` is what it
+   cuts to. The plate is a fixed 280px column, so a long caption used to wrap and
+   push the bar down the screen mid-action -- the one element on this surface that
+   must not move while it is being watched. The hint under the bar is NOT cut: it
+   is a fixed instruction telling the player which key stops this, and half an
+   instruction is worse than two lines of one. */
 .label {
   margin: 0;
+  max-width: 100%;
   color: var(--op-red-text);
   text-transform: uppercase;
 }

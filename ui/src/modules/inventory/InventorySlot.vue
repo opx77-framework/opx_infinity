@@ -238,7 +238,7 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
       </span>
 
       <span class="foot">
-        <span class="name">{{ label }}</span>
+        <span class="name op-truncate">{{ label }}</span>
         <span class="mass">{{ weight }}</span>
       </span>
     </template>
@@ -506,14 +506,10 @@ const showArt = computed(() => props.stack !== null && !props.broken.has(props.s
 
 .name {
   flex: 1 1 auto;
-  min-width: 0;
   font: 400 var(--op-fs-micro) / 1.2 var(--op-font-mono);
   letter-spacing: var(--op-track-label);
   text-transform: uppercase;
   color: currentcolor;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .cell.filled:hover .name,

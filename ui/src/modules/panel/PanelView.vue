@@ -803,8 +803,8 @@ function filter(value: string): void {
               @mouseenter="pointAt(item.id)"
               @mouseleave="pointAway"
             >
-              <span class="row-label op-label">{{ item.label }}</span>
-              <span v-if="item.detail" class="row-hint op-copy">{{ item.detail }}</span>
+              <span class="row-label op-label op-truncate">{{ item.label }}</span>
+              <span v-if="item.detail" class="row-hint op-copy op-truncate">{{ item.detail }}</span>
             </button>
 
             <p v-if="!visible.length" class="empty op-copy">
@@ -829,7 +829,7 @@ function filter(value: string): void {
           <div v-if="view.summary" class="summary">
             <div class="plate">
               <span class="plate-label op-eyebrow">{{ view.summary.label }}</span>
-              <span class="plate-value op-value">{{ view.summary.value }}</span>
+              <span class="plate-value op-value op-truncate">{{ view.summary.value }}</span>
             </div>
             <button
               v-if="summaryAction"
@@ -840,7 +840,7 @@ function filter(value: string): void {
               data-augmented-ui="tr-clip border"
               @click="press(summaryAction)"
             >
-              <span class="row-label op-label">{{ summaryAction.label }}</span>
+              <span class="row-label op-label op-truncate">{{ summaryAction.label }}</span>
             </button>
           </div>
 
@@ -864,7 +864,7 @@ function filter(value: string): void {
             data-augmented-ui="tr-clip border"
             @click="press(button)"
           >
-            <span class="row-label op-label">{{ button.label }}</span>
+            <span class="row-label op-label op-truncate">{{ button.label }}</span>
           </button>
         </footer>
       </div>
@@ -888,7 +888,7 @@ function filter(value: string): void {
           data-augmented-ui="tr-clip border"
           @click="press(button)"
         >
-          <span class="row-label op-label">{{ button.label }}</span>
+          <span class="row-label op-label op-truncate">{{ button.label }}</span>
         </button>
       </div>
     </div>
@@ -917,7 +917,7 @@ function filter(value: string): void {
             data-augmented-ui="tr-clip border"
             @click="press(button)"
           >
-            <span class="row-label op-label">{{ button.label }}</span>
+            <span class="row-label op-label op-truncate">{{ button.label }}</span>
           </button>
         </div>
       </div>
@@ -947,7 +947,7 @@ function filter(value: string): void {
               data-augmented-ui="tr-clip border"
               @click="press(button)"
             >
-              <span class="row-label op-label">{{ button.label }}</span>
+              <span class="row-label op-label op-truncate">{{ button.label }}</span>
             </button>
           </div>
 
@@ -974,7 +974,7 @@ function filter(value: string): void {
                    control it names, then what the control is currently standing
                    on. Reordering with `order` instead would leave the tab order
                    walking the line backwards. -->
-              <span class="slot-name op-eyebrow">{{ slider.label }}</span>
+              <span class="slot-name op-eyebrow op-truncate">{{ slider.label }}</span>
               <input
                 class="slot-track"
                 type="range"
@@ -988,7 +988,11 @@ function filter(value: string): void {
                 @input="scrubSlot(slider, ($event.target as HTMLInputElement).value)"
                 @change="settleSlot(slider)"
               >
-              <span class="slot-value op-value">{{ slider.value }}</span>
+              <!-- AFTER THE TRACK AND NOT UNDER THE NAME. The label is what the
+                   thumb is standing on, so it belongs next to the thumb's own
+                   instrument; `.op-truncate` because a record name is longer than
+                   any column that leaves room for a usable track. -->
+              <span class="slot-value op-value op-truncate">{{ slider.value }}</span>
               <!-- THE READOUT IS NOW A WAY IN. It was required technical filler
                    under rule 8 -- where the thumb stands, in a range the player
                    cannot otherwise see the size of -- and it still states that.
@@ -1033,7 +1037,7 @@ function filter(value: string): void {
             data-augmented-ui="tr-clip border"
             @click="press(button)"
           >
-            <span class="row-label op-label">{{ button.label }}</span>
+            <span class="row-label op-label op-truncate">{{ button.label }}</span>
           </button>
         </footer>
       </section>
@@ -1058,7 +1062,7 @@ function filter(value: string): void {
               data-augmented-ui="tr-clip border"
               @click="answer(false)"
             >
-              <span class="row-label op-label">{{ dialog.no }}</span>
+              <span class="row-label op-label op-truncate">{{ dialog.no }}</span>
             </button>
             <button
               type="button"
@@ -1066,7 +1070,7 @@ function filter(value: string): void {
               data-augmented-ui="tr-clip border"
               @click="answer(true)"
             >
-              <span class="row-label op-label">{{ dialog.yes }}</span>
+              <span class="row-label op-label op-truncate">{{ dialog.yes }}</span>
             </button>
           </footer>
         </section>
@@ -1383,22 +1387,7 @@ function filter(value: string): void {
 }
 
 .slot-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--op-red-idle);
-}
-
-/* AFTER THE TRACK AND NOT UNDER THE NAME. The label is what the thumb is
-   standing on, so it belongs next to the thumb's own instrument; ellipsised
-   because a record name is longer than any column that leaves room for a
-   usable track. */
-.slot-value {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Narrow enough that the four columns do not fit: the line folds into two, name
@@ -1542,12 +1531,6 @@ function filter(value: string): void {
   color: var(--op-red-idle);
 }
 
-.plate-value {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .status {
   margin: 0;
   font: 400 var(--op-fs-meta) / 1.4 var(--op-font-mono);
@@ -1647,19 +1630,11 @@ function filter(value: string): void {
 
 .row-label {
   flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .row-hint {
   flex: 1 1 auto;
-  min-width: 0;
   opacity: 0.7;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* THE ONE FIELD. The caret is the only thing on this surface allowed to blink,

@@ -10816,5 +10816,270 @@ do
 			tostring(nowhere.error))
 	end
 end
+
+-- ── the sky with no weather on it ────────────────────────────────────────────
+-- THE OWNER'S REPORT: "pour le target quand je interagis avec le ciel j'ai pas
+-- les options admin pour modifier la meteo etc."
+--
+-- Every part of the chain was innocent. The rows are built
+-- (`client/target.lua`), the command names are configured (`config/admin.lua`
+-- LINKS), and -- this is the part worth a check of its own, because it was the
+-- first thing suspected -- the SERVER's access map does carry them:
+-- `menuCommands` walks `Server.Commands()` AND every value in LINKS, so
+-- `opx.weather.set` is asked about and answered like any other name.
+--
+-- What it is answered WITH is the bug. Those three commands belong to the
+-- weather module, and a staff role written the way `README.md` writes one --
+-- `command.opx.admin` plus `command.opx.admin.*` -- holds neither
+-- `command.opx.weather.*` nor `command.opx.time`. So the map says false, the eye
+-- correctly refuses to draw a row it cannot run, and the sky keeps only the two
+-- rows whose grants are admin's own. The menu greys such a row and says
+-- "Refusé"; the eye has no greyed state and simply has nothing there, which is
+-- indistinguishable from a feature nobody wrote.
+--
+-- Two halves are checked. The first is that the map is honest -- if this ever
+-- stops naming the linked commands, the rows vanish for a DIFFERENT reason and
+-- the diagnosis below would be wrong. The second is that the eye now SAYS what
+-- it dropped and which grant would bring it back.
+section('the eye and the grants it does not hold')
+do
+	local senv, scontrol, swhy = boot('server')
+	check('the server boots for the access map', swhy == nil, swhy)
+
+	local map
+	if swhy == nil then
+		local admin = senv.OPX.Modules.Get('admin')
+		local PLAYER = 1
+		scontrol.Admit(PLAYER, 'user-1')
+		-- EXACTLY the role the README describes, and nothing else: the opener and
+		-- every command this module registers. No weather, no time, no inventory.
+		for _, command in ipairs(admin.Server.Commands()) do
+			scontrol.Allow(PLAYER, 'command.' .. command.name)
+		end
+
+		local realTrigger = senv.TriggerClientEvent
+		senv.TriggerClientEvent = function(name, target, payload)
+			if name == admin.Event.ACCESS then map = payload end
+			return realTrigger and realTrigger(name, target, payload)
+		end
+		senv.source = PLAYER
+		scontrol.netEvents[admin.Event.REFRESH]('access')
+		scontrol.Pump(10)
+
+		check('the server answers the access refresh', type(map) == 'table')
+		check('and it could read the ACL, so the map is authoritative',
+			map ~= nil and map.aclKnown == true)
+		check('this role does not hold the weather command',
+			map ~= nil and map.access['opx.weather.set'] ~= true)
+		check('while admin\'s own noclip IS granted to the same role',
+			map ~= nil and map.access['opx.admin.self.noclip'] == true)
+
+		-- THE HYPOTHESIS THIS KILLS, and it can only be killed from the other
+		-- side: the map carries `true` entries and nothing else, so a refused
+		-- command and a command never asked about look identical in it. Ask about
+		-- a SECOND player who holds the weather grant. If `menuCommands` walked
+		-- only `Server.Commands()` -- this module's own -- the name would be
+		-- missing from their map too, and every weather row would be hidden from
+		-- an operator whose ACL actually allows it.
+		local OTHER = 2
+		scontrol.Admit(OTHER, 'user-2')
+		scontrol.Allow(OTHER, 'command.' .. admin.OPENER)
+		scontrol.Allow(OTHER, 'command.opx.weather.set')
+		local granted
+		senv.TriggerClientEvent = function(name, target, payload)
+			if name == admin.Event.ACCESS and target == OTHER then granted = payload end
+			return realTrigger and realTrigger(name, target, payload)
+		end
+		senv.source = OTHER
+		scontrol.netEvents[admin.Event.REFRESH]('access')
+		scontrol.Pump(10)
+		check('the map DOES ask the ACL about a linked module\'s command',
+			granted ~= nil and granted.access['opx.weather.set'] == true,
+			'the access map covers only admin\'s own commands')
+		senv.TriggerClientEvent = realTrigger
+	end
+
+	local cenv, ccontrol, cwhy = boot('client')
+	check('the client boots for the eye', cwhy == nil, cwhy)
+
+	if cwhy == nil and map ~= nil then
+		local admin = cenv.OPX.Modules.Get('admin')
+
+		-- What this client told the server about its own registration. The report
+		-- is the only place a row that was never drawn is visible from anywhere
+		-- but the one machine, which is the whole reason it is being asserted on.
+		local reports = {}
+		cenv.TriggerServerEvent = function(name, arg)
+			if name == admin.Event.TARGET_REPORT then reports[#reports + 1] = arg end
+		end
+
+		local real = admin.Contracts.target
+		check('the eye contract is there to wrap', type(real) == 'table')
+
+		local sky = {}
+		local wrap = {
+			RegisterSky = function(owner, rows)
+				local answer = real.RegisterSky(owner, rows)
+				if answer.ok then
+					for _, row in ipairs(rows) do sky[#sky + 1] = row.id end
+				end
+				return answer
+			end,
+			Clear = function(owner)
+				sky = {}
+				return real.Clear(owner)
+			end,
+		}
+		admin.Contracts.target = setmetatable(wrap, { __index = real })
+
+		local function has(id)
+			for _, name in ipairs(sky) do
+				if name == id then return true end
+			end
+			return false
+		end
+
+		admin.Target.Access(map)
+		ccontrol.Pump(10)
+
+		-- THE REPORT, verbatim. `#sky` is what the operator sees; what is NOT in
+		-- it is what they wrote in about.
+		check('the two sky rows whose grants are admin\'s own are drawn',
+			has('admin_skyNoclip') and has('admin_skyPvp'), table.concat(sky, ','))
+		check('and not one weather preset is, which is the report',
+			not has('admin_skyWeather_sunny') and not has('admin_skyWeather_rain'),
+			table.concat(sky, ','))
+		check('nor the roll, nor the clock -- the "etc." in the report',
+			not has('admin_skyWeatherNext') and not has('admin_skyTime'),
+			table.concat(sky, ','))
+
+		-- AND NOW IT SAYS SO. One line, in the server journal, naming the grants.
+		local line = reports[#reports] or ''
+		check('the eye reports what it hid', line:find('hidden') ~= nil, line)
+		check('and names the weather grant, which is the acl.jsonc entry to add',
+			line:find('opx%.weather%.set') ~= nil, line)
+		check('and the roll', line:find('opx%.weather%.next') ~= nil, line)
+		check('and the clock', line:find('opx%.time') ~= nil, line)
+		-- THE SAME MECHANISM, ON A ROW NOBODY HAS REPORTED YET. `playerBag` ends
+		-- in the inventory module's own command, so this role loses it too.
+		check('and the bag row, hidden by the same mechanism on a player',
+			line:find('opx%.inventory%.open') ~= nil, line)
+		check('it does not name a grant this role DOES hold',
+			line:find('opx%.admin%.self%.noclip') == nil, line)
+
+		-- THE OTHER DIRECTION, so the check cannot pass by hiding everything: add
+		-- the three grants the README says the world controls need and the rows
+		-- come back.
+		local full = {}
+		for name, value in pairs(map.access) do full[name] = value end
+		full['opx.weather.set'] = true
+		full['opx.weather.next'] = true
+		full['opx.time'] = true
+		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
+		ccontrol.Pump(10)
+
+		check('granting command.opx.weather.* puts every preset on the sky',
+			has('admin_skyWeather_sunny') and has('admin_skyWeather_sandstorm'),
+			table.concat(sky, ','))
+		check('and command.opx.time puts the clock back',
+			has('admin_skyTime'), table.concat(sky, ','))
+		check('with the two that were always there still there',
+			has('admin_skyNoclip') and has('admin_skyPvp'), table.concat(sky, ','))
+	end
+end
+
+-- ── one line does not wrap, and it is written down once ──────────────────────
+-- THE OWNER'S OTHER REPORT: "fait en sorte que si un texte est trop long qu'il
+-- aille pas a la ligne". A label that outran its column wrapped onto a second
+-- line instead of being cut, and on the eye that moves every row under it while
+-- the ray is still on the one above.
+--
+-- The rule is CSS and belongs in CSS: truncation is a question about a rendered
+-- width in a proportional face, and Lua's `OPX.Text.Clean` cuts on a byte count,
+-- which is not the same question -- ten Ws and ten i's are ten bytes and nowhere
+-- near the same width. So the check is on the stylesheets, and it is the one
+-- `core/shared/glyphs.lua` earned: a rule that was written out by hand in
+-- twenty-one scoped blocks across ten module stylesheets, and had already
+-- drifted between them, now exists once and the modules may not grow a second
+-- copy.
+section('the one truncation rule')
+do
+	local function read(path)
+		local handle = io.open(path, 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		return body
+	end
+
+	local surface = read('ui/src/design-system/surface.css')
+	check('the design system stylesheet is readable', #surface > 0)
+	check('and it declares the one cut', surface:find('%.op%-truncate%s*{') ~= nil)
+
+	-- ALL FOUR DECLARATIONS, because three of them do nothing on their own.
+	-- `text-overflow` needs `overflow: hidden`, and neither does anything without
+	-- `white-space: nowrap` -- the property only applies to text that cannot wrap,
+	-- which is exactly how the label reached a second line past an ellipsis that
+	-- was already declared on it. `min-width: 0` is the flex half: a flex item's
+	-- automatic minimum is its content, so without it a long label refuses to
+	-- shrink and pushes the rest of the row out instead of being cut.
+	local body = surface:match('%.op%-truncate%s*{(.-)}') or ''
+	for _, entry in ipairs({
+		{ 'min-width: 0', 'min%-width:%s*0' },
+		{ 'overflow: hidden', 'overflow:%s*hidden' },
+		{ 'white-space: nowrap', 'white%-space:%s*nowrap' },
+		{ 'text-overflow: ellipsis', 'text%-overflow:%s*ellipsis' },
+	}) do
+		check(('the cut declares %s'):format(entry[1]), body:find(entry[2]) ~= nil, body)
+	end
+
+	-- AND NOWHERE ELSE. A module that writes the triple out again has forked the
+	-- rule, which is how the three glyph lists reached 47, 45 and 14 names.
+	local modules = {
+		'chat/ChatInput', 'chat/ChatLog', 'form/FormView', 'hud/HudInfo', 'hud/HudRoot',
+		'hud/HudStatus', 'hud/HudVehicle', 'hud/HudVitals', 'hud/HudVoice',
+		'inventory/InventoryGrid', 'inventory/InventorySlot', 'inventory/InventoryView',
+		'inventory/SlotbarRoot', 'menu/MenuView', 'notify/NotifyRoot', 'notify/NotifyToast',
+		'panel/PanelView', 'progress/ProgressRoot', 'prompts/PromptsRoot', 'spawn/SpawnView',
+		'tags/TagsRoot', 'target/TargetView',
+	}
+	local forked, unread = {}, {}
+	for _, name in ipairs(modules) do
+		local text = read('ui/src/modules/' .. name .. '.vue')
+		if #text == 0 then
+			unread[#unread + 1] = name
+		elseif text:find('text%-overflow') ~= nil then
+			forked[#forked + 1] = name
+		end
+	end
+	check('every module stylesheet was read', #unread == 0, table.concat(unread, ', '))
+	check('and not one of them declares its own text-overflow',
+		#forked == 0, table.concat(forked, ', '))
+
+	-- THE ROWS THE OWNER WAS LOOKING AT. A rule nothing uses is not a rule, so
+	-- the eye's own label -- the element the report was written about -- has to
+	-- carry the class.
+	local target = read('ui/src/modules/target/TargetView.vue')
+	check('the eye\'s row label takes the cut',
+		target:find('class="label op%-truncate"') ~= nil)
+	check('and so does a folder\'s count', target:find('class="value op%-truncate"') ~= nil)
+
+	-- THE EXEMPTIONS, asserted so that a later sweep cannot quietly cut them. A
+	-- sentence is not a label: a toast message, an item description and the eye's
+	-- own row hint are multi-line by design.
+	local toast = read('ui/src/modules/notify/NotifyToast.vue')
+	check('a toast message still wraps: it is a sentence, not a label',
+		toast:find('overflow%-wrap:%s*anywhere') ~= nil)
+	local inventory = read('ui/src/modules/inventory/InventoryView.vue')
+	check('an item description still wraps, to four lines and then a clamp',
+		inventory:find('line%-clamp:%s*4') ~= nil)
+	check('the eye\'s row hint still wraps', target:find('white%-space:%s*normal') ~= nil)
+
+	-- THE BUILT PAGE, because `web/index.html` is what ships and it is committed
+	-- separately from the sources it was built from. A rule that is in `ui/` and
+	-- not in `web/` is a rule the game does not have.
+	local built = read('web/index.html')
+	check('the shipped page is readable', #built > 0)
+	check('and the cut is in it', built:find('%.op%-truncate{') ~= nil)
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

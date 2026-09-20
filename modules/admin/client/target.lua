@@ -381,6 +381,47 @@ local function rowOf(context)
 	return row
 end
 
+--- The grants the last access map REFUSED, once each, in the order the rows ask
+--- for them.
+--
+-- THE OWNER REPORTED THIS AS A MISSING FEATURE AND IT IS A MISSING GRANT.
+-- "pour le target quand je interagis avec le ciel j'ai pas les options admin pour
+-- modifier la meteo etc." -- the ten weather and time rows were not drawn on the
+-- sky, and nothing anywhere said why.
+--
+-- The rows were built, the config had the command names, and the server's access
+-- map did ask the ACL about them -- `menuCommands` in `server/menu.lua` walks
+-- every value in LINKS as well as this module's own commands, so the first guess,
+-- that the map covered only admin's own, is wrong. The ACL simply said no.
+-- `opx.weather.set`, `opx.weather.next` and `opx.time` are the WEATHER module's
+-- commands, and a staff role written the way `README.md` writes one --
+-- `command.opx.admin` plus `command.opx.admin.*` -- holds neither. So `granted`
+-- correctly dropped every row that ends in one, and the sky was left with the two
+-- rows whose grants ARE admin's own, Noclip and PvP. The same mechanism takes
+-- `playerBag` off a player, which ends in `opx.inventory.open`.
+--
+-- The MENU does not have this problem, and the difference is the whole of the
+-- fix: it draws the row and greys it with "Refusé" (`denied` in `client/menu.lua`),
+-- so an operator can see that the row exists and that their role is what is in
+-- the way. The eye has no greyed state -- `Registry.Matches` refuses a row that
+-- is not enabled, so a row it cannot run is a row it cannot draw -- and an
+-- omission on a list nobody has ever seen complete is indistinguishable from a
+-- feature that was never written. Hence this: the eye cannot show the operator,
+-- so it tells the SERVER, in the one line it already sends per registration, and
+-- the names it prints are exactly the `command.<name>` entries to add to
+-- `acl.jsonc`.
+local function refusals()
+	local names, seen = {}, {}
+	for _, row in ipairs(ROWS) do
+		local grant = row.grant
+		if type(grant) == 'string' and grant ~= '' and not seen[grant] and not granted(grant) then
+			seen[grant] = true
+			names[#names + 1] = grant
+		end
+	end
+	return names
+end
+
 -- The definitions the access map grants, by kind, and their signature.
 local function wanted()
 	local byKind, ids = {}, {}
@@ -462,7 +503,18 @@ local function register(contract, byKind, signature)
 	registered = signature
 	local total = 0
 	for _, rows in pairs(byKind) do total = total + #rows end
-	report(('%d staff rows on the eye'):format(total))
+	-- THE ROWS THAT ARE NOT THERE ARE THE HALF WORTH READING. A count alone said
+	-- "26 staff rows on the eye" whether that was all 37 this module has or, as it
+	-- was for the operator who reported the missing weather, 26 of them -- so the
+	-- line was true and answered nothing. `refusals` names the grants, and a name
+	-- here is the `command.<name>` to put in `acl.jsonc`.
+	local missing = refusals()
+	if #missing == 0 then
+		report(('%d staff rows on the eye'):format(total))
+	else
+		report(('%d staff rows on the eye; %d hidden, this ACL does not grant: %s')
+			:format(total, #ROWS - total, table.concat(missing, ' ')))
+	end
 	return true
 end
 

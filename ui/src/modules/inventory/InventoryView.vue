@@ -754,7 +754,7 @@ try {
           <header class="head">
             <div class="head-text">
               <span class="eyebrow">{{ label('bag', 'BAG') }}</span>
-              <h1>{{ titleOf(primary, 'bag') }}</h1>
+              <h1 class="op-truncate">{{ titleOf(primary, 'bag') }}</h1>
             </div>
             <!-- The key the player actually has, rebinds included: Lua reads it
                  back off the host at send time rather than trusting the config. -->
@@ -845,7 +845,7 @@ try {
             <header class="head">
               <div class="head-text">
                 <span class="eyebrow">{{ label(secondary.kind, '') }}</span>
-                <h1>{{ titleOf(secondary, 'stash') }}</h1>
+                <h1 class="op-truncate">{{ titleOf(secondary, 'stash') }}</h1>
               </div>
             </header>
 
@@ -944,15 +944,15 @@ try {
 
           <div class="fact">
             <span class="cap-mono">{{ label('weight') }}</span>
-            <span class="value">{{ detail.weight }}</span>
+            <span class="value op-truncate">{{ detail.weight }}</span>
           </div>
           <div v-if="detail.ammo >= 0" class="fact">
             <span class="cap-mono">{{ label('ammo') }}</span>
-            <span class="value">{{ detail.ammo }}</span>
+            <span class="value op-truncate">{{ detail.ammo }}</span>
           </div>
           <div v-if="detail.serial" class="fact">
             <span class="cap-mono">{{ label('serial') }}</span>
-            <span class="value">{{ detail.serial }}</span>
+            <span class="value op-truncate">{{ detail.serial }}</span>
           </div>
 
           <div v-if="detail.wear >= 0" class="meter stack">
@@ -1016,7 +1016,7 @@ try {
               :disabled="busy"
               @click="doGive(person.id)"
             >
-              <span class="row-label">#{{ person.id }}</span>
+              <span class="row-label op-truncate">#{{ person.id }}</span>
               <span class="row-value">{{ person.distance }}{{ label('m', 'm') }}</span>
             </button>
             <div v-if="!nearby.length" class="sep">{{ label('nobody') }}</div>
@@ -1327,9 +1327,6 @@ try {
   letter-spacing: var(--op-track-head);
   text-transform: uppercase;
   color: var(--op-red-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .head h2 {
@@ -1670,14 +1667,10 @@ try {
 
 .fact .value {
   margin-left: auto;
-  min-width: 0;
   font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
   letter-spacing: var(--op-track-label);
   color: var(--op-text);
   font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .prose {
@@ -1750,9 +1743,6 @@ try {
 
 .row-label {
   flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .row-value {

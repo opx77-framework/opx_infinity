@@ -145,7 +145,7 @@ function share(value: number): number {
             <!-- The slash draws itself on with a scaleX on a child, never on the frame. -->
             <i class="slash" />
           </span>
-          <span v-if="voice.caption" class="caption">{{ voice.caption }}</span>
+          <span v-if="voice.caption" class="caption op-truncate">{{ voice.caption }}</span>
         </div>
 
         <!-- THE METER. The same object HudVitals.vue draws: a chamfered 1px track with
@@ -417,15 +417,11 @@ function share(value: number): number {
 
 .caption {
   flex: 1;
-  min-width: 0;
   text-align: right;
   font: 700 var(--op-fs-micro) / 1 var(--op-font-mono);
   letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
   color: var(--voice-tone);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .talking .caption {
