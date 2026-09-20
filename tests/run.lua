@@ -2365,7 +2365,36 @@ do
 		end
 
 		appearance.Wardrobe.Open('appearance')
-		control.Pump(30)
+
+		-- THE READ MUST BREATHE, and this is the check that says so. The defect
+		-- this whole section now guards was not a wrong answer: it was the right
+		-- answer computed in ONE resume, which exceeded the client's per-resume
+		-- instruction budget and unwound the coroutine with nothing logged
+		-- anywhere the operator could see. Desktop Lua has no such budget, so no
+		-- assertion about the RESULT can ever catch it -- only an assertion about
+		-- the shape of the work.
+		--
+		-- Forty frames is comfortably past the twenty-one a per-slot yield
+		-- needs -- three breaths a slot, seven slots -- and comfortably short of
+		-- the eighty-odd a chunked 2000-record read costs. The first number was
+		-- twenty and did NOT discriminate: the mutation passed. So: still reading here means it is chunking; already open
+		-- means somebody took the chunking out.
+		-- Asked of the OPENED note rather than of `IsOpen`, which answers
+		-- `phase ~= 'closed'` and is therefore true throughout the read.
+		control.Pump(40)
+		check('a 2000-record slot has not finished opening after 40 frames, so the '
+			.. 'read is chunked rather than done in one resume',
+			toldServer():find('the fitting room opened', 1, true) == nil, toldServer())
+
+		-- ONE FRAME PER `CATALOGUE_CHUNK` ENTRIES, which is why this is not 30 any
+		-- more. `readCatalogue` used to yield once per slot and blew the client's
+		-- per-resume instruction budget doing a whole slot in one go -- the defect
+		-- that made the fitting room silently not exist. It now breathes every 64
+		-- entries, so this 2000-record slot alone costs about sixty-five frames
+		-- and the whole read about eighty. Sized with headroom rather than to the
+		-- measurement, because the chunk is a tuning value and this test is about
+		-- the truncation line, not about how many frames the read takes.
+		control.Pump(200)
 		check('an answer that reaches the limit is reported, not swallowed',
 			toldServer():find('being truncated', 1, true) ~= nil, toldServer())
 		check('and the line names the slot and both numbers',

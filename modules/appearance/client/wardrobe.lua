@@ -304,6 +304,27 @@ for index = 1, #SLOTS do IS_SLOT[SLOTS[index]] = true end
 -- nobody is told about is the class of defect this room was.
 local RECORD_LIMIT = 2000
 
+-- Catalogue entries handled between two frames.
+--
+-- THE NUMBER THIS WHOLE EPISODE WAS ABOUT, and the owner is the one who found
+-- it: their client raised `Open77 script execution budget exceeded` at the
+-- `readCatalogue` call. That error is written on the PLAYER'S machine and never
+-- reaches the server journal, which is why five diagnoses ran on a silence that
+-- was not silent at all -- somebody was just reading it in the wrong place.
+--
+-- `readCatalogue` yielded once per SLOT, so one slot's work had to fit in one
+-- resume: up to 2000 records filtered, sorted, then indexed twice. The largest
+-- slot is around 650 and that is already past the per-resume budget. Exceeding
+-- it "unwinds straight out of the coroutine body -- it does not crash the
+-- resource, it does not repeat, and it logs nothing" (`core/client/scheduler.lua`).
+-- So `begin` never returned, `phase` stayed 'opening', and the fitting room was
+-- a feature that silently did not exist.
+--
+-- 64 is deliberately small. The cost of an extra frame here is invisible -- the
+-- room is opening, the player is looking at a loading world -- and the cost of
+-- being wrong the other way is this bug.
+local CATALOGUE_CHUNK = 64
+
 -- Milliseconds between two tries at opening the room after a creation, and how
 -- long a kept outfit's save is listened for.
 local RETRY_MS = 500
@@ -322,7 +343,13 @@ local SAVE_WAIT_MS = 30000
 -- room neither open nor closed and every later open refused `wardrobe_busy` for
 -- the session. Checked from the UPKEEP pass for the same reason as before -- it
 -- is the thing that still runs when the thread is what went.
-local OPENING_DEADLINE_MS = 10000
+-- RAISED WITH THE CHUNKING ABOVE. The catalogue now takes a frame per 64
+-- entries instead of one per slot -- roughly a hundred frames rather than seven
+-- -- and those frames are spent during the world load, where a frame is not
+-- 16 ms. Ten seconds was a comfortable ceiling for the old shape and a trap for
+-- this one: it would fire on an open that was working. The watchdog exists to
+-- unstick `phase`, not to race the thing it is watching.
+local OPENING_DEADLINE_MS = 25000
 
 -- Degrees one turn of the camera moves.
 local TURN_DEGREES = 45
@@ -741,18 +768,22 @@ end
 -- record this is removing.
 local function readCatalogue(mine)
 	local total = 0
+
+	--- One frame, and whether this attempt still owns the room.
+	local function breathe()
+		Wait(0)
+		return mine == generation
+	end
+
 	for index = 1, #SLOTS do
 		local slot = SLOTS[index]
-		-- Per slot, because this loop is the ONLY place in the whole open that
-		-- yields -- one frame each, at `Wait(0)` below -- so it is the only place
-		-- an open can stop without returning. If the watchdog ever names a slot,
-		-- it names the frame the worker was never resumed on.
 		openingStage = 'catalogue: ' .. tostring(slot)
 		local called, records, reason = pcall(Open77.equipment.records,
 			{ slot = slot, family = family, restricted = false, limit = RECORD_LIMIT })
 		if not called or type(records) ~= 'table' then
 			return nil, tostring(called and reason or records)
 		end
+		if not breathe() then return nil, 'superseded' end
 
 		local names = {}
 		for entry = 1, #records do
@@ -761,12 +792,19 @@ local function readCatalogue(mine)
 				record.nonvisual ~= true then
 				names[#names + 1] = record.record
 			end
+			if entry % CATALOGUE_CHUNK == 0 and not breathe() then return nil, 'superseded' end
 		end
+
+		-- On its own frame. `table.sort` is C and costs the VM little, but it is
+		-- the one step here that cannot be cut in half, so it is given a clean
+		-- budget rather than the remains of the filter's.
 		table.sort(names)
+		if not breathe() then return nil, 'superseded' end
 
 		for position = 1, #names do
 			known[names[position]] = slot
 			at[names[position]] = position
+			if position % CATALOGUE_CHUNK == 0 and not breathe() then return nil, 'superseded' end
 		end
 		pieces[slot] = names
 		total = total + #records
@@ -781,8 +819,7 @@ local function readCatalogue(mine)
 				'it is being truncated'):format(slot, #records, RECORD_LIMIT))
 		end
 
-		Wait(0)
-		if mine ~= generation then return nil, 'superseded' end
+		if not breathe() then return nil, 'superseded' end
 	end
 	return total
 end
