@@ -233,6 +233,29 @@ local function looksFor(source, shop)
 	return out
 end
 
+--- Dresses one player in a look, having told `appearance` the write is expected.
+--
+-- THE GRANT IS THE WHOLE REASON THIS IS A FUNCTION. `appearance` refuses a
+-- clothing save that did not come through a door the server knows about --
+-- otherwise the price of a change is whatever a rewritten client feels like
+-- paying -- and the three doors below dress a player WITHOUT opening a fitting
+-- room: a bought uniform, one of their own saved outfits, a code somebody read
+-- out. The clothes go on, the client's own debounced save follows a second or
+-- two later, and without this it would be refused as roomless -- which for
+-- `onWear` would mean money taken for clothes that do not survive the session.
+--
+-- The check is made before the clothes are sent and not after: a look put on a
+-- player whose save will be refused is worse than one that never went on.
+local function dressIn(source, look, wear)
+	if appearance == nil or type(appearance.AllowClothingSave) ~= 'function' then
+		refuse(source, 'shops.unavailable')
+		return false
+	end
+	appearance.AllowClothingSave(source, 'shops')
+	TriggerClientEvent(M.Event.PUT_ON, source, { look = look, wear = wear })
+	return true
+end
+
 --- "I am at this shop and I want the room."
 local function onOpen(source, key)
 	local shop, why = shopAt(source, key)
@@ -313,6 +336,13 @@ local function onWear(source, payload)
 		if not here then return refuse(source, 'shops.notHere') end
 	end
 
+	-- BEFORE THE MONEY. `dressIn` needs the `appearance` contract to grant the
+	-- save, and a till that charged for a uniform this server then could not put
+	-- on would be the one failure on this path nobody can undo.
+	if appearance == nil or type(appearance.AllowClothingSave) ~= 'function' then
+		return refuse(source, 'shops.unavailable')
+	end
+
 	if tuning.charge and look.cost > 0 then
 		local paid, reason = character.RemoveMoney(source, tuning.currency, look.cost,
 			('%s at %s'):format(look.label, shop.label))
@@ -320,7 +350,7 @@ local function onWear(source, payload)
 			{ total = look.cost }) end
 	end
 
-	TriggerClientEvent(M.Event.PUT_ON, source, { look = look.key, wear = look.wear })
+	dressIn(source, look.key, look.wear)
 end
 
 -- ── saved looks ─────────────────────────────────────────────────────────────
@@ -420,7 +450,7 @@ local function onLoad(source, payload)
 
 	local wear = equipmentOf(OPX.Storage.Decode(found.value.look, nil))
 	if wear == nil then return refuse(source, 'shops.outfitUnreadable') end
-	TriggerClientEvent(M.Event.PUT_ON, source, { look = tostring(found.value.name), wear = wear })
+	dressIn(source, tostring(found.value.name), wear)
 end
 
 --- "Forget this saved look."
@@ -489,7 +519,7 @@ local function onRedeem(source, payload)
 
 	local wear = equipmentOf(OPX.Storage.Decode(found.value.look, nil))
 	if wear == nil then return refuse(source, 'shops.outfitUnreadable') end
-	TriggerClientEvent(M.Event.PUT_ON, source, { look = tostring(found.value.name), wear = wear })
+	dressIn(source, tostring(found.value.name), wear)
 end
 
 --- Reads the config and declares the table. Never yields.

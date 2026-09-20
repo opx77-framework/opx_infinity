@@ -14887,5 +14887,156 @@ do
 			first == 1, first)
 	end
 end
+section('clothing saves need a fitting room somebody opened')
+do
+	-- THE EXPLOIT THIS PINS. `appearance:saveClothing` asked four questions --
+	-- is the payload a table, is it too soon, is a character loaded, is the
+	-- citizen id the loaded one -- and then wrote nine `Items.*` records and
+	-- republished the look to everybody. None of them asks where the player is
+	-- standing or whether a fitting room was ever put up, so a rewritten client
+	-- dressed itself out of the whole catalogue from anywhere in the city, and
+	-- `modules/shops` -- which charges per changed slot -- never saw it happen.
+	--
+	-- The same argument had already retired the `opx.appearance.wardrobe`
+	-- command ("a free door onto a priced room is not a convenience, it is the
+	-- price being optional"). The command was shut and the net event, which is
+	-- the wider door of the two because it needs no room at all, was left open.
+	local env, control, why = boot('server')
+	check('the server boots for the clothing door', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local appearance = OPX and OPX.Modules.Get('appearance') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	check('the appearance and character modules are both there',
+		type(appearance) == 'table' and type(character) == 'table')
+
+	if type(appearance) == 'table' and type(character) == 'table' then
+		local SAVE = appearance.Event.SAVE_CLOTHING
+		local REFUSED = appearance.Event.REFUSED
+		local OPERATION = appearance.Operation.SAVE_CLOTHING
+		check('the clothing door is registered on the wire',
+			type(control.netEvents[SAVE]) == 'function')
+
+		-- A record the shape check accepts, so that anything refused below is
+		-- refused for the reason under test and never for being malformed.
+		local function record(jacket)
+			return { schemaVersion = appearance.Clothing.VERSION,
+				equipment = { OuterChest = jacket }, wardrobe = {} }
+		end
+		check('the record these checks send is one the canonical form accepts',
+			appearance.Clothing.Canonical(record('Items.Jacket_Police_01')) ~= nil)
+
+		local PLAYER, OTHER = 91, 92
+		local CITIZEN = 'citizen-dresser'
+		local EMPTY = { schemaVersion = 1, equipment = {}, wardrobe = { outfits = {} } }
+
+		--- Puts a loaded character on the roster, with a clothing row or without.
+		local function load(stored)
+			character.Players[PLAYER] = { PlayerData = {
+				citizenId = CITIZEN, source = PLAYER, clothing = stored } }
+		end
+
+		--- Fires the save door and answers the refusal code sent back, or nil.
+		--
+		-- THE COOLDOWN IS CLEARED FIRST, and that is not tidiness. The door's own
+		-- 2 s floor is checked BEFORE the room is, so a second save inside it
+		-- comes back `error.tooFast` -- which is not `clothing.noFittingRoom`,
+		-- which is what every positive check below reads. Left in, this helper
+		-- would report "not refused for want of a room" for a save that never
+		-- reached the room question at all, and the section would pass with the
+		-- gate ripped out. Winding `GetGameTimer` on does NOT do it: `OPX.Now`
+		-- resolves the timer once, on first use, and the boot already used it.
+		local function save(player, citizen, jacket)
+			OPX.ForgetCooldowns(player)
+			local mark = #control.clientEvents
+			env.source = player
+			control.netEvents[SAVE]({ citizenId = citizen, clothing = record(jacket) })
+			env.source = nil
+			control.Pump(4)
+			for index = #control.clientEvents, mark + 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == REFUSED and sent.source == player and sent[2] == OPERATION then
+					return tostring(sent[1])
+				end
+			end
+			return nil
+		end
+
+		-- ── the door with nobody on the other side of it ──────────────────────
+		load(EMPTY)
+		check('a save that came through no fitting room at all is refused',
+			save(PLAYER, CITIZEN, 'Items.Jacket_Police_01') == 'clothing.noFittingRoom')
+
+		-- ── and the grant is what opens it ────────────────────────────────────
+		-- `OpenWardrobe` is the one door on this half: `shops` calls it from the
+		-- shop the player is standing in, `clothing` from the store they are
+		-- standing on, `admin` from its own ACL. None of those is reached here on
+		-- purpose -- what is under test is that the grant, and nothing else, is
+		-- what the save door reads.
+		check('the contract carries the grant those doors call',
+			type(appearance.AllowClothingSave) == 'function')
+		appearance.AllowClothingSave(PLAYER, 'test')
+		local granted = save(PLAYER, CITIZEN, 'Items.Jacket_Police_02')
+		check('a save behind a granted room is not refused for want of one',
+			granted ~= 'clothing.noFittingRoom', tostring(granted))
+
+		-- ── the grant belongs to ONE connection ───────────────────────────────
+		-- Keyed by the connection and not by the character, so the grant handed
+		-- to the player at the counter is not a grant for the one behind them in
+		-- the queue.
+		character.Players[OTHER] = { PlayerData = {
+			citizenId = 'citizen-other', source = OTHER, clothing = EMPTY } }
+		check('one player\'s grant is not another player\'s',
+			save(OTHER, 'citizen-other', 'Items.Jacket_01') == 'clothing.noFittingRoom')
+
+		-- ── a departure takes the grant with it ───────────────────────────────
+		-- A connection id is recycled, so a grant that outlived its holder is a
+		-- free wardrobe handed to whoever joins onto that id next. The roster is
+		-- rebuilt afterwards deliberately: what is under test is the GRANT
+		-- surviving a departure, and a player the roster no longer holds would be
+		-- refused `error.notLoggedIn` long before anything asked about a room.
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+		load(EMPTY)
+		check('a grant does not outlive the connection it was given to',
+			save(PLAYER, CITIZEN, 'Items.Jacket_Police_03') == 'clothing.noFittingRoom')
+
+		-- ── the join's own room, which this half never opens ──────────────────
+		-- The client offers it off `WARDROBE.OFFER_POLICY` the moment a character
+		-- enters the world, and says nothing to the server -- so without a grant
+		-- here the one room a player is GUARANTEED, the one a character is
+		-- dressed in at creation, would be the only room whose save is refused.
+		-- Under the shipped 'first' that is read as "this character has never had
+		-- clothing stored", which is `false`, and which the creator's own first
+		-- save is what writes over.
+		check('the shipped policy is the one this grant is written against',
+			appearance.ResolveWardrobePolicy() == appearance.WardrobePolicy.FIRST,
+			tostring(appearance.ResolveWardrobePolicy()))
+
+		local LOADED = OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded')
+		load(false)
+		check('and the same character is refused before the world entry says so',
+			save(PLAYER, CITIZEN, 'Items.Jacket_Police_04') == 'clothing.noFittingRoom')
+
+		control.Fire(LOADED, PLAYER, character.Players[PLAYER].PlayerData)
+		-- NOT `== nil`: there is no database in this harness, so a save that gets
+		-- past the room question goes on to be refused by storage instead. What
+		-- is asserted is which of the two refused it.
+		local creation = save(PLAYER, CITIZEN, 'Items.Jacket_Police_05')
+		check('a character with nothing stored may save what it was created in',
+			creation ~= 'clothing.noFittingRoom', tostring(creation))
+
+		-- And a RETURNING character is handed nothing, because no room is offered
+		-- to one: the grant is spent or not, and it cannot come round again --
+		-- the row exists from the first save on.
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+		load(EMPTY)
+		control.Fire(LOADED, PLAYER, character.Players[PLAYER].PlayerData)
+		check('a character that already has a row is handed no room by the join',
+			save(PLAYER, CITIZEN, 'Items.Jacket_Police_06') == 'clothing.noFittingRoom')
+
+		character.Players[PLAYER], character.Players[OTHER] = nil, nil
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

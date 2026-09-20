@@ -48,6 +48,20 @@ M.Event = {
 	-- claimed.
 	ASK = OPX.Event(NET, 'clothing', 'ask'),
 
+	-- Client to server: "I pressed the key at a store". Carries NOTHING, for the
+	-- same reason `ASK` carries nothing -- the server reads the position off the
+	-- connection and finds the store itself, so there is no named store for a
+	-- client to be wrong or dishonest about.
+	--
+	-- WHY THIS EXISTS AT ALL, when the key already opens the room locally: the
+	-- room is where clothes change, and `appearance` now refuses a clothing save
+	-- that no door on the SERVER opened. The key is a door; it was simply a door
+	-- this half never heard about. `config/clothing.lua` asked for exactly this
+	-- ("this door has to become a request the server answers after measuring the
+	-- distance itself"), and the comment there is now out of date in the good
+	-- direction: it is measured here.
+	OPEN = OPX.Event(NET, 'clothing', 'open'),
+
 	-- Server to client: the stores of this player's own routing bucket.
 	SYNC = OPX.Event(NET, 'clothing', 'sync'),
 

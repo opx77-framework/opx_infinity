@@ -246,6 +246,16 @@ function Runtime.Open(origin)
 	end
 	result.store = nearest.key
 
+	-- TOLD TO THE SERVER BEFORE THE ROOM GOES UP, and never waited on. The room
+	-- itself is a local decision and stays one -- every reason it may not open is
+	-- knowable here and nowhere else -- but the SAVE that comes out of it is not:
+	-- `appearance` refuses a clothing write that no server-side door opened, and
+	-- this is that door being reported. The server measures the distance to the
+	-- store again for itself and ignores this entirely if the player is not at
+	-- one, so a client that fires it from the other side of the city gets a room
+	-- it cannot save anything out of.
+	TriggerServerEvent(M.Event.OPEN)
+
 	local api = OPX.Api.Get('appearance')
 	if type(api) ~= 'table' or type(api.OpenWardrobe) ~= 'function' then
 		-- Named rather than silent, and named as the missing CONTRACT: the
