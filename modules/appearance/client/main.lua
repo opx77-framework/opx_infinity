@@ -321,8 +321,22 @@ function M.Runtime.BodyFamily()
 	end
 	if loadedFamily ~= nil then return loadedFamily end
 	local bootstrap = readBootstrap()
-	if bootstrap and bootstrap.phase == 'ready' and M.IsFamily(bootstrap.family) then
-		return bootstrap.family
+	if bootstrap and bootstrap.phase == 'ready' then
+		-- BOTH SPELLINGS, and not out of indecision. This read was `.family`
+		-- alone, and the devkit's card for `Open77.session.characterBootstrap`
+		-- documents the field as `bodyFamily` -- its own example prints
+		-- `bootstrap.bodyFamily`. So the fallback silently answered nil, and
+		-- being the LAST fallback is exactly what made that invisible: the two
+		-- readings above it usually succeed, and when they did not the caller
+		-- simply got no family rather than a wrong one.
+		--
+		-- The devkit is pinned to op77.76 while this server runs 82+, and there
+		-- is no game here to settle which spelling the live build answers. Both
+		-- cost one comparison, and reading both is correct under either --
+		-- guessing one and being wrong is another silent nil.
+		local family = bootstrap.bodyFamily
+		if not M.IsFamily(family) then family = bootstrap.family end
+		if M.IsFamily(family) then return family end
 	end
 	return nil
 end
