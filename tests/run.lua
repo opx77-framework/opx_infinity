@@ -2481,6 +2481,196 @@ do
 	end
 end
 
+-- ── what the client pays for every second it is doing nothing ────────────────
+-- A pass that recomputes an answer that did not change is the whole subject. The
+-- three checks below are the three shapes it took, and each of them is a
+-- REGRESSION GUARD rather than a feature: nothing a player can see changes if
+-- one of them fails, which is exactly why they have to be here.
+--
+-- The counters are on the HOST BRIDGES, not on the Lua. A host read is the unit
+-- that costs on the platform, and counting it is the only figure that survives
+-- the difference between this machine and a game.
+section('the standing cost')
+do
+	local pressed = false
+	local keyCallbacks = {}
+	local reads = { isDown = 0, keyFor = 0 }
+	local pools = { health = 100, armor = 0, stamina = 100 }
+
+	--- Everything the client half reaches for that the plain harness has no stub
+	--- for. Without the camera and the cursor `canPick` refuses and the target
+	--- module registers its sweep and nothing else, so the two jobs under test
+	--- would never exist to be counted.
+	local function prelude(env)
+		local O = env.Open77
+		O.input = {
+			isDown = function() reads.isDown = reads.isDown + 1 return pressed end,
+			keyFor = function() reads.keyFor = reads.keyFor + 1 return 'ALT' end,
+			cursor = function() return { inBounds = true, captured = false } end,
+			isCaptured = function() return false end,
+			block = function() return true end,
+		}
+		O.camera = { screenRaycast = function() return { hit = false } end }
+		O.stats = {
+			get = function()
+				return {
+					health = { value = pools.health, maximum = 100 },
+					armor = pools.armor,
+					stamina = { value = pools.stamina, maximum = 100 },
+				}
+			end,
+		}
+		-- The body wins over the canonical pool for damage the server never hears
+		-- of, so this is the reading the gauge column actually draws.
+		O.character.state = function()
+			return {
+				health = pools.health, attached = true, alive = true,
+				position = { x = 0, y = 0, z = 0 },
+			}
+		end
+		-- Keyed by id: half the client registers a mapping, and the last one to do
+		-- so would otherwise be the only one a test could press.
+		env.RegisterKeyMapping = function(id, _, _, callback) keyCallbacks[id] = callback end
+	end
+
+	local env, control, why = boot('client', nil, prelude)
+	if why ~= nil then
+		check('the client half loads', false, why)
+	else
+		local OPX = env.OPX
+
+		local function registered(name)
+			for _, line in ipairs(OPX.Scheduler.Report()) do
+				if line:match('^' .. name .. '%s') then return true end
+			end
+			return false
+		end
+
+		-- ── the job that only exists while there is something to do ───────────
+		-- `target:resolve` slices a pick at 25ms, the fastest interval in the
+		-- resource. The one client loop sleeps the nearest deadline, so a job at
+		-- that interval sets the floor on how often the loop wakes AT ALL --
+		-- registered for the session it woke it forty times a second to read a
+		-- nil and return. It is registered by the pick and cancelled by the last
+		-- slice.
+		check('the eye is up and its standing jobs with it', registered('target:watch'))
+		check('but the slicer is not standing: nothing is being sliced',
+			not registered('target:resolve'))
+
+		-- ── the key read that decides a boolean that was already decided ──────
+		-- `armed` is a latch: the press drops it, the release raises it. Reading
+		-- the key to raise one that is already up is two host reads, twenty times
+		-- a second, for the whole session.
+		reads.isDown, reads.keyFor = 0, 0
+		control.Pump(20)
+		check('an eye at rest reads the key not at all',
+			reads.isDown == 0 and reads.keyFor == 0,
+			('isDown=%d keyFor=%d'):format(reads.isDown, reads.keyFor))
+
+		-- AND IT STILL RE-ARMS, which is the half that matters: a gate that never
+		-- opens is not an optimisation, it is a key that works once.
+		local keyCallback = keyCallbacks['opx.target.activate']
+		if keyCallback == nil then
+			check('the target key was mapped', false, 'no RegisterKeyMapping callback')
+		else
+			pressed = true
+			keyCallback()
+			pressed = false
+			reads.isDown, reads.keyFor = 0, 0
+			control.Pump(20)
+			check('a press puts the latch down and the read comes back',
+				reads.isDown > 0, reads.isDown)
+
+			-- Released and observed: the latch is up again and the reads stop.
+			reads.isDown, reads.keyFor = 0, 0
+			control.Pump(20)
+			check('and stops again once the release has been seen',
+				reads.isDown == 0, reads.isDown)
+		end
+
+		-- ── the payload built thirty times a second to be thrown away ─────────
+		-- `hud:vitals` is change-gated on a signature, and building that
+		-- signature was the cost: a row table, five `tostring`s and a concat per
+		-- gauge and one more over the lot, at 30 Hz, discarded whenever the pools
+		-- had not moved.
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] ~= nil then page = candidate end
+		end
+		if page == nil then
+			check('the overlay page exists', false)
+		else
+			local function vitals()
+				local count = 0
+				for _, message in ipairs(page.sent) do
+					if message.channel == 'opx:hud:vitals' then count = count + 1 end
+				end
+				return count
+			end
+
+			-- COUNTING SENDS IS NOT ENOUGH, and the reason is the whole point of
+			-- the change: the push was ALREADY gated on a signature, so a pass
+			-- that rebuilt the column and compared it equal sent nothing either
+			-- way. The cost was the rebuild, and the only way to see it from out
+			-- here is to watch the configuration the rebuild reads. Each gauge
+			-- row is proxied so that reading its `SOURCE` -- which `gauges()`
+			-- does once per row per call and nothing else does at all -- counts.
+			local builds = 0
+			do
+				local settings = OPX.Modules.Get('hud').Settings
+				local configured = settings.GAUGES
+				local proxied = {}
+				for index = 1, #configured do
+					local row = configured[index]
+					proxied[index] = setmetatable({}, {
+						__index = function(_, field)
+							if field == 'SOURCE' then builds = builds + 1 end
+							return row[field]
+						end,
+					})
+				end
+				settings.GAUGES = proxied
+			end
+
+			-- The join screens own the display until they say otherwise, and a
+			-- covered HUD samples nothing at all.
+			env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'entry', 'state'), { open = false })
+			env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'spawn', 'state'), { open = false })
+			control.PageEmit(page, 'opx:hud:ready', {})
+			control.Pump(10)
+
+			local settled = vitals()
+			check('the gauge column reaches the page', settled > 0, settled)
+
+			builds = 0
+			control.Pump(40)
+			check('and a pool that did not move draws nothing further',
+				vitals() == settled, ('%d -> %d'):format(settled, vitals()))
+			check('nor builds the column it would have thrown away',
+				builds == 0, builds)
+
+			-- THE HALF THE GATE COULD BREAK. A gate that never lets go is a
+			-- health bar frozen at whatever it said when the player spawned.
+			pools.health = 41
+			control.Pump(10)
+			check('a pool that moved is drawn', vitals() > settled,
+				('%d -> %d'):format(settled, vitals()))
+			check('and the column was built to draw it', builds > 0, builds)
+
+			-- A fraction of a percent is not a percent. The gauges draw whole
+			-- numbers, so a pool jittering below the rounding is not a change,
+			-- and a gate that compared the raw pool would fire on every pass.
+			local drawnAt41 = vitals()
+			pools.health = 41.4
+			builds = 0
+			control.Pump(20)
+			check('a move too small to round to a different percent is not',
+				vitals() == drawnAt41 and builds == 0,
+				('sent %d -> %d, built %d'):format(drawnAt41, vitals(), builds))
+		end
+	end
+end
+
 -- ── the registry, against declarations the resource does not ship ────────────
 section('ui focus')
 do
