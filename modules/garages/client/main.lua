@@ -35,8 +35,10 @@ local GROUP = 'spot'
 local spots = {}
 local markers = {}
 
--- The spot the player is standing on, and whether its row is up.
-local nearest, shown = nil, false
+-- The spot the player is standing on, whether its row is up, and which label
+-- that row carries: the same key brings a vehicle out and puts one away, so the
+-- row has two possible texts and the change between them is a redraw.
+local nearest, shown, shownLabel = nil, false, nil
 
 -- Whether the key mapping answered.
 local keyRegistered = false
@@ -87,6 +89,27 @@ local function captured()
 	if type(input) ~= 'table' or type(input.isCaptured) ~= 'function' then return false end
 	local read, answer = pcall(input.isCaptured)
 	return read and answer == true
+end
+
+-- Whether the player is sitting in a vehicle. This is the client's half of the
+-- one decision the marker makes, and it is a HINT: it chooses which text the row
+-- shows, and nothing else. The server asks the host the same question before it
+-- puts anything away.
+local function seated()
+	local vehicles = Open77.vehicles
+	if type(vehicles) ~= 'table' or type(vehicles.getPlayerSeat) ~= 'function' then
+		return false
+	end
+	local read, assignment = pcall(vehicles.getPlayerSeat)
+	return read and type(assignment) == 'table'
+end
+
+-- What the key is about to do, as a locale key: put away while seated, and take
+-- out at a marker otherwise.
+local function promptLabel()
+	if nearest == nil then return nil end
+	if seated() then return 'garages.prompt.putAway' end
+	return 'garages.prompt.' .. nearest.kind
 end
 
 -- ── the markers ─────────────────────────────────────────────────────────────
@@ -176,10 +199,13 @@ local function keyLabel()
 	return OPX.Lib.Input.KeyFor(declared.ID) or declared.DEFAULT
 end
 
--- Brings the strip in line with where the player is standing.
+-- Brings the strip in line with where the player is standing AND with what they
+-- are sitting in: a row that went on saying "bring out a vehicle" while the
+-- player sat in one would be naming the wrong job for the key under it.
 local function syncPrompt()
 	local want = nearest ~= nil and keyLabel() ~= nil and not captured()
-	if want == shown then return end
+	local label = want and promptLabel() or nil
+	if want == shown and label == shownLabel then return end
 
 	local api = OPX.Api.Get('prompts')
 	if api == nil or type(api.Show) ~= 'function' or type(api.Hide) ~= 'function' then
@@ -193,13 +219,13 @@ local function syncPrompt()
 		return
 	end
 
-	shown = want
+	shown, shownLabel = want, label
 	local ran, answer
 	if want then
 		ran, answer = pcall(api.Show, OWNER, GROUP, { rows = { {
 			keys = { action = keySettings().ID },
 			-- Short on purpose: the strip never wraps a line.
-			label = locale('garages.prompt.' .. nearest.kind),
+			label = locale(label),
 		} } })
 	else
 		ran, answer = pcall(api.Hide, OWNER, GROUP)
@@ -295,6 +321,9 @@ function Runtime.Report()
 		markers = drawn,
 		nearest = nearest and nearest.key or nil,
 		shown = shown,
+		-- Which of the key's two jobs the row is naming, so a diagnostic can tell
+		-- a row that never went up from one that went up saying the wrong thing.
+		label = shownLabel,
 		key = keyLabel(),
 	}
 end
@@ -342,7 +371,7 @@ end
 -- @author XEROX710
 function Runtime.Init()
 	spots, markers = {}, {}
-	nearest, shown, keyRegistered = nil, false, false
+	nearest, shown, shownLabel, keyRegistered = nil, false, nil, false
 	reportedMarkers, reportedStrip = false, false
 	scanJob, askJob = nil, nil
 end
@@ -406,12 +435,17 @@ function Runtime.Start()
 			scan()
 		end)
 
-	RegisterNetEvent(M.Event.ANSWER, function(key, ok, failure, plate)
+	RegisterNetEvent(M.Event.ANSWER, function(key, ok, failure, plate, action)
 		local verdict = {
 			spot = type(key) == 'string' and key or nil,
 			ok = ok == true,
 			error = ok ~= true and tostring(failure or 'garages.refused') or nil,
 			plate = plate,
+			-- 'brought', 'recalled' or 'stored': which of the key's jobs the server
+			-- actually did. Carried rather than guessed at from the toast, because
+			-- "a car came out" and "the car was already out and had to be moved"
+			-- are different facts about the same marker.
+			action = type(action) == 'string' and action or nil,
 			source = 'server',
 		}
 		publish(verdict)

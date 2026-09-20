@@ -208,7 +208,7 @@ function Host.Environment(side, database)
 	-- creation and then raised, so every bring-out was answered as a refusal
 	-- while the vehicle it created sat in the world.
 	local control
-	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves
+	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
 	local bodies, effects, travels, notices, placement
 
 	-- Replicated state bags, by `<kind>:<id>`. A REAL store and not an accepting
@@ -302,14 +302,33 @@ function Host.Environment(side, database)
 			create = function(options)
 				vehicleCreates[#vehicleCreates + 1] = options
 				if vehicles.refuse ~= nil then return nil, tostring(vehicles.refuse) end
-				return '0x0000000000000001'
+				-- A DISTINCT id per creation, the way the engine hands them out. A stub
+				-- that answered one constant made every live vehicle the same vehicle
+				-- to anything matching by id -- the seat oracle among them -- so a
+				-- player sitting in one car could be read as sitting in another.
+				vehicles.next = (vehicles.next or 0) + 1
+				return ('0x%016x'):format(vehicles.next)
 			end,
-			get = function() return nil end,
-			remove = function() return true end,
+			-- What a live vehicle projects. Nil is "the host knows nothing about
+			-- it", which is one of the two answers a caller has to survive;
+			-- `vehicles.snapshot` is the other, and it is where an occupant is set
+			-- so the refusal that protects a driver can be exercised.
+			get = function() return vehicles.snapshot end,
+			-- Recorded, because "the vehicle was put away" and "it is still in the
+			-- world with a row that says stored" read identically from a return
+			-- value. The comment above has always promised this list.
+			remove = function(id)
+				vehicleRemoves[#vehicleRemoves + 1] = id
+				return true
+			end,
 			update = function() return true end,
 			getDamage = function() return {} end,
 			setDamage = function() return true end,
 			flags = function() return {} end,
+			-- The seat THIS client is in, which is what tells the strip whether the
+			-- key is about to take a vehicle out or put one away. Slot 1 is the
+			-- local player here, the same convention `state.localPlayer` uses.
+			getPlayerSeat = function() return seats[1] end,
 		},
 
 		-- World markers. The stub validates exactly what `client/src/api/Markers.cpp`
@@ -431,6 +450,12 @@ function Host.Environment(side, database)
 			respawn = function() return true end,
 			revive = function() return true end,
 			setArmor = function() return true end,
+			-- The seat a connection is sitting in, or nil. The marker key's whole
+			-- behaviour turns on this answer -- it is what decides whether the key
+			-- puts a vehicle away or brings one out -- so a suite that could not
+			-- set it could not exercise half the door. `control.Seat` is the way.
+			getVehicleSeat = function(playerId) return seats[tonumber(playerId) or playerId] end,
+
 			-- The one native that hides a body. Recorded rather than accepted: on
 			-- the server a veil is a REASON and here it is a boolean, and a test
 			-- that could not read the boolean could not tell a body that was
@@ -572,10 +597,16 @@ function Host.Environment(side, database)
 	input = { captured = false, keys = {}, down = {} }
 	acl = { granted = {} }
 	-- Set `refuse` to make the engine refuse a creation, the way an unsupported
-	-- record or a full world would.
-	vehicles = { refuse = nil }
+	-- record or a full world would, and `snapshot` to make `get` answer a live
+	-- vehicle's projection -- the occupied case, which is the one a recall has to
+	-- refuse.
+	vehicles = { refuse = nil, snapshot = nil }
 	vehicleCreates = {}
 	vehicleRemoves = {}
+
+	-- Who is sitting in what, by player id. Empty is "everybody is on foot",
+	-- which is the answer most of the suite wants and one caller has to survive.
+	seats = {}
 
 	-- Bodies the server half hid or gave back, keyed by player id, with every
 	-- write in order -- a veil applied twice reads differently from one that
@@ -812,6 +843,10 @@ function Host.Environment(side, database)
 		-- Key mappings the runtime declared, by id.
 		keyMappings = keyMappings,
 
+		-- The vehicle stubs themselves: what `get` answers and what the engine
+		-- refuses are both set through here.
+		vehicles = vehicles,
+
 		-- Every argument list `Open77.vehicles.create` was called with, and every
 		-- id `remove` was called with.
 		vehicleCreates = vehicleCreates,
@@ -851,6 +886,9 @@ function Host.Environment(side, database)
 
 		--- Puts an account on a slot, or clears it when `userId` is nil.
 		Admit = function(playerId, userId) control.accounts[playerId] = userId end,
+
+		--- Puts a player in a vehicle, or takes them out when it is nil.
+		Seat = function(playerId, assignment) seats[tonumber(playerId) or playerId] = assignment end,
 
 		--- Plays the page: invokes whatever the runtime wired to that channel,
 		--- exactly as the real bridge would when the page emits.

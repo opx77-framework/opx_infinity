@@ -9,6 +9,20 @@
 -- theirs -- and only then asks the `vehicles` contract to create it, AT the
 -- spot and facing the spot's HEADING, never beside the player.
 --
+-- THE ONE KEY DOES TWO THINGS, AND ONLY THE SERVER DECIDES WHICH. Standing on a
+-- marker, the key brings one of the character's own vehicles out AT the spot.
+-- Sitting in one of them, the same key puts it AWAY, filed under the spot the
+-- player is standing on so that is where it comes out next time. The seated
+-- question is answered by the host's own seat assignment and the plate the
+-- `vehicles` contract holds, never by the client; the client only chooses which
+-- of the two texts the row names.
+--
+-- A VEHICLE OF THEIRS THAT IS ALREADY OUT IS MOVED, NOT IGNORED. It used to be
+-- answered with the id it already had -- `Ok`, "brought out", and an empty spot
+-- in front of the player, because the car was on the other side of the map. The
+-- `vehicles` contract recalls it to the named place instead, and refuses when
+-- somebody is sitting in it.
+--
 -- What comes out is what the character already owns: this module spawns no new
 -- vehicle and creates no row. A spot with nothing eligible answers a refusal
 -- that says so, rather than handing out a car the player does not have.
