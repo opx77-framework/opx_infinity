@@ -338,6 +338,11 @@ local RETRYABLE = {
 	player_down = true,
 	input_captured = true,
 	no_view = true,
+	-- RETRIED, AND ITS CLOCK DOES NOT RUN -- see `awaitRoom`. The spawn selector
+	-- gives the player forty-five seconds to choose and the room's own window is
+	-- sixty, so a room that merely waited would be timed out by somebody else's
+	-- deliberation rather than by anything about the room.
+	spawn_up = true,
 }
 
 -- closed, opening while the puppet is asked for, or open; and the room
@@ -387,6 +392,19 @@ local outfitCleared, savedPerspective, orbit = false, nil, 180
 -- Creation handoff generation, so an older wait stops, and the kept outfit whose
 -- save is listened for.
 local creationWatch, awaitSave = 0, nil
+
+-- Whether the spawn selector owns the screen right now.
+--
+-- THE JOIN HAS THREE SCREENS AND THEY WERE NEVER SEQUENCED. `modules/spawn`
+-- already writes this problem down in its own manifest, about the other two:
+-- "a brand new character is asked for a name and a spawn at the same moment,
+-- and two modals on one keyboard is one modal losing its focus". The fitting
+-- room is the third, and nothing ordered it against the spawn menu -- so a
+-- creation offered its room into a screen that was already up, every time.
+--
+-- Tracked rather than asked, because `spawn` publishes the state and exposes no
+-- reader; the event is on the local bus and carries `{ open, phase }`.
+local spawnUp = false
 
 -- The character the live retry watch is owed to, or nil when none is running.
 -- Read by the `characterChanged` handler, which otherwise cannot tell the
@@ -533,6 +551,7 @@ local function refusal()
 		type(Open77.equipment.records) ~= 'function' then why = 'equipment_api_unavailable'
 	elseif Runtime.IsDown() then why = 'player_down'
 	elseif not playable() then why = 'player_unavailable'
+	elseif spawnUp then why = 'spawn_up'
 	elseif OPX.Lib.Input.IsCaptured() then why = 'input_captured'
 	end
 
@@ -1054,9 +1073,33 @@ local function awaitRoom(owner, creation, citizenId, resumed)
 	watchCitizen = citizenId
 	CreateThread(function()
 		local deadline, reason, said = Runtime.NowMs() + creationWaitMs(), nil, nil
+		local traced = false
+
+		-- THE TRACE, and it is here because four rounds of elimination have now
+		-- run out of things to eliminate. The owed line prints, and then nothing
+		-- does: not a refusal, not a supersede, not the expiry -- and the expiry
+		-- is only reached once `begin` has RETURNED, so its silence says the loop
+		-- is not coming back round rather than that the window is still open.
+		-- That leaves "the thread never started" and "the first attempt never
+		-- finished", which are indistinguishable from outside and are told apart
+		-- by exactly two lines. They come out on the first pass only.
+		Runtime.Note(('the retry for %s is running; it has %d ms')
+			:format(tostring(citizenId), creationWaitMs()))
+
 		while mine == creationWatch and Runtime.NowMs() < deadline do
 			local ok
 			ok, reason = begin(owner, creation, citizenId)
+			if not traced then
+				traced = true
+				Runtime.Note(('the first attempt for %s answered ok=%s, %s')
+					:format(tostring(citizenId), tostring(ok), tostring(reason or 'no reason')))
+			end
+
+			-- THE CLOCK DOES NOT RUN WHILE ANOTHER JOIN SCREEN IS UP, which is the
+			-- rule `clothing.lua` already applies to the creator. The spawn menu
+			-- gives the player 45s and this window is 60s, so without this a room
+			-- could be withdrawn for a delay that was somebody else's by design.
+			if reason == 'spawn_up' then deadline = Runtime.NowMs() + creationWaitMs() end
 			if ok or reason == 'wardrobe_busy' then
 				if not ok then
 					-- Silent until now, and one of only three ways out of this loop
@@ -1306,6 +1349,22 @@ end
 --- Wires both views to the decisions this module reaches.
 -- @author dop42
 function M.Wardrobe.Wire()
+	-- THE THIRD JOIN SCREEN, ordered against the second. `spawn` publishes its
+	-- own up/down on the local bus and exposes no reader, so it is tracked here.
+	--
+	-- ASKED FOR BY NAME AND NOT DEPENDED ON: a runtime without the spawn module
+	-- simply never sets this, `refusal` never returns `spawn_up`, and the room
+	-- behaves exactly as it did before. That is the same shape as the optional
+	-- `diagnostics` relay, and it is why this is not a hard cross-module import.
+	local spawn = OPX.Modules.Get('spawn')
+	local channel = type(spawn) == 'table' and type(spawn.Event) == 'table'
+		and spawn.Event.ON_STATE or nil
+	if channel ~= nil then
+		AddEventHandler(channel, function(state)
+			spawnUp = type(state) == 'table' and state.open == true
+		end)
+	end
+
 	AddEventHandler(M.Event.ON_DECISION, function(decision)
 		if type(decision) ~= 'table' then return end
 		local event = decision.event
