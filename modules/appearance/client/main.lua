@@ -1155,6 +1155,17 @@ local function registerEvents()
 		Runtime.Notify('error', 'appearance.panelUnavailable', { reason = tostring(reason) })
 	end)
 
+	-- THE CLIENT STILL DECIDES. The server only says "staff asked for this"; every
+	-- reason a room cannot open -- the puppet not alive, another surface holding
+	-- the keyboard, a save in flight -- is knowable here and nowhere else, so the
+	-- gate is unchanged and a refusal is reported to the player whose screen it
+	-- is. The operator who asked sees their own answer through the admin menu.
+	RegisterNetEvent(M.Event.OPEN_WARDROBE, function()
+		local ok, reason = M.Wardrobe.Open('appearance')
+		if ok then return end
+		Runtime.Notify('error', 'wardrobe.unavailable', { reason = tostring(reason) })
+	end)
+
 	-- One door for both refusals, dispatched by the operation each one names.
 	-- Registering the same net event name twice is a coin toss on which handler
 	-- survives, and the answer to a face save must never be eaten by the clothing

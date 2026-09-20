@@ -409,6 +409,13 @@ local function onOwnChanged(payload)
 			lock = nil
 		end
 	end
+	-- THE WALK LEASE FOLLOWS THE STATE, and it is taken here because this is the
+	-- single funnel for "what my own body is doing now" -- every start, every
+	-- stop, every expiry and every failure arrives through it. An emote that
+	-- does not walk, one this client does not know, and no emote at all are the
+	-- same answer to `Follow`: release. See `client/walk.lua`.
+	M.Walk.Follow(payload.active == true, payload.animation)
+
 	showPrompt(payload.active == true)
 end
 
@@ -422,6 +429,11 @@ end
 -- Expires requests with no verdict and ends a playback whose owning module has
 -- stopped: a caller that started a playback takes it with it.
 local function sweep()
+	-- THE WALK WATCHDOG, first, because a lease that outlived its emote is the
+	-- one fault in this module a player cannot work around: they simply walk for
+	-- the rest of the session. It is cheap when nothing is held.
+	M.Walk.Check()
+
 	local atMs = OPX.Now()
 	for id, request in pairs(pending) do
 		if atMs - request.atMs > PENDING_MS then
@@ -478,5 +490,9 @@ function Runtime.Shutdown()
 		OPX.Scheduler.Cancel(sweepJob)
 		sweepJob = nil
 	end
+	-- THE LEASE GOES BACK WHEN THE MODULE DOES. A resource that stops holding a
+	-- walk request the platform still honours would leave the player slowed with
+	-- nothing left running to explain it.
+	M.Walk.Release()
 	pending, owners, lock = {}, {}, nil
 end

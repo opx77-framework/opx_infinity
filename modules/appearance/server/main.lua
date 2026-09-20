@@ -839,11 +839,39 @@ end
 
 --- Publishes the contract. Nothing may read one before this phase ends.
 function M.Api()
+	--- Asks one player's client to put the fitting room up.
+	--
+	-- WHOEVER CALLS THIS HAS ALREADY DECIDED THEY MAY. This module holds no
+	-- notion of staff and checks no grant: the caller's own command is where the
+	-- ACL is read, which is the same division every other contract here keeps.
+	-- What it does own is the id: a player who is not connected is refused here
+	-- rather than becoming a `TriggerClientEvent` into nothing.
+	--
+	-- Answers only whether the ASK went out. Whether a room opens is the client's
+	-- to decide and it may well say no -- the puppet has to be alive on foot and
+	-- nothing else may hold the keyboard -- so a true here is not a room.
+	-- @author dop42
+	-- @param playerId integer
+	-- @return boolean
+	-- @return string|nil the refusal
+	function M.OpenWardrobe(playerId)
+		local id = tonumber(playerId)
+		if id == nil or id <= 0 then return false, 'invalid_player' end
+		-- NO CONNECTION CHECK HERE, deliberately. There is no `players.exists` on
+		-- this build, and the callers that matter resolve their target through
+		-- `Server.Target` first, which does. Inventing a second, weaker check out
+		-- of `players.all` would be a roster walk per call that answers the same
+		-- question worse.
+		TriggerClientEvent(M.Event.OPEN_WARDROBE, id)
+		return true
+	end
+
 	OPX.Api.Provide('appearance', 1, {
 		GetAppearance = M.GetAppearance,
 		SaveAppearance = M.SaveAppearance,
 		GetClothing = M.GetClothing,
 		SaveClothing = M.SaveClothing,
+		OpenWardrobe = M.OpenWardrobe,
 	})
 end
 

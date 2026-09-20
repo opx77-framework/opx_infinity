@@ -1958,7 +1958,7 @@ do
 		env.TriggerEvent(appearance.Event.ON_VIEW, { kind = 'room', title = 'Wardrobe' })
 		check('a room nobody can draw is not answered inside its own publication',
 			#seen == 0, table.concat(seen, ', '))
-		control.Pump(4)
+		control.Pump(20)
 		check('and is answered on the next pass instead', seen[1] == 'room.close',
 			table.concat(seen, ', '))
 		appearance.FromView = real
@@ -2402,7 +2402,36 @@ do
 		end
 
 		appearance.Wardrobe.Open('appearance')
-		control.Pump(30)
+
+		-- THE READ MUST BREATHE, and this is the check that says so. The defect
+		-- this whole section now guards was not a wrong answer: it was the right
+		-- answer computed in ONE resume, which exceeded the client's per-resume
+		-- instruction budget and unwound the coroutine with nothing logged
+		-- anywhere the operator could see. Desktop Lua has no such budget, so no
+		-- assertion about the RESULT can ever catch it -- only an assertion about
+		-- the shape of the work.
+		--
+		-- Forty frames is comfortably past the twenty-one a per-slot yield
+		-- needs -- three breaths a slot, seven slots -- and comfortably short of
+		-- the eighty-odd a chunked 2000-record read costs. The first number was
+		-- twenty and did NOT discriminate: the mutation passed. So: still reading here means it is chunking; already open
+		-- means somebody took the chunking out.
+		-- Asked of the OPENED note rather than of `IsOpen`, which answers
+		-- `phase ~= 'closed'` and is therefore true throughout the read.
+		control.Pump(40)
+		check('a 2000-record slot has not finished opening after 40 frames, so the '
+			.. 'read is chunked rather than done in one resume',
+			toldServer():find('the fitting room opened', 1, true) == nil, toldServer())
+
+		-- ONE FRAME PER `CATALOGUE_CHUNK` ENTRIES, which is why this is not 30 any
+		-- more. `readCatalogue` used to yield once per slot and blew the client's
+		-- per-resume instruction budget doing a whole slot in one go -- the defect
+		-- that made the fitting room silently not exist. It now breathes every 64
+		-- entries, so this 2000-record slot alone costs about sixty-five frames
+		-- and the whole read about eighty. Sized with headroom rather than to the
+		-- measurement, because the chunk is a tuning value and this test is about
+		-- the truncation line, not about how many frames the read takes.
+		control.Pump(200)
 		check('an answer that reaches the limit is reported, not swallowed',
 			toldServer():find('being truncated', 1, true) ~= nil, toldServer())
 		check('and the line names the slot and both numbers',
@@ -2673,6 +2702,196 @@ do
 			raises == 3, tostring(raises))
 
 		Scheduler.Stop()
+	end
+end
+
+-- ── what the client pays for every second it is doing nothing ────────────────
+-- A pass that recomputes an answer that did not change is the whole subject. The
+-- three checks below are the three shapes it took, and each of them is a
+-- REGRESSION GUARD rather than a feature: nothing a player can see changes if
+-- one of them fails, which is exactly why they have to be here.
+--
+-- The counters are on the HOST BRIDGES, not on the Lua. A host read is the unit
+-- that costs on the platform, and counting it is the only figure that survives
+-- the difference between this machine and a game.
+section('the standing cost')
+do
+	local pressed = false
+	local keyCallbacks = {}
+	local reads = { isDown = 0, keyFor = 0 }
+	local pools = { health = 100, armor = 0, stamina = 100 }
+
+	--- Everything the client half reaches for that the plain harness has no stub
+	--- for. Without the camera and the cursor `canPick` refuses and the target
+	--- module registers its sweep and nothing else, so the two jobs under test
+	--- would never exist to be counted.
+	local function prelude(env)
+		local O = env.Open77
+		O.input = {
+			isDown = function() reads.isDown = reads.isDown + 1 return pressed end,
+			keyFor = function() reads.keyFor = reads.keyFor + 1 return 'ALT' end,
+			cursor = function() return { inBounds = true, captured = false } end,
+			isCaptured = function() return false end,
+			block = function() return true end,
+		}
+		O.camera = { screenRaycast = function() return { hit = false } end }
+		O.stats = {
+			get = function()
+				return {
+					health = { value = pools.health, maximum = 100 },
+					armor = pools.armor,
+					stamina = { value = pools.stamina, maximum = 100 },
+				}
+			end,
+		}
+		-- The body wins over the canonical pool for damage the server never hears
+		-- of, so this is the reading the gauge column actually draws.
+		O.character.state = function()
+			return {
+				health = pools.health, attached = true, alive = true,
+				position = { x = 0, y = 0, z = 0 },
+			}
+		end
+		-- Keyed by id: half the client registers a mapping, and the last one to do
+		-- so would otherwise be the only one a test could press.
+		env.RegisterKeyMapping = function(id, _, _, callback) keyCallbacks[id] = callback end
+	end
+
+	local env, control, why = boot('client', nil, prelude)
+	if why ~= nil then
+		check('the client half loads', false, why)
+	else
+		local OPX = env.OPX
+
+		local function registered(name)
+			for _, line in ipairs(OPX.Scheduler.Report()) do
+				if line:match('^' .. name .. '%s') then return true end
+			end
+			return false
+		end
+
+		-- ── the job that only exists while there is something to do ───────────
+		-- `target:resolve` slices a pick at 25ms, the fastest interval in the
+		-- resource. The one client loop sleeps the nearest deadline, so a job at
+		-- that interval sets the floor on how often the loop wakes AT ALL --
+		-- registered for the session it woke it forty times a second to read a
+		-- nil and return. It is registered by the pick and cancelled by the last
+		-- slice.
+		check('the eye is up and its standing jobs with it', registered('target:watch'))
+		check('but the slicer is not standing: nothing is being sliced',
+			not registered('target:resolve'))
+
+		-- ── the key read that decides a boolean that was already decided ──────
+		-- `armed` is a latch: the press drops it, the release raises it. Reading
+		-- the key to raise one that is already up is two host reads, twenty times
+		-- a second, for the whole session.
+		reads.isDown, reads.keyFor = 0, 0
+		control.Pump(20)
+		check('an eye at rest reads the key not at all',
+			reads.isDown == 0 and reads.keyFor == 0,
+			('isDown=%d keyFor=%d'):format(reads.isDown, reads.keyFor))
+
+		-- AND IT STILL RE-ARMS, which is the half that matters: a gate that never
+		-- opens is not an optimisation, it is a key that works once.
+		local keyCallback = keyCallbacks['opx.target.activate']
+		if keyCallback == nil then
+			check('the target key was mapped', false, 'no RegisterKeyMapping callback')
+		else
+			pressed = true
+			keyCallback()
+			pressed = false
+			reads.isDown, reads.keyFor = 0, 0
+			control.Pump(20)
+			check('a press puts the latch down and the read comes back',
+				reads.isDown > 0, reads.isDown)
+
+			-- Released and observed: the latch is up again and the reads stop.
+			reads.isDown, reads.keyFor = 0, 0
+			control.Pump(20)
+			check('and stops again once the release has been seen',
+				reads.isDown == 0, reads.isDown)
+		end
+
+		-- ── the payload built thirty times a second to be thrown away ─────────
+		-- `hud:vitals` is change-gated on a signature, and building that
+		-- signature was the cost: a row table, five `tostring`s and a concat per
+		-- gauge and one more over the lot, at 30 Hz, discarded whenever the pools
+		-- had not moved.
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] ~= nil then page = candidate end
+		end
+		if page == nil then
+			check('the overlay page exists', false)
+		else
+			local function vitals()
+				local count = 0
+				for _, message in ipairs(page.sent) do
+					if message.channel == 'opx:hud:vitals' then count = count + 1 end
+				end
+				return count
+			end
+
+			-- COUNTING SENDS IS NOT ENOUGH, and the reason is the whole point of
+			-- the change: the push was ALREADY gated on a signature, so a pass
+			-- that rebuilt the column and compared it equal sent nothing either
+			-- way. The cost was the rebuild, and the only way to see it from out
+			-- here is to watch the configuration the rebuild reads. Each gauge
+			-- row is proxied so that reading its `SOURCE` -- which `gauges()`
+			-- does once per row per call and nothing else does at all -- counts.
+			local builds = 0
+			do
+				local settings = OPX.Modules.Get('hud').Settings
+				local configured = settings.GAUGES
+				local proxied = {}
+				for index = 1, #configured do
+					local row = configured[index]
+					proxied[index] = setmetatable({}, {
+						__index = function(_, field)
+							if field == 'SOURCE' then builds = builds + 1 end
+							return row[field]
+						end,
+					})
+				end
+				settings.GAUGES = proxied
+			end
+
+			-- The join screens own the display until they say otherwise, and a
+			-- covered HUD samples nothing at all.
+			env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'entry', 'state'), { open = false })
+			env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'spawn', 'state'), { open = false })
+			control.PageEmit(page, 'opx:hud:ready', {})
+			control.Pump(10)
+
+			local settled = vitals()
+			check('the gauge column reaches the page', settled > 0, settled)
+
+			builds = 0
+			control.Pump(40)
+			check('and a pool that did not move draws nothing further',
+				vitals() == settled, ('%d -> %d'):format(settled, vitals()))
+			check('nor builds the column it would have thrown away',
+				builds == 0, builds)
+
+			-- THE HALF THE GATE COULD BREAK. A gate that never lets go is a
+			-- health bar frozen at whatever it said when the player spawned.
+			pools.health = 41
+			control.Pump(10)
+			check('a pool that moved is drawn', vitals() > settled,
+				('%d -> %d'):format(settled, vitals()))
+			check('and the column was built to draw it', builds > 0, builds)
+
+			-- A fraction of a percent is not a percent. The gauges draw whole
+			-- numbers, so a pool jittering below the rounding is not a change,
+			-- and a gate that compared the raw pool would fire on every pass.
+			local drawnAt41 = vitals()
+			pools.health = 41.4
+			builds = 0
+			control.Pump(20)
+			check('a move too small to round to a different percent is not',
+				vitals() == drawnAt41 and builds == 0,
+				('sent %d -> %d, built %d'):format(drawnAt41, vitals(), builds))
+		end
 	end
 end
 
@@ -6637,6 +6856,264 @@ do
 	end
 end
 
+-- ── what the screen does once the server has answered ────────────────────────
+-- The owner's report was "deleting a character takes seconds to leave the
+-- screen". The cause was a fixed 1200ms sleep standing in for an answer the
+-- client was already being sent, so these hold the causal chain rather than a
+-- duration: the command goes out and NOTHING is asked for until the answer
+-- lands, a refusal asks for nothing at all, and a confirmation both drops the
+-- row and refetches. A timer cannot be asserted on; a cause can.
+section('the staff menu answers the server, not a clock')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the menu feedback tests', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+
+		local asked = {}
+		env.TriggerServerEvent = function(name, topic, arg)
+			asked[#asked + 1] = { name = name, topic = topic, arg = arg }
+			-- The host answers whether the line left, and `Client.Execute` refuses to
+			-- believe a nil: a stub that forgot this aborts every command silently.
+			return true
+		end
+
+		-- The spec and not the surface, for the reason the find screen's wrapper
+		-- gives: what reaches the page has the ids and the row data stripped off.
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(handle, spec)
+				specs[#specs + 1] = spec
+				return realMenu.Update(handle, spec)
+			end,
+		}, { __index = realMenu })
+
+		local function rowOf(id)
+			for _, item in ipairs((specs[#specs] or {}).items or {}) do
+				if item.id == id then return item end
+			end
+			return nil
+		end
+		local function act(itemId, extra)
+			local item = rowOf(itemId)
+			if item == nil then return false end
+			local payload = { action = 'select', itemId = itemId, handle = 1, data = item.data }
+			for key, value in pairs(extra or {}) do payload[key] = value end
+			local on
+			for index = #specs, 1, -1 do
+				if specs[index].on then on = specs[index].on break end
+			end
+			if on == nil then return false end
+			on(payload)
+			return true
+		end
+		local function refreshes(topic)
+			local seen = 0
+			for _, entry in ipairs(asked) do
+				if entry.name == admin.Event.REFRESH and entry.topic == topic then seen = seen + 1 end
+			end
+			return seen
+		end
+
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = true, inventory = false })
+		control.Pump(10)
+
+		--- Opens an account's character list holding two rows and lands on the
+		--- confirmation screen for deleting the second.
+		local function armDelete()
+			admin.Menu.OpenAt('playerCharacters', 2)
+			control.Pump(10)
+			control.netEvents[admin.Event.CHARACTERS]({ rows = {
+				{ citizenId = 'CIT-0001', firstName = 'V', lastName = 'One' },
+				{ citizenId = 'CIT-0002', firstName = 'V', lastName = 'Two' },
+			}, offset = 0, total = 2, done = true, target = '2' })
+			control.Pump(10)
+			act('char_CIT-0002')
+			control.Pump(10)
+			act('delete')
+			control.Pump(10)
+			asked = {}
+			act('confirm')
+			control.Pump(6)
+		end
+
+		armDelete()
+		check('a confirmed delete sends the command line', (function()
+			for _, entry in ipairs(asked) do
+				if entry.name == OPX.Modules.Get('admin').Host.COMMAND_EXECUTE then return true end
+			end
+			return false
+		end)())
+		-- THE POINT OF THE WHOLE CHANGE. Six pumps is well past the 1200ms the old
+		-- code slept for, and the list must still not have been asked for: until
+		-- the server has answered there is nothing to ask it about.
+		check('and asks for no list at all until the server has answered',
+			refreshes('characters') == 0, ('%d asked'):format(refreshes('characters')))
+		check('so the row is still drawn, because nothing has confirmed it is gone',
+			rowOf('char_CIT-0002') ~= nil)
+
+		control.netEvents['open77:command:result'](
+			'/opx.admin.character.delete CIT-0002', true, 'deleted')
+		control.Pump(4)
+		check('the answer is what asks for the list again',
+			refreshes('characters') == 1, ('%d asked'):format(refreshes('characters')))
+		check('and the row goes on the confirmation rather than on the refetch',
+			rowOf('char_CIT-0002') == nil)
+
+		-- A REFUSED DELETE IS THE CASE THAT MATTERS. Nothing was deleted, so the row
+		-- stays and no list is read: a UI that removed it and quietly put it back is
+		-- how somebody deletes the wrong character twice.
+		asked = {}
+		armDelete()
+		control.netEvents['open77:command:result'](
+			'/opx.admin.character.delete CIT-0002', false, 'permission_denied: refused')
+		control.Pump(4)
+		check('a REFUSED delete leaves the row exactly where it was',
+			rowOf('char_CIT-0002') ~= nil)
+		check('and spends no list read on a command the server turned down',
+			refreshes('characters') == 0, ('%d asked'):format(refreshes('characters')))
+
+		-- THE GREYED ROW. `tagsOwn` is only meaningful while the name tags are on,
+		-- and the switch above it is a server round trip -- so the row is greyed
+		-- until `TAGS_STATE` lands. What must never come back is the version where
+		-- nothing asked for a rebuild and the row stayed greyed until the operator
+		-- moved the cursor: this asserts the rebuild, not the delay.
+		admin.Menu.OpenAt('self')
+		control.Pump(10)
+		check('the own-tag row is greyed while the name tags are off',
+			(function()
+				local item = rowOf('tagsOwn')
+				return item ~= nil and item.disabled == true
+			end)())
+		local before = #specs
+		control.netEvents[admin.Event.TAGS_STATE](true, false)
+		control.Pump(4)
+		check('the name tags arriving rebuilds the screen by itself',
+			#specs > before, ('%d rebuilds'):format(#specs - before))
+		check('and the own-tag row is a live checkbox in the rebuilt screen',
+			(function()
+				local item = rowOf('tagsOwn')
+				return item ~= nil and not item.disabled and type(item.toggle) == 'boolean'
+			end)(), (function()
+				local item = rowOf('tagsOwn')
+				return item and ('disabled=%s toggle=%s')
+					:format(tostring(item.disabled), tostring(item.toggle))
+			end)())
+	end
+end
+
+-- ── the name tags say what the pass decided ──────────────────────────────────
+-- The tags stopped drawing after the `opx_lib` migration and produced not one
+-- diagnosable line, because every line the pass can write went to a file on the
+-- player's machine. These hold the evidence open: a pass that draws nothing has
+-- to say WHY through `OPX.Note`, and the four ways it can draw nothing have to
+-- be four different sentences.
+section('the name tag pass reports what it decided')
+do
+	-- What the stubbed native answers: a list, or a reason string for a refusal.
+	local answer = {}
+
+	local env, control = Host.Environment('client')
+	local notes = {}
+	env.TriggerServerEvent = function(name, module, text)
+		if tostring(name):find('runtime:note', 1, true) then notes[#notes + 1] = tostring(text) end
+		return true
+	end
+	-- The host stubs no `players.nearby` and no `kvp`, which is right for every
+	-- other test and is exactly what this one is about.
+	env.Open77.players.nearby = function()
+		if type(answer) == 'string' then return nil, answer end
+		return answer
+	end
+	env.Open77.kvp = { get = function(_, fallback) return fallback end,
+		set = function() return true end }
+
+	local why
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk, failure = loadfile(file, 't', env)
+		if not chunk then why = failure break end
+		local ok, raised = pcall(chunk)
+		if not ok then why = raised break end
+	end
+	check('the client boots for the tag pass tests', why == nil, why)
+
+	if why == nil then
+		control.Fire('onClientResourceStart', 'opx_infinity')
+		control.Pump(60)
+		control.ReadyPages()
+
+		local admin = env.OPX.Modules.Get('admin')
+
+		local function said(fragment)
+			for _, note in ipairs(notes) do
+				if note:find(fragment, 1, true) then return note end
+			end
+			return nil
+		end
+
+		check('starting says the pass was registered, and on what settings',
+			said('pass registered at') ~= nil, table.concat(notes, ' | '))
+		-- THE SILENCE THAT COST TWO DIAGNOSES. A switch that never came on and a
+		-- pass that computed nothing were the same empty journal.
+		check('and a switch that is off says so rather than saying nothing',
+			said('the switch is off') ~= nil, table.concat(notes, ' | '))
+
+		notes = {}
+		control.netEvents[admin.Event.TAGS_STATE](true, false)
+		control.Pump(20)
+		check('the switch coming on is reported, so the grant can be ruled out',
+			said('the switch is on') ~= nil, table.concat(notes, ' | '))
+		check('and an empty world names the call it made and the answer it got',
+			said('radius=') ~= nil and said('0 near') ~= nil, table.concat(notes, ' | '))
+
+		-- TWENTY PUMPS AND NOT FOUR, here and at every wait in this section, and
+		-- the reason is the scheduler rather than the pass. `OPX.Scheduler` runs
+		-- at most `MAX_PER_TICK` jobs per resume and rotates so none starves --
+		-- so the more modules a boot registers, the longer any one job waits for
+		-- its turn. Four pumps was enough when this was written and stopped being
+		-- enough the moment garages, dealerships and clothing stores each brought
+		-- their own job. Nothing about the pass changed; the queue in front of it
+		-- did.
+		--
+		-- BODIES BUT NO NAMES is the server's list failing, not a native, and the
+		-- line has to be able to say which: they want opposite fixes.
+		notes = {}
+		answer = {
+			{ playerId = 2, entity = 20, distance = 5.0, position = { x = 0, y = 0, z = 0 } },
+		}
+		control.Pump(20)
+		check('bodies with no name list are counted as a naming fault, not a native one',
+			said('no name 1') ~= nil, table.concat(notes, ' | '))
+
+		notes = {}
+		control.netEvents[admin.Event.TAG_ROWS]({
+			rows = { { id = 2, name = 'vee' } }, offset = 0, done = true })
+		control.Pump(20)
+		check('and once the names arrive the pass reports a row drawn',
+			said('1 drawn') ~= nil, table.concat(notes, ' | '))
+
+		-- A REFUSAL FROM THE NATIVE reads as an empty list at the call site, so the
+		-- reason has to be carried out or it is indistinguishable from "nobody near".
+		notes = {}
+		answer = 'no_local_position'
+		control.Pump(20)
+		check('a refusal from the native carries its reason into the journal',
+			said('no_local_position') ~= nil, table.concat(notes, ' | '))
+
+		-- An absent native and an unreachable NAMESPACE are a build fault and a
+		-- library fault. The code that tells them apart was being thrown away.
+		notes = {}
+		env.Open77.players.nearby = nil
+		control.Pump(20)
+		check('and an unreachable native says which of the two kinds it is',
+			said('native_not_found') ~= nil, table.concat(notes, ' | '))
+	end
+end
+
 -- ── the note door ────────────────────────────────────────────────────────────
 -- `OPX.Note` and `core/server/note.lua`. THE ONE THING THIS RUNTIME HAS THAT AN
 -- OPERATOR CAN READ about what a client decided, so the suite holds both ends of
@@ -6974,6 +7451,214 @@ do
 end
 
 
+-- ── clothing shops: the half that is pure ───────────────────────────────────
+-- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
+-- module was written for. Whether a player is standing at a counter needs a
+-- server, a body and a position; what their change COSTS needs none of those,
+-- so it lives in `module.lua` as plain functions over plain tables and is held
+-- to account here.
+section('shops')
+do
+	local env, _, why = boot('client')
+	check('the client boots with the shops module', why == nil, why)
+
+	local shops = why == nil and env.OPX.Modules.Get('shops') or nil
+	check('the module declared itself', type(shops) == 'table')
+
+	if type(shops) == 'table' then
+		-- THE COPY THAT MUST NOT DRIFT. `shops.SLOTS` is a hand-written mirror of
+		-- `appearance`'s list, because a shared file cannot reach a client-only
+		-- table and a module may not read another's settings. The comment on it
+		-- promises this test exists; here it is.
+		local appearance = env.OPX.Modules.Get('appearance')
+		local theirs = type(appearance) == 'table' and type(appearance.Clothing) == 'table'
+			and appearance.Clothing.SLOTS or nil
+		check('the slot list is the same one appearance uses',
+			type(theirs) == 'table' and #theirs == #shops.SLOTS
+			and table.concat(theirs, ',') == table.concat(shops.SLOTS, ','),
+			type(theirs) == 'table' and table.concat(theirs, ',') or 'appearance has no SLOTS')
+
+		check('a slot name is recognised', shops.IsSlot('Legs') == true)
+		check('and anything else is not',
+			shops.IsSlot('Trousers') == false and shops.IsSlot(nil) == false)
+
+		-- ── what changed ──
+		check('an untouched look owes nothing',
+			#shops.Changed({ Legs = 'Items.A' }, { Legs = 'Items.A' }) == 0)
+		check('a swapped garment is one slot',
+			table.concat(shops.Changed({ Legs = 'Items.A' }, { Legs = 'Items.B' }), ',') == 'Legs')
+
+		-- TAKING SOMETHING OFF IS A CHANGE. It is the case a naive diff misses,
+		-- and a shop that did not bill it would let anybody re-dress for free by
+		-- emptying a slot and filling it on a second visit.
+		check('emptying a slot is a change',
+			table.concat(shops.Changed({ Head = 'Items.Hat' }, { Head = false }), ',') == 'Head')
+
+		-- ...AND nil IS NOT. An absent key and an explicitly empty slot are the
+		-- same state wearing two spellings; charging for the difference between
+		-- them would bill a player for how the record happened to be encoded.
+		check('nil and false are the same emptiness',
+			#shops.Changed({ Head = nil }, { Head = false }) == 0)
+
+		check('the answer is in the canonical order, not the table order',
+			table.concat(shops.Changed({}, { Feet = 'Items.B', Head = 'Items.A' }), ',')
+				== 'Head,Feet')
+
+		-- ── what it costs ──
+		local prices = shops.Prices({ Legs = 450, Feet = 300, Head = 250 }, { Legs = 140 })
+		check('a shop overrides one price and inherits the rest',
+			prices.Legs == 140 and prices.Feet == 300 and prices.Head == 250)
+		check('a key that is not a slot never becomes a price',
+			shops.Prices({ Trousers = 900 }, nil).Trousers == nil)
+
+		check('the bill is the sum of the slots that moved',
+			shops.Bill(prices, { 'Legs', 'Feet' }) == 440)
+		check('a slot with no price is free rather than an error',
+			shops.Bill(prices, { 'Outfit' }) == 0)
+		check('changing nothing costs nothing', shops.Bill(prices, {}) == 0)
+
+		-- ── codes ──
+		local length = 8
+		check('a code survives being read out badly',
+			shops.CleanCode('  abcd-2345 ', length) == 'ABCD2345')
+		check('a code of the wrong length is refused',
+			shops.CleanCode('ABCD234', length) == nil)
+
+		-- NOTHING IS GUESSED, and this is the check that holds that decision.
+		-- Crockford's base32 reads a typed `I` as `1`; this alphabet contains
+		-- neither, so there is no correct target and a guess would hand somebody
+		-- a different look than the one they were read out.
+		check('a character the alphabet excludes is refused, not remapped',
+			shops.CleanCode('ABCD2I45', length) == nil
+			and shops.CleanCode('ABCD2O45', length) == nil)
+
+		local step = 0
+		local minted = shops.MintCode(length, function(_, high)
+			step = step + 1
+			return ((step - 1) % high) + 1
+		end)
+		check('a minted code is the length asked for', #minted == length)
+		local clean = true
+		for index = 1, #minted do
+			if not shops.CODE_ALPHABET:find(minted:sub(index, index), 1, true) then clean = false end
+		end
+		check('and every character of it is in the alphabet', clean, minted)
+		check('and a minted code reads back as itself',
+			shops.CleanCode(minted, length) == minted)
+	end
+end
+
+-- ── walking through an emote ────────────────────────────────────────────────
+-- THE LEASE IS THE RISK, not the feature. `Open77.movement.setWalkMode` is a
+-- request held on the PLAYER, not a property of the animation: if an emote ends
+-- and nothing releases, that player walks for the rest of their session with
+-- nothing on screen to explain it and no way to undo it. So what is tested here
+-- is almost entirely the giving back.
+section('animations: walking through an emote')
+do
+	local env, _, why = boot('client')
+	check('the client boots with the walk half', why == nil, why)
+
+	local animations = why == nil and env.OPX.Modules.Get('animations') or nil
+	local Walk = type(animations) == 'table' and animations.Walk or nil
+	check('the walk half declared itself', type(Walk) == 'table')
+
+	if type(Walk) == 'table' then
+		-- A recorder in place of the native, so every ask and every release is
+		-- counted rather than inferred.
+		local asked = {}
+		env.Open77.movement = {
+			setWalkMode = function(enabled, speed)
+				asked[#asked + 1] = { enabled = enabled, speed = speed }
+				return true
+			end,
+		}
+
+		local Catalogue = animations.Catalogue
+
+		-- ── the catalogue rule ──
+		-- EVERY WALKABLE EMOTE IS A STANDING ONE, asserted across the whole
+		-- catalogue rather than on one row. `sit`, `examine` and `wounded` are
+		-- authored against the ground: walking out of one does not produce a
+		-- player strolling while seated, it produces a body sliding across the
+		-- pavement in a pose that stopped meaning anything.
+		local entries = Catalogue.Entries()
+		local offenders = {}
+		local walkable = 0
+		for index = 1, #entries do
+			local entry = entries[index]
+			if entry.walk ~= nil then
+				walkable = walkable + 1
+				if entry.placement ~= 'standing' then
+					offenders[#offenders + 1] = entry.name
+				end
+				if entry.walk < 0.5 or entry.walk > 2.5 then
+					offenders[#offenders + 1] = entry.name .. '(speed)'
+				end
+			end
+		end
+		check('some emotes are walkable at all', walkable > 0, tostring(walkable))
+		check('and every one of them is a standing pose within the speed bounds',
+			#offenders == 0, table.concat(offenders, ','))
+
+		-- ── taking and giving back ──
+		check('nothing is held before an emote plays', Walk.Held() == nil)
+
+		Walk.Follow(true, 'smoke')
+		check('a walkable emote takes the lease at its own speed', Walk.Held() == 1.3,
+			tostring(Walk.Held()))
+		check('and it asked the platform exactly once',
+			#asked == 1 and asked[1].enabled == true and asked[1].speed == 1.3)
+
+		-- ASKED ONCE, NOT ONCE A FRAME. The state funnel fires on every change and
+		-- a re-ask at the same speed would be a native call per event for nothing.
+		Walk.Follow(true, 'smoke')
+		check('holding it again at the same speed asks nothing more', #asked == 1)
+
+		Walk.Follow(true, 'drink')
+		check('a different emote moves the lease rather than stacking one',
+			Walk.Held() == 1.2 and #asked == 2 and asked[2].speed == 1.2)
+
+		Walk.Follow(true, 'dance')
+		check('an emote that does not walk gives the lease back',
+			Walk.Held() == nil and asked[#asked].enabled == false)
+
+		Walk.Follow(true, 'smoke')
+		Walk.Follow(false, nil)
+		check('and so does the emote ending', Walk.Held() == nil
+			and asked[#asked].enabled == false)
+
+		Walk.Follow(true, 'no_such_emote')
+		check('an emote this client does not know holds nothing', Walk.Held() == nil)
+
+		-- ── the watchdog ──
+		-- The reason it exists: the release above is a promise about every exit
+		-- path, and a promise about every path is the kind that is kept until
+		-- somebody adds a path. This is what makes it survive that.
+		animations.Presenter.State = function() return { active = false } end
+		Walk.Follow(true, 'smoke')
+		check('the lease is held before the sweep', Walk.Held() == 1.3)
+		Walk.Check()
+		check('a lease with no emote under it is swept', Walk.Held() == nil)
+
+		animations.Presenter.State = function()
+			return { active = true, animation = 'smoke' }
+		end
+		Walk.Follow(true, 'smoke')
+		Walk.Check()
+		check('and a lease that still has one is left alone', Walk.Held() == 1.3)
+
+		-- ── a host that cannot do it ──
+		-- op77.75 is recent. A client older than that is not broken; it simply
+		-- cannot walk through an emote, and must not raise trying.
+		Walk.Release()
+		env.Open77.movement = nil
+		check('a build without the native reports it', Walk.Available() == false)
+		local safe = pcall(Walk.Follow, true, 'smoke')
+		check('and asking for a walk on one neither holds nor raises',
+			safe and Walk.Held() == nil)
+	end
+end
 -- ── the staff spawn menu: Air, the AV lift, and a descend ───────────────────
 -- THREE THINGS, ALL OF THEM OBSERVED RATHER THAN READ. The class the spawn menu
 -- did not have; that a record's category comes from the record and an AV is

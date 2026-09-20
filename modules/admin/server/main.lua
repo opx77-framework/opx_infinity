@@ -699,6 +699,12 @@ function M.Start()
 	M.Contracts.vehicles = OPX.Api.Get('vehicles')
 	M.Contracts.downed = OPX.Api.Get('downed')
 	M.Contracts.prompts = OPX.Api.Get('prompts')
+	-- RESOLVED HERE OR NOT AT ALL. `Server.Contract` reads this table rather than
+	-- asking the registry, so a contract absent from this block answers nil for
+	-- the whole session however well it is running -- which is exactly how the
+	-- new fitting-room row refused every player with `appearance_unavailable` on
+	-- a server where appearance was up and serving everybody else.
+	M.Contracts.appearance = OPX.Api.Get('appearance')
 
 	if M.Contracts.inventory == nil then
 		Open77.log.warn('[admin] no inventory contract: every weapon and bag command refuses, ' ..

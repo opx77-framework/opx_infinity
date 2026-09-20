@@ -177,6 +177,28 @@ OPX.Config.MODULES.appearance = {
 		-- session. Past it the join moves on and the player keeps the clothes the
 		-- platform gave them.
 		CREATION_WAIT_MS = 60000,
+
+		-- The field of view the fitting room borrows, in degrees, or nil to
+		-- leave the player's own alone.
+		--
+		-- A WIDER LENS, NOT A CAMERA FURTHER BACK, and the difference is worth
+		-- stating because the platform does not offer the second one cheaply.
+		-- `Open77.camera.orbit` -- what this room uses to stand in front of the
+		-- puppet -- is a yaw offset INSIDE the third-person rig and, in the
+		-- platform's own words, "cannot move the view off the player". Actually
+		-- dollying back means a scripted camera (`Open77.camera.follow`, or
+		-- `create` + `lookAt` + `activate`), which needs the `camera.script`
+		-- permission -- the one the Scripted cameras guide deliberately contrasts
+		-- with `camera.preview` as the one you do NOT hand a clothing shop
+		-- without thinking, because it takes the view away from gameplay and
+		-- every release rule on that page then applies.
+		--
+		-- Widening the lens costs neither: `Open77.camera.setFov` checks no
+		-- permission, `Open77.camera.view` reads the player's own value back so
+		-- it is restored exactly rather than guessed, and more of the body is in
+		-- frame -- which is the thing actually wanted. Around 80 is the game's
+		-- normal on foot; raise this to see more, lower it to fill the frame.
+		CAMERA_FOV = 95,
 	},
 
 	-- THE PANEL'S OWN DOOR. `ID` is stable because a player's rebind is stored
