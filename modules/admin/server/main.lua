@@ -383,7 +383,41 @@ function Server.PositionOf(playerId)
 	if not read or type(position) ~= 'table' then return nil end
 	local x, y, z = Text.Finite(position.x), Text.Finite(position.y), Text.Finite(position.z)
 	if x == nil or y == nil or z == nil then return nil end
-	return { x = x, y = y, z = z, bucket = Text.Integer(position.bucket) or 0 }
+	return { x = x, y = y, z = z, bucket = Text.Integer(position.bucket) or 0,
+		heading = Server.HeadingOf(playerId) }
+end
+
+--- The yaw a player's body is facing, or nil when the host cannot say.
+-- @author dop42
+--
+-- WHY THIS IS A SECOND CALL. `Open77.players.position` answers `{ x, y, z,
+-- bucket }` and nothing else -- there is no facing in it at all, which is why
+-- `/opx.admin.self.pos` printed a hardcoded `HEADING = 0.0` for as long as it
+-- existed. `Open77.players.get` is the rich read (2.31.13+op77.67) and carries
+-- `heading` with its alias `yaw` once the player has ever reported a snapshot.
+--
+-- THIS IS NOW LOAD-BEARING and it was cosmetic before. The staff menu's Dev
+-- screen used to place a showroom car facing whichever way the OPERATOR'S OWN
+-- CLIENT was looking, because the client reads its own facing and a chat line
+-- has none. The owner deleted that screen on 2026-09-21 and a showroom car is a
+-- line in `config/dealership.lua` now -- so the one thing left that turns "where
+-- I am standing, facing this way" into a config line is this command, and a
+-- capture with no facing in it cannot write `HEADING`.
+--
+-- NIL RATHER THAN ZERO on a host that cannot answer. Zero is a legal facing, so
+-- a fallback of zero would be indistinguishable from north and the caller could
+-- not tell the operator that the number is a guess. `SELF_POS` says so.
+-- @param playerId Source
+-- @return number|nil degrees, 0..360
+function Server.HeadingOf(playerId)
+	local api = Open77.players
+	if type(api) ~= 'table' or type(api.get) ~= 'function' then return nil end
+	local read, snapshot = pcall(api.get, playerId)
+	if not read or type(snapshot) ~= 'table' then return nil end
+	local yaw = Text.Finite(snapshot.heading)
+	if yaw == nil then yaw = Text.Finite(snapshot.yaw) end
+	if yaw == nil then return nil end
+	return yaw % 360.0
 end
 
 --- The host's life state for a player, or nil: loading and the selection screen

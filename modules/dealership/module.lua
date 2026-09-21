@@ -51,8 +51,11 @@ M.Event = {
 	-- Client to server. `source` always comes from the authenticated connection.
 	ASK = OPX.Event(NET, 'dealership', 'ask'),
 	BUY = OPX.Event(NET, 'dealership', 'buy'),
-	-- The placement menu's answer: where the operator is standing and which way
-	-- they are looking, for a preview point being placed or taken away.
+	-- The runtime placement path: where the operator is standing and which way
+	-- they are looking, for a preview point being placed or taken away. NOTHING
+	-- IN THIS RESOURCE RAISES THESE TWO ANY MORE -- the staff menu's Dev screen
+	-- was the only caller and the owner deleted it on 2026-09-21. A showroom car
+	-- is written in PREVIEW.POINTS in config/dealership.lua; see client/exports.
 	PLACED = OPX.Event(NET, 'dealership', 'placed'),
 	UNPLACED = OPX.Event(NET, 'dealership', 'unplaced'),
 	-- A salesperson offering a vehicle to the player they picked off the eye,

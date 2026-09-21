@@ -58,6 +58,13 @@ local spots = {}
 -- said no -- is a thing an operator has to be able to see.
 local previews, showroom = {}, {}
 
+-- The two halves `previews` is merged from, and they are the dealer story told
+-- a second time. `configPreviews` is `PREVIEW.POINTS` in `config/dealership.lua`;
+-- `adoptedPreviews` is what `opx77_dealership_previews` still holds from before
+-- 2026-09-21, when the staff menu's Dev screen wrote showroom cars straight into
+-- it and the owner deleted the screen for exactly that reason.
+local configPreviews, adoptedPreviews = {}, {}
+
 -- Per-player rate-limit windows for requests that are not rate-limited by
 -- `OPX.Cooling`.
 local windows = {}
@@ -68,8 +75,11 @@ local windows = {}
 -- cope with an answer that never came -- a timeout, a watcher thread and a
 -- "your client did not answer" toast, all to make one round trip survivable.
 --
--- The placement menu runs on the client, so the client READS ITS OWN FACING
--- before it says anything at all. One message, no waiting, nothing to expire.
+-- The placement path that replaced it ran ON THE CLIENT, so the client READ
+-- ITS OWN FACING before it said anything at all: one message, no waiting,
+-- nothing to expire. That path is still wired and nothing in this resource
+-- calls it -- the menu it belonged to is gone and a showroom car is a row in
+-- PREVIEW.POINTS in config/dealership.lua.
 --
 -- The offer each BUYER has not answered yet, by their player id. Keyed by the
 -- buyer and not by the seller: a buyer may only be deciding about one vehicle at
@@ -779,6 +789,63 @@ local function dress(spot)
 	showroom[spot.key] = id
 end
 
+--- Rebuilds the merged showroom. Called at load and after the adoption.
+-- CONFIG WINS, the same way and for the same reason it wins for dealers: the
+-- file is the copy somebody has, and a stale database row of the same key
+-- silently moving a car an operator moved in the file would be a car they cannot
+-- move by editing the one place they are told to edit.
+local function rebuildPreviews()
+	previews = {}
+	for key, spot in pairs(configPreviews) do previews[key] = spot end
+	for key, spot in pairs(adoptedPreviews) do
+		if previews[key] == nil then previews[key] = spot end
+	end
+end
+
+--- Stands a car on every point that has a dealer to stand in. Yields per car.
+-- @author XEROX710
+--
+-- ONE RESUME PER CAR, and this is the loop that needs it most in the resource:
+-- every pass is a `vehicles.create` round trip. A loop that did the whole floor
+-- in one resume runs out of the per-resume instruction budget partway down and
+-- the coroutine unwinds with NO error, NO log and NO refusal -- leaving the cars
+-- it reached standing and the rest silently missing. That failure has cost this
+-- codebase five outages; `core/shared/lifecycle.lua` `runPhase` and
+-- `modules/admin/client/target.lua` `register()` are the worked examples.
+--
+-- MUST BE CALLED FROM A THREAD. It is called from the boot thread and nowhere
+-- else; `Wait` outside one is a raise.
+--
+-- The per-dealer LIMIT is enforced here and not only at the config check,
+-- because an adopted row can push a configured floor over it and nothing
+-- validates the two together until they are merged.
+local function raiseFloor()
+	local keys = {}
+	for key in pairs(previews) do keys[#keys + 1] = key end
+	table.sort(keys)
+	local standing = {}
+	for index = 1, #keys do
+		Wait(0)
+		local spot = previews[keys[index]]
+		if spots[spot.dealer] == nil then
+			-- A preview whose dealer is gone is a car in a field. It is kept in
+			-- the table -- the dealer may come back on the next edit of the
+			-- config -- and simply not stood up.
+			Open77.log.warn(('[dealership] the showroom car %s names the dealer %s, ' ..
+				'which does not exist; it is not created')
+				:format(safe(spot.key), safe(spot.dealer)))
+		elseif Access.PREVIEW_LIMIT > 0
+			and (standing[spot.dealer] or 0) >= Access.PREVIEW_LIMIT then
+			Open77.log.warn(('[dealership] the showroom car %s is over PREVIEW.LIMIT (%d) for ' ..
+				'the dealer %s; it is not created')
+				:format(safe(spot.key), Access.PREVIEW_LIMIT, safe(spot.dealer)))
+		else
+			standing[spot.dealer] = (standing[spot.dealer] or 0) + 1
+			dress(spot)
+		end
+	end
+end
+
 --- How many previews one dealer's floor already holds.
 local function floorCount(dealerKey, except)
 	local total = 0
@@ -798,6 +865,16 @@ end
 -- @return Result
 function M.PlacePreview(player, key, entryKey, yaw, citizenId)
 	if not Access.PreviewsEnabled() then return Result.Err('dealership.previewsOff') end
+
+	-- A CONFIGURED POINT IS NOT THIS PATH'S TO MOVE. `PREVIEW.POINTS` in
+	-- `config/dealership.lua` is read at start and wins the merge, so a write
+	-- here under a configured key would move the car until the next restart and
+	-- then move it back -- an operator editing the file and an operator standing
+	-- in the room disagreeing about where a car is, with the file winning
+	-- silently the next morning. Refused rather than shadowed.
+	if type(key) == 'string' and configPreviews[key] ~= nil then
+		return Result.Err('dealership.previewIsConfig', key)
+	end
 
 	local at = pointOf(player)
 	if at == nil then return Result.Err('dealership.noPosition') end
@@ -839,6 +916,11 @@ function M.PlacePreview(player, key, entryKey, yaw, citizenId)
 		return Result.Err('dealership.placeFailed', tostring(saved.detail))
 	end
 
+	-- INTO THE MERGED TABLE ONLY. `adoptedPreviews` is an INPUT to the boot
+	-- merge and not a running copy of it: `rebuildPreviews` is called at Init and
+	-- once more when the adoption finishes, both of them long before anything can
+	-- reach this function. Writing there as well would be a line no test can
+	-- observe and no reader can check.
 	previews[spot.key] = spot
 	dress(spot)
 	Open77.log.info(('[dealership] showroom car %s (%s) placed at %s by %d')
@@ -854,6 +936,12 @@ end
 function M.RemovePreview(key)
 	if type(key) ~= 'string' or previews[key] == nil then
 		return Result.Err('dealership.noSuchPreview')
+	end
+	-- Same refusal as the place above, and for the same reason: a configured car
+	-- deleted here comes back at the next start, which reads as a removal that
+	-- did not work. It is removed by deleting its row from `PREVIEW.POINTS`.
+	if configPreviews[key] ~= nil then
+		return Result.Err('dealership.previewIsConfig', key)
 	end
 	local gone = Store.RemovePreview(key)
 	if not gone.ok then return Result.Err('dealership.placeFailed', tostring(gone.detail)) end
@@ -1080,7 +1168,10 @@ function M.Init()
 	configSpots = Access.SPOTS
 	adopted = {}
 	rebuild()
-	previews, showroom = {}, {}
+	configPreviews = Access.PREVIEW_POINTS
+	adoptedPreviews = {}
+	showroom = {}
+	rebuildPreviews()
 	windows = {}
 	offers = {}
 	nextOffer = 0
@@ -1363,6 +1454,14 @@ function M.Start()
 		end
 
 		-- ── the showroom, once the dealers are known ─────────────────────
+		--
+		-- A SHOWROOM CAR IS CONFIG NOW, exactly like the dealer it stands in.
+		-- `PREVIEW.POINTS` in `config/dealership.lua` is the list; the database
+		-- is read for the cars placed before 2026-09-21, when the staff menu's
+		-- Dev screen still wrote them, and every one of those is printed back
+		-- as the config line that recreates it. Same two halves as the dealer
+		-- migration above: the adoption keeps the floor dressed, and the lines
+		-- are how an operator stops needing it.
 		local floor = Store.FetchPreviews()
 		if not floor.ok then
 			Open77.log.error('[dealership] the showroom could not be read: ' ..
@@ -1370,8 +1469,11 @@ function M.Start()
 		else
 			local listed = type(floor.value) == 'table' and floor.value or {}
 			for index = 1, #listed do
-				-- ONE RESUME PER CAR, and this loop needs it more than any other
-				-- in the resource: every pass is a `vehicles.create` round trip.
+				-- ONE RESUME PER ROW. This loop no longer creates a vehicle --
+				-- `raiseFloor` below does -- but a coercion apiece is still
+				-- enough to walk into the per-resume instruction budget on a
+				-- large showroom, and a resume that runs out unwinds with no
+				-- error and no log.
 				Wait(0)
 				local row = listed[index]
 				local spot, why = Access.PreviewFromDefinition(row.preview_key, {
@@ -1379,22 +1481,42 @@ function M.Start()
 					DEALER = row.dealer_key, ENTRY = row.entry_key,
 				})
 				if spot == nil then
-					Open77.log.warn('[dealership] a showroom car was refused: ' .. tostring(why))
-				elseif spots[spot.dealer] == nil then
-					-- A preview whose dealer is gone is a car in a field. It is
-					-- kept in the table -- the dealer may come back on the next
-					-- edit of the config -- and simply not stood up.
-					previews[spot.key] = spot
-					Open77.log.warn(('[dealership] the showroom car %s names the dealer %s, ' ..
-						'which no longer exists; it is not created')
-						:format(safe(spot.key), safe(spot.dealer)))
+					Open77.log.warn('[dealership] a legacy showroom car was refused: ' ..
+						tostring(why))
 				else
-					previews[spot.key] = spot
-					dress(spot)
+					adoptedPreviews[spot.key] = spot
 				end
 			end
-			Open77.log.info(('[dealership] showroom: %d placed, %d standing')
-				:format(OPX.Table.Count(previews), OPX.Table.Count(showroom)))
+			rebuildPreviews()
+
+			-- EVERY CAR THAT EXISTS ONLY IN THE DATABASE, as the config line
+			-- that would recreate it. Printed at EVERY start and not once into
+			-- one operator's chat box, which is what the Dev screen did and why
+			-- nobody ever had a copy of their own showroom.
+			local orphans = {}
+			for key in pairs(adoptedPreviews) do
+				if configPreviews[key] == nil then orphans[#orphans + 1] = key end
+			end
+			table.sort(orphans)
+			for index = 1, #orphans do
+				Wait(0)
+				local spot = adoptedPreviews[orphans[index]]
+				Open77.log.info(('[dealership] config line: %s = { X = %.2f, Y = %.2f, ' ..
+					'Z = %.2f, HEADING = %.1f, BUCKET = %d, DEALER = %q, ENTRY = %q },')
+					:format(spot.key, spot.x, spot.y, spot.z, spot.heading, spot.bucket,
+						spot.dealer, spot.entry))
+			end
+			if #orphans > 0 then
+				Open77.log.warn(('[dealership] %d showroom car(s) exist only in ' ..
+					'opx77_dealership_previews. The menu that placed them is gone: paste the ' ..
+					'config line(s) above into PREVIEW.POINTS in config/dealership.lua, or ' ..
+					'they are one dropped database away from lost'):format(#orphans))
+			end
+
+			raiseFloor()
+			Open77.log.info(('[dealership] showroom: %d from config, %d adopted, %d standing')
+				:format(OPX.Table.Count(configPreviews), #orphans,
+					OPX.Table.Count(showroom)))
 		end
 
 		-- A player who connected while the database was being read asked too

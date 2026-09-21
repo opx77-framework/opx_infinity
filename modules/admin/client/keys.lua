@@ -17,10 +17,12 @@ local Keys = M.Keys
 
 --- The mapping ids, listed once so a rename is followed here and nowhere else.
 Keys.MENU = 'opx.admin.menu'
--- Opens the menu on the Dev screen rather than the root. A SECOND id and not the
--- menu's own: a player rebinds each one separately, and folding them together
--- would take the Dev key away from anyone who moved the menu key.
-Keys.DEV = 'opx.admin.dev'
+-- `Keys.DEV` STOOD HERE and is gone with the Dev screen it opened (2026-09-21,
+-- the owner: "degage moi ce menu est pass moi tous dans les config"). It was the
+-- only mapping that landed on a named screen rather than on the root, so
+-- nothing declares a second menu id any more. A player's stored rebind of
+-- `opx.admin.dev` is simply never asked for; the id is not reused for anything
+-- else, so putting the screen back would find it again.
 Keys.FASTER = 'opx.admin.noclipFaster'
 Keys.SLOWER = 'opx.admin.noclipSlower'
 

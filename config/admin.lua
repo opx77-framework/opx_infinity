@@ -20,18 +20,23 @@ OPX.Config.MODULES.admin = {
 
 	-- Default keys players rebind in the pause menu; false registers none.
 	--
-	-- DEV opens the staff menu on the Dev screen -- the commands that place a
-	-- garage, a pad or a dealer -- instead of on the root, which is the whole of
-	-- its point: the place you set up a server from is one press away. It is a
-	-- second key and not a chord because the host takes a key name and no
-	-- modifier of its own. F10 out of the box, because everything under F9 is
-	-- spoken for: F9 here, F3 the emote picker, and F5 and F8 belong to the media
-	-- resource's panel and cursor on an install that has it. The dealership is
-	-- NOT in this list: a dealer is a place you stand on, like a garage spot, and
-	-- it takes that key -- E.
+	-- THERE IS NO DEV KEY ANY MORE. `DEV = 'F10'` stood here and opened the staff
+	-- menu on a screen called Dev -- the screen a server was set up from. The
+	-- owner deleted that screen on 2026-09-21 ("il y a pas de config live c'est
+	-- tous par les fichier config donc degage moi ce menu est pass moi tous dans
+	-- les config"), so the key had nothing left to land on and went with it. F10
+	-- is free again. What that screen PLACED is a line in `config/dealership.lua`
+	-- now; what it READ is a command an operator types.
+	--
+	-- TO CAPTURE A POSITION FOR ONE OF THOSE CONFIG FILES: stand where you want
+	-- it, FACE THE WAY IT SHOULD FACE, and run `/opx.admin.self.pos` -- Self ->
+	-- Position on this menu, or the row on the target eye. It copies
+	-- `{ NAME = ..., X = ..., Y = ..., Z = ..., HEADING = ... }` to the operating
+	-- system clipboard, with the facing you are actually standing at, ready to
+	-- paste. That is the whole capture path, and every config file that wants a
+	-- coordinate names it.
 	KEYS = {
 		MENU = 'F9',
-		DEV = 'F10',
 		SPEED_UP = 'PAGEUP',
 		SPEED_DOWN = 'PAGEDOWN',
 	},

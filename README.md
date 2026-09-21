@@ -212,12 +212,14 @@ logged with what was bought; a hand-over that is refused is *not* a failed sale:
 vehicle is owned and filed, and only the convenience of driving it away is reported.
 
 A dealer also has a **showroom floor** and a **zone**. An operator dresses the floor
-with **preview points** from the staff menu's Dev screen: each one stands a model of the
-stock list where the operator is standing, facing where they are looking, **locked** —
-an unlocked showroom car is a free car with an audience — and persistent, because a
-showroom car is furniture. Placing and removing one is gated on `opx.dealership.place`,
-**a right of its own** rather than a command's: the command it would have borrowed no
-longer exists, and dressing a floor is a different job from moving the building.
+with **preview points**, written in `PREVIEW.POINTS` in `config/dealership.lua`: each
+one stands a model of the stock list at a position and a facing the file names,
+**locked** — an unlocked showroom car is a free car with an audience — and persistent,
+because a showroom car is furniture. To capture a point, stand where the car goes,
+face the way it should face, and run `/opx.admin.self.pos`, which copies the position
+**and your facing** to your clipboard; paste the numbers into a row. A showroom placed
+before 2026-09-21 lives in `opx77_dealership_previews` and is adopted at every boot,
+which also prints each one as the config line that recreates it.
 
 Inside a dealer's `ZONE_RADIUS` the target eye grows a **"sell a vehicle"** row on every
 other player, so a salesperson sells face to face. Pressing it charges nobody: an
@@ -292,17 +294,22 @@ error the resource ever sees.
 **A role for an operator therefore needs both spellings, and the same shape repeats
 wherever a module owns a namespace:** `command.opx.admin` *and* `command.opx.admin.*`
 to open the panel and use it, `command.opx.garages.*`, `command.opx.dealership.*` and
-`command.opx.clothing.*` for the Dev screen's readings, and `command.opx.weather.*`,
+`command.opx.clothing.*` for the garage, dealer and wardrobe commands, and
+`command.opx.weather.*`,
 `command.opx.time` and `command.opx.time.*` for the world controls.
 
-**One grant on that screen is NOT a `command.` at all**, and it is the one an operator
-will be missing: `opx.dealership.place`, which places and removes a showroom car. It is
-written exactly like that, with no prefix, because it gates no command — the commands
-that used to place things were deleted, and a right named after one of them would gate
-nothing. `command.*` does not cover it and neither does `command.opx.dealership.*`; only
-`*`, or the right itself, does. A role that holds every `command.` line above and not
-this one presses the two showroom rows and is refused, with the refusal on their own
-screen and a line in the server journal naming the right.
+**One right in this resource is NOT a `command.` at all**: `opx.dealership.place`,
+which gates the runtime path that places and removes a showroom car. It is written
+exactly like that, with no prefix, because it gates no command — the commands that used
+to place things were deleted, and a right named after one of them would gate nothing.
+`command.*` does not cover it and neither does `command.opx.dealership.*`; only `*`, or
+the right itself, does.
+
+**It currently opens nothing a player can reach.** The staff menu's Dev screen was its
+only caller and it was deleted on 2026-09-21 — a showroom car is config now — so the
+routeway is still wired and still refuses, but no surface in this resource sends
+anything down it. The grant is safe to revoke unless another resource is written
+against the dealership contract's `Place`/`Unplace`.
 
 Only the `admin`
 and `owner` roles the server supplies avoid the question — they are `command.*` and

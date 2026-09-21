@@ -66,7 +66,21 @@ end
 --- Places a showroom car where this client is standing, facing where it looks.
 -- @author XEROX710
 --
--- PUBLISHED FOR THE STAFF MENU, which is the placement menu the operator uses.
+-- NOTHING IN THIS RESOURCE CALLS THIS ANY MORE. It was published for the staff
+-- menu's Dev screen, which was the placement menu, and the owner deleted that
+-- screen on 2026-09-21: "il y a pas de config live c'est tous par les fichier
+-- config donc degage moi ce menu est pass moi tous dans les config". A showroom
+-- car is a row in `PREVIEW.POINTS` in `config/dealership.lua` now, and the
+-- server prints every one that exists only in the database at boot as the config
+-- line that recreates it.
+--
+-- IT IS LEFT WIRED AND IT STILL WORKS, which is a decision and not an oversight:
+-- deleting a module's whole write path is a bigger call than deleting a menu and
+-- it is the owner's to make. What it means in the meantime is that
+-- `PLACEMENT_RIGHT` -- `opx.dealership.place`, granted to one account on the
+-- live server -- gates a door with no handle on the inside. `config/dealership.lua`
+-- says so beside the right itself, and says it is safe to revoke.
+--
 -- Publishing it grants nothing: this half only asks, and the server refuses
 -- anybody who does not hold `PLACEMENT_RIGHT`. A contract call from a client is
 -- no permission check at all, which is why the check is not here.

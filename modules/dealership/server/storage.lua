@@ -31,8 +31,15 @@ M.Storage = {}
 -- Nothing drops it, so an operator who has not checked their dealers in yet can
 -- still roll back.
 --
--- `opx77_dealership_previews` is the table that IS written at runtime, from the
--- staff menu's Dev screen. A NEW TABLE rather than a `role` column on the one
+-- `opx77_dealership_previews` IS READ-ONLY IN PRACTICE NOW, for the same reason
+-- and on the same day. It was written at runtime from the staff menu's Dev
+-- screen; the owner deleted that screen on 2026-09-21 and a showroom car is a
+-- row in PREVIEW.POINTS in `config/dealership.lua`. The writers below are still
+-- here because the routeway they serve is, but nothing in this resource reaches
+-- them. The READ stays and is the migration: every row config does not name is
+-- adopted at boot and printed as the line that checks it in.
+--
+-- A NEW TABLE rather than a `role` column on the one
 -- above: an ALTER on a live table for a feature that could have its own is a
 -- migration nobody needed, and a preview is not a dealer -- it has no kind and
 -- it names a stock row.
