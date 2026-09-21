@@ -21926,6 +21926,80 @@ do
 				and type(control.netEvents[module.Event.DECLINE]) == 'function'
 				and type(control.netEvents[module.Event.HANG_UP]) == 'function')
 
+		-- ── AND NOW THEY CAN HEAR EACH OTHER ─────────────────────────────────
+		-- THE OWNER: "petit bug quand il repond a l'appel on s'entend pas". It
+		-- was not a bug in what was built -- the call carried its state and its
+		-- presentation and no audio at all, which was reported as a limitation
+		-- when it landed and read as a fault the first time two people tried it.
+		--
+		-- Membership is REACHABILITY and the server owns reachability, so these
+		-- checks ask the channel who is on it rather than counting calls into a
+		-- stub. Both are put back where the section found them afterwards.
+		control.Stand(A, 0.0, 0.0, 0.0)
+		control.Stand(B, 1.0, 0.0, 0.0)
+
+		local function channelOfCall()
+			for id, channel in pairs(control.voice.channels) do
+				local _ = id
+				return channel
+			end
+			return nil
+		end
+		local function channels()
+			local count = 0
+			for _ in pairs(control.voice.channels) do count = count + 1 end
+			return count
+		end
+
+		check('nobody on a call means no channel standing', channels() == 0, channels())
+
+		ask(A, module.Event.INVITE, B)
+		local ringing = inviteOn(B)
+		check('the call rings', ringing ~= nil)
+		ask(B, module.Event.ACCEPT, ringing)
+
+		local channel = channelOfCall()
+		check('answering opens one voice channel for the call',
+			channel ~= nil and channels() == 1, channels())
+		check('and puts BOTH parties on it, which is the whole of the report',
+			channel ~= nil and channel.members[A] ~= nil and channel.members[B] ~= nil,
+			channel and tostring(channel.members[A]) or 'no channel')
+		-- Speak AND listen: a membership that could only listen is the same
+		-- silence from the other side.
+		check('each able to speak and to listen',
+			channel ~= nil and channel.members[A].canSpeak == true
+				and channel.members[A].canListen == true
+				and channel.members[B].canSpeak == true
+				and channel.members[B].canListen == true)
+
+		-- ── A THIRD JOINS, AND THE CHANNEL DOES NOT MULTIPLY ─────────────────
+		control.Stand(C, 2.0, 0.0, 0.0)
+		ask(A, module.Event.INVITE, C)
+		local joining = inviteOn(C)
+		ask(C, module.Event.ACCEPT, joining)
+		channel = channelOfCall()
+		check('a third party joins the SAME channel rather than opening another',
+			channels() == 1 and channel ~= nil and channel.members[C] ~= nil,
+			channels())
+
+		-- ── ONE LEAVES, TWO CARRY ON ─────────────────────────────────────────
+		-- The line this kills: dropping the channel whenever `callEnded` runs.
+		-- It runs when one of three hangs up, and the other two are still
+		-- talking.
+		ask(C, module.Event.HANG_UP)
+		channel = channelOfCall()
+		check('the one who hung up is off the channel',
+			channel ~= nil and channel.members[C] == nil)
+		check('and the two still talking still have one',
+			channels() == 1 and channel.members[A] ~= nil and channel.members[B] ~= nil,
+			channels())
+
+		-- ── AND THE LAST ONE TAKES IT WITH THEM ──────────────────────────────
+		-- A channel that outlives its call is two strangers who can still hear
+		-- each other, which is exactly what the consent was for.
+		ask(A, module.Event.HANG_UP)
+		check('the call ending takes the channel with it', channels() == 0, channels())
+
 		-- ── calling yourself ─────────────────────────────────────────────────
 		local mark = ask(A, module.Event.INVITE, A)
 		local refused = refusalFor(mark)

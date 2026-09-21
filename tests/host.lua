@@ -332,7 +332,7 @@ function Host.Environment(side, database)
 	-- every exit and has a watchdog that re-takes one the platform dropped, and
 	-- a stub that answered `true` and kept nothing could not tell any of those
 	-- three apart -- nor a call that lit both parties from one that lit neither.
-	local holocall
+	local holocall, voice
 	local plates, watchers
 	local world, lives, gate, generations, carried, environment
 	local blips, hud
@@ -834,6 +834,66 @@ function Host.Environment(side, database)
 		-- 1..500 -- so a marker the engine would refuse under `unsupported_style`
 		-- fails here rather than silently in a live session. A marker that is never
 		-- removed is the other half of the same class of bug, so `list` is real.
+		-- THE VOICE STACK. Server-side channel ownership and the one client call
+		-- the calls module makes. Modelled rather than accepted: a stub that
+		-- answered true to everything would have let the call ship with the audio
+		-- half missing a second time, and the questions a test needs to ask are
+		-- about MEMBERSHIP -- who is on which channel, and is the channel still
+		-- there -- not about how many times a function was called.
+		voice = {
+			createChannel = function(options)
+				if voice.absent then return nil, 'voice_unavailable' end
+				if voice.refuse ~= nil then return nil, voice.refuse end
+				-- "`options` is required and must be a table", verbatim from the
+				-- card, and a refusal a caller passing nothing would deserve.
+				if type(options) ~= 'table' then return nil, 'options_required' end
+				local id = ('chan-%d'):format(voice.next)
+				voice.next = voice.next + 1
+				voice.channels[id] = { id = id, name = options.name, members = {} }
+				return { id = id, name = options.name }
+			end,
+			removeChannel = function(channelId)
+				if voice.channels[channelId] == nil then return false, 'no_such_channel' end
+				voice.channels[channelId] = nil
+				return true
+			end,
+			addPlayer = function(channelId, playerId, options)
+				local channel = voice.channels[channelId]
+				if channel == nil then return false, 'no_such_channel' end
+				local id = tonumber(playerId) or playerId
+				-- The real host will not put a slot nobody is on into a channel,
+				-- and a stub that did would hide a call added for a player who
+				-- had already gone.
+				if control.accounts[id] == nil then return false, 'no_such_player' end
+				local speak = true
+				local listen = true
+				if type(options) == 'table' then
+					if options.canSpeak == false then speak = false end
+					if options.canListen == false then listen = false end
+				end
+				channel.members[id] = { canSpeak = speak, canListen = listen }
+				return true
+			end,
+			removePlayer = function(channelId, playerId)
+				local channel = voice.channels[channelId]
+				if channel == nil then return false, 'no_such_channel' end
+				channel.members[tonumber(playerId) or playerId] = nil
+				return true
+			end,
+			-- The client half: what route this machine's frames take. `status`
+			-- answers the PTT state a test staged, so a module that forces the
+			-- microphone open is visible as a `transmit` of true that no test
+			-- ever asked for.
+			status = function()
+				if voice.status == nil then return nil, 'voice_backend_unavailable' end
+				return voice.status
+			end,
+			setTransmitting = function(enabled, intent)
+				voice.transmit = { enabled = enabled, intent = intent }
+				return true
+			end,
+		},
+
 		nameplates = {
 			set = function(playerId, options)
 				local id = tonumber(playerId)
@@ -1636,6 +1696,15 @@ function Host.Environment(side, database)
 	holocall = { ours = {}, others = {}, writes = {}, reads = {},
 		absent = false, refuse = nil, readRefuse = nil }
 
+	-- THE VOICE STACK, modelled because a call that nobody can hear was shipped
+	-- once already. `channels` is id -> { name, members = { playerId -> perms } },
+	-- so a test can ask the two questions that matter -- is this player on the
+	-- call's channel, and did the channel go when the call did -- rather than
+	-- counting calls to a stub that always said yes. `absent` is a host with no
+	-- voice stack at all, which must cost the call its audio and nothing else.
+	voice = { channels = {}, next = 1, absent = false, refuse = nil,
+		transmit = nil, status = nil }
+
 	-- The travel natives' own state, and every write to them.
 	travels = { noclip = false, mapPick = false, calls = {}, refuse = nil }
 
@@ -2210,6 +2279,9 @@ function Host.Environment(side, database)
 		--- reference, so a test flips `absent` or `refuse` on it directly, the
 		--- way it already does with `markers.refuse` and `bodies.refuse`.
 		holocall = holocall,
+		-- The voice stack's own state: channels, their members, and the one
+		-- client-side route assertion. A test asks this who is on a call's channel.
+		voice = voice,
 
 		--- Puts a player in a routing bucket directly, the way another resource
 		--- would, without going through the runtime's own move.

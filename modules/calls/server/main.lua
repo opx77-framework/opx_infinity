@@ -227,6 +227,103 @@ local function darkenEyes(playerId)
 	end
 end
 
+-- ── the voice channel ────────────────────────────────────────────────────────
+--
+-- THE OWNER: "petit bug quand il repond a l'appel on s'entend pas". Not a bug in
+-- what was built -- this half was never built at all, and it was reported as a
+-- limitation when the feature landed: the call carried its STATE and its
+-- PRESENTATION, and no audio. Two players on a call heard each other exactly as
+-- far as ordinary proximity carried, which across the city is not at all.
+--
+-- A call gets a channel of its own, created on demand and destroyed with the
+-- call. The same discipline as the eye-glow above and for the same reason: this
+-- is world state the platform holds on our word, and a call that ends down an
+-- unreleased path would leave two strangers able to hear each other for the rest
+-- of the session. `channelOf` is keyed by call id, `dropChannel` is safe to call
+-- for a call that never had one, and the sweep gives back what the wire missed.
+--
+-- LISTENING IS OURS TO GRANT; SPEAKING IS NOT, ENTIRELY. Membership with
+-- `canListen` is what makes the other half audible, and the server owns it. What
+-- the server cannot own is which route a speaker's frame takes: the client picks
+-- that with `setTransmitting`'s intent, and by default that is proximity. The
+-- client half asserts `all` while a call is live -- see `modules/calls/client`
+-- -- so the player is heard both by the call and by anyone standing next to
+-- them, which is what a phone call in a shared world should sound like.
+local voiceChannels = {}
+
+local function voice()
+	local api = Open77.voice
+	if type(api) ~= 'table' or type(api.createChannel) ~= 'function' then return nil end
+	return api
+end
+
+-- The channel for a call, creating it on first use. nil when the platform has
+-- no voice stack, which costs the call nothing but its audio.
+local function channelOf(callId)
+	if voiceChannels[callId] ~= nil then return voiceChannels[callId] end
+	local api = voice()
+	if api == nil then return nil end
+
+	local made, reason = pcall(api.createChannel, {
+		name = ('call %s'):format(tostring(callId)),
+		-- No effect and no spatial blend: a holocall is the other person in your
+		-- head, not a voice in the room. `mode` is left to the platform's default
+		-- rather than named, because naming one this build does not know is a
+		-- refusal that costs the whole channel.
+		persistent = false,
+	})
+	if not made then
+		audit('calls.voice', 0, false, 'raised: ' .. tostring(reason))
+		return nil
+	end
+	local channel = reason
+	if type(channel) ~= 'table' or channel.id == nil then
+		audit('calls.voice', 0, false, 'refused: ' .. tostring(channel))
+		return nil
+	end
+	voiceChannels[callId] = channel.id
+	return channel.id
+end
+
+-- Puts one player on a call's channel. Answers whether they are on it.
+local function joinVoice(callId, playerId)
+	local api = voice()
+	local channelId = api ~= nil and channelOf(callId) or nil
+	if channelId == nil then return false end
+	local ok, reason = pcall(api.addPlayer, channelId, playerId,
+		{ canSpeak = true, canListen = true })
+	if not ok or reason == false then
+		audit('calls.voice', playerId, false, 'not added: ' .. tostring(reason))
+		return false
+	end
+	return true
+end
+
+-- Takes one player off a call's channel. Safe when they are not on it.
+local function leaveVoice(callId, playerId)
+	local channelId = voiceChannels[callId]
+	local api = voice()
+	if channelId == nil or api == nil or type(api.removePlayer) ~= 'function' then return end
+	local ok, reason = pcall(api.removePlayer, channelId, playerId)
+	if not ok then
+		audit('calls.voice', playerId, false, 'would not remove: ' .. tostring(reason))
+	end
+end
+
+-- Destroys a call's channel. Called when the call is over, and by the sweep for
+-- a channel whose call is no longer in the registry.
+local function dropChannel(callId)
+	local channelId = voiceChannels[callId]
+	if channelId == nil then return end
+	voiceChannels[callId] = nil
+	local api = voice()
+	if api == nil or type(api.removeChannel) ~= 'function' then return end
+	local ok, reason = pcall(api.removeChannel, channelId)
+	if not ok then
+		audit('calls.voice', 0, false, 'would not drop: ' .. tostring(reason))
+	end
+end
+
 --- Whether the platform currently shows a holocall glow on a player, for ANY
 --- resource. Published on the contract, and the sweep's own question.
 ---
@@ -363,16 +460,30 @@ end
 -- forget to.
 local function callChanged(callId)
 	local ids = registry.Participants(callId)
-	for index = 1, #ids do lightEyes(ids[index]) end
+	for index = 1, #ids do
+		lightEyes(ids[index])
+		-- Idempotent on purpose: this runs on every change to a call, not only
+		-- on the join, so a membership the platform dropped is re-taken on the
+		-- next one rather than waiting for the sweep.
+		joinVoice(callId, ids[index])
+	end
 	pushAll(ids)
 end
 
 -- Releases the glow for anybody who left, and pushes everyone who was involved.
 local function callEnded(outcome)
+	local callId = outcome.callId
 	for index = 1, #outcome.were do
 		local id = outcome.were[index]
-		if registry.CallOf(id) == nil then darkenEyes(id) end
+		if registry.CallOf(id) == nil then
+			darkenEyes(id)
+			if callId ~= nil then leaveVoice(callId, id) end
+		end
 	end
+	-- THE CHANNEL GOES WITH THE LAST PARTICIPANT AND NOT BEFORE. `callEnded` also
+	-- runs when ONE of three hangs up and the other two carry on talking, and
+	-- dropping the channel there would silence a call that is still going.
+	if callId ~= nil and #registry.Participants(callId) == 0 then dropChannel(callId) end
 	pushAll(outcome.were)
 end
 
@@ -653,6 +764,18 @@ local function scan()
 			darkenEyes(id)
 		end
 	end
+
+	-- THE SAME ASSERTION FOR THE CHANNEL, and it matters more than the glow. A
+	-- leaked eye-glow is a player who looks odd; a leaked channel is two people
+	-- who can still hear each other after the call they agreed to is over, which
+	-- is the whole of what consent bought them.
+	for callId in pairs(voiceChannels) do
+		if #registry.Participants(callId) == 0 then
+			Open77.log.warn(('[calls] a voice channel outlived call %s; dropping it')
+				:format(tostring(callId)))
+			dropChannel(callId)
+		end
+	end
 end
 
 -- ── the contract ─────────────────────────────────────────────────────────────
@@ -844,4 +967,10 @@ end
 function M.Stop()
 	for id in pairs(eyesHeld) do darkenEyes(id) end
 	eyesHeld = {}
+	-- A non-persistent channel is released with its owning resource, so this is
+	-- belt and braces -- but a reload is exactly when a channel would otherwise
+	-- survive its call, and the platform's promise is not this module's to lean
+	-- on when giving it back costs one call each.
+	for callId in pairs(voiceChannels) do dropChannel(callId) end
+	voiceChannels = {}
 end

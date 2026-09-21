@@ -196,6 +196,9 @@ local function onState(payload)
 
 	if nowCall ~= nil and nowCall ~= hadCall then
 		play(sounds.ACCEPTED)
+		-- At once, not on the next sweep: the first half-second of a call is
+		-- exactly when somebody says "allô".
+		routeVoice()
 	elseif hadCall ~= nil and nowCall == nil then
 		play(sounds.HANG_UP)
 	end
@@ -211,7 +214,50 @@ end
 -- it keeps ticking after the card has gone, because the card leaving is about
 -- the SCREEN and the call is still ringing. A player who looked away still
 -- hears it, and ALT still answers it.
+-- ── the route this machine's own voice takes ─────────────────────────────────
+--
+-- THE OWNER: "petit bug quand il repond a l'appel on s'entend pas". The server
+-- half of that is a voice channel per call and membership on it -- see
+-- `modules/calls/server/main.lua` -- and membership is what makes the other
+-- person AUDIBLE. It is not what makes you audible to them.
+--
+-- A client captures one stream and ROUTES it: `setTransmitting`'s intent picks
+-- between proximity, the channels you are a member of, or both. The default is
+-- proximity, which across Night City reaches nobody, so two people on a call
+-- could each hear a channel neither of them was speaking into.
+--
+-- THE MIC IS NEVER FORCED OPEN, and the shape below is the whole of that
+-- promise: `enabled` is read back out of `Open77.voice.status()` and handed
+-- straight back. This says "whatever you are doing with the microphone, keep
+-- doing it, and send it to the call as well" -- it cannot start a transmission
+-- and it cannot stop one. `all` rather than `channels` because a holocall in a
+-- shared world should still be half-audible to whoever is standing next to you.
+--
+-- Re-asserted on the sweep as well as on the state change, because `open-voice`
+-- owns the push-to-talk key and drives the same native; if it re-states the
+-- intent, this takes it back within half a second rather than for good.
+local function routeVoice()
+	local api = Open77.voice
+	if type(api) ~= 'table' or type(api.setTransmitting) ~= 'function' then return end
+	if type(api.status) ~= 'function' then return end
+
+	local read, status = pcall(api.status)
+	if not read or type(status) ~= 'table' then return end
+
+	-- Two names for the same fact across builds, and neither is guessed at: the
+	-- card for `status` promises "PTT/VAD state" without fixing the field, so
+	-- both are read and anything else leaves the route alone.
+	local talking = status.transmitting
+	if type(talking) ~= 'boolean' then talking = status.pushToTalk end
+	if type(talking) ~= 'boolean' then return end
+
+	pcall(api.setTransmitting, talking, 'all')
+end
+
 local function rearm()
+	-- BEFORE THE INVITE GUARD, because a call is live long after the invite is
+	-- gone and this is the only clock the module runs.
+	if state.call ~= nil then routeVoice() end
 	if state.invite == nil then return end
 	local atMs = OPX.Now()
 

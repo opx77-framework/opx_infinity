@@ -682,6 +682,29 @@ permissions {
   "players.holocall.control",
   "players.holocall.read",
 
+  -- THE CALL'S AUDIO, and the two halves are two permissions because they are
+  -- two runtimes. The owner reported it as "quand il repond a l'appel on s'entend
+  -- pas", and the reason was that the feature shipped carrying a call's state and
+  -- its presentation and no voice at all.
+  --
+  -- `voice.manage` is the SERVER's, and every call site is in
+  -- `modules/calls/server/main.lua`: `Open77.voice.createChannel` in
+  -- `channelOf`, `addPlayer` in `joinVoice`, `removePlayer` in `leaveVoice`,
+  -- `removeChannel` in `dropChannel`. Membership is reachability and the server
+  -- owns reachability; a client asking to be on a call's channel would be a
+  -- client granting itself an ear.
+  --
+  -- `voice.client` is the CLIENT's, for `Open77.voice.setTransmitting` in
+  -- `modules/calls/client/main.lua`. It decides which route this machine's own
+  -- frames take, which is local presentation policy and cannot grant anything:
+  -- the card for it says in as many words that the server still validates every
+  -- recipient and membership. Undeclared, the membership would stand and the
+  -- player would HEAR the call while nobody heard them -- half a conversation,
+  -- refused silently on their own machine, which is the shape of failure this
+  -- manifest's comments keep coming back to.
+  "voice.manage",
+  "voice.client",
+
   "player.appearance.read",
   "player.cyberware.read",
   "player.appearance.edit",
