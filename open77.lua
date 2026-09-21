@@ -620,6 +620,25 @@ permissions {
   "player.weapons.read",
   "puppets.present",
 
+  -- THE PERMISSION IS AN ARGUMENT, NOT A NAMESPACE, at the only three call
+  -- sites that need these two. `OPX.Lib.Native.Call('camera.orbit',
+  -- 'camera.preview', ...)` names the method and the permission as STRINGS, so
+  -- `Open77.camera` and `Open77.world` genuinely appear nowhere in this tree
+  -- outside comments -- and both of these were removed on 2026-09-21 on exactly
+  -- that evidence.
+  --
+  -- What it broke, reported from the game within the hour: the fitting room's
+  -- preview camera stopped turning the body (`camera.orbit` / `camera.clearOrbit`),
+  -- and the eye stopped resolving anything the ray had to reach for -- yourself,
+  -- the sky (`camera.screenRaycast`).
+  --
+  -- NOTHING SERVER-SIDE SAID SO. Both are CLIENT permissions, so the refusal
+  -- lands in the player's own log; the server journal showed zero
+  -- `permission_denied` and a clean boot, which is what they were checked
+  -- against. A client permission is verified in the game or not at all.
+  "camera.preview",
+  "world.query",
+
   "player.travel",
 
   "input.actions",
