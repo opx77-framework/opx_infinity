@@ -19970,5 +19970,136 @@ do
 				:format(method, entry.file))
 	end
 end
+
+-- The server has always written the character's name to the state bag, at the
+-- right moment. NOTHING READ IT. The plate above a head is drawn by the
+-- platform and labelled with the displayName the Master vouches for -- the
+-- account's gamertag -- and this resource never called `Open77.nameplates.set`
+-- nor declared `ui.nameplates`. The chat asked `Open77.players.identity`, whose
+-- `name` is that same account name, under a comment claiming it showed "the
+-- player's own". So a player who had just named their character still spoke and
+-- walked around as their gamertag, on the first connection and on the
+-- hundredth: it was never a first-connection defect, it was permanent.
+section('the character name reaches what draws it')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local State = character ~= nil and character.PlayerState or nil
+		check('the client character module is up', State ~= nil)
+
+		if State ~= nil then
+			-- A body walks past that this VM has never asked about, and the
+			-- server moves their name. The delta alone must put the plate right.
+			local bag = env.Open77.state.player(21)
+			bag:set('name', 'Vincent Kowalski')
+			control.Pump(4)
+			check('a name delta puts the character name on the plate',
+				control.plates.byId[21] ~= nil
+					and control.plates.byId[21].label == 'Vincent Kowalski',
+				control.plates.byId[21] and tostring(control.plates.byId[21].label))
+
+			-- Somebody named BEFORE this client ever saw them never sends a
+			-- delta. The first pull is the other half, or they keep the account
+			-- plate for ever.
+			local other = env.Open77.state.player(22)
+			other:set('name', 'Jackie Welles')
+			control.plates.byId[22] = nil
+			State.Of(22)
+			check('and so does the first read of a player already named',
+				control.plates.byId[22] ~= nil
+					and control.plates.byId[22].label == 'Jackie Welles',
+				control.plates.byId[22] and tostring(control.plates.byId[22].label))
+
+			-- A character with no name yet is not a failure: a row exists before
+			-- anybody does, and the plate must go back rather than say nothing.
+			bag:set('name', nil)
+			control.Pump(4)
+			check('clearing the name hands the plate back to the platform',
+				control.plates.byId[21] == nil)
+
+			-- A refused override must not be swallowed: it is the difference
+			-- between "the name is wrong" and "the grant is missing".
+			control.plates.refuse = 'permission_denied:ui.nameplates'
+			local before = #control.log.warn
+			bag:set('name', 'Judy Alvarez')
+			control.Pump(4)
+			check('a refused override is named where an operator will read it',
+				#control.log.warn > before
+					and table.concat(control.log.warn, ' | ')
+						:find('ui.nameplates', 1, true) ~= nil,
+				table.concat(control.log.warn, ' | '))
+			control.plates.refuse = nil
+
+			-- The overrides go back with the module. The platform cleans up when
+			-- the RESOURCE stops, which is not the same event.
+			bag:set('name', 'Judy Alvarez')
+			control.Pump(4)
+			check('the module holds an override again', control.plates.byId[21] ~= nil)
+			State.Stop()
+			check('and stopping the module hands every plate back',
+				control.plates.byId[21] == nil and control.plates.byId[22] == nil)
+		end
+	end
+end
+
+-- The chat carried the same defect from the other side.
+section('a message is attributed to the character, not the account')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local chat = OPX.Modules.Get('chat')
+		local character = OPX.Modules.Get('character')
+		check('both modules are up', chat ~= nil and character ~= nil)
+
+		if chat ~= nil and character ~= nil then
+			local said = chat.Event.SAY
+			control.Admit(31, 'account-speaker')
+			OPX.EnsureSession(31)
+
+			--  is a flat list of every TriggerClientEvent, newest
+			-- last, so the message is found by name rather than by key.
+			local function lastAuthor()
+				for index = #control.clientEvents, 1, -1 do
+					local sent = control.clientEvents[index]
+					if sent.name == chat.Event.MESSAGE and type(sent[1]) == 'table' then
+						return sent[1].author
+					end
+				end
+				return nil
+			end
+
+			-- Nobody loaded: the account name is all there is, and that is right.
+			env.source = 31
+			control.netEvents[said]('hello')
+			control.Pump(4)
+			local anonymous = lastAuthor()
+			check('with no character loaded the account name is used',
+				anonymous ~= nil, tostring(anonymous))
+
+			-- A SECOND SPEAKER, not the same one again: the box rate-limits a
+			-- player to one line per RATE_MS and the second would simply be
+			-- dropped, leaving the first message's author standing and the check
+			-- passing or failing for the wrong reason.
+			control.Admit(32, 'account-named')
+			OPX.EnsureSession(32)
+			character.Players[32] = {
+				PlayerData = { charInfo = { firstName = 'Vincent', lastName = 'Kowalski' } },
+			}
+			env.source = 32
+			control.netEvents[said]('hello again')
+			control.Pump(4)
+			check('once a character is loaded the message is theirs',
+				lastAuthor() == 'Vincent Kowalski', tostring(lastAuthor()))
+			character.Players[32] = nil
+		end
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

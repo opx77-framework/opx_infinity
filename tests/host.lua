@@ -326,6 +326,7 @@ function Host.Environment(side, database)
 	local control
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
 	local bodies, effects, travels, notices, placement, lifts, trips
+	local plates, watchers
 	local world, lives, gate, generations, carried, environment
 
 	-- The live tunable values, by key: what `Open77.tunables.declare` hands back
@@ -340,15 +341,41 @@ function Host.Environment(side, database)
 
 	-- One bag handle. The five method names shadow the keys of the same name, which
 	-- is the platform's own rule and the one thing a caller can get wrong here.
+	-- A LIVE onChange. The stub answered a handle and never called anybody, on
+	-- the argument that a delta only arrives from the other side of a wire that
+	-- does not exist here. True of the wire, and it made every consumer of a
+	-- replicated key untestable -- which is how a character name could be
+	-- written correctly by the server for months with nothing reading it.
+	-- Writes announce synchronously: the platform delivers on a tick boundary,
+	-- and a test that pumps sees the same order either way.
+	local function announce(kind, id, key, value)
+		for _, entry in pairs(watchers.byId) do
+			local wants = entry.selector == nil or entry.selector == kind
+			if wants and (entry.key == nil or entry.key == key) then
+				pcall(entry.handler, { kind = kind, id = tostring(id) }, key, value)
+			end
+		end
+	end
+
 	local function bagFor(kind, id)
 		local slot = ('%s:%s'):format(kind, tostring(id))
 		bags[slot] = bags[slot] or {}
 		local methods = {
-			set = function(_, key, value) bags[slot][key] = value; return true end,
+			set = function(_, key, value)
+				bags[slot][key] = value
+				announce(kind, id, key, value)
+				return true
+			end,
 			clear = function(_, key)
-				if key == nil then bags[slot] = {}; return true end
+				if key == nil then
+					local had = bags[slot]
+					bags[slot] = {}
+					for name in pairs(had) do announce(kind, id, name, nil) end
+					return true
+				end
 				if bags[slot][key] == nil then return false, 'unknown_bag' end
 				bags[slot][key] = nil
+				announce(kind, id, key, nil)
 				return true
 			end,
 			get = function(_, key) return bags[slot][key] end,
@@ -404,10 +431,23 @@ function Host.Environment(side, database)
 			entity = function(kind, id) return bagFor(kind, id) end,
 			localPlayer = function() return bagFor('player', 1) end,
 
-			-- No delta ever fires here: a change handler is only reached from a
-			-- write on the OTHER side of the wire, and there is no wire.
-			onChange = function() return 1 end,
-			offChange = function() return true end,
+			onChange = function(selector, key, handler)
+				if type(handler) ~= 'function' then return nil, 'invalid_handler' end
+				if selector ~= nil and type(selector) ~= 'string' then
+					return nil, 'invalid_state_selector'
+				end
+				if key ~= nil and type(key) ~= 'string' then return nil, 'invalid_state_key' end
+				if watchers.refuse ~= nil then return nil, tostring(watchers.refuse) end
+				watchers.next = watchers.next + 1
+				watchers.byId[watchers.next] =
+					{ selector = selector, key = key, handler = handler }
+				return watchers.next
+			end,
+			offChange = function(handle)
+				if watchers.byId[handle] == nil then return false, 'unknown_watcher' end
+				watchers.byId[handle] = nil
+				return true
+			end,
 		},
 
 		-- `notifications` WAS DECLARED TWICE IN THIS TABLE, here and again near
@@ -713,6 +753,27 @@ function Host.Environment(side, database)
 		-- 1..500 -- so a marker the engine would refuse under `unsupported_style`
 		-- fails here rather than silently in a live session. A marker that is never
 		-- removed is the other half of the same class of bug, so `list` is real.
+		nameplates = {
+			set = function(playerId, options)
+				local id = tonumber(playerId)
+				if id == nil or id <= 0 then return false, 'invalid_argument' end
+				if type(options) ~= 'table' then return false, 'invalid_argument' end
+				local label = options.label
+				if label ~= nil and type(label) ~= 'string' then return false, 'invalid_argument' end
+				if plates.refuse ~= nil then return false, tostring(plates.refuse) end
+				plates.byId[id] = options
+				plates.set[#plates.set + 1] = { player = id, label = label }
+				return true
+			end,
+			remove = function(playerId)
+				local id = tonumber(playerId)
+				if id == nil then return false, 'invalid_argument' end
+				if plates.byId[id] == nil then return false, 'unknown_override' end
+				plates.byId[id] = nil
+				plates.removed[#plates.removed + 1] = id
+				return true
+			end,
+		},
 		markers = {
 			create = function(options)
 				if type(options) ~= 'table' or type(options.position) ~= 'table' then
@@ -1162,6 +1223,10 @@ function Host.Environment(side, database)
 
 	-- Recorded by the marker and key stubs above, and read by the tests.
 	markers = { byId = {}, created = {}, removed = {}, next = 0 }
+	-- Recorded by the nameplate stub: which players carry an override, and every
+	-- set and remove in order.  makes the host turn an override away.
+	plates = { byId = {}, set = {}, removed = {}, refuse = nil }
+	watchers = { byId = {}, next = 0, refuse = nil }
 	input = { captured = false, keys = {}, down = {} }
 	-- `refuse` is a string: every ACL question comes back `false, <reason>`, the
 	-- way a build without the `acl.read` grant answers.
@@ -1519,6 +1584,8 @@ function Host.Environment(side, database)
 		-- next creation fail, which is how "the API is there but said no" is
 		-- exercised.
 		markers = markers,
+		plates = plates,
+		watchers = watchers,
 
 		-- The keyboard: `input.captured` is another surface holding it, `input.keys`
 		-- is what each mapping answers to after a rebind.

@@ -661,6 +661,17 @@ permissions {
 
   "ui.vanilla.hud",
 
+  -- The plate above a head. The platform draws it labelled with the displayName
+  -- the Master vouches for -- the account gamertag -- and nothing here ever
+  -- overrode it, so a player who had just named their character still walked
+  -- around under their account name, on the first connection and on the
+  -- hundredth. `modules/character/client/state.lua` sets the override from the
+  -- name the server already publishes on the state bag.
+  --
+  -- CLIENT permission: a refusal lands in the player's own log and the server
+  -- journal says nothing. Verified in the game, or not verified.
+  "ui.nameplates",
+
   -- The staff module, and only the staff module. Every one of these gates a
   -- single call; none is reachable without passing the ACL first.
   --   players.life.visibility  `setVisible`, for `opx.admin.self.invisible`. The
