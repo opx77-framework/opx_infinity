@@ -120,6 +120,100 @@ function OPX.Storage.Transaction(statements)
 	return Result.Ok(true)
 end
 
+--- Resource state that survives a reload, one namespace per writer.
+-- @author dop42
+--
+-- `Open77.state` IS NOT A KEY-VALUE STORE. The card for 2.31.13+op77.76 is
+-- exact: "Not a key-value store: it holds one value per resource." This is one
+-- resource, and TWO modules were writing that one value whole --
+-- `modules/weather/server/state.lua` its clock, epoch and preset, and
+-- `modules/admin/server/world.lua` the destinations an operator placed in game.
+-- Whichever wrote last destroyed the other's carried state, and both write
+-- often: weather on every mutation and on its first anchor, the destinations on
+-- every add and remove.
+--
+-- Nothing crashed, which is why it went unnoticed: each stamps its own protocol
+-- number and refuses a blob that does not carry it, so the loser cold-starts.
+-- What it cost was silent. Place a staff destination and the world clock
+-- restarts on the next reload; let the weather roll and the destinations are
+-- gone. Weather says so in the log -- "carried state ignored: protocol nil is
+-- not 1" -- against a blob that was never weather's.
+--
+-- It could not be seen off-platform either: the test host's `state.save`
+-- accepted everything and kept nothing and `load` answered nil forever, so
+-- every restore in this runtime took its cold-start path in every test.
+--
+-- So: one blob holding a table of namespaces, and each writer reads and writes
+-- its own. A namespace neither module has written is absent, which is the same
+-- cold start each already handles -- including the first boot after this
+-- change, when the old unnamespaced blob is ignored once by both.
+OPX.Carry = {}
+
+-- Stamped on the envelope, not on what a caller puts inside it: a caller keeps
+-- its own version number for its own shape, and this one is only about whether
+-- the envelope is one of ours.
+local CARRY_PROTOCOL = 1
+
+--- Whether the host offers the reload store at all.
+local function carryApi()
+	local state = Open77.state
+	if type(state) ~= 'table' or type(state.save) ~= 'function'
+		or type(state.load) ~= 'function' then
+		return nil
+	end
+	return state
+end
+
+--- Every namespace carried across the reload, or an empty table.
+-- An envelope that is not ours -- the unnamespaced blob an older build wrote,
+-- or anything else the host handed back -- reads as nothing carried.
+local function namespaces()
+	local state = carryApi()
+	if state == nil then return {} end
+	local read, carried = pcall(state.load)
+	if not read or type(carried) ~= 'table' then return {} end
+	if carried.CARRY ~= CARRY_PROTOCOL or type(carried.namespaces) ~= 'table' then return {} end
+	return carried.namespaces
+end
+
+--- What one namespace carried across the reload, or nil.
+-- @author dop42
+-- @param namespace string
+-- @return any
+function OPX.Carry.Load(namespace)
+	if type(namespace) ~= 'string' or namespace == '' then return nil end
+	return namespaces()[namespace]
+end
+
+--- Carries one namespace's value, leaving every other namespace alone.
+--- `nil` clears that namespace and only that one.
+-- @author dop42
+--
+-- Read-modify-write, and it has to be: the whole point is that this writer does
+-- not know who else has carried something. The host round-trips the blob
+-- through JSON, so what comes back is already a copy and there is nothing to
+-- alias.
+-- @param namespace string
+-- @param value any JSON-encodable, or nil to clear
+-- @return boolean
+-- @return string|nil the refusal
+function OPX.Carry.Save(namespace, value)
+	if type(namespace) ~= 'string' or namespace == '' then return false, 'bad-namespace' end
+	local state = carryApi()
+	if state == nil then return false, 'no-state-api' end
+
+	local held = namespaces()
+	held[namespace] = value
+
+	-- A `save` may be REFUSED -- an unserialisable blob, or a stopping resource,
+	-- whose write the host turns away on purpose. Read rather than assumed: a
+	-- refusal recorded as a success is carried state nobody knows is gone.
+	local wrote, saved, reason = pcall(state.save, { CARRY = CARRY_PROTOCOL, namespaces = held })
+	if not wrote then return false, tostring(saved) end
+	if saved == false then return false, tostring(reason) end
+	return true
+end
+
 --- Decodes a JSON column, answering the fallback when it cannot.
 -- @author dop42
 --

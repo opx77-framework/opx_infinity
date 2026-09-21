@@ -53,25 +53,30 @@ local function seed()
 	for name, row in pairs(runtime) do locations[name] = row end
 end
 
--- Whether the host offers the reload state store.
-local function hasState()
-	return type(Open77.state) == 'table' and type(Open77.state.save) == 'function'
-		and type(Open77.state.load) == 'function'
-end
+-- The namespace this module carries under. `Open77.state` holds ONE value per
+-- resource -- not a key-value store -- and this module is not the only writer
+-- in it: `modules/weather/server/state.lua` carries the world clock, its epoch
+-- and its preset. Writing the blob whole, which is what this did, meant
+-- whichever wrote last destroyed the other's state: place a destination and the
+-- clock restarts on the next reload, let the weather roll and the destinations
+-- are gone. Neither crashed, because each refuses a blob that does not carry
+-- its own protocol number -- so the loser simply cold-started, and the only
+-- sign of it was weather logging "carried state ignored: protocol nil is not 1"
+-- against a blob that was never weather's. `OPX.Carry` is the one blob divided
+-- up, a namespace per writer.
+local CARRY = 'admin.world'
 
 -- Hands the in-game destinations to the host's reload store.
 local function save()
-	if not hasState() then return end
 	local list = {}
 	for _, row in pairs(runtime) do list[#list + 1] = row end
-	pcall(Open77.state.save, { protocol = STATE_PROTOCOL, locations = list })
+	OPX.Carry.Save(CARRY, { protocol = STATE_PROTOCOL, locations = list })
 end
 
 -- Adopts the destinations carried across a reload, when the shape matches.
 local function restore()
-	if not hasState() then return end
-	local read, carried = pcall(Open77.state.load)
-	if not read or type(carried) ~= 'table' or carried.protocol ~= STATE_PROTOCOL then return end
+	local carried = OPX.Carry.Load(CARRY)
+	if type(carried) ~= 'table' or carried.protocol ~= STATE_PROTOCOL then return end
 	for _, row in ipairs(type(carried.locations) == 'table' and carried.locations or {}) do
 		local location = type(row) == 'table'
 			and locationOf(row.name, row.label, row.x, row.y, row.z, row.heading, true) or nil

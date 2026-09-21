@@ -90,6 +90,10 @@ local CORE_NAMESPACE = {
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
 	Storage = true, Audit = true, Surface = true,
+	-- `Carry` is the one reload-surviving blob, divided into a namespace per
+	-- writer. `Open77.state` holds ONE value per resource and two modules were
+	-- writing it whole, each destroying the other; see `lib/server/storage.lua`.
+	Carry = true,
 	-- `Lib` is the external library, `opx_lib`, loaded once by
 	-- `lib/client/lib.lua` and client-only. It replaced `Rpc` and `Keys`, which
 	-- were the two helpers in `lib/client/` that reached nothing this resource
@@ -3031,6 +3035,20 @@ do
 		-- the drift is the only thing worth testing here.
 		check('opx_lib loaded, and it is the real one',
 			type(env.OPX.Lib) == 'table' and type(env.OPX.Lib.VERSION) == 'string')
+
+		-- AND IT IS THE RIGHT ONE. There is more than one checkout of this
+		-- library on a working machine, and `Host.Providers.opx_lib` picks
+		-- whichever sits at `../opx_lib` -- which depends on where this
+		-- resource has been cloned, and is different inside a git worktree.
+		-- The wrong checkout does NOT fail here: it fails 21 checks scattered
+		-- through the rest of this file, not one of which mentions the library.
+		-- Pinned, and the failure names the path that answered, so the next
+		-- person spends a second on it rather than an afternoon.
+		local LIB_VERSION = '0.4.0'
+		check('and it is the version this suite was written against',
+			env.OPX.Lib.VERSION == LIB_VERSION,
+			('%s answered %s, wanted %s -- set OPX_LIB_PATH at the right checkout')
+				:format(Host.Providers.opx_lib, tostring(env.OPX.Lib.VERSION), LIB_VERSION))
 		check('the two helpers that moved out are reachable',
 			type(env.OPX.Lib.Input) == 'table' and type(env.OPX.Lib.Rpc) == 'table')
 		-- What the migration was for: the old names are gone, not aliased.
@@ -6919,7 +6937,13 @@ do
 			('%s,%s'):format(inBucket[1].key, inBucket[2].key))
 
 		-- ── the commands ─────────────────────────────────────────────────
+		-- ADMITTED, because `add` captures the position the SERVER reads and the
+		-- host answers nil for a slot nobody is connected on. This test used to
+		-- pass without an account on the slot only because the harness answered
+		-- the origin for every id it was ever asked about, connected or not --
+		-- so "at the position the SERVER read" was asserting the stub.
 		local src = 41
+		control.Admit(src, 'account-clothing')
 		check('the add command is registered and ACL-gated',
 			control.commands['opx.clothing.add'] ~= nil
 				and control.commands['opx.clothing.add'].restricted == true)
@@ -7448,9 +7472,15 @@ do
 		local Noclip = admin.Noclip
 		local travel = admin.Event.TRAVEL
 
-		-- The advertised effect catalogue, in the shape a config can check against.
+		-- The advertised effect catalogue, in the shape a config can check
+		-- against. `Open77.vfx.catalog()` answers a MAP FROM ALIAS TO COOKED
+		-- PATH, so the alias is the key: this walked it with `ipairs`, which
+		-- over a map visits nothing at all, and the set below was empty. Every
+		-- alias then read as absent -- and the check still passed, because the
+		-- harness was handing back an array where the engine hands back a map
+		-- and the two mistakes cancelled.
 		local carried = {}
-		for _, alias in ipairs(cenv.Open77.vfx.catalog()) do carried[alias] = true end
+		for alias in pairs(cenv.Open77.vfx.catalog()) do carried[alias] = true end
 
 		check('the pop owns one transition point and nothing else',
 			type(Noclip.Changed) == 'function' and type(Noclip.Pop) == 'function')
@@ -9741,13 +9771,18 @@ do
 		OPX.EnsureSession(src)
 		control.Allow(src, 'command.' .. admin.Command.VEHICLE_SPAWN)
 
-		-- THE READINESS GATE, opened here because a spawn acts on a BODY. The stub's
-		-- own life state is not a table and its gate is shut, which is a deliberate
-		-- default -- nothing may teleport or spawn a player before they are in the
-		-- world -- and therefore something this section has to say out loud rather
-		-- than spawn around.
-		env.Open77.players.getLifeState = function() return { state = 'alive' } end
-		env.Open77.ready = { isReady = function() return true end, status = function() return nil end }
+		-- THE READINESS GATE, open because `control.Admit` above admitted a real
+		-- connection. What stood here was two patched natives:
+		--
+		--   env.Open77.players.getLifeState = function() return { state = 'alive' } end
+		--   env.Open77.ready = { isReady = ..., status = ... }
+		--
+		-- The first named the wrong field -- it is `phase`, not `state` -- and
+		-- worked only because every consumer stops at `type(life) == 'table'`.
+		-- The second replaced the whole gate with two functions, dropping
+		-- `hold`, `release` and `participate`, so anything here that took a hold
+		-- would have raised. Neither is needed now that the host answers for an
+		-- admitted player the way the platform does.
 
 		-- Read out of the config, so this checks the arithmetic rather than
 		-- repeating the numbers it is meant to be checking.
@@ -11462,12 +11497,21 @@ do
 		-- actually destroys a memory-only container lives here.
 		local World = inventory.World
 
-		-- The gate answers false and the life reader answers a STRING in the bare
-		-- harness, and `Players.MayAct` reads both. Without these two every
-		-- conversion below would refuse before it reached any money, and the
-		-- section would pass by never doing anything.
-		env.Open77.ready.isReady = function() return true end
-		env.Open77.players.getLifeState = function() return {} end
+		-- THESE TWO ARE ADMITTED CONNECTIONS NOW, not two patched natives.
+		--
+		-- What stood here was `env.Open77.ready.isReady = function() return true
+		-- end` and `env.Open77.players.getLifeState = function() return {} end`.
+		-- The second was wrong on its own terms -- the field is `phase`, not
+		-- nothing -- and it only worked because every consumer stops at
+		-- `type(life) == 'table'`. Between them they replaced the two doors
+		-- `Players.MayAct` is made of with constants, so nothing below could
+		-- ever exercise either: a body on the floor and a player behind a shut
+		-- gate both read the same as a healthy one.
+		--
+		-- `control.Admit` gives each slot what the host gives a real connection
+		-- -- a session, an open gate, a position and an alive phase -- so
+		-- `MayAct` now answers for a reason. They stand on the same spot
+		-- because handing something over is measured between two bodies.
 
 		local wired, item, moneyType = Currency.Wired()
 		check('the money-to-item bridge wired itself at start', wired == true)
@@ -11512,6 +11556,10 @@ do
 		end
 
 		local ALICE, BOB = 401, 402
+		control.Admit(ALICE, 'account-401')
+		control.Admit(BOB, 'account-402')
+		control.Stand(ALICE, 100.0, 200.0, 30.0)
+		control.Stand(BOB, 100.5, 200.0, 30.0)
 		local aliceBag = load(ALICE, 'citizen-eddies-a', 1000)
 		local bobBag = load(BOB, 'citizen-eddies-b', 0)
 		check('both bags are held for their characters',
@@ -16265,6 +16313,2145 @@ do
 		chat:find('chat%-field op%-frame op%-arete op%-lift') == nil)
 	check('and the frame that says it is live is still there',
 		chat:find('chat%-field op%-frame op%-arete', 1, false) ~= nil)
+end
+
+-- ── the guards a mutation audit found nothing standing over ──────────────────
+-- Everything below was reachable, load-bearing and untested. 487 of 563 mutants
+-- survived this suite; most of them survived because `tests/host.lua` answered
+-- something the platform never answers, and the rest because nothing ever
+-- called the code at all. The stubs are honest now, so these are the checks the
+-- honest stubs make possible.
+
+-- ── money: the overdraft, and the amount that is not one ─────────────────────
+-- `RemoveMoney`'s overdraft refusal and the `n <= 0` guard in `amountOf` both
+-- survived mutation. Without the second, a negative amount handed to
+-- `RemoveMoney` subtracts a negative number: it is a money printer with an
+-- audit trail saying money was removed.
+section('money: what may not be taken, and what may not be made')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		check('the character module is there', type(character) == 'table')
+
+		if type(character) == 'table' then
+			local RICH = 501
+			control.Admit(RICH, 'account-501')
+			character.Players[RICH] = {
+				PlayerData = { citizenId = 'citizen-money', source = RICH,
+					userId = 'account-501', money = { EDDIES = 500, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-money'] = RICH
+			character.Registry.byUserId['account-501'] = RICH
+
+			local function balance() return character.GetMoney(RICH, 'EDDIES') end
+
+			-- ── the overdraft ────────────────────────────────────────────────
+			-- "Removes money, refusing rather than truncating when short. A
+			-- half-successful purchase is worse than one that fails."
+			check('taking what is there works', (character.RemoveMoney(RICH, 'EDDIES', 200))
+				== true and balance() == 300, balance())
+
+			local short, shortWhy = character.RemoveMoney(RICH, 'EDDIES', 301)
+			check('taking one eddie more than there is is REFUSED',
+				short == false and shortWhy == 'money.insufficient', tostring(shortWhy))
+			check('and the balance did not move', balance() == 300, balance())
+
+			-- Exactly the balance is not an overdraft, which is the boundary the
+			-- comparison is written on: `< 0`, not `<= 0`.
+			check('taking exactly what is there is allowed',
+				(character.RemoveMoney(RICH, 'EDDIES', 300)) == true and balance() == 0,
+				balance())
+			check('and taking a single eddie from nothing is refused',
+				(character.RemoveMoney(RICH, 'EDDIES', 1)) == false and balance() == 0,
+				balance())
+
+			-- ── the amount that is not one ───────────────────────────────────
+			character.SetMoney(RICH, 'EDDIES', 500)
+			local mark = #control.log.warn
+
+			-- THE MONEY PRINTER. `money[type] - value` with a negative `value` is
+			-- an addition, and the overdraft check above it passes trivially.
+			local printer, printerWhy = character.RemoveMoney(RICH, 'EDDIES', -1000)
+			check('removing a NEGATIVE amount is refused, not credited',
+				printer == false and printerWhy == 'money.badAmount', tostring(printerWhy))
+			check('and the balance is untouched by it', balance() == 500, balance())
+
+			check('removing nothing is refused too',
+				(character.RemoveMoney(RICH, 'EDDIES', 0)) == false and balance() == 500,
+				balance())
+			check('and so is NaN, which passes every comparison it meets',
+				(character.RemoveMoney(RICH, 'EDDIES', 0 / 0)) == false and balance() == 500,
+				balance())
+			check('and so is an infinity', (character.RemoveMoney(RICH, 'EDDIES', math.huge))
+				== false and balance() == 500, balance())
+
+			-- ADDING a negative is the same hole from the other side: it would
+			-- debit an account through the credit door, skipping the overdraft
+			-- check entirely.
+			check('adding a negative amount is refused as well',
+				(character.AddMoney(RICH, 'EDDIES', -250)) == false and balance() == 500,
+				balance())
+
+			-- `OPX.Audit` appears nowhere in this suite, and the refusal above is
+			-- one of the few things in the runtime that raises a security entry.
+			-- A refusal nobody can see afterwards is a refusal an operator cannot
+			-- act on.
+			local audited = table.concat(control.log.warn, ' | '):sub(1)
+			check('every refused amount is written to the audit log as a security event',
+				audited:find('event=money.badAmount', 1, true) ~= nil
+					and audited:find('severity=warn', 1, true) ~= nil,
+				table.concat(control.log.warn, ' | '):sub(-200))
+			check('naming the player it came from',
+				audited:find('player=' .. RICH, 1, true) ~= nil)
+			check('and the audit really wrote something new for it',
+				#control.log.warn > mark, ('%d -> %d'):format(mark, #control.log.warn))
+
+			-- A rounded amount is still an amount: 0.4 rounds to 0 and must be
+			-- refused, 0.6 rounds to 1 and must not be.
+			check('an amount that rounds to nothing is refused',
+				(character.RemoveMoney(RICH, 'EDDIES', 0.4)) == false and balance() == 500,
+				balance())
+			check('and one that rounds to one is taken',
+				(character.RemoveMoney(RICH, 'EDDIES', 0.6)) == true and balance() == 499,
+				balance())
+		end
+	end
+end
+
+-- ── every DELETE names its rows ──────────────────────────────────────────────
+-- Three separate `DELETE`s in `modules/inventory/server/storage.lua` each wipe
+-- every inventory row on the server with their `WHERE` removed, and all three
+-- mutants survived. The source-level invariant below is the one that cannot be
+-- outrun by a statement written tomorrow; the behavioural checks under it prove
+-- the clause is not merely present but bound to the thing being deleted.
+section('no DELETE in this resource is unqualified')
+do
+	-- Read off the MANIFEST rather than off the filesystem, so it covers exactly
+	-- what ships and cannot drift from it -- the same rule the sandbox check at
+	-- the top of this file follows.
+	local files, seen = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if not seen[file] then
+				seen[file] = true
+				files[#files + 1] = file
+			end
+		end
+	end
+	check('the manifest names scripts to read', #files > 50, #files)
+
+	local unqualified, counted = {}, 0
+	for _, file in ipairs(files) do
+		local handle = io.open(file, 'r')
+		if handle then
+			local body = handle:read('a')
+			handle:close()
+			-- Each DELETE and the 200 bytes after it: a statement is a multi-line
+			-- string in several of these files, so the clause may be on the next
+			-- line or the one after.
+			for at in body:gmatch('()DELETE%s+FROM') do
+				counted = counted + 1
+				local tail = body:sub(at, at + 200)
+				if tail:upper():find('WHERE', 1, true) == nil then
+					unqualified[#unqualified + 1] =
+						('%s: %s'):format(file, (tail:gsub('%s+', ' '):sub(1, 60)))
+				end
+			end
+		end
+	end
+
+	check('there are DELETE statements to check at all', counted >= 15, counted)
+	check('and not one of them is unqualified', #unqualified == 0,
+		table.concat(unqualified, ' | '))
+end
+
+section('the inventory DELETEs name the container, and only that one')
+do
+	-- Every statement the bridge is handed, in order, so the WHERE is read off
+	-- the SQL that would really be sent rather than off a return value.
+	local statements = {}
+	local db = Host.Database({
+		scalar = function() return 1 end,
+		query = function() return {} end,
+		single = function() return nil end,
+		update = function(sql, params)
+			statements[#statements + 1] = { sql = sql, params = params }
+			return 1
+		end,
+		transaction = function(list)
+			for index = 1, #list do
+				statements[#statements + 1] =
+					{ sql = list[index].query, values = list[index].values }
+			end
+			return true
+		end,
+	})
+
+	local env, control, why = boot('server', db)
+	check('the server boots with a recording bridge', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		check('the inventory module is there', type(inventory) == 'table')
+
+		if type(inventory) == 'table' then
+			local Store = inventory.Storage
+
+			--- Every statement since a mark whose text carries `needle`.
+			local function since(mark, needle)
+				local found = {}
+				for index = mark + 1, #statements do
+					if statements[index].sql:find(needle, 1, true) then
+						found[#found + 1] = statements[index]
+					end
+				end
+				return found
+			end
+
+			-- ── Store.Save: the stale rows go, and only that container's ─────
+			local mark = #statements
+			env.CreateThread(function()
+				Store.Save({ { id = 4242, rows = {
+					{ slot = 1, name = 'bandage', count = 2, metadata = nil },
+				} } })
+			end)
+			control.Pump(20)
+
+			local wipes = since(mark, 'DELETE FROM opx77_inventory_items')
+			check('saving a container clears its stale rows first', #wipes == 1, #wipes)
+			check('and the DELETE names the container it is saving',
+				#wipes == 1 and wipes[1].sql:find('WHERE inventory_id = ?', 1, true) ~= nil,
+				#wipes == 1 and wipes[1].sql)
+			-- THE BINDING, not just the clause: `WHERE inventory_id = ?` with
+			-- nothing bound to it is a syntax error at best and every row at
+			-- worst, and the transaction form binds positionally.
+			check('with that container\'s own id bound to it',
+				#wipes == 1 and type(wipes[1].values) == 'table'
+					and #wipes[1].values == 1 and wipes[1].values[1] == 4242,
+				#wipes == 1 and wipes[1].values and wipes[1].values[1])
+
+			-- ── Store.Delete: one container ──────────────────────────────────
+			mark = #statements
+			env.CreateThread(function() Store.Delete(77) end)
+			control.Pump(20)
+			local dropped = since(mark, 'DELETE FROM opx77_inventories')
+			check('deleting one container names it', #dropped == 1
+				and dropped[1].sql:find('WHERE id = @id', 1, true) ~= nil,
+				#dropped == 1 and dropped[1].sql)
+			check('and binds the id it was given',
+				#dropped == 1 and type(dropped[1].params) == 'table'
+					and dropped[1].params.id == 77,
+				#dropped == 1 and dropped[1].params and dropped[1].params.id)
+
+			-- ── Store.PurgeCharacter: one character's containers ─────────────
+			mark = #statements
+			env.CreateThread(function() Store.PurgeCharacter('citizen-purge') end)
+			control.Pump(20)
+			local purged = since(mark, 'DELETE FROM opx77_inventories')
+			check('purging a character names the character', #purged == 1
+				and purged[1].sql:find('WHERE citizen_id = @citizen', 1, true) ~= nil,
+				#purged == 1 and purged[1].sql)
+			check('and binds the citizen id, so it takes nobody else\'s containers',
+				#purged == 1 and type(purged[1].params) == 'table'
+					and purged[1].params.citizen == 'citizen-purge',
+				#purged == 1 and purged[1].params and purged[1].params.citizen)
+			-- The two `DELETE FROM opx77_inventories` statements are different
+			-- statements: a purge that used the delete-one clause would take the
+			-- container whose PRIMARY KEY happened to equal nothing at all.
+			check('and it is not the same statement as deleting one container',
+				#purged == 1 and #dropped == 1 and purged[1].sql ~= dropped[1].sql)
+		end
+	end
+end
+
+-- ── the readiness gate ───────────────────────────────────────────────────────
+-- All eight guards in `core/server/gate.lua` survived mutation, because
+-- `Open77.ready` was five constants: `isReady` answered false for everybody,
+-- `status` answered nil, and `hold` answered a constant 1 so no two session
+-- tokens ever differed. The gate is real in the harness now.
+section('the readiness gate: holds, sessions, and the id that was recycled')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		-- ── participation ────────────────────────────────────────────────────
+		check('core declared its participation once, at load',
+			#control.gate.participations == 1, #control.gate.participations)
+		check('naming a liveness interval the host can hold it to',
+			control.gate.participations[1] ~= nil
+				and type(control.gate.participations[1].livenessIntervalMs) == 'number'
+				and control.gate.participations[1].livenessIntervalMs >= 1000,
+			control.gate.participations[1] and control.gate.participations[1].livenessIntervalMs)
+
+		-- ── IsReady ──────────────────────────────────────────────────────────
+		-- "A player the host does not know is reported ready, so an unknown id
+		-- never blocks a mode forever."
+		check('a player the host has never heard of reads as ready',
+			OPX.Gate.IsReady(9999) == true)
+
+		local HELD = 61
+		control.Admit(HELD, 'account-held')
+		OPX.EnsureSession(HELD)
+		check('and a player nobody is holding reads as ready',
+			OPX.Gate.IsReady(HELD) == true)
+
+		control.Hold(HELD, 'opx77_appearance', 'loading clothes')
+		check('a player somebody else is holding reads as NOT ready',
+			OPX.Gate.IsReady(HELD) == false)
+		control.Free(HELD, 'opx77_appearance')
+		check('and ready again once that hold goes', OPX.Gate.IsReady(HELD) == true)
+
+		-- The index has to sit INSIDE the pcall, or a host without the native
+		-- raises on the index rather than being caught. A read that raises reads
+		-- as OPEN: holding a player the host cannot answer for behind a gate
+		-- nothing will ever open is the worse failure.
+		local realReady = env.Open77.ready.isReady
+		env.Open77.ready.isReady = function() error('no such native', 0) end
+		check('a read that raises reads as open, and does not take the caller down',
+			OPX.Gate.IsReady(HELD) == true)
+		env.Open77.ready.isReady = realReady
+
+		-- THE RAISE THAT MATTERS IS THE INDEX, not the call. A host with no
+		-- `Open77.ready` AT ALL raises while RESOLVING `Open77.ready.isReady`,
+		-- which `pcall(Open77.ready.isReady, source)` does BEFORE pcall is
+		-- entered -- outside the protection written for exactly this case.
+		-- Only `pcall(function() ... end)` catches it.
+		local realGate = env.Open77.ready
+		env.Open77.ready = nil
+		local survived, open = pcall(OPX.Gate.IsReady, HELD)
+		check('a host with no readiness API at all does not take IsReady down',
+			survived == true, tostring(open))
+		check('and it reads as open rather than holding a player forever',
+			survived == true and open == true, tostring(open))
+		check('Release survives it too',
+			(pcall(OPX.Gate.Release, HELD, 'no host')))
+		check('and so does Hold, which runs inside the connect handler',
+			(pcall(OPX.Gate.Hold, HELD, 'no host')))
+		env.Open77.ready = realGate
+		-- ── Hold ─────────────────────────────────────────────────────────────
+		check('holding a slot with no session at all is refused',
+			OPX.Gate.Hold(8888, 'nobody') == false)
+
+		local WATCHED = 62
+		control.Admit(WATCHED, 'account-watched')
+		OPX.EnsureSession(WATCHED)
+		check('holding a real session works', OPX.Gate.Hold(WATCHED, 'entry') == true)
+		local firstSession = OPX.Sessions[WATCHED].gateSession
+		check('and records the session the host handed back', firstSession ~= nil)
+		check('and the gate really is shut for them now',
+			OPX.Gate.IsReady(WATCHED) == false)
+
+		-- A REFUSED HOLD IS NOT A HOLD. The host answers nil plus a reason, and
+		-- recording that as taken leaves nothing holding the player at all.
+		local REFUSED = 63
+		control.Admit(REFUSED, 'account-refused')
+		OPX.EnsureSession(REFUSED)
+		control.gate.refuseHold = 'gate_unavailable'
+		local errorsBefore = #control.log.warn
+		check('a hold the host refuses is reported as a refusal',
+			OPX.Gate.Hold(REFUSED, 'entry') == false)
+		check('and no session is recorded for it',
+			OPX.Sessions[REFUSED].gateSession == nil)
+		check('and the operator is told which player and why',
+			table.concat(control.log.warn, ' | ')
+				:find('the hold for 63 was refused: gate_unavailable', 1, true) ~= nil,
+			#control.log.warn - errorsBefore)
+		control.gate.refuseHold = nil
+
+		-- ── Release ──────────────────────────────────────────────────────────
+		check('releasing a source that is not a number at all is refused',
+			OPX.Gate.Release({}, 'nonsense') == false)
+
+		check('releasing a held player opens the gate',
+			OPX.Gate.Release(WATCHED, 'character-loaded') == true)
+		check('and the host really let them through',
+			OPX.Gate.IsReady(WATCHED) == true)
+		check('and the note reaches the host prefixed with this resource',
+			(function()
+				local last = control.gate.releases[#control.gate.releases]
+				return last ~= nil and tostring(last.note):sub(1, 14) == 'opx_infinity:'
+					or tostring(last and last.note):find('opx_infinity:', 1, true) == 1
+			end)(), control.gate.releases[#control.gate.releases]
+				and control.gate.releases[#control.gate.releases].note)
+
+		-- THE LOST-SESSION RECOVERY, which was dead code for as long as `status`
+		-- answered nil. This VM has forgotten the session -- a reload, a bug, a
+		-- handler that cleared it early -- and the hold has NO DEADLINE, so
+		-- skipping the release would block that player for as long as this
+		-- resource answers. It asks the host who is holding instead.
+		local FORGOTTEN = 64
+		control.Admit(FORGOTTEN, 'account-forgotten')
+		OPX.EnsureSession(FORGOTTEN)
+		OPX.Gate.Hold(FORGOTTEN, 'entry')
+		local hostSession = control.gate.sessions[FORGOTTEN]
+		OPX.Sessions[FORGOTTEN].gateSession = nil
+		local asked = #control.gate.releases
+		check('a release with no remembered session still goes through',
+			OPX.Gate.Release(FORGOTTEN, 'recovered') == true)
+		check('by asking the host for the session it had forgotten',
+			control.gate.releases[asked + 1] ~= nil
+				and control.gate.releases[asked + 1].session == hostSession,
+			control.gate.releases[asked + 1] and control.gate.releases[asked + 1].session)
+		check('and the gate is open for them', OPX.Gate.IsReady(FORGOTTEN) == true)
+
+		-- THE RECYCLED PLAYER ID. This is the race the session token exists for
+		-- and the one a constant 1 made invisible: player 65 connects, is held,
+		-- disconnects, and a NEW player takes slot 65 before the first release
+		-- lands. Releasing by id alone would open the gate for somebody who is
+		-- still loading.
+		local SLOT = 65
+		control.Admit(SLOT, 'account-first')
+		OPX.EnsureSession(SLOT)
+		OPX.Gate.Hold(SLOT, 'entry')
+		local staleSession = OPX.Sessions[SLOT].gateSession
+
+		control.Admit(SLOT, nil)
+		control.Admit(SLOT, 'account-second')
+		OPX.EnsureSession(SLOT)
+		OPX.Gate.Hold(SLOT, 'entry')
+		local freshSession = OPX.Sessions[SLOT].gateSession
+		check('a recycled player id gets a DIFFERENT session token',
+			staleSession ~= nil and freshSession ~= nil and staleSession ~= freshSession,
+			('%s vs %s'):format(tostring(staleSession), tostring(freshSession)))
+
+		-- The late release, arriving with the previous connection's token.
+		OPX.Sessions[SLOT].gateSession = staleSession
+		check('and a release carrying the stale one is refused',
+			OPX.Gate.Release(SLOT, 'late') == false)
+		check('so the new player is still behind the gate',
+			OPX.Gate.IsReady(SLOT) == false)
+		check('and this VM has NOT marked them released, so something can try again',
+			OPX.Sessions[SLOT].released ~= true
+				and OPX.Sessions[SLOT].gateSession ~= nil)
+
+		OPX.Sessions[SLOT].gateSession = freshSession
+		check('while the release carrying the right one goes through',
+			OPX.Gate.Release(SLOT, 'character-loaded') == true)
+		check('and only now is the gate open', OPX.Gate.IsReady(SLOT) == true)
+	end
+end
+
+
+-- ── a host with no readiness gate at all ─────────────────────────────────────
+-- `Gate.Participate` is called at FILE SCOPE, at the foot of `gate.lua`, and it
+-- resolved `Open77.ready.participate` unprotected. So a build with no readiness
+-- API took the whole resource down while LOADING a server_script -- over a gate
+-- nothing would have been held behind anyway. It could not be seen off-platform
+-- because the harness always installed one.
+section('the runtime boots on a host with no readiness gate')
+do
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.ready = nil
+	end)
+	check('every manifest script still loads', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		check('and the operator is told there is no gate to participate in',
+			table.concat(control.log.error, ' | ')
+				:find('no readiness gate to participate in', 1, true) ~= nil,
+			table.concat(control.log.error, ' | '):sub(-200))
+		check('and told what that means for them',
+			table.concat(control.log.error, ' | ')
+				:find('nothing will wait for one', 1, true) ~= nil)
+
+		-- Every door still answers rather than raising, and answers the way a
+		-- runtime with no gate has to: open. Holding a player behind a gate
+		-- that does not exist is the one outcome nothing recovers from.
+		control.Admit(81, 'account-nogate')
+		OPX.EnsureSession(81)
+		check('the gate reads open for everybody', OPX.Gate.IsReady(81) == true)
+		check('a hold is refused rather than raising', OPX.Gate.Hold(81, 'entry') == false)
+		check('and a release still answers', (pcall(OPX.Gate.Release, 81, 'done')))
+
+		-- And a player connecting does not take the connect handler down with
+		-- them, which is what the file-scope raise cost before it.
+		check('a player can still connect',
+			(pcall(control.Fire, OPX.Host.PLAYER_CONNECTED, 82)))
+	end
+end
+
+section('the give-up watch: the deadline, the claim, and the slot that changed hands')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		-- ── the deadline is a deadline ───────────────────────────────────────
+		-- `Pump` moves the clock 100 ms a round and the watch ticks every 1000,
+		-- so a 3000 ms deadline is reached in about 30 rounds and NOT in 5.
+		local SLOW = 71
+		control.Admit(SLOW, 'account-slow')
+		OPX.EnsureSession(SLOW)
+		OPX.Gate.Hold(SLOW, 'entry')
+		local askedAt = {}
+		OPX.Gate.Watch(SLOW, 3000, function(source)
+			askedAt[#askedAt + 1] = source
+			return true
+		end)
+		control.Pump(5)
+		check('the watch does not give up before its deadline', #askedAt == 0, #askedAt)
+		control.Pump(60)
+		check('and does give up at it', #askedAt == 1 and askedAt[1] == SLOW, #askedAt)
+		check('exactly once, not once per tick afterwards', #askedAt == 1, #askedAt)
+
+		-- ── the claim ────────────────────────────────────────────────────────
+		-- Answering FALSE means "this player is mine now": the watch stops and
+		-- the hold is left for that caller. Anything else, and core releases.
+		local CLAIMED = 72
+		control.Admit(CLAIMED, 'account-claimed')
+		OPX.EnsureSession(CLAIMED)
+		OPX.Gate.Hold(CLAIMED, 'entry')
+		OPX.Gate.Watch(CLAIMED, 1000, function() return false end)
+		control.Pump(60)
+		check('a caller that claims the hold keeps it',
+			OPX.Gate.IsReady(CLAIMED) == false)
+		check('and the session is not marked released',
+			OPX.Sessions[CLAIMED].released ~= true)
+
+		local ABANDONED = 73
+		control.Admit(ABANDONED, 'account-abandoned')
+		OPX.EnsureSession(ABANDONED)
+		OPX.Gate.Hold(ABANDONED, 'entry')
+		OPX.Gate.Watch(ABANDONED, 1000, function() return nil end)
+		control.Pump(60)
+		check('a caller that claims nothing has the hold released for it',
+			OPX.Gate.IsReady(ABANDONED) == true)
+		check('and it says so where an operator will read it',
+			table.concat(control.log.warn, ' | ')
+				:find('73 spent too long behind the gate', 1, true) ~= nil)
+
+		-- ── the slot that changed hands ──────────────────────────────────────
+		-- The watch closes over the userId it started with. If the slot is
+		-- handed to somebody else, the watch must exit rather than give up on a
+		-- player it was never watching.
+		local HANDED = 74
+		control.Admit(HANDED, 'account-before')
+		OPX.EnsureSession(HANDED)
+		OPX.Gate.Hold(HANDED, 'entry')
+		local gaveUpOn = {}
+		OPX.Gate.Watch(HANDED, 1000, function(source)
+			gaveUpOn[#gaveUpOn + 1] = source
+			return true
+		end)
+		-- The slot changes hands before the deadline.
+		control.Pump(2)
+		control.Admit(HANDED, 'account-after')
+		OPX.ForgetSession(HANDED)
+		OPX.EnsureSession(HANDED)
+		control.Pump(60)
+		check('a watch whose slot changed hands gives up on nobody',
+			#gaveUpOn == 0, #gaveUpOn)
+
+		-- ── the host gave up on us ───────────────────────────────────────────
+		-- Two sources disagree about the spelling, so both are matched. A player
+		-- the host admitted without us is very possibly in the world with no
+		-- character, and the log line is all anybody gets.
+		for _, spelling in ipairs({ 'liveness_lost:', 'timeout:' }) do
+			local before = #control.log.warn
+			control.Fire(OPX.Host.PLAYER_READY, 75, spelling .. 'opx_infinity')
+			check(('the host giving up with `%s` is noticed'):format(spelling),
+				table.concat(control.log.warn, ' | ', before + 1, #control.log.warn)
+					:find('the host gave up on this runtime holding 75', 1, true) ~= nil,
+				table.concat(control.log.warn, ' | ', before + 1, #control.log.warn))
+		end
+
+		local quiet = #control.log.warn
+		control.Fire(OPX.Host.PLAYER_READY, 76, 'timeout:some_other_resource')
+		check('and another resource being given up on is not ours to report',
+			table.concat(control.log.warn, ' | ', quiet + 1, #control.log.warn)
+				:find('gave up on this runtime', 1, true) == nil)
+
+		local silent = #control.log.warn
+		control.Fire(OPX.Host.PLAYER_READY, 77, 'cleared')
+		check('nor is an ordinary clean open', #control.log.warn == silent)
+
+		local none = #control.log.warn
+		control.Fire(OPX.Host.PLAYER_READY, 78, 'no_holds')
+		check('but a player admitted with NO hold taken at all is reported',
+			table.concat(control.log.warn, ' | ', none + 1, #control.log.warn)
+				:find('78 was admitted with no hold taken at all', 1, true) ~= nil)
+	end
+end
+
+-- ── Common.Integer ───────────────────────────────────────────────────────────
+-- The range check survived mutation in both directions. It is the only thing
+-- between a slot number off the wire and an index into somebody's bag.
+section('Common.Integer is the bound on everything that arrives from a client')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		for _, name in ipairs({ 'inventory', 'animations' }) do
+			local module = env.OPX.Modules.Get(name)
+			local Common = module and module.Common
+			check(('%s has a Common.Integer'):format(name),
+				Common ~= nil and type(Common.Integer) == 'function')
+
+			if Common ~= nil and type(Common.Integer) == 'function' then
+				local function tag(label) return ('%s: %s'):format(name, label) end
+
+				check(tag('a number inside the range comes back'),
+					Common.Integer(5, 1, 10) == 5)
+				check(tag('the floor itself is inside it'), Common.Integer(1, 1, 10) == 1)
+				check(tag('and so is the ceiling'), Common.Integer(10, 1, 10) == 10)
+
+				-- THE TWO HALVES OF THE RANGE, separately: a mutant that drops
+				-- one of them passes every test that only ever tries the other.
+				check(tag('one below the floor is refused'),
+					Common.Integer(0, 1, 10) == nil)
+				check(tag('far below the floor is refused'),
+					Common.Integer(-2147483647, 1, 10) == nil)
+				check(tag('one above the ceiling is refused'),
+					Common.Integer(11, 1, 10) == nil)
+				check(tag('far above the ceiling is refused'),
+					Common.Integer(2147483647, 1, 10) == nil)
+
+				-- NaN passes both `<` comparisons unchallenged, which is why it
+				-- is rejected before either of them.
+				check(tag('NaN is refused before it reaches a comparison'),
+					Common.Integer(0 / 0, 1, 10) == nil)
+				check(tag('and so are the infinities'),
+					Common.Integer(math.huge, 1, 10) == nil
+						and Common.Integer(-math.huge, 1, 10) == nil)
+				check(tag('a fraction is not a whole number'),
+					Common.Integer(5.5, 1, 10) == nil)
+				check(tag('nor is a string that looks like one'),
+					Common.Integer('5', 1, 10) == nil)
+				check(tag('nor a boolean, a table or nothing at all'),
+					Common.Integer(true, 1, 10) == nil and Common.Integer({}, 1, 10) == nil
+						and Common.Integer(nil, 1, 10) == nil)
+			end
+
+			-- `TypedInteger` is the same bound read off a word somebody typed,
+			-- and it caps the word's length first: `tonumber` on an arbitrarily
+			-- long string is work a client should not be able to ask for.
+			if Common ~= nil and type(Common.TypedInteger) == 'function' then
+				check(('%s: a typed number inside the range is read'):format(name),
+					Common.TypedInteger('7', 1, 10) == 7)
+				check(('%s: a typed number outside it is refused'):format(name),
+					Common.TypedInteger('11', 1, 10) == nil)
+				-- THE CAP IS ON THE WORD, NOT ON THE NUMBER, and the difference
+				-- only shows on a long word that parses to something SMALL:
+				-- twenty-five leading zeroes and a five is `5`, inside every
+				-- range, and is refused for its length alone. A long word that
+				-- parses to a big number is refused by the range anyway and
+				-- proves nothing about the cap.
+				check(('%s: a long word that parses inside the range is still refused')
+					:format(name),
+					Common.TypedInteger(('0'):rep(25) .. '5', 1, 10) == nil,
+					tostring(Common.TypedInteger(('0'):rep(25) .. '5', 1, 10)))
+				check(('%s: while a short one that parses the same way is read'):format(name),
+					Common.TypedInteger('0005', 1, 10) == 5,
+					tostring(Common.TypedInteger('0005', 1, 10)))
+				check(('%s: and a word too long to be a number is refused unparsed'):format(name),
+					Common.TypedInteger(('9'):rep(64), 1, 2147483647) == nil)
+			end
+		end
+	end
+end
+
+-- ── the inventory's one door in ──────────────────────────────────────────────
+-- `modules/inventory/server/requests.lua` is the whole wire surface of the
+-- inventory: one net event carrying a request id, an action name and a payload,
+-- and it had NEVER BEEN FIRED BY ANY TEST. Every one of its seven guards
+-- survived mutation, and so did both rate limits. `source` is the only value a
+-- client cannot forge; everything else below is a claim the door has to check.
+section('the inventory wire door: every field of a request is a claim')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local character = OPX.Modules.Get('character')
+		check('the inventory and character modules are both there',
+			type(inventory) == 'table' and type(character) == 'table')
+
+		if type(inventory) == 'table' and type(character) == 'table' then
+			local Containers = inventory.Containers
+			local Players = inventory.Players
+			local Options = inventory.Options
+			local KIND = inventory.KIND
+
+			local REQUEST = inventory.Event.REQUEST
+			local ANSWER = inventory.Event.ANSWER
+			local HELLO = inventory.Event.HELLO
+
+			check('the request door is wired', type(control.netEvents[REQUEST]) == 'function')
+			check('and so is the hello door', type(control.netEvents[HELLO]) == 'function')
+
+			-- A loaded character with a memory-only bag, the same stand-in the
+			-- eddies section uses: real code, real containers, no database.
+			local PLAYER = 801
+			control.Admit(PLAYER, 'account-801')
+			control.Stand(PLAYER, 10.0, 20.0, 30.0)
+			character.Players[PLAYER] = {
+				PlayerData = { citizenId = 'citizen-wire', source = PLAYER,
+					userId = 'account-801', money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-wire'] = PLAYER
+			character.Registry.byUserId['account-801'] = PLAYER
+			local bag = Containers.Transient(KIND.CHARACTER, 'citizen-wire',
+				Options.BAG_SLOTS, Options.BAG_MAX_WEIGHT)
+			bag.transient = nil
+			Players.Attach(PLAYER)
+			check('the player has a bag', Players.Bag(PLAYER) == bag)
+
+			--- Plays the door: sets `source` the way the host does, fires the
+			--- event, pumps the thread the handler runs on, and answers the
+			--- reply that came back -- or nil when the door answered nothing at
+			--- all, which is a different outcome and one the client feels as a
+			--- request that never settles.
+			local nextId = 0
+			local function ask(action, payload, asSource)
+				nextId = nextId + 1
+				local id = nextId
+				local mark = #control.clientEvents
+				env.source = asSource == nil and PLAYER or asSource
+				control.netEvents[REQUEST](id, action, payload)
+				env.source = nil
+				control.Pump(20)
+				for index = #control.clientEvents, mark + 1, -1 do
+					local event = control.clientEvents[index]
+					if event.name == ANSWER and event[1] == id then
+						return { ok = event[2], code = event[3], data = event[4] }
+					end
+				end
+				return nil
+			end
+
+			--- The same, but with a request id the caller chose, so a forged one
+			--- can be sent.
+			local function askRaw(requestId, action, payload)
+				local mark = #control.clientEvents
+				env.source = PLAYER
+				control.netEvents[REQUEST](requestId, action, payload)
+				env.source = nil
+				control.Pump(20)
+				for index = #control.clientEvents, mark + 1, -1 do
+					if control.clientEvents[index].name == ANSWER then
+						return control.clientEvents[index]
+					end
+				end
+				return nil
+			end
+
+			-- The allowance is a live tunable and the shipped value is 20, which
+			-- is not enough for a section this size. Raised the way an operator
+			-- would raise it, and lowered again at the end to exercise it.
+			control.tunables.INVENTORY_RATE_REQUESTS = 1000
+
+			-- ── the door opens at all ────────────────────────────────────────
+			local opened = ask('open', {})
+			check('an open is answered', opened ~= nil and opened.ok == true,
+				opened and tostring(opened.code))
+			check('and it carries the bag it opened',
+				opened ~= nil and type(opened.data) == 'table'
+					and type(opened.data.primary) == 'table',
+				opened and opened.data and type(opened.data.primary))
+
+			-- ── source is the only thing a client cannot forge ───────────────
+			-- `source <= 0` is the console and every host path that does not
+			-- name a connection. None of them is a player with a bag.
+			check('a request from slot 0 is dropped, not served',
+				ask('open', {}, 0) == nil)
+			check('and so is one from a negative slot', ask('open', {}, -1) == nil)
+			check('and one from a source the host did not format as a number',
+				ask('open', {}, 'nobody') == nil)
+
+			-- ── the request id is bounded ────────────────────────────────────
+			-- The id is what the client matches the answer against. An id it
+			-- could not have generated is a request nothing is waiting on.
+			check('a request id of zero is dropped', askRaw(0, 'open', {}) == nil)
+			check('a negative one is dropped', askRaw(-5, 'open', {}) == nil)
+			check('a fractional one is dropped', askRaw(1.5, 'open', {}) == nil)
+			check('one past the signed 32-bit ceiling is dropped',
+				askRaw(2147483648, 'open', {}) == nil)
+			check('a NaN is dropped', askRaw(0 / 0, 'open', {}) == nil)
+			check('and so is one that is not a number at all',
+				askRaw('1', 'open', {}) == nil and askRaw({}, 'open', {}) == nil)
+			check('while the largest legal one is served',
+				(askRaw(2147483647, 'open', {})) ~= nil)
+
+			-- ── an unknown action is ANSWERED, not dropped ───────────────────
+			-- The difference matters to the client: a dropped request leaves the
+			-- screen holding a move until its own timeout, and an answered
+			-- refusal settles it now.
+			local unknown = ask('flyToTheMoon', {})
+			check('an action nobody registered is refused',
+				unknown ~= nil and unknown.ok == false and unknown.code == 'bad_request',
+				unknown and tostring(unknown.code))
+			check('and refused by ANSWERING, so the screen does not hang',
+				unknown ~= nil)
+			check('an action that is not a string is refused the same way',
+				(function()
+					local answer = ask(42, {})
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+			-- A handler is looked up in a plain table, so a key from the Lua
+			-- metatable would be a callable action nobody wrote.
+			check('and a Lua table key is not an action',
+				(function()
+					local answer = ask('__index', {})
+					return answer ~= nil and answer.ok == false
+				end)())
+
+			-- ── the payload is a claim ───────────────────────────────────────
+			local moved = ask('move', { from = bag.id, to = bag.id, fromSlot = 'first' })
+			check('a move naming a slot that is not a number is refused',
+				moved ~= nil and moved.ok == false and moved.code == 'bad_request',
+				moved and tostring(moved.code))
+			check('a move with no payload table at all is refused',
+				(function()
+					local answer = ask('move', 'not a table')
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+			check('a slot of zero is refused',
+				(function()
+					local answer = ask('move', { from = bag.id, to = bag.id, fromSlot = 0 })
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+			check('a slot past 65535 is refused',
+				(function()
+					local answer = ask('move', { from = bag.id, to = bag.id, fromSlot = 65536 })
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+			check('a count of zero is refused',
+				(function()
+					local answer = ask('split', { container = bag.id, slot = 1, count = 0 })
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+			check('and a count past the stack ceiling is refused',
+				(function()
+					local answer = ask('split',
+						{ container = bag.id, slot = 1, count = Options.MAX_STACK + 1 })
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+
+			-- ── a container the player has not opened ────────────────────────
+			-- `resolve` answers the bag, or the second container WHILE IT IS
+			-- STILL IN REACH, and nothing else. A client naming somebody else's
+			-- container id is the whole reason it is written that way.
+			local stranger = Containers.Transient(KIND.STASH, 'somebody-else', 10, 1000)
+			stranger.transient = nil
+			Containers.Add(stranger, 'bandage', 3)
+			local reached = ask('sort', { container = stranger.id })
+			check('a container the player never opened is not found',
+				reached ~= nil and reached.ok == false and reached.code == 'not_found',
+				reached and tostring(reached.code))
+			check('and its contents were not touched',
+				(function()
+					local total = 0
+					for _, stack in pairs(stranger.items) do total = total + stack.count end
+					return total == 3
+				end)())
+
+			-- ── the glovebox opens from inside the car and nowhere else ──────
+			local glovebox = ask('openGlovebox', {})
+			check('a glovebox open from outside a car is refused',
+				glovebox ~= nil and glovebox.ok == false and glovebox.code == 'not_seated',
+				glovebox and tostring(glovebox.code))
+
+			-- AND SILENTLY. The open key asks for the glovebox FIRST and falls
+			-- back to the bag, so a press while on foot must not raise a toast
+			-- -- which is why the handler carries its own seat check ahead of
+			-- `MayAct` rather than leaving it to `Actions.OpenVehicle`, which
+			-- answers the same code but only after `MayAct` has had its say. On
+			-- a DEAD player the two orders differ: with the handler's check the
+			-- press is `not_seated` and silent, without it every press on the
+			-- floor toasts "dead".
+			control.Life(PLAYER, 'dead')
+			local quietNotices = #control.notices
+			local onFloor = ask('openGlovebox', {})
+			check('a dead player on foot pressing the open key is refused for not sitting down',
+				onFloor ~= nil and onFloor.ok == false and onFloor.code == 'not_seated',
+				onFloor and tostring(onFloor.code))
+			check('and is not toasted about it once per press',
+				#control.notices == quietNotices,
+				#control.notices - quietNotices)
+			control.Life(PLAYER, 'alive')
+
+			-- ── a host with no life reader at all ────────────────────────────
+			-- Refusing everybody because a host call is missing is worse than
+			-- the thing the check prevents, so an absent reader FAILS OPEN. That
+			-- direction has to be asserted: the safe-looking change is the one
+			-- that locks every player out of their own bag on an older build.
+			local realLife = env.Open77.players.getLifeState
+			env.Open77.players.getLifeState = nil
+			check('a host with no life reader lets a player at their own bag',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == true
+				end)())
+			env.Open77.players.getLifeState = realLife
+
+			-- ── a body on the floor may not empty its bag ────────────────────
+			-- The down screen is drawn by the CLIENT, so closing it proves
+			-- nothing about what the connection can still send. Dumping
+			-- contraband before a staff search is the obvious use.
+			control.Life(PLAYER, 'dead')
+			local dead = ask('move', { from = bag.id, to = bag.id, fromSlot = 1 })
+			check('a dead player may not move a slot',
+				dead ~= nil and dead.ok == false and dead.code == 'dead',
+				dead and tostring(dead.code))
+			check('nor open the screen',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == false and answer.code == 'dead'
+				end)())
+			check('nor sort a container',
+				(function()
+					local answer = ask('sort', { container = bag.id, mode = 'name' })
+					return answer ~= nil and answer.ok == false and answer.code == 'dead'
+				end)())
+			control.Life(PLAYER, 'alive')
+			check('and may again once they are back on their feet',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == true
+				end)())
+
+			-- A player with no body at all -- a continue screen, a slot that has
+			-- not incarnated -- is not alive either.
+			control.Life(PLAYER, nil)
+			check('a player with no life state at all may not act',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == false and answer.code == 'dead'
+				end)(), 'no life state')
+			control.Life(PLAYER, 'alive')
+
+			-- ── a player behind the readiness gate ───────────────────────────
+			control.Hold(PLAYER, 'opx77_appearance', 'still loading')
+			local held = ask('open', {})
+			check('a player the gate is still holding may not act',
+				held ~= nil and held.ok == false and held.code == 'not_ready',
+				held and tostring(held.code))
+			control.Free(PLAYER, 'opx77_appearance')
+			check('and may once the gate opens',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == true
+				end)())
+
+
+			-- ── the second container, and the reach that holds it open ───────
+			-- A player acts on their own bag, or on what they have open beside
+			-- it WHILE IT IS STILL IN REACH, and on nothing else. Out of reach
+			-- the second container is closed rather than refused quietly, so the
+			-- screen stops showing something that is no longer there. None of
+			-- that was reachable while every player stood at the origin.
+			local ANCHOR = { x = 300.0, y = 400.0, z = 10.0, bucket = 0 }
+			local stash = Containers.Transient(KIND.STASH, 'wire-stash', 20, 5000)
+			stash.transient = nil
+			stash.anchor = ANCHOR
+			Containers.Add(stash, 'bandage', 4)
+
+			local other = Containers.Transient(KIND.STASH, 'wire-other', 20, 5000)
+			other.transient = nil
+			other.anchor = ANCHOR
+
+			control.Stand(PLAYER, ANCHOR.x, ANCHOR.y, ANCHOR.z)
+			Containers.View(PLAYER, stash)
+
+			local atStash = ask('sort', { container = stash.id, mode = 'name' })
+			check('a second container the player has open and is standing at is theirs to use',
+				atStash ~= nil and atStash.ok == true, atStash and tostring(atStash.code))
+
+			-- A DIFFERENT container, at the same anchor, that this player has
+			-- NOT opened. Reach is not the only door: the view is.
+			local unopened = ask('sort', { container = other.id })
+			check('but the one beside it that they never opened is not',
+				unopened ~= nil and unopened.ok == false and unopened.code == 'not_found',
+				unopened and tostring(unopened.code))
+
+			-- And the bag is always theirs, wherever they are standing.
+			check('while their own bag is reachable from anywhere',
+				(function()
+					local answer = ask('sort', { container = bag.id, mode = 'name' })
+					return answer ~= nil and answer.ok == true
+				end)())
+
+			-- ── walking away ─────────────────────────────────────────────────
+			Containers.View(PLAYER, stash)
+			control.Stand(PLAYER, ANCHOR.x + 50.0, ANCHOR.y, ANCHOR.z)
+			local walked = ask('sort', { container = stash.id })
+			check('walking away from an open container puts it out of reach',
+				walked ~= nil and walked.ok == false and walked.code == 'not_found',
+				walked and tostring(walked.code))
+			check('and it is CLOSED rather than refused quietly, so the screen stops '
+				.. 'showing something that is not there',
+				Containers.Viewing(PLAYER) == nil)
+
+			-- The same rule on the way in: an `open` finds the second container
+			-- gone rather than listing it.
+			control.Stand(PLAYER, ANCHOR.x, ANCHOR.y, ANCHOR.z)
+			Containers.View(PLAYER, stash)
+			local beside = ask('open', {})
+			check('an open lists the second container while it is in reach',
+				beside ~= nil and beside.ok == true and type(beside.data) == 'table'
+					and beside.data.secondary ~= nil,
+				beside and beside.data and tostring(beside.data.secondary))
+
+			control.Stand(PLAYER, ANCHOR.x, ANCHOR.y + 50.0, ANCHOR.z)
+			local away = ask('open', {})
+			check('and drops it once the player has walked off',
+				away ~= nil and away.ok == true and type(away.data) == 'table'
+					and away.data.secondary == nil,
+				away and away.data and tostring(away.data.secondary))
+
+			-- ── the bucket is part of reach ──────────────────────────────────
+			-- Standing on the exact spot in another instance is not standing at
+			-- the container.
+			control.Stand(PLAYER, ANCHOR.x, ANCHOR.y, ANCHOR.z)
+			Containers.View(PLAYER, stash)
+			control.Bucket(PLAYER, 9)
+			local elsewhere = ask('sort', { container = stash.id })
+			check('the same spot in another routing bucket is out of reach',
+				elsewhere ~= nil and elsewhere.ok == false and elsewhere.code == 'not_found',
+				elsewhere and tostring(elsewhere.code))
+			control.Bucket(PLAYER, 0)
+
+			-- ── a staff view ignores reach, and only a staff view ────────────
+			-- A search screen is opened on somebody who is not standing there.
+			control.Stand(PLAYER, ANCHOR.x + 500.0, ANCHOR.y, ANCHOR.z)
+			Containers.View(PLAYER, stash, true)
+			local staffed = ask('sort', { container = stash.id, mode = 'name' })
+			check('a staff view reaches a container from across the city',
+				staffed ~= nil and staffed.ok == true, staffed and tostring(staffed.code))
+			Containers.CloseSecondary(PLAYER, false)
+			control.Stand(PLAYER, 10.0, 20.0, 30.0)
+			-- ── the rate limit ───────────────────────────────────────────────
+			-- "A refused request IS answered, so the client settles what it is
+			-- waiting on instead of holding a move until its own timeout. Past
+			-- twice the allowance in one window a flood stops costing an answer
+			-- at all."
+			local ALLOWANCE = 2
+			control.tunables.INVENTORY_RATE_REQUESTS = ALLOWANCE
+			-- A fresh window: the clock has moved well past the last one.
+			control.Pump(20)
+
+			-- FIRED WITHOUT PUMPING BETWEEN THEM, because `Pump` moves the clock
+			-- 100 ms a round and the window is 1000: pumping between requests
+			-- opens a new window every other one and the limit never binds. A
+			-- flood arrives inside one window, so this is what a flood is.
+			local mark = #control.clientEvents
+			for index = 1, 12 do
+				env.source = PLAYER
+				control.netEvents[REQUEST](1000 + index, 'open', {})
+				env.source = nil
+			end
+			control.Pump(20)
+
+			local answered, refused = 0, 0
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == ANSWER then
+					answered = answered + 1
+					if event[3] == 'too_fast' then refused = refused + 1 end
+				end
+			end
+			-- Two served, and then the refusals -- which ARE answered, so the
+			-- screen settles rather than holding a move until its own timeout.
+			check('the allowance binds: only what it permits is served',
+				answered - refused == ALLOWANCE,
+				('%d answered, %d of them refusals'):format(answered, refused))
+			check('and a refused request is still answered',
+				refused > 0, refused)
+			-- "Past twice the allowance in one window a flood stops costing an
+			-- answer at all": 12 requests, 2 served, 4 refusals answered, and the
+			-- remaining 6 dropped in silence.
+			check('and past twice the allowance it stops answering at all',
+				refused == ALLOWANCE * 2 and answered < 12,
+				('%d answered of 12, %d refusals'):format(answered, refused))
+
+			control.tunables.INVENTORY_RATE_REQUESTS = 1000
+			control.Pump(20)
+
+			-- ── the hello door has its own limit ─────────────────────────────
+			-- A hello costs a drop sync and a bag load, so a client looping on it
+			-- is a client the server pays for.
+			-- The second one goes in BEFORE the first is pumped, the way a
+			-- client looping on it would send them: pumping between the two
+			-- moves the clock 1000 ms a call and the second would be a
+			-- legitimate retry rather than a flood.
+			local before = #control.clientEvents
+			env.source = PLAYER
+			control.netEvents[HELLO]()
+			local afterFirst = #control.clientEvents
+			control.netEvents[HELLO]()
+			local afterSecond = #control.clientEvents
+			env.source = nil
+			control.Pump(10)
+			check('a hello is answered', afterFirst > before, afterFirst - before)
+			check('and a second one inside two seconds costs nothing',
+				afterSecond == afterFirst, afterSecond - afterFirst)
+			check('a hello from slot 0 is dropped',
+				(function()
+					local mark = #control.clientEvents
+					env.source = 0
+					control.netEvents[HELLO]()
+					control.Pump(10)
+					env.source = nil
+					return #control.clientEvents == mark
+				end)())
+
+			-- ── a departing player is forgotten ──────────────────────────────
+			-- The windows are keyed by player id and player ids are recycled, so
+			-- a window nobody clears is a window the next player inherits.
+			control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+			control.Pump(5)
+			check('a disconnect clears the rate window, so the next player on that '
+				.. 'slot does not inherit it',
+				(function()
+					local mark = #control.clientEvents
+					env.source = PLAYER
+					control.netEvents[HELLO]()
+					control.Pump(10)
+					env.source = nil
+					return #control.clientEvents > mark
+				end)())
+		end
+	end
+end
+
+-- ── reach and the routing bucket, on the server ──────────────────────────────
+-- `Open77.players.position` answered `{0,0,0,bucket=0}` for every id forever,
+-- with no way to move it, so every reach check in this runtime compared the
+-- origin against an anchor and every bucket comparison was `0 == 0`. Eight of
+-- the ten reach and bucket mutants in the audit survived on that one stub. The
+-- body is movable now, so distance is a distance.
+section('reach: the server decides where a player is standing, and it is not the origin')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local World = inventory and inventory.World
+		check('the inventory module publishes a World', type(World) == 'table')
+
+		if type(World) == 'table' then
+			local WALKER = 901
+			control.Admit(WALKER, 'account-901')
+			control.Stand(WALKER, 100.0, 200.0, 30.0)
+
+			local at = World.Position(WALKER)
+			check('a connected player has a position',
+				at ~= nil and at.x == 100.0 and at.y == 200.0 and at.z == 30.0,
+				at and ('%s,%s,%s'):format(at.x, at.y, at.z))
+			check('and it is NOT the origin, which is what the harness used to answer',
+				at ~= nil and not (at.x == 0 and at.y == 0 and at.z == 0))
+
+			-- A slot nobody is connected on has no position at all, and the
+			-- runtime must not read that as the origin: the origin is a real
+			-- place, and every reach check against it would pass for somebody
+			-- standing there.
+			check('a slot nobody is connected on has no position',
+				World.Position(9998) == nil)
+
+			-- The body really moves.
+			control.Stand(WALKER, 105.0, 200.0, 30.0)
+			local moved = World.Position(WALKER)
+			check('and walking five metres moves it five metres',
+				moved ~= nil and moved.x == 105.0,
+				moved and moved.x)
+			check('which is a distance the runtime can measure',
+				math.abs(World.Distance(at, moved) - 5.0) < 0.001,
+				World.Distance(at, moved))
+
+			-- ── the bucket ───────────────────────────────────────────────────
+			check('a player starts in the world bucket',
+				World.Position(WALKER).bucket == 0, World.Position(WALKER).bucket)
+			OPX.EnsureSession(WALKER)
+			OPX.Buckets.Move(WALKER, 4242, 'a test')
+			check('and a move really moves them',
+				World.Position(WALKER).bucket == 4242, World.Position(WALKER).bucket)
+			check('which the host agrees with',
+				env.Open77.routingBuckets.getPlayer(WALKER) == 4242)
+
+			-- Isolation and release, which could not be told apart while every
+			-- read answered 0.
+			local BASE = OPX.Config.SERVER.ENTRY.BUCKET.BASE
+			local WORLD_BUCKET = OPX.Config.SERVER.ENTRY.BUCKET.WORLD
+			check('isolating puts a player in their OWN selection bucket',
+				OPX.Buckets.Isolate(WALKER) == true
+					and env.Open77.routingBuckets.getPlayer(WALKER) == BASE + WALKER,
+				env.Open77.routingBuckets.getPlayer(WALKER))
+			local released, moved2 = OPX.Buckets.Release(WALKER)
+			check('and releasing takes them back out to the world',
+				released == true and moved2 == true
+					and env.Open77.routingBuckets.getPlayer(WALKER) == WORLD_BUCKET,
+				env.Open77.routingBuckets.getPlayer(WALKER))
+			-- A second release has nothing to do, and must not say it moved
+			-- somebody: that is how a caller tells a no-op from a move.
+			local again, movedAgain = OPX.Buckets.Release(WALKER)
+			check('releasing somebody already out is a no-op that says so',
+				again == true and movedAgain == false)
+
+			-- ── a non-finite coordinate ──────────────────────────────────────
+			-- NaN passes every comparison it is put through, including the one
+			-- that would stop it being used as a distance.
+			env.Open77.players.position = function()
+				return { x = 0 / 0, y = 0.0, z = 0.0, bucket = 0 }
+			end
+			check('a position carrying NaN is refused rather than measured against',
+				World.Position(WALKER) == nil)
+			env.Open77.players.position = function()
+				return { x = math.huge, y = 0.0, z = 0.0, bucket = 0 }
+			end
+			check('and so is one carrying an infinity', World.Position(WALKER) == nil)
+			env.Open77.players.position = function() return 'somewhere' end
+			check('and one that is not a table at all', World.Position(WALKER) == nil)
+			env.Open77.players.position = nil
+			check('and a host with no position native answers nothing, not the origin',
+				World.Position(WALKER) == nil)
+		end
+	end
+end
+
+-- ── the shop counter is a place ──────────────────────────────────────────────
+-- `shopAt` refuses a shop in another bucket and a shop out of reach, and both
+-- mutants survived: with every player at the origin in bucket 0 the two
+-- comparisons were constants.
+section('shops: a counter on the other side of the city is not a counter you are at')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local shops = OPX.Modules.Get('shops')
+		check('the shops module is there', type(shops) == 'table')
+
+		if type(shops) == 'table' then
+			-- `thrift_watson` from the shipped config, and its counter.
+			local COUNTER = { x = -1180.0, y = 1550.0, z = 25.0 }
+			local SHOPPER = 911
+			control.Admit(SHOPPER, 'account-911')
+
+			--- Fires the OPEN door and answers the refusal the player was shown,
+			--- or nil when the room was opened instead.
+			local function open(key)
+				local mark = #control.notices
+				env.source = SHOPPER
+				control.netEvents[shops.Event.OPEN](key)
+				env.source = nil
+				control.Pump(10)
+				for index = #control.notices, mark + 1, -1 do
+					return control.notices[index].message
+				end
+				return nil
+			end
+
+			check('the shop door is wired',
+				type(control.netEvents[shops.Event.OPEN]) == 'function')
+
+			-- AT the counter.
+			control.Stand(SHOPPER, COUNTER.x, COUNTER.y, COUNTER.z)
+			check('standing at the counter is not refused for being too far',
+				(open('thrift_watson') or ''):find('close enough', 1, true) == nil,
+				open('thrift_watson'))
+
+			-- A hundred metres away. The configured reach is metres, not
+			-- kilometres, and this is the check a client asking from anywhere
+			-- has to fail.
+			control.Stand(SHOPPER, COUNTER.x + 100.0, COUNTER.y, COUNTER.z)
+			check('a hundred metres away is too far',
+				(open('thrift_watson') or ''):find('close enough', 1, true) ~= nil,
+				open('thrift_watson'))
+
+			-- The other side of the city -- which is where the OTHER configured
+			-- shop is, so this also proves the answer is the position and not
+			-- the first entry of a table.
+			control.Stand(SHOPPER, -1631.0, -1012.0, 8.0)
+			check('and standing at a DIFFERENT shop is still too far from this one',
+				(open('thrift_watson') or ''):find('close enough', 1, true) ~= nil,
+				open('thrift_watson'))
+
+			-- ── the bucket ───────────────────────────────────────────────────
+			-- Two instances of the same street. Standing on the exact spot in
+			-- another bucket is standing in another world.
+			control.Stand(SHOPPER, COUNTER.x, COUNTER.y, COUNTER.z)
+			control.Bucket(SHOPPER, 7)
+			check('the same spot in another routing bucket is not the same spot',
+				(open('thrift_watson') or ''):find('close enough', 1, true) ~= nil,
+				open('thrift_watson'))
+			control.Bucket(SHOPPER, 0)
+
+			-- ── no position at all ───────────────────────────────────────────
+			-- The refusal has its own wording, because "the server cannot tell
+			-- where you are standing" and "you are not close enough" are
+			-- different things for the player and for whoever reads the report.
+			control.Admit(SHOPPER, nil)
+			control.Admit(SHOPPER, 'account-911-again')
+			env.Open77.players.position = function() return nil end
+			check('a player the host cannot place is refused, and told why',
+				(open('thrift_watson') or ''):find('cannot tell where', 1, true) ~= nil,
+				open('thrift_watson'))
+			check('and it is NOT treated as standing at the origin',
+				(open('thrift_watson') or ''):find('close enough', 1, true) == nil)
+		end
+	end
+end
+
+-- ── the flag bits are the engine's ───────────────────────────────────────────
+-- `Open77.vehicles.flags` is a CONSTANT TABLE on this build, and the harness
+-- made it a call answering `{}` -- so `masks()` took its callable branch, every
+-- configured flag resolved `unknown_flag`, and all three mutants over that
+-- resolution survived. The exact failure the module's own comment warns about,
+-- manufactured by the harness and certified green.
+section('vehicle flags resolve against the host\'s own bits')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		check('the admin module is there', type(admin) == 'table')
+
+		if type(admin) == 'table' then
+			check('the host publishes flags as a TABLE, not a call',
+				type(env.Open77.vehicles.flags) == 'table',
+				type(env.Open77.vehicles.flags))
+			check('carrying the platform\'s own bit values',
+				env.Open77.vehicles.flags.engineOn == 1
+					and env.Open77.vehicles.flags.locked == 2
+					and env.Open77.vehicles.flags.lightsOn == 64
+					and env.Open77.vehicles.flags.invulnerable == 16)
+
+			local flag = control.commands['opx.admin.vehicle.flag']
+			check('the flag command is registered', flag ~= nil)
+
+			local STAFF = 941
+			control.Admit(STAFF, 'account-941')
+			-- A live vehicle with every bit clear, so the mask the runtime
+			-- resolves is exactly the mask that comes back in the write.
+			control.vehicles.snapshot = { id = 1, flags = 0, occupants = {} }
+
+			--- Runs the command and answers the flags it asked the host to
+			--- write, or nil when it wrote nothing at all.
+			local function setFlag(name)
+				local mark = #control.vehicles.updates
+				if flag then flag.run(STAFF, { '1', name, 'on' }) end
+				control.Pump(10)
+				local last = control.vehicles.updates[#control.vehicles.updates]
+				if #control.vehicles.updates == mark then return nil end
+				return last.patch and last.patch.flags
+			end
+
+			-- THE HOST'S BIT, not the module's own copy of it. The module keeps
+			-- a fallback table for a build that publishes no constants, and the
+			-- only way to tell "read the host" from "used the fallback" is to
+			-- make the two DISAGREE -- which is the whole point of reading the
+			-- host at all, and was untestable while `flags` answered `{}`.
+			env.Open77.vehicles.flags = { engineOn = 1, locked = 1024,
+				lightsOn = 64, invulnerable = 16 }
+			check('a flag resolves to the HOST\'s bit for it, not to a private copy',
+				setFlag('locked') == 1024, tostring(setFlag('locked')))
+			check('and another flag to the host\'s bit for that one',
+				setFlag('lightsOn') == 64, tostring(setFlag('lightsOn')))
+
+			-- Back to the platform's real values.
+			env.Open77.vehicles.flags = { engineOn = 1, locked = 2, destroyed = 4,
+				exploded = 8, invulnerable = 16, immortal = 32, lightsOn = 64,
+				highBeams = 128, sirenOn = 256, paintApplied = 512 }
+			check('engineOn and locked are not the same bit, nor each other\'s',
+				setFlag('engineOn') == 1 and setFlag('locked') == 2,
+				('%s / %s'):format(tostring(setFlag('engineOn')), tostring(setFlag('locked'))))
+
+			-- A build publishing it as a CALL is the other shape the module's
+			-- own comment names, and the third is no table at all.
+			env.Open77.vehicles.flags = function()
+				return { engineOn = 1, locked = 2048, lightsOn = 64, invulnerable = 16 }
+			end
+			check('a host publishing it as a call is read too',
+				setFlag('locked') == 2048, tostring(setFlag('locked')))
+
+			env.Open77.vehicles.flags = nil
+			check('and a host with none at all falls back rather than resolving nothing',
+				setFlag('locked') == 2, tostring(setFlag('locked')))
+
+			check('a flag nobody configured writes nothing at all',
+				setFlag('teleportation') == nil)
+			control.vehicles.snapshot = nil
+		end
+	end
+end
+
+-- ── the ACL answers a reason ─────────────────────────────────────────────────
+-- `Open77.acl.isAllowed` answers a boolean, or FALSE WITH A REASON. The stub
+-- answered a bare boolean, so `permission_denied:acl.read`, `invalid_permission`
+-- and `invalid_player_id` were three documented answers nothing could produce
+-- and the degradation the whole alias feature is built around was untested.
+section('the ACL: a refusal, and a question the host could not answer')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+
+		local STAFF, CIVILIAN = 921, 922
+		control.Admit(STAFF, 'account-921')
+		control.Admit(CIVILIAN, 'account-922')
+		control.Allow(STAFF, 'command.opx.admin.menu')
+
+		if type(admin) == 'table' then
+			check('a granted right reads as granted',
+				admin.Server.Permitted(STAFF, 'opx.admin.menu') == true)
+			check('and one nobody granted reads as refused',
+				admin.Server.Permitted(CIVILIAN, 'opx.admin.menu') == false)
+
+			-- THE CONSOLE. The host lets it run any restricted command and
+			-- `isAllowed` answers `invalid_player_id` for it rather than yes, so
+			-- asking would lock the server's own console out of its own menu.
+			check('the console is named rather than asked',
+				admin.Server.Permitted(0, 'opx.admin.menu') == true)
+
+			-- A HOST THAT CANNOT ANSWER is not a host that said no. `Permitted`
+			-- answers nil for it, which the menu reads as "unknown" and greys
+			-- nothing out -- because greying every row out on an unreadable ACL
+			-- would be worse than showing rows the host will refuse anyway.
+			local realAcl = env.Open77.acl
+			env.Open77.acl = nil
+			check('a host with no ACL at all answers unknown, not refused',
+				admin.Server.Permitted(CIVILIAN, 'opx.admin.menu') == nil)
+			env.Open77.acl = { isAllowed = function() error('no acl.read', 0) end }
+			check('and so does one whose read raises',
+				admin.Server.Permitted(CIVILIAN, 'opx.admin.menu') == nil)
+			env.Open77.acl = realAcl
+
+			-- A refusal CARRYING A REASON is still a refusal. It is not unknown,
+			-- and reading it as a grant is the direction that opens doors.
+			control.acl.refuse = 'permission_denied:acl.read'
+			check('a refusal carrying a reason is a refusal, not a grant',
+				admin.Server.Permitted(STAFF, 'opx.admin.menu') == false)
+			control.acl.refuse = nil
+			check('and the grant comes back once the ACL can be read again',
+				admin.Server.Permitted(STAFF, 'opx.admin.menu') == true)
+
+			-- A HOST WHOSE ACL ANSWERS NOTHING AT ALL. This is the one case that
+			-- separates `allowed == true` from `allowed ~= false`, and it is the
+			-- direction that matters: `~= false` reads NOTHING as a grant, and
+			-- would turn a build whose ACL native answers nothing into an open
+			-- door on sixty staff commands. A read that raises already counts as
+			-- a refusal; a read that answers nothing has to count as one too.
+			env.Open77.acl = { isAllowed = function() end }
+			check('a host whose ACL answers nothing is a refusal, not a grant',
+				admin.Server.Permitted(STAFF, 'opx.admin.menu') ~= true,
+				tostring(admin.Server.Permitted(STAFF, 'opx.admin.menu')))
+			env.Open77.acl = { isAllowed = function() return 'yes' end }
+			check('and neither is a host that answers something that is not a boolean',
+				admin.Server.Permitted(STAFF, 'opx.admin.menu') ~= true,
+				tostring(admin.Server.Permitted(STAFF, 'opx.admin.menu')))
+			env.Open77.acl = realAcl
+		end
+	end
+end
+
+-- ── the generation, the name, and the clock ──────────────────────────────────
+-- Three stubs that were constants: `resource.generation` was 1 forever, so
+-- every abort-on-reload guard compared 1 against 1; `players.name` was the
+-- string 'player', so no strip and no truncation could ever fire; and
+-- `environment.getTime` answered 0 where the card answers a table, so weather's
+-- whole drift correction sat behind a check never once satisfied.
+section('a reload, a hostile name, and a clock that has drifted')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		-- ── the generation ───────────────────────────────────────────────────
+		check('this resource has a generation',
+			env.Open77.resource.generation() == 1, env.Open77.resource.generation())
+		check('and a resource that is not running has none',
+			env.Open77.resource.generation('open77_nothing') == 0)
+		local before = env.Open77.resource.generation()
+		control.Reload()
+		check('and a reload really changes it',
+			env.Open77.resource.generation() ~= before,
+			('%s -> %s'):format(before, env.Open77.resource.generation()))
+
+		-- ── the name off the host ────────────────────────────────────────────
+		-- `downed` strips control characters and cuts a name to 32 bytes,
+		-- because the name is LISTED BACK to a caller -- a dispatch screen. A
+		-- constant eight-byte `'player'` with nothing in it to strip made both
+		-- unreachable.
+		local BODY = 931
+		control.Admit(BODY, 'account-931')
+
+		-- The bare host read first, which every caller shares.
+		control.Rename(BODY, 'Johnny')
+		check('the host answers the name it was given',
+			env.Open77.players.name(BODY) == 'Johnny', env.Open77.players.name(BODY))
+		check('and nothing at all for a slot nobody is on',
+			env.Open77.players.name(9997) == nil)
+
+		local character = OPX.Modules.Get('character')
+		local downed = OPX.Api.Get('downed')
+		check('the downed contract is published',
+			downed ~= nil and type(downed.List) == 'function')
+
+		if downed ~= nil and type(downed.List) == 'function' and type(character) == 'table' then
+			-- A loaded character on a dead body: the life scan puts them down,
+			-- and the dispatch list is where the name comes back out.
+			character.Players[BODY] = {
+				PlayerData = { citizenId = 'citizen-downed', source = BODY,
+					userId = 'account-931', money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-downed'] = BODY
+			character.Registry.byUserId['account-931'] = BODY
+
+			control.Stand(BODY, 55.0, 66.0, 7.0)
+			control.Rename(BODY, 'V\nthe\tmerc')
+			control.Life(BODY, 'dead')
+			control.Pump(30)
+
+			--- The dispatch row for one player, or nil.
+			local function rowFor(playerId)
+				local listed = downed.List()
+				local rows = listed and listed.ok and listed.value and listed.value.players or {}
+				for _, row in ipairs(rows) do
+					if row.id == playerId then return row end
+				end
+				return nil
+			end
+
+			local row = rowFor(BODY)
+			check('a dead body with a character loaded is listed as down', row ~= nil)
+			if row ~= nil then
+				check('and the dispatch row carries where it is lying',
+					type(row.position) == 'table' and row.position.x == 55.0
+						and row.position.y == 66.0,
+					row.position and ('%s,%s'):format(row.position.x, row.position.y))
+				check('not the origin, which is a real place somebody else could be at',
+					type(row.position) == 'table'
+						and not (row.position.x == 0 and row.position.y == 0))
+				check('and which instance it is lying in, so a dispatch in another '
+					.. 'one is not sent to it',
+					type(row.position) == 'table' and row.position.bucket == 0,
+					row.position and tostring(row.position.bucket))
+			end
+
+			control.Bucket(BODY, 12)
+			control.Pump(10)
+			local moved = rowFor(BODY)
+			check('a body in another routing bucket is listed in that one',
+				moved ~= nil and type(moved.position) == 'table'
+					and moved.position.bucket == 12,
+				moved and moved.position and tostring(moved.position.bucket))
+			control.Bucket(BODY, 0)
+
+			if row ~= nil then
+				check('a name carrying control characters is stripped of them',
+					type(row.name) == 'string' and row.name:find('%c') == nil,
+					row.name and ('%q'):format(row.name))
+				check('and they become spaces rather than vanishing, so the name still reads',
+					row.name == 'V the merc', row.name and ('%q'):format(row.name))
+			end
+
+			control.Rename(BODY, ('A'):rep(200))
+			control.Pump(10)
+			local long = rowFor(BODY)
+			check('and a name past 32 bytes is cut to 32',
+				long ~= nil and type(long.name) == 'string' and #long.name == 32,
+				long and long.name and #long.name)
+
+			control.Life(BODY, 'alive')
+			control.Pump(20)
+			check('and standing back up takes them off the list', rowFor(BODY) == nil)
+		end
+	end
+end
+
+section('the weather clock: a drift worth correcting, and one that is not')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		check('the engine clock answers a snapshot table, not a number',
+			type(env.Open77.environment.getTime()) == 'table',
+			type(env.Open77.environment.getTime()))
+
+		local live = env.Open77.environment.getTime()
+		check('carrying the fields the card names',
+			live ~= nil and type(live.hour) == 'number' and type(live.minute) == 'number'
+				and type(live.second) == 'number' and type(live.totalSeconds) == 'number'
+				and type(live.frozen) == 'boolean')
+
+		-- The clock the harness holds really is a clock: setting it moves it,
+		-- and reading it back gives the hour that was set. A `setTime` that kept
+		-- nothing made "what the engine holds" and "what the server asked for"
+		-- the same question, which is the question a drift correction exists to
+		-- ask twice.
+		env.Open77.environment.setTime(13, 45, 30)
+		local after = env.Open77.environment.getTime()
+		check('and setting it moves it', after.hour == 13 and after.minute == 45
+			and after.second == 30,
+			('%s:%s:%s'):format(after.hour, after.minute, after.second))
+		check('with the total seconds agreeing with the parts',
+			after.totalSeconds == 13 * 3600 + 45 * 60 + 30, after.totalSeconds)
+
+		-- Midnight is 0 and not 86400: the wrap is where an off-by-one in a
+		-- forward delta shows up as a jump of a whole day.
+		env.Open77.environment.setTime(24, 0, 0)
+		check('and midnight wraps to zero rather than to a day',
+			env.Open77.environment.getTime().totalSeconds == 0,
+			env.Open77.environment.getTime().totalSeconds)
+
+		-- A build with no environment backend answers nil plus a reason, which
+		-- is the case the `type(live) == 'table'` guard is written for.
+		control.environment.refuse = 'environment_backend_unavailable'
+		local none, reason = env.Open77.environment.getTime()
+		check('a host with no environment backend answers nothing, and says why',
+			none == nil and reason == 'environment_backend_unavailable', tostring(reason))
+		control.environment.refuse = nil
+	end
+end
+
+-- ── the carried state ────────────────────────────────────────────────────────
+-- `Open77.state.save` accepted and kept nothing and `load` answered nil
+-- forever, so every `restoreState` in the runtime took its cold-start path in
+-- every test: the protocol check, the bounds and the refusal that drops all of
+-- it were unreachable.
+section('carried state: what survives a reload, and what must not be adopted')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		-- SOMETHING IS ALREADY CARRIED BY THE TIME THE RESOURCE IS UP, and that
+		-- is the point: `modules/weather` anchors itself at start and saves, so
+		-- the blob a reload would find is written during boot. While `save` kept
+		-- nothing this was invisible -- the module's own `restoreState`, which
+		-- reads it back, took its cold-start path in every test ever run.
+		local booted = env.Open77.state.load()
+		check('the runtime carries something of its own across a reload',
+			type(booted) == 'table', type(booted))
+		check('and it was written through a save the host recorded',
+			#control.carried.writes > 0, #control.carried.writes)
+
+		env.Open77.state.clear()
+		check('a cold start carries nothing', env.Open77.state.load() == nil)
+
+		env.Open77.state.save({ PROTOCOL = 3, weather = 'clear', hour = 9 })
+		local back = env.Open77.state.load()
+		check('what was saved comes back', type(back) == 'table' and back.PROTOCOL == 3
+			and back.weather == 'clear', back and back.PROTOCOL)
+
+		-- Through JSON, because that is what the platform stores it as: a blob
+		-- kept by reference would let a module mutate its own carried state
+		-- after saving it and never know the platform would not have carried
+		-- the change.
+		local live = { PROTOCOL = 4, weather = 'rain' }
+		env.Open77.state.save(live)
+		live.weather = 'changed after the save'
+		check('and it is a copy, not the caller\'s own table',
+			env.Open77.state.load().weather == 'rain',
+			env.Open77.state.load().weather)
+
+		control.carried.refuse = 'state_too_large'
+		local saved, refusal = env.Open77.state.save({ PROTOCOL = 5 })
+		check('a save the host refuses answers false and says why',
+			saved == false and refusal == 'state_too_large', tostring(refusal))
+		check('and the previous blob is still what comes back',
+			env.Open77.state.load().PROTOCOL == 4, env.Open77.state.load().PROTOCOL)
+		control.carried.refuse = nil
+
+		env.Open77.state.clear()
+		check('clearing takes it away', env.Open77.state.load() == nil)
+	end
+end
+
+-- ── a reload leaves nobody else's rows behind ────────────────────────────────
+-- `Open77.resource.generation` answered a constant 1 for every resource
+-- forever, so `alive(owner, generation)` compared 1 against 1 and every
+-- abort-on-reload guard in the runtime was trivially satisfied. A reload is the
+-- one event those guards exist for and it could not be staged at all.
+section('the eye forgets the rows of a resource that reloaded under it')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the target module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local target = OPX.Modules.Get('target')
+		check('the target module publishes a registry',
+			target ~= nil and type(target.Registry) == 'table')
+
+		if target ~= nil and type(target.Registry) == 'table' then
+			local Registry = target.Registry
+			local OWNER = 'open77_somebody_else'
+
+			-- A SEPARATE RESOURCE, not a module in this VM: a module here
+			-- answers an in-process sentinel and is never swept for a reload,
+			-- which is the branch above the one under test.
+			env.GetResourceState = function(name)
+				return name == OWNER and 'running' or 'stopped'
+			end
+			control.generations[OWNER] = 5
+
+			local token = Registry.Register(OWNER, 5, {
+				id = 'someone.row',
+				label = 'A row somebody else put here',
+				onSelect = function() end,
+			})
+			check('another resource can put a row on the eye', token ~= nil, tostring(token))
+			check('and it is listed while that resource is up',
+				#Registry.List(OWNER) == 1, #Registry.List(OWNER))
+
+			-- Still the same VM: a sweep leaves it alone. The liveness read is
+			-- cached for half a second, so the clock is moved past that first --
+			-- otherwise this would be asserting the cache and not the guard.
+			control.Pump(10)
+			Registry.Sweep()
+			check('a sweep while it is still the same VM keeps the row',
+				#Registry.List(OWNER) == 1, #Registry.List(OWNER))
+
+			-- THE RELOAD. The resource is still running, so `GetResourceState`
+			-- says nothing is wrong; the only thing that changed is the
+			-- generation, and that is the whole point of reading one.
+			control.Reload(OWNER)
+			control.Pump(10)
+			Registry.Sweep()
+			check('but a row registered by a generation that has gone is dropped',
+				#Registry.List(OWNER) == 0, #Registry.List(OWNER))
+
+			-- And a row whose owner stopped outright goes the same way.
+			control.generations[OWNER] = nil
+			local again = Registry.Register(OWNER, env.Open77.resource.generation(OWNER), {
+				id = 'someone.row',
+				label = 'A row somebody else put here',
+				onSelect = function() end,
+			})
+			check('a resource the host does not know cannot register at all',
+				again == nil, tostring(again))
+		end
+	end
+end
+
+-- ── the carried state a reload has to refuse ─────────────────────────────────
+-- `Open77.state.load` answered nil forever, so `restoreState` returned at its
+-- first line in every test ever run: the protocol check, the preset check and
+-- every bound below them were unreachable. Carried state is UNTRUSTED INPUT --
+-- written by an earlier version of this code, which may have accepted wider
+-- bounds than the wire does now -- and a single bad field has to drop all of
+-- it rather than half of it.
+section('weather: adopting the previous generation\'s state, and refusing it whole')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the weather module', why == nil, why)
+
+	if why == nil then
+		local weather = env.OPX.Modules.Get('weather')
+		local Authority = weather and weather.Authority
+		check('the weather authority is there', type(Authority) == 'table')
+
+		if type(Authority) == 'table' then
+			-- What the module itself wrote during boot, which is by construction
+			-- a blob of exactly the right shape. Nothing here invents one: a
+			-- hand-built fixture would drift from the writer the moment a field
+			-- was added, and then this would be testing the fixture.
+			--
+			-- Read through `OPX.Carry` under this module's own namespace, which
+			-- is where it lives: `Open77.state` holds one value for the whole
+			-- resource and this module is not its only writer.
+			local written = env.OPX.Carry.Load('weather')
+			check('the module carried something of its own across the boot',
+				type(written) == 'table', type(written))
+
+			--- Saves a copy of that blob with one field changed, and answers
+			--- whether the authority adopted it.
+			local function restoreWith(field, value)
+				local blob = {}
+				for key, held in pairs(written or {}) do blob[key] = held end
+				blob[field] = value
+				env.OPX.Carry.Save('weather', blob)
+				return Authority.Restore()
+			end
+
+			check('its own carried state is adopted',
+				restoreWith('PROTOCOL', written and written.PROTOCOL) == true)
+
+			local mark = #control.log.warn
+			check('a blob from an older protocol is refused whole',
+				restoreWith('PROTOCOL', 999) == false)
+			check('and says so, naming both protocols',
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn)
+					:find('protocol 999 is not', 1, true) ~= nil,
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn))
+
+			mark = #control.log.warn
+			check('a preset that is no longer configured is refused whole',
+				restoreWith('weather', 'a_preset_nobody_ships') == false)
+			check('and says which one',
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn)
+					:find('a_preset_nobody_ships', 1, true) ~= nil,
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn))
+
+			mark = #control.log.warn
+			check('a field that is not a finite number is refused whole',
+				restoreWith('rate', 0 / 0) == false)
+			check('and names the field',
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn)
+					:find("field 'rate'", 1, true) ~= nil,
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn))
+
+			check('a rate of zero would stop the day, and is refused',
+				restoreWith('rate', 0) == false)
+			check('a revision below one is refused', restoreWith('revision', 0) == false)
+
+			-- NOT A TABLE AT ALL. A host that carried something else, or a blob
+			-- an older version wrote as a string: the first line of the restore
+			-- is what stops it, and nothing could reach that line before.
+			env.OPX.Carry.Save('weather', 'not a table')
+			check('a carried blob that is not a table at all is refused',
+				Authority.Restore() == false)
+
+			env.Open77.state.clear()
+			check('and a cold start with nothing carried is refused too, quietly',
+				Authority.Restore() == false)
+		end
+	end
+end
+
+-- ── the drift correction that had never once run ─────────────────────────────
+-- `Open77.environment.getTime` answered the NUMBER 0, and the whole correction
+-- below sits behind `if type(live) == 'table'`. So the branch was never entered
+-- in any test ever run: the client re-applied the clock on every accepted
+-- snapshot, and both mutants over the tolerance survived. With a real engine
+-- clock the correction is a comparison between two numbers again.
+section('weather: the clock is corrected when it has drifted, and left alone when it has not')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the weather module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local weather = OPX.Modules.Get('weather')
+		local SYNC = OPX.Event(OPX.Channel.NET, 'weather', 'sync')
+		check('the weather sync door is wired',
+			type(control.netEvents[SYNC]) == 'function')
+
+		if type(control.netEvents[SYNC]) == 'function' and type(weather) == 'table' then
+			-- The tolerance is 120 GAME seconds, so a minute of drift is inside
+			-- it and ten minutes is not. Read rather than repeated, so this
+			-- checks the comparison and not the number.
+			local TOLERANCE = type(weather.SYNC) == 'table'
+				and weather.SYNC.DRIFT_TOLERANCE_SECONDS or 120
+			check('the tolerance is read from the module, not repeated here',
+				type(weather.SYNC) == 'table'
+					and weather.SYNC.DRIFT_TOLERANCE_SECONDS == TOLERANCE, TOLERANCE)
+
+			local revision = 0
+			--- One accepted authority snapshot at a given time of day. FROZEN,
+			--- because a running clock would make "what the engine holds" move
+			--- underneath the comparison and the test would be about the pump
+			--- rate rather than about drift. No preset, so nothing here is about
+			--- the weather half.
+			local function syncAt(secondsOfDay)
+				revision = revision + 1
+				-- Past the sync floor, or the snapshot is deferred rather than
+				-- applied and the assertion below reads the previous one.
+				control.Pump(5)
+				control.netEvents[SYNC]({
+					protocol = 1,
+					authorityEpoch = 1,
+					revision = revision,
+					weatherRevision = 1,
+					secondsOfDay = secondsOfDay,
+					rate = 1.0,
+					timeFrozen = true,
+					weatherFrozen = false,
+					weather = '',
+					weatherPreset = '',
+					weatherPriority = 0,
+					transitionSeconds = 0,
+					weatherTransitionRemainingMs = 0,
+					reason = 'test',
+				})
+				control.Pump(5)
+			end
+
+			local NOON = 12 * 3600
+
+			local before = #control.environment.writes
+			syncAt(NOON)
+			check('the first snapshot is written to the engine',
+				#control.environment.writes > before,
+				#control.environment.writes - before)
+			check('and the engine clock now reads what the authority said',
+				env.Open77.environment.getTime().totalSeconds == NOON,
+				env.Open77.environment.getTime().totalSeconds)
+
+			-- INSIDE the tolerance. The engine's own clock runs the seconds
+			-- between corrections, so a minute of difference is not worth a
+			-- `setTime` -- which jumps to the NEXT occurrence of an hour and is
+			-- visible in the sky.
+			local mark = #control.environment.writes
+			syncAt(NOON + math.floor(TOLERANCE / 2))
+			check('a drift inside the tolerance is left alone',
+				#control.environment.writes == mark,
+				#control.environment.writes - mark)
+			check('and the engine clock has not moved',
+				env.Open77.environment.getTime().totalSeconds == NOON,
+				env.Open77.environment.getTime().totalSeconds)
+
+			-- OUTSIDE it.
+			mark = #control.environment.writes
+			syncAt(NOON + TOLERANCE * 5)
+			check('a drift past the tolerance is corrected',
+				#control.environment.writes > mark,
+				#control.environment.writes - mark)
+			check('and the engine clock is moved to where the authority says',
+				env.Open77.environment.getTime().totalSeconds == NOON + TOLERANCE * 5,
+				env.Open77.environment.getTime().totalSeconds)
+
+			-- A HOST WITH NO ENGINE CLOCK is the case the `type(live) == 'table'`
+			-- guard is written for: with nothing to compare against, the
+			-- correction is made rather than skipped.
+			control.environment.refuse = 'environment_backend_unavailable'
+			mark = #control.environment.writes
+			syncAt(NOON)
+			control.environment.refuse = nil
+			check('a host that cannot be asked the time is written to anyway',
+				#control.environment.writes > mark,
+				#control.environment.writes - mark)
+		end
+	end
+end
+
+-- ── the destinations a reload carried, adopted before anything else runs ─────
+-- `Open77.state.load` answered nil forever, so this module's `restore()` -- run
+-- from `Register`, before any command can add a destination -- took its
+-- cold-start path in every test and the in-game destinations were lost on every
+-- reload with nothing to say so. The blob is written in the PRELUDE here,
+-- before a single script has loaded, which is exactly where the previous
+-- generation's blob is waiting on a real reload.
+section('the staff destinations a reload carried')
+do
+	local CARRIED = { protocol = 1, locations = {
+		{ name = 'thehill', label = 'THE HILL', x = 120.5, y = -240.25, z = 15.75,
+			heading = 90.0 },
+	} }
+
+	-- Written in the envelope `OPX.Carry` writes, because that is what the
+	-- previous generation of this resource leaves behind. A prelude is the only
+	-- honest place for it: the destinations are adopted from `World.Register`,
+	-- before any command could have added one.
+	local function seedCarry(sandbox, namespace, value)
+		sandbox.Open77.state.save({ CARRY = 1, namespaces = { [namespace] = value } })
+	end
+
+	local env, _, why = boot('server', nil, function(sandbox)
+		seedCarry(sandbox, 'admin.world', CARRIED)
+	end)
+	check('the server boots on top of a carried blob', why == nil, why)
+
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		local named
+		for _, row in ipairs(admin and admin.World.Locations() or {}) do
+			if row.name == 'thehill' then named = row end
+		end
+		check('a destination the previous generation placed in game is still there',
+			named ~= nil)
+		check('with the point it was placed on', named ~= nil and named.x == 120.5
+			and named.y == -240.25 and named.z == 15.75,
+			named and ('%s,%s,%s'):format(named.x, named.y, named.z))
+		check('and marked as a runtime one, not a configured one',
+			named ~= nil and named.runtime == true)
+		check('while the configured destinations are still there beside it',
+			#(admin and admin.World.Locations() or {}) > 1,
+			#(admin and admin.World.Locations() or {}))
+	end
+
+	-- A BLOB FROM ANOTHER PROTOCOL IS NOT ADOPTED. It was written by an earlier
+	-- version of this code, which may have meant something else by these fields.
+	local env2, _, why2 = boot('server', nil, function(sandbox)
+		seedCarry(sandbox, 'admin.world',
+			{ protocol = 999, locations = CARRIED.locations })
+	end)
+	if why2 == nil then
+		local admin2 = env2.OPX.Modules.Get('admin')
+		local strayed = false
+		for _, row in ipairs(admin2 and admin2.World.Locations() or {}) do
+			if row.name == 'thehill' then strayed = true end
+		end
+		check('a blob from another protocol is left alone', strayed == false)
+	end
+
+	-- ── and the two writers no longer destroy each other ─────────────────
+	-- `Open77.state` holds ONE value per resource. Two modules write it, and
+	-- until `OPX.Carry` they each wrote it whole: an operator placing a staff
+	-- destination wiped the world clock, and the next weather roll wiped the
+	-- destination. Neither crashed -- each refuses a blob without its own
+	-- protocol number -- so the only evidence was weather logging "carried
+	-- state ignored" against a blob that was never weather's.
+	local env3, control3, why3 = boot('server', nil, function(sandbox)
+		seedCarry(sandbox, 'admin.world', CARRIED)
+	end)
+	check('the server boots for the two-writer case', why3 == nil, why3)
+	if why3 == nil then
+		local OPX3 = env3.OPX
+		local weather3 = OPX3.Modules.Get('weather')
+		local admin3 = OPX3.Modules.Get('admin')
+
+		-- The weather half has been up and saving since Start.
+		check('weather carried something of its own', OPX3.Carry.Load('weather') ~= nil)
+		check('and the destinations are still there beside it',
+			(function()
+				for _, row in ipairs(admin3 and admin3.World.Locations() or {}) do
+					if row.name == 'thehill' then return true end
+				end
+				return false
+			end)())
+
+		-- One more write from each, in the order a live server makes them.
+		OPX3.Carry.Save('admin.world', { protocol = 1, locations = {} })
+		check('a destination write leaves the weather namespace alone',
+			OPX3.Carry.Load('weather') ~= nil)
+		if weather3 ~= nil and type(weather3.Authority) == 'table' then
+			weather3.Authority.SetTimeFrozen(true, 'test')
+			control3.Pump(5)
+		end
+		check('and a weather write leaves the destinations namespace alone',
+			type(OPX3.Carry.Load('admin.world')) == 'table',
+			type(OPX3.Carry.Load('admin.world')))
+
+		-- The envelope itself: one blob, and the namespaces inside it.
+		local blob = env3.Open77.state.load()
+		check('there is exactly ONE blob, whatever is in it', type(blob) == 'table'
+			and type(blob.namespaces) == 'table')
+		check('and both writers are inside it',
+			type(blob) == 'table' and type(blob.namespaces) == 'table'
+				and blob.namespaces['weather'] ~= nil
+				and blob.namespaces['admin.world'] ~= nil,
+			type(blob) == 'table' and blob.namespaces
+				and table.concat((function()
+					local keys = {}
+					for key in pairs(blob.namespaces) do keys[#keys + 1] = key end
+					table.sort(keys)
+					return keys
+				end)(), ','))
+
+		-- A NAMESPACE CLEARS ON ITS OWN. `nil` takes that one away and nothing
+		-- else, which is what "leaving every other namespace alone" has to mean
+		-- in the one direction that could quietly take the lot.
+		OPX3.Carry.Save('admin.world', nil)
+		check('clearing one namespace clears only that one',
+			OPX3.Carry.Load('admin.world') == nil and OPX3.Carry.Load('weather') ~= nil)
+
+		-- The blob an older build wrote, with no envelope, is not walked as one.
+		env3.Open77.state.save({ PROTOCOL = 1, weather = 'clear' })
+		check('an unnamespaced blob from an older build reads as nothing carried',
+			OPX3.Carry.Load('weather') == nil)
+		check('and so does a blob that is not a table at all',
+			(function()
+				env3.Open77.state.save('nonsense')
+				return OPX3.Carry.Load('weather') == nil
+			end)())
+
+		-- A host with no reload store is a real build, and neither writer may
+		-- raise on it.
+		local realState = env3.Open77.state
+		env3.Open77.state = nil
+		check('a host with no reload store answers nothing rather than raising',
+			OPX3.Carry.Load('weather') == nil)
+		local saved, reason = OPX3.Carry.Save('weather', { PROTOCOL = 1 })
+		check('and a save on it is refused, with a reason, rather than raising',
+			saved == false and reason == 'no-state-api', tostring(reason))
+		env3.Open77.state = realState
+
+		-- A save the HOST refuses is not a save. Recording one as done is
+		-- carried state nobody knows is gone.
+		control3.carried.refuse = 'unserialisable_state'
+		local turned, why4 = OPX3.Carry.Save('weather', { PROTOCOL = 1 })
+		check('a save the host turns away is reported as refused',
+			turned == false and why4 == 'unserialisable_state', tostring(why4))
+		control3.carried.refuse = nil
+
+		check('and a namespace that is not a name is refused outright',
+			(OPX3.Carry.Save('', { a = 1 })) == false
+				and (OPX3.Carry.Save(nil, { a = 1 })) == false)
+	end
+end
+
+-- ── a body that is dead and not incarnated ───────────────────────────────────
+-- `admit` refuses a player with no life state at all, because "touching a body
+-- that has neither crashes it". It could never be reached while `getLifeState`
+-- answered a string for everybody, and the two natives it reconciles --
+-- `isDead` and `getLifeState` -- could not be made to disagree.
+section('downed: a revive of a body the host cannot answer for')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local downed = OPX.Api.Get('downed')
+		local character = OPX.Modules.Get('character')
+		check('the downed contract is published',
+			downed ~= nil and type(downed.Revive) == 'function')
+
+		if downed ~= nil and type(downed.Revive) == 'function' and type(character) == 'table' then
+			local BODY = 951
+			control.Admit(BODY, 'account-951')
+			character.Players[BODY] = {
+				PlayerData = { citizenId = 'citizen-951', source = BODY,
+					userId = 'account-951', money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-951'] = BODY
+			character.Registry.byUserId['account-951'] = BODY
+
+			control.Life(BODY, 'dead')
+			control.Pump(20)
+			local down = downed.Revive(BODY, 'test')
+			check('a dead body with a life state is revived',
+				down ~= nil and down.ok == true, down and tostring(down.error or down.detail))
+			check('and the host really stood them up',
+				env.Open77.players.getLifeState(BODY).phase == 'alive',
+				env.Open77.players.getLifeState(BODY).phase)
+
+			-- THE TWO NATIVES DISAGREEING. `isDead` and `getLifeState` are
+			-- separate host calls and a body between two states answers one and
+			-- not the other. `admit` exists for exactly that window.
+			control.Life(BODY, 'dead')
+			control.Pump(20)
+			env.Open77.players.isDead = function() return true end
+			env.Open77.players.getLifeState = function() return nil end
+			local blind = downed.Revive(BODY, 'test')
+			check('but a body the host has no life state for is refused, not touched',
+				blind ~= nil and blind.ok == false, blind and tostring(blind.ok))
+			check('and named as not incarnated rather than as some other failure',
+				blind ~= nil and tostring(blind.error or blind.detail):find('not_incarnated',
+					1, true) ~= nil,
+				blind and tostring(blind.error or blind.detail))
+		end
+	end
 end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

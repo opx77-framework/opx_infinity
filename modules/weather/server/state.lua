@@ -55,6 +55,14 @@ local CARRIED_NUMBERS = {
 	'weatherChangedAtMs', 'transitionSeconds', 'nextRollAtMs',
 }
 
+-- The namespace this module carries under. `Open77.state` holds ONE value per
+-- resource -- not a key-value store -- and this module is not the only writer
+-- in it: `modules/admin/server/world.lua` carries the destinations an operator
+-- placed in game. Writing the blob whole, which is what this did, meant
+-- whichever wrote last destroyed the other's state, silently, on a runtime
+-- where both write often. `OPX.Carry` is the one blob divided up.
+local CARRY = 'weather'
+
 -- Hands the live state to the host for the next reload. Nothing is saved before
 -- the anchor is placed: an anchor of zero would restart the day at the anchor on
 -- the next reload.
@@ -71,7 +79,7 @@ local function saveState()
 		local field = CARRIED_NUMBERS[position]
 		carried[field] = state[field]
 	end
-	Open77.state.save(carried)
+	OPX.Carry.Save(CARRY, carried)
 end
 
 -- Adopts the previous generation's carried state, or refuses it whole. The
@@ -80,7 +88,7 @@ end
 -- field drops all of it rather than half of it. A carried anchor stays an
 -- anchor: the host's monotonic clock belongs to the process, not to this VM.
 local function restoreState()
-	local carried = Open77.state.load()
+	local carried = OPX.Carry.Load(CARRY)
 	if type(carried) ~= 'table' then return false end
 
 	if carried.PROTOCOL ~= M.PROTOCOL then
