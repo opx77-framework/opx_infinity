@@ -26,8 +26,17 @@ local function apply(on)
 	if type(combat) ~= 'table' or type(combat.setFriendlyFire) ~= 'function' then
 		return false, 'combat_unavailable'
 	end
+	-- THE RAISE STAYS IN THE JOURNAL. `pcall`'s failure is a Lua error string --
+	-- an absolute file path, a line number and whatever the host's own message
+	-- says -- and it used to come back as the `reason` the command hands a staff
+	-- member on screen. `Server.Refuse` trims it to 64 characters, which makes it
+	-- a truncated file path rather than a leak avoided. One stable code out, the
+	-- real text to the operator who can do something with it.
 	local called, ok, reason = pcall(combat.setFriendlyFire, on == true)
-	if not called then return false, tostring(ok) end
+	if not called then
+		Open77.log.error('[admin] combat.setFriendlyFire raised: ' .. tostring(ok))
+		return false, 'combat_raised'
+	end
 	if ok ~= true then return false, tostring(reason or 'refused') end
 	pvp = on == true
 	TriggerClientEvent(M.Event.PVP, -1, pvp)

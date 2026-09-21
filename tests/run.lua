@@ -11791,6 +11791,41 @@ do
 			check('which is every eddie the section ever created, and not one fewer',
 				total() == START + MINTED, tostring(total()))
 		end
+
+		-- ── a stash with no anchor is in reach from everywhere, on purpose ────
+		-- AND ONLY WHEN SOMEBODY DECIDED THAT. `WithinReach` used to answer true
+		-- for any STASH with no `anchor` field, which is a conclusion drawn from
+		-- something MISSING: a stash built by another route, or one whose anchor
+		-- is cleared later, became a shared container in reach of the entire
+		-- server with nothing anywhere saying so. `World.Stash` now records the
+		-- decision where it is made and the reach test reads the flag.
+		do
+			local SIZE = { slots = 4, maxWeight = 1000 }
+			-- Registered first, so `Containers.Load` inside `World.Stash` finds
+			-- them in the identity cache and the real function runs with no
+			-- database -- the same trick the bags at the top of this section use.
+			Containers.Transient(KIND.STASH, 'stash-no-anchor', SIZE.slots, SIZE.maxWeight)
+			Containers.Transient(KIND.STASH, 'stash-anchored', SIZE.slots, SIZE.maxWeight)
+			local roaming = World.Stash('stash-no-anchor', SIZE, nil, 'Nowhere')
+			check('a stash opened with no position is marked as such',
+				roaming ~= nil and roaming.anywhere == true)
+			check('and is therefore in reach', World.WithinReach(ALICE, roaming) == true)
+
+			local placed = World.Stash('stash-anchored', SIZE,
+				{ x = 500.0, y = 500.0, z = 0.0, bucket = 0 }, 'Somewhere')
+			check('a stash with a position is not marked as roaming',
+				placed ~= nil and placed.anywhere ~= true)
+			check('and is out of reach from the other side of the map',
+				World.WithinReach(ALICE, placed) == false)
+
+			-- The case the flag exists for: a stash-shaped container nobody made
+			-- through `World.Stash`. Before the flag this was in reach of
+			-- everybody, everywhere, for the life of the server.
+			local stray = Containers.Transient(KIND.STASH, 'stash-stray',
+				SIZE.slots, SIZE.maxWeight)
+			check('a stash-shaped container nobody declared roaming is not in reach',
+				World.WithinReach(ALICE, stray) == false)
+		end
 	end
 end
 
@@ -13885,6 +13920,32 @@ do
 		check('a carrier who disconnects leaves the crate standing on its point',
 			#props.transforms == placedBefore + 1, #props.transforms)
 		check('and it is still in the world', #props.removes == removedNow, #props.removes)
+
+		-- ── the host's own refusal does not cross the wire ───────────────────
+		-- `Open77.props.attach` answers eleven codes and grows with the platform,
+		-- and every one of them names a platform concept -- a bone, an attachment
+		-- parent, a bucket. They used to be handed straight to the client as the
+		-- refusal reason, which made the answer to "why could I not pick that up"
+		-- a description of our own internals. The client's own guard caught them
+		-- and showed the catch-all, so nothing gibberish reached a screen; what
+		-- reached the wire, and the public decision bus with it, was still the
+		-- inside of the host.
+		at = at + 10000
+		positions[9] = { x = home.x, y = home.y, z = home.z, bucket = 0 }
+		fire(9, M.Event.HELLO)
+		props.refuseAttach = 'invalid_attachment_bone'
+		fire(9, M.Event.BEGIN, Step.PICKUP, CRATE)
+		at = at + Access.PICKUP_MS + 1
+		fire(9, M.Event.FINISH)
+		check('an attach the host refuses is a refused pickup',
+			lastAnswer()[1] == false, tostring(lastAnswer()[2]))
+		check('and the client is told a code this module owns, not the platform\'s',
+			lastAnswer()[2] == 'attach_refused', tostring(lastAnswer()[2]))
+		check('which has a sentence of its own, so it is not the catch-all',
+			OPX.Locale.Exists('hauling.refused.attach_refused'))
+		props.refuseAttach = nil
+		check('and the crate is back on the ground for whoever is next',
+			OPX.Api.Get('hauling').State().value.sites.docks.carried == 0)
 
 		-- ── getting into a car is not a way to load a crate ──────────────────
 		-- The platform's automatic detach list is death, disconnect, parent removal

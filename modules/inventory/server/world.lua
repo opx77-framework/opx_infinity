@@ -147,8 +147,14 @@ function World.WithinReach(source, container)
 			distance(position, centre) <= Options.REACH_VEHICLE
 	end
 
+	-- `anywhere` and NOT "a stash with no anchor". The two say the same thing
+	-- today and stop saying it the moment somebody builds a stash container by
+	-- another route or clears an anchor: the first is a decision `World.Stash`
+	-- recorded, the second is a conclusion drawn from a field that is missing,
+	-- and the conclusion drawn wrongly is a shared container in reach of the
+	-- whole server.
 	local anchor = container.anchor
-	if not anchor then return container.kind == KIND.STASH end
+	if not anchor then return container.kind == KIND.STASH and container.anywhere == true end
 	return World.InReach(position, anchor)
 end
 
@@ -162,6 +168,10 @@ local dropSequence = 0
 
 -- Pile prop models whose creation has already failed once, so it is said once.
 local propWarned = {}
+
+-- Stashes already reported as anchorless. One line per stash and not per open:
+-- a stash is reopened every time somebody walks up to it.
+local warnedAnywhere = {}
 
 --- Shapes a pile as a client is sent it.
 local function wireOf(drop)
@@ -377,6 +387,22 @@ function World.Stash(name, size, anchor, title)
 	if not container then return nil, reason end
 	if anchor then container.anchor = anchor end
 	if title then container.title = title end
+
+	-- SAID HERE RATHER THAN INFERRED IN `WithinReach`. A stash with no anchor is
+	-- in reach from anywhere, for as long as the server runs, for anybody who is
+	-- handed its id -- which is the right answer for a caller that has already
+	-- decided who may open it, and a shared portable container for a caller that
+	-- simply forgot the position. Recording the decision where it is MADE means
+	-- the reach test reads a flag somebody set instead of drawing a conclusion
+	-- from a missing field, and a container that later loses its anchor does not
+	-- silently become global.
+	container.anywhere = container.anchor == nil
+	if container.anywhere and not warnedAnywhere[name] then
+		warnedAnywhere[name] = true
+		Open77.log.warn(('[inventory] stash %s was opened with no position: it is in reach ' ..
+			'from anywhere for the rest of the session, for anybody its id reaches')
+			:format(tostring(name)))
+	end
 	return container, nil
 end
 

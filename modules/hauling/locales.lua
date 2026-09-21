@@ -40,6 +40,12 @@ local EN = {
 	['hauling.refused.not_loaded'] = 'That crate is not in a vehicle.',
 	['hauling.refused.no_such_vehicle'] = 'That vehicle is not there.',
 	['hauling.refused.no_bed_slot'] = 'There is nowhere in that vehicle to put it.',
+	-- ONE SENTENCE FOR THE WHOLE HOST SET. `Open77.props.attach` answers eleven
+	-- codes and grows with the platform, and each of them names a platform
+	-- concept -- a bone, an attachment parent, a bucket -- that means nothing to
+	-- a player. The server journals its own reason and sends this instead, so
+	-- there is no longer a code here that only `generic` can catch.
+	['hauling.refused.attach_refused'] = 'The crate would not go there.',
 	['hauling.refused.not_at_dropoff'] = 'The vehicle is not at a drop-off.',
 	['hauling.refused.not_paid'] = 'The delivery could not be paid. Nothing was taken.',
 	['hauling.refused.nothing_running'] = 'You were not doing anything.',
@@ -78,6 +84,7 @@ local FR = {
 	['hauling.refused.not_loaded'] = "Cette caisse n'est pas dans un véhicule.",
 	['hauling.refused.no_such_vehicle'] = "Ce véhicule n'existe pas.",
 	['hauling.refused.no_bed_slot'] = 'Il n’y a pas de place pour elle dans ce véhicule.',
+	['hauling.refused.attach_refused'] = "La caisse n'a pas pu être posée là.",
 	['hauling.refused.not_at_dropoff'] = "Le véhicule n'est pas à un point de livraison.",
 	['hauling.refused.not_paid'] = "La livraison n'a pas pu être payée. Rien n'a été pris.",
 	['hauling.refused.nothing_running'] = 'Vous ne faisiez rien.',

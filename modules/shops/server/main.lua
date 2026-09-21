@@ -267,7 +267,17 @@ local function onOpen(source, key)
 	TriggerClientEvent(M.Event.LOOKS, source, { shop = shop.key, looks = looksFor(source, shop) })
 
 	local ok, reason = appearance.OpenWardrobe(source)
-	if not ok then refuse(source, 'shops.unavailable', { reason = tostring(reason) }) end
+	if not ok then
+		-- THE REASON GOES TO THE JOURNAL AND NOT ACROSS THE WIRE. `invalid_player`
+		-- and whatever the `appearance` contract answers next are that module's
+		-- internal vocabulary: they mean nothing to a player, they are not
+		-- catalogue keys, and shipping them is this module handing a client the
+		-- inside of another one. The operator is the one who can act on it, so
+		-- the operator is who gets it.
+		Open77.log.warn(('[shops] the fitting room at %s was refused for player %d: %s')
+			:format(shop.key, source, tostring(reason)))
+		refuse(source, 'shops.unavailable')
+	end
 end
 
 --- "I closed the room having changed these slots."
