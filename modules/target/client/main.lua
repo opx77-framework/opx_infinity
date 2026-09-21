@@ -1042,6 +1042,120 @@ function M.Api()
 	})
 end
 
+-- ── the eye's own row: who is this ───────────────────────────────────────────
+--
+-- THE OWNER: "en gors avec alt sur un joeuru tu peux recup c'est identifiant
+-- donc id serveur est id perso c'est tous". See the IDENTIFY block in
+-- `config/target.lua` for why this row lives in the eye and not in `character`:
+-- the short version is that `character` cannot depend on `target` without
+-- closing a cycle through `downed`, and the graph refuses a cycle by name.
+--
+-- BOTH VALUES ARE ALREADY ON THIS CLIENT. The character id is replicated on the
+-- player's own state bag -- it is what draws their nameplate -- so this row reads
+-- what is here rather than asking the server for something about somebody else.
+local IDENTIFY_OWNER = 'target'
+
+-- The player id the eye's context names, as a number.
+local function identifyTarget(context)
+	local subject = type(context) == 'table' and context.target or nil
+	if type(subject) ~= 'table' then return nil end
+	local id = tonumber(subject.playerId)
+	if id == nil or id <= 0 or id % 1 ~= 0 then return nil end
+	return id
+end
+
+-- The character id replicated for one player, or nil when the bag has not
+-- arrived. A player whose bag is silent is a player this row cannot answer
+-- about, which is the honest answer rather than a blank line.
+local function citizenOf(playerId)
+	local character = OPX.Api.Get('character')
+	if type(character) ~= 'table' or type(character.GetPlayerIdentity) ~= 'function' then
+		return nil
+	end
+	local read, identity = pcall(character.GetPlayerIdentity, playerId)
+	if not read or type(identity) ~= 'table' then return nil end
+	return identity.citizenId
+end
+
+-- Puts one line on the clipboard, and answers whether it went. A host with no
+-- clipboard costs the copy and not the row: the identifiers are still on screen.
+local function copy(line)
+	local clipboard = Open77.clipboard
+	if type(clipboard) ~= 'table' or type(clipboard.setText) ~= 'function' then
+		return false
+	end
+	local wrote, ok = pcall(clipboard.setText, line)
+	return wrote and ok == true
+end
+
+-- Registers the row, if the config asks for it. On a thread with a `Wait(0)`,
+-- because `RegisterMany` is all-or-nothing and its refusal is written to a log
+-- on the player's own machine.
+local function registerIdentify()
+	local block = type(M.Settings.IDENTIFY) == 'table' and M.Settings.IDENTIFY or {}
+	if block.ENABLED == false then return end
+
+	local reach = OPX.Math.Finite(block.DISTANCE) or 12.0
+	reach = math.min(50.0, math.max(1.0, reach))
+
+	CreateThread(function()
+		Wait(0)
+		local answer = registerPlayers(IDENTIFY_OWNER, { M.IdentifyRow(reach) })
+		if answer == nil or answer.ok ~= true then
+			OPX.Note('target', ('the identify row was refused: %s')
+				:format(tostring(answer and answer.error)))
+		end
+	end)
+end
+
+--- The row itself, built rather than inlined so a test can ask it questions.
+--- `Registry.List` answers a projection with no predicates in it, so a row that
+--- is only ever a table literal inside a registration is a row whose
+--- `canInteract` and `onSelect` nothing can reach.
+-- @author dop42
+-- @param reach number metres
+-- @return table
+function M.IdentifyRow(reach)
+	return {
+			id = 'whoIsThis',
+			label = OPX.Locale.Text('target.identify.row'),
+			icon = 'tag',
+			order = 5,
+			distance = reach,
+			-- Offered only when there is something to answer with. A row that
+			-- appears and then says "unknown" teaches a player the feature is
+			-- broken; one that is simply absent teaches them the bag has not
+			-- arrived yet, which is what is true.
+			canInteract = function(context)
+				local who = identifyTarget(context)
+				return who ~= nil and citizenOf(who) ~= nil
+			end,
+			onSelect = function(context)
+				local who = identifyTarget(context)
+				if who == nil then return false end
+				local citizen = citizenOf(who)
+				if citizen == nil then return false end
+
+				local line = ('%d / %s'):format(who, citizen)
+				local copied = copy(line)
+				OPX.Toast.Show({
+					id = 'opx.target.identify',
+					kind = 'info',
+					title = OPX.Locale.Text('target.identify.title'),
+					-- BOTH NUMBERS, NAMED. "id serveur est id perso": they are
+					-- different things with different lifetimes, and a toast that
+					-- printed two bare values would leave the reader guessing
+					-- which was which.
+					message = OPX.Locale.Text(
+						copied and 'target.identify.copied' or 'target.identify.shown',
+						{ server = tostring(who), citizen = citizen }),
+					durationMs = 8000,
+				})
+				return true
+			end,
+	}
+end
+
 --- Wires the page, claims the key and starts the two jobs.
 -- @author dop42
 function M.Start()
@@ -1049,6 +1163,8 @@ function M.Start()
 	-- the half of this module that still works without a screen ray, and a stopped
 	-- owner's rows must not outlive it either way.
 	jobs[#jobs + 1] = OPX.Scheduler.Every('target:sweep', SWEEP_MS, sweep)
+
+	registerIdentify()
 
 	if not canPick() then
 		Open77.log.warn('this client has no screen picking: the target eye is off')

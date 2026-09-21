@@ -21810,6 +21810,106 @@ end
 -- mechanism -- a set of named screens holding the display -- and what was
 -- missing was the menu ever saying it was one. This is the other half of the
 -- check in the HUD section: that one proves the HUD listens, this one proves
+
+-- ── who is this ──────────────────────────────────────────────────────────────
+-- THE OWNER: "en gors avec alt sur un joeuru tu peux recup c'est identifiant
+-- donc id serveur est id perso c'est tous".
+--
+-- One row on another player, answering with both identifiers. They are different
+-- things with different lifetimes -- the server id is the number in the journal
+-- and is only that player's until they disconnect; the character id is durable
+-- -- so both are named rather than printed as two bare values.
+--
+-- THE ROW IS THE EYE'S OWN, and that is forced rather than chosen: `character`
+-- cannot depend on `target`, because `target` optionally depends on `downed` and
+-- `downed` REQUIRES `character`. The module graph refuses a cycle by name and
+-- would take the boot down, which is why this is checked here at all.
+section('the eye answers who somebody is')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the identify row', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local target = OPX.Api.Get('target')
+		check('the eye contract is up', target ~= nil and type(target.List) == 'function')
+
+		if target ~= nil then
+			settle(control, function()
+				local answer = target.List('target')
+				return answer.ok and #answer.value.options > 0
+			end, 40)
+			local held = target.List('target')
+			local rows = held.ok and held.value.options or {}
+			local row
+			for _, entry in ipairs(rows) do
+				if tostring(entry.id):find('whoIsThis', 1, true) then row = entry end
+			end
+			check('the eye carries a row of its own for it', row ~= nil,
+				('%d row(s)'):format(#rows))
+
+			-- ── OFFERED ONLY WHEN THERE IS SOMETHING TO ANSWER WITH ─────────
+			-- A row that appears and then says "unknown" teaches a player the
+			-- feature is broken. One that is simply absent teaches them the bag
+			-- has not arrived, which is what is true.
+			-- STUBBED ON THE CONTRACT AND NOT ON THE MODULE. The row reads
+			-- `Api.Get('character').GetPlayerIdentity`, and that reference was
+			-- taken when the contract was published -- replacing the function on
+			-- the module namespace afterwards changes nothing the row can see,
+			-- which is how the first version of this check failed while the
+			-- feature worked.
+			local characterApi = OPX.Api.Get('character')
+			check('the character contract is up to be stubbed',
+				type(characterApi) == 'table')
+			local realIdentity = characterApi ~= nil and characterApi.GetPlayerIdentity or nil
+			local identity = {}
+			if characterApi ~= nil then
+				characterApi.GetPlayerIdentity = function(playerId)
+					return identity[tonumber(playerId)] or {}
+				end
+			end
+
+			-- THE MODULE, not the contract: `Api.Get` answers the published
+			-- surface and the row builder is not on it -- nothing outside this
+			-- module calls it, so publishing it would widen the contract for a
+			-- test.
+			local eye = OPX.Modules.Get('target')
+			local built = type(eye.IdentifyRow) == 'function' and eye.IdentifyRow(12.0) or nil
+			check('and the row is reachable as a table a test can ask questions of',
+				type(built) == 'table' and type(built.onSelect) == 'function')
+			local context = { kind = 'player', target = { playerId = 42 } }
+			check('with no replicated identity the row is not offered',
+				built == nil or built.canInteract(context) ~= true)
+
+			identity[42] = { citizenId = 'CJX-DP9J', name = 'Somebody' }
+			check('and with one it is', built ~= nil and built.canInteract(context) == true)
+
+			-- ── AND IT ANSWERS WITH BOTH ────────────────────────────────────
+			local said
+			local realToast = OPX.Toast.Show
+            OPX.Toast.Show = function(payload)
+				said = payload
+				return realToast and realToast(payload)
+			end
+			local copied
+			env.Open77.clipboard = { setText = function(line) copied = line return true end }
+
+			local ran = built ~= nil and built.onSelect(context)
+			check('selecting it answers', ran == true)
+			check('and puts BOTH identifiers on the clipboard, not one',
+				type(copied) == 'string' and copied:find('42', 1, true) ~= nil
+					and copied:find('CJX-DP9J', 1, true) ~= nil,
+				tostring(copied))
+			check('and says so on screen, with each one named',
+				said ~= nil and tostring(said.message):find('42', 1, true) ~= nil
+					and tostring(said.message):find('CJX-DP9J', 1, true) ~= nil,
+				said and tostring(said.message))
+
+			OPX.Toast.Show = realToast
+			if characterApi ~= nil then characterApi.GetPlayerIdentity = realIdentity end
+		end
+	end
+end
 -- there is something to hear.
 section('a menu announces itself')
 do

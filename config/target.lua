@@ -71,4 +71,33 @@ OPX.Config.MODULES.target = {
 
 	-- Rows one slice resolves. See the header.
 	BATCH = 5,
+
+	-- ── WHO IS THIS ──────────────────────────────────────────────────────────
+	--
+	-- THE OWNER: "en gors avec alt sur un joeuru tu peux recup c'est identifiant
+	-- donc id serveur est id perso c'est tous".
+	--
+	-- One row on another player that answers with their two identifiers and puts
+	-- them on the clipboard. Two, because they are different things and both get
+	-- asked for: the SERVER id is the number in the journal and in every staff
+	-- command, and it is only that player's until they disconnect; the CHARACTER
+	-- id is durable and identifies a person for as long as the character exists.
+	--
+	-- IT IS THE EYE'S OWN ROW AND NOT THE CHARACTER MODULE'S, and that is forced
+	-- rather than chosen: `character` cannot depend on `target`, because `target`
+	-- optionally depends on `downed` and `downed` REQUIRES `character` -- a cycle,
+	-- which the module graph refuses by name and which would take the boot down.
+	-- The eye already starts after the character module for the same reason, so it
+	-- can read the contract with no ordering of its own.
+	--
+	-- NOTHING PRIVATE CROSSES ANYTHING. Both values are already on this client:
+	-- the character id is replicated on the player's own state bag, which is what
+	-- draws their nameplate. This row reads what is already here and copies it.
+	IDENTIFY = {
+		-- Whether the row is offered at all.
+		ENABLED = true,
+		-- Metres it reaches. The eye's own default is 3.0; this is a thing you do
+		-- to somebody you are looking at across a room.
+		DISTANCE = 12.0,
+	},
 }
