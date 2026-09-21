@@ -9,13 +9,20 @@
 -- theirs -- and only then asks the `vehicles` contract to create it, AT the
 -- spot and facing the spot's HEADING, never beside the player.
 --
--- THE ONE KEY DOES TWO THINGS, AND ONLY THE SERVER DECIDES WHICH. Standing on a
--- marker, the key brings one of the character's own vehicles out AT the spot.
--- Sitting in one of them, the same key puts it AWAY, filed under the spot the
--- player is standing on so that is where it comes out next time. The seated
--- question is answered by the host's own seat assignment and the plate the
--- `vehicles` contract holds, never by the client; the client only chooses which
--- of the two texts the row names.
+-- A GARAGE IS A KEY AND A GARAGE IS IN SEVERAL PLACES. Each of its locations has
+-- a MENU point that opens the list of everything filed under that key, ONE ENTRY
+-- point that takes a vehicle in, and an ordered list of EXITS a vehicle comes
+-- out at -- the first one with nothing parked on it. When every exit is taken
+-- the request is REFUSED and the player told so, rather than queued or dropped
+-- on top of the car already there.
+--
+-- THE ONE KEY DOES TWO THINGS, AND ONLY THE SERVER DECIDES WHICH. At a menu
+-- point the key opens the list. At an entry point, sitting in one of the
+-- character's own vehicles, it puts that vehicle AWAY under the garage's key --
+-- so it comes out at ANY location of that garage afterwards, which is the whole
+-- of the rework. The seated question is answered by the host's own seat
+-- assignment and the plate the `vehicles` contract holds, never by the client;
+-- the client only chooses which of the two texts the row names.
 --
 -- A VEHICLE OF THEIRS THAT IS ALREADY OUT IS MOVED, NOT IGNORED. It used to be
 -- answered with the id it already had -- `Ok`, "brought out", and an empty spot
@@ -49,7 +56,10 @@ local M = OPX.Modules.Declare{
 	side = 'both',
 	fatal = false,
 	requires = { 'character' },
-	optional = { 'vehicles', 'prompts', 'downed' },
+	-- `menu` is optional and not required: without it the list cannot be drawn
+	-- and `/opx.garages.bring` still brings a vehicle out, which is a garage
+	-- with one fewer door rather than a broken one.
+	optional = { 'vehicles', 'prompts', 'downed', 'menu' },
 }
 
 -- The three prefixes are disjoint by construction (core/shared/channels.lua):
@@ -63,13 +73,17 @@ M.Event = {
 	-- Client to server. `source` always comes from the authenticated connection.
 	ASK = OPX.Event(NET, 'garages', 'ask'),
 	REQUEST = OPX.Event(NET, 'garages', 'request'),
-	CAPTURED = OPX.Event(NET, 'garages', 'captured'),
+	-- The list behind a menu point: every vehicle filed under THAT garage's key,
+	-- wherever it was stored. Asked for when the list is opened and never kept on
+	-- the client between two opens -- a roster cached across a purchase, another
+	-- location's put-away or a sale is a roster that lies.
+	LIST = OPX.Event(NET, 'garages', 'list'),
 
-	-- Server to client: the spots this player may see, one verdict, and the ask
-	-- to capture where a player is standing (a command has no heading of its own).
+	-- Server to client: the points this player may see, the list behind one of
+	-- them, and one verdict.
 	SYNC = OPX.Event(NET, 'garages', 'sync'),
+	VEHICLES = OPX.Event(NET, 'garages', 'vehicles'),
 	ANSWER = OPX.Event(NET, 'garages', 'answer'),
-	CAPTURE = OPX.Event(NET, 'garages', 'capture'),
 
 	-- The client's own bus. `decision` carries every verdict, local refusals
 	-- included. Public: a bare AddEventHandler reaches it.
@@ -79,10 +93,28 @@ M.Event = {
 --- Which request a refusal answers.
 -- Passed to `OPX.Refuse`: without it a client waiting on one of several requests
 -- cannot tell which `error.tooFast` is its own.
-M.Operation = { BRING = 'garageBring', CAPTURE = 'garageCapture' }
+--
+-- `CAPTURE` is gone with the commands that opened it: nothing in this module
+-- writes a place any more, and an operation name nothing raises is a name the
+-- next reader wires a refusal up to.
+M.Operation = { BRING = 'garageBring', LIST = 'garageList' }
 
 --- The host raises this when a player rebinds or resets a mapping.
 M.KEYBINDS_CHANGED = 'onKeybindsChanged'
 
---- The two kinds a spot may declare. A garage is a ground vehicle, a pad is an AV.
+--- The two kinds a GARAGE may declare. A garage holds ground vehicles, a pad
+--- holds AV records. It is a fact about the GARAGE and never about one of its
+--- points: a garage that took cars in at one location and AVs at another would
+--- be a garage whose own list means two things.
 M.KIND = { GARAGE = 'garage', AVPAD = 'avpad' }
+
+--- What a drawn point of a garage IS, which is not what the garage holds.
+--
+--   MENU   opens the list of everything filed under this garage's key, whichever
+--          of its locations it was stored at.
+--   ENTRY  takes in the vehicle the player is sitting in. One per location.
+--
+-- An EXIT is deliberately NOT in this set: nothing is drawn at one and no key is
+-- pressed on one. It is a place the server creates a vehicle at, and it belongs
+-- to the location rather than to the set of things a player walks up to.
+M.ROLE = { MENU = 'menu', ENTRY = 'entry' }

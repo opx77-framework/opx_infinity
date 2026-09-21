@@ -517,6 +517,10 @@ SCREENS.root = function()
 		go('vehicles', 'admin.menu.vehicles', 'vehicles', nil, { icon = 'vehicle' }),
 		go('world', 'admin.menu.world', 'world', nil, { icon = 'world' }),
 		go('server', 'admin.menu.server', 'server', nil, { icon = 'server' }),
+		-- The screen the DEV key lands on, and reachable from the root as well:
+		-- a second key is a shortcut, never the only door. Whoever rebinds the
+		-- menu key away must still be able to get here.
+		go('dev', 'admin.menu.dev', 'dev', nil, { icon = 'tool' }),
 	}
 end
 
@@ -1272,6 +1276,46 @@ SCREENS.world = function()
 		Command.WORLD_LOC_ADD), 'plus')
 	items[#items + 1] = go('saved', 'admin.menu.saved', 'saved', nil, { icon = 'list' })
 	return locale('admin.menu.world'), items
+end
+
+-- ── the Dev screen ──────────────────────────────────────────────────────────
+--
+-- THE PLACEMENT MENU, and the reason the DEV key exists: this is the screen a
+-- server is set up from, one press away from wherever the operator is standing.
+--
+-- WHAT IS NOT ON IT ANY MORE, and why. `garages add`, `garages remove`,
+-- `dealership add` and `dealership remove` were four of its rows, and all four
+-- wrote a PLACE into a database from a chat line -- so the shape of the world
+-- lived in a table nobody had a copy of. A garage and a dealer are written in
+-- `config/garages.lua` and `config/dealership.lua` now; what is left here is
+-- what still genuinely happens at runtime.
+--
+-- THE SHOWROOM ROWS END IN A CONTRACT CALL AND NOT IN A COMMAND, which is the
+-- one place this screen breaks its own rule, and `client/forms.lua` says at
+-- length why: the commands they would have used are gone, the dealership's
+-- server half gates them on its own ACL right, and a row whose right gates no
+-- command cannot be greyed from an access map built out of command names.
+SCREENS.dev = function()
+	local items = {
+		section('admin.menu.section.garages'),
+		icon(command('garageList', 'admin.menu.garageList', { Command.GARAGES_LIST }), 'list'),
+		icon(form('garageBring', 'admin.menu.garageBring', 'garageBring', nil,
+			Command.GARAGES_BRING), 'vehicle'),
+
+		section('admin.menu.section.dealership'),
+		icon(command('dealerList', 'admin.menu.dealerList', { Command.DEALERSHIP_LIST }), 'list'),
+		icon(command('dealerStock', 'admin.menu.dealerStock', { Command.DEALERSHIP_STOCK }),
+			'info'),
+		icon(form('dealerBuy', 'admin.menu.dealerBuy', 'dealerBuy', nil, Command.DEALERSHIP_BUY),
+			'vehicle'),
+
+		section('admin.menu.section.showroom'),
+		icon(row('previewPlace', locale('admin.menu.previewPlace'),
+			{ form = 'previewPlace' }), 'plus'),
+		icon(row('previewRemove', locale('admin.menu.previewRemove'),
+			{ form = 'previewRemove' }), 'trash'),
+	}
+	return locale('admin.menu.dev'), items
 end
 
 SCREENS.weather = function()
@@ -2131,6 +2175,21 @@ function Menu.Start()
 	local configured = M.Section('KEYS')
 	Keys.Register(Keys.MENU, 'admin.key.menu', Keys.Setting('KEYS.MENU', configured.MENU, 'F9'),
 		pressed, nil, function() return playerDown end)
+
+	-- THE DEV KEY, which was declared in `client/keys.lua` and registered by
+	-- nobody: `Keys.DEV` existed, `config/admin.lua` shipped `KEYS.DEV = 'F10'`
+	-- and said in as many words that it "opens the staff menu on the Dev screen",
+	-- and no line anywhere handed either of them to `RegisterKeyMapping`. So the
+	-- key did nothing, the pause menu listed no shortcut for it, and the config
+	-- documented a feature the build did not have.
+	--
+	-- It is NOT a `whileCaptured` key, unlike the menu key: the menu key has to
+	-- survive the down screen holding the keyboard, because a staff member has to
+	-- be able to get a downed player up. Nothing on the Dev screen is an
+	-- emergency.
+	Keys.Register(Keys.DEV, 'admin.key.dev', Keys.Setting('KEYS.DEV', configured.DEV, 'F10'),
+		function() Menu.OpenAt('dev') end)
+
 	Keys.OnChanged(Menu.Refresh)
 
 	RegisterNetEvent(M.Event.OPEN, function(payload)

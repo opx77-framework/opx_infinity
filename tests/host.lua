@@ -636,7 +636,43 @@ function Host.Environment(side, database)
 				-- to anything matching by id -- the seat oracle among them -- so a
 				-- player sitting in one car could be read as sitting in another.
 				vehicles.next = (vehicles.next or 0) + 1
-				return ('0x%016x'):format(vehicles.next)
+				local id = ('0x%016x'):format(vehicles.next)
+				-- WHAT EXISTS, not only what was asked for. `vehicleCreates` is
+				-- the request log and it never shrinks; `world` is the set of
+				-- vehicles that are in the world NOW, which is the only thing
+				-- `all` can honestly answer. A garage exit is blocked by a car
+				-- that exists, not by a car that was once created.
+				vehicles.world[#vehicles.world + 1] = {
+					id = id,
+					record = options.record,
+					position = type(options.position) == 'table'
+						and { x = options.position.x, y = options.position.y,
+							z = options.position.z } or nil,
+					bucket = options.bucket or 0,
+					-- The flags a creation asked for, as the engine's own
+					-- bitfield: `create` takes the nine flag names as booleans
+					-- in its definition and a snapshot reports them in `flags`.
+					-- A showroom car that asked to be locked and is not is the
+					-- failure the dealership warns about, and it is only
+					-- visible if the two are connected here.
+					flags = (options.locked and 2 or 0)
+						+ (options.engineOn and 1 or 0)
+						+ (options.lightsOn and 64 or 0),
+					persistent = options.persistent == true,
+				}
+				return id
+			end,
+
+			-- Every vehicle that exists, oldest first, optionally of one routing
+			-- bucket. The real call filters by bucket when it is given one and
+			-- answers everything when it is not.
+			all = function(bucket)
+				local listed = {}
+				for index = 1, #vehicles.world do
+					local car = vehicles.world[index]
+					if bucket == nil or car.bucket == bucket then listed[#listed + 1] = car end
+				end
+				return listed
 			end,
 			-- What a live vehicle projects, FOR THE ID THAT WAS ASKED ABOUT. This
 			-- ignored its argument entirely and answered one shared snapshot, so
@@ -649,16 +685,33 @@ function Host.Environment(side, database)
 			-- tests that predate the store -- an unknown id still answers nil
 			-- when neither is set, which is the other answer a caller must
 			-- survive.
+			-- `world` is read LAST, after `snapshot`, and the order is load-bearing:
+			-- a test that sets `snapshot` is saying "every live vehicle projects
+			-- this", which is how the occupied-recall case is written, and a
+			-- world entry taking precedence would silently answer the created
+			-- car instead. With no snapshot set, a vehicle answers what it was
+			-- created as -- which is what lets a caller read back a flag it
+			-- asked for.
 			get = function(id)
 				local known = id ~= nil and vehicles.byId[id]
 				if known ~= nil then return known end
-				return vehicles.snapshot
+				if vehicles.snapshot ~= nil then return vehicles.snapshot end
+				for index = 1, #vehicles.world do
+					if vehicles.world[index].id == id then return vehicles.world[index] end
+				end
+				return nil
 			end,
 			-- Recorded, because "the vehicle was put away" and "it is still in the
 			-- world with a row that says stored" read identically from a return
 			-- value. The comment above has always promised this list.
 			remove = function(id)
 				vehicleRemoves[#vehicleRemoves + 1] = id
+				-- And it stops existing, which is the half a removal log cannot
+				-- say: a garage exit a car was just recalled off has to read as
+				-- free again on the very next pass.
+				for index = #vehicles.world, 1, -1 do
+					if vehicles.world[index].id == id then table.remove(vehicles.world, index) end
+				end
 				return true
 			end,
 			-- RECORDED, for the same reason `remove` is: "the flags were written"
@@ -1433,8 +1486,14 @@ function Host.Environment(side, database)
 	-- refuse.
 	-- `byId` is the per-vehicle store `get` reads first: put a projection in it
 	-- under the id `create` handed back and two live vehicles stop being one.
+	-- `world` is every vehicle that EXISTS right now, in creation order, which is
+	-- what `Open77.vehicles.all` answers. It is kept by `create` and `remove`
+	-- rather than set by a test, because the one question it is there to answer
+	-- -- is anything parked on this garage exit -- is a question about what those
+	-- two calls did, and a hand-written list would let a test assert an exit is
+	-- blocked by a car the runtime never created.
 	vehicles = { refuse = nil, snapshot = nil, byId = {}, updates = {},
-		refuseUpdate = nil }
+		refuseUpdate = nil, world = {} }
 	vehicleCreates = {}
 	vehicleRemoves = {}
 

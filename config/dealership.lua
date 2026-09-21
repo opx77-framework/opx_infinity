@@ -1,11 +1,21 @@
 --- Where vehicles and AVs are sold, what they cost, and where the bought one goes.
 -- @author XEROX710
 --
--- A dealer is a PLACE, exactly like a garage spot: a marker is drawn where the
--- operator put it, and the server re-derives the player's distance to the
--- DECLARED position before money moves. A dealer captured in game lives in the
--- database and is merged over this table key by key -- `/opx.dealership.add` is
--- what writes it.
+-- A dealer is a PLACE: a marker is drawn where the operator put it, and the
+-- server re-derives the player's distance to the DECLARED position before money
+-- moves. A dealer is written in SPOTS at the bottom of this file and nowhere
+-- else -- `/opx.dealership.add` and `.remove` are gone, for the reason
+-- `config/garages.lua` gives at the same place. Any dealer still living only in
+-- `opx77_dealerships` is adopted at boot and printed as the line that checks it
+-- in, so nothing an operator placed is lost by the commands going away.
+--
+-- THREE THINGS HAPPEN AT A DEALER NOW. A player stands on the marker and buys
+-- from the list, as before. An operator dresses the floor with PREVIEW POINTS --
+-- locked showroom cars, placed from the staff menu's Dev screen. And anyone
+-- inside the dealership ZONE grows a "sell a vehicle" row on every other player,
+-- so a salesperson sells to a customer face to face: the customer's own client
+-- confirms, the price is paid into the company bank of the seller's job or gang,
+-- and a configured percentage of it is paid to the seller.
 --
 -- KIND is carried over from the garages vocabulary and means the same two
 -- things, because a dealership and a garage are the same two categories of
@@ -72,9 +82,6 @@ OPX.Config.MODULES.dealership = {
 
 	REQUEST_WINDOW_MS = 10000,
 	REQUESTS_PER_WINDOW = 6,
-	-- How long `add` waits for the client's answer before it says the capture
-	-- did not happen.
-	CAPTURE_TIMEOUT_MS = 5000,
 	-- Floor between two purchases from one connection. Long enough that a
 	-- double-tap on a menu row is one purchase and not two.
 	COOLDOWN_MS = 3000,
@@ -115,16 +122,104 @@ OPX.Config.MODULES.dealership = {
 		VISIBLE_ROWS = 15,
 	},
 
-	-- The three placement commands are ACL-gated, exactly as the garages ones
-	-- are: they write a place every player uses. `stock` is a reading of the
-	-- catalogue and `buy` acts on the caller alone, so both are open -- a player
-	-- who has been granted nothing still has to be able to spend their money.
+	-- `list` is a reading of what is placed and stays ACL-gated; `stock` is a
+	-- reading of the catalogue and `buy` acts on the caller alone, so both are
+	-- open -- a player who has been granted nothing still has to be able to spend
+	-- their money.
+	--
+	-- `add` and `remove` ARE GONE. They placed a dealer from a chat line into a
+	-- table only one host had. A dealer is written in SPOTS below, and the thing
+	-- an operator still places at runtime -- a preview point -- is placed from
+	-- the staff menu's Dev screen, which is a menu rather than four positional
+	-- arguments nobody can remember the order of.
 	COMMANDS = {
-		add = 'opx.dealership.add',
-		remove = 'opx.dealership.remove',
 		list = 'opx.dealership.list',
 		stock = 'opx.dealership.stock',
 		buy = 'opx.dealership.buy',
+	},
+
+	-- ── the showroom floor ──────────────────────────────────────────────────
+
+	-- WHAT A PREVIEW POINT IS. A place on the showroom floor with one model of
+	-- the stock list standing on it, so a player walks around what they are about
+	-- to buy instead of reading its name off a row. A dealer has as many as the
+	-- operator places.
+	--
+	-- THE PREVIEW IS LOCKED, and that is not decoration: an unlocked showroom car
+	-- is a free car with an audience. The lock is the engine's own `locked` flag,
+	-- set at creation and read back -- a flag that was asked for and refused is a
+	-- line in the journal rather than a car driving out of the window.
+	--
+	-- LIMIT is per dealer and exists because every preview is a network vehicle
+	-- that never despawns: a showroom of two hundred is a showroom that costs
+	-- every client in the district its frame budget.
+	PREVIEW = {
+		ENABLED = true,
+		LIMIT = 12,
+		LOCKED = true,
+		-- Metres a preview is lifted off the declared Z. Smaller than AV_LIFT,
+		-- because this is the gap that stops a chassis resting in the floor
+		-- rather than the clearance an AV needs to materialise.
+		LIFT = 0.1,
+	},
+
+	-- THE RIGHT THAT PLACES ONE, and it is its OWN right rather than the `add`
+	-- command's. Two reasons, and neither is tidiness: the command it would have
+	-- borrowed no longer exists, so the grant would name nothing; and placing a
+	-- showroom car is a different job from placing a dealer, so an operator who
+	-- may dress a floor need not also be able to move the building.
+	--
+	-- It is resolved with `Open77.acl.isAllowed`, which takes any right name --
+	-- this one is NOT prefixed `command.`, because it gates no command.
+	PLACEMENT_RIGHT = 'opx.dealership.place',
+
+	-- THERE IS NO PLACEMENT TIMEOUT, and there used to be. `/opx.dealership.add`
+	-- was a chat command with no facing of its own, so the server asked the
+	-- operator's client for one and then had to survive an answer that never
+	-- came. The placement menu runs ON the client, which reads its own facing
+	-- before it sends anything: one message, nothing to wait for.
+
+	-- ── selling to somebody standing in front of you ────────────────────────
+
+	-- Flat metres from a dealer within which the eye grows a "sell a vehicle"
+	-- row on every other player. Wider than USE_RADIUS on purpose: USE_RADIUS is
+	-- standing ON the marker, and a showroom is a room -- a salesperson walks a
+	-- customer around it and must not lose the row for doing so.
+	ZONE_RADIUS = 30.0,
+
+	-- THE BUYER'S OWN CLIENT CONFIRMS, and there is no setting to turn that off.
+	-- The owner chose it over debiting the buyer the moment a salesperson presses
+	-- a row: money that leaves an account because somebody else clicked something
+	-- is a support ticket whatever the salesperson meant by it.
+	--
+	-- This is how long they have to answer. An offer that expires is refused and
+	-- both sides are told, rather than sitting in a table until one of them
+	-- disconnects.
+	OFFER_TIMEOUT_MS = 30000,
+
+	-- WHERE THE MONEY GOES. The price is paid into the COMPANY BANK of the
+	-- seller's own group, and this percentage of it is paid to the seller
+	-- instead. 0 is a company that pays commission to nobody, 100 is one that
+	-- keeps nothing; both are legal and neither is the default.
+	--
+	-- Rounded DOWN to a whole unit, and the company gets the remainder: a
+	-- rounding that favoured the seller would mint money on every odd price.
+	SELLER_CUT_PERCENT = 10,
+
+	-- WHICH GROUPS HAVE A COMPANY BANK. The owner chose both: "jobs AND gangs".
+	-- A seller's company is their JOB when jobs are banked and the job is not in
+	-- EXCLUDED below, and their GANG otherwise -- a gang member with a day job
+	-- sells for the day job, which is the one a customer is buying from.
+	--
+	-- EXCLUDED names the jobs that are the absence of a job. `unemployed` is an
+	-- entry in `config/character.lua` rather than a nil, precisely so nothing has
+	-- to handle nil, and a bank account for it would be one account every player
+	-- on the server can pay into and its bosses -- there are none -- withdraw
+	-- from.
+	COMPANY = {
+		JOBS = true,
+		GANGS = true,
+		EXCLUDED = { unemployed = true, none = true },
 	},
 
 	-- WHAT IS FOR SALE, AND FOR HOW MUCH.
@@ -221,8 +316,7 @@ OPX.Config.MODULES.dealership = {
 	-- LABEL is the operator's own words and is never translated. Key is the
 	-- durable name a purchase and every command names.
 	--
-	-- `/opx.dealership.add` prints the line to check in here, which is how a
-	-- dealer survives a database reset:
+	-- A dealer reads:
 	--   dealer_example = { LABEL = "WATSON AUTOS", KIND = 'garage',
 	--     X = -1771.79, Y = -77.30, Z = 7.53, HEADING = 90.0, BUCKET = 0 },
 	--
@@ -230,8 +324,9 @@ OPX.Config.MODULES.dealership = {
 	-- Checked in on 2026-09-21 off the boot log, for the reason written at the
 	-- same place in `config/garages.lua`: the rework removes the command that
 	-- made it, and a dealer that exists only in a table nobody has a copy of is
-	-- one dropped database away from gone. A captured row of the same key still
-	-- wins, so nothing about today's server changes.
+	-- one dropped database away from gone. A row of the same key is now SHADOWED
+	-- by this file rather than overlaying it -- there is no command to move a
+	-- dealer with any more, so the file has to be the one thing that decides.
 	--
 	-- The key really is `garage1` -- the capture generates a key per KIND, and a
 	-- dealer selling garage-class cars gets that one. It is unrelated to the

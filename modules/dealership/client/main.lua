@@ -62,6 +62,24 @@ local keyRegistered = false
 -- The open menu's handle, and the screen stack this file owns, or nil/empty.
 local handle, stack = nil, {}
 
+-- THE OFFER THIS PLAYER HAS BEEN MADE, or nil. It is the only screen in this
+-- module somebody else opens, so it is held outside the stack: the stack is what
+-- the player navigated to and this is what arrived.
+local offer = nil
+
+-- Whether this player is standing inside a dealer's ZONE, and the dealer it is.
+-- Being in one is what grows the "sell a vehicle" row on every other player.
+local zone = nil
+
+-- Whether the eye's rows are registered now, so the registration runs on a
+-- CHANGE and not once a scan: `target.RegisterPlayers` is a whole-registry
+-- write, and doing it twice a second would be a write per scan for ever.
+local zoneRows = false
+
+-- Said once when the eye refuses the row, for the same reason the marker and the
+-- strip each have their own flag.
+local reportedTarget = false
+
 -- Whether each failure was already logged. A marker that cannot be drawn and a
 -- row that cannot be posted are different problems and a player reading the log
 -- wants to know which one they have.
@@ -340,6 +358,54 @@ local function screenFor(current)
 		return locale('dealership.menu.title', { dealer = tostring(dealer.label) }), items
 	end
 
+	-- THE SALESPERSON'S OWN LIST. The same catalogue as the root, and
+	-- deliberately not a second one: what a dealer sells does not change because
+	-- somebody else is paying. What changes is what a row DOES -- it offers,
+	-- rather than buying -- and there is no delivery screen under it, because the
+	-- buyer is standing in the showroom and drives it out of here.
+	if current.screen == 'sell' then
+		local arg = type(current.arg) == 'table' and current.arg or {}
+		local dealer = zone
+		local rows = type(dealer) == 'table' and stock[dealer.kind] or nil
+		if type(rows) ~= 'table' or #rows == 0 or arg.buyer == nil then return nil end
+
+		local items = {}
+		local lastClass = nil
+		for index = 1, #rows do
+			local row = rows[index]
+			if row.class ~= lastClass and row.class ~= '' then
+				lastClass = row.class
+				items[#items + 1] = { separator = true, label = row.class }
+			end
+			items[#items + 1] = {
+				id = row.key,
+				label = row.label,
+				value = row.text,
+				data = { offer = row.key, buyer = arg.buyer },
+			}
+		end
+		items[#items + 1] = { separator = true, label = '' }
+		items[#items + 1] = { id = 'close', label = locale('dealership.close'), close = true }
+		return locale('dealership.menu.sell', { player = tostring(arg.name or arg.buyer) }), items,
+			{ status = locale('dealership.menu.sellHint') }
+	end
+
+	-- THE BUYER'S OWN CONFIRMATION, and the whole reason a sale is two round
+	-- trips instead of one. Two rows and no default: neither of them is one the
+	-- cursor lands on by accident, and closing the screen answers nothing at all
+	-- -- the offer then expires on the server's own clock and the seller is told
+	-- so, which is a better outcome than a buyer who bought a car by pressing
+	-- escape.
+	if current.screen == 'offer' then
+		if type(offer) ~= 'table' then return nil end
+		return locale('dealership.menu.offer', { model = tostring(offer.model) }), {
+			{ id = 'yes', label = locale('dealership.offerAccept'), value = tostring(offer.text),
+				data = { decide = true } },
+			{ id = 'no', label = locale('dealership.offerDecline'), data = { decide = false } },
+		}, { status = locale('dealership.menu.offerHint', {
+			seller = tostring(offer.seller), price = tostring(offer.text) }) }
+	end
+
 	if current.screen == 'deliver' then
 		local arg = type(current.arg) == 'table' and current.arg or {}
 		local row = nil
@@ -476,18 +542,23 @@ end
 -- The garages a bought vehicle of this kind may be filed under, by key.
 -- Read from the garages contract every time a destination screen is opened: it
 -- is that module's answer, and a copy would be a copy to keep in step.
+--
+-- `Garages` AND NOT `Spots`. A garage is a key with several locations now, and
+-- `Spots` answers the drawn MARKERS -- so asking it here listed the same garage
+-- once per door and filed the bought car under a door, which is a car that comes
+-- out of exactly one location and nowhere else.
 local function placesFor(kind)
 	local api = OPX.Api.Get('garages')
-	if api == nil or type(api.Spots) ~= 'function' then return {} end
-	local read, answer = pcall(api.Spots)
+	if api == nil or type(api.Garages) ~= 'function' then return {} end
+	local read, answer = pcall(api.Garages)
 	if not read or type(answer) ~= 'table' or answer.ok ~= true then return {} end
-	local listed = type(answer.value) == 'table' and answer.value.spots or nil
+	local listed = type(answer.value) == 'table' and answer.value.garages or nil
 	if type(listed) ~= 'table' then return {} end
 
 	local places = {}
-	for key, spot in pairs(listed) do
-		if type(spot) == 'table' and spot.kind == kind then
-			places[#places + 1] = { key = key, label = tostring(spot.label or key) }
+	for key, built in pairs(listed) do
+		if type(built) == 'table' and built.kind == kind then
+			places[#places + 1] = { key = key, label = tostring(built.label or key) }
 		end
 	end
 	table.sort(places, function(left, right) return left.key < right.key end)
@@ -555,6 +626,26 @@ onRow = function(payload)
 		return push('deliver', { entry = data.entry, places = places })
 	end
 
+	-- A ROW ON THE SELL SCREEN OFFERS AND NEVER BUYS. Nothing is charged to
+	-- anybody by this press: the server records an offer and the buyer's own
+	-- client is what confirms it.
+	if current.screen == 'sell' then
+		if type(data.offer) ~= 'string' or data.buyer == nil then return end
+		takeDown()
+		local sent, reason = TriggerServerEvent(M.Event.OFFER, data.buyer, data.offer)
+		if not sent then
+			publish({ ok = false, error = tostring(reason or 'not_sent'), source = 'client' })
+			return say('error', locale('dealership.refused'))
+		end
+		return publish({ ok = true, queued = true, entry = data.offer, buyer = data.buyer,
+			source = 'sell' })
+	end
+
+	if current.screen == 'offer' then
+		if type(data.decide) ~= 'boolean' then return end
+		return Runtime.Decide(data.decide)
+	end
+
 	if current.screen == 'deliver' then
 		-- The destination row is the confirmation: it names the place the
 		-- vehicle is filed under, and the price has been on the status line for
@@ -611,6 +702,73 @@ function Runtime.Open(origin)
 	return result
 end
 
+--- Opens the salesperson's list for one player the eye picked.
+-- @author XEROX710
+--
+-- EVERY REFUSAL HERE IS LOCAL AND CHANGES NOTHING. The server re-derives that
+-- this client is in a zone, that the buyer is in the same one, that the seller
+-- has a company to bank into and that the buyer has the money, before it so much
+-- as records an offer.
+-- @param buyer integer the player id the eye resolved
+-- @param name string|nil what to call them on the screen
+-- @return table
+function Runtime.Sell(buyer, name)
+	local result = { source = 'target' }
+	buyer = tonumber(buyer)
+	if buyer == nil then
+		result.ok, result.error = false, 'error.badRequest'
+		publish(result)
+		return result
+	end
+	if zone == nil then
+		result.ok, result.error = false, 'dealership.notInZone'
+		publish(result)
+		say('error', locale(result.error))
+		return result
+	end
+	if type(stock[zone.kind]) ~= 'table' or #stock[zone.kind] == 0 then
+		result.ok, result.error = false, 'dealership.nothingForSale'
+		publish(result)
+		say('error', locale(result.error))
+		return result
+	end
+
+	takeDown()
+	stack = { { screen = 'sell', arg = { buyer = buyer, name = name } } }
+	if not draw() then
+		result.ok, result.error = false, 'dealership.noList'
+		publish(result)
+		return result
+	end
+	syncPrompt()
+	result.ok, result.buyer = true, buyer
+	publish(result)
+	return result
+end
+
+--- Answers the offer this player was made: yes or no.
+-- @author XEROX710
+-- @param yes boolean
+-- @return table
+function Runtime.Decide(yes)
+	local live = offer
+	offer = nil
+	takeDown()
+	if type(live) ~= 'table' then return { ok = false, error = 'dealership.noOffer' } end
+	-- THE OFFER'S OWN NAME GOES BACK WITH THE ANSWER. A second offer replaces
+	-- the first, and a confirm already in flight for the first would otherwise
+	-- buy the second -- a different car, at a different price, that this player
+	-- never saw.
+	local sent, reason = TriggerServerEvent(M.Event.DECIDE, live.token, yes == true)
+	if not sent then
+		publish({ ok = false, error = tostring(reason or 'not_sent'), source = 'client' })
+		return { ok = false, error = 'not_sent' }
+	end
+	publish({ ok = true, queued = true, entry = live.entry, accepted = yes == true,
+		source = 'offer' })
+	return { ok = true, queued = true }
+end
+
 --- Closes the list this file opened.
 -- @author XEROX710
 -- @return table
@@ -658,43 +816,165 @@ function Runtime.Report()
 		key = keyLabel(),
 		open = handle ~= nil,
 		screen = current and current.screen or nil,
+		-- Which showroom the player is standing IN, as opposed to which counter
+		-- they are standing ON: a diagnostic that saw only `nearest` could not
+		-- tell an eye with no row from a player who had left the room.
+		zone = zone and zone.key or nil,
+		selling = zoneRows,
+		offered = offer and offer.entry or nil,
 		listed = nearest ~= nil and type(stock[nearest.kind]) == 'table'
 			and #stock[nearest.kind] or 0,
 	}
 end
 
+-- ── the zone, and the row it grows on other players ─────────────────────────
+
+-- The one row this module puts on the eye. Registered while the player is inside
+-- a dealer's zone and taken off the moment they leave, so a salesperson has it
+-- on the showroom floor and nowhere else.
+--
+-- `distance` is the eye's own reach to the BODY it is pointed at -- how far the
+-- ray may travel to find the customer -- and has nothing to do with ZONE_RADIUS,
+-- which is how far the SALESPERSON may be from the counter. Three metres is
+-- conversation distance, which is what selling a car to somebody is.
+local function sellRow()
+	return {
+		id = 'sell',
+		label = locale('dealership.target.sell'),
+		icon = 'vehicle',
+		distance = 3.0,
+		onSelect = function(context)
+			local target = type(context) == 'table' and context.target or nil
+			local id = type(target) == 'table' and math.tointeger(target.playerId) or nil
+			if id == nil or id < 1 then return false end
+			local answer = Runtime.Sell(id, type(target.displayName) == 'string'
+				and target.displayName or nil)
+			return answer.ok == true
+		end,
+	}
+end
+
+-- Puts the row on the eye, or takes it off, to match `zone`.
+--
+-- ON A THREAD OF ITS OWN, WITH A YIELD BEFORE THE REGISTRATION, and that is not
+-- decoration: a registration built and submitted inside the resume that also ran
+-- a scan pass has been how this codebase lost rows in silence four times --
+-- `modules/admin/client/target.lua` `register()` is the worked example and says
+-- so at length. The coroutine unwinds with no error and no log, and what is left
+-- is an eye that has some of the rows somebody asked for. One row is one batch,
+-- so the yield is the whole of the ceremony here.
+--
+-- Called only when `zone` CHANGES, because `RegisterPlayers` is a whole-registry
+-- write for this owner and doing it twice a second would be a write per scan for
+-- ever.
+local function syncTarget()
+	local api = OPX.Api.Get('target')
+	if api == nil or type(api.RegisterPlayers) ~= 'function' then
+		if zone ~= nil and not reportedTarget then
+			reportedTarget = true
+			Open77.log.info('[dealership] no target contract: the showroom grows no ' ..
+				'"sell a vehicle" row, and the list still sells to whoever opens it')
+		end
+		return
+	end
+	local wanted = zone ~= nil
+	if wanted == zoneRows then return end
+	zoneRows = wanted
+
+	CreateThread(function()
+		Wait(0)
+		local answer
+		if wanted then
+			answer = api.RegisterPlayers(OWNER, { sellRow() })
+		else
+			answer = api.Clear(OWNER)
+		end
+		if type(answer) ~= 'table' or answer.ok ~= true then
+			-- The flag goes back, so the next pass through the zone tries again
+			-- rather than believing a row is there that never was.
+			zoneRows = not wanted
+			if not reportedTarget then
+				reportedTarget = true
+				Open77.log.warn(('[dealership] the showroom row was refused: %s')
+					:format(type(answer) == 'table' and tostring(answer.error) or 'no answer'))
+			end
+		end
+	end)
+end
+
 -- ── the scan ────────────────────────────────────────────────────────────────
 
--- One pass: where the player is, which dealer they are on, and what is drawn.
+-- One pass: where the player is, which dealer they are on, whether they are in a
+-- showroom at all, and what is drawn.
 local function scan()
 	local x, y = playerXY()
 	if x == nil then
 		nearest = nil
+		if zone ~= nil then
+			zone = nil
+			syncTarget()
+		end
 		syncPrompt()
 		return
 	end
 	nearest = Access.Nearest(spots, x, y)
+
+	-- TWO RADII OVER ONE LIST. `nearest` is standing ON the marker, which is what
+	-- buys; `zone` is being IN THE ROOM, which is what sells. The wider read is a
+	-- second pass over the same table rather than a second table to keep in step.
+	local inside = Access.Nearest(spots, x, y, Access.ZONE_RADIUS_SQ)
+	local wasIn = zone ~= nil and zone.key or nil
+	zone = inside
+	if (inside ~= nil and inside.key or nil) ~= wasIn then syncTarget() end
+
 	syncPrompt()
 	reconcile(x, y)
 end
 
--- ── the capture round-trip ──────────────────────────────────────────────────
+-- ── the placement round-trip ────────────────────────────────────────────────
 
--- A command on the server cannot know a facing, so it asks this client for one:
--- the answer carries the position's heading and nothing else this half decides.
-local function answerCapture(kind, key, label)
+--- Places a showroom car where this client is standing, facing where it looks.
+-- @author XEROX710
+--
+-- THE FACING IS THE ONE FIELD THIS HALF CONTRIBUTES. A menu row has no facing,
+-- and `Open77.character.yaw` is the only place one exists; the POSITION is read
+-- on the server, from the connection, and never off this wire.
+--
+-- The right is the SERVER'S to check. This is a plain net event and a net event
+-- has no host-side ACL of its own, which is exactly why the server asks
+-- `PLACEMENT_RIGHT` before it writes anything: a client calling this without the
+-- grant is refused there, and nothing here pretends otherwise.
+-- @param key string the durable name for the showroom car
+-- @param entryKey string the stock row it is standing as
+-- @return table
+function Runtime.Place(key, entryKey)
+	if type(key) ~= 'string' or key == '' or type(entryKey) ~= 'string' or entryKey == '' then
+		return { ok = false, error = 'error.badRequest' }
+	end
 	local yaw = playerYaw()
-	local accepted, reason = TriggerServerEvent(M.Event.CAPTURED, kind, key, label, yaw)
-	if not accepted then
-		Open77.log.warn(('[dealership] capture of %s was not sent: %s'):format(tostring(key),
-			tostring(reason)))
-		return
+	local sent, reason = TriggerServerEvent(M.Event.PLACED, key, entryKey, yaw)
+	if not sent then
+		Open77.log.warn(('[dealership] the placement of %s was not sent: %s')
+			:format(tostring(key), tostring(reason)))
+		return { ok = false, error = tostring(reason or 'not_sent') }
 	end
 	-- Said out loud because the other end of this round trip is invisible from
-	-- here: the server's own line says the request went out, and this one says it
-	-- came back with a facing.
-	Open77.log.info(('[dealership] answered the capture of %s as %s yaw=%s'):format(
-		tostring(key), tostring(kind), tostring(yaw)))
+	-- here: without it a placement that died in the middle reads from the outside
+	-- as one that was never asked for.
+	Open77.log.info(('[dealership] asked to place %s as %s yaw=%s'):format(
+		tostring(key), tostring(entryKey), tostring(yaw)))
+	return { ok = true, queued = true, key = key }
+end
+
+--- Takes one showroom car away by its key.
+-- @author XEROX710
+-- @param key string
+-- @return table
+function Runtime.Unplace(key)
+	if type(key) ~= 'string' or key == '' then return { ok = false, error = 'error.badRequest' } end
+	local sent, reason = TriggerServerEvent(M.Event.UNPLACED, key)
+	if not sent then return { ok = false, error = tostring(reason or 'not_sent') } end
+	return { ok = true, queued = true, key = key }
 end
 
 -- ── the phases ──────────────────────────────────────────────────────────────
@@ -706,7 +986,8 @@ function Runtime.Init()
 	stock = { [M.KIND.GARAGE] = {}, [M.KIND.AVPAD] = {} }
 	nearest, shown, shownLabel, keyRegistered = nil, false, nil, false
 	handle, stack = nil, {}
-	reportedMarkers, reportedStrip, reportedMenu = false, false, false
+	offer, zone, zoneRows = nil, nil, false
+	reportedMarkers, reportedStrip, reportedMenu, reportedTarget = false, false, false, false
 	scanJob, askJob = nil, nil
 end
 
@@ -816,8 +1097,36 @@ function Runtime.Start()
 		end
 	end)
 
-	RegisterNetEvent(M.Event.CAPTURE, function(kind, key, label)
-		answerCapture(kind, key, label)
+	-- THE OFFER A SALESPERSON MADE, and the one screen in this module that the
+	-- player did not open themselves. It is a menu and not a toast: a toast
+	-- cannot be answered, and the whole point of this round trip is that the
+	-- money does not move until the buyer says so.
+	RegisterNetEvent(M.Event.OFFERED, function(payload)
+		if type(payload) ~= 'table' or type(payload.entry) ~= 'string' then return end
+		offer = payload
+		takeDown()
+		stack = { { screen = 'offer' } }
+		if not draw() then
+			offer = nil
+			return say('error', locale('dealership.noList'))
+		end
+		syncPrompt()
+	end)
+
+	-- What became of an offer, told to the SELLER. The buyer already knows: they
+	-- answered it.
+	RegisterNetEvent(M.Event.SETTLED, function(payload)
+		if type(payload) ~= 'table' then return end
+		local verdict = {
+			ok = payload.ok == true,
+			error = payload.ok ~= true and tostring(payload.error or 'dealership.refused') or nil,
+			entry = type(payload.entry) == 'string' and payload.entry or nil,
+			commission = payload.cut,
+			banked = payload.company,
+			source = 'sale',
+		}
+		publish(verdict)
+		if not verdict.ok then say('error', locale(verdict.error)) end
 	end)
 
 	-- Asked now so the first scan has a list, then on the poll so a change of
@@ -858,6 +1167,12 @@ function Runtime.Shutdown()
 	end
 	takeDown()
 	clearMarkers()
+	-- The eye's row goes with everything else. A row left behind by a stopped
+	-- owner is a row that opens a list nothing is listening for.
+	local eye = OPX.Api.Get('target')
+	if zoneRows and eye ~= nil and type(eye.Clear) == 'function' then
+		pcall(eye.Clear, OWNER)
+	end
 	local api = OPX.Api.Get('prompts')
 	if shown and api ~= nil and type(api.Hide) == 'function' then
 		pcall(api.Hide, OWNER, GROUP)

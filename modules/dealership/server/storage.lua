@@ -1,4 +1,4 @@
---- Every SQL statement this module runs, and the one table it owns.
+--- Every SQL statement this module runs, and the three tables it owns.
 -- @author XEROX710
 --
 -- This is the only file in the module allowed to carry SQL, and a CI check
@@ -9,9 +9,10 @@
 -- the same reason. Every statement yields and answers a `Result`, so every one
 -- of them has to be reached from a `CreateThread`.
 --
--- No foreign key, and nothing durable about a purchase lives here: a dealer is a
--- place in the world and belongs to no character. What a player BOUGHT is a
--- vehicle, and that row is the vehicles module's -- this module creates none.
+-- No foreign key on a place, and nothing durable about a purchase lives here: a
+-- dealer is a place in the world and belongs to no character. What a player
+-- BOUGHT is a vehicle, and that row is the vehicles module's -- this module
+-- creates none.
 
 local M = OPX.Modules.Get('dealership')
 
@@ -20,11 +21,28 @@ local Storage = OPX.Storage
 M.Storage = {}
 
 --- One CREATE TABLE IF NOT EXISTS per table this module owns.
--- `spot_key` is the durable name a captured dealer is referred to by, and it is
--- the primary key because a dealer captured twice is one dealer moved, not two.
--- The shape is the garages table's, on purpose: a dealer and a garage spot are
--- the same kind of thing and an operator moving between the two should not have
--- to learn a second set of column names.
+--
+-- `opx77_dealerships` IS READ-ONLY NOW. `/opx.dealership.add` and `.remove`
+-- wrote it, and both are gone: a dealer is written in `config/dealership.lua`.
+-- The `Upsert` and `Delete` that stood here went with them, because a writer
+-- with no caller is a writer the next reader wires a new command up to. The
+-- read stays, and it is the whole migration: the server adopts every row in
+-- here that config does not name and prints the line that would check it in.
+-- Nothing drops it, so an operator who has not checked their dealers in yet can
+-- still roll back.
+--
+-- `opx77_dealership_previews` is the table that IS written at runtime, from the
+-- staff menu's Dev screen. A NEW TABLE rather than a `role` column on the one
+-- above: an ALTER on a live table for a feature that could have its own is a
+-- migration nobody needed, and a preview is not a dealer -- it has no kind and
+-- it names a stock row.
+--
+-- `opx77_company_accounts` is where the money from a face-to-face sale lands.
+-- Keyed by (kind, group) rather than by a surrogate id, because the pair IS the
+-- identity: there is one account per job and one per gang, and a second row for
+-- the same pair would be money in an account nobody reads. `balance` is a signed
+-- BIGINT so that a bug that overdraws one is visible as a negative number rather
+-- than as a wrap to something astronomical.
 M.Storage.SCHEMA = {
 	[[
 CREATE TABLE IF NOT EXISTS opx77_dealerships (
@@ -41,9 +59,33 @@ CREATE TABLE IF NOT EXISTS opx77_dealerships (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB
 ]],
+	[[
+CREATE TABLE IF NOT EXISTS opx77_dealership_previews (
+    preview_key VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+    dealer_key VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    entry_key VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    x DOUBLE NOT NULL,
+    y DOUBLE NOT NULL,
+    z DOUBLE NOT NULL,
+    heading FLOAT NOT NULL DEFAULT 0,
+    bucket INT UNSIGNED NOT NULL DEFAULT 0,
+    placed_by VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB
+]],
+	[[
+CREATE TABLE IF NOT EXISTS opx77_company_accounts (
+    kind VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    group_key VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    balance BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (kind, group_key)
+) ENGINE=InnoDB
+]],
 }
 
---- Every captured dealer, oldest first.
+--- Every dealer still in the legacy table, oldest first.
 -- @author XEROX710
 -- @return Result carrying an array of rows
 function M.Storage.FetchAll()
@@ -54,24 +96,36 @@ SELECT spot_key, label, kind, x, y, z, heading, bucket, captured_by
   ]])
 end
 
---- Inserts a captured dealer, or moves the one already under that key.
--- One statement rather than a select and a branch: two captures in the same tick
--- would both pass the select, and the primary key is the only thing that can
--- settle a key.
+--- Every placed preview point, oldest first.
 -- @author XEROX710
--- @param spot table normalised spot fields
--- @param citizenId string|nil who captured it
+-- @return Result carrying an array of rows
+function M.Storage.FetchPreviews()
+	return Storage.Query([[
+SELECT preview_key, dealer_key, entry_key, x, y, z, heading, bucket
+  FROM opx77_dealership_previews
+ ORDER BY created_at
+  ]])
+end
+
+--- Places one preview point, or moves the one already under that key.
+-- One statement rather than a select and a branch: two placements in the same
+-- tick would both pass the select, and the primary key is the only thing that
+-- can settle a key.
+-- @author XEROX710
+-- @param spot table normalised preview fields
+-- @param citizenId string|nil who placed it
 -- @return Result
-function M.Storage.Upsert(spot, citizenId)
+function M.Storage.PlacePreview(spot, citizenId)
 	return Storage.Execute([[
-INSERT INTO opx77_dealerships (spot_key, label, kind, x, y, z, heading, bucket, captured_by)
-VALUES (@key, @label, @kind, @x, @y, @z, @heading, @bucket, NULLIF(@citizen, ''))
-ON DUPLICATE KEY UPDATE label = @label, kind = @kind, x = @x, y = @y, z = @z,
-                        heading = @heading, bucket = @bucket
+INSERT INTO opx77_dealership_previews
+       (preview_key, dealer_key, entry_key, x, y, z, heading, bucket, placed_by)
+VALUES (@key, @dealer, @entry, @x, @y, @z, @heading, @bucket, NULLIF(@citizen, ''))
+ON DUPLICATE KEY UPDATE dealer_key = @dealer, entry_key = @entry,
+                        x = @x, y = @y, z = @z, heading = @heading, bucket = @bucket
   ]], {
 		key = spot.key,
-		label = spot.label,
-		kind = spot.kind,
+		dealer = spot.dealer,
+		entry = spot.entry,
 		x = spot.x,
 		y = spot.y,
 		z = spot.z,
@@ -81,10 +135,55 @@ ON DUPLICATE KEY UPDATE label = @label, kind = @kind, x = @x, y = @y, z = @z,
 	})
 end
 
---- Deletes a captured dealer by its key.
+--- Takes one preview point away by its key.
 -- @author XEROX710
 -- @param key string
 -- @return Result
-function M.Storage.Delete(key)
-	return Storage.Execute('DELETE FROM opx77_dealerships WHERE spot_key = @key', { key = key })
+function M.Storage.RemovePreview(key)
+	return Storage.Execute(
+		'DELETE FROM opx77_dealership_previews WHERE preview_key = @key', { key = key })
+end
+
+--- Every company account, for the readout.
+-- @author XEROX710
+-- @return Result carrying an array of rows
+function M.Storage.FetchAccounts()
+	return Storage.Query([[
+SELECT kind, group_key, balance
+  FROM opx77_company_accounts
+ ORDER BY kind, group_key
+  ]])
+end
+
+--- Adds to one company's balance, creating the account when there is none.
+-- @author XEROX710
+--
+-- ONE STATEMENT, AND THE ARITHMETIC IS THE DATABASE'S. A read, an add in Lua and
+-- a write is three steps with two yields between them, and two sales settling in
+-- the same second would each read the balance before the other wrote it -- so
+-- one of the two deposits would be lost, silently, in a table nobody reconciles.
+-- `balance = balance + @amount` cannot lose one.
+-- @param kind string 'job' or 'gang'
+-- @param group string
+-- @param amount integer
+-- @return Result
+function M.Storage.Deposit(kind, group, amount)
+	return Storage.Execute([[
+INSERT INTO opx77_company_accounts (kind, group_key, balance)
+VALUES (@kind, @group, @amount)
+ON DUPLICATE KEY UPDATE balance = balance + @amount
+  ]], { kind = kind, group = group, amount = amount })
+end
+
+--- One company's balance, or nil when the account has never been paid into.
+-- @author XEROX710
+-- @param kind string
+-- @param group string
+-- @return Result
+function M.Storage.Balance(kind, group)
+	return Storage.Single([[
+SELECT balance
+  FROM opx77_company_accounts
+ WHERE kind = @kind AND group_key = @group
+  ]], { kind = kind, group = group })
 end

@@ -323,46 +323,43 @@ FORMS.time = {
 
 -- ── the Dev forms ───────────────────────────────────────────────────────────
 --
--- WHAT THESE ARE FOR. The Dev screen runs the `garages` and `dealership`
--- commands, and every one of them takes an argument a row cannot hold: a kind, a
--- durable key, a label. So each row opens a form here and the form's answer IS
--- the command line -- the same words, in the same order, that the operator would
--- have typed. Nothing here can do something the chat command cannot, and the
--- ACL is still the server's: a form is a way to fill in arguments, never a way
--- around a grant.
+-- WHAT THESE ARE FOR. The Dev screen is where a server is set up from, and every
+-- one of its doors takes an argument a row cannot hold: a durable key, a stock
+-- row, a plate. So each row opens a form here.
 --
--- THE KIND IS A PICKER AND NOT A TYPED WORD. The vocabulary is exactly two
--- words, a `garage` sells ground vehicles and an `avpad` sells AVs, and a
--- mistyped one is refused by the command with a message about keys rather than
--- about kinds. A choice cannot be mistyped.
+-- THERE ARE TWO KINDS OF DOOR NOW, AND THEY ARE NOT THE SAME THING. The older
+-- ones end in a COMMAND LINE -- the same words, in the same order, an operator
+-- would have typed -- and the ACL is the host's, resolved against
+-- `command.<name>` before the handler runs. The showroom ones end in a CONTRACT
+-- CALL on the dealership's client half, because the commands they would have
+-- used are gone: `/opx.garages.add`, `/opx.garages.remove`,
+-- `/opx.dealership.add` and `/opx.dealership.remove` all wrote a place into a
+-- database, and a place is written in config now.
+--
+-- A CONTRACT CALL FROM A CLIENT IS NO PERMISSION CHECK AT ALL, and nothing here
+-- pretends otherwise: the dealership's SERVER half asks the ACL for
+-- `PLACEMENT_RIGHT` -- its own right, not a command's -- before it writes
+-- anything. What this file does is fill in the arguments.
+--
+-- THE SHOWROOM ROWS ARE NOT GREYED, and that is a deliberate difference from
+-- every other row on this menu. `denied()` greys a row whose COMMAND the access
+-- map refuses, and the access map is built from command names; a right that
+-- gates no command is not in it. Greying on a name that is not there would grey
+-- the row for everybody, which is worse than a row that is pressed and refused
+-- with a sentence.
 --
 -- THE OPTIONAL FIELDS ARE APPENDED ONLY WHEN FILLED. An empty token is an empty
--- POSITIONAL argument, and the command reads positionals: a blank label would
--- land as the next argument along, and a blank plate would ask for a vehicle
--- whose plate is the empty string.
+-- POSITIONAL argument, and the command reads positionals: a blank plate would
+-- ask for a vehicle whose plate is the empty string.
 
--- Key and label lengths, from the columns that own them: a spot key and a stock
--- key are 48 characters in both modules, a label 64, a plate 16.
-local MAX_KEY, MAX_LABEL, MAX_PLATE = 48, 64, 16
-
--- The two kinds, as the picker draws them.
-local function kindOptions()
-	return {
-		{ label = locale('admin.field.kindGarage'), value = 'garage' },
-		{ label = locale('admin.field.kindAvpad'), value = 'avpad' },
-	}
-end
-
-local function kindField()
-	return { id = 'kind', label = locale('admin.field.kind'), options = kindOptions() }
-end
+-- Key lengths, from the columns that own them: a preview key and a stock key are
+-- 48 characters in both modules, a plate 16. The label width went with the two
+-- `add` forms: a garage and a dealer are named in config now, and nothing on
+-- this screen types a label any more.
+local MAX_KEY, MAX_PLATE = 48, 16
 
 local function keyField()
 	return text('key', 'admin.field.key', { charset = 'name', maxLength = MAX_KEY, required = true })
-end
-
-local function labelField()
-	return text('label', 'admin.field.label', { charset = 'name', maxLength = MAX_LABEL })
 end
 
 -- Appends a value only when it was filled in.
@@ -371,28 +368,58 @@ local function with(tokens, value)
 	return tokens
 end
 
-FORMS.garageAdd = {
+-- The dealership's client half, or nil. Read at submit time and never captured:
+-- the contract resolves at Start and this file loads before it.
+local function dealership()
+	return Client.Contract('dealership')
+end
+
+-- Says what a contract call answered, in the status line the menu already has.
+-- A form that submitted into silence is a form an operator presses twice.
+local function reported(answer, whenMissing)
+	if answer == nil then return menu().Resume(locale(whenMissing), false) end
+	if type(answer) ~= 'table' or answer.ok ~= true then
+		return menu().Resume(locale('admin.client.devRefused'), false)
+	end
+	return menu().Resume(locale('admin.client.devSent'), true)
+end
+
+-- PLACING A SHOWROOM CAR. The position is the SERVER'S -- it reads it off the
+-- connection -- and the facing is the client's, because a menu row has none. The
+-- dealer is the nearest one whose zone the operator is standing in, which is why
+-- this form asks for neither a dealer nor a coordinate: an operator places a
+-- showroom car by standing where they want it.
+FORMS.previewPlace = {
 	build = function()
-		return { title = locale('admin.form.garageAdd'),
-			description = locale('admin.form.garageAddHint'),
-			fields = { kindField(), keyField(), labelField() } }
+		return { title = locale('admin.form.previewPlace'),
+			description = locale('admin.form.previewPlaceHint'),
+			fields = {
+				keyField(),
+				text('entry', 'admin.field.entry',
+					{ charset = 'name', maxLength = MAX_KEY, required = true }),
+			} }
 	end,
 	submit = function(values)
-		local tokens = { Command.GARAGES_ADD, values.kind }
-		with(tokens, values.key)
-		with(tokens, M.Trimmed(values.label, MAX_LABEL))
-		menu().Run(tokens)
+		local contract = dealership()
+		if contract == nil or type(contract.Place) ~= 'function' then
+			return menu().Resume(locale('admin.client.devMissing'), false)
+		end
+		reported(contract.Place(values.key, values.entry), 'admin.client.devMissing')
 	end,
 }
 
-FORMS.garageRemove = {
+FORMS.previewRemove = {
 	build = function()
-		return { title = locale('admin.form.garageRemove'),
-			description = locale('admin.form.garageRemoveHint'),
+		return { title = locale('admin.form.previewRemove'),
+			description = locale('admin.form.previewRemoveHint'),
 			fields = { keyField() } }
 	end,
 	submit = function(values)
-		menu().Run({ Command.GARAGES_REMOVE, values.key })
+		local contract = dealership()
+		if contract == nil or type(contract.Unplace) ~= 'function' then
+			return menu().Resume(locale('admin.client.devMissing'), false)
+		end
+		reported(contract.Unplace(values.key), 'admin.client.devMissing')
 	end,
 }
 
@@ -407,31 +434,6 @@ FORMS.garageBring = {
 		local tokens = { Command.GARAGES_BRING, values.key }
 		with(tokens, M.Trimmed(values.plate, MAX_PLATE))
 		menu().Run(tokens)
-	end,
-}
-
-FORMS.dealerAdd = {
-	build = function()
-		return { title = locale('admin.form.dealerAdd'),
-			description = locale('admin.form.dealerAddHint'),
-			fields = { kindField(), keyField(), labelField() } }
-	end,
-	submit = function(values)
-		local tokens = { Command.DEALERSHIP_ADD, values.kind }
-		with(tokens, values.key)
-		with(tokens, M.Trimmed(values.label, MAX_LABEL))
-		menu().Run(tokens)
-	end,
-}
-
-FORMS.dealerRemove = {
-	build = function()
-		return { title = locale('admin.form.dealerRemove'),
-			description = locale('admin.form.dealerRemoveHint'),
-			fields = { keyField() } }
-	end,
-	submit = function(values)
-		menu().Run({ Command.DEALERSHIP_REMOVE, values.key })
 	end,
 }
 
