@@ -173,7 +173,6 @@ local statsReported = false
 -- How many vitals readings have been relayed, and when the last one went. See
 -- `sampleVitals`: `Open77.log` on a client writes to the PLAYER'S machine, so a
 -- number an operator needs has to travel.
-local noted, lastNote = 0, 0
 
 -- Whether a value is a number that is neither NaN nor infinite. The one shared
 -- predicate, aliased rather than wrapped: a one-line wrapper is a second name
@@ -226,8 +225,8 @@ end
 -- ── the gauges ───────────────────────────────────────────────────────────────
 
 --- One gauge's percent, or nil when nothing can read it.
--- The live pool wins over the stored need wherever the engine reports one:
--- damage the server never hears of only ever lowers the body.
+-- The live pool wins over the stored need wherever the server reports one: the
+-- canonical pool is authoritative, the stored character value is a fallback.
 local function sourceOf(name)
 	if name == 'health' or name == 'armor' then return live[name] end
 	if name == 'stamina' and live.stamina ~= nil then return live.stamina end
@@ -438,15 +437,6 @@ local function share(pool, flatMaximum)
 	return math.max(0, value) / maximum * 100
 end
 
---- The local body's health points as the game shows them, or nil.
-local function bodyHealth()
-	local character = Open77.character
-	if type(character) ~= 'table' or type(character.state) ~= 'function' then return nil end
-	local read, body = pcall(character.state)
-	if not read or type(body) ~= 'table' or not finite(body.health) then return nil end
-	return body.health
-end
-
 --- Reads the engine's pools once. Keeps the last reading through an answer that
 --- simply did not arrive, and clears it when the bridge says there is none.
 ---
@@ -471,16 +461,28 @@ local function sampleVitals()
 	local read, state = pcall(stats.get)
 	if not read or type(state) ~= 'table' then return false end
 
+	-- ONE POOL, AND IT IS THE SERVER'S. There was a second reading here: the local
+	-- body's health, off `Open77.character.state`, on the grounds that damage the
+	-- server never hears of -- a fall, an npc -- only ever lowers the body, so the
+	-- body should win. It was measured against the CANONICAL maximum, and the two
+	-- are not on the same scale.
+	--
+	-- Nobody could see that while the maximum was 100, because 100 and 100 divide
+	-- the same. Raising it to 250 separated them and the bar stuck at 40% -- the
+	-- owner read that as a heal that had stopped healing, and the staff menu was
+	-- innocent: the audit line said `admin.self.heal … "250"` and the server had
+	-- applied it. The reading that settled it is in the journal verbatim:
+	--
+	--   vitals: engine body 100.0, canonical 250.0 of 250.0, drawn 40%
+	--
+	-- Full health, reported as two fifths of it. The engine body carries no
+	-- maximum of its own in that record -- `Open77.character.state` answers
+	-- placement, orientation and health, nothing to divide by -- so there is no
+	-- honest way to put it on the same axis as a canonical pool, and no need:
+	-- `player-stats` opens with "Open77 owns player health and stamina on the
+	-- dedicated server". The pool IS the truth, fall damage included. The second
+	-- opinion was never worth having and is gone.
 	local health = share(state.health, state.maxHealth)
-	-- Damage the server never hears of -- a fall, an npc -- only ever lowers the
-	-- body, so the body wins, measured against the canonical maximum.
-	local body = bodyHealth()
-	if body ~= nil then
-		local pool = state.health
-		local maximum = type(pool) == 'table' and firstFinite(pool.maximum, pool.max)
-			or state.maxHealth
-		health = share(body, maximum)
-	end
 
 	-- Compared AFTER `percent`, not before: the gauges draw whole percents, so a
 	-- pool that moved by a hundredth of a point did not move anything the player
@@ -492,30 +494,6 @@ local function sampleVitals()
 		or nowArmor ~= live.armor
 		or nowStamina ~= live.stamina
 
-	-- BOTH READINGS, SIDE BY SIDE, WHEN THE BAR MOVES. The owner reports that the
-	-- staff menu's heal stopped healing when the maximum went from 100 to 250, and
-	-- the server half is proven: the audit line says `admin.self.heal … "250"` and
-	-- nothing refused it. So the number is being APPLIED and something between the
-	-- pool and the bar disagrees about what it means -- and the candidate is three
-	-- lines up. `state.health` is the canonical pool, server-owned; `bodyHealth`
-	-- is read straight off the engine object; and this function divides the SECOND
-	-- by the FIRST's maximum. If the engine body is still on the stock scale, a
-	-- full 100 over a canonical 250 draws a bar at 40% that will not move, which is
-	-- exactly "the heal does nothing" from the other side of the screen.
-	--
-	-- Guessing which it is cost an afternoon on the eye last week. This prints the
-	-- two numbers into the server journal instead: at most four lines a session,
-	-- only when the drawn percent moved, and four seconds apart so a heal and the
-	-- damage before it are separate lines rather than one burst at spawn.
-	if moved and noted < 4 and OPX.Now() - lastNote > 4000 then
-		noted, lastNote = noted + 1, OPX.Now()
-		local pool = type(state.health) == 'table' and state.health or nil
-		OPX.Note('hud', ('vitals: engine body %s, canonical %s of %s, drawn %s%%')
-			:format(tostring(body),
-				tostring(pool and pool.value or state.health),
-				tostring(pool and firstFinite(pool.maximum, pool.max) or state.maxHealth),
-				tostring(nowHealth)))
-	end
 
 	live = { health = nowHealth, armor = nowArmor, stamina = nowStamina }
 	return moved

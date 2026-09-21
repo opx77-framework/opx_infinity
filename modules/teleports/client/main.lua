@@ -331,6 +331,23 @@ function Runtime.Use(origin)
 		result.ok, result.error = false, 'teleports.busy'
 	elseif nearest == nil then
 		result.ok, result.error = false, 'teleports.noSuchTeleport'
+		-- NOT A WORD, WHEN THE KEY IS WHAT ASKED. `E` is a contextual key and four
+		-- modules in this resource declare it -- clothing, garages, dealership and
+		-- this one -- so every press anywhere reaches all four and three of them
+		-- find nothing. The other three already return in silence; this one fell
+		-- through to the shared sentence below and shouted "there is no teleport
+		-- here" across the whole city, including at a player who pressed the key
+		-- for something else entirely. That is how it was reported: pressing the
+		-- key for the phone and being told about teleports.
+		--
+		-- A CALLER THAT NAMED ITSELF STILL GETS THE SENTENCE. A menu row or a
+		-- command asked this module in particular, and there "nothing happened" is
+		-- the answer that leaves a player guessing. `publish` runs either way, so
+		-- the module's own listeners and the tests see the refusal regardless.
+		if (origin or 'key') == 'key' then
+			publish(result)
+			return result
+		end
 	elseif asking then
 		-- The client's own half of the one-trip-at-a-time rule. The server keeps
 		-- the real lock; this only stops a key held down from filling the request

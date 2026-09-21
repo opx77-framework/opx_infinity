@@ -12587,6 +12587,40 @@ do
 		check('and the key on empty ground refuses locally rather than asking',
 			nowhere.ok ~= true and nowhere.error == 'teleports.noSuchTeleport',
 			tostring(nowhere.error))
+
+		-- ── AND IT DOES NOT SAY SO ────────────────────────────────────────────
+		-- THE OWNER'S REPORT: "je appuye sur la touche set pour use telephone
+		-- cela me dit Failed teleport there is no teleport here".
+		--
+		-- `E` is contextual and FOUR modules in this resource declare it --
+		-- clothing, garages, dealership and this one -- so a press anywhere
+		-- reaches all four and at least three find nothing under the player. The
+		-- other three return in silence. This one fell through to the shared
+		-- sentence and announced itself across the whole city, to a player who
+		-- had pressed the key meaning something else entirely.
+		--
+		-- A caller that NAMES itself still gets told: a menu row or a command
+		-- asked this module in particular, and silence there is the answer that
+		-- leaves a player guessing.
+		local said = 0
+		local realToast = OPX.Toast.Show
+		OPX.Toast.Show = function(payload)
+			said = said + 1
+			return realToast(payload)
+		end
+
+		said = 0
+		local pressed = Runtime.Use('key')
+		check('the key on empty ground still refuses', pressed.ok ~= true
+			and pressed.error == 'teleports.noSuchTeleport', tostring(pressed.error))
+		check('and says nothing at all about it', said == 0, said)
+
+		said = 0
+		local asked = Runtime.Use('menu')
+		check('while a caller that named itself is still told', said == 1, said)
+		check('with the same refusal', asked.error == 'teleports.noSuchTeleport',
+			tostring(asked.error))
+		OPX.Toast.Show = realToast
 	end
 end
 
@@ -20428,6 +20462,93 @@ do
 			Screen.Own = function() return nil end
 			check('with no bag at all nothing reads as held', Slotbar.Holds(3) == false)
 			Screen.Own = realOwn
+		end
+	end
+end
+
+-- ── a bar at two fifths of a full player ─────────────────────────────────────
+-- THE OWNER'S REPORT: "le heal dans le menu admin semble pas heal depuis qu'on
+-- a changé le max vie", and then, having watched it: "la vie toujours 40
+-- afficher sur l'hud enfois de 250".
+--
+-- The staff menu was innocent and the server was too -- the audit line said
+-- `admin.self.heal … "250"` and nothing refused it. `sampleVitals` took a
+-- SECOND reading, the local body's health off `Open77.character.state`, on the
+-- grounds that damage the server never hears of only ever lowers the body --
+-- and divided it by the CANONICAL maximum. The two are not on the same axis,
+-- and while the maximum was 100 nothing could show it, because 100 and 100
+-- divide the same. The line the client relayed once the maximum moved:
+--
+--   vitals: engine body 100.0, canonical 250.0 of 250.0, drawn 40%
+--
+-- So the check is the shape of that line: the canonical pool full at 250, the
+-- engine body still reporting 100, and the gauge that reaches the page drawing
+-- a hundred percent of a living player.
+section('a full player draws a full bar, whatever the maximum is')
+do
+	local function prelude(env)
+		local O = env.Open77
+		O.input = {
+			isDown = function() return false end,
+			keyFor = function() return 'ALT' end,
+			cursor = function() return { inBounds = true, captured = false } end,
+			isCaptured = function() return false end,
+			block = function() return true end,
+		}
+		O.camera = { screenRaycast = function() return { hit = false } end }
+		-- FULL, ON THE RAISED MAXIMUM. `config/shared.lua` HEALTH.MAX is 250.
+		O.stats = {
+			get = function()
+				return {
+					health = { value = 250, maximum = 250 },
+					armor = 0,
+					stamina = { value = 100, maximum = 100 },
+				}
+			end,
+		}
+		-- AND THE ENGINE BODY ON ITS OWN SCALE, which is the whole defect: it
+		-- carries no maximum in this record to divide by, and 100 is what the
+		-- live client reported for a player the server called full.
+		O.character.state = function()
+			return {
+				health = 100, attached = true, alive = true,
+				position = { x = 0, y = 0, z = 0 },
+			}
+		end
+		env.RegisterKeyMapping = function() end
+	end
+
+	local env, control, why = boot('client', nil, prelude)
+	check('the client boots for the gauges', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] ~= nil then page = candidate end
+		end
+		check('the overlay page is up', page ~= nil)
+
+		if page ~= nil then
+			env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'entry', 'state'), { open = false })
+			env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'spawn', 'state'), { open = false })
+			control.PageEmit(page, 'opx:hud:ready', {})
+			control.Pump(10)
+
+			local drawnPct
+			for _, message in ipairs(page.sent) do
+				if message.channel == 'opx:hud:vitals' and type(message.payload) == 'table' then
+					for _, row in ipairs(message.payload.gauges or {}) do
+						if row.id == 'health' then drawnPct = row.pct end
+					end
+				end
+			end
+
+			check('the health gauge reaches the page at all', drawnPct ~= nil, drawnPct)
+			-- 40 IS THE BUG, VERBATIM: 100 over 250. Anything but a full bar for a
+			-- player the server says is full means a second opinion came back.
+			check('a player the server calls full draws full, not 40%',
+				drawnPct ~= nil and math.abs(drawnPct - 100) < 0.5, drawnPct)
 		end
 	end
 end
