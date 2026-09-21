@@ -80,10 +80,7 @@ function OPX.Hooks.Trigger(name, payload)
 	return true
 end
 
---- @author dop42
--- @param name string
--- @return boolean
-function OPX.Hooks.Has(name)
-	local list = registry[name]
-	return list ~= nil and #list > 0
-end
+-- `Has(name)` was here and had no caller. Asking whether a hook has listeners
+-- before running it is the shape that goes stale between the question and the
+-- answer; `Run` over an empty list is already the cheap no-op that makes the
+-- question unnecessary.

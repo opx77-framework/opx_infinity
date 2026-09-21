@@ -186,6 +186,6 @@
 }
 
 .op-enter {
-  animation: op-plate-in 190ms var(--op-stutter) backwards;
+  animation: op-plate-in var(--op-enter-ms) var(--op-stutter) backwards;
   animation-delay: calc(var(--op-slot, 0) * 28ms + 40ms);
 }

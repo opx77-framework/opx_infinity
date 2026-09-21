@@ -253,8 +253,8 @@ function share(value: number): number {
   contain: layout paint style;
   /* An entrance: three steps, not a fade. */
   transition:
-    opacity 190ms steps(3, end),
-    transform 190ms steps(3, end);
+    opacity var(--op-enter-ms) var(--op-stutter),
+    transform var(--op-enter-ms) var(--op-stutter);
   /* The state ladder, resolved once and read by the mic, the caption, the meter
      and the slash. NOT by the frame: `--voice-frame` sat here for four states
      and nothing ever read it, so the caps and the rx counter never followed the

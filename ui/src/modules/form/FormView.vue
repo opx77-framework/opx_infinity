@@ -1077,7 +1077,7 @@ function focusField(field: Field): void {
 }
 
 .room.open .field {
-  animation: field-in 190ms steps(3, end) backwards;
+  animation: field-in var(--op-enter-ms) var(--op-stutter) backwards;
   animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
 }
 

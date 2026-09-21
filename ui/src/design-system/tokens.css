@@ -216,7 +216,15 @@
   --op-dur-fast: 90ms;   /* colour and border changes */
   --op-dur: 150ms;       /* enter, leave, hover       */
   --op-dur-slow: 220ms;  /* a whole surface arriving  */
+
+  /* THE STUTTER IS TWO VALUES, so retuning it is one edit and not nine. A
+     surface, a row, a chip and a toast all arrive on the same three-step cut,
+     and every one of them hard-coded `190ms steps(3, end)` while the token
+     beside it was honoured by exactly one rule -- so the one surface that read
+     the token would have moved on its own. The @keyframes bodies stay their
+     own: what each surface does over those 190ms legitimately differs. */
   --op-stutter: steps(3, end);
+  --op-enter-ms: 190ms;
 }
 
 /* Every surface is transparent: the game renders behind it, and a page that

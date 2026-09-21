@@ -15118,6 +15118,180 @@ do
 		zeroed == 0, zeroed)
 end
 
+-- ── nothing is published on OPX that nobody calls ────────────────────────────
+-- `OPX.Validate.OneOf`, `OPX.CitizenId.IsValid` and `OPX.Hooks.Has` were three
+-- one-line wrappers over the function directly above them, with no caller
+-- anywhere. A published helper nobody calls is not free: it is a shape the next
+-- author has to decide whether to adopt, and it is never the shape they want --
+-- `OneOf` answered a Result where every membership test in the resource wants a
+-- code, and `IsValid` threw away the reason `Parse` had already worked out.
+-- This is the same argument `core/server/gate.lua`'s `Watch` lost.
+section('the shared libraries publish nothing that nobody calls')
+do
+	local files, names = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if files[file] == nil then
+				files[file] = true
+				names[#names + 1] = file
+			end
+		end
+	end
+	table.sort(names)
+
+	local sources = {}
+	for _, file in ipairs(names) do
+		local handle = io.open(file, 'r')
+		if handle ~= nil then
+			sources[file] = handle:read('a')
+			handle:close()
+		end
+	end
+
+	-- Only `lib/shared`: these are the general helpers, the ones with no module
+	-- to own them and no lifecycle to explain why they exist. A module's own
+	-- surface is answered by its contract and is a different question.
+	local published = {}
+	for _, file in ipairs(names) do
+		if file:match('^lib/shared/') then
+			for namespace, fn in (sources[file] or ''):gmatch('function%s+OPX%.([%w_]+)%.([%w_]+)%s*%(') do
+				published[#published + 1] = { file = file, name = ('OPX.%s.%s'):format(namespace, fn), fn = fn }
+			end
+		end
+	end
+	check('there are shared helpers to account for', #published > 0, #published)
+
+	-- A caller in ANY manifest file other than the one that defines it -- the
+	-- suite itself is not a caller, which is the whole point: a helper that only
+	-- its own test calls is still dead.
+	local orphans = {}
+	for _, entry in ipairs(published) do
+		local called = false
+		for _, file in ipairs(names) do
+			if file ~= entry.file and (sources[file] or ''):find('%.' .. entry.fn .. '%s*%(') then
+				called = true
+				break
+			end
+		end
+		if not called then orphans[#orphans + 1] = ('%s (%s)'):format(entry.name, entry.file) end
+	end
+	table.sort(orphans)
+	check('and every one of them has a caller outside its own file',
+		#orphans == 0, table.concat(orphans, ', '))
+end
+
+-- ── the stutter is a token, and only a token ─────────────────────────────────
+-- `--op-stutter` was declared in `tokens.css` and honoured by exactly ONE rule;
+-- eight module stylesheets wrote `190ms steps(3, end)` out by hand. A retune
+-- would have moved the one surface that read the token and left the other
+-- eight, which is worse than never having had a token. The @keyframes bodies
+-- are deliberately not touched: what each surface does over those milliseconds
+-- legitimately differs, and only the cadence is shared.
+section('the stutter is declared once')
+do
+	--- Every page source file under a directory, recursively, without shelling out.
+	local function sources(root, out)
+		out = out or {}
+		-- `io.popen` is the only directory walk available here, and the suite already
+		-- reads page files by name elsewhere; the list is short enough to name.
+		local handle = io.popen('dir /b /s "' .. root:gsub('/', '\\') .. '" 2>nul')
+		if handle == nil then return out end
+		for line in handle:lines() do
+			local path = line:gsub('\\', '/')
+			if path:match('%.css$') or path:match('%.vue$') or path:match('%.ts$') then
+				out[#out + 1] = path
+			end
+		end
+		handle:close()
+		return out
+	end
+
+	local files = sources('ui/src')
+	check('the page sources are readable', #files > 0, #files)
+
+	local declared, hardcoded, timings = {}, {}, {}
+	for _, path in ipairs(files) do
+		local handle = io.open(path, 'r')
+		if handle ~= nil then
+			local source = handle:read('a')
+			handle:close()
+			local short = path:match('(ui/src/.*)$') or path
+			if source:find('%-%-op%-stutter:%s*steps') then declared[#declared + 1] = short end
+			-- Block comments out first: a file is allowed to NAME the cadence in
+			-- prose, and several usefully do.
+			local code = source:gsub('/%*.-%*/', ' ')
+			-- The stutter is `steps(3, ...)`. A different step count is a different
+			-- animation with its own reason -- `steps(8, end)` is the target eye's
+			-- scan line -- and is none of this check's business.
+			if code:find('%-%-op%-stutter:') == nil and code:find('steps%s*%(%s*3%s*,') then
+				hardcoded[#hardcoded + 1] = short
+			end
+			-- And the one duration the stutter is written at is a token too, so a
+			-- retune moves every surface that arrives rather than one of nine.
+			if code:find('%-%-op%-enter%-ms:') == nil and code:find('190ms') then
+				timings[#timings + 1] = short
+			end
+		end
+	end
+	table.sort(declared); table.sort(hardcoded); table.sort(timings)
+	check('the stutter is declared in exactly one place', #declared == 1,
+		table.concat(declared, ', '))
+	check('and no stylesheet writes the timing function out by hand',
+		#hardcoded == 0, table.concat(hardcoded, ', '))
+	check('and none writes the enter duration out either', #timings == 0,
+		table.concat(timings, ', '))
+end
+
+-- ── no catalogue declares the same key twice ─────────────────────────────────
+-- A Lua table literal keeps the LAST of two identical keys and says nothing, so
+-- a duplicated row is invisible at load, invisible at runtime and invisible to
+-- every check that reads the built table. It has to be read out of the source.
+-- `modules/admin/locales.lua` carried one, in EN and in FR, across 27 files.
+section('no locale catalogue declares a key twice')
+do
+	local files = {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if file:find('locales', 1, true) and files[file] == nil then
+				files[file] = true
+			end
+		end
+	end
+	local names = {}
+	for file in pairs(files) do names[#names + 1] = file end
+	table.sort(names)
+	check('the catalogues are on the manifest', #names > 0, #names)
+
+	-- Per table literal, not per file: EN and FR legitimately carry the same key,
+	-- and that is the whole point of them.
+	local twice = {}
+	for _, file in ipairs(names) do
+		local handle = io.open(file, 'r')
+		if handle ~= nil then
+			local block, seen = nil, {}
+			for line in handle:lines() do
+				local opened = line:match('^local%s+([%u_]+)%s*=%s*{%s*$')
+				if opened ~= nil then
+					block, seen = opened, {}
+				elseif line:match('^}') then
+					block = nil
+				elseif block ~= nil then
+					local key = line:match("^%s*%['([^']+)'%]%s*=")
+					if key ~= nil then
+						if seen[key] then
+							twice[#twice + 1] = ('%s: %s.%s'):format(file, block, key)
+						end
+						seen[key] = true
+					end
+				end
+			end
+			handle:close()
+		end
+	end
+	check('no catalogue table holds the same key twice', #twice == 0,
+		table.concat(twice, ' | '))
+end
+
 -- ── the theme bounds are two lists and one seam ──────────────────────────────
 -- `BOUNDS` in `modules/theme/shared/palette.lua` and `KNOBS` in
 -- `ui/src/design-system/theme.ts` carry the same floors and ceilings, and the

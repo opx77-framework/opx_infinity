@@ -330,7 +330,7 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
 }
 
 .gauge {
-  animation: vital-in 190ms steps(3, end) backwards;
+  animation: vital-in var(--op-enter-ms) var(--op-stutter) backwards;
   animation-delay: calc(var(--slot, 0) * 28ms);
 }
 </style>

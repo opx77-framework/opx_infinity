@@ -1915,7 +1915,7 @@ try {
 }
 
 .room.open .panel {
-  animation: panel-in 190ms steps(3, end) backwards;
+  animation: panel-in var(--op-enter-ms) var(--op-stutter) backwards;
 }
 
 .room.open .lead {
