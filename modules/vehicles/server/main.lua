@@ -358,6 +358,29 @@ function M.Spawn(source, plateId, at)
 	return done(Result.Ok({ plate = plateId, id = id, recalled = recalled or nil }))
 end
 
+--- The engine id one plate is out as right now, or nil when it is not out.
+-- @author XEROX710
+--
+-- THE ONE READ IN THIS CONTRACT THAT DOES NOT TOUCH THE DATABASE, and that is
+-- the whole reason it exists beside `Get`, which answers the same fact among
+-- several others. `garages` asks it once per bring-out, to leave the vehicle it
+-- is about to fetch out of its own occupancy check -- a car left standing on the
+-- only exit of its own garage would otherwise be a car that can never be
+-- recalled. Through `Get` that question cost a `FetchOne`, which YIELDS: one
+-- more database round trip on the hottest path this module has, for a fact
+-- already sitting in memory.
+--
+-- It says nothing about ownership on purpose. A caller that needs to know whose
+-- vehicle it is has `Get` or `Spawn`, both of which prove it; this answers only
+-- "is there an entity for this plate, and which one".
+-- @param plateId string
+-- @return any|nil the engine id
+function M.LiveId(plateId)
+	if type(plateId) ~= 'string' then return nil end
+	local record = live[plateId]
+	return record and record.id or nil
+end
+
 --- Answers the plate of a vehicle this connection is sitting in, when it OWNS it.
 -- The oracle for "put this away": the seat assignment names the vehicle and the
 -- plate table names its owner, so nothing on the wire is consulted -- a plate in
@@ -617,6 +640,7 @@ function M.Api()
 		List = M.List,
 		Get = M.Get,
 		PlateOf = M.PlateOf,
+		LiveId = M.LiveId,
 		Occupied = M.Occupied,
 		Spawn = M.Spawn,
 		Store = M.Store,

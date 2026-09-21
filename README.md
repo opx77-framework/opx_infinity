@@ -171,11 +171,24 @@ necessarily the player who asked. A request that names no place — the module's
 spawn event, and the nearby-the-player path — keeps the old answer: moving a car for
 "somewhere near me" would be a surprise rather than a service.
 
-It ships with **no spots**: `/opx.garages.add` captures one where the operator is
-standing (the heading comes from their client, because a chat line has none) and prints
-the line to check into `config/garages.lua`; `/opx.garages.remove`, `/opx.garages.list`
-and `/opx.garages.bring <key> [plate]` delete one, list them and take one out from chat.
-All four are ACL-gated under `command.opx.garages.*`.
+A **garage is a key, and a key may be in several places.** Each of its locations has
+three kinds of point: a **menu** point, where the list of everything filed under that
+key opens — whichever location it was stored at; one **entry** point, the door a vehicle
+is taken in at; and an ordered list of **exits**, tried in the order written, where it
+comes out. The first exit with nothing parked within `EXIT_CLEARANCE` of it wins, and
+when every one of them is taken the request is **refused and the player told so**,
+rather than queued behind a car nobody may move or created inside it. The vehicle being
+fetched never blocks its own bay: a car left standing on the only exit of its own garage
+would otherwise be a car that can never be recalled.
+
+Garages are written in `config/garages.lua` under `GARAGES`, and nowhere else.
+`/opx.garages.add` and `/opx.garages.remove` **are gone**: they wrote a place every
+player uses into `opx77_garages`, so the shape of the world lived in a table nobody had
+a copy of. Nothing was lost with them — the server still READS that table at boot,
+adopts every row in it that the config file does not name (as one location whose menu,
+door and only exit are that one captured point, which is exactly what a spot used to
+do), and prints each one as the block to paste into the config. `/opx.garages.list` and
+`/opx.garages.bring <key> [plate]` remain, ACL-gated under `command.opx.garages.*`.
 
 ### Buying a vehicle
 
@@ -198,15 +211,34 @@ registration that is refused after payment is refunded in full and the failure i
 logged with what was bought; a hand-over that is refused is *not* a failed sale: the
 vehicle is owned and filed, and only the convenience of driving it away is reported.
 
-It ships with **no dealers**, exactly as garages ships with no spots: `/opx.dealership.add`
-captures one where the operator is standing, under the kind and key it is given (both
-optional), and prints the line to check into `config/dealership.lua` so the dealer
-survives a database reset. `/opx.dealership.remove` deletes a captured one and refuses
-a configured one. `/opx.dealership.list` names every dealer and its origin;
-`/opx.dealership.stock` lists what is for sale and which kind sells it; and
+A dealer also has a **showroom floor** and a **zone**. An operator dresses the floor
+with **preview points** from the staff menu's Dev screen: each one stands a model of the
+stock list where the operator is standing, facing where they are looking, **locked** —
+an unlocked showroom car is a free car with an audience — and persistent, because a
+showroom car is furniture. Placing and removing one is gated on `opx.dealership.place`,
+**a right of its own** rather than a command's: the command it would have borrowed no
+longer exists, and dressing a floor is a different job from moving the building.
+
+Inside a dealer's `ZONE_RADIUS` the target eye grows a **"sell a vehicle"** row on every
+other player, so a salesperson sells face to face. Pressing it charges nobody: an
+**offer** is recorded and **the buyer's own client confirms it**, which is deliberate —
+money that leaves an account because somebody else clicked something is a support ticket
+whatever the salesperson meant by it. An offer carries its own name, so an answer to one
+that has been replaced buys nothing, and it expires on the server's clock with both
+sides told. On a yes the price is charged to the buyer, paid into the **company bank**
+of the seller's job (or gang, when they have no job) in `opx77_company_accounts`, and
+`SELLER_CUT_PERCENT` of it is paid to the seller as commission — rounded down, with the
+remainder to the company, because the other way round mints currency on every odd price.
+
+Dealers are written in `config/dealership.lua` under `SPOTS`. `/opx.dealership.add` and
+`/opx.dealership.remove` **are gone**, for the reason and with the same migration the
+garages section describes: the legacy table is still read at boot, every row the config
+does not name is adopted, and each is printed as the line that checks it in.
+`/opx.dealership.list` names every dealer, its origin and every showroom car standing on
+it; `/opx.dealership.stock` lists what is for sale and which kind sells it; and
 `/opx.dealership.buy <key> [garage]` buys from chat, which is what a player uses on a
-client whose list could not open. The three placement commands are ACL-gated — they
-write a place every player uses — and the two that act on the caller alone are not.
+client whose list could not open. `list` is ACL-gated and the two that act on the caller
+alone are not.
 
 ### Getting dressed
 
@@ -228,7 +260,7 @@ off the wire — is the whole of what a capture needs. There is no capture round
 this module, no deadline waiting for its answer and no "did not answer" warning,
 because there is nothing to ask.
 
-It ships with **no stores**, exactly as garages and dealerships ship with no spots:
+It ships with **no stores**, and it is the one of the three that still captures its own:
 `/opx.clothing.add [key] [label]` captures one where the operator is standing, names a
 key back when it is given none, and prints the line to check into `config/clothing.lua`
 so the store survives a database reset. `/opx.clothing.remove <key>` deletes a captured
@@ -260,8 +292,19 @@ error the resource ever sees.
 **A role for an operator therefore needs both spellings, and the same shape repeats
 wherever a module owns a namespace:** `command.opx.admin` *and* `command.opx.admin.*`
 to open the panel and use it, `command.opx.garages.*`, `command.opx.dealership.*` and
-`command.opx.clothing.*` for the Dev screen's placement commands, and `command.opx.weather.*`,
-`command.opx.time` and `command.opx.time.*` for the world controls. Only the `admin`
+`command.opx.clothing.*` for the Dev screen's readings, and `command.opx.weather.*`,
+`command.opx.time` and `command.opx.time.*` for the world controls.
+
+**One grant on that screen is NOT a `command.` at all**, and it is the one an operator
+will be missing: `opx.dealership.place`, which places and removes a showroom car. It is
+written exactly like that, with no prefix, because it gates no command — the commands
+that used to place things were deleted, and a right named after one of them would gate
+nothing. `command.*` does not cover it and neither does `command.opx.dealership.*`; only
+`*`, or the right itself, does. A role that holds every `command.` line above and not
+this one presses the two showroom rows and is refused, with the refusal on their own
+screen and a line in the server journal naming the right.
+
+Only the `admin`
 and `owner` roles the server supplies avoid the question — they are `command.*` and
 `*` — which is also why granting a human `admin` on a server that loads a diagnostic
 resource hands them `command.client.exec` with it. The file is the server's

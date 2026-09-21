@@ -201,12 +201,196 @@ Access.POLL_MS = math.floor(finiteNumber(Config.POLL_MS) or 0)
 Access.COOLDOWN_MS = math.floor(finiteNumber(Config.COOLDOWN_MS) or 0)
 Access.REQUEST_WINDOW_MS = math.floor(finiteNumber(Config.REQUEST_WINDOW_MS) or 0)
 Access.REQUESTS_PER_WINDOW = math.floor(finiteNumber(Config.REQUESTS_PER_WINDOW) or 0)
-Access.CAPTURE_TIMEOUT_MS = math.floor(finiteNumber(Config.CAPTURE_TIMEOUT_MS) or 0)
 
 --- The configured dealers, already validated.
 -- Read as empty rather than refused: every read is reachable from the contract.
 -- @author XEROX710
 Access.SPOTS = Access.Coerce(Config.SPOTS, nil)
+
+-- ── preview points ──────────────────────────────────────────────────────────
+
+-- A PREVIEW IS NOT A DEALER, and it has its own spec for exactly two
+-- differences. It has no KIND -- what it shows is decided by the stock row it
+-- names, and a preview whose kind disagreed with its own model would be a
+-- showroom car nobody can buy. And its noun is its own, so a refusal an operator
+-- reads says "preview" rather than "dealer" about a thing they placed from a
+-- different menu.
+--
+-- It keeps the HEADING, because a showroom car parked at zero degrees faces
+-- whichever way the map was built rather than the way the floor is laid out.
+local PREVIEW_SPEC = {
+	noun = 'preview',
+	maxKey = Access.MAX_KEY,
+	kinds = nil,
+	heading = true,
+}
+
+--- Normalises one preview point, in the operator's upper-case spelling.
+-- @author XEROX710
+-- @param key any
+-- @param raw any
+-- @return table|nil
+-- @return string|nil
+function Access.PreviewFromDefinition(key, raw)
+	local spot, why = OPX.Spots.FromDefinition(PREVIEW_SPEC, key, raw)
+	if spot == nil then return nil, why end
+	return Access.AttachPreview(spot, raw)
+end
+
+--- Normalises one preview point off the wire.
+-- @author XEROX710
+-- @param raw any
+-- @return table|nil
+-- @return string|nil
+function Access.PreviewFromWire(raw)
+	local spot, why = OPX.Spots.FromWire(PREVIEW_SPEC, raw)
+	if spot == nil then return nil, why end
+	return Access.AttachPreview(spot, raw)
+end
+
+--- Hangs the two fields the shared record knows nothing about onto a preview.
+-- @author XEROX710
+--
+-- WHICH DEALER'S FLOOR IT STANDS ON and WHICH MODEL IS STANDING ON IT. Neither
+-- belongs in `lib/shared/spots.lua`: five modules share that record and none of
+-- the other four has a catalogue to point at.
+--
+-- Both are REQUIRED, and a preview missing either is refused rather than
+-- defaulted. A preview with no entry would be an empty parking space that
+-- nothing can ever be put on; a preview with no dealer would be a car standing
+-- in a field that no zone ever cleans up.
+-- @param spot table
+-- @param raw table
+-- @return table|nil
+-- @return string|nil
+function Access.AttachPreview(spot, raw)
+	raw = type(raw) == 'table' and raw or {}
+	local dealer = raw.DEALER or raw.dealer
+	local entry = raw.ENTRY or raw.entry
+	if type(dealer) ~= 'string' or dealer == '' or #dealer > Access.MAX_KEY then
+		return nil, ('%s: DEALER must name a dealer'):format(spot.key)
+	end
+	if type(entry) ~= 'string' or entry == '' or #entry > Access.MAX_KEY then
+		return nil, ('%s: ENTRY must name a stock row'):format(spot.key)
+	end
+	spot.dealer = dealer
+	spot.entry = entry
+	return spot
+end
+
+--- The fields of one preview point as the wire carries them.
+-- @author XEROX710
+-- @param spot table
+-- @return table
+function Access.PreviewWire(spot)
+	local wire = OPX.Spots.Serialise(spot)
+	wire.dealer = spot.dealer
+	wire.entry = spot.entry
+	return wire
+end
+
+-- How many previews one dealer's floor may hold. Every one of them is a network
+-- vehicle that never despawns, so this is a frame budget and not a taste.
+Access.PREVIEW_LIMIT = math.floor(
+	finiteNumber(type(Config.PREVIEW) == 'table' and Config.PREVIEW.LIMIT or nil) or 0)
+
+--- Whether the showroom is dressed at all.
+-- @author XEROX710
+-- @return boolean
+function Access.PreviewsEnabled()
+	local block = type(Config.PREVIEW) == 'table' and Config.PREVIEW or nil
+	return block ~= nil and block.ENABLED ~= false
+end
+
+--- Whether a preview is created locked.
+-- @author XEROX710
+-- @return boolean
+function Access.PreviewLocked()
+	local block = type(Config.PREVIEW) == 'table' and Config.PREVIEW or nil
+	return block == nil or block.LOCKED ~= false
+end
+
+--- Metres a preview is lifted off its declared Z, clamped to something a chassis
+--- neither rests inside nor falls out of.
+-- @author XEROX710
+-- @return number
+function Access.PreviewLift()
+	local block = type(Config.PREVIEW) == 'table' and Config.PREVIEW or nil
+	local lift = finiteNumber(block ~= nil and block.LIFT or nil)
+	if lift == nil or lift < 0.0 or lift > 2.0 then return 0.1 end
+	return lift
+end
+
+-- ── the zone, the offer and the money ───────────────────────────────────────
+
+-- Flat metres from a dealer inside which the eye grows a row on other players,
+-- squared once because every test against it is a squared comparison.
+local ZONE_RADIUS = finiteNumber(Config.ZONE_RADIUS) or 0
+Access.ZONE_RADIUS = ZONE_RADIUS
+Access.ZONE_RADIUS_SQ = ZONE_RADIUS * ZONE_RADIUS
+
+Access.OFFER_TIMEOUT_MS = math.floor(finiteNumber(Config.OFFER_TIMEOUT_MS) or 0)
+
+--- The right that places a preview point.
+-- ITS OWN RIGHT AND NOT A COMMAND'S. The `add` command it would have borrowed
+-- does not exist any more, so a grant naming it would gate nothing; and dressing
+-- a floor is a different job from moving the building.
+-- @author XEROX710
+-- @return string|nil
+function Access.PlacementRight()
+	local right = Config.PLACEMENT_RIGHT
+	if type(right) ~= 'string' or right == '' then return nil end
+	return right
+end
+
+--- What the seller is paid out of a sale, and what the company banks.
+-- @author XEROX710
+--
+-- ROUNDED DOWN TO THE SELLER AND THE REMAINDER TO THE COMPANY. The other way
+-- round mints a unit of currency on every odd price, which over a shift is a
+-- company account that grows without anybody buying anything.
+--
+-- The percentage is clamped rather than refused: 0 is a company that pays no
+-- commission, 100 is one that keeps nothing, and a number outside that is an
+-- operator's typo -- which must not become a negative deposit.
+-- @param price number
+-- @return integer the seller's cut
+-- @return integer what the company banks
+function Access.Split(price)
+	local total = finiteNumber(price)
+	if total == nil or total <= 0 then return 0, 0 end
+	total = math.floor(total)
+	local percent = finiteNumber(Config.SELLER_CUT_PERCENT) or 0
+	if percent < 0 then percent = 0 elseif percent > 100 then percent = 100 end
+	local cut = math.floor(total * percent / 100)
+	if cut > total then cut = total end
+	return cut, total - cut
+end
+
+--- The company a seller sells for: their job, or their gang, or neither.
+-- @author XEROX710
+--
+-- THE JOB WINS. A gang member with a day job sells for the day job, because that
+-- is the company the customer believes they are buying from. `EXCLUDED` names
+-- the entries that are the ABSENCE of a group -- `unemployed` and `none` are
+-- rows in `config/character.lua` rather than nils, precisely so nothing has to
+-- handle nil, and an account for either would be one account every player on the
+-- server pays into and nobody can be the boss of.
+-- @param job any the job name
+-- @param gang any the gang name
+-- @return string|nil 'job' or 'gang'
+-- @return string|nil the group name
+function Access.CompanyOf(job, gang)
+	local block = type(Config.COMPANY) == 'table' and Config.COMPANY or {}
+	local excluded = type(block.EXCLUDED) == 'table' and block.EXCLUDED or {}
+	if block.JOBS ~= false and type(job) == 'string' and job ~= '' and not excluded[job] then
+		return 'job', job
+	end
+	if block.GANGS ~= false and type(gang) == 'string' and gang ~= '' and not excluded[gang] then
+		return 'gang', gang
+	end
+	return nil, nil
+end
 
 -- ── the stock ───────────────────────────────────────────────────────────────
 
@@ -367,8 +551,8 @@ end
 -- ── the configuration, read back ────────────────────────────────────────────
 
 -- Config keys that must be a finite number above zero.
-local NUMBERS = { 'USE_RADIUS', 'SCAN_MS', 'POLL_MS', 'COOLDOWN_MS',
-	'REQUEST_WINDOW_MS', 'REQUESTS_PER_WINDOW', 'CAPTURE_TIMEOUT_MS' }
+local NUMBERS = { 'USE_RADIUS', 'ZONE_RADIUS', 'SCAN_MS', 'POLL_MS', 'COOLDOWN_MS',
+	'REQUEST_WINDOW_MS', 'REQUESTS_PER_WINDOW', 'OFFER_TIMEOUT_MS' }
 
 --- Lists every configuration error visible without a world, sorted.
 -- @author XEROX710
@@ -409,6 +593,51 @@ function Access.Problems()
 	-- SPOTS are validated once at load; the errors are re-derived here so the
 	-- diagnostic reports them rather than only the boot log.
 	Access.Coerce(Config.SPOTS, lines)
+
+	-- THE ZONE HAS TO CONTAIN THE MARKER. A zone smaller than the radius a
+	-- dealer is USED at would grow the salesperson's row on players who are
+	-- already too far to buy anything, and take it away from one standing on the
+	-- marker -- which reads from inside the game as an eye that works everywhere
+	-- except at the counter.
+	if (finiteNumber(Config.ZONE_RADIUS) or 0) > 0 and
+		(finiteNumber(Config.ZONE_RADIUS) or 0) < (finiteNumber(Config.USE_RADIUS) or 0) then
+		lines[#lines + 1] = 'ZONE_RADIUS must be at least USE_RADIUS: the zone has to contain ' ..
+			'the marker it is drawn around'
+	end
+
+	local percent = finiteNumber(Config.SELLER_CUT_PERCENT)
+	if percent == nil or percent < 0 or percent > 100 then
+		lines[#lines + 1] = 'SELLER_CUT_PERCENT must be a number from 0 to 100'
+	end
+
+	if Access.PlacementRight() == nil then
+		lines[#lines + 1] = 'PLACEMENT_RIGHT must be the ACL right that places a preview point'
+	end
+
+	local preview = Config.PREVIEW
+	if preview ~= nil and type(preview) ~= 'table' then
+		lines[#lines + 1] = 'PREVIEW must be a table of ENABLED, LIMIT, LOCKED and LIFT'
+	elseif type(preview) == 'table' then
+		local limit = finiteNumber(preview.LIMIT)
+		if limit == nil or limit < 1 or limit % 1 ~= 0 then
+			lines[#lines + 1] = 'PREVIEW.LIMIT must be a whole number of showroom cars, 1 or more'
+		end
+		local lift = finiteNumber(preview.LIFT)
+		if lift == nil or lift < 0.0 or lift > 2.0 then
+			lines[#lines + 1] = 'PREVIEW.LIFT must be a finite number, 0 to 2 metres'
+		end
+	end
+
+	local company = Config.COMPANY
+	if type(company) ~= 'table' then
+		lines[#lines + 1] = 'COMPANY must be a table of JOBS, GANGS and EXCLUDED'
+	elseif company.JOBS == false and company.GANGS == false then
+		-- Not a fault of shape but of meaning: with neither banked, no seller
+		-- anywhere has a company, so every face-to-face sale refuses and the
+		-- whole feature is off without anything saying so.
+		lines[#lines + 1] = 'COMPANY.JOBS and COMPANY.GANGS are both off: nobody can sell to ' ..
+			'another player, because no seller has an account to pay into'
+	end
 
 	local key = type(Config.KEY) == 'table' and Config.KEY or nil
 	if key == nil then

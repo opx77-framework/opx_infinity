@@ -63,6 +63,42 @@ local function isOpen()
 	return Runtime.IsOpen()
 end
 
+--- Places a showroom car where this client is standing, facing where it looks.
+-- @author XEROX710
+--
+-- PUBLISHED FOR THE STAFF MENU, which is the placement menu the operator uses.
+-- Publishing it grants nothing: this half only asks, and the server refuses
+-- anybody who does not hold `PLACEMENT_RIGHT`. A contract call from a client is
+-- no permission check at all, which is why the check is not here.
+-- @param key string
+-- @param entryKey string
+-- @return Result
+local function place(key, entryKey)
+	local verdict = Runtime.Place(key, entryKey)
+	if verdict.ok ~= true then return Result.Err(verdict.error or 'dealership.placeFailed') end
+	return Result.Ok(verdict)
+end
+
+--- Takes one showroom car away by its key, on the same terms.
+-- @author XEROX710
+-- @param key string
+-- @return Result
+local function unplace(key)
+	local verdict = Runtime.Unplace(key)
+	if verdict.ok ~= true then return Result.Err(verdict.error or 'dealership.placeFailed') end
+	return Result.Ok(verdict)
+end
+
+--- Answers the offer this player is deciding about, or a refusal.
+-- @author XEROX710
+-- @param yes boolean
+-- @return Result
+local function decide(yes)
+	local verdict = Runtime.Decide(yes == true)
+	if verdict.ok ~= true then return Result.Err(verdict.error or 'dealership.noOffer') end
+	return Result.Ok(verdict)
+end
+
 --- Builds the client state. Never yields.
 -- @author XEROX710
 function M.Init()
@@ -79,6 +115,9 @@ function M.Api()
 		Open = open,
 		Close = close,
 		IsOpen = isOpen,
+		Place = place,
+		Unplace = unplace,
+		Decide = decide,
 	})
 end
 

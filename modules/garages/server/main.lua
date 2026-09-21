@@ -1,4 +1,4 @@
---- Server half: the spots, what may come out of each, and the capture commands.
+--- Server half: the garages, what may come out of each, and where it comes out.
 -- @author XEROX710
 --
 -- Everything the client believes is re-derived here before a vehicle exists: an
@@ -12,9 +12,24 @@
 -- before it moves anything. Two owners of the same question would be one too
 -- many, and the plate is the one this half does not own.
 --
--- A spot captured in game lives in the database and is merged OVER the config by
--- key, so a spot checked in at `config/garages.lua` can be moved in game and the
--- checked-in value is what a database reset falls back to.
+-- A GARAGE IS A KEY AND THE KEY IS IN SEVERAL PLACES. What a player walks up to
+-- is a POINT -- a menu point or a door -- and every point knows which garage it
+-- belongs to and which of that garage's locations it is at. A vehicle is filed
+-- under the GARAGE, never under a point, which is what makes storing at one
+-- location and fetching at another one garage rather than two.
+--
+-- WHERE A VEHICLE COMES OUT IS DECIDED HERE AND NOWHERE ELSE. The location's
+-- EXITS are tried in the order the operator wrote them and the first one with
+-- nothing parked on it wins. When all of them are taken the request is REFUSED
+-- and the player told so: the owner chose that over the two alternatives, which
+-- are queueing the player behind a car nobody may move and creating a vehicle
+-- inside the one already there.
+--
+-- THE PLACEMENT COMMANDS ARE GONE. `/opx.garages.add` and `.remove` wrote into
+-- `opx77_garages`, so the shape of the world lived in a table nobody had a copy
+-- of. A garage is written in `config/garages.lua` now. What did NOT go is the
+-- READ of that table: see "the legacy adoption" below, which is the whole of the
+-- migration and the reason removing the commands loses nothing.
 --
 -- Every value off the wire goes through `safe` before it reaches a format
 -- string: a newline would forge a whole log line.
@@ -25,31 +40,33 @@ local Access = M.Access
 local Result = OPX.Result
 local Store = M.Storage
 
--- The spots an operator checked in, and the ones captured in game.
-local configSpots = {}
-local captured = {}
+-- The garages an operator wrote in config, and the ones adopted out of the
+-- legacy table at boot.
+local configGarages = {}
+local adopted = {}
 
--- Config overlaid by captured: the one list every read below uses.
+-- Config overlaid by the adoption, and the flat point table every read below
+-- uses. Both are rebuilt together and never separately: a point whose garage is
+-- not in `garages` is a marker that opens a list of nothing.
+local garages = {}
 local spots = {}
 
 -- Per-player rate-limit windows for requests that are not rate-limited by
 -- `OPX.Cooling`.
 local windows = {}
 
--- The capture request each connection has not answered yet: `{ at = ms }`, by
--- player id. `add` cannot know a facing, so it asks the client for one, and an
--- answer that never comes used to be indistinguishable from one that arrived --
--- the operator was told to look the way the vehicle should point and then heard
--- nothing at all, for ever. A request now has a lifetime and settles itself.
-local pending = {}
-
 -- The contracts, resolved in `Start`. Nil means nothing can be proved and every
 -- request is refused.
 local vehicles, character
 
--- Whether the capture commands are worth registering, and whether the database
--- answered. Set in `Start`.
+-- Whether the sweep is running. Set in `Start`.
 local running = false
+
+-- Whether the missing occupancy read was already said: without
+-- `Open77.vehicles.all` no exit can be told apart from a free one, and every
+-- bring-out takes the first exit. That is the old behaviour and it is not worth
+-- refusing over, but it is worth an operator being able to find it.
+local reportedOccupancy = false
 
 -- Longest wire value a log line carries, in characters.
 local MAX_LOGGED = 64
@@ -79,28 +96,6 @@ local function within(player, limit, spanMs)
 	return true
 end
 
--- One request's identity, so a watcher cannot expire a request that replaced
--- it. `at` is monotonic and taken once.
-local function watchCapture(player, at, key)
-	if Access.CAPTURE_TIMEOUT_MS <= 0 then return end
-	CreateThread(function()
-		while true do
-			local entry = pending[player]
-			if entry == nil or entry.at ~= at then return end
-			if OPX.Now() - at >= Access.CAPTURE_TIMEOUT_MS then break end
-			Wait(100)
-		end
-		-- Still this request and still unanswered: say so, once.
-		local entry = pending[player]
-		if entry == nil or entry.at ~= at then return end
-		pending[player] = nil
-		Open77.log.warn(
-			('[garages] player %d did not answer the capture of %s within %d ms; ' ..
-				'nothing was saved'):format(player, safe(key), Access.CAPTURE_TIMEOUT_MS))
-		OPX.NotifyLocale(player, 'garages.captureNoAnswer', { key = safe(key) }, 'error')
-	end)
-end
-
 --- Answers the character this connection has loaded, or nil.
 -- The only ownership oracle there is: a citizen id in a payload is a claim.
 local function characterOf(source)
@@ -119,14 +114,34 @@ local function pointOf(source)
 	return { x = x, y = y, bucket = bucket or 0 }
 end
 
---- Rebuilds the merged list. Called once at load and after every capture.
+--- Rebuilds the merged garages and the flat point table under them.
+-- Called once at load and once when the legacy adoption has finished.
 local function rebuild()
-	spots = {}
-	for key, spot in pairs(configSpots) do spots[key] = spot end
-	for key, spot in pairs(captured) do spots[key] = spot end
+	garages, spots = {}, {}
+	for key, built in pairs(configGarages) do garages[key] = built end
+	for key, built in pairs(adopted) do
+		-- CONFIG WINS, and this is the one precedence the rework reverses. A
+		-- captured row used to overlay the config file, because the command was
+		-- the authority and the file was the backup. There is no command now:
+		-- the file IS the garage, and a stale row of the same name silently
+		-- moving it would be a garage an operator cannot move by editing the one
+		-- place they are told to edit.
+		if garages[key] == nil then garages[key] = built end
+	end
+	for _, built in pairs(garages) do
+		for _, point in ipairs(Access.PointsOf(built)) do spots[point.key] = point end
+	end
 end
 
---- The spots of one bucket, ready for the wire.
+--- The location a point belongs to, or nil.
+local function locationOf(point)
+	if type(point) ~= 'table' then return nil end
+	local built = garages[point.garage]
+	if built == nil then return nil end
+	return built.locations[point.location]
+end
+
+--- The points of one bucket, ready for the wire.
 local function payloadFor(bucket)
 	local list = Access.InBucket(spots, bucket)
 	local out = {}
@@ -134,7 +149,7 @@ local function payloadFor(bucket)
 	return out
 end
 
---- Sends one player the spots of their own bucket.
+--- Sends one player the points of their own bucket.
 local function sync(player)
 	if type(player) ~= 'number' then return end
 	local at = pointOf(player)
@@ -142,7 +157,7 @@ local function sync(player)
 	TriggerClientEvent(M.Event.SYNC, player, { spots = payloadFor(at.bucket) })
 end
 
---- Sends every connected player their own list. Guarded: a capture must not
+--- Sends every connected player their own list. Guarded: the adoption must not
 --- fail because one connection could not be read.
 local function syncAll()
 	local read, ids = pcall(Open77.players.all)
@@ -155,35 +170,37 @@ local function syncAll()
 	end
 end
 
---- Whether a stored row may come out at a spot.
+--- Whether a stored row may come out of a garage.
 -- The kind is the only thing decided here, and it is the whole rule: a ground
--- marker takes a ground vehicle and a pad takes an AV. Whether a row may come out
--- at all is the vehicles contract's question, not this module's -- a vehicle that
--- is already out is answered there with the id it has, and the state a row was
--- stored under belongs to the module that wrote it.
-local function eligible(row, spot)
+-- garage takes a ground vehicle and a pad takes an AV. Whether a row may come
+-- out at all is the vehicles contract's question, not this module's.
+local function eligible(row, built)
 	if type(row) ~= 'table' or type(row.plate) ~= 'string' then return false end
 	local av = Access.IsAv(row.record)
-	if spot.kind == M.KIND.AVPAD then return av end
+	if built.kind == M.KIND.AVPAD then return av end
 	return not av
 end
 
 --- Picks what comes out: a named plate when one was named, otherwise the
---- player's own vehicle stored at THIS spot, and failing that any eligible one.
+--- player's own vehicle stored at THIS garage, and failing that any eligible one.
 -- Ties are broken by plate because the order the rows arrive in is ANOTHER
 -- MODULE'S. `vehicles.List` answers them `ORDER BY created_at`, which is not
 -- part of that contract and not this module's to lean on: a stored vehicle
 -- landing on a second row with the same timestamp, or that query gaining an
 -- index, would change which of two equally eligible cars the same press hands
 -- over. The plate is the row's own and never ties.
-local function choose(rows, spot, wanted)
+--
+-- THE RANK IS THE GARAGE'S KEY AND NOT A POINT'S, which is the difference the
+-- rework turns on: a car put away at the Watson door of `garage1` ranks first at
+-- the Japantown menu of `garage1`, because both of them ARE `garage1`.
+local function choose(rows, built, wanted)
 	local ranked = {}
 	for index = 1, #rows do
 		local row = rows[index]
-		if eligible(row, spot) then
+		if eligible(row, built) then
 			ranked[#ranked + 1] = {
 				row = row,
-				rank = (row.garage == spot.key) and 0 or 1,
+				rank = (row.garage == built.key) and 0 or 1,
 			}
 		end
 	end
@@ -201,39 +218,173 @@ local function choose(rows, spot, wanted)
 	return nil, 'vehicle.notFound'
 end
 
---- The spot a request names, resolved against where the connection is standing.
--- THE ONE RESOLVER. The spot underfoot, the routing bucket and the reach are the
--- same three questions whether the key is about to take a vehicle out or put one
--- away, and a second copy for the second job would be a second answer to them.
+--- The first exit of a location with nothing parked on it, or nil.
+-- @author XEROX710
+--
+-- IN THE ORDER THE OPERATOR WROTE THEM, which is the contract `config/garages.lua`
+-- states: the first exit is the one the bay is meant to use and the rest are the
+-- fallbacks, in preference order. Answering nil is a REFUSAL and never a licence
+-- to use the last one anyway.
+--
+-- Measured flat, against the DECLARED exit position, and only against vehicles
+-- in the location's own routing bucket -- a car in another instance is not
+-- standing in this bay. `skipId` is the vehicle being fetched: a car left
+-- standing on the only exit of its own garage would otherwise be a car that can
+-- never be recalled, which is the one occupancy that must not count.
+--
+-- A HOST THAT CANNOT LIST VEHICLES ANSWERS THE FIRST EXIT. There is then nothing
+-- to measure and every exit reads as free, which is exactly what this module did
+-- before there were exits at all; it is said once rather than refused, because a
+-- garage that stops working on an older host is worse than one that occasionally
+-- drops a car on another.
+-- @param place table a location
+-- @param skipId any the engine id of the vehicle being fetched, or nil
+-- @return table|nil the exit
+-- @return integer|nil which one it was, so the log can say
+local function freeExit(place, skipId)
+	local parked = {}
+	local api = Open77.vehicles
+	if type(api) == 'table' and type(api.all) == 'function' then
+		local read, listed = pcall(api.all, place.bucket)
+		if read and type(listed) == 'table' then
+			for index = 1, #listed do
+				local car = listed[index]
+				local at = type(car) == 'table' and (type(car.position) == 'table' and car.position
+					or car) or nil
+				local x = at ~= nil and coordinate(at.x) or nil
+				local y = at ~= nil and coordinate(at.y) or nil
+				local id = type(car) == 'table' and car.id or nil
+				if x ~= nil and y ~= nil and
+					(skipId == nil or id == nil or tostring(id) ~= tostring(skipId)) then
+					parked[#parked + 1] = { x = x, y = y }
+				end
+			end
+		end
+	elseif not reportedOccupancy then
+		reportedOccupancy = true
+		Open77.log.warn('[garages] this host cannot list vehicles, so no exit can be told from ' ..
+			'an occupied one: every bring-out takes the first exit written')
+	end
+
+	for slot = 1, #place.exits do
+		local exit = place.exits[slot]
+		local free = true
+		for index = 1, #parked do
+			local dx, dy = parked[index].x - exit.x, parked[index].y - exit.y
+			if dx * dx + dy * dy <= Access.EXIT_CLEARANCE_SQ then
+				free = false
+				break
+			end
+		end
+		if free then return exit, slot end
+	end
+	return nil, nil
+end
+
+--- The point a request names, resolved against where the connection is standing.
+-- THE ONE RESOLVER. The point underfoot, the routing bucket and the reach are
+-- the same three questions whether the key is about to open a list, take a
+-- vehicle out or put one away, and a second copy for the second job would be a
+-- second answer to them.
+--
+-- A NAME MAY BE A POINT OR A GARAGE. `/opx.garages.bring garage1` is what an
+-- operator types, and `garage1` is a garage with several points; the nearest
+-- point OF THAT GARAGE is what they mean. A point key -- which only ever comes
+-- off the wire -- is matched exactly.
 -- @author XEROX710
 -- @param source Source
--- @param key string|nil the spot name; the nearest one when omitted
+-- @param key string|nil the point or garage name; the nearest point when omitted
 -- @return spot|nil
 -- @return Result|nil the refusal, when there is one
 local function resolve(source, key)
 	local at = pointOf(source)
 	if at == nil then return nil, Result.Err('garages.noPosition') end
 
-	local spot = nil
+	local point = nil
 	if key == nil or key == '' then
-		spot = Access.Nearest(spots, at.x, at.y)
+		point = Access.Nearest(spots, at.x, at.y)
 	else
-		spot = Access.Spot(spots, key)
+		point = Access.Spot(spots, key)
+		if point == nil and garages[key] ~= nil then
+			local mine = {}
+			for _, candidate in ipairs(Access.PointsOf(garages[key])) do
+				mine[candidate.key] = candidate
+			end
+			-- UNBOUNDED, and that is the difference between two refusals an
+			-- operator reads. Asking for the nearest point WITHIN REACH answers
+			-- nil for somebody standing across the street from the garage they
+			-- named, and nil here means `noSuchSpot` -- "there is no garage
+			-- here", about a garage that plainly exists. The reach is applied
+			-- below, once, where its refusal says it was the distance.
+			point = Access.Nearest(mine, at.x, at.y, math.huge)
+		end
 	end
-	if spot == nil then return nil, Result.Err('garages.noSuchSpot') end
-	if spot.bucket ~= at.bucket then return nil, Result.Err('garages.wrongBucket') end
+	if point == nil then return nil, Result.Err('garages.noSuchSpot') end
+	if point.bucket ~= at.bucket then return nil, Result.Err('garages.wrongBucket') end
 
-	local flat = Access.FlatDistanceSquared(spot, at.x, at.y)
+	local flat = Access.FlatDistanceSquared(point, at.x, at.y)
 	if flat == nil or flat > Access.USE_RADIUS_SQ then
-		return nil, Result.Err('garages.tooFar', spot.key)
+		return nil, Result.Err('garages.tooFar', point.key)
 	end
-	return spot, nil
+	return point, nil
 end
 
---- Brings one of the connection's own vehicles out at a spot it stands on.
+--- Every vehicle the connection may bring out of the garage a point belongs to.
+-- @author XEROX710
+--
+-- THE GARAGE'S WHOLE LIST, and that is the feature: a player standing at one
+-- location sees what they left at every other one. `here` says which rows were
+-- filed at this garage, so the list can show the rest as what they are -- a car
+-- that is somewhere else and will be fetched to here.
+-- @param source Source
+-- @param key string|nil the point name; the nearest one when omitted
+-- @return Result
+function M.List(source, key)
+	if vehicles == nil then return Result.Err('garages.noVehicles') end
+
+	local data = characterOf(source)
+	if data == nil or type(data.citizenId) ~= 'string' then
+		return Result.Err('garages.noCharacter')
+	end
+	local point, refusal = resolve(source, key)
+	if point == nil then return refusal end
+	local built = garages[point.garage]
+	if built == nil then return Result.Err('garages.noSuchSpot') end
+
+	local owned = vehicles.List(data.citizenId)
+	if not owned.ok then return owned end
+	local rows = type(owned.value) == 'table' and owned.value or {}
+
+	local listed = {}
+	for index = 1, #rows do
+		local row = rows[index]
+		if eligible(row, built) then
+			listed[#listed + 1] = {
+				plate = row.plate,
+				record = row.record,
+				here = row.garage == built.key,
+			}
+		end
+	end
+	table.sort(listed, function(left, right)
+		if left.here ~= right.here then return left.here end
+		return left.plate < right.plate
+	end)
+
+	return Result.Ok({
+		spot = point.key,
+		garage = built.key,
+		label = built.label,
+		kind = built.kind,
+		vehicles = listed,
+	})
+end
+
+--- Brings one of the connection's own vehicles out at a free exit of the
+--- location it is standing at.
 -- @author XEROX710
 -- @param source Source
--- @param key string|nil the spot name; the nearest one when omitted
+-- @param key string|nil the point or garage name; the nearest point when omitted
 -- @param wanted string|nil a plate the caller claims
 -- @return Result
 function M.Bring(source, key, wanted)
@@ -243,33 +394,60 @@ function M.Bring(source, key, wanted)
 	if data == nil or type(data.citizenId) ~= 'string' then
 		return Result.Err('garages.noCharacter')
 	end
-	local spot, refusal = resolve(source, key)
-	if spot == nil then return refusal end
+	local point, refusal = resolve(source, key)
+	if point == nil then return refusal end
+	local built = garages[point.garage]
+	local place = locationOf(point)
+	if built == nil or place == nil then return Result.Err('garages.noSuchSpot') end
 
 	local owned = vehicles.List(data.citizenId)
 	if not owned.ok then return owned end
 	local rows = type(owned.value) == 'table' and owned.value or {}
-	local pick, refusal = choose(rows, spot, wanted)
-	if pick == nil then return Result.Err(refusal or 'garages.nothingHere', spot.key) end
+	local pick, why = choose(rows, built, wanted)
+	if pick == nil then return Result.Err(why or 'garages.nothingHere', built.key) end
 
-	-- The spot itself, never the player's side: that is the whole point of a
+	-- THE VEHICLE BEING FETCHED DOES NOT BLOCK ITS OWN BAY. It is read through
+	-- the contract that owns it rather than guessed at: a plate that is not out
+	-- has no id, and an id that is not out cannot be standing on anything.
+	--
+	-- `LiveId` AND NOT `Get`, deliberately. `Get` answers the same fact among
+	-- several others and reaches the database to do it, which YIELDS -- one more
+	-- round trip on the hottest path here, for something already in that module's
+	-- memory. A contract too old to have it costs the exemption and nothing else:
+	-- the car then blocks its own bay, which is the behaviour a single-exit
+	-- garage had before there were exits.
+	local outNow = type(vehicles.LiveId) == 'function' and vehicles.LiveId(pick.plate) or nil
+
+	local exit, slot = freeExit(place, outNow)
+	if exit == nil then
+		-- REFUSED AND SAID, which is the owner's own choice: "if no exit point is
+		-- free, refuse and notify the player". The alternatives were a queue
+		-- behind a car nobody may move and a vehicle created inside one.
+		Open77.log.info(('[garages] %s: every exit of %s location %d is occupied; %s stays in')
+			:format(tostring(data.citizenId), safe(built.key), place.index, safe(pick.plate)))
+		return Result.Err('garages.noFreeExit', built.label)
+	end
+
+	-- The exit itself, never the player's side: that is the whole point of a
 	-- marker. An AV is lifted clear of the pad it materialises on.
-	local z = spot.z
+	local z = exit.z
 	if Access.IsAv(pick.record) then z = z + Access.AvLift() end
 
 	-- Flat, the shape the vehicles contract reads a named place in: a nested
 	-- position would be read as no place at all and the car would land beside the
 	-- player, a car's width off the marker.
 	local spawned = vehicles.Spawn(source, pick.plate, {
-		x = spot.x, y = spot.y, z = z,
-		yaw = spot.heading,
-		bucket = spot.bucket,
+		x = exit.x, y = exit.y, z = z,
+		yaw = exit.heading,
+		bucket = exit.bucket,
 	})
 	if not spawned.ok then return spawned end
 
 	return Result.Ok({
-		spot = spot.key,
-		label = spot.label,
+		spot = point.key,
+		garage = built.key,
+		label = built.label,
+		exit = slot,
 		plate = pick.plate,
 		id = spawned.value and spawned.value.id or nil,
 		-- Forwarded, not decided here: whether the vehicle had to be moved is
@@ -286,13 +464,12 @@ end
 -- holds, both through the vehicles contract. A client that said "I am in my car"
 -- would be a client deciding what gets stored.
 --
--- Putting away is filed UNDER THE SPOT the player is standing on, because that is
--- what makes it come out there next time: `choose` prefers a row whose garage is
--- the spot it is standing on, and a car put away at a marker that then treated it
--- as a stranger would be a marker that forgets where you left it.
+-- Putting away is filed UNDER THE GARAGE and never under the point, which is the
+-- whole of the rework: a car taken in at one door comes out at every location of
+-- that garage, and `choose` ranks it first at all of them.
 -- @author XEROX710
 -- @param source Source
--- @param key string|nil the spot name; the nearest one when omitted
+-- @param key string|nil the point name; the nearest one when omitted
 -- @param wanted string|nil a plate the caller claims, for the bring-out half
 -- @return Result
 function M.Use(source, key, wanted)
@@ -307,13 +484,16 @@ function M.Use(source, key, wanted)
 	-- is the bring-out half -- the behaviour every marker had before this.
 	local seated = type(vehicles.Occupied) == 'function' and vehicles.Occupied(source) or nil
 	if seated ~= nil and seated.ok and seated.value ~= nil then
-		local spot, refusal = resolve(source, key)
-		if spot == nil then return refusal end
-		local put = vehicles.Store(seated.value.plate, spot.key)
+		local point, refusal = resolve(source, key)
+		if point == nil then return refusal end
+		local built = garages[point.garage]
+		if built == nil then return Result.Err('garages.noSuchSpot') end
+		local put = vehicles.Store(seated.value.plate, built.key)
 		if not put.ok then return put end
 		return Result.Ok({
-			spot = spot.key,
-			label = spot.label,
+			spot = point.key,
+			garage = built.key,
+			label = built.label,
 			plate = seated.value.plate,
 			stored = true,
 		})
@@ -342,8 +522,6 @@ local function onRequested(key, plate)
 	-- from one row. The race lives in `vehicles` and wants fixing there; this is
 	-- the caller that can drive it, and the floor its own config already asked
 	-- for is what stops it being driven.
-	--
-	-- Same shape and same reason as the dealership's, which did apply its own.
 	if Access.COOLDOWN_MS > 0 and OPX.Cooling(src, 'garages.bring', Access.COOLDOWN_MS) then
 		TriggerClientEvent(M.Event.ANSWER, src, key, false, 'garages.rateLimited')
 		return
@@ -359,7 +537,7 @@ local function onRequested(key, plate)
 			-- The refusal AND a toast of the same code: without the toast the
 			-- player would not know why nothing happened.
 			OPX.Refuse(src, used.error, M.Operation.BRING)
-			OPX.NotifyLocale(src, used.error, nil, 'error')
+			OPX.NotifyLocale(src, used.error, { garage = safe(used.detail) }, 'error')
 			TriggerClientEvent(M.Event.ANSWER, src, key, false, used.error)
 			Open77.log.info(('[garages] player %d refused %s: %s'):format(src, safe(key),
 				tostring(used.error)))
@@ -377,9 +555,32 @@ local function onRequested(key, plate)
 			OPX.NotifyLocale(src, 'garages.broughtOut', { plate = value.plate }, 'success')
 		end
 		TriggerClientEvent(M.Event.ANSWER, src, key, true, nil, value.plate, action)
-		Open77.log.info(('[garages] player %d %s %s at %s'):format(src,
+		Open77.log.info(('[garages] player %d %s %s at %s%s'):format(src,
 			action == 'stored' and 'put away' or (action == 'recalled' and 'moved' or 'brought out'),
-			safe(value.plate), safe(value.spot)))
+			safe(value.plate), safe(value.garage),
+			value.exit ~= nil and (' exit ' .. tostring(value.exit)) or ''))
+	end)
+end
+
+--- One list off the wire, for the menu point the player is standing on.
+-- Counted against the same window a bring-out is: a client asking for a roster
+-- in a loop is a client reading the database in a loop.
+local function onListed(key)
+	local src = tonumber(source)
+	if src == nil then return end
+	if key ~= nil and type(key) ~= 'string' then key = nil end
+	if not within(src, Access.REQUESTS_PER_WINDOW, Access.REQUEST_WINDOW_MS) then
+		return OPX.Refuse(src, 'error.tooFast', M.Operation.LIST)
+	end
+
+	CreateThread(function()
+		local listed = M.List(src, key)
+		if not listed.ok then
+			OPX.Refuse(src, listed.error, M.Operation.LIST)
+			TriggerClientEvent(M.Event.VEHICLES, src, { spot = key, error = listed.error })
+			return
+		end
+		TriggerClientEvent(M.Event.VEHICLES, src, listed.value)
 	end)
 end
 
@@ -391,186 +592,38 @@ local function register(name, opts, handler)
 	OPX.Command.Register(name, opts, handler)
 end
 
---- Whether the ACL lets this player run a capture command.
--- The host resolves `command.<name>` before a COMMAND handler runs, and a net
--- event has no such gate of its own -- so the capture door asks the same
--- question here. An unreadable ACL answers no: a door that cannot be checked is
--- not one to leave open.
-local function aclAllows(player, name)
-	if type(name) ~= 'string' or name == '' then return false end
-	local acl = Open77.acl
-	if type(acl) ~= 'table' or type(acl.isAllowed) ~= 'function' then return false end
-	local read, allowed = pcall(acl.isAllowed, player, 'command.' .. name)
-	return read and allowed == true
-end
-
--- Prints every spot: kind, position, and whether it came from config or the
--- database.
+-- Prints every garage: its kind, each location's points, and whether the garage
+-- came from config or was adopted out of the legacy table.
 local function report(source)
 	local lines = {}
-	local keys, capturedCount = {}, 0
-	for key in pairs(spots) do keys[#keys + 1] = key end
+	local keys, adoptedCount = {}, 0
+	for key in pairs(garages) do keys[#keys + 1] = key end
 	table.sort(keys)
 	for index = 1, #keys do
-		local spot = spots[keys[index]]
-		local fromDatabase = captured[spot.key] ~= nil
-		if fromDatabase then capturedCount = capturedCount + 1 end
-		lines[#lines + 1] = ('%s %s %s pos=%.2f,%.2f,%.2f yaw=%.1f bucket=%d %s'):format(
-			spot.key, spot.kind, spot.label, spot.x, spot.y, spot.z, spot.heading,
-			spot.bucket, fromDatabase and 'captured' or 'config')
+		local built = garages[keys[index]]
+		local legacy = adopted[built.key] ~= nil and configGarages[built.key] == nil
+		if legacy then adoptedCount = adoptedCount + 1 end
+		lines[#lines + 1] = ('%s %s %s %d location(s) %s'):format(
+			built.key, built.kind, built.label, #built.locations,
+			legacy and 'legacy' or 'config')
+		for _, place in ipairs(built.locations) do
+			lines[#lines + 1] = ('  %d menu=%.2f,%.2f,%.2f in=%.2f,%.2f,%.2f yaw=%.1f ' ..
+				'exits=%d bucket=%d'):format(place.index,
+				place.menu.x, place.menu.y, place.menu.z,
+				place.entry.x, place.entry.y, place.entry.z, place.entry.heading,
+				#place.exits, place.bucket)
+		end
 	end
-	lines[#lines + 1] = ('%d spot(s): %d from config, %d captured')
-		:format(#keys, #keys - capturedCount, capturedCount)
+	lines[#lines + 1] = ('%d garage(s): %d from config, %d adopted'):format(#keys,
+		#keys - adoptedCount, adoptedCount)
 	OPX.CommandResult(source, true, table.concat(lines, '\n'))
 end
 
---- Saves one captured spot: the position from the server, the heading from the
---- client that asked.
--- The position is read HERE and never off the wire, so the yaw is the one field a
--- client contributes -- and it only turns a vehicle. Runs on a thread: the write
--- yields.
-local function capture(player, kind, key, label, yaw, citizenId)
-	local at = pointOf(player)
-	if at == nil then
-		return OPX.NotifyLocale(player, 'garages.noPosition', nil, 'error')
-	end
-	local read, position = pcall(Open77.players.position, player)
-	local z = read and type(position) == 'table' and coordinate(position.z) or nil
-	if z == nil then
-		return OPX.NotifyLocale(player, 'garages.noPosition', nil, 'error')
-	end
-
-	local heading = Access.FiniteNumber(yaw)
-	if heading == nil then heading = 0.0 end
-	heading = heading % 360.0
-
-	local spot, why = Access.FromDefinition(key, {
-		KIND = kind, LABEL = label, X = at.x, Y = at.y, Z = z,
-		HEADING = heading, BUCKET = at.bucket,
-	})
-	if spot == nil then
-		-- Said in the node's log as well as to the player: a refusal only the
-		-- player can see leaves whoever reads the log unable to tell a capture
-		-- that was turned down from one that never arrived.
-		Open77.log.warn(('[garages] player %d capture of %s refused: %s')
-			:format(player, safe(key), safe(why)))
-		OPX.NotifyLocale(player, 'garages.captureFailed', nil, 'error')
-		return OPX.CommandResult(player, false, tostring(why))
-	end
-
-	local saved = Store.Upsert(spot, citizenId)
-	if not saved.ok then
-		Open77.log.warn(('[garages] player %d could not save the capture of %s: %s')
-			:format(player, safe(key), safe(saved.detail)))
-		OPX.NotifyLocale(player, 'garages.captureFailed', nil, 'error')
-		return OPX.CommandResult(player, false, 'could not save; the reason is in the server log')
-	end
-	captured[key] = spot
-	rebuild()
-	-- The operator first and directly: they are looking at the marker they just
-	-- placed, and a fan-out that cannot read the roster would otherwise leave the
-	-- one person who cares without it.
-	sync(player)
-	syncAll()
-	Open77.log.info(('[garages] %s captured as %s at %.2f,%.2f,%.2f yaw=%.1f by %d')
-		:format(key, kind, spot.x, spot.y, spot.z, spot.heading, player))
-	OPX.CommandResult(player, true, ('%s saved; check it in to survive a database reset:\n  %s = ' ..
-		'{ LABEL = %q, KIND = %q, X = %.2f, Y = %.2f, Z = %.2f, HEADING = %.1f, BUCKET = %d },')
-		:format(key, key, spot.label, spot.kind, spot.x, spot.y, spot.z, spot.heading,
-			spot.bucket))
-end
-
---- Registers the capture and diagnostic commands.
+--- Registers the two commands that are left.
+-- `add` and `remove` are gone: they wrote a place every player uses into a table
+-- only one host had. See the header.
 local function registerCommands()
 	local names = type(M.Settings.COMMANDS) == 'table' and M.Settings.COMMANDS or {}
-
-	register(names.add, {
-		restricted = true,
-		help = 'garages.help.add',
-		params = {
-			{ name = 'kind', optional = true, help = locale('garages.help.addKind') },
-			{ name = 'key', optional = true, help = locale('garages.help.addKey') },
-			{ name = 'label', optional = true, help = locale('garages.help.addLabel') },
-		},
-	}, function(source, args)
-		-- THE KIND AND THE KEY ARE BOTH OPTIONAL. The config file has always
-		-- advertised the bare form -- "`/opx.garages.add` prints the line to check
-		-- in here" -- but the handler demanded two positionals and answered the
-		-- bare command with a string no player ever saw and no line in the server
-		-- log, so the command read as dead. It is not dead: it captures a garage
-		-- where the operator stands, under a key it names back to them.
-		--
-		-- One rule decides the slots: the first word names the KIND when it is one
-		-- and is the KEY otherwise, in which case the kind is the garage the bare
-		-- form means.
-		local kind = type(args[1]) == 'string' and args[1]:lower() or ''
-		local first = 1
-		if Access.KINDS[kind] then
-			first = 2
-		else
-			kind = M.KIND.GARAGE
-		end
-		local key = type(args[first]) == 'string' and args[first] or ''
-		if #key > Access.MAX_KEY then
-			Open77.log.warn(('[garages] player %d add refused: the key is %d characters, over %d')
-				:format(source, #key, Access.MAX_KEY))
-			return OPX.CommandResult(source, false,
-				('usage: add [garage|avpad] [key] [label] -- a key is 1 to %d characters')
-					:format(Access.MAX_KEY))
-		end
-		if #key == 0 then
-			-- Named back in the answer: a spot whose key the operator never learned
-			-- could not be brought out or removed afterwards.
-			local index = 0
-			repeat index = index + 1 until spots[kind .. index] == nil
-			key = kind .. index
-		end
-		local label = ''
-		for index = first + 1, #args do
-			label = label .. (index > first + 1 and ' ' or '') .. tostring(args[index])
-		end
-		if #label > 64 then label = label:sub(1, 64) end
-
-		-- The position is read below when the client answers; the HEADING is the
-		-- operator's own facing, and a chat command has none. So the client is
-		-- asked for it -- the one field a client contributes, and it only turns a
-		-- vehicle -- exactly as a dropped pile is turned by the same answer.
-		-- Recorded before the ask, so an answer that arrives immediately cannot be
-		-- mistaken for one that arrived before it was ever requested.
-		local at = OPX.Now()
-		pending[source] = { at = at }
-		TriggerClientEvent(M.Event.CAPTURE, source, kind, key, label)
-		Open77.log.info(('[garages] asked player %d for the facing of %s %s')
-			:format(source, kind, key))
-		watchCapture(source, at, key)
-		OPX.CommandResult(source, true, 'capturing where you are standing; look the way the ' ..
-			'vehicle should point')
-	end)
-
-	register(names.remove, {
-		restricted = true,
-		help = 'garages.help.remove',
-		params = { { name = 'key', help = locale('garages.help.removeKey') } },
-	}, function(source, args)
-		local key = type(args[1]) == 'string' and args[1] or ''
-		if #key == 0 then return OPX.CommandResult(source, false, 'usage: remove <key>') end
-		if captured[key] == nil then
-			return OPX.CommandResult(source, false, configSpots[key] ~= nil
-				and 'that spot comes from config; edit config/garages.lua to remove it'
-				or 'no captured spot named ' .. key)
-		end
-		CreateThread(function()
-			local gone = Store.Delete(key)
-			if not gone.ok then
-				return OPX.CommandResult(source, false, 'could not delete; the reason is in the server log')
-			end
-			captured[key] = nil
-			rebuild()
-			syncAll()
-			Open77.log.info(('[garages] %s removed by %d'):format(key, source))
-			OPX.CommandResult(source, true, key .. ' removed.')
-		end)
-	end)
 
 	register(names.list, { restricted = true, help = 'garages.help.list' }, function(source)
 		report(source)
@@ -589,7 +642,7 @@ local function registerCommands()
 		CreateThread(function()
 			local brought = M.Bring(source, key, plate)
 			if not brought.ok then
-				OPX.NotifyLocale(source, brought.error, nil, 'error')
+				OPX.NotifyLocale(source, brought.error, { garage = safe(brought.detail) }, 'error')
 				return OPX.CommandResult(source, false, tostring(brought.error))
 			end
 			OPX.NotifyLocale(source, 'garages.broughtOut', { plate = brought.value.plate }, 'success')
@@ -599,17 +652,78 @@ local function registerCommands()
 	end)
 end
 
+-- ── the legacy adoption ─────────────────────────────────────────────────────
+
+--- Turns one row of `opx77_garages` into a garage of one location.
+-- @author XEROX710
+--
+-- THIS IS THE WHOLE MIGRATION, and it is written as code rather than as a SQL
+-- script for one reason: a spot in that table is a spot NOBODY HAS A COPY OF.
+-- The commands that wrote it are gone, so without this every marker an operator
+-- ever placed in game disappears the moment this version starts -- silently,
+-- because an empty `GARAGES` block is a valid config.
+--
+-- A legacy spot was ONE POINT that did everything: you stood on it, pressed the
+-- key, and the car appeared where you were standing. So it adopts as one
+-- location whose menu, door and only exit are that same point, which is exactly
+-- what it did before. The key is kept, which is what makes it seamless: a
+-- vehicle's `garage` column already holds it, so not one row is rewritten.
+--
+-- It is READ-ONLY. Nothing writes to `opx77_garages` any more and nothing drops
+-- it: an operator who has not yet checked their spots in can roll back to the
+-- previous version and still have them.
+local function adopt(row)
+	local key = row.spot_key
+	local block = {
+		KIND = row.kind,
+		LABEL = row.label,
+		LOCATIONS = { {
+			BUCKET = row.bucket,
+			MENU = { X = row.x, Y = row.y, Z = row.z },
+			ENTRY = { X = row.x, Y = row.y, Z = row.z, HEADING = row.heading },
+			EXITS = { { X = row.x, Y = row.y, Z = row.z, HEADING = row.heading } },
+		} },
+	}
+	local problems = {}
+	local built = select(1, Access.CoerceGarages({ [key] = block }, problems))
+	return built[key], problems[1]
+end
+
+--- The block an operator pastes into `config/garages.lua` to keep a garage.
+-- Written at every start for every adopted garage, for the reason the old
+-- capture line was written once into one player's chat box and then lost.
+local function configLines(built)
+	local lines = { ('[garages] config line: %s = { LABEL = %q, KIND = %q, LOCATIONS = {')
+		:format(built.key, built.label, built.kind) }
+	for _, place in ipairs(built.locations) do
+		lines[#lines + 1] = ('[garages] config line:   { BUCKET = %d,'):format(place.bucket)
+		lines[#lines + 1] = ('[garages] config line:     MENU = { X = %.2f, Y = %.2f, Z = %.2f },')
+			:format(place.menu.x, place.menu.y, place.menu.z)
+		lines[#lines + 1] = ('[garages] config line:     ENTRY = { X = %.2f, Y = %.2f, Z = %.2f, ' ..
+			'HEADING = %.1f },'):format(place.entry.x, place.entry.y, place.entry.z,
+			place.entry.heading)
+		lines[#lines + 1] = '[garages] config line:     EXITS = {'
+		for _, exit in ipairs(place.exits) do
+			lines[#lines + 1] = ('[garages] config line:       { X = %.2f, Y = %.2f, Z = %.2f, ' ..
+				'HEADING = %.1f },'):format(exit.x, exit.y, exit.z, exit.heading)
+		end
+		lines[#lines + 1] = '[garages] config line:     } },'
+	end
+	lines[#lines + 1] = '[garages] config line: } },'
+	return lines
+end
+
 -- ── the phases ──────────────────────────────────────────────────────────────
 
 --- Builds the state from config and contributes this module's table. Never yields.
 -- @author XEROX710
 function M.Init()
-	configSpots = Access.SPOTS
-	captured = {}
+	configGarages = Access.GARAGES
+	adopted = {}
 	rebuild()
 	windows = {}
-	pending = {}
 	running = false
+	reportedOccupancy = false
 	OPX.Schema.Add(M.Storage.SCHEMA)
 end
 
@@ -619,19 +733,29 @@ function M.Api()
 	OPX.Api.Provide('garages', 1, {
 		Bring = M.Bring,
 		Use = M.Use,
+		List = M.List,
+		-- The DRAWN POINTS, by point key. What a marker is, and nothing about
+		-- what a vehicle is filed under.
 		Spots = function() return spots end,
+		-- THE GARAGES, by the key a vehicle's `garage` column holds. The
+		-- dealership names one of these as a delivery destination, and naming a
+		-- point there would file a car under a marker rather than under a
+		-- garage -- which is a car that comes out of exactly one door of one
+		-- location and nowhere else.
+		Garages = function() return garages end,
 		State = function()
 			local listed = {}
-			for key, spot in pairs(spots) do
-				listed[key] = { kind = spot.kind, label = spot.label,
-					captured = captured[key] ~= nil }
+			for key, built in pairs(garages) do
+				listed[key] = { kind = built.kind, label = built.label,
+					locations = #built.locations,
+					adopted = adopted[key] ~= nil and configGarages[key] == nil }
 			end
-			return Result.Ok({ spots = listed })
+			return Result.Ok({ garages = listed })
 		end,
 	})
 end
 
---- Resolves the contracts, loads the captured spots and wires the two doors.
+--- Resolves the contracts, adopts the legacy rows and wires the doors.
 -- @author XEROX710
 function M.Start()
 	character = OPX.Api.Get('character')
@@ -648,9 +772,6 @@ function M.Start()
 		Open77.log.warn('[garages] config: ' .. line)
 	end
 
-	-- Both doors are registered whatever the database answered: an operator has
-	-- to be able to read back what the configuration says, and `add` is how a
-	-- database that answered nothing gets filled.
 	registerCommands()
 
 	RegisterNetEvent(M.Event.ASK, function()
@@ -660,45 +781,7 @@ function M.Start()
 	end)
 
 	RegisterNetEvent(M.Event.REQUEST, onRequested)
-
-	-- The capture door, gated exactly as the command that opens it: a net event
-	-- has no host-side ACL check, so the same question is asked here. A client
-	-- that sends this unprompted is either the operator or nobody.
-	RegisterNetEvent(M.Event.CAPTURED, function(kind, key, label, yaw)
-		local player = tonumber(source)
-		if player == nil then return end
-
-		-- Settled by the arrival itself, accepted or not: an answer is an answer,
-		-- and a "did not answer" warning after one has landed would be a lie.
-		pending[player] = nil
-
-		local names = type(M.Settings.COMMANDS) == 'table' and M.Settings.COMMANDS or {}
-		if not aclAllows(player, names.add) then
-			Open77.log.warn(('[garages] player %d tried to capture a spot without %s')
-				:format(player, tostring(names.add)))
-			return OPX.Refuse(player, 'error.noPermission', M.Operation.CAPTURE)
-		end
-		if not within(player, Access.REQUESTS_PER_WINDOW, Access.REQUEST_WINDOW_MS) then
-			Open77.log.warn(('[garages] player %d answered a capture too fast; refused')
-				:format(player))
-			return OPX.Refuse(player, 'error.tooFast', M.Operation.CAPTURE)
-		end
-
-		kind = type(kind) == 'string' and kind:lower() or ''
-		key = type(key) == 'string' and key or ''
-		label = type(label) == 'string' and label or ''
-		if #label > 64 then label = label:sub(1, 64) end
-		if not Access.KINDS[kind] or #key == 0 or #key > Access.MAX_KEY then
-			Open77.log.warn(('[garages] player %d answered a capture for an unusable spot')
-				:format(player))
-			return OPX.Refuse(player, 'error.badRequest', M.Operation.CAPTURE)
-		end
-
-		local data = characterOf(player)
-		CreateThread(function()
-			capture(player, kind, key, label, yaw, data and data.citizenId or nil)
-		end)
-	end)
+	RegisterNetEvent(M.Event.LIST, onListed)
 
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, function(playerId)
 		local player = tonumber(playerId)
@@ -709,57 +792,68 @@ function M.Start()
 	CreateThread(function()
 		local rows = Store.FetchAll()
 		if not rows.ok then
-			Open77.log.error('[garages] captured spots could not be read: ' ..
+			Open77.log.error('[garages] the legacy spots could not be read: ' ..
 				tostring(rows.detail))
 			return
 		end
 		local loaded = type(rows.value) == 'table' and rows.value or {}
-		local accepted, refused = 0, 0
+		local accepted, refused, shadowed = 0, 0, 0
 		for index = 1, #loaded do
-			local row = loaded[index]
-			local spot, why = Access.FromDefinition(row.spot_key, {
-				KIND = row.kind, LABEL = row.label,
-				X = row.x, Y = row.y, Z = row.z, HEADING = row.heading, BUCKET = row.bucket,
-			})
-			if spot == nil then
+			-- ONE RESUME PER ROW. Every adoption coerces a whole garage and every
+			-- config line below formats a dozen strings, and a loop that did all
+			-- of both in the resume that read the database would run out of
+			-- instruction budget partway down -- the coroutine unwinding with no
+			-- error, no log and no refusal, leaving the garages it got to and
+			-- silently dropping the rest. That failure has cost this codebase
+			-- four outages; `modules/admin/client/target.lua` `register()` is the
+			-- worked example and says so at length. A frame per row costs nothing
+			-- at boot.
+			Wait(0)
+			local built, why = adopt(loaded[index])
+			if built == nil then
 				refused = refused + 1
-				Open77.log.warn('[garages] captured row refused: ' .. tostring(why))
+				Open77.log.warn('[garages] a legacy spot was refused: ' .. tostring(why))
 			else
 				accepted = accepted + 1
-				captured[spot.key] = spot
+				adopted[built.key] = built
 			end
 		end
 		rebuild()
+		for key in pairs(adopted) do
+			if configGarages[key] ~= nil then shadowed = shadowed + 1 end
+		end
 		-- A player who connected while the database was being read asked too
 		-- early and was told nothing; they ask again on their own cadence.
 		syncAll()
-		Open77.log.info(('[garages] ready: %d config, %d captured, %d refused'):format(
-			(function()
-				local count = OPX.Table.Count(configSpots)
-				return count
-			end)(), accepted, refused))
+		Open77.log.info(('[garages] ready: %d from config, %d adopted from the legacy table, ' ..
+			'%d refused, %d shadowed by a garage of the same name in config'):format(
+			OPX.Table.Count(configGarages), accepted - shadowed, refused, shadowed))
 
-		-- EVERY CAPTURED SPOT, AS THE CONFIG LINE THAT WOULD RECREATE IT.
+		-- EVERY ADOPTED GARAGE, AS THE CONFIG BLOCK THAT WOULD RECREATE IT.
 		--
-		-- A captured spot lives only in `opx77_garages`. `capture` hands the
-		-- operator this exact line when they place one -- "check it in to
-		-- survive a database reset" -- and a line handed to one player once, in
-		-- a chat box, months ago, is a line nobody has. So the whole set is
-		-- written at every start: emptying the table, restoring an older dump,
-		-- or moving to another host then costs a scroll of the journal rather
-		-- than every garage on the server.
-		--
-		-- Bounded by what the operator placed, which is a handful; the same
-		-- reasoning the `ready` line above already accepts.
+		-- The line the old `add` command handed the operator was handed to one
+		-- player, once, in a chat box, and is a line nobody has. The whole set is
+		-- written at every start instead, so emptying the table, restoring an
+		-- older dump or moving to another host costs a scroll of the journal
+		-- rather than every garage on the server. THIS IS THE OTHER HALF OF THE
+		-- MIGRATION: the adoption keeps the server running, and these lines are
+		-- how an operator stops needing it.
 		local keys = {}
-		for key in pairs(captured) do keys[#keys + 1] = key end
+		for key in pairs(adopted) do
+			if configGarages[key] == nil then keys[#keys + 1] = key end
+		end
 		table.sort(keys)
 		for index = 1, #keys do
-			local spot = captured[keys[index]]
-			Open77.log.info(('[garages] config line: %s = { LABEL = %q, KIND = %q, X = %.2f, '
-				.. 'Y = %.2f, Z = %.2f, HEADING = %.1f, BUCKET = %d },')
-				:format(spot.key, spot.label, spot.kind, spot.x, spot.y, spot.z,
-					spot.heading, spot.bucket))
+			Wait(0)
+			for _, line in ipairs(configLines(adopted[keys[index]])) do
+				Open77.log.info(line)
+			end
+		end
+		if #keys > 0 then
+			Open77.log.warn(('[garages] %d garage(s) exist only in opx77_garages. The commands ' ..
+				'that made them are gone: paste the config line(s) above into ' ..
+				'config/garages.lua, or they are one dropped database away from lost')
+				:format(#keys))
 		end
 	end)
 
@@ -776,10 +870,9 @@ function M.Start()
 	end)
 end
 
---- Stops the sweep. The spots are already durable, so there is nothing to write.
+--- Stops the sweep. The garages are config, so there is nothing to write.
 -- @author XEROX710
 function M.Stop()
 	running = false
 	windows = {}
-	pending = {}
 end

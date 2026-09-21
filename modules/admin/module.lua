@@ -227,17 +227,21 @@ M.Command = {
 
 	-- THE DEV GROUP IS A SECOND VOCABULARY, and it is the only one above that this
 	-- module does not register. These are the commands of `garages` and
-	-- `dealership` -- the ones that PLACE something in the world -- and the Dev
-	-- screen runs them so an operator does not have to keep a chat line in their
-	-- head. The values here are the FALLBACK: the loop below takes the live name
-	-- out of each owner's own config, so a rename there lands on the Dev screen
-	-- without an edit here, and a row can never name a command nobody registers.
-	GARAGES_ADD = 'opx.garages.add',
-	GARAGES_REMOVE = 'opx.garages.remove',
+	-- `dealership`, and the Dev screen runs them so an operator does not have to
+	-- keep a chat line in their head. The values here are the FALLBACK: the loop
+	-- below takes the live name out of each owner's own config, so a rename there
+	-- lands on the Dev screen without an edit here, and a row can never name a
+	-- command nobody registers.
+	--
+	-- `GARAGES_ADD`, `GARAGES_REMOVE`, `DEALERSHIP_ADD` and `DEALERSHIP_REMOVE`
+	-- ARE GONE, with the commands they named. All four wrote a PLACE into a
+	-- database from a chat line, so the shape of the world lived in a table
+	-- nobody had a copy of; a garage and a dealer are written in config now. A
+	-- name left standing here would have been a Dev row that ends in a command
+	-- the server does not register -- greyed for everybody, for ever, with
+	-- nothing saying why.
 	GARAGES_LIST = 'opx.garages.list',
 	GARAGES_BRING = 'opx.garages.bring',
-	DEALERSHIP_ADD = 'opx.dealership.add',
-	DEALERSHIP_REMOVE = 'opx.dealership.remove',
 	DEALERSHIP_LIST = 'opx.dealership.list',
 	DEALERSHIP_STOCK = 'opx.dealership.stock',
 	DEALERSHIP_BUY = 'opx.dealership.buy',
@@ -267,10 +271,9 @@ M.Command = {
 -- contract; when the Dev group next needs work, that is where these belong.
 do
 	local groups = {
-		garages = { add = 'GARAGES_ADD', remove = 'GARAGES_REMOVE', list = 'GARAGES_LIST',
-			bring = 'GARAGES_BRING' },
-		dealership = { add = 'DEALERSHIP_ADD', remove = 'DEALERSHIP_REMOVE',
-			list = 'DEALERSHIP_LIST', stock = 'DEALERSHIP_STOCK', buy = 'DEALERSHIP_BUY' },
+		garages = { list = 'GARAGES_LIST', bring = 'GARAGES_BRING' },
+		dealership = { list = 'DEALERSHIP_LIST', stock = 'DEALERSHIP_STOCK',
+			buy = 'DEALERSHIP_BUY' },
 	}
 	for moduleId, wanted in pairs(groups) do
 		local owner = OPX.Config.MODULES[moduleId]

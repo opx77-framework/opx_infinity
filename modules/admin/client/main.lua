@@ -314,6 +314,12 @@ function M.Start()
 	M.Contracts.inventory = OPX.Api.Get('inventory')
 	M.Contracts.downed = OPX.Api.Get('downed')
 	M.Contracts.prompts = OPX.Api.Get('prompts')
+	-- THE ONLY CONTRACT THE STAFF MENU ACTS THROUGH RATHER THAN READS. The Dev
+	-- screen's showroom rows end here instead of in a command line, because the
+	-- commands they would have used were deleted with the rest of the placement
+	-- commands. It is optional like every other: without it those two rows say so
+	-- when they are pressed.
+	M.Contracts.dealership = OPX.Api.Get('dealership')
 
 	if M.Contracts.menu == nil then
 		Open77.log.warn('[admin] no menu contract: the staff menu cannot be drawn. Every command ' ..

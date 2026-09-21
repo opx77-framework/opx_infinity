@@ -5253,104 +5253,124 @@ do
 		local src = 41
 		load(src, 'citizen-garage')
 
-		check('the capture command is registered and ACL-gated',
-			control.commands['opx.garages.add'] ~= nil
-				and control.commands['opx.garages.add'].restricted == true)
-		check('and its routeway to the client exists',
-			type(control.netEvents[garages.Event.CAPTURED]) == 'function')
+		-- ── the commands that placed a spot are gone ──────────────────────
+		-- THE MIGRATION IS WHAT MAKES THIS SAFE, and it is checked below rather
+		-- than assumed here: `add` and `remove` wrote a place into
+		-- `opx77_garages`, and removing them without reading that table again
+		-- would delete every marker an operator ever placed in game.
+		check('the capture command is gone', control.commands['opx.garages.add'] == nil)
+		check('and so is the one that deleted a spot',
+			control.commands['opx.garages.remove'] == nil)
+		check('and the routeway that let a client place one is gone with them',
+			garages.Event.CAPTURED == nil and garages.Event.CAPTURE == nil)
+		check('the two readings are still registered and still ACL-gated',
+			control.commands['opx.garages.list'] ~= nil
+				and control.commands['opx.garages.list'].restricted == true
+				and control.commands['opx.garages.bring'] ~= nil
+				and control.commands['opx.garages.bring'].restricted == true)
+		check('and the module no longer offers a writer to that table',
+			garages.Storage.Upsert == nil and garages.Storage.Delete == nil
+				and type(garages.Storage.FetchAll) == 'function')
 
-		-- The command asks the CLIENT where it is looking, because a chat command
-		-- has no facing of its own.
-		local mark = #control.clientEvents
-		control.commands['opx.garages.add'].run(src, { 'garage', 'garage_dock' })
-		local asked = lastEvent(garages.Event.CAPTURE)
-		check('the add command asks the client for its facing',
-			asked ~= nil and #control.clientEvents > mark and asked.source == src)
-		check('naming the kind and the key it was given',
-			asked ~= nil and asked[1] == 'garage' and asked[2] == 'garage_dock')
-
-		-- ── the bare form the config file advertises ─────────────────────
-		-- `config/garages.lua` has always said `/opx.garages.add` prints the line to
-		-- check in, while the handler demanded two positionals and answered the
-		-- bare command with a string no player saw and no line in the server log.
-		-- A command the documentation advertises and the handler refuses is a door
-		-- with no handle, so the kind and the key are now both optional.
-		control.commands['opx.garages.add'].run(src, {})
-		local bare = lastEvent(garages.Event.CAPTURE)
-		check('the bare add command asks the client too, as a garage',
-			bare ~= nil and bare[1] == 'garage', bare and tostring(bare[1]))
-		-- THE PROPERTY, NOT THE LITERAL. This asserted `garage1`, which is only
-		-- the answer when nothing is placed yet -- so it was really asserting
-		-- that the SHIPPED CONFIG IS EMPTY, and it failed the day two captured
-		-- spots were checked into `config/garages.lua`. What the generator owes
-		-- is a `garage<n>` that is not already taken; which n that is depends on
-		-- the server, and is not this check's business.
-		local generated = bare ~= nil and tostring(bare[2]) or ''
-		check('under a key it generated, so the spot can be named again afterwards',
-			generated:match('^garage%d+$') ~= nil
-				and garages.Access.SPOTS[generated] == nil, generated)
-
-		-- The generated key steps past what is already placed, so a second bare
-		-- capture cannot land on the first one's name.
-		control.commands['opx.garages.add'].run(src, { 'avpad' })
-		local pad = lastEvent(garages.Event.CAPTURE)
-		check('a bare AV pad add is an avpad with its own generated key',
-			pad ~= nil and pad[1] == 'avpad' and pad[2] == 'avpad1',
-			pad and ('%s/%s'):format(tostring(pad[1]), tostring(pad[2])))
-
-		-- A first word that is not a kind is the KEY, which is what somebody
-		-- typing `add watson` means; the label still travels as the label.
-		control.commands['opx.garages.add'].run(src, { 'watson', 'THE DOCKS' })
-		local named = lastEvent(garages.Event.CAPTURE)
-		check('and a first word that is not a kind is the key',
-			named ~= nil and named[1] == 'garage' and named[2] == 'watson'
-				and named[3] == 'THE DOCKS',
-			named and ('%s/%s/%s'):format(tostring(named[1]), tostring(named[2]),
-				tostring(named[3])))
-
-		-- A CLIENT THAT FIRES THE ROUTEWAY ITSELF. The net event has no host-side
-		-- ACL check -- that gate runs for commands only -- so the module asks the
-		-- same question here. Without this, anybody could place markers.
-		env.source = src
-		local before = #control.clientEvents
-		control.netEvents[garages.Event.CAPTURED]('garage', 'sneaky', 'SNEAKY', 0.0)
-		local denied = control.clientEvents[#control.clientEvents]
-		check('a capture from someone without the permission is refused',
-			#control.clientEvents > before and denied ~= nil and denied[1] ~= nil
-				and denied[1].code == 'error.noPermission',
-			denied and denied[1] and tostring(denied[1].code))
-		check('and the refusal names the operation, so a client can tell it apart',
-			denied ~= nil and denied[1] ~= nil and denied[1].operation == garages.Operation.CAPTURE)
-		check('and nothing was placed', contract.Spots()['sneaky'] == nil)
-		check('and nothing was written', #wrote == 0, #wrote)
-
-		-- With the permission, the same routeway lands a spot.
-		control.Allow(src, 'command.opx.garages.add')
-		control.netEvents[garages.Event.CAPTURED]('garage', 'garage_dock', 'THE DOCK', 90.0)
-		control.Pump(8)
-		local held = contract.Spots()
-		check('a permitted capture lands', held['garage_dock'] ~= nil)
-		check('at the position the SERVER read and the heading the client gave',
-			held['garage_dock'] ~= nil and held['garage_dock'].x == 0.0
-				and held['garage_dock'].y == 0.0 and held['garage_dock'].z == 0.0
-				and held['garage_dock'].heading == 90.0,
-			held['garage_dock'] and ('%s,%s,%s yaw %s'):format(held['garage_dock'].x,
-				held['garage_dock'].y, held['garage_dock'].z, tostring(held['garage_dock'].heading)))
-		check('and its label is the operator\'s own words', held['garage_dock'].label == 'THE DOCK')
-		check('and the row was written through the bridge', #wrote == 1, #wrote)
-		local synced = lastEvent(garages.Event.SYNC)
-		-- THE CAPTURED SPOT IS IN THE LIST, not "the list has exactly one entry".
-		-- The sync carries the config spots as well as the captured ones, so a
-		-- count was really a count of what `config/garages.lua` happens to ship
-		-- -- it read as one until two spots were checked into it.
-		local sent = synced ~= nil and type(synced[1]) == 'table'
-			and type(synced[1].spots) == 'table' and synced[1].spots or nil
-		local carried = false
-		for index = 1, sent and #sent or 0 do
-			if sent[index].key == 'garage_dock' then carried = true end
+		-- ── a garage is a key in several places ───────────────────────────
+		-- Built through the real coercion and hung on the tables the server
+		-- itself reads, so what is under test is the shipped `CoerceGarages` and
+		-- not a fixture's idea of a garage.
+		--
+		-- TWO LOCATIONS, sixty metres apart, and that IS the feature: the owner
+		-- asked for a garage whose menu "shows ALL vehicles belonging to that
+		-- garage id, so a player stores a car at one location and takes it out at
+		-- another location of the same garage".
+		local heldGarages, held = contract.Garages(), contract.Spots()
+		local function place(key, block)
+			local built = select(1, Access.CoerceGarages({ [key] = block }))[key]
+			if built == nil then return nil end
+			heldGarages[key] = built
+			for _, point in ipairs(Access.PointsOf(built)) do held[point.key] = point end
+			return built
 		end
-		check('and the client was told what is there now',
-			carried, sent and #sent or 'nothing sent')
+
+		local dock = place('garage_dock', {
+			KIND = 'garage', LABEL = 'THE DOCK',
+			LOCATIONS = {
+				{ BUCKET = 0,
+					MENU = { X = 0.0, Y = 0.0, Z = 0.0 },
+					ENTRY = { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 90.0 },
+					EXITS = { { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 90.0 } } },
+				{ BUCKET = 0,
+					MENU = { X = 60.0, Y = 0.0, Z = 0.0 },
+					ENTRY = { X = 60.0, Y = 0.0, Z = 0.0, HEADING = 270.0 },
+					EXITS = { { X = 60.0, Y = 0.0, Z = 0.0, HEADING = 270.0 } } },
+			},
+		})
+		check('a garage with two locations is accepted whole',
+			dock ~= nil and #dock.locations == 2, dock and #dock.locations)
+		check('and each location draws a menu point and a door, and nothing else',
+			dock ~= nil and #Access.PointsOf(dock) == 4
+				and held['garage_dock#1'] ~= nil and held['garage_dock#1'].role == 'menu'
+				and held['garage_dock#1.in'] ~= nil and held['garage_dock#1.in'].role == 'entry',
+			dock and #Access.PointsOf(dock))
+		check('every point knows which garage it opens, wherever it is',
+			held['garage_dock#2'] ~= nil and held['garage_dock#2'].garage == 'garage_dock'
+				and held['garage_dock#2'].location == 2,
+			held['garage_dock#2'] and held['garage_dock#2'].garage)
+		check('a door is drawn as a door and not as a list',
+			Access.Marker('garage', 'entry').style == 'interaction'
+				and Access.Marker('garage', 'menu').style == 'spawn',
+			('%s/%s'):format(Access.Marker('garage', 'entry').style,
+				Access.Marker('garage', 'menu').style))
+		check('a location with no exit at all is refused rather than half-built',
+			place('garage_noexit', { KIND = 'garage', LOCATIONS = { { BUCKET = 0,
+				MENU = { X = 1.0, Y = 1.0, Z = 0.0 },
+				ENTRY = { X = 1.0, Y = 1.0, Z = 0.0 }, EXITS = {} } } }) == nil)
+		check('and nothing of it was left on the point table',
+			held['garage_noexit#1'] == nil)
+
+		-- ── the list behind a menu point ──────────────────────────────────
+		-- The whole garage's roster, and that is the feature: the owner asked for
+		-- "a menu-opening point that shows ALL vehicles belonging to that garage
+		-- id". The roster fixture files both cars under `impound`, so neither is
+		-- filed at this garage yet -- and both still have to be listed, because
+		-- what a garage OFFERS is everything of the right kind that the character
+		-- owns.
+		-- ON ITS OWN CONNECTION, and not on `src`. A list is counted against the
+		-- same per-player window a bring-out is -- a client asking for a roster in
+		-- a loop is a client reading the database in a loop -- so two lists spent
+		-- on `src` here would leave the bring-out sequence below one request short
+		-- of its own budget and rate-limit a check about something else entirely.
+		local browser = 51
+		load(browser, 'citizen-garage')
+		env.source = browser
+		control.netEvents[garages.Event.LIST]('garage_dock#1')
+		control.Pump(8)
+		local listed = lastEvent(garages.Event.VEHICLES)
+		local roster = listed ~= nil and type(listed[1]) == 'table' and listed[1] or nil
+		check('a menu point answers the garage\'s own list',
+			roster ~= nil and roster.garage == 'garage_dock'
+				and type(roster.vehicles) == 'table',
+			roster and tostring(roster.error))
+		check('of exactly the vehicles this garage can hold, and not the AV',
+			roster ~= nil and #roster.vehicles == 1
+				and roster.vehicles[1].plate == 'AA111AA',
+			roster and #roster.vehicles)
+		check('and says of each whether it is parked here or somewhere else',
+			roster ~= nil and roster.vehicles[1].here == false)
+
+		-- THE OTHER LOCATION ANSWERS THE SAME LIST. Two menu points, sixty metres
+		-- apart, one garage: a list that differed between them would be two
+		-- garages wearing one name.
+		control.Stand(browser, 60.0, 0.0, 0.0)
+		control.netEvents[garages.Event.LIST]('garage_dock#2')
+		control.Pump(8)
+		local elsewhere = lastEvent(garages.Event.VEHICLES)
+		local other = elsewhere ~= nil and type(elsewhere[1]) == 'table' and elsewhere[1] or nil
+		check('the garage\'s other location lists the very same vehicles',
+			other ~= nil and other.garage == 'garage_dock'
+				and #other.vehicles == #roster.vehicles
+				and other.vehicles[1].plate == roster.vehicles[1].plate,
+			other and (other.error or #other.vehicles))
+		control.Stand(browser, 0.0, 0.0, 0.0)
+		env.source = src
 
 		-- ── bringing out what the character owns ──────────────────────────
 
@@ -5389,11 +5409,23 @@ do
 			options ~= nil and options.record == 'Vehicle.v_standard2_archer_hella_player')
 
 		-- ── the AV pad ────────────────────────────────────────────────────
-		-- Added through the table the server itself holds, so the validation
+		-- Added through the tables the server itself holds, so the validation
 		-- under test is the real one rather than a fixture's copy.
-		held['pad_dock'] = Access.FromDefinition('pad_dock', {
-			KIND = 'avpad', LABEL = 'THE PAD', X = 0.0, Y = 0.0, Z = 2.0, HEADING = 0.0, BUCKET = 0,
+		--
+		-- A HUNDRED METRES AWAY FROM THE DOCK, which it did not have to be before
+		-- exits existed. The car brought out above is standing on the dock's own
+		-- exit, and an exit is occupied by whatever is parked within
+		-- EXIT_CLEARANCE of it -- so a pad sharing the dock's coordinates would
+		-- be a pad blocked by the car that just came out of the garage, which is
+		-- a true refusal about the wrong thing.
+		place('pad_dock', {
+			KIND = 'avpad', LABEL = 'THE PAD',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = 100.0, Y = 0.0, Z = 2.0 },
+				ENTRY = { X = 100.0, Y = 0.0, Z = 2.0, HEADING = 0.0 },
+				EXITS = { { X = 100.0, Y = 0.0, Z = 2.0, HEADING = 0.0 } } } },
 		})
+		control.Stand(src, 100.0, 0.0, 2.0)
 		created = #control.vehicleCreates
 		control.netEvents[garages.Event.REQUEST]('pad_dock')
 		control.Pump(8)
@@ -5415,6 +5447,10 @@ do
 		-- stood on an empty marker and pressed the key again -- six times in one
 		-- recorded session. The vehicle is put away and created again AT the
 		-- spot now, which is what the marker promised in the first place.
+		--
+		-- Back at the dock, where the car this brings to the marker already is.
+		control.Stand(src, 0.0, 0.0, 0.0)
+		env.source = src
 		created = #control.vehicleCreates
 		local removals = #control.vehicleRemoves
 		control.netEvents[garages.Event.REQUEST]('garage_dock')
@@ -5470,13 +5506,28 @@ do
 			#control.vehicleCreates == created and #control.vehicleRemoves == removals + 1,
 			('%d created, %d removed'):format(#control.vehicleCreates - created,
 				#control.vehicleRemoves - removals))
-		check('and it is filed UNDER the marker the player is standing on',
-			#vehicleWrites > wroteVehicles
-				and vehicleWrites[#vehicleWrites].garage == 'garage_dock'
-				and tonumber(vehicleWrites[#vehicleWrites].state) == 1,
-			#vehicleWrites > wroteVehicles and ('garage=%s state=%s'):format(
-				tostring(vehicleWrites[#vehicleWrites].garage),
-				tostring(vehicleWrites[#vehicleWrites].state)) or 'nothing was written')
+		-- A WRITE FOR THIS PLATE THAT FILES IT HERE, rather than "the last write
+		-- on the bridge". Two things write while these eight pumps run and
+		-- neither is under test: the save loop photographs the condition of
+		-- everything else that is out, and it re-writes THIS row from the
+		-- fixture -- whose `garage` column is a constant, because the bridge
+		-- answers one static row however many times it is asked. Reading the last
+		-- write therefore reported whichever of the two `pairs` reached first,
+		-- and flipped between runs.
+		--
+		-- What the put-away owes is a write of this plate, STORED, under the
+		-- GARAGE's key. A `M.Use` that filed under the point's key would write
+		-- `garage_dock#1` and no write here would match.
+		local filed = nil
+		for index = wroteVehicles + 1, #vehicleWrites do
+			local write = vehicleWrites[index]
+			if write.plate == outPlate and write.garage == 'garage_dock' then filed = write end
+		end
+		check('and it is filed UNDER THE GARAGE, which is what puts it in every ' ..
+			'location of it',
+			filed ~= nil and tonumber(filed.state) == 1,
+			filed and ('state=%s'):format(tostring(filed.state))
+				or 'no write filed that plate under garage_dock')
 		answer = lastEvent(garages.Event.ANSWER)
 		check('and the answer says STORED, which is not the same thing as brought out',
 			answer ~= nil and answer[2] == true and answer[5] == 'stored',
@@ -5512,8 +5563,12 @@ do
 		env.source = walker
 
 		local far = 40.0
-		held['far_dock'] = Access.FromDefinition('far_dock', {
-			KIND = 'garage', LABEL = 'FAR', X = far, Y = 0.0, Z = 0.0, HEADING = 0.0, BUCKET = 0,
+		place('far_dock', {
+			KIND = 'garage', LABEL = 'FAR',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = far, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = far, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = far, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } },
 		})
 		created = #control.vehicleCreates
 		control.netEvents[garages.Event.REQUEST]('far_dock')
@@ -5524,8 +5579,12 @@ do
 			lastEvent(garages.Event.ANSWER) ~= nil and lastEvent(garages.Event.ANSWER)[3] == 'garages.tooFar',
 			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
 
-		held['other_bucket'] = Access.FromDefinition('other_bucket', {
-			KIND = 'garage', LABEL = 'ELSEWHERE', X = 0.0, Y = 0.0, Z = 0.0, BUCKET = 7,
+		place('other_bucket', {
+			KIND = 'garage', LABEL = 'ELSEWHERE',
+			LOCATIONS = { { BUCKET = 7,
+				MENU = { X = 0.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } },
 		})
 		control.netEvents[garages.Event.REQUEST]('other_bucket')
 		control.Pump(8)
@@ -5600,87 +5659,209 @@ do
 			control.netEvents[garages.Event.REQUEST]('garage_dock')
 			control.Pump(6)
 		end
+		-- THE ANSWER TO THE SEVENTH REQUEST, not "the last answer on the wire".
+		-- A refusal is raised where the request lands and a success is raised
+		-- from a thread that has been through the database, so the six that were
+		-- served report AFTER the seventh was turned away -- and `lastEvent` then
+		-- reads a success and calls the limit broken. The refusal is the first
+		-- thing on the wire after the mark, because nothing about it yields.
+		local spamMark = #control.clientEvents
 		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		local turned = control.clientEvents[spamMark + 1]
 		control.Pump(6)
 		check(('the request after %d in one window is rate-limited'):format(limit),
-			lastEvent(garages.Event.ANSWER) ~= nil
-				and lastEvent(garages.Event.ANSWER)[3] == 'garages.rateLimited',
-			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+			turned ~= nil and turned.name == garages.Event.ANSWER
+				and turned[2] == false and turned[3] == 'garages.rateLimited',
+			turned and tostring(turned[3]) or 'nothing was answered at all')
 
-		-- ── a capture the client never answers ────────────────────────────
-		-- The one failure that used to be silent at both ends: the command asks
-		-- for a facing, no answer ever comes, and neither half says anything -- so
-		-- the operator walks away believing a spot was placed where there is none.
-		-- Last in this section because it leaves a spot behind and moves `source`.
-		local function asksFor(player)
-			local asked = 0
-			for index = 1, #control.clientEvents do
-				local event = control.clientEvents[index]
-				if event.name == garages.Event.CAPTURE and event.source == player then
-					asked = asked + 1
-				end
-			end
-			return asked
+		-- ── the exits, and the refusal when every one of them is taken ────
+		-- THE OWNER'S OWN CHOICE IS WHAT IS UNDER TEST HERE: "multiple exit
+		-- points, tried in order with fallback when one is occupied. If NO exit
+		-- point is free: refuse and notify the player" -- chosen explicitly over
+		-- queueing and over force-spawning on top of what is parked there.
+		--
+		-- WHAT BLOCKS A BAY IS SOMEBODY ELSE'S CAR, created straight through
+		-- `Open77.vehicles.create` the way another resource or another player's
+		-- vehicle would exist. Two reasons it is not this character's own: the
+		-- vehicle being fetched is deliberately exempt from its own bay, so a
+		-- test that blocked a bay with it would be testing the exemption; and a
+		-- hand-written list of positions would let all of this pass against a
+		-- `freeExit` that never reads the world at all.
+		local function park(x, y)
+			return env.Open77.vehicles.create({
+				record = 'Vehicle.v_standard2_archer_hella_player',
+				position = { x = x, y = y, z = 0.0 }, yaw = 0.0, bucket = 0,
+			})
 		end
 
-		local quiet = 42
-		load(quiet, 'citizen-garage-quiet')
-		control.Allow(quiet, 'command.opx.garages.add')
-		local warnsBefore, noticesBefore = #control.log.warn, #control.notices
-		local logsBefore = #control.log.info
-		local previousSource = env.source
-		control.commands['opx.garages.add'].run(quiet, { 'garage', 'garage_never' })
-		check('an unanswered capture is asked for exactly once', asksFor(quiet) == 1,
-			asksFor(quiet))
-		check('and the request is logged when it goes out',
-			#control.log.info > logsBefore
-				and control.log.info[#control.log.info]:find('garage_never', 1, true) ~= nil,
-			control.log.info[#control.log.info])
+		local bays = 46
+		load(bays, 'citizen-garage')
+		env.source = bays
+		control.Stand(bays, 200.0, 0.0, 0.0)
+		place('garage_bays', {
+			KIND = 'garage', LABEL = 'THE BAYS',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = 200.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 200.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = {
+					{ X = 200.0, Y = 0.0, Z = 0.0, HEADING = 10.0 },
+					{ X = 210.0, Y = 0.0, Z = 0.0, HEADING = 20.0 },
+				} } },
+		})
 
-		-- Young: the answer may still be on its way, so nothing is said yet.
-		control.Pump(10)
-		check('nothing is said while the answer may still come',
-			#control.log.warn == warnsBefore and #control.notices == noticesBefore)
-
-		-- Past its lifetime it settles itself, once -- not once per pump.
-		control.Pump(80)
-		control.Pump(80)
-		check('a capture that is never answered is reported, once',
-			#control.log.warn == warnsBefore + 1, #control.log.warn - warnsBefore)
-		check('naming the spot and saying nothing was saved',
-			control.log.warn[#control.log.warn] ~= nil
-				and control.log.warn[#control.log.warn]:find('garage_never', 1, true) ~= nil
-				and control.log.warn[#control.log.warn]:find('nothing was saved', 1, true) ~= nil,
-			control.log.warn[#control.log.warn])
-		local told = control.notices[#control.notices]
-		check('and the operator is told in game, not only in the log',
-			#control.notices == noticesBefore + 1 and told ~= nil and told.playerId == quiet
-				and told.type == 'error',
-			told and ('%s: %s'):format(tostring(told.type), tostring(told.message)))
-		check('and no spot was placed by it', contract.Spots()['garage_never'] == nil)
-
-		-- A late answer is still an answer. The request is gone, so the ordinary
-		-- path runs and the spot lands: slowness is not a refusal, and a client
-		-- that was still loading must not need the command run again.
-		local lateWarns = #control.log.warn
-		env.source = quiet
-		control.netEvents[garages.Event.CAPTURED]('garage', 'garage_never', 'LATE', 12.0)
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_bays')
 		control.Pump(8)
-		control.Pump(40)
-		check('an answer that arrives after the warning still lands',
-			contract.Spots()['garage_never'] ~= nil)
-		check('and it raises no second "did not answer"',
-			#control.log.warn == lateWarns, #control.log.warn - lateWarns)
+		options = control.vehicleCreates[#control.vehicleCreates]
+		check('with both exits free the FIRST one written is used',
+			#control.vehicleCreates == created + 1 and options ~= nil
+				and options.position.x == 200.0 and options.yaw == 10.0,
+			options and ('%s yaw %s'):format(tostring(options.position.x), tostring(options.yaw)))
 
-		-- An answer that is unusable is a different failure with its own line:
-		-- the client DID answer, so "did not answer" would be a lie.
-		local badWarns = #control.log.warn
-		control.netEvents[garages.Event.CAPTURED]('not-a-kind', 'garage_bad', 'X', 0.0)
-		check('an unusable answer is reported as one',
-			#control.log.warn == badWarns + 1
-				and control.log.warn[#control.log.warn]:find('unusable spot', 1, true) ~= nil,
-			control.log.warn[#control.log.warn])
-		env.source = previousSource
+		-- Somebody else parks across bay one. The next fetch falls through to bay
+		-- two, in the order the operator wrote them.
+		local firstBay = park(200.0, 0.0)
+		check('the blocking vehicle exists as far as the host is concerned',
+			firstBay ~= nil and #env.Open77.vehicles.all(0) > 0)
+		control.Pump(31)
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_bays')
+		control.Pump(8)
+		options = control.vehicleCreates[#control.vehicleCreates]
+		check('an exit with somebody else\'s car on it is skipped for the next one',
+			#control.vehicleCreates == created + 1 and options ~= nil
+				and options.position.x == 210.0 and options.yaw == 20.0,
+			options and ('%s yaw %s'):format(tostring(options.position.x), tostring(options.yaw)))
+
+		-- And across bay two as well. Every exit is taken now, and the answer is
+		-- a refusal rather than a queue or a car inside another car.
+		park(210.0, 0.0)
+		control.Pump(31)
+		created = #control.vehicleCreates
+		local noticesBeforeBays = #control.notices
+		control.netEvents[garages.Event.REQUEST]('garage_bays')
+		control.Pump(8)
+		check('with every exit taken nothing is created at all',
+			#control.vehicleCreates == created,
+			#control.vehicleCreates - created)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and the refusal says it was the exits, not the distance or the roster',
+			answer ~= nil and answer[2] == false and answer[3] == 'garages.noFreeExit',
+			answer and tostring(answer[3]))
+		local blocked = control.notices[#control.notices]
+		check('and the player is told in game, which is what the owner asked for',
+			#control.notices > noticesBeforeBays and blocked ~= nil
+				and blocked.playerId == bays and blocked.type == 'error',
+			blocked and ('%s: %s'):format(tostring(blocked.type), tostring(blocked.message)))
+
+		-- ── a car standing on its own only exit ───────────────────────────
+		-- The one occupancy that must NOT count. A single-exit garage whose own
+		-- car is parked on it would otherwise be a garage that can never hand
+		-- that car back -- the vehicle blocks itself, for ever.
+		local solo = 49
+		load(solo, 'citizen-garage')
+		env.source = solo
+		control.Stand(solo, 300.0, 0.0, 0.0)
+		place('garage_solo', {
+			KIND = 'garage', LABEL = 'ONE BAY',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = 300.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 300.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = 300.0, Y = 0.0, Z = 0.0, HEADING = 45.0 } } } },
+		})
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_solo')
+		control.Pump(8)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('the only car of a one-bay garage comes out of it',
+			#control.vehicleCreates == created + 1 and answer ~= nil and answer[2] == true,
+			answer and tostring(answer[3]))
+		-- And again: it is now standing on the one exit it has to come out of.
+		control.Pump(31)
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_solo')
+		control.Pump(8)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and a car standing on its own only exit does not block itself',
+			#control.vehicleCreates == created + 1 and answer ~= nil and answer[2] == true,
+			answer and tostring(answer[3]))
+
+		-- ── the migration: nothing an operator placed is lost ─────────────
+		-- THE WHOLE REASON THE COMMANDS COULD BE DELETED. `/opx.garages.add`
+		-- wrote into `opx77_garages`, so every marker placed in game lived in a
+		-- table nobody has a copy of; deleting the commands without reading that
+		-- table again would have wiped the lot, silently, because an empty
+		-- `GARAGES` block is a valid config.
+		--
+		-- A legacy row was ONE POINT that did everything -- stand on it, press the
+		-- key, the car appears where you are standing -- so it adopts as one
+		-- location whose menu, door and only exit are that same point.
+		--
+		-- The second row is `garage1`, which `config/garages.lua` also names, and
+		-- it is at a different place on purpose: that is the precedence case.
+		local legacy = {
+			{ spot_key = 'legacy_yard', label = 'THE YARD', kind = 'garage',
+				x = 500.0, y = 0.0, z = 3.0, heading = 77.0, bucket = 0 },
+			{ spot_key = 'garage1', label = 'MOVED', kind = 'garage',
+				x = 900.0, y = 900.0, z = 9.0, heading = 5.0, bucket = 0 },
+		}
+		local adoptedEnv, adoptedControl, adoptedWhy = boot('server', Host.Database({
+			scalar = function() return 1 end,
+			update = function() return 0 end,
+			single = function() return nil end,
+			query = function(sql)
+				if sql:find('opx77_garages', 1, true) then return legacy end
+				return {}
+			end,
+		}))
+		check('a server with a legacy spot in the database boots', adoptedWhy == nil, adoptedWhy)
+		if adoptedWhy == nil then
+			adoptedControl.Pump(40)
+			local adoptedContract = adoptedEnv.OPX.Api.Get('garages')
+			local kept = adoptedContract.Garages()['legacy_yard']
+			check('a spot that lives only in the database is adopted as a garage',
+				kept ~= nil and kept.kind == 'garage' and kept.label == 'THE YARD'
+					and #kept.locations == 1,
+				kept and #kept.locations)
+			check('as one location whose menu, door and only exit are that one point',
+				kept ~= nil and kept.locations[1].menu.x == 500.0
+					and kept.locations[1].entry.x == 500.0
+					and kept.locations[1].entry.heading == 77.0
+					and #kept.locations[1].exits == 1
+					and kept.locations[1].exits[1].z == 3.0,
+				kept and kept.locations[1] and #kept.locations[1].exits)
+			check('and it draws the two points a configured garage draws',
+				adoptedContract.Spots()['legacy_yard#1'] ~= nil
+					and adoptedContract.Spots()['legacy_yard#1.in'] ~= nil)
+
+			-- THE OTHER HALF OF THE MIGRATION. Adopting it keeps the server
+			-- running; the block printed at every start is how an operator stops
+			-- needing the adoption at all. The old command handed that line to
+			-- one player, once, in a chat box.
+			local printed, warned = false, false
+			for index = 1, #adoptedControl.log.info do
+				if adoptedControl.log.info[index]:find('config line: legacy_yard', 1, true) then
+					printed = true
+				end
+			end
+			for index = 1, #adoptedControl.log.warn do
+				if adoptedControl.log.warn[index]:find('opx77_garages', 1, true) then
+					warned = true
+				end
+			end
+			check('and the block that would check it in is written to the journal', printed)
+			check('with a line saying it exists nowhere else', warned)
+
+			-- CONFIG WINS OVER THE DATABASE NOW, which reverses what a captured
+			-- spot used to do. There is no command to move a garage with any
+			-- more, so a stale row silently moving one would be a garage an
+			-- operator cannot move by editing the one place they are told to.
+			local shadowed = adoptedContract.Garages()['garage1']
+			check('a garage named in config is not moved by a row of the same name',
+				shadowed ~= nil and shadowed.locations[1].menu.x == -1527.21,
+				shadowed and shadowed.locations[1].menu.x)
+		end
+		env.source = src
 	end
 end
 
@@ -5721,10 +5902,16 @@ do
 		check('the client asks for its spots on start', asked)
 
 		-- ── the markers ───────────────────────────────────────────────────
+		-- THE ROLE TRAVELS WITH THE POINT, and this half never guesses it: what a
+		-- marker is -- a list or a door -- is the server's answer, and a client
+		-- that decided for itself would draw a door as a list at the moment the
+		-- config said otherwise.
 		cctl.netEvents[garages.Event.SYNC]({ spots = {
-			{ key = 'garage_dock', label = 'THE DOCK', kind = 'garage',
-				x = 0.0, y = 0.0, z = 0.0, heading = 90.0, bucket = 0 },
-			{ key = 'pad_dock', label = 'THE PAD', kind = 'avpad',
+			{ key = 'garage_dock#1', label = 'THE DOCK', kind = 'garage',
+				garage = 'garage_dock', role = 'menu', location = 1,
+				x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+			{ key = 'pad_dock#1', label = 'THE PAD', kind = 'avpad',
+				garage = 'pad_dock', role = 'menu', location = 1,
 				x = 6.0, y = 0.0, z = 2.0, heading = 0.0, bucket = 0 },
 		} })
 		cctl.Pump(6)
@@ -5762,8 +5949,11 @@ do
 			garageMarker and tostring(garageMarker.position.z))
 
 		-- ── the strip row ─────────────────────────────────────────────────
-		check('standing on a marker posts its row', Runtime.Report().nearest == 'garage_dock',
+		check('standing on a marker posts its row', Runtime.Report().nearest == 'garage_dock#1',
 			Runtime.Report().nearest)
+		check('and the client knows which garage it opens, not only which marker it is',
+			Runtime.Garages()['garage_dock'] ~= nil and Runtime.Report().garages == 2,
+			Runtime.Report().garages)
 		local listed = prompts ~= nil and prompts.List('garages') or nil
 		check('and the strip holds exactly one row for it',
 			listed ~= nil and listed.ok == true and listed.value.count == 1
@@ -5772,28 +5962,68 @@ do
 		check('and names the key it is bound to', Runtime.Report().key == 'E',
 			Runtime.Report().key)
 
-		-- ONE KEY, TWO JOBS, so the row has to name the job it is about to do:
-		-- a row that still read "bring out a vehicle" while the player sat in one
-		-- would be labelling the key with the wrong half of what it does.
-		check('on foot, the row names the bring-out',
+		-- ONE KEY, SEVERAL JOBS, so the row has to name the job it is about to do
+		-- AT THE POINT IT IS STANDING ON. A menu point opens a list whether or
+		-- not the player is sitting in something -- putting a car away is what a
+		-- DOOR is for, and a list point that offered to take your car would be
+		-- offering something it cannot do.
+		check('a menu point names the list it opens',
 			Runtime.Report().label == 'garages.prompt.garage', Runtime.Report().label)
 		cctl.Seat(1, { seat = 'driver' })
-		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.putAway' end)
-		check('seated in a vehicle, the same row says put away',
-			Runtime.Report().label == 'garages.prompt.putAway', Runtime.Report().label)
-		cctl.Seat(1, nil)
-		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.garage' end)
-		check('and it goes back to the bring-out once the player is out of it',
+		cctl.Pump(6)
+		check('and goes on naming it while the player is sitting in something',
 			Runtime.Report().label == 'garages.prompt.garage', Runtime.Report().label)
+		cctl.Seat(1, nil)
+		cctl.Pump(6)
 
 		-- ── the key sends the request ─────────────────────────────────────
+		-- A MENU POINT ASKS FOR A LIST, and does not ask for a vehicle. The
+		-- whole point of the list is that the player chooses which of their own
+		-- cars comes out, so a press that went straight to `REQUEST` would hand
+		-- them whichever one sorted first.
 		local before = #cctl.serverEvents
 		mapping.pressed()
 		local sent = cctl.serverEvents[#cctl.serverEvents]
-		check('the key sends a request for the marker underfoot',
+		check('the key on a menu point asks for the garage\'s list',
 			#cctl.serverEvents == before + 1 and sent ~= nil
-				and sent.name == garages.Event.REQUEST and sent[1] == 'garage_dock',
-			sent and tostring(sent[1]))
+				and sent.name == garages.Event.LIST and sent[1] == 'garage_dock#1',
+			sent and ('%s %s'):format(tostring(sent.name), tostring(sent[1])))
+
+		-- ── the door ──────────────────────────────────────────────────────
+		-- The same key, the same player, a different kind of point.
+		cctl.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'garage_dock#1.in', label = 'THE DOCK', kind = 'garage',
+				garage = 'garage_dock', role = 'entry', location = 1,
+				x = 0.0, y = 0.0, z = 0.0, heading = 90.0, bucket = 0 },
+		} })
+		cctl.Pump(6)
+		check('a door is a door and the client knows which it is',
+			Runtime.Report().nearest == 'garage_dock#1.in' and Runtime.Report().role == 'entry',
+			Runtime.Report().role)
+		check('and on foot it asks the player to drive in',
+			Runtime.Report().label == 'garages.prompt.driveIn', Runtime.Report().label)
+		cctl.Seat(1, { seat = 'driver' })
+		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.putAway' end)
+		check('seated in a vehicle, the door says put away',
+			Runtime.Report().label == 'garages.prompt.putAway', Runtime.Report().label)
+
+		before = #cctl.serverEvents
+		mapping.pressed()
+		sent = cctl.serverEvents[#cctl.serverEvents]
+		check('and the key on a door asks the SERVER to act, rather than for a list',
+			#cctl.serverEvents == before + 1 and sent ~= nil
+				and sent.name == garages.Event.REQUEST and sent[1] == 'garage_dock#1.in',
+			sent and ('%s %s'):format(tostring(sent.name), tostring(sent[1])))
+		cctl.Seat(1, nil)
+		cctl.Pump(6)
+
+		-- Back to the menu point for the rest of this section.
+		cctl.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'garage_dock#1', label = 'THE DOCK', kind = 'garage',
+				garage = 'garage_dock', role = 'menu', location = 1,
+				x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+		} })
+		cctl.Pump(6)
 
 		-- A keyboard held elsewhere is not a key: a row that stayed up while
 		-- somebody typed would fire as they typed.
@@ -5815,21 +6045,21 @@ do
 			return row ~= nil and row.ok == true and row.value.count == 1
 		end)
 
-		-- ── the capture round-trip ────────────────────────────────────────
-		mark = #cctl.serverEvents
-		local infoMark = #cctl.log.info
-		cctl.netEvents[garages.Event.CAPTURE]('avpad', 'pad_dock', 'THE PAD')
-		local answered = cctl.serverEvents[#cctl.serverEvents]
-		check('the client answers a capture ask', #cctl.serverEvents > mark)
-		check('with the operator\'s own facing, which only this half can read',
-			answered ~= nil and answered.name == garages.Event.CAPTURED
-				and answered[1] == 'avpad' and answered[2] == 'pad_dock')
-		-- Both ends of the round trip say their half, so a capture that dies in
-		-- the middle is a hole in a log rather than silence from everywhere.
-		check('and names the spot it answered, so the round trip reads from here',
-			#cctl.log.info > infoMark
-				and cctl.log.info[#cctl.log.info]:find('pad_dock', 1, true) ~= nil,
-			cctl.log.info[#cctl.log.info])
+		-- ── the list the server answers with ──────────────────────────────
+		-- A GARAGE WITH NOTHING IN IT SAYS SO rather than opening an empty
+		-- screen, and a refusal the server sends back is shown rather than
+		-- swallowed. Neither of them may leave a handle behind: the next press
+		-- would then close a list nobody can see instead of opening one.
+		cctl.netEvents[garages.Event.VEHICLES]({ spot = 'garage_dock#1',
+			garage = 'garage_dock', label = 'THE DOCK', vehicles = {} })
+		cctl.Pump(2)
+		check('a garage with nothing in it opens no list at all',
+			Runtime.Report().listing == nil)
+		cctl.netEvents[garages.Event.VEHICLES]({ spot = 'garage_dock#1',
+			error = 'garages.tooFar' })
+		cctl.Pump(2)
+		check('and a refusal that comes back with the list leaves none open either',
+			Runtime.Report().listing == nil)
 
 		-- ── taking them down ──────────────────────────────────────────────
 		cctl.netEvents[garages.Event.SYNC]({ spots = {} })
@@ -5887,10 +6117,25 @@ do
 	-- already exist, every dealership row written, and every vehicle row a
 	-- purchase creates. The SQL is the shipped storage's -- only the answers are
 	-- a fixture's.
-	local function bridge(rows, vehiclesWritten, dealersWritten)
+	local function bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts)
 		return Host.Database({
 			scalar = function() return 1 end,
 			update = function(sql, params)
+				-- THE COMPANY ACCOUNT IS A REAL BALANCE HERE and not a write log,
+				-- because the statement under test does its arithmetic in SQL --
+				-- `balance = balance + @amount`, so that two sales settling in
+				-- the same second cannot lose one. A stub that only recorded the
+				-- call would make a deposit that overwrote instead of adding look
+				-- exactly the same.
+				if sql:find('opx77_company_accounts', 1, true) then
+					local key = tostring(params.kind) .. ':' .. tostring(params.group)
+					accounts[key] = (accounts[key] or 0) + (tonumber(params.amount) or 0)
+					return 1
+				end
+				if sql:find('opx77_dealership_previews', 1, true) then
+					previewsWritten[#previewsWritten + 1] = params
+					return 1
+				end
 				if sql:find('INSERT INTO opx77_vehicles', 1, true) then
 					vehiclesWritten[#vehiclesWritten + 1] = params
 					-- The row that was just written, in the column shape the
@@ -5927,6 +6172,11 @@ do
 			-- would answer zero for every character.
 			single = function(sql, params)
 				if sql:find('COUNT(*)', 1, true) ~= nil then return { total = #rows } end
+				if sql:find('opx77_company_accounts', 1, true) then
+					local key = tostring(params.kind) .. ':' .. tostring(params.group)
+					if accounts[key] == nil then return nil end
+					return { balance = accounts[key] }
+				end
 				local plate = type(params) == 'table' and params.plate or nil
 				if plate ~= nil then
 					for index = 1, #rows do
@@ -5939,7 +6189,9 @@ do
 	end
 
 	local rows, vehiclesWritten, dealersWritten = {}, {}, {}
-	local env, control, why = boot('server', bridge(rows, vehiclesWritten, dealersWritten))
+	local previewsWritten, accounts = {}, {}
+	local env, control, why = boot('server',
+		bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts))
 	check('the server boots with the dealership module', why == nil, why)
 
 	-- The last client event with one name, or nil. Every verdict below is read
@@ -6124,25 +6376,48 @@ do
 			select(1, Access.Nearest({ far = spots.far }, 0.0, 0.0)) == nil)
 
 		-- ── the doors ─────────────────────────────────────────────────────
-		check('the placement commands are registered and ACL-gated',
-			control.commands[Config.COMMANDS.add] ~= nil
-				and control.commands[Config.COMMANDS.add].restricted == true
-				and control.commands[Config.COMMANDS.remove].restricted == true
+		-- THE COMMANDS THAT PLACED A DEALER ARE GONE, both of them. They wrote a
+		-- place every player uses into `opx77_dealerships`, so the shape of the
+		-- world lived in a table nobody had a copy of. What still exists is the
+		-- READ of that table -- checked further down, and the whole reason
+		-- deleting them loses nothing.
+		check('the command that placed a dealer is gone',
+			Config.COMMANDS.add == nil and control.commands['opx.dealership.add'] == nil)
+		check('and so is the one that deleted one',
+			Config.COMMANDS.remove == nil and control.commands['opx.dealership.remove'] == nil)
+		check('the reading of what is placed is still registered and still ACL-gated',
+			control.commands[Config.COMMANDS.list] ~= nil
 				and control.commands[Config.COMMANDS.list].restricted == true)
 		check('and buying and reading the stock are open, because they act on the caller',
 			control.commands[Config.COMMANDS.buy] ~= nil
 				and control.commands[Config.COMMANDS.buy].restricted == false
 				and control.commands[Config.COMMANDS.stock] ~= nil
 				and control.commands[Config.COMMANDS.stock].restricted == false)
-		check('and the capture routeway exists for the ask to come back on',
-			type(control.netEvents[dealership.Event.CAPTURED]) == 'function'
-				and type(control.netEvents[dealership.Event.BUY]) == 'function')
+		check('the routeways a purchase and a sale come in on exist',
+			type(control.netEvents[dealership.Event.BUY]) == 'function'
+				and type(control.netEvents[dealership.Event.OFFER]) == 'function'
+				and type(control.netEvents[dealership.Event.DECIDE]) == 'function')
+		check('and so do the two the placement menu uses',
+			type(control.netEvents[dealership.Event.PLACED]) == 'function'
+				and type(control.netEvents[dealership.Event.UNPLACED]) == 'function')
+
+		-- THE PLACEMENT RIGHT IS ITS OWN RIGHT and not a command's. The command
+		-- it would have borrowed does not exist any more, so a grant naming it
+		-- would gate nothing at all.
+		local borrowed = false
+		for _, name in pairs(Config.COMMANDS) do
+			if name == Access.PlacementRight() then borrowed = true end
+		end
+		check('placing a showroom car is gated on a right of its own',
+			Access.PlacementRight() == 'opx.dealership.place' and not borrowed,
+			tostring(Access.PlacementRight()))
+		check('and that right is not the name of any command this module registers',
+			not borrowed and control.commands[Access.PlacementRight()] == nil)
 
 		-- ── the fixture's dealers ──────────────────────────────────────────
 		-- `Access.SPOTS` IS the list the server half reads as its configuration
 		-- (`M.Init` takes that table, not a copy), so writing here is what an
-		-- operator checking a dealer in does. A capture below re-merges config
-		-- with captured, which is what puts them in the world.
+		-- operator checking a dealer in does.
 		Access.SPOTS['yard'] = Access.FromDefinition('yard', {
 			KIND = 'garage', LABEL = 'UPTOWN YARD', X = 1.0, Y = 1.0, Z = 5.0,
 			HEADING = 90.0, BUCKET = 0,
@@ -6159,8 +6434,15 @@ do
 			KIND = 'garage', LABEL = 'OTHER YARD', X = 1.0, Y = 1.0, Z = 0.0,
 			HEADING = 0.0, BUCKET = 3,
 		})
+		-- The dealer every purchase below is made at, where the fixture's players
+		-- stand. Written into the same table for the same reason.
+		Access.SPOTS['dealer_dock'] = Access.FromDefinition('dealer_dock', {
+			KIND = 'garage', LABEL = 'THE DOCKS', X = 0.0, Y = 0.0, Z = 0.0,
+			HEADING = 90.0, BUCKET = 0,
+		})
+		local held = contract.Spots()
+		for key, spot in pairs(Access.SPOTS) do held[key] = spot end
 
-		-- ── the capture round-trip ─────────────────────────────────────────
 		-- A loaded Player, in the shape the character contract reads: the data it
 		-- owns, and the method it calls on every balance change.
 		local function load(id, citizenId, eddies)
@@ -6184,97 +6466,106 @@ do
 		local src = 71
 		load(src, 'citizen-dealer', 2000000)
 
-		-- A command asks the CLIENT where it is looking, because a chat command
-		-- has no facing of its own -- and the heading only turns a vehicle that
-		-- is handed over where it was bought.
-		local mark = #control.clientEvents
-		control.commands[Config.COMMANDS.add].run(src, { 'garage', 'dealer_dock' })
-		local asked = lastEvent(dealership.Event.CAPTURE)
-		check('the add command asks the client for its facing',
-			asked ~= nil and #control.clientEvents > mark and asked.source == src)
-		check('naming the kind and the key it was given',
-			asked ~= nil and asked[1] == 'garage' and asked[2] == 'dealer_dock',
-			asked and ('%s/%s'):format(tostring(asked[1]), tostring(asked[2])))
-
-		-- The bare form the config file advertises, with the key and the kind
-		-- both optional -- and the first word is the KIND when it is one.
-		control.commands[Config.COMMANDS.add].run(src, {})
-		local bare = lastEvent(dealership.Event.CAPTURE)
-		-- The property, not the literal, for the reason written at the same
-		-- check in the garages section: `garage1` is only the answer while
-		-- nothing is placed, so asserting it was asserting that the shipped
-		-- config is empty.
-		local bareKey = bare ~= nil and tostring(bare[2]) or ''
-		check('the bare add command asks as a garage, under a key it generated',
-			bare ~= nil and bare[1] == 'garage' and bareKey:match('^garage%d+$') ~= nil
-				and dealership.Access.SPOTS[bareKey] == nil,
-			bare and ('%s/%s'):format(tostring(bare[1]), bareKey))
-		control.commands[Config.COMMANDS.add].run(src, { 'avpad' })
-		local padAsk = lastEvent(dealership.Event.CAPTURE)
-		check('and a bare AV pad add is an avpad with its own generated key',
-			padAsk ~= nil and padAsk[1] == 'avpad' and padAsk[2] == 'avpad1',
-			padAsk and ('%s/%s'):format(tostring(padAsk[1]), tostring(padAsk[2])))
-		control.commands[Config.COMMANDS.add].run(src, { 'watson', 'WATSON AUTOS' })
-		local named = lastEvent(dealership.Event.CAPTURE)
-		check('and a first word that is not a kind is the key itself',
-			named ~= nil and named[1] == 'garage' and named[2] == 'watson'
-				and named[3] == 'WATSON AUTOS',
-			named and ('%s/%s/%s'):format(tostring(named[1]), tostring(named[2]),
-				tostring(named[3])))
-
-		-- A key longer than the column is refused BEFORE the client is asked: a
-		-- capture that could never be saved must not move the operator's marker.
-		local lastAsk = lastEvent(dealership.Event.CAPTURE)
-		control.commands[Config.COMMANDS.add].run(src, { 'garage', string.rep('k', Access.MAX_KEY + 1) })
-		check('a key longer than the column is refused before the client is asked',
-			lastEvent(dealership.Event.CAPTURE) == lastAsk)
-		check('and the refusal says what a key may be', lastAnswer('a key is 1 to') ~= nil)
-
-		-- A CLIENT THAT FIRES THE ROUTEWAY ITSELF. The net event has no host-side
-		-- ACL check -- that gate runs for commands only -- so the module asks the
-		-- same question here. Without it, anybody could place dealers.
+		-- ── the showroom, and the right that dresses it ───────────────────
+		-- A CLIENT THAT FIRES THE ROUTEWAY ITSELF. A net event has no host-side
+		-- ACL check -- that gate runs for commands only -- so the module asks
+		-- for `PLACEMENT_RIGHT` here. Without it anybody could stand a car on
+		-- any showroom floor on the server.
 		env.source = src
 		local before = #control.clientEvents
-		control.netEvents[dealership.Event.CAPTURED]('garage', 'sneaky', 'SNEAKY', 0.0)
-		local denied = control.clientEvents[#control.clientEvents]
-		check('a capture from someone without the permission is refused',
+		local standing = #control.vehicleCreates
+		control.netEvents[dealership.Event.PLACED]('show_one', 'hella', 0.0)
+		-- READ BEFORE THE PUMP. A refusal is raised where the request lands and
+		-- nothing about it yields, so it is the first thing on the wire; pumping
+		-- first and reading the last event would read whatever a thread that was
+		-- already running reported next.
+		local denied = control.clientEvents[before + 1]
+		control.Pump(8)
+		check('placing a showroom car without the right is refused',
 			#control.clientEvents > before and denied ~= nil and denied[1] ~= nil
 				and denied[1].code == 'error.noPermission',
 			denied and denied[1] and tostring(denied[1].code))
 		check('and the refusal names the operation, so a client can tell it apart',
 			denied ~= nil and denied[1] ~= nil
-				and denied[1].operation == dealership.Operation.CAPTURE)
-		check('and nothing was placed', contract.Spots()['sneaky'] == nil)
-		check('and nothing was written', #dealersWritten == 0)
+				and denied[1].operation == dealership.Operation.PLACE)
+		check('and no car was created by it', #control.vehicleCreates == standing,
+			#control.vehicleCreates - standing)
 
-		-- With the permission, the same routeway lands a dealer -- at the
-		-- position the SERVER read and the heading the client gave.
-		control.Allow(src, 'command.' .. Config.COMMANDS.add)
-		control.netEvents[dealership.Event.CAPTURED]('garage', 'dealer_dock', 'THE DOCKS', 90.0)
+		-- THE COMMAND'S OWN GRANT IS NOT ENOUGH, and that is the point of a
+		-- dedicated right: the two jobs are different, and the grant for the one
+		-- that reads must not open the one that writes.
+		control.Allow(src, 'command.' .. Config.COMMANDS.list)
+		control.netEvents[dealership.Event.PLACED]('show_one', 'hella', 0.0)
 		control.Pump(8)
-		local held = contract.Spots()
-		check('a permitted capture lands', held['dealer_dock'] ~= nil)
-		check('at the position the SERVER read and the heading the client gave',
-			held['dealer_dock'] ~= nil and held['dealer_dock'].x == 0.0
-				and held['dealer_dock'].y == 0.0 and held['dealer_dock'].z == 0.0
-				and held['dealer_dock'].heading == 90.0,
-			held['dealer_dock'] and ('%s,%s,%s yaw %s'):format(held['dealer_dock'].x,
-				held['dealer_dock'].y, held['dealer_dock'].z, tostring(held['dealer_dock'].heading)))
-		check('and its label is the operator\'s own words', held['dealer_dock'].label == 'THE DOCKS')
-		check('and the row was written through the bridge', #dealersWritten == 1, #dealersWritten)
-		check('and the fixture\'s checked-in dealers are in the merged list too',
-			held['yard'] ~= nil and held['pad'] ~= nil and held['far_yard'] ~= nil)
+		check('and the reading command\'s own grant does not open it either',
+			#control.vehicleCreates == standing,
+			#control.vehicleCreates - standing)
+
+		control.Allow(src, Access.PlacementRight())
+		control.netEvents[dealership.Event.PLACED]('show_one', 'hella', 37.0)
+		control.Pump(8)
+		local placed = contract.Previews()
+		local showroom = placed.ok and placed.value.previews or {}
+		check('with the right, the showroom car is placed', #showroom == 1
+			and showroom[1].key == 'show_one' and showroom[1].entry == 'hella',
+			#showroom)
+		check('at the dealer whose zone the operator is standing in',
+			showroom[1] ~= nil and showroom[1].dealer == 'dealer_dock',
+			showroom[1] and showroom[1].dealer)
+		check('and it is standing in the world, not only in the table',
+			showroom[1] ~= nil and showroom[1].standing == true)
+		check('and the row was written through the bridge', #previewsWritten == 1,
+			#previewsWritten)
+
+		-- THE LOCK IS THE WHOLE POINT OF A SHOWROOM CAR. An unlocked one is a
+		-- free car with an audience, so it is asked for at creation and the
+		-- engine's own `locked` bit is what is asserted -- not that the runtime
+		-- meant to ask.
+		local shown = control.vehicleCreates[#control.vehicleCreates]
+		check('the showroom car is created LOCKED',
+			shown ~= nil and shown.locked == true, shown and tostring(shown.locked))
+		check('and persistent, because a showroom car is furniture',
+			shown ~= nil and shown.persistent == true, shown and tostring(shown.persistent))
+		check('as the model the operator picked, turned the way they were looking',
+			shown ~= nil and shown.record == Access.Entry('hella').record
+				and shown.yaw == 37.0,
+			shown and ('%s yaw %s'):format(tostring(shown.record), tostring(shown.yaw)))
+
+		-- A model this dealer does not sell has no business standing on its
+		-- floor: an AV in a car showroom is a preview of something nobody there
+		-- can buy.
+		standing = #control.vehicleCreates
+		control.netEvents[dealership.Event.PLACED]('show_air', 'manticore', 0.0)
+		control.Pump(8)
+		check('a model this dealer does not sell is refused a place on its floor',
+			#control.vehicleCreates == standing,
+			#control.vehicleCreates - standing)
+
+		-- Nowhere near a dealer is nowhere: a showroom car in a field is a
+		-- network vehicle nothing ever cleans up.
+		control.Stand(src, 900.0, 900.0, 0.0)
+		standing = #control.vehicleCreates
+		control.netEvents[dealership.Event.PLACED]('show_field', 'hella', 0.0)
+		control.Pump(8)
+		check('and one placed outside every dealership zone is refused too',
+			#control.vehicleCreates == standing,
+			#control.vehicleCreates - standing)
+		control.Stand(src, 0.0, 0.0, 0.0)
+
 		-- Told what is there NOW, and only what is in the player's own routing
-		-- bucket: the dealer parked on bucket 3 is not in a bucket-0 client's list.
+		-- bucket: the dealer parked on bucket 3 is not in a bucket-0 client's
+		-- list. Asked for, the way a client asks on its own cadence -- nothing
+		-- writes a dealer at runtime any more, so nothing fans a list out by
+		-- itself.
+		control.netEvents[dealership.Event.ASK]()
+		control.Pump(4)
 		local synced = lastEvent(dealership.Event.SYNC)
 		local found, inBucket = {}, true
 		for index = 1, type(synced) == 'table' and #synced[1].spots or 0 do
 			found[synced[1].spots[index].key] = true
-		end
-		for index = 1, type(synced) == 'table' and #synced[1].spots or 0 do
 			if synced[1].spots[index].bucket ~= 0 then inBucket = false end
 		end
-		check('and the client was told what is there now',
+		check('the client was told what is there',
 			synced ~= nil and type(synced[1]) == 'table' and type(synced[1].spots) == 'table'
 				and found['dealer_dock'] == true and found['yard'] == true,
 			synced and synced[1] and tostring(#synced[1].spots))
@@ -6349,15 +6640,25 @@ do
 		-- ── the destination the buyer chose ────────────────────────────────
 		-- Read from the GARAGES contract, which is the only owner of where a
 		-- garage is: nothing here keeps a copy.
-		local listed = garages.Spots()
-		listed['garage_dock'] = garageAccess.FromDefinition('garage_dock', {
-			KIND = 'garage', LABEL = 'THE DOCK', X = 1.0, Y = 1.0, Z = 5.0,
-			HEADING = 0.0, BUCKET = 0,
-		})
-		listed['pad_dock'] = garageAccess.FromDefinition('pad_dock', {
-			KIND = 'avpad', LABEL = 'THE PAD', X = 1.0, Y = 1.0, Z = 5.0,
-			HEADING = 0.0, BUCKET = 0,
-		})
+		--
+		-- A GARAGE AND NOT A POINT. The garages rework made a garage a key with
+		-- several locations, and a vehicle is filed under the KEY -- naming one
+		-- of its markers here would file a car under a door, which is a car that
+		-- comes out of exactly one location and nowhere else.
+		local listed = garages.Garages()
+		local function garage(key, kind)
+			local built = select(1, garageAccess.CoerceGarages({ [key] = {
+				KIND = kind, LABEL = key,
+				LOCATIONS = { { BUCKET = 0,
+					MENU = { X = 1.0, Y = 1.0, Z = 5.0 },
+					ENTRY = { X = 1.0, Y = 1.0, Z = 5.0, HEADING = 0.0 },
+					EXITS = { { X = 1.0, Y = 1.0, Z = 5.0, HEADING = 0.0 } } } },
+			} }))[key]
+			listed[key] = built
+			return built
+		end
+		garage('garage_dock', 'garage')
+		garage('pad_dock', 'avpad')
 
 		local delivered = contract.Buy(src, 'yard', 'quartz', 'garage_dock')
 		check('a purchase may name the garage it is delivered to',
@@ -6466,52 +6767,291 @@ do
 		check('and nothing was charged for it',
 			character.Players[src].PlayerData.money.EDDIES == wireBalance - hella.price,
 			tostring(character.Players[src].PlayerData.money.EDDIES))
+		-- ── selling to somebody standing in front of you ───────────────────
+		-- THE OWNER'S OWN TWO CHOICES ARE WHAT IS UNDER TEST. "The buyer must
+		-- have the money, and THE BUYER'S CLIENT CONFIRMS the purchase" -- chosen
+		-- explicitly over debiting them the moment a salesperson presses a row.
+		-- And "the sale money goes to the COMPANY BANK and a config-defined
+		-- percentage goes to the seller", for jobs AND gangs.
+		local seller, buyer = 73, 74
+		local sellerData = load(seller, 'citizen-seller', 0)
+		local buyerData = load(buyer, 'citizen-buyer', 2000000)
+		-- The two groups a character carries, in the shape the character module
+		-- resolves them into: a name and a grade. The JOB is the company here,
+		-- and the gang beside it is what proves the job wins.
+		sellerData.PlayerData.job = { name = 'fixer', grade = { level = 2 } }
+		sellerData.PlayerData.gang = { name = 'maelstrom', grade = { level = 0 } }
+		control.Stand(seller, 0.0, 0.0, 0.0)
+		control.Stand(buyer, 0.0, 0.0, 0.0)
+		env.source = seller
+
+		local hellaRow = Access.Entry('hella')
+		local cut, banked = Access.Split(hellaRow.price)
+		check('the split is the configured percentage, rounded to the seller\'s cost',
+			cut == math.floor(hellaRow.price * Config.SELLER_CUT_PERCENT / 100)
+				and cut + banked == hellaRow.price,
+			('%d + %d vs %d'):format(cut, banked, hellaRow.price))
+
+		local buyerBefore = character.Players[buyer].PlayerData.money.EDDIES
+		local sellerBefore = character.Players[seller].PlayerData.money.EDDIES
+		local madeRows = #vehiclesWritten
+		local offered = contract.Offer(seller, buyer, 'hella')
+		check('a salesperson inside the zone may offer a model to a player in it',
+			offered.ok == true, offered.ok == false and tostring(offered.error))
+		check('and the offer names the company the money would go to',
+			offered.ok and offered.value.cut == cut and offered.value.company == banked,
+			offered.ok and ('%s/%s'):format(tostring(offered.value.cut),
+				tostring(offered.value.company)))
+
+		-- NOTHING HAS MOVED. This is the whole of the owner's choice: an offer is
+		-- a question, and a question does not take anybody's money.
+		check('an offer charges the buyer nothing at all',
+			character.Players[buyer].PlayerData.money.EDDIES == buyerBefore,
+			character.Players[buyer].PlayerData.money.EDDIES)
+		check('and registers no vehicle', #vehiclesWritten == madeRows,
+			#vehiclesWritten - madeRows)
+		check('and pays the seller nothing yet',
+			character.Players[seller].PlayerData.money.EDDIES == sellerBefore)
+
+		-- The buyer is asked, on their own client, and the ask carries what they
+		-- need to answer it: which model, at what price, from whom.
+		local asked = lastEvent(dealership.Event.OFFERED)
+		check('the buyer\'s own client is what is asked',
+			asked ~= nil and asked.source == buyer and type(asked[1]) == 'table'
+				and asked[1].entry == 'hella' and asked[1].price == hellaRow.price,
+			asked and tostring(asked.source))
+		local offerAt = asked ~= nil and asked[1].token or nil
+
+		-- NO IS AN ANSWER, and it settles the offer rather than leaving it open.
+		local declined = contract.Accept(buyer, offerAt, false)
+		check('the buyer may say no', declined.ok == false
+			and declined.error == 'dealership.offerDeclined', tostring(declined.error))
+		check('and nothing moved for that either',
+			character.Players[buyer].PlayerData.money.EDDIES == buyerBefore
+				and #vehiclesWritten == madeRows)
+		check('and the same answer cannot be given twice',
+			contract.Accept(buyer, offerAt, true).error == 'dealership.noOffer')
+
+		-- AN OFFER IS IDENTIFIED BY ITS OWN CLOCK, and this is the case that
+		-- needs it: a second offer REPLACES the first, and a confirm that was
+		-- already in flight for the first would otherwise buy the second -- a
+		-- different car, at a different price, that the buyer never saw. The
+		-- table alone cannot tell them apart, because both are keyed by the buyer.
+		local firstOffer = contract.Offer(seller, buyer, 'hella')
+		local firstAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local secondOffer = contract.Offer(seller, buyer, 'caliburn')
+		local secondAt = lastEvent(dealership.Event.OFFERED)[1].token
+		check('a second offer replaces the first rather than queueing behind it',
+			firstOffer.ok and secondOffer.ok and firstAt ~= secondAt,
+			('%s vs %s'):format(tostring(firstAt), tostring(secondAt)))
+		local stale = contract.Accept(buyer, firstAt, true)
+		check('and a yes to the offer that was replaced buys nothing at all',
+			stale.ok == false and stale.error == 'dealership.noOffer', tostring(stale.error))
+		check('and the buyer still has their money',
+			character.Players[buyer].PlayerData.money.EDDIES == buyerBefore,
+			character.Players[buyer].PlayerData.money.EDDIES)
+		-- The live one is still live: a stale answer must not settle it either.
+		check('while the offer they were actually made is still open',
+			contract.Accept(buyer, secondAt, false).error == 'dealership.offerDeclined')
+
+		-- ── and yes ────────────────────────────────────────────────────────
+		local settled
+		offered = contract.Offer(seller, buyer, 'hella')
+		asked = lastEvent(dealership.Event.OFFERED)
+		offerAt = asked ~= nil and asked[1].token or nil
+		env.CreateThread(function() settled = contract.Accept(buyer, offerAt, true) end)
+		check('the sale settles', settle(control, function() return settled ~= nil end, 60),
+			settled and tostring(settled.error))
+		check('and it went through', settled ~= nil and settled.ok == true,
+			settled and tostring(settled.error))
+		check('the buyer paid the price, and only the price',
+			character.Players[buyer].PlayerData.money.EDDIES == buyerBefore - hellaRow.price,
+			character.Players[buyer].PlayerData.money.EDDIES)
+		check('and owns the vehicle', #vehiclesWritten == madeRows + 1,
+			#vehiclesWritten - madeRows)
+
+		-- WHERE THE MONEY WENT. The company bank of the seller's own group, and
+		-- the configured percentage of it to the seller.
+		check('the seller is paid the configured percentage',
+			character.Players[seller].PlayerData.money.EDDIES == sellerBefore + cut,
+			character.Players[seller].PlayerData.money.EDDIES)
+		check('and the rest is banked to the company, not to the seller',
+			accounts['job:fixer'] == banked, tostring(accounts['job:fixer']))
+		-- THE JOB WINS OVER THE GANG. A gang member with a day job sells for the
+		-- day job, because that is the company the customer is buying from.
+		check('to the JOB, for a seller who has a job and a gang both',
+			accounts['gang:maelstrom'] == nil, tostring(accounts['gang:maelstrom']))
+		check('and the balance reads back through the contract',
+			(function()
+				local read = contract.Balance('job', 'fixer')
+				return read.ok and read.value.balance == banked
+			end)())
+
+		-- ── what a sale is refused for ─────────────────────────────────────
+		-- A SELLER WITH NO COMPANY HAS NOWHERE TO PAY THE MONEY IN, so the sale
+		-- is refused rather than made with the price evaporating.
+		local drifter = 75
+		local drifterData = load(drifter, 'citizen-drifter', 0)
+		drifterData.PlayerData.job = { name = 'unemployed', grade = { level = 0 } }
+		drifterData.PlayerData.gang = { name = 'none', grade = { level = 0 } }
+		control.Stand(drifter, 0.0, 0.0, 0.0)
+		check('a seller with no job and no gang cannot sell at all',
+			contract.Offer(drifter, buyer, 'hella').error == 'dealership.noCompany')
+
+		-- A gang member with no job sells for the gang, which is the other half
+		-- of the owner's "jobs AND gangs".
+		drifterData.PlayerData.gang = { name = 'valentinos', grade = { level = 3 } }
+		local gangOffer = contract.Offer(drifter, buyer, 'hella')
+		check('and one with only a gang sells for the gang',
+			gangOffer.ok == true, gangOffer.ok == false and tostring(gangOffer.error))
+		local gangAsked = lastEvent(dealership.Event.OFFERED)
+		local gangSettled
+		env.CreateThread(function()
+			gangSettled = contract.Accept(buyer, gangAsked[1].token, true)
+		end)
+		check('that sale settles too',
+			settle(control, function() return gangSettled ~= nil end, 60))
+		check('and the money lands in the GANG\'s account',
+			accounts['gang:valentinos'] == banked, tostring(accounts['gang:valentinos']))
+
+		-- OUT OF THE ROOM IS OUT OF THE SALE. Both ends are proved, and proved
+		-- again when the buyer answers -- everything provable at the offer can
+		-- have stopped being true by then.
+		control.Stand(buyer, 900.0, 900.0, 0.0)
+		check('a buyer who is not in the showroom cannot be offered anything',
+			contract.Offer(seller, buyer, 'hella').error == 'dealership.buyerNotInZone')
+		control.Stand(buyer, 0.0, 0.0, 0.0)
+		control.Stand(seller, 900.0, 900.0, 0.0)
+		check('and a salesperson outside every showroom cannot sell from one',
+			contract.Offer(seller, buyer, 'hella').error == 'dealership.notInZone')
+		control.Stand(seller, 0.0, 0.0, 0.0)
+
+		local walkOut = contract.Offer(seller, buyer, 'hella')
+		local walkAsked = lastEvent(dealership.Event.OFFERED)
+		control.Stand(buyer, 900.0, 900.0, 0.0)
+		check('an offer accepted from outside the showroom is refused',
+			walkOut.ok and contract.Accept(buyer, walkAsked[1].token, true).error
+				== 'dealership.notInZone')
+		control.Stand(buyer, 0.0, 0.0, 0.0)
+
+		-- The courtesy check, which is not the check that counts: the removal
+		-- itself is still what settles it.
+		local pauper = 76
+		load(pauper, 'citizen-pauper', 10)
+		control.Stand(pauper, 0.0, 0.0, 0.0)
+		check('a buyer who cannot afford it is not asked in the first place',
+			contract.Offer(seller, pauper, 'hella').error == 'dealership.buyerCannotAfford')
+		check('and nobody can sell to themselves',
+			contract.Offer(seller, seller, 'hella').error == 'dealership.noSuchBuyer')
+		env.source = src
 
 		-- ── the commands an operator reads ─────────────────────────────────
 		control.commands[Config.COMMANDS.stock].run(src, {})
-		local stockAnswer = lastAnswer('row(s)')		check('the stock command lists what is for sale and which dealer sells it',
+		local stockAnswer = lastAnswer('row(s)')
+		check('the stock command lists what is for sale and which dealer sells it',
 			stockAnswer ~= nil and stockAnswer.text:find('hella', 1, true) ~= nil
 				and stockAnswer.text:find('avpad', 1, true) ~= nil,
 			stockAnswer and stockAnswer.text:sub(1, 60))
 
-		-- A dealer that comes from the config file: `list` says which is which,
-		-- and `remove` will not take it out of the world.
 		control.commands[Config.COMMANDS.list].run(src, {})
 		local listAnswer = lastAnswer('dealer(s)')
 		check('the list command names every dealer and where it comes from',
 			listAnswer ~= nil and listAnswer.text:find('dealer_dock', 1, true) ~= nil
 				and listAnswer.text:find('yard', 1, true) ~= nil
-				and listAnswer.text:find('captured', 1, true) ~= nil
 				and listAnswer.text:find('config', 1, true) ~= nil,
 			listAnswer and listAnswer.text:sub(1, 60))
+		-- AND WHAT IS STANDING ON EACH FLOOR. A showroom car that was placed and
+		-- is NOT standing -- its record refused, the host said no -- is the one
+		-- thing an operator cannot see from inside the game, so the reading that
+		-- exists has to say it.
+		check('and every showroom car, and whether it is actually standing',
+			listAnswer ~= nil and listAnswer.text:find('show_one', 1, true) ~= nil
+				and listAnswer.text:find('showroom car', 1, true) ~= nil,
+			listAnswer and listAnswer.text:sub(1, 120))
 
-		control.commands[Config.COMMANDS.remove].run(src, { 'yard' })
-		check('a configured dealer is refused removal, and says where it lives',
-			lastAnswer('config/dealership.lua') ~= nil)
-		check('and it is still standing', contract.Spots()['yard'] ~= nil)
-
-		control.commands[Config.COMMANDS.remove].run(src, { 'ghost' })
-		check('removing a dealer nobody placed says there was none',
-			lastAnswer('no captured dealer named ghost') ~= nil)
-
-		local dealerMark = #dealersWritten
-		control.commands[Config.COMMANDS.remove].run(src, { 'dealer_dock' })
+		-- ── taking a showroom car away ─────────────────────────────────────
+		-- Through the same routeway that placed it, gated on the same right.
+		local ghosts = 72
+		load(ghosts, 'citizen-nobody', 0)
+		env.source = ghosts
+		local removals = #control.vehicleRemoves
+		control.netEvents[dealership.Event.UNPLACED]('show_one')
 		control.Pump(8)
-		check('a captured dealer can be removed', #dealersWritten > dealerMark
-			and contract.Spots()['dealer_dock'] == nil)
-		synced = lastEvent(dealership.Event.SYNC)
-		found = {}
-		for index = 1, type(synced) == 'table' and #synced[1].spots or 0 do
-			found[synced[1].spots[index].key] = true
-		end
-		check('and every client is told what is left',
-			synced ~= nil and found['dealer_dock'] == nil and found['yard'] == true,
-			synced and ('%d spot(s)'):format(#synced[1].spots))
+		check('taking a showroom car away without the right is refused',
+			#control.vehicleRemoves == removals,
+			#control.vehicleRemoves - removals)
+		local stillThere = contract.Previews()
+		check('and it is still standing', stillThere.ok
+			and #stillThere.value.previews == 1)
 
-		-- A PURCHASE FROM A DEALER THAT IS GONE is refused rather than answered
-		-- from a stale list.
-		check('and buying at the removed dealer is refused',
-			refused('dealer_dock', 'hella') == 'dealership.noSuchSpot')
+		env.source = src
+		removals = #control.vehicleRemoves
+		control.netEvents[dealership.Event.UNPLACED]('show_one')
+		control.Pump(8)
+		local gone = contract.Previews()
+		check('with the right, the showroom car is taken off the floor',
+			gone.ok and #gone.value.previews == 0, gone.ok and #gone.value.previews)
+		check('and it is removed from the world, not only from the table',
+			#control.vehicleRemoves == removals + 1,
+			#control.vehicleRemoves - removals)
+
+		control.netEvents[dealership.Event.UNPLACED]('never_placed')
+		control.Pump(4)
+		check('and one nobody placed says there was none',
+			lastAnswer('dealership.noSuchPreview') ~= nil
+				or lastEvent(dealership.Event.ANSWER) ~= nil)
+
+		-- ── the migration: nothing an operator placed is lost ──────────────
+		-- THE WHOLE REASON THE COMMANDS COULD BE DELETED. `/opx.dealership.add`
+		-- wrote into `opx77_dealerships`, so every dealer placed in game lived in
+		-- a table nobody has a copy of; deleting the command without reading that
+		-- table again would have wiped the lot, silently, because an empty
+		-- `SPOTS` block is a valid config.
+		local legacy = {
+			{ spot_key = 'legacy_lot', label = 'THE LOT', kind = 'garage',
+				x = 700.0, y = 0.0, z = 4.0, heading = 12.0, bucket = 0 },
+			{ spot_key = 'garage1', label = 'MOVED', kind = 'garage',
+				x = 800.0, y = 800.0, z = 8.0, heading = 3.0, bucket = 0 },
+		}
+		local keptEnv, keptControl, keptWhy = boot('server', Host.Database({
+			scalar = function() return 1 end,
+			update = function() return 0 end,
+			single = function() return nil end,
+			query = function(sql)
+				if sql:find('opx77_dealerships', 1, true) then return legacy end
+				return {}
+			end,
+		}))
+		check('a server with a legacy dealer in the database boots', keptWhy == nil, keptWhy)
+		if keptWhy == nil then
+			keptControl.Pump(40)
+			local keptContract = keptEnv.OPX.Api.Get('dealership')
+			local adopted = keptContract.Spots()['legacy_lot']
+			check('a dealer that lives only in the database is adopted',
+				adopted ~= nil and adopted.label == 'THE LOT' and adopted.x == 700.0
+					and adopted.heading == 12.0,
+				adopted and adopted.x)
+			local printed, warned = false, false
+			for index = 1, #keptControl.log.info do
+				if keptControl.log.info[index]:find('config line: legacy_lot', 1, true) then
+					printed = true
+				end
+			end
+			for index = 1, #keptControl.log.warn do
+				if keptControl.log.warn[index]:find('opx77_dealerships', 1, true) then
+					warned = true
+				end
+			end
+			check('and the line that would check it in is written to the journal', printed)
+			check('with a line saying it exists nowhere else', warned)
+			-- CONFIG WINS OVER THE DATABASE NOW. There is no command to move a
+			-- dealer with any more, so a stale row silently moving one would be a
+			-- dealer an operator cannot move by editing the one place they are
+			-- told to edit.
+			local shadowed = keptContract.Spots()['garage1']
+			check('a dealer named in config is not moved by a row of the same name',
+				shadowed ~= nil and shadowed.x == -1536.42, shadowed and shadowed.x)
+		end
 	end
 end
 
@@ -6797,22 +7337,6 @@ do
 				and verdicts[2].garage == 'garage_dock',
 			verdicts[2] and tostring(verdicts[2].plate))
 
-		-- ── the heading, which only this half can read ─────────────────────
-		before = #cctl.serverEvents
-		local infoMark = #cctl.log.info
-		cctl.netEvents[dealership.Event.CAPTURE]('garage', 'dealer_dock', 'THE DOCKS')
-		local answered = cctl.serverEvents[#cctl.serverEvents]
-		check('the client answers a capture ask', #cctl.serverEvents > before)
-		check('with the operator\'s own facing, which the server cannot read',
-			answered ~= nil and answered.name == dealership.Event.CAPTURED
-				and answered[1] == 'garage' and answered[2] == 'dealer_dock',
-			answered and tostring(answered[2]))
-		-- Both ends of the round trip say their half, so a capture that dies in
-		-- the middle is a hole in a log rather than silence from everywhere.
-		check('and names the dealer it answered, so the round trip reads from here',
-			#cctl.log.info > infoMark
-				and cctl.log.info[#cctl.log.info]:find('dealer_dock', 1, true) ~= nil,
-			cctl.log.info[#cctl.log.info])
 
 		-- ── a keyboard held elsewhere is not a key ─────────────────────────
 		cctl.input.captured = true
@@ -6855,6 +7379,87 @@ do
 		cctl.Pump(6)
 		check('and the garages module\'s own markers are not this module\'s bookkeeping',
 			#cenv.Open77.markers.list() == 2, #cenv.Open77.markers.list())
+
+		-- ── the showroom floor, and the row it grows on other players ──────
+		-- BEING IN THE ROOM IS NOT STANDING ON THE COUNTER, and the difference is
+		-- the whole of the selling half: a salesperson walks a customer around a
+		-- showroom, and a row that only existed on the marker would vanish the
+		-- moment they did.
+		check('standing on the marker is also being inside the zone',
+			Runtime.Report().zone ~= nil and Runtime.Report().nearest ~= nil,
+			tostring(Runtime.Report().zone))
+		check('and the eye is given a row to put on other players',
+			Runtime.Report().selling == true)
+		local eye = OPX.Api.Get('target')
+		local rows = eye ~= nil and eye.List('dealership') or nil
+		check('one row, and it is the one that sells',
+			rows ~= nil and rows.ok == true and #rows.value.options == 1
+				and rows.value.options[1].id == 'sell',
+			rows and rows.ok and #rows.value.options)
+
+		-- Twenty metres off the marker is still inside a thirty-metre zone: too
+		-- far to buy, near enough to be sold to.
+		cctl.placement.x, cctl.placement.y = 20.0, 0.0
+		settle(cctl, function() return Runtime.Report().nearest == nil end)
+		check('twenty metres away there is no counter underfoot',
+			Runtime.Report().nearest == nil, tostring(Runtime.Report().nearest))
+		check('but the showroom is still around you, and the row is still there',
+			Runtime.Report().zone ~= nil and Runtime.Report().selling == true,
+			tostring(Runtime.Report().zone))
+
+		-- And out of the building takes it away again. A row left behind is a row
+		-- that opens a list the server will refuse.
+		cctl.placement.x, cctl.placement.y = 900.0, 900.0
+		settle(cctl, function() return Runtime.Report().selling == false end)
+		check('leaving the showroom takes the row off the eye',
+			Runtime.Report().zone == nil and Runtime.Report().selling == false,
+			tostring(Runtime.Report().zone))
+		-- SETTLED ON THE EYE ITSELF, not on this module's own flag. The flag says
+		-- what has been ASKED for -- it flips the moment the zone changes -- and
+		-- the registration runs on a thread of its own, which is the whole reason
+		-- it yields before it writes. Reading the registry on the flag alone
+		-- would read it one resume too early.
+		settle(cctl, function()
+			local held = eye ~= nil and eye.List('dealership') or nil
+			return held ~= nil and held.ok == true and #held.value.options == 0
+		end)
+		rows = eye ~= nil and eye.List('dealership') or nil
+		check('and the eye is holding none of ours',
+			rows ~= nil and rows.ok == true and #rows.value.options == 0,
+			rows and rows.ok and #rows.value.options)
+		cctl.placement.x, cctl.placement.y = 0.0, 0.0
+		settle(cctl, function() return Runtime.Report().selling == true end)
+
+		-- ── the offer the buyer has to answer ──────────────────────────────
+		-- THE ONE SCREEN IN THIS MODULE SOMEBODY ELSE OPENS. It is a menu and not
+		-- a toast, because the whole point of the round trip is that it can be
+		-- answered.
+		cctl.netEvents[dealership.Event.OFFERED]({
+			token = 12345, entry = 'hella', model = 'Archer Hella', price = 29000,
+			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+		})
+		cctl.Pump(4)
+		check('an offer opens the screen that answers it',
+			Runtime.Report().open == true and Runtime.Report().screen == 'offer'
+				and Runtime.Report().offered == 'hella',
+			tostring(Runtime.Report().screen))
+
+		before = #cctl.serverEvents
+		local answerOut = Runtime.Decide(true)
+		local decided = cctl.serverEvents[#cctl.serverEvents]
+		check('answering it sends the buyer\'s own decision',
+			answerOut.ok == true and #cctl.serverEvents == before + 1 and decided ~= nil
+				and decided.name == dealership.Event.DECIDE and decided[2] == true,
+			decided and tostring(decided.name))
+		-- THE OFFER'S OWN CLOCK GOES BACK WITH IT. A second offer replaces the
+		-- first, and a confirm already in flight for the first would otherwise buy
+		-- the second -- a different car, at a different price, never seen.
+		check('carrying the clock of the offer it is answering', decided[1] == 12345,
+			decided and tostring(decided[1]))
+		check('and the screen is gone, so it cannot be answered twice',
+			Runtime.Report().open == false and Runtime.Report().offered == nil)
+		check('and there is nothing left to answer',
+			Runtime.Decide(true).ok == false)
 
 		-- ── a dealer the client cannot read ────────────────────────────────
 		local warned = #cctl.log.warn
@@ -8391,6 +8996,57 @@ do
 		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = false })
 		control.Pump(10)
 		check('the staff menu opens', admin.Menu.IsOpen())
+
+		-- ── the Dev screen, and the key that was declared and never registered ──
+		-- `Keys.DEV` existed in `client/keys.lua`, `config/admin.lua` shipped
+		-- `KEYS.DEV = 'F10'` and said in as many words that it "opens the staff
+		-- menu on the Dev screen", and no line anywhere handed either of them to
+		-- `RegisterKeyMapping`. So the key did nothing, the pause menu listed no
+		-- shortcut for it, and the config documented a feature the build did not
+		-- have.
+		local devKey = control.keyMappings.byId['opx.admin.dev']
+		check('the Dev key is declared to the host, so a player can rebind it',
+			devKey ~= nil)
+		check('and it is the key the config names, separately from the menu key',
+			devKey ~= nil and devKey.key == 'F10'
+				and control.keyMappings.byId['opx.admin.menu'] ~= nil
+				and control.keyMappings.byId['opx.admin.menu'].key ~= devKey.key,
+			devKey and tostring(devKey.key))
+		check('and the pause menu is given a name for it, not a key',
+			devKey ~= nil and type(devKey.name) == 'string' and devKey.name ~= ''
+				and devKey.name:find('key', 1, true) == nil, devKey and tostring(devKey.name))
+
+		check('the Dev screen can be opened', admin.Menu.OpenAt('dev') == true)
+		control.Pump(10)
+		check('and it lands on it', admin.Menu.Screen() == 'dev', admin.Menu.Screen())
+		-- WHAT IS ON IT, and what is deliberately not. The four rows that placed
+		-- a garage or a dealer are gone with the commands behind them; the two
+		-- that dress a showroom are new, and they are the reason the screen has
+		-- to exist rather than being a list of readings.
+		check('it offers the showroom rows, which are what an operator still places',
+			hasRow('previewPlace') ~= nil and hasRow('previewRemove') ~= nil)
+		check('and the readings that are left',
+			hasRow('garageList') ~= nil and hasRow('dealerList') ~= nil
+				and hasRow('dealerStock') ~= nil)
+		check('and none of the four rows that placed a spot from a chat line',
+			hasRow('garageAdd') == nil and hasRow('garageRemove') == nil
+				and hasRow('dealerAdd') == nil and hasRow('dealerRemove') == nil)
+		-- EVERY ROW ON IT IS WRITTEN IN WORDS. A catalogue key that was never
+		-- registered comes back as itself, so the screen draws `admin.menu.dev`
+		-- at an operator and every check above still passes -- which is exactly
+		-- how this screen sat half-finished: the forms behind it were written and
+		-- roughly fifteen of the keys they name never were.
+		local unwritten = {}
+		for _, id in ipairs({ 'previewPlace', 'previewRemove', 'garageList', 'garageBring',
+			'dealerList', 'dealerStock', 'dealerBuy' }) do
+			local item = hasRow(id)
+			if item == nil or type(item.label) ~= 'string'
+				or item.label:find('^admin%.') ~= nil then
+				unwritten[#unwritten + 1] = id
+			end
+		end
+		check('and every one of them is written in words rather than drawn as its key',
+			#unwritten == 0, table.concat(unwritten, ' '))
 
 		asked = {}
 		check('the find screen can be opened', admin.Menu.OpenAt('offlineChars') == true)
@@ -16113,7 +16769,17 @@ do
 		-- A reservation that outlived a refusal would lock the plate for the rest
 		-- of the session: every later request would answer `vehicle.busy` for a
 		-- car that is not out and never was.
-		vehicles.Store(PLATE)
+		-- ON A THREAD, because `Store` yields. It reads the live snapshot first
+		-- and then fetches the row to write the condition onto, and that fetch is
+		-- a database read -- so calling it straight from here raised "attempt to
+		-- yield from outside a coroutine". It only ever appeared to work because
+		-- the host's `get` answered nil for a vehicle it had itself created,
+		-- which sent `Store` down the branch that does not read the row.
+		local putAway
+		env.CreateThread(function() putAway = vehicles.Store(PLATE) end)
+		check('the car is put away again before the refusal case',
+			settle(control, function() return putAway ~= nil end, 60))
+
 		local realCreate = env.Open77.vehicles.create
 		env.Open77.vehicles.create = function() return nil, 'refused_by_test' end
 		local failed
