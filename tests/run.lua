@@ -11458,6 +11458,9 @@ do
 		local Catalog = inventory.Catalog
 		local Options = inventory.Options
 		local KIND = inventory.KIND
+		-- For the boot-of-an-unowned-car block at the end: the sweep that
+		-- actually destroys a memory-only container lives here.
+		local World = inventory.World
 
 		-- The gate answers false and the life reader answers a STRING in the bare
 		-- harness, and `Players.MayAct` reads both. Without these two every
@@ -11496,6 +11499,14 @@ do
 			character.Registry.byUserId[userId] = id
 			local bag = Containers.Transient(KIND.CHARACTER, citizenId,
 				Options.BAG_SLOTS, Options.BAG_MAX_WEIGHT)
+			-- AND THEN TOLD IT IS NOT MEMORY-ONLY, which is not a fiddle: a real
+			-- character bag comes from `Containers.Load` and is written, and
+			-- `transient` now means something -- a container that may not be
+			-- handed anything carrying `DROP = false`, because it is going to be
+			-- discarded unwritten. A stand-in left flagged transient would refuse
+			-- every eddies move below, and it would be right to: what it would be
+			-- refusing is the stand-in, not the code under test.
+			bag.transient = nil
 			Players.Attach(id)
 			return bag
 		end
@@ -11687,6 +11698,134 @@ do
 				tostring(character.GetMoney(ALICE, 'EDDIES'))))
 		check('and after every one of these, the economy is the size it started',
 			total() == START, tostring(total()))
+
+		-- ── the boot of a car nobody owns ─────────────────────────────────────
+		-- THE OTHER WAY OUT, and until `Containers.Move` learned about `DROP` it
+		-- was wide open. `droppable` was read in `Actions.Drop` and nowhere else,
+		-- so the floor was shut and every other memory-only container was not:
+		-- open the boot of a vehicle this resource did not spawn -- ambient
+		-- traffic, an admin `/car`, anything with no plate in `live`, which also
+		-- skips the owner check because `ownerCitizenId` is nil -- move the notes
+		-- in, and walk away. The container is transient, nothing marks it dirty,
+		-- nothing ever writes it, and the sweep discards it five seconds after
+		-- the car goes. Balance gone, no row, no audit line.
+		--
+		-- WHAT IS ASSERTED IS CONSERVATION, before and after, across both halves
+		-- of it: the move and the sweep. A refusal that had already taken the
+		-- notes out of the bag would pass a check that only read the refusal.
+		local VEHICLE = 770011
+		local carGone = false
+		env.Open77.vehicles.get = function(id)
+			if carGone or id ~= VEHICLE then return nil end
+			return { record = 'Vehicle.v_standard2_villefort_cortes_player',
+				x = 0.0, y = 0.0, z = 0.0, bucket = 0 }
+		end
+		env.Open77.vehicles.getPlayerSeat = function() return nil end
+		env.Open77.players.position = function() return { x = 0.0, y = 0.0, z = 0.0, bucket = 0 } end
+
+		local boot9, bootWhy = Actions.OpenVehicle(ALICE, KIND.TRUNK, VEHICLE)
+		check('the boot of an unowned car opens, which is the door the exploit used',
+			boot9 ~= nil, tostring(bootWhy))
+		check('and it is a container nothing will ever write',
+			boot9 ~= nil and boot9.transient == true)
+
+		if boot9 ~= nil then
+			-- The deposit above banked every note Alice had, so a stack is put
+			-- back to carry into the boot. It is MINTED and not moved, which is
+			-- why the economy is `START + MINTED` from here on and why `before`
+			-- is read after it: what the checks below are about is conservation
+			-- across the boot, not the size of the float.
+			local MINTED = 120
+			Containers.Add(aliceBag, 'eddies', MINTED)
+			local notes = nil
+			for index, stack in pairs(aliceBag.items) do
+				if stack.name == 'eddies' then notes = index end
+			end
+			local before = total()
+			check('the notes to be carried into the boot are in the bag',
+				notes ~= nil and before == START + MINTED, tostring(before))
+
+			local moved, moveWhy = Containers.Move(aliceBag, notes, boot9, nil, nil)
+			check('eddies cannot be moved into a boot that is never written',
+				moved == false and moveWhy == 'no_drop', tostring(moveWhy))
+			check('and the refused move left every note where it was',
+				total() == before, ('%d was %d'):format(total(), before))
+			check('and put nothing in the boot',
+				next(boot9.items) == nil)
+
+			-- The refusal is about THIS item and not about boots being shut: an
+			-- ordinary thing still goes in one, or the fix would be a feature
+			-- deleted rather than a hole closed.
+			Containers.Add(aliceBag, 'bandage', 1)
+			local gauze = nil
+			for index, stack in pairs(aliceBag.items) do
+				if stack.name == 'bandage' then gauze = index end
+			end
+			check('while an ordinary item still goes in the boot',
+				(Containers.Move(aliceBag, gauze, boot9, nil, nil)) == true)
+
+			-- ── and then the car is gone ───────────────────────────────────────
+			-- The sweep is the second half: it is what actually destroys the
+			-- container, and the money must not be in it when it does.
+			carGone = true
+			local warnings = #control.log.warn
+			World.SweepVehicles()
+			check('the swept boot is discarded, as a memory-only container must be',
+				Containers.Get(boot9.id) == nil)
+
+			-- AND IT SAID SO. Destroying a container used to be the one thing this
+			-- module did in complete silence -- no audit line, no log line, not
+			-- even the `log.warn` in `Unload`, which sits inside the branch a
+			-- transient skips. Money cannot get in here any more, but a boot full
+			-- of somebody's things still goes with a despawned car, and staff
+			-- asking where it went had nothing whatsoever to read.
+			local said = nil
+			for index = warnings + 1, #control.log.warn do
+				local line = tostring(control.log.warn[index])
+				if line:find('inventory.discarded', 1, true) then said = line end
+			end
+			check('and what it destroyed is on the record',
+				said ~= nil and said:find('bandage', 1, true) ~= nil, tostring(said))
+			check('and the economy is still the size it was before the boot opened',
+				total() == before, ('%d was %d'):format(total(), before))
+			check('which is every eddie the section ever created, and not one fewer',
+				total() == START + MINTED, tostring(total()))
+		end
+
+		-- ── a stash with no anchor is in reach from everywhere, on purpose ────
+		-- AND ONLY WHEN SOMEBODY DECIDED THAT. `WithinReach` used to answer true
+		-- for any STASH with no `anchor` field, which is a conclusion drawn from
+		-- something MISSING: a stash built by another route, or one whose anchor
+		-- is cleared later, became a shared container in reach of the entire
+		-- server with nothing anywhere saying so. `World.Stash` now records the
+		-- decision where it is made and the reach test reads the flag.
+		do
+			local SIZE = { slots = 4, maxWeight = 1000 }
+			-- Registered first, so `Containers.Load` inside `World.Stash` finds
+			-- them in the identity cache and the real function runs with no
+			-- database -- the same trick the bags at the top of this section use.
+			Containers.Transient(KIND.STASH, 'stash-no-anchor', SIZE.slots, SIZE.maxWeight)
+			Containers.Transient(KIND.STASH, 'stash-anchored', SIZE.slots, SIZE.maxWeight)
+			local roaming = World.Stash('stash-no-anchor', SIZE, nil, 'Nowhere')
+			check('a stash opened with no position is marked as such',
+				roaming ~= nil and roaming.anywhere == true)
+			check('and is therefore in reach', World.WithinReach(ALICE, roaming) == true)
+
+			local placed = World.Stash('stash-anchored', SIZE,
+				{ x = 500.0, y = 500.0, z = 0.0, bucket = 0 }, 'Somewhere')
+			check('a stash with a position is not marked as roaming',
+				placed ~= nil and placed.anywhere ~= true)
+			check('and is out of reach from the other side of the map',
+				World.WithinReach(ALICE, placed) == false)
+
+			-- The case the flag exists for: a stash-shaped container nobody made
+			-- through `World.Stash`. Before the flag this was in reach of
+			-- everybody, everywhere, for the life of the server.
+			local stray = Containers.Transient(KIND.STASH, 'stash-stray',
+				SIZE.slots, SIZE.maxWeight)
+			check('a stash-shaped container nobody declared roaming is not in reach',
+				World.WithinReach(ALICE, stray) == false)
+		end
 	end
 end
 
@@ -13782,6 +13921,32 @@ do
 			#props.transforms == placedBefore + 1, #props.transforms)
 		check('and it is still in the world', #props.removes == removedNow, #props.removes)
 
+		-- ── the host's own refusal does not cross the wire ───────────────────
+		-- `Open77.props.attach` answers eleven codes and grows with the platform,
+		-- and every one of them names a platform concept -- a bone, an attachment
+		-- parent, a bucket. They used to be handed straight to the client as the
+		-- refusal reason, which made the answer to "why could I not pick that up"
+		-- a description of our own internals. The client's own guard caught them
+		-- and showed the catch-all, so nothing gibberish reached a screen; what
+		-- reached the wire, and the public decision bus with it, was still the
+		-- inside of the host.
+		at = at + 10000
+		positions[9] = { x = home.x, y = home.y, z = home.z, bucket = 0 }
+		fire(9, M.Event.HELLO)
+		props.refuseAttach = 'invalid_attachment_bone'
+		fire(9, M.Event.BEGIN, Step.PICKUP, CRATE)
+		at = at + Access.PICKUP_MS + 1
+		fire(9, M.Event.FINISH)
+		check('an attach the host refuses is a refused pickup',
+			lastAnswer()[1] == false, tostring(lastAnswer()[2]))
+		check('and the client is told a code this module owns, not the platform\'s',
+			lastAnswer()[2] == 'attach_refused', tostring(lastAnswer()[2]))
+		check('which has a sentence of its own, so it is not the catch-all',
+			OPX.Locale.Exists('hauling.refused.attach_refused'))
+		props.refuseAttach = nil
+		check('and the crate is back on the ground for whoever is next',
+			OPX.Api.Get('hauling').State().value.sites.docks.carried == 0)
+
 		-- ── getting into a car is not a way to load a crate ──────────────────
 		-- The platform's automatic detach list is death, disconnect, parent removal
 		-- and bucket change. A SEAT IS NONE OF THOSE, so without this the carrier
@@ -14887,5 +15052,307 @@ do
 			first == 1, first)
 	end
 end
+section('vehicles: two spawns of one plate in one tick produce exactly one car')
+do
+	-- THE RACE, WHICH WAS REAL AND NOT SUSPECTED. `Store.FetchOne` is a database
+	-- read and it yields -- `lib/server/storage.lua` awaits it -- and it happens
+	-- BEFORE the "already out" guard. So two `M.Spawn` threads for one plate both
+	-- read `live[plateId] == nil`, both reach `Open77.vehicles.create`, and one
+	-- row becomes two cars; the second write to `live` then buries the first,
+	-- which is a vehicle nothing will ever put away because nothing knows it is
+	-- there. `modules/garages/server/main.lua:330` names this race in a comment.
+	--
+	-- The three doors in (`vehicle.spawn`, `garages.bring`, `dealership.buy`)
+	-- held three SEPARATE per-player cooldowns, so one client firing two of them
+	-- in a tick cleared both floors -- but a per-player floor was never the right
+	-- shape for this. The thing that must not happen twice is a PLATE, so the
+	-- plate is what is claimed, the way `hauling`'s `Claim.Take` claims a crate.
+	local env, control, why = boot('server')
+	check('the server boots for the spawn race', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local vehicles = OPX and OPX.Modules.Get('vehicles') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	check('the vehicles and character modules are both there',
+		type(vehicles) == 'table' and type(character) == 'table')
+
+	if type(vehicles) == 'table' and type(character) == 'table' then
+		local DRIVER, PLATE, CITIZEN = 71, 'RACE001', 'citizen-racer'
+		character.Players[DRIVER] = { PlayerData = {
+			citizenId = CITIZEN, source = DRIVER, userId = 'account-71' } }
+		-- THE INDEX AS WELL AS THE ROSTER, the way `character.RegisterPlayer`
+		-- fills both. Without it `ownerLoaded` cannot find the citizen, the save
+		-- pass reads the car as belonging to somebody who has left, and puts it
+		-- away between the setup spawn and the race -- which leaves both racers
+		-- on the beside-the-player path and quietly tests nothing.
+		character.Registry.byCitizenId[CITIZEN] = DRIVER
+		character.Registry.byUserId['account-71'] = DRIVER
+
+		env.Open77.players.position = function()
+			return { x = 5.0, y = 6.0, z = 7.0, bucket = 0 }
+		end
+
+		-- THE YIELD, PUT BACK BY HAND. There is no database in this harness, so
+		-- the real `FetchOne` answers without ever suspending -- and a spawn that
+		-- never suspends cannot be interleaved, which would make this section
+		-- pass against the very defect it is written for. `Wait(0)` is the read
+		-- that the platform's own `MySQL.single.await` is.
+		local realFetch = vehicles.Storage.FetchOne
+		local fetches = 0
+		vehicles.Storage.FetchOne = function(plate)
+			fetches = fetches + 1
+			env.Wait(0)
+			if plate ~= PLATE then return OPX.Result.Err('vehicle.notFound', plate) end
+			return OPX.Result.Ok({ plate = PLATE, citizenId = CITIZEN,
+				record = 'Vehicle.v_standard2_villefort_cortes_player',
+				state = vehicles.Storage.STATE.STORED, health = 1.0, metadata = {} })
+		end
+		local realState = vehicles.Storage.SetState
+		vehicles.Storage.SetState = function() return OPX.Result.Ok(true) end
+
+		-- ── the car is out, which is what makes the window ────────────────────
+		-- THE RECALL PATH IS THE DANGEROUS ONE, and it is worth being exact about
+		-- why. On the plain path the only yield is the fetch, and whichever
+		-- thread the database answers first then runs guard-to-`live` without
+		-- suspending again, so the second finds the car already out. A caller
+		-- that NAMES a place -- every garage marker, every pad, every dealer
+		-- handover -- goes through `M.Store` instead, which clears `live` and
+		-- yields, and then fetches again and yields again. That is a window with
+		-- the plate standing empty in the middle of it, and a second thread walks
+		-- straight through: it creates a car and writes `live`, and the recaller
+		-- wakes up and creates another over the top. Two cars, one row, and the
+		-- first is orphaned -- nothing knows it exists, so nothing ever puts it
+		-- away.
+		local first
+		env.CreateThread(function() first = vehicles.Spawn(DRIVER, PLATE) end)
+		check('the vehicle is out to begin with',
+			settle(control, function() return first ~= nil end, 60) and first.ok == true,
+			first and tostring(first.error))
+
+		local created, removed = #control.vehicleCreates, #control.vehicleRemoves
+		local AT = { x = 0.0, y = 0.0, z = 0.0, yaw = 0.0, bucket = 0 }
+		-- Two explicit slots, NOT `answers[#answers + 1]`: Lua settles the index
+		-- of an assignment before the call on its right, so both threads would
+		-- pick slot 1 and the loser would overwrite the winner -- and the section
+		-- would then be asserting one answer where it meant to assert two.
+		local raceA, raceB
+		env.CreateThread(function() raceA = vehicles.Spawn(DRIVER, PLATE, AT) end)
+		env.CreateThread(function() raceB = vehicles.Spawn(DRIVER, PLATE, AT) end)
+		check('both recalls settle',
+			settle(control, function() return raceA ~= nil and raceB ~= nil end, 80),
+			('%s / %s'):format(tostring(raceA), tostring(raceB)))
+		check('and both of them really did read the row, so both were in flight',
+			fetches >= 3, fetches)
+
+		local ok, refused = 0, nil
+		for _, answer in ipairs({ raceA, raceB }) do
+			if answer.ok then ok = ok + 1 else refused = answer.error end
+		end
+		check('exactly one of the two comes back with a vehicle', ok == 1, ok)
+		check('and the loser is told the plate is already coming out, not given a car',
+			refused == 'vehicle.busy', tostring(refused))
+		check('ONE ROW MADE ONE CAR, which is the whole of it',
+			#control.vehicleCreates == created + 1,
+			('%d created'):format(#control.vehicleCreates - created))
+		check('and there are words for the refusal, so the loser is told something',
+			OPX.Locale.Text('vehicle.busy'):find('already', 1, true) ~= nil,
+			OPX.Locale.Text('vehicle.busy'))
+
+		-- THE WINNER RECALLED, which is the path the race lives on: it is the one
+		-- that puts the old car away and then fetches again, and it is the two
+		-- yields in that gap the loser used to walk through. A run where neither
+		-- recalled is a run that tested the safe path and proved nothing.
+		local recalls = 0
+		for _, answer in ipairs({ raceA, raceB }) do
+			if answer.ok and answer.value.recalled then recalls = recalls + 1 end
+		end
+		check('and the one that won went the way the race actually lives',
+			recalls == 1, recalls)
+
+		-- NO ORPHAN. The duplication's real cost is not the second car, it is the
+		-- FIRST: `live` holds one entry per plate, so a second write buries the
+		-- first and leaves a vehicle in the world that nothing will ever put
+		-- away, save or remove. A recall removes exactly what it replaces, so one
+		-- creation and one removal is the whole of what should have happened.
+		check('and the car it replaced is the only one that was removed',
+			#control.vehicleRemoves == removed + 1,
+			('%d removed'):format(#control.vehicleRemoves - removed))
+
+		-- ── and the claim is given back when the spawn fails ──────────────────
+		-- A reservation that outlived a refusal would lock the plate for the rest
+		-- of the session: every later request would answer `vehicle.busy` for a
+		-- car that is not out and never was.
+		vehicles.Store(PLATE)
+		local realCreate = env.Open77.vehicles.create
+		env.Open77.vehicles.create = function() return nil, 'refused_by_test' end
+		local failed
+		env.CreateThread(function() failed = vehicles.Spawn(DRIVER, PLATE) end)
+		check('a refused creation settles', settle(control, function() return failed ~= nil end, 60))
+		check('and it is refused rather than silently succeeding',
+			failed ~= nil and failed.ok == false, failed and tostring(failed.error))
+
+		env.Open77.vehicles.create = realCreate
+		local after
+		env.CreateThread(function() after = vehicles.Spawn(DRIVER, PLATE) end)
+		check('the next attempt settles', settle(control, function() return after ~= nil end, 60))
+		check('a plate whose spawn failed is not locked for the session',
+			after ~= nil and after.ok == true, after and tostring(after.error))
+
+		vehicles.Storage.FetchOne, vehicles.Storage.SetState = realFetch, realState
+		character.Players[DRIVER] = nil
+	end
+end
+
+section('clothing saves need a fitting room somebody opened')
+do
+	-- THE EXPLOIT THIS PINS. `appearance:saveClothing` asked four questions --
+	-- is the payload a table, is it too soon, is a character loaded, is the
+	-- citizen id the loaded one -- and then wrote nine `Items.*` records and
+	-- republished the look to everybody. None of them asks where the player is
+	-- standing or whether a fitting room was ever put up, so a rewritten client
+	-- dressed itself out of the whole catalogue from anywhere in the city, and
+	-- `modules/shops` -- which charges per changed slot -- never saw it happen.
+	--
+	-- The same argument had already retired the `opx.appearance.wardrobe`
+	-- command ("a free door onto a priced room is not a convenience, it is the
+	-- price being optional"). The command was shut and the net event, which is
+	-- the wider door of the two because it needs no room at all, was left open.
+	local env, control, why = boot('server')
+	check('the server boots for the clothing door', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local appearance = OPX and OPX.Modules.Get('appearance') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	check('the appearance and character modules are both there',
+		type(appearance) == 'table' and type(character) == 'table')
+
+	if type(appearance) == 'table' and type(character) == 'table' then
+		local SAVE = appearance.Event.SAVE_CLOTHING
+		local REFUSED = appearance.Event.REFUSED
+		local OPERATION = appearance.Operation.SAVE_CLOTHING
+		check('the clothing door is registered on the wire',
+			type(control.netEvents[SAVE]) == 'function')
+
+		-- A record the shape check accepts, so that anything refused below is
+		-- refused for the reason under test and never for being malformed.
+		local function record(jacket)
+			return { schemaVersion = appearance.Clothing.VERSION,
+				equipment = { OuterChest = jacket }, wardrobe = {} }
+		end
+		check('the record these checks send is one the canonical form accepts',
+			appearance.Clothing.Canonical(record('Items.Jacket_Police_01')) ~= nil)
+
+		local PLAYER, OTHER = 91, 92
+		local CITIZEN = 'citizen-dresser'
+		local EMPTY = { schemaVersion = 1, equipment = {}, wardrobe = { outfits = {} } }
+
+		--- Puts a loaded character on the roster, with a clothing row or without.
+		local function load(stored)
+			character.Players[PLAYER] = { PlayerData = {
+				citizenId = CITIZEN, source = PLAYER, clothing = stored } }
+		end
+
+		--- Fires the save door and answers the refusal code sent back, or nil.
+		--
+		-- THE COOLDOWN IS CLEARED FIRST, and that is not tidiness. The door's own
+		-- 2 s floor is checked BEFORE the room is, so a second save inside it
+		-- comes back `error.tooFast` -- which is not `clothing.noFittingRoom`,
+		-- which is what every positive check below reads. Left in, this helper
+		-- would report "not refused for want of a room" for a save that never
+		-- reached the room question at all, and the section would pass with the
+		-- gate ripped out. Winding `GetGameTimer` on does NOT do it: `OPX.Now`
+		-- resolves the timer once, on first use, and the boot already used it.
+		local function save(player, citizen, jacket)
+			OPX.ForgetCooldowns(player)
+			local mark = #control.clientEvents
+			env.source = player
+			control.netEvents[SAVE]({ citizenId = citizen, clothing = record(jacket) })
+			env.source = nil
+			control.Pump(4)
+			for index = #control.clientEvents, mark + 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == REFUSED and sent.source == player and sent[2] == OPERATION then
+					return tostring(sent[1])
+				end
+			end
+			return nil
+		end
+
+		-- ── the door with nobody on the other side of it ──────────────────────
+		load(EMPTY)
+		check('a save that came through no fitting room at all is refused',
+			save(PLAYER, CITIZEN, 'Items.Jacket_Police_01') == 'clothing.noFittingRoom')
+
+		-- ── and the grant is what opens it ────────────────────────────────────
+		-- `OpenWardrobe` is the one door on this half: `shops` calls it from the
+		-- shop the player is standing in, `clothing` from the store they are
+		-- standing on, `admin` from its own ACL. None of those is reached here on
+		-- purpose -- what is under test is that the grant, and nothing else, is
+		-- what the save door reads.
+		check('the contract carries the grant those doors call',
+			type(appearance.AllowClothingSave) == 'function')
+		appearance.AllowClothingSave(PLAYER, 'test')
+		local granted = save(PLAYER, CITIZEN, 'Items.Jacket_Police_02')
+		check('a save behind a granted room is not refused for want of one',
+			granted ~= 'clothing.noFittingRoom', tostring(granted))
+
+		-- ── the grant belongs to ONE connection ───────────────────────────────
+		-- Keyed by the connection and not by the character, so the grant handed
+		-- to the player at the counter is not a grant for the one behind them in
+		-- the queue.
+		character.Players[OTHER] = { PlayerData = {
+			citizenId = 'citizen-other', source = OTHER, clothing = EMPTY } }
+		check('one player\'s grant is not another player\'s',
+			save(OTHER, 'citizen-other', 'Items.Jacket_01') == 'clothing.noFittingRoom')
+
+		-- ── a departure takes the grant with it ───────────────────────────────
+		-- A connection id is recycled, so a grant that outlived its holder is a
+		-- free wardrobe handed to whoever joins onto that id next. The roster is
+		-- rebuilt afterwards deliberately: what is under test is the GRANT
+		-- surviving a departure, and a player the roster no longer holds would be
+		-- refused `error.notLoggedIn` long before anything asked about a room.
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+		load(EMPTY)
+		check('a grant does not outlive the connection it was given to',
+			save(PLAYER, CITIZEN, 'Items.Jacket_Police_03') == 'clothing.noFittingRoom')
+
+		-- ── the join's own room, which this half never opens ──────────────────
+		-- The client offers it off `WARDROBE.OFFER_POLICY` the moment a character
+		-- enters the world, and says nothing to the server -- so without a grant
+		-- here the one room a player is GUARANTEED, the one a character is
+		-- dressed in at creation, would be the only room whose save is refused.
+		-- Under the shipped 'first' that is read as "this character has never had
+		-- clothing stored", which is `false`, and which the creator's own first
+		-- save is what writes over.
+		check('the shipped policy is the one this grant is written against',
+			appearance.ResolveWardrobePolicy() == appearance.WardrobePolicy.FIRST,
+			tostring(appearance.ResolveWardrobePolicy()))
+
+		local LOADED = OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded')
+		load(false)
+		check('and the same character is refused before the world entry says so',
+			save(PLAYER, CITIZEN, 'Items.Jacket_Police_04') == 'clothing.noFittingRoom')
+
+		control.Fire(LOADED, PLAYER, character.Players[PLAYER].PlayerData)
+		-- NOT `== nil`: there is no database in this harness, so a save that gets
+		-- past the room question goes on to be refused by storage instead. What
+		-- is asserted is which of the two refused it.
+		local creation = save(PLAYER, CITIZEN, 'Items.Jacket_Police_05')
+		check('a character with nothing stored may save what it was created in',
+			creation ~= 'clothing.noFittingRoom', tostring(creation))
+
+		-- And a RETURNING character is handed nothing, because no room is offered
+		-- to one: the grant is spent or not, and it cannot come round again --
+		-- the row exists from the first save on.
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+		load(EMPTY)
+		control.Fire(LOADED, PLAYER, character.Players[PLAYER].PlayerData)
+		check('a character that already has a row is handed no room by the join',
+			save(PLAYER, CITIZEN, 'Items.Jacket_Police_06') == 'clothing.noFittingRoom')
+
+		character.Players[PLAYER], character.Players[OTHER] = nil, nil
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

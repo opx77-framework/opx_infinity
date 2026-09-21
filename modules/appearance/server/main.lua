@@ -667,9 +667,64 @@ local function bucketOf(player)
 	return read and tonumber(bucket) or nil
 end
 
---- Forgets a departed player's look, absence, warning and floors.
+-- ── the fitting-room grant ───────────────────────────────────────────────────
+-- WHY THE CLOTHING SAVE NEEDS ONE. `SAVE_CLOTHING` asked four questions -- is
+-- this a table, is it too soon, is a character loaded, is it THIS character --
+-- and then wrote whatever nine `Items.*` records the payload named. Not one of
+-- them asks where the player is standing or whether a fitting room was ever put
+-- up, so a rewritten client dressed itself out of the whole catalogue, from
+-- anywhere in the city, as often as the 2 s floor allowed.
+--
+-- That is the same argument that retired the `opx.appearance.wardrobe` command
+-- (see `VIEW_COMMANDS` below: "a free door onto a priced room is not a
+-- convenience, it is the price being optional"). The command was shut and the
+-- net event was left open, and the net event is the bigger door of the two: it
+-- needs no room at all.
+--
+-- A GRANT IS NOT A BILL, and must never be read as one. It says only that a
+-- door THIS SERVER KNOWS ABOUT put a fitting room up for this player -- a shop
+-- they were standing in, a clothing store, a staff member, a purchase, or the
+-- character's own creation. Whether the change was PAID for is still decided by
+-- `modules/shops`, on its own client-initiated `bill` event, which a client may
+-- still simply not send. Closing that is a separate change and a bigger one:
+-- the server would have to diff the stored record against the incoming one and
+-- charge for the slots that moved, instead of believing a list the client
+-- volunteers.
+
+-- How long one grant lets a client save for, in milliseconds.
+--
+-- IT HAS TO OUTLIVE A BROWSE, and nothing tells this half when a room closed.
+-- The client lends its puppet to the room, saves nothing while it is lent, and
+-- sends the one save a debounce later -- so the window has to cover a player
+-- reading through every jacket the catalogue holds, that debounce, and the
+-- bill-then-restore round trip `modules/shops` does on top of it when the money
+-- is not there. Ten minutes is generous; it is also finite and it is tied to a
+-- door, which is the whole of the difference from what was here before.
+local DRESSING_MS = 600000
+
+-- source -> the millisecond a fitting-room grant runs out at.
+local dressing = {}
+
+-- The `WARDROBE.OFFER_POLICY` this half resolved at Init, so the join's own room
+-- -- which the client offers, and which this half is never told about -- can be
+-- granted by the same setting that decides whether it appears.
+local wardrobeOffer = M.WARDROBE_POLICY_DEFAULT
+
+--- Whether this player may have an authoritative clothing write right now.
+local function dressed(source)
+	local untilMs = dressing[source]
+	if untilMs == nil then return false end
+	if OPX.Now() >= untilMs then
+		dressing[source] = nil
+		return false
+	end
+	return true
+end
+
+--- Forgets a departed player's look, absence, warning, floors and grant.
 local function forget(player)
 	looks[player], absent[player], warned[player] = nil, nil, nil
+	dressing[player] = nil
 	local prefix = ':' .. player
 	for key in pairs(lastAt) do
 		if key:sub(-#prefix) == prefix then lastAt[key] = nil end
@@ -734,6 +789,14 @@ local function registerEvents()
 		if not player then return M.RefuseSave(src, 'error.notLoggedIn', operation) end
 		if payload.citizenId ~= player.PlayerData.citizenId then
 			return M.RefuseSave(src, 'clothing.stale', operation)
+		end
+		-- THE ONLY QUESTION HERE THAT IS NOT ABOUT IDENTITY. Everything above
+		-- asks who is sending; this asks whether anybody ever opened a room for
+		-- them to change in. See `the fitting-room grant` above for why a save
+		-- that did not come through one is a wardrobe with no door on it.
+		if not dressed(src) then
+			OPX.Audit.Player(player, 'clothing.refused', nil, { reason = 'no_fitting_room' })
+			return M.RefuseSave(src, 'clothing.noFittingRoom', operation)
 		end
 
 		CreateThread(function()
@@ -866,6 +929,14 @@ end
 --- Builds state and contributes this module's table. Never yields.
 function M.Init()
 	looks, absent, lastAt, warned = {}, {}, {}, {}
+	dressing = {}
+
+	-- Resolved once, on this half too, for the reason the client resolves it
+	-- once: a policy read per join is a typo reported on every join. The join is
+	-- the one fitting room this half never puts up itself -- the client offers it
+	-- off `OFFER_POLICY` the moment a character enters the world -- so reading
+	-- the same setting is the only way the grant can follow the room.
+	wardrobeOffer = M.ResolveWardrobePolicy()
 
 	-- Resolved once: a ceiling read per save would let a changed setting measure a
 	-- half-finished save against something else.
@@ -878,6 +949,33 @@ end
 
 --- Publishes the contract. Nothing may read one before this phase ends.
 function M.Api()
+	--- Lets one player's client save what it is wearing for the next few minutes.
+	--
+	-- WHOEVER CALLS THIS HAS ALREADY DECIDED THEY MAY, exactly as with
+	-- `OpenWardrobe` below: this module holds no notion of a shop, a store, a
+	-- till or a staff grant, and the caller's own door is where the player was
+	-- checked. `shops` measures the distance to the shop before it dresses
+	-- anybody; `clothing` measures it to the store; `admin` reads its ACL.
+	--
+	-- IT IS FOR DOORS THAT DRESS WITHOUT A ROOM. A caller that puts the fitting
+	-- room up should use `OpenWardrobe`, which grants this for itself. This one
+	-- exists for the paths that put clothes STRAIGHT ON -- a bought uniform, a
+	-- saved outfit, a shared code -- where the client's own save is the only
+	-- thing that follows and would otherwise be refused as roomless.
+	-- @author dop42
+	-- @param playerId integer
+	-- @param owner string the caller's own name, for the journal
+	-- @return boolean
+	-- @return string|nil the refusal
+	function M.AllowClothingSave(playerId, owner)
+		local id = tonumber(playerId)
+		if id == nil or id <= 0 then return false, 'invalid_player' end
+		dressing[id] = OPX.Now() + DRESSING_MS
+		Open77.log.debug(('[appearance] %s may save clothing for player %d')
+			:format(tostring(owner or '?'), id))
+		return true
+	end
+
 	--- Asks one player's client to put the fitting room up.
 	--
 	-- WHOEVER CALLS THIS HAS ALREADY DECIDED THEY MAY. This module holds no
@@ -901,6 +999,13 @@ function M.Api()
 		-- `Server.Target` first, which does. Inventing a second, weaker check out
 		-- of `players.all` would be a roster walk per call that answers the same
 		-- question worse.
+		--
+		-- THE GRANT GOES WITH THE ASK and not with the room opening, because this
+		-- half never hears that one did. A player whose client refuses the room
+		-- holds a grant they cannot use: they still have to change clothes
+		-- somehow for it to matter, and every way of doing that is a door that
+		-- would have granted it anyway.
+		M.AllowClothingSave(id, 'wardrobe')
 		TriggerClientEvent(M.Event.OPEN_WARDROBE, id)
 		return true
 	end
@@ -911,6 +1016,7 @@ function M.Api()
 		GetClothing = M.GetClothing,
 		SaveClothing = M.SaveClothing,
 		OpenWardrobe = M.OpenWardrobe,
+		AllowClothingSave = M.AllowClothingSave,
 	})
 end
 
@@ -999,6 +1105,26 @@ function M.Start()
 			end
 		end)
 
+	-- THE JOIN'S OWN FITTING ROOM, WHICH THIS HALF NEVER OPENS. The client offers
+	-- it off `WARDROBE.OFFER_POLICY` as soon as a character enters the world, and
+	-- says nothing to the server about it -- so without this the one room a
+	-- player is GUARANTEED, the one a character is dressed in at creation, would
+	-- be the only room whose save is refused.
+	--
+	-- 'first' is read here as 'this character has never had clothing stored',
+	-- which is `clothing == false` and is exactly what the creator's own first
+	-- save writes over. It is one grant, spent or not, and it cannot come round
+	-- again: the row exists from then on. `nil` is not `false` and gets nothing
+	-- -- the record could not be read, so the client is not saving anyway.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded'),
+		function(source, playerData)
+			local id = tonumber(source)
+			if id == nil or id <= 0 or type(playerData) ~= 'table' then return end
+			local offered = wardrobeOffer == M.WardrobePolicy.ALWAYS
+				or (wardrobeOffer == M.WardrobePolicy.FIRST and playerData.clothing == false)
+			if offered then M.AllowClothingSave(id, 'join') end
+		end)
+
 	registerEvents()
 	M.RegisterCommands()
 
@@ -1031,4 +1157,8 @@ end
 --- to write: the next publication rebuilds all of it.
 function M.Stop()
 	looks, absent, lastAt, warned = {}, {}, {}, {}
+	-- The grants go too. A restart is every fitting room in the city closing at
+	-- once, and a grant that outlived one would be a door left open by a room
+	-- that no longer exists.
+	dressing = {}
 end

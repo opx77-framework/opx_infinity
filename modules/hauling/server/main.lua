@@ -594,7 +594,16 @@ local function complete(player)
 			-- is strictly worse than the crate standing on its point.
 			Claim.Release(crates, crate.id, player)
 			announce(crate)
-			return false, tostring(why or 'attach_refused')
+			-- THE HOST'S OWN WORDS GO TO THE JOURNAL, NOT TO THE CLIENT. What
+			-- `Open77.props.attach` answers is the platform's vocabulary and it
+			-- grows with the build -- `invalid_attachment_parent`,
+			-- `invalid_attachment_bone`, whatever comes next -- and the client has
+			-- a sentence for none of it. Handing it over made the refusal a
+			-- description of our own internals that a player reads as gibberish
+			-- and an attacker reads as a map. One stable code out, the detail in.
+			Open77.log.warn(('[hauling] crate %s would not attach to player %d: %s')
+				:format(safe(crate.id), player, safe(why)))
+			return false, 'attach_refused'
 		end
 		crate.where = Where.CARRIED
 		crate.step = nil
@@ -625,7 +634,12 @@ local function complete(player)
 			offset = { x = slot.x, y = slot.y, z = slot.z },
 			rotation = { x = 0.0, y = 0.0, z = slot.yaw },
 		}, crate.revision)
-		if not attached then return false, tostring(why) end
+		if not attached then
+			-- As on the pickup path: the host's reason is for the operator.
+			Open77.log.warn(('[hauling] crate %s would not attach to vehicle %s: %s')
+				:format(safe(crate.id), safe(vehicleId), safe(why)))
+			return false, 'attach_refused'
+		end
 		bedCount[vehicleId] = n
 		crate.where = Where.LOADED
 		crate.vehicle = vehicleId
@@ -657,9 +671,20 @@ local function complete(player)
 		if character == nil or type(character.AddMoney) ~= 'function' then
 			return false, 'no_character'
 		end
-		-- PAID BEFORE THE CRATE IS RETIRED. The other order loses a crate and pays
-		-- nothing when the money call refuses, and there is then nothing left to
-		-- retry with -- the crate is gone and so is the evidence.
+		-- NOTHING BETWEEN THE PAY AND THE RETIRE MAY YIELD. The rule
+		-- `claim.lua`'s header states for `Claim.Take` applies to this window for
+		-- the same reason and with a worse consequence: `AddMoney` is the last
+		-- yield, and from the line after it to `retire` the crate is still
+		-- claimed, still owned, and already paid for. A yield in there -- a log
+		-- that awaits, a notify that round-trips, a second contract call -- lets
+		-- another `FINISH` for the same crate through the `TooSoon` window and
+		-- pays the same delivery twice. `retire` is the only thing that takes the
+		-- crate out of reach, so it must be the very next thing that happens.
+		--
+		-- PAID BEFORE THE CRATE IS RETIRED, and that order is deliberate. The
+		-- other one loses a crate and pays nothing when the money call refuses,
+		-- and there is then nothing left to retry with -- the crate is gone and
+		-- so is the evidence.
 		--
 		-- `AddMoney` answers `(boolean, localeKey)` and NOT a Result, which is the
 		-- convention this contract alone uses; `pcall` in front of it because a

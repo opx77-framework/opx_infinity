@@ -6,18 +6,21 @@
 -- database and is merged over this table key by key -- `/opx.clothing.add` is
 -- what writes it.
 --
--- THE DISTANCE IS CHECKED ON THE CLIENT AND NOWHERE ELSE, and this note used to
--- claim otherwise. It said "the server re-derives the player's distance to the
--- DECLARED position before the list is sent", and the server does no such thing
--- -- `sync()` filters by ROUTING BUCKET only, and the door itself never reaches
--- the server at all: the key calls the appearance contract locally.
+-- WHICH ROOM OPENS IS A CLIENT DECISION; WHAT MAY BE SAVED OUT OF IT IS NOT.
+-- The key still calls the appearance contract locally, because every reason a
+-- room may not go up -- the puppet down, another surface holding the keyboard,
+-- a save in flight -- is knowable on that client and nowhere else. `sync()`
+-- still filters the LIST by routing bucket only.
 --
--- Which is fine for what this costs today, and is not fine for what it will.
--- Opening a free fitting room from the wrong place is a cosmetic lie. Opening a
--- PRICED one is the price being optional, and `modules/shops` prices it. When
--- the two are joined, this door has to become a request the server answers
--- after measuring the distance itself -- the shape `modules/shops/server/main.lua`
--- already uses in `shopAt`. Until then this comment says what the code does.
+-- What changed is the half that matters. This note used to end "until then this
+-- comment says what the code does", the then being the day the room acquired a
+-- price: `modules/shops` charges per changed slot, and a fitting room opened
+-- from the wrong place stopped being a cosmetic lie the moment a save came out
+-- of it. The key now also raises `clothing:open` on the server, which measures
+-- the distance to the store ITSELF -- the shape `modules/shops/server/main.lua`
+-- uses in `shopAt` -- and only then tells `appearance` that a clothing write is
+-- expected from this player. A client that fires it from the other side of the
+-- city draws itself a room and cannot save a stitch of it.
 --
 -- WHAT IS BEHIND THE KEY IS THE FITTING ROOM, not a shop of our own. The
 -- `appearance` module already streams this body's whole clothing catalogue
