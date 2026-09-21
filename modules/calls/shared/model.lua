@@ -74,9 +74,18 @@ local Model = M.Model
 --- ASKED and `targetNotReady` about the player they asked for, and a caller who
 --- cannot tell those apart is told "that did not work" for two situations with
 --- two different remedies -- wait a moment, versus that person is not here.
+--- `disabled` IS NOT IN IT, and its absence was a deliberate removal rather
+--- than an oversight. It was written here first, for a module switched off in
+--- the config -- and nothing can ever answer it: `OPX.Modules.Declare` reads
+--- `enabled == false` and the module never reaches a phase, so there is no
+--- handler to refuse with it and no contract to refuse through. A name in a
+--- closed set that nothing can answer is a refusal the next author will reach
+--- for and a sentence in two catalogues nobody will ever read.
 Model.REASONS = {
-	-- the module, and the shape of the request
-	disabled = true,
+	-- the shape of the request. Both of these are the SERVER's rather than this
+	-- file's -- `badRequest` is answered here as well, `tooFast` only there --
+	-- and they are in this table because the set is every refusal the MODULE
+	-- can give a player, not every refusal this file produces.
 	badRequest = true,
 	tooFast = true,
 

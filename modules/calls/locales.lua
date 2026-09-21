@@ -69,7 +69,6 @@ local EN = {
 	['calls.contact.saved'] = '{name} is in your contacts.',
 
 	-- ── the refusals, one per name in `Model.REASONS` ────────────────────────
-	['calls.error.disabled'] = 'Calls are unavailable on this server.',
 	['calls.error.badRequest'] = 'That request made no sense.',
 	['calls.error.tooFast'] = 'Slow down.',
 	['calls.error.self'] = 'You cannot call yourself.',
@@ -134,7 +133,6 @@ local FR = {
 	['calls.contact.offered'] = '{name} vous propose son contact.',
 	['calls.contact.saved'] = '{name} est dans vos contacts.',
 
-	['calls.error.disabled'] = 'Les appels sont indisponibles sur ce serveur.',
 	['calls.error.badRequest'] = "Cette requête n'a aucun sens.",
 	['calls.error.tooFast'] = 'Doucement.',
 	['calls.error.self'] = 'Vous ne pouvez pas vous appeler vous-même.',
