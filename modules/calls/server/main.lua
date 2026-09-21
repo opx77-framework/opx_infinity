@@ -1,0 +1,847 @@
+--- Server authority over a holocall: who is on it, who may join, and whose
+--- eyes are lit.
+-- @author dop42
+--
+-- The rules are in `shared/model.lua` and touch no host. THIS file is the half
+-- that does: it asks the platform whether a player is through the gate, whether
+-- they are alive, where they are standing and what they are called, hands those
+-- answers to the model as predicates, and turns the model's verdicts into wire
+-- traffic and into an eye-glow lease.
+--
+-- The split is worth stating once because it is what every function below
+-- obeys. NOTHING HERE DECIDES ANYTHING. `onInvite` reads a player id off the
+-- wire, bounds it, checks a cooldown, and asks the model; if the model says no,
+-- the refusal is relayed and the function is over. There is no branch in this
+-- file that opens a call, and there is no branch in the model that sends one.
+--
+-- ── the blue eyes ────────────────────────────────────────────────────────────
+--
+-- `Open77.players.setHoloCallEyes(playerId, enabled, { durationMs })` is the
+-- platform's own holocall glow -- the game's authored effect, not a light this
+-- resource invented -- and it is a LEASE held by a resource VM rather than a
+-- switch on a player. The platform's own words: the glow stays on while ANY
+-- resource holds a lease, `false` releases only ours, and it clears by itself
+-- on death, disconnect, resource stop and expiry.
+--
+-- TAKEN WITH A DEADLINE AND RENEWED, never held open, and that decision is
+-- borrowed wholesale from `modules/animations/client/walk.lua`, whose header
+-- says why at length: a lease is not tied to the thing that justified it, so a
+-- call that ends down a path nobody released on leaves a player glowing for
+-- the rest of their session with nothing on screen explaining it. With a
+-- bounded lease the worst case is EYES.LEASE_MS of glow. The sweep renews
+-- every participant's lease, which is what makes a live call keep it.
+--
+-- AND IT IS READ BACK. `Open77.players.getHoloCallEyes` answers whether any
+-- resource holds a lease, so it cannot tell us whether OURS survived -- but it
+-- can tell us that NOBODY'S did, and for a participant we believe we are
+-- holding one for, that is a lease the platform dropped: a death, a reload, an
+-- expiry we mis-timed. The sweep re-acquires it and says so once. That is the
+-- same watchdog shape `Walk.Check` has, and it exists for the same reason --
+-- the release path is a promise about every exit, and a promise about every
+-- exit is the kind that is kept until somebody adds an exit.
+
+local M = OPX.Modules.Get('calls')
+
+local Result = OPX.Result
+local Model = M.Model
+
+-- The one-per-player floor, the invite lifetime and the ceiling, settled in
+-- `Init` from the config and bounded there rather than read on every request.
+local requestMs = 1500
+local inviteTtlMs = 30000
+local maximum = Model.MAX_PARTICIPANTS
+local contactRange = 6.0
+local maxContacts = 64
+local leaseMs = 30000
+local scanMs = 2000
+
+-- The call registry, built in `Init`.
+local registry
+
+-- The character contract, looked up in `Start`.
+local character
+
+-- Players we believe are holding OUR eye-glow lease. Our own bookkeeping and
+-- not a read of the platform's, because `getHoloCallEyes` answers for every
+-- resource at once and so can never say whose lease is whose.
+local eyesHeld = {}
+
+-- The metadata key a character's contact list is filed under.
+local CONTACTS_KEY = 'callContacts'
+
+-- Whether the holocall natives exist on this host, resolved on first use. The
+-- pair arrived in 2.31.13+op77.63 and this resource ships against op77.75, so
+-- they are expected -- but the same promise was made about `players.teleport`
+-- and `modules/teleports/server/main.lua` looks it up before every call anyway.
+-- A host without them loses the glow and keeps every call.
+local function holocall()
+	local players = Open77.players
+	if type(players) ~= 'table' then return nil end
+	if type(players.setHoloCallEyes) ~= 'function' then return nil end
+	return players
+end
+
+-- One audit line, info when the thing happened and warn when it did not.
+local function audit(event, playerId, ok, detail)
+	OPX.Audit.Log({
+		event = event,
+		severity = ok and 'info' or 'warn',
+		source = playerId,
+		message = detail,
+	})
+end
+
+-- ── what the host says about a player ────────────────────────────────────────
+
+-- The life phase without the underscore the client spells and the server does
+-- not, exactly as `modules/downed/server/main.lua` reads it.
+local function phaseOf(life)
+	return type(life) == 'table' and (tostring(life.phase or ''):gsub('_', '')) or ''
+end
+
+-- A player's finite position and bucket, or nil.
+local function positionOf(playerId)
+	local read, position = pcall(Open77.players.position, playerId)
+	if not read or type(position) ~= 'table' then return nil end
+	local x, y, z = OPX.Math.Finite(position.x), OPX.Math.Finite(position.y),
+		OPX.Math.Finite(position.z)
+	if x == nil or y == nil or z == nil then return nil end
+	return { x = x, y = y, z = z, bucket = math.floor(OPX.Math.Finite(position.bucket) or 0) }
+end
+
+-- The character loaded in a slot, or nil. A slot with no character is the
+-- selection screen or a body that belongs to nobody, and a call placed to one
+-- would ring a screen that has no player behind it.
+local function loadedIn(playerId)
+	if character == nil or type(character.GetPlayer) ~= 'function' then return nil end
+	local loaded = character.GetPlayer(playerId)
+	local data = loaded and loaded.PlayerData
+	if type(data) ~= 'table' then return nil end
+	return loaded, data
+end
+
+-- The name a card shows: the CHARACTER'S, never the account's.
+--
+-- `Open77.players.name` answers the displayName the Master vouches for -- the
+-- account gamertag -- and the manifest's `ui.nameplates` block records what
+-- that cost the last time a surface drew it: a player who had just named their
+-- character walked around under their account name. A holocall card is the same
+-- mistake waiting to happen, so the character's own name is what is read and
+-- the account name is the fallback for a slot with no character yet.
+local function nameOf(playerId)
+	local _, data = loadedIn(playerId)
+	local info = type(data) == 'table' and type(data.charInfo) == 'table' and data.charInfo or nil
+	if info ~= nil then
+		local first = type(info.firstName) == 'string' and info.firstName or ''
+		local last = type(info.lastName) == 'string' and info.lastName or ''
+		local full = (first .. ' ' .. last):gsub('^%s+', ''):gsub('%s+$', '')
+		if full ~= '' then return (full:gsub('%c', ' ')):sub(1, 32) end
+	end
+	local read, name = pcall(Open77.players.name, playerId)
+	if not read or type(name) ~= 'string' then return nil end
+	return (name:gsub('%c', ' ')):sub(1, 32)
+end
+
+--- Whether a player may take part in a call at all, and why not.
+---
+--- THE MODEL'S `judge`, and every reason it answers is a name in
+--- `Model.REASONS`. Four questions in a fixed order, cheapest and most
+--- disqualifying first:
+---
+---   is the slot occupied at all      noSuchPlayer
+---   is the readiness gate open       notReady
+---   is a character loaded            notReady
+---   is the body alive                notAlive
+---
+--- A host that cannot answer the gate is `unreadable` rather than a refusal
+--- naming the player: the distinction between "they are not here" and "we could
+--- not find out" is the difference between a player retrying and a player
+--- giving up on a feature that is merely having a bad second.
+local function judge(playerId)
+	local read, name = pcall(Open77.players.name, playerId)
+	if not read or type(name) ~= 'string' then return false, 'noSuchPlayer' end
+
+	local ready = Open77.ready
+	if type(ready) ~= 'table' or type(ready.isReady) ~= 'function' then
+		return false, 'unreadable'
+	end
+	local asked, open = pcall(ready.isReady, playerId)
+	if not asked then return false, 'unreadable' end
+	if open ~= true then return false, 'notReady' end
+
+	if loadedIn(playerId) == nil then return false, 'notReady' end
+
+	local got, life = pcall(Open77.players.getLifeState, playerId)
+	if not got or type(life) ~= 'table' then return false, 'unreadable' end
+	if phaseOf(life) ~= 'alive' then return false, 'notAlive' end
+
+	return true
+end
+
+--- Whether two bodies are close enough to hand over a contact.
+---
+--- The model's `near`, asked for `contact` invites and for nothing else. BOTH
+--- HALVES ARE REQUIRED -- the same routing bucket AND the range -- because two
+--- players in different buckets can stand on the same coordinates and never see
+--- each other, which is exactly what an instance is for. Range alone would let
+--- somebody in an apartment hand a contact to a stranger in the street below.
+local function near(a, b)
+	local here, there = positionOf(a), positionOf(b)
+	if here == nil or there == nil then return false end
+	if here.bucket ~= there.bucket then return false end
+	local dx, dy, dz = here.x - there.x, here.y - there.y, here.z - there.z
+	return (dx * dx + dy * dy + dz * dz) <= (contactRange * contactRange)
+end
+
+-- ── the eye-glow lease ───────────────────────────────────────────────────────
+
+-- Takes or renews one player's lease. Answers whether the platform took it.
+local function lightEyes(playerId)
+	local players = holocall()
+	if players == nil then return false end
+	local ok, reason = pcall(players.setHoloCallEyes, playerId, true, { durationMs = leaseMs })
+	-- `pcall` answers (true, false, reason) when the native itself refused, so
+	-- the raise and the refusal are two different failures and both land here.
+	if not ok then
+		audit('calls.eyes', playerId, false, 'raised: ' .. tostring(reason))
+		return false
+	end
+	if reason == false then
+		audit('calls.eyes', playerId, false, 'refused')
+		return false
+	end
+	eyesHeld[playerId] = true
+	return true
+end
+
+-- Gives one player's lease back. Safe to call when it is not held, and
+-- deliberately cheap enough that no caller has to ask itself whether it is.
+local function darkenEyes(playerId)
+	if eyesHeld[playerId] == nil then return end
+	eyesHeld[playerId] = nil
+	local players = holocall()
+	if players == nil then return end
+	local ok, reason = pcall(players.setHoloCallEyes, playerId, false)
+	if not ok then
+		audit('calls.eyes', playerId, false, 'would not release: ' .. tostring(reason))
+	end
+end
+
+--- Whether the platform currently shows a holocall glow on a player, for ANY
+--- resource. Published on the contract, and the sweep's own question.
+---
+--- IT CANNOT SAY WHOSE LEASE IT IS, which is the whole reason `eyesHeld` exists
+--- beside it. What it can say is that there is no lease at all, and for a
+--- participant of a live call that is a lease the platform dropped under us.
+local function eyesOn(playerId)
+	local players = Open77.players
+	if type(players) ~= 'table' or type(players.getHoloCallEyes) ~= 'function' then
+		return nil, 'unavailable'
+	end
+	local read, enabled = pcall(players.getHoloCallEyes, playerId)
+	if not read then return nil, tostring(enabled) end
+	if enabled == nil then return nil, 'unreadable' end
+	return enabled == true
+end
+
+-- ── the wire ─────────────────────────────────────────────────────────────────
+
+-- One player's whole call world, as their screen draws it. Every clock is
+-- RELATIVE, so the two machines never have to agree about what time it is --
+-- the same rule `modules/downed/server/main.lua` states for its own push.
+local function stateFor(playerId)
+	local atMs = OPX.Now()
+	local call = registry.CallOf(playerId)
+	local invite = registry.IncomingOf(playerId)
+	local outgoing = registry.OutgoingOf(playerId)
+
+	local participants
+	if call ~= nil then
+		participants = {}
+		for index = 1, #call.order do
+			local id = call.order[index]
+			participants[index] = { id = id, name = nameOf(id) or '?', self = id == playerId }
+		end
+	end
+
+	return {
+		call = call ~= nil and {
+			id = call.id,
+			founder = call.founder,
+			elapsedMs = atMs - call.startedAtMs,
+			participants = participants,
+		} or nil,
+		invite = invite ~= nil and {
+			id = invite.id,
+			kind = invite.kind,
+			from = invite.from,
+			fromName = nameOf(invite.from) or '?',
+			expiresInMs = math.max(0, invite.expiresAtMs - atMs),
+		} or nil,
+		outgoing = outgoing ~= nil and {
+			id = outgoing.id,
+			kind = outgoing.kind,
+			to = outgoing.to,
+			toName = nameOf(outgoing.to) or '?',
+			expiresInMs = math.max(0, outgoing.expiresAtMs - atMs),
+		} or nil,
+	}
+end
+
+-- Pushes one player their state.
+local function push(playerId)
+	TriggerClientEvent(M.Event.STATE, playerId, stateFor(playerId))
+end
+
+-- Pushes a list of players their state, each built for them.
+local function pushAll(ids)
+	for index = 1, #ids do push(ids[index]) end
+end
+
+-- Tells one player a thing happened, from the catalogue and never in words this
+-- file chose.
+local function tell(playerId, key, params)
+	OPX.NotifyLocale(playerId, key, params, 'info')
+end
+
+-- Relays a model refusal to the player who asked. The code IS the locale key's
+-- last segment, which is what keeps the two vocabularies from drifting: a
+-- reason the model can answer and the catalogue has no line for is caught by
+-- the test suite rather than downgraded in front of a player.
+local function refuse(playerId, reason, operation)
+	OPX.Refuse(playerId, 'calls.error.' .. tostring(reason), operation, 'talk')
+end
+
+-- ── contacts ─────────────────────────────────────────────────────────────────
+
+-- One character's contact list, always an array and never nil.
+local function contactsOf(playerId)
+	if character == nil or type(character.GetMetadata) ~= 'function' then return {} end
+	local read, held = pcall(character.GetMetadata, playerId, CONTACTS_KEY)
+	if not read or type(held) ~= 'table' then return {} end
+	local out = {}
+	for _, row in ipairs(held) do
+		if type(row) == 'table' and type(row.citizenId) == 'string' then
+			out[#out + 1] = { citizenId = row.citizenId, name = tostring(row.name or '?') }
+		end
+	end
+	return out
+end
+
+-- Writes one contact into a character's list, replacing a row for the same
+-- citizen rather than appending a second. Answers whether anything changed.
+local function remember(playerId, citizenId, name)
+	if character == nil or type(character.SetMetadata) ~= 'function' then return false end
+	if type(citizenId) ~= 'string' or citizenId == '' then return false end
+	local held = contactsOf(playerId)
+	for index = 1, #held do
+		if held[index].citizenId == citizenId then
+			held[index].name = name
+			return character.SetMetadata(playerId, CONTACTS_KEY, held) == true
+		end
+	end
+	-- BOUNDED, and the oldest row goes. The list is written into the character's
+	-- metadata blob and that blob is read on every load, so an unbounded one is
+	-- a row that grows for the life of a character and is paid for on every
+	-- connection they ever make.
+	if #held >= maxContacts then table.remove(held, 1) end
+	held[#held + 1] = { citizenId = citizenId, name = name }
+	return character.SetMetadata(playerId, CONTACTS_KEY, held) == true
+end
+
+-- The citizen id of the character in a slot, or nil.
+local function citizenOf(playerId)
+	local _, data = loadedIn(playerId)
+	if type(data) ~= 'table' or type(data.citizenId) ~= 'string' then return nil end
+	return data.citizenId
+end
+
+-- ── the verbs, as the wire asks for them ─────────────────────────────────────
+
+-- Applies the eye-glow to everyone on a call and pushes them all their state.
+-- The one place a call's participants are lit, so there is one place that can
+-- forget to.
+local function callChanged(callId)
+	local ids = registry.Participants(callId)
+	for index = 1, #ids do lightEyes(ids[index]) end
+	pushAll(ids)
+end
+
+-- Releases the glow for anybody who left, and pushes everyone who was involved.
+local function callEnded(outcome)
+	for index = 1, #outcome.were do
+		local id = outcome.were[index]
+		if registry.CallOf(id) == nil then darkenEyes(id) end
+	end
+	pushAll(outcome.were)
+end
+
+local function onInvite(rawTarget, rawKind)
+	local playerId = tonumber(source) or 0
+	if playerId <= 0 then return end
+	if OPX.Cooling(playerId, 'calls:invite', requestMs) then
+		return refuse(playerId, 'tooFast', M.Operation.INVITE)
+	end
+
+	local target = Model.PlayerId(rawTarget)
+	-- The kind is the ONE thing a client may name, and it may name exactly one
+	-- value: `contact`. Everything else -- whether this is a fresh call or a
+	-- third being added -- the model derives from whether the sender is already
+	-- on a call, precisely so that a client cannot claim a `join` against a
+	-- call it is not in.
+	local kind = rawKind == 'contact' and 'contact' or nil
+	if target == nil then return refuse(playerId, 'badRequest', M.Operation.INVITE) end
+
+	local invite, reason = registry.Invite(playerId, target, kind)
+	if invite == nil then return refuse(playerId, reason, M.Operation.INVITE) end
+
+	audit('calls.invite', playerId, true, ('%s -> %d (%s)'):format(invite.id, target, invite.kind))
+	push(playerId)
+	push(target)
+	if invite.kind == 'contact' then
+		tell(target, 'calls.contact.offered', { name = nameOf(playerId) or '?' })
+	else
+		tell(target, 'calls.ringing', { name = nameOf(playerId) or '?' })
+		tell(playerId, 'calls.placed', { name = nameOf(target) or '?' })
+	end
+end
+
+local function onAccept(rawInvite)
+	local playerId = tonumber(source) or 0
+	if playerId <= 0 then return end
+	if OPX.Cooling(playerId, 'calls:answer', requestMs) then
+		return refuse(playerId, 'tooFast', M.Operation.ANSWER)
+	end
+
+	local outcome, reason = registry.Accept(playerId, rawInvite)
+	if outcome == nil then
+		-- The state goes back with the refusal: an invite refused because it
+		-- expired is an invite the screen is still drawing, and a player told
+		-- "that already rang out" while the card sits there is being told the
+		-- screen is lying.
+		push(playerId)
+		return refuse(playerId, reason, M.Operation.ANSWER)
+	end
+
+	if outcome.kind == 'contact' then
+		local a, b = outcome.between[1], outcome.between[2]
+		local citizenA, citizenB = citizenOf(a), citizenOf(b)
+		local nameA, nameB = nameOf(a) or '?', nameOf(b) or '?'
+		-- BOTH DIRECTIONS, because that is what the owner asked for -- a
+		-- contact SHARED, with consent, not a number handed one way. Each write
+		-- is checked separately: a metadata write can fail on its own, and half
+		-- an exchange is worth a line in the journal.
+		local savedA = remember(a, citizenB, nameB)
+		local savedB = remember(b, citizenA, nameA)
+		audit('calls.contact', a, savedA and savedB,
+			('%s <-> %s'):format(tostring(citizenA), tostring(citizenB)))
+		tell(a, 'calls.contact.saved', { name = nameB })
+		tell(b, 'calls.contact.saved', { name = nameA })
+		push(a)
+		push(b)
+		return
+	end
+
+	audit('calls.accept', playerId, true, ('%s (%s)'):format(outcome.callId, outcome.kind))
+	callChanged(outcome.callId)
+	local key = outcome.kind == 'join' and 'calls.joined' or 'calls.answered'
+	local joinedName = nameOf(outcome.joined) or '?'
+	for index = 1, #outcome.participants do
+		local id = outcome.participants[index]
+		if id ~= outcome.joined then tell(id, key, { name = joinedName }) end
+	end
+end
+
+local function onDecline(rawInvite)
+	local playerId = tonumber(source) or 0
+	if playerId <= 0 then return end
+	if OPX.Cooling(playerId, 'calls:answer', requestMs) then
+		return refuse(playerId, 'tooFast', M.Operation.ANSWER)
+	end
+
+	local outcome, reason = registry.Decline(playerId, rawInvite)
+	if outcome == nil then
+		push(playerId)
+		return refuse(playerId, reason, M.Operation.ANSWER)
+	end
+
+	audit('calls.decline', playerId, true, tostring(outcome.kind))
+	push(playerId)
+	push(outcome.from)
+	if outcome.kind ~= 'contact' then
+		tell(outcome.from, 'calls.declined', { name = nameOf(playerId) or '?' })
+	end
+end
+
+local function onHangUp()
+	local playerId = tonumber(source) or 0
+	if playerId <= 0 then return end
+	if OPX.Cooling(playerId, 'calls:hangup', requestMs) then
+		return refuse(playerId, 'tooFast', M.Operation.HANG_UP)
+	end
+
+	local outcome, reason = registry.HangUp(playerId)
+	if outcome == nil then
+		push(playerId)
+		return refuse(playerId, reason, M.Operation.HANG_UP)
+	end
+
+	audit('calls.hangUp', playerId, true, ('%s ended=%s'):format(outcome.callId,
+		tostring(outcome.ended)))
+	callEnded(outcome)
+	local leaverName = nameOf(playerId) or '?'
+	for index = 1, #outcome.were do
+		local id = outcome.were[index]
+		if id ~= playerId then
+			tell(id, outcome.ended and 'calls.ended' or 'calls.left', { name = leaverName })
+		end
+	end
+end
+
+-- Answers the caller their own contact list, with each row's reachability
+-- worked out HERE and not on the screen that draws it.
+--
+-- `registry.Consider` is what answers "could I ring this person right now", and
+-- it is the same function `Invite` runs -- so a row drawn as available is a row
+-- the server will accept, and a row drawn with a reason beside it names the
+-- reason the server would have given. The alternative, a client re-deriving
+-- "are they busy" from whatever it can see, is the hand-kept second opinion
+-- this codebase has been bitten by in five other places, and the copy that
+-- drifted would be the one offering a row that refuses when you press it.
+--
+-- NOTHING ABOUT WHERE ANYBODY IS crosses on this wire, and no row exists for a
+-- contact who is not connected. A contact list that reported who was online
+-- would be a presence tracker; one that reported who was CALLABLE is the
+-- feature, and the difference is that an offline contact is simply absent
+-- rather than listed as unavailable.
+local function onRoster()
+	local playerId = tonumber(source) or 0
+	if playerId <= 0 then return end
+	if OPX.Cooling(playerId, 'calls:roster', 1000) then return end
+
+	local rows = {}
+	for _, contact in ipairs(contactsOf(playerId)) do
+		local loaded = character ~= nil and type(character.GetPlayerByCitizenId) == 'function'
+			and character.GetPlayerByCitizenId(contact.citizenId) or nil
+		local data = loaded and loaded.PlayerData or nil
+		local id = type(data) == 'table' and Model.PlayerId(data.source) or nil
+		if id ~= nil then
+			local kind, reason = registry.Consider(playerId, id, nil)
+			rows[#rows + 1] = {
+				id = id,
+				-- The name as it is NOW rather than as it was written into the
+				-- contact row: a character named after the hand-over would
+				-- otherwise be listed under whatever they were called then.
+				name = nameOf(id) or contact.name,
+				kind = kind,
+				refusal = reason,
+			}
+		end
+	end
+	table.sort(rows, function(left, right)
+		-- Reachable first, then by name. A list whose top row is one you cannot
+		-- press is a list that reads as broken.
+		if (left.refusal == nil) ~= (right.refusal == nil) then return left.refusal == nil end
+		return tostring(left.name) < tostring(right.name)
+	end)
+
+	TriggerClientEvent(M.Event.ROSTER, playerId, {
+		rows = rows,
+		onCall = registry.CallOf(playerId) ~= nil,
+	})
+end
+
+-- Pushes the caller their state again. The re-pop button, and the start-up
+-- handshake, are the same request: "tell me what is happening to me".
+local function onReady()
+	local playerId = tonumber(source) or 0
+	if playerId <= 0 then return end
+	if OPX.Cooling(playerId, 'calls:ready', 1000) then return end
+	push(playerId)
+end
+
+-- ── the sweep ────────────────────────────────────────────────────────────────
+
+-- Drops a departing player's call and invites, and gives back their glow.
+local function departed(rawPlayerId)
+	local playerId = Model.PlayerId(rawPlayerId)
+	if playerId == nil then return end
+	local left, dropped = registry.Forget(playerId)
+	-- The platform clears a lease on disconnect by itself; the local record is
+	-- cleared so a recycled slot does not inherit a lease nobody holds.
+	eyesHeld[playerId] = nil
+	-- The cooldown windows are NOT cleared here. `core/server/answer.lua` owns
+	-- them and purges them from its own handler on the same event, and the
+	-- comment there says why it must be the one place: a window left behind
+	-- refuses the next holder of a recycled slot their first action.
+	for index = 1, #dropped do
+		local invite = dropped[index]
+		local other = invite.from == playerId and invite.to or invite.from
+		push(other)
+	end
+	if left ~= nil then
+		callEnded(left)
+		for index = 1, #left.were do
+			if left.were[index] ~= playerId then tell(left.were[index], 'calls.ended') end
+		end
+	end
+end
+
+-- One pass: expire what rang out, drop anybody who can no longer take a call,
+-- and renew the glow of everybody still on one.
+local function scan()
+	for _, invite in ipairs(registry.Expire()) do
+		push(invite.from)
+		push(invite.to)
+		if invite.kind ~= 'contact' then
+			tell(invite.from, 'calls.expired', { name = nameOf(invite.to) or '?' })
+		end
+	end
+
+	-- A PARTICIPANT WHO CAN NO LONGER TAKE A CALL IS TAKEN OFF IT, and this is
+	-- the only path that ends a call nobody asked to end. Dying is the case
+	-- that matters: the platform drops the eye-glow lease on death by itself,
+	-- so without this the call would carry on with a corpse on it whose eyes
+	-- had gone dark -- a state no screen could explain.
+	local ending = {}
+	for _, callId in ipairs(registry.CallIds()) do
+		for _, id in ipairs(registry.Participants(callId)) do
+			if not judge(id) then ending[#ending + 1] = id end
+		end
+	end
+	for index = 1, #ending do
+		local outcome = registry.HangUp(ending[index])
+		if outcome ~= nil then
+			audit('calls.hangUp', ending[index], true, 'dropped: no longer reachable')
+			callEnded(outcome)
+			for at = 1, #outcome.were do
+				if outcome.were[at] ~= ending[index] then
+					tell(outcome.were[at], outcome.ended and 'calls.ended' or 'calls.left',
+						{ name = nameOf(ending[index]) or '?' })
+				end
+			end
+		end
+	end
+
+	-- THE WATCHDOG. Every participant should be carrying our lease; the read
+	-- answers for every resource at once, so a `false` here means nobody at all
+	-- holds one and ours is gone. Re-acquired, and said out loud once per
+	-- occurrence -- a lease that had to be swept is a path somebody forgot, and
+	-- naming it is the whole point.
+	for _, callId in ipairs(registry.CallIds()) do
+		for _, id in ipairs(registry.Participants(callId)) do
+			if eyesHeld[id] then
+				local on = eyesOn(id)
+				if on == false then
+					Open77.log.warn(('[calls] the eye-glow lease for %d was dropped; re-taking it')
+						:format(id))
+					eyesHeld[id] = nil
+				end
+			end
+			lightEyes(id)
+		end
+	end
+
+	-- And the other direction: a lease we are holding for somebody who is on no
+	-- call. `HangUp` and `Forget` both release, so this should find nothing --
+	-- it is here because "should find nothing" is the claim, and an assertion
+	-- that costs one table walk is cheaper than the claim being wrong quietly.
+	for id in pairs(eyesHeld) do
+		if registry.CallOf(id) == nil then
+			Open77.log.warn(('[calls] an eye-glow lease outlived its call for %d; releasing it')
+				:format(id))
+			darkenEyes(id)
+		end
+	end
+end
+
+-- ── the contract ─────────────────────────────────────────────────────────────
+
+--- Whether a player is on a call, and with whom.
+-- @author dop42
+-- @param playerId integer
+-- @return Result
+local function isOnCall(playerId)
+	local id = Model.PlayerId(playerId)
+	if id == nil then return Result.Err('calls.error.badRequest') end
+	local call = registry.CallOf(id)
+	if call == nil then return Result.Ok({ onCall = false }) end
+	return Result.Ok({ onCall = true, callId = call.id, founder = call.founder,
+		participants = call.order, elapsedMs = OPX.Now() - call.startedAtMs })
+end
+
+--- Every live call, for a dispatch screen or a diagnostic dump.
+-- @author dop42
+-- @return Result
+local function list()
+	local rows = {}
+	for _, callId in ipairs(registry.CallIds()) do
+		local ids = registry.Participants(callId)
+		local named = {}
+		for index = 1, #ids do named[index] = { id = ids[index], name = nameOf(ids[index]) } end
+		rows[#rows + 1] = { id = callId, participants = named }
+	end
+	return Result.Ok({ calls = rows })
+end
+
+--- Takes a player off whatever call they are on, as a moderator or another
+--- module would. Answers `notInCall` when there is nothing to end.
+-- @author dop42
+-- @param playerId integer
+-- @param caller string the name the hang-up is audited under
+-- @return Result
+local function hangUp(playerId, caller)
+	local id = Model.PlayerId(playerId)
+	if id == nil then return Result.Err('calls.error.badRequest') end
+	local outcome, reason = registry.HangUp(id)
+	if outcome == nil then return Result.Err('calls.error.' .. tostring(reason)) end
+	audit('calls.hangUp', id, true, 'by ' .. tostring(caller))
+	callEnded(outcome)
+	return Result.Ok({ callId = outcome.callId, ended = outcome.ended })
+end
+
+--- Whether the platform is showing a holocall glow on a player, for any
+--- resource at all. Published because it is the one question this module can
+--- answer about the world rather than about its own bookkeeping.
+-- @author dop42
+-- @param playerId integer
+-- @return Result
+local function eyes(playerId)
+	local id = Model.PlayerId(playerId)
+	if id == nil then return Result.Err('calls.error.badRequest') end
+	local on, why = eyesOn(id)
+	if on == nil then return Result.Err('calls.error.unreadable', why) end
+	return Result.Ok({ lit = on, ours = eyesHeld[id] == true })
+end
+
+--- A character's contact list.
+-- @author dop42
+-- @param playerId integer
+-- @return Result
+local function contacts(playerId)
+	local id = Model.PlayerId(playerId)
+	if id == nil then return Result.Err('calls.error.badRequest') end
+	return Result.Ok({ contacts = contactsOf(id) })
+end
+
+-- Names every key present in one catalogue and missing from the other, and
+-- every refusal the model can answer that neither catalogue carries.
+local function checkLocales()
+	local catalogs = M.Catalogs or {}
+	local english, french = catalogs.en or {}, catalogs.fr or {}
+	for key in pairs(english) do
+		if french[key] == nil then Open77.log.warn('[calls] the fr catalogue is missing ' .. key) end
+	end
+	for key in pairs(french) do
+		if english[key] == nil then Open77.log.warn('[calls] the en catalogue is missing ' .. key) end
+	end
+	for reason in pairs(Model.REASONS) do
+		local key = 'calls.error.' .. reason
+		if english[key] == nil then
+			Open77.log.warn('[calls] no catalogue line for the refusal ' .. reason)
+		end
+	end
+end
+
+--- Builds the registry and settles every bound out of the config.
+-- @author dop42
+function M.Init()
+	local settings = M.Settings
+	local clamp = OPX.Math.Clamp
+	-- Named for what it RETURNS, and the suite holds every file to it. The header
+	-- of `modules/downed/server/main.lua` says why: four files used a local called
+	-- `finite` for the PREDICATE, and one name for both is an `if finite(x) then`
+	-- that is true for nil.
+	local finiteNumber = OPX.Math.Finite
+
+	requestMs = math.floor(clamp(finiteNumber(settings.REQUEST_MS) or 1500, 0, 60000))
+	inviteTtlMs = math.floor(clamp(finiteNumber(settings.INVITE_TTL_S) or 30, 5, 300) * 1000)
+	maximum = math.floor(clamp(finiteNumber(settings.MAX_PARTICIPANTS) or Model.MAX_PARTICIPANTS,
+		2, Model.MAX_PARTICIPANTS))
+	contactRange = clamp(finiteNumber(settings.CONTACT_RANGE) or 6.0, 0.5, 50.0)
+	maxContacts = math.floor(clamp(finiteNumber(settings.MAX_CONTACTS) or 64, 1, 512))
+	scanMs = math.floor(clamp(finiteNumber(settings.SCAN_MS) or 2000, 250, 30000))
+
+	local eyesConfig = type(settings.EYES) == 'table' and settings.EYES or {}
+	-- Bounded at the platform's own ceiling: `setHoloCallEyes` takes
+	-- `durationMs` in 0..600000 and refuses `invalid_options` outside it, and a
+	-- config that wandered past would refuse every renewal for the life of the
+	-- server while logging nothing a player could see.
+	leaseMs = math.floor(clamp(finiteNumber(eyesConfig.LEASE_MS) or 30000, 1000, 600000))
+
+	eyesHeld = {}
+	registry = Model.New{
+		now = OPX.Now,
+		judge = judge,
+		near = near,
+		ttlMs = inviteTtlMs,
+		maximum = maximum,
+	}
+end
+
+--- Publishes who is on a call, and the one way to end one from outside.
+-- @author dop42
+function M.Api()
+	OPX.Api.Provide('calls', 1, {
+		IsOnCall = isOnCall,
+		List = list,
+		HangUp = hangUp,
+		Eyes = eyes,
+		Contacts = contacts,
+	})
+end
+
+--- Wires the four verbs and starts the sweep.
+-- @author dop42
+function M.Start()
+	character = OPX.Api.Get('character')
+	if character == nil then
+		Open77.log.warn('[calls] no character contract: no call can name who is on it')
+	end
+
+	RegisterNetEvent(M.Event.READY, onReady)
+	RegisterNetEvent(M.Event.ASK_ROSTER, onRoster)
+	RegisterNetEvent(M.Event.INVITE, onInvite)
+	RegisterNetEvent(M.Event.ACCEPT, onAccept)
+	RegisterNetEvent(M.Event.DECLINE, onDecline)
+	RegisterNetEvent(M.Event.HANG_UP, onHangUp)
+	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, departed)
+
+	-- The fast path off a death, so a flatlined participant is off the call in
+	-- the same tick rather than at the next sweep. The sweep still does it: a
+	-- death that happened while this module was stopped raises nothing.
+	AddEventHandler('onPlayerLifeStateChanged', function(rawPlayerId)
+		local id = Model.PlayerId(rawPlayerId)
+		if id == nil or registry.CallOf(id) == nil then return end
+		CreateThread(function()
+			local ok, failure = pcall(scan)
+			if not ok then Open77.log.error('[calls] life scan failed: ' .. tostring(failure)) end
+		end)
+	end)
+
+	OPX.Scheduler.Every('calls:scan', scanMs, scan)
+
+	checkLocales()
+
+	if holocall() == nil then
+		-- SAID AT START AND NOT AT THE FIRST REFUSAL, the way
+		-- `modules/teleports/server/main.lua` says the same thing about its own
+		-- native: a host without the pair loses the glow and keeps every call,
+		-- and that is worth one line at boot rather than a warning per
+		-- participant per sweep for the life of the server.
+		Open77.log.warn('[calls] this host has no holocall eye-glow: calls will run unlit')
+	end
+	Open77.log.info(('calls: up to %d on a call, ringing for %ds')
+		:format(maximum, math.floor(inviteTtlMs / 1000)))
+end
+
+--- Gives every lease back on the way out.
+---
+--- The platform releases this VM's leases when the resource stops, so this is
+--- belt and braces -- but a RELOAD is the case it really covers, and a player
+--- left glowing across one has no way to work out why.
+-- @author dop42
+function M.Stop()
+	for id in pairs(eyesHeld) do darkenEyes(id) end
+	eyesHeld = {}
+end
