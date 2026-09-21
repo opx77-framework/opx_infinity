@@ -89,6 +89,19 @@ end
 local function pressHotbar(index)
 	local Screen = M.Screen
 	if Screen.IsOpen() or Screen.IsDown() or Screen.Own() == nil then return end
+
+	-- AN EMPTY SLOT IS NOT A REQUEST. Pressing a hotbar key over nothing sent a
+	-- `use` anyway, the server refused it -- correctly, it is the authority on
+	-- what a slot holds -- and the refusal came back as a toast. So a player
+	-- reaching for the wrong number was told off for it, every time, for a
+	-- keypress that could not have done anything.
+	--
+	-- The client already knows: `Screen.Own()` is the mirror the server pushes
+	-- on every change, and it is what the peek row is drawn from. Asking it here
+	-- costs one walk of a five-entry list and saves a round trip. The server
+	-- still refuses an empty slot, so a crafted client gains nothing.
+	if not M.Slotbar.Holds(index) then return end
+
 	Screen.Request('use', { slot = index })
 end
 

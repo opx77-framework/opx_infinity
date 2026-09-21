@@ -20268,5 +20268,50 @@ do
 		end
 	end
 end
+
+-- Pressing a hotbar key over an empty slot sent a `use` anyway, the server
+-- refused it -- correctly; it is the authority on what a slot holds -- and the
+-- refusal came back as a toast. A player reaching for the wrong number was told
+-- off for it, every time, for a press that could not have done anything.
+section('a hotbar key over nothing asks nothing')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local Slotbar = inventory ~= nil and inventory.Slotbar or nil
+		local Options = inventory ~= nil and inventory.Options or nil
+		check('the hotbar half is up', Slotbar ~= nil and Options ~= nil)
+
+		if Slotbar ~= nil and Options ~= nil then
+			check('the peek key is not the game\'s own quick menu',
+				Options.KEY_PEEK ~= 'TAB', tostring(Options.KEY_PEEK))
+			check('and it is still a key, not switched off',
+				Options.KEY_PEEK ~= false and Options.KEY_PEEK ~= nil,
+				tostring(Options.KEY_PEEK))
+
+			-- The mirror is a sparse LIST and the slot is a field on each entry,
+			-- so the fifth entry is not slot five. That is the whole reason this
+			-- is asked through `Holds` rather than indexed at the call site.
+			local Screen = inventory.Screen
+			local realOwn = Screen.Own
+			Screen.Own = function()
+				return { items = { { slot = 3, name = 'medkit', count = 1 } } }
+			end
+
+			check('a slot the bag fills reads as held', Slotbar.Holds(3) == true)
+			check('an empty slot does not', Slotbar.Holds(1) == false)
+			check('and neither does a slot that is not a number',
+				Slotbar.Holds('three') == false)
+			check('nor one past the end', Slotbar.Holds(99) == false)
+
+			Screen.Own = function() return nil end
+			check('with no bag at all nothing reads as held', Slotbar.Holds(3) == false)
+			Screen.Own = realOwn
+		end
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
