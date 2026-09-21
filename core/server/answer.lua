@@ -164,10 +164,30 @@ local MAX_COMMAND_DUMP = 8192
 local MAX_COMMAND_LINE = 240
 
 --- Bounds a multi-line dump without touching what makes it readable.
+---
+--- CUT ON A CHARACTER BOUNDARY, AND SAID OUT LOUD. The first version of this
+--- cut on a raw byte, so a stock list carrying an accented vehicle name could be
+--- severed mid-sequence and handed to CEF as invalid UTF-8 -- while `lineText`
+--- beside it went through `OPX.Audit.Safe`, which looks for a boundary. And it
+--- cut in silence: a dealer list past the ceiling simply ended, with an ellipsis
+--- and no reason anywhere. The operator asking for the list is exactly the
+--- person who needs to know it was not all of it.
 local function dumpText(message)
 	local text = tostring(message or '')
 	if #text <= MAX_COMMAND_DUMP then return text end
-	return text:sub(1, MAX_COMMAND_DUMP) .. '...'
+
+	local cut = MAX_COMMAND_DUMP
+	-- Back off the continuation bytes of a character this would split. At most
+	-- three: UTF-8 is never wider than four bytes.
+	for _ = 1, 3 do
+		local byte = text:byte(cut + 1)
+		if byte == nil or byte < 0x80 or byte >= 0xC0 then break end
+		cut = cut - 1
+	end
+
+	Open77.log.warn(('[answer] a command answer of %d bytes was cut to %d')
+		:format(#text, cut))
+	return text:sub(1, cut) .. '...'
 end
 
 --- Bounds and strips a single line on its way into a toast.

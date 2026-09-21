@@ -69,6 +69,10 @@ local REVALIDATE_MS, LOOKUP_BUDGET_MS, BATCH = 200, 1500, 5
 -- Whether the key is held and the eye is up.
 local opened = false
 
+-- Whether this module actually took the control restrictions, so that `close`
+-- does not hand back restrictions it never took.
+local heldControls = false
+
 -- Whether a pick or a select is being worked out.
 local busy = false
 
@@ -253,7 +257,14 @@ local function close(reason)
 	handle = nil
 	OPX.UI.ReleaseFocus(FOCUS)
 	if not was then return end
-	controls(false)
+	-- ONLY IF THEY WERE TAKEN. `controls(false)` is a global reset of this
+	-- resource's control restrictions, not the inverse of what this function
+	-- set, so calling it on a path that never took them hands back restrictions
+	-- another module is relying on.
+	if heldControls then
+		controls(false)
+		heldControls = false
+	end
 	TriggerEvent(EVENT_CLOSED, reason or 'closed')
 end
 
@@ -553,6 +564,21 @@ local function open()
 	-- `OPX.UI.Send`'s answers, of which the second says the host refused the
 	-- payload whole while reporting the send a success; `local drawn = send(...)`
 	-- threw that one away, so a refused open read as a drawn one.
+	-- CONTROLS FIRST, THEN THE PAGE, THEN THE FOCUS. Moving the send above the
+	-- controls to keep focus from being taken before anything was drawn put the
+	-- send above them TOO, and that cost two things: a refused `controls` left
+	-- the eye drawn for one frame before `close` tore it down -- a flicker on
+	-- every key press on a client without `players.controls` -- and `close`
+	-- reached `controls(false)` on a path where nothing had ever been taken.
+	-- `controls(false)` is `Open77.players.resetControls()`, which clears EVERY
+	-- control restriction this resource holds, not the ones this function set:
+	-- a player who is down, cuffed or in an animation would have got their aim
+	-- and their weapon back by pressing the target key.
+	--
+	-- Only the FOCUS has to wait for the draw, and only the focus does.
+	if not controls(true) then return close('controls_unavailable') end
+	heldControls = true
+
 	local drawn, refused = send('target:open', {
 		handle = handle,
 		hoverMs = HOVER_MS,
@@ -565,7 +591,6 @@ local function open()
 	})
 	if not drawn or refused then return close(refused and 'payload_refused' or 'no_surface') end
 	OPX.UI.AcquireFocus(FOCUS, { keyboard = true, cursor = true })
-	if not controls(true) then return close('controls_unavailable') end
 	TriggerEvent(EVENT_OPENED, { handle = handle })
 end
 

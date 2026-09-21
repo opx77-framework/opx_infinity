@@ -5,6 +5,8 @@ OPX.Locale.Register('fr', {
 	['error.unavailable'] = "Ce n'est pas disponible pour le moment.",
 	['error.badRequest'] = "Cette requete n'a pas pu etre lue.",
 	['error.payloadRefused'] = 'Cette reponse etait trop volumineuse pour etre affichee.',
+	['error.rpc_timeout'] = 'Cela a pris trop de temps. Réessayez.',
+	['error.rpc_failed'] = "Cela n'a pas abouti.",
 	['error.tooFast'] = 'Doucement.',
 	['error.noPermission'] = 'Vous ne pouvez pas faire cela.',
 })

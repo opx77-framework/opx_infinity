@@ -19411,11 +19411,23 @@ do
 			OPX.Gate.Release(7, 'done', 'user-BBBB') == true)
 		check('and then B is marked released', OPX.Sessions[7].released == true)
 
-		-- With no session at all there is nothing left that says the slot was
-		-- ever ours, and the host's status would answer for its new occupant.
+		-- A caller that NAMES an identity has something to protect: with no
+		-- session there is nothing left saying the slot was ever theirs, and the
+		-- host's status would answer for whoever holds it now.
 		check('a release for a slot with no session refuses instead of guessing',
 			OPX.Gate.Release(99, 'never', 'user-AAAA') == false)
-		check('and so does one that names nobody', OPX.Gate.Release(99, 'never') == false)
+
+		-- A caller that names NOBODY is the departure path -- `refuseEntry`
+		-- releases exactly where `EnsureSession` answered nil, and that function
+		-- forgets the session BEFORE answering, so there is never one here. It
+		-- has no recycled slot to protect: it is ending a connection, not
+		-- admitting anybody. Refusing it left a player whose identity the host
+		-- could not attest behind a shut gate WITH NO DEADLINE, on a loading
+		-- screen, until the resource restarted -- because core holds a gate for
+		-- everyone who connects whether or not `Gate.Hold` ever ran.
+		check('but one that names nobody is still the safe release the docstring promises',
+			OPX.Gate.Release(99, 'never') ~= false,
+			tostring(OPX.Gate.Release(99, 'never')))
 
 		-- The bucket half of the same admission.
 		control.Admit(8, 'user-CCCC')

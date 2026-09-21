@@ -237,13 +237,20 @@ function OPX.Gate.Release(source, note, expectedUserId)
 				tostring(expectedUserId)))
 		return false
 	end
-	if session == nil then
-		Open77.log.warn(('[gate] not releasing %d: no session, so no way to tell whose hold this is')
-			:format(source))
-		return false
-	end
-
-	local gateSession = session.gateSession
+	-- NO SESSION IS NOT THE SAME AS THE WRONG SESSION, and treating them alike
+	-- shut a gate that used to open. `refuseEntry` in the character module
+	-- releases on the path where `EnsureSession` answered nil -- and that
+	-- function calls `ForgetSession` BEFORE answering nil, so there is never a
+	-- session here by construction. Core holds a gate for every player who
+	-- connects, whether or not `Gate.Hold` ever ran, so refusing left a player
+	-- whose identity the host could not attest behind a shut gate with no
+	-- deadline, on a loading screen, until the resource restarted.
+	--
+	-- A caller that named an identity has something to protect and is refused
+	-- above. A caller that named none has no recycled slot to protect -- it is
+	-- ending this connection, not admitting anybody -- so it gets what the
+	-- docstring promises: the token is asked of the host.
+	local gateSession = session and session.gateSession
 	if gateSession == nil then
 		-- THE INDEX IS INSIDE THE PCALL. `pcall(Open77.ready.status, source)`
 		-- resolves `Open77.ready.status` BEFORE pcall is called, so a host that
@@ -251,11 +258,10 @@ function OPX.Gate.Release(source, note, expectedUserId)
 		-- for exactly that. Same correction as `IsReady` below and as `permitted`
 		-- in `core/server/commands.lua`.
 		--
-		-- Reached only with a session in hand, and past the identity check above:
-		-- the token this reads back belongs to the account the caller named. The
-		-- case it exists for is a VM that lost its own copy -- a reload, with the
-		-- session rebuilt from the host's attested identity -- where skipping the
-		-- release would leave a real player behind a hold that has no deadline.
+		-- Past the identity check above, so with a session in hand the token this
+		-- reads back belongs to the account the caller named. With NO session it is
+		-- the departure path, where there is nobody to protect and a hold nobody
+		-- releases has no deadline at all.
 		local read, status = pcall(function() return Open77.ready.status(source) end)
 		gateSession = read and type(status) == 'table' and status.session or nil
 	end
@@ -291,8 +297,10 @@ function OPX.Gate.Release(source, note, expectedUserId)
 	-- about the host rather than a guess about an error, and a raise from the
 	-- call itself is the refusal it always was.
 	if type(Open77.ready) ~= 'table' or type(Open77.ready.release) ~= 'function' then
-		session.gateSession = nil
-		session.released = true
+		if session then
+			session.gateSession = nil
+			session.released = true
+		end
 		TriggerEvent(RELEASED, source, note or 'done')
 		return true
 	end
@@ -316,8 +324,10 @@ function OPX.Gate.Release(source, note, expectedUserId)
 		return false
 	end
 
-	session.gateSession = nil
-	session.released = true
+	if session then
+		session.gateSession = nil
+		session.released = true
+	end
 
 	Open77.log.debug(('[gate] released for %d (%s)'):format(source, note or 'done'))
 
