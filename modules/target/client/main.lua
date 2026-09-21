@@ -491,6 +491,35 @@ local function notedKind(kind, matched)
 	if notedKinds[kind] then return end
 	notedKinds[kind] = true
 	OPX.Note('target', ('a pick on %s matched %d row(s)'):format(kind, matched))
+
+	-- A KIND THAT MATCHED NOTHING HAS TWO CAUSES AND THEY NEED OPPOSITE FIXES:
+	-- nobody registered a row for it, or rows were registered and the filter
+	-- turned them all down. The count alone cannot tell them apart -- it read
+	-- zero either way, and an afternoon went into guessing which.
+	--
+	-- `Registry.List` answers what is actually held, by owner, and an id is
+	-- enough: a row meant for the sky is named for it. So a barren kind says
+	-- what each owner is holding that looks like it, and the two causes stop
+	-- looking alike. Only on a zero, and only once per kind, so the ordinary
+	-- case costs nothing.
+	if matched > 0 or kind == 'none' then return end
+
+	local seen = {}
+	-- Every declared module is a possible owner; the registry answers an empty
+	-- list for one that never registered anything, so nothing has to be guessed.
+	for _, module in ipairs(OPX.Modules.All()) do
+		local owner = module.Id
+		local held = Registry.List(owner)
+		local named = 0
+		for index = 1, #held do
+			if tostring(held[index].id):lower():find(kind, 1, true) then named = named + 1 end
+		end
+		if #held > 0 then
+			seen[#seen + 1] = ('%s %d/%d'):format(owner, named, #held)
+		end
+	end
+	OPX.Note('target', ('rows held that name %s, by owner: %s')
+		:format(kind, #seen > 0 and table.concat(seen, ', ') or 'nobody holds any row'))
 end
 
 local function hover(payload)
