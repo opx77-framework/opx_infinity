@@ -20198,6 +20198,10 @@ do
 
 		if Walk ~= nil then
 			env.Open77.movement = { setWalkMode = function() return true end }
+			-- The harness boots without a movement stub, so `Walk.Start` correctly
+			-- declined to offer paces a client cannot take. Re-run it now that the
+			-- lease exists, which is also the path a real client takes.
+			Walk.Start()
 
 			local configured = OPX.Config.MODULES.animations.WALK_PACES
 			check('the framework ships a list of paces',
@@ -20217,19 +20221,42 @@ do
 			check('every shipped pace is inside the platform bounds',
 				#bad == 0, table.concat(bad, ','))
 
-			-- ── the rows ──
-			local rows = Walk.Rows()
-			check('there is a row per pace, plus the ordinary body',
-				#rows == #configured + 1, #rows)
-			local selfOnly, foldered, labelled = true, true, true
-			for index = 1, #rows do
-				if rows[index].kind ~= 'self' then selfOnly = false end
-				if rows[index].folder ~= 'walk' then foldered = false end
-				if not OPX.Locale.Exists(rows[index].label) then labelled = false end
+			-- ── THE ROWS ARE ACCEPTED, which is the only question worth asking ──
+			--
+			-- This block used to read the fields back -- `kind == 'self'`,
+			-- `folder == 'walk'`, the label in the catalogue -- and it passed
+			-- while NOT ONE ROW EXISTED IN THE REGISTRY. The rows were built in
+			-- `admin`'s internal vocabulary, which `admin` translates at its own
+			-- door; the registry wants `onSelect`, `canInteract` and `checked`,
+			-- refuses a definition without a callable `onSelect`, and
+			-- `RegisterMany` is ALL-OR-NOTHING, so all four went down together.
+			-- The refusal was logged with `Open77.log.warn`, which writes on the
+			-- player's own machine, and nothing here asked the registry what it
+			-- had actually taken.
+			--
+			-- Asserting a shape I chose only ever proves I am consistent with
+			-- myself. `List` is the other side of the contract answering.
+			local target = OPX.Api.Get('target')
+			check('the eye is up so the rows have somewhere to go', target ~= nil)
+
+			local held = target ~= nil and target.List('animations') or nil
+			check('the pace rows were accepted by the registry',
+				held ~= nil and held.ok == true,
+				held ~= nil and tostring(held.error) or 'no contract')
+
+			local options = held ~= nil and held.ok and held.value.options or {}
+			check('one per pace, plus the ordinary body',
+				#options == #configured + 1, #options)
+
+			-- A raw catalogue key would be drawn as itself: the registry takes
+			-- display text, not a key to resolve.
+			local raw = {}
+			for index = 1, #options do
+				local label = tostring(options[index].label)
+				if label:match('^animations%.') then raw[#raw + 1] = label end
 			end
-			check('every row is a self row', selfOnly)
-			check('and they share one folder, so they do not crowd the eye', foldered)
-			check('and every label is in the catalogue', labelled)
+			check('and their labels are resolved, not catalogue keys',
+				#raw == 0, table.concat(raw, ', '))
 
 			-- ── choosing ──
 			Walk.Request('emote', nil)
@@ -20246,10 +20273,15 @@ do
 
 			-- The row marks itself, which is what makes the list readable: the
 			-- answer to "which pace am I on" is the same click as changing it.
+			-- Read off `Walk.Rows()` freshly, and through `checked` -- the field
+			-- the registry reads. The old spelling was `state`, which is what
+			-- `admin` calls it, and asserting that name was part of what let the
+			-- whole batch be refused while this section stayed green.
 			local live = Walk.Pace()
+			local built = Walk.Rows()
 			local marked = 0
-			for index = 1, #rows do
-				if rows[index].state() == true then marked = marked + 1 end
+			for index = 1, #built do
+				if built[index].checked() == true then marked = marked + 1 end
 			end
 			check('exactly one row reads as the live one', marked == 1, marked)
 

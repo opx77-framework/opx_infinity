@@ -294,31 +294,29 @@ local function contextAt(x, y)
 		hit.kind = 'sky'
 		hit.playerDistance = nil
 
-		-- THE DIRECTION IS DERIVED, BECAUSE THE RAYCAST DOES NOT RETURN ONE.
-		-- `sameTarget` compares two sky contexts by their `direction` and
-		-- nothing else -- there is no surface to compare, which is the whole
-		-- point of the sky. But the devkit's contract for `camera.screenRaycast`
-		-- is explicit: a MISS answers `hit = false` and a `position` at the ray
-		-- ENDPOINT, and the fields a hit adds are `normal`, `distance`,
-		-- `material` and `entityLookupAvailable`. No `direction`, on either.
+		-- THE HOST'S OWN `direction` IS KEPT, AND IT WAS BRIEFLY OVERWRITTEN.
 		--
-		-- So `left.direction` was always nil, `sameTarget` always answered false
-		-- for the sky, and every revalidation concluded the player had looked
-		-- somewhere else and dropped the pick. The sky list could never stay on
-		-- screen -- which is exactly what was reported: rows on yourself, and
-		-- nothing at all on the sky.
+		-- A derivation stood here, on the belief that `camera.screenRaycast`
+		-- returns no direction. It does. `screen-picking` says the raycast
+		-- "uses the same arguments as `screenRay`" and that "all ray fields
+		-- remain present" -- those fields being `origin`, `direction`,
+		-- `position` and `maxDistance`, with `direction` a unit world-space
+		-- vector; a hit ADDS `normal`, `distance`, `material` and the rest
+		-- rather than replacing them. And `context-menu` says it for this exact
+		-- case: "For sky, `hit=false`: use `origin` and unit `direction` to
+		-- aim. `position` is only the ray endpoint at `maxDistance`."
 		--
-		-- The endpoint minus the eye IS the direction, normalised. It is the
-		-- same vector `sameTarget`'s dot product was written for, so that
-		-- comparison is left exactly as it is.
-		local to, from = hit.position, state.position
-		if type(to) == 'table' and type(from) == 'table' then
-			local dx, dy, dz = to.x - from.x, to.y - from.y, to.z - from.z
-			local length = math.sqrt(dx * dx + dy * dy + dz * dz)
-			if length > 0 then
-				hit.direction = { x = dx / length, y = dy / length, z = dz / length }
-			end
-		end
+		-- The belief came from reading a card that enumerated what a hit ADDS
+		-- and concluding the base fields were absent. They were never absent.
+		--
+		-- The derivation was also wrong in a way that mattered: it measured from
+		-- the BODY, not the camera. `sameTarget` calls two sky contexts the same
+		-- at a dot product above 0.9998, which over a 12 m ray is about 24 cm of
+		-- movement -- and `controls(true)` blocks aim, fire, interaction and
+		-- rotation, NOT walking. So a player taking one step while the list was
+		-- open lost their pick. With the camera's own direction the camera has
+		-- not moved, so it never happens; in third person, where the body sits
+		-- metres from the camera, the derived vector was wrong outright.
 		return hit
 	end
 	if not hit.entityLookupAvailable then return nil end

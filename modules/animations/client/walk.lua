@@ -228,35 +228,52 @@ end
 -- @author dop42
 -- @return table[]
 function Walk.Rows()
-	local rows = {
-		{
-			id = 'walkOff',
-			kind = 'self',
-			folder = 'walk',
-			label = 'animations.walk.off',
+	-- THE REGISTRY'S VOCABULARY, AND THE FIRST VERSION SPOKE ADMIN'S.
+	--
+	-- `modules/admin/client/target.lua` builds rows with `kind`, `folder`,
+	-- `select`, `check` and `state`, then translates them at the door: `kind`
+	-- picks which `Register*` to call, and the rest is its own shape. Copying
+	-- that shape straight into `RegisterSelf` looked right and was not.
+	--
+	-- `modules/target/shared/model.lua` wants `onSelect`, `canInteract` and
+	-- `checked`, and `Register` refuses a definition whose `onSelect` is not a
+	-- callback -- `invalid_option`. `RegisterMany` is all-or-nothing, so all
+	-- four rows were refused together and NO pace row ever existed. The refusal
+	-- was logged with `Open77.log.warn`, which writes on the player's own
+	-- machine, so the line existed and was nowhere anybody was looking.
+	-- `modules/hauling/client/main.lua` is the caller that gets this right.
+	--
+	-- The label is RESOLVED here. The registry takes display text, not a
+	-- catalogue key, so the raw key would have been drawn as itself.
+	local function row(id, label, pace)
+		return {
+			id = id,
+			label = locale(label),
 			icon = 'person',
-			state = function() return Walk.Pace() == nil end,
-			check = function() return Walk.Available() end,
-			select = function() Walk.Choose(nil) return true end,
-		},
-	}
+			group = locale('animations.walk.group'),
+			-- Above the staff band, which starts at 100: a pace is something
+			-- everybody has and a player should not scroll past noclip to reach.
+			order = 10,
+			canInteract = function() return Walk.Available() end,
+			checked = function()
+				local live = Walk.Pace()
+				if pace == nil then return live == nil end
+				return live ~= nil and live.id == pace.id
+			end,
+			onSelect = function()
+				Walk.Choose(pace and pace.id or nil)
+				return true
+			end,
+		}
+	end
 
+	-- No `kind` field: `RegisterSelf` is what makes these self rows, and it sets
+	-- `types`, `allowSelf` and `selfOnly` itself.
+	local rows = { row('walkOff', 'animations.walk.off', nil) }
 	local list = paces()
 	for index = 1, #list do
 		local pace = list[index]
-		rows[#rows + 1] = {
-			id = 'walk_' .. pace.id,
-			kind = 'self',
-			folder = 'walk',
-			label = 'animations.walk.' .. pace.id,
-			icon = 'person',
-			state = function()
-				local live = Walk.Pace()
-				return live ~= nil and live.id == pace.id
-			end,
-			check = function() return Walk.Available() end,
-			select = function() Walk.Choose(pace.id) return true end,
-		}
+		rows[#rows + 1] = row('walk_' .. pace.id, 'animations.walk.' .. pace.id, pace)
 	end
 	return rows
 end
@@ -280,8 +297,13 @@ function Walk.Start()
 
 	local answer = contract.RegisterSelf('animations', Walk.Rows())
 	if answer == nil or answer.ok ~= true then
-		Open77.log.warn('[animations] the walking pace rows were not registered: '
-			.. tostring(answer and answer.error))
+		--  AND NOT . A client log line is written on
+		-- the PLAYER'S machine, so the first version of this refusal existed and
+		-- was nowhere the operator could ever read it -- which is how four rows
+		-- refused in a batch went unnoticed until somebody reported the feature
+		-- missing in game. This is exactly what the bounded relay is for.
+		OPX.Note('animations', ('the walking pace rows were refused: %s')
+			:format(tostring(answer and answer.error)))
 	end
 end
 
