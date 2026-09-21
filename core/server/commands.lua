@@ -50,9 +50,17 @@ local taken = {}
 --- does not install `Open77.acl` -- one without the `acl.read` grant, or an
 --- older build -- raised on the index, outside the protection written for
 --- exactly that. The paragraph above described behaviour the code did not have.
+---
+--- THE NAME IS LOWER-CASED, and it was asked as spelt. The host resolves
+--- `command.<name>` against the LOWER-CASED registration -- which is why `taken`
+--- below is a lower-cased index and why `configuredAlias` lower-cases -- so a
+--- command registered as `opx.Foo` was gated by the host on `command.opx.foo`
+--- while this asked about `command.opx.Foo`: a different ACL entry, and one
+--- nobody has written down. Every name in this resource happens to be lower-case
+--- today, so the two agreed by luck rather than by construction.
 local function permitted(source, name)
 	local read, allowed = pcall(function()
-		return Open77.acl.isAllowed(source, 'command.' .. name)
+		return Open77.acl.isAllowed(source, 'command.' .. name:lower())
 	end)
 	return read and allowed == true
 end
@@ -284,9 +292,23 @@ function OPX.Command.Register(name, opts, handler)
 			-- restricted command, and `isAllowed` answers `invalid_player_id`
 			-- for it rather than yes, so asking would lock the server's own
 			-- console out of every alias while leaving it the long name.
-			local player = tonumber(source) or 0
-			if restricted and player > 0 and not permitted(player, name) then
-				return OPX.Refuse(source, 'error.noPermission', name)
+			--
+			-- THE CONSOLE IS NAMED, NOT DEFAULTED TO. This read was
+			-- `tonumber(source) or 0` followed by `player > 0`, so ANY source that
+			-- does not parse -- nil, a table, a string the host did not format as
+			-- a number -- folded to 0 and skipped the check entirely. The alias is
+			-- registered unrestricted on purpose, so this branch is the only thing
+			-- between a bare `god`/`noclip`/`freeze` and every player on the
+			-- server. Every other source read in this runtime rejects that input
+			-- (`core/client/note.lua`, `core/server/answer.lua`, `core/server/gate.lua`);
+			-- this is the one place a source is read as PERMISSION, which is the
+			-- one place it may not be guessed at.
+			local player = tonumber(source)
+			local console = source == nil or player == 0
+			if restricted and not console then
+				if player == nil or player < 0 or not permitted(player, name) then
+					return OPX.Refuse(source, 'error.noPermission', name)
+				end
 			end
 			return run(source, args, raw)
 		end, false)

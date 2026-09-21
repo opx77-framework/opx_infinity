@@ -3626,6 +3626,59 @@ do
 		check('the console may run a restricted alias', ran == 1)
 	end
 
+	-- ── a source that does not parse is NOT the console ───────────────────────
+	-- THE CONSOLE USED TO BE THE DEFAULT RATHER THAN A NAMED CASE. The read was
+	-- `local player = tonumber(source) or 0` followed by `player > 0`, so ANY
+	-- source that does not parse -- nil, a table, a string the host did not
+	-- format as a number -- folded to 0 and skipped the ACL entirely. The alias
+	-- is registered UNRESTRICTED on purpose, so this branch is the only thing
+	-- between a bare `god`/`noclip`/`freeze` and every player on the server.
+	-- Every other source read in this runtime rejects that input; this is the
+	-- one place a source is read as PERMISSION.
+	do
+		local env, host = commandEnv({ ['opx.admin.self.god'] = 'god' })
+		local ran = 0
+		env.OPX.Command.Register('opx.admin.self.god', { restricted = true },
+			function() ran = ran + 1 end)
+
+		local survived = host.Type('god', 'not-a-number', {})
+		check('a source that does not parse cannot run a restricted alias', ran == 0)
+		check('and it is refused rather than raising', survived == true)
+		host.Type('god', {}, {})
+		check('and neither can a table', ran == 0)
+		host.Type('god', -3, {})
+		check('and neither can a negative id', ran == 0)
+		check('and each of them was told why',
+			#host.refusals == 3, #host.refusals)
+
+		host.Type('god', 0, { 'still' })
+		check('while the console, which is source 0 and nothing else, still may',
+			ran == 1, ran)
+	end
+
+	-- ── the ACL entry is the LOWER-CASED name, which is what the host resolves ─
+	-- `permitted` asked `'command.' .. name` as spelt while the host gates the
+	-- registration on `command.<lower-cased name>`. Every command in this
+	-- resource happens to be lower-case today, so the two agreed by luck rather
+	-- than by construction -- and the day one is not, the alias asks about an ACL
+	-- entry nobody has written down and goes inert for everybody.
+	do
+		local env, host = commandEnv({ ['opx.admin.Self.God'] = 'god' })
+		local asked = {}
+		env.Open77.acl.isAllowed = function(_, permission)
+			asked[#asked + 1] = tostring(permission)
+			return true
+		end
+		local ran = 0
+		env.OPX.Command.Register('opx.admin.Self.God', { restricted = true },
+			function() ran = ran + 1 end)
+
+		host.Type('god', 11, {})
+		check('the alias asks the ACL about the lower-cased command entry',
+			asked[1] == 'command.opx.admin.self.god', tostring(asked[1]))
+		check('and the alias still runs for a player who holds it', ran == 1)
+	end
+
 	-- ── one operation, one cooldown window ────────────────────────────────────
 	-- A command registered twice must not get two independent floors. The window
 	-- is keyed on the operation and closed over once, so both spellings share it;
@@ -7657,6 +7710,73 @@ do
 				second.Api = function() OPX.Api.Provide('thing', 1, {}) end
 			end,
 			expect = function(OPX) return OPX.Modules.Record('beta').State == 'failed' end,
+		},
+		{
+			-- A NON-FATAL MODULE FAILING A PHASE MUST DROP ITS DEPENDANTS, and it
+			-- did not. The settling loop ran exactly once, inside a memoised
+			-- `Resolve`, before any phase had touched a state -- so a module that
+			-- failed in `Init` left every dependant `declared`, and they carried on
+			-- through `Api` and `Start` against a contract nobody ever published.
+			-- `crafting` is `fatal = false` in this runtime and `gunsmith` requires
+			-- it, so that is the shipped shape of this, not a hypothetical.
+			label = 'a non-fatal module failing in Init drops what requires it',
+			declare = function(OPX, seen)
+				local first = OPX.Modules.Declare{ id = 'alpha' }
+				first.Init = function() error('no schema', 0) end
+				first.Api = function() OPX.Api.Provide('thing', 1, {}) end
+				local second = OPX.Modules.Declare{ id = 'beta', requires = { 'alpha' } }
+				second.Start = function() seen[#seen + 1] = 'beta ran' end
+			end,
+			expect = function(OPX, seen)
+				return OPX.Modules.Record('alpha').State == 'failed'
+					and OPX.Modules.Record('beta').State == 'unavailable'
+					and #seen == 0
+			end,
+		},
+		{
+			label = 'and the dropped dependant names the module that took it down',
+			declare = function(OPX)
+				local first = OPX.Modules.Declare{ id = 'alpha' }
+				first.Init = function() error('no schema', 0) end
+				OPX.Modules.Declare{ id = 'beta', requires = { 'alpha' } }
+			end,
+			expect = function(OPX)
+				return tostring(OPX.Modules.Record('beta').Reason)
+					:find('alpha', 1, true) ~= nil
+			end,
+		},
+		{
+			label = 'a module whose requirement started is left alone',
+			declare = function(OPX, seen)
+				OPX.Modules.Declare{ id = 'alpha' }
+				local second = OPX.Modules.Declare{ id = 'beta', requires = { 'alpha' } }
+				second.Start = function() seen[#seen + 1] = 'beta ran' end
+			end,
+			expect = function(OPX, seen)
+				return OPX.Modules.Record('beta').State == 'started' and #seen == 1
+			end,
+		},
+		{
+			-- `module.State = 'stopped'` was written INSIDE the
+			-- `type(Stop) == 'function'` guard, so a module with no `Stop` -- which
+			-- is most of them -- read as running for ever. `core/client/boot.lua`
+			-- runs `Modules.Stop` from `onClientResourceStop`, where the VM can
+			-- outlive the resource and that state is the only thing left to read.
+			label = 'a module with no Stop is still marked stopped',
+			declare = function(OPX)
+				OPX.Modules.Declare{ id = 'alpha' }
+			end,
+			after = function(OPX) OPX.Modules.Stop() end,
+			expect = function(OPX) return OPX.Modules.Record('alpha').State == 'stopped' end,
+		},
+		{
+			label = 'and a second Stop does not call a module Stop twice',
+			declare = function(OPX, seen)
+				local m = OPX.Modules.Declare{ id = 'alpha' }
+				m.Stop = function() seen[#seen + 1] = 'stopped' end
+			end,
+			after = function(OPX) OPX.Modules.Stop(); OPX.Modules.Stop() end,
+			expect = function(_, seen) return #seen == 1 end,
 		},
 		{
 			label = 'Get answers nil below the requested version',
@@ -14075,6 +14195,696 @@ do
 			(target.List('hauling')).value ~= nil)
 		check('and the client survives a refusal code nobody wrote a sentence for',
 			pcall(control.netEvents[M.Event.ANSWER], false, 'invalid_attachment_bone', false))
+	end
+end
+
+-- ── the senior audit of core/ and lib/ ───────────────────────────────────────
+-- Every check below stands for one finding, and each one was watched go red
+-- against the code as it shipped before being written down.
+
+-- ── the gate reads what the host actually said ───────────────────────────────
+-- `Open77.ready.release` answers true, or false plus a reason -- "a session that
+-- no longer matches is dropped rather than releasing a newer hold". `Release`
+-- returned a hard-coded `true` whatever came back, and cleared `released` BEFORE
+-- asking, so on a refusal our state said released and the host still held the
+-- gate. `Hold` twenty lines above had always read its refusal: two halves of one
+-- mechanism disagreeing, in a file whose first line is "Nothing may teleport,
+-- spawn, kill or respawn a player until their readiness gate has opened."
+section('the gate reads the host answer')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		control.Admit(21, 'account-gate')
+		OPX.EnsureSession(21)
+		OPX.Gate.Hold(21, 'test')
+
+		env.Open77.ready.release = function() return false, 'session_mismatch' end
+		check('a refused release is reported as a refusal',
+			OPX.Gate.Release(21, 'character-loaded') == false)
+		check('and the session is NOT marked released',
+			OPX.Sessions[21].released ~= true)
+		check('and the hold is still ours, so something can try again',
+			OPX.Sessions[21].gateSession ~= nil)
+		check('and the operator is told which player and why',
+			table.concat(control.log.error, ' | '):find('the release for 21 was refused', 1, true)
+				~= nil, table.concat(control.log.error, ' | '))
+
+		env.Open77.ready.release = function() return true end
+		check('and the retry that follows goes through',
+			OPX.Gate.Release(21, 'character-loaded') == true)
+		check('and only now is the session released',
+			OPX.Sessions[21].released == true)
+
+		-- `pcall(Open77.ready.status, source)` resolves the field BEFORE pcall is
+		-- called, so a host that does not install it raised on the index --
+		-- outside the protection written for exactly that case. The same pattern
+		-- this repo already corrected in `commands.lua`.
+		control.Admit(22, 'account-gate-2')
+		OPX.EnsureSession(22)
+		env.Open77.ready.status = nil
+		env.Open77.ready.isReady = nil
+		check('Release survives a host with no ready.status',
+			(pcall(OPX.Gate.Release, 22, 'done')))
+		check('IsReady survives a host with no ready.isReady',
+			(pcall(OPX.Gate.IsReady, 22)))
+	end
+end
+
+-- ── the give-up watch has a caller ───────────────────────────────────────────
+-- Nothing in production called `OPX.Gate.Watch`. `deadlineFor`, `deadlineMs` and
+-- the whole `ENTRY.WATCH_MS` validation block existed to configure a function
+-- with no caller, so `config/server.lua`'s WATCH_MS was a live-looking, validated
+-- operator setting with zero effect -- and the gate file's own promise that "the
+-- runtime gives up first, and says why" was untrue.
+section('the entry sequence arms the give-up watch')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local armed = {}
+		local realWatch = OPX.Gate.Watch
+		OPX.Gate.Watch = function(source, timeoutMs, onGiveUp)
+			armed[#armed + 1] = { source = source, onGiveUp = onGiveUp }
+			return true
+		end
+
+		control.Admit(23, 'account-watch')
+		control.Fire(OPX.Host.PLAYER_CONNECTED, 23)
+		control.Pump(20)
+		OPX.Gate.Watch = realWatch
+
+		check('a connecting player is watched', #armed == 1 and armed[1].source == 23,
+			#armed)
+		check('and the watch is handed a give-up decision',
+			#armed == 1 and type(armed[1].onGiveUp) == 'function')
+
+		if #armed == 1 and type(armed[1].onGiveUp) == 'function' then
+			-- Answering FALSE means "this player is mine now" and stops the watch
+			-- without touching the hold. The thread that would release it is the
+			-- thing that has stalled, so it must not claim it: an unreleased hold
+			-- has no deadline.
+			local answer = armed[1].onGiveUp(23)
+			check('and it does not claim the hold, so core releases it',
+				answer ~= false, tostring(answer))
+			check('and it says so where an operator will read it',
+				table.concat(control.log.error, ' | ')
+					:find('did not finish before the gate deadline', 1, true) ~= nil,
+				table.concat(control.log.error, ' | '))
+		end
+	end
+end
+
+-- ── a toast the host dropped is not recorded as delivered ────────────────────
+-- `Open77.notifications.send` answers an id, or nil plus a reason. Neither was
+-- read at 47 call sites, and `repeated()` wrote `bucket[text] = now` BEFORE the
+-- send -- so a toast the host dropped was remembered as delivered and the
+-- identical retry, which is the one a caller makes when it learns the send
+-- failed, was swallowed for the whole 2000 ms window.
+section('a toast the host dropped')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		control.Admit(31, 'account-notify')
+		OPX.EnsureSession(31)
+
+		env.Open77.notifications.send = function() return nil, 'network_unavailable' end
+		local delivered, code = OPX.Notify(31, 'the bank is closed', 'error')
+		check('a dropped toast is reported as dropped', delivered == false)
+		check('and it carries the host reason', code == 'network_unavailable', tostring(code))
+		check('and the operator is told',
+			table.concat(control.log.warn, ' | '):find('was not delivered', 1, true) ~= nil,
+			table.concat(control.log.warn, ' | '))
+
+		env.Open77.notifications.send = function() return 'n1' end
+		check('and the identical retry is NOT swallowed',
+			OPX.Notify(31, 'the bank is closed', 'error') == true)
+		check('while a second identical toast still is',
+			select(2, OPX.Notify(31, 'the bank is closed', 'error')) == 'duplicate')
+		check('and NotifyLocale relays the answer rather than eating it',
+			OPX.NotifyLocale(31, 'error.unavailable', nil, 'error') == true)
+	end
+end
+
+-- ── an interval that raises is not an interval of 50ms ───────────────────────
+-- `local ok, answered = pcall(value); value = ok and answered or nil` made a
+-- raise and a legitimate nil indistinguishable, and the fallback was
+-- MIN_INTERVAL_MS: a save job whose interval closure started raising became a
+-- 50ms loop for the life of the resource, 600x its configured rate, with no log
+-- line at all -- step failures are reported once per run, interval failures
+-- never were -- while `Report` printed a confident `50ms`.
+section('a raising interval closure')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		OPX.Scheduler.Every('audit.raising', function()
+			error('the tunable is gone', 0)
+		end, function() end)
+		control.Pump(3)
+
+		local report = table.concat(OPX.Scheduler.Report(), '\n')
+		check('it does not fall back to the 50ms floor',
+			report:find('audit%.raising%s+50ms') == nil, report)
+		check('it falls back slowly instead',
+			report:find('audit%.raising%s+60000ms') ~= nil, report)
+		check('and the report says the interval could not be read',
+			report:find('audit%.raising.-interval unreadable') ~= nil, report)
+		check('and the operator was told, once',
+			table.concat(control.log.error, ' | ')
+				:find('audit.raising: its interval raised', 1, true) ~= nil,
+			table.concat(control.log.error, ' | '))
+
+		-- A cadence that is not a number is the same failure by another door, and
+		-- `math.floor(tonumber(value) or 0)` turned it into the floor too.
+		OPX.Scheduler.Every('audit.nonsense', function() return 'soon' end, function() end)
+		control.Pump(3)
+		local second = table.concat(OPX.Scheduler.Report(), '\n')
+		check('and a cadence that is not a number goes the same way',
+			second:find('audit%.nonsense%s+60000ms') ~= nil, second)
+	end
+end
+
+-- ── a malformed minimum grade closes the gate ────────────────────────────────
+-- `held < (finiteNumber(minimum) or 0)` turned `JOBS = { ncpd = true }` -- a
+-- config typo -- into a floor of 0, so every member of the job walked through.
+-- It was the one coercion in a file whose docstring says "a gated requirement
+-- closes on every doubt" whose fallback REMOVED a guard.
+section('a malformed minimum grade')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local now = 1000
+		local snapshot = { job = { name = 'ncpd', grade = { level = 0 }, onDuty = true },
+			jobs = { ncpd = 0 }, atMs = now }
+		local policy = { maxAgeMs = 60000, membership = 'primary' }
+
+		local open, code = OPX.JobGate.Evaluate({ jobs = { ncpd = true } },
+			snapshot, now, policy)
+		check('a boolean minimum does not open the gate', open == false, tostring(open))
+		check('and the refusal names the nearest miss', code == 'grade_too_low', tostring(code))
+		check('nor does a minimum that is not a number at all',
+			(OPX.JobGate.Evaluate({ jobs = { ncpd = 'two' } }, snapshot, now, policy)) == false)
+		check('a well-formed minimum the character meets still opens it',
+			(OPX.JobGate.Evaluate({ jobs = { ncpd = 0 } }, snapshot, now, policy)) == true)
+		check('and a requirement with no JOBS at all is still PUBLIC',
+			(OPX.JobGate.Evaluate({}, nil, now, policy)) == true)
+		-- Repairing the value here would hide the typo, which is why
+		-- `modules/gunsmith` carries a malformed minimum through untouched.
+		check('and `Problems` is still what NAMES the typo',
+			#OPX.JobGate.Problems({ ncpd = true }, 'floor #3') == 1)
+	end
+end
+
+-- ── the three adapters agree on the fail direction ───────────────────────────
+-- For a subject that is not a table, teleports answered closed, elevators RAISED
+-- out of whichever handler was asking, and gunsmith built `{ jobs = nil }` --
+-- which `Evaluate` reads as PUBLIC and OPENS. Three answers to one question,
+-- and the dangerous one was the default on a bench.
+section('every job gate fails in the same direction')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local now = 1000
+		local snapshot = { job = { name = 'arasaka', grade = { level = 9 }, onDuty = true },
+			jobs = { arasaka = 9 }, atMs = now }
+
+		local elevators = OPX.Modules.Get('elevators')
+		local gunsmith = OPX.Modules.Get('gunsmith')
+		local teleports = OPX.Modules.Get('teleports')
+		check('the three modules are here to be asked',
+			elevators ~= nil and gunsmith ~= nil and teleports ~= nil)
+
+		-- Under pcall, because the answer being a RAISE is one of the three
+		-- answers this is here to rule out: the elevators adapter read
+		-- `floor.JOBS` straight off whatever it was handed.
+		local function evaluate(module)
+			local ok, closed, code = pcall(module.Access.Evaluate, nil, snapshot, now)
+			if not ok then return 'raised', tostring(closed) end
+			return closed, code
+		end
+
+		if elevators and gunsmith and teleports then
+			local lift, refusedLift = evaluate(elevators)
+			check('a floor that is not a table is CLOSED, not a raise',
+				lift == false, tostring(lift) .. ' ' .. tostring(refusedLift))
+			check('and it says which floor it could not read',
+				refusedLift == 'no_such_floor', tostring(refusedLift))
+
+			local bench, refusedBench = evaluate(gunsmith)
+			check('an armoury that is not a table is CLOSED, not public',
+				bench == false, tostring(bench) .. ' ' .. tostring(refusedBench))
+			check('and it says which bench it could not read',
+				refusedBench == 'no_such_bench', tostring(refusedBench))
+
+			check('and teleports, which always did, still is',
+				(evaluate(teleports)) == false)
+		end
+	end
+end
+
+-- ── `Audit.Log` cannot take its caller down ──────────────────────────────────
+-- Every audit call sits inside somebody else's net handler and the whole body
+-- was unprotected: `('player=%d'):format` raises on a float source and
+-- `json.encode` raises on a cyclic table. Each of those lost the ENTRY and then
+-- the OPERATION it was auditing -- the wrong direction for a file about what an
+-- operator will have to account for later.
+section('the audit log survives what a caller hands it')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local before = #control.log.warn + #control.log.info + #control.log.error
+
+		check('a float source does not raise',
+			(pcall(OPX.Audit.Log, { event = 'audit.float', source = 12.5 })))
+		check('a source that is not a number at all does not raise',
+			(pcall(OPX.Audit.Log, { event = 'audit.text', source = 'console' })))
+
+		local cyclic = {}
+		cyclic.self = cyclic
+		check('a cyclic data block does not raise',
+			(pcall(OPX.Audit.Log, { event = 'audit.cycle', data = cyclic })))
+
+		local after = #control.log.warn + #control.log.info + #control.log.error
+		check('and every one of them still wrote a line', after - before >= 3,
+			after - before)
+		check('the unusable source is printed rather than dropped',
+			table.concat(control.log.info, ' | '):find('player=12.5', 1, true) ~= nil,
+			table.concat(control.log.info, ' | '))
+		check('and the cyclic block is named as unencodable',
+			table.concat(control.log.info, ' | '):find('unencodable', 1, true) ~= nil,
+			table.concat(control.log.info, ' | '))
+	end
+end
+
+-- ── no comment in core/ or lib/ claims a `rawget` that is not there ──────────
+-- Three comments asserted a mechanism the code had stopped using:
+-- `lib/server/storage.lua` said it reached the MySQL bridge "through `rawget`",
+-- and `core/server/tunables.lua` CITED that file as precedent. A comment and its
+-- code disagreeing is the bug; this is the check that keeps them together.
+section('comments that name a mechanism use it')
+do
+	local claimed, using = {}, 0
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if file:find('^core/') or file:find('^lib/') then
+				local handle = io.open(file, 'r')
+				if handle then
+					local source = handle:read('a')
+					handle:close()
+					-- The claim, as all three spelt it, against the call itself.
+					if source:find('through `rawget`', 1, true)
+						or source:find('through rawget', 1, true) then
+						if source:find('rawget(', 1, true) then
+							using = using + 1
+						else
+							claimed[#claimed + 1] = file
+						end
+					end
+				end
+			end
+		end
+	end
+	check('no file in core/ or lib/ says it reads through rawget without doing so',
+		#claimed == 0, table.concat(claimed, ', '))
+end
+
+-- ── the page's glyph header names the one Lua list ───────────────────────────
+-- `core/shared/glyphs.lua` deleted the three-copy regime -- 47 names, 45 and 14
+-- -- and `Model.ICONS` and `menu.M.ICONS` are aliases of that one table now.
+-- The page's own header still instructed the next author to keep three lists in
+-- step, one of which (`Catalog.ICONS`) no longer exists anywhere.
+section('the glyph header describes the regime that exists')
+do
+	local handle = io.open('ui/src/modules/target/glyphs.ts', 'r')
+	check('the page glyph file is readable', handle ~= nil)
+	if handle then
+		local source = handle:read('a')
+		handle:close()
+		check('its header does not name a Lua list that was deleted',
+			source:find('Catalog.ICONS', 1, true) == nil)
+		check('and it points at the one list that exists',
+			source:find('core/shared/glyphs.lua', 1, true) ~= nil)
+	end
+
+	-- And the deleted name really is gone from Lua, so the header is not merely
+	-- agreeing with itself.
+	local found = {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			local handle2 = io.open(file, 'r')
+			if handle2 then
+				local source = handle2:read('a')
+				handle2:close()
+				if source:find('Catalog%.ICONS%s*=') then found[#found + 1] = file end
+			end
+		end
+	end
+	check('no Lua file defines Catalog.ICONS any more', #found == 0,
+		table.concat(found, ', '))
+end
+
+-- ── a toast patch the page refused is rolled back ────────────────────────────
+-- `Update` mutated the live table and only THEN sent. On a refusal Lua's copy
+-- was ahead of the page's, and `Toast.Attach`'s `notify:ready` handler replays
+-- `live` on the next page mount -- so the player finally saw text that had
+-- already been thrown away once. The function's own comment claimed this was
+-- handled.
+section('a toast patch the page refused')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local id = OPX.Toast.Show({ kind = 'info', message = 'Reading the catalogue' })
+		check('a toast goes up', type(id) == 'string', tostring(id))
+
+		local huge = {}
+		for index = 1, 2000 do huge[index] = 'xxxxxxxx' end
+		local patched, code = OPX.Toast.Update(id, { message = 'Almost there', blob = huge })
+		check('an oversized patch is refused', patched == false, tostring(patched))
+		check('and says the host refused the payload', code == 'payload_refused', tostring(code))
+
+		-- Asserted through the seam the player actually sees: the replay on a page
+		-- remount is what carried the undelivered text.
+		local page = control.pages[#control.pages]
+		local from = #page.sent
+		-- With a table, because `OPX.UI.On` drops a payload that is not one -- the
+		-- real page emits `{}` here.
+		control.PageEmit(page, 'opx:notify:ready', {})
+		local replayed
+		for index = from + 1, #page.sent do
+			if page.sent[index].channel == 'opx:notify:show'
+				and page.sent[index].payload.id == id then
+				replayed = page.sent[index].payload
+			end
+		end
+		check('the toast is replayed on the next page mount', replayed ~= nil)
+		check('and it carries the text the page actually has',
+			replayed ~= nil and replayed.message == 'Reading the catalogue',
+			replayed and tostring(replayed.message) or 'nothing replayed')
+		check('and not the key the refused patch added',
+			replayed ~= nil and replayed.blob == nil)
+
+		-- Against its own `@return`, this answered a bare `false`.
+		check('a patch to a toast that has gone answers both values',
+			select(2, OPX.Toast.Update('no-such-toast', {})) == 'no_such_toast')
+	end
+end
+
+-- ── the two handlers that discarded `Toast.Show`'s answer ────────────────────
+-- The `NOTIFY` and `ANSWER` net handlers carry every server-originated refusal
+-- and every command answer, and both threw the `(nil, reason)` pair away. A
+-- player whose overlay is refusing them is told nothing at all, and from the
+-- server that is indistinguishable from a player who never did anything wrong --
+-- which is precisely what `OPX.Note` exists to end.
+section('a refusal the client could not draw reaches the journal')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local NOTIFY = OPX.Event(OPX.Channel.NET, 'runtime', 'notify')
+		local NOTE = OPX.Event(OPX.Channel.NET, 'runtime', 'note')
+
+		--- Every note the runtime put on the wire since `from`, by module.
+		local function notesSince(from)
+			local out = {}
+			for index = from + 1, #control.serverEvents do
+				local row = control.serverEvents[index]
+				if row.name == NOTE then out[#out + 1] = row end
+			end
+			return out
+		end
+
+		-- ── a LIVE surface whose host refuses the payload ─────────────────────
+		-- `lib/client/surface.lua`'s refusal branch is the one thing that whole
+		-- seam exists to make visible, and it wrote `Open77.log.warn` -- a file on
+		-- the PLAYER's machine.
+		local beforeSurface = #control.serverEvents
+		local huge = {}
+		for index = 1, 2000 do huge[index] = 'xxxxxxxx' end
+		local sent, refused = OPX.UI.Send('overlay', 'audit:probe', { blob = huge })
+		check('the host refuses an oversized payload', sent == true and refused == true,
+			('%s %s'):format(tostring(sent), tostring(refused)))
+
+		local surfaceNotes = notesSince(beforeSurface)
+		check('and the refusal reaches the SERVER journal, not only the player\'s disk',
+			#surfaceNotes == 1, #surfaceNotes)
+		check('filed under the surface, naming the channel',
+			#surfaceNotes == 1 and surfaceNotes[1][1] == 'surface'
+				and tostring(surfaceNotes[1][2]):find('audit:probe', 1, true) ~= nil,
+			#surfaceNotes == 1 and tostring(surfaceNotes[1][2]) or 'no note')
+
+		-- Once per channel: a channel the host refuses once it refuses every time,
+		-- and `OPX.Note` spends a net event per call against a budget of sixty.
+		local secondSurface = #control.serverEvents
+		OPX.UI.Send('overlay', 'audit:probe', { blob = huge })
+		check('and it is said once per channel, not once per send',
+			#notesSince(secondSurface) == 0, #notesSince(secondSurface))
+
+		-- The page is gone: every send from here on answers no surface.
+		OPX.UI.Teardown()
+
+		local from = #control.serverEvents
+		control.netEvents[NOTIFY]({ code = 'error.unavailable', kind = 'error' })
+
+		local relayed
+		for index = from + 1, #control.serverEvents do
+			local row = control.serverEvents[index]
+			if row.name == NOTE and tostring(row[2]):find('not drawn', 1, true) then
+				relayed = row
+			end
+		end
+		check('a refusal the page never drew is relayed to the server',
+			relayed ~= nil, #control.serverEvents - from)
+		check('and it is filed under the surface that could not draw it',
+			relayed ~= nil and relayed[1] == 'notify', relayed and tostring(relayed[1]))
+
+		-- Once per session. A refused toast is a structural failure, so the first
+		-- says everything the next two hundred would, and `OPX.Note` spends a net
+		-- event per call against a budget of sixty for the whole session.
+		local second = #control.serverEvents
+		control.netEvents[NOTIFY]({ code = 'error.noPermission', kind = 'error' })
+		local again = 0
+		for index = second + 1, #control.serverEvents do
+			if control.serverEvents[index].name == NOTE then again = again + 1 end
+		end
+		check('and it is said once, not once per refusal', again == 0, again)
+	end
+
+	-- ── and the surface that never came up at all ─────────────────────────────
+	-- `core/client/ui.lua` said "nothing can be drawn; every view will answer
+	-- no_surface" -- in a file on the player's machine. One-off, boot-time and
+	-- terminal is exactly what `OPX.Note`'s budget is for.
+	do
+		local blind, blindControl, blindWhy = boot('client', nil, function(sandbox)
+			sandbox.WebUI = { create = function() return nil, 'refused_by_host' end }
+		end)
+		check('a client whose surface will not build still boots', blindWhy == nil, blindWhy)
+
+		if blindWhy == nil then
+			local NOTE = blind.OPX.Event(blind.OPX.Channel.NET, 'runtime', 'note')
+			local told
+			for _, row in ipairs(blindControl.serverEvents) do
+				if row.name == NOTE and row[1] == 'ui'
+					and tostring(row[2]):find('nothing can be drawn', 1, true) then
+					told = row
+				end
+			end
+			check('and the operator is told, in the journal, that it can draw nothing',
+				told ~= nil)
+		end
+	end
+end
+
+-- ── the locale catalogue actually reaches the page ───────────────────────────
+-- It was ONE unchunked send of the whole catalogue: 1,533 keys and ~78 kB for
+-- one language, against a host ceiling this repo documents at 1,024 value nodes
+-- (`modules/inventory/client/main.lua`: "a page write past 1,024 value nodes is
+-- dropped without a word"). Only one return was read, so the refusal was
+-- invisible; `useLocale.ts` answers the key on a miss, so every label on every
+-- surface renders as its raw key for the whole session; and it is sent once,
+-- from the `ready` handler, with no retry. The harness has modelled the ceiling
+-- all along and no test looked.
+section('the locale catalogue reaches the page')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		control.Pump(20)
+		local page = control.pages[1]
+		check('a page was created', page ~= nil)
+
+		if page ~= nil then
+			local parts, keys, first, done, oversized = 0, 0, 0, 0, 0
+			for _, sent in ipairs(page.sent) do
+				if sent.channel == 'opx:locale:set' then
+					parts = parts + 1
+					for _ in pairs(sent.payload.strings) do keys = keys + 1 end
+					if sent.payload.first == true then first = first + 1 end
+					if sent.payload.done == true then done = done + 1 end
+					if Host.PayloadNodes(sent.payload) > Host.MAX_PAYLOAD_NODES then
+						oversized = oversized + 1
+					end
+				end
+			end
+
+			local refused = 0
+			for _, row in ipairs(page.refused) do
+				if row.channel == 'opx:locale:set' then refused = refused + 1 end
+			end
+
+			check('the catalogue is written in more than one part', parts > 1, parts)
+			check('not one part is past the host payload ceiling', oversized == 0, oversized)
+			check('and NOT ONE PART WAS REFUSED', refused == 0, refused)
+			check('exactly one part clears what the page was holding', first == 1, first)
+			check('and exactly one marks the end of the catalogue', done == 1, done)
+			check('and every key in the catalogue arrived',
+				keys == env.OPX.Table.Count(env.OPX.Locale.Catalogue()),
+				('%d of %d'):format(keys, env.OPX.Table.Count(env.OPX.Locale.Catalogue())))
+		end
+	end
+
+	-- ── THE SHIPPED PAGE HAS TO MERGE THE PARTS ───────────────────────────────
+	-- `web/` is a COMMITTED BUILD ARTEFACT and `ui/` never leaves the repo, so a
+	-- protocol change that lands in `ui/src/stores/ui.ts` alone is a change the
+	-- running server does not have. The old `setStrings` replaced the dictionary
+	-- on every send: against a chunking Lua it would keep the LAST part and throw
+	-- the rest away, which is worse than the single refused send this replaced.
+	--
+	-- Spelt against the minified text because that is what ships. A rebuild that
+	-- renames the parameter still leaves `.first` -- a minifier cannot rename a
+	-- property read off data that came from outside the bundle -- so this asserts
+	-- only the part that survives one. If a rebuild does change the spelling, the
+	-- thing to check before touching this line is that the page still MERGES.
+	do
+		local handle = io.open('web/index.html', 'r')
+		check('the shipped page is readable', handle ~= nil)
+		if handle then
+			local built = handle:read('a')
+			handle:close()
+			check('and it reads the `first` flag, so it accumulates the parts',
+				built:find('.first!==', 1, true) ~= nil)
+		end
+	end
+end
+
+-- ── the client's one loop is one loop ────────────────────────────────────────
+-- `core/client/scheduler.lua` alone, with a clock and a thread runner the test
+-- drives: the live client has a dozen jobs of its own registered by other
+-- modules, which is the wrong thing to assert starvation against.
+section('the client scheduler')
+do
+	local function schedulerEnv()
+		local host = { now = 0, threads = {}, errors = {} }
+		local env = {
+			OPX = { Now = function() return host.now end },
+			Open77 = { log = {
+				error = function(line) host.errors[#host.errors + 1] = tostring(line) end,
+			} },
+			CreateThread = function(fn)
+				host.threads[#host.threads + 1] = coroutine.create(fn)
+			end,
+			Wait = function() coroutine.yield() end,
+			type = type, tonumber = tonumber, tostring = tostring, pcall = pcall,
+			ipairs = ipairs, pairs = pairs, error = error, math = math, table = table,
+			string = string, select = select, coroutine = coroutine,
+		}
+		env._G = env
+		setmetatable(env, { __index = _G })
+		assert(loadfile('core/client/scheduler.lua', 't', env))()
+
+		host.Pump = function(rounds)
+			for _ = 1, rounds or 1 do
+				for _, thread in ipairs(host.threads) do
+					if coroutine.status(thread) == 'suspended' then
+						assert(coroutine.resume(thread))
+					end
+				end
+			end
+		end
+		return env.OPX.Scheduler, host
+	end
+
+	-- ── a pass resumes where the last one left off ────────────────────────────
+	-- `compact()` set `cursor = 0`, which sent the next pass back to the head of
+	-- the list and contradicted `tick`'s own promise that it "resumes where it
+	-- left off so a long list cannot starve its tail". With more than
+	-- MAX_PER_TICK jobs and anything cancelling on a cycle -- a menu registering
+	-- a key poll on open and cancelling it on close is exactly that -- the tail
+	-- was reached late or not at all.
+	do
+		local Scheduler, host = schedulerEnv()
+		local order, handles = {}, {}
+		for index = 1, 6 do
+			handles[index] = Scheduler.Every(('job%d'):format(index), 0, function()
+				order[#order + 1] = index
+			end)
+		end
+
+		Scheduler.Start()
+		host.Pump(1)
+		check('the first pass runs four jobs, from the head',
+			#order == 4 and order[1] == 1 and order[4] == 4, table.concat(order, ','))
+
+		-- The cancel is what forces a compaction on the next pass.
+		Scheduler.Cancel(handles[1])
+		local mark = #order
+		host.Pump(1)
+		check('and the pass AFTER a compaction carries on from the tail',
+			order[mark + 1] == 5, table.concat(order, ','))
+		check('rather than starting over at the head',
+			order[mark + 1] ~= 2, table.concat(order, ','))
+	end
+
+	-- ── Stop then Start leaves one loop, not two ──────────────────────────────
+	-- `Stop` set `running = false` and nothing else. The loop is asleep inside
+	-- `Wait`, so a `Start` before it next woke found `running` true again and
+	-- carried on BESIDE the new one: two loops walking one list, on the one
+	-- runtime that cannot afford it. The server half clears its job table on
+	-- `Stop`; this half did not, and the asymmetry had no comment.
+	do
+		local Scheduler, host = schedulerEnv()
+		local first = 0
+		Scheduler.Every('before', 0, function() first = first + 1 end)
+		Scheduler.Start()
+		host.Pump(1)
+		check('one loop runs a job once a pass', first == 1, first)
+
+		Scheduler.Stop()
+		check('Stop drops the jobs the stopped loop was holding',
+			#Scheduler.Report() == 0, #Scheduler.Report())
+
+		Scheduler.Start()
+		local second = 0
+		Scheduler.Every('after', 0, function() second = second + 1 end)
+		host.Pump(1)
+		check('and after Stop then Start the new job runs ONCE a pass, not twice',
+			second == 1, second)
+		check('and the retired loop is not still running the old one',
+			first == 1, first)
 	end
 end
 print(('\n%d checks, %d failed'):format(checks, failures))

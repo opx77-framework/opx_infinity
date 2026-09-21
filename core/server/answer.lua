@@ -30,6 +30,16 @@ local function repeated(source, text)
 
 	local now = OPX.Now()
 	if bucket[text] and now - bucket[text] < ANSWER_DEDUPE_MS then return true end
+	return false, bucket
+end
+
+--- Records that this text has gone out, so an exact repeat is swallowed.
+--- SEPARATE FROM THE TEST ABOVE, and it was the same call. `repeated` wrote
+--- `bucket[text] = now` BEFORE the send, so a toast the host dropped was recorded
+--- as delivered and the identical retry -- which is the one a caller makes when
+--- it learns the send failed -- was swallowed for the whole window.
+local function remember(bucket, text)
+	local now = OPX.Now()
 
 	-- Bounded, or a client that provokes a new text every message grows this for
 	-- the whole session. Closed windows go first; only if that frees nothing does
@@ -50,7 +60,6 @@ local function repeated(source, text)
 	end
 
 	bucket[text] = now
-	return false
 end
 
 --- Sends a toast, through whatever the host routes notifications to. An exact
@@ -67,18 +76,41 @@ end
 -- @param message string
 -- @param kind string|nil info, success, warning or error
 -- @param durationMs integer|nil
+-- @return boolean whether the host took it
+-- @return string|nil why it did not, or 'duplicate' for one swallowed here
 function OPX.Notify(source, message, kind, durationMs)
 	source = tonumber(source)
-	if not source or source <= 0 then return end
-	if repeated(source, ('%s:%s'):format(tostring(kind), tostring(message))) then return end
+	if not source or source <= 0 then return false, 'invalid_source' end
 
-	Open77.notifications.send(source, {
+	local text = ('%s:%s'):format(tostring(kind), tostring(message))
+	local again, bucket = repeated(source, text)
+	if again then return false, 'duplicate' end
+
+	-- THE HOST'S ANSWER IS READ, and at 47 call sites it was not. `send` answers
+	-- an id, or nil plus one of `duplicate_notification_id`, `network_unavailable`
+	-- or `permission_denied:network.events`. It routes to the `open77_notifications`
+	-- package, so on a server whose load list does not carry that package EVERY
+	-- server-side toast is dropped -- and with no read and no log line the only
+	-- symptom is players who are never told anything, which reads as the refusals
+	-- themselves not firing.
+	local id, refused = Open77.notifications.send(source, {
 		type = kind or 'info',
 		title = OPX.Config.SHARED.SERVER_NAME,
 		message = message,
 		durationMs = durationMs or 5000,
 		position = OPX.Config.SHARED.NOTIFY_POSITION,
 	})
+
+	if id == nil or id == false then
+		Open77.log.warn(('[answer] the toast for %d was not delivered (%s): %s')
+			:format(source, tostring(refused), OPX.Audit.Safe(message)))
+		return false, refused and tostring(refused) or 'notification_refused'
+	end
+
+	-- RECORDED ONLY NOW. Written before the send, a dropped toast was remembered
+	-- as delivered and the caller's retry was swallowed for the whole window.
+	remember(bucket, text)
+	return true
 end
 
 --- Guarantees a code a player is shown exists in the catalogue. Storage answers
@@ -100,8 +132,12 @@ end
 -- @param key string
 -- @param params table|nil
 -- @param kind string|nil
+-- @return boolean whether the host took it
+-- @return string|nil why it did not
 function OPX.NotifyLocale(source, key, params, kind)
-	OPX.Notify(source, locale(OPX.RefusalKey(key), params), kind)
+	-- Relayed rather than swallowed: this is the door 45 of the 47 call sites use,
+	-- so dropping the answer here would put the read back where it was.
+	return OPX.Notify(source, locale(OPX.RefusalKey(key), params), kind)
 end
 
 --- Answers a command that asked to read something back -- a list, a dump, a

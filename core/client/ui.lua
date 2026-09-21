@@ -59,6 +59,76 @@ local function wireReadyChannels(surface)
 	end
 end
 
+-- Locale keys written to the page in one `locale:set`.
+--
+-- THE WHOLE CATALOGUE IN ONE SEND WAS PAST THE HOST'S CEILING. It is 1,533 keys
+-- and about 78 kB for one language today, and it grows with every module added:
+-- `modules/inventory/client/main.lua` records that "a page write past 1,024 value
+-- nodes is dropped without a word", which is why the item catalogue is drained 40
+-- at a time, and `modules/inventory/server/containers.lua` sets its own budget at
+-- 900. This one send was half as large again as that figure and was not chunked
+-- at all.
+--
+-- What it cost when the host refused it: the answer was discarded, so nothing
+-- knew; `useLocale.ts` answers the key on a miss, so EVERY label on EVERY surface
+-- renders as its raw key for the whole session; it is sent once, from the `ready`
+-- handler, with no retry. `modules/hud/client/main.lua` records players seeing
+-- `hud.voice.state.idle` painted on screen, which is exactly this symptom.
+local CATALOGUE_PART = 250
+
+--- Writes the locale catalogue to the page, in parts, reading every answer.
+---
+--- The page's boot subscribes to `locale:set` and cannot call back for a string
+--- per render, so it gets the catalogue rather than a lookup. `first` clears what
+--- the page holds and `done` says the last part has landed -- the same idiom
+--- `modules/inventory`'s `drainCatalog` uses, and for the same reason.
+---
+--- ONE PART PER FRAME. A `Wait(0)` resets the per-resume instruction budget, the
+--- same argument `core/shared/lifecycle.lua` makes for yielding between module
+--- `Start`s: eight parts shaped and sent in one resume is one budget between them.
+local function sendCatalogue(surface)
+	local strings = OPX.Locale.Catalogue()
+	local keys = {}
+	for key in pairs(strings) do keys[#keys + 1] = key end
+
+	local function write()
+		local at = 1
+		local total = #keys
+		repeat
+			local last = math.min(total, at + CATALOGUE_PART - 1)
+			local part = {}
+			for index = at, last do part[keys[index]] = strings[keys[index]] end
+
+			local sent, refused = OPX.Surface.Send(surface, 'locale:set', {
+				locale = OPX.Locale.Current(),
+				strings = part,
+				first = at == 1,
+				done = last >= total,
+			})
+			-- BOTH ANSWERS. The single value this read before could not tell a
+			-- part the page drew from one the host threw away, and a thrown-away
+			-- part is a block of labels that render as their own keys for the
+			-- session with no trace anywhere the operator can reach.
+			if not sent or refused then
+				Open77.log.error(('[ui] locale keys %d..%d were not written: %s')
+					:format(at, last, refused and 'the host refused the payload' or 'no surface'))
+				OPX.Note('ui', ('%d locale keys of %d were refused by the page; those labels '
+					.. 'will render as their raw keys'):format(last - at + 1, total))
+				return
+			end
+
+			at = last + 1
+			if at <= total and type(Wait) == 'function' then Wait(0) end
+		until at > total
+	end
+
+	-- On a thread, because `write` yields and this runs from a page callback.
+	-- Guarded on the native rather than on the side, the way `runPhase` is: a
+	-- build or a test host without `CreateThread` still gets its catalogue, just
+	-- in one frame, as every build did before.
+	if type(CreateThread) == 'function' then CreateThread(write) else write() end
+end
+
 --- Builds the surface from its configured layer, z-index and frame rate.
 local function create()
 	local settings = OPX.Config.CLIENT.SURFACE or {}
@@ -76,20 +146,19 @@ local function create()
 	if surface == nil then
 		Open77.log.error(('[ui] the surface failed: %s'):format(tostring(why)))
 		Open77.log.error('  nothing can be drawn; every view will answer no_surface.')
+		-- AND IN THE SERVER'S JOURNAL. The two lines above land in a file on the
+		-- PLAYER's machine, so from the server a client that can draw nothing at
+		-- all is indistinguishable from a quiet one -- which is the exact
+		-- confusion `OPX.Note` exists to end. One-off, boot-time and terminal is
+		-- precisely what its sixty-per-session budget is for.
+		OPX.Note('ui', ('the surface failed (%s): nothing can be drawn on this client')
+			:format(tostring(why)))
 		return nil
 	end
 
 	OPX.Surface.On(surface, 'ready', function()
 		surface.ready = true
-		-- `locale:set`, which is the channel the page's boot subscribes to. The
-		-- page cannot call back for a string per render, so it gets the whole
-		-- catalogue once; a name nobody listens to leaves every label rendering
-		-- as its own key, which reads as a missing translation rather than as a
-		-- broken channel.
-		OPX.Surface.Send(surface, 'locale:set', {
-			locale = OPX.Locale.Current(),
-			strings = OPX.Locale.Catalogue(),
-		})
+		sendCatalogue(surface)
 	end)
 
 	-- Before anything can be emitted, which is the whole point: a channel wired
