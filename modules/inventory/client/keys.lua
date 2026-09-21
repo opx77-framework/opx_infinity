@@ -41,8 +41,14 @@ local function register(id, name, key, onPressed)
 	local effective = type(ok) == 'string' and ok ~= '' and ok or
 		(ok == true and type(answer) == 'string' and answer ~= '' and answer) or nil
 	if not called or (ok ~= true and effective == nil) then
-		Open77.log.warn(('[inventory] key mapping %s (%s) not registered: %s')
-			:format(id, tostring(key), tostring(called and answer or ok)))
+		local why = ('[inventory] key mapping %s (%s) not registered: %s')
+			:format(id, tostring(key), tostring(called and answer or ok))
+		Open77.log.warn(why)
+		-- AND TO THE OPERATOR, because the client log is on the PLAYER'S machine.
+		-- A mapping the host refused is a key that silently does nothing for
+		-- everyone, and the only person able to change the default is the one
+		-- reading the server journal.
+		OPX.Note('inventory', why)
 		return false
 	end
 	registered[id] = effective or key
@@ -74,6 +80,12 @@ local function pressOpen()
 end
 
 --- Uses the item in one bag slot, with the screen closed and the player up.
+--- Shows the hotbar row for a few seconds. It uses nothing: a player who wants
+--- to know what slot three holds should not have to eat it to find out.
+local function pressPeek()
+	M.Slotbar.Peek()
+end
+
 local function pressHotbar(index)
 	local Screen = M.Screen
 	if Screen.IsOpen() or Screen.IsDown() or Screen.Own() == nil then return end
@@ -89,6 +101,8 @@ function Keys.Register()
 			locale('inventory.key.hotbar', { slot = index }),
 			Options.KEYS_HOTBAR[index], function() pressHotbar(index) end)
 	end
+
+	register('opx.inventory.peek', locale('inventory.key.peek'), Options.KEY_PEEK, pressPeek)
 
 	-- Nothing in the catalogue depends on a key, so a rebind only resends the
 	-- configuration.

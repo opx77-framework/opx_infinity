@@ -23,6 +23,7 @@ local Actions = M.Actions
 local Weapons = M.Weapons
 local Requests = M.Requests
 local Commands = M.Commands
+local Currency = M.Currency
 
 local Result = OPX.Result
 
@@ -172,8 +173,7 @@ end
 -- @return Result
 function M.ClearInventory(target)
 	return withBag(target, function(bag)
-		local stacks = 0
-		for _ in pairs(bag.items) do stacks = stacks + 1 end
+		local stacks = OPX.Table.Count(bag.items)
 		local ok, code = Containers.Clear(bag)
 		OPX.Audit.Log({ event = 'inventory.clear', severity = ok and 'info' or 'warn',
 			message = ('%d stack(s)'):format(stacks), citizenId = bag.owner,
@@ -500,6 +500,15 @@ function M.Api()
 		RegisterUsable = Actions.RegisterUsable,
 		UnregisterUsable = Actions.UnregisterUsable,
 
+		-- THE MONEY BRIDGE, and the only two functions that may move a balance
+		-- and a stack of notes in the same breath. Published so that a job, a
+		-- heist or an ATM asks for a conversion instead of writing its own pair
+		-- of calls -- a caller that debits and inserts by hand is a caller that
+		-- will one day do only one of the two. See `server/currency.lua`.
+		Withdraw = Currency.Withdraw,
+		Deposit = Currency.Deposit,
+		CurrencyWired = Currency.Wired,
+
 		GetHeldWeapon = M.GetHeldWeapon,
 	})
 end
@@ -525,6 +534,11 @@ function M.Start()
 	Weapons.Wire()
 	Requests.Wire()
 	Commands.Register()
+
+	-- AFTER the contracts are resolved above, and not in `Init`: the money-to-item
+	-- bridge refuses to wire itself at all without a `character` contract to draw
+	-- a note against, and `Init` runs before any contract is published.
+	Currency.Register()
 
 	-- A DELETED CHARACTER TAKES ITS CONTAINERS WITH IT, and their stacks with
 	-- them: the item rows really do cascade off `inventory_id`, and this is a real

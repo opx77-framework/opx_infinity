@@ -15,7 +15,8 @@ local Server = M.Server
 local Text = OPX.Text
 local Command = M.Command
 
-local answer, refuse, audit, tell = Server.Answer, Server.Refuse, Server.Audit, Server.Tell
+local answer, refuse, audit = Server.Answer, Server.Refuse, Server.Audit
+local tell, inform = Server.Tell, Server.Inform
 local count = Server.Count
 
 M.Players = {}
@@ -191,7 +192,7 @@ local function heal(source, raw, playerId, event)
 	local ok, reason = Open77.players.setHealth(playerId, maximum)
 	if not ok then return nativeRefused(source, raw, event, playerId, reason) end
 	audit(source, event, true, playerId, ('%.0f'):format(maximum))
-	if playerId ~= source then tell(playerId, 'admin.toast.healed', nil, 'success') end
+	inform(source, playerId, 'admin.toast.healed', nil, 'success')
 	answer(source, raw, true, 'admin.done.healed',
 		{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 end
@@ -219,7 +220,7 @@ local function revive(source, raw, playerId, event)
 	end
 
 	audit(source, event, true, playerId)
-	if playerId ~= source then tell(playerId, 'admin.toast.revived', nil, 'success') end
+	inform(source, playerId, 'admin.toast.revived', nil, 'success')
 	answer(source, raw, true, 'admin.done.revived',
 		{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 end
@@ -236,9 +237,7 @@ local function god(source, raw, playerId, word, event)
 	local ok, reason = Open77.players.setGodMode(playerId, wanted)
 	if not ok then return nativeRefused(source, raw, event, playerId, reason) end
 	audit(source, event, true, playerId, wanted and 'on' or 'off')
-	if playerId ~= source then
-		tell(playerId, wanted and 'admin.toast.godOn' or 'admin.toast.godOff')
-	end
+	inform(source, playerId, wanted and 'admin.toast.godOn' or 'admin.toast.godOff')
 	answer(source, raw, true, wanted and 'admin.done.godOn' or 'admin.done.godOff',
 		{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 end
@@ -400,9 +399,8 @@ function Players.Register()
 			frozen[playerId] = wanted or nil
 			pushBodiesToStaff()
 			audit(source, 'admin.player.freeze', true, playerId, wanted and 'on' or 'off')
-			if playerId ~= source then
-				tell(playerId, wanted and 'admin.toast.frozen' or 'admin.toast.unfrozen', nil, 'warning')
-			end
+			inform(source, playerId, wanted and 'admin.toast.frozen' or 'admin.toast.unfrozen',
+				nil, 'warning')
 			answer(source, raw, true, wanted and 'admin.done.frozen' or 'admin.done.unfrozen',
 				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
@@ -450,7 +448,7 @@ function Players.Register()
 			local placed, code, reason = Server.Place(playerId, point, 0.0, bucket, 'bring')
 			audit(source, 'admin.player.bring', placed, playerId, code)
 			if not placed then return refuse(source, raw, code, { reason = reason, id = playerId }) end
-			tell(playerId, 'admin.toast.brought')
+			inform(source, playerId, 'admin.toast.brought')
 			answer(source, raw, true, 'admin.done.bring',
 				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
@@ -476,7 +474,7 @@ function Players.Register()
 			audit(source, 'admin.player.tp', placed, playerId,
 				('%.0f %.0f %.0f %s'):format(point.x, point.y, point.z, code or ''))
 			if not placed then return refuse(source, raw, code, { reason = reason, id = playerId }) end
-			if playerId ~= source then tell(playerId, 'admin.toast.moved') end
+			inform(source, playerId, 'admin.toast.moved')
 			answer(source, raw, true, 'admin.done.moved',
 				{ x = ('%.1f'):format(point.x), y = ('%.1f'):format(point.y),
 					z = ('%.1f'):format(point.z) })
@@ -501,6 +499,44 @@ function Players.Register()
 			if not placed then return refuse(source, raw, code, { reason = reason }) end
 			setNoclip(source, true, Command.PLAYER_OBSERVE)
 			answer(source, raw, true, 'admin.done.observe',
+				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
+		end,
+	})
+
+	-- THE FITTING ROOM, OPENED ON SOMEBODY ELSE'S SCREEN, and free in the sense
+	-- that matters: no shop, no till, no garment list -- the whole catalogue the
+	-- player's own body can wear. It is the staff answer to "my clothes are
+	-- wrong" that does not need a shop to exist yet.
+	--
+	-- THE SERVER ONLY ASKS. Every reason a room may not open -- the puppet not
+	-- alive on foot, another surface holding the keyboard, a save in flight -- is
+	-- knowable on that player's client and nowhere else, so `true` here means the
+	-- ask went out and not that a room appeared. The operator is told exactly
+	-- that, rather than a success that might be a lie.
+	Server.Command(Command.PLAYER_WARDROBE, {
+		help = 'admin.help.playerWardrobe',
+		params = { { name = 'playerId|me', help = 'admin.help.playerOrMe' } },
+		handler = function(source, args, raw)
+			local playerId = Server.Target(source, raw, args[1])
+			if playerId == nil then return end
+			local event = 'admin.player.wardrobe'
+			if not Server.Admitted(source, raw, playerId, event) then return end
+
+			-- Both refusals go through `nativeRefused`, which is the house path for
+			-- "something below said no": it words the refusal, audits the attempt
+			-- as failed, and carries the reason. A missing contract is exactly that
+			-- -- a runtime without the appearance module cannot dress anybody.
+			local appearance = Server.Contract('appearance')
+			if appearance == nil or type(appearance.OpenWardrobe) ~= 'function' then
+				return nativeRefused(source, raw, event, playerId, 'appearance_unavailable')
+			end
+
+			local ok, reason = appearance.OpenWardrobe(playerId)
+			if not ok then return nativeRefused(source, raw, event, playerId, reason) end
+
+			audit(source, event, true, playerId, 'asked')
+			inform(source, playerId, 'admin.toast.wardrobe', nil, 'info')
+			answer(source, raw, true, 'admin.done.wardrobe',
 				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,
 	})
@@ -545,7 +581,10 @@ function Players.Register()
 			})
 			if not ok then return nativeRefused(source, raw, 'admin.player.kill', playerId, reason) end
 			audit(source, 'admin.player.kill', true, playerId)
-			tell(playerId, 'admin.toast.killed', nil, 'warning')
+			-- A staff member who kills themselves gets the command's own answer and
+			-- nothing else: "a staff member killed you" is a line only the player on
+			-- the other end of it has anything to learn from.
+			inform(source, playerId, 'admin.toast.killed', nil, 'warning')
 			answer(source, raw, true, 'admin.done.killed',
 				{ id = playerId, name = Server.LabelOf(playerId) or '?' })
 		end,

@@ -838,11 +838,17 @@ local setPolling
 local function writeStatus(owned, text, bad)
 	local clean = text ~= nil and Text.Clean(text, MAX_STATUS) or nil
 	if clean == nil or clean == '' then return false end
-	OPX.Toast.Show({
+	-- THE ANSWER IS CHECKED, because it can be refused. `OPX.Toast.Show` answers
+	-- nil for a surface that is not up, and this used to discard that: the notice
+	-- went nowhere and said so to nobody. Six other modules already fall back to
+	-- the client journal on this exact path; these three did not, and the toast's
+	-- own docstring claimed they did.
+	local raised = OPX.Toast.Show({
 		id = 'menu:' .. tostring(owned.id),
 		kind = bad == true and 'error' or 'success',
 		message = clean,
 	})
+	if raised == nil then Open77.log.info('[menu] ' .. clean) end
 	return false
 end
 
@@ -1165,18 +1171,33 @@ local function onDismiss(payload)
 	closeNow(record.handle, 'dismissed')
 end
 
---- What the page's focus stack now holds on this surface.
+-- Answers the surface-wide focus broadcast for this module's own owners.
+--
+-- THE BROADCAST NAMES THE WHOLE STACK'S TOP, NOT JUST "EMPTY OR NOT", and
+-- reading only the empty case was the incomplete half of this idiom.
+-- `ui/src/bridge/focus.ts` announces on EVERY change to the page's focus stack,
+-- carrying the one owner now on top -- so a top that moved from one of OURS to
+-- somebody else's arrives here as `focus = true` with an owner this module does
+-- not know, and the old shape did nothing at all with that. The stale Lua entry
+-- then sat above the module actually on screen and `applyFocus` applied ITS
+-- wants: the chat line's `cursor = false` over the inventory's `cursor = true`,
+-- with the inventory drawn and the cursor gone.
+--
+-- The answer is the same in all six copies: release every owner of mine that is
+-- NOT the announced one, then acquire the announced one if it is mine. `form`,
+-- `menu` and `panel` are saved from the worst of it by an explicit
+-- `ReleaseFocus` on their close paths; `chat` and `downed` have none, so for
+-- those two this handler is the only release there is.
 local function onFocus(payload)
-	if payload.focus ~= true then
-		-- The page's stack emptied: nothing on this surface holds anything, so
-		-- this module lets go of its own.
-		for owner in pairs(FOCUS) do OPX.UI.ReleaseFocus(owner) end
-		return
-	end
+	if type(payload) ~= 'table' then return end
 	local owner = payload.owner
-	local wants = type(owner) == 'string' and FOCUS[owner] or nil
+	local held = (payload.focus == true and type(owner) == 'string') and owner or nil
+	for name in pairs(FOCUS) do
+		if name ~= held then OPX.UI.ReleaseFocus(name) end
+	end
+	local wants = held ~= nil and FOCUS[held] or nil
 	if wants == nil then return end
-	OPX.UI.AcquireFocus(owner, wants)
+	OPX.UI.AcquireFocus(held, wants)
 end
 
 -- ── the keyboard Lua reads itself ───────────────────────────────────────────

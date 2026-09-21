@@ -177,7 +177,7 @@ onMounted(() => {
            sits on is the group's, not each row's -- one rotation per group instead of
            one per row. -->
       <div v-for="group in groups" :key="group.key" class="group">
-        <div v-if="group.title" class="title">{{ group.title }}</div>
+        <div v-if="group.title" class="title op-truncate">{{ group.title }}</div>
 
         <div
           v-for="(row, at) in group.rows"
@@ -192,7 +192,7 @@ onMounted(() => {
               <kbd class="cap op-cap" data-augmented-ui="tr-clip border">{{ cap.label }}</kbd>
             </span>
           </span>
-          <span class="label">{{ row.label }}</span>
+          <span class="label op-truncate">{{ row.label }}</span>
           <span v-if="row.value" class="value">{{ row.value }}</span>
         </div>
       </div>
@@ -359,9 +359,6 @@ onMounted(() => {
   letter-spacing: var(--op-track-micro);
   text-transform: uppercase;
   color: var(--op-red-idle);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* =============================================================================
@@ -423,13 +420,10 @@ onMounted(() => {
    spent on the cap, which is the part that is an instrument. */
 .label {
   flex: 0 1 auto;
-  min-width: 0;
   font: 700 var(--op-fs-lead) / 1.2 var(--op-font-display);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--op-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* A live reading beside the label -- the noclip speed is the one in the tree. THE

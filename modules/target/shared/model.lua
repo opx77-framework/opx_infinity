@@ -20,23 +20,12 @@ local Model = M.Model
 local KINDS = { player = true, vehicle = true, npc = true, prop = true, door = true, device = true,
 	item = true, object = true, world = true, sky = true }
 
--- Icons the page draws. A name outside this set is refused rather than passed
--- through: the page selects a local glyph by it, and an unknown name would reach
--- the DOM as an attribute nobody wrote.
---
--- The second band is the one that lets a cascade of thirty rows read as thirty
--- different things; it is kept in step by hand with `ui/src/modules/target/
--- glyphs.ts`, `menu.M.ICONS` and `Catalog.ICONS`.
-Model.ICONS = { interact = true, person = true, vehicle = true, info = true, lock = true, tool = true,
-	location = true, box = true, door = true, heal = true, money = true, talk = true,
-	folder = true, back = true,
-	search = true, filter = true, list = true, star = true,
-	weapon = true, ammo = true, shield = true, ban = true, warning = true,
-	eye = true, hidden = true, tag = true,
-	flag = true, map = true, world = true, clock = true, weather = true,
-	gear = true, refresh = true, bolt = true, server = true, key = true,
-	arrow = true, plus = true, minus = true, trash = true,
-	heart = true, emote = true, food = true, drink = true, smoke = true }
+-- Icons the page draws, and NOT a list of its own: `OPX.Glyphs` in
+-- `core/shared/glyphs.lua` is the one set, because the three hand-kept copies
+-- this used to be one of had drifted to 47 names, 45 and 14. A name outside it
+-- is refused rather than passed through -- the page selects a local glyph by it,
+-- and an unknown name would reach the DOM as an attribute nobody wrote.
+Model.ICONS = OPX.Glyphs
 
 -- Rows every owner together may hold.
 Model.MAX_TOTAL = 128

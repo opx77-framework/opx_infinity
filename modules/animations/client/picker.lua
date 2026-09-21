@@ -433,7 +433,7 @@ end
 
 -- Takes the word the box was given and shows what it found.
 local function filter(query)
-	local typed = type(query) == 'string' and (query:match('^%s*(.-)%s*$') or '') or ''
+	local typed = type(query) == 'string' and OPX.String.Trim(query) or ''
 	local current = stack[#stack]
 	if current == nil then return end
 	if typed == '' then

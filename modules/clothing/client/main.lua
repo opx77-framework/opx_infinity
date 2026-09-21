@@ -109,8 +109,16 @@ end
 -- Brings the drawn set in line with what is in range: a store within
 -- MAX_DISTANCE has a marker, one beyond it does not. Touches nothing when the
 -- set would not change.
-local function reconcile()
-	local x, y = playerXY()
+--
+-- THE POSITION IS THREADED THROUGH, NOT READ AGAIN. `scan()` -- the only caller
+-- -- has just read it for `Access.Nearest`, and reading it a second time here
+-- made this module cost TWO host position reads per pass at SCAN_MS. Across
+-- `clothing`, `dealership` and `garages` that was twelve host reads a second for
+-- six distinct answers. `modules/teleports/client/main.lua` already threads it
+-- (`reconcile(at)`); these three were never updated with it.
+-- @param x number|nil the player's position, or nil where it could not be read
+-- @param y number|nil
+local function reconcile(x, y)
 	local limit = Access.MaxDistance()
 	local reach = limit * limit
 
@@ -246,6 +254,16 @@ function Runtime.Open(origin)
 	end
 	result.store = nearest.key
 
+	-- TOLD TO THE SERVER BEFORE THE ROOM GOES UP, and never waited on. The room
+	-- itself is a local decision and stays one -- every reason it may not open is
+	-- knowable here and nowhere else -- but the SAVE that comes out of it is not:
+	-- `appearance` refuses a clothing write that no server-side door opened, and
+	-- this is that door being reported. The server measures the distance to the
+	-- store again for itself and ignores this entirely if the player is not at
+	-- one, so a client that fires it from the other side of the city gets a room
+	-- it cannot save anything out of.
+	TriggerServerEvent(M.Event.OPEN)
+
 	local api = OPX.Api.Get('appearance')
 	if type(api) ~= 'table' or type(api.OpenWardrobe) ~= 'function' then
 		-- Named rather than silent, and named as the missing CONTRACT: the
@@ -292,10 +310,8 @@ end
 -- @author XEROX710
 -- @return table
 function Runtime.Report()
-	local count = 0
-	for _ in pairs(spots) do count = count + 1 end
-	local drawn = 0
-	for _ in pairs(markers) do drawn = drawn + 1 end
+	local count = OPX.Table.Count(spots)
+	local drawn = OPX.Table.Count(markers)
 	return {
 		spots = count,
 		markers = drawn,
@@ -319,7 +335,7 @@ local function scan()
 	end
 	nearest = Access.Nearest(spots, x, y)
 	syncPrompt()
-	reconcile()
+	reconcile(x, y)
 end
 
 -- ── the phases ──────────────────────────────────────────────────────────────

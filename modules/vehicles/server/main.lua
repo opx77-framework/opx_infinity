@@ -11,6 +11,16 @@ local STATE = M.Storage.STATE
 -- `Init`: the host removes what this resource created when it stops.
 local live
 
+-- Plates a `M.Spawn` is part-way through, so a second one is refused rather than
+-- creating a second car from the same row. SEPARATE FROM `live`, which means "a
+-- vehicle is out" and is read for exactly that by six other functions: a plate
+-- is claimed both when nothing is out (a fresh spawn) and when something is (a
+-- recall, which puts the old one away first and leaves `live` empty while it
+-- does), and neither state fits in there. Rebuilt empty by `Init` with `live`,
+-- because a claim held across a restart would be a plate nobody can ever bring
+-- out again.
+local claiming
+
 -- The last citizen id each connection had a vehicle out for. The character
 -- module logs a player out on its own disconnect handler, which runs before
 -- this module's -- this module requires it, so it starts after it and registers
@@ -190,6 +200,50 @@ function M.Spawn(source, plateId, at)
 		return Result.Err('vehicle.notFound', plateId)
 	end
 
+	-- ── the plate is claimed HERE, before anything else can be ───────────────
+	-- THE DUPLICATION RACE, AND WHY THE GUARD BELOW IS NOT ONE ON ITS OWN.
+	-- `Store.FetchOne` is a database read and it YIELDS -- `lib/server/storage`
+	-- awaits it -- and it happens ABOVE the "already out" test, so two `M.Spawn`
+	-- threads for one plate reach that test together.
+	--
+	-- On the beside-the-player path that is survivable by luck: whichever thread
+	-- the database answers first then runs the test, `vehicles.create` and the
+	-- `live` write with nothing in between that suspends, so the second finds the
+	-- car out. THE RECALL PATH IS NOT. A caller that names a place -- every
+	-- garage marker, every pad, every dealer handover -- goes through `M.Store`,
+	-- which clears `live` and yields, and then fetches again and yields again.
+	-- The plate stands empty in the middle of that, the second thread walks
+	-- through, creates a car and writes `live`, and the recaller wakes and
+	-- creates another over the top. Two cars from one row, and the first is
+	-- ORPHANED: `live` holds one entry per plate, so nothing knows it exists and
+	-- nothing will ever put it away, save it or remove it.
+	-- `modules/garages/server/main.lua:330` names this race; this is it shut.
+	--
+	-- A SEPARATE TABLE AND NOT A PLACEHOLDER IN `live`. `live` means "a vehicle
+	-- is out" and six other functions read it for exactly that; a plate can be
+	-- claimed while nothing is out (a fresh spawn) and while something is (a
+	-- recall, which puts the old one away first), and neither is a state `live`
+	-- can express without every one of those readers learning about it.
+	--
+	-- CLAIM FIRST, THEN DO THE WORK, the shape `modules/hauling/server/claim.lua`
+	-- uses: there is no yield between the test and the write, so two threads
+	-- cannot both pass it. From here to the end of this function EVERY exit goes
+	-- through `done`, or a spawn that failed locks the plate for the session.
+	--
+	-- The three doors in (`vehicle.spawn`, `garages.bring`, `dealership.buy`)
+	-- still hold three separate per-player cooldowns, and deliberately: they are
+	-- three operations an operator prices separately, and a per-player floor was
+	-- never the right shape for this anyway. The thing that must not be done
+	-- twice is a PLATE, and that is what is claimed.
+	if claiming[plateId] then return Result.Err('vehicle.busy', plateId) end
+	claiming[plateId] = true
+
+	--- Gives the claim back and answers. Every exit below goes through it.
+	local function done(result)
+		claiming[plateId] = nil
+		return result
+	end
+
 	-- ── already out: recalled to the named place, or answered as it is ────
 	-- WHAT HAPPENS NEXT IS THE WHOLE OF A MARKER'S PROMISE. Answering `Ok` with
 	-- the id the vehicle already has, while it sits on the other side of the map,
@@ -206,7 +260,7 @@ function M.Spawn(source, plateId, at)
 	local recalled = false
 	if live[plateId] ~= nil then
 		if type(at) ~= 'table' then
-			return Result.Ok({ plate = plateId, id = live[plateId].id, alreadyOut = true })
+			return done(Result.Ok({ plate = plateId, id = live[plateId].id, alreadyOut = true }))
 		end
 		-- NOTHING IS YANKED OUT FROM UNDER ANYBODY. The occupant of a live vehicle
 		-- is not necessarily the player who asked -- a marker is a public place --
@@ -214,20 +268,22 @@ function M.Spawn(source, plateId, at)
 		local snapshot = Open77.vehicles.get(live[plateId].id)
 		local occupants = type(snapshot) == 'table' and snapshot.occupants or nil
 		if type(occupants) == 'table' and #occupants > 0 then
-			return Result.Err('vehicle.occupied', plateId)
+			return done(Result.Err('vehicle.occupied', plateId))
 		end
 		local put = M.Store(plateId)
-		if not put.ok then return put end
+		if not put.ok then return done(put) end
 		-- Read again, because putting it away is what wrote the condition back:
 		-- the vehicle created below has to be the row as it now stands.
 		fetched = Store.FetchOne(plateId)
-		if not fetched.ok then return fetched end
+		if not fetched.ok then return done(fetched) end
 		vehicle = fetched.value
 		recalled = true
 	end
 
 	local position = Open77.players.position(source)
-	if position == nil then return Result.Err('vehicle.noPosition', tostring(source)) end
+	if position == nil then
+		return done(Result.Err('vehicle.noPosition', tostring(source)))
+	end
 
 	-- A named place is read through the same coercions as the player's own, so a
 	-- NaN or a string from a caller cannot reach the engine as a coordinate.
@@ -259,7 +315,7 @@ function M.Spawn(source, plateId, at)
 		primaryColor = vehicle.paint and vehicle.paint.primary or nil,
 		secondaryColor = vehicle.paint and vehicle.paint.secondary or nil,
 	})
-	if id == nil then return Result.Err('vehicle.spawnRefused', tostring(reason)) end
+	if id == nil then return done(Result.Err('vehicle.spawnRefused', tostring(reason))) end
 
 	-- The stored damage and flags are given back, or a put-away-and-fetch cycle
 	-- would repair windows, lights, tyres, dents and the destroyed flag for free.
@@ -275,7 +331,7 @@ function M.Spawn(source, plateId, at)
 	local still = characterOf(source)
 	if not still or still.citizenId ~= data.citizenId then
 		Open77.vehicles.remove(id)
-		return Result.Err('vehicle.notLoggedIn', tostring(source))
+		return done(Result.Err('vehicle.notLoggedIn', tostring(source)))
 	end
 
 	live[plateId] = { id = id, citizenId = data.citizenId }
@@ -283,7 +339,9 @@ function M.Spawn(source, plateId, at)
 	Store.SetState(plateId, STATE.OUT)
 	OPX.Audit.Player(character.GetPlayer(source), 'vehicle.spawn', plateId,
 		{ id = tostring(id) })
-	return Result.Ok({ plate = plateId, id = id, recalled = recalled or nil })
+	-- The claim is given back only now, with `live` already written: a gap
+	-- between the two would be the same window in miniature.
+	return done(Result.Ok({ plate = plateId, id = id, recalled = recalled or nil }))
 end
 
 --- Answers the plate of a vehicle this connection is sitting in, when it OWNS it.
@@ -519,6 +577,7 @@ end
 -- @author dop42
 function M.Init()
 	live = {}
+	claiming = {}
 	owners = {}
 	OPX.Schema.Add(M.Storage.SCHEMA)
 end

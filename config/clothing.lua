@@ -2,10 +2,25 @@
 -- @author XEROX710
 --
 -- A STORE IS A PLACE, exactly as a garage spot and a dealer are: the marker is
--- drawn where the operator put it, and the server re-derives the player's
--- distance to the DECLARED position before the list is sent. A store captured in
--- game lives in the database and is merged over this table key by key --
--- `/opx.clothing.add` is what writes it.
+-- drawn where the operator put it. A store captured in game lives in the
+-- database and is merged over this table key by key -- `/opx.clothing.add` is
+-- what writes it.
+--
+-- WHICH ROOM OPENS IS A CLIENT DECISION; WHAT MAY BE SAVED OUT OF IT IS NOT.
+-- The key still calls the appearance contract locally, because every reason a
+-- room may not go up -- the puppet down, another surface holding the keyboard,
+-- a save in flight -- is knowable on that client and nowhere else. `sync()`
+-- still filters the LIST by routing bucket only.
+--
+-- What changed is the half that matters. This note used to end "until then this
+-- comment says what the code does", the then being the day the room acquired a
+-- price: `modules/shops` charges per changed slot, and a fitting room opened
+-- from the wrong place stopped being a cosmetic lie the moment a save came out
+-- of it. The key now also raises `clothing:open` on the server, which measures
+-- the distance to the store ITSELF -- the shape `modules/shops/server/main.lua`
+-- uses in `shopAt` -- and only then tells `appearance` that a clothing write is
+-- expected from this player. A client that fires it from the other side of the
+-- city draws itself a room and cannot save a stitch of it.
 --
 -- WHAT IS BEHIND THE KEY IS THE FITTING ROOM, not a shop of our own. The
 -- `appearance` module already streams this body's whole clothing catalogue

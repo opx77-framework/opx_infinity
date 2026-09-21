@@ -21,6 +21,12 @@
 -- forgets it, so the next pass tries again rather than believing the page is
 -- showing something it never received.
 --
+-- AND THE GATE IS AHEAD OF THE BUILD, not only ahead of the send. A signature is
+-- a concat over a table this file just allocated, so a channel gated only at the
+-- send still paid to discover it had nothing to say. `hud:vitals` is gated on the
+-- sampled pools instead, which is three integers, and builds the column only when
+-- one of them moved. See the job in `Start`.
+--
 -- Nothing here is authoritative and nothing here writes: no mutator, no database
 -- and no event to the server.
 
@@ -438,18 +444,27 @@ end
 
 --- Reads the engine's pools once. Keeps the last reading through an answer that
 --- simply did not arrive, and clears it when the bridge says there is none.
+---
+--- ANSWERS WHETHER THE READING MOVED, because the caller at 30 Hz has no other
+--- way to know. An unchanged pool means an unchanged gauge column, and building
+--- one to discover that is the cost this return exists to let the caller skip.
+--- A read that simply did not arrive answers false: the held reading is still the
+--- one the page is showing.
+-- @return boolean
 local function sampleVitals()
 	local stats = Open77.stats
 	if type(stats) ~= 'table' or type(stats.get) ~= 'function' then
+		local moved = live.health ~= nil or live.armor ~= nil or live.stamina ~= nil
 		live = {}
-		if statsReported then return end
-		statsReported = true
-		Open77.log.warn('[hud] live pools unreadable: health falls back to the stored character')
-		return
+		if not statsReported then
+			statsReported = true
+			Open77.log.warn('[hud] live pools unreadable: health falls back to the stored character')
+		end
+		return moved
 	end
 
 	local read, state = pcall(stats.get)
-	if not read or type(state) ~= 'table' then return end
+	if not read or type(state) ~= 'table' then return false end
 
 	local health = share(state.health, state.maxHealth)
 	-- Damage the server never hears of -- a fall, an npc -- only ever lowers the
@@ -462,11 +477,18 @@ local function sampleVitals()
 		health = share(body, maximum)
 	end
 
-	live = {
-		health = percent(health),
-		armor = percent(finite(state.armor) and math.max(0, state.armor) or 0),
-		stamina = percent(share(state.stamina, state.maxStamina)),
-	}
+	-- Compared AFTER `percent`, not before: the gauges draw whole percents, so a
+	-- pool that moved by a hundredth of a point did not move anything the player
+	-- can see, and a raw comparison would report a change on almost every pass.
+	local nowHealth = percent(health)
+	local nowArmor = percent(finite(state.armor) and math.max(0, state.armor) or 0)
+	local nowStamina = percent(share(state.stamina, state.maxStamina))
+	local moved = nowHealth ~= live.health
+		or nowArmor ~= live.armor
+		or nowStamina ~= live.stamina
+
+	live = { health = nowHealth, armor = nowArmor, stamina = nowStamina }
+	return moved
 end
 
 -- ── the microphone ───────────────────────────────────────────────────────────
@@ -1022,12 +1044,38 @@ function M.Start()
 
 	OPX.Scheduler.Every('hud.vitals', Settings.VITALS_MS or 33, function()
 		if not ready or not visible or down or covered then return end
-		sampleVitals()
-		drawVitals()
+		-- THE SAMPLE STAYS AT THE SURFACE'S RATE AND THE DRAW DOES NOT. The two
+		-- host reads are the poll and the poll is load-bearing: the body wins
+		-- over the canonical pool precisely for damage the server never hears of
+		-- -- a fall, an npc -- which reaches this module through no event at all,
+		-- so the `open77:playerStatsChanged` handler above is a shortcut to
+		-- drawing sooner and never a replacement for this.
+		--
+		-- The DRAW is the part that was recomputing an unchanged answer.
+		-- `gauges()` is a pure function of the live pools, the stored needs and
+		-- the configuration. Needs arrive on their own event and redraw from
+		-- there; the configuration does not move at runtime. So the pools are the
+		-- only input this pass owns, and a pass whose pools did not move was
+		-- building a row table, five `tostring`s and a concat per row and one
+		-- more over the lot, purely to compare equal and throw it away -- thirty
+		-- times a second, for the whole session.
+		--
+		-- `drawn[CHANNEL_VITALS] == nil` IS THE RETRY, and it is why this gate
+		-- cannot strand the page: `push` forgets the signature of a send that did
+		-- not land, and the ready handler clears every signature it holds, so an
+		-- undrawn channel is redrawn on the next pass whether the pools moved or
+		-- not.
+		if sampleVitals() or drawn[CHANNEL_VITALS] == nil then drawVitals() end
 	end)
 
 	OPX.Scheduler.Every('hud.widgets', Settings.WIDGET_MS or 100, function()
-		if not ready then return end
+		-- `covered` BELONGS HERE TOO, and its absence was the whole of this cost.
+		-- The vitals job two lines up steps aside for a full-screen view; this one
+		-- gated on `ready` alone, so while a join screen or the inventory held the
+		-- display `voiceView()` and `vehicleView()` -- four host reads and seven
+		-- locale lookups between them -- kept running ten times a second to build
+		-- payloads for widgets the page has hidden.
+		if not ready or covered then return end
 		drawWidgets()
 	end)
 end

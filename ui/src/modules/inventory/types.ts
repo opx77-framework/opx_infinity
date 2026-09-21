@@ -44,6 +44,13 @@ export interface CatalogEntry {
   image: string
   usable: boolean
   stackable: boolean
+  /**
+   * Whether the server will let this be left on the ground. Advisory only --
+   * `Actions.Drop` is the check -- and it is here so the menu stops offering a
+   * row it is about to be refused for. Defaults TRUE, so an older server that
+   * sends no such field behaves exactly as it did.
+   */
+  droppable: boolean
   category: string
   weapon: boolean
   ammo: boolean
@@ -110,6 +117,7 @@ export function readCatalogEntry(value: unknown): CatalogEntry {
     image: text(row.image),
     usable: bool(row.usable),
     stackable: bool(row.stackable, true),
+    droppable: bool(row.droppable, true),
     category: text(row.category, 'misc'),
     weapon: bool(row.weapon),
     ammo: bool(row.ammo)

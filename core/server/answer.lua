@@ -30,13 +30,22 @@ local function repeated(source, text)
 
 	local now = OPX.Now()
 	if bucket[text] and now - bucket[text] < ANSWER_DEDUPE_MS then return true end
+	return false, bucket
+end
+
+--- Records that this text has gone out, so an exact repeat is swallowed.
+--- SEPARATE FROM THE TEST ABOVE, and it was the same call. `repeated` wrote
+--- `bucket[text] = now` BEFORE the send, so a toast the host dropped was recorded
+--- as delivered and the identical retry -- which is the one a caller makes when
+--- it learns the send failed -- was swallowed for the whole window.
+local function remember(bucket, text)
+	local now = OPX.Now()
 
 	-- Bounded, or a client that provokes a new text every message grows this for
 	-- the whole session. Closed windows go first; only if that frees nothing does
 	-- the oldest open one go, because clearing the table wholesale would let an
 	-- identical toast through before its window had passed.
-	local count = 0
-	for _ in pairs(bucket) do count = count + 1 end
+	local count = OPX.Table.Count(bucket)
 	if count >= MAX_TEXTS then
 		local oldestKey, oldestAt
 		for key, at in pairs(bucket) do
@@ -51,7 +60,6 @@ local function repeated(source, text)
 	end
 
 	bucket[text] = now
-	return false
 end
 
 --- Sends a toast, through whatever the host routes notifications to. An exact
@@ -68,18 +76,41 @@ end
 -- @param message string
 -- @param kind string|nil info, success, warning or error
 -- @param durationMs integer|nil
+-- @return boolean whether the host took it
+-- @return string|nil why it did not, or 'duplicate' for one swallowed here
 function OPX.Notify(source, message, kind, durationMs)
 	source = tonumber(source)
-	if not source or source <= 0 then return end
-	if repeated(source, ('%s:%s'):format(tostring(kind), tostring(message))) then return end
+	if not source or source <= 0 then return false, 'invalid_source' end
 
-	Open77.notifications.send(source, {
+	local text = ('%s:%s'):format(tostring(kind), tostring(message))
+	local again, bucket = repeated(source, text)
+	if again then return false, 'duplicate' end
+
+	-- THE HOST'S ANSWER IS READ, and at 47 call sites it was not. `send` answers
+	-- an id, or nil plus one of `duplicate_notification_id`, `network_unavailable`
+	-- or `permission_denied:network.events`. It routes to the `open77_notifications`
+	-- package, so on a server whose load list does not carry that package EVERY
+	-- server-side toast is dropped -- and with no read and no log line the only
+	-- symptom is players who are never told anything, which reads as the refusals
+	-- themselves not firing.
+	local id, refused = Open77.notifications.send(source, {
 		type = kind or 'info',
 		title = OPX.Config.SHARED.SERVER_NAME,
 		message = message,
 		durationMs = durationMs or 5000,
 		position = OPX.Config.SHARED.NOTIFY_POSITION,
 	})
+
+	if id == nil or id == false then
+		Open77.log.warn(('[answer] the toast for %d was not delivered (%s): %s')
+			:format(source, tostring(refused), OPX.Audit.Safe(message)))
+		return false, refused and tostring(refused) or 'notification_refused'
+	end
+
+	-- RECORDED ONLY NOW. Written before the send, a dropped toast was remembered
+	-- as delivered and the caller's retry was swallowed for the whole window.
+	remember(bucket, text)
+	return true
 end
 
 --- Guarantees a code a player is shown exists in the catalogue. Storage answers
@@ -101,8 +132,12 @@ end
 -- @param key string
 -- @param params table|nil
 -- @param kind string|nil
+-- @return boolean whether the host took it
+-- @return string|nil why it did not
 function OPX.NotifyLocale(source, key, params, kind)
-	OPX.Notify(source, locale(OPX.RefusalKey(key), params), kind)
+	-- Relayed rather than swallowed: this is the door 45 of the 47 call sites use,
+	-- so dropping the answer here would put the read back where it was.
+	return OPX.Notify(source, locale(OPX.RefusalKey(key), params), kind)
 end
 
 --- Answers a command that asked to read something back -- a list, a dump, a
@@ -112,6 +147,12 @@ end
 -- @param accepted boolean
 -- @param message string
 function OPX.CommandResult(source, accepted, message)
+	-- NORMALISED LIKE EVERY OTHER SOURCE IN THIS FILE, and it was not. Four
+	-- functions here open with `source = tonumber(source)` and this one went
+	-- straight to the comparison, so a source arriving as a string -- which is
+	-- how a console and some host paths hand it over -- raised `attempt to
+	-- compare string with number` instead of printing to the console.
+	source = tonumber(source)
 	if source and source > 0 then
 		TriggerClientEvent(RESULT, source, {
 			type = accepted and 'info' or 'error',
@@ -134,15 +175,21 @@ end
 -- @param toasted boolean|nil
 -- @param icon string|nil a glyph name from `OPX.Toast.ICONS`
 function OPX.CommandNotice(source, raw, kind, message, toasted, icon)
+	-- Normalised for the same reason as `CommandResult` above.
+	source = tonumber(source)
 	if source and source > 0 then
 		-- `icon` is a trailing argument: every caller that predates it sends five
-		-- and the client half reads a nil sixth. Only its TYPE is checked here --
-		-- the closed set of glyph names lives on the client, where the page that
-		-- draws them does, and core may not reach into a module to borrow one. The
-		-- client drops a name it has no path for and logs it rather than losing
-		-- the sentence it was attached to.
+		-- and the client half reads a nil sixth.
+		--
+		-- THE NAME IS CHECKED HERE NOW. It used to be type-checked only, because
+		-- the closed set lived on the client and core could not reach into a
+		-- module to borrow one -- true when it was written, and no longer: the
+		-- set is `OPX.Glyphs`, in a shared script, so the server holds the same
+		-- list the page draws from. Checking at the SENDING side is what names
+		-- the culprit; the client still drops an unknown name and logs it rather
+		-- than losing the sentence, because this is not the only door in.
 		TriggerClientEvent(ANSWER, source, raw or '', kind, message, toasted == true,
-			type(icon) == 'string' and icon or nil)
+			type(icon) == 'string' and OPX.Glyphs[icon] and icon or nil)
 	else
 		print(message)
 	end

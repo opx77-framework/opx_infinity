@@ -39,6 +39,10 @@ local DEFAULT_Z_INDEX = 700
 -- registers on from growing for the life of the page.
 local MAX_LATCHED = 8
 
+-- Channels the operator has already been told the host refuses, so `Send` puts
+-- one note in the journal per channel rather than one per call. See `Send`.
+local reportedRefusal = {}
+
 --- Holds a payload that arrived on a channel nothing listens to yet.
 --
 -- The page is built while the modules are still starting, and a module registers
@@ -179,7 +183,7 @@ function OPX.Surface.Create(spec)
 
 	-- Read at call time, not at load: a client build without the plugin has no
 	-- WebUI global, and a resource that only sometimes draws must still load.
-	local webui = rawget(_G, 'WebUI')
+	local webui = WebUI
 	if type(webui) ~= 'table' or type(webui.create) ~= 'function' then
 		return nil, 'no_webui'
 	end
@@ -266,6 +270,17 @@ function OPX.Surface.Send(surface, channel, payload)
 	if answer == false then
 		Open77.log.warn(('[surface %s] %s refused by the host: the payload is too large ' ..
 			'or not serialisable'):format(surface.id, full))
+		-- AND IN THE SERVER'S JOURNAL, ONCE. The warning above goes to a log file
+		-- on the PLAYER's machine -- which is the one place nobody diagnosing this
+		-- can read -- so the single refusal this whole seam exists to make visible
+		-- was visible to nobody. One note per channel per session: a channel the
+		-- host refuses once it will refuse every time, so the first says all of
+		-- it, and `OPX.Note` spends a net event per call.
+		if not reportedRefusal[full] then
+			reportedRefusal[full] = true
+			OPX.Note('surface', ('%s was refused by the host: the payload is too large or '
+				.. 'not serialisable'):format(full))
+		end
 		return true, true
 	end
 	return true, false
@@ -299,8 +314,16 @@ end
 function OPX.Surface.Visible(surface, visible)
 	if type(surface) ~= 'table' or surface.failed or surface.page == nil then return false end
 	local page = surface.page
-	local ok = pcall(visible and page.show or page.hide, page)
-	return ok
+	-- WRITTEN OUT RATHER THAN `visible and page.show or page.hide`, which is the
+	-- and/or trap doing real damage. When `visible` is true and the host's page
+	-- has no `show` -- an older build, a surface kind that does not support it --
+	-- the first half answers nil, the `or` takes over, and the page is HIDDEN in
+	-- answer to a request to show it. A missing method should fail the call, not
+	-- silently perform its opposite.
+	local method = visible and page.show or nil
+	if not visible then method = page.hide end
+	if type(method) ~= 'function' then return false end
+	return (pcall(method, page))
 end
 
 --- Whether the page currently holds focus. A surface that lost it while open has

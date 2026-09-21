@@ -132,11 +132,20 @@ local function modelOf(name, value, where)
 end
 
 --- The fields every kind of catalogue entry shares.
+--
+-- `droppable` is the one that is not a display detail. A pile on the ground is a
+-- MEMORY-ONLY container: it is swept after `DROPS.LIFETIME_MINUTES` and nothing
+-- about it survives a restart. That is a fair price for a bandage and a wrong one
+-- for a stack of eddies, which is somebody's balance in transit -- dropped and
+-- forgotten, it is money deleted with nothing anywhere saying so. `DROP = false`
+-- is therefore enforced by `Actions.Drop` on the SERVER; the flag is carried into
+-- `ViewOf` only so the screen stops offering a row it is about to be refused for.
 local function base(name, raw, where)
 	return {
 		name = name,
 		weight = weightOf(name, raw, where),
 		stackable = raw.STACK ~= false,
+		droppable = raw.DROP ~= false,
 		category = Common.Word(raw.CATEGORY, 32, '^[%w_]+$') or 'misc',
 		label = textField(raw.LABEL),
 		description = textField(raw.DESCRIPTION),
@@ -238,7 +247,22 @@ function Catalog.IndexWeapons(count)
 				entry.category = 'weapon'
 				entry.stackable = false
 				entry.usable = true
-				entry.weapon = { record = record, class = raw.CLASS, ammo = ammo }
+				-- THE MAGAZINE, AND IT IS NOT THE AMMO ITEM'S STACK. `AMMO.MAX` is
+				-- how many rounds fit in a BOX -- five hundred for a handgun --
+				-- and the weapon half was reading it as how many fit in the gun,
+				-- so a player could load a pistol with the whole crate. The
+				-- weapon's own value wins, its class's is the default, and a
+				-- class with none loads nothing rather than everything: a
+				-- magazine nobody stated is a magazine nobody has thought about,
+				-- and refusing is the answer that gets noticed.
+				local magazine = Common.Integer(raw.MAGAZINE, 1, 9999)
+					or Common.Integer(class.MAGAZINE, 1, 9999)
+				if ammo ~= nil and magazine == nil then
+					problem(('data/weapons.lua %s: neither it nor class %s states a MAGAZINE, so '
+						.. 'it loads nothing'):format(name, tostring(raw.CLASS)))
+				end
+				entry.weapon = { record = record, class = raw.CLASS, ammo = ammo,
+					magazine = magazine }
 				add(entry, 'data/weapons.lua')
 			end
 		end
@@ -344,6 +368,7 @@ function Catalog.ViewOf(name)
 		image = entry.image,
 		usable = entry.usable == true,
 		stackable = entry.stackable,
+		droppable = entry.droppable ~= false,
 		category = entry.category,
 		weapon = entry.weapon ~= nil,
 		ammo = entry.ammo ~= nil,

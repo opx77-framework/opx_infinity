@@ -209,8 +209,12 @@ function Host.Environment(side, database)
 	-- while the vehicle it created sat in the world.
 	local control
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
-	local bodies, effects, travels, notices, placement
+	local bodies, effects, travels, notices, placement, lifts, trips
 	local npcs, npcCreates, npcRemoves
+
+	-- The live tunable values, by key: what `Open77.tunables.declare` hands back
+	-- and what `control.tunables` lets a test move while the runtime is up.
+	local tunables = {}
 
 	-- Replicated state bags, by `<kind>:<id>`. A REAL store and not an accepting
 	-- stub: the runtime skips a write whose value has not moved, and a `set` that
@@ -280,7 +284,33 @@ function Host.Environment(side, database)
 		-- One declaration per resource, answering a live table the runtime reads
 		-- through. A host that does not install this at all is the other case the
 		-- runtime has to survive, so tests can clear it.
-		tunables = { declare = function(block) return block end },
+		--
+		-- THE PROXY ANSWERS VALUES, AND THIS ANSWERED THE DECLARATION. `declare`
+		-- takes `{ KEY = { value = 750, type = 'integer', ... } }` and the real
+		-- host hands back a proxy where `proxy.KEY` is 750; this stub handed back
+		-- the block itself, so `proxy.KEY` was the SPEC TABLE. `OPX.Tune.Number`
+		-- tests what it reads with `IsFinite`, a table is not finite, and so every
+		-- tunable in the suite quietly read as the caller's floor -- which for
+		-- every rate limit in this runtime is 0, meaning OFF. That is why a staff
+		-- menu shipped tripping its own refresh floor on ordinary navigation with
+		-- a green suite behind it, and why the elevators' REQUESTS_PER_WINDOW came
+		-- out 0 -- the first floor request any player made was rate-limited before
+		-- it was looked at. No test could see a floor at all.
+		--
+		-- The table is the live one and is handed to the test through
+		-- `control.tunables`, so a test can move a value the way an operator moves
+		-- it from the panel.
+		tunables = {
+			declare = function(block)
+				-- A spec that is a bare value rather than a table is taken as
+				-- the value: `declare` accepts both and a stub that did not
+				-- would raise where the real host answers.
+				for key, spec in pairs(block) do
+					tunables[key] = type(spec) == 'table' and spec.value or spec
+				end
+				return tunables
+			end,
+		},
 
 		-- The readiness gate. `hold` answers ONE value -- the session -- or
 		-- nil plus a reason, which is the shape the runtime has to handle.
@@ -337,7 +367,6 @@ function Host.Environment(side, database)
 		-- suite had no way to tell a squad that arrived from one that was refused:
 		-- `Open77.npcs` was absent, so every officer was answered
 		-- `npcs_api_unavailable:create` and both looked the same from a log line.
-		--
 		-- Recorded the way vehicles are, and for the same reason -- WHERE each one
 		-- was placed is the whole point of a response -- with the argument the
 		-- caller passed, so a test can read the record, the position and the
@@ -346,6 +375,9 @@ function Host.Environment(side, database)
 			create = function(options)
 				npcCreates[#npcCreates + 1] = options
 				if npcs.refuse ~= nil then return nil, tostring(npcs.refuse) end
+				-- A distinct id per creation, for the same reason the vehicle stub
+				-- hands out distinct ones: a constant id makes every officer the same
+				-- officer to anything matching by id.
 				npcs.next = (npcs.next or 0) + 1
 				return ('npc-%d'):format(npcs.next)
 			end,
@@ -360,6 +392,97 @@ function Host.Environment(side, database)
 			-- `ai.native` and passes whatever it finds.
 			ai = { native = 'native', passive = 'passive', hostile = 'hostile' },
 			damage = { mortal = 'mortal', immortal = 'immortal', invulnerable = 'invulnerable' },
+		},
+
+		-- Network elevators. A REAL flag store and not an accepting stub, because
+		-- the one thing this module's job gate rests on is that an adopted cabin
+		-- comes up LOCKED: the platform turns a press of the vanilla in-cabin floor
+		-- button into a player request, and `locked` is the only bit that refuses
+		-- one. A `setFlags` that answered true without keeping anything would make
+		-- the difference between a gated lift and an ungated one invisible here,
+		-- which is exactly the bug the tests below exist to catch.
+		--
+		-- The constants carry the platform's own values -- powered 1, locked 2,
+		-- interactionAllowed 4, doorsClosed 8 -- from the `setFlags` card, so a mask
+		-- assembled by the runtime is compared against the numbers the engine uses
+		-- and not against a private set that would agree with any of them.
+		elevators = {
+			flags = { powered = 1, locked = 2, interactionAllowed = 4, doorsClosed = 8 },
+
+			-- Engine hashes are opaque 64-bit values and never go through
+			-- `tonumber`; the id the host hands back for one is a plain integer, and
+			-- the two are different things the runtime must not confuse.
+			adopt = function(definition)
+				lifts.adopts[#lifts.adopts + 1] = definition
+				if lifts.refuse ~= nil then return nil, tostring(lifts.refuse) end
+				lifts.next = lifts.next + 1
+				local id = lifts.next
+				lifts.byId[id] = {
+					id = id,
+					engineEntity = definition.engineEntity,
+					bucket = definition.bucket or 0,
+					floorCount = definition.floorCount,
+					activeFloor = definition.initialFloor or 0,
+					phase = 'idle',
+					x = definition.position and definition.position.x,
+					y = definition.position and definition.position.y,
+					z = definition.position and definition.position.z,
+					-- The host's OWN default when the caller names none: powered plus
+					-- interaction allowed, per the `adopt` card. A stub that defaulted
+					-- to locked would have passed the runtime as it stood before this
+					-- change, which is the whole point of writing it out.
+					--
+					-- `ignoreAdoptFlags` is the build that predates the field and drops
+					-- it in silence. That is not a hypothetical: it is the reason the
+					-- runtime reads the mask back instead of trusting its own request,
+					-- and without it here that read-back could never be exercised.
+					flags = (not lifts.ignoreAdoptFlags and definition.flags) or 5,
+				}
+				return id
+			end,
+
+			get = function(id) return lifts.byId[id] end,
+
+			all = function(bucket)
+				local rows = {}
+				for _, lift in pairs(lifts.byId) do
+					if bucket == nil or lift.bucket == bucket then rows[#rows + 1] = lift end
+				end
+				-- Sorted, because `pairs` order would reshuffle which lift the
+				-- runtime's re-claim scan meets first between runs.
+				table.sort(rows, function(left, right) return left.id < right.id end)
+				return rows
+			end,
+
+			-- REPLACES the mask, the way the real one documents itself. Set
+			-- `lifts.refuseFlags` to answer false, which is how a cabin owned by
+			-- another resource refuses a lock it does not own.
+			setFlags = function(id, flags)
+				local lift = lifts.byId[id]
+				if lift == nil then return false, 'no_such_elevator' end
+				if lifts.refuseFlags then return false, 'not_owner' end
+				lift.flags = flags
+				lifts.flagWrites[#lifts.flagWrites + 1] = { id = id, flags = flags }
+				return true
+			end,
+
+			goTo = function(id, floor)
+				local lift = lifts.byId[id]
+				if lift == nil then return false end
+				lifts.trips[#lifts.trips + 1] = { id = id, floor = floor }
+				lift.targetFloor = floor
+				return true
+			end,
+
+			remove = function(id)
+				lifts.removes[#lifts.removes + 1] = id
+				lifts.byId[id] = nil
+				return true
+			end,
+
+			-- What a client's scan sees. Empty by default: a world with no streamed
+			-- lift in it is the honest answer for a harness with no world.
+			nearby = function() return lifts.nearby end,
 		},
 
 		-- World markers. The stub validates exactly what `client/src/api/Markers.cpp`
@@ -509,6 +632,36 @@ function Host.Environment(side, database)
 			isVisible = function(playerId) return bodies.visible[tonumber(playerId) or playerId] end,
 			isFrozen = function(playerId) return bodies.frozen[tonumber(playerId) or playerId] end,
 			disconnect = function() return true end,
+
+			-- Moves a living body with no life transition, and answers a PROMISE
+			-- for whether it got there. See `trips` above for why the two are not
+			-- the same answer. The promise is already settled when it is handed
+			-- back, which is a simplification the caller cannot observe: it awaits
+			-- either way, and awaiting a settled promise is legal.
+			teleport = function(playerId, position, options)
+				trips.calls[#trips.calls + 1] = {
+					playerId = tonumber(playerId) or playerId,
+					position = position,
+					options = options,
+				}
+				if trips.refuse ~= nil then return nil, trips.refuse end
+				local rejection = trips.reject
+				local landed = {
+					x = type(position) == 'table' and position.x or nil,
+					y = type(position) == 'table' and position.y or nil,
+					z = type(position) == 'table' and position.z or nil,
+					state = trips.state or 'settled',
+				}
+				return {
+					await = function()
+						if rejection ~= nil then return nil, rejection end
+						return landed
+					end,
+					status = function()
+						return rejection ~= nil and 'rejected' or 'resolved'
+					end,
+				}
+			end,
 		},
 
 		character = {
@@ -638,6 +791,14 @@ function Host.Environment(side, database)
 	npcCreates = {}
 	npcRemoves = {}
 
+	-- Adopted elevators, and every mutation in order. `refuse` makes `adopt`
+	-- answer nil the way a host with no elevator authority does, and `refuseFlags`
+	-- makes `setFlags` answer false the way a cabin another resource owns does --
+	-- the two paths on which an adoption must NOT be kept.
+	lifts = { byId = {}, next = 0, adopts = {}, flagWrites = {}, trips = {},
+		removes = {}, nearby = {}, refuse = nil, refuseFlags = false,
+		ignoreAdoptFlags = false }
+
 	-- Who is sitting in what, by player id. Empty is "everybody is on foot",
 	-- which is the answer most of the suite wants and one caller has to survive.
 	seats = {}
@@ -649,6 +810,25 @@ function Host.Environment(side, database)
 
 	-- The travel natives' own state, and every write to them.
 	travels = { noclip = false, mapPick = false, calls = {}, refuse = nil }
+
+	-- Every `Open77.players.teleport` the server half asked for, and what the
+	-- platform is to answer.
+	--
+	-- THE NATIVE ANSWERS A PROMISE AND NOT A BOOLEAN, and the distinction is the
+	-- whole reason this stub is not a one-liner. A trip that is refused OUTRIGHT
+	-- -- a player in a vehicle, a body that is not alive -- answers `nil, reason`
+	-- and no move is ever issued. A trip that is ACCEPTED answers a promise that
+	-- settles later: it RESOLVES `{ x, y, z, state }` when the client reports the
+	-- body on the point, grounded and not falling for three frames, and REJECTS
+	-- with `settle_timeout` when it never did. A stub that answered true for both
+	-- would make "the body arrived" and "the body was asked to move" the same
+	-- observation, and the second is the one that was already true before
+	-- anybody wrote a settle watch.
+	--
+	--   trips.refuse  a string: the native refuses outright, nothing moves
+	--   trips.reject  a string: the move is issued and the arrival never comes
+	--   trips.state   'settled' (the default) or 'near', for a resolution
+	trips = { calls = {}, refuse = nil, reject = nil, state = 'settled' }
 
 	-- Notifications the runtime sent, oldest first.
 	notices = {}
@@ -756,8 +936,51 @@ function Host.Environment(side, database)
 				return page
 			end,
 		},
+		-- RAISES ON A DUPLICATE, because the host does and this stub did not.
+		--
+		-- The devkit card for build 2.31.13+op77.76 is exact: "Names are 1 to 64
+		-- characters ... registering one twice raises `duplicate command`." This
+		-- was a silent overwrite, and the cost of that was measured rather than
+		-- imagined: the appearance module registered `opx.appearance` twice, the
+		-- raise took the rest of its `Start` with it -- including the hook that
+		-- loads a character's clothing at login -- and all 1012 checks passed
+		-- over it. A stub that accepts what the engine refuses is a stub that
+		-- certifies a broken server.
+		--
+		-- Names are checked too, for the same reason: a name with a space in it
+		-- is a command nobody can ever type, and the suite should say so here
+		-- rather than let an operator find out.
 		RegisterCommand = function(name, fn, restricted)
-			commands[name] = { run = fn, restricted = restricted == true }
+			if type(name) ~= 'string' or #name < 1 or #name > 64
+				or name:match('^[%w_%.:%-]+$') == nil then
+				error(('invalid command name %q'):format(tostring(name)), 2)
+			end
+			-- Case-insensitively, as the host matches them.
+			local key = name:lower()
+			if commands[key] ~= nil then error('duplicate command', 2) end
+			commands[key] = { run = fn, restricted = restricted == true }
+		end,
+
+		-- The host's command registry, which `core/server/commands.lua` reads
+		-- before it takes a short alias: a bare word like `noclip` is far likelier
+		-- to be owned by another resource in the session than a prefixed one is.
+		--
+		-- The shape is the card's -- `name`, `resource`, `restricted`, `source` --
+		-- and it answers for the whole session and not just this resource, which
+		-- is the only reason the runtime bothers to ask. `control.Claim` is how a
+		-- test puts another resource's command in it.
+		GetRegisteredCommands = function()
+			local rows = {}
+			for name, entry in pairs(commands) do
+				rows[#rows + 1] = {
+					name = name,
+					resource = entry.resource or 'opx_infinity',
+					restricted = entry.restricted,
+					source = 'resource',
+				}
+			end
+			table.sort(rows, function(left, right) return left.name < right.name end)
+			return rows
 		end,
 
 		-- Two answer shapes are documented for the host call: the effective key,
@@ -816,6 +1039,8 @@ function Host.Environment(side, database)
 		netEvents = netEvents,
 		clientEvents = clientEvents,
 		serverEvents = serverEvents,
+		-- The live tunables, so a test can move one the way the Warden panel does.
+		tunables = tunables,
 		handlers = handlers,
 
 		--- Resumes every queued thread up to `rounds` times, so a `while true`
@@ -871,6 +1096,12 @@ function Host.Environment(side, database)
 		npcCreates = npcCreates,
 		npcRemoves = npcRemoves,
 
+		-- Every adopted lift, every flag mask written to one, every trip scheduled
+		-- and every release -- plus the two refusal switches. A lift's `flags` here
+		-- is the engine's own bitmask, so a test asserts on `locked` being set and
+		-- not on the runtime having meant to set it.
+		lifts = lifts,
+
 		-- Bodies the server half hid, by player id, and every write in order.
 		bodies = bodies,
 
@@ -884,6 +1115,11 @@ function Host.Environment(side, database)
 		-- Travel native state and every write to it.
 		travels = travels,
 
+		-- Every server-side teleport asked for, and the answer the platform is
+		-- to give: see the block where it is built for what `refuse`, `reject`
+		-- and `state` each mean.
+		trips = trips,
+
 		-- Notifications the runtime sent, oldest first.
 		notices = notices,
 
@@ -895,6 +1131,15 @@ function Host.Environment(side, database)
 				acl.granted[tostring(playerId)] = player
 			end
 			player[tostring(permission)] = true
+		end,
+
+		--- Registers a command as ANOTHER resource in the session, so a collision
+		--- with `open77_shell` or `open77_weapons` can be exercised. The runtime
+		--- has no way to tell this apart from a real one, which is the point: a
+		--- short alias competes for one session-wide namespace.
+		Claim = function(name, resourceName)
+			commands[tostring(name):lower()] =
+				{ run = function() end, restricted = false, resource = resourceName }
 		end,
 
 		--- Takes one back off, so a refusal can be exercised after a grant.

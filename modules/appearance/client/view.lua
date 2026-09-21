@@ -149,11 +149,17 @@ local function fromPanel(payload)
 	if type(payload) ~= 'table' or payload.handle ~= roomHandle then return end
 	local action = payload.action
 
-	-- The room draws no rows and no tabs, so the panel contract's `select`,
-	-- `hover`, `leave` and `tab` cannot be raised for it -- `panel` checks a
-	-- clicked item against the items it was sent and a tab against the tabs it
-	-- drew, and there are none of either. Forwarding them would be four branches
-	-- nothing can reach.
+	-- The room draws no rows, so the panel contract's `select` and `hover` cannot
+	-- be raised for it -- `panel` checks a clicked item against the items it was
+	-- sent and there are none. IT DOES DRAW TABS NOW: the seven slots are the
+	-- categories the grid is filed under, so `tab` is a real message and the two
+	-- branches below are the grid's whole protocol.
+	if action == 'tab' then return M.FromView('room.tab', { slot = payload.tab }) end
+	-- The grid reaching the bottom of what it holds. It asks for a start index;
+	-- the state half decides what, and how much, answers it.
+	if action == 'tiles' then
+		return M.FromView('room.tiles', { slot = payload.slot, from = payload.from })
+	end
 	if action == 'slide' then
 		return M.FromView('room.slide',
 			{ slot = payload.id, index = payload.index, commit = payload.commit })
@@ -248,7 +254,25 @@ local function onView(payload)
 
 	if kind == 'roomState' then
 		if Panel == nil or roomHandle == nil then return end
-		Panel.Update(roomHandle, { sliders = payload.sliders, status = payload.status })
+		-- THE CATEGORY STRIP IS FORWARDED TOO, and it is named here rather than
+		-- the payload being passed straight through because this list is the
+		-- contract: a `roomState` field that is not written down on this line does
+		-- not reach the page, silently, and the panel refuses a patch carrying any
+		-- field it does not know. The strip HAS to ride on state and not only on
+		-- the first frame -- whoever fills it cannot do so until it has heard the
+		-- room open, which happens after the frame has gone out.
+		Panel.Update(roomHandle, { sliders = payload.sliders, status = payload.status,
+			groups = payload.groups, tabs = payload.tabs, tab = payload.tab })
+		return
+	end
+
+	-- THE GRID'S WINDOW, ON ITS OWN AND NOT INSIDE `roomState`. A state goes out
+	-- on every slider move; a window that rode on it would push the page's grid
+	-- back to the top of the category on every preview, which is the scroll the
+	-- player was in the middle of. See `sendTiles` in `client/wardrobe.lua`.
+	if kind == 'roomTiles' then
+		if Panel == nil or roomHandle == nil then return end
+		Panel.Update(roomHandle, { tiles = payload.tiles })
 		return
 	end
 

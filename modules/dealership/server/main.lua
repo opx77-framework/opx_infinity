@@ -269,6 +269,16 @@ function M.Buy(source, dealerKey, entryKey, destKey)
 		Open77.log.error(('[dealership] %s: vehicles.Register threw for %s: %s')
 			:format(tostring(data.citizenId), entry.key, tostring(made)))
 		made = Result.Err('dealership.registerFailed')
+	elseif type(made) ~= 'table' then
+		-- THE OTHER WAY THE SAME MONEY GETS LOST. The pcall above guards a THROW;
+		-- this guards a RETURN that is not a Result. `made.ok` on a nil raises
+		-- here, three lines after `RemoveMoney` and before the refund that the
+		-- comment above exists to protect -- so the throw the pcall was added to
+		-- survive would simply move down the function. A contract that answers
+		-- the wrong shape is a refusal like any other.
+		Open77.log.error(('[dealership] %s: vehicles.Register answered a %s for %s')
+			:format(tostring(data.citizenId), type(made), entry.key))
+		made = Result.Err('dealership.registerFailed')
 	end
 	if not made.ok then
 		-- THE HALF THAT CAN BE UNDONE. Nothing was owned, so the money goes
@@ -662,8 +672,7 @@ function M.Api()
 				dealers[key] = { kind = spot.kind, label = spot.label,
 					captured = captured[key] ~= nil }
 			end
-			local total = 0
-			for _ in pairs(Access.STOCK) do total = total + 1 end
+			local total = OPX.Table.Count(Access.STOCK)
 			return Result.Ok({ dealers = dealers, stock = total, currency = currency })
 		end,
 	})
@@ -812,8 +821,7 @@ function M.Start()
 		-- A player who connected while the database was being read asked too
 		-- early and was told nothing; they ask again on their own cadence.
 		syncAll()
-		local inConfig = 0
-		for _ in pairs(configSpots) do inConfig = inConfig + 1 end
+		local inConfig = OPX.Table.Count(configSpots)
 		Open77.log.info(('[dealership] ready: %d config, %d captured, %d refused; ' ..
 			'%d garage row(s) and %d avpad row(s) for sale in %s'):format(
 			inConfig, accepted, refused, #Access.For(M.KIND.GARAGE), #Access.For(M.KIND.AVPAD),

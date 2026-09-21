@@ -27,16 +27,23 @@ local Client = M.Client
 ---
 --- `Open77.log` on the client is a file on the player's machine, and the
 --- operator reading it is somewhere else, so a fault nobody can see is a fault
---- nobody fixes. The relay belongs to `diagnostics`, which is declared optional:
---- a runtime without it keeps the line local rather than failing.
+--- nobody fixes.
+---
+--- THROUGH `OPX.Note`, AND IT USED TO GO THROUGH `diagnostics.PAGE`. That module
+--- is declared optional, so every line this function has ever written was
+--- conditional on a module nobody checks the state of -- which means a silent
+--- journal proved nothing at all: the fault could be absent, or the relay could
+--- be. The name tags were diagnosed twice from that silence. `OPX.Note` is core,
+--- is always there, is bounded at sixty a session and keeps the local copy
+--- regardless, so a missing line is now evidence rather than an unknown.
+---
+--- It is also the end of the second relay that `core/client/note.lua` was
+--- written to replace: two channels competing for one journal is how a line ends
+--- up on neither.
 -- @author dop42
 -- @param message string
 function Client.Journal(message)
-	Open77.log.warn('[admin] ' .. message)
-
-	local diagnostics = OPX.Modules.Get('diagnostics')
-	local channel = type(diagnostics) == 'table' and diagnostics.PAGE or nil
-	if channel ~= nil then pcall(TriggerServerEvent, channel, '[admin] ' .. message) end
+	OPX.Note('admin', message)
 end
 
 -- Fragment both known queue acknowledgement wordings share. The dispatcher
@@ -82,8 +89,14 @@ end
 -- @param kind string info, success, warning or error
 -- @param message string
 function Client.Notice(kind, message)
-	OPX.Toast.Show({ id = 'opx.admin', kind = kind, message = message,
+	-- THE ANSWER IS CHECKED, because it can be refused. `OPX.Toast.Show` answers
+	-- nil for a surface that is not up, and this used to discard that: the notice
+	-- went nowhere and said so to nobody. Six other modules already fall back to
+	-- the client journal on this exact path; these three did not, and the toast's
+	-- own docstring claimed they did.
+	local raised = OPX.Toast.Show({ id = 'opx.admin', kind = kind, message = message,
 		title = locale('admin.toast.title') })
+	if raised == nil then Open77.log.info('[admin] ' .. tostring(message)) end
 end
 
 --- Raises a notice whose text comes from a catalogue key.
@@ -120,15 +133,27 @@ function Client.Execute(tokens)
 end
 
 -- Writes an answer under the list when this client sent the line lately.
+--
+-- Two answers, and the second one is what stops the same sentence going up
+-- twice: whether the menu actually put it on screen. `modules/menu` reroutes
+-- `SetStatus` to a toast, so "under the list" IS a toast now, and a caller that
+-- writes the status and then raises its own is the duplicate the owner reported.
+-- With the menu shut the line is only queued, so the caller's toast is still the
+-- one thing that will say anything.
 local function underList(raw, accepted, message)
 	local name = (raw:match('^/?(%S+)') or ''):lower()
 	local sentAt = awaiting[name]
-	if sentAt == nil or Client.NowMs() - sentAt > AWAITING_MS then return false end
-	M.Menu.Status(message, accepted == true)
+	if sentAt == nil or Client.NowMs() - sentAt > AWAITING_MS then return false, false end
+	local shown = M.Menu.Status(message, accepted == true)
+	-- THE ANSWER IS THE SIGNAL, and it was being read for its text alone. The
+	-- menu had already sent whatever list read the line makes necessary, on a
+	-- fixed 1200ms sleep, because nothing told it the server was done -- while
+	-- this function was holding exactly that. It is told now.
+	M.Menu.Answered(name, accepted == true)
 	-- A refused switch flipped its own box already; the redraw puts back the
 	-- state that actually holds.
 	if accepted ~= true then M.Menu.Refresh() end
-	return true
+	return true, shown == true
 end
 
 --- Whether this module has noclip on, as the menu's switch row reads it.
@@ -201,8 +226,17 @@ end
 -- Shows this module's own answer under the list, in chat, or as a toast.
 local function onAnswer(raw, accepted, message, kind)
 	if type(raw) ~= 'string' or type(message) ~= 'string' or message == '' then return end
-	underList(raw, accepted == true, message)
+	local _, shown = underList(raw, accepted == true, message)
 	if M.Controls.Answered(raw, accepted == true) then return end
+	-- ONE SENTENCE, ONE TOAST. This raised the module's own toast unconditionally,
+	-- and `underList` above had just put the same words up as well: the owner gave
+	-- themselves an item as staff and got the line twice, once titled STAFF and
+	-- once bare. That was not a duplicate when it was written -- `SetStatus` drew
+	-- a line under the menu's list back then -- and `modules/menu` rerouting it to
+	-- a toast turned two surfaces into one. `onCommandResult` above already keeps
+	-- this rule, including the exception: the status lane is a single truncated
+	-- line, so an answer that spans several still needs the toast to be readable.
+	if shown and not message:find('\n', 1, true) then return end
 	if kind ~= 'info' and kind ~= 'success' and kind ~= 'warning' and kind ~= 'error' then
 		kind = accepted == true and 'success' or 'error'
 	end

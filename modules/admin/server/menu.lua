@@ -209,11 +209,35 @@ function Menu.Register()
 			if request == nil then return end
 		end
 
-		-- Named, so a client waiting on one of several lists can tell which
-		-- `error.tooFast` is its own.
+		-- DROPPED IN SILENCE, AND IT USED TO RAISE `error.tooFast` AT THE PLAYER.
+		-- That one line is half of the owner's "des fois je recois des message du
+		-- style slow down dans le menu admin mais cela marche quand meme": a Slow
+		-- down toast on a staff action that went through anyway.
+		--
+		-- It went through because THE REFUSAL WAS NEVER ABOUT THE ACTION. A
+		-- refresh is not something an operator does; it is this menu asking for a
+		-- list again, and the client fires several of them while somebody walks
+		-- from the root to a player's health screen (see `askFor` in
+		-- `client/menu.lua`, which now asks once per question per floor). The
+		-- navigation, or the command, did exactly what it was told -- and then a
+		-- request the operator never made was turned away and told them to slow
+		-- down. Two outcomes for one press, one of them about something else.
+		--
+		-- The `operation` name did not help either, and the comment that used to
+		-- stand here claimed it would: it said the refusal is named so a client
+		-- waiting on one of several lists can tell which `error.tooFast` is its
+		-- own. Nothing reads it. `OPX.Refuse` puts the operation on the wire and
+		-- the handler in `core/client/notify.lua` reads the kind, the code and the
+		-- glyph -- it toasts every refusal whatever it names. So `adminRefresh`
+		-- distinguished nothing and the toast reached the operator regardless.
+		--
+		-- THE GUARD STAYS. It is what stops a client asking for the roster in a
+		-- loop, and it is per player and per topic so one list never starves
+		-- another. What goes is the sentence: a background list read that the
+		-- floor turns away is a request not served, not a player told off.
 		if Server.Cooled(player, 'refresh:' .. topic,
 			OPX.Tune.Number('ADMIN_RATE_REFRESH_MS', 0)) then
-			return OPX.Refuse(player, 'error.tooFast', 'adminRefresh')
+			return
 		end
 
 		if Server.Permitted(player, M.OPENER) ~= true then
@@ -268,7 +292,15 @@ function Menu.Register()
 		if player <= 0 or type(text) ~= 'string' then return end
 		if Server.Cooled(player, 'target:report', 1000) then return end
 		if Server.Permitted(player, M.OPENER) ~= true then return end
+		-- 640 AND NOT 160, because the line now carries the grants the eye DROPPED
+		-- rows for and that is the half an operator writes an ACL from. 160 bytes
+		-- held the count and about four command names, so the one report that
+		-- would have answered "why is there no weather on the sky" was cut in the
+		-- middle of the third name it was naming. The cap is still a cap -- this is
+		-- a client sentence reaching the server journal -- but it is sized for what
+		-- it now has to say: this module has 56 commands and a role can refuse all
+		-- of them at once.
 		Open77.log.info(('[admin] target rows, player %d: %s')
-			:format(player, M.Trimmed(text, 160) or '?'))
+			:format(player, M.Trimmed(text, 640) or '?'))
 	end)
 end

@@ -14,7 +14,6 @@ local M = OPX.Modules.Get('inventory')
 
 local Common = M.Common
 local Options = M.Options
-local Catalog = M.Catalog
 local Containers = M.Containers
 local Players = M.Players
 local KIND = M.KIND
@@ -106,10 +105,47 @@ local function lower(source, held, total)
 	Containers.Publish(bag)
 end
 
---- States the item's rounds to the engine, split into magazine and reserve.
--- A magazine above the weapon's capacity is refused by the engine, so it is never
--- guessed: a reload keeps what is already loaded and the magazine read at that
--- moment decides the split, which is why the snapshot is asked for first.
+--- How an item's rounds are split between the magazine and the reserve.
+--
+-- PURE, AND SEPARATE FROM THE RELAY BELOW, because the arithmetic is where the
+-- defect was and the relay is what made it hard to see.
+--
+-- BOTH HALVES ARE ALWAYS STATED. `setAmmo` changes only what it is told about,
+-- and the fallback here used to name the reserve and say nothing of the
+-- magazine -- so the engine kept the one it loaded when the weapon was
+-- assigned, a full one, and an item holding ZERO rounds came out of the bag
+-- shooting. Rounds nobody paid for, which is the one thing the header of this
+-- file says must never happen.
+--
+-- A magazine ABOVE the weapon's capacity is refused by the engine, which is why
+-- one is never guessed upward: a reload keeps what is already chambered and the
+-- reading taken at that moment decides the split. But zero is always safe --
+-- no capacity is below it -- so when the capacity is unknown the rounds go to
+-- the reserve and the player chambers them. That is honest: we know how many
+-- rounds they own and not how many fit.
+-- @author dop42
+-- @param ammo integer rounds the item holds
+-- @param capacity integer|nil the weapon's magazine, when the engine said
+-- @param magazine integer|nil what is chambered now, when the engine said
+-- @param keepMagazine boolean whether to leave what is chambered alone
+-- @return table the amounts for `Open77.weapons.setAmmo`
+function Weapons.Amounts(ammo, capacity, magazine, keepMagazine)
+	local amounts = { activate = true }
+	if keepMagazine and magazine then
+		local kept = math.min(magazine, ammo)
+		amounts.magazine = kept
+		amounts.reserve = ammo - kept
+	elseif capacity then
+		amounts.magazine = math.min(ammo, capacity)
+		amounts.reserve = ammo - amounts.magazine
+	else
+		amounts.magazine = 0
+		amounts.reserve = ammo
+	end
+	return amounts
+end
+
+--- States the item's rounds to the engine.
 local function load(source, held, state, keepMagazine)
 	local citizenId = Players.Citizen(source)
 	local bag = citizenId and Containers.Find(KIND.CHARACTER, citizenId)
@@ -117,19 +153,9 @@ local function load(source, held, state, keepMagazine)
 	if not entry then return end
 	local ammo = math.min(Common.Integer(entry.metadata.ammo, 0, 1000000) or 0, held.max)
 
-	local amounts = { activate = true }
 	local capacity = type(state) == 'table' and Common.Integer(state.capacity, 1, 100000) or nil
 	local magazine = type(state) == 'table' and Common.Integer(state.magazine, 0, 100000) or nil
-	if keepMagazine and magazine then
-		magazine = math.min(magazine, ammo)
-		amounts.reserve = ammo - magazine
-		amounts.magazine = magazine
-	elseif capacity then
-		amounts.magazine = math.min(ammo, capacity)
-		amounts.reserve = ammo - amounts.magazine
-	else
-		amounts.reserve = ammo
-	end
+	local amounts = Weapons.Amounts(ammo, capacity, magazine, keepMagazine)
 
 	local requestId, reason = Open77.weapons.setAmmo(source, Options.WEAPON_SLOT, amounts)
 	if not requestId then
@@ -139,6 +165,36 @@ local function load(source, held, state, keepMagazine)
 	end
 	held.loading = true
 	remember(requestId, { source = source, kind = 'load', held = held })
+end
+
+--- Whether the engine says a weapon is drawn right now.
+--
+-- THE ONLY HONEST ANSWER TO "IS IT IN HAND", and the reason it is asked at all:
+-- `armed[source]` is OUR record of what we last put there, and the game holsters
+-- a weapon on its own often enough that the two drift. When they drift, Use --
+-- which reads as a toggle -- puts away a weapon that is already away.
+--
+-- `Open77.weapons.get` is a CACHE and the platform says so plainly: "read it to
+-- decide, never to assert". It carries two ages because its halves refresh at
+-- different rates, and `fresh` applies a two-second rule to the half that
+-- matters here -- `drawn` rides the ordinary 20 Hz player snapshot.
+--
+-- SO A STALE OR ABSENT ANSWER MEANS "DO NOT KNOW", AND DO-NOT-KNOW KEEPS THE OLD
+-- BEHAVIOUR. `weapons_unreported` is a player the host has heard nothing from,
+-- which is not the same as a player carrying nothing; a build without the call
+-- is not a build where every weapon is holstered. Treating either as "not in
+-- hand" would trade a rare wrong holster for a constant wrong draw.
+-- @author dop42
+-- @param source Source
+-- @return boolean
+function Weapons.InHand(source)
+	local weapons = Open77.weapons
+	if type(weapons) ~= 'table' or type(weapons.get) ~= 'function' then return true end
+
+	local read, state = pcall(weapons.get, source)
+	if not read or type(state) ~= 'table' then return true end
+	if state.fresh ~= true then return true end
+	return state.drawn == true
 end
 
 --- Draws a bag weapon, or puts it away when it is already in hand.
@@ -154,11 +210,22 @@ function Weapons.Use(source, bag, slot, item)
 	local entry = bag.items[slot]
 
 	local held = armed[source]
-	if held then
+	if held and Weapons.InHand(source) then
 		local heldSlot = findHeld(bag, held)
 		Weapons.Holster(source, true)
 		-- Using the weapon already in hand is how a player puts it away.
 		if heldSlot == slot then return true, nil end
+	elseif held then
+		-- IT IS NOT IN THEIR HAND, WHATEVER THIS TABLE SAYS. The game holsters a
+		-- weapon on its own -- a vehicle, a scripted beat, a knockdown -- and
+		-- nothing tells us. Pressing Use then put away something already away,
+		-- and the player pressed it again to get the same nothing. Forgotten
+		-- here rather than holstered: `Holster` would ask the client to remove a
+		-- slot the engine has already emptied, and then this Use would fall
+		-- through to an assign anyway. So the bookkeeping is corrected and the
+		-- press does what the player meant, which is draw.
+		armed[source] = nil
+		Weapons.Announce(source, nil)
 	end
 
 	if type(entry.metadata) ~= 'table' then entry.metadata = {} end
@@ -169,13 +236,19 @@ function Weapons.Use(source, bag, slot, item)
 	end
 
 	local ammoItem = item.weapon.ammo
-	local ammoEntry = ammoItem and Catalog.Get(ammoItem)
 	held = {
 		name = entry.name,
 		serial = entry.metadata.serial,
 		record = item.weapon.record,
 		ammoItem = ammoItem,
-		max = ammoEntry and ammoEntry.ammo.max or 0,
+		-- THE GUN'S MAGAZINE, NOT THE BOX'S STACK. This read the ammo item's
+		-- `MAX` -- how many rounds fit in a crate, five hundred for a handgun --
+		-- so a player loaded the whole crate into a pistol and never reloaded.
+		-- `magazine` is stated per weapon class in `data/weapons.lua`, and a
+		-- class that names ammunition without one is a boot warning: the gun
+		-- then loads nothing, which gets noticed, rather than everything, which
+		-- does not.
+		max = ammoItem and item.weapon.magazine or 0,
 		state = 'arming',
 		loading = false,
 	}

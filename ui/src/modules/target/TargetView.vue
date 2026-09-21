@@ -1066,8 +1066,8 @@ onUnmounted(() => {
                     <path v-for="(d, index) in glyphPaths('folder')" :key="index" :d="d" />
                   </svg>
                 </span>
-                <span class="label">{{ entry.name }}</span>
-                <span class="value">{{ entry.count }}</span>
+                <span class="label op-label op-truncate">{{ entry.name }}</span>
+                <span class="value op-value op-truncate">{{ entry.count }}</span>
                 <span class="mark">&gt;</span>
               </div>
 
@@ -1097,7 +1097,7 @@ onUnmounted(() => {
                     <path v-for="(d, index) in glyphPaths(entry.row.icon)" :key="index" :d="d" />
                   </svg>
                 </span>
-                <span class="label">{{ entry.row.label }}</span>
+                <span class="label op-label op-truncate">{{ entry.row.label }}</span>
                 <span
                   v-if="entry.row.checked !== undefined"
                   class="check"
@@ -1368,32 +1368,21 @@ onUnmounted(() => {
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.95));
 }
 
+/* The cut itself is `.op-truncate` in `design-system/surface.css`, and this row is
+   the reason the class exists: a long row label wrapped onto a second line and
+   pushed the row's own height around instead of being cut. A row on the eye is one
+   line -- whoever registered it chose the words, and a list whose rows change
+   height as the ray moves is a list that cannot be read, because the row the
+   pointer is over is no longer the row it was aimed at. */
 .label {
   flex: 0 1 auto;
-  min-width: 0;
-  font: 700 var(--op-fs-lead) / 1.25 var(--op-font-display);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* WITHOUT THIS THE ELLIPSIS ABOVE DOES NOTHING. `text-overflow` only applies to
-     text that cannot wrap, so a long row label was wrapping onto a second line
-     and pushing the row's own height around instead of being cut. A row on the
-     eye is one line: whoever registered it chose the words, and a list whose
-     rows change height as the ray moves is a list that cannot be read. */
-  white-space: nowrap;
 }
 
 .value {
   flex: none;
   margin-left: auto;
   max-width: 45%;
-  font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
-  letter-spacing: var(--op-track-label);
   opacity: 0.88;
-  font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* The affordance column, always last so every mark lands at the same x. */

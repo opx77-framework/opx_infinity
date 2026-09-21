@@ -46,6 +46,47 @@ local function visit(module, seen, out, trail)
 	out[#out + 1] = module
 end
 
+--- Drops every module whose requirements are no longer runnable, until the
+--- answer stops changing: dropping one module can drop its dependants.
+---
+--- CALLED AFTER EVERY PHASE AND NOT ONLY AT RESOLVE, which is the difference
+--- between an invariant of the BOOT GRAPH and an invariant of the RUN. `Resolve`
+--- is memoised, so this used to run exactly once, against states nothing had
+--- touched yet. A non-fatal module failing in `Init` -- `crafting` is
+--- `fatal = false`, and `gunsmith` requires it -- left every dependant still
+--- `declared`, so they went on to `Api` and `Start` and ran a whole session
+--- against a contract that was never published. `OPX.Api.Get` answers nil for it
+--- and the dependant discovers that wherever it happens to look.
+---
+--- @param list table[] the resolved modules, in dependency order
+--- @return string[] the ids dropped by this pass
+local function settle(list)
+	local dropped = {}
+	local settling = true
+	while settling do
+		settling = false
+		for _, module in ipairs(list) do
+			if module.State == 'declared' then
+				for _, id in ipairs(module.Requires) do
+					local other = OPX.Modules.Record(id)
+					if other == nil then
+						halt(module, 'unavailable', ('requires %q, which is not installed'):format(id))
+						dropped[#dropped + 1] = module.Id
+						settling = true
+						break
+					elseif other.State ~= 'declared' and other.State ~= 'started' then
+						halt(module, 'unavailable', ('requires %q, which is %s'):format(id, other.State))
+						dropped[#dropped + 1] = module.Id
+						settling = true
+						break
+					end
+				end
+			end
+		end
+	end
+	return dropped
+end
+
 --- Orders every declared module and marks the ones that cannot run.
 -- @author dop42
 -- @return table[] the modules to run, in dependency order
@@ -98,6 +139,8 @@ function OPX.Modules.Resolve()
 		end
 	end
 
+	settle(out)
+
 	resolved = out
 	return out
 end
@@ -126,6 +169,15 @@ end
 -- `Init` is NOT given the same treatment: it is documented never to yield, it
 -- builds state rather than touching the world, and a yield there would let an
 -- event reach a module whose state is half built.
+--
+-- NEITHER IS `Api`, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT -- it read
+-- as one, so it is written down. The same objection applies and applies harder:
+-- `Api` is where contracts are published, so a yield in the middle of it is a
+-- frame in which some modules have published and some have not, and an event
+-- arriving in that frame gets nil from `OPX.Api.Get` for a contract that exists.
+-- The budget argument does not weigh much against it either, because an `Api`
+-- body is a handful of `Provide` calls and no world reads; `Start` is where the
+-- work is, and `Start` is what yields.
 -- @return string|nil the id of a fatal module that failed
 local function runPhase(phase)
 	local fatal
@@ -190,6 +242,17 @@ function OPX.Modules.Run(between)
 		end
 		local fatal = runPhase(phase)
 		if fatal then return false, fatal end
+
+		-- RE-SETTLED AFTER THE PHASE, because a phase can drop a module the graph
+		-- said was runnable. A non-fatal module that raises in `Init` is marked
+		-- `failed` here and nowhere else -- `Resolve` is memoised and had already
+		-- run -- so its dependants used to carry on through `Api` and `Start` with
+		-- a contract nobody published. They are dropped now, with the reason
+		-- naming the module that actually failed.
+		for _, id in ipairs(settle(OPX.Modules.Resolve())) do
+			local module = OPX.Modules.Record(id)
+			Open77.log.error(('[%s] %s'):format(id, module and module.Reason or 'dropped'))
+		end
 	end
 
 	for _, module in ipairs(OPX.Modules.Resolve()) do
@@ -212,11 +275,20 @@ function OPX.Modules.Stop()
 	local running = OPX.Modules.Resolve()
 	for index = #running, 1, -1 do
 		local module = running[index]
-		if module.State == 'started' and type(module.Module.Stop) == 'function' then
-			local ok, failure = pcall(module.Module.Stop)
-			if not ok then
-				Open77.log.error(('[%s] stop failed: %s'):format(module.Id, tostring(failure)))
+		if module.State == 'started' then
+			if type(module.Module.Stop) == 'function' then
+				local ok, failure = pcall(module.Module.Stop)
+				if not ok then
+					Open77.log.error(('[%s] stop failed: %s'):format(module.Id, tostring(failure)))
+				end
 			end
+			-- MARKED STOPPED WHETHER OR NOT IT HAD A `Stop`, and this write was
+			-- INSIDE the `type(...) == 'function'` guard. A module with no `Stop`
+			-- -- most of them -- stayed `started` for ever, so `Report` said
+			-- running after the resource had gone and a second `Stop` would call
+			-- every `Stop` again. `core/client/boot.lua` runs this from
+			-- `onClientResourceStop`, where the VM can outlive the resource and
+			-- that state is all anything has left to read.
 			module.State = 'stopped'
 		end
 	end

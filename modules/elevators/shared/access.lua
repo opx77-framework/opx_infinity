@@ -22,10 +22,6 @@ local Config = type(M.Settings) == 'table' and M.Settings or {}
 Access.ELEVATORS = type(Config.ELEVATORS) == 'table' and Config.ELEVATORS or {}
 local ELEVATORS = Access.ELEVATORS
 
--- Failure ranking, so a refusal names the closest near-miss rather than the
--- first one `pairs` happens to meet.
-local RANK = { off_duty = 3, grade_too_low = 2, job_required = 1 }
-
 -- Coerces to a number, rejecting NaN and both infinities. Kept module-local
 -- rather than folded into `OPX.Text.Finite`, which also caps at 2^53: a
 -- millisecond clock is measured with this and must not be bounded like a
@@ -167,24 +163,18 @@ function Access.Locate(x, y, z, entity)
 	return bestKey, ELEVATORS[bestKey]
 end
 
--- Answers the grade of a job this character holds, or nil. MEMBERSHIP = 'any'
--- counts a membership for the grade and never for ON_DUTY: the memberships table
--- carries grades, not a clock.
-local function heldGrade(snapshot, name)
-	local job = snapshot.job
-	if type(job) == 'table' and job.name == name then
-		return type(job.grade) == 'table' and finiteNumber(job.grade.level) or 0
-	end
-	if Config.MEMBERSHIP ~= 'any' then return nil end
-	if type(snapshot.jobs) ~= 'table' then return nil end
-	return finiteNumber(snapshot.jobs[name])
-end
-
 --- Decides whether a character snapshot may select a floor.
 -- A public floor stays open with no snapshot at all: a broken character read
 -- must not lock a lobby. A gated floor closes past JOB_MAX_AGE_MS. The age is
 -- measured with FiniteNumber and never with Coordinate, because a millisecond
 -- clock passes BOUND during a session.
+--
+-- THE RULE ITSELF NOW LIVES IN `lib/shared/jobgate.lua` and this is the adapter
+-- that names a FLOOR's fields to it. It was written here first and moved the
+-- day `modules/teleports` wanted the same five branches -- the ranking, the
+-- staleness bound, the primary-versus-any-membership distinction and the
+-- public-stays-open rule -- rather than being copied a second time. Every
+-- refusal string is unchanged, which is what the elevators suite asserts.
 -- @author dop42
 -- @param floor table
 -- @param snapshot table|nil
@@ -192,31 +182,14 @@ end
 -- @return boolean
 -- @return string|nil
 function Access.Evaluate(floor, snapshot, nowMs)
-	local required = floor.JOBS
-	if type(required) ~= 'table' or next(required) == nil then return true, nil end
-
-	local atMs = type(snapshot) == 'table' and finiteNumber(snapshot.atMs) or nil
-	if atMs == nil then return false, 'no_character' end
-	if nowMs - atMs > Access.JOB_MAX_AGE_MS then return false, 'job_stale' end
-	if type(snapshot.job) ~= 'table' then return false, 'no_character' end
-
-	local worst, worstRank = 'job_required', RANK.job_required
-	for name, minimum in pairs(required) do
-		local held = heldGrade(snapshot, name)
-		if held ~= nil then
-			if held < (finiteNumber(minimum) or 0) then
-				if RANK.grade_too_low > worstRank then
-					worst, worstRank = 'grade_too_low', RANK.grade_too_low
-				end
-			elseif floor.ON_DUTY == true and
-				not (snapshot.job.name == name and snapshot.job.onDuty == true) then
-				if RANK.off_duty > worstRank then worst, worstRank = 'off_duty', RANK.off_duty end
-			else
-				return true, nil
-			end
-		end
-	end
-	return false, worst
+	-- CLOSED FOR A FLOOR THAT IS NOT A TABLE, and this line was missing. Reading
+	-- `floor.JOBS` off a nil RAISED, out of whichever net handler was asking,
+	-- while `modules/teleports` answered closed and `modules/gunsmith` answered
+	-- OPEN for the same input -- three answers to one question. They agree now,
+	-- and they agree on closed.
+	if type(floor) ~= 'table' then return false, 'no_such_floor' end
+	return OPX.JobGate.Evaluate({ jobs = floor.JOBS, onDuty = floor.ON_DUTY }, snapshot, nowMs,
+		{ maxAgeMs = Access.JOB_MAX_AGE_MS, membership = Config.MEMBERSHIP })
 end
 
 --- Builds every floor row to draw for a character, in order.
@@ -322,18 +295,9 @@ function Access.Problems()
 						if type(floor.LABEL) ~= 'string' or floor.LABEL == '' then
 							lines[#lines + 1] = where .. ': no LABEL'
 						end
-						if floor.JOBS ~= nil then
-							if type(floor.JOBS) ~= 'table' then
-								lines[#lines + 1] = where .. ': JOBS must be a table of name -> minimum grade'
-							else
-								for name, minimum in pairs(floor.JOBS) do
-									if type(name) ~= 'string' or finiteNumber(minimum) == nil then
-										lines[#lines + 1] = where ..
-											': JOBS entries are job name -> minimum grade level, e.g. { ncpd = 0 }'
-									end
-								end
-							end
-						end
+						-- The JOBS block is checked by the shared gate that reads it, so
+						-- the two can never drift into accepting different shapes.
+						OPX.JobGate.Problems(floor.JOBS, where, lines)
 					end
 				end
 			end

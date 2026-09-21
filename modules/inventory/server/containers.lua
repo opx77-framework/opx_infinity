@@ -565,6 +565,31 @@ function Containers.Move(from, fromSlot, to, toSlot, count)
 	if not from or not to then return false, 'not_found' end
 	local source = from.items[fromSlot]
 	if not source then return false, 'empty_slot' end
+
+	-- WHAT MAY NOT BE LEFT ON THE FLOOR MAY NOT BE LEFT ANYWHERE THAT IS NEVER
+	-- WRITTEN, and until this line the rule only covered the floor. `DROP = false`
+	-- was checked in `Actions.Drop` and nowhere else, so the whole of it could be
+	-- walked around: withdraw eddies, open the boot of any vehicle this resource
+	-- did not spawn -- ambient traffic, an admin `/car`, anything with no plate in
+	-- `live`, which also skips the owner check because `ownerCitizenId` is nil --
+	-- and move the stack in. That container is transient. Nothing marks it dirty,
+	-- nothing ever writes it, and `SweepVehicles` discards it five seconds after
+	-- the vehicle goes. A balance deleted, with no row and nothing for staff to
+	-- settle from: exactly the hazard `data/items.lua` names for a ground pile and
+	-- closes there.
+	--
+	-- CHECKED AT THIS LAYER AND NOT AT THE DOOR, because `transient` is what the
+	-- rule is actually about -- a pile and a plateless boot are the same promise,
+	-- "this is memory and it is going away" -- and a third memory-only container
+	-- added later is covered the day it is written rather than the day somebody
+	-- remembers. It reads the SOURCE stack's name because that is what crosses:
+	-- on the swap branch a stack moves each way, and only the one leaving `from`
+	-- is entering something that will not keep it.
+	if to.transient and to.id ~= from.id then
+		local item = Catalog.Get(source.name)
+		if item and item.droppable == false then return false, 'no_drop' end
+	end
+
 	if count == nil then
 		count = source.count
 	else
@@ -701,6 +726,30 @@ end
 function Containers.Discard(id)
 	local container = loaded[id]
 	if not container then return end
+
+	-- WHAT WENT WITH IT, SAID OUT LOUD. This is the one place in the module where
+	-- items cease to exist, and it used to do it in complete silence: no audit
+	-- line, no log line, not even the `log.warn` in `Unload` -- that one sits
+	-- inside the branch a transient skips. A pile sweeping itself up is ordinary
+	-- and expected; a boot full of somebody's things going with a despawned car
+	-- is the same code path, and staff asking "where did it go" had nothing at
+	-- all to read. Only when there is something to say: `CheckEmptyDrop` discards
+	-- emptied piles constantly, and a line per empty pile is a journal nobody
+	-- reads and therefore a journal that hides this one.
+	local carried, kinds = 0, {}
+	for _, stack in pairs(container.items) do
+		carried = carried + 1
+		kinds[#kinds + 1] = ('%s x%d'):format(tostring(stack.name), tonumber(stack.count) or 0)
+	end
+	if carried > 0 then
+		table.sort(kinds)
+		OPX.Audit.Log({ event = 'inventory.discarded', severity = 'warn',
+			message = ('%s %s: %d stack(s) destroyed'):format(tostring(container.kind),
+				tostring(container.owner), carried),
+			data = { kind = container.kind, owner = container.owner,
+				transient = container.transient == true, items = table.concat(kinds, ', ') } })
+	end
+
 	container.unloadWhenClean = nil
 	for _, view in ipairs(Containers.Viewers()) do
 		if view.id == id then Containers.CloseSecondary(view.source, true) end

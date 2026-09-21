@@ -186,8 +186,7 @@ end
 local function count(owner)
 	local mine = Effects.byOwner[owner]
 	if mine == nil then return 0 end
-	local total = 0
-	for _ in pairs(mine) do total = total + 1 end
+	local total = OPX.Table.Count(mine)
 	return total
 end
 

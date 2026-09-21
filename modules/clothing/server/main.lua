@@ -279,6 +279,45 @@ function M.Start()
 		sync(player)
 	end)
 
+	-- THE KEY, AS A THING THE SERVER HAS AN OPINION ABOUT. It opened the room
+	-- locally and told this half nothing, which was fine while the room was only
+	-- a mirror: a fitting room opened from the wrong place was a cosmetic lie.
+	-- It stopped being fine when the room acquired a save `appearance` will only
+	-- write for a door the server opened, and `config/clothing.lua` already said
+	-- what the answer had to be -- the distance measured HERE, the shape
+	-- `modules/shops` uses in `shopAt`.
+	--
+	-- NOTHING IS SENT BACK and nothing is refused out loud. The client has
+	-- already decided whether to put a room up and has already said so to the
+	-- player; this only decides whether what comes out of that room may be
+	-- stored, and a second refusal on the same key press would be two answers to
+	-- one question. A player who is not at a store gets the room their own
+	-- client chose to draw and cannot save a stitch of it.
+	RegisterNetEvent(M.Event.OPEN, function()
+		local player = tonumber(source)
+		if player == nil or player <= 0 then return end
+		-- The same floor the list is asked on: a key that can be held down is a
+		-- key that can be a request per frame.
+		if OPX.Cooling(player, 'clothing.open', 1000) then return end
+
+		local point = pointOf(player)
+		if point == nil then return end
+		local here = Access.Nearest(Access.InBucket(spots, point.bucket), point.x, point.y)
+		if here == nil then
+			Open77.log.debug(('[clothing] player %d asked for a store they are not standing on')
+				:format(player))
+			return
+		end
+
+		local appearance = OPX.Api.Get('appearance')
+		if type(appearance) ~= 'table' or type(appearance.AllowClothingSave) ~= 'function' then
+			-- Not an error. `appearance` is declared optional by this module, and a
+			-- host running the platform's own package has no contract to tell.
+			return
+		end
+		appearance.AllowClothingSave(player, 'clothing')
+	end)
+
 	CreateThread(function()
 		local rows = Store.FetchAll()
 		if not rows.ok then
@@ -305,8 +344,7 @@ function M.Start()
 		-- A player who connected while the database was being read asked too
 		-- early and was told nothing; they ask again on their own cadence.
 		syncAll()
-		local fromConfig = 0
-		for _ in pairs(configSpots) do fromConfig = fromConfig + 1 end
+		local fromConfig = OPX.Table.Count(configSpots)
 		Open77.log.info(('[clothing] ready: %d config, %d captured, %d refused')
 			:format(fromConfig, accepted, refused))
 	end)

@@ -54,13 +54,26 @@ export function setFocused(focused: boolean): void {
 }
 
 /**
- * Replaces the dictionary wholesale. Lua owns the player's language and may change it
- * mid-session; merging would leave the previous language's strings behind for any key
- * the new one happens not to define.
+ * Takes one PART of the dictionary. Lua sends the catalogue in parts because the whole
+ * of it -- 1,533 keys, about 78 kB -- is well past the ~1,024 value nodes a single page
+ * write carries, and a write past that is dropped by the host without a word. The
+ * symptom when it happened was total: `useLocale` answers the key on a miss, so every
+ * label on every surface rendered as its own raw key for the whole session.
+ *
+ * `first` clears what is held and `done` marks the last part -- the same flags
+ * `modules/inventory` drains its item catalogue with. A payload carrying NEITHER flag
+ * is treated as a whole catalogue in one part, which is what every older sender did.
+ *
+ * It still REPLACES rather than merges across a language change: Lua owns the player's
+ * language and may change it mid-session, and merging would leave the previous
+ * language's strings behind for any key the new one happens not to define. That is what
+ * `first` is for -- it is the clear, moved from "every send" to "the send that starts a
+ * catalogue".
  */
 export function setStrings(payload: Payload): void {
   const incoming = table(payload.strings)
-  const next: Record<string, string> = {}
+  const first = payload.first !== false
+  const next: Record<string, string> = first ? {} : { ...state.strings }
   for (const key of Object.keys(incoming)) next[key] = text(incoming[key], key)
   state.strings = next
 }

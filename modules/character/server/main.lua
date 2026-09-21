@@ -223,6 +223,26 @@ function M.BeginEntry(source)
 
 	OPX.Buckets.Isolate(source, 'joined')
 
+	-- THE GIVE-UP WATCH, AND NOTHING CALLED IT BEFORE THIS. Every return path in
+	-- the thread below releases the hold, but a read that never answers returns
+	-- from nothing: a database that has stopped responding leaves this player
+	-- behind a shut gate until the HOST's liveness interval expires, and the host
+	-- then opens it with `liveness_lost:` and no idea why. The watch's deadline
+	-- sits below that interval on purpose -- `core/server/gate.lua` says the
+	-- runtime "gives up first, and says why" -- and with no caller that sentence
+	-- was untrue and `ENTRY.WATCH_MS` was a validated operator setting with no
+	-- effect at all.
+	--
+	-- It answers anything but false, so core releases the hold itself. Answering
+	-- false means "this player is mine now", which is only honest while somebody
+	-- is going to release it; the thread below may be the thing that has stalled,
+	-- so claiming the hold here is how it ends up held for the session.
+	OPX.Gate.Watch(source, nil, function(src)
+		Open77.log.error(('[character] entry for %d did not finish before the gate deadline; '
+			.. 'releasing rather than leaving the hold for the host to time out'):format(src))
+		OPX.Refuse(src, 'entry.failed', M.Operation.ENTRY)
+	end)
+
 	-- Its own thread, for the database reads, and no failure path leaves the
 	-- player held. There is nothing to choose and nothing to wait for: the account
 	-- is locked on a character, or it is about to be locked on a new one.

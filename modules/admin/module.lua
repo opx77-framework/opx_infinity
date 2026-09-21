@@ -162,6 +162,7 @@ M.Command = {
 	PLAYER_HEALTH = 'opx.admin.player.health',
 	PLAYER_ARMOR = 'opx.admin.player.armor',
 	PLAYER_MODEL = 'opx.admin.player.model',
+	PLAYER_WARDROBE = 'opx.admin.player.wardrobe',
 
 	-- The ACCOUNT's characters, not the body in the world. `opx.admin.player.*` is
 	-- the session and the puppet -- freeze it, heal it, move it -- and every one
@@ -222,8 +223,6 @@ M.Command = {
 	WORLD_PVP = 'opx.admin.world.pvp',
 	WORLD_DOOR = 'opx.admin.world.door',
 
-	READ_PLAYERS = 'opx.admin.read.players',
-	READ_LOCATIONS = 'opx.admin.read.locations',
 	READ_STATUS = 'opx.admin.read.status',
 	READ_AUDIT = 'opx.admin.read.audit',
 
@@ -247,12 +246,26 @@ M.Command = {
 
 -- The live names of the Dev group, read from the modules that own them.
 --
--- SAFE TO READ AT LOAD: every `config/*.lua` is a manifest script ahead of every
--- `modules/*/module.lua`, so both COMMANDS tables exist by the time this file
--- runs. A module that is switched off or absent still HAS its config (the
--- platform loads the file, and `enabled = false` stops the module, not the
--- config), and a config that lost its COMMANDS block leaves the fallback above
--- standing: a row that runs the documented name is worth more than no row.
+-- THIS BREAKS THE ONE RULE `config/entry.lua` STATES OUTRIGHT -- "a module may
+-- not read another module's settings, so the two are kept in step by hand" --
+-- and it is written down here rather than left for the next reader to notice.
+-- It is a considered exception, not an oversight, and these are its terms:
+--
+--   * the names are needed at LOAD, to build `M.Command`, and a contract is not
+--     resolvable until Start. Fixing it properly means moving the Dev group's
+--     rows to Start-time resolution, which is a change to the admin menu and
+--     not to this block.
+--   * every `config/*.lua` is a manifest script ahead of every
+--     `modules/*/module.lua`, so both COMMANDS tables exist by the time this
+--     file runs. A module switched off or absent still HAS its config: the
+--     platform loads the file, and `enabled = false` stops the module.
+--   * a config that lost its COMMANDS block leaves the fallback above standing,
+--     so the worst case is a row that runs the documented name.
+--
+-- What it costs is the thing the rule protects: rename a command in
+-- `config/garages.lua` and this table silently keeps pointing at the old name
+-- until somebody presses the row. `garages` and `dealership` both publish a
+-- contract; when the Dev group next needs work, that is where these belong.
 do
 	local groups = {
 		garages = { add = 'GARAGES_ADD', remove = 'GARAGES_REMOVE', list = 'GARAGES_LIST',
@@ -388,7 +401,7 @@ M.TUNABLES = {
 function M.Trimmed(value, maximum)
 	if type(value) == 'number' then value = tostring(value) end
 	if type(value) ~= 'string' then return nil end
-	value = value:gsub('%c', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+	value = OPX.String.Trim((value:gsub('%c', ' ')))
 	if value == '' then return nil end
 	if #value > maximum then value = value:sub(1, OPX.Text.Span(value, maximum)) end
 	return value

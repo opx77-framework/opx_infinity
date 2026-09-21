@@ -81,7 +81,7 @@ end
 function Common.Clean(value, maximum)
 	if type(value) == 'number' then value = tostring(value) end
 	if type(value) ~= 'string' then return nil end
-	value = value:gsub('%c', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+	value = OPX.String.Trim((value:gsub('%c', ' ')))
 	if value == '' then return nil end
 	if #value > maximum then value = value:sub(1, span(value, maximum)) end
 	return value
@@ -260,6 +260,12 @@ local hotbar = section(Config.HOTBAR, 'HOTBAR')
 Options.HOTBAR = hotbar.ENABLED ~= false
 Options.HOTBAR_SLOTS = Options.HOTBAR and bounded('HOTBAR.SLOTS', hotbar.SLOTS, 0, 9, 5) or 0
 
+-- How long the peek key holds the hotbar row on screen. The floor is there
+-- because a row shown for a quarter of a second is a flicker nobody reads, and
+-- the ceiling because a row held for half a minute is not a peek, it is a HUD
+-- element the operator should be asked for on purpose.
+Options.HOTBAR_PEEK_MS = bounded('HOTBAR.PEEK_MS', hotbar.PEEK_MS, 500, 30000, 4000)
+
 local keys = section(Config.KEYS, 'KEYS')
 Options.KEY_OPEN = keyName('KEYS.OPEN', keys.OPEN, 'I')
 
@@ -277,6 +283,27 @@ for index = 1, Options.HOTBAR_SLOTS do
 		key = false
 	end
 	Options.KEYS_HOTBAR[index] = key
+end
+
+--- The key that shows the hotbar row, or false where none is registered.
+--
+-- CHECKED AGAINST THE KEYS IT WOULD SHADOW, exactly as each hotbar key is
+-- checked against the open key above. A peek bound to the same key as a hotbar
+-- slot would draw the row and use the item in the same press, which is the one
+-- thing this key must not do; bound to the open key it would fight the bag.
+Options.KEY_PEEK = Options.HOTBAR_SLOTS > 0
+	and keyName('KEYS.PEEK', keys.PEEK, 'TAB') or false
+if Options.KEY_PEEK and Options.KEY_PEEK == Options.KEY_OPEN then
+	problem(('KEYS.PEEK is the open key %q; the peek key is not registered')
+		:format(Options.KEY_PEEK))
+	Options.KEY_PEEK = false
+end
+for index = 1, Options.HOTBAR_SLOTS do
+	if Options.KEY_PEEK and Options.KEY_PEEK == Options.KEYS_HOTBAR[index] then
+		problem(('KEYS.PEEK is hotbar key %d (%q); the peek key is not registered')
+			:format(index, Options.KEY_PEEK))
+		Options.KEY_PEEK = false
+	end
 end
 
 Options.USE_COOLDOWN_MS = bounded('USE_COOLDOWN_MS', Config.USE_COOLDOWN_MS, 0, 60000, 750)
@@ -380,3 +407,44 @@ end
 
 Options.MAX_COMMAND_COUNT =
 	bounded('MAX_COMMAND_COUNT', Config.MAX_COMMAND_COUNT, 1, Options.MAX_STACK, 10000)
+
+--- The money-to-item bridge: whether it is wired, what it trades and how much.
+--
+-- RESOLVED HERE AND NOT AT THE MOMENT OF USE, because every one of these
+-- mistakes has the same shape -- half a bridge -- and half a bridge is where
+-- money goes missing. A withdraw that debits `EDIES` (a typo) into an item
+-- nothing can deposit destroys the balance on the first use, and it would not be
+-- noticed until a player complained; refusing to wire the bridge at all is a
+-- line in the boot log that somebody reads the same day.
+--
+-- THE ITEM IS NOT CHECKED HERE. `shared/catalog.lua` loads after this file, so
+-- there is no catalogue to ask yet. `server/currency.lua` asks at `Start`, where
+-- there is, and turns the bridge off the same way.
+local currency = section(Config.CURRENCY, 'CURRENCY')
+Options.CURRENCY_ENABLED = currency.ENABLED ~= false
+Options.CURRENCY_ITEM = Common.Word(currency.ITEM, 48, '^[%w_%-%.]+$')
+Options.CURRENCY_MONEY_TYPE = nil
+Options.CURRENCY_MAX_WITHDRAW =
+	bounded('CURRENCY.MAX_WITHDRAW', currency.MAX_WITHDRAW, 1, Options.MAX_STACK, 1000000)
+
+if Options.CURRENCY_ENABLED then
+	if Options.CURRENCY_ITEM == nil then
+		problem('CURRENCY.ITEM must be an item name; no money can be withdrawn as an item')
+		Options.CURRENCY_ENABLED = false
+	end
+
+	-- A money type the server does not have is the typo that costs the most:
+	-- `AddMoney` and `RemoveMoney` both answer `money.badType` for it, so the
+	-- withdraw would refuse and the deposit would refuse -- but only AFTER the
+	-- deposit had already taken the notes out of the bag. Off is the safe state.
+	local types = type(OPX.Config.SHARED) == 'table' and type(OPX.Config.SHARED.MONEY) == 'table'
+		and OPX.Config.SHARED.MONEY.TYPES or nil
+	local named = Common.Word(currency.MONEY_TYPE, 32, '^[%w_]+$')
+	if type(types) ~= 'table' or named == nil or types[named] == nil then
+		problem(('CURRENCY.MONEY_TYPE %q is not a money type this server declares; no money ' ..
+			'can be withdrawn as an item'):format(tostring(currency.MONEY_TYPE)))
+		Options.CURRENCY_ENABLED = false
+	else
+		Options.CURRENCY_MONEY_TYPE = named
+	end
+end

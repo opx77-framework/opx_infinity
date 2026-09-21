@@ -241,7 +241,7 @@ onUnmounted(() => {
           <div class="head">
             <div class="head-text">
               <span class="eyebrow op-eyebrow">SPAWN</span>
-              <h1>{{ title }}</h1>
+              <h1 class="op-truncate">{{ title }}</h1>
             </div>
           </div>
 
@@ -270,11 +270,11 @@ onUnmounted(() => {
               >
                 <span class="index op-eyebrow" aria-hidden="true">{{ ordinal(at) }}</span>
                 <span class="card-text">
-                  <span class="label op-label">{{ place.label }}</span>
+                  <span class="label op-label op-truncate">{{ place.label }}</span>
                   <!-- The district, and never the coordinates: what Lua sends is a
                        label and a hint line, and there is nothing here for a page to
                        be tempted to act on. -->
-                  <span v-if="place.district" class="district op-value">{{ place.district }}</span>
+                  <span v-if="place.district" class="district op-value op-truncate">{{ place.district }}</span>
                 </span>
               </div>
             </li>
@@ -440,9 +440,6 @@ onUnmounted(() => {
   letter-spacing: var(--op-track-head);
   text-transform: uppercase;
   color: var(--op-red-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The sentence under the question. Prose, and the player's rather than an
@@ -527,19 +524,10 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-.label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* The hint line. Grey, because the district is context for the place name above
    it and not a second reading of it. */
 .district {
   color: var(--op-text-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* --- CHOSEN ------------------------------------------------------------------

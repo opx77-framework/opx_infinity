@@ -700,6 +700,33 @@ function M.Runtime.BeginPristine(origin)
 	end)
 end
 
+-- THE TWO BOOTSTRAP METHODS ARE CHECKED BY NAME, like `creatorAvailable` twenty
+-- lines down and unlike `M.Start`, which only checks that `Open77.session` is a
+-- TABLE. A host that carries the table without these two therefore reaches
+-- `ResolveBootstrap`, and an unguarded index-and-call on it raises out of
+-- whatever is running -- which for the picker thread below means dying while
+-- holding `bootstrapPicking`, and that latch stuck true is a loading cover the
+-- player never gets out from behind.
+
+--- Tells the host this client cannot answer the bootstrap, where it can be told.
+local function failBootstrap(reason)
+	local session = Open77.session
+	local fn = type(session) == 'table' and session.failCharacterBootstrap or nil
+	if type(fn) ~= 'function' then return end
+	pcall(fn, reason)
+end
+
+--- Spends the host's one-shot bootstrap, answering its refusal rather than it.
+local function spendBootstrap(family)
+	local session = Open77.session
+	local fn = type(session) == 'table' and session.resolveCharacterBootstrap or nil
+	if type(fn) ~= 'function' then return false, 'resolve_character_bootstrap_unavailable' end
+	local called, resolved, reason = pcall(fn, family)
+	if not called then return false, tostring(resolved) end
+	if not resolved then return false, reason end
+	return true
+end
+
 --- Spends the one-shot character bootstrap on a body family.
 -- @author dop42
 -- @param family any
@@ -711,12 +738,12 @@ function M.Runtime.ResolveBootstrap(family)
 		return true
 	end
 	if not M.IsFamily(family) then
-		Open77.session.failCharacterBootstrap('invalid_body_family')
+		failBootstrap('invalid_body_family')
 		return false
 	end
-	local resolved, reason = Open77.session.resolveCharacterBootstrap(family)
+	local resolved, reason = spendBootstrap(family)
 	if not resolved then
-		Open77.session.failCharacterBootstrap(tostring(reason or 'character_bootstrap_failed'))
+		failBootstrap(tostring(reason or 'character_bootstrap_failed'))
 		Runtime.Notify('error', 'appearance.bootstrapFailed', { reason = tostring(reason) })
 		return false
 	end
@@ -835,6 +862,118 @@ local function choiceWaitMs()
 	return wait
 end
 
+-- The picker thread's heartbeat, what it was started for, and how many times it
+-- has been started again.
+--
+-- WHY A SUPERVISOR EXISTS AT ALL. `bootstrapPicking` is taken BEFORE the thread
+-- and dropped only from inside its body, and that body is a raw `while true`
+-- with no `pcall` around it. `core/client/scheduler.lua` names the failure that
+-- makes this fatal: exceeding the per-resume instruction budget "unwinds
+-- straight out of the coroutine body ... it does not crash the resource, it does
+-- not repeat, and it logs nothing". The thread is then dropped for the session
+-- with the latch stuck true, so every later `BeginBootstrap` returns on its
+-- first line, the bootstrap is never spent, THE WORLD NEVER LOADS UNDER THE
+-- PLAYER, and the journal is empty -- which is the one failure a player cannot
+-- tell from a frozen game.
+--
+-- It is not a hypothetical placement. `M.Start` calls this during the
+-- frame-per-module boot walk, where the budget is tightest, and the loop then
+-- runs across the world load -- the transition `wardrobe.lua` measured a 3.1 s
+-- script stall on.
+--
+-- It cannot simply move into the scheduler: the loop yields, and `runJob` wraps
+-- a step in `pcall`, so the thread stays and a scheduler job WATCHES it. That is
+-- the answer `wardrobe.lua:1673-1795` already carries for exactly this shape.
+local pickBeat, pickOrigin, pickRevivals = 0, 'start', 0
+
+-- How long the supervisor waits for a beat before calling the picker dead. Past
+-- the 3.1 s script stall `wardrobe.lua` measured across the world load, with
+-- room to spare: this loop body reads a projection and compares two clocks, so
+-- it has no legitimate step of its own anywhere near this long.
+local PICK_STALL_MS = 5000
+
+-- How many times a dead picker is started again before the bootstrap is simply
+-- spent. A revival covers the world-load transition, which is the one moment a
+-- thread is known to be at risk; past that something is wrong that another
+-- thread will not fix, and the module's own rule applies -- one reload worse,
+-- never stuck.
+local MAX_PICK_REVIVALS = 2
+
+local runPicker
+
+--- Starts the picker, beating once so the supervisor does not call it dead.
+local function spawnPicker()
+	pickBeat = nowMs()
+	CreateThread(function() runPicker(pickOrigin) end)
+end
+
+--- Waits for the choice, and spends the bootstrap on a guess when none comes.
+runPicker = function(origin)
+	local wait = choiceWaitMs()
+	local ceiling = choiceCeilingMs()
+	local startedAt = nowMs()
+	local deadline = startedAt + wait
+	while true do
+		pickBeat = nowMs()
+		if bootstrapResolved or bootstrapPhase() ~= 'waiting' then break end
+		-- The character the server is loading, or a creation under way, IS the
+		-- answer: both spend the bootstrap themselves, on the body that belongs
+		-- to the character.
+		if State.citizenId ~= nil or State.creating then break end
+		-- But never past the ceiling: see `choiceCeilingMs`.
+		if ceiling ~= nil and deadline > startedAt + ceiling then
+			deadline = startedAt + ceiling
+		end
+		if nowMs() >= deadline then
+			bootstrapPicking = false
+			local family = defaultFamily()
+			Open77.log.warn(('[appearance] no character reached this client in %d ms (%s): ' ..
+				'the bootstrap is spent on the %s body so that a world comes up at all')
+				:format(nowMs() - startedAt, origin, family))
+			Runtime.ResolveBootstrap(family)
+			return
+		end
+		Wait(ROSTER_POLL_MS)
+	end
+	bootstrapPicking = false
+end
+
+--- Watches the picker thread and starts it again if it stopped without a word.
+-- @author dop42
+--
+-- Driven from the `appearance.watch` scheduler job, which is where it has to
+-- live: a scheduler job is `pcall`ed and resumed by the one client loop, and the
+-- thing it is watching is a raw thread started microseconds before the world
+-- load. See `pickBeat` above for what a dead picker costs.
+function M.Runtime.SuperviseBootstrap()
+	if not bootstrapPicking then return end
+	-- Somebody else spent it while the picker was waiting; the latch is all that
+	-- is left to clear.
+	if bootstrapResolved then
+		bootstrapPicking = false
+		return
+	end
+	if nowMs() - pickBeat < PICK_STALL_MS then return end
+
+	if pickRevivals < MAX_PICK_REVIVALS then
+		pickRevivals = pickRevivals + 1
+		Open77.log.warn(('[appearance] the bootstrap picker stopped without a word after ' ..
+			'%d ms; starting it again (%d)'):format(PICK_STALL_MS, pickRevivals))
+		return spawnPicker()
+	end
+
+	-- THE WORLD IS GIVEN A BODY ANYWAY, and this is the ending that was missing.
+	-- With the picker dead and the latch standing, the player sits behind the
+	-- loading cover for the rest of the session with nothing in the journal. A
+	-- guessed body is one reload worse; a stuck latch has no way forward at all.
+	bootstrapPicking = false
+	local family = defaultFamily()
+	Open77.log.warn(('[appearance] the bootstrap picker stopped %d times and is not coming ' ..
+		'back; the bootstrap is spent on the %s body so that a world comes up at all')
+		:format(pickRevivals + 1, family))
+	Runtime.ResolveBootstrap(family)
+end
+
 --- Holds the join bootstrap for a choice, and spends it on a guess if none comes.
 -- @author dop42
 --
@@ -853,35 +992,9 @@ function M.Runtime.BeginBootstrap(origin)
 	if bootstrapResolved or bootstrapPicking then return end
 	if bootstrapPhase() ~= 'waiting' then return end
 	bootstrapPicking = true
-
-	CreateThread(function()
-		local wait = choiceWaitMs()
-		local ceiling = choiceCeilingMs()
-		local startedAt = nowMs()
-		local deadline = startedAt + wait
-		while true do
-			if bootstrapResolved or bootstrapPhase() ~= 'waiting' then break end
-			-- The character the server is loading, or a creation under way, IS the
-			-- answer: both spend the bootstrap themselves, on the body that belongs
-			-- to the character.
-			if State.citizenId ~= nil or State.creating then break end
-			-- But never past the ceiling: see `choiceCeilingMs`.
-			if ceiling ~= nil and deadline > startedAt + ceiling then
-				deadline = startedAt + ceiling
-			end
-			if nowMs() >= deadline then
-				bootstrapPicking = false
-				local family = defaultFamily()
-				Open77.log.warn(('[appearance] no character reached this client in %d ms (%s): ' ..
-					'the bootstrap is spent on the %s body so that a world comes up at all')
-					:format(nowMs() - startedAt, origin, family))
-				Runtime.ResolveBootstrap(family)
-				return
-			end
-			Wait(ROSTER_POLL_MS)
-		end
-		bootstrapPicking = false
-	end)
+	pickOrigin = tostring(origin)
+	pickRevivals = 0
+	spawnPicker()
 end
 
 --- Restores, asks for a creation, or settles on the default face.
@@ -1155,6 +1268,17 @@ local function registerEvents()
 		Runtime.Notify('error', 'appearance.panelUnavailable', { reason = tostring(reason) })
 	end)
 
+	-- THE CLIENT STILL DECIDES. The server only says "staff asked for this"; every
+	-- reason a room cannot open -- the puppet not alive, another surface holding
+	-- the keyboard, a save in flight -- is knowable here and nowhere else, so the
+	-- gate is unchanged and a refusal is reported to the player whose screen it
+	-- is. The operator who asked sees their own answer through the admin menu.
+	RegisterNetEvent(M.Event.OPEN_WARDROBE, function()
+		local ok, reason = M.Wardrobe.Open('appearance')
+		if ok then return end
+		Runtime.Notify('error', 'wardrobe.unavailable', { reason = tostring(reason) })
+	end)
+
 	-- One door for both refusals, dispatched by the operation each one names.
 	-- Registering the same net event name twice is a coin toss on which handler
 	-- survives, and the answer to a face save must never be eaten by the clothing
@@ -1425,6 +1549,52 @@ function M.Contract.CloseWardrobe(owner)
 	return Result.Ok(true)
 end
 
+--- Offers the open fitting room a strip of category buttons.
+-- @author dop42
+--
+-- FOR THE MODULE THAT OWNS THE OUTFITS, AND ONLY WHILE A ROOM IS OPEN. The
+-- saved outfits, the share codes and the job-gated ready-made looks all live in
+-- `modules/shops`, which already requires this module; this is how it reaches
+-- into a fitting room without this module having to learn that shops exist. A
+-- press comes back on the decision bus as `wardrobeGroup`, carrying the owner
+-- and the caller's own button id.
+--
+-- The strip is dropped when the room closes, so a caller offers per room rather
+-- than once at start-up. Passing an empty list takes a caller's strip down.
+-- @param owner string the caller's own name
+-- @param groups table|nil an array of { id, label, disabled }
+-- @return Result
+function M.Contract.OfferWardrobeGroups(owner, groups)
+	if not M.Wardrobe.IsOpen() then return Result.Err('no_wardrobe_open') end
+	local ok, reason = M.Wardrobe.OfferGroups(owner, groups)
+	if not ok then return Result.Err(tostring(reason)) end
+	return Result.Ok(true)
+end
+
+--- Lays a saved look onto the open fitting room's draft.
+-- @author dop42
+--
+-- THE FITTING ROOM'S OWN PATH, not a second way to dress somebody. While the
+-- room is open the puppet is lent to it, so `BeginClothingPreview` -- the way a
+-- shop dresses a player standing on the shop floor -- is refused, and a caller
+-- that tried it did nothing at all. This puts the look on the DRAFT instead: the
+-- sliders move, Cancel still undoes it, and the slots it moved are reported on
+-- `wardrobeClosed` so a shop bills them like any other change.
+--
+-- Slots the body's own catalogue does not carry are skipped rather than
+-- refused -- a share code was read out by somebody whose character may be
+-- another build -- so the answer says how much of the look went on.
+-- @param records table slot name to record name, or false for an empty slot
+-- @return Result
+function M.Contract.DressWardrobe(records)
+	local gone = guard()
+	if gone then return gone end
+	if not M.Wardrobe.IsOpen() then return Result.Err('no_wardrobe_open') end
+	local ok, reason = M.Wardrobe.Dress(records)
+	if not ok then return Result.Err(tostring(reason)) end
+	return Result.Ok(true)
+end
+
 --- Lends the puppet to a fitting room, answering what it wears.
 -- Nothing is saved and no look is published while it is lent, so a jacket a player
 -- is only trying on never reaches the database or anybody else.
@@ -1497,6 +1667,8 @@ function M.Api()
 		ClosePanel = M.Contract.ClosePanel,
 		OpenWardrobe = M.Contract.OpenWardrobe,
 		CloseWardrobe = M.Contract.CloseWardrobe,
+		OfferWardrobeGroups = M.Contract.OfferWardrobeGroups,
+		DressWardrobe = M.Contract.DressWardrobe,
 
 		BeginClothingPreview = M.Contract.BeginClothingPreview,
 		EndClothingPreview = M.Contract.EndClothingPreview,
@@ -1551,6 +1723,13 @@ function M.Start()
 	-- read would otherwise end the pass -- and it is the first of them that ends a
 	-- body reload and announces gameplay-ready.
 	OPX.Scheduler.Every('appearance.watch', WATCH_MS, function()
+		-- FIRST, AND IN ITS OWN PCALL, because it must run even when the three
+		-- steps below are failing: the picker holds the latch the whole join is
+		-- behind, and a picker that died silently strands it. See `pickBeat`.
+		local watchedPick, pickFailure = pcall(Runtime.SuperviseBootstrap)
+		if not watchedPick then
+			Open77.log.error('[appearance] bootstrap watch: ' .. tostring(pickFailure))
+		end
 		local ok, failure = pcall(M.Editor.Watch)
 		if not ok then Open77.log.error('[appearance] watch: ' .. tostring(failure)) end
 		local watched, reason = pcall(Runtime.WatchReload)

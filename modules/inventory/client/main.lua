@@ -32,14 +32,18 @@ local FOCUS_OWNER = 'inventory'
 local REQUEST_TIMEOUT_MS = 15000
 
 -- Catalogue entries carried by one page write. An entry is about twenty value
--- nodes with its name, and the host silently drops a page write past 1,024.
+-- nodes with its name, and the host REFUSES a page write past 1,024 value nodes
+-- WHOLE rather than truncating it -- `lib/client/surface.lua` hands that refusal
+-- back as `Send`'s second answer, and this file reads it on the open path.
 local CATALOG_PART = 40
 
 -- Whether the surface has been built and its channels wired, whether the page has
--- reported itself mounted, and the one write that is waiting for it to.
+-- reported itself mounted, the one write that is waiting for it to, and when that
+-- write started waiting.
 local surfaceWired = false
 local pageReady = false
 local pendingOpen = nil
+local pendingSince = nil
 
 -- The handle the current opening is keyed on. A payload carrying any other handle
 -- belongs to a screen that has already been replaced, and is dropped.
@@ -255,7 +259,50 @@ end
 
 -- ── opening and closing ──────────────────────────────────────────────────────
 
---- Takes the keyboard and the cursor, then draws the granted open answer.
+--- Takes the keyboard and the cursor for a screen the page has the payload for.
+-- The page holds the keyboard as well as the cursor: the modifier gestures and
+-- Escape are read there, and a held ALT must not open something else over the
+-- top. Idempotent, because the open path reaches it on a refresh as well.
+local function takeFocus()
+	if release ~= nil then return end
+	release = OPX.UI.AcquireFocus(FOCUS_OWNER, { keyboard = true, cursor = true })
+		and function() OPX.UI.ReleaseFocus(FOCUS_OWNER) end
+		or nil
+end
+
+--- Gives up on an open the page will never draw, and says so.
+-- Both callers reach here with the screen NOT drawn, so there is nothing on
+-- screen to explain the missing inventory: the toast is the only thing the
+-- player gets, and the journal line is the only thing anybody debugging it gets.
+local function abandonOpen(why)
+	Open77.log.error(('[inventory] the open payload never reached the page (%s): the screen ' ..
+		'is not drawn, so the keyboard and the cursor are not taken'):format(why))
+	local line = locale('inventory.error.failed')
+	if OPX.Toast.Show({ id = 'inventory.open', kind = 'error', message = line }) == nil then
+		Open77.log.info('[inventory] ' .. line)
+	end
+	if open then
+		Screen.Close()
+	else
+		-- The server opened a container for a screen that is not going to exist.
+		Screen.Request('close')
+	end
+end
+
+--- Draws the granted open answer, and takes the focus once the page has it.
+--
+-- THE FOCUS IS TAKEN AFTER THE PAYLOAD LANDS, NEVER BEFORE IT. The host bounds a
+-- WebUI payload and REFUSES an oversized one whole -- see `CATALOG_PART` -- and
+-- this write carries TWO containers plus `configPayload()`, while the server
+-- bounds one container at 900 nodes and a 200-slot stash is a legal
+-- configuration. So the refusal is reachable, not theoretical.
+--
+-- Taken first, it left the player here: keyboard and cursor acquired, `open`
+-- true, and the page never sent `inventory:open` -- so its own focus stack is
+-- empty, `.layer-modal` keeps `pointer-events: none`, and no Escape handler was
+-- ever armed. Nothing is drawn and nothing answers, and `pass()`'s only recovery
+-- is `usable()`, which is false ONLY when the player is down or dead. The way
+-- out was to die.
 local function show(data)
 	if type(data.primary) ~= 'table' then return end
 	own = data.primary
@@ -265,28 +312,37 @@ local function show(data)
 	end
 
 	local wasOpen = open
+	local drawOn = handle
 	if not wasOpen then
 		handleSequence = handleSequence + 1
-		handle = ('inv%d'):format(handleSequence)
-		-- The page holds the keyboard as well as the cursor: the modifier gestures
-		-- and Escape are read there, and a held ALT must not open something else
-		-- over the top.
-		release = OPX.UI.AcquireFocus(FOCUS_OWNER, { keyboard = true, cursor = true })
-			and function() OPX.UI.ReleaseFocus(FOCUS_OWNER) end
-			or nil
+		drawOn = ('inv%d'):format(handleSequence)
 	end
-	open = true
 
 	local payload = {
-		handle = handle,
+		handle = drawOn,
 		config = configPayload(),
 		primary = data.primary,
 		secondary = type(data.secondary) == 'table' and data.secondary or false,
 	}
-	-- A send made before the page has reported ready is DROPPED, not queued, so
-	-- the very first open -- the one that built the surface -- is held until the
-	-- page says it has mounted.
-	if not send('open', payload) then pendingOpen = payload end
+	-- BOTH ANSWERS ARE READ, and reading only the first was the bug. `false` is
+	-- "the page has not reported ready" -- a send then is DROPPED, not queued, so
+	-- the payload is held for the handshake. The second answer is the HOST's
+	-- refusal, and it comes back alongside a `true`: a caller reading one value
+	-- took a payload the page never saw for one it had drawn.
+	local sent, refused = send('open', payload)
+	if refused then
+		abandonOpen('the host refused it as too large or not serialisable')
+		return
+	end
+
+	handle = drawOn
+	open = true
+	if sent then
+		pendingOpen, pendingSince = nil, nil
+		takeFocus()
+	else
+		pendingOpen, pendingSince = payload, OPX.Now()
+	end
 
 	if not wasOpen then TriggerEvent(M.Event.ON_OPENED) end
 end
@@ -298,7 +354,7 @@ function Screen.Close()
 	open = false
 	send('close', { handle = handle })
 	handle = nil
-	pendingOpen = nil
+	pendingOpen, pendingSince = nil, nil
 	if release then release() end
 	release = nil
 	Screen.Request('close')
@@ -408,11 +464,18 @@ local function announce(changes)
 			:format(change.delta > 0 and '+' or '', change.delta, Catalog.Label(change.name))
 	end
 	if #lines == 0 then return end
-	OPX.Toast.Show({
+	-- THE ANSWER IS CHECKED, because it can be refused. `OPX.Toast.Show` answers
+	-- nil for a surface that is not up, and this used to discard that: the notice
+	-- went nowhere and said so to nobody. Six other modules already fall back to
+	-- the client journal on this exact path; these three did not, and the toast's
+	-- own docstring claimed they did.
+	local line = table.concat(lines, '   ')
+	local raised = OPX.Toast.Show({
 		id = 'inventory.change',
 		kind = 'info',
-		message = table.concat(lines, '   '),
+		message = line,
 	})
+	if raised == nil then Open77.log.info('[inventory] ' .. line) end
 end
 
 --- Sends another resource's client half a message, from a thread of its own.
@@ -503,15 +566,62 @@ local function registerEvents()
 
 		local animation = payload.animation
 		if type(animation) == 'table' and type(animation.name) == 'string' then
-			-- Animations still live in a resource of their own; there is no contract
-			-- to read, so this is an ordinary cross-resource call that costs nothing
-			-- when it is not running.
-			tell('opx77_animations', 'play', animation.name, {
-				variant = animation.variant,
-				loop = false,
-				durationMs = animation.durationMs,
-				cancelable = false,
-			})
+			-- THROUGH OUR OWN CONTRACT, AND IT USED TO BE A CALL INTO NOTHING. This
+			-- read `tell('opx77_animations', 'play', ...)` -- the external resource
+			-- `modules/animations` was written to replace, which this server does
+			-- not load and which the manifest does not name. A cross-resource call
+			-- to a resource that is not running costs nothing and says nothing, so
+			-- eating an item played no animation at all and nobody could tell the
+			-- difference between "the config is wrong" and "the call went nowhere".
+			--
+			-- The comment that was here said there was no contract to read. There
+			-- is: `animations` publishes one, it takes the same four options under
+			-- the same names, and it is in this runtime.
+			-- THE BAR OWNS THE GESTURE, and that is why this asks `progress` rather
+			-- than `animations`. A timed action is three things -- a picture of how
+			-- long is left, a hold on the player, and a gesture -- and they have to
+			-- begin and end together or the player is left standing in an animation
+			-- with no bar, or held by a lock with nothing on screen to explain it.
+			-- `progress` starts both and `finish` takes both down on every exit.
+			--
+			-- A DURATION IS WHAT MAKES IT A BAR. An item whose `USE.ANIMATION` names
+			-- no `DURATION_MS` is a gesture and not a timed action, so it goes
+			-- straight to `animations` as before -- there is nothing to count.
+			local progress = OPX.Api.Get('progress')
+			local animations = OPX.Api.Get('animations')
+
+			if progress ~= nil and animation.durationMs ~= nil then
+				local shown = progress.Start(FOCUS_OWNER, {
+					label = payload.label or payload.name or '',
+					durationMs = animation.durationMs,
+					animation = { name = animation.name, variant = animation.variant },
+					-- Eating is the case this was written for, and the owner's words
+					-- were that the player must not be able to stop it.
+					cancelable = false,
+				})
+				if type(shown) == 'table' and shown.ok ~= true then
+					Open77.log.debug(('[inventory] the bar for %s was refused: %s')
+						:format(animation.name, tostring(shown.error)))
+				end
+			elseif animations == nil then
+				-- Optional, like every other contract this module reaches for: the
+				-- item is still used and its needs still move, and only the gesture
+				-- is lost. Said once rather than silently, because a missing
+				-- animation is exactly what the old call failed to report.
+				Open77.log.debug('[inventory] no animations contract: ' .. animation.name
+					.. ' is not played')
+			else
+				local played = animations.Play(animation.name, {
+					variant = animation.variant,
+					loop = false,
+					durationMs = animation.durationMs,
+					cancelable = false,
+				}, FOCUS_OWNER)
+				if type(played) == 'table' and played.ok ~= true then
+					Open77.log.debug(('[inventory] %s was refused: %s')
+						:format(animation.name, tostring(played.error)))
+				end
+			end
 		end
 
 		TriggerEvent(M.Event.ON_USED, payload)
@@ -564,9 +674,20 @@ function ensureSurface()
 		queueCatalog()
 		-- A screen opened before the page had mounted: its one write was held back
 		-- rather than dropped, because a send made before ready is not queued.
+		--
+		-- BOTH ANSWERS HERE TOO. This used to read none at all and clear the
+		-- payload regardless, so a refusal on the replay lost the open for good
+		-- while the screen stayed marked up -- and this is the LAST chance the
+		-- payload gets, because `inventory:ready` is emitted once per page.
 		if pendingOpen ~= nil then
-			send('open', pendingOpen)
-			pendingOpen = nil
+			local replayed, refused = send('open', pendingOpen)
+			pendingOpen, pendingSince = nil, nil
+			if replayed and not refused then
+				takeFocus()
+			else
+				abandonOpen(refused and 'the host refused the replay'
+					or 'the replay was not sent')
+			end
 		end
 	end)
 
@@ -607,6 +728,17 @@ local function pass()
 		end
 	end
 	drainCatalog()
+
+	-- A SCREEN MARKED UP THAT WAS NEVER DRAWN, and a recovery that does not need
+	-- the player to die. `usable()` below goes false only when they are down or
+	-- dead, so it was the only way out of an open the page never received.
+	-- `inventory:ready` is emitted once per page; a payload still waiting for it
+	-- a whole request timeout later is not going to be replayed.
+	if pendingOpen ~= nil and pendingSince ~= nil
+		and now - pendingSince > REQUEST_TIMEOUT_MS then
+		abandonOpen('the page never reported ready')
+	end
+
 	if open and not usable() then Screen.Close() end
 end
 
@@ -671,6 +803,7 @@ function M.Start()
 	-- screen was unreachable by any route and nothing on screen said why.
 	-- Nothing in `Register` needs a world row, so it goes first and survives.
 	M.Keys.Register()
+	M.Slotbar.Wire()
 	M.World.Wire()
 
 	OPX.Scheduler.Every('inventory.screen', 500, pass)

@@ -17,8 +17,15 @@
 --   3. `MAX_PER_OWNER` bounds how much any one owner can add to the walk.
 --
 -- The scheduler is the other half of it: there is no `CreateThread` loop here at
--- all. `OPX.Scheduler.Every` runs the two repeating jobs, and the only threads
--- this file spawns are one-shot bodies for work that has to yield on a promise.
+-- all. `OPX.Scheduler.Every` runs the repeating jobs, and the only threads this
+-- file spawns are one-shot bodies for work that has to yield on a promise.
+--
+-- TWO of those jobs stand for the session -- `target:sweep` and `target:watch` --
+-- and the third, `target:resolve`, exists only while a pick is in flight. The
+-- slicing above is what makes it the fastest job in the resource, and a job at
+-- that interval sets the floor on how often the one client loop wakes; leaving it
+-- registered between picks bought forty passes a second of reading a nil. See
+-- `setPending`.
 
 local M = OPX.Modules.Get('target')
 local Model = M.Model
@@ -98,11 +105,50 @@ local down = false
 local liveness = {}
 
 -- The pick being resolved, or nil: request, context, queue, at, rows, listed,
--- budget and whether a slice's thread is running.
+-- budget and whether a slice's thread is running. Written only through
+-- `setPending`, which is what keeps the resolve job alive for exactly as long as
+-- there is a pick to slice.
 local pending = nil
+
+-- The resolve job's handle while a pick is in flight, and the job body itself,
+-- declared here because `setPending` is needed above the point `resolve` can be
+-- written -- `close` clears a pick, and `close` comes before the slicing.
+local resolveJob = nil
+local resolve
 
 -- Scheduler handles, so Stop takes the jobs down with the module.
 local jobs = {}
+
+--- Sets the pick being resolved, registering the job that slices it and dropping
+--- that job again the moment there is nothing to slice.
+---
+--- WHY RESOLVE IS NOT A STANDING JOB. `pending` is nil except between a right
+--- button press and the last slice of that press: a fraction of a second, a few
+--- times a minute. Registered for the session at RESOLVE_MS it was the fastest
+--- interval in the resource, so it set the floor on how often the one client loop
+--- woke at all -- forty passes a second, every one of them to read a nil and
+--- return. The scheduler is built for exactly this: `Cancel` drops a job at the
+--- next pass rather than leaving a hole, so a job may follow the thing it serves.
+---
+--- THE SLICING IS UNTOUCHED. While a pick is in flight the job is registered at
+--- the same RESOLVE_MS and hands `slice` the same BATCH rows per pass. This
+--- decides only whether the job exists when there is no pick, and the budget
+--- margin during one is the margin it always was.
+-- @author dop42
+-- @param job table|nil
+local function setPending(job)
+	pending = job
+	if job ~= nil then
+		if resolveJob == nil then
+			resolveJob = OPX.Scheduler.Every('target:resolve', RESOLVE_MS, resolve)
+		end
+		return
+	end
+	if resolveJob ~= nil then
+		OPX.Scheduler.Cancel(resolveJob)
+		resolveJob = nil
+	end
+end
 
 -- Reads the generation an owner is on, or nil when it is not running. A module in
 -- this VM answers the sentinel; a separate resource answers the host's number, so
@@ -201,7 +247,8 @@ end
 local function close(reason)
 	request = request + 1
 	local was = opened
-	opened, busy, selection, listed, pending = false, false, nil, {}, nil
+	opened, busy, selection, listed = false, false, nil, {}
+	setPending(nil)
 	if handle ~= nil then send('target:close', { handle = handle }) end
 	handle = nil
 	OPX.UI.ReleaseFocus(FOCUS)
@@ -304,7 +351,7 @@ end
 -- Draws the resolved list, or nothing at all.
 local function finish()
 	local job = pending
-	pending = nil
+	setPending(nil)
 	if job == nil or not stillHeld(job.request) then return end
 	busy = false
 	if #job.rows == 0 then
@@ -331,7 +378,7 @@ local function slice()
 	local last = math.min(job.at + BATCH - 1, #job.queue)
 	while job.at <= last do
 		if not stillHeld(job.request) then
-			pending = nil
+			setPending(nil)
 			return
 		end
 		if OPX.Now() >= job.budget then
@@ -350,7 +397,7 @@ local function slice()
 			if answer == true or answer == false then mark = answer end
 		end
 		if not stillHeld(job.request) then
-			pending = nil
+			setPending(nil)
 			return
 		end
 		if allowed and Registry.Get(row.token) == row and Registry.Matches(row, job.context) then
@@ -371,11 +418,11 @@ end
 
 -- Starts the next slice, if the last one has finished. The scheduler job, and the
 -- only thing that paces the resolution.
-local function resolve()
+function resolve()
 	local job = pending
 	if job == nil or job.inFlight then return end
 	if not stillHeld(job.request) then
-		pending = nil
+		setPending(nil)
 		return
 	end
 	job.inFlight = true
@@ -423,7 +470,7 @@ local function pick(payload)
 		send('target:empty', { handle = handle })
 		return
 	end
-	pending = {
+	setPending({
 		request = request,
 		context = context,
 		-- One sweep for the whole pick, inside Candidates.
@@ -433,7 +480,7 @@ local function pick(payload)
 		listed = {},
 		budget = OPX.Now() + LOOKUP_BUDGET_MS,
 		inFlight = false,
-	}
+	})
 end
 
 -- Runs a listed row's onSelect once its target and its predicate still hold. On
@@ -497,7 +544,8 @@ local function open()
 	request = request + 1
 	sequence = sequence + 1
 	handle = ('t%d'):format(sequence)
-	opened, selection, listed, busy, pending = true, nil, {}, false, nil
+	opened, selection, listed, busy = true, nil, {}, false
+	setPending(nil)
 	OPX.UI.AcquireFocus(FOCUS, { keyboard = true, cursor = true })
 	if not controls(true) then return close('controls_unavailable') end
 	local drawn = send('target:open', {
@@ -522,7 +570,14 @@ end
 
 -- Closes the eye once the key, the focus or the target is gone.
 local function watch()
-	if not held() then armed = true end
+	-- `armed` FIRST, and the order is the whole point. Re-arming is a latch that
+	-- only ever goes one way: `open` drops it on a press, this raises it on the
+	-- release, and raising one that is already up is the definition of
+	-- recomputing an answer that did not change. `held` is two host reads --
+	-- `input.keyFor` then `input.isDown` -- so an ungated read cost forty of them
+	-- a second for the whole session to re-decide a boolean that is true except
+	-- in the fraction of a second between a press and its release.
+	if not armed and not held() then armed = true end
 	if not opened then return end
 	if OPX.UI.FocusOwner() ~= FOCUS or not held() or down or living() == nil then
 		return close('input_released')
@@ -838,7 +893,8 @@ function M.Init()
 	BATCH = math.floor(tuned('BATCH', 5, 1, 16))
 
 	opened, busy, handle, sequence, request = false, false, nil, 0, 0
-	selection, listed, pending = nil, {}, nil
+	selection, listed = nil, {}
+	setPending(nil)
 	armed, down = true, false
 	lastPick, lastHover, nextCheck = -math.huge, -math.huge, 0
 	disabledBy, liveness, jobs = {}, {}, {}
@@ -931,7 +987,8 @@ function M.Start()
 	end
 
 	jobs[#jobs + 1] = OPX.Scheduler.Every('target:watch', WATCH_MS, watch)
-	jobs[#jobs + 1] = OPX.Scheduler.Every('target:resolve', RESOLVE_MS, resolve)
+	-- `target:resolve` is not registered here. It exists only while a pick is
+	-- being sliced, and `setPending` is what puts it up and takes it down.
 end
 
 --- Takes the eye down and gives the key and the controls back.

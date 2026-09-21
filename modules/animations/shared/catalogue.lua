@@ -40,7 +40,7 @@ local ENTRY_ICONS = { emote = true, talk = true, heart = true, heal = true, drin
 
 -- Catalogue rows: profile name, category, clip stem and variant suffixes.
 local ENTRIES = {
-	{ NAME = 'handsup', CATEGORY = 'gestures', PLACEMENT = 'standing',
+	{ NAME = 'handsup', CATEGORY = 'gestures', PLACEMENT = 'standing', WALK = 1,
 		STEM = 'stand__2h_up__03__',
 		VARIANTS = { 'look_around__01', 'look_left__01', 'look_right__01', 'shuffle__01' } },
 	{ NAME = 'clap', CATEGORY = 'gestures', PLACEMENT = 'standing',
@@ -51,14 +51,14 @@ local ENTRIES = {
 		STEM = 'stand__dance__02__',
 		VARIANTS = { 'dancing__02', 'dancing__03', 'dancing__04', 'dancing__05', 'dancing__07',
 			'dancing__08' } },
-	{ NAME = 'phone', CATEGORY = 'social', PLACEMENT = 'standing', PROP = 'phone', ICON = 'talk',
+	{ NAME = 'phone', CATEGORY = 'social', PLACEMENT = 'standing', WALK = 1.4, PROP = 'phone', ICON = 'talk',
 		STEM = 'stand__2h_phone__03__',
 		VARIANTS = { 'tap_phone__01', 'shuffle__01' } },
 
-	{ NAME = 'cry', CATEGORY = 'emotions', PLACEMENT = 'standing',
+	{ NAME = 'cry', CATEGORY = 'emotions', PLACEMENT = 'standing', WALK = 1.2,
 		STEM = 'stand__rh_on_forehead__01__',
 		VARIANTS = { 'cry__01', 'cry__02', 'rub_tears__01', 'blow_nose__02' } },
-	{ NAME = 'think', CATEGORY = 'emotions', PLACEMENT = 'standing', ICON = 'info',
+	{ NAME = 'think', CATEGORY = 'emotions', PLACEMENT = 'standing', WALK = 1.4, ICON = 'info',
 		STEM = 'stand__rh_on_chin__01__',
 		-- The space in 'rub_forehead__ 01' is in the platform's clip name, not a
 		-- typo; it is also why Common.Text accepts a space.
@@ -78,17 +78,17 @@ local ENTRIES = {
 			'stretch_muscle_04', 'stretch_muscle_05', 'stretch_muscle_06', 'stretch_muscle_07',
 			'stretch_muscle_08', 'stretch_muscle_09', 'stretch_muscle_10' } },
 
-	{ NAME = 'smoke', CATEGORY = 'consumables', PLACEMENT = 'standing', PROP = 'cigarette',
+	{ NAME = 'smoke', CATEGORY = 'consumables', PLACEMENT = 'standing', WALK = 1.3, PROP = 'cigarette',
 		ICON = 'smoke',
 		STEM = 'stand__rh_cigarette__01__',
 		VARIANTS = { 'smoke__01', 'smoke__02', 'smoke__03', 'drop_ash__01', 'drop_ash__04',
 			'look_around__01', 'look_around__02', 'shuffle__01', 'shuffle__02', 'shuffle__04',
 			'wipe_forehead__01' } },
-	{ NAME = 'cigar', CATEGORY = 'consumables', PLACEMENT = 'standing', PROP = 'cigar', ICON = 'smoke',
+	{ NAME = 'cigar', CATEGORY = 'consumables', PLACEMENT = 'standing', WALK = 1.3, PROP = 'cigar', ICON = 'smoke',
 		STEM = 'stand__rh_cigar__weight_right__01__',
 		VARIANTS = { 'smoke__01', 'smoke__02', 'smoke__03', 'look_left__01', 'scratch_nose__01',
 			'scratch_ball__01' } },
-	{ NAME = 'drink', CATEGORY = 'consumables', PLACEMENT = 'standing', PROP = 'can', ICON = 'drink',
+	{ NAME = 'drink', CATEGORY = 'consumables', PLACEMENT = 'standing', WALK = 1.2, PROP = 'can', ICON = 'drink',
 		STEM = 'stand__rh_can__01__',
 		VARIANTS = { 'drink__01', 'drink__03', 'drink__04', 'shuffle__01', 'spill__01',
 			'spill__02' } },
@@ -113,7 +113,7 @@ for index = 1, #Catalogue.CATEGORIES do isCategory[Catalogue.CATEGORIES[index]] 
 -- Reduces a clip suffix to the words shown beside a variant:
 -- 'rub_forehead__ 01' reads 'rub forehead 1'.
 local function words(suffix)
-	local spoken = suffix:gsub('[_%s]+', ' '):gsub('^%s+', ''):gsub('%s+$', '')
+	local spoken = OPX.String.Trim((suffix:gsub('[_%s]+', ' ')))
 	spoken = spoken:gsub('%f[%d]0+(%d)', '%1')
 	return spoken
 end
@@ -139,10 +139,33 @@ for index = 1, #ENTRIES do
 				or Catalogue.CATEGORY_ICONS[row.CATEGORY] or 'emote',
 			prop = row.PROP,
 			placement = row.PLACEMENT or 'standing',
+			-- Metres per second this emote may be walked at, or nil for one that
+			-- holds the player still. See `client/walk.lua` for what the number
+			-- actually buys: `Open77.movement.setWalkMode` is a LEASE on the
+			-- player's body, not a property of the animation, and there is no
+			-- `canWalk` anywhere in the platform.
+			--
+			-- ONLY A STANDING POSE MAY CARRY ONE, and the rule is enforced rather
+			-- than trusted. `sit`, `examine` and `wounded` are authored against
+			-- the ground: walking out of one does not produce a player strolling
+			-- while seated, it produces a body sliding across the pavement in a
+			-- pose that no longer means anything. A `WALK` on such a row is a
+			-- config mistake and is dropped, not honoured.
+			walk = nil,
 			clips = {},
 			words = {},
 			variantOf = {},
 		}
+		-- Bounded to what `setWalkMode` accepts (0.5 to 2.5 m/s). Out of range is
+		-- dropped here rather than refused once a second by the native, which
+		-- would be a fault nobody sees: the emote would simply never walk and no
+		-- line anywhere would say why.
+		local wanted = tonumber(row.WALK)
+		if wanted ~= nil and entry.placement == 'standing'
+			and wanted >= 0.5 and wanted <= 2.5 then
+			entry.walk = wanted
+		end
+
 		for position = 1, #row.VARIANTS do
 			local suffix = row.VARIANTS[position]
 			local clip = type(suffix) == 'string' and stem .. suffix or nil

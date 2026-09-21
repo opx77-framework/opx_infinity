@@ -52,6 +52,10 @@ dependency "opx_lib"
 reload_policy "reconnect"
 
 shared_script "core/shared/main.lua"
+-- The glyph vocabulary, before anything that validates a name against it: the
+-- toast in `core/client/notify.lua`, `Model.ICONS` and `menu.M.ICONS` all point
+-- at this one table rather than each carrying a copy.
+shared_script "core/shared/glyphs.lua"
 shared_script "core/shared/channels.lua"
 shared_script "core/shared/registry.lua"
 shared_script "core/shared/lifecycle.lua"
@@ -82,9 +86,25 @@ shared_script "config/appearance.lua"
 shared_script "config/inventory.lua"
 shared_script "config/hud.lua"
 shared_script "config/prompts.lua"
+shared_script "config/progress.lua"
 shared_script "config/target.lua"
+shared_script "config/shops.lua"
 shared_script "config/animations.lua"
 shared_script "config/elevators.lua"
+-- Shared like the garages, dealership and clothing configs above, and for the
+-- same reason: the client draws an entrance's marker and reads the radius, the
+-- marker vocabulary and the key here. The DESTINATIONS are in it too and the
+-- client half never reads them -- it is sent the entrances it may see, already
+-- judged, and names a key and a leg back. See modules/teleports/module.lua.
+shared_script "config/teleports.lua"
+-- Shared: the client reads the refusal windows and the handover bar's length
+-- here, and the server re-derives every bound the client thinks it knows.
+shared_script "config/crafting.lua"
+-- Shared like the crafting config above it: the client draws the two spheres of
+-- every armoury and reads their positions here, and both halves must refuse the
+-- same rows.
+shared_script "config/gunsmith.lua"
+shared_script "config/hauling.lua"
 shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
@@ -103,6 +123,11 @@ shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
 shared_script "lib/shared/string.lua"
 shared_script "lib/shared/math.lua"
+-- The one job gate, ahead of every module that asks it a question. It was
+-- `modules/elevators/shared/access.lua`'s own five branches until
+-- `modules/teleports` wanted the same rule; a second hand-kept copy of an
+-- access decision is how two surfaces end up disagreeing about who may pass.
+shared_script "lib/shared/jobgate.lua"
 shared_script "lib/shared/text.lua"
 shared_script "lib/shared/validate.lua"
 shared_script "lib/shared/hooks.lua"
@@ -201,6 +226,9 @@ shared_script "modules/downed/locales.lua"
 server_script "modules/downed/server/storage.lua"
 server_script "modules/downed/server/main.lua"
 client_script "modules/downed/client/main.lua"
+-- The seam's other end. `main.lua` owns the state machine and draws nothing;
+-- this is the only file that knows the down screen is a CEF page.
+client_script "modules/downed/client/view.lua"
 
 shared_script "modules/menu/module.lua"
 shared_script "modules/menu/locales.lua"
@@ -277,10 +305,11 @@ client_script "modules/clothing/client/exports.lua"
 -- The two ends are in different repos on purpose. The CONTENT lives here: the law
 -- book, the ledger that charges, the response that stands units in the world, and
 -- the commands an operator or a job drives it with. The SEAM lives in
--- `open77-base`: `Open77.prevention.heat/.av`, the only way to move a star, since
--- every `PreventionSystem` method is scripted and the ones that raise a stage are
--- private. `client/main.lua` is the one file that speaks to that seam, and it
--- names the half it cannot reach instead of failing silently.
+-- `open77-base`: `Open77.prevention.setWanted/.requestAv/.state`, the only way to
+-- move a star, since every `PreventionSystem` method is scripted and the ones
+-- that raise a stage are private. `client/main.lua` is the one file that speaks
+-- to that seam, and it names the half it cannot reach instead of failing
+-- silently.
 shared_script "modules/ncpd/module.lua"
 shared_script "modules/ncpd/locales.lua"
 shared_script "modules/ncpd/shared/law.lua"
@@ -313,6 +342,7 @@ server_script "modules/inventory/server/containers.lua"
 server_script "modules/inventory/server/players.lua"
 server_script "modules/inventory/server/world.lua"
 server_script "modules/inventory/server/actions.lua"
+server_script "modules/inventory/server/currency.lua"
 server_script "modules/inventory/server/weapons.lua"
 server_script "modules/inventory/server/requests.lua"
 server_script "modules/inventory/server/commands.lua"
@@ -320,6 +350,7 @@ server_script "modules/inventory/server/main.lua"
 client_script "modules/inventory/client/main.lua"
 client_script "modules/inventory/client/world.lua"
 client_script "modules/inventory/client/keys.lua"
+client_script "modules/inventory/client/slotbar.lua"
 
 shared_script "modules/hud/module.lua"
 shared_script "modules/hud/locales.lua"
@@ -343,12 +374,21 @@ shared_script "modules/animations/shared/settings.lua"
 server_script "modules/animations/server/service.lua"
 server_script "modules/animations/server/commands.lua"
 server_script "modules/animations/server/main.lua"
+client_script "modules/animations/client/walk.lua"
 client_script "modules/animations/client/presenter.lua"
 client_script "modules/animations/client/main.lua"
 client_script "modules/animations/client/keys.lua"
 client_script "modules/animations/client/picker.lua"
 client_script "modules/animations/client/prompt.lua"
 client_script "modules/animations/client/exports.lua"
+
+-- The timed-action bar. AFTER `animations`, whose gesture it starts and stops
+-- together with the bar, and after `downed`, which takes it away. Both are
+-- declared optional, so the dependency walk would order it correctly wherever
+-- this block sat -- it is written here so the file reads in the order it runs.
+shared_script "modules/progress/module.lua"
+shared_script "modules/progress/locales.lua"
+client_script "modules/progress/client/main.lua"
 
 shared_script "modules/elevators/module.lua"
 shared_script "modules/elevators/locales.lua"
@@ -358,6 +398,63 @@ client_script "modules/elevators/client/state.lua"
 client_script "modules/elevators/client/main.lua"
 client_script "modules/elevators/client/panel.lua"
 client_script "modules/elevators/client/exports.lua"
+
+-- Teleports: operator-placed shortcuts to the parts of the map nobody can walk
+-- to, some of them locked to a job. After `elevators`, whose job gate it shares
+-- through `lib/shared/jobgate.lua` and whose config vocabulary it copies, and
+-- after `downed` and `prompts`, both of which it asks and neither of which it
+-- requires. Before `admin`, which stays last.
+shared_script "modules/teleports/module.lua"
+shared_script "modules/teleports/locales.lua"
+shared_script "modules/teleports/shared/access.lua"
+server_script "modules/teleports/server/main.lua"
+client_script "modules/teleports/client/main.lua"
+-- The lifecycle: the registry calls the module, and `Runtime` is what does the
+-- work. Without this file the client half is never built.
+client_script "modules/teleports/client/exports.lua"
+-- Hauling. After `target`, whose eye is the ENTIRE entry -- there is no command
+-- and no key -- and after `character`, which pays for a delivery. `progress`,
+-- `inventory` and `animations` are optional and are all ordered above anyway.
+-- Needs no permission of its own: `world.props` and `players.animations.control`
+-- are already declared for other modules, and this one adds nothing.
+shared_script "modules/hauling/module.lua"
+shared_script "modules/hauling/locales.lua"
+shared_script "modules/hauling/shared/access.lua"
+server_script "modules/hauling/server/claim.lua"
+server_script "modules/hauling/server/main.lua"
+client_script "modules/hauling/client/main.lua"
+
+-- Clothing shops. After `appearance`, whose fitting room it opens, and after
+-- `target`, whose eye carries its row -- both are ordered above. Before
+-- `admin`, which stays last.
+shared_script "modules/shops/module.lua"
+shared_script "modules/shops/locales.lua"
+server_script "modules/shops/server/storage.lua"
+server_script "modules/shops/server/main.lua"
+client_script "modules/shops/client/main.lua"
+
+-- The shared crafting service. AFTER `inventory`, whose bag the materials come
+-- out of and whose catalogue says what a recipe may name, and after `character`,
+-- which owns the citizen id an order is filed under and the purse a fee comes
+-- from -- both are `requires`. After `menu` and `progress`, which are optional
+-- and which the dependency walk would order correctly wherever this block sat;
+-- it is written here so the file reads in the order it runs.
+shared_script "modules/crafting/module.lua"
+shared_script "modules/crafting/locales.lua"
+shared_script "modules/crafting/shared/recipes.lua"
+server_script "modules/crafting/server/storage.lua"
+server_script "modules/crafting/server/main.lua"
+client_script "modules/crafting/client/main.lua"
+
+-- The gunsmith, which is the crafting service's first consumer. AFTER
+-- `crafting`, whose benches it registers, and after `target`, whose eye carries
+-- its two rows. Before `admin`, which stays last.
+shared_script "modules/gunsmith/module.lua"
+shared_script "modules/gunsmith/locales.lua"
+shared_script "modules/gunsmith/shared/access.lua"
+server_script "modules/gunsmith/server/main.lua"
+client_script "modules/gunsmith/client/main.lua"
+
 -- LAST of the modules, because it reaches into nearly all of them and provides
 -- nothing back. Every contract it uses is optional bar `character`: without the
 -- menu, the form or the target eye it logs one line each and all 50 commands
@@ -519,6 +616,22 @@ permissions {
 
   "players.stats.apply",
 
+  -- `Open77.players.teleport`, the ONLY thing in this resource that moves a
+  -- living body without killing it. `modules/teleports` is its only caller.
+  --
+  -- CHECKED IN THE DEVKIT, unlike the two model names at the bottom of this
+  -- block: `open77_permissions players.teleport` answers with a card of its own
+  -- and prints this exact manifest line, so the name is the catalogue's and not
+  -- a guess. The catalogue also says it "gates 0 natives", which is the same
+  -- shape `state.write` has above -- the listing counts what a native HANDLER
+  -- checks, and this one checks further down. The native's own card says
+  -- "Requires `players.teleport`" in as many words.
+  --
+  -- The native arrived in 2.31.13+op77.67. `modules/teleports/server/main.lua`
+  -- never assumes it: it looks the function up before every call and refuses
+  -- every trip with `unavailable` when it is absent, saying so once at start.
+  "players.teleport",
+
   "players.disconnect",
 
   "player.appearance.read",
@@ -526,6 +639,13 @@ permissions {
   "player.appearance.edit",
   "player.equipment.read",
   "player.equipment.edit",
+  -- `Open77.weapons.get` on the server, which is the only thing that can answer
+  -- WHETHER A WEAPON IS ACTUALLY IN HAND. The inventory used to answer that from
+  -- its own bookkeeping, and the game holsters a weapon by itself often enough
+  -- that the two drifted: pressing Use on a weapon the game had already put away
+  -- put it away again. The other four weapon calls this resource makes need no
+  -- permission; this one does, and the catalogue confirms the name.
+  "player.weapons.read",
   "puppets.present",
 
   "camera.preview",

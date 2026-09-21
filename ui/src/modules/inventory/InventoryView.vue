@@ -754,7 +754,7 @@ try {
           <header class="head">
             <div class="head-text">
               <span class="eyebrow">{{ label('bag', 'BAG') }}</span>
-              <h1>{{ titleOf(primary, 'bag') }}</h1>
+              <h1 class="op-truncate">{{ titleOf(primary, 'bag') }}</h1>
             </div>
             <!-- The key the player actually has, rebinds included: Lua reads it
                  back off the host at send time rather than trusting the config. -->
@@ -804,7 +804,7 @@ try {
           <footer class="foot">
             <button
               type="button"
-              class="row grow"
+              class="row op-label grow"
               data-augmented-ui="tr-clip border"
               :class="{ off: !primary || busy }"
               :disabled="!primary || busy"
@@ -814,7 +814,7 @@ try {
             </button>
             <button
               type="button"
-              class="row grow"
+              class="row op-label grow"
               data-augmented-ui="tr-clip border"
               :class="{ off: !primary || busy }"
               :disabled="!primary || busy"
@@ -824,7 +824,7 @@ try {
             </button>
             <button
               type="button"
-              class="row grow"
+              class="row op-label grow"
               data-augmented-ui="tr-clip border"
               @click="close"
             >
@@ -845,7 +845,7 @@ try {
             <header class="head">
               <div class="head-text">
                 <span class="eyebrow">{{ label(secondary.kind, '') }}</span>
-                <h1>{{ titleOf(secondary, 'stash') }}</h1>
+                <h1 class="op-truncate">{{ titleOf(secondary, 'stash') }}</h1>
               </div>
             </header>
 
@@ -877,7 +877,7 @@ try {
             <footer class="foot">
               <button
                 type="button"
-                class="row grow"
+                class="row op-label grow"
                 data-augmented-ui="tr-clip border"
                 :class="{ off: busy }"
                 :disabled="busy"
@@ -887,7 +887,7 @@ try {
               </button>
               <button
                 type="button"
-                class="row grow"
+                class="row op-label grow"
                 data-augmented-ui="tr-clip border"
                 @click="closeSecondary"
               >
@@ -944,15 +944,15 @@ try {
 
           <div class="fact">
             <span class="cap-mono">{{ label('weight') }}</span>
-            <span class="value">{{ detail.weight }}</span>
+            <span class="value op-value op-truncate">{{ detail.weight }}</span>
           </div>
           <div v-if="detail.ammo >= 0" class="fact">
             <span class="cap-mono">{{ label('ammo') }}</span>
-            <span class="value">{{ detail.ammo }}</span>
+            <span class="value op-value op-truncate">{{ detail.ammo }}</span>
           </div>
           <div v-if="detail.serial" class="fact">
             <span class="cap-mono">{{ label('serial') }}</span>
-            <span class="value">{{ detail.serial }}</span>
+            <span class="value op-value op-truncate">{{ detail.serial }}</span>
           </div>
 
           <div v-if="detail.wear >= 0" class="meter stack">
@@ -970,7 +970,7 @@ try {
           <button
             v-if="isBag && menuEntry?.usable"
             type="button"
-            class="row"
+            class="row op-label"
             :class="{ off: busy }"
             :disabled="busy"
             @click="doUse"
@@ -980,17 +980,24 @@ try {
           <button
             v-if="menuStack.count > 1"
             type="button"
-            class="row"
+            class="row op-label"
             :class="{ off: busy }"
             :disabled="busy"
             @click="openSplit"
           >
             {{ label('split') }}
           </button>
+          <!-- `droppable` is the server's own answer, carried on the catalogue
+               entry, and the row is HIDDEN rather than disabled: a greyed-out
+               Drop invites the question "why", and the honest answer -- a pile
+               is memory-only, so dropping eddies would delete them at the next
+               restart -- does not fit on a menu row. Dragging onto the ground
+               zone is still offered and still refused by the server, with a
+               toast that says so. -->
           <button
-            v-if="isBag && config.drops"
+            v-if="isBag && config.drops && menuEntry?.droppable !== false"
             type="button"
-            class="row"
+            class="row op-label"
             :class="{ off: busy }"
             :disabled="busy"
             @click="doDrop"
@@ -999,20 +1006,20 @@ try {
           </button>
 
           <template v-if="isBag">
-            <div class="sep">{{ label('giveTo') }}</div>
+            <div class="sep op-eyebrow">{{ label('giveTo') }}</div>
             <button
               v-for="person in nearby"
               :key="person.id"
               type="button"
-              class="row"
+              class="row op-label"
               :class="{ off: busy }"
               :disabled="busy"
               @click="doGive(person.id)"
             >
-              <span class="row-label">#{{ person.id }}</span>
-              <span class="row-value">{{ person.distance }}{{ label('m', 'm') }}</span>
+              <span class="row-label op-truncate">#{{ person.id }}</span>
+              <span class="row-value op-value">{{ person.distance }}{{ label('m', 'm') }}</span>
             </button>
-            <div v-if="!nearby.length" class="sep">{{ label('nobody') }}</div>
+            <div v-if="!nearby.length" class="sep op-eyebrow">{{ label('nobody') }}</div>
           </template>
         </div>
       </div>
@@ -1025,18 +1032,18 @@ try {
           <h2>{{ label('split') }}</h2>
         </header>
         <div class="stepper">
-          <button type="button" class="row" @click="stepSplit(-1)">&minus;</button>
+          <button type="button" class="row op-label" @click="stepSplit(-1)">&minus;</button>
           <span class="count">{{ split.count }}</span>
-          <button type="button" class="row" @click="stepSplit(1)">+</button>
+          <button type="button" class="row op-label" @click="stepSplit(1)">+</button>
         </div>
         <!-- TRUE, and the surface already knew it: the most this stack can give
              up is one unit less than it holds. -->
         <p class="hint">1 &ndash; {{ split.max }}</p>
         <footer class="foot">
-          <button type="button" class="row grow" @click="split.open = false">
+          <button type="button" class="row op-label grow" @click="split.open = false">
             {{ label('close') }}
           </button>
-          <button type="button" class="row grow on" @click="doSplit">
+          <button type="button" class="row op-label grow on" @click="doSplit">
             {{ label('split') }}
           </button>
         </footer>
@@ -1320,9 +1327,6 @@ try {
   letter-spacing: var(--op-track-head);
   text-transform: uppercase;
   color: var(--op-red-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .head h2 {
@@ -1663,14 +1667,7 @@ try {
 
 .fact .value {
   margin-left: auto;
-  min-width: 0;
-  font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
-  letter-spacing: var(--op-track-label);
   color: var(--op-text);
-  font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .prose {
@@ -1721,9 +1718,6 @@ try {
   min-width: 0;
   margin: 0;
   padding: var(--op-space-2) var(--op-space-3) calc(var(--op-space-2) + 1px);
-  font: 700 var(--op-fs-lead) / 1.25 var(--op-font-display);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--op-red-text);
   white-space: nowrap;
   cursor: pointer;
@@ -1743,18 +1737,12 @@ try {
 
 .row-label {
   flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .row-value {
   flex: none;
   margin-left: auto;
-  font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
-  letter-spacing: var(--op-track-label);
   opacity: 0.88;
-  font-variant-numeric: tabular-nums;
 }
 
 .row:hover:not(.off):not(.on) {
@@ -1784,9 +1772,6 @@ try {
   gap: var(--op-space-2);
   min-width: 0;
   padding: var(--op-space-3) 0 var(--op-space-1) var(--op-space-1);
-  font: 600 var(--op-fs-micro) / 1 var(--op-font-mono);
-  letter-spacing: var(--op-track-micro);
-  text-transform: uppercase;
   color: var(--op-red-deep);
 }
 

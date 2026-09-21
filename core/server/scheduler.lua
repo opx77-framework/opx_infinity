@@ -30,18 +30,62 @@ local nextHandle = 0
 
 local MIN_INTERVAL_MS = 50
 
+-- What a job runs at when its own interval cannot be read at all and it has
+-- never yet produced a usable one. It is deliberately SLOW. `MIN_INTERVAL_MS`
+-- was the old fallback and it is the wrong direction by three orders of
+-- magnitude: a save job configured at 30s that starts raising became a 50ms loop
+-- for the life of the resource. Running late costs a delayed pass; running 600x
+-- too fast costs the server.
+local FALLBACK_INTERVAL_MS = 60000
+
 --- This pass's interval. A function is re-read every pass, which is what a job
 --- whose cadence is a live tunable needs: a number captured at registration is
 --- frozen for the life of the resource.
+---
+--- A RAISE AND A LEGITIMATE NUMBER ARE NOW DISTINGUISHED, and they were not:
+--- `value = ok and answered or nil` collapsed a raising closure, a closure
+--- answering nil and a closure answering 0 into the same `nil`, which then
+--- floored to `MIN_INTERVAL_MS`. Nothing logged it -- step failures are reported
+--- once per run, interval failures never were -- and `Report` printed a confident
+--- `50ms` with no hint it was a fallback.
 local function intervalOf(job)
 	local value = job.interval
+
 	if type(value) == 'function' then
 		local ok, answered = pcall(value)
-		value = ok and answered or nil
+		if not ok then
+			-- Once per run of failures, the same rule the step below follows: an
+			-- interval closure that raises every pass would otherwise write a line
+			-- per pass, at the very rate this fallback exists to avoid.
+			if not job.intervalFailing then
+				job.intervalFailing = true
+				Open77.log.error(('[scheduler] %s: its interval raised (%s); running at %dms')
+					:format(job.name, tostring(answered), job.lastIntervalMs or FALLBACK_INTERVAL_MS))
+			end
+			return job.lastIntervalMs or FALLBACK_INTERVAL_MS
+		end
+		value = answered
 	end
-	value = math.floor(tonumber(value) or 0)
-	if value < MIN_INTERVAL_MS then return MIN_INTERVAL_MS end
-	return value
+
+	-- NaN and both infinities go the same way as a nil: `math.floor(math.huge)` is
+	-- an infinite `Wait`, which is a job that never runs again and says nothing.
+	local number = tonumber(value)
+	if number == nil or number ~= number or number == math.huge or number == -math.huge then
+		-- A cadence nobody can read is not a cadence of zero. Same fallback and
+		-- same one-line-per-run rule as the raise above.
+		if not job.intervalFailing then
+			job.intervalFailing = true
+			Open77.log.error(('[scheduler] %s: its interval is not a number (%s); running at %dms')
+				:format(job.name, type(value), job.lastIntervalMs or FALLBACK_INTERVAL_MS))
+		end
+		return job.lastIntervalMs or FALLBACK_INTERVAL_MS
+	end
+
+	job.intervalFailing = false
+	number = math.floor(number)
+	if number < MIN_INTERVAL_MS then number = MIN_INTERVAL_MS end
+	job.lastIntervalMs = number
+	return number
 end
 
 --- Registers repeating work on its own managed task. Returns a handle for
@@ -100,6 +144,18 @@ function OPX.Scheduler.Cancel(handle)
 	if job == nil then return end
 	job.live = false
 	jobs[handle] = nil
+	-- DROPPED FROM `order` TOO, and it was not. `order` is the registration
+	-- sequence `Report` walks; cancelling cleared `jobs[handle]` and left the
+	-- handle in it forever, so a caller that registers and cancels on a cycle --
+	-- a sweep that follows a session, say -- grew a list nothing ever shortened
+	-- for the life of the resource. `Report` reads correctly either way, which
+	-- is why nothing ever noticed.
+	for index = 1, #order do
+		if order[index] == handle then
+			table.remove(order, index)
+			break
+		end
+	end
 end
 
 --- Stops every job. The resource is going down; the tasks go with it either way,
@@ -110,6 +166,9 @@ function OPX.Scheduler.Stop()
 		job.live = false
 		jobs[handle] = nil
 	end
+	-- And the sequence with them: leaving it behind would have `Report` walk a
+	-- list of handles to nothing after a stop.
+	order = {}
 end
 
 --- One line per live job: name and interval. For the diagnostic command.
@@ -120,8 +179,13 @@ function OPX.Scheduler.Report()
 	for index = 1, #order do
 		local job = jobs[order[index]]
 		if job ~= nil then
-			lines[#lines + 1] = ('%-28s %6dms %s')
-				:format(job.name, intervalOf(job), job.failing and 'failing' or 'running')
+			-- THE INTERVAL IS NAMED AS A FALLBACK WHEN IT IS ONE. This printed a
+			-- confident `50ms` for a job whose interval closure was raising, which
+			-- is the one reading an operator would never question.
+			local interval = intervalOf(job)
+			local state = job.failing and 'failing' or 'running'
+			if job.intervalFailing then state = state .. ' (interval unreadable)' end
+			lines[#lines + 1] = ('%-28s %6dms %s'):format(job.name, interval, state)
 		end
 	end
 	return lines

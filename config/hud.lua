@@ -84,10 +84,22 @@ OPX.Config.MODULES.hud = {
 		PASSENGER = true,
 	},
 
-	-- Components of the game's own HUD, which this one replaces. The platform
-	-- drops every hide request of a resource when it stops, so nothing is put
-	-- back by hand.
+	-- Components of the game's own HUD, which this one replaces. `false` hides
+	-- one; `true` leaves it to the game. The platform drops every hide request of
+	-- a resource when it stops, so nothing is put back by hand, and a hide is a
+	-- CLAIM rather than an override -- releasing ours does not reveal a component
+	-- another resource is still hiding.
+	--
+	-- ALL THIRTEEN ARE LISTED, and that is the change. Seven were named and six
+	-- were simply absent, which reads as "we decided to show them" and meant "we
+	-- did not think about them". Every one now carries a value and a reason, so
+	-- the next person is disagreeing with a decision rather than filling a gap.
+	--
+	-- `Open77.hud.components()` is the authority on the set; the client half
+	-- reads it and applies only the names this build knows, so a name added or
+	-- renamed upstream costs nothing here.
 	VANILLA = {
+		-- Replaced outright by this HUD.
 		minimap = false,
 		compass = false,
 		clock = false,
@@ -95,5 +107,32 @@ OPX.Config.MODULES.hud = {
 		stamina = false,
 		weapon = false,
 		speedometer = false,
+
+		-- DEAD CHROME ON THIS SERVER. There are no quests, so the tracker draws
+		-- single-player objectives over a multiplayer world.
+		questTracker = false,
+
+		-- WE OWN NOTIFICATIONS. `core/client/notify.lua` and the overlay draw
+		-- every message this runtime sends; the vanilla stack would be a second,
+		-- differently-styled one saying things nobody here raises.
+		vanillaNotifications = false,
+
+		-- THE VANILLA INVENTORY AND CHARACTER SCREENS. This runtime has its own
+		-- for both, and two inventories over one body is the double-surface
+		-- problem every other seam in this tree is shaped to avoid: the vanilla
+		-- one shows the engine's equipment, ours shows the bag, and they disagree.
+		hubMenu = false,
+
+		-- LEFT TO THE GAME, DELIBERATELY, and each for its own reason.
+		--
+		-- `crosshair` is how a player aims. Hiding it is not a style choice, it
+		-- is taking away the weapon's usability.
+		crosshair = true,
+		-- `scanner` is real gameplay and we replace nothing it does.
+		scanner = true,
+		-- `phone` is the one genuinely open question. It is the vanilla contacts
+		-- list, which is single-player content -- but it is also a screen players
+		-- reach for, and nothing here replaces it yet. Shown until something does.
+		phone = true,
 	},
 }

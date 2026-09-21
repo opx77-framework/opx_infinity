@@ -435,7 +435,7 @@ function focusField(field: Field): void {
                    its own `::before` with `--op77-accent`, which is yellow under
                    `.op-theme-city`. Otherwise identical, and that is the only reason. -->
               <span class="eyebrow">FORM</span>
-              <h1>{{ title }}</h1>
+              <h1 class="op-truncate">{{ title }}</h1>
             </div>
           </div>
 
@@ -458,7 +458,7 @@ function focusField(field: Field): void {
                 :class="[`kind-${field.kind}`, { on: field.on }]"
                 @click="focusField(field)"
               >
-                <span class="label">{{ field.label }}</span>
+                <span class="label op-label op-truncate">{{ field.label }}</span>
                 <span class="cell">
                   <!-- NO `v-model`, here or anywhere on this surface. `:value` is what
                        Lua's last word on this field allows the line to show and `@input`
@@ -484,7 +484,7 @@ function focusField(field: Field): void {
                   <span v-if="field.kind === 'slider'" class="rule">
                     <i :style="{ width: fill(field) }" />
                   </span>
-                  <span v-if="field.kind !== 'text'" class="value">{{ field.value }}</span>
+                  <span v-if="field.kind !== 'text'" class="value op-value op-truncate">{{ field.value }}</span>
                   <span v-if="field.kind === 'text' && field.count && field.on" class="count">
                     {{ field.count }}
                   </span>
@@ -500,7 +500,7 @@ function focusField(field: Field): void {
           </ul>
 
           <div v-if="hint || status || keys.length" class="foot">
-            <p v-if="hint" class="hint">{{ hint }}</p>
+            <p v-if="hint" class="hint op-copy">{{ hint }}</p>
             <p v-if="status" class="status" :class="{ bad: statusBad }">{{ status }}</p>
             <div v-if="keys.length" class="keys">
               <span v-for="cap in keys" :key="cap.key" class="key">
@@ -739,9 +739,6 @@ function focusField(field: Field): void {
   letter-spacing: var(--op-track-head);
   text-transform: uppercase;
   color: var(--op-red-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* The sentence under the question. It is prose and it is the player's, not an
@@ -805,14 +802,10 @@ function focusField(field: Field): void {
     transform 120ms var(--op-ease);
 }
 
+/* The type is `.op-label` on the element. What is left here is this
+   surface's own: the field name yields to the cell beside it. */
 .label {
   flex: 0 1 auto;
-  min-width: 0;
-  font: 700 var(--op-fs-lead) / 1.25 var(--op-font-display);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* Zero flex-basis so a long typed line scrolls the cell instead of truncating the
@@ -872,12 +865,7 @@ function focusField(field: Field): void {
 /* A choice's option and a slider's number, as Lua rendered them, suffix and all. */
 .value {
   flex: 0 1 auto;
-  font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
-  letter-spacing: var(--op-track-label);
   opacity: 0.88;
-  font-variant-numeric: tabular-nums;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* A RULE, NOT A GAUGE, and ahead of the number as input.css had it. Two pixels
@@ -981,7 +969,6 @@ function focusField(field: Field): void {
 /* The one place the surface wraps: a hint is a sentence. */
 .hint {
   margin: 0;
-  font: 400 var(--op-fs-meta) / 1.4 var(--op-font-body);
   color: var(--op-text-dim);
   white-space: normal;
 }

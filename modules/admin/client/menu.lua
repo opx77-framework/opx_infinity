@@ -75,6 +75,11 @@ local handle, suspended = nil, false
 -- A status line to write when the next screen opens.
 local queuedStatus
 
+-- Lists to ask for again once the line that changes them has been ANSWERED, by
+-- command name. See `Menu.Run`, which used to sleep 1200ms instead of waiting
+-- for the answer it was already being sent.
+local pending = {}
+
 -- Bumped by every draw, so a stale open claims nothing.
 local drawn = 0
 
@@ -583,6 +588,10 @@ SCREENS.player = function(id)
 		section('admin.menu.section.actions'),
 		go('move', 'admin.menu.movement', 'playerMove', id, { icon = 'map' }),
 		go('health', 'admin.menu.healthActions', 'playerHealth', id, { icon = 'heal' }),
+		-- Beside the ped picker, because they are the same question one layer
+		-- apart: that one changes the body, this one changes what is on it.
+		icon(command('wardrobe', 'admin.menu.wardrobe', { Command.PLAYER_WARDROBE, target },
+			'roster'), 'person'),
 		modelRow(target, M.Target.ModelOf(id)),
 	})
 	local link = links()
@@ -1386,10 +1395,6 @@ SCREENS.server = function()
 		section('admin.menu.section.reports'),
 		icon(command('status', 'admin.menu.status', { Command.READ_STATUS }), 'info'),
 		icon(command('audit', 'admin.menu.audit', { Command.READ_AUDIT }), 'list'),
-		section('admin.menu.section.chat'),
-		icon(command('list', 'admin.menu.playerList', { Command.READ_PLAYERS }), 'person'),
-		icon(command('locations', 'admin.menu.locationList', { Command.READ_LOCATIONS }),
-			'location'),
 	}
 	if link.PLAYERS or link.SAVE then
 		items[#items + 1] = section('admin.menu.section.characters')
@@ -1552,6 +1557,62 @@ local function draw(inPlace)
 	handle = opened.value.handle
 end
 
+-- THE SERVER'S REFRESH FLOOR, mirrored. `ADMIN_RATE_REFRESH_MS` is 750 out of
+-- the box and the server remains the authority; this copy exists so the menu
+-- does not SEND a request the server would only turn away. It is the same
+-- bargain `FIND_MIN_TERM` strikes with the search floor a few hundred lines up.
+local REFRESH_FLOOR_MS = 750
+
+-- When each refresh question was last put to the server, by question.
+local askedAt = {}
+
+--- Asks the server for one list because the operator WALKED ONTO a screen that
+--- draws it, and drops the ask when the same question went out a moment ago.
+-- @author dop42
+--
+-- THE OWNER'S REPORT WAS "des fois je recois des message du style slow down
+-- dans le menu admin mais cela marche quand meme" -- a Slow down toast on a
+-- staff action that worked anyway -- and this was one of its two halves.
+--
+-- Walking root -> Players -> a player -> Health is three keypresses, and `push`
+-- below asks for the ROSTER on every screen whose name starts with `player`. So
+-- three deliberate presses put three identical roster requests on the wire
+-- inside about 300ms, the server's 750ms floor turned the second and the third
+-- away, and `OPX.Refuse` raised `error.tooFast` at the operator for each. The
+-- navigation itself worked perfectly -- the screens draw from the roster this
+-- client already holds -- so what the operator saw was a menu that worked while
+-- telling them to slow down. The limit was not wrong; asking three times for
+-- one list in a third of a second was.
+--
+-- ONLY THE INCIDENTAL ASKS COME THROUGH HERE. A refresh sent because a COMMAND
+-- was answered goes straight out (see `Menu.Answered`): that one is the single
+-- case where the list has actually changed and a stale answer is the wrong
+-- answer. So are the per-target asks -- a bag, an account's characters, a find
+-- page -- because each empties its store to `loading` before it asks, and a
+-- dropped request would leave that screen waiting for ever.
+-- @param topic string
+-- @param arg any
+-- @return boolean whether it was sent
+local function askFor(topic, arg)
+	local now = Client.NowMs()
+	-- Swept on the way in rather than on a timer: an entry past the floor can
+	-- never suppress anything again, so the table only ever holds the questions
+	-- asked in the last three quarters of a second.
+	for question, at in pairs(askedAt) do
+		if now - at >= REFRESH_FLOOR_MS then askedAt[question] = nil end
+	end
+
+	-- Keyed by the question and not by the topic. None of the topics that reach
+	-- here carries an argument today, but one that did -- and was keyed by its
+	-- topic alone -- would answer a second target's question with the first's
+	-- silence, which is the exact failure this whole change is about.
+	local question = topic .. '|' .. tostring(arg)
+	if askedAt[question] ~= nil then return false end
+	askedAt[question] = now
+	TriggerServerEvent(M.Event.REFRESH, topic, arg)
+	return true
+end
+
 -- Pushes a screen, asks for its data again, and draws it.
 local function push(screen, arg)
 	-- A FILTER SURVIVES A PAGE TURN. `more` pushes the SAME screen with `p + 1`,
@@ -1563,7 +1624,7 @@ local function push(screen, arg)
 	local carried = current and current.screen == screen and current.filter or nil
 	stack[#stack + 1] = { screen = screen, arg = arg, filter = carried }
 	-- Leaving the root is the moment to re-check what the ACL still grants.
-	if #stack == 2 then TriggerServerEvent(M.Event.REFRESH, 'access') end
+	if #stack == 2 then askFor('access') end
 	-- BEFORE the `^player` prefix test below, which this name also matches: that
 	-- branch would win the chain and ask only for the roster, and the list would
 	-- sit on 'loading' for ever. The roster is asked for here as well, because the
@@ -1577,14 +1638,14 @@ local function push(screen, arg)
 		chars.target, chars.rows, chars.incoming = tostring(arg), {}, {}
 		chars.loaded, chars.error = false, nil
 		TriggerServerEvent(M.Event.REFRESH, 'characters', tostring(arg))
-		TriggerServerEvent(M.Event.REFRESH, 'roster')
+		askFor('roster')
 	elseif screen:match('^player') then
-		TriggerServerEvent(M.Event.REFRESH, 'roster')
+		askFor('roster')
 	elseif screen == 'locations' or screen == 'saved' then
-		TriggerServerEvent(M.Event.REFRESH, 'locations')
+		askFor('locations')
 	elseif (screen == 'itemCategories' or screen == 'weaponList' or screen == 'ammoList') and
 		(not catalog.loaded or catalog.error) then
-		TriggerServerEvent(M.Event.REFRESH, 'items')
+		askFor('items')
 	elseif screen == 'bag' then
 		bag.target, bag.rows, bag.incoming, bag.loaded, bag.error = tostring(arg), {}, {}, false, nil
 		TriggerServerEvent(M.Event.REFRESH, 'bag', tostring(arg))
@@ -1615,25 +1676,50 @@ end
 -- ── what another file calls ─────────────────────────────────────────────────
 
 --- Writes the line under the list, or keeps it for the next screen.
+---
+--- THE ANSWER SAYS WHETHER THE PLAYER CAN READ IT NOW, and it used to say
+--- nothing at all. `modules/menu` no longer draws a status line: `SetStatus` is
+--- rerouted to a TOAST, because a line under a list is a line nobody watches. So
+--- a caller that writes the status and then raises a toast of its own is putting
+--- the same sentence on screen twice, in the same lane -- which is exactly what
+--- the owner saw when they gave themselves an item as staff: one untitled toast
+--- from here and one titled STAFF from `Client.Notice`. A caller cannot avoid
+--- that without being told whether this call landed, so this answers.
+---
+--- Queued is NOT landed. With no menu open the line is kept for the next screen
+--- and the player sees nothing now, so the caller's own toast is the only thing
+--- that will say anything -- the keybinds and the map pick both run commands
+--- with the menu shut.
 -- @author dop42
 -- @param line string
 -- @param ok boolean
+-- @return boolean whether the line is on screen now
 function Menu.Status(line, ok)
-	if type(line) ~= 'string' then return end
+	if type(line) ~= 'string' then return false end
 	local one = line:match('^[^\n]*') or line
 	if #one > 116 then one = Text.Bytes(one, 113) .. '...' end
 	if handle == nil then
 		queuedStatus = { text = one, ok = ok }
-		return
+		return false
 	end
 	local contract = Client.Contract('menu')
-	if contract ~= nil then contract.SetStatus(handle, one, ok == false) end
+	if contract == nil then return false end
+	local wrote = contract.SetStatus(handle, one, ok == false)
+	return type(wrote) == 'table' and wrote.ok == true
 end
 
 -- The refresh topics that are read FOR somebody, and are dropped by the server
 -- without one. Everything else -- the roster, the locations, the catalogue -- is
 -- the whole world's and takes no argument.
 local PER_TARGET = { bag = true, characters = true, found = true }
+
+-- GAPS, not instants: the settle after a switch waits each of these in turn, so
+-- the screen is rebuilt about 120 ms, 250 ms, 500 ms and 1 s after the command
+-- went out. Front-loaded because a client-side switch has usually landed within
+-- one frame and the operator is looking straight at the row; the tail is for a
+-- command that goes to the server and answers nothing back. Four redraws of a
+-- nine-row list, once per deliberate keypress.
+local SWITCH_SETTLE_MS = { 120, 130, 250, 500 }
 
 --- Who a per-target topic is asked for, or nil.
 -- The two are read from different places on purpose. A bag is read off the
@@ -1654,8 +1740,27 @@ local function refreshArg(topic)
 	return nil
 end
 
---- Runs a command line and asks for a list again a moment later.
+--- Runs a command line and asks for a list again once the server has answered.
 -- @author dop42
+--
+-- THIS USED TO BE A 1200 ms SLEEP, and that number was the whole bug the owner
+-- reported as "deleting a character takes seconds to leave the screen". The
+-- client already learns the outcome of every line it sends -- the dispatcher
+-- answers on `COMMAND_RESULT` and `onCommandResult` in `main.lua` reads it -- and
+-- the old code threw that away and guessed instead. Measured, the guess cost a
+-- fixed 1200 ms on top of the command's own round trip, the refresh's, and the
+-- two database reads behind the list.
+--
+-- IT WAS ALSO A CORRECTNESS BUG AND NOT ONLY A SLOW ONE. 1200 ms is a bet that
+-- the server finishes first, and a character delete is the heaviest write in
+-- this runtime: it ends a session and fans out across five modules. Lose the
+-- bet and the refetch reads the list BEFORE the row goes, the answer redraws the
+-- deleted row as though it were still there, and nothing asks again -- so the
+-- row stays until the operator navigates away. A guess cannot be tuned out of
+-- that; only the answer can.
+--
+-- A REFUSED LINE NOW ASKS FOR NOTHING. The old thread fired whatever the server
+-- said, which spent a list read on a delete the ACL had just refused.
 -- @param tokens table
 -- @param refresh string|nil
 function Menu.Run(tokens, refresh)
@@ -1670,12 +1775,91 @@ function Menu.Run(tokens, refresh)
 	-- A per-target topic with no target is a request the server drops anyway, so
 	-- it is not sent: the list stays as it was rather than silently not arriving.
 	if PER_TARGET[refresh] and arg == nil then return end
-	-- A one-shot thread, not a scheduler job: the list is asked for once, after
-	-- the server has had time to do the thing that changes it.
-	CreateThread(function()
-		Wait(1200)
-		TriggerServerEvent(M.Event.REFRESH, refresh, arg)
-	end)
+
+	-- Keyed by the command NAME, because that is what comes back on the answer.
+	-- A second run of the same line replaces the first: both want the same list,
+	-- and the later answer is the one that knows what is in it.
+	pending[tostring(tokens[1]):lower()] =
+		{ topic = refresh, arg = arg, tokens = tokens, atMs = Client.NowMs() }
+end
+
+-- Takes one character out of whichever list is holding it, answering whether it
+-- was there. Both stores are swept: the same citizen id can be in an account's
+-- list and in the find at once, and a row left in either is a row the operator
+-- can open a page on.
+local function dropCharacter(citizenId)
+	local gone = false
+	for _, store in ipairs({ chars, absent }) do
+		for index = #store.rows, 1, -1 do
+			if store.rows[index].citizenId == citizenId then
+				table.remove(store.rows, index)
+				gone = true
+			end
+		end
+	end
+	return gone
+end
+
+--- What the server said about a line this menu sent, and what follows from it.
+-- @author dop42
+--
+-- NOT OPTIMISM. Nothing here runs until the server has answered, and a refusal
+-- takes the other branch: the row stays, and the refusal is the line under the
+-- list. Removing a row before the server agreed would be worse than the delay it
+-- saves -- the case that matters is the delete that gets REFUSED, and a list
+-- that silently put the row back is how somebody deletes the wrong character
+-- twice.
+-- @param name string the command name, lowercased
+-- @param accepted boolean
+function Menu.Answered(name, accepted)
+	local held = pending[name]
+	if held == nil then return end
+	pending[name] = nil
+
+	-- A refused line changed nothing, so there is nothing to ask for. The redraw
+	-- `onCommandResult` already does puts back whatever state actually holds.
+	if accepted ~= true then return end
+
+	-- THE ROW GOES NOW, not a list read later. A confirmed delete is the server
+	-- saying the character is gone; the refetch below is still sent, because the
+	-- delete moves things this client cannot derive -- the account's active lock
+	-- among them -- but the operator does not wait on it to see the thing they
+	-- asked for happen.
+	if held.tokens[1] == Command.CHARACTER_DELETE and held.tokens[2] ~= nil then
+		if dropCharacter(tostring(held.tokens[2])) then draw(true) end
+	end
+
+	-- SENT, NEVER FLOORED -- `askFor` is deliberately not used here. This is the
+	-- one refresh that knows the list it asks for has CHANGED: the operator just
+	-- healed somebody, or renamed a character, and the server has said it
+	-- happened. Dropping it because walking onto the screen asked for the same
+	-- list half a second ago would leave the menu drawing the world as it was
+	-- before the action -- which is the failure the answer-driven refetch was
+	-- written to end. If it trips the server's floor the server drops it in
+	-- silence; it does not tell the operator their action was too fast, because
+	-- it was not.
+	TriggerServerEvent(M.Event.REFRESH, held.topic, held.arg)
+end
+
+-- How long a pending refresh waits for an answer that may never come.
+--
+-- The dispatcher answers every line it accepts, but "every" is a claim about
+-- code this module does not own, and the failure it would cause is the list
+-- never refreshing at all -- the exact symptom this change exists to end. So the
+-- old blind delay is kept as a FLOOR rather than the mechanism: past this the
+-- refresh is sent unanswered, which is no worse than what shipped before.
+local ANSWER_GRACE_MS = 3000
+
+-- Sends any refresh whose answer never arrived. On the upkeep pass, so a
+-- forgotten entry cannot outlive the menu.
+local function sweepPending()
+	local now = Client.NowMs()
+	for name, held in pairs(pending) do
+		if now - held.atMs > ANSWER_GRACE_MS then
+			pending[name] = nil
+			TriggerServerEvent(M.Event.REFRESH, held.topic, held.arg)
+		end
+	end
 end
 
 --- Puts a typed query on the open list screen, or clears it.
@@ -1690,7 +1874,7 @@ function Menu.Filter(query)
 	local current = top()
 	if current == nil then return end
 	local typed = type(query) == 'string' and Text.Bytes(query, 48) or nil
-	if typed ~= nil then typed = typed:match('^%s*(.-)%s*$') end
+	if typed ~= nil then typed = OPX.String.Trim(typed) end
 
 	-- THE ONE SCREEN WHOSE FILTER IS NOT A FILTER. Every other list on this menu
 	-- has already arrived in full and `matches()` cuts it down without touching
@@ -1878,7 +2062,37 @@ onAction = function(payload)
 		local tokens = {}
 		for index, token in ipairs(data.switch) do tokens[index] = token end
 		tokens[#tokens + 1] = payload.value and 'on' or 'off'
-		return Menu.Run(tokens)
+		Menu.Run(tokens)
+		-- AND THEN REDRAW, WHICH THIS BRANCH ALONE DID NOT DO. The two branches
+		-- above both end in `draw()` and both explain themselves by saying a
+		-- switch is the case that "waits on the round trip". Some switches do:
+		-- `tags` is answered by the server and its answer calls `Menu.Refresh`.
+		-- Many do not. `noclip` is decided on this client, by this client, and
+		-- nothing echoes -- so the row, and every OTHER row whose `disabled` is
+		-- computed from it, kept whatever the last draw had decided. The operator
+		-- saw a live checkbox beside a row that should have greyed out, and the
+		-- screen only told the truth again when some unrelated event happened to
+		-- redraw it. That is the "I have to move once for it to update" the owner
+		-- reported, and it was never about the cursor: the menu module does not
+		-- dispatch on a move, so moving cannot rebuild anything. It was about
+		-- which event got there first.
+		--
+		-- A COMMAND IS NOT SYNCHRONOUS, so one redraw here would read the state
+		-- the switch has not changed yet. A short bounded settle is what covers
+		-- both kinds without the menu having to know which kind it just ran: the
+		-- builder re-reads whatever it reads, four more times, over a second. An
+		-- in-place update is a rebuild and one frame, the menu is open and already
+		-- interactive, and a redundant frame costs a page repaint of nine rows.
+		--
+		-- A switch the SERVER answers keeps working exactly as before: its echo
+		-- still calls `Menu.Refresh`, and landing on an unchanged frame is free.
+		return CreateThread(function()
+			for _, delay in ipairs(SWITCH_SETTLE_MS) do
+				Wait(delay)
+				if handle == nil then return end
+				Menu.Refresh()
+			end
+		end)
 	end
 
 	if payload.action ~= 'select' then return end
@@ -1926,8 +2140,10 @@ local function pressed()
 	Client.Execute({ M.OPENER })
 end
 
--- Sets the down screen aside while a downed operator has the menu or a form up.
+-- Sets the down screen aside while a downed operator has the menu or a form up,
+-- and sends any refresh whose answer never came.
 local function syncSuspend()
+	sweepPending()
 	local downed = Client.Contract('downed')
 	if downed == nil then
 		suspending = false
@@ -2008,7 +2224,7 @@ function Menu.Start()
 		local hadInventory = session.inventory
 		adopt(payload)
 		if session.inventory and not hadInventory then
-			TriggerServerEvent(M.Event.REFRESH, 'items')
+			askFor('items')
 		end
 		draw(true)
 	end)

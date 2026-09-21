@@ -177,6 +177,80 @@ OPX.Config.MODULES.appearance = {
 		-- session. Past it the join moves on and the player keeps the clothes the
 		-- platform gave them.
 		CREATION_WAIT_MS = 60000,
+
+		-- WHERE THE CAMERA STANDS WHILE THE ROOM IS OPEN, as an offset in the
+		-- PUPPET'S OWN SPACE: X across, Y in front, Z up, in metres. Nil, or any
+		-- unusable value, leaves the camera on the body and falls back to the
+		-- `CAMERA_FOV` widening below.
+		--
+		-- X = 0 IS THE ENTIRE BUG FIX, so it is worth writing down what it fixes.
+		-- The report was "la camera n'est pas centrer sur le perso, le perso est
+		-- a droite" -- the character sits off to the right of the frame. That is
+		-- not a framing preference, it is the third-person rig: the rig is pinned
+		-- OVER THE PLAYER'S SHOULDER, laterally off the body's centreline, and
+		-- `Open77.camera.orbit` -- the only camera call this room used to make --
+		-- is a yaw INSIDE that rig which, in the platform's own words, "cannot
+		-- move the view off the player". Yawing an off-centre rig around the body
+		-- leaves the body exactly as off-centre as it found it.
+		--
+		-- AND THE PREVIOUS ATTEMPT MADE IT WORSE. It widened the lens instead of
+		-- moving the camera, and a wider lens on a rig that is still pinned
+		-- off-centre pushes the subject FURTHER towards the edge: there is more
+		-- frame on either side of an aim point that never moved.
+		--
+		-- `Open77.camera.detach(x, y, z)` takes the camera off the body and puts
+		-- it at this offset, so a lateral offset of zero is the body's
+		-- centreline -- the puppet in the middle of the frame, which is the thing
+		-- that was asked for. IT NEEDS NO PERMISSION: its handler checks none,
+		-- which is why this and not the `camera.script` rig (`create` / `attach`
+		-- / `follow`), whose framing control is finer but which would oblige this
+		-- resource to declare the permission the Scripted cameras guide
+		-- deliberately contrasts with `camera.preview` as the one you do NOT hand
+		-- a clothing shop without thinking. It has shipped since 2.31.0+op77.3.
+		--
+		-- Y IS HOW MUCH OF THE BODY YOU SEE: 2.6 m stands a whole figure in frame
+		-- at the game's normal lens; raise it to stand further back, lower it for
+		-- head and shoulders. Z = 1.1 is about chest height, so the shot is level
+		-- with the clothes rather than looking down on them.
+		--
+		-- AND X STAYS AT ZERO NOW THAT THE PANEL HAS THE WHOLE LEFT SIDE. The
+		-- obvious other half of "the menu takes the left of the screen" is "so
+		-- push the character into the right of the frame", and the temptation is
+		-- to do it here, with a lateral offset. IT CANNOT BE DONE FROM THIS FILE.
+		-- `Open77.camera.detach` takes a POSITION in the body's own space and
+		-- nothing else -- no aim point -- and `Open77.camera.orbit` is a yaw
+		-- inside the third-person rig, which the platform says in as many words
+		-- "cannot move the view off the player". The only native that could aim a
+		-- shot somewhere other than at the subject is the `camera.script` rig,
+		-- which is exactly the permission the paragraphs above refuse to take for
+		-- a clothing shop. A lateral X here changes which SIDE the camera stands
+		-- on; it does not move the puppet across the frame.
+		--
+		-- So the framing and the layout are one decision taken in the other file.
+		-- `.rail` in `ui/src/modules/panel/PanelView.vue` is bounded at 38vw for
+		-- this reason and says so: a whole-body shot at Y = 2.6 puts the figure in
+		-- the middle fifth of a 16:9 frame, and the panel stops short of it. If
+		-- this Y is lowered -- a closer shot, a bigger figure -- that width is the
+		-- number that has to come down with it.
+		CAMERA_OFFSET = { X = 0.0, Y = 2.6, Z = 1.1 },
+
+		-- The field of view the fitting room borrows, in degrees, or nil to
+		-- leave the player's own alone.
+		--
+		-- THE FALLBACK, AND ONLY THE FALLBACK, which is the change here. This
+		-- used to run on every room and was the whole of the framing; it now runs
+		-- only when `CAMERA_OFFSET` above is unusable or `Open77.camera.detach`
+		-- refuses -- because on a rig still pinned to the player, widening is
+		-- what put the character off to the right to begin with. When the camera
+		-- really does stand back, the player's own lens is left exactly alone.
+		--
+		-- Widening still costs no permission -- `Open77.camera.setFov` checks
+		-- none and `Open77.camera.view` reads the player's own value back so it
+		-- is restored exactly rather than guessed -- so it stays the right thing
+		-- to do on a build that cannot dolly. Around 80 is the game's normal on
+		-- foot; raise this to see more of an off-centre body, lower it to fill
+		-- the frame.
+		CAMERA_FOV = 95,
 	},
 
 	-- THE PANEL'S OWN DOOR. `ID` is stable because a player's rebind is stored

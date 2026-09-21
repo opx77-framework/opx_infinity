@@ -3,7 +3,16 @@
 --
 -- This is the only place that talks to the bridge. `MySQL` is an alias of
 -- `Open77.database`, installed only with the `database.access` permission, so it
--- is read through `rawget` and may be absent.
+-- may be absent: `run` reads the global and answers `no-database` rather than
+-- indexing a nil.
+--
+-- IT IS AN ORDINARY GLOBAL READ AND NOT `rawget`, and this paragraph went on
+-- saying `rawget` after the call had stopped being one. `core/shared/main.lua`
+-- carries the argument: `rawget` skips the metatable an Open77 environment
+-- installs, which is the very thing that resolves a host global, and reading a
+-- global that is not there never raises anyway -- so there was nothing for it to
+-- guard. `core/server/tunables.lua` then cited this file as precedent for a
+-- `rawget` that was no longer in it.
 --
 -- Every call yields, so it must come from a `CreateThread` -- never from file
 -- scope, and never from an event handler that is not itself on a thread.
@@ -30,7 +39,7 @@ local readyReason = 'not probed'
 
 --- Runs one bridge method, turning a raise into a Result.
 local function run(method, sql, params)
-	local api = rawget(_G, 'MySQL')
+	local api = MySQL
 	local fn = api and api[method]
 	if not fn or type(fn.await) ~= 'function' then
 		return Result.Err('no-database', ('MySQL.%s.await is unavailable'):format(method))
@@ -95,7 +104,7 @@ function OPX.Storage.Execute(sql, params) return run('update', sql, params) end
 -- @param statements table a list of { query, parameters } pairs
 -- @return Result
 function OPX.Storage.Transaction(statements)
-	local api = rawget(_G, 'MySQL')
+	local api = MySQL
 	local fn = api and api.transaction
 	if not fn or type(fn.await) ~= 'function' then
 		return Result.Err('no-database', 'MySQL.transaction.await is unavailable')
