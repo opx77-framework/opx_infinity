@@ -110,8 +110,7 @@ const cells = computed(() =>
       v-for="cell in cells"
       :key="cell.slot"
       class="cell op-frame"
-      :class="{ empty: !cell.filled }"
-      data-augmented-ui="tl-clip br-clip border"
+      data-augmented-ui="tr-clip border"
     >
       <span v-if="cell.key" class="cap">{{ cell.key }}</span>
 
@@ -151,26 +150,35 @@ const cells = computed(() =>
   pointer-events: none;
 }
 
+/* THE SAME CELL AS THE BAG, at three quarters of it. It borrowed the grid's
+   frame in spirit and not in its values: two chamfers where the bag has one, a
+   solid border where the bag's is 70% alpha, and `--op-plane-bg` where the bag
+   sits on `--op-plate`. Side by side they read as two different components, and
+   the peek's whole job is to be a preview of the bag. The tokens are the
+   grid cell's now, verbatim -- 72px against the grid's 90, which is the "a
+   little larger" the owner asked for without becoming a second inventory
+   screen across the bottom of the display. */
 .cell {
   position: relative;
   box-sizing: border-box;
-  width: 56px;
-  height: 56px;
+  width: 72px;
+  height: 72px;
   display: grid;
   place-items: center;
-  padding: 4px;
+  padding: var(--op-space-1);
 
-  --aug-tl: var(--op-cut-sm);
-  --aug-br: var(--op-cut-sm);
-  --aug-border-bg: var(--op-red-idle);
-  background: var(--op-plane-bg, rgba(0, 0, 0, 0.45));
+  --aug-tr: var(--op-cut-sm);
+  --aug-border-bg: rgba(var(--op-red-idle-rgb), 0.70);
+  background: var(--op-plate);
 }
 
-/* An empty slot is still drawn, and drawn quieter. Closing the gap would
-   renumber the row the player is trying to memorise. */
-.cell.empty {
-  --aug-border-bg: var(--op-line-faint, rgba(255, 255, 255, 0.18));
-}
+/* AN EMPTY SLOT IS DRAWN THE SAME AS A FULL ONE. It used to take a fainter
+   border, which made the row a diagram of what you are carrying rather than a
+   reminder of what the keys are bound to -- and the owner's answer to being
+   shown which cell matters was that it does not. The cell is still drawn, and
+   still says "empty" inside it: closing the gap would renumber the row the
+   player is trying to memorise, which is the one thing this row exists to
+   prevent. */
 
 .art {
   max-width: 100%;
@@ -180,17 +188,17 @@ const cells = computed(() =>
 
 /* `.op-truncate` in the template does the cut; this is the width it cuts TO. A
    grid item under `place-items: center` is sized by its content, so `overflow:
-   hidden` on its own clips nothing -- a long mark simply drew past a 56px cell.
+   hidden` on its own clips nothing -- a long mark simply drew past the cell.
    `max-width` is what gives the ellipsis an edge to land on. */
 .mark {
   max-width: 100%;
-  font-size: 13px;
+  font-size: 15px;
   letter-spacing: 0.06em;
   color: var(--op-red-text);
 }
 
 .mark.faint {
-  font-size: 9px;
+  font-size: 10px;
   text-transform: uppercase;
   color: var(--op-text-faint);
 }
@@ -201,7 +209,7 @@ const cells = computed(() =>
   top: 2px;
   left: 4px;
   font-family: var(--op-font-mono, monospace);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
   color: var(--op-red-text);
 }
@@ -211,7 +219,7 @@ const cells = computed(() =>
   right: 4px;
   bottom: 2px;
   font-family: var(--op-font-mono, monospace);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   color: var(--op-text);
 }
