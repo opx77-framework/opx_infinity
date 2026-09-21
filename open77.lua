@@ -101,6 +101,10 @@ shared_script "config/crafting.lua"
 -- same rows.
 shared_script "config/gunsmith.lua"
 shared_script "config/hauling.lua"
+-- Shared: the client half reads the sound event names, the participant ceiling
+-- and the refusal windows here, and the server re-derives every bound the
+-- client thinks it knows. See modules/calls/module.lua.
+shared_script "config/calls.lua"
 shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
@@ -444,6 +448,25 @@ shared_script "modules/gunsmith/shared/access.lua"
 server_script "modules/gunsmith/server/main.lua"
 client_script "modules/gunsmith/client/main.lua"
 
+-- Holocalls. AFTER `character`, whose citizen id a contact row is filed under
+-- and whose charInfo names who is calling -- a `requires`, so the dependency
+-- walk would order it correctly wherever this block sat; it is written here so
+-- the file reads in the order it runs. After `target` and `menu`, which are
+-- optional and carry every row and every entry the feature has. Before `admin`,
+-- which stays last.
+--
+-- `shared/model.lua` before either half: both of them index `M.Model`, and the
+-- server's `Init` builds a registry out of it on the first phase.
+shared_script "modules/calls/module.lua"
+shared_script "modules/calls/locales.lua"
+shared_script "modules/calls/shared/model.lua"
+server_script "modules/calls/server/main.lua"
+client_script "modules/calls/client/main.lua"
+-- The seam to the page, after the state half for the reason
+-- `modules/downed/client/view.lua` gives: the state half publishes on a local
+-- event and this is the only file that knows the other end is a CEF page.
+client_script "modules/calls/client/view.lua"
+
 -- LAST of the modules, because it reaches into nearly all of them and provides
 -- nothing back. Every contract it uses is optional bar `character`: without the
 -- menu, the form or the target eye it logs one line each and all 50 commands
@@ -605,6 +628,42 @@ permissions {
   "players.teleport",
 
   "players.disconnect",
+
+  -- THE HOLOCALL EYE-GLOW, one declaration per native handler and both names
+  -- out of the op77.76 catalogue rather than off a documentation page --
+  -- `open77_api server:Open77.players.setHoloCallEyes` prints this exact
+  -- manifest line, and the same for the reader. They arrived in
+  -- 2.31.13+op77.63, which is older than the op77.75 this ships against.
+  --
+  --   players.holocall.control  `Open77.players.setHoloCallEyes`, at the two
+  --                             call sites in `modules/calls/server/main.lua`
+  --                             that are the ONLY writers: `lightEyes` takes
+  --                             and renews a bounded lease for a participant,
+  --                             `darkenEyes` gives it back. Nothing else in
+  --                             this resource lights an eye
+  --   players.holocall.read     `Open77.players.getHoloCallEyes`, at the one
+  --                             call site in `eyesOn` in the same file. It is
+  --                             the sweep's watchdog and the `Eyes` contract
+  --                             entry underneath it: the reader answers for
+  --                             EVERY resource at once, so it cannot say whose
+  --                             lease is whose -- what it can say is that
+  --                             there is none at all, which for a live
+  --                             participant is a lease the platform dropped
+  --
+  -- The lease is BOUNDED AND RENEWED rather than held open, which is a decision
+  -- and not a detail; `config/calls.lua`'s EYES block and the header of
+  -- `modules/calls/server/main.lua` both say why, and the short version is the
+  -- one `modules/animations/client/walk.lua` already learned the hard way.
+  --
+  -- BOTH CALL SITES ARE ON THE SERVER, so a refusal of either lands in the
+  -- server journal and not on the player's machine -- unlike `camera.preview`
+  -- and `world.query` above, these two can be verified from the host.
+  -- `players.holocall.read` is enforced on the client as well and there is a
+  -- client `Open77.players.getHoloCallEyes` behind it; this resource does not
+  -- call it. The glow a client needs to know about is its own participation,
+  -- and the server already pushes that on `opx:net:calls:state`.
+  "players.holocall.control",
+  "players.holocall.read",
 
   "player.appearance.read",
   "player.cyberware.read",

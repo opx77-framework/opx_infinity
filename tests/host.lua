@@ -326,6 +326,13 @@ function Host.Environment(side, database)
 	local control
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
 	local bodies, effects, travels, notices, placement, lifts, trips
+	-- The blue holocall eye-glow leases, by player id. A REAL LEASE STORE and
+	-- not an accepting stub, for the reason the bag store above gives about
+	-- itself: `modules/calls` renews a bounded lease every sweep, releases it on
+	-- every exit and has a watchdog that re-takes one the platform dropped, and
+	-- a stub that answered `true` and kept nothing could not tell any of those
+	-- three apart -- nor a call that lit both parties from one that lit neither.
+	local holocall
 	local plates, watchers
 	local world, lives, gate, generations, carried, environment
 
@@ -1075,6 +1082,77 @@ function Host.Environment(side, database)
 			isFrozen = function(playerId) return bodies.frozen[tonumber(playerId) or playerId] end,
 			disconnect = function() return true end,
 
+			-- ── the blue holocall eye-glow ───────────────────────────────────
+			--
+			-- THE REFUSALS ARE MODELLED, NOT JUST THE SUCCESS, and the card's
+			-- own list is what they are modelled from: `holocall_unavailable`,
+			-- `invalid_argument`, `invalid_options`. A stub that took anything
+			-- and answered `true` would make the whole of `M.Init`'s clamping
+			-- untestable -- `durationMs` has a documented 0..600000 range and a
+			-- config outside it refuses EVERY renewal while logging nothing a
+			-- player can see, which is exactly the class of fault this harness
+			-- exists to catch off-platform.
+			setHoloCallEyes = function(playerId, enabled, options)
+				local id = tonumber(playerId) or playerId
+				holocall.writes[#holocall.writes + 1] =
+					{ playerId = id, enabled = enabled, options = options }
+				if holocall.absent then return false, 'holocall_unavailable' end
+				if holocall.refuse ~= nil then return false, holocall.refuse end
+				if type(enabled) ~= 'boolean' then return false, 'invalid_argument' end
+				-- The card says the id is a network player id, so a slot the
+				-- host does not know is an argument fault and not a lease.
+				if type(id) ~= 'number' or control.accounts[id] == nil then
+					return false, 'invalid_argument'
+				end
+				local duration = 0
+				if options ~= nil then
+					if type(options) ~= 'table' then return false, 'invalid_options' end
+					for key in pairs(options) do
+						-- "options may ONLY contain durationMs". A stub that
+						-- ignored a stray key would accept a caller passing
+						-- `{ durationMs = 30000, ms = 1 }` that the platform
+						-- refuses whole.
+						if key ~= 'durationMs' then return false, 'invalid_options' end
+					end
+					duration = options.durationMs
+					if duration == nil then
+						duration = 0
+					elseif type(duration) ~= 'number' or duration % 1 ~= 0
+						or duration < 0 or duration > 600000 then
+						return false, 'invalid_options'
+					end
+				end
+				if enabled then
+					-- `0` means "until this resource releases it", which is a
+					-- different thing from "for no time at all".
+					holocall.ours[id] = duration > 0 and { expiresAt = clock + duration } or false
+				else
+					-- "false releases only its lease": another resource's is
+					-- untouched, which is the property `eyesOn` rests on.
+					holocall.ours[id] = nil
+				end
+				return true
+			end,
+
+			getHoloCallEyes = function(playerId)
+				local id = tonumber(playerId) or playerId
+				holocall.reads[#holocall.reads + 1] = id
+				if holocall.absent then return nil, 'holocall_unavailable' end
+				if holocall.readRefuse ~= nil then return nil, holocall.readRefuse end
+				if type(id) ~= 'number' then return nil, 'invalid_player' end
+				if control.accounts[id] == nil then return nil, 'player_unavailable' end
+				local own = holocall.ours[id]
+				-- EXPIRY IS REAL. A bounded lease that never lapsed here would
+				-- make the renewal in `calls:scan` indistinguishable from doing
+				-- nothing at all.
+				if own ~= nil and own ~= false and clock >= own.expiresAt then
+					holocall.ours[id] = nil
+					own = nil
+				end
+				-- "The glow remains enabled while ANY resource holds a lease."
+				return own ~= nil or holocall.others[id] == true
+			end,
+
 			-- Moves a living body with no life transition, and answers a PROMISE
 			-- for whether it got there. See `trips` above for why the two are not
 			-- the same answer. The promise is already settled when it is handed
@@ -1198,6 +1276,27 @@ function Host.Environment(side, database)
 				effects.sfx[#effects.sfx + 1] = { event = event, options = options }
 				return #effects.sfx
 			end,
+
+			-- The frontend door: a 2D Wwise event with no entity and no
+			-- emitter. It answers `true`, or `nil` plus a reason -- NOT a
+			-- handle -- because a frontend one-shot has nothing to address a
+			-- stop to.
+			--
+			-- IT REFUSES AN UNKNOWN NAME RATHER THAN FORWARDING IT, which is
+			-- the platform's documented behaviour and the only reason the
+			-- calls module's ringtone is testable at all: a stub that accepted
+			-- every string could not tell `ui_phone_incoming_call` from a name
+			-- somebody made up, and "an invented event is indistinguishable
+			-- from no sound" is already written in `config/admin.lua` about
+			-- the other door. `effects.sfxEvents` is the curated table; a test
+			-- that wants a refusal names something outside it.
+			play2d = function(event)
+				effects.sfx2d[#effects.sfx2d + 1] = event
+				if effects.refuse2d ~= nil then return nil, effects.refuse2d end
+				if type(event) ~= 'string' or event == '' then return nil, 'invalid_sfx_event' end
+				if not effects.sfxEvents[event] then return nil, 'invalid_sfx_event' end
+				return true
+			end,
 		},
 
 		-- Player notifications, in the shape the runtime sends them: the toast is
@@ -1270,6 +1369,21 @@ function Host.Environment(side, database)
 	-- write in order -- a veil applied twice reads differently from one that
 	-- moved, which is the difference between a fix and a coincidence.
 	bodies = { visible = {}, frozen = {}, writes = {}, refuse = nil }
+
+	-- `ours` is this resource VM's lease per player, as `{ expiresAt }` or the
+	-- sentinel `false` for a lease taken with `durationMs = 0`, which the
+	-- platform holds until it is released. `others` is a lease held by SOME
+	-- OTHER resource, which is the case that makes `getHoloCallEyes` a
+	-- genuinely different question from "did we ask for one": the reader
+	-- answers for every resource at once, and a caller that treated it as its
+	-- own would release a glow it never took. `control.EyesHeldElsewhere` is
+	-- how a test stages that.
+	--
+	-- `absent` takes both natives away, which is the op77.62-and-older host the
+	-- calls module is written to survive; `refuse` makes the writer answer a
+	-- reason, the way a host that has the API and said no does.
+	holocall = { ours = {}, others = {}, writes = {}, reads = {},
+		absent = false, refuse = nil, readRefuse = nil }
 
 	-- The travel natives' own state, and every write to them.
 	travels = { noclip = false, mapPick = false, calls = {}, refuse = nil }
@@ -1385,6 +1499,26 @@ function Host.Environment(side, database)
 		plays = {}, calls = {}, entityPlays = {}, stopped = {}, live = {}, sfx = {},
 		updates = {},
 		next = 0, refuse = nil,
+
+		-- Every `Open77.sfx.play2d` the client half asked for, in order, and
+		-- the curated table it is judged against. These eight are Cyberpunk's
+		-- own `ui_phone_01` bank as the devkit's sfx catalogue lists them for
+		-- game build 2.31 -- the same eight `config/calls.lua` names, written
+		-- here so the config and the host agree about which strings are real
+		-- and a typo in either is one failing check rather than a silent
+		-- ringtone nobody hears.
+		sfx2d = {},
+		refuse2d = nil,
+		sfxEvents = {
+			['ui_phone_incoming_call'] = true,
+			['ui_phone_incoming_call_stop'] = true,
+			['ui_phone_incoming_call_positive'] = true,
+			['ui_phone_incoming_call_negative'] = true,
+			['ui_phone_initiation_call'] = true,
+			['ui_phone_initiation_call_stop'] = true,
+			['ui_phone_off'] = true,
+			['ui_menu_onpress'] = true,
+		},
 	}
 
 	local env = {
@@ -1733,6 +1867,13 @@ function Host.Environment(side, database)
 				lives[id] = nil
 				gate.sessions[id] = nil
 				gate.holds[id] = nil
+				-- AND THE GLOW, because the platform says so: a holocall lease
+				-- "clears on death, disconnect, resource stop/reload/failure or
+				-- expiry". Leaving it here would let a test see a lit slot that
+				-- nobody is sitting in, which is the one thing the lease's own
+				-- documentation promises cannot happen.
+				holocall.ours[id] = nil
+				holocall.others[id] = nil
 				return
 			end
 			world.positions[id] = world.positions[id] or { x = 0.0, y = 0.0, z = 0.0 }
@@ -1758,7 +1899,54 @@ function Host.Environment(side, database)
 		--- continue screen, and the case `MayAct` and `downed` both branch on.
 		--- One of `alive`, `dead`, `revivepending`, `respawnpending`,
 		--- `recovering`.
-		Life = function(playerId, phase) lives[tonumber(playerId) or playerId] = phase end,
+		Life = function(playerId, phase)
+			local id = tonumber(playerId) or playerId
+			lives[id] = phase
+			-- THE PLATFORM CLEARS A HOLOCALL LEASE ON DEATH, in its own words,
+			-- and modelling it here is what makes `modules/calls`'s watchdog
+			-- mean anything: the module re-takes a lease that went while the
+			-- call was still live, and without this the glow would survive a
+			-- flatline in the harness and nowhere else.
+			if phase == 'dead' or phase == nil then
+				holocall.ours[id] = nil
+				holocall.others[id] = nil
+			end
+		end,
+
+		--- Whether the platform is showing the blue glow on a slot, and whose
+		--- lease it is. Two answers, because `getHoloCallEyes` deliberately
+		--- collapses them and a test asserting on the collapsed one could not
+		--- tell a resource that took a lease from one that merely benefited
+		--- from somebody else's.
+		--- @return boolean lit, boolean ours
+		Eyes = function(playerId)
+			local id = tonumber(playerId) or playerId
+			local own = holocall.ours[id]
+			if own ~= nil and own ~= false and clock >= own.expiresAt then
+				holocall.ours[id] = nil
+				own = nil
+			end
+			return own ~= nil or holocall.others[id] == true, own ~= nil
+		end,
+
+		--- Stages a lease held by ANOTHER resource, which `getHoloCallEyes`
+		--- reports and `setHoloCallEyes(false)` must never touch.
+		EyesHeldElsewhere = function(playerId, held)
+			holocall.others[tonumber(playerId) or playerId] = held == true
+		end,
+
+		--- Takes this VM's lease away without telling it, the way a platform
+		--- reload or an expiry does. The case the calls sweep's watchdog is
+		--- written for.
+		EyesDropped = function(playerId)
+			holocall.ours[tonumber(playerId) or playerId] = nil
+		end,
+
+		--- The holocall stub's own state: every write, every read, and the two
+		--- switches that make the natives absent or refusing. Handed over by
+		--- reference, so a test flips `absent` or `refuse` on it directly, the
+		--- way it already does with `markers.refuse` and `bodies.refuse`.
+		holocall = holocall,
 
 		--- Puts a player in a routing bucket directly, the way another resource
 		--- would, without going through the runtime's own move.

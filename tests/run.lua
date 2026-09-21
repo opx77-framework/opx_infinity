@@ -20552,5 +20552,903 @@ do
 		end
 	end
 end
+-- ── the holocall ─────────────────────────────────────────────────────────────
+-- The owner asked for "appel vision": a player-to-player holocall with the
+-- game's own blue eye-glow on both parties, answered on the target eye rather
+-- than on a key of its own. Three of those words carry the whole of the risk.
+-- PLAYER TO PLAYER means two machines, neither of which may be believed about
+-- what the other agreed to. BOTH PARTIES means a piece of world state -- a
+-- lease on a native effect -- that outlives the call unless something gives it
+-- back. WITH CONSENT means the interesting half of the feature is the refusals
+-- and not the success.
+--
+-- So this section is about the refusals and the next one is about the lease.
+section('calls: the call is the server\'s, and every refusal it can give has a name')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the calls module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Api.Get('calls')
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+
+		check('the calls module is running', OPX.Modules.IsRunning('calls'),
+			OPX.Modules.Record('calls') and OPX.Modules.Record('calls').Reason)
+		check('and the contract is published',
+			calls ~= nil and type(calls.IsOnCall) == 'function'
+				and type(calls.HangUp) == 'function')
+
+		-- Connected players with characters, which is what `judge` demands
+		-- before anybody may place or take a call at all.
+		local A, B, C, D = 601, 602, 603, 604
+		local function incarnate(id, tag)
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Caller', lastName = tag } },
+				Functions = { UpdatePlayerData = function() end,
+					GetMetaData = function() return nil end,
+					SetMetaData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		incarnate(A, 'a')
+		incarnate(B, 'b')
+		incarnate(C, 'c')
+		incarnate(D, 'd')
+		control.Pump(5)
+
+		-- The refusal a client was sent, as `OPX.Refuse` puts it on the wire.
+		local function refusalFor(mark)
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if type(sent[1]) == 'table' and sent[1].kind == 'error' then return sent[1] end
+			end
+			return nil
+		end
+
+		-- One wire request, with the caller's own cooldown already spent. The
+		-- pump is not decoration: REQUEST_MS is 1500 and a pump round is 100ms
+		-- of host clock, so two requests in a row from one player really are
+		-- rate-limited, exactly as they would be in game.
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			control.netEvents[name](...)
+			env.source = nil
+			return mark
+		end
+
+		-- How many people are on a player's call, and ZERO rather than a raise
+		-- when they are on none.
+		--
+		-- `IsOnCall` answers `{ onCall = false }` with no `participants` field,
+		-- which is right -- a call that is not there has no list -- and every
+		-- check below that counts a call has to survive the answer being that.
+		-- Written after a mutation: making `HangUp` keep a call of one alive
+		-- took the whole suite down with `attempt to get length of a nil value`
+		-- instead of naming the check that noticed. A test that crashes still
+		-- fails, but it fails without telling anybody what it found.
+		local function onCallCount(playerId)
+			local answer = calls.IsOnCall(playerId)
+			local value = answer.ok and answer.value or {}
+			return value.onCall == true and #(value.participants or {}) or 0
+		end
+
+		-- The invite id the server last pushed to a player's screen, or nil.
+		local function inviteOn(playerId)
+			local found
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == module.Event.STATE and sent.source == playerId
+					and type(sent[1]) == 'table' then
+					found = type(sent[1].invite) == 'table' and sent[1].invite.id or nil
+				end
+			end
+			return found
+		end
+
+		check('the four wire verbs are registered',
+			type(control.netEvents[module.Event.INVITE]) == 'function'
+				and type(control.netEvents[module.Event.ACCEPT]) == 'function'
+				and type(control.netEvents[module.Event.DECLINE]) == 'function'
+				and type(control.netEvents[module.Event.HANG_UP]) == 'function')
+
+		-- ── calling yourself ─────────────────────────────────────────────────
+		local mark = ask(A, module.Event.INVITE, A)
+		local refused = refusalFor(mark)
+		check('a player who calls themselves is refused',
+			refused ~= nil and refused.code == 'calls.error.self',
+			refused and tostring(refused.code))
+		check('and the refusal names the operation it belongs to, not "unknown"',
+			refused ~= nil and refused.operation == module.Operation.INVITE,
+			refused and tostring(refused.operation))
+
+		-- ── a slot with no character ─────────────────────────────────────────
+		-- Admitted and through the gate, but never loaded a character: the
+		-- selection screen. A call placed to one would ring a screen with
+		-- nobody behind it, and the caller has to be told which END failed.
+		local EMPTY = 605
+		control.Admit(EMPTY, 'account-empty')
+		OPX.EnsureSession(EMPTY)
+		control.Life(EMPTY, 'alive')
+		mark = ask(A, module.Event.INVITE, EMPTY)
+		refused = refusalFor(mark)
+		check('a call to a slot with no character is refused as the TARGET not being ready',
+			refused ~= nil and refused.code == 'calls.error.targetNotReady',
+			refused and tostring(refused.code))
+
+		-- ── the ordinary call ────────────────────────────────────────────────
+		ask(A, module.Event.INVITE, B)
+		local ringing = inviteOn(B)
+		check('a call to a living, incarnate player rings on their screen',
+			ringing ~= nil, ringing)
+		check('and the caller is on no call yet -- an invite is not a call',
+			calls.IsOnCall(A).value.onCall == false)
+
+		-- A SECOND INVITE FROM THE SAME PLAYER. One out at a time, and the
+		-- model's header says why: a second would overwrite `outgoing` and
+		-- leave the first in the table with nothing pointing at it -- a ghost
+		-- the target could still accept, into a call the sender had forgotten
+		-- placing.
+		mark = ask(A, module.Event.INVITE, C)
+		refused = refusalFor(mark)
+		check('a second call placed while the first is ringing is refused',
+			refused ~= nil and refused.code == 'calls.error.alreadyPending',
+			refused and tostring(refused.code))
+
+		-- AND A SECOND INVITE TO THE SAME TARGET, from somebody else. The card
+		-- shows one call; a queue of calls nobody sees is worse for the caller
+		-- than a refusal they read at once.
+		mark = ask(C, module.Event.INVITE, B)
+		refused = refusalFor(mark)
+		check('and a second call TO a ringing player is refused as a busy line',
+			refused ~= nil and refused.code == 'calls.error.targetPending',
+			refused and tostring(refused.code))
+
+		-- ── somebody else's invite ───────────────────────────────────────────
+		-- The ids are minted from a counter and are not secret. Nothing rests
+		-- on them being secret, and this is the check that says so: the invite
+		-- named has to be the one waiting for THIS player.
+		mark = ask(C, module.Event.ACCEPT, ringing)
+		refused = refusalFor(mark)
+		check('a player accepting an invite that is not theirs gets nowhere',
+			refused ~= nil and refused.code == 'calls.error.noSuchInvite',
+			refused and tostring(refused.code))
+		check('and it is still ringing for the player it was for',
+			calls.IsOnCall(B).value.onCall == false and inviteOn(B) == ringing)
+
+		-- ── the accept ───────────────────────────────────────────────────────
+		ask(B, module.Event.ACCEPT, ringing)
+		local onCallA, onCallB = calls.IsOnCall(A).value, calls.IsOnCall(B).value
+		check('accepting puts both parties on one call',
+			onCallA.onCall == true and onCallB.onCall == true
+				and onCallA.callId == onCallB.callId,
+			tostring(onCallA.callId) .. '/' .. tostring(onCallB.callId))
+		check('with two participants and the caller as the founder',
+			#onCallA.participants == 2 and onCallA.founder == A,
+			#onCallA.participants .. ' founder=' .. tostring(onCallA.founder))
+
+		-- ── the third ────────────────────────────────────────────────────────
+		-- The SAME verb. `kind` is derived from the sender already being on a
+		-- call, which is the one place the two paths could be confused: a
+		-- `join` that opened a second call instead would look identical from
+		-- the inviting side and be wrong from every other.
+		ask(A, module.Event.INVITE, D)
+		local joinId = inviteOn(D)
+		check('a player on a call inviting somebody rings them too', joinId ~= nil)
+
+		ask(D, module.Event.ACCEPT, joinId)
+		local three = calls.IsOnCall(A).value
+		check('and the third accepting joins the SAME call rather than opening a second',
+			three.onCall == true and #three.participants == 3
+				and three.callId == onCallA.callId,
+			#three.participants .. ' on ' .. tostring(three.callId))
+
+		-- ── the fourth ───────────────────────────────────────────────────────
+		mark = ask(B, module.Event.INVITE, C)
+		refused = refusalFor(mark)
+		check('a fourth is refused: the owner asked for a third, not a conference',
+			refused ~= nil and refused.code == 'calls.error.callFull',
+			refused and tostring(refused.code))
+		check('and nobody was added while the refusal was being written',
+			onCallCount(A) == 3)
+
+		-- ── TWO INVITES OUT AND ONE SEAT LEFT ────────────────────────────────
+		-- The ceiling is checked when an invite is raised AND again when one is
+		-- answered, and only the second check catches this. Two participants of
+		-- a two-person call each invite somebody while there is room for one
+		-- more: both invites are legal when they are raised, and the second
+		-- accept arrives at a call that is already full. Without the re-check
+		-- the call would hold four, which is a row the screens cannot draw and
+		-- a number `Model.MAX_PARTICIPANTS` says cannot happen.
+		--
+		-- Written because a mutation proved it: removing the accept-stage
+		-- ceiling left the suite entirely green, so until this existed that
+		-- guard was carried by nothing.
+		ask(D, module.Event.HANG_UP)
+		ask(A, module.Event.HANG_UP)
+		control.Pump(20)
+		local E, F = 606, 607
+		incarnate(E, 'e')
+		incarnate(F, 'f')
+		control.Pump(5)
+
+		ask(A, module.Event.INVITE, B)
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('a two-person call is up again for the race',
+			onCallCount(A) == 2,
+			onCallCount(A))
+		ask(A, module.Event.INVITE, E)
+		ask(B, module.Event.INVITE, F)
+		check('both participants may have an invite out while one seat is left',
+			inviteOn(E) ~= nil and inviteOn(F) ~= nil)
+		ask(E, module.Event.ACCEPT, inviteOn(E))
+		check('the first of them takes the seat',
+			onCallCount(A) == 3,
+			onCallCount(A))
+		mark = ask(F, module.Event.ACCEPT, inviteOn(F))
+		refused = refusalFor(mark)
+		check('and the second is refused at the ANSWER, not let in to make a fourth',
+			refused ~= nil and refused.code == 'calls.error.callFull',
+			refused and tostring(refused.code))
+		check('with the call still holding exactly three',
+			onCallCount(A) == 3
+				and calls.IsOnCall(F).value.onCall == false,
+			onCallCount(A))
+
+		-- ── one leaves, two carry on ─────────────────────────────────────────
+		ask(E, module.Event.HANG_UP)
+		check('the third hanging up leaves the other two talking',
+			calls.IsOnCall(A).value.onCall == true
+				and onCallCount(A) == 2
+				and calls.IsOnCall(D).value.onCall == false)
+
+		-- ── the second leaves, and a call of one is not a call ───────────────
+		ask(B, module.Event.HANG_UP)
+		check('the second hanging up ends the call for the survivor too',
+			calls.IsOnCall(A).value.onCall == false
+				and calls.IsOnCall(B).value.onCall == false)
+
+		-- ── hanging up when there is nothing to hang up ──────────────────────
+		mark = ask(A, module.Event.HANG_UP)
+		refused = refusalFor(mark)
+		check('hanging up with no call is refused rather than silently accepted',
+			refused ~= nil and refused.code == 'calls.error.notInCall',
+			refused and tostring(refused.code))
+
+		-- ── the target is already talking to somebody else ───────────────────
+		ask(B, module.Event.INVITE, C)
+		ask(C, module.Event.ACCEPT, inviteOn(C))
+		check('two other players are on their own call',
+			calls.IsOnCall(B).value.onCall == true)
+		mark = ask(A, module.Event.INVITE, C)
+		refused = refusalFor(mark)
+		check('a call to somebody already talking is refused',
+			refused ~= nil and refused.code == 'calls.error.targetInCall',
+			refused and tostring(refused.code))
+
+		-- ── the disconnect ───────────────────────────────────────────────────
+		control.Fire('onPlayerDisconnected', C)
+		control.Pump(5)
+		check('a participant disconnecting ends the call for the one left behind',
+			calls.IsOnCall(B).value.onCall == false)
+
+		-- ── the expiry ───────────────────────────────────────────────────────
+		-- A call nobody answers holds the caller's one outgoing slot and the
+		-- target's one incoming slot. Left standing it would lock both of them
+		-- out of the feature until somebody disconnected.
+		ask(A, module.Event.INVITE, B)
+		local rings = inviteOn(B)
+		check('an unanswered call is ringing', rings ~= nil)
+		-- INVITE_TTL_S is 30, and a pump round is 100ms of host clock.
+		control.Pump(340)
+		check('an unanswered call rings out', inviteOn(B) ~= rings)
+		mark = ask(B, module.Event.ACCEPT, rings)
+		refused = refusalFor(mark)
+		check('and answering it afterwards is refused, not honoured',
+			refused ~= nil and (refused.code == 'calls.error.noSuchInvite'
+				or refused.code == 'calls.error.expired'),
+			refused and tostring(refused.code))
+		check('with nobody put on a call by it', calls.IsOnCall(A).value.onCall == false)
+		check('and the caller may place another, so the slot really was given back',
+			calls.IsOnCall(A).value.onCall == false
+				and module.Model ~= nil)
+		ask(A, module.Event.INVITE, B)
+		check('which they can: a fresh call rings again', inviteOn(B) ~= nil
+			and inviteOn(B) ~= rings)
+
+		-- ── the vocabulary is closed, and both catalogues carry all of it ────
+		-- `OPX.RefusalKey` downgrades a code with no catalogue line to
+		-- `error.unavailable` and writes a warning to the server log -- so a
+		-- refusal with no line is a refusal the player is never told, and the
+		-- only trace is a journal line nobody is reading at the time.
+		local missing = {}
+		local catalogs = module.Catalogs or {}
+		for reason in pairs(module.Model.REASONS) do
+			local key = 'calls.error.' .. reason
+			if (catalogs.en or {})[key] == nil then missing[#missing + 1] = 'en:' .. reason end
+			if (catalogs.fr or {})[key] == nil then missing[#missing + 1] = 'fr:' .. reason end
+		end
+		table.sort(missing)
+		check('every refusal the model can answer has a line in both catalogues',
+			#missing == 0, table.concat(missing, ', '))
+		-- The count as well as the contents, so a vocabulary that silently
+		-- emptied could not make the check above pass by having nothing left
+		-- to check. That is exactly how the page-source walk in this file
+		-- managed to be green on one platform and red on another.
+		local reasonCount = 0
+		for _ in pairs(module.Model.REASONS) do reasonCount = reasonCount + 1 end
+		check('and the vocabulary is not empty', reasonCount >= 19, reasonCount)
+	end
+end
+
+-- ── refusing a call, and handing over a contact ──────────────────────────────
+-- The owner asked for contact sharing "via ALT, with the other party's
+-- consent", which makes it the same invite object as a call with a different
+-- `kind` -- and the ONE action in the module that has a rule about where the
+-- two bodies are standing. A call reaches across the city; that is the feature.
+-- Handing somebody your number is something you do in front of them, and it is
+-- the one thing a client could otherwise claim to have done from anywhere.
+section('calls: a refusal is an answer, and a contact needs two people and a consent')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the contact hand-over', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Api.Get('calls')
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+
+		local A, B = 801, 802
+		-- A REAL METADATA STORE per character, not an accepting stub. The whole
+		-- claim being tested is that a contact is written to BOTH sides, and a
+		-- `SetMetaData` that swallowed its argument would make a module that
+		-- wrote one side, the wrong side, or neither look identical.
+		local meta = {}
+		local function incarnate(id, tag)
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			meta[id] = {}
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Fixer', lastName = tag } },
+				Functions = {
+					UpdatePlayerData = function() end,
+					GetMetaData = function(key)
+						if key == nil then return meta[id] end
+						return meta[id][key]
+					end,
+					SetMetaData = function(key, value) meta[id][key] = value end,
+				},
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		incarnate(A, 'ca')
+		incarnate(B, 'cb')
+		control.Pump(5)
+
+		local function refusalFor(mark)
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if type(sent[1]) == 'table' and sent[1].kind == 'error' then return sent[1] end
+			end
+			return nil
+		end
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			control.netEvents[name](...)
+			env.source = nil
+			return mark
+		end
+		local function inviteOn(playerId)
+			local found
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == module.Event.STATE and sent.source == playerId
+					and type(sent[1]) == 'table' then
+					found = type(sent[1].invite) == 'table' and sent[1].invite.id or nil
+				end
+			end
+			return found
+		end
+		local function contactsOf(playerId)
+			local answer = calls.Contacts(playerId)
+			return answer.ok and answer.value.contacts or {}
+		end
+
+		-- ── declining ────────────────────────────────────────────────────────
+		-- A refusal has to reach the CALLER, not merely stop ringing for the
+		-- person who refused: a call that simply goes quiet is a caller staring
+		-- at a dialling screen forever.
+		ask(A, module.Event.INVITE, B)
+		local ringing = inviteOn(B)
+		check('a call is ringing to be refused', ringing ~= nil)
+		local mark = #control.clientEvents
+		ask(B, module.Event.DECLINE, ringing)
+		check('declining puts nobody on a call',
+			calls.IsOnCall(A).value.onCall == false
+				and calls.IsOnCall(B).value.onCall == false)
+		local toldCaller = false
+		for index = mark + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.source == A and sent.name == module.Event.STATE then toldCaller = true end
+		end
+		check('and the CALLER is told, rather than left on a dialling screen', toldCaller)
+		check('and nobody is left glowing over a call that never happened',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+		-- AND THE SLOTS ARE GIVEN BACK. A decline that left the invite in place
+		-- would lock both of them out of the feature just as an unexpired one
+		-- does, and it is the same two indexes.
+		ask(A, module.Event.INVITE, B)
+		check('the caller may place another call straight afterwards',
+			inviteOn(B) ~= nil and inviteOn(B) ~= ringing)
+		ask(B, module.Event.DECLINE, inviteOn(B))
+
+		-- ── a contact from across the street ─────────────────────────────────
+		-- CONTACT_RANGE is 6 metres. These two are 40 apart.
+		control.Stand(A, 0.0, 0.0, 0.0)
+		control.Stand(B, 40.0, 0.0, 0.0)
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		local refused = refusalFor(mark)
+		check('a contact offered from across the street is refused',
+			refused ~= nil and refused.code == 'calls.error.tooFar',
+			refused and tostring(refused.code))
+		check('and nothing was written to either character',
+			#contactsOf(A) == 0 and #contactsOf(B) == 0)
+
+		-- ── and a CALL from the same distance, which must NOT be ─────────────
+		-- The range rule belongs to the contact hand-over and to nothing else.
+		-- A module that applied it to calls would have built a walkie-talkie.
+		ask(A, module.Event.INVITE, B)
+		check('while a CALL from the same distance goes through: a holocall is not a radio',
+			inviteOn(B) ~= nil)
+		ask(B, module.Event.DECLINE, inviteOn(B))
+
+		-- ── two people in the same place but not the same world ──────────────
+		-- Same coordinates, different routing buckets: an instance is exactly
+		-- the case where two bodies share a point and cannot see each other.
+		control.Stand(B, 1.0, 0.0, 0.0)
+		control.Bucket(B, 7)
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a contact offered into another routing bucket is refused, however close',
+			refused ~= nil and refused.code == 'calls.error.tooFar',
+			refused and tostring(refused.code))
+		control.Bucket(B, 0)
+
+		-- ── the hand-over ────────────────────────────────────────────────────
+		ask(A, module.Event.INVITE, B, 'contact')
+		local offered = inviteOn(B)
+		check('a contact offered face to face reaches the other party', offered ~= nil)
+		check('and nothing is written until they agree -- it needs a consent',
+			#contactsOf(A) == 0 and #contactsOf(B) == 0)
+
+		ask(B, module.Event.ACCEPT, offered)
+		local mine, theirs = contactsOf(A), contactsOf(B)
+		check('accepting writes the contact BOTH ways, which is what sharing means',
+			#mine == 1 and #theirs == 1, ('%d/%d'):format(#mine, #theirs))
+		check('each side holding the other\'s citizen id, not their own',
+			mine[1] ~= nil and mine[1].citizenId == 'citizen-cb'
+				and theirs[1] ~= nil and theirs[1].citizenId == 'citizen-ca',
+			(mine[1] and mine[1].citizenId or '?') .. '/'
+				.. (theirs[1] and theirs[1].citizenId or '?'))
+		check('and the CHARACTER\'s name rather than the account gamertag',
+			mine[1] ~= nil and mine[1].name == 'Fixer cb', mine[1] and mine[1].name)
+		check('while putting nobody on a call: a contact is not a conversation',
+			calls.IsOnCall(A).value.onCall == false
+				and calls.IsOnCall(B).value.onCall == false)
+		check('and lighting nobody\'s eyes either',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+		-- ── the same contact twice ───────────────────────────────────────────
+		-- Replaced, not appended. The list is written into the character's
+		-- metadata blob and read back on every load, so a duplicate row is a
+		-- cost paid on every connection they ever make.
+		ask(A, module.Event.INVITE, B, 'contact')
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('handing over the same contact again replaces the row rather than adding a second',
+			#contactsOf(A) == 1 and #contactsOf(B) == 1,
+			('%d/%d'):format(#contactsOf(A), #contactsOf(B)))
+	end
+end
+
+-- ── the blue eyes ────────────────────────────────────────────────────────────
+-- The glow is a LEASE held by a resource VM, not a switch on a player: the
+-- platform keeps it lit while ANY resource holds one, `false` releases only
+-- ours, and it clears by itself on death, disconnect and expiry. Every one of
+-- those five properties is a way to get this wrong, and `tests/host.lua` models
+-- all of them precisely so this section can tell them apart -- a stub that took
+-- anything and answered `true` would make every check below pass whatever the
+-- module did.
+--
+-- The shape this module chose -- a BOUNDED lease, renewed on a sweep, with a
+-- watchdog that re-takes one the platform dropped -- is borrowed from
+-- `modules/animations/client/walk.lua`, whose header explains what an open lease
+-- costs: a player walking, or glowing, for the rest of their session with
+-- nothing on screen to explain it.
+section('calls: the blue eyes are a lease, and a lease has to be given back')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the eye-glow', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Api.Get('calls')
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+
+		local A, B = 701, 702
+		local function incarnate(id, tag)
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Glow', lastName = tag } },
+				Functions = { UpdatePlayerData = function() end,
+					GetMetaData = function() return nil end,
+					SetMetaData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		incarnate(A, 'ea')
+		incarnate(B, 'eb')
+		control.Pump(5)
+
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			control.netEvents[name](...)
+			env.source = nil
+		end
+		local function inviteOn(playerId)
+			local found
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == module.Event.STATE and sent.source == playerId
+					and type(sent[1]) == 'table' then
+					found = type(sent[1].invite) == 'table' and sent[1].invite.id or nil
+				end
+			end
+			return found
+		end
+
+		local litA = control.Eyes(A)
+		check('nobody is glowing before a call', litA == false)
+
+		ask(A, module.Event.INVITE, B)
+		check('a call that is merely RINGING lights nobody',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		local litA2, oursA = control.Eyes(A)
+		local litB2, oursB = control.Eyes(B)
+		check('accepting lights BOTH parties, which is what the owner asked for',
+			litA2 == true and litB2 == true)
+		check('and the lease is this resource\'s own, not somebody else\'s glow',
+			oursA == true and oursB == true)
+
+		-- THE LEASE IS BOUNDED. `setHoloCallEyes` takes `durationMs` in
+		-- 0..600000 and refuses `invalid_options` outside it; 0 means "until
+		-- released", which is the shape this module deliberately does NOT use.
+		local lastWrite
+		for _, write in ipairs(control.holocall.writes) do
+			if write.enabled == true then lastWrite = write end
+		end
+		check('the lease is taken with a deadline rather than held open',
+			lastWrite ~= nil and type(lastWrite.options) == 'table'
+				and type(lastWrite.options.durationMs) == 'number'
+				and lastWrite.options.durationMs > 0,
+			lastWrite and lastWrite.options and tostring(lastWrite.options.durationMs))
+		check('and inside the range the platform documents, so no renewal is refused',
+			lastWrite ~= nil and lastWrite.options.durationMs <= 600000,
+			lastWrite and lastWrite.options and tostring(lastWrite.options.durationMs))
+
+		-- THE RENEWAL. The lease outlives its own deadline only because the
+		-- sweep re-takes it; the host expires it honestly, so a module that
+		-- took one lease and stopped would go dark here.
+		control.Pump(400)
+		check('the glow survives longer than one lease, because the sweep renews it',
+			control.Eyes(A) == true and control.Eyes(B) == true)
+
+		-- THE WATCHDOG. The platform drops a lease on its own -- a death, a
+		-- reload, an expiry mis-timed -- and `getHoloCallEyes` is how this
+		-- module finds out: it answers for every resource at once, so it cannot
+		-- say whose lease is whose, but a `false` for a live participant means
+		-- nobody's survived.
+		control.EyesDropped(A)
+		check('a lease the platform dropped really is gone', control.Eyes(A) == false)
+		control.Pump(40)
+		check('and the sweep notices and re-takes it', control.Eyes(A) == true)
+
+		-- A LEASE HELD BY ANOTHER RESOURCE IS NOT OURS TO RELEASE. This is the
+		-- property that makes `getHoloCallEyes` a genuinely different question
+		-- from "did we ask for one", and a module that treated the reader as
+		-- its own bookkeeping would put out somebody else's light.
+		control.EyesHeldElsewhere(B, true)
+		ask(A, module.Event.HANG_UP)
+		check('hanging up puts out the glow this module lit', control.Eyes(A) == false)
+		local litB3, oursB3 = control.Eyes(B)
+		check('and releases our own lease on the other party', oursB3 == false)
+		check('but leaves another resource\'s lease alone', litB3 == true)
+		control.EyesHeldElsewhere(B, false)
+		check('nobody is left glowing on our account', control.Eyes(B) == false)
+
+		-- ── a death ends the call, and the eyes were already dark ────────────
+		control.Pump(20)
+		ask(A, module.Event.INVITE, B)
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('a fresh call lights both again',
+			control.Eyes(A) == true and control.Eyes(B) == true)
+
+		-- The platform clears a lease on death by itself. Without the sweep
+		-- taking the body off the call, the call would carry on with a corpse
+		-- on it whose eyes had gone dark -- a state no screen could explain.
+		control.Life(B, 'dead')
+		control.Pump(40)
+		check('a participant who dies is taken off the call',
+			calls.IsOnCall(B).value.onCall == false)
+		check('and the survivor is released with them rather than left on a dead line',
+			calls.IsOnCall(A).value.onCall == false)
+		check('with nobody glowing afterwards',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+		-- ── a host with no holocall natives at all ───────────────────────────
+		-- The pair arrived in 2.31.13+op77.63 and this ships against op77.75,
+		-- so they are expected -- and the same was said of `players.teleport`,
+		-- which `modules/teleports` looks up before every call anyway. A host
+		-- without them must lose the glow and keep every call.
+		control.holocall.absent = true
+		control.Life(B, 'alive')
+		control.Pump(20)
+		ask(A, module.Event.INVITE, B)
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('a host with no eye-glow natives still connects the call',
+			calls.IsOnCall(A).value.onCall == true
+				and #calls.IsOnCall(A).value.participants == 2)
+		check('and reports the glow as unreadable rather than pretending it is lit',
+			calls.Eyes(A).ok == false, calls.Eyes(A).ok)
+		ask(A, module.Event.HANG_UP)
+		check('and hanging up on such a host still ends the call',
+			calls.IsOnCall(A).value.onCall == false)
+		control.holocall.absent = false
+	end
+end
+
+-- ── the sound is the game's own, named and not shipped ───────────────────────
+-- The owner asked for "the real Cyberpunk incoming-call sound". The answer is
+-- `Open77.sfx.play2d`, which posts a Wwise event through
+-- `gameGameAudioSystem::Play` with no entity -- the same door the vanilla
+-- frontend uses for its own menu sounds -- so the names below ARE the game's,
+-- read out of the devkit's sfx catalogue for build 2.31. Nothing is downloaded
+-- and nothing is redistributed.
+--
+-- THE PLATFORM REFUSES A NAME OUTSIDE ITS CURATED TABLE rather than forwarding
+-- it, which is the only reason this is checkable: a made-up event and a real
+-- one are otherwise indistinguishable from the caller's side, and
+-- `config/admin.lua` already says so about the other effect door.
+section('calls: the ringtone names an event the platform will actually play')
+do
+	local env, _, why = boot('client')
+	check('the client boots with the calls module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local module = OPX.Modules.Get('calls')
+		local settings = OPX.Modules.Settings('calls')
+		local sounds = type(settings.SOUND) == 'table' and settings.SOUND or {}
+
+		check('the calls module is running on the client', OPX.Modules.IsRunning('calls'),
+			OPX.Modules.Record('calls') and OPX.Modules.Record('calls').Reason)
+
+		-- The curated table the host stub judges against is Cyberpunk's own
+		-- `ui_phone_01` bank as the devkit lists it. A name in the config that
+		-- is not in it is a ringtone that would be refused in game, silently,
+		-- on the player's machine.
+		local catalogue = env.Open77.sfx
+		check('the frontend sound door exists on this build',
+			type(catalogue) == 'table' and type(catalogue.play2d) == 'function')
+
+		local bad = {}
+		for field, event in pairs(sounds) do
+			if type(event) == 'string' and event ~= '' then
+				local ok = catalogue.play2d(event)
+				if ok ~= true then bad[#bad + 1] = field .. '=' .. event end
+			end
+		end
+		table.sort(bad)
+		check('every sound the config names is one the platform will play',
+			#bad == 0, table.concat(bad, ', '))
+
+		-- And the config really names some, so the check above cannot pass by
+		-- having nothing to look at.
+		local named = 0
+		for _, event in pairs(sounds) do
+			if type(event) == 'string' and event ~= '' then named = named + 1 end
+		end
+		check('and the config names a ringtone at all', named >= 4, named)
+		check('including the incoming ring itself',
+			sounds.INCOMING == 'ui_phone_incoming_call', tostring(sounds.INCOMING))
+
+		-- A MADE-UP NAME IS REFUSED, which is what makes the walk above mean
+		-- something rather than being a loop over an accepting stub.
+		check('while an invented event is refused rather than forwarded',
+			catalogue.play2d('ui_phone_not_a_real_event') ~= true)
+	end
+end
+
+-- ── the rows on the eye, and the budget they are registered under ────────────
+-- The owner asked for accept and decline "via ALT, not a dedicated key", for
+-- contact sharing and a third participant on the same eye, and for a button
+-- that brings the card back. That is seven rows across two kinds, and
+-- `RegisterMany` is ALL OR NOTHING: one malformed row refuses the whole batch,
+-- and the refusal is written to a log file on the player's own machine.
+-- `modules/animations/client/walk.lua` lost all four of its pace rows to
+-- exactly that and nobody found out until somebody reported the feature
+-- missing in game.
+section('calls: seven rows on the eye, answered in the registry\'s own vocabulary')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the call rows', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local module = OPX.Modules.Get('calls')
+		local target = OPX.Api.Get('target')
+
+		check('the eye is up', target ~= nil and type(target.List) == 'function')
+
+		if target ~= nil then
+			-- THE CONTRACT ANSWERS A Result, and every entry of it does. The
+			-- first version of this walked `target.List('calls')` itself, which
+			-- is `{ ok = true, value = { options = { ... } } }` -- length zero,
+			-- for ever, for every owner including ones with rows. A check that
+			-- counts the wrong table reports the feature missing whatever the
+			-- feature does, which is the exact shape of a test that is worse
+			-- than no test.
+			local function rowsOf()
+				local answer = target.List('calls')
+				return answer.ok and answer.value.options or {}
+			end
+			-- Registration runs on a thread with a `Wait(0)` between the kinds,
+			-- so it is a resume or two away from `Start` finishing.
+			settle(control, function() return #rowsOf() >= 7 end, 40)
+			local rows = rowsOf()
+			check('all seven rows reached the registry, not four of them',
+				#rows == 7, #rows)
+
+			local byId = {}
+			for _, row in ipairs(rows) do byId[row.id] = row end
+			-- Named one at a time rather than counted, because the count alone
+			-- would be satisfied by seven copies of the same row -- and the
+			-- owner asked for these seven specifically.
+			for _, id in ipairs({ 'callAccept', 'callDecline', 'callHangUp', 'callRepop',
+				'callPlace', 'callAdd', 'callShare' }) do
+				check(('the row %s is on the eye'):format(id), byId[id] ~= nil)
+			end
+
+			-- THE REGISTRY'S VOCABULARY, which is the trap walk.lua fell into:
+			-- `modules/admin/client/target.lua` builds rows with `select`,
+			-- `check` and `state` and translates them at the door, and copying
+			-- that shape straight into `RegisterSelf` refuses the whole batch
+			-- with `invalid_option`. Every row this module hands over has to
+			-- speak `onSelect`, `canInteract` and `checked`.
+			local wrong = {}
+			for _, row in ipairs(module.SelfRows()) do
+				if type(row.onSelect) ~= 'function' then wrong[#wrong + 1] = row.id .. ':onSelect' end
+				if row.select ~= nil or row.check ~= nil or row.state ~= nil then
+					wrong[#wrong + 1] = row.id .. ':admin-shape'
+				end
+				if row.icon ~= nil and OPX.Glyphs[row.icon] ~= true then
+					wrong[#wrong + 1] = row.id .. ':icon=' .. tostring(row.icon)
+				end
+			end
+			for _, row in ipairs(module.PlayerRows()) do
+				if type(row.onSelect) ~= 'function' then wrong[#wrong + 1] = row.id .. ':onSelect' end
+				if row.icon ~= nil and OPX.Glyphs[row.icon] ~= true then
+					wrong[#wrong + 1] = row.id .. ':icon=' .. tostring(row.icon)
+				end
+			end
+			table.sort(wrong)
+			check('every row speaks the registry\'s vocabulary and draws a glyph that exists',
+				#wrong == 0, table.concat(wrong, ', '))
+
+			-- ── a row appears when it has something to do, and not before ────
+			-- `canInteract` is what makes the answer rows come and go; they are
+			-- registered once and never re-registered, so this predicate is the
+			-- whole of the behaviour.
+			local selfRows = {}
+			for _, row in ipairs(module.SelfRows()) do selfRows[row.id] = row end
+			local context = { target = { kind = 'player', isLocalPlayer = true } }
+			check('with no call and nothing ringing, ACCEPT is not offered',
+				selfRows.callAccept.canInteract(context) ~= true)
+			check('nor is HANG UP', selfRows.callHangUp.canInteract(context) ~= true)
+			check('nor the re-pop button, which would otherwise do nothing',
+				selfRows.callRepop.canInteract(context) ~= true)
+
+			-- The server pushing a ringing invite is the only thing that
+			-- changes any of this: nothing in the client half is a fact.
+			--
+			-- Delivered on the NET channel it is registered on, and not with a
+			-- local `TriggerEvent`. The host keeps the two apart -- a
+			-- `RegisterNetEvent` handler lands in `control.netEvents` and a
+			-- local raise never reaches it -- which is the harness modelling
+			-- the very rule `core/shared/channels.lua` exists to enforce.
+			control.netEvents[module.Event.STATE]({
+				invite = { id = 'i1', kind = 'call', from = 9, fromName = 'Somebody',
+					expiresInMs = 20000 },
+			})
+			control.Pump(4)
+			local fresh = {}
+			for _, row in ipairs(module.SelfRows()) do fresh[row.id] = row end
+			check('once a call is ringing, ACCEPT is offered', fresh.callAccept.canInteract(context))
+			check('and DECLINE with it', fresh.callDecline.canInteract(context))
+			check('while HANG UP still is not -- there is no call yet',
+				fresh.callHangUp.canInteract(context) ~= true)
+
+			-- THE RE-POP BUTTON. Offered only once the card has actually been
+			-- waved away: offered unconditionally it would be a row that does
+			-- nothing, most of the time, on everybody's own body.
+			check('the re-pop row is not offered while the card is still up',
+				fresh.callRepop.canInteract(context) ~= true)
+			module.FromView('dismiss')
+			control.Pump(2)
+			local after = {}
+			for _, row in ipairs(module.SelfRows()) do after[row.id] = row end
+			check('and is offered the moment the player waves the card away',
+				after.callRepop.canInteract(context) == true)
+			check('while the call itself is still ringing -- dismissing is not declining',
+				module.State().invite ~= nil and module.State().carded == false)
+			module.FromView('repop')
+			control.Pump(2)
+			check('and bringing it back puts the card on screen again',
+				module.State().carded == true)
+
+			-- ── the card is on the layer that cannot take the mouse ──────────
+			-- The owner's hard requirement -- it must not ruin the player's
+			-- vision -- is the `overlay` layer, which is `pointer-events: none`
+			-- for its whole height and is never focused. A card on
+			-- `interactive` would draw identically and be exactly the thing
+			-- they said not to build, so the layer is asserted rather than
+			-- trusted to a comment.
+			local view = io.open('modules/calls/client/view.lua', 'r')
+			local source = view and view:read('a') or ''
+			if view then view:close() end
+			-- COMMENTS STRIPPED FIRST, the way the permission-argument section
+			-- above strips them and for exactly the same reason: this codebase
+			-- quotes its own call sites in prose constantly, and that file's
+			-- header both names the layer and explains at length why it must
+			-- NOT call `OPX.UI.AcquireFocus`. A grep over the prose finds the
+			-- explanation and reports it as the thing being explained.
+			--
+			-- Written this way because a mutation proved it. Moving the view to
+			-- `interactive` left the check green: the assertion was matching
+			-- the sentence in the header that says the layer is the
+			-- requirement, so it would have gone on passing for the rest of
+			-- this file's life whatever the code did. That is precisely the
+			-- test-that-passes-both-ways this project has been burned by twice.
+			local code = source:gsub('%-%-[^\n]*', '')
+			check('the call views are on the overlay layer',
+				code:find("SURFACE%s*=%s*'overlay'") ~= nil)
+			check('and this module never acquires focus, which is what would take the keyboard',
+				code:find('AcquireFocus', 1, true) == nil)
+		end
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
