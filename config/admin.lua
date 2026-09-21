@@ -89,7 +89,13 @@ OPX.Config.MODULES.admin = {
 		-- authored yaw, and nothing else in the catalogue is recorded as seen at
 		-- all -- so a prettier-looking dematerialise here would be a guess that
 		-- probably draws nothing. Change this line to taste; it is one line.
-		EFFECT = 'fire.large',
+		--
+		-- EMPTY ON PURPOSE. It was `fire.large` and the owner asked for it gone
+		-- on 2026-09-21: a tall flame at the operator's feet every time noclip
+		-- goes on or off reads as something being on fire, which is not what a
+		-- staff member toggling a camera wants to announce to the street. The
+		-- alias is left written above so putting it back is one word.
+		EFFECT = '',
 		-- Seconds the effect lives, 0..600 (the engine's own ceiling). 0 hands the
 		-- rest of its life to the effect itself.
 		EFFECT_SECONDS = 1.5,

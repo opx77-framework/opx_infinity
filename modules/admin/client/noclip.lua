@@ -110,9 +110,15 @@ end
 -- @return boolean whether the pop was drawn
 function Noclip.Pop()
 	if effect == '' then
+		-- AN EMPTY EFFECT IS A CHOICE, NOT AN OMISSION, and this said it in a
+		-- warning -- which is what an operator reads when something is wrong.
+		-- The shipped config is empty now, deliberately, so warning about it
+		-- would put a line in every session's log for a setting working exactly
+		-- as written. Still said once, at debug, because "no pop at all" is
+		-- worth being able to confirm when somebody expects one.
 		if not reportedOff then
 			reportedOff = true
-			Open77.log.warn('[admin] no noclip pop: config MODULES.admin.NOCLIP.EFFECT is empty')
+			Open77.log.debug('[admin] noclip draws no pop: MODULES.admin.NOCLIP.EFFECT is empty')
 		end
 		return false
 	end

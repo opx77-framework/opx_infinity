@@ -7535,6 +7535,25 @@ do
 
 		check('the pop owns one transition point and nothing else',
 			type(Noclip.Changed) == 'function' and type(Noclip.Pop) == 'function')
+		-- THE SHIPPED CONFIG DRAWS NOTHING, on purpose: the owner asked for the
+		-- flame at an operator's feet to go on 2026-09-21. That is a fact about
+		-- the config and it is asserted as one -- and the machinery below is then
+		-- exercised against an effect this section names itself. "Does the pop
+		-- work" and "does the shipped config ask for one" are two questions, and
+		-- only the first is what the rest of this section is about; reading the
+		-- answer to the second out of the config was what made every check here
+		-- fail the moment the config changed.
+		check('the shipped config asks for no pop at all',
+			OPX.Config.MODULES.admin.NOCLIP.EFFECT == '',
+			OPX.Config.MODULES.admin.NOCLIP.EFFECT)
+		check('so the pop draws nothing, and says it drew nothing',
+			Noclip.Pop() == false)
+
+		local shipped = OPX.Config.MODULES.admin.NOCLIP.EFFECT
+		OPX.Config.MODULES.admin.NOCLIP.EFFECT = 'fire.large'
+		-- Pure re-read and reset: no handler, no job, nothing registered twice.
+		Noclip.Start()
+
 		local report = Noclip.Report()
 		check('it starts with the effect the config names, and no handle',
 			report.handle == nil and report.effect == OPX.Config.MODULES.admin.NOCLIP.EFFECT,
@@ -7676,6 +7695,12 @@ do
 			missing == 1, missing)
 		check('and the half keeps working: the native still moves and the edge is still reported',
 			cctl.travels.noclip == true and #cctl.serverEvents > mark2)
+
+		-- The env is shared between sections, so the effect this section named
+		-- for itself goes back to what the config ships before anybody else
+		-- reads it.
+		OPX.Config.MODULES.admin.NOCLIP.EFFECT = shipped
+		Noclip.Start()
 	end
 end
 
