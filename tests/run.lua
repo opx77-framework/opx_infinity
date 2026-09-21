@@ -19686,5 +19686,184 @@ do
 			OPX.UI.FocusOwner() == nil)
 	end
 end
+
+-- Six corrections made in this same sweep were not held by anything: each one
+-- could be put back and the suite stayed green, which is the defect the sweep
+-- was about. A fix nothing asserts is a fix with a half-life.
+section('the guards this sweep added, held in place')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		-- `Run()` a second time used to answer true, which reads as a successful
+		-- boot: the caller starts a loop over an empty job list and reports every
+		-- module as stopped, with nothing rebuilt and nothing logged.
+		local again, reason = OPX.Modules.Run()
+		check('a second Run() answers false rather than a successful-looking true',
+			again == false, tostring(again))
+		check('and names why', tostring(reason):find('already ran', 1, true) ~= nil,
+			tostring(reason))
+
+		-- A newline in `event`, `citizen` or `user` forges a whole audit line.
+		-- The header of `lib/server/audit.lua` promises these are stripped; only
+		-- `message` and `data` ever were.
+		local before = #control.log.info + #control.log.warn + #control.log.error
+		OPX.Audit.Log({
+			event = 'test.forge\nevent=session.login severity=info',
+			severity = 'info',
+			citizenId = 'AAA\nBBBB',
+			userId = 'user\nforged',
+			message = 'one line',
+		})
+		local written = table.concat(control.log.info, ' | ') .. ' | '
+			.. table.concat(control.log.warn, ' | ') .. ' | '
+			.. table.concat(control.log.error, ' | ')
+		check('an audit entry was written', before >= 0 and #written > 0)
+		check('a newline in the event name does not forge a second line',
+			written:find('test.forge\n', 1, true) == nil, 'a raw newline reached the line')
+		check('nor one in the citizen id', written:find('AAA\nBBBB', 1, true) == nil)
+		check('nor one in the user id', written:find('user\nforged', 1, true) == nil)
+
+		-- A snapshot stamped in the FUTURE gives a negative age and passes every
+		-- maximum there is. "A gated requirement closes on every doubt."
+		local need = { jobs = { medic = 1 } }
+		local policy = { maxAgeMs = 5000 }
+		local now = 1000000
+		local held = { job = { name = 'medic', grade = { level = 5 } }, jobs = {}, atMs = now }
+		check('a snapshot taken now is honoured',
+			OPX.JobGate.Evaluate(need, held, now, policy) == true)
+		local future = { job = { name = 'medic', grade = { level = 5 } }, jobs = {}, atMs = now + 60000 }
+		local allowed, code = OPX.JobGate.Evaluate(need, future, now, policy)
+		check('a snapshot stamped in the future is refused, not accepted for ever',
+			allowed == false, tostring(allowed))
+		check('and it is named as stale', code == 'job_stale', tostring(code))
+
+		-- `Report` used to CALL the caller's interval closure, so printing a
+		-- job's state ran module code and cleared the once-per-run warning the
+		-- job had just emitted.
+		local asked = 0
+		local handle = OPX.Scheduler.Every('test:report', function()
+			asked = asked + 1
+			return 500
+		end, function() end)
+		control.Pump(5)
+		local afterRuns = asked
+		local lines = OPX.Scheduler.Report()
+		check('Report produced a line for the job',
+			table.concat(lines, ' | '):find('test:report', 1, true) ~= nil,
+			table.concat(lines, ' | '))
+		check('and it did not call the caller\'s interval closure to do it',
+			asked == afterRuns, ('%d -> %d'):format(afterRuns, asked))
+		OPX.Scheduler.Cancel(handle)
+	end
+end
+
+-- A module that raises halfway through `Start` has already registered its jobs,
+-- its handlers and its hooks. It is marked `failed`, never `started`, and
+-- `Modules.Stop` used to skip exactly that state -- so what it registered ran
+-- against half-built state for the life of the resource.
+section('a module that failed is still stopped')
+do
+	local stopped = false
+	local env, _, why = boot('server', nil, function(environment)
+		environment.OPX = environment.OPX or {}
+		environment.__opxTestStopped = function() stopped = true end
+	end)
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		-- An EXISTING module, put into the state a failed `Start` leaves behind.
+		-- Declaring a new one here would not work and that is its own trap:
+		-- `Resolve` is memoised and has already run, so a module declared now is
+		-- invisible to every phase and to `Stop` -- which `Declare` refuses
+		-- outright now rather than leaving it to be discovered like this.
+		local record
+		for _, candidate in ipairs(OPX.Modules.Resolve()) do
+			if type(candidate.Module.Stop) == 'function' then record = candidate break end
+		end
+		check('there is a started module with a Stop to use', record ~= nil)
+		if record ~= nil then record.Module.Stop = function() env.__opxTestStopped() end end
+		if record ~= nil then
+			-- Straight to the state a failed `Start` leaves behind, because `Run`
+			-- has already been and is deliberately not repeatable.
+			record.State = 'failed'
+			OPX.Modules.Stop()
+			check('a failed module gets its Stop called, so its jobs and hooks go',
+				stopped == true)
+			check('and it ends up stopped rather than staying failed for ever',
+				record.State == 'stopped', tostring(record.State))
+		end
+	end
+end
+
+-- `OPX.UI.Answer` discarded the refusal. The host refuses an oversized payload
+-- WHOLE and still reports the send a success, so Lua believed it had replied
+-- and the page's promise timed out five seconds later with no trace: the
+-- refusal note is keyed by channel, and every reply shares one channel.
+section('an answer the host refused is answered again, small')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page = control.pages[1]
+
+		local before = #page.sent
+		local huge = {}
+		for index = 1, Host.MAX_PAYLOAD_NODES + 64 do huge['k' .. index] = index end
+		OPX.UI.Answer('interactive', 'ref-1', { ok = true, data = huge })
+
+		check('the oversized answer was refused by the host',
+			#page.refused > 0 and page.refused[#page.refused].channel:find('reply', 1, true) ~= nil,
+			#page.refused > 0 and page.refused[#page.refused].channel or 'nothing refused')
+
+		local last = page.sent[#page.sent]
+		check('and a reply small enough to land was sent under the same ref',
+			#page.sent > before and last ~= nil and last.payload ~= nil
+				and last.payload.ref == 'ref-1',
+			last and tostring(last.payload and last.payload.ref) or 'nothing sent')
+		check('carrying a refusal the view can render instead of a five-second spinner',
+			last ~= nil and last.payload.ok == false
+				and last.payload.error == 'error.payloadRefused',
+			last and tostring(last.payload and last.payload.error))
+
+		-- An answer that fits is untouched: one send, no follow-up.
+		local fitting = #page.sent
+		OPX.UI.Answer('interactive', 'ref-2', { ok = true, data = { one = 1 } })
+		check('an answer that fits is sent once and not followed by a code',
+			#page.sent == fitting + 1
+				and page.sent[#page.sent].payload.error == nil,
+			('%d -> %d'):format(fitting, #page.sent))
+	end
+end
+
+-- `Resolve` memoises its order, so a module declared after it has run sits at
+-- `declared` for ever: no phase touches it, `Report` never lists it because it
+-- walks the resolved order, and `IsRunning` answers false with the reason
+-- written nowhere. No caller does this today -- which is exactly why a silent
+-- one would be found the hard way.
+section('a module declared too late is refused, not lost')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		check('the order has been resolved by now', OPX.Modules.Resolved() == true)
+		local made, failure = pcall(OPX.Modules.Declare, { id = 'testlate', side = 'server' })
+		check('declaring after that raises rather than making a module nothing runs',
+			made == false, tostring(made))
+		check('and says so in the message',
+			tostring(failure):find('after the modules were resolved', 1, true) ~= nil,
+			tostring(failure))
+		check('and no phantom record was left behind',
+			OPX.Modules.Record('testlate') == nil)
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

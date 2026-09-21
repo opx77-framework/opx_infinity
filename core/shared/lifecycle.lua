@@ -330,3 +330,13 @@ function OPX.Modules.Report()
 	end
 	return lines
 end
+
+--- Whether the module order has already been worked out. `OPX.Modules.Declare`
+--- reads this to refuse a declaration that arrives too late to be run: the
+--- order is memoised, so a module declared afterwards sits at `declared` for
+--- ever, in no phase, in no report, with the reason written nowhere.
+-- @author dop42
+-- @return boolean
+function OPX.Modules.Resolved()
+	return resolved ~= nil
+end

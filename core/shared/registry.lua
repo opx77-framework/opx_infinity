@@ -99,6 +99,17 @@ function OPX.Modules.Declare(spec)
 	if records[id] then
 		error(('module %q is declared twice'):format(id), 2)
 	end
+	-- AFTER `Resolve` IS TOO LATE, AND IT USED TO BE SILENT. `Resolve` memoises
+	-- its order, so a module declared once it has run sits at `declared` for
+	-- ever: no phase touches it, `Report` never lists it -- it walks the
+	-- resolved order -- and `IsRunning` answers false with the reason recorded
+	-- nowhere. Every `Declare` today is in a `module.lua` loaded before the
+	-- phases begin, so this is a trap being shut rather than a bug being fixed;
+	-- it is shut because the failure it produces is invisible.
+	if type(OPX.Modules.Resolved) == 'function' and OPX.Modules.Resolved() then
+		error(('module %q is declared after the modules were resolved; nothing would run it')
+			:format(id), 2)
+	end
 
 	local side = spec.side or 'both'
 	if not SIDES[side] then
