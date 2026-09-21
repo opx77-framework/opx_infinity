@@ -217,6 +217,70 @@ local function point(out, key, label, x, y, z)
 	return true
 end
 
+--- Whether the local character passes one place's JOBS block.
+--
+-- THE OWNER: "fait en sorte que les blips job on les voit uniquement si on fait
+-- partie du job si possible". It is possible, and it is possible WITHOUT a
+-- second rule: `config/gunsmith.lua` and `config/hauling.lua` already say who
+-- may use a place, in the same `JOBS` / `ON_DUTY` / `MEMBERSHIP` vocabulary that
+-- `config/elevators.lua` and `config/teleports.lua` use, and one gate decides all
+-- of them. So the map asks that gate. A pin appears for exactly the people the
+-- bench would open for, and the two can never drift apart, because there is only
+-- one of them.
+--
+-- A PLACE WITH NO `JOBS` BLOCK IS PUBLIC and stays pinned for everybody --
+-- `Evaluate`'s first line, and the reason hauling's sample sites stay visible:
+-- the owner asked for a job-free job, and "anyone may haul" must not read as
+-- "nobody may see where".
+--
+-- THIS IS A VISIBILITY FILTER AND NOT A GATE, which inverts the asymmetry the
+-- gate itself is built on. `jobgate.lua` closes on every doubt because granting
+-- a gated surface costs the operator the gate. Here the cost runs the other way:
+-- hiding a pin from somebody entitled to it is the failure, and showing one to
+-- somebody who cannot use the bench is untidy at worst -- the server refuses
+-- them at the bench either way, and nothing here decides anything. So every
+-- doubt this side opens:
+--
+--   * no character API, no character yet, no snapshot -- pinned. A player
+--     reading a map during a database hiccup is not a threat model;
+--   * `MEMBERSHIP = 'any'` with a job held as a secondary membership -- pinned.
+--     The client mirror carries the PRIMARY job and no memberships table, so
+--     this side genuinely cannot answer, and it must not answer "no". Both
+--     shipped configs say `primary` today, where the mirror is exactly enough.
+--
+-- The snapshot is stamped now because the mirror IS now: it is replicated, and
+-- `character` raises `job` the moment it changes. Staleness is a server-roster
+-- problem and stamping it honestly here would invent one.
+local function passesJob(requirement, membership)
+	local required = type(requirement) == 'table' and requirement.jobs or nil
+	if type(required) ~= 'table' or next(required) == nil then return true end
+
+	local api = OPX.Api.Get('character')
+	if type(api) ~= 'table' or type(api.GetJobData) ~= 'function' then return true end
+
+	-- THE TWO NILS ARE NOT THE SAME NIL, which is the whole of the distinction
+	-- the paragraph above promises. `GetJobData` answers nil for a character with
+	-- no job AND for no character at all, and those want opposite answers: the
+	-- first is somebody who is genuinely not on the payroll and must not see the
+	-- pin, the second is a client that has not finished joining and must not be
+	-- punished for it. `IsLoggedIn` is what tells them apart.
+	local known, logged = pcall(api.IsLoggedIn)
+	if not known or logged ~= true then return true end
+
+	local read, job = pcall(api.GetJobData)
+	if not read then return true end
+	if type(job) ~= 'table' then return false end
+
+	-- `membership = 'any'` cannot be decided from a mirror with no memberships
+	-- table, so it is decided as `primary` and anything that fails is shown
+	-- rather than hidden. See the note above about which way the doubt runs.
+	local now = OPX.Now()
+	local passed = OPX.JobGate.Evaluate(requirement, { job = job, atMs = now }, now,
+		{ maxAgeMs = 0, membership = 'primary' })
+	if passed then return true end
+	return membership == 'any'
+end
+
 --- Every point of one category, and how many blanks were skipped building it.
 -- @param name string one of `M.ORDER`
 -- @return table list of points
@@ -278,9 +342,14 @@ local function pointsOf(name)
 		local guns = foreignSettings('gunsmith')
 		local armouries = guns ~= nil and guns.ARMOURIES or nil
 		if type(armouries) == 'table' then
+			local membership = guns.MEMBERSHIP
 			for key, raw in pairs(armouries) do
 				local bench = type(raw) == 'table' and raw.BENCH or nil
-				if type(bench) == 'table' then
+				-- The armoury's own JOBS block, read straight off the config the
+				-- gunsmith module gates the bench with. An ungated armoury is
+				-- public and stays pinned.
+				if type(bench) == 'table'
+					and passesJob({ jobs = raw.JOBS, onDuty = raw.ON_DUTY }, membership) then
 					add('bench\1' .. tostring(key), raw.LABEL, bench.X, bench.Y, bench.Z)
 				end
 			end
@@ -295,9 +364,18 @@ local function pointsOf(name)
 		local haul = foreignSettings('hauling')
 		local sites = haul ~= nil and haul.SITES or nil
 		if type(sites) == 'table' then
+			local membership = haul.MEMBERSHIP
 			for siteKey, site in pairs(sites) do
 				local drops = type(site) == 'table' and site.DROPOFFS or nil
-				if type(drops) == 'table' then
+				-- THE GATE IS ON THE SITE, NOT ON THE DROP-OFF, which is where
+				-- `modules/hauling` puts it too: a site's JOBS block is what makes
+				-- the whole job a whitelist, and its drop-offs are places inside it
+				-- rather than jobs of their own. Both shipped sites have no JOBS
+				-- block at all, deliberately -- the owner asked for a job-free job
+				-- -- so both stay pinned for everybody and this changes nothing
+				-- until somebody writes one.
+				if type(drops) == 'table'
+					and passesJob({ jobs = site.JOBS, onDuty = site.ON_DUTY }, membership) then
 					for dropKey, drop in pairs(drops) do
 						if type(drop) == 'table' then
 							add('drop\1' .. tostring(siteKey) .. '\1' .. tostring(dropKey),

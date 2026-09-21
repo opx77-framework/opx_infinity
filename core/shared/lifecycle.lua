@@ -143,24 +143,53 @@ end
 -- `failed`, the rest of its `Start` never ran -- which is why the symptom was "no
 -- inventory AND no keybinds", with no error anywhere a player could see.
 --
--- `Init` is NOT given the same treatment: it is documented never to yield, it
+-- `Init` WAS NOT given the same treatment: it is documented never to yield, it
 -- builds state rather than touching the world, and a yield there would let an
--- event reach a module whose state is half built.
+-- event reach a module whose state is half built. That reasoning is kept below,
+-- with what finally outweighed it.
 --
--- NEITHER IS `Api`, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT -- it read
--- as one, so it is written down. The same objection applies and applies harder:
+-- `Api` WAS NOT EITHER, AND THAT DECISION IS NOW REVERSED. It is left standing
+-- here because the objection to yielding was a real one and is worth keeping:
 -- `Api` is where contracts are published, so a yield in the middle of it is a
 -- frame in which some modules have published and some have not, and an event
 -- arriving in that frame gets nil from `OPX.Api.Get` for a contract that exists.
--- The budget argument does not weigh much against it either, because an `Api`
--- body is a handful of `Provide` calls and no world reads; `Start` is where the
--- work is, and `Start` is what yields.
+-- The second half of the argument was that the budget could not be the problem,
+-- because an `Api` body is a handful of `Provide` calls and no world reads.
+--
+-- THAT HALF WAS WRONG, and the thirtieth module proved it. A handful of calls
+-- is nothing; a handful of calls TIMES THIRTY, out of one budget, is not, and
+-- adding `modules/blips` on 2026-09-21 pushed the total over. Deployed 18:29;
+-- by 18:45 the journal carried, from the owner's own client:
+--
+--   client module: needs failed / api failed:
+--   modules/needs/client/main.lua:809: Open77 script execution budget exceeded
+--
+-- Line 809 is `OPX.Api.Provide('needs', 1, {...})`. `needs` did nothing wrong
+-- and neither did `blips`: the budget was a shared pot and the module holding
+-- the parcel went without, exactly as the inventory did in `Start` above, and
+-- with the same tell -- "it was never reliably the inventory". The owner saw it
+-- as "je vois plus les status", because the chip strip `needs` publishes was
+-- never published.
+--
+-- AND THE OBJECTION IS ANSWERED BY WHAT IT WAS WEIGHED AGAINST. Not yielding
+-- does not avoid a frame where a contract is missing -- it buys a run where a
+-- contract is missing FOREVER, because the phase dies partway and the modules
+-- after the cut never publish at all. A one-frame window during boot, in a boot
+-- where `Start` already spreads itself over frames, is strictly the smaller of
+-- the two. It also stops being a lottery: without this, every module added from
+-- now on re-rolls which existing module dies.
+--
+-- `Init` yields for the same reason. The objection there -- an event reaching a
+-- module whose state is half built -- is weighed against the same alternative,
+-- a module whose state is never built at all.
 -- @return string|nil the id of a fatal module that failed
 local function runPhase(phase)
 	local fatal
-	-- Guarded on the native rather than on the side: a build without `Wait` must
-	-- still boot, just in one frame, as it did before.
-	local yielding = phase == 'Start' and type(Wait) == 'function'
+	-- EVERY PHASE, NOT JUST `Start` -- see the head of this function for what
+	-- changed and what it was weighed against. Guarded on the native rather than
+	-- on the phase: a build without `Wait` must still boot, just in one frame, as
+	-- every build did before.
+	local yielding = type(Wait) == 'function'
 	for _, module in ipairs(OPX.Modules.Resolve()) do
 		-- A PER-MODULE REQUIREMENT RE-CHECK USED TO STAND HERE, AND IT COST THE
 		-- CLIENT HALF ITS FORM. The idea was sound -- `Resolve` hands back a
@@ -168,11 +197,11 @@ local function runPhase(phase)
 		-- followed IN THE SAME PHASE by the modules that require it, which run,
 		-- register their handlers, and are only marked `unavailable` afterwards.
 		--
-		-- The cost was not. `Init` and `Api` are documented never to yield, so
-		-- each of them runs in ONE resume and shares ONE instruction budget --
-		-- which is the whole argument for `Start` yielding between modules. A
-		-- loop over every module's `Requires` before every step, across thirty
-		-- modules, is paid out of that single budget, and this file already says
+		-- The cost was not. `Init` and `Api` did not yield then, so each of them
+		-- ran in ONE resume and shared ONE instruction budget -- which is the
+		-- whole argument for yielding between modules, and why every phase does
+		-- it now. A loop over every module's `Requires` before every step, across
+		-- thirty modules, was paid out of that single budget, and this file says
 		-- what happens then: "each module made the next one likelier to trip,
 		-- and the one that actually tripped depended on how much the frame had
 		-- already spent". Deployed 2026-09-21 13:41; by 13:50 the journal

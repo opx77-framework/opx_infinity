@@ -61,7 +61,15 @@ local function boot(side, database, prelude)
 	-- state the platform never produces.
 	if side == 'client' then control.Fire('onClientResourceStart', 'opx_infinity') end
 
-	control.Pump(60)
+	-- ENOUGH FRAMES FOR A BOOT THAT SPREADS ITSELF OVER THEM. This was 60, which
+	-- covered a boot where only `Start` yielded between modules -- thirty modules,
+	-- thirty frames, and room to spare. Every phase yields now, so a full boot is
+	-- three times that, and 60 left the server half part-way through it: the
+	-- symptom was `attempt to index a nil value (local 'flying')` on a test
+	-- reading `control.commands['noclip']`, a command registered by a module the
+	-- boot had not reached. A harness that stops pumping before the resource has
+	-- finished starting is testing a state the platform never ships.
+	control.Pump(240)
 
 	-- A surface refuses everything until its page has reported ready, so a test
 	-- that skipped this would be testing the window before the UI exists.
@@ -1651,7 +1659,7 @@ do
 		end
 
 		ctl.Fire('onClientResourceStart', 'opx_infinity')
-		ctl.Pump(60)
+		ctl.Pump(240)
 		ctl.ReadyPages()
 		return own, ctl
 	end
@@ -3200,7 +3208,7 @@ do
 			#unwrapped == 0, table.concat(unwrapped, ', '))
 
 		control.Fire('onClientResourceStart', 'opx_infinity')
-		control.Pump(60)
+		control.Pump(240)
 		check('diagnostics started', env.OPX.Modules.IsRunning('diagnostics'))
 		check('a second resource-start does not re-run the phases',
 			env.OPX.Modules.Record('weather').State == 'started',
@@ -4684,7 +4692,7 @@ do
 
 		-- The rest of the boot, where the hud finally registers and is handed
 		-- the ready it missed.
-		control.Pump(60)
+		control.Pump(240)
 
 		local drew = {}
 		for _, message in ipairs(page and page.sent or {}) do drew[message.channel] = true end
@@ -8907,7 +8915,7 @@ do
 
 	if why == nil then
 		control.Fire('onClientResourceStart', 'opx_infinity')
-		control.Pump(60)
+		control.Pump(240)
 		control.ReadyPages()
 
 		local admin = env.OPX.Modules.Get('admin')
