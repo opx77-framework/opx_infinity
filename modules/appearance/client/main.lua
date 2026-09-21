@@ -700,6 +700,33 @@ function M.Runtime.BeginPristine(origin)
 	end)
 end
 
+-- THE TWO BOOTSTRAP METHODS ARE CHECKED BY NAME, like `creatorAvailable` twenty
+-- lines down and unlike `M.Start`, which only checks that `Open77.session` is a
+-- TABLE. A host that carries the table without these two therefore reaches
+-- `ResolveBootstrap`, and an unguarded index-and-call on it raises out of
+-- whatever is running -- which for the picker thread below means dying while
+-- holding `bootstrapPicking`, and that latch stuck true is a loading cover the
+-- player never gets out from behind.
+
+--- Tells the host this client cannot answer the bootstrap, where it can be told.
+local function failBootstrap(reason)
+	local session = Open77.session
+	local fn = type(session) == 'table' and session.failCharacterBootstrap or nil
+	if type(fn) ~= 'function' then return end
+	pcall(fn, reason)
+end
+
+--- Spends the host's one-shot bootstrap, answering its refusal rather than it.
+local function spendBootstrap(family)
+	local session = Open77.session
+	local fn = type(session) == 'table' and session.resolveCharacterBootstrap or nil
+	if type(fn) ~= 'function' then return false, 'resolve_character_bootstrap_unavailable' end
+	local called, resolved, reason = pcall(fn, family)
+	if not called then return false, tostring(resolved) end
+	if not resolved then return false, reason end
+	return true
+end
+
 --- Spends the one-shot character bootstrap on a body family.
 -- @author dop42
 -- @param family any
@@ -711,12 +738,12 @@ function M.Runtime.ResolveBootstrap(family)
 		return true
 	end
 	if not M.IsFamily(family) then
-		Open77.session.failCharacterBootstrap('invalid_body_family')
+		failBootstrap('invalid_body_family')
 		return false
 	end
-	local resolved, reason = Open77.session.resolveCharacterBootstrap(family)
+	local resolved, reason = spendBootstrap(family)
 	if not resolved then
-		Open77.session.failCharacterBootstrap(tostring(reason or 'character_bootstrap_failed'))
+		failBootstrap(tostring(reason or 'character_bootstrap_failed'))
 		Runtime.Notify('error', 'appearance.bootstrapFailed', { reason = tostring(reason) })
 		return false
 	end
@@ -835,6 +862,118 @@ local function choiceWaitMs()
 	return wait
 end
 
+-- The picker thread's heartbeat, what it was started for, and how many times it
+-- has been started again.
+--
+-- WHY A SUPERVISOR EXISTS AT ALL. `bootstrapPicking` is taken BEFORE the thread
+-- and dropped only from inside its body, and that body is a raw `while true`
+-- with no `pcall` around it. `core/client/scheduler.lua` names the failure that
+-- makes this fatal: exceeding the per-resume instruction budget "unwinds
+-- straight out of the coroutine body ... it does not crash the resource, it does
+-- not repeat, and it logs nothing". The thread is then dropped for the session
+-- with the latch stuck true, so every later `BeginBootstrap` returns on its
+-- first line, the bootstrap is never spent, THE WORLD NEVER LOADS UNDER THE
+-- PLAYER, and the journal is empty -- which is the one failure a player cannot
+-- tell from a frozen game.
+--
+-- It is not a hypothetical placement. `M.Start` calls this during the
+-- frame-per-module boot walk, where the budget is tightest, and the loop then
+-- runs across the world load -- the transition `wardrobe.lua` measured a 3.1 s
+-- script stall on.
+--
+-- It cannot simply move into the scheduler: the loop yields, and `runJob` wraps
+-- a step in `pcall`, so the thread stays and a scheduler job WATCHES it. That is
+-- the answer `wardrobe.lua:1673-1795` already carries for exactly this shape.
+local pickBeat, pickOrigin, pickRevivals = 0, 'start', 0
+
+-- How long the supervisor waits for a beat before calling the picker dead. Past
+-- the 3.1 s script stall `wardrobe.lua` measured across the world load, with
+-- room to spare: this loop body reads a projection and compares two clocks, so
+-- it has no legitimate step of its own anywhere near this long.
+local PICK_STALL_MS = 5000
+
+-- How many times a dead picker is started again before the bootstrap is simply
+-- spent. A revival covers the world-load transition, which is the one moment a
+-- thread is known to be at risk; past that something is wrong that another
+-- thread will not fix, and the module's own rule applies -- one reload worse,
+-- never stuck.
+local MAX_PICK_REVIVALS = 2
+
+local runPicker
+
+--- Starts the picker, beating once so the supervisor does not call it dead.
+local function spawnPicker()
+	pickBeat = nowMs()
+	CreateThread(function() runPicker(pickOrigin) end)
+end
+
+--- Waits for the choice, and spends the bootstrap on a guess when none comes.
+runPicker = function(origin)
+	local wait = choiceWaitMs()
+	local ceiling = choiceCeilingMs()
+	local startedAt = nowMs()
+	local deadline = startedAt + wait
+	while true do
+		pickBeat = nowMs()
+		if bootstrapResolved or bootstrapPhase() ~= 'waiting' then break end
+		-- The character the server is loading, or a creation under way, IS the
+		-- answer: both spend the bootstrap themselves, on the body that belongs
+		-- to the character.
+		if State.citizenId ~= nil or State.creating then break end
+		-- But never past the ceiling: see `choiceCeilingMs`.
+		if ceiling ~= nil and deadline > startedAt + ceiling then
+			deadline = startedAt + ceiling
+		end
+		if nowMs() >= deadline then
+			bootstrapPicking = false
+			local family = defaultFamily()
+			Open77.log.warn(('[appearance] no character reached this client in %d ms (%s): ' ..
+				'the bootstrap is spent on the %s body so that a world comes up at all')
+				:format(nowMs() - startedAt, origin, family))
+			Runtime.ResolveBootstrap(family)
+			return
+		end
+		Wait(ROSTER_POLL_MS)
+	end
+	bootstrapPicking = false
+end
+
+--- Watches the picker thread and starts it again if it stopped without a word.
+-- @author dop42
+--
+-- Driven from the `appearance.watch` scheduler job, which is where it has to
+-- live: a scheduler job is `pcall`ed and resumed by the one client loop, and the
+-- thing it is watching is a raw thread started microseconds before the world
+-- load. See `pickBeat` above for what a dead picker costs.
+function M.Runtime.SuperviseBootstrap()
+	if not bootstrapPicking then return end
+	-- Somebody else spent it while the picker was waiting; the latch is all that
+	-- is left to clear.
+	if bootstrapResolved then
+		bootstrapPicking = false
+		return
+	end
+	if nowMs() - pickBeat < PICK_STALL_MS then return end
+
+	if pickRevivals < MAX_PICK_REVIVALS then
+		pickRevivals = pickRevivals + 1
+		Open77.log.warn(('[appearance] the bootstrap picker stopped without a word after ' ..
+			'%d ms; starting it again (%d)'):format(PICK_STALL_MS, pickRevivals))
+		return spawnPicker()
+	end
+
+	-- THE WORLD IS GIVEN A BODY ANYWAY, and this is the ending that was missing.
+	-- With the picker dead and the latch standing, the player sits behind the
+	-- loading cover for the rest of the session with nothing in the journal. A
+	-- guessed body is one reload worse; a stuck latch has no way forward at all.
+	bootstrapPicking = false
+	local family = defaultFamily()
+	Open77.log.warn(('[appearance] the bootstrap picker stopped %d times and is not coming ' ..
+		'back; the bootstrap is spent on the %s body so that a world comes up at all')
+		:format(pickRevivals + 1, family))
+	Runtime.ResolveBootstrap(family)
+end
+
 --- Holds the join bootstrap for a choice, and spends it on a guess if none comes.
 -- @author dop42
 --
@@ -853,35 +992,9 @@ function M.Runtime.BeginBootstrap(origin)
 	if bootstrapResolved or bootstrapPicking then return end
 	if bootstrapPhase() ~= 'waiting' then return end
 	bootstrapPicking = true
-
-	CreateThread(function()
-		local wait = choiceWaitMs()
-		local ceiling = choiceCeilingMs()
-		local startedAt = nowMs()
-		local deadline = startedAt + wait
-		while true do
-			if bootstrapResolved or bootstrapPhase() ~= 'waiting' then break end
-			-- The character the server is loading, or a creation under way, IS the
-			-- answer: both spend the bootstrap themselves, on the body that belongs
-			-- to the character.
-			if State.citizenId ~= nil or State.creating then break end
-			-- But never past the ceiling: see `choiceCeilingMs`.
-			if ceiling ~= nil and deadline > startedAt + ceiling then
-				deadline = startedAt + ceiling
-			end
-			if nowMs() >= deadline then
-				bootstrapPicking = false
-				local family = defaultFamily()
-				Open77.log.warn(('[appearance] no character reached this client in %d ms (%s): ' ..
-					'the bootstrap is spent on the %s body so that a world comes up at all')
-					:format(nowMs() - startedAt, origin, family))
-				Runtime.ResolveBootstrap(family)
-				return
-			end
-			Wait(ROSTER_POLL_MS)
-		end
-		bootstrapPicking = false
-	end)
+	pickOrigin = tostring(origin)
+	pickRevivals = 0
+	spawnPicker()
 end
 
 --- Restores, asks for a creation, or settles on the default face.
@@ -1554,6 +1667,13 @@ function M.Start()
 	-- read would otherwise end the pass -- and it is the first of them that ends a
 	-- body reload and announces gameplay-ready.
 	OPX.Scheduler.Every('appearance.watch', WATCH_MS, function()
+		-- FIRST, AND IN ITS OWN PCALL, because it must run even when the three
+		-- steps below are failing: the picker holds the latch the whole join is
+		-- behind, and a picker that died silently strands it. See `pickBeat`.
+		local watchedPick, pickFailure = pcall(Runtime.SuperviseBootstrap)
+		if not watchedPick then
+			Open77.log.error('[appearance] bootstrap watch: ' .. tostring(pickFailure))
+		end
 		local ok, failure = pcall(M.Editor.Watch)
 		if not ok then Open77.log.error('[appearance] watch: ' .. tostring(failure)) end
 		local watched, reason = pcall(Runtime.WatchReload)

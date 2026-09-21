@@ -362,7 +362,7 @@ onUnmounted(() => {
                 <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true">
                   <path v-for="(d, at) in GLYPHS.heart" :key="at" :d="d" />
                 </svg>
-                <span class="figure op-value">{{ bpm }}</span>
+                <span class="figure op-value op-truncate">{{ bpm }}</span>
                 <span class="unit op-eyebrow">{{ label(T.bpm) }}</span>
               </dd>
             </div>
@@ -373,7 +373,7 @@ onUnmounted(() => {
                 <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true">
                   <path v-for="(d, at) in GLYPHS.clock" :key="at" :d="d" />
                 </svg>
-                <span class="figure op-value">{{ downClock }}</span>
+                <span class="figure op-value op-truncate">{{ downClock }}</span>
               </dd>
             </div>
 
@@ -383,7 +383,7 @@ onUnmounted(() => {
                 <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true">
                   <path v-for="(d, at) in GLYPHS.bolt" :key="at" :d="d" />
                 </svg>
-                <span class="figure op-value">
+                <span class="figure op-value op-truncate">
                   {{ waiting ? label(T.signalOn) : label(T.signalOff) }}
                 </span>
               </dd>
@@ -406,7 +406,7 @@ onUnmounted(() => {
                 <path v-for="(d, at) in GLYPHS.heal" :key="at" :d="d" />
               </svg>
               <span class="choice-text">
-                <span class="choice-label op-label">
+                <span class="choice-label op-label op-truncate">
                   {{ waiting ? label(T.waitActive) : label(T.waitLabel) }}
                 </span>
                 <span class="choice-hint op-copy">
@@ -438,7 +438,7 @@ onUnmounted(() => {
                 <path v-for="(d, at) in GLYPHS.location" :key="at" :d="d" />
               </svg>
               <span class="choice-text">
-                <span class="choice-label op-label">{{ giveUpTitle }}</span>
+                <span class="choice-label op-label op-truncate">{{ giveUpTitle }}</span>
                 <span class="choice-hint op-copy">{{ giveUpHint }}</span>
               </span>
             </div>
@@ -611,11 +611,12 @@ onUnmounted(() => {
   stroke-linejoin: round;
 }
 
+/* THE CUT IS `.op-truncate` ON THE ELEMENT. Written out here it was missing
+   `min-width: 0`, and `.figure`'s parent -- the `dd`, a plain flex row -- does
+   not supply one, so a reading long enough to need the ellipsis pushed the unit
+   out of the row instead of being cut. Only the size is this surface's own. */
 .figure {
   font-size: var(--op-fs-body);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .unit {
@@ -678,12 +679,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: var(--op-space-1);
   min-width: 0;
-}
-
-.choice-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .choice-hint {

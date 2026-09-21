@@ -179,14 +179,50 @@ local function keyLabel(token)
 	return upper
 end
 
+-- The answer a cap resolved to last time, remembered ON THE CAP. `false` stands
+-- for "nothing can name this one", which a nil could not: nil is also "not
+-- resolved yet", and an unnameable cap is the case that would otherwise be
+-- re-read every pass forever.
+--
+-- WHY IT IS REMEMBERED AT ALL. `build()` runs on EVERY pass -- `pass()` calls
+-- `draw()` unconditionally and `draw()` builds BEFORE its signature gate at the
+-- bottom of this section -- so this resolved once per cap per row per group,
+-- 6.7 times a second, for the whole session. `OPX.Lib.Input.KeyFor` is a HOST
+-- READ: at ten rows of up to `MAX_KEYS` caps that is up to sixty host reads a
+-- pass, spent computing a signature that compares equal and is thrown away.
+-- This is the correction `hud.vitals` documents at
+-- `modules/hud/client/main.lua:1054-1060` -- "the DRAW is the part that was
+-- recomputing an unchanged answer" -- and it was never applied here.
+--
+-- ON THE CAP, AND NOT IN A TABLE BESIDE IT, because the client sandbox has no
+-- `setmetatable` (`core/shared/registry.lua:121`): a cache keyed by cap tables
+-- could not be weak, and caps are rebuilt on every `show` and `update`, so it
+-- would grow for the life of the session. Stored on the cap it lives and dies
+-- with the group, and `rowSpec` -- the only other reader of a cap -- names the
+-- three fields it wants rather than walking them.
+--
+-- IT CANNOT GO STALE. A cap resolves from its own `literal`/`action`, frozen
+-- when the group was validated, and the binding the host holds for that action,
+-- which cannot move without `open77:keybinds:changed`. That event already has a
+-- handler here, and the handler forgets these first.
+local CAP_UNNAMEABLE = false
+
 --- One stored cap's text, or nil when nothing can name it.
--- Resolved WHEN THE STRIP IS DRAWN and not when the group was posted, so a
--- rebind reaches the strip without a call from the caller.
+-- Resolved WHEN THE STRIP IS FIRST DRAWN and not when the group was posted, so a
+-- rebind reaches the strip without a call from the caller -- see `CAP_UNNAMEABLE`.
 local function capText(cap)
-	if cap.literal ~= nil then return keyLabel(cap.literal) end
-	local key = OPX.Lib.Input.KeyFor(cap.action) or cap.fallback
-	if key == nil then return nil end
-	return keyLabel(key)
+	local known = cap.text
+	if known ~= nil then return known or nil end
+
+	local text
+	if cap.literal ~= nil then
+		text = keyLabel(cap.literal)
+	else
+		local key = OPX.Lib.Input.KeyFor(cap.action) or cap.fallback
+		if key ~= nil then text = keyLabel(key) end
+	end
+	cap.text = text or CAP_UNNAMEABLE
+	return text
 end
 
 -- ── validating a group ───────────────────────────────────────────────────────
@@ -390,6 +426,18 @@ local function removeOwner(owner)
 	end
 	for index = 1, #keys do groups[keys[index]] = nil end
 	return #keys
+end
+
+--- Forgets every cap's resolved text, so the next draw reads the host again.
+-- Bounded by what is held: caps that belong to no live group are unreachable
+-- from here and were already gone. See `CAP_UNNAMEABLE` for why this is the
+-- invalidation rather than a cache with a lifetime of its own.
+local function forgetCaps()
+	for _, group in pairs(groups) do
+		for _, row in ipairs(group.rows) do
+			for _, cap in ipairs(row.keys) do cap.text = nil end
+		end
+	end
 end
 
 --- Every group, highest priority then most recent first.
@@ -759,7 +807,13 @@ function M.Start()
 		if owner ~= nil then hideAll(owner) end
 	end)
 
-	AddEventHandler(HOST_KEYBINDS_CHANGED, function() draw() end)
+	-- The resolved caps go FIRST: a redraw that read the cache would put the old
+	-- key back on the strip and then gate the next pass on its signature, so the
+	-- rebind would never appear.
+	AddEventHandler(HOST_KEYBINDS_CHANGED, function()
+		forgetCaps()
+		draw()
+	end)
 
 	AddEventHandler(EVENT_DOWNED_CHANGED, function(payload)
 		if type(payload) ~= 'table' then return end
