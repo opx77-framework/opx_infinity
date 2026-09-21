@@ -24,39 +24,22 @@ Access.Config = Config
 Access.SITES = type(Config.SITES) == 'table' and Config.SITES or {}
 local SITES = Access.SITES
 
--- Box every accepted coordinate fits in.
-local BOUND = 1000000
-
 -- Coerces to a finite number, or nil. `OPX.Math.Finite` and not
 -- `OPX.Text.Finite`, which also caps at 2^53: a yaw, a price and a millisecond
 -- clock are all measured with this and must not be bounded like a coordinate.
--- It was written out by hand here, and identically in ten other files, under
--- that same correct reasoning -- which is an argument for one helper and never
--- was one for eleven copies.
 local finiteNumber = OPX.Math.Finite
 Access.FiniteNumber = finiteNumber
 
---- Coerces a world coordinate: finite and inside BOUND.
--- @author dop42
--- @param value any
--- @return number|nil
-local function coordinate(value)
-	local parsed = finiteNumber(value)
-	if parsed == nil or parsed > BOUND or parsed < -BOUND then return nil end
-	return parsed
-end
-Access.Coordinate = coordinate
+-- The world box and the two coercions over it, in `lib/shared/spots.lua`. Only
+-- those: a hauling SITE is a run of pickup points and dropoffs with a vehicle
+-- and a pay rate, not a placed spot, and that record is its own. Where a
+-- coordinate stops being believable is the same question everywhere on one map.
+Access.Coordinate = OPX.Spots.Coordinate
+Access.Integer = OPX.Spots.Integer
+local coordinate, integer = Access.Coordinate, Access.Integer
 
---- Coerces a whole number inside BOUND.
--- @author dop42
--- @param value any
--- @return integer|nil
-local function integer(value)
-	local parsed = coordinate(value)
-	if parsed == nil or parsed % 1 ~= 0 then return nil end
-	return math.floor(parsed)
-end
-Access.Integer = integer
+-- The %d ceiling quoted in this module's own refusal messages.
+local BOUND = OPX.Spots.BOUND
 
 --- Whether a point is the unfilled blank this config ships with.
 --

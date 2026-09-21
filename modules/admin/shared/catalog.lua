@@ -61,7 +61,7 @@ do
 	end
 end
 
---- Whether a record is an AV, by the one rule: `OPX.Text.IsAvRecord` over
+--- Whether a record is an AV, by the one rule: `OPX.Vehicle.IsAvRecord` over
 --- `OPX.Config.SHARED.AV_PREFIXES`.
 --
 -- This was the third hand-written copy of that rule, over a third config key,
@@ -78,7 +78,7 @@ end
 -- @param record string
 -- @return boolean
 local function isAir(record)
-	return Text.IsAvRecord(record)
+	return OPX.Vehicle.IsAvRecord(record)
 end
 
 --- Indexes the next `count` rows into their classes and both lookups.

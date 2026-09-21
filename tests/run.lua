@@ -87,6 +87,16 @@ local CORE_NAMESPACE = {
 	-- decide who may pass, on both halves, and the copy that drifted would be
 	-- the one saying somebody may.
 	JobGate = true,
+	-- The one placed-spot vocabulary, in `lib/shared/spots.lua`, on `OPX` for
+	-- the same reason `JobGate` is: `garages` and `dealership` held 334
+	-- `diff`-clean identical lines of it and `clothing`, `teleports` and
+	-- `elevators` held cut-down copies, and the copy that drifted would be the
+	-- one refusing a spot the other accepted -- a car bought at a dealer and
+	-- recallable at no garage.
+	Spots = true,
+	-- Whether a TweakDB record flies, in `lib/shared/vehicle.lua`. A fact about
+	-- the record, so it cannot be the three answers it was.
+	Vehicle = true,
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
 	Storage = true, Audit = true, Surface = true,
@@ -5199,9 +5209,20 @@ do
 			right = Access.FromDefinition('right', { KIND = 'garage', X = -3.0, Y = 0.0, Z = 0.0 }),
 			far = Access.FromDefinition('far', { KIND = 'garage', X = 100.0, Y = 0.0, Z = 0.0 }),
 		}
-		local nearest = Access.Nearest(spots, 0.0, 0.0)
+		-- ASKED IN BOTH ORDERS, and that is the whole check. The version that
+		-- stood here handed `Nearest` one table and asserted the answer was
+		-- `left` -- which this Lua returns from `pairs` first anyway, so deleting
+		-- the `spot.key < best.key` tie-break left the check GREEN. It was
+		-- asserting a hash order, not a rule. Two tied spots offered in each
+		-- order cannot both be visited first, so a `Nearest` that answers
+		-- whichever it met first must fail one of the two calls, whatever any
+		-- implementation's traversal order is.
+		local tiedFirst = Access.Nearest({ spots.right, spots.left }, 0.0, 0.0)
+		local tiedSecond = Access.Nearest({ spots.left, spots.right }, 0.0, 0.0)
 		check('two markers a metre apart are decided by name, not by pairs order',
-			nearest ~= nil and nearest.key == 'left', nearest and nearest.key)
+			tiedFirst ~= nil and tiedFirst.key == 'left'
+				and tiedSecond ~= nil and tiedSecond.key == 'left',
+			('%s/%s'):format(tiedFirst and tiedFirst.key, tiedSecond and tiedSecond.key))
 		check('a radius the caller names is what is measured against',
 			select(1, Access.Nearest(spots, 0.0, 0.0, 4.0)) == nil)
 		check('a spot beyond the radius is not offered',
@@ -6071,9 +6092,15 @@ do
 			right = Access.FromDefinition('right', { KIND = 'garage', X = -3.0, Y = 0.0, Z = 0.0 }),
 			far = Access.FromDefinition('far', { KIND = 'garage', X = 100.0, Y = 0.0, Z = 0.0 }),
 		}
-		local nearest = Access.Nearest(spots, 0.0, 0.0)
+		-- Asked in BOTH orders, for the reason the garages copy of this check
+		-- spells out: one table and one assertion tested this Lua's hash order
+		-- and stayed green with the tie-break deleted.
+		local tiedFirst = Access.Nearest({ spots.right, spots.left }, 0.0, 0.0)
+		local tiedSecond = Access.Nearest({ spots.left, spots.right }, 0.0, 0.0)
 		check('two dealers a metre apart are decided by name, not by pairs order',
-			nearest ~= nil and nearest.key == 'left', nearest and nearest.key)
+			tiedFirst ~= nil and tiedFirst.key == 'left'
+				and tiedSecond ~= nil and tiedSecond.key == 'left',
+			('%s/%s'):format(tiedFirst and tiedFirst.key, tiedSecond and tiedSecond.key))
 		check('a radius the caller names is what is measured against',
 			select(1, Access.Nearest(spots, 0.0, 0.0, 4.0)) == nil)
 		check('a dealer beyond the radius is not offered',
@@ -6325,8 +6352,14 @@ do
 		local avBuy = contract.Buy(src, 'pad', 'manticore', nil)
 		check('an AV is sold at a pad', avBuy.ok == true, avBuy and tostring(avBuy.error))
 		handOver = control.vehicleCreates[#control.vehicleCreates]
+		-- ASSERTED AGAINST THE SHIPPED NUMBER, not against `Access.AvLift()`. The
+		-- version that stood here compared the created z to `5.0 + Access.AvLift()`
+		-- -- the function under test on both sides of the `==` -- so an `AvLift`
+		-- that answered 99 metres moved the expectation to 99 metres with it and
+		-- the check stayed green. `config/dealership.lua` ships AV_LIFT = 1.2, and
+		-- 1.2 is what an AV must come out at.
 		check('and it is handed over LIFTED clear of the pad\'s own floor',
-			handOver ~= nil and handOver.position.z == 5.0 + Access.AvLift(),
+			handOver ~= nil and math.abs(handOver.position.z - (5.0 + 1.2)) < 1e-9,
 			handOver and tostring(handOver.position.z))
 		check('and the AV\'s price is the AV row\'s, not a car\'s',
 			character.Players[src].PlayerData.money.EDDIES == 2000000 - manticore.price)
@@ -14851,7 +14884,7 @@ do
 		-- A NON-STRING IS NOT AIR, and is not a raise either. The admin copy called
 		-- `record:lower()` straight off whatever it was handed.
 		for _, odd in ipairs({ 42, true, {} }) do
-			local read, answer = pcall(OPX.Text.IsAvRecord, odd)
+			local read, answer = pcall(OPX.Vehicle.IsAvRecord, odd)
 			check(('a %s record is refused rather than raising'):format(type(odd)),
 				read == true and answer == false, tostring(read) .. ' ' .. tostring(answer))
 		end

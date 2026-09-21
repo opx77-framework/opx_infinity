@@ -1,13 +1,19 @@
 --- Config reads, coercions and the decisions both halves share.
 -- @author XEROX710
 --
--- Two input shapes arrive here and they are deliberately not the same function.
--- A DEFINITION is what an operator writes in `config/garages.lua` and what a
--- captured row holds in the database: upper-case fields, the same spelling the
--- elevators config uses. A WIRE spot is what the server sends a client: already
--- normalised and lower-case. Each is validated on its own terms, and both end in
--- the one `build` below -- so there is one place that decides what a spot is and
--- one place that decides whether one is usable.
+-- WHAT A SPOT IS, AND WHO DECIDES IT. The record, the two input shapes that
+-- normalise into it, the marker look and the coordinate box are all
+-- `lib/shared/spots.lua`, and this file only names this module's own words to
+-- them: its noun, its two KINDs, its key width and its fallback marker. That is
+-- not tidying. `modules/dealership/shared/access.lua` held 334 `diff`-clean
+-- identical lines of it, and the two must agree exactly or a car bought at a
+-- dealer cannot be recalled at the garage beside it.
+--
+-- WHAT IS STILL THIS MODULE'S. Everything below the vocabulary: which distances
+-- and cadences it scans at, how long a capture may take, and what a broken one
+-- of those reads as. Those are numbers about THIS surface, not about what a spot
+-- is, and a shared file that owned them would be forcing a dealer and a garage
+-- to poll at the same rate for no reason.
 --
 -- Every value is coerced and never trusted: a coordinate that is a string, a
 -- NaN, an unknown KIND or a radius outside the engine's range reads as a
@@ -25,88 +31,34 @@ local Config = type(M.Settings) == 'table' and M.Settings or {}
 -- Coerces to a finite number, or nil. `OPX.Math.Finite` and not
 -- `OPX.Text.Finite`, which also caps at 2^53: a yaw, a price and a millisecond
 -- clock are all measured with this and must not be bounded like a coordinate.
--- It was written out by hand here, and identically in ten other files, under
--- that same correct reasoning -- which is an argument for one helper and never
--- was one for eleven copies.
 local finiteNumber = OPX.Math.Finite
 Access.FiniteNumber = finiteNumber
 
--- Box every accepted coordinate fits in.
-local BOUND = 1000000
+-- The world box and the two coercions over it, in `lib/shared/spots.lua`. Kept
+-- as names on `Access` because the whole module already reads spot rules through
+-- `Access` and a caller should not have to know which of them is shared.
+Access.Coordinate = OPX.Spots.Coordinate
+Access.Integer = OPX.Spots.Integer
 
--- Coerces a world coordinate: finite and inside BOUND.
-local function coordinate(value)
-	local parsed = finiteNumber(value)
-	if parsed == nil or parsed > BOUND or parsed < -BOUND then return nil end
-	return parsed
-end
-Access.Coordinate = coordinate
-
--- Coerces a whole number inside BOUND.
-local function integer(value)
-	local parsed = coordinate(value)
-	if parsed == nil or parsed % 1 ~= 0 then return nil end
-	return math.floor(parsed)
-end
-Access.Integer = integer
-
--- The two kinds, and the engine's own marker vocabulary. A style or a shape
--- outside these sets is refused by `Open77.markers` with a status, so picking
--- one here would only move the refusal to a place with less to say about it.
+-- The two kinds. A style or a shape outside the engine's own sets is refused by
+-- `Open77.markers` with a status, so those live in `lib/shared/spots.lua` beside
+-- the resolver that falls back to them.
 local KINDS = { [M.KIND.GARAGE] = true, [M.KIND.AVPAD] = true }
 Access.KINDS = KINDS
-
-local SHAPES = { ring = true, cylinder = true }
-local STYLES = { interaction = true, objective = true, spawn = true, danger = true }
 
 --- The largest allowed spot key, which is also the column width.
 Access.MAX_KEY = 48
 
---- Builds one validated spot, or answers why it was refused.
--- @author XEROX710
--- @param key string
--- @param kind any
--- @param label any
--- @param x any
--- @param y any
--- @param z any
--- @param heading any
--- @param bucket any
--- @return table|nil
--- @return string|nil
-local function build(key, kind, label, x, y, z, heading, bucket)
-	if type(key) ~= 'string' or key == '' or #key > Access.MAX_KEY then
-		return nil, 'key must be a string of 1 to ' .. Access.MAX_KEY .. ' characters'
-	end
-	if type(kind) ~= 'string' or not KINDS[kind:lower()] then
-		return nil, ('%s: KIND must be one of garage, avpad'):format(key)
-	end
-	x, y, z = coordinate(x), coordinate(y), coordinate(z)
-	if x == nil or y == nil or z == nil then
-		return nil, ('%s: X, Y and Z must be finite numbers inside %d'):format(key, BOUND)
-	end
-	local headingNumber = heading == nil and 0.0 or finiteNumber(heading)
-	if headingNumber == nil then
-		return nil, ('%s: HEADING must be a finite number'):format(key)
-	end
-	local bucketNumber = bucket == nil and 0 or integer(bucket)
-	if bucketNumber == nil or bucketNumber < 0 then
-		return nil, ('%s: BUCKET must be a whole number, 0 or more'):format(key)
-	end
-	if label ~= nil and type(label) ~= 'string' then
-		return nil, ('%s: LABEL must be a string'):format(key)
-	end
-	return {
-		key = key,
-		label = (type(label) == 'string' and label ~= '') and label or key,
-		kind = kind:lower(),
-		x = x,
-		y = y,
-		z = z,
-		heading = headingNumber,
-		bucket = bucketNumber,
-	}
-end
+-- This module's words for the shared record: a spot has a KIND, because a garage
+-- and an AV pad are drawn and used differently, and a HEADING, because a vehicle
+-- is CREATED at one and something has to say which way it faces.
+local SPEC = {
+	noun = 'spot',
+	maxKey = Access.MAX_KEY,
+	kinds = KINDS,
+	kindNames = 'garage, avpad',
+	heading = true,
+}
 
 --- Normalises one config or database row, in the operator's upper-case spelling.
 -- @author XEROX710
@@ -115,8 +67,7 @@ end
 -- @return table|nil
 -- @return string|nil
 function Access.FromDefinition(key, raw)
-	if type(raw) ~= 'table' then return nil, tostring(key) .. ': every spot must be a table' end
-	return build(key, raw.KIND, raw.LABEL, raw.X, raw.Y, raw.Z, raw.HEADING, raw.BUCKET)
+	return OPX.Spots.FromDefinition(SPEC, key, raw)
 end
 
 --- Normalises one spot off the wire, in the shape `Access.Serialise` writes.
@@ -125,21 +76,14 @@ end
 -- @return table|nil
 -- @return string|nil
 function Access.FromWire(raw)
-	if type(raw) ~= 'table' then return nil, 'every spot must be a table' end
-	return build(raw.key, raw.kind, raw.label, raw.x, raw.y, raw.z, raw.heading, raw.bucket)
+	return OPX.Spots.FromWire(SPEC, raw)
 end
 
 --- The fields of one spot, as the wire and the SYNC event carry them.
 -- @author XEROX710
 -- @param spot table
 -- @return table
-function Access.Serialise(spot)
-	return {
-		key = spot.key, label = spot.label, kind = spot.kind,
-		x = spot.x, y = spot.y, z = spot.z,
-		heading = spot.heading, bucket = spot.bucket,
-	}
-end
+Access.Serialise = OPX.Spots.Serialise
 
 --- Builds a key -> spot table from a list of definitions.
 -- @author XEROX710
@@ -147,22 +91,7 @@ end
 -- @param problems table|nil collector, appended to
 -- @return table
 function Access.Coerce(definitions, problems)
-	local spots = {}
-	if type(definitions) ~= 'table' then
-		if problems ~= nil then
-			problems[#problems + 1] = 'SPOTS must be a table of key -> definition'
-		end
-		return spots
-	end
-	for key, raw in pairs(definitions) do
-		local spot, why = Access.FromDefinition(key, raw)
-		if spot == nil then
-			if problems ~= nil then problems[#problems + 1] = why end
-		else
-			spots[key] = spot
-		end
-	end
-	return spots
+	return OPX.Spots.Coerce(SPEC, definitions, problems)
 end
 
 --- Answers one spot by key, or nil.
@@ -170,26 +99,14 @@ end
 -- @param spots table
 -- @param key any
 -- @return table|nil
-function Access.Spot(spots, key)
-	if type(key) ~= 'string' then return nil end
-	return spots[key]
-end
+Access.Spot = OPX.Spots.Spot
 
 --- Every spot in a bucket, sorted by key.
--- Sorted because `pairs` order would reshuffle a listing, a SYNC payload and a
--- determinism check between runs.
 -- @author XEROX710
 -- @param spots table
 -- @param bucket integer
 -- @return table[] array of spots
-function Access.InBucket(spots, bucket)
-	local list = {}
-	for _, spot in pairs(spots) do
-		if spot.bucket == bucket then list[#list + 1] = spot end
-	end
-	table.sort(list, function(left, right) return left.key < right.key end)
-	return list
-end
+Access.InBucket = OPX.Spots.InBucket
 
 --- Squared horizontal distance from a point to a spot's declared position.
 -- @author XEROX710
@@ -197,12 +114,7 @@ end
 -- @param x any
 -- @param y any
 -- @return number|nil
-function Access.FlatDistanceSquared(spot, x, y)
-	x, y = coordinate(x), coordinate(y)
-	if spot == nil or x == nil or y == nil then return nil end
-	local dx, dy = x - spot.x, y - spot.y
-	return dx * dx + dy * dy
-end
+Access.FlatDistanceSquared = OPX.Spots.FlatDistanceSquared
 
 --- Answers the spot a point stands on, or nil. The nearest wins; at equal
 -- distance the key decides, so `pairs` order never chooses between two markers
@@ -215,22 +127,12 @@ end
 -- @return table|nil
 -- @return number|nil squared distance
 function Access.Nearest(spots, x, y, radius)
-	radius = radius or Access.USE_RADIUS_SQ
-	local best, bestDistance
-	for _, spot in pairs(spots) do
-		local flat = Access.FlatDistanceSquared(spot, x, y)
-		if flat ~= nil and flat <= radius and
-			(bestDistance == nil or flat < bestDistance or
-				(flat == bestDistance and spot.key < best.key)) then
-			best, bestDistance = spot, flat
-		end
-	end
-	return best, bestDistance
+	return OPX.Spots.Nearest(spots, x, y, radius or Access.USE_RADIUS_SQ)
 end
 
 --- Whether a TweakDB vehicle record is an AV.
 --
--- ONE RULE, OVER ONE CONFIG KEY: `OPX.Text.IsAvRecord` and
+-- ONE RULE, OVER ONE CONFIG KEY: `OPX.Vehicle.IsAvRecord` and
 -- `OPX.Config.SHARED.AV_PREFIXES`. This module, the dealership and the admin
 -- catalogue each carried their own copy over their own key, and the copies had
 -- already stopped agreeing about what a non-string or an emptied list means.
@@ -243,48 +145,34 @@ end
 -- @param record any
 -- @return boolean
 function Access.IsAv(record)
-	return OPX.Text.IsAvRecord(record)
+	return OPX.Vehicle.IsAvRecord(record)
 end
 
+-- What a marker falls back to per kind when the operator named nothing usable. A
+-- pad is a RING, because an AV lands inside it and a filled cylinder would be
+-- drawn through the hull; a garage is a cylinder you walk into.
+local FALLBACK = {
+	[M.KIND.AVPAD] = { shape = 'ring', style = 'objective', RADIUS = 3.5 },
+	[M.KIND.GARAGE] = { shape = 'cylinder', style = 'spawn', RADIUS = 2.5 },
+}
+
 --- The marker an engine spot of this kind is drawn with.
--- Falls back per field rather than as a block, so a config that names a good
--- shape and a bad style keeps the shape.
---
--- The lift is part of the look and not of the spot: a ring that is not lifted
--- off the floor is co-planar with it and draws nothing, so the offset belongs
--- here with the shape that decides it rather than at every call site.
+-- The per-field fallback and the ground lift are `lib/shared/spots.lua`; the two
+-- shapes below are this module's own choice and stay here.
 -- @author XEROX710
 -- @param kind string
 -- @return table shape, style, radius, lift
 function Access.Marker(kind)
 	local declared = type(Config.MARKER) == 'table' and Config.MARKER[kind] or nil
-	declared = type(declared) == 'table' and declared or {}
-	local fallback = kind == M.KIND.AVPAD and
-		{ shape = 'ring', style = 'objective', RADIUS = 3.5 } or
-		{ shape = 'cylinder', style = 'spawn', RADIUS = 2.5 }
-
-	local shape = type(declared.shape) == 'string' and declared.shape:lower() or fallback.shape
-	if not SHAPES[shape] then shape = fallback.shape end
-	local style = type(declared.style) == 'string' and declared.style:lower() or fallback.style
-	if not STYLES[style] then style = fallback.style end
-
-	local radius = finiteNumber(declared.RADIUS)
-	if radius == nil or radius < 0.1 or radius > 50.0 then radius = fallback.RADIUS end
-
-	-- 0 is a real choice -- a marker deliberately on the floor -- so only a
-	-- broken value falls back.
-	local lift = finiteNumber(Config.GROUND_OFFSET)
-	if lift == nil or lift < 0.0 or lift > 2.0 then lift = 0.06 end
-	return { shape = shape, style = style, radius = radius, lift = lift }
+	local fallback = kind == M.KIND.AVPAD and FALLBACK[M.KIND.AVPAD] or FALLBACK[M.KIND.GARAGE]
+	return OPX.Spots.Marker(declared, fallback, Config.GROUND_OFFSET)
 end
 
 --- How far away a marker is still drawn, clamped to what the engine accepts.
 -- @author XEROX710
 -- @return number
 function Access.MaxDistance()
-	local distance = finiteNumber(Config.MAX_DISTANCE)
-	if distance == nil or distance < 1.0 or distance > 500.0 then return 150.0 end
-	return distance
+	return OPX.Spots.MaxDistance(Config.MAX_DISTANCE, 150.0)
 end
 
 -- The distances and cadences, read once. A value `Problems` refuses reads as
@@ -301,12 +189,12 @@ Access.REQUESTS_PER_WINDOW = math.floor(finiteNumber(Config.REQUESTS_PER_WINDOW)
 Access.CAPTURE_TIMEOUT_MS = math.floor(finiteNumber(Config.CAPTURE_TIMEOUT_MS) or 0)
 
 --- The AV lift, clamped to something a chassis will not fall through.
+-- The rule is `lib/shared/vehicle.lua`, beside the one that says whether a
+-- record is an AV at all: the staff spawner had a third copy with no bound.
 -- @author XEROX710
 -- @return number
 function Access.AvLift()
-	local lift = finiteNumber(Config.AV_LIFT)
-	if lift == nil or lift < 0.0 or lift > 10.0 then return 1.2 end
-	return lift
+	return OPX.Vehicle.AvLift(Config.AV_LIFT)
 end
 
 --- The configured spots, already validated.
@@ -331,38 +219,16 @@ function Access.Problems()
 		end
 	end
 
-	local distance = finiteNumber(Config.MAX_DISTANCE)
-	if distance == nil or distance < 1.0 or distance > 500.0 then
-		lines[#lines + 1] = 'MAX_DISTANCE must be a finite number, 1 to 500 metres'
-	end
-	local groundOffset = finiteNumber(Config.GROUND_OFFSET)
-	if groundOffset == nil or groundOffset < 0.0 or groundOffset > 2.0 then
-		lines[#lines + 1] = 'GROUND_OFFSET must be a finite number, 0 to 2 metres'
-	end
-	local lift = finiteNumber(Config.AV_LIFT)
-	if lift == nil or lift < 0.0 or lift > 10.0 then
-		lines[#lines + 1] = 'AV_LIFT must be a finite number, 0 to 10 metres'
-	end
+	-- The draw distance and the ground offset are reported against the same
+	-- bounds `Access.Marker` and `Access.MaxDistance` clamp to, because they are
+	-- literally the same constants.
+	OPX.Spots.DrawProblems(Config.MAX_DISTANCE, Config.GROUND_OFFSET, lines)
+
+	OPX.Vehicle.AvLiftProblem(Config.AV_LIFT, lines)
 
 	for _, kind in ipairs({ M.KIND.GARAGE, M.KIND.AVPAD }) do
 		local declared = type(Config.MARKER) == 'table' and Config.MARKER[kind] or nil
-		if type(declared) ~= 'table' then
-			lines[#lines + 1] = ('MARKER.%s must be a table of shape, style and RADIUS'):format(kind)
-		else
-			local shape = type(declared.shape) == 'string' and declared.shape:lower() or nil
-			if shape ~= nil and not SHAPES[shape] then
-				lines[#lines + 1] = ('MARKER.%s.shape must be ring or cylinder'):format(kind)
-			end
-			local style = type(declared.style) == 'string' and declared.style:lower() or nil
-			if style ~= nil and not STYLES[style] then
-				lines[#lines + 1] = ('MARKER.%s.style must be interaction, objective, spawn or danger')
-					:format(kind)
-			end
-			local radius = finiteNumber(declared.RADIUS)
-			if radius == nil or radius < 0.1 or radius > 50.0 then
-				lines[#lines + 1] = ('MARKER.%s.RADIUS must be a finite number, 0.1 to 50'):format(kind)
-			end
-		end
+		OPX.Spots.MarkerProblems(declared, 'MARKER.' .. kind, lines)
 	end
 
 	-- SPOTS are validated once at load; the errors are re-derived here so the

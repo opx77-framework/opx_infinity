@@ -125,6 +125,19 @@ shared_script "lib/shared/math.lua"
 -- may pass, and this file has been re-written by hand twice since it was
 -- factored out, each time losing a branch.
 shared_script "lib/shared/jobgate.lua"
+-- The placed-spot vocabulary, ahead of every module that places something. The
+-- same argument the job gate makes, about a different decision: `garages` and
+-- `dealership` held 334 `diff`-clean identical lines of it, and the copy that
+-- drifted would be the one drawing an AV pad at floor height or refusing a spot
+-- the other module accepted -- a car you can buy at a pad you cannot recall it
+-- at. `clothing`, `teleports` and `elevators` carried cut-down copies.
+shared_script "lib/shared/spots.lua"
+-- Whether a TweakDB record flies. A fact about the record, so it cannot be the
+-- three answers it was -- `garages`, `dealership` and the admin catalogue, over
+-- three config keys, one of which guarded neither its argument nor an emptied
+-- list. It lived in `lib/shared/text.lua`, which measures and cuts display text
+-- and does none of this.
+shared_script "lib/shared/vehicle.lua"
 shared_script "lib/shared/text.lua"
 shared_script "lib/shared/validate.lua"
 shared_script "lib/shared/hooks.lua"
