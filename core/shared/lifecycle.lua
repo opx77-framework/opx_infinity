@@ -162,6 +162,28 @@ local function runPhase(phase)
 	-- still boot, just in one frame, as it did before.
 	local yielding = phase == 'Start' and type(Wait) == 'function'
 	for _, module in ipairs(OPX.Modules.Resolve()) do
+		-- SETTLED BEFORE THIS MODULE, NOT ONLY AFTER THE PHASE. `settle` ran once
+		-- the whole phase was over, and the order `Resolve` hands back puts a
+		-- dependency before its dependant -- so a module that failed in `Init`
+		-- was followed, in the SAME phase, by the modules that require it. They
+		-- ran their `Init`, built their state and registered their handlers, and
+		-- only then were marked `unavailable`. Those handlers stay registered:
+		-- nothing here unregisters, and the module never gets `Api`, `Start` or
+		-- `Stop`, so what is left answers events with `OPX.Api.Get` returning nil.
+		if module.State == 'declared' then
+			for _, id in ipairs(module.Requires) do
+				local other = OPX.Modules.Record(id)
+				local state = other and other.State
+				if state ~= 'declared' and state ~= 'started' then
+					halt(module, 'unavailable', other == nil
+						and ('requires %q, which is not installed'):format(id)
+						or ('requires %q, which is %s'):format(id, state))
+					Open77.log.error(('[%s] %s'):format(module.Id, module.Reason))
+					break
+				end
+			end
+		end
+
 		if module.State == 'declared' then
 			-- Phases live on the namespace; everything else the loop reads is on
 			-- the record. The two were one table once, and a module field named
@@ -176,6 +198,14 @@ local function runPhase(phase)
 				if not ok then
 					halt(module, 'failed', ('%s failed: %s'):format(phase:lower(), tostring(failure)))
 					Open77.log.error(('[%s] %s'):format(module.Id, module.Reason))
+					-- WHAT IT PUBLISHED GOES WITH IT. `Provide` is called from
+					-- inside `Api`, and `Api` may raise after publishing: the
+					-- contract used to stay for the life of the resource, naming
+					-- an implementation whose constructor never finished.
+					for _, name in ipairs(OPX.Api.Withdraw(module.Id)) do
+						Open77.log.error(('[%s] contract %q is withdrawn with it')
+							:format(module.Id, name))
+					end
 					if module.Fatal then fatal = module.Id end
 				end
 				-- AFTER the module, not before: a fresh budget is worth nothing to
@@ -209,7 +239,17 @@ function OPX.Modules.Run(between)
 	-- Idempotent. The host can raise a resource-start event more than once, and
 	-- running the phases twice publishes every contract twice -- which `Provide`
 	-- correctly refuses, failing every module that owns one.
-	if ran then return true end
+	-- AND IT SAYS SO. Answering `true` to a second call was a lie that read as a
+	-- successful boot: `core/client/boot.lua` went on to start the loop over an
+	-- empty job list and print a report in which every line said `stopped`, and
+	-- a player connected through a stop/start of this VM had nothing rebuilt and
+	-- nothing logged. `ran` is not reset -- nothing here unregisters a handler,
+	-- so a second run would double every one of them -- the answer is simply
+	-- honest about which of the two things happened.
+	if ran then
+		Open77.log.error('[modules] Run() was called twice; this VM cannot be started in place')
+		return false, 'already ran'
+	end
 	ran = true
 
 	for _, phase in ipairs(PHASES) do
@@ -252,7 +292,15 @@ function OPX.Modules.Stop()
 	local running = OPX.Modules.Resolve()
 	for index = #running, 1, -1 do
 		local module = running[index]
-		if module.State == 'started' then
+		-- `failed` IS STOPPED TOO. A module that raised halfway through its
+		-- `Start` had already registered its scheduler jobs, its event handlers
+		-- and its hooks -- this file's own example is `inventory` hitting the
+		-- instruction budget, with "the rest of its `Start`" never run. It was
+		-- marked `failed`, never `started`, so this loop skipped it and its jobs
+		-- went on running against half-built state for the life of the resource,
+		-- and its hooks went on voting. A `Stop` already has to tolerate a
+		-- partial start, because that is exactly the state it is called in.
+		if module.State == 'started' or module.State == 'failed' then
 			if type(module.Module.Stop) == 'function' then
 				local ok, failure = pcall(module.Module.Stop)
 				if not ok then
@@ -281,4 +329,14 @@ function OPX.Modules.Report()
 			:format(module.Id, module.State, module.Reason or '')
 	end
 	return lines
+end
+
+--- Whether the module order has already been worked out. `OPX.Modules.Declare`
+--- reads this to refuse a declaration that arrives too late to be run: the
+--- order is memoised, so a module declared afterwards sits at `declared` for
+--- ever, in no phase, in no report, with the reason written nowhere.
+-- @author dop42
+-- @return boolean
+function OPX.Modules.Resolved()
+	return resolved ~= nil
 end

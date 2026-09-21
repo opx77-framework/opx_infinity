@@ -19,6 +19,12 @@ local SESSION_FORGOTTEN = OPX.Event(OPX.Channel.INTERNAL, 'session', 'forgotten'
 -- What the platform log shows against our hold.
 local HOLD_REASON = 'opx_infinity:character-selection'
 
+-- How long entry waits for the boot thread to settle the schema question, and
+-- how often it looks. Bounded so a boot that never finishes leaves no thread
+-- polling for the life of the resource; the gate watch is what the player sees.
+local BOOT_SETTLE_MS = 30000
+local BOOT_POLL_MS = 100
+
 -- ── the background pass ──────────────────────────────────────────────────────
 
 -- Milliseconds between two passes. Position is sampled at 1 Hz because by the
@@ -246,13 +252,57 @@ function M.BeginEntry(source)
 	-- Its own thread, for the database reads, and no failure path leaves the
 	-- player held. There is nothing to choose and nothing to wait for: the account
 	-- is locked on a character, or it is about to be locked on a new one.
+	--
+	-- THE ACCOUNT THIS ENTRY IS FOR, read before anything yields. `EnterSession`
+	-- is database reads end to end and every one of them gives up the thread; a
+	-- player who drops during a slow read has their slot recycled, and the
+	-- failure path below then spoke for whoever took it -- a refusal toast to a
+	-- stranger, and a gate release that admitted them with no character.
+	local userId = session.userId
+
 	CreateThread(function()
+		-- BOOT IS NOT INSTANT, AND NOTHING WAITED FOR IT. `OPX.Booted` was
+		-- written twice in `core/server/boot.lua` and read nowhere at all: the
+		-- guards that matter all read `OPX.BootError`, which is nil for the
+		-- whole of boot precisely because the schema question has not been
+		-- settled yet. A player reconnecting just after a restart came through
+		-- here while `Schema.Apply` was still creating tables -- every statement
+		-- is a round trip that yields, and `Start` yields between every module,
+		-- so the window is dozens of frames -- and the reads below then ran
+		-- against tables that did not exist, with `OPX.BootError` set behind
+		-- them on a player who was already half in.
+		--
+		-- Waiting is kinder than refusing, and costs nothing: the gate hold is
+		-- already taken, so the player simply stays behind it, and the watch
+		-- started above gives up and says why if boot never settles.
+		local waited = 0
+		while not OPX.Booted and waited < BOOT_SETTLE_MS do
+			Wait(BOOT_POLL_MS)
+			waited = waited + BOOT_POLL_MS
+		end
+		if not OPX.Booted then
+			Open77.log.error(('[character] boot had not settled after %d ms; refusing entry for %d')
+				:format(waited, source))
+			local stalled = OPX.Sessions[source]
+			if stalled and stalled.userId == userId then
+				OPX.Refuse(source, 'entry.failed', M.Operation.ENTRY)
+				OPX.Gate.Release(source, 'boot-unsettled', userId)
+			end
+			return
+		end
+
 		local entered = M.EnterSession(source)
 		if entered.ok then return end
 		Open77.log.error(('[character] %d could not be brought into the world: %s (%s)')
 			:format(source, tostring(entered.error), tostring(entered.detail)))
+		local live = OPX.Sessions[source]
+		if not live or live.userId ~= userId then
+			Open77.log.warn(('[character] %d is no longer %s; not answering for the slot')
+				:format(source, tostring(userId)))
+			return
+		end
 		OPX.Refuse(source, 'entry.failed', M.Operation.ENTRY)
-		OPX.Gate.Release(source, 'entry-failed')
+		OPX.Gate.Release(source, 'entry-failed', userId)
 	end)
 end
 

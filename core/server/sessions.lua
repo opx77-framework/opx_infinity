@@ -107,3 +107,37 @@ function OPX.SessionHolds(playerId)
 	if not session then return false end
 	return session.userId == OPX.UserIdOf(playerId)
 end
+
+-- A FLOOR UNDER THE SESSION TABLE, and it had none. `OPX.ForgetSession` exists
+-- here and every call to it on the departure path lives in the module that owns
+-- characters: disable that module, have it fail in `Init`, or have it dropped
+-- for a missing dependency, and nothing removes a session ever again. A slot
+-- that is never reused keeps a departed player's session readable and
+-- attributable, `core/server/buckets.lua` walks dead slots at stop, and
+-- `OPX.Buckets.Isolate` goes on believing a recycled slot has a session.
+--
+-- DEFERRED BY A FRAME, deliberately. The character module documents an order --
+-- `Logout` samples the position while the session is still there, and only then
+-- is it forgotten -- and a handler registered here at load runs BEFORE every
+-- module's. So this does not race it: it runs after the frame and clears up
+-- only what nobody claimed, which is the definition of a floor.
+AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, function(rawPlayerId)
+	local playerId = tonumber(rawPlayerId)
+	if not playerId then return end
+
+	local function sweep()
+		if OPX.Sessions[playerId] == nil then return end
+		Open77.log.warn(('[session] slot %d left a session behind; no module claimed the ' ..
+			'departure'):format(playerId))
+		OPX.ForgetSession(playerId)
+	end
+
+	if type(CreateThread) == 'function' then
+		CreateThread(function()
+			Wait(0)
+			sweep()
+		end)
+	else
+		sweep()
+	end
+end)

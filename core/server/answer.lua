@@ -140,6 +140,45 @@ function OPX.NotifyLocale(source, key, params, kind)
 	return OPX.Notify(source, locale(OPX.RefusalKey(key), params), kind)
 end
 
+-- What a dump may be, and what a single-line toast may be.
+--
+-- THE TWO DOORS ARE NOT THE SAME DOOR. `CommandResult` answers a command that
+-- asked to READ something back -- a stock list, a dealer list, a block of
+-- configuration -- so its newlines are the answer and stripping them would
+-- destroy it; it gets a ceiling and nothing else. `CommandNotice` is one line
+-- in a toast, where a newline is somebody else's forged line.
+--
+-- Neither had anything at all. `OPX.Refuse` carries no internals -- its code
+-- goes through `RefusalKey`, so only catalogue keys reach a player -- but these
+-- two carry a STRING the caller chose, and the hardening pass that made
+-- refusals stop carrying internals touched four modules and neither of these.
+-- Six live call sites still send `tostring(saved.detail)`, which is
+-- `lib/server/storage.lua`'s `query-failed`: the raw MySQL exception with its
+-- table and column names, or a Lua error with an absolute path. The recipient
+-- has passed an ACL, but they are a client and none of that is theirs.
+--
+-- The ceiling and the strip are what the door owes. Naming a catalogue key
+-- instead of an exception is what those six call sites owe, and every one of
+-- them already logs the detail where it belongs.
+local MAX_COMMAND_DUMP = 8192
+local MAX_COMMAND_LINE = 240
+
+--- Bounds a multi-line dump without touching what makes it readable.
+local function dumpText(message)
+	local text = tostring(message or '')
+	if #text <= MAX_COMMAND_DUMP then return text end
+	return text:sub(1, MAX_COMMAND_DUMP) .. '...'
+end
+
+--- Bounds and strips a single line on its way into a toast.
+local function lineText(message)
+	local text = tostring(message or '')
+	if type(OPX.Audit) == 'table' and type(OPX.Audit.Safe) == 'function' then
+		return OPX.Audit.Safe(text, MAX_COMMAND_LINE)
+	end
+	return (text:sub(1, MAX_COMMAND_LINE):gsub('[%c]', ' '))
+end
+
 --- Answers a command that asked to read something back -- a list, a dump, a
 --- block of configuration. Source nil or 0 is the console, which reads a print.
 -- @author dop42
@@ -157,7 +196,7 @@ function OPX.CommandResult(source, accepted, message)
 		TriggerClientEvent(RESULT, source, {
 			type = accepted and 'info' or 'error',
 			author = OPX.Config.SHARED.SERVER_NAME,
-			text = message,
+			text = dumpText(message),
 		})
 	else
 		print(message)
@@ -188,7 +227,8 @@ function OPX.CommandNotice(source, raw, kind, message, toasted, icon)
 		-- list the page draws from. Checking at the SENDING side is what names
 		-- the culprit; the client still drops an unknown name and logs it rather
 		-- than losing the sentence, because this is not the only door in.
-		TriggerClientEvent(ANSWER, source, raw or '', kind, message, toasted == true,
+		TriggerClientEvent(ANSWER, source, raw or '', kind, lineText(message),
+			toasted == true,
 			type(icon) == 'string' and OPX.Glyphs[icon] and icon or nil)
 	else
 		print(message)
@@ -254,3 +294,13 @@ function OPX.Refuse(source, code, operation, icon)
 		icon = type(icon) == 'string' and icon or nil,
 	})
 end
+
+-- Its own table, purged in its own file, the way `core/server/note.lua` already
+-- does it. Every call to `OPX.ForgetCooldowns` on the departure path lived in
+-- the character module, so a build without it -- or one where it failed to
+-- start -- leaked both tables for the life of the process and left a spent
+-- window that refuses the next holder of a recycled slot their first action.
+-- Calling it twice costs nothing: it only clears.
+AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, function(rawPlayerId)
+	OPX.ForgetCooldowns(tonumber(rawPlayerId))
+end)

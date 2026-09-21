@@ -14,6 +14,7 @@ OPX.Locale.Register('en', {
 	['vehicle.notSpawned'] = 'That vehicle is not out.',
 	['vehicle.noPosition'] = 'You have no position to spawn beside.',
 	['vehicle.spawnRefused'] = 'The vehicle could not be created.',
+	['vehicle.storeRefused'] = 'That vehicle could not be taken off the street. It is still out.',
 	['vehicle.occupied'] = 'Somebody is sitting in that vehicle. It cannot be moved.',
 	-- A second request for a plate whose spawn is already in flight. Not an
 	-- error the player caused: it is the answer the loser of a double-press gets
@@ -32,6 +33,7 @@ OPX.Locale.Register('fr', {
 	['vehicle.notSpawned'] = "Ce véhicule n'est pas sorti.",
 	['vehicle.noPosition'] = 'Aucune position pour faire apparaître le véhicule.',
 	['vehicle.spawnRefused'] = "Le véhicule n'a pas pu être créé.",
+	['vehicle.storeRefused'] = "Ce véhicule n'a pas pu être retiré de la rue. Il est toujours sorti.",
 	['vehicle.occupied'] = 'Quelqu\'un est assis dans ce véhicule. Impossible de le déplacer.',
 	['vehicle.busy'] = 'Ce véhicule est déjà en train de sortir.',
 	['vehicle.badRecord'] = 'Ce modèle de véhicule ne peut pas être utilisé.',

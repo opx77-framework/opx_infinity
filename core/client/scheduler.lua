@@ -29,7 +29,34 @@ local running = false
 -- `Start`.
 local generation = 0
 
+-- How many DUE jobs one resume may run, and the ceiling that scaling stops at.
+--
+-- FOUR WAS A CONSTANT, AND A CONSTANT IS A THROUGHPUT LIMIT. A saturated pass
+-- comes straight back with `return 0`, so the most this loop can ever do is
+-- four jobs per frame however many are registered -- and 44 are. Simulated
+-- against the real registration list: at 30 fps with a menu open the cap binds
+-- on 893 passes out of 899, the menu key poll is served every ~79 ms against
+-- the 25 it asks for, and the vitals stream runs at 12 Hz against a configured
+-- 30. The nearest-deadline sleep below fixed the unsaturated case; it cannot
+-- fix this one.
+--
+-- It is scaled rather than simply raised, because what this ceiling protects is
+-- the per-resume instruction budget described at the top of this file, and
+-- exceeding that does not degrade -- it retires the loop for the session,
+-- silently. So a long list earns more work per resume, a short one is exactly
+-- as it was, and neither can ever run the whole list in one resume.
 local MAX_PER_TICK = 4
+local CEILING_PER_TICK = 10
+local PER_TICK_DIVISOR = 4
+
+--- How many jobs this pass may run, given how many are registered.
+local function jobsPerTick(count)
+	local scaled = math.ceil(count / PER_TICK_DIVISOR)
+	if scaled < MAX_PER_TICK then return MAX_PER_TICK end
+	if scaled > CEILING_PER_TICK then return CEILING_PER_TICK end
+	return scaled
+end
+
 local MAX_FAILURES = 3
 local IDLE_MS = 100
 
@@ -162,11 +189,19 @@ local function tick()
 	local count = #jobs
 	if count == 0 then return IDLE_MS end
 
+	local perTick = jobsPerTick(count)
 	local ran, examined = 0, 0
-	while examined < count and ran < MAX_PER_TICK do
+	while examined < count and ran < perTick do
 		cursor = cursor % count + 1
 		examined = examined + 1
 		local job = jobs[cursor]
+		-- A STEP MAY EMPTY THIS LIST UNDER THE LOOP. `Stop()` replaces `jobs`
+		-- with a fresh table, and `count` was fixed before the first step ran, so
+		-- the next turn indexed past the end and raised `attempt to index a nil
+		-- value (local 'job')` -- caught by the `pcall` around the pass, so it
+		-- cost one log line that reads like a bug in the scheduler itself,
+		-- written at the moment the resource is stopping.
+		if job == nil then break end
 		if job.step and atMs >= job.nextAt then
 			runJob(job, atMs)
 			ran = ran + 1
@@ -179,12 +214,20 @@ local function tick()
 	-- happened to find nothing else due, so the health bar ran at a third of the
 	-- rate its own config names. The cap stays as the idle floor, and a pass that
 	-- hit MAX_PER_TICK with more still due comes straight back.
-	if ran >= MAX_PER_TICK then return 0 end
+	if ran >= perTick then return 0 end
 
+	-- `#jobs` AGAIN, NOT `count`. A step is allowed to register work -- the
+	-- target module registers its 25 ms resolve from the hover path, which is
+	-- itself a job -- and a job appended during this pass sits past the bound
+	-- taken before the steps ran. The sweep then never saw it and the pass slept
+	-- the idle floor, so the first run of a job asked for in 25 ms landed up to
+	-- 100 ms later.
 	local soonest
-	for index = 1, count do
+	for index = 1, #jobs do
 		local job = jobs[index]
-		if job.step and (soonest == nil or job.nextAt < soonest) then soonest = job.nextAt end
+		if job and job.step and (soonest == nil or job.nextAt < soonest) then
+			soonest = job.nextAt
+		end
 	end
 	if soonest == nil then return IDLE_MS end
 

@@ -221,7 +221,14 @@ local function putBack(crate, reason)
 		crate.vehicle = nil
 	end
 	if propsReady() and type(Open77.props.detach) == 'function' then
-		pcall(Open77.props.detach, crate.id)
+		-- Read, like the `setTransform` below it already is: a refused detach
+		-- leaves the crate on the carrier's body while this function goes on to
+		-- stand it back up on its point and announce it as on the ground.
+		local let, detached, why = pcall(Open77.props.detach, crate.id)
+		if not let or detached == false then
+			Open77.log.warn(('[hauling] crate %s would not come off the body: %s')
+				:format(safe(crate.id), safe(let and why or detached)))
+		end
 	end
 	if propsReady() and type(Open77.props.setTransform) == 'function' then
 		local moved, why = pcall(Open77.props.setTransform, crate.id,
@@ -260,7 +267,16 @@ local function retire(crate, reason)
 	points[crate.index] = OPX.Now() + Access.RespawnMs(crate.site)
 
 	if propsReady() and type(Open77.props.remove) == 'function' then
-		pcall(Open77.props.remove, crate.id)
+		-- The answer is read: `remove` refuses with a reason, and this told
+		-- every client the crate was gone and armed its respawn regardless. A
+		-- refusal left the crate standing on its point while the server said it
+		-- had gone and prepared to put a second one in the same place.
+		local called, removed, why = pcall(Open77.props.remove, crate.id)
+		if not called or removed ~= true then
+			Open77.log.error(('[hauling] crate %s was paid for but not removed from the ' ..
+				'world (%s); a second one may appear beside it'):format(safe(crate.id),
+				safe(called and why or removed)))
+		end
 	end
 	announceGone(crate.id)
 	Open77.log.info(('[hauling] crate %s removed from %s point %d: %s'):format(

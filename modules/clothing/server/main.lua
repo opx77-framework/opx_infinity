@@ -147,7 +147,7 @@ local function capture(player, key, label)
 		Open77.log.warn(('[clothing] player %d could not save the capture of %s: %s')
 			:format(player, safe(key), safe(saved.detail)))
 		OPX.NotifyLocale(player, 'clothing.captureFailed', nil, 'error')
-		return OPX.CommandResult(player, false, 'could not save: ' .. tostring(saved.detail))
+		return OPX.CommandResult(player, false, 'could not save; the reason is in the server log')
 	end
 	captured[key] = store
 	rebuild()
@@ -218,7 +218,7 @@ local function registerCommands()
 		CreateThread(function()
 			local gone = Store.Delete(key)
 			if not gone.ok then
-				return OPX.CommandResult(source, false, 'could not delete: ' .. tostring(gone.detail))
+				return OPX.CommandResult(source, false, 'could not delete; the reason is in the server log')
 			end
 			captured[key] = nil
 			rebuild()

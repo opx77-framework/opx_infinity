@@ -99,6 +99,17 @@ function OPX.Modules.Declare(spec)
 	if records[id] then
 		error(('module %q is declared twice'):format(id), 2)
 	end
+	-- AFTER `Resolve` IS TOO LATE, AND IT USED TO BE SILENT. `Resolve` memoises
+	-- its order, so a module declared once it has run sits at `declared` for
+	-- ever: no phase touches it, `Report` never lists it -- it walks the
+	-- resolved order -- and `IsRunning` answers false with the reason recorded
+	-- nowhere. Every `Declare` today is in a `module.lua` loaded before the
+	-- phases begin, so this is a trap being shut rather than a bug being fixed;
+	-- it is shut because the failure it produces is invisible.
+	if type(OPX.Modules.Resolved) == 'function' and OPX.Modules.Resolved() then
+		error(('module %q is declared after the modules were resolved; nothing would run it')
+			:format(id), 2)
+	end
 
 	local side = spec.side or 'both'
 	if not SIDES[side] then
@@ -242,4 +253,27 @@ function OPX.Api.Versions()
 	local list = {}
 	for name, held in pairs(contracts) do list[name] = held.version end
 	return list
+end
+
+--- Withdraws every contract a module published. Called by the lifecycle when
+--- that module is halted.
+---
+--- A PUBLISHED CONTRACT OUTLIVED THE MODULE THAT PUBLISHED IT. `Provide` is
+--- called from inside `Api`, and `Api` is a function that can raise three lines
+--- after publishing: the module was marked `failed` and the contract stayed in
+--- this table for the life of the resource, pointing at an implementation whose
+--- constructor never finished and whose `Start` will never run. `settle` only
+--- walks `Requires`, not `Optional`, so a module that lists it as optional was
+--- not dropped -- it started, called `OPX.Api.Get`, got the half-built table,
+--- and discovered the problem wherever it happened to look.
+-- @author dop42
+-- @param owner string the module id
+-- @return string[] the names withdrawn
+function OPX.Api.Withdraw(owner)
+	local withdrawn = {}
+	for name, held in pairs(contracts) do
+		if held.owner == owner then withdrawn[#withdrawn + 1] = name end
+	end
+	for index = 1, #withdrawn do contracts[withdrawn[index]] = nil end
+	return withdrawn
 end

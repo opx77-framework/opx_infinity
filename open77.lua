@@ -557,7 +557,6 @@ permissions {
   -- nothing else.
   "state.write",
 
-  "database.access",
 
   "world.environment",
 
@@ -613,12 +612,10 @@ permissions {
   "player.weapons.read",
   "puppets.present",
 
-  "camera.preview",
   "player.travel",
 
   "input.actions",
 
-  "world.query",
   "players.controls",
 
   "players.animations.control",

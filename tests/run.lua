@@ -15319,12 +15319,23 @@ end
 -- legitimately differs, and only the cadence is shared.
 section('the stutter is declared once')
 do
-	--- Every page source file under a directory, recursively, without shelling out.
+	--- Every page source file under a directory, recursively.
+	---
+	--- `dir /b /s` IS WINDOWS-ONLY, and that is how this section managed to be
+	--- green on a developer's machine and red in CI for two releases running: on
+	--- Linux the pipe opens, produces nothing, and the walk answers an empty
+	--- list. The readability check below is the only reason that showed up as a
+	--- failure rather than as every assertion in this section passing vacuously
+	--- -- which is the whole argument for writing it, and the argument for this
+	--- walk knowing which platform it is on.
 	local function sources(root, out)
 		out = out or {}
 		-- `io.popen` is the only directory walk available here, and the suite already
 		-- reads page files by name elsewhere; the list is short enough to name.
-		local handle = io.popen('dir /b /s "' .. root:gsub('/', '\\') .. '" 2>nul')
+		local command = package.config:sub(1, 1) == '\\'
+			and ('dir /b /s "%s" 2>nul'):format(root:gsub('/', '\\'))
+			or ('find "%s" -type f 2>/dev/null'):format(root)
+		local handle = io.popen(command)
 		if handle == nil then return out end
 		for line in handle:lines() do
 			local path = line:gsub('\\', '/')
@@ -19166,6 +19177,703 @@ do
 					1, true) ~= nil,
 				blind and tostring(blind.error or blind.detail))
 		end
+	end
+end
+
+-- `lib/shared/validate.lua` and `lib/shared/citizenid.lua` were the two files in
+-- the runtime that NOTHING here executed. Replacing all five of their public
+-- functions with an unconditional `error()` left the suite at "2501 checks, 0
+-- failed" -- while the same treatment applied to `Audit.Log` brought it down on
+-- the first section. They are the code that reads what a client chose, and they
+-- were carried entirely by the modules that happen to call them, none of which
+-- asserts a refusal. Every check below is written to fail if one guard is taken
+-- out, because that is the only property that makes a test worth its line count.
+section('the trust boundary validator')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local Text, Number = OPX.Validate.Text, OPX.Validate.Number
+
+		local function refusal(result)
+			return result ~= nil and result.ok == false and result.error or nil
+		end
+
+		-- Type first: a table where a string is expected is the shape a crafted
+		-- net event hands over, and it must not reach `#value` or `:match`.
+		check('a table is refused as a type, not indexed', refusal(Text({})) == 'type')
+		check('and so is nil', refusal(Text(nil)) == 'type')
+		check('and a number, which Lua would happily concatenate',
+			refusal(Text(42)) == 'type')
+
+		-- The character bounds. `min` defaults to 1, so the empty string -- what a
+		-- form submits when the field was never filled -- is short, not valid.
+		check('the empty string is too short by the default minimum',
+			refusal(Text('')) == 'too-short')
+		check('and so is whitespace, because the value is trimmed first',
+			refusal(Text('   ')) == 'too-short')
+		check('a value under an explicit minimum is refused',
+			refusal(Text('ab', { min = 3 })) == 'too-short')
+		check('a value over an explicit maximum is refused',
+			refusal(Text('abcdef', { max = 5 })) == 'too-long')
+		check('the maximum is inclusive', Text('abcde', { max = 5 }).ok == true)
+		check('and the minimum is inclusive', Text('abc', { min = 3 }).ok == true)
+
+		-- THE HARD 1024-BYTE CEILING, which is the guard that cannot be inferred
+		-- from the character bounds. With a generous `max` the character test
+		-- would accept this; the ceiling refuses it before `OPX.String.Length`
+		-- walks a single byte of it. A caller that passes a client's string with
+		-- a large max is exactly how an arbitrarily long scan gets reached.
+		local roomy = { max = 1000000 }
+		check('a 2 KiB string is refused although its character limit is a million',
+			refusal(Text(string.rep('a', 2048), roomy)) == 'too-long')
+		check('and so is a megabyte, without scanning it',
+			refusal(Text(string.rep('a', 1024 * 1024), roomy)) == 'too-long')
+		-- The ceiling is `max * 4 + 16` under the cap, so a four-byte-per-character
+		-- value at the limit still fits. This is the half that must NOT refuse.
+		check('a value at the character limit still fits under the ceiling',
+			Text(string.rep('é', 20), { max = 20 }).ok == true)
+
+		-- Invalid UTF-8 has no character length, and the comparison that follows
+		-- would be `nil < number`, which raises rather than refuses.
+		check('invalid UTF-8 is refused by name, not by raising',
+			refusal(Text('\xFF\xFE\xFF')) == 'not-utf8')
+
+		-- The pattern, and the fact that it is applied to the TRIMMED value.
+		check('a value that misses the pattern is refused as a format',
+			refusal(Text('ab3', { pattern = '^%a+$' })) == 'format')
+		check('a value that matches it is accepted', Text('abc', { pattern = '^%a+$' }).ok == true)
+		check('and the pattern sees the trimmed value, not the raw one',
+			Text('  abc  ', { pattern = '^%a+$' }).ok == true)
+		check('what comes back is the trimmed value', Text('  abc  ').value == 'abc')
+
+		-- Numbers. Finiteness is tested BEFORE the bounds, because NaN compares
+		-- false against everything and would pass a min and a max unchallenged.
+		check('NaN is refused as not finite, not as out of range',
+			refusal(Number(0 / 0, { min = 0, max = 10 })) == 'not-finite')
+		check('and so is positive infinity',
+			refusal(Number(math.huge, { min = 0, max = 10 })) == 'not-finite')
+		check('and negative infinity',
+			refusal(Number(-math.huge, { min = 0, max = 10 })) == 'not-finite')
+		check('a word is refused as a type', refusal(Number('soon')) == 'type')
+		check('a table too', refusal(Number({})) == 'type')
+		check('but a numeric string coerces', Number('12.5').value == 12.5)
+
+		check('a fraction is refused when an integer was asked for',
+			refusal(Number(1.5, { integer = true })) == 'not-integer')
+		check('and a whole number is not', Number(2, { integer = true }).ok == true)
+		check('a value under the minimum is refused',
+			refusal(Number(-1, { min = 0 })) == 'too-small')
+		check('a value over the maximum is refused',
+			refusal(Number(11, { max = 10 })) == 'too-large')
+		check('both bounds are inclusive',
+			Number(0, { min = 0 }).ok == true and Number(10, { max = 10 }).ok == true)
+		-- A zero minimum is a real configuration and Lua makes `opts.min and ...`
+		-- true for it; a guard written as a truthiness test would drop it.
+		check('a minimum of zero is still applied',
+			refusal(Number(-0.5, { min = 0 })) == 'too-small')
+	end
+end
+
+-- The check symbol is the whole point of the format: it is what makes a typed
+-- or misheard id fail at the door instead of becoming a lookup for somebody
+-- else's character. Nothing exercised it, so `Parse` accepting any seven
+-- symbols of the alphabet was indistinguishable from `Parse` working.
+section('citizen ids and the symbol that checks them')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local CitizenId = OPX.CitizenId
+		local ALPHABET = CitizenId.ALPHABET
+
+		local function refusal(result)
+			return result ~= nil and result.ok == false and result.error or nil
+		end
+		local function raw(id) return (id:gsub('%-', '')) end
+
+		local id = CitizenId.Build({ 0, 1, 2, 3, 4, 5 })
+		check('Build writes seven symbols in three-dash-four',
+			type(id) == 'string' and #id == 8 and id:sub(4, 4) == '-', tostring(id))
+		check('and what it writes, Parse accepts', CitizenId.Parse(id).ok == true,
+			tostring(CitizenId.Parse(id).error))
+		check('and answers it in the same display form',
+			CitizenId.Parse(id).value == id, tostring(CitizenId.Parse(id).value))
+
+		check('Generate answers an id Parse accepts',
+			CitizenId.Parse(CitizenId.Generate(function(_, high) return high end)).ok == true)
+		check('and it is deterministic when the source of numbers is',
+			CitizenId.Generate(function() return 0 end)
+				== CitizenId.Generate(function() return 0 end))
+
+		-- Forgiving on case and separators, which is the documented contract for
+		-- an id a player reads off a screen and types back in.
+		check('lower case parses', CitizenId.Parse(id:lower()).ok == true)
+		check('spaces and underscores are ignored',
+			CitizenId.Parse((' ' .. raw(id):sub(1, 2) .. '_ ' .. raw(id):sub(3)) .. ' ').ok == true)
+
+		-- EVERY SINGLE-SYMBOL SUBSTITUTION IS CAUGHT. This is the property the
+		-- prime modulus buys, and it is worth asserting exhaustively rather than
+		-- on one example: over 23 every weight is invertible, so a changed symbol
+		-- always changes the sum. A composite modulus would let a family through.
+		local substitutions, caught = 0, 0
+		local plain = raw(id)
+		for position = 1, 7 do
+			for index = 1, #ALPHABET do
+				local symbol = ALPHABET:sub(index, index)
+				if symbol ~= plain:sub(position, position) then
+					substitutions = substitutions + 1
+					local typo = plain:sub(1, position - 1) .. symbol .. plain:sub(position + 1)
+					if refusal(CitizenId.Parse(typo)) == 'checksum' then caught = caught + 1 end
+				end
+			end
+		end
+		check(('every one of the %d single-symbol substitutions fails the checksum')
+			:format(substitutions), substitutions == 154 and caught == substitutions,
+			('%d of %d'):format(caught, substitutions))
+
+		-- And every transposition of two adjacent PAYLOAD symbols, the other typo
+		-- the weights are chosen to catch. Adjacent weights differ by one, which
+		-- is non-zero mod 23, so a swap of two different values always moves the
+		-- sum. The check symbol itself carries no weight, so the pair that spans
+		-- it is not part of this guarantee and is not asserted as if it were.
+		local swaps, stopped = 0, 0
+		for position = 1, 5 do
+			local left, right = plain:sub(position, position), plain:sub(position + 1, position + 1)
+			if left ~= right then
+				swaps = swaps + 1
+				local swapped = plain:sub(1, position - 1) .. right .. left
+					.. plain:sub(position + 2)
+				if refusal(CitizenId.Parse(swapped)) == 'checksum' then stopped = stopped + 1 end
+			end
+		end
+		check(('every one of the %d adjacent transpositions fails the checksum')
+			:format(swaps), swaps == 5 and stopped == swaps, ('%d of %d'):format(stopped, swaps))
+
+		-- The refusals that come before the checksum, each by its own name, so a
+		-- caller can tell "you mistyped it" from "that is not an id at all".
+		check('a non-string is refused as a type', refusal(CitizenId.Parse({})) == 'type')
+		check('and nil too', refusal(CitizenId.Parse(nil)) == 'type')
+		check('too few symbols is a length', refusal(CitizenId.Parse('346-79')) == 'length')
+		check('too many is a length', refusal(CitizenId.Parse(raw(id) .. '3')) == 'length')
+		-- BOUNDED BEFORE `upper` AND `gsub` TOUCH IT. Without the byte bound this
+		-- is two allocations over a string a client chose the size of.
+		check('an over-long input is refused on bytes before it is cleaned',
+			refusal(CitizenId.Parse(string.rep('-', 4096) .. raw(id))) == 'length')
+		-- Ambiguous symbols are absent from the alphabet on purpose: 0/O, 1/I/L,
+		-- 2/Z, 5/S, 8/B, U/V and Q. A reader who "corrects" one must be refused.
+		for _, symbol in ipairs({ '0', 'O', '1', 'I', 'L', '2', '5', 'S', '8', 'B', 'U', 'V', 'Q' }) do
+			check(('%q is not a citizen id symbol'):format(symbol),
+				ALPHABET:find(symbol, 1, true) == nil
+					and refusal(CitizenId.Parse(symbol .. plain:sub(2))) == 'alphabet')
+		end
+	end
+end
+
+-- `Hold` says the session number is what keeps a later release honest. It was
+-- not: `Release` took no identity, read the token back off the slot -- or asked
+-- the host for it, which answers for whoever stands there now -- and the host's
+-- `session_mismatch` guard was therefore never shown a stale token. The entry
+-- sequence yields on every database read and a slot is recycled the instant a
+-- player drops, so a late release opened the gate of the player who took the
+-- slot, with no character loaded, while `Buckets.Release` beside it took them
+-- out of their selection bucket: a complete admission of the wrong person.
+section('a release names the account it was held for')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		control.Admit(7, 'user-AAAA')
+		OPX.EnsureSession(7)
+		OPX.Gate.Hold(7, 'entry')
+		check('A is held behind the gate', OPX.Sessions[7].gateSession ~= nil)
+
+		-- A drops during a slow read. The platform hands slot 7 to B, who takes
+		-- a hold of their own -- and A's thread has not come back yet.
+		control.Admit(7, 'user-BBBB')
+		local b = OPX.EnsureSession(7)
+		check('the slot now belongs to B', b.userId == 'user-BBBB')
+		OPX.Gate.Hold(7, 'entry')
+		local bHold = OPX.Sessions[7].gateSession
+
+		check('A\'s late release is refused rather than opening B\'s gate',
+			OPX.Gate.Release(7, 'entry-failed', 'user-AAAA') == false)
+		check('and B is still held, with the same token',
+			OPX.Sessions[7].gateSession == bHold and OPX.Sessions[7].released ~= true)
+		check('while B\'s own release goes through',
+			OPX.Gate.Release(7, 'done', 'user-BBBB') == true)
+		check('and then B is marked released', OPX.Sessions[7].released == true)
+
+		-- With no session at all there is nothing left that says the slot was
+		-- ever ours, and the host's status would answer for its new occupant.
+		check('a release for a slot with no session refuses instead of guessing',
+			OPX.Gate.Release(99, 'never', 'user-AAAA') == false)
+		check('and so does one that names nobody', OPX.Gate.Release(99, 'never') == false)
+
+		-- The bucket half of the same admission.
+		control.Admit(8, 'user-CCCC')
+		OPX.EnsureSession(8)
+		OPX.Buckets.Isolate(8, 'joined')
+		-- Where the player actually IS, read back off the host, not `PlacementOf`,
+		-- which answers where a STORED bucket would put somebody.
+		local function bucketOf(id) return env.Open77.routingBuckets.getPlayer(id) end
+		check('C is isolated in a selection bucket',
+			OPX.Buckets.IsSelection(bucketOf(8)) == true, tostring(bucketOf(8)))
+
+		control.Admit(8, 'user-DDDD')
+		OPX.EnsureSession(8)
+		OPX.Buckets.Isolate(8, 'joined')
+		local ok, moved = OPX.Buckets.Release(8, 'character-loaded', 'user-CCCC')
+		check('a late bucket release for a departed account moves nobody',
+			ok == false and moved == false)
+		check('and D is still in their selection bucket',
+			OPX.Buckets.IsSelection(bucketOf(8)) == true, tostring(bucketOf(8)))
+		check('while D\'s own release moves them out',
+			select(2, OPX.Buckets.Release(8, 'character-loaded', 'user-DDDD')) == true)
+
+		-- An isolate that arrives late must not drag the new holder into a
+		-- selection bucket of their own.
+		check('and a late isolate is refused the same way',
+			OPX.Buckets.Isolate(8, 'joined', 'user-CCCC') == false)
+
+		-- A HOST THAT RAISED IS NOT A HOST WITHOUT THE API. Both used to be
+		-- rewritten to nil, and nil is not false, so both reached the success
+		-- path: `released` set with the host still holding, and `Watch` returns
+		-- on `released`, so nothing retried. The player waited out the host's
+		-- liveness interval behind a shut gate.
+		control.Admit(9, 'user-EEEE')
+		OPX.EnsureSession(9)
+		OPX.Gate.Hold(9, 'entry')
+		local realRelease = env.Open77.ready.release
+		env.Open77.ready.release = function() error('transient host failure') end
+		local answered = OPX.Gate.Release(9, 'done', 'user-EEEE')
+		env.Open77.ready.release = realRelease
+		check('a release the host raised on is reported as refused', answered == false)
+		check('and the hold is kept, so the watch can try again',
+			OPX.Sessions[9].gateSession ~= nil and OPX.Sessions[9].released ~= true)
+		check('and the retry succeeds once the host answers again',
+			OPX.Gate.Release(9, 'done', 'user-EEEE') == true)
+
+		-- A host with no readiness API at all is a different thing: there is no
+		-- gate to be stuck behind, so the release is honestly a success.
+		control.Admit(10, 'user-FFFF')
+		OPX.EnsureSession(10)
+		OPX.Gate.Hold(10, 'entry')
+		local realReady = env.Open77.ready
+		env.Open77.ready = nil
+		check('a host with no readiness API releases rather than stranding anybody',
+			OPX.Gate.Release(10, 'done', 'user-FFFF') == true)
+		env.Open77.ready = realReady
+	end
+end
+
+-- One test in nineteen thousand lines covered hooks, and it registered and
+-- removed entirely outside a trigger. `Trigger` walked the LIVE list with a
+-- bound taken at entry, while a hook is entitled to register or remove from
+-- inside it -- and `Trigger` yields, so another thread can reach `Remove`
+-- between two hooks of one trigger. Every shape below skipped a hook, and a
+-- skipped hook is a skipped VETO: the action it would have refused went ahead.
+section('a hook cannot make the trigger lose the hook after it')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local Hooks = OPX.Hooks
+
+		-- A one-shot that withdraws itself. Removing shifted the tail down under
+		-- a cursor that had already moved past it, so the next hook was skipped.
+		local ran = {}
+		local first, second
+		first = Hooks.Register('t:oneshot', function()
+			ran[#ran + 1] = 'first'
+			Hooks.Remove(first)
+		end)
+		second = Hooks.Register('t:oneshot', function() ran[#ran + 1] = 'second' end)
+		local third = Hooks.Register('t:oneshot', function() ran[#ran + 1] = 'third' end)
+		Hooks.Trigger('t:oneshot', {})
+		check('a hook that removes itself does not swallow the next one',
+			table.concat(ran, ',') == 'first,second,third', table.concat(ran, ','))
+		Hooks.Remove(second)
+		Hooks.Remove(third)
+
+		-- The veto that used to be lost. The removal leaves the live list shorter
+		-- than the bound, `list[i]` is nil, and `list[i].fn` is the evaluation of
+		-- an ARGUMENT to `pcall` -- so it is not protected by it. The raise left
+		-- `Trigger` altogether and the hook that refuses never voted.
+		local vetoRan = false
+		local doomed = Hooks.Register('t:veto', function() end)
+		local remover = Hooks.Register('t:veto', function() Hooks.Remove(doomed) end)
+		local vetoer = Hooks.Register('t:veto', function()
+			vetoRan = true
+			return false
+		end)
+		local allowed = Hooks.Trigger('t:veto', {})
+		check('a removal mid-trigger still lets the veto after it run', vetoRan == true)
+		check('and the veto is honoured', allowed == false)
+		Hooks.Remove(remover)
+		Hooks.Remove(vetoer)
+
+		-- An insertion before the cursor. A hook registering a LOWER priority put
+		-- the new entry ahead of the cursor, so the hook at the cursor ran twice
+		-- and the last one never ran at all.
+		local order = {}
+		local inserted
+		local a = Hooks.Register('t:insert', function() order[#order + 1] = 'a' end, 0)
+		local b = Hooks.Register('t:insert', function()
+			order[#order + 1] = 'b'
+			if inserted == nil then
+				inserted = Hooks.Register('t:insert', function() order[#order + 1] = 'new' end, -5)
+			end
+		end, 1)
+		local c = Hooks.Register('t:insert', function() order[#order + 1] = 'c' end, 2)
+		Hooks.Trigger('t:insert', {})
+		check('a hook that registers another does not run twice',
+			table.concat(order, ',') == 'a,b,c', table.concat(order, ','))
+		check('and the hook after it is not lost', order[#order] == 'c')
+		-- The new one is in the list, it simply was not part of the walk that
+		-- was already under way. It runs on the next trigger, in priority order.
+		order = {}
+		Hooks.Trigger('t:insert', {})
+		check('the newly registered hook runs on the next trigger, in priority order',
+			table.concat(order, ',') == 'new,a,b,c', table.concat(order, ','))
+		Hooks.Remove(a); Hooks.Remove(b); Hooks.Remove(c); Hooks.Remove(inserted)
+
+		-- A hook withdrawn during a trigger must not be called from the walk that
+		-- was already copied: a module that has just stopped is the real case.
+		local calls = 0
+		local withdrawn
+		local trigger = Hooks.Register('t:withdraw', function() Hooks.Remove(withdrawn) end, 0)
+		withdrawn = Hooks.Register('t:withdraw', function() calls = calls + 1 end, 1)
+		Hooks.Trigger('t:withdraw', {})
+		check('a hook removed earlier in the same trigger is not called', calls == 0)
+		Hooks.Remove(trigger)
+
+		-- The contract that was already right, asserted so the copy does not
+		-- quietly change it: priority order, and only an explicit false vetoes.
+		local seen = {}
+		local low = Hooks.Register('t:order', function() seen[#seen + 1] = 'low' end, -1)
+		local mid = Hooks.Register('t:order', function() seen[#seen + 1] = 'mid' end, 0)
+		local high = Hooks.Register('t:order', function()
+			seen[#seen + 1] = 'high'
+			return nil
+		end, 5)
+		check('hooks run low priority first, and nil is not a veto',
+			Hooks.Trigger('t:order', {}) == true and table.concat(seen, ',') == 'low,mid,high',
+			table.concat(seen, ','))
+		local raised = Hooks.Register('t:order', function() error('a third party raised') end, 6)
+		local after = false
+		local last = Hooks.Register('t:order', function() after = true end, 7)
+		check('a hook that raises is skipped, not fatal, and the next one still runs',
+			Hooks.Trigger('t:order', {}) == true and after == true)
+		Hooks.Remove(low); Hooks.Remove(mid); Hooks.Remove(high)
+		Hooks.Remove(raised); Hooks.Remove(last)
+		check('a name nobody registered answers that the action may proceed',
+			Hooks.Trigger('t:nobody', {}) == true)
+	end
+end
+
+-- `OPX.Booted` was written twice in `core/server/boot.lua` and read nowhere in
+-- the resource. The twenty-eight guards that look like they cover boot all read
+-- `OPX.BootError`, which is nil for the whole of boot by design -- it records
+-- the ANSWER to the schema question, and during boot there is not one yet. So a
+-- player reconnecting just after a restart walked straight into an entry
+-- sequence whose tables were still being created.
+section('entry waits for boot to settle')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+
+		check('the flag exists and boot finished by setting it', OPX.Booted == true)
+
+		-- Put the runtime back into the state it is in for the first dozens of
+		-- frames after a restart: held, with the schema question unsettled.
+		OPX.Booted = false
+		control.Admit(31, 'account-booting')
+		control.Fire(OPX.Host.PLAYER_CONNECTED, 31)
+		control.Pump(30)
+
+		local held = OPX.Sessions[31]
+		check('a player connecting during boot is held, not admitted',
+			held ~= nil and held.gateSession ~= nil and held.released ~= true,
+			held and tostring(held.released))
+		check('and nothing was loaded for them out of tables that may not exist',
+			character ~= nil and character.GetPlayer(31) == nil)
+
+		-- And it is a wait, not a refusal: the hold is already taken, so the
+		-- player sits behind the gate and comes in when the schema is settled.
+		OPX.Booted = true
+		control.Pump(40)
+		check('once boot settles the entry sequence runs',
+			OPX.Sessions[31] == nil or OPX.Sessions[31].released == true
+				or character.GetPlayer(31) ~= nil,
+			OPX.Sessions[31] and tostring(OPX.Sessions[31].released))
+	end
+end
+
+-- The broadcast was answered by six of the EIGHT owners that take focus on this
+-- surface. `inventory` and `target` wire no `focus:set` handler at all, and
+-- every handler releases only its OWN names, so an owner neither of them
+-- claimed was an owner nobody released.
+--
+-- What that cost, on the path that really happens: a render error inside a view
+-- unmounts it -- `ui/src/boot/ModuleHost.vue` drops the slot on
+-- `onErrorCaptured` -- the page releases its own focus and announces an empty
+-- stack, and the Lua entry stays on top for ever. `applyFocus` keeps applying
+-- it, so the player holds keyboard and cursor with nothing drawn: no movement,
+-- a pointer on screen, and no way out except to die. `focus:set` is a property
+-- of the SURFACE, so it is answered once in core now rather than in eight
+-- copies of which two were missing.
+section('the page is the truth about what is on screen')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page = control.pages[1]
+
+		local function announce(owner)
+			control.PageEmit(page, 'opx:focus:set',
+				{ surface = 'opx', focus = owner ~= nil, owner = owner or '' })
+		end
+
+		-- An owner NO module here answers for. Nothing in `modules/` releases it,
+		-- which is exactly the position `inventory` and `target` are in.
+		OPX.UI.AcquireFocus('inventory', { keyboard = true, cursor = true })
+		check('the inventory holds keyboard and cursor',
+			OPX.UI.FocusOwner() == 'inventory' and page.focus.cursor == true)
+
+		-- The view dies and the page says so.
+		announce(nil)
+		check('an owner no module answers for is still released',
+			OPX.UI.FocusOwner() == nil, tostring(OPX.UI.FocusOwner()))
+		check('and the player really has their controls back',
+			page.focus.keyboard == false and page.focus.cursor == false,
+			('kb=%s cur=%s'):format(tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+
+		-- The same for `target`, the other owner with no handler.
+		OPX.UI.AcquireFocus('target', { keyboard = true, cursor = true })
+		announce(nil)
+		check('and the eye cannot strand the player either', OPX.UI.FocusOwner() == nil)
+
+		-- A top that MOVED rather than emptied: everything stacked above the
+		-- announced owner is a view the page no longer has.
+		OPX.UI.AcquireFocus('chat', { keyboard = true, cursor = false })
+		OPX.UI.AcquireFocus('inventory', { keyboard = true, cursor = true })
+		check('the inventory is over the chat line', OPX.UI.FocusOwner() == 'inventory')
+		announce('chat')
+		check('an announced owner lower in the stack drops what is above it',
+			OPX.UI.FocusOwner() == 'chat', tostring(OPX.UI.FocusOwner()))
+		check('so the wants applied are the drawn module\'s, not the stale one\'s',
+			page.focus.keyboard == true and page.focus.cursor == false,
+			('kb=%s cur=%s'):format(tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+
+		-- An owner the Lua stack does not hold is somebody else's to acquire --
+		-- their own handler does that on this same broadcast -- so core leaves
+		-- the stack alone rather than guessing at it.
+		-- `menu` is an owner core does not hold. It must not invent an entry for
+		-- it: acquiring is the owning module's job, on this same broadcast, with
+		-- the wants only that module knows. What happens here is the chat module
+		-- releasing itself because it is not the announced owner -- which is the
+		-- six-handler idiom working, not core doing it for them.
+		announce('menu')
+		check('core does not fabricate a stack entry for an owner it does not hold',
+			OPX.UI.FocusOwner() ~= 'menu', tostring(OPX.UI.FocusOwner()))
+		announce(nil)
+		check('and the stack still empties on an empty announcement',
+			OPX.UI.FocusOwner() == nil)
+	end
+end
+
+-- Six corrections made in this same sweep were not held by anything: each one
+-- could be put back and the suite stayed green, which is the defect the sweep
+-- was about. A fix nothing asserts is a fix with a half-life.
+section('the guards this sweep added, held in place')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		-- `Run()` a second time used to answer true, which reads as a successful
+		-- boot: the caller starts a loop over an empty job list and reports every
+		-- module as stopped, with nothing rebuilt and nothing logged.
+		local again, reason = OPX.Modules.Run()
+		check('a second Run() answers false rather than a successful-looking true',
+			again == false, tostring(again))
+		check('and names why', tostring(reason):find('already ran', 1, true) ~= nil,
+			tostring(reason))
+
+		-- A newline in `event`, `citizen` or `user` forges a whole audit line.
+		-- The header of `lib/server/audit.lua` promises these are stripped; only
+		-- `message` and `data` ever were.
+		local before = #control.log.info + #control.log.warn + #control.log.error
+		OPX.Audit.Log({
+			event = 'test.forge\nevent=session.login severity=info',
+			severity = 'info',
+			citizenId = 'AAA\nBBBB',
+			userId = 'user\nforged',
+			message = 'one line',
+		})
+		local written = table.concat(control.log.info, ' | ') .. ' | '
+			.. table.concat(control.log.warn, ' | ') .. ' | '
+			.. table.concat(control.log.error, ' | ')
+		check('an audit entry was written', before >= 0 and #written > 0)
+		check('a newline in the event name does not forge a second line',
+			written:find('test.forge\n', 1, true) == nil, 'a raw newline reached the line')
+		check('nor one in the citizen id', written:find('AAA\nBBBB', 1, true) == nil)
+		check('nor one in the user id', written:find('user\nforged', 1, true) == nil)
+
+		-- A snapshot stamped in the FUTURE gives a negative age and passes every
+		-- maximum there is. "A gated requirement closes on every doubt."
+		local need = { jobs = { medic = 1 } }
+		local policy = { maxAgeMs = 5000 }
+		local now = 1000000
+		local held = { job = { name = 'medic', grade = { level = 5 } }, jobs = {}, atMs = now }
+		check('a snapshot taken now is honoured',
+			OPX.JobGate.Evaluate(need, held, now, policy) == true)
+		local future = { job = { name = 'medic', grade = { level = 5 } }, jobs = {}, atMs = now + 60000 }
+		local allowed, code = OPX.JobGate.Evaluate(need, future, now, policy)
+		check('a snapshot stamped in the future is refused, not accepted for ever',
+			allowed == false, tostring(allowed))
+		check('and it is named as stale', code == 'job_stale', tostring(code))
+
+		-- `Report` used to CALL the caller's interval closure, so printing a
+		-- job's state ran module code and cleared the once-per-run warning the
+		-- job had just emitted.
+		local asked = 0
+		local handle = OPX.Scheduler.Every('test:report', function()
+			asked = asked + 1
+			return 500
+		end, function() end)
+		control.Pump(5)
+		local afterRuns = asked
+		local lines = OPX.Scheduler.Report()
+		check('Report produced a line for the job',
+			table.concat(lines, ' | '):find('test:report', 1, true) ~= nil,
+			table.concat(lines, ' | '))
+		check('and it did not call the caller\'s interval closure to do it',
+			asked == afterRuns, ('%d -> %d'):format(afterRuns, asked))
+		OPX.Scheduler.Cancel(handle)
+	end
+end
+
+-- A module that raises halfway through `Start` has already registered its jobs,
+-- its handlers and its hooks. It is marked `failed`, never `started`, and
+-- `Modules.Stop` used to skip exactly that state -- so what it registered ran
+-- against half-built state for the life of the resource.
+section('a module that failed is still stopped')
+do
+	local stopped = false
+	local env, _, why = boot('server', nil, function(environment)
+		environment.OPX = environment.OPX or {}
+		environment.__opxTestStopped = function() stopped = true end
+	end)
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		-- An EXISTING module, put into the state a failed `Start` leaves behind.
+		-- Declaring a new one here would not work and that is its own trap:
+		-- `Resolve` is memoised and has already run, so a module declared now is
+		-- invisible to every phase and to `Stop` -- which `Declare` refuses
+		-- outright now rather than leaving it to be discovered like this.
+		local record
+		for _, candidate in ipairs(OPX.Modules.Resolve()) do
+			if type(candidate.Module.Stop) == 'function' then record = candidate break end
+		end
+		check('there is a started module with a Stop to use', record ~= nil)
+		if record ~= nil then record.Module.Stop = function() env.__opxTestStopped() end end
+		if record ~= nil then
+			-- Straight to the state a failed `Start` leaves behind, because `Run`
+			-- has already been and is deliberately not repeatable.
+			record.State = 'failed'
+			OPX.Modules.Stop()
+			check('a failed module gets its Stop called, so its jobs and hooks go',
+				stopped == true)
+			check('and it ends up stopped rather than staying failed for ever',
+				record.State == 'stopped', tostring(record.State))
+		end
+	end
+end
+
+-- `OPX.UI.Answer` discarded the refusal. The host refuses an oversized payload
+-- WHOLE and still reports the send a success, so Lua believed it had replied
+-- and the page's promise timed out five seconds later with no trace: the
+-- refusal note is keyed by channel, and every reply shares one channel.
+section('an answer the host refused is answered again, small')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page = control.pages[1]
+
+		local before = #page.sent
+		local huge = {}
+		for index = 1, Host.MAX_PAYLOAD_NODES + 64 do huge['k' .. index] = index end
+		OPX.UI.Answer('interactive', 'ref-1', { ok = true, data = huge })
+
+		check('the oversized answer was refused by the host',
+			#page.refused > 0 and page.refused[#page.refused].channel:find('reply', 1, true) ~= nil,
+			#page.refused > 0 and page.refused[#page.refused].channel or 'nothing refused')
+
+		local last = page.sent[#page.sent]
+		check('and a reply small enough to land was sent under the same ref',
+			#page.sent > before and last ~= nil and last.payload ~= nil
+				and last.payload.ref == 'ref-1',
+			last and tostring(last.payload and last.payload.ref) or 'nothing sent')
+		check('carrying a refusal the view can render instead of a five-second spinner',
+			last ~= nil and last.payload.ok == false
+				and last.payload.error == 'error.payloadRefused',
+			last and tostring(last.payload and last.payload.error))
+
+		-- An answer that fits is untouched: one send, no follow-up.
+		local fitting = #page.sent
+		OPX.UI.Answer('interactive', 'ref-2', { ok = true, data = { one = 1 } })
+		check('an answer that fits is sent once and not followed by a code',
+			#page.sent == fitting + 1
+				and page.sent[#page.sent].payload.error == nil,
+			('%d -> %d'):format(fitting, #page.sent))
+	end
+end
+
+-- `Resolve` memoises its order, so a module declared after it has run sits at
+-- `declared` for ever: no phase touches it, `Report` never lists it because it
+-- walks the resolved order, and `IsRunning` answers false with the reason
+-- written nowhere. No caller does this today -- which is exactly why a silent
+-- one would be found the hard way.
+section('a module declared too late is refused, not lost')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		check('the order has been resolved by now', OPX.Modules.Resolved() == true)
+		local made, failure = pcall(OPX.Modules.Declare, { id = 'testlate', side = 'server' })
+		check('declaring after that raises rather than making a module nothing runs',
+			made == false, tostring(made))
+		check('and says so in the message',
+			tostring(failure):find('after the modules were resolved', 1, true) ~= nil,
+			tostring(failure))
+		check('and no phantom record was left behind',
+			OPX.Modules.Record('testlate') == nil)
 	end
 end
 print(('\n%d checks, %d failed'):format(checks, failures))

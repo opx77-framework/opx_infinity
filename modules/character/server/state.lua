@@ -196,8 +196,16 @@ function State.Clear(source)
 	if not read or type(bag) ~= 'table' then return end
 	for _, key in ipairs(KEYS) do
 		-- `unknown_bag` is the ordinary answer for a session that has already gone,
-		-- so the refusal is not worth a line.
-		pcall(bag.clear, bag, key)
+		-- so THAT refusal is not worth a line -- but it was the only one being
+		-- discarded. Any other refusal leaves the departed character's name and
+		-- citizen id replicated on a bag every other client still reads, which is
+		-- the one failure here anybody would notice from the game.
+		local called, cleared, why = pcall(bag.clear, bag, key)
+		if (not called or cleared == false) and tostring(called and why or cleared)
+			:find('unknown_bag', 1, true) == nil then
+			Open77.log.warn(('[character] bag key %s was not cleared for %s: %s')
+				:format(tostring(key), tostring(source), tostring(called and why or cleared)))
+		end
 	end
 end
 
