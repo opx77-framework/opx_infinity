@@ -14991,6 +14991,157 @@ do
 			first == 1, first)
 	end
 end
+section('vehicles: two spawns of one plate in one tick produce exactly one car')
+do
+	-- THE RACE, WHICH WAS REAL AND NOT SUSPECTED. `Store.FetchOne` is a database
+	-- read and it yields -- `lib/server/storage.lua` awaits it -- and it happens
+	-- BEFORE the "already out" guard. So two `M.Spawn` threads for one plate both
+	-- read `live[plateId] == nil`, both reach `Open77.vehicles.create`, and one
+	-- row becomes two cars; the second write to `live` then buries the first,
+	-- which is a vehicle nothing will ever put away because nothing knows it is
+	-- there. `modules/garages/server/main.lua:330` names this race in a comment.
+	--
+	-- The three doors in (`vehicle.spawn`, `garages.bring`, `dealership.buy`)
+	-- held three SEPARATE per-player cooldowns, so one client firing two of them
+	-- in a tick cleared both floors -- but a per-player floor was never the right
+	-- shape for this. The thing that must not happen twice is a PLATE, so the
+	-- plate is what is claimed, the way `hauling`'s `Claim.Take` claims a crate.
+	local env, control, why = boot('server')
+	check('the server boots for the spawn race', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local vehicles = OPX and OPX.Modules.Get('vehicles') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	check('the vehicles and character modules are both there',
+		type(vehicles) == 'table' and type(character) == 'table')
+
+	if type(vehicles) == 'table' and type(character) == 'table' then
+		local DRIVER, PLATE, CITIZEN = 71, 'RACE001', 'citizen-racer'
+		character.Players[DRIVER] = { PlayerData = {
+			citizenId = CITIZEN, source = DRIVER, userId = 'account-71' } }
+		-- THE INDEX AS WELL AS THE ROSTER, the way `character.RegisterPlayer`
+		-- fills both. Without it `ownerLoaded` cannot find the citizen, the save
+		-- pass reads the car as belonging to somebody who has left, and puts it
+		-- away between the setup spawn and the race -- which leaves both racers
+		-- on the beside-the-player path and quietly tests nothing.
+		character.Registry.byCitizenId[CITIZEN] = DRIVER
+		character.Registry.byUserId['account-71'] = DRIVER
+
+		env.Open77.players.position = function()
+			return { x = 5.0, y = 6.0, z = 7.0, bucket = 0 }
+		end
+
+		-- THE YIELD, PUT BACK BY HAND. There is no database in this harness, so
+		-- the real `FetchOne` answers without ever suspending -- and a spawn that
+		-- never suspends cannot be interleaved, which would make this section
+		-- pass against the very defect it is written for. `Wait(0)` is the read
+		-- that the platform's own `MySQL.single.await` is.
+		local realFetch = vehicles.Storage.FetchOne
+		local fetches = 0
+		vehicles.Storage.FetchOne = function(plate)
+			fetches = fetches + 1
+			env.Wait(0)
+			if plate ~= PLATE then return OPX.Result.Err('vehicle.notFound', plate) end
+			return OPX.Result.Ok({ plate = PLATE, citizenId = CITIZEN,
+				record = 'Vehicle.v_standard2_villefort_cortes_player',
+				state = vehicles.Storage.STATE.STORED, health = 1.0, metadata = {} })
+		end
+		local realState = vehicles.Storage.SetState
+		vehicles.Storage.SetState = function() return OPX.Result.Ok(true) end
+
+		-- ── the car is out, which is what makes the window ────────────────────
+		-- THE RECALL PATH IS THE DANGEROUS ONE, and it is worth being exact about
+		-- why. On the plain path the only yield is the fetch, and whichever
+		-- thread the database answers first then runs guard-to-`live` without
+		-- suspending again, so the second finds the car already out. A caller
+		-- that NAMES a place -- every garage marker, every pad, every dealer
+		-- handover -- goes through `M.Store` instead, which clears `live` and
+		-- yields, and then fetches again and yields again. That is a window with
+		-- the plate standing empty in the middle of it, and a second thread walks
+		-- straight through: it creates a car and writes `live`, and the recaller
+		-- wakes up and creates another over the top. Two cars, one row, and the
+		-- first is orphaned -- nothing knows it exists, so nothing ever puts it
+		-- away.
+		local first
+		env.CreateThread(function() first = vehicles.Spawn(DRIVER, PLATE) end)
+		check('the vehicle is out to begin with',
+			settle(control, function() return first ~= nil end, 60) and first.ok == true,
+			first and tostring(first.error))
+
+		local created, removed = #control.vehicleCreates, #control.vehicleRemoves
+		local AT = { x = 0.0, y = 0.0, z = 0.0, yaw = 0.0, bucket = 0 }
+		-- Two explicit slots, NOT `answers[#answers + 1]`: Lua settles the index
+		-- of an assignment before the call on its right, so both threads would
+		-- pick slot 1 and the loser would overwrite the winner -- and the section
+		-- would then be asserting one answer where it meant to assert two.
+		local raceA, raceB
+		env.CreateThread(function() raceA = vehicles.Spawn(DRIVER, PLATE, AT) end)
+		env.CreateThread(function() raceB = vehicles.Spawn(DRIVER, PLATE, AT) end)
+		check('both recalls settle',
+			settle(control, function() return raceA ~= nil and raceB ~= nil end, 80),
+			('%s / %s'):format(tostring(raceA), tostring(raceB)))
+		check('and both of them really did read the row, so both were in flight',
+			fetches >= 3, fetches)
+
+		local ok, refused = 0, nil
+		for _, answer in ipairs({ raceA, raceB }) do
+			if answer.ok then ok = ok + 1 else refused = answer.error end
+		end
+		check('exactly one of the two comes back with a vehicle', ok == 1, ok)
+		check('and the loser is told the plate is already coming out, not given a car',
+			refused == 'vehicle.busy', tostring(refused))
+		check('ONE ROW MADE ONE CAR, which is the whole of it',
+			#control.vehicleCreates == created + 1,
+			('%d created'):format(#control.vehicleCreates - created))
+		check('and there are words for the refusal, so the loser is told something',
+			OPX.Locale.Text('vehicle.busy'):find('already', 1, true) ~= nil,
+			OPX.Locale.Text('vehicle.busy'))
+
+		-- THE WINNER RECALLED, which is the path the race lives on: it is the one
+		-- that puts the old car away and then fetches again, and it is the two
+		-- yields in that gap the loser used to walk through. A run where neither
+		-- recalled is a run that tested the safe path and proved nothing.
+		local recalls = 0
+		for _, answer in ipairs({ raceA, raceB }) do
+			if answer.ok and answer.value.recalled then recalls = recalls + 1 end
+		end
+		check('and the one that won went the way the race actually lives',
+			recalls == 1, recalls)
+
+		-- NO ORPHAN. The duplication's real cost is not the second car, it is the
+		-- FIRST: `live` holds one entry per plate, so a second write buries the
+		-- first and leaves a vehicle in the world that nothing will ever put
+		-- away, save or remove. A recall removes exactly what it replaces, so one
+		-- creation and one removal is the whole of what should have happened.
+		check('and the car it replaced is the only one that was removed',
+			#control.vehicleRemoves == removed + 1,
+			('%d removed'):format(#control.vehicleRemoves - removed))
+
+		-- ── and the claim is given back when the spawn fails ──────────────────
+		-- A reservation that outlived a refusal would lock the plate for the rest
+		-- of the session: every later request would answer `vehicle.busy` for a
+		-- car that is not out and never was.
+		vehicles.Store(PLATE)
+		local realCreate = env.Open77.vehicles.create
+		env.Open77.vehicles.create = function() return nil, 'refused_by_test' end
+		local failed
+		env.CreateThread(function() failed = vehicles.Spawn(DRIVER, PLATE) end)
+		check('a refused creation settles', settle(control, function() return failed ~= nil end, 60))
+		check('and it is refused rather than silently succeeding',
+			failed ~= nil and failed.ok == false, failed and tostring(failed.error))
+
+		env.Open77.vehicles.create = realCreate
+		local after
+		env.CreateThread(function() after = vehicles.Spawn(DRIVER, PLATE) end)
+		check('the next attempt settles', settle(control, function() return after ~= nil end, 60))
+		check('a plate whose spawn failed is not locked for the session',
+			after ~= nil and after.ok == true, after and tostring(after.error))
+
+		vehicles.Storage.FetchOne, vehicles.Storage.SetState = realFetch, realState
+		character.Players[DRIVER] = nil
+	end
+end
+
 section('clothing saves need a fitting room somebody opened')
 do
 	-- THE EXPLOIT THIS PINS. `appearance:saveClothing` asked four questions --
