@@ -15319,12 +15319,23 @@ end
 -- legitimately differs, and only the cadence is shared.
 section('the stutter is declared once')
 do
-	--- Every page source file under a directory, recursively, without shelling out.
+	--- Every page source file under a directory, recursively.
+	---
+	--- `dir /b /s` IS WINDOWS-ONLY, and that is how this section managed to be
+	--- green on a developer's machine and red in CI for two releases running: on
+	--- Linux the pipe opens, produces nothing, and the walk answers an empty
+	--- list. The readability check below is the only reason that showed up as a
+	--- failure rather than as every assertion in this section passing vacuously
+	--- -- which is the whole argument for writing it, and the argument for this
+	--- walk knowing which platform it is on.
 	local function sources(root, out)
 		out = out or {}
 		-- `io.popen` is the only directory walk available here, and the suite already
 		-- reads page files by name elsewhere; the list is short enough to name.
-		local handle = io.popen('dir /b /s "' .. root:gsub('/', '\\') .. '" 2>nul')
+		local command = package.config:sub(1, 1) == '\\'
+			and ('dir /b /s "%s" 2>nul'):format(root:gsub('/', '\\'))
+			or ('find "%s" -type f 2>/dev/null'):format(root)
+		local handle = io.popen(command)
 		if handle == nil then return out end
 		for line in handle:lines() do
 			local path = line:gsub('\\', '/')
