@@ -49,8 +49,12 @@ local markers = {}
 -- avpad = {} }` of `{ key, label, class, price, text }`.
 local stock = { garage = {}, avpad = {} }
 
--- The dealer the player is standing on, and whether its row is up.
-local nearest, shown = nil, false
+-- The dealer the player is standing on, whether its row is up, and the locale
+-- key that row is naming. THE LABEL IS STATE, not a function of the boolean:
+-- there are two kinds with two different strings, so a sync that compared only
+-- "is a row up" would leave "Browse vehicles" standing over an AV pad the player
+-- walked onto straight from a car dealer, without `nearest` ever passing nil.
+local nearest, shown, shownLabel = nil, false, nil
 
 -- Whether the key mapping answered.
 local keyRegistered = false
@@ -209,10 +213,21 @@ local function keyLabel()
 	return OPX.Lib.Input.KeyFor(declared.ID) or declared.DEFAULT
 end
 
--- Brings the strip in line with where the player is standing.
+-- What the key is about to open, as a locale key: a car dealer and an AV pad are
+-- the same gesture but two different lists, so the row has to name the one it is
+-- standing over.
+local function promptLabel()
+	if nearest == nil then return nil end
+	return 'dealership.prompt.' .. nearest.kind
+end
+
+-- Brings the strip in line with where the player is standing AND with which kind
+-- of dealer that is: comparing only "is a row up" would keep a car dealer's
+-- label over an adjacent AV pad, because both want a row.
 local function syncPrompt()
 	local want = nearest ~= nil and keyLabel() ~= nil and not captured() and handle == nil
-	if want == shown then return end
+	local label = want and promptLabel() or nil
+	if want == shown and label == shownLabel then return end
 
 	local api = OPX.Api.Get('prompts')
 	if api == nil or type(api.Show) ~= 'function' or type(api.Hide) ~= 'function' then
@@ -222,18 +237,18 @@ local function syncPrompt()
 			reportedStrip = true
 			Open77.log.info('[dealership] no prompts contract; the strip row is not shown')
 		end
-		shown = false
+		shown, shownLabel = false, nil
 		return
 	end
 
-	shown = want
+	shown, shownLabel = want, label
 	local ran, answer
 	if want then
 		ran, answer = pcall(api.Show, OWNER, GROUP, { rows = { {
 			keys = { action = keySettings().ID },
 			-- Short on purpose: the strip never wraps a line. A dealer that sells
 			-- AVs says so, because what is behind the key is a different list.
-			label = locale('dealership.prompt.' .. nearest.kind),
+			label = locale(label),
 		} } })
 	else
 		ran, answer = pcall(api.Hide, OWNER, GROUP)
@@ -637,6 +652,9 @@ function Runtime.Report()
 		markers = drawn,
 		nearest = nearest and nearest.key or nil,
 		shown = shown,
+		-- Which kind the row is naming, so a diagnostic can tell a row that never
+		-- went up from one that went up naming the other kind.
+		label = shownLabel,
 		key = keyLabel(),
 		open = handle ~= nil,
 		screen = current and current.screen or nil,
@@ -686,7 +704,7 @@ end
 function Runtime.Init()
 	spots, markers = {}, {}
 	stock = { [M.KIND.GARAGE] = {}, [M.KIND.AVPAD] = {} }
-	nearest, shown, keyRegistered = nil, false, false
+	nearest, shown, shownLabel, keyRegistered = nil, false, nil, false
 	handle, stack = nil, {}
 	reportedMarkers, reportedStrip, reportedMenu = false, false, false
 	scanJob, askJob = nil, nil

@@ -6575,6 +6575,24 @@ do
 		check('and it knows what the dealer sells', Runtime.Report().listed == 1,
 			tostring(Runtime.Report().listed))
 
+		-- ONE KEY, TWO LISTS, so the row has to name the kind it is standing over.
+		-- The pad is inside reach of the yard and the yard inside reach of the pad,
+		-- so walking between them never takes `nearest` through nil: a sync that
+		-- compared only "is a row up" would leave "Browse vehicles" over a pad that
+		-- only sells AVs.
+		check('on a car dealer, the row names the car list',
+			Runtime.Report().label == 'dealership.prompt.garage', Runtime.Report().label)
+		cctl.placement.x, cctl.placement.y = 4.0, 1.0
+		settle(cctl, function() return Runtime.Report().nearest == 'pad' end)
+		check('stepping onto the adjacent pad re-aims the row at it',
+			Runtime.Report().nearest == 'pad', Runtime.Report().nearest)
+		check('and the row names the AV list, not the one it walked in carrying',
+			Runtime.Report().label == 'dealership.prompt.avpad', Runtime.Report().label)
+		cctl.placement.x, cctl.placement.y = 0.0, 0.0
+		settle(cctl, function() return Runtime.Report().nearest == 'yard' end)
+		check('and walking back to the car dealer names the car list again',
+			Runtime.Report().label == 'dealership.prompt.garage', Runtime.Report().label)
+
 		-- ── the list ───────────────────────────────────────────────────────
 		mapping.pressed()
 		check('the key opens the list for the dealer underfoot',
@@ -9634,7 +9652,7 @@ do
 
 		-- DERIVED, NEVER DECLARED: every Air row's record matches the configured
 		-- prefixes, and every row the rule calls air carries the flag.
-		local prefixes = admin.Section('VEHICLES').AV_PREFIXES or {}
+		local prefixes = OPX.Config.SHARED.AV_PREFIXES or {}
 		local function isAir(record)
 			local lowered = tostring(record):lower()
 			for _, prefix in ipairs(prefixes) do
@@ -13777,6 +13795,100 @@ do
 		check('so the crate is free for whoever asks next',
 			retry[#retry] ~= nil and retry[#retry][1] == true,
 			retry[#retry] and tostring(retry[#retry][2]))
+
+		-- ── the job gate is `lib/shared/jobgate.lua`, not a fourth copy ──────
+		-- A SITE'S JOBS BLOCK MUST MEAN WHAT THE IDENTICAL KEY MEANS ON A LIFT, AN
+		-- ENTRANCE AND A BENCH. This module shipped its own hand-written rule that
+		-- read JOBS and silently ignored `ON_DUTY` beside it, and answered whichever
+		-- job it happened to look up first rather than the closest near-miss. An
+		-- operator who locked a site to clocked-on nomads got a site open to every
+		-- nomad, with nothing anywhere saying so.
+		local hauler = OPX.Api.Get('character')
+		local realGetPlayer = hauler.GetPlayer
+		local held, memberships = nil, {}
+		hauler.GetPlayer = function()
+			return { PlayerData = { job = held, jobs = memberships } }
+		end
+
+		-- A second crate, still on the ground, and somebody standing on it. Every
+		-- refusal below leaves it there, because the gate is asked before the claim.
+		local GATED, gatedAt = nil, nil
+		for id, prop in pairs(props.byId) do
+			if id ~= CRATE and (GATED == nil or id < GATED) then GATED, gatedAt = id, prop end
+		end
+		check('there is a second crate to gate', GATED ~= nil)
+		positions[9] = { x = gatedAt.x, y = gatedAt.y, z = gatedAt.z, bucket = 0 }
+		fire(9, M.Event.HELLO)
+
+		-- One request, and the answer it got. The clock moves past the rate-limit
+		-- window each time so a refusal is the gate's and never the limiter's.
+		local function askFor()
+			local mark = #control.clientEvents
+			at = at + 6000
+			fire(9, M.Event.BEGIN, Step.PICKUP, GATED)
+			for index = #control.clientEvents, mark + 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == M.Event.ANSWER then return sent end
+			end
+			return nil
+		end
+
+		SITE.JOBS, SITE.ON_DUTY = { nomad = 2 }, true
+		held = { name = 'nomad', grade = { level = 4 }, onDuty = false }
+		local gated = askFor()
+		check('ON_DUTY on a site is read, and an off-duty holder is turned away',
+			gated ~= nil and gated[1] == false and gated[2] == 'off_duty',
+			gated and tostring(gated[2]))
+
+		held = { name = 'fixer', grade = { level = 9 }, onDuty = true }
+		gated = askFor()
+		check('and somebody holding another job entirely is told it is the job',
+			gated ~= nil and gated[1] == false and gated[2] == 'job_required',
+			gated and tostring(gated[2]))
+
+		held = { name = 'nomad', grade = { level = 1 }, onDuty = true }
+		gated = askFor()
+		check('and the right job at too low a grade is told it is the grade',
+			gated ~= nil and gated[1] == false and gated[2] == 'grade_too_low',
+			gated and tostring(gated[2]))
+
+		-- THE NEAR-MISS IS NAMED, not the first job the gate happened to visit. With
+		-- two jobs required and only one of them held, a refusal that answered
+		-- `job_required` would send a nomad off to find a job they already have.
+		SITE.JOBS = { nomad = 5, ncpd = 0 }
+		gated = askFor()
+		check('with two jobs asked for, the refusal names the closest near-miss',
+			gated ~= nil and gated[1] == false and gated[2] == 'grade_too_low',
+			gated and tostring(gated[2]))
+
+		-- MEMBERSHIP = any counts a membership for the grade. Under primary the same
+		-- character is refused, because only the worked job counts at all.
+		SITE.JOBS, SITE.ON_DUTY = { nomad = 2 }, nil
+		held = { name = 'fixer', grade = { level = 0 }, onDuty = true }
+		memberships = { nomad = 4 }
+		gated = askFor()
+		check('under MEMBERSHIP primary a membership alone is not the job',
+			gated ~= nil and gated[1] == false and gated[2] == 'job_required',
+			gated and tostring(gated[2]))
+		OPX.Config.MODULES.hauling.MEMBERSHIP = 'any'
+		gated = askFor()
+		check('and under any the same membership carries the grade',
+			gated ~= nil and gated[1] == true, gated and tostring(gated[2]))
+		OPX.Config.MODULES.hauling.MEMBERSHIP = 'primary'
+
+		-- A MALFORMED MINIMUM IS ONE SENTENCE, the shared one, and not this module's
+		-- own drifted wording for the same operator mistake.
+		SITE.JOBS = { nomad = true }
+		local said = table.concat(Access.Problems(), '\n')
+		check('a JOBS typo is reported in the words every other module uses',
+			said:find('JOBS entries are job name %-> minimum grade level', 1) ~= nil, said)
+		check('and the site it is on is condemned rather than half-gated',
+			not Access.Usable('docks'))
+
+		SITE.JOBS, SITE.ON_DUTY = nil, nil
+		hauler.GetPlayer = realGetPlayer
+		check('and clearing JOBS makes the site public again',
+			(Access.Evaluate(Access.Site('docks'), nil, at)) == true)
 	end
 end
 
@@ -14652,8 +14764,12 @@ do
 		local elevators = OPX.Modules.Get('elevators')
 		local gunsmith = OPX.Modules.Get('gunsmith')
 		local teleports = OPX.Modules.Get('teleports')
-		check('the three modules are here to be asked',
-			elevators ~= nil and gunsmith ~= nil and teleports ~= nil)
+		-- FOUR NOW. `hauling` merged with a fourth hand-written copy of the rule
+		-- and no adapter at all, so it is held to the same fail direction as the
+		-- three the gate was factored out of.
+		local hauling = OPX.Modules.Get('hauling')
+		check('the four modules are here to be asked',
+			elevators ~= nil and gunsmith ~= nil and teleports ~= nil and hauling ~= nil)
 
 		-- Under pcall, because the answer being a RAISE is one of the three
 		-- answers this is here to rule out: the elevators adapter read
@@ -14679,7 +14795,88 @@ do
 
 			check('and teleports, which always did, still is',
 				(evaluate(teleports)) == false)
+
+			local site, refusedSite = evaluate(hauling)
+			check('a hauling site that is not a table is CLOSED, not a raise',
+				site == false, tostring(site) .. ' ' .. tostring(refusedSite))
+			check('and it says which site it could not read',
+				refusedSite == 'no_such_site', tostring(refusedSite))
 		end
+	end
+end
+
+-- ── one air category, one list ───────────────────────────────────────────────
+-- `Access.IsAv` in garages, `Access.IsAv` in dealership and `isAir` in the admin
+-- catalogue were three copies of one rule over three config keys. The data
+-- agreed; the code did not. The admin copy guarded neither its argument nor an
+-- emptied list, so clearing `VEHICLES.AV_PREFIXES` alone reclassified every AV
+-- as ground in the staff catalogue while the garage and the dealer went on
+-- calling the same records air -- and each of the three comments named one of
+-- the others as the rule it shared.
+section('a record is air for the whole server or for none of it')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local garages = OPX.Modules.Get('garages')
+		local dealership = OPX.Modules.Get('dealership')
+		local admin = OPX.Modules.Get('admin')
+		check('the three readers are here to be asked',
+			garages ~= nil and dealership ~= nil and admin ~= nil)
+
+		-- The admin catalogue never exposed its predicate, and must not have to:
+		-- it stamps each row with the answer, so the ROW is what is read here.
+		local function adminSays(record)
+			for _, class in ipairs(admin.Catalog.Classes()) do
+				for _, entry in ipairs(class.members) do
+					if entry.record == record then return entry.av end
+				end
+			end
+			return nil
+		end
+
+		local AIR = 'Vehicle.av_rayfield_excalibur'
+		local GROUND = 'Vehicle.v_standard2_archer_hella_player'
+		check('an AV record is air in all three', garages.Access.IsAv(AIR) == true
+			and dealership.Access.IsAv(AIR) == true and adminSays(AIR) == true,
+			('%s/%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
+				tostring(dealership.Access.IsAv(AIR)), tostring(adminSays(AIR))))
+		check('and a car is ground in all three', garages.Access.IsAv(GROUND) == false
+			and dealership.Access.IsAv(GROUND) == false and adminSays(GROUND) == false,
+			('%s/%s/%s'):format(tostring(garages.Access.IsAv(GROUND)),
+				tostring(dealership.Access.IsAv(GROUND)), tostring(adminSays(GROUND))))
+
+		-- A NON-STRING IS NOT AIR, and is not a raise either. The admin copy called
+		-- `record:lower()` straight off whatever it was handed.
+		for _, odd in ipairs({ 42, true, {} }) do
+			local read, answer = pcall(OPX.Text.IsAvRecord, odd)
+			check(('a %s record is refused rather than raising'):format(type(odd)),
+				read == true and answer == false, tostring(read) .. ' ' .. tostring(answer))
+		end
+
+		-- ONE KEY MOVES ALL THREE. Emptying the operator's list falls back to the
+		-- documented pair rather than meaning "nothing flies", and pointing it
+		-- somewhere else moves the garage, the dealer and the catalogue together.
+		local real = OPX.Config.SHARED.AV_PREFIXES
+		OPX.Config.SHARED.AV_PREFIXES = {}
+		check('an emptied list still calls the documented pair air',
+			garages.Access.IsAv(AIR) == true and dealership.Access.IsAv(AIR) == true,
+			('%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
+				tostring(dealership.Access.IsAv(AIR))))
+		OPX.Config.SHARED.AV_PREFIXES = { 'vehicle.v_standard2_' }
+		check('and changing the one list moves both readers off the old answer',
+			garages.Access.IsAv(AIR) == false and dealership.Access.IsAv(AIR) == false,
+			('%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
+				tostring(dealership.Access.IsAv(AIR))))
+		check('and onto the new one, together',
+			garages.Access.IsAv(GROUND) == true and dealership.Access.IsAv(GROUND) == true,
+			('%s/%s'):format(tostring(garages.Access.IsAv(GROUND)),
+				tostring(dealership.Access.IsAv(GROUND))))
+		OPX.Config.SHARED.AV_PREFIXES = real
+		check('and putting it back puts them both back',
+			garages.Access.IsAv(AIR) == true and garages.Access.IsAv(GROUND) == false)
 	end
 end
 

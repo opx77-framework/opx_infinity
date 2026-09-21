@@ -243,34 +243,18 @@ function Access.Nearest(spots, x, y, radius)
 end
 
 --- Whether a TweakDB vehicle record is an AV.
--- The rule the garages module and `open77_avcleanup` both use, so a record is in
--- the air category for every part of the server or for none of it.
+--
+-- ONE RULE, OVER ONE CONFIG KEY: `OPX.Text.IsAvRecord` and
+-- `OPX.Config.SHARED.AV_PREFIXES`. The comment that used to sit here claimed
+-- this WAS the rule the garages module uses; it was a second copy over a second
+-- key, and the admin catalogue had a third that behaved differently again. It is
+-- one rule now, which is what makes a record air for every part of the server or
+-- for none of it.
 -- @author XEROX710
 -- @param record any
 -- @return boolean
 function Access.IsAv(record)
-	if type(record) ~= 'string' then return false end
-	local lowered = record:lower()
-	for index = 1, #Access.AV_PREFIXES do
-		local prefix = Access.AV_PREFIXES[index]
-		if lowered:sub(1, #prefix) == prefix then return true end
-	end
-	return false
-end
-
--- The AV prefixes, lower-cased once, with the documented pair as the fallback.
-do
-	local configured = Config.AV_PREFIXES
-	local prefixes = {}
-	if type(configured) == 'table' then
-		for index = 1, #configured do
-			if type(configured[index]) == 'string' and configured[index] ~= '' then
-				prefixes[#prefixes + 1] = configured[index]:lower()
-			end
-		end
-	end
-	if #prefixes == 0 then prefixes = { 'vehicle.av_', 'vehicle.max_tac_av' } end
-	Access.AV_PREFIXES = prefixes
+	return OPX.Text.IsAvRecord(record)
 end
 
 --- The marker an engine spot of this kind is drawn with.

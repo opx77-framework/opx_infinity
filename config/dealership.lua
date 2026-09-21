@@ -60,10 +60,10 @@ OPX.Config.MODULES.dealership = {
 	-- half-buried: an AV record's pivot is the chassis centre.
 	AV_LIFT = 1.2,
 
-	-- An AV record starts with one of these, lower-cased. The same rule the
-	-- garages module and `open77_avcleanup` use, so a record is in the air
-	-- category for every part of the server or for none of it.
-	AV_PREFIXES = { 'vehicle.av_', 'vehicle.max_tac_av' },
+	-- WHICH RECORDS ARE AVs IS NOT A DEALERSHIP SETTING. It is one list,
+	-- `AV_PREFIXES` in `config/shared.lua`, read by one helper, which is what
+	-- puts a record in the air category for every part of the server or for none
+	-- of it. This key used to claim that and be a second copy of it.
 
 	-- The marker/scan loop, and how often the client re-asks for its list so a
 	-- change of routing bucket is picked up without a rejoin.

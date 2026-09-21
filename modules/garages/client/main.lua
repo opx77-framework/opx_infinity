@@ -223,7 +223,7 @@ local function syncPrompt()
 			reportedStrip = true
 			Open77.log.info('[garages] no prompts contract; the strip row is not shown')
 		end
-		shown = false
+		shown, shownLabel = false, nil
 		return
 	end
 

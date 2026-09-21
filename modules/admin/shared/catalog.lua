@@ -61,32 +61,24 @@ do
 	end
 end
 
--- The AV prefixes, lower-cased, read once from the config.
-local avPrefixes
-
---- Whether a record is an AV, by the one rule: `VEHICLES.AV_PREFIXES`.
--- The same rule the garages module, the dealership and the platform's own
--- gamemodes use, so a record is in the air category everywhere or nowhere. The
--- catalogue marks the row with the answer, and no row declares its own category:
--- one owner, and a row cannot disagree with itself.
+--- Whether a record is an AV, by the one rule: `OPX.Text.IsAvRecord` over
+--- `OPX.Config.SHARED.AV_PREFIXES`.
+--
+-- This was the third hand-written copy of that rule, over a third config key,
+-- and it was the one that behaved differently: no guard on the argument, and no
+-- fallback to the documented pair when the list came back empty. Emptying
+-- `VEHICLES.AV_PREFIXES` alone therefore reclassified every AV as ground in the
+-- staff catalogue while the garage and the dealer went on calling the same
+-- records air -- and the comment that stood here named this copy as the one the
+-- other two used.
+--
+-- The catalogue marks the row with the answer, and no row declares its own
+-- category: one owner, and a row cannot disagree with itself.
 -- @author dop42
 -- @param record string
 -- @return boolean
 local function isAir(record)
-	if avPrefixes == nil then
-		avPrefixes = {}
-		for _, prefix in ipairs(M.Section('VEHICLES').AV_PREFIXES or {}) do
-			if type(prefix) == 'string' and prefix ~= '' then
-				avPrefixes[#avPrefixes + 1] = prefix:lower()
-			end
-		end
-	end
-	local lowered = record:lower()
-	for index = 1, #avPrefixes do
-		local prefix = avPrefixes[index]
-		if lowered:sub(1, #prefix) == prefix then return true end
-	end
-	return false
+	return Text.IsAvRecord(record)
 end
 
 --- Indexes the next `count` rows into their classes and both lookups.
