@@ -47,13 +47,22 @@ local SURFACE = 'overlay'
 local CHANNEL = 'calls:view'
 local EVENT_VIEW = M.Event.VIEW
 
--- Every action the seam documents. An unknown one reaching `FromView` is
--- ignored there, so nothing here filters a second time.
+-- Every action the seam accepts. An unknown one reaching `FromView` is ignored
+-- there, so nothing here filters a second time.
 --
--- `dismiss` and `repop` are the pair that make the owner's re-pop button work:
--- the page reports that the player waved the card away, and the eye's
--- `callRepop` row -- or the page itself -- asks for it back. Neither touches
--- the call; both are about this screen.
+-- TODAY THE PAGE EMITS ONE OF THEM -- `ready`, from the card's `onMounted`.
+-- That is not an oversight and the other six are not dead: a view on this layer
+-- has no way to be pressed, so every DECISION arrives through the eye and calls
+-- `M.FromView` in process. The list is the seam's vocabulary rather than a
+-- record of what the current page happens to use, and it is written out here so
+-- that a view which later gains a legitimate way to speak -- a keybind, a
+-- surface that moves -- finds the wire already there rather than adding a
+-- seventh spelling of it.
+--
+-- `dismiss` and `repop` are the pair behind the owner's re-pop button.
+-- Dismissing is the card leaving the screen; the call goes on ringing, the
+-- sound goes on re-arming, and the server is never told. Both are about this
+-- screen and neither touches the call.
 local ACTIONS = { 'ready', 'dismiss', 'repop', 'accept', 'decline', 'hangUp', 'diag' }
 
 --- Wires the page to the seam.

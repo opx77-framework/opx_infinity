@@ -65,6 +65,19 @@ local dismissed = nil
 local lastRingMs = -math.huge
 local ringEveryMs = 3500
 
+-- When the card went up, and how long it may stay. THE OWNER'S REQUIREMENT AS A
+-- CLOCK: the card says its piece and takes itself off the screen, and the eye's
+-- re-pop row brings it back. The call goes on ringing throughout -- this is the
+-- card leaving, not the call being refused.
+--
+-- THE CLOCK IS THE CLIENT'S AND THE SERVER IS NEVER TOLD. Where a card is on
+-- somebody's screen is a fact about that screen, so a dismissal that crossed
+-- the wire would be this module asking the authority to remember something the
+-- authority has no business knowing -- and would then have to be un-remembered
+-- on every reconnect, every reload and every character change.
+local cardUpMs = nil
+local cardDwellMs = 8000
+
 -- Sound event names, settled in `Start` from the config.
 local sounds = {}
 
@@ -160,6 +173,7 @@ local function onState(payload)
 	if nowInvite ~= hadInvite then
 		dismissed = nil
 		lastRingMs = -math.huge
+		cardUpMs = nowInvite ~= nil and OPX.Now() or nil
 	end
 
 	-- The ring starts on a card arriving and stops on it going, whichever way
@@ -189,14 +203,28 @@ local function onState(payload)
 	draw()
 end
 
--- Re-arms the ring while a card is up. `ui_phone_incoming_call` is a one-shot,
--- so "it rings until you answer" is a clock rather than a loop.
+-- Re-arms the ring while a card is up, and takes the card down once it has had
+-- its say.
+--
+-- THE RING OUTLIVES THE CARD, deliberately. `ui_phone_incoming_call` is a
+-- one-shot, so "it rings until you answer" is a clock rather than a loop -- and
+-- it keeps ticking after the card has gone, because the card leaving is about
+-- the SCREEN and the call is still ringing. A player who looked away still
+-- hears it, and ALT still answers it.
 local function rearm()
-	if not carded() then return end
+	if state.invite == nil then return end
 	local atMs = OPX.Now()
-	if atMs - lastRingMs < ringEveryMs then return end
-	lastRingMs = atMs
-	play(sounds.INCOMING)
+
+	if atMs - lastRingMs >= ringEveryMs then
+		lastRingMs = atMs
+		play(sounds.INCOMING)
+	end
+
+	if cardUpMs ~= nil and dismissed ~= state.invite.id
+		and atMs - cardUpMs >= cardDwellMs then
+		dismissed = state.invite.id
+		draw()
+	end
 end
 
 -- ── what the page asks for ───────────────────────────────────────────────────
@@ -225,6 +253,12 @@ function M.FromView(action, payload)
 	end
 	if action == 'repop' then
 		dismissed = nil
+		-- THE DWELL CLOCK RESTARTS, which is what makes the re-pop row worth
+		-- pressing twice. Without this the card would come back and be taken
+		-- down again on the next sweep, because `cardUpMs` would still be the
+		-- moment the call first arrived -- a button that appears to do nothing,
+		-- which is the worst kind.
+		cardUpMs = OPX.Now()
 		TriggerServerEvent(M.Event.READY)
 		draw()
 		return
@@ -490,6 +524,7 @@ end
 function M.Init()
 	state = { call = nil, invite = nil, outgoing = nil }
 	dismissed = nil
+	cardUpMs = nil
 	lastRingMs = -math.huge
 	mutedEvents = {}
 	jobs = {}
@@ -498,6 +533,11 @@ function M.Init()
 	sounds = type(settings.SOUND) == 'table' and settings.SOUND or {}
 	ringEveryMs = math.floor(OPX.Math.Clamp(
 		OPX.Math.Finite(settings.RING_EVERY_MS) or 3500, 1000, 60000))
+	-- Bounded to something a player can read and something short of the whole
+	-- invite lifetime: a dwell longer than INVITE_TTL_S would mean the card
+	-- never left on its own and the configuration said it did.
+	cardDwellMs = math.floor(OPX.Math.Clamp(
+		OPX.Math.Finite(settings.CARD_DWELL_S) or 8, 2, 60) * 1000)
 end
 
 --- Wires the state push, the rows and the ring.

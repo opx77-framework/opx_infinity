@@ -21405,6 +21405,67 @@ do
 			-- nothing, most of the time, on everybody's own body.
 			check('the re-pop row is not offered while the card is still up',
 				fresh.callRepop.canInteract(context) ~= true)
+
+			-- ── THE CARD TAKES ITSELF DOWN ──────────────────────────────────
+			-- The owner's requirement as a clock. A card that sat at the edge
+			-- of the view for the whole thirty seconds an invite rings is in
+			-- the player's vision for thirty seconds however narrow it is, so
+			-- it says its piece and gets out of the way.
+			--
+			-- THE CALL DOES NOT GO WITH IT, which is the half worth asserting:
+			-- dismissing is not declining, so the invite is still there and the
+			-- eye still answers it. A version that cleared `state.invite`
+			-- instead would look identical on screen and would have hung up on
+			-- everybody who blinked.
+			check('the card is on screen while it is dwelling', module.State().carded == true)
+			-- CARD_DWELL_S is 8, and a pump round is 100ms of host clock.
+			control.Pump(100)
+			check('and takes itself off the screen once it has had its say',
+				module.State().carded == false)
+			check('while the call goes on ringing -- the card left, the call did not',
+				module.State().invite ~= nil)
+
+			-- AND IT REALLY GOES ON RINGING, out loud. The card leaving is
+			-- about the SCREEN; a player who looked away still hears the phone
+			-- and can still answer it on the eye. Written because a mutation
+			-- proved it: gating the re-arm on the card being up instead of on
+			-- the invite existing silenced the call the moment the card dwelt
+			-- out, and every other check in this section stayed green.
+			local heard = #control.effects.sfx2d
+			control.Pump(60)
+			local rang = 0
+			for index = heard + 1, #control.effects.sfx2d do
+				if control.effects.sfx2d[index] == 'ui_phone_incoming_call' then
+					rang = rang + 1
+				end
+			end
+			check('and the phone keeps ringing after the card has gone',
+				rang > 0, rang)
+			local dwelt = {}
+			for _, row in ipairs(module.SelfRows()) do dwelt[row.id] = row end
+			check('so ACCEPT is still on the eye for a card nobody can see',
+				dwelt.callAccept.canInteract(context) == true)
+			check('and the re-pop row is offered to bring it back',
+				dwelt.callRepop.canInteract(context) == true)
+
+			module.FromView('repop')
+			check('re-popping puts it back on screen', module.State().carded == true)
+			-- AND THE CLOCK RESTARTS WITH IT. Without that the card comes back
+			-- and is taken down again by the very next sweep, because the dwell
+			-- would still be measured from when the call first arrived -- a
+			-- button that appears to do nothing, which is the worst kind.
+			--
+			-- PUMPED FAR ENOUGH FOR A SWEEP TO ACTUALLY HAPPEN, which is the
+			-- whole of what this check is worth. The first version pumped two
+			-- rounds, and the ring job runs every 500ms with the client
+			-- scheduler taking at most four jobs a pass -- so no sweep ran, the
+			-- card was still up because nothing had looked at it, and breaking
+			-- the restart outright left the suite green. Twenty rounds is two
+			-- seconds of host clock: several sweeps, and a quarter of the dwell.
+			control.Pump(20)
+			check('and stays up, because the dwell clock restarted with it',
+				module.State().carded == true)
+
 			module.FromView('dismiss')
 			control.Pump(2)
 			local after = {}
@@ -21446,6 +21507,145 @@ do
 				code:find("SURFACE%s*=%s*'overlay'") ~= nil)
 			check('and this module never acquires focus, which is what would take the keyboard',
 				code:find('AcquireFocus', 1, true) == nil)
+		end
+	end
+end
+
+-- ── the seam no shared file can close ────────────────────────────────────────
+-- The card and the chip are `.vue` files. Nothing loadable from Lua can hold
+-- them to the channel Lua publishes on or to the keys Lua's catalogue carries,
+-- so this section reads them as text and does it here -- exactly as the glyph
+-- header section above reads `ui/src/modules/target/glyphs.ts`.
+--
+-- The failure it is written against is not hypothetical and it is not loud. A
+-- channel spelt one character differently is a view that mounts, reports ready,
+-- and never receives anything: no error, no warning, an empty corner of the
+-- screen. A locale key spelt differently renders AS THE KEY -- `useLocale`
+-- says "loudly wrong is the point" and it is right, but loudly wrong on a
+-- player's screen is still found by a player rather than by this file.
+section('calls: the page and Lua agree about the channel and about every word')
+do
+	local function sourceOf(path)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local text = handle:read('a')
+		handle:close()
+		return text
+	end
+
+	local card = sourceOf('ui/src/modules/calls/IncomingCall.vue')
+	local chip = sourceOf('ui/src/modules/calls/CallLive.vue')
+	-- NOT `boot`, which is this file's own function for standing a runtime up.
+	-- The first version shadowed it here and the section below could no longer
+	-- boot a server to read the catalogue out of.
+	local registry = sourceOf('ui/src/boot/main.ts')
+	check('the incoming card is readable', card ~= nil)
+	check('the live chip is readable', chip ~= nil)
+	check('and the module registry is readable', registry ~= nil)
+
+	if card ~= nil and chip ~= nil and registry ~= nil then
+		-- ── the layer ────────────────────────────────────────────────────────
+		-- The owner's "il faut pas que ca gene la vision du joueur" is the
+		-- `overlay` layer and nothing else: `SurfaceRoot.vue` makes that layer
+		-- `pointer-events: none` for its whole height and never focuses it.
+		-- Either of these registered on `modal` would draw identically and be
+		-- the thing the owner said not to build, which is why the layer is
+		-- asserted from the registry rather than trusted to a comment.
+		-- The registration, found by walking the lines rather than by building a
+		-- pattern around the id. A HYPHEN IS A LUA PATTERN QUANTIFIER, so
+		-- `id:%s*'calls-incoming'` interpolated into a pattern matches
+		-- `id: 'calls'` followed by as little as possible, then `incoming'` --
+		-- which is nothing in this file, so both registrations read as absent
+		-- and the layer check under them could never fire. Found the first time
+		-- this section ran, which is the only reason it is not still true.
+		local function registrationOf(id)
+			for line in registry:gmatch('[^\n]+') do
+				if line:find("id: '" .. id .. "'", 1, true) then return line end
+			end
+			return nil
+		end
+
+		for _, id in ipairs({ 'calls-incoming', 'calls-live' }) do
+			local line = registrationOf(id)
+			check(('the %s view is registered'):format(id), line ~= nil)
+			check(('and %s is on the overlay layer, which takes no pointer'):format(id),
+				line ~= nil and line:find("surface:%s*'overlay'") ~= nil, line)
+		end
+
+		-- ── the channel ──────────────────────────────────────────────────────
+		-- `OPX.UI.Send` prefixes the surface id, so Lua's `'calls:view'`
+		-- arrives at the page as `'opx:calls:view'`. The two halves spell it
+		-- from two files that never see each other.
+		local view = sourceOf('modules/calls/client/view.lua') or ''
+		local channel = view:match("local CHANNEL = '([%w:_]+)'")
+		check('the Lua seam names a channel', channel ~= nil, channel)
+		local onPage = channel ~= nil and ('opx:' .. channel) or '?'
+		check('and the incoming card listens on exactly that channel, prefixed',
+			card:find("useBridge('" .. onPage .. "'", 1, true) ~= nil, onPage)
+		check('and so does the live chip',
+			chip:find("useBridge('" .. onPage .. "'", 1, true) ~= nil, onPage)
+
+		-- Every channel the page emits BACK has to be one `view.lua` wired a
+		-- handler for, or it is an intent that reaches nobody.
+		local wired = {}
+		for action in view:gmatch("'([%w]+)'") do wired[action] = true end
+		local unwired = {}
+		for _, page in ipairs({ card, chip }) do
+			for name in page:gmatch("emit%('opx:calls:([%w]+)'") do
+				if not wired[name] then unwired[#unwired + 1] = name end
+			end
+		end
+		table.sort(unwired)
+		check('every intent the page emits is one the Lua seam listens for',
+			#unwired == 0, table.concat(unwired, ', '))
+
+		-- ── neither view re-enables the pointer ──────────────────────────────
+		-- `SurfaceRoot.vue` makes the overlay layer `pointer-events: none` for
+		-- its whole height, and a child may override that -- CSS inherits the
+		-- value but a descendant with `auto` still receives events. What it
+		-- does NOT get is a cursor: the page only has one while some OTHER
+		-- module has taken it on the modal layer. So a control on either of
+		-- these views is clickable exactly when the inventory or the menu
+		-- happens to be open and dead the rest of the time.
+		--
+		-- This card shipped with one. It was a small × to wave the card away,
+		-- with `pointer-events: auto` and a written defence of the exception,
+		-- and the defence did not survive being asked which cursor would press
+		-- it. The dwell clock and the eye's re-pop row replaced it, and this
+		-- check is here so that the next person who wants a button on a
+		-- holocall card finds out from the suite rather than from a player.
+		local repointing = {}
+		for _, pair in ipairs({ { 'IncomingCall.vue', card }, { 'CallLive.vue', chip } }) do
+			-- Comments stripped, since both files now explain the rule in prose.
+			local styles = pair[2]:gsub('/%*.-%*/', '')
+			if styles:find('pointer%-events:%s*auto') then repointing[#repointing + 1] = pair[1] end
+		end
+		check('neither call view re-enables the pointer on a layer that has no cursor',
+			#repointing == 0, table.concat(repointing, ', '))
+
+		-- ── every word ───────────────────────────────────────────────────────
+		-- The page holds no English: every label is a key, and a key with no
+		-- catalogue line renders as itself.
+		local serverEnv, _, bootWhy = boot('server')
+		check('the server boots for the catalogue', bootWhy == nil, bootWhy)
+		if bootWhy == nil then
+			local module = serverEnv.OPX.Modules.Get('calls')
+			local english = (module.Catalogs or {}).en or {}
+			local french = (module.Catalogs or {}).fr or {}
+			local missing, seen = {}, 0
+			for _, page in ipairs({ card, chip }) do
+				for key in page:gmatch("t%('(calls%.[%w%.]+)'") do
+					seen = seen + 1
+					if english[key] == nil then missing[#missing + 1] = 'en:' .. key end
+					if french[key] == nil then missing[#missing + 1] = 'fr:' .. key end
+				end
+			end
+			table.sort(missing)
+			check('every key the two views ask for exists in both catalogues',
+				#missing == 0, table.concat(missing, ', '))
+			-- The count, so a regex that stopped matching could not make the
+			-- check above pass by finding nothing to check.
+			check('and the views really do ask for some', seen >= 8, seen)
 		end
 	end
 end

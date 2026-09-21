@@ -96,6 +96,25 @@ OPX.Config.MODULES.calls = {
 		HANG_UP = 'ui_phone_off',
 	},
 
+	-- Seconds the incoming card stays on screen before it takes ITSELF down.
+	--
+	-- THE OWNER'S HARD REQUIREMENT, AS A NUMBER: "il faut pas que ca gene la
+	-- vision du joueur". A card that sits at the edge of the view for the whole
+	-- thirty seconds an invite rings is in the player's vision for thirty
+	-- seconds, whatever its width -- so it says its piece and gets out of the
+	-- way, and the eye's re-pop row brings it back for as long as the call is
+	-- still ringing.
+	--
+	-- THE CALL GOES ON RINGING. This is the card leaving, not the call being
+	-- refused: the sound keeps re-arming, ACCEPT and DECLINE stay on the eye,
+	-- and the server knows nothing about any of it. Dismissing and declining
+	-- being different things is the whole reason the client half holds
+	-- `dismissed` locally and never tells the server.
+	--
+	-- Long enough to read three lines twice, short enough that nobody shoots at
+	-- something they could not see.
+	CARD_DWELL_S = 8,
+
 	-- Milliseconds between two re-arms of the ring, so an incoming call rings
 	-- for as long as the card is up rather than once. `ui_phone_incoming_call`
 	-- is a one-shot: there is no loop to start and no handle to stop, which is
