@@ -491,22 +491,32 @@ local notedKinds = {}
 --- Everything it touches is guarded: a diagnostic that can raise is a
 --- diagnostic that takes its caller down with it, and this one is called from
 --- the middle of a pick.
+--- What one owner holds that is named for this kind, out of what it holds at all.
+---
+--- ONE OWNER AND ONE CALL, because the first version asked for all thirty
+--- declared modules and `Registry.List` SWEEPS -- a host read per owner
+--- generation, every time. Thirty sweeps in one resume exceeded the instruction
+--- budget, and the guard around this reported it verbatim from the game:
+--- `held: unreadable: model.lua:539: Open77 script execution budget exceeded`.
+---
+--- `admin` is the owner worth asking about: it is the one that registers rows
+--- for every kind. And `Candidates` has just swept for this same pick, so the
+--- one sweep left here finds nothing to prune and costs almost nothing.
 local function heldFor(kind)
-	local seen = {}
-	for _, module in ipairs(OPX.Modules.All()) do
-		local owner = module.Id
-		local held = Registry.List(owner)
-		if type(held) == 'table' and #held > 0 then
-			local named = 0
-			for index = 1, #held do
-				local id = tostring(held[index].id):lower()
-				if id:find(kind, 1, true) then named = named + 1 end
-			end
-			seen[#seen + 1] = ('%s %d/%d'):format(owner, named, #held)
-		end
+	local held = Registry.List('admin')
+	if type(held) ~= 'table' or #held == 0 then return 'admin holds no row at all' end
+
+	local named = {}
+	for index = 1, #held do
+		local id = tostring(held[index].id)
+		if id:lower():find(kind, 1, true) then named[#named + 1] = id end
 	end
-	if #seen == 0 then return 'nobody holds a row at all' end
-	return table.concat(seen, ', ')
+	if #named == 0 then
+		return ('admin holds %d rows and none is named for %s'):format(#held, kind)
+	end
+	-- The ids themselves: which rows exist is the answer, not how many.
+	return ('admin holds %d rows, %d named for %s: %s')
+		:format(#held, #named, kind, table.concat(named, ' '))
 end
 
 local function notedKind(kind, matched)
