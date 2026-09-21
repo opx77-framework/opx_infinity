@@ -99,8 +99,47 @@ OPX.Config.MODULES.hud = {
 	-- reads it and applies only the names this build knows, so a name added or
 	-- renamed upstream costs nothing here.
 	VANILLA = {
+		-- ====================================================================
+		-- THE MINIMAP, AND THE ONE ENTRY IN THIS LIST THAT WAS NOT PAID FOR
+		-- ====================================================================
+		--
+		-- `true` since the blips work, and it is a REVERSAL. It was `false`, under
+		-- the heading "replaced outright by this HUD", alongside health, stamina,
+		-- the clock and the rest.
+		--
+		-- IT WAS NOT REPLACED. Every other hide in this block is paid for by
+		-- something this runtime draws instead: `core/client/notify.lua` for the
+		-- notifications, our own gauges for health and stamina, our own clock. The
+		-- minimap was the one entry where we hid the game's version and drew
+		-- NOTHING. `grep -rin "minimap|radar" ui/ web/` finds a single CSS comment
+		-- in `MenuView.vue` positioning something "below the minimap" and no
+		-- component anywhere. So the player lost their map and got an empty corner.
+		--
+		-- THAT IS THE OWNER'S COMPLAINT, VERBATIM AND REPEATED: "ce serais cool de
+		-- voir des blips sur la minimap". There were no blips at all until
+		-- `modules/blips` -- that, and not this flag, is what the map was missing,
+		-- and `config/blips.lua` carries the measurement. But this flag decides
+		-- WHERE they land, because the platform's component table
+		-- (`open77_guide hud-visibility#components`) gives `minimap` as: "Map
+		-- panel, geometry, player marker, MAPPINS, GPS lines, frame and location
+		-- label". Hiding it hides the pins ON THE MINIMAP.
+		--
+		-- THE FULLSCREEN MAP IS NOT AFFECTED EITHER WAY. It is not one of the
+		-- thirteen components `Open77.hud` governs; there is no switch here that
+		-- reaches it. So:
+		--
+		--   true   pins on the minimap AND the fullscreen map. A vanilla panel in
+		--          the corner of a screen the rest of which is ours.
+		--   false  pins on the fullscreen map only. A clean corner, and a player
+		--          who has to open the big map to navigate.
+		--
+		-- Set it back to `false` if the clean screen is worth more than the map.
+		-- Nothing breaks: `modules/blips` reads this component's effective state
+		-- at boot and says which of the two is in force in its `OPX.Note`, so the
+		-- answer is in the server journal rather than in somebody's memory.
+		minimap = true,
+
 		-- Replaced outright by this HUD.
-		minimap = false,
 		compass = false,
 		clock = false,
 		health = false,

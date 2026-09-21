@@ -101,6 +101,12 @@ shared_script "config/crafting.lua"
 -- same rows.
 shared_script "config/gunsmith.lua"
 shared_script "config/hauling.lua"
+-- AFTER every config it names, which is the only ordering rule it has: the map
+-- pins are sourced from garages, dealership, shops, teleports, gunsmith and
+-- hauling, and a reader who finds a category here should already have passed
+-- the block it comes from. It holds no coordinate of its own -- see its header
+-- for why, and for what actually suppressed the blips before this.
+shared_script "config/blips.lua"
 shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
@@ -444,6 +450,18 @@ shared_script "modules/gunsmith/shared/access.lua"
 server_script "modules/gunsmith/server/main.lua"
 client_script "modules/gunsmith/client/main.lua"
 
+-- AFTER ALL FIVE OF ITS SOURCES, and there is no server half to list. The map
+-- pins read the garages, dealership and teleports clients' own published lists
+-- and the shops, gunsmith and hauling config blocks, so every module it names
+-- is declared above it -- which is what lets its `optional` list be honest
+-- rather than a set of names resolved later.
+--
+-- It reaches into other modules and provides nothing back, exactly like `admin`
+-- below, and is placed here for the same reason. It is NOT last only because
+-- `admin` genuinely has to be: it lists what every other file registered.
+shared_script "modules/blips/module.lua"
+client_script "modules/blips/client/main.lua"
+
 -- LAST of the modules, because it reaches into nearly all of them and provides
 -- nothing back. Every contract it uses is optional bar `character`: without the
 -- menu, the form or the target eye it logs one line each and all 50 commands
@@ -660,6 +678,31 @@ permissions {
   "voice.client",
 
   "ui.vanilla.hud",
+
+  -- THE MAP PINS. `open77_permissions ui.vanilla.map` answers with a card
+  -- naming this exact manifest line and the 22 natives in `Open77.blips` it
+  -- gates, so the name is the catalogue's and not a guess.
+  --
+  -- The call sites, all in `modules/blips/client/main.lua` and all of them
+  -- gated on this ONE name:
+  --   Open77.blips.create   `create()`, the pin itself
+  --   Open77.blips.remove   `remove()`, a spot that went away or moved
+  --   Open77.blips.clear    `Runtime.Shutdown`, the whole set at stop
+  -- `Open77.blips.sprites` is the one function in the namespace that needs no
+  -- permission, and this resource does not call it.
+  --
+  -- CLIENT PERMISSION, WHICH IS WHY IT IS WORTH READING TWICE. The refusal is
+  -- `permission_denied:ui.vanilla.map`, it lands in the PLAYER's own log on the
+  -- player's own machine, and the server journal says nothing at all. Undeclared,
+  -- the map would simply stay empty -- which is indistinguishable from the bug
+  -- this module was written to fix, and is exactly how `camera.preview` and
+  -- `world.query` were removed from this block on 2026-09-21 against a clean
+  -- server boot and had to be put back within the hour.
+  --
+  -- That is also why `modules/blips/client/main.lua` spends its first
+  -- `OPX.Note` saying how many pins went up: a client permission is verified in
+  -- the game or it is not verified, and the operator cannot read the client log.
+  "ui.vanilla.map",
 
   -- The plate above a head. The platform draws it labelled with the displayName
   -- the Master vouches for -- the account gamertag -- and nothing here ever
