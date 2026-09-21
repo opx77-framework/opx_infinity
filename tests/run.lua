@@ -20153,5 +20153,120 @@ do
 			HEALTH.LEGACY_FULL == 100, tostring(HEALTH.LEGACY_FULL))
 	end
 end
+
+-- A PACE IS THE FIRST REASON TO WALK THAT OUTLIVES ITS TRIGGER. Every other
+-- caller holds the lease while something is visibly happening and lets go when
+-- it ends; a pace is a preference that stands until the player changes it. Two
+-- consequences, and they are the whole of this section: the lease is ONE
+-- request per RESOURCE, so an emote and a pace would have overwritten each
+-- other -- and the watchdog, written when an emote was the only thing that
+-- could ask, would have swept a deliberate pace on every sweep, with a warning
+-- line each time blaming a path nobody had forgotten.
+section('the walking pace, on the eye')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local animations = OPX.Modules.Get('animations')
+		local Walk = animations ~= nil and animations.Walk or nil
+		check('the walk half is up', Walk ~= nil)
+
+		if Walk ~= nil then
+			env.Open77.movement = { setWalkMode = function() return true end }
+
+			local configured = OPX.Config.MODULES.animations.WALK_PACES
+			check('the framework ships a list of paces',
+				type(configured) == 'table' and #configured > 0,
+				type(configured) == 'table' and #configured or 'absent')
+
+			-- Every pace inside the platform's own 0.5..2.5 bounds. One outside
+			-- is refused before the native sees it, so the row would be drawn,
+			-- clicked, and do nothing at all -- silently, for ever.
+			local bad = {}
+			for index = 1, #configured do
+				local speed = tonumber(configured[index].SPEED)
+				if speed == nil or speed < 0.5 or speed > 2.5 then
+					bad[#bad + 1] = tostring(configured[index].ID)
+				end
+			end
+			check('every shipped pace is inside the platform bounds',
+				#bad == 0, table.concat(bad, ','))
+
+			-- ── the rows ──
+			local rows = Walk.Rows()
+			check('there is a row per pace, plus the ordinary body',
+				#rows == #configured + 1, #rows)
+			local selfOnly, foldered, labelled = true, true, true
+			for index = 1, #rows do
+				if rows[index].kind ~= 'self' then selfOnly = false end
+				if rows[index].folder ~= 'walk' then foldered = false end
+				if not OPX.Locale.Exists(rows[index].label) then labelled = false end
+			end
+			check('every row is a self row', selfOnly)
+			check('and they share one folder, so they do not crowd the eye', foldered)
+			check('and every label is in the catalogue', labelled)
+
+			-- ── choosing ──
+			Walk.Request('emote', nil)
+			Walk.Choose(nil)
+			check('the ordinary body holds nothing', Walk.Held() == nil and Walk.Pace() == nil)
+
+			for index = 1, #configured do
+				local id = configured[index].ID
+				local pace = Walk.Choose(id)
+				check(('choosing %s holds its own speed'):format(tostring(id)),
+					pace ~= nil and pace.id == id and Walk.Held() == pace.speed,
+					tostring(Walk.Held()))
+			end
+
+			-- The row marks itself, which is what makes the list readable: the
+			-- answer to "which pace am I on" is the same click as changing it.
+			local live = Walk.Pace()
+			local marked = 0
+			for index = 1, #rows do
+				if rows[index].state() == true then marked = marked + 1 end
+			end
+			check('exactly one row reads as the live one', marked == 1, marked)
+
+			check('and choosing the ordinary body again releases the lease',
+				Walk.Choose(nil) == nil and Walk.Held() == nil)
+
+			-- ── the two reasons coexist ──
+			-- The platform arbitrates between RESOURCES; inside one resource
+			-- there is a single request, so the same rule is applied here
+			-- between reasons. Without it an emote would wipe out a pace.
+			Walk.Choose(live.id)
+			Walk.Follow(true, 'smoke')
+			check('an emote does not wipe the pace out',
+				Walk.Asked('pace') == live.speed, tostring(Walk.Asked('pace')))
+			check('and the slower of the two is what the body is given',
+				Walk.Held() == math.min(live.speed, 1.3), tostring(Walk.Held()))
+
+			Walk.Follow(false, nil)
+			check('the emote ending leaves the pace standing',
+				Walk.Held() == live.speed, tostring(Walk.Held()))
+
+			-- ── the watchdog answers for the emote and nothing else ──
+			local warned = #control.log.warn
+			Walk.Check()
+			check('the watchdog does not sweep a pace nobody asked it about',
+				Walk.Held() == live.speed, tostring(Walk.Held()))
+			check('and it does not blame anybody for it either',
+				#control.log.warn == warned)
+
+			Walk.Choose(nil)
+			check('releasing the pace releases the lease', Walk.Held() == nil)
+
+			-- A speed the platform would refuse never reaches it.
+			Walk.Request('pace', 9.0)
+			check('a pace outside the bounds is refused here, not by the native',
+				Walk.Asked('pace') == nil and Walk.Held() == nil)
+			Walk.Request('emote', nil)
+			env.Open77.movement = nil
+		end
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

@@ -166,6 +166,7 @@ function M.Start()
 	Runtime.Start()
 	Keys.Start()
 	Picker.Start()
+	M.Walk.Start()
 end
 
 --- Takes every screen, prompt and posed body back down.
