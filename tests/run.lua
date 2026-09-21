@@ -730,17 +730,50 @@ do
 				},
 			}
 			character.AwaitingPlacement[returning] = 'citizen-returning'
-			check('a character that already has a position is offered the menu too',
+			-- ── THE POLICY DECIDES, AND BOTH HALVES ARE DRIVEN ──────────────
+			-- THE OWNER: "active le config pour pas que cela me propose de
+			-- choisir mon spwan a chaque connection cela me remet au lieu de
+			-- dernier connexion". That is `OFFER_POLICY`, and the shipped value
+			-- is `'first'` now.
+			--
+			-- SET EXPLICITLY IN BOTH DIRECTIONS rather than read off the config,
+			-- because a check that only exercises the shipped value tests the
+			-- default and not the setting -- and the one it does not exercise is
+			-- the one that breaks. The gate is driven through the REAL
+			-- `character.PlacePending`: every test that called `spawn.Offer`
+			-- directly once passed straight through a defect that skipped the
+			-- offer for anybody whose row held a position.
+			local shippedPolicy = OPX.Config.MODULES.spawn.OFFER_POLICY
+			check('the shipped policy asks once per character, not once per join',
+				shippedPolicy == 'first', tostring(shippedPolicy))
+
+			OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+			spawn.Init()
+			check("under 'always', a character that already has a position is asked",
 				character.PlacePending(returning) == true)
 			check('and its choice is outstanding', spawn.IsPending(returning) == true)
+			--  clears what is outstanding, which is what lets the same
+			-- character be asked twice in one section under two policies.
+			character.AwaitingPlacement[returning] = 'citizen-returning'
 
-			-- A BRAND NEW character, with nowhere in its row at all.
+			-- AND THE OWNER'S CASE: the same character, resumed in silence.
+			OPX.Config.MODULES.spawn.OFFER_POLICY = 'first'
+			spawn.Init()
+			check("under 'first', a returning character is placed without being asked",
+				character.PlacePending(returning) == false)
+			check('and nothing is left outstanding for them',
+				spawn.IsPending(returning) == false)
+
+			-- A BRAND NEW character, with nowhere in its row at all, is still
+			-- asked -- which is the whole of what 'first' means.
 			local fresh = 32
 			character.Players[fresh] = { PlayerData = { citizenId = 'citizen-fresh' } }
 			character.AwaitingPlacement[fresh] = 'citizen-fresh'
-			check('and a brand new character is still offered it',
+			check('while a character that has never stood anywhere still chooses',
 				character.PlacePending(fresh) == true)
 			check('with its own choice outstanding', spawn.IsPending(fresh) == true)
+
+			OPX.Config.MODULES.spawn.OFFER_POLICY = shippedPolicy
 
 			-- Neither of these is a real player; leave the store as it was found.
 			character.Players[returning] = nil
@@ -1031,6 +1064,15 @@ do
 		end
 
 		-- ── the offer ────────────────────────────────────────────────────────────
+		-- DRIVEN UNDER 'always', EXPLICITLY. What follows tests the offer's own
+		-- plumbing -- the channel, the duration, the choice, the timeout -- and not
+		-- which world enters get one. The shipped policy is 'first' now, under
+		-- which a direct `Offer` for a character the store knows nothing about is
+		-- a legitimate refusal, and these checks would be testing the policy by
+		-- accident.
+		local heldPolicy = OPX.Config.MODULES.spawn.OFFER_POLICY
+		OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+		spawn.Init()
 		local src = 7
 		control.Admit(src, 'account-spawn')
 		OPX.EnsureSession(src)
@@ -1186,6 +1228,10 @@ do
 		check('and the hold releases it when the menu never appears',
 			spawn.IsPending(stuck) == false)
 		OPX.Config.MODULES.spawn.HOLD_MAX_SECONDS = savedHold
+		-- Put back what the config ships, so nothing after this section is
+		-- testing a policy this one set.
+		OPX.Config.MODULES.spawn.OFFER_POLICY = heldPolicy
+		spawn.Init()
 	end
 end
 

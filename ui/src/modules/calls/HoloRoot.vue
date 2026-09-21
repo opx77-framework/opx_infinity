@@ -397,7 +397,12 @@ const shown = computed<Row[]>(() => contacts.value)
      and the middle of the screen is where the thing you are doing is. */
   align-items: flex-end;
   justify-content: center;
-  padding-bottom: var(--op-inset-y);
+  /* FLUSH. "vraiemen coller en bas la il y a un espace encore entre le bas et le
+     debut du holo" -- there was a screen inset here, and the disc sat another
+     8% up inside the stage on top of it. A projector plate belongs ON the
+     bottom edge, with its far rim running off it, the way one would if it were
+     really standing on the floor in front of the player. */
+  padding-bottom: 0;
   /* The layer stays transparent to the pointer; only the panel takes it. */
   pointer-events: none;
   /* THE ONE PERSPECTIVE. Everything inside is laid out against it, which is
@@ -413,7 +418,7 @@ const shown = computed<Row[]>(() => contacts.value)
   align-items: flex-end;
   justify-content: center;
   width: min(560px, calc(100vw - var(--op-inset-x) * 2));
-  height: min(560px, calc(100vh - var(--op-inset-y) * 2));
+  height: min(460px, calc(100vh - var(--op-inset-y)));
   transform-style: preserve-3d;
   animation: op-holo-rise 220ms ease-out both;
 }
@@ -422,7 +427,9 @@ const shown = computed<Row[]>(() => contacts.value)
 .disc {
   position: absolute;
   left: 50%;
-  bottom: 8%;
+  /* Below the edge, so the near rim is what the player sees and the far one
+     runs off the bottom of the screen. */
+  bottom: -9%;
   width: 380px;
   height: 380px;
   margin-left: -190px;
@@ -472,7 +479,7 @@ const shown = computed<Row[]>(() => contacts.value)
 .beam {
   position: absolute;
   left: 50%;
-  bottom: 10%;
+  bottom: -4%;
   width: 300px;
   height: 260px;
   margin-left: -150px;
@@ -492,7 +499,7 @@ const shown = computed<Row[]>(() => contacts.value)
   box-sizing: border-box;
   width: 100%;
   max-height: 78%;
-  margin-bottom: 26%;
+  margin-bottom: 14%;
   padding: var(--op-space-3);
   overflow: auto;
   /* THE ONLY ELEMENT ON THIS SURFACE THAT TAKES THE POINTER. A click beside it
@@ -529,7 +536,7 @@ const shown = computed<Row[]>(() => contacts.value)
    No panel, nothing pressable, nothing focused. */
 .passive {
   position: relative;
-  margin-bottom: 26%;
+  margin-bottom: 14%;
   text-align: center;
   /* Said again here although the layer already says it: this is drawn over
      whatever the player is aiming at, and it must never take the pointer. */
