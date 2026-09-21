@@ -369,9 +369,28 @@ end
 --- menu, the form and the staff rows down with it.
 -- @author dop42
 function M.Stop()
-	if noclipOn and Client.TravelNative('setNoclip') then pcall(Open77.travel.setNoclip, false) end
-	if mapArmed and Client.TravelNative('setMapPick') then pcall(Open77.travel.setMapPick, false) end
-	noclipOn, mapArmed = false, false
+	-- THE ANSWERS ARE READ. Both were discarded, and this is the one path that
+	-- puts a member of staff back on their feet: a refused `setNoclip(false)`
+	-- with the flags cleared underneath it leaves them flying with nothing left
+	-- that knows to switch it off. The flags follow what actually happened, so a
+	-- later stop -- or the toggle itself -- still has something to act on.
+	if noclipOn and Client.TravelNative('setNoclip') then
+		local called, off, why = pcall(Open77.travel.setNoclip, false)
+		if called and off ~= false then
+			noclipOn = false
+		else
+			Open77.log.error(('[admin] noclip would not switch off: %s')
+				:format(tostring(called and why or off)))
+		end
+	else
+		noclipOn = false
+	end
+	if mapArmed and Client.TravelNative('setMapPick') then
+		local called, off = pcall(Open77.travel.setMapPick, false)
+		mapArmed = not (called and off ~= false)
+	else
+		mapArmed = false
+	end
 	M.Menu.Close()
 	M.Menu.Stop()
 	M.TagsView.Stop()

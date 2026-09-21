@@ -317,18 +317,34 @@ function M.Spawn(source, plateId, at)
 
 	-- The stored damage and flags are given back, or a put-away-and-fetch cycle
 	-- would repair windows, lights, tyres, dents and the destroyed flag for free.
+	-- Both answer a boolean, and both were discarded -- so the free repair the
+	-- comment above says this prevents happened anyway whenever the host refused,
+	-- with nothing said. It is not worth refusing the spawn over, but it is worth
+	-- an operator being able to find it.
 	if type(vehicle.damage) == 'table' then
-		Open77.vehicles.setDamage(id, vehicle.damage)
+		if Open77.vehicles.setDamage(id, vehicle.damage) ~= true then
+			Open77.log.warn(('[vehicles] %s came out with its stored damage unapplied; ' ..
+				'this fetch repaired it for free'):format(plateId))
+		end
 	end
 	local flags = finiteNumber(vehicle.metadata and vehicle.metadata.flags)
-	if flags ~= nil then Open77.vehicles.update(id, { flags = flags }) end
+	if flags ~= nil and Open77.vehicles.update(id, { flags = flags }) ~= true then
+		Open77.log.warn(('[vehicles] %s came out without its stored flags'):format(plateId))
+	end
 
 	-- The connection is read again after the database read, which yielded:
 	-- writing `live` for a character that left meanwhile would leave a vehicle
 	-- nothing will ever put away, so it is removed instead.
 	local still = characterOf(source)
 	if not still or still.citizenId ~= data.citizenId then
-		Open77.vehicles.remove(id)
+		-- The removal is the whole point of this branch -- the comment above says
+		-- it is here so there is no vehicle "nothing will ever put away" -- and a
+		-- discarded refusal produces precisely that orphan. It cannot be undone
+		-- from here, so it is named where an operator will find it.
+		if Open77.vehicles.remove(id) ~= true then
+			Open77.log.error(('[vehicles] %s was spawned for a character who left and could ' ..
+				'not be removed; it is in the world with nothing owning it'):format(plateId))
+		end
 		return done(Result.Err('vehicle.notLoggedIn', tostring(source)))
 	end
 
@@ -403,7 +419,20 @@ function M.Store(plateId, garage)
 		Store.SetState(plateId, STATE.STORED, garage)
 	end
 
-	Open77.vehicles.remove(record.id)
+	-- THE ANSWER IS READ, AND IT WAS NOT. `Open77.vehicles.remove` answers a
+	-- boolean and this discarded it, after the row had already been moved to
+	-- STORED. A refused removal therefore ended as: the database says the car is
+	-- in the garage, and the car is still standing in the street. Fetching it
+	-- again spawns a second one on the same plate -- one row, two cars. That is
+	-- a duplication vector, not a cosmetic leak, so the state does not move
+	-- until the world has actually given the vehicle up.
+	if Open77.vehicles.remove(record.id) ~= true then
+		Open77.log.error(('[vehicles] %s could not be removed from the world; leaving it ' ..
+			'spawned rather than recording it as stored'):format(plateId))
+		Store.SetState(plateId, STATE.OUT, garage)
+		return Result.Err('vehicle.storeRefused', plateId)
+	end
+
 	live[plateId] = nil
 	return Result.Ok({ plate = plateId })
 end

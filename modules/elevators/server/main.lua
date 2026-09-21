@@ -115,6 +115,23 @@ end
 -- `setFlags` REPLACES the mask rather than merging into it, which is why the
 -- snapshot is read first: writing a bare `locked` would clear `powered` and
 -- leave a dead cabin the server could still schedule trips on.
+--- Gives an adopted lift back, reading whether the host really took it back.
+--- Both rollback paths below used a bare `pcall` and discarded the answer. A
+--- refused release is the worst outcome of the three: this module forgets the
+--- lift while the host still records it as adopted, so nothing here can drive
+--- it, release it or adopt it again, and the shaft is dead until the resource
+--- restarts. It cannot be undone from here, so it is named.
+local function releaseAdoption(id, why)
+	local called, released, reason = pcall(Open77.elevators.remove, id)
+	if not called or released == false then
+		Open77.log.error(('[elevators] lift %s could not be given back after %s (%s); ' ..
+			'the host still holds it and nothing here can drive it')
+			:format(tostring(id), tostring(why), tostring(called and reason or released)))
+		return false
+	end
+	return true
+end
+
 local function applyLock(id)
 	local locked = flagBits()
 	if locked == nil then return false end
@@ -244,7 +261,7 @@ local function adopt(key, entity, x, y, z, bucket, floorCount, activeFloor)
 	-- that door: it names a lift that DOES exist, somewhere else.
 	local settled = Open77.elevators.get(id)
 	if type(settled) == 'table' and not atElevator(key, settled) then
-		pcall(Open77.elevators.remove, id)
+		releaseAdoption(id, 'wrong_place')
 		return { ok = false, error = 'wrong_place' }
 	end
 
@@ -261,7 +278,7 @@ local function adopt(key, entity, x, y, z, bucket, floorCount, activeFloor)
 	-- a working lift that gates nothing, which is what it is either way, minus the
 	-- false assurance.
 	if not applyLock(id) then
-		pcall(Open77.elevators.remove, id)
+		releaseAdoption(id, 'not_locked')
 		return { ok = false, error = 'not_locked' }
 	end
 
