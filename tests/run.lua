@@ -19462,5 +19462,154 @@ do
 		env.Open77.ready = realReady
 	end
 end
+
+-- One test in nineteen thousand lines covered hooks, and it registered and
+-- removed entirely outside a trigger. `Trigger` walked the LIVE list with a
+-- bound taken at entry, while a hook is entitled to register or remove from
+-- inside it -- and `Trigger` yields, so another thread can reach `Remove`
+-- between two hooks of one trigger. Every shape below skipped a hook, and a
+-- skipped hook is a skipped VETO: the action it would have refused went ahead.
+section('a hook cannot make the trigger lose the hook after it')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local Hooks = OPX.Hooks
+
+		-- A one-shot that withdraws itself. Removing shifted the tail down under
+		-- a cursor that had already moved past it, so the next hook was skipped.
+		local ran = {}
+		local first, second
+		first = Hooks.Register('t:oneshot', function()
+			ran[#ran + 1] = 'first'
+			Hooks.Remove(first)
+		end)
+		second = Hooks.Register('t:oneshot', function() ran[#ran + 1] = 'second' end)
+		local third = Hooks.Register('t:oneshot', function() ran[#ran + 1] = 'third' end)
+		Hooks.Trigger('t:oneshot', {})
+		check('a hook that removes itself does not swallow the next one',
+			table.concat(ran, ',') == 'first,second,third', table.concat(ran, ','))
+		Hooks.Remove(second)
+		Hooks.Remove(third)
+
+		-- The veto that used to be lost. The removal leaves the live list shorter
+		-- than the bound, `list[i]` is nil, and `list[i].fn` is the evaluation of
+		-- an ARGUMENT to `pcall` -- so it is not protected by it. The raise left
+		-- `Trigger` altogether and the hook that refuses never voted.
+		local vetoRan = false
+		local doomed = Hooks.Register('t:veto', function() end)
+		local remover = Hooks.Register('t:veto', function() Hooks.Remove(doomed) end)
+		local vetoer = Hooks.Register('t:veto', function()
+			vetoRan = true
+			return false
+		end)
+		local allowed = Hooks.Trigger('t:veto', {})
+		check('a removal mid-trigger still lets the veto after it run', vetoRan == true)
+		check('and the veto is honoured', allowed == false)
+		Hooks.Remove(remover)
+		Hooks.Remove(vetoer)
+
+		-- An insertion before the cursor. A hook registering a LOWER priority put
+		-- the new entry ahead of the cursor, so the hook at the cursor ran twice
+		-- and the last one never ran at all.
+		local order = {}
+		local inserted
+		local a = Hooks.Register('t:insert', function() order[#order + 1] = 'a' end, 0)
+		local b = Hooks.Register('t:insert', function()
+			order[#order + 1] = 'b'
+			if inserted == nil then
+				inserted = Hooks.Register('t:insert', function() order[#order + 1] = 'new' end, -5)
+			end
+		end, 1)
+		local c = Hooks.Register('t:insert', function() order[#order + 1] = 'c' end, 2)
+		Hooks.Trigger('t:insert', {})
+		check('a hook that registers another does not run twice',
+			table.concat(order, ',') == 'a,b,c', table.concat(order, ','))
+		check('and the hook after it is not lost', order[#order] == 'c')
+		-- The new one is in the list, it simply was not part of the walk that
+		-- was already under way. It runs on the next trigger, in priority order.
+		order = {}
+		Hooks.Trigger('t:insert', {})
+		check('the newly registered hook runs on the next trigger, in priority order',
+			table.concat(order, ',') == 'new,a,b,c', table.concat(order, ','))
+		Hooks.Remove(a); Hooks.Remove(b); Hooks.Remove(c); Hooks.Remove(inserted)
+
+		-- A hook withdrawn during a trigger must not be called from the walk that
+		-- was already copied: a module that has just stopped is the real case.
+		local calls = 0
+		local withdrawn
+		local trigger = Hooks.Register('t:withdraw', function() Hooks.Remove(withdrawn) end, 0)
+		withdrawn = Hooks.Register('t:withdraw', function() calls = calls + 1 end, 1)
+		Hooks.Trigger('t:withdraw', {})
+		check('a hook removed earlier in the same trigger is not called', calls == 0)
+		Hooks.Remove(trigger)
+
+		-- The contract that was already right, asserted so the copy does not
+		-- quietly change it: priority order, and only an explicit false vetoes.
+		local seen = {}
+		local low = Hooks.Register('t:order', function() seen[#seen + 1] = 'low' end, -1)
+		local mid = Hooks.Register('t:order', function() seen[#seen + 1] = 'mid' end, 0)
+		local high = Hooks.Register('t:order', function()
+			seen[#seen + 1] = 'high'
+			return nil
+		end, 5)
+		check('hooks run low priority first, and nil is not a veto',
+			Hooks.Trigger('t:order', {}) == true and table.concat(seen, ',') == 'low,mid,high',
+			table.concat(seen, ','))
+		local raised = Hooks.Register('t:order', function() error('a third party raised') end, 6)
+		local after = false
+		local last = Hooks.Register('t:order', function() after = true end, 7)
+		check('a hook that raises is skipped, not fatal, and the next one still runs',
+			Hooks.Trigger('t:order', {}) == true and after == true)
+		Hooks.Remove(low); Hooks.Remove(mid); Hooks.Remove(high)
+		Hooks.Remove(raised); Hooks.Remove(last)
+		check('a name nobody registered answers that the action may proceed',
+			Hooks.Trigger('t:nobody', {}) == true)
+	end
+end
+
+-- `OPX.Booted` was written twice in `core/server/boot.lua` and read nowhere in
+-- the resource. The twenty-eight guards that look like they cover boot all read
+-- `OPX.BootError`, which is nil for the whole of boot by design -- it records
+-- the ANSWER to the schema question, and during boot there is not one yet. So a
+-- player reconnecting just after a restart walked straight into an entry
+-- sequence whose tables were still being created.
+section('entry waits for boot to settle')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+
+		check('the flag exists and boot finished by setting it', OPX.Booted == true)
+
+		-- Put the runtime back into the state it is in for the first dozens of
+		-- frames after a restart: held, with the schema question unsettled.
+		OPX.Booted = false
+		control.Admit(31, 'account-booting')
+		control.Fire(OPX.Host.PLAYER_CONNECTED, 31)
+		control.Pump(30)
+
+		local held = OPX.Sessions[31]
+		check('a player connecting during boot is held, not admitted',
+			held ~= nil and held.gateSession ~= nil and held.released ~= true,
+			held and tostring(held.released))
+		check('and nothing was loaded for them out of tables that may not exist',
+			character ~= nil and character.GetPlayer(31) == nil)
+
+		-- And it is a wait, not a refusal: the hold is already taken, so the
+		-- player sits behind the gate and comes in when the schema is settled.
+		OPX.Booted = true
+		control.Pump(40)
+		check('once boot settles the entry sequence runs',
+			OPX.Sessions[31] == nil or OPX.Sessions[31].released == true
+				or character.GetPlayer(31) ~= nil,
+			OPX.Sessions[31] and tostring(OPX.Sessions[31].released))
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

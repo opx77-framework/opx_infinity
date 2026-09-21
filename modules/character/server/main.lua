@@ -19,6 +19,12 @@ local SESSION_FORGOTTEN = OPX.Event(OPX.Channel.INTERNAL, 'session', 'forgotten'
 -- What the platform log shows against our hold.
 local HOLD_REASON = 'opx_infinity:character-selection'
 
+-- How long entry waits for the boot thread to settle the schema question, and
+-- how often it looks. Bounded so a boot that never finishes leaves no thread
+-- polling for the life of the resource; the gate watch is what the player sees.
+local BOOT_SETTLE_MS = 30000
+local BOOT_POLL_MS = 100
+
 -- ── the background pass ──────────────────────────────────────────────────────
 
 -- Milliseconds between two passes. Position is sampled at 1 Hz because by the
@@ -255,6 +261,36 @@ function M.BeginEntry(source)
 	local userId = session.userId
 
 	CreateThread(function()
+		-- BOOT IS NOT INSTANT, AND NOTHING WAITED FOR IT. `OPX.Booted` was
+		-- written twice in `core/server/boot.lua` and read nowhere at all: the
+		-- guards that matter all read `OPX.BootError`, which is nil for the
+		-- whole of boot precisely because the schema question has not been
+		-- settled yet. A player reconnecting just after a restart came through
+		-- here while `Schema.Apply` was still creating tables -- every statement
+		-- is a round trip that yields, and `Start` yields between every module,
+		-- so the window is dozens of frames -- and the reads below then ran
+		-- against tables that did not exist, with `OPX.BootError` set behind
+		-- them on a player who was already half in.
+		--
+		-- Waiting is kinder than refusing, and costs nothing: the gate hold is
+		-- already taken, so the player simply stays behind it, and the watch
+		-- started above gives up and says why if boot never settles.
+		local waited = 0
+		while not OPX.Booted and waited < BOOT_SETTLE_MS do
+			Wait(BOOT_POLL_MS)
+			waited = waited + BOOT_POLL_MS
+		end
+		if not OPX.Booted then
+			Open77.log.error(('[character] boot had not settled after %d ms; refusing entry for %d')
+				:format(waited, source))
+			local stalled = OPX.Sessions[source]
+			if stalled and stalled.userId == userId then
+				OPX.Refuse(source, 'entry.failed', M.Operation.ENTRY)
+				OPX.Gate.Release(source, 'boot-unsettled', userId)
+			end
+			return
+		end
+
 		local entered = M.EnterSession(source)
 		if entered.ok then return end
 		Open77.log.error(('[character] %d could not be brought into the world: %s (%s)')
