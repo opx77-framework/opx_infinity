@@ -481,6 +481,18 @@ function resolve()
 end
 
 -- Lights the eye when the cursor is over something with rows, predicates aside.
+-- Which context kinds this session has already reported on.
+local notedKinds = {}
+
+--- Says once, per kind, what a pick found -- and relays it where an operator is.
+--- `Open77.log` on a client writes to the PLAYER'S machine, which is why this
+--- goes through `OPX.Note` instead: a diagnostic nobody can read is not one.
+local function notedKind(kind, matched)
+	if notedKinds[kind] then return end
+	notedKinds[kind] = true
+	OPX.Note('target', ('a pick on %s matched %d row(s)'):format(kind, matched))
+end
+
 local function hover(payload)
 	if not opened or busy or selection ~= nil or payload.handle ~= handle then return end
 	if OPX.Now() - lastHover < HOVER_MS * 0.5 then return end
@@ -514,14 +526,35 @@ local function pick(payload)
 	local context = contextAt(x, y)
 	if context == nil then
 		busy = false
+		-- A ray that answered nothing at all is not the same as a ray that hit
+		-- something nobody has a row for, and the player sees one empty list
+		-- either way. Said once per session: a client whose raycast is refused
+		-- -- a missing grant, an option this build will not take -- otherwise
+		-- looks exactly like a world nobody registered anything in.
+		notedKind('none', 0)
 		send('target:empty', { handle = handle })
 		return
 	end
+
+	-- One sweep for the whole pick, inside Candidates.
+	local queue = Registry.Candidates(context)
+
+	-- WHAT THE RAY TOUCHED AND WHAT MATCHED IT, once per kind per session.
+	--
+	-- Everything between the key press and a drawn row is client-side, so when a
+	-- list comes up empty there is nothing an operator can read: the rows may be
+	-- unregistered, the context may be a kind nobody covers, or the ray may not
+	-- have produced a context at all, and all three look identical from the
+	-- outside. The three were guessed at in turn over one afternoon. This is the
+	-- one number that separates them, and it costs at most a handful of notes --
+	-- `OPX.Note` is bounded at sixty per session and this is bounded again by
+	-- the number of kinds.
+	notedKind(tostring(context.kind), #queue)
+
 	setPending({
 		request = request,
 		context = context,
-		-- One sweep for the whole pick, inside Candidates.
-		queue = Registry.Candidates(context),
+		queue = queue,
 		at = 1,
 		rows = {},
 		listed = {},
