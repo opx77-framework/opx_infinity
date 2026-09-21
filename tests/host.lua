@@ -328,6 +328,27 @@ function Host.Environment(side, database)
 	local bodies, effects, travels, notices, placement, lifts, trips
 	local plates, watchers
 	local world, lives, gate, generations, carried, environment
+	local blips, hud
+
+	-- The thirteen canonical stock-HUD components, in the platform's own order,
+	-- and every alias `setVisible`/`isVisible` accept for them. Both are the
+	-- catalogue's, not this file's invention: a stub that answered for a name the
+	-- engine does not know would let a typo in `config/hud.lua` pass here and
+	-- fail in the game as `invalid_hud_component`.
+	local HUD_COMPONENTS = {
+		'minimap', 'compass', 'clock', 'health', 'stamina', 'weapon', 'speedometer',
+		'questTracker', 'phone', 'scanner', 'vanillaNotifications', 'crosshair', 'hubMenu',
+	}
+	local HUD_CANONICAL = {
+		map = 'minimap', radar = 'minimap', time = 'clock', hp = 'health',
+		ammo = 'weapon', weapons = 'weapon', weaponammo = 'weapon',
+		speed = 'speedometer', quest = 'questTracker', tracker = 'questTracker',
+		objectives = 'questTracker', vision = 'scanner', visionmode = 'scanner',
+		notifications = 'vanillaNotifications', notification = 'vanillaNotifications',
+		toasts = 'vanillaNotifications', reticle = 'crosshair', reticule = 'crosshair',
+		hub = 'hubMenu',
+	}
+	for _, name in ipairs(HUD_COMPONENTS) do HUD_CANONICAL[name:lower()] = name end
 
 	-- The live tunable values, by key: what `Open77.tunables.declare` hands back
 	-- and what `control.tunables` lets a test move while the runtime is up.
@@ -823,6 +844,111 @@ function Host.Environment(side, database)
 			end,
 		},
 
+		-- Vanilla map pins. THE REFUSALS ARE THE POINT OF THIS STUB. A blip that
+		-- the engine turns away is invisible and silent -- `create` answers `nil`
+		-- plus a reason and nothing is logged anywhere the operator can read --
+		-- which is the exact failure `modules/blips` was written to end, so a stub
+		-- that only modelled success would let every one of them through green.
+		--
+		-- What is modelled, and each is a real 2.31 refusal from the platform
+		-- guide rather than a shape invented here:
+		--   * `color`, `colour`, `alpha`, `opacity`, `scale`, `shortRange` and
+		--     `category` are refused BY NAME as `unsupported_option:<key>`, and
+		--     `kind = "radius"` as `unsupported_kind:radius`. A mappin carries no
+		--     such field; opacity and scale live on the UI profile the SPRITE
+		--     resolves, shared by every pin using it.
+		--   * `range` outside 0..4000 is `invalid_range`.
+		--   * `title` is capped at 128 bytes and `description` at 1024.
+		--   * the per-resource quota is 128; the 129th create is refused.
+		--   * `blips.permission = true` answers every call
+		--     `permission_denied:ui.vanilla.map`, which is how an UNDECLARED
+		--     client permission behaves -- silently, with the server journal
+		--     saying nothing at all.
+		-- `blips.refuse` is the markers stub's escape hatch, for "the API is there
+		-- and said no" without naming a particular cause.
+		--
+		-- IDS ARE DECIMAL STRINGS AND NEVER NUMBERS. The platform's handles are
+		-- 64-bit and its guide says in as many words not to put them through
+		-- `tonumber`; a stub handing back integers would let a caller that does
+		-- pass here and lose the handle in the game.
+		blips = {
+			create = function(options)
+				if blips.permission then return nil, 'permission_denied:ui.vanilla.map' end
+				if type(options) ~= 'table' then return nil, 'invalid_argument' end
+				if type(options.position) ~= 'table' and options.entity == nil then
+					return nil, 'invalid_argument'
+				end
+				for _, key in ipairs({ 'color', 'colour', 'alpha', 'opacity', 'scale',
+					'shortRange', 'category' }) do
+					if options[key] ~= nil then return nil, 'unsupported_option:' .. key end
+				end
+				if options.kind ~= nil then
+					if tostring(options.kind) == 'radius' then return nil, 'unsupported_kind:radius' end
+					return nil, 'unsupported_option:kind'
+				end
+				if options.range ~= nil then
+					local range = tonumber(options.range)
+					if range == nil or range < 0 or range > 4000 then return nil, 'invalid_range' end
+				end
+				if options.title ~= nil and #tostring(options.title) > 128 then
+					return nil, 'invalid_argument'
+				end
+				if options.description ~= nil and #tostring(options.description) > 1024 then
+					return nil, 'invalid_argument'
+				end
+				if options.title ~= nil and options.label ~= nil then
+					return nil, 'invalid_argument'
+				end
+				if blips.refuse ~= nil then return nil, tostring(blips.refuse) end
+				if blips.count >= 128 then return nil, 'blip_quota_exceeded' end
+				blips.next = blips.next + 1
+				-- DELIBERATELY PAST 2^53, which is the width a double carries
+				-- exactly. Lua 5.4's own integers are 64-bit and would survive a
+				-- `tonumber`, so this does not catch that on its own -- what it
+				-- catches is the handle reaching anything that holds numbers as
+				-- doubles, a WebUI payload or a JSON round trip, where the id comes
+				-- back a DIFFERENT number and every lookup with it misses. The
+				-- string-ness of the handle is asserted separately in `run.lua`.
+				local id = ('%d'):format(9007199254740993 + blips.next)
+				blips.byId[id] = options
+				blips.count = blips.count + 1
+				blips.created[#blips.created + 1] = id
+				return id
+			end,
+			remove = function(id)
+				if blips.permission then return false, 'permission_denied:ui.vanilla.map' end
+				if type(id) ~= 'string' or blips.byId[id] == nil then return false, 'unknown_blip' end
+				blips.byId[id] = nil
+				blips.count = blips.count - 1
+				blips.removed[#blips.removed + 1] = id
+				return true
+			end,
+			clear = function()
+				if blips.permission then return false, 'permission_denied:ui.vanilla.map' end
+				for id in pairs(blips.byId) do
+					blips.byId[id] = nil
+					blips.removed[#blips.removed + 1] = id
+				end
+				blips.count = 0
+				return true
+			end,
+			get = function(id)
+				if blips.permission then return nil, 'permission_denied:ui.vanilla.map' end
+				return blips.byId[id]
+			end,
+			list = function()
+				if blips.permission then return nil, 'permission_denied:ui.vanilla.map' end
+				local out = {}
+				for id in pairs(blips.byId) do out[#out + 1] = id end
+				table.sort(out)
+				return out
+			end,
+			sprites = function()
+				-- The one function in the namespace that checks no permission.
+				return { { name = 'DefaultVariant', value = 0 } }
+			end,
+		},
+
 		-- The keyboard. `isCaptured` answers what the test set, so a player typing
 		-- into the chat box is a case a caller can actually be exercised against.
 		input = {
@@ -1212,7 +1338,53 @@ function Host.Environment(side, database)
 		end,
 		},
 
-		hud = { setVisible = function() return true end },
+		-- The stock HUD's thirteen components. It used to be `setVisible` answering
+		-- a bare `true`, which is enough to boot `modules/hud` and not enough to
+		-- ask it anything: the READ was missing entirely.
+		--
+		-- `modules/blips` is what needed it. Whether the vanilla minimap is on
+		-- decides whether a mappin can reach the minimap at all -- the component
+		-- governs "Map panel, geometry, player marker, MAPPINS, GPS lines" -- and
+		-- that is the sentence the module puts in the operator's journal. A stub
+		-- with no `isVisible` would have let it report a state it never read.
+		--
+		-- A HIDE IS A CLAIM AND NOT AN OVERRIDE, which is modelled because it is
+		-- the part people get wrong: `setVisible(c, true)` releases only the
+		-- CALLER's claim, and the component stays hidden while anybody else holds
+		-- one. Names are case-insensitive, an unknown one is `invalid_hud_component`
+		-- rather than a silent success, and `hud.refuse` turns every call away the
+		-- way a build without `ui.vanilla.hud` does.
+		hud = {
+			components = function()
+				if hud.refuse ~= nil then return nil, tostring(hud.refuse) end
+				local out = {}
+				for _, name in ipairs(HUD_COMPONENTS) do out[#out + 1] = name end
+				return out
+			end,
+			setVisible = function(component, visible)
+				if hud.refuse ~= nil then return false, tostring(hud.refuse) end
+				local name = HUD_CANONICAL[type(component) == 'string' and component:lower() or '']
+				if name == nil then return false, 'invalid_hud_component' end
+				local claims = hud.claims[name] or {}
+				hud.claims[name] = claims
+				claims[hud.owner] = visible == false and true or nil
+				return true, next(claims) == nil
+			end,
+			isVisible = function(component)
+				if hud.refuse ~= nil then return nil, tostring(hud.refuse) end
+				local name = HUD_CANONICAL[type(component) == 'string' and component:lower() or '']
+				if name == nil then return nil, 'invalid_hud_component' end
+				return next(hud.claims[name] or {}) == nil
+			end,
+			state = function()
+				if hud.refuse ~= nil then return nil, tostring(hud.refuse) end
+				local out = {}
+				for _, name in ipairs(HUD_COMPONENTS) do
+					out[name] = next(hud.claims[name] or {}) == nil
+				end
+				return out
+			end,
+		},
 
 		-- A GENERATION THAT CAN CHANGE. This answered a constant 1 for every
 		-- resource forever, so every abort-on-reload guard in the runtime --
@@ -1235,6 +1407,18 @@ function Host.Environment(side, database)
 
 	-- Recorded by the marker and key stubs above, and read by the tests.
 	markers = { byId = {}, created = {}, removed = {}, next = 0 }
+	-- Recorded by the blip stub. `count` is tracked separately from `byId` so the
+	-- 128-per-resource quota is exercised against the number LIVE rather than the
+	-- number ever made -- a resource at the cap that removes one may create one.
+	-- `refuse` fails the next create with a reason of the test's choosing;
+	-- `permission` models the undeclared `ui.vanilla.map`, which refuses every
+	-- call and says so only in the player's own log.
+	blips = { byId = {}, created = {}, removed = {}, next = 0, count = 0,
+		refuse = nil, permission = false }
+	-- The stock-HUD hide claims, component -> owner -> true. `owner` is which
+	-- resource the calls are attributed to, so a test can make a SECOND resource
+	-- hold a claim and check that releasing ours does not reveal the component.
+	hud = { claims = {}, owner = 'opx_infinity', refuse = nil }
 	-- Recorded by the nameplate stub: which players carry an override, and every
 	-- set and remove in order.  makes the host turn an override away.
 	plates = { byId = {}, set = {}, removed = {}, refuse = nil }
@@ -1600,6 +1784,18 @@ function Host.Environment(side, database)
 		markers = markers,
 		plates = plates,
 		watchers = watchers,
+
+		-- The vanilla map pins the runtime created and removed, and the two
+		-- levers that make the engine say no: `blips.refuse` is a reason string
+		-- for the next create, `blips.permission = true` is the undeclared
+		-- `ui.vanilla.map` -- every call turned away, nothing logged where the
+		-- operator can read it, and a map that is simply empty.
+		blips = blips,
+
+		-- The stock HUD's hide claims. `hud.claims.minimap` carrying an owner is
+		-- the state `config/hud.lua`'s `VANILLA.minimap = false` produces, and it
+		-- is what decides whether a mappin can reach the minimap at all.
+		hud = hud,
 
 		-- The keyboard: `input.captured` is another surface holding it, `input.keys`
 		-- is what each mapping answers to after a rebind.

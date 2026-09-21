@@ -20552,5 +20552,420 @@ do
 		end
 	end
 end
+-- ── the map the owner could not see anything on ─────────────────────────────
+--
+-- "ce serais cool de voir des blips sur la minimap", then "sur la map je vois
+-- pas les blips". Before `modules/blips` this runtime had never created one:
+-- `grep -rn blips .` over the whole tree was empty, and the fullscreen map was
+-- blank because nothing had ever put anything on it.
+--
+-- So the first check here is the one that would have caught the whole thing --
+-- does anything at all reach the engine -- and the rest are the ways a pin can
+-- be created and still be wrong.
+section('blips: the map has pins on it, and they come from the spot lists')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the blips module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		check('the blips module is declared', type(blips) == 'table')
+
+		local report = blips.Runtime.Report()
+		-- THE REGRESSION CHECK FOR THE ORIGINAL DEFECT. `config/shops.lua` ships
+		-- two surveyed shops and `config/gunsmith.lua` three armoury benches, so a
+		-- bare client with no server lists at all still has five places to point
+		-- at. Zero here is the bug the owner reported, exactly as he reported it.
+		check('a bare client still puts pins on the map', report.live > 0, report.live)
+		check('and the engine really was asked for every one of them',
+			#control.blips.created == report.live,
+			('%d created, %d reported'):format(#control.blips.created, report.live))
+
+		-- THE HANDLES ARE 64-BIT DECIMAL STRINGS AND MUST STAY STRINGS -- the
+		-- platform guide says in as many words never to put one through
+		-- `tonumber`. The stub hands back ids past 2^53 so that a handle which
+		-- ever reaches something holding numbers as doubles comes back different;
+		-- this check is the other half, that the module never converted one at
+		-- all. Storing the id as a number instead costs this module every removal
+		-- it will ever make, because the engine's table is keyed by the string.
+		local stringly, exact = true, true
+		for id, handle in pairs(blips.Runtime.Created()) do
+			if type(handle) ~= 'string' then stringly = false end
+			if control.blips.byId[handle] == nil then exact = false end
+			local _ = id
+		end
+		check('every handle is kept as the string the engine gave', stringly)
+		check('and every one of them still names a live blip', exact)
+
+		-- THE UNSURVEYED POINTS. Every DROPOFF in `config/hauling.lua` is an
+		-- all-zero placeholder and the file says so in its own header. A pin at
+		-- the world origin is a pin in the sea, and it reads as this feature
+		-- being broken rather than as the config being unfilled.
+		check('the all-zero placeholders were skipped rather than pinned',
+			report.skipped > 0, report.skipped)
+		local atOrigin = 0
+		for _, options in pairs(control.blips.byId) do
+			local at = options.position
+			if at ~= nil and at.x == 0.0 and at.y == 0.0 and at.z == 0.0 then
+				atOrigin = atOrigin + 1
+			end
+		end
+		check('and not one pin was dropped at the world origin', atOrigin == 0, atOrigin)
+
+		-- The tooltip text. The POINT's own label titles the pin and the CATEGORY
+		-- names what kind of place it is; a pin carrying neither is a dot.
+		local titled, described = 0, 0
+		for _, options in pairs(control.blips.byId) do
+			if type(options.title) == 'string' and options.title ~= '' then titled = titled + 1 end
+			if type(options.description) == 'string' and options.description ~= '' then
+				described = described + 1
+			end
+		end
+		check('every pin carries the operator\'s own name for the place',
+			titled == report.live, ('%d of %d'):format(titled, report.live))
+		check('and the category that says what kind of place it is',
+			described == report.live, ('%d of %d'):format(described, report.live))
+	end
+end
+
+-- ── the yield that four outages paid for ────────────────────────────────────
+--
+-- A client resume has an INSTRUCTION BUDGET, and a loop that creates several
+-- dozen engine handles in one pass runs out of it partway down -- at which
+-- point the coroutine unwinds with NO ERROR, NO LOG AND NO REFUSAL. Half the
+-- pins are up, the rest never exist, and nothing anywhere says so.
+--
+-- `modules/admin/client/target.lua`'s `register()` carries the full story and
+-- paid for it four times. Blips are the same shape: a hundred-odd engine calls,
+-- all at start, all in one pass. This is the check that the yield is real.
+section('blips: a hundred pins are not created in one resume')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the batching', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		local BATCH = 2
+
+		OPX.Config.MODULES.blips.BATCH = BATCH
+		-- Nine spots on one source, so the run is long enough that a missing yield
+		-- cannot be mistaken for a short list.
+		local spots = {}
+		for index = 1, 9 do
+			spots['g' .. index] = { key = 'g' .. index, label = 'Garage ' .. index,
+				x = 100.0 + index, y = 200.0, z = 30.0 }
+		end
+		OPX.Modules.Get('garages').Runtime.Spots = function() return spots end
+
+		-- COUNTED AT EVERY YIELD. `marks` is how many creates had happened each
+		-- time the thread gave the frame back, so the gaps between consecutive
+		-- marks are the runs of un-yielded work. A `Wait(0)` deleted from
+		-- `apply()` turns all nine into ONE run, which is the mutation this is
+		-- here to kill.
+		local creates, marks = 0, {}
+		local native = env.Open77.blips
+		local realCreate = native.create
+		native.create = function(...)
+			creates = creates + 1
+			return realCreate(...)
+		end
+		local realWait = env.Wait
+		env.Wait = function(...)
+			marks[#marks + 1] = creates
+			return realWait(...)
+		end
+
+		blips.Runtime.Sync()
+		control.Pump(40)
+		env.Wait = realWait
+		native.create = realCreate
+
+		check('all nine garages were pinned', creates >= 9, creates)
+
+		local longest, previous = 0, 0
+		for index = 1, #marks do
+			local run = marks[index] - previous
+			if run > longest then longest = run end
+			previous = marks[index]
+		end
+		if creates - previous > longest then longest = creates - previous end
+		check('and no more than BATCH of them were created between two yields',
+			longest <= BATCH, ('longest un-yielded run was %d, BATCH is %d'):format(longest, BATCH))
+	end
+end
+
+-- ── the settings the engine refuses by name ─────────────────────────────────
+--
+-- `Open77.blips` refuses `color`/`colour` with their own reason token. It is
+-- not an oversight: a mappin carries no colour field, and opacity and scale
+-- live on a UI profile the SPRITE resolves and every pin using it shares. So
+-- the sprite IS the colour, and an operator who writes `COLOUR` has to be told
+-- rather than quietly ignored -- a property accepted and silently discarded is
+-- worse than one that is missing.
+section('blips: colour is refused by name, and the refusal names the category')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the refused settings', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+
+		OPX.Config.MODULES.blips.CATEGORIES.shops.COLOUR = '#ff0000'
+		OPX.Config.MODULES.blips.CATEGORIES.garages.RANGE = 9000
+
+		local _, problems = blips.Runtime.Categories()
+		local saidColour, saidRange = false, false
+		for index = 1, #problems do
+			local line = problems[index]
+			if line:find('shops', 1, true) and line:find('COLOUR', 1, true)
+				and line:find('SPRITE', 1, true) then saidColour = true end
+			if line:find('garages', 1, true) and line:find('RANGE', 1, true) then
+				saidRange = true
+			end
+		end
+		check('a COLOUR is refused, naming its category and what to use instead', saidColour,
+			table.concat(problems, ' / '))
+		-- 0..4000 is the engine's own bound and outside it `create` answers
+		-- `invalid_range` -- which is a pin that is simply absent, indistinguishable
+		-- from the bug this module fixes. So it is refused at boot instead.
+		check('and a RANGE outside 0..4000 is refused before the engine sees it', saidRange,
+			table.concat(problems, ' / '))
+
+		-- The category with the bad RANGE must draw NOTHING, and the engine must
+		-- never have been handed the bad value.
+		OPX.Modules.Get('garages').Runtime.Spots = function()
+			return { g1 = { key = 'g1', label = 'Garage', x = 10.0, y = 20.0, z = 30.0 } }
+		end
+		blips.Runtime.Sync()
+		control.Pump(30)
+		local ranged, badRange = 0, 0
+		for _, options in pairs(control.blips.byId) do
+			if options.range ~= nil then
+				ranged = ranged + 1
+				if options.range > 4000 or options.range < 0 then badRange = badRange + 1 end
+			end
+			if options.description == 'Garage' then badRange = badRange + 1 end
+		end
+		check('the category the engine would have refused draws nothing at all',
+			badRange == 0, badRange)
+		-- AND IT NEVER REACHED THE ENGINE. Without the boot check the bad range is
+		-- handed to `create`, which answers `invalid_range` -- so the pin is
+		-- missing either way and the assertion above cannot tell the two apart.
+		-- A refusal counted here is the difference between "we refused it, with a
+		-- line naming the category" and "the engine refused it, in silence".
+		check('and the engine was never handed the value it would refuse',
+			blips.Runtime.Report().refused == 0, blips.Runtime.Report().refused)
+		-- A shop's RANGE of 400 is legitimate and must still reach the engine, or
+		-- this check would pass just as well with ranges dropped entirely.
+		check('while a range the engine accepts is still sent', ranged > 0, ranged)
+	end
+end
+
+-- ── a pin that outlived the thing it pointed at ─────────────────────────────
+--
+-- The failure mode of every module of this shape written the other way round:
+-- blips are added when a spot appears and nothing takes them down. A garage an
+-- operator deleted, or a spot in a routing bucket the player left, goes on
+-- being pinned until the player rejoins.
+section('blips: a spot that went away, and one that moved')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the reconcile', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		local garages = OPX.Modules.Get('garages')
+
+		local list = {
+			one = { key = 'one', label = 'First', x = 10.0, y = 20.0, z = 30.0 },
+			two = { key = 'two', label = 'Second', x = 40.0, y = 50.0, z = 60.0 },
+		}
+		garages.Runtime.Spots = function() return list end
+		blips.Runtime.Sync()
+		control.Pump(30)
+
+		local function pinned(label)
+			for _, options in pairs(control.blips.byId) do
+				if options.title == label then return options end
+			end
+			return nil
+		end
+
+		check('both garages are pinned', pinned('First') ~= nil and pinned('Second') ~= nil)
+
+		-- THE SPOT GOES AWAY. The server stopped naming it -- deleted, or a bucket
+		-- this player is no longer in.
+		list.two = nil
+		blips.Runtime.Sync()
+		control.Pump(30)
+		check('a garage the server stopped naming loses its pin', pinned('Second') == nil)
+		check('and the one still named keeps it', pinned('First') ~= nil)
+
+		-- THE SPOT MOVES. A pin left where the garage used to be is worse than no
+		-- pin: it sends the player to the wrong place with confidence.
+		list.one.x, list.one.y, list.one.z = 900.0, 800.0, 700.0
+		blips.Runtime.Sync()
+		control.Pump(30)
+		local moved = pinned('First')
+		check('a garage that moved is pinned where it is now',
+			moved ~= nil and moved.position.x == 900.0,
+			moved and moved.position.x or 'no pin')
+		local stale = 0
+		for _, options in pairs(control.blips.byId) do
+			if options.position ~= nil and options.position.x == 10.0 then stale = stale + 1 end
+		end
+		check('and nothing is left pointing at where it used to be', stale == 0, stale)
+	end
+end
+
+-- ── the quota, and the permission that refuses in silence ───────────────────
+section('blips: the platform\'s own ceilings, and a refusal nobody can see')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the ceilings', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+
+		-- THE QUOTA IS 128 PER RESOURCE and it is the platform's, not a taste. A
+		-- config asking for more is asking the engine to refuse the surplus one
+		-- create at a time, silently, on the 129th -- which is the shape of bug
+		-- this whole module exists to end. So it is clamped and counted here.
+		OPX.Config.MODULES.blips.MAX = 400
+		OPX.Config.MODULES.blips.CATEGORIES.shops.SHOW = false
+		OPX.Config.MODULES.blips.CATEGORIES.jobs.SHOW = false
+		local many = {}
+		for index = 1, 200 do
+			many['g' .. index] = { key = 'g' .. index, label = 'G' .. index,
+				x = 100.0 + index, y = 200.0, z = 30.0 }
+		end
+		OPX.Modules.Get('garages').Runtime.Spots = function() return many end
+
+		blips.Runtime.Sync()
+		control.Pump(120)
+		local report = blips.Runtime.Report()
+		check('a config asking for 400 pins is clamped to the platform\'s 128',
+			report.live == 128, report.live)
+		check('and the engine never refused one, because it was never asked',
+			report.refused == 0, report.refused)
+		check('the points that did not fit are counted rather than dropped in silence',
+			report.capped == 72, report.capped)
+
+		-- THE SET THAT SURVIVES THE CAP IS THE SAME SET EVERY PASS. `pairs` order
+		-- is not stable, and without the sort a server over the quota would draw a
+		-- different arbitrary 128 on every reconcile: pins flickering in and out
+		-- with nothing in the world changing.
+		local first = {}
+		for id in pairs(blips.Runtime.Created()) do first[#first + 1] = id end
+		table.sort(first)
+
+		-- THE SAME 200 SPOTS IN A DIFFERENT INSERTION ORDER, which is not a
+		-- contrivance: `modules/garages/client/main.lua` builds a FRESH `accepted`
+		-- table on every SYNC, so the `pairs` order of the list this module reads
+		-- genuinely changes from one server message to the next. Without the sort
+		-- in `Runtime.Wanted`, the 128 that fit are then a different arbitrary 128
+		-- each time -- pins flickering in and out with nothing in the world having
+		-- changed. Reading the same table twice would not show that at all.
+		local reordered = {}
+		for index = 200, 1, -1 do
+			reordered['g' .. index] = { key = 'g' .. index, label = 'G' .. index,
+				x = 100.0 + index, y = 200.0, z = 30.0 }
+		end
+		OPX.Modules.Get('garages').Runtime.Spots = function() return reordered end
+
+		blips.Runtime.Sync()
+		control.Pump(120)
+		local second = {}
+		for id in pairs(blips.Runtime.Created()) do second[#second + 1] = id end
+		table.sort(second)
+		check('and it is the same 128 after a reshuffled list, not a different arbitrary set',
+			table.concat(first, ',') == table.concat(second, ','))
+	end
+end
+
+section('blips: an undeclared client permission is a map that is simply empty')
+do
+	-- `ui.vanilla.map` is enforced by the CLIENT. Undeclared, every call answers
+	-- `permission_denied:ui.vanilla.map`, the refusal lands in the player's own
+	-- log on the player's own machine, and the server journal says NOTHING. That
+	-- is indistinguishable from the original defect, and it is why the manifest
+	-- comment on that permission is as long as it is.
+	local env, control, why = boot('client')
+	check('the client boots before the map permission is taken away', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+
+		-- Taken down while the grant is still there, so the engine really is
+		-- empty, and only then refused -- otherwise the pins from boot would sit
+		-- there and the module would rightly report them live.
+		blips.Runtime.Shutdown()
+		control.blips.permission = true
+		blips.Runtime.Start()
+		control.Pump(30)
+
+		local report = blips.Runtime.Report()
+		check('no pin is drawn', report.live == 0, report.live)
+		check('but the module counted the refusals rather than raising',
+			report.refused > 0, report.refused)
+		-- The operator has to be able to learn this from the SERVER's journal,
+		-- because `Open77.log` on a client writes to a file on a machine they do
+		-- not have. `OPX.Note` is the only line that crosses.
+		local notes = 0
+		for _, sent in ipairs(control.serverEvents) do
+			if sent.name == OPX.Event(OPX.Channel.NET, 'runtime', 'note') and sent[1] == 'blips' then
+				notes = notes + 1
+			end
+		end
+		check('and said so where the operator can read it', notes > 0, notes)
+	end
+end
+
+section('blips: the minimap state is read, not assumed')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the minimap read', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+
+		-- `config/hud.lua` now ships `VANILLA.minimap = true`, because this HUD
+		-- draws no minimap of its own and hiding the game's one handed the player
+		-- an empty corner. That is a CONFIGURATION and not a law, so the module
+		-- reads the effective state rather than assuming either answer.
+		check('with the shipped config the minimap is on, so pins reach it',
+			blips.Runtime.Report().minimap == true)
+
+		-- A hide claim is what `VANILLA.minimap = false` produces. The pins are
+		-- unaffected on the fullscreen map -- that surface is not one of the
+		-- thirteen components -- but the module must not go on claiming they are
+		-- on the minimap.
+		env.Open77.hud.setVisible('minimap', false)
+		check('a hide claim is seen for what it is',
+			blips.Runtime.Report().minimap == false)
+
+		-- The alias, because `config/hud.lua` could reasonably spell it `map`.
+		env.Open77.hud.setVisible('minimap', true)
+		check('and releasing the claim puts it back',
+			blips.Runtime.Report().minimap == true)
+
+		-- Pins are drawn either way: the fullscreen map is NOT governed by the
+		-- minimap component, which is the measurement the whole investigation
+		-- turned on.
+		env.Open77.hud.setVisible('minimap', false)
+		blips.Runtime.Sync()
+		control.Pump(30)
+		check('and the pins are still drawn with the minimap hidden',
+			blips.Runtime.Report().live > 0, blips.Runtime.Report().live)
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
