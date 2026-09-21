@@ -688,7 +688,21 @@
      Drop your file in `ui/public/`, name it here, run `npm run build`, deploy.
      ────────────────────────────────────────────────────────────────────────── */
   var LOADSCREEN = {
-    // The clip, relative to this file. VP9/AV1 + Opus/Vorbis, under 16 MiB.
+    // The clip. Either a file beside this one -- VP9/AV1 + Opus/Vorbis, under
+    // 16 MiB, the two rules above -- or an `https://` URL you host.
+    //
+    // A URL IS ALLOWED AND IT IS NOT FREE. `Open77.webui.create` says external
+    // media is permitted with CORS and TLS enforced, so the codec rule still
+    // applies but the 16 MiB cap does not. What it costs is a network
+    // dependency at the single worst moment to have one: the join, on the
+    // player's connection, with nothing else on screen. A host that is slow,
+    // blocked or down leaves the poster standing in. A remote source that fails
+    // therefore falls back once to the bundled file -- keep one there.
+    //
+    // NOT SOMEBODY ELSE'S VIDEO. This takes a URL you are entitled to serve.
+    // A third-party player embedded as a silent background, stripped of its
+    // controls, is not what that player is offered for, and the clip in it is
+    // not yours to re-serve either.
     video: "./loading.webm",
 
     // Shown before the first frame decodes, and instead of the clip when the
@@ -767,7 +781,34 @@
 
   var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+  /* A REMOTE CLIP FALLS BACK TO THE SHIPPED ONE, EXACTLY ONCE.
+
+     `LOADSCREEN.video` may be an https URL, because the host allows a surface
+     external media with CORS and TLS enforced. That buys freedom from the 16 MiB
+     per-file cap and costs a network dependency at the single worst moment to
+     have one: the join, on somebody else's connection, with nothing else on
+     screen. A host that is slow, blocked or simply down would otherwise leave
+     the poster and the ground standing in, which reads as a styling choice
+     rather than as a fetch that failed.
+
+     So a remote source that errors is retried once against the bundled file and
+     only then gives up. Once, because a loop between two failing sources during
+     a join would be worse than either failure. A bundled source that fails is
+     not retried at all -- it is already the fallback. */
+  var BUNDLED_VIDEO = "./loading.webm";
+  var triedBundled = false;
+
   function noVideo(){
+    var source = videoEl && videoEl.querySelector("source");
+    var current = source && source.getAttribute("src");
+    if(!triedBundled && source && current && current !== BUNDLED_VIDEO
+       && /^https?:/i.test(current)){
+      triedBundled = true;
+      source.setAttribute("src", BUNDLED_VIDEO);
+      videoEl.load();
+      start();
+      return;
+    }
     document.body.classList.add("no-video");
   }
 
