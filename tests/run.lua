@@ -5279,8 +5279,16 @@ do
 		local bare = lastEvent(garages.Event.CAPTURE)
 		check('the bare add command asks the client too, as a garage',
 			bare ~= nil and bare[1] == 'garage', bare and tostring(bare[1]))
+		-- THE PROPERTY, NOT THE LITERAL. This asserted `garage1`, which is only
+		-- the answer when nothing is placed yet -- so it was really asserting
+		-- that the SHIPPED CONFIG IS EMPTY, and it failed the day two captured
+		-- spots were checked into `config/garages.lua`. What the generator owes
+		-- is a `garage<n>` that is not already taken; which n that is depends on
+		-- the server, and is not this check's business.
+		local generated = bare ~= nil and tostring(bare[2]) or ''
 		check('under a key it generated, so the spot can be named again afterwards',
-			bare ~= nil and bare[2] == 'garage1', bare and tostring(bare[2]))
+			generated:match('^garage%d+$') ~= nil
+				and garages.Access.SPOTS[generated] == nil, generated)
 
 		-- The generated key steps past what is already placed, so a second bare
 		-- capture cannot land on the first one's name.
@@ -5331,9 +5339,18 @@ do
 		check('and its label is the operator\'s own words', held['garage_dock'].label == 'THE DOCK')
 		check('and the row was written through the bridge', #wrote == 1, #wrote)
 		local synced = lastEvent(garages.Event.SYNC)
+		-- THE CAPTURED SPOT IS IN THE LIST, not "the list has exactly one entry".
+		-- The sync carries the config spots as well as the captured ones, so a
+		-- count was really a count of what `config/garages.lua` happens to ship
+		-- -- it read as one until two spots were checked into it.
+		local sent = synced ~= nil and type(synced[1]) == 'table'
+			and type(synced[1].spots) == 'table' and synced[1].spots or nil
+		local carried = false
+		for index = 1, sent and #sent or 0 do
+			if sent[index].key == 'garage_dock' then carried = true end
+		end
 		check('and the client was told what is there now',
-			synced ~= nil and type(synced[1]) == 'table' and type(synced[1].spots) == 'table'
-				and #synced[1].spots == 1)
+			carried, sent and #sent or 'nothing sent')
 
 		-- ── bringing out what the character owns ──────────────────────────
 
@@ -6183,9 +6200,15 @@ do
 		-- both optional -- and the first word is the KIND when it is one.
 		control.commands[Config.COMMANDS.add].run(src, {})
 		local bare = lastEvent(dealership.Event.CAPTURE)
+		-- The property, not the literal, for the reason written at the same
+		-- check in the garages section: `garage1` is only the answer while
+		-- nothing is placed, so asserting it was asserting that the shipped
+		-- config is empty.
+		local bareKey = bare ~= nil and tostring(bare[2]) or ''
 		check('the bare add command asks as a garage, under a key it generated',
-			bare ~= nil and bare[1] == 'garage' and bare[2] == 'garage1',
-			bare and ('%s/%s'):format(tostring(bare[1]), tostring(bare[2])))
+			bare ~= nil and bare[1] == 'garage' and bareKey:match('^garage%d+$') ~= nil
+				and dealership.Access.SPOTS[bareKey] == nil,
+			bare and ('%s/%s'):format(tostring(bare[1]), bareKey))
 		control.commands[Config.COMMANDS.add].run(src, { 'avpad' })
 		local padAsk = lastEvent(dealership.Event.CAPTURE)
 		check('and a bare AV pad add is an avpad with its own generated key',

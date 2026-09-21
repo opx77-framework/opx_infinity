@@ -221,9 +221,24 @@ OPX.Config.MODULES.dealership = {
 	-- LABEL is the operator's own words and is never translated. Key is the
 	-- durable name a purchase and every command names.
 	--
-	-- Empty until a dealer is captured in game. `/opx.dealership.add` prints the
-	-- line to check in here, which is how a dealer survives a database reset:
+	-- `/opx.dealership.add` prints the line to check in here, which is how a
+	-- dealer survives a database reset:
 	--   dealer_example = { LABEL = "WATSON AUTOS", KIND = 'garage',
 	--     X = -1771.79, Y = -77.30, Z = 7.53, HEADING = 90.0, BUCKET = 0 },
-	SPOTS = {},
+	--
+	-- THE ONE BELOW WAS CAPTURED IN GAME AND LIVED ONLY IN `opx77_dealerships`.
+	-- Checked in on 2026-09-21 off the boot log, for the reason written at the
+	-- same place in `config/garages.lua`: the rework removes the command that
+	-- made it, and a dealer that exists only in a table nobody has a copy of is
+	-- one dropped database away from gone. A captured row of the same key still
+	-- wins, so nothing about today's server changes.
+	--
+	-- The key really is `garage1` -- the capture generates a key per KIND, and a
+	-- dealer selling garage-class cars gets that one. It is unrelated to the
+	-- `garage1` in `config/garages.lua`: the two live in different tables and
+	-- name different things.
+	SPOTS = {
+		garage1 = { LABEL = 'garage1', KIND = 'garage',
+			X = -1536.42, Y = -207.43, Z = 7.86, HEADING = 142.2, BUCKET = 0 },
+	},
 }

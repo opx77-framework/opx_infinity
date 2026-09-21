@@ -92,9 +92,27 @@ OPX.Config.MODULES.garages = {
 	-- LABEL is the operator's own words and is never translated. Key is the
 	-- durable name: a vehicle's `garage` column and every command name it.
 	--
-	-- Empty until a spot is captured in game. `/opx.garages.add` prints the line
-	-- to check in here, which is how a spot survives a database reset:
+	-- `/opx.garages.add` prints the line to check in here, which is how a spot
+	-- survives a database reset:
 	--   garage_example = { LABEL = "V'S GARAGE", KIND = 'garage',
 	--     X = -1771.79, Y = -77.30, Z = 7.53, HEADING = 90.0, BUCKET = 0 },
-	SPOTS = {},
+	--
+	-- THE TWO BELOW WERE CAPTURED IN GAME AND LIVED ONLY IN `opx77_garages`.
+	-- Checked in on 2026-09-21, read off the boot log that now writes every
+	-- captured spot as its own line. They are the first thing this file has ever
+	-- described, and the reason is not tidiness: the config-first rework removes
+	-- the commands that made them, and a spot that exists only in a table nobody
+	-- has a copy of is a spot one dropped database away from gone. A captured
+	-- row of the same key still wins, so checking them in changes nothing about
+	-- how the server runs today.
+	--
+	-- LABEL is `garage1`/`garage2` because that is what the capture generated;
+	-- they are the operator's own words to change, and changing one renames
+	-- nothing -- the KEY is what a vehicle's `garage` column holds.
+	SPOTS = {
+		garage1 = { LABEL = 'garage1', KIND = 'garage',
+			X = -1527.21, Y = -218.56, Z = 7.86, HEADING = 199.6, BUCKET = 0 },
+		garage2 = { LABEL = 'garage2', KIND = 'garage',
+			X = 89.67, Y = -569.73, Z = 7.56, HEADING = 242.1, BUCKET = 0 },
+	},
 }
