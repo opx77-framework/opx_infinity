@@ -1958,8 +1958,16 @@ do
 		env.TriggerEvent(appearance.Event.ON_VIEW, { kind = 'room', title = 'Wardrobe' })
 		check('a room nobody can draw is not answered inside its own publication',
 			#seen == 0, table.concat(seen, ', '))
-		control.Pump(4)
-		check('and is answered on the next pass instead', seen[1] == 'room.close',
+		-- SETTLED, NOT COUNTED. How many passes the upkeep job needs is how many
+		-- other jobs the scheduler happens to be rotating through -- it runs four
+		-- per pass -- so a fixed round count asserted how many modules this
+		-- resource had the day it was written. Loading one more module moved the
+		-- answer from the fourth pass to the fifth and failed a test about a room
+		-- that had been torn down correctly. `settle` keeps the teeth, which are
+		-- that the answer arrives on a LATER pass and is the room's own close.
+		check('and is answered on the next pass instead',
+			settle(control, function() return #seen > 0 end, 40)
+				and seen[1] == 'room.close',
 			table.concat(seen, ', '))
 		appearance.FromView = real
 	end
@@ -3448,15 +3456,21 @@ section('garages')
 do
 	-- The vehicle roster the bridge answers with. The SQL is the real storage
 	-- module's; this is only the bridge half.
-	local function bridge(rows, wrote)
+	local function bridge(rows, wrote, vehicleWrites)
 		return Host.Database({
 			scalar = function() return 1 end,
-			update = function(sql)
+			update = function(sql, params)
 				-- Only the INSERT: the schema runs `CREATE TABLE IF NOT EXISTS`
 				-- through the same bridge method, and counting that would make
 				-- "nothing was written" true of a boot rather than of a refusal.
 				if wrote ~= nil and sql:find('INSERT INTO opx77_garages', 1, true) then
 					wrote[#wrote + 1] = sql
+				end
+				-- Every write to a vehicle row, with its parameters. Which marker a
+				-- put-away files the vehicle UNDER is only observable here: the
+				-- roster this bridge answers from is never touched by an UPDATE.
+				if vehicleWrites ~= nil and sql:find('UPDATE opx77_vehicles', 1, true) then
+					vehicleWrites[#vehicleWrites + 1] = type(params) == 'table' and params or {}
 				end
 				return 0
 			end,
@@ -3502,9 +3516,9 @@ do
 		}
 	end
 
-	local wrote = {}
+	local wrote, vehicleWrites = {}, {}
 	local env, control, why = boot('server', bridge({ row('AA111AA', 'Vehicle.v_standard2_archer_hella_player'),
-		row('AA222AA', 'Vehicle.av_militech_manticore') }, wrote))
+		row('AA222AA', 'Vehicle.av_militech_manticore') }, wrote, vehicleWrites))
 	check('the server boots with the garages module', why == nil, why)
 
 	-- The last client event with one name, or nil. Every verdict below is asserted
@@ -3522,6 +3536,9 @@ do
 		local garages = OPX.Modules.Get('garages')
 		local Access = garages.Access
 		local contract = OPX.Api.Get('garages')
+		-- The vehicles half, read the way any other module reads it: the plate a
+		-- player is sitting in is proved through this contract and nothing else.
+		local vehicleApi = OPX.Api.Get('vehicles')
 
 		check('the garages module is running', OPX.Modules.IsRunning('garages'),
 			OPX.Modules.Record('garages').Reason)
@@ -3611,11 +3628,23 @@ do
 
 		-- ── the capture round-trip ─────────────────────────────────────────
 		-- A character that owns the two rows above, on a slot the host admitted.
+		--
+		-- THE INDEX AS WELL AS THE ROSTER. `character.RegisterPlayer` fills both,
+		-- and the difference is not cosmetic: "is this character still loaded?"
+		-- is answered from `Registry.byCitizenId`, and the vehicles module asks it
+		-- before saving a live vehicle in place. A roster entry with no index
+		-- entry reads as an owner who left, so the save pass put every car away --
+		-- which meant no vehicle in this file was ever still out one pump later,
+		-- and "a vehicle that is already out" could not be tested at all.
 		local function load(id, citizenId)
 			control.Admit(id, 'account-' .. tostring(id))
 			OPX.EnsureSession(id)
 			local character = OPX.Modules.Get('character')
-			character.Players[id] = { PlayerData = { citizenId = citizenId } }
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = { PlayerData = { citizenId = citizenId, source = id,
+				userId = userId } }
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
 			return character
 		end
 
@@ -3748,6 +3777,103 @@ do
 			lastEvent(garages.Event.ANSWER) ~= nil
 				and lastEvent(garages.Event.ANSWER)[4] == 'AA222AA',
 			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[4]))
+
+		-- ── a vehicle that is already out is BROUGHT TO THE MARKER ───────
+		-- The bug this pins: the door answered `Ok` with the id the vehicle
+		-- already had, wherever it was, so the player was told "brought out",
+		-- stood on an empty marker and pressed the key again -- six times in one
+		-- recorded session. The vehicle is put away and created again AT the
+		-- spot now, which is what the marker promised in the first place.
+		created = #control.vehicleCreates
+		local removals = #control.vehicleRemoves
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		check('a vehicle that is already out is removed and created again',
+			#control.vehicleCreates == created + 1 and #control.vehicleRemoves == removals + 1,
+			('%d created, %d removed'):format(#control.vehicleCreates - created,
+				#control.vehicleRemoves - removals))
+		options = control.vehicleCreates[#control.vehicleCreates]
+		check('and the second creation is ON the marker, not beside the player',
+			options ~= nil and options.position.x == 0.0 and options.position.y == 0.0,
+			options and ('%s,%s'):format(tostring(options.position.x), tostring(options.position.y)))
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and the answer says it was moved rather than brought from the roster',
+			answer ~= nil and answer[2] == true and answer[5] == 'recalled',
+			answer and tostring(answer[5]))
+
+		-- SOMEBODY IS SITTING IN IT. The occupant is not necessarily the player
+		-- who pressed the key -- a marker is a public place -- so the vehicle is
+		-- refused rather than taken out of a driver's hands.
+		control.vehicles.snapshot = { occupants = { { playerId = 99 } } }
+		created = #control.vehicleCreates
+		removals = #control.vehicleRemoves
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		check('a vehicle somebody is sitting in is neither moved nor removed',
+			#control.vehicleCreates == created and #control.vehicleRemoves == removals,
+			('%d created, %d removed'):format(#control.vehicleCreates - created,
+				#control.vehicleRemoves - removals))
+		check('and the refusal names the occupant',
+			lastEvent(garages.Event.ANSWER) ~= nil
+				and lastEvent(garages.Event.ANSWER)[3] == 'vehicle.occupied',
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+		control.vehicles.snapshot = nil
+
+		-- ── the same key, seated: PUT IT AWAY ────────────────────────────
+		-- The id is read the way any caller reads it -- the seat assignment names a
+		-- runtime id and this contract is what says which plate owns it -- and the
+		-- plate is the roster fixture the bring-out above just produced.
+		local outPlate = 'AA111AA'
+		local live = vehicleApi.Get(outPlate)
+		check('the plate out at the marker answers its runtime id',
+			live.ok == true and live.value.spawned == true and live.value.id ~= nil,
+			live.ok and tostring(live.value.id) or tostring(live.detail))
+		control.Seat(src, { vehicleId = live.value.id, seat = 'driver' })
+
+		created = #control.vehicleCreates
+		removals = #control.vehicleRemoves
+		local wroteVehicles = #vehicleWrites
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		check('seated on a marker, the key puts the vehicle away and creates nothing',
+			#control.vehicleCreates == created and #control.vehicleRemoves == removals + 1,
+			('%d created, %d removed'):format(#control.vehicleCreates - created,
+				#control.vehicleRemoves - removals))
+		check('and it is filed UNDER the marker the player is standing on',
+			#vehicleWrites > wroteVehicles
+				and vehicleWrites[#vehicleWrites].garage == 'garage_dock'
+				and tonumber(vehicleWrites[#vehicleWrites].state) == 1,
+			#vehicleWrites > wroteVehicles and ('garage=%s state=%s'):format(
+				tostring(vehicleWrites[#vehicleWrites].garage),
+				tostring(vehicleWrites[#vehicleWrites].state)) or 'nothing was written')
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and the answer says STORED, which is not the same thing as brought out',
+			answer ~= nil and answer[2] == true and answer[5] == 'stored',
+			answer and tostring(answer[5]))
+		check('and the character is on foot again as far as the contract is concerned',
+			vehicleApi.Occupied(src).value == nil)
+
+		-- On foot, the same key brings it back -- out of the roster, at the spot
+		-- it was just filed under. Both halves of one key, one marker.
+		--
+		-- THE MARKER'S OWN WINDOW HAS TO EXPIRE FIRST, and deliberately rather
+		-- than by widening it: this section has now asked it as many times as one
+		-- window allows, and the refusal that follows is the subject of the test
+		-- at the end of the file. Clock ticks are 100 ms in this harness.
+		control.Pump(math.ceil(OPX.Config.MODULES.garages.REQUEST_WINDOW_MS / 100) + 2)
+		control.Seat(src, nil)
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		control.Pump(8)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and on foot the same key brings it back out at that marker',
+			#control.vehicleCreates == created + 1 and answer ~= nil
+				and answer[2] == true and answer[5] == 'brought',
+			('%d created, answer ok=%s action=%s error=%s'):format(
+				#control.vehicleCreates - created,
+				answer and tostring(answer[2]) or 'none',
+				answer and tostring(answer[5]) or 'none',
+				answer and tostring(answer[3]) or 'none'))
 
 		-- ── what is refused, and why ──────────────────────────────────────
 		local walker = 42
@@ -3976,6 +4102,20 @@ do
 			listed and listed.ok and tostring(listed.value.count))
 		check('and names the key it is bound to', Runtime.Report().key == 'E',
 			Runtime.Report().key)
+
+		-- ONE KEY, TWO JOBS, so the row has to name the job it is about to do:
+		-- a row that still read "bring out a vehicle" while the player sat in one
+		-- would be labelling the key with the wrong half of what it does.
+		check('on foot, the row names the bring-out',
+			Runtime.Report().label == 'garages.prompt.garage', Runtime.Report().label)
+		cctl.Seat(1, { seat = 'driver' })
+		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.putAway' end)
+		check('seated in a vehicle, the same row says put away',
+			Runtime.Report().label == 'garages.prompt.putAway', Runtime.Report().label)
+		cctl.Seat(1, nil)
+		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.garage' end)
+		check('and it goes back to the bring-out once the player is out of it',
+			Runtime.Report().label == 'garages.prompt.garage', Runtime.Report().label)
 
 		-- ── the key sends the request ─────────────────────────────────────
 		local before = #cctl.serverEvents
@@ -4351,11 +4491,18 @@ do
 		local function load(id, citizenId, eddies)
 			control.Admit(id, 'account-' .. tostring(id))
 			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
 			character.Players[id] = {
-				PlayerData = { citizenId = citizenId, source = id,
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
 					money = { EDDIES = eddies or 0 } },
 				Functions = { UpdatePlayerData = function() end },
 			}
+			-- The roster AND the index, the way `character.RegisterPlayer` fills
+			-- them: the vehicles module asks the index whether an owner is still
+			-- loaded before it saves a live vehicle in place, and a hand-loaded
+			-- roster without it reads as an owner who left.
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
 			return character.Players[id]
 		end
 
@@ -7159,11 +7306,15 @@ do
 		local function load(id, citizenId, eddies)
 			control.Admit(id, 'account-' .. tostring(id))
 			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
 			character.Players[id] = {
-				PlayerData = { citizenId = citizenId, source = id,
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
 					money = { EDDIES = eddies or 0 } },
 				Functions = { UpdatePlayerData = function() end },
 			}
+			-- The roster and the index, as `character.RegisterPlayer` fills them.
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
 			return character.Players[id]
 		end
 
@@ -7600,6 +7751,573 @@ do
 			check(('the pack ships the clip %s'):format(tostring(name)), file ~= nil)
 			if file ~= nil then file:close() end
 		end
+	end
+end
+
+-- ── the law book and the heat ladder ────────────────────────────────────────
+-- WHAT IS ASSERTED HERE is arithmetic and vocabulary, not a world: what a crime
+-- costs, when a stage is left, how a score falls, and which division answers.
+-- The engine half of the mechanic -- the lever that raises a stage and the AV
+-- request -- is a platform seam that does not exist yet, so nothing here claims
+-- to have watched a star appear.
+section('the law book and the heat ladder')
+do
+	--- The world a law book needs: the config, the module, the law, nothing else.
+	-- @param function|nil mutate applied to the config once it has run, so a test
+	--   can hand the validator a bad value without editing the file
+	-- @return table module
+	-- @return table control
+	local function lawWorld(mutate)
+		local own, ctl = Host.Environment('server')
+		for _, file in ipairs({
+			'core/shared/main.lua', 'core/shared/channels.lua',
+			'core/shared/registry.lua', 'core/shared/lifecycle.lua',
+			'lib/shared/math.lua', 'lib/shared/result.lua', 'lib/shared/validate.lua',
+			'lib/shared/text.lua', 'lib/shared/string.lua', 'lib/shared/table.lua',
+			'config/shared.lua', 'config/ncpd.lua',
+			'modules/ncpd/module.lua', 'modules/ncpd/shared/law.lua',
+		}) do
+			assert(loadfile(file, 't', own), file)()
+			if mutate and file == 'config/ncpd.lua' then mutate(own.OPX.Config.MODULES.ncpd) end
+		end
+		return own.OPX.Modules.Get('ncpd'), ctl
+	end
+
+	local module = lawWorld()
+	local law = module.Law
+
+	check('the shipped law book validates without a single warning',
+		#law.Warnings == 0, table.concat(law.Warnings, ' | '))
+	check('every law the file declares is in the book',
+		#law.Ids == 11 and law.Known('murder') and law.Known('vehicleTheft'),
+		tostring(#law.Ids))
+	check('and the ladder is the engine\'s own stages, keyed by heat number',
+		law.StageCount == 5 and law.Heat(0) == 'Heat_0' and law.Heat(1) == 'Heat_1'
+			and law.Heat(5) == 'Heat_5',
+		tostring(law.StageCount) .. ' ' .. tostring(law.Heat(5)))
+	check('an offence carries the price and the ceiling the file gives it',
+		law.Score('murder') == 40 and law.Ceiling('murder') == nil
+			and law.Score('assault') == 8 and law.Ceiling('assault') == 2,
+		tostring(law.Score('murder')) .. '/' .. tostring(law.Ceiling('murder')))
+	-- A NEAR MISS IS A MISS: an unknown offence has to be a refusal, because a
+	-- report that silently scored nothing looks exactly like a working one.
+	check('a near miss is not a law, whatever its shape',
+		not law.Known('murdery') and not law.Known('Murder') and not law.Known(nil)
+			and not law.Known(true))
+	check('the division is the ladder\'s own, stage by stage',
+		law.Division(4) == 'ncpd' and law.Division(5) == 'maxtac',
+		tostring(law.Division(4)) .. '/' .. tostring(law.Division(5)))
+	check('Heat_0 has a threshold to cross and no division answering',
+		law.Division(0) == nil and law.Capacity(0) == 50,
+		tostring(law.Capacity(0)))
+	check('and a stage outside the ladder has neither a division nor a capacity',
+		law.Division(6) == nil and law.Division('5') == nil and law.Division(9) == nil
+			and law.Capacity(6) == nil and law.Capacity(-1) == nil)
+	check('a stage\'s response names the engine\'s own records',
+		law.Vehicles(1)[1] == 'Vehicle.ncpd_villefort_cortes_heat_1'
+			and law.Vehicles(5)[1] == 'Vehicle.ncpd_hellhound_heat_5'
+			and #law.Vehicles(6) == 0,
+		tostring(law.Vehicles(1)[1]))
+	check('a district scales a crime, and an unlisted or missing one is the default',
+		law.Multiplier('badlands') == 0.6 and law.Multiplier('City_Center') == 1.5
+			and law.Multiplier('atlantis') == 1 and law.Multiplier(nil) == 1,
+		tostring(law.Multiplier('badlands')))
+
+	-- THE LADDER STEPS ONCE. The engine checks its threshold once per crime and
+	-- zeroes the score as it crosses, so one enormous score does not skip a
+	-- division -- it crosses one stage and starts again from zero.
+	do
+		local stage, score, crossed = law.Advance(0, 0, 10)
+		check('a crime below the first capacity crosses nothing',
+			stage == 0 and score == 10 and crossed == false,
+			tostring(stage) .. '/' .. tostring(score))
+		stage, score, crossed = law.Advance(0, 45, 5)
+		check('reaching a stage\'s capacity crosses it and zeroes the score',
+			stage == 1 and score == 0 and crossed == true,
+			tostring(stage) .. '/' .. tostring(score))
+		stage, score, crossed = law.Advance(1, 0, 10000)
+		check('and one enormous score still crosses exactly one stage',
+			stage == 2 and score == 0 and crossed == true, tostring(stage))
+		stage, score, crossed = law.Advance(5, 10, 10000)
+		check('the top of the ladder is the top: nothing crosses above it',
+			stage == 5 and score == 10010 and crossed == false,
+			tostring(stage) .. '/' .. tostring(score))
+		check('and a stage outside the ladder is clamped rather than trusted',
+			select(1, law.Advance(9, 0, 0)) == 5 and select(1, law.Advance(-3, 0, 0)) == 0)
+	end
+
+	do
+		check('a score is held while the hold lasts',
+			law.Decay(50, 0) == 50 and law.Decay(50, law.DecayHold) == 50)
+		check('then it drains at the configured rate',
+			law.Decay(50, law.DecayHold + 10) == 50 - law.DecayRate * 10,
+			tostring(law.Decay(50, law.DecayHold + 10)))
+		check('and a player who has done nothing for long enough is dropped outright',
+			law.Decay(50, law.DecayReset) == 0 and law.Decay(50, law.DecayReset + 100) == 0)
+		check('a drained score never goes below zero, and a zero score stays zero',
+			law.Decay(5, law.DecayHold + 1000) == 0 and law.Decay(0, 1) == 0
+				and law.Decay(-4, 1) == 0)
+	end
+
+	do
+		local verdict = law.Accrue({ stage = 0, score = 0 }, 'murder', nil, 'badlands')
+		check('a crime is charged at its own price, scaled by its district',
+			verdict.ok and verdict.delta == 24 and verdict.score == 24,
+			tostring(verdict.delta))
+		verdict = law.Accrue({ stage = 0, score = 0 }, 'murder', 2, nil)
+		check('a report may carry its own multiplier',
+			verdict.delta == 80, tostring(verdict.delta))
+		-- A BAD MULTIPLIER IS ONE, never a zero: a resource that reports `0` by
+		-- accident must not be able to make a crime free.
+		verdict = law.Accrue({ stage = 0, score = 0 }, 'murder', 0, nil)
+		check('an unusable multiplier is one, never a zero that swallows the crime',
+			verdict.delta == 40, tostring(verdict.delta))
+		verdict = law.Accrue({ stage = 0, score = 0 }, 'murdery')
+		check('an offence the book does not name is refused, not charged as nothing',
+			verdict.ok == false and verdict.reason == 'unknownLaw', tostring(verdict.reason))
+		verdict = law.Accrue({ stage = 3, score = 10 }, 'assault')
+		check('an offence past its ceiling still happened and earns nothing',
+			verdict.ok == true and verdict.capped == true and verdict.delta == 0
+				and verdict.score == 10, tostring(verdict.delta))
+		verdict = law.Accrue({ stage = 1, score = 0 }, 'assault')
+		check('while below its ceiling it is charged in full',
+			verdict.capped == false and verdict.delta == 8, tostring(verdict.delta))
+		verdict = law.Accrue({ stage = 0, score = 0 }, 'murder', nil, 'nowhere')
+		check('and an unlisted district neither swallows nor doubles a crime',
+			verdict.delta == 40, tostring(verdict.delta))
+		-- The crossing reports the division of the stage REACHED: the one thing a
+		-- response needs and the one thing a ledger must not work out twice.
+		verdict = law.Accrue({ stage = 4, score = 440 }, 'murder', nil, 'city_center')
+		check('crossing into the last stage reports MaxTac as the division that answers',
+			verdict.crossed == true and verdict.stage == 5 and verdict.division == 'maxtac',
+			tostring(verdict.division))
+	end
+
+	do
+		local maxtac = law.Maxtac
+		check('the division\'s own row is validated, not merely present',
+			type(maxtac) == 'table' and maxtac.Stage == 5 and maxtac.Fill == 'bots'
+				and maxtac.AvRecord == 'Vehicle.max_tac_av',
+			type(maxtac) == 'table' and tostring(maxtac.AvRecord))
+		check('and it names the engine\'s troopers, vehicle, tag and alone effect',
+			type(maxtac) == 'table' and #maxtac.Troopers == 4
+				and maxtac.Vehicle == 'Vehicle.ncpd_suv_thorton_merrimac_maxtac'
+				and maxtac.Tag == 'MaxTac_NotPrevention'
+				and maxtac.AloneEffect == 'BaseStatusEffect.MaxTacAlone',
+			type(maxtac) == 'table' and tostring(#maxtac.Troopers))
+		check('the air unit keeps the engine\'s own one-at-a-time rule',
+			type(maxtac) == 'table' and maxtac.AvOneAtATime == true
+				and maxtac.AvCooldown ~= nil and #maxtac.AvSecondWave == 3)
+	end
+
+	-- WHAT THE SERVER SAYS AT BOOT, because a wiped law is only worth anything if
+	-- somebody names it in the block an operator reads after editing a config.
+	do
+		local env, control, why = boot('server')
+		check('the server boots with the law book in it', why == nil, why)
+		if why == nil then
+			local env2 = env
+			local info = table.concat(control.log.info, '\n')
+			local warned = table.concat(control.log.warn, '\n')
+			check('and journals the book and the ladder once',
+				info:find('[ncpd] ready: 11 law(s), 5 heat stage(s): ncpd 1-4, maxtac 5', 1, true) ~= nil,
+				env2 ~= nil and '')
+			check('with nothing to warn about on a clean book',
+				warned:find('[ncpd] config', 1, true) == nil, warned)
+		end
+	end
+
+	-- ── negative controls ────────────────────────────────────────────────
+	-- Each one hands the validator a value the shipped file does not contain, and
+	-- each must be NAMED: a config the module cannot use has to be a warning and a
+	-- narrowed book, never a session that will not start.
+	do
+		local broken = lawWorld(function(config) config.LAWS[2].score = 'lots' end)
+		local said = table.concat(broken.Law.Warnings, ' | ')
+		check('a law with an unusable score is dropped and named',
+			broken.Law.Known('murder') == false and #broken.Law.Warnings == 1
+				and said:find('murder', 1, true) ~= nil, said)
+		check('and it costs that one law rather than the book',
+			#broken.Law.Ids == 10 and broken.Law.Known('assault') ~= nil
+				and broken.Law.Known('vehicleTheft') ~= nil, tostring(#broken.Law.Ids))
+
+		broken = lawWorld(function(config)
+			config.LAWS[3] = { id = 'murder', label = 'again', score = 5.0 }
+		end)
+		check('a law declared twice is refused as a duplicate and kept once',
+			table.concat(broken.Law.Warnings, ' | '):find('twice', 1, true) ~= nil
+				and #broken.Law.Ids == 10, tostring(#broken.Law.Ids))
+
+		broken = lawWorld(function(config) config.LADDER[3].division = 'riot' end)
+		check('a stage naming a division nobody declared is named, and loses it',
+			table.concat(broken.Law.Warnings, ' | '):find('riot', 1, true) ~= nil
+				and broken.Law.Division(3) == nil)
+
+		broken = lawWorld(function(config)
+			config.LADDER[4] = nil
+			config.LADDER[5] = nil
+		end)
+		check('the ladder is the configuration\'s: three stages declared is three stages',
+			broken.Law.StageCount == 3 and broken.Law.Division(3) == 'ncpd'
+				and broken.Law.Division(4) == nil, tostring(broken.Law.StageCount))
+
+		broken = lawWorld(function(config) config.MAXTAC.STAGE = 2 end)
+		check('MaxTac pointed at an NCPD stage is named',
+			table.concat(broken.Law.Warnings, ' | '):find('whose division is', 1, true) ~= nil)
+
+		broken = lawWorld(function(config) config.MAXTAC.FILL = 'robots' end)
+		check('a fill rule that is neither players nor bots is named',
+			table.concat(broken.Law.Warnings, ' | '):find('robots', 1, true) ~= nil)
+
+		broken = lawWorld(function(config) config.MAXTAC.TROOPERS = {} end)
+		check('a bot fill with no trooper is named rather than an empty street',
+			table.concat(broken.Law.Warnings, ' | '):find('filled by nobody', 1, true) ~= nil)
+
+		broken = lawWorld(function(config) config.LAWS = 'none' end)
+		check('a book that is not a table says so, and the ladder survives it',
+			table.concat(broken.Law.Warnings, ' | '):find('not a table', 1, true) ~= nil
+				and #broken.Law.Ids == 0 and broken.Law.StageCount == 5)
+		check('and every crime is then refused rather than scored as nothing',
+			broken.Law.Accrue({ stage = 0, score = 0 }, 'murder').reason == 'unknownLaw')
+	end
+end
+
+-- ── the crime ledger, the mirror, and the street ─────────────────────────────
+-- WHAT IS DRIVEN HERE is the whole loop the two jobs are made of, on the real
+-- modules: a stage is written into the ledger, the RESPONSE puts the configured
+-- units in the world for it, the engine's own reading is mirrored in, and a
+-- reading the engine never gave is refused rather than believed.
+--
+-- The seam itself -- the two levers that move a star and the read that reports
+-- one -- is not exercised here and cannot be: `PreventionSystem` lives inside a
+-- running client, and this host has no game. What is asserted instead is every
+-- decision on THIS side of that seam, including the one that protects it: the
+-- mirror COPIES a stage and never scores one, so the ledger cannot climb because
+-- the engine climbed.
+section('the heat ledger, the mirror and the street')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the ncpd module in it', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local ncpd = OPX.Modules.Get('ncpd')
+		local character = OPX.Modules.Get('character')
+		local Ledger, Response, Law = ncpd.Ledger, ncpd.Response, ncpd.Law
+
+		--- Puts a loaded character on a slot, the way `character.RegisterPlayer`
+		-- fills its own roster. A heat score is bound to a citizen id, so every
+		-- charge below needs one to exist.
+		-- @param id number
+		-- @param citizenId string
+		-- @return table the Player the contract reads
+		local function load(id, citizenId)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					money = { EDDIES = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+			return character.Players[id]
+		end
+
+		-- ── the ledger ──────────────────────────────────────────────────────
+		-- A crime below the first capacity is charged and crosses nothing: the
+		-- ladder starts at Heat_0 and Heat_0 has a threshold of its own.
+		local first = Ledger.Report('citizen-ncpd-a', 'murder')
+		check('a murder is charged what the law book says it is worth',
+			first.ok == true and first.value.law == 'murder' and first.value.delta == 40,
+			first.ok and tostring(first.value.delta) or tostring(first.error))
+		check('and a first crime below the stage\'s capacity crosses nothing yet',
+			first.value.crossed == false and first.value.stage == 0 and first.value.score == 40,
+			('%s/%s'):format(tostring(first.value.stage), tostring(first.value.score)))
+
+		local crossing = Ledger.Report('citizen-ncpd-a', 'murder')
+		check('a second crime reaching the capacity crosses exactly one stage',
+			crossing.value.crossed == true and crossing.value.stage == 1
+				and crossing.value.score == 0,
+			('%s/%s'):format(tostring(crossing.value.stage), tostring(crossing.value.score)))
+		check('and the division that owns that stage is the ladder\'s own',
+			crossing.value.division == ncpd.DIVISION.NCPD, tostring(crossing.value.division))
+
+		-- THE SCORE IS ZERO RIGHT AFTER A CROSSING, which is why a stage is never
+		-- read from it: the engine zeroes as it promotes, and a caller that treated
+		-- "score 0" as "not wanted" would clear the stage it had just raised.
+		local status = Ledger.Status('citizen-ncpd-a')
+		check('a stage just crossed is still held, on a score of zero',
+			status.stage == 1 and status.wanted == true and status.score == 0.0,
+			('%s/%s'):format(tostring(status.stage), tostring(status.score)))
+
+		local second = Ledger.Report('citizen-ncpd-a', 'murdery')
+		check('an offence that is not in the book is refused, not scored as nothing',
+			second.ok ~= true and tostring(second.error) == 'ncpd.unknownLaw',
+			tostring(second.error))
+		local nobody = Ledger.Report('', 'murder')
+		check('and a crime with nobody to charge is refused',
+			nobody.ok ~= true and tostring(nobody.error) == 'ncpd.noCitizen')
+
+		local set = Ledger.Set('citizen-ncpd-a', 5)
+		check('a stage can be set without a crime, for a job or an operator',
+			set.ok == true and set.value.stage == 5 and set.value.crossed == true
+				and set.value.division == ncpd.DIVISION.MAXTAC,
+			tostring(set.value and set.value.stage))
+		check('and a stage outside the ladder is refused rather than clamped',
+			Ledger.Set('citizen-ncpd-a', 6).ok ~= true
+				and Ledger.Set('citizen-ncpd-a', -1).ok ~= true
+				and Ledger.Set('citizen-ncpd-a', 1.5).ok ~= true)
+
+		-- The drop is by TIME, not by score, and only after the quiet window.
+		local entry = Ledger.Status('citizen-ncpd-a')
+		local quiet = (Law.DecayReset + 1) * 1000
+		local drained = Ledger.Decay('citizen-ncpd-a', OPX.Now() + quiet)
+		check('a wanted player who has done nothing for the quiet window is dropped',
+			drained ~= nil and drained.stage == 0 and entry.wanted == true,
+			('%s -> %s'):format(tostring(entry.stage), tostring(drained and drained.stage)))
+		check('and a character the ledger has never held is not put on the ladder by asking',
+			Ledger.Decay('citizen-ncpd-absent', OPX.Now()) == nil)
+
+		-- ── the street ──────────────────────────────────────────────────────
+		local subject = 81
+		load(subject, 'citizen-ncpd-b')
+		local stage = 3
+		local row = Law.Stage(stage)
+		local applied = Response.Apply('citizen-ncpd-b', subject, stage)
+		check('a stage stands its own configured units in the world',
+			applied.ok == true and applied.value.npcs == row.Response.UNITS
+				and applied.value.vehicles == #row.Response.VEHICLES
+				and #applied.value.refused == 0,
+			table.concat(applied.value.refused or {}, ', '))
+		check('and they are the records the config names, not invented ones',
+			control.npcCreates[1] ~= nil
+				and control.npcCreates[1].record == ncpd.Settings.NCPD.OFFICERS[1]
+				and control.vehicleCreates[1].record == row.Response.VEHICLES[1],
+			control.npcCreates[1] and tostring(control.npcCreates[1].record))
+
+		-- ── EVERY ROSTER RECORD MUST EXIST IN THIS BUILD'S TWEAKDB ──────────
+		-- The list below is the spawnable half of
+		-- `docs/generated/npc-records-2.31.csv`: every record in the namespaces
+		-- this module draws from that carries an entity template. A record with
+		-- no template cannot be spawned at all, so it is not on the list either.
+		-- It is VENDORED here rather than read at run time, because the suite runs
+		-- without the main checkout beside it.
+		--
+		-- This is the check that was missing, and it was missing at the cost of a
+		-- live test: the roster named `Character.prevention_maxtac_wa`, which does
+		-- not exist. The client refused it (`npc_record_not_found`), the Merrimac
+		-- still arrived, and the division in it was EMPTY -- which reads in game
+		-- as trucks that have pulled up and stopped. Nothing here could see it,
+		-- because the only check on the name compared it to the same config the
+		-- name came from, and the two agreed with each other while both were
+		-- wrong. A name the engine cannot answer now fails right here.
+		local spawnable = {}
+		for _, name in ipairs({
+			'Character.maxtac_av_LMG_mb',
+			'Character.maxtac_av_LMG_mb_2nd_wave',
+			'Character.maxtac_av_mantis_wa',
+			'Character.maxtac_av_mantis_wa_2nd_wave',
+			'Character.maxtac_av_netrunner_ma',
+			'Character.maxtac_av_netrunner_ma_2nd_wave',
+			'Character.maxtac_av_riffle_ma',
+			'Character.maxtac_av_riffle_ma_2nd_wave',
+			'Character.maxtac_av_sniper_wa_elite',
+			'Character.maxtac_av_sniper_wa_elite_2nd_wave',
+			'Character.ncpd_base_android',
+			'Character.ncpd_base_drone_bombus',
+			'Character.ncpd_base_drone_wyvern',
+			'Character.ncpd_base_ma',
+			'Character.ncpd_base_mb',
+			'Character.ncpd_base_minotaur',
+			'Character.ncpd_base_wa',
+			'Character.prevention_av_maxtac_rifle_ma',
+			'Character.prevention_av_maxtac_rifle_wa',
+			'Character.prevention_maxtac_rifle_ma',
+			'Character.prevention_maxtac_rifle_wa',
+		}) do
+			spawnable[name] = true
+		end
+
+		local named, missing, seen = 0, {}, {}
+		local function walkRecords(value)
+			if type(value) == 'string' then
+				if value:find('^Character%.') then
+					named = named + 1
+					if not spawnable[value] then missing[#missing + 1] = value end
+				end
+			elseif type(value) == 'table' and not seen[value] then
+				seen[value] = true
+				for _, item in pairs(value) do walkRecords(item) end
+			end
+		end
+		walkRecords(ncpd.Settings)
+		check('every character record the roster names exists in this build',
+			named > 0 and #missing == 0,
+			('%s named, not in the 2.31 dump: %s'):format(named, table.concat(missing, ', ')))
+
+		-- And the regression itself, named, so a future edit that puts it back
+		-- cannot pass by being in both halves of this file.
+		check('and the record that was invented for a year is not among them',
+			not spawnable['Character.prevention_maxtac_wa']
+				and tostring(Law.Maxtac.Ground[2])
+					:find('prevention_maxtac_wa', 1, true) == nil,
+			('%s (the ground pair is %s)'):format(tostring(Law.Maxtac.Ground[2]),
+				table.concat(Law.Maxtac.Ground, ', ')))
+		check('and an officer is placed around the player rather than on them',
+			control.npcCreates[1] ~= nil
+				and (math.abs(control.npcCreates[1].position.x) > 0.0
+					or math.abs(control.npcCreates[1].position.y) > 0.0),
+			control.npcCreates[1] and tostring(control.npcCreates[1].position.x))
+
+		-- Climbing must not leave the last stage's cars standing beside the new
+		-- one's, and a cleared player must have nothing at all.
+		local before = #control.npcRemoves + #control.vehicleRemoves
+		local raised = Response.Apply('citizen-ncpd-b', subject, 4)
+		-- EVERYTHING the stage below had is taken down, counted rather than
+		-- assumed: a stage that climbed while the last one's cars stayed put is a
+		-- chase with three stages of police in it.
+		check('climbing a stage takes the stage below it down first',
+			raised.ok == true
+				and raised.value.freed == applied.value.npcs + applied.value.vehicles
+				and #control.npcRemoves + #control.vehicleRemoves > before,
+			('%s freed, expected %s'):format(tostring(raised.value.freed),
+				tostring(applied.value.npcs + applied.value.vehicles)))
+		-- What the new stage stood up is what is standing -- the status and the
+		-- apply must agree, or one of them is counting something else. The row's own
+		-- numbers are not restated here because a stage may also declare a
+		-- roadblock, whose standing officers are part of the same response.
+		check('and what is standing is exactly what this stage stood up',
+			Response.Status('citizen-ncpd-b').stage == 4
+				and Response.Status('citizen-ncpd-b').npcs == raised.value.npcs
+				and raised.value.npcs > applied.value.npcs,
+			('%s standing, %s stood up'):format(tostring(Response.Status('citizen-ncpd-b').npcs),
+				tostring(raised.value.npcs)))
+
+		local cleared = Response.Apply('citizen-ncpd-b', subject, 0)
+		check('a cleared stage leaves nothing standing',
+			cleared.ok == true and cleared.value.npcs == 0
+				and Response.Status('citizen-ncpd-b').npcs == 0)
+
+		-- ── MaxTac: the division, the AV, and the squad ─────────────────────
+		local maxtac = Law.Stage(Law.Maxtac.Stage)
+		local inbound = Response.Apply('citizen-ncpd-b', subject, Law.Maxtac.Stage)
+		check('the MaxTac stage asks the wanted player\'s own client for the AV',
+			inbound.ok == true and inbound.value.av == true)
+		check('and stands the squad the config sizes, from the trooper records',
+			inbound.value.filled == math.min(maxtac.Response.UNITS,
+				#(Law.Maxtac.Troopers or {})),
+			tostring(inbound.value.filled))
+		check('and every seat it filled is a real character in the world',
+			#control.npcCreates >= inbound.value.filled,
+			tostring(#control.npcCreates))
+
+		-- A HOST THAT REFUSES IS NAMED, not left as an empty street: this is the
+		-- shape that says which record or which contract was missing.
+		control.npcs.refuse = 'no_spawn_contract'
+		local refused = Response.Apply('citizen-ncpd-b', subject, 2)		check('a refused spawn is reported as a refusal, with the record named',
+			refused.ok == true and #refused.value.refused > 0
+				and tostring(refused.value.refused[1]):find('no_spawn_contract', 1, true) ~= nil,
+			table.concat(refused.value.refused or {}, ', '))
+
+		-- THE EMPTY UNIT. The cars spawn and the officers do not -- the exact
+		-- shape a missing `world.npcs` produced on staging, where four cars stood
+		-- in the street with nobody in them and read in game as a squad that had
+		-- arrived and stopped. A stage with no officer standing is no unit at all,
+		-- so its cars come back down and the refusal says which shape it was.
+		-- Anything the checks above left standing is put away first, so the count
+		-- below is this stage's own cars and not the previous one's being cleared.
+		Response.ReleaseAll()
+		control.npcs.refuse = 'permission_denied:world.npcs'
+		local createsBefore = #control.vehicleCreates
+		local removesBefore = #control.vehicleRemoves
+		local empty = Response.Apply('citizen-ncpd-b', subject, 2)
+		-- How many cars this stage put down, and how many it took back up.
+		-- Counted around the call rather than assumed, so a rule that left the
+		-- cars in the world cannot pass on a previous stage's removals.
+		local placed = #control.vehicleCreates - createsBefore
+		local taken = #control.vehicleRemoves - removesBefore
+		check('a stage whose every officer was refused leaves no car standing',
+			empty.ok == true and empty.value.npcs == 0 and empty.value.vehicles == 0,
+			('%s npc(s), %s car(s)'):format(tostring(empty.value.npcs), tostring(empty.value.vehicles)))
+		check('and the parked cars were really taken back out of the world',
+			placed > 0 and taken == placed,
+			('%d car(s) placed, %d removed'):format(placed, taken))
+		check('and the reason names the empty unit rather than only the record',
+			tostring(empty.value.refused[#empty.value.refused]):find('ncpd.noOfficers', 1, true) ~= nil,
+			table.concat(empty.value.refused or {}, ', '))
+		-- A host that refuses the CARS but places the officers keeps its cars
+		-- standing: the rule is about an officerless unit, not about traffic.
+		control.npcs.refuse = nil
+		local officers = Response.Apply('citizen-ncpd-b', subject, 2)
+		check('and a stage with officers standing keeps its cars',
+			officers.ok == true and officers.value.npcs > 0 and officers.value.vehicles > 0,
+			table.concat(officers.value.refused or {}, ', '))
+		Response.ReleaseAll()
+
+		-- ── the mirror ──────────────────────────────────────────────────────
+		-- The client reads its own engine and states the stage it holds. This is the
+		-- ONLY report of a crime the engine charged, so what it must not become is a
+		-- second scorer: a mirrored stage is COPIED, and never charged to the book.
+		local watcher = 82
+		load(watcher, 'citizen-ncpd-engine')
+		Ledger.Forget()
+		local report = control.netEvents[ncpd.Event.REPORT]
+		check('the engine report has a handler on the wire', type(report) == 'function')
+
+		local from = #control.clientEvents
+		report(watcher, 4)
+		local mirrored = Ledger.Status('citizen-ncpd-engine')
+		check('a stage the client reports is mirrored into the ledger',
+			mirrored.stage == 4, tostring(mirrored.stage))
+		check('and it is copied, not scored: no crime was charged for it',
+			mirrored.score == 0.0, tostring(mirrored.score))
+		local told = 0
+		for index = from + 1, #control.clientEvents do
+			if control.clientEvents[index].name == ncpd.Event.STAGE then told = told + 1 end
+		end
+		check('and the crossing is published to that player\'s client', told == 1, tostring(told))
+
+		-- The unchanged stage is the heartbeat, not an event: re-publishing it
+		-- would rebuild the response once a poll.
+		local standing = #control.npcCreates
+		from = #control.clientEvents
+		report(watcher, 4)
+		told = 0
+		for index = from + 1, #control.clientEvents do
+			if control.clientEvents[index].name == ncpd.Event.STAGE then told = told + 1 end
+		end
+		check('a repeated stage is a heartbeat and publishes nothing',
+			told == 0 and #control.npcCreates == standing, tostring(told))
+
+		-- The stage is the ONLY thing a report may move, and only within the
+		-- ladder: a client cannot name a stage the engine does not have.
+		from = #control.clientEvents
+		report(watcher, 42)
+		check('a stage outside the ladder is refused rather than clamped',
+			Ledger.Status('citizen-ncpd-engine').stage == 4,
+			tostring(Ledger.Status('citizen-ncpd-engine').stage))
+		report(watcher, 'four')
+		check('and a stage that is not a number is refused too',
+			Ledger.Status('citizen-ncpd-engine').stage == 4)
+
+		-- A report attributed to nobody: the citizen comes from the CONNECTION, so
+		-- a slot with no loaded character has nothing to charge.
+		from = #control.log.warn
+		local stranger = 88
+		report(stranger, 5)
+		check('a report from a connection with no character is refused and named',
+			table.concat(control.log.warn, ' | '):find('no character loaded', 1, true) ~= nil,
+			table.concat(control.log.warn, ' | '))
+		check('and no stage was written for it', Ledger.Count() == 1, tostring(Ledger.Count()))
+
+		check('a stage the engine drops back to zero takes the response down',
+			Response.Status('citizen-ncpd-engine').npcs > 0)
+		report(watcher, 0)
+		check('and the ledger follows the engine down to nothing',
+			Ledger.Status('citizen-ncpd-engine').stage == 0
+				and Response.Status('citizen-ncpd-engine').npcs == 0)
 	end
 end
 

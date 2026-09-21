@@ -73,6 +73,10 @@ shared_script "config/dealership.lua"
 -- Shared like the two above: the client draws a store's marker and reads the
 -- radius and the key here, and both halves must refuse the same rows.
 shared_script "config/clothing.lua"
+-- Shared because both halves read it: the server scores from the law book and
+-- the client later shows which division is answering. It must also run before
+-- `modules/ncpd/module.lua` declares, which every shared config does.
+shared_script "config/ncpd.lua"
 shared_script "config/chat.lua"
 shared_script "config/appearance.lua"
 shared_script "config/inventory.lua"
@@ -264,6 +268,26 @@ client_script "modules/clothing/client/main.lua"
 -- The lifecycle: the registry calls the module, and `Runtime` is what does the
 -- work. Without this file the client half is never built.
 client_script "modules/clothing/client/exports.lua"
+
+-- NCPD and MaxTac: the law book, the heat ledger, and the response the two
+-- divisions put on the street. After `character`, whose loaded character a heat
+-- score is bound to -- and which is the only ownership oracle this module trusts
+-- for "which citizen did that".
+--
+-- The two ends are in different repos on purpose. The CONTENT lives here: the law
+-- book, the ledger that charges, the response that stands units in the world, and
+-- the commands an operator or a job drives it with. The SEAM lives in
+-- `open77-base`: `Open77.prevention.heat/.av`, the only way to move a star, since
+-- every `PreventionSystem` method is scripted and the ones that raise a stage are
+-- private. `client/main.lua` is the one file that speaks to that seam, and it
+-- names the half it cannot reach instead of failing silently.
+shared_script "modules/ncpd/module.lua"
+shared_script "modules/ncpd/locales.lua"
+shared_script "modules/ncpd/shared/law.lua"
+server_script "modules/ncpd/server/ledger.lua"
+server_script "modules/ncpd/server/response.lua"
+server_script "modules/ncpd/server/main.lua"
+client_script "modules/ncpd/client/main.lua"
 
 shared_script "modules/chat/module.lua"
 shared_script "modules/chat/locales.lua"
@@ -462,6 +486,29 @@ permissions {
   "world.effects",
 
   "world.vehicles",
+
+  -- The MaxTac squad is spawned by the SERVER as canonical NPCs, which is what
+  -- `world.npcs` gates (`wiki/npcs.md`: "Server mutation requires `world.npcs`").
+  -- Without this line every trooper is answered `permission_denied:world.npcs`
+  -- and the squad silently never arrives -- the exact empty-street failure the
+  -- MaxTac roster exists to prevent.
+  "world.npcs",
+
+  -- The wanted level, and the MaxTac AV on top of it. `world.prevention` is the
+  -- name the platform gates this on (`Open77.prevention.setWanted` / `.requestAv`
+  -- / `.state`), and it is a CLIENT permission: there is no server-side
+  -- prevention call to gate, because every `PreventionSystem` method is scripted
+  -- and only a client's own script frame may call one.
+  --
+  -- WHAT "PER PLAYER" MEANS HERE. The engine's wanted level is a scalar on a
+  -- singleton system, so the lever has no target argument -- it moves the heat of
+  -- the world the calling client is simulating. A per-player wanted level works
+  -- only because every player runs their own client, which is why the server
+  -- sends the charge to ONE connection and this module keeps the player id in the
+  -- payload as its own bookkeeping rather than passing it on. An undeclared name
+  -- is answered `permission_denied:<name>`, so a host that does not know it loses
+  -- the lever and nothing else.
+  "world.prevention",
 
   "acl.read",
 

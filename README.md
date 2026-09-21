@@ -149,6 +149,34 @@ which hands the room to a character the game's own creator has just built and to
 nobody else — so for a **returning** player the key, the panel's own `outfits →
 wardrobe` row and that command are the whole of the way in.
 
+### The garage key: out, and away
+
+`garages` is a **place**, like a dealer and a store: stand on the marker, press its
+key — **E** by default and rebindable — and it does one of two things. On foot it
+brings one of the character's own vehicles out AT the spot; **sitting in one of them,
+the same key puts it away**, filed under the spot the player is standing on, which is
+what makes it come out there next time. Which of the two is decided on the SERVER, from
+the seat the host reports and the plate the `vehicles` contract holds: a client that
+said "I am in my car" would be a client deciding what gets stored. The client's half of
+the decision is only which of the two texts the row shows.
+
+**A vehicle that is already out is MOVED to the marker, not answered.** It used to be
+answered with the id it already had — `Ok`, "Brought out XX", and an empty spot in
+front of the player, because the car was parked on the other side of the map, which is
+what a player found and reported by pressing the key six times in one session. The
+`vehicles` contract recalls it instead: put away first, which writes its condition
+back, then created again on the marker and facing the marker's own heading. It refuses
+with `vehicle.occupied` when somebody is sitting in it, because the occupant is not
+necessarily the player who asked. A request that names no place — the module's own
+spawn event, and the nearby-the-player path — keeps the old answer: moving a car for
+"somewhere near me" would be a surprise rather than a service.
+
+It ships with **no spots**: `/opx.garages.add` captures one where the operator is
+standing (the heading comes from their client, because a chat line has none) and prints
+the line to check into `config/garages.lua`; `/opx.garages.remove`, `/opx.garages.list`
+and `/opx.garages.bring <key> [plate]` delete one, list them and take one out from chat.
+All four are ACL-gated under `command.opx.garages.*`.
+
 ### Buying a vehicle
 
 `dealership` sells what `vehicles` owns. A **dealer is a place**, like a garage spot:
@@ -215,6 +243,45 @@ generic failure. On a server running the platform's own `open77_appearance` pack
 contract is simply absent, and the key says that out loud instead of doing nothing: the
 markers draw and the row posts either way, so silence would be the one answer nobody
 could read.
+
+### The wanted level is a crime score, not a fact
+
+`ncpd` owns what a crime is worth, who is charged, and which division answers.
+The engine's own wanted level is **an accumulated crime score**, not a value one
+can set: `PreventionSystem` keeps the score, raises `EPreventionHeatStage`
+(`Heat_0 .. Heat_5`) when it reaches the current stage's capacity, and zeroes it
+as it crosses. The `wanted_level` quest fact is written *from* that stage and read
+only by a debug overlay — setting the fact moves the bar and nothing else. So the
+module drives the ladder rather than the fact, and the sirens, the radio, the
+roadblocks, the wanted bar and every response unit stay the game's own.
+
+`config/ncpd.lua` is the law book and needs no code to change: `LAWS` are
+`{ id, label, score, ceiling }`, where `ceiling` is the stage at or above which an
+offence stops counting; `LADDER` is keyed by the engine's own **heat number**, so
+`[0]` is `Heat_0` — not wanted, whose capacity is the score that makes a player
+wanted — and each row carries the score that leaves it plus the response the
+engine already wires to it; `DISTRICTS` scales a score by district; `DECAY` is how
+it falls again. `MAXTAC` is the separate division that arrives at `Heat_5`: the
+Zetatech Surveyor and its variants, the troopers, the Merrimac and the ground pair,
+the tag the engine gives a MaxTac NPC spawned outside its own system, and the rule
+that troopers are **players who opted in, bots for every seat left empty** — so an
+empty division is never an empty street.
+
+Every value is validated when the resource loads and a value that cannot be used is
+a **named warning, not a raise**: a law with a bad score costs that law and is
+called out at boot, where an operator looks. The suite pins the arithmetic, the
+vocabulary and eight negative controls; the boot line reads
+`[ncpd] ready: 11 law(s), 5 heat stage(s): ncpd 1-4, maxtac 5`.
+
+**What is not here yet, deliberately.** Raising a stage is a platform seam:
+`PreventionSystem`'s 287 methods are all scripted, so the client enqueues a command
+and its REDscript loop runs it inside the script frame it owns. That queue exists
+and carries `prevention.lock`, `prevention.blockfoot` and `prevention.blockvehicle`
+today; it does not yet carry a heat or AV command — that is one change in
+`open77-base`, and it is what the per-player ledger is waiting on. Until it lands
+the law book is the single source of truth for what a crime costs and nothing
+charges anybody yet. The reasoning, every record involved and the build order are in
+`docs/ncpd-maxtac.md`.
 
 ### The grants a staff panel needs
 

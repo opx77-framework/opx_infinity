@@ -9,11 +9,15 @@ local EN = {
 	['garages.title'] = 'GARAGES',
 	['garages.refused'] = 'That could not be done.',
 
-	['garages.key.use'] = 'Bring out a vehicle',
+	['garages.key.use'] = 'Bring out or put away a vehicle',
 	['garages.prompt.garage'] = 'Bring out a vehicle',
 	['garages.prompt.avpad'] = 'Bring out an AV',
+	-- Said instead of the two above while the player is sitting in one of their
+	-- own vehicles, because that is what the same key does then.
+	['garages.prompt.putAway'] = 'Put your vehicle away',
 
 	['garages.broughtOut'] = 'Brought out {plate}.',
+	['garages.storedAway'] = 'Put away {plate}.',
 
 	['garages.noSuchSpot'] = 'There is no garage here.',
 	['garages.noCharacter'] = 'Your record could not be read.',
@@ -45,11 +49,13 @@ local FR = {
 	['garages.title'] = 'GARAGES',
 	['garages.refused'] = "Cela n'a pas pu être fait.",
 
-	['garages.key.use'] = 'Sortir un véhicule',
+	['garages.key.use'] = 'Sortir ou ranger un véhicule',
 	['garages.prompt.garage'] = 'Sortir un véhicule',
 	['garages.prompt.avpad'] = 'Sortir un AV',
+	['garages.prompt.putAway'] = 'Ranger votre véhicule',
 
 	['garages.broughtOut'] = 'Sorti : {plate}.',
+	['garages.storedAway'] = 'Rangé : {plate}.',
 
 	['garages.noSuchSpot'] = 'Il n’y a pas de garage ici.',
 	['garages.noCharacter'] = "Votre fiche n'a pas pu être lue.",
