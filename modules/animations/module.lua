@@ -18,7 +18,15 @@ local M = OPX.Modules.Declare{
 	id = 'animations',
 	side = 'both',
 	fatal = false,
-	optional = { 'downed', 'menu', 'form', 'prompts' },
+	-- `target` is optional too, and it is optional ON PURPOSE rather than
+	-- required: a runtime without the eye is a runtime where the walking paces
+	-- are unreachable, which is a missing convenience and not a broken module.
+	-- But it MUST be named. `Resolve` orders modules by what they declare, so
+	-- without this line nothing put `target` ahead of `animations` on the
+	-- client, `OPX.Api.Get('target')` answered nil in `Walk.Start`, and the pace
+	-- rows were never registered at all -- reported from the game the same hour
+	-- they shipped.
+	optional = { 'downed', 'menu', 'form', 'prompts', 'target' },
 }
 
 local NET = OPX.Channel.NET
