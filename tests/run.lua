@@ -3081,9 +3081,15 @@ do
 		end
 		-- Only the modules this resource CALLS, found by reading the client
 		-- sources. Declaring the library's whole permission set instead would
-		-- hand this resource `world.markers` and `ui.vanilla.map` for code it
-		-- does not run, and a manifest that asks for more than it uses is the
-		-- habit this project does not have.
+		-- hand this resource permissions for code it does not run, and a
+		-- manifest that asks for more than it uses is the habit this project
+		-- does not have.
+		--
+		-- This paragraph used to name `world.markers` and `ui.vanilla.map` as the
+		-- examples. `ui.vanilla.map` stopped being one on 2026-09-21, when
+		-- `modules/blips` started calling `Open77.blips.create` and the manifest
+		-- gained it for real -- which is the direction below working: a permission
+		-- is declared when something reaches for it and not before.
 		--
 		-- The useful direction is the other one: start calling `OPX.Lib.Blip`
 		-- and this check names the line to add, here, instead of the blip
