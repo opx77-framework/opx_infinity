@@ -20126,5 +20126,32 @@ do
 		end
 	end
 end
+
+-- The health pool is an operator's number now, and two conversions in
+-- `PlaceCharacter` divided stored points by a hard-coded 100. Raising the pool
+-- without touching them would have placed every character at
+-- stored/100 of a 250-point body -- so somebody who logged out unhurt would
+-- come back at 40%, quietly, everywhere at once, the first time the number
+-- moved. That is the whole reason this section exists.
+section('the health pool is configured, and the stored points follow it')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local HEALTH = OPX.Config.SHARED.HEALTH
+
+		check('the framework ships a pool and a legacy full value',
+			type(HEALTH) == 'table' and OPX.Math.IsFinite(HEALTH.MAX)
+				and OPX.Math.IsFinite(HEALTH.LEGACY_FULL),
+			type(HEALTH) == 'table' and tostring(HEALTH.MAX))
+		check('and a new character starts with the pool, not a literal',
+			OPX.Config.MODULES.character.PLAYER.STARTING_METADATA.health == HEALTH.MAX,
+			tostring(OPX.Config.MODULES.character.PLAYER.STARTING_METADATA.health))
+		check('the legacy full value is not a tunable that moved with the pool',
+			HEALTH.LEGACY_FULL == 100, tostring(HEALTH.LEGACY_FULL))
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

@@ -1018,12 +1018,24 @@ function Host.Environment(side, database)
 				world.transitions[#world.transitions + 1] = { playerId = id, verb = 'kill' }
 				return true
 			end,
+			-- The canonical maximum. Recorded rather than swallowed: the whole
+			-- point of a configurable pool is that a fraction lands against it,
+			-- and a stub that answers true and keeps nothing cannot tell a body
+			-- placed at full from one placed at 40 per cent.
+			setMaxHealth = function(playerId, maximum)
+				local id = tonumber(playerId) or playerId
+				local wanted = tonumber(maximum)
+				if wanted == nil or wanted < 1 then return false, 'invalid_argument' end
+				world.maxHealth[id] = wanted
+				return true
+			end,
 			respawn = function(playerId, position)
 				local id = tonumber(playerId) or playerId
 				if lives[id] == nil then return false, 'not_incarnated' end
 				lives[id] = 'alive'
 				if type(position) == 'table' then control.Stand(id, position) end
-				world.transitions[#world.transitions + 1] = { playerId = id, verb = 'respawn' }
+				world.transitions[#world.transitions + 1] = { playerId = id, verb = 'respawn',
+					health = type(position) == 'table' and position.health or nil }
 				return true
 			end,
 			revive = function(playerId)
@@ -1296,6 +1308,8 @@ function Host.Environment(side, database)
 	world = {
 		positions = {}, buckets = {}, names = {},
 		bucketWrites = {}, population = {}, lockdown = {}, transitions = {},
+		-- The canonical health maximum each player was given, by player id.
+		maxHealth = {},
 	}
 
 	-- The life phase of each player id, or nil for a slot with no body. Set on

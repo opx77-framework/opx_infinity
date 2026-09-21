@@ -129,8 +129,14 @@ OPX.Config.MODULES.character = {
 
 	PLAYER = {
 		-- Initial metadata. The module itself reads health and armor.
+		--
+		-- Health is stored in POINTS, so a new character starts with the pool
+		-- this server configures rather than a literal. `config/shared.lua` is a
+		-- shared script and the manifest loads it before this one, so the value
+		-- is there to read; the `or 100` is the engine's own default, for a
+		-- config an operator has emptied.
 		STARTING_METADATA = {
-			health = 100,
+			health = (OPX.Config.SHARED.HEALTH or {}).MAX or 100,
 			armor = 0,
 			isDead = false,
 			inLastStand = false,

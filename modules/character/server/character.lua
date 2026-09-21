@@ -8,6 +8,42 @@ local M = OPX.Modules.Get('character')
 
 local Result = OPX.Result
 
+--- The health pool this server places a body with, in points.
+--- Read at call time and never captured: `config/shared.lua` is a shared script
+--- and the value is an operator's to change between restarts, not a constant to
+--- bake into a closure at load.
+local function healthMaximum()
+	local shared = OPX.Config.SHARED.HEALTH
+	local wanted = type(shared) == 'table' and OPX.Math.Finite(shared.MAX) or nil
+	-- 1 rather than 100 as the floor: a pool of zero would make every fraction
+	-- below a division by zero, and a body nobody can hurt is not what an
+	-- operator who typed a bad number meant. The engine's own default is the
+	-- fallback, because it is the only value certain to work.
+	if wanted == nil or wanted < 1 then return 100 end
+	return math.floor(wanted)
+end
+
+--- The stored health of a character, in points, against the pool it will be
+--- placed in.
+---
+--- HEALTH IS PERSISTED IN POINTS, so every row written before `HEALTH.MAX`
+--- existed holds a number on a 0..100 scale. Read naively against a pool of
+--- 250, a character who logged out unhurt comes back at 40% -- a punishment for
+--- a setting they did not change, applied to everybody at once, the first time
+--- the pool is raised. A row at or above what the old scale called full is
+--- therefore placed full. It costs nothing once the pool has been raised: a
+--- character hurt below the legacy full value still comes back hurt.
+local function healthPoints(stored, maximum)
+	local points = OPX.Math.Finite(stored)
+	if points == nil then return maximum end
+
+	local shared = OPX.Config.SHARED.HEALTH
+	local legacy = type(shared) == 'table' and OPX.Math.Finite(shared.LEGACY_FULL) or nil
+	if legacy ~= nil and maximum > legacy and points >= legacy then return maximum end
+
+	return OPX.Math.Clamp(points, 0, maximum)
+end
+
 --- Answers how many characters an account may hold.
 local function slotsFor(userId)
 	return M.Settings.CHARACTERS.SLOTS_BY_USER[userId]
@@ -768,20 +804,32 @@ function M.PlaceCharacter(player, target)
 	})
 	if not killed then return false, tostring(killError) end
 
-	local health = tonumber(data.metadata.health)
-	if not OPX.Math.IsFinite(health) then health = 100 end
+	-- THE POOL IS THE SERVER'S, AND IT IS APPLIED BEFORE THE BODY IS FILLED.
+	-- `respawn` and `revive` both take a FRACTION, and the two conversions below
+	-- divided stored points by a hard-coded 100 -- so the moment the pool stopped
+	-- being 100 every character would have woken at the wrong depth, silently.
+	-- `setMaxHealth` is the platform's canonical maximum and the client is told,
+	-- never asked; it is set first so the fraction lands against the new pool.
+	local maximum = healthMaximum()
+	local applied, maxError = Open77.players.setMaxHealth(source, maximum)
+	if applied == false then
+		Open77.log.warn(('[character] %d keeps the engine default health pool: %s')
+			:format(source, tostring(maxError)))
+	end
+
+	local health = healthPoints(data.metadata.health, maximum)
 	local respawned, respawnError = Open77.players.respawn(source, {
 		position = { x = target.x, y = target.y, z = target.z },
 		heading = target.heading or 0.0,
 		bucket = bucket,
-		health = OPX.Math.Clamp(health / 100, 0.15, 1.0),
+		health = OPX.Math.Clamp(health / maximum, 0.15, 1.0),
 		graceMs = 5000,
 	})
 	if not respawned then
 		-- A revive picks the body up where it fell and not where the row says, so
 		-- MaySample stays false and the stored position survives.
 		local revived, reviveError = Open77.players.revive(source, {
-			health = OPX.Math.Clamp(health / 100, 0.15, 1.0),
+			health = OPX.Math.Clamp(health / maximum, 0.15, 1.0),
 			graceMs = 5000,
 		})
 		if not revived then

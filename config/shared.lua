@@ -16,6 +16,32 @@ OPX.Config.SHARED = {
 		ALLOW_NEGATIVE = {},
 	},
 
+	-- The health pool every character is placed with, in POINTS.
+	--
+	-- IT LIVES HERE AND NOT UNDER A MODULE for the same reason `AV_PREFIXES`
+	-- does: how big a body's health pool is is a fact about this server, not
+	-- about whoever is looking at it. `character` places against it, `downed`
+	-- reads fractions of it, `hud` draws it, and `admin` reports it -- four
+	-- readers is exactly how a number ends up written four times and edited
+	-- once. The server applies it with `Open77.players.setMaxHealth`, which is
+	-- the platform's canonical maximum: the client is TOLD, never asked.
+	--
+	-- The engine's own default is 100. Raising it does not make anybody
+	-- tougher against a given hit by itself -- damage is the engine's -- it
+	-- makes the pool deeper.
+	HEALTH = {
+		MAX = 250,
+
+		-- What a stored health value was written against before `MAX` existed.
+		-- Health is persisted in POINTS, so every row already in the database
+		-- holds a number on a 0..100 scale. Read naively against a MAX of 250
+		-- a character who logged out unhurt would come back at 40%, which is a
+		-- punishment for a setting they did not change. A row at or above this
+		-- is therefore placed at full. Do not raise it: it is a statement about
+		-- what the old data MEANS, not a tunable.
+		LEGACY_FULL = 100,
+	},
+
 	-- A TweakDB vehicle record naming an AV starts with one of these, compared
 	-- lower-cased because the database column and the wire disagree about case.
 	-- The rule `open77_avcleanup` sweeps the world by.
