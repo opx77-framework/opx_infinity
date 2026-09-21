@@ -182,25 +182,125 @@ function Host.PayloadNodes(value)
 	return nodes
 end
 
+--- What steers each bridge `Host.Database` has built, keyed by the bridge and
+--- weak on that key so a bridge a test has dropped is not kept alive by it.
+Host.steering = setmetatable({}, { __mode = 'k' })
+
 --- A stand-in for the `MySQL` bridge. `answers` maps a method name to a function
 --- of (sql, params); a method that is absent raises, which is what the real
 --- bridge does and the whole reason `OPX.Storage` wraps every call.
 -- @author dop42
+--
+-- EVERY QUERY USED TO BE ATOMIC, and that made a whole class of bug unreachable.
+-- `bridge.query.await` called straight through and answered on the spot, so no
+-- two threads could ever be part-way through a query at the same time -- no
+-- interleaving was reachable by any route, which is precisely the failure
+-- `OPX.Storage` and every read-modify-write above it exist to guard against.
+-- The card is exact: the continuation "resumes on the owning resource's
+-- scheduler, never on the database worker". So `await` YIELDS once before it
+-- answers, and the caller comes back on a later `control.Pump` round -- which
+-- is what lets a test start two claims on one row and watch them overtake each
+-- other.
+--
+-- It yields only when it is legal to: `OPX.Schema.Apply` is called straight
+-- from test code, off any coroutine, and the real bridge would raise there
+-- rather than silently succeed. `control.database.strict` makes it raise, so a
+-- call site can be PROVED to be on a thread; the default answers instead, so
+-- that proving it is a test's choice and not a precondition of every test.
+--
+-- THE METHOD IS A CALLABLE THAT ALSO CARRIES `.await`, which is the shape the
+-- card documents ("two forms: pass a callback, or use `.await`"). It was a
+-- plain table, so the documented callback form raised `attempt to call a table
+-- value` and no test could use it.
 -- @param answers table<string, function>
 -- @return table
 function Host.Database(answers)
 	local bridge = {}
-	for _, method in ipairs({ 'query', 'single', 'scalar', 'insert', 'update', 'transaction' }) do
-		bridge[method] = {
-			await = function(sql, params)
-				local answer = answers[method]
-				if answer == nil then error(('no stub for MySQL.%s'):format(method), 0) end
-				return answer(sql, params)
-			end,
-		}
+
+	-- What a test steers, reachable as `control.database` once an environment
+	-- has been built with this bridge, and as a field on the bridge itself for
+	-- the tests that build one without booting.
+	--
+	--   strict   true: an `await` off a coroutine raises, as the real one does
+	--   calls    every call in order: { method, sql, params, form }
+	--   park     a function of (method, sql) answering true to hold that call
+	--            suspended until `control.database.Resume()` lets it go
+	local steering = { strict = false, calls = {}, park = nil, parked = {} }
+
+	local function invoke(method, sql, params)
+		local answer = answers[method]
+		if answer == nil then error(('no stub for MySQL.%s'):format(method), 0) end
+		return answer(sql, params)
 	end
+
+	for _, method in ipairs({ 'query', 'single', 'scalar', 'insert', 'update', 'transaction' }) do
+		local function await(sql, params)
+			steering.calls[#steering.calls + 1] =
+				{ method = method, sql = sql, params = params, form = 'await' }
+
+			if coroutine.isyieldable() then
+				-- PARKED CALLS COME BACK IN THE ORDER THEY ARE RELEASED, not in
+				-- the order they were made: a database worker answers whichever
+				-- query finishes first, and a runtime that assumed otherwise is
+				-- the bug this affordance is for.
+				if steering.park ~= nil and steering.park(method, sql, params) then
+					local ticket = { held = true }
+					steering.parked[#steering.parked + 1] = ticket
+					while ticket.held do coroutine.yield() end
+				else
+					-- The ordinary case: one trip through the scheduler.
+					coroutine.yield()
+				end
+			elseif steering.strict then
+				error(('MySQL.%s.await was called off a coroutine'):format(method), 0)
+			end
+
+			return invoke(method, sql, params)
+		end
+
+		bridge[method] = setmetatable({ await = await }, {
+			-- The callback form. The continuation runs on the caller's side of
+			-- the wire, so it is queued rather than called here -- a callback
+			-- that ran before this returned would be the one thing the card
+			-- says never happens.
+			__call = function(_, sql, params, callback)
+				if type(params) == 'function' then callback, params = params, nil end
+				steering.calls[#steering.calls + 1] =
+					{ method = method, sql = sql, params = params, form = 'callback' }
+				local rows = invoke(method, sql, params)
+				if type(callback) == 'function' then callback(rows) end
+				return nil
+			end,
+		})
+	end
+
+	--- Lets every parked call go, oldest first.
+	function steering.Resume(count)
+		local released = 0
+		for index = 1, #steering.parked do
+			local ticket = steering.parked[index]
+			if ticket.held then
+				ticket.held = false
+				released = released + 1
+				if count ~= nil and released >= count then break end
+			end
+		end
+		return released
+	end
+
+	-- Held OUTSIDE the bridge, in a weak-keyed registry, rather than as
+	-- `bridge.control`: the bridge models `MySQL` and a key the platform does
+	-- not have on it is a key a caller could come to depend on. `Host.Steering`
+	-- is the lookup, and `Host.Environment` publishes it as `control.database`.
+	Host.steering[bridge] = steering
 	return bridge
 end
+
+--- What steers one bridge, for a test that built one without booting.
+-- @author dop42
+-- @param bridge table
+-- @return table|nil
+function Host.Steering(bridge) return bridge ~= nil and Host.steering[bridge] or nil end
 
 --- Builds a fresh environment carrying the globals the platform installs.
 -- @author dop42
@@ -1473,6 +1573,11 @@ function Host.Environment(side, database)
 
 		-- The engine's clock and weather, and the two refusal switches.
 		environment = environment,
+
+		-- What steers the MySQL bridge this environment was booted with, or nil
+		-- when it has none: `strict`, `calls`, `park` and `Resume`. Parking a
+		-- query is how two threads are made to overlap inside one.
+		database = Host.Steering(database),
 
 		--- Reloads a resource: its generation changes, which is exactly what a
 		--- guard holding a cached handle is watching for. With no name it is
