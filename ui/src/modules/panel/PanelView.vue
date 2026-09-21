@@ -1791,6 +1791,13 @@ function filter(value: string): void {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: var(--op-space-1);
+  /* A CEF scrollbar is a Chromium scrollbar drawn over gameplay. */
+  scrollbar-width: none;
+}
+
+.tiles::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .tiles.busy {
