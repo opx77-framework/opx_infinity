@@ -19876,5 +19876,87 @@ do
 			OPX.Modules.Record('testlate') == nil)
 	end
 end
+
+-- THE PERMISSION IS AN ARGUMENT AT THESE CALL SITES, so no search of the
+-- `Open77.*` namespaces can find them and the hand-kept `GATED` list above
+-- cannot know about one nobody thought to add.
+--
+-- That is not hypothetical. On 2026-09-21 `camera.preview` and `world.query`
+-- were removed from the manifest as unused, on the evidence that
+-- `Open77.camera`, `Open77.world` and `Open77.hacking` appear in this tree only
+-- inside comments -- which is TRUE, and which proves nothing, because the three
+-- calls that need them are written `Native.Call('camera.orbit',
+-- 'camera.preview', ...)`. The suite stayed green, the server journal stayed
+-- clean -- these are CLIENT permissions, so the refusal lands in the player's
+-- own log -- and in the game the fitting room's camera stopped turning the body
+-- and the eye stopped resolving the sky or the player's own feet.
+--
+-- This derives the pairs from the source instead of from anybody's memory: the
+-- method and the permission are literals side by side, which is the one shape
+-- that cannot drift from what the code actually asks the host for.
+section('a permission named as an argument is still a permission')
+do
+	local handle = io.open('open77.lua', 'r')
+	local manifest = handle and handle:read('a') or ''
+	if handle then handle:close() end
+	check('the manifest is readable', #manifest > 0)
+
+	-- The declared list, read the same way the section above reads it.
+	local declared = {}
+	for name in manifest:gmatch('"([a-z][a-z0-9._]*)"') do declared[name] = true end
+
+	local seen, files = {}, {}
+	for _, side in ipairs({ 'shared', 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if not seen[file] then
+				seen[file] = true
+				files[#files + 1] = file
+			end
+		end
+	end
+	check('the manifest lists the files to scan', #files > 0, #files)
+
+	-- method -> { permission, the file that asks for it }
+	local asked, count = {}, 0
+	for index = 1, #files do
+		local input = io.open(files[index], 'r')
+		if input then
+			local body = input:read('a')
+			input:close()
+			-- Comments are stripped first: a call quoted in prose -- and this
+			-- codebase quotes call sites in prose constantly -- must not demand a
+			-- grant of its own. What is left is code.
+			body = body:gsub('%-%-[^\n]*', '')
+			for method, permission in
+				body:gmatch("Native%.%a+%(%s*'([%w_.]+)'%s*,%s*'([a-z][a-z0-9._]*)'") do
+				if asked[method] == nil then
+					asked[method] = { permission = permission, file = files[index] }
+					count = count + 1
+				end
+			end
+		end
+	end
+
+	-- The count is asserted, not just the contents: a call site that stops
+	-- naming its permission -- or a new one that does -- changes this number,
+	-- and a silent drop to zero would make every check below pass vacuously.
+	-- That is exactly how the page-source walk managed to be green on one
+	-- platform and red on another for two releases.
+	check('the scan found the call sites that name their own permission',
+		count == 3, count)
+
+	local names = {}
+	for method in pairs(asked) do names[#names + 1] = method end
+	table.sort(names)
+
+	for _, method in ipairs(names) do
+		local entry = asked[method]
+		check(('%s asks for %s, and the manifest declares it')
+			:format(method, entry.permission),
+			declared[entry.permission] == true,
+			('%s names it in %s and open77.lua does not declare it')
+				:format(method, entry.file))
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
