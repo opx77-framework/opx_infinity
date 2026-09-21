@@ -546,9 +546,14 @@ local function open()
 	handle = ('t%d'):format(sequence)
 	opened, selection, listed, busy = true, nil, {}, false
 	setPending(nil)
-	OPX.UI.AcquireFocus(FOCUS, { keyboard = true, cursor = true })
-	if not controls(true) then return close('controls_unavailable') end
-	local drawn = send('target:open', {
+	-- THE FOCUS IS TAKEN AFTER THE PAGE HAS THE OPEN, not before it. Taken
+	-- first, a page that never drew left the player holding keyboard and cursor
+	-- with nothing on screen -- the same ordering defect that was corrected in
+	-- `inventory`, left standing here. And `send` forwards BOTH of
+	-- `OPX.UI.Send`'s answers, of which the second says the host refused the
+	-- payload whole while reporting the send a success; `local drawn = send(...)`
+	-- threw that one away, so a refused open read as a drawn one.
+	local drawn, refused = send('target:open', {
 		handle = handle,
 		hoverMs = HOVER_MS,
 		labels = {
@@ -558,7 +563,9 @@ local function open()
 			back = locale('target.back'),
 		},
 	})
-	if not drawn then return close('no_surface') end
+	if not drawn or refused then return close(refused and 'payload_refused' or 'no_surface') end
+	OPX.UI.AcquireFocus(FOCUS, { keyboard = true, cursor = true })
+	if not controls(true) then return close('controls_unavailable') end
 	TriggerEvent(EVENT_OPENED, { handle = handle })
 end
 
@@ -884,7 +891,7 @@ function M.Init()
 	MAX_OPTIONS = math.floor(tuned('MAX_OPTIONS', 32, 1, Model.MAX_TOTAL))
 	HOVER_MS = math.floor(tuned('HOVER_MS', 90, 30, 1000))
 	WATCH_MS = math.floor(tuned('WATCH_MS', 50, 10, 1000))
-	RESOLVE_MS = math.floor(tuned('RESOLVE_MS', 25, 0, 1000))
+	RESOLVE_MS = math.floor(tuned('RESOLVE_MS', 25, 1, 1000))
 	SWEEP_MS = math.floor(tuned('SWEEP_MS', 2000, 250, 60000))
 	REVALIDATE_MS = math.floor(tuned('REVALIDATE_MS', 200, 50, 5000))
 	LOOKUP_BUDGET_MS = math.floor(tuned('LOOKUP_BUDGET_MS', 1500, 100, 10000))

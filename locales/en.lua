@@ -8,6 +8,7 @@
 OPX.Locale.Register('en', {
 	['error.unavailable'] = 'That is not available right now.',
 	['error.badRequest'] = 'That request could not be read.',
+	['error.payloadRefused'] = 'That answer was too large to display.',
 	['error.tooFast'] = 'Slow down.',
 	['error.noPermission'] = 'You may not do that.',
 })

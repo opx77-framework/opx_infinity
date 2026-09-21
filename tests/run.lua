@@ -19611,5 +19611,80 @@ do
 			OPX.Sessions[31] and tostring(OPX.Sessions[31].released))
 	end
 end
+
+-- The broadcast was answered by six of the EIGHT owners that take focus on this
+-- surface. `inventory` and `target` wire no `focus:set` handler at all, and
+-- every handler releases only its OWN names, so an owner neither of them
+-- claimed was an owner nobody released.
+--
+-- What that cost, on the path that really happens: a render error inside a view
+-- unmounts it -- `ui/src/boot/ModuleHost.vue` drops the slot on
+-- `onErrorCaptured` -- the page releases its own focus and announces an empty
+-- stack, and the Lua entry stays on top for ever. `applyFocus` keeps applying
+-- it, so the player holds keyboard and cursor with nothing drawn: no movement,
+-- a pointer on screen, and no way out except to die. `focus:set` is a property
+-- of the SURFACE, so it is answered once in core now rather than in eight
+-- copies of which two were missing.
+section('the page is the truth about what is on screen')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page = control.pages[1]
+
+		local function announce(owner)
+			control.PageEmit(page, 'opx:focus:set',
+				{ surface = 'opx', focus = owner ~= nil, owner = owner or '' })
+		end
+
+		-- An owner NO module here answers for. Nothing in `modules/` releases it,
+		-- which is exactly the position `inventory` and `target` are in.
+		OPX.UI.AcquireFocus('inventory', { keyboard = true, cursor = true })
+		check('the inventory holds keyboard and cursor',
+			OPX.UI.FocusOwner() == 'inventory' and page.focus.cursor == true)
+
+		-- The view dies and the page says so.
+		announce(nil)
+		check('an owner no module answers for is still released',
+			OPX.UI.FocusOwner() == nil, tostring(OPX.UI.FocusOwner()))
+		check('and the player really has their controls back',
+			page.focus.keyboard == false and page.focus.cursor == false,
+			('kb=%s cur=%s'):format(tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+
+		-- The same for `target`, the other owner with no handler.
+		OPX.UI.AcquireFocus('target', { keyboard = true, cursor = true })
+		announce(nil)
+		check('and the eye cannot strand the player either', OPX.UI.FocusOwner() == nil)
+
+		-- A top that MOVED rather than emptied: everything stacked above the
+		-- announced owner is a view the page no longer has.
+		OPX.UI.AcquireFocus('chat', { keyboard = true, cursor = false })
+		OPX.UI.AcquireFocus('inventory', { keyboard = true, cursor = true })
+		check('the inventory is over the chat line', OPX.UI.FocusOwner() == 'inventory')
+		announce('chat')
+		check('an announced owner lower in the stack drops what is above it',
+			OPX.UI.FocusOwner() == 'chat', tostring(OPX.UI.FocusOwner()))
+		check('so the wants applied are the drawn module\'s, not the stale one\'s',
+			page.focus.keyboard == true and page.focus.cursor == false,
+			('kb=%s cur=%s'):format(tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+
+		-- An owner the Lua stack does not hold is somebody else's to acquire --
+		-- their own handler does that on this same broadcast -- so core leaves
+		-- the stack alone rather than guessing at it.
+		-- `menu` is an owner core does not hold. It must not invent an entry for
+		-- it: acquiring is the owning module's job, on this same broadcast, with
+		-- the wants only that module knows. What happens here is the chat module
+		-- releasing itself because it is not the announced owner -- which is the
+		-- six-handler idiom working, not core doing it for them.
+		announce('menu')
+		check('core does not fabricate a stack entry for an owner it does not hold',
+			OPX.UI.FocusOwner() ~= 'menu', tostring(OPX.UI.FocusOwner()))
+		announce(nil)
+		check('and the stack still empties on an empty announcement',
+			OPX.UI.FocusOwner() == nil)
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
