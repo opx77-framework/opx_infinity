@@ -69,10 +69,15 @@ Access.Integer = integer
 -- an unfilled template row is always exactly that. A tolerance here would
 -- eventually condemn a real point somebody stood on.
 --
--- This is the check `config/elevators.lua` did not have. Four lifts shipped with
--- positions that passed every shape test in that module's validator -- finite,
--- in range, fully formed -- and matched nothing in the world. No lift was ever
--- adopted, no panel ever opened, and nothing anywhere said why, for weeks.
+-- THE ZEROS ARE WHY THIS CHECK CAN EXIST AT ALL, and that is the lesson taken
+-- from `config/elevators.lua` rather than a check it was missing. Its four lifts
+-- ship PLAUSIBLE coordinates -- `X = -1521.40` and three more like it, carried
+-- over from a standalone resource that had said they were samples -- which no
+-- rule here or anywhere could tell from a surveyed position: they are finite, in
+-- range and fully formed, and they match nothing in Night City. No lift was ever
+-- adopted, no panel ever opened, and nothing anywhere said why, for weeks. So
+-- this config ships blanks instead of plausible numbers, precisely so that a
+-- blank is something a validator can see.
 -- @author dop42
 -- @param point table|nil
 -- @return boolean

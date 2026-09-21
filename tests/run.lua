@@ -14984,6 +14984,220 @@ do
 		table.concat(found, ', '))
 end
 
+-- ── a comment that states a fact about other code states a true one ──────────
+-- Each of these was a sentence asserting a guarantee the code did not provide.
+-- They are held here and not merely rewritten, because a false comment is only
+-- discovered by somebody who trusted it, and the disagreement is the bug.
+section('the comments that make a checkable claim')
+do
+	--- One file's whole source, or nil.
+	local function sourceOf(path)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local text = handle:read('a')
+		handle:close()
+		return text
+	end
+
+	-- Every Lua file the manifest actually loads, on either side, once.
+	local loaded, order = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if loaded[file] == nil then
+				loaded[file] = sourceOf(file) or ''
+				order[#order + 1] = file
+			end
+		end
+	end
+	check('the manifest\'s files are readable', #order > 0, #order)
+
+	-- ── `reconcile` is not the only writer of the marker set ──────────────
+	-- `clothing` and `garages` both said it was; `clearMarkers()` empties the
+	-- same table in both, and `teleports` -- the later rewrite of the same header
+	-- -- never made the claim.
+	local sole = {}
+	for _, file in ipairs(order) do
+		if loaded[file]:find('the only thing that touches that set', 1, true) then
+			sole[#sole + 1] = file
+		end
+	end
+	check('no file claims `reconcile` is the only writer of its marker set',
+		#sole == 0, table.concat(sole, ', '))
+	-- And the claim really would be false, so this is not agreeing with itself.
+	local emptiers = 0
+	for _, file in ipairs({ 'modules/clothing/client/main.lua',
+		'modules/garages/client/main.lua' }) do
+		local source = loaded[file] or ''
+		if source:find('local function clearMarkers', 1, true)
+			and source:find('markers%[key%] = nil') then
+			emptiers = emptiers + 1
+		end
+	end
+	check('because a second function really does empty it, in both', emptiers == 2,
+		emptiers)
+
+	-- ── the job gate is not narrating copies that still exist ─────────────
+	-- The claim is "a JOBS block means one thing", and the thing it means is the
+	-- five-branch decision that answers a REFUSAL CODE. A file that reads a `JOBS`
+	-- block and names one of those codes is deciding access, and must decide it in
+	-- `lib/shared/jobgate.lua`. `modules/hauling` was the fourth hand-written copy.
+	--
+	-- Reading a JOBS block for something else is not caught and must not be:
+	-- `modules/character` owns the roster of job definitions, and `modules/shops`
+	-- asks `character.HasJob` per name -- a boolean about a live player, with no
+	-- snapshot and no code -- which the gate's header names as the exception.
+	local rogue = {}
+	for _, file in ipairs(order) do
+		local source = loaded[file]
+		-- A file that READS a JOBS block -- `x.JOBS` -- rather than one that only
+		-- mentions the word in prose, AND answers the gate's own vocabulary.
+		local decides = source:find('%.JOBS%f[^%w_]')
+			and (source:find('grade_too_low', 1, true) or source:find('off_duty', 1, true))
+		if decides and not source:find('OPX.JobGate', 1, true)
+			and file:find('lib/shared/jobgate%.lua') == nil then
+			rogue[#rogue + 1] = file
+		end
+	end
+	check('every file that decides a JOBS block routes it through the one gate',
+		#rogue == 0, table.concat(rogue, ', '))
+	-- And `modules/shops`, the exception, really is one: it reads a JOBS block and
+	-- answers no refusal code of its own.
+	local shops = loaded['modules/shops/server/main.lua'] or ''
+	check('and the named exception is still asking the character contract',
+		shops:find('%.JOBS%f[^%w_]') ~= nil and shops:find('character.HasJob', 1, true) ~= nil
+			and shops:find('grade_too_low', 1, true) == nil)
+
+	-- ── the admin docblock sits on the function it describes ──────────────
+	-- A docblock headed "The name of the CHARACTER a player is playing", with a
+	-- single `@param playerId Source`, sat above `bagKey(playerId, key)`, which
+	-- takes two arguments and answers no such thing. `Server.CharacterOf`, which
+	-- does, had no doc at all.
+	local admin = loaded['modules/admin/server/main.lua'] or ''
+	local claim = 'The name of the CHARACTER a player is playing'
+	local at = admin:find(claim, 1, true)
+	check('the character-name docblock is still in the file', at ~= nil)
+	if at ~= nil then
+		local after = admin:sub(at)
+		local toCharacterOf = after:find('function Server.CharacterOf', 1, true)
+		local toBagKey = after:find('local function bagKey', 1, true)
+		check('and the next function under it is the one it describes',
+			toCharacterOf ~= nil and (toBagKey == nil or toCharacterOf < toBagKey),
+			('CharacterOf@%s bagKey@%s'):format(tostring(toCharacterOf), tostring(toBagKey)))
+	end
+
+	-- ── the garages tie-break does not blame `pairs` ──────────────────────
+	-- `choose` walks `for index = 1, #rows` over an array. The sort is worth
+	-- having; the reason given was not the reason.
+	local garages = loaded['modules/garages/server/main.lua'] or ''
+	local choose = garages:find('local function choose', 1, true)
+	check('the garages chooser is still there', choose ~= nil)
+	if choose ~= nil then
+		-- The comment block immediately above it.
+		local head = garages:sub(math.max(1, choose - 700), choose)
+		check('and its tie-break reason does not blame `pairs`',
+			head:find('pairs', 1, true) == nil, head:sub(-260))
+		local body = garages:sub(choose, choose + 700)
+		check('because there is no `pairs` on that path to blame',
+			body:find('pairs%s*%(') == nil)
+	end
+
+	-- ── the hauling placeholder rule and the elevators story agree ────────
+	-- The docblock claimed an all-three-axes-zero rule was "the check
+	-- config/elevators.lua did not have", and then described elevators as having
+	-- shipped plausible-but-wrong coordinates. Both cannot be true.
+	local hauling = loaded['modules/hauling/shared/access.lua'] or ''
+	check('the hauling placeholder rule no longer claims elevators lacked it',
+		hauling:find('the check `config/elevators.lua` did not have', 1, true) == nil
+			and hauling:find('This is the check', 1, true) == nil)
+	local lifts = sourceOf('config/elevators.lua') or ''
+	local zeroed = 0
+	for x, y, z in lifts:gmatch('X%s*=%s*(%-?[%d%.]+),%s*Y%s*=%s*(%-?[%d%.]+),%s*Z%s*=%s*(%-?[%d%.]+)') do
+		if tonumber(x) == 0 and tonumber(y) == 0 and tonumber(z) == 0 then zeroed = zeroed + 1 end
+	end
+	check('because not one shipped lift is at three zeros, so the rule could not have caught them',
+		zeroed == 0, zeroed)
+end
+
+-- ── the theme bounds are two lists and one seam ──────────────────────────────
+-- `BOUNDS` in `modules/theme/shared/palette.lua` and `KNOBS` in
+-- `ui/src/design-system/theme.ts` carry the same floors and ceilings, and the
+-- duplication is deliberate: the page's copy is the last clamp before a custom
+-- property is written, it must hold against a payload Lua never saw, and a `.ts`
+-- file cannot read a Lua table. What was missing was anything watching them.
+-- `core/shared/glyphs.lua` has exactly this arrangement with the page's glyph
+-- list and the suite reads both files for it; this does the same, so a retune on
+-- one side names the other side's line instead of shipping two clamps.
+section('the theme bounds agree across the one seam')
+do
+	--- Every `key = { low, high }` row of one Lua table literal.
+	local function luaBounds(path, name)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local source = handle:read('a')
+		handle:close()
+		local opened = source:find('local ' .. name .. ' = {', 1, true)
+		if opened == nil then return nil end
+		-- To the first line that is a lone closing brace, so RUNGS below is not
+		-- swept in.
+		local closed = source:find('\n}', opened, true)
+		local block = source:sub(opened, closed or #source)
+		local out = {}
+		for key, low, high in block:gmatch('([%a][%w]*)%s*=%s*{%s*(%-?[%d%.]+)%s*,%s*(%-?[%d%.]+)%s*}') do
+			out[key] = { tonumber(low), tonumber(high) }
+		end
+		return out
+	end
+
+	--- Every `key: { ... min: n, max: n }` row of the page's KNOBS map.
+	local function pageBounds(path)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local source = handle:read('a')
+		handle:close()
+		local out = {}
+		for key, body in source:gmatch('([%a][%w]*):%s*{([^}]*)}') do
+			local low = body:match('min:%s*(%-?[%d%.]+)')
+			local high = body:match('max:%s*(%-?[%d%.]+)')
+			if low ~= nil and high ~= nil then
+				out[key] = { tonumber(low), tonumber(high) }
+			end
+		end
+		return out
+	end
+
+	local lua = luaBounds('modules/theme/shared/palette.lua', 'BOUNDS')
+	local page = pageBounds('ui/src/design-system/theme.ts')
+	check('the Lua bounds are readable', lua ~= nil and next(lua) ~= nil)
+	check('and the page bounds are', page ~= nil and next(page) ~= nil)
+
+	if lua ~= nil and page ~= nil then
+		-- Both directions. A knob the page clamps and Lua does not is a value the
+		-- server would hand over unbounded; one Lua clamps and the page does not is
+		-- a property written past its ceiling on somebody's screen.
+		local missing, extra, differ = {}, {}, {}
+		for key, bound in pairs(lua) do
+			local other = page[key]
+			if other == nil then
+				missing[#missing + 1] = key
+			elseif other[1] ~= bound[1] or other[2] ~= bound[2] then
+				differ[#differ + 1] = ('%s lua=%s..%s page=%s..%s'):format(key,
+					bound[1], bound[2], other[1], other[2])
+			end
+		end
+		for key in pairs(page) do
+			if lua[key] == nil then extra[#extra + 1] = key end
+		end
+		table.sort(missing); table.sort(extra); table.sort(differ)
+
+		check('every knob Lua bounds is bounded by the page too', #missing == 0,
+			table.concat(missing, ', '))
+		check('and every knob the page bounds is bounded by Lua', #extra == 0,
+			table.concat(extra, ', '))
+		check('and the two lists agree on every floor and ceiling', #differ == 0,
+			table.concat(differ, ' | '))
+	end
+end
+
 -- ── a toast patch the page refused is rolled back ────────────────────────────
 -- `Update` mutated the live table and only THEN sent. On a refusal Lua's copy
 -- was ahead of the page's, and `Toast.Attach`'s `notify:ready` handler replays

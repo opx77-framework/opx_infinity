@@ -119,10 +119,11 @@ shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
 shared_script "lib/shared/string.lua"
 shared_script "lib/shared/math.lua"
--- The one job gate, ahead of every module that asks it a question. It was
--- `modules/elevators/shared/access.lua`'s own five branches until
--- `modules/teleports` wanted the same rule; a second hand-kept copy of an
--- access decision is how two surfaces end up disagreeing about who may pass.
+-- The job gate, ahead of every module that asks it a question. A `JOBS` block
+-- means one thing wherever it is written, and it is decided there: a hand-kept
+-- copy of an access decision is how two surfaces end up disagreeing about who
+-- may pass, and this file has been re-written by hand twice since it was
+-- factored out, each time losing a branch.
 shared_script "lib/shared/jobgate.lua"
 shared_script "lib/shared/text.lua"
 shared_script "lib/shared/validate.lua"

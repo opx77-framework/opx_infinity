@@ -253,23 +253,14 @@ function Server.UserOf(playerId)
 	return M.Trimmed(identifier, 64)
 end
 
---- The name of the CHARACTER a player is playing, or nil.
---
--- Read off the replicated state bag and not through the `character` contract, and
--- that is the point rather than a shortcut: this module then says nothing at all
--- about who publishes the key. A runtime whose characters come from somewhere
--- else writes the same `name` and every staff line here follows it; a runtime
--- with no character module at all loses a name and keeps working.
---
--- Nil is an ordinary answer twice over: for somebody still at the selection
--- screen, and for a character that has not been named yet -- a character is a row
--- before it is anybody.
+--- One string key off a player's replicated bag, or nil.
+-- Reading a bag costs no permission and no round trip; a host that does not
+-- replicate them answers nil for everything, which is the same answer as a slot
+-- with no character on it.
 -- @author dop42
 -- @param playerId Source
--- @return string|nil
--- One string key off a player's replicated bag, or nil. Reading a bag costs no
--- permission and no round trip; a host that does not replicate them answers nil
--- for everything, which is the same answer as a slot with no character on it.
+-- @param key string
+-- @return any
 local function bagKey(playerId, key)
 	local state = Open77.state
 	if type(state) ~= 'table' or type(state.player) ~= 'function' then return nil end
@@ -284,6 +275,20 @@ local function bagKey(playerId, key)
 	return value
 end
 
+--- The name of the CHARACTER a player is playing, or nil.
+--
+-- Read off the replicated state bag and not through the `character` contract, and
+-- that is the point rather than a shortcut: this module then says nothing at all
+-- about who publishes the key. A runtime whose characters come from somewhere
+-- else writes the same `name` and every staff line here follows it; a runtime
+-- with no character module at all loses a name and keeps working.
+--
+-- Nil is an ordinary answer twice over: for somebody still at the selection
+-- screen, and for a character that has not been named yet -- a character is a row
+-- before it is anybody.
+-- @author dop42
+-- @param playerId Source
+-- @return string|nil
 function Server.CharacterOf(playerId)
 	return M.Trimmed(bagKey(playerId, 'name'), 64)
 end

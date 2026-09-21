@@ -1,15 +1,25 @@
---- The one job gate: does this character snapshot satisfy a job requirement.
+--- The job gate: does this character snapshot satisfy a job requirement.
 -- @author dop42
 --
--- FACTORED OUT OF `modules/elevators/shared/access.lua`, WHICH WROTE IT FIRST,
--- and moved here the moment a second module wanted the same rule. The elevators
--- copy was the only one on disk; `modules/teleports` needed it verbatim --
--- `JOBS = { name = minimumGrade }`, an `ON_DUTY` flag, a staleness bound, a
--- primary-job-versus-any-membership distinction and a refusal that names the
--- CLOSEST near-miss -- and a second hand-kept copy of a five-branch access rule
--- is how two surfaces end up disagreeing about who may pass. `core/shared/glyphs.lua`
--- is the same story told about icons: three copies, 47 names, 45 and 14, and no
--- test looking.
+-- THE RULE IS THAT A `JOBS` BLOCK MEANS ONE THING. Wherever a surface in this
+-- resource is gated by `JOBS = { name = minimumGrade }` beside an `ON_DUTY`
+-- flag, it is decided here and not in the module: the staleness bound, the
+-- primary-job-versus-any-membership distinction, the public-stays-open rule and
+-- a refusal that names the CLOSEST near-miss are one decision, and a module that
+-- keeps its own copy of five branches is how two surfaces end up disagreeing
+-- about who may pass. `modules/elevators/shared/access.lua` wrote it first and it
+-- moved here the moment a second module wanted it; it has since been rewritten
+-- by hand twice more by modules that merged in parallel, each time losing a
+-- branch, which is the argument restated rather than a reason to stop making it.
+-- `core/shared/glyphs.lua` is the same story told about icons: three copies, 47
+-- names, 45 and 14, and no test looking.
+--
+-- WHAT IS NOT THIS. `modules/shops` gates on a job too and does NOT come through
+-- here: it asks `character.HasJob` per job name, which is the character module's
+-- own in-memory read of its own roster. That is a different question -- a
+-- boolean about a live player, with no snapshot, no age and no refusal code --
+-- and asking the owner of the data is a legitimate answer to it. What would not
+-- be legitimate is a third way of spelling the same five branches.
 --
 -- WHAT A SNAPSHOT IS. The job fields of a loaded character, plus the millisecond
 -- it was read at:
