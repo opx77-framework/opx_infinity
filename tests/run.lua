@@ -20543,11 +20543,11 @@ do
 			control.PageEmit(page, 'opx:hud:ready', {})
 			control.Pump(10)
 
-			local drawnPct
+			local drawnPct, drawnPoints
 			for _, message in ipairs(page.sent) do
 				if message.channel == 'opx:hud:vitals' and type(message.payload) == 'table' then
 					for _, row in ipairs(message.payload.gauges or {}) do
-						if row.id == 'health' then drawnPct = row.pct end
+						if row.id == 'health' then drawnPct, drawnPoints = row.pct, row.points end
 					end
 				end
 			end
@@ -20557,6 +20557,12 @@ do
 			-- player the server says is full means a second opinion came back.
 			check('a player the server calls full draws full, not 40%',
 				drawnPct ~= nil and math.abs(drawnPct - 100) < 0.5, drawnPct)
+
+			-- AND THE NUMBER IS NOT THE BAR. "le hud affiche 100 enfois de 250 dans
+			-- vie": once the two stopped being the same number, the share was the
+			-- wrong one to print. The bar keeps 100% and the read-out says 250.
+			check('the read-out carries the pool in points, not the share',
+				drawnPoints == 250, tostring(drawnPoints))
 		end
 	end
 end
@@ -20606,6 +20612,76 @@ do
 		check('every handle is kept as the string the engine gave', stringly)
 		check('and every one of them still names a live blip', exact)
 
+
+		-- ── THE JOB PINS BELONG TO THE JOB ────────────────────────────────────
+		-- THE OWNER: "fait en sorte que les blips job on les voit uniquement si on
+		-- fait partie du job si possible".
+		--
+		-- It is possible without inventing a rule. `config/gunsmith.lua` already
+		-- says who may use `arasaka_armoury` -- `JOBS = { arasaka = 0 }` with
+		-- `ON_DUTY = true` -- in the same vocabulary `config/hauling.lua`,
+		-- `config/elevators.lua` and `config/teleports.lua` use, and
+		-- `lib/shared/jobgate.lua` is the one thing that decides all of them. The
+		-- map asks that gate, so a pin appears for exactly the people the bench
+		-- opens for and the two cannot drift.
+		local character = OPX.Modules.Get('character')
+		local function pinned(key)
+			for id in pairs(blips.Runtime.Created()) do
+				if id:find(key, 1, true) then return true end
+			end
+			return false
+		end
+
+		local GATED = 'bench\1arasaka_armoury'
+
+		-- BEFORE A CHARACTER EXISTS THE PIN STAYS, and that is the deliberate
+		-- direction. This is visibility, not authorisation -- the server refuses
+		-- the bench either way and nothing here decides anything -- so the
+		-- asymmetry the gate itself is built on is inverted: hiding a pin from
+		-- somebody entitled to it is the failure, showing one to somebody who
+		-- cannot use the bench is untidy. A client still joining is not a threat.
+		check('a gated bench is pinned before there is a character to judge',
+			pinned(GATED), 'the join window must not hide it')
+
+		-- A CHARACTER WITH NO JOB IS NOT IN THE JOB.
+		character.IsLoggedIn = true
+		character.PlayerData = { citizenId = 'TEST-1' }
+		blips.Runtime.Sync()
+		control.Pump(20)
+		check('a character who holds no job loses the gated pin', not pinned(GATED))
+
+		-- THE WRONG JOB IS STILL NOT THE JOB.
+		character.PlayerData = { citizenId = 'TEST-1',
+			job = { name = 'ncpd', onDuty = true, grade = { level = 4 } } }
+		blips.Runtime.Sync()
+		control.Pump(20)
+		check('and so does one who holds a different job', not pinned(GATED))
+
+		-- ON THE PAYROLL BUT OFF THE CLOCK. `ON_DUTY = true` on the armoury means
+		-- the job must be the one being WORKED, and the map honours that too --
+		-- the same field, read by the same gate, as the bench itself.
+		character.PlayerData = { citizenId = 'TEST-1',
+			job = { name = 'arasaka', onDuty = false, grade = { level = 0 } } }
+		blips.Runtime.Sync()
+		control.Pump(20)
+		check('an arasaka employee off duty does not get it either', not pinned(GATED))
+
+		-- AND THE WHOLE POINT: clocked on, the bench is on the map.
+		character.PlayerData = { citizenId = 'TEST-1',
+			job = { name = 'arasaka', onDuty = true, grade = { level = 0 } } }
+		blips.Runtime.Sync()
+		control.Pump(20)
+		check('and the employee who is working sees their armoury', pinned(GATED))
+
+		-- THE UNGATED PLACES ARE UNTOUCHED BY ANY OF IT. A shop has no JOBS block
+		-- and `Evaluate`'s first line is that no requirement is public -- which is
+		-- also what keeps hauling's deliberately job-free sites on the map.
+		check('a place with no JOBS block stays pinned throughout',
+			blips.Runtime.Report().live > 0, blips.Runtime.Report().live)
+		character.IsLoggedIn = false
+		character.PlayerData = {}
+		blips.Runtime.Sync()
+		control.Pump(20)
 		-- THE UNSURVEYED POINTS. Every DROPOFF in `config/hauling.lua` is an
 		-- all-zero placeholder and the file says so in its own header. A pin at
 		-- the world origin is a pin in the sea, and it reads as this feature
@@ -20686,6 +20762,7 @@ do
 		end
 
 		blips.Runtime.Sync()
+		control.Pump(20)
 		control.Pump(40)
 		env.Wait = realWait
 		native.create = realCreate
@@ -20748,6 +20825,7 @@ do
 			return { g1 = { key = 'g1', label = 'Garage', x = 10.0, y = 20.0, z = 30.0 } }
 		end
 		blips.Runtime.Sync()
+		control.Pump(20)
 		control.Pump(30)
 		local ranged, badRange = 0, 0
 		for _, options in pairs(control.blips.byId) do
@@ -20794,6 +20872,7 @@ do
 		}
 		garages.Runtime.Spots = function() return list end
 		blips.Runtime.Sync()
+		control.Pump(20)
 		control.Pump(30)
 
 		local function pinned(label)
@@ -20809,6 +20888,7 @@ do
 		-- this player is no longer in.
 		list.two = nil
 		blips.Runtime.Sync()
+		control.Pump(20)
 		control.Pump(30)
 		check('a garage the server stopped naming loses its pin', pinned('Second') == nil)
 		check('and the one still named keeps it', pinned('First') ~= nil)
@@ -20817,6 +20897,7 @@ do
 		-- pin: it sends the player to the wrong place with confidence.
 		list.one.x, list.one.y, list.one.z = 900.0, 800.0, 700.0
 		blips.Runtime.Sync()
+		control.Pump(20)
 		control.Pump(30)
 		local moved = pinned('First')
 		check('a garage that moved is pinned where it is now',
@@ -20855,6 +20936,7 @@ do
 		OPX.Modules.Get('garages').Runtime.Spots = function() return many end
 
 		blips.Runtime.Sync()
+		control.Pump(20)
 		control.Pump(120)
 		local report = blips.Runtime.Report()
 		check('a config asking for 400 pins is clamped to the platform\'s 128',
@@ -20887,6 +20969,7 @@ do
 		OPX.Modules.Get('garages').Runtime.Spots = function() return reordered end
 
 		blips.Runtime.Sync()
+		control.Pump(20)
 		control.Pump(120)
 		local second = {}
 		for id in pairs(blips.Runtime.Created()) do second[#second + 1] = id end
@@ -20969,6 +21052,7 @@ do
 		-- turned on.
 		env.Open77.hud.setVisible('minimap', false)
 		blips.Runtime.Sync()
+		control.Pump(20)
 		control.Pump(30)
 		check('and the pins are still drawn with the minimap hidden',
 			blips.Runtime.Report().live > 0, blips.Runtime.Report().live)

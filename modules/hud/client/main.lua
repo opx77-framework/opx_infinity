@@ -138,6 +138,11 @@ local owners, covered = {}, false
 -- player acts on.
 local live = {}
 
+-- The same pools in POINTS, for the read-out. Held apart from `live` because
+-- they answer different questions and are gated separately: `live` is what the
+-- bar is scaled by and is a share, this is what the number says and is not.
+local points = {}
+
 -- The needs the needs module published, nil until it has.
 local needs = nil
 
@@ -183,6 +188,15 @@ local finite = OPX.Math.IsFinite
 local function percent(value)
 	if not finite(value) then return nil end
 	return math.floor(OPX.Math.Clamp(value, 0, 100) + 0.5)
+end
+
+-- The same rounding with NO ceiling, for a pool drawn in points rather than in
+-- percent. `percent` clamps to 100 because a share cannot exceed one; a health
+-- pool whose maximum is 250 very much can, and clamping it here is how the
+-- read-out would go on saying 100 after everything else had been fixed.
+local function finiteRound(value)
+	if not finite(value) then return nil end
+	return math.floor(math.max(0, value) + 0.5)
 end
 
 --- Sends one channel when its picture changed, forgetting the signature of a
@@ -257,6 +271,10 @@ local function gauges()
 				icon = row.ICON,
 				label = row.LABEL,
 				pct = value,
+				-- The read-out's number when the source keeps one. Absent for
+				-- armour and for every need, which are percentages already, and
+				-- the page draws `pct` for those exactly as it always did.
+				points = points[row.SOURCE],
 				tone = toneOf(row, value),
 			}
 		end
@@ -271,7 +289,7 @@ local function drawVitals(force)
 	for index = 1, #rows do
 		local row = rows[index]
 		marks[index] = table.concat({ tostring(row.id), tostring(row.icon), tostring(row.label),
-			tostring(row.pct), row.tone }, '\1')
+			tostring(row.pct), tostring(row.points), row.tone }, '\1')
 	end
 	push(CHANNEL_VITALS, { gauges = rows }, table.concat(marks, '\2'), force)
 end
@@ -490,12 +508,36 @@ local function sampleVitals()
 	local nowHealth = percent(health)
 	local nowArmor = percent(finite(state.armor) and math.max(0, state.armor) or 0)
 	local nowStamina = percent(share(state.stamina, state.maxStamina))
+	-- THE POINTS AS WELL AS THE SHARE, because a percent stopped being an answer
+	-- the moment the maximum stopped being 100.
+	--
+	-- THE OWNER, on a full player: "le hud affiche 100 enfois de 250 dans vie".
+	-- The gauge was drawing 100 and it was right -- a hundred percent of a full
+	-- pool -- and it was also useless. While `HEALTH.MAX` was 100 the percent and
+	-- the points were the same number, so the read-out could be either and nobody
+	-- had to decide which it was; at 250 they part, and the one a player wants is
+	-- the one their maximum is written in. The BAR keeps the share, because a bar
+	-- is a share; the read-out gets the points.
+	--
+	-- Armour has no pool of its own here -- `state.armor` arrives already a
+	-- percent -- and the needs are percentages by definition, so those keep the
+	-- number they always had. A source with no points is simply not given any,
+	-- and the page falls back to what it drew before.
+	local pool = type(state.health) == 'table' and state.health or nil
+	local nowPoints = pool and finiteRound(firstFinite(pool.value, pool.current))
+		or finiteRound(state.health)
+	local staminaPool = type(state.stamina) == 'table' and state.stamina or nil
+	local nowStaminaPoints = staminaPool
+		and finiteRound(firstFinite(staminaPool.value, staminaPool.current)) or nil
+
 	local moved = nowHealth ~= live.health
 		or nowArmor ~= live.armor
 		or nowStamina ~= live.stamina
-
+		or nowPoints ~= points.health
+		or nowStaminaPoints ~= points.stamina
 
 	live = { health = nowHealth, armor = nowArmor, stamina = nowStamina }
+	points = { health = nowPoints, stamina = nowStaminaPoints }
 	return moved
 end
 
