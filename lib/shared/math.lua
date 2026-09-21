@@ -42,10 +42,11 @@ end
 -- `IsFinite` and had to convert it twice.
 --
 -- What is NOT here is the coordinate box. `BOUND = 1000000` and the `coordinate`
--- and `integer` helpers over it are still one copy per module, because a bound
--- on WORLD SPACE is a policy about a map and this library knows nothing about
--- one; they belong with the placed-spot vocabulary those modules share, which is
--- a bigger extraction than this.
+-- and `integer` helpers over it are NOT in this file, because a bound on WORLD
+-- SPACE is a policy about a map and this library knows nothing about one. They
+-- are one copy now, in `lib/shared/spots.lua`, with the placed-spot vocabulary
+-- that measures against them -- which is the home this comment named when the
+-- seven copies were still one per module.
 -- @param value any
 -- @return number|nil
 function OPX.Math.Finite(value)

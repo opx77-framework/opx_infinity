@@ -50,20 +50,19 @@ Access.FiniteNumber = OPX.Math.Finite
 
 local finite = Access.FiniteNumber
 
--- Box every accepted coordinate fits in.
-local BOUND = 1000000
+-- The world box and the coercion over it, in `lib/shared/spots.lua`. THE
+-- COORDINATE COERCER AND NOT THE INTEGER ONE, deliberately -- see
+-- `Access.WholeInRange` below, which is this module's own and takes a range.
+--
+-- CALLED BY ITS PUBLISHED NAME below and not through a local alias, on purpose.
+-- Seven modules published an `Access.Coordinate` that nothing ever called: the
+-- name was dead while the rule it pointed at was used everywhere, behind a
+-- one-letter-different local. `lib/shared/spots.lua` is the one world box now,
+-- and a reader of this file should be able to see that it is the one being used.
+Access.Coordinate = OPX.Spots.Coordinate
 
---- Coerces a world coordinate: finite and inside BOUND.
--- @author dop42
--- @param value any
--- @return number|nil
-function Access.Coordinate(value)
-	local parsed = finite(value)
-	if parsed == nil or parsed > BOUND or parsed < -BOUND then return nil end
-	return parsed
-end
-
-local coordinate = Access.Coordinate
+-- The %d ceiling quoted in this module's own refusal messages.
+local BOUND = OPX.Spots.BOUND
 
 --- Coerces a whole number inside a CALLER-GIVEN range.
 --
@@ -129,7 +128,7 @@ function Access.ChestFrom(raw)
 	name = OPX.String.Trim(name)
 	if name == '' or #name > 48 or not name:match('^[%w_%-%.]+$') then return nil end
 
-	local x, y, z = coordinate(raw.X), coordinate(raw.Y), coordinate(raw.Z)
+	local x, y, z = Access.Coordinate(raw.X), Access.Coordinate(raw.Y), Access.Coordinate(raw.Z)
 	if x == nil or y == nil or z == nil then return nil end
 
 	return {
@@ -145,9 +144,9 @@ end
 for key, armoury in pairs(ARMOURIES) do
 	if type(key) == 'string' and type(armoury) == 'table' then
 		local bench = armoury.BENCH
-		local x = type(bench) == 'table' and coordinate(bench.X) or nil
-		local y = type(bench) == 'table' and coordinate(bench.Y) or nil
-		local z = type(bench) == 'table' and coordinate(bench.Z) or nil
+		local x = type(bench) == 'table' and Access.Coordinate(bench.X) or nil
+		local y = type(bench) == 'table' and Access.Coordinate(bench.Y) or nil
+		local z = type(bench) == 'table' and Access.Coordinate(bench.Z) or nil
 		if x ~= nil and y ~= nil and z ~= nil then
 			BENCHES[key] = { x = x, y = y, z = z,
 				bucket = integer(bench.BUCKET, 0, 2147483647) or 0 }
@@ -398,7 +397,7 @@ function Access.Problems()
 				lines[#lines + 1] = key .. ': no BENCH, so there is nowhere to make anything'
 			else
 				for _, axis in ipairs(AXES) do
-					if coordinate(armoury.BENCH[axis]) == nil then
+					if Access.Coordinate(armoury.BENCH[axis]) == nil then
 						lines[#lines + 1] = ('%s: BENCH %s must be a finite number inside %d')
 							:format(key, axis, BOUND)
 					end
