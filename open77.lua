@@ -557,6 +557,14 @@ permissions {
   -- nothing else.
   "state.write",
 
+  -- `MySQL` IS AN ALIAS OF `Open77.database`, so a grep for the namespace finds
+  -- nothing but comments while every character, vehicle and inventory row in the
+  -- resource goes through it. Removed on 2026-09-21 on exactly that evidence and
+  -- restored the same hour: the server came up with
+  -- `permission_denied:database.access` and "nobody will be able to connect".
+  -- See the header of `lib/server/storage.lua`, which says so in its second line.
+  "database.access",
+
 
   "world.environment",
 
