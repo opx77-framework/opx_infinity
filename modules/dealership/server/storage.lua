@@ -114,42 +114,15 @@ SELECT preview_key, dealer_key, entry_key, x, y, z, heading, bucket
   ]])
 end
 
---- Places one preview point, or moves the one already under that key.
--- One statement rather than a select and a branch: two placements in the same
--- tick would both pass the select, and the primary key is the only thing that
--- can settle a key.
--- @author XEROX710
--- @param spot table normalised preview fields
--- @param citizenId string|nil who placed it
--- @return Result
-function M.Storage.PlacePreview(spot, citizenId)
-	return Storage.Execute([[
-INSERT INTO opx77_dealership_previews
-       (preview_key, dealer_key, entry_key, x, y, z, heading, bucket, placed_by)
-VALUES (@key, @dealer, @entry, @x, @y, @z, @heading, @bucket, NULLIF(@citizen, ''))
-ON DUPLICATE KEY UPDATE dealer_key = @dealer, entry_key = @entry,
-                        x = @x, y = @y, z = @z, heading = @heading, bucket = @bucket
-  ]], {
-		key = spot.key,
-		dealer = spot.dealer,
-		entry = spot.entry,
-		x = spot.x,
-		y = spot.y,
-		z = spot.z,
-		heading = spot.heading,
-		bucket = spot.bucket,
-		citizen = citizenId ~= nil and tostring(citizenId) or '',
-	})
-end
-
---- Takes one preview point away by its key.
--- @author XEROX710
--- @param key string
--- @return Result
-function M.Storage.RemovePreview(key)
-	return Storage.Execute(
-		'DELETE FROM opx77_dealership_previews WHERE preview_key = @key', { key = key })
-end
+-- THE PREVIEW WRITERS STOOD HERE AND ARE GONE, with the runtime path that was
+-- their only caller. The showroom is written in `PREVIEW.POINTS` now.
+--
+-- THE TABLE IS NOT DROPPED and `FetchPreviews` above is untouched: every row an
+-- operator placed is still read at boot, still adopted, and still printed as the
+-- config line that recreates it. This module reads that table and no longer
+-- writes to it -- the same shape `modules/garages/server/storage.lua` took when
+-- its own capture commands went, and for the same reason: a writer with no
+-- caller is one the next reader wires a new command to.
 
 --- Every company account, for the readout.
 -- @author XEROX710

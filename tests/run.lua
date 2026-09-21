@@ -6481,22 +6481,17 @@ do
 			type(control.netEvents[dealership.Event.BUY]) == 'function'
 				and type(control.netEvents[dealership.Event.OFFER]) == 'function'
 				and type(control.netEvents[dealership.Event.DECIDE]) == 'function')
-		check('and so do the two the placement menu uses',
-			type(control.netEvents[dealership.Event.PLACED]) == 'function'
-				and type(control.netEvents[dealership.Event.UNPLACED]) == 'function')
-
-		-- THE PLACEMENT RIGHT IS ITS OWN RIGHT and not a command's. The command
-		-- it would have borrowed does not exist any more, so a grant naming it
-		-- would gate nothing at all.
-		local borrowed = false
-		for _, name in pairs(Config.COMMANDS) do
-			if name == Access.PlacementRight() then borrowed = true end
-		end
-		check('placing a showroom car is gated on a right of its own',
-			Access.PlacementRight() == 'opx.dealership.place' and not borrowed,
-			tostring(Access.PlacementRight()))
-		check('and that right is not the name of any command this module registers',
-			not borrowed and control.commands[Access.PlacementRight()] == nil)
+		-- AND THE TWO THE PLACEMENT MENU USED ARE GONE, with the menu, the right
+		-- and the write path behind them. Checked as absent rather than deleted,
+		-- for the reason the showroom block below gives: a routeway that comes
+		-- back by accident is the one nobody notices.
+		check('the placement wire verbs are not registered, because they do not exist',
+			dealership.Event.PLACED == nil and dealership.Event.UNPLACED == nil,
+			tostring(dealership.Event.PLACED))
+		check('and no ACL right is left guarding a door with nothing behind it',
+			type(Access.PlacementRight) ~= 'function'
+				and OPX.Config.MODULES.dealership.PLACEMENT_RIGHT == nil,
+			tostring(OPX.Config.MODULES.dealership.PLACEMENT_RIGHT))
 
 		-- ── the fixture's dealers ──────────────────────────────────────────
 		-- `Access.SPOTS` IS the list the server half reads as its configuration
@@ -6550,90 +6545,31 @@ do
 		local src = 71
 		load(src, 'citizen-dealer', 2000000)
 
-		-- ── the showroom, and the right that dresses it ───────────────────
-		-- A CLIENT THAT FIRES THE ROUTEWAY ITSELF. A net event has no host-side
-		-- ACL check -- that gate runs for commands only -- so the module asks
-		-- for `PLACEMENT_RIGHT` here. Without it anybody could stand a car on
-		-- any showroom floor on the server.
+		-- ── the showroom is dressed from config and nowhere else ──────────
+		-- A LONG BLOCK STOOD HERE and every check in it exercised a routeway
+		-- that no longer exists: a client firing `PLACED`, the ACL right that
+		-- gated it, and the refusals for a model the dealer does not sell and a
+		-- spot outside every zone. The owner removed the staff screen that was
+		-- its only caller, and then the path itself -- "retire cela aussi".
+		--
+		-- What replaced it is `PREVIEW.POINTS` in `config/dealership.lua`, and
+		-- that has its own coverage further down: the floor raised from config,
+		-- the per-dealer limit, the orphaned-dealer branch, the migration printer
+		-- and the `Wait(0)` between cars. Those are the checks that matter now.
+		--
+		-- What is asserted here is the ABSENCE, because a routeway that comes
+		-- back by accident -- a merge, a half-reverted branch -- is exactly the
+		-- kind of thing nobody notices until somebody finds the door.
 		env.source = src
-		local before = #control.clientEvents
-		local standing = #control.vehicleCreates
-		control.netEvents[dealership.Event.PLACED]('show_one', 'hella', 0.0)
-		-- READ BEFORE THE PUMP. A refusal is raised where the request lands and
-		-- nothing about it yields, so it is the first thing on the wire; pumping
-		-- first and reading the last event would read whatever a thread that was
-		-- already running reported next.
-		local denied = control.clientEvents[before + 1]
-		control.Pump(8)
-		check('placing a showroom car without the right is refused',
-			#control.clientEvents > before and denied ~= nil and denied[1] ~= nil
-				and denied[1].code == 'error.noPermission',
-			denied and denied[1] and tostring(denied[1].code))
-		check('and the refusal names the operation, so a client can tell it apart',
-			denied ~= nil and denied[1] ~= nil
-				and denied[1].operation == dealership.Operation.PLACE)
-		check('and no car was created by it', #control.vehicleCreates == standing,
-			#control.vehicleCreates - standing)
-
-		-- THE COMMAND'S OWN GRANT IS NOT ENOUGH, and that is the point of a
-		-- dedicated right: the two jobs are different, and the grant for the one
-		-- that reads must not open the one that writes.
-		control.Allow(src, 'command.' .. Config.COMMANDS.list)
-		control.netEvents[dealership.Event.PLACED]('show_one', 'hella', 0.0)
-		control.Pump(8)
-		check('and the reading command\'s own grant does not open it either',
-			#control.vehicleCreates == standing,
-			#control.vehicleCreates - standing)
-
-		control.Allow(src, Access.PlacementRight())
-		control.netEvents[dealership.Event.PLACED]('show_one', 'hella', 37.0)
-		control.Pump(8)
-		local placed = contract.Previews()
-		local showroom = placed.ok and placed.value.previews or {}
-		check('with the right, the showroom car is placed', #showroom == 1
-			and showroom[1].key == 'show_one' and showroom[1].entry == 'hella',
-			#showroom)
-		check('at the dealer whose zone the operator is standing in',
-			showroom[1] ~= nil and showroom[1].dealer == 'dealer_dock',
-			showroom[1] and showroom[1].dealer)
-		check('and it is standing in the world, not only in the table',
-			showroom[1] ~= nil and showroom[1].standing == true)
-		check('and the row was written through the bridge', #previewsWritten == 1,
-			#previewsWritten)
-
-		-- THE LOCK IS THE WHOLE POINT OF A SHOWROOM CAR. An unlocked one is a
-		-- free car with an audience, so it is asked for at creation and the
-		-- engine's own `locked` bit is what is asserted -- not that the runtime
-		-- meant to ask.
-		local shown = control.vehicleCreates[#control.vehicleCreates]
-		check('the showroom car is created LOCKED',
-			shown ~= nil and shown.locked == true, shown and tostring(shown.locked))
-		check('and persistent, because a showroom car is furniture',
-			shown ~= nil and shown.persistent == true, shown and tostring(shown.persistent))
-		check('as the model the operator picked, turned the way they were looking',
-			shown ~= nil and shown.record == Access.Entry('hella').record
-				and shown.yaw == 37.0,
-			shown and ('%s yaw %s'):format(tostring(shown.record), tostring(shown.yaw)))
-
-		-- A model this dealer does not sell has no business standing on its
-		-- floor: an AV in a car showroom is a preview of something nobody there
-		-- can buy.
-		standing = #control.vehicleCreates
-		control.netEvents[dealership.Event.PLACED]('show_air', 'manticore', 0.0)
-		control.Pump(8)
-		check('a model this dealer does not sell is refused a place on its floor',
-			#control.vehicleCreates == standing,
-			#control.vehicleCreates - standing)
-
-		-- Nowhere near a dealer is nowhere: a showroom car in a field is a
-		-- network vehicle nothing ever cleans up.
-		control.Stand(src, 900.0, 900.0, 0.0)
-		standing = #control.vehicleCreates
-		control.netEvents[dealership.Event.PLACED]('show_field', 'hella', 0.0)
-		control.Pump(8)
-		check('and one placed outside every dealership zone is refused too',
-			#control.vehicleCreates == standing,
-			#control.vehicleCreates - standing)
+		check('a client cannot fire a placement, because there is nothing to fire',
+			dealership.Event.PLACED == nil and dealership.Event.UNPLACED == nil,
+			tostring(dealership.Event.PLACED))
+		check('and no right is left standing guard over it',
+			type(Access.PlacementRight) ~= 'function'
+				and OPX.Config.MODULES.dealership.PLACEMENT_RIGHT == nil,
+			tostring(OPX.Config.MODULES.dealership.PLACEMENT_RIGHT))
+		check('while the showroom itself is still a thing config can dress',
+			type(Access.PREVIEW_POINTS) == 'table')
 		control.Stand(src, 0.0, 0.0, 0.0)
 
 		-- Told what is there NOW, and only what is in the player's own routing
@@ -7037,6 +6973,16 @@ do
 				and stockAnswer.text:find('avpad', 1, true) ~= nil,
 			stockAnswer and stockAnswer.text:sub(1, 60))
 
+		-- A CAR ON THE FLOOR FOR THE LIST TO NAME, and it comes from CONFIG now:
+		-- the placement routeway that used to stand one up here is gone with the
+		-- staff screen that called it. Seeded the way `config/dealership.lua`
+		-- seeds one, so this check tests the path that actually exists.
+		Access.PREVIEW_POINTS['show_one'] = Access.PreviewFromDefinition('show_one', {
+			X = 0.0, Y = 0.0, Z = 0.0, HEADING = 37.0, BUCKET = 0,
+			DEALER = 'dealer_dock', ENTRY = 'hella' })
+		dealership.Init()
+		control.Pump(8)
+
 		control.commands[Config.COMMANDS.list].run(src, {})
 		local listAnswer = lastAnswer('dealer(s)')
 		check('the list command names every dealer and where it comes from',
@@ -7054,37 +7000,24 @@ do
 			listAnswer and listAnswer.text:sub(1, 120))
 
 		-- ── taking a showroom car away ─────────────────────────────────────
-		-- Through the same routeway that placed it, gated on the same right.
-		local ghosts = 72
-		load(ghosts, 'citizen-nobody', 0)
-		env.source = ghosts
-		local removals = #control.vehicleRemoves
-		control.netEvents[dealership.Event.UNPLACED]('show_one')
+		-- THE BLOCK THAT STOOD HERE tested `UNPLACED` and the right that gated
+		-- it. Both went with the placement path -- "retire cela aussi" -- and a
+		-- car comes off a floor the same way it goes on now: by leaving
+		-- `PREVIEW.POINTS` in `config/dealership.lua`.
+		--
+		-- The removal itself is still covered, by the config path's own checks
+		-- further down: a point taken out of config is not raised on the next
+		-- Init, and `raiseFloor` is what decides what stands.
+		Access.PREVIEW_POINTS['show_one'] = nil
+		dealership.Init()
 		control.Pump(8)
-		check('taking a showroom car away without the right is refused',
-			#control.vehicleRemoves == removals,
-			#control.vehicleRemoves - removals)
-		local stillThere = contract.Previews()
-		check('and it is still standing', stillThere.ok
-			and #stillThere.value.previews == 1)
-
-		env.source = src
-		removals = #control.vehicleRemoves
-		control.netEvents[dealership.Event.UNPLACED]('show_one')
-		control.Pump(8)
-		local gone = contract.Previews()
-		check('with the right, the showroom car is taken off the floor',
-			gone.ok and #gone.value.previews == 0, gone.ok and #gone.value.previews)
-		check('and it is removed from the world, not only from the table',
-			#control.vehicleRemoves == removals + 1,
-			#control.vehicleRemoves - removals)
-
-		control.netEvents[dealership.Event.UNPLACED]('never_placed')
-		control.Pump(4)
-		check('and one nobody placed says there was none',
-			lastAnswer('dealership.noSuchPreview') ~= nil
-				or lastEvent(dealership.Event.ANSWER) ~= nil)
-
+		local afterDrop = contract.Previews()
+		local stillListed = false
+		for _, entry in ipairs(afterDrop.ok and afterDrop.value.previews or {}) do
+			if entry.key == 'show_one' then stillListed = true end
+		end
+		check('a showroom car taken out of config is off the floor on the next start',
+			not stillListed)
 		-- ── the migration: nothing an operator placed is lost ──────────────
 		-- THE WHOLE REASON THE COMMANDS COULD BE DELETED. `/opx.dealership.add`
 		-- wrote into `opx77_dealerships`, so every dealer placed in game lived in
@@ -7239,49 +7172,30 @@ do
 		check('with the shipped config putting nothing in the journal at all',
 			reports('PREVIEW.POINTS') == false)
 
-		-- ── a configured car is not the runtime path's to move ─────────────
-		-- The runtime path is `M.PlacePreview` and `M.RemovePreview`, reached
-		-- through the contract's `Place`/`Unplace`. NOTHING IN THIS RESOURCE
-		-- CALLS THEM ANY MORE -- the Dev screen was the only caller -- but they
-		-- are still wired, and a write under a CONFIGURED key would move a car
-		-- until the next restart and then move it back: an operator editing the
-		-- file and an operator standing in the room disagreeing about where a car
-		-- is, with the file winning silently in the morning.
-		-- CALLED STRAIGHT AND NOT THROUGH THE ROUTEWAY, which every other check
-		-- in this section uses. The routeway is rate-limited per player and this
-		-- section has already spent that window on the refusal checks above, so a
-		-- place sent through it here answers `error.tooFast` and proves nothing
-		-- about the config guard, which is what is under test.
-		env.source = src
-		local staged = dealership.PlacePreview(src, 'legacy_show', 'hella', 15.0, nil)
-		control.Pump(8)
-		local onFloor = contract.Previews()
-		check('a car placed the runtime way is on the floor',
-			staged.ok == true and onFloor.ok and #onFloor.value.previews == 1,
-			tostring(staged.error or (onFloor.ok and #onFloor.value.previews)))
-
-		-- `Access.PREVIEW_POINTS` IS the table the server half took at Init, so
-		-- writing here is what an operator adding a row to the config does.
-		Access.PREVIEW_POINTS['legacy_show'] = Access.PreviewFromDefinition('legacy_show', {
-			X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0, BUCKET = 0,
-			DEALER = 'dealer_dock', ENTRY = 'hella' })
-		local moved = dealership.PlacePreview(src, 'legacy_show', 'hella', 0.0, nil)
-		check('a car written in config cannot be moved from the runtime path',
-			moved.ok == false and moved.error == 'dealership.previewIsConfig',
-			tostring(moved.error))
-		local deleted = dealership.RemovePreview('legacy_show')
-		check('and it cannot be deleted from it either',
-			deleted.ok == false and deleted.error == 'dealership.previewIsConfig',
-			tostring(deleted.error))
-		check('and the refusal is a sentence rather than a code on the screen',
-			OPX.Locale.Exists('dealership.previewIsConfig'))
-
-		-- Not vacuous: with the row out of the config again the same key removes,
-		-- so what was refused was the CONFIG and not the key.
-		Access.PREVIEW_POINTS['legacy_show'] = nil
-		check('while the same car removes once it is no longer written in config',
-			dealership.RemovePreview('legacy_show').ok == true)
-
+		-- ── there is no runtime path left to guard against ─────────────────
+		-- A BLOCK STOOD HERE testing that a car written in config could not be
+		-- moved or deleted by `M.PlacePreview` / `M.RemovePreview`. That guard
+		-- was the right answer while both existed: a write under a configured
+		-- key would move a car until the next restart and then move it back, and
+		-- an operator editing the file and an operator standing in the room would
+		-- disagree with the file winning silently in the morning.
+		--
+		-- Both are gone -- "retire cela aussi" -- so the guard has nothing to
+		-- guard. What is asserted instead is that the writers really did go, on
+		-- the module AND on the store: a writer with no caller is one the next
+		-- reader wires a new command to, which is the whole reason they went
+		-- rather than being left standing.
+		check('nothing on this module places or removes a showroom car',
+			dealership.PlacePreview == nil and dealership.RemovePreview == nil,
+			type(dealership.PlacePreview))
+		check('and the store has no writer for that table either',
+			dealership.Storage == nil or (dealership.Storage.PlacePreview == nil
+				and dealership.Storage.RemovePreview == nil))
+		-- NON-VACUOUS: the READER is still there, which is what keeps every row
+		-- an operator placed before today visible and migratable.
+		check('while the reading of that table is untouched',
+			dealership.Storage ~= nil
+				and type(dealership.Storage.FetchPreviews) == 'function')
 		-- ── the showroom migration, the same story in a second table ───────
 		-- The second row names a dealer that is in neither the config nor the
 		-- database. A car in a field is what that is, and nothing ever cleans it

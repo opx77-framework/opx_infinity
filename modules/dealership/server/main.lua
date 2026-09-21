@@ -855,101 +855,15 @@ local function floorCount(dealerKey, except)
 	return total
 end
 
---- Places one preview point where the operator is standing.
--- @author XEROX710
--- @param player Source
--- @param key string
--- @param entryKey string
--- @param yaw any the operator's own facing, the one field their client gives
--- @param citizenId string|nil
--- @return Result
-function M.PlacePreview(player, key, entryKey, yaw, citizenId)
-	if not Access.PreviewsEnabled() then return Result.Err('dealership.previewsOff') end
-
-	-- A CONFIGURED POINT IS NOT THIS PATH'S TO MOVE. `PREVIEW.POINTS` in
-	-- `config/dealership.lua` is read at start and wins the merge, so a write
-	-- here under a configured key would move the car until the next restart and
-	-- then move it back -- an operator editing the file and an operator standing
-	-- in the room disagreeing about where a car is, with the file winning
-	-- silently the next morning. Refused rather than shadowed.
-	if type(key) == 'string' and configPreviews[key] ~= nil then
-		return Result.Err('dealership.previewIsConfig', key)
-	end
-
-	local at = pointOf(player)
-	if at == nil then return Result.Err('dealership.noPosition') end
-	local read, position = pcall(Open77.players.position, player)
-	local z = read and type(position) == 'table' and coordinate(position.z) or nil
-	if z == nil then return Result.Err('dealership.noPosition') end
-
-	local entry = Access.Entry(entryKey)
-	if entry == nil then return Result.Err('dealership.noSuchEntry') end
-
-	-- THE DEALER IS THE NEAREST ONE IN THE ZONE, not one the menu named: an
-	-- operator places a showroom car by standing where they want it, and a
-	-- showroom car in no showroom is a car in a field that nothing cleans up.
-	local dealer = Access.Nearest(spots, at.x, at.y, Access.ZONE_RADIUS_SQ)
-	if dealer == nil or not inZone(at, dealer) then
-		return Result.Err('dealership.notInZone')
-	end
-	if not Access.SoldHere(dealer.kind, entry) then
-		return Result.Err('dealership.notSold', entry.key)
-	end
-	if Access.PREVIEW_LIMIT > 0 and floorCount(dealer.key, key) >= Access.PREVIEW_LIMIT then
-		return Result.Err('dealership.previewLimit', tostring(Access.PREVIEW_LIMIT))
-	end
-
-	local heading = Access.FiniteNumber(yaw)
-	if heading == nil then heading = 0.0 end
-	heading = heading % 360.0
-
-	local spot, why = Access.PreviewFromDefinition(key, {
-		X = at.x, Y = at.y, Z = z, HEADING = heading, BUCKET = at.bucket,
-		DEALER = dealer.key, ENTRY = entry.key,
-	})
-	if spot == nil then return Result.Err('dealership.placeFailed', tostring(why)) end
-
-	local saved = Store.PlacePreview(spot, citizenId)
-	if not saved.ok then
-		Open77.log.warn(('[dealership] the showroom car %s could not be saved: %s')
-			:format(safe(key), safe(saved.detail)))
-		return Result.Err('dealership.placeFailed', tostring(saved.detail))
-	end
-
-	-- INTO THE MERGED TABLE ONLY. `adoptedPreviews` is an INPUT to the boot
-	-- merge and not a running copy of it: `rebuildPreviews` is called at Init and
-	-- once more when the adoption finishes, both of them long before anything can
-	-- reach this function. Writing there as well would be a line no test can
-	-- observe and no reader can check.
-	previews[spot.key] = spot
-	dress(spot)
-	Open77.log.info(('[dealership] showroom car %s (%s) placed at %s by %d')
-		:format(spot.key, spot.entry, spot.dealer, player))
-	return Result.Ok({ key = spot.key, dealer = spot.dealer, entry = spot.entry,
-		model = entry.label })
-end
-
---- Takes one preview point away.
--- @author XEROX710
--- @param key any
--- @return Result
-function M.RemovePreview(key)
-	if type(key) ~= 'string' or previews[key] == nil then
-		return Result.Err('dealership.noSuchPreview')
-	end
-	-- Same refusal as the place above, and for the same reason: a configured car
-	-- deleted here comes back at the next start, which reads as a removal that
-	-- did not work. It is removed by deleting its row from `PREVIEW.POINTS`.
-	if configPreviews[key] ~= nil then
-		return Result.Err('dealership.previewIsConfig', key)
-	end
-	local gone = Store.RemovePreview(key)
-	if not gone.ok then return Result.Err('dealership.placeFailed', tostring(gone.detail)) end
-	lower(key)
-	previews[key] = nil
-	Open77.log.info(('[dealership] showroom car %s removed'):format(safe(key)))
-	return Result.Ok({ key = key })
-end
+-- THE TWO WRITERS ARE GONE. `M.PlacePreview` and `M.RemovePreview` stood here,
+-- and the whole of what they wrote is now `PREVIEW.POINTS` in
+-- `config/dealership.lua`. The reader below is untouched: rows an operator
+-- placed before today are still adopted at boot and still printed as the config
+-- line that recreates them, so nothing anybody put on a showroom floor is lost.
+--
+-- `Store.PlacePreview` and `Store.RemovePreview` go with them for the reason
+-- `modules/garages/server/storage.lua` gives about its own: a writer with no
+-- caller is one the next reader wires a new command to.
 
 --- Every preview point, as a client or a menu reads them.
 -- @author XEROX710
@@ -1188,8 +1102,6 @@ function M.Api()
 		Buy = M.Buy,
 		Offer = M.Offer,
 		Accept = M.Accept,
-		PlacePreview = M.PlacePreview,
-		RemovePreview = M.RemovePreview,
 		Previews = function() return Result.Ok({ previews = previewList() }) end,
 		Spots = function() return spots end,
 		Stock = function()
@@ -1291,80 +1203,21 @@ function M.Start()
 	RegisterNetEvent(M.Event.BUY, onRequested)
 	RegisterNetEvent(M.Event.OFFER, onOffered)
 	RegisterNetEvent(M.Event.DECIDE, onDecided)
-
-	-- THE PLACEMENT DOOR, GATED ON ITS OWN RIGHT. A net event has no host-side
-	-- ACL check -- that gate runs for commands only -- and the command this used
-	-- to borrow no longer exists, so the question is asked here against
-	-- `PLACEMENT_RIGHT`. An unreadable ACL answers no: a door that cannot be
-	-- checked is not one to leave open.
-	local function mayPlace(player)
-		local right = Access.PlacementRight()
-		if right == nil then return false end
-		local acl = Open77.acl
-		if type(acl) ~= 'table' or type(acl.isAllowed) ~= 'function' then return false end
-		local read, allowed = pcall(acl.isAllowed, player, right)
-		return read and allowed == true
-	end
-
-	RegisterNetEvent(M.Event.PLACED, function(key, entryKey, yaw)
-		local player = tonumber(source)
-		if player == nil then return end
-
-		if not mayPlace(player) then
-			Open77.log.warn(('[dealership] player %d tried to place a showroom car without %s')
-				:format(player, tostring(Access.PlacementRight())))
-			return OPX.Refuse(player, 'error.noPermission', M.Operation.PLACE)
-		end
-		if not within(player, Access.REQUESTS_PER_WINDOW, Access.REQUEST_WINDOW_MS) then
-			return OPX.Refuse(player, 'error.tooFast', M.Operation.PLACE)
-		end
-		key = type(key) == 'string' and key or ''
-		entryKey = type(entryKey) == 'string' and entryKey or ''
-		if #key == 0 or #key > Access.MAX_KEY or #entryKey == 0 then
-			return OPX.Refuse(player, 'error.badRequest', M.Operation.PLACE)
-		end
-
-		local data = characterOf(player)
-		CreateThread(function()
-			local placed = M.PlacePreview(player, key, entryKey, yaw,
-				data and data.citizenId or nil)
-			if not placed.ok then
-				-- The detail travels into the message as `{key}`, because the
-				-- two refusals an operator will actually hit both have a number
-				-- or a name in them -- "this showroom is already full (12 cars)"
-				-- says what to do about it and "that could not be placed" does
-				-- not. A code with no `{key}` in its text simply ignores it.
-				OPX.NotifyLocale(player, placed.error, { key = safe(placed.detail) }, 'error')
-				return OPX.CommandResult(player, false, tostring(placed.error))
-			end
-			OPX.NotifyLocale(player, 'dealership.previewPlaced',
-				{ model = placed.value.model }, 'success')
-			OPX.CommandResult(player, true, ('%s placed at %s'):format(placed.value.key,
-				placed.value.dealer))
-		end)
-	end)
-
-	RegisterNetEvent(M.Event.UNPLACED, function(key)
-		local player = tonumber(source)
-		if player == nil then return end
-		if not mayPlace(player) then
-			Open77.log.warn(('[dealership] player %d tried to remove a showroom car without %s')
-				:format(player, tostring(Access.PlacementRight())))
-			return OPX.Refuse(player, 'error.noPermission', M.Operation.PLACE)
-		end
-		if not within(player, Access.REQUESTS_PER_WINDOW, Access.REQUEST_WINDOW_MS) then
-			return OPX.Refuse(player, 'error.tooFast', M.Operation.PLACE)
-		end
-		CreateThread(function()
-			local gone = M.RemovePreview(type(key) == 'string' and key or nil)
-			if not gone.ok then
-				OPX.NotifyLocale(player, gone.error, nil, 'error')
-				return OPX.CommandResult(player, false, tostring(gone.error))
-			end
-			OPX.NotifyLocale(player, 'dealership.previewRemoved', nil, 'success')
-			OPX.CommandResult(player, true, gone.value.key .. ' removed.')
-		end)
-	end)
+	-- THE PLACEMENT DOOR IS GONE. `M.PlacePreview`, `M.RemovePreview`, the two
+	-- net handlers behind them and the `opx.dealership.place` right that gated
+	-- them all stood here until the owner said "retire cela aussi".
+	--
+	-- They were the runtime half of a feature that no longer has a runtime half:
+	-- the staff Dev screen was the only caller, it was removed on the owner's
+	-- word ("pass moi tous dans les config"), and the showroom is now written in
+	-- `PREVIEW.POINTS`. What was left was a door with no handle on the inside --
+	-- a wire verb nothing sends, guarded by an ACL right granted to somebody, on
+	-- a write path with no reader. That is worse than either having it or not:
+	-- it is a live entry point nobody exercises and therefore nobody notices.
+	--
+	-- The TABLE is untouched. `opx77_dealership_previews` is still created, still
+	-- read, and every row in it is still adopted at boot and still printed as the
+	-- config line that recreates it. Nothing an operator placed is lost.
 
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, function(playerId)
 		local player = tonumber(playerId)

@@ -381,17 +381,8 @@ Access.ZONE_RADIUS_SQ = ZONE_RADIUS * ZONE_RADIUS
 
 Access.OFFER_TIMEOUT_MS = math.floor(finiteNumber(Config.OFFER_TIMEOUT_MS) or 0)
 
---- The right that places a preview point.
--- ITS OWN RIGHT AND NOT A COMMAND'S. The `add` command it would have borrowed
--- does not exist any more, so a grant naming it would gate nothing; and dressing
--- a floor is a different job from moving the building.
--- @author XEROX710
--- @return string|nil
-function Access.PlacementRight()
-	local right = Config.PLACEMENT_RIGHT
-	if type(right) ~= 'string' or right == '' then return nil end
-	return right
-end
+-- `Access.PlacementRight` stood here and named the ACL right that gated placing
+-- a preview point. Both it and the right went when the write path did.
 
 --- What the seller is paid out of a sale, and what the company banks.
 -- @author XEROX710
@@ -660,9 +651,6 @@ function Access.Problems()
 		lines[#lines + 1] = 'SELLER_CUT_PERCENT must be a number from 0 to 100'
 	end
 
-	if Access.PlacementRight() == nil then
-		lines[#lines + 1] = 'PLACEMENT_RIGHT must be the ACL right that places a preview point'
-	end
 
 	local preview = Config.PREVIEW
 	if preview ~= nil and type(preview) ~= 'table' then

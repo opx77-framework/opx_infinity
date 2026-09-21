@@ -56,8 +56,6 @@ M.Event = {
 	-- IN THIS RESOURCE RAISES THESE TWO ANY MORE -- the staff menu's Dev screen
 	-- was the only caller and the owner deleted it on 2026-09-21. A showroom car
 	-- is written in PREVIEW.POINTS in config/dealership.lua; see client/exports.
-	PLACED = OPX.Event(NET, 'dealership', 'placed'),
-	UNPLACED = OPX.Event(NET, 'dealership', 'unplaced'),
 	-- A salesperson offering a vehicle to the player they picked off the eye,
 	-- and that player's own answer to it. TWO EVENTS AND NOT ONE, because they
 	-- come from two different connections and only one of them is the buyer.

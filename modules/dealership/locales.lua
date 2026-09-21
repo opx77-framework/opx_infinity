@@ -43,14 +43,12 @@ local EN = {
 	-- owner deleted that screen on 2026-09-21. These sentences are still reached
 	-- by the contract's `Place`/`Unplace`, which nothing in this resource calls
 	-- any more -- a caller outside it would still be answered properly.
-	['dealership.previewsOff'] = 'Showroom cars are switched off on this server.',
 	['dealership.previewPlaced'] = 'A {model} is standing here now.',
 	['dealership.previewRemoved'] = 'That showroom car is gone.',
 	['dealership.previewLimit'] = 'This showroom is already full ({key} cars).',
 	['dealership.noSuchPreview'] = 'There is no showroom car by that name.',
 	['dealership.previewIsConfig'] =
 		'{key} is written in config/dealership.lua and is moved by editing it.',
-	['dealership.placeFailed'] = 'That showroom car could not be placed.',
 
 	-- Selling face to face, and the two ends of it: the salesperson who offers
 	-- and the buyer who answers.
@@ -118,14 +116,12 @@ local FR = {
 	['dealership.registerFailed'] = "Ce véhicule n'a pas pu être enregistré, il ne vous a donc pas été vendu.",
 	['dealership.noVehicles'] = 'Les véhicules sont indisponibles sur ce serveur.',
 
-	['dealership.previewsOff'] = "Les véhicules d'exposition sont désactivés sur ce serveur.",
 	['dealership.previewPlaced'] = 'Une {model} est exposée ici.',
 	['dealership.previewRemoved'] = "Ce véhicule d'exposition a été retiré.",
 	['dealership.previewLimit'] = 'Ce hall est déjà plein ({key} véhicules).',
 	['dealership.noSuchPreview'] = "Aucun véhicule d'exposition ne porte ce nom.",
 	['dealership.previewIsConfig'] =
 		'{key} est écrit dans config/dealership.lua et se déplace en modifiant ce fichier.',
-	['dealership.placeFailed'] = "Ce véhicule d'exposition n'a pas pu être placé.",
 
 	['dealership.target.sell'] = 'Vendre un véhicule',
 	['dealership.offerSent'] = "Offre envoyée. La personne doit l'accepter elle-même.",

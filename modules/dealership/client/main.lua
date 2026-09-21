@@ -118,15 +118,8 @@ local function playerXY()
 	return x, y
 end
 
--- The player's own facing in degrees, or nil. Read only when a capture is asked
--- for, because that is the only time it is used.
-local function playerYaw()
-	local character = Open77.character
-	if type(character) ~= 'table' or type(character.yaw) ~= 'function' then return nil end
-	local read, yaw = pcall(character.yaw)
-	if not read or type(yaw) ~= 'number' or yaw ~= yaw then return nil end
-	return yaw
-end
+-- `playerYaw` stood here. It read the operator's own facing for a capture, and
+-- went with the capture: `/opx.admin.self.pos` reads a facing server-side now.
 
 -- Whether another surface holds the keyboard: the chat box, a form, the pause
 -- menu. Kept module-local rather than folded into `OPX.Lib.Input.IsCaptured`,
@@ -932,50 +925,12 @@ local function scan()
 end
 
 -- ── the placement round-trip ────────────────────────────────────────────────
-
---- Places a showroom car where this client is standing, facing where it looks.
--- @author XEROX710
---
--- THE FACING IS THE ONE FIELD THIS HALF CONTRIBUTES. A menu row has no facing,
--- and `Open77.character.yaw` is the only place one exists; the POSITION is read
--- on the server, from the connection, and never off this wire.
---
--- The right is the SERVER'S to check. This is a plain net event and a net event
--- has no host-side ACL of its own, which is exactly why the server asks
--- `PLACEMENT_RIGHT` before it writes anything: a client calling this without the
--- grant is refused there, and nothing here pretends otherwise.
--- @param key string the durable name for the showroom car
--- @param entryKey string the stock row it is standing as
--- @return table
-function Runtime.Place(key, entryKey)
-	if type(key) ~= 'string' or key == '' or type(entryKey) ~= 'string' or entryKey == '' then
-		return { ok = false, error = 'error.badRequest' }
-	end
-	local yaw = playerYaw()
-	local sent, reason = TriggerServerEvent(M.Event.PLACED, key, entryKey, yaw)
-	if not sent then
-		Open77.log.warn(('[dealership] the placement of %s was not sent: %s')
-			:format(tostring(key), tostring(reason)))
-		return { ok = false, error = tostring(reason or 'not_sent') }
-	end
-	-- Said out loud because the other end of this round trip is invisible from
-	-- here: without it a placement that died in the middle reads from the outside
-	-- as one that was never asked for.
-	Open77.log.info(('[dealership] asked to place %s as %s yaw=%s'):format(
-		tostring(key), tostring(entryKey), tostring(yaw)))
-	return { ok = true, queued = true, key = key }
-end
-
---- Takes one showroom car away by its key.
--- @author XEROX710
--- @param key string
--- @return table
-function Runtime.Unplace(key)
-	if type(key) ~= 'string' or key == '' then return { ok = false, error = 'error.badRequest' } end
-	local sent, reason = TriggerServerEvent(M.Event.UNPLACED, key)
-	if not sent then return { ok = false, error = tostring(reason or 'not_sent') } end
-	return { ok = true, queued = true, key = key }
-end
+-- `Runtime.Place` and `Runtime.Unplace` stood here and asked the server to dress
+-- or strip a showroom floor. They went with the server path they spoke to: the
+-- floor is `PREVIEW.POINTS` in `config/dealership.lua` now, and the one field
+-- this half ever contributed -- the operator's own facing, which a chat line has
+-- no way of knowing -- is what `/opx.admin.self.pos` reads and copies into the
+-- config row.
 
 -- ── the phases ──────────────────────────────────────────────────────────────
 

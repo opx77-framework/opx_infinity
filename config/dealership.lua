@@ -220,28 +220,19 @@ OPX.Config.MODULES.dealership = {
 		},
 	},
 
-	-- THE RIGHT THAT PLACED ONE. It is its OWN right and never a command's: the
-	-- `add` command it would have borrowed does not exist, so a grant naming
-	-- that would gate nothing at all.
+	-- THE RIGHT THAT PLACED ONE IS GONE, AND SO IS WHAT IT GATED. `PLACEMENT_RIGHT
+	-- = 'opx.dealership.place'` stood here, guarding `M.PlacePreview` and
+	-- `M.RemovePreview` through the dealership contract.
 	--
-	-- WHAT IT STILL GATES, HONESTLY. The routeway it guards --
-	-- `M.PlacePreview` / `M.RemovePreview`, reached through the dealership
-	-- contract's `Place` and `Unplace` -- is intact, and the server still
-	-- refuses anybody who does not hold this right. But NOTHING IN THIS
-	-- RESOURCE CALLS IT ANY MORE: the staff menu's Dev screen was its only
-	-- caller and the owner deleted that screen on 2026-09-21. So this is a
-	-- locked door with no handle on the inside, kept because deleting a
-	-- module's whole write path is a bigger decision than deleting a menu and
-	-- is the owner's to make.
+	-- The owner removed the staff Dev screen that was their only caller, and then
+	-- ("retire cela aussi") the path itself. What it was doing in the meantime is
+	-- worth writing down, because it is a shape worth recognising: a wire verb
+	-- nothing sent, on a write path nothing read, guarded by an ACL right granted
+	-- to a real account. A live entry point nobody exercises is worse than either
+	-- having the feature or not having it -- nobody watches a door nobody uses.
 	--
-	-- WHAT THAT MEANS FOR THE LIVE SERVER: `opx.dealership.place` is granted to
-	-- one account in the host's ACL, and that grant now opens nothing a player
-	-- can reach. It is safe to revoke and should be, unless and until another
-	-- resource is written against `Place`/`Unplace`.
-	--
-	-- It is resolved with `Open77.acl.isAllowed`, which takes any right name --
-	-- this one is NOT prefixed `command.`, because it gates no command.
-	PLACEMENT_RIGHT = 'opx.dealership.place',
+	-- The showroom is `PREVIEW.POINTS` above, and the table that held the old
+	-- rows is still read, still adopted and still printed back as config.
 
 	-- ── selling to somebody standing in front of you ────────────────────────
 

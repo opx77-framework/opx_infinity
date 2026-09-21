@@ -64,44 +64,17 @@ local function isOpen()
 end
 
 --- Places a showroom car where this client is standing, facing where it looks.
--- @author XEROX710
+-- `Place` and `Unplace` stood here. They asked the server to dress or strip a
+-- showroom floor, gated on the `opx.dealership.place` ACL right.
 --
--- NOTHING IN THIS RESOURCE CALLS THIS ANY MORE. It was published for the staff
--- menu's Dev screen, which was the placement menu, and the owner deleted that
--- screen on 2026-09-21: "il y a pas de config live c'est tous par les fichier
--- config donc degage moi ce menu est pass moi tous dans les config". A showroom
--- car is a row in `PREVIEW.POINTS` in `config/dealership.lua` now, and the
--- server prints every one that exists only in the database at boot as the config
--- line that recreates it.
+-- The owner removed the staff Dev screen that was their only caller, then the
+-- path itself ("retire cela aussi"). The shape is worth naming: a published
+-- contract verb nothing called, over a wire verb nothing sent, guarded by a
+-- right granted to a real account. A live entry point nobody exercises is worse
+-- than either having the feature or not -- nobody watches a door nobody uses.
 --
--- IT IS LEFT WIRED AND IT STILL WORKS, which is a decision and not an oversight:
--- deleting a module's whole write path is a bigger call than deleting a menu and
--- it is the owner's to make. What it means in the meantime is that
--- `PLACEMENT_RIGHT` -- `opx.dealership.place`, granted to one account on the
--- live server -- gates a door with no handle on the inside. `config/dealership.lua`
--- says so beside the right itself, and says it is safe to revoke.
---
--- Publishing it grants nothing: this half only asks, and the server refuses
--- anybody who does not hold `PLACEMENT_RIGHT`. A contract call from a client is
--- no permission check at all, which is why the check is not here.
--- @param key string
--- @param entryKey string
--- @return Result
-local function place(key, entryKey)
-	local verdict = Runtime.Place(key, entryKey)
-	if verdict.ok ~= true then return Result.Err(verdict.error or 'dealership.placeFailed') end
-	return Result.Ok(verdict)
-end
-
---- Takes one showroom car away by its key, on the same terms.
--- @author XEROX710
--- @param key string
--- @return Result
-local function unplace(key)
-	local verdict = Runtime.Unplace(key)
-	if verdict.ok ~= true then return Result.Err(verdict.error or 'dealership.placeFailed') end
-	return Result.Ok(verdict)
-end
+-- The floor is `PREVIEW.POINTS` in `config/dealership.lua`, and the rows placed
+-- before today are still read and still printed back as config.
 
 --- Answers the offer this player is deciding about, or a refusal.
 -- @author XEROX710
@@ -129,8 +102,6 @@ function M.Api()
 		Open = open,
 		Close = close,
 		IsOpen = isOpen,
-		Place = place,
-		Unplace = unplace,
 		Decide = decide,
 	})
 end
