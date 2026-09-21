@@ -552,7 +552,18 @@ onUnmounted(() => {
          rather than `OpKeyCap` because that component fills its plate with
          `--op77-accent`, which pass 02 forbids and `.op-theme-city` turns
          yellow; every pass-02 surface draws its own for the same reason. -->
-    <div class="chat-field op-frame op-arete op-lift" data-augmented-ui="tr-clip border">
+    <!-- NO `.op-lift`. It used to be here, unconditionally, and this is the one
+         box in the runtime that is TYPED INTO: `shapes.css` says of `.op-lift`
+         that "IT IS A FILTER ... never put it on anything whose value changes
+         every frame", and the value inside this box changes on every keystroke
+         and again on every caret blink, each one re-rasterising the filter's
+         whole backing store. Every other `.op-lift` in the tree is bound to a
+         state over static content -- the chosen row, the failed toast -- and
+         this was the only unconditional one. The two files that hit the same
+         wall took the same way out: `HudVoice.vue` ("THE BLOOM IS NOT THE
+         ANSWER") and `DownedView.vue` ("NO FILTER, ANYWHERE"). The frame, the
+         arete and the 2px border are what say this box is live. -->
+    <div class="chat-field op-frame op-arete" data-augmented-ui="tr-clip border">
       <span class="chat-caret" aria-hidden="true">&gt;</span>
       <input
         ref="field"

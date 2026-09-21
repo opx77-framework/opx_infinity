@@ -1069,7 +1069,13 @@ function M.Start()
 	end)
 
 	OPX.Scheduler.Every('hud.widgets', Settings.WIDGET_MS or 100, function()
-		if not ready then return end
+		-- `covered` BELONGS HERE TOO, and its absence was the whole of this cost.
+		-- The vitals job two lines up steps aside for a full-screen view; this one
+		-- gated on `ready` alone, so while a join screen or the inventory held the
+		-- display `voiceView()` and `vehicleView()` -- four host reads and seven
+		-- locale lookups between them -- kept running ten times a second to build
+		-- payloads for widgets the page has hidden.
+		if not ready or covered then return end
 		drawWidgets()
 	end)
 end

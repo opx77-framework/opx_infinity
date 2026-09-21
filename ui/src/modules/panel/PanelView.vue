@@ -1547,7 +1547,6 @@ function filter(value: string): void {
 
 .intro {
   margin: 0;
-  font: 400 var(--op-fs-meta) / 1.4 var(--op-font-body);
   color: var(--op-text-dim);
 }
 

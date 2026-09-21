@@ -148,8 +148,16 @@ end
 
 -- Brings the drawn set in line with what is in range: a dealer within
 -- MAX_DISTANCE has a marker, one beyond it does not.
-local function reconcile()
-	local x, y = playerXY()
+--
+-- THE POSITION IS THREADED THROUGH, NOT READ AGAIN. `scan()` -- the only caller
+-- -- has just read it for `Access.Nearest`, and reading it a second time here
+-- made this module cost TWO host position reads per pass at SCAN_MS. Across
+-- `clothing`, `dealership` and `garages` that was twelve host reads a second for
+-- six distinct answers. `modules/teleports/client/main.lua` already threads it
+-- (`reconcile(at)`); these three were never updated with it.
+-- @param x number|nil the player's position, or nil where it could not be read
+-- @param y number|nil
+local function reconcile(x, y)
 	local limit = Access.MaxDistance()
 	local reach = limit * limit
 
@@ -649,7 +657,7 @@ local function scan()
 	end
 	nearest = Access.Nearest(spots, x, y)
 	syncPrompt()
-	reconcile()
+	reconcile(x, y)
 end
 
 -- ── the capture round-trip ──────────────────────────────────────────────────
