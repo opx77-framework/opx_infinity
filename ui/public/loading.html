@@ -375,6 +375,13 @@
         rgba(var(--op-plate-rgb), 1) 70%),
       var(--op-void);
   }
+  /* NO CLIP CONFIGURED IS NOT THE SAME AS A CLIP THAT FAILED, and they should not
+     look alike. The gradient above is the designed stand-in for a film that was
+     meant to be there and is not -- it keeps the screen looking deliberate while
+     something is wrong. An operator who cleared `LOADSCREEN.video` asked for no
+     film at all, so they get the void flat, with no glow suggesting a picture is
+     still loading. */
+  body.no-clip .stage{ background: var(--op-void); }
   /* Two stops, because one would have to grey the whole picture to make the bay
      legible. On the plate channels rather than an invented near-black, so the
      darkened corner is the same ground the bay is. */
@@ -703,6 +710,14 @@
     // A third-party player embedded as a silent background, stripped of its
     // controls, is not what that player is offered for, and the clip in it is
     // not yours to re-serve either.
+    //
+    // EMPTY MEANS NO FILM, and a black ground rather than the stand-in the
+    // screen draws when a clip it expected did not arrive. Nothing is fetched,
+    // the poster included. Clearing this is also what makes the shipped
+    // `loading.webm` dead weight: 14.83 MiB of the pack every player downloads,
+    // safe to delete from `ui/public/` once nothing names it -- but keep one
+    // there while a URL is configured, because a remote clip that fails falls
+    // back to it.
     video: "./loading.webm",
 
     // Shown before the first frame decodes, and instead of the clip when the
@@ -733,13 +748,26 @@
      be fetched rather than sitting in the DOM unread. */
   if(videoEl){
     var sourceEl = videoEl.querySelector("source");
-    if(LOADSCREEN.poster && videoEl.getAttribute("poster") !== LOADSCREEN.poster){
-      videoEl.setAttribute("poster", LOADSCREEN.poster);
-    }
-    if(LOADSCREEN.fit) videoEl.style.objectFit = LOADSCREEN.fit;
-    if(sourceEl && LOADSCREEN.video && sourceEl.getAttribute("src") !== LOADSCREEN.video){
-      sourceEl.setAttribute("src", LOADSCREEN.video);
+
+    /* NO CLIP AT ALL, and it is a setting rather than a failure. An empty
+       `video` means the operator does not want a film, so nothing is fetched --
+       not the source the markup names, and not the poster either, which would
+       otherwise sit there as a still picture of the film they just removed. The
+       body says so in its own class, and the ground goes flat black. */
+    if(!LOADSCREEN.video){
+      if(sourceEl) sourceEl.removeAttribute("src");
+      videoEl.removeAttribute("poster");
       videoEl.load();
+      document.body.classList.add("no-video", "no-clip");
+    }else{
+      if(LOADSCREEN.poster && videoEl.getAttribute("poster") !== LOADSCREEN.poster){
+        videoEl.setAttribute("poster", LOADSCREEN.poster);
+      }
+      if(LOADSCREEN.fit) videoEl.style.objectFit = LOADSCREEN.fit;
+      if(sourceEl && sourceEl.getAttribute("src") !== LOADSCREEN.video){
+        sourceEl.setAttribute("src", LOADSCREEN.video);
+        videoEl.load();
+      }
     }
   }
 
