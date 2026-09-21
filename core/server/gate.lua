@@ -205,19 +205,57 @@ end
 -- @author dop42
 -- @param source Source
 -- @param note string|nil reaches every resource as the detail of onPlayerReady
+-- @param expectedUserId string|nil the account the caller held the gate for; a
+--        slot that belongs to anybody else by now is refused rather than opened
 -- @return boolean
-function OPX.Gate.Release(source, note)
+function OPX.Gate.Release(source, note, expectedUserId)
 	source = tonumber(source)
 	if not source then return false end
 
 	local session = OPX.Sessions[source]
-	local gateSession = session and session.gateSession
+
+	-- WHOSE GATE IS THIS. `Hold` above says the session number is what keeps a
+	-- later release honest, and it was not: the number released was never the
+	-- one the caller held. It was read back off the slot at release time, or
+	-- asked of the host, and both answer for whoever is standing on that slot
+	-- NOW. The host does refuse a stale token -- `session_mismatch` -- but it
+	-- was never shown one, so the guard this function relied on could not fire.
+	--
+	-- That matters because the entry sequence yields on every database read and
+	-- a slot is recycled the instant a player drops. A release arriving late
+	-- then opened the gate of whoever took the slot, with no character loaded,
+	-- and `Buckets.Release` beside it took them out of the selection bucket too,
+	-- so the admission was complete rather than partial. `Watch` below has
+	-- always captured `userId` and rechecked it before acting; so does this now.
+	--
+	-- A caller that names no identity gets the old behaviour only while a
+	-- session is there to read a token off. With no session there is nothing
+	-- left to prove the slot was ever ours, and guessing is what caused this.
+	if expectedUserId ~= nil and (session == nil or session.userId ~= expectedUserId) then
+		Open77.log.warn(('[gate] not releasing %d: the slot holds %s, not %s')
+			:format(source, session and tostring(session.userId) or 'nobody',
+				tostring(expectedUserId)))
+		return false
+	end
+	if session == nil then
+		Open77.log.warn(('[gate] not releasing %d: no session, so no way to tell whose hold this is')
+			:format(source))
+		return false
+	end
+
+	local gateSession = session.gateSession
 	if gateSession == nil then
 		-- THE INDEX IS INSIDE THE PCALL. `pcall(Open77.ready.status, source)`
 		-- resolves `Open77.ready.status` BEFORE pcall is called, so a host that
 		-- does not install it raised on the index, outside the protection written
 		-- for exactly that. Same correction as `IsReady` below and as `permitted`
 		-- in `core/server/commands.lua`.
+		--
+		-- Reached only with a session in hand, and past the identity check above:
+		-- the token this reads back belongs to the account the caller named. The
+		-- case it exists for is a VM that lost its own copy -- a reload, with the
+		-- session rebuilt from the host's attested identity -- where skipping the
+		-- release would leave a real player behind a hold that has no deadline.
 		local read, status = pcall(function() return Open77.ready.status(source) end)
 		gateSession = read and type(status) == 'table' and status.session or nil
 	end
@@ -241,13 +279,30 @@ function OPX.Gate.Release(source, note)
 	-- with no readiness API there is no gate to be held behind, and treating it
 	-- as `false` would be the "player stuck behind a shut gate" outcome this
 	-- whole block is written to avoid.
+	--
+	-- A HOST WITH NO READINESS API IS NOT A HOST WHOSE RELEASE RAISED, and those
+	-- two were one branch. Both were caught by the `pcall`, both were rewritten
+	-- to `nil`, and `nil` is not `false`, so both fell through to the success
+	-- path below -- which clears `gateSession` and sets `released`. `Watch`
+	-- returns on `released`, so a release that raised for a transient reason
+	-- left the player behind a shut gate with nothing left to retry: exactly the
+	-- combination the comment below calls the one nothing recovers from. The
+	-- absence of the API is now established BEFORE the call, where it is a fact
+	-- about the host rather than a guess about an error, and a raise from the
+	-- call itself is the refusal it always was.
+	if type(Open77.ready) ~= 'table' or type(Open77.ready.release) ~= 'function' then
+		session.gateSession = nil
+		session.released = true
+		TriggerEvent(RELEASED, source, note or 'done')
+		return true
+	end
+
 	local called, opened, refused = pcall(function()
 		return Open77.ready.release(source, gateSession, NOTE_PREFIX .. (note or 'done'))
 	end)
 	if not called then
-		Open77.log.warn(('[gate] the release for %d could not be made: %s')
-			:format(source, tostring(opened)))
-		opened, refused = nil, nil
+		Open77.log.error(('[gate] the release for %d raised: %s'):format(source, tostring(opened)))
+		return false
 	end
 	if opened == false then
 		-- OUR STATE IS CLEARED ONLY ON SUCCESS, and it was cleared BEFORE the
@@ -261,10 +316,8 @@ function OPX.Gate.Release(source, note)
 		return false
 	end
 
-	if session then
-		session.gateSession = nil
-		session.released = true
-	end
+	session.gateSession = nil
+	session.released = true
 
 	Open77.log.debug(('[gate] released for %d (%s)'):format(source, note or 'done'))
 
@@ -326,7 +379,9 @@ function OPX.Gate.Watch(source, timeoutMs, onGiveUp)
 
 				Open77.log.warn(('[gate] %d spent too long behind the gate; releasing without them')
 					:format(source))
-				Gate.Release(source, 'watch-timeout')
+				-- The identity this watch was started for, not whoever holds the
+				-- slot by the time the deadline arrives.
+				Gate.Release(source, 'watch-timeout', userId)
 				return true
 			end)
 

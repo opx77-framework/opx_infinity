@@ -246,13 +246,27 @@ function M.BeginEntry(source)
 	-- Its own thread, for the database reads, and no failure path leaves the
 	-- player held. There is nothing to choose and nothing to wait for: the account
 	-- is locked on a character, or it is about to be locked on a new one.
+	--
+	-- THE ACCOUNT THIS ENTRY IS FOR, read before anything yields. `EnterSession`
+	-- is database reads end to end and every one of them gives up the thread; a
+	-- player who drops during a slow read has their slot recycled, and the
+	-- failure path below then spoke for whoever took it -- a refusal toast to a
+	-- stranger, and a gate release that admitted them with no character.
+	local userId = session.userId
+
 	CreateThread(function()
 		local entered = M.EnterSession(source)
 		if entered.ok then return end
 		Open77.log.error(('[character] %d could not be brought into the world: %s (%s)')
 			:format(source, tostring(entered.error), tostring(entered.detail)))
+		local live = OPX.Sessions[source]
+		if not live or live.userId ~= userId then
+			Open77.log.warn(('[character] %d is no longer %s; not answering for the slot')
+				:format(source, tostring(userId)))
+			return
+		end
 		OPX.Refuse(source, 'entry.failed', M.Operation.ENTRY)
-		OPX.Gate.Release(source, 'entry-failed')
+		OPX.Gate.Release(source, 'entry-failed', userId)
 	end)
 end
 

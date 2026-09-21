@@ -19168,5 +19168,299 @@ do
 		end
 	end
 end
+
+-- `lib/shared/validate.lua` and `lib/shared/citizenid.lua` were the two files in
+-- the runtime that NOTHING here executed. Replacing all five of their public
+-- functions with an unconditional `error()` left the suite at "2501 checks, 0
+-- failed" -- while the same treatment applied to `Audit.Log` brought it down on
+-- the first section. They are the code that reads what a client chose, and they
+-- were carried entirely by the modules that happen to call them, none of which
+-- asserts a refusal. Every check below is written to fail if one guard is taken
+-- out, because that is the only property that makes a test worth its line count.
+section('the trust boundary validator')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local Text, Number = OPX.Validate.Text, OPX.Validate.Number
+
+		local function refusal(result)
+			return result ~= nil and result.ok == false and result.error or nil
+		end
+
+		-- Type first: a table where a string is expected is the shape a crafted
+		-- net event hands over, and it must not reach `#value` or `:match`.
+		check('a table is refused as a type, not indexed', refusal(Text({})) == 'type')
+		check('and so is nil', refusal(Text(nil)) == 'type')
+		check('and a number, which Lua would happily concatenate',
+			refusal(Text(42)) == 'type')
+
+		-- The character bounds. `min` defaults to 1, so the empty string -- what a
+		-- form submits when the field was never filled -- is short, not valid.
+		check('the empty string is too short by the default minimum',
+			refusal(Text('')) == 'too-short')
+		check('and so is whitespace, because the value is trimmed first',
+			refusal(Text('   ')) == 'too-short')
+		check('a value under an explicit minimum is refused',
+			refusal(Text('ab', { min = 3 })) == 'too-short')
+		check('a value over an explicit maximum is refused',
+			refusal(Text('abcdef', { max = 5 })) == 'too-long')
+		check('the maximum is inclusive', Text('abcde', { max = 5 }).ok == true)
+		check('and the minimum is inclusive', Text('abc', { min = 3 }).ok == true)
+
+		-- THE HARD 1024-BYTE CEILING, which is the guard that cannot be inferred
+		-- from the character bounds. With a generous `max` the character test
+		-- would accept this; the ceiling refuses it before `OPX.String.Length`
+		-- walks a single byte of it. A caller that passes a client's string with
+		-- a large max is exactly how an arbitrarily long scan gets reached.
+		local roomy = { max = 1000000 }
+		check('a 2 KiB string is refused although its character limit is a million',
+			refusal(Text(string.rep('a', 2048), roomy)) == 'too-long')
+		check('and so is a megabyte, without scanning it',
+			refusal(Text(string.rep('a', 1024 * 1024), roomy)) == 'too-long')
+		-- The ceiling is `max * 4 + 16` under the cap, so a four-byte-per-character
+		-- value at the limit still fits. This is the half that must NOT refuse.
+		check('a value at the character limit still fits under the ceiling',
+			Text(string.rep('é', 20), { max = 20 }).ok == true)
+
+		-- Invalid UTF-8 has no character length, and the comparison that follows
+		-- would be `nil < number`, which raises rather than refuses.
+		check('invalid UTF-8 is refused by name, not by raising',
+			refusal(Text('\xFF\xFE\xFF')) == 'not-utf8')
+
+		-- The pattern, and the fact that it is applied to the TRIMMED value.
+		check('a value that misses the pattern is refused as a format',
+			refusal(Text('ab3', { pattern = '^%a+$' })) == 'format')
+		check('a value that matches it is accepted', Text('abc', { pattern = '^%a+$' }).ok == true)
+		check('and the pattern sees the trimmed value, not the raw one',
+			Text('  abc  ', { pattern = '^%a+$' }).ok == true)
+		check('what comes back is the trimmed value', Text('  abc  ').value == 'abc')
+
+		-- Numbers. Finiteness is tested BEFORE the bounds, because NaN compares
+		-- false against everything and would pass a min and a max unchallenged.
+		check('NaN is refused as not finite, not as out of range',
+			refusal(Number(0 / 0, { min = 0, max = 10 })) == 'not-finite')
+		check('and so is positive infinity',
+			refusal(Number(math.huge, { min = 0, max = 10 })) == 'not-finite')
+		check('and negative infinity',
+			refusal(Number(-math.huge, { min = 0, max = 10 })) == 'not-finite')
+		check('a word is refused as a type', refusal(Number('soon')) == 'type')
+		check('a table too', refusal(Number({})) == 'type')
+		check('but a numeric string coerces', Number('12.5').value == 12.5)
+
+		check('a fraction is refused when an integer was asked for',
+			refusal(Number(1.5, { integer = true })) == 'not-integer')
+		check('and a whole number is not', Number(2, { integer = true }).ok == true)
+		check('a value under the minimum is refused',
+			refusal(Number(-1, { min = 0 })) == 'too-small')
+		check('a value over the maximum is refused',
+			refusal(Number(11, { max = 10 })) == 'too-large')
+		check('both bounds are inclusive',
+			Number(0, { min = 0 }).ok == true and Number(10, { max = 10 }).ok == true)
+		-- A zero minimum is a real configuration and Lua makes `opts.min and ...`
+		-- true for it; a guard written as a truthiness test would drop it.
+		check('a minimum of zero is still applied',
+			refusal(Number(-0.5, { min = 0 })) == 'too-small')
+	end
+end
+
+-- The check symbol is the whole point of the format: it is what makes a typed
+-- or misheard id fail at the door instead of becoming a lookup for somebody
+-- else's character. Nothing exercised it, so `Parse` accepting any seven
+-- symbols of the alphabet was indistinguishable from `Parse` working.
+section('citizen ids and the symbol that checks them')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local CitizenId = OPX.CitizenId
+		local ALPHABET = CitizenId.ALPHABET
+
+		local function refusal(result)
+			return result ~= nil and result.ok == false and result.error or nil
+		end
+		local function raw(id) return (id:gsub('%-', '')) end
+
+		local id = CitizenId.Build({ 0, 1, 2, 3, 4, 5 })
+		check('Build writes seven symbols in three-dash-four',
+			type(id) == 'string' and #id == 8 and id:sub(4, 4) == '-', tostring(id))
+		check('and what it writes, Parse accepts', CitizenId.Parse(id).ok == true,
+			tostring(CitizenId.Parse(id).error))
+		check('and answers it in the same display form',
+			CitizenId.Parse(id).value == id, tostring(CitizenId.Parse(id).value))
+
+		check('Generate answers an id Parse accepts',
+			CitizenId.Parse(CitizenId.Generate(function(_, high) return high end)).ok == true)
+		check('and it is deterministic when the source of numbers is',
+			CitizenId.Generate(function() return 0 end)
+				== CitizenId.Generate(function() return 0 end))
+
+		-- Forgiving on case and separators, which is the documented contract for
+		-- an id a player reads off a screen and types back in.
+		check('lower case parses', CitizenId.Parse(id:lower()).ok == true)
+		check('spaces and underscores are ignored',
+			CitizenId.Parse((' ' .. raw(id):sub(1, 2) .. '_ ' .. raw(id):sub(3)) .. ' ').ok == true)
+
+		-- EVERY SINGLE-SYMBOL SUBSTITUTION IS CAUGHT. This is the property the
+		-- prime modulus buys, and it is worth asserting exhaustively rather than
+		-- on one example: over 23 every weight is invertible, so a changed symbol
+		-- always changes the sum. A composite modulus would let a family through.
+		local substitutions, caught = 0, 0
+		local plain = raw(id)
+		for position = 1, 7 do
+			for index = 1, #ALPHABET do
+				local symbol = ALPHABET:sub(index, index)
+				if symbol ~= plain:sub(position, position) then
+					substitutions = substitutions + 1
+					local typo = plain:sub(1, position - 1) .. symbol .. plain:sub(position + 1)
+					if refusal(CitizenId.Parse(typo)) == 'checksum' then caught = caught + 1 end
+				end
+			end
+		end
+		check(('every one of the %d single-symbol substitutions fails the checksum')
+			:format(substitutions), substitutions == 154 and caught == substitutions,
+			('%d of %d'):format(caught, substitutions))
+
+		-- And every transposition of two adjacent PAYLOAD symbols, the other typo
+		-- the weights are chosen to catch. Adjacent weights differ by one, which
+		-- is non-zero mod 23, so a swap of two different values always moves the
+		-- sum. The check symbol itself carries no weight, so the pair that spans
+		-- it is not part of this guarantee and is not asserted as if it were.
+		local swaps, stopped = 0, 0
+		for position = 1, 5 do
+			local left, right = plain:sub(position, position), plain:sub(position + 1, position + 1)
+			if left ~= right then
+				swaps = swaps + 1
+				local swapped = plain:sub(1, position - 1) .. right .. left
+					.. plain:sub(position + 2)
+				if refusal(CitizenId.Parse(swapped)) == 'checksum' then stopped = stopped + 1 end
+			end
+		end
+		check(('every one of the %d adjacent transpositions fails the checksum')
+			:format(swaps), swaps == 5 and stopped == swaps, ('%d of %d'):format(stopped, swaps))
+
+		-- The refusals that come before the checksum, each by its own name, so a
+		-- caller can tell "you mistyped it" from "that is not an id at all".
+		check('a non-string is refused as a type', refusal(CitizenId.Parse({})) == 'type')
+		check('and nil too', refusal(CitizenId.Parse(nil)) == 'type')
+		check('too few symbols is a length', refusal(CitizenId.Parse('346-79')) == 'length')
+		check('too many is a length', refusal(CitizenId.Parse(raw(id) .. '3')) == 'length')
+		-- BOUNDED BEFORE `upper` AND `gsub` TOUCH IT. Without the byte bound this
+		-- is two allocations over a string a client chose the size of.
+		check('an over-long input is refused on bytes before it is cleaned',
+			refusal(CitizenId.Parse(string.rep('-', 4096) .. raw(id))) == 'length')
+		-- Ambiguous symbols are absent from the alphabet on purpose: 0/O, 1/I/L,
+		-- 2/Z, 5/S, 8/B, U/V and Q. A reader who "corrects" one must be refused.
+		for _, symbol in ipairs({ '0', 'O', '1', 'I', 'L', '2', '5', 'S', '8', 'B', 'U', 'V', 'Q' }) do
+			check(('%q is not a citizen id symbol'):format(symbol),
+				ALPHABET:find(symbol, 1, true) == nil
+					and refusal(CitizenId.Parse(symbol .. plain:sub(2))) == 'alphabet')
+		end
+	end
+end
+
+-- `Hold` says the session number is what keeps a later release honest. It was
+-- not: `Release` took no identity, read the token back off the slot -- or asked
+-- the host for it, which answers for whoever stands there now -- and the host's
+-- `session_mismatch` guard was therefore never shown a stale token. The entry
+-- sequence yields on every database read and a slot is recycled the instant a
+-- player drops, so a late release opened the gate of the player who took the
+-- slot, with no character loaded, while `Buckets.Release` beside it took them
+-- out of their selection bucket: a complete admission of the wrong person.
+section('a release names the account it was held for')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		control.Admit(7, 'user-AAAA')
+		OPX.EnsureSession(7)
+		OPX.Gate.Hold(7, 'entry')
+		check('A is held behind the gate', OPX.Sessions[7].gateSession ~= nil)
+
+		-- A drops during a slow read. The platform hands slot 7 to B, who takes
+		-- a hold of their own -- and A's thread has not come back yet.
+		control.Admit(7, 'user-BBBB')
+		local b = OPX.EnsureSession(7)
+		check('the slot now belongs to B', b.userId == 'user-BBBB')
+		OPX.Gate.Hold(7, 'entry')
+		local bHold = OPX.Sessions[7].gateSession
+
+		check('A\'s late release is refused rather than opening B\'s gate',
+			OPX.Gate.Release(7, 'entry-failed', 'user-AAAA') == false)
+		check('and B is still held, with the same token',
+			OPX.Sessions[7].gateSession == bHold and OPX.Sessions[7].released ~= true)
+		check('while B\'s own release goes through',
+			OPX.Gate.Release(7, 'done', 'user-BBBB') == true)
+		check('and then B is marked released', OPX.Sessions[7].released == true)
+
+		-- With no session at all there is nothing left that says the slot was
+		-- ever ours, and the host's status would answer for its new occupant.
+		check('a release for a slot with no session refuses instead of guessing',
+			OPX.Gate.Release(99, 'never', 'user-AAAA') == false)
+		check('and so does one that names nobody', OPX.Gate.Release(99, 'never') == false)
+
+		-- The bucket half of the same admission.
+		control.Admit(8, 'user-CCCC')
+		OPX.EnsureSession(8)
+		OPX.Buckets.Isolate(8, 'joined')
+		-- Where the player actually IS, read back off the host, not `PlacementOf`,
+		-- which answers where a STORED bucket would put somebody.
+		local function bucketOf(id) return env.Open77.routingBuckets.getPlayer(id) end
+		check('C is isolated in a selection bucket',
+			OPX.Buckets.IsSelection(bucketOf(8)) == true, tostring(bucketOf(8)))
+
+		control.Admit(8, 'user-DDDD')
+		OPX.EnsureSession(8)
+		OPX.Buckets.Isolate(8, 'joined')
+		local ok, moved = OPX.Buckets.Release(8, 'character-loaded', 'user-CCCC')
+		check('a late bucket release for a departed account moves nobody',
+			ok == false and moved == false)
+		check('and D is still in their selection bucket',
+			OPX.Buckets.IsSelection(bucketOf(8)) == true, tostring(bucketOf(8)))
+		check('while D\'s own release moves them out',
+			select(2, OPX.Buckets.Release(8, 'character-loaded', 'user-DDDD')) == true)
+
+		-- An isolate that arrives late must not drag the new holder into a
+		-- selection bucket of their own.
+		check('and a late isolate is refused the same way',
+			OPX.Buckets.Isolate(8, 'joined', 'user-CCCC') == false)
+
+		-- A HOST THAT RAISED IS NOT A HOST WITHOUT THE API. Both used to be
+		-- rewritten to nil, and nil is not false, so both reached the success
+		-- path: `released` set with the host still holding, and `Watch` returns
+		-- on `released`, so nothing retried. The player waited out the host's
+		-- liveness interval behind a shut gate.
+		control.Admit(9, 'user-EEEE')
+		OPX.EnsureSession(9)
+		OPX.Gate.Hold(9, 'entry')
+		local realRelease = env.Open77.ready.release
+		env.Open77.ready.release = function() error('transient host failure') end
+		local answered = OPX.Gate.Release(9, 'done', 'user-EEEE')
+		env.Open77.ready.release = realRelease
+		check('a release the host raised on is reported as refused', answered == false)
+		check('and the hold is kept, so the watch can try again',
+			OPX.Sessions[9].gateSession ~= nil and OPX.Sessions[9].released ~= true)
+		check('and the retry succeeds once the host answers again',
+			OPX.Gate.Release(9, 'done', 'user-EEEE') == true)
+
+		-- A host with no readiness API at all is a different thing: there is no
+		-- gate to be stuck behind, so the release is honestly a success.
+		control.Admit(10, 'user-FFFF')
+		OPX.EnsureSession(10)
+		OPX.Gate.Hold(10, 'entry')
+		local realReady = env.Open77.ready
+		env.Open77.ready = nil
+		check('a host with no readiness API releases rather than stranding anybody',
+			OPX.Gate.Release(10, 'done', 'user-FFFF') == true)
+		env.Open77.ready = realReady
+	end
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

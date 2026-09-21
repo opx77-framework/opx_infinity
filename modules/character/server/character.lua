@@ -894,6 +894,15 @@ enterCharacter = function(source, citizenId)
 		return Result.Ok(current)
 	end
 
+	-- THE ACCOUNT THIS ENTRY IS FOR, taken before the first database read. Every
+	-- step from here yields, and a player who drops mid-read has their slot
+	-- handed to the next connection. The bucket release and the gate release at
+	-- the foot of this function are what admit somebody into the world; run on a
+	-- recycled slot they admitted the wrong player, with nothing loaded.
+	local entrant = OPX.Sessions[source]
+	local entrantUserId = entrant and entrant.userId
+	if entrantUserId == nil then return Result.Err('character.notFound', tostring(citizenId)) end
+
 	-- On a switch the target is checked -- exists, owned, not already in play --
 	-- BEFORE the current character is dismounted. Otherwise a refused switch would
 	-- leave the player in the world with nothing loaded and nothing to save them.
@@ -955,19 +964,20 @@ enterCharacter = function(source, citizenId)
 			Open77.log.warn(('[character] %s logged in but was not placed: %s')
 				:format(parsed.value, tostring(reason)))
 		end
-		OPX.Buckets.Release(source, placed and 'character-placed' or 'character-loaded')
+		OPX.Buckets.Release(source, placed and 'character-placed' or 'character-loaded',
+			entrantUserId)
 	else
 		M.AwaitingPlacement[source] = parsed.value
 		-- Out of the selection bucket either way: nobody plays alone in one.
-		OPX.Buckets.Release(source, 'character-loaded')
+		OPX.Buckets.Release(source, 'character-loaded', entrantUserId)
 	end
 
-	OPX.Gate.Release(source, 'character-loaded')
+	OPX.Gate.Release(source, 'character-loaded', entrantUserId)
 
 	-- The lock follows what actually entered the world, so the next connection
 	-- comes back to this character whatever moved it here.
 	local session = OPX.Sessions[source]
-	if session then
+	if session and session.userId == entrantUserId then
 		local locked = M.Storage.SetActive(session.userId, parsed.value)
 		if not locked.ok then
 			Open77.log.error(('[character] %s entered but the account was not locked on it: %s')
