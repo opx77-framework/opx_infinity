@@ -162,28 +162,28 @@ local function runPhase(phase)
 	-- still boot, just in one frame, as it did before.
 	local yielding = phase == 'Start' and type(Wait) == 'function'
 	for _, module in ipairs(OPX.Modules.Resolve()) do
-		-- SETTLED BEFORE THIS MODULE, NOT ONLY AFTER THE PHASE. `settle` ran once
-		-- the whole phase was over, and the order `Resolve` hands back puts a
-		-- dependency before its dependant -- so a module that failed in `Init`
-		-- was followed, in the SAME phase, by the modules that require it. They
-		-- ran their `Init`, built their state and registered their handlers, and
-		-- only then were marked `unavailable`. Those handlers stay registered:
-		-- nothing here unregisters, and the module never gets `Api`, `Start` or
-		-- `Stop`, so what is left answers events with `OPX.Api.Get` returning nil.
-		if module.State == 'declared' then
-			for _, id in ipairs(module.Requires) do
-				local other = OPX.Modules.Record(id)
-				local state = other and other.State
-				if state ~= 'declared' and state ~= 'started' then
-					halt(module, 'unavailable', other == nil
-						and ('requires %q, which is not installed'):format(id)
-						or ('requires %q, which is %s'):format(id, state))
-					Open77.log.error(('[%s] %s'):format(module.Id, module.Reason))
-					break
-				end
-			end
-		end
-
+		-- A PER-MODULE REQUIREMENT RE-CHECK USED TO STAND HERE, AND IT COST THE
+		-- CLIENT HALF ITS FORM. The idea was sound -- `Resolve` hands back a
+		-- dependency before its dependant, so a module that failed in `Init` is
+		-- followed IN THE SAME PHASE by the modules that require it, which run,
+		-- register their handlers, and are only marked `unavailable` afterwards.
+		--
+		-- The cost was not. `Init` and `Api` are documented never to yield, so
+		-- each of them runs in ONE resume and shares ONE instruction budget --
+		-- which is the whole argument for `Start` yielding between modules. A
+		-- loop over every module's `Requires` before every step, across thirty
+		-- modules, is paid out of that single budget, and this file already says
+		-- what happens then: "each module made the next one likelier to trip,
+		-- and the one that actually tripped depended on how much the frame had
+		-- already spent". Deployed 2026-09-21 13:41; by 13:50 the journal
+		-- carried `client module: form failed / api failed: Open77 script
+		-- execution budget exceeded`, three times, from three different players,
+		-- and never once in the twenty-four hours before it. `form` draws the
+		-- name entry, so a player joining with an unnamed character was never
+		-- asked for a name and sat under the loading cover at `Character`.
+		--
+		-- `settle` after each phase is what this goes back to. It is a phase
+		-- late, and it is free.
 		if module.State == 'declared' then
 			-- Phases live on the namespace; everything else the loop reads is on
 			-- the record. The two were one table once, and a module field named
