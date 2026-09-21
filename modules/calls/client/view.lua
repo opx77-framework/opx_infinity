@@ -65,6 +65,27 @@ local EVENT_VIEW = M.Event.VIEW
 -- screen and neither touches the call.
 local ACTIONS = { 'ready', 'dismiss', 'repop', 'accept', 'decline', 'hangUp', 'diag' }
 
+-- ── THE SECOND SURFACE, AND WHY THERE ARE TWO ────────────────────────────────
+--
+-- THE OWNER: "fait une touche qui ouvre un menu style halogram tous se passe
+-- desus", "le halo prend vrais le devant de l'ecran", "en plein centre".
+--
+-- The card above may never be pressed, and everything in this file's header
+-- explains why: it arrives unbidden, so it lives on a layer that cannot take
+-- the mouse. The hologram is the exact opposite and for the exact same reason
+-- -- the player OPENED it, on a key, deliberately -- so it is centred, in
+-- front, focused and pressable, and it carries every verb this module has.
+--
+-- The two could not share a layer. A passive notice that could steal input and
+-- a deliberate screen that could not would both be the wrong way round.
+local HOLO_SURFACE = 'interactive'
+local HOLO_CHANNEL = 'calls:holo'
+
+-- What the hologram may say. `close` and `toggle` are about the screen; the
+-- rest name a player the server judges again.
+local HOLO_ACTIONS = { 'close', 'toggle', 'call', 'share',
+	'accept', 'decline', 'hangUp', 'diag' }
+
 --- Wires the page to the seam.
 -- @author dop42
 function View.Start()
@@ -78,8 +99,36 @@ function View.Start()
 	-- The state half to the page. Registered BEFORE anything can publish: the
 	-- first payload this module ever causes is the one `FromView('ready')`
 	-- draws straight back, and a handler added after that would miss it.
+	-- The hologram's own end of the seam.
+	for _, action in ipairs(HOLO_ACTIONS) do
+		OPX.UI.On(HOLO_SURFACE, 'calls:' .. action, function(payload)
+			M.FromView(action, payload)
+		end)
+	end
+
 	AddEventHandler(EVENT_VIEW, function(payload)
 		if type(payload) ~= 'table' then return end
+		-- ROUTED BY KIND, because the two surfaces are two screens. Sending the
+		-- hologram's roster to the overlay would put a contact list on a layer
+		-- nobody can press, and sending the card to the interactive layer would
+		-- give an unbidden notice the keyboard.
+		if payload.kind == 'holo' then
+			OPX.UI.Send(HOLO_SURFACE, HOLO_CHANNEL, payload)
+			-- FOCUS FOLLOWS THE SCREEN, and only this screen ever takes it. A
+			-- hologram the player cannot type into or click is not a menu, and
+			-- one that kept focus after closing would be a player who cannot
+			-- move.
+			-- `(owner, wants)`, and the cursor is asked for explicitly: it
+			-- defaults to false, and a hologram whose rows cannot be clicked is
+			-- a picture. The stack is what gives focus back to whatever was
+			-- under this when it closes, rather than dropping it to nothing.
+			if payload.open == true then
+				OPX.UI.AcquireFocus('calls', { keyboard = true, cursor = true })
+			else
+				OPX.UI.ReleaseFocus('calls')
+			end
+			return
+		end
 		OPX.UI.Send(SURFACE, CHANNEL, payload)
 	end)
 end

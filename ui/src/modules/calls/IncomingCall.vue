@@ -139,7 +139,7 @@ onUnmounted(stopTick)
 <template>
   <aside v-if="open" class="incoming op-plane">
     <section
-      class="card op-bay op-anchor-right op-arete is-end op-interlace op-ink op-enter"
+      class="card op-bay op-anchor-left op-arete is-end op-interlace op-ink op-enter"
       data-augmented-ui="tr-clip bl-clip border"
     >
       <p class="eyebrow op-eyebrow">{{ t('calls.incoming.eyebrow') }}</p>
@@ -173,7 +173,10 @@ onUnmounted(stopTick)
 
 .incoming {
   position: absolute;
-  right: 0;
+  /* LEFT, ON THE OWNER'S WORD: "pass la a gauche meme l'appel en cours a
+     gauche". It sat on the right, which is where the vanilla HUD keeps its own
+     phone -- and that was the argument for it until the owner looked at it. */
+  left: 0;
   top: 50%;
   transform: translateY(-50%);
   display: flex;
@@ -188,7 +191,11 @@ onUnmounted(stopTick)
   box-sizing: border-box;
   width: 232px;
   padding: var(--op-space-3) var(--op-space-3) var(--op-space-2);
-  background: var(--op-plate);
+  /* NO PLATE. "remove le background sur la notif d'appel a droite". The card
+     is text and an outline over the world now:  still draws its
+     chamfered border, and what the player loses is the slab that was sitting
+     between them and the street. */
+  background: none;
   --aug-tr: var(--op-cut-lg);
   --aug-bl: var(--op-cut-lg);
 }

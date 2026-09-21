@@ -22361,6 +22361,48 @@ do
 		check('and nobody is left glowing over a call that never happened',
 			control.Eyes(A) == false and control.Eyes(B) == false)
 
+
+		-- ── AND IT IS WRITTEN DOWN ───────────────────────────────────────────
+		-- THE OWNER: "si il repond pas ou refuse note le c'est important". Both
+		-- of those ended with the caller looking at a screen that had gone back
+		-- to normal, and nothing anywhere remembering either -- and two people
+		-- who keep missing each other is the ordinary case, not the edge one.
+		--
+		-- THE TWO SIDES GET DIFFERENT ROWS, and asserting both is the point: a
+		-- system that recorded only the caller's is one where the person who was
+		-- called never finds out they were.
+		local function recentFor(playerId)
+			local mark2 = #control.clientEvents
+			ask(playerId, module.Event.ASK_ROSTER)
+			control.Pump(20)
+			for index = #control.clientEvents, mark2 + 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.source == playerId and sent.name == module.Event.ROSTER
+					and type(sent[1]) == 'table' then
+					return type(sent[1].recent) == 'table' and sent[1].recent or {}
+				end
+			end
+			return {}
+		end
+		local function heldOutcome(rows, outcome)
+			for _, row in ipairs(rows) do
+				if row.outcome == outcome then return row end
+			end
+			return nil
+		end
+
+		local callerSaw = recentFor(A)
+		local calleeSaw = recentFor(B)
+		check('the caller is told their call was refused',
+			heldOutcome(callerSaw, 'declined') ~= nil, #callerSaw)
+		check('and the one who refused has it down as a refusal of their own',
+			heldOutcome(calleeSaw, 'refused') ~= nil, #calleeSaw)
+		-- Named, not merely counted: a list of four "call" rows is a list nobody
+		-- can act on.
+		check('each row naming the other person',
+			(heldOutcome(callerSaw, 'declined') or {}).name ~= nil
+				and (heldOutcome(callerSaw, 'declined') or {}).name ~= '?',
+			(heldOutcome(callerSaw, 'declined') or {}).name)
 		-- AND THE SLOTS ARE GIVEN BACK. A decline that left the invite in place
 		-- would lock both of them out of the feature just as an unexpired one
 		-- does, and it is the same two indexes.
@@ -22751,222 +22793,128 @@ do
 	end
 end
 
--- ── the rows on the eye, and the budget they are registered under ────────────
--- The owner asked for accept and decline "via ALT, not a dedicated key", for
--- contact sharing and a third participant on the same eye, and for a button
--- that brings the card back. That is seven rows across two kinds, and
--- `RegisterMany` is ALL OR NOTHING: one malformed row refuses the whole batch,
--- and the refusal is written to a log file on the player's own machine.
--- `modules/animations/client/walk.lua` lost all four of its pace rows to
--- exactly that and nobody found out until somebody reported the feature
--- missing in game.
-section('calls: seven rows on the eye, answered in the registry\'s own vocabulary')
+-- ── the eye is not where a phone lives ───────────────────────────────────────
+-- THE OWNER, having used it: "fait en sorte que cela passe pas par alt ce
+-- serais en gros fait une touche qui ouvre un menu style halogram tous se passe
+-- desus call resus contact etc plus de alt".
+--
+-- This module had eight rows on the target eye. They worked, they were tested,
+-- and they were the wrong shape: ALT needs a body under the crosshair, and a
+-- holocall is what you reach for when the person is NOT in front of you --
+-- answering one meant pointing at your own body first.
+--
+-- So the checks below are the opposite of the ones they replace. Not a row on
+-- the eye, a key; and the whole of the interaction behind it. The count is
+-- asserted as ZERO rather than the section simply being deleted, because a row
+-- that comes back by accident -- a merge, a half-reverted branch -- is exactly
+-- the kind of thing nobody notices until a player reports two ways of doing the
+-- same thing.
+section('calls: one key, no rows on the eye')
 do
-	local env, control, why = boot('client')
-	check('the client boots for the call rows', why == nil, why)
+	local keys = {}
+	local env, control, why = boot('client', nil, function(e)
+		e.RegisterKeyMapping = function(id, name, key, pressed)
+			keys[id] = { name = name, key = key, pressed = pressed }
+			return key
+		end
+	end)
+	check('the client boots for the hologram', why == nil, why)
 
 	if why == nil then
 		local OPX = env.OPX
 		local module = OPX.Modules.Get('calls')
 		local target = OPX.Api.Get('target')
 
-		check('the eye is up', target ~= nil and type(target.List) == 'function')
-
+		check('the eye is up, so an empty list is a decision and not an absence',
+			target ~= nil and type(target.List) == 'function')
 		if target ~= nil then
-			-- THE CONTRACT ANSWERS A Result, and every entry of it does. The
-			-- first version of this walked `target.List('calls')` itself, which
-			-- is `{ ok = true, value = { options = { ... } } }` -- length zero,
-			-- for ever, for every owner including ones with rows. A check that
-			-- counts the wrong table reports the feature missing whatever the
-			-- feature does, which is the exact shape of a test that is worse
-			-- than no test.
-			local function rowsOf()
-				local answer = target.List('calls')
-				return answer.ok and answer.value.options or {}
-			end
-			-- Registration runs on a thread with a `Wait(0)` between the kinds,
-			-- so it is a resume or two away from `Start` finishing.
-			settle(control, function() return #rowsOf() >= 8 end, 40)
-			local rows = rowsOf()
-			check('all eight rows reached the registry, not five of them',
-				#rows == 8, #rows)
+			local answer = target.List('calls')
+			local rows = answer.ok and answer.value.options or {}
+			check('and this module registers NOT ONE row on it', #rows == 0, #rows)
+		end
 
-			local byId = {}
-			for _, row in ipairs(rows) do byId[row.id] = row end
-			-- Named one at a time rather than counted, because the count alone
-			-- would be satisfied by eight copies of the same row -- and the
-			-- owner asked for these eight specifically.
-			for _, id in ipairs({ 'callAccept', 'callDecline', 'callHangUp', 'callMenu',
-				'callRepop', 'callPlace', 'callAdd', 'callShare' }) do
-				check(('the row %s is on the eye'):format(id), byId[id] ~= nil)
-			end
+		-- ── THE KEY ──────────────────────────────────────────────────────────
+		local declared = OPX.Config.MODULES.calls.KEY
+		check('the config declares a key with an id and a default',
+			type(declared) == 'table' and type(declared.ID) == 'string'
+				and type(declared.DEFAULT) == 'string' and declared.DEFAULT ~= '')
+		local mapped = declared ~= nil and keys[declared.ID] or nil
+		check('and the module really registered it with the host',
+			mapped ~= nil, declared and tostring(declared.ID))
+		check('on the key the config names',
+			mapped ~= nil and mapped.key == declared.DEFAULT,
+			mapped and tostring(mapped.key))
+		-- NOT ONE OF THE KEYS ALREADY SPOKEN FOR. A default that collides is a
+		-- feature that appears to do nothing while another one fires, and the
+		-- collision is invisible in every log.
+		local taken = {
+			E = 'the contextual key', I = 'the bag', T = 'chat', Y = 'the hotbar peek',
+			X = 'stopping an emote', F1 = 'the menu', F3 = 'the animation picker',
+			F9 = 'the staff menu', F10 = 'the staff dev screen',
+		}
+		check('and it is not a key another feature already owns',
+			declared == nil or taken[declared.DEFAULT] == nil,
+			declared and taken[declared.DEFAULT])
 
-			-- THE REGISTRY'S VOCABULARY, which is the trap walk.lua fell into:
-			-- `modules/admin/client/target.lua` builds rows with `select`,
-			-- `check` and `state` and translates them at the door, and copying
-			-- that shape straight into `RegisterSelf` refuses the whole batch
-			-- with `invalid_option`. Every row this module hands over has to
-			-- speak `onSelect`, `canInteract` and `checked`.
-			local wrong = {}
-			for _, row in ipairs(module.SelfRows()) do
-				if type(row.onSelect) ~= 'function' then wrong[#wrong + 1] = row.id .. ':onSelect' end
-				if row.select ~= nil or row.check ~= nil or row.state ~= nil then
-					wrong[#wrong + 1] = row.id .. ':admin-shape'
-				end
-				if row.icon ~= nil and OPX.Glyphs[row.icon] ~= true then
-					wrong[#wrong + 1] = row.id .. ':icon=' .. tostring(row.icon)
-				end
+		-- ── AND THE KEY OPENS THE THING ──────────────────────────────────────
+		local drawn = {}
+		env.AddEventHandler(module.Event.VIEW, function(payload)
+			if type(payload) == 'table' and payload.kind == 'holo' then
+				drawn[#drawn + 1] = payload
 			end
-			for _, row in ipairs(module.PlayerRows()) do
-				if type(row.onSelect) ~= 'function' then wrong[#wrong + 1] = row.id .. ':onSelect' end
-				if row.icon ~= nil and OPX.Glyphs[row.icon] ~= true then
-					wrong[#wrong + 1] = row.id .. ':icon=' .. tostring(row.icon)
-				end
-			end
-			table.sort(wrong)
-			check('every row speaks the registry\'s vocabulary and draws a glyph that exists',
-				#wrong == 0, table.concat(wrong, ', '))
+		end)
 
-			-- ── a row appears when it has something to do, and not before ────
-			-- `canInteract` is what makes the answer rows come and go; they are
-			-- registered once and never re-registered, so this predicate is the
-			-- whole of the behaviour.
-			local selfRows = {}
-			for _, row in ipairs(module.SelfRows()) do selfRows[row.id] = row end
-			local context = { target = { kind = 'player', isLocalPlayer = true } }
-			check('with no call and nothing ringing, ACCEPT is not offered',
-				selfRows.callAccept.canInteract(context) ~= true)
-			check('nor is HANG UP', selfRows.callHangUp.canInteract(context) ~= true)
-			check('nor the re-pop button, which would otherwise do nothing',
-				selfRows.callRepop.canInteract(context) ~= true)
+		check('the hologram starts closed', module.HoloOpen() == false)
+		if mapped ~= nil then mapped.pressed() end
+		control.Pump(5)
+		check('the key opens it', module.HoloOpen() == true)
+		check('and the screen was told, in the same press rather than a round trip',
+			#drawn > 0 and drawn[#drawn].open == true,
+			#drawn > 0 and tostring(drawn[#drawn].open) or 'nothing drawn')
 
-			-- The server pushing a ringing invite is the only thing that
-			-- changes any of this: nothing in the client half is a fact.
-			--
-			-- Delivered on the NET channel it is registered on, and not with a
-			-- local `TriggerEvent`. The host keeps the two apart -- a
-			-- `RegisterNetEvent` handler lands in `control.netEvents` and a
-			-- local raise never reaches it -- which is the harness modelling
-			-- the very rule `core/shared/channels.lua` exists to enforce.
-			control.netEvents[module.Event.STATE]({
-				invite = { id = 'i1', kind = 'call', from = 9, fromName = 'Somebody',
-					expiresInMs = 20000 },
+		-- THE ROSTER IS ASKED FOR ON EVERY OPEN AND NEVER CACHED: who is
+		-- connected, who is busy and who is close enough to hand a contact to
+		-- are all facts with a shelf life of seconds.
+		local asked = 0
+		local realTrigger = env.TriggerServerEvent
+		env.TriggerServerEvent = function(name, ...)
+			if name == module.Event.ASK_ROSTER then asked = asked + 1 end
+			return realTrigger and realTrigger(name, ...)
+		end
+
+		if mapped ~= nil then mapped.pressed() end
+		control.Pump(5)
+		check('pressing again closes it', module.HoloOpen() == false)
+		if mapped ~= nil then mapped.pressed() end
+		control.Pump(5)
+		check('and opening it again asks the server for a fresh roster', asked == 1, asked)
+		env.TriggerServerEvent = realTrigger
+
+		-- ── WHAT THE SCREEN IS GIVEN ─────────────────────────────────────────
+		-- Contacts, the people close enough to hand a contact to, and what
+		-- happened to the calls that did not happen. The last two are new and
+		-- both were asked for: with ALT gone there is no other way to name
+		-- somebody who is not already a contact, and "si il repond pas ou refuse
+		-- note le c'est important".
+		control.netEvents = control.netEvents or {}
+		local handler = control.netEvents[module.Event.ROSTER]
+		check('the client takes a roster from the server',
+			type(handler) == 'function')
+		if type(handler) == 'function' then
+			handler({
+				rows = { { id = 7, name = 'Contact' } },
+				nearby = { { id = 8, name = 'Bystander' } },
+				recent = { { outcome = 'missed', name = 'Someone', atMs = 1 } },
+				onCall = false,
 			})
-			control.Pump(4)
-			local fresh = {}
-			for _, row in ipairs(module.SelfRows()) do fresh[row.id] = row end
-			check('once a call is ringing, ACCEPT is offered', fresh.callAccept.canInteract(context))
-			check('and DECLINE with it', fresh.callDecline.canInteract(context))
-			check('while HANG UP still is not -- there is no call yet',
-				fresh.callHangUp.canInteract(context) ~= true)
-
-			-- THE RE-POP BUTTON. Offered only once the card has actually been
-			-- waved away: offered unconditionally it would be a row that does
-			-- nothing, most of the time, on everybody's own body.
-			check('the re-pop row is not offered while the card is still up',
-				fresh.callRepop.canInteract(context) ~= true)
-
-			-- ── THE CARD TAKES ITSELF DOWN ──────────────────────────────────
-			-- The owner's requirement as a clock. A card that sat at the edge
-			-- of the view for the whole thirty seconds an invite rings is in
-			-- the player's vision for thirty seconds however narrow it is, so
-			-- it says its piece and gets out of the way.
-			--
-			-- THE CALL DOES NOT GO WITH IT, which is the half worth asserting:
-			-- dismissing is not declining, so the invite is still there and the
-			-- eye still answers it. A version that cleared `state.invite`
-			-- instead would look identical on screen and would have hung up on
-			-- everybody who blinked.
-			check('the card is on screen while it is dwelling', module.State().carded == true)
-			-- CARD_DWELL_S is 8, and a pump round is 100ms of host clock.
-			control.Pump(100)
-			check('and takes itself off the screen once it has had its say',
-				module.State().carded == false)
-			check('while the call goes on ringing -- the card left, the call did not',
-				module.State().invite ~= nil)
-
-			-- AND IT REALLY GOES ON RINGING, out loud. The card leaving is
-			-- about the SCREEN; a player who looked away still hears the phone
-			-- and can still answer it on the eye. Written because a mutation
-			-- proved it: gating the re-arm on the card being up instead of on
-			-- the invite existing silenced the call the moment the card dwelt
-			-- out, and every other check in this section stayed green.
-			local heard = #control.effects.sfx2d
-			control.Pump(60)
-			local rang = 0
-			for index = heard + 1, #control.effects.sfx2d do
-				if control.effects.sfx2d[index] == 'ui_phone_incoming_call' then
-					rang = rang + 1
-				end
-			end
-			check('and the phone keeps ringing after the card has gone',
-				rang > 0, rang)
-			local dwelt = {}
-			for _, row in ipairs(module.SelfRows()) do dwelt[row.id] = row end
-			check('so ACCEPT is still on the eye for a card nobody can see',
-				dwelt.callAccept.canInteract(context) == true)
-			check('and the re-pop row is offered to bring it back',
-				dwelt.callRepop.canInteract(context) == true)
-
-			module.FromView('repop')
-			check('re-popping puts it back on screen', module.State().carded == true)
-			-- AND THE CLOCK RESTARTS WITH IT. Without that the card comes back
-			-- and is taken down again by the very next sweep, because the dwell
-			-- would still be measured from when the call first arrived -- a
-			-- button that appears to do nothing, which is the worst kind.
-			--
-			-- PUMPED FAR ENOUGH FOR A SWEEP TO ACTUALLY HAPPEN, which is the
-			-- whole of what this check is worth. The first version pumped two
-			-- rounds, and the ring job runs every 500ms with the client
-			-- scheduler taking at most four jobs a pass -- so no sweep ran, the
-			-- card was still up because nothing had looked at it, and breaking
-			-- the restart outright left the suite green. Twenty rounds is two
-			-- seconds of host clock: several sweeps, and a quarter of the dwell.
-			control.Pump(20)
-			check('and stays up, because the dwell clock restarted with it',
-				module.State().carded == true)
-
-			module.FromView('dismiss')
-			control.Pump(2)
-			local after = {}
-			for _, row in ipairs(module.SelfRows()) do after[row.id] = row end
-			check('and is offered the moment the player waves the card away',
-				after.callRepop.canInteract(context) == true)
-			check('while the call itself is still ringing -- dismissing is not declining',
-				module.State().invite ~= nil and module.State().carded == false)
-			module.FromView('repop')
-			control.Pump(2)
-			check('and bringing it back puts the card on screen again',
-				module.State().carded == true)
-
-			-- ── the card is on the layer that cannot take the mouse ──────────
-			-- The owner's hard requirement -- it must not ruin the player's
-			-- vision -- is the `overlay` layer, which is `pointer-events: none`
-			-- for its whole height and is never focused. A card on
-			-- `interactive` would draw identically and be exactly the thing
-			-- they said not to build, so the layer is asserted rather than
-			-- trusted to a comment.
-			local view = io.open('modules/calls/client/view.lua', 'r')
-			local source = view and view:read('a') or ''
-			if view then view:close() end
-			-- COMMENTS STRIPPED FIRST, the way the permission-argument section
-			-- above strips them and for exactly the same reason: this codebase
-			-- quotes its own call sites in prose constantly, and that file's
-			-- header both names the layer and explains at length why it must
-			-- NOT call `OPX.UI.AcquireFocus`. A grep over the prose finds the
-			-- explanation and reports it as the thing being explained.
-			--
-			-- Written this way because a mutation proved it. Moving the view to
-			-- `interactive` left the check green: the assertion was matching
-			-- the sentence in the header that says the layer is the
-			-- requirement, so it would have gone on passing for the rest of
-			-- this file's life whatever the code did. That is precisely the
-			-- test-that-passes-both-ways this project has been burned by twice.
-			local code = source:gsub('%-%-[^\n]*', '')
-			check('the call views are on the overlay layer',
-				code:find("SURFACE%s*=%s*'overlay'") ~= nil)
-			check('and this module never acquires focus, which is what would take the keyboard',
-				code:find('AcquireFocus', 1, true) == nil)
+			control.Pump(5)
+			local last = drawn[#drawn]
+			check('and hands the screen the contacts',
+				last ~= nil and #last.rows == 1 and last.rows[1].name == 'Contact')
+			check('the people standing near enough to hand a contact to',
+				last ~= nil and #last.nearby == 1 and last.nearby[1].name == 'Bystander')
+			check('and the calls that were missed or refused',
+				last ~= nil and #last.recent == 1 and last.recent[1].outcome == 'missed')
 		end
 	end
 end
@@ -22999,9 +22947,11 @@ do
 	-- The first version shadowed it here and the section below could no longer
 	-- boot a server to read the catalogue out of.
 	local registry = sourceOf('ui/src/boot/main.ts')
+	local holo = sourceOf('ui/src/modules/calls/HoloRoot.vue')
 	check('the incoming card is readable', card ~= nil)
 	check('the live chip is readable', chip ~= nil)
 	check('and the module registry is readable', registry ~= nil)
+	check('and the hologram is readable', holo ~= nil)
 
 	if card ~= nil and chip ~= nil and registry ~= nil then
 		-- ── the layer ────────────────────────────────────────────────────────
@@ -23093,11 +23043,33 @@ do
 			local english = (module.Catalogs or {}).en or {}
 			local french = (module.Catalogs or {}).fr or {}
 			local missing, seen = {}, 0
-			for _, page in ipairs({ card, chip }) do
-				for key in page:gmatch("t%('(calls%.[%w%.]+)'") do
-					seen = seen + 1
-					if english[key] == nil then missing[#missing + 1] = 'en:' .. key end
-					if french[key] == nil then missing[#missing + 1] = 'fr:' .. key end
+			-- THE HOLOGRAM IS WALKED TOO, and it is the one that matters now: it
+			-- carries the whole feature's vocabulary, twenty-eight keys of it,
+			-- where the two views above carry a handful each. Left out, the check
+			-- would go on passing over the files that changed least.
+				for _, raw in ipairs({ card, chip, holo }) do
+				-- COMMENTS STRIPPED FIRST, which the pointer-events check above
+				-- already does and for a reason this check learned the hard way:
+				-- the hologram's own prose EXPLAINS this rule, quoting the
+				-- pattern, and the scanner dutifully reported the quotation as a
+				-- missing key.
+				local page = raw:gsub('/%*.-%*/', ''):gsub('%s*//[^\n]*', '')
+				-- EVERY `calls.*` LITERAL, not only the ones inside `t(...)`.
+				-- The hologram holds two lookup tables whose values are keys --
+				-- written that way precisely so this check could see them -- and
+				-- a scanner anchored on `t(` looked straight past both. Proved
+				-- by removing a French line and watching the suite stay green.
+				--
+				-- A literal ending in a dot is a PREFIX something concatenates
+				-- onto, not a key, and the only one is `calls.error.`: its
+				-- nineteen real keys are walked against `Model.REASONS` by the
+				-- check above this one.
+				for key in page:gmatch("'(calls%.[%w%.]+)'") do
+					if not key:find('%.$') then
+						seen = seen + 1
+						if english[key] == nil then missing[#missing + 1] = 'en:' .. key end
+						if french[key] == nil then missing[#missing + 1] = 'fr:' .. key end
+					end
 				end
 			end
 			table.sort(missing)
@@ -23105,7 +23077,7 @@ do
 				#missing == 0, table.concat(missing, ', '))
 			-- The count, so a regex that stopped matching could not make the
 			-- check above pass by finding nothing to check.
-			check('and the views really do ask for some', seen >= 8, seen)
+			check('and the views really do ask for some', seen >= 20, seen)
 		end
 	end
 end

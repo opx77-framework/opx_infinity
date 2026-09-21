@@ -33,28 +33,54 @@ local EN = {
 	['calls.incoming.expires'] = 'Expires in {time}',
 
 	-- ── the live chip ────────────────────────────────────────────────────────
+	-- The chip used to say "Show the call again", which named a row on the target
+	-- eye. That row is gone with the rest of them; the way back is the hologram
+	-- key, and the chip does not know which key that is -- a player may rebind it
+	-- -- so it says what is TRUE rather than guessing at an instruction.
+	['calls.live.waiting'] = 'A call is waiting.',
 	['calls.live.title'] = 'CALL',
 	['calls.live.elapsed'] = 'ELAPSED',
 	['calls.live.with'] = 'WITH',
 	['calls.live.others'] = '+{count}',
 
 	-- ── the rows on the eye ──────────────────────────────────────────────────
-	['calls.group'] = 'Holocall',
-	['calls.row.call'] = 'Call this person',
-	['calls.row.add'] = 'Add to the call',
-	['calls.row.share'] = 'Share your contact',
-	['calls.row.menu'] = 'Contacts',
-	['calls.row.accept'] = 'Answer the call',
-	['calls.row.decline'] = 'Refuse the call',
-	['calls.row.hangUp'] = 'Hang up',
-	['calls.row.repop'] = 'Show the call again',
 
-	-- ── the contacts screen ──────────────────────────────────────────────────
-	['calls.menu.title'] = 'CONTACTS',
-	['calls.menu.call'] = 'Reachable now',
-	['calls.menu.add'] = 'Add to this call',
-	['calls.menu.empty'] = 'Nobody has given you their contact yet.',
-	['calls.menu.unavailable'] = 'Unavailable',
+
+	-- ── the hologram ─────────────────────────────────────────────────────────
+	-- The whole feature's vocabulary now: the eye rows above are gone and these
+	-- replaced them. See `config/calls.lua`'s KEY block for why.
+	['calls.key.holo'] = 'Holocall',
+	['calls.holo.eyebrow'] = 'NETWORK',
+	['calls.holo.title'] = 'HOLOCALL',
+	['calls.holo.close'] = 'CLOSE',
+	['calls.holo.ringing'] = '{name} is calling you.',
+	['calls.holo.sharing'] = '{name} wants to give you their contact.',
+	['calls.holo.calling'] = 'Calling {name}...',
+	['calls.holo.live'] = 'On a call with {names}.',
+	['calls.holo.answer'] = 'ANSWER',
+	['calls.holo.refuse'] = 'REFUSE',
+	-- The share is a question, so its answers are a question's answers and not
+	-- a call's. "le share contact devrais etre un input qui propose un yes or no".
+	['calls.holo.yes'] = 'YES',
+	['calls.holo.no'] = 'NO',
+	['calls.holo.hangUp'] = 'HANG UP',
+	['calls.holo.call'] = 'CALL',
+	['calls.holo.add'] = 'ADD',
+	['calls.holo.share'] = 'SHARE',
+	['calls.holo.tab.contacts'] = 'CONTACTS',
+	['calls.holo.tab.nearby'] = 'AROUND ME',
+	['calls.holo.tab.recent'] = 'RECENT',
+	['calls.holo.noContacts'] = 'Nobody has given you their contact yet.',
+	['calls.holo.noNear'] = 'Nobody close enough to hand a contact to.',
+	['calls.holo.noneNear'] = 'Nobody close enough to hand a contact to.',
+	['calls.holo.noRecent'] = 'Nothing yet.',
+	-- Four outcomes and four sentences, because "they did not pick up" and "you
+	-- missed one" are the same event from two sides and a system that said the
+	-- same thing to both would be telling one of them a small lie.
+	['calls.holo.outcome.missed'] = 'Missed call',
+	['calls.holo.outcome.unanswered'] = 'No answer',
+	['calls.holo.outcome.declined'] = 'They refused',
+	['calls.holo.outcome.refused'] = 'You refused',
 
 	-- ── what happened ────────────────────────────────────────────────────────
 	['calls.placed'] = 'Calling {name}...',
@@ -105,22 +131,38 @@ local FR = {
 	['calls.live.elapsed'] = 'DURÉE',
 	['calls.live.with'] = 'AVEC',
 	['calls.live.others'] = '+{count}',
+	['calls.live.waiting'] = 'Un appel attend.',
 
-	['calls.group'] = 'Appel vision',
-	['calls.row.call'] = 'Appeler cette personne',
-	['calls.row.add'] = "Ajouter à l'appel",
-	['calls.row.share'] = 'Partager votre contact',
-	['calls.row.menu'] = 'Contacts',
-	['calls.row.accept'] = "Répondre à l'appel",
-	['calls.row.decline'] = "Refuser l'appel",
-	['calls.row.hangUp'] = 'Raccrocher',
-	['calls.row.repop'] = "Réafficher l'appel",
 
-	['calls.menu.title'] = 'CONTACTS',
-	['calls.menu.call'] = 'Joignables',
-	['calls.menu.add'] = 'Ajouter à cet appel',
-	['calls.menu.empty'] = "Personne ne vous a encore transmis son contact.",
-	['calls.menu.unavailable'] = 'Indisponible',
+
+	-- ── l'hologramme ─────────────────────────────────────────────────────────
+	['calls.key.holo'] = 'Holo-appel',
+	['calls.holo.eyebrow'] = 'RESEAU',
+	['calls.holo.title'] = 'HOLO-APPEL',
+	['calls.holo.close'] = 'FERMER',
+	['calls.holo.ringing'] = '{name} vous appelle.',
+	['calls.holo.sharing'] = '{name} veut vous donner son contact.',
+	['calls.holo.calling'] = 'Appel de {name}...',
+	['calls.holo.live'] = 'En appel avec {names}.',
+	['calls.holo.answer'] = 'REPONDRE',
+	['calls.holo.refuse'] = 'REFUSER',
+	['calls.holo.yes'] = 'OUI',
+	['calls.holo.no'] = 'NON',
+	['calls.holo.hangUp'] = 'RACCROCHER',
+	['calls.holo.call'] = 'APPELER',
+	['calls.holo.add'] = 'AJOUTER',
+	['calls.holo.share'] = 'PARTAGER',
+	['calls.holo.tab.contacts'] = 'CONTACTS',
+	['calls.holo.tab.nearby'] = 'AUTOUR DE MOI',
+	['calls.holo.tab.recent'] = 'RECENTS',
+	['calls.holo.noContacts'] = 'Personne ne vous a encore donne son contact.',
+	['calls.holo.noNear'] = 'Personne d\'assez proche pour donner un contact.',
+	['calls.holo.noneNear'] = 'Personne d\'assez proche pour donner un contact.',
+	['calls.holo.noRecent'] = 'Rien pour le moment.',
+	['calls.holo.outcome.missed'] = 'Appel manque',
+	['calls.holo.outcome.unanswered'] = 'Pas de reponse',
+	['calls.holo.outcome.declined'] = 'Il a refuse',
+	['calls.holo.outcome.refused'] = 'Vous avez refuse',
 
 	['calls.placed'] = 'Appel de {name}...',
 	['calls.ringing'] = '{name} vous appelle.',

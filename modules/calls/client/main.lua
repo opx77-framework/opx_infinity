@@ -312,6 +312,24 @@ function M.FromView(action, payload)
 	if action == 'accept' then return M.Accept() end
 	if action == 'decline' then return M.Decline() end
 	if action == 'hangUp' then return M.HangUp() end
+
+	-- ── THE HOLOGRAM'S OWN VERBS ─────────────────────────────────────────────
+	-- Every one of them names a player id the SERVER then judges again. A page
+	-- is the least trustworthy caller in the resource -- it is a browser -- so
+	-- the id is bounded through the model here and the rule is applied there.
+	if action == 'close' then return M.CloseHolo() end
+	if action == 'toggle' then return M.ToggleHolo() end
+	if action == 'call' then
+		return M.Invite(type(payload) == 'table' and payload.id or nil, nil)
+	end
+	if action == 'share' then
+		-- THE OWNER: "le share contact devrais etre un input qui propose un yes
+		-- or no". It always was on the receiving side -- a contact hand-over is
+		-- an invite like any other and needs the other party's consent -- and
+		-- what was missing is that the ASKING side had no screen of its own.
+		-- The page puts the question; this is the yes.
+		return M.Invite(type(payload) == 'table' and payload.id or nil, 'contact')
+	end
 	if action == 'diag' then
 		OPX.Note('calls', ('view: %s'):format(tostring(type(payload) == 'table'
 			and payload.detail or payload)))
@@ -381,315 +399,107 @@ function M.State()
 	}
 end
 
--- ── the menu: the other way to reach somebody who is not in front of you ─────
+-- ── the hologram: one screen, and every verb on it ───────────────────────────
 --
--- THE OWNER ASKED FOR THE THIRD PARTICIPANT "par le menu ou par le ALT", and
--- the two paths are not alternatives so much as complements. ALT needs a body
--- under the crosshair, which is exactly the person a holocall was invented to
--- avoid having to walk to; the menu is how you reach the rest.
+-- THE OWNER: "fait en sorte que cela passe pas par alt ce serais en gros fait
+-- une touche qui ouvre un menu style halogram tous se passe desus call resus
+-- contact etc plus de alt", then "le halo prend vrais le devant de l'ecran" and
+-- "en plein centre".
 --
--- IT LISTS THE CALLER'S CONTACTS AND NOBODY ELSE, which is what makes the
--- sharing worth having: the people you can ring from a menu are the people who
--- agreed to be reachable that way. The server builds the list, works out each
--- row's reachability with the SAME function that judges an invite, and sends
--- neither a position nor a row for a contact who is not connected.
+-- WHAT WAS HERE BEFORE: eight rows on the target eye and a contacts list drawn
+-- with the generic menu module. Both are gone. The eye is where you interact
+-- with a thing you are LOOKING AT, and a holocall is the thing you reach for
+-- when the person is not there -- answering one meant pointing at your own body
+-- first, which is the tell that the mechanism was the one at hand rather than
+-- the one the feature wanted.
 --
--- THE MENU IS OPTIONAL AND THE LIST IS NOT CACHED. Without the menu module the
--- calls still work on the eye, and the list is asked for when the screen opens
--- rather than held: a contact list a minute old is a list of rows that refuse.
+-- TWO SURFACES, AND THE SPLIT IS THE WHOLE DESIGN. The incoming card and the
+-- live chip stay on `overlay`: `pointer-events: none` for their whole height,
+-- never focused, so a call arriving can never take the mouse or stand between
+-- the player and what they are aiming at. The hologram is the opposite on
+-- purpose -- centred, in front, focused, pressable -- because it is the thing
+-- the player deliberately opened. A passive notice that could steal input and a
+-- deliberate screen that could not would both be the wrong way round.
+--
+-- THE LIST IS ASKED FOR WHEN THE SCREEN OPENS AND NEVER CACHED. A contact list a
+-- minute old is a list of rows that refuse: who is connected, who is already on
+-- a call and who is close enough to hand a contact to are all facts with a
+-- shelf life measured in seconds, and the server works every one of them out
+-- with the SAME function that judges the invite itself.
 
--- The open menu's handle, or nil.
-local menuHandle = nil
+-- Whether the hologram is up, and the last roster the server sent for it.
+local holoOpen = false
+local roster = { rows = {}, nearby = {}, recent = {}, onCall = false }
 
--- Turns one roster row into a menu row, greyed with its reason when it has one.
-local function rosterRow(row)
-	local reason = row.refusal
-	return {
-		id = 'contact_' .. tostring(row.id),
-		label = tostring(row.name or '?'),
-		icon = 'person',
-		-- THE REASON IS SHOWN, not merely obeyed. A row that is simply dark
-		-- tells a player their contact is unreachable and nothing else, and the
-		-- two commonest reasons -- already on a call, line busy -- are both
-		-- things that stop being true in a minute.
-		description = reason ~= nil and locale('calls.error.' .. reason) or nil,
-		value = reason ~= nil and locale('calls.menu.unavailable') or nil,
-		disabled = reason ~= nil,
-		data = { kind = 'invite', id = row.id },
-	}
+-- Pushes the hologram's own payload. Separate from `draw` because they are two
+-- surfaces with two lifetimes: the card comes and goes with the call, this
+-- comes and goes with the player's attention.
+local function drawHolo()
+	publish({
+		kind = 'holo',
+		open = holoOpen,
+		rows = roster.rows,
+		nearby = roster.nearby,
+		recent = roster.recent,
+		call = state.call,
+		invite = state.invite,
+		outgoing = state.outgoing,
+	})
 end
 
--- Draws or redraws the contacts screen from a roster the server sent.
-local function drawMenu(payload)
-	local menu = OPX.Api.Get('menu')
-	if menu == nil then return end
-
-	local items = {}
-	local rows = type(payload.rows) == 'table' and payload.rows or {}
-	if #rows == 0 then
-		-- A SEPARATOR AND NOT A DISABLED ROW. An empty list still has to say
-		-- something, and a row that looks pressable and is not is worse than a
-		-- line of text that never looked like one.
-		items[#items + 1] = { separator = true, label = locale('calls.menu.empty') }
-	else
-		items[#items + 1] = { separator = true,
-			label = payload.onCall == true and locale('calls.menu.add')
-				or locale('calls.menu.call') }
-		for index = 1, #rows do
-			local row = rows[index]
-			if type(row) == 'table' and Model.PlayerId(row.id) ~= nil then
-				items[#items + 1] = rosterRow(row)
-			end
-		end
-	end
-
-	if state.call ~= nil then
-		items[#items + 1] = { separator = true, label = locale('calls.live.title') }
-		items[#items + 1] = {
-			id = 'hangUp',
-			label = locale('calls.row.hangUp'),
-			icon = 'ban',
-			danger = true,
-			data = { kind = 'hangUp' },
-		}
-	end
-
-	local spec = {
-		owner = OWNER,
-		id = 'calls',
-		title = locale('calls.menu.title'),
-		items = items,
-		on = function(payload2)
-			if type(payload2) ~= 'table' or payload2.action ~= 'select' then return end
-			local data = type(payload2.data) == 'table' and payload2.data or nil
-			if data == nil then return end
-			if data.kind == 'hangUp' then return M.HangUp() end
-			if data.kind == 'invite' then return M.Invite(data.id, nil) end
-		end,
+-- Takes a roster from the server and redraws, if the screen is still up. A
+-- roster arriving after the player closed the screen is dropped rather than
+-- stored: the next open asks again.
+local function onRoster(payload)
+	if type(payload) ~= 'table' then return end
+	roster = {
+		rows = type(payload.rows) == 'table' and payload.rows or {},
+		nearby = type(payload.nearby) == 'table' and payload.nearby or {},
+		recent = type(payload.recent) == 'table' and payload.recent or {},
+		onCall = payload.onCall == true,
 	}
-
-	if menuHandle ~= nil then
-		-- `Update` and not a fresh `Open`: it re-walks the navigation stack by
-		-- row id, so a refresh does not throw the cursor back to the top of a
-		-- list somebody is halfway down.
-		local updated = menu.Update(menuHandle, spec)
-		if updated.ok then return end
-		menuHandle = nil
-	end
-
-	local opened = menu.Open(spec)
-	if not opened.ok then
-		OPX.Note('calls', 'the contacts screen was refused: ' .. tostring(opened.error))
-		return
-	end
-	menuHandle = opened.value.handle
+	if holoOpen then drawHolo() end
 end
 
---- Opens the contacts screen, which is the menu path to placing a call and to
---- adding a third.
+--- Opens the hologram and asks for a fresh roster.
 -- @author dop42
--- @return boolean whether anything was asked for
-function M.OpenMenu()
-	if OPX.Api.Get('menu') == nil then return false end
+-- @return boolean
+function M.OpenHolo()
+	if holoOpen then return true end
+	holoOpen = true
+	-- Drawn before the roster arrives, with whatever the last one held. The
+	-- screen must appear on the key press rather than on a round trip: a
+	-- hologram that opens a beat after the key is a hologram that feels broken.
+	drawHolo()
 	TriggerServerEvent(M.Event.ASK_ROSTER)
 	return true
 end
 
--- ── the rows on the eye ──────────────────────────────────────────────────────
-
--- The id the eye's context names for the body under the crosshair, as a number.
--- `modules/admin/client/target.lua` reads the same field and turns it into a
--- command argument; here it is passed straight back to the server, so it is
--- bounded through the model rather than formatted.
-local function targetOf(context)
-	local target = type(context) == 'table' and context.target or nil
-	if type(target) ~= 'table' then return nil end
-	return Model.PlayerId(target.playerId)
-end
-
---- The rows drawn on somebody ELSE's body: call them, add them, give them your
---- contact.
----
---- `canInteract` is what makes each appear at the right moment, and each of
---- them is the cheap half of a rule the server owns. "Not while they are
---- already on your call" is checked here so the row is simply absent; it is
---- checked AGAIN on the server, because a row that is absent is not a rule.
+--- Takes the hologram down.
 -- @author dop42
--- @return table[]
-function M.PlayerRows()
-	local group = locale('calls.group')
-	local function onCall()
-		return state.call ~= nil
-	end
-	local function alreadyOn(context)
-		local id = targetOf(context)
-		if id == nil or state.call == nil then return false end
-		for _, row in ipairs(state.call.participants or {}) do
-			if row.id == id then return true end
-		end
-		return false
-	end
-
-	return {
-		{
-			id = 'callPlace',
-			label = locale('calls.row.call'),
-			icon = 'talk',
-			group = group,
-			-- Below the staff band, which starts at 100, and above nothing in
-			-- particular: these are rows everybody has.
-			order = 20,
-			distance = ROW_DISTANCE,
-			canInteract = function(context)
-				return targetOf(context) ~= nil and not onCall()
-			end,
-			onSelect = function(context)
-				return M.Invite(targetOf(context), nil)
-			end,
-		},
-		{
-			id = 'callAdd',
-			label = locale('calls.row.add'),
-			icon = 'plus',
-			group = group,
-			order = 21,
-			distance = ROW_DISTANCE,
-			canInteract = function(context)
-				return targetOf(context) ~= nil and onCall() and not alreadyOn(context)
-			end,
-			onSelect = function(context)
-				return M.Invite(targetOf(context), nil)
-			end,
-		},
-		{
-			id = 'callShare',
-			label = locale('calls.row.share'),
-			icon = 'tag',
-			group = group,
-			order = 22,
-			-- SHORTER THAN THE OTHER TWO, and it matches the server's
-			-- CONTACT_RANGE rather than merely being small: a row offered at
-			-- twelve metres for an action refused past six is a row that
-			-- refuses most of the times it is pressed.
-			distance = 6.0,
-			canInteract = function(context)
-				return targetOf(context) ~= nil
-			end,
-			onSelect = function(context)
-				return M.Invite(targetOf(context), 'contact')
-			end,
-		},
-	}
-end
-
---- The rows drawn on the player's OWN body: answer, refuse, hang up, and bring
---- the card back.
----
---- THIS IS WHERE THE OWNER'S "ACCEPT AND DECLINE ON ALT" LIVES. There is no
---- keybinding for either and there is deliberately none: ALT on yourself
---- already lists what you can do to yourself, it costs no key, and it cannot
---- collide with anything else on the keyboard. `modules/animations/client/walk.lua`
---- makes the same argument for the walking paces.
--- @author dop42
--- @return table[]
-function M.SelfRows()
-	local group = locale('calls.group')
-	return {
-		{
-			id = 'callAccept',
-			label = locale('calls.row.accept'),
-			icon = 'talk',
-			group = group,
-			order = 10,
-			canInteract = function() return state.invite ~= nil end,
-			onSelect = function() return M.Accept() end,
-		},
-		{
-			id = 'callDecline',
-			label = locale('calls.row.decline'),
-			icon = 'ban',
-			group = group,
-			order = 11,
-			danger = true,
-			canInteract = function() return state.invite ~= nil end,
-			onSelect = function() return M.Decline() end,
-		},
-		{
-			id = 'callHangUp',
-			label = locale('calls.row.hangUp'),
-			icon = 'ban',
-			group = group,
-			order = 12,
-			danger = true,
-			canInteract = function() return state.call ~= nil end,
-			onSelect = function() return M.HangUp() end,
-		},
-		{
-			id = 'callMenu',
-			label = locale('calls.row.menu'),
-			icon = 'list',
-			group = group,
-			order = 14,
-			-- THE MENU PATH, offered whether or not a call is up: with none it
-			-- places one, with one it adds a third. Both are the same verb and
-			-- the server derives which -- see `registry.Consider`.
-			canInteract = function() return OPX.Api.Get('menu') ~= nil end,
-			onSelect = function() return M.OpenMenu() end,
-		},
-		{
-			id = 'callRepop',
-			label = locale('calls.row.repop'),
-			icon = 'eye',
-			group = group,
-			order = 15,
-			-- THE RE-POP BUTTON THE OWNER ASKED FOR, and it is offered only
-			-- when there is something to re-pop: a card that was waved away, or
-			-- a live call whose chip somebody lost. Offered unconditionally it
-			-- would be a row that does nothing, most of the time, on everybody's
-			-- own body.
-			canInteract = function()
-				return (state.invite ~= nil and dismissed == state.invite.id) or state.call ~= nil
-			end,
-			onSelect = function()
-				M.FromView('repop')
-				return true
-			end,
-		},
-	}
-end
-
--- Puts both sets on the eye, one resume per kind.
---
--- ONE `Wait(0)` BETWEEN THE TWO KINDS, and `modules/admin/client/target.lua`'s
--- `register` carries the full story of what it is for: the host bounds a task
--- by a per-frame instruction budget and stops it dead when it is passed, with
--- no error, no log and no refusal -- so a registration that builds and submits
--- every row in one resume loses whichever kinds were after the cut. That module
--- lost its `sky` rows for days. Seven rows is a long way inside the budget and
--- the yield costs one frame on a path that runs once, which is the wrong
--- trade-off to get clever about.
-local function register(contract)
-	local sets = {
-		{ call = 'RegisterSelf', rows = M.SelfRows() },
-		{ call = 'RegisterPlayers', rows = M.PlayerRows() },
-	}
-	for index = 1, #sets do
-		Wait(0)
-		local set = sets[index]
-		local answer = contract[set.call](OWNER, set.rows)
-		if answer == nil or answer.ok ~= true then
-			-- `OPX.Note` and not `Open77.log.warn`: `RegisterMany` is
-			-- all-or-nothing, so this line is the difference between "the
-			-- feature is missing" and "row `callShare` has a bad icon", and on
-			-- a client the warning would be written to a file on the player's
-			-- own machine.
-			OPX.Note('calls', ('the %s rows were refused: %s')
-				:format(set.call, tostring(answer and answer.error)))
-			return false
-		end
-	end
+-- @return boolean
+function M.CloseHolo()
+	if not holoOpen then return false end
+	holoOpen = false
+	drawHolo()
 	return true
 end
+
+--- The key's verb, and the page's close button.
+-- @author dop42
+-- @return boolean
+function M.ToggleHolo()
+	if holoOpen then return M.CloseHolo() end
+	return M.OpenHolo()
+end
+
+--- Whether the hologram is up. For a test, and for whatever asks next.
+-- @author dop42
+-- @return boolean
+function M.HoloOpen()
+	return holoOpen
+end
+
 
 --- Builds the state.
 -- @author dop42
@@ -699,7 +509,8 @@ function M.Init()
 	cardUpMs = nil
 	lastRingMs = -math.huge
 	mutedEvents = {}
-	menuHandle = nil
+	holoOpen = false
+	roster = { rows = {}, nearby = {}, recent = {}, onCall = false }
 	jobs = {}
 
 	local settings = M.Settings
@@ -724,29 +535,39 @@ function M.Start()
 	RegisterNetEvent(M.Event.STATE, onState)
 	RegisterNetEvent(M.Event.ROSTER, function(payload)
 		if type(payload) ~= 'table' then return end
-		drawMenu(payload)
+		onRoster(payload)
 	end)
 
 	-- The ring is a scheduler job rather than a thread of its own: it has one
 	-- comparison to make and a module that wants a tick has to justify it.
 	jobs[#jobs + 1] = OPX.Scheduler.Every('calls:ring', 500, rearm)
 
-	-- `target` is optional to this module, so its absence is a runtime without
-	-- an eye rather than a fault: the calls still work over the contract and
-	-- the page, and nobody can reach them by looking at somebody.
-	local contract = OPX.Api.Get('target')
-	if contract == nil or type(contract.RegisterSelf) ~= 'function' then
-		Open77.log.info('[calls] this client has no target eye: no call rows are offered')
+	-- ── THE ONE KEY ──────────────────────────────────────────────────────────
+	-- Everything this module offers is behind it. `DEFAULT = false` switches it
+	-- off for a server that binds it elsewhere, and there is then no way in --
+	-- which is a configuration rather than a fault, so it is said once and not
+	-- warned about.
+	local declared = type(M.Settings.KEY) == 'table' and M.Settings.KEY or {}
+	local key = declared.DEFAULT
+	if type(key) ~= 'string' or key == '' then
+		Open77.log.info('[calls] no key is configured: the hologram cannot be opened')
+	elseif type(RegisterKeyMapping) ~= 'function' then
+		OPX.Note('calls', 'this host has no RegisterKeyMapping: the hologram has no key')
 	else
-		-- ON A THREAD, and the `Wait(0)` in `register` is the only reason it
-		-- needs one. Whether a `Start` may yield is the lifecycle's business
-		-- rather than this module's -- `runPhase` already yields between
-		-- modules under a `pcall` for exactly that doubt -- so the yield is put
-		-- somewhere it is certainly allowed.
-		CreateThread(function()
-			local ok, failure = pcall(register, contract)
-			if not ok then OPX.Note('calls', 'call rows: ' .. tostring(failure)) end
-		end)
+		-- TWO ANSWER SHAPES ARE DOCUMENTED for this host call -- the effective
+		-- key, or `true` and the key -- and reading only one of them logged a
+		-- working mapping as a failure everywhere else in this resource before
+		-- it was written down. Both are accepted; anything else is reported.
+		local called, ok, answer = pcall(RegisterKeyMapping,
+			tostring(declared.ID or 'opx.calls.holo'),
+			locale(declared.NAME or 'calls.key.holo'), key,
+			function() M.ToggleHolo() end)
+		if not called then
+			OPX.Note('calls', 'the hologram key was not mapped: ' .. tostring(ok))
+		elseif ok == false or (ok == nil and answer == nil) then
+			OPX.Note('calls', ('the hologram key %q was refused: %s')
+				:format(key, tostring(answer)))
+		end
 	end
 
 	-- Ask for the state once we are up. A player who reloads into a live call
@@ -762,17 +583,11 @@ function M.Stop()
 		if type(OPX.Scheduler.Cancel) == 'function' then OPX.Scheduler.Cancel(jobs[index]) end
 	end
 	jobs = {}
-	local contract = OPX.Api.Get('target')
-	if contract ~= nil and type(contract.Clear) == 'function' then
-		pcall(contract.Clear, OWNER)
-	end
-	-- The contacts screen goes with the module. A menu left standing over a
-	-- stopped owner is a list of rows whose `on` callback belongs to a VM that
-	-- is no longer answering.
-	local menu = OPX.Api.Get('menu')
-	if menuHandle ~= nil and menu ~= nil and type(menu.Close) == 'function' then
-		pcall(menu.Close, menuHandle, 'calls')
-	end
-	menuHandle = nil
+	-- THE HOLOGRAM GOES WITH THE MODULE. A screen left standing over a stopped
+	-- owner is a set of buttons whose handler belongs to a VM that is no longer
+	-- answering -- and this one holds focus, so it would also be a screen the
+	-- player cannot close.
+	holoOpen = false
+	drawHolo()
 	publish({ kind = 'state' })
 end

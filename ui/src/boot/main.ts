@@ -1,5 +1,6 @@
 import CallLive from '@/modules/calls/CallLive.vue'
 import CallIncoming from '@/modules/calls/IncomingCall.vue'
+import CallHolo from '@/modules/calls/HoloRoot.vue'
 import ChatInput from '@/modules/chat/ChatInput.vue'
 import ChatLog from '@/modules/chat/ChatLog.vue'
 import DownedView from '@/modules/downed/DownedView.vue'
@@ -71,6 +72,13 @@ registerModule({ id: 'tags', surface: 'overlay', component: TagsRoot })
 // two events kept in step by hand.
 registerModule({ id: 'calls-incoming', surface: 'overlay', component: CallIncoming })
 registerModule({ id: 'calls-live', surface: 'overlay', component: CallLive })
+
+// AND THE HOLOGRAM, WHICH IS THE ONLY ONE OF THE THREE THAT MAY BE PRESSED.
+// The two above arrive unbidden and live on a layer that cannot take the mouse;
+// this one the player opened on a key, so it is centred, focused and pressable.
+// It listens on its own channel because it is its own screen -- Lua routes by
+// payload kind and never sends a roster to a layer nobody can click.
+registerModule({ id: 'calls-holo', surface: 'modal', component: CallHolo })
 
 // The chat is ONE Lua module drawn as TWO registrations, because it is two
 // concerns on two layers: the log is always drawn and never focused, the input

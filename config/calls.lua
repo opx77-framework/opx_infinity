@@ -121,4 +121,28 @@ OPX.Config.MODULES.calls = {
 	-- why `INCOMING_STOP` exists as a separate event and why this is a clock
 	-- rather than a flag.
 	RING_EVERY_MS = 3500,
+
+	-- ── THE KEY, AND THE INTERACTION MODEL IT REPLACED ───────────────────────
+	--
+	-- THE OWNER: "fait en sorte que cela passe pas par alt ce serais en gros
+	-- fait une touche qui ouvre un menu style halogram tous se passe desus call
+	-- resus contact etc plus de alt", and then: "le halo prend vrais le devant
+	-- de l'ecran", "en plein centre".
+	--
+	-- This feature was built on the target eye. Eight rows: answer, refuse, hang
+	-- up, call this person, add them, share a contact, open the contacts, bring
+	-- the card back. Every one of them is gone, and the whole of the interaction
+	-- is one screen this key opens.
+	--
+	-- WHY THE EYE WAS THE WRONG PLACE, now that it has been used: ALT needs a
+	-- body under the crosshair, and a holocall is the thing you reach for when
+	-- the person is NOT in front of you. Answering a call meant pointing at
+	-- yourself first. The eye was the mechanism at hand rather than the one the
+	-- feature wanted.
+	--
+	-- `H` for holo. Free on this build -- `E` is contextual, `I` the bag, `T`
+	-- chat, `Y` the hotbar peek, `X` stops an emote, `F1` the menu, `F3` the
+	-- animation picker, `F9` and `F10` staff -- and `false` switches the key off
+	-- entirely for a server that would rather bind it elsewhere.
+	KEY = { ID = 'opx.calls.holo', NAME = 'calls.key.holo', DEFAULT = 'H' },
 }

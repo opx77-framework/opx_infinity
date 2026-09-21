@@ -141,7 +141,7 @@ onUnmounted(stopTick)
         {{ headline }}<span v-if="extra" class="extra op-eyebrow">{{ extra }}</span>
       </p>
 
-      <p v-if="waiting" class="waiting op-eyebrow">{{ t('calls.row.repop') }}</p>
+      <p v-if="waiting" class="waiting op-eyebrow">{{ t('calls.live.waiting') }}</p>
     </section>
   </aside>
 </template>
@@ -164,7 +164,9 @@ onUnmounted(stopTick)
   box-sizing: border-box;
   width: 168px;
   padding: var(--op-space-2) var(--op-space-2) var(--op-space-2) var(--op-space-3);
-  background: var(--op-plate-quiet);
+  /* NO PLATE, the same call as the incoming card: the chip is an outline and a
+     clock over the world. */
+  background: none;
   --aug-tr: var(--op-cut-lg);
   --aug-bl: var(--op-cut-lg);
 }

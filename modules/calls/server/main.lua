@@ -446,6 +446,53 @@ local function remember(playerId, citizenId, name)
 	return character.SetMetadata(playerId, CONTACTS_KEY, held) == true
 end
 
+-- ── what happened to the calls that did not happen ───────────────────────────
+--
+-- THE OWNER: "si il repond pas ou refuse note le c'est important". A call that
+-- rang out and a call that was refused both ended with the caller looking at a
+-- screen that had gone back to normal, and nothing anywhere remembered either.
+-- Two people who keep missing each other is the ordinary case, not the edge one.
+--
+-- WRITTEN WHERE THE CONTACTS ARE, which is the character's metadata blob, and
+-- that is not an implementation detail: it is a JSON column on the characters
+-- table, written on save and decoded on load, so this survives a reconnect for
+-- exactly the same reason the contact list does. The owner asked for the
+-- contacts to be in the database and they already were; this joins them.
+--
+-- BOTH SIDES GET A ROW, and they are different rows. The caller's says "they did
+-- not pick up" and the callee's says "you missed one", and a system that only
+-- recorded the caller's would be a system where the person who was called never
+-- finds out.
+local RECENT_KEY = 'callRecent'
+local MAX_RECENT = 20
+
+-- One character's recent calls, newest last, always an array.
+local function recentOf(playerId)
+	if character == nil or type(character.GetMetadata) ~= 'function' then return {} end
+	local read, held = pcall(character.GetMetadata, playerId, RECENT_KEY)
+	if not read or type(held) ~= 'table' then return {} end
+	local out = {}
+	for _, row in ipairs(held) do
+		if type(row) == 'table' and type(row.outcome) == 'string' then
+			out[#out + 1] = { outcome = row.outcome, name = tostring(row.name or '?'),
+				citizenId = row.citizenId, atMs = tonumber(row.atMs) or 0 }
+		end
+	end
+	return out
+end
+
+-- Files one outcome on one character. Bounded, oldest first out, for the reason
+-- the contact list is bounded: the blob is read on every load.
+local function fileRecent(playerId, outcome, withName, withCitizen)
+	if character == nil or type(character.SetMetadata) ~= 'function' then return false end
+	if playerId == nil or playerId <= 0 then return false end
+	local held = recentOf(playerId)
+	held[#held + 1] = { outcome = outcome, name = tostring(withName or '?'),
+		citizenId = withCitizen, atMs = OPX.Now() }
+	while #held > MAX_RECENT do table.remove(held, 1) end
+	return character.SetMetadata(playerId, RECENT_KEY, held) == true
+end
+
 -- The citizen id of the character in a slot, or nil.
 local function citizenOf(playerId)
 	local _, data = loadedIn(playerId)
@@ -581,6 +628,11 @@ local function onDecline(rawInvite)
 	push(outcome.from)
 	if outcome.kind ~= 'contact' then
 		tell(outcome.from, 'calls.declined', { name = nameOf(playerId) or '?' })
+		-- The refusal, on both sides and named honestly on each: the caller was
+		-- refused, and the person who refused turned one down. Neither is a
+		-- missed call and calling them one would be a small lie repeated daily.
+		fileRecent(outcome.from, 'declined', nameOf(playerId), citizenOf(playerId))
+		fileRecent(playerId, 'refused', nameOf(outcome.from), citizenOf(outcome.from))
 	end
 end
 
@@ -656,8 +708,42 @@ local function onRoster()
 		return tostring(left.name) < tostring(right.name)
 	end)
 
+	-- ── WHO IS STANDING IN FRONT OF YOU ──────────────────────────────────────
+	-- THE OWNER: "fait une touche qui ouvre un menu style halogram tous se passe
+	-- desus call resus contact etc plus de alt". Taking ALT away takes with it
+	-- the only way this module had of naming somebody who is NOT already a
+	-- contact -- and a contact list you can only add to by using the thing you
+	-- just removed is a list that stays empty forever.
+	--
+	-- So the roster carries the people in range of a hand-over as well. The same
+	-- `near` the invite itself is judged by, so a row that appears here is a row
+	-- the server will accept: a list offering somebody the next call refuses is
+	-- the fault this file already avoids for contacts.
+	local nearby = {}
+	local known = {}
+	for _, row in ipairs(rows) do known[row.id] = true end
+	local roster = Open77.players
+	local everyone = type(roster) == 'table' and type(roster.all) == 'function'
+		and select(2, pcall(roster.all)) or nil
+	for _, other in ipairs(type(everyone) == 'table' and everyone or {}) do
+		local id = Model.PlayerId(other)
+		if id ~= nil and id ~= playerId and not known[id] and near(playerId, id) then
+			nearby[#nearby + 1] = { id = id, name = nameOf(id) or '?' }
+		end
+	end
+	table.sort(nearby, function(left, right)
+		return tostring(left.name) < tostring(right.name)
+	end)
+
+	-- Newest first on the wire, because that is the order it is read in.
+	local recent = recentOf(playerId)
+	local ordered = {}
+	for index = #recent, 1, -1 do ordered[#ordered + 1] = recent[index] end
+
 	TriggerClientEvent(M.Event.ROSTER, playerId, {
 		rows = rows,
+		nearby = nearby,
+		recent = ordered,
 		onCall = registry.CallOf(playerId) ~= nil,
 	})
 end
@@ -706,6 +792,13 @@ local function scan()
 		push(invite.to)
 		if invite.kind ~= 'contact' then
 			tell(invite.from, 'calls.expired', { name = nameOf(invite.to) or '?' })
+			-- BOTH SIDES, AND NOT THE SAME ROW. `unanswered` is what the caller
+			-- reads; `missed` is what the person who never looked at their screen
+			-- reads, and it is the one that makes the feature worth having.
+			fileRecent(invite.from, 'unanswered', nameOf(invite.to), citizenOf(invite.to))
+			fileRecent(invite.to, 'missed', nameOf(invite.from), citizenOf(invite.from))
+			audit('calls.unanswered', invite.from, true,
+				('%s did not pick up'):format(tostring(nameOf(invite.to) or invite.to)))
 		end
 	end
 
