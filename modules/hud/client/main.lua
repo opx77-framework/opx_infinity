@@ -170,10 +170,10 @@ local pushToTalkKey = nil
 -- Whether an unreadable stats bridge and a failed voice hide have been logged.
 local statsReported = false
 
---- Whether a value is a number that is neither NaN nor infinite.
-local function finite(value)
-	return OPX.Math.IsFinite(value)
-end
+-- Whether a value is a number that is neither NaN nor infinite. The one shared
+-- predicate, aliased rather than wrapped: a one-line wrapper is a second name
+-- for the same answer and the only thing it can ever do is drift.
+local finite = OPX.Math.IsFinite
 
 --- Clamps a value to 0..100 and rounds it, or answers nil for an unreadable one.
 local function percent(value)

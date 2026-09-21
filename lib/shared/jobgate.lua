@@ -51,18 +51,13 @@ local RANK = { off_duty = 3, grade_too_low = 2, job_required = 1 }
 -- that still closes rather than an index of nil.
 local NO_POLICY = {}
 
--- Coerces to a number, rejecting NaN and both infinities. Kept local rather
--- than folded into `OPX.Text.Finite`, which also caps at 2^53: a millisecond
--- clock is measured with this and must not be bounded like a coordinate. It is
--- the same helper `modules/elevators/shared/access.lua` keeps, for the same
--- stated reason.
-local function finiteNumber(value)
-	value = tonumber(value)
-	if value == nil or value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
-end
+-- Coerces to a finite number, or nil. `OPX.Math.Finite` and not
+-- `OPX.Text.Finite`, which also caps at 2^53: a yaw, a price and a millisecond
+-- clock are all measured with this and must not be bounded like a coordinate.
+-- It was written out by hand here, and identically in ten other files, under
+-- that same correct reasoning -- which is an argument for one helper and never
+-- was one for eleven copies.
+local finiteNumber = OPX.Math.Finite
 
 -- The grade of a job this character holds, or nil for one they do not.
 --

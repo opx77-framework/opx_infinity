@@ -49,10 +49,11 @@ local FIELDS = { 'id', 'label', 'onSelect', 'canInteract', 'checked', 'descripti
 -- Largest radius of one sphere, in metres.
 local MAX_SPHERE_RADIUS = 10
 
--- Whether a value is a finite number.
-local function finite(value)
-	return type(value) == 'number' and value == value and value > -math.huge and value < math.huge
-end
+-- Whether a value is a finite number. `OPX.Math.IsFinite` and not a fourth hand
+-- rolling of it: this one tested `value > -math.huge and value < math.huge`
+-- rather than comparing against the infinities directly, which is the same
+-- answer by a different route and a fifth thing to get right next time.
+local finite = OPX.Math.IsFinite
 
 --- Whether a value is one line of text no longer than max bytes.
 -- @author dop42

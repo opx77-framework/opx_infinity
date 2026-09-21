@@ -15118,6 +15118,103 @@ do
 		zeroed == 0, zeroed)
 end
 
+-- ── finiteness is one function, and one name per answer ──────────────────────
+-- The same four-clause `tonumber` + NaN + two-infinities body was written out in
+-- ELEVEN files, each under a comment correctly explaining why it is not
+-- `OPX.Text.Finite` -- which is an argument for one helper and never was one for
+-- eleven copies. Worse, `local function finite` meant two different things: a
+-- PREDICATE returning a boolean in four files and a COERCER returning
+-- number-or-nil in three, so `if finite(x) then` is true for nil in half the
+-- resource and false for 0 in the other half.
+section('finiteness is written once')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		-- The coercer answers the NUMBER, and every one of these is a value that
+		-- really arrives: a string off the wire, a NaN through JSON, an infinity
+		-- from a division nobody guarded.
+		check('a numeric string coerces', OPX.Math.Finite('12.5') == 12.5,
+			tostring(OPX.Math.Finite('12.5')))
+		check('zero coerces to zero and not to nil', OPX.Math.Finite(0) == 0,
+			tostring(OPX.Math.Finite(0)))
+		check('NaN does not', OPX.Math.Finite(0 / 0) == nil)
+		check('nor does either infinity',
+			OPX.Math.Finite(math.huge) == nil and OPX.Math.Finite(-math.huge) == nil)
+		check('nor a word, a table or nil', OPX.Math.Finite('soon') == nil
+			and OPX.Math.Finite({}) == nil and OPX.Math.Finite(nil) == nil)
+		-- NOT `OPX.Text.Finite`, which caps at 2^53. That cap is right for a value
+		-- that has been through JSON and wrong for a millisecond clock, and it is
+		-- the reason every one of the eleven copies existed.
+		check('and it does NOT cap at 2^53, which is why it is not OPX.Text.Finite',
+			OPX.Math.Finite(2 ^ 54) == 2 ^ 54 and OPX.Text.Finite(2 ^ 54) == nil)
+
+		-- Every module that published the coercer still publishes it, answering the
+		-- same thing: the extraction is only faithful if no caller can tell.
+		for _, id in ipairs({ 'clothing', 'dealership', 'elevators', 'garages',
+			'gunsmith', 'hauling', 'teleports' }) do
+			local module = OPX.Modules.Get(id)
+			local coerce = module ~= nil and module.Access ~= nil and module.Access.FiniteNumber or nil
+			check(('%s still publishes the coercer, and it is the shared one'):format(id),
+				coerce == OPX.Math.Finite, tostring(coerce))
+		end
+		local crafting = OPX.Modules.Get('crafting')
+		check('and so does crafting, under its own name',
+			crafting ~= nil and crafting.Recipes.Finite == OPX.Math.Finite)
+
+		-- GUNSMITH'S THREE-ARGUMENT HELPER IS NOT CALLED `Integer`. Six modules
+		-- publish `Access.Integer(value)`, which takes one argument and bounds
+		-- against their own coordinate box; gunsmith's took three and bounded
+		-- against whatever the call site asked for. Lua drops surplus arguments
+		-- silently, so a call written from memory against the wrong one passes
+		-- every value it is given.
+		local gunsmith = OPX.Modules.Get('gunsmith')
+		check('gunsmith no longer publishes a second meaning for Access.Integer',
+			gunsmith ~= nil and gunsmith.Access.Integer == nil)
+		check('and its ranged helper says so in its name',
+			gunsmith ~= nil and type(gunsmith.Access.WholeInRange) == 'function')
+		check('and still bounds against the caller\'s range',
+			gunsmith ~= nil and gunsmith.Access.WholeInRange(5, 1, 10) == 5
+				and gunsmith.Access.WholeInRange(11, 1, 10) == nil
+				and gunsmith.Access.WholeInRange(1.5, 1, 10) == nil)
+		-- The one-argument `Access.Integer` the other six publish is unchanged and
+		-- still bounds against the coordinate box rather than a caller's range.
+		local garages = OPX.Modules.Get('garages')
+		check('while the one-argument Access.Integer still means what it meant',
+			garages ~= nil and garages.Access.Integer(7) == 7
+				and garages.Access.Integer(7.5) == nil
+				and garages.Access.Integer(2000000) == nil)
+	end
+
+	-- And no file has quietly written a twelfth copy, or reused `finite` for the
+	-- answer it does not mean.
+	local hand, ambiguous = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			local handle = io.open(file, 'r')
+			if handle ~= nil then
+				local source = handle:read('a')
+				handle:close()
+				if source:find('value%s*==%s*math%.huge%s+or%s+value%s*==%s*%-math%.huge')
+					and not file:find('lib/shared/math%.lua') then
+					hand[#hand + 1] = file
+				end
+				-- A local called `finite` must be the predicate; a coercer is
+				-- `finiteNumber`. The two answer differently for nil and for 0.
+				if source:find('local%s+finite%s*=%s*OPX%.Math%.Finite%f[^%w_]') then
+					ambiguous[#ambiguous + 1] = file
+				end
+			end
+		end
+	end
+	check('no file writes the finiteness test out by hand', #hand == 0,
+		table.concat(hand, ', '))
+	check('and no local called `finite` is the coercer', #ambiguous == 0,
+		table.concat(ambiguous, ', '))
+end
+
 -- ── nothing is published on OPX that nobody calls ────────────────────────────
 -- `OPX.Validate.OneOf`, `OPX.CitizenId.IsValid` and `OPX.Hooks.Has` were three
 -- one-line wrappers over the function directly above them, with no caller

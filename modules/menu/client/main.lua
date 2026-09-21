@@ -89,10 +89,10 @@ local downHeard = 0
 
 -- ── text and names ──────────────────────────────────────────────────────────
 
---- Whether a value is a number that is neither NaN nor infinite.
-local function finite(value)
-	return OPX.Math.IsFinite(value)
-end
+-- Whether a value is a number that is neither NaN nor infinite. The one shared
+-- predicate, aliased rather than wrapped: a one-line wrapper is a second name
+-- for the same answer and the only thing it can ever do is drift.
+local finite = OPX.Math.IsFinite
 
 --- Whether a value is a bounded identifier: word characters, `_`, `:`, `-`, `.`.
 local function validName(value, maximum)

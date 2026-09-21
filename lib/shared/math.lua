@@ -29,6 +29,31 @@ function OPX.Math.IsFinite(value)
 		and value ~= -math.huge
 end
 
+--- Coerces to a finite number, or nil.
+-- @author dop42
+--
+-- THE COERCING HALF OF `IsFinite`, and it is here because it was written out by
+-- hand in ELEVEN files -- every `shared/access.lua` that reads a config, the job
+-- gate, and three module-local `finite`s -- with the same four-clause body and
+-- the same comment explaining why it is not `OPX.Text.Finite`. That reasoning is
+-- right and is the reason this exists: `OPX.Text.Finite` also caps at 2^53,
+-- which is correct for a value that has been through JSON and wrong for a
+-- millisecond clock, and a caller that wanted the number got a boolean from
+-- `IsFinite` and had to convert it twice.
+--
+-- What is NOT here is the coordinate box. `BOUND = 1000000` and the `coordinate`
+-- and `integer` helpers over it are still one copy per module, because a bound
+-- on WORLD SPACE is a policy about a map and this library knows nothing about
+-- one; they belong with the placed-spot vocabulary those modules share, which is
+-- a bigger extraction than this.
+-- @param value any
+-- @return number|nil
+function OPX.Math.Finite(value)
+	value = tonumber(value)
+	if not OPX.Math.IsFinite(value) then return nil end
+	return value
+end
+
 --- Squared distance between two points.
 -- Squared on purpose: a within-range test compares against a squared radius
 -- and so never pays for the square root, which matters on a per-frame loop.
