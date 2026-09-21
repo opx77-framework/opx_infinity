@@ -170,6 +170,11 @@ local pushToTalkKey = nil
 -- Whether an unreadable stats bridge and a failed voice hide have been logged.
 local statsReported = false
 
+-- How many vitals readings have been relayed, and when the last one went. See
+-- `sampleVitals`: `Open77.log` on a client writes to the PLAYER'S machine, so a
+-- number an operator needs has to travel.
+local noted, lastNote = 0, 0
+
 -- Whether a value is a number that is neither NaN nor infinite. The one shared
 -- predicate, aliased rather than wrapped: a one-line wrapper is a second name
 -- for the same answer and the only thing it can ever do is drift.
@@ -486,6 +491,31 @@ local function sampleVitals()
 	local moved = nowHealth ~= live.health
 		or nowArmor ~= live.armor
 		or nowStamina ~= live.stamina
+
+	-- BOTH READINGS, SIDE BY SIDE, WHEN THE BAR MOVES. The owner reports that the
+	-- staff menu's heal stopped healing when the maximum went from 100 to 250, and
+	-- the server half is proven: the audit line says `admin.self.heal … "250"` and
+	-- nothing refused it. So the number is being APPLIED and something between the
+	-- pool and the bar disagrees about what it means -- and the candidate is three
+	-- lines up. `state.health` is the canonical pool, server-owned; `bodyHealth`
+	-- is read straight off the engine object; and this function divides the SECOND
+	-- by the FIRST's maximum. If the engine body is still on the stock scale, a
+	-- full 100 over a canonical 250 draws a bar at 40% that will not move, which is
+	-- exactly "the heal does nothing" from the other side of the screen.
+	--
+	-- Guessing which it is cost an afternoon on the eye last week. This prints the
+	-- two numbers into the server journal instead: at most four lines a session,
+	-- only when the drawn percent moved, and four seconds apart so a heal and the
+	-- damage before it are separate lines rather than one burst at spawn.
+	if moved and noted < 4 and OPX.Now() - lastNote > 4000 then
+		noted, lastNote = noted + 1, OPX.Now()
+		local pool = type(state.health) == 'table' and state.health or nil
+		OPX.Note('hud', ('vitals: engine body %s, canonical %s of %s, drawn %s%%')
+			:format(tostring(body),
+				tostring(pool and pool.value or state.health),
+				tostring(pool and firstFinite(pool.maximum, pool.max) or state.maxHealth),
+				tostring(nowHealth)))
+	end
 
 	live = { health = nowHealth, armor = nowArmor, stamina = nowStamina }
 	return moved
