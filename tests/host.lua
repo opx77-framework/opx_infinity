@@ -1075,6 +1075,14 @@ function Host.Environment(side, database)
 				if value == nil or value % 1 ~= 0 or value < 0 or value > 4294967295 then
 					return false, 'invalid_bucket'
 				end
+				-- AND A SLOT NOBODY IS ON CANNOT BE MOVED. The real host refuses
+				-- this and the stub used to accept it, which is why every
+				-- departure filed `[bucket] N could not be moved … (unloaded)` at
+				-- warn on the live server and not one test ever saw it: the one
+				-- path that produces the line could not be reached from here.
+				-- `control.Admit` is how a test says a slot is occupied, so its
+				-- absence is the disconnect.
+				if control.accounts[id] == nil then return false, 'no_such_player' end
 				world.buckets[id] = value
 				world.bucketWrites[#world.bucketWrites + 1] = { playerId = id, bucket = value }
 				return true

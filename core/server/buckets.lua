@@ -182,6 +182,23 @@ function OPX.Buckets.Move(source, bucket, why)
 
 	-- A warning and not a debug line: the player is then waiting in the wrong
 	-- world, or walking into it.
+	--
+	-- UNLESS THEY HAVE ALREADY LEFT, in which case there is no wrong world to
+	-- wait in. `M.Logout` isolates on the way out, and it serves two callers: a
+	-- player SWITCHING character, who is still on the slot and for whom a failed
+	-- move matters, and a player DISCONNECTING, whose slot the host has already
+	-- given up. The second cannot succeed and does not need to, and it filed a
+	-- warning on every single departure -- three in one minute on a quiet
+	-- evening, each one reading like a fault in the routing.
+	--
+	-- The host is the authority on whether the slot is still occupied: it stops
+	-- vouching for an identity the moment the connection is gone.
+	if OPX.UserIdOf(source) == nil then
+		Open77.log.debug(('[bucket] %s was not moved from %s to %s (%s): the slot is gone')
+			:format(tostring(source), tostring(from), tostring(bucket), why))
+		return false
+	end
+
 	Open77.log.warn(('[bucket] %s could not be moved from %s to %s (%s): %s')
 		:format(tostring(source), tostring(from), tostring(bucket), why,
 			tostring(called and reason or moved)))

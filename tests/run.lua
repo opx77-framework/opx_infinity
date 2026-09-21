@@ -550,6 +550,45 @@ do
 		OPX.Sessions[11].departing = true
 		check('a departing session is refused', OPX.Buckets.Isolate(11) == false)
 
+
+		-- ── A SLOT THAT HAS ALREADY GONE IS NOT A ROUTING FAULT ──────────────
+		-- `[bucket] N could not be moved from 0 to 77005 (unloaded): false` was
+		-- filed at WARN on every single departure -- three in one minute on a
+		-- quiet evening -- and each one read like the routing had broken. It had
+		-- not. `character.Logout` isolates on the way out and serves two callers:
+		-- a player SWITCHING character, still on the slot, for whom a failed move
+		-- means they are waiting in the wrong world; and a player DISCONNECTING,
+		-- whose slot the host has already given up, where the move cannot succeed
+		-- and does not need to.
+		--
+		-- The host is the authority: it stops vouching for an identity the
+		-- instant the connection is gone. `control.Admit` is what a test uses to
+		-- say a slot is occupied, so taking the account away IS the disconnect.
+		control.Admit(13, 'account-g')
+		OPX.EnsureSession(13)
+		control.moved = false
+		local warnsBefore, debugsBefore = #control.log.warn, #control.log.debug
+		control.accounts[13] = nil
+		OPX.Buckets.Isolate(13, 'unloaded')
+
+		local shouted = false
+		for index = warnsBefore + 1, #control.log.warn do
+			if tostring(control.log.warn[index]):find('could not be moved', 1, true) then
+				shouted = true
+			end
+		end
+		check('a bucket move for a slot the host has given up is not a warning',
+			not shouted, table.concat(control.log.warn, ' | '):sub(1, 160))
+
+		-- SAID, THOUGH, AND NOT SWALLOWED. The move really did not happen, and a
+		-- silence here would be the other half of the same problem.
+		local noted = false
+		for index = debugsBefore + 1, #control.log.debug do
+			if tostring(control.log.debug[index]):find('the slot is gone', 1, true) then
+				noted = true
+			end
+		end
+		check('it is recorded at debug, where a routine departure belongs', noted)
 		-- The gate seam: `onGiveUp` answering false means "this player is mine
 		-- now", and core must NOT release a hold the caller has taken over.
 		control.Admit(12, 'account-f')
@@ -12607,6 +12646,55 @@ do
 				total() == before, ('%d was %d'):format(total(), before))
 			check('which is every eddie the section ever created, and not one fewer',
 				total() == START + MINTED, tostring(total()))
+
+			-- ── AND A CLEAN LOGOUT IS NOT A LOSS ──────────────────────────────
+			-- The line above is right about a swept boot and was WRONG about
+			-- every ordinary departure, because `Unload` calls the same function
+			-- on the good path -- after writing the container and checking it
+			-- came back clean. A quiet evening's journal carried
+			-- `character 39N-FRKJ: 2 stack(s) destroyed` at severity WARN about a
+			-- sniper rifle and 351 rounds sitting safely in the database. Staff
+			-- reading that would go looking for a loss that never happened, and a
+			-- line that cries wolf costs more than no line at all: the one it
+			-- hides is the real one.
+			local kept = Containers.Transient(KIND.STASH, 'stash-unload-clean', 4, 1000)
+			Containers.Add(kept, 'bandage', 2)
+
+			-- The write branch, forced: a persisted container with a storage that
+			-- answers clean. Nothing else about `Unload` changes.
+			local heldC = Containers.Get(kept.id)
+			heldC.transient = false
+			local realSave = inventory.Storage.SaveUntilClean
+			inventory.Storage.SaveUntilClean = function() return true end
+
+			local flagged
+			local realDiscard = Containers.Discard
+			Containers.Discard = function(id, written)
+				flagged = written
+				return realDiscard(id, written)
+			end
+
+			local warnsBefore = #control.log.warn
+			local infos = #control.log.info
+			env.CreateThread(function() Containers.Unload(kept.id) end)
+			control.Pump(10)
+
+			Containers.Discard = realDiscard
+			inventory.Storage.SaveUntilClean = realSave
+
+			check('a written container tells Discard that nothing is being lost',
+				flagged == true, tostring(flagged))
+			check('and not one warning is filed for a clean unload',
+				#control.log.warn == warnsBefore,
+				table.concat(control.log.warn, ' | '):sub(1, 160))
+
+			local told = nil
+			for index = infos + 1, #control.log.info do
+				local line = tostring(control.log.info[index])
+				if line:find('inventory.unloaded', 1, true) then told = line end
+			end
+			check('it is recorded, as written and unloaded rather than destroyed',
+				told ~= nil and told:find('destroyed', 1, true) == nil, tostring(told))
 		end
 
 		-- ── a stash with no anchor is in reach from everywhere, on purpose ────

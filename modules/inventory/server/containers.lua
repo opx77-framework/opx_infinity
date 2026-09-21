@@ -723,7 +723,9 @@ end
 -- guarded slice runs under `pcall`, which a yield must not cross.
 -- @author dop42
 -- @param id integer
-function Containers.Discard(id)
+-- @param written boolean|nil true when the caller has just written this
+--   container and verified it clean, so nothing is being lost
+function Containers.Discard(id, written)
 	local container = loaded[id]
 	if not container then return end
 
@@ -741,11 +743,27 @@ function Containers.Discard(id)
 		carried = carried + 1
 		kinds[#kinds + 1] = ('%s x%d'):format(tostring(stack.name), tonumber(stack.count) or 0)
 	end
+	-- AND "DESTROYED" ONLY WHEN SOMETHING WAS. This line was written for the
+	-- case it names -- a boot full of somebody's things going with a despawned
+	-- car -- and `Unload` calls the same function on the ordinary path, AFTER
+	-- writing the container and checking it came back clean. So every clean
+	-- logout filed `character 39N-FRKJ: 2 stack(s) destroyed` at severity WARN
+	-- about a sniper rifle and 351 rounds that were sitting safely in the
+	-- database, and staff reading the journal would have gone looking for a loss
+	-- that never happened. A line that cries wolf costs more than no line: the
+	-- one it hides is the real one.
+	--
+	-- The caller knows which it is, because the caller is the one that either
+	-- wrote or did not.
 	if carried > 0 then
 		table.sort(kinds)
-		OPX.Audit.Log({ event = 'inventory.discarded', severity = 'warn',
-			message = ('%s %s: %d stack(s) destroyed'):format(tostring(container.kind),
-				tostring(container.owner), carried),
+		local saved = written == true
+		OPX.Audit.Log({
+			event = saved and 'inventory.unloaded' or 'inventory.discarded',
+			severity = saved and 'info' or 'warn',
+			message = ('%s %s: %d stack(s) %s'):format(tostring(container.kind),
+				tostring(container.owner), carried,
+				saved and 'written and unloaded' or 'destroyed'),
 			data = { kind = container.kind, owner = container.owner,
 				transient = container.transient == true, items = table.concat(kinds, ', ') } })
 	end
@@ -782,5 +800,8 @@ function Containers.Unload(id)
 			return
 		end
 	end
-	Containers.Discard(id)
+	-- Written and verified clean above, so nothing is being lost and the audit
+	-- line must not say it is. A transient reaches here having written nothing,
+	-- which is what `transient` means, and keeps the loud line.
+	Containers.Discard(id, not container.transient)
 end
