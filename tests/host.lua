@@ -153,6 +153,22 @@ Host.json = json
 -- runtime's counter being wrong.
 Host.MAX_PAYLOAD_NODES = 1024
 
+--- Turns a list of VFX aliases into the alias -> path map the native answers.
+-- @author dop42
+--
+-- Kept as a list in the source because a list of 51 names is what anybody
+-- maintaining it wants to read, and turned into the map here because a map is
+-- what `Open77.vfx.catalog` actually hands back.
+-- @param aliases string[]
+-- @return table<string, string>
+function Host.VfxCatalog(aliases)
+	local map = {}
+	for index = 1, #aliases do
+		map[aliases[index]] = ('base\\fx\\%s.effect'):format(aliases[index]:gsub('%.', '\\'))
+	end
+	return map
+end
+
 --- The nodes one payload comes to.
 -- @author dop42
 -- @param value any
@@ -210,6 +226,7 @@ function Host.Environment(side, database)
 	local control
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
 	local bodies, effects, travels, notices, placement, lifts, trips
+	local world, lives, gate, generations, carried, environment
 
 	-- The live tunable values, by key: what `Open77.tunables.declare` hands back
 	-- and what `control.tunables` lets a test move while the runtime is up.
@@ -260,12 +277,27 @@ function Host.Environment(side, database)
 
 		-- `Open77.state` holds two unrelated things and the platform says so: the
 		-- resource-private blob that survives a reload, and the replicated bags.
-		-- `save`/`load` answer nothing, which is the cold-start case a module has to
-		-- handle anyway.
+		--
+		-- A REAL BLOB, AND ONE THAT CAN REFUSE. `save` answered true and kept
+		-- nothing, `load` answered nil forever: a module could not be shown its
+		-- own carried state coming back, so every `restoreState` in the runtime
+		-- took its cold-start path in every test and the whole adoption branch
+		-- -- protocol check, bounds, the refusal that drops all of it -- was
+		-- unreachable. `control.carried` is the blob; set `carried.refuse` to a
+		-- string and `save` answers `false, reason` the way a host with no room
+		-- for it does.
 		state = {
-			save = function() return true end,
-			load = function() return nil end,
-			clear = function() return true end,
+			save = function(value)
+				if carried.refuse ~= nil then return false, tostring(carried.refuse) end
+				-- Through JSON, because that is what the platform stores it as:
+				-- a blob carrying a function or a cycle would not survive, and a
+				-- stub keeping the live table by reference would hide that.
+				carried.blob = json.decode(json.encode(value))
+				carried.writes[#carried.writes + 1] = carried.blob
+				return true
+			end,
+			load = function() return carried.blob end,
+			clear = function() carried.blob = nil; return true end,
 
 			global = bagFor('global', 0),
 			player = function(id) return bagFor('player', id) end,
@@ -278,7 +310,12 @@ function Host.Environment(side, database)
 			offChange = function() return true end,
 		},
 
-		notifications = { send = function() return true end },
+		-- `notifications` WAS DECLARED TWICE IN THIS TABLE, here and again near
+		-- the bottom. Lua keeps the last one, so this key was dead: the
+		-- swallowing `send = function() return true end` that stood here read
+		-- like the live stub and was not, and anybody correcting it would have
+		-- changed nothing. The real one, which records every toast, is the only
+		-- one now.
 
 		-- One declaration per resource, answering a live table the runtime reads
 		-- through. A host that does not install this at all is the other case the
@@ -311,14 +348,95 @@ function Host.Environment(side, database)
 			end,
 		},
 
-		-- The readiness gate. `hold` answers ONE value -- the session -- or
-		-- nil plus a reason, which is the shape the runtime has to handle.
+		-- THE READINESS GATE, AND IT REALLY HOLDS. Five constants stood here and
+		-- one of them was inverted:
+		--
+		--   `isReady` answered false for everybody. The card is explicit the
+		--   other way -- "a player the host does not know is reported ready, so
+		--   an unknown id never blocks a mode forever" -- so every gate in the
+		--   suite read SHUT, `Players.GateOpen` was false for every player, and
+		--   the eight guards in `core/server/gate.lua` all sat behind a door
+		--   nothing could open.
+		--
+		--   `status` answered nil, which made the lost-session recovery in
+		--   `Gate.Release` -- the branch that asks the host who is holding when
+		--   this VM has forgotten -- permanently dead code.
+		--
+		--   `hold` answered a constant 1, so a stale session token and a fresh
+		--   one compared equal and the recycled-player-id race the file exists
+		--   to prevent was unobservable.
+		--
+		--   `participate` and `release` never refused, so neither refusal path
+		--   was reachable.
+		--
+		-- A slot becomes KNOWN when `control.Admit` puts an account on it, and
+		-- its session token is bumped then -- which is what makes a release
+		-- carrying the previous connection's token land on a mismatch, exactly
+		-- as it would on the platform.
 		ready = {
-			participate = function() return true end,
-			hold = function() return 1 end,
-			release = function() return true end,
-			status = function() return nil end,
-			isReady = function() return false end,
+			participate = function(declaration)
+				gate.participations[#gate.participations + 1] = declaration
+				if gate.refuseParticipate ~= nil then return false, gate.refuseParticipate end
+				return true
+			end,
+
+			-- Answers the PLAYER's session, not a per-hold token: the card says
+			-- "returns the player's `session`, which later identifies the hold
+			-- being released", and refreshing an existing hold restarts its
+			-- deadline rather than issuing a new number.
+			hold = function(playerId, reason)
+				local id = tonumber(playerId) or playerId
+				if gate.refuseHold ~= nil then return nil, gate.refuseHold end
+				local session = gate.sessions[id]
+				if session == nil then return nil, 'unknown_player' end
+				local held = gate.holds[id] or {}
+				gate.holds[id] = held
+				held['opx_infinity'] = { reason = tostring(reason or ''), at = clock }
+				return session
+			end,
+
+			-- A session that no longer matches is DROPPED rather than releasing a
+			-- newer hold -- the one rule that keeps a late release from opening
+			-- the gate for whoever reconnected onto the same slot.
+			release = function(playerId, session, note)
+				local id = tonumber(playerId) or playerId
+				gate.releases[#gate.releases + 1] =
+					{ playerId = id, session = session, note = note }
+				if gate.refuseRelease ~= nil then return false, gate.refuseRelease end
+				if session ~= nil and gate.sessions[id] ~= nil and session ~= gate.sessions[id] then
+					return false, 'session_mismatch'
+				end
+				local held = gate.holds[id]
+				if held == nil or held['opx_infinity'] == nil then return false, 'no_such_hold' end
+				held['opx_infinity'] = nil
+				return true
+			end,
+
+			status = function(playerId)
+				local id = tonumber(playerId) or playerId
+				local session = gate.sessions[id]
+				local holds = {}
+				for resource, held in pairs(gate.holds[id] or {}) do
+					holds[#holds + 1] = { resource = resource, reason = held.reason,
+						ageMs = clock - held.at }
+				end
+				table.sort(holds, function(left, right) return left.resource < right.resource end)
+				return {
+					known = session ~= nil,
+					ready = #holds == 0,
+					session = session,
+					ageMs = 0,
+					holds = holds,
+				}
+			end,
+
+			-- An UNKNOWN id is ready. That is the card's rule and the opposite of
+			-- what stood here.
+			isReady = function(playerId)
+				local id = tonumber(playerId) or playerId
+				if gate.sessions[id] == nil then return true end
+				return next(gate.holds[id] or {}) == nil
+			end,
 		},
 
 		-- Spawned vehicles. `create` answers an opaque engine id, which is stored
@@ -329,6 +447,20 @@ function Host.Environment(side, database)
 		-- whole point of a garage marker: a test that only saw an id could not
 		-- tell a vehicle placed on the marker from one placed beside the player.
 		vehicles = {
+			-- A CONSTANT TABLE, NOT A CALL, and the platform's own ten values.
+			-- The card is explicit: `Open77.vehicles.flags` is a public constant
+			-- table, "reasons it can return: none (a table, not a call)". This
+			-- stub was `function() return {} end`, so `masks()` in
+			-- `modules/admin/server/vehicles.lua` took its callable branch, got
+			-- an empty table back, and every configured flag resolved
+			-- `unknown_flag` -- the exact failure that file's own comment warns
+			-- about, manufactured by the harness and certified green. Because it
+			-- is a table here, the branch the runtime will really take on this
+			-- build is the branch the suite exercises.
+			flags = { engineOn = 1, locked = 2, destroyed = 4, exploded = 8,
+				invulnerable = 16, immortal = 32, lightsOn = 64, highBeams = 128,
+				sirenOn = 256, paintApplied = 512 },
+
 			create = function(options)
 				vehicleCreates[#vehicleCreates + 1] = options
 				if vehicles.refuse ~= nil then return nil, tostring(vehicles.refuse) end
@@ -339,11 +471,22 @@ function Host.Environment(side, database)
 				vehicles.next = (vehicles.next or 0) + 1
 				return ('0x%016x'):format(vehicles.next)
 			end,
-			-- What a live vehicle projects. Nil is "the host knows nothing about
-			-- it", which is one of the two answers a caller has to survive;
-			-- `vehicles.snapshot` is the other, and it is where an occupant is set
-			-- so the refusal that protects a driver can be exercised.
-			get = function() return vehicles.snapshot end,
+			-- What a live vehicle projects, FOR THE ID THAT WAS ASKED ABOUT. This
+			-- ignored its argument entirely and answered one shared snapshot, so
+			-- two live vehicles were the same vehicle to everything that reads
+			-- one: per-vehicle occupancy could not be distinguished, and neither
+			-- could a read-before-remove that names the wrong car.
+			--
+			-- `vehicles.byId[id]` is the per-vehicle store and is checked first.
+			-- `vehicles.snapshot` is kept as the fallback for the id-agnostic
+			-- tests that predate the store -- an unknown id still answers nil
+			-- when neither is set, which is the other answer a caller must
+			-- survive.
+			get = function(id)
+				local known = id ~= nil and vehicles.byId[id]
+				if known ~= nil then return known end
+				return vehicles.snapshot
+			end,
 			-- Recorded, because "the vehicle was put away" and "it is still in the
 			-- world with a row that says stored" read identically from a return
 			-- value. The comment above has always promised this list.
@@ -524,8 +667,29 @@ function Host.Environment(side, database)
 		-- `acl.read` is granted in the manifest, and the capture door asks the same
 		-- question the command gate asks. Empty means refused, which is the shape
 		-- every caller has to survive; `control.Allow` is how a test grants one.
+		-- THE THREE REFUSALS THE CARD NAMES, and not a bare boolean. This
+		-- answered `true`/`false` and nothing else, so a caller could not be
+		-- shown the difference between "the ACL says no" and "the ACL could not
+		-- be asked" -- and `permission_denied:acl.read`, `invalid_permission`
+		-- and `invalid_player_id` were three documented answers no test could
+		-- produce.
+		--
+		-- `acl.refuse` is a build where this resource does not hold `acl.read`:
+		-- every question comes back denied WITH A REASON, which is the
+		-- degradation `core/server/commands.lua` and the staff menu are both
+		-- built around. `control.Allow` is still how a grant is made.
 		acl = {
 			isAllowed = function(playerId, permission)
+				if acl.refuse ~= nil then return false, tostring(acl.refuse) end
+				if type(permission) ~= 'string' or permission == '' then
+					return false, 'invalid_permission'
+				end
+				-- The console is source 0 and is NOT a player here: the card is
+				-- explicit that it answers `invalid_player_id` for it rather
+				-- than yes, which is why `commands.lua` names the console
+				-- instead of asking.
+				local id = tonumber(playerId)
+				if id == nil or id % 1 ~= 0 or id <= 0 then return false, 'invalid_player_id' end
 				local granted = acl.granted
 				if granted == nil then return false end
 				local player = granted[tostring(playerId)]
@@ -533,20 +697,81 @@ function Host.Environment(side, database)
 			end,
 		},
 
+		-- A REAL BUCKET STORE. `getPlayer` answered a constant 0 and `setPlayer`
+		-- kept nothing, so "the player moved to bucket N" was unobservable by any
+		-- route: every `Buckets.Move` skipped its own no-op check, every
+		-- `Buckets.Release` saw a player who was never in a selection bucket, and
+		-- every bucket comparison anywhere in the suite was `0 == 0`. A bucket is
+		-- the only thing standing between two instances of the same shop, so a
+		-- harness that cannot tell them apart certifies a reach check that is not
+		-- there. `control.Bucket` is how a test puts somebody in one.
 		routingBuckets = {
-			setPlayer = function() return true end,
-			getPlayer = function() return 0 end,
-			setPopulationEnabled = function() return true end,
-			setLockdownMode = function() return true end,
+			setPlayer = function(playerId, bucket)
+				local id = tonumber(playerId) or playerId
+				local value = tonumber(bucket)
+				-- The host's own range, and the reason it is checked: a bucket id
+				-- outside it is refused rather than stored, which is the answer
+				-- `Buckets.Move` warns on and could never reach.
+				if value == nil or value % 1 ~= 0 or value < 0 or value > 4294967295 then
+					return false, 'invalid_bucket'
+				end
+				world.buckets[id] = value
+				world.bucketWrites[#world.bucketWrites + 1] = { playerId = id, bucket = value }
+				return true
+			end,
+			getPlayer = function(playerId)
+				return world.buckets[tonumber(playerId) or playerId] or 0
+			end,
+			setPopulationEnabled = function(bucket, on)
+				world.population[#world.population + 1] = { bucket = bucket, enabled = on }
+				return true
+			end,
+			setLockdownMode = function(bucket, mode)
+				world.lockdown[#world.lockdown + 1] = { bucket = bucket, mode = mode }
+				return true
+			end,
 		},
 
+		-- THE CLOCK ANSWERS A SNAPSHOT TABLE, not the number 0. The card is
+		-- `{ day, hour, minute, second, totalSeconds, frozen }` or nil, and
+		-- `modules/weather` guards its whole drift correction with
+		-- `if type(live) == 'table'` -- so with a 0 here that branch was never
+		-- once entered and the module re-applied the time on every single pass
+		-- with nothing to say it was wrong. A REAL store, because the drift
+		-- correction is a comparison between what the engine holds and what the
+		-- server asked for, and a `setTime` that kept nothing made the two the
+		-- same question.
 		environment = {
-			getTime = function() return 0 end,
-			setTime = function() return true end,
-			setTimeFrozen = function() return true end,
-			setWeather = function() return true end,
-			setWeatherFrozen = function() return true end,
-			isWeatherFrozen = function() return false end,
+			getTime = function()
+				if environment.refuse ~= nil then return nil, environment.refuse end
+				local total = environment.seconds % 86400
+				return {
+					day = environment.day,
+					hour = math.floor(total / 3600),
+					minute = math.floor(total % 3600 / 60),
+					second = total % 60,
+					totalSeconds = total,
+					frozen = environment.timeFrozen,
+				}
+			end,
+			setTime = function(hour, minute, second)
+				if environment.refuseSet ~= nil then return false, environment.refuseSet end
+				environment.seconds =
+					((tonumber(hour) or 0) * 3600 + (tonumber(minute) or 0) * 60
+						+ (tonumber(second) or 0)) % 86400
+				environment.writes[#environment.writes + 1] = environment.seconds
+				return true
+			end,
+			setTimeFrozen = function(held) environment.timeFrozen = held == true; return true end,
+			setWeather = function(preset)
+				environment.weather = preset
+				return true
+			end,
+			setWeatherFrozen = function(held)
+				environment.weatherFrozen = held == true
+				return true
+			end,
+			isWeatherFrozen = function() return environment.weatherFrozen end,
 		},
 
 		players = {
@@ -563,13 +788,77 @@ function Host.Environment(side, database)
 				table.sort(ids)
 				return ids
 			end,
-			name = function(playerId) return control.accounts[playerId] and 'player' or nil end,
-			position = function() return { x = 0, y = 0, z = 0, bucket = 0 } end,
-			getLifeState = function() return 'alive' end,
-			isDead = function() return false end,
-			kill = function() return true end,
-			respawn = function() return true end,
-			revive = function() return true end,
+			-- The display name the host holds for a slot, and NOT a constant. It
+			-- was `'player'` for everybody, which is a name with no control
+			-- character in it and eight bytes long -- so `downed`'s strip and its
+			-- 32-byte cut could never fire, and neither could any other caller's.
+			-- `control.Rename` is how a test gives somebody a name the host would
+			-- really hand over.
+			name = function(playerId)
+				local id = tonumber(playerId) or playerId
+				if control.accounts[id] == nil then return nil end
+				return world.names[id] or ('player-' .. tostring(id))
+			end,
+
+			-- WHERE THE PLAYER ACTUALLY IS, and nil for a slot the host does not
+			-- know. This answered `{ x = 0, y = 0, z = 0, bucket = 0 }` for every
+			-- id that was ever asked about, with no way to move it: all 26
+			-- server-side call sites read the origin, every reach test compared
+			-- origin against anchor, and every bucket comparison was `0 == 0`.
+			-- Eight of the ten reach and bucket mutants in the audit survived on
+			-- this one stub alone. The bucket comes from the routing store above,
+			-- so a player the runtime moved reads as moved. `control.Stand` is
+			-- how a test walks somebody somewhere.
+			position = function(playerId)
+				local id = tonumber(playerId) or playerId
+				local at = world.positions[id]
+				if at == nil then return nil end
+				return { x = at.x, y = at.y, z = at.z, bucket = world.buckets[id] or 0 }
+			end,
+
+			-- A SNAPSHOT TABLE, not a string. The card answers
+			-- `{ phase = alive|dead|revivepending|respawnpending|recovering }` or
+			-- nil, and every consumer in this runtime type-checks for a table --
+			-- so a stub answering `'alive'` made `Players.Alive` HARD FALSE for
+			-- every player in the suite and `Players.MayAct` answer `false,
+			-- 'dead'` everywhere. The whole inventory door sat behind a refusal
+			-- the harness manufactured. `control.Life` sets a phase; a slot with
+			-- no life state at all is the not-incarnated case, which is a real
+			-- answer this host now gives and callers have to survive.
+			getLifeState = function(playerId)
+				local phase = lives[tonumber(playerId) or playerId]
+				if phase == nil then return nil end
+				return { phase = phase }
+			end,
+			isDead = function(playerId)
+				return lives[tonumber(playerId) or playerId] == 'dead'
+			end,
+			-- The three life transitions really move the phase. They answered a
+			-- bare `true` and changed nothing, so the placement sequence in
+			-- `modules/character` -- kill, then respawn on the point -- could not
+			-- be told from one that killed and left the body there.
+			kill = function(playerId)
+				local id = tonumber(playerId) or playerId
+				if lives[id] == nil then return false, 'not_incarnated' end
+				lives[id] = 'dead'
+				world.transitions[#world.transitions + 1] = { playerId = id, verb = 'kill' }
+				return true
+			end,
+			respawn = function(playerId, position)
+				local id = tonumber(playerId) or playerId
+				if lives[id] == nil then return false, 'not_incarnated' end
+				lives[id] = 'alive'
+				if type(position) == 'table' then control.Stand(id, position) end
+				world.transitions[#world.transitions + 1] = { playerId = id, verb = 'respawn' }
+				return true
+			end,
+			revive = function(playerId)
+				local id = tonumber(playerId) or playerId
+				if lives[id] == nil then return false, 'not_incarnated' end
+				lives[id] = 'alive'
+				world.transitions[#world.transitions + 1] = { playerId = id, verb = 'revive' }
+				return true
+			end,
 			setArmor = function() return true end,
 			-- The seat a connection is sitting in, or nil. The marker key's whole
 			-- behaviour turns on this answer -- it is what decides whether the key
@@ -738,7 +1027,22 @@ function Host.Environment(side, database)
 		},
 
 		hud = { setVisible = function() return true end },
-		resource = { generation = function() return 1 end },
+
+		-- A GENERATION THAT CAN CHANGE. This answered a constant 1 for every
+		-- resource forever, so every abort-on-reload guard in the runtime --
+		-- `modules/target`'s row sweep, `modules/needs`, the deferred callbacks
+		-- in `modules/animations` -- compared 1 against 1 and was trivially
+		-- satisfied. A reload is the event those guards exist for and it could
+		-- not be staged. `control.Reload(name)` bumps one.
+		--
+		-- The card's other two answers are here too: this VM's own generation
+		-- when no name is given, and 0 for a resource that is not running.
+		resource = {
+			generation = function(resourceName)
+				if resourceName == nil then return generations['opx_infinity'] or 1 end
+				return generations[tostring(resourceName)] or 0
+			end,
+		},
 	}
 
 	Open77.database = database
@@ -746,12 +1050,16 @@ function Host.Environment(side, database)
 	-- Recorded by the marker and key stubs above, and read by the tests.
 	markers = { byId = {}, created = {}, removed = {}, next = 0 }
 	input = { captured = false, keys = {}, down = {} }
-	acl = { granted = {} }
+	-- `refuse` is a string: every ACL question comes back `false, <reason>`, the
+	-- way a build without the `acl.read` grant answers.
+	acl = { granted = {}, refuse = nil }
 	-- Set `refuse` to make the engine refuse a creation, the way an unsupported
 	-- record or a full world would, and `snapshot` to make `get` answer a live
 	-- vehicle's projection -- the occupied case, which is the one a recall has to
 	-- refuse.
-	vehicles = { refuse = nil, snapshot = nil }
+	-- `byId` is the per-vehicle store `get` reads first: put a projection in it
+	-- under the id `create` handed back and two live vehicles stop being one.
+	vehicles = { refuse = nil, snapshot = nil, byId = {} }
 	vehicleCreates = {}
 	vehicleRemoves = {}
 
@@ -797,6 +1105,54 @@ function Host.Environment(side, database)
 	-- Notifications the runtime sent, oldest first.
 	notices = {}
 
+	-- The world as the SERVER sees it, per player id: where each body is, which
+	-- routing bucket it is in, what the host calls it, and every write the
+	-- runtime made to any of the three.
+	--
+	-- Separate from `placement`, which is the CLIENT's own local operator: the
+	-- two were conflated by `control.placement` being the only movable position
+	-- in the harness, and `control.placement` feeds `character.position`, which
+	-- no server script can call. Nothing could move a server-side position at
+	-- all, so no reach check on the server side was ever exercised.
+	world = {
+		positions = {}, buckets = {}, names = {},
+		bucketWrites = {}, population = {}, lockdown = {}, transitions = {},
+	}
+
+	-- The life phase of each player id, or nil for a slot with no body. Set on
+	-- admission and moved by `kill`, `respawn`, `revive` and `control.Life`.
+	lives = {}
+
+	-- The readiness gate's own state. A REAL gate, because the runtime's whole
+	-- recycled-player-id defence rests on a session token that CHANGES, and the
+	-- stub answered a constant 1 -- so a stale token and a fresh one compared
+	-- equal and the race `core/server/gate.lua` exists to prevent could not be
+	-- staged. `holds` is per player, per resource; `sessions` is the token the
+	-- host hands out, bumped every time a slot is admitted afresh.
+	--
+	--   gate.refuseHold         a string: `hold` answers nil and that reason
+	--   gate.refuseParticipate  a string: `participate` refuses the declaration
+	--   gate.refuseRelease      a string: `release` answers false and that reason
+	gate = { sessions = {}, holds = {}, nextSession = 100, participations = {},
+		releases = {}, refuseHold = nil, refuseParticipate = nil, refuseRelease = nil }
+
+	-- VM generations by resource name. This resource starts at 1; anything not
+	-- named here is not running and answers 0, which is the card's own answer.
+	-- `control.Reload` bumps one.
+	generations = { opx_infinity = 1 }
+
+	-- The resource-private blob that survives a reload. `blob` is what `load`
+	-- answers, `writes` is every `save` in order, and `refuse` makes `save`
+	-- answer `false, reason`.
+	carried = { blob = nil, writes = {}, refuse = nil }
+
+	-- The engine's own clock and weather, so a drift correction has two numbers
+	-- to compare rather than one. `refuse` makes `getTime` answer nil plus a
+	-- reason -- a build without the environment backend -- and `refuseSet` does
+	-- the same for `setTime`.
+	environment = { day = 1, seconds = 0, timeFrozen = false, weather = nil,
+		weatherFrozen = false, writes = {}, refuse = nil, refuseSet = nil }
+
 	-- Where the local operator is standing. Movable, because an effect that is
 	-- placed once and left behind and one that follows the operator read
 	-- identically unless the suite can move the operator between pumps.
@@ -806,7 +1162,19 @@ function Host.Environment(side, database)
 	-- `calls` every attempt including the refusals, and `live` the handles still
 	-- held -- a pop that was never stopped shows up there.
 	effects = {
-		catalogue = {
+		-- A MAP FROM ALIAS TO PATH, which is what the card answers: "table
+		-- mapping alias to effect path, or nil; reason". This was a 51-element
+		-- ARRAY, so `catalog()['fire.large']` -- the only way anybody reads a
+		-- catalogue -- was nil for all 51 legal aliases, and a config naming a
+		-- real effect looked exactly like one naming a typo. The paths are
+		-- synthesised from the alias rather than copied from the engine: what a
+		-- caller may do with a cooked path is build-dependent, so the only
+		-- property worth modelling here is that a legal alias has one and an
+		-- illegal alias has none.
+		--
+		-- The aliases themselves are the real list, a copy of `kVfxCatalog` in
+		-- `client/src/api/Effects.cpp` (51 of them, counted 2026-09-19).
+		catalogue = Host.VfxCatalog({
 			'blood.puddle', 'electric.arc', 'electric.destruction', 'electric.device',
 			'electric.emp', 'electric.industrial_arm', 'explosion.frag', 'explosion.fuel',
 			'explosion.grenade', 'explosion.nuclear', 'explosion.steam', 'explosion.turret',
@@ -820,7 +1188,7 @@ function Host.Environment(side, database)
 			'vehicle.fire', 'vehicle.police_lights', 'vehicle.skid', 'vehicle.skid.mark',
 			'vehicle.skid.smoke', 'water.drip', 'water.hydrant', 'water.sprinkler',
 			'weather.dust', 'weather.rain', 'weather.sandstorm',
-		},
+		}),
 		plays = {}, calls = {}, entityPlays = {}, stopped = {}, live = {}, sfx = {},
 		updates = {},
 		next = 0, refuse = nil,
@@ -1081,6 +1449,40 @@ function Host.Environment(side, database)
 		-- Notifications the runtime sent, oldest first.
 		notices = notices,
 
+		-- Where every player stands on the SERVER, which bucket each is in, what
+		-- the host calls them, and every bucket write, population and lockdown
+		-- call and life transition the runtime made. Move a body with
+		-- `control.Stand`, not by writing here.
+		world = world,
+
+		-- Life phase by player id. `control.Life` is the way to move one.
+		lives = lives,
+
+		-- The readiness gate's own state: session tokens, who holds what, and
+		-- the three refusal switches. `control.Hold` and `control.Free` stage
+		-- another resource's hold.
+		gate = gate,
+
+		-- VM generation by resource name. `control.Reload` is how a test makes a
+		-- resource look reloaded to an abort-on-reload guard.
+		generations = generations,
+
+		-- The resource-private blob that survives a reload, every write to it,
+		-- and the refusal switch.
+		carried = carried,
+
+		-- The engine's clock and weather, and the two refusal switches.
+		environment = environment,
+
+		--- Reloads a resource: its generation changes, which is exactly what a
+		--- guard holding a cached handle is watching for. With no name it is
+		--- this resource.
+		Reload = function(resourceName)
+			local key = tostring(resourceName or 'opx_infinity')
+			generations[key] = (generations[key] or 0) + 1
+			return generations[key]
+		end,
+
 		--- Grants one permission to one player, as an ACL entry would.
 		Allow = function(playerId, permission)
 			local player = acl.granted[tostring(playerId)]
@@ -1107,7 +1509,76 @@ function Host.Environment(side, database)
 		end,
 
 		--- Puts an account on a slot, or clears it when `userId` is nil.
-		Admit = function(playerId, userId) control.accounts[playerId] = userId end,
+		---
+		--- Admitting a slot gives it everything the host gives a real connection:
+		--- a position at the origin, the world bucket, an alive body and a FRESH
+		--- gate session. The session is what makes a recycled player id testable
+		--- -- admit 7, release with its token, admit 7 again, and a release
+		--- carrying the old token now lands on `session_mismatch` the way it
+		--- would on the platform.
+		Admit = function(playerId, userId)
+			local id = tonumber(playerId) or playerId
+			control.accounts[playerId] = userId
+			if userId == nil then
+				world.positions[id] = nil
+				world.buckets[id] = nil
+				world.names[id] = nil
+				lives[id] = nil
+				gate.sessions[id] = nil
+				gate.holds[id] = nil
+				return
+			end
+			world.positions[id] = world.positions[id] or { x = 0.0, y = 0.0, z = 0.0 }
+			world.buckets[id] = world.buckets[id] or 0
+			lives[id] = lives[id] or 'alive'
+			gate.nextSession = gate.nextSession + 1
+			gate.sessions[id] = gate.nextSession
+			gate.holds[id] = {}
+		end,
+
+		--- Walks a player to a point. Takes `{ x, y, z }` or three numbers, so a
+		--- test can move the body a reach check measures against -- which nothing
+		--- in this harness could do before.
+		Stand = function(playerId, x, y, z)
+			local id = tonumber(playerId) or playerId
+			if type(x) == 'table' then x, y, z = x.x, x.y, x.z end
+			world.positions[id] = { x = tonumber(x) or 0.0, y = tonumber(y) or 0.0,
+				z = tonumber(z) or 0.0 }
+		end,
+
+		--- Sets a player's life phase, or takes their body away entirely when it
+		--- is nil -- which is what the host answers for somebody behind a
+		--- continue screen, and the case `MayAct` and `downed` both branch on.
+		--- One of `alive`, `dead`, `revivepending`, `respawnpending`,
+		--- `recovering`.
+		Life = function(playerId, phase) lives[tonumber(playerId) or playerId] = phase end,
+
+		--- Puts a player in a routing bucket directly, the way another resource
+		--- would, without going through the runtime's own move.
+		Bucket = function(playerId, bucket)
+			world.buckets[tonumber(playerId) or playerId] = tonumber(bucket) or 0
+		end,
+
+		--- Gives the host a display name for a slot. The default is
+		--- `player-<id>`; pass one with a control character or past 32 bytes to
+		--- exercise a caller's strip and cut.
+		Rename = function(playerId, name)
+			world.names[tonumber(playerId) or playerId] = name
+		end,
+
+		--- Takes a hold on a player as ANOTHER resource, so "the gate is shut
+		--- because somebody else is still loading" can be staged. `Free` lifts it.
+		Hold = function(playerId, resourceName, reason)
+			local id = tonumber(playerId) or playerId
+			gate.holds[id] = gate.holds[id] or {}
+			gate.holds[id][tostring(resourceName)] = { reason = reason or 'test', at = clock }
+		end,
+
+		--- Lifts another resource's hold.
+		Free = function(playerId, resourceName)
+			local held = gate.holds[tonumber(playerId) or playerId]
+			if held then held[tostring(resourceName)] = nil end
+		end,
 
 		--- Puts a player in a vehicle, or takes them out when it is nil.
 		Seat = function(playerId, assignment) seats[tonumber(playerId) or playerId] = assignment end,

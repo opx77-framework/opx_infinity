@@ -6919,7 +6919,13 @@ do
 			('%s,%s'):format(inBucket[1].key, inBucket[2].key))
 
 		-- ── the commands ─────────────────────────────────────────────────
+		-- ADMITTED, because `add` captures the position the SERVER reads and the
+		-- host answers nil for a slot nobody is connected on. This test used to
+		-- pass without an account on the slot only because the harness answered
+		-- the origin for every id it was ever asked about, connected or not --
+		-- so "at the position the SERVER read" was asserting the stub.
 		local src = 41
+		control.Admit(src, 'account-clothing')
 		check('the add command is registered and ACL-gated',
 			control.commands['opx.clothing.add'] ~= nil
 				and control.commands['opx.clothing.add'].restricted == true)
@@ -7448,9 +7454,15 @@ do
 		local Noclip = admin.Noclip
 		local travel = admin.Event.TRAVEL
 
-		-- The advertised effect catalogue, in the shape a config can check against.
+		-- The advertised effect catalogue, in the shape a config can check
+		-- against. `Open77.vfx.catalog()` answers a MAP FROM ALIAS TO COOKED
+		-- PATH, so the alias is the key: this walked it with `ipairs`, which
+		-- over a map visits nothing at all, and the set below was empty. Every
+		-- alias then read as absent -- and the check still passed, because the
+		-- harness was handing back an array where the engine hands back a map
+		-- and the two mistakes cancelled.
 		local carried = {}
-		for _, alias in ipairs(cenv.Open77.vfx.catalog()) do carried[alias] = true end
+		for alias in pairs(cenv.Open77.vfx.catalog()) do carried[alias] = true end
 
 		check('the pop owns one transition point and nothing else',
 			type(Noclip.Changed) == 'function' and type(Noclip.Pop) == 'function')
@@ -11462,12 +11474,21 @@ do
 		-- actually destroys a memory-only container lives here.
 		local World = inventory.World
 
-		-- The gate answers false and the life reader answers a STRING in the bare
-		-- harness, and `Players.MayAct` reads both. Without these two every
-		-- conversion below would refuse before it reached any money, and the
-		-- section would pass by never doing anything.
-		env.Open77.ready.isReady = function() return true end
-		env.Open77.players.getLifeState = function() return {} end
+		-- THESE TWO ARE ADMITTED CONNECTIONS NOW, not two patched natives.
+		--
+		-- What stood here was `env.Open77.ready.isReady = function() return true
+		-- end` and `env.Open77.players.getLifeState = function() return {} end`.
+		-- The second was wrong on its own terms -- the field is `phase`, not
+		-- nothing -- and it only worked because every consumer stops at
+		-- `type(life) == 'table'`. Between them they replaced the two doors
+		-- `Players.MayAct` is made of with constants, so nothing below could
+		-- ever exercise either: a body on the floor and a player behind a shut
+		-- gate both read the same as a healthy one.
+		--
+		-- `control.Admit` gives each slot what the host gives a real connection
+		-- -- a session, an open gate, a position and an alive phase -- so
+		-- `MayAct` now answers for a reason. They stand on the same spot
+		-- because handing something over is measured between two bodies.
 
 		local wired, item, moneyType = Currency.Wired()
 		check('the money-to-item bridge wired itself at start', wired == true)
@@ -11512,6 +11533,10 @@ do
 		end
 
 		local ALICE, BOB = 401, 402
+		control.Admit(ALICE, 'account-401')
+		control.Admit(BOB, 'account-402')
+		control.Stand(ALICE, 100.0, 200.0, 30.0)
+		control.Stand(BOB, 100.5, 200.0, 30.0)
 		local aliceBag = load(ALICE, 'citizen-eddies-a', 1000)
 		local bobBag = load(BOB, 'citizen-eddies-b', 0)
 		check('both bags are held for their characters',
