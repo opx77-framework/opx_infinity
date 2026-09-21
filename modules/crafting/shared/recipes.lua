@@ -36,18 +36,17 @@ Recipes.KEY_MAX = 64
 --- Longest label in bytes, matched to what a menu row draws before it elides.
 Recipes.LABEL_MAX = 64
 
--- Coerces to a number, rejecting NaN and both infinities. Written out rather
--- than borrowed from `OPX.Math.IsFinite` so the coercion and the test are one
--- step: every caller below wants the number or nil, never a boolean about a
--- value it then has to convert again.
-local function finite(value)
-	value = tonumber(value)
-	if value == nil or value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
-end
-Recipes.Finite = finite
+-- Coerces to a number, rejecting NaN and both infinities. `OPX.Math.Finite` and
+-- not `OPX.Math.IsFinite`, for the reason this file wrote the body out to get:
+-- every caller below wants the number or nil, never a boolean about a value it
+-- then has to convert again. That is the coercing half, and it is one function
+-- now rather than the same eleven lines in eleven files.
+--
+-- NAMED `finiteNumber` AND NOT `finite`. Four other files use `finite` for the
+-- PREDICATE, and a local whose name means a boolean in one file and a number in
+-- the next is an `if finite(x) then` that is true for nil.
+local finiteNumber = OPX.Math.Finite
+Recipes.Finite = finiteNumber
 
 --- A whole number inside a range, or nil.
 -- @author dop42
@@ -56,7 +55,7 @@ Recipes.Finite = finite
 -- @param high number
 -- @return integer|nil
 function Recipes.Integer(value, low, high)
-	local parsed = finite(value)
+	local parsed = finiteNumber(value)
 	if parsed == nil or parsed % 1 ~= 0 then return nil end
 	if parsed < low or parsed > high then return nil end
 	return math.floor(parsed)
@@ -90,8 +89,8 @@ function Recipes.Limits()
 	local settings = type(M.Settings) == 'table' and M.Settings or {}
 	local rate = type(settings.RATE_LIMIT) == 'table' and settings.RATE_LIMIT or {}
 	return {
-		reach = finite(settings.REACH) or 3.0,
-		maxReach = finite(settings.MAX_REACH) or 25.0,
+		reach = finiteNumber(settings.REACH) or 3.0,
+		maxReach = finiteNumber(settings.MAX_REACH) or 25.0,
 		queue = integer(settings.QUEUE, 1, 100) or 3,
 		maxQueue = integer(settings.MAX_QUEUE, 1, 100) or 10,
 		minSeconds = integer(settings.MIN_SECONDS, 1, 86400) or 5,
@@ -117,7 +116,7 @@ end
 -- @param seconds any
 -- @return string
 function Recipes.Clock(seconds)
-	local total = finite(seconds)
+	local total = finiteNumber(seconds)
 	if total == nil or total <= 0 then return '0s' end
 	total = math.ceil(total)
 	if total < 60 then return ('%ds'):format(total) end
@@ -311,9 +310,9 @@ function Recipes.Bench(benchKey, raw, known)
 	local position = nil
 	if raw.position ~= nil then
 		local at = raw.position
-		local x = type(at) == 'table' and finite(at.x) or nil
-		local y = type(at) == 'table' and finite(at.y) or nil
-		local z = type(at) == 'table' and finite(at.z) or nil
+		local x = type(at) == 'table' and finiteNumber(at.x) or nil
+		local y = type(at) == 'table' and finiteNumber(at.y) or nil
+		local z = type(at) == 'table' and finiteNumber(at.z) or nil
 		if x == nil or y == nil or z == nil then
 			problems[#problems + 1] = id .. ': position needs a finite x, y and z'
 			return nil, problems
@@ -321,7 +320,7 @@ function Recipes.Bench(benchKey, raw, known)
 		position = { x = x, y = y, z = z, bucket = integer(at.bucket, 0, 2147483647) or 0 }
 	end
 
-	local reach = finite(raw.reach)
+	local reach = finiteNumber(raw.reach)
 	if reach == nil or reach <= 0 or reach > bounds.maxReach then
 		if raw.reach ~= nil then
 			problems[#problems + 1] = ('%s: reach must be above 0 and at most %.1f; using %.1f')
@@ -450,7 +449,7 @@ function Recipes.Allowed(recipe, have, money, cooking, queue)
 	if #short > 0 then return false, Refusal.SHORT, short end
 
 	if recipe.price > 0 then
-		local balance = finite(money)
+		local balance = finiteNumber(money)
 		if balance == nil or balance < recipe.price then
 			return false, Refusal.CANNOT_PAY, {}
 		end
@@ -469,7 +468,7 @@ end
 -- @param tailSeconds any
 -- @return integer
 function Recipes.StartOffset(tailSeconds)
-	local tail = finite(tailSeconds)
+	local tail = finiteNumber(tailSeconds)
 	if tail == nil or tail < 0 then return 0 end
 	return math.floor(tail)
 end
@@ -493,7 +492,7 @@ end
 -- @return boolean
 function Recipes.IsReady(order)
 	if type(order) ~= 'table' then return false end
-	local remaining = finite(order.remaining)
+	local remaining = finiteNumber(order.remaining)
 	return remaining ~= nil and remaining <= 0
 end
 
@@ -512,10 +511,10 @@ function Recipes.Order(orders)
 	if type(orders) ~= 'table' then return out end
 	for index = 1, #orders do out[index] = orders[index] end
 	table.sort(out, function(left, right)
-		local a = finite(left.remaining) or 0
-		local b = finite(right.remaining) or 0
+		local a = finiteNumber(left.remaining) or 0
+		local b = finiteNumber(right.remaining) or 0
 		if a ~= b then return a < b end
-		return (finite(left.id) or 0) < (finite(right.id) or 0)
+		return (finiteNumber(left.id) or 0) < (finiteNumber(right.id) or 0)
 	end)
 	return out
 end
@@ -602,7 +601,7 @@ function Recipes.View(bench, have, money, orders, label, allowed)
 			label = recipe and (recipe.label or label(recipe.output)) or order.recipe,
 			output = recipe and recipe.output or nil,
 			count = recipe and recipe.count or nil,
-			remaining = math.max(0, math.floor(finite(order.remaining) or 0)),
+			remaining = math.max(0, math.floor(finiteNumber(order.remaining) or 0)),
 			ready = Recipes.IsReady(order),
 		}
 	end

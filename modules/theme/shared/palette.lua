@@ -44,11 +44,20 @@ local TRIPLETS = {
 	alarm = true, plate = true, plateLit = true,
 }
 
--- Every scalar knob, its floor and its ceiling. ONE table, read by both the
--- producer and the receiver, because two copies of a bound is one bound and one
--- bug: the server clamps what the operator wrote and the client clamps what
+-- Every scalar knob, its floor and its ceiling. ONE table in Lua, read by both
+-- the producer and the receiver, because two copies of a bound is one bound and
+-- one bug: the server clamps what the operator wrote and the client clamps what
 -- arrived, and if those disagreed the disagreement would only ever show up as a
 -- surface that looks wrong on someone else's machine.
+--
+-- THE PAGE HAS A SECOND COPY AND IS ALLOWED ONE. `KNOBS` in
+-- `ui/src/design-system/theme.ts` carries the same floors and ceilings, on
+-- purpose: it is the last clamp before a custom property is written, it must
+-- hold against a payload this file never saw, and a `.ts` file cannot read a Lua
+-- table. That is the one seam no shared file can close, so `tests/run.lua` reads
+-- both files and holds the two lists together -- the same arrangement
+-- `core/shared/glyphs.lua` has with `ui/src/modules/target/glyphs.ts`. Change a
+-- bound here and the suite will name the line in the other file.
 --
 --   plateAlpha       the ground under running type. tokens.css calls 0.78 "the
 --                    floor for running text over gameplay" and it is right, but

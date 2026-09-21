@@ -25,16 +25,13 @@ local Access = M.Access
 
 local Config = type(M.Settings) == 'table' and M.Settings or {}
 
--- Coerces to a number, rejecting NaN and both infinities. Kept module-local
--- rather than folded into `OPX.Text.Finite`, which also caps at 2^53: a price, a
--- yaw or a millisecond clock is measured with this.
-local function finiteNumber(value)
-	value = tonumber(value)
-	if value == nil or value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
-end
+-- Coerces to a finite number, or nil. `OPX.Math.Finite` and not
+-- `OPX.Text.Finite`, which also caps at 2^53: a yaw, a price and a millisecond
+-- clock are all measured with this and must not be bounded like a coordinate.
+-- It was written out by hand here, and identically in ten other files, under
+-- that same correct reasoning -- which is an argument for one helper and never
+-- was one for eleven copies.
+local finiteNumber = OPX.Math.Finite
 Access.FiniteNumber = finiteNumber
 
 -- Box every accepted coordinate fits in.
@@ -243,34 +240,18 @@ function Access.Nearest(spots, x, y, radius)
 end
 
 --- Whether a TweakDB vehicle record is an AV.
--- The rule the garages module and `open77_avcleanup` both use, so a record is in
--- the air category for every part of the server or for none of it.
+--
+-- ONE RULE, OVER ONE CONFIG KEY: `OPX.Text.IsAvRecord` and
+-- `OPX.Config.SHARED.AV_PREFIXES`. The comment that used to sit here claimed
+-- this WAS the rule the garages module uses; it was a second copy over a second
+-- key, and the admin catalogue had a third that behaved differently again. It is
+-- one rule now, which is what makes a record air for every part of the server or
+-- for none of it.
 -- @author XEROX710
 -- @param record any
 -- @return boolean
 function Access.IsAv(record)
-	if type(record) ~= 'string' then return false end
-	local lowered = record:lower()
-	for index = 1, #Access.AV_PREFIXES do
-		local prefix = Access.AV_PREFIXES[index]
-		if lowered:sub(1, #prefix) == prefix then return true end
-	end
-	return false
-end
-
--- The AV prefixes, lower-cased once, with the documented pair as the fallback.
-do
-	local configured = Config.AV_PREFIXES
-	local prefixes = {}
-	if type(configured) == 'table' then
-		for index = 1, #configured do
-			if type(configured[index]) == 'string' and configured[index] ~= '' then
-				prefixes[#prefixes + 1] = configured[index]:lower()
-			end
-		end
-	end
-	if #prefixes == 0 then prefixes = { 'vehicle.av_', 'vehicle.max_tac_av' } end
-	Access.AV_PREFIXES = prefixes
+	return OPX.Text.IsAvRecord(record)
 end
 
 --- The marker an engine spot of this kind is drawn with.

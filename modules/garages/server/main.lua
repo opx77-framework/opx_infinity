@@ -170,8 +170,12 @@ end
 
 --- Picks what comes out: a named plate when one was named, otherwise the
 --- player's own vehicle stored at THIS spot, and failing that any eligible one.
--- Ties are broken by plate so the same request always answers the same vehicle
--- rather than whichever row `pairs` met first.
+-- Ties are broken by plate because the order the rows arrive in is ANOTHER
+-- MODULE'S. `vehicles.List` answers them `ORDER BY created_at`, which is not
+-- part of that contract and not this module's to lean on: a stored vehicle
+-- landing on a second row with the same timestamp, or that query gaining an
+-- index, would change which of two equally eligible cars the same press hands
+-- over. The plate is the row's own and never ties.
 local function choose(rows, spot, wanted)
 	local ranked = {}
 	for index = 1, #rows do

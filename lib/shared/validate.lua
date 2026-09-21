@@ -53,11 +53,8 @@ function OPX.Validate.Number(value, opts)
 	return Result.Ok(n)
 end
 
---- @author dop42
--- @param value any
--- @param allowed table<any, boolean>
--- @return Result
-function OPX.Validate.OneOf(value, allowed)
-	if allowed[value] then return Result.Ok(value) end
-	return Result.Err('not-allowed', tostring(value))
-end
+-- `OneOf(value, allowed)` was here and had no caller anywhere in the resource.
+-- Every place that needs it writes the membership test inline against a set it
+-- already holds, and reads a code rather than a Result; a published helper
+-- nothing calls is a shape the next author has to decide about, and a Result
+-- where the callers all want a boolean is the wrong shape to hand them.

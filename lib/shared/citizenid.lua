@@ -108,9 +108,7 @@ function OPX.CitizenId.Parse(input)
 	return Result.Ok(grouped(cleaned))
 end
 
---- @author dop42
--- @param value any
--- @return boolean
-function OPX.CitizenId.IsValid(value)
-	return CitizenId.Parse(value).ok
-end
+-- `IsValid(value)` was here -- `CitizenId.Parse(value).ok` and nothing else --
+-- and had no caller. Every caller in the resource wants the PARSED id or the
+-- reason it was refused, both of which `Parse` already answers; a boolean
+-- wrapper only ever costs the caller a second parse to find out what was wrong.

@@ -41,19 +41,12 @@ local Access = M.Access
 
 local Config = type(M.Settings) == 'table' and M.Settings or {}
 
---- Coerces to a number, rejecting NaN and both infinities.
--- Not `OPX.Text.Finite`, which also caps at 2^53: a millisecond clock is
--- measured with this and must not be bounded like a coordinate.
--- @author dop42
--- @param value any
--- @return number|nil
-function Access.FiniteNumber(value)
-	value = tonumber(value)
-	if value == nil or value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
-end
+--- Coerces to a finite number, or nil.
+-- `OPX.Math.Finite` and not `OPX.Text.Finite`, which also caps at 2^53: a
+-- millisecond clock is measured with this and must not be bounded like a
+-- coordinate. The reasoning was written out here and in ten other files, which
+-- is an argument for one helper and never was one for eleven copies.
+Access.FiniteNumber = OPX.Math.Finite
 
 local finite = Access.FiniteNumber
 
@@ -72,19 +65,26 @@ end
 
 local coordinate = Access.Coordinate
 
---- Coerces a whole number inside a range.
+--- Coerces a whole number inside a CALLER-GIVEN range.
+--
+-- NOT `Access.Integer`, which is what this was called. Six other modules publish
+-- an `Access.Integer(value)` that takes one argument and bounds against their
+-- own world-coordinate box; this takes three and bounds against whatever the
+-- call site asks for. One name meaning two signatures is a call written from
+-- memory against the wrong one, and it type-checks in Lua: the extra arguments
+-- are silently dropped and every value passes.
 -- @author dop42
 -- @param value any
 -- @param low number
 -- @param high number
 -- @return integer|nil
-function Access.Integer(value, low, high)
+function Access.WholeInRange(value, low, high)
 	local parsed = finite(value)
 	if parsed == nil or parsed % 1 ~= 0 or parsed < low or parsed > high then return nil end
 	return math.floor(parsed)
 end
 
-local integer = Access.Integer
+local integer = Access.WholeInRange
 
 --- Past this snapshot age a gated armoury closes.
 Access.JOB_MAX_AGE_MS = finite(Config.JOB_MAX_AGE_MS) or 0

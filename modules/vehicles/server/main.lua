@@ -42,12 +42,10 @@ local PLATE_TRIES = 5
 -- although the host caps it too.
 local MAX_RECORD = 256
 
---- Answers a value as a finite number, or nil.
-local function finite(value)
-	value = tonumber(value)
-	if not OPX.Math.IsFinite(value) then return nil end
-	return value
-end
+--- Answers a value as a finite number, or nil. Named for what it RETURNS: four
+--- other files use a local called `finite` for the predicate, and one name for
+--- both is an `if finite(x) then` that is true for nil.
+local finiteNumber = OPX.Math.Finite
 
 --- Draws a plate in the configured shape.
 -- `OPX.String.Random` draws ASCII capitals and digits, which is what the column
@@ -75,10 +73,10 @@ end
 
 --- Copies a spawned vehicle's health, damage and flags onto its row.
 local function applyCondition(vehicle, record, snapshot)
-	vehicle.health = finite(snapshot.health) or vehicle.health
+	vehicle.health = finiteNumber(snapshot.health) or vehicle.health
 	vehicle.damage = Open77.vehicles.getDamage(record.id)
 	vehicle.metadata = vehicle.metadata or {}
-	vehicle.metadata.flags = finite(snapshot.flags)
+	vehicle.metadata.flags = finiteNumber(snapshot.flags)
 end
 
 --- Stores a new vehicle for a character under a fresh plate.
@@ -287,14 +285,14 @@ function M.Spawn(source, plateId, at)
 
 	-- A named place is read through the same coercions as the player's own, so a
 	-- NaN or a string from a caller cannot reach the engine as a coordinate.
-	local place, yaw, bucket = nil, nil, finite(position.bucket)
+	local place, yaw, bucket = nil, nil, finiteNumber(position.bucket)
 	if type(at) == 'table' then
-		local x, y, z = finite(at.x), finite(at.y), finite(at.z)
+		local x, y, z = finiteNumber(at.x), finiteNumber(at.y), finiteNumber(at.z)
 		if x ~= nil and y ~= nil and z ~= nil then
 			place = { x = x, y = y, z = z }
 		end
-		yaw = finite(at.yaw)
-		local atBucket = finite(at.bucket)
+		yaw = finiteNumber(at.yaw)
+		local atBucket = finiteNumber(at.bucket)
 		if place ~= nil and atBucket ~= nil then bucket = math.floor(atBucket) end
 	end
 	if place == nil then
@@ -322,7 +320,7 @@ function M.Spawn(source, plateId, at)
 	if type(vehicle.damage) == 'table' then
 		Open77.vehicles.setDamage(id, vehicle.damage)
 	end
-	local flags = finite(vehicle.metadata and vehicle.metadata.flags)
+	local flags = finiteNumber(vehicle.metadata and vehicle.metadata.flags)
 	if flags ~= nil then Open77.vehicles.update(id, { flags = flags }) end
 
 	-- The connection is read again after the database read, which yielded:

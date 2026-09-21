@@ -53,9 +53,11 @@ OPX.Config.MODULES.garages = {
 	-- its own AV spawns.
 	AV_LIFT = 1.2,
 
-	-- An AV record starts with one of these, lower-cased. The same rule
-	-- `open77_avcleanup` sweeps the world by.
-	AV_PREFIXES = { 'vehicle.av_', 'vehicle.max_tac_av' },
+	-- WHICH RECORDS ARE AVs IS NOT A GARAGE SETTING. It is one list,
+	-- `AV_PREFIXES` in `config/shared.lua`, read by one helper: this module, the
+	-- dealership and the admin catalogue each used to carry their own, and a
+	-- record that flies at a dealer and not in a garage is a car you can buy at a
+	-- pad you cannot recall it at.
 
 	-- The marker/scan loop. SCAN_MS also decides how long a marker stays up
 	-- after a read fails.

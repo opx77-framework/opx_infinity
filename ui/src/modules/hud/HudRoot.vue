@@ -212,7 +212,7 @@ onMounted(() => {
      five clusters move. */
   contain: layout style;
   /* It cuts, it does not fade. */
-  transition: opacity 190ms steps(3, end);
+  transition: opacity var(--op-enter-ms) var(--op-stutter);
 }
 
 .hud.open {

@@ -181,6 +181,13 @@ OPX.Config.MODULES.hauling = {
 		BY_RECORD = {},
 	},
 
+	-- primary reads the worked job; any counts every membership for the grade but
+	-- never for ON_DUTY, because the memberships table carries grades and not a
+	-- clock. The same word, with the same two values, on `config/elevators.lua`,
+	-- `config/teleports.lua` and `config/gunsmith.lua`: a site's JOBS block is
+	-- decided by the one gate in `lib/shared/jobgate.lua`.
+	MEMBERSHIP = 'primary',
+
 	-- ========================================================================
 	-- THE TWO SITES BELOW ARE SAMPLES. EVERY POSITION IN THEM IS A PLACEHOLDER
 	-- ZERO AND BOTH SITES ARE THEREFORE DISABLED AT BOOT. See the header.
@@ -192,7 +199,8 @@ OPX.Config.MODULES.hauling = {
 	--
 	-- JOBS IS DELIBERATELY ABSENT FROM BOTH. The owner asked for a job-free job,
 	-- which reads as "no whitelist" and not as "unpaid": anyone may haul, and
-	-- hauling pays. Adding `JOBS = { nomad = 0 }` to a site makes it a whitelist.
+	-- hauling pays. Adding `JOBS = { nomad = 0 }` to a site makes it a whitelist,
+	-- and `ON_DUTY = true` beside it narrows that to whoever is clocked on.
 	SITES = {
 		docks = {
 			LABEL = 'DOCKS YARD',

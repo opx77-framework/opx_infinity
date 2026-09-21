@@ -6575,6 +6575,24 @@ do
 		check('and it knows what the dealer sells', Runtime.Report().listed == 1,
 			tostring(Runtime.Report().listed))
 
+		-- ONE KEY, TWO LISTS, so the row has to name the kind it is standing over.
+		-- The pad is inside reach of the yard and the yard inside reach of the pad,
+		-- so walking between them never takes `nearest` through nil: a sync that
+		-- compared only "is a row up" would leave "Browse vehicles" over a pad that
+		-- only sells AVs.
+		check('on a car dealer, the row names the car list',
+			Runtime.Report().label == 'dealership.prompt.garage', Runtime.Report().label)
+		cctl.placement.x, cctl.placement.y = 4.0, 1.0
+		settle(cctl, function() return Runtime.Report().nearest == 'pad' end)
+		check('stepping onto the adjacent pad re-aims the row at it',
+			Runtime.Report().nearest == 'pad', Runtime.Report().nearest)
+		check('and the row names the AV list, not the one it walked in carrying',
+			Runtime.Report().label == 'dealership.prompt.avpad', Runtime.Report().label)
+		cctl.placement.x, cctl.placement.y = 0.0, 0.0
+		settle(cctl, function() return Runtime.Report().nearest == 'yard' end)
+		check('and walking back to the car dealer names the car list again',
+			Runtime.Report().label == 'dealership.prompt.garage', Runtime.Report().label)
+
 		-- ── the list ───────────────────────────────────────────────────────
 		mapping.pressed()
 		check('the key opens the list for the dealer underfoot',
@@ -9634,7 +9652,7 @@ do
 
 		-- DERIVED, NEVER DECLARED: every Air row's record matches the configured
 		-- prefixes, and every row the rule calls air carries the flag.
-		local prefixes = admin.Section('VEHICLES').AV_PREFIXES or {}
+		local prefixes = OPX.Config.SHARED.AV_PREFIXES or {}
 		local function isAir(record)
 			local lowered = tostring(record):lower()
 			for _, prefix in ipairs(prefixes) do
@@ -13777,6 +13795,100 @@ do
 		check('so the crate is free for whoever asks next',
 			retry[#retry] ~= nil and retry[#retry][1] == true,
 			retry[#retry] and tostring(retry[#retry][2]))
+
+		-- ── the job gate is `lib/shared/jobgate.lua`, not a fourth copy ──────
+		-- A SITE'S JOBS BLOCK MUST MEAN WHAT THE IDENTICAL KEY MEANS ON A LIFT, AN
+		-- ENTRANCE AND A BENCH. This module shipped its own hand-written rule that
+		-- read JOBS and silently ignored `ON_DUTY` beside it, and answered whichever
+		-- job it happened to look up first rather than the closest near-miss. An
+		-- operator who locked a site to clocked-on nomads got a site open to every
+		-- nomad, with nothing anywhere saying so.
+		local hauler = OPX.Api.Get('character')
+		local realGetPlayer = hauler.GetPlayer
+		local held, memberships = nil, {}
+		hauler.GetPlayer = function()
+			return { PlayerData = { job = held, jobs = memberships } }
+		end
+
+		-- A second crate, still on the ground, and somebody standing on it. Every
+		-- refusal below leaves it there, because the gate is asked before the claim.
+		local GATED, gatedAt = nil, nil
+		for id, prop in pairs(props.byId) do
+			if id ~= CRATE and (GATED == nil or id < GATED) then GATED, gatedAt = id, prop end
+		end
+		check('there is a second crate to gate', GATED ~= nil)
+		positions[9] = { x = gatedAt.x, y = gatedAt.y, z = gatedAt.z, bucket = 0 }
+		fire(9, M.Event.HELLO)
+
+		-- One request, and the answer it got. The clock moves past the rate-limit
+		-- window each time so a refusal is the gate's and never the limiter's.
+		local function askFor()
+			local mark = #control.clientEvents
+			at = at + 6000
+			fire(9, M.Event.BEGIN, Step.PICKUP, GATED)
+			for index = #control.clientEvents, mark + 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == M.Event.ANSWER then return sent end
+			end
+			return nil
+		end
+
+		SITE.JOBS, SITE.ON_DUTY = { nomad = 2 }, true
+		held = { name = 'nomad', grade = { level = 4 }, onDuty = false }
+		local gated = askFor()
+		check('ON_DUTY on a site is read, and an off-duty holder is turned away',
+			gated ~= nil and gated[1] == false and gated[2] == 'off_duty',
+			gated and tostring(gated[2]))
+
+		held = { name = 'fixer', grade = { level = 9 }, onDuty = true }
+		gated = askFor()
+		check('and somebody holding another job entirely is told it is the job',
+			gated ~= nil and gated[1] == false and gated[2] == 'job_required',
+			gated and tostring(gated[2]))
+
+		held = { name = 'nomad', grade = { level = 1 }, onDuty = true }
+		gated = askFor()
+		check('and the right job at too low a grade is told it is the grade',
+			gated ~= nil and gated[1] == false and gated[2] == 'grade_too_low',
+			gated and tostring(gated[2]))
+
+		-- THE NEAR-MISS IS NAMED, not the first job the gate happened to visit. With
+		-- two jobs required and only one of them held, a refusal that answered
+		-- `job_required` would send a nomad off to find a job they already have.
+		SITE.JOBS = { nomad = 5, ncpd = 0 }
+		gated = askFor()
+		check('with two jobs asked for, the refusal names the closest near-miss',
+			gated ~= nil and gated[1] == false and gated[2] == 'grade_too_low',
+			gated and tostring(gated[2]))
+
+		-- MEMBERSHIP = any counts a membership for the grade. Under primary the same
+		-- character is refused, because only the worked job counts at all.
+		SITE.JOBS, SITE.ON_DUTY = { nomad = 2 }, nil
+		held = { name = 'fixer', grade = { level = 0 }, onDuty = true }
+		memberships = { nomad = 4 }
+		gated = askFor()
+		check('under MEMBERSHIP primary a membership alone is not the job',
+			gated ~= nil and gated[1] == false and gated[2] == 'job_required',
+			gated and tostring(gated[2]))
+		OPX.Config.MODULES.hauling.MEMBERSHIP = 'any'
+		gated = askFor()
+		check('and under any the same membership carries the grade',
+			gated ~= nil and gated[1] == true, gated and tostring(gated[2]))
+		OPX.Config.MODULES.hauling.MEMBERSHIP = 'primary'
+
+		-- A MALFORMED MINIMUM IS ONE SENTENCE, the shared one, and not this module's
+		-- own drifted wording for the same operator mistake.
+		SITE.JOBS = { nomad = true }
+		local said = table.concat(Access.Problems(), '\n')
+		check('a JOBS typo is reported in the words every other module uses',
+			said:find('JOBS entries are job name %-> minimum grade level', 1) ~= nil, said)
+		check('and the site it is on is condemned rather than half-gated',
+			not Access.Usable('docks'))
+
+		SITE.JOBS, SITE.ON_DUTY = nil, nil
+		hauler.GetPlayer = realGetPlayer
+		check('and clearing JOBS makes the site public again',
+			(Access.Evaluate(Access.Site('docks'), nil, at)) == true)
 	end
 end
 
@@ -14652,8 +14764,12 @@ do
 		local elevators = OPX.Modules.Get('elevators')
 		local gunsmith = OPX.Modules.Get('gunsmith')
 		local teleports = OPX.Modules.Get('teleports')
-		check('the three modules are here to be asked',
-			elevators ~= nil and gunsmith ~= nil and teleports ~= nil)
+		-- FOUR NOW. `hauling` merged with a fourth hand-written copy of the rule
+		-- and no adapter at all, so it is held to the same fail direction as the
+		-- three the gate was factored out of.
+		local hauling = OPX.Modules.Get('hauling')
+		check('the four modules are here to be asked',
+			elevators ~= nil and gunsmith ~= nil and teleports ~= nil and hauling ~= nil)
 
 		-- Under pcall, because the answer being a RAISE is one of the three
 		-- answers this is here to rule out: the elevators adapter read
@@ -14679,7 +14795,88 @@ do
 
 			check('and teleports, which always did, still is',
 				(evaluate(teleports)) == false)
+
+			local site, refusedSite = evaluate(hauling)
+			check('a hauling site that is not a table is CLOSED, not a raise',
+				site == false, tostring(site) .. ' ' .. tostring(refusedSite))
+			check('and it says which site it could not read',
+				refusedSite == 'no_such_site', tostring(refusedSite))
 		end
+	end
+end
+
+-- ── one air category, one list ───────────────────────────────────────────────
+-- `Access.IsAv` in garages, `Access.IsAv` in dealership and `isAir` in the admin
+-- catalogue were three copies of one rule over three config keys. The data
+-- agreed; the code did not. The admin copy guarded neither its argument nor an
+-- emptied list, so clearing `VEHICLES.AV_PREFIXES` alone reclassified every AV
+-- as ground in the staff catalogue while the garage and the dealer went on
+-- calling the same records air -- and each of the three comments named one of
+-- the others as the rule it shared.
+section('a record is air for the whole server or for none of it')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local garages = OPX.Modules.Get('garages')
+		local dealership = OPX.Modules.Get('dealership')
+		local admin = OPX.Modules.Get('admin')
+		check('the three readers are here to be asked',
+			garages ~= nil and dealership ~= nil and admin ~= nil)
+
+		-- The admin catalogue never exposed its predicate, and must not have to:
+		-- it stamps each row with the answer, so the ROW is what is read here.
+		local function adminSays(record)
+			for _, class in ipairs(admin.Catalog.Classes()) do
+				for _, entry in ipairs(class.members) do
+					if entry.record == record then return entry.av end
+				end
+			end
+			return nil
+		end
+
+		local AIR = 'Vehicle.av_rayfield_excalibur'
+		local GROUND = 'Vehicle.v_standard2_archer_hella_player'
+		check('an AV record is air in all three', garages.Access.IsAv(AIR) == true
+			and dealership.Access.IsAv(AIR) == true and adminSays(AIR) == true,
+			('%s/%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
+				tostring(dealership.Access.IsAv(AIR)), tostring(adminSays(AIR))))
+		check('and a car is ground in all three', garages.Access.IsAv(GROUND) == false
+			and dealership.Access.IsAv(GROUND) == false and adminSays(GROUND) == false,
+			('%s/%s/%s'):format(tostring(garages.Access.IsAv(GROUND)),
+				tostring(dealership.Access.IsAv(GROUND)), tostring(adminSays(GROUND))))
+
+		-- A NON-STRING IS NOT AIR, and is not a raise either. The admin copy called
+		-- `record:lower()` straight off whatever it was handed.
+		for _, odd in ipairs({ 42, true, {} }) do
+			local read, answer = pcall(OPX.Text.IsAvRecord, odd)
+			check(('a %s record is refused rather than raising'):format(type(odd)),
+				read == true and answer == false, tostring(read) .. ' ' .. tostring(answer))
+		end
+
+		-- ONE KEY MOVES ALL THREE. Emptying the operator's list falls back to the
+		-- documented pair rather than meaning "nothing flies", and pointing it
+		-- somewhere else moves the garage, the dealer and the catalogue together.
+		local real = OPX.Config.SHARED.AV_PREFIXES
+		OPX.Config.SHARED.AV_PREFIXES = {}
+		check('an emptied list still calls the documented pair air',
+			garages.Access.IsAv(AIR) == true and dealership.Access.IsAv(AIR) == true,
+			('%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
+				tostring(dealership.Access.IsAv(AIR))))
+		OPX.Config.SHARED.AV_PREFIXES = { 'vehicle.v_standard2_' }
+		check('and changing the one list moves both readers off the old answer',
+			garages.Access.IsAv(AIR) == false and dealership.Access.IsAv(AIR) == false,
+			('%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
+				tostring(dealership.Access.IsAv(AIR))))
+		check('and onto the new one, together',
+			garages.Access.IsAv(GROUND) == true and dealership.Access.IsAv(GROUND) == true,
+			('%s/%s'):format(tostring(garages.Access.IsAv(GROUND)),
+				tostring(dealership.Access.IsAv(GROUND))))
+		OPX.Config.SHARED.AV_PREFIXES = real
+		check('and putting it back puts them both back',
+			garages.Access.IsAv(AIR) == true and garages.Access.IsAv(GROUND) == false)
 	end
 end
 
@@ -14785,6 +14982,491 @@ do
 	end
 	check('no Lua file defines Catalog.ICONS any more', #found == 0,
 		table.concat(found, ', '))
+end
+
+-- ── a comment that states a fact about other code states a true one ──────────
+-- Each of these was a sentence asserting a guarantee the code did not provide.
+-- They are held here and not merely rewritten, because a false comment is only
+-- discovered by somebody who trusted it, and the disagreement is the bug.
+section('the comments that make a checkable claim')
+do
+	--- One file's whole source, or nil.
+	local function sourceOf(path)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local text = handle:read('a')
+		handle:close()
+		return text
+	end
+
+	-- Every Lua file the manifest actually loads, on either side, once.
+	local loaded, order = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if loaded[file] == nil then
+				loaded[file] = sourceOf(file) or ''
+				order[#order + 1] = file
+			end
+		end
+	end
+	check('the manifest\'s files are readable', #order > 0, #order)
+
+	-- ── `reconcile` is not the only writer of the marker set ──────────────
+	-- `clothing` and `garages` both said it was; `clearMarkers()` empties the
+	-- same table in both, and `teleports` -- the later rewrite of the same header
+	-- -- never made the claim.
+	local sole = {}
+	for _, file in ipairs(order) do
+		if loaded[file]:find('the only thing that touches that set', 1, true) then
+			sole[#sole + 1] = file
+		end
+	end
+	check('no file claims `reconcile` is the only writer of its marker set',
+		#sole == 0, table.concat(sole, ', '))
+	-- And the claim really would be false, so this is not agreeing with itself.
+	local emptiers = 0
+	for _, file in ipairs({ 'modules/clothing/client/main.lua',
+		'modules/garages/client/main.lua' }) do
+		local source = loaded[file] or ''
+		if source:find('local function clearMarkers', 1, true)
+			and source:find('markers%[key%] = nil') then
+			emptiers = emptiers + 1
+		end
+	end
+	check('because a second function really does empty it, in both', emptiers == 2,
+		emptiers)
+
+	-- ── the job gate is not narrating copies that still exist ─────────────
+	-- The claim is "a JOBS block means one thing", and the thing it means is the
+	-- five-branch decision that answers a REFUSAL CODE. A file that reads a `JOBS`
+	-- block and names one of those codes is deciding access, and must decide it in
+	-- `lib/shared/jobgate.lua`. `modules/hauling` was the fourth hand-written copy.
+	--
+	-- Reading a JOBS block for something else is not caught and must not be:
+	-- `modules/character` owns the roster of job definitions, and `modules/shops`
+	-- asks `character.HasJob` per name -- a boolean about a live player, with no
+	-- snapshot and no code -- which the gate's header names as the exception.
+	local rogue = {}
+	for _, file in ipairs(order) do
+		local source = loaded[file]
+		-- A file that READS a JOBS block -- `x.JOBS` -- rather than one that only
+		-- mentions the word in prose, AND answers the gate's own vocabulary.
+		local decides = source:find('%.JOBS%f[^%w_]')
+			and (source:find('grade_too_low', 1, true) or source:find('off_duty', 1, true))
+		if decides and not source:find('OPX.JobGate', 1, true)
+			and file:find('lib/shared/jobgate%.lua') == nil then
+			rogue[#rogue + 1] = file
+		end
+	end
+	check('every file that decides a JOBS block routes it through the one gate',
+		#rogue == 0, table.concat(rogue, ', '))
+	-- And `modules/shops`, the exception, really is one: it reads a JOBS block and
+	-- answers no refusal code of its own.
+	local shops = loaded['modules/shops/server/main.lua'] or ''
+	check('and the named exception is still asking the character contract',
+		shops:find('%.JOBS%f[^%w_]') ~= nil and shops:find('character.HasJob', 1, true) ~= nil
+			and shops:find('grade_too_low', 1, true) == nil)
+
+	-- ── the admin docblock sits on the function it describes ──────────────
+	-- A docblock headed "The name of the CHARACTER a player is playing", with a
+	-- single `@param playerId Source`, sat above `bagKey(playerId, key)`, which
+	-- takes two arguments and answers no such thing. `Server.CharacterOf`, which
+	-- does, had no doc at all.
+	local admin = loaded['modules/admin/server/main.lua'] or ''
+	local claim = 'The name of the CHARACTER a player is playing'
+	local at = admin:find(claim, 1, true)
+	check('the character-name docblock is still in the file', at ~= nil)
+	if at ~= nil then
+		local after = admin:sub(at)
+		local toCharacterOf = after:find('function Server.CharacterOf', 1, true)
+		local toBagKey = after:find('local function bagKey', 1, true)
+		check('and the next function under it is the one it describes',
+			toCharacterOf ~= nil and (toBagKey == nil or toCharacterOf < toBagKey),
+			('CharacterOf@%s bagKey@%s'):format(tostring(toCharacterOf), tostring(toBagKey)))
+	end
+
+	-- ── the garages tie-break does not blame `pairs` ──────────────────────
+	-- `choose` walks `for index = 1, #rows` over an array. The sort is worth
+	-- having; the reason given was not the reason.
+	local garages = loaded['modules/garages/server/main.lua'] or ''
+	local choose = garages:find('local function choose', 1, true)
+	check('the garages chooser is still there', choose ~= nil)
+	if choose ~= nil then
+		-- The comment block immediately above it.
+		local head = garages:sub(math.max(1, choose - 700), choose)
+		check('and its tie-break reason does not blame `pairs`',
+			head:find('pairs', 1, true) == nil, head:sub(-260))
+		local body = garages:sub(choose, choose + 700)
+		check('because there is no `pairs` on that path to blame',
+			body:find('pairs%s*%(') == nil)
+	end
+
+	-- ── the hauling placeholder rule and the elevators story agree ────────
+	-- The docblock claimed an all-three-axes-zero rule was "the check
+	-- config/elevators.lua did not have", and then described elevators as having
+	-- shipped plausible-but-wrong coordinates. Both cannot be true.
+	local hauling = loaded['modules/hauling/shared/access.lua'] or ''
+	check('the hauling placeholder rule no longer claims elevators lacked it',
+		hauling:find('the check `config/elevators.lua` did not have', 1, true) == nil
+			and hauling:find('This is the check', 1, true) == nil)
+	local lifts = sourceOf('config/elevators.lua') or ''
+	local zeroed = 0
+	for x, y, z in lifts:gmatch('X%s*=%s*(%-?[%d%.]+),%s*Y%s*=%s*(%-?[%d%.]+),%s*Z%s*=%s*(%-?[%d%.]+)') do
+		if tonumber(x) == 0 and tonumber(y) == 0 and tonumber(z) == 0 then zeroed = zeroed + 1 end
+	end
+	check('because not one shipped lift is at three zeros, so the rule could not have caught them',
+		zeroed == 0, zeroed)
+end
+
+-- ── finiteness is one function, and one name per answer ──────────────────────
+-- The same four-clause `tonumber` + NaN + two-infinities body was written out in
+-- ELEVEN files, each under a comment correctly explaining why it is not
+-- `OPX.Text.Finite` -- which is an argument for one helper and never was one for
+-- eleven copies. Worse, `local function finite` meant two different things: a
+-- PREDICATE returning a boolean in four files and a COERCER returning
+-- number-or-nil in three, so `if finite(x) then` is true for nil in half the
+-- resource and false for 0 in the other half.
+section('finiteness is written once')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		-- The coercer answers the NUMBER, and every one of these is a value that
+		-- really arrives: a string off the wire, a NaN through JSON, an infinity
+		-- from a division nobody guarded.
+		check('a numeric string coerces', OPX.Math.Finite('12.5') == 12.5,
+			tostring(OPX.Math.Finite('12.5')))
+		check('zero coerces to zero and not to nil', OPX.Math.Finite(0) == 0,
+			tostring(OPX.Math.Finite(0)))
+		check('NaN does not', OPX.Math.Finite(0 / 0) == nil)
+		check('nor does either infinity',
+			OPX.Math.Finite(math.huge) == nil and OPX.Math.Finite(-math.huge) == nil)
+		check('nor a word, a table or nil', OPX.Math.Finite('soon') == nil
+			and OPX.Math.Finite({}) == nil and OPX.Math.Finite(nil) == nil)
+		-- NOT `OPX.Text.Finite`, which caps at 2^53. That cap is right for a value
+		-- that has been through JSON and wrong for a millisecond clock, and it is
+		-- the reason every one of the eleven copies existed.
+		check('and it does NOT cap at 2^53, which is why it is not OPX.Text.Finite',
+			OPX.Math.Finite(2 ^ 54) == 2 ^ 54 and OPX.Text.Finite(2 ^ 54) == nil)
+
+		-- Every module that published the coercer still publishes it, answering the
+		-- same thing: the extraction is only faithful if no caller can tell.
+		for _, id in ipairs({ 'clothing', 'dealership', 'elevators', 'garages',
+			'gunsmith', 'hauling', 'teleports' }) do
+			local module = OPX.Modules.Get(id)
+			local coerce = module ~= nil and module.Access ~= nil and module.Access.FiniteNumber or nil
+			check(('%s still publishes the coercer, and it is the shared one'):format(id),
+				coerce == OPX.Math.Finite, tostring(coerce))
+		end
+		local crafting = OPX.Modules.Get('crafting')
+		check('and so does crafting, under its own name',
+			crafting ~= nil and crafting.Recipes.Finite == OPX.Math.Finite)
+
+		-- GUNSMITH'S THREE-ARGUMENT HELPER IS NOT CALLED `Integer`. Six modules
+		-- publish `Access.Integer(value)`, which takes one argument and bounds
+		-- against their own coordinate box; gunsmith's took three and bounded
+		-- against whatever the call site asked for. Lua drops surplus arguments
+		-- silently, so a call written from memory against the wrong one passes
+		-- every value it is given.
+		local gunsmith = OPX.Modules.Get('gunsmith')
+		check('gunsmith no longer publishes a second meaning for Access.Integer',
+			gunsmith ~= nil and gunsmith.Access.Integer == nil)
+		check('and its ranged helper says so in its name',
+			gunsmith ~= nil and type(gunsmith.Access.WholeInRange) == 'function')
+		check('and still bounds against the caller\'s range',
+			gunsmith ~= nil and gunsmith.Access.WholeInRange(5, 1, 10) == 5
+				and gunsmith.Access.WholeInRange(11, 1, 10) == nil
+				and gunsmith.Access.WholeInRange(1.5, 1, 10) == nil)
+		-- The one-argument `Access.Integer` the other six publish is unchanged and
+		-- still bounds against the coordinate box rather than a caller's range.
+		local garages = OPX.Modules.Get('garages')
+		check('while the one-argument Access.Integer still means what it meant',
+			garages ~= nil and garages.Access.Integer(7) == 7
+				and garages.Access.Integer(7.5) == nil
+				and garages.Access.Integer(2000000) == nil)
+	end
+
+	-- And no file has quietly written a twelfth copy, or reused `finite` for the
+	-- answer it does not mean.
+	local hand, ambiguous = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			local handle = io.open(file, 'r')
+			if handle ~= nil then
+				local source = handle:read('a')
+				handle:close()
+				if source:find('value%s*==%s*math%.huge%s+or%s+value%s*==%s*%-math%.huge')
+					and not file:find('lib/shared/math%.lua') then
+					hand[#hand + 1] = file
+				end
+				-- A local called `finite` must be the predicate; a coercer is
+				-- `finiteNumber`. The two answer differently for nil and for 0.
+				if source:find('local%s+finite%s*=%s*OPX%.Math%.Finite%f[^%w_]') then
+					ambiguous[#ambiguous + 1] = file
+				end
+			end
+		end
+	end
+	check('no file writes the finiteness test out by hand', #hand == 0,
+		table.concat(hand, ', '))
+	check('and no local called `finite` is the coercer', #ambiguous == 0,
+		table.concat(ambiguous, ', '))
+end
+
+-- ── nothing is published on OPX that nobody calls ────────────────────────────
+-- `OPX.Validate.OneOf`, `OPX.CitizenId.IsValid` and `OPX.Hooks.Has` were three
+-- one-line wrappers over the function directly above them, with no caller
+-- anywhere. A published helper nobody calls is not free: it is a shape the next
+-- author has to decide whether to adopt, and it is never the shape they want --
+-- `OneOf` answered a Result where every membership test in the resource wants a
+-- code, and `IsValid` threw away the reason `Parse` had already worked out.
+-- This is the same argument `core/server/gate.lua`'s `Watch` lost.
+section('the shared libraries publish nothing that nobody calls')
+do
+	local files, names = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if files[file] == nil then
+				files[file] = true
+				names[#names + 1] = file
+			end
+		end
+	end
+	table.sort(names)
+
+	local sources = {}
+	for _, file in ipairs(names) do
+		local handle = io.open(file, 'r')
+		if handle ~= nil then
+			sources[file] = handle:read('a')
+			handle:close()
+		end
+	end
+
+	-- Only `lib/shared`: these are the general helpers, the ones with no module
+	-- to own them and no lifecycle to explain why they exist. A module's own
+	-- surface is answered by its contract and is a different question.
+	local published = {}
+	for _, file in ipairs(names) do
+		if file:match('^lib/shared/') then
+			for namespace, fn in (sources[file] or ''):gmatch('function%s+OPX%.([%w_]+)%.([%w_]+)%s*%(') do
+				published[#published + 1] = { file = file, name = ('OPX.%s.%s'):format(namespace, fn), fn = fn }
+			end
+		end
+	end
+	check('there are shared helpers to account for', #published > 0, #published)
+
+	-- A caller in ANY manifest file other than the one that defines it -- the
+	-- suite itself is not a caller, which is the whole point: a helper that only
+	-- its own test calls is still dead.
+	local orphans = {}
+	for _, entry in ipairs(published) do
+		local called = false
+		for _, file in ipairs(names) do
+			if file ~= entry.file and (sources[file] or ''):find('%.' .. entry.fn .. '%s*%(') then
+				called = true
+				break
+			end
+		end
+		if not called then orphans[#orphans + 1] = ('%s (%s)'):format(entry.name, entry.file) end
+	end
+	table.sort(orphans)
+	check('and every one of them has a caller outside its own file',
+		#orphans == 0, table.concat(orphans, ', '))
+end
+
+-- ── the stutter is a token, and only a token ─────────────────────────────────
+-- `--op-stutter` was declared in `tokens.css` and honoured by exactly ONE rule;
+-- eight module stylesheets wrote `190ms steps(3, end)` out by hand. A retune
+-- would have moved the one surface that read the token and left the other
+-- eight, which is worse than never having had a token. The @keyframes bodies
+-- are deliberately not touched: what each surface does over those milliseconds
+-- legitimately differs, and only the cadence is shared.
+section('the stutter is declared once')
+do
+	--- Every page source file under a directory, recursively, without shelling out.
+	local function sources(root, out)
+		out = out or {}
+		-- `io.popen` is the only directory walk available here, and the suite already
+		-- reads page files by name elsewhere; the list is short enough to name.
+		local handle = io.popen('dir /b /s "' .. root:gsub('/', '\\') .. '" 2>nul')
+		if handle == nil then return out end
+		for line in handle:lines() do
+			local path = line:gsub('\\', '/')
+			if path:match('%.css$') or path:match('%.vue$') or path:match('%.ts$') then
+				out[#out + 1] = path
+			end
+		end
+		handle:close()
+		return out
+	end
+
+	local files = sources('ui/src')
+	check('the page sources are readable', #files > 0, #files)
+
+	local declared, hardcoded, timings = {}, {}, {}
+	for _, path in ipairs(files) do
+		local handle = io.open(path, 'r')
+		if handle ~= nil then
+			local source = handle:read('a')
+			handle:close()
+			local short = path:match('(ui/src/.*)$') or path
+			if source:find('%-%-op%-stutter:%s*steps') then declared[#declared + 1] = short end
+			-- Block comments out first: a file is allowed to NAME the cadence in
+			-- prose, and several usefully do.
+			local code = source:gsub('/%*.-%*/', ' ')
+			-- The stutter is `steps(3, ...)`. A different step count is a different
+			-- animation with its own reason -- `steps(8, end)` is the target eye's
+			-- scan line -- and is none of this check's business.
+			if code:find('%-%-op%-stutter:') == nil and code:find('steps%s*%(%s*3%s*,') then
+				hardcoded[#hardcoded + 1] = short
+			end
+			-- And the one duration the stutter is written at is a token too, so a
+			-- retune moves every surface that arrives rather than one of nine.
+			if code:find('%-%-op%-enter%-ms:') == nil and code:find('190ms') then
+				timings[#timings + 1] = short
+			end
+		end
+	end
+	table.sort(declared); table.sort(hardcoded); table.sort(timings)
+	check('the stutter is declared in exactly one place', #declared == 1,
+		table.concat(declared, ', '))
+	check('and no stylesheet writes the timing function out by hand',
+		#hardcoded == 0, table.concat(hardcoded, ', '))
+	check('and none writes the enter duration out either', #timings == 0,
+		table.concat(timings, ', '))
+end
+
+-- ── no catalogue declares the same key twice ─────────────────────────────────
+-- A Lua table literal keeps the LAST of two identical keys and says nothing, so
+-- a duplicated row is invisible at load, invisible at runtime and invisible to
+-- every check that reads the built table. It has to be read out of the source.
+-- `modules/admin/locales.lua` carried one, in EN and in FR, across 27 files.
+section('no locale catalogue declares a key twice')
+do
+	local files = {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if file:find('locales', 1, true) and files[file] == nil then
+				files[file] = true
+			end
+		end
+	end
+	local names = {}
+	for file in pairs(files) do names[#names + 1] = file end
+	table.sort(names)
+	check('the catalogues are on the manifest', #names > 0, #names)
+
+	-- Per table literal, not per file: EN and FR legitimately carry the same key,
+	-- and that is the whole point of them.
+	local twice = {}
+	for _, file in ipairs(names) do
+		local handle = io.open(file, 'r')
+		if handle ~= nil then
+			local block, seen = nil, {}
+			for line in handle:lines() do
+				local opened = line:match('^local%s+([%u_]+)%s*=%s*{%s*$')
+				if opened ~= nil then
+					block, seen = opened, {}
+				elseif line:match('^}') then
+					block = nil
+				elseif block ~= nil then
+					local key = line:match("^%s*%['([^']+)'%]%s*=")
+					if key ~= nil then
+						if seen[key] then
+							twice[#twice + 1] = ('%s: %s.%s'):format(file, block, key)
+						end
+						seen[key] = true
+					end
+				end
+			end
+			handle:close()
+		end
+	end
+	check('no catalogue table holds the same key twice', #twice == 0,
+		table.concat(twice, ' | '))
+end
+
+-- ── the theme bounds are two lists and one seam ──────────────────────────────
+-- `BOUNDS` in `modules/theme/shared/palette.lua` and `KNOBS` in
+-- `ui/src/design-system/theme.ts` carry the same floors and ceilings, and the
+-- duplication is deliberate: the page's copy is the last clamp before a custom
+-- property is written, it must hold against a payload Lua never saw, and a `.ts`
+-- file cannot read a Lua table. What was missing was anything watching them.
+-- `core/shared/glyphs.lua` has exactly this arrangement with the page's glyph
+-- list and the suite reads both files for it; this does the same, so a retune on
+-- one side names the other side's line instead of shipping two clamps.
+section('the theme bounds agree across the one seam')
+do
+	--- Every `key = { low, high }` row of one Lua table literal.
+	local function luaBounds(path, name)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local source = handle:read('a')
+		handle:close()
+		local opened = source:find('local ' .. name .. ' = {', 1, true)
+		if opened == nil then return nil end
+		-- To the first line that is a lone closing brace, so RUNGS below is not
+		-- swept in.
+		local closed = source:find('\n}', opened, true)
+		local block = source:sub(opened, closed or #source)
+		local out = {}
+		for key, low, high in block:gmatch('([%a][%w]*)%s*=%s*{%s*(%-?[%d%.]+)%s*,%s*(%-?[%d%.]+)%s*}') do
+			out[key] = { tonumber(low), tonumber(high) }
+		end
+		return out
+	end
+
+	--- Every `key: { ... min: n, max: n }` row of the page's KNOBS map.
+	local function pageBounds(path)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local source = handle:read('a')
+		handle:close()
+		local out = {}
+		for key, body in source:gmatch('([%a][%w]*):%s*{([^}]*)}') do
+			local low = body:match('min:%s*(%-?[%d%.]+)')
+			local high = body:match('max:%s*(%-?[%d%.]+)')
+			if low ~= nil and high ~= nil then
+				out[key] = { tonumber(low), tonumber(high) }
+			end
+		end
+		return out
+	end
+
+	local lua = luaBounds('modules/theme/shared/palette.lua', 'BOUNDS')
+	local page = pageBounds('ui/src/design-system/theme.ts')
+	check('the Lua bounds are readable', lua ~= nil and next(lua) ~= nil)
+	check('and the page bounds are', page ~= nil and next(page) ~= nil)
+
+	if lua ~= nil and page ~= nil then
+		-- Both directions. A knob the page clamps and Lua does not is a value the
+		-- server would hand over unbounded; one Lua clamps and the page does not is
+		-- a property written past its ceiling on somebody's screen.
+		local missing, extra, differ = {}, {}, {}
+		for key, bound in pairs(lua) do
+			local other = page[key]
+			if other == nil then
+				missing[#missing + 1] = key
+			elseif other[1] ~= bound[1] or other[2] ~= bound[2] then
+				differ[#differ + 1] = ('%s lua=%s..%s page=%s..%s'):format(key,
+					bound[1], bound[2], other[1], other[2])
+			end
+		end
+		for key in pairs(page) do
+			if lua[key] == nil then extra[#extra + 1] = key end
+		end
+		table.sort(missing); table.sort(extra); table.sort(differ)
+
+		check('every knob Lua bounds is bounded by the page too', #missing == 0,
+			table.concat(missing, ', '))
+		check('and every knob the page bounds is bounded by Lua', #extra == 0,
+			table.concat(extra, ', '))
+		check('and the two lists agree on every floor and ceiling', #differ == 0,
+			table.concat(differ, ' | '))
+	end
 end
 
 -- ── a toast patch the page refused is rolled back ────────────────────────────

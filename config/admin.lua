@@ -203,12 +203,13 @@ OPX.Config.MODULES.admin = {
 	VEHICLES = {
 		SPAWN_OFFSET = { X = 3.0, Y = 0.0, Z = 0.25 },
 
-		-- An AV record starts with one of these, lower-cased. The SAME rule the
-		-- garages module, the dealership and the platform's own gamemodes use, so
-		-- a record is in the air category for every part of the server or for none
-		-- of it. It decides two things and nothing else: the lift below, and which
+		-- WHICH RECORDS ARE AVs IS NOT AN ADMIN SETTING. It is one list,
+		-- `AV_PREFIXES` in `config/shared.lua`, read by one helper. This key was
+		-- the third copy and the one whose code differed: emptying it alone
+		-- reclassified every AV as ground in the staff catalogue while the garage
+		-- and the dealer went on calling the same records air. The answer still
+		-- decides two things here and nothing else -- the lift below, and which
 		-- rows the spawn menu's Air class holds.
-		AV_PREFIXES = { 'vehicle.av_', 'vehicle.max_tac_av' },
 
 		-- Metres a spawned AV is lifted above the spawn offset. An AV record's
 		-- pivot is the chassis centre, so one created at ground level starts

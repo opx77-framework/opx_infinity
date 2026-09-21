@@ -1238,7 +1238,7 @@ onUnmounted(() => {
   --pop: 7px;
   --tilt: var(--op-tilt);
   --origin: left center;
-  animation: cut-in 120ms steps(3, end);
+  animation: cut-in 120ms var(--op-stutter);
 }
 
 .cascade.flip .column {
@@ -1605,7 +1605,7 @@ onUnmounted(() => {
 }
 
 .row {
-  animation: plate-in 180ms steps(3, end) backwards;
+  animation: plate-in 180ms var(--op-stutter) backwards;
   animation-delay: calc(var(--slot, 0) * 28ms);
 }
 

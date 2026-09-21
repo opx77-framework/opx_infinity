@@ -11,8 +11,9 @@
 -- captured marker at all, and would draw one in a bucket it is not in.
 --
 -- Markers are engine primitives, so nothing is redrawn per frame: one is created
--- when a spot comes into range and removed when it leaves, and `reconcile` is
--- the only thing that touches that set. Creation is guarded -- the
+-- when a spot comes into range and removed when it leaves. `reconcile` owns that
+-- set for as long as the module is running, and `clearMarkers` empties it on the
+-- way down; nothing else writes it. Creation is guarded -- the
 -- `world.markers` API may not be installed at all, and a raise here would take
 -- the scan down with it.
 --
@@ -223,7 +224,7 @@ local function syncPrompt()
 			reportedStrip = true
 			Open77.log.info('[garages] no prompts contract; the strip row is not shown')
 		end
-		shown = false
+		shown, shownLabel = false, nil
 		return
 	end
 

@@ -221,7 +221,7 @@ useBridge('opx:hud:info', (payload: Payload) => {
 }
 
 .line {
-  animation: line-in 190ms steps(3, end) backwards;
+  animation: line-in var(--op-enter-ms) var(--op-stutter) backwards;
   animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
 }
 
