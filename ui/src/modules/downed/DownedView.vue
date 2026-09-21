@@ -340,8 +340,6 @@ onUnmounted(() => {
 
 <template>
   <div class="room op-ink" :class="{ open, aside }">
-    <div class="scrim" :class="{ shown: open }" />
-
     <div class="stage op-plane">
       <div class="bay op-bay op-arete" data-augmented-ui="tr-clip bl-clip border">
         <div class="bay-inner op-interlace">
@@ -458,7 +456,7 @@ onUnmounted(() => {
 /* =============================================================================
    THE DOWN SCREEN -- red, outlined, untilted.
 
-   It is `SpawnView`'s room -- a scrim, a centred plane, one bay -- because it is
+   It is `SpawnView`'s room -- a centred plane, one bay -- because it is
    the same kind of surface: a full-screen question the player cannot walk away
    from, over a world they may not touch. What is different is the weight. A
    spawn menu is offered; this is the end of a life, so the wash is heavier, the
@@ -498,21 +496,14 @@ onUnmounted(() => {
   pointer-events: none;
 }
 
-/* The wash. Heavier than the spawn menu's `--op-plate-quiet`, on the same
-   channels: an operator who darkens the surface darkens this with it, and the
-   one thing behind this screen worth seeing is that there is a street there. */
-.scrim {
-  position: absolute;
-  inset: 0;
-  background: rgba(var(--op-plate-rgb), var(--op-downed-veil, 0.84));
-  opacity: 0;
-  transition: opacity var(--op-dur-slow) var(--op-ease);
-}
-
-.scrim.shown {
-  opacity: 1;
-}
-
+/* NO WASH. There was a full-screen veil here at 84% of the plate colour, and
+   the owner asked for it gone: being dead is the one state where what is behind
+   the panel -- the street, whoever is standing over you -- is worth more than
+   the panel's legibility. The element is gone with it rather than left at zero
+   alpha; it was `inset: 0` over the whole surface, and an invisible layer that
+   still occupies the screen is the kind of thing that gets blamed for stray
+   clicks a year later. Its `--op-downed-veil` knob was never defined anywhere,
+   so nothing else reads it back. */
 .stage {
   position: relative;
   display: flex;

@@ -487,55 +487,22 @@ local notedKinds = {}
 --- Says once, per kind, what a pick found -- and relays it where an operator is.
 --- `Open77.log` on a client writes to the PLAYER'S machine, which is why this
 --- goes through `OPX.Note` instead: a diagnostic nobody can read is not one.
---- What each owner is holding that looks like this kind, as one short string.
---- Everything it touches is guarded: a diagnostic that can raise is a
---- diagnostic that takes its caller down with it, and this one is called from
---- the middle of a pick.
---- What one owner holds that is named for this kind, out of what it holds at all.
 ---
---- ONE OWNER AND ONE CALL, because the first version asked for all thirty
---- declared modules and `Registry.List` SWEEPS -- a host read per owner
---- generation, every time. Thirty sweeps in one resume exceeded the instruction
---- budget, and the guard around this reported it verbatim from the game:
---- `held: unreadable: model.lua:539: Open77 script execution budget exceeded`.
+--- IT STAYS. The scaffolding around it is gone -- a `Registry.List` sweep per
+--- owner that answered which rows a kind actually held, and whose own first
+--- version exceeded the instruction budget asking thirty times. This one line
+--- is what is left, and it is what found the defect it was built for: `a pick
+--- on sky matched 0 row(s)` against `a pick on self matched 13 row(s)` said, in
+--- the server journal, that the ray and the kind were fine and the rows were
+--- not there -- after an afternoon of guessing at the raycast, at `Matches` and
+--- at the ACL in turn, each of which looks identical from outside the client.
 ---
---- `admin` is the owner worth asking about: it is the one that registers rows
---- for every kind. And `Candidates` has just swept for this same pick, so the
---- one sweep left here finds nothing to prune and costs almost nothing.
-local function heldFor(kind)
-	local held = Registry.List('admin')
-	if type(held) ~= 'table' or #held == 0 then return 'admin holds no row at all' end
-
-	local named = {}
-	for index = 1, #held do
-		local id = tostring(held[index].id)
-		if id:lower():find(kind, 1, true) then named[#named + 1] = id end
-	end
-	if #named == 0 then
-		return ('admin holds %d rows and none is named for %s'):format(#held, kind)
-	end
-	-- The ids themselves: which rows exist is the answer, not how many.
-	return ('admin holds %d rows, %d named for %s: %s')
-		:format(#held, #named, kind, table.concat(named, ' '))
-end
-
+--- One note per kind per session, no sweep, no host read, and `OPX.Note` bounds
+--- it again at sixty a session.
 local function notedKind(kind, matched)
 	if notedKinds[kind] then return end
 	notedKinds[kind] = true
-
-	-- ONE NOTE, NOT TWO, AND THE SECOND HALF CANNOT TAKE THE PICK DOWN. The
-	-- breakdown was a separate note after an early return, and in the game it
-	-- never arrived: something in it raised, the surface handler swallowed the
-	-- error, and the pick died there -- a diagnostic that failed silently while
-	-- investigating something failing silently. It is one line now, and the
-	-- breakdown is computed under pcall so a fault in the diagnostic reports
-	-- itself instead of disappearing.
-	local line = ('a pick on %s matched %d row(s)'):format(kind, matched)
-	if matched == 0 and kind ~= 'none' then
-		local ok, answer = pcall(heldFor, kind)
-		line = ('%s; held: %s'):format(line, ok and answer or ('unreadable: ' .. tostring(answer)))
-	end
-	OPX.Note('target', line)
+	OPX.Note('target', ('a pick on %s matched %d row(s)'):format(kind, matched))
 end
 
 local function hover(payload)
