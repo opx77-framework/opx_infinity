@@ -49,6 +49,20 @@
 -- point, and a heading on a record nothing turns is a field a later author wires
 -- up by mistake.
 --
+-- HOW TO CAPTURE ONE OF THOSE POINTS. Stand on it, FACE THE WAY A CAR COMING
+-- OUT SHOULD FACE, and run `/opx.admin.self.pos` -- Self -> Position on the
+-- staff menu, or the row on the target eye. It copies
+-- `{ NAME = "here", LABEL = "Here", X = ..., Y = ..., Z = ..., HEADING = ... }`
+-- to your operating system clipboard, with the facing you are really standing
+-- at, and you paste the numbers into a MENU, an ENTRY or an EXIT below. That is
+-- the whole capture path on this server. It is a COMMAND and not a menu on
+-- purpose: the owner deleted the staff menu's Dev screen on 2026-09-21 --
+-- "il y a pas de config live c'est tous par les fichier config donc degage moi
+-- ce menu est pass moi tous dans les config" -- because a screen that places
+-- things teaches an operator to set a server up somewhere nobody can read
+-- afterwards. This command places nothing. It reads a number and hands it to
+-- you, and you put it in the file.
+--
 -- The marker vocabulary is fixed by the engine and not by this file: styles are
 -- `interaction`, `objective`, `spawn` and `danger`, shapes are `ring` and
 -- `cylinder`, RADIUS is 0.1..50 and MAX_DISTANCE is 1..500. Anything else is

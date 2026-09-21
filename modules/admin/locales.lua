@@ -27,7 +27,15 @@ local EN = {
 	['admin.done.revived'] = '{name} [{id}] revived.',
 	['admin.done.godOn'] = 'God mode on for {name} [{id}].',
 	['admin.done.godOff'] = 'God mode off for {name} [{id}].',
+	-- THE CAPTURE PATH'S TWO ANSWERS. The second is not a failure: the row is
+	-- copied either way, and what it says is that the HEADING in it is a zero
+	-- this host could not read rather than the way the operator is facing. A
+	-- config row pasted from it would stand a car facing north and nothing would
+	-- ever say why, which is the sort of thing an operator spends an afternoon on.
 	['admin.done.pos'] = 'Copied to the clipboard (bucket {bucket}): {row}',
+	['admin.done.posNoHeading'] =
+		'Copied to the clipboard (bucket {bucket}), but this host cannot read your ' ..
+		'facing, so HEADING is 0.0 and not a reading: {row}',
 	['admin.done.goto'] = 'Teleported to {name} [{id}], bucket {bucket}.',
 	['admin.done.bring'] = '{name} [{id}] brought to you.',
 	['admin.done.observe'] = 'Observing {name} [{id}] with noclip on. They can see you.',
@@ -505,39 +513,14 @@ local EN = {
 	['admin.field.label'] = 'Label',
 	['admin.field.time'] = 'HH:MM',
 	['admin.field.query'] = 'Words',
-	-- The Dev screen's own fields. A KEY is a durable name an operator will type
-	-- again to remove the thing; an ENTRY is a row of the dealership's stock list,
-	-- which `/opx.dealership.stock` prints.
-	['admin.field.key'] = 'Name',
-	['admin.field.entry'] = 'Stock key',
-	['admin.field.plate'] = 'Plate',
-	['admin.field.garage'] = 'Garage',
-
-	-- ── the Dev screen ────────────────────────────────────────────────────
-	['admin.menu.dev'] = 'Dev',
-	['admin.menu.section.garages'] = 'Garages',
-	['admin.menu.section.dealership'] = 'Dealership',
-	['admin.menu.section.showroom'] = 'Showroom',
-	['admin.menu.garageList'] = 'List every garage',
-	['admin.menu.garageBring'] = 'Bring a vehicle out',
-	['admin.menu.dealerList'] = 'List every dealership',
-	['admin.menu.dealerStock'] = 'List what is for sale',
-	['admin.menu.dealerBuy'] = 'Buy a vehicle',
-	['admin.menu.previewPlace'] = 'Place a showroom car here',
-	['admin.menu.previewRemove'] = 'Remove a showroom car',
-
-	['admin.form.garageBring'] = 'Bring a vehicle out',
-	['admin.form.garageBringHint'] =
-		'Stand at the garage. Leave the plate empty for the first vehicle that fits.',
-	['admin.form.dealerBuy'] = 'Buy a vehicle',
-	['admin.form.dealerBuyHint'] =
-		'Stand on the dealership marker. The stock key is what the stock list prints.',
-	['admin.form.previewPlace'] = 'Place a showroom car',
-	['admin.form.previewPlaceHint'] =
-		'It is placed where you are standing, facing where you are looking, at the ' ..
-		'dealership you are inside. It is locked: nobody drives it away.',
-	['admin.form.previewRemove'] = 'Remove a showroom car',
-	['admin.form.previewRemoveHint'] = 'The name it was placed under.',
+	-- THE DEV SCREEN'S KEYS ARE GONE, all twenty-seven of them: the screen, its key,
+	-- its three sections, its seven rows, its four forms with their fields, and the
+	-- three answers the two contract-call rows had. The owner deleted that screen
+	-- on 2026-09-21; `modules/admin/client/menu.lua` says at length where each row
+	-- went. Not one of them is named from any Lua or Vue file any more, and the
+	-- French table below lost exactly the same keys in the same pass -- this repo
+	-- keeps the two in step, and a key in one table and not the other is a screen
+	-- that reads in English for half the server.
 
 	['admin.client.menuMissing'] = 'The staff menu needs the menu module, which is not running.',
 	['admin.client.menuBusy'] = 'Another menu is open. Close it first.',
@@ -546,15 +529,8 @@ local EN = {
 	['admin.client.travelMissing'] = 'This game client has no travel natives.',
 	['admin.client.denied'] = 'No access to /{command}.',
 	['admin.client.unknownCommand'] = '/{command} is not a command on this server.',
-	-- The showroom rows do not end in a command, so they cannot say "the command
-	-- could not be sent": they end in a contract call on another module's client
-	-- half, and these three are its three answers.
-	['admin.client.devMissing'] = 'The dealership module is not running on this client.',
-	['admin.client.devRefused'] = 'That was refused. The reason is on your screen.',
-	['admin.client.devSent'] = 'Sent.',
 
 	['admin.key.menu'] = 'Staff: open or close the menu',
-	['admin.key.dev'] = 'Staff: open the menu on the Dev screen',
 	['admin.key.speedUp'] = 'Staff: noclip faster',
 	['admin.key.speedDown'] = 'Staff: noclip slower',
 
@@ -646,6 +622,9 @@ local FR = {
 	['admin.done.godOn'] = 'Invincibilité activée pour {name} [{id}].',
 	['admin.done.godOff'] = 'Invincibilité retirée à {name} [{id}].',
 	['admin.done.pos'] = 'Copié dans le presse-papiers (bucket {bucket}) : {row}',
+	['admin.done.posNoHeading'] =
+		'Copié dans le presse-papiers (bucket {bucket}), mais cet hôte ne peut pas lire ' ..
+		"votre orientation : HEADING vaut 0.0 et n'est pas une mesure : {row}",
 	['admin.done.goto'] = 'Téléporté auprès de {name} [{id}], bucket {bucket}.',
 	['admin.done.bring'] = "{name} [{id}] amené jusqu'à vous.",
 	['admin.done.observe'] = 'Vous observez {name} [{id}], noclip activé. Cette personne vous voit.',
@@ -1114,35 +1093,6 @@ local FR = {
 	['admin.field.label'] = 'Libellé',
 	['admin.field.time'] = 'HH:MM',
 	['admin.field.query'] = 'Mots',
-	['admin.field.key'] = 'Nom',
-	['admin.field.entry'] = 'Clé du stock',
-	['admin.field.plate'] = 'Plaque',
-	['admin.field.garage'] = 'Garage',
-
-	['admin.menu.dev'] = 'Dev',
-	['admin.menu.section.garages'] = 'Garages',
-	['admin.menu.section.dealership'] = 'Concession',
-	['admin.menu.section.showroom'] = 'Hall d’exposition',
-	['admin.menu.garageList'] = 'Lister les garages',
-	['admin.menu.garageBring'] = 'Sortir un véhicule',
-	['admin.menu.dealerList'] = 'Lister les concessions',
-	['admin.menu.dealerStock'] = 'Lister ce qui est en vente',
-	['admin.menu.dealerBuy'] = 'Acheter un véhicule',
-	['admin.menu.previewPlace'] = 'Exposer un véhicule ici',
-	['admin.menu.previewRemove'] = 'Retirer un véhicule exposé',
-
-	['admin.form.garageBring'] = 'Sortir un véhicule',
-	['admin.form.garageBringHint'] =
-		'Placez-vous au garage. Laissez la plaque vide pour le premier véhicule éligible.',
-	['admin.form.dealerBuy'] = 'Acheter un véhicule',
-	['admin.form.dealerBuyHint'] =
-		'Placez-vous sur le marqueur de la concession. La clé est celle que liste le stock.',
-	['admin.form.previewPlace'] = 'Exposer un véhicule',
-	['admin.form.previewPlaceHint'] =
-		'Il est placé où vous êtes, orienté où vous regardez, dans la concession où vous ' ..
-		'vous trouvez. Il est verrouillé : personne ne peut le voler.',
-	['admin.form.previewRemove'] = 'Retirer un véhicule exposé',
-	['admin.form.previewRemoveHint'] = 'Le nom sous lequel il a été placé.',
 
 	['admin.client.menuMissing'] = 'Le menu du staff a besoin du module menu, qui ne tourne pas.',
 	['admin.client.menuBusy'] = "Un autre menu est ouvert. Fermez-le d'abord.",
@@ -1151,12 +1101,8 @@ local FR = {
 	['admin.client.travelMissing'] = "Ce client de jeu n'a pas les fonctions de déplacement.",
 	['admin.client.denied'] = "Pas d'accès à /{command}.",
 	['admin.client.unknownCommand'] = "/{command} n'est pas une commande de ce serveur.",
-	['admin.client.devMissing'] = "Le module concession ne tourne pas sur ce client.",
-	['admin.client.devRefused'] = "Refusé. La raison est affichée à l'écran.",
-	['admin.client.devSent'] = 'Envoyé.',
 
 	['admin.key.menu'] = 'Équipe : ouvrir ou fermer le menu',
-	['admin.key.dev'] = 'Équipe : ouvrir le menu sur l’écran Dev',
 	['admin.key.speedUp'] = 'Équipe : noclip plus rapide',
 	['admin.key.speedDown'] = 'Équipe : noclip plus lent',
 

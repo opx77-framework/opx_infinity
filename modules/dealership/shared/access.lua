@@ -289,6 +289,56 @@ function Access.PreviewWire(spot)
 	return wire
 end
 
+--- Builds a key -> preview table from a block of `PREVIEW.POINTS` definitions.
+-- @author XEROX710
+--
+-- THE SAME JOB `Access.Coerce` DOES FOR DEALERS, and written out rather than
+-- handed to `OPX.Spots.Coerce` for one reason: a preview is a shared spot record
+-- PLUS two fields the shared record knows nothing about, and `Coerce` stops at
+-- the shared half. A point that passed the coordinate check and then named no
+-- dealer would be accepted here and refused at the moment a car had to stand on
+-- it, which is a config error found at the wrong end of the day.
+--
+-- `nil` is an empty showroom and NOT a problem: a server with no preview points
+-- is a server whose dealers are counters rather than halls, which is the
+-- ordinary case. Anything that is not nil and not a table IS reported.
+-- @param definitions any map of key -> row
+-- @param problems table|nil collector, appended to
+-- @return table
+function Access.CoercePreviews(definitions, problems)
+	local points = {}
+	if definitions == nil then return points end
+	if type(definitions) ~= 'table' then
+		if problems ~= nil then
+			problems[#problems + 1] = 'PREVIEW.POINTS must be a table of key -> definition'
+		end
+		return points
+	end
+	for key, raw in pairs(definitions) do
+		local spot, why = Access.PreviewFromDefinition(key, raw)
+		if spot == nil then
+			if problems ~= nil then problems[#problems + 1] = 'PREVIEW.POINTS.' .. tostring(why) end
+		else
+			points[spot.key] = spot
+		end
+	end
+	return points
+end
+
+--- The configured showroom, already validated.
+-- @author XEROX710
+--
+-- THIS IS WHERE A SHOWROOM CAR LIVES NOW. It used to live in
+-- `opx77_dealership_previews`, written there by the staff menu's Dev screen,
+-- and the owner deleted that screen on 2026-09-21 ("il y a pas de config live
+-- c'est tous par les fichier config"). The database is still READ at boot -- a
+-- car an operator placed before this version is adopted and printed back as the
+-- config line that recreates it -- but nothing writes to it from a menu, and a
+-- point named here SHADOWS an adopted row of the same key. Config wins, always:
+-- the file is the copy somebody has.
+Access.PREVIEW_POINTS = Access.CoercePreviews(
+	type(Config.PREVIEW) == 'table' and Config.PREVIEW.POINTS or nil, nil)
+
 -- How many previews one dealer's floor may hold. Every one of them is a network
 -- vehicle that never despawns, so this is a frame budget and not a taste.
 Access.PREVIEW_LIMIT = math.floor(
@@ -625,6 +675,48 @@ function Access.Problems()
 		local lift = finiteNumber(preview.LIFT)
 		if lift == nil or lift < 0.0 or lift > 2.0 then
 			lines[#lines + 1] = 'PREVIEW.LIFT must be a finite number, 0 to 2 metres'
+		end
+
+		-- THE SHOWROOM ITSELF, validated at load exactly as SPOTS is. The errors
+		-- are re-derived here rather than kept from the load, so the diagnostic
+		-- reports them and not only the boot log.
+		local points = Access.CoercePreviews(preview.POINTS, lines)
+
+		-- AND WHAT EACH POINT NAMES. ENTRY is checked because the stock list is
+		-- ENTIRELY config: a point naming a row that is not in it can never
+		-- stand a car up, on this start or any other, so it is a config error
+		-- and not a runtime one. DEALER is deliberately NOT checked here -- a
+		-- dealer may still be adopted out of `opx77_dealerships` at boot, which
+		-- happens long after this file loads, so a name that is missing now may
+		-- be there in a second. The server says so per car when it dresses the
+		-- floor, which is the moment it is actually knowable.
+		local ordered = {}
+		for key in pairs(points) do ordered[#ordered + 1] = key end
+		table.sort(ordered)
+		for _, key in ipairs(ordered) do
+			local point = points[key]
+			if Access.STOCK[point.entry] == nil then
+				lines[#lines + 1] = ('PREVIEW.POINTS.%s: ENTRY names %q, which is not a KEY in ' ..
+					'STOCK; nothing can ever stand on it'):format(key, point.entry)
+			end
+		end
+
+		-- A SHOWROOM BIGGER THAN ITS OWN LIMIT is a config that refuses half of
+		-- itself at boot with a line per car. Counted per dealer, because the
+		-- limit is per floor.
+		local perDealer = {}
+		for _, point in pairs(points) do
+			perDealer[point.dealer] = (perDealer[point.dealer] or 0) + 1
+		end
+		local dealers = {}
+		for dealer in pairs(perDealer) do dealers[#dealers + 1] = dealer end
+		table.sort(dealers)
+		for _, dealer in ipairs(dealers) do
+			if Access.PREVIEW_LIMIT > 0 and perDealer[dealer] > Access.PREVIEW_LIMIT then
+				lines[#lines + 1] = ('PREVIEW.POINTS: %d point(s) name the dealer %q, which is ' ..
+					'more than PREVIEW.LIMIT (%d); the ones over the line are not created')
+					:format(perDealer[dealer], dealer, Access.PREVIEW_LIMIT)
+			end
 		end
 	end
 

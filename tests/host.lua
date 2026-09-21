@@ -1244,6 +1244,41 @@ function Host.Environment(side, database)
 				return { x = at.x, y = at.y, z = at.z, bucket = world.buckets[id] or 0 }
 			end,
 
+			-- THE RICH READ, 2.31.13+op77.67, and the only place on the server
+			-- side a player's FACING can be had at all: `position` above answers
+			-- `{ x, y, z, bucket }` and carries no yaw, which is why
+			-- `/opx.admin.self.pos` printed a hardcoded `HEADING = 0.0` for as
+			-- long as it existed.
+			--
+			-- Answers what the card says it answers: `playerId`, `bucket`,
+			-- `fresh` and `ready` always; `position`, `heading` and its alias
+			-- `yaw` only once the slot has reported. A slot this harness has
+			-- never stood anywhere has NO position and NO heading, which is the
+			-- case a caller has to survive and the case that would otherwise
+			-- read as a player standing at the origin facing north.
+			--
+			-- `control.Stand` sets both, so a test can face somebody a way and
+			-- read it back.
+			get = function(playerId)
+				local id = tonumber(playerId) or playerId
+				if control.accounts[id] == nil then return nil, 'player_not_found' end
+				local snapshot = { playerId = id, bucket = world.buckets[id] or 0,
+					fresh = true, ready = true }
+				local at = world.positions[id]
+				if at ~= nil then
+					snapshot.ageMs = 0
+					snapshot.position = { x = at.x, y = at.y, z = at.z }
+					local yaw = world.headings[id]
+					if yaw ~= nil then
+						snapshot.heading = yaw
+						snapshot.yaw = yaw
+					end
+				end
+				local named = world.names[id]
+				if named ~= nil then snapshot.name = named end
+				return snapshot
+			end,
+
 			-- A SNAPSHOT TABLE, not a string. The card answers
 			-- `{ phase = alive|dead|revivepending|respawnpending|recovering }` or
 			-- nil, and every consumer in this runtime type-checks for a table --
@@ -1740,7 +1775,7 @@ function Host.Environment(side, database)
 	-- no server script can call. Nothing could move a server-side position at
 	-- all, so no reach check on the server side was ever exercised.
 	world = {
-		positions = {}, buckets = {}, names = {},
+		positions = {}, headings = {}, buckets = {}, names = {},
 		bucketWrites = {}, population = {}, lockdown = {}, transitions = {},
 		-- The canonical health maximum each player was given, by player id.
 		maxHealth = {},
@@ -2219,11 +2254,24 @@ function Host.Environment(side, database)
 		--- Walks a player to a point. Takes `{ x, y, z }` or three numbers, so a
 		--- test can move the body a reach check measures against -- which nothing
 		--- in this harness could do before.
-		Stand = function(playerId, x, y, z)
+		---
+		--- AND FACES THEM A WAY, optionally: a fourth number, or `heading`/`yaw`
+		--- on the table. Only `Open77.players.get` answers it, so a caller that
+		--- reads a facing off `position` cannot be told from one that reads it
+		--- off the rich snapshot unless the two disagree -- and they do, because
+		--- `position` has no yaw at all. A call that names no heading LEAVES THE
+		--- OLD ONE rather than resetting it to zero: zero is a legal facing, and
+		--- a reset would make "never faced anywhere" and "facing north" the same
+		--- state, which is the distinction the capture path turns on.
+		Stand = function(playerId, x, y, z, heading)
 			local id = tonumber(playerId) or playerId
-			if type(x) == 'table' then x, y, z = x.x, x.y, x.z end
+			if type(x) == 'table' then
+				heading = x.heading or x.yaw or heading
+				x, y, z = x.x, x.y, x.z
+			end
 			world.positions[id] = { x = tonumber(x) or 0.0, y = tonumber(y) or 0.0,
 				z = tonumber(z) or 0.0 }
+			if tonumber(heading) ~= nil then world.headings[id] = tonumber(heading) end
 		end,
 
 		--- Sets a player's life phase, or takes their body away entirely when it

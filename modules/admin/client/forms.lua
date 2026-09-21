@@ -321,139 +321,33 @@ FORMS.time = {
 	end,
 }
 
--- ── the Dev forms ───────────────────────────────────────────────────────────
+-- ── the Dev forms are gone, and so is the screen that opened them ───────────
 --
--- WHAT THESE ARE FOR. The Dev screen is where a server is set up from, and every
--- one of its doors takes an argument a row cannot hold: a durable key, a stock
--- row, a plate. So each row opens a form here.
+-- THE OWNER'S WORDS, 2026-09-21: "il y a pas de config live c'est tous par les
+-- fichier config donc degage moi ce menu est pass moi tous dans les config".
+-- The Dev screen read as a place a server is CONFIGURED from, and this server is
+-- not configured from a menu: every place in it is a line in `config/`.
 --
--- THERE ARE TWO KINDS OF DOOR NOW, AND THEY ARE NOT THE SAME THING. The older
--- ones end in a COMMAND LINE -- the same words, in the same order, an operator
--- would have typed -- and the ACL is the host's, resolved against
--- `command.<name>` before the handler runs. The showroom ones end in a CONTRACT
--- CALL on the dealership's client half, because the commands they would have
--- used are gone: `/opx.garages.add`, `/opx.garages.remove`,
--- `/opx.dealership.add` and `/opx.dealership.remove` all wrote a place into a
--- database, and a place is written in config now.
+-- Four forms stood here and all four went with it:
 --
--- A CONTRACT CALL FROM A CLIENT IS NO PERMISSION CHECK AT ALL, and nothing here
--- pretends otherwise: the dealership's SERVER half asks the ACL for
--- `PLACEMENT_RIGHT` -- its own right, not a command's -- before it writes
--- anything. What this file does is fill in the arguments.
+--   `previewPlace` / `previewRemove` ended in a CONTRACT CALL on the
+--   dealership's client half rather than in a command line, which was the one
+--   place this file broke its own rule. They wrote a showroom car into
+--   `opx77_dealership_previews` -- a place nobody has a copy of, which is the
+--   exact thing `/opx.dealership.add` was deleted for. A showroom car is
+--   declared in `PREVIEW.POINTS` in `config/dealership.lua` now, and the server
+--   prints every database-only one at boot as the config line that recreates it.
 --
--- THE SHOWROOM ROWS ARE NOT GREYED, and that is a deliberate difference from
--- every other row on this menu. `denied()` greys a row whose COMMAND the access
--- map refuses, and the access map is built from command names; a right that
--- gates no command is not in it. Greying on a name that is not there would grey
--- the row for everybody, which is worse than a row that is pressed and refused
--- with a sentence.
+--   `garageBring`, `dealerBuy` and the two list rows beside them were not
+--   configuration at all -- they are the commands `opx.garages.bring`,
+--   `opx.dealership.buy`, `.list` and `.stock`, which are still registered and
+--   still ACL-gated. An operator types them, which is what the form was typing
+--   for them.
 --
--- THE OPTIONAL FIELDS ARE APPENDED ONLY WHEN FILLED. An empty token is an empty
--- POSITIONAL argument, and the command reads positionals: a blank plate would
--- ask for a vehicle whose plate is the empty string.
-
--- Key lengths, from the columns that own them: a preview key and a stock key are
--- 48 characters in both modules, a plate 16. The label width went with the two
--- `add` forms: a garage and a dealer are named in config now, and nothing on
--- this screen types a label any more.
-local MAX_KEY, MAX_PLATE = 48, 16
-
-local function keyField()
-	return text('key', 'admin.field.key', { charset = 'name', maxLength = MAX_KEY, required = true })
-end
-
--- Appends a value only when it was filled in.
-local function with(tokens, value)
-	if type(value) == 'string' and value ~= '' then tokens[#tokens + 1] = value end
-	return tokens
-end
-
--- The dealership's client half, or nil. Read at submit time and never captured:
--- the contract resolves at Start and this file loads before it.
-local function dealership()
-	return Client.Contract('dealership')
-end
-
--- Says what a contract call answered, in the status line the menu already has.
--- A form that submitted into silence is a form an operator presses twice.
-local function reported(answer, whenMissing)
-	if answer == nil then return menu().Resume(locale(whenMissing), false) end
-	if type(answer) ~= 'table' or answer.ok ~= true then
-		return menu().Resume(locale('admin.client.devRefused'), false)
-	end
-	return menu().Resume(locale('admin.client.devSent'), true)
-end
-
--- PLACING A SHOWROOM CAR. The position is the SERVER'S -- it reads it off the
--- connection -- and the facing is the client's, because a menu row has none. The
--- dealer is the nearest one whose zone the operator is standing in, which is why
--- this form asks for neither a dealer nor a coordinate: an operator places a
--- showroom car by standing where they want it.
-FORMS.previewPlace = {
-	build = function()
-		return { title = locale('admin.form.previewPlace'),
-			description = locale('admin.form.previewPlaceHint'),
-			fields = {
-				keyField(),
-				text('entry', 'admin.field.entry',
-					{ charset = 'name', maxLength = MAX_KEY, required = true }),
-			} }
-	end,
-	submit = function(values)
-		local contract = dealership()
-		if contract == nil or type(contract.Place) ~= 'function' then
-			return menu().Resume(locale('admin.client.devMissing'), false)
-		end
-		reported(contract.Place(values.key, values.entry), 'admin.client.devMissing')
-	end,
-}
-
-FORMS.previewRemove = {
-	build = function()
-		return { title = locale('admin.form.previewRemove'),
-			description = locale('admin.form.previewRemoveHint'),
-			fields = { keyField() } }
-	end,
-	submit = function(values)
-		local contract = dealership()
-		if contract == nil or type(contract.Unplace) ~= 'function' then
-			return menu().Resume(locale('admin.client.devMissing'), false)
-		end
-		reported(contract.Unplace(values.key), 'admin.client.devMissing')
-	end,
-}
-
-FORMS.garageBring = {
-	build = function()
-		return { title = locale('admin.form.garageBring'),
-			description = locale('admin.form.garageBringHint'),
-			fields = { keyField(),
-				text('plate', 'admin.field.plate', { charset = 'name', maxLength = MAX_PLATE }) } }
-	end,
-	submit = function(values)
-		local tokens = { Command.GARAGES_BRING, values.key }
-		with(tokens, M.Trimmed(values.plate, MAX_PLATE))
-		menu().Run(tokens)
-	end,
-}
-
-FORMS.dealerBuy = {
-	build = function()
-		return { title = locale('admin.form.dealerBuy'),
-			description = locale('admin.form.dealerBuyHint'),
-			fields = {
-				text('entry', 'admin.field.entry',
-					{ charset = 'name', maxLength = MAX_KEY, required = true }),
-				text('garage', 'admin.field.garage',
-					{ charset = 'name', maxLength = MAX_KEY }),
-			} }
-	end,
-	submit = function(values)
-		local tokens = { Command.DEALERSHIP_BUY, values.entry }
-		with(tokens, M.Trimmed(values.garage, MAX_KEY))
-		menu().Run(tokens)
-	end,
-}
+-- `MAX_KEY`, `MAX_PLATE`, `keyField`, `with`, `dealership` and `reported` were
+-- read by those six and nothing else, so they went with them. If a Dev-shaped
+-- form ever comes back, it comes back around a COMMAND: a contract call from a
+-- client is no permission check at all.
 
 -- Turns one answer into its command, or brings the menu back.
 local function onAnswer(payload)

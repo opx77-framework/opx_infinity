@@ -517,10 +517,6 @@ SCREENS.root = function()
 		go('vehicles', 'admin.menu.vehicles', 'vehicles', nil, { icon = 'vehicle' }),
 		go('world', 'admin.menu.world', 'world', nil, { icon = 'world' }),
 		go('server', 'admin.menu.server', 'server', nil, { icon = 'server' }),
-		-- The screen the DEV key lands on, and reachable from the root as well:
-		-- a second key is a shortcut, never the only door. Whoever rebinds the
-		-- menu key away must still be able to get here.
-		go('dev', 'admin.menu.dev', 'dev', nil, { icon = 'tool' }),
 	}
 end
 
@@ -1278,46 +1274,43 @@ SCREENS.world = function()
 	return locale('admin.menu.world'), items
 end
 
--- ── the Dev screen ──────────────────────────────────────────────────────────
+-- ── the Dev screen is gone ──────────────────────────────────────────────────
 --
--- THE PLACEMENT MENU, and the reason the DEV key exists: this is the screen a
--- server is set up from, one press away from wherever the operator is standing.
+-- THE OWNER'S WORDS, 2026-09-21: "il y a pas de config live c'est tous par les
+-- fichier config donc degage moi ce menu est pass moi tous dans les config".
 --
--- WHAT IS NOT ON IT ANY MORE, and why. `garages add`, `garages remove`,
--- `dealership add` and `dealership remove` were four of its rows, and all four
--- wrote a PLACE into a database from a chat line -- so the shape of the world
--- lived in a table nobody had a copy of. A garage and a dealer are written in
--- `config/garages.lua` and `config/dealership.lua` now; what is left here is
--- what still genuinely happens at runtime.
+-- A screen called Dev, sitting on the root beside Players and World and opened
+-- by a key of its own, read as the place this server is CONFIGURED from. It is
+-- not. Every place on this server -- a garage, a dealer, a showroom car, a
+-- teleport, a lift -- is a line in `config/`, read at start, in version control
+-- and reviewable. A menu that appears to place one of them teaches an operator
+-- to set the server up somewhere nobody can read afterwards, which is the exact
+-- lesson `/opx.garages.add` and `/opx.dealership.add` were deleted for.
 --
--- THE SHOWROOM ROWS END IN A CONTRACT CALL AND NOT IN A COMMAND, which is the
--- one place this screen breaks its own rule, and `client/forms.lua` says at
--- length why: the commands they would have used are gone, the dealership's
--- server half gates them on its own ACL right, and a row whose right gates no
--- command cannot be greyed from an access map built out of command names.
-SCREENS.dev = function()
-	local items = {
-		section('admin.menu.section.garages'),
-		icon(command('garageList', 'admin.menu.garageList', { Command.GARAGES_LIST }), 'list'),
-		icon(form('garageBring', 'admin.menu.garageBring', 'garageBring', nil,
-			Command.GARAGES_BRING), 'vehicle'),
-
-		section('admin.menu.section.dealership'),
-		icon(command('dealerList', 'admin.menu.dealerList', { Command.DEALERSHIP_LIST }), 'list'),
-		icon(command('dealerStock', 'admin.menu.dealerStock', { Command.DEALERSHIP_STOCK }),
-			'info'),
-		icon(form('dealerBuy', 'admin.menu.dealerBuy', 'dealerBuy', nil, Command.DEALERSHIP_BUY),
-			'vehicle'),
-
-		section('admin.menu.section.showroom'),
-		icon(row('previewPlace', locale('admin.menu.previewPlace'),
-			{ form = 'previewPlace' }), 'plus'),
-		icon(row('previewRemove', locale('admin.menu.previewRemove'),
-			{ form = 'previewRemove' }), 'trash'),
-	}
-	return locale('admin.menu.dev'), items
-end
-
+-- WHERE THE SEVEN ROWS WENT:
+--
+--   `previewPlace` / `previewRemove` were the only two that were genuinely
+--   CONFIGURATION, and they are `PREVIEW.POINTS` in `config/dealership.lua`
+--   now. The dealership's server half prints every showroom car that exists
+--   only in the database at boot, as the config line that recreates it, exactly
+--   as it already did for adopted dealers.
+--
+--   `garageList`, `garageBring`, `dealerList`, `dealerStock` and `dealerBuy`
+--   were never configuration: they are `opx.garages.list`, `opx.garages.bring`,
+--   `opx.dealership.list`, `.stock` and `.buy`, all still registered and still
+--   ACL-gated by the host. An operator types them in chat, which is what the
+--   rows were typing on their behalf.
+--
+-- THE KEY WENT WITH IT. `Keys.DEV`, its registration here and `KEYS.DEV` in
+-- `config/admin.lua` existed to land on this screen and on nothing else, so
+-- F10 is free again. `Menu.OpenAt` stays -- the target eye and the down screen
+-- both land on a named screen through it.
+--
+-- HOW AN OPERATOR CAPTURES A POSITION NOW: `/opx.admin.self.pos`, which is on
+-- this menu under Self -> Position and on the eye's own row. It copies the
+-- position AND the facing the operator is standing at straight to the operating
+-- system clipboard, ready to paste into whichever `config/` file wants it. That
+-- command is the whole of the capture path and the config headers name it.
 SCREENS.weather = function()
 	local link = links()
 	local items = {}
@@ -2175,20 +2168,6 @@ function Menu.Start()
 	local configured = M.Section('KEYS')
 	Keys.Register(Keys.MENU, 'admin.key.menu', Keys.Setting('KEYS.MENU', configured.MENU, 'F9'),
 		pressed, nil, function() return playerDown end)
-
-	-- THE DEV KEY, which was declared in `client/keys.lua` and registered by
-	-- nobody: `Keys.DEV` existed, `config/admin.lua` shipped `KEYS.DEV = 'F10'`
-	-- and said in as many words that it "opens the staff menu on the Dev screen",
-	-- and no line anywhere handed either of them to `RegisterKeyMapping`. So the
-	-- key did nothing, the pause menu listed no shortcut for it, and the config
-	-- documented a feature the build did not have.
-	--
-	-- It is NOT a `whileCaptured` key, unlike the menu key: the menu key has to
-	-- survive the down screen holding the keyboard, because a staff member has to
-	-- be able to get a downed player up. Nothing on the Dev screen is an
-	-- emergency.
-	Keys.Register(Keys.DEV, 'admin.key.dev', Keys.Setting('KEYS.DEV', configured.DEV, 'F10'),
-		function() Menu.OpenAt('dev') end)
 
 	Keys.OnChanged(Menu.Refresh)
 

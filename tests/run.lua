@@ -7136,6 +7136,330 @@ do
 			check('a dealer named in config is not moved by a row of the same name',
 				shadowed ~= nil and shadowed.x == -1536.42, shadowed and shadowed.x)
 		end
+
+		-- ── and the showroom went the same way ─────────────────────────────
+		-- THE OWNER, 2026-09-21: "il y a pas de config live c'est tous par les
+		-- fichier config donc degage moi ce menu est pass moi tous dans les
+		-- config". The staff menu's Dev screen was the ONE thing on this server
+		-- that placed a showroom car, and it wrote it into
+		-- `opx77_dealership_previews` -- the same mistake `/opx.dealership.add`
+		-- made, in a second table. The screen is gone and a showroom car is
+		-- `PREVIEW.POINTS` in `config/dealership.lua`.
+		check('a fresh server ships no showroom at all, so nothing stands in a road',
+			type(Access.PREVIEW_POINTS) == 'table' and next(Access.PREVIEW_POINTS) == nil)
+
+		-- ── what a point written in config has to be ───────────────────────
+		local built = Access.CoercePreviews({
+			show_ok = { X = 1.0, Y = 2.0, Z = 3.0, HEADING = 52.0, BUCKET = 4,
+				DEALER = 'garage1', ENTRY = 'hella' },
+		}, nil)
+		check('a point written in config is accepted whole, facing and bucket included',
+			built.show_ok ~= nil and built.show_ok.heading == 52.0
+				and built.show_ok.bucket == 4 and built.show_ok.dealer == 'garage1'
+				and built.show_ok.entry == 'hella',
+			built.show_ok and tostring(built.show_ok.heading))
+
+		-- BOTH EXTRA FIELDS ARE REQUIRED and neither is defaulted, because the
+		-- shared spot record knows about neither: a car with no dealer stands in
+		-- a field that no zone ever cleans up, and one with no entry is an empty
+		-- parking space nothing can ever be put on.
+		local refused = {}
+		local half = Access.CoercePreviews({
+			no_dealer = { X = 1.0, Y = 1.0, Z = 1.0, ENTRY = 'hella' },
+			no_entry = { X = 1.0, Y = 1.0, Z = 1.0, DEALER = 'garage1' },
+			bad_place = { X = 0 / 0, Y = 1.0, Z = 1.0, DEALER = 'garage1', ENTRY = 'hella' },
+		}, refused)
+		check('a point with no dealer, no stock row or a NaN coordinate is refused',
+			next(half) == nil and #refused == 3, ('%d kept, %d refused')
+				:format(OPX.Table.Count(half), #refused))
+		check('and every refusal says PREVIEW.POINTS, so an operator knows which block',
+			(function()
+				for _, line in ipairs(refused) do
+					if line:find('PREVIEW.POINTS', 1, true) == nil then return false end
+				end
+				return true
+			end)(), table.concat(refused, ' | '))
+
+		-- A BLOCK THAT IS NOT A TABLE is reported; a block that is ABSENT is an
+		-- empty showroom and not a fault, which is the ordinary server.
+		check('an absent POINTS block is an empty showroom rather than a problem',
+			(function()
+				local lines = {}
+				local none = Access.CoercePreviews(nil, lines)
+				return next(none) == nil and #lines == 0
+			end)())
+
+		-- ── what the diagnostic says about a bad showroom ──────────────────
+		--- Whether `Access.Problems` says something containing `needle`.
+		local function reports(needle)
+			for _, line in ipairs(Access.Problems()) do
+				if line:find(needle, 1, true) then return true, line end
+			end
+			return false
+		end
+
+		local shippedPoints = Config.PREVIEW.POINTS
+		Config.PREVIEW.POINTS = 'nonsense'
+		check('a POINTS block that is not a table is reported rather than quietly dropped',
+			reports('PREVIEW.POINTS must be a table'))
+
+		-- THE STOCK LIST IS ENTIRELY CONFIG, so a point naming a row that is not
+		-- in it can never stand a car up -- on this start or any other. That is a
+		-- config error and it is said at boot, not discovered by an operator
+		-- wondering why one bay is empty.
+		Config.PREVIEW.POINTS = {
+			bad_entry = { X = 1.0, Y = 1.0, Z = 1.0, HEADING = 0.0, BUCKET = 0,
+				DEALER = 'garage1', ENTRY = 'no_such_row' },
+		}
+		check('a point naming a stock row that does not exist is named at boot',
+			reports('ENTRY names "no_such_row"'))
+		-- AND THE DEALER IS DELIBERATELY NOT CHECKED HERE: a dealer may still be
+		-- adopted out of `opx77_dealerships` long after this file loads, so a
+		-- name missing now may be there in a second. The server says so per car
+		-- when it dresses the floor, which is the moment it is knowable.
+		Config.PREVIEW.POINTS = {
+			far_dealer = { X = 1.0, Y = 1.0, Z = 1.0, HEADING = 0.0, BUCKET = 0,
+				DEALER = 'not_checked_at_load', ENTRY = 'hella' },
+		}
+		check('while a dealer that does not exist yet is not a load-time problem',
+			reports('not_checked_at_load') == false)
+
+		-- MORE CARS ON ONE FLOOR THAN `LIMIT` is a config that refuses part of
+		-- itself at boot with a line per car. The limit is a frame budget: every
+		-- preview is a network vehicle that never despawns.
+		local crowd = {}
+		for index = 1, Access.PREVIEW_LIMIT + 2 do
+			crowd['crowd' .. index] = { X = 1.0, Y = 1.0, Z = 1.0, HEADING = 0.0, BUCKET = 0,
+				DEALER = 'garage1', ENTRY = 'hella' }
+		end
+		Config.PREVIEW.POINTS = crowd
+		check('and a floor with more cars on it than PREVIEW.LIMIT is counted and reported',
+			reports('more than PREVIEW.LIMIT'))
+		Config.PREVIEW.POINTS = shippedPoints
+		check('with the shipped config putting nothing in the journal at all',
+			reports('PREVIEW.POINTS') == false)
+
+		-- ── a configured car is not the runtime path's to move ─────────────
+		-- The runtime path is `M.PlacePreview` and `M.RemovePreview`, reached
+		-- through the contract's `Place`/`Unplace`. NOTHING IN THIS RESOURCE
+		-- CALLS THEM ANY MORE -- the Dev screen was the only caller -- but they
+		-- are still wired, and a write under a CONFIGURED key would move a car
+		-- until the next restart and then move it back: an operator editing the
+		-- file and an operator standing in the room disagreeing about where a car
+		-- is, with the file winning silently in the morning.
+		-- CALLED STRAIGHT AND NOT THROUGH THE ROUTEWAY, which every other check
+		-- in this section uses. The routeway is rate-limited per player and this
+		-- section has already spent that window on the refusal checks above, so a
+		-- place sent through it here answers `error.tooFast` and proves nothing
+		-- about the config guard, which is what is under test.
+		env.source = src
+		local staged = dealership.PlacePreview(src, 'legacy_show', 'hella', 15.0, nil)
+		control.Pump(8)
+		local onFloor = contract.Previews()
+		check('a car placed the runtime way is on the floor',
+			staged.ok == true and onFloor.ok and #onFloor.value.previews == 1,
+			tostring(staged.error or (onFloor.ok and #onFloor.value.previews)))
+
+		-- `Access.PREVIEW_POINTS` IS the table the server half took at Init, so
+		-- writing here is what an operator adding a row to the config does.
+		Access.PREVIEW_POINTS['legacy_show'] = Access.PreviewFromDefinition('legacy_show', {
+			X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0, BUCKET = 0,
+			DEALER = 'dealer_dock', ENTRY = 'hella' })
+		local moved = dealership.PlacePreview(src, 'legacy_show', 'hella', 0.0, nil)
+		check('a car written in config cannot be moved from the runtime path',
+			moved.ok == false and moved.error == 'dealership.previewIsConfig',
+			tostring(moved.error))
+		local deleted = dealership.RemovePreview('legacy_show')
+		check('and it cannot be deleted from it either',
+			deleted.ok == false and deleted.error == 'dealership.previewIsConfig',
+			tostring(deleted.error))
+		check('and the refusal is a sentence rather than a code on the screen',
+			OPX.Locale.Exists('dealership.previewIsConfig'))
+
+		-- Not vacuous: with the row out of the config again the same key removes,
+		-- so what was refused was the CONFIG and not the key.
+		Access.PREVIEW_POINTS['legacy_show'] = nil
+		check('while the same car removes once it is no longer written in config',
+			dealership.RemovePreview('legacy_show').ok == true)
+
+		-- ── the showroom migration, the same story in a second table ───────
+		-- The second row names a dealer that is in neither the config nor the
+		-- database. A car in a field is what that is, and nothing ever cleans it
+		-- up -- so it is KEPT (the dealer may come back on the next edit of the
+		-- config) and simply not stood up, with a line per car saying so. That
+		-- check is the only thing standing between an operator and a showroom
+		-- floating over the badlands after a renamed dealer.
+		local legacyShowroom = {
+			{ preview_key = 'legacy_show', dealer_key = 'garage1', entry_key = 'hella',
+				x = -1536.0, y = -207.0, z = 7.86, heading = 41.0, bucket = 0 },
+			{ preview_key = 'orphan_show', dealer_key = 'no_such_dealer', entry_key = 'hella',
+				x = 10.0, y = 10.0, z = 1.0, heading = 0.0, bucket = 0 },
+		}
+		local floorEnv, floorControl, floorWhy = boot('server', Host.Database({
+			scalar = function() return 1 end,
+			update = function() return 0 end,
+			single = function() return nil end,
+			query = function(sql)
+				if sql:find('opx77_dealership_previews', 1, true) then return legacyShowroom end
+				return {}
+			end,
+		}))
+		check('a server with a showroom car in the database boots', floorWhy == nil, floorWhy)
+		if floorWhy == nil then
+			floorControl.Pump(40)
+			local floorContract = floorEnv.OPX.Api.Get('dealership')
+			local listed = floorContract.Previews()
+			local byKey = {}
+			for _, entry in ipairs(listed.ok and listed.value.previews or {}) do
+				byKey[entry.key] = entry
+			end
+			check('a showroom car that lives only in the database is adopted',
+				listed.ok and #listed.value.previews == 2 and byKey.legacy_show ~= nil,
+				listed.ok and #listed.value.previews)
+			check('and stood up, because the dealer it names is written in config',
+				byKey.legacy_show ~= nil and byKey.legacy_show.standing == true)
+			check('while one whose dealer does not exist is kept rather than dropped',
+				byKey.orphan_show ~= nil)
+			check('and not stood up, because a car in a field is what that would be',
+				byKey.orphan_show ~= nil and byKey.orphan_show.standing == false,
+				byKey.orphan_show and tostring(byKey.orphan_show.standing))
+			check('with a line per car naming the dealer that is missing',
+				(function()
+					for index = 1, #floorControl.log.warn do
+						local line = floorControl.log.warn[index]
+						if line:find('orphan_show', 1, true)
+							and line:find('no_such_dealer', 1, true) then return true end
+					end
+					return false
+				end)())
+
+			-- THE OTHER HALF OF THE MIGRATION, and the half the Dev screen never
+			-- had: the line it handed an operator was handed to one player, once,
+			-- in a chat box. The whole floor is written at every start instead.
+			local printed, warned = false, false
+			for index = 1, #floorControl.log.info do
+				local line = floorControl.log.info[index]
+				if line:find('config line: legacy_show', 1, true)
+					and line:find('DEALER = "garage1"', 1, true)
+					and line:find('ENTRY = "hella"', 1, true)
+					and line:find('HEADING = 41.0', 1, true) then
+					printed = true
+				end
+			end
+			for index = 1, #floorControl.log.warn do
+				local line = floorControl.log.warn[index]
+				if line:find('opx77_dealership_previews', 1, true)
+					and line:find('PREVIEW.POINTS', 1, true) then
+					warned = true
+				end
+			end
+			check('and the config line that recreates it names its dealer, its row and its facing',
+				printed)
+			check('with a line telling the operator it exists nowhere else', warned)
+		end
+
+		-- ── the floor is counted against PREVIEW.LIMIT when it is DRESSED ──
+		-- The config check a few hundred lines up counts what is written in
+		-- `PREVIEW.POINTS`, and it cannot see the adopted half: a database with
+		-- thirteen cars on one floor and a config with none passes that check and
+		-- then creates thirteen network vehicles that never despawn. The limit is
+		-- a frame budget for every client in the district, so it is enforced
+		-- again where the cars are actually raised.
+		local crowded = {}
+		for index = 1, Access.PREVIEW_LIMIT + 1 do
+			crowded[index] = { preview_key = ('crowd_%02d'):format(index),
+				dealer_key = 'garage1', entry_key = 'hella',
+				x = -1536.0, y = -207.0, z = 7.86, heading = 0.0, bucket = 0 }
+		end
+		-- COUNTED AT EVERY YIELD, the way the blips batch test counts its pins.
+		-- Every pass of the loop that raises the floor is a `vehicles.create`
+		-- round trip, and a loop that did the whole showroom in ONE resume would
+		-- run out of the per-resume instruction budget partway down and unwind
+		-- the coroutine with no error, no log and no refusal -- leaving the cars
+		-- it reached standing and the rest silently missing. That failure has
+		-- cost this codebase five outages, and the harness has no instruction
+		-- budget, so nothing else in this suite can see it: `marks` is how many
+		-- cars had been created each time the thread gave the frame back, and the
+		-- gaps between consecutive marks are the runs of un-yielded work.
+		local raised, marks = 0, {}
+		local fullEnv, fullControl, fullWhy = boot('server', Host.Database({
+			scalar = function() return 1 end,
+			update = function() return 0 end,
+			single = function() return nil end,
+			query = function(sql)
+				if sql:find('opx77_dealership_previews', 1, true) then return crowded end
+				return {}
+			end,
+		}), function(sandbox)
+			local realCreate = sandbox.Open77.vehicles.create
+			sandbox.Open77.vehicles.create = function(...)
+				raised = raised + 1
+				return realCreate(...)
+			end
+			local realWait = sandbox.Wait
+			sandbox.Wait = function(...)
+				marks[#marks + 1] = raised
+				return realWait(...)
+			end
+		end)
+		check('a server with an over-full showroom in the database boots', fullWhy == nil, fullWhy)
+		if fullWhy == nil then
+			fullControl.Pump(40)
+			local fullContract = fullEnv.OPX.Api.Get('dealership')
+			local held = fullContract.Previews()
+			local standing = 0
+			for _, entry in ipairs(held.ok and held.value.previews or {}) do
+				if entry.standing then standing = standing + 1 end
+			end
+			check('every car is kept, because none of them is the operator\'s to lose',
+				held.ok and #held.value.previews == Access.PREVIEW_LIMIT + 1,
+				held.ok and #held.value.previews)
+			check('while only PREVIEW.LIMIT of them are stood up',
+				standing == Access.PREVIEW_LIMIT, standing)
+			check('and the ones over the line are named in the journal, not dropped in silence',
+				(function()
+					for index = 1, #fullControl.log.warn do
+						if fullControl.log.warn[index]:find('over PREVIEW.LIMIT', 1, true) then
+							return true
+						end
+					end
+					return false
+				end)())
+
+			-- ONE CAR PER RESUME. The yield deleted from that loop turns twelve
+			-- creates into one un-yielded run, which is the mutation this kills.
+			local longest, previous = 0, 0
+			for index = 1, #marks do
+				local run = marks[index] - previous
+				if run > longest then longest = run end
+				previous = marks[index]
+			end
+			if raised - previous > longest then longest = raised - previous end
+			check('the showroom was raised a car at a time, with the frame given back between',
+				raised >= Access.PREVIEW_LIMIT and longest <= 1,
+				('%d raised, longest un-yielded run was %d'):format(raised, longest))
+		end
+
+		-- ── and a car written in config is on the floor from Init ──────────
+		-- THE CONFIG HALF OF THE SAME MERGE. Everything above exercises the
+		-- database half; this is the half that matters from here on, because
+		-- `PREVIEW.POINTS` is where a showroom car is written now and the
+		-- database is only what the deleted menu left behind. `M.Init` is the one
+		-- entry point that reads the config table, and it is re-run here on
+		-- purpose -- this is the last thing this section asks of the module.
+		Access.PREVIEW_POINTS['from_config'] = Access.PreviewFromDefinition('from_config', {
+			X = 1.0, Y = 1.0, Z = 5.0, HEADING = 33.0, BUCKET = 0,
+			DEALER = 'garage1', ENTRY = 'hella' })
+		dealership.Init()
+		local afterInit = contract.Previews()
+		local seeded
+		for _, entry in ipairs(afterInit.ok and afterInit.value.previews or {}) do
+			if entry.key == 'from_config' then seeded = entry end
+		end
+		check('a showroom car written in config is on the floor from Init, with no database at all',
+			seeded ~= nil and seeded.dealer == 'garage1' and seeded.entry == 'hella',
+			seeded and seeded.dealer)
+		Access.PREVIEW_POINTS['from_config'] = nil
 	end
 end
 
@@ -8119,6 +8443,138 @@ do
 	end
 end
 
+-- ── the capture path ────────────────────────────────────────────────────────
+-- HOW "WHERE I AM STANDING" BECOMES A LINE IN A CONFIG FILE, and since
+-- 2026-09-21 the only way this resource has of doing it.
+--
+-- The owner deleted the staff menu's Dev screen that day -- "il y a pas de
+-- config live c'est tous par les fichier config donc degage moi ce menu est
+-- pass moi tous dans les config" -- and with it the two rows that turned where
+-- an operator was standing into a showroom car in a database. Every place on
+-- this server is a line in `config/` now: a garage, a dealer, a showroom car, a
+-- teleport, a lift. So the question an operator asks -- "how do I get these
+-- coordinates into that file" -- has exactly one answer, and it is this command.
+--
+-- THE FACING IS THE PART THAT WAS MISSING. `HEADING = 0.0` was HARDCODED into
+-- the copied row for as long as the command existed, because
+-- `Open77.players.position` answers `{ x, y, z, bucket }` and carries no yaw at
+-- all. That was survivable while a menu filled the facing in from the
+-- operator's own client; with the menu gone it made three quarters of a config
+-- row and left them to guess the rest -- and a garage EXIT, a dealer and a
+-- showroom car are all CREATED at a yaw.
+section('the capture path: standing somewhere becomes a line in config')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the capture path', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+
+		--- The newest row the server pushed at a clipboard, or nil.
+		local function lastCopied()
+			for index = #control.clientEvents, 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == admin.Event.TRAVEL and event[1] == 'copy' then return event[2] end
+			end
+			return nil
+		end
+
+		--- The newest sentence the server answered the operator with, or nil.
+		local function lastSaid()
+			for index = #control.clientEvents, 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == admin.Event.ANSWER then return event[3] end
+			end
+			return nil
+		end
+
+		--- Stands a FRESH operator somewhere, facing a way, and runs the capture.
+		--- A slot of its own per capture, and not one operator run three times:
+		--- the command is a `read`, so the host holds a per-operator floor of a
+		--- second between two runs and the second and third would be answered
+		--- "Slow down" rather than a row. The floor is real and tested elsewhere;
+		--- what is under test here is what the row says.
+		local function capture(id, x, y, z, heading)
+			control.Admit(id, 'account-capture-' .. tostring(id))
+			OPX.EnsureSession(id)
+			control.Allow(id, 'command.' .. admin.Command.SELF_POS)
+			control.Stand(id, x, y, z, heading)
+			control.commands[admin.Command.SELF_POS].run(id, {})
+			control.Pump(4)
+			return lastCopied(), lastSaid()
+		end
+
+		-- Standing somewhere, facing something other than north: the whole point
+		-- is that the row comes back with the facing the body really has.
+		local row, said = capture(41, 12.5, -34.25, 7.5, 137.5)
+		check('the command copies a row to the clipboard rather than only printing it',
+			type(row) == 'string' and row ~= '', tostring(row))
+		check('and the row carries the point the body is standing on',
+			row ~= nil and row:find('X = 12.50', 1, true) ~= nil
+				and row:find('Y = -34.25', 1, true) ~= nil
+				and row:find('Z = 7.50', 1, true) ~= nil, tostring(row))
+		-- THE ASSERTION THE WHOLE CHANGE IS ABOUT. A hardcoded zero passes every
+		-- other check on this row.
+		check('and the FACING the body really has, not a hardcoded zero',
+			row ~= nil and row:find('HEADING = 137.5', 1, true) ~= nil, tostring(row))
+		check('in the shape a config file takes, so it pastes without editing',
+			row ~= nil and row:find('^{ NAME = ') ~= nil and row:find('},$') ~= nil,
+			tostring(row))
+		check('and the operator is told it was copied rather than left guessing',
+			said ~= nil and said:find('clipboard', 1, true) ~= nil, tostring(said))
+		local ordinary = said
+
+		-- A YAW OUTSIDE THE CIRCLE. A reading that came back as 400 would be
+		-- written into a file and handed to `vehicles.create` as 400.
+		local wide = capture(43, 0.0, 0.0, 0.0, 400.0)
+		check('a yaw outside the circle is brought back inside it',
+			wide ~= nil and wide:find('HEADING = 40.0', 1, true) ~= nil, tostring(wide))
+		check('and the same reading is what Server.HeadingOf answers on its own',
+			admin.Server.HeadingOf(43) == 40.0, tostring(admin.Server.HeadingOf(43)))
+		check('and it rides along on every position read, so one call gets both',
+			(admin.Server.PositionOf(43) or {}).heading == 40.0,
+			tostring((admin.Server.PositionOf(43) or {}).heading))
+
+		-- ── a host that cannot answer a facing ─────────────────────────────
+		-- `Open77.players.get` is 2.31.13+op77.67 and the rich read is the only
+		-- place a yaw exists server-side. On anything older the row is still
+		-- copied -- the coordinates are the hard part and they are still right --
+		-- but the zero in it is NOT a reading, and an operator who pasted it
+		-- believing it was would stand every car in that bay facing north and
+		-- never find out why.
+		local rich = env.Open77.players.get
+		env.Open77.players.get = nil
+		local blind, blindSaid = capture(44, 0.0, 0.0, 0.0, 90.0)
+		check('a host with no rich read still copies the point',
+			blind ~= nil and blind:find('X = 0.00', 1, true) ~= nil, tostring(blind))
+		check('with a zero in the facing, because there is nothing to read',
+			blind ~= nil and blind:find('HEADING = 0.0', 1, true) ~= nil, tostring(blind))
+		check('and says in as many words that the zero in it is not a facing',
+			blindSaid ~= nil and blindSaid:find('facing', 1, true) ~= nil, tostring(blindSaid))
+		check('rather than answering the ordinary sentence',
+			blindSaid ~= ordinary, tostring(blindSaid))
+		check('and Server.HeadingOf answers nil rather than a zero that reads as north',
+			admin.Server.HeadingOf(44) == nil, tostring(admin.Server.HeadingOf(44)))
+		env.Open77.players.get = rich
+
+		-- A SLOT THAT HAS NEVER REPORTED has no facing either, and it is the
+		-- same nil: the rich read carries no heading until something has stood
+		-- the body somewhere, which is what the host does.
+		local never = 45
+		control.Admit(never, 'account-never-stood')
+		check('a body that has never reported has no facing to read',
+			admin.Server.HeadingOf(never) == nil, tostring(admin.Server.HeadingOf(never)))
+
+		-- BOTH SENTENCES ARE WRITTEN. A key that was never registered comes back
+		-- as itself, so a missing one reads on screen as `admin.done.posNoHeading`
+		-- and every check above still passes.
+		check('both answers are sentences and not keys',
+			OPX.Locale.Exists('admin.done.pos')
+				and OPX.Locale.Exists('admin.done.posNoHeading'))
+	end
+end
+
 section('noclip, server side')
 do
 	local env, control, why = boot('server')
@@ -9027,6 +9483,98 @@ do
 	end
 end
 
+-- ── what the Dev screen took out of the catalogues ──────────────────────────
+-- A DELETED SCREEN LEAVES ITS WORDS BEHIND, and nothing at runtime ever
+-- notices: an orphaned catalogue key costs no memory anybody misses and raises
+-- nothing, so a file accretes the vocabulary of every feature it has ever had
+-- until nobody can tell which half of it is live. Twenty-seven keys belonged to
+-- the Dev screen -- the screen itself, its key, its three sections, its seven
+-- rows, its four forms with their fields, and the three answers the two
+-- contract-call rows had -- and this is what says they went.
+--
+-- AND THAT BOTH CATALOGUES LOST THE SAME ONES. This repo keeps `en` and `fr` in
+-- step by hand; a key in one table and not the other reads on screen as the key
+-- itself, which looks like a missing translation rather than a broken lookup,
+-- so nobody reports it as a bug. Read out of the SOURCE and not out of
+-- `OPX.Locale`, because the lookup falls back to English: a French table
+-- missing every key in this change would answer every test in this suite
+-- correctly and be wrong on the screen of every French-speaking player.
+section('the staff catalogues stay in step')
+do
+	--- Every `['some.key']` between two markers in a locale file.
+	local function keysBetween(body, from, to)
+		local start = body:find(from, 1, true)
+		local stop = to and body:find(to, 1, true) or (#body + 1)
+		local found, count = {}, 0
+		if start == nil or stop == nil then return found, 0 end
+		for key in body:sub(start, stop):gmatch("%['([%w%._%-]+)'%]%s*=") do
+			if found[key] == nil then
+				found[key] = true
+				count = count + 1
+			end
+		end
+		return found, count
+	end
+
+	for _, file in ipairs({ 'modules/admin/locales.lua', 'modules/dealership/locales.lua' }) do
+		local handle = io.open(file, 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		check(('%s was read'):format(file), #body > 0)
+
+		local english, englishCount = keysBetween(body, 'local EN = {', 'local FR = {')
+		local french, frenchCount = keysBetween(body, 'local FR = {', nil)
+		check(('%s carries two catalogues with something in them'):format(file),
+			englishCount > 0 and frenchCount > 0,
+			('%d en, %d fr'):format(englishCount, frenchCount))
+
+		local lonely = {}
+		for key in pairs(english) do
+			if french[key] == nil then lonely[#lonely + 1] = 'en only: ' .. key end
+		end
+		for key in pairs(french) do
+			if english[key] == nil then lonely[#lonely + 1] = 'fr only: ' .. key end
+		end
+		table.sort(lonely)
+		check(('and every key in %s is in both of them'):format(file),
+			#lonely == 0, table.concat(lonely, ', '))
+	end
+
+	-- THE TWENTY-SEVEN, by name. A list and not a namespace sweep: `admin.menu.*`
+	-- and `admin.field.*` are full of keys that are still drawn, and a prefix
+	-- check would either miss these or condemn those.
+	local handle = io.open('modules/admin/locales.lua', 'r')
+	local body = handle and handle:read('a') or ''
+	if handle then handle:close() end
+
+	local GONE = {
+		'admin.menu.dev', 'admin.key.dev',
+		'admin.menu.section.garages', 'admin.menu.section.dealership',
+		'admin.menu.section.showroom',
+		'admin.menu.garageList', 'admin.menu.garageBring', 'admin.menu.dealerList',
+		'admin.menu.dealerStock', 'admin.menu.dealerBuy',
+		'admin.menu.previewPlace', 'admin.menu.previewRemove',
+		'admin.form.garageBring', 'admin.form.garageBringHint',
+		'admin.form.dealerBuy', 'admin.form.dealerBuyHint',
+		'admin.form.previewPlace', 'admin.form.previewPlaceHint',
+		'admin.form.previewRemove', 'admin.form.previewRemoveHint',
+		'admin.field.key', 'admin.field.entry', 'admin.field.plate', 'admin.field.garage',
+		'admin.client.devMissing', 'admin.client.devRefused', 'admin.client.devSent',
+	}
+	local left = {}
+	for _, key in ipairs(GONE) do
+		if body:find(("['%s']"):format(key), 1, true) ~= nil then left[#left + 1] = key end
+	end
+	check('every word the Dev screen owned went with it, out of both catalogues',
+		#left == 0, table.concat(left, ' '))
+
+	-- Not vacuous: a `find` that had stopped matching anything -- a changed
+	-- quoting style, a file that moved -- would pass the check above with the
+	-- whole screen still written.
+	check('while a key the menu still draws is still there',
+		body:find("['admin.menu.players']", 1, true) ~= nil)
+end
+
 -- ── the find screen drops a late answer ──────────────────────────────────────
 -- THE ONE SCREEN WITH NO TARGET TO TAG WITH. Every other per-target list on this
 -- menu is read FOR a player and tagged with that player's id, so an answer for
@@ -9081,56 +9629,70 @@ do
 		control.Pump(10)
 		check('the staff menu opens', admin.Menu.IsOpen())
 
-		-- ── the Dev screen, and the key that was declared and never registered ──
-		-- `Keys.DEV` existed in `client/keys.lua`, `config/admin.lua` shipped
-		-- `KEYS.DEV = 'F10'` and said in as many words that it "opens the staff
-		-- menu on the Dev screen", and no line anywhere handed either of them to
-		-- `RegisterKeyMapping`. So the key did nothing, the pause menu listed no
-		-- shortcut for it, and the config documented a feature the build did not
-		-- have.
-		local devKey = control.keyMappings.byId['opx.admin.dev']
-		check('the Dev key is declared to the host, so a player can rebind it',
-			devKey ~= nil)
-		check('and it is the key the config names, separately from the menu key',
-			devKey ~= nil and devKey.key == 'F10'
-				and control.keyMappings.byId['opx.admin.menu'] ~= nil
-				and control.keyMappings.byId['opx.admin.menu'].key ~= devKey.key,
-			devKey and tostring(devKey.key))
-		check('and the pause menu is given a name for it, not a key',
-			devKey ~= nil and type(devKey.name) == 'string' and devKey.name ~= ''
-				and devKey.name:find('key', 1, true) == nil, devKey and tostring(devKey.name))
+		-- ── the Dev screen is gone, and the key with it ──────────────────────
+		-- THE OWNER, 2026-09-21: "il y a pas de config live c'est tous par les
+		-- fichier config donc degage moi ce menu est pass moi tous dans les
+		-- config". A screen called Dev sitting on the root and opened by a key of
+		-- its own read as the place this server is CONFIGURED from, and every
+		-- place on this server is a line in `config/`.
+		--
+		-- THESE ARE THE SAME CHECKS TURNED THE OTHER WAY. What stood here
+		-- asserted that `Keys.DEV` reached the host and that the screen carried
+		-- the two placement rows. Deleting them outright would have left nothing
+		-- saying the door is SHUT -- and nothing saying that only that door shut,
+		-- which is the half that goes wrong: a raise in `Menu.Start`, a renamed
+		-- config section or a `Keys.Register` that started refusing would take
+		-- the MENU key with it and leave staff with no way in at all.
+		check('the root carries no Dev row', hasRow('dev') == nil)
+		check('and still carries every other category, so a row went and not the screen list',
+			hasRow('players') ~= nil and hasRow('self') ~= nil and hasRow('vehicles') ~= nil
+				and hasRow('world') ~= nil and hasRow('server') ~= nil)
 
-		check('the Dev screen can be opened', admin.Menu.OpenAt('dev') == true)
+		check('no Dev key is declared to the host any more',
+			control.keyMappings.byId['opx.admin.dev'] == nil)
+		local menuKey = control.keyMappings.byId['opx.admin.menu']
+		check('while the menu key still is, on the key the config names',
+			menuKey ~= nil and menuKey.key == 'F9', menuKey and tostring(menuKey.key))
+		check('and so are both noclip speeds, so one mapping went and not the registration',
+			control.keyMappings.byId['opx.admin.noclipFaster'] ~= nil
+				and control.keyMappings.byId['opx.admin.noclipSlower'] ~= nil)
+
+		check('there is no Dev screen left to land on', admin.Menu.OpenAt('dev') == false)
 		control.Pump(10)
-		check('and it lands on it', admin.Menu.Screen() == 'dev', admin.Menu.Screen())
-		-- WHAT IS ON IT, and what is deliberately not. The four rows that placed
-		-- a garage or a dealer are gone with the commands behind them; the two
-		-- that dress a showroom are new, and they are the reason the screen has
-		-- to exist rather than being a list of readings.
-		check('it offers the showroom rows, which are what an operator still places',
-			hasRow('previewPlace') ~= nil and hasRow('previewRemove') ~= nil)
-		check('and the readings that are left',
-			hasRow('garageList') ~= nil and hasRow('dealerList') ~= nil
-				and hasRow('dealerStock') ~= nil)
-		check('and none of the four rows that placed a spot from a chat line',
-			hasRow('garageAdd') == nil and hasRow('garageRemove') == nil
-				and hasRow('dealerAdd') == nil and hasRow('dealerRemove') == nil)
-		-- EVERY ROW ON IT IS WRITTEN IN WORDS. A catalogue key that was never
-		-- registered comes back as itself, so the screen draws `admin.menu.dev`
-		-- at an operator and every check above still passes -- which is exactly
-		-- how this screen sat half-finished: the forms behind it were written and
-		-- roughly fifteen of the keys they name never were.
-		local unwritten = {}
-		for _, id in ipairs({ 'previewPlace', 'previewRemove', 'garageList', 'garageBring',
-			'dealerList', 'dealerStock', 'dealerBuy' }) do
-			local item = hasRow(id)
-			if item == nil or type(item.label) ~= 'string'
-				or item.label:find('^admin%.') ~= nil then
-				unwritten[#unwritten + 1] = id
-			end
+		-- A refusal and not a close: `OpenAt` answers false for a screen it does
+		-- not have, and an operator who pressed a stale keybind must not lose the
+		-- menu they were standing in for it.
+		check('and asking for it leaves the menu where it was rather than closing it',
+			admin.Menu.IsOpen() and admin.Menu.Screen() == 'root', admin.Menu.Screen())
+
+		-- THE FOUR FORMS BEHIND ITS ROWS. `Forms.Open` answers false for a kind
+		-- it does not know, so this also catches one of them being moved onto
+		-- another screen rather than removed.
+		local alive = {}
+		for _, kind in ipairs({ 'previewPlace', 'previewRemove', 'garageBring', 'dealerBuy' }) do
+			if admin.Forms.Open(kind) ~= false then alive[#alive + 1] = kind end
 		end
-		check('and every one of them is written in words rather than drawn as its key',
-			#unwritten == 0, table.concat(unwritten, ' '))
+		check('and none of the four Dev forms can be opened any more',
+			#alive == 0, table.concat(alive, ' '))
+		-- Not vacuous: a `Forms.Open` refusing everything would pass the check
+		-- above and take every form on the menu with it.
+		check('while a form that is still on the menu opens',
+			admin.Forms.Open('announce') == true)
+
+		-- AND THE FIVE COMMAND NAMES THE SCREEN BORROWED. They belong to
+		-- `garages` and `dealership`, which still register them and are still
+		-- ACL-gated; what went is this module's copy of them, and with it the
+		-- load-time read of another module's `COMMANDS` block -- an exception to
+		-- the one rule `config/entry.lua` states outright, written down in
+		-- `modules/admin/module.lua` with "when the Dev group next needs work".
+		check('and the five names the screen borrowed from other modules are gone',
+			admin.Command.GARAGES_LIST == nil and admin.Command.GARAGES_BRING == nil
+				and admin.Command.DEALERSHIP_LIST == nil
+				and admin.Command.DEALERSHIP_STOCK == nil
+				and admin.Command.DEALERSHIP_BUY == nil)
+		check('while this module\'s own names are untouched',
+			admin.Command.SELF_POS == 'opx.admin.self.pos'
+				and admin.Command.MENU == 'opx.admin')
 
 		asked = {}
 		check('the find screen can be opened', admin.Menu.OpenAt('offlineChars') == true)

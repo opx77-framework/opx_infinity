@@ -147,7 +147,10 @@ OPX.Config.MODULES.teleports = {
 	--   1. The ENTRY position. Stand where the player should stand and read it
 	--      off `/opx.admin.self.pos`, which copies it to the clipboard.
 	--   2. The EXIT position AND HEADING. Stand where they should land, facing
-	--      the way they should face, and read both off the same command. Land
+	--      the way they should face, and read both off the same command -- the
+	--      HEADING in the row it copies really is your own facing now. It was a
+	--      hardcoded `0.0` until 2026-09-21, so an exit captured before then and
+	--      never turned by hand lands everybody facing north. Land
 	--      people on FLOOR they can already see -- the platform's arrival watch
 	--      will re-issue the move while the body sinks through an unstreamed
 	--      floor, but it cannot conjure a floor that is not there, and a

@@ -11,7 +11,7 @@
 --
 -- THREE THINGS HAPPEN AT A DEALER NOW. A player stands on the marker and buys
 -- from the list, as before. An operator dresses the floor with PREVIEW POINTS --
--- locked showroom cars, placed from the staff menu's Dev screen. And anyone
+-- locked showroom cars, written in `PREVIEW.POINTS` below. And anyone
 -- inside the dealership ZONE grows a "sell a vehicle" row on every other player,
 -- so a salesperson sells to a customer face to face: the customer's own client
 -- confirms, the price is paid into the company bank of the seller's job or gang,
@@ -25,9 +25,19 @@
 -- an AV record is refused at a `garage` dealer whatever its row says.
 --
 -- X, Y and Z are validated, and only X and Y are measured against. HEADING is
--- the yaw a vehicle handed over here is created with, which is why `add` asks
--- the operator's own client for a facing exactly as the garages command does --
--- a chat line has no facing of its own.
+-- the yaw a vehicle handed over here is created with, and the yaw a showroom car
+-- stands at, so it is never decoration: a dealer at zero degrees hands cars out
+-- facing whichever way the map was built.
+--
+-- HOW TO CAPTURE ONE. Stand where the thing goes, FACE THE WAY IT SHOULD FACE,
+-- and run `/opx.admin.self.pos` -- Self -> Position on the staff menu, or the
+-- row on the target eye. It copies
+-- `{ NAME = "here", LABEL = "Here", X = ..., Y = ..., Z = ..., HEADING = ... }`
+-- to your operating system clipboard, with the facing you are really standing
+-- at, and you paste the numbers into a row below. That is the whole capture
+-- path. It replaced a menu, not a survey: `/opx.dealership.add` wrote the same
+-- numbers straight into a database, which is what made them impossible to read
+-- back.
 --
 -- The marker vocabulary is the engine's, not this file's: styles are
 -- `interaction`, `objective`, `spawn` and `danger`, shapes are `ring` and
@@ -128,10 +138,11 @@ OPX.Config.MODULES.dealership = {
 	-- their money.
 	--
 	-- `add` and `remove` ARE GONE. They placed a dealer from a chat line into a
-	-- table only one host had. A dealer is written in SPOTS below, and the thing
-	-- an operator still places at runtime -- a preview point -- is placed from
-	-- the staff menu's Dev screen, which is a menu rather than four positional
-	-- arguments nobody can remember the order of.
+	-- table only one host had. A dealer is written in SPOTS below, and so is a
+	-- preview point, in PREVIEW.POINTS -- the staff menu's Dev screen used to
+	-- place those and the owner deleted it on 2026-09-21: "il y a pas de config
+	-- live c'est tous par les fichier config donc degage moi ce menu est pass
+	-- moi tous dans les config". NOTHING ON THIS SERVER IS PLACED FROM A MENU.
 	COMMANDS = {
 		list = 'opx.dealership.list',
 		stock = 'opx.dealership.stock',
@@ -161,23 +172,76 @@ OPX.Config.MODULES.dealership = {
 		-- because this is the gap that stops a chassis resting in the floor
 		-- rather than the clearance an AV needs to materialise.
 		LIFT = 0.1,
+
+		-- ── THE SHOWROOM ITSELF ──────────────────────────────────────────
+		--
+		-- ONE ROW PER CAR ON THE FLOOR, keyed by a durable name of your own.
+		-- Empty out of the box: a fresh server's dealers are counters, and a
+		-- sample point would stand a car in the middle of somebody's road.
+		--
+		-- A point reads:
+		--   show_hella_1 = { X = -1536.1, Y = -205.9, Z = 7.86, HEADING = 52.0,
+		--     BUCKET = 0, DEALER = 'garage1', ENTRY = 'hella' },
+		--
+		--   X, Y, Z    where the car stands. LIFT above is added to Z, so give
+		--              the floor and not the roof of the wheel.
+		--   HEADING    the yaw it faces, 0..360. This is the field a menu used
+		--              to fill in from the operator's own facing and the field
+		--              `/opx.admin.self.pos` now copies with the rest, so stand
+		--              the way the car should stand before you run it.
+		--   BUCKET     the routing bucket, 0 for the ordinary world.
+		--   DEALER     a key in SPOTS at the bottom of this file. A point
+		--              naming a dealer that does not exist is KEPT and simply
+		--              not created, with a line in the journal per car -- the
+		--              dealer may come back on the next edit of this file, and
+		--              deleting the car for the operator would be worse.
+		--   ENTRY      a KEY in STOCK. Which model stands there, and what the
+		--              player walks around before they buy it. A name that is
+		--              not in STOCK is refused at boot with a line naming it:
+		--              the stock list is entirely config, so a point that names
+		--              nothing in it can never stand a car up on any start.
+		--
+		-- THE KEY IS YOURS AND IT IS DURABLE. It is what the journal names when
+		-- a car refuses, and what a row adopted out of `opx77_dealership_previews`
+		-- is matched against -- a key written here SHADOWS the database row of
+		-- the same name, because this file is the copy somebody has.
+		--
+		-- MORE THAN `LIMIT` POINTS ON ONE DEALER is reported at boot and the
+		-- ones over the line are not created. The limit is a frame budget:
+		-- every preview is a network vehicle that never despawns.
+		--
+		-- MIGRATING A SHOWROOM PLACED BEFORE 2026-09-21: the server prints
+		-- every preview that exists only in `opx77_dealership_previews` at
+		-- every start, as the exact config line that recreates it, followed by
+		-- a warning counting them. Paste them in here and they stop depending
+		-- on that table. The table is read-only now -- nothing writes to it --
+		-- so nothing is lost while you get round to it.
+		POINTS = {
+		},
 	},
 
-	-- THE RIGHT THAT PLACES ONE, and it is its OWN right rather than the `add`
-	-- command's. Two reasons, and neither is tidiness: the command it would have
-	-- borrowed no longer exists, so the grant would name nothing; and placing a
-	-- showroom car is a different job from placing a dealer, so an operator who
-	-- may dress a floor need not also be able to move the building.
+	-- THE RIGHT THAT PLACED ONE. It is its OWN right and never a command's: the
+	-- `add` command it would have borrowed does not exist, so a grant naming
+	-- that would gate nothing at all.
+	--
+	-- WHAT IT STILL GATES, HONESTLY. The routeway it guards --
+	-- `M.PlacePreview` / `M.RemovePreview`, reached through the dealership
+	-- contract's `Place` and `Unplace` -- is intact, and the server still
+	-- refuses anybody who does not hold this right. But NOTHING IN THIS
+	-- RESOURCE CALLS IT ANY MORE: the staff menu's Dev screen was its only
+	-- caller and the owner deleted that screen on 2026-09-21. So this is a
+	-- locked door with no handle on the inside, kept because deleting a
+	-- module's whole write path is a bigger decision than deleting a menu and
+	-- is the owner's to make.
+	--
+	-- WHAT THAT MEANS FOR THE LIVE SERVER: `opx.dealership.place` is granted to
+	-- one account in the host's ACL, and that grant now opens nothing a player
+	-- can reach. It is safe to revoke and should be, unless and until another
+	-- resource is written against `Place`/`Unplace`.
 	--
 	-- It is resolved with `Open77.acl.isAllowed`, which takes any right name --
 	-- this one is NOT prefixed `command.`, because it gates no command.
 	PLACEMENT_RIGHT = 'opx.dealership.place',
-
-	-- THERE IS NO PLACEMENT TIMEOUT, and there used to be. `/opx.dealership.add`
-	-- was a chat command with no facing of its own, so the server asked the
-	-- operator's client for one and then had to survive an answer that never
-	-- came. The placement menu runs ON the client, which reads its own facing
-	-- before it sends anything: one message, nothing to wait for.
 
 	-- ── selling to somebody standing in front of you ────────────────────────
 
