@@ -487,39 +487,45 @@ local notedKinds = {}
 --- Says once, per kind, what a pick found -- and relays it where an operator is.
 --- `Open77.log` on a client writes to the PLAYER'S machine, which is why this
 --- goes through `OPX.Note` instead: a diagnostic nobody can read is not one.
-local function notedKind(kind, matched)
-	if notedKinds[kind] then return end
-	notedKinds[kind] = true
-	OPX.Note('target', ('a pick on %s matched %d row(s)'):format(kind, matched))
-
-	-- A KIND THAT MATCHED NOTHING HAS TWO CAUSES AND THEY NEED OPPOSITE FIXES:
-	-- nobody registered a row for it, or rows were registered and the filter
-	-- turned them all down. The count alone cannot tell them apart -- it read
-	-- zero either way, and an afternoon went into guessing which.
-	--
-	-- `Registry.List` answers what is actually held, by owner, and an id is
-	-- enough: a row meant for the sky is named for it. So a barren kind says
-	-- what each owner is holding that looks like it, and the two causes stop
-	-- looking alike. Only on a zero, and only once per kind, so the ordinary
-	-- case costs nothing.
-	if matched > 0 or kind == 'none' then return end
-
+--- What each owner is holding that looks like this kind, as one short string.
+--- Everything it touches is guarded: a diagnostic that can raise is a
+--- diagnostic that takes its caller down with it, and this one is called from
+--- the middle of a pick.
+local function heldFor(kind)
 	local seen = {}
-	-- Every declared module is a possible owner; the registry answers an empty
-	-- list for one that never registered anything, so nothing has to be guessed.
 	for _, module in ipairs(OPX.Modules.All()) do
 		local owner = module.Id
 		local held = Registry.List(owner)
-		local named = 0
-		for index = 1, #held do
-			if tostring(held[index].id):lower():find(kind, 1, true) then named = named + 1 end
-		end
-		if #held > 0 then
+		if type(held) == 'table' and #held > 0 then
+			local named = 0
+			for index = 1, #held do
+				local id = tostring(held[index].id):lower()
+				if id:find(kind, 1, true) then named = named + 1 end
+			end
 			seen[#seen + 1] = ('%s %d/%d'):format(owner, named, #held)
 		end
 	end
-	OPX.Note('target', ('rows held that name %s, by owner: %s')
-		:format(kind, #seen > 0 and table.concat(seen, ', ') or 'nobody holds any row'))
+	if #seen == 0 then return 'nobody holds a row at all' end
+	return table.concat(seen, ', ')
+end
+
+local function notedKind(kind, matched)
+	if notedKinds[kind] then return end
+	notedKinds[kind] = true
+
+	-- ONE NOTE, NOT TWO, AND THE SECOND HALF CANNOT TAKE THE PICK DOWN. The
+	-- breakdown was a separate note after an early return, and in the game it
+	-- never arrived: something in it raised, the surface handler swallowed the
+	-- error, and the pick died there -- a diagnostic that failed silently while
+	-- investigating something failing silently. It is one line now, and the
+	-- breakdown is computed under pcall so a fault in the diagnostic reports
+	-- itself instead of disappearing.
+	local line = ('a pick on %s matched %d row(s)'):format(kind, matched)
+	if matched == 0 and kind ~= 'none' then
+		local ok, answer = pcall(heldFor, kind)
+		line = ('%s; held: %s'):format(line, ok and answer or ('unreadable: ' .. tostring(answer)))
+	end
+	OPX.Note('target', line)
 end
 
 local function hover(payload)
