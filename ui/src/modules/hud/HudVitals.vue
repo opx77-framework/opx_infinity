@@ -188,11 +188,18 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
   stroke-linecap: round;
   stroke-linejoin: round;
   /* An SVG stroke takes no text-shadow, so the contract's answer is one
-     drop-shadow -- and this is the only `filter` in the folder. It is allowed
+     drop-shadow -- and this is the only `filter` in THIS file. It is allowed
      because it is STATIC: a 14px glyph whose paint changes only when Lua
      changes the tone, at most five on screen. Nothing whose value moves every
      frame carries one, which is why the bar, the readout and the vehicle rings
-     do not. */
+     do not.
+
+     IT IS NOT THE ONLY ONE IN THE FOLDER, which is what this used to claim.
+     `HudVoice.vue` has two -- the mic glyph's black, static for the same reason
+     as this one, and the rx counter's bloom, which `shapes.css` allows because
+     an outset shadow is sheared by a clip and the counter changes only when the
+     set of speakers does. Both are argued where they are written. A false
+     invariant is worse than none: the next reader trusts it and stops looking. */
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.95));
   transition: stroke var(--op-dur-fast) linear;
 }

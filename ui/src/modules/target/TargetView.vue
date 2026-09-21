@@ -1066,8 +1066,8 @@ onUnmounted(() => {
                     <path v-for="(d, index) in glyphPaths('folder')" :key="index" :d="d" />
                   </svg>
                 </span>
-                <span class="label op-truncate">{{ entry.name }}</span>
-                <span class="value op-truncate">{{ entry.count }}</span>
+                <span class="label op-label op-truncate">{{ entry.name }}</span>
+                <span class="value op-value op-truncate">{{ entry.count }}</span>
                 <span class="mark">&gt;</span>
               </div>
 
@@ -1097,7 +1097,7 @@ onUnmounted(() => {
                     <path v-for="(d, index) in glyphPaths(entry.row.icon)" :key="index" :d="d" />
                   </svg>
                 </span>
-                <span class="label op-truncate">{{ entry.row.label }}</span>
+                <span class="label op-label op-truncate">{{ entry.row.label }}</span>
                 <span
                   v-if="entry.row.checked !== undefined"
                   class="check"
@@ -1376,19 +1376,13 @@ onUnmounted(() => {
    pointer is over is no longer the row it was aimed at. */
 .label {
   flex: 0 1 auto;
-  font: 700 var(--op-fs-lead) / 1.25 var(--op-font-display);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .value {
   flex: none;
   margin-left: auto;
   max-width: 45%;
-  font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);
-  letter-spacing: var(--op-track-label);
   opacity: 0.88;
-  font-variant-numeric: tabular-nums;
 }
 
 /* The affordance column, always last so every mark lands at the same x. */

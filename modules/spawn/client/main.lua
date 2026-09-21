@@ -222,16 +222,24 @@ local function onChoose(payload)
 	TriggerServerEvent(M.Event.CHOOSE, { id = id })
 end
 
---- What the page's focus stack now holds on this surface.
+--- Answers the surface-wide focus broadcast for this module's own owner.
+--
+-- THE BROADCAST NAMES THE WHOLE STACK'S TOP, NOT JUST "EMPTY OR NOT", and
+-- reading only the empty case was the incomplete half of this idiom.
+-- `ui/src/bridge/focus.ts` announces on EVERY change to the page's focus stack,
+-- carrying the one owner now on top -- so a top that moved from this module's
+-- owner to somebody else's arrived here as `focus = true` with another name, and
+-- the old shape did nothing at all with it. This module's stale Lua entry then
+-- sat above the module actually on screen, and `applyFocus` applied ITS wants
+-- over theirs. Six copies of this handler had the same hole; this is the same
+-- correction, written for the one owner this module has.
 local function onFocus(payload)
 	if type(payload) ~= 'table' then return end
-	if payload.focus ~= true then
-		-- The page's stack emptied: nothing on this surface holds anything, so
-		-- this module lets go of its own.
+	if payload.focus ~= true or payload.owner ~= OWNER then
 		OPX.UI.ReleaseFocus(OWNER)
 		return
 	end
-	if payload.owner == OWNER then OPX.UI.AcquireFocus(OWNER, FOCUS) end
+	OPX.UI.AcquireFocus(OWNER, FOCUS)
 end
 
 --- Wires the page channels once, on the first offer.

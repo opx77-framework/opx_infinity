@@ -218,8 +218,16 @@ local function headingReporter()
 				lastSent = nil
 				return
 			end
-			local yaw = Open77.character.yaw()
-			if not OPX.Math.IsFinite(yaw) then return end
+			-- CHECKED BY NAME, the way every other client file in this resource
+			-- reads a `character` method. Unguarded, a client without `yaw`
+			-- raised here every pass: the scheduler's own pcall catches it, so
+			-- the cost is not a crash but a job suspended for the session and
+			-- two lines in the player's journal -- a heading that silently
+			-- stopped being reported, with the reason only on their PC.
+			local character = Open77.character
+			if type(character) ~= 'table' or type(character.yaw) ~= 'function' then return end
+			local read, yaw = pcall(character.yaw)
+			if not read or not OPX.Math.IsFinite(yaw) then return end
 			if lastSent == nil or math.abs(yaw - lastSent) >= HEADING_EPSILON then
 				lastSent = yaw
 				TriggerServerEvent(M.Event.HEADING, { heading = yaw })

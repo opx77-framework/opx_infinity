@@ -319,7 +319,7 @@ useBridge('open77:anchors', (payload: Payload) => {
              that is already there. -->
         <span class="name">{{ entry.row.name }}</span>
 
-        <span v-if="showUser && entry.row.user" class="user">{{ entry.row.user }}</span>
+        <span v-if="showUser && entry.row.user" class="user op-eyebrow">{{ entry.row.user }}</span>
 
         <span v-if="showCitizen && entry.row.citizenId" class="cid">
           {{ entry.row.citizenId }}
@@ -497,8 +497,10 @@ useBridge('open77:anchors', (payload: Payload) => {
    name somebody was given, and the mono face is this tree's whole convention for
    that. NOT uppercased, for the same reason: the casing belongs to its owner. */
 .user {
-  font: 600 var(--op-fs-micro) / 1 var(--op-font-mono);
-  letter-spacing: var(--op-track-micro);
+  /* `.op-eyebrow` MINUS ITS UPPERCASE, and that is the whole of what is left
+     here: the role carried the face and the tracking, and the one deviation is
+     spelled out rather than being the accident of a hand-written copy. */
+  text-transform: none;
   color: var(--op-red-idle);
 }
 

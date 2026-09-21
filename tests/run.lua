@@ -12660,8 +12660,16 @@ do
 
 	-- AND NOWHERE ELSE. A module that writes the triple out again has forked the
 	-- rule, which is how the three glyph lists reached 47, 45 and 14 names.
+	--
+	-- `downed/DownedView` WAS NOT ON THIS LIST, and that is the whole reason the
+	-- last two hand-rolled copies in the tree survived the sweep that removed the
+	-- other twenty-one. Both were missing `min-width: 0` -- the flex half, which
+	-- `.figure`'s parent does not supply -- so a reading long enough to need the
+	-- ellipsis pushed its unit out of the row instead of being cut. A rule
+	-- enforced off a list is only enforced over the list.
 	local modules = {
-		'chat/ChatInput', 'chat/ChatLog', 'form/FormView', 'hud/HudInfo', 'hud/HudRoot',
+		'chat/ChatInput', 'chat/ChatLog', 'downed/DownedView', 'form/FormView',
+		'hud/HudInfo', 'hud/HudRoot',
 		'hud/HudStatus', 'hud/HudVehicle', 'hud/HudVitals', 'hud/HudVoice',
 		'inventory/InventoryGrid', 'inventory/InventorySlot', 'inventory/InventoryView',
 		'inventory/SlotbarRoot', 'menu/MenuView', 'notify/NotifyRoot', 'notify/NotifyToast',
@@ -12684,10 +12692,14 @@ do
 	-- THE ROWS THE OWNER WAS LOOKING AT. A rule nothing uses is not a rule, so
 	-- the eye's own label -- the element the report was written about -- has to
 	-- carry the class.
+	-- The row now wears its TYPE ROLE as well -- `.label` and `.value` here used
+	-- to write the canonical face out again in scoped CSS -- so the cut travels
+	-- beside it rather than alone.
 	local target = read('ui/src/modules/target/TargetView.vue')
 	check('the eye\'s row label takes the cut',
-		target:find('class="label op%-truncate"') ~= nil)
-	check('and so does a folder\'s count', target:find('class="value op%-truncate"') ~= nil)
+		target:find('class="label op-label op-truncate"', 1, true) ~= nil)
+	check('and so does a folder\'s count',
+		target:find('class="value op-value op-truncate"', 1, true) ~= nil)
 
 	-- THE EXEMPTIONS, asserted so that a later sweep cannot quietly cut them. A
 	-- sentence is not a label: a toast message, an item description and the eye's
@@ -15354,5 +15366,905 @@ do
 	end
 end
 
+
+-- ── the latch the whole join sits behind ────────────────────────────────────
+-- `BeginBootstrap` takes `bootstrapPicking` BEFORE its thread and drops it only
+-- from inside a raw `while true` body with no pcall. The per-resume instruction
+-- budget unwinds out of a coroutine body with no crash and no log line, so a
+-- picker that hit it left the latch true for the session: every later
+-- `BeginBootstrap` returned on its first line, the bootstrap was never spent,
+-- and the world never loaded under the player.
+section('the bootstrap picker is watched, so the latch cannot strand the join')
+do
+	-- The clock the module reads, owned by this test. `OPX.Now` resolves
+	-- `GetGameTimer` once and keeps it, so it has to be in place before any file
+	-- loads -- and owning it is the only way to show the picker a five-second
+	-- silence without resuming it, which is exactly what a dropped thread is.
+	local fakeMs = 0
+	local phase = 'waiting'
+	local spent, failed = {}, {}
+	local refuseSpend = false
+
+	local function session(full)
+		local api = {
+			characterBootstrap = function() return { phase = phase } end,
+			requestCharacterCreator = function() return false, 'no_creator' end,
+			takeCharacterCreatorResult = function() return nil end,
+			resetCharacterBootstrap = function() return true end,
+		}
+		if full then
+			api.resolveCharacterBootstrap = function(family)
+				if refuseSpend then return false, 'no_host' end
+				spent[#spent + 1] = tostring(family)
+				return true
+			end
+			api.failCharacterBootstrap = function(reason)
+				failed[#failed + 1] = tostring(reason)
+				return true
+			end
+		end
+		return api
+	end
+
+	local function prelude(full)
+		return function(env)
+			env.GetGameTimer = function() return fakeMs end
+			env.Open77.session = session(full)
+			env.Open77.appearance = {
+				captureBody = function() return nil, 'no_host' end,
+				takeBodyFamilyTransition = function() return nil end,
+				finishCommit = function() return true end,
+			}
+		end
+	end
+
+	local env, control, why = boot('client', nil, prelude(true))
+	check('the client boots with a bootstrap left waiting', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+		local Runtime = appearance.Runtime
+		check('the appearance half is running against it',
+			OPX.Modules.IsRunning('appearance'),
+			OPX.Modules.Record('appearance').Reason)
+		check('and the host really is holding a bootstrap open',
+			Runtime.BootstrapPhase() == 'waiting', Runtime.BootstrapPhase())
+
+		-- `Start` began the picker, and boot pumped it, so it has just beaten.
+		check('nothing has been spent while the picker is alive', #spent == 0, #spent)
+
+		-- ── a picker that is merely slow is left alone ────────────────────
+		local quiet = #control.log.warn
+		fakeMs = fakeMs + 200
+		Runtime.SuperviseBootstrap()
+		check('a picker that beat a moment ago is left alone',
+			#spent == 0 and #control.log.warn == quiet,
+			('%d spent, %d -> %d warnings'):format(#spent, quiet, #control.log.warn))
+
+		-- ── and one that stopped without a word is started again ──────────
+		-- FROM HERE ON THE PICKER IS NEVER RESUMED. That is precisely what the
+		-- budget leaves behind: a coroutine the client dropped, holding the
+		-- latch, with nothing in the journal to say it went.
+		local function warnings(needle)
+			local count = 0
+			for _, line in ipairs(control.log.warn) do
+				if line:find(needle, 1, true) then count = count + 1 end
+			end
+			return count
+		end
+
+		fakeMs = fakeMs + 5100
+		Runtime.SuperviseBootstrap()
+		check('a picker that stopped without a word is started again',
+			warnings('starting it again (1)') == 1,
+			table.concat(control.log.warn, ' | '))
+		check('and the bootstrap is not spent while a revival may still answer',
+			#spent == 0, #spent)
+
+		fakeMs = fakeMs + 5100
+		Runtime.SuperviseBootstrap()
+		check('twice, and no further', warnings('starting it again (2)') == 1,
+			warnings('starting it again'))
+
+		-- ── and then the world is given a body anyway ─────────────────────
+		refuseSpend = true
+		fakeMs = fakeMs + 5100
+		Runtime.SuperviseBootstrap()
+		check('a picker that is not coming back does not hold the join',
+			warnings('is not coming back') == 1,
+			table.concat(control.log.warn, ' | '))
+
+		-- THE LATCH IS THE POINT. The spend above was refused, so the bootstrap
+		-- is still unresolved -- and a later `BeginBootstrap` has to be able to
+		-- start a picker. Under the shape this replaces the latch was stuck true
+		-- and this call returned on its first line, for the rest of the session.
+		refuseSpend = false
+		Runtime.BeginBootstrap('after the give-up')
+		for _ = 1, 200 do
+			fakeMs = fakeMs + 100
+			control.Pump(1)
+			if #spent > 0 then break end
+		end
+		check('the latch was released, so a later join can still spend it',
+			#spent == 1, #spent)
+		check('and it spent the configured default body', spent[1] == 'female',
+			tostring(spent[1]))
+	end
+
+	-- ── the wiring, which is the other half of the answer ─────────────────
+	-- A supervisor nothing drives is a comment. It rides the 200 ms
+	-- `appearance.watch` job because a scheduler job is pcalled and resumed by
+	-- the one client loop, while the picker is a raw thread started microseconds
+	-- before the world load.
+	do
+		fakeMs, phase, spent, failed = 0, 'waiting', {}, {}
+		local wenv, wcontrol, wwhy = boot('client', nil, prelude(true))
+		if wwhy ~= nil then
+			check('the client boots for the watch wiring', false, wwhy)
+		else
+			local watched = 0
+			wenv.OPX.Modules.Get('appearance').Runtime.SuperviseBootstrap =
+				function() watched = watched + 1 end
+			for _ = 1, 20 do
+				fakeMs = fakeMs + 100
+				wcontrol.Pump(1)
+			end
+			check('a scheduler job drives the bootstrap supervisor', watched > 0, watched)
+		end
+	end
+
+	-- ── the two host methods, checked by name ─────────────────────────────
+	-- `M.Start` only checks that `Open77.session` is a TABLE, while
+	-- `creatorAvailable` twenty lines away checks three sibling methods by name.
+	-- A host with the table and not these two therefore reaches `ResolveBootstrap`,
+	-- and an unguarded call there raised out of whatever was running -- including
+	-- the picker, which is holding the latch.
+	do
+		fakeMs, phase, spent, failed = 0, 'waiting', {}, {}
+		local senv, _, swhy = boot('client', nil, prelude(false))
+		if swhy ~= nil then
+			check('the client boots without the two bootstrap methods', false, swhy)
+		else
+			local Runtime = senv.OPX.Modules.Get('appearance').Runtime
+			local called, answer = pcall(Runtime.ResolveBootstrap, 'female')
+			check('a session with no resolveCharacterBootstrap is refused, not raised on',
+				called and answer == false, tostring(called) .. '/' .. tostring(answer))
+			local told, refused = pcall(Runtime.ResolveBootstrap, 'not-a-family')
+			check('and neither is a bad family, which has to reach failCharacterBootstrap',
+				told and refused == false, tostring(told) .. '/' .. tostring(refused))
+		end
+	end
+end
+
+-- ── the focus taken for a screen the page never received ────────────────────
+-- `OPX.UI.Send` answers TWO values and the second is the host's refusal: the
+-- host bounds a WebUI payload and refuses an oversized one WHOLE while the send
+-- itself still reports success. The open path read one, took `true` for
+-- "drawn", and had already acquired the keyboard and the cursor -- so a refused
+-- open left the player with a cursor on screen, game input muted and nothing
+-- rendered, recoverable only by dying.
+section('the inventory takes no focus for an open the host refused')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the refused open', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local api = OPX.Api.Get('inventory')
+		local page = control.pages[1]
+
+		--- The id of the last `open` request this client sent the server.
+		local function lastOpen()
+			local id = nil
+			for index = 1, #control.serverEvents do
+				local entry = control.serverEvents[index]
+				if entry.name == inventory.Event.REQUEST and entry[2] == 'open' then
+					id = entry[1]
+				end
+			end
+			return id
+		end
+
+		--- A bag with `slots` items in it. `Host.MAX_PAYLOAD_NODES` is 1024 and
+		--- an entry is about twenty value nodes, so a 200-slot stash -- a legal
+		--- configuration -- is past the bound on its own, before the SECOND
+		--- container and `configPayload()` this open also carries.
+		local function bag(id, slots)
+			local items = {}
+			for index = 1, slots do
+				items[index] = { slot = index, name = 'item' .. index, count = 1,
+					weight = 1.0, label = 'ITEM ' .. index }
+			end
+			return { id = id, kind = 'bag', slots = slots, items = items }
+		end
+
+		control.PageEmit(page, 'opx:inventory:ready', {})
+		control.Pump(2)
+
+		-- ── the refusal ───────────────────────────────────────────────────
+		api.Open()
+		control.Pump(2)
+		local requestId = lastOpen()
+		check('the open reached the server', requestId ~= nil)
+
+		local refusedBefore = #page.refused
+		if requestId ~= nil then
+			control.netEvents[inventory.Event.ANSWER](requestId, true, '',
+				{ primary = bag('stash', 200) })
+		end
+		control.Pump(2)
+
+		check('the host refused the payload, as it does on a real client',
+			#page.refused > refusedBefore, #page.refused)
+		check('so the screen does not claim to be open', api.IsOpen() == false,
+			tostring(api.IsOpen()))
+		check('AND THE KEYBOARD WAS NEVER TAKEN: no cursor over an empty screen',
+			OPX.UI.FocusOwner() ~= 'inventory', tostring(OPX.UI.FocusOwner()))
+		check('nor the page left holding a focus nothing can release',
+			not page.focus.cursor and not page.focus.keyboard,
+			('kb=%s cur=%s'):format(tostring(page.focus.keyboard),
+				tostring(page.focus.cursor)))
+		check('and the player is told, because nothing is on screen to tell them',
+			table.concat(control.log.error, ' | '):find('never reached the page',
+				1, true) ~= nil, table.concat(control.log.error, ' | '))
+
+		-- ── and the half the fix could break ──────────────────────────────
+		-- A screen that CAN be drawn must still take the keyboard and the cursor:
+		-- the modifier gestures and Escape are read on the page.
+		api.Open()
+		control.Pump(2)
+		local second = lastOpen()
+		if second ~= nil then
+			control.netEvents[inventory.Event.ANSWER](second, true, '',
+				{ primary = bag('bag', 4) })
+		end
+		control.Pump(2)
+		check('an open the page received is drawn', api.IsOpen() == true)
+		check('and it takes the keyboard and the cursor',
+			OPX.UI.FocusOwner() == 'inventory'
+				and page.focus.keyboard == true and page.focus.cursor == true,
+			('%s kb=%s cur=%s'):format(tostring(OPX.UI.FocusOwner()),
+				tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+
+		api.Close()
+		control.Pump(2)
+		check('and gives both back on close', OPX.UI.FocusOwner() == nil,
+			tostring(OPX.UI.FocusOwner()))
+	end
+end
+
+-- ── the held open that nothing ever came back for ───────────────────────────
+-- A send made before the page has reported ready is DROPPED, not queued, so the
+-- payload is held for the handshake. `inventory:ready` is emitted ONCE per page,
+-- so a payload still waiting for it is waiting for something that is not coming
+-- -- and the only recovery this module had was `usable()`, which goes false only
+-- when the player is DOWN OR DEAD.
+section('a held inventory open gives up without the player having to die')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the held open', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local api = OPX.Api.Get('inventory')
+
+		local function lastOpen()
+			local id = nil
+			for index = 1, #control.serverEvents do
+				local entry = control.serverEvents[index]
+				if entry.name == inventory.Event.REQUEST and entry[2] == 'open' then
+					id = entry[1]
+				end
+			end
+			return id
+		end
+
+		-- THE PAGE IS NEVER TOLD IT IS READY, which is the whole case: this half
+		-- of the handshake is the one that already cost this module a session.
+		api.Open()
+		control.Pump(2)
+		local requestId = lastOpen()
+		if requestId ~= nil then
+			control.netEvents[inventory.Event.ANSWER](requestId, true, '',
+				{ primary = { id = 'bag', kind = 'bag', slots = 4, items = {} } })
+		end
+		control.Pump(2)
+		check('the open is held for a handshake that has not come',
+			api.IsOpen() == true, tostring(api.IsOpen()))
+		check('and the keyboard is not taken for it either',
+			OPX.UI.FocusOwner() ~= 'inventory', tostring(OPX.UI.FocusOwner()))
+
+		-- One request timeout of the client's own clock, and no dying involved.
+		control.Pump(200)
+		check('a whole request timeout later it gives up on its own',
+			api.IsOpen() == false, tostring(api.IsOpen()))
+		check('and says so, rather than leaving a screen nobody can see',
+			table.concat(control.log.error, ' | '):find('never reported ready',
+				1, true) ~= nil, table.concat(control.log.error, ' | '))
+	end
+end
+
+-- ── the focus the page is holding, and the five copies that ignored it ──────
+section('a focus broadcast names one owner, and the others let go')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the focus idiom', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page = control.pages[1]
+
+		-- The page announces on EVERY change to its stack, not only when it
+		-- empties: `ui/src/bridge/focus.ts` emits `focus:set` with the one owner
+		-- now on top. Six Lua handlers read only the empty case, so a top that
+		-- moved to SOMEBODY ELSE'S owner left theirs on the Lua stack above the
+		-- module actually on screen -- and `applyFocus` then applied its wants.
+		local function announce(owner)
+			control.PageEmit(page, 'opx:focus:set',
+				{ surface = 'opx', focus = owner ~= nil, owner = owner or '' })
+		end
+
+		-- chat takes the keyboard and refuses the cursor; the inventory wants
+		-- both. This is the exact pair the report named.
+		announce('chat')
+		check('the announced owner is taken', OPX.UI.FocusOwner() == 'chat',
+			tostring(OPX.UI.FocusOwner()))
+		check('and its wants reached the page: keyboard, no cursor',
+			page.focus.keyboard == true and page.focus.cursor == false,
+			('kb=%s cur=%s'):format(tostring(page.focus.keyboard),
+				tostring(page.focus.cursor)))
+
+		OPX.UI.AcquireFocus('inventory', { keyboard = true, cursor = true })
+		check('the inventory opens over it and wants the cursor',
+			page.focus.cursor == true)
+
+		-- The page now says the inventory is on top. chat is not the announced
+		-- owner, so chat must let go -- it has no close path of its own, and this
+		-- handler is its only release.
+		announce('inventory')
+		check('an owner that is not the announced one lets go',
+			OPX.UI.FocusOwner() == 'inventory', tostring(OPX.UI.FocusOwner()))
+		check('so the cursor the drawn module asked for is the one applied',
+			page.focus.cursor == true and page.focus.keyboard == true,
+			('kb=%s cur=%s'):format(tostring(page.focus.keyboard),
+				tostring(page.focus.cursor)))
+
+		-- AND IT IS REALLY GONE, not merely outranked: releasing the inventory
+		-- must leave nothing behind. A stale chat entry would surface here.
+		OPX.UI.ReleaseFocus('inventory')
+		check('and nothing of the stale owner is left underneath',
+			OPX.UI.FocusOwner() == nil, tostring(OPX.UI.FocusOwner()))
+
+		-- ALL SIX COPIES, not the one the report opened with. The idiom was
+		-- identical in `chat`, `downed`, `form`, `menu`, `panel` (two owners) and
+		-- `spawn`, and a fix applied to the two that had no other release path
+		-- would have left four surfaces answering the broadcast the old way.
+		--
+		-- THREE OF THEM WIRE THIS HANDLER ON THEIR FIRST OPEN. `form`, `menu` and
+		-- `panel` register it inside their own `wire()`, so on a client that has
+		-- never drawn one there is no handler to answer the broadcast at all --
+		-- and a loop over the owner names would quietly test nothing for three of
+		-- the six. One open each is what puts them on the bus.
+		local opens = {
+			form = OPX.Api.Get('form').Open({
+				owner = 'test', id = 'test.form', title = 'FORM',
+				fields = { { id = 'a', label = 'A', maxLength = 8 } },
+				on = function() end,
+			}),
+			menu = OPX.Api.Get('menu').Open({
+				owner = 'test', title = 'MENU',
+				items = { { id = 'a', label = 'A' } },
+				on = function() end,
+			}),
+			panel = OPX.Api.Get('panel').Open({
+				owner = 'test', id = 'test.panel', title = 'PANEL',
+				actions = { { id = 'a', label = 'A' } },
+				on = function() end,
+			}),
+		}
+		local refused = {}
+		for name, answer in pairs(opens) do
+			if not (type(answer) == 'table' and answer.ok) then
+				refused[#refused + 1] = ('%s: %s'):format(name,
+					tostring(type(answer) == 'table' and answer.error or answer))
+			end
+		end
+		table.sort(refused)
+		check('form, menu and panel each drew once, which is what wires them',
+			#refused == 0, table.concat(refused, ' | '))
+
+		-- An empty stack, so the loop below starts from nothing held.
+		announce(nil)
+		for _, owner in ipairs({ 'chat', 'downed', 'form', 'menu', 'panel',
+			'panel.confirm', 'spawn', 'test' }) do
+			OPX.UI.ReleaseFocus(owner)
+		end
+		check('and the stack is empty before the sweep', OPX.UI.FocusOwner() == nil,
+			tostring(OPX.UI.FocusOwner()))
+
+		-- `spawn` is the one left out: its handler wires on a server offer, which
+		-- this section has no server for. Its source is asserted below instead.
+		local OWNERS = { 'chat', 'downed', 'form', 'menu', 'panel', 'panel.confirm' }
+		local stranded = {}
+		for _, owner in ipairs(OWNERS) do
+			announce(owner)
+			if OPX.UI.FocusOwner() ~= owner then
+				stranded[#stranded + 1] = owner .. ' never took it'
+			end
+			-- Somebody else's surface is now on top. This owner is not the one
+			-- announced, so it has to let go -- and nothing of it may be left
+			-- underneath, which is what releasing the stranger reveals.
+			announce('somebody.else')
+			OPX.UI.ReleaseFocus('somebody.else')
+			if OPX.UI.FocusOwner() ~= nil then
+				stranded[#stranded + 1] = ('%s left %s behind')
+					:format(owner, tostring(OPX.UI.FocusOwner()))
+				OPX.UI.ReleaseFocus(OPX.UI.FocusOwner())
+			end
+		end
+		check('every wired handler takes its own owner and drops it again',
+			#stranded == 0, table.concat(stranded, ' | '))
+
+		-- AND ALL SIX FILES CARRY THE CORRECTED SHAPE. The live sweep above covers
+		-- five owners across five files; `spawn` answers the same broadcast with
+		-- the same hole and cannot be reached from here. The shape it replaces --
+		-- "release mine only when the stack EMPTIED" -- is asserted gone, because
+		-- that is the half that did nothing when the top moved to a stranger.
+		local function read(path)
+			local handle = io.open(path, 'r')
+			local body = handle and handle:read('a') or ''
+			if handle then handle:close() end
+			return body
+		end
+		local COPIES = {
+			{ 'modules/chat/client/view.lua',
+				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
+			{ 'modules/downed/client/view.lua',
+				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
+			{ 'modules/form/client/main.lua',
+				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
+			{ 'modules/menu/client/main.lua',
+				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
+			{ 'modules/panel/client/main.lua',
+				'if name ~= held then OPX.UI.ReleaseFocus(name) end' },
+			{ 'modules/spawn/client/main.lua',
+				'if payload.focus ~= true or payload.owner ~= OWNER then' },
+		}
+		local unfixed = {}
+		for _, entry in ipairs(COPIES) do
+			local text = read(entry[1])
+			if #text == 0 then
+				unfixed[#unfixed + 1] = entry[1] .. ' unreadable'
+			else
+				if not text:find(entry[2], 1, true) then
+					unfixed[#unfixed + 1] = entry[1] .. ' has not taken the idiom'
+				end
+				-- The shape it replaces, and ONLY inside the handler: both
+				-- `chat` and `downed` legitimately release every owner they hold
+				-- from `View.Shutdown`, so the release loop alone is not the
+				-- tell. `if payload.focus ~= true then` is: the corrected
+				-- handlers never ask that question on its own, and `spawn`'s
+				-- asks it together with the owner.
+				if text:find('if payload.focus ~= true then\n', 1, true) then
+					unfixed[#unfixed + 1] = entry[1] .. ' still only answers an empty stack'
+				end
+			end
+		end
+		check('and all six copies of the handler carry it, spawn included',
+			#unfixed == 0, table.concat(unfixed, ' | '))
+
+		-- The other direction still works: an empty stack is a release.
+		announce('downed')
+		check('an announcement for a module\'s own owner still acquires',
+			OPX.UI.FocusOwner() == 'downed', tostring(OPX.UI.FocusOwner()))
+		announce(nil)
+		check('and an empty stack still releases', OPX.UI.FocusOwner() == nil,
+			tostring(OPX.UI.FocusOwner()))
+	end
+end
+
+-- ── the strip that re-read the host to compute the same answer ──────────────
+section('the prompt strip resolves a cap once, not 6.7 times a second')
+do
+	-- ONLY THIS SECTION'S OWN ACTIONS ARE COUNTED. `clothing`, `dealership` and
+	-- `garages` each resolve their own key through the same native on their own
+	-- pass, and a counter that took all of them would have stayed busy with the
+	-- strip switched off entirely -- which is exactly how the first version of
+	-- this check passed against a strip that never drew.
+	local reads, keys = 0, { ['opx.test.one'] = 'F', ['opx.test.two'] = 'G' }
+	local function prelude(env)
+		env.Open77.input = {
+			keyFor = function(action)
+				if type(action) == 'string' and action:find('opx.test.', 1, true) == 1 then
+					reads = reads + 1
+					return keys[action]
+				end
+				return 'F'
+			end,
+			isDown = function() return false end,
+			cursor = function() return { inBounds = false, captured = false } end,
+			isCaptured = function() return false end,
+			block = function() return true end,
+		}
+	end
+
+	local env, control, why = boot('client', nil, prelude)
+	check('the client boots for the prompt strip', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local prompts = OPX.Api.Get('prompts')
+		local page = control.pages[1]
+		if prompts == nil or page == nil then
+			check('the prompts contract and its page are up', false)
+		else
+			-- THE STRIP HAS TO BE DRAWING. `draw()` returns on its first line until
+			-- the page has reported ready, and `build()` is inside it: without this
+			-- the whole section measures a strip that never ran.
+			control.PageEmit(page, 'opx:prompts:ready', {})
+
+			-- Two rows, each naming an ACTION rather than a literal, because an
+			-- action is what costs a host read.
+			prompts.Show('test', 'cost', { title = 'COST', rows = {
+				{ id = 'one', label = 'ONE', keys = { action = 'opx.test.one' } },
+				{ id = 'two', label = 'TWO', keys = { action = 'opx.test.two' } },
+			} })
+			control.Pump(6)
+			check('the strip resolved both of its caps', reads >= 2, reads)
+
+			-- `pass()` calls `draw()` unconditionally and `draw()` builds BEFORE
+			-- its signature gate, so every pass re-resolved every cap -- up to
+			-- sixty host reads a pass at ten rows of `MAX_KEYS` -- purely to
+			-- compute a signature that compared equal and was thrown away.
+			reads = 0
+			control.Pump(40)
+			check('and a strip that did not change reads the host not at all',
+				reads == 0, reads)
+
+			-- THE HALF THE CACHE COULD BREAK, and the reason it is invalidated on
+			-- the host's own event rather than on a clock: a gate that never lets
+			-- go is a rebind that never reaches the strip.
+			keys['opx.test.one'] = 'H'
+			env.TriggerEvent('open77:keybinds:changed')
+			check('a rebind makes the strip read the host again', reads >= 2, reads)
+			-- AND THE NEW KEY IS ON THE STRIP. A cache that is invalidated but not
+			-- re-read is the same bug wearing the fix's clothes: the signature gate
+			-- below it would then hold the old frame for good.
+			local drew = nil
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == 'opx:prompts:frame' then
+					drew = page.sent[index]
+					break
+				end
+			end
+			local caps = drew and drew.payload.groups[1].rows[1].caps
+			check('and the rebound key is what the strip now draws',
+				caps ~= nil and caps[1] == 'H', caps and tostring(caps[1]))
+
+			-- A cap that nothing can name must not be re-resolved every pass
+			-- either: that was the case with no answer to cache at all.
+			prompts.Hide('test', 'cost')
+			control.Pump(2)
+			prompts.Show('test', 'blank', { title = 'BLANK', rows = {
+				{ id = 'none', label = 'NONE', keys = { action = 'opx.test.none' } },
+			} })
+			control.Pump(6)
+			reads = 0
+			control.Pump(40)
+			check('and neither does one the host has no key for', reads == 0, reads)
+		end
+	end
+end
+
+-- ── the second host read three modules made for an answer they already had ──
+section('a spot scan reads the player\'s position once per pass')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the scan cost', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		-- THE WINDOW IS THE HALF OF THE PASS THAT USED TO READ TWICE. `scan()`
+		-- reads the position, resolves `Access.Nearest` with it and then calls
+		-- `reconcile`, whose first statement was a SECOND read of the same
+		-- position; `Access.MaxDistance()` is the statement after it. So a read
+		-- landing between `Nearest` returning and `MaxDistance` being entered is
+		-- that second read and nothing else -- which is what makes this
+		-- attributable to these three modules rather than to every client module
+		-- that reads a position.
+		local inWindow, extra, passes = false, 0, 0
+		local character = env.Open77.character
+		local position = character.position
+		character.position = function(...)
+			if inWindow then extra = extra + 1 end
+			return position(...)
+		end
+
+		for _, name in ipairs({ 'clothing', 'dealership', 'garages' }) do
+			local access = OPX.Modules.Get(name).Access
+			local nearest, maxDistance = access.Nearest, access.MaxDistance
+			access.Nearest = function(...)
+				local answer = table.pack(nearest(...))
+				passes = passes + 1
+				inWindow = true
+				return table.unpack(answer, 1, answer.n)
+			end
+			access.MaxDistance = function(...)
+				inWindow = false
+				return maxDistance(...)
+			end
+		end
+
+		control.Pump(40)
+		inWindow = false
+		check('all three modules scanned', passes >= 3, passes)
+		check('and not one of them read the position a second time',
+			extra == 0, ('%d extra reads over %d passes'):format(extra, passes))
+	end
+end
+
+-- ── the widgets the page has hidden, still being built ten times a second ───
+section('a covered HUD builds no widgets')
+do
+	local reads = 0
+	local function prelude(env)
+		env.Open77.voice = {
+			status = function()
+				reads = reads + 1
+				return { mode = 'proximity', proximityDistance = 10.0 }
+			end,
+			modes = function() return { 'proximity' } end,
+		}
+	end
+
+	local env, control, why = boot('client', nil, prelude)
+	check('the client boots for the widget cost', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] ~= nil then page = candidate end
+		end
+		--- Raises the join screen that owns the display, exactly as the entry
+		--- module does. `hud` has no contract method for this: the cover is what
+		--- another module SAYS on the bus, never something a caller sets.
+		local function cover(open)
+			env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'entry', 'state'), { open = open })
+		end
+
+		if page == nil then
+			check('the overlay page is up', false)
+		else
+			control.PageEmit(page, 'opx:hud:ready', {})
+			control.Pump(10)
+			reads = 0
+			control.Pump(20)
+			check('an uncovered HUD samples the voice host', reads > 0, reads)
+
+			-- The vitals job steps aside for a full-screen view; the widgets job
+			-- gated on `ready` alone, so `voiceView()` and `vehicleView()` -- four
+			-- host reads and seven locale lookups between them -- kept running at
+			-- 10Hz for payloads the page has hidden.
+			cover(true)
+			control.Pump(10)
+			reads = 0
+			control.Pump(30)
+			check('a covered one samples it not at all', reads == 0, reads)
+
+			-- AND IT COMES BACK, which is the half the gate could break: a widget
+			-- frozen behind a screen that has closed is worse than one that costs.
+			cover(false)
+			control.Pump(20)
+			check('and the moment the screen lets go, it samples again',
+				reads > 0, reads)
+		end
+	end
+end
+
+-- ── the one unguarded character read left on the client ─────────────────────
+section('the heading job checks yaw by name, like every other read')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the heading job', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+
+		-- A build without `yaw`. `Open77.character.yaw()` was called flat, so the
+		-- job raised every pass: the scheduler's pcall catches it, so the cost is
+		-- not a crash but a heading that stops being reported and two lines in
+		-- the journal on the player's own PC.
+		env.Open77.character.yaw = nil
+		character.IsLoggedIn = true
+		control.Pump(40)
+
+		local raised = {}
+		for _, line in ipairs(control.log.error) do
+			if line:find('character.heading', 1, true) or line:find('character%.yaw') then
+				raised[#raised + 1] = line
+			end
+		end
+		check('a client without the yaw native raises nothing',
+			#raised == 0, table.concat(raised, ' | '))
+
+		-- AND IT STILL REPORTS ONE where the native is there: a guard that never
+		-- lets the read through is a heading nobody ever hears.
+		env.Open77.character.yaw = function() return 42.0 end
+		control.Pump(40)
+		local sent = false
+		for _, entry in ipairs(control.serverEvents) do
+			if entry.name == character.Event.HEADING then sent = true end
+		end
+		check('and one that has it still reports the heading', sent)
+	end
+end
+
+-- ── the four type roles, and the eleven copies of them ──────────────────────
+section('the four type roles are declared once')
+do
+	local function read(path)
+		local handle = io.open(path, 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		return body
+	end
+
+	-- EVERY module view, and the list is asserted complete below rather than
+	-- trusted: the sweep that took `.op-truncate` down to one copy ran off a list
+	-- exactly like this one, `downed/DownedView.vue` was not on it, and that is
+	-- why two hand-rolled truncations survived it.
+	local VIEWS = {
+		'chat/ChatInput', 'chat/ChatLog', 'downed/DownedView', 'form/FormView',
+		'hud/HudInfo', 'hud/HudRoot', 'hud/HudStatus', 'hud/HudVehicle',
+		'hud/HudVitals', 'hud/HudVoice', 'inventory/InventoryGrid',
+		'inventory/InventorySlot', 'inventory/InventoryView', 'inventory/SlotbarRoot',
+		'menu/MenuView', 'notify/NotifyRoot', 'notify/NotifyToast', 'panel/PanelView',
+		'progress/ProgressRoot', 'prompts/PromptsRoot', 'spawn/SpawnView',
+		'tags/TagsRoot', 'target/TargetView',
+	}
+	local views, unread = {}, {}
+	for _, name in ipairs(VIEWS) do
+		local path = 'ui/src/modules/' .. name .. '.vue'
+		local text = read(path)
+		if #text == 0 then unread[#unread + 1] = name else views[path] = text end
+	end
+	check('every module view on the list was read', #unread == 0,
+		table.concat(unread, ', '))
+
+	-- THE LIST IS THE WHOLE TREE, checked against what the page imports. A view
+	-- added to `ui/src/` and not to this list is a view nothing here covers, and
+	-- the import graph is the one place every view has to appear.
+	local imported, missing = {}, {}
+	for _, root in ipairs({ 'ui/src/App.vue', 'ui/src/main.ts' }) do read(root) end
+	for _, name in ipairs(VIEWS) do imported[name] = true end
+	for _, name in ipairs(VIEWS) do
+		local text = views['ui/src/modules/' .. name .. '.vue'] or ''
+		for other in text:gmatch("from '%./(%u[%w]*)%.vue'") do
+			local folder = name:match('^(.-)/')
+			if not imported[folder .. '/' .. other] then
+				missing[#missing + 1] = folder .. '/' .. other
+			end
+		end
+	end
+	check('and every view a listed view imports is on the list too',
+		#missing == 0, table.concat(missing, ', '))
+
+	-- THE ROLE IS THE `font` SHORTHAND. A scoped block that writes the same
+	-- shorthand out again has forked the role, and the copies had already
+	-- drifted: all three `.op-label` ones hardcoded `letter-spacing: 0.04em`
+	-- where the role reads `var(--op-track-lead)`. Identical today -- which is
+	-- exactly how `.op-truncate` reached twenty-one copies before anybody looked.
+	local ROLES = {
+		['op-label'] = 'font: 700 var(--op-fs-lead) / 1.25 var(--op-font-display);',
+		['op-value'] = 'font: 500 var(--op-fs-meta) / 1 var(--op-font-mono);',
+		['op-eyebrow'] = 'font: 600 var(--op-fs-micro) / 1 var(--op-font-mono);',
+		['op-copy'] = 'font: 400 var(--op-fs-meta) / 1.4 var(--op-font-body);',
+	}
+
+	--- How many times `needle` occurs in `haystack`, PLAIN. Every shorthand
+	--- above carries `(`, `)`, `-` and `.`, which a Lua pattern reads as
+	--- quantifiers and classes: matched as a pattern, all four roles answer zero.
+	local function times(haystack, needle)
+		local count, at = 0, 1
+		while true do
+			local from, to = haystack:find(needle, at, true)
+			if from == nil then return count end
+			count, at = count + 1, to + 1
+		end
+	end
+
+	local surface = read('ui/src/design-system/surface.css')
+	local roleNames = {}
+	for role in pairs(ROLES) do roleNames[#roleNames + 1] = role end
+	table.sort(roleNames)
+	for _, role in ipairs(roleNames) do
+		check(('the design system declares .%s'):format(role),
+			surface:find('.' .. role .. ' {', 1, true) ~= nil)
+		check(('and it is the one place .%s\'s face is written'):format(role),
+			times(surface, ROLES[role]) == 1, times(surface, ROLES[role]))
+	end
+
+	local forked = {}
+	for path, text in pairs(views) do
+		for role, shorthand in pairs(ROLES) do
+			if text:find(shorthand, 1, true) then
+				forked[#forked + 1] = ('%s re-declares .%s'):format(path, role)
+			end
+		end
+	end
+	table.sort(forked)
+	check('and not one module view writes a role\'s face out again',
+		#forked == 0, table.concat(forked, ', '))
+
+	-- THE ROLE HAS TO BE ON THE ELEMENT, or this check passes on a surface that
+	-- simply lost its type. These are the eleven the sweep moved.
+	local wears = {
+		{ 'form/FormView', 'class="label op-label op-truncate"' },
+		{ 'form/FormView', 'class="value op-value op-truncate"' },
+		{ 'form/FormView', 'class="hint op-copy"' },
+		{ 'inventory/InventoryView', 'class="value op-value op-truncate"' },
+		{ 'inventory/InventoryView', 'class="row op-label' },
+		{ 'inventory/InventoryView', 'class="row-value op-value"' },
+		{ 'inventory/InventoryView', 'class="sep op-eyebrow"' },
+		{ 'target/TargetView', 'class="label op-label op-truncate"' },
+		{ 'target/TargetView', 'class="value op-value op-truncate"' },
+		{ 'tags/TagsRoot', 'class="user op-eyebrow"' },
+		{ 'panel/PanelView', 'class="intro op-copy"' },
+	}
+	local bare = {}
+	for _, entry in ipairs(wears) do
+		local text = read('ui/src/modules/' .. entry[1] .. '.vue')
+		if not text:find(entry[2], 1, true) then
+			bare[#bare + 1] = ('%s: %s'):format(entry[1], entry[2])
+		end
+	end
+	check('and every element the copies dressed wears the role instead',
+		#bare == 0, table.concat(bare, ' | '))
+
+	-- THE ONE DELIBERATE DEVIATION, kept deliberate. A citizen's account name is
+	-- `.op-eyebrow` MINUS its uppercase, because the casing belongs to its owner
+	-- -- which is a line of CSS saying so, not a hand-copied block that happens
+	-- to leave it out.
+	local tags = read('ui/src/modules/tags/TagsRoot.vue')
+	check('the account name keeps its own casing, and says so',
+		tags:find('text%-transform:%s*none') ~= nil)
+
+	-- ── the two truncations the sweep missed ──────────────────────────────
+	local downed = read('ui/src/modules/downed/DownedView.vue')
+	check('the down screen no longer rolls its own cut',
+		downed:find('text%-overflow') == nil)
+	check('its readings take the one rule', downed:find('figure op%-value op%-truncate') ~= nil)
+	check('and so does a choice\'s label',
+		downed:find('choice%-label op%-label op%-truncate') ~= nil)
+
+	-- ── an invariant that was false ───────────────────────────────────────
+	-- `HudVitals.vue` claimed its drop-shadow was "the only `filter` in the
+	-- folder"; `HudVoice.vue` has two. A false invariant is worse than none.
+	local vitals = read('ui/src/modules/hud/HudVitals.vue')
+	local voice = read('ui/src/modules/hud/HudVoice.vue')
+	check('HudVoice really does carry filters of its own',
+		select(2, voice:gsub('filter:%s*drop%-shadow', '')) == 2,
+		select(2, voice:gsub('filter:%s*drop%-shadow', '')))
+	check('so HudVitals no longer claims to be the only one in the folder',
+		vitals:find('only `filter` in the folder', 1, true) == nil)
+	check('and it says what the others are', vitals:find('HudVoice.vue', 1, true) ~= nil)
+
+	-- ── the one unconditional bloom ───────────────────────────────────────
+	-- `.op-lift` is a filter and `shapes.css` says of it: "never put it on
+	-- anything whose value changes every frame". Every other use in the tree is
+	-- bound to a state over static content; the chat field is the box the player
+	-- TYPES INTO, and it carried one unconditionally.
+	local chat = read('ui/src/modules/chat/ChatInput.vue')
+	check('the live text field carries no filter',
+		chat:find('chat%-field op%-frame op%-arete op%-lift') == nil)
+	check('and the frame that says it is live is still there',
+		chat:find('chat%-field op%-frame op%-arete', 1, false) ~= nil)
+end
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
