@@ -293,6 +293,32 @@ local function contextAt(x, y)
 		hit.target = { kind = 'sky', networked = false }
 		hit.kind = 'sky'
 		hit.playerDistance = nil
+
+		-- THE DIRECTION IS DERIVED, BECAUSE THE RAYCAST DOES NOT RETURN ONE.
+		-- `sameTarget` compares two sky contexts by their `direction` and
+		-- nothing else -- there is no surface to compare, which is the whole
+		-- point of the sky. But the devkit's contract for `camera.screenRaycast`
+		-- is explicit: a MISS answers `hit = false` and a `position` at the ray
+		-- ENDPOINT, and the fields a hit adds are `normal`, `distance`,
+		-- `material` and `entityLookupAvailable`. No `direction`, on either.
+		--
+		-- So `left.direction` was always nil, `sameTarget` always answered false
+		-- for the sky, and every revalidation concluded the player had looked
+		-- somewhere else and dropped the pick. The sky list could never stay on
+		-- screen -- which is exactly what was reported: rows on yourself, and
+		-- nothing at all on the sky.
+		--
+		-- The endpoint minus the eye IS the direction, normalised. It is the
+		-- same vector `sameTarget`'s dot product was written for, so that
+		-- comparison is left exactly as it is.
+		local to, from = hit.position, state.position
+		if type(to) == 'table' and type(from) == 'table' then
+			local dx, dy, dz = to.x - from.x, to.y - from.y, to.z - from.z
+			local length = math.sqrt(dx * dx + dy * dy + dz * dz)
+			if length > 0 then
+				hit.direction = { x = dx / length, y = dy / length, z = dz / length }
+			end
+		end
 		return hit
 	end
 	if not hit.entityLookupAvailable then return nil end
@@ -309,7 +335,19 @@ local function sameTarget(left, right)
 	if left == nil or right == nil or left.kind ~= right.kind then return false end
 	if left.kind == 'sky' then
 		local p, q = left.direction, right.direction
-		return type(p) == 'table' and type(q) == 'table' and p.x * q.x + p.y * q.y + p.z * q.z > 0.9998
+		if type(p) == 'table' and type(q) == 'table' then
+			return p.x * q.x + p.y * q.y + p.z * q.z > 0.9998
+		end
+		-- A DIRECTION THAT COULD NOT BE DERIVED IS NOT A DIFFERENT SKY. Without
+		-- this the answer was false, for ever, and false here means "you looked
+		-- somewhere else" -- so the pick was dropped on every revalidation and
+		-- the list never stayed up. `contextAt` derives the direction from the
+		-- ray endpoint now, so this is reached only when the body's own position
+		-- could not be read; the endpoints are then compared instead, at the
+		-- ray's own scale rather than the 20 cm a surface is compared at.
+		local a, b = left.position, right.position
+		if type(a) ~= 'table' or type(b) ~= 'table' then return true end
+		return (a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 + (a.z - b.z) ^ 2 < 1.0
 	end
 	if left.target.engineEntity or right.target.engineEntity then
 		return left.target.engineEntity == right.target.engineEntity
