@@ -655,10 +655,79 @@
 <script>
 (function(){
   "use strict";
+
+  /* ── WHAT AN OPERATOR CHANGES ──────────────────────────────────────────────
+     The whole of this screen's configuration, in one place, because there is
+     nowhere else it could live. This page runs BEFORE any Lua of ours does and
+     has no network beyond its own folder (see the header): it cannot read
+     `config/*.lua`, it cannot be told anything by the runtime, and it cannot
+     fetch a settings file. A named block at the top of its own script is the
+     only form a setting can take here, so it is written as one rather than
+     scattered through the markup below.
+
+     THE TWO RULES THAT ARE NOT PREFERENCES, and both fail in ways that do not
+     look like what they are:
+
+       CODEC. VP9 or AV1 video with Opus or Vorbis audio. CEF carries Chromium's
+       free codec set only, so an H.264/AAC file -- which is what almost
+       everything downloaded from the web is -- demuxes and then dies with
+       DEMUXER_ERROR_NO_SUPPORTED_STREAMS. The poster and the ground stand in so
+       convincingly that it reads as a styling choice, not a broken file. To
+       convert one you already have the rights to:
+
+         ffmpeg -i yours.mp4 -c:v libvpx-vp9 -crf 34 -b:v 0 \
+                -vf scale=1280:-2 -c:a libopus -b:a 96k out.webm
+
+       SIZE. Under 16 MiB, counted in bytes, enforced while the host scans
+       `web/**`. Over it the resource is refused with `invalid_web_file:<name>`
+       and OPX_INFINITY DOES NOT START AT ALL -- it is not the loading screen
+       that breaks, it is everything. The shipped clip is 14.83 MiB, so there is
+       about 1.1 MiB of headroom: check the byte count before deploying, not the
+       look of it.
+
+     Drop your file in `ui/public/`, name it here, run `npm run build`, deploy.
+     ────────────────────────────────────────────────────────────────────────── */
+  var LOADSCREEN = {
+    // The clip, relative to this file. VP9/AV1 + Opus/Vorbis, under 16 MiB.
+    video: "./loading.webm",
+
+    // Shown before the first frame decodes, and instead of the clip when the
+    // file is missing or will not play. Any format the browser draws.
+    poster: "./loading-poster.jpg",
+
+    // "cover" fills the frame and crops what does not fit, which is what makes
+    // a clip read as a background. "contain" shows the whole frame and leaves
+    // bars: correct for something with text baked into it.
+    fit: "cover",
+
+    // Whether to try playing with sound. The host starts Chromium with
+    // `autoplay-policy=user-gesture-required`, so this is an ATTEMPT: refused,
+    // the page retries muted and says so, and the first click unmutes. Set
+    // false for a screen that should always start silent.
+    sound: true,
+  };
+
   var $=function(id){return document.getElementById(id)};
   var phaseEl=$("phase"),pctEl=$("pct"),barEl=$("bar"),fillEl=$("fill"),
       detailEl=$("detail"),videoEl=$("video"),
       playEl=$("play"),muteEl=$("mute"),volEl=$("vol"),volValEl=$("volVal");
+
+  /* The block above, applied to the element. The markup below still names the
+     shipped clip and poster, so a build where this script never runs shows the
+     same screen it always did rather than a blank frame -- these overwrite it
+     only when they differ, and `load()` is what makes a changed source actually
+     be fetched rather than sitting in the DOM unread. */
+  if(videoEl){
+    var sourceEl = videoEl.querySelector("source");
+    if(LOADSCREEN.poster && videoEl.getAttribute("poster") !== LOADSCREEN.poster){
+      videoEl.setAttribute("poster", LOADSCREEN.poster);
+    }
+    if(LOADSCREEN.fit) videoEl.style.objectFit = LOADSCREEN.fit;
+    if(sourceEl && LOADSCREEN.video && sourceEl.getAttribute("src") !== LOADSCREEN.video){
+      sourceEl.setAttribute("src", LOADSCREEN.video);
+      videoEl.load();
+    }
+  }
 
   /* ── the player ────────────────────────────────────────────────────────────── */
   // Why the play/pause state is read from the element rather than kept in a flag: a
@@ -674,6 +743,12 @@
       if(typeof saved.muted==="boolean") pref.muted=saved.muted;
     }
   }catch(e){}
+  /* The operator's switch beats the player's remembered choice, and only in the
+     silent direction: `sound: false` is a decision about the screen, so a
+     `muted:false` left in localStorage from a previous build must not undo it.
+     The mute control still works -- a player may turn it back on -- because
+     this sets the starting state, not a lock. */
+  if(LOADSCREEN.sound === false) pref.muted = true;
   function persist(){
     try{ localStorage.setItem("op77.loadscreen.media", JSON.stringify(pref)); }catch(e){}
   }
