@@ -145,4 +145,25 @@ OPX.Config.MODULES.calls = {
 	-- animation picker, `F9` and `F10` staff -- and `false` switches the key off
 	-- entirely for a server that would rather bind it elsewhere.
 	KEY = { ID = 'opx.calls.holo', NAME = 'calls.key.holo', DEFAULT = 'H' },
+
+	-- ── ANSWERING WITHOUT OPENING ANYTHING ───────────────────────────────────
+	--
+	-- THE OWNER: "tu vas juste pop l'animation pas le menu est dans la sphere tu
+	-- vas ajouter les gens qui appel ou presnter un incoming call puis avec les
+	-- prompt afficher y pour repondre x pour reffuser".
+	--
+	-- A call arriving must not open a screen. It pops the projection, puts the
+	-- caller inside it, and says which two keys answer it -- so a player who is
+	-- driving, shooting or reading something else is told, and decides, without
+	-- anything taking the mouse or the keyboard from them.
+	--
+	-- THESE TWO KEYS ARE ALREADY SPOKEN FOR, AND THAT IS THE OWNER'S CALL RATHER
+	-- THAN AN OVERSIGHT. `Y` is the hotbar peek (`config/inventory.lua`) and `X`
+	-- stops an emote (`config/animations.lua`). The platform lets two actions
+	-- share a physical key and fires both, so outside a ringing call these
+	-- behave exactly as they did -- the handlers here do nothing at all unless
+	-- there is a call to answer. While one IS ringing, pressing Y also peeks the
+	-- hotbar for a moment. Move whichever bothers you; all three are config.
+	ANSWER_KEY = { ID = 'opx.calls.answer', NAME = 'calls.key.answer', DEFAULT = 'Y' },
+	DECLINE_KEY = { ID = 'opx.calls.decline', NAME = 'calls.key.decline', DEFAULT = 'X' },
 }

@@ -50,6 +50,8 @@ local EN = {
 	-- The whole feature's vocabulary now: the eye rows above are gone and these
 	-- replaced them. See `config/calls.lua`'s KEY block for why.
 	['calls.key.holo'] = 'Holocall',
+	['calls.holo.incoming'] = 'Incoming call',
+	['calls.holo.inCall'] = 'Call in progress',
 	['calls.holo.eyebrow'] = 'NETWORK',
 	['calls.holo.title'] = 'HOLOCALL',
 	['calls.holo.close'] = 'CLOSE',
@@ -137,6 +139,8 @@ local FR = {
 
 	-- ── l'hologramme ─────────────────────────────────────────────────────────
 	['calls.key.holo'] = 'Holo-appel',
+	['calls.holo.incoming'] = 'Appel entrant',
+	['calls.holo.inCall'] = 'Appel en cours',
 	['calls.holo.eyebrow'] = 'RESEAU',
 	['calls.holo.title'] = 'HOLO-APPEL',
 	['calls.holo.close'] = 'FERMER',

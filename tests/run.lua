@@ -23393,7 +23393,26 @@ do
 		if target ~= nil then
 			local answer = target.List('calls')
 			local rows = answer.ok and answer.value.options or {}
-			check('and this module registers NOT ONE row on it', #rows == 0, #rows)
+			-- EXACTLY ONE ROW, AND IT IS THE ONE THE EYE IS RIGHT FOR. The owner
+			-- took ALT off this feature -- "plus de alt" -- and then put it back
+			-- for a single job: "pour demander le contact a quelqun c'est
+			-- toujours avec alt ? ce serais top".
+			--
+			-- The distinction is worth the check. Answering a call has no body
+			-- under the crosshair; the person is somewhere else, which is the
+			-- whole point of a holocall, and the eight rows that used to live
+			-- here made a player point at themselves to pick up. Handing
+			-- somebody your contact IS a thing you do to a person in front of
+			-- you. So: one row, on a player, and nothing on `self`.
+			check('exactly one row is on the eye, the contact hand-over',
+				#rows == 1 and rows[1] ~= nil and tostring(rows[1].id):find('Share', 1, true),
+				('%d row(s): %s'):format(#rows, rows[1] and tostring(rows[1].id) or '-'))
+			local onSelf = target.List('calls')
+			local selfRows = 0
+			for _, row in ipairs(onSelf.ok and onSelf.value.options or {}) do
+				if type(row.types) == 'table' and row.types.self then selfRows = selfRows + 1 end
+			end
+			check('and not one of them is on the player themselves', selfRows == 0, selfRows)
 		end
 
 		-- ── THE KEY ──────────────────────────────────────────────────────────
@@ -23466,7 +23485,6 @@ do
 		if type(handler) == 'function' then
 			handler({
 				rows = { { id = 7, name = 'Contact' } },
-				nearby = { { id = 8, name = 'Bystander' } },
 				recent = { { outcome = 'missed', name = 'Someone', atMs = 1 } },
 				onCall = false,
 			})
@@ -23474,8 +23492,12 @@ do
 			local last = drawn[#drawn]
 			check('and hands the screen the contacts',
 				last ~= nil and #last.rows == 1 and last.rows[1].name == 'Contact')
-			check('the people standing near enough to hand a contact to',
-				last ~= nil and #last.nearby == 1 and last.nearby[1].name == 'Bystander')
+			-- AND NOTHING ABOUT WHO IS NEARBY. That list lasted one message: it
+			-- existed only because ALT had been taken off the feature, and the
+			-- owner put ALT back for exactly that job. Asserted as absent, because
+			-- two ways to hand over a contact is one too many.
+			check('and nothing about who is standing nearby, which the eye does now',
+				last ~= nil and last.nearby == nil, tostring(last and last.nearby))
 			check('and the calls that were missed or refused',
 				last ~= nil and #last.recent == 1 and last.recent[1].outcome == 'missed')
 		end

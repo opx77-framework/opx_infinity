@@ -708,32 +708,13 @@ local function onRoster()
 		return tostring(left.name) < tostring(right.name)
 	end)
 
-	-- ── WHO IS STANDING IN FRONT OF YOU ──────────────────────────────────────
-	-- THE OWNER: "fait une touche qui ouvre un menu style halogram tous se passe
-	-- desus call resus contact etc plus de alt". Taking ALT away takes with it
-	-- the only way this module had of naming somebody who is NOT already a
-	-- contact -- and a contact list you can only add to by using the thing you
-	-- just removed is a list that stays empty forever.
-	--
-	-- So the roster carries the people in range of a hand-over as well. The same
-	-- `near` the invite itself is judged by, so a row that appears here is a row
-	-- the server will accept: a list offering somebody the next call refuses is
-	-- the fault this file already avoids for contacts.
-	local nearby = {}
-	local known = {}
-	for _, row in ipairs(rows) do known[row.id] = true end
-	local roster = Open77.players
-	local everyone = type(roster) == 'table' and type(roster.all) == 'function'
-		and select(2, pcall(roster.all)) or nil
-	for _, other in ipairs(type(everyone) == 'table' and everyone or {}) do
-		local id = Model.PlayerId(other)
-		if id ~= nil and id ~= playerId and not known[id] and near(playerId, id) then
-			nearby[#nearby + 1] = { id = id, name = nameOf(id) or '?' }
-		end
-	end
-	table.sort(nearby, function(left, right)
-		return tostring(left.name) < tostring(right.name)
-	end)
+	-- A "WHO IS NEARBY" LIST STOOD HERE and lasted one message. It was added when
+	-- ALT was taken off this feature -- a contact list you can only add to with
+	-- the thing just removed stays empty forever -- and the owner put ALT back
+	-- for exactly that job: "du coup plus de arround me vu que tu utilise le
+	-- target pour partager le contact". Two ways to do one thing is one too many,
+	-- and the eye is the better of them: handing somebody your contact is a thing
+	-- you do to a person standing in front of you.
 
 	-- Newest first on the wire, because that is the order it is read in.
 	local recent = recentOf(playerId)
@@ -742,7 +723,6 @@ local function onRoster()
 
 	TriggerClientEvent(M.Event.ROSTER, playerId, {
 		rows = rows,
-		nearby = nearby,
 		recent = ordered,
 		onCall = registry.CallOf(playerId) ~= nil,
 	})
@@ -1014,6 +994,48 @@ function M.Start()
 	if character == nil then
 		Open77.log.warn('[calls] no character contract: no call can name who is on it')
 	end
+
+	-- ── A FAKE CALL, FOR LOOKING AT ─────────────────────────────────────────
+	--
+	-- TEMPORARY. THE OWNER ASKED FOR IT AND ASKED FOR IT TO GO: "tu peux me faire
+	-- une commande de test pour recevoir un faut appel juste pour test si tous
+	-- good tu retire". It is written in one block so that removing it is deleting
+	-- one block, and it is marked here so the next person reading this file knows
+	-- it was never meant to stay.
+	--
+	-- WHAT IT IS AND IS NOT. It pushes a STATE payload straight at the caller's
+	-- own screen: the projection pops, a name sits in it, the ring plays and the
+	-- two letters appear, which is the whole of what there is to look at. It does
+	-- NOT create a call in the registry, so pressing the answer key answers
+	-- `noSuchInvite` -- which is honest, and is itself worth seeing, because it
+	-- is exactly what a player gets if they answer a call that expired while
+	-- they were reading it.
+	--
+	-- Restricted, because a command that makes somebody else's phone ring is a
+	-- command that can be used to bother them.
+	RegisterCommand('opx.calls.test', function(source)
+		local playerId = tonumber(source) or 0
+		if playerId <= 0 then return end
+
+		local allowed = Open77.acl ~= nil and type(Open77.acl.isAllowed) == 'function'
+			and select(2, pcall(Open77.acl.isAllowed, playerId, 'command.opx.calls.test'))
+		if allowed ~= true then
+			Open77.log.warn(('[calls] %d asked for a test call without the grant')
+				:format(playerId))
+			return
+		end
+
+		TriggerClientEvent(M.Event.STATE, playerId, {
+			invite = {
+				id = 'test-' .. tostring(OPX.Now()),
+				kind = 'call',
+				from = playerId,
+				name = 'TEST CALLER',
+				expiresInMs = 30000,
+			},
+		})
+		Open77.log.info(('[calls] a test call was pushed to %d'):format(playerId))
+	end, true)
 
 	RegisterNetEvent(M.Event.READY, onReady)
 	RegisterNetEvent(M.Event.ASK_ROSTER, onRoster)

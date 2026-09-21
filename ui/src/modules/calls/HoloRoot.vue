@@ -57,7 +57,6 @@ interface Recent {
 
 const open = ref(false)
 const contacts = ref<Row[]>([])
-const nearby = ref<Row[]>([])
 const recent = ref<Recent[]>([])
 
 /** The call this player is on, the one ringing at them, and the one they placed. */
@@ -66,7 +65,7 @@ const invite = ref<Payload | null>(null)
 const outgoing = ref<Payload | null>(null)
 
 /** Which list is showing. Local: the screen's own state, never Lua's. */
-const tab = ref<'contacts' | 'nearby' | 'recent'>('contacts')
+const tab = ref<'contacts' | 'recent'>('contacts')
 
 const onCall = computed(() => call.value !== null)
 const ringing = computed(() => invite.value !== null)
@@ -102,7 +101,6 @@ useBridge('opx:calls:holo', (payload: Payload) => {
   guard('calls:holo', () => {
     open.value = payload.open === true
     contacts.value = rowsOf(payload.rows)
-    nearby.value = rowsOf(payload.nearby)
     recent.value = list<Payload>(payload.recent).map((row) => ({
       outcome: text(row.outcome, 'missed'),
       name: text(row.name, '?')
@@ -111,17 +109,14 @@ useBridge('opx:calls:holo', (payload: Payload) => {
     call.value = Object.keys(live).length > 0 ? live : null
     const ring = table(payload.invite)
     invite.value = Object.keys(ring).length > 0 ? ring : null
+    if (text(payload.answerKey) !== '') answerKey.value = text(payload.answerKey)
+    if (text(payload.declineKey) !== '') declineKey.value = text(payload.declineKey)
     const placed = table(payload.outgoing)
     outgoing.value = Object.keys(placed).length > 0 ? placed : null
 
-    // A screen that opens on the tab you left it on is a screen that remembers
-    // a decision you made about a list that has since been rebuilt. It opens on
-    // the contacts, always, except while somebody is standing in front of you
-    // and you have no contacts at all -- which is a new player's first minute
-    // and the one case where the wrong default is a dead end.
-    if (payload.open === true && contacts.value.length === 0 && nearby.value.length > 0) {
-      tab.value = 'nearby'
-    }
+    // A screen always opens on the contacts. It used to fall to a "nearby" tab
+    // for a player with none, which was the right default while that tab was
+    // the only way to make a first contact -- the eye does that now.
   }, undefined)
 })
 
@@ -134,10 +129,10 @@ function callRow(row: Row): void {
   emit('opx:calls:call', { id: row.id })
 }
 
-function shareRow(row: Row): void {
-  if (row.refusal !== null) return
-  emit('opx:calls:share', { id: row.id })
-}
+// `shareRow` stood here and sent `opx:calls:share`. Handing somebody a contact
+// is back on the target eye, where it belongs: it is the one thing in this
+// feature you do to a person standing in front of you. The seam still accepts
+// `share`, because the eye row is what sends it now.
 
 function accept(): void {
   emit('opx:calls:accept', {})
@@ -155,12 +150,11 @@ function hangUp(): void {
  * LITERAL KEYS, NOT BUILT ONES, and the suite is why. A catalogue check walks
  * this file for `t('calls...')` and asserts every one exists in both languages;
  * a key assembled from a prefix and a variable is invisible to it, so the first
- * missing line would reach a player as the word `calls.holo.tab.nearby` printed
+ * missing line would reach a player as the word `calls.holo.tab.recent` printed
  * on a button. These three maps are that check's eyes.
  */
 const TAB_KEY = {
   contacts: 'calls.holo.tab.contacts',
-  nearby: 'calls.holo.tab.nearby',
   recent: 'calls.holo.tab.recent'
 } as const
 
@@ -181,11 +175,29 @@ function reasonKey(reason: string): string {
   return 'calls.error.' + reason
 }
 
-const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : contacts.value))
+/**
+ * WHETHER ANYTHING IS ON SCREEN, and the two reasons are different. `open` is
+ * the player pressing the key: the whole projection, focused and pressable. The
+ * other two are a call arriving or running -- "tu vas juste pop l'animation pas
+ * le menu" -- so the sphere pops with the caller in it, says which keys answer
+ * it, and takes nothing at all.
+ */
+const present = computed(() => open.value || ringing.value || onCall.value)
+
+/**
+ * The two letters the sphere prints. They come off the payload rather than
+ * being written here: a server that rebinds them in `config/calls.lua` must not
+ * have its players told the wrong key, and a page that hardcoded `Y` would be a
+ * second opinion about a configuration it cannot see.
+ */
+const answerKey = ref('Y')
+const declineKey = ref('X')
+
+const shown = computed<Row[]>(() => contacts.value)
 </script>
 
 <template>
-  <div v-if="open" class="holo op-ink">
+  <div v-if="present" class="holo op-ink" :class="{ live: !open }">
     <!-- ── THE PROJECTOR ──────────────────────────────────────────────────
          "je souhaite vraiement un effect de holo 3d en cercle un delire plutot
          pousser que cela donne vraiement l'impression de l'utiliser de l'oeil".
@@ -212,7 +224,50 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
            making the panel look PROJECTED rather than drawn. -->
       <div class="beam" aria-hidden="true"></div>
 
-      <section class="panel" :class="{ 'is-ringing': ringing }">
+      <!-- ── THE SPHERE ALONE ────────────────────────────────────────────
+           "tu vas juste pop l'animation pas le menu est dans la sphere tu vas
+           ajouter les gens qui appel ou presnter un incoming call puis avec les
+           prompt afficher y pour repondre x pour reffuser".
+
+           A CALL ARRIVING OPENS NOTHING. There is no panel here, nothing to
+           press and nothing focused -- the projection pops, the caller's name
+           sits in it, and two letters say how to answer. A player who is
+           driving or shooting is told and can decide without losing the
+           keyboard, which is the whole reason the answer is a key and not a
+           button.
+
+           It replaces two views: a card on one side of the screen and a chip on
+           the other. One projection, at the bottom, doing both.
+      -->
+      <div v-if="!open" class="passive">
+        <p v-if="ringing" class="passive-who op-label">
+          {{ text(invite?.name, '?') }}
+        </p>
+        <p v-else class="passive-who op-label">
+          {{ participants.join(', ') }}
+        </p>
+        <p class="passive-what op-eyebrow">
+          {{ ringing
+            ? (inviteIsContact ? t('calls.holo.sharing', { name: text(invite?.name, '?') })
+              : t('calls.holo.incoming'))
+            : t('calls.holo.inCall') }}
+        </p>
+        <!-- THE KEYS, AS LETTERS. Read off the config the same way the rest of
+             this surface reads its words, so a server that rebinds them is not
+             telling its players the wrong thing. -->
+        <div v-if="ringing" class="prompts">
+          <span class="prompt">
+            <b class="cap">{{ answerKey }}</b>
+            {{ inviteIsContact ? t('calls.holo.yes') : t('calls.holo.answer') }}
+          </span>
+          <span class="prompt">
+            <b class="cap">{{ declineKey }}</b>
+            {{ inviteIsContact ? t('calls.holo.no') : t('calls.holo.refuse') }}
+          </span>
+        </div>
+      </div>
+
+      <section v-if="open" class="panel" :class="{ 'is-ringing': ringing }">
         <!-- NO PLATE ANYWHERE ON THIS SURFACE. The owner has asked for the
              background gone three times now, and a hologram with a slab behind
              it is a window. Legibility comes from light instead: the type
@@ -259,7 +314,7 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
 
         <nav class="tabs">
           <button
-            v-for="name in (['contacts', 'nearby', 'recent'] as const)"
+            v-for="name in (['contacts', 'recent'] as const)"
             :key="name"
             class="tab op-eyebrow"
             :class="{ on: tab === name }"
@@ -285,17 +340,11 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
                 {{ onCall ? t('calls.holo.add') : t('calls.holo.call') }}
               </button>
               <button
-                v-if="tab === 'nearby'"
-                class="pill op-eyebrow"
-                type="button"
-                @click="shareRow(row)"
-              >
-                {{ t('calls.holo.share') }}
               </button>
             </template>
           </li>
           <li v-if="shown.length === 0" class="empty op-copy">
-            {{ tab === 'nearby' ? t('calls.holo.noneNear') : t('calls.holo.noContacts') }}
+            {{ t('calls.holo.noContacts') }}
           </li>
         </ul>
 
@@ -342,8 +391,13 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
+  /* AT THE BOTTOM, NOT THE MIDDLE. The owner asked for centre first and then
+     corrected it twice -- "mets le en bas" -- and the reason shows the moment
+     you use it: this is a projection you glance at while doing something else,
+     and the middle of the screen is where the thing you are doing is. */
+  align-items: flex-end;
   justify-content: center;
+  padding-bottom: var(--op-inset-y);
   /* The layer stays transparent to the pointer; only the panel takes it. */
   pointer-events: none;
   /* THE ONE PERSPECTIVE. Everything inside is laid out against it, which is
@@ -468,6 +522,55 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
   50% {
     border-color: rgba(var(--op-red-rgb), 0.95);
   }
+}
+
+/* --- the sphere alone ------------------------------------------------------
+   What a call arriving looks like: the projection, the name, and two letters.
+   No panel, nothing pressable, nothing focused. */
+.passive {
+  position: relative;
+  margin-bottom: 26%;
+  text-align: center;
+  /* Said again here although the layer already says it: this is drawn over
+     whatever the player is aiming at, and it must never take the pointer. */
+  pointer-events: none;
+}
+
+.passive-who {
+  margin: 0;
+  color: var(--op-red);
+  text-shadow: var(--op-ink), 0 0 14px var(--op-red-glow);
+}
+
+.passive-what {
+  margin: var(--op-space-1) 0 0;
+  color: var(--op-text-faint);
+}
+
+.prompts {
+  display: flex;
+  gap: var(--op-space-3);
+  justify-content: center;
+  margin-top: var(--op-space-2);
+  color: var(--op-text-faint);
+}
+
+.prompt {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--op-space-1);
+}
+
+/* The key itself, drawn as a key. */
+.cap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  padding: 1px 4px;
+  border: 1px solid rgba(var(--op-red-rgb), 0.55);
+  color: var(--op-red);
+  font-weight: 700;
 }
 
 .head {

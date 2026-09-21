@@ -44,13 +44,6 @@ local M = OPX.Modules.Get('calls')
 
 local Model = M.Model
 
--- What this module calls itself on the eye, and the folder its rows sit in.
-local OWNER = 'calls'
-
--- Metres a call row reaches. The eye's own default is 3.0; a holocall is
--- placed by looking at somebody across a room, so this is longer and still
--- well inside the registry's 50 m ceiling.
-local ROW_DISTANCE = 12.0
 
 -- The last state the server pushed. Never written from this side.
 local state = { call = nil, invite = nil, outgoing = nil }
@@ -89,6 +82,10 @@ local mutedEvents = {}
 -- The scheduler handles this module holds, so `Stop` can give them back.
 local jobs = {}
 
+-- The name the pause plugin re-raises Escape under. A host name, so it is not
+-- built from `OPX.Event`, and the same constant `modules/menu` reads.
+local PAUSE_KEY = 'open77:pauseKey'
+
 -- The view seam, and the one channel every payload travels on.
 local EVENT_VIEW = M.Event.VIEW
 
@@ -119,6 +116,11 @@ local function play(event)
 	-- complaint with no evidence anywhere the operator can reach.
 	OPX.Note('calls', ('the sound %q did not play: %s'):format(event, tostring(reason)))
 end
+
+-- Forward-declared: `onState` below pushes the projection's payload as well as
+-- the card's, and it is defined with the rest of the hologram two hundred lines
+-- further down. Without this the call would resolve to a global and be nil.
+local drawHolo
 
 -- Publishes one payload to whatever is drawing this module.
 local function publish(payload)
@@ -202,6 +204,13 @@ local function onState(payload)
 	elseif hadCall ~= nil and nowCall == nil then
 		play(sounds.HANG_UP)
 	end
+
+	-- THE PROJECTION KNOWS ABOUT THE CALL TOO. It is not only the screen the
+	-- player opens: a call arriving pops the sphere with the caller in it and
+	-- nothing else, which is the owner's "tu vas juste pop l'animation pas le
+	-- menu". So the holo payload goes out on every state change as well as on
+	-- every open.
+	drawHolo()
 
 	draw()
 end
@@ -398,6 +407,79 @@ function M.State()
 		carded = carded(),
 	}
 end
+-- ── the one thing the eye is still right for ─────────────────────────────────
+--
+-- THE OWNER: "pour demander le contact a quelqun c'est toujours avec alt ? ce
+-- serais top", and then: "du coup plus de arround me vu que tu utilise le target
+-- pour partager le contact ou avoir le contact".
+--
+-- ALT CAME BACK FOR EXACTLY ONE ROW, and the reason is the reason it was wrong
+-- for the others. The eye needs a body under the crosshair. Answering a call
+-- does not have one -- the person is somewhere else, which is the whole point of
+-- a holocall -- and the eight rows that used to live here made a player point at
+-- their own body to pick up. Handing somebody your contact is the opposite: it
+-- IS a thing you do to a person standing in front of you, face to face, within
+-- arm's reach, and pointing at them is the natural way to say which one.
+--
+-- SO THE "AROUND ME" TAB WENT. The hologram grew one when ALT was removed --
+-- otherwise a contact list you can only add to with the thing just deleted stays
+-- empty forever -- and this row makes it redundant. One way to do a thing.
+--
+-- THE SERVER STILL DECIDES. The row names a player id and nothing else; the
+-- range, the bucket, the consent and the swap are all judged there, by the same
+-- function that judges every other invite.
+local OWNER = 'calls'
+
+-- Metres the row reaches. Deliberately short and deliberately not the twelve a
+-- call row used to have: the server refuses a hand-over beyond `CONTACT_RANGE`,
+-- and a row offered where it would be refused is a row that teaches a player the
+-- feature is broken.
+local ROW_DISTANCE = 6.0
+
+-- The id the eye's context names for the body under the crosshair, as a number.
+local function targetOf(context)
+	local target = type(context) == 'table' and context.target or nil
+	if type(target) ~= 'table' then return nil end
+	return Model.PlayerId(target.playerId)
+end
+
+--- The one row this module draws on another player.
+-- @author dop42
+-- @return table[]
+function M.PlayerRows()
+	return {
+		{
+			id = 'callShare',
+			label = locale('calls.row.share'),
+			icon = 'person',
+			group = locale('calls.group'),
+			order = 60,
+			distance = ROW_DISTANCE,
+			canInteract = function(context) return targetOf(context) ~= nil end,
+			onSelect = function(context)
+				local target = targetOf(context)
+				if target == nil then return false end
+				return M.Invite(target, 'contact')
+			end,
+		},
+	}
+end
+
+-- Puts the row on the eye. ON A THREAD with a `Wait(0)`, because `RegisterMany`
+-- is ALL OR NOTHING -- one malformed row refuses the whole batch, and the
+-- refusal is written to a log on the player's own machine, which is the trap
+-- `modules/animations/client/walk.lua` fell into and documented.
+local function registerRows(contract)
+	Wait(0)
+	local answer = contract.RegisterPlayers(OWNER, M.PlayerRows())
+	if answer == nil or answer.ok ~= true then
+		OPX.Note('calls', ('the contact row was refused: %s')
+			:format(tostring(answer and answer.error)))
+		return false
+	end
+	return true
+end
+
 
 -- ── the hologram: one screen, and every verb on it ───────────────────────────
 --
@@ -427,23 +509,35 @@ end
 -- shelf life measured in seconds, and the server works every one of them out
 -- with the SAME function that judges the invite itself.
 
+-- The letter a configured key block names, or nil. The page prints it beside
+-- the word that says what it does, so a rebind reaches the player.
+local function keyLetter(block)
+	local key = type(block) == 'table' and block.DEFAULT or nil
+	if type(key) ~= 'string' or key == '' then return nil end
+	return key
+end
+
 -- Whether the hologram is up, and the last roster the server sent for it.
 local holoOpen = false
-local roster = { rows = {}, nearby = {}, recent = {}, onCall = false }
+local roster = { rows = {}, recent = {}, onCall = false }
 
 -- Pushes the hologram's own payload. Separate from `draw` because they are two
 -- surfaces with two lifetimes: the card comes and goes with the call, this
 -- comes and goes with the player's attention.
-local function drawHolo()
+function drawHolo()
 	publish({
 		kind = 'holo',
 		open = holoOpen,
 		rows = roster.rows,
-		nearby = roster.nearby,
 		recent = roster.recent,
 		call = state.call,
 		invite = state.invite,
 		outgoing = state.outgoing,
+		-- THE LETTERS THE SPHERE PRINTS. Read off the config rather than written
+		-- into the page: a server that rebinds them must not have its players
+		-- told the wrong key.
+		answerKey = keyLetter(M.Settings.ANSWER_KEY),
+		declineKey = keyLetter(M.Settings.DECLINE_KEY),
 	})
 end
 
@@ -454,7 +548,6 @@ local function onRoster(payload)
 	if type(payload) ~= 'table' then return end
 	roster = {
 		rows = type(payload.rows) == 'table' and payload.rows or {},
-		nearby = type(payload.nearby) == 'table' and payload.nearby or {},
 		recent = type(payload.recent) == 'table' and payload.recent or {},
 		onCall = payload.onCall == true,
 	}
@@ -510,7 +603,7 @@ function M.Init()
 	lastRingMs = -math.huge
 	mutedEvents = {}
 	holoOpen = false
-	roster = { rows = {}, nearby = {}, recent = {}, onCall = false }
+	roster = { rows = {}, recent = {}, onCall = false }
 	jobs = {}
 
 	local settings = M.Settings
@@ -541,33 +634,75 @@ function M.Start()
 	-- The ring is a scheduler job rather than a thread of its own: it has one
 	-- comparison to make and a module that wants a tick has to justify it.
 	jobs[#jobs + 1] = OPX.Scheduler.Every('calls:ring', 500, rearm)
-
-	-- ── THE ONE KEY ──────────────────────────────────────────────────────────
-	-- Everything this module offers is behind it. `DEFAULT = false` switches it
-	-- off for a server that binds it elsewhere, and there is then no way in --
-	-- which is a configuration rather than a fault, so it is said once and not
-	-- warned about.
-	local declared = type(M.Settings.KEY) == 'table' and M.Settings.KEY or {}
-	local key = declared.DEFAULT
-	if type(key) ~= 'string' or key == '' then
-		Open77.log.info('[calls] no key is configured: the hologram cannot be opened')
-	elseif type(RegisterKeyMapping) ~= 'function' then
-		OPX.Note('calls', 'this host has no RegisterKeyMapping: the hologram has no key')
-	else
+	-- ── THE KEYS ─────────────────────────────────────────────────────────────
+	-- One opens the projection; two answer a call without opening anything. All
+	-- three are declared the same way and refused the same way, so the shape is
+	-- written once.
+	--
+	-- `DEFAULT = false` switches one off for a server that binds it elsewhere,
+	-- and there is then no way in by that route -- a configuration rather than a
+	-- fault, so it is said once and not warned about.
+	local function bind(block, fallbackId, fallbackName, press)
+		local declared = type(block) == 'table' and block or {}
+		local key = declared.DEFAULT
+		if type(key) ~= 'string' or key == '' then
+			Open77.log.info(('[calls] no key is configured for %s'):format(fallbackId))
+			return
+		end
+		if type(RegisterKeyMapping) ~= 'function' then
+			OPX.Note('calls', 'this host has no RegisterKeyMapping: the calls have no keys')
+			return
+		end
 		-- TWO ANSWER SHAPES ARE DOCUMENTED for this host call -- the effective
 		-- key, or `true` and the key -- and reading only one of them logged a
 		-- working mapping as a failure everywhere else in this resource before
 		-- it was written down. Both are accepted; anything else is reported.
 		local called, ok, answer = pcall(RegisterKeyMapping,
-			tostring(declared.ID or 'opx.calls.holo'),
-			locale(declared.NAME or 'calls.key.holo'), key,
-			function() M.ToggleHolo() end)
+			tostring(declared.ID or fallbackId),
+			locale(declared.NAME or fallbackName), key, press)
 		if not called then
-			OPX.Note('calls', 'the hologram key was not mapped: ' .. tostring(ok))
+			OPX.Note('calls', ('%s was not mapped: %s'):format(fallbackId, tostring(ok)))
 		elseif ok == false or (ok == nil and answer == nil) then
-			OPX.Note('calls', ('the hologram key %q was refused: %s')
-				:format(key, tostring(answer)))
+			OPX.Note('calls', ('%s could not take %q: %s')
+				:format(fallbackId, key, tostring(answer)))
 		end
+	end
+
+	bind(M.Settings.KEY, 'opx.calls.holo', 'calls.key.holo',
+		function() M.ToggleHolo() end)
+
+	-- ANSWERING AND REFUSING DO NOTHING WHEN THERE IS NOTHING TO ANSWER, and
+	-- that is what makes sharing a key with the hotbar peek and the emote stop
+	-- survivable: outside a ringing call these handlers return immediately and
+	-- the other feature is the only one that acted. `M.Accept` and `M.Decline`
+	-- already answer false with no invite, so the guard is theirs and not a
+	-- second copy of the same question.
+	bind(M.Settings.ANSWER_KEY, 'opx.calls.answer', 'calls.key.answer',
+		function() M.Accept() end)
+	bind(M.Settings.DECLINE_KEY, 'opx.calls.decline', 'calls.key.decline',
+		function() M.Decline() end)
+
+	-- ESCAPE CLOSES IT, and it is not a key this module may bind. The pause
+	-- plugin swallows Escape before any surface sees it and re-raises it under
+	-- its own name --  answers the same broadcast the same way --
+	-- so binding  here would be asking for a key the platform has already
+	-- taken. Closing only when the projection is OPEN matters: the sphere pops
+	-- unbidden while a call rings, and Escape must not answer a call.
+	AddEventHandler(PAUSE_KEY, function()
+		if holoOpen then M.CloseHolo() end
+	end)
+
+	-- THE ONE ROW ON THE EYE. `target` is optional to this module, so its absence
+	-- is a runtime with no way to hand somebody a contact face to face rather
+	-- than a fault: the calls themselves are all behind the key above.
+	local eye = OPX.Api.Get('target')
+	if eye == nil or type(eye.RegisterPlayers) ~= 'function' then
+		Open77.log.info('[calls] this client has no target eye: contacts cannot be handed over')
+	else
+		CreateThread(function()
+			local ok, failure = pcall(registerRows, eye)
+			if not ok then OPX.Note('calls', 'the contact row: ' .. tostring(failure)) end
+		end)
 	end
 
 	-- Ask for the state once we are up. A player who reloads into a live call
