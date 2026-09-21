@@ -121,8 +121,20 @@ function OPX.JobGate.Evaluate(requirement, snapshot, nowMs, policy)
 	-- argument -- took down whatever network handler was asking. Refusing a gated
 	-- surface is the safe direction and it is the one branch of this function
 	-- that changed in the move.
+	-- TESTED IN BOTH DIRECTIONS. `at - atMs > maxAgeMs` is a one-sided test: a
+	-- snapshot stamped in the FUTURE gives a negative age and passes every
+	-- maximum there is. This file says a gated requirement "closes on every
+	-- doubt", and a timestamp that has not happened yet is not a doubt this
+	-- should be resolving in the caller's favour. Every adapter today builds its
+	-- snapshot from the server roster with `atMs = OPX.Now()`, so this is the
+	-- trap being closed rather than a hole being plugged -- and it is exactly
+	-- the sort of thing that stops being true the day one of them takes a
+	-- snapshot a client sent.
 	local at = finiteNumber(nowMs)
-	if at == nil or at - atMs > maxAgeMs then return false, 'job_stale' end
+	local stamped = finiteNumber(atMs)
+	if at == nil or stamped == nil or stamped > at or at - stamped > maxAgeMs then
+		return false, 'job_stale'
+	end
 	if type(snapshot.job) ~= 'table' then return false, 'no_character' end
 
 	local worst, worstRank = 'job_required', RANK.job_required

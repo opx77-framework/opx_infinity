@@ -243,3 +243,26 @@ function OPX.Api.Versions()
 	for name, held in pairs(contracts) do list[name] = held.version end
 	return list
 end
+
+--- Withdraws every contract a module published. Called by the lifecycle when
+--- that module is halted.
+---
+--- A PUBLISHED CONTRACT OUTLIVED THE MODULE THAT PUBLISHED IT. `Provide` is
+--- called from inside `Api`, and `Api` is a function that can raise three lines
+--- after publishing: the module was marked `failed` and the contract stayed in
+--- this table for the life of the resource, pointing at an implementation whose
+--- constructor never finished and whose `Start` will never run. `settle` only
+--- walks `Requires`, not `Optional`, so a module that lists it as optional was
+--- not dropped -- it started, called `OPX.Api.Get`, got the half-built table,
+--- and discovered the problem wherever it happened to look.
+-- @author dop42
+-- @param owner string the module id
+-- @return string[] the names withdrawn
+function OPX.Api.Withdraw(owner)
+	local withdrawn = {}
+	for name, held in pairs(contracts) do
+		if held.owner == owner then withdrawn[#withdrawn + 1] = name end
+	end
+	for index = 1, #withdrawn do contracts[withdrawn[index]] = nil end
+	return withdrawn
+end

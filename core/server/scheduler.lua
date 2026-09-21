@@ -182,7 +182,15 @@ function OPX.Scheduler.Report()
 			-- THE INTERVAL IS NAMED AS A FALLBACK WHEN IT IS ONE. This printed a
 			-- confident `50ms` for a job whose interval closure was raising, which
 			-- is the one reading an operator would never question.
-			local interval = intervalOf(job)
+			-- READ, NOT RE-ASKED. `intervalOf` CALLS the caller's interval
+			-- closure and writes `job.lastIntervalMs` and `job.intervalFailing`
+			-- back onto the job, so a diagnostic command ran arbitrary module
+			-- code and, by clearing `intervalFailing`, re-armed the once-per-run
+			-- log line the job had just emitted. Printing a job's state must not
+			-- change it. The last value the scheduler itself resolved is the
+			-- honest answer, and the fallback below is the one this line already
+			-- documents.
+			local interval = job.lastIntervalMs or intervalOf(job)
 			local state = job.failing and 'failing' or 'running'
 			if job.intervalFailing then state = state .. ' (interval unreadable)' end
 			lines[#lines + 1] = ('%-28s %6dms %s'):format(job.name, interval, state)
