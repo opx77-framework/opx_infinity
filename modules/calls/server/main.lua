@@ -995,48 +995,6 @@ function M.Start()
 		Open77.log.warn('[calls] no character contract: no call can name who is on it')
 	end
 
-	-- ── A FAKE CALL, FOR LOOKING AT ─────────────────────────────────────────
-	--
-	-- TEMPORARY. THE OWNER ASKED FOR IT AND ASKED FOR IT TO GO: "tu peux me faire
-	-- une commande de test pour recevoir un faut appel juste pour test si tous
-	-- good tu retire". It is written in one block so that removing it is deleting
-	-- one block, and it is marked here so the next person reading this file knows
-	-- it was never meant to stay.
-	--
-	-- WHAT IT IS AND IS NOT. It pushes a STATE payload straight at the caller's
-	-- own screen: the projection pops, a name sits in it, the ring plays and the
-	-- two letters appear, which is the whole of what there is to look at. It does
-	-- NOT create a call in the registry, so pressing the answer key answers
-	-- `noSuchInvite` -- which is honest, and is itself worth seeing, because it
-	-- is exactly what a player gets if they answer a call that expired while
-	-- they were reading it.
-	--
-	-- Restricted, because a command that makes somebody else's phone ring is a
-	-- command that can be used to bother them.
-	RegisterCommand('opx.calls.test', function(source)
-		local playerId = tonumber(source) or 0
-		if playerId <= 0 then return end
-
-		local allowed = Open77.acl ~= nil and type(Open77.acl.isAllowed) == 'function'
-			and select(2, pcall(Open77.acl.isAllowed, playerId, 'command.opx.calls.test'))
-		if allowed ~= true then
-			Open77.log.warn(('[calls] %d asked for a test call without the grant')
-				:format(playerId))
-			return
-		end
-
-		TriggerClientEvent(M.Event.STATE, playerId, {
-			invite = {
-				id = 'test-' .. tostring(OPX.Now()),
-				kind = 'call',
-				from = playerId,
-				name = 'TEST CALLER',
-				expiresInMs = 30000,
-			},
-		})
-		Open77.log.info(('[calls] a test call was pushed to %d'):format(playerId))
-	end, true)
-
 	RegisterNetEvent(M.Event.READY, onReady)
 	RegisterNetEvent(M.Event.ASK_ROSTER, onRoster)
 	RegisterNetEvent(M.Event.INVITE, onInvite)
