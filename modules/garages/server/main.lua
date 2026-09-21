@@ -738,6 +738,29 @@ function M.Start()
 				local count = OPX.Table.Count(configSpots)
 				return count
 			end)(), accepted, refused))
+
+		-- EVERY CAPTURED SPOT, AS THE CONFIG LINE THAT WOULD RECREATE IT.
+		--
+		-- A captured spot lives only in `opx77_garages`. `capture` hands the
+		-- operator this exact line when they place one -- "check it in to
+		-- survive a database reset" -- and a line handed to one player once, in
+		-- a chat box, months ago, is a line nobody has. So the whole set is
+		-- written at every start: emptying the table, restoring an older dump,
+		-- or moving to another host then costs a scroll of the journal rather
+		-- than every garage on the server.
+		--
+		-- Bounded by what the operator placed, which is a handful; the same
+		-- reasoning the `ready` line above already accepts.
+		local keys = {}
+		for key in pairs(captured) do keys[#keys + 1] = key end
+		table.sort(keys)
+		for index = 1, #keys do
+			local spot = captured[keys[index]]
+			Open77.log.info(('[garages] config line: %s = { LABEL = %q, KIND = %q, X = %.2f, '
+				.. 'Y = %.2f, Z = %.2f, HEADING = %.1f, BUCKET = %d },')
+				:format(spot.key, spot.label, spot.kind, spot.x, spot.y, spot.z,
+					spot.heading, spot.bucket))
+		end
 	end)
 
 	-- A sweep for the rate-limit windows, so a long session does not accumulate

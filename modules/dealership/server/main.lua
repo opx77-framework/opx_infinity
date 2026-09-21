@@ -826,6 +826,21 @@ function M.Start()
 			'%d garage row(s) and %d avpad row(s) for sale in %s'):format(
 			inConfig, accepted, refused, #Access.For(M.KIND.GARAGE), #Access.For(M.KIND.AVPAD),
 			tostring(currency or 'no currency')))
+
+		-- Every captured spot as the config line that would recreate it, for the
+		-- reason spelled out beside the same loop in `modules/garages`: a spot
+		-- placed in game exists only in `opx77_dealerships`, and the line that
+		-- would check it in was handed to one player, once, in a chat box.
+		local keys = {}
+		for key in pairs(captured) do keys[#keys + 1] = key end
+		table.sort(keys)
+		for index = 1, #keys do
+			local spot = captured[keys[index]]
+			Open77.log.info(('[dealership] config line: %s = { LABEL = %q, KIND = %q, X = %.2f, '
+				.. 'Y = %.2f, Z = %.2f, HEADING = %.1f, BUCKET = %d },')
+				:format(spot.key, spot.label, spot.kind, spot.x, spot.y, spot.z,
+					spot.heading, spot.bucket))
+		end
 	end)
 
 	-- A sweep for the rate-limit windows, so a long session does not accumulate
