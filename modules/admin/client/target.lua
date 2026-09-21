@@ -485,6 +485,22 @@ local function register(contract, byKind, signature)
 	registered = ''
 	for _, kind in ipairs(KINDS) do
 		local rows = byKind[kind] or {}
+		-- One resume per kind, and the whole of the fix for a defect that read as a
+		-- missing feature for days. Every row this module owns was built AND
+		-- registered inside the single resume that delivers the access map, and that
+		-- resume ran out of instruction budget partway down this list: the coroutine
+		-- unwound with no error, no log and no refusal, leaving the kinds registered
+		-- so far on the eye and the rest never registered at all. `sky` is last in
+		-- KINDS, so `sky` is what the operator never saw -- ALT on themselves drew
+		-- rows, ALT on the sky drew nothing, and every explanation that starts at the
+		-- eye (the raycast, `Matches`, the ACL) is reasoning about rows that were
+		-- never put there.
+		--
+		-- The journal named it by what it did NOT say: twelve rows live on the eye,
+		-- and the closing `report` below -- which is unconditional on the way out --
+		-- never sent once across a dozen restarts. Registration runs on an access
+		-- change, not per tick, so a frame per kind costs nothing.
+		Wait(0)
 		for first = 1, #rows, BATCH do
 			local batch = {}
 			for index = first, math.min(first + BATCH - 1, #rows) do batch[#batch + 1] = rows[index] end
@@ -530,11 +546,27 @@ local function sync()
 		return
 	end
 	syncing = true
+	-- Registration runs on a thread of its own, and the `Wait(0)` in `register` is
+	-- the only reason it needs one. `Target.Access` is a net event handler, and
+	-- whether a handler may yield is the host's business rather than this module's
+	-- -- the test suite calls it straight, with no coroutine under it at all, and
+	-- said so the moment the yield went in. A thread the host started can always
+	-- yield, so every kind gets a resume, and the `syncing`/`dirty` pair that was
+	-- already here for re-entrancy is exactly the guard an asynchronous sync wants.
+	CreateThread(function()
 	repeat
 		dirty = false
 		local built, byKind, signature = pcall(wanted)
 		if built then
-			register(contract, byKind, signature)
+			-- Protected for the reason the loop above yields: `register` raising is how
+			-- this module lost two fifths of its rows in silence. A raise is now a line
+			-- in the server log instead of an absence in it.
+			local done, failure = pcall(register, contract, byKind, signature)
+			if not done then
+				registered = nil
+				Open77.log.warn('[admin] staff rows: ' .. tostring(failure))
+				report('staff rows not registered: ' .. tostring(failure))
+			end
 		else
 			registered = nil
 			Open77.log.warn('[admin] staff rows: ' .. tostring(byKind))
@@ -542,6 +574,7 @@ local function sync()
 		end
 	until not dirty
 	syncing = false
+	end)
 end
 
 --- Takes an access map from the opener or from a refresh, and registers what it

@@ -12758,6 +12758,69 @@ do
 			has('admin_skyTime'), table.concat(sky, ','))
 		check('with the two that were always there still there',
 			has('admin_skyNoclip') and has('admin_skyPvp'), table.concat(sky, ','))
+
+		-- ── THE BUG THE BLOCK ABOVE CANNOT SEE ──────────────────────────────
+		-- Everything above passes on a host with no instruction budget, and the
+		-- live server has one. The operator reported the weather rows missing,
+		-- the checks above said they were drawn the moment the ACL granted them,
+		-- and on the server ALT on the sky still drew NOTHING -- not the weather
+		-- rows, not Noclip, not PvP, nothing. The journal settled it by omission:
+		-- `a pick on sky matched 0 row(s); held: admin holds 12 rows and none is
+		-- named for sky`, and `register`'s closing report -- which it sends on
+		-- every way out -- had never arrived once. Registration was not failing.
+		-- It was dying: the whole of `wanted` plus five registrations ran in the
+		-- one resume that delivers the access map, the resume ran out of budget
+		-- partway down KINDS, and the coroutine unwound with no error and no log,
+		-- leaving the kinds before the cut on the eye and the kinds after it --
+		-- `sky` is last -- never registered at all.
+		--
+		-- So give the stub a budget. Three host calls to a resume, reset by a
+		-- yield, which is the shape of the real one and the only shape that can
+		-- tell a registration that yields from one that does not.
+		local spent, budgeted = 0, {}
+		local realWait = cenv.Wait
+		cenv.Wait = function(ms)
+			spent = 0
+			return realWait(ms)
+		end
+		for _, method in ipairs({ 'RegisterSelf', 'RegisterPlayers', 'RegisterVehicles',
+			'RegisterDoors', 'RegisterSky' }) do
+			budgeted[method] = function(owner, rows)
+				spent = spent + 1
+				if spent > 3 then error('Open77 script execution budget exceeded', 0) end
+				local answer = real[method](owner, rows)
+				if method == 'RegisterSky' and answer.ok then
+					for _, row in ipairs(rows) do sky[#sky + 1] = row.id end
+				end
+				return answer
+			end
+		end
+		budgeted.Clear = function(owner)
+			sky = {}
+			return real.Clear(owner)
+		end
+		admin.Contracts.target = setmetatable(budgeted, { __index = real })
+
+		reports = {}
+		admin.Target.Access({ access = {}, aclKnown = true, inventory = false })
+		ccontrol.Pump(10)
+		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
+		ccontrol.Pump(10)
+
+		-- THE ASSERTION, and it is about the LAST kind on purpose. Registering in
+		-- one resume gets through `self` and stops; `sky` is the fifth.
+		check('a budget of three host calls a resume still reaches the last kind',
+			has('admin_skyNoclip') and has('admin_skyPvp') and has('admin_skyTime'),
+			table.concat(sky, ','))
+
+		-- AND THE LINE THAT WOULD HAVE SAID SO. Its absence from a dozen restarts
+		-- of the live journal is what finally located this, so it is asserted.
+		local closing = reports[#reports] or ''
+		check('and the registration reports itself on the way out',
+			closing:find('staff rows on the eye') ~= nil, closing)
+		check('not as a raise that nobody catches',
+			closing:find('budget exceeded') == nil, closing)
+		cenv.Wait = realWait
 	end
 end
 
