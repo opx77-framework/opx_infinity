@@ -90,6 +90,10 @@ local CORE_NAMESPACE = {
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
 	Storage = true, Audit = true, Surface = true,
+	-- `Carry` is the one reload-surviving blob, divided into a namespace per
+	-- writer. `Open77.state` holds ONE value per resource and two modules were
+	-- writing it whole, each destroying the other; see `lib/server/storage.lua`.
+	Carry = true,
 	-- `Lib` is the external library, `opx_lib`, loaded once by
 	-- `lib/client/lib.lua` and client-only. It replaced `Rpc` and `Keys`, which
 	-- were the two helpers in `lib/client/` that reached nothing this resource
@@ -16615,6 +16619,23 @@ do
 			OPX.Gate.IsReady(HELD) == true)
 		env.Open77.ready.isReady = realReady
 
+		-- THE RAISE THAT MATTERS IS THE INDEX, not the call. A host with no
+		-- `Open77.ready` AT ALL raises while RESOLVING `Open77.ready.isReady`,
+		-- which `pcall(Open77.ready.isReady, source)` does BEFORE pcall is
+		-- entered -- outside the protection written for exactly this case.
+		-- Only `pcall(function() ... end)` catches it.
+		local realGate = env.Open77.ready
+		env.Open77.ready = nil
+		local survived, open = pcall(OPX.Gate.IsReady, HELD)
+		check('a host with no readiness API at all does not take IsReady down',
+			survived == true, tostring(open))
+		check('and it reads as open rather than holding a player forever',
+			survived == true and open == true, tostring(open))
+		check('Release survives it too',
+			(pcall(OPX.Gate.Release, HELD, 'no host')))
+		check('and so does Hold, which runs inside the connect handler',
+			(pcall(OPX.Gate.Hold, HELD, 'no host')))
+		env.Open77.ready = realGate
 		-- ── Hold ─────────────────────────────────────────────────────────────
 		check('holding a slot with no session at all is refused',
 			OPX.Gate.Hold(8888, 'nobody') == false)
@@ -16715,6 +16736,46 @@ do
 		check('while the release carrying the right one goes through',
 			OPX.Gate.Release(SLOT, 'character-loaded') == true)
 		check('and only now is the gate open', OPX.Gate.IsReady(SLOT) == true)
+	end
+end
+
+
+-- ── a host with no readiness gate at all ─────────────────────────────────────
+-- `Gate.Participate` is called at FILE SCOPE, at the foot of `gate.lua`, and it
+-- resolved `Open77.ready.participate` unprotected. So a build with no readiness
+-- API took the whole resource down while LOADING a server_script -- over a gate
+-- nothing would have been held behind anyway. It could not be seen off-platform
+-- because the harness always installed one.
+section('the runtime boots on a host with no readiness gate')
+do
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.ready = nil
+	end)
+	check('every manifest script still loads', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		check('and the operator is told there is no gate to participate in',
+			table.concat(control.log.error, ' | ')
+				:find('no readiness gate to participate in', 1, true) ~= nil,
+			table.concat(control.log.error, ' | '):sub(-200))
+		check('and told what that means for them',
+			table.concat(control.log.error, ' | ')
+				:find('nothing will wait for one', 1, true) ~= nil)
+
+		-- Every door still answers rather than raising, and answers the way a
+		-- runtime with no gate has to: open. Holding a player behind a gate
+		-- that does not exist is the one outcome nothing recovers from.
+		control.Admit(81, 'account-nogate')
+		OPX.EnsureSession(81)
+		check('the gate reads open for everybody', OPX.Gate.IsReady(81) == true)
+		check('a hold is refused rather than raising', OPX.Gate.Hold(81, 'entry') == false)
+		check('and a release still answers', (pcall(OPX.Gate.Release, 81, 'done')))
+
+		-- And a player connecting does not take the connect handler down with
+		-- them, which is what the file-scope raise cost before it.
+		check('a player can still connect',
+			(pcall(control.Fire, OPX.Host.PLAYER_CONNECTED, 82)))
 	end
 end
 
@@ -16881,6 +16942,19 @@ do
 					Common.TypedInteger('7', 1, 10) == 7)
 				check(('%s: a typed number outside it is refused'):format(name),
 					Common.TypedInteger('11', 1, 10) == nil)
+				-- THE CAP IS ON THE WORD, NOT ON THE NUMBER, and the difference
+				-- only shows on a long word that parses to something SMALL:
+				-- twenty-five leading zeroes and a five is `5`, inside every
+				-- range, and is refused for its length alone. A long word that
+				-- parses to a big number is refused by the range anyway and
+				-- proves nothing about the cap.
+				check(('%s: a long word that parses inside the range is still refused')
+					:format(name),
+					Common.TypedInteger(('0'):rep(25) .. '5', 1, 10) == nil,
+					tostring(Common.TypedInteger(('0'):rep(25) .. '5', 1, 10)))
+				check(('%s: while a short one that parses the same way is read'):format(name),
+					Common.TypedInteger('0005', 1, 10) == 5,
+					tostring(Common.TypedInteger('0005', 1, 10)))
 				check(('%s: and a word too long to be a number is refused unparsed'):format(name),
 					Common.TypedInteger(('9'):rep(64), 1, 2147483647) == nil)
 			end
@@ -17091,6 +17165,39 @@ do
 			check('a glovebox open from outside a car is refused',
 				glovebox ~= nil and glovebox.ok == false and glovebox.code == 'not_seated',
 				glovebox and tostring(glovebox.code))
+
+			-- AND SILENTLY. The open key asks for the glovebox FIRST and falls
+			-- back to the bag, so a press while on foot must not raise a toast
+			-- -- which is why the handler carries its own seat check ahead of
+			-- `MayAct` rather than leaving it to `Actions.OpenVehicle`, which
+			-- answers the same code but only after `MayAct` has had its say. On
+			-- a DEAD player the two orders differ: with the handler's check the
+			-- press is `not_seated` and silent, without it every press on the
+			-- floor toasts "dead".
+			control.Life(PLAYER, 'dead')
+			local quietNotices = #control.notices
+			local onFloor = ask('openGlovebox', {})
+			check('a dead player on foot pressing the open key is refused for not sitting down',
+				onFloor ~= nil and onFloor.ok == false and onFloor.code == 'not_seated',
+				onFloor and tostring(onFloor.code))
+			check('and is not toasted about it once per press',
+				#control.notices == quietNotices,
+				#control.notices - quietNotices)
+			control.Life(PLAYER, 'alive')
+
+			-- ── a host with no life reader at all ────────────────────────────
+			-- Refusing everybody because a host call is missing is worse than
+			-- the thing the check prevents, so an absent reader FAILS OPEN. That
+			-- direction has to be asserted: the safe-looking change is the one
+			-- that locks every player out of their own bag on an older build.
+			local realLife = env.Open77.players.getLifeState
+			env.Open77.players.getLifeState = nil
+			check('a host with no life reader lets a player at their own bag',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == true
+				end)())
+			env.Open77.players.getLifeState = realLife
 
 			-- ── a body on the floor may not empty its bag ────────────────────
 			-- The down screen is drawn by the CLIENT, so closing it proves
@@ -17741,6 +17848,22 @@ do
 				check('not the origin, which is a real place somebody else could be at',
 					type(row.position) == 'table'
 						and not (row.position.x == 0 and row.position.y == 0))
+				check('and which instance it is lying in, so a dispatch in another '
+					.. 'one is not sent to it',
+					type(row.position) == 'table' and row.position.bucket == 0,
+					row.position and tostring(row.position.bucket))
+			end
+
+			control.Bucket(BODY, 12)
+			control.Pump(10)
+			local moved = rowFor(BODY)
+			check('a body in another routing bucket is listed in that one',
+				moved ~= nil and type(moved.position) == 'table'
+					and moved.position.bucket == 12,
+				moved and moved.position and tostring(moved.position.bucket))
+			control.Bucket(BODY, 0)
+
+			if row ~= nil then
 				check('a name carrying control characters is stripped of them',
 					type(row.name) == 'string' and row.name:find('%c') == nil,
 					row.name and ('%q'):format(row.name))
@@ -17951,7 +18074,11 @@ do
 			-- a blob of exactly the right shape. Nothing here invents one: a
 			-- hand-built fixture would drift from the writer the moment a field
 			-- was added, and then this would be testing the fixture.
-			local written = env.Open77.state.load()
+			--
+			-- Read through `OPX.Carry` under this module's own namespace, which
+			-- is where it lives: `Open77.state` holds one value for the whole
+			-- resource and this module is not its only writer.
+			local written = env.OPX.Carry.Load('weather')
 			check('the module carried something of its own across the boot',
 				type(written) == 'table', type(written))
 
@@ -17961,7 +18088,7 @@ do
 				local blob = {}
 				for key, held in pairs(written or {}) do blob[key] = held end
 				blob[field] = value
-				env.Open77.state.save(blob)
+				env.OPX.Carry.Save('weather', blob)
 				return Authority.Restore()
 			end
 
@@ -17999,7 +18126,7 @@ do
 			-- NOT A TABLE AT ALL. A host that carried something else, or a blob
 			-- an older version wrote as a string: the first line of the restore
 			-- is what stops it, and nothing could reach that line before.
-			env.Open77.state.save('not a table')
+			env.OPX.Carry.Save('weather', 'not a table')
 			check('a carried blob that is not a table at all is refused',
 				Authority.Restore() == false)
 
@@ -18112,6 +18239,217 @@ do
 			check('a host that cannot be asked the time is written to anyway',
 				#control.environment.writes > mark,
 				#control.environment.writes - mark)
+		end
+	end
+end
+
+-- ── the destinations a reload carried, adopted before anything else runs ─────
+-- `Open77.state.load` answered nil forever, so this module's `restore()` -- run
+-- from `Register`, before any command can add a destination -- took its
+-- cold-start path in every test and the in-game destinations were lost on every
+-- reload with nothing to say so. The blob is written in the PRELUDE here,
+-- before a single script has loaded, which is exactly where the previous
+-- generation's blob is waiting on a real reload.
+section('the staff destinations a reload carried')
+do
+	local CARRIED = { protocol = 1, locations = {
+		{ name = 'thehill', label = 'THE HILL', x = 120.5, y = -240.25, z = 15.75,
+			heading = 90.0 },
+	} }
+
+	-- Written in the envelope `OPX.Carry` writes, because that is what the
+	-- previous generation of this resource leaves behind. A prelude is the only
+	-- honest place for it: the destinations are adopted from `World.Register`,
+	-- before any command could have added one.
+	local function seedCarry(sandbox, namespace, value)
+		sandbox.Open77.state.save({ CARRY = 1, namespaces = { [namespace] = value } })
+	end
+
+	local env, _, why = boot('server', nil, function(sandbox)
+		seedCarry(sandbox, 'admin.world', CARRIED)
+	end)
+	check('the server boots on top of a carried blob', why == nil, why)
+
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		local named
+		for _, row in ipairs(admin and admin.World.Locations() or {}) do
+			if row.name == 'thehill' then named = row end
+		end
+		check('a destination the previous generation placed in game is still there',
+			named ~= nil)
+		check('with the point it was placed on', named ~= nil and named.x == 120.5
+			and named.y == -240.25 and named.z == 15.75,
+			named and ('%s,%s,%s'):format(named.x, named.y, named.z))
+		check('and marked as a runtime one, not a configured one',
+			named ~= nil and named.runtime == true)
+		check('while the configured destinations are still there beside it',
+			#(admin and admin.World.Locations() or {}) > 1,
+			#(admin and admin.World.Locations() or {}))
+	end
+
+	-- A BLOB FROM ANOTHER PROTOCOL IS NOT ADOPTED. It was written by an earlier
+	-- version of this code, which may have meant something else by these fields.
+	local env2, _, why2 = boot('server', nil, function(sandbox)
+		seedCarry(sandbox, 'admin.world',
+			{ protocol = 999, locations = CARRIED.locations })
+	end)
+	if why2 == nil then
+		local admin2 = env2.OPX.Modules.Get('admin')
+		local strayed = false
+		for _, row in ipairs(admin2 and admin2.World.Locations() or {}) do
+			if row.name == 'thehill' then strayed = true end
+		end
+		check('a blob from another protocol is left alone', strayed == false)
+	end
+
+	-- ── and the two writers no longer destroy each other ─────────────────
+	-- `Open77.state` holds ONE value per resource. Two modules write it, and
+	-- until `OPX.Carry` they each wrote it whole: an operator placing a staff
+	-- destination wiped the world clock, and the next weather roll wiped the
+	-- destination. Neither crashed -- each refuses a blob without its own
+	-- protocol number -- so the only evidence was weather logging "carried
+	-- state ignored" against a blob that was never weather's.
+	local env3, control3, why3 = boot('server', nil, function(sandbox)
+		seedCarry(sandbox, 'admin.world', CARRIED)
+	end)
+	check('the server boots for the two-writer case', why3 == nil, why3)
+	if why3 == nil then
+		local OPX3 = env3.OPX
+		local weather3 = OPX3.Modules.Get('weather')
+		local admin3 = OPX3.Modules.Get('admin')
+
+		-- The weather half has been up and saving since Start.
+		check('weather carried something of its own', OPX3.Carry.Load('weather') ~= nil)
+		check('and the destinations are still there beside it',
+			(function()
+				for _, row in ipairs(admin3 and admin3.World.Locations() or {}) do
+					if row.name == 'thehill' then return true end
+				end
+				return false
+			end)())
+
+		-- One more write from each, in the order a live server makes them.
+		OPX3.Carry.Save('admin.world', { protocol = 1, locations = {} })
+		check('a destination write leaves the weather namespace alone',
+			OPX3.Carry.Load('weather') ~= nil)
+		if weather3 ~= nil and type(weather3.Authority) == 'table' then
+			weather3.Authority.SetTimeFrozen(true, 'test')
+			control3.Pump(5)
+		end
+		check('and a weather write leaves the destinations namespace alone',
+			type(OPX3.Carry.Load('admin.world')) == 'table',
+			type(OPX3.Carry.Load('admin.world')))
+
+		-- The envelope itself: one blob, and the namespaces inside it.
+		local blob = env3.Open77.state.load()
+		check('there is exactly ONE blob, whatever is in it', type(blob) == 'table'
+			and type(blob.namespaces) == 'table')
+		check('and both writers are inside it',
+			type(blob) == 'table' and type(blob.namespaces) == 'table'
+				and blob.namespaces['weather'] ~= nil
+				and blob.namespaces['admin.world'] ~= nil,
+			type(blob) == 'table' and blob.namespaces
+				and table.concat((function()
+					local keys = {}
+					for key in pairs(blob.namespaces) do keys[#keys + 1] = key end
+					table.sort(keys)
+					return keys
+				end)(), ','))
+
+		-- A NAMESPACE CLEARS ON ITS OWN. `nil` takes that one away and nothing
+		-- else, which is what "leaving every other namespace alone" has to mean
+		-- in the one direction that could quietly take the lot.
+		OPX3.Carry.Save('admin.world', nil)
+		check('clearing one namespace clears only that one',
+			OPX3.Carry.Load('admin.world') == nil and OPX3.Carry.Load('weather') ~= nil)
+
+		-- The blob an older build wrote, with no envelope, is not walked as one.
+		env3.Open77.state.save({ PROTOCOL = 1, weather = 'clear' })
+		check('an unnamespaced blob from an older build reads as nothing carried',
+			OPX3.Carry.Load('weather') == nil)
+		check('and so does a blob that is not a table at all',
+			(function()
+				env3.Open77.state.save('nonsense')
+				return OPX3.Carry.Load('weather') == nil
+			end)())
+
+		-- A host with no reload store is a real build, and neither writer may
+		-- raise on it.
+		local realState = env3.Open77.state
+		env3.Open77.state = nil
+		check('a host with no reload store answers nothing rather than raising',
+			OPX3.Carry.Load('weather') == nil)
+		local saved, reason = OPX3.Carry.Save('weather', { PROTOCOL = 1 })
+		check('and a save on it is refused, with a reason, rather than raising',
+			saved == false and reason == 'no-state-api', tostring(reason))
+		env3.Open77.state = realState
+
+		-- A save the HOST refuses is not a save. Recording one as done is
+		-- carried state nobody knows is gone.
+		control3.carried.refuse = 'unserialisable_state'
+		local turned, why4 = OPX3.Carry.Save('weather', { PROTOCOL = 1 })
+		check('a save the host turns away is reported as refused',
+			turned == false and why4 == 'unserialisable_state', tostring(why4))
+		control3.carried.refuse = nil
+
+		check('and a namespace that is not a name is refused outright',
+			(OPX3.Carry.Save('', { a = 1 })) == false
+				and (OPX3.Carry.Save(nil, { a = 1 })) == false)
+	end
+end
+
+-- ── a body that is dead and not incarnated ───────────────────────────────────
+-- `admit` refuses a player with no life state at all, because "touching a body
+-- that has neither crashes it". It could never be reached while `getLifeState`
+-- answered a string for everybody, and the two natives it reconciles --
+-- `isDead` and `getLifeState` -- could not be made to disagree.
+section('downed: a revive of a body the host cannot answer for')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local downed = OPX.Api.Get('downed')
+		local character = OPX.Modules.Get('character')
+		check('the downed contract is published',
+			downed ~= nil and type(downed.Revive) == 'function')
+
+		if downed ~= nil and type(downed.Revive) == 'function' and type(character) == 'table' then
+			local BODY = 951
+			control.Admit(BODY, 'account-951')
+			character.Players[BODY] = {
+				PlayerData = { citizenId = 'citizen-951', source = BODY,
+					userId = 'account-951', money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-951'] = BODY
+			character.Registry.byUserId['account-951'] = BODY
+
+			control.Life(BODY, 'dead')
+			control.Pump(20)
+			local down = downed.Revive(BODY, 'test')
+			check('a dead body with a life state is revived',
+				down ~= nil and down.ok == true, down and tostring(down.error or down.detail))
+			check('and the host really stood them up',
+				env.Open77.players.getLifeState(BODY).phase == 'alive',
+				env.Open77.players.getLifeState(BODY).phase)
+
+			-- THE TWO NATIVES DISAGREEING. `isDead` and `getLifeState` are
+			-- separate host calls and a body between two states answers one and
+			-- not the other. `admit` exists for exactly that window.
+			control.Life(BODY, 'dead')
+			control.Pump(20)
+			env.Open77.players.isDead = function() return true end
+			env.Open77.players.getLifeState = function() return nil end
+			local blind = downed.Revive(BODY, 'test')
+			check('but a body the host has no life state for is refused, not touched',
+				blind ~= nil and blind.ok == false, blind and tostring(blind.ok))
+			check('and named as not incarnated rather than as some other failure',
+				blind ~= nil and tostring(blind.error or blind.detail):find('not_incarnated',
+					1, true) ~= nil,
+				blind and tostring(blind.error or blind.detail))
 		end
 	end
 end
