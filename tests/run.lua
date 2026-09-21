@@ -4799,6 +4799,37 @@ do
 			{ ok = true, event = 'wardrobeClosed', reason = 'saved' })
 		check('and the last one to close gives it back', showing())
 
+
+		-- ── AND A MENU IS ONE OF THEM ────────────────────────────────────────
+		-- THE OWNER: "l'hud des eddis etc passe la a gauche et du coup quand le
+		-- menu est ouvert hide la car la minimap native du jeu est a droite".
+		-- The vanilla minimap came back with the blips work, the money block
+		-- moved to the free corner, and a menu opening over it is one more thing
+		-- in a corner that now has two already.
+		--
+		-- The fourth name in the set and not a fourth mechanism, which is the
+		-- part worth a check: it must overlap with the other three the same way.
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'menu', 'state'),
+			{ open = true })
+		check('a menu opening takes the hud off screen', not showing())
+
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'appearance', 'decision'),
+			{ ok = true, event = 'wardrobeOpened' })
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'menu', 'state'),
+			{ open = false })
+		check('and a fitting room under it keeps it off when the menu closes',
+			not showing())
+
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'appearance', 'decision'),
+			{ ok = true, event = 'wardrobeClosed', reason = 'saved' })
+		check('with the hud coming back once both are gone', showing())
+
+		-- AND THE MONEY BLOCK IS IN THE FREE CORNER. `config/hud.lua` is where
+		-- an operator moves it, and the check is on the shipped value because
+		-- the whole point was that the shipped one collided with the minimap.
+		check('the info block is anchored away from the vanilla minimap',
+			env.OPX.Config.MODULES.hud.INFO_ANCHOR == 'top-left',
+			tostring(env.OPX.Config.MODULES.hud.INFO_ANCHOR))
 		-- The player's own choice is never touched by any of this: it is recorded
 		-- underneath, exactly as it is while they are down.
 		hudApi.SetVisible(false)
@@ -21251,6 +21282,62 @@ end
 --
 -- So the check is the shape of that line: the canonical pool full at 250, the
 -- engine body still reporting 100, and the gauge that reaches the page drawing
+
+-- ── a menu says so, so the HUD can stand aside ───────────────────────────────
+-- THE OWNER: "quand le menu est ouvert hide la". The HUD already had the
+-- mechanism -- a set of named screens holding the display -- and what was
+-- missing was the menu ever saying it was one. This is the other half of the
+-- check in the HUD section: that one proves the HUD listens, this one proves
+-- there is something to hear.
+section('a menu announces itself')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the menu announcement', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local module = OPX.Modules.Get('menu')
+		local heard = {}
+		env.AddEventHandler(module.Event.STATE, function(payload)
+			if type(payload) == 'table' then heard[#heard + 1] = payload.open end
+		end)
+
+		local api = OPX.Api.Get('menu')
+		check('the menu contract is up', type(api) == 'table' and type(api.Open) == 'function')
+
+		if type(api) == 'table' and type(api.Open) == 'function' then
+			local opened = api.Open({
+				owner = 'test', title = 'MENU',
+				items = { { id = 'a', label = 'A' } },
+				on = function() end,
+			})
+			control.Pump(5)
+			check('opening one is announced', heard[#heard] == true,
+				('%d raise(s)'):format(#heard))
+
+			-- ON A CHANGE, NOT ON EVERY OPEN. A menu replacing another is still a
+			-- menu being open, and a listener that stood aside would watch the
+			-- HUD flicker between the two.
+			local before = #heard
+			local second = api.Open({
+				owner = 'test', title = 'SECOND',
+				items = { { id = 'b', label = 'B' } },
+				on = function() end,
+			})
+			control.Pump(5)
+			check('and a menu replacing another says nothing at all',
+				#heard == before, ('%d -> %d'):format(before, #heard))
+
+			if type(api.Close) == 'function' then
+				api.Close(second.ok and second.value.handle or nil, 'test')
+				control.Pump(5)
+				check('closing the last one is announced too', heard[#heard] == false,
+					tostring(heard[#heard]))
+			end
+			local _ = opened
+		end
+	end
+end
 -- a hundred percent of a living player.
 section('a full player draws a full bar, whatever the maximum is')
 do
@@ -23078,6 +23165,60 @@ do
 			-- The count, so a regex that stopped matching could not make the
 			-- check above pass by finding nothing to check.
 			check('and the views really do ask for some', seen >= 20, seen)
+		end
+
+		-- ── A CLASS THAT DOES NOT EXIST STYLES NOTHING ───────────────────────
+		-- THE OWNER, on the first hologram: "je vois pas les text dans l'ui".
+		-- The view asked for `.op-title` and `.op-micro`. Neither is in the
+		-- design system -- `surface.css` defines `.op-label`, `.op-value`,
+		-- `.op-eyebrow`, `.op-copy` and `.op-truncate`, and that is the lot --
+		-- so every heading and every small label on that screen rendered with no
+		-- type preset at all. Nothing warns: an unknown class is not an error in
+		-- CSS, it is simply a selector that never matches.
+		--
+		-- So every `op-` class these views name must be defined SOMEWHERE the
+		-- browser will find it: the design system, or the file's own scoped
+		-- block. Checked across all three call views, because the one that got
+		-- it wrong was the newest.
+		do
+			local system = ''
+			for _, sheet in ipairs({ 'tokens.css', 'shapes.css', 'surface.css', 'fonts.css' }) do
+				system = system .. (sourceOf('ui/src/design-system/' .. sheet) or '')
+			end
+			check('the design system stylesheets are readable', #system > 0)
+
+			local unknown, used = {}, 0
+			for _, pair in ipairs({
+				{ 'IncomingCall.vue', card }, { 'CallLive.vue', chip }, { 'HoloRoot.vue', holo },
+			}) do
+				local file, body = pair[1], pair[2]
+				-- Comments stripped: these files discuss the rule in prose and
+				-- name the very classes they are explaining.
+				local code = body:gsub('/%*.-%*/', ''):gsub('<!%-%-.-%-%->', '')
+				local scoped = code:match('<style scoped>(.*)</style>') or ''
+				-- Classes as they appear in a `class="..."` attribute only. A
+				-- name inside a selector is a DEFINITION, not a use.
+				for attribute in code:gmatch('class="([^"]*)"') do
+					for name in attribute:gmatch('(op%-[%w%-]+)') do
+						used = used + 1
+						-- ESCAPED, because `-` is a Lua pattern quantifier: the first
+						-- version searched for `.op` followed by nothing followed by
+						-- `eyebrow` and reported all fifty classes as undefined,
+						-- including the eleven that plainly work on screen.
+						local literal = name:gsub('%-', '%%-')
+						if not system:find('%.' .. literal .. '[^%w%-]')
+							and not scoped:find('%.' .. literal .. '[^%w%-]') then
+							unknown[#unknown + 1] = file .. ':' .. name
+						end
+					end
+				end
+			end
+			table.sort(unknown)
+			check('every design-system class the call views name is really defined',
+				#unknown == 0, table.concat(unknown, ', '))
+			-- Non-vacuity: a regex that stopped matching would otherwise pass by
+			-- finding nothing to check.
+			check('and the views really do name some', used >= 10, used)
 		end
 	end
 end

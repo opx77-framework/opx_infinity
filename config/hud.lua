@@ -15,7 +15,12 @@ OPX.Config.MODULES.hud = {
 
 	-- bottom-left, bottom-right, top-left, top-right, top-center, bottom-center.
 	ANCHOR = 'bottom-left',
-	INFO_ANCHOR = 'top-right',
+	-- THE MONEY AND THE CLOCK, AND THEY MOVED BECAUSE THE MINIMAP CAME BACK.
+	-- "l'hud des eddis etc passe la a gauche ... car la minimap native du jeu
+	-- est a droite". `minimap` was `false` here until the blips work, which put
+	-- the game's own map panel back in the top-right corner -- straight under
+	-- this block. Left is the free corner now.
+	INFO_ANCHOR = 'top-left',
 	-- Absent, the strip rides in the gauge column's corner.
 	STATUS_ANCHOR = 'bottom-left',
 	-- Pixels of clearance between the chip strip and the gauges beneath it.

@@ -186,109 +186,157 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
 
 <template>
   <div v-if="open" class="holo op-ink">
-    <!-- THE PANE. Centred by the wrapper, and it is the whole of "le halo prend
-         vrais le devant de l'ecran": this is not a corner widget, it is the
-         screen the player opened. -->
-    <section class="pane op-frame op-interlace op-enter" data-augmented-ui="tl-clip br-clip border">
-      <header class="head">
-        <p class="eyebrow op-micro">{{ t('calls.holo.eyebrow') }}</p>
-        <h2 class="title op-title">{{ t('calls.holo.title') }}</h2>
-        <button class="shut op-micro" type="button" @click="close">
-          {{ t('calls.holo.close') }}
-        </button>
-      </header>
+    <!-- ── THE PROJECTOR ──────────────────────────────────────────────────
+         "je souhaite vraiement un effect de holo 3d en cercle un delire plutot
+         pousser que cela donne vraiement l'impression de l'utiliser de l'oeil".
 
-      <!-- THE RINGING CALL COMES FIRST AND ABOVE EVERYTHING, because it is the
-           one thing on this screen with a clock running on it. -->
-      <div v-if="ringing" class="ring op-plate-quiet">
-        <p class="ring-who">
-          {{ inviteIsContact
-            ? t('calls.holo.sharing', { name: text(invite?.name, '?') })
-            : t('calls.holo.ringing', { name: text(invite?.name, '?') }) }}
-        </p>
-        <div class="acts">
-          <button class="act yes op-frame" type="button" @click="accept">
-            {{ inviteIsContact ? t('calls.holo.yes') : t('calls.holo.answer') }}
+         THE PLATE IS LAID BACK AND THE CONTENT STANDS UP, which is the whole of
+         the 3D: one `perspective` on the wrapper, a disc rotated flat under it
+         like a projector base, and the panel standing almost upright above it.
+         Nothing here is an image and nothing is a filter -- the design system
+         forbids a filter on anything that repaints, and there is a clock on this
+         surface. Rings, gradients and one transform each.
+    -->
+    <div class="stage">
+      <!-- The plate the projection stands on: three rings and one sweeping arc.
+           The sweep is what makes it read as live rather than printed, and it is
+           a `rotate` on a pseudo-element, which the compositor owns. -->
+      <div class="disc" aria-hidden="true">
+        <span class="ring r1"></span>
+        <span class="ring r2"></span>
+        <span class="ring r3"></span>
+        <span class="sweep"></span>
+      </div>
+
+      <!-- The beam. One gradient and a clip, and it does most of the work of
+           making the panel look PROJECTED rather than drawn. -->
+      <div class="beam" aria-hidden="true"></div>
+
+      <section class="panel" :class="{ 'is-ringing': ringing }">
+        <!-- NO PLATE ANYWHERE ON THIS SURFACE. The owner has asked for the
+             background gone three times now, and a hologram with a slab behind
+             it is a window. Legibility comes from light instead: the type
+             carries its own glow and `.op-ink` holds it against the street,
+             which is what every other plateless surface here leans on. -->
+        <header class="head">
+          <p class="eyebrow op-eyebrow">{{ t('calls.holo.eyebrow') }}</p>
+          <h2 class="title op-label">{{ t('calls.holo.title') }}</h2>
+          <button class="shut op-eyebrow" type="button" @click="close">
+            {{ t('calls.holo.close') }}
           </button>
-          <button class="act no op-frame" type="button" @click="decline">
-            {{ inviteIsContact ? t('calls.holo.no') : t('calls.holo.refuse') }}
+        </header>
+
+        <!-- The ringing call is the one thing here with a clock running on it,
+             so it sits above everything and the panel's edges pulse with it. -->
+        <div v-if="ringing" class="ring-row">
+          <p class="ring-who op-copy">
+            {{ inviteIsContact
+              ? t('calls.holo.sharing', { name: text(invite?.name, '?') })
+              : t('calls.holo.ringing', { name: text(invite?.name, '?') }) }}
+          </p>
+          <div class="acts">
+            <button class="act yes op-eyebrow" type="button" @click="accept">
+              {{ inviteIsContact ? t('calls.holo.yes') : t('calls.holo.answer') }}
+            </button>
+            <button class="act no op-eyebrow" type="button" @click="decline">
+              {{ inviteIsContact ? t('calls.holo.no') : t('calls.holo.refuse') }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="onCall" class="live-row">
+          <p class="live-who op-copy">
+            {{ t('calls.holo.live', { names: participants.join(', ') }) }}
+          </p>
+          <button class="act no op-eyebrow" type="button" @click="hangUp">
+            {{ t('calls.holo.hangUp') }}
           </button>
         </div>
-      </div>
 
-      <div v-if="onCall" class="live op-plate-quiet">
-        <p class="live-who">{{ t('calls.holo.live', { names: participants.join(', ') }) }}</p>
-        <button class="act no op-frame" type="button" @click="hangUp">
-          {{ t('calls.holo.hangUp') }}
-        </button>
-      </div>
+        <p v-else-if="outgoing !== null" class="waiting op-eyebrow">
+          {{ t('calls.holo.calling', { name: text(outgoing?.name, '?') }) }}
+        </p>
 
-      <p v-else-if="outgoing !== null" class="waiting op-micro">
-        {{ t('calls.holo.calling', { name: text(outgoing?.name, '?') }) }}
-      </p>
+        <nav class="tabs">
+          <button
+            v-for="name in (['contacts', 'nearby', 'recent'] as const)"
+            :key="name"
+            class="tab op-eyebrow"
+            :class="{ on: tab === name }"
+            type="button"
+            @click="tab = name"
+          >
+            {{ t(TAB_KEY[name]) }}
+          </button>
+        </nav>
 
-      <nav class="tabs">
-        <button
-          v-for="name in (['contacts', 'nearby', 'recent'] as const)"
-          :key="name"
-          class="tab op-micro"
-          :class="{ on: tab === name }"
-          type="button"
-          @click="tab = name"
-        >
-          {{ t(TAB_KEY[name]) }}
-        </button>
-      </nav>
+        <ul v-if="tab !== 'recent'" class="rows">
+          <li v-for="row in shown" :key="row.id" class="row" :class="{ off: row.refusal !== null }">
+            <span class="dot" aria-hidden="true"></span>
+            <span class="who op-copy op-truncate">{{ row.name }}</span>
+            <!-- THE REASON IS SHOWN, NOT MERELY OBEYED. A row that is simply
+                 dark says the contact is unreachable and nothing else, and the
+                 two commonest reasons both stop being true in a minute. -->
+            <span v-if="row.refusal !== null" class="why op-eyebrow">
+              {{ t(reasonKey(row.refusal)) }}
+            </span>
+            <template v-else>
+              <button class="pill op-eyebrow" type="button" @click="callRow(row)">
+                {{ onCall ? t('calls.holo.add') : t('calls.holo.call') }}
+              </button>
+              <button
+                v-if="tab === 'nearby'"
+                class="pill op-eyebrow"
+                type="button"
+                @click="shareRow(row)"
+              >
+                {{ t('calls.holo.share') }}
+              </button>
+            </template>
+          </li>
+          <li v-if="shown.length === 0" class="empty op-copy">
+            {{ tab === 'nearby' ? t('calls.holo.noneNear') : t('calls.holo.noContacts') }}
+          </li>
+        </ul>
 
-      <ul v-if="tab !== 'recent'" class="rows">
-        <li v-for="row in shown" :key="row.id" class="row" :class="{ off: row.refusal !== null }">
-          <span class="who op-truncate">{{ row.name }}</span>
-          <!-- THE REASON IS SHOWN, NOT MERELY OBEYED. A row that is simply dark
-               says the contact is unreachable and nothing else, and the two
-               commonest reasons -- already on a call, line busy -- both stop
-               being true in a minute. -->
-          <span v-if="row.refusal !== null" class="why op-micro">
-            {{ t(reasonKey(row.refusal)) }}
-          </span>
-          <template v-else>
-            <button class="pill op-micro" type="button" @click="callRow(row)">
-              {{ onCall ? t('calls.holo.add') : t('calls.holo.call') }}
-            </button>
-            <!-- Sharing is offered only to the people close enough for the
-                 server to accept it, which is what the `nearby` list IS. -->
-            <button
-              v-if="tab === 'nearby'"
-              class="pill op-micro"
-              type="button"
-              @click="shareRow(row)"
-            >
-              {{ t('calls.holo.share') }}
-            </button>
-          </template>
-        </li>
-        <li v-if="shown.length === 0" class="empty op-micro">
-          {{ tab === 'nearby' ? t('calls.holo.noneNear') : t('calls.holo.noContacts') }}
-        </li>
-      </ul>
-
-      <ul v-else class="rows">
-        <li v-for="(row, at) in recent" :key="at" class="row off">
-          <span class="who op-truncate">{{ row.name }}</span>
-          <span class="why op-micro">{{ t(OUTCOME_KEY[row.outcome] ?? 'calls.holo.outcome.missed') }}</span>
-        </li>
-        <li v-if="recent.length === 0" class="empty op-micro">
-          {{ t('calls.holo.noRecent') }}
-        </li>
-      </ul>
-    </section>
+        <ul v-else class="rows">
+          <li v-for="(row, at) in recent" :key="at" class="row off">
+            <span class="dot" aria-hidden="true"></span>
+            <span class="who op-copy op-truncate">{{ row.name }}</span>
+            <span class="why op-eyebrow">
+              {{ t(OUTCOME_KEY[row.outcome] ?? 'calls.holo.outcome.missed') }}
+            </span>
+          </li>
+          <li v-if="recent.length === 0" class="empty op-copy">
+            {{ t('calls.holo.noRecent') }}
+          </li>
+        </ul>
+      </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
 /* =============================================================================
-   DEAD CENTRE, AND IN FRONT. "le halo prend vrais le devant de l'ecran", "en
-   plein centre". The wrapper is the whole viewport so the pane can be centred
-   against it rather than against whatever the layer happens to be sized to.
+   DEAD CENTRE, IN FRONT, AND PROJECTED -- "le halo prend vrais le devant de
+   l'ecran", "en plein centre", "un effect de holo 3d en cercle un delire plutot
+   pousser".
+
+   WHAT THIS IS NOT: a panel with a background. The first version was exactly
+   that, and a slab is what stops a hologram reading as one. Everything below
+   builds legibility out of LIGHT instead -- the type carries its own glow, and
+   the disc and the beam give the eye somewhere to sit the panel.
+
+   AND THE CLASSES ARE REAL ONES. The first version reached for `.op-title` and
+   `.op-micro`, neither of which exists anywhere in the design system, so every
+   label on this screen rendered with no type preset at all. `surface.css`
+   defines five: `.op-label`, `.op-value`, `.op-eyebrow`, `.op-copy`,
+   `.op-truncate`. Those are what is used here.
+
+   NO FILTERS. `design-system/shapes.css` says never to put one on something
+   that repaints, and this surface has a clock on it. Every effect is a
+   gradient, a border-radius or a transform, and the only animation is a
+   `rotate` on a pseudo-element.
    ========================================================================== */
 .holo {
   position: absolute;
@@ -296,23 +344,130 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
   display: flex;
   align-items: center;
   justify-content: center;
-  /* NO SCRIM. The owner has asked for the background off twice on this module's
-     other two views, and the same answer applies here: a hologram is a thing
-     projected into the room, and a room you cannot see is not one. */
+  /* The layer stays transparent to the pointer; only the panel takes it. */
   pointer-events: none;
+  /* THE ONE PERSPECTIVE. Everything inside is laid out against it, which is
+     what makes the disc read as lying under the panel rather than as an ellipse
+     drawn behind it. */
+  perspective: 900px;
+  perspective-origin: 50% 46%;
 }
 
-.pane {
+.stage {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: min(560px, calc(100vw - var(--op-inset-x) * 2));
+  height: min(560px, calc(100vh - var(--op-inset-y) * 2));
+  transform-style: preserve-3d;
+  animation: op-holo-rise 220ms ease-out both;
+}
+
+/* --- the projector plate -------------------------------------------------- */
+.disc {
+  position: absolute;
+  left: 50%;
+  bottom: 8%;
+  width: 380px;
+  height: 380px;
+  margin-left: -190px;
+  transform: rotateX(74deg);
+  transform-style: preserve-3d;
+}
+
+.ring {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(var(--op-red-rgb), 0.35);
+  border-radius: 50%;
+}
+
+.r2 {
+  inset: 14%;
+  border-color: rgba(var(--op-red-rgb), 0.22);
+}
+
+.r3 {
+  inset: 30%;
+  border-color: rgba(var(--op-red-rgb), 0.5);
+  box-shadow: 0 0 26px rgba(var(--op-red-rgb), 0.28);
+}
+
+.sweep {
+  position: absolute;
+  inset: 4%;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    rgba(var(--op-red-rgb), 0) 0deg,
+    rgba(var(--op-red-rgb), 0) 250deg,
+    rgba(var(--op-red-rgb), 0.24) 320deg,
+    rgba(var(--op-red-rgb), 0) 360deg
+  );
+  animation: op-holo-sweep 5.5s linear infinite;
+}
+
+@keyframes op-holo-sweep {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* --- the beam ------------------------------------------------------------- */
+.beam {
+  position: absolute;
+  left: 50%;
+  bottom: 10%;
+  width: 300px;
+  height: 260px;
+  margin-left: -150px;
+  background: linear-gradient(
+    to top,
+    rgba(var(--op-red-rgb), 0.16),
+    rgba(var(--op-red-rgb), 0.04) 45%,
+    transparent 78%
+  );
+  clip-path: polygon(38% 100%, 62% 100%, 96% 0%, 4% 0%);
+  transform: translateZ(1px);
+}
+
+/* --- the panel ------------------------------------------------------------ */
+.panel {
+  position: relative;
   box-sizing: border-box;
-  width: min(520px, calc(100vw - var(--op-inset-x) * 2));
-  max-height: calc(100vh - var(--op-inset-y) * 2);
-  overflow: auto;
+  width: 100%;
+  max-height: 78%;
+  margin-bottom: 26%;
   padding: var(--op-space-3);
-  /* The one element on this surface that takes the pointer. The wrapper stays
-     transparent to it, so a click beside the pane goes to the world. */
+  overflow: auto;
+  /* THE ONLY ELEMENT ON THIS SURFACE THAT TAKES THE POINTER. A click beside it
+     goes to the world. */
   pointer-events: auto;
-  --aug-tl: var(--op-cut-lg);
-  --aug-br: var(--op-cut-lg);
+  transform: rotateX(6deg) translateZ(40px);
+  /* The projection's own edge, instead of a plate: a hairline down each side
+     and a scanline wash across it. */
+  border-left: 1px solid rgba(var(--op-red-rgb), 0.45);
+  border-right: 1px solid rgba(var(--op-red-rgb), 0.45);
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(var(--op-red-rgb), 0.05) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+.panel.is-ringing {
+  animation: op-holo-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes op-holo-pulse {
+  0%,
+  100% {
+    border-color: rgba(var(--op-red-rgb), 0.45);
+  }
+  50% {
+    border-color: rgba(var(--op-red-rgb), 0.95);
+  }
 }
 
 .head {
@@ -321,6 +476,8 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
   align-items: baseline;
   gap: var(--op-space-1);
   margin-bottom: var(--op-space-3);
+  padding-bottom: var(--op-space-2);
+  border-bottom: 1px solid rgba(var(--op-red-rgb), 0.3);
 }
 
 .eyebrow {
@@ -332,6 +489,10 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
 .title {
   grid-column: 1;
   margin: 0;
+  color: var(--op-red);
+  /* The type's own light, and this is what replaces the plate: a letter that
+     emits is legible over a bright street with nothing behind it. */
+  text-shadow: var(--op-ink), 0 0 12px var(--op-red-glow);
 }
 
 .shut {
@@ -344,17 +505,18 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
 }
 
 .shut:hover {
-  color: var(--op-text);
+  color: var(--op-red);
 }
 
-.ring,
-.live {
+.ring-row,
+.live-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--op-space-2);
   margin-bottom: var(--op-space-2);
-  padding: var(--op-space-2);
+  padding: var(--op-space-2) 0;
+  border-bottom: 1px solid rgba(var(--op-red-rgb), 0.2);
 }
 
 .ring-who,
@@ -369,18 +531,21 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
 }
 
 .act {
+  border: 1px solid rgba(var(--op-red-rgb), 0.5);
   padding: var(--op-space-1) var(--op-space-2);
   background: none;
-  color: var(--op-text);
+  color: var(--op-red-text);
   cursor: pointer;
 }
 
-.act.yes {
-  color: var(--op-good, var(--op-text));
+.act:hover {
+  border-color: var(--op-red);
+  color: var(--op-red);
+  box-shadow: 0 0 14px rgba(var(--op-red-rgb), 0.3);
 }
 
 .act.no {
-  color: var(--op-red);
+  color: var(--op-text-faint);
 }
 
 .waiting {
@@ -390,14 +555,13 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
 
 .tabs {
   display: flex;
-  gap: var(--op-space-2);
+  gap: var(--op-space-3);
   margin-bottom: var(--op-space-2);
-  border-bottom: 1px solid var(--op-line);
 }
 
 .tab {
   border: 0;
-  border-bottom: 2px solid transparent;
+  border-bottom: 1px solid transparent;
   padding: var(--op-space-1) 0;
   background: none;
   color: var(--op-text-faint);
@@ -406,7 +570,8 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
 
 .tab.on {
   border-bottom-color: var(--op-red);
-  color: var(--op-text);
+  color: var(--op-red);
+  text-shadow: var(--op-ink), 0 0 10px var(--op-red-glow);
 }
 
 .rows {
@@ -420,11 +585,27 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
   align-items: center;
   gap: var(--op-space-2);
   padding: var(--op-space-1) 0;
-  border-bottom: 1px solid var(--op-line);
+  border-bottom: 1px solid rgba(var(--op-red-rgb), 0.14);
+}
+
+/* The reachable marker: lit for a row that can be pressed, dark for one that
+   cannot. The only thing on a row that says so at a glance. */
+.dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--op-red);
+  box-shadow: 0 0 8px var(--op-red-glow);
 }
 
 .row.off {
   color: var(--op-text-faint);
+}
+
+.row.off .dot {
+  background: rgba(var(--op-red-rgb), 0.25);
+  box-shadow: none;
 }
 
 .who {
@@ -437,19 +618,43 @@ const shown = computed<Row[]>(() => (tab.value === 'nearby' ? nearby.value : con
 }
 
 .pill {
-  border: 1px solid var(--op-line);
+  border: 1px solid rgba(var(--op-red-rgb), 0.4);
   padding: 2px var(--op-space-2);
   background: none;
-  color: var(--op-text);
+  color: var(--op-red-text);
   cursor: pointer;
 }
 
 .pill:hover {
   border-color: var(--op-red);
+  color: var(--op-red);
+  box-shadow: 0 0 12px rgba(var(--op-red-rgb), 0.28);
 }
 
 .empty {
-  padding: var(--op-space-2) 0;
+  padding: var(--op-space-3) 0;
   color: var(--op-text-faint);
+}
+
+/* A projection does not fade in from nowhere: it rises off the plate. */
+@keyframes op-holo-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A player who has asked the system to stop moving things gets a still
+   hologram, not a broken one. */
+@media (prefers-reduced-motion: reduce) {
+  .sweep,
+  .panel.is-ringing,
+  .stage {
+    animation: none;
+  }
 }
 </style>

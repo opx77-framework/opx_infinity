@@ -69,6 +69,20 @@ local FOCUS = {
 -- The one open menu, or nil.
 local record
 
+-- The last `open` this module announced, so the event is raised on a CHANGE and
+-- not on every open. A menu replacing another is still a menu being open, and a
+-- listener that stood aside would see the HUD flicker between the two.
+local announcedOpen = false
+
+-- Tells anything that has to stand aside whether a menu is up. Cheap enough to
+-- call from both ends of every path rather than making each one decide.
+local function announce()
+	local isOpen = record ~= nil
+	if isOpen == announcedOpen then return end
+	announcedOpen = isOpen
+	TriggerEvent(M.Event.STATE, { open = isOpen })
+end
+
 -- Handle the next opened menu receives. Unique for the life of the session.
 local nextHandle = 0
 
@@ -866,6 +880,16 @@ local function closeNow(handle, reason)
 	-- `focus:set` too, but a page that is gone never will, and a focus held
 	-- across a close is a player who cannot move.
 	OPX.UI.ReleaseFocus(OWNER)
+	-- NOT WHEN ANOTHER MENU IS TAKING THIS ONE'S PLACE. `Open` closes the
+	-- standing menu before it installs its own, so a bare `announce()` here
+	-- raised `false` and then `true` for what is, to anybody standing aside,
+	-- one continuous menu -- and the HUD would come back for a frame in the
+	-- middle of it. Caught by the check that asserts a replacement says nothing,
+	-- which failed with `1 -> 3` the first time it ran.
+	--
+	-- The two reasons are `Open`'s own words for exactly that case, and no other
+	-- caller uses them.
+	if reason ~= 'reopened' and reason ~= 'superseded' then announce() end
 	-- The menu is already gone when this is raised, so a close handler may open
 	-- another one.
 	dispatch(closing, nil, 'close', reason)
@@ -911,6 +935,7 @@ local function Open(spec)
 	nextHandle = nextHandle + 1
 	built.handle = nextHandle
 	record = built
+	announce()
 	-- Set BEFORE the page is told to open: the page announces `focus:set` during
 	-- its own open handler, and `onFocus` reads this to answer it.
 	FOCUS.menu = M.FOCUS_MODES[built.focus]
@@ -1353,6 +1378,7 @@ end
 -- @author dop42
 function M.Init()
 	record = nil
+	announcedOpen = false
 	nextHandle = 0
 	pendingOpen = false
 	wired = false

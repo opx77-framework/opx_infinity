@@ -60,7 +60,7 @@ local EVENT_NEEDS_EFFECTS = OPX.Event(OPX.Channel.LOCAL, 'needs', 'effects')
 -- The downed module's public bus.
 local EVENT_DOWNED_CHANGED = OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed')
 
--- THE THREE SCREENS THAT OWN THE DISPLAY INSTEAD OF THIS ONE, each on its own
+-- THE FOUR SCREENS THAT OWN THE DISPLAY INSTEAD OF THIS ONE, each on its own
 -- module's public bus. Read with a bare AddEventHandler and nothing is required:
 -- a world without one of these modules simply never raises its name, which is
 -- the right answer rather than a HUD that hides for a screen nobody can open.
@@ -73,8 +73,13 @@ local EVENT_DOWNED_CHANGED = OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed')
 --   appearance the fitting room once it IS drawn -- including one the player
 --              asked for from the appearance panel, long after the join, which
 --              `entry` knows nothing about and should not.
+--   menu       any open menu. Added on the owner's word once the vanilla
+--              minimap came back and the money block moved left to get out of
+--              its way: a menu opening over that corner is one more thing in a
+--              corner that now has two already.
 local EVENT_ENTRY_STATE = OPX.Event(OPX.Channel.LOCAL, 'entry', 'state')
 local EVENT_SPAWN_STATE = OPX.Event(OPX.Channel.LOCAL, 'spawn', 'state')
+local EVENT_MENU_STATE = OPX.Event(OPX.Channel.LOCAL, 'menu', 'state')
 local EVENT_APPEARANCE_DECISION = OPX.Event(OPX.Channel.LOCAL, 'appearance', 'decision')
 
 -- This module's own public bus, raised after the surface was told, so a handler
@@ -1041,6 +1046,20 @@ function M.Start()
 	AddEventHandler(EVENT_SPAWN_STATE, function(payload)
 		if type(payload) ~= 'table' then return end
 		setCovered('spawn', payload.open == true)
+	end)
+
+	-- A MENU IS A SCREEN THE PLAYER IS READING, so the HUD stands aside for it
+	-- exactly as it does for the join and the fitting room. "quand le menu est
+	-- ouvert hide la" -- and the reason is the corner: the vanilla minimap came
+	-- back with the blips work, the money block moved to the left to get out of
+	-- its way, and a menu opening over it is one more thing in a corner that now
+	-- has two already.
+	--
+	-- The fourth name in a set, not a fourth mechanism: `setCovered` restores
+	-- whatever the player themselves chose the moment the last screen closes.
+	AddEventHandler(EVENT_MENU_STATE, function(payload)
+		if type(payload) ~= 'table' then return end
+		setCovered('menu', payload.open == true)
 	end)
 
 	-- A room that is DRAWN. `entry` already covers one that is merely owed, and
