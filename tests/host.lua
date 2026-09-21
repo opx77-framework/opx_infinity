@@ -506,9 +506,15 @@ function Host.Environment(side, database)
 				if session ~= nil and gate.sessions[id] ~= nil and session ~= gate.sessions[id] then
 					return false, 'session_mismatch'
 				end
+				-- A SESSION MISMATCH IS THE ONLY REFUSAL. Releasing when this
+				-- resource holds nothing answers TRUE, because the postcondition
+				-- -- "we are not holding this player" -- is satisfied, and
+				-- because `OPX.Gate.Release` documents itself as idempotent and
+				-- "safe for a player who never held one". Modelling that as a
+				-- refusal would make the runtime log an error on every ordinary
+				-- double release and would make its own promise a lie.
 				local held = gate.holds[id]
-				if held == nil or held['opx_infinity'] == nil then return false, 'no_such_hold' end
-				held['opx_infinity'] = nil
+				if held ~= nil then held['opx_infinity'] = nil end
 				return true
 			end,
 
