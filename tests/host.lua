@@ -594,10 +594,17 @@ function Host.Environment(side, database)
 				vehicleRemoves[#vehicleRemoves + 1] = id
 				return true
 			end,
-			update = function() return true end,
+			-- RECORDED, for the same reason `remove` is: "the flags were written"
+			-- and "the runtime meant to write them" read identically off a bare
+			-- `true`, and the mask a flag resolves to is the whole question when
+			-- the bits come from the host rather than from a private copy.
+			update = function(id, patch)
+				vehicles.updates[#vehicles.updates + 1] = { id = id, patch = patch }
+				if vehicles.refuseUpdate ~= nil then return false, vehicles.refuseUpdate end
+				return true
+			end,
 			getDamage = function() return {} end,
 			setDamage = function() return true end,
-			flags = function() return {} end,
 			-- The seat THIS client is in, which is what tells the strip whether the
 			-- key is about to take a vehicle out or put one away. Slot 1 is the
 			-- local player here, the same convention `state.localPlayer` uses.
@@ -1159,7 +1166,8 @@ function Host.Environment(side, database)
 	-- refuse.
 	-- `byId` is the per-vehicle store `get` reads first: put a projection in it
 	-- under the id `create` handed back and two live vehicles stop being one.
-	vehicles = { refuse = nil, snapshot = nil, byId = {} }
+	vehicles = { refuse = nil, snapshot = nil, byId = {}, updates = {},
+		refuseUpdate = nil }
 	vehicleCreates = {}
 	vehicleRemoves = {}
 
@@ -1509,6 +1517,13 @@ function Host.Environment(side, database)
 		-- The keyboard: `input.captured` is another surface holding it, `input.keys`
 		-- is what each mapping answers to after a rebind.
 		input = input,
+
+		-- The ACL's own state. `granted` is what `control.Allow` writes; set
+		-- `acl.refuse` to a string to make every question come back `false,
+		-- <reason>`, the way a build without the `acl.read` grant answers -- a
+		-- refusal CARRYING a reason, which is not the same thing as a host that
+		-- could not be asked at all.
+		acl = acl,
 
 		-- Key mappings the runtime declared, by id.
 		keyMappings = keyMappings,
