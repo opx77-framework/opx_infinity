@@ -498,6 +498,59 @@ local function onHangUp()
 	end
 end
 
+-- Answers the caller their own contact list, with each row's reachability
+-- worked out HERE and not on the screen that draws it.
+--
+-- `registry.Consider` is what answers "could I ring this person right now", and
+-- it is the same function `Invite` runs -- so a row drawn as available is a row
+-- the server will accept, and a row drawn with a reason beside it names the
+-- reason the server would have given. The alternative, a client re-deriving
+-- "are they busy" from whatever it can see, is the hand-kept second opinion
+-- this codebase has been bitten by in five other places, and the copy that
+-- drifted would be the one offering a row that refuses when you press it.
+--
+-- NOTHING ABOUT WHERE ANYBODY IS crosses on this wire, and no row exists for a
+-- contact who is not connected. A contact list that reported who was online
+-- would be a presence tracker; one that reported who was CALLABLE is the
+-- feature, and the difference is that an offline contact is simply absent
+-- rather than listed as unavailable.
+local function onRoster()
+	local playerId = tonumber(source) or 0
+	if playerId <= 0 then return end
+	if OPX.Cooling(playerId, 'calls:roster', 1000) then return end
+
+	local rows = {}
+	for _, contact in ipairs(contactsOf(playerId)) do
+		local loaded = character ~= nil and type(character.GetPlayerByCitizenId) == 'function'
+			and character.GetPlayerByCitizenId(contact.citizenId) or nil
+		local data = loaded and loaded.PlayerData or nil
+		local id = type(data) == 'table' and Model.PlayerId(data.source) or nil
+		if id ~= nil then
+			local kind, reason = registry.Consider(playerId, id, nil)
+			rows[#rows + 1] = {
+				id = id,
+				-- The name as it is NOW rather than as it was written into the
+				-- contact row: a character named after the hand-over would
+				-- otherwise be listed under whatever they were called then.
+				name = nameOf(id) or contact.name,
+				kind = kind,
+				refusal = reason,
+			}
+		end
+	end
+	table.sort(rows, function(left, right)
+		-- Reachable first, then by name. A list whose top row is one you cannot
+		-- press is a list that reads as broken.
+		if (left.refusal == nil) ~= (right.refusal == nil) then return left.refusal == nil end
+		return tostring(left.name) < tostring(right.name)
+	end)
+
+	TriggerClientEvent(M.Event.ROSTER, playerId, {
+		rows = rows,
+		onCall = registry.CallOf(playerId) ~= nil,
+	})
+end
+
 -- Pushes the caller their state again. The re-pop button, and the start-up
 -- handshake, are the same request: "tell me what is happening to me".
 local function onReady()
@@ -747,6 +800,7 @@ function M.Start()
 	end
 
 	RegisterNetEvent(M.Event.READY, onReady)
+	RegisterNetEvent(M.Event.ASK_ROSTER, onRoster)
 	RegisterNetEvent(M.Event.INVITE, onInvite)
 	RegisterNetEvent(M.Event.ACCEPT, onAccept)
 	RegisterNetEvent(M.Event.DECLINE, onDecline)

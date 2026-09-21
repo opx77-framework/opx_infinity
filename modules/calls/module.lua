@@ -75,6 +75,19 @@ M.Event = {
 	DECLINE = OPX.Event(NET, 'calls', 'decline'),
 	HANG_UP = OPX.Event(NET, 'calls', 'hangup'),
 
+	-- The menu's list, asked for and answered. The owner wanted a third
+	-- participant addable "par le menu ou par le ALT", and the ALT path needs
+	-- somebody standing in front of you -- so the menu path needs a list of
+	-- people who are not.
+	--
+	-- IT IS THE CALLER'S CONTACTS AND NOBODY ELSE, which is what makes contact
+	-- sharing worth having rather than a write-only feature: the people you can
+	-- ring from a menu are exactly the people who agreed to be reachable that
+	-- way. The obvious alternative -- every connected player -- is an unbounded
+	-- list, and it is also a presence and a position leak dressed as a feature.
+	ASK_ROSTER = OPX.Event(NET, 'calls', 'roster'),
+	ROSTER = OPX.Event(NET, 'calls', 'contacts'),
+
 	-- Client-local: the state half to whatever draws it. One channel carrying a
 	-- `kind`, the way `modules/downed/client/view.lua` explains at length.
 	VIEW = OPX.Event(LOCAL, 'calls', 'view'),

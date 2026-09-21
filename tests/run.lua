@@ -20735,6 +20735,38 @@ do
 			#onCallA.participants == 2 and onCallA.founder == A,
 			#onCallA.participants .. ' founder=' .. tostring(onCallA.founder))
 
+		-- ── a third who is already talking to somebody else ──────────────────
+		-- The `join` branch has its own `targetInCall`, and it is NOT the one
+		-- the fresh-call branch has: a participant reaching for somebody who is
+		-- mid-call elsewhere is a different sentence in the model from a player
+		-- with no call reaching for the same person. Written because a mutation
+		-- proved it -- removing the join branch's copy left the suite green, so
+		-- until this existed that line was carried by nothing.
+		--
+		-- BEFORE THE THIRD JOINS, and the order is the whole of what makes it
+		-- work: `Consider` checks the ceiling before it checks the target, so
+		-- against a call that already holds three this is `callFull` and the
+		-- line under test is never reached. The first version sat below and
+		-- reported exactly that.
+		local E, F = 608, 609
+		incarnate(E, 'e2')
+		incarnate(F, 'f2')
+		control.Pump(5)
+		ask(E, module.Event.INVITE, F)
+		ask(F, module.Event.ACCEPT, inviteOn(F))
+		check('two other players hold a call of their own',
+			onCallCount(E) == 2, onCallCount(E))
+		mark = ask(B, module.Event.INVITE, E)
+		refused = refusalFor(mark)
+		check('adding a third who is on another call is refused, not stolen from it',
+			refused ~= nil and refused.code == 'calls.error.targetInCall',
+			refused and tostring(refused.code))
+		check('and neither call changed size',
+			onCallCount(A) == 2 and onCallCount(E) == 2,
+			onCallCount(A) .. '/' .. onCallCount(E))
+		ask(E, module.Event.HANG_UP)
+		control.Pump(20)
+
 		-- ── the third ────────────────────────────────────────────────────────
 		-- The SAME verb. `kind` is derived from the sender already being on a
 		-- call, which is the one place the two paths could be confused: a
@@ -21057,11 +21089,99 @@ do
 		-- Replaced, not appended. The list is written into the character's
 		-- metadata blob and read back on every load, so a duplicate row is a
 		-- cost paid on every connection they ever make.
+		--
+		-- BEFORE THE MENU BLOCK BELOW, and the order is load-bearing: that
+		-- block disconnects the contact to prove an absent one is not listed,
+		-- and a hand-over to a slot nobody is sitting in is refused for a
+		-- perfectly good reason that has nothing to do with duplicates.
 		ask(A, module.Event.INVITE, B, 'contact')
 		ask(B, module.Event.ACCEPT, inviteOn(B))
 		check('handing over the same contact again replaces the row rather than adding a second',
 			#contactsOf(A) == 1 and #contactsOf(B) == 1,
 			('%d/%d'):format(#contactsOf(A), #contactsOf(B)))
+
+		-- ── the menu path, and the one copy of the rules ─────────────────────
+		-- The owner wanted a third addable "par le menu ou par le ALT". ALT
+		-- needs a body under the crosshair, which is the person a holocall
+		-- exists to avoid walking to, so the menu is how you reach the rest --
+		-- and the list is the caller's CONTACTS, which is what makes the
+		-- sharing above worth having rather than a write-only feature.
+		--
+		-- THE ROW'S REACHABILITY IS `registry.Consider`'s ANSWER, the same
+		-- function `Invite` runs. That is asserted here rather than assumed,
+		-- because the alternative -- a second derivation of "is that player
+		-- busy" next to the one that decides -- is the hand-kept second opinion
+		-- this codebase has been bitten by in five other places, and the copy
+		-- that drifted would be the one offering a row that refuses when it is
+		-- pressed.
+		local function rosterFor(playerId)
+			control.Pump(20)
+			env.source = playerId
+			control.netEvents[module.Event.ASK_ROSTER]()
+			env.source = nil
+			for index = #control.clientEvents, 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == module.Event.ROSTER and sent.source == playerId then
+					return type(sent[1]) == 'table' and sent[1] or nil
+				end
+			end
+			return nil
+		end
+
+		local roster = rosterFor(A)
+		check('the contacts screen is answered with a list', roster ~= nil
+			and type(roster.rows) == 'table', roster and type(roster.rows))
+		check('and it holds the contact that was just handed over, and only that',
+			roster ~= nil and #roster.rows == 1, roster and #roster.rows)
+		check('naming the connected player id rather than the citizen id it is stored under',
+			roster ~= nil and roster.rows[1] ~= nil and roster.rows[1].id == B,
+			roster and roster.rows[1] and tostring(roster.rows[1].id))
+		check('with no refusal beside it, because that call would go through',
+			roster ~= nil and roster.rows[1] ~= nil and roster.rows[1].refusal == nil,
+			roster and roster.rows[1] and tostring(roster.rows[1].refusal))
+
+		-- THE ROW AND THE VERB AGREE. Put the contact on a call and the row is
+		-- greyed with the same code the invite would have been refused with.
+		local C = 803
+		incarnate(C, 'cc')
+		control.Pump(5)
+		ask(B, module.Event.INVITE, C)
+		ask(C, module.Event.ACCEPT, inviteOn(C))
+		check('the contact is now on a call of their own',
+			calls.IsOnCall(B).value.onCall == true)
+
+		roster = rosterFor(A)
+		local listed = roster ~= nil and roster.rows[1] or nil
+		check('the row is greyed rather than dropped: unreachable now is not gone',
+			listed ~= nil and listed.id == B, listed and tostring(listed.id))
+		check('and names WHY, so the player knows it is worth trying again',
+			listed ~= nil and listed.refusal == 'targetInCall',
+			listed and tostring(listed.refusal))
+
+		-- And the verb agrees, which is the whole point of the shared rule.
+		mark = ask(A, module.Event.INVITE, B)
+		refused = refusalFor(mark)
+		check('and pressing it anyway is refused with exactly that code',
+			refused ~= nil and refused.code == 'calls.error.' .. tostring(listed and listed.refusal),
+			refused and tostring(refused.code))
+
+		ask(B, module.Event.HANG_UP)
+		control.Pump(20)
+
+		-- ── a contact who is not connected is simply absent ──────────────────
+		-- Not listed as unavailable. A list that reported who was OFFLINE would
+		-- be a presence tracker; one that lists who is CALLABLE is the feature.
+		control.Fire('onPlayerDisconnected', B)
+		control.Admit(B, nil)
+		character.Players[B] = nil
+		character.Registry.byCitizenId['citizen-cb'] = nil
+		control.Pump(10)
+		roster = rosterFor(A)
+		check('a contact who is not connected is absent from the list, not greyed in it',
+			roster ~= nil and #roster.rows == 0, roster and #roster.rows)
+		check('and the stored contact row itself is untouched -- they are away, not deleted',
+			#contactsOf(A) == 1, #contactsOf(A))
+
 	end
 end
 
@@ -21326,18 +21446,18 @@ do
 			end
 			-- Registration runs on a thread with a `Wait(0)` between the kinds,
 			-- so it is a resume or two away from `Start` finishing.
-			settle(control, function() return #rowsOf() >= 7 end, 40)
+			settle(control, function() return #rowsOf() >= 8 end, 40)
 			local rows = rowsOf()
-			check('all seven rows reached the registry, not four of them',
-				#rows == 7, #rows)
+			check('all eight rows reached the registry, not five of them',
+				#rows == 8, #rows)
 
 			local byId = {}
 			for _, row in ipairs(rows) do byId[row.id] = row end
 			-- Named one at a time rather than counted, because the count alone
-			-- would be satisfied by seven copies of the same row -- and the
-			-- owner asked for these seven specifically.
-			for _, id in ipairs({ 'callAccept', 'callDecline', 'callHangUp', 'callRepop',
-				'callPlace', 'callAdd', 'callShare' }) do
+			-- would be satisfied by eight copies of the same row -- and the
+			-- owner asked for these eight specifically.
+			for _, id in ipairs({ 'callAccept', 'callDecline', 'callHangUp', 'callMenu',
+				'callRepop', 'callPlace', 'callAdd', 'callShare' }) do
 				check(('the row %s is on the eye'):format(id), byId[id] ~= nil)
 			end
 

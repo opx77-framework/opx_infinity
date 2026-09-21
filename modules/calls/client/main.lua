@@ -335,6 +335,120 @@ function M.State()
 	}
 end
 
+-- ── the menu: the other way to reach somebody who is not in front of you ─────
+--
+-- THE OWNER ASKED FOR THE THIRD PARTICIPANT "par le menu ou par le ALT", and
+-- the two paths are not alternatives so much as complements. ALT needs a body
+-- under the crosshair, which is exactly the person a holocall was invented to
+-- avoid having to walk to; the menu is how you reach the rest.
+--
+-- IT LISTS THE CALLER'S CONTACTS AND NOBODY ELSE, which is what makes the
+-- sharing worth having: the people you can ring from a menu are the people who
+-- agreed to be reachable that way. The server builds the list, works out each
+-- row's reachability with the SAME function that judges an invite, and sends
+-- neither a position nor a row for a contact who is not connected.
+--
+-- THE MENU IS OPTIONAL AND THE LIST IS NOT CACHED. Without the menu module the
+-- calls still work on the eye, and the list is asked for when the screen opens
+-- rather than held: a contact list a minute old is a list of rows that refuse.
+
+-- The open menu's handle, or nil.
+local menuHandle = nil
+
+-- Turns one roster row into a menu row, greyed with its reason when it has one.
+local function rosterRow(row)
+	local reason = row.refusal
+	return {
+		id = 'contact_' .. tostring(row.id),
+		label = tostring(row.name or '?'),
+		icon = 'person',
+		-- THE REASON IS SHOWN, not merely obeyed. A row that is simply dark
+		-- tells a player their contact is unreachable and nothing else, and the
+		-- two commonest reasons -- already on a call, line busy -- are both
+		-- things that stop being true in a minute.
+		description = reason ~= nil and locale('calls.error.' .. reason) or nil,
+		value = reason ~= nil and locale('calls.menu.unavailable') or nil,
+		disabled = reason ~= nil,
+		data = { kind = 'invite', id = row.id },
+	}
+end
+
+-- Draws or redraws the contacts screen from a roster the server sent.
+local function drawMenu(payload)
+	local menu = OPX.Api.Get('menu')
+	if menu == nil then return end
+
+	local items = {}
+	local rows = type(payload.rows) == 'table' and payload.rows or {}
+	if #rows == 0 then
+		-- A SEPARATOR AND NOT A DISABLED ROW. An empty list still has to say
+		-- something, and a row that looks pressable and is not is worse than a
+		-- line of text that never looked like one.
+		items[#items + 1] = { separator = true, label = locale('calls.menu.empty') }
+	else
+		items[#items + 1] = { separator = true,
+			label = payload.onCall == true and locale('calls.menu.add')
+				or locale('calls.menu.call') }
+		for index = 1, #rows do
+			local row = rows[index]
+			if type(row) == 'table' and Model.PlayerId(row.id) ~= nil then
+				items[#items + 1] = rosterRow(row)
+			end
+		end
+	end
+
+	if state.call ~= nil then
+		items[#items + 1] = { separator = true, label = locale('calls.live.title') }
+		items[#items + 1] = {
+			id = 'hangUp',
+			label = locale('calls.row.hangUp'),
+			icon = 'ban',
+			danger = true,
+			data = { kind = 'hangUp' },
+		}
+	end
+
+	local spec = {
+		owner = OWNER,
+		id = 'calls',
+		title = locale('calls.menu.title'),
+		items = items,
+		on = function(payload2)
+			if type(payload2) ~= 'table' or payload2.action ~= 'select' then return end
+			local data = type(payload2.data) == 'table' and payload2.data or nil
+			if data == nil then return end
+			if data.kind == 'hangUp' then return M.HangUp() end
+			if data.kind == 'invite' then return M.Invite(data.id, nil) end
+		end,
+	}
+
+	if menuHandle ~= nil then
+		-- `Update` and not a fresh `Open`: it re-walks the navigation stack by
+		-- row id, so a refresh does not throw the cursor back to the top of a
+		-- list somebody is halfway down.
+		local updated = menu.Update(menuHandle, spec)
+		if updated.ok then return end
+		menuHandle = nil
+	end
+
+	local opened = menu.Open(spec)
+	if not opened.ok then
+		OPX.Note('calls', 'the contacts screen was refused: ' .. tostring(opened.error))
+		return
+	end
+	menuHandle = opened.value.handle
+end
+
+--- Opens the contacts screen, which is the menu path to placing a call and to
+--- adding a third.
+-- @author dop42
+-- @return boolean whether anything was asked for
+function M.OpenMenu()
+	if OPX.Api.Get('menu') == nil then return false end
+	TriggerServerEvent(M.Event.ASK_ROSTER)
+	return true
+end
+
 -- ── the rows on the eye ──────────────────────────────────────────────────────
 
 -- The id the eye's context names for the body under the crosshair, as a number.
@@ -465,11 +579,23 @@ function M.SelfRows()
 			onSelect = function() return M.HangUp() end,
 		},
 		{
+			id = 'callMenu',
+			label = locale('calls.row.menu'),
+			icon = 'list',
+			group = group,
+			order = 14,
+			-- THE MENU PATH, offered whether or not a call is up: with none it
+			-- places one, with one it adds a third. Both are the same verb and
+			-- the server derives which -- see `registry.Consider`.
+			canInteract = function() return OPX.Api.Get('menu') ~= nil end,
+			onSelect = function() return M.OpenMenu() end,
+		},
+		{
 			id = 'callRepop',
 			label = locale('calls.row.repop'),
 			icon = 'eye',
 			group = group,
-			order = 13,
+			order = 15,
 			-- THE RE-POP BUTTON THE OWNER ASKED FOR, and it is offered only
 			-- when there is something to re-pop: a card that was waved away, or
 			-- a live call whose chip somebody lost. Offered unconditionally it
@@ -527,6 +653,7 @@ function M.Init()
 	cardUpMs = nil
 	lastRingMs = -math.huge
 	mutedEvents = {}
+	menuHandle = nil
 	jobs = {}
 
 	local settings = M.Settings
@@ -549,6 +676,10 @@ function M.Start()
 	if type(M.View) == 'table' and type(M.View.Start) == 'function' then M.View.Start() end
 
 	RegisterNetEvent(M.Event.STATE, onState)
+	RegisterNetEvent(M.Event.ROSTER, function(payload)
+		if type(payload) ~= 'table' then return end
+		drawMenu(payload)
+	end)
 
 	-- The ring is a scheduler job rather than a thread of its own: it has one
 	-- comparison to make and a module that wants a tick has to justify it.
@@ -589,5 +720,13 @@ function M.Stop()
 	if contract ~= nil and type(contract.Clear) == 'function' then
 		pcall(contract.Clear, OWNER)
 	end
+	-- The contacts screen goes with the module. A menu left standing over a
+	-- stopped owner is a list of rows whose `on` callback belongs to a VM that
+	-- is no longer answering.
+	local menu = OPX.Api.Get('menu')
+	if menuHandle ~= nil and menu ~= nil and type(menu.Close) == 'function' then
+		pcall(menu.Close, menuHandle, 'calls')
+	end
+	menuHandle = nil
 	publish({ kind = 'state' })
 end

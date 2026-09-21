@@ -268,20 +268,34 @@ function Model.New(options)
 		if outgoing[invite.from] == invite.id then outgoing[invite.from] = nil end
 	end
 
-	--- Raises an invite. The verb behind every consent in this module.
+	--- Whether one player could invite another right now, and as what.
 	---
-	--- `kind` is not the caller's to choose freely: it is DERIVED from whether
-	--- the sender is in a call, because those are the same intent -- "I want to
-	--- talk to that person" -- and letting a client name the kind would let it
-	--- name a `join` against a call it is not in. The caller passes `contact`
-	--- or nothing, and nothing means "a call, whichever sort applies".
+	--- EVERY RULE `Invite` ENFORCES, WITH NOTHING BUILT AND NOTHING CHANGED.
+	--- It exists because there are two callers who need the same answer and
+	--- only one of them wants the side effects: raising the invite, and DRAWING
+	--- A MENU ROW for a person you might call -- greyed out, with the reason
+	--- beside it, which is the difference between a list that tells you why
+	--- somebody is unreachable and a list that refuses when you press it.
+	---
+	--- `Invite` calls this and does nothing else with the rules, so there is
+	--- one copy. The obvious alternative -- a menu that re-derives "is that
+	--- player busy" from `CallOf` and `IncomingOf` -- is the hand-kept second
+	--- opinion this codebase has been bitten by in five other places, and the
+	--- copy that drifted would be the one offering a row the server refuses.
+	---
+	--- `kind` is not the caller's to choose freely either: it is DERIVED from
+	--- whether the sender is in a call, because those are the same intent --
+	--- "I want to talk to that person" -- and letting a client name the kind
+	--- would let it name a `join` against a call it is not in. The caller
+	--- passes `contact` or nothing, and nothing means "a call, whichever sort
+	--- applies".
 	-- @author dop42
 	-- @param from integer
 	-- @param to integer
 	-- @param wanted string|nil 'contact', or nil for a call
-	-- @return table|nil the invite
+	-- @return string|nil the kind it would be
 	-- @return string|nil the refusal
-	function registry.Invite(from, to, wanted)
+	function registry.Consider(from, to, wanted)
 		local sender, target = Model.PlayerId(from), Model.PlayerId(to)
 		if sender == nil or target == nil then return nil, 'badRequest' end
 		if wanted ~= nil and wanted ~= 'contact' then return nil, 'badRequest' end
@@ -292,15 +306,14 @@ function Model.New(options)
 		ok, reason = admits(target, 'target')
 		if not ok then return nil, reason end
 
-		-- ONE OUT AND ONE IN, CHECKED BEFORE ANYTHING IS BUILT. A second invite
-		-- from the same player would overwrite `outgoing` and leave the first in
-		-- `invites` with nothing pointing at it: a ghost the target could still
-		-- accept, into a call the sender had forgotten placing.
+		-- ONE OUT AND ONE IN. A second invite from the same player would
+		-- overwrite `outgoing` and leave the first in `invites` with nothing
+		-- pointing at it: a ghost the target could still accept, into a call
+		-- the sender had forgotten placing.
 		if outgoing[sender] ~= nil then return nil, 'alreadyPending' end
 		if incoming[target] ~= nil then return nil, 'targetPending' end
 
 		local kind = wanted or (callOf[sender] ~= nil and 'join' or 'call')
-		local callId = nil
 
 		if kind == 'contact' then
 			-- The one rule about where the two bodies are, and the only one.
@@ -310,17 +323,42 @@ function Model.New(options)
 			-- asks this question.
 			if not near(sender, target) then return nil, 'tooFar' end
 			if incoming[sender] ~= nil then return nil, 'alreadyPending' end
-		elseif kind == 'join' then
-			callId = callOf[sender]
-			local call = calls[callId]
+			return kind
+		end
+
+		if kind == 'join' then
+			local call = calls[callOf[sender] or false]
 			if call == nil then return nil, 'notInCall' end
 			if #call.order >= maximum then return nil, 'callFull' end
-			if callOf[target] == callId then return nil, 'alreadyParticipant' end
+			if callOf[target] == call.id then return nil, 'alreadyParticipant' end
 			if callOf[target] ~= nil then return nil, 'targetInCall' end
-		else
-			if callOf[sender] ~= nil then return nil, 'alreadyInCall' end
-			if callOf[target] ~= nil then return nil, 'targetInCall' end
+			return kind
 		end
+
+		if callOf[sender] ~= nil then return nil, 'alreadyInCall' end
+		if callOf[target] ~= nil then return nil, 'targetInCall' end
+		return kind
+	end
+
+	--- Raises an invite. The verb behind every consent in this module.
+	---
+	--- The rules are `Consider`'s, every one of them, and this adds only the
+	--- object: an id, the two ends, the call it joins and a deadline.
+	-- @author dop42
+	-- @param from integer
+	-- @param to integer
+	-- @param wanted string|nil 'contact', or nil for a call
+	-- @return table|nil the invite
+	-- @return string|nil the refusal
+	function registry.Invite(from, to, wanted)
+		local kind, reason = registry.Consider(from, to, wanted)
+		if kind == nil then return nil, reason end
+
+		-- Re-bounded rather than carried out of `Consider`: it answers a kind
+		-- and a refusal, and a second return value that callers could forget to
+		-- use is how an unchecked id gets into a table key.
+		local sender, target = Model.PlayerId(from), Model.PlayerId(to)
+		local callId = kind == 'join' and callOf[sender] or nil
 
 		local atMs = now()
 		sequence = sequence + 1

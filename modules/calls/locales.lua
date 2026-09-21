@@ -43,10 +43,18 @@ local EN = {
 	['calls.row.call'] = 'Call this person',
 	['calls.row.add'] = 'Add to the call',
 	['calls.row.share'] = 'Share your contact',
+	['calls.row.menu'] = 'Contacts',
 	['calls.row.accept'] = 'Answer the call',
 	['calls.row.decline'] = 'Refuse the call',
 	['calls.row.hangUp'] = 'Hang up',
 	['calls.row.repop'] = 'Show the call again',
+
+	-- ── the contacts screen ──────────────────────────────────────────────────
+	['calls.menu.title'] = 'CONTACTS',
+	['calls.menu.call'] = 'Reachable now',
+	['calls.menu.add'] = 'Add to this call',
+	['calls.menu.empty'] = 'Nobody has given you their contact yet.',
+	['calls.menu.unavailable'] = 'Unavailable',
 
 	-- ── what happened ────────────────────────────────────────────────────────
 	['calls.placed'] = 'Calling {name}...',
@@ -103,10 +111,17 @@ local FR = {
 	['calls.row.call'] = 'Appeler cette personne',
 	['calls.row.add'] = "Ajouter à l'appel",
 	['calls.row.share'] = 'Partager votre contact',
+	['calls.row.menu'] = 'Contacts',
 	['calls.row.accept'] = "Répondre à l'appel",
 	['calls.row.decline'] = "Refuser l'appel",
 	['calls.row.hangUp'] = 'Raccrocher',
 	['calls.row.repop'] = "Réafficher l'appel",
+
+	['calls.menu.title'] = 'CONTACTS',
+	['calls.menu.call'] = 'Joignables',
+	['calls.menu.add'] = 'Ajouter à cet appel',
+	['calls.menu.empty'] = "Personne ne vous a encore transmis son contact.",
+	['calls.menu.unavailable'] = 'Indisponible',
 
 	['calls.placed'] = 'Appel de {name}...',
 	['calls.ringing'] = '{name} vous appelle.',
