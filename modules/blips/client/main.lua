@@ -374,8 +374,49 @@ local function pointsOf(name)
 				-- block at all, deliberately -- the owner asked for a job-free job
 				-- -- so both stay pinned for everybody and this changes nothing
 				-- until somebody writes one.
-				if type(drops) == 'table'
-					and passesJob({ jobs = site.JOBS, onDuty = site.ON_DUTY }, membership) then
+				local allowed = passesJob({ jobs = site.JOBS, onDuty = site.ON_DUTY },
+					membership)
+
+				-- ── AND THE YARD ITSELF, WHICH WAS THE HALF NOBODY COULD FIND ──
+				-- THE OWNER: "pour la hauling tu peux mettre des blips aussi car
+				-- sinon ont sais pas ou sais". The drop-offs were pinned and the
+				-- PICKUP was not, so the map said where to deliver a crate and
+				-- nothing at all about where to collect one -- which is the half
+				-- of the job you have to find first.
+				--
+				-- ONE PIN PER SITE, AT ITS FIRST SURVEYED POINT. A site has no
+				-- coordinate of its own -- it is a scatter of crate points -- and
+				-- pinning all of them would be up to 64 pins eating half the
+				-- platform's per-resource quota to say "there are boxes in this
+				-- yard" over and over. The first point that is not a placeholder
+				-- is a real place inside the yard, which is all a driver needs.
+				if type(site) == 'table' and allowed and type(site.POINTS) == 'table' then
+					-- `point` is the helper; `spot` is the row. The first draft named
+					-- the loop variable `point` and shadowed the function it was
+					-- about to call.
+					--
+					-- CALLED DIRECTLY RATHER THAN THROUGH `add`, because `add`
+					-- counts every refusal as a skipped placeholder -- and the
+					-- unsurveyed points before the first real one would then be
+					-- counted twice, once here and once as themselves.
+					--
+					-- THE KEY IS WHAT MAKES IT ONE PIN, NOT THE BREAK, and that is
+					-- worth writing down because the first version of this comment
+					-- claimed the opposite. Every point of a site is offered under
+					-- the same `site\<key>`, and the reconciliation downstream is
+					-- keyed -- so even without the break a yard gets one blip.
+					-- Proved by mutation: removing the break changes nothing, and
+					-- making the key per-point produces two. The break is the cheap
+					-- early exit it looks like and no more.
+					for _, spot in ipairs(site.POINTS) do
+						if type(spot) == 'table' and point(out, 'site\1' .. tostring(siteKey),
+							site.LABEL, spot.X, spot.Y, spot.Z) then
+							break
+						end
+					end
+				end
+
+				if type(drops) == 'table' and allowed then
 					for dropKey, drop in pairs(drops) do
 						if type(drop) == 'table' then
 							add('drop\1' .. tostring(siteKey) .. '\1' .. tostring(dropKey),

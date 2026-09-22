@@ -22346,6 +22346,69 @@ do
 		-- THE UNSURVEYED POINTS. Every DROPOFF in `config/hauling.lua` is an
 		-- all-zero placeholder and the file says so in its own header. A pin at
 		-- the world origin is a pin in the sea, and it reads as this feature
+
+		-- ── THE YARD ITSELF, NOT ONLY WHERE THE CRATE GOES ───────────────────
+		-- THE OWNER: "pour la hauling tu peux mettre des blips aussi car sinon
+		-- ont sais pas ou sais". Hauling was already a blip source -- and only
+		-- its DROP-OFFS were pinned, so the map said where to deliver a crate and
+		-- nothing about where to collect one, which is the half you have to find
+		-- first.
+		--
+		-- WHY HE SAW NOTHING AT ALL, though, is a different fault and not this
+		-- one: every coordinate in `config/hauling.lua` ships as `0,0,0` -- ten of
+		-- them, none surveyed -- the hauling module disables both sites at boot
+		-- and says so in the journal on every start, and this module refuses to
+		-- pin the world origin. A pin in the sea reads as the feature being
+		-- broken. So the check below surveys a site first, because a test against
+		-- the shipped placeholders would pass by pinning nothing.
+		do
+			local haulCfg = OPX.Config.MODULES.hauling
+			local site = haulCfg ~= nil and haulCfg.SITES and haulCfg.SITES.docks or nil
+			check('the shipped hauling site is there to survey', site ~= nil)
+
+			if site ~= nil then
+				local heldPoints = site.POINTS
+				-- THREE POINTS, and the first left as a placeholder on purpose:
+				-- the yard's pin must land on the first point that is REAL, not
+				-- on the first point in the list.
+				site.POINTS = {
+					{ X = 0.0, Y = 0.0, Z = 0.0, YAW = 0.0 },
+					{ X = 120.0, Y = -430.0, Z = 12.0, YAW = 90.0 },
+					{ X = 124.0, Y = -430.0, Z = 12.0, YAW = 90.0 },
+				}
+				blips.Runtime.Sync()
+				control.Pump(20)
+
+				local yards = 0
+				local at
+				for id in pairs(blips.Runtime.Created()) do
+					if tostring(id):find('site', 1, true) and tostring(id):find('docks', 1, true) then
+						yards = yards + 1
+						at = id
+					end
+				end
+				check('a surveyed yard is pinned', yards >= 1, yards)
+				-- ONE PIN PER YARD AND NOT ONE PER CRATE. Up to 64 points a site,
+				-- and the platform allows 128 blips for the whole resource.
+				check('exactly once, however many crate points it has', yards == 1,
+					('%d pin(s): %s'):format(yards, tostring(at)))
+
+				-- AND ON A REAL PLACE. The first entry is a placeholder, so a pin
+				-- that landed on it would be a pin in the sea.
+				local origin = 0
+				for _, options in pairs(control.blips.byId) do
+					local where = options.position
+					if where ~= nil and where.x == 0.0 and where.y == 0.0 and where.z == 0.0 then
+						origin = origin + 1
+					end
+				end
+				check('and not on the placeholder that comes before it', origin == 0, origin)
+
+				site.POINTS = heldPoints
+				blips.Runtime.Sync()
+				control.Pump(20)
+			end
+		end
 		-- being broken rather than as the config being unfilled.
 		check('the all-zero placeholders were skipped rather than pinned',
 			report.skipped > 0, report.skipped)
