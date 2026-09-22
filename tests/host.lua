@@ -210,7 +210,7 @@ function Host.Environment(side, database)
 	local control
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
 	local bodies, effects, travels, notices, placement, lifts, trips
-	local npcs, npcCreates, npcRemoves
+	local npcs, npcCreates, npcRemoves, npcAttitudes, npcGroups, population
 
 	-- The live tunable values, by key: what `Open77.tunables.declare` hands back
 	-- and what `control.tunables` lets a test move while the runtime is up.
@@ -352,6 +352,25 @@ function Host.Environment(side, database)
 				vehicleRemoves[#vehicleRemoves + 1] = id
 				return true
 			end,
+			-- The kinematic route the MaxTac insertion flies on. Recorded rather
+			-- than applied -- this host has no physics -- because where the pose was
+			-- is the whole of what a decision about a fly-in depends on: a create at
+			-- altitude and a remove afterwards is a run that could have been
+			-- cancelled between two points, and the poses are what tell them apart.
+			setTransform = function(id, definition)
+				vehiclePoses[#vehiclePoses + 1] = { id = id, definition = definition }
+				if vehicles.poseRefuse ~= nil then return nil, tostring(vehicles.poseRefuse) end
+				return true
+			end,
+			-- A pin and a switch, both recorded: `setFrozen` is what stops a client
+			-- arguing with the server's pose, and the two electrical bits are what
+			-- make an unoccupied airframe audible and lit.
+			setFrozen = function(id, frozen)
+				vehiclePins[#vehiclePins + 1] = { id = id, frozen = frozen }
+				return true
+			end,
+			setEngine = function() return true end,
+			setLights = function() return true end,
 			update = function() return true end,
 			getDamage = function() return {} end,
 			setDamage = function() return true end,
@@ -380,6 +399,33 @@ function Host.Environment(side, database)
 				-- officer to anything matching by id.
 				npcs.next = (npcs.next or 0) + 1
 				return ('npc-%d'):format(npcs.next)
+			end,
+			-- Every attitude row a resource puts on a body, in order. This is the
+			-- only place the harness can see WHOSE SIDE an officer is on, and that
+			-- is the whole difference between a squad that fights the player it
+			-- was raised for and one that stands there or turns on itself. The
+			-- `towards` argument is recorded exactly as the caller passed it,
+			-- with no translation, so a test asserts the module's own shape.
+			setAttitude = function(id, attitude, options)
+				npcAttitudes[#npcAttitudes + 1] = { id = id, attitude = attitude,
+					towards = type(options) == 'table' and options.towards or nil }
+				if npcs.refuseAttitude ~= nil then
+					return false, tostring(npcs.refuseAttitude)
+				end
+				return true
+			end,
+			-- The group each body was sworn into. Recorded because a group is
+			-- the ONLY thing that stops the base game's own faction rules from
+			-- turning an element on itself: two NPCs sharing a non-empty group
+			-- are allies, and two with none are resolved by rules this resource
+			-- does not own. A test that could not see this call could not tell a
+			-- squad from a firing line.
+			setGroup = function(id, group)
+				npcGroups[#npcGroups + 1] = { id = id, group = group }
+				if npcs.refuseGroup ~= nil then
+					return false, tostring(npcs.refuseGroup)
+				end
+				return true
 			end,
 			remove = function(id)
 				npcRemoves[#npcRemoves + 1] = id
@@ -563,6 +609,38 @@ function Host.Environment(side, database)
 				if granted == nil then return false end
 				local player = granted[tostring(playerId)]
 				return player ~= nil and player[tostring(permission)] == true
+			end,
+		},
+
+		-- `Open77.world`, the server half. Only the population pair is real here:
+		-- the rest of that table wants a streamed world, and this host has none.
+		--
+		-- REAL and not accepting, because the one thing the NCPD response asks of
+		-- it is that a write MOVES the police bit and leaves crowd and traffic
+		-- alone -- a stub answering `true` to everything could never show that.
+		world = {
+			getPopulation = function(bucket)
+				local held = population.byBucket[bucket]
+				if held == nil then
+					held = { bucket = bucket, crowd = 0.0, traffic = 0.0, police = false }
+				end
+				return { bucket = held.bucket, crowd = held.crowd, traffic = held.traffic,
+					police = held.police,
+					enabled = held.crowd > 0 or held.traffic > 0 or held.police == true }
+			end,
+			setPopulation = function(bucket, options)
+				population.writes[#population.writes + 1] = { bucket = bucket,
+					crowd = type(options) == 'table' and options.crowd or nil,
+					traffic = type(options) == 'table' and options.traffic or nil,
+					police = type(options) == 'table' and options.police or nil }
+				if population.refuse ~= nil then
+					return nil, tostring(population.refuse)
+				end
+				population.byBucket[bucket] = { bucket = bucket,
+					crowd = tonumber(type(options) == 'table' and options.crowd) or 0.0,
+					traffic = tonumber(type(options) == 'table' and options.traffic) or 0.0,
+					police = type(options) == 'table' and options.police == true }
+				return true
 			end,
 		},
 
@@ -784,12 +862,24 @@ function Host.Environment(side, database)
 	-- record or a full world would, and `snapshot` to make `get` answer a live
 	-- vehicle's projection -- the occupied case, which is the one a recall has to
 	-- refuse.
-	vehicles = { refuse = nil, snapshot = nil }
+	vehicles = { refuse = nil, snapshot = nil, poseRefuse = nil }
 	vehicleCreates = {}
 	vehicleRemoves = {}
+	-- Every pose a vehicle was told to take, and every pin put on one.
+	vehiclePoses = {}
+	vehiclePins = {}
 	npcs = { refuse = nil }
 	npcCreates = {}
 	npcRemoves = {}
+	npcAttitudes = {}
+	-- Every `setGroup` a resource made, in order.
+	npcGroups = {}
+	-- A REAL per-bucket ambient policy, not an accepting stub. The default is
+	-- the empty policy every Open77 client starts from -- no crowd, no traffic,
+	-- NO POLICE -- which is exactly the state a heat stage has to be able to
+	-- move. `refuse` makes a write answer nil, reason, the way a host without
+	-- the permission does.
+	population = { byBucket = {}, writes = {}, refuse = nil }
 
 	-- Adopted elevators, and every mutation in order. `refuse` makes `adopt`
 	-- answer nil the way a host with no elevator authority does, and `refuseFlags`
@@ -1090,11 +1180,27 @@ function Host.Environment(side, database)
 		vehicleCreates = vehicleCreates,
 		vehicleRemoves = vehicleRemoves,
 
+		-- The flight a vehicle was given, in order, and the pins put on one. Read
+		-- by the MaxTac checks: an insertion has to be provable as a RUN -- out at
+		-- altitude, down to the drop, and gone at the end -- and a create plus a
+		-- remove on its own reads the same as a run that never moved.
+		vehiclePoses = vehiclePoses,
+		vehiclePins = vehiclePins,
+
 		-- The same two for characters, so a response can be counted rather than
 		-- assumed: what arrived, where, and whether it was refused.
 		npcs = npcs,
 		npcCreates = npcCreates,
 		npcRemoves = npcRemoves,
+		npcAttitudes = npcAttitudes,
+
+		-- Which side each body was sworn into, and every row the module put on
+		-- one. Read by the squad checks: the rows say who is aimed at, the
+		-- groups say who is not aimed at, and a squad needs both.
+		npcGroups = npcGroups,
+		-- The ambient policy, and every write to it. Read by the NCPD checks: the
+		-- bit a stage has to move, and the two it must not touch.
+		population = population,
 
 		-- Every adopted lift, every flag mask written to one, every trip scheduled
 		-- and every release -- plus the two refusal switches. A lift's `flags` here

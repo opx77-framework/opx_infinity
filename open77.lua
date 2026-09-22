@@ -314,6 +314,9 @@ shared_script "modules/ncpd/module.lua"
 shared_script "modules/ncpd/locales.lua"
 shared_script "modules/ncpd/shared/law.lua"
 server_script "modules/ncpd/server/ledger.lua"
+-- The MaxTac insertion, before `response.lua` because the response is what asks
+-- it for an aircraft: `M.Av` has to exist by the time a stage is applied.
+server_script "modules/ncpd/server/av.lua"
 server_script "modules/ncpd/server/response.lua"
 server_script "modules/ncpd/server/main.lua"
 client_script "modules/ncpd/client/main.lua"
@@ -581,6 +584,17 @@ permissions {
   -- appears. The staff noclip pop is the reason this line is here -- without it
   -- there was no pop at all, and nothing on the server said why.
   "world.effects",
+
+  -- The per-bucket ambient policy, which is what decides whether the engine's
+  -- own police -- the units a heat stage spawns and the MaxTac AV -- may exist at
+  -- all. `world.npcs` is not the same thing: it lets a server CREATE a body, and
+  -- this lets the vanilla prevention system do it. Both are needed for an NCPD
+  -- response, and without this one every stage is a star with nothing behind it.
+  --
+  -- Only `modules/ncpd` writes it, and it asks for police and for NOTHING else:
+  -- crowd and traffic are read back and written unchanged, so the empty street
+  -- stays empty and only the police axis moves.
+  "world.population",
 
   "world.vehicles",
 

@@ -16323,6 +16323,17 @@ do
 	check('the division is the ladder\'s own, stage by stage',
 		law.Division(4) == 'ncpd' and law.Division(5) == 'maxtac',
 		tostring(law.Division(4)) .. '/' .. tostring(law.Division(5)))
+	-- THE INSERTION PLAN IS READ ONCE, HERE. The flight itself is driven in the
+	-- street section below, but a plan that does not survive validation is never
+	-- flown at all, so what the law book publishes is the precondition for every
+	-- check there: the run is planned in metres and seconds and the phase order
+	-- is the one the controller flies.
+	local insertion = law.Maxtac.AvInsertion
+	check('the shipped insertion plan validates, so the AV can be flown at all',
+		insertion ~= nil and insertion.ApproachMetres == 320.0
+			and insertion.ApproachAltitude == 95.0 and insertion.HoverAltitude == 26.0
+			and insertion.DropAltitude == 5.0 and insertion.TickMs == 100,
+		tostring(insertion and insertion.ApproachMetres))
 	check('Heat_0 has a threshold to cross and no division answering',
 		law.Division(0) == nil and law.Capacity(0) == 50,
 		tostring(law.Capacity(0)))
@@ -16488,6 +16499,38 @@ do
 		broken = lawWorld(function(config) config.MAXTAC.TROOPERS = {} end)
 		check('a bot fill with no trooper is named rather than an empty street',
 			table.concat(broken.Law.Warnings, ' | '):find('filled by nobody', 1, true) ~= nil)
+
+		-- THE INSERTION PLAN. A run whose numbers are wrong is dropped WHOLE and
+		-- named rather than flown from what could be read: an aircraft that dives
+		-- into the street, or one that never leaves, is not a config wart an
+		-- operator can see -- it is a feature that looks broken. Each control
+		-- below breaks one field and asks for the named warning AND a nil plan.
+		-- The altitude ordering is the one that matters most: it is the only
+		-- field whose failure is invisible until the airframe is already in
+		-- the player's lap.
+		broken = lawWorld(function(config) config.MAXTAC.AV.INSERTION.HOVER_ALTITUDE = 3.0 end)
+		check('an insertion that would fly through the street is named and dropped',
+			table.concat(broken.Law.Warnings, ' | '):find('must order DROP_ALTITUDE', 1, true) ~= nil
+				and broken.Law.Maxtac.AvInsertion == nil,
+			table.concat(broken.Law.Warnings, ' | '))
+
+		broken = lawWorld(function(config) config.MAXTAC.AV.INSERTION.TICK_MS = 5 end)
+		check('a pose cadence the server cannot afford is named and dropped',
+			table.concat(broken.Law.Warnings, ' | '):find('cadence between 25 and 1000', 1, true) ~= nil
+				and broken.Law.Maxtac.AvInsertion == nil,
+			table.concat(broken.Law.Warnings, ' | '))
+
+		broken = lawWorld(function(config) config.MAXTAC.AV.INSERTION = nil end)
+		check('a missing plan is named rather than flown with nothing',
+			table.concat(broken.Law.Warnings, ' | '):find('is never flown in', 1, true) ~= nil
+				and broken.Law.Maxtac.AvInsertion == nil,
+			table.concat(broken.Law.Warnings, ' | '))
+
+		broken = lawWorld(function(config) config.MAXTAC.AV.INSERTION.APPROACH_METRES = 0 end)
+		check('one unusable distance drops the plan whole rather than partly using it',
+			table.concat(broken.Law.Warnings, ' | '):find('APPROACH_METRES is not a distance', 1, true) ~= nil
+				and broken.Law.Maxtac.AvInsertion == nil,
+			table.concat(broken.Law.Warnings, ' | '))
 
 		broken = lawWorld(function(config) config.LAWS = 'none' end)
 		check('a book that is not a table says so, and the ladder survives it',
@@ -16770,6 +16813,368 @@ do
 		check('and a stage with officers standing keeps its cars',
 			officers.ok == true and officers.value.npcs > 0 and officers.value.vehicles > 0,
 			table.concat(officers.value.refused or {}, ', '))
+		Response.ReleaseAll()
+
+		-- ── the ambient policy, and whose side the squad is on ──────────────
+		-- TWO FACTS THE RESPONSE CANNOT WORK WITHOUT, and it asked for neither:
+		-- the bucket must ALLOW police, or the engine behind every client has been
+		-- told to spawn nothing and a stage is a star with no unit behind it; and
+		-- every officer must be told WHO its enemy is, or the squad has no opinion
+		-- at all -- in game it stood in the street and shot itself. Both are
+		-- asserted through the harness on the real module.
+		control.population.byBucket[0] = { bucket = 0, crowd = 0.25, traffic = 1.0, police = false }
+		control.population.writes = {}
+		control.population.refuse = nil
+		local rowsFrom = #control.npcAttitudes
+		local groupsFrom = #control.npcGroups
+		local hot = Response.Apply('citizen-ncpd-b', subject, 3)
+		local wrote = control.population.writes[1]
+		check('a stage asks its bucket for police, and for nothing else',
+			wrote ~= nil and wrote.bucket == 0 and wrote.police == true
+				and wrote.crowd == 0.25 and wrote.traffic == 1.0,
+			wrote == nil and 'no write at all' or ('police=%s crowd=%s traffic=%s'):format(
+				tostring(wrote.police), tostring(wrote.crowd), tostring(wrote.traffic)))
+		check('and the bucket now allows police',
+			hot.ok == true and control.population.byBucket[0].police == true)
+		check('and the street stays empty: crowd and traffic are written back unchanged',
+			control.population.byBucket[0].crowd == 0.25 and control.population.byBucket[0].traffic == 1.0,
+			('crowd=%s traffic=%s'):format(tostring(control.population.byBucket[0].crowd),
+				tostring(control.population.byBucket[0].traffic)))
+
+		-- WHO THE SQUAD IS AIMED AT. Two rows per officer and no others: a
+		-- `default` row that covers everyone the officer has no row for, and one
+		-- hostile row naming the player the response was raised for. The second
+		-- player standing in the street is not a target for being there, and the
+		-- officer beside him is not a target at all -- which is the row that stops
+		-- a squad shooting itself.
+		local neutral, aimed = 0, 0
+		for index = rowsFrom + 1, #control.npcAttitudes do
+			local row = control.npcAttitudes[index]
+			if row.attitude == 'neutral' and row.towards == nil then neutral = neutral + 1 end
+			if row.attitude == 'hostile' and row.towards == subject then aimed = aimed + 1 end
+		end
+		local standing = hot.ok == true and hot.value.npcs or -1
+		check('every officer is neutral to everyone it has no row for',
+			neutral == standing and neutral > 0,
+			('%d neutral row(s) for %d officer(s)'):format(neutral, standing))
+		check('and hostile to the one player the response was raised for',
+			aimed == standing and aimed > 0,
+			('%d hostile row(s) for %d officer(s)'):format(aimed, standing))
+		check('and carries no third opinion that could aim it at its own squad',
+			#control.npcAttitudes - rowsFrom == neutral + aimed,
+			('%d row(s): %d neutral, %d aimed'):format(#control.npcAttitudes - rowsFrom,
+				neutral, aimed))
+
+		-- ── AND WHOSE SIDE IT IS ON ──────────────────────────────────────────
+		-- The rows above say who an officer SHOOTS AT. They do not stop it
+		-- shooting its own squad: a body with no group is resolved by the base
+		-- game's own faction rules, and the two record families this module
+		-- stands -- `Character.prevention_maxtac_*` on the ground and
+		-- `Character.maxtac_av_*` in the air -- are hostile to each other in
+		-- those rules. That is the fratricide an operator sees as troopers
+		-- fighting themselves, and the client's combat funnel counts as
+		-- `npcVersusNpc`. Two NPCs sharing a non-empty group are allies
+		-- (`wiki/npcs.md`), so every officer is sworn into one group per
+		-- DIVISION -- not per response, because two squads raised for two
+		-- wanted players in one street are colleagues.
+		local enlisted, enlistedNote = {}, {}
+		for index = groupsFrom + 1, #control.npcGroups do
+			local group = tostring(control.npcGroups[index].group)
+			enlisted[group] = (enlisted[group] or 0) + 1
+			enlistedNote[#enlistedNote + 1] = group
+		end
+		check('every officer of a stage is sworn into the division\'s group',
+			standing > 0 and #control.npcGroups - groupsFrom == standing
+				and enlisted[('opx-ncpd-%s'):format(tostring(hot.value.division))] == standing,
+			('%d group(s) for %d officer(s): %s'):format(#control.npcGroups - groupsFrom, standing,
+				table.concat(enlistedNote, ' ')))
+		check('and one group covers the whole element, so no officer is left out of it',
+			standing > 0 and enlisted[('opx-ncpd-%s'):format(tostring(hot.value.division))] ~= nil
+				and next(enlisted, next(enlisted)) == nil,
+			('%d distinct group(s)'):format((function() local n = 0
+				for _ in pairs(enlisted) do n = n + 1 end return n end)()))
+
+		-- The write is a replicated policy, so a bucket that already allows police
+		-- is left alone: a second stage of the same chase must not re-announce it.
+		local writes = #control.population.writes
+		Response.Apply('citizen-ncpd-b', subject, 4)
+		check('a bucket that already allows police is not written again',
+			#control.population.writes == writes, tostring(#control.population.writes))
+
+		-- And a host that refuses the write says so, in the response's own refusal
+		-- list, rather than leaving a stage that looks like a unit nobody came to.
+		-- The bit is cleared first, or the write is never attempted at all: a
+		-- bucket that already allows police is left alone by design, which the
+		-- check above pins. This control has to reach the write to exercise it.
+		control.population.byBucket[0].police = false
+		control.population.refuse = 'permission_denied:world.population'
+		local denied = Response.Apply('citizen-ncpd-b', subject, 2)
+		control.population.refuse = nil
+		local named = false
+		for _, refusal in ipairs(denied.ok == true and denied.value.refused or {}) do
+			if tostring(refusal):find('world.population', 1, true) ~= nil then named = true end
+		end
+		check('a bucket that refuses the police bit is reported, not swallowed', named,
+			table.concat(denied.ok == true and denied.value.refused or {}, ', '))
+		Response.ReleaseAll()
+
+		-- ── the MaxTac insertion ─────────────────────────────────────────────
+		-- WHAT IS DRIVEN HERE is `modules/ncpd/server/av.lua`, through the
+		-- response's own call site, on the real plan. The engine's route is asked
+		-- for and answers `ticket 0` on the live node, so the aircraft is an
+		-- Open77 vehicle the SERVER flies with `setTransform` -- and "flown" is
+		-- the whole of the claim that has to be provable. A create at altitude
+		-- plus a remove afterwards reads identical to a run that was cancelled
+		-- between two points, so what is asserted is the ROUTE and the ORDER: out
+		-- and high, in and down, down to the drop, the squad standing where it
+		-- dropped rather than on the old 40 m ground ring, back up and away, and
+		-- the airframe gone when the run ends.
+		--
+		-- THE CADENCE IS CAPTURED, NOT AWAITED. The phase machine is what is under
+		-- test; a test that slept would be asserting on wall-clock, and the
+		-- shipped run takes 33 seconds of it.
+		local AV = ncpd.Av
+		check('the module owns an AV controller that can insert, retract and stop',
+			type(AV) == 'table' and type(AV.Insert) == 'function'
+				and type(AV.Retract) == 'function' and type(AV.RetractAll) == 'function')
+		check('an insertion with no plan is refused rather than flown with nothing',
+			AV.Insert({ citizenId = 'citizen-ncpd-none', target = { x = 0, y = 0, z = 0 } }) == nil)
+		check('and one with nobody to fly it for is refused too',
+			AV.Insert({ citizenId = '', target = { x = 0, y = 0, z = 0 } }) == nil)
+
+		local Scheduler = OPX.Scheduler
+		local realEvery, realCancel = Scheduler.Every, Scheduler.Cancel
+		local avJob
+		Scheduler.Every = function(jobName, intervalMs, step)
+			avJob = { name = jobName, intervalMs = intervalMs, step = step }
+			return 1
+		end
+		Scheduler.Cancel = function(handle) return handle ~= nil end
+
+		--- One pose of the flight this block is watching. False when the run is
+		-- over: the step after the airframe is put away poses nothing, and that
+		-- is what ends the loop rather than a clock.
+		-- @return boolean
+		local function tick()
+			local before = #control.vehiclePoses
+			avJob.step()
+			return #control.vehiclePoses > before
+		end
+
+		--- Flies the run to its end, or to the bound.
+		-- @param integer|nil limit
+		-- @return integer how many steps were taken
+		local function fly(limit)
+			local steps = 0
+			for _ = 1, (limit or 600) do
+				if not tick() then return steps end
+				steps = steps + 1
+			end
+			return steps
+		end
+
+		--- The airframe a stage created, found by RECORD rather than by index:
+		-- the ground car is created first, so a positional read is the Merrimac.
+		-- @param integer from
+		-- @return table|nil the argument list it was created with
+		local function airframeFrom(from)
+			for index = from + 1, #control.vehicleCreates do
+				if control.vehicleCreates[index].record == Law.Maxtac.AvRecord then
+					return control.vehicleCreates[index]
+				end
+			end
+			return nil
+		end
+
+		--- Horizontal distance between two points.
+		-- @param table a
+		-- @param table b
+		-- @return number
+		local function span(a, b)
+			return math.sqrt((a.x - b.x) ^ 2 + (a.y - b.y) ^ 2)
+		end
+
+		local origin = { x = 0, y = 0 }
+		local plan = Law.Maxtac.AvInsertion
+		-- A pinned airframe the host still knows about, so the run is not ended
+		-- by the controller's own "the airframe was taken away" path.
+		control.vehicles.snapshot = '0x00000000000000aa'
+
+		local third = 83
+		load(third, 'citizen-ncpd-c')
+		local avFrom, npcFrom, poseFrom = #control.vehicleCreates, #control.npcCreates, #control.vehiclePoses
+		local lifted = Response.Apply('citizen-ncpd-c', third, 5)
+		local airframe = airframeFrom(avFrom)
+		local avNote = airframe == nil
+			and ('nothing flown: ' .. table.concat(lifted.ok == true and lifted.value.refused or {}, ', '))
+			or ('%s at %.1fm out, %.1fm up'):format(tostring(airframe.record),
+				span(airframe.position, origin), airframe.position.z)
+		check('the MaxTac stage flies an airframe in rather than only raising a star',
+			lifted.ok == true and lifted.value.av == true and airframe ~= nil, avNote)
+		check('and it starts out along its approach and high, not over the player',
+			airframe ~= nil and math.abs(airframe.position.z - plan.ApproachAltitude) < 0.001
+				and math.abs(span(airframe.position, origin) - plan.ApproachMetres) < 0.01,
+			avNote)
+		-- THE AIR DIVISION IS WITHHELD, NOT STOOD EARLY. What a stage places the
+		-- moment it is applied is its own ground element -- the ladder row's units
+		-- and its roadblock -- and NOT the four that arrive by air: those appear
+		-- when the aircraft is at the drop, which is the whole difference between
+		-- a squad that steps out of an AV and troopers that were always standing
+		-- there. Counted around this call rather than assumed.
+		local groundElement = #control.npcCreates - npcFrom
+		local avAfterFirst = #control.vehicleCreates
+		-- One step, so the airframe has been posed: the run's own id is what tells
+		-- the pin, the route and the removal below which vehicle they are about.
+		tick()
+		local avId = control.vehiclePoses[poseFrom + 1].id
+		check('the air division is withheld: the stage stands only its own ground element',
+			groundElement > 0 and lifted.value.filled > 0
+				and AV.IsInbound('citizen-ncpd-c') == true and AV.Inbound() == 1,
+			('%d unit(s) on the ground, %d still in the aircraft'):format(
+				groundElement, lifted.value.filled))
+		check('and the airframe is pinned for the flight',
+			#control.vehiclePins >= 1 and control.vehiclePins[#control.vehiclePins].frozen == true,
+			tostring(#control.vehiclePins) .. ' pin(s)')
+
+		-- A SECOND SUMMON, while one is in the air. `ONE_AT_A_TIME` is the
+		-- engine's own rule and the config keeps it, so the refusal has to be
+		-- NAMED on the second response -- and its squad still stands, on the
+		-- ground ring, because a division that answers with nothing is worse than
+		-- one that answers on foot. The fallback is the documented one; what must
+		-- not happen is a silent stage.
+		local fourth = 84
+		load(fourth, 'citizen-ncpd-d')
+		local second = Response.Apply('citizen-ncpd-d', fourth, 5)
+		local refusedByName = false
+		for _, refusal in ipairs(second.ok == true and second.value.refused or {}) do
+			if tostring(refusal):find('one_at_a_time', 1, true) ~= nil then refusedByName = true end
+		end
+		check('a second summon while one is in the air is refused by name',
+			refusedByName, table.concat(second.ok == true and second.value.refused or {}, ', '))
+		check('and that division still stands, on foot, rather than not at all',
+			second.value.npcs >= groundElement + second.value.filled and second.value.filled > 0
+				and airframeFrom(avAfterFirst) == nil and AV.Inbound() == 1,
+			('%d on foot (%d of them the air squad), %d in the air'):format(
+				second.value.npcs, second.value.filled, AV.Inbound()))
+		Response.Release('citizen-ncpd-d')
+
+		-- ── the route ───────────────────────────────────────────────────────
+		local squadFrom = #control.npcCreates
+		local squadGroupsFrom = #control.npcGroups
+		for _ = 1, 600 do
+			if #control.npcCreates > squadFrom or not tick() then break end
+		end
+		local stood = #control.npcCreates - squadFrom
+		local drop = nil
+		for index = poseFrom + 1, #control.vehiclePoses do
+			local at = control.vehiclePoses[index].definition
+			if drop == nil or at.z < drop.z then drop = at end
+		end
+		local furthest = 0.0
+		local level = true
+		for index = squadFrom + 1, #control.npcCreates do
+			local trooper = control.npcCreates[index].position
+			local away = span(trooper, drop or origin)
+			if away > furthest then furthest = away end
+			if math.abs(trooper.z - plan.DropAltitude) > 0.001 then level = false end
+		end
+		check('the squad steps out at the bottom of the descent, inside the aircraft\'s footprint',
+			stood == lifted.value.filled and stood > 0 and drop ~= nil
+				and math.abs(drop.z - plan.DropAltitude) < 0.001 and level and furthest < 4.0,
+			('%d trooper(s), drop at %.1fm, furthest %.1fm away'):format(
+				stood, drop and drop.z or -1.0, furthest))
+		-- AND THEY ARE ON THE SAME SIDE AS THE REST OF THE ELEMENT. The four
+		-- that came by air are the records the ground units are hostile to in
+		-- the base game's faction rules, so an unsworn air squad is a firefight
+		-- between two halves of one division the moment they touch down. This is
+		-- the check that would have caught it: every trooper that stepped out
+		-- carries the ground element's own group.
+		local airGroups = {}
+		for index = squadGroupsFrom + 1, #control.npcGroups do
+			airGroups[tostring(control.npcGroups[index].group)] = true
+		end
+		check('and the troops from the aircraft are sworn into that same group',
+			stood > 0 and #control.npcGroups - squadGroupsFrom == stood
+				and airGroups[('opx-ncpd-%s'):format(tostring(lifted.value.division))] == true
+				and next(airGroups, next(airGroups)) == nil,
+			('%d group(s) for %d trooper(s)'):format(#control.npcGroups - squadGroupsFrom, stood))
+
+		-- ── the rest of the run ─────────────────────────────────────────────
+		local remaining = fly(600)
+		local lowest, last = math.huge, nil
+		for index = poseFrom + 1, #control.vehiclePoses do
+			local at = control.vehiclePoses[index].definition
+			if at.z < lowest then lowest = at.z end
+			last = at
+		end
+		check('the airframe never goes below its drop altitude, so it cannot eat the player',
+			lowest >= plan.DropAltitude - 1e-6, ('lowest pose %.2fm'):format(lowest))
+		check('and the run ends climbing back out to where it came in from',
+			last ~= nil and math.abs(last.z - plan.ApproachAltitude) < 0.001
+				and math.abs(span(last, origin) - plan.ApproachMetres) < 0.01,
+			last and ('%.1fm out at %.1fm'):format(span(last, origin), last.z) or 'no pose')
+		check('and it really flew: the poses are a run, not a create and a remove',
+			remaining > 0 and #control.vehiclePoses - poseFrom > 100,
+			('%d pose(s)'):format(#control.vehiclePoses - poseFrom))
+		check('and the aircraft is taken out of the world when the run finishes',
+			control.vehicleRemoves[#control.vehicleRemoves] == avId
+				and AV.IsInbound('citizen-ncpd-c') == false and AV.Inbound() == 0,
+			('%d removal(s), %d inbound'):format(#control.vehicleRemoves, AV.Inbound()))
+
+		-- ── a cleared stage takes the aircraft down ─────────────────────────
+		-- An aircraft still holding a bucket its own response no longer owns
+		-- cannot be posed again by anybody, so a cleared stage has to retract it
+		-- rather than leave it hanging over the street for the rest of the
+		-- session -- the shape that reads in game as a helicopter that never
+		-- leaves. Released BEFORE the drop, which is the only moment this can be
+		-- tested: once the squad is on the street the stage is still a stage.
+		local fifth = 85
+		load(fifth, 'citizen-ncpd-e')
+		local removesFrom = #control.vehicleRemoves
+		Response.Apply('citizen-ncpd-e', fifth, 5)
+		tick()
+		local flyingNow = control.vehiclePoses[#control.vehiclePoses].id
+		Response.Release('citizen-ncpd-e')
+		local posedAfterRelease = tick()
+		-- Searched rather than read off the end: the release takes the aircraft
+		-- down FIRST and then the ground element, so the last removal of the
+		-- three is a car's, not the airframe's.
+		local tookDown = false
+		for index = removesFrom + 1, #control.vehicleRemoves do
+			if control.vehicleRemoves[index] == flyingNow then tookDown = true end
+		end
+		check('a cleared stage takes its aircraft down rather than leaving it hanging',
+			AV.IsInbound('citizen-ncpd-e') == false and posedAfterRelease == false,
+			('inbound=%s, posed after release=%s'):format(
+				tostring(AV.IsInbound('citizen-ncpd-e')), tostring(posedAfterRelease)))
+		check('and the airframe it took down is the one it flew in', tookDown,
+			tostring(flyingNow) .. ' among ' .. tostring(#control.vehicleRemoves - removesFrom)
+				.. ' removal(s)')
+
+		-- ── a group the host refuses is reported, not fatal ─────────────────────
+		-- The officers still stand -- they exist in the world either way -- and the
+		-- refusal is NAMED beside the spawn refusals, so an element that is about
+		-- to shoot itself is visible in the node's log rather than inferred from
+		-- what a player sees in the street.
+		control.npcs.refuseGroup = 'permission_denied:world.npcs'
+		Response.ReleaseAll()
+		local sixth = 86
+		load(sixth, 'citizen-ncpd-f')
+		local unsworn = Response.Apply('citizen-ncpd-f', sixth, 2)
+		control.npcs.refuseGroup = nil
+		local namedGroup = false
+		for _, refusal in ipairs(unsworn.ok == true and unsworn.value.refused or {}) do
+			if tostring(refusal):find('group:', 1, true) ~= nil then namedGroup = true end
+		end
+		check('a group the host refuses is named rather than leaving a squad quietly unsworn',
+			namedGroup and unsworn.value.npcs > 0,
+			table.concat(unsworn.ok == true and unsworn.value.refused or {}, ', '))
+		Response.ReleaseAll()
+
+		Scheduler.Every, Scheduler.Cancel = realEvery, realCancel
+		check('no aircraft is left in the air when the block ends',
+			AV.RetractAll('the check is over') == 0 and AV.Inbound() == 0,
+			tostring(AV.Inbound()) .. ' still inbound')
 		Response.ReleaseAll()
 
 		-- ── the mirror ──────────────────────────────────────────────────────

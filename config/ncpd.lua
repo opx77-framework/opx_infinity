@@ -12,12 +12,23 @@
 -- radio and the spawn reinitialisation all happen inside the game's own path.
 --
 -- WHAT IS OURS AND WHAT IS THE ENGINE'S. Ours: which acts count, what they cost,
--- how fast the score falls, and who may answer. The engine's: the six stages,
--- the response each one already has wired to it, every vehicle and every
--- character record below, and the AV's own fly-in, propulsion note and red
--- warning lines -- those are properties of the entity template and its AI
--- package (`av_spawn_setup`, `summonDistanceMin/Max`, `verticalOffset`), so the
--- only thing this feature does about them is SUMMON them.
+-- how fast the score falls, who may answer, and -- since the engine's own route
+-- was measured to refuse it -- the MaxTac AV's insertion run. The engine's: the
+-- six stages, the response each one already has wired to it, and every vehicle
+-- and character record below.
+--
+-- THE AV IS SUMMONED THROUGH THE ENGINE AND, WHEN THAT IS REFUSED, FLOWN BY US.
+-- `gamePreventionSpawnSystem.RequestAVSpawn` is the engine's own route and the
+-- bridge asks for it (`prevention.av`). On the live node it answers
+-- `prevention.av.ticket.0` -- the call lands, no aircraft is scheduled, nothing
+-- renders for anybody -- so `MAXTAC.AV.INSERTION` below is the run the server
+-- flies instead, on an Open77 vehicle every client can see. The airframe's
+-- authored visuals (jet flames, thrusters, the model's own lights) come with
+-- the record; the red warning lines are a property of the entity template and
+-- its AI package (`av_spawn_setup`, `summonDistanceMin/Max`, `verticalOffset`)
+-- and an unoccupied server-flown AV cannot command them, so what this feature
+-- does about them is keep the aircraft's lights on and point its nose at the
+-- player it came for.
 --
 -- THE TWO DIVISIONS ARE THE ENGINE'S OWN SPLIT. `Heat_1 .. Heat_4` is the NCPD
 -- ladder -- Cortes, Archer Hella, Emperor, Merrimac, and the Hellhound at
@@ -249,6 +260,33 @@ OPX.Config.MODULES.ncpd = {
 			-- Metres above the pad a requested AV is placed, so it does not start
 			-- half-buried: an AV record's pivot is the chassis centre.
 			LIFT = 1.2,
+
+			-- THE INSERTION RUN. The engine's own route -- `RequestAVSpawn`, asked
+			-- for by the client as `prevention.av` -- answers `ticket 0` on the
+			-- live node: the call lands, no aircraft is scheduled, and the only
+			-- thing on the street is the squad the response placed there. So the
+			-- AV below is an Open77 vehicle flown by the server. Every number here
+			-- is metres, seconds or milliseconds, and the order the aircraft flies
+			-- is: APPROACH_METRES out at APPROACH_ALTITUDE, in over CRUISE_SECONDS
+			-- to HOVER_ALTITUDE, down over DESCENT_SECONDS to DROP_ALTITUDE, hold
+			-- DEPLOY_SECONDS while the squad steps out, back up to HOVER_ALTITUDE,
+			-- hold HOVER_SECONDS, then out and away over EXIT_SECONDS.
+			INSERTION = {
+				APPROACH_METRES = 320.0,
+				APPROACH_ALTITUDE = 95.0,
+				HOVER_ALTITUDE = 26.0,
+				DROP_ALTITUDE = 5.0,
+				CRUISE_SECONDS = 6.0,
+				DESCENT_SECONDS = 3.5,
+				DEPLOY_SECONDS = 2.5,
+				HOVER_SECONDS = 14.0,
+				EXIT_SECONDS = 6.0,
+				-- The pose cadence. `setTransform` revokes the physics lease and
+				-- republishes the canonical transform on every call, so this is a
+				-- cost on every viewer: ten a second is smooth at cruise and does
+				-- not make one aircraft the most expensive thing in the bucket.
+				TICK_MS = 100,
+			},
 		},
 
 		-- The ground division: the Merrimac in MaxTac livery, and the two troopers

@@ -432,6 +432,7 @@ do
 		end
 
 		local av = maxtac.AV
+		local insertion = nil
 		if type(av) ~= 'table' then
 			warn('ncpd: MAXTAC.AV is not a table, so nothing flies in')
 			av = nil
@@ -444,6 +445,59 @@ do
 			end
 			if finite(av.COOLDOWN_SECONDS) == nil or finite(av.COOLDOWN_SECONDS) < 0 then
 				warn('ncpd: MAXTAC.AV.COOLDOWN_SECONDS is not a duration')
+			end
+
+			-- The insertion run. Every field is a distance, a duration or a pose
+			-- cadence, and the altitudes are ordered or the airframe flies through
+			-- the street. A plan with one unusable number is dropped WHOLE and
+			-- named: a run that starts from a half-read plan is an AV buried in
+			-- the road or one that never leaves, and both look like a broken
+			-- feature rather than a bad config line.
+			local plan = av.INSERTION
+			if type(plan) ~= 'table' then
+				warn('ncpd: MAXTAC.AV.INSERTION is not a table, so the AV is never flown in')
+			else
+				local usable = true
+				for _, field in ipairs({
+					'APPROACH_METRES', 'APPROACH_ALTITUDE', 'HOVER_ALTITUDE', 'DROP_ALTITUDE',
+				}) do
+					if positive(plan[field]) == nil then
+						warn(('ncpd: MAXTAC.AV.INSERTION.%s is not a distance'):format(field))
+						usable = false
+					end
+				end
+				for _, field in ipairs({
+					'CRUISE_SECONDS', 'DESCENT_SECONDS', 'DEPLOY_SECONDS', 'HOVER_SECONDS', 'EXIT_SECONDS',
+				}) do
+					if finite(plan[field]) == nil or plan[field] < 0 then
+						warn(('ncpd: MAXTAC.AV.INSERTION.%s is not a duration'):format(field))
+						usable = false
+					end
+				end
+				local tick = finite(plan.TICK_MS)
+				if tick == nil or tick ~= math.floor(tick) or tick < 25 or tick > 1000 then
+					warn('ncpd: MAXTAC.AV.INSERTION.TICK_MS is not a cadence between 25 and 1000 ms')
+					usable = false
+				end
+				if usable and not (positive(plan.DROP_ALTITUDE) < positive(plan.HOVER_ALTITUDE) and
+					positive(plan.HOVER_ALTITUDE) <= positive(plan.APPROACH_ALTITUDE)) then
+					warn('ncpd: MAXTAC.AV.INSERTION must order DROP_ALTITUDE < HOVER_ALTITUDE <= APPROACH_ALTITUDE')
+					usable = false
+				end
+				if usable then
+					insertion = {
+						ApproachMetres = plan.APPROACH_METRES,
+						ApproachAltitude = plan.APPROACH_ALTITUDE,
+						HoverAltitude = plan.HOVER_ALTITUDE,
+						DropAltitude = plan.DROP_ALTITUDE,
+						CruiseSeconds = plan.CRUISE_SECONDS,
+						DescentSeconds = plan.DESCENT_SECONDS,
+						DeploySeconds = plan.DEPLOY_SECONDS,
+						HoverSeconds = plan.HOVER_SECONDS,
+						ExitSeconds = plan.EXIT_SECONDS,
+						TickMs = tick,
+					}
+				end
 			end
 		end
 
@@ -482,6 +536,7 @@ do
 			AvOneAtATime = av ~= nil and av.ONE_AT_A_TIME == true,
 			AvCooldown = av ~= nil and finite(av.COOLDOWN_SECONDS) or nil,
 			AvLift = av ~= nil and finite(av.LIFT) or nil,
+			AvInsertion = insertion,
 			Vehicle = name(maxtac.VEHICLE),
 			Ground = records(maxtac.GROUND, 'GROUND'),
 			Troopers = troopers,

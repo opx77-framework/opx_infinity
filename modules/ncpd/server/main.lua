@@ -587,6 +587,22 @@ function M.Start()
 	Open77.log.info(('[ncpd] ready: %d law(s), %d heat stage(s): %s; %s')
 		:format(#Law.Ids, Law.StageCount, ladder(),
 			canSpawn and 'the street can answer' or 'NO spawn contract: units will be refused'))
+
+	-- Named at BOOT, not at the first charge. The client refuses to raise its own
+	-- heat while its ambient policy has not heard that this bucket allows police,
+	-- so a stage applied before the policy lands is a star with no unit behind it
+	-- -- and the one window that cannot be retried is the first one. See
+	-- `allowPolice` in `response.lua` for what the bit is and why it is the
+	-- server's to set.
+	-- Only the refusal is said HERE. The write that succeeds already prints its
+	-- own line, with the crowd and traffic it preserved, and a second line for
+	-- the same fact at the same moment is noise -- the first boot after the
+	-- policy was ever empty is the only boot that needs either of them.
+	local police, policeWhy = Response.AllowPolice(0)
+	if not police then
+		Open77.log.warn('[ncpd] bucket 0 does NOT allow police (' .. tostring(policeWhy) ..
+			'): stages will set with no unit behind them')
+	end
 	if character == nil then
 		Open77.log.warn('[ncpd] no character contract: nobody can be charged')
 	end
@@ -606,8 +622,16 @@ end
 --- Deregisters the surface and takes every response down.
 function M.Stop()
 	M.running = false
+	-- The aircraft first: `Response.ReleaseAll` walks the responses it still
+	-- holds, and an insertion is not one of them -- it is a run of its own that
+	-- would otherwise keep posing an airframe in a bucket nothing owns again.
+	local av = M.Av
+	local flying = av ~= nil and type(av.RetractAll) == 'function' and av.RetractAll('the module stopped') or 0
 	local removed = Response.ReleaseAll()
 	Ledger.Forget()
+	if flying > 0 then
+		Open77.log.info(('[ncpd] stopped: %d MaxTac AV(s) taken down'):format(flying))
+	end
 	if removed > 0 then
 		Open77.log.info(('[ncpd] stopped: %d unit(s) taken down'):format(removed))
 	end

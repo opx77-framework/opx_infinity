@@ -133,13 +133,92 @@ local function carry(record, at, yaw, bucket, spec)
 	return safeCall('vehicles', 'create', definition)
 end
 
+--- Tells one spawned officer who its enemies are, and who they are not.
+--
+-- WHY THIS IS NOT OPTIONAL. A body that carries no attitude row at all keeps
+-- whatever the engine's own relationship table says about it, and two puppets a
+-- script spawned are not necessarily on the same side of it: in game the squad
+-- stood in the street and shot EACH OTHER while the wanted player walked away --
+-- the exact symptom a response with no opinion produces. Two rows fix it, and
+-- the first is the one that matters:
+--
+--   * `default` covers every target the officer has no row for. Neutral, so the
+--     squad does not fire on each other, on bystanders, or on traffic. Neutral
+--     rather than friendly on purpose: friendly would make a squad that will not
+--     shoot back at all.
+--   * `players[<the charged player>]` is the one hostile row, and it is the only
+--     player this response was raised for. Hostility is per NPC and per target --
+--     the only shape the engine can express per incarnation -- so a second
+--     player standing beside the first is not a target simply for being there.
+--
+-- The refusal is returned, never swallowed: an officer created without these
+-- rows is a body that will stand in the street and do nothing, which is the
+-- failure this function exists to remove, and one line in the node's log is the
+-- difference between that and a mystery.
+-- @param id string the created NPC
+-- @param playerId number|nil the charged player, when the caller knows it
+-- @return boolean set
+-- @return string|nil why not
+local function opinionate(id, playerId, group)
+	local npcs = Open77 and Open77.npcs
+	if npcs == nil or type(npcs.setAttitude) ~= 'function' then
+		return false, 'npc_attitude_unavailable'
+	end
+
+	-- Every row is attempted even when an earlier one fails, because they are
+	-- three independent facts about one body -- who it ignores, who it is
+	-- sworn against, and which side it belongs to -- and a body missing one of
+	-- them is still better than one missing all three. The FIRST failure is
+	-- what the caller reports, so a broken `setGroup` cannot hide a broken
+	-- `setAttitude` behind it.
+	local why = nil
+
+	local ok, refusal = npcs.setAttitude(id, 'neutral')
+	if ok ~= true then why = tostring(refusal or 'npc_attitude_refused') end
+
+	if playerId ~= nil then
+		local aimed, aimedWhy = npcs.setAttitude(id, 'hostile', { towards = playerId })
+		if aimed ~= true and why == nil then why = tostring(aimedWhy or 'npc_attitude_refused') end
+	end
+
+	-- THE SQUAD IS ONE SIDE, and this is what makes it so. A body with no group
+	-- is resolved by the base game's own faction rules, and two of the records
+	-- this module stands -- the `Character.prevention_maxtac_*` ground pair and
+	-- the `Character.maxtac_av_*` family the aircraft carries -- are hostile to
+	-- each other in those rules. That is the fratricide: the client's own combat
+	-- funnel counted it (`npcVersusNpc`, `crossfireHits`) and in game the squad
+	-- shoots itself. Two NPCs sharing a non-empty group are allies
+	-- (`wiki/npcs.md`), so the whole element is sworn in to ONE group per
+	-- division: the ground units, the roadblock and the troops that step out of
+	-- the AV all end up in the same one, and the divisions do not need a row
+	-- between them because every officer already carries a `neutral` default.
+	if group ~= nil and type(npcs.setGroup) == 'function' then
+		local sworn, groupWhy = npcs.setGroup(id, group)
+		if sworn ~= true and why == nil then
+			why = ('group:%s'):format(tostring(groupWhy or 'npc_group_refused'))
+		end
+	end
+
+	return why == nil, why
+end
+
+--- The one group every officer of a division stands in.
+-- Per DIVISION and not per response on purpose: two officers of the same kind,
+-- raised for two different wanted players in the same street, are colleagues.
+-- @param division string|nil
+-- @return string
+local function divisionGroup(division)
+	return ('opx-ncpd-%s'):format(tostring(division or M.DIVISION.NCPD))
+end
+
 --- Stands one configured character at a position, facing the player.
 -- @return string|nil id
 -- @return string|nil refusal
-local function officer(record, at, yaw, bucket)
-	local ai = Open77 and Open77.npcs and Open77.npcs.ai
-	local damage = Open77 and Open77.npcs and Open77.npcs.damage
-	return safeCall('npcs', 'create', {
+local function officer(record, at, yaw, bucket, held, target, group)
+	local npcs = Open77 and Open77.npcs
+	local ai = npcs and npcs.ai
+	local damage = npcs and npcs.damage
+	local id, reason = safeCall('npcs', 'create', {
 		record = record,
 		position = { x = at.x, y = at.y, z = at.z },
 		yaw = yaw,
@@ -151,6 +230,18 @@ local function officer(record, at, yaw, bucket)
 		despawnWhenUnobserved = false,
 		persistent = false,
 	})
+	if id == nil then return nil, reason end
+
+	-- The opinion goes on the body that was just created, so a squad is never
+	-- standing there with no idea whose side it is on. The officer is KEPT when
+	-- this fails -- it exists in the world either way -- and the reason is
+	-- reported beside the spawn refusals rather than logged here, so the caller
+	-- that owns the bookkeeping is still the only thing that writes it.
+	local opinionated, why = opinionate(id, target, group)
+	if not opinionated and type(held) == 'table' then
+		held.refused[#held.refused + 1] = ('attitude:%s:%s'):format(record, tostring(why))
+	end
+	return id
 end
 
 --- The roster a stage's officers are drawn from.
@@ -175,6 +266,15 @@ end
 -- @param citizenId string
 -- @return integer how many units were removed
 local function dismantle(citizenId)
+	-- The insertion goes down first, and before the early return: an aircraft
+	-- still holding a bucket its own response no longer owns cannot be posed
+	-- again by anybody, so a cleared stage would leave it hanging over the
+	-- street for as long as the session lasted.
+	local av = M.Av
+	if av ~= nil and type(av.Retract) == 'function' then
+		av.Retract(citizenId, 'the response was taken down')
+	end
+
 	local held = deployed[citizenId]
 	if held == nil then return 0 end
 	deployed[citizenId] = nil
@@ -194,6 +294,62 @@ end
 -- @return integer how many units were removed
 function Response.Release(citizenId)
 	return dismantle(citizenId)
+end
+
+--- Whether the engine may spawn police in one bucket, and the write that says so.
+--
+-- WHY THE SERVER HAS TO ASK AT ALL. The three switches that decide whether a heat
+-- stage produces anything -- `SetSystemLock`, `SetBlockOnFootSpawn`,
+-- `SetBlockVehicleSpawn` -- are driven by the CLIENT from the SERVER'S per-bucket
+-- ambient policy: `blockPolice = suppressVanilla && !police`
+-- (`client/src/world/VehicleSpawnPolicy.cpp`). Every Open77 client starts from an
+-- EMPTY policy -- no crowd, no traffic, no police -- so on a node that never names
+-- this bit the engine has been told to spawn nothing: the ladder sets a stage, the
+-- stars come up, the street stays empty, and the MaxTac AV request is refused at
+-- the client before it is ever sent (`police_disallowed`).
+--
+-- Crowd and traffic are read back and written UNCHANGED, so this moves the police
+-- axis and nothing else: an empty street stays empty. It is idempotent, and the
+-- line is printed once per bucket, when the write actually happens.
+-- @param bucket number
+-- @return boolean allowed
+-- @return string|nil why not
+local function allowPolice(bucket)
+	local world = Open77 and Open77.world
+	if world == nil or type(world.setPopulation) ~= 'function'
+		or type(world.getPopulation) ~= 'function' then
+		return false, 'population_api_unavailable'
+	end
+
+	local policy, readWhy = world.getPopulation(bucket)
+	if type(policy) ~= 'table' then
+		return false, tostring(readWhy or 'population_unreadable')
+	end
+	if policy.police == true then return true end
+
+	local crowd = tonumber(policy.crowd) or 0.0
+	local traffic = tonumber(policy.traffic) or 0.0
+	local ok, writeWhy = world.setPopulation(bucket, {
+		crowd = crowd, traffic = traffic, police = true })
+	if ok ~= true then return false, tostring(writeWhy or 'population_refused') end
+
+	Open77.log.info(('[ncpd] bucket %d allows police: crowd %.2f and traffic %.2f unchanged, ' ..
+		'the engine may answer a heat stage'):format(bucket, crowd, traffic))
+	return true
+end
+
+--- Names the bucket's ambient policy as one that allows police.
+--
+-- Exported because a node wants this true BEFORE anybody is charged: the client
+-- refuses to raise its own heat while its policy has not heard the bit yet, so a
+-- stage applied in that window is a star with no unit behind it. `M.Start` calls
+-- it for the default world bucket; `Response.Apply` calls it for whatever bucket
+-- the charged player is actually in, which is the only place that is knowable.
+-- @param bucket number
+-- @return boolean allowed
+-- @return string|nil why not
+function Response.AllowPolice(bucket)
+	return allowPolice(tonumber(bucket) or 0)
 end
 
 --- Stands the response for one stage up, and takes the previous stage down.
@@ -230,6 +386,15 @@ function Response.Apply(citizenId, playerId, stage)
 	local held = { stage = stage, division = division, vehicles = {}, npcs = {}, refused = {} }
 	deployed[citizenId] = held
 
+	-- Before a single unit: the bucket has to allow police, or every spawn below
+	-- this line is being asked of an engine that has been told to spawn nothing.
+	-- See `allowPolice`; a refusal is reported, not swallowed, because a stage
+	-- with no response is the one outcome an operator cannot see the cause of.
+	local allowed, allowedWhy = allowPolice(at.bucket)
+	if not allowed then
+		held.refused[#held.refused + 1] = ('police:%s'):format(tostring(allowedWhy))
+	end
+
 	-- How many officers this stage tried to stand. A stage whose officers were
 	-- all refused is not a response with fewer officers -- it is cars parked in
 	-- the street, which in game reads as a squad that arrived and stopped. The
@@ -256,7 +421,8 @@ function Response.Apply(citizenId, playerId, stage)
 		if record == nil then break end
 		local at2 = bearing(at, index, units, 8.0)
 		attempted = attempted + 1
-		local id, reason = officer(record, at2, facing(at2, at), at.bucket)
+		local id, reason = officer(record, at2, facing(at2, at), at.bucket, held, playerId,
+			divisionGroup(division))
 		if id == nil then
 			held.refused[#held.refused + 1] = ('%s:%s'):format(record, tostring(reason))
 		else
@@ -291,7 +457,8 @@ function Response.Apply(citizenId, playerId, stage)
 			if record == nil then break end
 			local at2 = bearing(centre, index, standing, 4.0)
 			attempted = attempted + 1
-			local id, reason = officer(record, at2, facing(at, at2), at.bucket)
+			local id, reason = officer(record, at2, facing(at, at2), at.bucket, held, playerId,
+				divisionGroup(division))
 			if id == nil then
 				held.refused[#held.refused + 1] = ('roadblock:%s:%s'):format(record, tostring(reason))
 			else
@@ -300,7 +467,17 @@ function Response.Apply(citizenId, playerId, stage)
 		end
 	end
 
-	-- ── MaxTac: the squad, and the AV the client is about to ask for ─────────
+	-- ── MaxTac: the squad, and the AV it arrives in ─────────────────────────
+	--
+	-- THE SQUAD ARRIVES FROM THE AIRCRAFT, NOT ON THE STREET. The engine's own
+	-- route (`prevention.av` -> `RequestAVSpawn`) answers `ticket 0` on the live
+	-- node, so nothing was ever flown and the troopers stood on a 40 m ring
+	-- around the player -- which is exactly "they just spawn on the ground". The
+	-- aircraft is therefore an Open77 vehicle the server flies (`server/av.lua`),
+	-- and the troopers are placed at the point it drops to, inside the ring it
+	-- occupies, at the moment it is there. When no airframe can be flown the
+	-- ground ring is still stood up and the reason is NAMED: a division that
+	-- answers with nothing is worse than one that answers on foot.
 	local av = false
 	local maxtac = Law.Maxtac
 	if division == M.DIVISION.MAXTAC and maxtac ~= nil then
@@ -324,21 +501,69 @@ function Response.Apply(citizenId, playerId, stage)
 		local radius = type(maxtac.Squad) == 'table' and tonumber(maxtac.Squad.INSERTION_RADIUS) or 40.0
 		local filling = maxtac.Fill ~= 'players'
 		local placeable = math.min(seats, #maxtac.Troopers)
-		if filling and placeable > 0 then
+
+		--- Stands one trooper, and records what happened either way.
+		-- A local rather than a loop because the air insertion stands its squad
+		-- from a callback, seconds after this function has returned.
+		local function stand(at2, index)
+			local record = maxtac.Troopers[index]
+			if record == nil then return end
+			attempted = attempted + 1
+			local id, reason = officer(record, at2, facing(at2, at), at.bucket, held, playerId,
+				divisionGroup(division))
+			if id == nil then
+				held.refused[#held.refused + 1] = ('%s:%s'):format(record, tostring(reason))
+			else
+				held.npcs[#held.npcs + 1] = id
+			end
+		end
+
+		-- The insertion. A malformed plan is named here rather than flown: an
+		-- aircraft that dives into the street is worse than a squad on foot.
+		local flown = false
+		local insertion = maxtac.AvInsertion
+		local contract = M.Av
+		if not filling or placeable == 0 then
+			-- Player-filled division: nothing to fly in for.
+		elseif insertion == nil then
+			held.refused[#held.refused + 1] = 'av:no_insertion_plan'
+		elseif contract == nil or type(contract.Insert) ~= 'function' then
+			held.refused[#held.refused + 1] = 'av:av_controller_unavailable'
+		else
+			local avId, reason = contract.Insert({
+				citizenId = citizenId,
+				target = { x = at.x, y = at.y, z = at.z },
+				bucket = at.bucket,
+				record = maxtac.AvRecord,
+				plan = insertion,
+				oneAtATime = maxtac.AvOneAtATime,
+				-- Where the aircraft drops to, once it is there: the squad steps
+				-- out inside its footprint, in the config's order, so a seat no
+				-- player took is a bot standing where the AV just was.
+				onDeploy = function(drop)
+					for index = 1, placeable do
+						stand(bearing(drop, index, placeable, 3.5), index)
+					end
+				end,
+			})
+			if avId == nil then
+				held.refused[#held.refused + 1] = ('av:%s'):format(tostring(reason))
+			else
+				flown = true
+				held.avId = avId
+			end
+		end
+
+		-- On foot only when nothing is flying.
+		if filling and placeable > 0 and not flown then
 			for index = 1, placeable do
-				local at2 = bearing(at, index, placeable, radius)
-				attempted = attempted + 1
-				local id, reason = officer(maxtac.Troopers[index], at2, facing(at2, at), at.bucket)
-				if id == nil then
-					held.refused[#held.refused + 1] = ('%s:%s'):format(maxtac.Troopers[index], tostring(reason))
-				else
-					held.npcs[#held.npcs + 1] = id
-				end
+				stand(bearing(at, index, placeable, radius), index)
 			end
 		end
 
 		held.seats = seats
 		held.filled = filling and placeable or 0
+		held.flown = flown
 	end
 
 	-- ── a unit is the car AND the officers in it ────────────────────────────
@@ -349,7 +574,7 @@ function Response.Apply(citizenId, playerId, stage)
 	-- as nothing standing plus a named refusal rather than as a squad that
 	-- arrived, parked and stopped -- the difference between a bug an operator
 	-- can see and a scene that just looks broken in game.
-	if attempted > 0 and #held.npcs == 0 and #held.vehicles > 0 then
+	if attempted > 0 and #held.npcs == 0 and #held.vehicles > 0 and held.flown ~= true then
 		local parked = #held.vehicles
 		for _, id in ipairs(held.vehicles) do
 			if safeCall('vehicles', 'remove', id) then freed = freed + 1 end
