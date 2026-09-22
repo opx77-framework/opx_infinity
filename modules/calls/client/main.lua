@@ -536,6 +536,10 @@ function drawHolo()
 		-- THE LETTERS THE SPHERE PRINTS. Read off the config rather than written
 		-- into the page: a server that rebinds them must not have its players
 		-- told the wrong key.
+		-- WHERE IT SITS, settled once through the shared vocabulary. The page
+		-- takes a name rather than a stylesheet: one word, nine values, refused
+		-- and named in the journal when it is none of them.
+		anchor = OPX.Anchors.Resolve(M.Settings.ANCHOR, 'bottom-center', 'calls.ANCHOR'),
 		answerKey = keyLetter(M.Settings.ANSWER_KEY),
 		declineKey = keyLetter(M.Settings.DECLINE_KEY),
 	})

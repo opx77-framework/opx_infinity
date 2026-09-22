@@ -164,6 +164,18 @@ OPX.Config.MODULES.calls = {
 	-- behave exactly as they did -- the handlers here do nothing at all unless
 	-- there is a call to answer. While one IS ringing, pressing Y also peeks the
 	-- hotbar for a moment. Move whichever bothers you; all three are config.
+	-- WHERE THE PROJECTION SITS. The owner moved this by hand three times --
+	-- centre, then bottom, then flush to the edge -- and every one of those was a
+	-- CSS edit because the value was not a setting. It is one now, and it speaks
+	-- the vocabulary in `lib/shared/anchors.lua`: the same nine names everywhere
+	-- they appear, rather than the three different sets eight config blocks were
+	-- quietly accepting behind one word.
+	--
+	-- A name that is not one of the nine is REFUSED AND NAMED in the journal, not
+	-- swallowed: a typo here is a screen in a corner nobody chose, and that is the
+	-- one fault a silent fallback makes impossible to find.
+	ANCHOR = 'bottom-center',
+
 	ANSWER_KEY = { ID = 'opx.calls.answer', NAME = 'calls.key.answer', DEFAULT = 'Y' },
 	DECLINE_KEY = { ID = 'opx.calls.decline', NAME = 'calls.key.decline', DEFAULT = 'X' },
 }

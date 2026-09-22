@@ -176,6 +176,40 @@
   --op-inset-x: 32px;
   --op-inset-y: 28px;
 
+  /* --- the veils behind a modal surface -------------------------------------
+     HOW MUCH OF THE STREET A FULL-SCREEN VIEW COVERS, and it is an operator's
+     decision rather than each view's: the fitting room, the spawn menu and the
+     form are three surfaces that all darken the world behind them, and three
+     views that each picked their own number would drift apart the first time
+     one of them was touched.
+
+     THESE FOUR WERE REFERENCED AND DEFINED NOWHERE. `var(--op-form-veil, 0.58)`
+     reads as a knob an operator can turn and was not one: the fallback was the
+     only value that had ever applied, in every one of them, since the day they
+     were written. The same shape as `--op-downed-veil`, which was removed on the
+     owner's word after the same discovery -- and the reason the suite now walks
+     every custom property this UI names.
+
+     The values are what the fallbacks were, so nothing on screen moves. What
+     changes is that turning them now does something. */
+  --op-form-veil: 0.58;
+  --op-spawn-veil: 0.58;
+  /* The menu deliberately darkens nothing: it is a list over live gameplay and
+     the player is expected to keep watching the street. Zero is a decision. */
+  --op-menu-veil: 0;
+
+  /* Pixels the notification column keeps clear at the top, under whatever the
+     surface above it occupies. */
+  --op-notify-clear-top: 132px;
+
+  /* A row's position in its list, set inline by the component so `.op-enter`
+     can stagger. NOT prefixed by the view: it is written by six components and
+     read by one rule in `surface.css`, which is exactly why the two names have
+     to be the same one. They were not -- the components wrote `--slot` and the
+     rule read `--op-slot`, so the fallback below was the only value that had
+     ever applied and nothing in this UI has ever actually cascaded in. */
+  --op-slot: 0;
+
   /* How much room a cluster's shadows and blooms need INSIDE a wrapper that
      clips. The wrapper pads by this and the anchor offsets pay it back. */
   --op-bleed: 10px;

@@ -450,7 +450,7 @@ function focusField(field: Field): void {
               :key="field.id"
               class="slot"
               :data-field="field.id"
-              :style="`--slot: ${at}`"
+              :style="`--op-slot: ${at}`"
             >
               <div
                 class="field"

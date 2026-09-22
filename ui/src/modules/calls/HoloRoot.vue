@@ -109,6 +109,7 @@ useBridge('opx:calls:holo', (payload: Payload) => {
     call.value = Object.keys(live).length > 0 ? live : null
     const ring = table(payload.invite)
     invite.value = Object.keys(ring).length > 0 ? ring : null
+    if (text(payload.anchor) !== '') anchor.value = text(payload.anchor)
     if (text(payload.answerKey) !== '') answerKey.value = text(payload.answerKey)
     if (text(payload.declineKey) !== '') declineKey.value = text(payload.declineKey)
     const placed = table(payload.outgoing)
@@ -190,6 +191,14 @@ const present = computed(() => open.value || ringing.value || onCall.value)
  * have its players told the wrong key, and a page that hardcoded `Y` would be a
  * second opinion about a configuration it cannot see.
  */
+/**
+ * WHERE THE PROJECTION SITS, as a name rather than a stylesheet. Lua settles it
+ * against the one vocabulary in `lib/shared/anchors.lua` and sends the word; the
+ * classes below are the nine it can be. The owner moved this by hand three times
+ * before it was a setting.
+ */
+const anchor = ref('bottom-center')
+
 const answerKey = ref('Y')
 const declineKey = ref('X')
 
@@ -197,7 +206,7 @@ const shown = computed<Row[]>(() => contacts.value)
 </script>
 
 <template>
-  <div v-if="present" class="holo op-ink" :class="{ live: !open }">
+  <div v-if="present" class="holo op-ink" :class="['anchor-' + anchor, { live: !open }]">
     <!-- ── THE PROJECTOR ──────────────────────────────────────────────────
          "je souhaite vraiement un effect de holo 3d en cercle un delire plutot
          pousser que cela donne vraiement l'impression de l'utiliser de l'oeil".
@@ -410,6 +419,65 @@ const shown = computed<Row[]>(() => contacts.value)
      drawn behind it. */
   perspective: 900px;
   perspective-origin: 50% 46%;
+}
+
+/* --- the nine positions ----------------------------------------------------
+   The vocabulary in `lib/shared/anchors.lua`, one class each. Lua sends the
+   name; this is the only place it becomes geometry.
+
+   The projection is laid out with `align-items` and `justify-content` on the
+   full-screen wrapper rather than with `position` on the pane, so a position
+   change never touches the 3D inside it: the disc, the beam and the panel keep
+   the same relationship to each other wherever the whole thing sits. */
+.anchor-top-left {
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
+.anchor-top-center {
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.anchor-top-right {
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+
+.anchor-left {
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.anchor-center {
+  align-items: center;
+  justify-content: center;
+}
+
+.anchor-right {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.anchor-bottom-left {
+  align-items: flex-end;
+  justify-content: flex-start;
+}
+
+.anchor-bottom-center {
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.anchor-bottom-right {
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+/* A projection standing on the floor belongs ON the bottom edge; one anchored
+   anywhere else needs the screen inset back, or it touches the frame. */
+.holo:not([class*='anchor-bottom']) {
+  padding: var(--op-inset-y) var(--op-inset-x);
 }
 
 .stage {

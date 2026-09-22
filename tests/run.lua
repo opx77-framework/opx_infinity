@@ -89,6 +89,11 @@ local CORE_NAMESPACE = {
 	-- against it too, and the three copies that preceded it -- 47 names, 45
 	-- and 14 -- are what a shared name is for.
 	Glyphs = true,
+	-- The one screen-placement vocabulary, in `lib/shared/anchors.lua`. On `OPX`
+	-- for the reason `Glyphs` is, and with a sharper version of the same story:
+	-- eight config blocks expose an `ANCHOR` and three DIFFERENT sets of names
+	-- were accepted behind it, so the same word in two files meant two things.
+	Anchors = true,
 	Modules = true, Api = true, Schema = true, Scheduler = true,
 	-- The one job gate, in `lib/shared/jobgate.lua`. On `OPX` and not inside a
 	-- module for the same reason `Glyphs` is: `elevators` and `teleports` both
@@ -14182,6 +14187,193 @@ end
 -- `core/shared/glyphs.lua` earned: a rule that was written out by hand in
 -- twenty-one scoped blocks across ten module stylesheets, and had already
 -- drifted between them, now exists once and the modules may not grow a second
+-- ── a knob nobody defined is not a knob ─────────────────────────────────────
+--
+-- THE OWNER ASKED WHETHER THE UI CONFIG COULD GO FURTHER FOR SERVER OWNERS, and
+-- the honest answer started here rather than with more settings: a custom
+-- property referenced with a fallback and defined NOWHERE reads exactly like an
+-- operator knob and is not one. The fallback is the only value that ever
+-- applies, and nothing warns -- CSS does not have an error for a name that does
+-- not exist, only a selector or a value that never matches.
+--
+-- `--op-downed-veil` was the first found, on the owner's word, and was removed.
+-- Measuring the rest turned up four more of the same shape -- `--op-form-veil`,
+-- `--op-spawn-veil`, `--op-menu-veil`, `--op-notify-clear-top` -- and one worse:
+-- the design system's stagger read `var(--op-slot)` while all six components
+-- that feed it wrote `--slot`, so `.op-enter` has never cascaded anywhere in
+-- this resource. All five are real tokens now.
+--
+-- THIS IS THE GUARD, and it is the one that makes exposing more worth doing:
+-- every `var(--op-…)` this UI names must be defined in the design system or in
+-- the file that uses it. Without it, "more configuration" means more knobs that
+
+-- ── one word, one meaning ────────────────────────────────────────────────────
+-- THE OWNER ASKED WHETHER THE UI CONFIG COULD GO FURTHER FOR SERVER OWNERS.
+-- Measuring first turned up the reason it could not: eight config blocks expose
+-- an `ANCHOR` and THREE DIFFERENT SETS of names were accepted behind it --
+-- `modules/menu` takes no bottom position at all, `modules/prompts` takes no
+-- centre, and `config/hud` is written with both. So the same word in two files
+-- meant two things, and a name one module did not know fell back to that
+-- module's own default in silence.
+--
+-- `lib/shared/anchors.lua` is one vocabulary of nine. This checks it, and checks
+-- the first surface to adopt it -- the call projection, which had no anchor at
+-- all and so could only be moved by editing CSS. The owner moved it by hand
+-- three times before it was a setting.
+section('where a surface sits is one vocabulary')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the anchors', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		check('the vocabulary is published', type(OPX.Anchors) == 'table'
+			and type(OPX.Anchors.ALL) == 'table')
+		check('and it is the nine positions', #OPX.Anchors.ALL == 9, #OPX.Anchors.ALL)
+
+		-- EVERY ONE OF THEM SURVIVES ITS OWN RESOLVE. A vocabulary whose own
+		-- names are refused is the fault this file exists to stop.
+		local refused = {}
+		for _, name in ipairs(OPX.Anchors.ALL) do
+			if OPX.Anchors.Resolve(name, 'center', 'test') ~= name then
+				refused[#refused + 1] = name
+			end
+		end
+		check('every name in it resolves to itself', #refused == 0,
+			table.concat(refused, ', '))
+
+		-- A TYPO IS NAMED, NOT SWALLOWED. One keystroke from a real name is the
+		-- commonest way to get a surface in a corner nobody chose, and a silent
+		-- fallback is what makes that impossible to find.
+		local warnings = #control.log.warn
+		check("a name that is not one of them falls back to the caller's default",
+			OPX.Anchors.Resolve('bottomleft', 'top-right', 'test.ANCHOR') == 'top-right')
+		local said = false
+		for index = warnings + 1, #control.log.warn do
+			if tostring(control.log.warn[index]):find('bottomleft', 1, true) then said = true end
+		end
+		check('and is named in the journal, with what is being used instead', said,
+			table.concat(control.log.warn, ' | '):sub(1, 120))
+
+		-- ABSENT IS NOT A TYPO. A config that simply does not carry the key is an
+		-- operator who never had an opinion, and warning about it would make the
+		-- journal useless for finding the ones that ARE mistakes.
+		warnings = #control.log.warn
+		check('an absent anchor takes the default in silence',
+			OPX.Anchors.Resolve(nil, 'bottom-left', 'test.ANCHOR') == 'bottom-left'
+				and #control.log.warn == warnings)
+
+		-- ── AND THE FIRST SURFACE TO USE IT ─────────────────────────────────
+		local calls = OPX.Modules.Get('calls')
+		local declared = OPX.Config.MODULES.calls.ANCHOR
+		check('the call projection has an anchor in config at all', declared ~= nil,
+			tostring(declared))
+		check('and it is one of the nine',
+			OPX.Anchors.Resolve(declared, 'center', 'calls.ANCHOR') == declared,
+			tostring(declared))
+
+		local drawn = {}
+		env.AddEventHandler(calls.Event.VIEW, function(payload)
+			if type(payload) == 'table' and payload.kind == 'holo' then
+				drawn[#drawn + 1] = payload
+			end
+		end)
+		calls.OpenHolo()
+		control.Pump(5)
+		check('and the projection tells the page where it sits',
+			#drawn > 0 and drawn[#drawn].anchor == declared,
+			#drawn > 0 and tostring(drawn[#drawn].anchor) or 'nothing drawn')
+		calls.CloseHolo()
+
+		-- THE PAGE HAS A CLASS FOR EVERY ONE OF THEM, or a perfectly valid
+		-- config value lands the projection wherever the fallback rule puts it --
+		-- which is the same silence, moved one file along.
+		-- Read here rather than through a helper: `sourceOf` is local to another
+		-- section, and a name that resolves to a global is nil.
+		local handle = io.open('ui/src/modules/calls/HoloRoot.vue', 'r')
+		local view = handle and handle:read('a') or nil
+		if handle then handle:close() end
+		check('the projection view is readable', view ~= nil)
+		local missing = {}
+		for _, name in ipairs(OPX.Anchors.ALL) do
+			if view == nil or not view:find('%.anchor%-' .. name:gsub('%-', '%%-')) then
+				missing[#missing + 1] = name
+			end
+		end
+		check('and carries a class for every position the vocabulary allows',
+			#missing == 0, table.concat(missing, ', '))
+	end
+end
+-- silently do nothing.
+section('every UI token an owner could turn is really there')
+do
+	local function read(path)
+		local handle = io.open(path, 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		return body
+	end
+
+	-- The stylesheets and every view, read once. Listed rather than globbed,
+	-- because a directory walk in the harness would quietly cover nothing on a
+	-- host whose `io.popen` is off and pass by finding no files at all.
+	local sheets = { 'tokens.css', 'shapes.css', 'surface.css', 'fonts.css' }
+	local system = ''
+	for _, sheet in ipairs(sheets) do
+		system = system .. read('ui/src/design-system/' .. sheet)
+	end
+	check('the design system stylesheets are readable', #system > 200, #system)
+
+	-- Every module view the page registers, taken from the registry itself so a
+	-- view added later is covered without this list being edited.
+	local registry = read('ui/src/boot/main.ts')
+	check('the module registry is readable', #registry > 0)
+
+	local views, seen = {}, {}
+	for path in registry:gmatch("from '@/(modules/[%w%-/%.]+%.vue)'") do
+		if not seen[path] then
+			seen[path] = true
+			views[#views + 1] = path
+		end
+	end
+	check('and it names the views to walk', #views >= 10, #views)
+
+	-- Defined anywhere the browser will find it: a `--op-x:` declaration in the
+	-- design system, or one in the file that uses it.
+	local defined = {}
+	for name in system:gmatch('(%-%-op%-[%w%-]+)%s*:') do defined[name] = true end
+
+	local unresolved = {}
+	for _, path in ipairs(views) do
+		local body = read('ui/src/' .. path)
+		local local_ = {}
+		for name in body:gmatch('(%-%-op%-[%w%-]+)%s*:') do local_[name] = true end
+		for name in body:gmatch('var%((%-%-op%-[%w%-]+)') do
+			if not defined[name] and not local_[name] then
+				unresolved[#unresolved + 1] = path:match('([^/]+)$') .. ':' .. name
+			end
+		end
+	end
+	table.sort(unresolved)
+	check('every token a view names is defined somewhere the browser will find it',
+		#unresolved == 0, table.concat(unresolved, ', '))
+
+	-- ── AND THE OTHER DIRECTION ─────────────────────────────────────────────
+	-- A token defined and never read is the same waste pointing the other way,
+	-- and it is how a theme grows entries that do nothing. Not asserted as zero
+	-- -- the design system carries a deliberate palette that individual views
+	-- compose from -- but the STAGGER is, because its whole job is to be read by
+	-- the one rule that stagger belongs to, and its name was wrong for months.
+	check('the stagger token is read by the design system',
+		system:find('var%(%-%-op%-slot') ~= nil)
+	local writers = 0
+	for _, path in ipairs(views) do
+		if read('ui/src/' .. path):find('%-%-op%-slot:', 1) then writers = writers + 1 end
+	end
+	check('and written by the views that stagger, under the same name',
+		writers >= 5, writers)
+end
+
 -- copy.
 section('the one truncation rule')
 do

@@ -1050,7 +1050,7 @@ onUnmounted(() => {
                 class="row"
                 data-augmented-ui="tr-clip border"
                 :class="{ off: busy, open: col.openName === entry.name }"
-                :style="`--slot: ${at}`"
+                :style="`--op-slot: ${at}`"
                 :data-folder="entry.name"
                 role="button"
                 :tabindex="busy ? -1 : 0"
@@ -1082,7 +1082,7 @@ onUnmounted(() => {
                   pending: entry.row.token === pendingToken,
                   off: busy && entry.row.token !== pendingToken
                 }"
-                :style="`--slot: ${at}`"
+                :style="`--op-slot: ${at}`"
                 role="button"
                 :tabindex="busy ? -1 : 0"
                 :aria-disabled="busy"

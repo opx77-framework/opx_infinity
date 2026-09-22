@@ -81,7 +81,7 @@ useBridge('opx:hud:info', (payload: Payload) => {
         :key="line.id"
         class="line"
         :class="line.tone"
-        :style="`--slot: ${at}`"
+        :style="`--op-slot: ${at}`"
       >
         <span class="label">{{ line.label }}</span>
         <span v-if="line.value" class="value">{{ line.value }}</span>

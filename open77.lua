@@ -134,6 +134,7 @@ shared_script "lib/shared/math.lua"
 -- copy of an access decision is how two surfaces end up disagreeing about who
 -- may pass, and this file has been re-written by hand twice since it was
 -- factored out, each time losing a branch.
+shared_script "lib/shared/anchors.lua"
 shared_script "lib/shared/jobgate.lua"
 -- The placed-spot vocabulary, ahead of every module that places something. The
 -- same argument the job gate makes, about a different decision: `garages` and

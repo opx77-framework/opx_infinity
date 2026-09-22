@@ -184,7 +184,7 @@ onMounted(() => {
           :key="row.key"
           class="row"
           :class="{ dim: row.dim }"
-          :style="`--slot: ${at}`"
+          :style="`--op-slot: ${at}`"
         >
           <span class="caps">
             <span v-for="cap in row.caps" :key="cap.key" class="key">
