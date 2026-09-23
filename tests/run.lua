@@ -45,7 +45,7 @@ end
 -- @return table env
 -- @return table control
 -- @return string|nil the file that failed, and why
-local function boot(side, database, prelude)
+local function boot(side, database, prelude, loaded)
 	local env, control = Host.Environment(side, database)
 	if prelude then prelude(env) end
 
@@ -54,6 +54,9 @@ local function boot(side, database, prelude)
 		if not chunk then return env, control, ('%s: %s'):format(file, why) end
 		local ok, failure = pcall(chunk)
 		if not ok then return env, control, ('%s: %s'):format(file, failure) end
+		-- After each file, before any module starts: where a test swaps a
+		-- shipped config for its fixture.
+		if loaded then loaded(env, file) end
 	end
 
 	-- The host always raises this for a starting resource, and the client half
@@ -15234,6 +15237,33 @@ do
 end
 
 
+-- THE HAULING SECTIONS BELOW TEST THE MODULE, NOT THE SHIPPED MAP. They were
+-- written when every site was a placeholder and they survey `docks` themselves;
+-- a real site beside it (Pacifica, surveyed 2026-09-23) takes claims and
+-- deliveries away from the fixture. So they boot with the two samples only,
+-- and the real sites get their own section.
+local HAULING_SAMPLES = { docks = true, badlands = true }
+local function haulingSamples(env, file)
+	if not file:find('config/hauling.lua', 1, true) then return end
+	local sites = env.OPX.Config.MODULES.hauling.SITES
+	for key in pairs(sites) do
+		if not HAULING_SAMPLES[key] then sites[key] = nil end
+	end
+end
+
+section('hauling: the surveyed Pacifica site is usable as shipped')
+do
+	local env, _, why = boot('server')
+	check('the server boots with the shipped hauling config', why == nil, why)
+	if why == nil then
+		local Access = env.OPX.Modules.Get('hauling').Access
+		local problems = table.concat(Access.Problems(), '\n')
+		check('the butcher shop site is usable', Access.Usable('pacifica_butcher'), problems)
+		check('and nothing is said against it',
+			problems:find('pacifica_butcher', 1, true) == nil, problems)
+	end
+end
+
 section('hauling: a site whose points are still the placeholder 0,0,0 is disabled, loudly')
 do
 	-- THE ONE FAILURE MODE THIS MODULE WAS MOST LIKELY TO REPEAT. `config/elevators.lua`
@@ -15245,7 +15275,7 @@ do
 	-- blank has to be refused rather than merely warned about.
 	local env, control, why = boot('server', nil, function(sandbox)
 		sandbox.Open77.props = { create = function() return nil, 'world_unavailable' end }
-	end)
+	end, haulingSamples)
 	check('the server boots for the hauling config case', why == nil, why)
 
 	if why == nil then
@@ -15403,7 +15433,7 @@ do
 		sandbox.Open77.props = propApi()
 		sandbox.Open77.players.position = function(id) return positions[id] end
 		sandbox.Open77.vehicles.get = function(id) return vehicles[id] end
-	end)
+	end, haulingSamples)
 	check('the server boots for the hauling claim tests', why == nil, why)
 
 	if why == nil then
@@ -15750,7 +15780,7 @@ do
 		sandbox.Open77.props = propApi()
 		sandbox.Open77.players.position = function(id) return positions[id] end
 		sandbox.Open77.vehicles.get = function(id) return vehicles[id] end
-	end)
+	end, haulingSamples)
 	check('the server boots for the hauling carry tests', why == nil, why)
 
 	if why == nil then
@@ -16015,7 +16045,7 @@ do
 		sandbox.Open77.props = propApi()
 		sandbox.Open77.players.position = function(id) return positions[id] end
 		sandbox.Open77.vehicles.get = function(id) return vehicles[id] end
-	end)
+	end, haulingSamples)
 	check('the server boots for the hauling delivery tests', why == nil, why)
 
 	if why == nil then

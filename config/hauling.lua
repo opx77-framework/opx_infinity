@@ -240,6 +240,35 @@ OPX.Config.MODULES.hauling = {
 			},
 		},
 
+		-- Surveyed in game on 2026-09-23. The two crates are 2.14m apart, just
+		-- over MIN_POINT_GAP: move one and check the gap.
+		pacifica_butcher = {
+			LABEL = 'Butcher shop and market',
+			BUCKET = 0,
+
+			-- Where the map pin goes. Without it the pin falls on the first point.
+			BLIP = { X = -1819.71, Y = -1970.77, Z = 52.50 },
+
+			POINTS = {
+				{ X = -1816.63, Y = -1977.91, Z = 52.50, YAW = 248.1 },
+				{ X = -1815.79, Y = -1975.94, Z = 52.50, YAW = 246.9 },
+			},
+			TARGET = {
+				LABEL = 'Pick up the crate',
+				DESCRIPTION = 'Market stock. Get it into a vehicle.',
+				ICON = 'box',
+			},
+			SPAWN_PER_PASS = 1,
+			RESPAWN_MS = 120000,
+
+			-- The sale point is ~14m from the crates. RADIUS is kept at 6 so a
+			-- vehicle parked by the crates (VEHICLE_REACH 4.5) is not already
+			-- inside it.
+			DROPOFFS = {
+				sale = { LABEL = 'Sale', X = -1819.13, Y = -1964.37, Z = 51.50, RADIUS = 6.0 },
+			},
+		},
+
 		badlands = {
 			LABEL = 'BADLANDS DEPOT',
 			BUCKET = 0,
