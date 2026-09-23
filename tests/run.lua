@@ -16227,14 +16227,19 @@ do
 		fire(2, M.Event.FINISH)
 		check('the crate is carried', lastAnswer()[1] == true, tostring(lastAnswer()[2]))
 		-- The owner: "je sais pas si tu peux trouver une animation pour le pickup".
-		check('the carrier plays the lift once',
-			#poses.played == 1 and poses.played[1].name == 'carry_pickup'
-				and poses.played[1].player == 2 and poses.played[1].options.loop == false)
+		-- The owner: "il y a pas une animation qui peut etre play quand on prend le
+		-- props ? une bonne animation". Kneel for the bar, then lift, then carry.
+		check('the carrier kneels at the crate for the length of the bar',
+			#poses.played >= 1 and poses.played[1].name == Access.PICKUP_POSE
+				and poses.played[1].player == 2 and poses.played[1].options.loop == true)
+		check('then plays the lift once',
+			#poses.played == 2 and poses.played[2].name == 'carry_pickup'
+				and poses.played[2].options.loop == false, #poses.played)
 		at = at + 1400
 		control.Pump(3)
 		check('and then the two-handed carry, looping',
-			#poses.played == 2 and poses.played[2].name == 'carry'
-				and poses.played[2].options.loop == true, #poses.played)
+			#poses.played == 3 and poses.played[3].name == 'carry'
+				and poses.played[3].options.loop == true, #poses.played)
 		-- The owner: "si ont porte le truc on puisse pas frapper n'y utiliser un item inv".
 		check('the weapon is put away at pickup', #holstered == 1 and holstered[1] == 2)
 		check('and the inventory can ask whether they are carrying',
@@ -16271,7 +16276,7 @@ do
 			#props.removes == removedBefore + 1 and props.byId[CRATE] == nil)
 		check('the carrier\'s hands are free', lastAnswer()[3] == false)
 		check('and the carry pose is stopped, by the id it was started under',
-			#poses.stopped == 1 and poses.stopped[1].id == 'pb2' and poses.stopped[1].player == 2)
+			#poses.stopped == 1 and poses.stopped[1].id == 'pb3' and poses.stopped[1].player == 2)
 		fire(2, M.Event.FINISH)
 		check('a second finish for the same load adds nothing',
 			lastAnswer()[2] == 'nothing_running' and trunks['veh-1'].docks == 1,
@@ -16571,7 +16576,23 @@ do
 		local sentBefore = #control.serverEvents
 		drop.pressed()
 		check('X with empty hands sends nothing', #control.serverEvents == sentBefore)
+		-- ── hands full: no weapon, no swing ─────────────────────────────────
+		-- The owner: "tu peux pas bloquer le fait qu'on puisse taper pendant qu'on
+		-- porte une caisse ?" The player controls reach what the input API cannot.
+		local held = {}
+		local players = env.Open77.players
+		for _, name in ipairs({ 'allowWeapons', 'allowShoot', 'allowAim' }) do
+			players[name] = function(allow) held[name] = allow == false or nil; return true end
+		end
+		players.resetControls = function() held = {}; return true end
 		control.netEvents[M.Event.ANSWER](true, nil, '555')
+		check('carrying takes the weapons, the shot and the aim away',
+			held.allowWeapons and held.allowShoot and held.allowAim)
+		-- The eye's close is `resetControls`, which clears this resource's blocks.
+		players.resetControls()
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'target', 'closed'), 'closed')
+		check('and they are put back when the ALT eye closes over a carry',
+			held.allowWeapons == true)
 		local function drops()
 			local n = 0
 			for index = 1, #control.serverEvents do
@@ -16599,6 +16620,8 @@ do
 				and type(sent[1].yaw) == 'number',
 			sent and sent.name)
 		control.netEvents[M.Event.ANSWER](true, 'dropped', false)
+		check('and handed back, one by one, when the crate is put down',
+			next(held) == nil)
 
 		-- A refusal corrects a client that had drifted: `carrying` is only ever what
 		-- the server last said, never inferred from a request that seemed to work.

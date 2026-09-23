@@ -591,6 +591,7 @@ local function refillOnce()
 		local crate = crates[stale[index]]
 		if crate ~= nil then
 			local was = crate.owner
+			dropPose(crate)
 			Claim.Release(crates, crate.id)
 			crate.pendingVehicle = nil
 			announce(crate)
@@ -758,6 +759,11 @@ local function beginPickup(player, propId)
 
 	local granted, why = Claim.Take(crates, propId, player, Step.PICKUP, revision, OPX.Now())
 	if not granted then return false, why end
+
+	-- Kneel at the crate for the length of the bar. A pose is a host call and the
+	-- claim is already won, so it cannot reopen the race; `carryPose` replaces it
+	-- when the bar completes, and every way the claim ends stops it.
+	if Access.PICKUP_POSE ~= '' then crate.pose = playPose(player, Access.PICKUP_POSE, true) end
 
 	announce(crate)
 	return true
@@ -1057,6 +1063,7 @@ local function complete(player)
 			-- RELEASED RATHER THAN KEPT. A claim whose attach was refused is a crate
 			-- nobody can see in anybody's hands and that nobody else may take; that
 			-- is strictly worse than the crate standing on its point.
+			dropPose(crate)
 			Claim.Release(crates, crate.id, player)
 			announce(crate)
 			-- THE HOST'S OWN WORDS GO TO THE JOURNAL, NOT TO THE CLIENT. What
@@ -1134,6 +1141,7 @@ local function abort(player, reason)
 	local crate = Claim.HeldBy(crates, player)
 	if crate == nil then return end
 	if crate.where == Where.CLAIMED then
+		dropPose(crate)
 		Claim.Release(crates, crate.id, player)
 		crate.pendingVehicle = nil
 		announce(crate)

@@ -156,6 +156,20 @@ OPX.Config.MODULES.hauling = {
 		ROTATION = { x = 0.0, y = 90.0, z = 0.0 },
 	},
 
+	-- WHAT THE PLAYER DOES WHILE THE PICKUP BAR RUNS. The owner, 2026-09-24: "il
+	-- y a pas une animation qui peut etre play quand on prend le props ? une
+	-- bonne animation". A kneeling workspot from the platform's own catalogue
+	-- (`open77_animations/shared/catalog.lua`), played for the length of the bar;
+	-- `carry_pickup` then lifts the crate and `carry` holds it.
+	--
+	--   'scavenge'  kneel, both hands working at something on the ground
+	--   'examine'   kneel and look the thing over
+	--   ''          none: the player just stands through the bar
+	--
+	-- Both are marked `asset_verified_runtime_pending` by the platform, and a
+	-- workspot ends if the player walks off -- which ends nothing else.
+	PICKUP_POSE = 'scavenge',
+
 	-- PUTTING A CARRIED CRATE DOWN. The owner, 2026-09-23: "pendant qu'on carry
 	-- ont peux faire x pour la drop". DROP_KEY is the default binding (players
 	-- rebind it under Pause -> Settings -> KEY BINDINGS); the crate lands

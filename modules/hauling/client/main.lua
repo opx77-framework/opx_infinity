@@ -267,10 +267,36 @@ end
 local HANDS_FULL = { 'Attack', 'WeaponWheel' }
 local handsBlocked = false
 
---- Claims or releases the two actions, only on a change.
+-- THE PLAYER CONTROLS, which reach what `Open77.input` cannot. The owner: "tu
+-- peux pas bloquer le fait qu'on puisse taper pendant qu'on porte une caisse ?"
+-- `Melee` is not blockable as an input on 2.31, but `allowWeapons(false)` is the
+-- game's own no-weapons restriction, and aim and shoot go with it. Released one
+-- by one with `true` and NEVER with `resetControls`, which would hand back every
+-- control block this resource holds -- the eye's, the downed screen's.
+local CONTROLS = { 'allowWeapons', 'allowShoot', 'allowAim' }
+
+--- Applies or releases the player controls, logging a refusal once.
+local controlsNoted = false
+local function holdControls(on)
+	local players = Open77.players
+	if type(players) ~= 'table' then return end
+	for _, name in ipairs(CONTROLS) do
+		if type(players[name]) == 'function' then
+			local called, ok, why = pcall(players[name], not on)
+			if on and (not called or ok ~= true) and not controlsNoted then
+				controlsNoted = true
+				OPX.Note('hauling', ('%s(false) was refused while carrying: %s')
+					:format(name, tostring(called and why or ok)))
+			end
+		end
+	end
+end
+
+--- Claims or releases the two actions and the controls, only on a change.
 local function blockHands(on)
 	if handsBlocked == on then return end
 	handsBlocked = on
+	holdControls(on)
 	local input = Open77.input
 	if type(input) ~= 'table' or type(input.setActionBlocked) ~= 'function' then return end
 	for _, action in ipairs(HANDS_FULL) do
@@ -372,6 +398,13 @@ function M.Start()
 
 	registerRows()
 	registerDropKey()
+
+	-- THE EYE HANDS BACK EVERY CONTROL THIS RESOURCE HOLDS when it closes -- its
+	-- `controls(false)` is `Open77.players.resetControls()` -- and a player can open
+	-- it with a crate in their arms. So the controls are put back after it.
+	AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'target', 'closed'), function()
+		if handsBlocked then holdControls(true) end
+	end)
 
 
 	RegisterNetEvent(M.Event.SNAPSHOT, function(part)
