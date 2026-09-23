@@ -168,31 +168,6 @@ OPX.Config.MODULES.hauling = {
 	DROP_DISTANCE = 0.7,
 	DROP_RETURN_MS = 300000,
 
-	-- THE ARROW OVER A CRATE THAT CAN BE PICKED UP. The owner, 2026-09-23: "si ont
-	-- peux les faire pop au dessus des caisse pour savoir que ces caisse la peuvent
-	-- etre ramasser". A native `Open77.markers` mesh (client op77.83+), drawn only
-	-- over a crate standing free on its point and taken down the moment somebody
-	-- claims it.
-	--
-	-- MAX IS A SHARE OF A QUOTA, not a taste: the platform allows 64 markers per
-	-- RESOURCE, and this runtime is one resource, so the teleports, the shops and
-	-- this job all draw from the same 64. LIFT is metres above the crate's point;
-	-- the arrow's own origin is its bottom. SHAPE is one of the platform's eight
-	-- (`arrow` points down); STYLE a palette -- interaction, objective, spawn, danger.
-	--
-	-- COLOR is RGBA 0..255 and wins over STYLE. The owner asked for red, and for
-	-- the arrow out of the crate: LIFT was 1.0 and it sat inside `crate.small`.
-	MARKER = {
-		SHAPE = 'arrow',
-		STYLE = 'danger',
-		COLOR = { r = 255, g = 40, b = 40, a = 220 },
-		RADIUS = 0.25,
-		HEIGHT = 0.5,
-		LIFT = 1.8,
-		MAX_DISTANCE = 40,
-		MAX = 16,
-	},
-
 	-- WHAT A LOADED CRATE BECOMES. Loading takes the crate out of the world and
 	-- puts one of this item in the vehicle's trunk, tagged with the site it came
 	-- from (`metadata.site`), which is what a drop-off pays by. Declared in

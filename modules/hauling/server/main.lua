@@ -324,6 +324,44 @@ local function place(crate, what)
 	end)
 end
 
+--- Replaces a crate's prop with a fresh one at `crate.x/y/z/yaw`.
+--
+-- A DETACHED PROP KEEPS FLYING ON THE CLIENT. The owner, twice: "quand je lache le
+-- props il se remet pas au sol il fly". The journal said the server had it on the
+-- floor -- `setTransform` accepted, z 52.50, the spawn height -- and the client kept
+-- drawing it where the detach left it, the carrier's chest. A prop that was never
+-- attached has no such state to carry, so the carried one is removed and a new one
+-- is created on the floor, under a new id the clients are told about.
+--
+-- OUT OF THE REGISTRY BEFORE THE REMOVE, for `retire`'s reason: removing the old
+-- prop raises `onPropAttachmentChanged` and `onPropRemoved` for it, and both
+-- handlers must find nothing under the old id.
+-- @return boolean false when no new prop could be made; the caller falls back
+local function reprop(crate, what)
+	if not propsReady() then return false end
+	local called, id, reason = pcall(Open77.props.create, {
+		model = Access.Model(crate.site),
+		position = { x = crate.x, y = crate.y, z = crate.z },
+		yaw = crate.yaw,
+		bucket = crate.bucket,
+		physics = 'static',
+		collision = true,
+	})
+	if not called or id == nil then
+		Open77.log.warn(('[hauling] crate %s: no fresh prop to be %s (%s)')
+			:format(safe(crate.id), what, safe(called and reason or id)))
+		return false
+	end
+	local old = crate.id
+	crates[old] = nil
+	crate.id = id
+	crates[id] = crate
+	crate.revision = revisionOf(id)
+	if type(Open77.props.remove) == 'function' then pcall(Open77.props.remove, old) end
+	announceGone(old)
+	return true
+end
+
 --- Takes a crate out of whatever it was attached to and stands it back on its point.
 --
 -- PUT BACK AND NOT DELETED, which is the whole difference between a carry that
@@ -338,7 +376,14 @@ end
 -- a crate standing somewhere else.
 local function putBack(crate, reason)
 	dropPose(crate)
-	if propsReady() and type(Open77.props.detach) == 'function' then
+	-- HOME, NOT WHERE IT LAST WAS. A crate somebody dropped has moved off its
+	-- point, and `crate.x` is where it lies; its point is still the config's.
+	local point = Access.Point(crate.site, crate.index)
+	if point ~= nil then
+		crate.x, crate.y, crate.z, crate.yaw = point.x, point.y, point.z, point.yaw
+	end
+	local fresh = reprop(crate, 'stood back up')
+	if not fresh and propsReady() and type(Open77.props.detach) == 'function' then
 		-- Read, like the `setTransform` below it already is: a refused detach
 		-- leaves the crate on the carrier's body while this function goes on to
 		-- stand it back up on its point and announce it as on the ground.
@@ -348,19 +393,13 @@ local function putBack(crate, reason)
 				:format(safe(crate.id), safe(let and why or detached)))
 		end
 	end
-	-- HOME, NOT WHERE IT LAST WAS. A crate somebody dropped has moved off its
-	-- point, and `crate.x` is where it lies; its point is still the config's.
-	local home = Access.Point(crate.site, crate.index)
-	if home ~= nil then
-		crate.x, crate.y, crate.z, crate.yaw = home.x, home.y, home.z, home.yaw
-	end
 	crate.where = Where.GROUND
 	crate.owner = nil
 	crate.step = nil
 	crate.claimedAtMs = nil
 	crate.pendingVehicle = nil
 	crate.droppedAtMs = nil
-	place(crate, 'stood back up')
+	if not fresh then place(crate, 'stood back up') end
 	crate.revision = revisionOf(crate.id) or crate.revision
 	announce(crate)
 	Open77.log.info(('[hauling] crate %s back on %s point %d: %s'):format(safe(crate.id),
@@ -790,15 +829,17 @@ local function dropCrate(player, yaw, groundZ)
 	crate.x, crate.y, crate.z, crate.yaw = x, y, z, yaw or crate.yaw
 	crate.droppedAtMs = OPX.Now()
 
-	if propsReady() and type(Open77.props.detach) == 'function' then
-		local let, detached, why = pcall(Open77.props.detach, crate.id)
-		if not let or detached == false then
-			Open77.log.warn(('[hauling] crate %s would not come off the body: %s')
-				:format(safe(crate.id), safe(let and why or detached)))
+	if not reprop(crate, 'put down') then
+		if propsReady() and type(Open77.props.detach) == 'function' then
+			local let, detached, why = pcall(Open77.props.detach, crate.id)
+			if not let or detached == false then
+				Open77.log.warn(('[hauling] crate %s would not come off the body: %s')
+					:format(safe(crate.id), safe(let and why or detached)))
+			end
 		end
+		place(crate, 'put down')
+		crate.revision = revisionOf(crate.id) or crate.revision
 	end
-	place(crate, 'put down')
-	crate.revision = revisionOf(crate.id) or crate.revision
 	announce(crate)
 	Open77.log.info(('[hauling] crate %s put down by player %d at %.2f, %.2f, %.2f')
 		:format(safe(crate.id), player, crate.x, crate.y, crate.z))
@@ -1113,8 +1154,14 @@ local function forget(playerId)
 	told[player] = nil
 	sales[player] = nil
 
+	-- COLLECTED FIRST: `putBack` re-keys a crate under a fresh prop id, and adding
+	-- a key to a table `pairs` is walking is undefined -- `invalid key to 'next'`.
+	local theirs = {}
 	for _, crate in pairs(crates) do
-		if crate.owner == player then
+		if crate.owner == player then theirs[#theirs + 1] = crate end
+	end
+	for _, crate in ipairs(theirs) do
+		do
 			if crate.where == Where.CARRIED then
 				putBack(crate, 'the carrier disconnected')
 			else
@@ -1378,8 +1425,13 @@ function M.Stop()
 		OPX.Scheduler.Cancel(refillJob)
 		refillJob = nil
 	end
+	-- Collected first, as in `forget`: `putBack` re-keys the table.
+	local carried = {}
 	for _, crate in pairs(crates) do
-		if crate.where == Where.CARRIED then
+		if crate.where == Where.CARRIED then carried[#carried + 1] = crate end
+	end
+	for _, crate in ipairs(carried) do
+		do
 			pcall(putBack, crate, 'the resource stopped')
 		end
 	end

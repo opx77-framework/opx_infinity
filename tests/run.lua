@@ -15881,21 +15881,38 @@ do
 		-- The platform detaches on death, disconnect, parent removal and bucket
 		-- change. If any of those DELETED the crate then disconnecting would be how a
 		-- player denies a crate to the competition.
-		local removedBefore = #props.removes
+		--
+		-- A FRESH PROP, NOT THE CARRIED ONE MOVED. A detached prop kept flying on the
+		-- client at the carrier's chest while the server had it on the floor -- the
+		-- owner: "quand je lache le props il se remet pas au sol il fly" -- so the
+		-- carried prop is removed and a new one stands on the point, under a new id.
+		local function crateAtHome()
+			for id, prop in pairs(props.byId) do
+				if prop.attachment == nil and math.abs(prop.x - home.x) < 0.001
+					and math.abs(prop.y - home.y) < 0.001 then
+					return id
+				end
+			end
+			return nil
+		end
+		local function standingNow()
+			return OPX.Api.Get('hauling').State().value.sites.docks.standing
+		end
+		local standingBefore = standingNow()
 		control.Fire(M.PROP_ATTACHMENT_CHANGED, CRATE, nil, bound.binding, 'player_died', 3)
-		check('a carry that ended stands the crate back up', #props.transforms == 1,
-			#props.transforms)
-		local stood = props.transforms[1] and props.transforms[1].position or nil
-		check('at its own point and not wherever the body fell',
-			stood ~= nil and math.abs(stood.x - home.x) < 0.001
-				and math.abs(stood.y - home.y) < 0.001,
-			stood ~= nil and ('%.1f,%.1f'):format(stood.x, stood.y) or 'nothing was placed')
-		check('and the crate is NOT removed, so dying is not how you deny one',
-			#props.removes == removedBefore, #props.removes)
-		check('it was detached before it was placed, because the native refuses a bound prop',
-			#props.detaches >= 1, #props.detaches)
+		local fresh = crateAtHome()
+		check('a carry that ended stands a crate back on its own point, not where the body fell',
+			fresh ~= nil and fresh ~= CRATE, tostring(fresh))
+		check('and the carried prop is gone, so no client keeps drawing it in the air',
+			props.byId[CRATE] == nil)
+		check('and the crate is NOT lost, so dying is not how you deny one',
+			standingNow() == standingBefore, standingNow())
 		check('and it is on the ground again for whoever is next',
 			OPX.Api.Get('hauling').State().value.sites.docks.carried == 0)
+		local told = sentTo(M.Event.GONE)
+		check('the clients are told the old id went',
+			#told >= 1 and told[#told][1] == CRATE)
+		CRATE = fresh or CRATE
 
 		-- ── the same, on a disconnect ────────────────────────────────────────
 		at = at + 10000
@@ -15904,11 +15921,13 @@ do
 		fire(3, M.Event.FINISH)
 		check('the crate can be picked up again', lastAnswer()[1] == true,
 			tostring(lastAnswer()[2]))
-		local placedBefore, removedNow = #props.transforms, #props.removes
+		local carriedId = CRATE
 		control.Fire(OPX.Host.PLAYER_DISCONNECTED, 3, 'quit')
+		local after = crateAtHome()
 		check('a carrier who disconnects leaves the crate standing on its point',
-			#props.transforms == placedBefore + 1, #props.transforms)
-		check('and it is still in the world', #props.removes == removedNow, #props.removes)
+			after ~= nil and after ~= carriedId, tostring(after))
+		check('and it is still in the world', standingNow() == standingBefore, standingNow())
+		CRATE = after or CRATE
 
 		-- ── the host's own refusal does not cross the wire ───────────────────
 		-- `Open77.props.attach` answers eleven codes and grows with the platform,
@@ -15950,10 +15969,14 @@ do
 		fire(4, M.Event.FINISH)
 		check('a fresh carrier has the crate',
 			OPX.Api.Get('hauling').State().value.sites.docks.carried == 1)
-		local standing = #props.transforms
+		local smuggled = CRATE
 		control.Fire(M.PLAYER_ENTERED_VEHICLE, 4, 'vehicle-1', 0)
+		local dropped = crateAtHome()
 		check('getting into a vehicle drops the crate rather than smuggling it',
-			#props.transforms == standing + 1, #props.transforms)
+			dropped ~= nil and dropped ~= smuggled
+				and OPX.Api.Get('hauling').State().value.sites.docks.carried == 0,
+			tostring(dropped))
+		CRATE = dropped or CRATE
 		check('and the carrier is told why',
 			lastAnswer()[1] == false and lastAnswer()[2] == 'carry_dropped',
 			tostring(lastAnswer()[2]))
@@ -16420,6 +16443,42 @@ do
 	end
 end
 
+section('hud: every vanilla component but the minimap is hidden, and a revive keeps it so')
+do
+	-- The owner: "regarde si ont hide bien tous ... sauf la minimap".
+	local env, control, why = boot('client')
+	check('the client boots for the vanilla HUD', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local function hiddenByUs(name)
+			local claims = control.hud.claims[name] or {}
+			return claims['opx_infinity'] == true
+		end
+		local function everyOtherHidden()
+			local shown = {}
+			for _, name in ipairs(env.Open77.hud.components()) do
+				if name ~= 'minimap' and not hiddenByUs(name) then shown[#shown + 1] = name end
+			end
+			return shown
+		end
+		local shown = everyOtherHidden()
+		check('every component the build lists is hidden, the ones never named included',
+			#shown == 0, table.concat(shown, ', '))
+		check('except the minimap, which carries the blips', not hiddenByUs('minimap'))
+
+		-- A CLAIM IS THE RESOURCE'S. `downed` hides the lot while a player is down
+		-- and releases it on revive -- in the same resource's name as the HUD's
+		-- own hides, so the release used to bring the whole vanilla HUD back.
+		local state = OPX.Event(OPX.Channel.NET, 'downed', 'state')
+		control.netEvents[state]({ down = true, giveUpInMs = 0, downForMs = 0 })
+		check('down, the minimap goes too', hiddenByUs('minimap'))
+		control.netEvents[state]({ down = false })
+		shown = everyOtherHidden()
+		check('revived, the minimap is back', not hiddenByUs('minimap'))
+		check('and nothing else came back with it', #shown == 0, table.concat(shown, ', '))
+	end
+end
+
 section('hauling: the client holds three rows and not one loop')
 do
 	-- THE BUDGET IS THE REASON THIS BLOCK EXISTS. The platform gives Lua 2000
@@ -16511,59 +16570,6 @@ do
 				and type(sent[1].yaw) == 'number',
 			sent and sent.name)
 		control.netEvents[M.Event.ANSWER](true, 'dropped', false)
-
-		-- ── the arrows over the free crates ─────────────────────────────────
-		-- The owner: "si ont peux les faire pop au dessus des caisse pour savoir que
-		-- ces caisse la peuvent etre ramasser".
-		local function arrowsLive()
-			local out = {}
-			for id, options in pairs(control.markers.byId) do
-				if options.shape == 'arrow' then out[#out + 1] = options end
-			end
-			return out
-		end
-		check('forty crates that came and went leave no arrow behind', #arrowsLive() == 0,
-			#arrowsLive())
-		control.netEvents[M.Event.SNAPSHOT]({ first = true, done = true, crates = {
-			{ id = '71', site = 'docks', x = 10.0, y = 0.0, z = 18.0, bucket = 0, where = 'ground' },
-			{ id = '72', site = 'docks', x = 14.0, y = 0.0, z = 18.0, bucket = 0, where = 'claimed' },
-		} })
-		local drawn = arrowsLive()
-		check('a crate standing free gets an arrow, and a claimed one does not',
-			#drawn == 1 and drawn[1].position.x == 10.0, #drawn)
-		check('and the arrow floats over the crate rather than inside it',
-			#drawn == 1 and drawn[1].position.z == 18.0 + M.Access.MARKER.lift)
-		control.netEvents[M.Event.CRATE]({ id = '71', site = 'docks', x = 10.0, y = 0.0,
-			z = 18.0, bucket = 0, where = 'claimed' })
-		check('the arrow goes the moment somebody claims the crate', #arrowsLive() == 0)
-		control.netEvents[M.Event.CRATE]({ id = '72', site = 'docks', x = 14.0, y = 0.0,
-			z = 18.0, bucket = 0, where = 'ground' })
-		check('and comes back over a crate that is put back', #arrowsLive() == 1)
-		local many = { first = true, done = true, crates = {} }
-		for index = 1, 40 do
-			many.crates[index] = { id = tostring(100 + index), site = 'docks', x = index * 5.0,
-				y = 0.0, z = 18.0, bucket = 0, where = 'ground' }
-		end
-		control.netEvents[M.Event.SNAPSHOT](many)
-		check('never more arrows than MARKER.MAX, which is a share of a 64 per-resource quota',
-			#arrowsLive() == M.Access.MARKER.max, #arrowsLive())
-
-		-- THE ARROWS AT LOGIN. The first snapshot lands before the world exists and
-		-- every create is refused `world_unavailable`; the owner saw no arrow until a
-		-- crate had been picked up and put down. World ready asks again.
-		control.markers.refuse = 'world_unavailable'
-		control.netEvents[M.Event.SNAPSHOT]({ first = true, done = true, crates = {
-			{ id = '81', site = 'docks', x = 10.0, y = 0.0, z = 18.0, bucket = 0, where = 'ground' },
-		} })
-		check('before the world exists, no arrow can be drawn', #arrowsLive() == 0)
-		control.markers.refuse = nil
-		control.Fire(OPX.Host.WORLD_READY)
-		local late = arrowsLive()
-		check('and the world arriving draws it, without the crate having to change',
-			#late == 1 and late[1].position.x == 10.0, #late)
-		check('red, as the owner asked',
-			#late == 1 and type(late[1].color) == 'table' and late[1].color.r == 255
-				and late[1].color.g < 100)
 
 		-- A refusal corrects a client that had drifted: `carrying` is only ever what
 		-- the server last said, never inferred from a request that seemed to work.

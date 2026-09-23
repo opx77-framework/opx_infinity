@@ -89,36 +89,6 @@ Access.DROP_KEY = type(Config.DROP_KEY) == 'string' and Config.DROP_KEY or 'X'
 Access.DROP_DISTANCE = math.min(2.0, math.max(0, finiteNumber(Config.DROP_DISTANCE) or 0.7))
 Access.DROP_RETURN_MS = math.max(0, integer(Config.DROP_RETURN_MS) or 300000)
 
--- The arrow over a free crate, normalised once. `nil` when the block is absent
--- or MAX is zero: no arrows, and nothing else changes.
-do
-	local raw = type(Config.MARKER) == 'table' and Config.MARKER or nil
-	local max = raw ~= nil and math.max(0, integer(raw.MAX) or 0) or 0
-	if raw ~= nil and max > 0 then
-		Access.MARKER = {
-			shape = type(raw.SHAPE) == 'string' and raw.SHAPE or 'arrow',
-			style = type(raw.STYLE) == 'string' and raw.STYLE or 'objective',
-			radius = math.max(0.1, finiteNumber(raw.RADIUS) or 0.25),
-			height = math.max(0.01, finiteNumber(raw.HEIGHT) or 0.5),
-			lift = finiteNumber(raw.LIFT) or 1.0,
-			maxDistance = math.min(500, math.max(1, finiteNumber(raw.MAX_DISTANCE) or 40)),
-			max = max,
-		}
-		-- RGBA bytes, all four whole numbers 0..255, or no colour and the style's.
-		local c = raw.COLOR
-		if type(c) == 'table' then
-			local function byte(v)
-				v = integer(v)
-				return v ~= nil and v >= 0 and v <= 255 and v or nil
-			end
-			local r, g, b, a = byte(c.r), byte(c.g), byte(c.b), byte(c.a == nil and 180 or c.a)
-			if r ~= nil and g ~= nil and b ~= nil and a ~= nil then
-				Access.MARKER.color = { r = r, g = g, b = b, a = a }
-			end
-		end
-	end
-end
-
 -- Squared, because every reach test below compares squares and a square root per
 -- test per player per pick is arithmetic nobody needs.
 Access.REACH_SQ = Access.REACH * Access.REACH

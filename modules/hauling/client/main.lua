@@ -78,11 +78,6 @@ local carrying = nil
 -- The seller NPCs, by id as a decimal string. Pushed by the server whole.
 local sellers = {}
 
--- Arrow marker handles, by crate id. A crate has one exactly while it stands free
--- on its point.
-local arrows = {}
-local arrowCount = 0
-local arrowsNoted = false
 
 -- The tokens the target rows were registered under, so `Stop` can take them back.
 local tokens = {}
@@ -262,74 +257,6 @@ local function registerRows()
 	end
 end
 
--- ── the arrows over free crates ─────────────────────────────────────────────
---
--- The owner: "si ont peux les faire pop au dessus des caisse pour savoir que ces
--- caisse la peuvent etre ramasser". STILL NO LOOP: an arrow is made or taken down
--- by the same crate delta that changes the row's answer, and the platform hides
--- it past MAX_DISTANCE on its own.
-
---- Says once why no arrow is drawn; a line per crate would be a line per refill.
-local function noteArrows(why)
-	if arrowsNoted then return end
-	arrowsNoted = true
-	OPX.Note('hauling', ('no arrow over the crates: %s'):format(tostring(why)))
-end
-
---- Takes a crate's arrow down, if it has one.
-local function unmark(id)
-	local handle = arrows[id]
-	if handle == nil then return end
-	arrows[id] = nil
-	arrowCount = arrowCount - 1
-	local api = Open77.markers
-	if type(api) == 'table' and type(api.remove) == 'function' then pcall(api.remove, handle) end
-end
-
---- Puts an arrow over a crate that stands free, and takes it off one that does not.
-local function mark(crate)
-	if crate.where ~= Where.GROUND then return unmark(crate.id) end
-	local look = Access.MARKER
-	if look == nil or arrows[crate.id] ~= nil then return end
-	if arrowCount >= look.max then return noteArrows('MARKER.MAX reached') end
-	local api = Open77.markers
-	if type(api) ~= 'table' or type(api.create) ~= 'function' then
-		return noteArrows('world.markers is unavailable')
-	end
-	local called, handle, why = pcall(api.create, {
-		position = { x = crate.x, y = crate.y, z = crate.z + look.lift },
-		shape = look.shape,
-		style = look.style,
-		color = look.color,
-		radius = look.radius,
-		height = look.height,
-		maxDistance = look.maxDistance,
-	})
-	if not called or handle == nil then
-		local reason = called and why or handle
-		-- NOT A FAULT, A MOMENT. The crates arrive with the first hello, which is
-		-- before the world exists; every arrow was refused `world_unavailable` and
-		-- nothing asked again until a crate changed. The owner: "la fleche ne
-		-- aparait que une fois que l'ont as pris puis et reposer". `remarkAll` on
-		-- world ready is the second asking.
-		if reason ~= 'world_unavailable' then noteArrows(reason) end
-		return
-	end
-	arrows[crate.id] = handle
-	arrowCount = arrowCount + 1
-end
-
---- Takes every arrow down.
-local function unmarkAll()
-	for id in pairs(arrows) do unmark(id) end
-	arrows, arrowCount = {}, 0
-end
-
---- Draws every arrow that should be up and is not. For when the world arrives.
-local function remarkAll()
-	for _, crate in pairs(crates) do mark(crate) end
-end
-
 -- ── hands full ──────────────────────────────────────────────────────────────
 --
 -- The owner: "si ont porte le truc on puisse pas frapper n'y utiliser un item
@@ -360,11 +287,9 @@ local function keep(row)
 	if type(row) ~= 'table' then return end
 	local id = propId(row.id)
 	if id == nil then return end
-	local crate = { id = id, site = tostring(row.site or ''),
+	crates[id] = { id = id, site = tostring(row.site or ''),
 		x = tonumber(row.x) or 0.0, y = tonumber(row.y) or 0.0, z = tonumber(row.z) or 0.0,
 		bucket = tonumber(row.bucket) or 0, where = tostring(row.where or Where.GROUND) }
-	crates[id] = crate
-	mark(crate)
 end
 
 --- Takes the bar down, whatever is holding it up.
@@ -445,9 +370,6 @@ function M.Start()
 	registerRows()
 	registerDropKey()
 
-	-- The crates can land before the world does; their arrows are asked again here.
-	AddEventHandler(OPX.Host.WORLD_READY, remarkAll)
-	AddEventHandler(OPX.Host.GAMEPLAY_READY, remarkAll)
 
 	RegisterNetEvent(M.Event.SNAPSHOT, function(part)
 		if type(part) ~= 'table' then return end
@@ -461,7 +383,6 @@ function M.Start()
 		-- part by part is a list that is briefly missing most of its crates, and a
 		-- pick during that window would offer nothing on a crate that is right there.
 		crates = {}
-		unmarkAll()
 		for _, row in ipairs(incoming) do keep(row) end
 		incoming = nil
 	end)
@@ -483,10 +404,7 @@ function M.Start()
 
 	RegisterNetEvent(M.Event.GONE, function(id)
 		local key = propId(id)
-		if key ~= nil then
-			crates[key] = nil
-			unmark(key)
-		end
+		if key ~= nil then crates[key] = nil end
 	end)
 
 	RegisterNetEvent(M.Event.ANSWER, function(ok, reason, held)
@@ -572,7 +490,6 @@ function M.Stop()
 		for _, token in ipairs(tokens) do pcall(target.Unregister, OWNER, token) end
 	end
 	tokens = {}
-	unmarkAll()
 	blockHands(false)
 	crates = {}
 	sellers = {}

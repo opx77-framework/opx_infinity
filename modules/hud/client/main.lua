@@ -171,6 +171,9 @@ local ready = false
 -- debugging a game HUD that will not go away.
 local vanillaFound = nil
 
+-- Components whose refusal has been noted, so a refusal is said once.
+local vanillaRefused = {}
+
 -- The reach mode open-voice last applied, its cycle, and the two keys.
 local reach = {}
 local modes = {}
@@ -846,15 +849,35 @@ local function applyVanilla()
 	local first = vanillaFound == nil
 	if first then vanillaFound = {} end
 
-	local applied = 0
+	-- EVERY COMPONENT THE BUILD KNOWS, NOT ONLY THE ONES NAMED. The owner: "regarde
+	-- si ont hide bien tous ... sauf la minimap". A component the config does not
+	-- name is HIDDEN, so one the platform adds later is covered on the day it
+	-- ships instead of appearing over our HUD until somebody lists it. Without the
+	-- build's own list, the named ones are all there is to go on.
+	local plan = {}
+	for component in pairs(known or {}) do plan[component] = false end
 	for component, shown in pairs(wanted) do
 		if type(component) == 'string' and type(shown) == 'boolean'
 			and (known == nil or known[component]) then
-			if first and type(hud.isVisible) == 'function' then
-				local read, was = pcall(hud.isVisible, component)
-				vanillaFound[component] = read and was or nil
-			end
-			if pcall(hud.setVisible, component, shown) then applied = applied + 1 end
+			plan[component] = shown
+		end
+	end
+
+	local applied = 0
+	for component, shown in pairs(plan) do
+		if first and type(hud.isVisible) == 'function' then
+			local read, was = pcall(hud.isVisible, component)
+			vanillaFound[component] = read and was or nil
+		end
+		-- THE ANSWER IS READ. `setVisible` answers `false, reason` rather than
+		-- raising, and `pcall` alone counted every refusal as applied.
+		local called, ok, why = pcall(hud.setVisible, component, shown)
+		if called and ok == true then
+			applied = applied + 1
+		elseif not vanillaRefused[component] then
+			vanillaRefused[component] = true
+			OPX.Note('hud', ('the vanilla %s could not be %s: %s'):format(component,
+				shown and 'shown' or 'hidden', tostring(called and why or ok)))
 		end
 	end
 	return applied
@@ -988,6 +1011,10 @@ function M.Api()
 		IsVisible = isVisible,
 		SetVisible = setVisible,
 		Vanilla = vanilla,
+		-- Puts this HUD's vanilla claims back. For `downed`, whose release on
+		-- revive clears them: claims belong to the RESOURCE, and this runtime is
+		-- one resource, so `setVisible(c, true)` there released ours too.
+		ApplyVanilla = applyVanilla,
 	})
 end
 
