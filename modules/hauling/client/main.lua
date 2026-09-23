@@ -300,12 +300,20 @@ local function mark(crate)
 		position = { x = crate.x, y = crate.y, z = crate.z + look.lift },
 		shape = look.shape,
 		style = look.style,
+		color = look.color,
 		radius = look.radius,
 		height = look.height,
 		maxDistance = look.maxDistance,
 	})
 	if not called or handle == nil then
-		return noteArrows(called and why or handle)
+		local reason = called and why or handle
+		-- NOT A FAULT, A MOMENT. The crates arrive with the first hello, which is
+		-- before the world exists; every arrow was refused `world_unavailable` and
+		-- nothing asked again until a crate changed. The owner: "la fleche ne
+		-- aparait que une fois que l'ont as pris puis et reposer". `remarkAll` on
+		-- world ready is the second asking.
+		if reason ~= 'world_unavailable' then noteArrows(reason) end
+		return
 	end
 	arrows[crate.id] = handle
 	arrowCount = arrowCount + 1
@@ -315,6 +323,36 @@ end
 local function unmarkAll()
 	for id in pairs(arrows) do unmark(id) end
 	arrows, arrowCount = {}, 0
+end
+
+--- Draws every arrow that should be up and is not. For when the world arrives.
+local function remarkAll()
+	for _, crate in pairs(crates) do mark(crate) end
+end
+
+-- ── hands full ──────────────────────────────────────────────────────────────
+--
+-- The owner: "si ont porte le truc on puisse pas frapper n'y utiliser un item
+-- inv". The server holsters the weapon at pickup and the inventory refuses item
+-- use; this stops the weapon coming back out. `Attack` (firing) is marked
+-- INFERRED by the platform and `Melee` is not blockable at all on 2.31, so a
+-- bare-handed swing is the one thing left and nothing here can refuse it.
+local HANDS_FULL = { 'Attack', 'WeaponWheel' }
+local handsBlocked = false
+
+--- Claims or releases the two actions, only on a change.
+local function blockHands(on)
+	if handsBlocked == on then return end
+	handsBlocked = on
+	local input = Open77.input
+	if type(input) ~= 'table' or type(input.setActionBlocked) ~= 'function' then return end
+	for _, action in ipairs(HANDS_FULL) do
+		local called, ok, why = pcall(input.setActionBlocked, action, on)
+		if on and (not called or ok ~= true) then
+			OPX.Note('hauling', ('%s could not be blocked while carrying: %s')
+				:format(action, tostring(called and why or ok)))
+		end
+	end
 end
 
 --- Puts one crate into the local list, or takes it out.
@@ -351,13 +389,28 @@ local function onDropKey()
 	end
 	-- A load bar under way ends here: the crate is going on the floor instead.
 	dropBar()
-	local yaw = nil
+	local yaw, groundZ = nil, nil
 	local character = Open77.character
 	if type(character) == 'table' and type(character.yaw) == 'function' then
 		local read, value = pcall(character.yaw)
 		if read and type(value) == 'number' then yaw = value end
 	end
-	TriggerServerEvent(M.Event.DROP, yaw)
+	-- THE FLOOR WHERE IT WILL LAND. The server has no physics and put the crate at
+	-- the player's own height, which is not the floor. Cast from just above the
+	-- player's head, not from the sky, so a roof or a balcony over them is not the
+	-- ground. `Open77.character.position()` answers three numbers.
+	if yaw ~= nil and type(character) == 'table' and type(character.position) == 'function'
+		and type(Open77.world) == 'table' and type(Open77.world.groundZ) == 'function' then
+		local read, x, y, z = pcall(character.position)
+		if read and type(x) == 'number' and type(y) == 'number' and type(z) == 'number' then
+			local radians = math.rad(yaw)
+			local dx = x - math.sin(radians) * Access.DROP_DISTANCE
+			local dy = y + math.cos(radians) * Access.DROP_DISTANCE
+			local cast, ground = pcall(Open77.world.groundZ, dx, dy, z + 1.0)
+			if cast and type(ground) == 'number' then groundZ = ground end
+		end
+	end
+	TriggerServerEvent(M.Event.DROP, { yaw = yaw, z = groundZ })
 end
 
 --- Binds the drop key, once. A refusal costs the key and nothing else.
@@ -391,6 +444,10 @@ function M.Start()
 
 	registerRows()
 	registerDropKey()
+
+	-- The crates can land before the world does; their arrows are asked again here.
+	AddEventHandler(OPX.Host.WORLD_READY, remarkAll)
+	AddEventHandler(OPX.Host.GAMEPLAY_READY, remarkAll)
 
 	RegisterNetEvent(M.Event.SNAPSHOT, function(part)
 		if type(part) ~= 'table' then return end
@@ -435,6 +492,7 @@ function M.Start()
 	RegisterNetEvent(M.Event.ANSWER, function(ok, reason, held)
 		local was = carrying
 		carrying = propId(held) or nil
+		blockHands(carrying ~= nil)
 		-- Said once per carry, the moment it starts: the key is no use unknown.
 		if was == nil and carrying ~= nil and dropKey ~= nil then
 			OPX.Toast.Locale('hauling.hint.drop', { key = dropKey }, 'info', 'box')
@@ -515,6 +573,7 @@ function M.Stop()
 	end
 	tokens = {}
 	unmarkAll()
+	blockHands(false)
 	crates = {}
 	sellers = {}
 	carrying = nil

@@ -103,6 +103,13 @@ function Actions.Use(source, slot)
 	end
 	local may, refusal = Players.MayAct(source)
 	if not may then return false, refusal end
+	-- HANDS FULL. Somebody carrying a hauling crate cannot draw a weapon or use
+	-- an item; asked of the contract by name, so a server without hauling is
+	-- unaffected.
+	local hauling = OPX.Api.Get('hauling')
+	if hauling ~= nil and type(hauling.IsCarrying) == 'function' and hauling.IsCarrying(source) then
+		return false, 'hands_full'
+	end
 
 	local bag, reason = Players.Bag(source)
 	if not bag then return false, reason end

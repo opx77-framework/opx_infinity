@@ -218,19 +218,54 @@ end
 -- `graph_verified_runtime_pending` -- so a refusal is logged once and the carry
 -- goes on without it rather than failing the pickup.
 local posesRefused = false
-local function carryPose(player)
+local function playPose(player, name, loop)
 	local animations = Open77.animations
 	if type(animations) ~= 'table' or type(animations.play) ~= 'function' then return nil end
-	local called, playback, why = pcall(animations.play, player, 'carry', { loop = true })
+	local called, playback, why = pcall(animations.play, player, name, { loop = loop })
 	if called and type(playback) == 'table' and playback.playbackId ~= nil then
 		return playback.playbackId
 	end
 	if not posesRefused then
 		posesRefused = true
-		Open77.log.warn(('[hauling] the carry animation was refused: %s')
-			:format(safe(called and why or playback)))
+		Open77.log.warn(('[hauling] the %s animation was refused: %s')
+			:format(name, safe(called and why or playback)))
 	end
 	return nil
+end
+
+-- How long `carry_pickup` runs before the loop takes over: its one clip,
+-- `enter_bodycarry_sync_upperbody`, is 1333 ms in the platform's catalogue.
+local PICKUP_CLIP_MS = 1333
+
+--- Plays the lift, then the two-handed carry loop, on a crate just picked up.
+--
+-- The owner: "je sais pas si tu peux trouver une animation pour le pickup". The
+-- platform ships one: `carry_pickup`, the `enter` of the same carry, played once.
+-- A new play replaces the last on a player, so the loop simply follows it -- but
+-- only if the crate is still in the same hands with the same pose, since a drop
+-- or a load during the clip has already stopped it.
+local function carryPose(crate, player)
+	local lift = playPose(player, 'carry_pickup', false)
+	if lift == nil then
+		crate.pose = playPose(player, 'carry', true)
+		return
+	end
+	crate.pose = lift
+	CreateThread(function()
+		Wait(PICKUP_CLIP_MS)
+		if crates[crate.id] ~= crate or crate.owner ~= player or crate.pose ~= lift
+			or crate.where ~= Where.CARRIED then
+			return
+		end
+		crate.pose = playPose(player, 'carry', true)
+	end)
+end
+
+--- Whether a player has a crate in their hands. For other modules: the
+--- inventory refuses item use to somebody carrying one.
+local function isCarrying(player)
+	local crate = Claim.HeldBy(crates, tonumber(player) or 0)
+	return crate ~= nil and crate.where == Where.CARRIED
 end
 
 --- Stops the carry pose a crate started, if it did.
@@ -242,6 +277,51 @@ local function dropPose(crate)
 		return
 	end
 	pcall(Open77.animations.stop, player, playback)
+end
+
+-- Metres the client's measured ground may sit from the server's reading of the
+-- player's height and still be believed: a step, a kerb, a slope.
+local DROP_GROUND_SLACK = 1.5
+
+-- Tries a placement gets before it is given up on, and the wait between them.
+local PLACE_TRIES = 5
+local PLACE_RETRY_MS = 150
+
+--- Stands a crate at `crate.x/y/z/yaw`, reading the host's answer.
+--
+-- THE ANSWER WAS NOT READ. Both callers did `local moved = pcall(setTransform,
+-- ...)`, which is `true` for a refusal: `setTransform` answers `false,
+-- 'prop_attached'` rather than raising. And `detach` "leaves the prop at the
+-- server's last coarse parent anchor" -- chest height -- so a refused move is
+-- a crate hanging in the air where the carrier's body last was. The owner saw
+-- exactly that: "quand je lache le props il se remet pas au sol il fly".
+--
+-- `prop_attached` straight after a detach is retried a few times on a thread of
+-- its own; every other refusal is final and goes to the journal.
+local function place(crate, what)
+	if not propsReady() or type(Open77.props.setTransform) ~= 'function' then return end
+	local function once()
+		return hostCall(Open77.props.setTransform, crate.id,
+			{ position = { x = crate.x, y = crate.y, z = crate.z }, yaw = crate.yaw })
+	end
+	local moved, why = once()
+	if moved then return end
+	if why ~= 'prop_attached' then
+		Open77.log.warn(('[hauling] crate %s could not be %s: %s')
+			:format(safe(crate.id), what, safe(why)))
+		return
+	end
+	CreateThread(function()
+		for _ = 1, PLACE_TRIES do
+			Wait(PLACE_RETRY_MS)
+			-- A crate somebody took meanwhile is theirs now, and not ours to move.
+			if crates[crate.id] ~= crate or crate.where ~= Where.GROUND then return end
+			moved, why = once()
+			if moved then return end
+		end
+		Open77.log.warn(('[hauling] crate %s could not be %s: %s')
+			:format(safe(crate.id), what, safe(why)))
+	end)
 end
 
 --- Takes a crate out of whatever it was attached to and stands it back on its point.
@@ -274,20 +354,13 @@ local function putBack(crate, reason)
 	if home ~= nil then
 		crate.x, crate.y, crate.z, crate.yaw = home.x, home.y, home.z, home.yaw
 	end
-	if propsReady() and type(Open77.props.setTransform) == 'function' then
-		local moved, why = pcall(Open77.props.setTransform, crate.id,
-			{ position = { x = crate.x, y = crate.y, z = crate.z }, yaw = crate.yaw })
-		if not moved then
-			Open77.log.warn(('[hauling] crate %s could not be stood back up: %s')
-				:format(safe(crate.id), safe(why)))
-		end
-	end
 	crate.where = Where.GROUND
 	crate.owner = nil
 	crate.step = nil
 	crate.claimedAtMs = nil
 	crate.pendingVehicle = nil
 	crate.droppedAtMs = nil
+	place(crate, 'stood back up')
 	crate.revision = revisionOf(crate.id) or crate.revision
 	announce(crate)
 	Open77.log.info(('[hauling] crate %s back on %s point %d: %s'):format(safe(crate.id),
@@ -684,11 +757,19 @@ end
 -- point -- which, reached first, would send a dropped crate home instead.
 -- @return boolean
 -- @return string|nil
-local function dropCrate(player, yaw)
+local function dropCrate(player, yaw, groundZ)
 	local crate = Claim.HeldBy(crates, player)
 	if crate == nil or crate.where ~= Where.CARRIED then return false, 'not_carrying' end
 	local here = standing(player)
 	if here == nil then return false, 'no_position' end
+
+	-- THE CLIENT'S GROUND, BELIEVED WITHIN DROP_GROUND_SLACK OF THE SERVER'S
+	-- READING. The server has no physics world, so the floor under the drop is
+	-- the client's `Open77.world.groundZ`; a value further off than a step or a
+	-- kerb is a forged or a missed ray, and the player's own height is used.
+	local z = here.z
+	groundZ = Access.FiniteNumber(groundZ)
+	if groundZ ~= nil and math.abs(groundZ - here.z) <= DROP_GROUND_SLACK then z = groundZ end
 
 	local x, y = here.x, here.y
 	yaw = Access.FiniteNumber(yaw)
@@ -706,7 +787,7 @@ local function dropCrate(player, yaw)
 	crate.step = nil
 	crate.claimedAtMs = nil
 	crate.pendingVehicle = nil
-	crate.x, crate.y, crate.z, crate.yaw = x, y, here.z, yaw or crate.yaw
+	crate.x, crate.y, crate.z, crate.yaw = x, y, z, yaw or crate.yaw
 	crate.droppedAtMs = OPX.Now()
 
 	if propsReady() and type(Open77.props.detach) == 'function' then
@@ -716,17 +797,11 @@ local function dropCrate(player, yaw)
 				:format(safe(crate.id), safe(let and why or detached)))
 		end
 	end
-	if propsReady() and type(Open77.props.setTransform) == 'function' then
-		local moved, why = pcall(Open77.props.setTransform, crate.id,
-			{ position = { x = crate.x, y = crate.y, z = crate.z }, yaw = crate.yaw })
-		if not moved then
-			Open77.log.warn(('[hauling] crate %s could not be put down: %s')
-				:format(safe(crate.id), safe(why)))
-		end
-	end
+	place(crate, 'put down')
 	crate.revision = revisionOf(crate.id) or crate.revision
 	announce(crate)
-	Open77.log.info(('[hauling] crate %s put down by player %d'):format(safe(crate.id), player))
+	Open77.log.info(('[hauling] crate %s put down by player %d at %.2f, %.2f, %.2f')
+		:format(safe(crate.id), player, crate.x, crate.y, crate.z))
 	return true
 end
 
@@ -953,7 +1028,13 @@ local function complete(player)
 			return false, 'attach_refused'
 		end
 		crate.where = Where.CARRIED
-		crate.pose = carryPose(player)
+		carryPose(crate, player)
+		-- HANDS FULL: whatever they were holding goes away. The owner: "si ont
+		-- porte le truc on puisse pas frapper n'y utiliser un item inv". The
+		-- client blocks drawing it again; the inventory refuses item use.
+		if type(Open77.weapons) == 'table' and type(Open77.weapons.holster) == 'function' then
+			pcall(Open77.weapons.holster, player)
+		end
 		crate.step = nil
 		crate.revision = revisionOf(crate.id) or crate.revision
 		announce(crate)
@@ -1115,6 +1196,7 @@ end
 function M.Api()
 	OPX.Api.Provide('hauling', 1, {
 		State = state,
+		IsCarrying = isCarrying,
 	})
 end
 
@@ -1195,14 +1277,20 @@ function M.Start()
 		end
 	end)
 
-	RegisterNetEvent(M.Event.DROP, function(yaw)
+	RegisterNetEvent(M.Event.DROP, function(where)
 		local player = tonumber(source) or 0
 		if player <= 0 then return end
 		if not within(requestWindows, player, REQUESTS_PER_WINDOW, REQUEST_WINDOW_MS) then
 			return answer(player, false, 'rate_limited')
 		end
-		if type(yaw) ~= 'number' then yaw = nil end
-		local ok, reason = dropCrate(player, yaw)
+		local yaw, groundZ = nil, nil
+		if type(where) == 'number' then
+			yaw = where
+		elseif type(where) == 'table' then
+			if type(where.yaw) == 'number' then yaw = where.yaw end
+			if type(where.z) == 'number' then groundZ = where.z end
+		end
+		local ok, reason = dropCrate(player, yaw, groundZ)
 		answer(player, ok, ok and 'dropped' or reason)
 	end)
 

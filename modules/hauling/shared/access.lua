@@ -104,6 +104,18 @@ do
 			maxDistance = math.min(500, math.max(1, finiteNumber(raw.MAX_DISTANCE) or 40)),
 			max = max,
 		}
+		-- RGBA bytes, all four whole numbers 0..255, or no colour and the style's.
+		local c = raw.COLOR
+		if type(c) == 'table' then
+			local function byte(v)
+				v = integer(v)
+				return v ~= nil and v >= 0 and v <= 255 and v or nil
+			end
+			local r, g, b, a = byte(c.r), byte(c.g), byte(c.b), byte(c.a == nil and 180 or c.a)
+			if r ~= nil and g ~= nil and b ~= nil and a ~= nil then
+				Access.MARKER.color = { r = r, g = g, b = b, a = a }
+			end
+		end
 	end
 end
 

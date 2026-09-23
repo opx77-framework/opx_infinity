@@ -15980,6 +15980,7 @@ do
 	local at = 1000000
 	local npcs = { next = 900, created = {}, removed = {} }
 	local poses = { played = {}, stopped = {} }
+	local holstered = {}
 	local props = { byId = {}, next = 0, creates = {}, attaches = {}, detaches = {},
 		removes = {}, transforms = {}, refuse = nil, unknown = nil }
 	local positions = {}
@@ -16060,6 +16061,11 @@ do
 			end,
 			remove = function(id) npcs.removed[#npcs.removed + 1] = id; return true end,
 		}
+		sandbox.Open77.weapons = sandbox.Open77.weapons or {}
+		sandbox.Open77.weapons.holster = function(player)
+			holstered[#holstered + 1] = player
+			return 'req-' .. #holstered
+		end
 		sandbox.Open77.animations = {
 			play = function(player, name, options)
 				poses.played[#poses.played + 1] = { player = player, name = name, options = options }
@@ -16197,9 +16203,20 @@ do
 		at = at + Access.PICKUP_MS + 1
 		fire(2, M.Event.FINISH)
 		check('the crate is carried', lastAnswer()[1] == true, tostring(lastAnswer()[2]))
-		check('and the carrier plays the two-handed carry, looping',
-			#poses.played == 1 and poses.played[1].name == 'carry'
-				and poses.played[1].player == 2 and poses.played[1].options.loop == true)
+		-- The owner: "je sais pas si tu peux trouver une animation pour le pickup".
+		check('the carrier plays the lift once',
+			#poses.played == 1 and poses.played[1].name == 'carry_pickup'
+				and poses.played[1].player == 2 and poses.played[1].options.loop == false)
+		at = at + 1400
+		control.Pump(3)
+		check('and then the two-handed carry, looping',
+			#poses.played == 2 and poses.played[2].name == 'carry'
+				and poses.played[2].options.loop == true, #poses.played)
+		-- The owner: "si ont porte le truc on puisse pas frapper n'y utiliser un item inv".
+		check('the weapon is put away at pickup', #holstered == 1 and holstered[1] == 2)
+		check('and the inventory can ask whether they are carrying',
+			OPX.Api.Get('hauling').IsCarrying(2) == true
+				and OPX.Api.Get('hauling').IsCarrying(3) == false)
 
 		-- ── a full trunk leaves the crate in the carrier's hands ─────────────
 		vehicles['veh-full'] = { id = 'veh-full', record = 'Vehicle.nothing',
@@ -16231,7 +16248,7 @@ do
 			#props.removes == removedBefore + 1 and props.byId[CRATE] == nil)
 		check('the carrier\'s hands are free', lastAnswer()[3] == false)
 		check('and the carry pose is stopped, by the id it was started under',
-			#poses.stopped == 1 and poses.stopped[1].id == 'pb1' and poses.stopped[1].player == 2)
+			#poses.stopped == 1 and poses.stopped[1].id == 'pb2' and poses.stopped[1].player == 2)
 		fire(2, M.Event.FINISH)
 		check('a second finish for the same load adds nothing',
 			lastAnswer()[2] == 'nothing_running' and trunks['veh-1'].docks == 1,
@@ -16490,7 +16507,8 @@ do
 		drop.pressed()
 		local sent = control.serverEvents[#control.serverEvents]
 		check('X while carrying asks the server, with the way the player faces',
-			sent ~= nil and sent.name == M.Event.DROP and type(sent[1]) == 'number',
+			sent ~= nil and sent.name == M.Event.DROP and type(sent[1]) == 'table'
+				and type(sent[1].yaw) == 'number',
 			sent and sent.name)
 		control.netEvents[M.Event.ANSWER](true, 'dropped', false)
 
@@ -16529,6 +16547,23 @@ do
 		control.netEvents[M.Event.SNAPSHOT](many)
 		check('never more arrows than MARKER.MAX, which is a share of a 64 per-resource quota',
 			#arrowsLive() == M.Access.MARKER.max, #arrowsLive())
+
+		-- THE ARROWS AT LOGIN. The first snapshot lands before the world exists and
+		-- every create is refused `world_unavailable`; the owner saw no arrow until a
+		-- crate had been picked up and put down. World ready asks again.
+		control.markers.refuse = 'world_unavailable'
+		control.netEvents[M.Event.SNAPSHOT]({ first = true, done = true, crates = {
+			{ id = '81', site = 'docks', x = 10.0, y = 0.0, z = 18.0, bucket = 0, where = 'ground' },
+		} })
+		check('before the world exists, no arrow can be drawn', #arrowsLive() == 0)
+		control.markers.refuse = nil
+		control.Fire(OPX.Host.WORLD_READY)
+		local late = arrowsLive()
+		check('and the world arriving draws it, without the crate having to change',
+			#late == 1 and late[1].position.x == 10.0, #late)
+		check('red, as the owner asked',
+			#late == 1 and type(late[1].color) == 'table' and late[1].color.r == 255
+				and late[1].color.g < 100)
 
 		-- A refusal corrects a client that had drifted: `carrying` is only ever what
 		-- the server last said, never inferred from a request that seemed to work.

@@ -179,12 +179,16 @@ OPX.Config.MODULES.hauling = {
 	-- this job all draw from the same 64. LIFT is metres above the crate's point;
 	-- the arrow's own origin is its bottom. SHAPE is one of the platform's eight
 	-- (`arrow` points down); STYLE a palette -- interaction, objective, spawn, danger.
+	--
+	-- COLOR is RGBA 0..255 and wins over STYLE. The owner asked for red, and for
+	-- the arrow out of the crate: LIFT was 1.0 and it sat inside `crate.small`.
 	MARKER = {
 		SHAPE = 'arrow',
-		STYLE = 'objective',
+		STYLE = 'danger',
+		COLOR = { r = 255, g = 40, b = 40, a = 220 },
 		RADIUS = 0.25,
 		HEIGHT = 0.5,
-		LIFT = 1.0,
+		LIFT = 1.8,
 		MAX_DISTANCE = 40,
 		MAX = 16,
 	},
