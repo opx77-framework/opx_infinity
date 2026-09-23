@@ -4,6 +4,7 @@ import { num, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { useLocale } from '@/composables/useLocale'
+import { corners } from '@/stores/corners'
 
 /**
  * THE VOICE BLOCK -- bottom-right corner, on the same insets as every anchored cluster.
@@ -123,7 +124,11 @@ function share(value: number): number {
 </script>
 
 <template>
-  <div class="voice" :class="[voice.state, { live: voice.active }]">
+  <div
+    class="voice"
+    :class="[voice.state, { live: voice.active }]"
+    :style="{ '--voice-lift': corners.bottomRight + 'px' }"
+  >
     <section class="panel">
       <div class="inner">
         <div class="head">
@@ -224,7 +229,7 @@ function share(value: number): number {
      arrive -- the meter, the reach mode, the pips and the keycaps are all conditional,
      and a top-anchored block would slide its own mic down the screen every time a line
      appeared above it. */
-  bottom: calc(var(--op-inset-y) - var(--hud-bleed));
+  bottom: calc(var(--op-inset-y) - var(--hud-bleed) + var(--voice-lift, 0px));
   /* IT IS SIZED BY ITS WIDEST LINE, and it was not.
 
      `opx77_hud/web/hud.css` pinned `.voice` at 52px: a narrow column hugging the
@@ -252,9 +257,12 @@ function share(value: number): number {
   perspective: var(--op-persp);
   contain: layout paint style;
   /* An entrance: three steps, not a fade. */
+  /* `bottom` too: the block steps up over an open key strip and back down when it
+     closes (`stores/corners.ts`), and a jump would read as a glitch. */
   transition:
     opacity var(--op-enter-ms) var(--op-stutter),
-    transform var(--op-enter-ms) var(--op-stutter);
+    transform var(--op-enter-ms) var(--op-stutter),
+    bottom var(--op-enter-ms) var(--op-stutter);
   /* The state ladder, resolved once and read by the mic, the caption, the meter
      and the slash. NOT by the frame: `--voice-frame` sat here for four states
      and nothing ever read it, so the caps and the rx counter never followed the
