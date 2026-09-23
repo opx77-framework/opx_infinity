@@ -15975,9 +15975,11 @@ do
 	end
 end
 
-section('hauling: loading, delivering, and the site the engine will not draw')
+section('hauling: loading into a trunk, selling to an NPC, and the site the engine will not draw')
 do
 	local at = 1000000
+	local npcs = { next = 900, created = {}, removed = {} }
+	local poses = { played = {}, stopped = {} }
 	local props = { byId = {}, next = 0, creates = {}, attaches = {}, detaches = {},
 		removes = {}, transforms = {}, refuse = nil, unknown = nil }
 	local positions = {}
@@ -16045,6 +16047,29 @@ do
 		sandbox.Open77.props = propApi()
 		sandbox.Open77.players.position = function(id) return positions[id] end
 		sandbox.Open77.vehicles.get = function(id) return vehicles[id] end
+		sandbox.Open77.vehicles.all = function()
+			local list = {}
+			for _, vehicle in pairs(vehicles) do list[#list + 1] = vehicle end
+			return list
+		end
+		sandbox.Open77.npcs = {
+			create = function(definition)
+				npcs.next = npcs.next + 1
+				npcs.created[#npcs.created + 1] = definition
+				return npcs.next
+			end,
+			remove = function(id) npcs.removed[#npcs.removed + 1] = id; return true end,
+		}
+		sandbox.Open77.animations = {
+			play = function(player, name, options)
+				poses.played[#poses.played + 1] = { player = player, name = name, options = options }
+				return { playbackId = 'pb' .. #poses.played }
+			end,
+			stop = function(player, id)
+				poses.stopped[#poses.stopped + 1] = { player = player, id = id }
+				return true
+			end,
+		}
 	end, haulingSamples)
 	check('the server boots for the hauling delivery tests', why == nil, why)
 
@@ -16093,109 +16118,130 @@ do
 			return out
 		end
 
+		-- ── stand-ins for the inventory and the wallet ───────────────────────
+		-- The contract lookup is replaced and not the modules: hauling asks
+		-- `OPX.Api.Get` for the functions it needs, and these are the smallest
+		-- things that can stand in for a trunk, a bag and a logged-in wallet.
+		local trunks, bags, paid = {}, {}, {}
+		local function tagOf(meta) return type(meta) == 'table' and meta.site or '?' end
+		local function take(store, key, meta, count)
+			local held = store[key] or {}
+			if (held[tagOf(meta)] or 0) < count then return { ok = false, error = 'not_enough' } end
+			held[tagOf(meta)] = held[tagOf(meta)] - count
+			return { ok = true, value = true }
+		end
+		local function put(store, key, meta, count)
+			store[key] = store[key] or {}
+			store[key][tagOf(meta)] = (store[key][tagOf(meta)] or 0) + count
+			return { ok = true, value = true }
+		end
+		local inventory = {
+			AddToTrunk = function(vehicle, name, count, meta)
+				if vehicle == 'veh-full' then return { ok = false, error = 'too_heavy' } end
+				return put(trunks, vehicle, meta, count)
+			end,
+			RemoveFromTrunk = function(vehicle, name, count, meta) return take(trunks, vehicle, meta, count) end,
+			CountInTrunk = function(vehicle, name, meta)
+				return { ok = true, value = (trunks[vehicle] or {})[tagOf(meta)] or 0 }
+			end,
+			GetItemCount = function(player, name, meta)
+				return { ok = true, value = (bags[player] or {})[tagOf(meta)] or 0 }
+			end,
+			RemoveItem = function(player, name, count, meta) return take(bags, player, meta, count) end,
+			AddItem = function(player, name, count, meta) return put(bags, player, meta, count) end,
+		}
+		local wallet = nil
+		local realGet = OPX.Api.Get
+		OPX.Api.Get = function(name)
+			if name == 'inventory' then return inventory end
+			if name == 'character' and wallet ~= nil then return wallet end
+			return realGet(name)
+		end
+
 		-- A truck standing beside the crate, away from every drop-off.
 		vehicles['veh-1'] = { id = 'veh-1', record = 'Vehicle.v_standard3_thorton_mackinaw_player',
 			position = { x = home.x + 2.0, y = home.y, z = home.z } }
 		positions[2] = { x = home.x, y = home.y, z = home.z, bucket = 0 }
 		fire(2, M.Event.HELLO)
 
+		-- ── the sellers ──────────────────────────────────────────────────────
+		-- The owner: "pour les points de vente fait en sorte que ce soit une
+		-- interaction alt sur un npc puis vendre".
+		local function sellerFor(dropoff)
+			local list = nil
+			for index = 1, #control.clientEvents do
+				if control.clientEvents[index].name == M.Event.SELLERS then
+					list = control.clientEvents[index][1]
+				end
+			end
+			for _, row in ipairs(list or {}) do
+				if row.dropoff == dropoff then return row.npc end
+			end
+			return nil
+		end
+		local SELLER = sellerFor('warehouse')
+		check('every drop-off of a usable site has a seller standing on it',
+			SELLER ~= nil and sellerFor('yard') ~= nil, #npcs.created)
+		check('and the seller id reaches the client as a decimal string, never a number',
+			type(SELLER) == 'string' and SELLER:match('^%d+$') ~= nil, tostring(SELLER))
+		check('a seller cannot be shot or talk the ear off anyone',
+			npcs.created[1] ~= nil and npcs.created[1].behavior.combatEnabled == false
+				and npcs.created[1].record:match('^Character%.Vendor') ~= nil)
+		local placed = #npcs.created
+		control.Pump(1)
+		check('a second pass puts no second seller on the same drop-off',
+			#npcs.created == placed, #npcs.created - placed)
+
+		-- ── pickup, and the carry pose ───────────────────────────────────────
 		fire(2, M.Event.BEGIN, Step.PICKUP, CRATE)
 		at = at + Access.PICKUP_MS + 1
 		fire(2, M.Event.FINISH)
 		check('the crate is carried', lastAnswer()[1] == true, tostring(lastAnswer()[2]))
+		check('and the carrier plays the two-handed carry, looping',
+			#poses.played == 1 and poses.played[1].name == 'carry'
+				and poses.played[1].player == 2 and poses.played[1].options.loop == true)
 
+		-- ── a full trunk leaves the crate in the carrier's hands ─────────────
+		vehicles['veh-full'] = { id = 'veh-full', record = 'Vehicle.nothing',
+			position = { x = home.x - 2.0, y = home.y, z = home.z } }
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.LOAD, 'veh-full')
+		at = at + Access.LOAD_MS + 1
+		fire(2, M.Event.FINISH)
+		check('a full trunk refuses the crate, in words the player has',
+			lastAnswer()[2] == 'trunk_full', tostring(lastAnswer()[2]))
+		check('and the crate is still in their hands',
+			OPX.Api.Get('hauling').State().value.sites.docks.carried == 1
+				and lastAnswer()[3] == CRATE)
+		vehicles['veh-full'] = nil
+
+		-- ── loading makes it an item ─────────────────────────────────────────
+		-- The owner: "des qu'il pose dans le vehicule cela deviens un item".
+		local removedBefore = #props.removes
 		at = at + 10000
 		fire(2, M.Event.BEGIN, Step.LOAD, 'veh-1')
 		check('the load is granted', lastAnswer()[1] == true, tostring(lastAnswer()[2]))
 		at = at + Access.LOAD_MS + 1
 		fire(2, M.Event.FINISH)
-		check('and the crate goes into the bed', lastAnswer()[1] == true,
+		check('and the crate goes into the trunk', lastAnswer()[1] == true,
 			tostring(lastAnswer()[2]))
-		local bed = props.attaches[#props.attaches]
-		check('attached to the vehicle at its root, which is where a bed slot is measured',
-			bed.binding.parentType == 'vehicle' and bed.binding.bone == '',
-			tostring(bed.binding.parentType))
-
-		-- LOADING RELEASES OWNERSHIP, on purpose: the loader's hands are free to fetch
-		-- another and whoever drives the truck delivers. That is the convoy, and it
-		-- comes out of one line in `complete`.
-		local loaded = OPX.Api.Get('hauling').State()
-		check('the crate is loaded and nobody\'s', loaded.value.sites.docks.loaded == 1,
-			loaded.value.sites.docks.loaded)
-
-		-- ── a delivery away from every drop-off is refused ───────────────────
-		at = at + 10000
-		positions[2] = { x = home.x + 2.0, y = home.y, z = home.z, bucket = 0 }
-		fire(2, M.Event.BEGIN, Step.DELIVER, CRATE)
-		check('a delivery from the middle of the yard is refused',
-			lastAnswer()[2] == 'not_at_dropoff', tostring(lastAnswer()[2]))
-
-		-- ── at a drop-off, and the money has to work ─────────────────────────
-		vehicles['veh-1'].position = { x = -1500.0, y = 200.0, z = 18.0 }
-		positions[2] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
-		at = at + 10000
-		fire(2, M.Event.BEGIN, Step.DELIVER, CRATE)
-		check('a delivery at a drop-off is begun', lastAnswer()[1] == true,
-			tostring(lastAnswer()[2]))
-
-		-- NOBODY IS LOGGED IN HERE, so the real character contract refuses the pay.
-		-- The crate MUST survive that: the other order loses a crate and pays nothing,
-		-- and there is then nothing left to retry with.
-		local removedBefore = #props.removes
-		at = at + Access.DELIVER_MS + 1
+		check('as one item tagged with the site it came from',
+			(trunks['veh-1'] or {}).docks == 1, (trunks['veh-1'] or {}).docks)
+		check('and the prop leaves the world',
+			#props.removes == removedBefore + 1 and props.byId[CRATE] == nil)
+		check('the carrier\'s hands are free', lastAnswer()[3] == false)
+		check('and the carry pose is stopped, by the id it was started under',
+			#poses.stopped == 1 and poses.stopped[1].id == 'pb1' and poses.stopped[1].player == 2)
 		fire(2, M.Event.FINISH)
-		check('a delivery that could not be paid is refused',
-			lastAnswer()[2] == 'not_paid', tostring(lastAnswer()[2]))
-		check('and the crate is still in the world, so nothing was lost for nothing',
-			#props.removes == removedBefore, #props.removes)
-
-		-- ── now with a contract that pays ────────────────────────────────────
-		-- The lookup is replaced and not the module: `complete` asks
-		-- `OPX.Api.Get('character')` for the one function it needs, and this is the
-		-- smallest thing that can stand in for a logged-in wallet.
-		local realGet = OPX.Api.Get
-		OPX.Api.Get = function(name)
-			if name == 'character' then
-				return { AddMoney = function(player, kind, amount, reason)
-					paid[#paid + 1] = { player = player, kind = kind, amount = amount,
-						reason = reason }
-					return true
-				end }
-			end
-			return realGet(name)
-		end
-
-		at = at + 10000
-		fire(2, M.Event.BEGIN, Step.DELIVER, CRATE)
-		at = at + Access.DELIVER_MS + 1
-		fire(2, M.Event.FINISH)
-		OPX.Api.Get = realGet
-
-		check('a paid delivery is accepted', lastAnswer()[1] == true,
+		check('a second finish for the same load adds nothing',
+			lastAnswer()[2] == 'nothing_running' and trunks['veh-1'].docks == 1,
 			tostring(lastAnswer()[2]))
-		check('the driver is paid the site\'s rate in the configured currency',
-			#paid == 1 and paid[1].amount == Access.Pay('docks')
-				and paid[1].kind == Access.CURRENCY,
-			#paid == 1 and tostring(paid[1].amount))
-		check('and the reason names the site and the destination it went to',
-			#paid == 1 and paid[1].reason:find('hauling:docks:warehouse', 1, true) ~= nil,
-			#paid == 1 and paid[1].reason)
-		check('and only then is the crate taken out of the world',
-			#props.removes == removedBefore + 1, #props.removes)
 
-		-- ── a driver who quits mid-delivery leaves the cargo in the truck ───
-		-- A DELIVERY BAR OWNS THE CRATE ONLY FOR ITS OWN LENGTH. Releasing it the
-		-- way a reservation is released would set the crate back to `ground` while
-		-- it is still bolted into a bed three districts away -- the refill pass
-		-- would then count its point as occupied by a crate nobody can reach, and
-		-- the row would vanish from the next driver's eye.
-		at = at + 10000
-		-- The truck is driven back to the yard, and the driver stands at the next
-		-- crate: everything below is checked against the server's own reading of
-		-- where they are, so the test has to put them somewhere real.
+		-- A second crate rides along.
 		local secondAt = props.byId[SECOND]
 		positions[2] = { x = secondAt.x, y = secondAt.y, z = secondAt.z, bucket = 0 }
 		vehicles['veh-1'].position = { x = secondAt.x + 2.0, y = secondAt.y, z = secondAt.z }
+		at = at + 10000
 		fire(2, M.Event.BEGIN, Step.PICKUP, SECOND)
 		at = at + Access.PICKUP_MS + 1
 		fire(2, M.Event.FINISH)
@@ -16203,21 +16249,81 @@ do
 		fire(2, M.Event.BEGIN, Step.LOAD, 'veh-1')
 		at = at + Access.LOAD_MS + 1
 		fire(2, M.Event.FINISH)
-		check('a second crate rides in the bed',
-			OPX.Api.Get('hauling').State().value.sites.docks.loaded == 1)
+		check('a second crate stacks in the same trunk', trunks['veh-1'].docks == 2,
+			trunks['veh-1'].docks)
+
+		-- ── a sale from the middle of the yard is refused ────────────────────
 		at = at + 10000
-		vehicles['veh-1'].position = { x = -1500.0, y = 200.0, z = 18.0 }
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		check('the seller will not deal with somebody across the city',
+			lastAnswer()[2] == 'too_far', tostring(lastAnswer()[2]))
+
+		-- ── at the seller, with the truck parked at the drop-off ─────────────
+		vehicles['veh-1'].position = { x = -1502.0, y = 201.0, z = 18.0 }
 		positions[2] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
-		fire(2, M.Event.BEGIN, Step.DELIVER, SECOND)
-		check('the delivery bar is running', lastAnswer()[1] == true,
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		check('a sale at the seller is begun', lastAnswer()[1] == true,
 			tostring(lastAnswer()[2]))
-		local placedBefore = #props.transforms
+
+		-- NOBODY IS LOGGED IN HERE, so the real character contract refuses the pay.
+		-- The crates MUST survive that.
+		at = at + Access.DELIVER_MS + 1
+		fire(2, M.Event.FINISH)
+		check('a sale that could not be paid is refused',
+			lastAnswer()[2] == 'not_paid', tostring(lastAnswer()[2]))
+		check('and the crates are put back in the trunk, so nothing was lost for nothing',
+			trunks['veh-1'].docks == 2, trunks['veh-1'].docks)
+
+		wallet = { AddMoney = function(player, kind, amount, reason)
+			paid[#paid + 1] = { player = player, kind = kind, amount = amount, reason = reason }
+			return true
+		end }
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		at = at + Access.DELIVER_MS + 1
+		fire(2, M.Event.FINISH)
+		check('a paid sale is accepted', lastAnswer()[1] == true, tostring(lastAnswer()[2]))
+		check('every crate in the parked trunk is sold at the site rate, in one go',
+			#paid == 1 and paid[1].amount == Access.Pay('docks') * 2
+				and paid[1].kind == Access.CURRENCY,
+			#paid == 1 and tostring(paid[1].amount))
+		check('and the reason names the site and the drop-off',
+			#paid == 1 and paid[1].reason:find('hauling:docks:warehouse', 1, true) ~= nil,
+			#paid == 1 and paid[1].reason)
+		check('and the trunk is empty after', trunks['veh-1'].docks == 0, trunks['veh-1'].docks)
+
+		-- ── crates carried in a bag sell too ─────────────────────────────────
+		bags[2] = { docks = 1 }
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		at = at + Access.DELIVER_MS + 1
+		fire(2, M.Event.FINISH)
+		check('a crate in the bag is sold as well',
+			#paid == 2 and paid[2].amount == Access.Pay('docks') and bags[2].docks == 0,
+			#paid == 2 and tostring(paid[2].amount))
+
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		check('with nothing left to sell, the seller says so',
+			lastAnswer()[2] == 'no_crates', tostring(lastAnswer()[2]))
+
+		-- ── a crate of another site does not sell here ───────────────────────
+		bags[2] = { badlands = 3 }
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		check('this buyer only takes this site\'s crates',
+			lastAnswer()[2] == 'no_crates', tostring(lastAnswer()[2]))
+
+		-- ── leaving mid-sale takes nothing ───────────────────────────────────
+		bags[2] = { docks = 1 }
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		check('the sale bar is running', lastAnswer()[1] == true, tostring(lastAnswer()[2]))
 		control.Fire(OPX.Host.PLAYER_DISCONNECTED, 2, 'quit')
-		check('the driver leaving mid-delivery leaves the crate in the truck',
-			OPX.Api.Get('hauling').State().value.sites.docks.loaded == 1,
-			OPX.Api.Get('hauling').State().value.sites.docks.loaded)
-		check('and nothing was stood back up on a point it is nowhere near',
-			#props.transforms == placedBefore, #props.transforms - placedBefore)
+		check('the seller leaving mid-sale leaves the crate where it was',
+			bags[2].docks == 1 and #paid == 2)
+		OPX.Api.Get = realGet
 
 		-- ── a subject that is not a name never reaches a native ──────────────
 		-- A client is free to put a table on the wire, and `Open77.vehicles.get({})`
@@ -16231,14 +16337,6 @@ do
 		check('a subject that is a table is refused rather than handed to a native',
 			survived and lastAnswer()[2] == 'invalid_subject',
 			tostring(lastAnswer()[2]))
-
-		-- ── the bed stacks rather than overlapping ───────────────────────────
-		local first = Access.BedSlot('Vehicle.nothing', 1)
-		local fifth = Access.BedSlot('Vehicle.nothing', 5)
-		check('the fifth crate reuses the first slot',
-			first ~= nil and fifth ~= nil and first.x == fifth.x and first.y == fifth.y)
-		check('and sits a layer higher rather than inside it', fifth.z > first.z,
-			fifth and tostring(fifth.z))
 
 		-- ── a model the engine does not know disables its site ───────────────
 		-- `Open77.props.catalog()` is ALWAYS an empty table on the server, so an alias
@@ -16296,9 +16394,9 @@ do
 		local ids = {}
 		for _, row in ipairs(held.ok and held.value.options or {}) do ids[#ids + 1] = row.id end
 		table.sort(ids)
-		check('three rows: pick up, load, hand over', #ids == 3, table.concat(ids, ', '))
+		check('three rows: pick up, load, sell', #ids == 3, table.concat(ids, ', '))
 		check('and they are the three this module names',
-			table.concat(ids, ',') == 'hauling.deliver,hauling.load,hauling.pickup',
+			table.concat(ids, ',') == 'hauling.load,hauling.pickup,hauling.sell',
 			table.concat(ids, ','))
 
 		-- REGISTERED ONCE AND NEVER AGAIN. The crate id-set changes on every pickup,
@@ -16341,6 +16439,42 @@ do
 			after.ok and #after.value.options)
 		check('and not one of them was re-registered: the tokens never moved',
 			tokensOf() == quiet, tokensOf() .. ' was ' .. quiet)
+
+		-- ── the arrows over the free crates ─────────────────────────────────
+		-- The owner: "si ont peux les faire pop au dessus des caisse pour savoir que
+		-- ces caisse la peuvent etre ramasser".
+		local function arrowsLive()
+			local out = {}
+			for id, options in pairs(control.markers.byId) do
+				if options.shape == 'arrow' then out[#out + 1] = options end
+			end
+			return out
+		end
+		check('forty crates that came and went leave no arrow behind', #arrowsLive() == 0,
+			#arrowsLive())
+		control.netEvents[M.Event.SNAPSHOT]({ first = true, done = true, crates = {
+			{ id = '71', site = 'docks', x = 10.0, y = 0.0, z = 18.0, bucket = 0, where = 'ground' },
+			{ id = '72', site = 'docks', x = 14.0, y = 0.0, z = 18.0, bucket = 0, where = 'claimed' },
+		} })
+		local drawn = arrowsLive()
+		check('a crate standing free gets an arrow, and a claimed one does not',
+			#drawn == 1 and drawn[1].position.x == 10.0, #drawn)
+		check('and the arrow floats over the crate rather than inside it',
+			#drawn == 1 and drawn[1].position.z == 18.0 + M.Access.MARKER.lift)
+		control.netEvents[M.Event.CRATE]({ id = '71', site = 'docks', x = 10.0, y = 0.0,
+			z = 18.0, bucket = 0, where = 'claimed' })
+		check('the arrow goes the moment somebody claims the crate', #arrowsLive() == 0)
+		control.netEvents[M.Event.CRATE]({ id = '72', site = 'docks', x = 14.0, y = 0.0,
+			z = 18.0, bucket = 0, where = 'ground' })
+		check('and comes back over a crate that is put back', #arrowsLive() == 1)
+		local many = { first = true, done = true, crates = {} }
+		for index = 1, 40 do
+			many.crates[index] = { id = tostring(100 + index), site = 'docks', x = index * 5.0,
+				y = 0.0, z = 18.0, bucket = 0, where = 'ground' }
+		end
+		control.netEvents[M.Event.SNAPSHOT](many)
+		check('never more arrows than MARKER.MAX, which is a share of a 64 per-resource quota',
+			#arrowsLive() == M.Access.MARKER.max, #arrowsLive())
 
 		-- A refusal corrects a client that had drifted: `carrying` is only ever what
 		-- the server last said, never inferred from a request that seemed to work.

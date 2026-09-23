@@ -84,6 +84,25 @@ Access.MIN_POINT_GAP = math.max(0, finiteNumber(Config.MIN_POINT_GAP) or 0)
 Access.REFILL_MS = math.max(0, integer(Config.REFILL_MS) or 0)
 Access.PAY_PER_CRATE = math.max(0, integer(Config.PAY_PER_CRATE) or 0)
 Access.CURRENCY = type(Config.CURRENCY) == 'string' and Config.CURRENCY or 'EDDIES'
+Access.ITEM = type(Config.ITEM) == 'string' and Config.ITEM or ''
+
+-- The arrow over a free crate, normalised once. `nil` when the block is absent
+-- or MAX is zero: no arrows, and nothing else changes.
+do
+	local raw = type(Config.MARKER) == 'table' and Config.MARKER or nil
+	local max = raw ~= nil and math.max(0, integer(raw.MAX) or 0) or 0
+	if raw ~= nil and max > 0 then
+		Access.MARKER = {
+			shape = type(raw.SHAPE) == 'string' and raw.SHAPE or 'arrow',
+			style = type(raw.STYLE) == 'string' and raw.STYLE or 'objective',
+			radius = math.max(0.1, finiteNumber(raw.RADIUS) or 0.25),
+			height = math.max(0.01, finiteNumber(raw.HEIGHT) or 0.5),
+			lift = finiteNumber(raw.LIFT) or 1.0,
+			maxDistance = math.min(500, math.max(1, finiteNumber(raw.MAX_DISTANCE) or 40)),
+			max = max,
+		}
+	end
+end
 
 -- Squared, because every reach test below compares squares and a square root per
 -- test per player per pick is arithmetic nobody needs.
@@ -146,8 +165,16 @@ function Access.Dropoff(key, dropoff)
 	local x, y, z = coordinate(row.X), coordinate(row.Y), coordinate(row.Z)
 	local radius = finiteNumber(row.RADIUS)
 	if x == nil or y == nil or z == nil or radius == nil or radius <= 0 then return nil end
+	-- THE SELLER, optional: a `Character.*` record standing on the drop-off. The
+	-- owner: "pour les points de vente fait en sorte que ce soit une interaction
+	-- alt sur un npc puis vendre".
+	local npc = nil
+	if type(row.NPC) == 'table' and type(row.NPC.RECORD) == 'string'
+		and row.NPC.RECORD:match('^Character%.[%w_]+$') then
+		npc = { record = row.NPC.RECORD, yaw = finiteNumber(row.NPC.YAW) or 0.0 }
+	end
 	return { key = dropoff, label = tostring(row.LABEL or dropoff), x = x, y = y, z = z,
-		radius = radius }
+		radius = radius, npc = npc }
 end
 
 --- Every usable drop-off of a site, sorted by key.
@@ -246,38 +273,6 @@ function Access.GapSquared(a, b)
 	end
 	local dx, dy, dz = ax - bx, ay - by, az - bz
 	return dx * dx + dy * dy + dz * dz
-end
-
---- The bed slot a vehicle gives the nth crate loaded into it.
--- Crate n takes slot ((n - 1) % #slots) + 1; past the last slot the next layer
--- stacks STACK_HEIGHT metres above the slot it shares, so a vehicle never
--- refuses a crate for want of a measured spot -- it stacks.
--- @author dop42
--- @param record string|nil the canonical vehicle record, for a per-vehicle bed
--- @param n integer the crate's ordinal in this vehicle, 1 or more
--- @return table|nil { x, y, z, yaw }
-function Access.BedSlot(record, n)
-	local bed = type(Config.BED) == 'table' and Config.BED or {}
-	local slots = nil
-	if type(bed.BY_RECORD) == 'table' and type(record) == 'string' then
-		local own = bed.BY_RECORD[record]
-		if type(own) == 'table' and type(own.SLOTS) == 'table' and #own.SLOTS > 0 then
-			slots = own.SLOTS
-		end
-	end
-	if slots == nil and type(bed.SLOTS) == 'table' and #bed.SLOTS > 0 then slots = bed.SLOTS end
-	if slots == nil then return nil end
-
-	n = integer(n)
-	if n == nil or n < 1 then return nil end
-	local count = #slots
-	local slot = slots[((n - 1) % count) + 1]
-	if type(slot) ~= 'table' then return nil end
-	local x, y, z = coordinate(slot.x), coordinate(slot.y), coordinate(slot.z)
-	if x == nil or y == nil or z == nil then return nil end
-	local layer = math.floor((n - 1) / count)
-	local stack = finiteNumber(bed.STACK_HEIGHT) or 0.0
-	return { x = x, y = y, z = z + layer * stack, yaw = finiteNumber(slot.yaw) or 0.0 }
 end
 
 --- How a carried crate is bound to a body, or nil when the config is unusable.
@@ -409,6 +404,9 @@ function Access.Problems()
 			lines[#lines + 1] = name .. ' must be a finite number, zero or more'
 		end
 	end
+	if Access.ITEM == '' then
+		lines[#lines + 1] = 'ITEM must name the inventory item a loaded crate becomes'
+	end
 	if type(Config.MODEL) ~= 'string' or Config.MODEL == '' then
 		lines[#lines + 1] = 'MODEL must be a curated prop alias, never a .mesh path'
 	end
@@ -505,10 +503,19 @@ function Access.Problems()
 					local row = dropoffs[names[index]]
 					if type(row) == 'table' and placeholder(row) then
 						blanks = blanks + 1
-					elseif Access.Dropoff(key, names[index]) == nil then
-						lines[#lines + 1] = ('%s dropoff %s: X, Y, Z must be finite and RADIUS ' ..
-							'above zero'):format(name, names[index])
-						bad = true
+					else
+						local read = Access.Dropoff(key, names[index])
+						if read == nil then
+							lines[#lines + 1] = ('%s dropoff %s: X, Y, Z must be finite and RADIUS ' ..
+								'above zero'):format(name, names[index])
+							bad = true
+						elseif read.npc == nil then
+							-- The seller IS the sale: with no NPC nothing can be sold here.
+							lines[#lines + 1] = ('%s dropoff %s: NPC must be { RECORD = ' ..
+								'\'Character.*\', YAW = n }; the seller is the only way to sell')
+								:format(name, names[index])
+							bad = true
+						end
 					end
 				end
 				if blanks > 0 then

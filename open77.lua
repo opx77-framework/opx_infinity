@@ -611,6 +611,11 @@ permissions {
 
   "world.props",
 
+  -- The hauling sellers: one server-owned NPC per drop-off, ALT then sell.
+  -- `open77_permissions world.npcs`: enforced by the server, gates
+  -- `Open77.npcs.create`/`remove`.
+  "world.npcs",
+
   -- `Open77.vfx.play`/`stop`/`catalog` and `Open77.sfx.play` are gated on this
   -- one name, and its refusal is SILENT: the native answers `nil,
   -- permission_denied:world.effects`, logs nothing, and the effect simply never

@@ -921,7 +921,9 @@ function Host.Environment(side, database)
 					return nil, 'invalid_argument'
 				end
 				local styles = { interaction = true, objective = true, spawn = true, danger = true }
-				local shapes = { ring = true, cylinder = true }
+				-- The op77.83 catalogue: eight shapes, from the `markers` guide.
+				local shapes = { ring = true, cylinder = true, checkpoint = true, arrow = true,
+					chevron = true, cone = true, diamond = true, sphere = true }
 				if not styles[tostring(options.style)] then return nil, 'unsupported_style' end
 				if not shapes[tostring(options.shape)] then return nil, 'unsupported_shape' end
 				local radius = tonumber(options.radius)

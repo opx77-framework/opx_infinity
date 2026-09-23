@@ -156,30 +156,40 @@ OPX.Config.MODULES.hauling = {
 		ROTATION = { x = 0.0, y = 90.0, z = 0.0 },
 	},
 
-	-- WHERE A LOADED CRATE SITS IN A VEHICLE. UNTUNED HERE TOO, and more so:
-	-- these are `rp_nomade`'s own starting guesses for a Thorton Mackinaw bed,
-	-- described in its config as guesses rather than measurements, and every
-	-- vehicle in the game has a different bed.
+	-- THE ARROW OVER A CRATE THAT CAN BE PICKED UP. The owner, 2026-09-23: "si ont
+	-- peux les faire pop au dessus des caisse pour savoir que ces caisse la peuvent
+	-- etre ramasser". A native `Open77.markers` mesh (client op77.83+), drawn only
+	-- over a crate standing free on its point and taken down the moment somebody
+	-- claims it.
 	--
-	-- Offsets are metres in the VEHICLE frame: +x right, +y forward towards the
-	-- cab, -y behind it, +z up; YAW is degrees around z. Crate n takes slot
-	-- ((n - 1) % #SLOTS) + 1, and a crate past the last slot stacks STACK_HEIGHT
-	-- metres above the slot it shares.
-	--
-	-- PER-VEHICLE beds live under BY_RECORD, keyed by the vehicle record the
-	-- server reads off the canonical vehicle. A record with no entry falls back to
-	-- SLOTS below, which is why SLOTS must stay a sane generic bed rather than one
-	-- truck's exact measurements.
-	BED = {
-		SLOTS = {
-			{ x = -0.55, y = -1.5, z = 0.9, yaw = 0.0 },
-			{ x =  0.55, y = -1.5, z = 0.9, yaw = 0.0 },
-			{ x = -0.55, y = -2.4, z = 0.9, yaw = 0.0 },
-			{ x =  0.55, y = -2.4, z = 0.9, yaw = 0.0 },
-		},
-		STACK_HEIGHT = 0.55,
-		BY_RECORD = {},
+	-- MAX IS A SHARE OF A QUOTA, not a taste: the platform allows 64 markers per
+	-- RESOURCE, and this runtime is one resource, so the teleports, the shops and
+	-- this job all draw from the same 64. LIFT is metres above the crate's point;
+	-- the arrow's own origin is its bottom. SHAPE is one of the platform's eight
+	-- (`arrow` points down); STYLE a palette -- interaction, objective, spawn, danger.
+	MARKER = {
+		SHAPE = 'arrow',
+		STYLE = 'objective',
+		RADIUS = 0.25,
+		HEIGHT = 0.5,
+		LIFT = 1.0,
+		MAX_DISTANCE = 40,
+		MAX = 16,
 	},
+
+	-- WHAT A LOADED CRATE BECOMES. Loading takes the crate out of the world and
+	-- puts one of this item in the vehicle's trunk, tagged with the site it came
+	-- from (`metadata.site`), which is what a drop-off pays by. Declared in
+	-- `modules/inventory/data/items.lua`; its WEIGHT is what caps a trunk.
+	--
+	-- THE OWNER, 2026-09-23: "des qu'il pose dans le vehicule cela deviens un
+	-- item". The crate used to be bolted into the bed as a prop, which needed a
+	-- measured bed per vehicle and never had one.
+	--
+	-- A delivery sells every crate of the site in the trunk of the vehicle parked
+	-- at one of its DROPOFFS, in one bar. A crate moved into a bag cannot be sold
+	-- until it is put back in a trunk.
+	ITEM = 'hauling_crate',
 
 	-- primary reads the worked job; any counts every membership for the grade but
 	-- never for ON_DUTY, because the memberships table carries grades and not a
@@ -235,8 +245,10 @@ OPX.Config.MODULES.hauling = {
 			-- thing anyone asks for after the second site. RADIUS is metres.
 			-- PLACEHOLDERS -- survey these too.
 			DROPOFFS = {
-				warehouse = { LABEL = 'Warehouse', X = 0.0, Y = 0.0, Z = 0.0, RADIUS = 8.0 },
-				yard = { LABEL = 'Back Yard', X = 0.0, Y = 0.0, Z = 0.0, RADIUS = 8.0 },
+				warehouse = { LABEL = 'Warehouse', X = 0.0, Y = 0.0, Z = 0.0, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorMale', YAW = 0.0 } },
+				yard = { LABEL = 'Back Yard', X = 0.0, Y = 0.0, Z = 0.0, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorFemale', YAW = 0.0 } },
 			},
 		},
 
@@ -261,11 +273,15 @@ OPX.Config.MODULES.hauling = {
 			SPAWN_PER_PASS = 1,
 			RESPAWN_MS = 120000,
 
-			-- The sale point is ~14m from the crates. RADIUS is kept at 6 so a
-			-- vehicle parked by the crates (VEHICLE_REACH 4.5) is not already
-			-- inside it.
+			-- A drop-off is a seller: ALT on its NPC, then sell. Every crate of this
+			-- site in the player's bag, and in the trunk of any vehicle
+			-- parked within RADIUS, goes in one bar. The sale point is ~14m from the
+			-- crates; RADIUS 6 keeps a truck loading at the crates out of it.
 			DROPOFFS = {
-				sale = { LABEL = 'Sale', X = -1819.13, Y = -1964.37, Z = 51.50, RADIUS = 6.0 },
+				sale = {
+					LABEL = 'Sale', X = -1819.13, Y = -1964.37, Z = 51.50, RADIUS = 6.0,
+					NPC = { RECORD = 'Character.VendorMale', YAW = 254.0 },
+				},
 			},
 		},
 
@@ -286,7 +302,8 @@ OPX.Config.MODULES.hauling = {
 			RESPAWN_MS = 180000,
 			PAY = 220,
 			DROPOFFS = {
-				camp = { LABEL = 'Nomad Camp', X = 0.0, Y = 0.0, Z = 0.0, RADIUS = 10.0 },
+				camp = { LABEL = 'Nomad Camp', X = 0.0, Y = 0.0, Z = 0.0, RADIUS = 10.0,
+					NPC = { RECORD = 'Character.VendorMale', YAW = 0.0 } },
 			},
 		},
 	},

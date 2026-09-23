@@ -75,6 +75,15 @@ local incoming = nil
 -- corrects a client that had drifted.
 local carrying = nil
 
+-- The seller NPCs, by id as a decimal string. Pushed by the server whole.
+local sellers = {}
+
+-- Arrow marker handles, by crate id. A crate has one exactly while it stands free
+-- on its point.
+local arrows = {}
+local arrowCount = 0
+local arrowsNoted = false
+
 -- The tokens the target rows were registered under, so `Stop` can take them back.
 local tokens = {}
 
@@ -143,13 +152,23 @@ local function canPickUp(context)
 	return picked(context, Where.GROUND) ~= nil
 end
 
---- Whether this client may be offered a delivery on what the ray hit.
--- A LOADED crate is one in a vehicle's bed. The server checks that the vehicle is
--- actually standing at one of the site's drop-offs, which this cannot know and
--- must not guess: the drop-off list is the server's and a client that drew the
--- row anyway would simply be refused, which is the right failure.
-local function canDeliver(context)
-	return picked(context, Where.LOADED) ~= nil
+--- The seller NPC the ray hit, as the decimal string the server keyed it by.
+local function seller(context)
+	if type(context) ~= 'table' or type(context.target) ~= 'table' then return nil end
+	local id = math.tointeger(context.target.npcId)
+	if id == nil then return nil end
+	local key = ('%d'):format(id)
+	if sellers[key] == nil then return nil end
+	return key
+end
+
+--- Whether this client may be offered a sale on what the ray hit.
+-- What there is to sell is the server's to count -- the bag and every trunk
+-- parked at the drop-off -- so an empty-handed player is offered the row and
+-- told `no_crates`, which is the right failure.
+local function canSell(context)
+	if carrying ~= nil then return false end
+	return seller(context) ~= nil
 end
 
 --- Whether this client may be offered a load on the vehicle it is looking at.
@@ -165,10 +184,10 @@ local function onPickUp(context)
 	ask(Step.PICKUP, crate.id)
 end
 
-local function onDeliver(context)
-	local crate = picked(context, Where.LOADED)
-	if crate == nil then return end
-	ask(Step.DELIVER, crate.id)
+local function onSell(context)
+	local key = seller(context)
+	if key == nil then return end
+	ask(Step.DELIVER, key)
 end
 
 local function onLoad(context)
@@ -200,15 +219,6 @@ local function registerRows()
 			-- The thing itself: a crate on the floor is what the player walked up to.
 			order = 5,
 		},
-		{
-			id = 'hauling.deliver',
-			label = locale('hauling.row.deliver'),
-			icon = 'money',
-			distance = Access.VEHICLE_REACH,
-			canInteract = canDeliver,
-			onSelect = onDeliver,
-			order = 4,
-		},
 	}
 
 	local rows = Access.TARGET_KIND == 'world'
@@ -235,6 +245,76 @@ local function registerRows()
 	else
 		OPX.Note('hauling', ('the load row was refused: %s'):format(tostring(load.error)))
 	end
+
+	local sell = target.RegisterNpcs(OWNER, {
+		id = 'hauling.sell',
+		label = locale('hauling.row.sell'),
+		icon = 'money',
+		distance = Access.VEHICLE_REACH,
+		canInteract = canSell,
+		onSelect = onSell,
+		order = 4,
+	})
+	if sell.ok then
+		tokens[#tokens + 1] = sell.value.token
+	else
+		OPX.Note('hauling', ('the sell row was refused: %s'):format(tostring(sell.error)))
+	end
+end
+
+-- ── the arrows over free crates ─────────────────────────────────────────────
+--
+-- The owner: "si ont peux les faire pop au dessus des caisse pour savoir que ces
+-- caisse la peuvent etre ramasser". STILL NO LOOP: an arrow is made or taken down
+-- by the same crate delta that changes the row's answer, and the platform hides
+-- it past MAX_DISTANCE on its own.
+
+--- Says once why no arrow is drawn; a line per crate would be a line per refill.
+local function noteArrows(why)
+	if arrowsNoted then return end
+	arrowsNoted = true
+	OPX.Note('hauling', ('no arrow over the crates: %s'):format(tostring(why)))
+end
+
+--- Takes a crate's arrow down, if it has one.
+local function unmark(id)
+	local handle = arrows[id]
+	if handle == nil then return end
+	arrows[id] = nil
+	arrowCount = arrowCount - 1
+	local api = Open77.markers
+	if type(api) == 'table' and type(api.remove) == 'function' then pcall(api.remove, handle) end
+end
+
+--- Puts an arrow over a crate that stands free, and takes it off one that does not.
+local function mark(crate)
+	if crate.where ~= Where.GROUND then return unmark(crate.id) end
+	local look = Access.MARKER
+	if look == nil or arrows[crate.id] ~= nil then return end
+	if arrowCount >= look.max then return noteArrows('MARKER.MAX reached') end
+	local api = Open77.markers
+	if type(api) ~= 'table' or type(api.create) ~= 'function' then
+		return noteArrows('world.markers is unavailable')
+	end
+	local called, handle, why = pcall(api.create, {
+		position = { x = crate.x, y = crate.y, z = crate.z + look.lift },
+		shape = look.shape,
+		style = look.style,
+		radius = look.radius,
+		height = look.height,
+		maxDistance = look.maxDistance,
+	})
+	if not called or handle == nil then
+		return noteArrows(called and why or handle)
+	end
+	arrows[crate.id] = handle
+	arrowCount = arrowCount + 1
+end
+
+--- Takes every arrow down.
+local function unmarkAll()
+	for id in pairs(arrows) do unmark(id) end
+	arrows, arrowCount = {}, 0
 end
 
 --- Puts one crate into the local list, or takes it out.
@@ -242,9 +322,11 @@ local function keep(row)
 	if type(row) ~= 'table' then return end
 	local id = propId(row.id)
 	if id == nil then return end
-	crates[id] = { id = id, site = tostring(row.site or ''),
+	local crate = { id = id, site = tostring(row.site or ''),
 		x = tonumber(row.x) or 0.0, y = tonumber(row.y) or 0.0, z = tonumber(row.z) or 0.0,
 		bucket = tonumber(row.bucket) or 0, where = tostring(row.where or Where.GROUND) }
+	crates[id] = crate
+	mark(crate)
 end
 
 --- Takes the bar down, whatever is holding it up.
@@ -282,6 +364,7 @@ function M.Start()
 		-- part by part is a list that is briefly missing most of its crates, and a
 		-- pick during that window would offer nothing on a crate that is right there.
 		crates = {}
+		unmarkAll()
 		for _, row in ipairs(incoming) do keep(row) end
 		incoming = nil
 	end)
@@ -290,9 +373,23 @@ function M.Start()
 		keep(row)
 	end)
 
+	RegisterNetEvent(M.Event.SELLERS, function(list)
+		if type(list) ~= 'table' then return end
+		local fresh = {}
+		for _, row in ipairs(list) do
+			if type(row) == 'table' and type(row.npc) == 'string' and row.npc:match('^%d+$') then
+				fresh[row.npc] = { site = tostring(row.site or ''), dropoff = tostring(row.dropoff or '') }
+			end
+		end
+		sellers = fresh
+	end)
+
 	RegisterNetEvent(M.Event.GONE, function(id)
 		local key = propId(id)
-		if key ~= nil then crates[key] = nil end
+		if key ~= nil then
+			crates[key] = nil
+			unmark(key)
+		end
 	end)
 
 	RegisterNetEvent(M.Event.ANSWER, function(ok, reason, held)
@@ -372,6 +469,8 @@ function M.Stop()
 		for _, token in ipairs(tokens) do pcall(target.Unregister, OWNER, token) end
 	end
 	tokens = {}
+	unmarkAll()
 	crates = {}
+	sellers = {}
 	carrying = nil
 end

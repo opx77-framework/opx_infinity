@@ -48,6 +48,10 @@ M.Data.ITEMS = {
 	electronics = { WEIGHT = 150, CATEGORY = 'material' },
 	lockpick = { WEIGHT = 50, CATEGORY = 'tool', MODEL = 'container.toolbox' },
 
+	-- A loaded hauling crate: `config/hauling.lua` ITEM. Ten kilos, so a trunk
+	-- (80 kg) takes eight and a bike's a third of that.
+	hauling_crate = { WEIGHT = 10000, CATEGORY = 'material', MODEL = 'crate.small' },
+
 	phone = { WEIGHT = 180, STACK = false },
 	id_card = { WEIGHT = 10, STACK = false },
 	shard = { WEIGHT = 20 },

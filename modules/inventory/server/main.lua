@@ -230,6 +230,95 @@ function M.CanCarry(target, name, count, metadata)
 	end)
 end
 
+-- ── a vehicle's trunk ────────────────────────────────────────────────────────
+
+--- Runs `body` against a vehicle's trunk. Yields: an owned trunk loads by plate.
+--
+-- `source`, when given, is held to the rule `Actions.OpenVehicle` applies to a
+-- player opening the boot by hand: an owned trunk answers to its owner only while
+-- TRUNK_OWNER_ONLY is on. A job putting things into a stranger's car, or selling
+-- them out of it, is the same theft as the screen, done by another door.
+local function withTrunk(vehicleId, source, body)
+	if type(vehicleId) == 'string' and vehicleId:match('^%d+$') and #vehicleId <= 19 then
+		vehicleId = math.tointeger(tonumber(vehicleId))
+	end
+	vehicleId = Common.Integer(vehicleId, 1, math.maxinteger)
+	if not vehicleId then return Result.Err('bad_argument', 'vehicleId') end
+	local trunk, reason = World.VehicleContainer(vehicleId, M.KIND.TRUNK)
+	if not trunk then return Result.Err(reason or 'not_found', tostring(vehicleId)) end
+	if source ~= nil and Options.TRUNK_OWNER_ONLY and trunk.ownerCitizenId
+		and trunk.ownerCitizenId ~= Players.Citizen(source) then
+		return Result.Err('not_yours', tostring(vehicleId))
+	end
+	return body(trunk)
+end
+
+--- Adds catalogue items to a vehicle's trunk.
+-- @author dop42
+-- @param vehicleId integer|string
+-- @param name string
+-- @param count integer|nil
+-- @param metadata table|nil
+-- @param source Source|nil held to the trunk owner rule when given
+-- @return Result
+function M.AddToTrunk(vehicleId, name, count, metadata, source)
+	name = itemName(name)
+	if not name then return Result.Err('bad_argument', 'name') end
+	local kept, allowed = Common.Metadata(metadata, Options.MAX_METADATA_BYTES)
+	if not allowed then return Result.Err('bad_argument', 'metadata') end
+	count = count == nil and 1 or Common.Integer(count, 1, Options.MAX_STACK)
+	if not count then return Result.Err('bad_argument', 'count') end
+
+	return withTrunk(vehicleId, source, function(trunk)
+		local ok, code = Containers.Add(trunk, name, count, kept)
+		OPX.Audit.Log({ event = 'inventory.trunkAdd', severity = ok and 'info' or 'warn',
+			message = ('%dx %s'):format(count, name),
+			data = { vehicle = tostring(vehicleId), item = name, count = count, error = code } })
+		return outcome(ok, code)
+	end)
+end
+
+--- Takes items out of a vehicle's trunk; nil metadata matches any stack.
+-- @author dop42
+-- @param vehicleId integer|string
+-- @param name string
+-- @param count integer|nil
+-- @param metadata table|nil
+-- @param source Source|nil held to the trunk owner rule when given
+-- @return Result
+function M.RemoveFromTrunk(vehicleId, name, count, metadata, source)
+	name = itemName(name)
+	if not name then return Result.Err('bad_argument', 'name') end
+	local kept, allowed = Common.Metadata(metadata, Options.MAX_METADATA_BYTES)
+	if not allowed then return Result.Err('bad_argument', 'metadata') end
+	count = count == nil and 1 or Common.Integer(count, 1, Options.MAX_STACK)
+	if not count then return Result.Err('bad_argument', 'count') end
+
+	return withTrunk(vehicleId, source, function(trunk)
+		local ok, code = Containers.Remove(trunk, name, count, kept)
+		OPX.Audit.Log({ event = 'inventory.trunkRemove', severity = ok and 'info' or 'warn',
+			message = ('%dx %s'):format(count, name),
+			data = { vehicle = tostring(vehicleId), item = name, count = count, error = code } })
+		return outcome(ok, code)
+	end)
+end
+
+--- How many units of an item a vehicle's trunk holds.
+-- @author dop42
+-- @param vehicleId integer|string
+-- @param name string
+-- @param metadata table|nil nil counts every stack of that item
+-- @param source Source|nil held to the trunk owner rule when given
+-- @return Result integer
+function M.CountInTrunk(vehicleId, name, metadata, source)
+	name = itemName(name)
+	if not name then return Result.Err('bad_argument', 'name') end
+	local kept = Common.Metadata(metadata, Options.MAX_METADATA_BYTES)
+	return withTrunk(vehicleId, source, function(trunk)
+		return Result.Ok(Containers.CountIn(trunk, name, kept))
+	end)
+end
+
 --- A bag as a screen would draw it: the slots, the stacks and the weight.
 -- Answered whole. It used to be paged by 64 stacks under a 32 KiB ceiling because
 -- it crossed a network argument; it does not cross anything now.
@@ -486,6 +575,10 @@ function M.Api()
 		CanCarry = M.CanCarry,
 		GetInventory = M.GetInventory,
 		GetSlot = M.GetSlot,
+
+		AddToTrunk = M.AddToTrunk,
+		RemoveFromTrunk = M.RemoveFromTrunk,
+		CountInTrunk = M.CountInTrunk,
 
 		GetItem = M.GetItem,
 		GetItems = M.GetItems,
