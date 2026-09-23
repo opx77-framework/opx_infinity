@@ -14152,7 +14152,11 @@ do
 		full['opx.weather.next'] = true
 		full['opx.time'] = true
 		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
-		ccontrol.Pump(10)
+		-- SETTLED RATHER THAN PUMPED A FIXED NUMBER OF TIMES. Registration yields
+		-- once per REGISTRATION CALL now, not once per kind, so a ten-frame pump
+		-- stopped reading a finished registration the moment a kind needed two
+		-- batches -- and the check failed naming rows that arrive one frame later.
+		settle(ccontrol, function() return has('admin_skyTime') end, 60)
 
 		check('granting command.opx.weather.* puts every preset on the sky',
 			has('admin_skyWeather_sunny') and has('admin_skyWeather_sandstorm'),
@@ -14242,10 +14246,13 @@ do
 		admin.Target.Access({ access = {}, aclKnown = true, inventory = false })
 		ccontrol.Pump(10)
 		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
-		ccontrol.Pump(10)
+		-- Settled, not counted: one resume per registration CALL means a kind that
+		-- needs two batches takes two frames, and a fixed pump reads a
+		-- registration that is still running.
+		settle(ccontrol, function() return has('admin_skyTime') end, 80)
 
 		-- THE ASSERTION, and it is about the LAST kind on purpose. Registering in
-		-- one resume gets through `self` and stops; `sky` is the fifth.
+		-- one resume gets through `self` and stops; `sky` is the last of eight.
 		check('a budget of three host calls a resume still reaches the last kind',
 			has('admin_skyNoclip') and has('admin_skyPvp') and has('admin_skyTime'),
 			table.concat(sky, ','))

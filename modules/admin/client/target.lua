@@ -471,9 +471,12 @@ local function buildRows()
 		{ id = 'devInspect_world', kind = 'world', folder = 'dev',
 			label = 'admin.target.inspect', icon = 'info',
 			grant = Command.SELF_POS, select = inspect },
-		{ id = 'devInspect_sky', kind = 'sky', folder = 'dev',
-			label = 'admin.target.inspect', icon = 'info',
-			grant = Command.SELF_POS, select = inspect },
+		-- NOT ON THE SKY, and the reason is a real cost rather than taste. The sky
+		-- list is bounded and `MAX_PRESETS` is deliberately sized to leave room for
+		-- the other sky rows -- so an eighth row there pushes a WEATHER PRESET off
+		-- the list, which the suite caught within a minute. Losing `sandstorm` to a
+		-- dev row is a bad trade, and inspecting the sky names no object anyway:
+		-- the ray answers an origin and a direction and there is nothing there.
 		{ id = 'skyNoclip', kind = 'sky', label = 'admin.target.noclip', icon = 'bolt',
 			grant = Command.SELF_NOCLIP, state = noclipOn,
 			select = onFlip(noclipOn, Command.SELF_NOCLIP) },
@@ -654,9 +657,23 @@ local function register(contract, byKind, signature)
 		-- The journal named it by what it did NOT say: twelve rows live on the eye,
 		-- and the closing `report` below -- which is unconditional on the way out --
 		-- never sent once across a dozen restarts. Registration runs on an access
-		-- change, not per tick, so a frame per kind costs nothing.
-		Wait(0)
+		-- change, not per tick, so a frame per registration call costs nothing.
 		for first = 1, #rows, BATCH do
+			-- PER BATCH AND NOT PER KIND, which is where this line started and
+			-- where it was not quite enough. A kind with more than BATCH rows --
+			-- `self` has ten -- registered two batches in one resume, and the
+			-- journal caught the result the hour the inspector went in, on a
+			-- client that was simply a little further into its frame:
+			--
+			--   [admin] target rows, player 4: staff rows not registered:
+			--   modules/target/shared/model.lua:143: script execution budget exceeded
+			--
+			-- It was reported rather than silent because the `pcall` around this
+			-- is there, which is the whole argument for the `pcall` -- but a
+			-- registration that reports itself dying is still a client with no
+			-- staff rows. One resume per REGISTRATION CALL costs a frame only
+			-- when a kind is big enough to need two.
+			Wait(0)
 			local batch = {}
 			for index = first, math.min(first + BATCH - 1, #rows) do batch[#batch + 1] = rows[index] end
 			local answer = contract[REGISTERS[kind]](M.OWNER, batch)
