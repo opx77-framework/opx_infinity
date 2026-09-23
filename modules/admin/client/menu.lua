@@ -517,6 +517,10 @@ SCREENS.root = function()
 		go('vehicles', 'admin.menu.vehicles', 'vehicles', nil, { icon = 'vehicle' }),
 		go('world', 'admin.menu.world', 'world', nil, { icon = 'world' }),
 		go('server', 'admin.menu.server', 'server', nil, { icon = 'server' }),
+		-- THE TOOLS, AND THEY ARE ALL READS. See the screen's own header for why a
+		-- screen by this name is allowed to exist again: the one that was removed
+		-- wrote, and this one asks.
+		go('dev', 'admin.menu.dev', 'dev', nil, { icon = 'info' }),
 	}
 end
 
@@ -1310,6 +1314,53 @@ end
 -- this menu under Self -> Position and on the eye's own row. It copies the
 -- position AND the facing the operator is standing at straight to the operating
 -- system clipboard, ready to paste into whichever `config/` file wants it. That
+
+-- ── the Dev screen ───────────────────────────────────────────────────────────
+--
+-- THE OWNER: "tu peux faire maintenant dans le menu admin avoir un categorie dev
+-- pour avoir des tool avoir le nom de props get position etc".
+--
+-- NOT THE SCREEN THAT WAS REMOVED, and the difference is the whole reason this
+-- one is allowed to exist. That one placed garage spots and showroom cars --
+-- writes dressed as configuration, on a server whose configuration is files --
+-- and went on the owner's word: "il y a pas de config live c'est tous par les
+-- fichier config donc degage moi ce menu". These are READS. Nothing here writes
+-- anything, anywhere; every row answers a question about the world and puts the
+-- answer on the clipboard.
+--
+-- THE AIMING HALF IS ON THE EYE AND NOT HERE, because a menu has no crosshair. A
+-- screen cannot ask what you are looking at: you are looking at the screen. So
+-- the inspector is an ALT row on all eight kinds, and this screen shows what the
+-- last one found -- which is also what makes the two halves one tool rather than
+-- two features with the same name.
+SCREENS.dev = function()
+	local items = {
+		section('admin.menu.section.devCapture'),
+		-- The capture path itself, which every config header in this resource
+		-- names. It is on the Self screen too: an operator looking for a dev tool
+		-- should not have to know it is filed under Self.
+		icon(command('pos', 'admin.menu.pos', { Command.SELF_POS }), 'location'),
+
+		section('admin.menu.section.devInspect'),
+	}
+
+	local last = M.Target.LastInspection and M.Target.LastInspection() or nil
+	if last == nil then
+		-- A SEPARATOR AND NOT A DISABLED ROW. An empty state has to say
+		-- something, and a row that looks pressable and is not is worse than a
+		-- line of text that never looked like one.
+		items[#items + 1] = section('admin.menu.devNoInspection')
+	else
+		-- The first line of the block, which is the kind, as the row's value --
+		-- and the whole block on the clipboard when it is pressed. A menu row is
+		-- one line high and the report is a dozen.
+		local first = tostring(last):match('^[^\n]*') or ''
+		items[#items + 1] = icon(row('devCopy', locale('admin.menu.devCopyLast'),
+			{ devCopy = true }, { value = first:sub(1, 28) }), 'tag')
+	end
+
+	return locale('admin.menu.dev'), items
+end
 -- command is the whole of the capture path and the config headers name it.
 SCREENS.weather = function()
 	local link = links()
@@ -2095,6 +2146,23 @@ onAction = function(payload)
 	if type(data.seek) == 'table' then
 		askFind(data.seek)
 		return draw()
+	end
+	-- The Dev screen's one pressable row: put the last inspection back on the
+	-- clipboard. It is here rather than in the screen builder because a row's
+	-- data is what the dispatch reads, and a builder that acted would act every
+	-- time the screen was drawn.
+	if data.devCopy == true then
+		local last = M.Target.LastInspection and M.Target.LastInspection() or nil
+		local clipboard = Open77.clipboard
+		local copied = false
+		if last ~= nil and type(clipboard) == 'table'
+			and type(clipboard.setText) == 'function' then
+			local wrote, ok = pcall(clipboard.setText, last)
+			copied = wrote and ok == true
+		end
+		Client.Toast(copied and 'admin.menu.devCopied' or 'admin.menu.devCopyFailed', nil,
+			copied and 'success' or 'error')
+		return
 	end
 	if type(data.go) == 'string' and SCREENS[data.go] then return push(data.go, data.arg) end
 	if type(data.run) == 'table' then

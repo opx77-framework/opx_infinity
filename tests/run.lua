@@ -9513,7 +9513,7 @@ do
 	if handle then handle:close() end
 
 	local GONE = {
-		'admin.menu.dev', 'admin.key.dev',
+		'admin.key.dev',
 		'admin.menu.section.garages', 'admin.menu.section.dealership',
 		'admin.menu.section.showroom',
 		'admin.menu.garageList', 'admin.menu.garageBring', 'admin.menu.dealerList',
@@ -9525,6 +9525,10 @@ do
 		'admin.form.previewRemove', 'admin.form.previewRemoveHint',
 		'admin.field.key', 'admin.field.entry', 'admin.field.plate', 'admin.field.garage',
 		'admin.client.devMissing', 'admin.client.devRefused', 'admin.client.devSent',
+		-- NOT 'admin.menu.dev': the name came back, on a screen that reads rather
+		-- than writes. What must stay gone is the WRITE vocabulary above it, and
+		-- that is what this list is.
+
 	}
 	local left = {}
 	for _, key in ipairs(GONE) do
@@ -9604,27 +9608,76 @@ do
 		-- THESE ARE THE SAME CHECKS TURNED THE OTHER WAY. What stood here
 		-- asserted that `Keys.DEV` reached the host and that the screen carried
 		-- the two placement rows. Deleting them outright would have left nothing
-		-- saying the door is SHUT -- and nothing saying that only that door shut,
-		-- which is the half that goes wrong: a raise in `Menu.Start`, a renamed
-		-- config section or a `Keys.Register` that started refusing would take
-		-- the MENU key with it and leave staff with no way in at all.
-		check('the root carries no Dev row', hasRow('dev') == nil)
-		check('and still carries every other category, so a row went and not the screen list',
+		-- ── THE NAME CAME BACK; THE WRITES DID NOT ──────────────────────────
+		-- The screen removed on 2026-09-21 placed garage spots and showroom cars
+		-- -- writes dressed as configuration, on a server whose configuration is
+		-- files. The owner then asked for a Dev category again, for tools: "avoir
+		-- le nom de props get position etc".
+		--
+		-- So these checks are not deleted and not simply inverted. What mattered
+		-- yesterday is what is asserted today: the screen may exist, and it may
+		-- not write. Every write vocabulary it used to carry is still banned from
+		-- both catalogues by the check further up this section, and the four
+		-- forms behind its old rows are still asserted absent below.
+		check('the root carries a Dev row again', hasRow('dev') ~= nil)
+		check('and still carries every other category, so a row came back and not a rewrite',
 			hasRow('players') ~= nil and hasRow('self') ~= nil and hasRow('vehicles') ~= nil
 				and hasRow('world') ~= nil and hasRow('server') ~= nil)
 
-		check('no Dev key is declared to the host any more',
+		-- NO KEY OF ITS OWN. The old screen had F10 and the owner never asked for
+		-- it back; the category is reached through the menu like every other one.
+		check('and still no Dev key is declared to the host',
 			control.keyMappings.byId['opx.admin.dev'] == nil)
 		local menuKey = control.keyMappings.byId['opx.admin.menu']
 		check('while the menu key still is, on the key the config names',
 			menuKey ~= nil and menuKey.key == 'F9', menuKey and tostring(menuKey.key))
-		check('and so are both noclip speeds, so one mapping went and not the registration',
+		check('and so are both noclip speeds, so nothing else moved',
 			control.keyMappings.byId['opx.admin.noclipFaster'] ~= nil
 				and control.keyMappings.byId['opx.admin.noclipSlower'] ~= nil)
 
-		check('there is no Dev screen left to land on', admin.Menu.OpenAt('dev') == false)
+		check('the Dev screen is there to land on', admin.Menu.OpenAt('dev') == true)
 		control.Pump(10)
-		-- A refusal and not a close: `OpenAt` answers false for a screen it does
+		check('and landing on it is where the menu goes',
+			admin.Menu.IsOpen() and admin.Menu.Screen() == 'dev', admin.Menu.Screen())
+		admin.Menu.OpenAt('root')
+		control.Pump(10)
+
+		-- ── THE INSPECTOR ───────────────────────────────────────────────────
+		-- THE OWNER: "avoir le nom de props get position etc possible aussi de
+		-- l'utiliser avec alt".
+		--
+		-- IT REPORTS WHAT THE PLATFORM RETURNED, NOT A LIST OF FIELDS THE CODE
+		-- GUESSED, and that is the property worth a check: a curated read-out is
+		-- wrong the day the platform adds a field, silently, because the operator
+		-- sees four lines and cannot know a fifth existed. So the check feeds it a
+		-- field nothing in this resource has ever heard of and requires it back.
+		local report = admin.Inspect({
+			kind = 'prop',
+			position = { x = 12.5, y = -30.25, z = 7.0 },
+			material = 'concrete',
+			distance = 4.25,
+			somethingNobodyHasHeardOf = 'keep me',
+			screen = { x = 0.5, y = 0.5 },
+			target = { kind = 'prop', engineEntity = 'ent-9', networked = true },
+		})
+		check('the inspector answers text', type(report) == 'string' and #report > 0)
+		check('naming the position as one readable line',
+			report:find('position=12.50, -30.25, 7.00', 1, true) ~= nil, report)
+		check('and the material, which is the half that names a prop',
+			report:find('material=concrete', 1, true) ~= nil)
+		check('and the engine entity, prefixed so it cannot be confused with the ray',
+			report:find('target.engineEntity=ent-9', 1, true) ~= nil, report)
+		check('and BOTH kinds, which is why the prefix exists',
+			report:find('kind=prop', 1, true) ~= nil
+				and report:find('target.kind=prop', 1, true) ~= nil)
+		-- THE ONE THAT MATTERS: a field this code has never heard of survives.
+		check('and a field nothing here knows about, because it reports what it found',
+			report:find('somethingNobodyHasHeardOf=keep me', 1, true) ~= nil, report)
+
+		-- Nothing is invented for a pick that answered nothing.
+		local empty = admin.Inspect(nil)
+		check('while a pick with nothing in it says so rather than printing blanks',
+			type(empty) == 'string' and empty:find('nothing', 1, true) ~= nil, empty)
 		-- not have, and an operator who pressed a stale keybind must not lose the
 		-- menu they were standing in for it.
 		check('and asking for it leaves the menu where it was rather than closing it',
@@ -14108,6 +14161,40 @@ do
 			has('admin_skyTime'), table.concat(sky, ','))
 		check('with the two that were always there still there',
 			has('admin_skyNoclip') and has('admin_skyPvp'), table.concat(sky, ','))
+
+		-- ── AND THE THREE KINDS THE INSPECTOR NEEDED ────────────────────────
+		-- This module reached `self`, `player`, `vehicle`, `door` and `sky` and
+		-- nothing else, so "what am I looking at" could be asked of a door and a
+		-- car and of nothing else in the city. A networked prop, a vanilla world
+		-- surface and an NPC are three things the eye distinguishes and staff
+		-- rows could be drawn on none of them.
+		--
+		-- CHECKED THROUGH THE CONTRACT THE MODULE ACTUALLY CALLS, so a kind added
+		-- to the KINDS list but missing from REGISTERS -- which is a silent
+		-- nothing, since the loop reads one by the other -- fails here.
+		local reached = {}
+		for _, name in ipairs({ 'RegisterProps', 'RegisterNpcs', 'RegisterWorld' }) do
+			wrap[name] = function(owner, rows)
+				local answer = real[name](owner, rows)
+				if answer.ok then
+					for _, entry in ipairs(rows) do reached[entry.id] = true end
+				end
+				return answer
+			end
+		end
+		-- A DIFFERENT SIGNATURE FIRST. `register` returns early when the granted
+		-- set is the one it already holds, so re-sending the same map after
+		-- wrapping the contract would wrap nothing and pass by measuring an empty
+		-- table. Emptying the access changes the signature; restoring it registers
+		-- again, through the wrap.
+		admin.Target.Access({ access = {}, aclKnown = true, inventory = false })
+		ccontrol.Pump(20)
+		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
+		ccontrol.Pump(20)
+		check('the inspector is offered on a prop', reached['admin_devInspect_prop'] == true)
+		check('on an NPC', reached['admin_devInspect_npc'] == true)
+		check('and on a plain world surface, which is most of the city',
+			reached['admin_devInspect_world'] == true)
 
 		-- ── THE BUG THE BLOCK ABOVE CANNOT SEE ──────────────────────────────
 		-- Everything above passes on a host with no instruction budget, and the
