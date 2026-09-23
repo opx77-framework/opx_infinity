@@ -233,9 +233,8 @@ local function playPose(player, name, loop)
 	return nil
 end
 
--- How long `carry_pickup` runs before the loop takes over: its one clip,
--- `enter_bodycarry_sync_upperbody`, is 1333 ms in the platform's catalogue.
-local PICKUP_CLIP_MS = 1333
+-- How long `carry_pickup` runs before the loop takes over; see `M.LIFT_MS`.
+local PICKUP_CLIP_MS = M.LIFT_MS
 
 --- Plays the lift, then the two-handed carry loop, on a crate just picked up.
 --
@@ -799,6 +798,9 @@ end
 local function dropCrate(player, yaw, groundZ)
 	local crate = Claim.HeldBy(crates, player)
 	if crate == nil or crate.where ~= Where.CARRIED then return false, 'not_carrying' end
+	-- NOT WHILE A BAR RUNS. The owner: "pendant qu'on load dans la voiture le
+	-- joueur peux plus faire x". The client stops offering it; this is the rule.
+	if crate.step ~= nil then return false, 'busy' end
 	local here = standing(player)
 	if here == nil then return false, 'no_position' end
 

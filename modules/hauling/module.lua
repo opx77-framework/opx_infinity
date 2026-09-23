@@ -97,6 +97,12 @@ M.Event = {
 --- The three things a player can be part-way through, and the one thing they can
 --- be holding. Named here rather than spelled at each site, because the server
 --- indexes the clock by the step and a typo would read as "no bar is running".
+--- How long the platform's `carry_pickup` clip runs: its one clip,
+--- `enter_bodycarry_sync_upperbody`, is 1333 ms in `open77_animations`' catalogue.
+--- The server starts the carry loop after it; the client offers X only after it,
+--- so the lift is never cut off half way.
+M.LIFT_MS = 1333
+
 M.Step = {
 	PICKUP = 'pickup',
 	LOAD = 'load',

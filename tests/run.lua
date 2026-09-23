@@ -16419,6 +16419,15 @@ do
 		fire(12, M.Event.FINISH)
 		check('a third crate is carried', lastAnswer()[3] == THIRD, tostring(lastAnswer()[2]))
 		local stoppedBefore = #poses.stopped
+		-- NOT WHILE LOADING: the server refuses a drop with a bar under way.
+		vehicles['veh-12'] = { id = 'veh-12', record = 'Vehicle.nothing',
+			position = { x = third.x + 2.0, y = third.y, z = third.z } }
+		fire(12, M.Event.BEGIN, Step.LOAD, 'veh-12')
+		fire(12, M.Event.DROP, 90.0)
+		check('X during the load bar is refused on the server too',
+			lastAnswer()[2] == 'busy', tostring(lastAnswer()[2]))
+		fire(12, M.Event.ABORT, 'cancelled')
+		vehicles['veh-12'] = nil
 		fire(12, M.Event.DROP, 90.0)
 		check('X puts it down', lastAnswer()[1] == true and lastAnswer()[3] == false,
 			tostring(lastAnswer()[2]))
@@ -16563,6 +16572,26 @@ do
 		drop.pressed()
 		check('X with empty hands sends nothing', #control.serverEvents == sentBefore)
 		control.netEvents[M.Event.ANSWER](true, nil, '555')
+		local function drops()
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == M.Event.DROP then n = n + 1 end
+			end
+			return n
+		end
+		-- The owner: "la notification qui dit X pour drop faut qu'elle soit apres le
+		-- load du carry de l'objet". Until the lift has played, X does nothing.
+		local before = drops()
+		drop.pressed()
+		check('X during the lift does nothing, so the lift is never cut off',
+			drops() == before)
+		control.Pump(math.ceil(M.LIFT_MS / 100) + 2)
+		-- The owner: "pendant qu'on load dans la voiture le joueur peux plus faire x".
+		control.netEvents[M.Event.RUN]({ id = '555', step = 'load', durationMs = 3000 })
+		drop.pressed()
+		check('and X while the load bar runs does nothing either', drops() == before)
+		control.Fire(OPX.Modules.Get('progress').Event.ON_DONE, { owner = 'hauling', finished = false,
+			ending = 'cancelled' })
 		drop.pressed()
 		local sent = control.serverEvents[#control.serverEvents]
 		check('X while carrying asks the server, with the way the player faces',

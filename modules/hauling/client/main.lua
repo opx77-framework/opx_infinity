@@ -302,18 +302,21 @@ end
 --- The key actually bound to the drop, as the host answered it.
 local dropKey = nil
 
+-- Whether X may put the crate down now: only once the lift has played out, and
+-- never while a bar (the load into a vehicle) is running.
+local dropReady = false
+
 --- Puts the carried crate down. The server decides; this only asks.
 -- The owner: "pendant qu'on carry ont peux faire x pour la drop".
 local function onDropKey()
-	if carrying == nil then return end
+	-- The owner: "pendant qu'on load dans la voiture le joueur peux plus faire x".
+	if carrying == nil or not dropReady or bar ~= nil then return end
 	-- A key typed into a text field is not a key pressed in the world.
 	local input = Open77.input
 	if type(input) == 'table' and type(input.isCaptured) == 'function' then
 		local read, taken = pcall(input.isCaptured)
 		if read and taken == true then return end
 	end
-	-- A load bar under way ends here: the crate is going on the floor instead.
-	dropBar()
 	local yaw, groundZ = nil, nil
 	local character = Open77.character
 	if type(character) == 'table' and type(character.yaw) == 'function' then
@@ -411,9 +414,23 @@ function M.Start()
 		local was = carrying
 		carrying = propId(held) or nil
 		blockHands(carrying ~= nil)
-		-- Said once per carry, the moment it starts: the key is no use unknown.
-		if was == nil and carrying ~= nil and dropKey ~= nil then
-			OPX.Toast.Locale('hauling.hint.drop', { key = dropKey }, 'info', 'box')
+		-- AFTER THE LIFT, NOT AT THE PICKUP. The owner: "la notification qui dit X
+		-- pour drop faut qu'elle soit apres le load du carry de l'objet". The key
+		-- goes live at the same moment, so the hint never offers a press that the
+		-- lift would swallow.
+		if carrying == nil then
+			dropReady = false
+		elseif was == nil then
+			dropReady = false
+			local held = carrying
+			CreateThread(function()
+				Wait(M.LIFT_MS)
+				if carrying ~= held then return end
+				dropReady = true
+				if dropKey ~= nil then
+					OPX.Toast.Locale('hauling.hint.drop', { key = dropKey }, 'info', 'box')
+				end
+			end)
 		end
 		if not ok then
 			dropBar()
@@ -491,6 +508,7 @@ function M.Stop()
 	end
 	tokens = {}
 	blockHands(false)
+	dropReady = false
 	crates = {}
 	sellers = {}
 	carrying = nil
