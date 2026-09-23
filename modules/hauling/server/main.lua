@@ -324,6 +324,44 @@ local function place(crate, what)
 	end)
 end
 
+-- ── the glow ────────────────────────────────────────────────────────────────
+
+-- Whether a refused light has been logged, so it is said once and not per crate.
+local lightRefused = false
+
+--- Takes a crate's glow out of the world, if it has one.
+local function lightOff(crate)
+	local id = crate.light
+	crate.light = nil
+	if id == nil or not propsReady() or type(Open77.props.remove) ~= 'function' then return end
+	pcall(Open77.props.remove, id)
+end
+
+--- Puts a glow over a crate standing free, replacing any it had.
+--
+-- `open77_props`' own `light.here` shape: `kind = "light"` on the model `light`,
+-- a point light and no mesh. A light is a prop in the same registry, so it
+-- streams, buckets and dies with the resource exactly as the crate does.
+local function lightOn(crate)
+	lightOff(crate)
+	local look = Access.LIGHT
+	if look == nil or not propsReady() then return end
+	local called, id, why = pcall(Open77.props.create, {
+		kind = 'light',
+		model = 'light',
+		position = { x = crate.x, y = crate.y, z = crate.z + look.lift },
+		bucket = crate.bucket,
+		light = { intensity = look.intensity, radius = look.radius, color = look.color,
+			enabled = true },
+	})
+	if called and id ~= nil then
+		crate.light = id
+	elseif not lightRefused then
+		lightRefused = true
+		Open77.log.warn(('[hauling] no glow over the crates: %s'):format(safe(called and why or id)))
+	end
+end
+
 --- Replaces a crate's prop with a fresh one at `crate.x/y/z/yaw`.
 --
 -- A DETACHED PROP KEEPS FLYING ON THE CLIENT. The owner, twice: "quand je lache le
@@ -376,6 +414,7 @@ end
 -- a crate standing somewhere else.
 local function putBack(crate, reason)
 	dropPose(crate)
+	lightOff(crate)
 	-- HOME, NOT WHERE IT LAST WAS. A crate somebody dropped has moved off its
 	-- point, and `crate.x` is where it lies; its point is still the config's.
 	local point = Access.Point(crate.site, crate.index)
@@ -401,6 +440,7 @@ local function putBack(crate, reason)
 	crate.droppedAtMs = nil
 	if not fresh then place(crate, 'stood back up') end
 	crate.revision = revisionOf(crate.id) or crate.revision
+	lightOn(crate)
 	announce(crate)
 	Open77.log.info(('[hauling] crate %s back on %s point %d: %s'):format(safe(crate.id),
 		safe(crate.site), crate.index, safe(reason)))
@@ -414,6 +454,7 @@ local function retire(crate, reason)
 	-- stood back up on its point a millisecond after being paid for and removed.
 	crates[crate.id] = nil
 	dropPose(crate)
+	lightOff(crate)
 	local points = cooling[crate.site]
 	if points == nil then
 		points = {}
@@ -470,6 +511,7 @@ local function spawn(siteKey, index)
 		revision = revisionOf(id),
 	}
 	crates[id] = crate
+	lightOn(crate)
 	announce(crate)
 	return id
 end
@@ -840,6 +882,7 @@ local function dropCrate(player, yaw, groundZ)
 		place(crate, 'put down')
 		crate.revision = revisionOf(crate.id) or crate.revision
 	end
+	lightOn(crate)
 	announce(crate)
 	Open77.log.info(('[hauling] crate %s put down by player %d at %.2f, %.2f, %.2f')
 		:format(safe(crate.id), player, crate.x, crate.y, crate.z))
@@ -1069,6 +1112,7 @@ local function complete(player)
 			return false, 'attach_refused'
 		end
 		crate.where = Where.CARRIED
+		lightOff(crate)
 		carryPose(crate, player)
 		-- HANDS FULL: whatever they were holding goes away. The owner: "si ont
 		-- porte le truc on puisse pas frapper n'y utiliser un item inv". The

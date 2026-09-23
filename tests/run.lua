@@ -15249,6 +15249,94 @@ local function haulingSamples(env, file)
 	for key in pairs(sites) do
 		if not HAULING_SAMPLES[key] then sites[key] = nil end
 	end
+	-- NO GLOW in these sections: their prop stubs count every prop as a crate, and
+	-- a light is a prop. The glow has a section of its own.
+	env.OPX.Config.MODULES.hauling.LIGHT = nil
+end
+
+section('hauling: a crate standing free glows, and the glow leaves with it')
+do
+	-- The owner, 2026-09-24: a native to make the props "plus visible". There is
+	-- no per-prop outline; a light is the platform's way.
+	local at = 1000000
+	local made, removed, positions = {}, {}, {}
+	local next = 0
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.GetGameTimer = function() return at end
+		sandbox.Open77.props = {
+			create = function(definition)
+				next = next + 1
+				local id = tostring(next)
+				made[id] = definition
+				return id
+			end,
+			get = function(id) return made[id] and { revision = 1 } or nil end,
+			remove = function(id) removed[#removed + 1] = id; made[id] = nil; return true end,
+			attach = function() return true end,
+			detach = function() return true end,
+			setTransform = function() return true end,
+			catalog = function() return {} end,
+		}
+		sandbox.Open77.players.position = function(id) return positions[id] end
+	end, function(env, file)
+		if not file:find('config/hauling.lua', 1, true) then return end
+		local sites = env.OPX.Config.MODULES.hauling.SITES
+		for key in pairs(sites) do
+			if not HAULING_SAMPLES[key] then sites[key] = nil end
+		end
+	end)
+	check('the server boots for the glow', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('hauling')
+		local SITE = OPX.Config.MODULES.hauling.SITES.docks
+		for index = 1, #SITE.POINTS do
+			SITE.POINTS[index].X, SITE.POINTS[index].Y, SITE.POINTS[index].Z =
+				-1440.0 + index * 4.0, 120.0, 18.0
+		end
+		SITE.DROPOFFS.warehouse.X, SITE.DROPOFFS.warehouse.Y = -1500.0, 200.0
+		SITE.DROPOFFS.yard.X, SITE.DROPOFFS.yard.Y = -1520.0, 210.0
+		M.Access.Problems()
+		control.Pump(1)
+
+		local function split()
+			local crates, lights = {}, {}
+			for id, definition in pairs(made) do
+				if definition.kind == 'light' then lights[#lights + 1] = id
+				else crates[#crates + 1] = id end
+			end
+			table.sort(crates)
+			return crates, lights
+		end
+		local crates, lights = split()
+		check('every crate standing free has a glow', #crates > 0 and #lights == #crates,
+			('%d crates, %d lights'):format(#crates, #lights))
+		local light = made[lights[1] or ''] or {}
+		check('in the shipped light.here shape: kind light, model light, a point light',
+			light.model == 'light' and type(light.light) == 'table'
+				and light.light.enabled == true and light.light.color.x == 1.0)
+		local crate = made[crates[1]]
+		check('over the crate, not inside it',
+			light.position ~= nil and light.position.z > 18.0)
+
+		positions[2] = { x = crate.position.x, y = crate.position.y, z = 18.0, bucket = 0 }
+		local function fire(event, ...)
+			env.source = 2
+			control.netEvents[event](...)
+			env.source = nil
+		end
+		fire(M.Event.HELLO)
+		fire(M.Event.BEGIN, M.Step.PICKUP, crates[1])
+		at = at + M.Access.PICKUP_MS + 1
+		fire(M.Event.FINISH)
+		local _, after = split()
+		check('picked up, its glow goes with it off the floor', #after == #lights - 1,
+			('%d lights'):format(#after))
+		fire(M.Event.DROP, { yaw = 0.0, z = 18.0 })
+		local _, dropped = split()
+		check('and put down, it glows where it lies', #dropped == #lights,
+			('%d lights'):format(#dropped))
+	end
 end
 
 section('hauling: the surveyed Pacifica site is usable as shipped')

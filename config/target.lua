@@ -100,4 +100,22 @@ OPX.Config.MODULES.target = {
 		-- to somebody you are looking at across a room.
 		DISTANCE = 12.0,
 	},
+
+	-- A GLOW ON WHAT THE EYE PICKED, for as long as its rows are up. The owner,
+	-- 2026-09-24: "fait egalement la lumiere sur l'object qu'on target".
+	--
+	-- A LOCAL light: `Open77.props.create` on the CLIENT is never replicated, so
+	-- only the player aiming sees it. Placed LIFT metres over the point the ray
+	-- hit. There is no outline native that follows the cursor --
+	-- `Open77.inspector.outline` outlines what the RETICLE is on, and the eye
+	-- picks with the cursor while the camera is held still.
+	--
+	-- COLOR is linear 0..1 with x/y/z keys, as every platform light takes it.
+	GLOW = {
+		ENABLED = true,
+		COLOR = { x = 1.0, y = 0.08, z = 0.08 },
+		INTENSITY = 15.0,
+		RADIUS = 2.0,
+		LIFT = 0.4,
+	},
 }
