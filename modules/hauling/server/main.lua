@@ -268,6 +268,12 @@ local function putBack(crate, reason)
 				:format(safe(crate.id), safe(let and why or detached)))
 		end
 	end
+	-- HOME, NOT WHERE IT LAST WAS. A crate somebody dropped has moved off its
+	-- point, and `crate.x` is where it lies; its point is still the config's.
+	local home = Access.Point(crate.site, crate.index)
+	if home ~= nil then
+		crate.x, crate.y, crate.z, crate.yaw = home.x, home.y, home.z, home.yaw
+	end
 	if propsReady() and type(Open77.props.setTransform) == 'function' then
 		local moved, why = pcall(Open77.props.setTransform, crate.id,
 			{ position = { x = crate.x, y = crate.y, z = crate.z }, yaw = crate.yaw })
@@ -281,6 +287,7 @@ local function putBack(crate, reason)
 	crate.step = nil
 	crate.claimedAtMs = nil
 	crate.pendingVehicle = nil
+	crate.droppedAtMs = nil
 	crate.revision = revisionOf(crate.id) or crate.revision
 	announce(crate)
 	Open77.log.info(('[hauling] crate %s back on %s point %d: %s'):format(safe(crate.id),
@@ -482,6 +489,17 @@ local function refillOnce()
 		end
 	end
 
+	-- A DROPPED CRATE LEFT LYING still holds its point; after DROP_RETURN_MS it
+	-- goes home so an alley does not keep a point out of the job for good.
+	local lying = {}
+	for _, crate in pairs(crates) do
+		if crate.where == Where.GROUND and crate.droppedAtMs ~= nil
+			and at - crate.droppedAtMs >= Access.DROP_RETURN_MS then
+			lying[#lying + 1] = crate
+		end
+	end
+	for index = 1, #lying do putBack(lying[index], 'left where it was dropped') end
+
 	local ceiling = Access.MAX_CRATES
 	for _, siteKey in ipairs(Access.UsableKeys()) do
 		local allowance = Access.SpawnPerPass(siteKey)
@@ -650,6 +668,65 @@ local function beginLoad(player, vehicleId)
 	local ok, why = Claim.Restamp(crates, crate.id, player, Step.LOAD, OPX.Now())
 	if not ok then return false, why end
 	crate.pendingVehicle = vehicleId
+	return true
+end
+
+--- Puts the carried crate down in front of the carrier, where anyone may take it.
+--
+-- The owner: "pendant qu'on carry ont peux faire x pour la drop".
+--
+-- THE SERVER HAS NO HEADING FOR A PLAYER, only a position, so the client's yaw
+-- says which way is "in front". It moves the crate DROP_DISTANCE metres at most
+-- from where the SERVER reads the player, so a forged yaw buys less than a metre.
+--
+-- THE STATE FLIPS BEFORE THE DETACH. `Open77.props.detach` raises
+-- `onPropAttachmentChanged`, and that handler stands a CARRIED crate back on its
+-- point -- which, reached first, would send a dropped crate home instead.
+-- @return boolean
+-- @return string|nil
+local function dropCrate(player, yaw)
+	local crate = Claim.HeldBy(crates, player)
+	if crate == nil or crate.where ~= Where.CARRIED then return false, 'not_carrying' end
+	local here = standing(player)
+	if here == nil then return false, 'no_position' end
+
+	local x, y = here.x, here.y
+	yaw = Access.FiniteNumber(yaw)
+	if yaw ~= nil then
+		-- Cyberpunk's forward for a yaw in degrees: 0 faces +Y, and it turns
+		-- towards -X as the yaw grows.
+		local radians = math.rad(yaw)
+		x = x - math.sin(radians) * Access.DROP_DISTANCE
+		y = y + math.cos(radians) * Access.DROP_DISTANCE
+	end
+
+	dropPose(crate)
+	crate.where = Where.GROUND
+	crate.owner = nil
+	crate.step = nil
+	crate.claimedAtMs = nil
+	crate.pendingVehicle = nil
+	crate.x, crate.y, crate.z, crate.yaw = x, y, here.z, yaw or crate.yaw
+	crate.droppedAtMs = OPX.Now()
+
+	if propsReady() and type(Open77.props.detach) == 'function' then
+		local let, detached, why = pcall(Open77.props.detach, crate.id)
+		if not let or detached == false then
+			Open77.log.warn(('[hauling] crate %s would not come off the body: %s')
+				:format(safe(crate.id), safe(let and why or detached)))
+		end
+	end
+	if propsReady() and type(Open77.props.setTransform) == 'function' then
+		local moved, why = pcall(Open77.props.setTransform, crate.id,
+			{ position = { x = crate.x, y = crate.y, z = crate.z }, yaw = crate.yaw })
+		if not moved then
+			Open77.log.warn(('[hauling] crate %s could not be put down: %s')
+				:format(safe(crate.id), safe(why)))
+		end
+	end
+	crate.revision = revisionOf(crate.id) or crate.revision
+	announce(crate)
+	Open77.log.info(('[hauling] crate %s put down by player %d'):format(safe(crate.id), player))
 	return true
 end
 
@@ -1116,6 +1193,17 @@ function M.Start()
 			Open77.log.info(('[hauling] player %d could not finish: %s'):format(player,
 				safe(reason)))
 		end
+	end)
+
+	RegisterNetEvent(M.Event.DROP, function(yaw)
+		local player = tonumber(source) or 0
+		if player <= 0 then return end
+		if not within(requestWindows, player, REQUESTS_PER_WINDOW, REQUEST_WINDOW_MS) then
+			return answer(player, false, 'rate_limited')
+		end
+		if type(yaw) ~= 'number' then yaw = nil end
+		local ok, reason = dropCrate(player, yaw)
+		answer(player, ok, ok and 'dropped' or reason)
 	end)
 
 	RegisterNetEvent(M.Event.ABORT, function(reason)

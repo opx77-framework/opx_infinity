@@ -156,6 +156,18 @@ OPX.Config.MODULES.hauling = {
 		ROTATION = { x = 0.0, y = 90.0, z = 0.0 },
 	},
 
+	-- PUTTING A CARRIED CRATE DOWN. The owner, 2026-09-23: "pendant qu'on carry
+	-- ont peux faire x pour la drop". DROP_KEY is the default binding (players
+	-- rebind it under Pause -> Settings -> KEY BINDINGS); the crate lands
+	-- DROP_DISTANCE metres in front of the player and anyone may pick it up.
+	--
+	-- A dropped crate still holds its point, so one left lying in an alley would
+	-- take that point out of the job for good. After DROP_RETURN_MS untouched it
+	-- goes back to its point on the next refill pass.
+	DROP_KEY = 'X',
+	DROP_DISTANCE = 0.7,
+	DROP_RETURN_MS = 300000,
+
 	-- THE ARROW OVER A CRATE THAT CAN BE PICKED UP. The owner, 2026-09-23: "si ont
 	-- peux les faire pop au dessus des caisse pour savoir que ces caisse la peuvent
 	-- etre ramasser". A native `Open77.markers` mesh (client op77.83+), drawn only

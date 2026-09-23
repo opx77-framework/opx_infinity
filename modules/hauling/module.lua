@@ -77,6 +77,8 @@ M.Event = {
 	BEGIN = OPX.Event(NET, 'hauling', 'begin'),
 	FINISH = OPX.Event(NET, 'hauling', 'finish'),
 	ABORT = OPX.Event(NET, 'hauling', 'abort'),
+	-- The carrier puts the crate down where they stand. Payload: their yaw.
+	DROP = OPX.Event(NET, 'hauling', 'drop'),
 
 	-- Server to client.
 	SNAPSHOT = OPX.Event(NET, 'hauling', 'snapshot'),

@@ -16338,6 +16338,7 @@ do
 			survived and lastAnswer()[2] == 'invalid_subject',
 			tostring(lastAnswer()[2]))
 
+
 		-- ── a model the engine does not know disables its site ───────────────
 		-- `Open77.props.catalog()` is ALWAYS an empty table on the server, so an alias
 		-- cannot be checked against a list; the only way to find out is to try. A site
@@ -16361,6 +16362,44 @@ do
 		control.Pump(1)
 		check('and it is not retried once a pass for the rest of the session',
 			#control.log.error == lines, #control.log.error - lines)
+
+		-- ── X puts a carried crate down in front of the carrier ──────────────
+		-- The owner: "pendant qu'on carry ont peux faire x pour la drop".
+		local THIRD = nil
+		for id, prop in pairs(props.byId) do
+			if prop.attachment == nil and (THIRD == nil or id < THIRD) then THIRD = id end
+		end
+		local third = props.byId[THIRD]
+		local thirdHome = { x = third.x, y = third.y, z = third.z }
+		positions[12] = { x = third.x, y = third.y, z = third.z, bucket = 0 }
+		fire(12, M.Event.HELLO)
+		at = at + 10000
+		fire(12, M.Event.BEGIN, Step.PICKUP, THIRD)
+		at = at + Access.PICKUP_MS + 1
+		fire(12, M.Event.FINISH)
+		check('a third crate is carried', lastAnswer()[3] == THIRD, tostring(lastAnswer()[2]))
+		local stoppedBefore = #poses.stopped
+		fire(12, M.Event.DROP, 90.0)
+		check('X puts it down', lastAnswer()[1] == true and lastAnswer()[3] == false,
+			tostring(lastAnswer()[2]))
+		check('in front of the carrier: yaw 90 is -X, DROP_DISTANCE away',
+			math.abs(props.byId[THIRD].x - (thirdHome.x - Access.DROP_DISTANCE)) < 1e-6
+				and math.abs(props.byId[THIRD].y - thirdHome.y) < 1e-6,
+			('%.3f, %.3f'):format(props.byId[THIRD].x, props.byId[THIRD].y))
+		check('off the body, and the carry pose stops',
+			props.byId[THIRD].attachment == nil and #poses.stopped == stoppedBefore + 1)
+		check('and it lies there for anyone: a crate on the ground, not back on its point',
+			props.byId[THIRD].x ~= thirdHome.x and lastAnswer()[3] == false)
+		fire(12, M.Event.DROP, 90.0)
+		check('X with empty hands is refused', lastAnswer()[2] == 'not_carrying',
+			tostring(lastAnswer()[2]))
+
+		-- Left lying, it goes home on a refill pass after DROP_RETURN_MS.
+		at = at + Access.DROP_RETURN_MS + 1
+		control.Pump(1)
+		check('a crate left lying goes back to its point',
+			props.byId[THIRD].x == thirdHome.x and props.byId[THIRD].y == thirdHome.y,
+			('%.3f, %.3f'):format(props.byId[THIRD].x, props.byId[THIRD].y))
 	end
 end
 
@@ -16439,6 +16478,21 @@ do
 			after.ok and #after.value.options)
 		check('and not one of them was re-registered: the tokens never moved',
 			tokensOf() == quiet, tokensOf() .. ' was ' .. quiet)
+
+		-- ── X to put the crate down ─────────────────────────────────────────
+		local drop = control.keyMappings.byId['hauling_drop']
+		check('the drop key is bound, to X by default', drop ~= nil and drop.key == 'X',
+			drop and drop.key)
+		local sentBefore = #control.serverEvents
+		drop.pressed()
+		check('X with empty hands sends nothing', #control.serverEvents == sentBefore)
+		control.netEvents[M.Event.ANSWER](true, nil, '555')
+		drop.pressed()
+		local sent = control.serverEvents[#control.serverEvents]
+		check('X while carrying asks the server, with the way the player faces',
+			sent ~= nil and sent.name == M.Event.DROP and type(sent[1]) == 'number',
+			sent and sent.name)
+		control.netEvents[M.Event.ANSWER](true, 'dropped', false)
 
 		-- ── the arrows over the free crates ─────────────────────────────────
 		-- The owner: "si ont peux les faire pop au dessus des caisse pour savoir que

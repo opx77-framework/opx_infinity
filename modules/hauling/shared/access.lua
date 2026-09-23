@@ -85,6 +85,9 @@ Access.REFILL_MS = math.max(0, integer(Config.REFILL_MS) or 0)
 Access.PAY_PER_CRATE = math.max(0, integer(Config.PAY_PER_CRATE) or 0)
 Access.CURRENCY = type(Config.CURRENCY) == 'string' and Config.CURRENCY or 'EDDIES'
 Access.ITEM = type(Config.ITEM) == 'string' and Config.ITEM or ''
+Access.DROP_KEY = type(Config.DROP_KEY) == 'string' and Config.DROP_KEY or 'X'
+Access.DROP_DISTANCE = math.min(2.0, math.max(0, finiteNumber(Config.DROP_DISTANCE) or 0.7))
+Access.DROP_RETURN_MS = math.max(0, integer(Config.DROP_RETURN_MS) or 300000)
 
 -- The arrow over a free crate, normalised once. `nil` when the block is absent
 -- or MAX is zero: no arrows, and nothing else changes.

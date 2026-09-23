@@ -18,6 +18,8 @@ local EN = {
 	['hauling.row.pickupHint'] = 'Heavy. Get it into a vehicle.',
 	['hauling.row.load'] = 'Load the crate',
 	['hauling.row.sell'] = 'Sell the crates',
+	['hauling.key.drop'] = 'Hauling: put the crate down',
+	['hauling.hint.drop'] = 'Press {key} to put the crate down.',
 
 	['hauling.bar.pickup'] = 'Lifting the crate',
 	['hauling.bar.load'] = 'Loading the crate',
@@ -71,6 +73,8 @@ local FR = {
 	['hauling.row.pickupHint'] = 'Lourde. À mettre dans un véhicule.',
 	['hauling.row.load'] = 'Charger la caisse',
 	['hauling.row.sell'] = 'Vendre les caisses',
+	['hauling.key.drop'] = 'Hauling : poser la caisse',
+	['hauling.hint.drop'] = 'Appuyez sur {key} pour poser la caisse.',
 
 	['hauling.bar.pickup'] = 'Soulèvement de la caisse',
 	['hauling.bar.load'] = 'Chargement de la caisse',

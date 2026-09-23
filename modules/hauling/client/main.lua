@@ -336,6 +336,45 @@ local function dropBar()
 	pcall(progress.Stop, OWNER, nil)
 end
 
+--- The key actually bound to the drop, as the host answered it.
+local dropKey = nil
+
+--- Puts the carried crate down. The server decides; this only asks.
+-- The owner: "pendant qu'on carry ont peux faire x pour la drop".
+local function onDropKey()
+	if carrying == nil then return end
+	-- A key typed into a text field is not a key pressed in the world.
+	local input = Open77.input
+	if type(input) == 'table' and type(input.isCaptured) == 'function' then
+		local read, taken = pcall(input.isCaptured)
+		if read and taken == true then return end
+	end
+	-- A load bar under way ends here: the crate is going on the floor instead.
+	dropBar()
+	local yaw = nil
+	local character = Open77.character
+	if type(character) == 'table' and type(character.yaw) == 'function' then
+		local read, value = pcall(character.yaw)
+		if read and type(value) == 'number' then yaw = value end
+	end
+	TriggerServerEvent(M.Event.DROP, yaw)
+end
+
+--- Binds the drop key, once. A refusal costs the key and nothing else.
+local function registerDropKey()
+	if type(RegisterKeyMapping) ~= 'function' then
+		return OPX.Note('hauling', 'this host has no RegisterKeyMapping: a crate cannot be put down')
+	end
+	local called, ok, answer = pcall(RegisterKeyMapping, 'hauling_drop',
+		locale('hauling.key.drop'), Access.DROP_KEY, onDropKey)
+	if not called or (ok ~= true and type(ok) ~= 'string') then
+		return OPX.Note('hauling', ('the drop key was refused: %s')
+			:format(tostring(called and answer or ok)))
+	end
+	dropKey = type(ok) == 'string' and ok ~= '' and ok
+		or (type(answer) == 'string' and answer ~= '' and answer) or Access.DROP_KEY
+end
+
 --- Wires the rows, the wire and the bar. No job is registered here on purpose.
 -- @author dop42
 function M.Start()
@@ -351,6 +390,7 @@ function M.Start()
 	end
 
 	registerRows()
+	registerDropKey()
 
 	RegisterNetEvent(M.Event.SNAPSHOT, function(part)
 		if type(part) ~= 'table' then return end
@@ -393,7 +433,12 @@ function M.Start()
 	end)
 
 	RegisterNetEvent(M.Event.ANSWER, function(ok, reason, held)
+		local was = carrying
 		carrying = propId(held) or nil
+		-- Said once per carry, the moment it starts: the key is no use unknown.
+		if was == nil and carrying ~= nil and dropKey ~= nil then
+			OPX.Toast.Locale('hauling.hint.drop', { key = dropKey }, 'info', 'box')
+		end
 		if not ok then
 			dropBar()
 			-- Every verdict goes on the public bus, refusals included: a HUD or a
