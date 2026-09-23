@@ -14116,7 +14116,11 @@ do
 		end
 
 		admin.Target.Access(map)
-		ccontrol.Pump(10)
+		-- SETTLED, NOT COUNTED. Registration yields once per registration call and
+		-- the batch is four rows, so how many frames it takes is a function of how
+		-- many rows the ACL granted -- which is exactly the thing this section
+		-- varies. A fixed pump reads a registration that is still running.
+		settle(ccontrol, function() return has('admin_skyNoclip') end, 80)
 
 		-- THE REPORT, verbatim. `#sky` is what the operator sees; what is NOT in
 		-- it is what they wrote in about.
@@ -14224,11 +14228,19 @@ do
 			spent = 0
 			return realWait(ms)
 		end
+		-- CHARGED PER ROW AND NOT PER CALL, which is what the live server does and
+		-- what this stub got wrong. The first version counted registration CALLS,
+		-- so it proved the yield between kinds and could not see the cost inside
+		-- one call -- and the live journal then showed a client dying INSIDE a
+		-- single `RegisterSelf` of eight rows, at `model.lua:187`, with the
+		-- per-kind yield already in place. Six rows to a resume, which is the
+		-- shape of that failure: a batch bigger than that cannot complete.
 		for _, method in ipairs({ 'RegisterSelf', 'RegisterPlayers', 'RegisterVehicles',
-			'RegisterDoors', 'RegisterSky' }) do
+			'RegisterDoors', 'RegisterProps', 'RegisterNpcs', 'RegisterWorld',
+			'RegisterSky' }) do
 			budgeted[method] = function(owner, rows)
-				spent = spent + 1
-				if spent > 3 then error('Open77 script execution budget exceeded', 0) end
+				spent = spent + #rows
+				if spent > 6 then error('Open77 script execution budget exceeded', 0) end
 				local answer = real[method](owner, rows)
 				if method == 'RegisterSky' and answer.ok then
 					for _, row in ipairs(rows) do sky[#sky + 1] = row.id end
@@ -14253,7 +14265,7 @@ do
 
 		-- THE ASSERTION, and it is about the LAST kind on purpose. Registering in
 		-- one resume gets through `self` and stops; `sky` is the last of eight.
-		check('a budget of three host calls a resume still reaches the last kind',
+		check('a budget of six ROWS a resume still reaches the last kind',
 			has('admin_skyNoclip') and has('admin_skyPvp') and has('admin_skyTime'),
 			table.concat(sky, ','))
 
