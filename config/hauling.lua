@@ -168,24 +168,6 @@ OPX.Config.MODULES.hauling = {
 	DROP_DISTANCE = 0.7,
 	DROP_RETURN_MS = 300000,
 
-	-- A GLOW ON EVERY CRATE STANDING FREE, so a yard reads as worked from across
-	-- the street. The owner, 2026-09-24, after the arrows went: a native to make
-	-- the props "plus visible". There is no per-prop outline native; a light is
-	-- the platform's own way, and this is `open77_props`' shipped `light.here`
-	-- shape exactly: a `kind = "light"` prop on the model `light`, a point light
-	-- with no mesh.
-	--
-	-- COLOR is linear 0..1 and the keys really are x/y/z (the platform refuses
-	-- r/g/b). LIFT is metres above the crate's point. The light goes when the
-	-- crate is picked up and comes back wherever it is put down. Remove the block
-	-- and no crate glows.
-	LIGHT = {
-		COLOR = { x = 1.0, y = 0.08, z = 0.08 },
-		INTENSITY = 20.0,
-		RADIUS = 3.0,
-		LIFT = 0.8,
-	},
-
 	-- WHAT A LOADED CRATE BECOMES. Loading takes the crate out of the world and
 	-- puts one of this item in the vehicle's trunk, tagged with the site it came
 	-- from (`metadata.site`), which is what a drop-off pays by. Declared in

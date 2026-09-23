@@ -89,25 +89,6 @@ Access.DROP_KEY = type(Config.DROP_KEY) == 'string' and Config.DROP_KEY or 'X'
 Access.DROP_DISTANCE = math.min(2.0, math.max(0, finiteNumber(Config.DROP_DISTANCE) or 0.7))
 Access.DROP_RETURN_MS = math.max(0, integer(Config.DROP_RETURN_MS) or 300000)
 
--- The glow on a free crate, normalised once; nil when the block is absent.
-do
-	local raw = type(Config.LIGHT) == 'table' and Config.LIGHT or nil
-	if raw ~= nil then
-		local c = type(raw.COLOR) == 'table' and raw.COLOR or {}
-		local function channel(v, fallback)
-			v = finiteNumber(v)
-			if v == nil then return fallback end
-			return math.min(1.0, math.max(0.0, v))
-		end
-		Access.LIGHT = {
-			color = { x = channel(c.x, 1.0), y = channel(c.y, 0.1), z = channel(c.z, 0.1) },
-			intensity = math.min(10000, math.max(0, finiteNumber(raw.INTENSITY) or 20.0)),
-			radius = math.min(500, math.max(0.1, finiteNumber(raw.RADIUS) or 3.0)),
-			lift = finiteNumber(raw.LIFT) or 0.8,
-		}
-	end
-end
-
 -- Squared, because every reach test below compares squares and a square root per
 -- test per player per pick is arithmetic nobody needs.
 Access.REACH_SQ = Access.REACH * Access.REACH

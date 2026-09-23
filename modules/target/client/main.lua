@@ -248,51 +248,7 @@ end
 --- Takes the eye down and hands the cursor, camera and weapons back.
 -- @author dop42
 -- @param reason string
--- ── the glow on what was picked ────────────────────────────────────────────
-
--- The local light over the picked thing, while its rows are up, or nil.
-local glow = nil
-
---- Takes the glow down, if one is up.
-local function glowOff()
-	local id = glow
-	glow = nil
-	if id == nil then return end
-	local props = Open77.props
-	if type(props) == 'table' and type(props.remove) == 'function' then pcall(props.remove, id) end
-end
-
---- Puts a local light over the point a pick hit. The owner: "fait egalement la
---- lumiere sur l'object qu'on target". Never replicated: only this player sees it.
-local function glowOn(context)
-	glowOff()
-	local look = type(M.Settings) == 'table' and M.Settings.GLOW or nil
-	if type(look) ~= 'table' or look.ENABLED == false then return end
-	-- The sky and the player's own body are not things to light up.
-	if type(context) ~= 'table' or context.kind == 'sky' or context.kind == 'self' then return end
-	local at = context.position
-	if type(at) ~= 'table' or type(at.x) ~= 'number' then return end
-	local props = Open77.props
-	if type(props) ~= 'table' or type(props.create) ~= 'function' then return end
-	local color = type(look.COLOR) == 'table' and look.COLOR or {}
-	local called, id = pcall(props.create, {
-		kind = 'light',
-		model = 'light',
-		position = { x = at.x, y = at.y, z = at.z + (tonumber(look.LIFT) or 0.4) },
-		collision = false,
-		light = {
-			intensity = tonumber(look.INTENSITY) or 15.0,
-			radius = tonumber(look.RADIUS) or 2.0,
-			color = { x = tonumber(color.x) or 1.0, y = tonumber(color.y) or 0.08,
-				z = tonumber(color.z) or 0.08 },
-			enabled = true,
-		},
-	})
-	if called and type(id) == 'string' then glow = id end
-end
-
 local function close(reason)
-	glowOff()
 	request = request + 1
 	local was = opened
 	opened, busy, selection, listed = false, false, nil, {}
@@ -453,7 +409,6 @@ local function finish()
 		return
 	end
 	selection, listed = job.context, job.listed
-	glowOn(job.context)
 	send('target:menu', {
 		handle = handle,
 		x = job.context.screen.x,
@@ -577,7 +532,6 @@ local function pick(payload)
 
 	request = request + 1
 	selection, listed, busy = nil, {}, true
-	glowOff()
 	if not send('target:loading', { handle = handle, x = x, y = y }) then
 		return close('no_surface')
 	end
