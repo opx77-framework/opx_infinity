@@ -94,8 +94,9 @@ local offers = {}
 -- the same one; a counter never repeats.
 local nextOffer = 0
 
--- The contracts, resolved in `Start`.
-local character, vehicles, garages
+-- The contracts, resolved in `Start`. `keys` is the vehicle keys contract, the
+-- only one of the four whose absence costs nothing but the key.
+local character, vehicles, garages, keys
 
 -- The currency a price is denominated in, settled in `Start`, and nil when the
 -- character contract does not know it. Nil refuses every purchase.
@@ -335,6 +336,28 @@ local function purchase(source, data, dealer, entry, dest)
 	end
 
 	local plate = made.value and made.value.plate or nil
+
+	-- THE KEY GOES WITH THE SALE, not with the hand-over: a car filed under a
+	-- garage and never driven off the lot is still a car the buyer owns, and the
+	-- key is how they get into it at the kerb. `Ensure` and not `Give`, so the
+	-- key the garage would otherwise cut on the first take-out is this one. A key
+	-- that did not fit in the bag is NOT a failed sale -- the garage cuts one the
+	-- first time the car comes out -- so it is logged, and said to the buyer when
+	-- it was their bag that was full, which is the one cause they can act on.
+	local keyed = false
+	if plate ~= nil and keys ~= nil then
+		local cut = keys.Ensure(source, plate, entry.label or entry.record)
+		keyed = type(cut) == 'table' and cut.ok == true
+		if not keyed then
+			local code = type(cut) == 'table' and cut.error or 'vehiclekeys.unavailable'
+			if code == 'vehiclekeys.noRoom' then
+				OPX.NotifyLocale(source, code, { label = tostring(cut.detail or plate) }, 'error')
+			end
+			Open77.log.warn(('[dealership] %s owns %s but was not given its key: %s')
+				:format(tostring(data.citizenId), tostring(plate), tostring(code)))
+		end
+	end
+
 	local handOver = M.Settings.HAND_OVER ~= false
 	local spawned = false
 
@@ -370,6 +393,7 @@ local function purchase(source, data, dealer, entry, dest)
 		price = entry.price,
 		currency = currency,
 		spawned = spawned,
+		keyed = keyed,
 	})
 end
 
@@ -1143,6 +1167,7 @@ function M.Start()
 	character = OPX.Api.Get('character')
 	vehicles = OPX.Api.Get('vehicles')
 	garages = OPX.Api.Get('garages')
+	keys = OPX.Api.Get('vehiclekeys')
 
 	if character == nil then
 		Open77.log.warn('[dealership] no character contract: nothing can be charged or proved ' ..

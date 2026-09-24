@@ -242,6 +242,44 @@ it; `/opx.dealership.stock` lists what is for sale and which kind sells it; and
 client whose list could not open. `list` is ACL-gated and the two that act on the caller
 alone are not.
 
+### Vehicle keys
+
+A key is an inventory item, `vehicle_key`, and **which vehicle it opens is its
+metadata**: `{ plate, label }`, written by `modules/vehiclekeys` and never by a client.
+Keys do not stack, and the bag and the hotbar draw each one under its own label —
+*Villefort Cortes · 12ABC345* — so two keys read as two cars. Inventory metadata was
+already stored, merged and moved whole; the contract gained `CountWhere(target, name,
+match)`, which counts units whose metadata carries the fields named (a key to a plate,
+whatever its label says), and the screen now prefers a stack's own `metadata.label`
+over the catalogue's name.
+
+**The plate is the identity.** An owned vehicle is keyed by its real plate. A vehicle
+`vehicles` never registered — a staff spawn, a showroom car — has no plate, so the
+first key cut for it mints one, `TMP-` and six characters. A real plate is letters and
+digits only, so a minted one can never equal it; it is held in memory and forgotten
+when the host removes the vehicle, and a key to it then opens nothing.
+
+**Who gets one.** The buyer, when a dealership sale completes (hand-over or not). The
+owner, when a garage brings the car out **and their bag holds no key to that plate** —
+ten take-outs are one key, and a key given away is replaced on the next one. Whoever a
+staff spawn was left beside (`opx.admin.vehicle.spawn`, `.give`). A full bag is said to
+the player and is never a reason to refuse the sale or the take-out.
+
+**Staff cut a key to a precise vehicle** with `opx.admin.vehicle.key <vehicleId|near>`,
+into their own bag: the eye row *Give me the key* on a vehicle sends the id it landed on,
+and the menu's vehicle screen sends `near` (the seat, else the nearest in the
+operator's bucket). The server resolves the vehicle and its plate itself; there is no
+plate argument. It is under `command.opx.admin.vehicle.*`, so an operator role already
+holds it.
+
+**What a key does is the host's lock.** `Open77.vehicles.setLocked` moves the durable,
+replicated entry lock the engine enforces (a locked car offers no way in). The row
+*Lock / unlock* on a vehicle, or using the key from the bag, turns it — for somebody
+holding a key to that plate, within 6 m or seated in it, both measured by the server.
+**A locked vehicle's trunk is shut**: `World.TrunkLocked` refuses the open with
+`inventory.error.locked` and closes one already open on the next reach sweep. The
+glovebox is not asked; it opens only from a seat. Nothing gates the engine yet.
+
 ### Getting dressed
 
 `clothing` is a **place**, like a garage spot and a dealer: stand on the marker, press
@@ -283,8 +321,8 @@ could read.
 **Opening the panel and using it are two different permissions, and the difference is
 one dot.** The host decides a line's permission from the word actually typed —
 `command.<word>` — so the opener is `command.opx.admin` and every action behind it is
-`command.opx.admin.<action>`. The module registers 56 restricted commands: the opener,
-and 55 actions under it (`opx.admin.self.noclip`, `opx.admin.player.goto`,
+`command.opx.admin.<action>`. The module registers 57 restricted commands: the opener,
+and 56 actions under it (`opx.admin.self.noclip`, `opx.admin.player.goto`,
 `opx.admin.vehicle.spawn`, `opx.admin.recovery.money`, …). The matcher keeps the dot
 and only a rule ENDING in `.*` is a prefix, so a role holding `command.opx.admin`
 alone opens the menu and is then refused by every row inside it — the operator watches

@@ -197,6 +197,26 @@ function M.GetItemCount(target, name, metadata)
 	end)
 end
 
+--- How many units of an item carry every metadata field of `match`.
+-- The metadata question `GetItemCount` cannot ask: it compares whole tables, so
+-- "a key to plate 12ABC345" is answered only by a caller that can rebuild the
+-- key's metadata byte for byte. This compares the fields named and ignores the
+-- rest.
+-- @author dop42
+-- @param target Source|CitizenId
+-- @param name string
+-- @param match table
+-- @return Result integer
+function M.CountWhere(target, name, match)
+	name = itemName(name)
+	if not name then return Result.Err('bad_argument', 'name') end
+	local kept, allowed = Common.Metadata(match, Options.MAX_METADATA_BYTES)
+	if not allowed or kept == nil then return Result.Err('bad_argument', 'match') end
+	return withBag(target, function(bag)
+		return Result.Ok(Containers.CountWhere(bag, name, kept))
+	end)
+end
+
 --- Whether a bag holds at least `count` of an item.
 -- @author dop42
 -- @param target Source|CitizenId
@@ -482,6 +502,7 @@ function M.Api()
 		ClearInventory = M.ClearInventory,
 
 		GetItemCount = M.GetItemCount,
+		CountWhere = M.CountWhere,
 		HasItem = M.HasItem,
 		CanCarry = M.CanCarry,
 		GetInventory = M.GetInventory,
@@ -510,6 +531,12 @@ function M.Api()
 		CurrencyWired = Currency.Wired,
 
 		GetHeldWeapon = M.GetHeldWeapon,
+
+		-- Whether a vehicle's trunk is shut to everybody right now. Published so
+		-- that every path that puts something in a trunk or takes it out -- the
+		-- screen here, and a job loading crates through this contract -- asks the
+		-- one question the same way. See `World.TrunkLocked`.
+		TrunkLocked = World.TrunkLocked,
 	})
 end
 
