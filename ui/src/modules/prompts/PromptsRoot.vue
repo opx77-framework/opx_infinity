@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref, shallowRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { emit } from '@/bridge/channel'
+import { holdBottomRight } from '@/stores/corners'
 import { list, num, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
@@ -160,16 +161,50 @@ useBridge('opx:prompts:hide', () => {
   hidden.value = true
 })
 
+/**
+ * What the open strip holds of the bottom-right corner, published for the voice block.
+ *
+ * MEASURED, not computed from the rows: a group wraps, a caption is long, a row carries
+ * two caps, and the only honest height is the box's. A ResizeObserver fires on those
+ * changes and on nothing else, so this costs nothing while the strip stands still.
+ */
+const strip = ref<HTMLElement | null>(null)
+const open = computed(() => groups.value.length > 0 && !hidden.value)
+let sizer: ResizeObserver | null = null
+
+function publish(): void {
+  const element = strip.value
+  if (element === null || !open.value || anchor.value !== 'bottom-right') {
+    holdBottomRight(0)
+    return
+  }
+  holdBottomRight(offset.value + element.offsetHeight)
+}
+
+watch([open, anchor, offset], publish)
+
 onMounted(() => {
   emit('opx:prompts:ready', {})
+  if (strip.value !== null && typeof ResizeObserver !== 'undefined') {
+    sizer = new ResizeObserver(publish)
+    sizer.observe(strip.value)
+  }
+  publish()
+})
+
+onBeforeUnmount(() => {
+  if (sizer !== null) sizer.disconnect()
+  sizer = null
+  holdBottomRight(0)
 })
 </script>
 
 <template>
   <div class="prompts">
     <div
+      ref="strip"
       class="strip"
-      :class="[anchor, { open: groups.length > 0 && !hidden }]"
+      :class="[anchor, { open }]"
       :style="{ '--strip-offset': offset + 'px', '--strip-width': maxWidth + 'px' }"
     >
       <!-- A GROUP IS NOT A PANEL. It is a title and its lines: no frame, no header rule,

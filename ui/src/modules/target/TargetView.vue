@@ -1038,9 +1038,18 @@ onUnmounted(() => {
           </template>
 
           <div v-if="!(loading && col.depth === 0)" class="rows" role="menu">
-            <template
+            <!-- THE ENTRANCE IS ON THE SLOT, NOT ON THE ROW -- the menu's fix, and
+                 the reason these buttons felt slow. A row's classes change under
+                 the pointer (`open`, `pending`), and an `animation` that differs
+                 between two states is CANCELLED AND RESTARTED by the change, so a
+                 folder the pointer left replayed its whole stutter from invisible.
+                 The slot is what the keyed v-for creates and its classes never
+                 change, so it plays `.op-enter` exactly once, like a menu row. -->
+            <div
               v-for="(entry, at) in col.entries"
               :key="entry.kind === 'folder' ? `d:${entry.name}` : `r:${entry.row.token}`"
+              class="slot op-enter"
+              :style="`--op-slot: ${at}`"
             >
               <!-- A FOLDER: the same frame, the count where a value goes and `>` in
                    the affordance column. Pointing at it opens its column beside
@@ -1050,7 +1059,7 @@ onUnmounted(() => {
                 class="row"
                 data-augmented-ui="tr-clip border"
                 :class="{ off: busy, open: col.openName === entry.name }"
-                :style="`--op-slot: ${at}`"
+
                 :data-folder="entry.name"
                 role="button"
                 :tabindex="busy ? -1 : 0"
@@ -1082,7 +1091,7 @@ onUnmounted(() => {
                   pending: entry.row.token === pendingToken,
                   off: busy && entry.row.token !== pendingToken
                 }"
-                :style="`--op-slot: ${at}`"
+
                 role="button"
                 :tabindex="busy ? -1 : 0"
                 :aria-disabled="busy"
@@ -1111,7 +1120,7 @@ onUnmounted(() => {
                 </span>
                 <span v-if="entry.row.description" class="hint">{{ entry.row.description }}</span>
               </div>
-            </template>
+            </div>
           </div>
         </div>
       </div>
@@ -1287,6 +1296,17 @@ onUnmounted(() => {
   min-height: 0;
 }
 
+/* The slot carries the entrance (`.op-enter`) and nothing else; the row fills it. */
+.slot {
+  display: flex;
+  min-width: 0;
+}
+
+.slot > .row {
+  flex: 1;
+  min-width: 0;
+}
+
 /* A row: a closed 1px frame with a chamfered top-right corner, and text.
 
    IT HAS A GROUND NOW. This comment used to end "there is nothing behind it and
@@ -1333,9 +1353,11 @@ onUnmounted(() => {
      alive over a daylight plaza -- and it was the bug the owner spotted: an outset
      shadow follows the BORDER BOX, so it ran past the diagonal and squared off the
      chamfer. The shadow is a stroke inside the sprite now. */
+  /* 80ms, the menu's: the step out of the column is the pointer's travel, and
+     a slower one is a button that answers late. */
   transition:
     color var(--op-dur-fast) linear,
-    transform 110ms var(--op-ease);
+    transform 80ms var(--op-ease);
 }
 
 .row:focus {
@@ -1579,40 +1601,4 @@ onUnmounted(() => {
    THE HINT -- the line shown while nothing is picked. A LABEL and not a control,
    so it takes the frame but never the hover.
    ========================================================================== */
-/* =============================================================================
-   THE BOOT-IN -- a stutter, not a fade, and the whole reason the v-for is keyed:
-   a column that opens creates every row of its level, so the level stutters in,
-   while the parent's rows survive untouched and do not re-run it. That is the
-   cascade's own confirmation that the parent did not go anywhere. Both keyframes
-   touch `opacity` and `transform` only, which the compositor runs without a
-   repaint.
-   ========================================================================== */
-@keyframes plate-in {
-  0% {
-    opacity: 0;
-    transform: translate3d(calc(var(--pop) * -1), 0, 0);
-  }
-
-  55% {
-    opacity: 1;
-    transform: translate3d(2px, 0, 0);
-  }
-
-  100% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
-}
-
-.row {
-  animation: plate-in 180ms var(--op-stutter) backwards;
-  animation-delay: calc(var(--slot, 0) * 28ms);
-}
-
-/* A row already out of the plane, or lit because its column is up, does not get
-   dragged back in by an entrance. */
-.row.pending,
-.row.open {
-  animation: none;
-}
 </style>

@@ -102,6 +102,14 @@ local function hideVanillaHud(hidden)
 	for _, component in ipairs(type(components) == 'table' and components or {}) do
 		if type(component) == 'string' then pcall(hud.setVisible, component, not hidden) end
 	end
+	-- A CLAIM BELONGS TO THE RESOURCE, NOT TO THIS MODULE. `modules/hud` hides the
+	-- vanilla HUD in the same resource's name, so the release above released its
+	-- claims too and every revive brought the whole vanilla HUD back. It is asked
+	-- to put its own back.
+	if not hidden then
+		local owner = OPX.Api.Get('hud')
+		if owner ~= nil and type(owner.ApplyVanilla) == 'function' then pcall(owner.ApplyVanilla) end
+	end
 end
 
 -- How long the GIVE UP press must last. Floored, because a misconfigured zero

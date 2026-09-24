@@ -48,9 +48,14 @@ local crates = {}
 -- rather than replacing a crate before the driver is out of the yard.
 local cooling = {}
 
--- Vehicle id to how many crates are in its bed, so the nth crate gets the nth
--- slot and the ones past the last slot stack instead of overlapping.
-local bedCount = {}
+-- Player to the sale they have begun at a seller: `{ site, dropoff, startedAtMs }`.
+-- A sale is not a crate -- loaded crates are trunk items -- so it is not in
+-- `crates` and `Claim` knows nothing of it.
+local sales = {}
+
+-- The seller NPCs, by id as a decimal string -> `{ id, site, dropoff }`. One per
+-- drop-off that declares an NPC.
+local sellers = {}
 
 -- Players handed the snapshot, so a delta reaches all of them and a release tells
 -- everyone who was told.
@@ -203,6 +208,159 @@ local function sendSnapshot(player)
 	until first > #list
 end
 
+-- ── the carry pose ──────────────────────────────────────────────────────────
+
+--- Starts the two-handed carry on a player, answering its playback id or nil.
+--
+-- `carry` is the platform's own profile (`open77_animations/shared/catalog.lua`):
+-- an UPPER-BODY LAYER, so the player still walks and runs, looping until stopped.
+-- No shipped resource plays it, and the catalogue still marks it
+-- `graph_verified_runtime_pending` -- so a refusal is logged once and the carry
+-- goes on without it rather than failing the pickup.
+local posesRefused = false
+local function playPose(player, name, loop)
+	local animations = Open77.animations
+	if type(animations) ~= 'table' or type(animations.play) ~= 'function' then return nil end
+	local called, playback, why = pcall(animations.play, player, name, { loop = loop })
+	if called and type(playback) == 'table' and playback.playbackId ~= nil then
+		return playback.playbackId
+	end
+	if not posesRefused then
+		posesRefused = true
+		Open77.log.warn(('[hauling] the %s animation was refused: %s')
+			:format(name, safe(called and why or playback)))
+	end
+	return nil
+end
+
+-- How long `carry_pickup` runs before the loop takes over; see `M.LIFT_MS`.
+local PICKUP_CLIP_MS = M.LIFT_MS
+
+--- Plays the lift, then the two-handed carry loop, on a crate just picked up.
+--
+-- The owner: "je sais pas si tu peux trouver une animation pour le pickup". The
+-- platform ships one: `carry_pickup`, the `enter` of the same carry, played once.
+-- A new play replaces the last on a player, so the loop simply follows it -- but
+-- only if the crate is still in the same hands with the same pose, since a drop
+-- or a load during the clip has already stopped it.
+local function carryPose(crate, player)
+	local lift = playPose(player, 'carry_pickup', false)
+	if lift == nil then
+		crate.pose = playPose(player, 'carry', true)
+		return
+	end
+	crate.pose = lift
+	CreateThread(function()
+		Wait(PICKUP_CLIP_MS)
+		if crates[crate.id] ~= crate or crate.owner ~= player or crate.pose ~= lift
+			or crate.where ~= Where.CARRIED then
+			return
+		end
+		crate.pose = playPose(player, 'carry', true)
+	end)
+end
+
+--- Whether a player has a crate in their hands. For other modules: the
+--- inventory refuses item use to somebody carrying one.
+local function isCarrying(player)
+	local crate = Claim.HeldBy(crates, tonumber(player) or 0)
+	return crate ~= nil and crate.where == Where.CARRIED
+end
+
+--- Stops the carry pose a crate started, if it did.
+local function dropPose(crate)
+	local player, playback = crate.owner, crate.pose
+	crate.pose = nil
+	if player == nil or playback == nil then return end
+	if type(Open77.animations) ~= 'table' or type(Open77.animations.stop) ~= 'function' then
+		return
+	end
+	pcall(Open77.animations.stop, player, playback)
+end
+
+-- Metres the client's measured ground may sit from the server's reading of the
+-- player's height and still be believed: a step, a kerb, a slope.
+local DROP_GROUND_SLACK = 1.5
+
+-- Tries a placement gets before it is given up on, and the wait between them.
+local PLACE_TRIES = 5
+local PLACE_RETRY_MS = 150
+
+--- Stands a crate at `crate.x/y/z/yaw`, reading the host's answer.
+--
+-- THE ANSWER WAS NOT READ. Both callers did `local moved = pcall(setTransform,
+-- ...)`, which is `true` for a refusal: `setTransform` answers `false,
+-- 'prop_attached'` rather than raising. And `detach` "leaves the prop at the
+-- server's last coarse parent anchor" -- chest height -- so a refused move is
+-- a crate hanging in the air where the carrier's body last was. The owner saw
+-- exactly that: "quand je lache le props il se remet pas au sol il fly".
+--
+-- `prop_attached` straight after a detach is retried a few times on a thread of
+-- its own; every other refusal is final and goes to the journal.
+local function place(crate, what)
+	if not propsReady() or type(Open77.props.setTransform) ~= 'function' then return end
+	local function once()
+		return hostCall(Open77.props.setTransform, crate.id,
+			{ position = { x = crate.x, y = crate.y, z = crate.z }, yaw = crate.yaw })
+	end
+	local moved, why = once()
+	if moved then return end
+	if why ~= 'prop_attached' then
+		Open77.log.warn(('[hauling] crate %s could not be %s: %s')
+			:format(safe(crate.id), what, safe(why)))
+		return
+	end
+	CreateThread(function()
+		for _ = 1, PLACE_TRIES do
+			Wait(PLACE_RETRY_MS)
+			-- A crate somebody took meanwhile is theirs now, and not ours to move.
+			if crates[crate.id] ~= crate or crate.where ~= Where.GROUND then return end
+			moved, why = once()
+			if moved then return end
+		end
+		Open77.log.warn(('[hauling] crate %s could not be %s: %s')
+			:format(safe(crate.id), what, safe(why)))
+	end)
+end
+
+--- Replaces a crate's prop with a fresh one at `crate.x/y/z/yaw`.
+--
+-- A DETACHED PROP KEEPS FLYING ON THE CLIENT. The owner, twice: "quand je lache le
+-- props il se remet pas au sol il fly". The journal said the server had it on the
+-- floor -- `setTransform` accepted, z 52.50, the spawn height -- and the client kept
+-- drawing it where the detach left it, the carrier's chest. A prop that was never
+-- attached has no such state to carry, so the carried one is removed and a new one
+-- is created on the floor, under a new id the clients are told about.
+--
+-- OUT OF THE REGISTRY BEFORE THE REMOVE, for `retire`'s reason: removing the old
+-- prop raises `onPropAttachmentChanged` and `onPropRemoved` for it, and both
+-- handlers must find nothing under the old id.
+-- @return boolean false when no new prop could be made; the caller falls back
+local function reprop(crate, what)
+	if not propsReady() then return false end
+	local called, id, reason = pcall(Open77.props.create, {
+		model = Access.Model(crate.site),
+		position = { x = crate.x, y = crate.y, z = crate.z },
+		yaw = crate.yaw,
+		bucket = crate.bucket,
+		physics = 'static',
+		collision = true,
+	})
+	if not called or id == nil then
+		Open77.log.warn(('[hauling] crate %s: no fresh prop to be %s (%s)')
+			:format(safe(crate.id), what, safe(called and reason or id)))
+		return false
+	end
+	local old = crate.id
+	crates[old] = nil
+	crate.id = id
+	crates[id] = crate
+	crate.revision = revisionOf(id)
+	if type(Open77.props.remove) == 'function' then pcall(Open77.props.remove, old) end
+	announceGone(old)
+	return true
+end
+
 --- Takes a crate out of whatever it was attached to and stands it back on its point.
 --
 -- PUT BACK AND NOT DELETED, which is the whole difference between a carry that
@@ -216,11 +374,15 @@ end
 -- wherever the coarse detach anchor left it and the point would look occupied by
 -- a crate standing somewhere else.
 local function putBack(crate, reason)
-	if crate.vehicle ~= nil then
-		bedCount[crate.vehicle] = math.max(0, (bedCount[crate.vehicle] or 1) - 1)
-		crate.vehicle = nil
+	dropPose(crate)
+	-- HOME, NOT WHERE IT LAST WAS. A crate somebody dropped has moved off its
+	-- point, and `crate.x` is where it lies; its point is still the config's.
+	local point = Access.Point(crate.site, crate.index)
+	if point ~= nil then
+		crate.x, crate.y, crate.z, crate.yaw = point.x, point.y, point.z, point.yaw
 	end
-	if propsReady() and type(Open77.props.detach) == 'function' then
+	local fresh = reprop(crate, 'stood back up')
+	if not fresh and propsReady() and type(Open77.props.detach) == 'function' then
 		-- Read, like the `setTransform` below it already is: a refused detach
 		-- leaves the crate on the carrier's body while this function goes on to
 		-- stand it back up on its point and announce it as on the ground.
@@ -230,19 +392,13 @@ local function putBack(crate, reason)
 				:format(safe(crate.id), safe(let and why or detached)))
 		end
 	end
-	if propsReady() and type(Open77.props.setTransform) == 'function' then
-		local moved, why = pcall(Open77.props.setTransform, crate.id,
-			{ position = { x = crate.x, y = crate.y, z = crate.z }, yaw = crate.yaw })
-		if not moved then
-			Open77.log.warn(('[hauling] crate %s could not be stood back up: %s')
-				:format(safe(crate.id), safe(why)))
-		end
-	end
 	crate.where = Where.GROUND
 	crate.owner = nil
 	crate.step = nil
 	crate.claimedAtMs = nil
 	crate.pendingVehicle = nil
+	crate.droppedAtMs = nil
+	if not fresh then place(crate, 'stood back up') end
 	crate.revision = revisionOf(crate.id) or crate.revision
 	announce(crate)
 	Open77.log.info(('[hauling] crate %s back on %s point %d: %s'):format(safe(crate.id),
@@ -256,9 +412,7 @@ local function retire(crate, reason)
 	-- crate up here: a crate still present when the attachment event lands would be
 	-- stood back up on its point a millisecond after being paid for and removed.
 	crates[crate.id] = nil
-	if crate.vehicle ~= nil then
-		bedCount[crate.vehicle] = math.max(0, (bedCount[crate.vehicle] or 1) - 1)
-	end
+	dropPose(crate)
 	local points = cooling[crate.site]
 	if points == nil then
 		points = {}
@@ -342,6 +496,87 @@ local function freePoints(siteKey, atMs)
 	return free
 end
 
+-- ── the sellers ─────────────────────────────────────────────────────────────
+
+--- The sellers as a client is sent them.
+local function sellerList()
+	local list = {}
+	for key, seller in pairs(sellers) do
+		list[#list + 1] = { npc = key, site = seller.site, dropoff = seller.dropoff }
+	end
+	table.sort(list, function(left, right) return left.npc < right.npc end)
+	return list
+end
+
+-- `site\1dropoff` of every drop-off that has a seller, and of every one whose
+-- seller was refused -- the second so the refusal is logged once, not every pass.
+local placed, refusedSellers = {}, {}
+
+--- Puts a seller NPC on every drop-off of every usable site that names one and
+--- has none yet.
+--
+-- RUN ON EVERY REFILL PASS and not only at boot: a site becomes usable after boot
+-- (an operator's fix, a fresh validation) and must not wait for a restart to be
+-- sold at. A drop-off that has one is skipped, so a pass that finds nothing to do
+-- costs a walk over the config.
+--
+-- `world.npcs`. Passive, silent and immortal: a seller who can be shot is a
+-- drop-off that closes for the session the first time somebody is bored.
+local function spawnSellers()
+	local npcs = Open77.npcs
+	if type(npcs) ~= 'table' or type(npcs.create) ~= 'function' then
+		if not refusedSellers['\0api'] then
+			refusedSellers['\0api'] = true
+			Open77.log.error('[hauling] the NPC API is unavailable; no seller will stand anywhere')
+		end
+		return
+	end
+	local added = false
+	local ai = type(npcs.ai) == 'table' and npcs.ai.tasks or nil
+	local immortal = type(npcs.damage) == 'table' and npcs.damage.immortal or 'invulnerable'
+	for _, siteKey in ipairs(Access.UsableKeys()) do
+		for _, dropoff in ipairs(Access.Dropoffs(siteKey)) do
+			local slot = siteKey .. '\1' .. tostring(dropoff.key)
+			if dropoff.npc ~= nil and not placed[slot] and not refusedSellers[slot] then
+				local called, id, why = pcall(npcs.create, {
+					record = dropoff.npc.record,
+					position = { x = dropoff.x, y = dropoff.y, z = dropoff.z },
+					yaw = dropoff.npc.yaw,
+					bucket = Access.Bucket(siteKey),
+					aiMode = ai,
+					damagePolicy = immortal,
+					behavior = { combatEnabled = false, voiceEnabled = false },
+					despawnWhenUnobserved = false,
+				})
+				if called and id ~= nil then
+					-- A DECIMAL STRING, never a number on the wire: the id is 64-bit
+					-- and a double would hand the client a different NPC.
+					local key = math.type(id) == 'integer' and ('%d'):format(id) or tostring(id)
+					sellers[key] = { id = id, site = siteKey, dropoff = dropoff.key }
+					placed[slot] = true
+					added = true
+				else
+					refusedSellers[slot] = true
+					Open77.log.error(('[hauling] no seller at %s/%s (%s): %s'):format(
+						safe(siteKey), safe(dropoff.key), safe(dropoff.npc.record),
+						safe(called and why or id)))
+				end
+			end
+		end
+	end
+	if not added then return end
+	local list = sellerList()
+	for player in pairs(told) do TriggerClientEvent(M.Event.SELLERS, player, list) end
+end
+
+--- Takes every seller out of the world.
+local function removeSellers()
+	if type(Open77.npcs) == 'table' and type(Open77.npcs.remove) == 'function' then
+		for _, seller in pairs(sellers) do pcall(Open77.npcs.remove, seller.id) end
+	end
+	sellers, placed, refusedSellers = {}, {}, {}
+end
+
 --- One refill-and-reap pass.
 --
 -- REAP FIRST, SPAWN SECOND, and in that order on purpose: a claim that expired
@@ -356,6 +591,7 @@ local function refillOnce()
 		local crate = crates[stale[index]]
 		if crate ~= nil then
 			local was = crate.owner
+			dropPose(crate)
 			Claim.Release(crates, crate.id)
 			crate.pendingVehicle = nil
 			announce(crate)
@@ -364,6 +600,17 @@ local function refillOnce()
 			if was ~= nil then answer(was, false, 'claim_expired') end
 		end
 	end
+
+	-- A DROPPED CRATE LEFT LYING still holds its point; after DROP_RETURN_MS it
+	-- goes home so an alley does not keep a point out of the job for good.
+	local lying = {}
+	for _, crate in pairs(crates) do
+		if crate.where == Where.GROUND and crate.droppedAtMs ~= nil
+			and at - crate.droppedAtMs >= Access.DROP_RETURN_MS then
+			lying[#lying + 1] = crate
+		end
+	end
+	for index = 1, #lying do putBack(lying[index], 'left where it was dropped') end
 
 	local ceiling = Access.MAX_CRATES
 	for _, siteKey in ipairs(Access.UsableKeys()) do
@@ -393,6 +640,8 @@ local function refillOnce()
 			allowance = allowance - 1
 		end
 	end
+
+	spawnSellers()
 
 	for _, windows in ipairs({ requestWindows, logWindows }) do
 		for player, window in pairs(windows) do
@@ -511,6 +760,12 @@ local function beginPickup(player, propId)
 	local granted, why = Claim.Take(crates, propId, player, Step.PICKUP, revision, OPX.Now())
 	if not granted then return false, why end
 
+	-- Kneel at the crate for the length of the bar. A pose is a host call and the
+	-- claim is already won, so it cannot reopen the race; `carryPose` replaces it
+	-- when the bar completes, and every way the claim ends stops it.
+	local kneel = Access.PickupPose(crate.site)
+	if kneel ~= '' then crate.pose = playPose(player, kneel, true) end
+
 	announce(crate)
 	return true
 end
@@ -534,55 +789,243 @@ local function beginLoad(player, vehicleId)
 	return true
 end
 
---- Begins the deliver bar on a crate that is in a vehicle standing at a drop-off.
-local function beginDeliver(player, propId)
-	local crate = crates[propId]
-	if crate == nil then return false, 'no_such_crate' end
-	if crate.where ~= Where.LOADED or crate.vehicle == nil then return false, 'not_loaded' end
-
-	local vehicle = vehicleAt(crate.vehicle)
-	if vehicle == nil then return false, 'no_such_vehicle' end
+--- Puts the carried crate down in front of the carrier, where anyone may take it.
+--
+-- The owner: "pendant qu'on carry ont peux faire x pour la drop".
+--
+-- THE SERVER HAS NO HEADING FOR A PLAYER, only a position, so the client's yaw
+-- says which way is "in front". It moves the crate DROP_DISTANCE metres at most
+-- from where the SERVER reads the player, so a forged yaw buys less than a metre.
+--
+-- THE STATE FLIPS BEFORE THE DETACH. `Open77.props.detach` raises
+-- `onPropAttachmentChanged`, and that handler stands a CARRIED crate back on its
+-- point -- which, reached first, would send a dropped crate home instead.
+-- @return boolean
+-- @return string|nil
+local function dropCrate(player, yaw, groundZ)
+	local crate = Claim.HeldBy(crates, player)
+	if crate == nil or crate.where ~= Where.CARRIED then return false, 'not_carrying' end
+	-- NOT WHILE A BAR RUNS. The owner: "pendant qu'on load dans la voiture le
+	-- joueur peux plus faire x". The client stops offering it; this is the rule.
+	if crate.step ~= nil then return false, 'busy' end
 	local here = standing(player)
 	if here == nil then return false, 'no_position' end
-	local gap = Access.GapSquared(here, vehicle)
-	if gap == nil or gap > Access.VEHICLE_REACH_SQ then return false, 'too_far' end
 
-	-- THE VEHICLE is what has to be at the drop-off, not the player: the crate is
-	-- in the bed, and a driver who parks on the pad and walks the last two metres
-	-- has delivered it.
-	local dropoff = nil
-	for _, row in ipairs(Access.Dropoffs(crate.site)) do
-		local reach = Access.GapSquared(vehicle, row)
-		if reach ~= nil and reach <= row.radius * row.radius then
-			dropoff = row
-			break
+	-- THE CLIENT'S GROUND, BELIEVED WITHIN DROP_GROUND_SLACK OF THE SERVER'S
+	-- READING. The server has no physics world, so the floor under the drop is
+	-- the client's `Open77.world.groundZ`; a value further off than a step or a
+	-- kerb is a forged or a missed ray, and the player's own height is used.
+	local z = here.z
+	groundZ = Access.FiniteNumber(groundZ)
+	if groundZ ~= nil and math.abs(groundZ - here.z) <= DROP_GROUND_SLACK then z = groundZ end
+
+	local x, y = here.x, here.y
+	yaw = Access.FiniteNumber(yaw)
+	if yaw ~= nil then
+		-- Cyberpunk's forward for a yaw in degrees: 0 faces +Y, and it turns
+		-- towards -X as the yaw grows.
+		local radians = math.rad(yaw)
+		x = x - math.sin(radians) * Access.DROP_DISTANCE
+		y = y + math.cos(radians) * Access.DROP_DISTANCE
+	end
+
+	dropPose(crate)
+	crate.where = Where.GROUND
+	crate.owner = nil
+	crate.step = nil
+	crate.claimedAtMs = nil
+	crate.pendingVehicle = nil
+	crate.x, crate.y, crate.z, crate.yaw = x, y, z, yaw or crate.yaw
+	crate.droppedAtMs = OPX.Now()
+
+	if not reprop(crate, 'put down') then
+		if propsReady() and type(Open77.props.detach) == 'function' then
+			local let, detached, why = pcall(Open77.props.detach, crate.id)
+			if not let or detached == false then
+				Open77.log.warn(('[hauling] crate %s would not come off the body: %s')
+					:format(safe(crate.id), safe(let and why or detached)))
+			end
 		end
+		place(crate, 'put down')
+		crate.revision = revisionOf(crate.id) or crate.revision
 	end
-	if dropoff == nil then return false, 'not_at_dropoff' end
-
-	-- The crate has no owner while it is in a bed -- loading releases it so the
-	-- loader can go and fetch another -- so the deliverer takes it for the length
-	-- of the bar. `Restamp` refuses a stranger, so it is claimed and then stamped.
-	crate.owner = player
-	local ok, why = Claim.Restamp(crates, crate.id, player, Step.DELIVER, OPX.Now())
-	if not ok then
-		crate.owner = nil
-		return false, why
-	end
-	crate.pendingDropoff = dropoff.key
+	announce(crate)
+	Open77.log.info(('[hauling] crate %s put down by player %d at %.2f, %.2f, %.2f')
+		:format(safe(crate.id), player, crate.x, crate.y, crate.z))
 	return true
 end
 
 --- The bar a begun step asks the client to draw.
-local function runBar(player, crate)
+local function runBar(player, step, id, site)
 	TriggerClientEvent(M.Event.RUN, player, {
-		id = crate.id, step = crate.step, durationMs = Access.StepMs(crate.step),
-		site = crate.site,
+		id = id, step = step, durationMs = Access.StepMs(step), site = site,
 	})
+end
+
+--- The inventory contract, when it can hold and sell trunk items.
+local function inventoryApi()
+	local api = OPX.Api.Get('inventory')
+	if api == nil or type(api.AddToTrunk) ~= 'function' then return nil end
+	return api
+end
+
+--- Maps an inventory refusal onto a code this module has a sentence for. The
+--- inventory's own word goes to the journal.
+local function trunkRefusal(code)
+	if code == 'too_heavy' or code == 'no_room' then return 'trunk_full' end
+	if code == 'not_yours' then return 'not_your_trunk' end
+	if code == 'locked' then return 'trunk_locked' end
+	if code == 'no_storage' then return 'no_trunk' end
+	if code == 'no_vehicle' then return 'no_such_vehicle' end
+	return 'trunk_refused'
+end
+
+--- Every vehicle standing inside a drop-off, in the player's bucket.
+-- `Open77.vehicles.all` is a server read of its own registry and does not yield.
+local function vehiclesAt(dropoff, bucket)
+	if type(Open77.vehicles) ~= 'table' or type(Open77.vehicles.all) ~= 'function' then
+		return {}
+	end
+	local read, list = pcall(Open77.vehicles.all, bucket)
+	if not read or type(list) ~= 'table' then return {} end
+	local out = {}
+	for _, snapshot in ipairs(list) do
+		if type(snapshot) == 'table' and snapshot.id ~= nil then
+			local at = type(snapshot.position) == 'table' and snapshot.position or snapshot
+			local gap = Access.GapSquared(at, dropoff)
+			if gap ~= nil and gap <= dropoff.radius * dropoff.radius then
+				out[#out + 1] = snapshot.id
+			end
+		end
+	end
+	return out
+end
+
+--- Where this site's crates are for a sale: the player's bag, then every trunk
+--- parked inside the drop-off that the player may open. YIELDS.
+-- @return table[] `{ vehicle = id|nil, count = n }`, only the non-empty ones
+-- @return integer the total
+local function stockFor(player, site, dropoff, bucket)
+	local inventory = inventoryApi()
+	if inventory == nil then return {}, 0 end
+	local tag = { site = site }
+	local out, total = {}, 0
+
+	local bag = inventory.GetItemCount(player, Access.ITEM, tag)
+	if type(bag) == 'table' and bag.ok and (bag.value or 0) > 0 then
+		out[#out + 1] = { vehicle = nil, count = bag.value }
+		total = total + bag.value
+	end
+	-- A trunk the player may not open (TRUNK_OWNER_ONLY) answers `not_yours` and is
+	-- skipped: selling out of a stranger's boot is the theft the screen refuses.
+	for _, vehicleId in ipairs(vehiclesAt(dropoff, bucket)) do
+		local held = inventory.CountInTrunk(vehicleId, Access.ITEM, tag, player)
+		if type(held) == 'table' and held.ok and (held.value or 0) > 0 then
+			out[#out + 1] = { vehicle = vehicleId, count = held.value }
+			total = total + held.value
+		end
+	end
+	return out, total
+end
+
+--- Begins the sale bar at a seller NPC.
+local function beginSale(player, npcId)
+	local whole = math.type(npcId) == 'integer' and npcId or nil
+	local seller = sellers[whole ~= nil and ('%d'):format(whole) or tostring(npcId)]
+	if seller == nil then return false, 'no_such_seller' end
+	if Claim.HeldBy(crates, player) ~= nil then return false, 'already_carrying' end
+	if inventoryApi() == nil then return false, 'no_inventory' end
+
+	local allowed, refusal = mayWork(player, seller.site)
+	if not allowed then return false, refusal end
+
+	local dropoff = Access.Dropoff(seller.site, seller.dropoff)
+	if dropoff == nil then return false, 'no_such_seller' end
+	local here = standing(player)
+	if here == nil then return false, 'no_position' end
+	local gap = Access.GapSquared(here, dropoff)
+	if gap == nil or gap > Access.VEHICLE_REACH_SQ then return false, 'too_far' end
+
+	local _, total = stockFor(player, seller.site, dropoff, here.bucket)
+	if total <= 0 then return false, 'no_crates' end
+
+	sales[player] = { site = seller.site, dropoff = seller.dropoff, startedAtMs = OPX.Now() }
+	runBar(player, Step.DELIVER, tostring(npcId), seller.site)
+	return true
+end
+
+--- Completes a sale: takes every crate of the site within reach and pays for them.
+--
+-- THE RECORD IS CLEARED BEFORE THE FIRST YIELD. Every inventory call below yields,
+-- and a second FINISH arriving during one must find nothing to complete, or the
+-- same crates are counted and paid twice.
+local function completeSale(player, sale)
+	sales[player] = nil
+	if Claim.TooSoon({ claimedAtMs = sale.startedAtMs }, OPX.Now(),
+		Access.StepMs(Step.DELIVER), Access.CLOCK_TOLERANCE_MS) then
+		return false, 'too_soon'
+	end
+
+	local dropoff = Access.Dropoff(sale.site, sale.dropoff)
+	if dropoff == nil then return false, 'no_such_seller' end
+	local here = standing(player)
+	if here == nil then return false, 'no_position' end
+	local gap = Access.GapSquared(here, dropoff)
+	if gap == nil or gap > Access.VEHICLE_REACH_SQ then return false, 'too_far' end
+
+	local character = OPX.Api.Get('character')
+	if character == nil or type(character.AddMoney) ~= 'function' then
+		return false, 'no_character'
+	end
+	local inventory = inventoryApi()
+	if inventory == nil then return false, 'no_inventory' end
+
+	local tag = { site = sale.site }
+	local stock = stockFor(player, sale.site, dropoff, here.bucket)
+	local taken, sold = {}, 0
+	for _, source in ipairs(stock) do
+		local removed = source.vehicle == nil
+			and inventory.RemoveItem(player, Access.ITEM, source.count, tag)
+			or inventory.RemoveFromTrunk(source.vehicle, Access.ITEM, source.count, tag, player)
+		if type(removed) == 'table' and removed.ok then
+			taken[#taken + 1] = source
+			sold = sold + source.count
+		end
+	end
+	if sold <= 0 then return false, 'no_crates' end
+
+	--- Puts back what was taken, when the pay refused.
+	local function restore()
+		for _, source in ipairs(taken) do
+			if source.vehicle == nil then
+				inventory.AddItem(player, Access.ITEM, source.count, tag)
+			else
+				inventory.AddToTrunk(source.vehicle, Access.ITEM, source.count, tag)
+			end
+		end
+	end
+
+	local pay = Access.Pay(sale.site) * sold
+	local called, paid, why = pcall(character.AddMoney, player, Access.CURRENCY, pay,
+		('hauling:%s:%s'):format(tostring(sale.site), tostring(dropoff.key)))
+	if not called or paid ~= true then
+		Open77.log.warn(('[hauling] player %d sold %d crate(s) at %s and was not paid: %s')
+			:format(player, sold, safe(dropoff.key), safe(called and why or paid)))
+		restore()
+		return false, 'not_paid'
+	end
+	Open77.log.info(('[hauling] player %d sold %d crate(s) of %s at %s for %d')
+		:format(player, sold, safe(sale.site), safe(dropoff.key), pay))
+	OPX.NotifyLocale(player, 'hauling.paid',
+		{ amount = pay, count = sold, dropoff = dropoff.label }, 'success')
+	return true
 end
 
 --- Completes whatever the player had begun.
 local function complete(player)
+	local sale = sales[player]
+	if sale ~= nil then return completeSale(player, sale) end
+
 	local crate = Claim.HeldBy(crates, player)
 	if crate == nil or crate.step == nil then return false, 'nothing_running' end
 
@@ -597,7 +1040,7 @@ local function complete(player)
 	local step = crate.step
 
 	if step == Step.PICKUP then
-		local carry = Access.Carry()
+		local carry = Access.Carry(crate.site)
 		if carry == nil then return false, 'no_carry_config' end
 		-- The reach is checked AGAIN, because the bar took seconds and the player
 		-- could have walked away during it. The claim is theirs either way; what
@@ -622,6 +1065,7 @@ local function complete(player)
 			-- RELEASED RATHER THAN KEPT. A claim whose attach was refused is a crate
 			-- nobody can see in anybody's hands and that nobody else may take; that
 			-- is strictly worse than the crate standing on its point.
+			dropPose(crate)
 			Claim.Release(crates, crate.id, player)
 			announce(crate)
 			-- THE HOST'S OWN WORDS GO TO THE JOURNAL, NOT TO THE CLIENT. What
@@ -636,6 +1080,13 @@ local function complete(player)
 			return false, 'attach_refused'
 		end
 		crate.where = Where.CARRIED
+		carryPose(crate, player)
+		-- HANDS FULL: whatever they were holding goes away. The owner: "si ont
+		-- porte le truc on puisse pas frapper n'y utiliser un item inv". The
+		-- client blocks drawing it again; the inventory refuses item use.
+		if type(Open77.weapons) == 'table' and type(Open77.weapons.holster) == 'function' then
+			pcall(Open77.weapons.holster, player)
+		end
 		crate.step = nil
 		crate.revision = revisionOf(crate.id) or crate.revision
 		announce(crate)
@@ -650,86 +1101,33 @@ local function complete(player)
 		if here == nil then return false, 'no_position' end
 		local gap = Access.GapSquared(here, vehicle)
 		if gap == nil or gap > Access.VEHICLE_REACH_SQ then return false, 'too_far' end
+		local inventory = inventoryApi()
+		if inventory == nil then return false, 'no_inventory' end
 
-		local n = (bedCount[vehicleId] or 0) + 1
-		local slot = Access.BedSlot(vehicle.record, n)
-		if slot == nil then return false, 'no_bed_slot' end
-
-		-- The bucket is NOT checked here: `Open77.props.attach` refuses a parent in
-		-- another bucket itself, with `invalid_attachment_parent`, and the host's
-		-- own answer is better than a second reading of a bucket the vehicle
-		-- snapshot does not reliably carry.
-		local attached, why = hostCall(Open77.props.attach, crate.id, {
-			parentType = 'vehicle', parentId = vehicleId, bone = '',
-			offset = { x = slot.x, y = slot.y, z = slot.z },
-			rotation = { x = 0.0, y = 0.0, z = slot.yaw },
-		}, crate.revision)
-		if not attached then
-			-- As on the pickup path: the host's reason is for the operator.
-			Open77.log.warn(('[hauling] crate %s would not attach to vehicle %s: %s')
-				:format(safe(crate.id), safe(vehicleId), safe(why)))
-			return false, 'attach_refused'
-		end
-		bedCount[vehicleId] = n
-		crate.where = Where.LOADED
-		crate.vehicle = vehicleId
-		crate.pendingVehicle = nil
+		-- THE CRATE BECOMES AN ITEM IN THE TRUNK. The owner: "des qu'il pose dans
+		-- le vehicule cela deviens un item".
+		--
+		-- THE STEP COMES OFF BEFORE THE YIELD. `AddToTrunk` loads an owned trunk by
+		-- plate and yields; a second FINISH arriving meanwhile must answer
+		-- `nothing_running` rather than add a second item. The crate stays CARRIED
+		-- and theirs, so a refusal leaves it in their hands where it was.
 		crate.step = nil
 		crate.claimedAtMs = nil
-		-- OWNERSHIP IS RELEASED BY LOADING, on purpose: the crate is in a bed now,
-		-- the loader's hands are free to fetch another, and whoever drives it to
-		-- the drop-off is the one who delivers it. That is the convoy, and it comes
-		-- out of this one line.
-		crate.owner = nil
-		crate.revision = revisionOf(crate.id) or crate.revision
-		announce(crate)
-		return true
-	end
-
-	if step == Step.DELIVER then
-		local dropoff = Access.Dropoff(crate.site, crate.pendingDropoff)
-		if dropoff == nil then return false, 'not_at_dropoff' end
-		local vehicle = vehicleAt(crate.vehicle)
-		if vehicle == nil then return false, 'no_such_vehicle' end
-		local reach = Access.GapSquared(vehicle, dropoff)
-		if reach == nil or reach > dropoff.radius * dropoff.radius then
-			return false, 'not_at_dropoff'
+		crate.pendingVehicle = nil
+		local added = inventory.AddToTrunk(vehicleId, Access.ITEM, 1, { site = crate.site },
+			player)
+		if type(added) ~= 'table' or not added.ok then
+			local code = type(added) == 'table' and added.error or 'raised'
+			Open77.log.info(('[hauling] crate %s refused by the trunk of %s: %s')
+				:format(safe(crate.id), safe(vehicleId), safe(code)))
+			return false, trunkRefusal(code)
 		end
-
-		local pay = Access.Pay(crate.site)
-		local character = OPX.Api.Get('character')
-		if character == nil or type(character.AddMoney) ~= 'function' then
-			return false, 'no_character'
+		-- The item is in. The prop goes, whatever happened to the carry during the
+		-- yield: a crate put back on its point meanwhile would otherwise exist twice.
+		if crates[crate.id] == crate then
+			retire(crate, ('loaded into the trunk of %s by player %d')
+				:format(tostring(vehicleId), player))
 		end
-		-- NOTHING BETWEEN THE PAY AND THE RETIRE MAY YIELD. The rule
-		-- `claim.lua`'s header states for `Claim.Take` applies to this window for
-		-- the same reason and with a worse consequence: `AddMoney` is the last
-		-- yield, and from the line after it to `retire` the crate is still
-		-- claimed, still owned, and already paid for. A yield in there -- a log
-		-- that awaits, a notify that round-trips, a second contract call -- lets
-		-- another `FINISH` for the same crate through the `TooSoon` window and
-		-- pays the same delivery twice. `retire` is the only thing that takes the
-		-- crate out of reach, so it must be the very next thing that happens.
-		--
-		-- PAID BEFORE THE CRATE IS RETIRED, and that order is deliberate. The
-		-- other one loses a crate and pays nothing when the money call refuses,
-		-- and there is then nothing left to retry with -- the crate is gone and
-		-- so is the evidence.
-		--
-		-- `AddMoney` answers `(boolean, localeKey)` and NOT a Result, which is the
-		-- convention this contract alone uses; `pcall` in front of it because a
-		-- non-table answer from a foreign contract raises at the call site, and the
-		-- one place that must not happen is between a delivery and its pay.
-		local called, paid, why = pcall(character.AddMoney, player, Access.CURRENCY, pay,
-			('hauling:%s:%s'):format(tostring(crate.site), tostring(dropoff.key)))
-		if not called or paid ~= true then
-			Open77.log.warn(('[hauling] player %d delivered to %s and was not paid: %s')
-				:format(player, safe(dropoff.key), safe(called and why or paid)))
-			return false, 'not_paid'
-		end
-		retire(crate, ('delivered to %s by player %d'):format(tostring(dropoff.key), player))
-		OPX.NotifyLocale(player, 'hauling.paid',
-			{ amount = pay, dropoff = dropoff.label }, 'success')
 		return true
 	end
 
@@ -738,21 +1136,16 @@ end
 
 --- Ends whatever the player had begun, without completing it.
 local function abort(player, reason)
+	if sales[player] ~= nil then
+		sales[player] = nil
+		return
+	end
 	local crate = Claim.HeldBy(crates, player)
 	if crate == nil then return end
 	if crate.where == Where.CLAIMED then
+		dropPose(crate)
 		Claim.Release(crates, crate.id, player)
 		crate.pendingVehicle = nil
-		announce(crate)
-		return
-	end
-	if crate.where == Where.LOADED then
-		-- A deliver bar that ended: hand the crate back to the bed rather than to
-		-- the player, which is where it physically still is.
-		crate.owner = nil
-		crate.step = nil
-		crate.claimedAtMs = nil
-		crate.pendingDropoff = nil
 		announce(crate)
 		return
 	end
@@ -764,37 +1157,28 @@ local function abort(player, reason)
 end
 
 --- Forgets a departing player and stands their crate back up.
---
--- A LOADED CRATE IS LEFT ALONE. It is in a vehicle, not in their hands, and the
--- truck it is in is still there for whoever drives it. Only a reservation and a
--- carry belong to the connection that left.
+-- Crates they loaded are trunk items by now and belong to the trunk.
 local function forget(playerId)
 	local player = tonumber(playerId) or 0
 	if player <= 0 then return end
 	requestWindows[player] = nil
 	logWindows[player] = nil
 	told[player] = nil
+	sales[player] = nil
 
+	-- COLLECTED FIRST: `putBack` re-keys a crate under a fresh prop id, and adding
+	-- a key to a table `pairs` is walking is undefined -- `invalid key to 'next'`.
+	local theirs = {}
 	for _, crate in pairs(crates) do
-		if crate.owner == player then
+		if crate.owner == player then theirs[#theirs + 1] = crate end
+	end
+	for _, crate in ipairs(theirs) do
+		do
 			if crate.where == Where.CARRIED then
 				putBack(crate, 'the carrier disconnected')
-			elseif crate.where == Where.LOADED then
-				-- ONLY THE NAME COMES OFF, and `Claim.Release` is deliberately not
-				-- used: it sets `where` back to `ground`, which for a crate bolted
-				-- into a truck's bed is a lie the refill pass then acts on -- it would
-				-- count the crate's point as occupied by a crate that is three
-				-- districts away, and the drop-off row would vanish from the driver's
-				-- eye mid-run. A delivery bar owns the crate only for its own length.
-				crate.owner = nil
-				crate.step = nil
-				crate.claimedAtMs = nil
-				crate.pendingDropoff = nil
-				announce(crate)
 			else
 				Claim.Release(crates, crate.id, player)
 				crate.pendingVehicle = nil
-				crate.pendingDropoff = nil
 				announce(crate)
 			end
 		end
@@ -834,7 +1218,7 @@ end
 local function state()
 	local sites = {}
 	for _, siteKey in ipairs(Access.UsableKeys()) do
-		sites[siteKey] = { standing = 0, claimed = 0, carried = 0, loaded = 0 }
+		sites[siteKey] = { standing = 0, claimed = 0, carried = 0 }
 	end
 	for _, crate in pairs(crates) do
 		local row = sites[crate.site]
@@ -842,7 +1226,6 @@ local function state()
 			row.standing = row.standing + 1
 			if crate.where == Where.CLAIMED then row.claimed = row.claimed + 1 end
 			if crate.where == Where.CARRIED then row.carried = row.carried + 1 end
-			if crate.where == Where.LOADED then row.loaded = row.loaded + 1 end
 		end
 	end
 	return OPX.Result.Ok({ sites = sites, total = crateCount() })
@@ -851,7 +1234,8 @@ end
 --- Builds the crate registry and declares the operator numbers.
 -- @author dop42
 function M.Init()
-	crates, cooling, bedCount, told = {}, {}, {}, {}
+	crates, cooling, told, sales = {}, {}, {}, {}
+	sellers = {}
 	requestWindows, logWindows = {}, {}
 
 	OPX.Tune.Declare{
@@ -871,6 +1255,7 @@ end
 function M.Api()
 	OPX.Api.Provide('hauling', 1, {
 		State = state,
+		IsCarrying = isCarrying,
 	})
 end
 
@@ -894,6 +1279,7 @@ function M.Start()
 		end
 		told[player] = true
 		sendSnapshot(player)
+		TriggerClientEvent(M.Event.SELLERS, player, sellerList())
 		answer(player, true, nil)
 	end)
 
@@ -919,14 +1305,15 @@ function M.Start()
 		elseif step == Step.LOAD then
 			ok, reason = beginLoad(player, subject)
 		elseif step == Step.DELIVER then
-			ok, reason = beginDeliver(player, subject)
+			ok, reason = beginSale(player, subject)
 		else
 			ok, reason = false, 'unknown_step'
 		end
 
-		if ok then
+		-- A sale runs its own bar; the other two steps run the crate's.
+		if ok and step ~= Step.DELIVER then
 			local crate = Claim.HeldBy(crates, player)
-			if crate ~= nil then runBar(player, crate) end
+			if crate ~= nil then runBar(player, crate.step, crate.id, crate.site) end
 		end
 		answer(player, ok, reason)
 		if not ok and within(logWindows, player, 1, 1000) then
@@ -949,6 +1336,23 @@ function M.Start()
 		end
 	end)
 
+	RegisterNetEvent(M.Event.DROP, function(where)
+		local player = tonumber(source) or 0
+		if player <= 0 then return end
+		if not within(requestWindows, player, REQUESTS_PER_WINDOW, REQUEST_WINDOW_MS) then
+			return answer(player, false, 'rate_limited')
+		end
+		local yaw, groundZ = nil, nil
+		if type(where) == 'number' then
+			yaw = where
+		elseif type(where) == 'table' then
+			if type(where.yaw) == 'number' then yaw = where.yaw end
+			if type(where.z) == 'number' then groundZ = where.z end
+		end
+		local ok, reason = dropCrate(player, yaw, groundZ)
+		answer(player, ok, ok and 'dropped' or reason)
+	end)
+
 	RegisterNetEvent(M.Event.ABORT, function(reason)
 		local player = tonumber(source) or 0
 		if player <= 0 then return end
@@ -966,7 +1370,7 @@ function M.Start()
 		local fresh = integer(revision)
 		if fresh ~= nil then crate.revision = fresh end
 		if current ~= nil then return end
-		if crate.where ~= Where.CARRIED and crate.where ~= Where.LOADED then return end
+		if crate.where ~= Where.CARRIED then return end
 		putBack(crate, ('the attachment ended (%s)'):format(safe(reason)))
 	end)
 
@@ -1001,6 +1405,10 @@ function M.Start()
 		if not ok then
 			Open77.log.error('[hauling] the boot crate probe failed: ' .. tostring(failure))
 		end
+		local placed, why = pcall(spawnSellers)
+		if not placed then
+			Open77.log.error('[hauling] placing the sellers failed: ' .. tostring(why))
+		end
 	end)
 
 	-- `integer|function`, and a function is re-read EVERY PASS, which is the whole
@@ -1024,12 +1432,18 @@ end
 --- Stops the refill pass and stands every carried crate back up.
 -- @author dop42
 function M.Stop()
+	removeSellers()
 	if refillJob ~= nil then
 		OPX.Scheduler.Cancel(refillJob)
 		refillJob = nil
 	end
+	-- Collected first, as in `forget`: `putBack` re-keys the table.
+	local carried = {}
 	for _, crate in pairs(crates) do
-		if crate.where == Where.CARRIED or crate.where == Where.LOADED then
+		if crate.where == Where.CARRIED then carried[#carried + 1] = crate end
+	end
+	for _, crate in ipairs(carried) do
+		do
 			pcall(putBack, crate, 'the resource stopped')
 		end
 	end

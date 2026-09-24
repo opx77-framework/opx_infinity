@@ -424,6 +424,18 @@ server_script "modules/hauling/server/claim.lua"
 server_script "modules/hauling/server/main.lua"
 client_script "modules/hauling/client/main.lua"
 
+-- Vehicle keys. After `vehicles`, whose plate is a key's identity, after
+-- `inventory`, whose bag a key lives in and whose catalogue declares the item,
+-- and after `target`, whose eye carries the lock row -- all three optional and
+-- all three ordered above. Before `admin`, which cuts a key for every vehicle
+-- staff spawn. Needs no permission of its own: `Open77.vehicles.setLocked` is
+-- `world.vehicles` and `isLocked` on the client is `vehicles.read`, both
+-- already declared below.
+shared_script "modules/vehiclekeys/module.lua"
+shared_script "modules/vehiclekeys/locales.lua"
+server_script "modules/vehiclekeys/server/main.lua"
+client_script "modules/vehiclekeys/client/main.lua"
+
 -- Clothing shops. After `appearance`, whose fitting room it opens, and after
 -- `target`, whose eye carries its row -- both are ordered above. Before
 -- `admin`, which stays last.
@@ -610,6 +622,11 @@ permissions {
   "world.environment",
 
   "world.props",
+
+  -- The hauling sellers: one server-owned NPC per drop-off, ALT then sell.
+  -- `open77_permissions world.npcs`: enforced by the server, gates
+  -- `Open77.npcs.create`/`remove`.
+  "world.npcs",
 
   -- `Open77.vfx.play`/`stop`/`catalog` and `Open77.sfx.play` are gated on this
   -- one name, and its refusal is SILENT: the native answers `nil,

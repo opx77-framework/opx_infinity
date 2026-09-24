@@ -103,6 +103,13 @@ function Actions.Use(source, slot)
 	end
 	local may, refusal = Players.MayAct(source)
 	if not may then return false, refusal end
+	-- HANDS FULL. Somebody carrying a hauling crate cannot draw a weapon or use
+	-- an item; asked of the contract by name, so a server without hauling is
+	-- unaffected.
+	local hauling = OPX.Api.Get('hauling')
+	if hauling ~= nil and type(hauling.IsCarrying) == 'function' and hauling.IsCarrying(source) then
+		return false, 'hands_full'
+	end
 
 	local bag, reason = Players.Bag(source)
 	if not bag then return false, reason end
@@ -339,15 +346,22 @@ function Actions.OpenVehicle(source, kind, vehicleId)
 		vehicleId = Common.Integer(vehicleId, 1, math.maxinteger)
 		if not vehicleId then return nil, 'bad_request' end
 		if World.Seat(source) == vehicleId then return nil, 'seated' end
+		-- A LOCKED VEHICLE KEEPS ITS BOOT SHUT, asked before anything is loaded
+		-- so the refusal names the lock rather than the reach it also fails.
+		-- The lock is the host's own bit, never a client's word; see
+		-- `World.TrunkLocked`.
+		if World.TrunkLocked(vehicleId) then return nil, 'locked' end
 	end
 
 	local container, reason = World.VehicleContainer(vehicleId, kind)
 	if not container then return nil, reason end
 
 	-- A BOOT THAT BELONGS TO SOMEBODY ANSWERS TO THEM. Reach and "not sitting in
-	-- it" were the only checks, so a stranger could empty a parked owned car; the
-	-- vehicles module has no lock to consult, so ownership is the whole of the
-	-- rule. Off by configuration for a server that wants theft.
+	-- it" were the only checks, so a stranger could empty a parked owned car.
+	-- The lock above is the second rule now -- a key holder who unlocked the car
+	-- has opened it to whoever is standing there -- and this one still stands
+	-- beside it, because an unlocked owned car is not an invitation. Off by
+	-- configuration for a server that wants theft.
 	--
 	-- The glovebox is exempt: it opens only while SEATED, and somebody sitting in
 	-- the car has already been let into it.

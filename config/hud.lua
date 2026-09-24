@@ -167,16 +167,20 @@ OPX.Config.MODULES.hud = {
 		-- one shows the engine's equipment, ours shows the bag, and they disagree.
 		hubMenu = false,
 
-		-- LEFT TO THE GAME, DELIBERATELY, and each for its own reason.
+		-- HIDDEN ON THE OWNER'S WORD, 2026-09-24: "regarde si ont hide bien tous
+		-- ... sauf la minimap". These three were left to the game on purpose, and
+		-- the reasons still stand, so they are written down for whoever reverses it:
 		--
-		-- `crosshair` is how a player aims. Hiding it is not a style choice, it
-		-- is taking away the weapon's usability.
-		crosshair = true,
-		-- `scanner` is real gameplay and we replace nothing it does.
-		scanner = true,
-		-- `phone` is the one genuinely open question. It is the vanilla contacts
-		-- list, which is single-player content -- but it is also a screen players
-		-- reach for, and nothing here replaces it yet. Shown until something does.
-		phone = true,
+		-- `crosshair` is how a player aims; with it hidden a weapon is fired blind.
+		-- `scanner` also REFUSES scanner activation, not just the overlay (the
+		-- platform's own note) -- and the multiplayer policy already refuses it.
+		-- `phone` is the vanilla contacts row, also already off in multiplayer.
+		crosshair = false,
+		scanner = false,
+		phone = false,
+
+		-- ANY COMPONENT NOT NAMED HERE IS HIDDEN. `modules/hud` walks the build's
+		-- own `Open77.hud.components()`, so one the platform adds later is covered
+		-- without an edit here. Name it `true` to leave it to the game.
 	},
 }

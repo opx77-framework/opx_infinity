@@ -174,6 +174,25 @@ local function spawnFor(source, raw, owner, entry, event)
 	spawned[vehicleId] = { owner = owner }
 	audit(source, event, true, owner, ('%s %s'):format(tostring(vehicleId), entry.record))
 	inform(source, owner, 'admin.toast.vehicle', { label = entry.label })
+
+	-- THE KEY COMES WITH THE CAR, to whoever the car was left beside: the operator
+	-- for a spawn, the player for a give. A staff vehicle has no plate, so the keys
+	-- module mints one that lives exactly as long as this vehicle does. A key that
+	-- could not be cut is logged and costs nothing else -- the car is out, and
+	-- `opx.admin.vehicle.key` cuts another.
+	--
+	-- ON A THREAD: the bag write can yield, and this runs inside the pcall that
+	-- guards every command handler, which a yield does not cross.
+	local keys = Server.Contract('vehiclekeys')
+	if keys ~= nil then
+		CreateThread(function()
+			local cut = keys.GiveFor(owner, vehicleId, entry.label)
+			if type(cut) ~= 'table' or not cut.ok then
+				Open77.log.warn(('[admin] %s was spawned for %d with no key: %s'):format(
+					tostring(vehicleId), owner, tostring(type(cut) == 'table' and cut.error or cut)))
+			end
+		end)
+	end
 	answer(source, raw, true, 'admin.done.spawned',
 		{ vehicle = tostring(vehicleId), label = entry.label, id = owner })
 end
@@ -369,6 +388,41 @@ function Vehicles.Register()
 				('%s %s'):format(tostring(vehicleId), seated and '' or tostring(reason)))
 			if not seated then return refuse(source, raw, 'refused', { reason = tostring(reason) }) end
 			answer(source, raw, true, 'admin.done.entered', { vehicle = tostring(vehicleId) })
+		end,
+	})
+
+	-- THE OWNER: "avant le menu ou alt on peut se donner la clé du véhicule
+	-- précis". One command, and both surfaces end in it: the eye row sends the id
+	-- of the vehicle it landed on, the menu row sends `near`. Either way the
+	-- vehicle is resolved HERE -- a typed id must name a live vehicle, `near` is
+	-- the seat and then the nearest in the operator's own bucket -- and its plate
+	-- is the keys module's answer about that vehicle. There is no plate argument
+	-- to forge, because there is no plate argument.
+	Server.Command(Command.VEHICLE_KEY, {
+		help = 'admin.help.vehicleKey',
+		params = { { name = 'vehicleId|near', help = 'admin.help.vehicleTarget', optional = true } },
+		inGame = true,
+		handler = function(source, args, raw)
+			if not available() then return refuse(source, raw, 'vehicles_unavailable') end
+			local keys = Server.Contract('vehiclekeys')
+			if keys == nil then return refuse(source, raw, 'keys_unavailable') end
+			local vehicleId = vehicleOf(source, raw, args[1] or 'near')
+			if vehicleId == nil then return end
+			-- On a thread, for the reason `spawnFor` gives: the bag write yields.
+			CreateThread(function()
+				local cut = keys.GiveFor(source, vehicleId)
+				local ok = type(cut) == 'table' and cut.ok == true
+				audit(source, 'admin.vehicle.key', ok, nil, ('%s %s'):format(tostring(vehicleId),
+					ok and cut.value.plate or tostring(type(cut) == 'table' and cut.error or cut)))
+				if not ok then
+					refuse(source, raw, 'refused',
+						{ reason = locale(type(cut) == 'table' and cut.error or 'vehiclekeys.unavailable',
+							{ label = tostring(vehicleId) }) })
+					return
+				end
+				answer(source, raw, true, 'admin.done.key',
+					{ vehicle = tostring(vehicleId), label = cut.value.label })
+			end)
 		end,
 	})
 

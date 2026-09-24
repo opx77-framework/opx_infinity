@@ -969,6 +969,9 @@ SCREENS.vehicles = function()
 		icon(command('repairVisual', 'admin.menu.repairVisual',
 			{ Command.VEHICLE_REPAIR, 'near', 'visual' }), 'tool'),
 		icon(command('enter', 'admin.menu.enter', { Command.VEHICLE_ENTER, 'near' }), 'door'),
+		-- The key to the vehicle the operator sits in, else the nearest one: the
+		-- same `near` every row in this band means, resolved on the server.
+		icon(command('key', 'admin.menu.vehicleKey', { Command.VEHICLE_KEY, 'near' }), 'key'),
 	}
 	local flags = {}
 	for _, flag in ipairs(M.Section('VEHICLES').FLAGS or {}) do
