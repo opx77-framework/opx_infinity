@@ -505,16 +505,134 @@ function Response.Apply(citizenId, playerId, stage)
 		--- Stands one trooper, and records what happened either way.
 		-- A local rather than a loop because the air insertion stands its squad
 		-- from a callback, seconds after this function has returned.
-		local function stand(at2, index)
+		-- @param at2 table where the body is to stand
+		-- @param index number which trooper of the config's list
+		-- @param where table|nil where to CREATE it, when that is not `at2`: a
+		--   body that boards is created at the hull, so it is never seen on the
+		--   street before it is inside
+		-- @return string|nil the id
+		local function stand(at2, index, where)
 			local record = maxtac.Troopers[index]
-			if record == nil then return end
+			if record == nil then return nil end
 			attempted = attempted + 1
-			local id, reason = officer(record, at2, facing(at2, at), at.bucket, held, playerId,
-				divisionGroup(division))
+			local id, reason = officer(record, where or at2, facing(at2, at), at.bucket, held,
+				playerId, divisionGroup(division))
 			if id == nil then
 				held.refused[#held.refused + 1] = ('%s:%s'):format(record, tostring(reason))
 			else
 				held.npcs[#held.npcs + 1] = id
+			end
+			return id
+		end
+
+		--- Puts one body down where it was going to stand all along.
+		-- The fallback for a seat the host refused, and for a body created at
+		-- the hull: without it a refused mount is a trooper falling in mid-air
+		-- beside the aircraft rather than a squad on the ground.
+		local function land(id, at2)
+			local npcs = Open77 and Open77.npcs
+			if type(npcs) ~= 'table' or type(npcs.setTransform) ~= 'function' then return end
+			pcall(npcs.setTransform, id, {
+				position = { x = at2.x, y = at2.y, z = at2.z },
+				yaw = facing(at2, at),
+			})
+		end
+
+		-- The seats a squad rides in, as the NPC task wants them: the FiveM
+		-- NUMBERS, not the canonical `seat_*` names. `npcs.tasks.enterVehicle`
+		-- parses its own short alias list and refuses `seat_front_right`
+		-- outright, while every read the platform makes reports the canonical
+		-- spelling -- so the translation lives here, once, and the config keeps
+		-- the canonical names it can be checked against.
+		local RIDE_SEAT = { seat_front_left = -1, seat_front_right = 0, seat_back_left = 1,
+			seat_back_right = 2 }
+		-- THE AIRCRAFT'S OWN SEATS, NOT THE CREW DOOR'S. The two lists are not the
+		-- same and must not be: `BOARDING.SEATS` is the order a PLAYER crew fills,
+		-- with the pilot's seat deliberately left out because a pilot reaches for
+		-- it, while a squad of four bots has no such courtesy to keep and four
+		-- seats to fill. Seating the squad from the crew list left the last
+		-- trooper on the street beside an empty front-left seat.
+		local rideSeats = {}
+		for _, seat in ipairs(M.Law.Seats) do
+			local number = RIDE_SEAT[seat]
+			if number ~= nil then rideSeats[#rideSeats + 1] = number end
+		end
+
+		-- The bodies of this response, by the config's own order, and which of
+		-- them took a seat. Both are filled from the aircraft's callbacks, which
+		-- run seconds after this function has returned.
+		local troopers, seated = {}, {}
+
+		--- Puts the squad aboard, as the descent begins.
+		--
+		-- WHY THIS MOMENT. `npcs.tasks.enterVehicle` is executed by the client
+		-- that replicates the body, and that client can only mount into a
+		-- vehicle it has already STREAMED -- `NpcReplication.cpp`'s own refusal
+		-- is `vehicle_not_streamed`. The bottom of the approach is the first
+		-- point at which the hull is inside a watching player's interest, so it
+		-- is the first point a seat can be asked for at all.
+		-- @param avId string the airframe's id
+		-- @param drop table the point it will drop the squad at
+		-- @return number how many bodies are inside it
+		local function takeSeats(avId, drop)
+			local npcs = Open77 and Open77.npcs
+			local tasks = npcs and npcs.tasks
+			local contract = Open77 and Open77.vehicles or nil
+			local hull = contract ~= nil and type(contract.get) == 'function'
+				and contract.get(avId) or nil
+			local where = type(hull) == 'table' and hull or drop
+			local aboard = 0
+			for index = 1, math.min(placeable, #rideSeats) do
+				local at2 = bearing(drop, index, placeable, 3.5)
+				local id = stand(at2, index, where)
+				troopers[index] = id
+				if id ~= nil then
+					local mounted, why = nil, 'npcs.tasks.enterVehicle is unavailable'
+					if type(tasks) == 'table' and type(tasks.enterVehicle) == 'function' then
+						local ran, taskId, reason = pcall(tasks.enterVehicle, id, avId,
+							rideSeats[index], { warp = true })
+						mounted = ran and taskId
+						if mounted == nil then
+							why = ran and tostring(reason or 'refused') or tostring(taskId)
+						end
+					end
+					if mounted ~= nil then
+						seated[index] = true
+						aboard = aboard + 1
+					else
+						held.refused[#held.refused + 1] = ('mount:%d:%s'):format(index, tostring(why))
+						land(id, at2)
+					end
+				end
+			end
+			if aboard > 0 then
+				Open77.log.info(('[ncpd] %d trooper(s) are aboard the MaxTac AV for %s')
+					:format(aboard, tostring(citizenId)))
+			end
+			return aboard
+		end
+
+		--- Steps the squad out at the bottom of the descent.
+		-- Every mounted body is told to leave its seat, which is what makes them
+		-- step out of the aircraft's own doors instead of standing where a script
+		-- put them; a body that never got a seat is placed on the ring, exactly as
+		-- it was before there was an aircraft to ride in.
+		-- @param avId string
+		-- @param drop table
+		local function stepOut(avId, drop)
+			local npcs = Open77 and Open77.npcs
+			local tasks = npcs and npcs.tasks
+			for index = 1, placeable do
+				if seated[index] == true then
+					if type(tasks) == 'table' and type(tasks.exitVehicle) == 'function' then
+						local ran = pcall(tasks.exitVehicle, troopers[index], { vehicleId = avId })
+						if not ran then
+							held.refused[#held.refused + 1] = ('dismount:%d'):format(index)
+						end
+					end
+				elseif troopers[index] == nil then
+					troopers[index] = stand(bearing(drop, index, placeable, 3.5), index)
+				end
 			end
 		end
 
@@ -537,13 +655,25 @@ function Response.Apply(citizenId, playerId, stage)
 				record = maxtac.AvRecord,
 				plan = insertion,
 				oneAtATime = maxtac.AvOneAtATime,
-				-- Where the aircraft drops to, once it is there: the squad steps
-				-- out inside its footprint, in the config's order, so a seat no
-				-- player took is a bot standing where the AV just was.
-				onDeploy = function(drop)
-					for index = 1, placeable do
-						stand(bearing(drop, index, placeable, 3.5), index)
-					end
+				-- The squad rides in and steps out. `onMount` is the descent's
+				-- beginning -- the first moment the hull is inside a watching
+				-- player's interest, which is the only time a client can put a body
+				-- in a seat -- and `onDeploy` is the bottom of it, where they leave
+				-- through the aircraft's own doors and stand inside its footprint
+				-- in the config's order: a seat no player took is a bot at the
+				-- point the AV just was.
+				onMount = function(drop, run)
+					takeSeats(run.avId, drop)
+				end,
+				onDeploy = function(drop, run)
+					stepOut(run.avId, drop)
+				end,
+				-- The crew door, announced by the controller on the phase that owns
+				-- it. `nil` is the door shutting, which is a thing the people who
+				-- were told where it is have to hear: a row that outlives the window
+				-- is a key that answers `not_boarding` forever.
+				onDoor = function(state)
+					if type(M.DoorCall) == 'function' then M.DoorCall(state) end
 				end,
 			})
 			if avId == nil then

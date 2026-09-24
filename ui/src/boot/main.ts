@@ -10,6 +10,9 @@ import PanelView from '@/modules/panel/PanelView.vue'
 import ProgressRoot from '@/modules/progress/ProgressRoot.vue'
 import SlotbarRoot from '@/modules/inventory/SlotbarRoot.vue'
 import PromptsRoot from '@/modules/prompts/PromptsRoot.vue'
+import RadioScanner from '@/modules/radio/RadioScanner.vue'
+import SkillTree from '@/modules/skills/SkillTree.vue'
+import Ripperdoc from '@/modules/ripperdoc/Ripperdoc.vue'
 import SpawnView from '@/modules/spawn/SpawnView.vue'
 import TagsRoot from '@/modules/tags/TagsRoot.vue'
 import TargetView from '@/modules/target/TargetView.vue'
@@ -74,6 +77,24 @@ registerModule({ id: 'spawn', surface: 'modal', component: SpawnView })
 // overlay layer is `pointer-events: none` for its whole height -- a death screen
 // registered there would draw perfectly and refuse every press.
 registerModule({ id: 'downed', surface: 'modal', component: DownedView })
+
+// The NCPD/MaxTac police scanner: a device panel at the right edge, tuned by
+// pressing a band. `modal` for the pointer -- a scanner nobody can tune is the
+// same as no scanner -- while the keyboard stays with the game, which is what
+// keeps the F2 that stows it working while it is up.
+registerModule({ id: 'ncpd-radio', surface: 'modal', component: RadioScanner })
+
+// The skill tree: three trunks of job work, centred and unrotated (a chart,
+// not a device). `modal` for the pointer -- a node nobody can press is the
+// same as no tree -- while the keyboard stays with the game, which is what
+// keeps the F3 that stows it working while it is up.
+registerModule({ id: 'skills-tree', surface: 'modal', component: SkillTree })
+
+// The ripperdoc clinic: the tray and the chair, centred and unrotated (a menu,
+// not a device). `modal` for the pointer -- a price nobody can press is the
+// same as no clinic -- while the keyboard stays with the game, which is what
+// keeps the E that works the chair alive while it is up.
+registerModule({ id: 'ripperdoc', surface: 'modal', component: Ripperdoc })
 
 createSurface({
   name: 'ui',

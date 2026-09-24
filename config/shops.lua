@@ -128,6 +128,29 @@ OPX.Config.MODULES.shops = {
 	-- empties a slot. Records are TweakDB names, `Items.<something>`; a name
 	-- this body cannot wear is skipped by the client with a line, because the
 	-- two body families do not share every garment.
+	-- ── EVERY RECORD HERE IS THE GAME'S OWN ───────────────────────────────
+	--
+	-- Read out of the two TweakDB files the install carries, through the
+	-- platform's generated catalogue of all 1,991 wearable `Clo_*` records
+	-- (`docs/research/clothing-items-catalog.md` and the JSON beside it), and
+	-- each one checked for the slot it really belongs to AND for being on both
+	-- body families. The four records the NCPD uniform used to name --
+	-- `Items.Police_Jacket_01`, `Items.Police_Pants_01`, `Items.Police_Boots_01`
+	-- and `Items.Q005_Police_Shirt` -- DO NOT EXIST, and neither did the four
+	-- the corporate look named: both looks dressed NOTHING, and said nothing
+	-- about it, because a record a body cannot wear is skipped with a log line
+	-- rather than refused. A uniform that silently does nothing is the exact
+	-- failure this file cannot test for itself, which is why `tests/run.lua`
+	-- pins every name below.
+	--
+	-- WHAT THE GAME ACTUALLY HAS, exhaustively:
+	--   NCPD  `Items.Cop_01_Set_*` -- jacket, pants, boots, glasses -- plus the
+	--         questline's one-piece issue suit, `Items.SQ029_Police_Suit`.
+	--   MaxTac `Items.SQ030_MaxTac_Helmet`, `_Chest`, `_Pants`. Three records
+	--         and no fourth: there is no MaxTac boot, glove or undershirt that a
+	--         player can wear, so those slots are left AS THE PLAYER HAD THEM --
+	--         `false` would send a trooper out barefoot to no purpose.
+	--   Trauma Team `Items.Trauma_Team_Outfit`, one piece, for the same job.
 	LOOKS = {
 		ncpd_patrol = {
 			LABEL = 'NCPD patrol uniform',
@@ -136,24 +159,62 @@ OPX.Config.MODULES.shops = {
 			JOBS = { ncpd = 0 },
 			ON_DUTY = true,
 			COST = 0,
-			-- Which shops offer it. Nil means every shop.
+			-- Which shops offer it. Nil means every shop, and every fitting room
+			-- the panel opens, because the wardrobe draws the looks the server
+			-- says this player may take -- so a uniform is not tied to one store.
 			AT = nil,
 			WEAR = {
-				InnerChest = 'Items.Q005_Police_Shirt',
-				OuterChest = 'Items.Police_Jacket_01',
-				Legs = 'Items.Police_Pants_01',
-				Feet = 'Items.Police_Boots_01',
+				OuterChest = 'Items.Cop_01_Set_Jacket',
+				Legs = 'Items.Cop_01_Set_Pants',
+				Feet = 'Items.Cop_01_Set_Boots',
+				Face = 'Items.Cop_01_Set_Glasses',
 			},
+		},
+
+		-- The other half of the NCPD's kit, and its own look rather than a second
+		-- name for the first: a one-piece issue suit and a four-piece patrol set
+		-- are different things to a player standing in the room.
+		ncpd_issue_suit = {
+			LABEL = 'NCPD issue suit',
+			JOBS = { ncpd = 0 },
+			ON_DUTY = true,
+			COST = 0,
+			AT = nil,
+			WEAR = { Outfit = 'Items.SQ029_Police_Suit' },
+		},
+
+		-- The division that answers at five stars, in the armour the game gives
+		-- its own troopers: helmet, chest, pants.
+		maxtac_field_kit = {
+			LABEL = 'MaxTac field kit',
+			JOBS = { maxtac = 0 },
+			ON_DUTY = true,
+			COST = 0,
+			AT = nil,
+			WEAR = {
+				Head = 'Items.SQ030_MaxTac_Helmet',
+				OuterChest = 'Items.SQ030_MaxTac_Chest',
+				Legs = 'Items.SQ030_MaxTac_Pants',
+			},
+		},
+
+		trauma_team = {
+			LABEL = 'Trauma Team kit',
+			JOBS = { trauma = 0 },
+			ON_DUTY = true,
+			COST = 0,
+			AT = nil,
+			WEAR = { Outfit = 'Items.Trauma_Team_Outfit' },
 		},
 
 		corpo_black = {
 			LABEL = 'Corporate black',
 			COST = 2500,
 			WEAR = {
-				InnerChest = 'Items.Formal_Shirt_01',
-				OuterChest = 'Items.Formal_Jacket_01',
-				Legs = 'Items.Formal_Pants_01',
-				Feet = 'Items.Formal_Shoes_01',
+				InnerChest = 'Items.FormalShirt_01_basic_01',
+				OuterChest = 'Items.FormalJacket_01_basic_01',
+				Legs = 'Items.FormalPants_01_basic_01',
+				Feet = 'Items.FormalShoes_01_basic_01',
 				Head = false,
 				Face = false,
 			},

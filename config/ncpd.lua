@@ -234,6 +234,53 @@ OPX.Config.MODULES.ncpd = {
 	-- -- `FILL = 'bots'` -- so the squad always arrives: an empty division must
 	-- not mean an empty street. `FILL = 'players'` is legal and makes the job
 	-- player-only, which is a choice a server may want on a job night.
+	-- ── the call-out ────────────────────────────────────────────────────────
+	--
+	-- WHO IS TOLD THAT THE CITY HAS A PROBLEM. A stage that RISES is broadcast
+	-- to every player who is ON DUTY in one of the jobs below, with the place it
+	-- happened: this is the half of a wanted level a roleplay server has and a
+	-- bot response cannot be -- the engine's units answer on their own, and the
+	-- people PLAYING the police go and do it because somebody told them.
+	--
+	-- IT SPAWNS NOTHING AND REPLACES NOTHING. The engine's own units and this
+	-- module's response are already on their way when it runs, so a call-out
+	-- that fails to send cannot leave the city unprotected; what it costs is
+	-- that the people playing the police never hear about it, which is why the
+	-- count and the failure are both journalled rather than swallowed.
+	--
+	-- A RISE, AND ONLY A RISE. Every poll that crosses a stage passes through the
+	-- same function, and so does the ledger's own decay back to zero --
+	-- repeatedly, once per poll. Neither is news. What is news is the instant a
+	-- stage goes up.
+	ALERTS = {
+		enabled = true,
+
+		-- The heat stage a call-out is worth making at, 1..5. Stage 1 is a
+		-- wanted player; a server that wants radio silence until somebody is
+		-- actually dangerous raises this.
+		MIN_STAGE = 1,
+
+		-- Which jobs are on the air. A player is on call when their PRIMARY job
+		-- is one of these AND they are ON DUTY -- duty is the character
+		-- module's own field and not a second one, so a clocked-off officer
+		-- hears nothing, which is what clocking off is for.
+		JOBS = { 'ncpd', 'maxtac', 'ncpd_maxtac' },
+
+		-- Floor between two call-outs about the SAME suspect, so one firefight
+		-- that climbs three stages is one message rather than three.
+		COOLDOWN_MS = 20000,
+
+		-- Metres a suspect's position is rounded to before it is named. A
+		-- call-out is radio traffic and not a coordinate: ten metres is a place
+		-- somebody can walk to, and it does not hand every officer a
+		-- metre-perfect fix on a player who is trying to get away.
+		ROUND_METRES = 10.0,
+
+		-- Whether the call-out names the suspect. Off is the setting for a
+		-- server whose radio should not be a nameplate detector.
+		NAME_SUSPECT = true,
+	},
+
 	MAXTAC = {
 		STAGE = 5,
 		HEAT = 'Heat_5',
@@ -327,6 +374,66 @@ OPX.Config.MODULES.ncpd = {
 			SEATS = 4,
 			WAVES = 3,
 			INSERTION_RADIUS = 40.0,
+		},
+
+		-- THE CREW DOOR. A MaxTac worker walks up to the aircraft while it holds
+		-- at the street and presses `KEY.DEFAULT` to get aboard.
+		--
+		-- THE MOUNT IS THE PLATFORM'S, NOT OURS. Boarding is
+		-- `Open77.vehicles.warpPlayerIntoVehicle(player, hull, seat,
+		-- { moveBucket = false, exitLocked = true })` -- the host's own
+		-- authoritative seat assignment, which reserves the seat, publishes the
+		-- forced entry and keeps the order until the client confirms the native
+		-- mount. Proximity and the vehicle's locked flag are bypassed by that
+		-- call on purpose: the reach rule below is OURS and is decided from the
+		-- player's position as the SERVER reads it, never from the client's.
+		--
+		-- THE HULL IS HANDED OVER, NOT SHARED. The aircraft is flown by the
+		-- server while nobody is aboard (`setTransform` per tick). A player
+		-- seated in an AV is its pilot as far as the platform is concerned --
+		-- `VehicleReplication` lets a seated client claim an AV at ANY seat --
+		-- so the moment somebody boards, this run STOPS POSING the hull, clears
+		-- its freeze and lets the crew fly it. Two hands on one airframe at
+		-- 10 Hz is a fight, not a ride.
+		--
+		-- NOBODY IS EVER DROPPED. A crew member is released when the aircraft is
+		-- down and at rest (see `REST_SPEED`), when the insertion is retracted,
+		-- or when this module stops. The aircraft is only removed from the world
+		-- when no player holds a seat in it.
+		BOARDING = {
+			ENABLED = true,
+			-- Who may board: the division's jobs, and only while ON DUTY. The
+			-- check is the character module's own `job.onDuty`, the same one the
+			-- call-out uses, so a clocked-off officer cannot take a seat.
+			JOBS = { 'maxtac', 'ncpd_maxtac' },
+			-- How long the aircraft holds at the street after the squad is out.
+			-- This is the window the crew walks up in; it is also the window in
+			-- which the row is on screen.
+			SECONDS = 20.0,
+			-- How close the asker has to be, measured by the server against the
+			-- hull's own canonical transform. The aircraft holds at
+			-- `AV.INSERTION.DROP_ALTITUDE`, so this is a radius around a hull 5 m
+			-- up: a walkable distance, not a reach through a wall.
+			REACH_METRES = 12.0,
+			-- The seats a crew takes, in the order they fill. The pilot seat is
+			-- not offered: any seat of an AV can fly it, and the seat closest to
+			-- the door is the one a body reaches first.
+			SEATS = { 'seat_front_right', 'seat_back_left', 'seat_back_right' },
+			-- The strip row names the player's own binding; the id is what a
+			-- rebind is stored under, so it must not change between builds.
+			KEY = { ID = 'opx.ncpd.board', NAME = 'ncpd.key.board', DEFAULT = 'F' },
+			-- While the hull is flying, an aboard body stays aboard: the exit lock
+			-- goes up with the seat and comes off when the aircraft is down and
+			-- slower than `REST_SPEED` for `REST_SECONDS`. "Down" is the hull
+			-- within `REST_HEIGHT` metres of the height the insertion dropped at,
+			-- because that is the last height this module knows the street to be
+			-- at. Without all three numbers the lock is a trap -- a crew that can
+			-- never step out of a parked aircraft.
+			REST_SPEED = 2.0,
+			REST_HEIGHT = 3.0,
+			REST_SECONDS = 1.0,
+			-- How often the crew's seats are read while they hold the hull.
+			CUSTODY_MS = 1000,
 		},
 	},
 }

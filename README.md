@@ -54,12 +54,20 @@ somebody will search for.
 | `require` | **no** | yes |
 | `load` / `loadfile` / `dofile` | no | no |
 | `LoadResourceFile` | own resource only | own resource only |
-| instruction budget | none (1,024 task quota) | **per-resume, and an overrun kills the coroutine silently** |
+| instruction budget | none (1,024 task quota) | **per RESUME: a 10 000-instruction hook inside a ~300 us slice** |
 
 The client budget is the single most expensive thing to forget. A loop without a
-`Wait` does not crash, does not log and does not repeat — it stops. `modules/target`
-is built in slices for exactly this reason; read its header before writing anything
-that walks a list every frame.
+`Wait` does not crash and does not repeat — it stops, and the only trace is one
+`Open77 script execution budget exceeded` line naming whatever instruction
+happened to be the 10 000th. `modules/target` is built in slices for exactly this
+reason; read its header before writing anything that walks a list every frame.
+
+The unit is the RESUME, not the frame: the host arms a count hook every 10 000 VM
+instructions and raises at the first hook after the save point, and the slice it
+measures against is `frameBudget / resources running` floored at 300 us — 214 us
+before the floor, with ~28 resources on a client. So the workable rule is one
+line: **a resume may run at most one hook interval, and loops yield between
+them.** The lifecycle follows it for you — see below.
 
 The server having no `require` is why `lib/shared/` exists and will keep existing.
 See **The library** below.
@@ -98,6 +106,17 @@ Four optional phases, run in dependency order across every module: `Init`, `Api`
 time** — if your config is a `server_script` rather than a `shared_script` it may not
 have run yet, so read `OPX.Config.MODULES[id]` in `Init` instead. That exact trap
 cost a release.
+
+**A PHASE BODY MUST NOT YIELD, AND THE LIFECYCLE YIELDS BETWEEN MODULES IN EVERY
+PHASE.** `Wait` inside any of the four is a bug; the resume boundary belongs to the
+loop, which puts one after each module so no phase has to think about the budget
+above. Yielding inside a body would leave that module half built for a frame, which
+is the thing this arrangement exists to avoid — the boundary is only ever between
+two modules, never inside one. The failure this prevents is not a slow boot: the
+boot's first frame used to hold every `Init`, every `Api` and the first `Start`,
+and when it overran, the coroutine died, every module after it was never started,
+and a live client sat on "Preparing character" for ever with one error line naming
+a table lookup.
 
 Modules talk through **contracts**, never by reaching into each other:
 
@@ -244,6 +263,86 @@ contract is simply absent, and the key says that out loud instead of doing nothi
 markers draw and the row posts either way, so silence would be the one answer nobody
 could read.
 
+### A job, a rank, and the desk that moves it
+
+`jobs` is a **place**, like a garage spot, a dealer and a store: stand on the marker,
+press its key — **E**, its own mapping again — and a menu opens. There are two kinds of
+board and they are not the same thing. A **sign-up board** is one employment office: it
+lists **every** job the character catalogue defines with your own standing against each —
+the grade you hold, how far the next rank is, or what the terms are missing — and any of
+them may be taken there. A **desk** is one division's, is shown only to the holder of that
+job's boss grade — and to whoever captured it, so an operator can see where they put it,
+which is a placement aid and not a promotion: every desk action re-derives that grade on
+the server and the roster is attached only for its holder — and is where a roster is
+managed: hired, promoted, demoted, dismissed.
+
+**A marker nobody can see is indistinguishable from a marker that was never placed**, so
+this module says which it is. The capture answer names the audience — *shown to every
+player within 150 m* for a sign-up board, *a desk is shown to the holder of ncpd grade 3,
+which you hold* for a boss, and for a capturer below that grade the plain sentence that
+they will see the marker and the roster will refuse them — and the client logs one line per
+change of what it holds and draws (`5 board(s) held, 1 marker(s) drawn; nearest 3.4 m`),
+which is what separates *the server never sent it* from *it is three kilometres away*.
+Both exist because a live server showed the failure they describe: an operator captured two
+desks, read `saved`, and saw nothing at all.
+
+**This module owns the terms of employment, not the employment.** Who holds what, at
+which grade, on duty or not, and what each grade is called and pays is
+`config/character.lua`'s `JOBS`; the character module stores it, replicates it and gates
+elevators, armouries and teleports with it. What the catalogue has no field for is
+**where** a job is joined, **who** may join it and **how long** the next rank takes, and
+that is all `config/jobs.lua` decides. The two tables must agree and are not allowed to
+drift: every job named here must exist there, and every `LADDER` level must be a grade
+that job really has. A ladder naming a grade nobody defined would promote somebody into a
+rank with no name; both faults are named at boot by `Access.Problems` rather than
+discovered by a player.
+
+**A rank costs worked time and nothing else.** A holder who is *on duty* in a job with a
+ladder banks `POINTS_PER_TICK` every `TICK_MS` — the shipped rate is a point a minute —
+and a level's number is the bank that rank wants, so `[1] = 90` is ninety minutes. Duty
+is the character module's own field and not a second one, so a job with
+`defaultDuty = true` banks while a player plays and a police officer banks while clocked
+in. With `AUTO_PROMOTE` on, a bank that reaches the next level promotes its holder and
+the promotion is announced the way `/opx.job` announces one; with it off the bank keeps
+filling and only a boss or an operator moves a rank, which is the setting a server that
+wants ranks earned *in front of somebody* will pick. A job declared `APPROVAL = true`
+never moves on a clock at all.
+
+A promotion goes through the **character contract**, in one function, so a rank gained at
+a desk is the same rank `/opx.job` grants: it arrives on the same client event, pays and
+`isBoss` the same, and every gate that already reads a job reads it. A character's
+primary job carries a *copy* of its grade, so the primary is written through `SetJob`
+(which rebuilds that copy) and every other membership through `AddPlayerToJob` (which
+must not touch it) — a promotion that moved only the membership row would leave a captain
+paid as a cadet and refused by every gate that reads `job.isBoss`.
+
+It ships with **one office and three desks**, standing on an **arrival point** — the
+Northside promenade entry of `config/spawn.lua`, which is where a player who picks it
+lands — because a feature nobody can find is a feature nobody has, and because a marker is
+drawn only within `MAX_DISTANCE`: the office stood at the platform's old default spawn,
+kilometres from every spawn this server offers, and read in game as *the job marker isn't
+appearing*. The desks are spaced 7 m off the office and not less, because `USE_RADIUS` is
+4 and two boards closer than that are two boards whose presses cannot be told apart. `/opx.jobs.add <signup|boss> <key>
+<job> [label]` captures one where the operator is standing, facing the way the board
+should point — a chat line has no facing of its own, so the client is asked — and prints
+the line to check into `config/jobs.lua` so it survives a database reset;
+`/opx.jobs.remove <key>` deletes a captured one and refuses a configured one, and
+`/opx.jobs.list` names every board, its kind, its job, its position, its bucket and its
+origin. The rest are `/opx.jobs.join <key>`, `/opx.jobs.leave`, `/opx.jobs.roster
+[job]`, `/opx.jobs.rank [citizen]`, `/opx.jobs.promote|demote <citizen> [job]`, which
+are the same doors the menu uses for a client whose list could not open. The placement
+commands are ACL-gated under `command.opx.jobs.*` — they write a place every player
+uses — and the boss actions are **not** in that list: a desk is granted by a grade and not
+by an operator's ACL file, and the server checks that grade itself every time.
+
+Hiring is a **scene**: the candidate must be standing within `HIRE_RADIUS` of the desk,
+re-derived on the server from the connection it is acting on rather than trusted from the
+boss's client, because hiring somebody across the map is not something anybody can see.
+The bank is this module's own and is the one thing it stores: it starts at nothing when
+somebody joins, is deleted when they are dismissed so a rehire starts at the bottom
+rather than walking back in at the rank they left, and is written back on a cadence and
+after every change of rank.
+
 ### The wanted level is a crime score, not a fact
 
 `ncpd` owns what a crime is worth, who is charged, and which division answers.
@@ -273,15 +372,52 @@ called out at boot, where an operator looks. The suite pins the arithmetic, the
 vocabulary and eight negative controls; the boot line reads
 `[ncpd] ready: 11 law(s), 5 heat stage(s): ncpd 1-4, maxtac 5`.
 
-**What is not here yet, deliberately.** Raising a stage is a platform seam:
-`PreventionSystem`'s 287 methods are all scripted, so the client enqueues a command
-and its REDscript loop runs it inside the script frame it owns. That queue exists
-and carries `prevention.lock`, `prevention.blockfoot` and `prevention.blockvehicle`
-today; it does not yet carry a heat or AV command — that is one change in
-`open77-base`, and it is what the per-player ledger is waiting on. Until it lands
-the law book is the single source of truth for what a crime costs and nothing
-charges anybody yet. The reasoning, every record involved and the build order are in
-`docs/ncpd-maxtac.md`.
+### The crew door: the aircraft is handed over, not shared
+
+A MaxTac worker **on duty in the division** walks up to the AV while it holds at the
+street and presses `MAXTAC.BOARDING.KEY.DEFAULT` — F out of the box. The row on the
+strip, the seat and every refusal are decided one step at a time:
+
+* **The window is the aircraft's, not the client's.** `server/av.lua` holds the hull
+  still for `BOARDING.SECONDS` after the squad steps out and announces the door to the
+  on-duty division; the client draws its row from the hull's position and
+  `REACH_METRES` and nothing else, and a row that outlived the window is not possible
+  because the same controller withdraws it. `/opx.ncpd.board [seat]` is the console
+  door to the same decision — two doors, one implementation.
+* **The mount is the platform's.** `Open77.vehicles.warpPlayerIntoVehicle(player,
+  hull, seat, { moveBucket = false, exitLocked = true })` reserves the seat, publishes
+  the forced entry and keeps the order until the client confirms the native mount.
+  Proximity and the vehicle's own lock are bypassed by that call on purpose: the reach
+  rule is ours and is measured from the position the **server** reads.
+* **The hull is handed over the moment somebody is in it.** A player seated in an AV
+  is its pilot as far as `VehicleReplication` is concerned — the claim test is
+  `IsAvRecord(record)` and a seat occupied, at any seat — so the controller stops
+  posing it, clears its freeze and lets the crew fly. Two hands on one airframe at
+  10 Hz is a fight, not a ride.
+* **Nobody is dropped.** The exit lock comes off when the hull is standing at street
+  level (`REST_SPEED`, `REST_HEIGHT`, `REST_SECONDS`), when the insertion is
+  retracted, or when the module stops. A crewing aircraft is never removed from the
+  world: it is removed when the last of the crew has stepped out of it.
+
+Every refusal is a code (`too_far`, `no_seat`, `notOnDuty` …) mapped once in
+`M.BoardRefusal` to the sentence a player reads, so the officer who pressed the key
+and the one who typed the command are told the same thing.
+
+**What is not here, deliberately.** The red warning lines under a MaxTac AV belong to
+the engine's own spawn setup, and an unoccupied server-flown airframe cannot command
+them. The `prevention.av` seam answers `ticket 0` on the live node — the call lands
+and the engine schedules nothing — so the insertion above is what actually flies the
+squad in, and the squad is what steps out of it.
+
+**The seam this rests on.** Raising a stage is a platform seam: `PreventionSystem`'s
+287 methods are all scripted, so the client enqueues a command and its REDscript loop
+runs it inside the script frame it owns, on the local player only. `open77-base`
+carries `prevention.heat:<0-5>` and `prevention.av` today, each refused when the
+player named is not the client running it, and the client reads the effect back with
+`prevention.state`. `prevention.lock`, `prevention.blockfoot` and
+`prevention.blockvehicle` are on the same queue. The engine's own AV route spawns
+nothing, which is why the aircraft is an Open77 vehicle the server flies. The
+reasoning, every record involved and the build order are in `docs/ncpd-maxtac.md`.
 
 ### The grants a staff panel needs
 

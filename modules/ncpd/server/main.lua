@@ -118,6 +118,231 @@ local function isDivision(data)
 	return false
 end
 
+--- Whether this character may hold a seat in the MaxTac aircraft.
+--
+-- THE DIVISION'S OWN RULE, read from the config's jobs, and DUTY is the whole
+-- filter -- the same `job.onDuty` the call-out uses, so a clocked-off officer can
+-- neither hear the call nor take a seat. The opt-in right is the division's other
+-- door and is kept for the same reason the call-out keeps it.
+--
+-- IT ANSWERS A REASON, NOT A BOOLEAN. The aircraft controller refuses with a name
+-- (`not_boarding`, `too_far`, `no_seat`); a door that answered `false` would make
+-- "you are off duty" and "there is no aircraft" the same sentence to the player.
+-- @param data table PlayerData
+-- @return boolean|string `true`, or the reason to refuse
+local function mayBoard(data)
+	local maxtac = Law.Maxtac
+	local boarding = maxtac ~= nil and maxtac.Boarding or nil
+	if boarding == nil then return 'no_door' end
+	if type(data) ~= 'table' then return 'noCitizen' end
+
+	local job = data.job
+	local name = type(job) == 'table' and job.name or nil
+	if type(job) ~= 'table' or job.onDuty ~= true or type(name) ~= 'string' then
+		return 'notOnDuty'
+	end
+	for _, listed in ipairs(boarding.Jobs) do
+		if listed == name then return true end
+	end
+
+	local acl = Open77.acl
+	if maxtac.Right ~= nil and type(acl) == 'table' and type(acl.isAllowed) == 'function' then
+		local read, allowed = pcall(acl.isAllowed, data.source, maxtac.Right)
+		if read and allowed == true then return true end
+	end
+	return 'notDivision'
+end
+
+--- The sentence a crew-door refusal is read as.
+--
+-- ONE TABLE, TWO DOORS. The aircraft controller answers with a code, and
+-- `M.BoardRefusal` is the module's single map from a code to the words a player
+-- reads -- shared with the client half, so the officer who typed the command and
+-- the one who pressed the key are told the same thing. A code the table has not
+-- heard of still names itself rather than going blank.
+-- @param code string|nil
+-- @return string
+local function boardWhy(code)
+	local text = tostring(code or 'failed')
+	return locale(M.BoardRefusal[text] or 'ncpd.board.failed', { reason = text })
+end
+
+-- ── the call-out ─────────────────────────────────────────────────────────────
+
+-- When each suspect was last called out, so one climb is one message.
+local called = {}
+
+--- A player's position, or nil. Read from the host rather than trusted from a
+--- client, which is how every distance in this tree is measured.
+-- @param source number
+-- @return table|nil `{ x, y, z, bucket }`
+local function positionOf(source)
+	local read, position = pcall(Open77.players.position, source)
+	if not read or type(position) ~= 'table' then return nil end
+	local x, y, z = tonumber(position.x), tonumber(position.y), tonumber(position.z)
+	if x == nil or y == nil or z == nil then return nil end
+	return { x = x, y = y, z = z, bucket = tonumber(position.bucket) or 0 }
+end
+
+--- Visits every connected player who is ON DUTY in one of `listed`.
+--
+-- THE HOST LISTS THE CONNECTIONS AND THE CONTRACT RESOLVES THE CHARACTER, which
+-- is the walk `garages`, `dealership`, `jobs` and `downed` all use. It is NOT
+-- `character.GetPlayers`: that one EVICTS a slot whose account id no longer
+-- matches its session, so finding out who to tell about a crime would unload
+-- characters as a side effect of reading a list.
+--
+-- The LIST is an argument because the module has two audiences: the call-out
+-- goes to everyone who answers for the city, and the crew door goes to the air
+-- division alone. One walk, two lists, so the duty rule is stated once.
+-- @param listed table[] job names
+-- @param fn function(source, who) called for each player on duty in one of them
+-- @return integer how many were visited
+local function walkOnDuty(listed, fn)
+	if type(listed) ~= 'table' then return 0 end
+
+	local read, ids = pcall(Open77.players.all)
+	if not read or type(ids) ~= 'table' then return 0 end
+
+	local seen = 0
+	for index = 1, #ids do
+		local who = characterOf(tonumber(ids[index]))
+		if who ~= nil then
+			local job = who.job
+			local name = type(job) == 'table' and job.name or nil
+			-- DUTY IS THE WHOLE FILTER, and it is the character module's own
+			-- field: a clocked-off officer hears nothing.
+			if type(job) == 'table' and job.onDuty == true and type(name) == 'string' then
+				for _, wanted in ipairs(listed) do
+					if name == wanted then
+						seen = seen + 1
+						fn(who.source, who)
+						break
+					end
+				end
+			end
+		end
+	end
+	return seen
+end
+
+--- Calls back for every connected player who is ON DUTY in a job on the air.
+-- @param fn function(source, who) called for each player on call
+-- @return integer how many were visited
+local function eachOnCall(fn)
+	local alerts = type(M.Settings) == 'table' and M.Settings.ALERTS or nil
+	return walkOnDuty(type(alerts) == 'table' and alerts.JOBS or nil, fn)
+end
+
+--- Tells the air division where the crew door is, while it is open.
+--
+-- ONE DECISION, ANNOUNCED. The window is the aircraft's own (`server/av.lua`
+-- holds the hull still and knows when the hold ends), so this half does not decide
+-- when a body may board -- it tells the people who can walk through the door where
+-- the door is, and withdraws the word with `nil` the moment it shuts. A client
+-- that computed the window itself would be a second answer to the same question.
+-- @param state table|nil `{ position, reach, seats, seconds }`, nil when shut
+-- @return integer how many were told
+function M.DoorCall(state)
+	local maxtac = Law.Maxtac
+	local boarding = maxtac ~= nil and maxtac.Boarding or nil
+	if boarding == nil then return 0 end
+	return walkOnDuty(boarding.Jobs, function(source)
+		TriggerClientEvent(M.Event.DOOR, source, state)
+	end)
+end
+
+--- Tells the people who answer for the city that a stage has gone up.
+--
+-- A RISE, AND ONLY A RISE. Every poll that crosses a stage reaches `publish`,
+-- and so does the ledger's own decay back to zero -- once per poll, for as long
+-- as the city remembers. Neither is news. The instant a stage rises is.
+--
+-- IT SPAWNS NOTHING. The engine's units and this module's response are already
+-- moving when this runs, so the worst a call-out can do is fail: what is lost
+-- is that the people playing the police never hear, which is why the count and
+-- the refusal are both journalled.
+-- @param citizenId string the suspect
+-- @param playerId number|nil their connection, for the name and the place
+-- @param stage number the stage now
+-- @param previous number the stage before
+-- @return integer how many were told
+local function callOut(citizenId, playerId, stage, previous)
+	local alerts = type(M.Settings) == 'table' and M.Settings.ALERTS or nil
+	if type(alerts) ~= 'table' or alerts.enabled == false then return 0 end
+	if stage <= previous or stage <= 0 then return 0 end
+	if stage < (tonumber(alerts.MIN_STAGE) or 1) then return 0 end
+
+	-- NO PLACE IS NO CALLOUT: a stage that rose with nobody connected has no
+	-- location to give, and a marker at 0,0 in the middle of the map is worse
+	-- than silence.
+	local where = playerId ~= nil and positionOf(playerId) or nil
+	if where == nil then
+		Open77.log.info(('[ncpd] stage %d for %s: no call-out, their position could not be read')
+			:format(stage, citizenId))
+		return 0
+	end
+
+	local now = OPX.Now()
+	local cooldown = tonumber(alerts.COOLDOWN_MS) or 20000
+	local last = called[citizenId]
+	if cooldown > 0 and last ~= nil and now - last < cooldown then
+		Open77.log.info(('[ncpd] stage %d for %s: no call-out, one went out %d ms ago')
+			:format(stage, citizenId, now - last))
+		return 0
+	end
+	called[citizenId] = now
+
+	-- Rounded to a place rather than a coordinate, so the radio does not hand
+	-- every officer a metre-perfect fix on somebody trying to get away.
+	local round = tonumber(alerts.ROUND_METRES) or 0.0
+	local x = where.x
+	local y = where.y
+	if round > 0 then
+		x = math.floor(where.x / round + 0.5) * round
+		y = math.floor(where.y / round + 0.5) * round
+	end
+	-- `-0.0` formats as `-0`, which reads like a fault in a notification.
+	if x == 0 then x = 0 end
+	if y == 0 then y = 0 end
+
+	local name = nil
+	if alerts.NAME_SUSPECT ~= false then
+		local data = characterOf(playerId)
+		local read = data ~= nil and tostring(data.name or '') or ''
+		if read ~= '' then name = read end
+	end
+
+	local args = {
+		division = tostring(labelOf(Law.Division(stage)) or 'NCPD'),
+		stage = stage,
+		x = math.floor(x),
+		y = math.floor(y),
+		name = name or '',
+	}
+	local key = name ~= nil and 'ncpd.dispatch.suspect' or 'ncpd.dispatch.rise'
+
+	local told = 0
+	eachOnCall(function(recipient)
+		-- THE SUSPECT IS NOT TOLD. Their own client already has the stage, the
+		-- label and the response; a call-out to them would be a second, and it
+		-- would name them to themselves.
+		if playerId ~= nil and recipient == playerId then return end
+		told = told + 1
+		OPX.NotifyLocale(recipient, key, args, 'warning')
+	end)
+
+	-- The same moment on the air: the dispatch band hears the call-out with the
+	-- SAME key and arguments the toast used -- one moment, one wording, two
+	-- surfaces -- and the suspect is kept off the line exactly as the toast
+	-- keeps them off it.
+	M.Radio.Push('ncpd', key, args, playerId)
+
+	Open77.log.info(('[ncpd] call-out: %s rose to stage %d/%d at %.0f, %.0f -- %d on-duty holder(s) told')
+		:format(citizenId, stage, Law.StageCount, x, y, told))
+	return told
+end
+
 --- Stands the response up for a stage and tells the player's client about it.
 --
 -- The order matters: the ledger is already written when this runs, so a client
@@ -158,6 +383,11 @@ local function publish(citizenId, verdict, options)
 			reason = opts.reason or 'crime',
 		})
 	end
+
+	-- The call-out, and it comes after the response on purpose: the units are
+	-- already moving by the time anybody is told, so the message is never the
+	-- thing the city's safety depends on.
+	callOut(citizenId, playerId, stage, previous)
 
 	if applied.ok == true and applied.value.av == true then
 		local maxtac = Law.Maxtac
@@ -247,6 +477,10 @@ local function decayPass(nowMs)
 			if playerId ~= nil then
 				OPX.NotifyLocale(playerId, 'ncpd.cleared', nil, 'success')
 			end
+			-- Case closed on the air as well: the dispatch band hears the same
+			-- sentence the freed player was just told, and they are kept off the
+			-- line for the same reason the call-out keeps a suspect off it.
+			M.Radio.Push('ncpd', 'ncpd.cleared', nil, playerId)
 		end
 	end
 	return dropped
@@ -399,6 +633,28 @@ local function registerCommands()
 		OPX.CommandResult(source, true, 'asked their client for the MaxTac AV')
 	end)
 
+	-- The console door to the crew seat. The strip row is the way in for a body
+	-- standing under the aircraft; this is the way in for an operator who wants a
+	-- seat without one, and both go through `Av.Board` -- one decision, two doors.
+	register(names.BOARD, {
+		help = 'ncpd.help.board',
+		params = { { name = 'seat', optional = true, help = 'ncpd.help.seat' } },
+	}, function(source, args)
+		local data = characterOf(source)
+		if data == nil then
+			return OPX.CommandResult(source, false, locale('ncpd.noCitizen'))
+		end
+		local av = M.Av
+		if av == nil or type(av.Board) ~= 'function' then
+			return OPX.CommandResult(source, false, 'the aircraft controller is unavailable')
+		end
+		local seat, why = av.Board(source, mayBoard(data), args[1])
+		if seat == nil then
+			return OPX.CommandResult(source, false, boardWhy(why))
+		end
+		OPX.CommandResult(source, true, locale('ncpd.board.aboard', { seat = tostring(seat) }))
+	end)
+
 	register(names.CLEAR, {
 		help = 'ncpd.help.clear',
 		params = { { name = 'player', optional = true, help = 'ncpd.help.player' } },
@@ -455,9 +711,13 @@ end
 -- is resolved from the connection the report arrived on, so the worst a modified
 -- client can do is lie about its OWN heat -- which the engine on its own client
 -- would immediately contradict, one report later.
--- @param source number the connection the report arrived on
--- @param stage any
-local function onEngineStage(source, stage)
+-- @param stage any the stage the engine mirror last read
+local function onEngineStage(stage)
+	-- THE CONNECTION IS THE `source` GLOBAL, never a parameter: the host
+	-- delivers payload only and names the sender in `source` around the
+	-- call, so a parameter named `source` here swallowed the stage.
+	source = tonumber(source)
+	if source == nil or source <= 0 then return end
 	local data = characterOf(source)
 	if data == nil then
 		Open77.log.warn(('[ncpd] engine report from player %d refused: no character loaded')
@@ -609,6 +869,37 @@ function M.Start()
 
 	registerCommands()
 	RegisterNetEvent(M.Event.REPORT, onEngineStage)
+
+	-- The airwaves: one voice channel per band on the host's own VOIP, seated
+	-- by the same audience rule the line feed pushes with (`server/radio.lua`).
+	M.Radio.VoiceStart()
+
+	-- The crew door's own ask, and it carries nothing at all. The player comes
+	-- from the connection, the permission from the module's own duty rule, the
+	-- hull and the distance from the controller's own reads -- so a modified
+	-- client can knock, and that is the whole of what it can do.
+	RegisterNetEvent(M.Event.BOARD, function()
+		-- No `source` parameter: the sender is the host's `source` global,
+		-- and a parameter of that name shadows it with the empty payload.
+		local playerId = tonumber(source)
+		if playerId == nil or playerId <= 0 then return end
+		local data = characterOf(playerId)
+		local permit = data ~= nil and mayBoard(data) or 'noCitizen'
+		local av = M.Av
+		local seat, why = nil, 'the aircraft controller is unavailable'
+		if av ~= nil and type(av.Board) == 'function' then
+			seat, why = av.Board(playerId, permit)
+		end
+		if seat == nil then
+			Open77.log.info(('[ncpd] player %d could not board the MaxTac AV: %s')
+				:format(playerId, tostring(why)))
+		end
+		TriggerClientEvent(M.Event.BOARDED, playerId, {
+			ok = seat ~= nil,
+			seat = seat,
+			reason = seat == nil and tostring(why) or nil,
+		})
+	end)
 
 	M.running = true
 	CreateThread(function()

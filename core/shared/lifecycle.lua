@@ -3,9 +3,13 @@
 --
 --   declare -> resolve -> init -> api -> start -> running -> stop
 --
--- `init` builds state and may not yield or reach another module. `api` publishes
+-- `init` builds state and may not reach another module. `api` publishes
 -- contracts, and nothing may read one before this phase ends. `start` runs on a
 -- coroutine and may hit the database. `stop` runs in reverse dependency order.
+--
+-- NO PHASE BODY MAY YIELD (`Wait`, or anything that reaches it), and every phase
+-- yields BETWEEN its modules -- the loop owns the resume boundary precisely so
+-- that no body has to think about the host's budget. See `runPhase`.
 
 local PHASES = { 'Init', 'Api', 'Start' }
 
@@ -147,43 +151,64 @@ end
 
 --- Runs one phase over the runnable modules, in order.
 --
--- `Start` YIELDS BETWEEN MODULES, and that is not politeness to the frame rate.
+-- EVERY PHASE YIELDS BETWEEN MODULES, and that is not politeness to the frame
+-- rate -- it is the only thing standing between this boot and a dead resource.
 --
--- The host bounds a task by a PER-FRAME instruction budget and stops it dead when
--- it is passed; a `Wait(0)` moves to the next frame and the budget starts again.
--- Every module's `Start` used to run in one frame, so the whole client boot spent
--- ONE budget between them: each module made the next one likelier to trip, and the
--- one that actually tripped depended on how much the frame had already spent.
+-- THE BUDGET IS A WALL-CLOCK SLICE, NOT AN INSTRUCTION COUNT. `ResourceHost`
+-- arms a count hook every 10 000 VM instructions and raises at whichever comes
+-- first: `instructionLimitPerResume` (1 500 000, so never for us) or
+-- `Clock::now() > instance.deadline`. The deadline is this resource's share of
+-- the host's `frameBudget` (6 ms), and with ~28 resources running on a client
+-- that share is 214 us -- BELOW THE 300 us FLOOR THE HOST REFUSES TO GO UNDER,
+-- so every resume gets 300 us however little work there is. Ten thousand hooked
+-- VM instructions cost more than that. The rule the platform states for script
+-- authors is therefore exact: A RESUME MAY RUN AT MOST ONE HOOK INTERVAL
+-- (10 000 INSTRUCTIONS) WHATEVER THE RESOURCE COUNT, AND LOOPS SPLIT THEIR WORK
+-- INTO RESUMES AND YIELD BETWEEN THEM.
 --
--- That is exactly what was seen. The inventory reported, intermittently:
+-- `Start` has yielded between its modules since the inventory was the victim:
 --
 --   client module: inventory failed
 --     start failed: modules/target/shared/model.lua:334: script execution budget exceeded
 --
--- It is not the inventory's fault and it was never reliably the inventory: it
--- registers its world rows in `Start`, late in dependency order, so it was simply
--- often the module holding the parcel. And because `Start` raising marks a module
--- `failed`, the rest of its `Start` never ran -- which is why the symptom was "no
--- inventory AND no keybinds", with no error anywhere a player could see.
+-- and it was never reliably the inventory -- it registers its world rows in
+-- `Start`, late in dependency order, so it was simply often the module holding
+-- the parcel. `Init` and `Api` were left in one frame each, which was defensible
+-- while a boot was small and stopped being defensible at 32 modules: the boot's
+-- FIRST resume ran every `Init`, every `Api` and the first `Start` together, and
+-- it died there. Seen in a live client (2026-09-21), twice in two sessions:
 --
--- `Init` is NOT given the same treatment: it is documented never to yield, it
--- builds state rather than touching the world, and a yield there would let an
--- event reach a module whose state is half built.
+--   [resource:opx_infinity] core/shared/lifecycle.lua:71: Open77 script
+--   execution budget exceeded
+--   stack traceback:
+--     core/shared/lifecycle.lua:71: in upvalue 'settle'
+--     core/shared/lifecycle.lua:252: in field 'Run'
+--     core/client/boot.lua:15: in function <core/client/boot.lua:9>
 --
--- NEITHER IS `Api`, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT -- it read
--- as one, so it is written down. The same objection applies and applies harder:
--- `Api` is where contracts are published, so a yield in the middle of it is a
--- frame in which some modules have published and some have not, and an event
--- arriving in that frame gets nil from `OPX.Api.Get` for a contract that exists.
--- The budget argument does not weigh much against it either, because an `Api`
--- body is a handful of `Provide` calls and no world reads; `Start` is where the
--- work is, and `Start` is what yields.
+-- `71` is `OPX.Modules.Record(id)` -- a table lookup, ~1 instruction. Nothing
+-- hot was named because nothing hot was there: the raise fires at the first
+-- 10 000-instruction boundary after the slice expires, so the line it names is
+-- just wherever the parcel ran out. Measured in the suite's own harness, that
+-- first resume was 13 000 instructions against a 10 000 interval, and every
+-- module the client then needed was never started: the shell sat on "Preparing
+-- character" for ever because the resource that answers it had died mid-boot,
+-- and the only trace was an error line no player can act on.
+--
+-- SO THE RESUME BOUNDARY IS AFTER EVERY MODULE IN EVERY PHASE. What is NOT
+-- changed is the contract each phase documents: A PHASE BODY MUST NOT YIELD.
+-- `Init` still may not call `Wait`, `Api` still may not, and this loop never
+-- interrupts one -- it yields after a body has returned, so no module is ever
+-- left half built. The frames introduced between modules are the frames `Start`
+-- has always had: an event arriving in one of them finds the modules whose
+-- phases have run and not the ones still waiting, exactly as it already could
+-- while `Start` was stepping. The cost is frames during a boot nobody is playing
+-- yet; the alternative is a resource that dies at ~10 000 instructions.
 -- @return string|nil the id of a fatal module that failed
 local function runPhase(phase)
 	local fatal
 	-- Guarded on the native rather than on the side: a build without `Wait` must
 	-- still boot, just in one frame, as it did before.
-	local yielding = phase == 'Start' and type(Wait) == 'function'
+	local yielding = type(Wait) == 'function'
 	for _, module in ipairs(OPX.Modules.Resolve()) do
 		if module.State == 'declared' then
 			-- Phases live on the namespace; everything else the loop reads is on
@@ -220,7 +245,8 @@ local function runPhase(phase)
 	return fatal
 end
 
---- Runs init, api and start. Call from a thread: `Start` may yield.
+--- Runs init, api and start. Call from a thread: every phase may yield between
+--- modules, and a phase body must not yield at all.
 --- `between` runs after every contract is published and before any module starts,
 --- which is where the server applies the schema: modules contribute their tables
 --- during `Init`, and `Start` is the first phase allowed to read the database.

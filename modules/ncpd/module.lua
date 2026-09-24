@@ -78,15 +78,95 @@ M.Event = {
 	-- arrived on, so a client cannot report a crime for anybody but itself.
 	REPORT = OPX.Event(NET, 'ncpd', 'engine'),
 
+	-- Client to server. A body is at the crew door of the MaxTac aircraft and
+	-- wants in. IT CARRIES NOTHING, deliberately: the server resolves the player
+	-- from the connection it arrived on, the hull from its own runs, and the
+	-- distance from its own position read -- so a modified client can ask and
+	-- nothing else. It cannot name a seat, an aircraft, or a place.
+	BOARD = OPX.Event(NET, 'ncpd', 'board'),
+
+	-- Server to client, to the asker alone: what the aircraft controller
+	-- answered, so a refusal is a sentence the player reads rather than a key
+	-- that did nothing.
+	BOARDED = OPX.Event(NET, 'ncpd', 'boarded'),
+
+	-- Server to client, to the air division's on-duty holders: where the crew
+	-- door is while it is open, and `nil` the moment it shuts.
+	DOOR = OPX.Event(NET, 'ncpd', 'door'),
+
+	-- Server to client, to one seated crew member alone: the exit lock is off.
+	-- Said because the lock coming off is the one moment a body in a flying hull
+	-- has something to do, and a seat that quietly stops being a seat reads as a
+	-- bug rather than a landing.
+	RELEASED = OPX.Event(NET, 'ncpd', 'released'),
+
+	-- Client to server, the police scanner: open it or stow it. It carries one
+	-- word, and the server answers with everything the panel draws -- who this
+	-- player is to the city decides which bands exist for them, so the request is
+	-- a knock and never a claim.
+	RADIO = OPX.Event(NET, 'ncpd', 'radio'),
+
+	-- Server to client, to the asker alone: the whole scanner frame (the bands,
+	-- which of them this listener may hear, the effective key) or a refusal that
+	-- names why there is no scanner for them.
+	RADIO_STATE = OPX.Event(NET, 'ncpd', 'radioState'),
+
+	-- Server to client, to the subscribers who may hear its band: one line of
+	-- traffic. It carries the locale KEY and its arguments rather than a
+	-- sentence, because the page holds no English and the catalogue is already
+	-- there.
+	RADIO_LINE = OPX.Event(NET, 'ncpd', 'radioLine'),
+
 	-- The client's own bus: what the module decided, local refusals included, so
 	-- a HUD or a job resource can hear a crossing without asking for it.
 	ON_STAGE = OPX.Event(LOCAL, 'ncpd', 'stage'),
 	ON_REFUSED = OPX.Event(LOCAL, 'ncpd', 'refused'),
+	ON_BOARD = OPX.Event(LOCAL, 'ncpd', 'board'),
+
+	-- The scanner's view seam: the state half publishes what the page draws and
+	-- never touches the page -- `client/radioview.lua` is the only file here that
+	-- knows the other end is a CEF surface (README: the view seam).
+	RADIO_VIEW = OPX.Event(LOCAL, 'ncpd', 'radioView'),
 }
 
 --- Which request a refusal answers. Passed to `OPX.Refuse` so a client waiting
 --- on one of several requests can tell which refusal is its own.
-M.Operation = { REPORT = 'ncpdReport', HEAT = 'ncpdHeat', AV = 'ncpdAv' }
+M.Operation = { REPORT = 'ncpdReport', HEAT = 'ncpdHeat', AV = 'ncpdAv', BOARD = 'ncpdBoard' }
+
+--- Every refusal the crew door can name, as the sentence a player reads.
+--
+-- ONE TABLE, TWO READERS. The aircraft controller refuses with a CODE
+-- (`server/av.lua`: `too_far`, `no_seat`, `departed` ...), because a code is what
+-- a log and a test can match. A player reads a sentence. The map between them
+-- lives here so the console door and the strip row say the same thing in the same
+-- words rather than each inventing its own wording for "you are off duty".
+--
+-- Codes with no entry fall back to `ncpd.board.failed`, which names the code, so
+-- a refusal this table has not heard of is still readable rather than blank.
+M.BoardRefusal = {
+	-- The division's half: who this player is to the city.
+	noCitizen = 'ncpd.board.noCitizen',
+	notOnDuty = 'ncpd.board.notOnDuty',
+	notDivision = 'ncpd.board.notDivision',
+	no_door = 'ncpd.board.noDoor',
+	-- The aircraft's half: whether there is a door to walk through at all.
+	no_position = 'ncpd.board.noPosition',
+	no_aircraft = 'ncpd.board.noAircraft',
+	not_boarding = 'ncpd.board.notBoarding',
+	departed = 'ncpd.board.departed',
+	crewed = 'ncpd.board.crewed',
+	too_far = 'ncpd.board.tooFar',
+	-- The seat itself.
+	no_seat = 'ncpd.board.noSeat',
+	seat_taken = 'ncpd.board.seatTaken',
+	invalid_seat = 'ncpd.board.invalidSeat',
+	seat_refused = 'ncpd.board.seatRefused',
+	-- A key pressed into a menu: refused before it reaches the wire.
+	captured = 'ncpd.board.menuOpen',
+	-- The two shapes that are our fault and not the player's.
+	invalid_player = 'ncpd.board.failed',
+	vehicles_api_unavailable = 'ncpd.board.failed',
+}
 
 --- The command names, in one place, spelled the way the ACL checks them
 --- (`command.<name>`).
@@ -97,4 +177,85 @@ M.Command = {
 	AV = 'opx.ncpd.av',
 	CLEAR = 'opx.ncpd.clear',
 	LAWS = 'opx.ncpd.laws',
+	-- The console door to the same seat the `KEY` offers. It exists because a
+	-- player whose strip row was never drawn still has a way in, and because the
+	-- door and the key share ONE implementation (`Av.Board`) -- two doors, one
+	-- decision.
+	BOARD = 'opx.ncpd.board',
+}
+
+--- The police scanner: its bands, its key, and every refusal it can read.
+--
+-- CHANNELS ARE VOCABULARY; AUDIENCE IS THE SERVER'S. The four bands exist for
+-- everybody who may open a scanner -- one piece of hardware with two knobs --
+-- but only the server decides who HEARS a band, and it says so per band in the
+-- frame (`hear`), so a band this listener cannot hear is drawn as a dark band
+-- rather than looking like a quiet one. `server/radio.lua` is the only reader of
+-- the rule; nothing here says which job hears what.
+--
+-- EVERY BAND IS ALSO A VOICE CHANNEL. Talking is the platform's own VOIP
+-- (`wiki/voice.md`): one Opus stream routed through up to four channels at
+-- once, with a radio effect the host renders itself -- so the PTT keys a real
+-- transmission and the volume knob turns a real gain, and no audio payload
+-- ever passes through Lua. `server/radio.lua` owns the channels (it owns the
+-- audience rule already) and carries each band's voice id in the frame;
+-- `VOICE_EFFECT` is the band's declared sound.
+--
+-- FREQUENCIES ARE CONTENT (rule 8 of the UI contract): the micro-label on a
+-- channel row states the band's own declared frequency -- something the surface
+-- knows -- rather than invented chrome.
+-- The client seam's home: `client/radioview.lua` fills this in with the
+-- wiring between the state half and the CEF page. Created here -- beside
+-- `M.Radio` -- so the seam file never has to index a table that does not
+-- exist yet (the namespace is owned in one place).
+M.RadioView = {}
+
+M.Radio = {
+	CHANNELS = {
+		{ id = 'ncpd',     NAME = 'ncpd.radio.channel.ncpd',     FREQ = '154.980' },
+		{ id = 'tactical', NAME = 'ncpd.radio.channel.tactical', FREQ = '155.475' },
+		{ id = 'maxtac',   NAME = 'ncpd.radio.channel.maxtac',   FREQ = '39.720' },
+		{ id = 'air',      NAME = 'ncpd.radio.channel.air',      FREQ = '45.880' },
+	},
+
+	-- The sound of one band on the air, as the HOST renders it -- the .87
+	-- wiki's own radio tuning, passed as a `createChannel` effect. Nothing is
+	-- heard through Lua ("PCM and Opus payloads are never exposed to Lua");
+	-- this is the metadata the native mixer applies per voice route.
+	VOICE_EFFECT = {
+		gain = 1.0,
+		highPassHz = 220.0,
+		lowPassHz = 4800.0,
+		distortion = 0.08,
+		radioNoise = 0.04,
+		spatialBlend = 0.0,
+		reverbWet = 0.22,
+		reverbRoomSize = 0.7,
+		reverbDecay = 1.8,
+		reverbDamping = 0.55,
+		reverbPreDelayMs = 24.0,
+	},
+
+	-- The key, in the same shape as the crew door's: the id is stable because a
+	-- player's rebind is stored under it, and `DEFAULT = false` would be a real
+	-- declaration of "no default binding".
+	KEY = { ID = 'opx.ncpd.radio', NAME = 'ncpd.key.radio', DEFAULT = 'F2' },
+
+	-- Lines the feed keeps for a scanner that stows and comes back. Bounded so
+	-- the frame carrying them is one host payload -- the ceiling is 1024 value
+	-- nodes and one line is about ten -- and capped again on the page.
+	BACKLOG = 30,
+
+	-- ONE TABLE, TWO READERS, exactly as `M.BoardRefusal` is: the server refuses
+	-- with a code, a player reads a sentence, and the map between them lives here
+	-- so the toast and the panel say the same thing in the same words. A code
+	-- this table has not heard of names itself rather than going blank.
+	Refusal = {
+		noCitizen = 'ncpd.radio.noCitizen',
+		notOnDuty = 'ncpd.radio.notOnDuty',
+		notDivision = 'ncpd.radio.notDivision',
+		-- A key pressed into a menu: refused before it reaches the wire.
+		captured = 'ncpd.radio.menuOpen',
+		failed = 'ncpd.radio.failed',
+	},
 }

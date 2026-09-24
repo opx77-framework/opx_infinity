@@ -74,7 +74,15 @@ end
 -- renders as its raw key for the whole session; it is sent once, from the `ready`
 -- handler, with no retry. `modules/hud/client/main.lua` records players seeing
 -- `hud.voice.state.idle` painted on screen, which is exactly this symptom.
-local CATALOGUE_PART = 250
+-- The drain's grain, taken from the one drain that is proven live:
+-- `modules/inventory/client/main.lua`'s `CATALOG_PART = 40`, on purpose. Its
+-- comment is the law: an entry costs about sixty VM instructions to shape, and
+-- a client handler that passes 10 000 is stopped by the host -- the same
+-- figure `core/shared/lifecycle.lua` names (~10 000 instructions). Forty
+-- shaped entries are ~2 400 instructions; the first attempt's 250 were
+-- ~15 000 -- every part over the ceiling by itself, so the chunking died
+-- exactly as the unchunked send had.
+local CATALOGUE_PART = 40
 
 --- Writes the locale catalogue to the page, in parts, reading every answer.
 ---
@@ -83,18 +91,30 @@ local CATALOGUE_PART = 250
 --- the page holds and `done` says the last part has landed -- the same idiom
 --- `modules/inventory`'s `drainCatalog` uses, and for the same reason.
 ---
---- ONE PART PER FRAME. A `Wait(0)` resets the per-resume instruction budget, the
---- same argument `core/shared/lifecycle.lua` makes for yielding between module
---- `Start`s: eight parts shaped and sent in one resume is one budget between them.
+--- ONE BOUNDED UNIT PER RESUME. A `Wait(0)` resets the per-resume instruction
+--- budget (~10 000 instructions), the same argument `core/shared/lifecycle.lua`
+--- makes for yielding between module `Start`s: the merge, the key list and each
+--- 40-key part shaped and sent in one resume is one budget between them.
 local function sendCatalogue(surface)
-	local strings = OPX.Locale.Catalogue()
-	local keys = {}
-	for key in pairs(strings) do keys[#keys + 1] = key end
-
 	local function write()
+		-- ONE BOUNDED UNIT PER RESUME, each behind its own `Wait(0)`. The host
+		-- stops a client handler at ~10 000 instructions -- inventory's and
+		-- lifecycle's shared, live-proven figure -- and the units are sized
+		-- against it: the flat merge, the key list, and one drained part each
+		-- take a resume of their own. The first fix left the merge and the key
+		-- list sharing the first part's resume, and that resume still died bare
+		-- ("Open77 script execution budget exceeded", no frame) with the
+		-- catalogue lost and every label rendering as its raw key.
+		if type(Wait) == 'function' then Wait(0) end
+		local strings = OPX.Locale.Catalogue()
+		if type(Wait) == 'function' then Wait(0) end
+		local keys = {}
+		for key in pairs(strings) do keys[#keys + 1] = key end
+
 		local at = 1
 		local total = #keys
-		repeat
+		while at <= total do
+			if type(Wait) == 'function' then Wait(0) end
 			local last = math.min(total, at + CATALOGUE_PART - 1)
 			local part = {}
 			for index = at, last do part[keys[index]] = strings[keys[index]] end
@@ -118,8 +138,7 @@ local function sendCatalogue(surface)
 			end
 
 			at = last + 1
-			if at <= total and type(Wait) == 'function' then Wait(0) end
-		until at > total
+		end
 	end
 
 	-- On a thread, because `write` yields and this runs from a page callback.

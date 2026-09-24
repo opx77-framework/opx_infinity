@@ -23,7 +23,16 @@ local Target = M.Target
 
 -- Rows sent in one registration. The registry takes at most 32 and refuses a
 -- batch whole, so the batch is small enough that one bad row is easy to place.
-local BATCH = 8
+--
+-- FOUR AND NOT EIGHT, because the host's budget is measured per RESUME and one
+-- registration is one resume's worth of work. Measured in the suite's harness
+-- (2026-09-21, `probe-target-cost`), the registry costs about 1 100 instructions
+-- a row: a batch of eight is 9 000, which is INSIDE one 10 000-instruction hook
+-- interval only by luck, and sixteen is 17 000. Four is ~4 300 with the whole
+-- interval as margin, and the batch boundary below keeps the registry's
+-- whole-or-not-at-all promise -- the fix for the cost is the yield, not a
+-- smaller promise.
+local BATCH = 4
 
 -- Milliseconds before the first access request, then between two. A grant taken
 -- away has to reach the eye without the operator opening the menu.
@@ -498,6 +507,21 @@ local function register(contract, byKind, signature)
 				registered = nil
 				return false
 			end
+			-- ONE BATCH PER RESUME. The whole pass is ~31 rows across five kinds,
+			-- which is 36 000 instructions if it runs in one go -- and it did:
+			--
+			--   opx_infinity/modules/target/shared/model.lua:283: Open77 script
+			--   execution budget exceeded
+			--     in field 'Register' ... in field 'RegisterMany'
+			--     modules/admin/client/target.lua:554: in field 'Access'
+			--     modules/admin/client/menu.lua:2222
+			--
+			-- The line it named was a table lookup, because the raise fires at the
+			-- first hook interval past the slice and not at anything hot. What it
+			-- cost was every staff row: the coroutine that raised is the one that
+			-- asked, so the eye came up with no admin options on it and the only
+			-- trace was an error line in a client log.
+			if Wait ~= nil then Wait(0) end
 		end
 	end
 	registered = signature
@@ -519,6 +543,15 @@ local function register(contract, byKind, signature)
 end
 
 -- Brings the eye's rows in line with the access map, one registration at a time.
+--
+-- IN A THREAD, AND THAT IS WHAT MAKES THE YIELD ABOVE POSSIBLE. This is reached
+-- from `RegisterNetEvent(M.Event.ACCESS, ...)`, and an event handler is not a
+-- coroutine: a `Wait` in that stack raises `attempt to yield from outside a
+-- coroutine` instead of splitting the work, so the registration ran to the end
+-- in one resume however large the access map was. The thread owns the loop now;
+-- the `syncing`/`dirty` pair that was already here is what makes a second access
+-- map arriving mid-registration safe, and it had to be -- every yield is a frame
+-- in which one can.
 local function sync()
 	local contract = Client.Contract('target')
 	if contract == nil then
@@ -530,18 +563,20 @@ local function sync()
 		return
 	end
 	syncing = true
-	repeat
-		dirty = false
-		local built, byKind, signature = pcall(wanted)
-		if built then
-			register(contract, byKind, signature)
-		else
-			registered = nil
-			Open77.log.warn('[admin] staff rows: ' .. tostring(byKind))
-			report('staff rows not built: ' .. tostring(byKind))
-		end
-	until not dirty
-	syncing = false
+	CreateThread(function()
+		repeat
+			dirty = false
+			local built, byKind, signature = pcall(wanted)
+			if built then
+				register(contract, byKind, signature)
+			else
+				registered = nil
+				Open77.log.warn('[admin] staff rows: ' .. tostring(byKind))
+				report('staff rows not built: ' .. tostring(byKind))
+			end
+		until not dirty
+		syncing = false
+	end)
 end
 
 --- Takes an access map from the opener or from a refresh, and registers what it

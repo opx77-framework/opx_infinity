@@ -209,6 +209,7 @@ function Host.Environment(side, database)
 	-- while the vehicle it created sat in the world.
 	local control
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
+	local vehicleWarps, vehicleLocks, vehicleEjects
 	local bodies, effects, travels, notices, placement, lifts, trips
 	local npcs, npcCreates, npcRemoves, npcAttitudes, npcGroups, population
 
@@ -378,7 +379,55 @@ function Host.Environment(side, database)
 			-- The seat THIS client is in, which is what tells the strip whether the
 			-- key is about to take a vehicle out or put one away. Slot 1 is the
 			-- local player here, the same convention `state.localPlayer` uses.
-			getPlayerSeat = function() return seats[1] end,
+			--
+			-- A NAMED PLAYER READS ITS OWN SLOT, because the crew door reads the
+			-- seats of the players IT seated: `seats[1]` was the whole oracle, so a
+			-- custody read could not tell one crew member from another. The
+			-- no-argument form keeps the local-player shorthand every other caller
+			-- in this suite was written against.
+			getPlayerSeat = function(playerId)
+				if playerId == nil then return seats[1] end
+				return seats[tonumber(playerId) or playerId]
+			end,
+			-- The crew door's own seam, and the reason this stub grew: a seat is
+			-- taken by a SERVER call (`warpPlayerIntoVehicle`) that no client has
+			-- to agree with, and the exit lock travels with it. Both are recorded
+			-- with their arguments -- the lock in particular, because "he stayed
+			-- aboard a flying aircraft" and "the lock was never set" are the same
+			-- picture from the street.
+			seatFree = function(id, seat)
+				if type(vehicles.seatsTaken) == 'table' and vehicles.seatsTaken[seat] == true then
+					return false
+				end
+				if vehicles.seatRead == false then return nil, 'vehicle_not_found' end
+				return true
+			end,
+			warpPlayerIntoVehicle = function(playerId, id, seat, options)
+				vehicleWarps[#vehicleWarps + 1] = { playerId = playerId, id = id, seat = seat,
+					options = options }
+				if vehicles.warpRefuse ~= nil then return nil, tostring(vehicles.warpRefuse) end
+				-- A warp that is taken is a warp the ledger knows about: the seat read
+				-- the custody pass makes is the platform's own, so the stub fills it in
+				-- rather than leaving a test to write both halves of the same fact.
+				seats[tonumber(playerId) or playerId] = { vehicleId = id, seat = seat,
+					exitLocked = options ~= nil and options.exitLocked == true }
+				return true
+			end,
+			setPlayerExitLocked = function(playerId, locked, id)
+				vehicleLocks[#vehicleLocks + 1] = { playerId = playerId, locked = locked, id = id }
+				if vehicles.lockRefuse ~= nil then return nil, tostring(vehicles.lockRefuse) end
+				local held = seats[tonumber(playerId) or playerId]
+				if type(held) == 'table' then held.exitLocked = locked == true end
+				return true
+			end,
+			forcePlayerOutOfVehicle = function(playerId, id)
+				vehicleEjects[#vehicleEjects + 1] = { playerId = playerId, id = id }
+				-- Forced out is out: the seat ledger the custody pass reads has to
+				-- follow, or a test that removes a crew member would leave them
+				-- seated forever.
+				seats[tonumber(playerId) or playerId] = nil
+				return true
+			end,
 		},
 
 		-- Spawned characters. The police response is the only thing in this
@@ -852,6 +901,238 @@ function Host.Environment(side, database)
 		resource = { generation = function() return 1 end },
 	}
 
+	-- The cyberware store and the animation player, stubbed in the shape the
+	-- .87 wiki documents. THE RECORD MUTATES ONLY WHEN A TEST SAYS THE WORK
+	-- COMPLETED (`cyberware.complete`): a ticket is pending work, never a
+	-- purchase, and a stub that fitted chrome at staging time would certify a
+	-- broken shop. Completion is FIRED BY THE TEST (`control.Fire` with the
+	-- host's own STRING player id and a JSON result), so both the async gap and
+	-- the string/number id convention are exercised rather than assumed.
+	local cyberware = {
+		-- definition id -> what `define` was handed.
+		defined = {},
+		-- player -> the durable record `{revision, arms, legs, ...}`. NIL means
+		-- still loading, which is the wiki's `notReady` state.
+		records = {},
+		-- Every staged install/remove, newest last, with its arguments.
+		installs = {},
+		removes = {},
+		-- ticket -> the staged work, committed by `complete`.
+		pending = {},
+		ops = 0,
+		seq = 0,
+		-- What the next staging answers instead of a ticket.
+		refuse = nil,
+	}
+
+	--- Commits (or rolls) one staged ticket, exactly as the platform would on
+	--- its completion. Returns the staged record for the test's own firing.
+	cyberware.complete = function(ticket, ok)
+		local staged = cyberware.pending[ticket]
+		if staged == nil then return nil end
+		cyberware.pending[ticket] = nil
+		if ok == true then
+			local record = cyberware.records[staged.player]
+			if record == nil then
+				record = { revision = 0 }
+				cyberware.records[staged.player] = record
+			end
+			if staged.mode == 'install' then
+				record[staged.slot] = {
+					instanceId = 'inst-' .. tostring(ticket),
+					definition = staged.definition,
+					definitionVersion = 1,
+					profile = staged.profile,
+					slot = staged.slot,
+					grade = staged.grade,
+				}
+			else
+				record[staged.slot] = nil
+			end
+			record.revision = (record.revision or 0) + 1
+			record.operationSlot = staged.slot
+			record.operationId = staged.operationId
+		end
+		return staged
+	end
+
+	local animations = {
+		-- Every play/playAt argument list, and every stop handle.
+		started = {},
+		stopped = {},
+		seq = 0,
+		-- What the next playAt answers instead of a playback.
+		refuse = nil,
+	}
+
+	-- The native VOIP seam, stubbed in the shape `wiki/voice.md` documents: the
+	-- server half owns channels and seats, the client half keys the PTT and
+	-- turns gains. Every call is recorded so a test can pin WHAT was asked for,
+	-- and `refuse` stages the platform's own `boolean, reason` refusals.
+	local voice = {
+		-- Every `createChannel` options table, newest last; ids are minted here.
+		created = {},
+		removed = {},
+		-- channel id -> player -> the permissions `addPlayer` was handed.
+		members = {},
+		-- Every seat/unseat operation, in order.
+		seatOps = {},
+		-- Every `setTransmitting(enabled, intent)` argument list.
+		transmitting = {},
+		capture = nil,
+		-- channel id -> the local gain `setChannelVolume` was handed.
+		gains = {},
+		seq = 0,
+		-- What the next addPlayer answers instead of `true`.
+		refuse = nil,
+	}
+
+	Open77.voice = {
+		createChannel = function(options)
+			voice.seq = voice.seq + 1
+			voice.created[#voice.created + 1] = options
+			local id = 'air-' .. voice.seq
+			voice.members[id] = {}
+			return { id = id, name = options and options.name,
+				mode = options and options.mode, effect = options and options.effect }
+		end,
+		removeChannel = function(id)
+			voice.removed[#voice.removed + 1] = id
+			return true
+		end,
+		addPlayer = function(id, player, permissions)
+			if voice.refuse ~= nil then
+				local why = voice.refuse
+				voice.refuse = nil
+				return false, why
+			end
+			voice.seatOps[#voice.seatOps + 1] = { 'add', id, player, permissions }
+			voice.members[id] = voice.members[id] or {}
+			voice.members[id][player] = permissions or true
+			return true
+		end,
+		removePlayer = function(id, player)
+			voice.seatOps[#voice.seatOps + 1] = { 'remove', id, player }
+			if voice.members[id] ~= nil then voice.members[id][player] = nil end
+			return true
+		end,
+		setCaptureEnabled = function(enabled)
+			voice.capture = enabled
+			return true
+		end,
+		setTransmitting = function(enabled, intent)
+			voice.transmitting[#voice.transmitting + 1] = { enabled, intent }
+			return true
+		end,
+		setChannelVolume = function(id, gain)
+			voice.gains[id] = gain
+			return true
+		end,
+		setOutputVolume = function(gain)
+			voice.output = gain
+			return true
+		end,
+		status = function()
+			return { inputLevel = 37, proximityEnabled = true }
+		end,
+		talkers = function() return {} end,
+	}
+
+	Open77.cyberware = {
+		-- What the next `define` answers instead of `{ok=true}`. It lives on
+		-- the API table -- the very object a resource holds -- so a boot
+		-- prelude can arm it before Start. The host's answers are TABLES
+		-- (`cyberwareRequest` json-decodes every handled outcome); a stub
+		-- returning bare `true` lets a result reader pass here and lie on the
+		-- server, which it did.
+		refuseDefine = nil,
+		define = function(definition)
+			local why = Open77.cyberware.refuseDefine
+			if why ~= nil then
+				Open77.cyberware.refuseDefine = nil
+				return { ok = false, reason = why }
+			end
+			cyberware.defined[tostring(definition and definition.id)] = definition
+			return { ok = true }
+		end,
+		current = function(player) return cyberware.records[player] end,
+		newOperationId = function()
+			cyberware.ops = cyberware.ops + 1
+			return 'op-' .. cyberware.ops
+		end,
+		install = function(player, definition, grade, options)
+			cyberware.installs[#cyberware.installs + 1] = { player, definition, grade, options }
+			if cyberware.refuse ~= nil then
+				local why = cyberware.refuse
+				cyberware.refuse = nil
+				return nil, why
+			end
+			local defined = cyberware.defined[tostring(definition)]
+			if defined == nil or type(options) ~= 'table' then
+				return nil, 'unknown_definition'
+			end
+			local snapshot = nil
+			for _, row in ipairs(type(defined.grades) == 'table' and defined.grades or {}) do
+				if row.id == grade then snapshot = row end
+			end
+			cyberware.seq = cyberware.seq + 1
+			local ticket = 'tkt-' .. cyberware.seq
+			cyberware.pending[ticket] = {
+				player = player, mode = 'install', definition = tostring(definition),
+				slot = defined.slot, profile = defined.profile,
+				grade = snapshot or { id = grade }, operationId = options.operationId,
+			}
+			return { ok = true, ticket = ticket }
+		end,
+		remove = function(player, options)
+			cyberware.removes[#cyberware.removes + 1] = { player, options }
+			if cyberware.refuse ~= nil then
+				local why = cyberware.refuse
+				cyberware.refuse = nil
+				return nil, why
+			end
+			if type(options) ~= 'table' then return nil, 'bad_options' end
+			cyberware.seq = cyberware.seq + 1
+			local ticket = 'tkt-' .. cyberware.seq
+			cyberware.pending[ticket] = {
+				player = player, mode = 'remove',
+				slot = options.slot or 'arms', operationId = options.operationId,
+			}
+			return { ok = true, ticket = ticket }
+		end,
+	}
+
+	Open77.animations = {
+		play = function(player, profile, options)
+			animations.started[#animations.started + 1] = { player, profile, nil, nil, options }
+			animations.seq = animations.seq + 1
+			return { playbackId = 'pb-' .. animations.seq }
+		end,
+		playAt = function(player, profile, position, yaw, options)
+			animations.started[#animations.started + 1] = { player, profile, position, yaw, options }
+			if animations.refuse ~= nil then
+				local why = animations.refuse
+				animations.refuse = nil
+				return nil, why
+			end
+			animations.seq = animations.seq + 1
+			return {
+				playbackId = 'pb-' .. animations.seq,
+				anchor = { x = position and position.x, y = position and position.y,
+					z = position and position.z, yaw = yaw or 0 },
+			}
+		end,
+		stop = function(player, playbackId)
+			animations.stopped[#animations.stopped + 1] = { player, playbackId }
+			return true
+		end,
+		stopAt = function(playbackId)
+			animations.stopped[#animations.stopped + 1] = { nil, playbackId }
+			return true
+		end,
+		current = function() return nil end,
+	}
+
 	Open77.database = database
 
 	-- Recorded by the marker and key stubs above, and read by the tests.
@@ -865,6 +1146,11 @@ function Host.Environment(side, database)
 	vehicles = { refuse = nil, snapshot = nil, poseRefuse = nil }
 	vehicleCreates = {}
 	vehicleRemoves = {}
+	-- The crew door's own ledgers: the mounts, the exit locks and the forced
+	-- exits the server asked for, in the order it asked.
+	vehicleWarps = {}
+	vehicleLocks = {}
+	vehicleEjects = {}
 	-- Every pose a vehicle was told to take, and every pin put on one.
 	vehiclePoses = {}
 	vehiclePins = {}
@@ -1091,7 +1377,22 @@ function Host.Environment(side, database)
 
 	if side == 'server' then
 		env.TriggerClientEvent = function(name, source, ...)
+			-- THE HOST'S OWN WIRE CHECKS, mirrored: `lua.CheckInteger(2)`
+			-- RAISES on a target that is not a number (numeric strings
+			-- coerce, as `luaL_checkinteger` does), and a target outside the
+			-- player range answers `invalid_target`. A stub that recorded
+			-- ANYTHING made a reply to a nil target look exactly like a
+			-- delivered one -- which is how `bad argument #2 to
+			-- 'TriggerClientEvent'` stayed invisible here while it killed
+			-- every frame live on the server.
+			local target = tonumber(source)
+			if type(source) ~= 'number' and (type(source) ~= 'string' or target == nil) then
+				error(("bad argument #2 to 'TriggerClientEvent' (number expected, got %s)")
+					:format(type(source)), 2)
+			end
+			if target < -1 or target == 0 then return false, 'invalid_target' end
 			clientEvents[#clientEvents + 1] = { name = name, source = source, ... }
+			return true
 		end
 	else
 		-- RECORDED, NOT SWALLOWED. This used to be an empty function, which made
@@ -1133,6 +1434,51 @@ function Host.Environment(side, database)
 		tunables = tunables,
 		handlers = handlers,
 
+		-- Every thread `CreateThread` has queued, oldest first.
+		--
+		-- Exposed so a test can drive resumes ITSELF rather than through `Pump`,
+		-- which is the only way to measure what the host actually budgets: one
+		-- `coroutine.resume` is one resume, and the host arms a count hook on
+		-- each. `Pump` resumes every thread once per round and cannot see the
+		-- boundary; the budget section in `tests/run.lua` walks these directly.
+		threads = threads,
+
+		--- Runs frames until every thread that exists NOW has finished, so a test
+		--- that wants "the resource is up" does not have to guess how many resumes
+		--- the boot takes.
+		---
+		--- IT IS NOT A FIXED NUMBER ANY MORE, and that is the point: the lifecycle
+		--- yields between modules in EVERY phase -- one resume per module per phase
+		--- -- because a resume that runs more than one hook interval is killed
+		--- outright by the host's budget. The old `Pump(60)` was sized for a boot
+		--- that yielded in `Start` alone; when `Init` and `Api` were given the same
+		--- treatment that boot needed ~100 resumes and the helper's 60 rounds ended
+		--- mid-boot, which read as "the spawn module is running: FAIL" and then as
+		--- a crash on a contract nobody had published. A count that has to be
+		--- re-tuned every time a module is added is a count that will be wrong.
+		---
+		--- Threads created DURING the drain are left alone: they are the scheduler
+		--- and the loops, which never end by design, and `Pump` is how a test
+		--- drives those afterwards.
+		Boot = function(rounds)
+			local waiting = {}
+			for _, thread in ipairs(threads) do waiting[#waiting + 1] = thread end
+			for _ = 1, rounds or 400 do
+				clock = clock + 100
+				local alive = false
+				for _, thread in ipairs(waiting) do
+					if coroutine.status(thread) == 'suspended' then
+						alive = true
+						local ok, failure = coroutine.resume(thread)
+						if not ok then
+							log.error[#log.error + 1] = 'thread died: ' .. tostring(failure)
+						end
+					end
+				end
+				if not alive then return end
+			end
+		end,
+
 		--- Resumes every queued thread up to `rounds` times, so a `while true`
 		--- loop in the runtime cannot hang the test.
 		Pump = function(rounds)
@@ -1164,6 +1510,13 @@ function Host.Environment(side, database)
 		-- exercised.
 		markers = markers,
 
+		-- The cyberware store and the animation player: what is defined, what is
+		-- fitted, and every staged call. `cyberware.complete` is how a test says
+		-- the platform finished the work.
+		cyberware = cyberware,
+		animations = animations,
+		voice = voice,
+
 		-- The keyboard: `input.captured` is another surface holding it, `input.keys`
 		-- is what each mapping answers to after a rebind.
 		input = input,
@@ -1179,6 +1532,9 @@ function Host.Environment(side, database)
 		-- id `remove` was called with.
 		vehicleCreates = vehicleCreates,
 		vehicleRemoves = vehicleRemoves,
+		vehicleWarps = vehicleWarps,
+		vehicleLocks = vehicleLocks,
+		vehicleEjects = vehicleEjects,
 
 		-- The flight a vehicle was given, in order, and the pins put on one. Read
 		-- by the MaxTac checks: an insertion has to be provable as a RUN -- out at

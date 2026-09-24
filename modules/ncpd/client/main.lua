@@ -189,6 +189,245 @@ RegisterNetEvent(M.Event.STAGE, function(payload)
 	})
 end)
 
+-- ── the crew door ─────────────────────────────────────────────────────────────
+--
+-- THE SERVER DECIDES AND THIS HALF ASKS. Which aircraft is boardable, who may
+-- hold a seat and whether one is free are the controller's own reads
+-- (`server/av.lua`): it announces the door to the air division the moment it
+-- opens and withdraws the word with a `nil` when it shuts. Nothing here computes
+-- a window, a reach or a seat. This half draws the row while the body is inside
+-- the reach that door named, and it knocks -- one event, carrying nothing at all.
+--
+-- THE ROW IS NOT THE PERMISSION. It is a hint that a door exists nearby and which
+-- key walks through it; the duty rule, the distance and the seat are all settled
+-- again on the server, so a client that never draws the row still has the console
+-- door (`/opx.ncpd.board`) and a client that draws one it should not have simply
+-- gets a refusal it can read.
+
+--- The prompts group this row lives in. One owner, one group: the aircraft's
+--- controller owns the decision and this is the surface it appears on.
+local OWNER = 'ncpd'
+local GROUP = 'crew'
+
+--- The host's own rebind signal. "onKeybindsChanged" is not a name the platform
+--- raises (nothing in the engine or the shell emits it) -- the resolved caps are
+--- announced by `open77:keybinds:changed`, which is what the strip itself
+--- listens to.
+local HOST_KEYBINDS_CHANGED = 'open77:keybinds:changed'
+
+--- How often the row is re-read against the player's own position. Half a second:
+--- fast enough that walking up to a hull has the row on screen before the hold is
+--- half over, and small enough that the read costs nothing.
+local DOOR_SCAN_MS = 500
+
+--- The door as the server last announced it, or nil when there is none. The
+--- payload is the aircraft's own: `{ citizenId, avId, position, reach, seats,
+--- seconds }`.
+local door = nil
+
+--- Whether the key mapping answered, whether the row is up, and the locale key it
+--- was drawn with -- so a change of what the key does is a redraw and nothing else.
+local keyRegistered, shown, shownLabel = false, false, nil
+
+--- Whether this client has already said the two things it says once.
+local stripWarned = false
+
+--- The key declaration, read from the validated config with the shipped value as
+--- the fallback: a config that lost its key block still names one rather than
+--- leaving the feature unreachable.
+-- @return table
+local function boardKey()
+	local maxtac = Law.Maxtac
+	local boarding = maxtac ~= nil and maxtac.Boarding or nil
+	local key = boarding ~= nil and boarding.Key or nil
+	if type(key) == 'table' and type(key.ID) == 'string' and key.ID ~= ''
+		and type(key.NAME) == 'string' and key.NAME ~= '' then
+		return {
+			ID = key.ID,
+			NAME = key.NAME,
+			-- `false` is a real declaration: "no default binding".
+			DEFAULT = key.DEFAULT ~= false and (key.DEFAULT or 'F') or false,
+		}
+	end
+	return { ID = 'opx.ncpd.board', NAME = 'ncpd.key.board', DEFAULT = 'F' }
+end
+
+--- Where the local player is, or nil. Read rather than kept, because a body walks
+--- and the hull does not.
+-- @return table|nil `{ x, y, z }`
+local function myself()
+	local character = Open77 and Open77.character
+	if type(character) ~= 'table' or type(character.position) ~= 'function' then return nil end
+	local read, x, y, z = pcall(character.position)
+	if not read or type(x) ~= 'number' or type(y) ~= 'number' or type(z) ~= 'number' then
+		return nil
+	end
+	-- A read that answers a NaN is a read that failed, and a comparison against
+	-- one is never true: said here so the row cannot light up on a broken read.
+	if x ~= x or y ~= y or z ~= z then return nil end
+	return { x = x, y = y, z = z }
+end
+
+--- Whether another surface holds the keyboard. A key pressed into a menu is not a
+--- request to board, which is why the row is not drawn while one is up either.
+-- @return boolean
+local function captured()
+	local input = Open77 and Open77.input
+	if type(input) ~= 'table' or type(input.isCaptured) ~= 'function' then return false end
+	local read, answer = pcall(input.isCaptured)
+	return read and answer == true
+end
+
+--- How far the player is from the hull the server named, or nil when either end of
+--- that measurement is unknown.
+-- @return number|nil
+local function metresToDoor()
+	if type(door) ~= 'table' or type(door.position) ~= 'table' then return nil end
+	local at = myself()
+	if at == nil then return nil end
+	local hull = door.position
+	local dx = at.x - (tonumber(hull.x) or 0.0)
+	local dy = at.y - (tonumber(hull.y) or 0.0)
+	local dz = at.z - (tonumber(hull.z) or 0.0)
+	return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+--- Whether the row should be up: a door the server says is open, a body inside the
+--- reach that door named, a key that answers, and no menu holding the keyboard.
+-- @return boolean
+local function rowWanted()
+	if type(door) ~= 'table' or not keyRegistered or captured() then return false end
+	local reach = tonumber(door.reach)
+	local metres = metresToDoor()
+	return reach ~= nil and metres ~= nil and metres <= reach
+end
+
+--- Names the key the row is bound to, or nil when the mapping was refused. Read
+--- from the host's resolved caps so a rebind is the player's own word for it.
+-- @return string|nil
+local function keyLabel()
+	if not keyRegistered then return nil end
+	local declared = boardKey()
+	if OPX.Lib ~= nil and OPX.Lib.Input ~= nil and type(OPX.Lib.Input.KeyFor) == 'function' then
+		return OPX.Lib.Input.KeyFor(declared.ID) or declared.DEFAULT
+	end
+	return declared.DEFAULT
+end
+
+--- Brings the strip in line with the door and with where the body stands.
+-- A row that outlived its window would be a key that answers a refusal forever,
+-- and a row that only appeared on a keystroke would never appear at all.
+local function syncRow()
+	local want = rowWanted()
+	local label = want and 'ncpd.prompt.board' or nil
+	if want == shown and label == shownLabel then return end
+
+	local api = OPX.Api.Get('prompts')
+	if api == nil or type(api.Show) ~= 'function' or type(api.Hide) ~= 'function' then
+		-- No strip is not a failure: the console door still seats a crew, and
+		-- this is said once.
+		if want and not stripWarned then
+			stripWarned = true
+			Open77.log.info('[ncpd] no prompts contract; the crew-door row is not shown')
+		end
+		shown = false
+		return
+	end
+
+	shown, shownLabel = want, label
+	local ran, answer
+	if want then
+		ran, answer = pcall(api.Show, OWNER, GROUP, { rows = { {
+			keys = { action = boardKey().ID },
+			-- Short on purpose: the strip never wraps a line.
+			label = locale(label),
+		} } })
+	else
+		ran, answer = pcall(api.Hide, OWNER, GROUP)
+	end
+	local failure = nil
+	if not ran then
+		failure = tostring(answer)
+	elseif type(answer) ~= 'table' or answer.ok ~= true then
+		failure = type(answer) == 'table' and tostring(answer.error or 'refused') or 'malformed_answer'
+	end
+	if failure ~= nil and not stripWarned then
+		stripWarned = true
+		Open77.log.warn('[ncpd] the crew-door row was refused: ' .. failure)
+	end
+end
+
+--- Knocks on the crew door: one event, carrying nothing.
+--
+-- THE TWO LOCAL REFUSALS ARE THE TWO THAT NEED NO WIRE TRIP -- a key pressed into
+-- a menu, and a key pressed with no door open anywhere on this client. Everything
+-- else is the server's answer, read back through `M.Event.BOARDED`, because the
+-- duty rule and the seat are exactly the things a client must not be believed on.
+-- @param origin string|nil 'key' for a key press, for the log line
+-- @return table `{ ok, code }`
+function M.Board(origin)
+	if captured() then return { ok = false, code = 'captured' } end
+	if type(door) ~= 'table' then return { ok = false, code = 'no_aircraft' } end
+	TriggerServerEvent(M.Event.BOARD)
+	if origin ~= nil then
+		Open77.log.info(('[ncpd] crew door knocked on (%s)'):format(tostring(origin)))
+	end
+	return { ok = true, queued = true }
+end
+
+--- What this half knows about the door, for a diagnostic or a test.
+-- @return table
+function M.BoardStatus()
+	return {
+		door = type(door) == 'table',
+		shown = shown,
+		label = shownLabel,
+		key = keyLabel(),
+		metres = metresToDoor(),
+	}
+end
+
+--- The door opening and shutting, as the controller announced it. `nil` is the
+--- shut door: the row comes down and a key pressed afterwards is answered locally
+--- rather than by a round trip that can only say "there is no aircraft".
+RegisterNetEvent(M.Event.DOOR, function(state)
+	if state == nil then
+		door = nil
+		syncRow()
+		return
+	end
+	if type(state) ~= 'table' or type(state.position) ~= 'table' then return end
+	door = state
+	syncRow()
+end)
+
+--- The aircraft controller's answer to this client's own knock: one toast, and
+--- the local bus for anything that wants to know a seat was taken.
+RegisterNetEvent(M.Event.BOARDED, function(payload)
+	if type(payload) ~= 'table' then return end
+	local seat = type(payload.seat) == 'string' and payload.seat or nil
+	if payload.ok == true and seat ~= nil then
+		OPX.Toast.Locale('ncpd.board.aboard', { seat = seat }, 'success')
+	else
+		local code = tostring(payload.reason or 'failed')
+		OPX.Toast.Locale(M.BoardRefusal[code] or 'ncpd.board.failed', { reason = code }, 'error')
+		Open77.log.info(('[ncpd] the crew door refused this client: %s'):format(code))
+	end
+	TriggerEvent(M.Event.ON_BOARD, {
+		ok = payload.ok == true,
+		seat = seat,
+		code = payload.reason,
+	})
+end)
+
+--- The exit lock coming off. The one moment a body in a flying hull has something
+--- to do, so it is said out loud rather than left to be discovered.
+RegisterNetEvent(M.Event.RELEASED, function(payload)
+	local seat = type(payload) == 'table' and tostring(payload.seat or '?') or '?'
+	OPX.Toast.Locale('ncpd.board.released', nil, 'success')
+	Open77.log.info(('[ncpd] the exit lock is off in %s: this crew may step out'):format(seat))
+end)
+
 -- ── the engine's own heat, reported back ───────────────────────────────────────
 --
 -- THIS IS HOW A CRIME REACHES THE LEDGER. The engine charges its own crime score
@@ -299,7 +538,7 @@ function M.Status()
 	return { applied = applied, reported = reported, seam = seam() ~= nil }
 end
 
---- Begins polling the engine's own heat.
+--- Starts the two polls and declares the crew door's key.
 function M.Start()
 	M.running = true
 	CreateThread(function()
@@ -308,11 +547,72 @@ function M.Start()
 			pcall(M.Report)
 		end
 	end)
+
+	-- The mapping's name is translated at registration and its id is stable,
+	-- because a player's rebind is stored under the id.
+	local declared = boardKey()
+	if declared.DEFAULT ~= false then
+		local called, ok, answer = pcall(RegisterKeyMapping, declared.ID, locale(declared.NAME),
+			declared.DEFAULT, function()
+				-- The menu test is made twice on purpose: the row is not drawn while
+				-- one is up, so a key pressed into a menu is a key pressed with no
+				-- row on screen, and it must do nothing rather than knock.
+				if captured() then return end
+				local ran, failure = pcall(M.Board, 'key')
+				if not ran then
+					Open77.log.error(('[ncpd] key %s: %s'):format(declared.ID, tostring(failure)))
+				end
+			end)
+		-- Two answer shapes are documented for the host call: the effective key,
+		-- or `true, key`. Reading only the second logged a working mapping as
+		-- refused.
+		local effective = nil
+		if called then
+			effective = type(ok) == 'string' and ok ~= '' and ok
+				or (ok == true and type(answer) == 'string' and answer ~= '' and answer) or nil
+		end
+		if not called or (ok ~= true and effective == nil) then
+			Open77.log.warn(('[ncpd] key mapping %s (%s) not registered: %s')
+				:format(declared.ID, tostring(declared.DEFAULT),
+					tostring(called and answer or ok)))
+		else
+			keyRegistered = true
+		end
+	end
+
+	-- A rebind changes the caps the row is drawn with; the strip itself re-reads
+	-- them, so this only re-reads whether the row should be up at all.
+	AddEventHandler(HOST_KEYBINDS_CHANGED, function() syncRow() end)
+
+	-- The row follows the body. Walking into reach has to light it up without a
+	-- keystroke, and the aircraft leaving has to take it down without one too.
+	CreateThread(function()
+		while M.running do
+			Wait(DOOR_SCAN_MS)
+			pcall(syncRow)
+		end
+	end)
+
+	-- The police scanner: its key and wire handlers (the state half), then its
+	-- view seam. Two starts because two files own two concerns -- README's view
+	-- seam is a file of its own.
+	if M.Radio.Start then M.Radio.Start() end
+	if M.RadioView and M.RadioView.Start then M.RadioView.Start() end
 end
 
---- Stops the poll. The next session reports its reading again from scratch.
+--- Stops the two polls and takes the row down. The next session reports its
+--- reading again from scratch, and hears the door again from the server.
 function M.Stop()
 	M.running = false
 	reported = nil
 	reportedAtMs = 0
+	door = nil
+	-- Through `syncRow`, so the strip is cleared through the same contract that
+	-- put it up. `keyRegistered` is left alone: a stop is not a rebind, and a
+	-- restart re-registers anyway.
+	syncRow()
+	-- The scanner down last: the view seam gives up focus first, then the state
+	-- half forgets the frame.
+	if M.RadioView and M.RadioView.Stop then M.RadioView.Stop() end
+	if M.Radio.Stop then M.Radio.Stop() end
 end

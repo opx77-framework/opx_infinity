@@ -71,6 +71,14 @@ server_script "config/vehicles.lua"
 -- Shared, unlike the vehicles config above: the client draws the markers and so
 -- reads the radii, the kinds and the marker vocabulary here.
 shared_script "config/garages.lua"
+-- Shared because both halves read it: the client draws a board's marker and
+-- reads the radius, the marker vocabulary and the key, and the server re-derives
+-- every distance, term and ladder level from the same table.
+shared_script "config/jobs.lua"
+shared_script "config/skills.lua"
+-- Shared, like the clothing config: the client draws the chair markers and
+-- reads the look, the reach and the key, and the server re-derives the rest.
+shared_script "config/ripperdoc.lua"
 -- Shared like the garages config, and for the same reason: the client draws the
 -- markers and reads the prices here, and both halves must refuse the same rows.
 shared_script "config/dealership.lua"
@@ -314,12 +322,38 @@ shared_script "modules/ncpd/module.lua"
 shared_script "modules/ncpd/locales.lua"
 shared_script "modules/ncpd/shared/law.lua"
 server_script "modules/ncpd/server/ledger.lua"
+-- The scanner feed, before the halves that push traffic into it:
+-- `M.Radio.Push` has to exist by the time a stage rises or an aircraft moves.
+server_script "modules/ncpd/server/radio.lua"
 -- The MaxTac insertion, before `response.lua` because the response is what asks
 -- it for an aircraft: `M.Av` has to exist by the time a stage is applied.
 server_script "modules/ncpd/server/av.lua"
 server_script "modules/ncpd/server/response.lua"
 server_script "modules/ncpd/server/main.lua"
 client_script "modules/ncpd/client/main.lua"
+-- The scanner's two halves: its state and rules, then the view seam that is the
+-- only file here that knows the other end is a CEF page (README: the view seam).
+client_script "modules/ncpd/client/radio.lua"
+client_script "modules/ncpd/client/radioview.lua"
+
+-- The skill tree: the character's own ledger, fed by the jobs bank's funnel
+-- (`jobs.Event.PAID`) and drawn as three trunks of nodes a level's point may
+-- buy. Before the jobs scripts are not required -- the hook is one guarded
+-- subscription in `Start` -- but after them so the funnel is never subscribed
+-- before it exists on a fresh boot.
+shared_script "modules/skills/module.lua"
+shared_script "modules/skills/locales.lua"
+shared_script "modules/ripperdoc/module.lua"
+shared_script "modules/ripperdoc/locales.lua"
+server_script "modules/ripperdoc/server/storage.lua"
+server_script "modules/ripperdoc/server/main.lua"
+client_script "modules/ripperdoc/client/main.lua"
+client_script "modules/ripperdoc/client/view.lua"
+server_script "modules/skills/server/storage.lua"
+server_script "modules/skills/server/main.lua"
+client_script "modules/skills/client/main.lua"
+-- The view seam: the only file here that knows the other end is a CEF page.
+client_script "modules/skills/client/view.lua"
 
 shared_script "modules/chat/module.lua"
 shared_script "modules/chat/locales.lua"
@@ -448,6 +482,26 @@ shared_script "modules/crafting/shared/recipes.lua"
 server_script "modules/crafting/server/storage.lua"
 server_script "modules/crafting/server/main.lua"
 client_script "modules/crafting/client/main.lua"
+
+-- Employment: the sign-up board a player reads every job on, the seniority
+-- ladder a rank is earned on, and the desk a division's boss manages its roster
+-- from. AFTER `character`, which owns every membership, grade, duty state and
+-- the `/opx.job` command this module grants ranks through -- a rank gained at a
+-- desk is the same rank, arriving on the same client event. `menu` and `prompts`
+-- are optional: without either, the markers still draw, the key still works and
+-- every command still answers.
+shared_script "modules/jobs/module.lua"
+shared_script "modules/jobs/locales.lua"
+shared_script "modules/jobs/shared/seniority.lua"
+-- After `seniority.lua`, whose `Top` the terms reader calls to turn a ladder
+-- into a level count.
+shared_script "modules/jobs/shared/access.lua"
+server_script "modules/jobs/server/storage.lua"
+server_script "modules/jobs/server/main.lua"
+client_script "modules/jobs/client/main.lua"
+-- The lifecycle: the registry calls the module, and `Runtime` is what does the
+-- work. Without this file the client half is never built.
+client_script "modules/jobs/client/exports.lua"
 
 -- The gunsmith, which is the crafting service's first consumer. AFTER
 -- `crafting`, whose benches it registers, and after `target`, whose eye carries
@@ -595,6 +649,27 @@ permissions {
   -- crowd and traffic are read back and written unchanged, so the empty street
   -- stays empty and only the police axis moves.
   "world.population",
+
+  -- The ripperdoc clinic's four, against the .87 cyberware contract:
+  -- `define` registers the clinic's two definitions at Start, `read` takes
+  -- the `current` record every offer consults ("consult `current` for
+  -- slot-empty rules"), `manage` stages the install/remove and mints the
+  -- operation id, and `animations.control` seats the patient on the
+  -- platform's own portable `chair` workspot. `players.cyberware.identity`
+  -- is deliberately NOT here: the appearance adapter binds characters, not
+  -- this shop.
+  "players.cyberware.define",
+  "players.cyberware.read",
+  "players.cyberware.manage",
+  "players.animations.control",
+
+  -- The police scanner's two, against `wiki/voice.md`: `voice.manage` owns the
+  -- radio channels this module creates (channel mutations are resource-owned),
+  -- and `voice.client` keys the PTT (`setTransmitting` with a `channel:<id>`
+  -- intent), turns the volume knob (`setChannelVolume`) and reads the levels
+  -- the TX meter and RX lamp show.
+  "voice.manage",
+  "voice.client",
 
   "world.vehicles",
 

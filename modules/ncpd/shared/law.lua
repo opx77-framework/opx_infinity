@@ -106,6 +106,66 @@ local function slug(value)
 	return text
 end
 
+-- Every seat spelling the platform accepts, mapped to the ONE it reports.
+-- `Open77.vehicles.seats` takes the FiveM numbers, the canonical `seat_*`
+-- names and the aliases listed in `wiki/vehicles.md`, while every read
+-- (`getPlayerSeat(...).seat`, `occupants[]`, `freeSeats`, `occupantInSeat`,
+-- `onPlayerEnteredVehicle`) answers only the canonical name. A seat stored the
+-- way it was written could therefore never be compared against the seat a body
+-- actually holds, which is exactly what the custody read does.
+local SEAT = {}
+do
+	local canonical = {
+		'-1', 'seat_front_left',
+		'0', 'seat_front_right',
+		'1', 'seat_back_left',
+		'2', 'seat_back_right',
+	}
+	local names = {
+		seat_front_left = 'seat_front_left',
+		seat_front_right = 'seat_front_right',
+		seat_back_left = 'seat_back_left',
+		seat_back_right = 'seat_back_right',
+	}
+	local aliases = {
+		driver = 'seat_front_left', frontleft = 'seat_front_left', front_left = 'seat_front_left',
+		frontpassenger = 'seat_front_right', frontright = 'seat_front_right',
+		front_right = 'seat_front_right',
+		rearleft = 'seat_back_left', backleft = 'seat_back_left', back_left = 'seat_back_left',
+		rearright = 'seat_back_right', backright = 'seat_back_right', back_right = 'seat_back_right',
+	}
+	local numbers = { ['-1'] = 'seat_front_left', ['0'] = 'seat_front_right',
+		['1'] = 'seat_back_left', ['2'] = 'seat_back_right' }
+	SEAT.Canonical = canonical
+	-- `pairs`, not `ipairs`: `names` is a MAP of name to itself, and `ipairs` over
+	-- a map walks nothing. Every canonical spelling was therefore absent from the
+	-- table, which made `Law.InSeat('seat_front_right')` nil -- and the door's own
+	-- validator drops `BOARDING` whole when a listed seat is not a seat name, so
+	-- the crew door was silently off on every boot rather than mis-declared.
+	for _, seat in pairs(names) do SEAT[seat] = seat end
+	for alias, seat in pairs(aliases) do SEAT[alias] = seat end
+	for number, seat in pairs(numbers) do SEAT[number] = seat; SEAT[tonumber(number)] = seat end
+end
+
+--- The canonical spelling of any seat the platform accepts, or nil.
+-- Published because the aircraft controller stores the seat it asked for and
+-- later compares it against the seat the host REPORTS: the two spellings have to
+-- be the same one for that comparison to mean anything.
+-- @param seat string|number
+-- @return string|nil `seat_front_left`, `seat_front_right`, `seat_back_left` or
+--   `seat_back_right`
+function Law.InSeat(seat)
+	return SEAT[seat]
+end
+
+--- The four seats of a four-seat vehicle, in seat order.
+-- Published so a caller that wants "the seats of this aircraft" does not borrow a
+-- list that means something else. `Maxtac.Boarding.Seats` is the CREW door's
+-- order -- the seats a PLAYER is offered, with the pilot's left out -- and a
+-- squad of four seated from that list leaves its last trooper standing in the
+-- street beside an aircraft with an empty seat in it.
+Law.Seats = { 'seat_front_left', 'seat_front_right', 'seat_back_left', 'seat_back_right' }
+
 local function warn(message)
 	Law.Warnings[#Law.Warnings + 1] = message
 end
@@ -523,6 +583,99 @@ do
 			end
 		end
 
+		-- THE CREW DOOR. Read here rather than at the first press, for the same
+		-- reason the insertion plan is: a seat the platform cannot spell is a
+		-- refusal nobody sees until a player is standing under an aircraft.
+		-- Every accepted spelling is the host's own (`Open77.vehicles.seats`
+		-- takes numbers, the canonical `seat_*` names and their aliases); this
+		-- keeps the canonical ones, because that is the only spelling the
+		-- runtime ever REPORTS back, and a seat list that cannot be compared
+		-- against `getPlayerSeat(...).seat` is a list the custody read cannot
+		-- use.
+		local boarding = nil
+		local door = maxtac.BOARDING
+		if type(door) ~= 'table' then
+			warn('ncpd: MAXTAC.BOARDING is not a table, so nobody can get aboard the AV')
+		elseif door.ENABLED == false then
+			-- Named, because an operator who switched the door off should see
+			-- that the module heard them rather than a silent absence.
+			warn('ncpd: MAXTAC.BOARDING.ENABLED is false; the aircraft is not boardable')
+		else
+			local seconds = finite(door.SECONDS)
+			if seconds == nil or seconds < 0 then
+				warn('ncpd: MAXTAC.BOARDING.SECONDS is not a duration')
+			end
+			local reach = positive(door.REACH_METRES)
+			if reach == nil then
+				warn('ncpd: MAXTAC.BOARDING.REACH_METRES is not a distance')
+			end
+			local seats, seated = {}, {}
+			if type(door.SEATS) ~= 'table' then
+				warn('ncpd: MAXTAC.BOARDING.SEATS is not a list of seats')
+			else
+				for index, seat in ipairs(door.SEATS) do
+					local canonical = SEAT[seat]
+					if canonical == nil then
+						warn(('ncpd: MAXTAC.BOARDING.SEATS entry %d is not a seat name')
+							:format(index))
+					elseif canonical == 'seat_front_left' then
+						-- The pilot seat is where the aircraft's own flight controls
+						-- are authored. A crew may fly from any seat, and offering
+						-- this one would take the seat a pilot would reach for.
+						warn('ncpd: MAXTAC.BOARDING.SEATS must not offer the pilot seat')
+					elseif not seated[canonical] then
+						-- Two spellings of one seat is one seat, not two: the list is
+						-- the seat ORDER a crew fills, and a duplicate would offer the
+						-- same seat twice and refuse the second body.
+						seated[canonical] = true
+						seats[#seats + 1] = canonical
+					end
+				end
+			end
+			local jobs = records(door.JOBS, 'BOARDING.JOBS')
+			if #jobs == 0 then
+				warn('ncpd: MAXTAC.BOARDING.JOBS names no job, so no worker can board')
+			end
+			local key = door.KEY
+			if type(key) ~= 'table' or name(key.ID) == nil or name(key.NAME) == nil then
+				warn('ncpd: MAXTAC.BOARDING.KEY is not a key declaration')
+			end
+			local restSpeed = positive(door.REST_SPEED)
+			if restSpeed == nil then
+				warn('ncpd: MAXTAC.BOARDING.REST_SPEED is not a speed')
+			end
+			-- Zero is allowed here and is a real choice: "only a hull exactly at
+			-- the drop height counts as down".
+			local restHeight = finite(door.REST_HEIGHT)
+			if restHeight == nil or restHeight < 0 then
+				warn('ncpd: MAXTAC.BOARDING.REST_HEIGHT is not a distance')
+				restHeight = nil
+			end
+			local restSeconds = finite(door.REST_SECONDS)
+			if restSeconds == nil or restSeconds < 0 then
+				warn('ncpd: MAXTAC.BOARDING.REST_SECONDS is not a duration')
+			end
+			local custody = finite(door.CUSTODY_MS)
+			if custody == nil or custody ~= math.floor(custody) or custody < 100 or custody > 60000 then
+				warn('ncpd: MAXTAC.BOARDING.CUSTODY_MS is not a cadence between 100 and 60000 ms')
+				custody = nil
+			end
+			if seconds ~= nil and seconds >= 0 and reach ~= nil and seats[1] ~= nil and #jobs > 0
+				and restSpeed ~= nil and restHeight ~= nil and restSeconds ~= nil and custody ~= nil then
+				boarding = {
+					Seconds = seconds,
+					ReachMetres = reach,
+					Seats = seats,
+					Jobs = jobs,
+					Key = { ID = key.ID, NAME = key.NAME, DEFAULT = key.DEFAULT },
+					RestSpeed = restSpeed,
+					RestHeight = restHeight,
+					RestSeconds = restSeconds,
+					CustodyMs = custody,
+				}
+			end
+		end
+
 		Law.Maxtac = {
 			Stage = stage,
 			Heat = row ~= nil and row.Heat or nil,
@@ -543,6 +696,10 @@ do
 			Tag = name(maxtac.TAG),
 			AloneEffect = name(maxtac.ALONE_EFFECT),
 			Squad = type(squad) == 'table' and squad or nil,
+			-- `nil` when the door is off or misdeclared: the controller then
+			-- holds no boarding window at all, which is the only honest shape
+			-- for a door nobody can walk through.
+			Boarding = boarding,
 		}
 	end
 end

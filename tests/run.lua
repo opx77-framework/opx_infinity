@@ -61,6 +61,9 @@ local function boot(side, database, prelude)
 	-- state the platform never produces.
 	if side == 'client' then control.Fire('onClientResourceStart', 'opx_infinity') end
 
+	-- `Boot` rather than a fixed count: the boot is one resume per module per
+	-- phase and the count moves whenever a module is added.
+	control.Boot()
 	control.Pump(60)
 
 	-- A surface refuses everything until its page has reported ready, so a test
@@ -1637,6 +1640,7 @@ do
 		end
 
 		ctl.Fire('onClientResourceStart', 'opx_infinity')
+		ctl.Boot()
 		ctl.Pump(60)
 		ctl.ReadyPages()
 		return own, ctl
@@ -3172,6 +3176,7 @@ do
 			#unwrapped == 0, table.concat(unwrapped, ', '))
 
 		control.Fire('onClientResourceStart', 'opx_infinity')
+		control.Boot()
 		control.Pump(60)
 		check('diagnostics started', env.OPX.Modules.IsRunning('diagnostics'))
 		check('a second resource-start does not re-run the phases',
@@ -4604,8 +4609,8 @@ do
 end
 
 -- The page is BUILT BEFORE THE MODULES ARE. `core/client/boot.lua` creates the
--- surface first, then walks the modules a frame at a time, because `Start` yields
--- between them to reset the instruction budget. A view emits `opx:<module>:ready`
+-- surface first, then walks the modules a frame at a time, because EVERY phase
+-- yields between them to reset the instruction budget. A view emits `opx:<module>:ready`
 -- from its mount and the bridge releases all of them in the same tick as
 -- `opx:ready`, so a page with warm CEF assets -- every reconnection, and a
 -- character switch ends the session -- mounts inside that window.
@@ -4656,6 +4661,7 @@ do
 
 		-- The rest of the boot, where the hud finally registers and is handed
 		-- the ready it missed.
+		control.Boot()
 		control.Pump(60)
 
 		local drew = {}
@@ -8778,6 +8784,7 @@ do
 
 	if why == nil then
 		control.Fire('onClientResourceStart', 'opx_infinity')
+		control.Boot()
 		control.Pump(60)
 		control.ReadyPages()
 
@@ -9289,6 +9296,171 @@ end
 -- that has never carried one, and `showOutfits` handed `menu.Open` a list of
 -- length zero, which that contract refuses outright. Neither said anything: one
 -- returned, the other toasted "That screen is not available right now."
+section('the uniform a job hands out')
+do
+	-- EVERY RECORD A LOOK NAMES IS THE GAME'S OWN, and this table is the whole
+	-- reason the section exists.
+	--
+	-- The four records the NCPD uniform named before this pass --
+	-- `Items.Police_Jacket_01`, `Items.Police_Pants_01`, `Items.Police_Boots_01`,
+	-- `Items.Q005_Police_Shirt` -- DO NOT EXIST, and neither did the four the
+	-- corporate look named. Both looks therefore dressed NOTHING and said nothing
+	-- about it: the client skips a record this body cannot wear with a log line,
+	-- so a dead uniform is indistinguishable from a player who declined to
+	-- change. NO TEST COULD SEE IT either, which is why the names are pinned here
+	-- rather than left to a comment: a name is either in this table or it fails,
+	-- and so is the SLOT the game gives it.
+	--
+	-- Read out of the two TweakDB files the install carries, through the
+	-- platform's generated catalogue of all 1,991 wearable `Clo_*` records
+	-- (`docs/research/clothing-items-catalog.md` and the JSON beside it). Each of
+	-- these is on BOTH body families, which the catalogue records per record and
+	-- this table does not attempt to restate.
+	--
+	-- The value is the catalogue's own slot name, in the game's spelling rather
+	-- than this module's: `outer_chest` here is the `OuterChest` slot.
+	local GAME_RECORDS = {
+		['Items.Cop_01_Set_Jacket'] = 'outer_chest',
+		['Items.Cop_01_Set_Pants'] = 'legs',
+		['Items.Cop_01_Set_Boots'] = 'feet',
+		['Items.Cop_01_Set_Glasses'] = 'face',
+		['Items.SQ029_Police_Suit'] = 'outfit',
+		['Items.SQ030_MaxTac_Helmet'] = 'head',
+		['Items.SQ030_MaxTac_Chest'] = 'outer_chest',
+		['Items.SQ030_MaxTac_Pants'] = 'legs',
+		['Items.Trauma_Team_Outfit'] = 'outfit',
+		['Items.FormalShirt_01_basic_01'] = 'inner_chest',
+		['Items.FormalJacket_01_basic_01'] = 'outer_chest',
+		['Items.FormalPants_01_basic_01'] = 'legs',
+		['Items.FormalShoes_01_basic_01'] = 'feet',
+	}
+	local SLOT_OF = {
+		Head = 'head', Face = 'face', InnerChest = 'inner_chest', OuterChest = 'outer_chest',
+		Legs = 'legs', Feet = 'feet', Outfit = 'outfit',
+	}
+
+	local env, control, why = boot('server')
+	check('the server boots with the shops module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local shops = OPX.Modules.Get('shops')
+		local characters = OPX.Modules.Get('character')
+		local looks = OPX.Config.MODULES.shops.LOOKS
+
+		-- ── the data, first ────────────────────────────────────────────────
+		local named, wrong = 0, {}
+		for key, look in pairs(looks) do
+			for slot, record in pairs(type(look.WEAR) == 'table' and look.WEAR or {}) do
+				if record ~= false then
+					named = named + 1
+					local game = GAME_RECORDS[record]
+					if game == nil then
+						wrong[#wrong + 1] = ('%s: %s does not exist'):format(key, tostring(record))
+					elseif game ~= SLOT_OF[slot] then
+						wrong[#wrong + 1] = ('%s: %s is a %s, not a %s')
+							:format(key, tostring(record), game, tostring(SLOT_OF[slot]))
+					end
+				end
+			end
+		end
+		check('every record a look names exists in the game, in that slot', #wrong == 0,
+			table.concat(wrong, ' | '))
+		-- A LOOK WITH NO GARMENT IS A ROW THAT DOES NOTHING, so the count is
+		-- pinned rather than left open: a look that lost its whole WEAR table to a
+		-- bad edit would otherwise pass the loop above by having nothing to check.
+		check('and the shipped looks between them wear thirteen garments', named == 13,
+			tostring(named))
+
+		-- THE THREE UNIFORMS ARE UNIFORMS: gated to a job, required on duty, free.
+		-- A uniform that costs money, or one anybody may take, is not one, and
+		-- each of those three is a field that can be lost in an edit.
+		for _, key in ipairs({ 'ncpd_patrol', 'ncpd_issue_suit', 'maxtac_field_kit' }) do
+			local look = looks[key]
+			check(('%s is gated to a job'):format(key),
+				type(look) == 'table' and type(look.JOBS) == 'table'
+					and next(look.JOBS) ~= nil)
+			check(('%s asks for duty and costs nothing'):format(key),
+				type(look) == 'table' and look.ON_DUTY == true and look.COST == 0)
+		end
+
+		-- ── and then the gate itself, driven ───────────────────────
+		-- THE SERVER DECIDES, and the list it sends is the decision: a look
+		-- somebody may not take is never a row they have to be refused at.
+		local JINGUJI = OPX.Config.MODULES.shops.SHOPS.jinguji
+		env.Open77.players.position = function()
+			return { x = JINGUJI.X, y = JINGUJI.Y, z = JINGUJI.Z, bucket = 0 }
+		end
+
+		local function load(id, citizenId, jobName, grade, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local rank = grade or 0
+			characters.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id),
+				jobs = jobName ~= nil and { [jobName] = rank } or {},
+				job = { name = jobName or 'unemployed',
+					grade = { level = jobName ~= nil and rank or 0 },
+					onDuty = onDuty == true },
+				money = { EDDIES = 0, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+
+		-- What the server answers when this player opens the room at this shop.
+		local function offered(playerId, shopKey)
+			env.source = playerId
+			local before = #control.clientEvents
+			control.netEvents[shops.Event.OPEN](shopKey)
+			control.Pump(6)
+			local payload = nil
+			for index = #control.clientEvents, before + 1, -1 do
+				if control.clientEvents[index].name == shops.Event.LOOKS then
+					payload = control.clientEvents[index][1]
+					break
+				end
+			end
+			local out = {}
+			for _, row in ipairs(payload and payload.looks or {}) do out[row.id] = row end
+			return out
+		end
+
+		load(71, 'citizen-uniform-ncpd', 'ncpd', 0, true)
+		local ncpd = offered(71, 'jinguji')
+		check('an on-duty officer is offered the patrol set', ncpd.ncpd_patrol ~= nil)
+		check('and the issue suit, which is the other half of the kit',
+			ncpd.ncpd_issue_suit ~= nil)
+		check('and not the division\'s armour, which is not their job',
+			ncpd.maxtac_field_kit == nil)
+		check('while the priced look every shop carries is theirs too',
+			ncpd.corpo_black ~= nil)
+
+		load(72, 'citizen-uniform-maxtac', 'maxtac', 0, true)
+		local maxtac = offered(72, 'jinguji')
+		check('a MaxTac trooper is offered the field kit', maxtac.maxtac_field_kit ~= nil)
+		check('and not the NCPD patrol set', maxtac.ncpd_patrol == nil)
+
+		-- OFF DUTY IS NOT IN UNIFORM. The flag is on every one of the three, so
+		-- one refusal proves the field is read rather than that a particular
+		-- look happens to be ungated.
+		load(73, 'citizen-uniform-offduty', 'ncpd', 0, false)
+		local off = offered(73, 'jinguji')
+		check('a clocked-off officer is offered no uniform at all',
+			off.ncpd_patrol == nil and off.ncpd_issue_suit == nil)
+
+		load(74, 'citizen-uniform-civilian', nil, nil, true)
+		local civilian = offered(74, 'jinguji')
+		check('and a civilian is offered none of the three',
+			civilian.ncpd_patrol == nil and civilian.ncpd_issue_suit == nil
+				and civilian.maxtac_field_kit == nil)
+
+		check('no thread died', not table.concat(control.log.error, ' | '):find('thread died'),
+			table.concat(control.log.error, ' | '))
+	end
+end
+
 section('shops: the row resolves by position, and an empty shelf is still a shelf')
 do
 	local env, control, why = boot('client')
@@ -12565,8 +12737,24 @@ do
 			return false
 		end
 
+		-- THE PASS IS A THREAD, AND IT YIELDS BETWEEN BATCHES. It has to: the
+		-- ACCESS handler that starts it is not a coroutine, so registering the
+		-- whole vocabulary in one resume overran the host's budget and took every
+		-- staff row with it (see the section named after that). Waiting for it is
+		-- therefore waiting for the report it sends when it is done, not a guess
+		-- at how many frames a pass takes -- `Pump(10)` was exactly that guess and
+		-- it caught the pass with two thirds of the sky registered.
+		local function settled(mark)
+			for _ = 1, 200 do
+				if #reports > mark then return true end
+				ccontrol.Pump(1)
+			end
+			return false
+		end
+
+		local mark = #reports
 		admin.Target.Access(map)
-		ccontrol.Pump(10)
+		check('the eye finishes its pass', settled(mark))
 
 		-- THE REPORT, verbatim. `#sky` is what the operator sees; what is NOT in
 		-- it is what they wrote in about.
@@ -12601,8 +12789,9 @@ do
 		full['opx.weather.set'] = true
 		full['opx.weather.next'] = true
 		full['opx.time'] = true
+		mark = #reports
 		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
-		ccontrol.Pump(10)
+		check('the second pass finishes too', settled(mark))
 
 		check('granting command.opx.weather.* puts every preset on the sky',
 			has('admin_skyWeather_sunny') and has('admin_skyWeather_sandstorm'),
@@ -14910,7 +15099,10 @@ do
 	check('the client boots', why == nil, why)
 
 	if why == nil then
-		control.Pump(20)
+		-- One bounded unit per resume at the proven grain (40 keys a part,
+		-- ~2 400 instructions): the catalogue drains in 48 units. The twenty
+		-- this drove only ever fitted the coarse 250-key grain's ten units.
+		control.Pump(120)
 		local page = control.pages[1]
 		check('a page was created', page ~= nil)
 
@@ -16334,6 +16526,32 @@ do
 			and insertion.ApproachAltitude == 95.0 and insertion.HoverAltitude == 26.0
 			and insertion.DropAltitude == 5.0 and insertion.TickMs == 100,
 		tostring(insertion and insertion.ApproachMetres))
+	-- THE SEAT VOCABULARY HAS TO ANSWER FOR ITSELF. The controller stores the
+	-- seat it asked the host for and later compares it against the seat the host
+	-- REPORTS, and the two are the same name only because `InSeat` translates
+	-- every accepted spelling to the canonical one. A table that cannot name its
+	-- own canonical spellings is not a cosmetic problem: the crew door's validator
+	-- drops `BOARDING` whole when a listed seat is not a seat name, so this map
+	-- being built with the wrong iterator switched the whole feature off at boot
+	-- and said so only in one warning line.
+	local seats = { 'seat_front_left', 'seat_front_right', 'seat_back_left', 'seat_back_right' }
+	local named = true
+	for _, seat in ipairs(seats) do
+		if law.InSeat(seat) ~= seat then named = false end
+	end
+	check('every canonical seat name is one the law book knows', named)
+	check('and the spellings the host accepts resolve to the same four',
+		law.InSeat('driver') == 'seat_front_left' and law.InSeat(-1) == 'seat_front_left'
+			and law.InSeat('0') == 'seat_front_right' and law.InSeat(2) == 'seat_back_right',
+		tostring(law.InSeat('driver')) .. '/' .. tostring(law.InSeat('0')))
+	check('and a seat that is not a seat is refused',
+		law.InSeat('roof') == nil and law.InSeat(nil) == nil and law.InSeat(9) == nil)
+	local crewDoor = law.Maxtac.Boarding
+	check('the shipped crew door validates, so a crew can get aboard at all',
+		crewDoor ~= nil and crewDoor.Seconds > 0.0 and crewDoor.ReachMetres > 0.0
+			and crewDoor.Seats[1] == 'seat_front_right' and #crewDoor.Jobs > 0
+			and crewDoor.RestSeconds >= 0.0,
+		tostring(crewDoor and crewDoor.Seats[1]))
 	check('Heat_0 has a threshold to cross and no division answering',
 		law.Division(0) == nil and law.Capacity(0) == 50,
 		tostring(law.Capacity(0)))
@@ -17151,6 +17369,276 @@ do
 			tostring(flyingNow) .. ' among ' .. tostring(#control.vehicleRemoves - removesFrom)
 				.. ' removal(s)')
 
+		-- ── the crew door ───────────────────────────────────────────────────
+		-- WHAT IS UNDER TEST IS A HAND-OVER AND A LOCK, not a key bind. An
+		-- aircraft that the server was flying is handed to a player at the moment
+		-- they board, and the thing that keeps them aboard a moving hull is the
+		-- host's own exit lock. Both are invisible from a return value alone:
+		-- "he stayed in the aircraft" and "she was never seated" look identical
+		-- from the street, and so do "the lock held" and "the lock was never
+		-- set". So the assertions are on the WIRE and on the MOUNT the server
+		-- asked for, read out of the harness's own ledgers.
+		--
+		-- THE PERMIT IS DRIVEN THROUGH THE REAL DOOR. `mayBoard` is the module's
+		-- rule and the net event is the only thing that calls it, so every refusal
+		-- below knocks on the wire the way a client does and reads the answer the
+		-- player would.
+		local boarding = Law.Maxtac.Boarding
+		check('the shipped config declares a crew door the suite can drive',
+			type(boarding) == 'table' and boarding.Seconds > 0.0 and boarding.ReachMetres > 0.0
+				and #boarding.Seats > 0 and #boarding.Jobs > 0,
+			type(boarding) == 'table' and ('%.0fs, %.0fm, %d seat(s)'):format(
+				boarding.Seconds, boarding.ReachMetres, #boarding.Seats) or 'no door')
+
+		-- The host's read of where everybody stands, which is the only distance
+		-- the door believes. Positioned per player here so one body can walk up
+		-- to the hull while the suspect the aircraft came for stays put.
+		local standing = {}
+		local realPosition = env.Open77.players.position
+		env.Open77.players.position = function(playerId)
+			local where = standing[tonumber(playerId) or playerId]
+			if where ~= nil then return where end
+			return { x = 0.0, y = 0.0, z = 0.0, bucket = 0 }
+		end
+
+		--- Puts a loaded character on a slot with a job and a duty state, which
+		-- is the whole of the crew rule: `job.onDuty` and a name in
+		-- `BOARDING.JOBS`.
+		-- @param id number
+		-- @param citizenId string
+		-- @param jobName string|nil
+		-- @param duty boolean
+		local function onShift(id, citizenId, jobName, duty)
+			load(id, citizenId)
+			local data = character.Players[id].PlayerData
+			data.job = { name = jobName, onDuty = duty == true, grade = { level = 0 } }
+			data.jobs = jobName ~= nil and { [jobName] = 0 } or {}
+		end
+
+		local crew, offCrew, subject2, stranger = 94, 95, 96, 97
+		onShift(crew, 'citizen-ncpd-crew', 'maxtac', true)
+		onShift(offCrew, 'citizen-ncpd-crew-off', 'maxtac', false)
+		onShift(subject2, 'citizen-ncpd-crew-subject', nil, false)
+
+		--- Knocks on the door the way a client does, and reads back the answer
+		-- the player would see. The event carries nothing, which is the property
+		-- under test as much as the answer is: the id comes from the connection.
+		-- @param playerId number
+		-- @return table|nil the answer sent to that connection
+		local function knock(playerId)
+			local mark = #control.clientEvents
+			local door = control.netEvents[ncpd.Event.BOARD]
+			if type(door) ~= 'function' then return nil end
+			env.source = playerId
+			door()
+			env.source = nil
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == ncpd.Event.BOARDED and event.source == playerId then return event[1] end
+			end
+			return nil
+		end
+
+		--- The notices of one kind sent to one connection since a mark.
+		-- A nil payload is a notice too -- "the door is shut" is exactly that --
+		-- so this counts the events rather than collecting their payloads: a list
+		-- with a nil at the end has no length to read, and the shut door was the
+		-- half that went missing from the first draft of this check.
+		-- @param name string
+		-- @param playerId number
+		-- @param integer from
+		-- @return integer how many carried a table
+		-- @return integer how many carried nothing
+		-- @return table|nil the last payload
+		local function notices(name, playerId, from)
+			local filled, empty, last = 0, 0, nil
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == name and event.source == playerId then
+					if type(event[1]) == 'table' then
+						filled = filled + 1
+						last = event[1]
+					else
+						empty = empty + 1
+					end
+				end
+			end
+			return filled, empty, last
+		end
+
+		-- The hull the door is measured from, as the server reads it. The pose loop
+		-- and the door read the same snapshot, and a door read that cannot see the
+		-- aircraft answers nothing at all -- which is why this is a live table here
+		-- rather than the pinned id string the flight checks above were written
+		-- against. Its height is the config's own drop altitude.
+		local pinned = control.vehicles.snapshot
+		control.vehicles.snapshot = { x = 0.0, y = 0.0, z = plan.DropAltitude, speed = 0.0 }
+
+		local marks = #control.clientEvents
+		local run = Response.Apply('citizen-ncpd-crew-subject', subject2, 5)
+		check('a MaxTac stage flies the aircraft a crew is meant to board',
+			run.ok == true and run.value.av == true and AV.IsInbound('citizen-ncpd-crew-subject'),
+			table.concat(run.ok == true and run.value.refused or {}, ', '))
+
+		local door, waited = nil, 0
+		for _ = 1, 900 do
+			if not tick() then break end
+			waited = waited + 1
+			door = AV.Door()
+			if door ~= nil then break end
+		end
+		check('and it opens a crew door while it holds at the street', door ~= nil,
+			('no door after %d pose(s)'):format(waited))
+
+		local doorOpens, doorShuts, opened = notices(ncpd.Event.DOOR, crew, marks)
+		check('and the door is announced to the air division on duty', opened ~= nil,
+			tostring(doorOpens) .. ' open notice(s)')
+		check('naming the hull, the reach and the seats it opens for',
+			opened ~= nil and type(opened.position) == 'table'
+				and opened.reach == boarding.ReachMetres and opened.seats == boarding.Seats,
+			opened and ('reach %s, %s seat(s)'):format(tostring(opened.reach),
+				tostring(opened.seats ~= nil and #opened.seats or 0)))
+		check('but not to a trooper who is clocked off',
+			notices(ncpd.Event.DOOR, offCrew, marks) == 0)
+
+		-- ── who is refused, before anything is touched ───────────────────
+		local refused = knock(offCrew)
+		check('a trooper who is clocked off is refused by name',
+			refused ~= nil and refused.ok == false and refused.reason == 'notOnDuty',
+			refused and tostring(refused.reason))
+		check('and a connection with no character at all is refused as one',
+			(function()
+				local answer = knock(stranger)
+				return answer ~= nil and answer.ok == false and answer.reason == 'noCitizen'
+			end)())
+		check('and nobody was seated by either knock', #control.vehicleWarps == 0)
+
+		standing[crew] = { x = door.position.x + 60.0, y = door.position.y, z = door.position.z,
+			bucket = 0 }
+		local far = knock(crew)
+		check('an officer on duty who is nowhere near it is refused as too far',
+			far ~= nil and far.ok == false and far.reason == 'too_far',
+			far and tostring(far.reason))
+
+		-- ── the board ─────────────────────────────────────────────────────
+		local posesBefore = #control.vehiclePoses
+		standing[crew] = { x = door.position.x + 1.0, y = door.position.y, z = door.position.z,
+			bucket = 0 }
+		local answer = knock(crew)
+		check('an officer on duty inside the reach takes a seat',
+			answer ~= nil and answer.ok == true and type(answer.seat) == 'string',
+			answer and tostring(answer.seat or answer.reason))
+		local mount = control.vehicleWarps[#control.vehicleWarps]
+		check('through the platform\'s own mount, and only for the player who asked',
+			mount ~= nil and mount.playerId == crew and mount.seat == answer.seat
+				and tostring(mount.id) == tostring(opened.avId),
+			mount and ('player %s, %s'):format(tostring(mount.playerId), tostring(mount.seat)))
+		check('with the exit lock travelling with the seat, and no bucket change',
+			mount ~= nil and type(mount.options) == 'table' and mount.options.exitLocked == true
+				and mount.options.moveBucket == false)
+		local pinnedTo = control.vehiclePins[#control.vehiclePins]
+		check('and the aircraft is unpinned as the crew takes it over',
+			pinnedTo ~= nil and tostring(pinnedTo.id) == tostring(opened.avId)
+				and pinnedTo.frozen == false,
+			pinnedTo and tostring(pinnedTo.frozen))
+		-- Up and away: the hull as the crew's own flight takes it, which is also
+		-- the state every check below starts from. The aircraft is theirs from the
+		-- moment they are in it, so this is what the server sees next.
+		control.vehicles.snapshot = { x = door.position.x + 200.0, y = door.position.y,
+			z = door.position.z + 40.0, speed = 22.0 }
+		check('so the server stops posing it rather than fighting the crew for it',
+			tick() == false and #control.vehiclePoses == posesBefore,
+			('%d pose(s) after the board'):format(#control.vehiclePoses - posesBefore))
+		check('and the door is withdrawn in the same breath as the hand-over',
+			doorShuts == 0 and AV.Door() == nil, tostring(doorShuts) .. ' shut notice(s)')
+
+		local function unlocksFrom(from)
+			local count = 0
+			for index = from + 1, #control.vehicleLocks do
+				if control.vehicleLocks[index].locked == false then count = count + 1 end
+			end
+			return count
+		end
+
+		-- ── the lock, while she is flying ────────────────────────────────
+		local locksFrom, noticesFrom = #control.vehicleLocks, #control.clientEvents
+		avJob.step()
+		check('a crew member stays aboard while the hull is flying',
+			unlocksFrom(locksFrom) == 0 and #AV.Crew('citizen-ncpd-crew-subject') == 1,
+			('%d unlock(s)'):format(unlocksFrom(locksFrom)))
+		check('and is told nothing, because nothing has happened to them',
+			notices(ncpd.Event.RELEASED, crew, noticesFrom) == 0)
+
+		-- ── put down on the street, and the lock comes off ────────────────
+		control.vehicles.snapshot = { x = door.position.x, y = door.position.y,
+			z = door.position.z, speed = 0.0 }
+		avJob.step()
+		check('a hull standing at the street lets its crew out',
+			unlocksFrom(locksFrom) == 1, ('%d unlock(s)'):format(unlocksFrom(locksFrom)))
+		check('and says so, which is the one moment a body in a flying hull acts on',
+			notices(ncpd.Event.RELEASED, crew, noticesFrom) == 1)
+		check('but the aircraft is still theirs: nothing is removed under them',
+			AV.IsInbound('citizen-ncpd-crew-subject') == true)
+
+		-- ── the crew steps out, and only then does the run end ───────────
+		control.Seat(crew, nil)
+		local removedFrom = #control.vehicleRemoves
+		avJob.step()
+		check('the run ends when the last of the crew is out',
+			AV.IsInbound('citizen-ncpd-crew-subject') == false and AV.Inbound() == 0)
+		check('and the airframe is taken out of the world with it',
+			control.vehicleRemoves[#control.vehicleRemoves] == opened.avId
+				and #control.vehicleRemoves > removedFrom,
+			tostring(control.vehicleRemoves[#control.vehicleRemoves]))
+
+		-- ── a retracted insertion does not drop a crew out of the sky ────
+		-- The other way the lock comes off, and the shape that used to end in an
+		-- aircraft removed from underneath a player: a cleared stage takes the
+		-- response down, and a crewed hull is handed over rather than deleted.
+		local third, subject3 = 98, 99
+		onShift(third, 'citizen-ncpd-crew-two', 'ncpd_maxtac', true)
+		onShift(subject3, 'citizen-ncpd-crew-subject-two', nil, false)
+		local secondRun = Response.Apply('citizen-ncpd-crew-subject-two', subject3, 5)
+		check('a second insertion flies once the first is down',
+			secondRun.ok == true and secondRun.value.av == true)
+		local door2 = nil
+		for _ = 1, 900 do
+			if not tick() then break end
+			door2 = AV.Door()
+			if door2 ~= nil then break end
+		end
+		check('and its door opens the same way', door2 ~= nil)
+		control.vehicles.snapshot = { x = door2.position.x, y = door2.position.y,
+			z = door2.position.z, speed = 0.0 }
+		standing[third] = { x = door2.position.x, y = door2.position.y, z = door2.position.z,
+			bucket = 0 }
+		local aboard = knock(third)
+		check('and a trooper of the other division name may board it too',
+			aboard ~= nil and aboard.ok == true and type(aboard.seat) == 'string',
+			aboard and tostring(aboard.seat or aboard.reason))
+		local keptFrom = #control.vehicleRemoves
+		local liftsFrom = #control.vehicleLocks
+		Response.Release('citizen-ncpd-crew-subject-two')
+		local tookDown = false
+		for index = keptFrom + 1, #control.vehicleRemoves do
+			if control.vehicleRemoves[index] == door2.avId then tookDown = true end
+		end
+		check('a retracted insertion hands the crewed hull over instead of deleting it',
+			not tookDown and AV.IsInbound('citizen-ncpd-crew-subject-two') == true)
+		check('and lifts the lock by name, so the crew is not trapped in it',
+			unlocksFrom(liftsFrom) == 1, ('%d unlock(s)'):format(unlocksFrom(liftsFrom)))
+		control.Seat(third, nil)
+		avJob.step()
+		check('and it is removed once they are out',
+			AV.IsInbound('citizen-ncpd-crew-subject-two') == false
+				and AV.Inbound() == 0, tostring(AV.Inbound()) .. ' still inbound')
+
+		control.vehicles.snapshot = pinned
+		env.Open77.players.position = realPosition
+		check('no aircraft is left in the air when the crew door block ends',
+			AV.RetractAll('the crew check is over') == 0 and AV.Inbound() == 0,
+			tostring(AV.Inbound()) .. ' still inbound')
+
 		-- ── a group the host refuses is reported, not fatal ─────────────────────
 		-- The officers still stand -- they exist in the world either way -- and the
 		-- refusal is NAMED beside the spawn refusals, so an element that is about
@@ -17184,8 +17672,13 @@ do
 		local watcher = 82
 		load(watcher, 'citizen-ncpd-engine')
 		Ledger.Forget()
-		local report = control.netEvents[ncpd.Event.REPORT]
-		check('the engine report has a handler on the wire', type(report) == 'function')
+		local wire = control.netEvents[ncpd.Event.REPORT]
+		check('the engine report has a handler on the wire', type(wire) == 'function')
+		local function report(player, stage)
+			env.source = player
+			wire(stage)
+			env.source = nil
+		end
 
 		local from = #control.clientEvents
 		report(watcher, 4)
@@ -17239,7 +17732,3445 @@ do
 		check('and the ledger follows the engine down to nothing',
 			Ledger.Status('citizen-ncpd-engine').stage == 0
 				and Response.Status('citizen-ncpd-engine').npcs == 0)
+
+		-- ── the call-out ──────────────────────────────────────────────────
+		-- WHO IS TOLD THAT THE CITY HAS A PROBLEM. A stage that RISES is
+		-- broadcast to every player ON DUTY in a division job, with the place it
+		-- happened: the engine's own units answer on their own, and this is how
+		-- the people PLAYING the police learn there is something to answer.
+		--
+		-- The helper at the top of this section loads a citizen and nothing else,
+		-- because a heat score knows nothing about employment. Duty is the
+		-- filter, so both halves of it are loaded below: an officer on the clock,
+		-- an officer off it, a trooper, and a civilian who holds no job at all.
+		local function onCall(id, citizenId, jobName, onDuty)
+			load(id, citizenId)
+			local data = character.Players[id].PlayerData
+			data.job = { name = jobName, onDuty = onDuty == true, grade = { level = 0 } }
+			data.jobs = jobName ~= nil and { [jobName] = 0 } or {}
+			return data
+		end
+
+		local suspect, officer = 89, 90
+		local trooper, offDuty, civilian = 91, 92, 93
+		onCall(suspect, 'citizen-ncpd-suspect', nil, false)
+		onCall(officer, 'citizen-ncpd-oncall', 'ncpd', true)
+		onCall(trooper, 'citizen-ncpd-trooper', 'maxtac', true)
+		onCall(offDuty, 'citizen-ncpd-offduty', 'ncpd', false)
+		onCall(civilian, 'citizen-ncpd-civilian', nil, false)
+
+		-- The place a call-out names, read from the host and never from a
+		-- client. 120.4 rounds to 120 and -880.6 to -880, which is what makes
+		-- the assertion below about ROUNDING rather than about formatting.
+		env.Open77.players.position = function()
+			return { x = 120.4, y = -880.6, z = 20.0, bucket = 0 }
+		end
+
+		--- The notices raised since a mark, by recipient.
+		local function toldFrom(mark)
+			local out = {}
+			for index = mark + 1, #control.notices do
+				local notice = control.notices[index]
+				if out[notice.playerId] == nil then out[notice.playerId] = notice.message end
+			end
+			return out
+		end
+
+		Ledger.Forget()
+		local mark = #control.notices
+		report(suspect, 3)
+		local told = toldFrom(mark)
+		local eachTold = {}
+		for index = mark + 1, #control.notices do
+			eachTold[#eachTold + 1] = ('%s: %s'):format(tostring(control.notices[index].playerId),
+				tostring(control.notices[index].message))
+		end
+		check('a rising stage calls out the officer on duty', told[officer] ~= nil,
+			table.concat(eachTold, ' | '))
+		check('and the division that owns the stage, on the same air', told[trooper] ~= nil)
+		check('but not an officer who is clocked off', told[offDuty] == nil)
+		check('nor an officer with no job at all', told[civilian] == nil)
+		check('and the suspect is not called out about themselves', told[suspect] == nil)
+
+		-- THE PLACE IS IN THE MESSAGE, rounded, because a call-out is radio
+		-- traffic rather than a metre-perfect fix on somebody running away.
+		local message = tostring(told[officer] or '')
+		check('the call-out names the stage and the place it happened',
+			message:find('3/6', 1, true) ~= nil
+				and message:find('120', 1, true) ~= nil
+				and message:find('-880', 1, true) ~= nil, message)
+
+		-- ONE FIREFIGHT IS ONE MESSAGE: the stage climbs as the fight goes on,
+		-- and a call-out per stage would be the radio nobody listens to.
+		mark = #control.notices
+		local warned = #control.log.info
+		report(suspect, 4)
+		check('a second stage inside the cooldown is not a second call-out',
+			#control.notices == mark)
+		check('and the reason is journalled rather than swallowed',
+			table.concat(control.log.info, ' | '):find('no call-out', 1, true) ~= nil,
+			table.concat(control.log.info, ' | '))
+		check('and the stage still rose, because the call-out is not the response',
+			Ledger.Status('citizen-ncpd-suspect').stage == 4,
+			tostring(Ledger.Status('citizen-ncpd-suspect').stage))
+
+		-- WITH THE COOLDOWN OFF THE NEXT STAGE IS TOLD, so the silence above is
+		-- the cooldown rather than the dispatch having stopped working. That is
+		-- the control this pair exists for.
+		ncpd.Settings.ALERTS.COOLDOWN_MS = 0
+		mark = #control.notices
+		report(suspect, 5)
+		check('and with the floor off, the next stage is told again',
+			#control.notices > mark)
+
+		-- A CLEARED CITY IS NOT A CALL-OUT: the engine drops to zero on its own
+		-- and the ledger follows it, once per poll.
+		mark = #control.notices
+		report(suspect, 0)
+		check('and the engine dropping to zero is not a call-out',
+			#control.notices == mark)
+		check('and the division is standing down for real',
+			Ledger.Status('citizen-ncpd-suspect').stage == 0)
 	end
 end
+-- ── the crew door, client side ─────────────────────────────────────────────
+-- The server owns the decision; this half owns the KEY and the SENTENCE. What is
+-- asserted here is the shape of both: the row appears while a body is inside the
+-- reach the door named and steps aside while a menu holds the keyboard, the key
+-- sends an event with NOTHING in it, and every answer the controller can give --
+-- the seat, the refusal, the release -- reaches the player as words rather than
+-- as a code.
+section('ncpd, the crew door: the key, the row and the answers')
+do
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots with the ncpd module', cwhy == nil, cwhy)
+
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local ncpd = OPX.Modules.Get('ncpd')
+		local prompts = OPX.Api.Get('prompts')
+
+		check('the client half is running, not just loaded', OPX.Modules.IsRunning('ncpd'),
+			OPX.Modules.Record('ncpd').Reason)
+
+		-- ── the key ───────────────────────────────────────────────────────
+		local mapping = cctl.keyMappings.byId['opx.ncpd.board']
+		check('the crew door has its own key, so a player can rebind it', mapping ~= nil)
+		check('and it defaults to F rather than to the marker key',
+			mapping ~= nil and mapping.key == 'F', mapping and tostring(mapping.key))
+		check('and names itself for the pause menu rather than naming a key',
+			mapping ~= nil and tostring(mapping.name):find('key', 1, true) == nil,
+			mapping and tostring(mapping.name))
+
+		--- The crew-door group as the strip holds it, or nil when it holds none.
+		-- @return table|nil
+		local function row()
+			local listed = prompts ~= nil and prompts.List('ncpd') or nil
+			if listed == nil or listed.ok ~= true then return nil end
+			return listed.value
+		end
+
+		--- The last toast this client raised, as the page was told to draw it.
+		-- @return table|nil
+		local function lastToast()
+			local found = nil
+			for _, page in ipairs(cctl.pages) do
+				for _, sent in ipairs(page.sent or {}) do
+					if sent.channel == 'opx:notify:show' then found = sent.payload end
+				end
+			end
+			return found
+		end
+
+		-- The body stands at the origin; the door is the aircraft's own shape, the
+		-- one `server/av.lua` publishes.
+		local AV_ID = '0x0000000000000011'
+		local door = { citizenId = 'citizen-ncpd-crew', avId = AV_ID,
+			position = { x = 0.0, y = 0.0, z = 5.0 }, reach = 12.0,
+			seats = { 'seat_front_right', 'seat_back_left', 'seat_back_right' },
+			seconds = 20.0 }
+
+		check('a client with no door open is holding no row', row() == nil or row().count == 0)
+		cctl.netEvents[ncpd.Event.DOOR](door)
+		settle(cctl, function() return (row() or {}).count == 1 end)
+		local listed = row()
+		check('an open door posts one row on the strip',
+			listed ~= nil and listed.count == 1 and listed.prompts[1] == 'crew',
+			listed and tostring(listed.count))
+		check('and the row is reachable, so it is the door that drew it',
+			ncpd.BoardStatus().shown == true and ncpd.BoardStatus().door == true)
+		check('and it knows how far it is from the hull',
+			ncpd.BoardStatus().metres ~= nil and ncpd.BoardStatus().metres < 12.0,
+			tostring(ncpd.BoardStatus().metres))
+
+		-- OUT OF REACH IS NO ROW: the door is announced to the whole air
+		-- division, so the row has to be the DISTANCE and not the announcement.
+		cctl.placement.x, cctl.placement.y, cctl.placement.z = 400.0, 400.0, 0.0
+		settle(cctl, function() return (row() or {}).count == 0 end)
+		check('walking out of the reach takes the row down',
+			(row() == nil) or (row().count == 0), tostring((row() or {}).count))
+		cctl.placement.x, cctl.placement.y, cctl.placement.z = 0.0, 0.0, 0.0
+		settle(cctl, function() return (row() or {}).count == 1 end)
+		check('and walking back in brings it up again', (row() or {}).count == 1)
+
+		-- ── the key ───────────────────────────────────────────────────────
+		local before = #cctl.serverEvents
+		mapping.pressed()
+		local sent = cctl.serverEvents[#cctl.serverEvents]
+		check('the key knocks on the server\'s door',
+			#cctl.serverEvents == before + 1 and sent ~= nil and sent.name == ncpd.Event.BOARD)
+		check('and carries nothing at all: no seat, no aircraft, no place',
+			sent ~= nil and sent[1] == nil, tostring(sent and sent[1]))
+
+		-- A keyboard held elsewhere is not a key: the row is not drawn while a
+		-- menu is up, and the key does not knock while one is.
+		cctl.input.captured = true
+		settle(cctl, function() return (row() or {}).count == 0 end)
+		check('the row steps aside while another surface holds the keyboard',
+			(row() or {}).count == 0)
+		before = #cctl.serverEvents
+		mapping.pressed()
+		check('and the key knocks on nothing while it does', #cctl.serverEvents == before)
+		cctl.input.captured = false
+		settle(cctl, function() return (row() or {}).count == 1 end)
+
+		-- ── the answers ───────────────────────────────────────────────────
+		cctl.netEvents[ncpd.Event.BOARDED]({ ok = true, seat = 'seat_back_left' })
+		local toast = lastToast()
+		check('a seat taken is a sentence naming the seat',
+		
+toast ~= nil and toast.message == OPX.Locale.Text('ncpd.board.aboard',
+				{ seat = 'seat_back_left' }), toast and tostring(toast.message))
+		check('and the kind is the one a success is drawn in',
+			toast ~= nil and toast.kind == 'success', toast and tostring(toast.kind))
+
+		cctl.netEvents[ncpd.Event.BOARDED]({ ok = false, reason = 'too_far' })
+		toast = lastToast()
+		check('a refusal the controller named is the sentence for that name',
+			toast ~= nil and toast.message == OPX.Locale.Text('ncpd.board.tooFar'),
+			toast and tostring(toast.message))
+		check('and it is drawn as an error rather than as a success',
+			toast ~= nil and toast.kind == 'error')
+
+		-- A code this build has not heard of is still readable rather than blank,
+		-- which is the whole reason the fallback names it.
+		cctl.netEvents[ncpd.Event.BOARDED]({ ok = false, reason = 'something_new' })
+		toast = lastToast()
+		check('a refusal with no sentence of its own names the code it came with',
+			toast ~= nil and tostring(toast.message):find('something_new', 1, true) ~= nil,
+			toast and tostring(toast.message))
+
+		-- The one moment a body in a flying hull has something to do.
+		cctl.netEvents[ncpd.Event.RELEASED]({ seat = 'seat_back_left', avId = AV_ID })
+		toast = lastToast()
+		check('and the exit lock coming off is said out loud',
+			toast ~= nil and toast.message == OPX.Locale.Text('ncpd.board.released'),
+			toast and tostring(toast.message))
+
+		-- ── the door shuts ────────────────────────────────────────────────
+		cctl.netEvents[ncpd.Event.DOOR](nil)
+		settle(cctl, function() return (row() or {}).count == 0 end)
+		check('the door shutting takes its row down', (row() or {}).count == 0)
+		before = #cctl.serverEvents
+		mapping.pressed()
+		check('and the key neither knocks nor travels for a door that is not there',
+			#cctl.serverEvents == before, tostring(#cctl.serverEvents - before))
+		check('and this half says so itself, rather than waiting for a refusal',
+			(ncpd.Board('key')).ok ~= true and ncpd.Board('key').code == 'no_aircraft')
+
+		-- Every refusal name the controller can answer has words. The list is the
+		-- module's own table, so a name added to the controller without a
+		-- sentence fails here rather than in front of a player.
+		local nameless = {}
+		for code, key in pairs(ncpd.BoardRefusal) do
+			local text = OPX.Locale.Text(key, { reason = code, seat = code })
+			if type(text) ~= 'string' or text == key or text == '' then
+				nameless[#nameless + 1] = code
+			end
+		end
+		check('every refusal the crew door can name has a sentence to say', #nameless == 0,
+			table.concat(nameless, ', '))
+	end
+end
+
+-- ── jobs: the board, the ladder and the desk ───────────────────────────────
+-- WHAT IS UNDER TEST IS THREE DECISIONS AND NOT A MENU. A sign-up board is a
+-- PLACE whose terms are re-derived from the live roster; a ladder turns a bank
+-- of worked time into a rank THROUGH THE CHARACTER MODULE, which is what makes
+-- the rank real; and a desk is gated on the job's own boss grade rather than on
+-- an operator's list. So these checks drive the real net events, the real
+-- commands and the real contracts, and read the membership rows back out of the
+-- database stub -- a test that only saw a return value could not tell a rank
+-- written through `character` from one this module kept to itself.
+section('jobs: the ladder, the terms and the boards')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the jobs module', why == nil, why)
+
+	-- The last server-to-client event with one name, or nil. Every verdict below
+	-- is read off the wire, because the wire is what a client actually gets.
+	local function lastEvent(name)
+		for index = #control.clientEvents, 1, -1 do
+			if control.clientEvents[index].name == name then return control.clientEvents[index] end
+		end
+		return nil
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local jobs = OPX.Modules.Get('jobs')
+		local Access, Seniority = jobs.Access, jobs.Seniority
+		local contract = OPX.Api.Get('jobs')
+		local character = OPX.Api.Get('character')
+
+		check('the jobs module is running', OPX.Modules.IsRunning('jobs'),
+			OPX.Modules.Record('jobs').Reason)
+		check('and publishes its half of the contract',
+			type(contract) == 'table' and type(contract.Roster) == 'function'
+				and type(contract.State) == 'function')
+		check('the module records no load-order problem',
+			OPX.Modules.Record('jobs').Missing == nil,
+			tostring(OPX.Modules.Record('jobs').Missing))
+
+		-- ── what a rank costs ─────────────────────────────────────────────
+		-- The arithmetic is pure, so every branch is drivable without a server.
+		local ladder = { [1] = 90.0, [2] = 360.0, [3] = 1080.0 }
+		check('a bank that does not reach a level holds the rank below it',
+			Seniority.GradeFor(ladder, 89.9) == 0)
+		check('exactly the level is that rank', Seniority.GradeFor(ladder, 90.0) == 1)
+		check('one point short of the next is still the one below',
+			Seniority.GradeFor(ladder, 359.9) == 1)
+		check('and the next level is the next rank', Seniority.GradeFor(ladder, 360.0) == 2)
+		check('a bank past the top holds the top', Seniority.GradeFor(ladder, 1e9) == 3)
+		check('a negative bank is nothing, not a rank below the first',
+			Seniority.GradeFor(ladder, -50.0) == 0)
+		check('a bank that is not a number is nothing too',
+			Seniority.GradeFor(ladder, 'lots') == 0)
+		check('the top of a ladder is its own level count', Seniority.Top(ladder) == 3)
+		-- A HOLE STOPS THE WALK rather than being stepped over: the levels above it
+		-- are not ranks this module can price, and `Access.Problems` names the
+		-- configuration at boot instead of promoting anybody into the gap.
+		check('a ladder with a hole is walked only to the hole',
+			Seniority.Top({ [1] = 90.0, [3] = 900.0 }) == 1)
+		check('a level nobody priced has no requirement',
+			Seniority.Required(ladder, 0) == nil and Seniority.Required(ladder, 4) == nil)
+		check('the ceiling clamps a bank and never below zero',
+			Seniority.Clamp(5000.0, 1000.0) == 1000.0 and Seniority.Clamp(-5.0, nil) == 0.0)
+		local progress = Seniority.Progress(ladder, 1, 225.0)
+		check('progress towards the next rank is measured from the rank held',
+			progress ~= nil and progress.level == 2 and progress.from == 90.0
+				and progress.to == 360.0 and progress.fraction == 0.5,
+			progress and ('%.2f'):format(progress.fraction))
+		check('and a finished ladder has no next rank to be a fraction of',
+			Seniority.Progress(ladder, 3, 5000.0) == nil)
+		check('how much longer is the difference, not the total',
+			Seniority.Shortfall(ladder, 2, 240.0) == 120.0)
+
+		-- ── the terms of employment ───────────────────────────────────────
+		local ncpd = Access.Terms('ncpd')
+		check('the shipped NCPD is open to sign-up with a three-level ladder',
+			ncpd ~= nil and ncpd.open == true and ncpd.approval == false and ncpd.top == 3)
+		local maxtac = Access.Terms('maxtac')
+		check('MaxTac takes no walk-ins', maxtac ~= nil and maxtac.approval == true)
+		check('and requires NCPD at a named grade',
+			maxtac ~= nil and maxtac.requires ~= nil and maxtac.requires.job == 'ncpd'
+				and maxtac.requires.grade == 2)
+		check('a job the config does not offer has no terms', Access.Terms('president') == nil)
+		check('and neither does nothing at all', Access.Terms(nil) == nil)
+
+		local noRights = { grade = function() return nil end, allowed = function() return true end }
+		local cadet = { grade = function(name) return name == 'ncpd' and 1 or nil end,
+			allowed = function() return true end }
+		local detective = { grade = function(name) return name == 'ncpd' and 2 or nil end,
+			allowed = function() return true end }
+		local refused = { grade = function() return nil end, allowed = function() return false end }
+
+		local open, missing = Access.MeetsTerms(maxtac, detective)
+		check('the sign-up board refuses an invitation job BY NAME',
+			open == false and missing == 'jobs.byInvitation', tostring(missing))
+		check('and says so even for somebody who would qualify',
+			select(1, Access.MeetsRequirements(maxtac, detective)) == true)
+		check('a job that is not offered is refused as not offered',
+			select(2, Access.MeetsTerms({ open = false, ladder = {}, top = 0 }, cadet)) == 'jobs.notOpen')
+		check('a requirement the character does not hold is named',
+			select(2, Access.MeetsRequirements(maxtac, noRights)) == 'jobs.needsJob')
+		check('and a grade below the one it asks for is named as the grade',
+			select(2, Access.MeetsRequirements(maxtac, cadet)) == 'jobs.needsGrade')
+		check('an ACL clause is asked of the ACL',
+			select(2, Access.MeetsRequirements(
+				{ requires = { acl = 'command.opx.jobs.add' } }, refused)) == 'jobs.needsRight')
+		check('an open job with no clauses is met by anybody',
+			select(1, Access.MeetsTerms(ncpd, noRights)) == true)
+
+		-- ── a board is a place ──────────────────────────────────────────
+		check('the shipped boards report no problems against the live catalogue',
+			#Access.Problems(character.GetJob) == 0,
+			table.concat(Access.Problems(character.GetJob), ' | '))
+
+		-- A LADDER LEVEL THE CATALOGUE HAS NO GRADE FOR IS NAMED, which is the one
+		-- configuration mistake that would otherwise promote somebody into a rank
+		-- with no name and no pay.
+		local shipped = OPX.Config.MODULES.jobs.JOBS.ncpd.LADDER
+		OPX.Config.MODULES.jobs.JOBS.ncpd.LADDER = { [1] = 90.0, [2] = 360.0, [3] = 1080.0, [9] = 10.0 }
+		local named = table.concat(Access.Problems(character.GetJob), ' | ')
+		OPX.Config.MODULES.jobs.JOBS.ncpd.LADDER = shipped
+		check('a ladder level with no grade behind it is named at boot',
+			named:find('ncpd.LADDER%[9%]') ~= nil, named)
+
+		-- A JOB THE CATALOGUE DOES NOT DEFINE IS NAMED TOO: a board for it could
+		-- never be signed at, and a warning that skipped the entry would leave it
+		-- looking joinable on the sign.
+		local jobsTable = OPX.Config.MODULES.jobs.JOBS
+		jobsTable.ghost = { OPEN = true, LADDER = { [1] = 10.0 } }
+		local ghost = table.concat(Access.Problems(character.GetJob), ' | ')
+		jobsTable.ghost = nil
+		check('a job nobody defined is named at boot',
+			ghost:find('JOBS.ghost') ~= nil, ghost)
+
+		-- The two looks, which are the engine's own vocabulary and glow for the
+		-- same reason the garage markers do.
+		local office = Access.Marker('signup')
+		check('an office marker is the glowing interaction cylinder',
+			office.shape == 'cylinder' and office.style == 'interaction'
+				and office.radius > 0.0,
+			('%s/%s'):format(tostring(office.shape), tostring(office.style)))
+		local desk = Access.Marker('boss')
+		check('a desk marker is the louder objective cylinder',
+			desk.shape == 'cylinder' and desk.style == 'objective',
+			('%s/%s'):format(tostring(desk.shape), tostring(desk.style)))
+		check('and both are lifted off the ground, which is what makes them draw',
+			office.lift > 0.0 and desk.lift > 0.0)
+
+		-- A board's key and shape are coerced rather than trusted: a KIND nobody
+		-- defined, a key nobody can ask for and a coordinate that is not a number
+		-- are each refused WITH THE KEY NAMED, which is what makes a config typo
+		-- findable in a log.
+		local problems = {}
+		Access.Coerce({
+			good = { KIND = 'signup', JOB = 'ncpd', X = 1.0, Y = 2.0, Z = 3.0 },
+			badKind = { KIND = 'office', JOB = 'ncpd', X = 1.0, Y = 2.0, Z = 3.0 },
+			badX = { KIND = 'signup', JOB = 'ncpd', X = 'over there', Y = 2.0, Z = 3.0 },
+			[string.rep('k', Access.MAX_KEY + 1)] = { KIND = 'signup', JOB = 'ncpd',
+				X = 1.0, Y = 2.0, Z = 3.0 },
+		}, problems)
+		check('every board that is not a board is refused and its key named',
+			#problems == 3, table.concat(problems, ' | '))
+		check('and the unnamed KIND is what it is refused for',
+			table.concat(problems, ' | '):find('badKind') ~= nil)
+		check('a coordinate that is a string is refused, not read as zero',
+			table.concat(problems, ' | '):find('badX') ~= nil)
+		check('and a key longer than the column is refused rather than truncated',
+			table.concat(problems, ' | '):find('48 characters') ~= nil,
+			table.concat(problems, ' | '))
+
+		-- ── what the server tells a player ─────────────────────────────
+		local src = 91
+		control.Admit(src, 'account-jobs-a')
+		OPX.EnsureSession(src)
+		local citizen = 'citizen-jobs-a'
+		local players = OPX.Modules.Get('character').Players
+		players[src] = { PlayerData = { citizenId = citizen, source = src,
+			userId = 'account-jobs-a', name = 'Jobs A', jobs = {},
+			job = { name = 'unemployed', grade = { level = 0 }, onDuty = true } },
+			Functions = { UpdatePlayerData = function() end } }
+		OPX.Modules.Get('character').Registry.byCitizenId[citizen] = src
+		OPX.Modules.Get('character').Registry.byUserId['account-jobs-a'] = src
+
+		-- Standing on the shipped office, which is where the board is. READ FROM THE
+		-- CONFIG rather than repeated: the office has moved once already (it stood
+		-- 3.4 km from every arrival point this server offers, so no client was ever
+		-- inside its marker's range -- reported live as "the job marker isn't
+		-- appearing in game"), and a test holding the old numbers would then be
+		-- failing for the placement instead of for the behaviour.
+		local officeAt = OPX.Config.MODULES.jobs.BOARDS.jobs_signup
+		env.Open77.players.position = function() return { x = officeAt.X, y = officeAt.Y,
+			z = officeAt.Z, bucket = 0 } end
+
+		env.source = src
+		control.netEvents[jobs.Event.ASK]()
+		local payload = lastEvent(jobs.Event.SYNC)
+		check('the board list is sent to the player who asked', payload ~= nil)
+		local sent = payload and payload[1] or nil
+		local office = nil
+		for index = 1, type(sent) == 'table' and #(sent.boards or {}) or 0 do
+			if sent.boards[index].kind == 'signup' then office = sent.boards[index] end
+		end
+		check('and it is the office they are standing on', office ~= nil and office.key == 'jobs_signup')
+		local offers = office and office.state and office.state.offers or {}
+		check('which offers every job the config lists', #offers >= 7, tostring(#offers))
+		local byName = {}
+		for index = 1, #offers do byName[offers[index].job] = offers[index] end
+		check('the offer carries the catalogue\'s own name for the work',
+			byName.ncpd ~= nil and type(byName.ncpd.label) == 'string')
+		check('a player who is not a member may sign the open one',
+			byName.ncpd ~= nil and byName.ncpd.canJoin == true)
+		check('and the job that takes no walk-ins says so rather than saying no',
+			byName.maxtac ~= nil and byName.maxtac.approval == true
+				and byName.maxtac.canJoin ~= true)
+		check('a desk is NOT sent to somebody who is not its boss',
+			(function()
+				for index = 1, #(sent.boards or {}) do
+					if sent.boards[index].kind == 'boss' then return false end
+				end
+				return true
+			end)())
+
+		-- ── the capture round-trip ─────────────────────────────────────
+		check('the add command is registered and ACL-gated',
+			control.commands['opx.jobs.add'] ~= nil
+				and control.commands['opx.jobs.add'].restricted == true)
+		check('and its routeway to the client exists',
+			type(control.netEvents[jobs.Event.CAPTURED]) == 'function')
+
+		local mark = #control.clientEvents
+		control.commands['opx.jobs.add'].run(src, { 'boss', 'jobs_desk_new', 'ncpd' })
+		local asked = lastEvent(jobs.Event.CAPTURE)
+		check('the add command asks the client for its facing',
+			asked ~= nil and #control.clientEvents > mark and asked.source == src)
+		check('naming the kind, the job and the key it was given',
+			asked ~= nil and asked[1] == 'boss' and asked[2] == 'ncpd' and asked[3] == 'jobs_desk_new',
+			asked and ('%s/%s/%s'):format(tostring(asked[1]), tostring(asked[2]), tostring(asked[3])))
+
+		-- A JOB THE CONFIG DOES NOT OFFER CANNOT BE CAPTURED: a board for work that
+		-- does not exist is a marker that refuses every press. Counted by the ASK
+		-- rather than by every client event, because the previous ask's watchdog
+		-- settles itself in the same window.
+		local function asksSince(mark)
+			local count = 0
+			for index = mark + 1, #control.clientEvents do
+				if control.clientEvents[index].name == jobs.Event.CAPTURE then count = count + 1 end
+			end
+			return count
+		end
+		mark = #control.clientEvents
+		control.commands['opx.jobs.add'].run(src, { 'signup', 'jobs_ghost', 'president' })
+		check('a board for a job nobody offers is not asked for at all', asksSince(mark) == 0,
+			tostring(asksSince(mark)))
+
+		-- The answer, with no ACL: a net event has no host-side gate, so the
+		-- capture door asks the ACL question itself. This is the whole reason the
+		-- door exists separately from the command.
+		local boardsBefore = OPX.Api.Get('jobs').State().value.boards
+		control.netEvents[jobs.Event.CAPTURED]('boss', 'ncpd', 'jobs_desk_new', '', 0.0)
+		control.Pump(4)
+		check('an answer from somebody without the command right is refused and named',
+			table.concat(control.log.warn, ' | '):find('without opx.jobs.add', 1, true) ~= nil,
+			table.concat(control.log.warn, ' | '))
+		check('and nothing was saved for it',
+			OPX.Api.Get('jobs').State().value.boards == boardsBefore,
+			tostring(OPX.Api.Get('jobs').State().value.boards - boardsBefore))
+
+		-- WHERE IT IS SAVED IS SECTION TWO'S BUSINESS: this boot has no database,
+		-- and a capture that cannot be written must SAY so rather than leaving a
+		-- marker standing in a config nobody wrote.
+		local warns = #control.log.warn
+		control.Allow(src, 'command.opx.jobs.add')
+		control.netEvents[jobs.Event.CAPTURED]('boss', 'ncpd', 'jobs_desk_new', '', 123.4)
+		control.Pump(4)
+		check('with no database the capture is refused and says why',
+			#control.log.warn > warns
+				and table.concat(control.log.warn, ' | '):find('capture of jobs_desk_new', 1, true) ~= nil,
+			table.concat(control.log.warn, ' | '))
+		check('and no board was added to the standing set',
+			OPX.Api.Get('jobs').State().value.boards == boardsBefore,
+			tostring(OPX.Api.Get('jobs').State().value.boards))
+		check('the remove command is registered too',
+			control.commands['opx.jobs.remove'] ~= nil)
+	end
+end
+
+section('jobs: signing on, ranking up and the desk')
+do
+	-- The INSERT's own column list paired positionally with its parameter list,
+	-- which is how the bridge pairs them. `board_key = @key` is where the two
+	-- vocabularies meet, and a stub that stored `params` whole hid it: it handed
+	-- the loader back exactly the field it was asking for, so a loader reading
+	-- `raw.key` against a query selecting `board_key` looked correct here and
+	-- refused every captured board on a live server.
+	-- @param sql string
+	-- @return string[]|nil the column names
+	-- @return string[]|nil the parameter names, in the same order
+	local function inserted(sql)
+		local columns = sql:match('INSERT INTO%s+[%w_]+%s*(%b())')
+		local values = sql:match('VALUES%s*(%b())')
+		if columns == nil or values == nil then return nil end
+		local names, params = {}, {}
+		for name in columns:gmatch('[%w_]+') do names[#names + 1] = name end
+		for name in values:gmatch('@([%w_]+)') do params[#params + 1] = name end
+		if #names ~= #params then return nil end
+		return names, params
+	end
+
+	-- THE MEMBERSHIP ROWS ARE REAL. The bridge below stores what the character
+	-- module writes, so `GetGroupMembers` -- which is what the roster is -- answers
+	-- from the SQL this runtime actually ran, and a promotion is proved by the row
+	-- rather than by a return value.
+	local function bridge(state)
+		return Host.Database({
+			scalar = function() return 1 end,
+			single = function() return nil end,
+			update = function(sql, params)
+				params = type(params) == 'table' and params or {}
+				if sql:find('INSERT INTO opx77_character_groups', 1, true) then
+					state.groups[params.citizen] = { grade = params.grade, type = params.type,
+						name = params.name }
+					state.membershipWrites = state.membershipWrites + 1
+				elseif sql:find('DELETE FROM opx77_character_groups', 1, true) then
+					state.groups[params.citizen] = nil
+					state.membershipDeletes = state.membershipDeletes + 1
+				elseif sql:find('INSERT INTO opx77_job_seniority', 1, true) then
+					state.banks[params.citizen .. '/' .. tostring(params.job)] = params.points
+					state.bankWrites = state.bankWrites + 1
+				elseif sql:find('DELETE FROM opx77_job_seniority', 1, true) then
+					state.banks[params.citizen .. '/' .. tostring(params.job)] = nil
+					state.bankDeletes = state.bankDeletes + 1
+				elseif sql:find('INSERT INTO opx77_job_boards', 1, true) then
+					local names, order = inserted(sql)
+					local row = {}
+					for index, column in ipairs(names or {}) do row[column] = params[order[index]] end
+					state.boards[row.board_key or params.key] = row
+				elseif sql:find('DELETE FROM opx77_job_boards', 1, true) then
+					state.boards[params.key] = nil
+				end
+				return 0
+			end,
+			query = function(sql, params)
+				params = type(params) == 'table' and params or {}
+				-- The roster, which is the one statement that joins two tables.
+				if sql:find('opx77_character_groups', 1, true)
+					and sql:find('opx77_characters', 1, true) then
+					local rows = {}
+					for citizen, row in pairs(state.groups) do
+						if row.type == params.type and row.name == params.name then
+							rows[#rows + 1] = { citizen_id = citizen, grade = row.grade,
+								name = 'Test Subject',
+								char_info = '{"firstName":"Test","lastName":"Subject"}' }
+						end
+					end
+					table.sort(rows, function(left, right) return left.grade > right.grade end)
+					return rows
+				end
+				if sql:find('opx77_job_seniority', 1, true) then
+					local rows = {}
+					for key, points in pairs(state.banks) do
+						local citizen, job = key:match('^([^/]+)/(.+)$')
+						rows[#rows + 1] = { citizen_id = citizen, job = job, points = points }
+					end
+					return rows
+				end
+				if sql:find('opx77_job_boards', 1, true) then
+					local rows = {}
+					for _, board in pairs(state.boards) do rows[#rows + 1] = board end
+					return rows
+				end
+				return {}
+			end,
+		})
+	end
+
+	local state = { groups = {}, banks = {}, boards = {}, membershipWrites = 0,
+		membershipDeletes = 0, bankWrites = 0, bankDeletes = 0 }
+	local env, control, why = boot('server', bridge(state))
+	check('the server boots with a database and the jobs module', why == nil, why)
+
+	local function lastEvent(name)
+		for index = #control.clientEvents, 1, -1 do
+			if control.clientEvents[index].name == name then return control.clientEvents[index] end
+		end
+		return nil
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local jobs = OPX.Modules.Get('jobs')
+		local Access = jobs.Access
+		local contract = OPX.Api.Get('jobs')
+		local character = OPX.Api.Get('character')
+		local characters = OPX.Modules.Get('character')
+		local settings = OPX.Config.MODULES.jobs
+
+		-- THE REQUEST WINDOW IS A RATE AND NOT A CLOCK, which is the same
+		-- distinction `POINTS_PER_TICK` below makes: the shipped ceiling is eight
+		-- asks in ten seconds per connection, and the harness's `Wait` returns at
+		-- once, so a hundred-odd asks below would all land inside one window and
+		-- be refused `error.tooFast`. Raised for the section, with the limit's own
+		-- refusal driven deliberately further down.
+		local shippedWindow = settings.REQUESTS_PER_WINDOW
+		settings.REQUESTS_PER_WINDOW = 1000
+
+		local function load(id, citizenId, jobName, grade, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local rank = grade or 0
+			characters.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id), jobs = jobName ~= nil and { [jobName] = rank } or {},
+				job = { name = jobName or 'unemployed', grade = { level = jobName ~= nil and rank or 0 },
+					onDuty = onDuty == true },
+				money = { EDDIES = 0, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId['account-' .. tostring(id)] = id
+			return characters.Players[id]
+		end
+
+		-- READ FROM THE CONFIG, for the reason above: these are only ever "the place
+		-- the shipped board stands", and where the office stands is pinned by its
+		-- own check (it must be within marker range of an arrival point).
+		local officeBoard = settings.BOARDS.jobs_signup
+		local cityBoard = settings.BOARDS.jobs_desk_city
+		local maxtacBoard = settings.BOARDS.jobs_desk_maxtac
+		local OFFICE = { x = officeBoard.X, y = officeBoard.Y, z = officeBoard.Z }
+		local DESK = { x = cityBoard.X, y = cityBoard.Y, z = cityBoard.Z }
+		local at = nil
+		env.Open77.players.position = function()
+			local where = at or { x = 0.0, y = 0.0, z = 0.0, bucket = 0 }
+			return { x = where.x, y = where.y, z = where.z, bucket = where.bucket or 0 }
+		end
+
+		local src = 51
+		local citizen = 'citizen-jobs-b'
+		load(src, citizen, nil, nil, false)
+		at = { x = OFFICE.x, y = OFFICE.y, z = OFFICE.z, bucket = 0 }
+
+		-- ── the commands the config names are the commands that exist ────
+		-- A DECLARATION NOBODY WIRED is the failure this suite was written for
+		-- once already: a config naming every command, a module registering none
+		-- of them, and every refusal a player read really meaning "unknown
+		-- command". The set is compared BOTH WAYS, so a command registered under
+		-- a name the config does not carry fails here too.
+		do
+			local expected, registered = {}, {}
+			for _, name in pairs(settings.COMMANDS) do expected[name] = true end
+			for name in pairs(control.commands) do
+				if name:sub(1, 9) == 'opx.jobs.' then registered[name] = true end
+			end
+
+			local missing, extra = {}, {}
+			for name in pairs(expected) do
+				if not registered[name] then missing[#missing + 1] = name end
+			end
+			for name in pairs(registered) do
+				if not expected[name] then extra[#extra + 1] = name end
+			end
+			table.sort(missing)
+			table.sort(extra)
+			check('every command the config names is registered', #missing == 0,
+				table.concat(missing, ', '))
+			check('and nothing is registered that the config does not name', #extra == 0,
+				table.concat(extra, ', '))
+
+			-- THE ONE THE HOST GATES. `restricted = true` is what makes the ACL the
+			-- check at all: without it a player who was never granted
+			-- `command.opx.jobs.*` could move every board on the map.
+			for _, name in ipairs({ settings.COMMANDS.add, settings.COMMANDS.remove,
+				settings.COMMANDS.list, settings.COMMANDS.roster, settings.COMMANDS.rank,
+				settings.COMMANDS.join, settings.COMMANDS.leave }) do
+				local entry = control.commands[name]
+				check(('%s asks the host for the right'):format(tostring(name)),
+					entry ~= nil and entry.restricted == true)
+			end
+
+			-- AND THE DESK'S OWN ARE NOT, deliberately: a boss is granted a desk by
+			-- their GRADE rather than by an operator's ACL file, and the grade is
+			-- re-derived on the server for every one of the four actions -- which
+			-- the refusals further down prove.
+			for _, name in ipairs({ settings.COMMANDS.promote, settings.COMMANDS.demote,
+				settings.COMMANDS.fire, settings.COMMANDS.hire }) do
+				local entry = control.commands[name]
+				check(('%s is not ACL-gated, because the grade is the check'):format(tostring(name)),
+					entry ~= nil and entry.restricted ~= true)
+			end
+		end
+
+		-- ── signing on ───────────────────────────────────────────────────
+		local writes = state.membershipWrites
+		env.source = src
+		control.netEvents[jobs.Event.JOIN]('jobs_signup', 'ncpd')
+		control.Pump(6)
+		check('signing at the office puts the job on the character',
+			characters.Players[src].PlayerData.jobs.ncpd == 0,
+			tostring(characters.Players[src].PlayerData.jobs.ncpd))
+		check('and the membership row went to the database',
+			state.membershipWrites == writes + 1 and state.groups[citizen] ~= nil
+				and state.groups[citizen].name == 'ncpd',
+			('%d writes, %s row'):format(state.membershipWrites - writes,
+				state.groups[citizen] and state.groups[citizen].name or 'no'))
+		check('an unemployed character takes it as their PRIMARY job',
+			characters.Players[src].PlayerData.job.name == 'ncpd'
+				and characters.Players[src].PlayerData.job.grade.level == 0,
+			characters.Players[src].PlayerData.job.name)
+		local answer = lastEvent(jobs.Event.ANSWER)
+		check('and the client is told it worked', answer ~= nil and answer[1] == true)
+		check('a bank is opened at nothing for the new job',
+			state.banks[citizen .. '/ncpd'] == 0.0, tostring(state.banks[citizen .. '/ncpd']))
+
+		-- CANONICALLY: the same job twice is not a second membership.
+		writes = state.membershipWrites
+		control.netEvents[jobs.Event.JOIN]('jobs_signup', 'ncpd')
+		control.Pump(6)
+		check('signing the same job again is refused rather than written twice',
+			state.membershipWrites == writes, tostring(state.membershipWrites - writes))
+		-- AND THE RESPONSE CARRIES THE REASON, which is the whole point of the
+		-- refusal vocabulary: a player reading 'jobs.alreadyMember' learns
+		-- something a generic no does not say.
+		check('and the refusal names the job that is already theirs',
+			#control.notices > 0)
+
+		writes = state.membershipWrites
+		control.netEvents[jobs.Event.JOIN]('jobs_signup', 'president')
+		control.Pump(4)
+		check('a job the config does not offer is refused and nothing is written',
+			state.membershipWrites == writes)
+
+		control.netEvents[jobs.Event.JOIN]('jobs_signup', 'maxtac')
+		control.Pump(4)
+		check('and an invitation-only job is refused at the sign',
+			characters.Players[src].PlayerData.jobs.maxtac == nil)
+
+		-- ── the board is a place ────────────────────────────────────────
+		local other = 52
+		local otherCitizen = 'citizen-jobs-c'
+		load(other, otherCitizen, nil, nil, false)
+		at = { x = OFFICE.x + 60.0, y = OFFICE.y + 60.0, z = OFFICE.z, bucket = 0 }
+		writes = state.membershipWrites
+		control.netEvents[jobs.Event.JOIN]('jobs_signup', 'trauma')
+		control.Pump(4)
+		check('signing from across the street is refused',
+			characters.Players[other].PlayerData.jobs.trauma == nil
+				and state.membershipWrites == writes)
+
+		at = { x = OFFICE.x, y = OFFICE.y, z = OFFICE.z, bucket = 7 }
+		control.netEvents[jobs.Event.JOIN]('jobs_signup', 'trauma')
+		control.Pump(4)
+		check('and from another routing bucket, whatever the distance says',
+			characters.Players[other].PlayerData.jobs.trauma == nil)
+
+		-- A slot with no character has nothing to sign with.
+		env.source = 53
+		control.netEvents[jobs.Event.JOIN]('jobs_signup', 'ncpd')
+		control.Pump(4)
+		check('a connection with no loaded character signs nothing',
+			state.groups['citizen-jobs-d'] == nil)
+
+		-- ── a rank is a rank everywhere ─────────────────────────────────
+		at = { x = OFFICE.x, y = OFFICE.y, z = OFFICE.z, bucket = 0 }
+		env.source = src
+		control.Pump(2)
+		-- THE OTHER DOOR ONTO THE SAME RANK, which is the point being made: an
+		-- operator's `/opx.job` writes the same membership the desk does, and this
+		-- module re-reads it rather than keeping a rank of its own.
+		local promoted = character.SetJob(citizen, 'ncpd', 3)
+		check('the character contract can raise the rank itself', promoted.ok == true,
+			tostring(promoted.error))
+		check('and the module reads that rank back rather than its own copy',
+			contract.Bank(citizen, 'ncpd') ~= nil)
+
+		-- ── the desk ───────────────────────────────────────────────────
+		at = { x = DESK.x, y = DESK.y, z = DESK.z, bucket = 0 }
+		control.netEvents[jobs.Event.ASK]()
+		local payload = lastEvent(jobs.Event.SYNC)
+		local desks = 0
+		for index = 1, type(payload) == 'table' and #(payload[1].boards or {}) or 0 do
+			if payload[1].boards[index].kind == 'boss' then desks = desks + 1 end
+		end
+		check('the Captain is shown the desk for their job', desks >= 1, tostring(desks))
+		control.Pump(4)
+		local roster = contract.Roster('ncpd')
+		check('and the roster answers who holds it', roster.ok == true, tostring(roster.error))
+		check('with the member the join put there',
+			roster.value.count >= 1, tostring(roster.value.count))
+
+		-- A CADET IS NOT SHOWN IT: the desk is gated on the job's own boss grade,
+		-- not on an operator's list. (The desk is asked for by key, so the Cadet
+		-- below is refused by the grade rather than by the marker.)
+		at = { x = OFFICE.x, y = OFFICE.y, z = OFFICE.z, bucket = 0 }
+		local cadet = 54
+		local cadetCitizen = 'citizen-jobs-d'
+		load(cadet, cadetCitizen, 'ncpd', 0, false)
+		state.groups[cadetCitizen] = { grade = 0, type = 'job', name = 'ncpd' }
+		env.source = cadet
+		control.netEvents[jobs.Event.ASK]()
+		payload = lastEvent(jobs.Event.SYNC)
+		desks = 0
+		for index = 1, type(payload) == 'table' and #(payload[1].boards or {}) or 0 do
+			if payload[1].boards[index].kind == 'boss' then desks = desks + 1 end
+		end
+		check('a Cadet is shown no desk at all', desks == 0, tostring(desks))
+
+		-- ── the desk's four actions ─────────────────────────────────────
+		at = { x = DESK.x, y = DESK.y, z = DESK.z, bucket = 0 }
+		env.source = cadet
+		local refused = contract.Boss and nil
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'promote', citizen, 'test')
+		control.Pump(6)
+		check('a member without the boss rank may not promote anybody',
+			state.groups[cadetCitizen].grade == 0)
+
+		env.source = src
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'promote', cadetCitizen, 'test')
+		control.Pump(6)
+		check('the Captain promotes the Cadet one grade',
+			state.groups[cadetCitizen] ~= nil and characters.Players[cadet].PlayerData.jobs.ncpd == 1,
+			tostring(characters.Players[cadet].PlayerData.jobs.ncpd))
+		check('and the promotion is announced to them',
+			#control.notices > 0)
+
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'demote', cadetCitizen, 'test')
+		control.Pump(6)
+		check('and demotes them back',
+			characters.Players[cadet].PlayerData.jobs.ncpd == 0,
+			tostring(characters.Players[cadet].PlayerData.jobs.ncpd))
+
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'demote', cadetCitizen, 'test')
+		control.Pump(6)
+		check('a demotion at the entry rank is refused rather than guessed at',
+			characters.Players[cadet].PlayerData.jobs.ncpd == 0)
+
+		-- THE LAST BOSS STAYS A BOSS: a desk nobody can sit behind is a roster
+		-- nobody can ever change again.
+		local before = state.membershipDeletes
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'fire', citizen, 'test')
+		control.Pump(6)
+		check('the last boss may not be dismissed',
+			state.membershipDeletes == before and characters.Players[src].PlayerData.jobs.ncpd == 3)
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'demote', citizen, 'test')
+		control.Pump(6)
+		check('nor demoted out of the boss grade',
+			characters.Players[src].PlayerData.jobs.ncpd == 3)
+
+		-- A SECOND CAPTAIN MAKES THE FIRST DISMISSABLE, which is the same rule
+		-- read from the other side: it is the LAST one that is protected.
+		character.SetJob(cadetCitizen, 'ncpd', 3)
+		state.groups[cadetCitizen] = { grade = 3, type = 'job', name = 'ncpd' }
+		before = state.membershipDeletes
+		local banks = state.bankDeletes
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'fire', cadetCitizen, 'test')
+		control.Pump(6)
+		check('with a second Captain, a dismissal goes through',
+			state.membershipDeletes == before + 1 and state.bankDeletes == banks + 1,
+			('%d deletes, %d bank deletes'):format(state.membershipDeletes - before,
+				state.bankDeletes - banks))
+		check('and the membership is gone from the character too',
+			characters.Players[cadet].PlayerData.jobs.ncpd == nil)
+
+		-- ── hiring at the desk ─────────────────────────────────────────
+		local rookie = 55
+		local rookieCitizen = 'citizen-jobs-e'
+		load(rookie, rookieCitizen, nil, nil, false)
+		at = { x = OFFICE.x, y = OFFICE.y, z = OFFICE.z, bucket = 0 }
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'hire', rookie, 'test')
+		control.Pump(6)
+		check('a candidate across the map is refused rather than hired',
+			characters.Players[rookie].PlayerData.jobs.ncpd == nil)
+
+		at = { x = DESK.x, y = DESK.y, z = DESK.z, bucket = 0 }
+		writes = state.membershipWrites
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'hire', rookie, 'test')
+		control.Pump(6)
+		check('a candidate standing at the desk is taken on at the entry rank',
+			characters.Players[rookie].PlayerData.jobs.ncpd == 0,
+			tostring(characters.Players[rookie].PlayerData.jobs.ncpd))
+		check('and their membership row was written', state.membershipWrites == writes + 1)
+
+		-- MAXTAC'S OWN TERMS ARE THE HIRE'S TERMS: the invitation job cannot be
+		-- hired into by somebody who is not an NCPD detective, which is the rule
+		-- the sign could only ever state.
+		--
+		-- THE DESK IS A SQUAD LEAD'S, so the caller is seated there FIRST. Without
+		-- that, every refusal below would be `jobs.notBoss` and the terms would
+		-- never be the thing under test -- a green check standing for a rule it
+		-- never reached.
+		character.SetJob(citizen, 'maxtac', 1)
+		local rookies = 56
+		load(rookies, 'citizen-jobs-f', nil, nil, false)
+		at = { x = maxtacBoard.X, y = maxtacBoard.Y, z = maxtacBoard.Z, bucket = 0 }
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_maxtac', 'hire', rookies, 'test')
+		control.Pump(6)
+		check('a hire into an invitation job needs the terms it names',
+			characters.Players[rookies].PlayerData.jobs.maxtac == nil)
+
+		-- THE TERMS ARE THE CANDIDATE'S, not the desk's: the one variable that
+		-- changes between the refusal above and the hire below is the RANK THE
+		-- CANDIDATE HOLDS, which is the whole of what `REQUIRES` claims to gate.
+		character.SetJob('citizen-jobs-f', 'ncpd', 2)
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_maxtac', 'hire', rookies, 'test')
+		control.Pump(6)
+		check('and goes through for somebody who meets them',
+			characters.Players[rookies].PlayerData.jobs.maxtac == 0,
+			tostring(characters.Players[rookies].PlayerData.jobs.maxtac))
+
+		-- AND THE COMMAND FORM OF A HIRE TAKES A CONNECTION, which is the one
+		-- thing that separates it from the three actions above it: a hire acts on
+		-- somebody who must be in the session, and `bossAct` reads its target as
+		-- a connection. Driving it here is what proves the reader and the guard
+		-- agree -- a command registered against a shape nobody can type is the
+		-- same class of fault as one that was never registered at all.
+		local recruited = 63
+		load(recruited, 'citizen-jobs-l', nil, nil, false)
+		character.SetJob('citizen-jobs-l', 'ncpd', 2)
+		at = { x = maxtacBoard.X, y = maxtacBoard.Y, z = maxtacBoard.Z, bucket = 0 }
+		control.commands[settings.COMMANDS.hire].run(src, { 'maxtac', tostring(recruited) })
+		control.Pump(6)
+		check('the hire command takes a connection and puts them on the job',
+			characters.Players[recruited].PlayerData.jobs.maxtac == 0,
+			tostring(characters.Players[recruited].PlayerData.jobs.maxtac))
+
+		-- A CITIZEN ID IS NOT A CONNECTION, and the reader refuses one rather
+		-- than handing `tonumber` a nil and reporting a failure from the wrong
+		-- place.
+		control.commands[settings.COMMANDS.hire].run(src, { 'maxtac', 'citizen-jobs-l' })
+		control.Pump(4)
+		check('and a citizen id is refused as a target, because it names no session',
+			characters.Players[recruited].PlayerData.jobs.maxtac == 0)
+
+		-- ── the ladder, by worked time ─────────────────────────────────
+		-- The shipped tick pays a point a minute; the harness's `Wait` returns at
+		-- once, so one pump is one pass and the rate is moved to make the level a
+		-- single pass away. That is a rate under test and not a clock.
+		local shippedTick = settings.SENIORITY.POINTS_PER_TICK
+		local shippedAuto = settings.SENIORITY.AUTO_PROMOTE
+		local worker = 57
+		local workerCitizen = 'citizen-jobs-g'
+		local before1 = OPX.Now()
+		load(worker, workerCitizen, 'merc', 0, true)
+		state.groups[workerCitizen] = { grade = 0, type = 'job', name = 'merc' }
+		at = { x = OFFICE.x, y = OFFICE.y, z = OFFICE.z, bucket = 0 }
+		control.Pump(2)
+		local banked = contract.Bank(workerCitizen, 'merc')
+		check('an on-duty holder banks worked time', banked > 0.0, tostring(banked))
+
+		settings.SENIORITY.POINTS_PER_TICK = 1000.0
+		control.Pump(4)
+		check('a bank past the ladder\'s level moves the rank',
+			characters.Players[worker].PlayerData.jobs.merc == 3,
+			tostring(characters.Players[worker].PlayerData.jobs.merc))
+		check('and the move is the catalogue\'s own grade, not a number from the ladder',
+			characters.Players[worker].PlayerData.job.grade.name == 'Legend',
+			tostring(characters.Players[worker].PlayerData.job.grade.name))
+		check('and it stops at the top grade the catalogue defines',
+			characters.Players[worker].PlayerData.jobs.merc == 3)
+		check('and the bank keeps filling after it',
+			contract.Bank(workerCitizen, 'merc') > 0.0)
+
+		-- A JOB WHOSE RANKS ARE GRANTED AT A DESK NEVER MOVES ON A CLOCK.
+		local invited = 58
+		local invitedCitizen = 'citizen-jobs-h'
+		load(invited, invitedCitizen, 'maxtac', 0, true)
+		state.groups[invitedCitizen] = { grade = 0, type = 'job', name = 'maxtac' }
+		control.Pump(6)
+		check('an invitation job never promotes on worked time',
+			characters.Players[invited].PlayerData.jobs.maxtac == 0,
+			tostring(characters.Players[invited].PlayerData.jobs.maxtac))
+
+		settings.SENIORITY.AUTO_PROMOTE = false
+		local quiet = 59
+		load(quiet, 'citizen-jobs-i', 'merc', 0, true)
+		control.Pump(6)
+		check('and with AUTO_PROMOTE off no rank moves at all',
+			characters.Players[quiet].PlayerData.jobs.merc == 0,
+			tostring(characters.Players[quiet].PlayerData.jobs.merc))
+		settings.SENIORITY.AUTO_PROMOTE = shippedAuto
+		settings.SENIORITY.POINTS_PER_TICK = shippedTick
+
+		-- OFF DUTY IS NOT WORKED: a job with a shift banks only while clocked in.
+		local offDuty = 60
+		load(offDuty, 'citizen-jobs-j', 'merc', 0, false)
+		local was = contract.Bank('citizen-jobs-j', 'merc')
+		control.Pump(6)
+		check('an off-duty holder banks nothing',
+			contract.Bank('citizen-jobs-j', 'merc') == was,
+			tostring(contract.Bank('citizen-jobs-j', 'merc')))
+
+		-- AND WHAT WAS BANKED SURVIVES A RESTART, which is what the write-back is
+		-- for: the row is on its way to the database before the next pass.
+		check('a bank is written back rather than held in memory', state.bankWrites > 0,
+			tostring(state.bankWrites))
+		check('and the roster shows the time served',
+			select(1, (function()
+				for _, member in ipairs(contract.Roster('merc').value.members) do
+					if member.citizenId == workerCitizen then return true end
+				end
+				return false
+			end)()) == true)
+
+		-- ── and the ceiling is a ceiling ───────────────────────────────
+		-- ONE ASK IN THE WINDOW, AND THE SECOND IS REFUSED. A board is a place a
+		-- player stands on, so this is about a stuck key rather than about
+		-- fairness -- but a request door with no ceiling is the shape that turns a
+		-- held key into a query per frame.
+		settings.REQUESTS_PER_WINDOW = 1
+		local noisy = 62
+		load(noisy, 'citizen-jobs-k', nil, nil, false)
+		at = { x = OFFICE.x, y = OFFICE.y, z = OFFICE.z, bucket = 0 }
+		env.source = noisy
+		control.netEvents[jobs.Event.JOIN]('jobs_signup', 'ncpd')
+		control.netEvents[jobs.Event.JOIN]('jobs_signup', 'merc')
+		control.Pump(6)
+		check('a connection over its request ceiling is refused',
+			characters.Players[noisy].PlayerData.jobs.merc == nil,
+			tostring(characters.Players[noisy].PlayerData.jobs.merc))
+		settings.REQUESTS_PER_WINDOW = shippedWindow
+
+		-- ── a captured board is still there at the next boot ────────────
+		-- THE RELOAD IS THE HALF NOBODY HAD TESTED, and a live server showed what
+		-- that cost: every captured board was refused at boot with
+		-- `key must be a string of 1 to 48 characters`, so a marker an operator had
+		-- placed vanished on every restart even though the write had succeeded.
+		-- The loader read `raw.key` where the query selects `board_key`.
+		local placed = 'jobs_desk_probe'
+		control.Allow(src, 'command.opx.jobs.add')
+		at = { x = OFFICE.x, y = OFFICE.y, z = OFFICE.z, bucket = 0 }
+		env.source = src
+		control.commands['opx.jobs.add'].run(src, { 'boss', placed, 'ncpd' })
+		control.Pump(2)
+		control.netEvents[jobs.Event.CAPTURED]('boss', 'ncpd', placed, 'PROBE', 45.0)
+		control.Pump(6)
+		check('a captured board is written under the column the query selects',
+			state.boards[placed] ~= nil and state.boards[placed].board_key == placed,
+			state.boards[placed] and tostring(state.boards[placed].board_key))
+
+		local again, control2, why2 = boot('server', bridge(state))
+		check('the server boots again on the same database', why2 == nil, why2)
+		if why2 == nil then
+			local refused = false
+			for _, line in ipairs(control2.log.warn) do
+				if line:find('captured board was refused', 1, true) then refused = true end
+			end
+			check('and the board it captured is not refused at boot', not refused,
+				table.concat(control2.log.warn, ' | '))
+			check('it stands with the config boards, so its marker is drawn',
+				again.OPX.Api.Get('jobs').State().value.boards == 5,
+				tostring(again.OPX.Api.Get('jobs').State().value.boards))
+		end
+
+		check('no thread died', not table.concat(control.log.error, ' | '):find('thread died'),
+			table.concat(control.log.error, ' | '))
+	end
+end
+
+section('jobs: a desk is drawn for whoever captured it')
+do
+	-- A DATABASE, BECAUSE A CAPTURE THAT CANNOT BE WRITTEN IS NOT SAVED AT ALL:
+	-- `capture` returns on `could not save` before it ever reaches `captured[key]
+	-- = board`, so a board placed with the bridge absent is a board that does not
+	-- exist -- and every check below would have been reading the config's boards
+	-- instead of the one under test, which is exactly how the live symptom went
+	-- unnoticed by a suite that had a section capturing boards with no bridge.
+	-- The row is stored BY COLUMN NAME, which is what the bridge answers with.
+	local rows = {}
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		single = function() return nil end,
+		insert = function() return 0 end,
+		transaction = function() return 0 end,
+		update = function(sql, params)
+			params = type(params) == 'table' and params or {}
+			if sql:find('opx77_job_boards', 1, true) then
+				rows[tostring(params.key)] = params
+			end
+			return 0
+		end,
+		query = function(sql)
+			if sql:find('opx77_job_boards', 1, true) then
+				local out = {}
+				for key, params in pairs(rows) do
+					out[#out + 1] = { board_key = key, label = params.label, kind = params.kind,
+						job = params.job, x = params.x, y = params.y, z = params.z,
+						heading = params.heading, bucket = params.bucket, created_by = params.by }
+				end
+				return out
+			end
+			return {}
+		end,
+	}))
+	check('the server boots with the jobs module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local jobs = OPX.Modules.Get('jobs')
+		local characters = OPX.Modules.Get('character')
+		local settings = OPX.Config.MODULES.jobs
+
+		-- THE LIVE SYMPTOM, PINNED. An operator captured two desks, read
+		-- `saved`, walked around and saw no marker at all -- and had no way to tell
+		-- a board nobody could see from a capture that had never happened. A desk
+		-- is drawn for the holder of its job's boss grade, and a division with no
+		-- boss yet has nobody: so the one player who could see where it had been
+		-- put was the operator, and they were not shown it either.
+		local function load(id, citizenId)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			characters.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id), jobs = {},
+				job = { name = 'unemployed', grade = { level = 0 }, onDuty = false },
+				money = { EDDIES = 0, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+
+		local where = { x = settings.BOARDS.jobs_signup.X, y = settings.BOARDS.jobs_signup.Y,
+			z = settings.BOARDS.jobs_signup.Z, bucket = 0 }
+		env.Open77.players.position = function()
+			return { x = where.x, y = where.y, z = where.z, bucket = where.bucket }
+		end
+
+		-- What the server last sent one player, by board key. Read off the wire,
+		-- because that is what decides whether a marker can exist at all.
+		local function boardsSentTo(id)
+			env.source = id
+			control.netEvents[jobs.Event.ASK]()
+			control.Pump(4)
+			local keys = {}
+			for index = #control.clientEvents, 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == jobs.Event.SYNC and event.source == id then
+					local payload = event[1]
+					for _, board in ipairs(type(payload) == 'table' and payload.boards or {}) do
+						keys[board.key] = board.kind
+					end
+					break
+				end
+			end
+			return keys
+		end
+
+		-- The prose of the last command answer naming this board, which is what an
+		-- operator actually reads.
+		local function answerFor(key)
+			for index = #control.clientEvents, 1, -1 do
+				local payload = control.clientEvents[index][1]
+				if type(payload) == 'table' and type(payload.text) == 'string'
+					and payload.text:find(key .. ' saved', 1, true) then
+					return payload.text
+				end
+			end
+			return nil
+		end
+
+		-- The two halves of a capture, driven as the pair a client drives them:
+		-- the command asks for a facing, the client answers with one.
+		local function capture(actor, kind, key, job)
+			control.commands['opx.jobs.add'].run(actor, { kind, key, job })
+			control.Pump(2)
+			env.source = actor
+			control.netEvents[jobs.Event.CAPTURED](kind, job, key, 'PROBE', 0.0)
+			control.Pump(4)
+		end
+
+		local placer, placerCitizen = 71, 'citizen-jobs-m'
+		local other = 72
+		load(placer, placerCitizen)
+		load(other, 'citizen-jobs-n')
+		control.Allow(placer, 'command.opx.jobs.add')
+
+		-- THE RULE THAT DOES NOT MOVE: a desk is not public.
+		local stranger = boardsSentTo(other)
+		check('a desk is not sent to a player who is neither its boss nor its capturer',
+			stranger.jobs_desk_city == nil, tostring(stranger.jobs_desk_city))
+
+		capture(placer, 'boss', 'desk_probe', 'ncpd')
+		local placed = boardsSentTo(placer)
+
+		-- AND THE SEND IS SAID, WITH THE BUCKET IT WAS DECIDED IN. The client's
+		-- own line says what it holds; without this one, `0 board(s) held` cannot
+		-- be told from a payload that was never sent or one that came back empty
+		-- because the player's routing bucket holds nothing.
+		check('the server says what it sent and which bucket it decided in',
+			table.concat(control.log.info, ' | '):find('board(s) in bucket 0 sent to', 1, true) ~= nil,
+			table.concat(control.log.info, ' | '))
+		check('a player who captured a desk is sent it, holding no grade at all',
+			placed.desk_probe == 'boss', tostring(placed.desk_probe))
+		check('and it is the capture that earned it, not desks being public',
+			placed.jobs_desk_city == nil, tostring(placed.jobs_desk_city))
+		check('and nobody else is sent it because somebody captured it',
+			boardsSentTo(other).desk_probe == nil)
+
+		local said = answerFor('desk_probe')
+		check('the capture answer names who will be shown the desk',
+			said ~= nil and said:find('a desk is shown to the holder of ncpd grade 3', 1, true) ~= nil,
+			tostring(said))
+		check('and tells a capturer below that grade that the roster will refuse them',
+			said ~= nil and said:find('the roster will refuse you', 1, true) ~= nil, tostring(said))
+
+		-- AND A BOSS IS TOLD THE DESK STANDS FOR THEM, which is the same answer
+		-- from the other side: the sentence is about this player's grade and not
+		-- about the board, so a wording that read the same either way would be one
+		-- nobody could act on.
+		OPX.Api.Get('character').SetJob(placerCitizen, 'ncpd', 3)
+		capture(placer, 'boss', 'desk_probe_boss', 'ncpd')
+		local bossSaid = answerFor('desk_probe_boss')
+		check('a capturer who holds the boss grade is told the desk stands for them',
+			bossSaid ~= nil and bossSaid:find('which you hold', 1, true) ~= nil, tostring(bossSaid))
+		check('and the config desk for that job reaches them too, now that they do',
+			boardsSentTo(placer).jobs_desk_city == 'boss')
+
+		-- A SIGN-UP BOARD IS THE OTHER KIND, and its answer states the other rule.
+		capture(placer, 'signup', 'sign_probe', 'ncpd')
+		local signSaid = answerFor('sign_probe')
+		check('a sign-up board is answered with the distance everybody sees it within',
+			signSaid ~= nil and signSaid:find('within 150 m', 1, true) ~= nil, tostring(signSaid))
+		check('and it is sent to a stranger the moment it is captured',
+			boardsSentTo(other).sign_probe == 'signup')
+
+		-- THE OFFICE STANDS WHERE PLAYERS ARRIVE. This is the placement half of
+		-- the same complaint: the shipped office sat at the platform's old default
+		-- spawn, kilometres from every entry in config/spawn.lua, so no client was
+		-- ever inside the range a marker is drawn in -- for anybody, boss or not.
+		-- Stated as the property rather than as a pair of coordinates, so moving
+		-- the office stays an operator's choice and moving it out of reach does
+		-- not.
+		do
+			local reach, near, closest = settings.MAX_DISTANCE, false, nil
+			for _, spot in ipairs(OPX.Config.MODULES.spawn.LOCATIONS) do
+				local dx = spot.x - settings.BOARDS.jobs_signup.X
+				local dy = spot.y - settings.BOARDS.jobs_signup.Y
+				local metres = math.sqrt(dx * dx + dy * dy)
+				if closest == nil or metres < closest then closest = metres end
+				if metres <= reach then near = true end
+			end
+			check('the shipped office stands within marker range of an arrival point',
+				near, closest and ('%.1f m to the nearest'):format(closest) or 'no arrival points')
+		end
+
+		check('no thread died', not table.concat(control.log.error, ' | '):find('thread died'),
+			table.concat(control.log.error, ' | '))
+	end
+end
+
+section('jobs: the board the client draws')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the jobs module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local jobs = OPX.Modules.Get('jobs')
+		local contract = OPX.Api.Get('jobs')
+		local menu = OPX.Api.Get('menu')
+
+		check('the jobs module is running on the client', OPX.Modules.IsRunning('jobs'),
+			OPX.Modules.Record('jobs').Reason)
+		check('and publishes its half of the contract',
+			type(contract) == 'table' and type(contract.Open) == 'function'
+				and type(contract.BoardState) == 'function')
+
+		-- The key is declared under a STABLE id, because a player's rebind is
+		-- stored under it, and named by a catalogue key so the pause menu reads
+		-- words rather than a key.
+		local mapping = control.keyMappings.byId['opx.jobs.use']
+		check('the key is declared under its stable id', mapping ~= nil)
+		check('and named by the catalogue rather than by the id',
+			mapping ~= nil and mapping.name == 'Read the board or manage the roster',
+			mapping and tostring(mapping.name))
+
+		-- The payload the server would send, in the shape `Access.Serialise`
+		-- writes. The client is handed it and decides only what to DRAW.
+		local function board(key, kind, job, x, y, state)
+			return { key = key, label = key, kind = kind, job = job, x = x, y = y, z = 0.0,
+				heading = 0.0, bucket = 0, state = state }
+		end
+		-- A SCAN IS NOT A FIXED NUMBER OF ROUNDS. The client's scheduler runs a job
+		-- when its interval is up and the harness advances its clock by 100 ms a
+		-- round, so "one scan later" is five rounds for this module and as many as
+		-- the other jobs on the same loop make it. `settle` is what the suite uses
+		-- for that, and it is what makes the assertion after it keep its teeth.
+		--
+		-- MARKERS ARE COUNTED AS THE ENGINE HOLDS THEM -- `byId` is what the
+		-- harness resolves a live marker against, and a removed one is gone from
+		-- it -- and as a DELTA: this client has the rest of the suite's modules
+		-- loaded and one of them may own a marker of its own, so an absolute count
+		-- here would pin somebody else's world rather than this board.
+		local function markers()
+			local count = 0
+			for _ in pairs(control.markers.byId) do count = count + 1 end
+			return count
+		end
+		local base = markers()
+
+		control.placement.x, control.placement.y, control.placement.z = 0.0, 0.0, 0.0
+		control.netEvents[jobs.Event.SYNC]({ boards = {
+			board('jobs_signup', 'signup', 'ncpd', 0.0, 0.0, { kind = 'signup', job = 'ncpd',
+				open = true, top = 3, offers = {
+					{ job = 'ncpd', label = 'NCPD', open = true, canJoin = true, top = 3 },
+					{ job = 'maxtac', label = 'MaxTac', open = true, approval = true, top = 1 },
+				} }),
+		} })
+		settle(control, function() return markers() == base + 1 end, 60)
+
+		local report = contract.State().value
+		check('the board arrives and is held', report.boards == 1, tostring(report.boards))
+		check('and its arrival is said in the log, apart from what is drawn',
+			table.concat(control.log.info, ' | '):find('board(s) received', 1, true) ~= nil,
+			table.concat(control.log.info, ' | '))
+		check('a marker is drawn for it', markers() == base + 1, tostring(markers()))
+
+		-- AND WHAT IS HELD AND DRAWN IS SAID IN THE LOG, with the nearest one in
+		-- metres. A missing marker used to be silent on both halves at once: the
+		-- server decides which boards a player may be shown and the client draws
+		-- the ones in range, so "the marker isn't there" named neither of them --
+		-- which is what made a desk an operator had placed indistinguishable from
+		-- a capture that never happened.
+		check('and what is held and drawn is said in the log',
+			table.concat(control.log.info, ' | '):find('marker(s) drawn', 1, true) ~= nil,
+			table.concat(control.log.info, ' | '))
+		do
+			-- AND IT STANDS WHERE THE SERVER SAID THE BOARD DOES. A marker at the
+			-- right count but the wrong place is the failure a count cannot see.
+			local placed = nil
+			for _, options in pairs(control.markers.byId) do
+				local position = options.position
+				if position.x == 0.0 and position.y == 0.0 then placed = position end
+			end
+			check('and it stands where the server said the board does',
+				placed ~= nil and placed.z > 0.0,
+				placed ~= nil and tostring(placed.z))
+		end
+		check('and the row the player would press is up', report.shown == true)
+		check('naming the key it is bound to', type(report.key) == 'string', tostring(report.key))
+		check('and nothing is offered for a board they do not hold', report.held == false)
+
+		-- A BOARD OUT OF RANGE DRAWS NOTHING and takes its row down with it.
+		control.placement.x, control.placement.y = 900.0, 900.0
+		settle(control, function() return markers() == base end, 60)
+		report = contract.State().value
+		check('a board beyond the draw distance loses its marker', markers() == base,
+			tostring(markers()))
+		check('and the row goes with it', report.shown ~= true)
+		check('while the board itself is still held, because it is still theirs',
+			report.boards == 1)
+
+		-- Back on it: the door opens on the board underfoot.
+		control.placement.x, control.placement.y = 0.0, 0.0
+		settle(control, function() return contract.State().value.nearest ~= nil end, 60)
+		check('back on the board, it is the one underfoot again',
+			contract.State().value.nearest == 'jobs_signup')
+		local opened = contract.Open('test')
+		check('the key opens the list for the board underfoot', opened.ok == true,
+			tostring(opened.error))
+		report = contract.State().value
+		check('and the list reports itself open on the job screen',
+			report.open == true and report.screen == 'signup',
+			('%s/%s'):format(tostring(report.open), tostring(report.screen)))
+		check('with a row per job the server offered', report.offers == 2, tostring(report.offers))
+
+		-- THE PRESS ITSELF, through the menu the player is actually looking at:
+		-- the page raises a key, the menu raises the row, and this module answers
+		-- by naming the BOARD and the JOB. Nothing else is trusted, which is what
+		-- makes the row a request rather than a decision.
+		-- THE KEY GOES TO THE PAGE THE MENU IS DRAWN ON, which is the surface that
+		-- both received the menu's own open channel and has the key handler the
+		-- runtime wired into it. The last page in the session is not that page: it
+		-- is whichever surface drew last, and a key emitted there is a no-op that
+		-- would read exactly like a press that did nothing.
+		local function told(page, channel)
+			for index = 1, #page.sent do
+				if page.sent[index].channel == channel then return true end
+			end
+			return false
+		end
+		local function menuPage()
+			for _, page in ipairs(control.pages) do
+				if page.handlers['opx:menu:key'] ~= nil and told(page, 'opx:menu:open') then
+					return page
+				end
+			end
+			return nil
+		end
+		local surface = menuPage()
+		check('the menu drew on a surface that takes its keys', surface ~= nil)
+
+		local state = menu.State()
+		check('the menu is up with a row under the cursor',
+			state.ok == true and state.value.itemId == 'ncpd',
+			state.ok and tostring(state.value.itemId))
+		-- THE PAGE FORWARDS `enter`, not a word of its own: the menu's vocabulary is
+		-- its own six keys, and a key outside them is dropped in silence.
+		local before = #control.serverEvents
+		control.PageEmit(surface, 'opx:menu:key',
+			{ handle = state.value.handle, key = 'enter' })
+		control.Pump(4)
+		local sent = nil
+		for index = before + 1, #control.serverEvents do
+			if control.serverEvents[index].name == jobs.Event.JOIN then
+				sent = control.serverEvents[index]
+			end
+		end
+		check('pressing a job descends to its own screen rather than signing',
+			sent == nil and contract.State().value.screen == 'job',
+			('%s/%s'):format(tostring(sent ~= nil), tostring(contract.State().value.screen)))
+
+		state = menu.State()
+		before = #control.serverEvents
+		-- The job screen's action row is the sign-up; the ladder rows are read
+		-- only, so the cursor is walked to the row that acts.
+		control.PageEmit(surface, 'opx:menu:key',
+			{ handle = state.value.handle, key = 'down' })
+		local steps = 0
+		while steps < 8 and contract.State().value.ready == nil do
+			steps = steps + 1
+			local now = menu.State()
+			control.PageEmit(surface, 'opx:menu:key',
+				{ handle = now.value.handle, key = 'enter' })
+			if #control.serverEvents > before then break end
+			control.PageEmit(control.pages[#control.pages], 'opx:menu:key',
+				{ handle = now.value.handle, key = 'down' })
+		end
+		sent = nil
+		for index = before + 1, #control.serverEvents do
+			if control.serverEvents[index].name == jobs.Event.JOIN then
+				sent = control.serverEvents[index]
+			end
+		end
+		check('and the job screen sends the board and the job, and nothing else',
+			sent ~= nil and sent[1] == 'jobs_signup' and sent[2] == 'ncpd',
+			sent and ('%s/%s/%s'):format(tostring(sent[1]), tostring(sent[2]), tostring(sent[3])))
+
+		-- The same key closes what it opened, and a closed list is not a door.
+		local closed = contract.Close()
+		check('the list closes again', closed.ok == true, tostring(closed.error))
+		check('and reports itself shut', contract.State().value.open ~= true)
+
+		-- A BOARD THE CLIENT COULD NOT READ IS REFUSED AND NAMED rather than
+		-- drawn as something else: a KIND nobody defined has no marker preset.
+		control.netEvents[jobs.Event.SYNC]({ boards = {
+			board('bad', 'office', 'ncpd', 0.0, 0.0, {}),
+		} })
+		control.Pump(4)
+		check('a board with an unknown kind is refused on the client too',
+			contract.State().value.boards == 0, tostring(contract.State().value.boards))
+
+		check('no thread died', not table.concat(control.log.error, ' | '):find('thread died'),
+			table.concat(control.log.error, ' | '))
+	end
+end
+
+-- A BOOT RESUME MAY NOT OUTLIVE ONE HOOK INTERVAL.
+--
+-- This is the fault that put a live client on "Preparing character" for ever
+-- (2026-09-21). `ResourceHost` arms a count hook every 10 000 VM instructions
+-- and raises at whichever comes first: `instructionLimitPerResume` (1 500 000,
+-- which this boot is nowhere near) or `Clock::now() > instance.deadline`. The
+-- deadline is the resource's slice of the host's 6 ms frame budget, and with
+-- ~28 resources on a client that slice is 214 us -- under the 300 us floor the
+-- host refuses to go below. Ten thousand hooked instructions cost more than
+-- 300 us, so the workable rule is the one the platform states: A RESUME MAY RUN
+-- AT MOST ONE HOOK INTERVAL, WHATEVER THE RESOURCE COUNT.
+--
+-- The boot's first resume used to hold every `Init`, every `Api` and the first
+-- `Start` -- 13 000 instructions in this harness against a 10 000 interval --
+-- and it died there, in a table lookup inside `settle`, because that is simply
+-- where the parcel ran out. The raise marks the module whose `Start` raised as
+-- failed, the rest of the boot never ran, and the shell never got its character
+-- answer: one error line, no playable session.
+--
+-- What is pinned here is the STRUCTURE that makes the bound hold by
+-- construction rather than the number of the day: no resume may contain more
+-- than one module's phase body. If someone puts a phase back into one frame,
+-- the first resume holds 33 bodies and this fails by name.
+--
+-- The measurement is finer than the host's: hooks every 1 000 instructions
+-- rather than 10 000, so a resume anywhere near the interval is visible and the
+-- assertion (`worst < INTERVAL`) is a whole interval of margin rather than an
+-- off-by-one on the boundary the host actually raises at.
+section('a boot resume cannot outlive one hook interval')
+do
+	local INTERVAL = 10000
+	local STEP = 1000
+
+	local env, control = Host.Environment('client')
+	local broken
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk, why = loadfile(file, 't', env)
+		if not chunk then broken = ('%s: %s'):format(file, why) break end
+		local ok, failure = pcall(chunk)
+		if not ok then broken = ('%s: %s'):format(file, failure) break end
+	end
+
+	if broken then
+		check('the client half loads for the budget walk', false, broken)
+	else
+		control.Fire('onClientResourceStart', 'opx_infinity')
+
+		-- Every phase body of every module, wherever it lives, so a resume that
+		-- ran more than one of them is counted rather than assumed.
+		local round = 0
+		local bodies = {}
+		for _, record in ipairs(env.OPX.Modules.All()) do
+			for _, phase in ipairs({ 'Init', 'Api', 'Start' }) do
+				local body = record.Module[phase]
+				if type(body) == 'function' then
+					record.Module[phase] = function(...)
+						bodies[round] = (bodies[round] or 0) + 1
+						return body(...)
+					end
+				end
+			end
+		end
+
+		-- Driven a resume at a time. `Pump` cannot be asked this question: it
+		-- resumes every thread once per round and the boundary disappears into
+		-- the round. One thread resumed once IS how the host accounts.
+		local spent = {}
+		local hook = function()
+			local thread = coroutine.running()
+			spent[thread] = (spent[thread] or 0) + STEP
+		end
+
+		local worst, mostBodies = 0, 0
+		for _ = 1, 400 do
+			round = round + 1
+			local live = false
+			for _, thread in ipairs(control.threads) do
+				if coroutine.status(thread) == 'suspended' then live = true end
+				spent[thread] = 0
+				debug.sethook(thread, hook, '', STEP)
+			end
+			if not live then break end
+			control.Pump(1)
+			for _, thread in ipairs(control.threads) do
+				if (spent[thread] or 0) > worst then worst = spent[thread] end
+			end
+		end
+		for _, count in pairs(bodies) do
+			if count > mostBodies then mostBodies = count end
+		end
+
+		-- The walk above is only the boot's cost if the boot FINISHED. `absent`
+		-- is a legitimate resting state -- `vehicles` is server-only and says so
+		-- in one word -- so what is looked for is a module still waiting to be
+		-- reached, or one that failed on the way.
+		local stopped = {}
+		for _, record in ipairs(env.OPX.Modules.All()) do
+			if record.State == 'declared' or record.State == 'failed' then
+				stopped[#stopped + 1] = ('%s(%s)'):format(record.Id, tostring(record.State))
+			end
+		end
+		check('the boot reaches every module and none fails', #stopped == 0,
+			table.concat(stopped, ' '))
+
+		check('no resume ran more than one module phase', mostBodies <= 1,
+			('%d bodies in one resume'):format(mostBodies))
+
+		check('and no resume ran a whole hook interval', worst < INTERVAL,
+			('%d instructions in the worst resume'):format(worst))
+
+		-- THE TEETH. The walk above only means something if it can SEE a merged
+		-- resume, so the same boot is run against a build with no `Wait`: the
+		-- lifecycle documents that build as booting in one frame, and one frame
+		-- is exactly the shape the host kills. Same modules, same order, no
+		-- yield -- one resume, and with `Wait` one per module phase.
+		local function bootResumes(withWait)
+			local own = select(1, Host.Environment('client'))
+			for _, file in ipairs({ 'core/shared/main.lua', 'core/shared/channels.lua',
+				'core/shared/registry.lua', 'core/shared/lifecycle.lua' }) do
+				assert(loadfile(file, 't', own), file)()
+			end
+			if not withWait then own.Wait = nil end
+			for index = 1, 3 do
+				local module = own.OPX.Modules.Declare{ id = ('m%d'):format(index) }
+				module.Init = function() end
+				module.Api = function() end
+				module.Start = function() end
+			end
+			local resumes = 0
+			local co = coroutine.create(function() own.OPX.Modules.Run() end)
+			while coroutine.status(co) ~= 'dead' and resumes < 64 do
+				resumes = resumes + 1
+				assert(coroutine.resume(co))
+			end
+			return resumes
+		end
+
+		check('a build without Wait still runs the whole boot in one resume',
+			bootResumes(false) == 1, tostring(bootResumes(false)))
+		check('and with Wait the phase bodies do not share a resume',
+			bootResumes(true) > 3, tostring(bootResumes(true)))
+	end
+end
+
+-- A REGISTRATION PASS IS MANY RESUMES, NOT ONE.
+--
+-- The same rule as the boot's, in the place a live client proved it: the admin
+-- menu's staff rows raised `budget exceeded` inside the target registry, reached
+-- through `Target.Access` -- which is a NET EVENT HANDLER and therefore not a
+-- coroutine, so the `Wait` the pass needed could not happen and every batch of
+-- every kind ran in one resume. Measured here: the registry costs about 1 100
+-- instructions a row, a batch of eight 9 000, and the whole pass 36 000 against
+-- a 10 000-instruction hook interval. What it cost the player was every staff
+-- row: the eye came up empty and the only trace was one error line naming a
+-- table lookup.
+--
+-- What is pinned: no resume holds more than one batch, the pass therefore spans
+-- several, and every granted row lands -- with the control that the same rows in
+-- ONE batch are still over the interval, which is why the yield is the fix and a
+-- smaller batch size alone would not be.
+section('the staff rows are registered a batch at a time')
+do
+	local env, control = Host.Environment('client')
+	local broken
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk, why = loadfile(file, 't', env)
+		if not chunk then broken = ('%s: %s'):format(file, why) break end
+		local ok, failure = pcall(chunk)
+		if not ok then broken = ('%s: %s'):format(file, failure) break end
+	end
+
+	if broken then
+		check('the client half loads for the staff-row pass', false, broken)
+	else
+		control.Fire('onClientResourceStart', 'opx_infinity')
+		control.Boot()
+		control.ReadyPages()
+
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local target = OPX.Api.Get('target')
+		check('the admin half and the eye are both up', admin ~= nil and target ~= nil
+			and admin.Target ~= nil and type(admin.Target.Access) == 'function')
+
+		local function rows(owner)
+			local answer = target.List(owner)
+			return answer.ok and #answer.value.options or -1
+		end
+
+		-- One entry per batch, keyed by the resume it ran in, so "how many batches
+		-- share a resume" is counted through the real contract rather than assumed.
+		local batches = {}
+		local resume = 0
+		for _, name in ipairs({ 'RegisterSelf', 'RegisterPlayers', 'RegisterVehicles',
+			'RegisterDoors', 'RegisterSky' }) do
+			local body = target[name]
+			target[name] = function(...)
+				batches[resume] = (batches[resume] or 0) + 1
+				return body(...)
+			end
+		end
+
+		local spent = {}
+		local STEP = 1000
+		local hook = function()
+			local thread = coroutine.running()
+			spent[thread] = (spent[thread] or 0) + STEP
+		end
+
+		-- The opener granted and the ACL unknown, which is how the module says
+		-- "offer everything I have" -- a row with no grant is still refused, so
+		-- this is the whole of the module's vocabulary.
+		local before = #control.threads
+		admin.Target.Access({ access = { ['opx.admin'] = true }, aclKnown = false })
+		local pass = control.threads[before + 1]
+		check('the pass runs on its own thread, because the handler cannot yield',
+			pass ~= nil)
+
+		local worst, mostBatches, total = 0, 0, 0
+		while pass ~= nil and coroutine.status(pass) == 'suspended' and resume < 200 do
+			resume = resume + 1
+			spent[pass] = 0
+			debug.sethook(pass, hook, '', STEP)
+			local ok, failure = coroutine.resume(pass)
+			if not ok then
+				check('the pass does not raise', false, tostring(failure))
+				break
+			end
+			if (spent[pass] or 0) > worst then worst = spent[pass] end
+		end
+		debug.sethook()
+		for _, count in pairs(batches) do
+			if count > mostBatches then mostBatches = count end
+			total = total + count
+		end
+
+		check('no resume registers more than one batch', mostBatches <= 1,
+			('%d batches in one resume'):format(mostBatches))
+		check('and the pass therefore spans several resumes', total > 1,
+			('%d batch(es) altogether'):format(total))
+		check('with no resume running a whole hook interval', worst < 10000,
+			('%d instructions in the worst resume'):format(worst))
+
+		local landed = rows('admin')
+		check('every granted staff row lands on the eye', landed > 0,
+			tostring(landed))
+
+		-- THE CONTROL. The same rows in ONE batch are over the interval, which is
+		-- what the pass used to do -- so a smaller batch size on its own would not
+		-- have saved it, and the yield is the part that matters.
+		local all = {}
+		for index = 1, 31 do
+			all[index] = { id = 'probe_' .. index, label = 'Row ' .. index, group = 'Staff',
+				icon = 'interact', distance = 10.0, order = 100 + index,
+				onSelect = function() return false end, data = { row = 'r' .. index } }
+		end
+		-- `admin` and not a name of my own: the registry only answers an owner that
+		-- is a running provider, so a made-up one is refused before any work and
+		-- the control would measure nothing at all.
+		target.Clear('admin')
+		local oneBatch = 0
+		debug.sethook(function() oneBatch = oneBatch + STEP end, '', STEP)
+		target.RegisterPlayers('admin', all)
+		debug.sethook()
+		check('the same rows in one batch are still over the interval',
+			oneBatch >= 10000, tostring(oneBatch))
+	end
+end
+
+section('the police scanner: the feed and its audience')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the ncpd module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local ncpd = OPX.Modules.Get('ncpd')
+		local characters = OPX.Modules.Get('character')
+		local Response = ncpd.Response
+		local Radio = ncpd.Radio
+
+		check('the scanner declares its four bands, its key and its ring bound',
+			type(Radio) == 'table' and type(Radio.Push) == 'function'
+				and #Radio.CHANNELS == 4 and Radio.KEY.ID == 'opx.ncpd.radio'
+				and Radio.KEY.DEFAULT == 'F2' and Radio.BACKLOG > 0)
+
+		-- Bodies with a job and a duty flag: the character contract's own
+		-- shape, the one the jobs section loads with.
+		local function load(id, citizenId, jobName, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			characters.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id),
+				jobs = jobName ~= nil and { [jobName] = 0 } or {},
+				job = { name = jobName or 'unemployed', grade = { level = 0 },
+					onDuty = onDuty == true },
+				money = { EDDIES = 0, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+
+		-- Everybody is standing on the same corner for these reads.
+		env.Open77.players.position = function()
+			return { x = 10.0, y = 20.0, z = 0.0, bucket = 0 }
+		end
+
+		load(41, 'citizen-radio-ncpd', 'ncpd', true)       -- answers for the city
+		load(42, 'citizen-radio-maxtac', 'maxtac', true)   -- the air division
+		load(43, 'citizen-radio-civilian', nil, false)     -- nobody
+		load(44, 'citizen-radio-offduty', 'maxtac', false) -- clocked off
+
+		-- ── the knock, and what the frame says ─────────────────────────────────
+		--- Knocks the way a client does -- the event carries nothing at all --
+		-- and reads back the frame that connection was answered with.
+		-- @param playerId number
+		-- @return table|nil
+		local function knock(playerId)
+			local mark = #control.clientEvents				local ask = control.netEvents[ncpd.Event.RADIO]
+				if type(ask) ~= 'function' then return nil end
+				-- The host's dispatch shape: payload only, the sender in the
+				-- `source` global (teleports' `use` helper is the idiom).
+				env.source = playerId
+				ask()
+				env.source = nil
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == ncpd.Event.RADIO_STATE and event.source == playerId then
+					return event[1]
+				end
+			end
+			return nil
+		end
+
+		check('the scanner knock has a handler on the wire',
+			type(control.netEvents[ncpd.Event.RADIO]) == 'function')
+
+		local officer = knock(41)
+		check('an on-duty officer\u{2019}s scanner opens',
+			officer ~= nil and officer.open == true,
+			officer ~= nil and tostring(officer.reason) or 'no answer')
+		check('and the frame carries all four bands',
+			officer ~= nil and officer.open == true and #officer.channels == 4,
+			officer ~= nil and ('%d band(s)'):format(#(officer.channels or {})) or 'no answer')
+		check('and the city bands are theirs to hear while the MaxTac band is dark',
+			officer ~= nil and officer.open == true
+				and officer.channels[1].hear == true and officer.channels[2].hear == true
+				and officer.channels[3].hear == false and officer.channels[4].hear == true,
+			officer ~= nil and ('%s/%s/%s/%s'):format(
+				tostring(officer.channels[1] and officer.channels[1].hear),
+				tostring(officer.channels[2] and officer.channels[2].hear),
+				tostring(officer.channels[3] and officer.channels[3].hear),
+				tostring(officer.channels[4] and officer.channels[4].hear)) or 'no answer')
+
+		-- ── the airwaves: one voice channel per band, seated by the same rule ──
+		-- The channels are the host's own (`createChannel`, mode `radio`, the
+		-- wiki's radio effect) and the seat is the audience rule applied
+		-- CONTINUOUSLY: what the frame says you may hear is exactly what the
+		-- native stack will let through, line or no line.
+		check('every band has its own voice channel on the host',
+			#control.voice.created == 4,
+			('%d channel(s)'):format(#control.voice.created))
+		check('and they are radio channels carrying the radio effect',
+			control.voice.created[1] ~= nil and control.voice.created[1].mode == 'radio'
+				and type(control.voice.created[1].effect) == 'table'
+				and (control.voice.created[1].effect.radioNoise or 0) > 0)
+		check('the frame carries each band\u{2019}s voice handle to the panel',
+			officer ~= nil and officer.open == true
+				and officer.channels[1].voice ~= nil and officer.channels[3].voice ~= nil)
+
+		--- Whether a connection is seated on one voice channel.
+		-- @param player number
+		-- @param handle any
+		-- @return boolean
+		local function seatedOn(player, handle)
+			local band = control.voice.members[handle]
+			return band ~= nil and band[player] ~= nil or false
+		end
+		check('the knock seats the officer on exactly the bands the frame says are theirs',
+			seatedOn(41, officer.channels[1].voice) == true
+				and seatedOn(41, officer.channels[3].voice) == false,
+			('dispatch=%s maxtac=%s'):format(tostring(seatedOn(41, officer.channels[1].voice)),
+				tostring(seatedOn(41, officer.channels[3].voice))))
+
+		characters.Players[41].PlayerData.job.onDuty = false
+		Radio.VoiceReconcile()
+		check('a trooper who clocks off is unseated on the very next pass',
+			seatedOn(41, officer.channels[1].voice) == false)
+		characters.Players[41].PlayerData.job.onDuty = true
+		Radio.VoiceReconcile()
+		check('and is seated again the moment they are back on duty',
+			seatedOn(41, officer.channels[1].voice) == true)
+
+		local trooper = knock(42)
+		check('a MaxTac holder hears every band',
+			trooper ~= nil and trooper.open == true
+				and trooper.channels[1].hear == true and trooper.channels[2].hear == true
+				and trooper.channels[3].hear == true and trooper.channels[4].hear == true)
+
+		local civilian = knock(43)
+		check('a civilian is refused, and the refusal names why',
+			civilian ~= nil and civilian.open ~= true and civilian.reason == 'notOnDuty',
+			civilian ~= nil and tostring(civilian.reason) or 'no answer')
+
+		local offduty = knock(44)
+		check('a clocked-off trooper is refused the same way',
+			offduty ~= nil and offduty.open ~= true and offduty.reason == 'notOnDuty')
+
+		-- ── routing: who hears a band, line by line ───────────────────────────
+		--- Puts one line up and reports who heard it.
+		-- @return integer how many were told
+		-- @return table source -> count
+		local function airtime(channel, key, args, except)
+			local from = #control.clientEvents
+			local told = Radio.Push(channel, key, args, except)
+			local heard = {}
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == ncpd.Event.RADIO_LINE then
+					heard[event.source] = (heard[event.source] or 0) + 1
+				end
+			end
+			return told, heard
+		end
+
+		local told, heard = airtime('ncpd', 'ncpd.dispatch.rise',
+			{ division = 'NCPD', stage = 3, x = 1, y = 2, name = '' })
+		check('a dispatch line reaches the responders on duty and nobody else',
+			told == 2 and heard[41] == 1 and heard[42] == 1
+				and heard[43] == nil and heard[44] == nil,
+			('%d told'):format(told))
+
+		told, heard = airtime('maxtac', 'ncpd.radio.maxtac.inbound',
+			{ citizen = 'T6Y-JT7D', seconds = 12 })
+		check('a MaxTac line stays on the MaxTac band',
+			told == 1 and heard[42] == 1 and heard[41] == nil,
+			('%d told'):format(told))
+
+		told, heard = airtime('ncpd', 'ncpd.dispatch.suspect',
+			{ division = 'NCPD', stage = 3, x = 1, y = 2, name = 'Player 41' }, 41)
+		check('and the suspect is kept off the line that names them',
+			heard[41] == nil and heard[42] == 1, ('%d told'):format(told))
+
+		told = Radio.Push('pirate', 'ncpd.dispatch.rise', nil)
+		check('a line for a band that does not exist goes up on none', told == 0)
+
+		-- ── the backlog a reopened scanner reads ──────────────────────────────
+		for _ = 1, Radio.BACKLOG + 10 do
+			Radio.Push('ncpd', 'ncpd.dispatch.rise',
+				{ division = 'NCPD', stage = 1, x = 0, y = 0, name = '' })
+		end
+		Radio.Push('ncpd', 'ncpd.cleared', nil)
+		local back = knock(41)
+		check('a reopened scanner comes back to the ring bound, newest last',
+			back ~= nil and back.open == true and #back.lines == Radio.BACKLOG
+				and back.lines[#back.lines].key == 'ncpd.cleared',
+			back ~= nil and ('%d line(s), last %s'):format(#back.lines,
+				tostring(back.lines[#back.lines] and back.lines[#back.lines].key)) or 'no answer')
+		check('and the frame is one host payload',
+			back ~= nil and Host.PayloadNodes(back) <= Host.MAX_PAYLOAD_NODES,
+			back ~= nil and ('%d nodes'):format(Host.PayloadNodes(back)) or 'no answer')
+		check('a line is a locale key and its arguments, never words',
+			back ~= nil and type(back.lines[1].key) == 'string'
+				and type(back.lines[1].args) == 'table'
+				and type(back.lines[1].at) == 'number')
+
+		-- ── the sites that put traffic on the air, driven for real ─────────────
+		-- THE CALL-OUT IS THE DISPATCH BAND. A stage rise is driven through the
+		-- same report the engine mirror makes, so the line under test is the one
+		-- the real crossing puts up -- with the SAME key and arguments as the
+		-- toast, which is why its wording cannot drift from the notification.
+		load(45, 'citizen-radio-suspect')			
+			local rawReport = control.netEvents[ncpd.Event.REPORT]
+			check('the engine report has a handler on the wire', type(rawReport) == 'function')
+			local function report(player, stage)
+				env.source = player
+				rawReport(stage)
+				env.source = nil
+			end
+			report(45, 3)
+		local risen = knock(42)
+		check('a stage rise puts the call-out on the dispatch band',
+			risen ~= nil and risen.open == true
+				and (risen.lines[#risen.lines].key == 'ncpd.dispatch.rise'
+					or risen.lines[#risen.lines].key == 'ncpd.dispatch.suspect'),
+			risen ~= nil and tostring(risen.lines[#risen.lines] and risen.lines[#risen.lines].key)
+				or 'no answer')
+
+		-- THE AIRCRAFT LIFECYCLE IS THE MAXTAC BAND. One real insertion, flown
+		-- on its own captured cadence (the flight section's own idiom: the phase
+		-- machine is what is under test, so the clock is never slept through).
+		local Scheduler = OPX.Scheduler
+		local realEvery, realCancel = Scheduler.Every, Scheduler.Cancel
+		local avJob
+		Scheduler.Every = function(jobName, intervalMs, step)
+			avJob = { name = jobName, intervalMs = intervalMs, step = step }
+			return 1
+		end
+		Scheduler.Cancel = function(handle) return handle ~= nil end
+
+		--- One step of the run under way.
+		-- @return boolean still posing
+		local function tick()
+			local before = #control.vehiclePoses
+			avJob.step()
+			return #control.vehiclePoses > before
+		end
+
+		-- A pinned airframe the host still knows about, so the run is not ended
+		-- by the controller\u{2019}s own \u{201C}the airframe was taken away\u{201D} path --
+		-- and standing exactly where everybody else does, because the harness\u{2019}s
+		-- `get` answers with this whole stand-in and the crew-door reach check
+		-- measures against its position.
+		control.vehicles.snapshot = { x = 10.0, y = 20.0, z = 0.0 }
+		load(46, 'citizen-av')
+		local lifted = Response.Apply('citizen-av', 46, 5)
+		check('the MaxTac stage flies its aircraft',
+			lifted.ok == true and lifted.value.av == true,
+			lifted.ok == true and table.concat(lifted.value.refused or {}, ', ') or 'refused')
+		local inbound = knock(42)
+		check('and the inbound is the newest line on the MaxTac band',
+			inbound ~= nil and inbound.open == true
+				and inbound.lines[#inbound.lines].key == 'ncpd.radio.maxtac.inbound',
+			inbound ~= nil and tostring(inbound.lines[#inbound.lines] and inbound.lines[#inbound.lines].key)
+				or 'no answer')
+
+		-- Fly her down to the hold; the door going open is the next line.
+		local held = false
+		for _ = 1, 400 do
+			if not tick() then break end
+			local peek = knock(42)
+			if peek ~= nil and peek.open == true and peek.lines[#peek.lines].key == 'ncpd.radio.maxtac.holds' then
+				held = true
+				break
+			end
+		end
+		check('the open door is on the air while she holds the street', held)
+
+		-- A body takes a crew seat during the window: the boarding and the
+		-- hand-over follow her onto the band, in that order (the hand-over runs
+		-- first inside `Av.Board`, and both lines must be there).
+		-- The host accepts the mount (the contract\u{2019}s own answer shape), and a
+		-- named seat is not asked for -- the first free one the host offers.
+		env.Open77.vehicles.warpPlayerIntoVehicle = function() return true end
+		local seated, seatWhy = ncpd.Av.Board(42, true)
+		local aboard = knock(42)
+		check('a crew seat puts the boarding on the band',
+			seated ~= nil and aboard ~= nil and aboard.open == true
+				and aboard.lines[#aboard.lines].key == 'ncpd.radio.maxtac.boarded',
+			('seat: %s (%s), last line: %s'):format(tostring(seated), tostring(seatWhy),
+				tostring(aboard ~= nil and aboard.lines[#aboard.lines]
+					and aboard.lines[#aboard.lines].key or 'no answer')))
+		check('and the hand-over is the line beneath it',
+			aboard ~= nil and aboard.lines[#aboard.lines - 1] ~= nil
+				and aboard.lines[#aboard.lines - 1].key == 'ncpd.radio.maxtac.crew')
+
+		-- And the run ends: her downing closes the flight on the band.
+		local steps = 0
+		for _ = 1, 600 do
+			if not tick() then break end
+			steps = steps + 1
+		end
+		local down = knock(42)
+		check('and her downing closes the run on the air',
+			down ~= nil and down.open == true
+				and down.lines[#down.lines].key == 'ncpd.radio.maxtac.down',
+			down ~= nil and ('%s after %d step(s)'):format(
+				tostring(down.lines[#down.lines] and down.lines[#down.lines].key), steps) or 'no answer')
+
+		Scheduler.Every, Scheduler.Cancel = realEvery, realCancel
+	end
+end
+
+section('the police scanner: the key, the toggle and the panel')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the ncpd module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local ncpd = OPX.Modules.Get('ncpd')
+		local Radio = ncpd.Radio
+		local page = control.pages[1]
+
+		-- Every toast the module raises, read back to the sentence key.
+		local toasted = {}
+		local realToast = OPX.Toast.Locale
+		OPX.Toast.Locale = function(key, args, kind)
+			toasted[#toasted + 1] = { key = key, args = args, kind = kind }
+			return realToast(key, args, kind)
+		end
+
+		--- The last `radio:view` message of one kind, and how many there are.
+		-- @param kind string
+		-- @return table|nil
+		-- @return integer
+		local function views(kind)
+			local found, count = nil, 0
+			for index = 1, #page.sent do
+				local entry = page.sent[index]
+				if entry.channel == 'opx:radio:view' and entry.payload ~= nil
+					and entry.payload.kind == kind then
+					found = entry.payload
+					count = count + 1
+				end
+			end
+			return found, count
+		end
+
+		-- ── the key ────────────────────────────────────────────────────────────
+		local mapping = control.keyMappings.byId[Radio.KEY.ID]
+		check('the key is declared to the host, so the pause menu lists it',
+			mapping ~= nil)
+		check('and defaults to F2', mapping ~= nil and mapping.key == 'F2',
+			mapping and tostring(mapping.key))
+		check('and the pause menu is given a name for it, not a key',
+			mapping ~= nil and type(mapping.name) == 'string' and mapping.name ~= ''
+				and mapping.name:find('F2', 1, true) == nil,
+			mapping and tostring(mapping.name))
+		check('and the press is wired to the toggle', mapping ~= nil and type(mapping.pressed) == 'function')
+
+		-- ── the toggle ─────────────────────────────────────────────────────────
+		local function knocks()
+			local count = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == ncpd.Event.RADIO then count = count + 1 end
+			end
+			return count
+		end
+
+		mapping.pressed()
+		check('pressing the key knocks for a scanner', knocks() == 1, tostring(knocks()))
+		local nothing = views('frame')
+		check('and nothing is drawn before the server answers', nothing == nil)
+
+		-- A key pressed into a menu is a key pressed with no scanner to open.
+		control.input.captured = true
+		mapping.pressed()
+		check('a key pressed into a menu knocks for nothing', knocks() == 1)
+		check('and says why', toasted[#toasted] ~= nil
+			and toasted[#toasted].key == 'ncpd.radio.menuOpen',
+			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
+		control.input.captured = false
+
+		-- ── the frame ──────────────────────────────────────────────────────────
+		control.netEvents[ncpd.Event.RADIO_STATE]({
+			open = true,
+			channels = {
+				{ id = 'ncpd', name = 'ncpd.radio.channel.ncpd', freq = '154.980', hear = true },
+				{ id = 'maxtac', name = 'ncpd.radio.channel.maxtac', freq = '39.720', hear = false },
+			},
+			lines = { { id = 1, channel = 'ncpd', key = 'ncpd.dispatch.rise',
+				args = { stage = 3 }, at = 1000 } },
+		})
+		local frame = views('frame')
+		check('the frame reaches the page with both bands',
+			frame ~= nil and #(frame.frame.channels or {}) == 2,
+			frame and ('%d band(s)'):format(#(frame.frame.channels or {})) or 'no frame')
+		check('and tunes the first band it can hear',
+			frame ~= nil and frame.frame.tuned == 'ncpd',
+			frame and tostring(frame.frame.tuned) or 'no frame')
+		check('and carries the resolved stow cap, not a mapping id',
+			frame ~= nil and frame.frame.key == 'F2',
+			frame and tostring(frame.frame.key) or 'no frame')
+		check('and names bands by KEY -- the page holds no English',
+			frame ~= nil and frame.frame.channels[1].name == 'ncpd.radio.channel.ncpd')
+		check('and the frame is one host payload',
+			frame ~= nil and Host.PayloadNodes(frame) <= Host.MAX_PAYLOAD_NODES,
+			frame and ('%d nodes'):format(Host.PayloadNodes(frame)) or 'no frame')
+
+		-- ── traffic, tuning and the dark band ─────────────────────────────────
+		control.netEvents[ncpd.Event.RADIO_LINE]({ id = 2, channel = 'ncpd',
+			key = 'ncpd.dispatch.rise', args = { stage = 3 }, at = 1001 })
+		local line = views('line')
+		check('traffic reaches the page as it lands',
+			line ~= nil and line.line.id == 2 and line.line.key == 'ncpd.dispatch.rise')
+
+		control.PageEmit(page, 'opx:radio:tune', { channel = 'maxtac' })
+		local _, tunings = views('tuned')
+		check('a band this listener cannot hear is not tunable', tunings == 0)
+
+		control.netEvents[ncpd.Event.RADIO_STATE]({
+			open = true,
+			channels = {
+				{ id = 'ncpd', name = 'ncpd.radio.channel.ncpd', freq = '154.980', hear = true },
+				{ id = 'maxtac', name = 'ncpd.radio.channel.maxtac', freq = '39.720', hear = true },
+			},
+			lines = {},
+		})
+		control.PageEmit(page, 'opx:radio:tune', { channel = 'maxtac' })
+		local tunedTo = views('tuned')
+		check('and a band it can hear tunes as an intent and comes back as fact',
+			tunedTo ~= nil and tunedTo.channel == 'maxtac',
+			tunedTo and tostring(tunedTo.channel) or 'no echo')
+
+		-- ── focus: the pointer, and NOT the keyboard ───────────────────────────
+		-- The keyboard staying with the game is what keeps the F2 stow working
+		-- while the panel is up.
+		control.PageEmit(page, 'opx:focus:set',
+			{ surface = 'opx', focus = true, owner = 'ncpd.radio' })
+		check('the scanner takes the cursor for its owner',
+			page.focus.cursor == true, ('kb=%s cur=%s'):format(
+				tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+		check('and never the keyboard, so F2 still stows it',
+			page.focus.keyboard == false, ('kb=%s cur=%s'):format(
+				tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+
+		-- ── stowing ───────────────────────────────────────────────────────────
+		control.PageEmit(page, 'opx:radio:close', {})
+		local closed = views('close')
+		check('a stow from the page takes the panel down', closed ~= nil)
+		check('and gives the focus back',
+			OPX.UI.FocusOwner() == nil or OPX.UI.FocusOwner() ~= 'ncpd.radio',
+			tostring(OPX.UI.FocusOwner()))
+
+		control.netEvents[ncpd.Event.RADIO_LINE]({ id = 3, channel = 'ncpd',
+			key = 'ncpd.dispatch.rise', args = {}, at = 1002 })
+		local _, lines = views('line')
+		check('a stowed scanner drops what it misses -- the ring is the reopen\u{2019}s backlog',
+			lines == 1, ('%d line(s) drawn'):format(lines))
+
+		mapping.pressed()
+		check('and the key opens it again', knocks() == 2, tostring(knocks()))
+
+		-- A refusal names its reason in the same words the panel would use.
+		control.netEvents[ncpd.Event.RADIO_STATE]({ open = false, reason = 'notDivision' })
+		check('a refusal is a sentence from the one table',
+			toasted[#toasted] ~= nil and toasted[#toasted].key == 'ncpd.radio.notDivision',
+			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
+		local _, frames = views('frame')
+		check('and the panel stays down for it', frames == 2, ('%d frame(s)'):format(frames))
+
+		-- ── the airwaves: the PTT, the speaker knob and the two lamps ─────────
+		-- The frame's rows carry the host's OWN channel handles -- the one thing
+		-- on the wire that is not vocabulary -- and every control below speaks
+		-- through them.
+		control.netEvents[ncpd.Event.RADIO_STATE]({
+			open = true,
+			channels = {
+				{ id = 'ncpd', name = 'ncpd.radio.channel.ncpd', freq = '154.980',
+					hear = true, voice = 'air-ncpd' },
+				{ id = 'maxtac', name = 'ncpd.radio.channel.maxtac', freq = '39.720',
+					hear = false, voice = 'air-maxtac' },
+			},
+			lines = {},
+		})
+
+		--- The last thing the PTT asked the host for.
+		-- @return table|nil
+		local function lastTx()
+			local list = control.voice.transmitting
+			return list[#list]
+		end
+
+		control.PageEmit(page, 'opx:radio:talk', { on = true })
+		local keyed = lastTx()
+		check('the PTT keys the tuned band on the host voice seam',
+			keyed ~= nil and keyed[1] == true and keyed[2] == 'channel:air-ncpd',
+			keyed and ('%s / %s'):format(tostring(keyed[1]), tostring(keyed[2])) or 'nothing keyed')
+		check('and the microphone is opened for it', control.voice.capture == true)
+		local lit = views('tx')
+		check('and the TX lamp is lit by the answer', lit ~= nil and lit.on == true)
+
+		control.PageEmit(page, 'opx:radio:talk', { on = false })
+		local released = lastTx()
+		check('releasing the PTT closes the channel again',
+			released ~= nil and released[1] == false,
+			released and tostring(released[1]) or 'nothing')
+
+		control.PageEmit(page, 'opx:radio:volume', { level = 50 })
+		check('the speaker knob sets the host gain on every band the frame named',
+			control.voice.gains['air-ncpd'] == 1.0 and control.voice.gains['air-maxtac'] == 1.0,
+			('%s / %s'):format(tostring(control.voice.gains['air-ncpd']),
+				tostring(control.voice.gains['air-maxtac'])))
+		control.PageEmit(page, 'opx:radio:volume', { level = 0 })
+		check('and bottoms out at silence', control.voice.gains['air-ncpd'] == 0.0)
+		control.PageEmit(page, 'opx:radio:volume', { level = 250 })
+		check('and is clamped at the top of the host\u{2019}s range',
+			control.voice.gains['air-ncpd'] == 2.0)
+
+		-- The lamps are READINGS: the host's own talker state lights them, and
+		-- two talkers releasing one at a time must not dim the lamp early.
+		control.Fire('open77:voice:talkingChanged', 7, true, 62)
+		local rx = views('rx')
+		check('the RX lamp is lit by the host\u{2019}s own talker state',
+			rx ~= nil and rx.on == true and rx.level == 62,
+			rx and ('on=%s level=%s'):format(tostring(rx.on), tostring(rx.level)) or 'no lamp')
+		control.Fire('open77:voice:talkingChanged', 8, true, 40)
+		control.Fire('open77:voice:talkingChanged', 7, false, 0)
+		local shared = views('rx')
+		check('and stays lit while anyone is still on the air',
+			shared ~= nil and shared.on == true)
+		control.Fire('open77:voice:talkingChanged', 8, false, 0)
+		local dark = views('rx')
+		check('and dims with the last one', dark ~= nil and dark.on == false)
+
+		-- A PTT held over a stow is a PTT released: the key never outlives the
+		-- scanner.
+		control.PageEmit(page, 'opx:radio:talk', { on = true })
+		control.PageEmit(page, 'opx:radio:close', {})
+		local afterStow = lastTx()
+		check('stowing the scanner releases a held key',
+			afterStow ~= nil and afterStow[1] == false,
+			afterStow and tostring(afterStow[1]) or 'nothing')
+	end
+end
+
+section('the skill tree: the ledger and its funnel')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the skills module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local skills = OPX.Modules.Get('skills')
+		local Skill = skills.Skill
+
+		check('the tree declares its key, its trunks and its curve',
+			type(Skill) == 'table' and Skill.KEY.ID == 'opx.skills.tree'
+				and Skill.KEY.DEFAULT == 'F3' and #Skill.Branches() == 3,
+			('%d trunk(s)'):format(#Skill.Branches()))
+		check('and the refusals are codes a sentence stands behind',
+			type(Skill.Refusal) == 'table' and Skill.Refusal.noPoints == 'skills.noPoints'
+				and Skill.Refusal.rank == 'skills.rank' and Skill.Refusal.prereq == 'skills.prereq')
+		check('and the curve is a function of the level alone',
+			Skill.Need(1) == 100 and Skill.Need(3) == 300 and Skill.Rank(0) == 1
+				and Skill.Rank(250) == 3 and Skill.Depth() == 5,
+			('%s/%s/%s'):format(Skill.Need(1), Skill.Rank(250), Skill.Depth()))
+
+		-- A holder of the tree, seeded the way the character contract reads it.
+		-- Takes its boot's own control and OPX: a second boot is a second runtime.
+		local function load(ctl, opx, id, citizenId)
+			local chars = opx.Modules.Get('character')
+			ctl.Admit(id, 'account-' .. tostring(id))
+			opx.EnsureSession(id)
+			chars.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id), jobs = {},
+				job = { name = 'unemployed', grade = { level = 0 }, onDuty = false },
+				money = { EDDIES = 0, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			chars.Registry.byCitizenId[citizenId] = id
+			chars.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+
+		local citizen = 'citizen-skill'
+		local src = 71
+		load(control, OPX, src, citizen)
+		load(control, OPX, 72, 'citizen-skill-bystander')
+
+		local jobsApi = OPX.Api.Get('jobs', 1)
+		local skillsApi = OPX.Api.Get('skills', 1)
+		check('both contracts are on the wire', jobsApi ~= nil and skillsApi ~= nil)
+
+		--- The frame, as the contract answers it.
+		-- @return table
+		local function state()
+			local answer = skillsApi.State(citizen)
+			return answer.ok == true and answer.value or {}
+		end
+
+		--- Every gain line one call pushed, and to whom.
+		-- @param from integer mark before the call
+		-- @return table lines
+		-- @return table heard[source] = count
+		local function gains(from)
+			local lines, heard = {}, {}
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == skills.Event.GAIN then
+					lines[#lines + 1] = event[1]
+					heard[event.source] = (heard[event.source] or 0) + 1
+				end
+			end
+			return lines, heard
+		end
+
+		-- ── THE FUNNEL: the jobs bank's own completion seam ─────────────────
+		-- `jobs.Award` is what an arrest or a delivery pays through, and `pay` is
+		-- the one funnel every credit passes. Driving THIS is the whole hook: no
+		-- step below it is mine except the listener.
+		local mark = #control.clientEvents
+		local awarded = jobsApi.Award(citizen, 'ncpd', 5)
+		check('an arrest\u{2019}s points reach the tree as XP, through jobs\u{2019} own funnel',
+			awarded.ok == true and state().xp == 50 and state().level == 1,
+			('xp=%s level=%s'):format(tostring(state().xp), tostring(state().level)))
+		local lines, heard = gains(mark)
+		check('and the player hears where they stand',
+			heard[src] == 1 and heard[72] == nil and lines[1] ~= nil
+				and lines[1].key == 'skills.gain.work' and lines[1].args.xp == 50,
+			heard[src] and ('%d line(s)'):format(#lines) or 'nobody heard')
+
+		mark = #control.clientEvents
+		jobsApi.Award(citizen, 'ncpd', 5)
+		local second = state()
+		check('the second shift crosses the first level and banks its point',
+			second.level == 2 and second.xp == 0 and second.points == 1,
+			('level=%s xp=%s points=%s'):format(second.level, second.xp, second.points))
+		lines = gains(mark)
+		check('and the gain line speaks the new level and what it banked',
+			lines[1] ~= nil and lines[1].level == 2 and lines[1].points == 1,
+			lines[1] and ('level=%s points=%s'):format(lines[1].level, lines[1].points) or 'no line')
+
+		-- ── the trunks each drink their own work ─────────────────────────────
+		skillsApi.Award(citizen, 'maxtac', 30)
+		local fed = state()
+		check('a big credit levels more than once and says how far it went',
+			fed.level == 3 and fed.xp == 100 and fed.points == 2,
+			('level=%s xp=%s points=%s'):format(fed.level, fed.xp, fed.points))
+		check('NCPD work deepens the NCPD trunk and nothing else',
+			fed.branches[1].id == 'ncpd' and fed.branches[1].rank == 2,
+			('%s rank %s'):format(fed.branches[1].id, fed.branches[1].rank))
+		check('and the air division\u{2019}s work deepens its own, four ranks of it',
+			fed.branches[2].id == 'maxtac' and fed.branches[2].rank == 4,
+			('%s rank %s'):format(fed.branches[2].id, fed.branches[2].rank))
+		skillsApi.Award(citizen, 'bartender', 5)
+		local street = state()
+		check('and work no trunk names falls to the street\u{2019}s',
+			street.branches[3].id == 'street' and street.branches[3].rank == 1,
+			('%s rank %s'):format(street.branches[3].id, street.branches[3].rank))
+		check('the frame is one host payload, trunks and all',
+			Host.PayloadNodes({ kind = 'frame', frame = street }) <= Host.MAX_PAYLOAD_NODES,
+			('%d nodes'):format(Host.PayloadNodes({ kind = 'frame', frame = street })))
+
+		-- ── the one intent: a point buys a node, and nothing else moves ──────
+		--- The spend door, and the refusal the fresh frame carries.
+		-- @param node string
+		-- @return string|nil refused
+		-- @return table the frame that answered
+		local function spend(node)
+			local mark = #control.clientEvents
+				env.source = src
+				control.netEvents[skills.Event.SPEND](node)
+				env.source = nil
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == skills.Event.STATE and event.source == src then
+					return event[1].refused, event[1]
+				end
+			end
+			return 'no-answer', {}
+		end
+
+		mark = #control.clientEvents
+		local refused, frame = spend('ncpd_1')
+		check('a reachable node with points in hand is claimed',
+			refused == nil and state().points == 1 and state().branches[1].nodes[1].state == 'unlocked',
+			tostring(refused))
+		local nodeLines = gains(mark)
+		check('and the claim is said in the same words the panel would use',
+			nodeLines[1] ~= nil and nodeLines[1].key == 'skills.gain.node',
+			nodeLines[1] and tostring(nodeLines[1].key) or 'no line')
+
+		refused = spend('ncpd_1')
+		check('a node already claimed refuses as claimed', refused == 'unlocked', tostring(refused))
+
+		refused = spend('ncpd_3')
+		check('a node beyond the trunk\u{2019}s rank refuses as rank', refused == 'rank', tostring(refused))
+
+		refused = spend('ncpd_2')
+		check('the next node down the chain is claimed in turn',
+			refused == nil and state().points == 0, tostring(refused))
+
+		refused = spend('maxtac_1')
+		check('an empty hand refuses as points', refused == 'noPoints', tostring(refused))
+
+		refused = spend('no_such_node')
+		check('and a node nobody declared refuses as itself', refused == 'noNode', tostring(refused))
+
+		check('a perk reads as what the claimed nodes declare, and zero before that',
+			skillsApi.Perk(citizen, 'ncpd.vest') == 2 and skillsApi.Perk(citizen, 'ncpd.reload') == 5
+				and skillsApi.Perk(citizen, 'maxtac.gforce') == 0,
+			('%s/%s/%s'):format(skillsApi.Perk(citizen, 'ncpd.vest'),
+				skillsApi.Perk(citizen, 'ncpd.reload'), skillsApi.Perk(citizen, 'maxtac.gforce')))
+		check('the API\u{2019}s hand award feeds the same ledger as the funnel',
+			(function()
+				local before = state().xp
+				local answer = skillsApi.Award('citizen-skill-bystander', 'ncpd', 2)
+				return answer.ok == true and state().xp == before
+			end)())
+
+		-- ── AND WHAT WAS EARNED SURVIVES A RESTART ───────────────────────────
+		-- The database is a real one under the statements: what the write put in
+		-- is what the next boot's SELECT reads out.
+		local rows, writes = {}, {}
+		local function database()
+			return Host.Database({
+				scalar = function() return 1 end,
+				update = function(sql, params)
+					if sql:find('INSERT INTO opx77_skills', 1, true) then
+						local put = type(params) == 'table' and params or {}
+						writes[#writes + 1] = put
+						for index = 1, #rows do
+							if rows[index].citizen_id == put.citizen then
+								table.remove(rows, index)
+								break
+							end
+						end
+						rows[#rows + 1] = {
+							citizen_id = put.citizen, xp = put.xp, level = put.level,
+							points = put.points, nodes = put.nodes, branches = put.branches,
+						}
+					end
+					return 0
+				end,
+				query = function(sql)
+					if sql:find('opx77_skills', 1, true) then
+						local out = {}
+						for index = 1, #rows do out[index] = rows[index] end
+						return out
+					end
+					return {}
+				end,
+				single = function() return nil end,
+			})
+		end
+
+		local live, control2, why2 = boot('server', database())
+		check('the server boots again on the same database', why2 == nil, why2)
+		if why2 == nil then
+			local OPX2 = live.OPX
+			local skillsApi2 = OPX2.Api.Get('skills', 1)
+			load(control2, OPX2, src, citizen)
+			control2.Pump(1)
+			-- A fresh ledger over a real database: work, then a claim, then the
+			-- write-back the thread carries.
+			skillsApi2.Award(citizen, 'maxtac', 30)				
+				live.source = src
+				control2.netEvents[skills.Event.SPEND]('maxtac_1')
+				live.source = nil
+			control2.Pump(4)
+			check('a claimed tree is written back rather than held in memory',
+				#writes > 0, ('%d write(s)'):format(#writes))
+			check('and the write carries the trunks\u{2019} work, not just the nodes',
+				#writes > 0 and writes[#writes].branches ~= nil
+					and tostring(writes[#writes].branches):find('maxtac:', 1, true) ~= nil,
+				#writes > 0 and tostring(writes[#writes].branches) or 'no write')
+
+			local third, control3, why3 = boot('server', database())
+			check('and a third boot on the same rows keeps the tree', why3 == nil, why3)
+			if why3 == nil then
+				local skillsApi3 = third.OPX.Api.Get('skills', 1)
+				control3.Pump(2)
+				local back = skillsApi3.State(citizen)
+				local value = back.ok == true and back.value or {}
+				check('the level, the points and the claimed nodes come back',
+					value.level == 3 and value.points == 1
+						and value.branches ~= nil and value.branches[2].nodes[1].state == 'unlocked',
+					('level=%s points=%s'):format(tostring(value.level), tostring(value.points)))
+				check('and so does the rank the work had reached',
+					value.branches ~= nil and value.branches[2].rank == 4,
+					value.branches and ('rank %s'):format(value.branches[2].rank) or 'no branches')
+			end
+		end
+	end
+end
+
+section('the skill tree: the key and the panel')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the skills module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local skills = OPX.Modules.Get('skills')
+		local Skill = skills.Skill
+		local page = control.pages[1]
+
+		local toasted = {}
+		local realToast = OPX.Toast.Locale
+		OPX.Toast.Locale = function(key, args, kind)
+			toasted[#toasted + 1] = { key = key, args = args, kind = kind }
+			return realToast(key, args, kind)
+		end
+
+		--- The last `skills:view` message of one kind, and how many there are.
+		-- @param kind string
+		-- @return table|nil
+		-- @return integer
+		local function views(kind)
+			local found, count = nil, 0
+			for index = 1, #page.sent do
+				local entry = page.sent[index]
+				if entry.channel == 'opx:skills:view' and entry.payload ~= nil
+					and entry.payload.kind == kind then
+					found = entry.payload
+					count = count + 1
+				end
+			end
+			return found, count
+		end
+
+		--- How many knocks have gone out.
+		-- @return integer
+		local function knocks()
+			local count = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == skills.Event.ASK then count = count + 1 end
+			end
+			return count
+		end
+
+		-- ── the key ──────────────────────────────────────────────────────────
+		local mapping = control.keyMappings.byId[Skill.KEY.ID]
+		check('the key is declared to the host, so the pause menu lists it', mapping ~= nil)
+		check('and defaults to F3', mapping ~= nil and mapping.key == 'F3', mapping and tostring(mapping.key))
+		check('and the pause menu is given a name for it, not a key',
+			mapping ~= nil and type(mapping.name) == 'string' and mapping.name ~= ''
+				and mapping.name:find('F3', 1, true) == nil,
+			mapping and tostring(mapping.name))
+		check('and the press is wired to the toggle', mapping ~= nil and type(mapping.pressed) == 'function')
+
+		-- ── the toggle ─────────────────────────────────────────────────────────
+		mapping.pressed()
+		check('pressing the key knocks for a tree', knocks() == 1, tostring(knocks()))
+		local nothing = views('frame')
+		check('and nothing is drawn before the server answers', nothing == nil)
+
+		control.input.captured = true
+		mapping.pressed()
+		check('a key pressed into a menu knocks for nothing', knocks() == 1)
+		check('and says why', toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.menuOpen',
+			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
+		control.input.captured = false
+
+		-- ── the frame ──────────────────────────────────────────────────────────
+		control.netEvents[skills.Event.STATE]({
+			open = true, level = 3, xp = 100, need = 300, points = 2, depth = 5,
+			branches = {
+				{ id = 'ncpd', name = 'skills.branch.ncpd', rank = 2, xp = 0, nodes = {
+					{ id = 'ncpd_1', name = 'skills.node.ncpd1', desc = 'skills.desc.ncpd1',
+						perk = 'ncpd.vest', value = 2, cost = 1, state = 'available' },
+					{ id = 'ncpd_2', name = 'skills.node.ncpd2', desc = 'skills.desc.ncpd2',
+						perk = 'ncpd.reload', value = 5, cost = 1, state = 'locked',
+						why = 'skills.prereq' },
+				} },
+				{ id = 'maxtac', name = 'skills.branch.maxtac', rank = 1, xp = 0, nodes = {} },
+				{ id = 'street', name = 'skills.branch.street', rank = 1, xp = 0, nodes = {} },
+			},
+		})
+		local frame = views('frame')
+		check('the frame reaches the page with every trunk',
+			frame ~= nil and #(frame.frame.branches or {}) == 3,
+			frame and ('%d trunk(s)'):format(#(frame.frame.branches or {})) or 'no frame')
+		check('and carries the resolved stow cap, not a mapping id',
+			frame ~= nil and frame.key == 'F3', frame and tostring(frame.key) or 'no frame')
+		check('and names trunks and nodes by KEY -- the page holds no English',
+			frame ~= nil and frame.frame.branches[1].name == 'skills.branch.ncpd'
+				and frame.frame.branches[1].nodes[1].name == 'skills.node.ncpd1')
+		check('and a locked node says the requirement it is kept behind',
+			frame ~= nil and frame.frame.branches[1].nodes[2].state == 'locked'
+				and frame.frame.branches[1].nodes[2].why == 'skills.prereq')
+		check('and the frame is one host payload',
+			frame ~= nil and Host.PayloadNodes(frame) <= Host.MAX_PAYLOAD_NODES,
+			frame and ('%d nodes'):format(Host.PayloadNodes(frame)) or 'no frame')
+
+		-- ── the one intent ─────────────────────────────────────────────────────
+		control.PageEmit(page, 'opx:skills:spend', { node = 'ncpd_1' })
+		local spent = nil
+		for index = 1, #control.serverEvents do
+			local event = control.serverEvents[index]
+			if event.name == skills.Event.SPEND then spent = event[1] end
+		end
+		check('a press on a node is an intent, naming that node and nothing else',
+			spent == 'ncpd_1', tostring(spent))
+
+		-- News from the ledger while the panel is up is the panel\u{2019}s strip.
+		control.netEvents[skills.Event.GAIN]({ key = 'skills.gain.work', args = { xp = 50 },
+			level = 0, points = 0 })
+		local gain = views('gain')
+		check('work credited reaches the panel', gain ~= nil and gain.line.key == 'skills.gain.work')
+		check('and work credited is not a toast -- it is the strip\u{2019}s and nobody else\u{2019}s',
+			toasted[#toasted] == nil or toasted[#toasted].key ~= 'skills.gain.work',
+			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
+
+		control.netEvents[skills.Event.GAIN]({ key = 'skills.gain.work', args = { xp = 100 },
+			level = 4, points = 1 })
+		check('but a level is worth looking up for',
+			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.gain.level'
+				and toasted[#toasted].args.level == 4,
+			toasted[#toasted] and ('%s level=%s'):format(toasted[#toasted].key,
+				tostring(toasted[#toasted].args and toasted[#toasted].args.level)) or 'no toast')
+
+		control.netEvents[skills.Event.GAIN]({ key = 'skills.gain.node', args = { cost = 1 },
+			level = 0, points = 0 })
+		check('and so is a node',
+			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.gain.node',
+			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
+
+		-- ── focus: the cursor, and NOT the keyboard ────────────────────────────
+		-- The keyboard staying with the game is what keeps the F3 stow working
+		-- while the panel is up.
+		control.PageEmit(page, 'opx:focus:set',
+			{ surface = 'opx', focus = true, owner = 'skills.tree' })
+		check('the tree takes the cursor for its owner',
+			page.focus.cursor == true, ('kb=%s cur=%s'):format(
+				tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+		check('and never the keyboard, so F3 still stows it',
+			page.focus.keyboard == false, ('kb=%s cur=%s'):format(
+				tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+
+		-- A refusal frame is a refresh with words: the toast says it and the
+		-- panel draws the same tree it drew before.
+		control.netEvents[skills.Event.STATE]({
+			open = true, level = 3, xp = 100, need = 300, points = 0, depth = 5,
+			refused = 'noPoints', branches = {},
+		})
+		check('a refused spend is said in the one table\u{2019}s words',
+			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.noPoints',
+			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
+
+		-- ── stowing ───────────────────────────────────────────────────────────
+		control.PageEmit(page, 'opx:skills:close', {})
+		local closed = views('close')
+		check('a stow from the page takes the panel down', closed ~= nil)
+		check('and gives the focus back',
+			OPX.UI.FocusOwner() == nil or OPX.UI.FocusOwner() ~= 'skills.tree',
+			tostring(OPX.UI.FocusOwner()))
+
+		control.netEvents[skills.Event.GAIN]({ key = 'skills.gain.work', args = { xp = 5 },
+			level = 0, points = 0 })
+		local _, gainCount = views('gain')
+		check('a stowed tree drops what it misses -- the next knock reads the ledger again',
+			gainCount == 3, ('%d gain line(s) drawn'):format(gainCount))
+
+		mapping.pressed()
+		check('and the key opens it again', knocks() == 2, tostring(knocks()))
+
+		-- A refusal names its reason in the same words the panel would use.
+		control.netEvents[skills.Event.STATE]({ open = false, reason = 'noCharacter' })
+		check('a refusal is a sentence from the one table',
+			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.noCharacter',
+			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
+		local _, frames = views('frame')
+		-- Two frames: the first knock\u{2019}s and the refused spend\u{2019}s refresh. A
+		-- refusal that closes the panel draws none.
+		check('and the panel stays down for it', frames == 2, ('%d frame(s)'):format(frames))
+	end
+end
+
+section('the ripperdoc clinic: the chair, the offer and the money rule')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the ripperdoc module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local characters = OPX.Modules.Get('character')
+		local contract = OPX.Api.Get('character')
+		local jobsContract = OPX.Api.Get('jobs')
+		local Event = ripperdoc.Event
+		local Refusal = ripperdoc.Ripper.Refusal
+
+		--- One press from one connection: the host names the sender in the
+		--- `source` global and delivers payload only (its own dispatch shape).
+		local function press(player, name, ...)
+			local args = table.pack(...)
+			env.source = player
+			control.netEvents[name](table.unpack(args, 1, args.n))
+			env.source = nil
+		end
+
+		check('the clinic declares its doors, its key and one refusal table',
+			type(Event.USE) == 'string' and type(Event.FRAME) == 'string'
+				and type(Event.VIEW) == 'string'
+				and ripperdoc.Ripper.KEY.ID == 'opx.ripperdoc.use'
+				and ripperdoc.Ripper.KEY.DEFAULT == 'E'
+				and Refusal.cannotPay == 'ripperdoc.cannotPay')
+
+		-- THE TRAY, as the config declares it: the platform's two audited
+		-- slot/profile pairs and the wiki example clinic's own numbers.
+		local catalog = ripperdoc.Ripper.Catalog()
+		local arms, legs = catalog[1], catalog[2]
+		check('the tray carries the platform pair at the wiki clinic prices',
+			#catalog == 2 and arms.SLOT == 'arms' and arms.PROFILE == 'gorilla_arms'
+				and legs.SLOT == 'legs' and legs.PROFILE == 'double_jump'
+				and arms.GRADES[1].PRICE == 100 and arms.GRADES[2].PRICE == 250
+				and legs.REMOVE == 25 and legs.GRADES[2].VALUE.jumpStaminaCost == 8,
+			('%d entries'):format(#catalog))
+
+		-- Both definitions are REGISTERED before anything may be staged: an
+		-- install against an undefined definition is refused by the store.
+		check('both definitions are registered with the store at Start',
+			control.cyberware.defined[arms.DEFINITION] ~= nil
+				and control.cyberware.defined[legs.DEFINITION] ~= nil
+				and control.cyberware.defined[arms.DEFINITION].grades[1].normalDamage == 15,
+			'one or both definitions are missing')
+
+		-- THE SHELF READS ITS OWN ANSWER. The store answers a TABLE, the
+		-- wiki's `{ok=...}`; a reader comparing it to `true` logged both
+		-- definitions as refused while swallowing the reason -- the first
+		-- staging boot printed exactly that. Acceptance must land in info,
+		-- and no false refusal may appear.
+		local infoLog = table.concat(control.log.info, ' | ')
+		local warnLog = table.concat(control.log.warn, ' | ')
+		local _, shelves = infoLog:gsub('is on the shelf', '')
+		check('the shelf accepts the store answer: two on the shelf, no false refusal',
+			shelves == 2 and warnLog:find('was refused') == nil,
+			('info=%s warn=%s'):format(infoLog, warnLog))
+
+		-- And a refusal keeps its REASON in the line. Same boot path, with
+		-- the store told to refuse the first definition only.
+		local _, control2, why2 = boot('server', nil, function(e)
+			e.Open77.cyberware.refuseDefine = 'invalid_definition'
+		end)
+		check('a refused definition is logged with its reason, not swallowed',
+			why2 == nil and table.concat(control2.log.warn, ' | ')
+				:find('was refused: invalid_definition') ~= nil,
+			table.concat(control2.log.warn, ' | '))
+
+		-- Bodies with a job and a duty flag: the character contract's own
+		-- shape, the one the jobs and radio sections load with.
+		local function load(id, citizenId, jobName, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			characters.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id),
+				jobs = jobName ~= nil and { [jobName] = 0 } or {},
+				job = { name = jobName or 'unemployed', grade = { level = 0 },
+					onDuty = onDuty == true },
+				money = { EDDIES = 500, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+
+		-- Everybody stands where the test says, and the roster is the three of
+		-- them (the invite list's own source).
+		local spot = { x = -1441.2, y = 129.6, z = 18.05 }
+		env.Open77.players.position = function()
+			return { x = spot.x, y = spot.y, z = spot.z, bucket = 0 }
+		end
+		env.Open77.players.all = function() return { 31, 32, 33 } end
+
+		load(31, 'citizen-ripper', 'ripperdoc', true)    -- the operator
+		load(32, 'citizen-patient', 'bartender', true)   -- the patient
+		load(33, 'citizen-bystander', nil, false)        -- at the chair, no job
+
+		-- THE MONEY RULE'S PROOF: the contract's calls, captured as they are
+		-- made, with the real functions still running underneath.
+		local charges, refunds, awards = {}, {}, {}
+		local realRemove, realAdd, realAward =
+			contract.RemoveMoney, contract.AddMoney, jobsContract.Award
+		contract.RemoveMoney = function(player, moneyType, amount, reason)
+			charges[#charges + 1] = { player, moneyType, amount, reason }
+			return realRemove(player, moneyType, amount, reason)
+		end
+		contract.AddMoney = function(player, moneyType, amount, reason)
+			refunds[#refunds + 1] = { player, moneyType, amount, reason }
+			return realAdd(player, moneyType, amount, reason)
+		end
+		jobsContract.Award = function(citizenId, name, points)
+			awards[#awards + 1] = { citizenId, name, points }
+			return realAward(citizenId, name, points)
+		end
+
+		-- The last frame one player was answered with.
+		local function frameOf(playerId)
+			local found = nil
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.FRAME and event.source == playerId then
+					found = event[1]
+				end
+			end
+			return found
+		end
+
+		-- The staged work still waiting on its completion.
+		local function ticketFor(player)
+			for id, staged in pairs(control.cyberware.pending) do
+				if staged.player == player then return id end
+			end
+			return nil
+		end
+
+		-- ── the press, and who it makes you ────────────────────────────────
+
+		check('the press door is wired',
+			type(control.netEvents[Event.USE]) == 'function', 'no handler')
+
+		press(33, Event.USE, 'no_such_chair')
+		local refused = frameOf(33)
+		check('a press at nothing is refused in a sentence',
+			refused ~= nil and refused.mode == 'notice'
+				and refused.flash.key == Refusal.noSuchChair,
+			refused and tostring(refused.mode) or 'no frame')
+
+		press(32, Event.USE, 'clinic_watson')
+		local seated = frameOf(32)
+		check('the patient is seated on the platform chair workspot and their menu opens',
+			seated ~= nil and seated.mode == 'sitter' and seated.attended == false
+				and #control.animations.started == 1
+				and control.animations.started[1][2] == 'chair'
+				and control.animations.started[1][3].x == -1441.2,
+			seated and tostring(seated.mode) or 'no frame')
+
+		press(33, Event.USE, 'clinic_watson')
+		check('a taken chair says taken',
+			frameOf(33).flash.key == Refusal.taken,
+			tostring(frameOf(33).flash.key))
+
+		press(31, Event.USE, 'clinic_watson')
+		local desk = frameOf(31)
+		check('the ripperdoc operates the chair and reads their patient',
+			desk ~= nil and desk.mode == 'desk' and desk.patient == 32
+				and desk.patientName == 'Player 32' and #desk.catalogue == 2,
+			desk and tostring(desk.mode) or 'no frame')
+
+		-- ── the offer, and the two doors ─────────────────────────────────
+			local function offer(player, entryId, gradeId, mode)
+				press(player, Event.OFFER, entryId, gradeId, mode)
+			end
+		offer(32, 'arms', 'street', 'install')
+		check('a patient cannot offer while the chair is operated',
+			frameOf(32).flash.key == Refusal.notRipperdoc,
+			tostring(frameOf(32).flash.key))
+
+		offer(31, 'arms', 'nope', 'install')
+		check('a grade the tray does not carry is refused',
+			frameOf(31).flash.key == Refusal.noSuchGrade,
+			tostring(frameOf(31).flash.key))
+
+		-- THE NOT-READY PATH, at the offer: no record, no submission.
+		offer(31, 'arms', 'street', 'install')
+		check('a record still loading refuses the offer outright',
+			frameOf(31).flash.key == Refusal.notReady and #charges == 0,
+			('%d charge(s)'):format(#charges))
+
+		-- COMPENSATE, at the accept: the record vanishes between offer and
+		-- answer, and the price that was reserved comes straight back.
+		control.cyberware.records[32] = { revision = 3 }
+		offer(31, 'arms', 'street', 'install')
+		check('the offer reaches both sides priced',
+			frameOf(32).offer ~= nil and frameOf(32).offer.price == 100
+				and frameOf(32).offer.by == 'Player 31' and frameOf(31).offer ~= nil,
+			'no offer on the wire')
+		control.cyberware.records[32] = nil
+		press(32, Event.ANSWER, 'offer', true)
+		check('a reservation the record will not back is refunded at once',
+			#charges == 1 and #refunds == 1 and refunds[1][3] == 100
+				and frameOf(32).flash.key == Refusal.notReady,
+			('%d charge(s), %d refund(s)'):format(#charges, #refunds))
+
+		-- With a record, the reserve-then-stage rule runs for real.
+		control.cyberware.records[32] = { revision = 3 }
+		offer(31, 'arms', 'street', 'install')
+		press(32, Event.ANSWER, 'offer', false)
+		check('a declined offer charges nothing',
+			#charges == 1 and frameOf(32).offer == nil,
+			('%d charge(s)'):format(#charges))
+
+		offer(31, 'arms', 'street', 'install')
+		press(32, Event.ANSWER, 'offer', true)
+		local staged = control.cyberware.installs[#control.cyberware.installs]
+		check('an accepted offer reserves the price and stages the work',
+			#charges == 2 and charges[2][3] == 100 and staged ~= nil
+				and staged[1] == 32 and staged[2] == arms.DEFINITION and staged[3] == 'street'
+				and staged[4].expectedRevision == 3 and staged[4].operationId ~= nil,
+			('%d charge(s)'):format(#charges))
+
+		-- THE COMPLETION, in the host's own shape: a STRING player id and a
+		-- JSON result on the server-local event.
+		local ticket = ticketFor(32)
+		check('the staged work waits on its ticket', ticket ~= nil, 'no pending work')
+
+		-- A FAILED completion compensates: the price comes back and nobody is
+		-- paid for work that did not happen.
+		control.cyberware.complete(ticket, false)
+		control.Fire('onCyberwareOperationCompleted', tostring(32), ticket,
+			Host.json.encode({ ok = false }))
+		check('a failed completion refunds the patient and pays nobody',
+			#refunds == 2 and refunds[2][3] == 100 and #awards == 0,
+			('%d refund(s), %d award(s)'):format(#refunds, #awards))
+
+		-- And the happy path: the charge stands, the record fills, and the
+		-- OPERATOR is paid through the jobs funnel -- the same `pay` every
+		-- shift and arrest goes through.
+		offer(31, 'arms', 'street', 'install')
+		press(32, Event.ANSWER, 'offer', true)
+		ticket = ticketFor(32)
+		control.cyberware.complete(ticket, true)
+		control.Fire('onCyberwareOperationCompleted', tostring(32), ticket,
+			Host.json.encode({ ok = true }))
+		local fitted = control.cyberware.records[32].arms
+		check('a completed installation keeps the charge and pays the operator through jobs',
+			#refunds == 2 and #awards == 1 and awards[1][1] == 'citizen-ripper'
+				and awards[1][2] == 'ripperdoc' and awards[1][3] == 5
+				and fitted ~= nil and fitted.grade.id == 'street',
+			('%d award(s)'):format(#awards))
+
+		-- THE SLOT RULES, read from the record: the arms slot is full now.
+		-- The refusal speaks to whoever pressed: the operator's own frame.
+		offer(31, 'arms', 'elite', 'install')
+		check('a filled slot states its condition',
+			frameOf(31).flash.key == Refusal.slotFilled,
+			tostring(frameOf(31).flash.key))
+		offer(31, 'legs', nil, 'remove')
+		check('an empty slot states its condition',
+			frameOf(31).flash.key == Refusal.slotEmpty,
+			tostring(frameOf(31).flash.key))
+
+		-- ── self-service: the same funnel, nobody to pay ───────────────
+
+		press(31, Event.CLOSE)
+		check('the patient is alone at the chair again',
+			frameOf(32).attended == false, 'still attended')
+		offer(32, 'legs', 'training', 'install')
+		check('with nobody operating, the patient may serve themselves',
+			frameOf(32).offer ~= nil and frameOf(32).offer.by == nil,
+			'no self offer')
+		press(32, Event.ANSWER, 'offer', true)
+		ticket = ticketFor(32)
+		control.cyberware.complete(ticket, true)
+		control.Fire('onCyberwareOperationCompleted', tostring(32), ticket,
+			Host.json.encode({ ok = true }))
+		check('a self-service fit charges and completes but pays nobody',
+			#awards == 1 and control.cyberware.records[32].legs ~= nil,
+			('%d award(s)'):format(#awards))
+
+		-- ── the stand ──────────────────────────────────────────────────────
+
+		press(32, Event.STAND)
+		check('standing stops the workspot and closes the panel',
+			#control.animations.stopped == 1 and control.animations.stopped[1][1] == 32
+				and frameOf(32).mode == 'closed',
+			('%d stop(s)'):format(#control.animations.stopped))
+
+		-- ── the option to sit ──────────────────────────────────────────────
+
+		press(31, Event.USE, 'clinic_watson')
+		local emptyDesk = frameOf(31)
+		check('an empty chair gives the operator their invite list',
+			emptyDesk.mode == 'desk' and #emptyDesk.invitees == 2,
+			emptyDesk and tostring(#(emptyDesk.invitees or {})) or 'no frame')
+		press(31, Event.INVITE, 32)
+		local invited = frameOf(32)
+		check('the invitation reaches its addressee',
+			invited ~= nil and invited.mode == 'invite' and invited.from == 'Player 31',
+			invited and tostring(invited.mode) or 'no frame')
+		press(32, Event.ANSWER, 'invite', true)
+		check('accepting the invitation seats them and the desk sees the patient',
+			frameOf(32).mode == 'sitter' and frameOf(31).patient == 32,
+			tostring(frameOf(32).mode))
+
+		-- ── a pull through the operator door, and BOTH completion doors ────
+
+		offer(31, 'legs', nil, 'remove')
+		press(32, Event.ANSWER, 'offer', true)
+		ticket = ticketFor(32)
+		check('a ticket that is not ours is never consumed',
+			(function()
+				local mark = #control.clientEvents
+				control.Fire('onCyberwareOperationCompleted', tostring(32),
+					'somebody-elses', Host.json.encode({ ok = true }))
+				return #control.clientEvents == mark and ticketFor(32) ~= nil
+			end)(), 'a foreign ticket moved our ledger')
+
+		-- THE GLOBAL DOOR: the example clinic names the handler a global, and
+		-- this host dispatches the server-local event. Both reach the same
+		-- ledger -- proven by settling through the global directly.
+		check('the completion handler is also named as a global entry point',
+			type(env.onCyberwareOperationCompleted) == 'function', 'no global door')
+		control.cyberware.complete(ticket, true)
+		env.onCyberwareOperationCompleted(tostring(32), ticket,
+			Host.json.encode({ ok = true }))
+		check('and the global door settles a pull identically: paid, slot empty',
+			#awards == 2 and charges[#charges][3] == 25
+				and control.cyberware.records[32].legs == nil,
+			('%d award(s), last charge %s'):format(#awards,
+				tostring(charges[#charges] and charges[#charges][3])))
+
+		-- THE PAYLOAD CEILING: one frame is one host payload (the bound
+		-- `core/client/ui.lua` states, enforced by the page stub).
+		check('a frame fits the host payload ceiling',
+			Host.PayloadNodes(frameOf(32)) <= Host.MAX_PAYLOAD_NODES,
+			tostring(Host.PayloadNodes(frameOf(32))))
+
+		-- The contracts go back the way the module published them.
+		contract.RemoveMoney, contract.AddMoney, jobsContract.Award =
+			realRemove, realAdd, realAward
+	end
+end
+
+section('the ripperdoc clinic: the surface and its presses')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the ripperdoc module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local Event = ripperdoc.Event
+
+		local mapping = control.keyMappings.byId[ripperdoc.Ripper.KEY.ID]
+		check('the interaction key is declared and defaults to E',
+			mapping ~= nil and mapping.key == 'E' and type(mapping.pressed) == 'function',
+			mapping and tostring(mapping.key) or 'absent')
+
+		local page = control.pages[#control.pages]
+		check('the clinic has a surface to draw on', page ~= nil, 'no page')
+
+		if page ~= nil then
+			local function views(channel, since)
+				local out = {}
+				for index = (since or 0) + 1, #page.sent do
+					local entry = page.sent[index]
+					if entry.channel == channel and entry.payload ~= nil then
+						out[#out + 1] = entry.payload
+					end
+				end
+				return out
+			end
+
+			local function asked(name, since)
+				for index = (since or 0) + 1, #control.serverEvents do
+					local sent = control.serverEvents[index]
+					if sent.name == name then return sent end
+				end
+				return nil
+			end
+
+			-- THE AUTO-OPEN, proven at the wire: a frame arrives and the page is
+			-- handed the whole menu -- with no key pressed and no knock sent.
+			local mark = #page.sent
+			control.netEvents[Event.FRAME]({
+				mode = 'sitter', chair = 'clinic_watson', name = 'ripperdoc.chair.watson',
+				attended = false, busy = false, offer = nil,
+				catalogue = { {
+					id = 'arms', name = 'ripperdoc.item.arms', slot = 'arms', remove = 50,
+					fitted = '', mine = false,
+					grades = { {
+						id = 'street', name = 'ripperdoc.grade.arms.street', price = 100,
+						owned = false, stats = { normalDamage = 15, chargedDamage = 35 },
+					} },
+				} },
+			})
+			local arrived = views('opx:ripperdoc:view', mark)
+			check('the frame reaches the page whole -- the menu opens itself',
+				#arrived == 1 and arrived[1].mode == 'sitter'
+					and arrived[1].catalogue[1].grades[1].price == 100,
+				('%d frame(s) on the page'):format(#arrived))
+
+			-- THE PRESSES: five intents, five server events, each naming only
+			-- what was pressed.
+			mark = #control.serverEvents
+			control.PageEmit(page, 'opx:ripperdoc:offer',
+				{ entry = 'arms', grade = 'street', mode = 'install' })
+			local sent = asked(Event.OFFER, mark)
+			check('a fit press is an intent naming entry, grade and mode',
+				sent ~= nil and sent[1] == 'arms' and sent[2] == 'street' and sent[3] == 'install',
+				sent and tostring(sent[1]) or 'no event')
+
+			mark = #control.serverEvents
+			control.PageEmit(page, 'opx:ripperdoc:answer', { what = 'offer', accept = true })
+			sent = asked(Event.ANSWER, mark)
+			check('an answer names what it answers and whether',
+				sent ~= nil and sent[1] == 'offer' and sent[2] == true,
+				sent and tostring(sent[1]) or 'no event')
+
+			mark = #control.serverEvents
+			control.PageEmit(page, 'opx:ripperdoc:invite', { player = 33 })
+			sent = asked(Event.INVITE, mark)
+			check('an invitation names its addressee',
+				sent ~= nil and sent[1] == 33, sent and tostring(sent[1]) or 'no event')
+
+			mark = #control.serverEvents
+			control.PageEmit(page, 'opx:ripperdoc:stand', {})
+			check('the leave control asks the server to stand',
+				asked(Event.STAND, mark) ~= nil, 'no event')
+
+			mark = #control.serverEvents
+			control.PageEmit(page, 'opx:ripperdoc:close', {})
+			check('and the operator door closes the same way',
+				asked(Event.CLOSE, mark) ~= nil, 'no event')
+
+			-- FOCUS: the cursor is taken and the keyboard never (the game keeps
+			-- the movement keys and the E that works the chair).
+			control.PageEmit(page, 'opx:focus:set',
+				{ surface = 'ui', focus = true, owner = 'ripperdoc.panel' })
+			check('the panel takes the cursor and never the keyboard',
+				page.focus.keyboard == false and page.focus.cursor == true,
+				('keyboard=%s cursor=%s'):format(tostring(page.focus.keyboard),
+					tostring(page.focus.cursor)))
+			control.PageEmit(page, 'opx:focus:set',
+				{ surface = 'ui', focus = false, owner = '' })
+			check('and gives both back when it lets go',
+				page.focus.keyboard == false and page.focus.cursor == false,
+				('keyboard=%s cursor=%s'):format(tostring(page.focus.keyboard),
+					tostring(page.focus.cursor)))
+
+			-- THE PROMPT ROW: shown at the chair, gone away from it, and the
+			-- press reaches the chair it is standing on.
+			local prompts = OPX.Api.Get('prompts')
+			local shown, hidden = 0, 0
+			if prompts ~= nil then
+				local realShow, realHide = prompts.Show, prompts.Hide
+				prompts.Show = function(...)
+					shown = shown + 1
+					return realShow(...)
+				end
+				prompts.Hide = function(...)
+					hidden = hidden + 1
+					return realHide(...)
+				end
+			end
+
+			env.Open77.character.position = function() return -1441.2, 129.6, 18.05 end
+			control.Pump(40)
+
+			-- Every chair IN RANGE wears a marker, lifted above the floor (a
+			-- marker left at floor height is co-planar with the floor and draws
+			-- nothing), and one out of range keeps no marker at all.
+			local drawn, lifted = 0, false
+			for _, record in pairs(control.markers.byId) do
+				drawn = drawn + 1
+				local spec = type(record) == 'table' and (record.options or record) or {}
+				local position = type(spec.position) == 'table' and spec.position or {}
+				if math.abs((position.z or 0) - (18.05 + 0.06)) < 0.001 then lifted = true end
+			end
+			check('every chair in range wears a marker, lifted above the floor',
+				drawn == #ripperdoc.Ripper.Chairs() and lifted,
+				('%d marker(s)'):format(drawn))
+
+			check('the strip row appears at the chair',
+				prompts == nil or shown >= 1, ('%d show(s)'):format(shown))
+
+			mark = #control.serverEvents
+			mapping.pressed()
+			sent = asked(Event.USE, mark)
+			check('the press names the chair the player stands on',
+				sent ~= nil and sent[1] == 'clinic_watson',
+				sent and tostring(sent[1]) or 'no event')
+
+			env.Open77.character.position = function() return 0.0, 0.0, 0.0 end
+			control.Pump(40)
+			check('and it is gone again from across the room',
+				prompts == nil or hidden >= 1, ('%d hide(s)'):format(hidden))
+		end
+	end
+end
+
+section('the ripperdoc clinic: /opx.clinic.add places the chair')
+do
+	-- The chair table the bridge answers with, and everything written to it.
+	-- The SQL is the real storage module's; this is only the bridge half.
+	local rows, wrote, deleted = {}, {}, {}
+	local function bridge()
+		return Host.Database({
+			scalar = function() return 1 end,
+			query = function(sql)
+				if sql:find('opx77_ripperdoc', 1, true) then return rows end
+				return {}
+			end,
+			update = function(sql)
+				-- Only the writes: the schema runs `CREATE TABLE IF NOT EXISTS`
+				-- through the same bridge method, and counting that would make
+				-- "nothing was written" true of a boot rather than of a refusal.
+				if sql:find('INSERT INTO opx77_ripperdoc', 1, true) then
+					wrote[#wrote + 1] = sql
+				end
+				if sql:find('DELETE FROM opx77_ripperdoc', 1, true) then
+					deleted[#deleted + 1] = sql
+				end
+				return 0
+			end,
+			single = function() return nil end,
+		})
+	end
+
+	-- A chair the database already holds, so the boot proves the READ path as
+	-- well as the one the command writes down.
+	rows[1] = { chair_key = 'clinic_old', label = 'THE OLD CHAIR',
+		x = -1546.96, y = 1233.77, z = 11.52, yaw = 270.0 }
+
+	local env, control, why = boot('server', bridge())
+	check('the server boots with the clinic and a database', why == nil, why)
+
+	-- The last client event with one name, or nil. Every verdict below is
+	-- asserted off the wire rather than off a return value, because the wire is
+	-- what the player's client actually reads.
+	local function lastEvent(name)
+		for index = #control.clientEvents, 1, -1 do
+			if control.clientEvents[index].name == name then return control.clientEvents[index] end
+		end
+		return nil
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local Event = ripperdoc.Event
+
+		check('the ripperdoc module is running', OPX.Modules.IsRunning('ripperdoc'),
+			OPX.Modules.Record('ripperdoc').Reason)
+
+		-- The chair the database held at boot came back as a row BESIDE the
+		-- config chair, in the shape every reader merges against.
+		check('a captured chair is read at boot beside the config one',
+			#ripperdoc.Ripper.Chairs() == 2 and ripperdoc.Ripper.Chair('clinic_old') ~= nil
+				and ripperdoc.Ripper.Chair('clinic_watson') ~= nil,
+			('%d chair(s)'):format(#ripperdoc.Ripper.Chairs()))
+		local old = ripperdoc.Ripper.Chair('clinic_old')
+		check('and it keeps the position and facing it was saved with',
+			old ~= nil and old.X == -1546.96 and old.Y == 1233.77 and old.Z == 11.52
+				and old.YAW == 270.0 and old.NAME == 'THE OLD CHAIR')
+
+		-- ── what a chair has to be ─────────────────────────────────────────
+		-- One rule for the command, the routeway and a row read back out of the
+		-- database.
+		local good = ripperdoc.Ripper.Row('x', 'X CHAIR', 1.5, 2.5, 3.5, 90.0)
+		check('a chair row is accepted', good ~= nil and good.YAW == 90.0)
+		check('and takes its key as its name when it has none',
+			select(1, ripperdoc.Ripper.Row('x', '', 1.5, 2.5, 3.5, 90.0)).NAME == 'x')
+		check('a NaN coordinate is refused, not carried to the engine',
+			ripperdoc.Ripper.Row('x', 'X', 0 / 0, 0, 0, 0) == nil)
+		check('an over-long key is refused',
+			ripperdoc.Ripper.Row(string.rep('k', 200), 'X', 0, 0, 0, 0) == nil)
+		check('a key of two words is refused',
+			ripperdoc.Ripper.Row('two words', 'X', 0, 0, 0, 0) == nil)
+		check('a facing the caller got wrong is wrapped, not carried',
+			select(1, ripperdoc.Ripper.Row('x', 'X', 0, 0, 0, -90.0)).YAW == 270.0)
+
+		-- ── the placement round-trip ───────────────────────────────────
+		local src = 51
+		control.Admit(src, 'account-clinic')
+		OPX.EnsureSession(src)
+
+		check('the capture command is registered and ACL-gated',
+			control.commands['opx.clinic.add'] ~= nil
+				and control.commands['opx.clinic.add'].restricted == true)
+		check('and its routeway to the client exists',
+			type(control.netEvents[Event.CAPTURED]) == 'function')
+
+		local mark = #control.clientEvents
+		control.commands['opx.clinic.add'].run(src, {})
+		local asked = lastEvent(Event.CAPTURE)
+		check('the add command asks the client for its facing',
+			asked ~= nil and #control.clientEvents > mark and asked.source == src)
+		check('under a key it generated, so the chair can be named again afterwards',
+			asked ~= nil and asked[1] == 'clinic1', asked and tostring(asked[1]))
+
+		control.commands['opx.clinic.add'].run(src, { 'victor', 'VICTOR', 'CHAIR' })
+		local named = lastEvent(Event.CAPTURE)
+		check('and a named add carries the key and the label',
+			named ~= nil and named[1] == 'victor' and named[2] == 'VICTOR CHAIR',
+			named and ('%s/%s'):format(tostring(named[1]), tostring(named[2])))
+
+		-- A CLIENT THAT FIRES THE ROUTEWAY ITSELF. The net event has no
+		-- host-side ACL check -- that gate runs for commands only -- so the
+		-- module asks the same question here. Without this, anybody could
+		-- place chairs.
+		env.source = src
+		local before = #control.clientEvents
+		control.netEvents[Event.CAPTURED]('sneaky', 'SNEAKY', 0.0)
+		local denied = control.clientEvents[#control.clientEvents]
+		check('a capture from someone without the permission is refused',
+			#control.clientEvents > before and denied ~= nil and denied[1] ~= nil
+				and denied[1].code == 'error.noPermission',
+			denied and denied[1] and tostring(denied[1].code))
+		check('and the refusal names the operation, so a client can tell it apart',
+			denied ~= nil and denied[1] ~= nil and denied[1].operation == ripperdoc.Operation.CAPTURE)
+		check('and nothing was placed', ripperdoc.Ripper.Chair('sneaky') == nil)
+		check('and nothing was written', #wrote == 0, #wrote)
+
+		-- With the permission, the same routeway lands a chair.
+		control.Allow(src, 'command.opx.clinic.add')
+		control.netEvents[Event.CAPTURED]('victor', 'VICTOR CHAIR', 90.0)
+		env.source = nil
+		control.Pump(8)
+		local held = ripperdoc.Ripper.Chair('victor')
+		check('a permitted capture lands', held ~= nil)
+		check('at the position the SERVER read and the facing the client gave',
+			held ~= nil and held.X == 0.0 and held.Y == 0.0 and held.Z == 0.0 and held.YAW == 90.0,
+			held and ('%s,%s,%s yaw %s'):format(held.X, held.Y, held.Z, tostring(held.YAW)))
+		check('and its name is the operator\'s own words',
+			held ~= nil and held.NAME == 'VICTOR CHAIR')
+		check('and the row was written through the bridge', #wrote == 1, #wrote)
+		local synced = lastEvent(Event.CHAIRS)
+		check('and every client was told what chairs are there now',
+			synced ~= nil and type(synced[1]) == 'table' and #synced[1] == 2,
+			synced and type(synced[1]) == 'table' and ('%d row(s)'):format(#synced[1]) or 'no event')
+
+		-- A client that comes up asks once and is fed.
+		env.source = src
+		control.netEvents[Event.ASK]()
+		env.source = nil
+		local fed = lastEvent(Event.CHAIRS)
+		check('a client that asks is fed the captured chairs',
+			fed ~= nil and fed.source == src and type(fed[1]) == 'table' and #fed[1] == 2,
+			fed and tostring(fed.source) or 'no event')
+
+		-- ── removing what was placed ────────────────────────────────────
+		control.commands['opx.clinic.remove'].run(src, { 'victor' })
+		control.Pump(8)
+		check('the remove command takes a captured chair away',
+			ripperdoc.Ripper.Chair('victor') == nil)
+		check('and deleted it through the bridge', #deleted == 1, #deleted)
+		check('the chair the database held at boot is still there',
+			ripperdoc.Ripper.Chair('clinic_old') ~= nil)
+
+		-- A config row is not the command's to remove: it would come back at
+		-- the next boot and look like the command had failed.
+		control.commands['opx.clinic.remove'].run(src, { 'clinic_watson' })
+		check('a config chair is not the remove command\'s to take',
+			ripperdoc.Ripper.Chair('clinic_watson') ~= nil and #deleted == 1, #deleted)
+
+		local ran = pcall(control.commands['opx.clinic.list'].run, src, {})
+		check('the list command reports without raising', ran == true)
+
+		-- A captured id SHADOWS a config one: a capture is one chair moved,
+		-- not two.
+		local merged = #ripperdoc.Ripper.Chairs()
+		ripperdoc.Ripper.SetCaptured({ { id = 'clinic_watson', NAME = 'MOVED CHAIR',
+			X = 1.0, Y = 2.0, Z = 3.0, YAW = 4.0 } })
+		check('a captured chair shadows the config row of the same id',
+			#ripperdoc.Ripper.Chairs() == merged - 1
+				and ripperdoc.Ripper.Chair('clinic_watson').NAME == 'MOVED CHAIR',
+			('%d chair(s)'):format(#ripperdoc.Ripper.Chairs()))
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
