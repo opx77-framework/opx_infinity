@@ -59,7 +59,8 @@ local M = OPX.Modules.Declare{
 	-- `menu` is optional and not required: without it the list cannot be drawn
 	-- and `/opx.garages.bring` still brings a vehicle out, which is a garage
 	-- with one fewer door rather than a broken one.
-	optional = { 'vehicles', 'prompts', 'downed', 'menu' },
+	-- `vehiclekeys` hands the owner a key on the way out when they hold none.
+	optional = { 'vehicles', 'prompts', 'downed', 'menu', 'vehiclekeys' },
 }
 
 -- The three prefixes are disjoint by construction (core/shared/channels.lua):
