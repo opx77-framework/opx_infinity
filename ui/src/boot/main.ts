@@ -1,5 +1,3 @@
-import CallLive from '@/modules/calls/CallLive.vue'
-import CallIncoming from '@/modules/calls/IncomingCall.vue'
 import CallHolo from '@/modules/calls/HoloRoot.vue'
 import ChatInput from '@/modules/chat/ChatInput.vue'
 import ChatLog from '@/modules/chat/ChatLog.vue'
@@ -52,32 +50,10 @@ registerModule({ id: 'inventory-slotbar', surface: 'overlay', component: Slotbar
 // never take focus: one that captured the keyboard would stop the player moving.
 registerModule({ id: 'tags', surface: 'overlay', component: TagsRoot })
 
-// THE HOLOCALL IS ONE LUA MODULE DRAWN AS TWO REGISTRATIONS, the way the chat
-// and the inventory are -- but for once BOTH halves are on the overlay, and
-// that is the requirement rather than a consequence. The owner's words about
-// the incoming card were "il faut pas que ca gene la vision du joueur": the
-// overlay layer is `pointer-events: none` for its whole height and is never
-// focused, so a card registered here cannot take the mouse, swallow a key, or
-// stand between the player and what they are aiming at.
-//
-// It is also why neither view carries an Accept button. A surface that cannot
-// be clicked cannot have one, so answering a call is a row on the target eye --
-// ALT on your own body -- which is what the owner asked for and what the layer
-// keeps honest. Moving either of these to `modal` to add a control would
-// rebuild exactly the thing they said not to build.
-//
-// Both subscribe to the same `opx:calls:view` channel and read different halves
-// of it: the card draws `invite`, the chip draws `call`. One payload, because
-// Lua publishes this player's whole call world in one push and a split would be
-// two events kept in step by hand.
-registerModule({ id: 'calls-incoming', surface: 'overlay', component: CallIncoming })
-registerModule({ id: 'calls-live', surface: 'overlay', component: CallLive })
-
-// AND THE HOLOGRAM, WHICH IS THE ONLY ONE OF THE THREE THAT MAY BE PRESSED.
-// The two above arrive unbidden and live on a layer that cannot take the mouse;
-// this one the player opened on a key, so it is centred, focused and pressable.
-// It listens on its own channel because it is its own screen -- Lua routes by
-// payload kind and never sends a roster to a layer nobody can click.
+// THE HOLOCALL IS ONE SCREEN. The card and the live chip that used to sit on the
+// left are gone on the owner's word; the sphere below says who is calling, who
+// you are talking to and which key answers or hangs up. It takes focus only when
+// the player opens it on its key.
 registerModule({ id: 'calls-holo', surface: 'modal', component: CallHolo })
 
 // The chat is ONE Lua module drawn as TWO registrations, because it is two

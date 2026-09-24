@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { list, num, table, text } from '@/bridge/types'
@@ -70,6 +70,12 @@ const tab = ref<'contacts' | 'recent'>('contacts')
 const onCall = computed(() => call.value !== null)
 const ringing = computed(() => invite.value !== null)
 
+/** A call this player placed that is still ringing on the other side. A
+ *  contact request is not dialling, so it pops nothing. */
+const dialing = computed(
+  () => outgoing.value !== null && text(outgoing.value.kind) !== 'contact'
+)
+
 /** Who is on the call, as names, for the header. */
 const participants = computed(() => {
   const held = call.value === null ? [] : list<Payload>(call.value.participants)
@@ -96,6 +102,12 @@ function rowsOf(value: unknown): Row[] {
     }))
     .filter((row) => row.id > 0)
 }
+
+// THE HANDSHAKE. It lived on the incoming card on the left, which is gone; Lua
+// answers with this player's whole call state.
+onMounted(() => {
+  emit('opx:calls:ready', {})
+})
 
 useBridge('opx:calls:holo', (payload: Payload) => {
   guard('calls:holo', () => {
@@ -183,7 +195,9 @@ function reasonKey(reason: string): string {
  * le menu" -- so the sphere pops with the caller in it, says which keys answer
  * it, and takes nothing at all.
  */
-const present = computed(() => open.value || ringing.value || onCall.value)
+const present = computed(
+  () => open.value || ringing.value || onCall.value || dialing.value
+)
 
 /**
  * The two letters the sphere prints. They come off the payload rather than
@@ -252,14 +266,18 @@ const shown = computed<Row[]>(() => contacts.value)
         <p v-if="ringing" class="passive-who op-label">
           {{ text(invite?.name, '?') }}
         </p>
-        <p v-else class="passive-who op-label">
+        <p v-else-if="onCall" class="passive-who op-label">
           {{ participants.join(', ') }}
+        </p>
+        <p v-else class="passive-who op-label">
+          {{ text(outgoing?.toName, '?') }}
         </p>
         <p class="passive-what op-eyebrow">
           {{ ringing
             ? (inviteIsContact ? t('calls.holo.sharing', { name: text(invite?.name, '?') })
               : t('calls.holo.incoming'))
-            : t('calls.holo.inCall') }}
+            : onCall ? t('calls.holo.inCall')
+              : t('calls.holo.calling', { name: text(outgoing?.toName, '?') }) }}
         </p>
         <!-- THE KEYS, AS LETTERS. Read off the config the same way the rest of
              this surface reads its words, so a server that rebinds them is not
@@ -272,6 +290,15 @@ const shown = computed<Row[]>(() => contacts.value)
           <span class="prompt">
             <b class="cap">{{ declineKey }}</b>
             {{ inviteIsContact ? t('calls.holo.no') : t('calls.holo.refuse') }}
+          </span>
+        </div>
+        <!-- HANGING UP IS ANSWERED THE SAME WAY: one letter in the sphere, the
+             refuse key, nothing to open. Also what withdraws a call still
+             ringing on the other side. -->
+        <div v-else class="prompts">
+          <span class="prompt">
+            <b class="cap">{{ declineKey }}</b>
+            {{ t('calls.holo.hangUp') }}
           </span>
         </div>
       </div>
@@ -318,7 +345,7 @@ const shown = computed<Row[]>(() => contacts.value)
         </div>
 
         <p v-else-if="outgoing !== null" class="waiting op-eyebrow">
-          {{ t('calls.holo.calling', { name: text(outgoing?.name, '?') }) }}
+          {{ t('calls.holo.calling', { name: text(outgoing?.toName, '?') }) }}
         </p>
 
         <nav class="tabs">
@@ -347,8 +374,6 @@ const shown = computed<Row[]>(() => contacts.value)
             <template v-else>
               <button class="pill op-eyebrow" type="button" @click="callRow(row)">
                 {{ onCall ? t('calls.holo.add') : t('calls.holo.call') }}
-              </button>
-              <button
               </button>
             </template>
           </li>
