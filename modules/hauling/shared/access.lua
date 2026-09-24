@@ -261,11 +261,29 @@ function Access.GapSquared(a, b)
 	return dx * dx + dy * dy + dz * dz
 end
 
---- How a carried crate is bound to a body, or nil when the config is unusable.
+--- The kneel a site plays while its pickup bar runs: its own PICKUP_POSE when
+--- it names one ('' included, which means none), else the global one.
 -- @author dop42
+-- @param key any
+-- @return string
+function Access.PickupPose(key)
+	local site = Access.Site(key)
+	if site ~= nil and type(site.PICKUP_POSE) == 'string' then return site.PICKUP_POSE end
+	return Access.PICKUP_POSE
+end
+
+--- How a carried crate is bound to a body, or nil when the config is unusable.
+---
+--- A SITE MAY CARRY ITS OWN BLOCK, because the numbers belong to the MODEL: a
+--- toolbox and a wooden crate have different sizes and pivots, and one offset
+--- tuned on `crate.small` puts the other inside the chest or in front of it.
+-- @author dop42
+-- @param key any the site, or nil for the global block
 -- @return table|nil { bone, offset, rotation }
-function Access.Carry()
-	local carry = type(Config.CARRY) == 'table' and Config.CARRY or nil
+function Access.Carry(key)
+	local site = key ~= nil and Access.Site(key) or nil
+	local carry = site ~= nil and type(site.CARRY) == 'table' and site.CARRY
+		or (type(Config.CARRY) == 'table' and Config.CARRY or nil)
 	if carry == nil then return nil end
 	local bone = carry.BONE
 	if bone ~= nil and type(bone) ~= 'string' then return nil end
@@ -419,6 +437,14 @@ function Access.Problems()
 			end
 			if site.MODEL ~= nil and (type(site.MODEL) ~= 'string' or site.MODEL == '') then
 				lines[#lines + 1] = name .. ': MODEL must be a curated prop alias'
+				bad = true
+			end
+			if site.PICKUP_POSE ~= nil and type(site.PICKUP_POSE) ~= 'string' then
+				lines[#lines + 1] = name .. ": PICKUP_POSE must be an animation name, or '' for none"
+				bad = true
+			end
+			if site.CARRY ~= nil and Access.Carry(key) == nil then
+				lines[#lines + 1] = name .. ': CARRY must name a BONE and finite OFFSET and ROTATION vectors'
 				bad = true
 			end
 			-- ONE DIAGNOSTIC FOR ONE MISTAKE. This was a hand-written fifth copy of

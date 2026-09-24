@@ -164,7 +164,17 @@ OPX.Config.MODULES.hauling = {
 	--
 	--   'scavenge'  kneel, both hands working at something on the ground
 	--   'examine'   kneel and look the thing over
+	--   'repair'    kneel with a screwdriver (the workspot brings its own)
+	--   'mechanic'  kneel with a wrench (the workspot brings its own)
 	--   ''          none: the player just stands through the bar
+	--
+	-- A SITE MAY NAME ITS OWN PICKUP_POSE, and its own MODEL and CARRY: the owner,
+	-- 2026-09-24, "des props plus logique pour les zone et des animation
+	-- differente". CARRY belongs to the model -- the numbers below are measured on
+	-- `crate.small` -- so a site whose box sits wrong in the hands gets its own
+	-- CARRY block rather than a change here. The carry itself stays `carry` on
+	-- every site: it is the only two-handed carry the platform ships, and
+	-- `hold_item_walk` spawns a soda can of its own.
 	--
 	-- Both are marked `asset_verified_runtime_pending` by the platform, and a
 	-- workspot ends if the player walks off -- which ends nothing else.
@@ -262,6 +272,9 @@ OPX.Config.MODULES.hauling = {
 		pacifica_butcher = {
 			LABEL = 'Butcher shop and market',
 			BUCKET = 0,
+			-- market delivery crate.
+			MODEL = 'crate.delivery',
+			PICKUP_POSE = 'scavenge',
 
 			-- Where the map pin goes. Without it the pin falls on the first point.
 			BLIP = { X = -1819.71, Y = -1970.77, Z = 52.50 },
@@ -299,6 +312,9 @@ OPX.Config.MODULES.hauling = {
 		dakota = {
 			LABEL = 'Dakota',
 			BUCKET = 0,
+			-- a Badlands fixer: an ammo box.
+			MODEL = 'crate.ammo_box',
+			PICKUP_POSE = 'examine',
 			POINTS = {
 				{ X = 2594.36, Y = -53.31, Z = 84.86, YAW = 124.7 },
 				{ X = 2593.03, Y = -58.59, Z = 84.89, YAW = 38.7 },
@@ -321,6 +337,9 @@ OPX.Config.MODULES.hauling = {
 		parking_megabuilding_06 = {
 			LABEL = 'Parking + Megabuilding 06',
 			BUCKET = 0,
+			-- building supplies in a wooden crate.
+			MODEL = 'crate.small',
+			PICKUP_POSE = 'scavenge',
 			POINTS = {
 				{ X = -526.35, Y = -1325.51, Z = 11.88, YAW = 135.3 },
 				{ X = -519.45, Y = -1330.41, Z = 11.93, YAW = 136.3 },
@@ -343,6 +362,9 @@ OPX.Config.MODULES.hauling = {
 		mechanic = {
 			LABEL = 'Mechanic',
 			BUCKET = 0,
+			-- spare parts: a toolbox, kneeling with a wrench.
+			MODEL = 'container.toolbox',
+			PICKUP_POSE = 'mechanic',
 			POINTS = {
 				{ X = -2456.16, Y = -909.03, Z = 9.26, YAW = 269.9 },
 				{ X = -2465.86, Y = -905.14, Z = 8.16, YAW = 177.6 },
@@ -365,6 +387,9 @@ OPX.Config.MODULES.hauling = {
 		airport_pharmacy = {
 			LABEL = 'Airport pharmacy',
 			BUCKET = 0,
+			-- medical stock: a medical container.
+			MODEL = 'medical.container',
+			PICKUP_POSE = 'examine',
 			POINTS = {
 				{ X = -3584.61, Y = 365.48, Z = 32.52, YAW = 264.9 },
 			},
@@ -386,6 +411,9 @@ OPX.Config.MODULES.hauling = {
 		arasaka_port = {
 			LABEL = 'Arasaka port',
 			BUCKET = 0,
+			-- corporate freight: a sealed case.
+			MODEL = 'military.case',
+			PICKUP_POSE = 'examine',
 			POINTS = {
 				{ X = -1246.29, Y = 549.03, Z = 7.42, YAW = 328.2 },
 				{ X = -1247.52, Y = 578.04, Z = 4.85, YAW = 271.6 },
@@ -408,6 +436,9 @@ OPX.Config.MODULES.hauling = {
 		delamain = {
 			LABEL = 'Delamain',
 			BUCKET = 0,
+			-- fleet parts: a toolbox, kneeling with a screwdriver.
+			MODEL = 'container.toolbox',
+			PICKUP_POSE = 'repair',
 			POINTS = {
 				{ X = -1013.62, Y = -136.09, Z = 3.51, YAW = 232.4 },
 				{ X = -1012.43, Y = -156.83, Z = 3.51, YAW = 322.8 },
@@ -430,6 +461,9 @@ OPX.Config.MODULES.hauling = {
 		waterfront_garage = {
 			LABEL = 'Waterfront garage',
 			BUCKET = 0,
+			-- garage stock in a cardboard box.
+			MODEL = 'crate.cardboard',
+			PICKUP_POSE = 'repair',
 			POINTS = {
 				{ X = -2335.01, Y = 536.86, Z = 11.23, YAW = 84.7 },
 				{ X = -2342.56, Y = 540.47, Z = 11.23, YAW = 178.9 },
@@ -452,6 +486,9 @@ OPX.Config.MODULES.hauling = {
 		garage_mechanic = {
 			LABEL = 'Garage / Mechanic',
 			BUCKET = 0,
+			-- spare parts: a toolbox, kneeling with a wrench.
+			MODEL = 'container.toolbox',
+			PICKUP_POSE = 'mechanic',
 			POINTS = {
 				{ X = -2381.65, Y = 285.58, Z = 12.98, YAW = 180.2 },
 			},
@@ -475,6 +512,9 @@ OPX.Config.MODULES.hauling = {
 		adult_shop_clouds = {
 			LABEL = 'Adult shop & Clouds',
 			BUCKET = 0,
+			-- club stock, discreetly boxed.
+			MODEL = 'crate.cardboard',
+			PICKUP_POSE = 'scavenge',
 			POINTS = {
 				{ X = -865.13, Y = 136.10, Z = 7.29, YAW = 54.8 },
 				{ X = -859.39, Y = 130.62, Z = 7.29, YAW = 50.6 },

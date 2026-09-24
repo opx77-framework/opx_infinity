@@ -763,7 +763,8 @@ local function beginPickup(player, propId)
 	-- Kneel at the crate for the length of the bar. A pose is a host call and the
 	-- claim is already won, so it cannot reopen the race; `carryPose` replaces it
 	-- when the bar completes, and every way the claim ends stops it.
-	if Access.PICKUP_POSE ~= '' then crate.pose = playPose(player, Access.PICKUP_POSE, true) end
+	local kneel = Access.PickupPose(crate.site)
+	if kneel ~= '' then crate.pose = playPose(player, kneel, true) end
 
 	announce(crate)
 	return true
@@ -1039,7 +1040,7 @@ local function complete(player)
 	local step = crate.step
 
 	if step == Step.PICKUP then
-		local carry = Access.Carry()
+		local carry = Access.Carry(crate.site)
 		if carry == nil then return false, 'no_carry_config' end
 		-- The reach is checked AGAIN, because the bar took seconds and the player
 		-- could have walked away during it. The claim is theirs either way; what

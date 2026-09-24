@@ -15291,6 +15291,64 @@ do
 	end
 end
 
+-- THE OWNER, 2026-09-24: "des props plus logique pour les zone et des animation
+-- differente". A site names its own MODEL, PICKUP_POSE and CARRY, and every name
+-- it uses has to be one the platform really hosts.
+section('hauling: each site picks its own prop, kneel and carry')
+do
+	local env, _, why = boot('server')
+	check('the server boots for the per-site props', why == nil, why)
+	if why == nil then
+		local Access = env.OPX.Modules.Get('hauling').Access
+		local sites = env.OPX.Config.MODULES.hauling.SITES
+
+		check('a site with its own model uses it',
+			Access.Model('airport_pharmacy') == 'medical.container', Access.Model('airport_pharmacy'))
+		check('and its own kneel', Access.PickupPose('mechanic') == 'mechanic',
+			Access.PickupPose('mechanic'))
+		check('a site that names neither falls back to the global ones',
+			Access.Model('badlands') == Access.MODEL and Access.PickupPose('badlands') == Access.PICKUP_POSE)
+
+		-- Every model is a curated alias the host carries: the 185 the platform
+		-- ships, of which these are the ones sized to be carried by hand.
+		local CARRIABLE = {
+			['crate.small'] = true, ['crate.cardboard'] = true, ['crate.delivery'] = true,
+			['crate.ammo_box'] = true, ['crate.valuable'] = true, ['container.toolbox'] = true,
+			['container.ammo_case'] = true, ['medical.container'] = true, ['military.case'] = true,
+		}
+		-- The kneels that exist in the platform catalogue and play on the ground.
+		local KNEELS = { scavenge = true, examine = true, repair = true, mechanic = true, [''] = true }
+		local strange = {}
+		for key in pairs(sites) do
+			if not CARRIABLE[Access.Model(key)] then strange[#strange + 1] = key .. ':' .. Access.Model(key) end
+			if not KNEELS[Access.PickupPose(key)] then
+				strange[#strange + 1] = key .. ':' .. Access.PickupPose(key)
+			end
+		end
+		table.sort(strange)
+		check('every site carries a box-sized alias and kneels a real pose',
+			#strange == 0, table.concat(strange, ', '))
+
+		-- A CARRY on one site is that site's alone.
+		local global = Access.Carry()
+		sites.mechanic.CARRY = { BONE = 'Chest', OFFSET = { x = 0, y = -0.4, z = 0.1 },
+			ROTATION = { x = 0, y = 0, z = 0 } }
+		local own = Access.Carry('mechanic')
+		check('a site CARRY is used for that site',
+			own ~= nil and own.offset.y == -0.4, own and own.offset.y)
+		check('and the others keep the global one',
+			Access.Carry('delamain').offset.y == global.offset.y)
+		sites.mechanic.CARRY = { BONE = 'Chest', OFFSET = { x = 'no' } }
+		check('an unreadable site CARRY is named',
+			table.concat(Access.Problems(), '\n'):find('mechanic: CARRY', 1, true) ~= nil)
+		sites.mechanic.CARRY = nil
+		sites.mechanic.PICKUP_POSE = 7
+		check('and so is a PICKUP_POSE that is not a name',
+			table.concat(Access.Problems(), '\n'):find('mechanic: PICKUP_POSE', 1, true) ~= nil)
+		sites.mechanic.PICKUP_POSE = 'mechanic'
+	end
+end
+
 section('inventory: a job cannot reach into a locked vehicle\'s trunk either')
 do
 	-- The owner: "si veh fermé coffre de veh inaccessible". The screen refuses it in
