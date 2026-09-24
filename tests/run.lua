@@ -5391,6 +5391,17 @@ do
 		local src = 41
 		load(src, 'citizen-garage')
 
+		-- A memory-only bag for the owner, so the key every bring-out cuts has
+		-- somewhere to land and can be counted at the end of the bring-outs.
+		local inventoryModule = OPX.Modules.Get('inventory')
+		local garageBag = inventoryModule.Containers.Transient(inventoryModule.KIND.CHARACTER,
+			'citizen-garage', inventoryModule.Options.BAG_SLOTS, inventoryModule.Options.BAG_MAX_WEIGHT)
+		garageBag.transient = nil
+		inventoryModule.Players.Attach(src)
+		local function keysTo(plate)
+			return inventoryModule.Containers.CountWhere(garageBag, 'vehicle_key', { plate = plate })
+		end
+
 		-- ── the commands that placed a spot are gone ──────────────────────
 		-- THE MIGRATION IS WHAT MAKES THIS SAFE, and it is checked below rather
 		-- than assumed here: `add` and `remove` wrote a place into
@@ -5605,6 +5616,15 @@ do
 		check('and the answer says it was moved rather than brought from the roster',
 			answer ~= nil and answer[2] == true and answer[5] == 'recalled',
 			answer and tostring(answer[5]))
+
+		-- ── the owner leaves with a key, and with one ─────────────────────
+		-- AA111AA has come out twice now -- brought, then recalled -- and AA222AA
+		-- once. A key per take-out would be two keys to the car; the rule is one.
+		settle(control, function() return keysTo('AA111AA') > 0 and keysTo('AA222AA') > 0 end, 20)
+		check('a car taken out of a garage comes with its key', keysTo('AA222AA') == 1,
+			keysTo('AA222AA'))
+		check('and taking it out again does not cut a second one', keysTo('AA111AA') == 1,
+			keysTo('AA111AA'))
 
 		-- SOMEBODY IS SITTING IN IT. The occupant is not necessarily the player
 		-- who pressed the key -- a marker is a public place -- so the vehicle is
@@ -18061,6 +18081,349 @@ do
 
 		vehicles.Storage.FetchOne, vehicles.Storage.SetState = realFetch, realState
 		character.Players[DRIVER] = nil
+	end
+end
+
+-- ── vehicle keys ─────────────────────────────────────────────────────────────
+-- THE OWNER: "faire les clé de voiture en item, quand même les véhicules admin,
+-- avant le menu ou alt on peut se donner la clé du véhicule précis". A key is an
+-- item whose vehicle is its metadata, the lock it turns is the host's own bit,
+-- and the one thing a client may name is WHICH vehicle it is pointing at.
+section('vehicle keys: cut by the server, one per plate, turned only by a holder')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the keys', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local keysModule = OPX and OPX.Modules.Get('vehiclekeys') or nil
+	local keys = OPX and OPX.Api.Get('vehiclekeys') or nil
+	local inventory = OPX and OPX.Modules.Get('inventory') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	local admin = OPX and OPX.Modules.Get('admin') or nil
+	check('the keys module is running and publishes its contract',
+		OPX ~= nil and OPX.Modules.IsRunning('vehiclekeys') and type(keys) == 'table'
+			and type(keys.GiveFor) == 'function' and type(keys.Ensure) == 'function',
+		OPX and tostring(OPX.Modules.Record('vehiclekeys').Reason))
+
+	if type(keys) == 'table' and type(inventory) == 'table' and type(character) == 'table'
+		and type(admin) == 'table' then
+		local Containers, KIND, Options = inventory.Containers, inventory.KIND, inventory.Options
+		local ITEM = keysModule.ITEM
+
+		-- ── the item ─────────────────────────────────────────────────────────
+		local item = inventory.Catalog.Get(ITEM)
+		check('the key is a catalogue item', item ~= nil)
+		check('that never stacks, so two keys to two cars stay two keys',
+			item ~= nil and item.stackable == false)
+		check('and is usable without being used up',
+			item ~= nil and item.usable == true and item.use.consume == 0)
+		check('with a name in both languages',
+			OPX.Locale.Exists('inventory.item.vehicle_key'))
+
+		-- A loaded character with a memory-only bag: real code, real containers,
+		-- no database -- the stand-in the inventory wire section uses.
+		local function seat(id, citizenId)
+			control.Admit(id, 'account-' .. id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = 'account-' .. id,
+					money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId['account-' .. id] = id
+			local bag = Containers.Transient(KIND.CHARACTER, citizenId,
+				Options.BAG_SLOTS, Options.BAG_MAX_WEIGHT)
+			bag.transient = nil
+			inventory.Players.Attach(id)
+			return bag
+		end
+
+		--- Every key stack in a bag, by slot.
+		local function keysIn(bag)
+			local found = {}
+			for slot, entry in pairs(bag.items) do
+				if entry.name == ITEM then found[#found + 1] = { slot = slot, entry = entry } end
+			end
+			return found
+		end
+
+		--- Runs a contract call on a thread, the way every caller runs one, and
+		--- answers what it answered.
+		local function run(body)
+			local answer, done = nil, false
+			env.CreateThread(function() answer = body(); done = true end)
+			settle(control, function() return done end, 30)
+			return answer
+		end
+
+		local HOLDER, STRANGER, STAFF = 811, 812, 813
+		local holderBag = seat(HOLDER, 'citizen-keyholder')
+		local strangerBag = seat(STRANGER, 'citizen-stranger')
+		local staffBag = seat(STAFF, 'citizen-staff')
+		control.Stand(HOLDER, 0.0, 0.0, 0.0)
+		control.Stand(STRANGER, 1.0, 0.0, 0.0)
+		control.Stand(STAFF, 0.0, 1.0, 0.0)
+
+		-- A vehicle nobody registered -- the shape of a staff spawn -- under an
+		-- integer id, which is what the host answers, and one parked elsewhere.
+		local CAR, OTHER = 4242, 4343
+		control.vehicles.byId[CAR] = { id = CAR, record = 'Vehicle.v_standard2_villefort_cortes_player',
+			x = 2.0, y = 0.0, z = 0.0, bucket = 0, flags = 0, occupants = {} }
+		control.vehicles.byId[OTHER] = { id = OTHER, record = 'Vehicle.v_sport1_quadra_turbo_player',
+			x = 500.0, y = 0.0, z = 0.0, bucket = 0, flags = 0, occupants = {} }
+
+		-- ── a plateless vehicle gets a plate that cannot be a real one ───────
+		local identity = keys.Identity(CAR)
+		local minted = identity.ok and identity.value.plate or ''
+		check('a vehicle nobody registered is given a plate to key it by',
+			identity.ok == true and minted:sub(1, 4) == 'TMP-', tostring(minted))
+		check('which no plate the vehicles module draws can ever equal',
+			minted:find('-', 1, true) ~= nil
+				and not minted:match('^%d%d%u%u%u%d%d%d$'), minted)
+		check('and the same vehicle keeps the same plate',
+			keys.Identity(CAR).value.plate == minted)
+		check('while another vehicle gets another',
+			keys.Identity(OTHER).value.plate ~= minted)
+
+		-- ── the key carries the vehicle in its metadata ──────────────────────
+		local cut = run(function() return keys.GiveFor(HOLDER, CAR) end)
+		local held = keysIn(holderBag)
+		check('a key is cut into the bag', cut ~= nil and cut.ok == true and #held == 1,
+			cut and tostring(cut.error))
+		local metadata = held[1] and held[1].entry.metadata or {}
+		check('and its metadata names the plate', metadata.plate == minted, tostring(metadata.plate))
+		check('and a label a player can read, with the model and the plate',
+			type(metadata.label) == 'string' and metadata.label:find('Villefort Cortes', 1, true) ~= nil
+				and metadata.label:find(minted, 1, true) ~= nil, tostring(metadata.label))
+		check('and the screen is sent that label, so two keys read differently',
+			(function()
+				local described = Containers.Describe(holderBag)
+				for _, stack in ipairs(described.items or {}) do
+					if stack.name == ITEM then
+						return type(stack.metadata) == 'table' and stack.metadata.label == metadata.label
+					end
+				end
+				return false
+			end)())
+
+		-- ── Ensure: the garage's rule, one key and not a key press ───────────
+		local PLATE = '12ABC345'
+		local first = run(function() return keys.Ensure(STRANGER, PLATE, 'Vehicle.v_standard2_archer_hella_player') end)
+		local second = run(function() return keys.Ensure(STRANGER, PLATE, 'Archer Hella') end)
+		local counted = 0
+		for _, found in ipairs(keysIn(strangerBag)) do
+			if found.entry.metadata.plate == PLATE then counted = counted + 1 end
+		end
+		check('the first take-out cuts a key', first ~= nil and first.ok and first.value.given == true)
+		check('the second cuts none, although it named the model differently',
+			second ~= nil and second.ok and second.value.given == false)
+		check('so ONE key to that plate is in the bag', counted == 1, counted)
+		check('and a key handed on is replaced on the next take-out',
+			(function()
+				for _, found in ipairs(keysIn(strangerBag)) do
+					if found.entry.metadata.plate == PLATE then
+						Containers.TakeFromSlot(strangerBag, found.slot, 1)
+					end
+				end
+				local again = run(function() return keys.Ensure(STRANGER, PLATE) end)
+				return again ~= nil and again.ok and again.value.given == true
+			end)())
+
+		-- ── turning it: the door, and what it believes ───────────────────────
+		local TOGGLE = keysModule.Event.TOGGLE
+		check('the lock door is wired', type(control.netEvents[TOGGLE]) == 'function')
+
+		local function toggle(asSource, payload)
+			local mark = #control.notices
+			env.source = asSource
+			control.netEvents[TOGGLE](payload)
+			env.source = nil
+			control.Pump(12)
+			return control.notices[#control.notices], #control.notices > mark
+		end
+
+		local told = toggle(STRANGER, { vehicleId = tostring(CAR) })
+		check('somebody without the key does not lock the car',
+			env.Open77.vehicles.isLocked(CAR) == false)
+		check('and is told it was the key',
+			told ~= nil and told.playerId == STRANGER
+				and told.message == OPX.Locale.Text('vehiclekeys.noKey'), told and told.message)
+
+		-- THE PLATE ON THE WIRE IS NOT READ. The stranger holds a real key -- to
+		-- 12ABC345 -- and names that plate beside the holder's car: a server that
+		-- read the payload's plate would take the key they hold for the car they
+		-- named.
+		toggle(STRANGER, { vehicleId = tostring(CAR), plate = PLATE })
+		check('a plate the client sends is ignored, not believed',
+			env.Open77.vehicles.isLocked(CAR) == false)
+		toggle(STRANGER, { vehicleId = tostring(CAR), plate = minted })
+		check('even when it is the right plate for that car',
+			env.Open77.vehicles.isLocked(CAR) == false)
+
+		local locks = #control.vehicles.locks
+		told = toggle(HOLDER, { vehicleId = tostring(CAR) })
+		check('the holder, standing beside it, locks it',
+			env.Open77.vehicles.isLocked(CAR) == true and #control.vehicles.locks == locks + 1)
+		check('through the host\'s own lock, the bit a snapshot reports',
+			(control.vehicles.byId[CAR].flags & 2) ~= 0)
+		check('and is told so',
+			told ~= nil and told.playerId == HOLDER and told.type == 'success', told and told.message)
+
+		-- ── a locked car keeps its trunk shut ───────────────────────────────
+		check('the inventory reads the lock as the trunk being shut',
+			inventory.World.TrunkLocked(CAR) == true)
+		local trunk, code = inventory.Actions.OpenVehicle(HOLDER, KIND.TRUNK, tostring(CAR))
+		check('and a locked vehicle\'s trunk is refused', trunk == nil and code == 'locked',
+			tostring(code))
+		check('with words for it in both languages',
+			OPX.Locale.Exists('inventory.error.locked'))
+		check('the contract publishes the same question for every other trunk path',
+			OPX.Api.Get('inventory').TrunkLocked(CAR) == true)
+
+		control.Pump(11)
+		toggle(HOLDER, { vehicleId = tostring(CAR) })
+		check('turning it again unlocks it', env.Open77.vehicles.isLocked(CAR) == false)
+		trunk, code = inventory.Actions.OpenVehicle(HOLDER, KIND.TRUNK, tostring(CAR))
+		check('and the trunk opens again', trunk ~= nil and code == nil, tostring(code))
+		Containers.CloseSecondary(HOLDER)
+
+		-- ── reach is the server's measurement ───────────────────────────────
+		control.Pump(11)
+		control.Stand(HOLDER, 60.0, 0.0, 0.0)
+		told = toggle(HOLDER, { vehicleId = tostring(CAR) })
+		check('from across the street the key does nothing',
+			env.Open77.vehicles.isLocked(CAR) == false)
+		check('and says it was the distance',
+			told ~= nil and told.message == OPX.Locale.Text('vehiclekeys.tooFar'), told and told.message)
+		control.Stand(HOLDER, 0.0, 0.0, 0.0)
+		control.Pump(11)
+		told = toggle(HOLDER, { vehicleId = '999999' })
+		check('a vehicle id that names nothing is refused as nothing',
+			told ~= nil and told.message == OPX.Locale.Text('vehiclekeys.noVehicle'), told and told.message)
+
+		-- ── using the key from the bag turns it on its own car ──────────────
+		held = keysIn(holderBag)
+		local used = run(function() return select(1, inventory.Actions.Use(HOLDER, held[1].slot)) end)
+		check('using the key from the bag locks the car it names',
+			used == true and env.Open77.vehicles.isLocked(CAR) == true, tostring(used))
+		check('and the key is still in the bag afterwards', #keysIn(holderBag) == 1)
+
+		-- ── staff: a restricted command, a row, and a key to a precise car ───
+		local command = control.commands['opx.admin.vehicle.key']
+		check('the staff key command is registered', command ~= nil)
+		check('and is restricted, so the host resolves its ACL grant first',
+			command ~= nil and command.restricted == true)
+		if command ~= nil then
+			command.run(STAFF, { tostring(OTHER) }, 'opx.admin.vehicle.key ' .. OTHER)
+			settle(control, function() return #keysIn(staffBag) > 0 end, 20)
+			local staffKey = keysIn(staffBag)[1]
+			check('the command cuts the operator the key to the vehicle it names',
+				staffKey ~= nil and staffKey.entry.metadata.plate == keys.Identity(OTHER).value.plate,
+				staffKey and tostring(staffKey.entry.metadata.plate))
+		end
+
+		-- The access map a staff role and a civilian are each sent: the eye draws
+		-- a row only where the map says the ACL grants its command.
+		local maps = {}
+		local realTrigger = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, target, payload)
+			if name == admin.Event.ACCESS then maps[target] = payload end
+			return realTrigger and realTrigger(name, target, payload)
+		end
+		control.Allow(STAFF, 'command.opx.admin')
+		control.Allow(STAFF, 'command.opx.admin.vehicle.key')
+		for _, who in ipairs({ STAFF, STRANGER }) do
+			env.source = who
+			control.netEvents[admin.Event.REFRESH]('access')
+			control.Pump(10)
+		end
+		env.source = nil
+		env.TriggerClientEvent = realTrigger
+		check('a staff role holding the grant is told it may cut keys',
+			maps[STAFF] ~= nil and maps[STAFF].access['opx.admin.vehicle.key'] == true)
+		check('a civilian is not',
+			maps[STRANGER] ~= nil and maps[STRANGER].access['opx.admin.vehicle.key'] ~= true)
+
+		-- ── a staff spawn comes with its key ─────────────────────────────────
+		local spawn = control.commands['opx.admin.vehicle.spawn']
+		if spawn ~= nil then
+			local before = #keysIn(staffBag)
+			control.tunables.ADMIN_VEHICLE_PER_OWNER = 5
+			spawn.run(STAFF, { 'hella' }, 'opx.admin.vehicle.spawn hella')
+			settle(control, function() return #keysIn(staffBag) > before end, 20)
+			local newest
+			for _, found in ipairs(keysIn(staffBag)) do
+				if found.entry.metadata.label:find('Archer Hella', 1, true) then newest = found end
+			end
+			check('a vehicle staff spawn comes with its key, under the catalogue\'s name',
+				#keysIn(staffBag) == before + 1 and newest ~= nil
+					and newest.entry.metadata.plate:sub(1, 4) == 'TMP-',
+				newest and newest.entry.metadata.label)
+		end
+
+		-- ── a removed vehicle takes its minted plate with it ────────────────
+		control.Fire('onVehicleRemoved', CAR, 'test')
+		control.vehicles.byId[CAR] = { id = CAR, record = 'Vehicle.v_sport1_quadra_turbo_player',
+			x = 2.0, y = 0.0, z = 0.0, bucket = 0, flags = 0, occupants = {} }
+		check('the id a removed car had does not inherit its plate',
+			keys.Identity(CAR).value.plate ~= minted)
+		control.vehicles.byId[CAR], control.vehicles.byId[OTHER] = nil, nil
+	end
+end
+
+-- The eye half of the staff grant: a row the access map does not grant is a
+-- row the eye does not register, which is the only refusal a client can draw.
+section('vehicle keys: the staff row on the eye, and the lock row')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the key rows', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local admin = OPX and OPX.Modules.Get('admin') or nil
+	check('the keys module runs on the client too',
+		OPX ~= nil and OPX.Modules.IsRunning('vehiclekeys'),
+		OPX and tostring(OPX.Modules.Record('vehiclekeys').Reason))
+
+	if type(admin) == 'table' and type(admin.Contracts.target) == 'table' then
+		local real = admin.Contracts.target
+		local drawn = {}
+		local wrap = {
+			RegisterVehicles = function(owner, rows)
+				local answer = real.RegisterVehicles(owner, rows)
+				if answer.ok then
+					for _, row in ipairs(rows) do drawn[row.id] = true end
+				end
+				return answer
+			end,
+			Clear = function(owner)
+				drawn = {}
+				return real.Clear(owner)
+			end,
+		}
+		admin.Contracts.target = setmetatable(wrap, { __index = real })
+
+		-- Staff, but without this one grant.
+		admin.Target.Access({ access = { ['opx.admin'] = true, ['opx.admin.vehicle.enter'] = true },
+			aclKnown = true, inventory = false })
+		settle(control, function() return drawn['admin_vehicleEnter'] == true end, 60)
+		check('a role without the grant gets the other vehicle rows',
+			drawn['admin_vehicleEnter'] == true)
+		check('and NOT the key row', drawn['admin_vehicleKey'] ~= true)
+
+		admin.Target.Access({ access = { ['opx.admin'] = true, ['opx.admin.vehicle.enter'] = true,
+			['opx.admin.vehicle.key'] = true }, aclKnown = true, inventory = false })
+		settle(control, function() return drawn['admin_vehicleKey'] == true end, 60)
+		check('granting command.opx.admin.vehicle.key puts the key row on a vehicle',
+			drawn['admin_vehicleKey'] == true)
+
+		-- A player who is not staff at all -- no opener -- gets no staff row,
+		-- whatever else the map claims.
+		admin.Target.Access({ access = { ['opx.admin.vehicle.key'] = true },
+			aclKnown = true, inventory = false })
+		control.Pump(20)
+		check('without the opener nobody is staff, so no key row',
+			drawn['admin_vehicleKey'] ~= true)
+		admin.Contracts.target = real
 	end
 end
 

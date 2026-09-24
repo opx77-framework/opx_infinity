@@ -422,6 +422,10 @@ local function buildRows()
 		{ id = 'vehicleLock', kind = 'vehicle', label = 'admin.target.vehicleLocked', icon = 'lock',
 			grant = Command.VEHICLE_FLAG, state = lockedOn,
 			select = onFlip(lockedOn, Command.VEHICLE_FLAG, 'vehicleId', 'locked') },
+		-- "on peut se donner la clé du véhicule précis": the id the eye landed on,
+		-- and the server resolves that vehicle's plate itself.
+		{ id = 'vehicleKey', kind = 'vehicle', label = 'admin.target.vehicleKey', icon = 'key',
+			grant = Command.VEHICLE_KEY, select = onVehicle(Command.VEHICLE_KEY) },
 		{ id = 'vehicleRemove', kind = 'vehicle', label = 'admin.target.removeVehicle', icon = 'trash',
 			danger = true, grant = Command.VEHICLE_REMOVE, select = onVehicle(Command.VEHICLE_REMOVE) },
 

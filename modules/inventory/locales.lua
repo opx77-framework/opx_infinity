@@ -97,6 +97,7 @@ OPX.Locale.Register('en', {
 	['inventory.error.no_storage'] = 'That vehicle has no room for that.',
 	['inventory.error.not_seated'] = 'Sit in the vehicle first.',
 	['inventory.error.not_yours'] = 'That is not your vehicle.',
+	['inventory.error.locked'] = 'That vehicle is locked.',
 	['inventory.error.seated'] = 'Get out of the vehicle first.',
 	['inventory.error.weapons_unavailable'] = 'Weapons cannot be drawn from the bag on this server.',
 	['inventory.error.weapon_refused'] = 'That weapon could not be drawn.',
@@ -156,6 +157,9 @@ OPX.Locale.Register('en', {
 	['inventory.item.hauling_crate'] = 'Cargo crate',
 	['inventory.item.phone'] = 'Phone',
 	['inventory.item.id_card'] = 'ID card',
+	['inventory.item.vehicle_key'] = 'Vehicle key',
+	['inventory.item.vehicle_key.description'] =
+		'Opens one vehicle, the one named on it. Use it beside that vehicle to lock or unlock it.',
 	['inventory.item.shard'] = 'Data shard',
 	['inventory.item.eddies'] = 'Eddies',
 	['inventory.item.eddies.description'] =
@@ -448,6 +452,7 @@ OPX.Locale.Register('fr', {
 	['inventory.error.no_storage'] = "Ce véhicule n'a pas de place pour ça.",
 	['inventory.error.not_seated'] = "Montez d'abord dans le véhicule.",
 	['inventory.error.not_yours'] = "Ce véhicule n'est pas le vôtre.",
+	['inventory.error.locked'] = 'Ce véhicule est verrouillé.',
 	['inventory.error.seated'] = "Sortez d'abord du véhicule.",
 	['inventory.error.weapons_unavailable'] = 'Les armes ne se sortent pas du sac sur ce serveur.',
 	['inventory.error.weapon_refused'] = "Cette arme n'a pas pu être dégainée.",
@@ -507,6 +512,9 @@ OPX.Locale.Register('fr', {
 	['inventory.item.hauling_crate'] = 'Caisse de marchandise',
 	['inventory.item.phone'] = 'Téléphone',
 	['inventory.item.id_card'] = "Carte d'identité",
+	['inventory.item.vehicle_key'] = 'Clé de véhicule',
+	['inventory.item.vehicle_key.description'] =
+		'Ouvre un seul véhicule, celui dont le nom est dessus. Utilisez-la à côté pour le verrouiller ou le déverrouiller.',
 	['inventory.item.shard'] = 'Éclat de données',
 	['inventory.item.eddies'] = 'Eddies',
 	['inventory.item.eddies.description'] =

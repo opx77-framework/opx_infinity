@@ -730,6 +730,38 @@ function Host.Environment(side, database)
 				if vehicles.refuseUpdate ~= nil then return false, vehicles.refuseUpdate end
 				return true
 			end,
+			-- THE ENTRY LOCK, kept in the vehicle's own `flags` bit (2) and not in a
+			-- private table beside it: the card says `setLocked` moves only
+			-- `VehicleStateFlags.Locked`, and a snapshot reports that bit, so a lock
+			-- set here is a lock `get(id).flags` shows and one the admin flag
+			-- command's write is read back through. An unknown vehicle answers nil
+			-- from `isLocked` and `false, vehicle_not_found` from `setLocked`, which
+			-- are the card's answers.
+			isLocked = function(id)
+				local car = id ~= nil and (vehicles.byId[id] or nil)
+				if car == nil then
+					for index = 1, #vehicles.world do
+						if vehicles.world[index].id == id then car = vehicles.world[index] end
+					end
+				end
+				if car == nil then return nil end
+				return ((tonumber(car.flags) or 0) & 2) ~= 0
+			end,
+			setLocked = function(id, locked)
+				local car = id ~= nil and (vehicles.byId[id] or nil)
+				if car == nil then
+					for index = 1, #vehicles.world do
+						if vehicles.world[index].id == id then car = vehicles.world[index] end
+					end
+				end
+				if car == nil then return false, 'vehicle_not_found' end
+				if type(locked) ~= 'boolean' then return false, 'invalid_argument' end
+				local bits = tonumber(car.flags) or 0
+				car.flags = locked and (bits | 2) or (bits & ~2)
+				vehicles.locks[#vehicles.locks + 1] = { id = id, locked = locked }
+				return true
+			end,
+			triggerHorn = function() return true end,
 			getDamage = function() return {} end,
 			setDamage = function() return true end,
 			-- The seat THIS client is in, which is what tells the strip whether the
@@ -1696,8 +1728,9 @@ function Host.Environment(side, database)
 	-- -- is anything parked on this garage exit -- is a question about what those
 	-- two calls did, and a hand-written list would let a test assert an exit is
 	-- blocked by a car the runtime never created.
+	-- `locks` is every `setLocked` the runtime made, in order.
 	vehicles = { refuse = nil, snapshot = nil, byId = {}, updates = {},
-		refuseUpdate = nil, world = {} }
+		refuseUpdate = nil, world = {}, locks = {} }
 	vehicleCreates = {}
 	vehicleRemoves = {}
 

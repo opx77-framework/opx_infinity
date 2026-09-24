@@ -56,6 +56,21 @@ M.Data.ITEMS = {
 	id_card = { WEIGHT = 10, STACK = false },
 	shard = { WEIGHT = 20 },
 
+	-- THE KEY TO ONE PRECISE VEHICLE. What it opens is in its metadata, never in
+	-- its name: `{ plate = '<PLATE>', label = '<model> · <PLATE>' }`, written by
+	-- `modules/vehiclekeys` and nothing else, so two keys are two stacks and the
+	-- screen draws each one under its own label.
+	--
+	-- STACK = false because two keys to two cars must never merge, and two keys
+	-- to ONE car are still two things somebody can hand to two people. USE with
+	-- CONSUME = 0 because pressing a key fob does not use it up: the handler the
+	-- keys module registers locks or unlocks the vehicle and gives the key back.
+	-- CLOSE = false so the toast that says what happened is read over the bag.
+	vehicle_key = {
+		WEIGHT = 20, CATEGORY = 'tool', STACK = false,
+		USE = { CONSUME = 0, CLOSE = false },
+	},
+
 	-- MONEY YOU CAN HAND OVER. One unit is one eddie, and the stack is a BEARER
 	-- NOTE drawn against the EDDIES balance: `/withdraw` debits the balance and
 	-- puts the units here, using the stack destroys it and credits the balance
