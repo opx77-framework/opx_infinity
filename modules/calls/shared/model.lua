@@ -479,6 +479,24 @@ function Model.New(options)
 		return { kind = invite.kind, from = invite.from, to = invite.to }
 	end
 
+	--- Withdraws the invite a player is waiting on, before anybody answered it.
+	---
+	--- THE CALLER'S HALF OF `Decline`. Without it the only way to stop a call
+	--- you placed was to let it ring out, and the other screen rang for the
+	--- whole INVITE_TTL_S after you had given up.
+	-- @author dop42
+	-- @param playerId integer
+	-- @return table|nil
+	-- @return string|nil the refusal
+	function registry.Cancel(playerId)
+		local sender = Model.PlayerId(playerId)
+		if sender == nil then return nil, 'badRequest' end
+		local invite = invites[outgoing[sender] or false]
+		if invite == nil then return nil, 'noSuchInvite' end
+		drop(invite)
+		return { kind = invite.kind, from = invite.from, to = invite.to }
+	end
+
 	--- Takes a player out of their call, ending it when too few are left.
 	---
 	--- A CALL OF ONE IS NOT A CALL. Two people talking, one hangs up: the
