@@ -264,6 +264,10 @@ local function withTrunk(vehicleId, source, body)
 	end
 	vehicleId = Common.Integer(vehicleId, 1, math.maxinteger)
 	if not vehicleId then return Result.Err('bad_argument', 'vehicleId') end
+	-- A LOCKED VEHICLE'S BOOT IS SHUT TO A JOB TOO. The owner: "si veh fermé
+	-- coffre de veh inaccessible". The screen refuses it in `Actions.OpenVehicle`;
+	-- this is the same rule for a module putting things in or taking them out.
+	if World.TrunkLocked(vehicleId) then return Result.Err('locked', tostring(vehicleId)) end
 	local trunk, reason = World.VehicleContainer(vehicleId, M.KIND.TRUNK)
 	if not trunk then return Result.Err(reason or 'not_found', tostring(vehicleId)) end
 	if source ~= nil and Options.TRUNK_OWNER_ONLY and trunk.ownerCitizenId

@@ -15284,6 +15284,31 @@ do
 	end
 end
 
+section('inventory: a job cannot reach into a locked vehicle\'s trunk either')
+do
+	-- The owner: "si veh fermé coffre de veh inaccessible". The screen refuses it in
+	-- `Actions.OpenVehicle`; the trunk contract that hauling loads and sells
+	-- through must refuse it the same way.
+	local locked = {}
+	local env, _, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.vehicles.isLocked = function(id) return locked[id] == true end
+	end)
+	check('the server boots for the locked trunk', why == nil, why)
+	if why == nil then
+		local inventory = env.OPX.Api.Get('inventory')
+		locked[41] = true
+		local added = inventory.AddToTrunk(41, 'hauling_crate', 1, { site = 'docks' })
+		check('loading into a locked vehicle is refused as locked',
+			added.ok == false and added.error == 'locked', tostring(added.error))
+		local counted = inventory.CountInTrunk(41, 'hauling_crate', { site = 'docks' })
+		check('and a sale does not count what is behind a locked boot',
+			counted.ok == false and counted.error == 'locked', tostring(counted.error))
+		local taken = inventory.RemoveFromTrunk(41, 'hauling_crate', 1, { site = 'docks' })
+		check('nor take it out', taken.ok == false and taken.error == 'locked',
+			tostring(taken.error))
+	end
+end
+
 section('hauling: a site whose points are still the placeholder 0,0,0 is disabled, loudly')
 do
 	-- THE ONE FAILURE MODE THIS MODULE WAS MOST LIKELY TO REPEAT. `config/elevators.lua`

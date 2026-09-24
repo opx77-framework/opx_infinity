@@ -873,6 +873,7 @@ end
 local function trunkRefusal(code)
 	if code == 'too_heavy' or code == 'no_room' then return 'trunk_full' end
 	if code == 'not_yours' then return 'not_your_trunk' end
+	if code == 'locked' then return 'trunk_locked' end
 	if code == 'no_storage' then return 'no_trunk' end
 	if code == 'no_vehicle' then return 'no_such_vehicle' end
 	return 'trunk_refused'
