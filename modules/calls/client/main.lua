@@ -58,6 +58,11 @@ local dismissed = nil
 local lastRingMs = -math.huge
 local ringEveryMs = 3500
 
+-- The invite this player already answered or refused. The ring stops on the
+-- key press rather than on the server's reply: the round trip is long enough
+-- for the re-arm clock to ring once more over the "allô".
+local silenced = nil
+
 -- When the card went up, and how long it may stay. THE OWNER'S REQUIREMENT AS A
 -- CLOCK: the card says its piece and takes itself off the screen, and the eye's
 -- re-pop row brings it back. The call goes on ringing throughout -- this is the
@@ -117,10 +122,26 @@ local function play(event)
 	OPX.Note('calls', ('the sound %q did not play: %s'):format(event, tostring(reason)))
 end
 
+-- Whether an invite is one the phone rings for. A contact hand-over is not.
+local function ringsFor(invite)
+	return type(invite) == 'table' and invite.kind ~= 'contact'
+end
+
+-- Stops the ring for the invite on screen, at once.
+local function silence()
+	if state.invite == nil or silenced == state.invite.id then return end
+	silenced = state.invite.id
+	if ringsFor(state.invite) then play(sounds.INCOMING_STOP) end
+end
+
 -- Forward-declared: `onState` below pushes the projection's payload as well as
 -- the card's, and it is defined with the rest of the hologram two hundred lines
 -- further down. Without this the call would resolve to a global and be nil.
 local drawHolo
+-- Same reason: `onState` routes the voice the moment a call connects, and the
+-- function is defined below it. As a bare global it was nil, and the error cut
+-- `onState` short on every call that connected.
+local routeVoice
 
 -- Publishes one payload to whatever is drawing this module.
 local function publish(payload)
@@ -158,6 +179,7 @@ local function onState(payload)
 	local hadInvite = state.invite ~= nil and state.invite.id or nil
 	local hadCall = state.call ~= nil and state.call.id or nil
 	local hadOutgoing = state.outgoing ~= nil and state.outgoing.id or nil
+	local previous = state
 
 	state = {
 		call = type(payload.call) == 'table' and payload.call or nil,
@@ -183,16 +205,28 @@ local function onState(payload)
 	-- event exists because `ui_phone_incoming_call` is a one-shot with no
 	-- handle: there is nothing to stop, so the bank carries a separate event
 	-- that plays the line closing.
+	-- A CONTACT HAND-OVER DOES NOT RING. The owner: "quand quelqu'un demande le
+	-- contact ne joue pas de son d'appel". It is a yes/no from somebody standing
+	-- in front of you, not a call, so neither side hears the phone.
 	if nowInvite ~= nil and nowInvite ~= hadInvite then
-		play(sounds.INCOMING)
-		lastRingMs = OPX.Now()
-	elseif hadInvite ~= nil and nowInvite == nil then
+		silenced = nil
+		if ringsFor(state.invite) then
+			play(sounds.INCOMING)
+			lastRingMs = OPX.Now()
+		end
+	end
+	-- STOPPED WHENEVER THE INVITE WENT, including when a second one replaced it:
+	-- answered, refused, expired or withdrawn by the caller.
+	if hadInvite ~= nil and nowInvite ~= hadInvite and ringsFor(previous.invite) then
 		play(sounds.INCOMING_STOP)
 	end
 
-	if hadOutgoing == nil and state.outgoing ~= nil then
+	-- THE DIAL TONE STOPS ON EVERY WAY OUT, answered included. It used to be
+	-- skipped when the call connected, and the caller went on hearing it over
+	-- the other person's voice.
+	if hadOutgoing == nil and state.outgoing ~= nil and ringsFor(state.outgoing) then
 		play(sounds.OUTGOING)
-	elseif hadOutgoing ~= nil and state.outgoing == nil and nowCall == nil then
+	elseif hadOutgoing ~= nil and state.outgoing == nil and ringsFor(previous.outgoing) then
 		play(sounds.OUTGOING_STOP)
 	end
 
@@ -245,7 +279,7 @@ end
 -- Re-asserted on the sweep as well as on the state change, because `open-voice`
 -- owns the push-to-talk key and drives the same native; if it re-states the
 -- intent, this takes it back within half a second rather than for good.
-local function routeVoice()
+function routeVoice()
 	local api = Open77.voice
 	if type(api) ~= 'table' or type(api.setTransmitting) ~= 'function' then return end
 	if type(api.status) ~= 'function' then return end
@@ -270,7 +304,8 @@ local function rearm()
 	if state.invite == nil then return end
 	local atMs = OPX.Now()
 
-	if atMs - lastRingMs >= ringEveryMs then
+	if ringsFor(state.invite) and silenced ~= state.invite.id
+		and atMs - lastRingMs >= ringEveryMs then
 		lastRingMs = atMs
 		play(sounds.INCOMING)
 	end
@@ -355,6 +390,7 @@ end
 -- @return boolean whether anything was asked for
 function M.Accept()
 	if state.invite == nil then return false end
+	silence()
 	TriggerServerEvent(M.Event.ACCEPT, state.invite.id)
 	return true
 end
@@ -364,18 +400,30 @@ end
 -- @return boolean
 function M.Decline()
 	if state.invite == nil then return false end
+	silence()
 	play(sounds.DECLINED)
 	TriggerServerEvent(M.Event.DECLINE, state.invite.id)
 	return true
 end
 
---- Leaves the call this player is on.
+--- Leaves the call this player is on, or withdraws the one they are ringing.
 -- @author dop42
 -- @return boolean
 function M.HangUp()
-	if state.call == nil then return false end
+	if state.call == nil and state.outgoing == nil then return false end
+	if state.call == nil and ringsFor(state.outgoing) then play(sounds.OUTGOING_STOP) end
 	TriggerServerEvent(M.Event.HANG_UP)
 	return true
+end
+
+--- The refuse key's verb: refuses a ringing invite first, and otherwise hangs
+--- up or withdraws. THE OWNER: hanging up works "la même façon" as answering --
+--- a key named in the sphere, nothing to open.
+-- @author dop42
+-- @return boolean
+function M.DeclineOrHangUp()
+	if state.invite ~= nil then return M.Decline() end
+	return M.HangUp()
 end
 
 --- Asks to call, to add, or to share a contact with one player.
@@ -605,6 +653,7 @@ function M.Init()
 	dismissed = nil
 	cardUpMs = nil
 	lastRingMs = -math.huge
+	silenced = nil
 	mutedEvents = {}
 	holoOpen = false
 	roster = { rows = {}, recent = {}, onCall = false }
@@ -683,8 +732,10 @@ function M.Start()
 	-- second copy of the same question.
 	bind(M.Settings.ANSWER_KEY, 'opx.calls.answer', 'calls.key.answer',
 		function() M.Accept() end)
+	-- THE SAME KEY HANGS UP. Refusing wins while something is ringing; on a
+	-- live call, or while ringing somebody, it ends or withdraws it.
 	bind(M.Settings.DECLINE_KEY, 'opx.calls.decline', 'calls.key.decline',
-		function() M.Decline() end)
+		function() M.DeclineOrHangUp() end)
 
 	-- ESCAPE CLOSES IT, and it is not a key this module may bind. The pause
 	-- plugin swallows Escape before any surface sees it and re-raises it under

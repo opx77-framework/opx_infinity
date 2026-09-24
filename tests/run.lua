@@ -23863,6 +23863,80 @@ do
 	end
 end
 
+-- ── the ring stops, and a contact request never rings ────────────────────────
+-- THE OWNER: "quand quelqu'un demande le contact ne joue pas de son d'appel,
+-- quand on appel si on repond stop les son d'appel ou meme si on stop l'appel".
+section('calls: what rings, and what stops it')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the ring', why == nil, why)
+
+	if why == nil then
+		local module = env.OPX.Modules.Get('calls')
+		local deliver = control.netEvents[module.Event.STATE]
+		local heard = control.effects.sfx2d
+		local function count(event)
+			local n = 0
+			for index = 1, #heard do if heard[index] == event then n = n + 1 end end
+			return n
+		end
+		check('the state handler is wired', type(deliver) == 'function')
+
+		if type(deliver) == 'function' then
+			deliver({ invite = { id = 'c1', kind = 'contact', name = 'Judy' } })
+			check('a contact request does not ring', count('ui_phone_incoming_call') == 0)
+			deliver({})
+			check('and its going away plays no stop either',
+				count('ui_phone_incoming_call_stop') == 0)
+
+			deliver({ invite = { id = 'i1', kind = 'call', name = 'Judy' } })
+			check('a call does ring', count('ui_phone_incoming_call') == 1)
+			local stops = count('ui_phone_incoming_call_stop')
+			check('answering it asks the server', module.Accept() == true)
+			check('and stops the ring on the key press, before the reply',
+				count('ui_phone_incoming_call_stop') == stops + 1)
+			deliver({ call = { id = 'k1', participants = {} } })
+
+			deliver({})
+			deliver({ outgoing = { id = 'o1', kind = 'call', to = 2, toName = 'Panam' } })
+			check('placing a call plays the dial tone', count('ui_phone_initiation_call') == 1)
+			deliver({ call = { id = 'k2', participants = {} } })
+			check('and the other side answering stops it',
+				count('ui_phone_initiation_call_stop') == 1)
+
+			deliver({})
+			deliver({ outgoing = { id = 'o2', kind = 'call', to = 2, toName = 'Panam' } })
+			check('the refuse key withdraws a call still ringing out',
+				module.DeclineOrHangUp() == true)
+			check('and stops the dial tone at once',
+				count('ui_phone_initiation_call_stop') == 2)
+
+			deliver({ call = { id = 'k3', participants = {} } })
+			check('the same key hangs up a live call', module.DeclineOrHangUp() == true)
+			deliver({})
+		end
+	end
+end
+
+-- The caller's withdrawal, on the model: the invite goes from both indexes.
+section('calls: a caller can withdraw a call nobody answered')
+do
+	local env, _, why = boot('server')
+	check('the server boots for the withdrawal', why == nil, why)
+	if why == nil then
+		local Model = env.OPX.Modules.Get('calls').Model
+		local registry = Model.New({ now = function() return 0 end, ttlMs = 30000,
+			maxParticipants = 3, judge = function() return true end })
+		local invited = registry.Invite(1, 2, nil)
+		check('the invite is raised', invited ~= nil)
+		local withdrawn, reason = registry.Cancel(1)
+		check('the caller can withdraw it', withdrawn ~= nil and withdrawn.to == 2, reason)
+		check('and neither side holds it any more',
+			registry.OutgoingOf(1) == nil and registry.IncomingOf(2) == nil)
+		check('withdrawing nothing is refused', select(2, registry.Cancel(1)) == 'noSuchInvite')
+	end
+end
+
 -- ── the eye is not where a phone lives ───────────────────────────────────────
 -- THE OWNER, having used it: "fait en sorte que cela passe pas par alt ce
 -- serais en gros fait une touche qui ouvre un menu style halogram tous se passe
@@ -24033,97 +24107,41 @@ do
 		return text
 	end
 
-	local card = sourceOf('ui/src/modules/calls/IncomingCall.vue')
-	local chip = sourceOf('ui/src/modules/calls/CallLive.vue')
 	-- NOT `boot`, which is this file's own function for standing a runtime up.
 	-- The first version shadowed it here and the section below could no longer
 	-- boot a server to read the catalogue out of.
 	local registry = sourceOf('ui/src/boot/main.ts')
 	local holo = sourceOf('ui/src/modules/calls/HoloRoot.vue')
-	check('the incoming card is readable', card ~= nil)
-	check('the live chip is readable', chip ~= nil)
-	check('and the module registry is readable', registry ~= nil)
+	check('the module registry is readable', registry ~= nil)
 	check('and the hologram is readable', holo ~= nil)
 
-	if card ~= nil and chip ~= nil and registry ~= nil then
-		-- ── the layer ────────────────────────────────────────────────────────
-		-- The owner's "il faut pas que ca gene la vision du joueur" is the
-		-- `overlay` layer and nothing else: `SurfaceRoot.vue` makes that layer
-		-- `pointer-events: none` for its whole height and never focuses it.
-		-- Either of these registered on `modal` would draw identically and be
-		-- the thing the owner said not to build, which is why the layer is
-		-- asserted from the registry rather than trusted to a comment.
-		-- The registration, found by walking the lines rather than by building a
-		-- pattern around the id. A HYPHEN IS A LUA PATTERN QUANTIFIER, so
-		-- `id:%s*'calls-incoming'` interpolated into a pattern matches
-		-- `id: 'calls'` followed by as little as possible, then `incoming'` --
-		-- which is nothing in this file, so both registrations read as absent
-		-- and the layer check under them could never fire. Found the first time
-		-- this section ran, which is the only reason it is not still true.
-		local function registrationOf(id)
-			for line in registry:gmatch('[^\n]+') do
-				if line:find("id: '" .. id .. "'", 1, true) then return line end
-			end
-			return nil
-		end
-
-		for _, id in ipairs({ 'calls-incoming', 'calls-live' }) do
-			local line = registrationOf(id)
-			check(('the %s view is registered'):format(id), line ~= nil)
-			check(('and %s is on the overlay layer, which takes no pointer'):format(id),
-				line ~= nil and line:find("surface:%s*'overlay'") ~= nil, line)
-		end
-
-		-- ── the channel ──────────────────────────────────────────────────────
-		-- `OPX.UI.Send` prefixes the surface id, so Lua's `'calls:view'`
-		-- arrives at the page as `'opx:calls:view'`. The two halves spell it
-		-- from two files that never see each other.
-		local view = sourceOf('modules/calls/client/view.lua') or ''
-		local channel = view:match("local CHANNEL = '([%w:_]+)'")
-		check('the Lua seam names a channel', channel ~= nil, channel)
-		local onPage = channel ~= nil and ('opx:' .. channel) or '?'
-		check('and the incoming card listens on exactly that channel, prefixed',
-			card:find("useBridge('" .. onPage .. "'", 1, true) ~= nil, onPage)
-		check('and so does the live chip',
-			chip:find("useBridge('" .. onPage .. "'", 1, true) ~= nil, onPage)
+	if holo ~= nil and registry ~= nil then
+		-- ── ONE SCREEN ───────────────────────────────────────────────────────
+		-- THE OWNER: "retire l'ui a gauche d'appel". The incoming card and the
+		-- live chip on the left are gone; the sphere says everything. Asserted so
+		-- a revert that brings one back is caught here rather than on a screen.
+		check('the left-side incoming card is no longer registered',
+			registry:find("'calls-incoming'", 1, true) == nil)
+		check('and neither is the left-side live chip',
+			registry:find("'calls-live'", 1, true) == nil)
+		check('the hologram is registered', registry:find("'calls-holo'", 1, true) ~= nil)
 
 		-- Every channel the page emits BACK has to be one `view.lua` wired a
 		-- handler for, or it is an intent that reaches nobody.
+		local view = sourceOf('modules/calls/client/view.lua') or ''
 		local wired = {}
 		for action in view:gmatch("'([%w]+)'") do wired[action] = true end
 		local unwired = {}
-		for _, page in ipairs({ card, chip }) do
-			for name in page:gmatch("emit%('opx:calls:([%w]+)'") do
-				if not wired[name] then unwired[#unwired + 1] = name end
-			end
+		for name in holo:gmatch("emit%('opx:calls:([%w]+)'") do
+			if not wired[name] then unwired[#unwired + 1] = name end
 		end
 		table.sort(unwired)
 		check('every intent the page emits is one the Lua seam listens for',
 			#unwired == 0, table.concat(unwired, ', '))
-
-		-- ── neither view re-enables the pointer ──────────────────────────────
-		-- `SurfaceRoot.vue` makes the overlay layer `pointer-events: none` for
-		-- its whole height, and a child may override that -- CSS inherits the
-		-- value but a descendant with `auto` still receives events. What it
-		-- does NOT get is a cursor: the page only has one while some OTHER
-		-- module has taken it on the modal layer. So a control on either of
-		-- these views is clickable exactly when the inventory or the menu
-		-- happens to be open and dead the rest of the time.
-		--
-		-- This card shipped with one. It was a small × to wave the card away,
-		-- with `pointer-events: auto` and a written defence of the exception,
-		-- and the defence did not survive being asked which cursor would press
-		-- it. The dwell clock and the eye's re-pop row replaced it, and this
-		-- check is here so that the next person who wants a button on a
-		-- holocall card finds out from the suite rather than from a player.
-		local repointing = {}
-		for _, pair in ipairs({ { 'IncomingCall.vue', card }, { 'CallLive.vue', chip } }) do
-			-- Comments stripped, since both files now explain the rule in prose.
-			local styles = pair[2]:gsub('/%*.-%*/', '')
-			if styles:find('pointer%-events:%s*auto') then repointing[#repointing + 1] = pair[1] end
-		end
-		check('neither call view re-enables the pointer on a layer that has no cursor',
-			#repointing == 0, table.concat(repointing, ', '))
+		-- THE HANDSHAKE MOVED with the card: without it a reloaded page is never
+		-- told the call it is on.
+		check('and the hologram sends the ready handshake',
+			holo:find("emit('opx:calls:ready'", 1, true) ~= nil)
 
 		-- ── every word ───────────────────────────────────────────────────────
 		-- The page holds no English: every label is a key, and a key with no
@@ -24139,7 +24157,7 @@ do
 			-- carries the whole feature's vocabulary, twenty-eight keys of it,
 			-- where the two views above carry a handful each. Left out, the check
 			-- would go on passing over the files that changed least.
-				for _, raw in ipairs({ card, chip, holo }) do
+				for _, raw in ipairs({ holo }) do
 				-- COMMENTS STRIPPED FIRST, which the pointer-events check above
 				-- already does and for a reason this check learned the hard way:
 				-- the hologram's own prose EXPLAINS this rule, quoting the
@@ -24194,7 +24212,7 @@ do
 
 			local unknown, used = {}, 0
 			for _, pair in ipairs({
-				{ 'IncomingCall.vue', card }, { 'CallLive.vue', chip }, { 'HoloRoot.vue', holo },
+				{ 'HoloRoot.vue', holo },
 			}) do
 				local file, body = pair[1], pair[2]
 				-- Comments stripped: these files discuss the rule in prose and

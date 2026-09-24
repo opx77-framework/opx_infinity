@@ -83,7 +83,7 @@ local HOLO_CHANNEL = 'calls:holo'
 
 -- What the hologram may say. `close` and `toggle` are about the screen; the
 -- rest name a player the server judges again.
-local HOLO_ACTIONS = { 'close', 'toggle', 'call', 'share',
+local HOLO_ACTIONS = { 'ready', 'close', 'toggle', 'call', 'share',
 	'accept', 'decline', 'hangUp', 'diag' }
 
 --- Wires the page to the seam.
