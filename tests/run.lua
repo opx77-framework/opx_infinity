@@ -15281,6 +15281,13 @@ do
 		check('the butcher shop site is usable', Access.Usable('pacifica_butcher'), problems)
 		check('and nothing is said against it',
 			problems:find('pacifica_butcher', 1, true) == nil, problems)
+		-- Every surveyed site, not only the first: a mistyped row in a pasted batch
+		-- disables its site at boot with one log line nobody reads.
+		for key in pairs(env.OPX.Config.MODULES.hauling.SITES) do
+			if not HAULING_SAMPLES[key] then
+				check(('the surveyed site %s is usable'):format(key), Access.Usable(key), problems)
+			end
+		end
 	end
 end
 

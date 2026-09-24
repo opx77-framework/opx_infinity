@@ -290,6 +290,214 @@ OPX.Config.MODULES.hauling = {
 			},
 		},
 
+		-- ── Surveyed in game by LucReali on 2026-09-24 ──────────────────────────
+		-- Their "Prop" rows are POINTS and their "Sale" rows are DROPOFFS, headings
+		-- as YAW. Their "Compra" (buy) rows have no counterpart here -- hauling has
+		-- no start point -- and are not used. Every sale is far from its crates,
+		-- so RADIUS 8 cannot reach a truck loading in the yard.
+
+		dakota = {
+			LABEL = 'Dakota',
+			BUCKET = 0,
+			POINTS = {
+				{ X = 2594.36, Y = -53.31, Z = 84.86, YAW = 124.7 },
+				{ X = 2593.03, Y = -58.59, Z = 84.89, YAW = 38.7 },
+			},
+			TARGET = {
+				LABEL = 'Pick up the crate',
+				DESCRIPTION = 'Badlands stock. Get it into a vehicle.',
+				ICON = 'box',
+			},
+			SPAWN_PER_PASS = 1,
+			RESPAWN_MS = 120000,
+			DROPOFFS = {
+				sale = {
+					LABEL = 'Sale', X = 2415.83, Y = -790.27, Z = 66.66, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorMale', YAW = 352.9 },
+				},
+			},
+		},
+
+		parking_megabuilding_06 = {
+			LABEL = 'Parking + Megabuilding 06',
+			BUCKET = 0,
+			POINTS = {
+				{ X = -526.35, Y = -1325.51, Z = 11.88, YAW = 135.3 },
+				{ X = -519.45, Y = -1330.41, Z = 11.93, YAW = 136.3 },
+			},
+			TARGET = {
+				LABEL = 'Pick up the crate',
+				DESCRIPTION = 'Building supplies. Get it into a vehicle.',
+				ICON = 'box',
+			},
+			SPAWN_PER_PASS = 1,
+			RESPAWN_MS = 120000,
+			DROPOFFS = {
+				sale = {
+					LABEL = 'Sale', X = -192.91, Y = -877.58, Z = 11.46, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorFemale', YAW = 20.7 },
+				},
+			},
+		},
+
+		mechanic = {
+			LABEL = 'Mechanic',
+			BUCKET = 0,
+			POINTS = {
+				{ X = -2456.16, Y = -909.03, Z = 9.26, YAW = 269.9 },
+				{ X = -2465.86, Y = -905.14, Z = 8.16, YAW = 177.6 },
+			},
+			TARGET = {
+				LABEL = 'Pick up the crate',
+				DESCRIPTION = 'Spare parts. Get it into a vehicle.',
+				ICON = 'box',
+			},
+			SPAWN_PER_PASS = 1,
+			RESPAWN_MS = 120000,
+			DROPOFFS = {
+				sale = {
+					LABEL = 'Sale', X = -2043.13, Y = -602.83, Z = 2.84, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorMale', YAW = 85.8 },
+				},
+			},
+		},
+
+		airport_pharmacy = {
+			LABEL = 'Airport pharmacy',
+			BUCKET = 0,
+			POINTS = {
+				{ X = -3584.61, Y = 365.48, Z = 32.52, YAW = 264.9 },
+			},
+			TARGET = {
+				LABEL = 'Pick up the crate',
+				DESCRIPTION = 'Medical stock. Get it into a vehicle.',
+				ICON = 'box',
+			},
+			SPAWN_PER_PASS = 1,
+			RESPAWN_MS = 120000,
+			DROPOFFS = {
+				sale = {
+					LABEL = 'Sale', X = -1361.08, Y = 617.55, Z = 4.44, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorFemale', YAW = 180.2 },
+				},
+			},
+		},
+
+		arasaka_port = {
+			LABEL = 'Arasaka port',
+			BUCKET = 0,
+			POINTS = {
+				{ X = -1246.29, Y = 549.03, Z = 7.42, YAW = 328.2 },
+				{ X = -1247.52, Y = 578.04, Z = 4.85, YAW = 271.6 },
+			},
+			TARGET = {
+				LABEL = 'Pick up the crate',
+				DESCRIPTION = 'Dock freight. Get it into a vehicle.',
+				ICON = 'box',
+			},
+			SPAWN_PER_PASS = 1,
+			RESPAWN_MS = 120000,
+			DROPOFFS = {
+				sale = {
+					LABEL = 'Sale', X = -1559.54, Y = 618.85, Z = 9.30, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorMale', YAW = 254.1 },
+				},
+			},
+		},
+
+		delamain = {
+			LABEL = 'Delamain',
+			BUCKET = 0,
+			POINTS = {
+				{ X = -1013.62, Y = -136.09, Z = 3.51, YAW = 232.4 },
+				{ X = -1012.43, Y = -156.83, Z = 3.51, YAW = 322.8 },
+			},
+			TARGET = {
+				LABEL = 'Pick up the crate',
+				DESCRIPTION = 'Fleet parts. Get it into a vehicle.',
+				ICON = 'box',
+			},
+			SPAWN_PER_PASS = 1,
+			RESPAWN_MS = 120000,
+			DROPOFFS = {
+				sale = {
+					LABEL = 'Sale', X = -1436.29, Y = -179.89, Z = 8.18, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorFemale', YAW = 322.6 },
+				},
+			},
+		},
+
+		waterfront_garage = {
+			LABEL = 'Waterfront garage',
+			BUCKET = 0,
+			POINTS = {
+				{ X = -2335.01, Y = 536.86, Z = 11.23, YAW = 84.7 },
+				{ X = -2342.56, Y = 540.47, Z = 11.23, YAW = 178.9 },
+			},
+			TARGET = {
+				LABEL = 'Pick up the crate',
+				DESCRIPTION = 'Garage stock. Get it into a vehicle.',
+				ICON = 'box',
+			},
+			SPAWN_PER_PASS = 1,
+			RESPAWN_MS = 120000,
+			DROPOFFS = {
+				sale = {
+					LABEL = 'Sale', X = -1918.49, Y = -121.60, Z = 7.56, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorMale', YAW = 180.7 },
+				},
+			},
+		},
+
+		garage_mechanic = {
+			LABEL = 'Garage / Mechanic',
+			BUCKET = 0,
+			POINTS = {
+				{ X = -2381.65, Y = 285.58, Z = 12.98, YAW = 180.2 },
+			},
+			TARGET = {
+				LABEL = 'Pick up the crate',
+				DESCRIPTION = 'Spare parts. Get it into a vehicle.',
+				ICON = 'box',
+			},
+			SPAWN_PER_PASS = 1,
+			RESPAWN_MS = 120000,
+			DROPOFFS = {
+				sale = {
+					LABEL = 'Sale', X = -2420.51, Y = 465.42, Z = 11.24, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorFemale', YAW = 321.6 },
+				},
+			},
+		},
+
+		-- Two sales. `sale` is at Z 128 -- up a building, so it sells out of a bag
+		-- but no vehicle can park inside its RADIUS; `sale_street` is at ground level.
+		adult_shop_clouds = {
+			LABEL = 'Adult shop & Clouds',
+			BUCKET = 0,
+			POINTS = {
+				{ X = -865.13, Y = 136.10, Z = 7.29, YAW = 54.8 },
+				{ X = -859.39, Y = 130.62, Z = 7.29, YAW = 50.6 },
+			},
+			TARGET = {
+				LABEL = 'Pick up the crate',
+				DESCRIPTION = 'Club stock. Get it into a vehicle.',
+				ICON = 'box',
+			},
+			SPAWN_PER_PASS = 1,
+			RESPAWN_MS = 120000,
+			DROPOFFS = {
+				sale = {
+					LABEL = 'Sale', X = -662.21, Y = 811.13, Z = 128.27, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorMale', YAW = 62.6 },
+				},
+				sale_street = {
+					LABEL = 'Street sale', X = -666.55, Y = 846.12, Z = 19.49, RADIUS = 8.0,
+					NPC = { RECORD = 'Character.VendorFemale', YAW = 345.1 },
+				},
+			},
+		},
+
 		badlands = {
 			LABEL = 'BADLANDS DEPOT',
 			BUCKET = 0,
