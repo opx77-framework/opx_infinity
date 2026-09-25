@@ -2,7 +2,10 @@ name: check
 
 on:
   push:
-    branches: [main]
+    # FEATURE BRANCHES TOO, so a branch is proven before its PR exists. The
+    # checks are the same ones the PR would run, and a red branch is read
+    # while it is still cheap to change.
+    branches: [main, 'feature/**']
   pull_request:
 
 jobs:
@@ -100,3 +103,42 @@ jobs:
                   | grep -vE '^\./(tests/|lib/server/storage\.lua$|modules/[a-z]+/server/storage\.lua$)' \
                   || true)
           [ -z "$stray" ] || { echo "SQL outside storage: $stray"; exit 1; }
+
+  # THE SHIPPED ARTEFACT IS web/, AND IT IS COMMITTED: ui/ never leaves the
+  # repo (see package.json). So a change under ui/src that forgot the build is
+  # a stale bundle on every server it reaches, and NO Lua check above can see
+  # it -- the suite reads ui/src as text and web/ as shipped. This job builds
+  # the bundle and then asserts the build changed NOTHING: the web/index.html
+  # in the tree has to be the one these tools just produced, byte for byte.
+  #
+  # If the last step goes red the fix is `npm run build` at the repo root and
+  # committing web/index.html -- that is the whole convention.
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # THE NODE MAJOR THE BUNDLE IS BUILT WITH. The lockfile pins every tool,
+      # but the runner's Node is ours to choose, and the step above compares
+      # bytes: the runner should be the machine that commits, so this pins the
+      # major the maintainers build on.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: The committed bundle is the built one
+        run: |
+          if ! git diff --exit-code -- web/index.html; then
+            echo 'web/index.html is stale: run `npm run build` at the repo root and commit it.'
+            exit 1
+          fi
