@@ -35,7 +35,8 @@
 -- module still READS that table at boot and adopts anything in it that this file
 -- does not name -- see `modules/garages/server/main.lua`, "the legacy adoption"
 -- -- and prints each one as the block to paste in here, so nothing an operator
--- ever placed is lost by the commands going away.
+-- ever placed is lost by the commands going away. `/opx.garages.export` hands
+-- the same blocks to a person in game, on demand.
 --
 -- KIND decides what may come out: a `garage` brings out a ground vehicle, an
 -- `avpad` brings out an AV record. It belongs to the GARAGE and not to a point,
@@ -158,10 +159,13 @@ OPX.Config.MODULES.garages = {
 	--
 	-- `add` and `remove` ARE GONE, and this is the whole of what is left. They
 	-- wrote a place every player uses into a table that only existed on one
-	-- host; a garage is a line in this file now. See the header.
+	-- host; a garage is a line in this file now. See the header. `export` is
+	-- the other half of that sentence: it hands back the block to paste for
+	-- every garage that still lives only in that table.
 	COMMANDS = {
 		list = 'opx.garages.list',
 		bring = 'opx.garages.bring',
+		export = 'opx.garages.export',
 	},
 
 	-- EVERY GARAGE ON THE SERVER.

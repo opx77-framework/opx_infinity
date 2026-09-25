@@ -49,6 +49,7 @@ local EN = {
 	['garages.help.bring'] = 'Bring your own vehicle out at a garage you are standing at.',
 	['garages.help.bringKey'] = 'the garage name; the nearest point when omitted',
 	['garages.help.bringPlate'] = 'a plate you own; the first eligible one when omitted',
+	['garages.help.export'] = 'Hand over the paste-ready config block for every garage that lives only in the database.',
 }
 
 local FR = {
@@ -85,6 +86,7 @@ local FR = {
 	['garages.help.bring'] = 'Sort votre propre véhicule à un garage où vous êtes.',
 	['garages.help.bringKey'] = 'le nom du garage ; le point le plus proche si omis',
 	['garages.help.bringPlate'] = 'une plaque à vous ; la première éligible si omise',
+	['garages.help.export'] = 'Donne le bloc de config à coller pour chaque garage présent seulement dans la base.',
 }
 
 OPX.Locale.Register('en', EN)

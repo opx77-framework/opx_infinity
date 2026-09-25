@@ -619,14 +619,62 @@ local function report(source)
 	OPX.CommandResult(source, true, table.concat(lines, '\n'))
 end
 
---- Registers the two commands that are left.
+-- Forward declaration (the same idiom as `askState` in jobs): the export
+-- below formats with `configLines`, which is defined with the legacy adoption
+-- AFTER the command block, and without this line the call reaches for a GLOBAL
+-- `configLines` -- nil -- and dies inside the answer thread. The declaration
+-- must stand before the closures that call it.
+local configLines
+
+--- The blocks that would check the legacy garages in, to whoever runs the
+-- export. The journal is the HOST's copy of the same lines; this is the one a
+-- person in game can read and paste.
+--
+-- ONE ANSWER PER GARAGE, and not one message for the lot: the answer channel
+-- cuts a message at 8192 bytes, so eighteen blocks in one message is a dump the
+-- operator receives half of, with the warning in a log they cannot see.
+--
+-- AND ONLY THE DB-ONLY GARAGES. A garage this file already names has nothing to
+-- paste, and a block pasted twice is a duplicate key and a config error.
+local function export(source)
+	local keys = {}
+	for key in pairs(adopted) do
+		if configGarages[key] == nil then keys[#keys + 1] = key end
+	end
+	table.sort(keys)
+	if #keys == 0 then
+		return OPX.CommandResult(source, true,
+			'every garage on this server is already named in config/garages.lua; nothing to paste')
+	end
+	CreateThread(function()
+		for index = 1, #keys do
+			-- ONE RESUME PER GARAGE, for the reason the boot loop above yields
+			-- per row: every block formats a dozen strings, and a loop that
+			-- formats the whole table in one resume is the shape of failure
+			-- that has cost this codebase four outages.
+			Wait(0)
+			OPX.CommandResult(source, true,
+				table.concat(configLines(adopted[keys[index]]), '\n'))
+		end
+		OPX.CommandResult(source, true,
+			('%d garage(s) live only in opx77_garages; the block for each is above, ' ..
+				'paste them into config/garages.lua'):format(#keys))
+	end)
+end
+
+--- Registers the three commands that are left.
 -- `add` and `remove` are gone: they wrote a place every player uses into a table
--- only one host had. See the header.
+-- only one host had. See the header. `export` reads that table and writes
+-- nothing -- it hands back the blocks that would check it in.
 local function registerCommands()
 	local names = type(M.Settings.COMMANDS) == 'table' and M.Settings.COMMANDS or {}
 
 	register(names.list, { restricted = true, help = 'garages.help.list' }, function(source)
 		report(source)
+	end)
+
+	register(names.export, { restricted = true, help = 'garages.help.export' }, function(source)
+		export(source)
 	end)
 
 	register(names.bring, {
@@ -690,26 +738,29 @@ local function adopt(row)
 end
 
 --- The block an operator pastes into `config/garages.lua` to keep a garage.
--- Written at every start for every adopted garage, for the reason the old
--- capture line was written once into one player's chat box and then lost.
-local function configLines(built)
-	local lines = { ('[garages] config line: %s = { LABEL = %q, KIND = %q, LOCATIONS = {')
+-- CLEAN LINES, with no log prefix on them: the journal at every start and the
+-- export command below answer the SAME block -- the host's copy and the
+-- person's -- and a prefix is a thing you have to strip before pasting. Written
+-- at every start for every adopted garage, for the reason the old capture line
+-- was written once into one player's chat box and then lost.
+function configLines(built)
+	local lines = { ('%s = { LABEL = %q, KIND = %q, LOCATIONS = {')
 		:format(built.key, built.label, built.kind) }
 	for _, place in ipairs(built.locations) do
-		lines[#lines + 1] = ('[garages] config line:   { BUCKET = %d,'):format(place.bucket)
-		lines[#lines + 1] = ('[garages] config line:     MENU = { X = %.2f, Y = %.2f, Z = %.2f },')
+		lines[#lines + 1] = ('  { BUCKET = %d,'):format(place.bucket)
+		lines[#lines + 1] = ('    MENU = { X = %.2f, Y = %.2f, Z = %.2f },')
 			:format(place.menu.x, place.menu.y, place.menu.z)
-		lines[#lines + 1] = ('[garages] config line:     ENTRY = { X = %.2f, Y = %.2f, Z = %.2f, ' ..
+		lines[#lines + 1] = ('    ENTRY = { X = %.2f, Y = %.2f, Z = %.2f, ' ..
 			'HEADING = %.1f },'):format(place.entry.x, place.entry.y, place.entry.z,
 			place.entry.heading)
-		lines[#lines + 1] = '[garages] config line:     EXITS = {'
+		lines[#lines + 1] = '    EXITS = {'
 		for _, exit in ipairs(place.exits) do
-			lines[#lines + 1] = ('[garages] config line:       { X = %.2f, Y = %.2f, Z = %.2f, ' ..
+			lines[#lines + 1] = ('      { X = %.2f, Y = %.2f, Z = %.2f, ' ..
 				'HEADING = %.1f },'):format(exit.x, exit.y, exit.z, exit.heading)
 		end
-		lines[#lines + 1] = '[garages] config line:     } },'
+		lines[#lines + 1] = '    } },'
 	end
-	lines[#lines + 1] = '[garages] config line: } },'
+	lines[#lines + 1] = '} },'
 	return lines
 end
 
@@ -846,7 +897,7 @@ function M.Start()
 		for index = 1, #keys do
 			Wait(0)
 			for _, line in ipairs(configLines(adopted[keys[index]])) do
-				Open77.log.info(line)
+				Open77.log.info('[garages] config line: ' .. line)
 			end
 		end
 		if #keys > 0 then

@@ -5268,6 +5268,21 @@ do
 		return nil
 	end
 
+	-- Every result line a command answered an operator with, joined. The answer
+	-- channel is a client event like any other, so the export below is read the
+	-- way the player reads it rather than off a return value.
+	local function answers(ctl, env)
+		local RESULT = env.OPX.Event(env.OPX.Channel.NET, 'runtime', 'commandResult')
+		local out = {}
+		for index = 1, #ctl.clientEvents do
+			local entry = ctl.clientEvents[index]
+			if entry.name == RESULT and type(entry[1]) == 'table' then
+				out[#out + 1] = tostring(entry[1].text or '')
+			end
+		end
+		return table.concat(out, '\n')
+	end
+
 	if why == nil then
 		local OPX = env.OPX
 		local garages = OPX.Modules.Get('garages')
@@ -5409,14 +5424,24 @@ do
 			control.commands['opx.garages.remove'] == nil)
 		check('and the routeway that let a client place one is gone with them',
 			garages.Event.CAPTURED == nil and garages.Event.CAPTURE == nil)
-		check('the two readings are still registered and still ACL-gated',
+		check('the three readings are still registered and still ACL-gated',
 			control.commands['opx.garages.list'] ~= nil
 				and control.commands['opx.garages.list'].restricted == true
 				and control.commands['opx.garages.bring'] ~= nil
-				and control.commands['opx.garages.bring'].restricted == true)
+				and control.commands['opx.garages.bring'].restricted == true
+				and control.commands['opx.garages.export'] ~= nil
+				and control.commands['opx.garages.export'].restricted == true)
 		check('and the module no longer offers a writer to that table',
 			garages.Storage.Upsert == nil and garages.Storage.Delete == nil
 				and type(garages.Storage.FetchAll) == 'function')
+
+		-- NOTHING TO PASTE IS AN ANSWER TOO: a database holding no legacy
+		-- spots says so, rather than handing back an empty message an operator
+		-- reads as a command that did nothing.
+		control.commands['opx.garages.export'].run(src, {})
+		control.Pump(4)
+		check('and an export of a database holding none says so rather than nothing',
+			answers(control, env):find('nothing to paste', 1, true) ~= nil)
 
 		-- ── a garage is a key in several places ───────────────────────────
 		-- Built through the real coercion and hung on the tables the server
@@ -5997,6 +6022,30 @@ do
 			end
 			check('and the block that would check it in is written to the journal', printed)
 			check('with a line saying it exists nowhere else', warned)
+
+			-- AND THE SAME BLOCKS, ON DEMAND, TO A PERSON. The journal is the
+			-- host's copy; an operator is in game. The export hands back the
+			-- same blocks, one message per garage -- the answer channel cuts a
+			-- message at 8192 bytes -- and it exports the DB-ONLY garages: a
+			-- block pasted twice is a duplicate key and a config error.
+			adoptedControl.commands['opx.garages.export'].run(src, {})
+			adoptedControl.Pump(4)
+			local exported = answers(adoptedControl, adoptedEnv)
+			check('the export command hands over the block to paste',
+				exported:find('legacy_yard = { LABEL = "THE YARD", KIND = "garage", LOCATIONS = {',
+					1, true) ~= nil,
+				exported:sub(1, 160))
+			check('with the one point it stands on as menu, door and exit',
+				exported:find('MENU = { X = 500.00, Y = 0.00, Z = 3.00 },', 1, true) ~= nil
+					and exported:find('ENTRY = { X = 500.00, Y = 0.00, Z = 3.00, HEADING = 77.0 },',
+						1, true) ~= nil
+					and exported:find('      { X = 500.00, Y = 0.00, Z = 3.00, HEADING = 77.0 },',
+						1, true) ~= nil)
+			check('and exports nothing a config line would duplicate',
+				exported:find('garage1 =', 1, true) == nil
+					and exported:find('MOVED', 1, true) == nil)
+			check('and counts what there was to paste',
+				exported:find('1 garage(s)', 1, true) ~= nil, exported:sub(-120))
 
 			-- CONFIG WINS OVER THE DATABASE NOW, which reverses what a captured
 			-- spot used to do. There is no command to move a garage with any

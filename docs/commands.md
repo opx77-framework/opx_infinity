@@ -20,8 +20,8 @@ so the row survives a database reset.
 | **Job boss desk** | `/opx.jobs.add boss [key] <job>` | same; a desk shows only to the boss grade + its capturer |
 | Remove a board | `/opx.jobs.remove <key>` | only captured boards; config rows are edited in `config/jobs.lua` |
 | List all boards | `/opx.jobs.list` | prints kind, job, pos, yaw, bucket, captured/config |
-| **Garage spot** | `/opx.garages.add [garage\|avpad] [key] [label]` | kind defaults `garage`; key auto-named (`garage1`…) |
-| Remove garage | `/opx.garages.remove <key>` | |
+| Garage (config now) | edit `config/garages.lua` | `add`/`remove` are **gone** — nothing places a garage in game; capture a point with `/opx.admin.self.pos` and paste it in |
+| Export DB-only garages | `/opx.garages.export` | the paste-ready config block for every garage still living only in `opx77_garages` |
 | List garages | `/opx.garages.list` | |
 | Bring a stored vehicle out | `/opx.garages.bring [key] [plate]` | |
 | **Dealership spot** | `/opx.dealership.add [garage\|avpad] [key] [label]` | same shape as garages |
