@@ -33,6 +33,12 @@ local page = nil
 
 local focusStack = {}
 
+-- Forward-declared: the surface's own `focus:set` reconciliation is wired inside
+-- `create()`, which is written above the definition below. Without this the
+-- closure there would resolve a GLOBAL of this name -- nil at call time -- and
+-- the reconciliation would raise the first time the page announced a change.
+local applyFocus
+
 --- Wires every channel a view may emit before its own module is running.
 --
 -- THE PAGE IS BUILT BEFORE THE MODULES ARE. `core/client/boot.lua` creates the
@@ -180,6 +186,47 @@ local function create()
 		sendCatalogue(surface)
 	end)
 
+	-- THE PAGE IS THE TRUTH ABOUT WHAT IS ON SCREEN, and this stack was only
+	-- ever corrected by the modules that remembered to listen. Six of the eight
+	-- owners wire `focus:set` for themselves; `inventory` and `target` do not,
+	-- and `focus:set` is a property of the SURFACE, not of any one module, so it
+	-- belongs here -- once -- rather than in eight copies of which two were
+	-- missing.
+	--
+	-- What the gap cost: a render error inside a view unmounts it
+	-- (`ui/src/boot/ModuleHost.vue` drops the slot on `onErrorCaptured`), the
+	-- page releases its own focus and announces an empty stack, and every module
+	-- handler releases only ITS OWN owners -- so nobody released `inventory`.
+	-- The Lua entry stayed on top, `applyFocus` kept re-applying it, and the
+	-- player was left holding keyboard and cursor with nothing drawn: no
+	-- movement, a pointer on screen, and the only way out was to die.
+	OPX.Surface.On(surface, 'focus:set', function(payload)
+		if type(payload) ~= 'table' then return end
+		local owner = payload.owner
+		local top = (payload.focus == true and type(owner) == 'string') and owner or nil
+
+		-- Nothing on the page wants focus, so nothing in Lua may keep claiming it.
+		if top == nil then
+			focusStack = {}
+			applyFocus()
+			return
+		end
+
+		-- Anything stacked ABOVE the announced top is a view the page no longer
+		-- has. An owner we do not hold at all is somebody else's to acquire --
+		-- their own handler does that -- so it is left alone rather than guessed at.
+		local at
+		for index = #focusStack, 1, -1 do
+			if focusStack[index].owner == top then
+				at = index
+				break
+			end
+		end
+		if at == nil then return end
+		for index = #focusStack, at + 1, -1 do table.remove(focusStack, index) end
+		applyFocus()
+	end)
+
 	-- Before anything can be emitted, which is the whole point: a channel wired
 	-- after the page mounted is wired too late.
 	wireReadyChannels(surface)
@@ -253,7 +300,27 @@ function OPX.UI.Answer(target, ref, payload)
 	if ref == nil then return end
 	payload = payload or {}
 	payload.ref = ref
-	OPX.UI.Send(target, REPLY, payload)
+
+	-- BOTH ANSWERS, for the same reason the send path above reads both: the host
+	-- refuses an oversized payload WHOLE and still reports the send as a
+	-- success. This direction was left out of that correction, and it is the
+	-- direction a view is waiting on -- a container or a two-hundred-slot stash
+	-- is exactly the answer large enough to be refused. Lua believed it had
+	-- replied, the page's promise timed out five seconds later with
+	-- `error.rpc_timeout`, and nothing anywhere said why: the refusal note is
+	-- keyed by channel, and every reply in the session shares one channel, so
+	-- one note covered every module for the rest of the session.
+	--
+	-- The recovery has to be a payload that cannot itself be refused, so it
+	-- carries the ref and a code and nothing else. The view then shows an error
+	-- instead of a spinner.
+	local sent, refused = OPX.UI.Send(target, REPLY, payload)
+	if sent and refused then
+		Open77.log.error(('[ui] the answer to %s was refused by the host; replying with a code')
+			:format(tostring(ref)))
+		OPX.UI.Send(target, REPLY, { ref = ref, ok = false, error = 'error.payloadRefused' })
+	end
+	return sent, refused
 end
 
 --- Registers a request handler: the answer is sent back on the reply channel
@@ -280,7 +347,7 @@ end
 --- surface now, and hiding it would blank the health bar every time a menu closed.
 --- The page inerts its own modal layer instead -- `Focus(false, false)` reaches it
 --- as a focus event, and the layer drops `pointer-events` on it.
-local function applyFocus()
+function applyFocus()
 	local surface = OPX.UI.Surface()
 	if surface == nil then return end
 
@@ -338,6 +405,16 @@ end
 -- @author dop42
 function OPX.UI.Teardown()
 	focusStack = {}
-	if page then OPX.Surface.Destroy(page) end
+	if page then
+		-- EMPTYING THE STACK IS NOT THE SAME AS GIVING THE FOCUS BACK. This
+		-- cleared the Lua list and never applied it, and `OPX.Surface.Destroy`
+		-- does not release focus either -- so the only thing standing between a
+		-- stop and a player left with a cursor and no controls was every one of
+		-- the eight focus owners remembering to release in its own `Stop`. They
+		-- all do today; the core owes them a floor that does not depend on it,
+		-- because there is no recovery from this one short of dying.
+		pcall(OPX.Surface.Focus, page, false, false)
+		OPX.Surface.Destroy(page)
+	end
 	page = nil
 end

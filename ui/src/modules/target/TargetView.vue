@@ -1050,7 +1050,7 @@ onUnmounted(() => {
                 class="row"
                 data-augmented-ui="tr-clip border"
                 :class="{ off: busy, open: col.openName === entry.name }"
-                :style="`--slot: ${at}`"
+                :style="`--op-slot: ${at}`"
                 :data-folder="entry.name"
                 role="button"
                 :tabindex="busy ? -1 : 0"
@@ -1082,7 +1082,7 @@ onUnmounted(() => {
                   pending: entry.row.token === pendingToken,
                   off: busy && entry.row.token !== pendingToken
                 }"
-                :style="`--slot: ${at}`"
+                :style="`--op-slot: ${at}`"
                 role="button"
                 :tabindex="busy ? -1 : 0"
                 :aria-disabled="busy"
@@ -1238,7 +1238,7 @@ onUnmounted(() => {
   --pop: 7px;
   --tilt: var(--op-tilt);
   --origin: left center;
-  animation: cut-in 120ms steps(3, end);
+  animation: cut-in 120ms var(--op-stutter);
 }
 
 .cascade.flip .column {
@@ -1605,7 +1605,7 @@ onUnmounted(() => {
 }
 
 .row {
-  animation: plate-in 180ms steps(3, end) backwards;
+  animation: plate-in 180ms var(--op-stutter) backwards;
   animation-delay: calc(var(--slot, 0) * 28ms);
 }
 

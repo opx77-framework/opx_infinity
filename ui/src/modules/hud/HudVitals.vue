@@ -58,6 +58,8 @@ interface Vital {
   icon: string[]
   label: string
   value: number
+  /** The pool in POINTS when the source keeps one, else null. See below. */
+  points: number | null
   tone: Tone
 }
 
@@ -73,9 +75,25 @@ function share(value: number): number {
   return Math.max(0, Math.min(100, value)) / 100
 }
 
-/** The readout, and the `aria-valuenow`. Same number, rounded once. */
+/** The `aria-valuenow`: the SHARE, which is what the bar is and what 0..100 means. */
 function shown(value: number): number {
   return Math.round(Math.max(0, Math.min(100, value)))
+}
+
+/**
+ * The read-out. POINTS when Lua sent them, the share when it did not.
+ *
+ * THE OWNER, on a full player: "le hud affiche 100 enfois de 250 dans vie". The
+ * number was the percent and it was correct and it was useless -- while the
+ * maximum was 100 the percent and the points were the same number and nobody had
+ * to decide which this was, and at 250 they part. The bar stays a share because a
+ * bar is a share; the number says how much health there is.
+ *
+ * Armour arrives as a percent and the needs are percentages by definition, so
+ * they send no points and keep the number they always had.
+ */
+function readout(vital: Vital): number {
+  return vital.points === null ? shown(vital.value) : vital.points
 }
 
 useBridge('opx:hud:vitals', (payload: Payload) => {
@@ -88,6 +106,10 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
       icon: iconPaths(text(row.icon)),
       label: t(text(row.label)),
       value: num(row.pct),
+      // `num` answers 0 for an absent field, and 0 points is a real reading -- a
+      // dying player. The absence has to survive as an absence, so it is tested
+      // before it is converted.
+      points: row.points === undefined || row.points === null ? null : num(row.points),
       tone: toneOf(row.tone)
     }))
 })
@@ -103,7 +125,7 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
       :key="vital.id"
       class="gauge"
       :class="vital.tone"
-      :style="`--slot: ${at}`"
+      :style="`--op-slot: ${at}`"
       role="meter"
       :aria-valuenow="shown(vital.value)"
       :aria-valuemin="0"
@@ -129,7 +151,7 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
         </span>
       </span>
 
-      <span class="readout">{{ shown(vital.value) }}</span>
+      <span class="readout">{{ readout(vital) }}</span>
     </div>
   </div>
 </template>
@@ -330,7 +352,7 @@ useBridge('opx:hud:vitals', (payload: Payload) => {
 }
 
 .gauge {
-  animation: vital-in 190ms steps(3, end) backwards;
+  animation: vital-in var(--op-enter-ms) var(--op-stutter) backwards;
   animation-delay: calc(var(--slot, 0) * 28ms);
 }
 </style>

@@ -23,7 +23,12 @@ local M = OPX.Modules.Declare{
 	-- Not a requirement: without it the box simply never hides. With it, the box
 	-- gives the keyboard back while a player is down, instead of fighting the
 	-- down screen for it.
-	optional = { 'downed' },
+	-- `downed` is not a requirement: without it the box simply never hides. With
+	-- it, the box gives the keyboard back while a player is down.
+	-- `character` is not one either: a runtime without it is one where the
+	-- gamertag IS the only name there is, and the box must still work there --
+	-- but with it, a message is attributed to the person, not to the account.
+	optional = { 'downed', 'character' },
 }
 
 -- The three prefixes are disjoint by construction (see core/shared/channels.lua):

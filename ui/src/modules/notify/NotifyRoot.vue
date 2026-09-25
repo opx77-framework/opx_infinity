@@ -560,7 +560,7 @@ onUnmounted(stop)
 /* =============================================================================
    ARRIVING AND LEAVING -- it cuts, it does not fade.
 
-   `steps(3, end)` on both, `opacity` and `transform` only, which the compositor runs
+   `--op-stutter` on both, `opacity` and `transform` only, which the compositor runs
    without a repaint. The entrance overshoots by a sixth of its own travel and settles,
    so three frames read as a stutter rather than as a slide with a low frame rate.
 
@@ -574,10 +574,10 @@ onUnmounted(stop)
 .entry {
   transform-origin: var(--origin, center);
   transform: rotateY(var(--tilt, 0deg));
-  animation: toast-in 190ms steps(3, end);
+  animation: toast-in var(--op-enter-ms) var(--op-stutter);
   transition:
-    opacity var(--op-dur-slow) steps(3, end),
-    transform var(--op-dur-slow) steps(3, end);
+    opacity var(--op-dur-slow) var(--op-stutter),
+    transform var(--op-dur-slow) var(--op-stutter);
 }
 
 /* Leaving is arriving, played backwards: out the edge it came in by. */

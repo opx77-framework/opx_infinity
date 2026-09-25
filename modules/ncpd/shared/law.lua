@@ -61,21 +61,22 @@ Law.DefaultDistrict = 1.0
 
 -- ── coercions ────────────────────────────────────────────────────────────────
 -- A number from a config that rejects NaN and both infinities, or nil.
+-- The finiteness half is `OPX.Math.Finite` and not `OPX.Text.Finite`, which
+-- also caps at 2^53: a capacity or a hold measured in seconds is not a value
+-- that has been through JSON and must not be bounded like one. The type gate
+-- in front of it is this book's own: a stage that arrives as a STRING is not a
+-- stage, because `Law.Stage('5')` answering Heat_5 would let a wire or config
+-- typo name a division.
 
-local function finite(value)
-	if type(value) ~= 'number' then
-		return nil
-	end
-	if value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
+local function finiteNumber(value)
+	if type(value) ~= 'number' then return nil end
+	return OPX.Math.Finite(value)
 end
 
 -- A number that must be strictly positive, or nil.
 
 local function positive(value)
-	local number = finite(value)
+	local number = finiteNumber(value)
 	if number == nil or number <= 0 then
 		return nil
 	end
@@ -209,7 +210,7 @@ do
 		-- the player leaves THAT stage.
 		local highest = 0
 		for key in pairs(ladder) do
-			local index = finite(key)
+			local index = finiteNumber(key)
 			if index == nil or index < 0 or index ~= math.floor(index) then
 				warn(('ncpd: LADDER has a key %q that is not a stage number'):format(tostring(key)))
 			elseif index > highest then
@@ -247,7 +248,7 @@ do
 					end
 				end
 
-				local capacity = finite(row.CAPACITY)
+				local capacity = finiteNumber(row.CAPACITY)
 				if capacity == nil or capacity < 0 then
 					warn(('ncpd: stage %d has no capacity, so nothing can leave it'):format(stage))
 					capacity = nil
@@ -258,7 +259,7 @@ do
 					warn(('ncpd: stage %d has no response table'):format(stage))
 					response = nil
 				else
-					local units = finite(response.UNITS)
+					local units = finiteNumber(response.UNITS)
 					if units == nil or units < 0 or units ~= math.floor(units) then
 						warn(('ncpd: stage %d response has no unit count'):format(stage))
 					end
@@ -302,17 +303,17 @@ do
 		warn('ncpd: DECAY is not a table, so a score never falls')
 		decay = {}
 	end
-	local hold = finite(decay.HOLD_SECONDS)
+	local hold = finiteNumber(decay.HOLD_SECONDS)
 	if hold == nil or hold < 0 then
 		warn('ncpd: DECAY.HOLD_SECONDS is not a duration, so the score drains at once')
 		hold = 0
 	end
-	local perSecond = finite(decay.PER_SECOND)
+	local perSecond = finiteNumber(decay.PER_SECOND)
 	if perSecond == nil or perSecond < 0 then
 		warn('ncpd: DECAY.PER_SECOND is not a rate, so the score never drains')
 		perSecond = 0
 	end
-	local reset = finite(decay.RESET_SECONDS)
+	local reset = finiteNumber(decay.RESET_SECONDS)
 	if reset == nil or reset < 0 then
 		warn('ncpd: DECAY.RESET_SECONDS is not a duration, so nothing is ever dropped')
 		reset = 0
@@ -361,7 +362,7 @@ do
 					-- a law that never stops counting: say so, and keep it unbounded.
 					local ceiling = row.ceiling
 					if ceiling ~= nil then
-						local stage = finite(ceiling)
+						local stage = finiteNumber(ceiling)
 						if stage == nil or stage ~= math.floor(stage) or stage < 1 then
 							warn(('ncpd: law %q has a ceiling that is not a stage'):format(id))
 							ceiling = nil
@@ -455,7 +456,7 @@ do
 	if type(maxtac) ~= 'table' then
 		warn('ncpd: MAXTAC is not a table, so the division can never answer')
 	else
-		local stage = finite(maxtac.STAGE)
+		local stage = finiteNumber(maxtac.STAGE)
 		local row = (stage ~= nil and stage == math.floor(stage)) and Law.Stages[stage] or nil
 		if row == nil then
 			warn(('ncpd: MAXTAC.STAGE is %s, which is not a stage of the ladder'):format(
@@ -503,7 +504,7 @@ do
 			if type(av.ONE_AT_A_TIME) ~= 'boolean' then
 				warn('ncpd: MAXTAC.AV.ONE_AT_A_TIME is not a boolean')
 			end
-			if finite(av.COOLDOWN_SECONDS) == nil or finite(av.COOLDOWN_SECONDS) < 0 then
+			if finiteNumber(av.COOLDOWN_SECONDS) == nil or finiteNumber(av.COOLDOWN_SECONDS) < 0 then
 				warn('ncpd: MAXTAC.AV.COOLDOWN_SECONDS is not a duration')
 			end
 
@@ -529,12 +530,12 @@ do
 				for _, field in ipairs({
 					'CRUISE_SECONDS', 'DESCENT_SECONDS', 'DEPLOY_SECONDS', 'HOVER_SECONDS', 'EXIT_SECONDS',
 				}) do
-					if finite(plan[field]) == nil or plan[field] < 0 then
+					if finiteNumber(plan[field]) == nil or plan[field] < 0 then
 						warn(('ncpd: MAXTAC.AV.INSERTION.%s is not a duration'):format(field))
 						usable = false
 					end
 				end
-				local tick = finite(plan.TICK_MS)
+				local tick = finiteNumber(plan.TICK_MS)
 				if tick == nil or tick ~= math.floor(tick) or tick < 25 or tick > 1000 then
 					warn('ncpd: MAXTAC.AV.INSERTION.TICK_MS is not a cadence between 25 and 1000 ms')
 					usable = false
@@ -570,11 +571,11 @@ do
 		if type(squad) ~= 'table' then
 			warn('ncpd: MAXTAC.SQUAD is not a table, so a summon has no size')
 		else
-			local seats = finite(squad.SEATS)
+			local seats = finiteNumber(squad.SEATS)
 			if seats == nil or seats ~= math.floor(seats) or seats < 1 then
 				warn('ncpd: MAXTAC.SQUAD.SEATS is not a seat count')
 			end
-			local waves = finite(squad.WAVES)
+			local waves = finiteNumber(squad.WAVES)
 			if waves == nil or waves ~= math.floor(waves) or waves < 1 then
 				warn('ncpd: MAXTAC.SQUAD.WAVES is not a wave count')
 			end
@@ -601,7 +602,7 @@ do
 			-- that the module heard them rather than a silent absence.
 			warn('ncpd: MAXTAC.BOARDING.ENABLED is false; the aircraft is not boardable')
 		else
-			local seconds = finite(door.SECONDS)
+			local seconds = finiteNumber(door.SECONDS)
 			if seconds == nil or seconds < 0 then
 				warn('ncpd: MAXTAC.BOARDING.SECONDS is not a duration')
 			end
@@ -646,16 +647,16 @@ do
 			end
 			-- Zero is allowed here and is a real choice: "only a hull exactly at
 			-- the drop height counts as down".
-			local restHeight = finite(door.REST_HEIGHT)
+			local restHeight = finiteNumber(door.REST_HEIGHT)
 			if restHeight == nil or restHeight < 0 then
 				warn('ncpd: MAXTAC.BOARDING.REST_HEIGHT is not a distance')
 				restHeight = nil
 			end
-			local restSeconds = finite(door.REST_SECONDS)
+			local restSeconds = finiteNumber(door.REST_SECONDS)
 			if restSeconds == nil or restSeconds < 0 then
 				warn('ncpd: MAXTAC.BOARDING.REST_SECONDS is not a duration')
 			end
-			local custody = finite(door.CUSTODY_MS)
+			local custody = finiteNumber(door.CUSTODY_MS)
 			if custody == nil or custody ~= math.floor(custody) or custody < 100 or custody > 60000 then
 				warn('ncpd: MAXTAC.BOARDING.CUSTODY_MS is not a cadence between 100 and 60000 ms')
 				custody = nil
@@ -682,13 +683,13 @@ do
 			Fill = fill,
 			Right = type(optIn) == 'table' and name(optIn.RIGHT) or nil,
 			Jobs = type(optIn) == 'table' and type(optIn.JOBS) == 'table' and optIn.JOBS or {},
-			ResponseSeconds = finite(maxtac.RESPONSE_SECONDS),
+			ResponseSeconds = finiteNumber(maxtac.RESPONSE_SECONDS),
 			AvRecord = av ~= nil and name(av.RECORD) or nil,
 			AvVariants = av ~= nil and records(av.VARIANTS, 'AV.VARIANTS') or {},
 			AvSecondWave = av ~= nil and records(av.SECOND_WAVE, 'AV.SECOND_WAVE') or {},
 			AvOneAtATime = av ~= nil and av.ONE_AT_A_TIME == true,
-			AvCooldown = av ~= nil and finite(av.COOLDOWN_SECONDS) or nil,
-			AvLift = av ~= nil and finite(av.LIFT) or nil,
+			AvCooldown = av ~= nil and finiteNumber(av.COOLDOWN_SECONDS) or nil,
+			AvLift = av ~= nil and finiteNumber(av.LIFT) or nil,
 			AvInsertion = insertion,
 			Vehicle = name(maxtac.VEHICLE),
 			Ground = records(maxtac.GROUND, 'GROUND'),
@@ -733,7 +734,7 @@ end
 -- @param stage number
 -- @return table|nil
 function Law.Stage(stage)
-	local index = finite(stage)
+	local index = finiteNumber(stage)
 	if index == nil or index ~= math.floor(index) or index < 0 or index > Law.StageCount then
 		return nil
 	end
@@ -803,11 +804,11 @@ end
 -- @param since number seconds since the last crime
 -- @return number
 function Law.Decay(score, since)
-	local value = finite(score) or 0
+	local value = finiteNumber(score) or 0
 	if value <= 0 then
 		return 0
 	end
-	local elapsed = finite(since) or 0
+	local elapsed = finiteNumber(since) or 0
 	if elapsed < 0 then
 		elapsed = 0
 	end
@@ -839,14 +840,14 @@ end
 -- @return number score
 -- @return boolean whether a stage was crossed
 function Law.Advance(stage, score, delta)
-	local current = finite(stage) or 0
+	local current = finiteNumber(stage) or 0
 	if current < 0 or current ~= math.floor(current) then
 		current = 0
 	end
 	if current > Law.StageCount then
 		current = Law.StageCount
 	end
-	local total = (finite(score) or 0) + (finite(delta) or 0)
+	local total = (finiteNumber(score) or 0) + (finiteNumber(delta) or 0)
 	if total < 0 then
 		total = 0
 	end
@@ -882,11 +883,11 @@ function Law.Accrue(entry, lawId, multiplier, district)
 		return { ok = false, reason = 'unknownLaw', law = tostring(lawId) }
 	end
 	local law = Law.Book[lawId]
-	local stage = finite(entry and entry.stage) or 0
+	local stage = finiteNumber(entry and entry.stage) or 0
 	if stage < 0 or stage ~= math.floor(stage) then
 		stage = 0
 	end
-	local score = finite(entry and entry.score) or 0
+	local score = finiteNumber(entry and entry.score) or 0
 	if score < 0 then
 		score = 0
 	end

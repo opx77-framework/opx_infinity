@@ -26,18 +26,12 @@ local M = OPX.Modules.Get('jobs')
 M.Seniority = {}
 local Seniority = M.Seniority
 
---- Coerces to a finite number, or nil. Kept local rather than folded into
+--- Coerces to a finite number, or nil. `OPX.Math.Finite` and not
 --- `OPX.Text.Finite`, which also caps at 2^53: this measures a bank of minutes
 --- and a fraction of a rank.
 -- @param value any
 -- @return number|nil
-function Seniority.Finite(value)
-	value = tonumber(value)
-	if value == nil or value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
-end
+Seniority.Finite = OPX.Math.Finite
 
 --- The highest level a ladder defines.
 -- A ladder with a hole is walked to the first missing level, so a caller that

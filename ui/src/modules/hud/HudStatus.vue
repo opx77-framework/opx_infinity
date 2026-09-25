@@ -157,7 +157,7 @@ onUnmounted(stop)
       class="chip"
       data-augmented-ui="tr-clip border"
       :class="chip.tone"
-      :style="`--slot: ${at}`"
+      :style="`--op-slot: ${at}`"
     >
       <span v-if="chip.icon" class="icon">{{ chip.icon }}</span>
       <span class="label">{{ chip.label }}</span>
@@ -178,7 +178,7 @@ onUnmounted(stop)
     <span
       v-if="hidden > 0"
       class="chip overflow"
-      :style="`--slot: ${chips.length}`"
+      :style="`--op-slot: ${chips.length}`"
     >
       <span class="label">+{{ hidden }}</span>
     </span>
@@ -325,7 +325,7 @@ onUnmounted(stop)
 }
 
 .chip {
-  animation: chip-in 190ms steps(3, end) backwards;
+  animation: chip-in var(--op-enter-ms) var(--op-stutter) backwards;
   animation-delay: calc(var(--slot, 0) * 28ms);
 }
 </style>

@@ -69,6 +69,10 @@ local REVALIDATE_MS, LOOKUP_BUDGET_MS, BATCH = 200, 1500, 5
 -- Whether the key is held and the eye is up.
 local opened = false
 
+-- Whether this module actually took the control restrictions, so that `close`
+-- does not hand back restrictions it never took.
+local heldControls = false
+
 -- Whether a pick or a select is being worked out.
 local busy = false
 
@@ -253,7 +257,14 @@ local function close(reason)
 	handle = nil
 	OPX.UI.ReleaseFocus(FOCUS)
 	if not was then return end
-	controls(false)
+	-- ONLY IF THEY WERE TAKEN. `controls(false)` is a global reset of this
+	-- resource's control restrictions, not the inverse of what this function
+	-- set, so calling it on a path that never took them hands back restrictions
+	-- another module is relying on.
+	if heldControls then
+		controls(false)
+		heldControls = false
+	end
 	TriggerEvent(EVENT_CLOSED, reason or 'closed')
 end
 
@@ -282,6 +293,30 @@ local function contextAt(x, y)
 		hit.target = { kind = 'sky', networked = false }
 		hit.kind = 'sky'
 		hit.playerDistance = nil
+
+		-- THE HOST'S OWN `direction` IS KEPT, AND IT WAS BRIEFLY OVERWRITTEN.
+		--
+		-- A derivation stood here, on the belief that `camera.screenRaycast`
+		-- returns no direction. It does. `screen-picking` says the raycast
+		-- "uses the same arguments as `screenRay`" and that "all ray fields
+		-- remain present" -- those fields being `origin`, `direction`,
+		-- `position` and `maxDistance`, with `direction` a unit world-space
+		-- vector; a hit ADDS `normal`, `distance`, `material` and the rest
+		-- rather than replacing them. And `context-menu` says it for this exact
+		-- case: "For sky, `hit=false`: use `origin` and unit `direction` to
+		-- aim. `position` is only the ray endpoint at `maxDistance`."
+		--
+		-- The belief came from reading a card that enumerated what a hit ADDS
+		-- and concluding the base fields were absent. They were never absent.
+		--
+		-- The derivation was also wrong in a way that mattered: it measured from
+		-- the BODY, not the camera. `sameTarget` calls two sky contexts the same
+		-- at a dot product above 0.9998, which over a 12 m ray is about 24 cm of
+		-- movement -- and `controls(true)` blocks aim, fire, interaction and
+		-- rotation, NOT walking. So a player taking one step while the list was
+		-- open lost their pick. With the camera's own direction the camera has
+		-- not moved, so it never happens; in third person, where the body sits
+		-- metres from the camera, the derived vector was wrong outright.
 		return hit
 	end
 	if not hit.entityLookupAvailable then return nil end
@@ -298,7 +333,19 @@ local function sameTarget(left, right)
 	if left == nil or right == nil or left.kind ~= right.kind then return false end
 	if left.kind == 'sky' then
 		local p, q = left.direction, right.direction
-		return type(p) == 'table' and type(q) == 'table' and p.x * q.x + p.y * q.y + p.z * q.z > 0.9998
+		if type(p) == 'table' and type(q) == 'table' then
+			return p.x * q.x + p.y * q.y + p.z * q.z > 0.9998
+		end
+		-- A DIRECTION THAT COULD NOT BE DERIVED IS NOT A DIFFERENT SKY. Without
+		-- this the answer was false, for ever, and false here means "you looked
+		-- somewhere else" -- so the pick was dropped on every revalidation and
+		-- the list never stayed up. `contextAt` derives the direction from the
+		-- ray endpoint now, so this is reached only when the body's own position
+		-- could not be read; the endpoints are then compared instead, at the
+		-- ray's own scale rather than the 20 cm a surface is compared at.
+		local a, b = left.position, right.position
+		if type(a) ~= 'table' or type(b) ~= 'table' then return true end
+		return (a.x - b.x) ^ 2 + (a.y - b.y) ^ 2 + (a.z - b.z) ^ 2 < 1.0
 	end
 	if left.target.engineEntity or right.target.engineEntity then
 		return left.target.engineEntity == right.target.engineEntity
@@ -434,6 +481,30 @@ function resolve()
 end
 
 -- Lights the eye when the cursor is over something with rows, predicates aside.
+-- Which context kinds this session has already reported on.
+local notedKinds = {}
+
+--- Says once, per kind, what a pick found -- and relays it where an operator is.
+--- `Open77.log` on a client writes to the PLAYER'S machine, which is why this
+--- goes through `OPX.Note` instead: a diagnostic nobody can read is not one.
+---
+--- IT STAYS. The scaffolding around it is gone -- a `Registry.List` sweep per
+--- owner that answered which rows a kind actually held, and whose own first
+--- version exceeded the instruction budget asking thirty times. This one line
+--- is what is left, and it is what found the defect it was built for: `a pick
+--- on sky matched 0 row(s)` against `a pick on self matched 13 row(s)` said, in
+--- the server journal, that the ray and the kind were fine and the rows were
+--- not there -- after an afternoon of guessing at the raycast, at `Matches` and
+--- at the ACL in turn, each of which looks identical from outside the client.
+---
+--- One note per kind per session, no sweep, no host read, and `OPX.Note` bounds
+--- it again at sixty a session.
+local function notedKind(kind, matched)
+	if notedKinds[kind] then return end
+	notedKinds[kind] = true
+	OPX.Note('target', ('a pick on %s matched %d row(s)'):format(kind, matched))
+end
+
 local function hover(payload)
 	if not opened or busy or selection ~= nil or payload.handle ~= handle then return end
 	if OPX.Now() - lastHover < HOVER_MS * 0.5 then return end
@@ -467,14 +538,35 @@ local function pick(payload)
 	local context = contextAt(x, y)
 	if context == nil then
 		busy = false
+		-- A ray that answered nothing at all is not the same as a ray that hit
+		-- something nobody has a row for, and the player sees one empty list
+		-- either way. Said once per session: a client whose raycast is refused
+		-- -- a missing grant, an option this build will not take -- otherwise
+		-- looks exactly like a world nobody registered anything in.
+		notedKind('none', 0)
 		send('target:empty', { handle = handle })
 		return
 	end
+
+	-- One sweep for the whole pick, inside Candidates.
+	local queue = Registry.Candidates(context)
+
+	-- WHAT THE RAY TOUCHED AND WHAT MATCHED IT, once per kind per session.
+	--
+	-- Everything between the key press and a drawn row is client-side, so when a
+	-- list comes up empty there is nothing an operator can read: the rows may be
+	-- unregistered, the context may be a kind nobody covers, or the ray may not
+	-- have produced a context at all, and all three look identical from the
+	-- outside. The three were guessed at in turn over one afternoon. This is the
+	-- one number that separates them, and it costs at most a handful of notes --
+	-- `OPX.Note` is bounded at sixty per session and this is bounded again by
+	-- the number of kinds.
+	notedKind(tostring(context.kind), #queue)
+
 	setPending({
 		request = request,
 		context = context,
-		-- One sweep for the whole pick, inside Candidates.
-		queue = Registry.Candidates(context),
+		queue = queue,
 		at = 1,
 		rows = {},
 		listed = {},
@@ -546,9 +638,29 @@ local function open()
 	handle = ('t%d'):format(sequence)
 	opened, selection, listed, busy = true, nil, {}, false
 	setPending(nil)
-	OPX.UI.AcquireFocus(FOCUS, { keyboard = true, cursor = true })
+	-- THE FOCUS IS TAKEN AFTER THE PAGE HAS THE OPEN, not before it. Taken
+	-- first, a page that never drew left the player holding keyboard and cursor
+	-- with nothing on screen -- the same ordering defect that was corrected in
+	-- `inventory`, left standing here. And `send` forwards BOTH of
+	-- `OPX.UI.Send`'s answers, of which the second says the host refused the
+	-- payload whole while reporting the send a success; `local drawn = send(...)`
+	-- threw that one away, so a refused open read as a drawn one.
+	-- CONTROLS FIRST, THEN THE PAGE, THEN THE FOCUS. Moving the send above the
+	-- controls to keep focus from being taken before anything was drawn put the
+	-- send above them TOO, and that cost two things: a refused `controls` left
+	-- the eye drawn for one frame before `close` tore it down -- a flicker on
+	-- every key press on a client without `players.controls` -- and `close`
+	-- reached `controls(false)` on a path where nothing had ever been taken.
+	-- `controls(false)` is `Open77.players.resetControls()`, which clears EVERY
+	-- control restriction this resource holds, not the ones this function set:
+	-- a player who is down, cuffed or in an animation would have got their aim
+	-- and their weapon back by pressing the target key.
+	--
+	-- Only the FOCUS has to wait for the draw, and only the focus does.
 	if not controls(true) then return close('controls_unavailable') end
-	local drawn = send('target:open', {
+	heldControls = true
+
+	local drawn, refused = send('target:open', {
 		handle = handle,
 		hoverMs = HOVER_MS,
 		labels = {
@@ -558,7 +670,8 @@ local function open()
 			back = locale('target.back'),
 		},
 	})
-	if not drawn then return close('no_surface') end
+	if not drawn or refused then return close(refused and 'payload_refused' or 'no_surface') end
+	OPX.UI.AcquireFocus(FOCUS, { keyboard = true, cursor = true })
 	TriggerEvent(EVENT_OPENED, { handle = handle })
 end
 
@@ -884,7 +997,7 @@ function M.Init()
 	MAX_OPTIONS = math.floor(tuned('MAX_OPTIONS', 32, 1, Model.MAX_TOTAL))
 	HOVER_MS = math.floor(tuned('HOVER_MS', 90, 30, 1000))
 	WATCH_MS = math.floor(tuned('WATCH_MS', 50, 10, 1000))
-	RESOLVE_MS = math.floor(tuned('RESOLVE_MS', 25, 0, 1000))
+	RESOLVE_MS = math.floor(tuned('RESOLVE_MS', 25, 1, 1000))
 	SWEEP_MS = math.floor(tuned('SWEEP_MS', 2000, 250, 60000))
 	REVALIDATE_MS = math.floor(tuned('REVALIDATE_MS', 200, 50, 5000))
 	LOOKUP_BUDGET_MS = math.floor(tuned('LOOKUP_BUDGET_MS', 1500, 100, 10000))
@@ -929,6 +1042,120 @@ function M.Api()
 	})
 end
 
+-- ── the eye's own row: who is this ───────────────────────────────────────────
+--
+-- THE OWNER: "en gors avec alt sur un joeuru tu peux recup c'est identifiant
+-- donc id serveur est id perso c'est tous". See the IDENTIFY block in
+-- `config/target.lua` for why this row lives in the eye and not in `character`:
+-- the short version is that `character` cannot depend on `target` without
+-- closing a cycle through `downed`, and the graph refuses a cycle by name.
+--
+-- BOTH VALUES ARE ALREADY ON THIS CLIENT. The character id is replicated on the
+-- player's own state bag -- it is what draws their nameplate -- so this row reads
+-- what is here rather than asking the server for something about somebody else.
+local IDENTIFY_OWNER = 'target'
+
+-- The player id the eye's context names, as a number.
+local function identifyTarget(context)
+	local subject = type(context) == 'table' and context.target or nil
+	if type(subject) ~= 'table' then return nil end
+	local id = tonumber(subject.playerId)
+	if id == nil or id <= 0 or id % 1 ~= 0 then return nil end
+	return id
+end
+
+-- The character id replicated for one player, or nil when the bag has not
+-- arrived. A player whose bag is silent is a player this row cannot answer
+-- about, which is the honest answer rather than a blank line.
+local function citizenOf(playerId)
+	local character = OPX.Api.Get('character')
+	if type(character) ~= 'table' or type(character.GetPlayerIdentity) ~= 'function' then
+		return nil
+	end
+	local read, identity = pcall(character.GetPlayerIdentity, playerId)
+	if not read or type(identity) ~= 'table' then return nil end
+	return identity.citizenId
+end
+
+-- Puts one line on the clipboard, and answers whether it went. A host with no
+-- clipboard costs the copy and not the row: the identifiers are still on screen.
+local function copy(line)
+	local clipboard = Open77.clipboard
+	if type(clipboard) ~= 'table' or type(clipboard.setText) ~= 'function' then
+		return false
+	end
+	local wrote, ok = pcall(clipboard.setText, line)
+	return wrote and ok == true
+end
+
+-- Registers the row, if the config asks for it. On a thread with a `Wait(0)`,
+-- because `RegisterMany` is all-or-nothing and its refusal is written to a log
+-- on the player's own machine.
+local function registerIdentify()
+	local block = type(M.Settings.IDENTIFY) == 'table' and M.Settings.IDENTIFY or {}
+	if block.ENABLED == false then return end
+
+	local reach = OPX.Math.Finite(block.DISTANCE) or 12.0
+	reach = math.min(50.0, math.max(1.0, reach))
+
+	CreateThread(function()
+		Wait(0)
+		local answer = registerPlayers(IDENTIFY_OWNER, { M.IdentifyRow(reach) })
+		if answer == nil or answer.ok ~= true then
+			OPX.Note('target', ('the identify row was refused: %s')
+				:format(tostring(answer and answer.error)))
+		end
+	end)
+end
+
+--- The row itself, built rather than inlined so a test can ask it questions.
+--- `Registry.List` answers a projection with no predicates in it, so a row that
+--- is only ever a table literal inside a registration is a row whose
+--- `canInteract` and `onSelect` nothing can reach.
+-- @author dop42
+-- @param reach number metres
+-- @return table
+function M.IdentifyRow(reach)
+	return {
+			id = 'whoIsThis',
+			label = OPX.Locale.Text('target.identify.row'),
+			icon = 'tag',
+			order = 5,
+			distance = reach,
+			-- Offered only when there is something to answer with. A row that
+			-- appears and then says "unknown" teaches a player the feature is
+			-- broken; one that is simply absent teaches them the bag has not
+			-- arrived yet, which is what is true.
+			canInteract = function(context)
+				local who = identifyTarget(context)
+				return who ~= nil and citizenOf(who) ~= nil
+			end,
+			onSelect = function(context)
+				local who = identifyTarget(context)
+				if who == nil then return false end
+				local citizen = citizenOf(who)
+				if citizen == nil then return false end
+
+				local line = ('%d / %s'):format(who, citizen)
+				local copied = copy(line)
+				OPX.Toast.Show({
+					id = 'opx.target.identify',
+					kind = 'info',
+					title = OPX.Locale.Text('target.identify.title'),
+					-- BOTH NUMBERS, NAMED. "id serveur est id perso": they are
+					-- different things with different lifetimes, and a toast that
+					-- printed two bare values would leave the reader guessing
+					-- which was which.
+					message = OPX.Locale.Text(
+						copied and 'target.identify.copied' or 'target.identify.shown',
+						{ server = tostring(who), citizen = citizen }),
+					durationMs = 8000,
+				})
+				return true
+			end,
+	}
+end
+
 --- Wires the page, claims the key and starts the two jobs.
 -- @author dop42
 function M.Start()
@@ -936,6 +1163,8 @@ function M.Start()
 	-- the half of this module that still works without a screen ray, and a stopped
 	-- owner's rows must not outlive it either way.
 	jobs[#jobs + 1] = OPX.Scheduler.Every('target:sweep', SWEEP_MS, sweep)
+
+	registerIdentify()
 
 	if not canPick() then
 		Open77.log.warn('this client has no screen picking: the target eye is off')

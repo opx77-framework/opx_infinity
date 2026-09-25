@@ -11,6 +11,18 @@
 --
 -- No foreign key: a spot is a place in the world and belongs to no character,
 -- which is also why deleting a character does not delete a garage.
+--
+-- THIS TABLE IS READ-ONLY NOW, and that is the migration rather than an
+-- oversight. `/opx.garages.add` and `.remove` wrote it, and both are gone: a
+-- garage is written in `config/garages.lua`. The `Upsert` and `Delete` that
+-- stood here went with them, because a writer with no caller is a writer the
+-- next reader wires a new command up to.
+--
+-- `FetchAll` and the CREATE stay, and they are the whole reason nothing is lost:
+-- the server adopts every row in here that config does not name, and prints the
+-- block that would check it in. Dropping the table would destroy the one copy of
+-- every spot an operator ever placed in game, so nothing here drops it -- an
+-- operator who has not yet checked their spots in can still roll back.
 
 local M = OPX.Modules.Get('garages')
 
@@ -48,39 +60,4 @@ SELECT spot_key, label, kind, x, y, z, heading, bucket, captured_by
   FROM opx77_garages
  ORDER BY created_at
   ]])
-end
-
---- Inserts a captured spot, or moves the one already under that key.
--- One statement rather than a select and a branch: two captures in the same tick
--- would both pass the select, and the primary key is the only thing that can
--- settle a key.
--- @author XEROX710
--- @param spot table normalised spot fields
--- @param citizenId string|nil who captured it
--- @return Result
-function M.Storage.Upsert(spot, citizenId)
-	return Storage.Execute([[
-INSERT INTO opx77_garages (spot_key, label, kind, x, y, z, heading, bucket, captured_by)
-VALUES (@key, @label, @kind, @x, @y, @z, @heading, @bucket, NULLIF(@citizen, ''))
-ON DUPLICATE KEY UPDATE label = @label, kind = @kind, x = @x, y = @y, z = @z,
-                        heading = @heading, bucket = @bucket
-  ]], {
-		key = spot.key,
-		label = spot.label,
-		kind = spot.kind,
-		x = spot.x,
-		y = spot.y,
-		z = spot.z,
-		heading = spot.heading,
-		bucket = spot.bucket,
-		citizen = citizenId ~= nil and tostring(citizenId) or '',
-	})
-end
-
---- Deletes a captured spot by its key.
--- @author XEROX710
--- @param key string
--- @return Result
-function M.Storage.Delete(key)
-	return Storage.Execute('DELETE FROM opx77_garages WHERE spot_key = @key', { key = key })
 end

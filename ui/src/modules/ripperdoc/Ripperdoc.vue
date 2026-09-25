@@ -329,7 +329,7 @@ onUnmounted(() => {
             </div>
             <div class="op-eyebrow state">
               <template v-if="mode === 'desk'">
-                {{ patientName ? t('ripperdoc.patient', { name: patientName }) : t('ripperdoc.noPatient') }}
+                {{ patientName ? t('ripperdoc.patient', { name: patientName }) : t('ripperdoc.vacant') }}
               </template>
               <template v-else-if="mode === 'invite'">
                 {{ t('ripperdoc.invite', { from }) }}
@@ -392,7 +392,7 @@ onUnmounted(() => {
                 </button>
               </div>
             </div>
-            <div v-else-if="busy" class="op-eyebrow working">{{ t('ripperdoc.busy') }}</div>
+            <div v-else-if="busy" class="op-eyebrow working">{{ t('ripperdoc.working') }}</div>
 
             <section v-for="entry in entries" :key="entry.id" class="entry">
               <div class="entry-head">

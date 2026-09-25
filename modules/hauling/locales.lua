@@ -53,6 +53,11 @@ local EN = {
 	['hauling.refused.no_character'] = 'Your record could not be read.',
 	['hauling.refused.job_required'] = 'You do not hold the job this site asks for.',
 	['hauling.refused.grade_too_low'] = 'Your grade is too low for this site.',
+	-- The two codes the shared job gate can answer that this module's own copy of
+	-- the rule never could: a site with ON_DUTY set, and a character record that
+	-- could not be read fresh enough to decide on.
+	['hauling.refused.off_duty'] = 'You would have to be on duty.',
+	['hauling.refused.job_stale'] = 'Your record could not be read. Try again.',
 	['hauling.refused.no_such_site'] = 'No such site.',
 	['hauling.refused.no_carry_config'] = 'This server has not said how a crate is carried.',
 }
@@ -92,6 +97,8 @@ local FR = {
 	['hauling.refused.no_character'] = "Votre fiche n'a pas pu être lue.",
 	['hauling.refused.job_required'] = "Vous n'exercez pas le métier demandé sur ce site.",
 	['hauling.refused.grade_too_low'] = 'Votre grade est trop bas pour ce site.',
+	['hauling.refused.off_duty'] = 'Il faudrait être en service.',
+	['hauling.refused.job_stale'] = "Votre fiche n'a pas pu être lue. Réessayez.",
 	['hauling.refused.no_such_site'] = "Ce site n'existe pas.",
 	['hauling.refused.no_carry_config'] = "Ce serveur n'a pas dit comment une caisse se porte.",
 }

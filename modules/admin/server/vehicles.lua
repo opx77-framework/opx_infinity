@@ -149,7 +149,14 @@ local function spawnFor(source, raw, owner, entry, event)
 	-- half-buried in it. `entry.av` is the catalogue's own answer, derived from the
 	-- record (see `Catalog.isAir`), so this is the same rule by which the row is
 	-- in the Air class and not a second list that could disagree with it.
-	local lift = entry.av and Server.Setting(settings.AV_LIFT, 1.2) or 0.0
+	--
+	-- `OPX.Vehicle.AvLift` AND NOT `Server.Setting`, which was the third copy of
+	-- this number and the one with no bound: the garage and the dealer both clamp
+	-- AV_LIFT to 0..10 and fall back to 1.2, and this read a plain numeric default,
+	-- so an operator who typed 500 in `config/admin.lua` dropped an AV from 500
+	-- metres here and got a quiet 1.2 from the other two. All three ship 1.2, which
+	-- is why it never showed.
+	local lift = entry.av and OPX.Vehicle.AvLift(settings.AV_LIFT) or 0.0
 	local vehicleId, reason = Open77.vehicles.create({
 		record = entry.record,
 		position = {

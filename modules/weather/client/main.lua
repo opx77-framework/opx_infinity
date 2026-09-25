@@ -500,6 +500,15 @@ function M.Stop()
 	-- back a lock that stopping has just released.
 	stopped = true
 	if not Projection.available then return end
-	Open77.environment.setTimeFrozen(false)
-	Open77.environment.setWeatherFrozen(false)
+	-- READ, because this is the hand-back and a silent refusal is a player left
+	-- with a frozen clock and a frozen sky after the resource has gone -- with
+	-- `reload_policy "reconnect"`, every change to the session's resource set
+	-- comes through here.
+	local timeOk = Open77.environment.setTimeFrozen(false)
+	local skyOk = Open77.environment.setWeatherFrozen(false)
+	if timeOk == false or skyOk == false then
+		Open77.log.error(('[weather] the engine was not given its clock and sky back ' ..
+			'(time=%s weather=%s); they stay as this resource left them')
+			:format(tostring(timeOk), tostring(skyOk)))
+	end
 end

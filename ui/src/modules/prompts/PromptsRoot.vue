@@ -184,7 +184,7 @@ onMounted(() => {
           :key="row.key"
           class="row"
           :class="{ dim: row.dim }"
-          :style="`--slot: ${at}`"
+          :style="`--op-slot: ${at}`"
         >
           <span class="caps">
             <span v-for="cap in row.caps" :key="cap.key" class="key">
@@ -264,8 +264,8 @@ onMounted(() => {
   opacity: 0;
   transform: translateY(var(--slide, 8px));
   transition:
-    opacity 190ms steps(3, end),
-    transform 190ms steps(3, end);
+    opacity var(--op-enter-ms) var(--op-stutter),
+    transform var(--op-enter-ms) var(--op-stutter);
 }
 
 .strip.open {
@@ -482,7 +482,7 @@ onMounted(() => {
 }
 
 .strip.open .row {
-  animation: prompt-in 190ms steps(3, end) backwards;
+  animation: prompt-in var(--op-enter-ms) var(--op-stutter) backwards;
   animation-delay: calc(var(--slot, 0) * 28ms + 40ms);
 }
 </style>

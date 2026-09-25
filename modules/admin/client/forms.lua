@@ -348,137 +348,33 @@ FORMS.time = {
 	end,
 }
 
--- ── the Dev forms ───────────────────────────────────────────────────────────
+-- ── the Dev forms are gone, and so is the screen that opened them ───────────
 --
--- WHAT THESE ARE FOR. The Dev screen runs the `garages` and `dealership`
--- commands, and every one of them takes an argument a row cannot hold: a kind, a
--- durable key, a label. So each row opens a form here and the form's answer IS
--- the command line -- the same words, in the same order, that the operator would
--- have typed. Nothing here can do something the chat command cannot, and the
--- ACL is still the server's: a form is a way to fill in arguments, never a way
--- around a grant.
+-- THE OWNER'S WORDS, 2026-09-21: "il y a pas de config live c'est tous par les
+-- fichier config donc degage moi ce menu est pass moi tous dans les config".
+-- The Dev screen read as a place a server is CONFIGURED from, and this server is
+-- not configured from a menu: every place in it is a line in `config/`.
 --
--- THE KIND IS A PICKER AND NOT A TYPED WORD. The vocabulary is exactly two
--- words, a `garage` sells ground vehicles and an `avpad` sells AVs, and a
--- mistyped one is refused by the command with a message about keys rather than
--- about kinds. A choice cannot be mistyped.
+-- Four forms stood here and all four went with it:
 --
--- THE OPTIONAL FIELDS ARE APPENDED ONLY WHEN FILLED. An empty token is an empty
--- POSITIONAL argument, and the command reads positionals: a blank label would
--- land as the next argument along, and a blank plate would ask for a vehicle
--- whose plate is the empty string.
-
--- Key and label lengths, from the columns that own them: a spot key and a stock
--- key are 48 characters in both modules, a label 64, a plate 16.
-local MAX_KEY, MAX_LABEL, MAX_PLATE = 48, 64, 16
-
--- The two kinds, as the picker draws them.
-local function kindOptions()
-	return {
-		{ label = locale('admin.field.kindGarage'), value = 'garage' },
-		{ label = locale('admin.field.kindAvpad'), value = 'avpad' },
-	}
-end
-
-local function kindField()
-	return { id = 'kind', label = locale('admin.field.kind'), options = kindOptions() }
-end
-
-local function keyField()
-	return text('key', 'admin.field.key', { charset = 'name', maxLength = MAX_KEY, required = true })
-end
-
-local function labelField()
-	return text('label', 'admin.field.label', { charset = 'name', maxLength = MAX_LABEL })
-end
-
--- Appends a value only when it was filled in.
-local function with(tokens, value)
-	if type(value) == 'string' and value ~= '' then tokens[#tokens + 1] = value end
-	return tokens
-end
-
-FORMS.garageAdd = {
-	build = function()
-		return { title = locale('admin.form.garageAdd'),
-			description = locale('admin.form.garageAddHint'),
-			fields = { kindField(), keyField(), labelField() } }
-	end,
-	submit = function(values)
-		local tokens = { Command.GARAGES_ADD, values.kind }
-		with(tokens, values.key)
-		with(tokens, M.Trimmed(values.label, MAX_LABEL))
-		menu().Run(tokens)
-	end,
-}
-
-FORMS.garageRemove = {
-	build = function()
-		return { title = locale('admin.form.garageRemove'),
-			description = locale('admin.form.garageRemoveHint'),
-			fields = { keyField() } }
-	end,
-	submit = function(values)
-		menu().Run({ Command.GARAGES_REMOVE, values.key })
-	end,
-}
-
-FORMS.garageBring = {
-	build = function()
-		return { title = locale('admin.form.garageBring'),
-			description = locale('admin.form.garageBringHint'),
-			fields = { keyField(),
-				text('plate', 'admin.field.plate', { charset = 'name', maxLength = MAX_PLATE }) } }
-	end,
-	submit = function(values)
-		local tokens = { Command.GARAGES_BRING, values.key }
-		with(tokens, M.Trimmed(values.plate, MAX_PLATE))
-		menu().Run(tokens)
-	end,
-}
-
-FORMS.dealerAdd = {
-	build = function()
-		return { title = locale('admin.form.dealerAdd'),
-			description = locale('admin.form.dealerAddHint'),
-			fields = { kindField(), keyField(), labelField() } }
-	end,
-	submit = function(values)
-		local tokens = { Command.DEALERSHIP_ADD, values.kind }
-		with(tokens, values.key)
-		with(tokens, M.Trimmed(values.label, MAX_LABEL))
-		menu().Run(tokens)
-	end,
-}
-
-FORMS.dealerRemove = {
-	build = function()
-		return { title = locale('admin.form.dealerRemove'),
-			description = locale('admin.form.dealerRemoveHint'),
-			fields = { keyField() } }
-	end,
-	submit = function(values)
-		menu().Run({ Command.DEALERSHIP_REMOVE, values.key })
-	end,
-}
-
-FORMS.dealerBuy = {
-	build = function()
-		return { title = locale('admin.form.dealerBuy'),
-			description = locale('admin.form.dealerBuyHint'),
-			fields = {
-				text('entry', 'admin.field.entry',
-					{ charset = 'name', maxLength = MAX_KEY, required = true }),
-				text('garage', 'admin.field.garage',
-					{ charset = 'name', maxLength = MAX_KEY }),
-			} }
-	end,
-	submit = function(values)
-		local tokens = { Command.DEALERSHIP_BUY, values.entry }
-		with(tokens, M.Trimmed(values.garage, MAX_KEY))
-		menu().Run(tokens)
-	end,
-}
+--   `previewPlace` / `previewRemove` ended in a CONTRACT CALL on the
+--   dealership's client half rather than in a command line, which was the one
+--   place this file broke its own rule. They wrote a showroom car into
+--   `opx77_dealership_previews` -- a place nobody has a copy of, which is the
+--   exact thing `/opx.dealership.add` was deleted for. A showroom car is
+--   declared in `PREVIEW.POINTS` in `config/dealership.lua` now, and the server
+--   prints every database-only one at boot as the config line that recreates it.
+--
+--   `garageBring`, `dealerBuy` and the two list rows beside them were not
+--   configuration at all -- they are the commands `opx.garages.bring`,
+--   `opx.dealership.buy`, `.list` and `.stock`, which are still registered and
+--   still ACL-gated. An operator types them, which is what the form was typing
+--   for them.
+--
+-- `MAX_KEY`, `MAX_PLATE`, `keyField`, `with`, `dealership` and `reported` were
+-- read by those six and nothing else, so they went with them. If a Dev-shaped
+-- form ever comes back, it comes back around a COMMAND: a contract call from a
+-- client is no permission check at all.
 
 -- Turns one answer into its command, or brings the menu back.
 local function onAnswer(payload)

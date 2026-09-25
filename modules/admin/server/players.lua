@@ -406,15 +406,35 @@ function Players.Register()
 		end,
 	})
 
+	-- THE CAPTURE PATH, and since 2026-09-21 the only one this resource has.
+	--
+	-- The owner deleted the staff menu's Dev screen that day -- "il y a pas de
+	-- config live c'est tous par les fichier config donc degage moi ce menu est
+	-- pass moi tous dans les config" -- and with it the two rows that turned
+	-- where an operator was standing into a showroom car in a database. Every
+	-- place on this server is a line in `config/` now, so the question "how do I
+	-- get the coordinates of where I am standing into that file" has exactly one
+	-- answer, and this is it. `config/admin.lua`, `config/dealership.lua`,
+	-- `config/garages.lua` and `config/teleports.lua` all name it.
+	--
+	-- THE FACING IS REAL NOW and used to be a hardcoded `0.0`. A garage EXIT, a
+	-- dealer and a showroom car are all created AT a yaw, so a capture with no
+	-- facing in it made three quarters of a config row and left the operator to
+	-- guess the rest. `Server.HeadingOf` reads it off the rich player snapshot.
+	-- On a host too old to answer one it comes back nil, and the operator is told
+	-- in as many words rather than handed a zero that looks like a reading.
 	Server.Command(Command.SELF_POS, {
 		help = 'admin.help.pos', inGame = true, read = true,
 		handler = function(source, _, raw)
 			local position = Server.PositionOf(source)
 			if position == nil then return refuse(source, raw, 'no_position') end
-			local row = ('{ NAME = "here", LABEL = "Here", X = %.2f, Y = %.2f, Z = %.2f, HEADING = 0.0 },')
-				:format(position.x, position.y, position.z)
+			local heading = position.heading
+			local row = ('{ NAME = "here", LABEL = "Here", X = %.2f, Y = %.2f, Z = %.2f, ' ..
+				'HEADING = %.1f },'):format(position.x, position.y, position.z, heading or 0.0)
 			travel(source, 'copy', row)
-			answer(source, raw, true, 'admin.done.pos', { row = row, bucket = position.bucket })
+			answer(source, raw, true,
+				heading ~= nil and 'admin.done.pos' or 'admin.done.posNoHeading',
+				{ row = row, bucket = position.bucket })
 		end,
 	})
 

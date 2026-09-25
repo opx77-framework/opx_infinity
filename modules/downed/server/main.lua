@@ -43,16 +43,14 @@ local lastRequest = {}
 -- The character contract, looked up in `Start`.
 local character
 
--- Answers a value as a finite number, or nil.
-local function finite(value)
-	local number = tonumber(value)
-	if not OPX.Math.IsFinite(number) then return nil end
-	return number
-end
+-- Answers a value as a finite number, or nil. Named for what it RETURNS: four
+-- other files use a local called `finite` for the predicate, and one name for
+-- both is an `if finite(x) then` that is true for nil.
+local finiteNumber = OPX.Math.Finite
 
 -- Bounds a value to low..high, using the fallback when it is not finite.
 local function clamp(value, low, high, fallback)
-	return OPX.Math.Clamp(finite(value) or fallback, low, high)
+	return OPX.Math.Clamp(finiteNumber(value) or fallback, low, high)
 end
 
 -- One audit line, info when the thing happened and warn when it did not.
@@ -99,9 +97,9 @@ end
 local function positionOf(playerId)
 	local read, position = pcall(Open77.players.position, playerId)
 	if not read or type(position) ~= 'table' then return nil end
-	local x, y, z = finite(position.x), finite(position.y), finite(position.z)
+	local x, y, z = finiteNumber(position.x), finiteNumber(position.y), finiteNumber(position.z)
 	if x == nil or y == nil or z == nil then return nil end
-	return { x = x, y = y, z = z, bucket = math.floor(finite(position.bucket) or 0) }
+	return { x = x, y = y, z = z, bucket = math.floor(finiteNumber(position.bucket) or 0) }
 end
 
 -- The ids of every connected player.
@@ -257,15 +255,15 @@ local function nearestHospital(origin)
 	local rows = M.Settings.HOSPITALS
 	local best, bestDistance
 	for _, row in ipairs(type(rows) == 'table' and rows or {}) do
-		local x, y, z = finite(row.X), finite(row.Y), finite(row.Z)
+		local x, y, z = finiteNumber(row.X), finiteNumber(row.Y), finiteNumber(row.Z)
 		if x and y and z then
 			local distance = 0
-			if origin and finite(origin.x) and finite(origin.y) then
+			if origin and finiteNumber(origin.x) and finiteNumber(origin.y) then
 				local dx, dy = x - origin.x, y - origin.y
 				distance = dx * dx + dy * dy
 			end
 			if best == nil or distance < bestDistance then
-				best = { x = x, y = y, z = z, heading = finite(row.HEADING) or 0.0, label = row.LABEL }
+				best = { x = x, y = y, z = z, heading = finiteNumber(row.HEADING) or 0.0, label = row.LABEL }
 				bestDistance = distance
 			end
 		end

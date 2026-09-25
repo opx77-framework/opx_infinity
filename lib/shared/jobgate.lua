@@ -1,15 +1,25 @@
---- The one job gate: does this character snapshot satisfy a job requirement.
+--- The job gate: does this character snapshot satisfy a job requirement.
 -- @author dop42
 --
--- FACTORED OUT OF `modules/elevators/shared/access.lua`, WHICH WROTE IT FIRST,
--- and moved here the moment a second module wanted the same rule. The elevators
--- copy was the only one on disk; `modules/teleports` needed it verbatim --
--- `JOBS = { name = minimumGrade }`, an `ON_DUTY` flag, a staleness bound, a
--- primary-job-versus-any-membership distinction and a refusal that names the
--- CLOSEST near-miss -- and a second hand-kept copy of a five-branch access rule
--- is how two surfaces end up disagreeing about who may pass. `core/shared/glyphs.lua`
--- is the same story told about icons: three copies, 47 names, 45 and 14, and no
--- test looking.
+-- THE RULE IS THAT A `JOBS` BLOCK MEANS ONE THING. Wherever a surface in this
+-- resource is gated by `JOBS = { name = minimumGrade }` beside an `ON_DUTY`
+-- flag, it is decided here and not in the module: the staleness bound, the
+-- primary-job-versus-any-membership distinction, the public-stays-open rule and
+-- a refusal that names the CLOSEST near-miss are one decision, and a module that
+-- keeps its own copy of five branches is how two surfaces end up disagreeing
+-- about who may pass. `modules/elevators/shared/access.lua` wrote it first and it
+-- moved here the moment a second module wanted it; it has since been rewritten
+-- by hand twice more by modules that merged in parallel, each time losing a
+-- branch, which is the argument restated rather than a reason to stop making it.
+-- `core/shared/glyphs.lua` is the same story told about icons: three copies, 47
+-- names, 45 and 14, and no test looking.
+--
+-- WHAT IS NOT THIS. `modules/shops` gates on a job too and does NOT come through
+-- here: it asks `character.HasJob` per job name, which is the character module's
+-- own in-memory read of its own roster. That is a different question -- a
+-- boolean about a live player, with no snapshot, no age and no refusal code --
+-- and asking the owner of the data is a legitimate answer to it. What would not
+-- be legitimate is a third way of spelling the same five branches.
 --
 -- WHAT A SNAPSHOT IS. The job fields of a loaded character, plus the millisecond
 -- it was read at:
@@ -41,18 +51,13 @@ local RANK = { off_duty = 3, grade_too_low = 2, job_required = 1 }
 -- that still closes rather than an index of nil.
 local NO_POLICY = {}
 
--- Coerces to a number, rejecting NaN and both infinities. Kept local rather
--- than folded into `OPX.Text.Finite`, which also caps at 2^53: a millisecond
--- clock is measured with this and must not be bounded like a coordinate. It is
--- the same helper `modules/elevators/shared/access.lua` keeps, for the same
--- stated reason.
-local function finiteNumber(value)
-	value = tonumber(value)
-	if value == nil or value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
-end
+-- Coerces to a finite number, or nil. `OPX.Math.Finite` and not
+-- `OPX.Text.Finite`, which also caps at 2^53: a yaw, a price and a millisecond
+-- clock are all measured with this and must not be bounded like a coordinate.
+-- It was written out by hand here, and identically in ten other files, under
+-- that same correct reasoning -- which is an argument for one helper and never
+-- was one for eleven copies.
+local finiteNumber = OPX.Math.Finite
 
 -- The grade of a job this character holds, or nil for one they do not.
 --
@@ -116,8 +121,20 @@ function OPX.JobGate.Evaluate(requirement, snapshot, nowMs, policy)
 	-- argument -- took down whatever network handler was asking. Refusing a gated
 	-- surface is the safe direction and it is the one branch of this function
 	-- that changed in the move.
+	-- TESTED IN BOTH DIRECTIONS. `at - atMs > maxAgeMs` is a one-sided test: a
+	-- snapshot stamped in the FUTURE gives a negative age and passes every
+	-- maximum there is. This file says a gated requirement "closes on every
+	-- doubt", and a timestamp that has not happened yet is not a doubt this
+	-- should be resolving in the caller's favour. Every adapter today builds its
+	-- snapshot from the server roster with `atMs = OPX.Now()`, so this is the
+	-- trap being closed rather than a hole being plugged -- and it is exactly
+	-- the sort of thing that stops being true the day one of them takes a
+	-- snapshot a client sent.
 	local at = finiteNumber(nowMs)
-	if at == nil or at - atMs > maxAgeMs then return false, 'job_stale' end
+	local stamped = finiteNumber(atMs)
+	if at == nil or stamped == nil or stamped > at or at - stamped > maxAgeMs then
+		return false, 'job_stale'
+	end
 	if type(snapshot.job) ~= 'table' then return false, 'no_character' end
 
 	local worst, worstRank = 'job_required', RANK.job_required

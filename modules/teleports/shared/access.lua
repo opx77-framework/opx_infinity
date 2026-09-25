@@ -27,44 +27,31 @@ local Access = M.Access
 
 local Config = type(M.Settings) == 'table' and M.Settings or {}
 
--- Coerces to a number, rejecting NaN and both infinities. Kept module-local
--- rather than folded into `OPX.Text.Finite`, which also caps at 2^53: a
--- millisecond clock is measured with this and must not be bounded like a
--- coordinate. `modules/elevators/shared/access.lua` keeps the same helper for
--- the same stated reason.
-local function finiteNumber(value)
-	value = tonumber(value)
-	if value == nil or value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
-end
+-- Coerces to a finite number, or nil. `OPX.Math.Finite` and not
+-- `OPX.Text.Finite`, which also caps at 2^53: a yaw, a price and a millisecond
+-- clock are all measured with this and must not be bounded like a coordinate.
+local finiteNumber = OPX.Math.Finite
 Access.FiniteNumber = finiteNumber
 
--- Box every accepted coordinate fits in, and the %d ceiling in the messages.
-local BOUND = 1000000
+-- The world box, the two coercions over it and the engine's marker vocabulary,
+-- all in `lib/shared/spots.lua`.
+--
+-- ONLY THOSE. A TELEPORT IS NOT A SPOT: it is a point with TWO ends and a leg,
+-- and `FromDefinition`, `Coerce`, `Entrance`, `Nearest` and `InBucket` below are
+-- about that shape and not about the placed-spot record `garages`, `dealership`
+-- and `clothing` share. Bending this module onto that record would have needed a
+-- parameter per difference -- two positions, two labels, a leg, a vertical band,
+-- a two-key sort -- which is a shared function with nothing left to say. The
+-- coordinate box and the marker look ARE the same question, so they come from
+-- there.
+Access.Coordinate = OPX.Spots.Coordinate
+Access.Integer = OPX.Spots.Integer
+local coordinate, integer = Access.Coordinate, Access.Integer
 
--- Coerces a world coordinate: finite and inside BOUND.
-local function coordinate(value)
-	local parsed = finiteNumber(value)
-	if parsed == nil or parsed > BOUND or parsed < -BOUND then return nil end
-	return parsed
-end
-Access.Coordinate = coordinate
+-- The %d ceiling quoted in this module's own refusal messages.
+local BOUND = OPX.Spots.BOUND
 
--- Coerces a whole number inside BOUND.
-local function integer(value)
-	local parsed = coordinate(value)
-	if parsed == nil or parsed % 1 ~= 0 then return nil end
-	return math.floor(parsed)
-end
-Access.Integer = integer
-
--- The engine's own marker vocabulary. A style or a shape outside these sets is
--- refused by `Open77.markers` with a status, so picking one here would only move
--- the refusal to a place with less to say about it.
-local SHAPES = { ring = true, cylinder = true }
-local STYLES = { interaction = true, objective = true, spawn = true, danger = true }
+local STYLES = OPX.Spots.STYLES
 
 --- The largest allowed teleport key, and the longest label kept.
 Access.MAX_KEY = 48
@@ -430,43 +417,33 @@ function Access.AtEntrance(entrance, x, y, z, bucket)
 	return true, nil
 end
 
+-- What a marker falls back to when the operator named nothing usable. A teleport
+-- pad is a small cylinder: a player must stand ON it, and a wide ring would
+-- invite them to stand in a hole the trigger does not cover.
+local FALLBACK = { shape = 'cylinder', style = 'interaction', RADIUS = 1.2 }
+
 --- The marker an entrance is drawn with, open or locked.
--- Falls back per field rather than as a block, so a config that names a good
--- shape and a bad style keeps the shape. The lift is part of the look and not of
--- the teleport: a ring that is not lifted off the floor is co-planar with it and
--- draws nothing at all.
+-- The per-field fallback and the ground lift are `lib/shared/spots.lua`. The
+-- LOCKED override is this module's own and stays here: no other module draws a
+-- refusal it will still let a player walk up to.
 -- @author dop42
 -- @param locked boolean|nil
 -- @return table shape, style, radius, lift
 function Access.Marker(locked)
-	local declared = type(Config.MARKER) == 'table' and Config.MARKER or {}
-	local shape = type(declared.shape) == 'string' and declared.shape:lower() or 'cylinder'
-	if not SHAPES[shape] then shape = 'cylinder' end
-	local style = type(declared.style) == 'string' and declared.style:lower() or 'interaction'
-	if not STYLES[style] then style = 'interaction' end
+	local look = OPX.Spots.Marker(Config.MARKER, FALLBACK, Config.GROUND_OFFSET)
 	if locked then
 		local refused = type(Config.LOCKED_STYLE) == 'string' and Config.LOCKED_STYLE:lower()
 			or 'danger'
-		style = STYLES[refused] and refused or 'danger'
+		look.style = STYLES[refused] and refused or 'danger'
 	end
-
-	local radius = finiteNumber(declared.RADIUS)
-	if radius == nil or radius < 0.1 or radius > 50.0 then radius = 1.2 end
-
-	-- 0 is a real choice -- a marker deliberately on the floor -- so only a
-	-- broken value falls back.
-	local lift = finiteNumber(Config.GROUND_OFFSET)
-	if lift == nil or lift < 0.0 or lift > 2.0 then lift = 0.06 end
-	return { shape = shape, style = style, radius = radius, lift = lift }
+	return look
 end
 
 --- How far away a marker is still drawn, clamped to what the engine accepts.
 -- @author dop42
 -- @return number
 function Access.MaxDistance()
-	local distance = finiteNumber(Config.MAX_DISTANCE)
-	if distance == nil or distance < 1.0 or distance > 500.0 then return 120.0 end
-	return distance
+	return OPX.Spots.MaxDistance(Config.MAX_DISTANCE, 120.0)
 end
 
 --- Whether a refused entrance is still drawn at all.
@@ -520,14 +497,10 @@ function Access.Problems()
 			'which is the range the arrival watch accepts'
 	end
 
-	local distance = finiteNumber(Config.MAX_DISTANCE)
-	if distance == nil or distance < 1.0 or distance > 500.0 then
-		lines[#lines + 1] = 'MAX_DISTANCE must be a finite number, 1 to 500 metres'
-	end
-	local groundOffset = finiteNumber(Config.GROUND_OFFSET)
-	if groundOffset == nil or groundOffset < 0.0 or groundOffset > 2.0 then
-		lines[#lines + 1] = 'GROUND_OFFSET must be a finite number, 0 to 2 metres'
-	end
+	-- The draw distance and the ground offset are reported against the same
+	-- bounds `Access.Marker` and `Access.MaxDistance` clamp to, because they are
+	-- literally the same constants.
+	OPX.Spots.DrawProblems(Config.MAX_DISTANCE, Config.GROUND_OFFSET, lines)
 
 	if Config.DENIED ~= 'shown' and Config.DENIED ~= 'hidden' then
 		lines[#lines + 1] = 'DENIED must be shown or hidden'
@@ -536,23 +509,7 @@ function Access.Problems()
 		lines[#lines + 1] = 'MEMBERSHIP must be primary or any'
 	end
 
-	local declared = type(Config.MARKER)
-	if declared ~= 'table' then
-		lines[#lines + 1] = 'MARKER must be a table of shape, style and RADIUS'
-	else
-		local shape = type(Config.MARKER.shape) == 'string' and Config.MARKER.shape:lower() or nil
-		if shape ~= nil and not SHAPES[shape] then
-			lines[#lines + 1] = 'MARKER.shape must be ring or cylinder'
-		end
-		local style = type(Config.MARKER.style) == 'string' and Config.MARKER.style:lower() or nil
-		if style ~= nil and not STYLES[style] then
-			lines[#lines + 1] = 'MARKER.style must be interaction, objective, spawn or danger'
-		end
-		local radius = finiteNumber(Config.MARKER.RADIUS)
-		if radius == nil or radius < 0.1 or radius > 50.0 then
-			lines[#lines + 1] = 'MARKER.RADIUS must be a finite number, 0.1 to 50'
-		end
-	end
+	OPX.Spots.MarkerProblems(Config.MARKER, 'MARKER', lines)
 	local lockedStyle = type(Config.LOCKED_STYLE) == 'string' and Config.LOCKED_STYLE:lower()
 		or nil
 	if lockedStyle ~= nil and not STYLES[lockedStyle] then

@@ -226,62 +226,25 @@ M.Command = {
 	READ_STATUS = 'opx.admin.read.status',
 	READ_AUDIT = 'opx.admin.read.audit',
 
-	-- THE DEV GROUP IS A SECOND VOCABULARY, and it is the only one above that this
-	-- module does not register. These are the commands of `garages` and
-	-- `dealership` -- the ones that PLACE something in the world -- and the Dev
-	-- screen runs them so an operator does not have to keep a chat line in their
-	-- head. The values here are the FALLBACK: the loop below takes the live name
-	-- out of each owner's own config, so a rename there lands on the Dev screen
-	-- without an edit here, and a row can never name a command nobody registers.
-	GARAGES_ADD = 'opx.garages.add',
-	GARAGES_REMOVE = 'opx.garages.remove',
-	GARAGES_LIST = 'opx.garages.list',
-	GARAGES_BRING = 'opx.garages.bring',
-	DEALERSHIP_ADD = 'opx.dealership.add',
-	DEALERSHIP_REMOVE = 'opx.dealership.remove',
-	DEALERSHIP_LIST = 'opx.dealership.list',
-	DEALERSHIP_STOCK = 'opx.dealership.stock',
-	DEALERSHIP_BUY = 'opx.dealership.buy',
+	-- THE DEV GROUP STOOD HERE AND IS GONE. It was a SECOND VOCABULARY -- five
+	-- command names belonging to `garages` and `dealership`, which this module
+	-- does not register -- and the Dev screen was the only thing that read them:
+	-- it ran those commands so an operator did not have to keep a chat line in
+	-- their head. The owner deleted that screen on 2026-09-21 ("il y a pas de
+	-- config live c'est tous par les fichier config donc degage moi ce menu est
+	-- pass moi tous dans les config"), and with it the last reader.
+	--
+	-- `opx.garages.list`, `opx.garages.bring`, `opx.dealership.list`, `.stock`
+	-- and `.buy` are all still registered by the modules that own them and are
+	-- still ACL-gated by the host. Nothing about them changed; an operator types
+	-- them, which is what the rows were typing on their behalf.
+	--
+	-- GOING WITH IT: the loop underneath, which read `COMMANDS` out of two other
+	-- modules' config at load. That was a written-down exception to the one rule
+	-- `config/entry.lua` states outright -- "a module may not read another
+	-- module's settings" -- and its own note said it should end "when the Dev
+	-- group next needs work". This was that.
 }
-
--- The live names of the Dev group, read from the modules that own them.
---
--- THIS BREAKS THE ONE RULE `config/entry.lua` STATES OUTRIGHT -- "a module may
--- not read another module's settings, so the two are kept in step by hand" --
--- and it is written down here rather than left for the next reader to notice.
--- It is a considered exception, not an oversight, and these are its terms:
---
---   * the names are needed at LOAD, to build `M.Command`, and a contract is not
---     resolvable until Start. Fixing it properly means moving the Dev group's
---     rows to Start-time resolution, which is a change to the admin menu and
---     not to this block.
---   * every `config/*.lua` is a manifest script ahead of every
---     `modules/*/module.lua`, so both COMMANDS tables exist by the time this
---     file runs. A module switched off or absent still HAS its config: the
---     platform loads the file, and `enabled = false` stops the module.
---   * a config that lost its COMMANDS block leaves the fallback above standing,
---     so the worst case is a row that runs the documented name.
---
--- What it costs is the thing the rule protects: rename a command in
--- `config/garages.lua` and this table silently keeps pointing at the old name
--- until somebody presses the row. `garages` and `dealership` both publish a
--- contract; when the Dev group next needs work, that is where these belong.
-do
-	local groups = {
-		garages = { add = 'GARAGES_ADD', remove = 'GARAGES_REMOVE', list = 'GARAGES_LIST',
-			bring = 'GARAGES_BRING' },
-		dealership = { add = 'DEALERSHIP_ADD', remove = 'DEALERSHIP_REMOVE',
-			list = 'DEALERSHIP_LIST', stock = 'DEALERSHIP_STOCK', buy = 'DEALERSHIP_BUY' },
-	}
-	for moduleId, wanted in pairs(groups) do
-		local owner = OPX.Config.MODULES[moduleId]
-		local commands = type(owner) == 'table' and owner.COMMANDS or nil
-		for key, name in pairs(wanted) do
-			local value = type(commands) == 'table' and commands[key] or nil
-			if type(value) == 'string' and value ~= '' then M.Command[name] = value end
-		end
-	end
-end
 
 --- The tunables this module contributes to the operator panel.
 -- Declared once, from the server's `Init`, with the configured value as the

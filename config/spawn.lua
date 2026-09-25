@@ -66,7 +66,13 @@ OPX.Config.MODULES.spawn = {
 	-- never guessed at: 'firstspawn', 'once' and true are each a typo, and a typo
 	-- that silently turned the menu off would look exactly like the module being
 	-- broken.
-	OFFER_POLICY = 'always',
+	-- THE OWNER: "active le config pour pas que cela me propose de choisir mon
+	-- spwan a chaque connection cela me remet au lieu de dernier connexion".
+	-- That is this setting and nothing else -- 'first' asks once, at character
+	-- creation, and a returning character resumes where its row says it was
+	-- standing when it left. The paragraph above calls this the roleplay answer
+	-- and it is the one this server wants.
+	OFFER_POLICY = 'first',
 
 	-- How long a player has to pick before the server places them at
 	-- `character.DEFAULT_SPAWN` and takes the menu down. This is the ONLY thing

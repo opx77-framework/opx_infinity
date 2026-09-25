@@ -182,6 +182,23 @@ function OPX.Buckets.Move(source, bucket, why)
 
 	-- A warning and not a debug line: the player is then waiting in the wrong
 	-- world, or walking into it.
+	--
+	-- UNLESS THEY HAVE ALREADY LEFT, in which case there is no wrong world to
+	-- wait in. `M.Logout` isolates on the way out, and it serves two callers: a
+	-- player SWITCHING character, who is still on the slot and for whom a failed
+	-- move matters, and a player DISCONNECTING, whose slot the host has already
+	-- given up. The second cannot succeed and does not need to, and it filed a
+	-- warning on every single departure -- three in one minute on a quiet
+	-- evening, each one reading like a fault in the routing.
+	--
+	-- The host is the authority on whether the slot is still occupied: it stops
+	-- vouching for an identity the moment the connection is gone.
+	if OPX.UserIdOf(source) == nil then
+		Open77.log.debug(('[bucket] %s was not moved from %s to %s (%s): the slot is gone')
+			:format(tostring(source), tostring(from), tostring(bucket), why))
+		return false
+	end
+
 	Open77.log.warn(('[bucket] %s could not be moved from %s to %s (%s): %s')
 		:format(tostring(source), tostring(from), tostring(bucket), why,
 			tostring(called and reason or moved)))
@@ -198,13 +215,17 @@ end
 -- @param source Source
 -- @param why string|nil what the log line says the move was for
 -- @return boolean
-function OPX.Buckets.Isolate(source, why)
+function OPX.Buckets.Isolate(source, why, expectedUserId)
 	source = tonumber(source)
 	local bucket = source and selectionOf(source)
 	if bucket == nil then return false end
 
 	local session = OPX.Sessions[source]
 	if not session or session.departing then return false end
+	-- The same check `OPX.Gate.Release` makes, for the same reason: this is
+	-- called from paths that yield, and a slot recycled in between would put
+	-- the player who now holds it into a selection bucket of their own.
+	if expectedUserId ~= nil and session.userId ~= expectedUserId then return false end
 
 	prepare(bucket)
 	return Buckets.Move(source, bucket, why or 'isolated')
@@ -217,9 +238,22 @@ end
 -- @author dop42
 -- @param source Source
 -- @param why string|nil what the log line says the move was for
+-- @param expectedUserId string|nil the account the caller loaded a character
+--        for; a slot that belongs to anybody else by now is left alone
 -- @return boolean ok
 -- @return boolean moved
-function OPX.Buckets.Release(source, why)
+function OPX.Buckets.Release(source, why, expectedUserId)
+	-- WHOSE SLOT IS THIS. This moved whoever stood on the slot into the world,
+	-- checking nothing at all, and it is called from the end of the entry
+	-- sequence -- after every database read that yields. Paired with the gate
+	-- release beside it, a late arrival admitted the player who had taken the
+	-- recycled slot: out of their selection bucket AND through the gate, with no
+	-- character loaded. `Isolate` above makes the same check.
+	if expectedUserId ~= nil then
+		local session = OPX.Sessions[tonumber(source) or -1]
+		if not session or session.userId ~= expectedUserId then return false, false end
+	end
+
 	local held = current(source)
 	if held == nil or not Buckets.IsSelection(held) then return true, false end
 	local moved = Buckets.Move(source, world, why or 'released')

@@ -333,7 +333,20 @@ function World.RemoveDrop(id)
 	if not drop then return end
 	drops[id] = nil
 	if drop.propId and type(Open77.props) == 'table' and type(Open77.props.remove) == 'function' then
-		pcall(Open77.props.remove, drop.propId)
+		-- THE TYPE GUARD PROTECTS AGAINST A RAISE, NOT AGAINST A REFUSAL.
+		-- `Open77.props.remove` answers `true`, or `false` and a reason --
+		-- `not_found`, `permission_denied:world.props`, `world_unavailable` --
+		-- and the bare `pcall` discarded all three. The row above has already
+		-- gone from `drops`, so nothing can ever come back to this prop: what
+		-- stays in the world is a visible pile that cannot be picked up, for
+		-- everyone in the area, until the resource is restarted. It cannot be
+		-- retried from here, so it is named where an operator will find it.
+		local called, removed, why = pcall(Open77.props.remove, drop.propId)
+		if not called or removed ~= true then
+			Open77.log.error(('[inventory] pile %s left a prop in the world (%s); it is ' ..
+				'visible and cannot be picked up'):format(tostring(id),
+				tostring(called and why or removed)))
+		end
 	end
 	-- `Discard` and not `Unload`: a pile is never written, and this is reached from
 	-- a guarded sweep that must not yield.

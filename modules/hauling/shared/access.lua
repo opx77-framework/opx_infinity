@@ -24,43 +24,22 @@ Access.Config = Config
 Access.SITES = type(Config.SITES) == 'table' and Config.SITES or {}
 local SITES = Access.SITES
 
--- Box every accepted coordinate fits in.
-local BOUND = 1000000
-
---- Coerces to a number, rejecting NaN and both infinities.
--- @author dop42
--- @param value any
--- @return number|nil
-local function finiteNumber(value)
-	value = tonumber(value)
-	if value == nil or value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
-end
+-- Coerces to a finite number, or nil. `OPX.Math.Finite` and not
+-- `OPX.Text.Finite`, which also caps at 2^53: a yaw, a price and a millisecond
+-- clock are all measured with this and must not be bounded like a coordinate.
+local finiteNumber = OPX.Math.Finite
 Access.FiniteNumber = finiteNumber
 
---- Coerces a world coordinate: finite and inside BOUND.
--- @author dop42
--- @param value any
--- @return number|nil
-local function coordinate(value)
-	local parsed = finiteNumber(value)
-	if parsed == nil or parsed > BOUND or parsed < -BOUND then return nil end
-	return parsed
-end
-Access.Coordinate = coordinate
+-- The world box and the two coercions over it, in `lib/shared/spots.lua`. Only
+-- those: a hauling SITE is a run of pickup points and dropoffs with a vehicle
+-- and a pay rate, not a placed spot, and that record is its own. Where a
+-- coordinate stops being believable is the same question everywhere on one map.
+Access.Coordinate = OPX.Spots.Coordinate
+Access.Integer = OPX.Spots.Integer
+local coordinate, integer = Access.Coordinate, Access.Integer
 
---- Coerces a whole number inside BOUND.
--- @author dop42
--- @param value any
--- @return integer|nil
-local function integer(value)
-	local parsed = coordinate(value)
-	if parsed == nil or parsed % 1 ~= 0 then return nil end
-	return math.floor(parsed)
-end
-Access.Integer = integer
+-- The %d ceiling quoted in this module's own refusal messages.
+local BOUND = OPX.Spots.BOUND
 
 --- Whether a point is the unfilled blank this config ships with.
 --
@@ -69,10 +48,15 @@ Access.Integer = integer
 -- an unfilled template row is always exactly that. A tolerance here would
 -- eventually condemn a real point somebody stood on.
 --
--- This is the check `config/elevators.lua` did not have. Four lifts shipped with
--- positions that passed every shape test in that module's validator -- finite,
--- in range, fully formed -- and matched nothing in the world. No lift was ever
--- adopted, no panel ever opened, and nothing anywhere said why, for weeks.
+-- THE ZEROS ARE WHY THIS CHECK CAN EXIST AT ALL, and that is the lesson taken
+-- from `config/elevators.lua` rather than a check it was missing. Its four lifts
+-- ship PLAUSIBLE coordinates -- `X = -1521.40` and three more like it, carried
+-- over from a standalone resource that had said they were samples -- which no
+-- rule here or anywhere could tell from a surveyed position: they are finite, in
+-- range and fully formed, and they match nothing in Night City. No lift was ever
+-- adopted, no panel ever opened, and nothing anywhere said why, for weeks. So
+-- this config ships blanks instead of plausible numbers, precisely so that a
+-- blank is something a validator can see.
 -- @author dop42
 -- @param point table|nil
 -- @return boolean
@@ -315,6 +299,39 @@ function Access.Carry()
 	return { bone = bone or '', offset = offset, rotation = rotation }
 end
 
+--- Decides whether a character snapshot may work a site.
+--
+-- THE RULE ITSELF LIVES IN `lib/shared/jobgate.lua` and this is the adapter that
+-- names a SITE's fields to it. This module shipped its own fourth copy of the
+-- rule, and it silently dropped two things the identical config keys do on
+-- `elevators`, `teleports` and `gunsmith`: `ON_DUTY = true` was read by nobody,
+-- and a refusal named whichever job `pairs` reached first rather than the
+-- closest near-miss. A JOBS block must mean the same thing on every surface that
+-- accepts one, or the operator has to learn four rules that look like one.
+--
+-- NO STALENESS BOUND IS PASSED, on purpose. The other three modules read
+-- `JOB_MAX_AGE_MS` because a CLIENT holds a replicated snapshot that can be
+-- minutes old and draws a panel from it. Nothing on this module's client half
+-- reads a job: the gate is asked only by the server, off a snapshot stamped from
+-- the same clock read that is handed in as `nowMs`, so the age is exactly zero.
+-- A config knob that can never change an answer would be a lie in the config
+-- file.
+-- @author dop42
+-- @param site table|nil
+-- @param snapshot table|nil { job, jobs, atMs }
+-- @param nowMs number
+-- @return boolean
+-- @return string|nil no_such_site, no_character, job_stale, job_required,
+--   grade_too_low, off_duty
+function Access.Evaluate(site, snapshot, nowMs)
+	-- Closed for a site that is not a table: reading `site.JOBS` off a nil raises
+	-- out of whichever network handler was asking, and the three sibling adapters
+	-- all answer closed here.
+	if type(site) ~= 'table' then return false, 'no_such_site' end
+	return OPX.JobGate.Evaluate({ jobs = site.JOBS, onDuty = site.ON_DUTY }, snapshot, nowMs,
+		{ maxAgeMs = 0, membership = Config.MEMBERSHIP })
+end
+
 -- The site keys whose points are all readable, far enough apart and not
 -- placeholders. Built once at load: the refill pass walks it every minute, and a
 -- site condemned at boot must never be reconsidered by a later pass that forgot
@@ -402,6 +419,9 @@ function Access.Problems()
 	if Access.Carry() == nil then
 		lines[#lines + 1] = 'CARRY must name a BONE and finite OFFSET and ROTATION vectors'
 	end
+	if Config.MEMBERSHIP ~= 'primary' and Config.MEMBERSHIP ~= 'any' then
+		lines[#lines + 1] = 'MEMBERSHIP must be primary or any'
+	end
 
 	for key, site in pairs(SITES) do
 		local name = tostring(key)
@@ -417,21 +437,15 @@ function Access.Problems()
 				lines[#lines + 1] = name .. ': MODEL must be a curated prop alias'
 				bad = true
 			end
-			if site.JOBS ~= nil then
-				if type(site.JOBS) ~= 'table' then
-					lines[#lines + 1] = name .. ': JOBS must be a table of name -> minimum grade'
-					bad = true
-				else
-					for job, minimum in pairs(site.JOBS) do
-						if type(job) ~= 'string' or finiteNumber(minimum) == nil then
-							lines[#lines + 1] = ('%s: JOBS must map a job name to a grade number')
-								:format(name)
-							bad = true
-							break
-						end
-					end
-				end
-			end
+			-- ONE DIAGNOSTIC FOR ONE MISTAKE. This was a hand-written fifth copy of
+			-- `OPX.JobGate.Problems` whose wording had drifted, so the same typo in
+			-- the same config key was reported in two different sentences depending
+			-- on which module it was written under. A site with an unreadable JOBS
+			-- block is still condemned here, which the shared lister does not do:
+			-- it reports, and what a report costs the site is this module's call.
+			local before = #lines
+			OPX.JobGate.Problems(site.JOBS, name, lines)
+			if #lines > before then bad = true end
 
 			local points = site.POINTS
 			if type(points) ~= 'table' or #points == 0 then

@@ -22,37 +22,23 @@ local Config = type(M.Settings) == 'table' and M.Settings or {}
 Access.ELEVATORS = type(Config.ELEVATORS) == 'table' and Config.ELEVATORS or {}
 local ELEVATORS = Access.ELEVATORS
 
--- Coerces to a number, rejecting NaN and both infinities. Kept module-local
--- rather than folded into `OPX.Text.Finite`, which also caps at 2^53: a
--- millisecond clock is measured with this and must not be bounded like a
--- coordinate.
-local function finiteNumber(value)
-	value = tonumber(value)
-	if value == nil or value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
-end
+-- Coerces to a finite number, or nil. `OPX.Math.Finite` and not
+-- `OPX.Text.Finite`, which also caps at 2^53: a yaw, a price and a millisecond
+-- clock are all measured with this and must not be bounded like a coordinate.
+local finiteNumber = OPX.Math.Finite
 Access.FiniteNumber = finiteNumber
 
--- Box every accepted coordinate fits in, and the %d ceiling.
-local BOUND = 1000000
+-- The world box and the two coercions over it, in `lib/shared/spots.lua`. Only
+-- those: an elevator is a SHAFT WITH FLOORS, not a placed spot, and the record
+-- below -- an entity, a list of stops, a per-floor gate -- is its own shape.
+-- What it does share with every other placed thing is where a coordinate stops
+-- being believable, and that is one number for the whole map.
+Access.Coordinate = OPX.Spots.Coordinate
+Access.Integer = OPX.Spots.Integer
+local coordinate, integer = Access.Coordinate, Access.Integer
 
--- Coerces a world coordinate: finite and inside BOUND.
-local function coordinate(value)
-	local parsed = finiteNumber(value)
-	if parsed == nil or parsed > BOUND or parsed < -BOUND then return nil end
-	return parsed
-end
-Access.Coordinate = coordinate
-
--- Coerces a whole number inside BOUND.
-local function integer(value)
-	local parsed = coordinate(value)
-	if parsed == nil or parsed % 1 ~= 0 then return nil end
-	return math.floor(parsed)
-end
-Access.Integer = integer
+-- The %d ceiling quoted in this module's own refusal messages.
+local BOUND = OPX.Spots.BOUND
 
 -- Elevator key to its declared ENTITY, lower-cased once, and to its validated
 -- x and y. Engine identifiers are opaque: compared as lower-cased strings and

@@ -45,6 +45,25 @@ OPX.Config.MODULES.animations = {
 		STOP = 'X',
 	},
 
+	-- THE PACES A PLAYER CYCLES, and what they are NOT.
+	--
+	-- There are no walk STYLES on this platform. `SetPedMovementClipset` -- the
+	-- FiveM native that gives a body a swagger or a limp -- has no Open77
+	-- equivalent at all: the devkit's alias table has no row for it, and the
+	-- whole of `Open77.movement` is `setWalkMode`, `getWalkMode`, `lock` and
+	-- `unlock`. What exists is a bounded SPEED, so these are paces and they are
+	-- named as paces rather than pretending to be gaits.
+	--
+	-- `SPEED` is metres per second and the platform accepts 0.5 to 2.5; anything
+	-- outside is refused by `Walk.Request` before the native ever sees it. The
+	-- first entry is the one a fresh session starts on, and cycling past the
+	-- last releases the lease and gives the body its ordinary movement back.
+	WALK_PACES = {
+		{ ID = 'stroll', SPEED = 0.8 },
+		{ ID = 'walk', SPEED = 1.2 },
+		{ ID = 'brisk', SPEED = 1.8 },
+	},
+
 	-- NAME = false registers no command. `e` is deliberately short and not
 	-- prefixed: /e dance is the emote everyone already types.
 	COMMANDS = {

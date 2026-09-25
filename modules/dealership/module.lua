@@ -34,7 +34,10 @@ local M = OPX.Modules.Declare{
 	-- car, and that is a choice an operator may make with `enabled = false`.
 	fatal = false,
 	requires = { 'character' },
-	optional = { 'vehicles', 'garages', 'prompts', 'menu' },
+	-- `target` is optional on the same terms as the rest: without it the eye
+	-- grows no "sell a vehicle" row and the showroom is a shop you buy from
+	-- yourself, which is what it was before.
+	optional = { 'vehicles', 'garages', 'prompts', 'menu', 'target' },
 }
 
 -- The three prefixes are disjoint by construction (core/shared/channels.lua):
@@ -48,14 +51,26 @@ M.Event = {
 	-- Client to server. `source` always comes from the authenticated connection.
 	ASK = OPX.Event(NET, 'dealership', 'ask'),
 	BUY = OPX.Event(NET, 'dealership', 'buy'),
-	CAPTURED = OPX.Event(NET, 'dealership', 'captured'),
+	-- The runtime placement path: where the operator is standing and which way
+	-- they are looking, for a preview point being placed or taken away. NOTHING
+	-- IN THIS RESOURCE RAISES THESE TWO ANY MORE -- the staff menu's Dev screen
+	-- was the only caller and the owner deleted it on 2026-09-21. A showroom car
+	-- is written in PREVIEW.POINTS in config/dealership.lua; see client/exports.
+	-- A salesperson offering a vehicle to the player they picked off the eye,
+	-- and that player's own answer to it. TWO EVENTS AND NOT ONE, because they
+	-- come from two different connections and only one of them is the buyer.
+	OFFER = OPX.Event(NET, 'dealership', 'offer'),
+	DECIDE = OPX.Event(NET, 'dealership', 'decide'),
 
 	-- Server to client: the dealers this player may see, what is for sale and at
-	-- what price, one verdict, and the ask to capture where a player is standing.
+	-- what price, one verdict, and the offer a buyer has to answer.
 	SYNC = OPX.Event(NET, 'dealership', 'sync'),
 	STOCK = OPX.Event(NET, 'dealership', 'stock'),
 	ANSWER = OPX.Event(NET, 'dealership', 'answer'),
-	CAPTURE = OPX.Event(NET, 'dealership', 'capture'),
+	OFFERED = OPX.Event(NET, 'dealership', 'offered'),
+	-- What became of an offer, sent to the SELLER: the buyer said no, the buyer
+	-- said nothing, or the sale went through and this is the commission.
+	SETTLED = OPX.Event(NET, 'dealership', 'settled'),
 
 	-- The client's own bus. `decision` carries every verdict, local refusals
 	-- included. Public: a bare AddEventHandler reaches it.
@@ -65,7 +80,16 @@ M.Event = {
 --- Which request a refusal answers.
 -- Passed to `OPX.Refuse`: without it a client waiting on one of several requests
 -- cannot tell which `error.tooFast` is its own.
-M.Operation = { BUY = 'dealershipBuy', CAPTURE = 'dealershipCapture' }
+M.Operation = {
+	BUY = 'dealershipBuy',
+	-- Placing or removing a preview point. NOT the old `CAPTURE`, which named
+	-- the command that placed a DEALER: that command is gone, and an operation
+	-- name nothing raises is a name the next reader wires a refusal up to.
+	PLACE = 'dealershipPlace',
+	-- Offering a vehicle to another player, and that player's answer.
+	OFFER = 'dealershipOffer',
+	DECIDE = 'dealershipDecide',
+}
 
 --- The host raises this when a player rebinds or resets a mapping.
 M.KEYBINDS_CHANGED = 'onKeybindsChanged'

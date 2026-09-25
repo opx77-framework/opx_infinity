@@ -221,7 +221,14 @@ local function putBack(crate, reason)
 		crate.vehicle = nil
 	end
 	if propsReady() and type(Open77.props.detach) == 'function' then
-		pcall(Open77.props.detach, crate.id)
+		-- Read, like the `setTransform` below it already is: a refused detach
+		-- leaves the crate on the carrier's body while this function goes on to
+		-- stand it back up on its point and announce it as on the ground.
+		local let, detached, why = pcall(Open77.props.detach, crate.id)
+		if not let or detached == false then
+			Open77.log.warn(('[hauling] crate %s would not come off the body: %s')
+				:format(safe(crate.id), safe(let and why or detached)))
+		end
 	end
 	if propsReady() and type(Open77.props.setTransform) == 'function' then
 		local moved, why = pcall(Open77.props.setTransform, crate.id,
@@ -260,7 +267,16 @@ local function retire(crate, reason)
 	points[crate.index] = OPX.Now() + Access.RespawnMs(crate.site)
 
 	if propsReady() and type(Open77.props.remove) == 'function' then
-		pcall(Open77.props.remove, crate.id)
+		-- The answer is read: `remove` refuses with a reason, and this told
+		-- every client the crate was gone and armed its respawn regardless. A
+		-- refusal left the crate standing on its point while the server said it
+		-- had gone and prepared to put a second one in the same place.
+		local called, removed, why = pcall(Open77.props.remove, crate.id)
+		if not called or removed ~= true then
+			Open77.log.error(('[hauling] crate %s was paid for but not removed from the ' ..
+				'world (%s); a second one may appear beside it'):format(safe(crate.id),
+				safe(called and why or removed)))
+		end
 	end
 	announceGone(crate.id)
 	Open77.log.info(('[hauling] crate %s removed from %s point %d: %s'):format(
@@ -423,29 +439,43 @@ local function vehicleAt(vehicleId)
 	return { id = snapshot.id or vehicleId, record = snapshot.record, x = x, y = y, z = z }
 end
 
+--- The job fields of a loaded character, stamped at `atMs`, or nil.
+-- The caller passes its own clock read in so the snapshot and the question are
+-- timed off the same instant: this is a server-side roster read in the server's
+-- own VM, so the age is zero by construction and `Access.Evaluate` passes no
+-- staleness bound.
+local function jobSnapshot(player, atMs)
+	local api = OPX.Api.Get('character')
+	if api == nil or type(api.GetPlayer) ~= 'function' then return nil end
+	local read, loaded = pcall(api.GetPlayer, player)
+	if not read or type(loaded) ~= 'table' or type(loaded.PlayerData) ~= 'table' then
+		return nil
+	end
+	local data = loaded.PlayerData
+	return {
+		job = type(data.job) == 'table' and data.job or nil,
+		jobs = type(data.jobs) == 'table' and data.jobs or nil,
+		atMs = atMs,
+	}
+end
+
 --- Whether the character holding this connection may work a site.
 -- JOBS IS ABSENT FROM THE SHIPPED SITES ON PURPOSE -- the owner asked for a job
 -- that needs no job -- so this answers true for every site that declares none,
 -- and the whole read of the character roster is skipped rather than made and
--- ignored.
+-- ignored. `OPX.JobGate.Evaluate` reads an absent JOBS as public, but the read
+-- is skipped HERE so the common path costs no contract call.
+--
+-- THE DECISION ITSELF IS `lib/shared/jobgate.lua`, through this module's own
+-- adapter, so `JOBS` and `ON_DUTY` on a site mean exactly what they mean on a
+-- lift, an entrance and a bench.
 local function mayWork(player, siteKey)
 	local site = Access.Site(siteKey)
 	if site == nil then return false, 'no_such_site' end
 	if type(site.JOBS) ~= 'table' or next(site.JOBS) == nil then return true end
 
-	local api = OPX.Api.Get('character')
-	if api == nil or type(api.GetPlayer) ~= 'function' then return false, 'no_character' end
-	local read, loaded = pcall(api.GetPlayer, player)
-	if not read or type(loaded) ~= 'table' or type(loaded.PlayerData) ~= 'table' then
-		return false, 'no_character'
-	end
-	local job = loaded.PlayerData.job
-	if type(job) ~= 'table' or type(job.name) ~= 'string' then return false, 'job_required' end
-	local minimum = Access.FiniteNumber(site.JOBS[job.name])
-	if minimum == nil then return false, 'job_required' end
-	local grade = type(job.grade) == 'table' and Access.FiniteNumber(job.grade.level) or nil
-	if grade == nil or grade < minimum then return false, 'grade_too_low' end
-	return true
+	local now = OPX.Now()
+	return Access.Evaluate(site, jobSnapshot(player, now), now)
 end
 
 --- Begins the pickup bar on a crate, if this player may have it.

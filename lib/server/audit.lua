@@ -57,6 +57,13 @@ end
 --- Turns a value into text without control characters, truncated.
 local function bounded(value, maximum)
 	local text = tostring(value or '')
+	-- CUT BEFORE THE SCAN, not after it. The strip ran over the WHOLE string and
+	-- the truncation came second, so `Safe(x, 64)` over a megabyte walked a
+	-- megabyte to keep 64 bytes. A generous head -- four bytes per character is
+	-- the widest UTF-8 goes, plus room for `span` to find a boundary -- is more
+	-- than any bound here needs and is all that is ever touched.
+	local head = (maximum or MAX_MESSAGE) * 4 + 16
+	if #text > head then text = text:sub(1, head) end
 	text = text:gsub('[%c]', ' ')
 	local cut = span(text, maximum)
 	if cut < #text then text = text:sub(1, cut) .. '...' end
@@ -77,12 +84,22 @@ end
 
 --- Formats an entry as one key=value audit line.
 local function toLine(entry)
+	-- BOUNDED LIKE EVERYTHING ELSE ON THE LINE. The header of this file promises
+	-- that "every message and every data text is stripped of its control
+	-- characters and bounded", and `message`, `data` and an unusable `source`
+	-- were -- these three were not. A newline in any of them forges a whole
+	-- audit line, which is the risk `core/server/note.lua` describes at length.
+	-- It held only by the accident of who calls it: `userId` comes attested by
+	-- the host and `citizenId` through `CitizenId.Parse` or a bounded word. A
+	-- guarantee the writer states is the writer's to keep, not every caller's.
 	local parts = {
-		('event=%s'):format(entry.event),
-		('severity=%s'):format(entry.severity),
+		('event=%s'):format(bounded(entry.event, 64)),
+		('severity=%s'):format(bounded(entry.severity, 16)),
 	}
-	if entry.citizenId then parts[#parts + 1] = ('citizen=%s'):format(entry.citizenId) end
-	if entry.userId then parts[#parts + 1] = ('user=%s'):format(entry.userId) end
+	if entry.citizenId then
+		parts[#parts + 1] = ('citizen=%s'):format(bounded(entry.citizenId, 64))
+	end
+	if entry.userId then parts[#parts + 1] = ('user=%s'):format(bounded(entry.userId, 64)) end
 	if entry.source then
 		-- `%d` RAISES ON ANYTHING THAT IS NOT A WHOLE NUMBER -- a float, a string
 		-- the host handed over, a table -- and a source arrives from every caller

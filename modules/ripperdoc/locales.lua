@@ -15,7 +15,7 @@ local EN = {
 	['ripperdoc.desk'] = 'DESK',
 	['ripperdoc.chair'] = '{name}',
 	['ripperdoc.patient'] = 'PATIENT {name}',
-	['ripperdoc.noPatient'] = 'NO PATIENT SEATED',
+	['ripperdoc.vacant'] = 'NO PATIENT SEATED',
 	['ripperdoc.self'] = 'SELF-SERVICE',
 	['ripperdoc.attended'] = 'ATTENDED',
 	['ripperdoc.invitees'] = 'AT THE CHAIR',
@@ -58,7 +58,7 @@ local EN = {
 	['ripperdoc.offerPull'] = 'Pull {name} for {price}?',
 	['ripperdoc.accept'] = 'ACCEPT',
 	['ripperdoc.decline'] = 'DECLINE',
-	['ripperdoc.busy'] = 'WORK IN PROGRESS',
+	['ripperdoc.working'] = 'WORK IN PROGRESS',
 
 	-- The option to sit.
 	['ripperdoc.invite'] = '{from} OFFERS YOU THE CHAIR',
@@ -110,7 +110,7 @@ local FR = {
 	['ripperdoc.desk'] = 'BUREAU',
 	['ripperdoc.chair'] = '{name}',
 	['ripperdoc.patient'] = 'PATIENT {name}',
-	['ripperdoc.noPatient'] = 'AUCUN PATIENT',
+	['ripperdoc.vacant'] = 'AUCUN PATIENT',
 	['ripperdoc.self'] = 'LIBRE SERVICE',
 	['ripperdoc.attended'] = 'PRIS EN CHARGE',
 	['ripperdoc.invitees'] = 'PRÈS DU FAUTEUIL',
@@ -150,7 +150,7 @@ local FR = {
 	['ripperdoc.offerPull'] = 'Retirer {name} pour {price} ?',
 	['ripperdoc.accept'] = 'ACCEPTER',
 	['ripperdoc.decline'] = 'REFUSER',
-	['ripperdoc.busy'] = 'TRAVAIL EN COURS',
+	['ripperdoc.working'] = 'TRAVAIL EN COURS',
 
 	['ripperdoc.invite'] = '{from} VOUS PROPOSE LE FAUTEUIL',
 	['ripperdoc.offerDeclined'] = 'Refusé.',

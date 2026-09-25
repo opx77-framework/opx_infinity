@@ -21,17 +21,27 @@ local Command = M.Command
 M.Target = {}
 local Target = M.Target
 
--- Rows sent in one registration. The registry takes at most 32 and refuses a
--- batch whole, so the batch is small enough that one bad row is easy to place.
+-- Rows sent in one registration.
 --
--- FOUR AND NOT EIGHT, because the host's budget is measured per RESUME and one
--- registration is one resume's worth of work. Measured in the suite's harness
+-- FOUR, AND THE NUMBER IS EVIDENCE RATHER THAN TASTE. It was eight, chosen so
+-- that one bad row in a refused batch is easy to place -- the registry takes up
+-- to 32 and refuses a batch whole. Eight turned out to be more than a loaded
+-- client can register in one resume: with a yield already between every
+-- registration call, the live journal still caught a client dying INSIDE a
+-- single `RegisterSelf` of eight rows.
+--
+--   [admin] target rows, player 1: staff rows not registered:
+--   modules/target/shared/model.lua:187: script execution budget exceeded
+--
+-- The cost is per ROW -- validation and a generation read each -- so halving the
+-- batch halves the work per resume. Measured in the suite's own harness
 -- (2026-09-21, `probe-target-cost`), the registry costs about 1 100 instructions
 -- a row: a batch of eight is 9 000, which is INSIDE one 10 000-instruction hook
 -- interval only by luck, and sixteen is 17 000. Four is ~4 300 with the whole
--- interval as margin, and the batch boundary below keeps the registry's
--- whole-or-not-at-all promise -- the fix for the cost is the yield, not a
--- smaller promise.
+-- interval as margin. It costs frames at registration, which happens on an
+-- access change and not per tick -- and the batch boundary below keeps the
+-- registry's whole-or-not-at-all promise, so the fix for the cost is the yield,
+-- not a smaller promise.
 local BATCH = 4
 
 -- Milliseconds before the first access request, then between two. A grant taken
@@ -42,9 +52,18 @@ local ACCESS_FIRST_MS, ACCESS_EVERY_MS = 5000, 60000
 local MAX_PRESETS = 8
 
 -- The register call for each kind, and the order they are registered in.
+-- THREE MORE KINDS THAN THIS MODULE USED TO REACH, and the inspector is why.
+-- The eye distinguishes a networked prop, a vanilla world surface and an NPC,
+-- and staff rows could be drawn on none of them -- so "what am I looking at"
+-- could be asked of a door and a vehicle and of nothing else in the city.
+--
+-- `sky` STAYS LAST. `register` walks this list in order and yields between the
+-- kinds; the order is otherwise only a reading order.
 local REGISTERS = { self = 'RegisterSelf', player = 'RegisterPlayers',
-	vehicle = 'RegisterVehicles', door = 'RegisterDoors', sky = 'RegisterSky' }
-local KINDS = { 'self', 'player', 'vehicle', 'door', 'sky' }
+	vehicle = 'RegisterVehicles', door = 'RegisterDoors',
+	prop = 'RegisterProps', npc = 'RegisterNpcs', world = 'RegisterWorld',
+	sky = 'RegisterSky' }
+local KINDS = { 'self', 'player', 'vehicle', 'door', 'prop', 'npc', 'world', 'sky' }
 
 -- Metres the rows reach, read once at start.
 local distance = 10.0
@@ -233,6 +252,120 @@ function Target.HasModels()
 end
 
 -- Builds every row. Called once from Start, so the locale is readable and the
+-- ── the inspector: what am I actually looking at ─────────────────────────────
+--
+-- THE OWNER: "avoir un categorie dev pour avoir des tool avoir le nom de props
+-- get position etc possible aussi de l'utiliser avec alt".
+--
+-- IT REPORTS WHAT THE PLATFORM RETURNED AND NOT A LIST OF FIELDS THIS FILE
+-- GUESSED. A curated read-out -- model, position, distance -- is a read-out that
+-- is wrong the day the platform adds a field, and silently: the operator sees
+-- four lines and has no way to know a fifth existed. So the walk below takes
+-- every SCALAR in the ray's answer and in the thing it hit, sorts them, and
+-- prints the lot. A dev tool that hides what it found is not one.
+--
+-- THIS IS NOT THE SCREEN THAT WAS REMOVED. That one offered garage and dealer
+-- placement -- writes dressed as configuration, on a server whose configuration
+-- is files -- and went on the owner's word. This reads and writes nothing: it
+-- answers a question about the world and puts the answer on the clipboard.
+--
+-- Gated on `SELF_POS`, which is the grant that already means "may read where
+-- things are" and is already registered and already in the access map. A new
+-- ACL name for the same question would be a second grant an operator has to
+-- know about, and yesterday's lesson was about exactly that.
+
+-- The last inspection, so the Dev screen can show it and copy it again without
+-- the operator having to aim a second time.
+local lastInspection = nil
+
+-- Numbers, strings and booleans read as themselves; everything else is named by
+-- its type rather than dumped. A nested table in a ray answer is a vector, and
+-- the three that matter are lifted out by name below.
+local function scalar(value)
+	local kind = type(value)
+	if kind == 'number' then
+		-- Coordinates to two places: an operator pasting one into a config wants
+		-- the number they can read, not seventeen digits of float.
+		if value % 1 ~= 0 then return ('%.2f'):format(value) end
+		return tostring(value)
+	end
+	if kind == 'string' or kind == 'boolean' then return tostring(value) end
+	return nil
+end
+
+-- A vector as one line, or nil when it is not one.
+local function vector(value)
+	if type(value) ~= 'table' then return nil end
+	local x, y, z = tonumber(value.x), tonumber(value.y), tonumber(value.z)
+	if x == nil or y == nil or z == nil then return nil end
+	return ('%.2f, %.2f, %.2f'):format(x, y, z)
+end
+
+-- Every readable field of one table, as `name=value` lines, sorted so two
+-- inspections of the same thing read the same way.
+local function fieldsOf(source, prefix, into)
+	if type(source) ~= 'table' then return end
+	local names = {}
+	for name in pairs(source) do names[#names + 1] = tostring(name) end
+	table.sort(names)
+	for _, name in ipairs(names) do
+		local value = source[name]
+		local line = scalar(value) or vector(value)
+		if line ~= nil then into[#into + 1] = ('%s%s=%s'):format(prefix, name, line) end
+	end
+end
+
+--- Everything the eye knows about one pick, as text.
+-- @author dop42
+-- @param context table
+-- @return string
+function M.Inspect(context)
+	local lines = {}
+	fieldsOf(context, '', lines)
+	-- The thing that was hit, prefixed so a field name that appears on both --
+	-- `kind` does -- is not two lines claiming to be one.
+	fieldsOf(type(context) == 'table' and context.target or nil, 'target.', lines)
+	if #lines == 0 then return 'nothing readable under the cursor' end
+	return table.concat(lines, '\n')
+end
+
+--- The last inspection this client made, or nil.
+-- @author dop42
+-- @return string|nil
+function M.LastInspection()
+	return lastInspection
+end
+
+-- Copies one block and says whether it went. A host with no clipboard costs the
+-- copy and not the answer: it is on screen and in the journal either way.
+local function copyBlock(text)
+	local clipboard = Open77.clipboard
+	if type(clipboard) ~= 'table' or type(clipboard.setText) ~= 'function' then
+		return false
+	end
+	local wrote, ok = pcall(clipboard.setText, text)
+	return wrote and ok == true
+end
+
+-- What the inspector row does, wherever it is drawn.
+local function inspect(context)
+	local report = M.Inspect(context)
+	lastInspection = report
+	local copied = copyBlock(report)
+
+	-- THREE PLACES, ON PURPOSE. The toast is what the operator sees now and is
+	-- one line; the clipboard is what they paste into a config; and the journal
+	-- is the only one of the three an operator can read AFTER the fact, from
+	-- another machine, which is what makes a report somebody sent you usable.
+	Client.Toast(copied and 'admin.target.inspected' or 'admin.target.inspectedNoCopy',
+		{ kind = tostring(type(context) == 'table' and context.kind or '?') },
+		copied and 'success' or 'info')
+	OPX.Note('admin', ('inspected %s -- %s'):format(
+		tostring(type(context) == 'table' and context.kind or '?'),
+		report:gsub('\n', ' | ')))
+	return true
+end
+
 -- configured presets have been checked.
 local function buildRows()
 	local links = M.Section('LINKS')
@@ -328,6 +461,41 @@ local function buildRows()
 				return ok
 			end },
 
+
+		-- ── THE INSPECTOR, ON EVERY KIND THE EYE CAN NAME ───────────────────
+		-- "possible aussi de l'utiliser avec alt". One row per kind rather than
+		-- one row: `kind` is how this module's registration batches, so a single
+		-- entry could only ever be drawn on one of them.
+		--
+		-- `folder` puts all eight under one heading, so they read as one tool
+		-- rather than as eight rows that happen to share a name.
+		{ id = 'devInspect_self', kind = 'self', folder = 'dev',
+			label = 'admin.target.inspect', icon = 'info',
+			grant = Command.SELF_POS, select = inspect },
+		{ id = 'devInspect_player', kind = 'player', folder = 'dev',
+			label = 'admin.target.inspect', icon = 'info',
+			grant = Command.SELF_POS, select = inspect },
+		{ id = 'devInspect_vehicle', kind = 'vehicle', folder = 'dev',
+			label = 'admin.target.inspect', icon = 'info',
+			grant = Command.SELF_POS, select = inspect },
+		{ id = 'devInspect_door', kind = 'door', folder = 'dev',
+			label = 'admin.target.inspect', icon = 'info',
+			grant = Command.SELF_POS, select = inspect },
+		{ id = 'devInspect_prop', kind = 'prop', folder = 'dev',
+			label = 'admin.target.inspect', icon = 'info',
+			grant = Command.SELF_POS, select = inspect },
+		{ id = 'devInspect_npc', kind = 'npc', folder = 'dev',
+			label = 'admin.target.inspect', icon = 'info',
+			grant = Command.SELF_POS, select = inspect },
+		{ id = 'devInspect_world', kind = 'world', folder = 'dev',
+			label = 'admin.target.inspect', icon = 'info',
+			grant = Command.SELF_POS, select = inspect },
+		-- NOT ON THE SKY, and the reason is a real cost rather than taste. The sky
+		-- list is bounded and `MAX_PRESETS` is deliberately sized to leave room for
+		-- the other sky rows -- so an eighth row there pushes a WEATHER PRESET off
+		-- the list, which the suite caught within a minute. Losing `sandstorm` to a
+		-- dev row is a bad trade, and inspecting the sky names no object anyway:
+		-- the ray answers an origin and a direction and there is nothing there.
 		{ id = 'skyNoclip', kind = 'sky', label = 'admin.target.noclip', icon = 'bolt',
 			grant = Command.SELF_NOCLIP, state = noclipOn,
 			select = onFlip(noclipOn, Command.SELF_NOCLIP) },
@@ -494,7 +662,40 @@ local function register(contract, byKind, signature)
 	registered = ''
 	for _, kind in ipairs(KINDS) do
 		local rows = byKind[kind] or {}
+		-- One resume per kind, and the whole of the fix for a defect that read as a
+		-- missing feature for days. Every row this module owns was built AND
+		-- registered inside the single resume that delivers the access map, and that
+		-- resume ran out of instruction budget partway down this list: the coroutine
+		-- unwound with no error, no log and no refusal, leaving the kinds registered
+		-- so far on the eye and the rest never registered at all. `sky` is last in
+		-- KINDS, so `sky` is what the operator never saw -- ALT on themselves drew
+		-- rows, ALT on the sky drew nothing, and every explanation that starts at the
+		-- eye (the raycast, `Matches`, the ACL) is reasoning about rows that were
+		-- never put there.
+		--
+		-- The journal named it by what it did NOT say: twelve rows live on the eye,
+		-- and the closing `report` below -- which is unconditional on the way out --
+		-- never sent once across a dozen restarts. Registration runs on an access
+		-- change, not per tick, so a frame per registration call costs nothing.
 		for first = 1, #rows, BATCH do
+			-- PER BATCH AND NOT PER KIND, which is where this line started and
+			-- where it was not quite enough. A kind with more than BATCH rows --
+			-- `self` has ten -- registered two batches in one resume, and the
+			-- journal caught the result the hour the inspector went in, on a
+			-- client that was simply a little further into its frame:
+			--
+			--   [admin] target rows, player 4: staff rows not registered:
+			--   modules/target/shared/model.lua:143: script execution budget exceeded
+			--
+			-- It was reported rather than silent because the `pcall` around this
+			-- is there, which is the whole argument for the `pcall` -- but a
+			-- registration that reports itself dying is still a client with no
+			-- staff rows. One resume per REGISTRATION CALL costs a frame only
+			-- when a kind is big enough to need two.
+			--
+			-- Guarded because the suite calls `register` straight, with no
+			-- coroutine under it and no `Wait` to yield to.
+			if Wait ~= nil then Wait(0) end
 			local batch = {}
 			for index = first, math.min(first + BATCH - 1, #rows) do batch[#batch + 1] = rows[index] end
 			local answer = contract[REGISTERS[kind]](M.OWNER, batch)
@@ -507,21 +708,6 @@ local function register(contract, byKind, signature)
 				registered = nil
 				return false
 			end
-			-- ONE BATCH PER RESUME. The whole pass is ~31 rows across five kinds,
-			-- which is 36 000 instructions if it runs in one go -- and it did:
-			--
-			--   opx_infinity/modules/target/shared/model.lua:283: Open77 script
-			--   execution budget exceeded
-			--     in field 'Register' ... in field 'RegisterMany'
-			--     modules/admin/client/target.lua:554: in field 'Access'
-			--     modules/admin/client/menu.lua:2222
-			--
-			-- The line it named was a table lookup, because the raise fires at the
-			-- first hook interval past the slice and not at anything hot. What it
-			-- cost was every staff row: the coroutine that raised is the one that
-			-- asked, so the eye came up with no admin options on it and the only
-			-- trace was an error line in a client log.
-			if Wait ~= nil then Wait(0) end
 		end
 	end
 	registered = signature
@@ -563,19 +749,34 @@ local function sync()
 		return
 	end
 	syncing = true
+	-- Registration runs on a thread of its own, and the `Wait(0)` in `register` is
+	-- the only reason it needs one. `Target.Access` is a net event handler, and
+	-- whether a handler may yield is the host's business rather than this module's
+	-- -- the test suite calls it straight, with no coroutine under it at all, and
+	-- said so the moment the yield went in. A thread the host started can always
+	-- yield, so every kind gets a resume, and the `syncing`/`dirty` pair that was
+	-- already here for re-entrancy is exactly the guard an asynchronous sync wants.
 	CreateThread(function()
-		repeat
-			dirty = false
-			local built, byKind, signature = pcall(wanted)
-			if built then
-				register(contract, byKind, signature)
-			else
+	repeat
+		dirty = false
+		local built, byKind, signature = pcall(wanted)
+		if built then
+			-- Protected for the reason the loop above yields: `register` raising is how
+			-- this module lost two fifths of its rows in silence. A raise is now a line
+			-- in the server log instead of an absence in it.
+			local done, failure = pcall(register, contract, byKind, signature)
+			if not done then
 				registered = nil
-				Open77.log.warn('[admin] staff rows: ' .. tostring(byKind))
-				report('staff rows not built: ' .. tostring(byKind))
+				Open77.log.warn('[admin] staff rows: ' .. tostring(failure))
+				report('staff rows not registered: ' .. tostring(failure))
 			end
-		until not dirty
-		syncing = false
+		else
+			registered = nil
+			Open77.log.warn('[admin] staff rows: ' .. tostring(byKind))
+			report('staff rows not built: ' .. tostring(byKind))
+		end
+	until not dirty
+	syncing = false
 	end)
 end
 

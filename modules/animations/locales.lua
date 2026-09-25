@@ -82,6 +82,15 @@ local EN = {
 	['animations.key.picker'] = 'Animations: open or close the picker',
 	['animations.key.stop'] = 'Animations: stop',
 
+	-- One per `WALK_PACES` entry, by its ID, plus the ordinary body. They are
+	-- paces and not gaits: this platform has no movement clipset, so nothing
+	-- here changes HOW a body walks, only how fast.
+	['animations.walk.group'] = 'Walking pace',
+	['animations.walk.off'] = 'Normal pace',
+	['animations.walk.stroll'] = 'Strolling',
+	['animations.walk.walk'] = 'Walking',
+	['animations.walk.brisk'] = 'Brisk pace',
+
 	['animations.prompt.stop'] = 'Stop animation',
 }
 
@@ -162,6 +171,12 @@ local FR = {
 
 	['animations.key.picker'] = 'Animations : ouvrir ou fermer le sélecteur',
 	['animations.key.stop'] = 'Animations : arrêter',
+
+	['animations.walk.group'] = 'Allure de marche',
+	['animations.walk.off'] = 'Allure normale',
+	['animations.walk.stroll'] = 'Flânerie',
+	['animations.walk.walk'] = 'Marche',
+	['animations.walk.brisk'] = 'Pas vif',
 
 	['animations.prompt.stop'] = "Arrêter l'animation",
 }

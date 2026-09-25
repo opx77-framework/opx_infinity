@@ -208,8 +208,8 @@ const gearClass = computed(() => {
   transform: rotateY(var(--tilt, 0deg)) translateY(8px);
   /* An entrance, so it stutters in three steps rather than fading. */
   transition:
-    opacity 190ms steps(3, end),
-    transform 190ms steps(3, end);
+    opacity var(--op-enter-ms) var(--op-stutter),
+    transform var(--op-enter-ms) var(--op-stutter);
 }
 
 .vehicle.live {

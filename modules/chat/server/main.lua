@@ -59,8 +59,34 @@ local function onSaid(text)
 	-- identity. Without one, the first eight characters of the account say
 	-- something an operator can act on; a session id says nothing to anyone once
 	-- the player has gone.
+	--
+	-- THE CHARACTER FIRST, AND IT NEVER WAS. This comment has always said "the
+	-- displayed name is the player's own", and the code went straight to
+	-- `Open77.players.identity`, whose `name` is the displayName the Master
+	-- vouches for -- the account's gamertag. So a player who had typed a
+	-- character name still spoke under their gamertag, on the first connection
+	-- and on the hundredth, and the `chat.author.unknown` branch below was dead
+	-- code: the platform always knows a connected session.
+	--
+	-- Optional rather than required: a runtime without the character module is
+	-- one where the gamertag IS the only name there is, and the box must still
+	-- work there.
+	local name
+	local character = OPX.Api.Get('character')
+	if character ~= nil then
+		local held = character.GetPlayer(player)
+		local charInfo = held and held.PlayerData and held.PlayerData.charInfo
+		local first = type(charInfo) == 'table' and charInfo.firstName or nil
+		local last = type(charInfo) == 'table' and charInfo.lastName or nil
+		if type(first) == 'string' and first ~= '' and type(last) == 'string' and last ~= '' then
+			name = first .. ' ' .. last
+		else
+			name = type(first) == 'string' and first ~= '' and first or nil
+		end
+	end
+
 	local identity = identityOf(player)
-	local name = identity and identity.name
+	if name == nil then name = identity and identity.name end
 	if type(name) ~= 'string' or name == '' then name = nil end
 	local unknown = identity and identity.userId and identity.userId:sub(1, 8) or tostring(player)
 	TriggerClientEvent(M.Event.MESSAGE, -1, {

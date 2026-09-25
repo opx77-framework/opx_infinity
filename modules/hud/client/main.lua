@@ -60,7 +60,7 @@ local EVENT_NEEDS_EFFECTS = OPX.Event(OPX.Channel.LOCAL, 'needs', 'effects')
 -- The downed module's public bus.
 local EVENT_DOWNED_CHANGED = OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed')
 
--- THE THREE SCREENS THAT OWN THE DISPLAY INSTEAD OF THIS ONE, each on its own
+-- THE FOUR SCREENS THAT OWN THE DISPLAY INSTEAD OF THIS ONE, each on its own
 -- module's public bus. Read with a bare AddEventHandler and nothing is required:
 -- a world without one of these modules simply never raises its name, which is
 -- the right answer rather than a HUD that hides for a screen nobody can open.
@@ -73,8 +73,13 @@ local EVENT_DOWNED_CHANGED = OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed')
 --   appearance the fitting room once it IS drawn -- including one the player
 --              asked for from the appearance panel, long after the join, which
 --              `entry` knows nothing about and should not.
+--   menu       any open menu. Added on the owner's word once the vanilla
+--              minimap came back and the money block moved left to get out of
+--              its way: a menu opening over that corner is one more thing in a
+--              corner that now has two already.
 local EVENT_ENTRY_STATE = OPX.Event(OPX.Channel.LOCAL, 'entry', 'state')
 local EVENT_SPAWN_STATE = OPX.Event(OPX.Channel.LOCAL, 'spawn', 'state')
+local EVENT_MENU_STATE = OPX.Event(OPX.Channel.LOCAL, 'menu', 'state')
 local EVENT_APPEARANCE_DECISION = OPX.Event(OPX.Channel.LOCAL, 'appearance', 'decision')
 
 -- This module's own public bus, raised after the surface was told, so a handler
@@ -138,6 +143,11 @@ local owners, covered = {}, false
 -- player acts on.
 local live = {}
 
+-- The same pools in POINTS, for the read-out. Held apart from `live` because
+-- they answer different questions and are gated separately: `live` is what the
+-- bar is scaled by and is a share, this is what the number says and is not.
+local points = {}
+
 -- The needs the needs module published, nil until it has.
 local needs = nil
 
@@ -170,15 +180,28 @@ local pushToTalkKey = nil
 -- Whether an unreadable stats bridge and a failed voice hide have been logged.
 local statsReported = false
 
---- Whether a value is a number that is neither NaN nor infinite.
-local function finite(value)
-	return OPX.Math.IsFinite(value)
-end
+-- How many vitals readings have been relayed, and when the last one went. See
+-- `sampleVitals`: `Open77.log` on a client writes to the PLAYER'S machine, so a
+-- number an operator needs has to travel.
+
+-- Whether a value is a number that is neither NaN nor infinite. The one shared
+-- predicate, aliased rather than wrapped: a one-line wrapper is a second name
+-- for the same answer and the only thing it can ever do is drift.
+local finite = OPX.Math.IsFinite
 
 --- Clamps a value to 0..100 and rounds it, or answers nil for an unreadable one.
 local function percent(value)
 	if not finite(value) then return nil end
 	return math.floor(OPX.Math.Clamp(value, 0, 100) + 0.5)
+end
+
+-- The same rounding with NO ceiling, for a pool drawn in points rather than in
+-- percent. `percent` clamps to 100 because a share cannot exceed one; a health
+-- pool whose maximum is 250 very much can, and clamping it here is how the
+-- read-out would go on saying 100 after everything else had been fixed.
+local function finiteRound(value)
+	if not finite(value) then return nil end
+	return math.floor(math.max(0, value) + 0.5)
 end
 
 --- Sends one channel when its picture changed, forgetting the signature of a
@@ -221,8 +244,8 @@ end
 -- ── the gauges ───────────────────────────────────────────────────────────────
 
 --- One gauge's percent, or nil when nothing can read it.
--- The live pool wins over the stored need wherever the engine reports one:
--- damage the server never hears of only ever lowers the body.
+-- The live pool wins over the stored need wherever the server reports one: the
+-- canonical pool is authoritative, the stored character value is a fallback.
 local function sourceOf(name)
 	if name == 'health' or name == 'armor' then return live[name] end
 	if name == 'stamina' and live.stamina ~= nil then return live.stamina end
@@ -253,6 +276,10 @@ local function gauges()
 				icon = row.ICON,
 				label = row.LABEL,
 				pct = value,
+				-- The read-out's number when the source keeps one. Absent for
+				-- armour and for every need, which are percentages already, and
+				-- the page draws `pct` for those exactly as it always did.
+				points = points[row.SOURCE],
 				tone = toneOf(row, value),
 			}
 		end
@@ -267,7 +294,7 @@ local function drawVitals(force)
 	for index = 1, #rows do
 		local row = rows[index]
 		marks[index] = table.concat({ tostring(row.id), tostring(row.icon), tostring(row.label),
-			tostring(row.pct), row.tone }, '\1')
+			tostring(row.pct), tostring(row.points), row.tone }, '\1')
 	end
 	push(CHANNEL_VITALS, { gauges = rows }, table.concat(marks, '\2'), force)
 end
@@ -433,15 +460,6 @@ local function share(pool, flatMaximum)
 	return math.max(0, value) / maximum * 100
 end
 
---- The local body's health points as the game shows them, or nil.
-local function bodyHealth()
-	local character = Open77.character
-	if type(character) ~= 'table' or type(character.state) ~= 'function' then return nil end
-	local read, body = pcall(character.state)
-	if not read or type(body) ~= 'table' or not finite(body.health) then return nil end
-	return body.health
-end
-
 --- Reads the engine's pools once. Keeps the last reading through an answer that
 --- simply did not arrive, and clears it when the bridge says there is none.
 ---
@@ -466,16 +484,28 @@ local function sampleVitals()
 	local read, state = pcall(stats.get)
 	if not read or type(state) ~= 'table' then return false end
 
+	-- ONE POOL, AND IT IS THE SERVER'S. There was a second reading here: the local
+	-- body's health, off `Open77.character.state`, on the grounds that damage the
+	-- server never hears of -- a fall, an npc -- only ever lowers the body, so the
+	-- body should win. It was measured against the CANONICAL maximum, and the two
+	-- are not on the same scale.
+	--
+	-- Nobody could see that while the maximum was 100, because 100 and 100 divide
+	-- the same. Raising it to 250 separated them and the bar stuck at 40% -- the
+	-- owner read that as a heal that had stopped healing, and the staff menu was
+	-- innocent: the audit line said `admin.self.heal … "250"` and the server had
+	-- applied it. The reading that settled it is in the journal verbatim:
+	--
+	--   vitals: engine body 100.0, canonical 250.0 of 250.0, drawn 40%
+	--
+	-- Full health, reported as two fifths of it. The engine body carries no
+	-- maximum of its own in that record -- `Open77.character.state` answers
+	-- placement, orientation and health, nothing to divide by -- so there is no
+	-- honest way to put it on the same axis as a canonical pool, and no need:
+	-- `player-stats` opens with "Open77 owns player health and stamina on the
+	-- dedicated server". The pool IS the truth, fall damage included. The second
+	-- opinion was never worth having and is gone.
 	local health = share(state.health, state.maxHealth)
-	-- Damage the server never hears of -- a fall, an npc -- only ever lowers the
-	-- body, so the body wins, measured against the canonical maximum.
-	local body = bodyHealth()
-	if body ~= nil then
-		local pool = state.health
-		local maximum = type(pool) == 'table' and firstFinite(pool.maximum, pool.max)
-			or state.maxHealth
-		health = share(body, maximum)
-	end
 
 	-- Compared AFTER `percent`, not before: the gauges draw whole percents, so a
 	-- pool that moved by a hundredth of a point did not move anything the player
@@ -483,11 +513,36 @@ local function sampleVitals()
 	local nowHealth = percent(health)
 	local nowArmor = percent(finite(state.armor) and math.max(0, state.armor) or 0)
 	local nowStamina = percent(share(state.stamina, state.maxStamina))
+	-- THE POINTS AS WELL AS THE SHARE, because a percent stopped being an answer
+	-- the moment the maximum stopped being 100.
+	--
+	-- THE OWNER, on a full player: "le hud affiche 100 enfois de 250 dans vie".
+	-- The gauge was drawing 100 and it was right -- a hundred percent of a full
+	-- pool -- and it was also useless. While `HEALTH.MAX` was 100 the percent and
+	-- the points were the same number, so the read-out could be either and nobody
+	-- had to decide which it was; at 250 they part, and the one a player wants is
+	-- the one their maximum is written in. The BAR keeps the share, because a bar
+	-- is a share; the read-out gets the points.
+	--
+	-- Armour has no pool of its own here -- `state.armor` arrives already a
+	-- percent -- and the needs are percentages by definition, so those keep the
+	-- number they always had. A source with no points is simply not given any,
+	-- and the page falls back to what it drew before.
+	local pool = type(state.health) == 'table' and state.health or nil
+	local nowPoints = pool and finiteRound(firstFinite(pool.value, pool.current))
+		or finiteRound(state.health)
+	local staminaPool = type(state.stamina) == 'table' and state.stamina or nil
+	local nowStaminaPoints = staminaPool
+		and finiteRound(firstFinite(staminaPool.value, staminaPool.current)) or nil
+
 	local moved = nowHealth ~= live.health
 		or nowArmor ~= live.armor
 		or nowStamina ~= live.stamina
+		or nowPoints ~= points.health
+		or nowStaminaPoints ~= points.stamina
 
 	live = { health = nowHealth, armor = nowArmor, stamina = nowStamina }
+	points = { health = nowPoints, stamina = nowStaminaPoints }
 	return moved
 end
 
@@ -991,6 +1046,20 @@ function M.Start()
 	AddEventHandler(EVENT_SPAWN_STATE, function(payload)
 		if type(payload) ~= 'table' then return end
 		setCovered('spawn', payload.open == true)
+	end)
+
+	-- A MENU IS A SCREEN THE PLAYER IS READING, so the HUD stands aside for it
+	-- exactly as it does for the join and the fitting room. "quand le menu est
+	-- ouvert hide la" -- and the reason is the corner: the vanilla minimap came
+	-- back with the blips work, the money block moved to the left to get out of
+	-- its way, and a menu opening over it is one more thing in a corner that now
+	-- has two already.
+	--
+	-- The fourth name in a set, not a fourth mechanism: `setCovered` restores
+	-- whatever the player themselves chose the moment the last screen closes.
+	AddEventHandler(EVENT_MENU_STATE, function(payload)
+		if type(payload) ~= 'table' then return end
+		setCovered('menu', payload.open == true)
 	end)
 
 	-- A room that is DRAWN. `entry` already covers one that is merely owed, and

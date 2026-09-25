@@ -20,18 +20,23 @@ OPX.Config.MODULES.admin = {
 
 	-- Default keys players rebind in the pause menu; false registers none.
 	--
-	-- DEV opens the staff menu on the Dev screen -- the commands that place a
-	-- garage, a pad or a dealer -- instead of on the root, which is the whole of
-	-- its point: the place you set up a server from is one press away. It is a
-	-- second key and not a chord because the host takes a key name and no
-	-- modifier of its own. F10 out of the box, because everything under F9 is
-	-- spoken for: F9 here, F3 the emote picker, and F5 and F8 belong to the media
-	-- resource's panel and cursor on an install that has it. The dealership is
-	-- NOT in this list: a dealer is a place you stand on, like a garage spot, and
-	-- it takes that key -- E.
+	-- THERE IS NO DEV KEY ANY MORE. `DEV = 'F10'` stood here and opened the staff
+	-- menu on a screen called Dev -- the screen a server was set up from. The
+	-- owner deleted that screen on 2026-09-21 ("il y a pas de config live c'est
+	-- tous par les fichier config donc degage moi ce menu est pass moi tous dans
+	-- les config"), so the key had nothing left to land on and went with it. F10
+	-- is free again. What that screen PLACED is a line in `config/dealership.lua`
+	-- now; what it READ is a command an operator types.
+	--
+	-- TO CAPTURE A POSITION FOR ONE OF THOSE CONFIG FILES: stand where you want
+	-- it, FACE THE WAY IT SHOULD FACE, and run `/opx.admin.self.pos` -- Self ->
+	-- Position on this menu, or the row on the target eye. It copies
+	-- `{ NAME = ..., X = ..., Y = ..., Z = ..., HEADING = ... }` to the operating
+	-- system clipboard, with the facing you are actually standing at, ready to
+	-- paste. That is the whole capture path, and every config file that wants a
+	-- coordinate names it.
 	KEYS = {
 		MENU = 'F9',
-		DEV = 'F10',
 		SPEED_UP = 'PAGEUP',
 		SPEED_DOWN = 'PAGEDOWN',
 	},
@@ -89,7 +94,13 @@ OPX.Config.MODULES.admin = {
 		-- authored yaw, and nothing else in the catalogue is recorded as seen at
 		-- all -- so a prettier-looking dematerialise here would be a guess that
 		-- probably draws nothing. Change this line to taste; it is one line.
-		EFFECT = 'fire.large',
+		--
+		-- EMPTY ON PURPOSE. It was `fire.large` and the owner asked for it gone
+		-- on 2026-09-21: a tall flame at the operator's feet every time noclip
+		-- goes on or off reads as something being on fire, which is not what a
+		-- staff member toggling a camera wants to announce to the street. The
+		-- alias is left written above so putting it back is one word.
+		EFFECT = '',
 		-- Seconds the effect lives, 0..600 (the engine's own ceiling). 0 hands the
 		-- rest of its life to the effect itself.
 		EFFECT_SECONDS = 1.5,
@@ -203,12 +214,13 @@ OPX.Config.MODULES.admin = {
 	VEHICLES = {
 		SPAWN_OFFSET = { X = 3.0, Y = 0.0, Z = 0.25 },
 
-		-- An AV record starts with one of these, lower-cased. The SAME rule the
-		-- garages module, the dealership and the platform's own gamemodes use, so
-		-- a record is in the air category for every part of the server or for none
-		-- of it. It decides two things and nothing else: the lift below, and which
+		-- WHICH RECORDS ARE AVs IS NOT AN ADMIN SETTING. It is one list,
+		-- `AV_PREFIXES` in `config/shared.lua`, read by one helper. This key was
+		-- the third copy and the one whose code differed: emptying it alone
+		-- reclassified every AV as ground in the staff catalogue while the garage
+		-- and the dealer went on calling the same records air. The answer still
+		-- decides two things here and nothing else -- the lift below, and which
 		-- rows the spawn menu's Air class holds.
-		AV_PREFIXES = { 'vehicle.av_', 'vehicle.max_tac_av' },
 
 		-- Metres a spawned AV is lifted above the spawn offset. An AV record's
 		-- pivot is the chassis centre, so one created at ground level starts

@@ -6,13 +6,17 @@
 -- drawn. A STOCK ROW is a thing for sale: a name, a class, a TweakDB record and
 -- a price. A purchase names one of each, and the server proves both again.
 --
--- Two input shapes arrive for a spot and they are not the same function. A
--- DEFINITION is what an operator writes in `config/dealership.lua` and what a
--- captured row holds in the database: upper-case fields, the same spelling the
--- garages and elevators configs use. A WIRE spot is what the server sends a
--- client: already normalised and lower-case. Each is validated on its own terms
--- and both end in the one `build` below, so there is one place that decides
--- what a spot is and one place that decides whether one is usable.
+-- THE SPOT HALF IS NOT WRITTEN HERE. The record, the two input shapes that
+-- normalise into it, the marker look and the coordinate box are all
+-- `lib/shared/spots.lua`, and this file only names this module's own words to
+-- them. `modules/garages/shared/access.lua` held 334 `diff`-clean identical
+-- lines of it, and the two must agree exactly: a car bought at a dealer is
+-- recalled at a garage, and a spot one of them accepts and the other refuses is
+-- a car that exists nowhere.
+--
+-- THE STOCK HALF IS, and stays. What is for sale, at what price, and which kind
+-- of dealer sells it is this module's own question -- no other module asks it --
+-- and a shared catalogue would be a shape with one user.
 --
 -- Every value is coerced and never trusted: a coordinate that is a string, a
 -- NaN, an unknown KIND or a price that is not a whole number above zero reads
@@ -25,45 +29,23 @@ local Access = M.Access
 
 local Config = type(M.Settings) == 'table' and M.Settings or {}
 
--- Coerces to a number, rejecting NaN and both infinities. Kept module-local
--- rather than folded into `OPX.Text.Finite`, which also caps at 2^53: a price, a
--- yaw or a millisecond clock is measured with this.
-local function finiteNumber(value)
-	value = tonumber(value)
-	if value == nil or value ~= value or value == math.huge or value == -math.huge then
-		return nil
-	end
-	return value
-end
+-- Coerces to a finite number, or nil. `OPX.Math.Finite` and not
+-- `OPX.Text.Finite`, which also caps at 2^53: a yaw, a price and a millisecond
+-- clock are all measured with this and must not be bounded like a coordinate.
+local finiteNumber = OPX.Math.Finite
 Access.FiniteNumber = finiteNumber
 
--- Box every accepted coordinate fits in.
-local BOUND = 1000000
+-- The world box and the two coercions over it, in `lib/shared/spots.lua`. Kept
+-- as names on `Access` because the whole module already reads spot rules through
+-- `Access` and a caller should not have to know which of them is shared.
+Access.Coordinate = OPX.Spots.Coordinate
+Access.Integer = OPX.Spots.Integer
 
--- Coerces a world coordinate: finite and inside BOUND.
-local function coordinate(value)
-	local parsed = finiteNumber(value)
-	if parsed == nil or parsed > BOUND or parsed < -BOUND then return nil end
-	return parsed
-end
-Access.Coordinate = coordinate
-
--- Coerces a whole number inside BOUND.
-local function integer(value)
-	local parsed = coordinate(value)
-	if parsed == nil or parsed % 1 ~= 0 then return nil end
-	return math.floor(parsed)
-end
-Access.Integer = integer
-
--- The two kinds, and the engine's own marker vocabulary. A style or a shape
--- outside these sets is refused by `Open77.markers` with a status, so picking
--- one here would only move the refusal somewhere with less to say about it.
+-- The two kinds. A style or a shape outside the engine's own sets is refused by
+-- `Open77.markers` with a status, so those live in `lib/shared/spots.lua` beside
+-- the resolver that falls back to them.
 local KINDS = { [M.KIND.GARAGE] = true, [M.KIND.AVPAD] = true }
 Access.KINDS = KINDS
-
-local SHAPES = { ring = true, cylinder = true }
-local STYLES = { interaction = true, objective = true, spawn = true, danger = true }
 
 --- The largest allowed spot key, which is also the column width.
 Access.MAX_KEY = 48
@@ -76,51 +58,17 @@ local MAX_CLASS = 32
 
 -- ── spots ───────────────────────────────────────────────────────────────────
 
---- Builds one validated spot, or answers why it was refused.
--- @author XEROX710
--- @param key string
--- @param kind any
--- @param label any
--- @param x any
--- @param y any
--- @param z any
--- @param heading any
--- @param bucket any
--- @return table|nil
--- @return string|nil
-local function build(key, kind, label, x, y, z, heading, bucket)
-	if type(key) ~= 'string' or key == '' or #key > Access.MAX_KEY then
-		return nil, 'key must be a string of 1 to ' .. Access.MAX_KEY .. ' characters'
-	end
-	if type(kind) ~= 'string' or not KINDS[kind:lower()] then
-		return nil, ('%s: KIND must be one of garage, avpad'):format(key)
-	end
-	x, y, z = coordinate(x), coordinate(y), coordinate(z)
-	if x == nil or y == nil or z == nil then
-		return nil, ('%s: X, Y and Z must be finite numbers inside %d'):format(key, BOUND)
-	end
-	local headingNumber = heading == nil and 0.0 or finiteNumber(heading)
-	if headingNumber == nil then
-		return nil, ('%s: HEADING must be a finite number'):format(key)
-	end
-	local bucketNumber = bucket == nil and 0 or integer(bucket)
-	if bucketNumber == nil or bucketNumber < 0 then
-		return nil, ('%s: BUCKET must be a whole number, 0 or more'):format(key)
-	end
-	if label ~= nil and type(label) ~= 'string' then
-		return nil, ('%s: LABEL must be a string'):format(key)
-	end
-	return {
-		key = key,
-		label = (type(label) == 'string' and label ~= '') and label or key,
-		kind = kind:lower(),
-		x = x,
-		y = y,
-		z = z,
-		heading = headingNumber,
-		bucket = bucketNumber,
-	}
-end
+-- This module's words for the shared record: a dealer has a KIND, because a
+-- showroom and an AV pad sell different halves of the catalogue, and a HEADING,
+-- because a bought vehicle is CREATED at one and something has to say which way
+-- it faces.
+local SPEC = {
+	noun = 'dealer',
+	maxKey = Access.MAX_KEY,
+	kinds = KINDS,
+	kindNames = 'garage, avpad',
+	heading = true,
+}
 
 --- Normalises one config or database row, in the operator's upper-case spelling.
 -- @author XEROX710
@@ -129,8 +77,7 @@ end
 -- @return table|nil
 -- @return string|nil
 function Access.FromDefinition(key, raw)
-	if type(raw) ~= 'table' then return nil, tostring(key) .. ': every dealer must be a table' end
-	return build(key, raw.KIND, raw.LABEL, raw.X, raw.Y, raw.Z, raw.HEADING, raw.BUCKET)
+	return OPX.Spots.FromDefinition(SPEC, key, raw)
 end
 
 --- Normalises one spot off the wire, in the shape `Access.Serialise` writes.
@@ -139,21 +86,14 @@ end
 -- @return table|nil
 -- @return string|nil
 function Access.FromWire(raw)
-	if type(raw) ~= 'table' then return nil, 'every dealer must be a table' end
-	return build(raw.key, raw.kind, raw.label, raw.x, raw.y, raw.z, raw.heading, raw.bucket)
+	return OPX.Spots.FromWire(SPEC, raw)
 end
 
 --- The fields of one spot, as the wire and the SYNC event carry them.
 -- @author XEROX710
 -- @param spot table
 -- @return table
-function Access.Serialise(spot)
-	return {
-		key = spot.key, label = spot.label, kind = spot.kind,
-		x = spot.x, y = spot.y, z = spot.z,
-		heading = spot.heading, bucket = spot.bucket,
-	}
-end
+Access.Serialise = OPX.Spots.Serialise
 
 --- Builds a key -> spot table from a list of definitions.
 -- @author XEROX710
@@ -161,22 +101,7 @@ end
 -- @param problems table|nil collector, appended to
 -- @return table
 function Access.Coerce(definitions, problems)
-	local spots = {}
-	if type(definitions) ~= 'table' then
-		if problems ~= nil then
-			problems[#problems + 1] = 'SPOTS must be a table of key -> definition'
-		end
-		return spots
-	end
-	for key, raw in pairs(definitions) do
-		local spot, why = Access.FromDefinition(key, raw)
-		if spot == nil then
-			if problems ~= nil then problems[#problems + 1] = why end
-		else
-			spots[key] = spot
-		end
-	end
-	return spots
+	return OPX.Spots.Coerce(SPEC, definitions, problems)
 end
 
 --- Answers one spot by key, or nil.
@@ -184,26 +109,14 @@ end
 -- @param spots table
 -- @param key any
 -- @return table|nil
-function Access.Spot(spots, key)
-	if type(key) ~= 'string' then return nil end
-	return spots[key]
-end
+Access.Spot = OPX.Spots.Spot
 
 --- Every spot in a bucket, sorted by key.
--- Sorted because `pairs` order would reshuffle a listing, a SYNC payload and a
--- determinism check between runs.
 -- @author XEROX710
 -- @param spots table
 -- @param bucket integer
 -- @return table[] array of spots
-function Access.InBucket(spots, bucket)
-	local list = {}
-	for _, spot in pairs(spots) do
-		if spot.bucket == bucket then list[#list + 1] = spot end
-	end
-	table.sort(list, function(left, right) return left.key < right.key end)
-	return list
-end
+Access.InBucket = OPX.Spots.InBucket
 
 --- Squared horizontal distance from a point to a spot's declared position.
 -- @author XEROX710
@@ -211,12 +124,7 @@ end
 -- @param x any
 -- @param y any
 -- @return number|nil
-function Access.FlatDistanceSquared(spot, x, y)
-	x, y = coordinate(x), coordinate(y)
-	if spot == nil or x == nil or y == nil then return nil end
-	local dx, dy = x - spot.x, y - spot.y
-	return dx * dx + dy * dy
-end
+Access.FlatDistanceSquared = OPX.Spots.FlatDistanceSquared
 
 --- Answers the spot a point stands on, or nil. The nearest wins; at equal
 -- distance the key decides, so `pairs` order never chooses between two markers
@@ -229,95 +137,58 @@ end
 -- @return table|nil
 -- @return number|nil squared distance
 function Access.Nearest(spots, x, y, radius)
-	radius = radius or Access.USE_RADIUS_SQ
-	local best, bestDistance
-	for _, spot in pairs(spots) do
-		local flat = Access.FlatDistanceSquared(spot, x, y)
-		if flat ~= nil and flat <= radius and
-			(bestDistance == nil or flat < bestDistance or
-				(flat == bestDistance and spot.key < best.key)) then
-			best, bestDistance = spot, flat
-		end
-	end
-	return best, bestDistance
+	return OPX.Spots.Nearest(spots, x, y, radius or Access.USE_RADIUS_SQ)
 end
 
 --- Whether a TweakDB vehicle record is an AV.
--- The rule the garages module and `open77_avcleanup` both use, so a record is in
--- the air category for every part of the server or for none of it.
+--
+-- ONE RULE, OVER ONE CONFIG KEY: `OPX.Vehicle.IsAvRecord` and
+-- `OPX.Config.SHARED.AV_PREFIXES`. The comment that used to sit here claimed
+-- this WAS the rule the garages module uses; it was a second copy over a second
+-- key, and the admin catalogue had a third that behaved differently again. It is
+-- one rule now, which is what makes a record air for every part of the server or
+-- for none of it.
 -- @author XEROX710
 -- @param record any
 -- @return boolean
 function Access.IsAv(record)
-	if type(record) ~= 'string' then return false end
-	local lowered = record:lower()
-	for index = 1, #Access.AV_PREFIXES do
-		local prefix = Access.AV_PREFIXES[index]
-		if lowered:sub(1, #prefix) == prefix then return true end
-	end
-	return false
+	return OPX.Vehicle.IsAvRecord(record)
 end
 
--- The AV prefixes, lower-cased once, with the documented pair as the fallback.
-do
-	local configured = Config.AV_PREFIXES
-	local prefixes = {}
-	if type(configured) == 'table' then
-		for index = 1, #configured do
-			if type(configured[index]) == 'string' and configured[index] ~= '' then
-				prefixes[#prefixes + 1] = configured[index]:lower()
-			end
-		end
-	end
-	if #prefixes == 0 then prefixes = { 'vehicle.av_', 'vehicle.max_tac_av' } end
-	Access.AV_PREFIXES = prefixes
-end
+-- What a marker falls back to per kind when the operator named nothing usable. A
+-- pad is a RING, because an AV lands inside it and a filled cylinder would be
+-- drawn through the hull; a showroom is a cylinder you walk into.
+local FALLBACK = {
+	[M.KIND.AVPAD] = { shape = 'ring', style = 'objective', RADIUS = 3.5 },
+	[M.KIND.GARAGE] = { shape = 'cylinder', style = 'spawn', RADIUS = 2.5 },
+}
 
 --- The marker an engine spot of this kind is drawn with.
--- Falls back per field rather than as a block, so a config that names a good
--- shape and a bad style keeps the shape. The lift is part of the look and not of
--- the spot: a ring that is not lifted off the floor draws nothing.
+-- The per-field fallback and the ground lift are `lib/shared/spots.lua`; the two
+-- shapes below are this module's own choice and stay here.
 -- @author XEROX710
 -- @param kind string
 -- @return table shape, style, radius, lift
 function Access.Marker(kind)
 	local declared = type(Config.MARKER) == 'table' and Config.MARKER[kind] or nil
-	declared = type(declared) == 'table' and declared or {}
-	local fallback = kind == M.KIND.AVPAD and
-		{ shape = 'ring', style = 'objective', RADIUS = 3.5 } or
-		{ shape = 'cylinder', style = 'spawn', RADIUS = 2.5 }
+	local fallback = kind == M.KIND.AVPAD and FALLBACK[M.KIND.AVPAD] or FALLBACK[M.KIND.GARAGE]
+	return OPX.Spots.Marker(declared, fallback, Config.GROUND_OFFSET)
+end
 
-	local shape = type(declared.shape) == 'string' and declared.shape:lower() or fallback.shape
-	if not SHAPES[shape] then shape = fallback.shape end
-	local style = type(declared.style) == 'string' and declared.style:lower() or fallback.style
-	if not STYLES[style] then style = fallback.style end
-
-	local radius = finiteNumber(declared.RADIUS)
-	if radius == nil or radius < 0.1 or radius > 50.0 then radius = fallback.RADIUS end
-
-	-- 0 is a real choice -- a marker deliberately on the floor -- so only a
-	-- broken value falls back.
-	local lift = finiteNumber(Config.GROUND_OFFSET)
-	if lift == nil or lift < 0.0 or lift > 2.0 then lift = 0.06 end
-	return { shape = shape, style = style, radius = radius, lift = lift }
+--- The AV lift, clamped to something a chassis will not fall through.
+-- The rule is `lib/shared/vehicle.lua`, beside the one that says whether a
+-- record is an AV at all: the staff spawner had a third copy with no bound.
+-- @author XEROX710
+-- @return number
+function Access.AvLift()
+	return OPX.Vehicle.AvLift(Config.AV_LIFT)
 end
 
 --- How far away a marker is still drawn, clamped to what the engine accepts.
 -- @author XEROX710
 -- @return number
 function Access.MaxDistance()
-	local distance = finiteNumber(Config.MAX_DISTANCE)
-	if distance == nil or distance < 1.0 or distance > 500.0 then return 150.0 end
-	return distance
-end
-
---- The AV lift, clamped to something a chassis will not fall through.
--- @author XEROX710
--- @return number
-function Access.AvLift()
-	local lift = finiteNumber(Config.AV_LIFT)
-	if lift == nil or lift < 0.0 or lift > 10.0 then return 1.2 end
-	return lift
+	return OPX.Spots.MaxDistance(Config.MAX_DISTANCE, 150.0)
 end
 
 -- The distances and cadences, read once. A value `Problems` refuses reads as
@@ -330,12 +201,237 @@ Access.POLL_MS = math.floor(finiteNumber(Config.POLL_MS) or 0)
 Access.COOLDOWN_MS = math.floor(finiteNumber(Config.COOLDOWN_MS) or 0)
 Access.REQUEST_WINDOW_MS = math.floor(finiteNumber(Config.REQUEST_WINDOW_MS) or 0)
 Access.REQUESTS_PER_WINDOW = math.floor(finiteNumber(Config.REQUESTS_PER_WINDOW) or 0)
-Access.CAPTURE_TIMEOUT_MS = math.floor(finiteNumber(Config.CAPTURE_TIMEOUT_MS) or 0)
 
 --- The configured dealers, already validated.
 -- Read as empty rather than refused: every read is reachable from the contract.
 -- @author XEROX710
 Access.SPOTS = Access.Coerce(Config.SPOTS, nil)
+
+-- ── preview points ──────────────────────────────────────────────────────────
+
+-- A PREVIEW IS NOT A DEALER, and it has its own spec for exactly two
+-- differences. It has no KIND -- what it shows is decided by the stock row it
+-- names, and a preview whose kind disagreed with its own model would be a
+-- showroom car nobody can buy. And its noun is its own, so a refusal an operator
+-- reads says "preview" rather than "dealer" about a thing they placed from a
+-- different menu.
+--
+-- It keeps the HEADING, because a showroom car parked at zero degrees faces
+-- whichever way the map was built rather than the way the floor is laid out.
+local PREVIEW_SPEC = {
+	noun = 'preview',
+	maxKey = Access.MAX_KEY,
+	kinds = nil,
+	heading = true,
+}
+
+--- Normalises one preview point, in the operator's upper-case spelling.
+-- @author XEROX710
+-- @param key any
+-- @param raw any
+-- @return table|nil
+-- @return string|nil
+function Access.PreviewFromDefinition(key, raw)
+	local spot, why = OPX.Spots.FromDefinition(PREVIEW_SPEC, key, raw)
+	if spot == nil then return nil, why end
+	return Access.AttachPreview(spot, raw)
+end
+
+--- Normalises one preview point off the wire.
+-- @author XEROX710
+-- @param raw any
+-- @return table|nil
+-- @return string|nil
+function Access.PreviewFromWire(raw)
+	local spot, why = OPX.Spots.FromWire(PREVIEW_SPEC, raw)
+	if spot == nil then return nil, why end
+	return Access.AttachPreview(spot, raw)
+end
+
+--- Hangs the two fields the shared record knows nothing about onto a preview.
+-- @author XEROX710
+--
+-- WHICH DEALER'S FLOOR IT STANDS ON and WHICH MODEL IS STANDING ON IT. Neither
+-- belongs in `lib/shared/spots.lua`: five modules share that record and none of
+-- the other four has a catalogue to point at.
+--
+-- Both are REQUIRED, and a preview missing either is refused rather than
+-- defaulted. A preview with no entry would be an empty parking space that
+-- nothing can ever be put on; a preview with no dealer would be a car standing
+-- in a field that no zone ever cleans up.
+-- @param spot table
+-- @param raw table
+-- @return table|nil
+-- @return string|nil
+function Access.AttachPreview(spot, raw)
+	raw = type(raw) == 'table' and raw or {}
+	local dealer = raw.DEALER or raw.dealer
+	local entry = raw.ENTRY or raw.entry
+	if type(dealer) ~= 'string' or dealer == '' or #dealer > Access.MAX_KEY then
+		return nil, ('%s: DEALER must name a dealer'):format(spot.key)
+	end
+	if type(entry) ~= 'string' or entry == '' or #entry > Access.MAX_KEY then
+		return nil, ('%s: ENTRY must name a stock row'):format(spot.key)
+	end
+	spot.dealer = dealer
+	spot.entry = entry
+	return spot
+end
+
+--- The fields of one preview point as the wire carries them.
+-- @author XEROX710
+-- @param spot table
+-- @return table
+function Access.PreviewWire(spot)
+	local wire = OPX.Spots.Serialise(spot)
+	wire.dealer = spot.dealer
+	wire.entry = spot.entry
+	return wire
+end
+
+--- Builds a key -> preview table from a block of `PREVIEW.POINTS` definitions.
+-- @author XEROX710
+--
+-- THE SAME JOB `Access.Coerce` DOES FOR DEALERS, and written out rather than
+-- handed to `OPX.Spots.Coerce` for one reason: a preview is a shared spot record
+-- PLUS two fields the shared record knows nothing about, and `Coerce` stops at
+-- the shared half. A point that passed the coordinate check and then named no
+-- dealer would be accepted here and refused at the moment a car had to stand on
+-- it, which is a config error found at the wrong end of the day.
+--
+-- `nil` is an empty showroom and NOT a problem: a server with no preview points
+-- is a server whose dealers are counters rather than halls, which is the
+-- ordinary case. Anything that is not nil and not a table IS reported.
+-- @param definitions any map of key -> row
+-- @param problems table|nil collector, appended to
+-- @return table
+function Access.CoercePreviews(definitions, problems)
+	local points = {}
+	if definitions == nil then return points end
+	if type(definitions) ~= 'table' then
+		if problems ~= nil then
+			problems[#problems + 1] = 'PREVIEW.POINTS must be a table of key -> definition'
+		end
+		return points
+	end
+	for key, raw in pairs(definitions) do
+		local spot, why = Access.PreviewFromDefinition(key, raw)
+		if spot == nil then
+			if problems ~= nil then problems[#problems + 1] = 'PREVIEW.POINTS.' .. tostring(why) end
+		else
+			points[spot.key] = spot
+		end
+	end
+	return points
+end
+
+--- The configured showroom, already validated.
+-- @author XEROX710
+--
+-- THIS IS WHERE A SHOWROOM CAR LIVES NOW. It used to live in
+-- `opx77_dealership_previews`, written there by the staff menu's Dev screen,
+-- and the owner deleted that screen on 2026-09-21 ("il y a pas de config live
+-- c'est tous par les fichier config"). The database is still READ at boot -- a
+-- car an operator placed before this version is adopted and printed back as the
+-- config line that recreates it -- but nothing writes to it from a menu, and a
+-- point named here SHADOWS an adopted row of the same key. Config wins, always:
+-- the file is the copy somebody has.
+Access.PREVIEW_POINTS = Access.CoercePreviews(
+	type(Config.PREVIEW) == 'table' and Config.PREVIEW.POINTS or nil, nil)
+
+-- How many previews one dealer's floor may hold. Every one of them is a network
+-- vehicle that never despawns, so this is a frame budget and not a taste.
+Access.PREVIEW_LIMIT = math.floor(
+	finiteNumber(type(Config.PREVIEW) == 'table' and Config.PREVIEW.LIMIT or nil) or 0)
+
+--- Whether the showroom is dressed at all.
+-- @author XEROX710
+-- @return boolean
+function Access.PreviewsEnabled()
+	local block = type(Config.PREVIEW) == 'table' and Config.PREVIEW or nil
+	return block ~= nil and block.ENABLED ~= false
+end
+
+--- Whether a preview is created locked.
+-- @author XEROX710
+-- @return boolean
+function Access.PreviewLocked()
+	local block = type(Config.PREVIEW) == 'table' and Config.PREVIEW or nil
+	return block == nil or block.LOCKED ~= false
+end
+
+--- Metres a preview is lifted off its declared Z, clamped to something a chassis
+--- neither rests inside nor falls out of.
+-- @author XEROX710
+-- @return number
+function Access.PreviewLift()
+	local block = type(Config.PREVIEW) == 'table' and Config.PREVIEW or nil
+	local lift = finiteNumber(block ~= nil and block.LIFT or nil)
+	if lift == nil or lift < 0.0 or lift > 2.0 then return 0.1 end
+	return lift
+end
+
+-- ── the zone, the offer and the money ───────────────────────────────────────
+
+-- Flat metres from a dealer inside which the eye grows a row on other players,
+-- squared once because every test against it is a squared comparison.
+local ZONE_RADIUS = finiteNumber(Config.ZONE_RADIUS) or 0
+Access.ZONE_RADIUS = ZONE_RADIUS
+Access.ZONE_RADIUS_SQ = ZONE_RADIUS * ZONE_RADIUS
+
+Access.OFFER_TIMEOUT_MS = math.floor(finiteNumber(Config.OFFER_TIMEOUT_MS) or 0)
+
+-- `Access.PlacementRight` stood here and named the ACL right that gated placing
+-- a preview point. Both it and the right went when the write path did.
+
+--- What the seller is paid out of a sale, and what the company banks.
+-- @author XEROX710
+--
+-- ROUNDED DOWN TO THE SELLER AND THE REMAINDER TO THE COMPANY. The other way
+-- round mints a unit of currency on every odd price, which over a shift is a
+-- company account that grows without anybody buying anything.
+--
+-- The percentage is clamped rather than refused: 0 is a company that pays no
+-- commission, 100 is one that keeps nothing, and a number outside that is an
+-- operator's typo -- which must not become a negative deposit.
+-- @param price number
+-- @return integer the seller's cut
+-- @return integer what the company banks
+function Access.Split(price)
+	local total = finiteNumber(price)
+	if total == nil or total <= 0 then return 0, 0 end
+	total = math.floor(total)
+	local percent = finiteNumber(Config.SELLER_CUT_PERCENT) or 0
+	if percent < 0 then percent = 0 elseif percent > 100 then percent = 100 end
+	local cut = math.floor(total * percent / 100)
+	if cut > total then cut = total end
+	return cut, total - cut
+end
+
+--- The company a seller sells for: their job, or their gang, or neither.
+-- @author XEROX710
+--
+-- THE JOB WINS. A gang member with a day job sells for the day job, because that
+-- is the company the customer believes they are buying from. `EXCLUDED` names
+-- the entries that are the ABSENCE of a group -- `unemployed` and `none` are
+-- rows in `config/character.lua` rather than nils, precisely so nothing has to
+-- handle nil, and an account for either would be one account every player on the
+-- server pays into and nobody can be the boss of.
+-- @param job any the job name
+-- @param gang any the gang name
+-- @return string|nil 'job' or 'gang'
+-- @return string|nil the group name
+function Access.CompanyOf(job, gang)
+	local block = type(Config.COMPANY) == 'table' and Config.COMPANY or {}
+	local excluded = type(block.EXCLUDED) == 'table' and block.EXCLUDED or {}
+	if block.JOBS ~= false and type(job) == 'string' and job ~= '' and not excluded[job] then
+		return 'job', job
+	end
+	if block.GANGS ~= false and type(gang) == 'string' and gang ~= '' and not excluded[gang] then
+		return 'gang', gang
+	end
+	return nil, nil
+end
 
 -- ── the stock ───────────────────────────────────────────────────────────────
 
@@ -496,8 +592,8 @@ end
 -- ── the configuration, read back ────────────────────────────────────────────
 
 -- Config keys that must be a finite number above zero.
-local NUMBERS = { 'USE_RADIUS', 'SCAN_MS', 'POLL_MS', 'COOLDOWN_MS',
-	'REQUEST_WINDOW_MS', 'REQUESTS_PER_WINDOW', 'CAPTURE_TIMEOUT_MS' }
+local NUMBERS = { 'USE_RADIUS', 'ZONE_RADIUS', 'SCAN_MS', 'POLL_MS', 'COOLDOWN_MS',
+	'REQUEST_WINDOW_MS', 'REQUESTS_PER_WINDOW', 'OFFER_TIMEOUT_MS' }
 
 --- Lists every configuration error visible without a world, sorted.
 -- @author XEROX710
@@ -512,18 +608,12 @@ function Access.Problems()
 		end
 	end
 
-	local distance = finiteNumber(Config.MAX_DISTANCE)
-	if distance == nil or distance < 1.0 or distance > 500.0 then
-		lines[#lines + 1] = 'MAX_DISTANCE must be a finite number, 1 to 500 metres'
-	end
-	local groundOffset = finiteNumber(Config.GROUND_OFFSET)
-	if groundOffset == nil or groundOffset < 0.0 or groundOffset > 2.0 then
-		lines[#lines + 1] = 'GROUND_OFFSET must be a finite number, 0 to 2 metres'
-	end
-	local lift = finiteNumber(Config.AV_LIFT)
-	if lift == nil or lift < 0.0 or lift > 10.0 then
-		lines[#lines + 1] = 'AV_LIFT must be a finite number, 0 to 10 metres'
-	end
+	-- The draw distance and the ground offset are reported against the same
+	-- bounds `Access.Marker` and `Access.MaxDistance` clamp to, because they are
+	-- literally the same constants.
+	OPX.Spots.DrawProblems(Config.MAX_DISTANCE, Config.GROUND_OFFSET, lines)
+
+	OPX.Vehicle.AvLiftProblem(Config.AV_LIFT, lines)
 
 	-- An empty stock is not an error -- an operator may be between suppliers --
 	-- but a row that was refused is.
@@ -538,28 +628,96 @@ function Access.Problems()
 
 	for _, kind in ipairs({ M.KIND.GARAGE, M.KIND.AVPAD }) do
 		local declared = type(Config.MARKER) == 'table' and Config.MARKER[kind] or nil
-		if type(declared) ~= 'table' then
-			lines[#lines + 1] = ('MARKER.%s must be a table of shape, style and RADIUS'):format(kind)
-		else
-			local shape = type(declared.shape) == 'string' and declared.shape:lower() or nil
-			if shape ~= nil and not SHAPES[shape] then
-				lines[#lines + 1] = ('MARKER.%s.shape must be ring or cylinder'):format(kind)
-			end
-			local style = type(declared.style) == 'string' and declared.style:lower() or nil
-			if style ~= nil and not STYLES[style] then
-				lines[#lines + 1] = ('MARKER.%s.style must be interaction, objective, spawn or danger')
-					:format(kind)
-			end
-			local radius = finiteNumber(declared.RADIUS)
-			if radius == nil or radius < 0.1 or radius > 50.0 then
-				lines[#lines + 1] = ('MARKER.%s.RADIUS must be a finite number, 0.1 to 50'):format(kind)
-			end
-		end
+		OPX.Spots.MarkerProblems(declared, 'MARKER.' .. kind, lines)
 	end
 
 	-- SPOTS are validated once at load; the errors are re-derived here so the
 	-- diagnostic reports them rather than only the boot log.
 	Access.Coerce(Config.SPOTS, lines)
+
+	-- THE ZONE HAS TO CONTAIN THE MARKER. A zone smaller than the radius a
+	-- dealer is USED at would grow the salesperson's row on players who are
+	-- already too far to buy anything, and take it away from one standing on the
+	-- marker -- which reads from inside the game as an eye that works everywhere
+	-- except at the counter.
+	if (finiteNumber(Config.ZONE_RADIUS) or 0) > 0 and
+		(finiteNumber(Config.ZONE_RADIUS) or 0) < (finiteNumber(Config.USE_RADIUS) or 0) then
+		lines[#lines + 1] = 'ZONE_RADIUS must be at least USE_RADIUS: the zone has to contain ' ..
+			'the marker it is drawn around'
+	end
+
+	local percent = finiteNumber(Config.SELLER_CUT_PERCENT)
+	if percent == nil or percent < 0 or percent > 100 then
+		lines[#lines + 1] = 'SELLER_CUT_PERCENT must be a number from 0 to 100'
+	end
+
+
+	local preview = Config.PREVIEW
+	if preview ~= nil and type(preview) ~= 'table' then
+		lines[#lines + 1] = 'PREVIEW must be a table of ENABLED, LIMIT, LOCKED and LIFT'
+	elseif type(preview) == 'table' then
+		local limit = finiteNumber(preview.LIMIT)
+		if limit == nil or limit < 1 or limit % 1 ~= 0 then
+			lines[#lines + 1] = 'PREVIEW.LIMIT must be a whole number of showroom cars, 1 or more'
+		end
+		local lift = finiteNumber(preview.LIFT)
+		if lift == nil or lift < 0.0 or lift > 2.0 then
+			lines[#lines + 1] = 'PREVIEW.LIFT must be a finite number, 0 to 2 metres'
+		end
+
+		-- THE SHOWROOM ITSELF, validated at load exactly as SPOTS is. The errors
+		-- are re-derived here rather than kept from the load, so the diagnostic
+		-- reports them and not only the boot log.
+		local points = Access.CoercePreviews(preview.POINTS, lines)
+
+		-- AND WHAT EACH POINT NAMES. ENTRY is checked because the stock list is
+		-- ENTIRELY config: a point naming a row that is not in it can never
+		-- stand a car up, on this start or any other, so it is a config error
+		-- and not a runtime one. DEALER is deliberately NOT checked here -- a
+		-- dealer may still be adopted out of `opx77_dealerships` at boot, which
+		-- happens long after this file loads, so a name that is missing now may
+		-- be there in a second. The server says so per car when it dresses the
+		-- floor, which is the moment it is actually knowable.
+		local ordered = {}
+		for key in pairs(points) do ordered[#ordered + 1] = key end
+		table.sort(ordered)
+		for _, key in ipairs(ordered) do
+			local point = points[key]
+			if Access.STOCK[point.entry] == nil then
+				lines[#lines + 1] = ('PREVIEW.POINTS.%s: ENTRY names %q, which is not a KEY in ' ..
+					'STOCK; nothing can ever stand on it'):format(key, point.entry)
+			end
+		end
+
+		-- A SHOWROOM BIGGER THAN ITS OWN LIMIT is a config that refuses half of
+		-- itself at boot with a line per car. Counted per dealer, because the
+		-- limit is per floor.
+		local perDealer = {}
+		for _, point in pairs(points) do
+			perDealer[point.dealer] = (perDealer[point.dealer] or 0) + 1
+		end
+		local dealers = {}
+		for dealer in pairs(perDealer) do dealers[#dealers + 1] = dealer end
+		table.sort(dealers)
+		for _, dealer in ipairs(dealers) do
+			if Access.PREVIEW_LIMIT > 0 and perDealer[dealer] > Access.PREVIEW_LIMIT then
+				lines[#lines + 1] = ('PREVIEW.POINTS: %d point(s) name the dealer %q, which is ' ..
+					'more than PREVIEW.LIMIT (%d); the ones over the line are not created')
+					:format(perDealer[dealer], dealer, Access.PREVIEW_LIMIT)
+			end
+		end
+	end
+
+	local company = Config.COMPANY
+	if type(company) ~= 'table' then
+		lines[#lines + 1] = 'COMPANY must be a table of JOBS, GANGS and EXCLUDED'
+	elseif company.JOBS == false and company.GANGS == false then
+		-- Not a fault of shape but of meaning: with neither banked, no seller
+		-- anywhere has a company, so every face-to-face sale refuses and the
+		-- whole feature is off without anything saying so.
+		lines[#lines + 1] = 'COMPANY.JOBS and COMPANY.GANGS are both off: nobody can sell to ' ..
+			'another player, because no seller has an account to pay into'
+	end
 
 	local key = type(Config.KEY) == 'table' and Config.KEY or nil
 	if key == nil then

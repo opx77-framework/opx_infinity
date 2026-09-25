@@ -49,7 +49,26 @@ OPX.Config.MODULES.inventory = {
 		HOTBAR = { '4', '5', '6', '7', '8' },
 		-- Shows the hotbar row for PEEK_MS and nothing else: it uses nothing,
 		-- takes no focus and cannot be clicked. `false` turns it off.
-		PEEK = 'TAB',
+		--
+		-- NOT `TAB`, AND THAT IS THE WHOLE REASON THIS COMMENT EXISTS. It was,
+		-- and the key did nothing in game. The path was traced end to end on
+		-- 2026-09-21 and every step of it is sound: `TAB` is in the platform's
+		-- own bindable vocabulary, `keyName` accepts it, `Options.KEY_PEEK`
+		-- carries it, the mapping is registered, and the peek's own refusals --
+		-- which relay to the server journal through `OPX.Note` -- were never
+		-- written once. The press never reached Lua at all.
+		--
+		-- Which the key guide explains: a binding "never fires while another
+		-- WebUI owns keyboard focus", and `TAB` is Cyberpunk's own quick menu.
+		-- The game takes the keyboard on that press, so the binding is
+		-- suppressed. The same guide says it in one line: "choose keys that do
+		-- not clash with an in-world action."
+		--
+		-- `Y` is the replacement and it is a judgement call, not a measurement:
+		-- it is free on a default Cyberpunk layout as far as I can tell, and a
+		-- player who disagrees rebinds it in Pause -> Settings -> KEY BINDINGS,
+		-- where the choice follows them to every server.
+		PEEK = 'Y',
 	},
 
 	-- Least time between two uses by one player, and how long a use handler has

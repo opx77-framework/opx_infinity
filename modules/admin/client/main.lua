@@ -314,6 +314,12 @@ function M.Start()
 	M.Contracts.inventory = OPX.Api.Get('inventory')
 	M.Contracts.downed = OPX.Api.Get('downed')
 	M.Contracts.prompts = OPX.Api.Get('prompts')
+	-- THE ONLY CONTRACT THE STAFF MENU ACTS THROUGH RATHER THAN READS. The Dev
+	-- screen's showroom rows end here instead of in a command line, because the
+	-- commands they would have used were deleted with the rest of the placement
+	-- commands. It is optional like every other: without it those two rows say so
+	-- when they are pressed.
+	M.Contracts.dealership = OPX.Api.Get('dealership')
 
 	if M.Contracts.menu == nil then
 		Open77.log.warn('[admin] no menu contract: the staff menu cannot be drawn. Every command ' ..
@@ -369,9 +375,28 @@ end
 --- menu, the form and the staff rows down with it.
 -- @author dop42
 function M.Stop()
-	if noclipOn and Client.TravelNative('setNoclip') then pcall(Open77.travel.setNoclip, false) end
-	if mapArmed and Client.TravelNative('setMapPick') then pcall(Open77.travel.setMapPick, false) end
-	noclipOn, mapArmed = false, false
+	-- THE ANSWERS ARE READ. Both were discarded, and this is the one path that
+	-- puts a member of staff back on their feet: a refused `setNoclip(false)`
+	-- with the flags cleared underneath it leaves them flying with nothing left
+	-- that knows to switch it off. The flags follow what actually happened, so a
+	-- later stop -- or the toggle itself -- still has something to act on.
+	if noclipOn and Client.TravelNative('setNoclip') then
+		local called, off, why = pcall(Open77.travel.setNoclip, false)
+		if called and off ~= false then
+			noclipOn = false
+		else
+			Open77.log.error(('[admin] noclip would not switch off: %s')
+				:format(tostring(called and why or off)))
+		end
+	else
+		noclipOn = false
+	end
+	if mapArmed and Client.TravelNative('setMapPick') then
+		local called, off = pcall(Open77.travel.setMapPick, false)
+		mapArmed = not (called and off ~= false)
+	else
+		mapArmed = false
+	end
 	M.Menu.Close()
 	M.Menu.Stop()
 	M.TagsView.Stop()

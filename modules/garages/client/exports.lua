@@ -27,11 +27,23 @@ local function nearest()
 	return Result.Ok({ key = spot.key, label = spot.label, kind = spot.kind })
 end
 
---- Answers every spot this client was told about, by key.
+--- Answers every drawn point this client was told about, by point key.
 -- @author XEROX710
 -- @return Result
 local function spots()
 	return Result.Ok({ spots = Runtime.Spots() })
+end
+
+--- Answers every garage this client was told about, by the key a vehicle's
+--- `garage` column holds.
+-- THE ONE A CALLER OUTSIDE THIS MODULE WANTS. A point is a marker; a garage is
+-- what a vehicle is filed under, and the dealership's delivery choice names one
+-- of these. Offering points there would list the same garage once per door and
+-- file a bought car under a marker.
+-- @author XEROX710
+-- @return Result
+local function garages()
+	return Result.Ok({ garages = Runtime.Garages() })
 end
 
 --- Brings the player's own vehicle out at the spot underfoot.
@@ -59,6 +71,7 @@ function M.Api()
 		State = state,
 		Nearest = nearest,
 		Spots = spots,
+		Garages = garages,
 		Bring = bring,
 	})
 end

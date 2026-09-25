@@ -81,6 +81,22 @@ local function rowFor(bag, slot)
 	return row
 end
 
+--- Whether the player's own bag holds anything in one hotbar slot.
+---
+--- Published so the hotbar KEYS can ask before they send. The server is still
+--- the authority on what a slot holds and still refuses an empty one -- this is
+--- the client declining to ask a question it already knows the answer to, which
+--- is the difference between a key that does nothing and a key that fetches a
+--- refusal and puts it on screen.
+-- @author dop42
+-- @param slot integer
+-- @return boolean
+function Slotbar.Holds(slot)
+	local index = tonumber(slot)
+	if index == nil then return false end
+	return stackAt(M.Screen.Own(), index) ~= nil
+end
+
 --- Every slot the hotbar has, in order.
 local function rows(bag)
 	local list = {}

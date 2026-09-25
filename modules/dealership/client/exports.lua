@@ -63,6 +63,29 @@ local function isOpen()
 	return Runtime.IsOpen()
 end
 
+--- Places a showroom car where this client is standing, facing where it looks.
+-- `Place` and `Unplace` stood here. They asked the server to dress or strip a
+-- showroom floor, gated on the `opx.dealership.place` ACL right.
+--
+-- The owner removed the staff Dev screen that was their only caller, then the
+-- path itself ("retire cela aussi"). The shape is worth naming: a published
+-- contract verb nothing called, over a wire verb nothing sent, guarded by a
+-- right granted to a real account. A live entry point nobody exercises is worse
+-- than either having the feature or not -- nobody watches a door nobody uses.
+--
+-- The floor is `PREVIEW.POINTS` in `config/dealership.lua`, and the rows placed
+-- before today are still read and still printed back as config.
+
+--- Answers the offer this player is deciding about, or a refusal.
+-- @author XEROX710
+-- @param yes boolean
+-- @return Result
+local function decide(yes)
+	local verdict = Runtime.Decide(yes == true)
+	if verdict.ok ~= true then return Result.Err(verdict.error or 'dealership.noOffer') end
+	return Result.Ok(verdict)
+end
+
 --- Builds the client state. Never yields.
 -- @author XEROX710
 function M.Init()
@@ -79,6 +102,7 @@ function M.Api()
 		Open = open,
 		Close = close,
 		IsOpen = isOpen,
+		Decide = decide,
 	})
 end
 

@@ -61,10 +61,23 @@ local function boot(side, database, prelude)
 	-- state the platform never produces.
 	if side == 'client' then control.Fire('onClientResourceStart', 'opx_infinity') end
 
-	-- `Boot` rather than a fixed count: the boot is one resume per module per
-	-- phase and the count moves whenever a module is added.
-	control.Boot()
-	control.Pump(60)
+	-- ENOUGH FRAMES FOR A BOOT THAT SPREADS ITSELF OVER THEM. This was 60, which
+	-- covered a boot where only `Start` yielded between modules -- thirty modules,
+	-- thirty frames, and room to spare. Every phase yields now, so a full boot is
+	-- three times that, and 60 left the server half part-way through it: the
+	-- symptom was `attempt to index a nil value (local 'flying')` on a test
+	-- reading `control.commands['noclip']`, a command registered by a module the
+	-- boot had not reached. A harness that stops pumping before the resource has
+	-- finished starting is testing a state the platform never ships.
+	--
+	-- 240 ROUNDS AND NOT `control.Boot()`, which drains the boot threads first
+	-- and then pumps: the drain advances the same 100 ms-per-round clock the
+	-- scheduler jobs are timed against, so every staggered first run landed
+	-- somewhere else entirely and two sections that read live traffic -- the
+	-- noclip body report and the heading job -- went looking in the wrong
+	-- four-second window. One helper, one clock, the shape the sections were
+	-- written against.
+	control.Pump(240)
 
 	-- A surface refuses everything until its page has reported ready, so a test
 	-- that skipped this would be testing the window before the UI exists.
@@ -84,15 +97,34 @@ local CORE_NAMESPACE = {
 	-- against it too, and the three copies that preceded it -- 47 names, 45
 	-- and 14 -- are what a shared name is for.
 	Glyphs = true,
+	-- The one screen-placement vocabulary, in `lib/shared/anchors.lua`. On `OPX`
+	-- for the reason `Glyphs` is, and with a sharper version of the same story:
+	-- eight config blocks expose an `ANCHOR` and three DIFFERENT sets of names
+	-- were accepted behind it, so the same word in two files meant two things.
+	Anchors = true,
 	Modules = true, Api = true, Schema = true, Scheduler = true,
 	-- The one job gate, in `lib/shared/jobgate.lua`. On `OPX` and not inside a
 	-- module for the same reason `Glyphs` is: `elevators` and `teleports` both
 	-- decide who may pass, on both halves, and the copy that drifted would be
 	-- the one saying somebody may.
 	JobGate = true,
+	-- The one placed-spot vocabulary, in `lib/shared/spots.lua`, on `OPX` for
+	-- the same reason `JobGate` is: `garages` and `dealership` held 334
+	-- `diff`-clean identical lines of it and `clothing`, `teleports` and
+	-- `elevators` held cut-down copies, and the copy that drifted would be the
+	-- one refusing a spot the other accepted -- a car bought at a dealer and
+	-- recallable at no garage.
+	Spots = true,
+	-- Whether a TweakDB record flies, in `lib/shared/vehicle.lua`. A fact about
+	-- the record, so it cannot be the three answers it was.
+	Vehicle = true,
 	Result = true, Table = true, String = true, Math = true, Text = true,
 	Validate = true, Hooks = true, Locale = true, CitizenId = true,
 	Storage = true, Audit = true, Surface = true,
+	-- `Carry` is the one reload-surviving blob, divided into a namespace per
+	-- writer. `Open77.state` holds ONE value per resource and two modules were
+	-- writing it whole, each destroying the other; see `lib/server/storage.lua`.
+	Carry = true,
 	-- `Lib` is the external library, `opx_lib`, loaded once by
 	-- `lib/client/lib.lua` and client-only. It replaced `Rpc` and `Keys`, which
 	-- were the two helpers in `lib/client/` that reached nothing this resource
@@ -531,6 +563,45 @@ do
 		OPX.Sessions[11].departing = true
 		check('a departing session is refused', OPX.Buckets.Isolate(11) == false)
 
+
+		-- ── A SLOT THAT HAS ALREADY GONE IS NOT A ROUTING FAULT ──────────────
+		-- `[bucket] N could not be moved from 0 to 77005 (unloaded): false` was
+		-- filed at WARN on every single departure -- three in one minute on a
+		-- quiet evening -- and each one read like the routing had broken. It had
+		-- not. `character.Logout` isolates on the way out and serves two callers:
+		-- a player SWITCHING character, still on the slot, for whom a failed move
+		-- means they are waiting in the wrong world; and a player DISCONNECTING,
+		-- whose slot the host has already given up, where the move cannot succeed
+		-- and does not need to.
+		--
+		-- The host is the authority: it stops vouching for an identity the
+		-- instant the connection is gone. `control.Admit` is what a test uses to
+		-- say a slot is occupied, so taking the account away IS the disconnect.
+		control.Admit(13, 'account-g')
+		OPX.EnsureSession(13)
+		control.moved = false
+		local warnsBefore, debugsBefore = #control.log.warn, #control.log.debug
+		control.accounts[13] = nil
+		OPX.Buckets.Isolate(13, 'unloaded')
+
+		local shouted = false
+		for index = warnsBefore + 1, #control.log.warn do
+			if tostring(control.log.warn[index]):find('could not be moved', 1, true) then
+				shouted = true
+			end
+		end
+		check('a bucket move for a slot the host has given up is not a warning',
+			not shouted, table.concat(control.log.warn, ' | '):sub(1, 160))
+
+		-- SAID, THOUGH, AND NOT SWALLOWED. The move really did not happen, and a
+		-- silence here would be the other half of the same problem.
+		local noted = false
+		for index = debugsBefore + 1, #control.log.debug do
+			if tostring(control.log.debug[index]):find('the slot is gone', 1, true) then
+				noted = true
+			end
+		end
+		check('it is recorded at debug, where a routine departure belongs', noted)
 		-- The gate seam: `onGiveUp` answering false means "this player is mine
 		-- now", and core must NOT release a hold the caller has taken over.
 		control.Admit(12, 'account-f')
@@ -672,17 +743,50 @@ do
 				},
 			}
 			character.AwaitingPlacement[returning] = 'citizen-returning'
-			check('a character that already has a position is offered the menu too',
+			-- ── THE POLICY DECIDES, AND BOTH HALVES ARE DRIVEN ──────────────
+			-- THE OWNER: "active le config pour pas que cela me propose de
+			-- choisir mon spwan a chaque connection cela me remet au lieu de
+			-- dernier connexion". That is `OFFER_POLICY`, and the shipped value
+			-- is `'first'` now.
+			--
+			-- SET EXPLICITLY IN BOTH DIRECTIONS rather than read off the config,
+			-- because a check that only exercises the shipped value tests the
+			-- default and not the setting -- and the one it does not exercise is
+			-- the one that breaks. The gate is driven through the REAL
+			-- `character.PlacePending`: every test that called `spawn.Offer`
+			-- directly once passed straight through a defect that skipped the
+			-- offer for anybody whose row held a position.
+			local shippedPolicy = OPX.Config.MODULES.spawn.OFFER_POLICY
+			check('the shipped policy asks once per character, not once per join',
+				shippedPolicy == 'first', tostring(shippedPolicy))
+
+			OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+			spawn.Init()
+			check("under 'always', a character that already has a position is asked",
 				character.PlacePending(returning) == true)
 			check('and its choice is outstanding', spawn.IsPending(returning) == true)
+			--  clears what is outstanding, which is what lets the same
+			-- character be asked twice in one section under two policies.
+			character.AwaitingPlacement[returning] = 'citizen-returning'
 
-			-- A BRAND NEW character, with nowhere in its row at all.
+			-- AND THE OWNER'S CASE: the same character, resumed in silence.
+			OPX.Config.MODULES.spawn.OFFER_POLICY = 'first'
+			spawn.Init()
+			check("under 'first', a returning character is placed without being asked",
+				character.PlacePending(returning) == false)
+			check('and nothing is left outstanding for them',
+				spawn.IsPending(returning) == false)
+
+			-- A BRAND NEW character, with nowhere in its row at all, is still
+			-- asked -- which is the whole of what 'first' means.
 			local fresh = 32
 			character.Players[fresh] = { PlayerData = { citizenId = 'citizen-fresh' } }
 			character.AwaitingPlacement[fresh] = 'citizen-fresh'
-			check('and a brand new character is still offered it',
+			check('while a character that has never stood anywhere still chooses',
 				character.PlacePending(fresh) == true)
 			check('with its own choice outstanding', spawn.IsPending(fresh) == true)
+
+			OPX.Config.MODULES.spawn.OFFER_POLICY = shippedPolicy
 
 			-- Neither of these is a real player; leave the store as it was found.
 			character.Players[returning] = nil
@@ -973,6 +1077,15 @@ do
 		end
 
 		-- ── the offer ────────────────────────────────────────────────────────────
+		-- DRIVEN UNDER 'always', EXPLICITLY. What follows tests the offer's own
+		-- plumbing -- the channel, the duration, the choice, the timeout -- and not
+		-- which world enters get one. The shipped policy is 'first' now, under
+		-- which a direct `Offer` for a character the store knows nothing about is
+		-- a legitimate refusal, and these checks would be testing the policy by
+		-- accident.
+		local heldPolicy = OPX.Config.MODULES.spawn.OFFER_POLICY
+		OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+		spawn.Init()
 		local src = 7
 		control.Admit(src, 'account-spawn')
 		OPX.EnsureSession(src)
@@ -1128,6 +1241,10 @@ do
 		check('and the hold releases it when the menu never appears',
 			spawn.IsPending(stuck) == false)
 		OPX.Config.MODULES.spawn.HOLD_MAX_SECONDS = savedHold
+		-- Put back what the config ships, so nothing after this section is
+		-- testing a policy this one set.
+		OPX.Config.MODULES.spawn.OFFER_POLICY = heldPolicy
+		spawn.Init()
 	end
 end
 
@@ -1641,7 +1758,7 @@ do
 
 		ctl.Fire('onClientResourceStart', 'opx_infinity')
 		ctl.Boot()
-		ctl.Pump(60)
+		ctl.Pump(240)
 		ctl.ReadyPages()
 		return own, ctl
 	end
@@ -3035,6 +3152,20 @@ do
 		-- the drift is the only thing worth testing here.
 		check('opx_lib loaded, and it is the real one',
 			type(env.OPX.Lib) == 'table' and type(env.OPX.Lib.VERSION) == 'string')
+
+		-- AND IT IS THE RIGHT ONE. There is more than one checkout of this
+		-- library on a working machine, and `Host.Providers.opx_lib` picks
+		-- whichever sits at `../opx_lib` -- which depends on where this
+		-- resource has been cloned, and is different inside a git worktree.
+		-- The wrong checkout does NOT fail here: it fails 21 checks scattered
+		-- through the rest of this file, not one of which mentions the library.
+		-- Pinned, and the failure names the path that answered, so the next
+		-- person spends a second on it rather than an afternoon.
+		local LIB_VERSION = '0.4.0'
+		check('and it is the version this suite was written against',
+			env.OPX.Lib.VERSION == LIB_VERSION,
+			('%s answered %s, wanted %s -- set OPX_LIB_PATH at the right checkout')
+				:format(Host.Providers.opx_lib, tostring(env.OPX.Lib.VERSION), LIB_VERSION))
 		check('the two helpers that moved out are reachable',
 			type(env.OPX.Lib.Input) == 'table' and type(env.OPX.Lib.Rpc) == 'table')
 		-- What the migration was for: the old names are gone, not aliased.
@@ -3049,9 +3180,15 @@ do
 		end
 		-- Only the modules this resource CALLS, found by reading the client
 		-- sources. Declaring the library's whole permission set instead would
-		-- hand this resource `world.markers` and `ui.vanilla.map` for code it
-		-- does not run, and a manifest that asks for more than it uses is the
-		-- habit this project does not have.
+		-- hand this resource permissions for code it does not run, and a
+		-- manifest that asks for more than it uses is the habit this project
+		-- does not have.
+		--
+		-- This paragraph used to name `world.markers` and `ui.vanilla.map` as the
+		-- examples. `ui.vanilla.map` stopped being one on 2026-09-21, when
+		-- `modules/blips` started calling `Open77.blips.create` and the manifest
+		-- gained it for real -- which is the direction below working: a permission
+		-- is declared when something reaches for it and not before.
 		--
 		-- The useful direction is the other one: start calling `OPX.Lib.Blip`
 		-- and this check names the line to add, here, instead of the blip
@@ -3177,7 +3314,7 @@ do
 
 		control.Fire('onClientResourceStart', 'opx_infinity')
 		control.Boot()
-		control.Pump(60)
+		control.Pump(240)
 		check('diagnostics started', env.OPX.Modules.IsRunning('diagnostics'))
 		check('a second resource-start does not re-run the phases',
 			env.OPX.Modules.Record('weather').State == 'started',
@@ -4662,7 +4799,7 @@ do
 		-- The rest of the boot, where the hud finally registers and is handed
 		-- the ready it missed.
 		control.Boot()
-		control.Pump(60)
+		control.Pump(240)
 
 		local drew = {}
 		for _, message in ipairs(page and page.sent or {}) do drew[message.channel] = true end
@@ -4724,6 +4861,37 @@ do
 			{ ok = true, event = 'wardrobeClosed', reason = 'saved' })
 		check('and the last one to close gives it back', showing())
 
+
+		-- ── AND A MENU IS ONE OF THEM ────────────────────────────────────────
+		-- THE OWNER: "l'hud des eddis etc passe la a gauche et du coup quand le
+		-- menu est ouvert hide la car la minimap native du jeu est a droite".
+		-- The vanilla minimap came back with the blips work, the money block
+		-- moved to the free corner, and a menu opening over it is one more thing
+		-- in a corner that now has two already.
+		--
+		-- The fourth name in the set and not a fourth mechanism, which is the
+		-- part worth a check: it must overlap with the other three the same way.
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'menu', 'state'),
+			{ open = true })
+		check('a menu opening takes the hud off screen', not showing())
+
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'appearance', 'decision'),
+			{ ok = true, event = 'wardrobeOpened' })
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'menu', 'state'),
+			{ open = false })
+		check('and a fitting room under it keeps it off when the menu closes',
+			not showing())
+
+		env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'appearance', 'decision'),
+			{ ok = true, event = 'wardrobeClosed', reason = 'saved' })
+		check('with the hud coming back once both are gone', showing())
+
+		-- AND THE MONEY BLOCK IS IN THE FREE CORNER. `config/hud.lua` is where
+		-- an operator moves it, and the check is on the shipped value because
+		-- the whole point was that the shipped one collided with the minimap.
+		check('the info block is anchored away from the vanilla minimap',
+			env.OPX.Config.MODULES.hud.INFO_ANCHOR == 'top-left',
+			tostring(env.OPX.Config.MODULES.hud.INFO_ANCHOR))
 		-- The player's own choice is never touched by any of this: it is recorded
 		-- underneath, exactly as it is while they are down.
 		hudApi.SetVisible(false)
@@ -5187,9 +5355,20 @@ do
 			right = Access.FromDefinition('right', { KIND = 'garage', X = -3.0, Y = 0.0, Z = 0.0 }),
 			far = Access.FromDefinition('far', { KIND = 'garage', X = 100.0, Y = 0.0, Z = 0.0 }),
 		}
-		local nearest = Access.Nearest(spots, 0.0, 0.0)
+		-- ASKED IN BOTH ORDERS, and that is the whole check. The version that
+		-- stood here handed `Nearest` one table and asserted the answer was
+		-- `left` -- which this Lua returns from `pairs` first anyway, so deleting
+		-- the `spot.key < best.key` tie-break left the check GREEN. It was
+		-- asserting a hash order, not a rule. Two tied spots offered in each
+		-- order cannot both be visited first, so a `Nearest` that answers
+		-- whichever it met first must fail one of the two calls, whatever any
+		-- implementation's traversal order is.
+		local tiedFirst = Access.Nearest({ spots.right, spots.left }, 0.0, 0.0)
+		local tiedSecond = Access.Nearest({ spots.left, spots.right }, 0.0, 0.0)
 		check('two markers a metre apart are decided by name, not by pairs order',
-			nearest ~= nil and nearest.key == 'left', nearest and nearest.key)
+			tiedFirst ~= nil and tiedFirst.key == 'left'
+				and tiedSecond ~= nil and tiedSecond.key == 'left',
+			('%s/%s'):format(tiedFirst and tiedFirst.key, tiedSecond and tiedSecond.key))
 		check('a radius the caller names is what is measured against',
 			select(1, Access.Nearest(spots, 0.0, 0.0, 4.0)) == nil)
 		check('a spot beyond the radius is not offered',
@@ -5220,87 +5399,124 @@ do
 		local src = 41
 		load(src, 'citizen-garage')
 
-		check('the capture command is registered and ACL-gated',
-			control.commands['opx.garages.add'] ~= nil
-				and control.commands['opx.garages.add'].restricted == true)
-		check('and its routeway to the client exists',
-			type(control.netEvents[garages.Event.CAPTURED]) == 'function')
+		-- ── the commands that placed a spot are gone ──────────────────────
+		-- THE MIGRATION IS WHAT MAKES THIS SAFE, and it is checked below rather
+		-- than assumed here: `add` and `remove` wrote a place into
+		-- `opx77_garages`, and removing them without reading that table again
+		-- would delete every marker an operator ever placed in game.
+		check('the capture command is gone', control.commands['opx.garages.add'] == nil)
+		check('and so is the one that deleted a spot',
+			control.commands['opx.garages.remove'] == nil)
+		check('and the routeway that let a client place one is gone with them',
+			garages.Event.CAPTURED == nil and garages.Event.CAPTURE == nil)
+		check('the two readings are still registered and still ACL-gated',
+			control.commands['opx.garages.list'] ~= nil
+				and control.commands['opx.garages.list'].restricted == true
+				and control.commands['opx.garages.bring'] ~= nil
+				and control.commands['opx.garages.bring'].restricted == true)
+		check('and the module no longer offers a writer to that table',
+			garages.Storage.Upsert == nil and garages.Storage.Delete == nil
+				and type(garages.Storage.FetchAll) == 'function')
 
-		-- The command asks the CLIENT where it is looking, because a chat command
-		-- has no facing of its own.
-		local mark = #control.clientEvents
-		control.commands['opx.garages.add'].run(src, { 'garage', 'garage_dock' })
-		local asked = lastEvent(garages.Event.CAPTURE)
-		check('the add command asks the client for its facing',
-			asked ~= nil and #control.clientEvents > mark and asked.source == src)
-		check('naming the kind and the key it was given',
-			asked ~= nil and asked[1] == 'garage' and asked[2] == 'garage_dock')
+		-- ── a garage is a key in several places ───────────────────────────
+		-- Built through the real coercion and hung on the tables the server
+		-- itself reads, so what is under test is the shipped `CoerceGarages` and
+		-- not a fixture's idea of a garage.
+		--
+		-- TWO LOCATIONS, sixty metres apart, and that IS the feature: the owner
+		-- asked for a garage whose menu "shows ALL vehicles belonging to that
+		-- garage id, so a player stores a car at one location and takes it out at
+		-- another location of the same garage".
+		local heldGarages, held = contract.Garages(), contract.Spots()
+		local function place(key, block)
+			local built = select(1, Access.CoerceGarages({ [key] = block }))[key]
+			if built == nil then return nil end
+			heldGarages[key] = built
+			for _, point in ipairs(Access.PointsOf(built)) do held[point.key] = point end
+			return built
+		end
 
-		-- ── the bare form the config file advertises ─────────────────────
-		-- `config/garages.lua` has always said `/opx.garages.add` prints the line to
-		-- check in, while the handler demanded two positionals and answered the
-		-- bare command with a string no player saw and no line in the server log.
-		-- A command the documentation advertises and the handler refuses is a door
-		-- with no handle, so the kind and the key are now both optional.
-		control.commands['opx.garages.add'].run(src, {})
-		local bare = lastEvent(garages.Event.CAPTURE)
-		check('the bare add command asks the client too, as a garage',
-			bare ~= nil and bare[1] == 'garage', bare and tostring(bare[1]))
-		check('under a key it generated, so the spot can be named again afterwards',
-			bare ~= nil and bare[2] == 'garage1', bare and tostring(bare[2]))
+		local dock = place('garage_dock', {
+			KIND = 'garage', LABEL = 'THE DOCK',
+			LOCATIONS = {
+				{ BUCKET = 0,
+					MENU = { X = 0.0, Y = 0.0, Z = 0.0 },
+					ENTRY = { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 90.0 },
+					EXITS = { { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 90.0 } } },
+				{ BUCKET = 0,
+					MENU = { X = 60.0, Y = 0.0, Z = 0.0 },
+					ENTRY = { X = 60.0, Y = 0.0, Z = 0.0, HEADING = 270.0 },
+					EXITS = { { X = 60.0, Y = 0.0, Z = 0.0, HEADING = 270.0 } } },
+			},
+		})
+		check('a garage with two locations is accepted whole',
+			dock ~= nil and #dock.locations == 2, dock and #dock.locations)
+		check('and each location draws a menu point and a door, and nothing else',
+			dock ~= nil and #Access.PointsOf(dock) == 4
+				and held['garage_dock#1'] ~= nil and held['garage_dock#1'].role == 'menu'
+				and held['garage_dock#1.in'] ~= nil and held['garage_dock#1.in'].role == 'entry',
+			dock and #Access.PointsOf(dock))
+		check('every point knows which garage it opens, wherever it is',
+			held['garage_dock#2'] ~= nil and held['garage_dock#2'].garage == 'garage_dock'
+				and held['garage_dock#2'].location == 2,
+			held['garage_dock#2'] and held['garage_dock#2'].garage)
+		check('a door is drawn as a door and not as a list',
+			Access.Marker('garage', 'entry').style == 'interaction'
+				and Access.Marker('garage', 'menu').style == 'spawn',
+			('%s/%s'):format(Access.Marker('garage', 'entry').style,
+				Access.Marker('garage', 'menu').style))
+		check('a location with no exit at all is refused rather than half-built',
+			place('garage_noexit', { KIND = 'garage', LOCATIONS = { { BUCKET = 0,
+				MENU = { X = 1.0, Y = 1.0, Z = 0.0 },
+				ENTRY = { X = 1.0, Y = 1.0, Z = 0.0 }, EXITS = {} } } }) == nil)
+		check('and nothing of it was left on the point table',
+			held['garage_noexit#1'] == nil)
 
-		-- The generated key steps past what is already placed, so a second bare
-		-- capture cannot land on the first one's name.
-		control.commands['opx.garages.add'].run(src, { 'avpad' })
-		local pad = lastEvent(garages.Event.CAPTURE)
-		check('a bare AV pad add is an avpad with its own generated key',
-			pad ~= nil and pad[1] == 'avpad' and pad[2] == 'avpad1',
-			pad and ('%s/%s'):format(tostring(pad[1]), tostring(pad[2])))
-
-		-- A first word that is not a kind is the KEY, which is what somebody
-		-- typing `add watson` means; the label still travels as the label.
-		control.commands['opx.garages.add'].run(src, { 'watson', 'THE DOCKS' })
-		local named = lastEvent(garages.Event.CAPTURE)
-		check('and a first word that is not a kind is the key',
-			named ~= nil and named[1] == 'garage' and named[2] == 'watson'
-				and named[3] == 'THE DOCKS',
-			named and ('%s/%s/%s'):format(tostring(named[1]), tostring(named[2]),
-				tostring(named[3])))
-
-		-- A CLIENT THAT FIRES THE ROUTEWAY ITSELF. The net event has no host-side
-		-- ACL check -- that gate runs for commands only -- so the module asks the
-		-- same question here. Without this, anybody could place markers.
-		env.source = src
-		local before = #control.clientEvents
-		control.netEvents[garages.Event.CAPTURED]('garage', 'sneaky', 'SNEAKY', 0.0)
-		local denied = control.clientEvents[#control.clientEvents]
-		check('a capture from someone without the permission is refused',
-			#control.clientEvents > before and denied ~= nil and denied[1] ~= nil
-				and denied[1].code == 'error.noPermission',
-			denied and denied[1] and tostring(denied[1].code))
-		check('and the refusal names the operation, so a client can tell it apart',
-			denied ~= nil and denied[1] ~= nil and denied[1].operation == garages.Operation.CAPTURE)
-		check('and nothing was placed', contract.Spots()['sneaky'] == nil)
-		check('and nothing was written', #wrote == 0, #wrote)
-
-		-- With the permission, the same routeway lands a spot.
-		control.Allow(src, 'command.opx.garages.add')
-		control.netEvents[garages.Event.CAPTURED]('garage', 'garage_dock', 'THE DOCK', 90.0)
+		-- ── the list behind a menu point ──────────────────────────────────
+		-- The whole garage's roster, and that is the feature: the owner asked for
+		-- "a menu-opening point that shows ALL vehicles belonging to that garage
+		-- id". The roster fixture files both cars under `impound`, so neither is
+		-- filed at this garage yet -- and both still have to be listed, because
+		-- what a garage OFFERS is everything of the right kind that the character
+		-- owns.
+		-- ON ITS OWN CONNECTION, and not on `src`. A list is counted against the
+		-- same per-player window a bring-out is -- a client asking for a roster in
+		-- a loop is a client reading the database in a loop -- so two lists spent
+		-- on `src` here would leave the bring-out sequence below one request short
+		-- of its own budget and rate-limit a check about something else entirely.
+		local browser = 51
+		load(browser, 'citizen-garage')
+		env.source = browser
+		control.netEvents[garages.Event.LIST]('garage_dock#1')
 		control.Pump(8)
-		local held = contract.Spots()
-		check('a permitted capture lands', held['garage_dock'] ~= nil)
-		check('at the position the SERVER read and the heading the client gave',
-			held['garage_dock'] ~= nil and held['garage_dock'].x == 0.0
-				and held['garage_dock'].y == 0.0 and held['garage_dock'].z == 0.0
-				and held['garage_dock'].heading == 90.0,
-			held['garage_dock'] and ('%s,%s,%s yaw %s'):format(held['garage_dock'].x,
-				held['garage_dock'].y, held['garage_dock'].z, tostring(held['garage_dock'].heading)))
-		check('and its label is the operator\'s own words', held['garage_dock'].label == 'THE DOCK')
-		check('and the row was written through the bridge', #wrote == 1, #wrote)
-		local synced = lastEvent(garages.Event.SYNC)
-		check('and the client was told what is there now',
-			synced ~= nil and type(synced[1]) == 'table' and type(synced[1].spots) == 'table'
-				and #synced[1].spots == 1)
+		local listed = lastEvent(garages.Event.VEHICLES)
+		local roster = listed ~= nil and type(listed[1]) == 'table' and listed[1] or nil
+		check('a menu point answers the garage\'s own list',
+			roster ~= nil and roster.garage == 'garage_dock'
+				and type(roster.vehicles) == 'table',
+			roster and tostring(roster.error))
+		check('of exactly the vehicles this garage can hold, and not the AV',
+			roster ~= nil and #roster.vehicles == 1
+				and roster.vehicles[1].plate == 'AA111AA',
+			roster and #roster.vehicles)
+		check('and says of each whether it is parked here or somewhere else',
+			roster ~= nil and roster.vehicles[1].here == false)
+
+		-- THE OTHER LOCATION ANSWERS THE SAME LIST. Two menu points, sixty metres
+		-- apart, one garage: a list that differed between them would be two
+		-- garages wearing one name.
+		control.Stand(browser, 60.0, 0.0, 0.0)
+		control.netEvents[garages.Event.LIST]('garage_dock#2')
+		control.Pump(8)
+		local elsewhere = lastEvent(garages.Event.VEHICLES)
+		local other = elsewhere ~= nil and type(elsewhere[1]) == 'table' and elsewhere[1] or nil
+		check('the garage\'s other location lists the very same vehicles',
+			other ~= nil and other.garage == 'garage_dock'
+				and #other.vehicles == #roster.vehicles
+				and other.vehicles[1].plate == roster.vehicles[1].plate,
+			other and (other.error or #other.vehicles))
+		control.Stand(browser, 0.0, 0.0, 0.0)
+		env.source = src
 
 		-- ── bringing out what the character owns ──────────────────────────
 
@@ -5339,11 +5555,23 @@ do
 			options ~= nil and options.record == 'Vehicle.v_standard2_archer_hella_player')
 
 		-- ── the AV pad ────────────────────────────────────────────────────
-		-- Added through the table the server itself holds, so the validation
+		-- Added through the tables the server itself holds, so the validation
 		-- under test is the real one rather than a fixture's copy.
-		held['pad_dock'] = Access.FromDefinition('pad_dock', {
-			KIND = 'avpad', LABEL = 'THE PAD', X = 0.0, Y = 0.0, Z = 2.0, HEADING = 0.0, BUCKET = 0,
+		--
+		-- A HUNDRED METRES AWAY FROM THE DOCK, which it did not have to be before
+		-- exits existed. The car brought out above is standing on the dock's own
+		-- exit, and an exit is occupied by whatever is parked within
+		-- EXIT_CLEARANCE of it -- so a pad sharing the dock's coordinates would
+		-- be a pad blocked by the car that just came out of the garage, which is
+		-- a true refusal about the wrong thing.
+		place('pad_dock', {
+			KIND = 'avpad', LABEL = 'THE PAD',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = 100.0, Y = 0.0, Z = 2.0 },
+				ENTRY = { X = 100.0, Y = 0.0, Z = 2.0, HEADING = 0.0 },
+				EXITS = { { X = 100.0, Y = 0.0, Z = 2.0, HEADING = 0.0 } } } },
 		})
+		control.Stand(src, 100.0, 0.0, 2.0)
 		created = #control.vehicleCreates
 		control.netEvents[garages.Event.REQUEST]('pad_dock')
 		control.Pump(8)
@@ -5365,6 +5593,10 @@ do
 		-- stood on an empty marker and pressed the key again -- six times in one
 		-- recorded session. The vehicle is put away and created again AT the
 		-- spot now, which is what the marker promised in the first place.
+		--
+		-- Back at the dock, where the car this brings to the marker already is.
+		control.Stand(src, 0.0, 0.0, 0.0)
+		env.source = src
 		created = #control.vehicleCreates
 		local removals = #control.vehicleRemoves
 		control.netEvents[garages.Event.REQUEST]('garage_dock')
@@ -5420,13 +5652,28 @@ do
 			#control.vehicleCreates == created and #control.vehicleRemoves == removals + 1,
 			('%d created, %d removed'):format(#control.vehicleCreates - created,
 				#control.vehicleRemoves - removals))
-		check('and it is filed UNDER the marker the player is standing on',
-			#vehicleWrites > wroteVehicles
-				and vehicleWrites[#vehicleWrites].garage == 'garage_dock'
-				and tonumber(vehicleWrites[#vehicleWrites].state) == 1,
-			#vehicleWrites > wroteVehicles and ('garage=%s state=%s'):format(
-				tostring(vehicleWrites[#vehicleWrites].garage),
-				tostring(vehicleWrites[#vehicleWrites].state)) or 'nothing was written')
+		-- A WRITE FOR THIS PLATE THAT FILES IT HERE, rather than "the last write
+		-- on the bridge". Two things write while these eight pumps run and
+		-- neither is under test: the save loop photographs the condition of
+		-- everything else that is out, and it re-writes THIS row from the
+		-- fixture -- whose `garage` column is a constant, because the bridge
+		-- answers one static row however many times it is asked. Reading the last
+		-- write therefore reported whichever of the two `pairs` reached first,
+		-- and flipped between runs.
+		--
+		-- What the put-away owes is a write of this plate, STORED, under the
+		-- GARAGE's key. A `M.Use` that filed under the point's key would write
+		-- `garage_dock#1` and no write here would match.
+		local filed = nil
+		for index = wroteVehicles + 1, #vehicleWrites do
+			local write = vehicleWrites[index]
+			if write.plate == outPlate and write.garage == 'garage_dock' then filed = write end
+		end
+		check('and it is filed UNDER THE GARAGE, which is what puts it in every ' ..
+			'location of it',
+			filed ~= nil and tonumber(filed.state) == 1,
+			filed and ('state=%s'):format(tostring(filed.state))
+				or 'no write filed that plate under garage_dock')
 		answer = lastEvent(garages.Event.ANSWER)
 		check('and the answer says STORED, which is not the same thing as brought out',
 			answer ~= nil and answer[2] == true and answer[5] == 'stored',
@@ -5462,8 +5709,12 @@ do
 		env.source = walker
 
 		local far = 40.0
-		held['far_dock'] = Access.FromDefinition('far_dock', {
-			KIND = 'garage', LABEL = 'FAR', X = far, Y = 0.0, Z = 0.0, HEADING = 0.0, BUCKET = 0,
+		place('far_dock', {
+			KIND = 'garage', LABEL = 'FAR',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = far, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = far, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = far, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } },
 		})
 		created = #control.vehicleCreates
 		control.netEvents[garages.Event.REQUEST]('far_dock')
@@ -5474,8 +5725,12 @@ do
 			lastEvent(garages.Event.ANSWER) ~= nil and lastEvent(garages.Event.ANSWER)[3] == 'garages.tooFar',
 			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
 
-		held['other_bucket'] = Access.FromDefinition('other_bucket', {
-			KIND = 'garage', LABEL = 'ELSEWHERE', X = 0.0, Y = 0.0, Z = 0.0, BUCKET = 7,
+		place('other_bucket', {
+			KIND = 'garage', LABEL = 'ELSEWHERE',
+			LOCATIONS = { { BUCKET = 7,
+				MENU = { X = 0.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } },
 		})
 		control.netEvents[garages.Event.REQUEST]('other_bucket')
 		control.Pump(8)
@@ -5550,87 +5805,209 @@ do
 			control.netEvents[garages.Event.REQUEST]('garage_dock')
 			control.Pump(6)
 		end
+		-- THE ANSWER TO THE SEVENTH REQUEST, not "the last answer on the wire".
+		-- A refusal is raised where the request lands and a success is raised
+		-- from a thread that has been through the database, so the six that were
+		-- served report AFTER the seventh was turned away -- and `lastEvent` then
+		-- reads a success and calls the limit broken. The refusal is the first
+		-- thing on the wire after the mark, because nothing about it yields.
+		local spamMark = #control.clientEvents
 		control.netEvents[garages.Event.REQUEST]('garage_dock')
+		local turned = control.clientEvents[spamMark + 1]
 		control.Pump(6)
 		check(('the request after %d in one window is rate-limited'):format(limit),
-			lastEvent(garages.Event.ANSWER) ~= nil
-				and lastEvent(garages.Event.ANSWER)[3] == 'garages.rateLimited',
-			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+			turned ~= nil and turned.name == garages.Event.ANSWER
+				and turned[2] == false and turned[3] == 'garages.rateLimited',
+			turned and tostring(turned[3]) or 'nothing was answered at all')
 
-		-- ── a capture the client never answers ────────────────────────────
-		-- The one failure that used to be silent at both ends: the command asks
-		-- for a facing, no answer ever comes, and neither half says anything -- so
-		-- the operator walks away believing a spot was placed where there is none.
-		-- Last in this section because it leaves a spot behind and moves `source`.
-		local function asksFor(player)
-			local asked = 0
-			for index = 1, #control.clientEvents do
-				local event = control.clientEvents[index]
-				if event.name == garages.Event.CAPTURE and event.source == player then
-					asked = asked + 1
-				end
-			end
-			return asked
+		-- ── the exits, and the refusal when every one of them is taken ────
+		-- THE OWNER'S OWN CHOICE IS WHAT IS UNDER TEST HERE: "multiple exit
+		-- points, tried in order with fallback when one is occupied. If NO exit
+		-- point is free: refuse and notify the player" -- chosen explicitly over
+		-- queueing and over force-spawning on top of what is parked there.
+		--
+		-- WHAT BLOCKS A BAY IS SOMEBODY ELSE'S CAR, created straight through
+		-- `Open77.vehicles.create` the way another resource or another player's
+		-- vehicle would exist. Two reasons it is not this character's own: the
+		-- vehicle being fetched is deliberately exempt from its own bay, so a
+		-- test that blocked a bay with it would be testing the exemption; and a
+		-- hand-written list of positions would let all of this pass against a
+		-- `freeExit` that never reads the world at all.
+		local function park(x, y)
+			return env.Open77.vehicles.create({
+				record = 'Vehicle.v_standard2_archer_hella_player',
+				position = { x = x, y = y, z = 0.0 }, yaw = 0.0, bucket = 0,
+			})
 		end
 
-		local quiet = 42
-		load(quiet, 'citizen-garage-quiet')
-		control.Allow(quiet, 'command.opx.garages.add')
-		local warnsBefore, noticesBefore = #control.log.warn, #control.notices
-		local logsBefore = #control.log.info
-		local previousSource = env.source
-		control.commands['opx.garages.add'].run(quiet, { 'garage', 'garage_never' })
-		check('an unanswered capture is asked for exactly once', asksFor(quiet) == 1,
-			asksFor(quiet))
-		check('and the request is logged when it goes out',
-			#control.log.info > logsBefore
-				and control.log.info[#control.log.info]:find('garage_never', 1, true) ~= nil,
-			control.log.info[#control.log.info])
+		local bays = 46
+		load(bays, 'citizen-garage')
+		env.source = bays
+		control.Stand(bays, 200.0, 0.0, 0.0)
+		place('garage_bays', {
+			KIND = 'garage', LABEL = 'THE BAYS',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = 200.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 200.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = {
+					{ X = 200.0, Y = 0.0, Z = 0.0, HEADING = 10.0 },
+					{ X = 210.0, Y = 0.0, Z = 0.0, HEADING = 20.0 },
+				} } },
+		})
 
-		-- Young: the answer may still be on its way, so nothing is said yet.
-		control.Pump(10)
-		check('nothing is said while the answer may still come',
-			#control.log.warn == warnsBefore and #control.notices == noticesBefore)
-
-		-- Past its lifetime it settles itself, once -- not once per pump.
-		control.Pump(80)
-		control.Pump(80)
-		check('a capture that is never answered is reported, once',
-			#control.log.warn == warnsBefore + 1, #control.log.warn - warnsBefore)
-		check('naming the spot and saying nothing was saved',
-			control.log.warn[#control.log.warn] ~= nil
-				and control.log.warn[#control.log.warn]:find('garage_never', 1, true) ~= nil
-				and control.log.warn[#control.log.warn]:find('nothing was saved', 1, true) ~= nil,
-			control.log.warn[#control.log.warn])
-		local told = control.notices[#control.notices]
-		check('and the operator is told in game, not only in the log',
-			#control.notices == noticesBefore + 1 and told ~= nil and told.playerId == quiet
-				and told.type == 'error',
-			told and ('%s: %s'):format(tostring(told.type), tostring(told.message)))
-		check('and no spot was placed by it', contract.Spots()['garage_never'] == nil)
-
-		-- A late answer is still an answer. The request is gone, so the ordinary
-		-- path runs and the spot lands: slowness is not a refusal, and a client
-		-- that was still loading must not need the command run again.
-		local lateWarns = #control.log.warn
-		env.source = quiet
-		control.netEvents[garages.Event.CAPTURED]('garage', 'garage_never', 'LATE', 12.0)
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_bays')
 		control.Pump(8)
-		control.Pump(40)
-		check('an answer that arrives after the warning still lands',
-			contract.Spots()['garage_never'] ~= nil)
-		check('and it raises no second "did not answer"',
-			#control.log.warn == lateWarns, #control.log.warn - lateWarns)
+		options = control.vehicleCreates[#control.vehicleCreates]
+		check('with both exits free the FIRST one written is used',
+			#control.vehicleCreates == created + 1 and options ~= nil
+				and options.position.x == 200.0 and options.yaw == 10.0,
+			options and ('%s yaw %s'):format(tostring(options.position.x), tostring(options.yaw)))
 
-		-- An answer that is unusable is a different failure with its own line:
-		-- the client DID answer, so "did not answer" would be a lie.
-		local badWarns = #control.log.warn
-		control.netEvents[garages.Event.CAPTURED]('not-a-kind', 'garage_bad', 'X', 0.0)
-		check('an unusable answer is reported as one',
-			#control.log.warn == badWarns + 1
-				and control.log.warn[#control.log.warn]:find('unusable spot', 1, true) ~= nil,
-			control.log.warn[#control.log.warn])
-		env.source = previousSource
+		-- Somebody else parks across bay one. The next fetch falls through to bay
+		-- two, in the order the operator wrote them.
+		local firstBay = park(200.0, 0.0)
+		check('the blocking vehicle exists as far as the host is concerned',
+			firstBay ~= nil and #env.Open77.vehicles.all(0) > 0)
+		control.Pump(31)
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_bays')
+		control.Pump(8)
+		options = control.vehicleCreates[#control.vehicleCreates]
+		check('an exit with somebody else\'s car on it is skipped for the next one',
+			#control.vehicleCreates == created + 1 and options ~= nil
+				and options.position.x == 210.0 and options.yaw == 20.0,
+			options and ('%s yaw %s'):format(tostring(options.position.x), tostring(options.yaw)))
+
+		-- And across bay two as well. Every exit is taken now, and the answer is
+		-- a refusal rather than a queue or a car inside another car.
+		park(210.0, 0.0)
+		control.Pump(31)
+		created = #control.vehicleCreates
+		local noticesBeforeBays = #control.notices
+		control.netEvents[garages.Event.REQUEST]('garage_bays')
+		control.Pump(8)
+		check('with every exit taken nothing is created at all',
+			#control.vehicleCreates == created,
+			#control.vehicleCreates - created)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and the refusal says it was the exits, not the distance or the roster',
+			answer ~= nil and answer[2] == false and answer[3] == 'garages.noFreeExit',
+			answer and tostring(answer[3]))
+		local blocked = control.notices[#control.notices]
+		check('and the player is told in game, which is what the owner asked for',
+			#control.notices > noticesBeforeBays and blocked ~= nil
+				and blocked.playerId == bays and blocked.type == 'error',
+			blocked and ('%s: %s'):format(tostring(blocked.type), tostring(blocked.message)))
+
+		-- ── a car standing on its own only exit ───────────────────────────
+		-- The one occupancy that must NOT count. A single-exit garage whose own
+		-- car is parked on it would otherwise be a garage that can never hand
+		-- that car back -- the vehicle blocks itself, for ever.
+		local solo = 49
+		load(solo, 'citizen-garage')
+		env.source = solo
+		control.Stand(solo, 300.0, 0.0, 0.0)
+		place('garage_solo', {
+			KIND = 'garage', LABEL = 'ONE BAY',
+			LOCATIONS = { { BUCKET = 0,
+				MENU = { X = 300.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 300.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = 300.0, Y = 0.0, Z = 0.0, HEADING = 45.0 } } } },
+		})
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_solo')
+		control.Pump(8)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('the only car of a one-bay garage comes out of it',
+			#control.vehicleCreates == created + 1 and answer ~= nil and answer[2] == true,
+			answer and tostring(answer[3]))
+		-- And again: it is now standing on the one exit it has to come out of.
+		control.Pump(31)
+		created = #control.vehicleCreates
+		control.netEvents[garages.Event.REQUEST]('garage_solo')
+		control.Pump(8)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and a car standing on its own only exit does not block itself',
+			#control.vehicleCreates == created + 1 and answer ~= nil and answer[2] == true,
+			answer and tostring(answer[3]))
+
+		-- ── the migration: nothing an operator placed is lost ─────────────
+		-- THE WHOLE REASON THE COMMANDS COULD BE DELETED. `/opx.garages.add`
+		-- wrote into `opx77_garages`, so every marker placed in game lived in a
+		-- table nobody has a copy of; deleting the commands without reading that
+		-- table again would have wiped the lot, silently, because an empty
+		-- `GARAGES` block is a valid config.
+		--
+		-- A legacy row was ONE POINT that did everything -- stand on it, press the
+		-- key, the car appears where you are standing -- so it adopts as one
+		-- location whose menu, door and only exit are that same point.
+		--
+		-- The second row is `garage1`, which `config/garages.lua` also names, and
+		-- it is at a different place on purpose: that is the precedence case.
+		local legacy = {
+			{ spot_key = 'legacy_yard', label = 'THE YARD', kind = 'garage',
+				x = 500.0, y = 0.0, z = 3.0, heading = 77.0, bucket = 0 },
+			{ spot_key = 'garage1', label = 'MOVED', kind = 'garage',
+				x = 900.0, y = 900.0, z = 9.0, heading = 5.0, bucket = 0 },
+		}
+		local adoptedEnv, adoptedControl, adoptedWhy = boot('server', Host.Database({
+			scalar = function() return 1 end,
+			update = function() return 0 end,
+			single = function() return nil end,
+			query = function(sql)
+				if sql:find('opx77_garages', 1, true) then return legacy end
+				return {}
+			end,
+		}))
+		check('a server with a legacy spot in the database boots', adoptedWhy == nil, adoptedWhy)
+		if adoptedWhy == nil then
+			adoptedControl.Pump(40)
+			local adoptedContract = adoptedEnv.OPX.Api.Get('garages')
+			local kept = adoptedContract.Garages()['legacy_yard']
+			check('a spot that lives only in the database is adopted as a garage',
+				kept ~= nil and kept.kind == 'garage' and kept.label == 'THE YARD'
+					and #kept.locations == 1,
+				kept and #kept.locations)
+			check('as one location whose menu, door and only exit are that one point',
+				kept ~= nil and kept.locations[1].menu.x == 500.0
+					and kept.locations[1].entry.x == 500.0
+					and kept.locations[1].entry.heading == 77.0
+					and #kept.locations[1].exits == 1
+					and kept.locations[1].exits[1].z == 3.0,
+				kept and kept.locations[1] and #kept.locations[1].exits)
+			check('and it draws the two points a configured garage draws',
+				adoptedContract.Spots()['legacy_yard#1'] ~= nil
+					and adoptedContract.Spots()['legacy_yard#1.in'] ~= nil)
+
+			-- THE OTHER HALF OF THE MIGRATION. Adopting it keeps the server
+			-- running; the block printed at every start is how an operator stops
+			-- needing the adoption at all. The old command handed that line to
+			-- one player, once, in a chat box.
+			local printed, warned = false, false
+			for index = 1, #adoptedControl.log.info do
+				if adoptedControl.log.info[index]:find('config line: legacy_yard', 1, true) then
+					printed = true
+				end
+			end
+			for index = 1, #adoptedControl.log.warn do
+				if adoptedControl.log.warn[index]:find('opx77_garages', 1, true) then
+					warned = true
+				end
+			end
+			check('and the block that would check it in is written to the journal', printed)
+			check('with a line saying it exists nowhere else', warned)
+
+			-- CONFIG WINS OVER THE DATABASE NOW, which reverses what a captured
+			-- spot used to do. There is no command to move a garage with any
+			-- more, so a stale row silently moving one would be a garage an
+			-- operator cannot move by editing the one place they are told to.
+			local shadowed = adoptedContract.Garages()['garage1']
+			check('a garage named in config is not moved by a row of the same name',
+				shadowed ~= nil and shadowed.locations[1].menu.x == -1527.21,
+				shadowed and shadowed.locations[1].menu.x)
+		end
+		env.source = src
 	end
 end
 
@@ -5671,10 +6048,16 @@ do
 		check('the client asks for its spots on start', asked)
 
 		-- ── the markers ───────────────────────────────────────────────────
+		-- THE ROLE TRAVELS WITH THE POINT, and this half never guesses it: what a
+		-- marker is -- a list or a door -- is the server's answer, and a client
+		-- that decided for itself would draw a door as a list at the moment the
+		-- config said otherwise.
 		cctl.netEvents[garages.Event.SYNC]({ spots = {
-			{ key = 'garage_dock', label = 'THE DOCK', kind = 'garage',
-				x = 0.0, y = 0.0, z = 0.0, heading = 90.0, bucket = 0 },
-			{ key = 'pad_dock', label = 'THE PAD', kind = 'avpad',
+			{ key = 'garage_dock#1', label = 'THE DOCK', kind = 'garage',
+				garage = 'garage_dock', role = 'menu', location = 1,
+				x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+			{ key = 'pad_dock#1', label = 'THE PAD', kind = 'avpad',
+				garage = 'pad_dock', role = 'menu', location = 1,
 				x = 6.0, y = 0.0, z = 2.0, heading = 0.0, bucket = 0 },
 		} })
 		cctl.Pump(6)
@@ -5712,8 +6095,11 @@ do
 			garageMarker and tostring(garageMarker.position.z))
 
 		-- ── the strip row ─────────────────────────────────────────────────
-		check('standing on a marker posts its row', Runtime.Report().nearest == 'garage_dock',
+		check('standing on a marker posts its row', Runtime.Report().nearest == 'garage_dock#1',
 			Runtime.Report().nearest)
+		check('and the client knows which garage it opens, not only which marker it is',
+			Runtime.Garages()['garage_dock'] ~= nil and Runtime.Report().garages == 2,
+			Runtime.Report().garages)
 		local listed = prompts ~= nil and prompts.List('garages') or nil
 		check('and the strip holds exactly one row for it',
 			listed ~= nil and listed.ok == true and listed.value.count == 1
@@ -5722,28 +6108,68 @@ do
 		check('and names the key it is bound to', Runtime.Report().key == 'E',
 			Runtime.Report().key)
 
-		-- ONE KEY, TWO JOBS, so the row has to name the job it is about to do:
-		-- a row that still read "bring out a vehicle" while the player sat in one
-		-- would be labelling the key with the wrong half of what it does.
-		check('on foot, the row names the bring-out',
+		-- ONE KEY, SEVERAL JOBS, so the row has to name the job it is about to do
+		-- AT THE POINT IT IS STANDING ON. A menu point opens a list whether or
+		-- not the player is sitting in something -- putting a car away is what a
+		-- DOOR is for, and a list point that offered to take your car would be
+		-- offering something it cannot do.
+		check('a menu point names the list it opens',
 			Runtime.Report().label == 'garages.prompt.garage', Runtime.Report().label)
 		cctl.Seat(1, { seat = 'driver' })
-		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.putAway' end)
-		check('seated in a vehicle, the same row says put away',
-			Runtime.Report().label == 'garages.prompt.putAway', Runtime.Report().label)
-		cctl.Seat(1, nil)
-		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.garage' end)
-		check('and it goes back to the bring-out once the player is out of it',
+		cctl.Pump(6)
+		check('and goes on naming it while the player is sitting in something',
 			Runtime.Report().label == 'garages.prompt.garage', Runtime.Report().label)
+		cctl.Seat(1, nil)
+		cctl.Pump(6)
 
 		-- ── the key sends the request ─────────────────────────────────────
+		-- A MENU POINT ASKS FOR A LIST, and does not ask for a vehicle. The
+		-- whole point of the list is that the player chooses which of their own
+		-- cars comes out, so a press that went straight to `REQUEST` would hand
+		-- them whichever one sorted first.
 		local before = #cctl.serverEvents
 		mapping.pressed()
 		local sent = cctl.serverEvents[#cctl.serverEvents]
-		check('the key sends a request for the marker underfoot',
+		check('the key on a menu point asks for the garage\'s list',
 			#cctl.serverEvents == before + 1 and sent ~= nil
-				and sent.name == garages.Event.REQUEST and sent[1] == 'garage_dock',
-			sent and tostring(sent[1]))
+				and sent.name == garages.Event.LIST and sent[1] == 'garage_dock#1',
+			sent and ('%s %s'):format(tostring(sent.name), tostring(sent[1])))
+
+		-- ── the door ──────────────────────────────────────────────────────
+		-- The same key, the same player, a different kind of point.
+		cctl.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'garage_dock#1.in', label = 'THE DOCK', kind = 'garage',
+				garage = 'garage_dock', role = 'entry', location = 1,
+				x = 0.0, y = 0.0, z = 0.0, heading = 90.0, bucket = 0 },
+		} })
+		cctl.Pump(6)
+		check('a door is a door and the client knows which it is',
+			Runtime.Report().nearest == 'garage_dock#1.in' and Runtime.Report().role == 'entry',
+			Runtime.Report().role)
+		check('and on foot it asks the player to drive in',
+			Runtime.Report().label == 'garages.prompt.driveIn', Runtime.Report().label)
+		cctl.Seat(1, { seat = 'driver' })
+		settle(cctl, function() return Runtime.Report().label == 'garages.prompt.putAway' end)
+		check('seated in a vehicle, the door says put away',
+			Runtime.Report().label == 'garages.prompt.putAway', Runtime.Report().label)
+
+		before = #cctl.serverEvents
+		mapping.pressed()
+		sent = cctl.serverEvents[#cctl.serverEvents]
+		check('and the key on a door asks the SERVER to act, rather than for a list',
+			#cctl.serverEvents == before + 1 and sent ~= nil
+				and sent.name == garages.Event.REQUEST and sent[1] == 'garage_dock#1.in',
+			sent and ('%s %s'):format(tostring(sent.name), tostring(sent[1])))
+		cctl.Seat(1, nil)
+		cctl.Pump(6)
+
+		-- Back to the menu point for the rest of this section.
+		cctl.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'garage_dock#1', label = 'THE DOCK', kind = 'garage',
+				garage = 'garage_dock', role = 'menu', location = 1,
+				x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+		} })
+		cctl.Pump(6)
 
 		-- A keyboard held elsewhere is not a key: a row that stayed up while
 		-- somebody typed would fire as they typed.
@@ -5765,21 +6191,21 @@ do
 			return row ~= nil and row.ok == true and row.value.count == 1
 		end)
 
-		-- ── the capture round-trip ────────────────────────────────────────
-		mark = #cctl.serverEvents
-		local infoMark = #cctl.log.info
-		cctl.netEvents[garages.Event.CAPTURE]('avpad', 'pad_dock', 'THE PAD')
-		local answered = cctl.serverEvents[#cctl.serverEvents]
-		check('the client answers a capture ask', #cctl.serverEvents > mark)
-		check('with the operator\'s own facing, which only this half can read',
-			answered ~= nil and answered.name == garages.Event.CAPTURED
-				and answered[1] == 'avpad' and answered[2] == 'pad_dock')
-		-- Both ends of the round trip say their half, so a capture that dies in
-		-- the middle is a hole in a log rather than silence from everywhere.
-		check('and names the spot it answered, so the round trip reads from here',
-			#cctl.log.info > infoMark
-				and cctl.log.info[#cctl.log.info]:find('pad_dock', 1, true) ~= nil,
-			cctl.log.info[#cctl.log.info])
+		-- ── the list the server answers with ──────────────────────────────
+		-- A GARAGE WITH NOTHING IN IT SAYS SO rather than opening an empty
+		-- screen, and a refusal the server sends back is shown rather than
+		-- swallowed. Neither of them may leave a handle behind: the next press
+		-- would then close a list nobody can see instead of opening one.
+		cctl.netEvents[garages.Event.VEHICLES]({ spot = 'garage_dock#1',
+			garage = 'garage_dock', label = 'THE DOCK', vehicles = {} })
+		cctl.Pump(2)
+		check('a garage with nothing in it opens no list at all',
+			Runtime.Report().listing == nil)
+		cctl.netEvents[garages.Event.VEHICLES]({ spot = 'garage_dock#1',
+			error = 'garages.tooFar' })
+		cctl.Pump(2)
+		check('and a refusal that comes back with the list leaves none open either',
+			Runtime.Report().listing == nil)
 
 		-- ── taking them down ──────────────────────────────────────────────
 		cctl.netEvents[garages.Event.SYNC]({ spots = {} })
@@ -5837,10 +6263,25 @@ do
 	-- already exist, every dealership row written, and every vehicle row a
 	-- purchase creates. The SQL is the shipped storage's -- only the answers are
 	-- a fixture's.
-	local function bridge(rows, vehiclesWritten, dealersWritten)
+	local function bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts)
 		return Host.Database({
 			scalar = function() return 1 end,
 			update = function(sql, params)
+				-- THE COMPANY ACCOUNT IS A REAL BALANCE HERE and not a write log,
+				-- because the statement under test does its arithmetic in SQL --
+				-- `balance = balance + @amount`, so that two sales settling in
+				-- the same second cannot lose one. A stub that only recorded the
+				-- call would make a deposit that overwrote instead of adding look
+				-- exactly the same.
+				if sql:find('opx77_company_accounts', 1, true) then
+					local key = tostring(params.kind) .. ':' .. tostring(params.group)
+					accounts[key] = (accounts[key] or 0) + (tonumber(params.amount) or 0)
+					return 1
+				end
+				if sql:find('opx77_dealership_previews', 1, true) then
+					previewsWritten[#previewsWritten + 1] = params
+					return 1
+				end
 				if sql:find('INSERT INTO opx77_vehicles', 1, true) then
 					vehiclesWritten[#vehiclesWritten + 1] = params
 					-- The row that was just written, in the column shape the
@@ -5877,6 +6318,11 @@ do
 			-- would answer zero for every character.
 			single = function(sql, params)
 				if sql:find('COUNT(*)', 1, true) ~= nil then return { total = #rows } end
+				if sql:find('opx77_company_accounts', 1, true) then
+					local key = tostring(params.kind) .. ':' .. tostring(params.group)
+					if accounts[key] == nil then return nil end
+					return { balance = accounts[key] }
+				end
 				local plate = type(params) == 'table' and params.plate or nil
 				if plate ~= nil then
 					for index = 1, #rows do
@@ -5889,7 +6335,9 @@ do
 	end
 
 	local rows, vehiclesWritten, dealersWritten = {}, {}, {}
-	local env, control, why = boot('server', bridge(rows, vehiclesWritten, dealersWritten))
+	local previewsWritten, accounts = {}, {}
+	local env, control, why = boot('server',
+		bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts))
 	check('the server boots with the dealership module', why == nil, why)
 
 	-- The last client event with one name, or nil. Every verdict below is read
@@ -6059,34 +6507,58 @@ do
 			right = Access.FromDefinition('right', { KIND = 'garage', X = -3.0, Y = 0.0, Z = 0.0 }),
 			far = Access.FromDefinition('far', { KIND = 'garage', X = 100.0, Y = 0.0, Z = 0.0 }),
 		}
-		local nearest = Access.Nearest(spots, 0.0, 0.0)
+		-- Asked in BOTH orders, for the reason the garages copy of this check
+		-- spells out: one table and one assertion tested this Lua's hash order
+		-- and stayed green with the tie-break deleted.
+		local tiedFirst = Access.Nearest({ spots.right, spots.left }, 0.0, 0.0)
+		local tiedSecond = Access.Nearest({ spots.left, spots.right }, 0.0, 0.0)
 		check('two dealers a metre apart are decided by name, not by pairs order',
-			nearest ~= nil and nearest.key == 'left', nearest and nearest.key)
+			tiedFirst ~= nil and tiedFirst.key == 'left'
+				and tiedSecond ~= nil and tiedSecond.key == 'left',
+			('%s/%s'):format(tiedFirst and tiedFirst.key, tiedSecond and tiedSecond.key))
 		check('a radius the caller names is what is measured against',
 			select(1, Access.Nearest(spots, 0.0, 0.0, 4.0)) == nil)
 		check('a dealer beyond the radius is not offered',
 			select(1, Access.Nearest({ far = spots.far }, 0.0, 0.0)) == nil)
 
 		-- ── the doors ─────────────────────────────────────────────────────
-		check('the placement commands are registered and ACL-gated',
-			control.commands[Config.COMMANDS.add] ~= nil
-				and control.commands[Config.COMMANDS.add].restricted == true
-				and control.commands[Config.COMMANDS.remove].restricted == true
+		-- THE COMMANDS THAT PLACED A DEALER ARE GONE, both of them. They wrote a
+		-- place every player uses into `opx77_dealerships`, so the shape of the
+		-- world lived in a table nobody had a copy of. What still exists is the
+		-- READ of that table -- checked further down, and the whole reason
+		-- deleting them loses nothing.
+		check('the command that placed a dealer is gone',
+			Config.COMMANDS.add == nil and control.commands['opx.dealership.add'] == nil)
+		check('and so is the one that deleted one',
+			Config.COMMANDS.remove == nil and control.commands['opx.dealership.remove'] == nil)
+		check('the reading of what is placed is still registered and still ACL-gated',
+			control.commands[Config.COMMANDS.list] ~= nil
 				and control.commands[Config.COMMANDS.list].restricted == true)
 		check('and buying and reading the stock are open, because they act on the caller',
 			control.commands[Config.COMMANDS.buy] ~= nil
 				and control.commands[Config.COMMANDS.buy].restricted == false
 				and control.commands[Config.COMMANDS.stock] ~= nil
 				and control.commands[Config.COMMANDS.stock].restricted == false)
-		check('and the capture routeway exists for the ask to come back on',
-			type(control.netEvents[dealership.Event.CAPTURED]) == 'function'
-				and type(control.netEvents[dealership.Event.BUY]) == 'function')
+		check('the routeways a purchase and a sale come in on exist',
+			type(control.netEvents[dealership.Event.BUY]) == 'function'
+				and type(control.netEvents[dealership.Event.OFFER]) == 'function'
+				and type(control.netEvents[dealership.Event.DECIDE]) == 'function')
+		-- AND THE TWO THE PLACEMENT MENU USED ARE GONE, with the menu, the right
+		-- and the write path behind them. Checked as absent rather than deleted,
+		-- for the reason the showroom block below gives: a routeway that comes
+		-- back by accident is the one nobody notices.
+		check('the placement wire verbs are not registered, because they do not exist',
+			dealership.Event.PLACED == nil and dealership.Event.UNPLACED == nil,
+			tostring(dealership.Event.PLACED))
+		check('and no ACL right is left guarding a door with nothing behind it',
+			type(Access.PlacementRight) ~= 'function'
+				and OPX.Config.MODULES.dealership.PLACEMENT_RIGHT == nil,
+			tostring(OPX.Config.MODULES.dealership.PLACEMENT_RIGHT))
 
 		-- ── the fixture's dealers ──────────────────────────────────────────
 		-- `Access.SPOTS` IS the list the server half reads as its configuration
 		-- (`M.Init` takes that table, not a copy), so writing here is what an
-		-- operator checking a dealer in does. A capture below re-merges config
-		-- with captured, which is what puts them in the world.
+		-- operator checking a dealer in does.
 		Access.SPOTS['yard'] = Access.FromDefinition('yard', {
 			KIND = 'garage', LABEL = 'UPTOWN YARD', X = 1.0, Y = 1.0, Z = 5.0,
 			HEADING = 90.0, BUCKET = 0,
@@ -6103,8 +6575,15 @@ do
 			KIND = 'garage', LABEL = 'OTHER YARD', X = 1.0, Y = 1.0, Z = 0.0,
 			HEADING = 0.0, BUCKET = 3,
 		})
+		-- The dealer every purchase below is made at, where the fixture's players
+		-- stand. Written into the same table for the same reason.
+		Access.SPOTS['dealer_dock'] = Access.FromDefinition('dealer_dock', {
+			KIND = 'garage', LABEL = 'THE DOCKS', X = 0.0, Y = 0.0, Z = 0.0,
+			HEADING = 90.0, BUCKET = 0,
+		})
+		local held = contract.Spots()
+		for key, spot in pairs(Access.SPOTS) do held[key] = spot end
 
-		-- ── the capture round-trip ─────────────────────────────────────────
 		-- A loaded Player, in the shape the character contract reads: the data it
 		-- owns, and the method it calls on every balance change.
 		local function load(id, citizenId, eddies)
@@ -6128,91 +6607,47 @@ do
 		local src = 71
 		load(src, 'citizen-dealer', 2000000)
 
-		-- A command asks the CLIENT where it is looking, because a chat command
-		-- has no facing of its own -- and the heading only turns a vehicle that
-		-- is handed over where it was bought.
-		local mark = #control.clientEvents
-		control.commands[Config.COMMANDS.add].run(src, { 'garage', 'dealer_dock' })
-		local asked = lastEvent(dealership.Event.CAPTURE)
-		check('the add command asks the client for its facing',
-			asked ~= nil and #control.clientEvents > mark and asked.source == src)
-		check('naming the kind and the key it was given',
-			asked ~= nil and asked[1] == 'garage' and asked[2] == 'dealer_dock',
-			asked and ('%s/%s'):format(tostring(asked[1]), tostring(asked[2])))
-
-		-- The bare form the config file advertises, with the key and the kind
-		-- both optional -- and the first word is the KIND when it is one.
-		control.commands[Config.COMMANDS.add].run(src, {})
-		local bare = lastEvent(dealership.Event.CAPTURE)
-		check('the bare add command asks as a garage, under a key it generated',
-			bare ~= nil and bare[1] == 'garage' and bare[2] == 'garage1',
-			bare and ('%s/%s'):format(tostring(bare[1]), tostring(bare[2])))
-		control.commands[Config.COMMANDS.add].run(src, { 'avpad' })
-		local padAsk = lastEvent(dealership.Event.CAPTURE)
-		check('and a bare AV pad add is an avpad with its own generated key',
-			padAsk ~= nil and padAsk[1] == 'avpad' and padAsk[2] == 'avpad1',
-			padAsk and ('%s/%s'):format(tostring(padAsk[1]), tostring(padAsk[2])))
-		control.commands[Config.COMMANDS.add].run(src, { 'watson', 'WATSON AUTOS' })
-		local named = lastEvent(dealership.Event.CAPTURE)
-		check('and a first word that is not a kind is the key itself',
-			named ~= nil and named[1] == 'garage' and named[2] == 'watson'
-				and named[3] == 'WATSON AUTOS',
-			named and ('%s/%s/%s'):format(tostring(named[1]), tostring(named[2]),
-				tostring(named[3])))
-
-		-- A key longer than the column is refused BEFORE the client is asked: a
-		-- capture that could never be saved must not move the operator's marker.
-		local lastAsk = lastEvent(dealership.Event.CAPTURE)
-		control.commands[Config.COMMANDS.add].run(src, { 'garage', string.rep('k', Access.MAX_KEY + 1) })
-		check('a key longer than the column is refused before the client is asked',
-			lastEvent(dealership.Event.CAPTURE) == lastAsk)
-		check('and the refusal says what a key may be', lastAnswer('a key is 1 to') ~= nil)
-
-		-- A CLIENT THAT FIRES THE ROUTEWAY ITSELF. The net event has no host-side
-		-- ACL check -- that gate runs for commands only -- so the module asks the
-		-- same question here. Without it, anybody could place dealers.
+		-- ── the showroom is dressed from config and nowhere else ──────────
+		-- A LONG BLOCK STOOD HERE and every check in it exercised a routeway
+		-- that no longer exists: a client firing `PLACED`, the ACL right that
+		-- gated it, and the refusals for a model the dealer does not sell and a
+		-- spot outside every zone. The owner removed the staff screen that was
+		-- its only caller, and then the path itself -- "retire cela aussi".
+		--
+		-- What replaced it is `PREVIEW.POINTS` in `config/dealership.lua`, and
+		-- that has its own coverage further down: the floor raised from config,
+		-- the per-dealer limit, the orphaned-dealer branch, the migration printer
+		-- and the `Wait(0)` between cars. Those are the checks that matter now.
+		--
+		-- What is asserted here is the ABSENCE, because a routeway that comes
+		-- back by accident -- a merge, a half-reverted branch -- is exactly the
+		-- kind of thing nobody notices until somebody finds the door.
 		env.source = src
-		local before = #control.clientEvents
-		control.netEvents[dealership.Event.CAPTURED]('garage', 'sneaky', 'SNEAKY', 0.0)
-		local denied = control.clientEvents[#control.clientEvents]
-		check('a capture from someone without the permission is refused',
-			#control.clientEvents > before and denied ~= nil and denied[1] ~= nil
-				and denied[1].code == 'error.noPermission',
-			denied and denied[1] and tostring(denied[1].code))
-		check('and the refusal names the operation, so a client can tell it apart',
-			denied ~= nil and denied[1] ~= nil
-				and denied[1].operation == dealership.Operation.CAPTURE)
-		check('and nothing was placed', contract.Spots()['sneaky'] == nil)
-		check('and nothing was written', #dealersWritten == 0)
+		check('a client cannot fire a placement, because there is nothing to fire',
+			dealership.Event.PLACED == nil and dealership.Event.UNPLACED == nil,
+			tostring(dealership.Event.PLACED))
+		check('and no right is left standing guard over it',
+			type(Access.PlacementRight) ~= 'function'
+				and OPX.Config.MODULES.dealership.PLACEMENT_RIGHT == nil,
+			tostring(OPX.Config.MODULES.dealership.PLACEMENT_RIGHT))
+		check('while the showroom itself is still a thing config can dress',
+			type(Access.PREVIEW_POINTS) == 'table')
+		control.Stand(src, 0.0, 0.0, 0.0)
 
-		-- With the permission, the same routeway lands a dealer -- at the
-		-- position the SERVER read and the heading the client gave.
-		control.Allow(src, 'command.' .. Config.COMMANDS.add)
-		control.netEvents[dealership.Event.CAPTURED]('garage', 'dealer_dock', 'THE DOCKS', 90.0)
-		control.Pump(8)
-		local held = contract.Spots()
-		check('a permitted capture lands', held['dealer_dock'] ~= nil)
-		check('at the position the SERVER read and the heading the client gave',
-			held['dealer_dock'] ~= nil and held['dealer_dock'].x == 0.0
-				and held['dealer_dock'].y == 0.0 and held['dealer_dock'].z == 0.0
-				and held['dealer_dock'].heading == 90.0,
-			held['dealer_dock'] and ('%s,%s,%s yaw %s'):format(held['dealer_dock'].x,
-				held['dealer_dock'].y, held['dealer_dock'].z, tostring(held['dealer_dock'].heading)))
-		check('and its label is the operator\'s own words', held['dealer_dock'].label == 'THE DOCKS')
-		check('and the row was written through the bridge', #dealersWritten == 1, #dealersWritten)
-		check('and the fixture\'s checked-in dealers are in the merged list too',
-			held['yard'] ~= nil and held['pad'] ~= nil and held['far_yard'] ~= nil)
 		-- Told what is there NOW, and only what is in the player's own routing
-		-- bucket: the dealer parked on bucket 3 is not in a bucket-0 client's list.
+		-- bucket: the dealer parked on bucket 3 is not in a bucket-0 client's
+		-- list. Asked for, the way a client asks on its own cadence -- nothing
+		-- writes a dealer at runtime any more, so nothing fans a list out by
+		-- itself.
+		control.netEvents[dealership.Event.ASK]()
+		control.Pump(4)
 		local synced = lastEvent(dealership.Event.SYNC)
 		local found, inBucket = {}, true
 		for index = 1, type(synced) == 'table' and #synced[1].spots or 0 do
 			found[synced[1].spots[index].key] = true
-		end
-		for index = 1, type(synced) == 'table' and #synced[1].spots or 0 do
 			if synced[1].spots[index].bucket ~= 0 then inBucket = false end
 		end
-		check('and the client was told what is there now',
+		check('the client was told what is there',
 			synced ~= nil and type(synced[1]) == 'table' and type(synced[1].spots) == 'table'
 				and found['dealer_dock'] == true and found['yard'] == true,
 			synced and synced[1] and tostring(#synced[1].spots))
@@ -6287,15 +6722,25 @@ do
 		-- ── the destination the buyer chose ────────────────────────────────
 		-- Read from the GARAGES contract, which is the only owner of where a
 		-- garage is: nothing here keeps a copy.
-		local listed = garages.Spots()
-		listed['garage_dock'] = garageAccess.FromDefinition('garage_dock', {
-			KIND = 'garage', LABEL = 'THE DOCK', X = 1.0, Y = 1.0, Z = 5.0,
-			HEADING = 0.0, BUCKET = 0,
-		})
-		listed['pad_dock'] = garageAccess.FromDefinition('pad_dock', {
-			KIND = 'avpad', LABEL = 'THE PAD', X = 1.0, Y = 1.0, Z = 5.0,
-			HEADING = 0.0, BUCKET = 0,
-		})
+		--
+		-- A GARAGE AND NOT A POINT. The garages rework made a garage a key with
+		-- several locations, and a vehicle is filed under the KEY -- naming one
+		-- of its markers here would file a car under a door, which is a car that
+		-- comes out of exactly one location and nowhere else.
+		local listed = garages.Garages()
+		local function garage(key, kind)
+			local built = select(1, garageAccess.CoerceGarages({ [key] = {
+				KIND = kind, LABEL = key,
+				LOCATIONS = { { BUCKET = 0,
+					MENU = { X = 1.0, Y = 1.0, Z = 5.0 },
+					ENTRY = { X = 1.0, Y = 1.0, Z = 5.0, HEADING = 0.0 },
+					EXITS = { { X = 1.0, Y = 1.0, Z = 5.0, HEADING = 0.0 } } } },
+			} }))[key]
+			listed[key] = built
+			return built
+		end
+		garage('garage_dock', 'garage')
+		garage('pad_dock', 'avpad')
 
 		local delivered = contract.Buy(src, 'yard', 'quartz', 'garage_dock')
 		check('a purchase may name the garage it is delivered to',
@@ -6313,8 +6758,14 @@ do
 		local avBuy = contract.Buy(src, 'pad', 'manticore', nil)
 		check('an AV is sold at a pad', avBuy.ok == true, avBuy and tostring(avBuy.error))
 		handOver = control.vehicleCreates[#control.vehicleCreates]
+		-- ASSERTED AGAINST THE SHIPPED NUMBER, not against `Access.AvLift()`. The
+		-- version that stood here compared the created z to `5.0 + Access.AvLift()`
+		-- -- the function under test on both sides of the `==` -- so an `AvLift`
+		-- that answered 99 metres moved the expectation to 99 metres with it and
+		-- the check stayed green. `config/dealership.lua` ships AV_LIFT = 1.2, and
+		-- 1.2 is what an AV must come out at.
 		check('and it is handed over LIFTED clear of the pad\'s own floor',
-			handOver ~= nil and handOver.position.z == 5.0 + Access.AvLift(),
+			handOver ~= nil and math.abs(handOver.position.z - (5.0 + 1.2)) < 1e-9,
 			handOver and tostring(handOver.position.z))
 		check('and the AV\'s price is the AV row\'s, not a car\'s',
 			character.Players[src].PlayerData.money.EDDIES == 2000000 - manticore.price)
@@ -6398,52 +6849,593 @@ do
 		check('and nothing was charged for it',
 			character.Players[src].PlayerData.money.EDDIES == wireBalance - hella.price,
 			tostring(character.Players[src].PlayerData.money.EDDIES))
+		-- ── selling to somebody standing in front of you ───────────────────
+		-- THE OWNER'S OWN TWO CHOICES ARE WHAT IS UNDER TEST. "The buyer must
+		-- have the money, and THE BUYER'S CLIENT CONFIRMS the purchase" -- chosen
+		-- explicitly over debiting them the moment a salesperson presses a row.
+		-- And "the sale money goes to the COMPANY BANK and a config-defined
+		-- percentage goes to the seller", for jobs AND gangs.
+		local seller, buyer = 73, 74
+		local sellerData = load(seller, 'citizen-seller', 0)
+		local buyerData = load(buyer, 'citizen-buyer', 2000000)
+		-- The two groups a character carries, in the shape the character module
+		-- resolves them into: a name and a grade. The JOB is the company here,
+		-- and the gang beside it is what proves the job wins.
+		sellerData.PlayerData.job = { name = 'fixer', grade = { level = 2 } }
+		sellerData.PlayerData.gang = { name = 'maelstrom', grade = { level = 0 } }
+		control.Stand(seller, 0.0, 0.0, 0.0)
+		control.Stand(buyer, 0.0, 0.0, 0.0)
+		env.source = seller
+
+		local hellaRow = Access.Entry('hella')
+		local cut, banked = Access.Split(hellaRow.price)
+		check('the split is the configured percentage, rounded to the seller\'s cost',
+			cut == math.floor(hellaRow.price * Config.SELLER_CUT_PERCENT / 100)
+				and cut + banked == hellaRow.price,
+			('%d + %d vs %d'):format(cut, banked, hellaRow.price))
+
+		local buyerBefore = character.Players[buyer].PlayerData.money.EDDIES
+		local sellerBefore = character.Players[seller].PlayerData.money.EDDIES
+		local madeRows = #vehiclesWritten
+		local offered = contract.Offer(seller, buyer, 'hella')
+		check('a salesperson inside the zone may offer a model to a player in it',
+			offered.ok == true, offered.ok == false and tostring(offered.error))
+		check('and the offer names the company the money would go to',
+			offered.ok and offered.value.cut == cut and offered.value.company == banked,
+			offered.ok and ('%s/%s'):format(tostring(offered.value.cut),
+				tostring(offered.value.company)))
+
+		-- NOTHING HAS MOVED. This is the whole of the owner's choice: an offer is
+		-- a question, and a question does not take anybody's money.
+		check('an offer charges the buyer nothing at all',
+			character.Players[buyer].PlayerData.money.EDDIES == buyerBefore,
+			character.Players[buyer].PlayerData.money.EDDIES)
+		check('and registers no vehicle', #vehiclesWritten == madeRows,
+			#vehiclesWritten - madeRows)
+		check('and pays the seller nothing yet',
+			character.Players[seller].PlayerData.money.EDDIES == sellerBefore)
+
+		-- The buyer is asked, on their own client, and the ask carries what they
+		-- need to answer it: which model, at what price, from whom.
+		local asked = lastEvent(dealership.Event.OFFERED)
+		check('the buyer\'s own client is what is asked',
+			asked ~= nil and asked.source == buyer and type(asked[1]) == 'table'
+				and asked[1].entry == 'hella' and asked[1].price == hellaRow.price,
+			asked and tostring(asked.source))
+		local offerAt = asked ~= nil and asked[1].token or nil
+
+		-- NO IS AN ANSWER, and it settles the offer rather than leaving it open.
+		local declined = contract.Accept(buyer, offerAt, false)
+		check('the buyer may say no', declined.ok == false
+			and declined.error == 'dealership.offerDeclined', tostring(declined.error))
+		check('and nothing moved for that either',
+			character.Players[buyer].PlayerData.money.EDDIES == buyerBefore
+				and #vehiclesWritten == madeRows)
+		check('and the same answer cannot be given twice',
+			contract.Accept(buyer, offerAt, true).error == 'dealership.noOffer')
+
+		-- AN OFFER IS IDENTIFIED BY ITS OWN CLOCK, and this is the case that
+		-- needs it: a second offer REPLACES the first, and a confirm that was
+		-- already in flight for the first would otherwise buy the second -- a
+		-- different car, at a different price, that the buyer never saw. The
+		-- table alone cannot tell them apart, because both are keyed by the buyer.
+		local firstOffer = contract.Offer(seller, buyer, 'hella')
+		local firstAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local secondOffer = contract.Offer(seller, buyer, 'caliburn')
+		local secondAt = lastEvent(dealership.Event.OFFERED)[1].token
+		check('a second offer replaces the first rather than queueing behind it',
+			firstOffer.ok and secondOffer.ok and firstAt ~= secondAt,
+			('%s vs %s'):format(tostring(firstAt), tostring(secondAt)))
+		local stale = contract.Accept(buyer, firstAt, true)
+		check('and a yes to the offer that was replaced buys nothing at all',
+			stale.ok == false and stale.error == 'dealership.noOffer', tostring(stale.error))
+		check('and the buyer still has their money',
+			character.Players[buyer].PlayerData.money.EDDIES == buyerBefore,
+			character.Players[buyer].PlayerData.money.EDDIES)
+		-- The live one is still live: a stale answer must not settle it either.
+		check('while the offer they were actually made is still open',
+			contract.Accept(buyer, secondAt, false).error == 'dealership.offerDeclined')
+
+		-- ── and yes ────────────────────────────────────────────────────────
+		local settled
+		offered = contract.Offer(seller, buyer, 'hella')
+		asked = lastEvent(dealership.Event.OFFERED)
+		offerAt = asked ~= nil and asked[1].token or nil
+		env.CreateThread(function() settled = contract.Accept(buyer, offerAt, true) end)
+		check('the sale settles', settle(control, function() return settled ~= nil end, 60),
+			settled and tostring(settled.error))
+		check('and it went through', settled ~= nil and settled.ok == true,
+			settled and tostring(settled.error))
+		check('the buyer paid the price, and only the price',
+			character.Players[buyer].PlayerData.money.EDDIES == buyerBefore - hellaRow.price,
+			character.Players[buyer].PlayerData.money.EDDIES)
+		check('and owns the vehicle', #vehiclesWritten == madeRows + 1,
+			#vehiclesWritten - madeRows)
+
+		-- WHERE THE MONEY WENT. The company bank of the seller's own group, and
+		-- the configured percentage of it to the seller.
+		check('the seller is paid the configured percentage',
+			character.Players[seller].PlayerData.money.EDDIES == sellerBefore + cut,
+			character.Players[seller].PlayerData.money.EDDIES)
+		check('and the rest is banked to the company, not to the seller',
+			accounts['job:fixer'] == banked, tostring(accounts['job:fixer']))
+		-- THE JOB WINS OVER THE GANG. A gang member with a day job sells for the
+		-- day job, because that is the company the customer is buying from.
+		check('to the JOB, for a seller who has a job and a gang both',
+			accounts['gang:maelstrom'] == nil, tostring(accounts['gang:maelstrom']))
+		check('and the balance reads back through the contract',
+			(function()
+				local read = contract.Balance('job', 'fixer')
+				return read.ok and read.value.balance == banked
+			end)())
+
+		-- ── what a sale is refused for ─────────────────────────────────────
+		-- A SELLER WITH NO COMPANY HAS NOWHERE TO PAY THE MONEY IN, so the sale
+		-- is refused rather than made with the price evaporating.
+		local drifter = 75
+		local drifterData = load(drifter, 'citizen-drifter', 0)
+		drifterData.PlayerData.job = { name = 'unemployed', grade = { level = 0 } }
+		drifterData.PlayerData.gang = { name = 'none', grade = { level = 0 } }
+		control.Stand(drifter, 0.0, 0.0, 0.0)
+		check('a seller with no job and no gang cannot sell at all',
+			contract.Offer(drifter, buyer, 'hella').error == 'dealership.noCompany')
+
+		-- A gang member with no job sells for the gang, which is the other half
+		-- of the owner's "jobs AND gangs".
+		drifterData.PlayerData.gang = { name = 'valentinos', grade = { level = 3 } }
+		local gangOffer = contract.Offer(drifter, buyer, 'hella')
+		check('and one with only a gang sells for the gang',
+			gangOffer.ok == true, gangOffer.ok == false and tostring(gangOffer.error))
+		local gangAsked = lastEvent(dealership.Event.OFFERED)
+		local gangSettled
+		env.CreateThread(function()
+			gangSettled = contract.Accept(buyer, gangAsked[1].token, true)
+		end)
+		check('that sale settles too',
+			settle(control, function() return gangSettled ~= nil end, 60))
+		check('and the money lands in the GANG\'s account',
+			accounts['gang:valentinos'] == banked, tostring(accounts['gang:valentinos']))
+
+		-- OUT OF THE ROOM IS OUT OF THE SALE. Both ends are proved, and proved
+		-- again when the buyer answers -- everything provable at the offer can
+		-- have stopped being true by then.
+		control.Stand(buyer, 900.0, 900.0, 0.0)
+		check('a buyer who is not in the showroom cannot be offered anything',
+			contract.Offer(seller, buyer, 'hella').error == 'dealership.buyerNotInZone')
+		control.Stand(buyer, 0.0, 0.0, 0.0)
+		control.Stand(seller, 900.0, 900.0, 0.0)
+		check('and a salesperson outside every showroom cannot sell from one',
+			contract.Offer(seller, buyer, 'hella').error == 'dealership.notInZone')
+		control.Stand(seller, 0.0, 0.0, 0.0)
+
+		local walkOut = contract.Offer(seller, buyer, 'hella')
+		local walkAsked = lastEvent(dealership.Event.OFFERED)
+		control.Stand(buyer, 900.0, 900.0, 0.0)
+		check('an offer accepted from outside the showroom is refused',
+			walkOut.ok and contract.Accept(buyer, walkAsked[1].token, true).error
+				== 'dealership.notInZone')
+		control.Stand(buyer, 0.0, 0.0, 0.0)
+
+		-- The courtesy check, which is not the check that counts: the removal
+		-- itself is still what settles it.
+		local pauper = 76
+		load(pauper, 'citizen-pauper', 10)
+		control.Stand(pauper, 0.0, 0.0, 0.0)
+		check('a buyer who cannot afford it is not asked in the first place',
+			contract.Offer(seller, pauper, 'hella').error == 'dealership.buyerCannotAfford')
+		check('and nobody can sell to themselves',
+			contract.Offer(seller, seller, 'hella').error == 'dealership.noSuchBuyer')
+		env.source = src
 
 		-- ── the commands an operator reads ─────────────────────────────────
 		control.commands[Config.COMMANDS.stock].run(src, {})
-		local stockAnswer = lastAnswer('row(s)')		check('the stock command lists what is for sale and which dealer sells it',
+		local stockAnswer = lastAnswer('row(s)')
+		check('the stock command lists what is for sale and which dealer sells it',
 			stockAnswer ~= nil and stockAnswer.text:find('hella', 1, true) ~= nil
 				and stockAnswer.text:find('avpad', 1, true) ~= nil,
 			stockAnswer and stockAnswer.text:sub(1, 60))
 
-		-- A dealer that comes from the config file: `list` says which is which,
-		-- and `remove` will not take it out of the world.
+		-- A CAR ON THE FLOOR FOR THE LIST TO NAME, and it comes from CONFIG now:
+		-- the placement routeway that used to stand one up here is gone with the
+		-- staff screen that called it. Seeded the way `config/dealership.lua`
+		-- seeds one, so this check tests the path that actually exists.
+		Access.PREVIEW_POINTS['show_one'] = Access.PreviewFromDefinition('show_one', {
+			X = 0.0, Y = 0.0, Z = 0.0, HEADING = 37.0, BUCKET = 0,
+			DEALER = 'dealer_dock', ENTRY = 'hella' })
+		dealership.Init()
+		control.Pump(8)
+
 		control.commands[Config.COMMANDS.list].run(src, {})
 		local listAnswer = lastAnswer('dealer(s)')
 		check('the list command names every dealer and where it comes from',
 			listAnswer ~= nil and listAnswer.text:find('dealer_dock', 1, true) ~= nil
 				and listAnswer.text:find('yard', 1, true) ~= nil
-				and listAnswer.text:find('captured', 1, true) ~= nil
 				and listAnswer.text:find('config', 1, true) ~= nil,
 			listAnswer and listAnswer.text:sub(1, 60))
+		-- AND WHAT IS STANDING ON EACH FLOOR. A showroom car that was placed and
+		-- is NOT standing -- its record refused, the host said no -- is the one
+		-- thing an operator cannot see from inside the game, so the reading that
+		-- exists has to say it.
+		check('and every showroom car, and whether it is actually standing',
+			listAnswer ~= nil and listAnswer.text:find('show_one', 1, true) ~= nil
+				and listAnswer.text:find('showroom car', 1, true) ~= nil,
+			listAnswer and listAnswer.text:sub(1, 120))
 
-		control.commands[Config.COMMANDS.remove].run(src, { 'yard' })
-		check('a configured dealer is refused removal, and says where it lives',
-			lastAnswer('config/dealership.lua') ~= nil)
-		check('and it is still standing', contract.Spots()['yard'] ~= nil)
-
-		control.commands[Config.COMMANDS.remove].run(src, { 'ghost' })
-		check('removing a dealer nobody placed says there was none',
-			lastAnswer('no captured dealer named ghost') ~= nil)
-
-		local dealerMark = #dealersWritten
-		control.commands[Config.COMMANDS.remove].run(src, { 'dealer_dock' })
+		-- ── taking a showroom car away ─────────────────────────────────────
+		-- THE BLOCK THAT STOOD HERE tested `UNPLACED` and the right that gated
+		-- it. Both went with the placement path -- "retire cela aussi" -- and a
+		-- car comes off a floor the same way it goes on now: by leaving
+		-- `PREVIEW.POINTS` in `config/dealership.lua`.
+		--
+		-- The removal itself is still covered, by the config path's own checks
+		-- further down: a point taken out of config is not raised on the next
+		-- Init, and `raiseFloor` is what decides what stands.
+		Access.PREVIEW_POINTS['show_one'] = nil
+		dealership.Init()
 		control.Pump(8)
-		check('a captured dealer can be removed', #dealersWritten > dealerMark
-			and contract.Spots()['dealer_dock'] == nil)
-		synced = lastEvent(dealership.Event.SYNC)
-		found = {}
-		for index = 1, type(synced) == 'table' and #synced[1].spots or 0 do
-			found[synced[1].spots[index].key] = true
+		local afterDrop = contract.Previews()
+		local stillListed = false
+		for _, entry in ipairs(afterDrop.ok and afterDrop.value.previews or {}) do
+			if entry.key == 'show_one' then stillListed = true end
 		end
-		check('and every client is told what is left',
-			synced ~= nil and found['dealer_dock'] == nil and found['yard'] == true,
-			synced and ('%d spot(s)'):format(#synced[1].spots))
+		check('a showroom car taken out of config is off the floor on the next start',
+			not stillListed)
+		-- ── the migration: nothing an operator placed is lost ──────────────
+		-- THE WHOLE REASON THE COMMANDS COULD BE DELETED. `/opx.dealership.add`
+		-- wrote into `opx77_dealerships`, so every dealer placed in game lived in
+		-- a table nobody has a copy of; deleting the command without reading that
+		-- table again would have wiped the lot, silently, because an empty
+		-- `SPOTS` block is a valid config.
+		local legacy = {
+			{ spot_key = 'legacy_lot', label = 'THE LOT', kind = 'garage',
+				x = 700.0, y = 0.0, z = 4.0, heading = 12.0, bucket = 0 },
+			{ spot_key = 'garage1', label = 'MOVED', kind = 'garage',
+				x = 800.0, y = 800.0, z = 8.0, heading = 3.0, bucket = 0 },
+		}
+		local keptEnv, keptControl, keptWhy = boot('server', Host.Database({
+			scalar = function() return 1 end,
+			update = function() return 0 end,
+			single = function() return nil end,
+			query = function(sql)
+				if sql:find('opx77_dealerships', 1, true) then return legacy end
+				return {}
+			end,
+		}))
+		check('a server with a legacy dealer in the database boots', keptWhy == nil, keptWhy)
+		if keptWhy == nil then
+			keptControl.Pump(40)
+			local keptContract = keptEnv.OPX.Api.Get('dealership')
+			local adopted = keptContract.Spots()['legacy_lot']
+			check('a dealer that lives only in the database is adopted',
+				adopted ~= nil and adopted.label == 'THE LOT' and adopted.x == 700.0
+					and adopted.heading == 12.0,
+				adopted and adopted.x)
+			local printed, warned = false, false
+			for index = 1, #keptControl.log.info do
+				if keptControl.log.info[index]:find('config line: legacy_lot', 1, true) then
+					printed = true
+				end
+			end
+			for index = 1, #keptControl.log.warn do
+				if keptControl.log.warn[index]:find('opx77_dealerships', 1, true) then
+					warned = true
+				end
+			end
+			check('and the line that would check it in is written to the journal', printed)
+			check('with a line saying it exists nowhere else', warned)
+			-- CONFIG WINS OVER THE DATABASE NOW. There is no command to move a
+			-- dealer with any more, so a stale row silently moving one would be a
+			-- dealer an operator cannot move by editing the one place they are
+			-- told to edit.
+			local shadowed = keptContract.Spots()['garage1']
+			check('a dealer named in config is not moved by a row of the same name',
+				shadowed ~= nil and shadowed.x == -1536.42, shadowed and shadowed.x)
+		end
 
-		-- A PURCHASE FROM A DEALER THAT IS GONE is refused rather than answered
-		-- from a stale list.
-		check('and buying at the removed dealer is refused',
-			refused('dealer_dock', 'hella') == 'dealership.noSuchSpot')
+		-- ── and the showroom went the same way ─────────────────────────────
+		-- THE OWNER, 2026-09-21: "il y a pas de config live c'est tous par les
+		-- fichier config donc degage moi ce menu est pass moi tous dans les
+		-- config". The staff menu's Dev screen was the ONE thing on this server
+		-- that placed a showroom car, and it wrote it into
+		-- `opx77_dealership_previews` -- the same mistake `/opx.dealership.add`
+		-- made, in a second table. The screen is gone and a showroom car is
+		-- `PREVIEW.POINTS` in `config/dealership.lua`.
+		check('a fresh server ships no showroom at all, so nothing stands in a road',
+			type(Access.PREVIEW_POINTS) == 'table' and next(Access.PREVIEW_POINTS) == nil)
+
+		-- ── what a point written in config has to be ───────────────────────
+		local built = Access.CoercePreviews({
+			show_ok = { X = 1.0, Y = 2.0, Z = 3.0, HEADING = 52.0, BUCKET = 4,
+				DEALER = 'garage1', ENTRY = 'hella' },
+		}, nil)
+		check('a point written in config is accepted whole, facing and bucket included',
+			built.show_ok ~= nil and built.show_ok.heading == 52.0
+				and built.show_ok.bucket == 4 and built.show_ok.dealer == 'garage1'
+				and built.show_ok.entry == 'hella',
+			built.show_ok and tostring(built.show_ok.heading))
+
+		-- BOTH EXTRA FIELDS ARE REQUIRED and neither is defaulted, because the
+		-- shared spot record knows about neither: a car with no dealer stands in
+		-- a field that no zone ever cleans up, and one with no entry is an empty
+		-- parking space nothing can ever be put on.
+		local refused = {}
+		local half = Access.CoercePreviews({
+			no_dealer = { X = 1.0, Y = 1.0, Z = 1.0, ENTRY = 'hella' },
+			no_entry = { X = 1.0, Y = 1.0, Z = 1.0, DEALER = 'garage1' },
+			bad_place = { X = 0 / 0, Y = 1.0, Z = 1.0, DEALER = 'garage1', ENTRY = 'hella' },
+		}, refused)
+		check('a point with no dealer, no stock row or a NaN coordinate is refused',
+			next(half) == nil and #refused == 3, ('%d kept, %d refused')
+				:format(OPX.Table.Count(half), #refused))
+		check('and every refusal says PREVIEW.POINTS, so an operator knows which block',
+			(function()
+				for _, line in ipairs(refused) do
+					if line:find('PREVIEW.POINTS', 1, true) == nil then return false end
+				end
+				return true
+			end)(), table.concat(refused, ' | '))
+
+		-- A BLOCK THAT IS NOT A TABLE is reported; a block that is ABSENT is an
+		-- empty showroom and not a fault, which is the ordinary server.
+		check('an absent POINTS block is an empty showroom rather than a problem',
+			(function()
+				local lines = {}
+				local none = Access.CoercePreviews(nil, lines)
+				return next(none) == nil and #lines == 0
+			end)())
+
+		-- ── what the diagnostic says about a bad showroom ──────────────────
+		--- Whether `Access.Problems` says something containing `needle`.
+		local function reports(needle)
+			for _, line in ipairs(Access.Problems()) do
+				if line:find(needle, 1, true) then return true, line end
+			end
+			return false
+		end
+
+		local shippedPoints = Config.PREVIEW.POINTS
+		Config.PREVIEW.POINTS = 'nonsense'
+		check('a POINTS block that is not a table is reported rather than quietly dropped',
+			reports('PREVIEW.POINTS must be a table'))
+
+		-- THE STOCK LIST IS ENTIRELY CONFIG, so a point naming a row that is not
+		-- in it can never stand a car up -- on this start or any other. That is a
+		-- config error and it is said at boot, not discovered by an operator
+		-- wondering why one bay is empty.
+		Config.PREVIEW.POINTS = {
+			bad_entry = { X = 1.0, Y = 1.0, Z = 1.0, HEADING = 0.0, BUCKET = 0,
+				DEALER = 'garage1', ENTRY = 'no_such_row' },
+		}
+		check('a point naming a stock row that does not exist is named at boot',
+			reports('ENTRY names "no_such_row"'))
+		-- AND THE DEALER IS DELIBERATELY NOT CHECKED HERE: a dealer may still be
+		-- adopted out of `opx77_dealerships` long after this file loads, so a
+		-- name missing now may be there in a second. The server says so per car
+		-- when it dresses the floor, which is the moment it is knowable.
+		Config.PREVIEW.POINTS = {
+			far_dealer = { X = 1.0, Y = 1.0, Z = 1.0, HEADING = 0.0, BUCKET = 0,
+				DEALER = 'not_checked_at_load', ENTRY = 'hella' },
+		}
+		check('while a dealer that does not exist yet is not a load-time problem',
+			reports('not_checked_at_load') == false)
+
+		-- MORE CARS ON ONE FLOOR THAN `LIMIT` is a config that refuses part of
+		-- itself at boot with a line per car. The limit is a frame budget: every
+		-- preview is a network vehicle that never despawns.
+		local crowd = {}
+		for index = 1, Access.PREVIEW_LIMIT + 2 do
+			crowd['crowd' .. index] = { X = 1.0, Y = 1.0, Z = 1.0, HEADING = 0.0, BUCKET = 0,
+				DEALER = 'garage1', ENTRY = 'hella' }
+		end
+		Config.PREVIEW.POINTS = crowd
+		check('and a floor with more cars on it than PREVIEW.LIMIT is counted and reported',
+			reports('more than PREVIEW.LIMIT'))
+		Config.PREVIEW.POINTS = shippedPoints
+		check('with the shipped config putting nothing in the journal at all',
+			reports('PREVIEW.POINTS') == false)
+
+		-- ── there is no runtime path left to guard against ─────────────────
+		-- A BLOCK STOOD HERE testing that a car written in config could not be
+		-- moved or deleted by `M.PlacePreview` / `M.RemovePreview`. That guard
+		-- was the right answer while both existed: a write under a configured
+		-- key would move a car until the next restart and then move it back, and
+		-- an operator editing the file and an operator standing in the room would
+		-- disagree with the file winning silently in the morning.
+		--
+		-- Both are gone -- "retire cela aussi" -- so the guard has nothing to
+		-- guard. What is asserted instead is that the writers really did go, on
+		-- the module AND on the store: a writer with no caller is one the next
+		-- reader wires a new command to, which is the whole reason they went
+		-- rather than being left standing.
+		check('nothing on this module places or removes a showroom car',
+			dealership.PlacePreview == nil and dealership.RemovePreview == nil,
+			type(dealership.PlacePreview))
+		check('and the store has no writer for that table either',
+			dealership.Storage == nil or (dealership.Storage.PlacePreview == nil
+				and dealership.Storage.RemovePreview == nil))
+		-- NON-VACUOUS: the READER is still there, which is what keeps every row
+		-- an operator placed before today visible and migratable.
+		check('while the reading of that table is untouched',
+			dealership.Storage ~= nil
+				and type(dealership.Storage.FetchPreviews) == 'function')
+		-- ── the showroom migration, the same story in a second table ───────
+		-- The second row names a dealer that is in neither the config nor the
+		-- database. A car in a field is what that is, and nothing ever cleans it
+		-- up -- so it is KEPT (the dealer may come back on the next edit of the
+		-- config) and simply not stood up, with a line per car saying so. That
+		-- check is the only thing standing between an operator and a showroom
+		-- floating over the badlands after a renamed dealer.
+		local legacyShowroom = {
+			{ preview_key = 'legacy_show', dealer_key = 'garage1', entry_key = 'hella',
+				x = -1536.0, y = -207.0, z = 7.86, heading = 41.0, bucket = 0 },
+			{ preview_key = 'orphan_show', dealer_key = 'no_such_dealer', entry_key = 'hella',
+				x = 10.0, y = 10.0, z = 1.0, heading = 0.0, bucket = 0 },
+		}
+		local floorEnv, floorControl, floorWhy = boot('server', Host.Database({
+			scalar = function() return 1 end,
+			update = function() return 0 end,
+			single = function() return nil end,
+			query = function(sql)
+				if sql:find('opx77_dealership_previews', 1, true) then return legacyShowroom end
+				return {}
+			end,
+		}))
+		check('a server with a showroom car in the database boots', floorWhy == nil, floorWhy)
+		if floorWhy == nil then
+			floorControl.Pump(40)
+			local floorContract = floorEnv.OPX.Api.Get('dealership')
+			local listed = floorContract.Previews()
+			local byKey = {}
+			for _, entry in ipairs(listed.ok and listed.value.previews or {}) do
+				byKey[entry.key] = entry
+			end
+			check('a showroom car that lives only in the database is adopted',
+				listed.ok and #listed.value.previews == 2 and byKey.legacy_show ~= nil,
+				listed.ok and #listed.value.previews)
+			check('and stood up, because the dealer it names is written in config',
+				byKey.legacy_show ~= nil and byKey.legacy_show.standing == true)
+			check('while one whose dealer does not exist is kept rather than dropped',
+				byKey.orphan_show ~= nil)
+			check('and not stood up, because a car in a field is what that would be',
+				byKey.orphan_show ~= nil and byKey.orphan_show.standing == false,
+				byKey.orphan_show and tostring(byKey.orphan_show.standing))
+			check('with a line per car naming the dealer that is missing',
+				(function()
+					for index = 1, #floorControl.log.warn do
+						local line = floorControl.log.warn[index]
+						if line:find('orphan_show', 1, true)
+							and line:find('no_such_dealer', 1, true) then return true end
+					end
+					return false
+				end)())
+
+			-- THE OTHER HALF OF THE MIGRATION, and the half the Dev screen never
+			-- had: the line it handed an operator was handed to one player, once,
+			-- in a chat box. The whole floor is written at every start instead.
+			local printed, warned = false, false
+			for index = 1, #floorControl.log.info do
+				local line = floorControl.log.info[index]
+				if line:find('config line: legacy_show', 1, true)
+					and line:find('DEALER = "garage1"', 1, true)
+					and line:find('ENTRY = "hella"', 1, true)
+					and line:find('HEADING = 41.0', 1, true) then
+					printed = true
+				end
+			end
+			for index = 1, #floorControl.log.warn do
+				local line = floorControl.log.warn[index]
+				if line:find('opx77_dealership_previews', 1, true)
+					and line:find('PREVIEW.POINTS', 1, true) then
+					warned = true
+				end
+			end
+			check('and the config line that recreates it names its dealer, its row and its facing',
+				printed)
+			check('with a line telling the operator it exists nowhere else', warned)
+		end
+
+		-- ── the floor is counted against PREVIEW.LIMIT when it is DRESSED ──
+		-- The config check a few hundred lines up counts what is written in
+		-- `PREVIEW.POINTS`, and it cannot see the adopted half: a database with
+		-- thirteen cars on one floor and a config with none passes that check and
+		-- then creates thirteen network vehicles that never despawn. The limit is
+		-- a frame budget for every client in the district, so it is enforced
+		-- again where the cars are actually raised.
+		local crowded = {}
+		for index = 1, Access.PREVIEW_LIMIT + 1 do
+			crowded[index] = { preview_key = ('crowd_%02d'):format(index),
+				dealer_key = 'garage1', entry_key = 'hella',
+				x = -1536.0, y = -207.0, z = 7.86, heading = 0.0, bucket = 0 }
+		end
+		-- COUNTED AT EVERY YIELD, the way the blips batch test counts its pins.
+		-- Every pass of the loop that raises the floor is a `vehicles.create`
+		-- round trip, and a loop that did the whole showroom in ONE resume would
+		-- run out of the per-resume instruction budget partway down and unwind
+		-- the coroutine with no error, no log and no refusal -- leaving the cars
+		-- it reached standing and the rest silently missing. That failure has
+		-- cost this codebase five outages, and the harness has no instruction
+		-- budget, so nothing else in this suite can see it: `marks` is how many
+		-- cars had been created each time the thread gave the frame back, and the
+		-- gaps between consecutive marks are the runs of un-yielded work.
+		local raised, marks = 0, {}
+		local fullEnv, fullControl, fullWhy = boot('server', Host.Database({
+			scalar = function() return 1 end,
+			update = function() return 0 end,
+			single = function() return nil end,
+			query = function(sql)
+				if sql:find('opx77_dealership_previews', 1, true) then return crowded end
+				return {}
+			end,
+		}), function(sandbox)
+			local realCreate = sandbox.Open77.vehicles.create
+			sandbox.Open77.vehicles.create = function(...)
+				raised = raised + 1
+				return realCreate(...)
+			end
+			local realWait = sandbox.Wait
+			sandbox.Wait = function(...)
+				marks[#marks + 1] = raised
+				return realWait(...)
+			end
+		end)
+		check('a server with an over-full showroom in the database boots', fullWhy == nil, fullWhy)
+		if fullWhy == nil then
+			fullControl.Pump(40)
+			local fullContract = fullEnv.OPX.Api.Get('dealership')
+			local held = fullContract.Previews()
+			local standing = 0
+			for _, entry in ipairs(held.ok and held.value.previews or {}) do
+				if entry.standing then standing = standing + 1 end
+			end
+			check('every car is kept, because none of them is the operator\'s to lose',
+				held.ok and #held.value.previews == Access.PREVIEW_LIMIT + 1,
+				held.ok and #held.value.previews)
+			check('while only PREVIEW.LIMIT of them are stood up',
+				standing == Access.PREVIEW_LIMIT, standing)
+			check('and the ones over the line are named in the journal, not dropped in silence',
+				(function()
+					for index = 1, #fullControl.log.warn do
+						if fullControl.log.warn[index]:find('over PREVIEW.LIMIT', 1, true) then
+							return true
+						end
+					end
+					return false
+				end)())
+
+			-- ONE CAR PER RESUME. The yield deleted from that loop turns twelve
+			-- creates into one un-yielded run, which is the mutation this kills.
+			local longest, previous = 0, 0
+			for index = 1, #marks do
+				local run = marks[index] - previous
+				if run > longest then longest = run end
+				previous = marks[index]
+			end
+			if raised - previous > longest then longest = raised - previous end
+			check('the showroom was raised a car at a time, with the frame given back between',
+				raised >= Access.PREVIEW_LIMIT and longest <= 1,
+				('%d raised, longest un-yielded run was %d'):format(raised, longest))
+		end
+
+		-- ── and a car written in config is on the floor from Init ──────────
+		-- THE CONFIG HALF OF THE SAME MERGE. Everything above exercises the
+		-- database half; this is the half that matters from here on, because
+		-- `PREVIEW.POINTS` is where a showroom car is written now and the
+		-- database is only what the deleted menu left behind. `M.Init` is the one
+		-- entry point that reads the config table, and it is re-run here on
+		-- purpose -- this is the last thing this section asks of the module.
+		Access.PREVIEW_POINTS['from_config'] = Access.PreviewFromDefinition('from_config', {
+			X = 1.0, Y = 1.0, Z = 5.0, HEADING = 33.0, BUCKET = 0,
+			DEALER = 'garage1', ENTRY = 'hella' })
+		dealership.Init()
+		local afterInit = contract.Previews()
+		local seeded
+		for _, entry in ipairs(afterInit.ok and afterInit.value.previews or {}) do
+			if entry.key == 'from_config' then seeded = entry end
+		end
+		check('a showroom car written in config is on the floor from Init, with no database at all',
+			seeded ~= nil and seeded.dealer == 'garage1' and seeded.entry == 'hella',
+			seeded and seeded.dealer)
+		Access.PREVIEW_POINTS['from_config'] = nil
 	end
 end
 
@@ -6562,6 +7554,24 @@ do
 			Runtime.Report().key)
 		check('and it knows what the dealer sells', Runtime.Report().listed == 1,
 			tostring(Runtime.Report().listed))
+
+		-- ONE KEY, TWO LISTS, so the row has to name the kind it is standing over.
+		-- The pad is inside reach of the yard and the yard inside reach of the pad,
+		-- so walking between them never takes `nearest` through nil: a sync that
+		-- compared only "is a row up" would leave "Browse vehicles" over a pad that
+		-- only sells AVs.
+		check('on a car dealer, the row names the car list',
+			Runtime.Report().label == 'dealership.prompt.garage', Runtime.Report().label)
+		cctl.placement.x, cctl.placement.y = 4.0, 1.0
+		settle(cctl, function() return Runtime.Report().nearest == 'pad' end)
+		check('stepping onto the adjacent pad re-aims the row at it',
+			Runtime.Report().nearest == 'pad', Runtime.Report().nearest)
+		check('and the row names the AV list, not the one it walked in carrying',
+			Runtime.Report().label == 'dealership.prompt.avpad', Runtime.Report().label)
+		cctl.placement.x, cctl.placement.y = 0.0, 0.0
+		settle(cctl, function() return Runtime.Report().nearest == 'yard' end)
+		check('and walking back to the car dealer names the car list again',
+			Runtime.Report().label == 'dealership.prompt.garage', Runtime.Report().label)
 
 		-- ── the list ───────────────────────────────────────────────────────
 		mapping.pressed()
@@ -6711,22 +7721,6 @@ do
 				and verdicts[2].garage == 'garage_dock',
 			verdicts[2] and tostring(verdicts[2].plate))
 
-		-- ── the heading, which only this half can read ─────────────────────
-		before = #cctl.serverEvents
-		local infoMark = #cctl.log.info
-		cctl.netEvents[dealership.Event.CAPTURE]('garage', 'dealer_dock', 'THE DOCKS')
-		local answered = cctl.serverEvents[#cctl.serverEvents]
-		check('the client answers a capture ask', #cctl.serverEvents > before)
-		check('with the operator\'s own facing, which the server cannot read',
-			answered ~= nil and answered.name == dealership.Event.CAPTURED
-				and answered[1] == 'garage' and answered[2] == 'dealer_dock',
-			answered and tostring(answered[2]))
-		-- Both ends of the round trip say their half, so a capture that dies in
-		-- the middle is a hole in a log rather than silence from everywhere.
-		check('and names the dealer it answered, so the round trip reads from here',
-			#cctl.log.info > infoMark
-				and cctl.log.info[#cctl.log.info]:find('dealer_dock', 1, true) ~= nil,
-			cctl.log.info[#cctl.log.info])
 
 		-- ── a keyboard held elsewhere is not a key ─────────────────────────
 		cctl.input.captured = true
@@ -6769,6 +7763,87 @@ do
 		cctl.Pump(6)
 		check('and the garages module\'s own markers are not this module\'s bookkeeping',
 			#cenv.Open77.markers.list() == 2, #cenv.Open77.markers.list())
+
+		-- ── the showroom floor, and the row it grows on other players ──────
+		-- BEING IN THE ROOM IS NOT STANDING ON THE COUNTER, and the difference is
+		-- the whole of the selling half: a salesperson walks a customer around a
+		-- showroom, and a row that only existed on the marker would vanish the
+		-- moment they did.
+		check('standing on the marker is also being inside the zone',
+			Runtime.Report().zone ~= nil and Runtime.Report().nearest ~= nil,
+			tostring(Runtime.Report().zone))
+		check('and the eye is given a row to put on other players',
+			Runtime.Report().selling == true)
+		local eye = OPX.Api.Get('target')
+		local rows = eye ~= nil and eye.List('dealership') or nil
+		check('one row, and it is the one that sells',
+			rows ~= nil and rows.ok == true and #rows.value.options == 1
+				and rows.value.options[1].id == 'sell',
+			rows and rows.ok and #rows.value.options)
+
+		-- Twenty metres off the marker is still inside a thirty-metre zone: too
+		-- far to buy, near enough to be sold to.
+		cctl.placement.x, cctl.placement.y = 20.0, 0.0
+		settle(cctl, function() return Runtime.Report().nearest == nil end)
+		check('twenty metres away there is no counter underfoot',
+			Runtime.Report().nearest == nil, tostring(Runtime.Report().nearest))
+		check('but the showroom is still around you, and the row is still there',
+			Runtime.Report().zone ~= nil and Runtime.Report().selling == true,
+			tostring(Runtime.Report().zone))
+
+		-- And out of the building takes it away again. A row left behind is a row
+		-- that opens a list the server will refuse.
+		cctl.placement.x, cctl.placement.y = 900.0, 900.0
+		settle(cctl, function() return Runtime.Report().selling == false end)
+		check('leaving the showroom takes the row off the eye',
+			Runtime.Report().zone == nil and Runtime.Report().selling == false,
+			tostring(Runtime.Report().zone))
+		-- SETTLED ON THE EYE ITSELF, not on this module's own flag. The flag says
+		-- what has been ASKED for -- it flips the moment the zone changes -- and
+		-- the registration runs on a thread of its own, which is the whole reason
+		-- it yields before it writes. Reading the registry on the flag alone
+		-- would read it one resume too early.
+		settle(cctl, function()
+			local held = eye ~= nil and eye.List('dealership') or nil
+			return held ~= nil and held.ok == true and #held.value.options == 0
+		end)
+		rows = eye ~= nil and eye.List('dealership') or nil
+		check('and the eye is holding none of ours',
+			rows ~= nil and rows.ok == true and #rows.value.options == 0,
+			rows and rows.ok and #rows.value.options)
+		cctl.placement.x, cctl.placement.y = 0.0, 0.0
+		settle(cctl, function() return Runtime.Report().selling == true end)
+
+		-- ── the offer the buyer has to answer ──────────────────────────────
+		-- THE ONE SCREEN IN THIS MODULE SOMEBODY ELSE OPENS. It is a menu and not
+		-- a toast, because the whole point of the round trip is that it can be
+		-- answered.
+		cctl.netEvents[dealership.Event.OFFERED]({
+			token = 12345, entry = 'hella', model = 'Archer Hella', price = 29000,
+			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+		})
+		cctl.Pump(4)
+		check('an offer opens the screen that answers it',
+			Runtime.Report().open == true and Runtime.Report().screen == 'offer'
+				and Runtime.Report().offered == 'hella',
+			tostring(Runtime.Report().screen))
+
+		before = #cctl.serverEvents
+		local answerOut = Runtime.Decide(true)
+		local decided = cctl.serverEvents[#cctl.serverEvents]
+		check('answering it sends the buyer\'s own decision',
+			answerOut.ok == true and #cctl.serverEvents == before + 1 and decided ~= nil
+				and decided.name == dealership.Event.DECIDE and decided[2] == true,
+			decided and tostring(decided.name))
+		-- THE OFFER'S OWN CLOCK GOES BACK WITH IT. A second offer replaces the
+		-- first, and a confirm already in flight for the first would otherwise buy
+		-- the second -- a different car, at a different price, never seen.
+		check('carrying the clock of the offer it is answering', decided[1] == 12345,
+			decided and tostring(decided[1]))
+		check('and the screen is gone, so it cannot be answered twice',
+			Runtime.Report().open == false and Runtime.Report().offered == nil)
+		check('and there is nothing left to answer',
+			Runtime.Decide(true).ok == false)
 
 		-- ── a dealer the client cannot read ────────────────────────────────
 		local warned = #cctl.log.warn
@@ -6925,7 +8000,13 @@ do
 			('%s,%s'):format(inBucket[1].key, inBucket[2].key))
 
 		-- ── the commands ─────────────────────────────────────────────────
+		-- ADMITTED, because `add` captures the position the SERVER reads and the
+		-- host answers nil for a slot nobody is connected on. This test used to
+		-- pass without an account on the slot only because the harness answered
+		-- the origin for every id it was ever asked about, connected or not --
+		-- so "at the position the SERVER read" was asserting the stub.
 		local src = 41
+		control.Admit(src, 'account-clothing')
 		check('the add command is registered and ACL-gated',
 			control.commands['opx.clothing.add'] ~= nil
 				and control.commands['opx.clothing.add'].restricted == true)
@@ -7338,6 +8419,138 @@ do
 	end
 end
 
+-- ── the capture path ────────────────────────────────────────────────────────
+-- HOW "WHERE I AM STANDING" BECOMES A LINE IN A CONFIG FILE, and since
+-- 2026-09-21 the only way this resource has of doing it.
+--
+-- The owner deleted the staff menu's Dev screen that day -- "il y a pas de
+-- config live c'est tous par les fichier config donc degage moi ce menu est
+-- pass moi tous dans les config" -- and with it the two rows that turned where
+-- an operator was standing into a showroom car in a database. Every place on
+-- this server is a line in `config/` now: a garage, a dealer, a showroom car, a
+-- teleport, a lift. So the question an operator asks -- "how do I get these
+-- coordinates into that file" -- has exactly one answer, and it is this command.
+--
+-- THE FACING IS THE PART THAT WAS MISSING. `HEADING = 0.0` was HARDCODED into
+-- the copied row for as long as the command existed, because
+-- `Open77.players.position` answers `{ x, y, z, bucket }` and carries no yaw at
+-- all. That was survivable while a menu filled the facing in from the
+-- operator's own client; with the menu gone it made three quarters of a config
+-- row and left them to guess the rest -- and a garage EXIT, a dealer and a
+-- showroom car are all CREATED at a yaw.
+section('the capture path: standing somewhere becomes a line in config')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the capture path', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+
+		--- The newest row the server pushed at a clipboard, or nil.
+		local function lastCopied()
+			for index = #control.clientEvents, 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == admin.Event.TRAVEL and event[1] == 'copy' then return event[2] end
+			end
+			return nil
+		end
+
+		--- The newest sentence the server answered the operator with, or nil.
+		local function lastSaid()
+			for index = #control.clientEvents, 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == admin.Event.ANSWER then return event[3] end
+			end
+			return nil
+		end
+
+		--- Stands a FRESH operator somewhere, facing a way, and runs the capture.
+		--- A slot of its own per capture, and not one operator run three times:
+		--- the command is a `read`, so the host holds a per-operator floor of a
+		--- second between two runs and the second and third would be answered
+		--- "Slow down" rather than a row. The floor is real and tested elsewhere;
+		--- what is under test here is what the row says.
+		local function capture(id, x, y, z, heading)
+			control.Admit(id, 'account-capture-' .. tostring(id))
+			OPX.EnsureSession(id)
+			control.Allow(id, 'command.' .. admin.Command.SELF_POS)
+			control.Stand(id, x, y, z, heading)
+			control.commands[admin.Command.SELF_POS].run(id, {})
+			control.Pump(4)
+			return lastCopied(), lastSaid()
+		end
+
+		-- Standing somewhere, facing something other than north: the whole point
+		-- is that the row comes back with the facing the body really has.
+		local row, said = capture(41, 12.5, -34.25, 7.5, 137.5)
+		check('the command copies a row to the clipboard rather than only printing it',
+			type(row) == 'string' and row ~= '', tostring(row))
+		check('and the row carries the point the body is standing on',
+			row ~= nil and row:find('X = 12.50', 1, true) ~= nil
+				and row:find('Y = -34.25', 1, true) ~= nil
+				and row:find('Z = 7.50', 1, true) ~= nil, tostring(row))
+		-- THE ASSERTION THE WHOLE CHANGE IS ABOUT. A hardcoded zero passes every
+		-- other check on this row.
+		check('and the FACING the body really has, not a hardcoded zero',
+			row ~= nil and row:find('HEADING = 137.5', 1, true) ~= nil, tostring(row))
+		check('in the shape a config file takes, so it pastes without editing',
+			row ~= nil and row:find('^{ NAME = ') ~= nil and row:find('},$') ~= nil,
+			tostring(row))
+		check('and the operator is told it was copied rather than left guessing',
+			said ~= nil and said:find('clipboard', 1, true) ~= nil, tostring(said))
+		local ordinary = said
+
+		-- A YAW OUTSIDE THE CIRCLE. A reading that came back as 400 would be
+		-- written into a file and handed to `vehicles.create` as 400.
+		local wide = capture(43, 0.0, 0.0, 0.0, 400.0)
+		check('a yaw outside the circle is brought back inside it',
+			wide ~= nil and wide:find('HEADING = 40.0', 1, true) ~= nil, tostring(wide))
+		check('and the same reading is what Server.HeadingOf answers on its own',
+			admin.Server.HeadingOf(43) == 40.0, tostring(admin.Server.HeadingOf(43)))
+		check('and it rides along on every position read, so one call gets both',
+			(admin.Server.PositionOf(43) or {}).heading == 40.0,
+			tostring((admin.Server.PositionOf(43) or {}).heading))
+
+		-- ── a host that cannot answer a facing ─────────────────────────────
+		-- `Open77.players.get` is 2.31.13+op77.67 and the rich read is the only
+		-- place a yaw exists server-side. On anything older the row is still
+		-- copied -- the coordinates are the hard part and they are still right --
+		-- but the zero in it is NOT a reading, and an operator who pasted it
+		-- believing it was would stand every car in that bay facing north and
+		-- never find out why.
+		local rich = env.Open77.players.get
+		env.Open77.players.get = nil
+		local blind, blindSaid = capture(44, 0.0, 0.0, 0.0, 90.0)
+		check('a host with no rich read still copies the point',
+			blind ~= nil and blind:find('X = 0.00', 1, true) ~= nil, tostring(blind))
+		check('with a zero in the facing, because there is nothing to read',
+			blind ~= nil and blind:find('HEADING = 0.0', 1, true) ~= nil, tostring(blind))
+		check('and says in as many words that the zero in it is not a facing',
+			blindSaid ~= nil and blindSaid:find('facing', 1, true) ~= nil, tostring(blindSaid))
+		check('rather than answering the ordinary sentence',
+			blindSaid ~= ordinary, tostring(blindSaid))
+		check('and Server.HeadingOf answers nil rather than a zero that reads as north',
+			admin.Server.HeadingOf(44) == nil, tostring(admin.Server.HeadingOf(44)))
+		env.Open77.players.get = rich
+
+		-- A SLOT THAT HAS NEVER REPORTED has no facing either, and it is the
+		-- same nil: the rich read carries no heading until something has stood
+		-- the body somewhere, which is what the host does.
+		local never = 45
+		control.Admit(never, 'account-never-stood')
+		check('a body that has never reported has no facing to read',
+			admin.Server.HeadingOf(never) == nil, tostring(admin.Server.HeadingOf(never)))
+
+		-- BOTH SENTENCES ARE WRITTEN. A key that was never registered comes back
+		-- as itself, so a missing one reads on screen as `admin.done.posNoHeading`
+		-- and every check above still passes.
+		check('both answers are sentences and not keys',
+			OPX.Locale.Exists('admin.done.pos')
+				and OPX.Locale.Exists('admin.done.posNoHeading'))
+	end
+end
+
 section('noclip, server side')
 do
 	local env, control, why = boot('server')
@@ -7454,12 +8667,37 @@ do
 		local Noclip = admin.Noclip
 		local travel = admin.Event.TRAVEL
 
-		-- The advertised effect catalogue, in the shape a config can check against.
+		-- The advertised effect catalogue, in the shape a config can check
+		-- against. `Open77.vfx.catalog()` answers a MAP FROM ALIAS TO COOKED
+		-- PATH, so the alias is the key: this walked it with `ipairs`, which
+		-- over a map visits nothing at all, and the set below was empty. Every
+		-- alias then read as absent -- and the check still passed, because the
+		-- harness was handing back an array where the engine hands back a map
+		-- and the two mistakes cancelled.
 		local carried = {}
-		for _, alias in ipairs(cenv.Open77.vfx.catalog()) do carried[alias] = true end
+		for alias in pairs(cenv.Open77.vfx.catalog()) do carried[alias] = true end
 
 		check('the pop owns one transition point and nothing else',
 			type(Noclip.Changed) == 'function' and type(Noclip.Pop) == 'function')
+		-- THE SHIPPED CONFIG DRAWS NOTHING, on purpose: the owner asked for the
+		-- flame at an operator's feet to go on 2026-09-21. That is a fact about
+		-- the config and it is asserted as one -- and the machinery below is then
+		-- exercised against an effect this section names itself. "Does the pop
+		-- work" and "does the shipped config ask for one" are two questions, and
+		-- only the first is what the rest of this section is about; reading the
+		-- answer to the second out of the config was what made every check here
+		-- fail the moment the config changed.
+		check('the shipped config asks for no pop at all',
+			OPX.Config.MODULES.admin.NOCLIP.EFFECT == '',
+			OPX.Config.MODULES.admin.NOCLIP.EFFECT)
+		check('so the pop draws nothing, and says it drew nothing',
+			Noclip.Pop() == false)
+
+		local shipped = OPX.Config.MODULES.admin.NOCLIP.EFFECT
+		OPX.Config.MODULES.admin.NOCLIP.EFFECT = 'fire.large'
+		-- Pure re-read and reset: no handler, no job, nothing registered twice.
+		Noclip.Start()
+
 		local report = Noclip.Report()
 		check('it starts with the effect the config names, and no handle',
 			report.handle == nil and report.effect == OPX.Config.MODULES.admin.NOCLIP.EFFECT,
@@ -7601,6 +8839,12 @@ do
 			missing == 1, missing)
 		check('and the half keeps working: the native still moves and the edge is still reported',
 			cctl.travels.noclip == true and #cctl.serverEvents > mark2)
+
+		-- The env is shared between sections, so the effect this section named
+		-- for itself goes back to what the config ships before anybody else
+		-- reads it.
+		OPX.Config.MODULES.admin.NOCLIP.EFFECT = shipped
+		Noclip.Start()
 	end
 end
 
@@ -8215,6 +9459,102 @@ do
 	end
 end
 
+-- ── what the Dev screen took out of the catalogues ──────────────────────────
+-- A DELETED SCREEN LEAVES ITS WORDS BEHIND, and nothing at runtime ever
+-- notices: an orphaned catalogue key costs no memory anybody misses and raises
+-- nothing, so a file accretes the vocabulary of every feature it has ever had
+-- until nobody can tell which half of it is live. Twenty-seven keys belonged to
+-- the Dev screen -- the screen itself, its key, its three sections, its seven
+-- rows, its four forms with their fields, and the three answers the two
+-- contract-call rows had -- and this is what says they went.
+--
+-- AND THAT BOTH CATALOGUES LOST THE SAME ONES. This repo keeps `en` and `fr` in
+-- step by hand; a key in one table and not the other reads on screen as the key
+-- itself, which looks like a missing translation rather than a broken lookup,
+-- so nobody reports it as a bug. Read out of the SOURCE and not out of
+-- `OPX.Locale`, because the lookup falls back to English: a French table
+-- missing every key in this change would answer every test in this suite
+-- correctly and be wrong on the screen of every French-speaking player.
+section('the staff catalogues stay in step')
+do
+	--- Every `['some.key']` between two markers in a locale file.
+	local function keysBetween(body, from, to)
+		local start = body:find(from, 1, true)
+		local stop = to and body:find(to, 1, true) or (#body + 1)
+		local found, count = {}, 0
+		if start == nil or stop == nil then return found, 0 end
+		for key in body:sub(start, stop):gmatch("%['([%w%._%-]+)'%]%s*=") do
+			if found[key] == nil then
+				found[key] = true
+				count = count + 1
+			end
+		end
+		return found, count
+	end
+
+	for _, file in ipairs({ 'modules/admin/locales.lua', 'modules/dealership/locales.lua' }) do
+		local handle = io.open(file, 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		check(('%s was read'):format(file), #body > 0)
+
+		local english, englishCount = keysBetween(body, 'local EN = {', 'local FR = {')
+		local french, frenchCount = keysBetween(body, 'local FR = {', nil)
+		check(('%s carries two catalogues with something in them'):format(file),
+			englishCount > 0 and frenchCount > 0,
+			('%d en, %d fr'):format(englishCount, frenchCount))
+
+		local lonely = {}
+		for key in pairs(english) do
+			if french[key] == nil then lonely[#lonely + 1] = 'en only: ' .. key end
+		end
+		for key in pairs(french) do
+			if english[key] == nil then lonely[#lonely + 1] = 'fr only: ' .. key end
+		end
+		table.sort(lonely)
+		check(('and every key in %s is in both of them'):format(file),
+			#lonely == 0, table.concat(lonely, ', '))
+	end
+
+	-- THE TWENTY-SEVEN, by name. A list and not a namespace sweep: `admin.menu.*`
+	-- and `admin.field.*` are full of keys that are still drawn, and a prefix
+	-- check would either miss these or condemn those.
+	local handle = io.open('modules/admin/locales.lua', 'r')
+	local body = handle and handle:read('a') or ''
+	if handle then handle:close() end
+
+	local GONE = {
+		'admin.key.dev',
+		'admin.menu.section.garages', 'admin.menu.section.dealership',
+		'admin.menu.section.showroom',
+		'admin.menu.garageList', 'admin.menu.garageBring', 'admin.menu.dealerList',
+		'admin.menu.dealerStock', 'admin.menu.dealerBuy',
+		'admin.menu.previewPlace', 'admin.menu.previewRemove',
+		'admin.form.garageBring', 'admin.form.garageBringHint',
+		'admin.form.dealerBuy', 'admin.form.dealerBuyHint',
+		'admin.form.previewPlace', 'admin.form.previewPlaceHint',
+		'admin.form.previewRemove', 'admin.form.previewRemoveHint',
+		'admin.field.key', 'admin.field.entry', 'admin.field.plate', 'admin.field.garage',
+		'admin.client.devMissing', 'admin.client.devRefused', 'admin.client.devSent',
+		-- NOT 'admin.menu.dev': the name came back, on a screen that reads rather
+		-- than writes. What must stay gone is the WRITE vocabulary above it, and
+		-- that is what this list is.
+
+	}
+	local left = {}
+	for _, key in ipairs(GONE) do
+		if body:find(("['%s']"):format(key), 1, true) ~= nil then left[#left + 1] = key end
+	end
+	check('every word the Dev screen owned went with it, out of both catalogues',
+		#left == 0, table.concat(left, ' '))
+
+	-- Not vacuous: a `find` that had stopped matching anything -- a changed
+	-- quoting style, a file that moved -- would pass the check above with the
+	-- whole screen still written.
+	check('while a key the menu still draws is still there',
+		body:find("['admin.menu.players']", 1, true) ~= nil)
+end
+
 -- ── the find screen drops a late answer ──────────────────────────────────────
 -- THE ONE SCREEN WITH NO TARGET TO TAG WITH. Every other per-target list on this
 -- menu is read FOR a player and tagged with that player's id, so an answer for
@@ -8268,6 +9608,120 @@ do
 		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = false })
 		control.Pump(10)
 		check('the staff menu opens', admin.Menu.IsOpen())
+
+		-- ── the Dev screen is gone, and the key with it ──────────────────────
+		-- THE OWNER, 2026-09-21: "il y a pas de config live c'est tous par les
+		-- fichier config donc degage moi ce menu est pass moi tous dans les
+		-- config". A screen called Dev sitting on the root and opened by a key of
+		-- its own read as the place this server is CONFIGURED from, and every
+		-- place on this server is a line in `config/`.
+		--
+		-- THESE ARE THE SAME CHECKS TURNED THE OTHER WAY. What stood here
+		-- asserted that `Keys.DEV` reached the host and that the screen carried
+		-- the two placement rows. Deleting them outright would have left nothing
+		-- ── THE NAME CAME BACK; THE WRITES DID NOT ──────────────────────────
+		-- The screen removed on 2026-09-21 placed garage spots and showroom cars
+		-- -- writes dressed as configuration, on a server whose configuration is
+		-- files. The owner then asked for a Dev category again, for tools: "avoir
+		-- le nom de props get position etc".
+		--
+		-- So these checks are not deleted and not simply inverted. What mattered
+		-- yesterday is what is asserted today: the screen may exist, and it may
+		-- not write. Every write vocabulary it used to carry is still banned from
+		-- both catalogues by the check further up this section, and the four
+		-- forms behind its old rows are still asserted absent below.
+		check('the root carries a Dev row again', hasRow('dev') ~= nil)
+		check('and still carries every other category, so a row came back and not a rewrite',
+			hasRow('players') ~= nil and hasRow('self') ~= nil and hasRow('vehicles') ~= nil
+				and hasRow('world') ~= nil and hasRow('server') ~= nil)
+
+		-- NO KEY OF ITS OWN. The old screen had F10 and the owner never asked for
+		-- it back; the category is reached through the menu like every other one.
+		check('and still no Dev key is declared to the host',
+			control.keyMappings.byId['opx.admin.dev'] == nil)
+		local menuKey = control.keyMappings.byId['opx.admin.menu']
+		check('while the menu key still is, on the key the config names',
+			menuKey ~= nil and menuKey.key == 'F9', menuKey and tostring(menuKey.key))
+		check('and so are both noclip speeds, so nothing else moved',
+			control.keyMappings.byId['opx.admin.noclipFaster'] ~= nil
+				and control.keyMappings.byId['opx.admin.noclipSlower'] ~= nil)
+
+		check('the Dev screen is there to land on', admin.Menu.OpenAt('dev') == true)
+		control.Pump(10)
+		check('and landing on it is where the menu goes',
+			admin.Menu.IsOpen() and admin.Menu.Screen() == 'dev', admin.Menu.Screen())
+		admin.Menu.OpenAt('root')
+		control.Pump(10)
+
+		-- ── THE INSPECTOR ───────────────────────────────────────────────────
+		-- THE OWNER: "avoir le nom de props get position etc possible aussi de
+		-- l'utiliser avec alt".
+		--
+		-- IT REPORTS WHAT THE PLATFORM RETURNED, NOT A LIST OF FIELDS THE CODE
+		-- GUESSED, and that is the property worth a check: a curated read-out is
+		-- wrong the day the platform adds a field, silently, because the operator
+		-- sees four lines and cannot know a fifth existed. So the check feeds it a
+		-- field nothing in this resource has ever heard of and requires it back.
+		local report = admin.Inspect({
+			kind = 'prop',
+			position = { x = 12.5, y = -30.25, z = 7.0 },
+			material = 'concrete',
+			distance = 4.25,
+			somethingNobodyHasHeardOf = 'keep me',
+			screen = { x = 0.5, y = 0.5 },
+			target = { kind = 'prop', engineEntity = 'ent-9', networked = true },
+		})
+		check('the inspector answers text', type(report) == 'string' and #report > 0)
+		check('naming the position as one readable line',
+			report:find('position=12.50, -30.25, 7.00', 1, true) ~= nil, report)
+		check('and the material, which is the half that names a prop',
+			report:find('material=concrete', 1, true) ~= nil)
+		check('and the engine entity, prefixed so it cannot be confused with the ray',
+			report:find('target.engineEntity=ent-9', 1, true) ~= nil, report)
+		check('and BOTH kinds, which is why the prefix exists',
+			report:find('kind=prop', 1, true) ~= nil
+				and report:find('target.kind=prop', 1, true) ~= nil)
+		-- THE ONE THAT MATTERS: a field this code has never heard of survives.
+		check('and a field nothing here knows about, because it reports what it found',
+			report:find('somethingNobodyHasHeardOf=keep me', 1, true) ~= nil, report)
+
+		-- Nothing is invented for a pick that answered nothing.
+		local empty = admin.Inspect(nil)
+		check('while a pick with nothing in it says so rather than printing blanks',
+			type(empty) == 'string' and empty:find('nothing', 1, true) ~= nil, empty)
+		-- not have, and an operator who pressed a stale keybind must not lose the
+		-- menu they were standing in for it.
+		check('and asking for it leaves the menu where it was rather than closing it',
+			admin.Menu.IsOpen() and admin.Menu.Screen() == 'root', admin.Menu.Screen())
+
+		-- THE FOUR FORMS BEHIND ITS ROWS. `Forms.Open` answers false for a kind
+		-- it does not know, so this also catches one of them being moved onto
+		-- another screen rather than removed.
+		local alive = {}
+		for _, kind in ipairs({ 'previewPlace', 'previewRemove', 'garageBring', 'dealerBuy' }) do
+			if admin.Forms.Open(kind) ~= false then alive[#alive + 1] = kind end
+		end
+		check('and none of the four Dev forms can be opened any more',
+			#alive == 0, table.concat(alive, ' '))
+		-- Not vacuous: a `Forms.Open` refusing everything would pass the check
+		-- above and take every form on the menu with it.
+		check('while a form that is still on the menu opens',
+			admin.Forms.Open('announce') == true)
+
+		-- AND THE FIVE COMMAND NAMES THE SCREEN BORROWED. They belong to
+		-- `garages` and `dealership`, which still register them and are still
+		-- ACL-gated; what went is this module's copy of them, and with it the
+		-- load-time read of another module's `COMMANDS` block -- an exception to
+		-- the one rule `config/entry.lua` states outright, written down in
+		-- `modules/admin/module.lua` with "when the Dev group next needs work".
+		check('and the five names the screen borrowed from other modules are gone',
+			admin.Command.GARAGES_LIST == nil and admin.Command.GARAGES_BRING == nil
+				and admin.Command.DEALERSHIP_LIST == nil
+				and admin.Command.DEALERSHIP_STOCK == nil
+				and admin.Command.DEALERSHIP_BUY == nil)
+		check('while this module\'s own names are untouched',
+			admin.Command.SELF_POS == 'opx.admin.self.pos'
+				and admin.Command.MENU == 'opx.admin')
 
 		asked = {}
 		check('the find screen can be opened', admin.Menu.OpenAt('offlineChars') == true)
@@ -8785,7 +10239,7 @@ do
 	if why == nil then
 		control.Fire('onClientResourceStart', 'opx_infinity')
 		control.Boot()
-		control.Pump(60)
+		control.Pump(240)
 		control.ReadyPages()
 
 		local admin = env.OPX.Modules.Get('admin')
@@ -9776,7 +11230,7 @@ do
 
 		-- DERIVED, NEVER DECLARED: every Air row's record matches the configured
 		-- prefixes, and every row the rule calls air carries the flag.
-		local prefixes = admin.Section('VEHICLES').AV_PREFIXES or {}
+		local prefixes = OPX.Config.SHARED.AV_PREFIXES or {}
 		local function isAir(record)
 			local lowered = tostring(record):lower()
 			for _, prefix in ipairs(prefixes) do
@@ -9913,13 +11367,18 @@ do
 		OPX.EnsureSession(src)
 		control.Allow(src, 'command.' .. admin.Command.VEHICLE_SPAWN)
 
-		-- THE READINESS GATE, opened here because a spawn acts on a BODY. The stub's
-		-- own life state is not a table and its gate is shut, which is a deliberate
-		-- default -- nothing may teleport or spawn a player before they are in the
-		-- world -- and therefore something this section has to say out loud rather
-		-- than spawn around.
-		env.Open77.players.getLifeState = function() return { state = 'alive' } end
-		env.Open77.ready = { isReady = function() return true end, status = function() return nil end }
+		-- THE READINESS GATE, open because `control.Admit` above admitted a real
+		-- connection. What stood here was two patched natives:
+		--
+		--   env.Open77.players.getLifeState = function() return { state = 'alive' } end
+		--   env.Open77.ready = { isReady = ..., status = ... }
+		--
+		-- The first named the wrong field -- it is `phase`, not `state` -- and
+		-- worked only because every consumer stops at `type(life) == 'table'`.
+		-- The second replaced the whole gate with two functions, dropping
+		-- `hold`, `release` and `participate`, so anything here that took a hold
+		-- would have raised. Neither is needed now that the host answers for an
+		-- admitted player the way the platform does.
 
 		-- Read out of the config, so this checks the arithmetic rather than
 		-- repeating the numbers it is meant to be checking.
@@ -11634,12 +13093,21 @@ do
 		-- actually destroys a memory-only container lives here.
 		local World = inventory.World
 
-		-- The gate answers false and the life reader answers a STRING in the bare
-		-- harness, and `Players.MayAct` reads both. Without these two every
-		-- conversion below would refuse before it reached any money, and the
-		-- section would pass by never doing anything.
-		env.Open77.ready.isReady = function() return true end
-		env.Open77.players.getLifeState = function() return {} end
+		-- THESE TWO ARE ADMITTED CONNECTIONS NOW, not two patched natives.
+		--
+		-- What stood here was `env.Open77.ready.isReady = function() return true
+		-- end` and `env.Open77.players.getLifeState = function() return {} end`.
+		-- The second was wrong on its own terms -- the field is `phase`, not
+		-- nothing -- and it only worked because every consumer stops at
+		-- `type(life) == 'table'`. Between them they replaced the two doors
+		-- `Players.MayAct` is made of with constants, so nothing below could
+		-- ever exercise either: a body on the floor and a player behind a shut
+		-- gate both read the same as a healthy one.
+		--
+		-- `control.Admit` gives each slot what the host gives a real connection
+		-- -- a session, an open gate, a position and an alive phase -- so
+		-- `MayAct` now answers for a reason. They stand on the same spot
+		-- because handing something over is measured between two bodies.
 
 		local wired, item, moneyType = Currency.Wired()
 		check('the money-to-item bridge wired itself at start', wired == true)
@@ -11684,6 +13152,10 @@ do
 		end
 
 		local ALICE, BOB = 401, 402
+		control.Admit(ALICE, 'account-401')
+		control.Admit(BOB, 'account-402')
+		control.Stand(ALICE, 100.0, 200.0, 30.0)
+		control.Stand(BOB, 100.5, 200.0, 30.0)
 		local aliceBag = load(ALICE, 'citizen-eddies-a', 1000)
 		local bobBag = load(BOB, 'citizen-eddies-b', 0)
 		check('both bags are held for their characters',
@@ -11962,6 +13434,55 @@ do
 				total() == before, ('%d was %d'):format(total(), before))
 			check('which is every eddie the section ever created, and not one fewer',
 				total() == START + MINTED, tostring(total()))
+
+			-- ── AND A CLEAN LOGOUT IS NOT A LOSS ──────────────────────────────
+			-- The line above is right about a swept boot and was WRONG about
+			-- every ordinary departure, because `Unload` calls the same function
+			-- on the good path -- after writing the container and checking it
+			-- came back clean. A quiet evening's journal carried
+			-- `character 39N-FRKJ: 2 stack(s) destroyed` at severity WARN about a
+			-- sniper rifle and 351 rounds sitting safely in the database. Staff
+			-- reading that would go looking for a loss that never happened, and a
+			-- line that cries wolf costs more than no line at all: the one it
+			-- hides is the real one.
+			local kept = Containers.Transient(KIND.STASH, 'stash-unload-clean', 4, 1000)
+			Containers.Add(kept, 'bandage', 2)
+
+			-- The write branch, forced: a persisted container with a storage that
+			-- answers clean. Nothing else about `Unload` changes.
+			local heldC = Containers.Get(kept.id)
+			heldC.transient = false
+			local realSave = inventory.Storage.SaveUntilClean
+			inventory.Storage.SaveUntilClean = function() return true end
+
+			local flagged
+			local realDiscard = Containers.Discard
+			Containers.Discard = function(id, written)
+				flagged = written
+				return realDiscard(id, written)
+			end
+
+			local warnsBefore = #control.log.warn
+			local infos = #control.log.info
+			env.CreateThread(function() Containers.Unload(kept.id) end)
+			control.Pump(10)
+
+			Containers.Discard = realDiscard
+			inventory.Storage.SaveUntilClean = realSave
+
+			check('a written container tells Discard that nothing is being lost',
+				flagged == true, tostring(flagged))
+			check('and not one warning is filed for a clean unload',
+				#control.log.warn == warnsBefore,
+				table.concat(control.log.warn, ' | '):sub(1, 160))
+
+			local told = nil
+			for index = infos + 1, #control.log.info do
+				local line = tostring(control.log.info[index])
+				if line:find('inventory.unloaded', 1, true) then told = line end
+			end
+			check('it is recorded, as written and unloaded rather than destroyed',
+				told ~= nil and told:find('destroyed', 1, true) == nil, tostring(told))
 		end
 
 		-- ── a stash with no anchor is in reach from everywhere, on purpose ────
@@ -12612,6 +14133,40 @@ do
 		check('and the key on empty ground refuses locally rather than asking',
 			nowhere.ok ~= true and nowhere.error == 'teleports.noSuchTeleport',
 			tostring(nowhere.error))
+
+		-- ── AND IT DOES NOT SAY SO ────────────────────────────────────────────
+		-- THE OWNER'S REPORT: "je appuye sur la touche set pour use telephone
+		-- cela me dit Failed teleport there is no teleport here".
+		--
+		-- `E` is contextual and FOUR modules in this resource declare it --
+		-- clothing, garages, dealership and this one -- so a press anywhere
+		-- reaches all four and at least three find nothing under the player. The
+		-- other three return in silence. This one fell through to the shared
+		-- sentence and announced itself across the whole city, to a player who
+		-- had pressed the key meaning something else entirely.
+		--
+		-- A caller that NAMES itself still gets told: a menu row or a command
+		-- asked this module in particular, and silence there is the answer that
+		-- leaves a player guessing.
+		local said = 0
+		local realToast = OPX.Toast.Show
+		OPX.Toast.Show = function(payload)
+			said = said + 1
+			return realToast(payload)
+		end
+
+		said = 0
+		local pressed = Runtime.Use('key')
+		check('the key on empty ground still refuses', pressed.ok ~= true
+			and pressed.error == 'teleports.noSuchTeleport', tostring(pressed.error))
+		check('and says nothing at all about it', said == 0, said)
+
+		said = 0
+		local asked = Runtime.Use('menu')
+		check('while a caller that named itself is still told', said == 1, said)
+		check('with the same refusal', asked.error == 'teleports.noSuchTeleport',
+			tostring(asked.error))
+		OPX.Toast.Show = realToast
 	end
 end
 
@@ -12755,6 +14310,13 @@ do
 		local mark = #reports
 		admin.Target.Access(map)
 		check('the eye finishes its pass', settled(mark))
+		-- SETTLED, NOT COUNTED. Registration yields once per registration call and
+		-- the batch is four rows, so how many frames it takes is a function of how
+		-- many rows the ACL granted -- which is exactly the thing this section
+		-- varies. A fixed pump reads a registration that is still running. The
+		-- wait above is the exact one -- the report the pass sends when it is
+		-- done -- and this settle names the row the pass is waited for by.
+		settle(ccontrol, function() return has('admin_skyNoclip') end, 80)
 
 		-- THE REPORT, verbatim. `#sky` is what the operator sees; what is NOT in
 		-- it is what they wrote in about.
@@ -12792,6 +14354,11 @@ do
 		mark = #reports
 		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
 		check('the second pass finishes too', settled(mark))
+		-- SETTLED RATHER THAN PUMPED A FIXED NUMBER OF TIMES. Registration yields
+		-- once per REGISTRATION CALL now, not once per kind, so a ten-frame pump
+		-- stopped reading a finished registration the moment a kind needed two
+		-- batches -- and the check failed naming rows that arrive one frame later.
+		settle(ccontrol, function() return has('admin_skyTime') end, 60)
 
 		check('granting command.opx.weather.* puts every preset on the sky',
 			has('admin_skyWeather_sunny') and has('admin_skyWeather_sandstorm'),
@@ -12800,6 +14367,114 @@ do
 			has('admin_skyTime'), table.concat(sky, ','))
 		check('with the two that were always there still there',
 			has('admin_skyNoclip') and has('admin_skyPvp'), table.concat(sky, ','))
+
+		-- ── AND THE THREE KINDS THE INSPECTOR NEEDED ────────────────────────
+		-- This module reached `self`, `player`, `vehicle`, `door` and `sky` and
+		-- nothing else, so "what am I looking at" could be asked of a door and a
+		-- car and of nothing else in the city. A networked prop, a vanilla world
+		-- surface and an NPC are three things the eye distinguishes and staff
+		-- rows could be drawn on none of them.
+		--
+		-- CHECKED THROUGH THE CONTRACT THE MODULE ACTUALLY CALLS, so a kind added
+		-- to the KINDS list but missing from REGISTERS -- which is a silent
+		-- nothing, since the loop reads one by the other -- fails here.
+		local reached = {}
+		for _, name in ipairs({ 'RegisterProps', 'RegisterNpcs', 'RegisterWorld' }) do
+			wrap[name] = function(owner, rows)
+				local answer = real[name](owner, rows)
+				if answer.ok then
+					for _, entry in ipairs(rows) do reached[entry.id] = true end
+				end
+				return answer
+			end
+		end
+		-- A DIFFERENT SIGNATURE FIRST. `register` returns early when the granted
+		-- set is the one it already holds, so re-sending the same map after
+		-- wrapping the contract would wrap nothing and pass by measuring an empty
+		-- table. Emptying the access changes the signature; restoring it registers
+		-- again, through the wrap.
+		admin.Target.Access({ access = {}, aclKnown = true, inventory = false })
+		ccontrol.Pump(20)
+		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
+		ccontrol.Pump(20)
+		check('the inspector is offered on a prop', reached['admin_devInspect_prop'] == true)
+		check('on an NPC', reached['admin_devInspect_npc'] == true)
+		check('and on a plain world surface, which is most of the city',
+			reached['admin_devInspect_world'] == true)
+
+		-- ── THE BUG THE BLOCK ABOVE CANNOT SEE ──────────────────────────────
+		-- Everything above passes on a host with no instruction budget, and the
+		-- live server has one. The operator reported the weather rows missing,
+		-- the checks above said they were drawn the moment the ACL granted them,
+		-- and on the server ALT on the sky still drew NOTHING -- not the weather
+		-- rows, not Noclip, not PvP, nothing. The journal settled it by omission:
+		-- `a pick on sky matched 0 row(s); held: admin holds 12 rows and none is
+		-- named for sky`, and `register`'s closing report -- which it sends on
+		-- every way out -- had never arrived once. Registration was not failing.
+		-- It was dying: the whole of `wanted` plus five registrations ran in the
+		-- one resume that delivers the access map, the resume ran out of budget
+		-- partway down KINDS, and the coroutine unwound with no error and no log,
+		-- leaving the kinds before the cut on the eye and the kinds after it --
+		-- `sky` is last -- never registered at all.
+		--
+		-- So give the stub a budget. Three host calls to a resume, reset by a
+		-- yield, which is the shape of the real one and the only shape that can
+		-- tell a registration that yields from one that does not.
+		local spent, budgeted = 0, {}
+		local realWait = cenv.Wait
+		cenv.Wait = function(ms)
+			spent = 0
+			return realWait(ms)
+		end
+		-- CHARGED PER ROW AND NOT PER CALL, which is what the live server does and
+		-- what this stub got wrong. The first version counted registration CALLS,
+		-- so it proved the yield between kinds and could not see the cost inside
+		-- one call -- and the live journal then showed a client dying INSIDE a
+		-- single `RegisterSelf` of eight rows, at `model.lua:187`, with the
+		-- per-kind yield already in place. Six rows to a resume, which is the
+		-- shape of that failure: a batch bigger than that cannot complete.
+		for _, method in ipairs({ 'RegisterSelf', 'RegisterPlayers', 'RegisterVehicles',
+			'RegisterDoors', 'RegisterProps', 'RegisterNpcs', 'RegisterWorld',
+			'RegisterSky' }) do
+			budgeted[method] = function(owner, rows)
+				spent = spent + #rows
+				if spent > 6 then error('Open77 script execution budget exceeded', 0) end
+				local answer = real[method](owner, rows)
+				if method == 'RegisterSky' and answer.ok then
+					for _, row in ipairs(rows) do sky[#sky + 1] = row.id end
+				end
+				return answer
+			end
+		end
+		budgeted.Clear = function(owner)
+			sky = {}
+			return real.Clear(owner)
+		end
+		admin.Contracts.target = setmetatable(budgeted, { __index = real })
+
+		reports = {}
+		admin.Target.Access({ access = {}, aclKnown = true, inventory = false })
+		ccontrol.Pump(10)
+		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
+		-- Settled, not counted: one resume per registration CALL means a kind that
+		-- needs two batches takes two frames, and a fixed pump reads a
+		-- registration that is still running.
+		settle(ccontrol, function() return has('admin_skyTime') end, 80)
+
+		-- THE ASSERTION, and it is about the LAST kind on purpose. Registering in
+		-- one resume gets through `self` and stops; `sky` is the last of eight.
+		check('a budget of six ROWS a resume still reaches the last kind',
+			has('admin_skyNoclip') and has('admin_skyPvp') and has('admin_skyTime'),
+			table.concat(sky, ','))
+
+		-- AND THE LINE THAT WOULD HAVE SAID SO. Its absence from a dozen restarts
+		-- of the live journal is what finally located this, so it is asserted.
+		local closing = reports[#reports] or ''
+		check('and the registration reports itself on the way out',
+			closing:find('staff rows on the eye') ~= nil, closing)
+		check('not as a raise that nobody catches',
+			closing:find('budget exceeded') == nil, closing)
+		cenv.Wait = realWait
 	end
 end
 
@@ -12816,6 +14491,193 @@ end
 -- `core/shared/glyphs.lua` earned: a rule that was written out by hand in
 -- twenty-one scoped blocks across ten module stylesheets, and had already
 -- drifted between them, now exists once and the modules may not grow a second
+-- ── a knob nobody defined is not a knob ─────────────────────────────────────
+--
+-- THE OWNER ASKED WHETHER THE UI CONFIG COULD GO FURTHER FOR SERVER OWNERS, and
+-- the honest answer started here rather than with more settings: a custom
+-- property referenced with a fallback and defined NOWHERE reads exactly like an
+-- operator knob and is not one. The fallback is the only value that ever
+-- applies, and nothing warns -- CSS does not have an error for a name that does
+-- not exist, only a selector or a value that never matches.
+--
+-- `--op-downed-veil` was the first found, on the owner's word, and was removed.
+-- Measuring the rest turned up four more of the same shape -- `--op-form-veil`,
+-- `--op-spawn-veil`, `--op-menu-veil`, `--op-notify-clear-top` -- and one worse:
+-- the design system's stagger read `var(--op-slot)` while all six components
+-- that feed it wrote `--slot`, so `.op-enter` has never cascaded anywhere in
+-- this resource. All five are real tokens now.
+--
+-- THIS IS THE GUARD, and it is the one that makes exposing more worth doing:
+-- every `var(--op-…)` this UI names must be defined in the design system or in
+-- the file that uses it. Without it, "more configuration" means more knobs that
+
+-- ── one word, one meaning ────────────────────────────────────────────────────
+-- THE OWNER ASKED WHETHER THE UI CONFIG COULD GO FURTHER FOR SERVER OWNERS.
+-- Measuring first turned up the reason it could not: eight config blocks expose
+-- an `ANCHOR` and THREE DIFFERENT SETS of names were accepted behind it --
+-- `modules/menu` takes no bottom position at all, `modules/prompts` takes no
+-- centre, and `config/hud` is written with both. So the same word in two files
+-- meant two things, and a name one module did not know fell back to that
+-- module's own default in silence.
+--
+-- `lib/shared/anchors.lua` is one vocabulary of nine. This checks it, and checks
+-- the first surface to adopt it -- the call projection, which had no anchor at
+-- all and so could only be moved by editing CSS. The owner moved it by hand
+-- three times before it was a setting.
+section('where a surface sits is one vocabulary')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the anchors', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		check('the vocabulary is published', type(OPX.Anchors) == 'table'
+			and type(OPX.Anchors.ALL) == 'table')
+		check('and it is the nine positions', #OPX.Anchors.ALL == 9, #OPX.Anchors.ALL)
+
+		-- EVERY ONE OF THEM SURVIVES ITS OWN RESOLVE. A vocabulary whose own
+		-- names are refused is the fault this file exists to stop.
+		local refused = {}
+		for _, name in ipairs(OPX.Anchors.ALL) do
+			if OPX.Anchors.Resolve(name, 'center', 'test') ~= name then
+				refused[#refused + 1] = name
+			end
+		end
+		check('every name in it resolves to itself', #refused == 0,
+			table.concat(refused, ', '))
+
+		-- A TYPO IS NAMED, NOT SWALLOWED. One keystroke from a real name is the
+		-- commonest way to get a surface in a corner nobody chose, and a silent
+		-- fallback is what makes that impossible to find.
+		local warnings = #control.log.warn
+		check("a name that is not one of them falls back to the caller's default",
+			OPX.Anchors.Resolve('bottomleft', 'top-right', 'test.ANCHOR') == 'top-right')
+		local said = false
+		for index = warnings + 1, #control.log.warn do
+			if tostring(control.log.warn[index]):find('bottomleft', 1, true) then said = true end
+		end
+		check('and is named in the journal, with what is being used instead', said,
+			table.concat(control.log.warn, ' | '):sub(1, 120))
+
+		-- ABSENT IS NOT A TYPO. A config that simply does not carry the key is an
+		-- operator who never had an opinion, and warning about it would make the
+		-- journal useless for finding the ones that ARE mistakes.
+		warnings = #control.log.warn
+		check('an absent anchor takes the default in silence',
+			OPX.Anchors.Resolve(nil, 'bottom-left', 'test.ANCHOR') == 'bottom-left'
+				and #control.log.warn == warnings)
+
+		-- ── AND THE FIRST SURFACE TO USE IT ─────────────────────────────────
+		local calls = OPX.Modules.Get('calls')
+		local declared = OPX.Config.MODULES.calls.ANCHOR
+		check('the call projection has an anchor in config at all', declared ~= nil,
+			tostring(declared))
+		check('and it is one of the nine',
+			OPX.Anchors.Resolve(declared, 'center', 'calls.ANCHOR') == declared,
+			tostring(declared))
+
+		local drawn = {}
+		env.AddEventHandler(calls.Event.VIEW, function(payload)
+			if type(payload) == 'table' and payload.kind == 'holo' then
+				drawn[#drawn + 1] = payload
+			end
+		end)
+		calls.OpenHolo()
+		control.Pump(5)
+		check('and the projection tells the page where it sits',
+			#drawn > 0 and drawn[#drawn].anchor == declared,
+			#drawn > 0 and tostring(drawn[#drawn].anchor) or 'nothing drawn')
+		calls.CloseHolo()
+
+		-- THE PAGE HAS A CLASS FOR EVERY ONE OF THEM, or a perfectly valid
+		-- config value lands the projection wherever the fallback rule puts it --
+		-- which is the same silence, moved one file along.
+		-- Read here rather than through a helper: `sourceOf` is local to another
+		-- section, and a name that resolves to a global is nil.
+		local handle = io.open('ui/src/modules/calls/HoloRoot.vue', 'r')
+		local view = handle and handle:read('a') or nil
+		if handle then handle:close() end
+		check('the projection view is readable', view ~= nil)
+		local missing = {}
+		for _, name in ipairs(OPX.Anchors.ALL) do
+			if view == nil or not view:find('%.anchor%-' .. name:gsub('%-', '%%-')) then
+				missing[#missing + 1] = name
+			end
+		end
+		check('and carries a class for every position the vocabulary allows',
+			#missing == 0, table.concat(missing, ', '))
+	end
+end
+-- silently do nothing.
+section('every UI token an owner could turn is really there')
+do
+	local function read(path)
+		local handle = io.open(path, 'r')
+		local body = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		return body
+	end
+
+	-- The stylesheets and every view, read once. Listed rather than globbed,
+	-- because a directory walk in the harness would quietly cover nothing on a
+	-- host whose `io.popen` is off and pass by finding no files at all.
+	local sheets = { 'tokens.css', 'shapes.css', 'surface.css', 'fonts.css' }
+	local system = ''
+	for _, sheet in ipairs(sheets) do
+		system = system .. read('ui/src/design-system/' .. sheet)
+	end
+	check('the design system stylesheets are readable', #system > 200, #system)
+
+	-- Every module view the page registers, taken from the registry itself so a
+	-- view added later is covered without this list being edited.
+	local registry = read('ui/src/boot/main.ts')
+	check('the module registry is readable', #registry > 0)
+
+	local views, seen = {}, {}
+	for path in registry:gmatch("from '@/(modules/[%w%-/%.]+%.vue)'") do
+		if not seen[path] then
+			seen[path] = true
+			views[#views + 1] = path
+		end
+	end
+	check('and it names the views to walk', #views >= 10, #views)
+
+	-- Defined anywhere the browser will find it: a `--op-x:` declaration in the
+	-- design system, or one in the file that uses it.
+	local defined = {}
+	for name in system:gmatch('(%-%-op%-[%w%-]+)%s*:') do defined[name] = true end
+
+	local unresolved = {}
+	for _, path in ipairs(views) do
+		local body = read('ui/src/' .. path)
+		local local_ = {}
+		for name in body:gmatch('(%-%-op%-[%w%-]+)%s*:') do local_[name] = true end
+		for name in body:gmatch('var%((%-%-op%-[%w%-]+)') do
+			if not defined[name] and not local_[name] then
+				unresolved[#unresolved + 1] = path:match('([^/]+)$') .. ':' .. name
+			end
+		end
+	end
+	table.sort(unresolved)
+	check('every token a view names is defined somewhere the browser will find it',
+		#unresolved == 0, table.concat(unresolved, ', '))
+
+	-- ── AND THE OTHER DIRECTION ─────────────────────────────────────────────
+	-- A token defined and never read is the same waste pointing the other way,
+	-- and it is how a theme grows entries that do nothing. Not asserted as zero
+	-- -- the design system carries a deliberate palette that individual views
+	-- compose from -- but the STAGGER is, because its whole job is to be read by
+	-- the one rule that stagger belongs to, and its name was wrong for months.
+	check('the stagger token is read by the design system',
+		system:find('var%(%-%-op%-slot') ~= nil)
+	local writers = 0
+	for _, path in ipairs(views) do
+		if read('ui/src/' .. path):find('%-%-op%-slot:', 1) then writers = writers + 1 end
+	end
+	check('and written by the views that stagger, under the same name',
+		writers >= 5, writers)
+end
+
 -- copy.
 section('the one truncation rule')
 do
@@ -13918,6 +15780,100 @@ do
 		check('so the crate is free for whoever asks next',
 			retry[#retry] ~= nil and retry[#retry][1] == true,
 			retry[#retry] and tostring(retry[#retry][2]))
+
+		-- ── the job gate is `lib/shared/jobgate.lua`, not a fourth copy ──────
+		-- A SITE'S JOBS BLOCK MUST MEAN WHAT THE IDENTICAL KEY MEANS ON A LIFT, AN
+		-- ENTRANCE AND A BENCH. This module shipped its own hand-written rule that
+		-- read JOBS and silently ignored `ON_DUTY` beside it, and answered whichever
+		-- job it happened to look up first rather than the closest near-miss. An
+		-- operator who locked a site to clocked-on nomads got a site open to every
+		-- nomad, with nothing anywhere saying so.
+		local hauler = OPX.Api.Get('character')
+		local realGetPlayer = hauler.GetPlayer
+		local held, memberships = nil, {}
+		hauler.GetPlayer = function()
+			return { PlayerData = { job = held, jobs = memberships } }
+		end
+
+		-- A second crate, still on the ground, and somebody standing on it. Every
+		-- refusal below leaves it there, because the gate is asked before the claim.
+		local GATED, gatedAt = nil, nil
+		for id, prop in pairs(props.byId) do
+			if id ~= CRATE and (GATED == nil or id < GATED) then GATED, gatedAt = id, prop end
+		end
+		check('there is a second crate to gate', GATED ~= nil)
+		positions[9] = { x = gatedAt.x, y = gatedAt.y, z = gatedAt.z, bucket = 0 }
+		fire(9, M.Event.HELLO)
+
+		-- One request, and the answer it got. The clock moves past the rate-limit
+		-- window each time so a refusal is the gate's and never the limiter's.
+		local function askFor()
+			local mark = #control.clientEvents
+			at = at + 6000
+			fire(9, M.Event.BEGIN, Step.PICKUP, GATED)
+			for index = #control.clientEvents, mark + 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == M.Event.ANSWER then return sent end
+			end
+			return nil
+		end
+
+		SITE.JOBS, SITE.ON_DUTY = { nomad = 2 }, true
+		held = { name = 'nomad', grade = { level = 4 }, onDuty = false }
+		local gated = askFor()
+		check('ON_DUTY on a site is read, and an off-duty holder is turned away',
+			gated ~= nil and gated[1] == false and gated[2] == 'off_duty',
+			gated and tostring(gated[2]))
+
+		held = { name = 'fixer', grade = { level = 9 }, onDuty = true }
+		gated = askFor()
+		check('and somebody holding another job entirely is told it is the job',
+			gated ~= nil and gated[1] == false and gated[2] == 'job_required',
+			gated and tostring(gated[2]))
+
+		held = { name = 'nomad', grade = { level = 1 }, onDuty = true }
+		gated = askFor()
+		check('and the right job at too low a grade is told it is the grade',
+			gated ~= nil and gated[1] == false and gated[2] == 'grade_too_low',
+			gated and tostring(gated[2]))
+
+		-- THE NEAR-MISS IS NAMED, not the first job the gate happened to visit. With
+		-- two jobs required and only one of them held, a refusal that answered
+		-- `job_required` would send a nomad off to find a job they already have.
+		SITE.JOBS = { nomad = 5, ncpd = 0 }
+		gated = askFor()
+		check('with two jobs asked for, the refusal names the closest near-miss',
+			gated ~= nil and gated[1] == false and gated[2] == 'grade_too_low',
+			gated and tostring(gated[2]))
+
+		-- MEMBERSHIP = any counts a membership for the grade. Under primary the same
+		-- character is refused, because only the worked job counts at all.
+		SITE.JOBS, SITE.ON_DUTY = { nomad = 2 }, nil
+		held = { name = 'fixer', grade = { level = 0 }, onDuty = true }
+		memberships = { nomad = 4 }
+		gated = askFor()
+		check('under MEMBERSHIP primary a membership alone is not the job',
+			gated ~= nil and gated[1] == false and gated[2] == 'job_required',
+			gated and tostring(gated[2]))
+		OPX.Config.MODULES.hauling.MEMBERSHIP = 'any'
+		gated = askFor()
+		check('and under any the same membership carries the grade',
+			gated ~= nil and gated[1] == true, gated and tostring(gated[2]))
+		OPX.Config.MODULES.hauling.MEMBERSHIP = 'primary'
+
+		-- A MALFORMED MINIMUM IS ONE SENTENCE, the shared one, and not this module's
+		-- own drifted wording for the same operator mistake.
+		SITE.JOBS = { nomad = true }
+		local said = table.concat(Access.Problems(), '\n')
+		check('a JOBS typo is reported in the words every other module uses',
+			said:find('JOBS entries are job name %-> minimum grade level', 1) ~= nil, said)
+		check('and the site it is on is condemned rather than half-gated',
+			not Access.Usable('docks'))
+
+		SITE.JOBS, SITE.ON_DUTY = nil, nil
+		hauler.GetPlayer = realGetPlayer
+		check('and clearing JOBS makes the site public again',
+			(Access.Evaluate(Access.Site('docks'), nil, at)) == true)
 	end
 end
 
@@ -14793,8 +16749,12 @@ do
 		local elevators = OPX.Modules.Get('elevators')
 		local gunsmith = OPX.Modules.Get('gunsmith')
 		local teleports = OPX.Modules.Get('teleports')
-		check('the three modules are here to be asked',
-			elevators ~= nil and gunsmith ~= nil and teleports ~= nil)
+		-- FOUR NOW. `hauling` merged with a fourth hand-written copy of the rule
+		-- and no adapter at all, so it is held to the same fail direction as the
+		-- three the gate was factored out of.
+		local hauling = OPX.Modules.Get('hauling')
+		check('the four modules are here to be asked',
+			elevators ~= nil and gunsmith ~= nil and teleports ~= nil and hauling ~= nil)
 
 		-- Under pcall, because the answer being a RAISE is one of the three
 		-- answers this is here to rule out: the elevators adapter read
@@ -14820,7 +16780,88 @@ do
 
 			check('and teleports, which always did, still is',
 				(evaluate(teleports)) == false)
+
+			local site, refusedSite = evaluate(hauling)
+			check('a hauling site that is not a table is CLOSED, not a raise',
+				site == false, tostring(site) .. ' ' .. tostring(refusedSite))
+			check('and it says which site it could not read',
+				refusedSite == 'no_such_site', tostring(refusedSite))
 		end
+	end
+end
+
+-- ── one air category, one list ───────────────────────────────────────────────
+-- `Access.IsAv` in garages, `Access.IsAv` in dealership and `isAir` in the admin
+-- catalogue were three copies of one rule over three config keys. The data
+-- agreed; the code did not. The admin copy guarded neither its argument nor an
+-- emptied list, so clearing `VEHICLES.AV_PREFIXES` alone reclassified every AV
+-- as ground in the staff catalogue while the garage and the dealer went on
+-- calling the same records air -- and each of the three comments named one of
+-- the others as the rule it shared.
+section('a record is air for the whole server or for none of it')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local garages = OPX.Modules.Get('garages')
+		local dealership = OPX.Modules.Get('dealership')
+		local admin = OPX.Modules.Get('admin')
+		check('the three readers are here to be asked',
+			garages ~= nil and dealership ~= nil and admin ~= nil)
+
+		-- The admin catalogue never exposed its predicate, and must not have to:
+		-- it stamps each row with the answer, so the ROW is what is read here.
+		local function adminSays(record)
+			for _, class in ipairs(admin.Catalog.Classes()) do
+				for _, entry in ipairs(class.members) do
+					if entry.record == record then return entry.av end
+				end
+			end
+			return nil
+		end
+
+		local AIR = 'Vehicle.av_rayfield_excalibur'
+		local GROUND = 'Vehicle.v_standard2_archer_hella_player'
+		check('an AV record is air in all three', garages.Access.IsAv(AIR) == true
+			and dealership.Access.IsAv(AIR) == true and adminSays(AIR) == true,
+			('%s/%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
+				tostring(dealership.Access.IsAv(AIR)), tostring(adminSays(AIR))))
+		check('and a car is ground in all three', garages.Access.IsAv(GROUND) == false
+			and dealership.Access.IsAv(GROUND) == false and adminSays(GROUND) == false,
+			('%s/%s/%s'):format(tostring(garages.Access.IsAv(GROUND)),
+				tostring(dealership.Access.IsAv(GROUND)), tostring(adminSays(GROUND))))
+
+		-- A NON-STRING IS NOT AIR, and is not a raise either. The admin copy called
+		-- `record:lower()` straight off whatever it was handed.
+		for _, odd in ipairs({ 42, true, {} }) do
+			local read, answer = pcall(OPX.Vehicle.IsAvRecord, odd)
+			check(('a %s record is refused rather than raising'):format(type(odd)),
+				read == true and answer == false, tostring(read) .. ' ' .. tostring(answer))
+		end
+
+		-- ONE KEY MOVES ALL THREE. Emptying the operator's list falls back to the
+		-- documented pair rather than meaning "nothing flies", and pointing it
+		-- somewhere else moves the garage, the dealer and the catalogue together.
+		local real = OPX.Config.SHARED.AV_PREFIXES
+		OPX.Config.SHARED.AV_PREFIXES = {}
+		check('an emptied list still calls the documented pair air',
+			garages.Access.IsAv(AIR) == true and dealership.Access.IsAv(AIR) == true,
+			('%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
+				tostring(dealership.Access.IsAv(AIR))))
+		OPX.Config.SHARED.AV_PREFIXES = { 'vehicle.v_standard2_' }
+		check('and changing the one list moves both readers off the old answer',
+			garages.Access.IsAv(AIR) == false and dealership.Access.IsAv(AIR) == false,
+			('%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
+				tostring(dealership.Access.IsAv(AIR))))
+		check('and onto the new one, together',
+			garages.Access.IsAv(GROUND) == true and dealership.Access.IsAv(GROUND) == true,
+			('%s/%s'):format(tostring(garages.Access.IsAv(GROUND)),
+				tostring(dealership.Access.IsAv(GROUND))))
+		OPX.Config.SHARED.AV_PREFIXES = real
+		check('and putting it back puts them both back',
+			garages.Access.IsAv(AIR) == true and garages.Access.IsAv(GROUND) == false)
 	end
 end
 
@@ -14926,6 +16967,502 @@ do
 	end
 	check('no Lua file defines Catalog.ICONS any more', #found == 0,
 		table.concat(found, ', '))
+end
+
+-- ── a comment that states a fact about other code states a true one ──────────
+-- Each of these was a sentence asserting a guarantee the code did not provide.
+-- They are held here and not merely rewritten, because a false comment is only
+-- discovered by somebody who trusted it, and the disagreement is the bug.
+section('the comments that make a checkable claim')
+do
+	--- One file's whole source, or nil.
+	local function sourceOf(path)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local text = handle:read('a')
+		handle:close()
+		return text
+	end
+
+	-- Every Lua file the manifest actually loads, on either side, once.
+	local loaded, order = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if loaded[file] == nil then
+				loaded[file] = sourceOf(file) or ''
+				order[#order + 1] = file
+			end
+		end
+	end
+	check('the manifest\'s files are readable', #order > 0, #order)
+
+	-- ── `reconcile` is not the only writer of the marker set ──────────────
+	-- `clothing` and `garages` both said it was; `clearMarkers()` empties the
+	-- same table in both, and `teleports` -- the later rewrite of the same header
+	-- -- never made the claim.
+	local sole = {}
+	for _, file in ipairs(order) do
+		if loaded[file]:find('the only thing that touches that set', 1, true) then
+			sole[#sole + 1] = file
+		end
+	end
+	check('no file claims `reconcile` is the only writer of its marker set',
+		#sole == 0, table.concat(sole, ', '))
+	-- And the claim really would be false, so this is not agreeing with itself.
+	local emptiers = 0
+	for _, file in ipairs({ 'modules/clothing/client/main.lua',
+		'modules/garages/client/main.lua' }) do
+		local source = loaded[file] or ''
+		if source:find('local function clearMarkers', 1, true)
+			and source:find('markers%[key%] = nil') then
+			emptiers = emptiers + 1
+		end
+	end
+	check('because a second function really does empty it, in both', emptiers == 2,
+		emptiers)
+
+	-- ── the job gate is not narrating copies that still exist ─────────────
+	-- The claim is "a JOBS block means one thing", and the thing it means is the
+	-- five-branch decision that answers a REFUSAL CODE. A file that reads a `JOBS`
+	-- block and names one of those codes is deciding access, and must decide it in
+	-- `lib/shared/jobgate.lua`. `modules/hauling` was the fourth hand-written copy.
+	--
+	-- Reading a JOBS block for something else is not caught and must not be:
+	-- `modules/character` owns the roster of job definitions, and `modules/shops`
+	-- asks `character.HasJob` per name -- a boolean about a live player, with no
+	-- snapshot and no code -- which the gate's header names as the exception.
+	local rogue = {}
+	for _, file in ipairs(order) do
+		local source = loaded[file]
+		-- A file that READS a JOBS block -- `x.JOBS` -- rather than one that only
+		-- mentions the word in prose, AND answers the gate's own vocabulary.
+		local decides = source:find('%.JOBS%f[^%w_]')
+			and (source:find('grade_too_low', 1, true) or source:find('off_duty', 1, true))
+		if decides and not source:find('OPX.JobGate', 1, true)
+			and file:find('lib/shared/jobgate%.lua') == nil then
+			rogue[#rogue + 1] = file
+		end
+	end
+	check('every file that decides a JOBS block routes it through the one gate',
+		#rogue == 0, table.concat(rogue, ', '))
+	-- And `modules/shops`, the exception, really is one: it reads a JOBS block and
+	-- answers no refusal code of its own.
+	local shops = loaded['modules/shops/server/main.lua'] or ''
+	check('and the named exception is still asking the character contract',
+		shops:find('%.JOBS%f[^%w_]') ~= nil and shops:find('character.HasJob', 1, true) ~= nil
+			and shops:find('grade_too_low', 1, true) == nil)
+
+	-- ── the admin docblock sits on the function it describes ──────────────
+	-- A docblock headed "The name of the CHARACTER a player is playing", with a
+	-- single `@param playerId Source`, sat above `bagKey(playerId, key)`, which
+	-- takes two arguments and answers no such thing. `Server.CharacterOf`, which
+	-- does, had no doc at all.
+	local admin = loaded['modules/admin/server/main.lua'] or ''
+	local claim = 'The name of the CHARACTER a player is playing'
+	local at = admin:find(claim, 1, true)
+	check('the character-name docblock is still in the file', at ~= nil)
+	if at ~= nil then
+		local after = admin:sub(at)
+		local toCharacterOf = after:find('function Server.CharacterOf', 1, true)
+		local toBagKey = after:find('local function bagKey', 1, true)
+		check('and the next function under it is the one it describes',
+			toCharacterOf ~= nil and (toBagKey == nil or toCharacterOf < toBagKey),
+			('CharacterOf@%s bagKey@%s'):format(tostring(toCharacterOf), tostring(toBagKey)))
+	end
+
+	-- ── the garages tie-break does not blame `pairs` ──────────────────────
+	-- `choose` walks `for index = 1, #rows` over an array. The sort is worth
+	-- having; the reason given was not the reason.
+	local garages = loaded['modules/garages/server/main.lua'] or ''
+	local choose = garages:find('local function choose', 1, true)
+	check('the garages chooser is still there', choose ~= nil)
+	if choose ~= nil then
+		-- The comment block immediately above it.
+		local head = garages:sub(math.max(1, choose - 700), choose)
+		check('and its tie-break reason does not blame `pairs`',
+			head:find('pairs', 1, true) == nil, head:sub(-260))
+		local body = garages:sub(choose, choose + 700)
+		check('because there is no `pairs` on that path to blame',
+			body:find('pairs%s*%(') == nil)
+	end
+
+	-- ── the hauling placeholder rule and the elevators story agree ────────
+	-- The docblock claimed an all-three-axes-zero rule was "the check
+	-- config/elevators.lua did not have", and then described elevators as having
+	-- shipped plausible-but-wrong coordinates. Both cannot be true.
+	local hauling = loaded['modules/hauling/shared/access.lua'] or ''
+	check('the hauling placeholder rule no longer claims elevators lacked it',
+		hauling:find('the check `config/elevators.lua` did not have', 1, true) == nil
+			and hauling:find('This is the check', 1, true) == nil)
+	local lifts = sourceOf('config/elevators.lua') or ''
+	local zeroed = 0
+	for x, y, z in lifts:gmatch('X%s*=%s*(%-?[%d%.]+),%s*Y%s*=%s*(%-?[%d%.]+),%s*Z%s*=%s*(%-?[%d%.]+)') do
+		if tonumber(x) == 0 and tonumber(y) == 0 and tonumber(z) == 0 then zeroed = zeroed + 1 end
+	end
+	check('because not one shipped lift is at three zeros, so the rule could not have caught them',
+		zeroed == 0, zeroed)
+end
+
+-- ── finiteness is one function, and one name per answer ──────────────────────
+-- The same four-clause `tonumber` + NaN + two-infinities body was written out in
+-- ELEVEN files, each under a comment correctly explaining why it is not
+-- `OPX.Text.Finite` -- which is an argument for one helper and never was one for
+-- eleven copies. Worse, `local function finite` meant two different things: a
+-- PREDICATE returning a boolean in four files and a COERCER returning
+-- number-or-nil in three, so `if finite(x) then` is true for nil in half the
+-- resource and false for 0 in the other half.
+section('finiteness is written once')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		-- The coercer answers the NUMBER, and every one of these is a value that
+		-- really arrives: a string off the wire, a NaN through JSON, an infinity
+		-- from a division nobody guarded.
+		check('a numeric string coerces', OPX.Math.Finite('12.5') == 12.5,
+			tostring(OPX.Math.Finite('12.5')))
+		check('zero coerces to zero and not to nil', OPX.Math.Finite(0) == 0,
+			tostring(OPX.Math.Finite(0)))
+		check('NaN does not', OPX.Math.Finite(0 / 0) == nil)
+		check('nor does either infinity',
+			OPX.Math.Finite(math.huge) == nil and OPX.Math.Finite(-math.huge) == nil)
+		check('nor a word, a table or nil', OPX.Math.Finite('soon') == nil
+			and OPX.Math.Finite({}) == nil and OPX.Math.Finite(nil) == nil)
+		-- NOT `OPX.Text.Finite`, which caps at 2^53. That cap is right for a value
+		-- that has been through JSON and wrong for a millisecond clock, and it is
+		-- the reason every one of the eleven copies existed.
+		check('and it does NOT cap at 2^53, which is why it is not OPX.Text.Finite',
+			OPX.Math.Finite(2 ^ 54) == 2 ^ 54 and OPX.Text.Finite(2 ^ 54) == nil)
+
+		-- Every module that published the coercer still publishes it, answering the
+		-- same thing: the extraction is only faithful if no caller can tell.
+		for _, id in ipairs({ 'clothing', 'dealership', 'elevators', 'garages',
+			'gunsmith', 'hauling', 'teleports' }) do
+			local module = OPX.Modules.Get(id)
+			local coerce = module ~= nil and module.Access ~= nil and module.Access.FiniteNumber or nil
+			check(('%s still publishes the coercer, and it is the shared one'):format(id),
+				coerce == OPX.Math.Finite, tostring(coerce))
+		end
+		local crafting = OPX.Modules.Get('crafting')
+		check('and so does crafting, under its own name',
+			crafting ~= nil and crafting.Recipes.Finite == OPX.Math.Finite)
+
+		-- GUNSMITH'S THREE-ARGUMENT HELPER IS NOT CALLED `Integer`. Six modules
+		-- publish `Access.Integer(value)`, which takes one argument and bounds
+		-- against their own coordinate box; gunsmith's took three and bounded
+		-- against whatever the call site asked for. Lua drops surplus arguments
+		-- silently, so a call written from memory against the wrong one passes
+		-- every value it is given.
+		local gunsmith = OPX.Modules.Get('gunsmith')
+		check('gunsmith no longer publishes a second meaning for Access.Integer',
+			gunsmith ~= nil and gunsmith.Access.Integer == nil)
+		check('and its ranged helper says so in its name',
+			gunsmith ~= nil and type(gunsmith.Access.WholeInRange) == 'function')
+		check('and still bounds against the caller\'s range',
+			gunsmith ~= nil and gunsmith.Access.WholeInRange(5, 1, 10) == 5
+				and gunsmith.Access.WholeInRange(11, 1, 10) == nil
+				and gunsmith.Access.WholeInRange(1.5, 1, 10) == nil)
+		-- The one-argument `Access.Integer` the other six publish is unchanged and
+		-- still bounds against the coordinate box rather than a caller's range.
+		local garages = OPX.Modules.Get('garages')
+		check('while the one-argument Access.Integer still means what it meant',
+			garages ~= nil and garages.Access.Integer(7) == 7
+				and garages.Access.Integer(7.5) == nil
+				and garages.Access.Integer(2000000) == nil)
+	end
+
+	-- And no file has quietly written a twelfth copy, or reused `finite` for the
+	-- answer it does not mean.
+	local hand, ambiguous = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			local handle = io.open(file, 'r')
+			if handle ~= nil then
+				local source = handle:read('a')
+				handle:close()
+				if source:find('value%s*==%s*math%.huge%s+or%s+value%s*==%s*%-math%.huge')
+					and not file:find('lib/shared/math%.lua') then
+					hand[#hand + 1] = file
+				end
+				-- A local called `finite` must be the predicate; a coercer is
+				-- `finiteNumber`. The two answer differently for nil and for 0.
+				if source:find('local%s+finite%s*=%s*OPX%.Math%.Finite%f[^%w_]') then
+					ambiguous[#ambiguous + 1] = file
+				end
+			end
+		end
+	end
+	check('no file writes the finiteness test out by hand', #hand == 0,
+		table.concat(hand, ', '))
+	check('and no local called `finite` is the coercer', #ambiguous == 0,
+		table.concat(ambiguous, ', '))
+end
+
+-- ── nothing is published on OPX that nobody calls ────────────────────────────
+-- `OPX.Validate.OneOf`, `OPX.CitizenId.IsValid` and `OPX.Hooks.Has` were three
+-- one-line wrappers over the function directly above them, with no caller
+-- anywhere. A published helper nobody calls is not free: it is a shape the next
+-- author has to decide whether to adopt, and it is never the shape they want --
+-- `OneOf` answered a Result where every membership test in the resource wants a
+-- code, and `IsValid` threw away the reason `Parse` had already worked out.
+-- This is the same argument `core/server/gate.lua`'s `Watch` lost.
+section('the shared libraries publish nothing that nobody calls')
+do
+	local files, names = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if files[file] == nil then
+				files[file] = true
+				names[#names + 1] = file
+			end
+		end
+	end
+	table.sort(names)
+
+	local sources = {}
+	for _, file in ipairs(names) do
+		local handle = io.open(file, 'r')
+		if handle ~= nil then
+			sources[file] = handle:read('a')
+			handle:close()
+		end
+	end
+
+	-- Only `lib/shared`: these are the general helpers, the ones with no module
+	-- to own them and no lifecycle to explain why they exist. A module's own
+	-- surface is answered by its contract and is a different question.
+	local published = {}
+	for _, file in ipairs(names) do
+		if file:match('^lib/shared/') then
+			for namespace, fn in (sources[file] or ''):gmatch('function%s+OPX%.([%w_]+)%.([%w_]+)%s*%(') do
+				published[#published + 1] = { file = file, name = ('OPX.%s.%s'):format(namespace, fn), fn = fn }
+			end
+		end
+	end
+	check('there are shared helpers to account for', #published > 0, #published)
+
+	-- A caller in ANY manifest file other than the one that defines it -- the
+	-- suite itself is not a caller, which is the whole point: a helper that only
+	-- its own test calls is still dead.
+	local orphans = {}
+	for _, entry in ipairs(published) do
+		local called = false
+		for _, file in ipairs(names) do
+			if file ~= entry.file and (sources[file] or ''):find('%.' .. entry.fn .. '%s*%(') then
+				called = true
+				break
+			end
+		end
+		if not called then orphans[#orphans + 1] = ('%s (%s)'):format(entry.name, entry.file) end
+	end
+	table.sort(orphans)
+	check('and every one of them has a caller outside its own file',
+		#orphans == 0, table.concat(orphans, ', '))
+end
+
+-- ── the stutter is a token, and only a token ─────────────────────────────────
+-- `--op-stutter` was declared in `tokens.css` and honoured by exactly ONE rule;
+-- eight module stylesheets wrote `190ms steps(3, end)` out by hand. A retune
+-- would have moved the one surface that read the token and left the other
+-- eight, which is worse than never having had a token. The @keyframes bodies
+-- are deliberately not touched: what each surface does over those milliseconds
+-- legitimately differs, and only the cadence is shared.
+section('the stutter is declared once')
+do
+	--- Every page source file under a directory, recursively.
+	---
+	--- `dir /b /s` IS WINDOWS-ONLY, and that is how this section managed to be
+	--- green on a developer's machine and red in CI for two releases running: on
+	--- Linux the pipe opens, produces nothing, and the walk answers an empty
+	--- list. The readability check below is the only reason that showed up as a
+	--- failure rather than as every assertion in this section passing vacuously
+	--- -- which is the whole argument for writing it, and the argument for this
+	--- walk knowing which platform it is on.
+	local function sources(root, out)
+		out = out or {}
+		-- `io.popen` is the only directory walk available here, and the suite already
+		-- reads page files by name elsewhere; the list is short enough to name.
+		local command = package.config:sub(1, 1) == '\\'
+			and ('dir /b /s "%s" 2>nul'):format(root:gsub('/', '\\'))
+			or ('find "%s" -type f 2>/dev/null'):format(root)
+		local handle = io.popen(command)
+		if handle == nil then return out end
+		for line in handle:lines() do
+			local path = line:gsub('\\', '/')
+			if path:match('%.css$') or path:match('%.vue$') or path:match('%.ts$') then
+				out[#out + 1] = path
+			end
+		end
+		handle:close()
+		return out
+	end
+
+	local files = sources('ui/src')
+	check('the page sources are readable', #files > 0, #files)
+
+	local declared, hardcoded, timings = {}, {}, {}
+	for _, path in ipairs(files) do
+		local handle = io.open(path, 'r')
+		if handle ~= nil then
+			local source = handle:read('a')
+			handle:close()
+			local short = path:match('(ui/src/.*)$') or path
+			if source:find('%-%-op%-stutter:%s*steps') then declared[#declared + 1] = short end
+			-- Block comments out first: a file is allowed to NAME the cadence in
+			-- prose, and several usefully do.
+			local code = source:gsub('/%*.-%*/', ' ')
+			-- The stutter is `steps(3, ...)`. A different step count is a different
+			-- animation with its own reason -- `steps(8, end)` is the target eye's
+			-- scan line -- and is none of this check's business.
+			if code:find('%-%-op%-stutter:') == nil and code:find('steps%s*%(%s*3%s*,') then
+				hardcoded[#hardcoded + 1] = short
+			end
+			-- And the one duration the stutter is written at is a token too, so a
+			-- retune moves every surface that arrives rather than one of nine.
+			if code:find('%-%-op%-enter%-ms:') == nil and code:find('190ms') then
+				timings[#timings + 1] = short
+			end
+		end
+	end
+	table.sort(declared); table.sort(hardcoded); table.sort(timings)
+	check('the stutter is declared in exactly one place', #declared == 1,
+		table.concat(declared, ', '))
+	check('and no stylesheet writes the timing function out by hand',
+		#hardcoded == 0, table.concat(hardcoded, ', '))
+	check('and none writes the enter duration out either', #timings == 0,
+		table.concat(timings, ', '))
+end
+
+-- ── no catalogue declares the same key twice ─────────────────────────────────
+-- A Lua table literal keeps the LAST of two identical keys and says nothing, so
+-- a duplicated row is invisible at load, invisible at runtime and invisible to
+-- every check that reads the built table. It has to be read out of the source.
+-- `modules/admin/locales.lua` carried one, in EN and in FR, across 27 files.
+section('no locale catalogue declares a key twice')
+do
+	local files = {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if file:find('locales', 1, true) and files[file] == nil then
+				files[file] = true
+			end
+		end
+	end
+	local names = {}
+	for file in pairs(files) do names[#names + 1] = file end
+	table.sort(names)
+	check('the catalogues are on the manifest', #names > 0, #names)
+
+	-- Per table literal, not per file: EN and FR legitimately carry the same key,
+	-- and that is the whole point of them.
+	local twice = {}
+	for _, file in ipairs(names) do
+		local handle = io.open(file, 'r')
+		if handle ~= nil then
+			local block, seen = nil, {}
+			for line in handle:lines() do
+				local opened = line:match('^local%s+([%u_]+)%s*=%s*{%s*$')
+				if opened ~= nil then
+					block, seen = opened, {}
+				elseif line:match('^}') then
+					block = nil
+				elseif block ~= nil then
+					local key = line:match("^%s*%['([^']+)'%]%s*=")
+					if key ~= nil then
+						if seen[key] then
+							twice[#twice + 1] = ('%s: %s.%s'):format(file, block, key)
+						end
+						seen[key] = true
+					end
+				end
+			end
+			handle:close()
+		end
+	end
+	check('no catalogue table holds the same key twice', #twice == 0,
+		table.concat(twice, ' | '))
+end
+
+-- ── the theme bounds are two lists and one seam ──────────────────────────────
+-- `BOUNDS` in `modules/theme/shared/palette.lua` and `KNOBS` in
+-- `ui/src/design-system/theme.ts` carry the same floors and ceilings, and the
+-- duplication is deliberate: the page's copy is the last clamp before a custom
+-- property is written, it must hold against a payload Lua never saw, and a `.ts`
+-- file cannot read a Lua table. What was missing was anything watching them.
+-- `core/shared/glyphs.lua` has exactly this arrangement with the page's glyph
+-- list and the suite reads both files for it; this does the same, so a retune on
+-- one side names the other side's line instead of shipping two clamps.
+section('the theme bounds agree across the one seam')
+do
+	--- Every `key = { low, high }` row of one Lua table literal.
+	local function luaBounds(path, name)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local source = handle:read('a')
+		handle:close()
+		local opened = source:find('local ' .. name .. ' = {', 1, true)
+		if opened == nil then return nil end
+		-- To the first line that is a lone closing brace, so RUNGS below is not
+		-- swept in.
+		local closed = source:find('\n}', opened, true)
+		local block = source:sub(opened, closed or #source)
+		local out = {}
+		for key, low, high in block:gmatch('([%a][%w]*)%s*=%s*{%s*(%-?[%d%.]+)%s*,%s*(%-?[%d%.]+)%s*}') do
+			out[key] = { tonumber(low), tonumber(high) }
+		end
+		return out
+	end
+
+	--- Every `key: { ... min: n, max: n }` row of the page's KNOBS map.
+	local function pageBounds(path)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local source = handle:read('a')
+		handle:close()
+		local out = {}
+		for key, body in source:gmatch('([%a][%w]*):%s*{([^}]*)}') do
+			local low = body:match('min:%s*(%-?[%d%.]+)')
+			local high = body:match('max:%s*(%-?[%d%.]+)')
+			if low ~= nil and high ~= nil then
+				out[key] = { tonumber(low), tonumber(high) }
+			end
+		end
+		return out
+	end
+
+	local lua = luaBounds('modules/theme/shared/palette.lua', 'BOUNDS')
+	local page = pageBounds('ui/src/design-system/theme.ts')
+	check('the Lua bounds are readable', lua ~= nil and next(lua) ~= nil)
+	check('and the page bounds are', page ~= nil and next(page) ~= nil)
+
+	if lua ~= nil and page ~= nil then
+		-- Both directions. A knob the page clamps and Lua does not is a value the
+		-- server would hand over unbounded; one Lua clamps and the page does not is
+		-- a property written past its ceiling on somebody's screen.
+		local missing, extra, differ = {}, {}, {}
+		for key, bound in pairs(lua) do
+			local other = page[key]
+			if other == nil then
+				missing[#missing + 1] = key
+			elseif other[1] ~= bound[1] or other[2] ~= bound[2] then
+				differ[#differ + 1] = ('%s lua=%s..%s page=%s..%s'):format(key,
+					bound[1], bound[2], other[1], other[2])
+			end
+		end
+		for key in pairs(page) do
+			if lua[key] == nil then extra[#extra + 1] = key end
+		end
+		table.sort(missing); table.sort(extra); table.sort(differ)
+
+		check('every knob Lua bounds is bounded by the page too', #missing == 0,
+			table.concat(missing, ', '))
+		check('and every knob the page bounds is bounded by Lua', #extra == 0,
+			table.concat(extra, ', '))
+		check('and the two lists agree on every floor and ceiling', #differ == 0,
+			table.concat(differ, ' | '))
+	end
 end
 
 -- ── a toast patch the page refused is rolled back ────────────────────────────
@@ -15386,7 +17923,17 @@ do
 		-- A reservation that outlived a refusal would lock the plate for the rest
 		-- of the session: every later request would answer `vehicle.busy` for a
 		-- car that is not out and never was.
-		vehicles.Store(PLATE)
+		-- ON A THREAD, because `Store` yields. It reads the live snapshot first
+		-- and then fetches the row to write the condition onto, and that fetch is
+		-- a database read -- so calling it straight from here raised "attempt to
+		-- yield from outside a coroutine". It only ever appeared to work because
+		-- the host's `get` answered nil for a vehicle it had itself created,
+		-- which sent `Store` down the branch that does not read the row.
+		local putAway
+		env.CreateThread(function() putAway = vehicles.Store(PLATE) end)
+		check('the car is put away again before the refusal case',
+			settle(control, function() return putAway ~= nil end, 60))
+
 		local realCreate = env.Open77.vehicles.create
 		env.Open77.vehicles.create = function() return nil, 'refused_by_test' end
 		local failed
@@ -20987,7 +23534,1120 @@ do
 			env.Open77.character.position = function() return 0.0, 0.0, 0.0 end
 			control.Pump(40)
 			check('and it is gone again from across the room',
-				prompts == nil or hidden >= 1, ('%d hide(s)'):format(hidden))
+				prompts == nil or hidden >= 1,				('%d hide(s)'):format(hidden))
+		end
+	end
+end
+
+-- ── the guards a mutation audit found nothing standing over ──────────────────
+-- Everything below was reachable, load-bearing and untested. 487 of 563 mutants
+-- survived this suite; most of them survived because `tests/host.lua` answered
+-- something the platform never answers, and the rest because nothing ever
+-- called the code at all. The stubs are honest now, so these are the checks the
+-- honest stubs make possible.
+
+-- ── money: the overdraft, and the amount that is not one ─────────────────────
+-- `RemoveMoney`'s overdraft refusal and the `n <= 0` guard in `amountOf` both
+-- survived mutation. Without the second, a negative amount handed to
+-- `RemoveMoney` subtracts a negative number: it is a money printer with an
+-- audit trail saying money was removed.
+section('money: what may not be taken, and what may not be made')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		check('the character module is there', type(character) == 'table')
+
+		if type(character) == 'table' then
+			local RICH = 501
+			control.Admit(RICH, 'account-501')
+			character.Players[RICH] = {
+				PlayerData = { citizenId = 'citizen-money', source = RICH,
+					userId = 'account-501', money = { EDDIES = 500, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-money'] = RICH
+			character.Registry.byUserId['account-501'] = RICH
+
+			local function balance() return character.GetMoney(RICH, 'EDDIES') end
+
+			-- ── the overdraft ────────────────────────────────────────────────
+			-- "Removes money, refusing rather than truncating when short. A
+			-- half-successful purchase is worse than one that fails."
+			check('taking what is there works', (character.RemoveMoney(RICH, 'EDDIES', 200))
+				== true and balance() == 300, balance())
+
+			local short, shortWhy = character.RemoveMoney(RICH, 'EDDIES', 301)
+			check('taking one eddie more than there is is REFUSED',
+				short == false and shortWhy == 'money.insufficient', tostring(shortWhy))
+			check('and the balance did not move', balance() == 300, balance())
+
+			-- Exactly the balance is not an overdraft, which is the boundary the
+			-- comparison is written on: `< 0`, not `<= 0`.
+			check('taking exactly what is there is allowed',
+				(character.RemoveMoney(RICH, 'EDDIES', 300)) == true and balance() == 0,
+				balance())
+			check('and taking a single eddie from nothing is refused',
+				(character.RemoveMoney(RICH, 'EDDIES', 1)) == false and balance() == 0,
+				balance())
+
+			-- ── the amount that is not one ───────────────────────────────────
+			character.SetMoney(RICH, 'EDDIES', 500)
+			local mark = #control.log.warn
+
+			-- THE MONEY PRINTER. `money[type] - value` with a negative `value` is
+			-- an addition, and the overdraft check above it passes trivially.
+			local printer, printerWhy = character.RemoveMoney(RICH, 'EDDIES', -1000)
+			check('removing a NEGATIVE amount is refused, not credited',
+				printer == false and printerWhy == 'money.badAmount', tostring(printerWhy))
+			check('and the balance is untouched by it', balance() == 500, balance())
+
+			check('removing nothing is refused too',
+				(character.RemoveMoney(RICH, 'EDDIES', 0)) == false and balance() == 500,
+				balance())
+			check('and so is NaN, which passes every comparison it meets',
+				(character.RemoveMoney(RICH, 'EDDIES', 0 / 0)) == false and balance() == 500,
+				balance())
+			check('and so is an infinity', (character.RemoveMoney(RICH, 'EDDIES', math.huge))
+				== false and balance() == 500, balance())
+
+			-- ADDING a negative is the same hole from the other side: it would
+			-- debit an account through the credit door, skipping the overdraft
+			-- check entirely.
+			check('adding a negative amount is refused as well',
+				(character.AddMoney(RICH, 'EDDIES', -250)) == false and balance() == 500,
+				balance())
+
+			-- `OPX.Audit` appears nowhere in this suite, and the refusal above is
+			-- one of the few things in the runtime that raises a security entry.
+			-- A refusal nobody can see afterwards is a refusal an operator cannot
+			-- act on.
+			local audited = table.concat(control.log.warn, ' | '):sub(1)
+			check('every refused amount is written to the audit log as a security event',
+				audited:find('event=money.badAmount', 1, true) ~= nil
+					and audited:find('severity=warn', 1, true) ~= nil,
+				table.concat(control.log.warn, ' | '):sub(-200))
+			check('naming the player it came from',
+				audited:find('player=' .. RICH, 1, true) ~= nil)
+			check('and the audit really wrote something new for it',
+				#control.log.warn > mark, ('%d -> %d'):format(mark, #control.log.warn))
+
+			-- A rounded amount is still an amount: 0.4 rounds to 0 and must be
+			-- refused, 0.6 rounds to 1 and must not be.
+			check('an amount that rounds to nothing is refused',
+				(character.RemoveMoney(RICH, 'EDDIES', 0.4)) == false and balance() == 500,
+				balance())
+			check('and one that rounds to one is taken',
+				(character.RemoveMoney(RICH, 'EDDIES', 0.6)) == true and balance() == 499,
+				balance())
+		end
+	end
+end
+
+-- ── every DELETE names its rows ──────────────────────────────────────────────
+-- Three separate `DELETE`s in `modules/inventory/server/storage.lua` each wipe
+-- every inventory row on the server with their `WHERE` removed, and all three
+-- mutants survived. The source-level invariant below is the one that cannot be
+-- outrun by a statement written tomorrow; the behavioural checks under it prove
+-- the clause is not merely present but bound to the thing being deleted.
+section('no DELETE in this resource is unqualified')
+do
+	-- Read off the MANIFEST rather than off the filesystem, so it covers exactly
+	-- what ships and cannot drift from it -- the same rule the sandbox check at
+	-- the top of this file follows.
+	local files, seen = {}, {}
+	for _, side in ipairs({ 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if not seen[file] then
+				seen[file] = true
+				files[#files + 1] = file
+			end
+		end
+	end
+	check('the manifest names scripts to read', #files > 50, #files)
+
+	local unqualified, counted = {}, 0
+	for _, file in ipairs(files) do
+		local handle = io.open(file, 'r')
+		if handle then
+			local body = handle:read('a')
+			handle:close()
+			-- Each DELETE and the 200 bytes after it: a statement is a multi-line
+			-- string in several of these files, so the clause may be on the next
+			-- line or the one after.
+			for at in body:gmatch('()DELETE%s+FROM') do
+				counted = counted + 1
+				local tail = body:sub(at, at + 200)
+				if tail:upper():find('WHERE', 1, true) == nil then
+					unqualified[#unqualified + 1] =
+						('%s: %s'):format(file, (tail:gsub('%s+', ' '):sub(1, 60)))
+				end
+			end
+		end
+	end
+
+	check('there are DELETE statements to check at all', counted >= 15, counted)
+	check('and not one of them is unqualified', #unqualified == 0,
+		table.concat(unqualified, ' | '))
+end
+
+section('the inventory DELETEs name the container, and only that one')
+do
+	-- Every statement the bridge is handed, in order, so the WHERE is read off
+	-- the SQL that would really be sent rather than off a return value.
+	local statements = {}
+	local db = Host.Database({
+		scalar = function() return 1 end,
+		query = function() return {} end,
+		single = function() return nil end,
+		update = function(sql, params)
+			statements[#statements + 1] = { sql = sql, params = params }
+			return 1
+		end,
+		transaction = function(list)
+			for index = 1, #list do
+				statements[#statements + 1] =
+					{ sql = list[index].query, values = list[index].values }
+			end
+			return true
+		end,
+	})
+
+	local env, control, why = boot('server', db)
+	check('the server boots with a recording bridge', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		check('the inventory module is there', type(inventory) == 'table')
+
+		if type(inventory) == 'table' then
+			local Store = inventory.Storage
+
+			--- Every statement since a mark whose text carries `needle`.
+			local function since(mark, needle)
+				local found = {}
+				for index = mark + 1, #statements do
+					if statements[index].sql:find(needle, 1, true) then
+						found[#found + 1] = statements[index]
+					end
+				end
+				return found
+			end
+
+			-- ── Store.Save: the stale rows go, and only that container's ─────
+			local mark = #statements
+			env.CreateThread(function()
+				Store.Save({ { id = 4242, rows = {
+					{ slot = 1, name = 'bandage', count = 2, metadata = nil },
+				} } })
+			end)
+			control.Pump(20)
+
+			local wipes = since(mark, 'DELETE FROM opx77_inventory_items')
+			check('saving a container clears its stale rows first', #wipes == 1, #wipes)
+			check('and the DELETE names the container it is saving',
+				#wipes == 1 and wipes[1].sql:find('WHERE inventory_id = ?', 1, true) ~= nil,
+				#wipes == 1 and wipes[1].sql)
+			-- THE BINDING, not just the clause: `WHERE inventory_id = ?` with
+			-- nothing bound to it is a syntax error at best and every row at
+			-- worst, and the transaction form binds positionally.
+			check('with that container\'s own id bound to it',
+				#wipes == 1 and type(wipes[1].values) == 'table'
+					and #wipes[1].values == 1 and wipes[1].values[1] == 4242,
+				#wipes == 1 and wipes[1].values and wipes[1].values[1])
+
+			-- ── Store.Delete: one container ──────────────────────────────────
+			mark = #statements
+			env.CreateThread(function() Store.Delete(77) end)
+			control.Pump(20)
+			local dropped = since(mark, 'DELETE FROM opx77_inventories')
+			check('deleting one container names it', #dropped == 1
+				and dropped[1].sql:find('WHERE id = @id', 1, true) ~= nil,
+				#dropped == 1 and dropped[1].sql)
+			check('and binds the id it was given',
+				#dropped == 1 and type(dropped[1].params) == 'table'
+					and dropped[1].params.id == 77,
+				#dropped == 1 and dropped[1].params and dropped[1].params.id)
+
+			-- ── Store.PurgeCharacter: one character's containers ─────────────
+			mark = #statements
+			env.CreateThread(function() Store.PurgeCharacter('citizen-purge') end)
+			control.Pump(20)
+			local purged = since(mark, 'DELETE FROM opx77_inventories')
+			check('purging a character names the character', #purged == 1
+				and purged[1].sql:find('WHERE citizen_id = @citizen', 1, true) ~= nil,
+				#purged == 1 and purged[1].sql)
+			check('and binds the citizen id, so it takes nobody else\'s containers',
+				#purged == 1 and type(purged[1].params) == 'table'
+					and purged[1].params.citizen == 'citizen-purge',
+				#purged == 1 and purged[1].params and purged[1].params.citizen)
+			-- The two `DELETE FROM opx77_inventories` statements are different
+			-- statements: a purge that used the delete-one clause would take the
+			-- container whose PRIMARY KEY happened to equal nothing at all.
+			check('and it is not the same statement as deleting one container',
+				#purged == 1 and #dropped == 1 and purged[1].sql ~= dropped[1].sql)
+		end
+	end
+end
+
+-- ── the readiness gate ───────────────────────────────────────────────────────
+-- All eight guards in `core/server/gate.lua` survived mutation, because
+-- `Open77.ready` was five constants: `isReady` answered false for everybody,
+-- `status` answered nil, and `hold` answered a constant 1 so no two session
+-- tokens ever differed. The gate is real in the harness now.
+section('the readiness gate: holds, sessions, and the id that was recycled')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		-- ── participation ────────────────────────────────────────────────────
+		check('core declared its participation once, at load',
+			#control.gate.participations == 1, #control.gate.participations)
+		check('naming a liveness interval the host can hold it to',
+			control.gate.participations[1] ~= nil
+				and type(control.gate.participations[1].livenessIntervalMs) == 'number'
+				and control.gate.participations[1].livenessIntervalMs >= 1000,
+			control.gate.participations[1] and control.gate.participations[1].livenessIntervalMs)
+
+		-- ── IsReady ──────────────────────────────────────────────────────────
+		-- "A player the host does not know is reported ready, so an unknown id
+		-- never blocks a mode forever."
+		check('a player the host has never heard of reads as ready',
+			OPX.Gate.IsReady(9999) == true)
+
+		local HELD = 61
+		control.Admit(HELD, 'account-held')
+		OPX.EnsureSession(HELD)
+		check('and a player nobody is holding reads as ready',
+			OPX.Gate.IsReady(HELD) == true)
+
+		control.Hold(HELD, 'opx77_appearance', 'loading clothes')
+		check('a player somebody else is holding reads as NOT ready',
+			OPX.Gate.IsReady(HELD) == false)
+		control.Free(HELD, 'opx77_appearance')
+		check('and ready again once that hold goes', OPX.Gate.IsReady(HELD) == true)
+
+		-- The index has to sit INSIDE the pcall, or a host without the native
+		-- raises on the index rather than being caught. A read that raises reads
+		-- as OPEN: holding a player the host cannot answer for behind a gate
+		-- nothing will ever open is the worse failure.
+		local realReady = env.Open77.ready.isReady
+		env.Open77.ready.isReady = function() error('no such native', 0) end
+		check('a read that raises reads as open, and does not take the caller down',
+			OPX.Gate.IsReady(HELD) == true)
+		env.Open77.ready.isReady = realReady
+
+		-- THE RAISE THAT MATTERS IS THE INDEX, not the call. A host with no
+		-- `Open77.ready` AT ALL raises while RESOLVING `Open77.ready.isReady`,
+		-- which `pcall(Open77.ready.isReady, source)` does BEFORE pcall is
+		-- entered -- outside the protection written for exactly this case.
+		-- Only `pcall(function() ... end)` catches it.
+		local realGate = env.Open77.ready
+		env.Open77.ready = nil
+		local survived, open = pcall(OPX.Gate.IsReady, HELD)
+		check('a host with no readiness API at all does not take IsReady down',
+			survived == true, tostring(open))
+		check('and it reads as open rather than holding a player forever',
+			survived == true and open == true, tostring(open))
+		check('Release survives it too',
+			(pcall(OPX.Gate.Release, HELD, 'no host')))
+		check('and so does Hold, which runs inside the connect handler',
+			(pcall(OPX.Gate.Hold, HELD, 'no host')))
+		env.Open77.ready = realGate
+		-- ── Hold ─────────────────────────────────────────────────────────────
+		check('holding a slot with no session at all is refused',
+			OPX.Gate.Hold(8888, 'nobody') == false)
+
+		local WATCHED = 62
+		control.Admit(WATCHED, 'account-watched')
+		OPX.EnsureSession(WATCHED)
+		check('holding a real session works', OPX.Gate.Hold(WATCHED, 'entry') == true)
+		local firstSession = OPX.Sessions[WATCHED].gateSession
+		check('and records the session the host handed back', firstSession ~= nil)
+		check('and the gate really is shut for them now',
+			OPX.Gate.IsReady(WATCHED) == false)
+
+		-- A REFUSED HOLD IS NOT A HOLD. The host answers nil plus a reason, and
+		-- recording that as taken leaves nothing holding the player at all.
+		local REFUSED = 63
+		control.Admit(REFUSED, 'account-refused')
+		OPX.EnsureSession(REFUSED)
+		control.gate.refuseHold = 'gate_unavailable'
+		local errorsBefore = #control.log.warn
+		check('a hold the host refuses is reported as a refusal',
+			OPX.Gate.Hold(REFUSED, 'entry') == false)
+		check('and no session is recorded for it',
+			OPX.Sessions[REFUSED].gateSession == nil)
+		check('and the operator is told which player and why',
+			table.concat(control.log.warn, ' | ')
+				:find('the hold for 63 was refused: gate_unavailable', 1, true) ~= nil,
+			#control.log.warn - errorsBefore)
+		control.gate.refuseHold = nil
+
+		-- ── Release ──────────────────────────────────────────────────────────
+		check('releasing a source that is not a number at all is refused',
+			OPX.Gate.Release({}, 'nonsense') == false)
+
+		check('releasing a held player opens the gate',
+			OPX.Gate.Release(WATCHED, 'character-loaded') == true)
+		check('and the host really let them through',
+			OPX.Gate.IsReady(WATCHED) == true)
+		check('and the note reaches the host prefixed with this resource',
+			(function()
+				local last = control.gate.releases[#control.gate.releases]
+				return last ~= nil and tostring(last.note):sub(1, 14) == 'opx_infinity:'
+					or tostring(last and last.note):find('opx_infinity:', 1, true) == 1
+			end)(), control.gate.releases[#control.gate.releases]
+				and control.gate.releases[#control.gate.releases].note)
+
+		-- THE LOST-SESSION RECOVERY, which was dead code for as long as `status`
+		-- answered nil. This VM has forgotten the session -- a reload, a bug, a
+		-- handler that cleared it early -- and the hold has NO DEADLINE, so
+		-- skipping the release would block that player for as long as this
+		-- resource answers. It asks the host who is holding instead.
+		local FORGOTTEN = 64
+		control.Admit(FORGOTTEN, 'account-forgotten')
+		OPX.EnsureSession(FORGOTTEN)
+		OPX.Gate.Hold(FORGOTTEN, 'entry')
+		local hostSession = control.gate.sessions[FORGOTTEN]
+		OPX.Sessions[FORGOTTEN].gateSession = nil
+		local asked = #control.gate.releases
+		check('a release with no remembered session still goes through',
+			OPX.Gate.Release(FORGOTTEN, 'recovered') == true)
+		check('by asking the host for the session it had forgotten',
+			control.gate.releases[asked + 1] ~= nil
+				and control.gate.releases[asked + 1].session == hostSession,
+			control.gate.releases[asked + 1] and control.gate.releases[asked + 1].session)
+		check('and the gate is open for them', OPX.Gate.IsReady(FORGOTTEN) == true)
+
+		-- THE RECYCLED PLAYER ID. This is the race the session token exists for
+		-- and the one a constant 1 made invisible: player 65 connects, is held,
+		-- disconnects, and a NEW player takes slot 65 before the first release
+		-- lands. Releasing by id alone would open the gate for somebody who is
+		-- still loading.
+		local SLOT = 65
+		control.Admit(SLOT, 'account-first')
+		OPX.EnsureSession(SLOT)
+		OPX.Gate.Hold(SLOT, 'entry')
+		local staleSession = OPX.Sessions[SLOT].gateSession
+
+		control.Admit(SLOT, nil)
+		control.Admit(SLOT, 'account-second')
+		OPX.EnsureSession(SLOT)
+		OPX.Gate.Hold(SLOT, 'entry')
+		local freshSession = OPX.Sessions[SLOT].gateSession
+		check('a recycled player id gets a DIFFERENT session token',
+			staleSession ~= nil and freshSession ~= nil and staleSession ~= freshSession,
+			('%s vs %s'):format(tostring(staleSession), tostring(freshSession)))
+
+		-- The late release, arriving with the previous connection's token.
+		OPX.Sessions[SLOT].gateSession = staleSession
+		check('and a release carrying the stale one is refused',
+			OPX.Gate.Release(SLOT, 'late') == false)
+		check('so the new player is still behind the gate',
+			OPX.Gate.IsReady(SLOT) == false)
+		check('and this VM has NOT marked them released, so something can try again',
+			OPX.Sessions[SLOT].released ~= true
+				and OPX.Sessions[SLOT].gateSession ~= nil)
+
+		OPX.Sessions[SLOT].gateSession = freshSession
+		check('while the release carrying the right one goes through',
+			OPX.Gate.Release(SLOT, 'character-loaded') == true)
+		check('and only now is the gate open', OPX.Gate.IsReady(SLOT) == true)
+	end
+end
+
+
+-- ── a host with no readiness gate at all ─────────────────────────────────────
+-- `Gate.Participate` is called at FILE SCOPE, at the foot of `gate.lua`, and it
+-- resolved `Open77.ready.participate` unprotected. So a build with no readiness
+-- API took the whole resource down while LOADING a server_script -- over a gate
+-- nothing would have been held behind anyway. It could not be seen off-platform
+-- because the harness always installed one.
+section('the runtime boots on a host with no readiness gate')
+do
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.ready = nil
+	end)
+	check('every manifest script still loads', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		check('and the operator is told there is no gate to participate in',
+			table.concat(control.log.error, ' | ')
+				:find('no readiness gate to participate in', 1, true) ~= nil,
+			table.concat(control.log.error, ' | '):sub(-200))
+		check('and told what that means for them',
+			table.concat(control.log.error, ' | ')
+				:find('nothing will wait for one', 1, true) ~= nil)
+
+		-- Every door still answers rather than raising, and answers the way a
+		-- runtime with no gate has to: open. Holding a player behind a gate
+		-- that does not exist is the one outcome nothing recovers from.
+		control.Admit(81, 'account-nogate')
+		OPX.EnsureSession(81)
+		check('the gate reads open for everybody', OPX.Gate.IsReady(81) == true)
+		check('a hold is refused rather than raising', OPX.Gate.Hold(81, 'entry') == false)
+		check('and a release still answers', (pcall(OPX.Gate.Release, 81, 'done')))
+
+		-- And a player connecting does not take the connect handler down with
+		-- them, which is what the file-scope raise cost before it.
+		check('a player can still connect',
+			(pcall(control.Fire, OPX.Host.PLAYER_CONNECTED, 82)))
+	end
+end
+
+section('the give-up watch: the deadline, the claim, and the slot that changed hands')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		-- ── the deadline is a deadline ───────────────────────────────────────
+		-- `Pump` moves the clock 100 ms a round and the watch ticks every 1000,
+		-- so a 3000 ms deadline is reached in about 30 rounds and NOT in 5.
+		local SLOW = 71
+		control.Admit(SLOW, 'account-slow')
+		OPX.EnsureSession(SLOW)
+		OPX.Gate.Hold(SLOW, 'entry')
+		local askedAt = {}
+		OPX.Gate.Watch(SLOW, 3000, function(source)
+			askedAt[#askedAt + 1] = source
+			return true
+		end)
+		control.Pump(5)
+		check('the watch does not give up before its deadline', #askedAt == 0, #askedAt)
+		control.Pump(60)
+		check('and does give up at it', #askedAt == 1 and askedAt[1] == SLOW, #askedAt)
+		check('exactly once, not once per tick afterwards', #askedAt == 1, #askedAt)
+
+		-- ── the claim ────────────────────────────────────────────────────────
+		-- Answering FALSE means "this player is mine now": the watch stops and
+		-- the hold is left for that caller. Anything else, and core releases.
+		local CLAIMED = 72
+		control.Admit(CLAIMED, 'account-claimed')
+		OPX.EnsureSession(CLAIMED)
+		OPX.Gate.Hold(CLAIMED, 'entry')
+		OPX.Gate.Watch(CLAIMED, 1000, function() return false end)
+		control.Pump(60)
+		check('a caller that claims the hold keeps it',
+			OPX.Gate.IsReady(CLAIMED) == false)
+		check('and the session is not marked released',
+			OPX.Sessions[CLAIMED].released ~= true)
+
+		local ABANDONED = 73
+		control.Admit(ABANDONED, 'account-abandoned')
+		OPX.EnsureSession(ABANDONED)
+		OPX.Gate.Hold(ABANDONED, 'entry')
+		OPX.Gate.Watch(ABANDONED, 1000, function() return nil end)
+		control.Pump(60)
+		check('a caller that claims nothing has the hold released for it',
+			OPX.Gate.IsReady(ABANDONED) == true)
+		check('and it says so where an operator will read it',
+			table.concat(control.log.warn, ' | ')
+				:find('73 spent too long behind the gate', 1, true) ~= nil)
+
+		-- ── the slot that changed hands ──────────────────────────────────────
+		-- The watch closes over the userId it started with. If the slot is
+		-- handed to somebody else, the watch must exit rather than give up on a
+		-- player it was never watching.
+		local HANDED = 74
+		control.Admit(HANDED, 'account-before')
+		OPX.EnsureSession(HANDED)
+		OPX.Gate.Hold(HANDED, 'entry')
+		local gaveUpOn = {}
+		OPX.Gate.Watch(HANDED, 1000, function(source)
+			gaveUpOn[#gaveUpOn + 1] = source
+			return true
+		end)
+		-- The slot changes hands before the deadline.
+		control.Pump(2)
+		control.Admit(HANDED, 'account-after')
+		OPX.ForgetSession(HANDED)
+		OPX.EnsureSession(HANDED)
+		control.Pump(60)
+		check('a watch whose slot changed hands gives up on nobody',
+			#gaveUpOn == 0, #gaveUpOn)
+
+		-- ── the host gave up on us ───────────────────────────────────────────
+		-- Two sources disagree about the spelling, so both are matched. A player
+		-- the host admitted without us is very possibly in the world with no
+		-- character, and the log line is all anybody gets.
+		for _, spelling in ipairs({ 'liveness_lost:', 'timeout:' }) do
+			local before = #control.log.warn
+			control.Fire(OPX.Host.PLAYER_READY, 75, spelling .. 'opx_infinity')
+			check(('the host giving up with `%s` is noticed'):format(spelling),
+				table.concat(control.log.warn, ' | ', before + 1, #control.log.warn)
+					:find('the host gave up on this runtime holding 75', 1, true) ~= nil,
+				table.concat(control.log.warn, ' | ', before + 1, #control.log.warn))
+		end
+
+		local quiet = #control.log.warn
+		control.Fire(OPX.Host.PLAYER_READY, 76, 'timeout:some_other_resource')
+		check('and another resource being given up on is not ours to report',
+			table.concat(control.log.warn, ' | ', quiet + 1, #control.log.warn)
+				:find('gave up on this runtime', 1, true) == nil)
+
+		local silent = #control.log.warn
+		control.Fire(OPX.Host.PLAYER_READY, 77, 'cleared')
+		check('nor is an ordinary clean open', #control.log.warn == silent)
+
+		local none = #control.log.warn
+		control.Fire(OPX.Host.PLAYER_READY, 78, 'no_holds')
+		check('but a player admitted with NO hold taken at all is reported',
+			table.concat(control.log.warn, ' | ', none + 1, #control.log.warn)
+				:find('78 was admitted with no hold taken at all', 1, true) ~= nil)
+	end
+end
+
+-- ── Common.Integer ───────────────────────────────────────────────────────────
+-- The range check survived mutation in both directions. It is the only thing
+-- between a slot number off the wire and an index into somebody's bag.
+section('Common.Integer is the bound on everything that arrives from a client')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		for _, name in ipairs({ 'inventory', 'animations' }) do
+			local module = env.OPX.Modules.Get(name)
+			local Common = module and module.Common
+			check(('%s has a Common.Integer'):format(name),
+				Common ~= nil and type(Common.Integer) == 'function')
+
+			if Common ~= nil and type(Common.Integer) == 'function' then
+				local function tag(label) return ('%s: %s'):format(name, label) end
+
+				check(tag('a number inside the range comes back'),
+					Common.Integer(5, 1, 10) == 5)
+				check(tag('the floor itself is inside it'), Common.Integer(1, 1, 10) == 1)
+				check(tag('and so is the ceiling'), Common.Integer(10, 1, 10) == 10)
+
+				-- THE TWO HALVES OF THE RANGE, separately: a mutant that drops
+				-- one of them passes every test that only ever tries the other.
+				check(tag('one below the floor is refused'),
+					Common.Integer(0, 1, 10) == nil)
+				check(tag('far below the floor is refused'),
+					Common.Integer(-2147483647, 1, 10) == nil)
+				check(tag('one above the ceiling is refused'),
+					Common.Integer(11, 1, 10) == nil)
+				check(tag('far above the ceiling is refused'),
+					Common.Integer(2147483647, 1, 10) == nil)
+
+				-- NaN passes both `<` comparisons unchallenged, which is why it
+				-- is rejected before either of them.
+				check(tag('NaN is refused before it reaches a comparison'),
+					Common.Integer(0 / 0, 1, 10) == nil)
+				check(tag('and so are the infinities'),
+					Common.Integer(math.huge, 1, 10) == nil
+						and Common.Integer(-math.huge, 1, 10) == nil)
+				check(tag('a fraction is not a whole number'),
+					Common.Integer(5.5, 1, 10) == nil)
+				check(tag('nor is a string that looks like one'),
+					Common.Integer('5', 1, 10) == nil)
+				check(tag('nor a boolean, a table or nothing at all'),
+					Common.Integer(true, 1, 10) == nil and Common.Integer({}, 1, 10) == nil
+						and Common.Integer(nil, 1, 10) == nil)
+			end
+
+			-- `TypedInteger` is the same bound read off a word somebody typed,
+			-- and it caps the word's length first: `tonumber` on an arbitrarily
+			-- long string is work a client should not be able to ask for.
+			if Common ~= nil and type(Common.TypedInteger) == 'function' then
+				check(('%s: a typed number inside the range is read'):format(name),
+					Common.TypedInteger('7', 1, 10) == 7)
+				check(('%s: a typed number outside it is refused'):format(name),
+					Common.TypedInteger('11', 1, 10) == nil)
+				-- THE CAP IS ON THE WORD, NOT ON THE NUMBER, and the difference
+				-- only shows on a long word that parses to something SMALL:
+				-- twenty-five leading zeroes and a five is `5`, inside every
+				-- range, and is refused for its length alone. A long word that
+				-- parses to a big number is refused by the range anyway and
+				-- proves nothing about the cap.
+				check(('%s: a long word that parses inside the range is still refused')
+					:format(name),
+					Common.TypedInteger(('0'):rep(25) .. '5', 1, 10) == nil,
+					tostring(Common.TypedInteger(('0'):rep(25) .. '5', 1, 10)))
+				check(('%s: while a short one that parses the same way is read'):format(name),
+					Common.TypedInteger('0005', 1, 10) == 5,
+					tostring(Common.TypedInteger('0005', 1, 10)))
+				check(('%s: and a word too long to be a number is refused unparsed'):format(name),
+					Common.TypedInteger(('9'):rep(64), 1, 2147483647) == nil)
+			end
+		end
+	end
+end
+
+-- ── the inventory's one door in ──────────────────────────────────────────────
+-- `modules/inventory/server/requests.lua` is the whole wire surface of the
+-- inventory: one net event carrying a request id, an action name and a payload,
+-- and it had NEVER BEEN FIRED BY ANY TEST. Every one of its seven guards
+-- survived mutation, and so did both rate limits. `source` is the only value a
+-- client cannot forge; everything else below is a claim the door has to check.
+section('the inventory wire door: every field of a request is a claim')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local character = OPX.Modules.Get('character')
+		check('the inventory and character modules are both there',
+			type(inventory) == 'table' and type(character) == 'table')
+
+		if type(inventory) == 'table' and type(character) == 'table' then
+			local Containers = inventory.Containers
+			local Players = inventory.Players
+			local Options = inventory.Options
+			local KIND = inventory.KIND
+
+			local REQUEST = inventory.Event.REQUEST
+			local ANSWER = inventory.Event.ANSWER
+			local HELLO = inventory.Event.HELLO
+
+			check('the request door is wired', type(control.netEvents[REQUEST]) == 'function')
+			check('and so is the hello door', type(control.netEvents[HELLO]) == 'function')
+
+			-- A loaded character with a memory-only bag, the same stand-in the
+			-- eddies section uses: real code, real containers, no database.
+			local PLAYER = 801
+			control.Admit(PLAYER, 'account-801')
+			control.Stand(PLAYER, 10.0, 20.0, 30.0)
+			character.Players[PLAYER] = {
+				PlayerData = { citizenId = 'citizen-wire', source = PLAYER,
+					userId = 'account-801', money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-wire'] = PLAYER
+			character.Registry.byUserId['account-801'] = PLAYER
+			local bag = Containers.Transient(KIND.CHARACTER, 'citizen-wire',
+				Options.BAG_SLOTS, Options.BAG_MAX_WEIGHT)
+			bag.transient = nil
+			Players.Attach(PLAYER)
+			check('the player has a bag', Players.Bag(PLAYER) == bag)
+
+			--- Plays the door: sets `source` the way the host does, fires the
+			--- event, pumps the thread the handler runs on, and answers the
+			--- reply that came back -- or nil when the door answered nothing at
+			--- all, which is a different outcome and one the client feels as a
+			--- request that never settles.
+			local nextId = 0
+			local function ask(action, payload, asSource)
+				nextId = nextId + 1
+				local id = nextId
+				local mark = #control.clientEvents
+				env.source = asSource == nil and PLAYER or asSource
+				control.netEvents[REQUEST](id, action, payload)
+				env.source = nil
+				control.Pump(20)
+				for index = #control.clientEvents, mark + 1, -1 do
+					local event = control.clientEvents[index]
+					if event.name == ANSWER and event[1] == id then
+						return { ok = event[2], code = event[3], data = event[4] }
+					end
+				end
+				return nil
+			end
+
+			--- The same, but with a request id the caller chose, so a forged one
+			--- can be sent.
+			local function askRaw(requestId, action, payload)
+				local mark = #control.clientEvents
+				env.source = PLAYER
+				control.netEvents[REQUEST](requestId, action, payload)
+				env.source = nil
+				control.Pump(20)
+				for index = #control.clientEvents, mark + 1, -1 do
+					if control.clientEvents[index].name == ANSWER then
+						return control.clientEvents[index]
+					end
+				end
+				return nil
+			end
+
+			-- The allowance is a live tunable and the shipped value is 20, which
+			-- is not enough for a section this size. Raised the way an operator
+			-- would raise it, and lowered again at the end to exercise it.
+			control.tunables.INVENTORY_RATE_REQUESTS = 1000
+
+			-- ── the door opens at all ────────────────────────────────────────
+			local opened = ask('open', {})
+			check('an open is answered', opened ~= nil and opened.ok == true,
+				opened and tostring(opened.code))
+			check('and it carries the bag it opened',
+				opened ~= nil and type(opened.data) == 'table'
+					and type(opened.data.primary) == 'table',
+				opened and opened.data and type(opened.data.primary))
+
+			-- ── source is the only thing a client cannot forge ───────────────
+			-- `source <= 0` is the console and every host path that does not
+			-- name a connection. None of them is a player with a bag.
+			check('a request from slot 0 is dropped, not served',
+				ask('open', {}, 0) == nil)
+			check('and so is one from a negative slot', ask('open', {}, -1) == nil)
+			check('and one from a source the host did not format as a number',
+				ask('open', {}, 'nobody') == nil)
+
+			-- ── the request id is bounded ────────────────────────────────────
+			-- The id is what the client matches the answer against. An id it
+			-- could not have generated is a request nothing is waiting on.
+			check('a request id of zero is dropped', askRaw(0, 'open', {}) == nil)
+			check('a negative one is dropped', askRaw(-5, 'open', {}) == nil)
+			check('a fractional one is dropped', askRaw(1.5, 'open', {}) == nil)
+			check('one past the signed 32-bit ceiling is dropped',
+				askRaw(2147483648, 'open', {}) == nil)
+			check('a NaN is dropped', askRaw(0 / 0, 'open', {}) == nil)
+			check('and so is one that is not a number at all',
+				askRaw('1', 'open', {}) == nil and askRaw({}, 'open', {}) == nil)
+			check('while the largest legal one is served',
+				(askRaw(2147483647, 'open', {})) ~= nil)
+
+			-- ── an unknown action is ANSWERED, not dropped ───────────────────
+			-- The difference matters to the client: a dropped request leaves the
+			-- screen holding a move until its own timeout, and an answered
+			-- refusal settles it now.
+			local unknown = ask('flyToTheMoon', {})
+			check('an action nobody registered is refused',
+				unknown ~= nil and unknown.ok == false and unknown.code == 'bad_request',
+				unknown and tostring(unknown.code))
+			check('and refused by ANSWERING, so the screen does not hang',
+				unknown ~= nil)
+			check('an action that is not a string is refused the same way',
+				(function()
+					local answer = ask(42, {})
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+			-- A handler is looked up in a plain table, so a key from the Lua
+			-- metatable would be a callable action nobody wrote.
+			check('and a Lua table key is not an action',
+				(function()
+					local answer = ask('__index', {})
+					return answer ~= nil and answer.ok == false
+				end)())
+
+			-- ── the payload is a claim ───────────────────────────────────────
+			local moved = ask('move', { from = bag.id, to = bag.id, fromSlot = 'first' })
+			check('a move naming a slot that is not a number is refused',
+				moved ~= nil and moved.ok == false and moved.code == 'bad_request',
+				moved and tostring(moved.code))
+			check('a move with no payload table at all is refused',
+				(function()
+					local answer = ask('move', 'not a table')
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+			check('a slot of zero is refused',
+				(function()
+					local answer = ask('move', { from = bag.id, to = bag.id, fromSlot = 0 })
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+			check('a slot past 65535 is refused',
+				(function()
+					local answer = ask('move', { from = bag.id, to = bag.id, fromSlot = 65536 })
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+			check('a count of zero is refused',
+				(function()
+					local answer = ask('split', { container = bag.id, slot = 1, count = 0 })
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+			check('and a count past the stack ceiling is refused',
+				(function()
+					local answer = ask('split',
+						{ container = bag.id, slot = 1, count = Options.MAX_STACK + 1 })
+					return answer ~= nil and answer.ok == false and answer.code == 'bad_request'
+				end)())
+
+			-- ── a container the player has not opened ────────────────────────
+			-- `resolve` answers the bag, or the second container WHILE IT IS
+			-- STILL IN REACH, and nothing else. A client naming somebody else's
+			-- container id is the whole reason it is written that way.
+			local stranger = Containers.Transient(KIND.STASH, 'somebody-else', 10, 1000)
+			stranger.transient = nil
+			Containers.Add(stranger, 'bandage', 3)
+			local reached = ask('sort', { container = stranger.id })
+			check('a container the player never opened is not found',
+				reached ~= nil and reached.ok == false and reached.code == 'not_found',
+				reached and tostring(reached.code))
+			check('and its contents were not touched',
+				(function()
+					local total = 0
+					for _, stack in pairs(stranger.items) do total = total + stack.count end
+					return total == 3
+				end)())
+
+			-- ── the glovebox opens from inside the car and nowhere else ──────
+			local glovebox = ask('openGlovebox', {})
+			check('a glovebox open from outside a car is refused',
+				glovebox ~= nil and glovebox.ok == false and glovebox.code == 'not_seated',
+				glovebox and tostring(glovebox.code))
+
+			-- AND SILENTLY. The open key asks for the glovebox FIRST and falls
+			-- back to the bag, so a press while on foot must not raise a toast
+			-- -- which is why the handler carries its own seat check ahead of
+			-- `MayAct` rather than leaving it to `Actions.OpenVehicle`, which
+			-- answers the same code but only after `MayAct` has had its say. On
+			-- a DEAD player the two orders differ: with the handler's check the
+			-- press is `not_seated` and silent, without it every press on the
+			-- floor toasts "dead".
+			control.Life(PLAYER, 'dead')
+			local quietNotices = #control.notices
+			local onFloor = ask('openGlovebox', {})
+			check('a dead player on foot pressing the open key is refused for not sitting down',
+				onFloor ~= nil and onFloor.ok == false and onFloor.code == 'not_seated',
+				onFloor and tostring(onFloor.code))
+			check('and is not toasted about it once per press',
+				#control.notices == quietNotices,
+				#control.notices - quietNotices)
+			control.Life(PLAYER, 'alive')
+
+			-- ── a host with no life reader at all ────────────────────────────
+			-- Refusing everybody because a host call is missing is worse than
+			-- the thing the check prevents, so an absent reader FAILS OPEN. That
+			-- direction has to be asserted: the safe-looking change is the one
+			-- that locks every player out of their own bag on an older build.
+			local realLife = env.Open77.players.getLifeState
+			env.Open77.players.getLifeState = nil
+			check('a host with no life reader lets a player at their own bag',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == true
+				end)())
+			env.Open77.players.getLifeState = realLife
+
+			-- ── a body on the floor may not empty its bag ────────────────────
+			-- The down screen is drawn by the CLIENT, so closing it proves
+			-- nothing about what the connection can still send. Dumping
+			-- contraband before a staff search is the obvious use.
+			control.Life(PLAYER, 'dead')
+			local dead = ask('move', { from = bag.id, to = bag.id, fromSlot = 1 })
+			check('a dead player may not move a slot',
+				dead ~= nil and dead.ok == false and dead.code == 'dead',
+				dead and tostring(dead.code))
+			check('nor open the screen',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == false and answer.code == 'dead'
+				end)())
+			check('nor sort a container',
+				(function()
+					local answer = ask('sort', { container = bag.id, mode = 'name' })
+					return answer ~= nil and answer.ok == false and answer.code == 'dead'
+				end)())
+			control.Life(PLAYER, 'alive')
+			check('and may again once they are back on their feet',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == true
+				end)())
+
+			-- A player with no body at all -- a continue screen, a slot that has
+			-- not incarnated -- is not alive either.
+			control.Life(PLAYER, nil)
+			check('a player with no life state at all may not act',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == false and answer.code == 'dead'
+				end)(), 'no life state')
+			control.Life(PLAYER, 'alive')
+
+			-- ── a player behind the readiness gate ───────────────────────────
+			control.Hold(PLAYER, 'opx77_appearance', 'still loading')
+			local held = ask('open', {})
+			check('a player the gate is still holding may not act',
+				held ~= nil and held.ok == false and held.code == 'not_ready',
+				held and tostring(held.code))
+			control.Free(PLAYER, 'opx77_appearance')
+			check('and may once the gate opens',
+				(function()
+					local answer = ask('open', {})
+					return answer ~= nil and answer.ok == true
+				end)())
+
+
+			-- ── the second container, and the reach that holds it open ───────
+			-- A player acts on their own bag, or on what they have open beside
+			-- it WHILE IT IS STILL IN REACH, and on nothing else. Out of reach
+			-- the second container is closed rather than refused quietly, so the
+			-- screen stops showing something that is no longer there. None of
+			-- that was reachable while every player stood at the origin.
+			local ANCHOR = { x = 300.0, y = 400.0, z = 10.0, bucket = 0 }
+			local stash = Containers.Transient(KIND.STASH, 'wire-stash', 20, 5000)
+			stash.transient = nil
+			stash.anchor = ANCHOR
+			Containers.Add(stash, 'bandage', 4)
+
+			local other = Containers.Transient(KIND.STASH, 'wire-other', 20, 5000)
+			other.transient = nil
+			other.anchor = ANCHOR
+
+			control.Stand(PLAYER, ANCHOR.x, ANCHOR.y, ANCHOR.z)
+			Containers.View(PLAYER, stash)
+
+			local atStash = ask('sort', { container = stash.id, mode = 'name' })
+			check('a second container the player has open and is standing at is theirs to use',
+				atStash ~= nil and atStash.ok == true, atStash and tostring(atStash.code))
+
+			-- A DIFFERENT container, at the same anchor, that this player has
+			-- NOT opened. Reach is not the only door: the view is.
+			local unopened = ask('sort', { container = other.id })
+			check('but the one beside it that they never opened is not',
+				unopened ~= nil and unopened.ok == false and unopened.code == 'not_found',
+				unopened and tostring(unopened.code))
+
+			-- And the bag is always theirs, wherever they are standing.
+			check('while their own bag is reachable from anywhere',
+				(function()
+					local answer = ask('sort', { container = bag.id, mode = 'name' })
+					return answer ~= nil and answer.ok == true
+				end)())
+
+			-- ── walking away ─────────────────────────────────────────────────
+			Containers.View(PLAYER, stash)
+			control.Stand(PLAYER, ANCHOR.x + 50.0, ANCHOR.y, ANCHOR.z)
+			local walked = ask('sort', { container = stash.id })
+			check('walking away from an open container puts it out of reach',
+				walked ~= nil and walked.ok == false and walked.code == 'not_found',
+				walked and tostring(walked.code))
+			check('and it is CLOSED rather than refused quietly, so the screen stops '
+				.. 'showing something that is not there',
+				Containers.Viewing(PLAYER) == nil)
+
+			-- The same rule on the way in: an `open` finds the second container
+			-- gone rather than listing it.
+			control.Stand(PLAYER, ANCHOR.x, ANCHOR.y, ANCHOR.z)
+			Containers.View(PLAYER, stash)
+			local beside = ask('open', {})
+			check('an open lists the second container while it is in reach',
+				beside ~= nil and beside.ok == true and type(beside.data) == 'table'
+					and beside.data.secondary ~= nil,
+				beside and beside.data and tostring(beside.data.secondary))
+
+			control.Stand(PLAYER, ANCHOR.x, ANCHOR.y + 50.0, ANCHOR.z)
+			local away = ask('open', {})
+			check('and drops it once the player has walked off',
+				away ~= nil and away.ok == true and type(away.data) == 'table'
+					and away.data.secondary == nil,
+				away and away.data and tostring(away.data.secondary))
+
+			-- ── the bucket is part of reach ──────────────────────────────────
+			-- Standing on the exact spot in another instance is not standing at
+			-- the container.
+			control.Stand(PLAYER, ANCHOR.x, ANCHOR.y, ANCHOR.z)
+			Containers.View(PLAYER, stash)
+			control.Bucket(PLAYER, 9)
+			local elsewhere = ask('sort', { container = stash.id })
+			check('the same spot in another routing bucket is out of reach',
+				elsewhere ~= nil and elsewhere.ok == false and elsewhere.code == 'not_found',
+				elsewhere and tostring(elsewhere.code))
+			control.Bucket(PLAYER, 0)
+
+			-- ── a staff view ignores reach, and only a staff view ────────────
+			-- A search screen is opened on somebody who is not standing there.
+			control.Stand(PLAYER, ANCHOR.x + 500.0, ANCHOR.y, ANCHOR.z)
+			Containers.View(PLAYER, stash, true)
+			local staffed = ask('sort', { container = stash.id, mode = 'name' })
+			check('a staff view reaches a container from across the city',
+				staffed ~= nil and staffed.ok == true, staffed and tostring(staffed.code))
+			Containers.CloseSecondary(PLAYER, false)
+			control.Stand(PLAYER, 10.0, 20.0, 30.0)
+			-- ── the rate limit ───────────────────────────────────────────────
+			-- "A refused request IS answered, so the client settles what it is
+			-- waiting on instead of holding a move until its own timeout. Past
+			-- twice the allowance in one window a flood stops costing an answer
+			-- at all."
+			local ALLOWANCE = 2
+			control.tunables.INVENTORY_RATE_REQUESTS = ALLOWANCE
+			-- A fresh window: the clock has moved well past the last one.
+			control.Pump(20)
+
+			-- FIRED WITHOUT PUMPING BETWEEN THEM, because `Pump` moves the clock
+			-- 100 ms a round and the window is 1000: pumping between requests
+			-- opens a new window every other one and the limit never binds. A
+			-- flood arrives inside one window, so this is what a flood is.
+			local mark = #control.clientEvents
+			for index = 1, 12 do
+				env.source = PLAYER
+				control.netEvents[REQUEST](1000 + index, 'open', {})
+				env.source = nil
+			end
+			control.Pump(20)
+
+			local answered, refused = 0, 0
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == ANSWER then
+					answered = answered + 1
+					if event[3] == 'too_fast' then refused = refused + 1 end
+				end
+			end
+			-- Two served, and then the refusals -- which ARE answered, so the
+			-- screen settles rather than holding a move until its own timeout.
+			check('the allowance binds: only what it permits is served',
+				answered - refused == ALLOWANCE,
+				('%d answered, %d of them refusals'):format(answered, refused))
+			check('and a refused request is still answered',
+				refused > 0, refused)
+			-- "Past twice the allowance in one window a flood stops costing an
+			-- answer at all": 12 requests, 2 served, 4 refusals answered, and the
+			-- remaining 6 dropped in silence.
+			check('and past twice the allowance it stops answering at all',
+				refused == ALLOWANCE * 2 and answered < 12,
+				('%d answered of 12, %d refusals'):format(answered, refused))
+
+			control.tunables.INVENTORY_RATE_REQUESTS = 1000
+			control.Pump(20)
+
+			-- ── the hello door has its own limit ─────────────────────────────
+			-- A hello costs a drop sync and a bag load, so a client looping on it
+			-- is a client the server pays for.
+			-- The second one goes in BEFORE the first is pumped, the way a
+			-- client looping on it would send them: pumping between the two
+			-- moves the clock 1000 ms a call and the second would be a
+			-- legitimate retry rather than a flood.
+			local before = #control.clientEvents
+			env.source = PLAYER
+			control.netEvents[HELLO]()
+			local afterFirst = #control.clientEvents
+			control.netEvents[HELLO]()
+			local afterSecond = #control.clientEvents
+			env.source = nil
+			control.Pump(10)
+			check('a hello is answered', afterFirst > before, afterFirst - before)
+			check('and a second one inside two seconds costs nothing',
+				afterSecond == afterFirst, afterSecond - afterFirst)
+			check('a hello from slot 0 is dropped',
+				(function()
+					local mark = #control.clientEvents
+					env.source = 0
+					control.netEvents[HELLO]()
+					control.Pump(10)
+					env.source = nil
+					return #control.clientEvents == mark
+				end)())
+
+			-- ── a departing player is forgotten ──────────────────────────────
+			-- The windows are keyed by player id and player ids are recycled, so
+			-- a window nobody clears is a window the next player inherits.
+			control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+			control.Pump(5)
+			check('a disconnect clears the rate window, so the next player on that '
+				.. 'slot does not inherit it',
+				(function()
+					local mark = #control.clientEvents
+					env.source = PLAYER
+					control.netEvents[HELLO]()
+					control.Pump(10)
+					env.source = nil
+					return #control.clientEvents > mark					end)())
 		end
 	end
 end
@@ -21169,6 +24829,4326 @@ do
 			#ripperdoc.Ripper.Chairs() == merged - 1
 				and ripperdoc.Ripper.Chair('clinic_watson').NAME == 'MOVED CHAIR',
 			('%d chair(s)'):format(#ripperdoc.Ripper.Chairs()))
+	end
+end
+
+-- ── reach and the routing bucket, on the server ──────────────────────────────
+-- `Open77.players.position` answered `{0,0,0,bucket=0}` for every id forever,
+-- with no way to move it, so every reach check in this runtime compared the
+-- origin against an anchor and every bucket comparison was `0 == 0`. Eight of
+-- the ten reach and bucket mutants in the audit survived on that one stub. The
+-- body is movable now, so distance is a distance.
+section('reach: the server decides where a player is standing, and it is not the origin')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local World = inventory and inventory.World
+		check('the inventory module publishes a World', type(World) == 'table')
+
+		if type(World) == 'table' then
+			local WALKER = 901
+			control.Admit(WALKER, 'account-901')
+			control.Stand(WALKER, 100.0, 200.0, 30.0)
+
+			local at = World.Position(WALKER)
+			check('a connected player has a position',
+				at ~= nil and at.x == 100.0 and at.y == 200.0 and at.z == 30.0,
+				at and ('%s,%s,%s'):format(at.x, at.y, at.z))
+			check('and it is NOT the origin, which is what the harness used to answer',
+				at ~= nil and not (at.x == 0 and at.y == 0 and at.z == 0))
+
+			-- A slot nobody is connected on has no position at all, and the
+			-- runtime must not read that as the origin: the origin is a real
+			-- place, and every reach check against it would pass for somebody
+			-- standing there.
+			check('a slot nobody is connected on has no position',
+				World.Position(9998) == nil)
+
+			-- The body really moves.
+			control.Stand(WALKER, 105.0, 200.0, 30.0)
+			local moved = World.Position(WALKER)
+			check('and walking five metres moves it five metres',
+				moved ~= nil and moved.x == 105.0,
+				moved and moved.x)
+			check('which is a distance the runtime can measure',
+				math.abs(World.Distance(at, moved) - 5.0) < 0.001,
+				World.Distance(at, moved))
+
+			-- ── the bucket ───────────────────────────────────────────────────
+			check('a player starts in the world bucket',
+				World.Position(WALKER).bucket == 0, World.Position(WALKER).bucket)
+			OPX.EnsureSession(WALKER)
+			OPX.Buckets.Move(WALKER, 4242, 'a test')
+			check('and a move really moves them',
+				World.Position(WALKER).bucket == 4242, World.Position(WALKER).bucket)
+			check('which the host agrees with',
+				env.Open77.routingBuckets.getPlayer(WALKER) == 4242)
+
+			-- Isolation and release, which could not be told apart while every
+			-- read answered 0.
+			local BASE = OPX.Config.SERVER.ENTRY.BUCKET.BASE
+			local WORLD_BUCKET = OPX.Config.SERVER.ENTRY.BUCKET.WORLD
+			check('isolating puts a player in their OWN selection bucket',
+				OPX.Buckets.Isolate(WALKER) == true
+					and env.Open77.routingBuckets.getPlayer(WALKER) == BASE + WALKER,
+				env.Open77.routingBuckets.getPlayer(WALKER))
+			local released, moved2 = OPX.Buckets.Release(WALKER)
+			check('and releasing takes them back out to the world',
+				released == true and moved2 == true
+					and env.Open77.routingBuckets.getPlayer(WALKER) == WORLD_BUCKET,
+				env.Open77.routingBuckets.getPlayer(WALKER))
+			-- A second release has nothing to do, and must not say it moved
+			-- somebody: that is how a caller tells a no-op from a move.
+			local again, movedAgain = OPX.Buckets.Release(WALKER)
+			check('releasing somebody already out is a no-op that says so',
+				again == true and movedAgain == false)
+
+			-- ── a non-finite coordinate ──────────────────────────────────────
+			-- NaN passes every comparison it is put through, including the one
+			-- that would stop it being used as a distance.
+			env.Open77.players.position = function()
+				return { x = 0 / 0, y = 0.0, z = 0.0, bucket = 0 }
+			end
+			check('a position carrying NaN is refused rather than measured against',
+				World.Position(WALKER) == nil)
+			env.Open77.players.position = function()
+				return { x = math.huge, y = 0.0, z = 0.0, bucket = 0 }
+			end
+			check('and so is one carrying an infinity', World.Position(WALKER) == nil)
+			env.Open77.players.position = function() return 'somewhere' end
+			check('and one that is not a table at all', World.Position(WALKER) == nil)
+			env.Open77.players.position = nil
+			check('and a host with no position native answers nothing, not the origin',
+				World.Position(WALKER) == nil)
+		end
+	end
+end
+
+-- ── the shop counter is a place ──────────────────────────────────────────────
+-- `shopAt` refuses a shop in another bucket and a shop out of reach, and both
+-- mutants survived: with every player at the origin in bucket 0 the two
+-- comparisons were constants.
+section('shops: a counter on the other side of the city is not a counter you are at')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local shops = OPX.Modules.Get('shops')
+		check('the shops module is there', type(shops) == 'table')
+
+		if type(shops) == 'table' then
+			-- `thrift_watson` from the shipped config, and its counter.
+			local COUNTER = { x = -1180.0, y = 1550.0, z = 25.0 }
+			local SHOPPER = 911
+			control.Admit(SHOPPER, 'account-911')
+
+			--- Fires the OPEN door and answers the refusal the player was shown,
+			--- or nil when the room was opened instead.
+			local function open(key)
+				local mark = #control.notices
+				env.source = SHOPPER
+				control.netEvents[shops.Event.OPEN](key)
+				env.source = nil
+				control.Pump(10)
+				for index = #control.notices, mark + 1, -1 do
+					return control.notices[index].message
+				end
+				return nil
+			end
+
+			check('the shop door is wired',
+				type(control.netEvents[shops.Event.OPEN]) == 'function')
+
+			-- AT the counter.
+			control.Stand(SHOPPER, COUNTER.x, COUNTER.y, COUNTER.z)
+			check('standing at the counter is not refused for being too far',
+				(open('thrift_watson') or ''):find('close enough', 1, true) == nil,
+				open('thrift_watson'))
+
+			-- A hundred metres away. The configured reach is metres, not
+			-- kilometres, and this is the check a client asking from anywhere
+			-- has to fail.
+			control.Stand(SHOPPER, COUNTER.x + 100.0, COUNTER.y, COUNTER.z)
+			check('a hundred metres away is too far',
+				(open('thrift_watson') or ''):find('close enough', 1, true) ~= nil,
+				open('thrift_watson'))
+
+			-- The other side of the city -- which is where the OTHER configured
+			-- shop is, so this also proves the answer is the position and not
+			-- the first entry of a table.
+			control.Stand(SHOPPER, -1631.0, -1012.0, 8.0)
+			check('and standing at a DIFFERENT shop is still too far from this one',
+				(open('thrift_watson') or ''):find('close enough', 1, true) ~= nil,
+				open('thrift_watson'))
+
+			-- ── the bucket ───────────────────────────────────────────────────
+			-- Two instances of the same street. Standing on the exact spot in
+			-- another bucket is standing in another world.
+			control.Stand(SHOPPER, COUNTER.x, COUNTER.y, COUNTER.z)
+			control.Bucket(SHOPPER, 7)
+			check('the same spot in another routing bucket is not the same spot',
+				(open('thrift_watson') or ''):find('close enough', 1, true) ~= nil,
+				open('thrift_watson'))
+			control.Bucket(SHOPPER, 0)
+
+			-- ── no position at all ───────────────────────────────────────────
+			-- The refusal has its own wording, because "the server cannot tell
+			-- where you are standing" and "you are not close enough" are
+			-- different things for the player and for whoever reads the report.
+			control.Admit(SHOPPER, nil)
+			control.Admit(SHOPPER, 'account-911-again')
+			env.Open77.players.position = function() return nil end
+			check('a player the host cannot place is refused, and told why',
+				(open('thrift_watson') or ''):find('cannot tell where', 1, true) ~= nil,
+				open('thrift_watson'))
+			check('and it is NOT treated as standing at the origin',
+				(open('thrift_watson') or ''):find('close enough', 1, true) == nil)
+		end
+	end
+end
+
+-- ── the flag bits are the engine's ───────────────────────────────────────────
+-- `Open77.vehicles.flags` is a CONSTANT TABLE on this build, and the harness
+-- made it a call answering `{}` -- so `masks()` took its callable branch, every
+-- configured flag resolved `unknown_flag`, and all three mutants over that
+-- resolution survived. The exact failure the module's own comment warns about,
+-- manufactured by the harness and certified green.
+section('vehicle flags resolve against the host\'s own bits')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		check('the admin module is there', type(admin) == 'table')
+
+		if type(admin) == 'table' then
+			check('the host publishes flags as a TABLE, not a call',
+				type(env.Open77.vehicles.flags) == 'table',
+				type(env.Open77.vehicles.flags))
+			check('carrying the platform\'s own bit values',
+				env.Open77.vehicles.flags.engineOn == 1
+					and env.Open77.vehicles.flags.locked == 2
+					and env.Open77.vehicles.flags.lightsOn == 64
+					and env.Open77.vehicles.flags.invulnerable == 16)
+
+			local flag = control.commands['opx.admin.vehicle.flag']
+			check('the flag command is registered', flag ~= nil)
+
+			local STAFF = 941
+			control.Admit(STAFF, 'account-941')
+			-- A live vehicle with every bit clear, so the mask the runtime
+			-- resolves is exactly the mask that comes back in the write.
+			control.vehicles.snapshot = { id = 1, flags = 0, occupants = {} }
+
+			--- Runs the command and answers the flags it asked the host to
+			--- write, or nil when it wrote nothing at all.
+			local function setFlag(name)
+				local mark = #control.vehicles.updates
+				if flag then flag.run(STAFF, { '1', name, 'on' }) end
+				control.Pump(10)
+				local last = control.vehicles.updates[#control.vehicles.updates]
+				if #control.vehicles.updates == mark then return nil end
+				return last.patch and last.patch.flags
+			end
+
+			-- THE HOST'S BIT, not the module's own copy of it. The module keeps
+			-- a fallback table for a build that publishes no constants, and the
+			-- only way to tell "read the host" from "used the fallback" is to
+			-- make the two DISAGREE -- which is the whole point of reading the
+			-- host at all, and was untestable while `flags` answered `{}`.
+			env.Open77.vehicles.flags = { engineOn = 1, locked = 1024,
+				lightsOn = 64, invulnerable = 16 }
+			check('a flag resolves to the HOST\'s bit for it, not to a private copy',
+				setFlag('locked') == 1024, tostring(setFlag('locked')))
+			check('and another flag to the host\'s bit for that one',
+				setFlag('lightsOn') == 64, tostring(setFlag('lightsOn')))
+
+			-- Back to the platform's real values.
+			env.Open77.vehicles.flags = { engineOn = 1, locked = 2, destroyed = 4,
+				exploded = 8, invulnerable = 16, immortal = 32, lightsOn = 64,
+				highBeams = 128, sirenOn = 256, paintApplied = 512 }
+			check('engineOn and locked are not the same bit, nor each other\'s',
+				setFlag('engineOn') == 1 and setFlag('locked') == 2,
+				('%s / %s'):format(tostring(setFlag('engineOn')), tostring(setFlag('locked'))))
+
+			-- A build publishing it as a CALL is the other shape the module's
+			-- own comment names, and the third is no table at all.
+			env.Open77.vehicles.flags = function()
+				return { engineOn = 1, locked = 2048, lightsOn = 64, invulnerable = 16 }
+			end
+			check('a host publishing it as a call is read too',
+				setFlag('locked') == 2048, tostring(setFlag('locked')))
+
+			env.Open77.vehicles.flags = nil
+			check('and a host with none at all falls back rather than resolving nothing',
+				setFlag('locked') == 2, tostring(setFlag('locked')))
+
+			check('a flag nobody configured writes nothing at all',
+				setFlag('teleportation') == nil)
+			control.vehicles.snapshot = nil
+		end
+	end
+end
+
+-- ── the ACL answers a reason ─────────────────────────────────────────────────
+-- `Open77.acl.isAllowed` answers a boolean, or FALSE WITH A REASON. The stub
+-- answered a bare boolean, so `permission_denied:acl.read`, `invalid_permission`
+-- and `invalid_player_id` were three documented answers nothing could produce
+-- and the degradation the whole alias feature is built around was untested.
+section('the ACL: a refusal, and a question the host could not answer')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+
+		local STAFF, CIVILIAN = 921, 922
+		control.Admit(STAFF, 'account-921')
+		control.Admit(CIVILIAN, 'account-922')
+		control.Allow(STAFF, 'command.opx.admin.menu')
+
+		if type(admin) == 'table' then
+			check('a granted right reads as granted',
+				admin.Server.Permitted(STAFF, 'opx.admin.menu') == true)
+			check('and one nobody granted reads as refused',
+				admin.Server.Permitted(CIVILIAN, 'opx.admin.menu') == false)
+
+			-- THE CONSOLE. The host lets it run any restricted command and
+			-- `isAllowed` answers `invalid_player_id` for it rather than yes, so
+			-- asking would lock the server's own console out of its own menu.
+			check('the console is named rather than asked',
+				admin.Server.Permitted(0, 'opx.admin.menu') == true)
+
+			-- A HOST THAT CANNOT ANSWER is not a host that said no. `Permitted`
+			-- answers nil for it, which the menu reads as "unknown" and greys
+			-- nothing out -- because greying every row out on an unreadable ACL
+			-- would be worse than showing rows the host will refuse anyway.
+			local realAcl = env.Open77.acl
+			env.Open77.acl = nil
+			check('a host with no ACL at all answers unknown, not refused',
+				admin.Server.Permitted(CIVILIAN, 'opx.admin.menu') == nil)
+			env.Open77.acl = { isAllowed = function() error('no acl.read', 0) end }
+			check('and so does one whose read raises',
+				admin.Server.Permitted(CIVILIAN, 'opx.admin.menu') == nil)
+			env.Open77.acl = realAcl
+
+			-- A refusal CARRYING A REASON is still a refusal. It is not unknown,
+			-- and reading it as a grant is the direction that opens doors.
+			control.acl.refuse = 'permission_denied:acl.read'
+			check('a refusal carrying a reason is a refusal, not a grant',
+				admin.Server.Permitted(STAFF, 'opx.admin.menu') == false)
+			control.acl.refuse = nil
+			check('and the grant comes back once the ACL can be read again',
+				admin.Server.Permitted(STAFF, 'opx.admin.menu') == true)
+
+			-- A HOST WHOSE ACL ANSWERS NOTHING AT ALL. This is the one case that
+			-- separates `allowed == true` from `allowed ~= false`, and it is the
+			-- direction that matters: `~= false` reads NOTHING as a grant, and
+			-- would turn a build whose ACL native answers nothing into an open
+			-- door on sixty staff commands. A read that raises already counts as
+			-- a refusal; a read that answers nothing has to count as one too.
+			env.Open77.acl = { isAllowed = function() end }
+			check('a host whose ACL answers nothing is a refusal, not a grant',
+				admin.Server.Permitted(STAFF, 'opx.admin.menu') ~= true,
+				tostring(admin.Server.Permitted(STAFF, 'opx.admin.menu')))
+			env.Open77.acl = { isAllowed = function() return 'yes' end }
+			check('and neither is a host that answers something that is not a boolean',
+				admin.Server.Permitted(STAFF, 'opx.admin.menu') ~= true,
+				tostring(admin.Server.Permitted(STAFF, 'opx.admin.menu')))
+			env.Open77.acl = realAcl
+		end
+	end
+end
+
+-- ── the generation, the name, and the clock ──────────────────────────────────
+-- Three stubs that were constants: `resource.generation` was 1 forever, so
+-- every abort-on-reload guard compared 1 against 1; `players.name` was the
+-- string 'player', so no strip and no truncation could ever fire; and
+-- `environment.getTime` answered 0 where the card answers a table, so weather's
+-- whole drift correction sat behind a check never once satisfied.
+section('a reload, a hostile name, and a clock that has drifted')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		-- ── the generation ───────────────────────────────────────────────────
+		check('this resource has a generation',
+			env.Open77.resource.generation() == 1, env.Open77.resource.generation())
+		check('and a resource that is not running has none',
+			env.Open77.resource.generation('open77_nothing') == 0)
+		local before = env.Open77.resource.generation()
+		control.Reload()
+		check('and a reload really changes it',
+			env.Open77.resource.generation() ~= before,
+			('%s -> %s'):format(before, env.Open77.resource.generation()))
+
+		-- ── the name off the host ────────────────────────────────────────────
+		-- `downed` strips control characters and cuts a name to 32 bytes,
+		-- because the name is LISTED BACK to a caller -- a dispatch screen. A
+		-- constant eight-byte `'player'` with nothing in it to strip made both
+		-- unreachable.
+		local BODY = 931
+		control.Admit(BODY, 'account-931')
+
+		-- The bare host read first, which every caller shares.
+		control.Rename(BODY, 'Johnny')
+		check('the host answers the name it was given',
+			env.Open77.players.name(BODY) == 'Johnny', env.Open77.players.name(BODY))
+		check('and nothing at all for a slot nobody is on',
+			env.Open77.players.name(9997) == nil)
+
+		local character = OPX.Modules.Get('character')
+		local downed = OPX.Api.Get('downed')
+		check('the downed contract is published',
+			downed ~= nil and type(downed.List) == 'function')
+
+		if downed ~= nil and type(downed.List) == 'function' and type(character) == 'table' then
+			-- A loaded character on a dead body: the life scan puts them down,
+			-- and the dispatch list is where the name comes back out.
+			character.Players[BODY] = {
+				PlayerData = { citizenId = 'citizen-downed', source = BODY,
+					userId = 'account-931', money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-downed'] = BODY
+			character.Registry.byUserId['account-931'] = BODY
+
+			control.Stand(BODY, 55.0, 66.0, 7.0)
+			control.Rename(BODY, 'V\nthe\tmerc')
+			control.Life(BODY, 'dead')
+			control.Pump(30)
+
+			--- The dispatch row for one player, or nil.
+			local function rowFor(playerId)
+				local listed = downed.List()
+				local rows = listed and listed.ok and listed.value and listed.value.players or {}
+				for _, row in ipairs(rows) do
+					if row.id == playerId then return row end
+				end
+				return nil
+			end
+
+			local row = rowFor(BODY)
+			check('a dead body with a character loaded is listed as down', row ~= nil)
+			if row ~= nil then
+				check('and the dispatch row carries where it is lying',
+					type(row.position) == 'table' and row.position.x == 55.0
+						and row.position.y == 66.0,
+					row.position and ('%s,%s'):format(row.position.x, row.position.y))
+				check('not the origin, which is a real place somebody else could be at',
+					type(row.position) == 'table'
+						and not (row.position.x == 0 and row.position.y == 0))
+				check('and which instance it is lying in, so a dispatch in another '
+					.. 'one is not sent to it',
+					type(row.position) == 'table' and row.position.bucket == 0,
+					row.position and tostring(row.position.bucket))
+			end
+
+			control.Bucket(BODY, 12)
+			control.Pump(10)
+			local moved = rowFor(BODY)
+			check('a body in another routing bucket is listed in that one',
+				moved ~= nil and type(moved.position) == 'table'
+					and moved.position.bucket == 12,
+				moved and moved.position and tostring(moved.position.bucket))
+			control.Bucket(BODY, 0)
+
+			if row ~= nil then
+				check('a name carrying control characters is stripped of them',
+					type(row.name) == 'string' and row.name:find('%c') == nil,
+					row.name and ('%q'):format(row.name))
+				check('and they become spaces rather than vanishing, so the name still reads',
+					row.name == 'V the merc', row.name and ('%q'):format(row.name))
+			end
+
+			control.Rename(BODY, ('A'):rep(200))
+			control.Pump(10)
+			local long = rowFor(BODY)
+			check('and a name past 32 bytes is cut to 32',
+				long ~= nil and type(long.name) == 'string' and #long.name == 32,
+				long and long.name and #long.name)
+
+			control.Life(BODY, 'alive')
+			control.Pump(20)
+			check('and standing back up takes them off the list', rowFor(BODY) == nil)
+		end
+	end
+end
+
+section('the weather clock: a drift worth correcting, and one that is not')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		check('the engine clock answers a snapshot table, not a number',
+			type(env.Open77.environment.getTime()) == 'table',
+			type(env.Open77.environment.getTime()))
+
+		local live = env.Open77.environment.getTime()
+		check('carrying the fields the card names',
+			live ~= nil and type(live.hour) == 'number' and type(live.minute) == 'number'
+				and type(live.second) == 'number' and type(live.totalSeconds) == 'number'
+				and type(live.frozen) == 'boolean')
+
+		-- The clock the harness holds really is a clock: setting it moves it,
+		-- and reading it back gives the hour that was set. A `setTime` that kept
+		-- nothing made "what the engine holds" and "what the server asked for"
+		-- the same question, which is the question a drift correction exists to
+		-- ask twice.
+		env.Open77.environment.setTime(13, 45, 30)
+		local after = env.Open77.environment.getTime()
+		check('and setting it moves it', after.hour == 13 and after.minute == 45
+			and after.second == 30,
+			('%s:%s:%s'):format(after.hour, after.minute, after.second))
+		check('with the total seconds agreeing with the parts',
+			after.totalSeconds == 13 * 3600 + 45 * 60 + 30, after.totalSeconds)
+
+		-- Midnight is 0 and not 86400: the wrap is where an off-by-one in a
+		-- forward delta shows up as a jump of a whole day.
+		env.Open77.environment.setTime(24, 0, 0)
+		check('and midnight wraps to zero rather than to a day',
+			env.Open77.environment.getTime().totalSeconds == 0,
+			env.Open77.environment.getTime().totalSeconds)
+
+		-- A build with no environment backend answers nil plus a reason, which
+		-- is the case the `type(live) == 'table'` guard is written for.
+		control.environment.refuse = 'environment_backend_unavailable'
+		local none, reason = env.Open77.environment.getTime()
+		check('a host with no environment backend answers nothing, and says why',
+			none == nil and reason == 'environment_backend_unavailable', tostring(reason))
+		control.environment.refuse = nil
+	end
+end
+
+-- ── the carried state ────────────────────────────────────────────────────────
+-- `Open77.state.save` accepted and kept nothing and `load` answered nil
+-- forever, so every `restoreState` in the runtime took its cold-start path in
+-- every test: the protocol check, the bounds and the refusal that drops all of
+-- it were unreachable.
+section('carried state: what survives a reload, and what must not be adopted')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		-- SOMETHING IS ALREADY CARRIED BY THE TIME THE RESOURCE IS UP, and that
+		-- is the point: `modules/weather` anchors itself at start and saves, so
+		-- the blob a reload would find is written during boot. While `save` kept
+		-- nothing this was invisible -- the module's own `restoreState`, which
+		-- reads it back, took its cold-start path in every test ever run.
+		local booted = env.Open77.state.load()
+		check('the runtime carries something of its own across a reload',
+			type(booted) == 'table', type(booted))
+		check('and it was written through a save the host recorded',
+			#control.carried.writes > 0, #control.carried.writes)
+
+		env.Open77.state.clear()
+		check('a cold start carries nothing', env.Open77.state.load() == nil)
+
+		env.Open77.state.save({ PROTOCOL = 3, weather = 'clear', hour = 9 })
+		local back = env.Open77.state.load()
+		check('what was saved comes back', type(back) == 'table' and back.PROTOCOL == 3
+			and back.weather == 'clear', back and back.PROTOCOL)
+
+		-- Through JSON, because that is what the platform stores it as: a blob
+		-- kept by reference would let a module mutate its own carried state
+		-- after saving it and never know the platform would not have carried
+		-- the change.
+		local live = { PROTOCOL = 4, weather = 'rain' }
+		env.Open77.state.save(live)
+		live.weather = 'changed after the save'
+		check('and it is a copy, not the caller\'s own table',
+			env.Open77.state.load().weather == 'rain',
+			env.Open77.state.load().weather)
+
+		control.carried.refuse = 'state_too_large'
+		local saved, refusal = env.Open77.state.save({ PROTOCOL = 5 })
+		check('a save the host refuses answers false and says why',
+			saved == false and refusal == 'state_too_large', tostring(refusal))
+		check('and the previous blob is still what comes back',
+			env.Open77.state.load().PROTOCOL == 4, env.Open77.state.load().PROTOCOL)
+		control.carried.refuse = nil
+
+		env.Open77.state.clear()
+		check('clearing takes it away', env.Open77.state.load() == nil)
+	end
+end
+
+-- ── a reload leaves nobody else's rows behind ────────────────────────────────
+-- `Open77.resource.generation` answered a constant 1 for every resource
+-- forever, so `alive(owner, generation)` compared 1 against 1 and every
+-- abort-on-reload guard in the runtime was trivially satisfied. A reload is the
+-- one event those guards exist for and it could not be staged at all.
+section('the eye forgets the rows of a resource that reloaded under it')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the target module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local target = OPX.Modules.Get('target')
+		check('the target module publishes a registry',
+			target ~= nil and type(target.Registry) == 'table')
+
+		if target ~= nil and type(target.Registry) == 'table' then
+			local Registry = target.Registry
+			local OWNER = 'open77_somebody_else'
+
+			-- A SEPARATE RESOURCE, not a module in this VM: a module here
+			-- answers an in-process sentinel and is never swept for a reload,
+			-- which is the branch above the one under test.
+			env.GetResourceState = function(name)
+				return name == OWNER and 'running' or 'stopped'
+			end
+			control.generations[OWNER] = 5
+
+			local token = Registry.Register(OWNER, 5, {
+				id = 'someone.row',
+				label = 'A row somebody else put here',
+				onSelect = function() end,
+			})
+			check('another resource can put a row on the eye', token ~= nil, tostring(token))
+			check('and it is listed while that resource is up',
+				#Registry.List(OWNER) == 1, #Registry.List(OWNER))
+
+			-- Still the same VM: a sweep leaves it alone. The liveness read is
+			-- cached for half a second, so the clock is moved past that first --
+			-- otherwise this would be asserting the cache and not the guard.
+			control.Pump(10)
+			Registry.Sweep()
+			check('a sweep while it is still the same VM keeps the row',
+				#Registry.List(OWNER) == 1, #Registry.List(OWNER))
+
+			-- THE RELOAD. The resource is still running, so `GetResourceState`
+			-- says nothing is wrong; the only thing that changed is the
+			-- generation, and that is the whole point of reading one.
+			control.Reload(OWNER)
+			control.Pump(10)
+			Registry.Sweep()
+			check('but a row registered by a generation that has gone is dropped',
+				#Registry.List(OWNER) == 0, #Registry.List(OWNER))
+
+			-- And a row whose owner stopped outright goes the same way.
+			control.generations[OWNER] = nil
+			local again = Registry.Register(OWNER, env.Open77.resource.generation(OWNER), {
+				id = 'someone.row',
+				label = 'A row somebody else put here',
+				onSelect = function() end,
+			})
+			check('a resource the host does not know cannot register at all',
+				again == nil, tostring(again))
+		end
+	end
+end
+
+-- ── the carried state a reload has to refuse ─────────────────────────────────
+-- `Open77.state.load` answered nil forever, so `restoreState` returned at its
+-- first line in every test ever run: the protocol check, the preset check and
+-- every bound below them were unreachable. Carried state is UNTRUSTED INPUT --
+-- written by an earlier version of this code, which may have accepted wider
+-- bounds than the wire does now -- and a single bad field has to drop all of
+-- it rather than half of it.
+section('weather: adopting the previous generation\'s state, and refusing it whole')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the weather module', why == nil, why)
+
+	if why == nil then
+		local weather = env.OPX.Modules.Get('weather')
+		local Authority = weather and weather.Authority
+		check('the weather authority is there', type(Authority) == 'table')
+
+		if type(Authority) == 'table' then
+			-- What the module itself wrote during boot, which is by construction
+			-- a blob of exactly the right shape. Nothing here invents one: a
+			-- hand-built fixture would drift from the writer the moment a field
+			-- was added, and then this would be testing the fixture.
+			--
+			-- Read through `OPX.Carry` under this module's own namespace, which
+			-- is where it lives: `Open77.state` holds one value for the whole
+			-- resource and this module is not its only writer.
+			local written = env.OPX.Carry.Load('weather')
+			check('the module carried something of its own across the boot',
+				type(written) == 'table', type(written))
+
+			--- Saves a copy of that blob with one field changed, and answers
+			--- whether the authority adopted it.
+			local function restoreWith(field, value)
+				local blob = {}
+				for key, held in pairs(written or {}) do blob[key] = held end
+				blob[field] = value
+				env.OPX.Carry.Save('weather', blob)
+				return Authority.Restore()
+			end
+
+			check('its own carried state is adopted',
+				restoreWith('PROTOCOL', written and written.PROTOCOL) == true)
+
+			local mark = #control.log.warn
+			check('a blob from an older protocol is refused whole',
+				restoreWith('PROTOCOL', 999) == false)
+			check('and says so, naming both protocols',
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn)
+					:find('protocol 999 is not', 1, true) ~= nil,
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn))
+
+			mark = #control.log.warn
+			check('a preset that is no longer configured is refused whole',
+				restoreWith('weather', 'a_preset_nobody_ships') == false)
+			check('and says which one',
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn)
+					:find('a_preset_nobody_ships', 1, true) ~= nil,
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn))
+
+			mark = #control.log.warn
+			check('a field that is not a finite number is refused whole',
+				restoreWith('rate', 0 / 0) == false)
+			check('and names the field',
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn)
+					:find("field 'rate'", 1, true) ~= nil,
+				table.concat(control.log.warn, ' | ', mark + 1, #control.log.warn))
+
+			check('a rate of zero would stop the day, and is refused',
+				restoreWith('rate', 0) == false)
+			check('a revision below one is refused', restoreWith('revision', 0) == false)
+
+			-- NOT A TABLE AT ALL. A host that carried something else, or a blob
+			-- an older version wrote as a string: the first line of the restore
+			-- is what stops it, and nothing could reach that line before.
+			env.OPX.Carry.Save('weather', 'not a table')
+			check('a carried blob that is not a table at all is refused',
+				Authority.Restore() == false)
+
+			env.Open77.state.clear()
+			check('and a cold start with nothing carried is refused too, quietly',
+				Authority.Restore() == false)
+		end
+	end
+end
+
+-- ── the drift correction that had never once run ─────────────────────────────
+-- `Open77.environment.getTime` answered the NUMBER 0, and the whole correction
+-- below sits behind `if type(live) == 'table'`. So the branch was never entered
+-- in any test ever run: the client re-applied the clock on every accepted
+-- snapshot, and both mutants over the tolerance survived. With a real engine
+-- clock the correction is a comparison between two numbers again.
+section('weather: the clock is corrected when it has drifted, and left alone when it has not')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the weather module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local weather = OPX.Modules.Get('weather')
+		local SYNC = OPX.Event(OPX.Channel.NET, 'weather', 'sync')
+		check('the weather sync door is wired',
+			type(control.netEvents[SYNC]) == 'function')
+
+		if type(control.netEvents[SYNC]) == 'function' and type(weather) == 'table' then
+			-- The tolerance is 120 GAME seconds, so a minute of drift is inside
+			-- it and ten minutes is not. Read rather than repeated, so this
+			-- checks the comparison and not the number.
+			local TOLERANCE = type(weather.SYNC) == 'table'
+				and weather.SYNC.DRIFT_TOLERANCE_SECONDS or 120
+			check('the tolerance is read from the module, not repeated here',
+				type(weather.SYNC) == 'table'
+					and weather.SYNC.DRIFT_TOLERANCE_SECONDS == TOLERANCE, TOLERANCE)
+
+			local revision = 0
+			--- One accepted authority snapshot at a given time of day. FROZEN,
+			--- because a running clock would make "what the engine holds" move
+			--- underneath the comparison and the test would be about the pump
+			--- rate rather than about drift. No preset, so nothing here is about
+			--- the weather half.
+			local function syncAt(secondsOfDay)
+				revision = revision + 1
+				-- Past the sync floor, or the snapshot is deferred rather than
+				-- applied and the assertion below reads the previous one.
+				control.Pump(5)
+				control.netEvents[SYNC]({
+					protocol = 1,
+					authorityEpoch = 1,
+					revision = revision,
+					weatherRevision = 1,
+					secondsOfDay = secondsOfDay,
+					rate = 1.0,
+					timeFrozen = true,
+					weatherFrozen = false,
+					weather = '',
+					weatherPreset = '',
+					weatherPriority = 0,
+					transitionSeconds = 0,
+					weatherTransitionRemainingMs = 0,
+					reason = 'test',
+				})
+				control.Pump(5)
+			end
+
+			local NOON = 12 * 3600
+
+			local before = #control.environment.writes
+			syncAt(NOON)
+			check('the first snapshot is written to the engine',
+				#control.environment.writes > before,
+				#control.environment.writes - before)
+			check('and the engine clock now reads what the authority said',
+				env.Open77.environment.getTime().totalSeconds == NOON,
+				env.Open77.environment.getTime().totalSeconds)
+
+			-- INSIDE the tolerance. The engine's own clock runs the seconds
+			-- between corrections, so a minute of difference is not worth a
+			-- `setTime` -- which jumps to the NEXT occurrence of an hour and is
+			-- visible in the sky.
+			local mark = #control.environment.writes
+			syncAt(NOON + math.floor(TOLERANCE / 2))
+			check('a drift inside the tolerance is left alone',
+				#control.environment.writes == mark,
+				#control.environment.writes - mark)
+			check('and the engine clock has not moved',
+				env.Open77.environment.getTime().totalSeconds == NOON,
+				env.Open77.environment.getTime().totalSeconds)
+
+			-- OUTSIDE it.
+			mark = #control.environment.writes
+			syncAt(NOON + TOLERANCE * 5)
+			check('a drift past the tolerance is corrected',
+				#control.environment.writes > mark,
+				#control.environment.writes - mark)
+			check('and the engine clock is moved to where the authority says',
+				env.Open77.environment.getTime().totalSeconds == NOON + TOLERANCE * 5,
+				env.Open77.environment.getTime().totalSeconds)
+
+			-- A HOST WITH NO ENGINE CLOCK is the case the `type(live) == 'table'`
+			-- guard is written for: with nothing to compare against, the
+			-- correction is made rather than skipped.
+			control.environment.refuse = 'environment_backend_unavailable'
+			mark = #control.environment.writes
+			syncAt(NOON)
+			control.environment.refuse = nil
+			check('a host that cannot be asked the time is written to anyway',
+				#control.environment.writes > mark,
+				#control.environment.writes - mark)
+		end
+	end
+end
+
+-- ── the destinations a reload carried, adopted before anything else runs ─────
+-- `Open77.state.load` answered nil forever, so this module's `restore()` -- run
+-- from `Register`, before any command can add a destination -- took its
+-- cold-start path in every test and the in-game destinations were lost on every
+-- reload with nothing to say so. The blob is written in the PRELUDE here,
+-- before a single script has loaded, which is exactly where the previous
+-- generation's blob is waiting on a real reload.
+section('the staff destinations a reload carried')
+do
+	local CARRIED = { protocol = 1, locations = {
+		{ name = 'thehill', label = 'THE HILL', x = 120.5, y = -240.25, z = 15.75,
+			heading = 90.0 },
+	} }
+
+	-- Written in the envelope `OPX.Carry` writes, because that is what the
+	-- previous generation of this resource leaves behind. A prelude is the only
+	-- honest place for it: the destinations are adopted from `World.Register`,
+	-- before any command could have added one.
+	local function seedCarry(sandbox, namespace, value)
+		sandbox.Open77.state.save({ CARRY = 1, namespaces = { [namespace] = value } })
+	end
+
+	local env, _, why = boot('server', nil, function(sandbox)
+		seedCarry(sandbox, 'admin.world', CARRIED)
+	end)
+	check('the server boots on top of a carried blob', why == nil, why)
+
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		local named
+		for _, row in ipairs(admin and admin.World.Locations() or {}) do
+			if row.name == 'thehill' then named = row end
+		end
+		check('a destination the previous generation placed in game is still there',
+			named ~= nil)
+		check('with the point it was placed on', named ~= nil and named.x == 120.5
+			and named.y == -240.25 and named.z == 15.75,
+			named and ('%s,%s,%s'):format(named.x, named.y, named.z))
+		check('and marked as a runtime one, not a configured one',
+			named ~= nil and named.runtime == true)
+		check('while the configured destinations are still there beside it',
+			#(admin and admin.World.Locations() or {}) > 1,
+			#(admin and admin.World.Locations() or {}))
+	end
+
+	-- A BLOB FROM ANOTHER PROTOCOL IS NOT ADOPTED. It was written by an earlier
+	-- version of this code, which may have meant something else by these fields.
+	local env2, _, why2 = boot('server', nil, function(sandbox)
+		seedCarry(sandbox, 'admin.world',
+			{ protocol = 999, locations = CARRIED.locations })
+	end)
+	if why2 == nil then
+		local admin2 = env2.OPX.Modules.Get('admin')
+		local strayed = false
+		for _, row in ipairs(admin2 and admin2.World.Locations() or {}) do
+			if row.name == 'thehill' then strayed = true end
+		end
+		check('a blob from another protocol is left alone', strayed == false)
+	end
+
+	-- ── and the two writers no longer destroy each other ─────────────────
+	-- `Open77.state` holds ONE value per resource. Two modules write it, and
+	-- until `OPX.Carry` they each wrote it whole: an operator placing a staff
+	-- destination wiped the world clock, and the next weather roll wiped the
+	-- destination. Neither crashed -- each refuses a blob without its own
+	-- protocol number -- so the only evidence was weather logging "carried
+	-- state ignored" against a blob that was never weather's.
+	local env3, control3, why3 = boot('server', nil, function(sandbox)
+		seedCarry(sandbox, 'admin.world', CARRIED)
+	end)
+	check('the server boots for the two-writer case', why3 == nil, why3)
+	if why3 == nil then
+		local OPX3 = env3.OPX
+		local weather3 = OPX3.Modules.Get('weather')
+		local admin3 = OPX3.Modules.Get('admin')
+
+		-- The weather half has been up and saving since Start.
+		check('weather carried something of its own', OPX3.Carry.Load('weather') ~= nil)
+		check('and the destinations are still there beside it',
+			(function()
+				for _, row in ipairs(admin3 and admin3.World.Locations() or {}) do
+					if row.name == 'thehill' then return true end
+				end
+				return false
+			end)())
+
+		-- One more write from each, in the order a live server makes them.
+		OPX3.Carry.Save('admin.world', { protocol = 1, locations = {} })
+		check('a destination write leaves the weather namespace alone',
+			OPX3.Carry.Load('weather') ~= nil)
+		if weather3 ~= nil and type(weather3.Authority) == 'table' then
+			weather3.Authority.SetTimeFrozen(true, 'test')
+			control3.Pump(5)
+		end
+		check('and a weather write leaves the destinations namespace alone',
+			type(OPX3.Carry.Load('admin.world')) == 'table',
+			type(OPX3.Carry.Load('admin.world')))
+
+		-- The envelope itself: one blob, and the namespaces inside it.
+		local blob = env3.Open77.state.load()
+		check('there is exactly ONE blob, whatever is in it', type(blob) == 'table'
+			and type(blob.namespaces) == 'table')
+		check('and both writers are inside it',
+			type(blob) == 'table' and type(blob.namespaces) == 'table'
+				and blob.namespaces['weather'] ~= nil
+				and blob.namespaces['admin.world'] ~= nil,
+			type(blob) == 'table' and blob.namespaces
+				and table.concat((function()
+					local keys = {}
+					for key in pairs(blob.namespaces) do keys[#keys + 1] = key end
+					table.sort(keys)
+					return keys
+				end)(), ','))
+
+		-- A NAMESPACE CLEARS ON ITS OWN. `nil` takes that one away and nothing
+		-- else, which is what "leaving every other namespace alone" has to mean
+		-- in the one direction that could quietly take the lot.
+		OPX3.Carry.Save('admin.world', nil)
+		check('clearing one namespace clears only that one',
+			OPX3.Carry.Load('admin.world') == nil and OPX3.Carry.Load('weather') ~= nil)
+
+		-- The blob an older build wrote, with no envelope, is not walked as one.
+		env3.Open77.state.save({ PROTOCOL = 1, weather = 'clear' })
+		check('an unnamespaced blob from an older build reads as nothing carried',
+			OPX3.Carry.Load('weather') == nil)
+		check('and so does a blob that is not a table at all',
+			(function()
+				env3.Open77.state.save('nonsense')
+				return OPX3.Carry.Load('weather') == nil
+			end)())
+
+		-- A host with no reload store is a real build, and neither writer may
+		-- raise on it.
+		local realState = env3.Open77.state
+		env3.Open77.state = nil
+		check('a host with no reload store answers nothing rather than raising',
+			OPX3.Carry.Load('weather') == nil)
+		local saved, reason = OPX3.Carry.Save('weather', { PROTOCOL = 1 })
+		check('and a save on it is refused, with a reason, rather than raising',
+			saved == false and reason == 'no-state-api', tostring(reason))
+		env3.Open77.state = realState
+
+		-- A save the HOST refuses is not a save. Recording one as done is
+		-- carried state nobody knows is gone.
+		control3.carried.refuse = 'unserialisable_state'
+		local turned, why4 = OPX3.Carry.Save('weather', { PROTOCOL = 1 })
+		check('a save the host turns away is reported as refused',
+			turned == false and why4 == 'unserialisable_state', tostring(why4))
+		control3.carried.refuse = nil
+
+		check('and a namespace that is not a name is refused outright',
+			(OPX3.Carry.Save('', { a = 1 })) == false
+				and (OPX3.Carry.Save(nil, { a = 1 })) == false)
+	end
+end
+
+-- ── a body that is dead and not incarnated ───────────────────────────────────
+-- `admit` refuses a player with no life state at all, because "touching a body
+-- that has neither crashes it". It could never be reached while `getLifeState`
+-- answered a string for everybody, and the two natives it reconciles --
+-- `isDead` and `getLifeState` -- could not be made to disagree.
+section('downed: a revive of a body the host cannot answer for')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local downed = OPX.Api.Get('downed')
+		local character = OPX.Modules.Get('character')
+		check('the downed contract is published',
+			downed ~= nil and type(downed.Revive) == 'function')
+
+		if downed ~= nil and type(downed.Revive) == 'function' and type(character) == 'table' then
+			local BODY = 951
+			control.Admit(BODY, 'account-951')
+			character.Players[BODY] = {
+				PlayerData = { citizenId = 'citizen-951', source = BODY,
+					userId = 'account-951', money = { EDDIES = 0, BANK = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-951'] = BODY
+			character.Registry.byUserId['account-951'] = BODY
+
+			control.Life(BODY, 'dead')
+			control.Pump(20)
+			local down = downed.Revive(BODY, 'test')
+			check('a dead body with a life state is revived',
+				down ~= nil and down.ok == true, down and tostring(down.error or down.detail))
+			check('and the host really stood them up',
+				env.Open77.players.getLifeState(BODY).phase == 'alive',
+				env.Open77.players.getLifeState(BODY).phase)
+
+			-- THE TWO NATIVES DISAGREEING. `isDead` and `getLifeState` are
+			-- separate host calls and a body between two states answers one and
+			-- not the other. `admit` exists for exactly that window.
+			control.Life(BODY, 'dead')
+			control.Pump(20)
+			env.Open77.players.isDead = function() return true end
+			env.Open77.players.getLifeState = function() return nil end
+			local blind = downed.Revive(BODY, 'test')
+			check('but a body the host has no life state for is refused, not touched',
+				blind ~= nil and blind.ok == false, blind and tostring(blind.ok))
+			check('and named as not incarnated rather than as some other failure',
+				blind ~= nil and tostring(blind.error or blind.detail):find('not_incarnated',
+					1, true) ~= nil,
+				blind and tostring(blind.error or blind.detail))
+		end
+	end
+end
+
+-- `lib/shared/validate.lua` and `lib/shared/citizenid.lua` were the two files in
+-- the runtime that NOTHING here executed. Replacing all five of their public
+-- functions with an unconditional `error()` left the suite at "2501 checks, 0
+-- failed" -- while the same treatment applied to `Audit.Log` brought it down on
+-- the first section. They are the code that reads what a client chose, and they
+-- were carried entirely by the modules that happen to call them, none of which
+-- asserts a refusal. Every check below is written to fail if one guard is taken
+-- out, because that is the only property that makes a test worth its line count.
+section('the trust boundary validator')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local Text, Number = OPX.Validate.Text, OPX.Validate.Number
+
+		local function refusal(result)
+			return result ~= nil and result.ok == false and result.error or nil
+		end
+
+		-- Type first: a table where a string is expected is the shape a crafted
+		-- net event hands over, and it must not reach `#value` or `:match`.
+		check('a table is refused as a type, not indexed', refusal(Text({})) == 'type')
+		check('and so is nil', refusal(Text(nil)) == 'type')
+		check('and a number, which Lua would happily concatenate',
+			refusal(Text(42)) == 'type')
+
+		-- The character bounds. `min` defaults to 1, so the empty string -- what a
+		-- form submits when the field was never filled -- is short, not valid.
+		check('the empty string is too short by the default minimum',
+			refusal(Text('')) == 'too-short')
+		check('and so is whitespace, because the value is trimmed first',
+			refusal(Text('   ')) == 'too-short')
+		check('a value under an explicit minimum is refused',
+			refusal(Text('ab', { min = 3 })) == 'too-short')
+		check('a value over an explicit maximum is refused',
+			refusal(Text('abcdef', { max = 5 })) == 'too-long')
+		check('the maximum is inclusive', Text('abcde', { max = 5 }).ok == true)
+		check('and the minimum is inclusive', Text('abc', { min = 3 }).ok == true)
+
+		-- THE HARD 1024-BYTE CEILING, which is the guard that cannot be inferred
+		-- from the character bounds. With a generous `max` the character test
+		-- would accept this; the ceiling refuses it before `OPX.String.Length`
+		-- walks a single byte of it. A caller that passes a client's string with
+		-- a large max is exactly how an arbitrarily long scan gets reached.
+		local roomy = { max = 1000000 }
+		check('a 2 KiB string is refused although its character limit is a million',
+			refusal(Text(string.rep('a', 2048), roomy)) == 'too-long')
+		check('and so is a megabyte, without scanning it',
+			refusal(Text(string.rep('a', 1024 * 1024), roomy)) == 'too-long')
+		-- The ceiling is `max * 4 + 16` under the cap, so a four-byte-per-character
+		-- value at the limit still fits. This is the half that must NOT refuse.
+		check('a value at the character limit still fits under the ceiling',
+			Text(string.rep('é', 20), { max = 20 }).ok == true)
+
+		-- Invalid UTF-8 has no character length, and the comparison that follows
+		-- would be `nil < number`, which raises rather than refuses.
+		check('invalid UTF-8 is refused by name, not by raising',
+			refusal(Text('\xFF\xFE\xFF')) == 'not-utf8')
+
+		-- The pattern, and the fact that it is applied to the TRIMMED value.
+		check('a value that misses the pattern is refused as a format',
+			refusal(Text('ab3', { pattern = '^%a+$' })) == 'format')
+		check('a value that matches it is accepted', Text('abc', { pattern = '^%a+$' }).ok == true)
+		check('and the pattern sees the trimmed value, not the raw one',
+			Text('  abc  ', { pattern = '^%a+$' }).ok == true)
+		check('what comes back is the trimmed value', Text('  abc  ').value == 'abc')
+
+		-- Numbers. Finiteness is tested BEFORE the bounds, because NaN compares
+		-- false against everything and would pass a min and a max unchallenged.
+		check('NaN is refused as not finite, not as out of range',
+			refusal(Number(0 / 0, { min = 0, max = 10 })) == 'not-finite')
+		check('and so is positive infinity',
+			refusal(Number(math.huge, { min = 0, max = 10 })) == 'not-finite')
+		check('and negative infinity',
+			refusal(Number(-math.huge, { min = 0, max = 10 })) == 'not-finite')
+		check('a word is refused as a type', refusal(Number('soon')) == 'type')
+		check('a table too', refusal(Number({})) == 'type')
+		check('but a numeric string coerces', Number('12.5').value == 12.5)
+
+		check('a fraction is refused when an integer was asked for',
+			refusal(Number(1.5, { integer = true })) == 'not-integer')
+		check('and a whole number is not', Number(2, { integer = true }).ok == true)
+		check('a value under the minimum is refused',
+			refusal(Number(-1, { min = 0 })) == 'too-small')
+		check('a value over the maximum is refused',
+			refusal(Number(11, { max = 10 })) == 'too-large')
+		check('both bounds are inclusive',
+			Number(0, { min = 0 }).ok == true and Number(10, { max = 10 }).ok == true)
+		-- A zero minimum is a real configuration and Lua makes `opts.min and ...`
+		-- true for it; a guard written as a truthiness test would drop it.
+		check('a minimum of zero is still applied',
+			refusal(Number(-0.5, { min = 0 })) == 'too-small')
+	end
+end
+
+-- The check symbol is the whole point of the format: it is what makes a typed
+-- or misheard id fail at the door instead of becoming a lookup for somebody
+-- else's character. Nothing exercised it, so `Parse` accepting any seven
+-- symbols of the alphabet was indistinguishable from `Parse` working.
+section('citizen ids and the symbol that checks them')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local CitizenId = OPX.CitizenId
+		local ALPHABET = CitizenId.ALPHABET
+
+		local function refusal(result)
+			return result ~= nil and result.ok == false and result.error or nil
+		end
+		local function raw(id) return (id:gsub('%-', '')) end
+
+		local id = CitizenId.Build({ 0, 1, 2, 3, 4, 5 })
+		check('Build writes seven symbols in three-dash-four',
+			type(id) == 'string' and #id == 8 and id:sub(4, 4) == '-', tostring(id))
+		check('and what it writes, Parse accepts', CitizenId.Parse(id).ok == true,
+			tostring(CitizenId.Parse(id).error))
+		check('and answers it in the same display form',
+			CitizenId.Parse(id).value == id, tostring(CitizenId.Parse(id).value))
+
+		check('Generate answers an id Parse accepts',
+			CitizenId.Parse(CitizenId.Generate(function(_, high) return high end)).ok == true)
+		check('and it is deterministic when the source of numbers is',
+			CitizenId.Generate(function() return 0 end)
+				== CitizenId.Generate(function() return 0 end))
+
+		-- Forgiving on case and separators, which is the documented contract for
+		-- an id a player reads off a screen and types back in.
+		check('lower case parses', CitizenId.Parse(id:lower()).ok == true)
+		check('spaces and underscores are ignored',
+			CitizenId.Parse((' ' .. raw(id):sub(1, 2) .. '_ ' .. raw(id):sub(3)) .. ' ').ok == true)
+
+		-- EVERY SINGLE-SYMBOL SUBSTITUTION IS CAUGHT. This is the property the
+		-- prime modulus buys, and it is worth asserting exhaustively rather than
+		-- on one example: over 23 every weight is invertible, so a changed symbol
+		-- always changes the sum. A composite modulus would let a family through.
+		local substitutions, caught = 0, 0
+		local plain = raw(id)
+		for position = 1, 7 do
+			for index = 1, #ALPHABET do
+				local symbol = ALPHABET:sub(index, index)
+				if symbol ~= plain:sub(position, position) then
+					substitutions = substitutions + 1
+					local typo = plain:sub(1, position - 1) .. symbol .. plain:sub(position + 1)
+					if refusal(CitizenId.Parse(typo)) == 'checksum' then caught = caught + 1 end
+				end
+			end
+		end
+		check(('every one of the %d single-symbol substitutions fails the checksum')
+			:format(substitutions), substitutions == 154 and caught == substitutions,
+			('%d of %d'):format(caught, substitutions))
+
+		-- And every transposition of two adjacent PAYLOAD symbols, the other typo
+		-- the weights are chosen to catch. Adjacent weights differ by one, which
+		-- is non-zero mod 23, so a swap of two different values always moves the
+		-- sum. The check symbol itself carries no weight, so the pair that spans
+		-- it is not part of this guarantee and is not asserted as if it were.
+		local swaps, stopped = 0, 0
+		for position = 1, 5 do
+			local left, right = plain:sub(position, position), plain:sub(position + 1, position + 1)
+			if left ~= right then
+				swaps = swaps + 1
+				local swapped = plain:sub(1, position - 1) .. right .. left
+					.. plain:sub(position + 2)
+				if refusal(CitizenId.Parse(swapped)) == 'checksum' then stopped = stopped + 1 end
+			end
+		end
+		check(('every one of the %d adjacent transpositions fails the checksum')
+			:format(swaps), swaps == 5 and stopped == swaps, ('%d of %d'):format(stopped, swaps))
+
+		-- The refusals that come before the checksum, each by its own name, so a
+		-- caller can tell "you mistyped it" from "that is not an id at all".
+		check('a non-string is refused as a type', refusal(CitizenId.Parse({})) == 'type')
+		check('and nil too', refusal(CitizenId.Parse(nil)) == 'type')
+		check('too few symbols is a length', refusal(CitizenId.Parse('346-79')) == 'length')
+		check('too many is a length', refusal(CitizenId.Parse(raw(id) .. '3')) == 'length')
+		-- BOUNDED BEFORE `upper` AND `gsub` TOUCH IT. Without the byte bound this
+		-- is two allocations over a string a client chose the size of.
+		check('an over-long input is refused on bytes before it is cleaned',
+			refusal(CitizenId.Parse(string.rep('-', 4096) .. raw(id))) == 'length')
+		-- Ambiguous symbols are absent from the alphabet on purpose: 0/O, 1/I/L,
+		-- 2/Z, 5/S, 8/B, U/V and Q. A reader who "corrects" one must be refused.
+		for _, symbol in ipairs({ '0', 'O', '1', 'I', 'L', '2', '5', 'S', '8', 'B', 'U', 'V', 'Q' }) do
+			check(('%q is not a citizen id symbol'):format(symbol),
+				ALPHABET:find(symbol, 1, true) == nil
+					and refusal(CitizenId.Parse(symbol .. plain:sub(2))) == 'alphabet')
+		end
+	end
+end
+
+-- `Hold` says the session number is what keeps a later release honest. It was
+-- not: `Release` took no identity, read the token back off the slot -- or asked
+-- the host for it, which answers for whoever stands there now -- and the host's
+-- `session_mismatch` guard was therefore never shown a stale token. The entry
+-- sequence yields on every database read and a slot is recycled the instant a
+-- player drops, so a late release opened the gate of the player who took the
+-- slot, with no character loaded, while `Buckets.Release` beside it took them
+-- out of their selection bucket: a complete admission of the wrong person.
+section('a release names the account it was held for')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		control.Admit(7, 'user-AAAA')
+		OPX.EnsureSession(7)
+		OPX.Gate.Hold(7, 'entry')
+		check('A is held behind the gate', OPX.Sessions[7].gateSession ~= nil)
+
+		-- A drops during a slow read. The platform hands slot 7 to B, who takes
+		-- a hold of their own -- and A's thread has not come back yet.
+		control.Admit(7, 'user-BBBB')
+		local b = OPX.EnsureSession(7)
+		check('the slot now belongs to B', b.userId == 'user-BBBB')
+		OPX.Gate.Hold(7, 'entry')
+		local bHold = OPX.Sessions[7].gateSession
+
+		check('A\'s late release is refused rather than opening B\'s gate',
+			OPX.Gate.Release(7, 'entry-failed', 'user-AAAA') == false)
+		check('and B is still held, with the same token',
+			OPX.Sessions[7].gateSession == bHold and OPX.Sessions[7].released ~= true)
+		check('while B\'s own release goes through',
+			OPX.Gate.Release(7, 'done', 'user-BBBB') == true)
+		check('and then B is marked released', OPX.Sessions[7].released == true)
+
+		-- A caller that NAMES an identity has something to protect: with no
+		-- session there is nothing left saying the slot was ever theirs, and the
+		-- host's status would answer for whoever holds it now.
+		check('a release for a slot with no session refuses instead of guessing',
+			OPX.Gate.Release(99, 'never', 'user-AAAA') == false)
+
+		-- A caller that names NOBODY is the departure path -- `refuseEntry`
+		-- releases exactly where `EnsureSession` answered nil, and that function
+		-- forgets the session BEFORE answering, so there is never one here. It
+		-- has no recycled slot to protect: it is ending a connection, not
+		-- admitting anybody. Refusing it left a player whose identity the host
+		-- could not attest behind a shut gate WITH NO DEADLINE, on a loading
+		-- screen, until the resource restarted -- because core holds a gate for
+		-- everyone who connects whether or not `Gate.Hold` ever ran.
+		check('but one that names nobody is still the safe release the docstring promises',
+			OPX.Gate.Release(99, 'never') ~= false,
+			tostring(OPX.Gate.Release(99, 'never')))
+
+		-- The bucket half of the same admission.
+		control.Admit(8, 'user-CCCC')
+		OPX.EnsureSession(8)
+		OPX.Buckets.Isolate(8, 'joined')
+		-- Where the player actually IS, read back off the host, not `PlacementOf`,
+		-- which answers where a STORED bucket would put somebody.
+		local function bucketOf(id) return env.Open77.routingBuckets.getPlayer(id) end
+		check('C is isolated in a selection bucket',
+			OPX.Buckets.IsSelection(bucketOf(8)) == true, tostring(bucketOf(8)))
+
+		control.Admit(8, 'user-DDDD')
+		OPX.EnsureSession(8)
+		OPX.Buckets.Isolate(8, 'joined')
+		local ok, moved = OPX.Buckets.Release(8, 'character-loaded', 'user-CCCC')
+		check('a late bucket release for a departed account moves nobody',
+			ok == false and moved == false)
+		check('and D is still in their selection bucket',
+			OPX.Buckets.IsSelection(bucketOf(8)) == true, tostring(bucketOf(8)))
+		check('while D\'s own release moves them out',
+			select(2, OPX.Buckets.Release(8, 'character-loaded', 'user-DDDD')) == true)
+
+		-- An isolate that arrives late must not drag the new holder into a
+		-- selection bucket of their own.
+		check('and a late isolate is refused the same way',
+			OPX.Buckets.Isolate(8, 'joined', 'user-CCCC') == false)
+
+		-- A HOST THAT RAISED IS NOT A HOST WITHOUT THE API. Both used to be
+		-- rewritten to nil, and nil is not false, so both reached the success
+		-- path: `released` set with the host still holding, and `Watch` returns
+		-- on `released`, so nothing retried. The player waited out the host's
+		-- liveness interval behind a shut gate.
+		control.Admit(9, 'user-EEEE')
+		OPX.EnsureSession(9)
+		OPX.Gate.Hold(9, 'entry')
+		local realRelease = env.Open77.ready.release
+		env.Open77.ready.release = function() error('transient host failure') end
+		local answered = OPX.Gate.Release(9, 'done', 'user-EEEE')
+		env.Open77.ready.release = realRelease
+		check('a release the host raised on is reported as refused', answered == false)
+		check('and the hold is kept, so the watch can try again',
+			OPX.Sessions[9].gateSession ~= nil and OPX.Sessions[9].released ~= true)
+		check('and the retry succeeds once the host answers again',
+			OPX.Gate.Release(9, 'done', 'user-EEEE') == true)
+
+		-- A host with no readiness API at all is a different thing: there is no
+		-- gate to be stuck behind, so the release is honestly a success.
+		control.Admit(10, 'user-FFFF')
+		OPX.EnsureSession(10)
+		OPX.Gate.Hold(10, 'entry')
+		local realReady = env.Open77.ready
+		env.Open77.ready = nil
+		check('a host with no readiness API releases rather than stranding anybody',
+			OPX.Gate.Release(10, 'done', 'user-FFFF') == true)
+		env.Open77.ready = realReady
+	end
+end
+
+-- One test in nineteen thousand lines covered hooks, and it registered and
+-- removed entirely outside a trigger. `Trigger` walked the LIVE list with a
+-- bound taken at entry, while a hook is entitled to register or remove from
+-- inside it -- and `Trigger` yields, so another thread can reach `Remove`
+-- between two hooks of one trigger. Every shape below skipped a hook, and a
+-- skipped hook is a skipped VETO: the action it would have refused went ahead.
+section('a hook cannot make the trigger lose the hook after it')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local Hooks = OPX.Hooks
+
+		-- A one-shot that withdraws itself. Removing shifted the tail down under
+		-- a cursor that had already moved past it, so the next hook was skipped.
+		local ran = {}
+		local first, second
+		first = Hooks.Register('t:oneshot', function()
+			ran[#ran + 1] = 'first'
+			Hooks.Remove(first)
+		end)
+		second = Hooks.Register('t:oneshot', function() ran[#ran + 1] = 'second' end)
+		local third = Hooks.Register('t:oneshot', function() ran[#ran + 1] = 'third' end)
+		Hooks.Trigger('t:oneshot', {})
+		check('a hook that removes itself does not swallow the next one',
+			table.concat(ran, ',') == 'first,second,third', table.concat(ran, ','))
+		Hooks.Remove(second)
+		Hooks.Remove(third)
+
+		-- The veto that used to be lost. The removal leaves the live list shorter
+		-- than the bound, `list[i]` is nil, and `list[i].fn` is the evaluation of
+		-- an ARGUMENT to `pcall` -- so it is not protected by it. The raise left
+		-- `Trigger` altogether and the hook that refuses never voted.
+		local vetoRan = false
+		local doomed = Hooks.Register('t:veto', function() end)
+		local remover = Hooks.Register('t:veto', function() Hooks.Remove(doomed) end)
+		local vetoer = Hooks.Register('t:veto', function()
+			vetoRan = true
+			return false
+		end)
+		local allowed = Hooks.Trigger('t:veto', {})
+		check('a removal mid-trigger still lets the veto after it run', vetoRan == true)
+		check('and the veto is honoured', allowed == false)
+		Hooks.Remove(remover)
+		Hooks.Remove(vetoer)
+
+		-- An insertion before the cursor. A hook registering a LOWER priority put
+		-- the new entry ahead of the cursor, so the hook at the cursor ran twice
+		-- and the last one never ran at all.
+		local order = {}
+		local inserted
+		local a = Hooks.Register('t:insert', function() order[#order + 1] = 'a' end, 0)
+		local b = Hooks.Register('t:insert', function()
+			order[#order + 1] = 'b'
+			if inserted == nil then
+				inserted = Hooks.Register('t:insert', function() order[#order + 1] = 'new' end, -5)
+			end
+		end, 1)
+		local c = Hooks.Register('t:insert', function() order[#order + 1] = 'c' end, 2)
+		Hooks.Trigger('t:insert', {})
+		check('a hook that registers another does not run twice',
+			table.concat(order, ',') == 'a,b,c', table.concat(order, ','))
+		check('and the hook after it is not lost', order[#order] == 'c')
+		-- The new one is in the list, it simply was not part of the walk that
+		-- was already under way. It runs on the next trigger, in priority order.
+		order = {}
+		Hooks.Trigger('t:insert', {})
+		check('the newly registered hook runs on the next trigger, in priority order',
+			table.concat(order, ',') == 'new,a,b,c', table.concat(order, ','))
+		Hooks.Remove(a); Hooks.Remove(b); Hooks.Remove(c); Hooks.Remove(inserted)
+
+		-- A hook withdrawn during a trigger must not be called from the walk that
+		-- was already copied: a module that has just stopped is the real case.
+		local calls = 0
+		local withdrawn
+		local trigger = Hooks.Register('t:withdraw', function() Hooks.Remove(withdrawn) end, 0)
+		withdrawn = Hooks.Register('t:withdraw', function() calls = calls + 1 end, 1)
+		Hooks.Trigger('t:withdraw', {})
+		check('a hook removed earlier in the same trigger is not called', calls == 0)
+		Hooks.Remove(trigger)
+
+		-- The contract that was already right, asserted so the copy does not
+		-- quietly change it: priority order, and only an explicit false vetoes.
+		local seen = {}
+		local low = Hooks.Register('t:order', function() seen[#seen + 1] = 'low' end, -1)
+		local mid = Hooks.Register('t:order', function() seen[#seen + 1] = 'mid' end, 0)
+		local high = Hooks.Register('t:order', function()
+			seen[#seen + 1] = 'high'
+			return nil
+		end, 5)
+		check('hooks run low priority first, and nil is not a veto',
+			Hooks.Trigger('t:order', {}) == true and table.concat(seen, ',') == 'low,mid,high',
+			table.concat(seen, ','))
+		local raised = Hooks.Register('t:order', function() error('a third party raised') end, 6)
+		local after = false
+		local last = Hooks.Register('t:order', function() after = true end, 7)
+		check('a hook that raises is skipped, not fatal, and the next one still runs',
+			Hooks.Trigger('t:order', {}) == true and after == true)
+		Hooks.Remove(low); Hooks.Remove(mid); Hooks.Remove(high)
+		Hooks.Remove(raised); Hooks.Remove(last)
+		check('a name nobody registered answers that the action may proceed',
+			Hooks.Trigger('t:nobody', {}) == true)
+	end
+end
+
+-- `OPX.Booted` was written twice in `core/server/boot.lua` and read nowhere in
+-- the resource. The twenty-eight guards that look like they cover boot all read
+-- `OPX.BootError`, which is nil for the whole of boot by design -- it records
+-- the ANSWER to the schema question, and during boot there is not one yet. So a
+-- player reconnecting just after a restart walked straight into an entry
+-- sequence whose tables were still being created.
+section('entry waits for boot to settle')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+
+		check('the flag exists and boot finished by setting it', OPX.Booted == true)
+
+		-- Put the runtime back into the state it is in for the first dozens of
+		-- frames after a restart: held, with the schema question unsettled.
+		OPX.Booted = false
+		control.Admit(31, 'account-booting')
+		control.Fire(OPX.Host.PLAYER_CONNECTED, 31)
+		control.Pump(30)
+
+		local held = OPX.Sessions[31]
+		check('a player connecting during boot is held, not admitted',
+			held ~= nil and held.gateSession ~= nil and held.released ~= true,
+			held and tostring(held.released))
+		check('and nothing was loaded for them out of tables that may not exist',
+			character ~= nil and character.GetPlayer(31) == nil)
+
+		-- And it is a wait, not a refusal: the hold is already taken, so the
+		-- player sits behind the gate and comes in when the schema is settled.
+		OPX.Booted = true
+		control.Pump(40)
+		check('once boot settles the entry sequence runs',
+			OPX.Sessions[31] == nil or OPX.Sessions[31].released == true
+				or character.GetPlayer(31) ~= nil,
+			OPX.Sessions[31] and tostring(OPX.Sessions[31].released))
+	end
+end
+
+-- The broadcast was answered by six of the EIGHT owners that take focus on this
+-- surface. `inventory` and `target` wire no `focus:set` handler at all, and
+-- every handler releases only its OWN names, so an owner neither of them
+-- claimed was an owner nobody released.
+--
+-- What that cost, on the path that really happens: a render error inside a view
+-- unmounts it -- `ui/src/boot/ModuleHost.vue` drops the slot on
+-- `onErrorCaptured` -- the page releases its own focus and announces an empty
+-- stack, and the Lua entry stays on top for ever. `applyFocus` keeps applying
+-- it, so the player holds keyboard and cursor with nothing drawn: no movement,
+-- a pointer on screen, and no way out except to die. `focus:set` is a property
+-- of the SURFACE, so it is answered once in core now rather than in eight
+-- copies of which two were missing.
+section('the page is the truth about what is on screen')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page = control.pages[1]
+
+		local function announce(owner)
+			control.PageEmit(page, 'opx:focus:set',
+				{ surface = 'opx', focus = owner ~= nil, owner = owner or '' })
+		end
+
+		-- An owner NO module here answers for. Nothing in `modules/` releases it,
+		-- which is exactly the position `inventory` and `target` are in.
+		OPX.UI.AcquireFocus('inventory', { keyboard = true, cursor = true })
+		check('the inventory holds keyboard and cursor',
+			OPX.UI.FocusOwner() == 'inventory' and page.focus.cursor == true)
+
+		-- The view dies and the page says so.
+		announce(nil)
+		check('an owner no module answers for is still released',
+			OPX.UI.FocusOwner() == nil, tostring(OPX.UI.FocusOwner()))
+		check('and the player really has their controls back',
+			page.focus.keyboard == false and page.focus.cursor == false,
+			('kb=%s cur=%s'):format(tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+
+		-- The same for `target`, the other owner with no handler.
+		OPX.UI.AcquireFocus('target', { keyboard = true, cursor = true })
+		announce(nil)
+		check('and the eye cannot strand the player either', OPX.UI.FocusOwner() == nil)
+
+		-- A top that MOVED rather than emptied: everything stacked above the
+		-- announced owner is a view the page no longer has.
+		OPX.UI.AcquireFocus('chat', { keyboard = true, cursor = false })
+		OPX.UI.AcquireFocus('inventory', { keyboard = true, cursor = true })
+		check('the inventory is over the chat line', OPX.UI.FocusOwner() == 'inventory')
+		announce('chat')
+		check('an announced owner lower in the stack drops what is above it',
+			OPX.UI.FocusOwner() == 'chat', tostring(OPX.UI.FocusOwner()))
+		check('so the wants applied are the drawn module\'s, not the stale one\'s',
+			page.focus.keyboard == true and page.focus.cursor == false,
+			('kb=%s cur=%s'):format(tostring(page.focus.keyboard), tostring(page.focus.cursor)))
+
+		-- An owner the Lua stack does not hold is somebody else's to acquire --
+		-- their own handler does that on this same broadcast -- so core leaves
+		-- the stack alone rather than guessing at it.
+		-- `menu` is an owner core does not hold. It must not invent an entry for
+		-- it: acquiring is the owning module's job, on this same broadcast, with
+		-- the wants only that module knows. What happens here is the chat module
+		-- releasing itself because it is not the announced owner -- which is the
+		-- six-handler idiom working, not core doing it for them.
+		announce('menu')
+		check('core does not fabricate a stack entry for an owner it does not hold',
+			OPX.UI.FocusOwner() ~= 'menu', tostring(OPX.UI.FocusOwner()))
+		announce(nil)
+		check('and the stack still empties on an empty announcement',
+			OPX.UI.FocusOwner() == nil)
+	end
+end
+
+-- Six corrections made in this same sweep were not held by anything: each one
+-- could be put back and the suite stayed green, which is the defect the sweep
+-- was about. A fix nothing asserts is a fix with a half-life.
+section('the guards this sweep added, held in place')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+
+		-- `Run()` a second time used to answer true, which reads as a successful
+		-- boot: the caller starts a loop over an empty job list and reports every
+		-- module as stopped, with nothing rebuilt and nothing logged.
+		local again, reason = OPX.Modules.Run()
+		check('a second Run() answers false rather than a successful-looking true',
+			again == false, tostring(again))
+		check('and names why', tostring(reason):find('already ran', 1, true) ~= nil,
+			tostring(reason))
+
+		-- A newline in `event`, `citizen` or `user` forges a whole audit line.
+		-- The header of `lib/server/audit.lua` promises these are stripped; only
+		-- `message` and `data` ever were.
+		local before = #control.log.info + #control.log.warn + #control.log.error
+		OPX.Audit.Log({
+			event = 'test.forge\nevent=session.login severity=info',
+			severity = 'info',
+			citizenId = 'AAA\nBBBB',
+			userId = 'user\nforged',
+			message = 'one line',
+		})
+		local written = table.concat(control.log.info, ' | ') .. ' | '
+			.. table.concat(control.log.warn, ' | ') .. ' | '
+			.. table.concat(control.log.error, ' | ')
+		check('an audit entry was written', before >= 0 and #written > 0)
+		check('a newline in the event name does not forge a second line',
+			written:find('test.forge\n', 1, true) == nil, 'a raw newline reached the line')
+		check('nor one in the citizen id', written:find('AAA\nBBBB', 1, true) == nil)
+		check('nor one in the user id', written:find('user\nforged', 1, true) == nil)
+
+		-- A snapshot stamped in the FUTURE gives a negative age and passes every
+		-- maximum there is. "A gated requirement closes on every doubt."
+		local need = { jobs = { medic = 1 } }
+		local policy = { maxAgeMs = 5000 }
+		local now = 1000000
+		local held = { job = { name = 'medic', grade = { level = 5 } }, jobs = {}, atMs = now }
+		check('a snapshot taken now is honoured',
+			OPX.JobGate.Evaluate(need, held, now, policy) == true)
+		local future = { job = { name = 'medic', grade = { level = 5 } }, jobs = {}, atMs = now + 60000 }
+		local allowed, code = OPX.JobGate.Evaluate(need, future, now, policy)
+		check('a snapshot stamped in the future is refused, not accepted for ever',
+			allowed == false, tostring(allowed))
+		check('and it is named as stale', code == 'job_stale', tostring(code))
+
+		-- `Report` used to CALL the caller's interval closure, so printing a
+		-- job's state ran module code and cleared the once-per-run warning the
+		-- job had just emitted.
+		local asked = 0
+		local handle = OPX.Scheduler.Every('test:report', function()
+			asked = asked + 1
+			return 500
+		end, function() end)
+		control.Pump(5)
+		local afterRuns = asked
+		local lines = OPX.Scheduler.Report()
+		check('Report produced a line for the job',
+			table.concat(lines, ' | '):find('test:report', 1, true) ~= nil,
+			table.concat(lines, ' | '))
+		check('and it did not call the caller\'s interval closure to do it',
+			asked == afterRuns, ('%d -> %d'):format(afterRuns, asked))
+		OPX.Scheduler.Cancel(handle)
+	end
+end
+
+-- A module that raises halfway through `Start` has already registered its jobs,
+-- its handlers and its hooks. It is marked `failed`, never `started`, and
+-- `Modules.Stop` used to skip exactly that state -- so what it registered ran
+-- against half-built state for the life of the resource.
+section('a module that failed is still stopped')
+do
+	local stopped = false
+	local env, _, why = boot('server', nil, function(environment)
+		environment.OPX = environment.OPX or {}
+		environment.__opxTestStopped = function() stopped = true end
+	end)
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		-- An EXISTING module, put into the state a failed `Start` leaves behind.
+		-- Declaring a new one here would not work and that is its own trap:
+		-- `Resolve` is memoised and has already run, so a module declared now is
+		-- invisible to every phase and to `Stop` -- which `Declare` refuses
+		-- outright now rather than leaving it to be discovered like this.
+		local record
+		for _, candidate in ipairs(OPX.Modules.Resolve()) do
+			if type(candidate.Module.Stop) == 'function' then record = candidate break end
+		end
+		check('there is a started module with a Stop to use', record ~= nil)
+		if record ~= nil then record.Module.Stop = function() env.__opxTestStopped() end end
+		if record ~= nil then
+			-- Straight to the state a failed `Start` leaves behind, because `Run`
+			-- has already been and is deliberately not repeatable.
+			record.State = 'failed'
+			OPX.Modules.Stop()
+			check('a failed module gets its Stop called, so its jobs and hooks go',
+				stopped == true)
+			check('and it ends up stopped rather than staying failed for ever',
+				record.State == 'stopped', tostring(record.State))
+		end
+	end
+end
+
+-- `OPX.UI.Answer` discarded the refusal. The host refuses an oversized payload
+-- WHOLE and still reports the send a success, so Lua believed it had replied
+-- and the page's promise timed out five seconds later with no trace: the
+-- refusal note is keyed by channel, and every reply shares one channel.
+section('an answer the host refused is answered again, small')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page = control.pages[1]
+
+		local before = #page.sent
+		local huge = {}
+		for index = 1, Host.MAX_PAYLOAD_NODES + 64 do huge['k' .. index] = index end
+		OPX.UI.Answer('interactive', 'ref-1', { ok = true, data = huge })
+
+		check('the oversized answer was refused by the host',
+			#page.refused > 0 and page.refused[#page.refused].channel:find('reply', 1, true) ~= nil,
+			#page.refused > 0 and page.refused[#page.refused].channel or 'nothing refused')
+
+		local last = page.sent[#page.sent]
+		check('and a reply small enough to land was sent under the same ref',
+			#page.sent > before and last ~= nil and last.payload ~= nil
+				and last.payload.ref == 'ref-1',
+			last and tostring(last.payload and last.payload.ref) or 'nothing sent')
+		check('carrying a refusal the view can render instead of a five-second spinner',
+			last ~= nil and last.payload.ok == false
+				and last.payload.error == 'error.payloadRefused',
+			last and tostring(last.payload and last.payload.error))
+
+		-- An answer that fits is untouched: one send, no follow-up.
+		local fitting = #page.sent
+		OPX.UI.Answer('interactive', 'ref-2', { ok = true, data = { one = 1 } })
+		check('an answer that fits is sent once and not followed by a code',
+			#page.sent == fitting + 1
+				and page.sent[#page.sent].payload.error == nil,
+			('%d -> %d'):format(fitting, #page.sent))
+	end
+end
+
+-- `Resolve` memoises its order, so a module declared after it has run sits at
+-- `declared` for ever: no phase touches it, `Report` never lists it because it
+-- walks the resolved order, and `IsRunning` answers false with the reason
+-- written nowhere. No caller does this today -- which is exactly why a silent
+-- one would be found the hard way.
+section('a module declared too late is refused, not lost')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		check('the order has been resolved by now', OPX.Modules.Resolved() == true)
+		local made, failure = pcall(OPX.Modules.Declare, { id = 'testlate', side = 'server' })
+		check('declaring after that raises rather than making a module nothing runs',
+			made == false, tostring(made))
+		check('and says so in the message',
+			tostring(failure):find('after the modules were resolved', 1, true) ~= nil,
+			tostring(failure))
+		check('and no phantom record was left behind',
+			OPX.Modules.Record('testlate') == nil)
+	end
+end
+
+-- THE PERMISSION IS AN ARGUMENT AT THESE CALL SITES, so no search of the
+-- `Open77.*` namespaces can find them and the hand-kept `GATED` list above
+-- cannot know about one nobody thought to add.
+--
+-- That is not hypothetical. On 2026-09-21 `camera.preview` and `world.query`
+-- were removed from the manifest as unused, on the evidence that
+-- `Open77.camera`, `Open77.world` and `Open77.hacking` appear in this tree only
+-- inside comments -- which is TRUE, and which proves nothing, because the three
+-- calls that need them are written `Native.Call('camera.orbit',
+-- 'camera.preview', ...)`. The suite stayed green, the server journal stayed
+-- clean -- these are CLIENT permissions, so the refusal lands in the player's
+-- own log -- and in the game the fitting room's camera stopped turning the body
+-- and the eye stopped resolving the sky or the player's own feet.
+--
+-- This derives the pairs from the source instead of from anybody's memory: the
+-- method and the permission are literals side by side, which is the one shape
+-- that cannot drift from what the code actually asks the host for.
+section('a permission named as an argument is still a permission')
+do
+	local handle = io.open('open77.lua', 'r')
+	local manifest = handle and handle:read('a') or ''
+	if handle then handle:close() end
+	check('the manifest is readable', #manifest > 0)
+
+	-- The declared list, read the same way the section above reads it.
+	local declared = {}
+	for name in manifest:gmatch('"([a-z][a-z0-9._]*)"') do declared[name] = true end
+
+	local seen, files = {}, {}
+	for _, side in ipairs({ 'shared', 'server', 'client' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if not seen[file] then
+				seen[file] = true
+				files[#files + 1] = file
+			end
+		end
+	end
+	check('the manifest lists the files to scan', #files > 0, #files)
+
+	-- method -> { permission, the file that asks for it }
+	local asked, count = {}, 0
+	for index = 1, #files do
+		local input = io.open(files[index], 'r')
+		if input then
+			local body = input:read('a')
+			input:close()
+			-- Comments are stripped first: a call quoted in prose -- and this
+			-- codebase quotes call sites in prose constantly -- must not demand a
+			-- grant of its own. What is left is code.
+			body = body:gsub('%-%-[^\n]*', '')
+			for method, permission in
+				body:gmatch("Native%.%a+%(%s*'([%w_.]+)'%s*,%s*'([a-z][a-z0-9._]*)'") do
+				if asked[method] == nil then
+					asked[method] = { permission = permission, file = files[index] }
+					count = count + 1
+				end
+			end
+		end
+	end
+
+	-- The count is asserted, not just the contents: a call site that stops
+	-- naming its permission -- or a new one that does -- changes this number,
+	-- and a silent drop to zero would make every check below pass vacuously.
+	-- That is exactly how the page-source walk managed to be green on one
+	-- platform and red on another for two releases.
+	check('the scan found the call sites that name their own permission',
+		count == 3, count)
+
+	local names = {}
+	for method in pairs(asked) do names[#names + 1] = method end
+	table.sort(names)
+
+	for _, method in ipairs(names) do
+		local entry = asked[method]
+		check(('%s asks for %s, and the manifest declares it')
+			:format(method, entry.permission),
+			declared[entry.permission] == true,
+			('%s names it in %s and open77.lua does not declare it')
+				:format(method, entry.file))
+	end
+end
+
+-- The server has always written the character's name to the state bag, at the
+-- right moment. NOTHING READ IT. The plate above a head is drawn by the
+-- platform and labelled with the displayName the Master vouches for -- the
+-- account's gamertag -- and this resource never called `Open77.nameplates.set`
+-- nor declared `ui.nameplates`. The chat asked `Open77.players.identity`, whose
+-- `name` is that same account name, under a comment claiming it showed "the
+-- player's own". So a player who had just named their character still spoke and
+-- walked around as their gamertag, on the first connection and on the
+-- hundredth: it was never a first-connection defect, it was permanent.
+section('the character name reaches what draws it')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local State = character ~= nil and character.PlayerState or nil
+		check('the client character module is up', State ~= nil)
+
+		if State ~= nil then
+			-- A body walks past that this VM has never asked about, and the
+			-- server moves their name. The delta alone must put the plate right.
+			local bag = env.Open77.state.player(21)
+			bag:set('name', 'Vincent Kowalski')
+			control.Pump(4)
+			check('a name delta puts the character name on the plate',
+				control.plates.byId[21] ~= nil
+					and control.plates.byId[21].label == 'Vincent Kowalski',
+				control.plates.byId[21] and tostring(control.plates.byId[21].label))
+
+			-- Somebody named BEFORE this client ever saw them never sends a
+			-- delta. The first pull is the other half, or they keep the account
+			-- plate for ever.
+			local other = env.Open77.state.player(22)
+			other:set('name', 'Jackie Welles')
+			control.plates.byId[22] = nil
+			State.Of(22)
+			check('and so does the first read of a player already named',
+				control.plates.byId[22] ~= nil
+					and control.plates.byId[22].label == 'Jackie Welles',
+				control.plates.byId[22] and tostring(control.plates.byId[22].label))
+
+			-- A character with no name yet is not a failure: a row exists before
+			-- anybody does, and the plate must go back rather than say nothing.
+			bag:set('name', nil)
+			control.Pump(4)
+			check('clearing the name hands the plate back to the platform',
+				control.plates.byId[21] == nil)
+
+			-- A refused override must not be swallowed: it is the difference
+			-- between "the name is wrong" and "the grant is missing".
+			control.plates.refuse = 'permission_denied:ui.nameplates'
+			local before = #control.log.warn
+			bag:set('name', 'Judy Alvarez')
+			control.Pump(4)
+			check('a refused override is named where an operator will read it',
+				#control.log.warn > before
+					and table.concat(control.log.warn, ' | ')
+						:find('ui.nameplates', 1, true) ~= nil,
+				table.concat(control.log.warn, ' | '))
+			control.plates.refuse = nil
+
+			-- The overrides go back with the module. The platform cleans up when
+			-- the RESOURCE stops, which is not the same event.
+			bag:set('name', 'Judy Alvarez')
+			control.Pump(4)
+			check('the module holds an override again', control.plates.byId[21] ~= nil)
+			State.Stop()
+			check('and stopping the module hands every plate back',
+				control.plates.byId[21] == nil and control.plates.byId[22] == nil)
+		end
+	end
+end
+
+-- The chat carried the same defect from the other side.
+section('a message is attributed to the character, not the account')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local chat = OPX.Modules.Get('chat')
+		local character = OPX.Modules.Get('character')
+		check('both modules are up', chat ~= nil and character ~= nil)
+
+		if chat ~= nil and character ~= nil then
+			local said = chat.Event.SAY
+			control.Admit(31, 'account-speaker')
+			OPX.EnsureSession(31)
+
+			--  is a flat list of every TriggerClientEvent, newest
+			-- last, so the message is found by name rather than by key.
+			local function lastAuthor()
+				for index = #control.clientEvents, 1, -1 do
+					local sent = control.clientEvents[index]
+					if sent.name == chat.Event.MESSAGE and type(sent[1]) == 'table' then
+						return sent[1].author
+					end
+				end
+				return nil
+			end
+
+			-- Nobody loaded: the account name is all there is, and that is right.
+			env.source = 31
+			control.netEvents[said]('hello')
+			control.Pump(4)
+			local anonymous = lastAuthor()
+			check('with no character loaded the account name is used',
+				anonymous ~= nil, tostring(anonymous))
+
+			-- A SECOND SPEAKER, not the same one again: the box rate-limits a
+			-- player to one line per RATE_MS and the second would simply be
+			-- dropped, leaving the first message's author standing and the check
+			-- passing or failing for the wrong reason.
+			control.Admit(32, 'account-named')
+			OPX.EnsureSession(32)
+			character.Players[32] = {
+				PlayerData = { charInfo = { firstName = 'Vincent', lastName = 'Kowalski' } },
+			}
+			env.source = 32
+			control.netEvents[said]('hello again')
+			control.Pump(4)
+			check('once a character is loaded the message is theirs',
+				lastAuthor() == 'Vincent Kowalski', tostring(lastAuthor()))
+			character.Players[32] = nil
+		end
+	end
+end
+
+-- The health pool is an operator's number now, and two conversions in
+-- `PlaceCharacter` divided stored points by a hard-coded 100. Raising the pool
+-- without touching them would have placed every character at
+-- stored/100 of a 250-point body -- so somebody who logged out unhurt would
+-- come back at 40%, quietly, everywhere at once, the first time the number
+-- moved. That is the whole reason this section exists.
+section('the health pool is configured, and the stored points follow it')
+do
+	local env, _, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local HEALTH = OPX.Config.SHARED.HEALTH
+
+		check('the framework ships a pool and a legacy full value',
+			type(HEALTH) == 'table' and OPX.Math.IsFinite(HEALTH.MAX)
+				and OPX.Math.IsFinite(HEALTH.LEGACY_FULL),
+			type(HEALTH) == 'table' and tostring(HEALTH.MAX))
+		check('and a new character starts with the pool, not a literal',
+			OPX.Config.MODULES.character.PLAYER.STARTING_METADATA.health == HEALTH.MAX,
+			tostring(OPX.Config.MODULES.character.PLAYER.STARTING_METADATA.health))
+		check('the legacy full value is not a tunable that moved with the pool',
+			HEALTH.LEGACY_FULL == 100, tostring(HEALTH.LEGACY_FULL))
+	end
+end
+
+-- A PACE IS THE FIRST REASON TO WALK THAT OUTLIVES ITS TRIGGER. Every other
+-- caller holds the lease while something is visibly happening and lets go when
+-- it ends; a pace is a preference that stands until the player changes it. Two
+-- consequences, and they are the whole of this section: the lease is ONE
+-- request per RESOURCE, so an emote and a pace would have overwritten each
+-- other -- and the watchdog, written when an emote was the only thing that
+-- could ask, would have swept a deliberate pace on every sweep, with a warning
+-- line each time blaming a path nobody had forgotten.
+section('the walking pace, on the eye')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local animations = OPX.Modules.Get('animations')
+		local Walk = animations ~= nil and animations.Walk or nil
+		check('the walk half is up', Walk ~= nil)
+
+		if Walk ~= nil then
+			env.Open77.movement = { setWalkMode = function() return true end }
+			-- The harness boots without a movement stub, so `Walk.Start` correctly
+			-- declined to offer paces a client cannot take. Re-run it now that the
+			-- lease exists, which is also the path a real client takes.
+			Walk.Start()
+
+			local configured = OPX.Config.MODULES.animations.WALK_PACES
+			check('the framework ships a list of paces',
+				type(configured) == 'table' and #configured > 0,
+				type(configured) == 'table' and #configured or 'absent')
+
+			-- Every pace inside the platform's own 0.5..2.5 bounds. One outside
+			-- is refused before the native sees it, so the row would be drawn,
+			-- clicked, and do nothing at all -- silently, for ever.
+			local bad = {}
+			for index = 1, #configured do
+				local speed = tonumber(configured[index].SPEED)
+				if speed == nil or speed < 0.5 or speed > 2.5 then
+					bad[#bad + 1] = tostring(configured[index].ID)
+				end
+			end
+			check('every shipped pace is inside the platform bounds',
+				#bad == 0, table.concat(bad, ','))
+
+			-- ── THE ROWS ARE ACCEPTED, which is the only question worth asking ──
+			--
+			-- This block used to read the fields back -- `kind == 'self'`,
+			-- `folder == 'walk'`, the label in the catalogue -- and it passed
+			-- while NOT ONE ROW EXISTED IN THE REGISTRY. The rows were built in
+			-- `admin`'s internal vocabulary, which `admin` translates at its own
+			-- door; the registry wants `onSelect`, `canInteract` and `checked`,
+			-- refuses a definition without a callable `onSelect`, and
+			-- `RegisterMany` is ALL-OR-NOTHING, so all four went down together.
+			-- The refusal was logged with `Open77.log.warn`, which writes on the
+			-- player's own machine, and nothing here asked the registry what it
+			-- had actually taken.
+			--
+			-- Asserting a shape I chose only ever proves I am consistent with
+			-- myself. `List` is the other side of the contract answering.
+			local target = OPX.Api.Get('target')
+			check('the eye is up so the rows have somewhere to go', target ~= nil)
+
+			local held = target ~= nil and target.List('animations') or nil
+			check('the pace rows were accepted by the registry',
+				held ~= nil and held.ok == true,
+				held ~= nil and tostring(held.error) or 'no contract')
+
+			local options = held ~= nil and held.ok and held.value.options or {}
+			check('one per pace, plus the ordinary body',
+				#options == #configured + 1, #options)
+
+			-- A raw catalogue key would be drawn as itself: the registry takes
+			-- display text, not a key to resolve.
+			local raw = {}
+			for index = 1, #options do
+				local label = tostring(options[index].label)
+				if label:match('^animations%.') then raw[#raw + 1] = label end
+			end
+			check('and their labels are resolved, not catalogue keys',
+				#raw == 0, table.concat(raw, ', '))
+
+			-- ── choosing ──
+			Walk.Request('emote', nil)
+			Walk.Choose(nil)
+			check('the ordinary body holds nothing', Walk.Held() == nil and Walk.Pace() == nil)
+
+			for index = 1, #configured do
+				local id = configured[index].ID
+				local pace = Walk.Choose(id)
+				check(('choosing %s holds its own speed'):format(tostring(id)),
+					pace ~= nil and pace.id == id and Walk.Held() == pace.speed,
+					tostring(Walk.Held()))
+			end
+
+			-- The row marks itself, which is what makes the list readable: the
+			-- answer to "which pace am I on" is the same click as changing it.
+			-- Read off `Walk.Rows()` freshly, and through `checked` -- the field
+			-- the registry reads. The old spelling was `state`, which is what
+			-- `admin` calls it, and asserting that name was part of what let the
+			-- whole batch be refused while this section stayed green.
+			local live = Walk.Pace()
+			local built = Walk.Rows()
+			local marked = 0
+			for index = 1, #built do
+				if built[index].checked() == true then marked = marked + 1 end
+			end
+			check('exactly one row reads as the live one', marked == 1, marked)
+
+			check('and choosing the ordinary body again releases the lease',
+				Walk.Choose(nil) == nil and Walk.Held() == nil)
+
+			-- ── the two reasons coexist ──
+			-- The platform arbitrates between RESOURCES; inside one resource
+			-- there is a single request, so the same rule is applied here
+			-- between reasons. Without it an emote would wipe out a pace.
+			Walk.Choose(live.id)
+			Walk.Follow(true, 'smoke')
+			check('an emote does not wipe the pace out',
+				Walk.Asked('pace') == live.speed, tostring(Walk.Asked('pace')))
+			check('and the slower of the two is what the body is given',
+				Walk.Held() == math.min(live.speed, 1.3), tostring(Walk.Held()))
+
+			Walk.Follow(false, nil)
+			check('the emote ending leaves the pace standing',
+				Walk.Held() == live.speed, tostring(Walk.Held()))
+
+			-- ── the watchdog answers for the emote and nothing else ──
+			local warned = #control.log.warn
+			Walk.Check()
+			check('the watchdog does not sweep a pace nobody asked it about',
+				Walk.Held() == live.speed, tostring(Walk.Held()))
+			check('and it does not blame anybody for it either',
+				#control.log.warn == warned)
+
+			Walk.Choose(nil)
+			check('releasing the pace releases the lease', Walk.Held() == nil)
+
+			-- A speed the platform would refuse never reaches it.
+			Walk.Request('pace', 9.0)
+			check('a pace outside the bounds is refused here, not by the native',
+				Walk.Asked('pace') == nil and Walk.Held() == nil)
+			Walk.Request('emote', nil)
+			env.Open77.movement = nil
+		end
+	end
+end
+
+-- Pressing a hotbar key over an empty slot sent a `use` anyway, the server
+-- refused it -- correctly; it is the authority on what a slot holds -- and the
+-- refusal came back as a toast. A player reaching for the wrong number was told
+-- off for it, every time, for a press that could not have done anything.
+section('a hotbar key over nothing asks nothing')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local Slotbar = inventory ~= nil and inventory.Slotbar or nil
+		local Options = inventory ~= nil and inventory.Options or nil
+		check('the hotbar half is up', Slotbar ~= nil and Options ~= nil)
+
+		if Slotbar ~= nil and Options ~= nil then
+			check('the peek key is not the game\'s own quick menu',
+				Options.KEY_PEEK ~= 'TAB', tostring(Options.KEY_PEEK))
+			check('and it is still a key, not switched off',
+				Options.KEY_PEEK ~= false and Options.KEY_PEEK ~= nil,
+				tostring(Options.KEY_PEEK))
+
+			-- The mirror is a sparse LIST and the slot is a field on each entry,
+			-- so the fifth entry is not slot five. That is the whole reason this
+			-- is asked through `Holds` rather than indexed at the call site.
+			local Screen = inventory.Screen
+			local realOwn = Screen.Own
+			Screen.Own = function()
+				return { items = { { slot = 3, name = 'medkit', count = 1 } } }
+			end
+
+			check('a slot the bag fills reads as held', Slotbar.Holds(3) == true)
+			check('an empty slot does not', Slotbar.Holds(1) == false)
+			check('and neither does a slot that is not a number',
+				Slotbar.Holds('three') == false)
+			check('nor one past the end', Slotbar.Holds(99) == false)
+
+			Screen.Own = function() return nil end
+			check('with no bag at all nothing reads as held', Slotbar.Holds(3) == false)
+			Screen.Own = realOwn
+		end
+	end
+end
+
+-- ── a bar at two fifths of a full player ─────────────────────────────────────
+-- THE OWNER'S REPORT: "le heal dans le menu admin semble pas heal depuis qu'on
+-- a changé le max vie", and then, having watched it: "la vie toujours 40
+-- afficher sur l'hud enfois de 250".
+--
+-- The staff menu was innocent and the server was too -- the audit line said
+-- `admin.self.heal … "250"` and nothing refused it. `sampleVitals` took a
+-- SECOND reading, the local body's health off `Open77.character.state`, on the
+-- grounds that damage the server never hears of only ever lowers the body --
+-- and divided it by the CANONICAL maximum. The two are not on the same axis,
+-- and while the maximum was 100 nothing could show it, because 100 and 100
+-- divide the same. The line the client relayed once the maximum moved:
+--
+--   vitals: engine body 100.0, canonical 250.0 of 250.0, drawn 40%
+--
+-- So the check is the shape of that line: the canonical pool full at 250, the
+-- engine body still reporting 100, and the gauge that reaches the page drawing
+
+-- ── a menu says so, so the HUD can stand aside ───────────────────────────────
+-- THE OWNER: "quand le menu est ouvert hide la". The HUD already had the
+-- mechanism -- a set of named screens holding the display -- and what was
+-- missing was the menu ever saying it was one. This is the other half of the
+-- check in the HUD section: that one proves the HUD listens, this one proves
+
+-- ── who is this ──────────────────────────────────────────────────────────────
+-- THE OWNER: "en gors avec alt sur un joeuru tu peux recup c'est identifiant
+-- donc id serveur est id perso c'est tous".
+--
+-- One row on another player, answering with both identifiers. They are different
+-- things with different lifetimes -- the server id is the number in the journal
+-- and is only that player's until they disconnect; the character id is durable
+-- -- so both are named rather than printed as two bare values.
+--
+-- THE ROW IS THE EYE'S OWN, and that is forced rather than chosen: `character`
+-- cannot depend on `target`, because `target` optionally depends on `downed` and
+-- `downed` REQUIRES `character`. The module graph refuses a cycle by name and
+-- would take the boot down, which is why this is checked here at all.
+section('the eye answers who somebody is')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the identify row', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local target = OPX.Api.Get('target')
+		check('the eye contract is up', target ~= nil and type(target.List) == 'function')
+
+		if target ~= nil then
+			settle(control, function()
+				local answer = target.List('target')
+				return answer.ok and #answer.value.options > 0
+			end, 40)
+			local held = target.List('target')
+			local rows = held.ok and held.value.options or {}
+			local row
+			for _, entry in ipairs(rows) do
+				if tostring(entry.id):find('whoIsThis', 1, true) then row = entry end
+			end
+			check('the eye carries a row of its own for it', row ~= nil,
+				('%d row(s)'):format(#rows))
+
+			-- ── OFFERED ONLY WHEN THERE IS SOMETHING TO ANSWER WITH ─────────
+			-- A row that appears and then says "unknown" teaches a player the
+			-- feature is broken. One that is simply absent teaches them the bag
+			-- has not arrived, which is what is true.
+			-- STUBBED ON THE CONTRACT AND NOT ON THE MODULE. The row reads
+			-- `Api.Get('character').GetPlayerIdentity`, and that reference was
+			-- taken when the contract was published -- replacing the function on
+			-- the module namespace afterwards changes nothing the row can see,
+			-- which is how the first version of this check failed while the
+			-- feature worked.
+			local characterApi = OPX.Api.Get('character')
+			check('the character contract is up to be stubbed',
+				type(characterApi) == 'table')
+			local realIdentity = characterApi ~= nil and characterApi.GetPlayerIdentity or nil
+			local identity = {}
+			if characterApi ~= nil then
+				characterApi.GetPlayerIdentity = function(playerId)
+					return identity[tonumber(playerId)] or {}
+				end
+			end
+
+			-- THE MODULE, not the contract: `Api.Get` answers the published
+			-- surface and the row builder is not on it -- nothing outside this
+			-- module calls it, so publishing it would widen the contract for a
+			-- test.
+			local eye = OPX.Modules.Get('target')
+			local built = type(eye.IdentifyRow) == 'function' and eye.IdentifyRow(12.0) or nil
+			check('and the row is reachable as a table a test can ask questions of',
+				type(built) == 'table' and type(built.onSelect) == 'function')
+			local context = { kind = 'player', target = { playerId = 42 } }
+			check('with no replicated identity the row is not offered',
+				built == nil or built.canInteract(context) ~= true)
+
+			identity[42] = { citizenId = 'CJX-DP9J', name = 'Somebody' }
+			check('and with one it is', built ~= nil and built.canInteract(context) == true)
+
+			-- ── AND IT ANSWERS WITH BOTH ────────────────────────────────────
+			local said
+			local realToast = OPX.Toast.Show
+            OPX.Toast.Show = function(payload)
+				said = payload
+				return realToast and realToast(payload)
+			end
+			local copied
+			env.Open77.clipboard = { setText = function(line) copied = line return true end }
+
+			local ran = built ~= nil and built.onSelect(context)
+			check('selecting it answers', ran == true)
+			check('and puts BOTH identifiers on the clipboard, not one',
+				type(copied) == 'string' and copied:find('42', 1, true) ~= nil
+					and copied:find('CJX-DP9J', 1, true) ~= nil,
+				tostring(copied))
+			check('and says so on screen, with each one named',
+				said ~= nil and tostring(said.message):find('42', 1, true) ~= nil
+					and tostring(said.message):find('CJX-DP9J', 1, true) ~= nil,
+				said and tostring(said.message))
+
+			OPX.Toast.Show = realToast
+			if characterApi ~= nil then characterApi.GetPlayerIdentity = realIdentity end
+		end
+	end
+end
+-- there is something to hear.
+section('a menu announces itself')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the menu announcement', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local module = OPX.Modules.Get('menu')
+		local heard = {}
+		env.AddEventHandler(module.Event.STATE, function(payload)
+			if type(payload) == 'table' then heard[#heard + 1] = payload.open end
+		end)
+
+		local api = OPX.Api.Get('menu')
+		check('the menu contract is up', type(api) == 'table' and type(api.Open) == 'function')
+
+		if type(api) == 'table' and type(api.Open) == 'function' then
+			local opened = api.Open({
+				owner = 'test', title = 'MENU',
+				items = { { id = 'a', label = 'A' } },
+				on = function() end,
+			})
+			control.Pump(5)
+			check('opening one is announced', heard[#heard] == true,
+				('%d raise(s)'):format(#heard))
+
+			-- ON A CHANGE, NOT ON EVERY OPEN. A menu replacing another is still a
+			-- menu being open, and a listener that stood aside would watch the
+			-- HUD flicker between the two.
+			local before = #heard
+			local second = api.Open({
+				owner = 'test', title = 'SECOND',
+				items = { { id = 'b', label = 'B' } },
+				on = function() end,
+			})
+			control.Pump(5)
+			check('and a menu replacing another says nothing at all',
+				#heard == before, ('%d -> %d'):format(before, #heard))
+
+			if type(api.Close) == 'function' then
+				api.Close(second.ok and second.value.handle or nil, 'test')
+				control.Pump(5)
+				check('closing the last one is announced too', heard[#heard] == false,
+					tostring(heard[#heard]))
+			end
+			local _ = opened
+		end
+	end
+end
+-- a hundred percent of a living player.
+section('a full player draws a full bar, whatever the maximum is')
+do
+	local function prelude(env)
+		local O = env.Open77
+		O.input = {
+			isDown = function() return false end,
+			keyFor = function() return 'ALT' end,
+			cursor = function() return { inBounds = true, captured = false } end,
+			isCaptured = function() return false end,
+			block = function() return true end,
+		}
+		O.camera = { screenRaycast = function() return { hit = false } end }
+		-- FULL, ON THE RAISED MAXIMUM. `config/shared.lua` HEALTH.MAX is 250.
+		O.stats = {
+			get = function()
+				return {
+					health = { value = 250, maximum = 250 },
+					armor = 0,
+					stamina = { value = 100, maximum = 100 },
+				}
+			end,
+		}
+		-- AND THE ENGINE BODY ON ITS OWN SCALE, which is the whole defect: it
+		-- carries no maximum in this record to divide by, and 100 is what the
+		-- live client reported for a player the server called full.
+		O.character.state = function()
+			return {
+				health = 100, attached = true, alive = true,
+				position = { x = 0, y = 0, z = 0 },
+			}
+		end
+		env.RegisterKeyMapping = function() end
+	end
+
+	local env, control, why = boot('client', nil, prelude)
+	check('the client boots for the gauges', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] ~= nil then page = candidate end
+		end
+		check('the overlay page is up', page ~= nil)
+
+		if page ~= nil then
+			env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'entry', 'state'), { open = false })
+			env.TriggerEvent(OPX.Event(OPX.Channel.LOCAL, 'spawn', 'state'), { open = false })
+			control.PageEmit(page, 'opx:hud:ready', {})
+			control.Pump(10)
+
+			local drawnPct, drawnPoints
+			for _, message in ipairs(page.sent) do
+				if message.channel == 'opx:hud:vitals' and type(message.payload) == 'table' then
+					for _, row in ipairs(message.payload.gauges or {}) do
+						if row.id == 'health' then drawnPct, drawnPoints = row.pct, row.points end
+					end
+				end
+			end
+
+			check('the health gauge reaches the page at all', drawnPct ~= nil, drawnPct)
+			-- 40 IS THE BUG, VERBATIM: 100 over 250. Anything but a full bar for a
+			-- player the server says is full means a second opinion came back.
+			check('a player the server calls full draws full, not 40%',
+				drawnPct ~= nil and math.abs(drawnPct - 100) < 0.5, drawnPct)
+
+			-- AND THE NUMBER IS NOT THE BAR. "le hud affiche 100 enfois de 250 dans
+			-- vie": once the two stopped being the same number, the share was the
+			-- wrong one to print. The bar keeps 100% and the read-out says 250.
+			check('the read-out carries the pool in points, not the share',
+				drawnPoints == 250, tostring(drawnPoints))
+		end
+	end
+end
+-- ── the map the owner could not see anything on ─────────────────────────────
+--
+-- "ce serais cool de voir des blips sur la minimap", then "sur la map je vois
+-- pas les blips". Before `modules/blips` this runtime had never created one:
+-- `grep -rn blips .` over the whole tree was empty, and the fullscreen map was
+-- blank because nothing had ever put anything on it.
+--
+-- So the first check here is the one that would have caught the whole thing --
+-- does anything at all reach the engine -- and the rest are the ways a pin can
+-- be created and still be wrong.
+section('blips: the map has pins on it, and they come from the spot lists')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the blips module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		check('the blips module is declared', type(blips) == 'table')
+
+		local report = blips.Runtime.Report()
+		-- THE REGRESSION CHECK FOR THE ORIGINAL DEFECT. `config/shops.lua` ships
+		-- two surveyed shops and `config/gunsmith.lua` three armoury benches, so a
+		-- bare client with no server lists at all still has five places to point
+		-- at. Zero here is the bug the owner reported, exactly as he reported it.
+		check('a bare client still puts pins on the map', report.live > 0, report.live)
+		check('and the engine really was asked for every one of them',
+			#control.blips.created == report.live,
+			('%d created, %d reported'):format(#control.blips.created, report.live))
+
+		-- THE HANDLES ARE 64-BIT DECIMAL STRINGS AND MUST STAY STRINGS -- the
+		-- platform guide says in as many words never to put one through
+		-- `tonumber`. The stub hands back ids past 2^53 so that a handle which
+		-- ever reaches something holding numbers as doubles comes back different;
+		-- this check is the other half, that the module never converted one at
+		-- all. Storing the id as a number instead costs this module every removal
+		-- it will ever make, because the engine's table is keyed by the string.
+		local stringly, exact = true, true
+		for id, handle in pairs(blips.Runtime.Created()) do
+			if type(handle) ~= 'string' then stringly = false end
+			if control.blips.byId[handle] == nil then exact = false end
+			local _ = id
+		end
+		check('every handle is kept as the string the engine gave', stringly)
+		check('and every one of them still names a live blip', exact)
+
+
+		-- ── THE JOB PINS BELONG TO THE JOB ────────────────────────────────────
+		-- THE OWNER: "fait en sorte que les blips job on les voit uniquement si on
+		-- fait partie du job si possible".
+		--
+		-- It is possible without inventing a rule. `config/gunsmith.lua` already
+		-- says who may use `arasaka_armoury` -- `JOBS = { arasaka = 0 }` with
+		-- `ON_DUTY = true` -- in the same vocabulary `config/hauling.lua`,
+		-- `config/elevators.lua` and `config/teleports.lua` use, and
+		-- `lib/shared/jobgate.lua` is the one thing that decides all of them. The
+		-- map asks that gate, so a pin appears for exactly the people the bench
+		-- opens for and the two cannot drift.
+		local character = OPX.Modules.Get('character')
+		local function pinned(key)
+			for id in pairs(blips.Runtime.Created()) do
+				if id:find(key, 1, true) then return true end
+			end
+			return false
+		end
+
+		local GATED = 'bench\1arasaka_armoury'
+
+		-- BEFORE A CHARACTER EXISTS THE PIN STAYS, and that is the deliberate
+		-- direction. This is visibility, not authorisation -- the server refuses
+		-- the bench either way and nothing here decides anything -- so the
+		-- asymmetry the gate itself is built on is inverted: hiding a pin from
+		-- somebody entitled to it is the failure, showing one to somebody who
+		-- cannot use the bench is untidy. A client still joining is not a threat.
+		check('a gated bench is pinned before there is a character to judge',
+			pinned(GATED), 'the join window must not hide it')
+
+		-- A CHARACTER WITH NO JOB IS NOT IN THE JOB.
+		character.IsLoggedIn = true
+		character.PlayerData = { citizenId = 'TEST-1' }
+		blips.Runtime.Sync()
+		control.Pump(20)
+		check('a character who holds no job loses the gated pin', not pinned(GATED))
+
+		-- THE WRONG JOB IS STILL NOT THE JOB.
+		character.PlayerData = { citizenId = 'TEST-1',
+			job = { name = 'ncpd', onDuty = true, grade = { level = 4 } } }
+		blips.Runtime.Sync()
+		control.Pump(20)
+		check('and so does one who holds a different job', not pinned(GATED))
+
+		-- ON THE PAYROLL BUT OFF THE CLOCK. `ON_DUTY = true` on the armoury means
+		-- the job must be the one being WORKED, and the map honours that too --
+		-- the same field, read by the same gate, as the bench itself.
+		character.PlayerData = { citizenId = 'TEST-1',
+			job = { name = 'arasaka', onDuty = false, grade = { level = 0 } } }
+		blips.Runtime.Sync()
+		control.Pump(20)
+		check('an arasaka employee off duty does not get it either', not pinned(GATED))
+
+		-- AND THE WHOLE POINT: clocked on, the bench is on the map.
+		character.PlayerData = { citizenId = 'TEST-1',
+			job = { name = 'arasaka', onDuty = true, grade = { level = 0 } } }
+		blips.Runtime.Sync()
+		control.Pump(20)
+		check('and the employee who is working sees their armoury', pinned(GATED))
+
+		-- THE UNGATED PLACES ARE UNTOUCHED BY ANY OF IT. A shop has no JOBS block
+		-- and `Evaluate`'s first line is that no requirement is public -- which is
+		-- also what keeps hauling's deliberately job-free sites on the map.
+		check('a place with no JOBS block stays pinned throughout',
+			blips.Runtime.Report().live > 0, blips.Runtime.Report().live)
+		character.IsLoggedIn = false
+		character.PlayerData = {}
+		blips.Runtime.Sync()
+		control.Pump(20)
+		-- THE UNSURVEYED POINTS. Every DROPOFF in `config/hauling.lua` is an
+		-- all-zero placeholder and the file says so in its own header. A pin at
+		-- the world origin is a pin in the sea, and it reads as this feature
+
+		-- ── THE YARD ITSELF, NOT ONLY WHERE THE CRATE GOES ───────────────────
+		-- THE OWNER: "pour la hauling tu peux mettre des blips aussi car sinon
+		-- ont sais pas ou sais". Hauling was already a blip source -- and only
+		-- its DROP-OFFS were pinned, so the map said where to deliver a crate and
+		-- nothing about where to collect one, which is the half you have to find
+		-- first.
+		--
+		-- WHY HE SAW NOTHING AT ALL, though, is a different fault and not this
+		-- one: every coordinate in `config/hauling.lua` ships as `0,0,0` -- ten of
+		-- them, none surveyed -- the hauling module disables both sites at boot
+		-- and says so in the journal on every start, and this module refuses to
+		-- pin the world origin. A pin in the sea reads as the feature being
+		-- broken. So the check below surveys a site first, because a test against
+		-- the shipped placeholders would pass by pinning nothing.
+		do
+			local haulCfg = OPX.Config.MODULES.hauling
+			local site = haulCfg ~= nil and haulCfg.SITES and haulCfg.SITES.docks or nil
+			check('the shipped hauling site is there to survey', site ~= nil)
+
+			if site ~= nil then
+				local heldPoints = site.POINTS
+				-- THREE POINTS, and the first left as a placeholder on purpose:
+				-- the yard's pin must land on the first point that is REAL, not
+				-- on the first point in the list.
+				site.POINTS = {
+					{ X = 0.0, Y = 0.0, Z = 0.0, YAW = 0.0 },
+					{ X = 120.0, Y = -430.0, Z = 12.0, YAW = 90.0 },
+					{ X = 124.0, Y = -430.0, Z = 12.0, YAW = 90.0 },
+				}
+				blips.Runtime.Sync()
+				control.Pump(20)
+
+				local yards = 0
+				local at
+				for id in pairs(blips.Runtime.Created()) do
+					if tostring(id):find('site', 1, true) and tostring(id):find('docks', 1, true) then
+						yards = yards + 1
+						at = id
+					end
+				end
+				check('a surveyed yard is pinned', yards >= 1, yards)
+				-- ONE PIN PER YARD AND NOT ONE PER CRATE. Up to 64 points a site,
+				-- and the platform allows 128 blips for the whole resource.
+				check('exactly once, however many crate points it has', yards == 1,
+					('%d pin(s): %s'):format(yards, tostring(at)))
+
+				-- AND ON A REAL PLACE. The first entry is a placeholder, so a pin
+				-- that landed on it would be a pin in the sea.
+				local origin = 0
+				for _, options in pairs(control.blips.byId) do
+					local where = options.position
+					if where ~= nil and where.x == 0.0 and where.y == 0.0 and where.z == 0.0 then
+						origin = origin + 1
+					end
+				end
+				check('and not on the placeholder that comes before it', origin == 0, origin)
+
+				site.POINTS = heldPoints
+				blips.Runtime.Sync()
+				control.Pump(20)
+			end
+		end
+		-- being broken rather than as the config being unfilled.
+		check('the all-zero placeholders were skipped rather than pinned',
+			report.skipped > 0, report.skipped)
+		local atOrigin = 0
+		for _, options in pairs(control.blips.byId) do
+			local at = options.position
+			if at ~= nil and at.x == 0.0 and at.y == 0.0 and at.z == 0.0 then
+				atOrigin = atOrigin + 1
+			end
+		end
+		check('and not one pin was dropped at the world origin', atOrigin == 0, atOrigin)
+
+		-- The tooltip text. The POINT's own label titles the pin and the CATEGORY
+		-- names what kind of place it is; a pin carrying neither is a dot.
+		local titled, described = 0, 0
+		for _, options in pairs(control.blips.byId) do
+			if type(options.title) == 'string' and options.title ~= '' then titled = titled + 1 end
+			if type(options.description) == 'string' and options.description ~= '' then
+				described = described + 1
+			end
+		end
+		check('every pin carries the operator\'s own name for the place',
+			titled == report.live, ('%d of %d'):format(titled, report.live))
+		check('and the category that says what kind of place it is',
+			described == report.live, ('%d of %d'):format(described, report.live))
+	end
+end
+
+-- ── the yield that four outages paid for ────────────────────────────────────
+--
+-- A client resume has an INSTRUCTION BUDGET, and a loop that creates several
+-- dozen engine handles in one pass runs out of it partway down -- at which
+-- point the coroutine unwinds with NO ERROR, NO LOG AND NO REFUSAL. Half the
+-- pins are up, the rest never exist, and nothing anywhere says so.
+--
+-- `modules/admin/client/target.lua`'s `register()` carries the full story and
+-- paid for it four times. Blips are the same shape: a hundred-odd engine calls,
+-- all at start, all in one pass. This is the check that the yield is real.
+section('blips: a hundred pins are not created in one resume')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the batching', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		local BATCH = 2
+
+		OPX.Config.MODULES.blips.BATCH = BATCH
+		-- Nine spots on one source, so the run is long enough that a missing yield
+		-- cannot be mistaken for a short list.
+		local spots = {}
+		for index = 1, 9 do
+			spots['g' .. index] = { key = 'g' .. index, label = 'Garage ' .. index,
+				x = 100.0 + index, y = 200.0, z = 30.0 }
+		end
+		OPX.Modules.Get('garages').Runtime.Spots = function() return spots end
+
+		-- COUNTED AT EVERY YIELD. `marks` is how many creates had happened each
+		-- time the thread gave the frame back, so the gaps between consecutive
+		-- marks are the runs of un-yielded work. A `Wait(0)` deleted from
+		-- `apply()` turns all nine into ONE run, which is the mutation this is
+		-- here to kill.
+		local creates, marks = 0, {}
+		local native = env.Open77.blips
+		local realCreate = native.create
+		native.create = function(...)
+			creates = creates + 1
+			return realCreate(...)
+		end
+		local realWait = env.Wait
+		env.Wait = function(...)
+			marks[#marks + 1] = creates
+			return realWait(...)
+		end
+
+		blips.Runtime.Sync()
+		control.Pump(20)
+		control.Pump(40)
+		env.Wait = realWait
+		native.create = realCreate
+
+		check('all nine garages were pinned', creates >= 9, creates)
+
+		local longest, previous = 0, 0
+		for index = 1, #marks do
+			local run = marks[index] - previous
+			if run > longest then longest = run end
+			previous = marks[index]
+		end
+		if creates - previous > longest then longest = creates - previous end
+		check('and no more than BATCH of them were created between two yields',
+			longest <= BATCH, ('longest un-yielded run was %d, BATCH is %d'):format(longest, BATCH))
+	end
+end
+
+-- ── the settings the engine refuses by name ─────────────────────────────────
+--
+-- `Open77.blips` refuses `color`/`colour` with their own reason token. It is
+-- not an oversight: a mappin carries no colour field, and opacity and scale
+-- live on a UI profile the SPRITE resolves and every pin using it shares. So
+-- the sprite IS the colour, and an operator who writes `COLOUR` has to be told
+-- rather than quietly ignored -- a property accepted and silently discarded is
+-- worse than one that is missing.
+section('blips: colour is refused by name, and the refusal names the category')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the refused settings', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+
+		OPX.Config.MODULES.blips.CATEGORIES.shops.COLOUR = '#ff0000'
+		OPX.Config.MODULES.blips.CATEGORIES.garages.RANGE = 9000
+
+		local _, problems = blips.Runtime.Categories()
+		local saidColour, saidRange = false, false
+		for index = 1, #problems do
+			local line = problems[index]
+			if line:find('shops', 1, true) and line:find('COLOUR', 1, true)
+				and line:find('SPRITE', 1, true) then saidColour = true end
+			if line:find('garages', 1, true) and line:find('RANGE', 1, true) then
+				saidRange = true
+			end
+		end
+		check('a COLOUR is refused, naming its category and what to use instead', saidColour,
+			table.concat(problems, ' / '))
+		-- 0..4000 is the engine's own bound and outside it `create` answers
+		-- `invalid_range` -- which is a pin that is simply absent, indistinguishable
+		-- from the bug this module fixes. So it is refused at boot instead.
+		check('and a RANGE outside 0..4000 is refused before the engine sees it', saidRange,
+			table.concat(problems, ' / '))
+
+		-- The category with the bad RANGE must draw NOTHING, and the engine must
+		-- never have been handed the bad value.
+		OPX.Modules.Get('garages').Runtime.Spots = function()
+			return { g1 = { key = 'g1', label = 'Garage', x = 10.0, y = 20.0, z = 30.0 } }
+		end
+		blips.Runtime.Sync()
+		control.Pump(20)
+		control.Pump(30)
+		local ranged, badRange = 0, 0
+		for _, options in pairs(control.blips.byId) do
+			if options.range ~= nil then
+				ranged = ranged + 1
+				if options.range > 4000 or options.range < 0 then badRange = badRange + 1 end
+			end
+			if options.description == 'Garage' then badRange = badRange + 1 end
+		end
+		check('the category the engine would have refused draws nothing at all',
+			badRange == 0, badRange)
+		-- AND IT NEVER REACHED THE ENGINE. Without the boot check the bad range is
+		-- handed to `create`, which answers `invalid_range` -- so the pin is
+		-- missing either way and the assertion above cannot tell the two apart.
+		-- A refusal counted here is the difference between "we refused it, with a
+		-- line naming the category" and "the engine refused it, in silence".
+		check('and the engine was never handed the value it would refuse',
+			blips.Runtime.Report().refused == 0, blips.Runtime.Report().refused)
+		-- A shop's RANGE of 400 is legitimate and must still reach the engine, or
+		-- this check would pass just as well with ranges dropped entirely.
+		check('while a range the engine accepts is still sent', ranged > 0, ranged)
+	end
+end
+
+-- ── a pin that outlived the thing it pointed at ─────────────────────────────
+--
+-- The failure mode of every module of this shape written the other way round:
+-- blips are added when a spot appears and nothing takes them down. A garage an
+-- operator deleted, or a spot in a routing bucket the player left, goes on
+-- being pinned until the player rejoins.
+section('blips: a spot that went away, and one that moved')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the reconcile', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		local garages = OPX.Modules.Get('garages')
+
+		local list = {
+			one = { key = 'one', label = 'First', x = 10.0, y = 20.0, z = 30.0 },
+			two = { key = 'two', label = 'Second', x = 40.0, y = 50.0, z = 60.0 },
+		}
+		garages.Runtime.Spots = function() return list end
+		blips.Runtime.Sync()
+		control.Pump(20)
+		control.Pump(30)
+
+		local function pinned(label)
+			for _, options in pairs(control.blips.byId) do
+				if options.title == label then return options end
+			end
+			return nil
+		end
+
+		check('both garages are pinned', pinned('First') ~= nil and pinned('Second') ~= nil)
+
+		-- THE SPOT GOES AWAY. The server stopped naming it -- deleted, or a bucket
+		-- this player is no longer in.
+		list.two = nil
+		blips.Runtime.Sync()
+		control.Pump(20)
+		control.Pump(30)
+		check('a garage the server stopped naming loses its pin', pinned('Second') == nil)
+		check('and the one still named keeps it', pinned('First') ~= nil)
+
+		-- THE SPOT MOVES. A pin left where the garage used to be is worse than no
+		-- pin: it sends the player to the wrong place with confidence.
+		list.one.x, list.one.y, list.one.z = 900.0, 800.0, 700.0
+		blips.Runtime.Sync()
+		control.Pump(20)
+		control.Pump(30)
+		local moved = pinned('First')
+		check('a garage that moved is pinned where it is now',
+			moved ~= nil and moved.position.x == 900.0,
+			moved and moved.position.x or 'no pin')
+		local stale = 0
+		for _, options in pairs(control.blips.byId) do
+			if options.position ~= nil and options.position.x == 10.0 then stale = stale + 1 end
+		end
+		check('and nothing is left pointing at where it used to be', stale == 0, stale)
+	end
+end
+
+-- ── the quota, and the permission that refuses in silence ───────────────────
+section('blips: the platform\'s own ceilings, and a refusal nobody can see')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the ceilings', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+
+		-- THE QUOTA IS 128 PER RESOURCE and it is the platform's, not a taste. A
+		-- config asking for more is asking the engine to refuse the surplus one
+		-- create at a time, silently, on the 129th -- which is the shape of bug
+		-- this whole module exists to end. So it is clamped and counted here.
+		OPX.Config.MODULES.blips.MAX = 400
+		OPX.Config.MODULES.blips.CATEGORIES.shops.SHOW = false
+		OPX.Config.MODULES.blips.CATEGORIES.jobs.SHOW = false
+		local many = {}
+		for index = 1, 200 do
+			many['g' .. index] = { key = 'g' .. index, label = 'G' .. index,
+				x = 100.0 + index, y = 200.0, z = 30.0 }
+		end
+		OPX.Modules.Get('garages').Runtime.Spots = function() return many end
+
+		blips.Runtime.Sync()
+		control.Pump(20)
+		control.Pump(120)
+		local report = blips.Runtime.Report()
+		check('a config asking for 400 pins is clamped to the platform\'s 128',
+			report.live == 128, report.live)
+		check('and the engine never refused one, because it was never asked',
+			report.refused == 0, report.refused)
+		check('the points that did not fit are counted rather than dropped in silence',
+			report.capped == 72, report.capped)
+
+		-- THE SET THAT SURVIVES THE CAP IS THE SAME SET EVERY PASS. `pairs` order
+		-- is not stable, and without the sort a server over the quota would draw a
+		-- different arbitrary 128 on every reconcile: pins flickering in and out
+		-- with nothing in the world changing.
+		local first = {}
+		for id in pairs(blips.Runtime.Created()) do first[#first + 1] = id end
+		table.sort(first)
+
+		-- THE SAME 200 SPOTS IN A DIFFERENT INSERTION ORDER, which is not a
+		-- contrivance: `modules/garages/client/main.lua` builds a FRESH `accepted`
+		-- table on every SYNC, so the `pairs` order of the list this module reads
+		-- genuinely changes from one server message to the next. Without the sort
+		-- in `Runtime.Wanted`, the 128 that fit are then a different arbitrary 128
+		-- each time -- pins flickering in and out with nothing in the world having
+		-- changed. Reading the same table twice would not show that at all.
+		local reordered = {}
+		for index = 200, 1, -1 do
+			reordered['g' .. index] = { key = 'g' .. index, label = 'G' .. index,
+				x = 100.0 + index, y = 200.0, z = 30.0 }
+		end
+		OPX.Modules.Get('garages').Runtime.Spots = function() return reordered end
+
+		blips.Runtime.Sync()
+		control.Pump(20)
+		control.Pump(120)
+		local second = {}
+		for id in pairs(blips.Runtime.Created()) do second[#second + 1] = id end
+		table.sort(second)
+		check('and it is the same 128 after a reshuffled list, not a different arbitrary set',
+			table.concat(first, ',') == table.concat(second, ','))
+	end
+end
+
+section('blips: an undeclared client permission is a map that is simply empty')
+do
+	-- `ui.vanilla.map` is enforced by the CLIENT. Undeclared, every call answers
+	-- `permission_denied:ui.vanilla.map`, the refusal lands in the player's own
+	-- log on the player's own machine, and the server journal says NOTHING. That
+	-- is indistinguishable from the original defect, and it is why the manifest
+	-- comment on that permission is as long as it is.
+	local env, control, why = boot('client')
+	check('the client boots before the map permission is taken away', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+
+		-- Taken down while the grant is still there, so the engine really is
+		-- empty, and only then refused -- otherwise the pins from boot would sit
+		-- there and the module would rightly report them live.
+		blips.Runtime.Shutdown()
+		control.blips.permission = true
+		blips.Runtime.Start()
+		control.Pump(30)
+
+		local report = blips.Runtime.Report()
+		check('no pin is drawn', report.live == 0, report.live)
+		check('but the module counted the refusals rather than raising',
+			report.refused > 0, report.refused)
+		-- The operator has to be able to learn this from the SERVER's journal,
+		-- because `Open77.log` on a client writes to a file on a machine they do
+		-- not have. `OPX.Note` is the only line that crosses.
+		local notes = 0
+		for _, sent in ipairs(control.serverEvents) do
+			if sent.name == OPX.Event(OPX.Channel.NET, 'runtime', 'note') and sent[1] == 'blips' then
+				notes = notes + 1
+			end
+		end
+		check('and said so where the operator can read it', notes > 0, notes)
+	end
+end
+
+section('blips: the minimap state is read, not assumed')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the minimap read', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+
+		-- `config/hud.lua` now ships `VANILLA.minimap = true`, because this HUD
+		-- draws no minimap of its own and hiding the game's one handed the player
+		-- an empty corner. That is a CONFIGURATION and not a law, so the module
+		-- reads the effective state rather than assuming either answer.
+		check('with the shipped config the minimap is on, so pins reach it',
+			blips.Runtime.Report().minimap == true)
+
+		-- A hide claim is what `VANILLA.minimap = false` produces. The pins are
+		-- unaffected on the fullscreen map -- that surface is not one of the
+		-- thirteen components -- but the module must not go on claiming they are
+		-- on the minimap.
+		env.Open77.hud.setVisible('minimap', false)
+		check('a hide claim is seen for what it is',
+			blips.Runtime.Report().minimap == false)
+
+		-- The alias, because `config/hud.lua` could reasonably spell it `map`.
+		env.Open77.hud.setVisible('minimap', true)
+		check('and releasing the claim puts it back',
+			blips.Runtime.Report().minimap == true)
+
+		-- Pins are drawn either way: the fullscreen map is NOT governed by the
+		-- minimap component, which is the measurement the whole investigation
+		-- turned on.
+		env.Open77.hud.setVisible('minimap', false)
+		blips.Runtime.Sync()
+		control.Pump(20)
+		control.Pump(30)
+		check('and the pins are still drawn with the minimap hidden',
+			blips.Runtime.Report().live > 0, blips.Runtime.Report().live)
+	end
+end
+-- ── the holocall ─────────────────────────────────────────────────────────────
+-- The owner asked for "appel vision": a player-to-player holocall with the
+-- game's own blue eye-glow on both parties, answered on the target eye rather
+-- than on a key of its own. Three of those words carry the whole of the risk.
+-- PLAYER TO PLAYER means two machines, neither of which may be believed about
+-- what the other agreed to. BOTH PARTIES means a piece of world state -- a
+-- lease on a native effect -- that outlives the call unless something gives it
+-- back. WITH CONSENT means the interesting half of the feature is the refusals
+-- and not the success.
+--
+-- So this section is about the refusals and the next one is about the lease.
+section('calls: the call is the server\'s, and every refusal it can give has a name')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the calls module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Api.Get('calls')
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+
+		check('the calls module is running', OPX.Modules.IsRunning('calls'),
+			OPX.Modules.Record('calls') and OPX.Modules.Record('calls').Reason)
+		check('and the contract is published',
+			calls ~= nil and type(calls.IsOnCall) == 'function'
+				and type(calls.HangUp) == 'function')
+
+		-- Connected players with characters, which is what `judge` demands
+		-- before anybody may place or take a call at all.
+		local A, B, C, D = 601, 602, 603, 604
+		local function incarnate(id, tag)
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Caller', lastName = tag } },
+				Functions = { UpdatePlayerData = function() end,
+					GetMetaData = function() return nil end,
+					SetMetaData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		incarnate(A, 'a')
+		incarnate(B, 'b')
+		incarnate(C, 'c')
+		incarnate(D, 'd')
+		control.Pump(5)
+
+		-- The refusal a client was sent, as `OPX.Refuse` puts it on the wire.
+		local function refusalFor(mark)
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if type(sent[1]) == 'table' and sent[1].kind == 'error' then return sent[1] end
+			end
+			return nil
+		end
+
+		-- One wire request, with the caller's own cooldown already spent. The
+		-- pump is not decoration: REQUEST_MS is 1500 and a pump round is 100ms
+		-- of host clock, so two requests in a row from one player really are
+		-- rate-limited, exactly as they would be in game.
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			control.netEvents[name](...)
+			env.source = nil
+			return mark
+		end
+
+		-- How many people are on a player's call, and ZERO rather than a raise
+		-- when they are on none.
+		--
+		-- `IsOnCall` answers `{ onCall = false }` with no `participants` field,
+		-- which is right -- a call that is not there has no list -- and every
+		-- check below that counts a call has to survive the answer being that.
+		-- Written after a mutation: making `HangUp` keep a call of one alive
+		-- took the whole suite down with `attempt to get length of a nil value`
+		-- instead of naming the check that noticed. A test that crashes still
+		-- fails, but it fails without telling anybody what it found.
+		local function onCallCount(playerId)
+			local answer = calls.IsOnCall(playerId)
+			local value = answer.ok and answer.value or {}
+			return value.onCall == true and #(value.participants or {}) or 0
+		end
+
+		-- The invite id the server last pushed to a player's screen, or nil.
+		local function inviteOn(playerId)
+			local found
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == module.Event.STATE and sent.source == playerId
+					and type(sent[1]) == 'table' then
+					found = type(sent[1].invite) == 'table' and sent[1].invite.id or nil
+				end
+			end
+			return found
+		end
+
+		check('the four wire verbs are registered',
+			type(control.netEvents[module.Event.INVITE]) == 'function'
+				and type(control.netEvents[module.Event.ACCEPT]) == 'function'
+				and type(control.netEvents[module.Event.DECLINE]) == 'function'
+				and type(control.netEvents[module.Event.HANG_UP]) == 'function')
+
+		-- ── AND NOW THEY CAN HEAR EACH OTHER ─────────────────────────────────
+		-- THE OWNER: "petit bug quand il repond a l'appel on s'entend pas". It
+		-- was not a bug in what was built -- the call carried its state and its
+		-- presentation and no audio at all, which was reported as a limitation
+		-- when it landed and read as a fault the first time two people tried it.
+		--
+		-- Membership is REACHABILITY and the server owns reachability, so these
+		-- checks ask the channel who is on it rather than counting calls into a
+		-- stub. Both are put back where the section found them afterwards.
+		control.Stand(A, 0.0, 0.0, 0.0)
+		control.Stand(B, 1.0, 0.0, 0.0)
+
+		-- Radio bands share this seam with calls: the NCPD scanner seats one
+		-- channel per band at boot, so the stub's `channels` holds both. These
+		-- two readers count CALL channels only -- the ones the calls module
+		-- named `call <id>` -- because a band is not a call, and "one channel
+		-- standing" below means one CALL channel.
+		local function isCall(channel)
+			return type(channel) == 'table' and type(channel.name) == 'string'
+				and channel.name:match('^call ') ~= nil
+		end
+		local function channelOfCall()
+			for id, channel in pairs(control.voice.channels) do
+				local _ = id
+				if isCall(channel) then return channel end
+			end
+			return nil
+		end
+		local function channels()
+			local count = 0
+			for _, channel in pairs(control.voice.channels) do
+				if isCall(channel) then count = count + 1 end
+			end
+			return count
+		end
+
+		check('nobody on a call means no channel standing', channels() == 0, channels())
+
+		ask(A, module.Event.INVITE, B)
+		local ringing = inviteOn(B)
+		check('the call rings', ringing ~= nil)
+		ask(B, module.Event.ACCEPT, ringing)
+
+		local channel = channelOfCall()
+		check('answering opens one voice channel for the call',
+			channel ~= nil and channels() == 1, channels())
+		check('and puts BOTH parties on it, which is the whole of the report',
+			channel ~= nil and channel.members[A] ~= nil and channel.members[B] ~= nil,
+			channel and tostring(channel.members[A]) or 'no channel')
+		-- Speak AND listen: a membership that could only listen is the same
+		-- silence from the other side.
+		check('each able to speak and to listen',
+			channel ~= nil and channel.members[A].canSpeak == true
+				and channel.members[A].canListen == true
+				and channel.members[B].canSpeak == true
+				and channel.members[B].canListen == true)
+
+		-- ── A THIRD JOINS, AND THE CHANNEL DOES NOT MULTIPLY ─────────────────
+		control.Stand(C, 2.0, 0.0, 0.0)
+		ask(A, module.Event.INVITE, C)
+		local joining = inviteOn(C)
+		ask(C, module.Event.ACCEPT, joining)
+		channel = channelOfCall()
+		check('a third party joins the SAME channel rather than opening another',
+			channels() == 1 and channel ~= nil and channel.members[C] ~= nil,
+			channels())
+
+		-- ── ONE LEAVES, TWO CARRY ON ─────────────────────────────────────────
+		-- The line this kills: dropping the channel whenever `callEnded` runs.
+		-- It runs when one of three hangs up, and the other two are still
+		-- talking.
+		ask(C, module.Event.HANG_UP)
+		channel = channelOfCall()
+		check('the one who hung up is off the channel',
+			channel ~= nil and channel.members[C] == nil)
+		check('and the two still talking still have one',
+			channels() == 1 and channel.members[A] ~= nil and channel.members[B] ~= nil,
+			channels())
+
+		-- ── AND THE LAST ONE TAKES IT WITH THEM ──────────────────────────────
+		-- A channel that outlives its call is two strangers who can still hear
+		-- each other, which is exactly what the consent was for.
+		ask(A, module.Event.HANG_UP)
+		check('the call ending takes the channel with it', channels() == 0, channels())
+
+		-- ── calling yourself ─────────────────────────────────────────────────
+		local mark = ask(A, module.Event.INVITE, A)
+		local refused = refusalFor(mark)
+		check('a player who calls themselves is refused',
+			refused ~= nil and refused.code == 'calls.error.self',
+			refused and tostring(refused.code))
+		check('and the refusal names the operation it belongs to, not "unknown"',
+			refused ~= nil and refused.operation == module.Operation.INVITE,
+			refused and tostring(refused.operation))
+
+		-- ── a slot with no character ─────────────────────────────────────────
+		-- Admitted and through the gate, but never loaded a character: the
+		-- selection screen. A call placed to one would ring a screen with
+		-- nobody behind it, and the caller has to be told which END failed.
+		local EMPTY = 605
+		control.Admit(EMPTY, 'account-empty')
+		OPX.EnsureSession(EMPTY)
+		control.Life(EMPTY, 'alive')
+		mark = ask(A, module.Event.INVITE, EMPTY)
+		refused = refusalFor(mark)
+		check('a call to a slot with no character is refused as the TARGET not being ready',
+			refused ~= nil and refused.code == 'calls.error.targetNotReady',
+			refused and tostring(refused.code))
+
+		-- ── the ordinary call ────────────────────────────────────────────────
+		ask(A, module.Event.INVITE, B)
+		local ringing = inviteOn(B)
+		check('a call to a living, incarnate player rings on their screen',
+			ringing ~= nil, ringing)
+		check('and the caller is on no call yet -- an invite is not a call',
+			calls.IsOnCall(A).value.onCall == false)
+
+		-- A SECOND INVITE FROM THE SAME PLAYER. One out at a time, and the
+		-- model's header says why: a second would overwrite `outgoing` and
+		-- leave the first in the table with nothing pointing at it -- a ghost
+		-- the target could still accept, into a call the sender had forgotten
+		-- placing.
+		mark = ask(A, module.Event.INVITE, C)
+		refused = refusalFor(mark)
+		check('a second call placed while the first is ringing is refused',
+			refused ~= nil and refused.code == 'calls.error.alreadyPending',
+			refused and tostring(refused.code))
+
+		-- AND A SECOND INVITE TO THE SAME TARGET, from somebody else. The card
+		-- shows one call; a queue of calls nobody sees is worse for the caller
+		-- than a refusal they read at once.
+		mark = ask(C, module.Event.INVITE, B)
+		refused = refusalFor(mark)
+		check('and a second call TO a ringing player is refused as a busy line',
+			refused ~= nil and refused.code == 'calls.error.targetPending',
+			refused and tostring(refused.code))
+
+		-- ── somebody else's invite ───────────────────────────────────────────
+		-- The ids are minted from a counter and are not secret. Nothing rests
+		-- on them being secret, and this is the check that says so: the invite
+		-- named has to be the one waiting for THIS player.
+		mark = ask(C, module.Event.ACCEPT, ringing)
+		refused = refusalFor(mark)
+		check('a player accepting an invite that is not theirs gets nowhere',
+			refused ~= nil and refused.code == 'calls.error.noSuchInvite',
+			refused and tostring(refused.code))
+		check('and it is still ringing for the player it was for',
+			calls.IsOnCall(B).value.onCall == false and inviteOn(B) == ringing)
+
+		-- ── the accept ───────────────────────────────────────────────────────
+		ask(B, module.Event.ACCEPT, ringing)
+		local onCallA, onCallB = calls.IsOnCall(A).value, calls.IsOnCall(B).value
+		check('accepting puts both parties on one call',
+			onCallA.onCall == true and onCallB.onCall == true
+				and onCallA.callId == onCallB.callId,
+			tostring(onCallA.callId) .. '/' .. tostring(onCallB.callId))
+		check('with two participants and the caller as the founder',
+			#onCallA.participants == 2 and onCallA.founder == A,
+			#onCallA.participants .. ' founder=' .. tostring(onCallA.founder))
+
+		-- ── a third who is already talking to somebody else ──────────────────
+		-- The `join` branch has its own `targetInCall`, and it is NOT the one
+		-- the fresh-call branch has: a participant reaching for somebody who is
+		-- mid-call elsewhere is a different sentence in the model from a player
+		-- with no call reaching for the same person. Written because a mutation
+		-- proved it -- removing the join branch's copy left the suite green, so
+		-- until this existed that line was carried by nothing.
+		--
+		-- BEFORE THE THIRD JOINS, and the order is the whole of what makes it
+		-- work: `Consider` checks the ceiling before it checks the target, so
+		-- against a call that already holds three this is `callFull` and the
+		-- line under test is never reached. The first version sat below and
+		-- reported exactly that.
+		local E, F = 608, 609
+		incarnate(E, 'e2')
+		incarnate(F, 'f2')
+		control.Pump(5)
+		ask(E, module.Event.INVITE, F)
+		ask(F, module.Event.ACCEPT, inviteOn(F))
+		check('two other players hold a call of their own',
+			onCallCount(E) == 2, onCallCount(E))
+		mark = ask(B, module.Event.INVITE, E)
+		refused = refusalFor(mark)
+		check('adding a third who is on another call is refused, not stolen from it',
+			refused ~= nil and refused.code == 'calls.error.targetInCall',
+			refused and tostring(refused.code))
+		check('and neither call changed size',
+			onCallCount(A) == 2 and onCallCount(E) == 2,
+			onCallCount(A) .. '/' .. onCallCount(E))
+		ask(E, module.Event.HANG_UP)
+		control.Pump(20)
+
+		-- ── the third ────────────────────────────────────────────────────────
+		-- The SAME verb. `kind` is derived from the sender already being on a
+		-- call, which is the one place the two paths could be confused: a
+		-- `join` that opened a second call instead would look identical from
+		-- the inviting side and be wrong from every other.
+		ask(A, module.Event.INVITE, D)
+		local joinId = inviteOn(D)
+		check('a player on a call inviting somebody rings them too', joinId ~= nil)
+
+		ask(D, module.Event.ACCEPT, joinId)
+		local three = calls.IsOnCall(A).value
+		check('and the third accepting joins the SAME call rather than opening a second',
+			three.onCall == true and #three.participants == 3
+				and three.callId == onCallA.callId,
+			#three.participants .. ' on ' .. tostring(three.callId))
+
+		-- ── the fourth ───────────────────────────────────────────────────────
+		mark = ask(B, module.Event.INVITE, C)
+		refused = refusalFor(mark)
+		check('a fourth is refused: the owner asked for a third, not a conference',
+			refused ~= nil and refused.code == 'calls.error.callFull',
+			refused and tostring(refused.code))
+		check('and nobody was added while the refusal was being written',
+			onCallCount(A) == 3)
+
+		-- ── TWO INVITES OUT AND ONE SEAT LEFT ────────────────────────────────
+		-- The ceiling is checked when an invite is raised AND again when one is
+		-- answered, and only the second check catches this. Two participants of
+		-- a two-person call each invite somebody while there is room for one
+		-- more: both invites are legal when they are raised, and the second
+		-- accept arrives at a call that is already full. Without the re-check
+		-- the call would hold four, which is a row the screens cannot draw and
+		-- a number `Model.MAX_PARTICIPANTS` says cannot happen.
+		--
+		-- Written because a mutation proved it: removing the accept-stage
+		-- ceiling left the suite entirely green, so until this existed that
+		-- guard was carried by nothing.
+		ask(D, module.Event.HANG_UP)
+		ask(A, module.Event.HANG_UP)
+		control.Pump(20)
+		local E, F = 606, 607
+		incarnate(E, 'e')
+		incarnate(F, 'f')
+		control.Pump(5)
+
+		ask(A, module.Event.INVITE, B)
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('a two-person call is up again for the race',
+			onCallCount(A) == 2,
+			onCallCount(A))
+		ask(A, module.Event.INVITE, E)
+		ask(B, module.Event.INVITE, F)
+		check('both participants may have an invite out while one seat is left',
+			inviteOn(E) ~= nil and inviteOn(F) ~= nil)
+		ask(E, module.Event.ACCEPT, inviteOn(E))
+		check('the first of them takes the seat',
+			onCallCount(A) == 3,
+			onCallCount(A))
+		mark = ask(F, module.Event.ACCEPT, inviteOn(F))
+		refused = refusalFor(mark)
+		check('and the second is refused at the ANSWER, not let in to make a fourth',
+			refused ~= nil and refused.code == 'calls.error.callFull',
+			refused and tostring(refused.code))
+		check('with the call still holding exactly three',
+			onCallCount(A) == 3
+				and calls.IsOnCall(F).value.onCall == false,
+			onCallCount(A))
+
+		-- ── one leaves, two carry on ─────────────────────────────────────────
+		ask(E, module.Event.HANG_UP)
+		check('the third hanging up leaves the other two talking',
+			calls.IsOnCall(A).value.onCall == true
+				and onCallCount(A) == 2
+				and calls.IsOnCall(D).value.onCall == false)
+
+		-- ── the second leaves, and a call of one is not a call ───────────────
+		ask(B, module.Event.HANG_UP)
+		check('the second hanging up ends the call for the survivor too',
+			calls.IsOnCall(A).value.onCall == false
+				and calls.IsOnCall(B).value.onCall == false)
+
+		-- ── hanging up when there is nothing to hang up ──────────────────────
+		mark = ask(A, module.Event.HANG_UP)
+		refused = refusalFor(mark)
+		check('hanging up with no call is refused rather than silently accepted',
+			refused ~= nil and refused.code == 'calls.error.notInCall',
+			refused and tostring(refused.code))
+
+		-- ── the target is already talking to somebody else ───────────────────
+		ask(B, module.Event.INVITE, C)
+		ask(C, module.Event.ACCEPT, inviteOn(C))
+		check('two other players are on their own call',
+			calls.IsOnCall(B).value.onCall == true)
+		mark = ask(A, module.Event.INVITE, C)
+		refused = refusalFor(mark)
+		check('a call to somebody already talking is refused',
+			refused ~= nil and refused.code == 'calls.error.targetInCall',
+			refused and tostring(refused.code))
+
+		-- ── the disconnect ───────────────────────────────────────────────────
+		control.Fire('onPlayerDisconnected', C)
+		control.Pump(5)
+		check('a participant disconnecting ends the call for the one left behind',
+			calls.IsOnCall(B).value.onCall == false)
+
+		-- ── the expiry ───────────────────────────────────────────────────────
+		-- A call nobody answers holds the caller's one outgoing slot and the
+		-- target's one incoming slot. Left standing it would lock both of them
+		-- out of the feature until somebody disconnected.
+		ask(A, module.Event.INVITE, B)
+		local rings = inviteOn(B)
+		check('an unanswered call is ringing', rings ~= nil)
+		-- INVITE_TTL_S is 30, and a pump round is 100ms of host clock.
+		control.Pump(340)
+		check('an unanswered call rings out', inviteOn(B) ~= rings)
+		mark = ask(B, module.Event.ACCEPT, rings)
+		refused = refusalFor(mark)
+		check('and answering it afterwards is refused, not honoured',
+			refused ~= nil and (refused.code == 'calls.error.noSuchInvite'
+				or refused.code == 'calls.error.expired'),
+			refused and tostring(refused.code))
+		check('with nobody put on a call by it', calls.IsOnCall(A).value.onCall == false)
+		check('and the caller may place another, so the slot really was given back',
+			calls.IsOnCall(A).value.onCall == false
+				and module.Model ~= nil)
+		ask(A, module.Event.INVITE, B)
+		check('which they can: a fresh call rings again', inviteOn(B) ~= nil
+			and inviteOn(B) ~= rings)
+
+		-- ── the vocabulary is closed, and both catalogues carry all of it ────
+		-- `OPX.RefusalKey` downgrades a code with no catalogue line to
+		-- `error.unavailable` and writes a warning to the server log -- so a
+		-- refusal with no line is a refusal the player is never told, and the
+		-- only trace is a journal line nobody is reading at the time.
+		local missing = {}
+		local catalogs = module.Catalogs or {}
+		for reason in pairs(module.Model.REASONS) do
+			local key = 'calls.error.' .. reason
+			if (catalogs.en or {})[key] == nil then missing[#missing + 1] = 'en:' .. reason end
+			if (catalogs.fr or {})[key] == nil then missing[#missing + 1] = 'fr:' .. reason end
+		end
+		table.sort(missing)
+		check('every refusal the model can answer has a line in both catalogues',
+			#missing == 0, table.concat(missing, ', '))
+		-- The count as well as the contents, so a vocabulary that silently
+		-- emptied could not make the check above pass by having nothing left
+		-- to check. That is exactly how the page-source walk in this file
+		-- managed to be green on one platform and red on another.
+		local reasonCount = 0
+		for _ in pairs(module.Model.REASONS) do reasonCount = reasonCount + 1 end
+		check('and the vocabulary is not empty', reasonCount >= 19, reasonCount)
+	end
+end
+
+-- ── refusing a call, and handing over a contact ──────────────────────────────
+-- The owner asked for contact sharing "via ALT, with the other party's
+-- consent", which makes it the same invite object as a call with a different
+-- `kind` -- and the ONE action in the module that has a rule about where the
+-- two bodies are standing. A call reaches across the city; that is the feature.
+-- Handing somebody your number is something you do in front of them, and it is
+-- the one thing a client could otherwise claim to have done from anywhere.
+section('calls: a refusal is an answer, and a contact needs two people and a consent')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the contact hand-over', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Api.Get('calls')
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+
+		local A, B = 801, 802
+		-- A REAL METADATA STORE per character, not an accepting stub. The whole
+		-- claim being tested is that a contact is written to BOTH sides, and a
+		-- `SetMetaData` that swallowed its argument would make a module that
+		-- wrote one side, the wrong side, or neither look identical.
+		local meta = {}
+		local function incarnate(id, tag)
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			meta[id] = {}
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Fixer', lastName = tag } },
+				Functions = {
+					UpdatePlayerData = function() end,
+					GetMetaData = function(key)
+						if key == nil then return meta[id] end
+						return meta[id][key]
+					end,
+					SetMetaData = function(key, value) meta[id][key] = value end,
+				},
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		incarnate(A, 'ca')
+		incarnate(B, 'cb')
+		control.Pump(5)
+
+		local function refusalFor(mark)
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if type(sent[1]) == 'table' and sent[1].kind == 'error' then return sent[1] end
+			end
+			return nil
+		end
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			control.netEvents[name](...)
+			env.source = nil
+			return mark
+		end
+		local function inviteOn(playerId)
+			local found
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == module.Event.STATE and sent.source == playerId
+					and type(sent[1]) == 'table' then
+					found = type(sent[1].invite) == 'table' and sent[1].invite.id or nil
+				end
+			end
+			return found
+		end
+		local function contactsOf(playerId)
+			local answer = calls.Contacts(playerId)
+			return answer.ok and answer.value.contacts or {}
+		end
+
+		-- ── declining ────────────────────────────────────────────────────────
+		-- A refusal has to reach the CALLER, not merely stop ringing for the
+		-- person who refused: a call that simply goes quiet is a caller staring
+		-- at a dialling screen forever.
+		ask(A, module.Event.INVITE, B)
+		local ringing = inviteOn(B)
+		check('a call is ringing to be refused', ringing ~= nil)
+		local mark = #control.clientEvents
+		ask(B, module.Event.DECLINE, ringing)
+		check('declining puts nobody on a call',
+			calls.IsOnCall(A).value.onCall == false
+				and calls.IsOnCall(B).value.onCall == false)
+		local toldCaller = false
+		for index = mark + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.source == A and sent.name == module.Event.STATE then toldCaller = true end
+		end
+		check('and the CALLER is told, rather than left on a dialling screen', toldCaller)
+		check('and nobody is left glowing over a call that never happened',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+
+		-- ── AND IT IS WRITTEN DOWN ───────────────────────────────────────────
+		-- THE OWNER: "si il repond pas ou refuse note le c'est important". Both
+		-- of those ended with the caller looking at a screen that had gone back
+		-- to normal, and nothing anywhere remembering either -- and two people
+		-- who keep missing each other is the ordinary case, not the edge one.
+		--
+		-- THE TWO SIDES GET DIFFERENT ROWS, and asserting both is the point: a
+		-- system that recorded only the caller's is one where the person who was
+		-- called never finds out they were.
+		local function recentFor(playerId)
+			local mark2 = #control.clientEvents
+			ask(playerId, module.Event.ASK_ROSTER)
+			control.Pump(20)
+			for index = #control.clientEvents, mark2 + 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.source == playerId and sent.name == module.Event.ROSTER
+					and type(sent[1]) == 'table' then
+					return type(sent[1].recent) == 'table' and sent[1].recent or {}
+				end
+			end
+			return {}
+		end
+		local function heldOutcome(rows, outcome)
+			for _, row in ipairs(rows) do
+				if row.outcome == outcome then return row end
+			end
+			return nil
+		end
+
+		local callerSaw = recentFor(A)
+		local calleeSaw = recentFor(B)
+		check('the caller is told their call was refused',
+			heldOutcome(callerSaw, 'declined') ~= nil, #callerSaw)
+		check('and the one who refused has it down as a refusal of their own',
+			heldOutcome(calleeSaw, 'refused') ~= nil, #calleeSaw)
+		-- Named, not merely counted: a list of four "call" rows is a list nobody
+		-- can act on.
+		check('each row naming the other person',
+			(heldOutcome(callerSaw, 'declined') or {}).name ~= nil
+				and (heldOutcome(callerSaw, 'declined') or {}).name ~= '?',
+			(heldOutcome(callerSaw, 'declined') or {}).name)
+		-- AND THE SLOTS ARE GIVEN BACK. A decline that left the invite in place
+		-- would lock both of them out of the feature just as an unexpired one
+		-- does, and it is the same two indexes.
+		ask(A, module.Event.INVITE, B)
+		check('the caller may place another call straight afterwards',
+			inviteOn(B) ~= nil and inviteOn(B) ~= ringing)
+		ask(B, module.Event.DECLINE, inviteOn(B))
+
+		-- ── a contact from across the street ─────────────────────────────────
+		-- CONTACT_RANGE is 6 metres. These two are 40 apart.
+		control.Stand(A, 0.0, 0.0, 0.0)
+		control.Stand(B, 40.0, 0.0, 0.0)
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		local refused = refusalFor(mark)
+		check('a contact offered from across the street is refused',
+			refused ~= nil and refused.code == 'calls.error.tooFar',
+			refused and tostring(refused.code))
+		check('and nothing was written to either character',
+			#contactsOf(A) == 0 and #contactsOf(B) == 0)
+
+		-- ── and a CALL from the same distance, which must NOT be ─────────────
+		-- The range rule belongs to the contact hand-over and to nothing else.
+		-- A module that applied it to calls would have built a walkie-talkie.
+		ask(A, module.Event.INVITE, B)
+		check('while a CALL from the same distance goes through: a holocall is not a radio',
+			inviteOn(B) ~= nil)
+		ask(B, module.Event.DECLINE, inviteOn(B))
+
+		-- ── two people in the same place but not the same world ──────────────
+		-- Same coordinates, different routing buckets: an instance is exactly
+		-- the case where two bodies share a point and cannot see each other.
+		control.Stand(B, 1.0, 0.0, 0.0)
+		control.Bucket(B, 7)
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a contact offered into another routing bucket is refused, however close',
+			refused ~= nil and refused.code == 'calls.error.tooFar',
+			refused and tostring(refused.code))
+		control.Bucket(B, 0)
+
+		-- ── the hand-over ────────────────────────────────────────────────────
+		ask(A, module.Event.INVITE, B, 'contact')
+		local offered = inviteOn(B)
+		check('a contact offered face to face reaches the other party', offered ~= nil)
+		check('and nothing is written until they agree -- it needs a consent',
+			#contactsOf(A) == 0 and #contactsOf(B) == 0)
+
+		ask(B, module.Event.ACCEPT, offered)
+		local mine, theirs = contactsOf(A), contactsOf(B)
+		check('accepting writes the contact BOTH ways, which is what sharing means',
+			#mine == 1 and #theirs == 1, ('%d/%d'):format(#mine, #theirs))
+		check('each side holding the other\'s citizen id, not their own',
+			mine[1] ~= nil and mine[1].citizenId == 'citizen-cb'
+				and theirs[1] ~= nil and theirs[1].citizenId == 'citizen-ca',
+			(mine[1] and mine[1].citizenId or '?') .. '/'
+				.. (theirs[1] and theirs[1].citizenId or '?'))
+		check('and the CHARACTER\'s name rather than the account gamertag',
+			mine[1] ~= nil and mine[1].name == 'Fixer cb', mine[1] and mine[1].name)
+		check('while putting nobody on a call: a contact is not a conversation',
+			calls.IsOnCall(A).value.onCall == false
+				and calls.IsOnCall(B).value.onCall == false)
+		check('and lighting nobody\'s eyes either',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+		-- ── the same contact twice ───────────────────────────────────────────
+		-- Replaced, not appended. The list is written into the character's
+		-- metadata blob and read back on every load, so a duplicate row is a
+		-- cost paid on every connection they ever make.
+		--
+		-- BEFORE THE MENU BLOCK BELOW, and the order is load-bearing: that
+		-- block disconnects the contact to prove an absent one is not listed,
+		-- and a hand-over to a slot nobody is sitting in is refused for a
+		-- perfectly good reason that has nothing to do with duplicates.
+		ask(A, module.Event.INVITE, B, 'contact')
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('handing over the same contact again replaces the row rather than adding a second',
+			#contactsOf(A) == 1 and #contactsOf(B) == 1,
+			('%d/%d'):format(#contactsOf(A), #contactsOf(B)))
+
+		-- ── the menu path, and the one copy of the rules ─────────────────────
+		-- The owner wanted a third addable "par le menu ou par le ALT". ALT
+		-- needs a body under the crosshair, which is the person a holocall
+		-- exists to avoid walking to, so the menu is how you reach the rest --
+		-- and the list is the caller's CONTACTS, which is what makes the
+		-- sharing above worth having rather than a write-only feature.
+		--
+		-- THE ROW'S REACHABILITY IS `registry.Consider`'s ANSWER, the same
+		-- function `Invite` runs. That is asserted here rather than assumed,
+		-- because the alternative -- a second derivation of "is that player
+		-- busy" next to the one that decides -- is the hand-kept second opinion
+		-- this codebase has been bitten by in five other places, and the copy
+		-- that drifted would be the one offering a row that refuses when it is
+		-- pressed.
+		local function rosterFor(playerId)
+			control.Pump(20)
+			env.source = playerId
+			control.netEvents[module.Event.ASK_ROSTER]()
+			env.source = nil
+			for index = #control.clientEvents, 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == module.Event.ROSTER and sent.source == playerId then
+					return type(sent[1]) == 'table' and sent[1] or nil
+				end
+			end
+			return nil
+		end
+
+		local roster = rosterFor(A)
+		check('the contacts screen is answered with a list', roster ~= nil
+			and type(roster.rows) == 'table', roster and type(roster.rows))
+		check('and it holds the contact that was just handed over, and only that',
+			roster ~= nil and #roster.rows == 1, roster and #roster.rows)
+		check('naming the connected player id rather than the citizen id it is stored under',
+			roster ~= nil and roster.rows[1] ~= nil and roster.rows[1].id == B,
+			roster and roster.rows[1] and tostring(roster.rows[1].id))
+		check('with no refusal beside it, because that call would go through',
+			roster ~= nil and roster.rows[1] ~= nil and roster.rows[1].refusal == nil,
+			roster and roster.rows[1] and tostring(roster.rows[1].refusal))
+
+		-- THE ROW AND THE VERB AGREE. Put the contact on a call and the row is
+		-- greyed with the same code the invite would have been refused with.
+		local C = 803
+		incarnate(C, 'cc')
+		control.Pump(5)
+		ask(B, module.Event.INVITE, C)
+		ask(C, module.Event.ACCEPT, inviteOn(C))
+		check('the contact is now on a call of their own',
+			calls.IsOnCall(B).value.onCall == true)
+
+		roster = rosterFor(A)
+		local listed = roster ~= nil and roster.rows[1] or nil
+		check('the row is greyed rather than dropped: unreachable now is not gone',
+			listed ~= nil and listed.id == B, listed and tostring(listed.id))
+		check('and names WHY, so the player knows it is worth trying again',
+			listed ~= nil and listed.refusal == 'targetInCall',
+			listed and tostring(listed.refusal))
+
+		-- And the verb agrees, which is the whole point of the shared rule.
+		mark = ask(A, module.Event.INVITE, B)
+		refused = refusalFor(mark)
+		check('and pressing it anyway is refused with exactly that code',
+			refused ~= nil and refused.code == 'calls.error.' .. tostring(listed and listed.refusal),
+			refused and tostring(refused.code))
+
+		ask(B, module.Event.HANG_UP)
+		control.Pump(20)
+
+		-- ── a contact who is not connected is simply absent ──────────────────
+		-- Not listed as unavailable. A list that reported who was OFFLINE would
+		-- be a presence tracker; one that lists who is CALLABLE is the feature.
+		control.Fire('onPlayerDisconnected', B)
+		control.Admit(B, nil)
+		character.Players[B] = nil
+		character.Registry.byCitizenId['citizen-cb'] = nil
+		control.Pump(10)
+		roster = rosterFor(A)
+		check('a contact who is not connected is absent from the list, not greyed in it',
+			roster ~= nil and #roster.rows == 0, roster and #roster.rows)
+		check('and the stored contact row itself is untouched -- they are away, not deleted',
+			#contactsOf(A) == 1, #contactsOf(A))
+
+	end
+end
+
+-- ── the blue eyes ────────────────────────────────────────────────────────────
+-- The glow is a LEASE held by a resource VM, not a switch on a player: the
+-- platform keeps it lit while ANY resource holds one, `false` releases only
+-- ours, and it clears by itself on death, disconnect and expiry. Every one of
+-- those five properties is a way to get this wrong, and `tests/host.lua` models
+-- all of them precisely so this section can tell them apart -- a stub that took
+-- anything and answered `true` would make every check below pass whatever the
+-- module did.
+--
+-- The shape this module chose -- a BOUNDED lease, renewed on a sweep, with a
+-- watchdog that re-takes one the platform dropped -- is borrowed from
+-- `modules/animations/client/walk.lua`, whose header explains what an open lease
+-- costs: a player walking, or glowing, for the rest of their session with
+-- nothing on screen to explain it.
+section('calls: the blue eyes are a lease, and a lease has to be given back')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the eye-glow', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Api.Get('calls')
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+
+		local A, B = 701, 702
+		local function incarnate(id, tag)
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Glow', lastName = tag } },
+				Functions = { UpdatePlayerData = function() end,
+					GetMetaData = function() return nil end,
+					SetMetaData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		incarnate(A, 'ea')
+		incarnate(B, 'eb')
+		control.Pump(5)
+
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			control.netEvents[name](...)
+			env.source = nil
+		end
+		local function inviteOn(playerId)
+			local found
+			for _, sent in ipairs(control.clientEvents) do
+				if sent.name == module.Event.STATE and sent.source == playerId
+					and type(sent[1]) == 'table' then
+					found = type(sent[1].invite) == 'table' and sent[1].invite.id or nil
+				end
+			end
+			return found
+		end
+
+		local litA = control.Eyes(A)
+		check('nobody is glowing before a call', litA == false)
+
+		ask(A, module.Event.INVITE, B)
+		check('a call that is merely RINGING lights nobody',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		local litA2, oursA = control.Eyes(A)
+		local litB2, oursB = control.Eyes(B)
+		check('accepting lights BOTH parties, which is what the owner asked for',
+			litA2 == true and litB2 == true)
+		check('and the lease is this resource\'s own, not somebody else\'s glow',
+			oursA == true and oursB == true)
+
+		-- THE LEASE IS BOUNDED. `setHoloCallEyes` takes `durationMs` in
+		-- 0..600000 and refuses `invalid_options` outside it; 0 means "until
+		-- released", which is the shape this module deliberately does NOT use.
+		local lastWrite
+		for _, write in ipairs(control.holocall.writes) do
+			if write.enabled == true then lastWrite = write end
+		end
+		check('the lease is taken with a deadline rather than held open',
+			lastWrite ~= nil and type(lastWrite.options) == 'table'
+				and type(lastWrite.options.durationMs) == 'number'
+				and lastWrite.options.durationMs > 0,
+			lastWrite and lastWrite.options and tostring(lastWrite.options.durationMs))
+		check('and inside the range the platform documents, so no renewal is refused',
+			lastWrite ~= nil and lastWrite.options.durationMs <= 600000,
+			lastWrite and lastWrite.options and tostring(lastWrite.options.durationMs))
+
+		-- THE RENEWAL. The lease outlives its own deadline only because the
+		-- sweep re-takes it; the host expires it honestly, so a module that
+		-- took one lease and stopped would go dark here.
+		control.Pump(400)
+		check('the glow survives longer than one lease, because the sweep renews it',
+			control.Eyes(A) == true and control.Eyes(B) == true)
+
+		-- THE WATCHDOG. The platform drops a lease on its own -- a death, a
+		-- reload, an expiry mis-timed -- and `getHoloCallEyes` is how this
+		-- module finds out: it answers for every resource at once, so it cannot
+		-- say whose lease is whose, but a `false` for a live participant means
+		-- nobody's survived.
+		control.EyesDropped(A)
+		check('a lease the platform dropped really is gone', control.Eyes(A) == false)
+		control.Pump(40)
+		check('and the sweep notices and re-takes it', control.Eyes(A) == true)
+
+		-- A LEASE HELD BY ANOTHER RESOURCE IS NOT OURS TO RELEASE. This is the
+		-- property that makes `getHoloCallEyes` a genuinely different question
+		-- from "did we ask for one", and a module that treated the reader as
+		-- its own bookkeeping would put out somebody else's light.
+		control.EyesHeldElsewhere(B, true)
+		ask(A, module.Event.HANG_UP)
+		check('hanging up puts out the glow this module lit', control.Eyes(A) == false)
+		local litB3, oursB3 = control.Eyes(B)
+		check('and releases our own lease on the other party', oursB3 == false)
+		check('but leaves another resource\'s lease alone', litB3 == true)
+		control.EyesHeldElsewhere(B, false)
+		check('nobody is left glowing on our account', control.Eyes(B) == false)
+
+		-- ── a death ends the call, and the eyes were already dark ────────────
+		control.Pump(20)
+		ask(A, module.Event.INVITE, B)
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('a fresh call lights both again',
+			control.Eyes(A) == true and control.Eyes(B) == true)
+
+		-- The platform clears a lease on death by itself. Without the sweep
+		-- taking the body off the call, the call would carry on with a corpse
+		-- on it whose eyes had gone dark -- a state no screen could explain.
+		control.Life(B, 'dead')
+		control.Pump(40)
+		check('a participant who dies is taken off the call',
+			calls.IsOnCall(B).value.onCall == false)
+		check('and the survivor is released with them rather than left on a dead line',
+			calls.IsOnCall(A).value.onCall == false)
+		check('with nobody glowing afterwards',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+		-- ── a host with no holocall natives at all ───────────────────────────
+		-- The pair arrived in 2.31.13+op77.63 and this ships against op77.75,
+		-- so they are expected -- and the same was said of `players.teleport`,
+		-- which `modules/teleports` looks up before every call anyway. A host
+		-- without them must lose the glow and keep every call.
+		control.holocall.absent = true
+		control.Life(B, 'alive')
+		control.Pump(20)
+		ask(A, module.Event.INVITE, B)
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		check('a host with no eye-glow natives still connects the call',
+			calls.IsOnCall(A).value.onCall == true
+				and #calls.IsOnCall(A).value.participants == 2)
+		check('and reports the glow as unreadable rather than pretending it is lit',
+			calls.Eyes(A).ok == false, calls.Eyes(A).ok)
+		ask(A, module.Event.HANG_UP)
+		check('and hanging up on such a host still ends the call',
+			calls.IsOnCall(A).value.onCall == false)
+		control.holocall.absent = false
+	end
+end
+
+-- ── the sound is the game's own, named and not shipped ───────────────────────
+-- The owner asked for "the real Cyberpunk incoming-call sound". The answer is
+-- `Open77.sfx.play2d`, which posts a Wwise event through
+-- `gameGameAudioSystem::Play` with no entity -- the same door the vanilla
+-- frontend uses for its own menu sounds -- so the names below ARE the game's,
+-- read out of the devkit's sfx catalogue for build 2.31. Nothing is downloaded
+-- and nothing is redistributed.
+--
+-- THE PLATFORM REFUSES A NAME OUTSIDE ITS CURATED TABLE rather than forwarding
+-- it, which is the only reason this is checkable: a made-up event and a real
+-- one are otherwise indistinguishable from the caller's side, and
+-- `config/admin.lua` already says so about the other effect door.
+section('calls: the ringtone names an event the platform will actually play')
+do
+	local env, _, why = boot('client')
+	check('the client boots with the calls module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local module = OPX.Modules.Get('calls')
+		local settings = OPX.Modules.Settings('calls')
+		local sounds = type(settings.SOUND) == 'table' and settings.SOUND or {}
+
+		check('the calls module is running on the client', OPX.Modules.IsRunning('calls'),
+			OPX.Modules.Record('calls') and OPX.Modules.Record('calls').Reason)
+
+		-- The curated table the host stub judges against is Cyberpunk's own
+		-- `ui_phone_01` bank as the devkit lists it. A name in the config that
+		-- is not in it is a ringtone that would be refused in game, silently,
+		-- on the player's machine.
+		local catalogue = env.Open77.sfx
+		check('the frontend sound door exists on this build',
+			type(catalogue) == 'table' and type(catalogue.play2d) == 'function')
+
+		local bad = {}
+		for field, event in pairs(sounds) do
+			if type(event) == 'string' and event ~= '' then
+				local ok = catalogue.play2d(event)
+				if ok ~= true then bad[#bad + 1] = field .. '=' .. event end
+			end
+		end
+		table.sort(bad)
+		check('every sound the config names is one the platform will play',
+			#bad == 0, table.concat(bad, ', '))
+
+		-- And the config really names some, so the check above cannot pass by
+		-- having nothing to look at.
+		local named = 0
+		for _, event in pairs(sounds) do
+			if type(event) == 'string' and event ~= '' then named = named + 1 end
+		end
+		check('and the config names a ringtone at all', named >= 4, named)
+		check('including the incoming ring itself',
+			sounds.INCOMING == 'ui_phone_incoming_call', tostring(sounds.INCOMING))
+
+		-- A MADE-UP NAME IS REFUSED, which is what makes the walk above mean
+		-- something rather than being a loop over an accepting stub.
+		check('while an invented event is refused rather than forwarded',
+			catalogue.play2d('ui_phone_not_a_real_event') ~= true)
+	end
+end
+
+-- ── the eye is not where a phone lives ───────────────────────────────────────
+-- THE OWNER, having used it: "fait en sorte que cela passe pas par alt ce
+-- serais en gros fait une touche qui ouvre un menu style halogram tous se passe
+-- desus call resus contact etc plus de alt".
+--
+-- This module had eight rows on the target eye. They worked, they were tested,
+-- and they were the wrong shape: ALT needs a body under the crosshair, and a
+-- holocall is what you reach for when the person is NOT in front of you --
+-- answering one meant pointing at your own body first.
+--
+-- So the checks below are the opposite of the ones they replace. Not a row on
+-- the eye, a key; and the whole of the interaction behind it. The count is
+-- asserted as ZERO rather than the section simply being deleted, because a row
+-- that comes back by accident -- a merge, a half-reverted branch -- is exactly
+-- the kind of thing nobody notices until a player reports two ways of doing the
+-- same thing.
+section('calls: one key, no rows on the eye')
+do
+	local keys = {}
+	local env, control, why = boot('client', nil, function(e)
+		e.RegisterKeyMapping = function(id, name, key, pressed)
+			keys[id] = { name = name, key = key, pressed = pressed }
+			return key
+		end
+	end)
+	check('the client boots for the hologram', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local module = OPX.Modules.Get('calls')
+		local target = OPX.Api.Get('target')
+
+		check('the eye is up, so an empty list is a decision and not an absence',
+			target ~= nil and type(target.List) == 'function')
+		if target ~= nil then
+			local answer = target.List('calls')
+			local rows = answer.ok and answer.value.options or {}
+			-- EXACTLY ONE ROW, AND IT IS THE ONE THE EYE IS RIGHT FOR. The owner
+			-- took ALT off this feature -- "plus de alt" -- and then put it back
+			-- for a single job: "pour demander le contact a quelqun c'est
+			-- toujours avec alt ? ce serais top".
+			--
+			-- The distinction is worth the check. Answering a call has no body
+			-- under the crosshair; the person is somewhere else, which is the
+			-- whole point of a holocall, and the eight rows that used to live
+			-- here made a player point at themselves to pick up. Handing
+			-- somebody your contact IS a thing you do to a person in front of
+			-- you. So: one row, on a player, and nothing on `self`.
+			check('exactly one row is on the eye, the contact hand-over',
+				#rows == 1 and rows[1] ~= nil and tostring(rows[1].id):find('Share', 1, true),
+				('%d row(s): %s'):format(#rows, rows[1] and tostring(rows[1].id) or '-'))
+			local onSelf = target.List('calls')
+			local selfRows = 0
+			for _, row in ipairs(onSelf.ok and onSelf.value.options or {}) do
+				if type(row.types) == 'table' and row.types.self then selfRows = selfRows + 1 end
+			end
+			check('and not one of them is on the player themselves', selfRows == 0, selfRows)
+		end
+
+		-- ── THE KEY ──────────────────────────────────────────────────────────
+		local declared = OPX.Config.MODULES.calls.KEY
+		check('the config declares a key with an id and a default',
+			type(declared) == 'table' and type(declared.ID) == 'string'
+				and type(declared.DEFAULT) == 'string' and declared.DEFAULT ~= '')
+		local mapped = declared ~= nil and keys[declared.ID] or nil
+		check('and the module really registered it with the host',
+			mapped ~= nil, declared and tostring(declared.ID))
+		check('on the key the config names',
+			mapped ~= nil and mapped.key == declared.DEFAULT,
+			mapped and tostring(mapped.key))
+		-- NOT ONE OF THE KEYS ALREADY SPOKEN FOR. A default that collides is a
+		-- feature that appears to do nothing while another one fires, and the
+		-- collision is invisible in every log.
+		local taken = {
+			E = 'the contextual key', I = 'the bag', T = 'chat', Y = 'the hotbar peek',
+			X = 'stopping an emote', F1 = 'the menu', F3 = 'the animation picker',
+			F9 = 'the staff menu', F10 = 'the staff dev screen',
+		}
+		check('and it is not a key another feature already owns',
+			declared == nil or taken[declared.DEFAULT] == nil,
+			declared and taken[declared.DEFAULT])
+
+		-- ── AND THE KEY OPENS THE THING ──────────────────────────────────────
+		local drawn = {}
+		env.AddEventHandler(module.Event.VIEW, function(payload)
+			if type(payload) == 'table' and payload.kind == 'holo' then
+				drawn[#drawn + 1] = payload
+			end
+		end)
+
+		check('the hologram starts closed', module.HoloOpen() == false)
+		if mapped ~= nil then mapped.pressed() end
+		control.Pump(5)
+		check('the key opens it', module.HoloOpen() == true)
+		check('and the screen was told, in the same press rather than a round trip',
+			#drawn > 0 and drawn[#drawn].open == true,
+			#drawn > 0 and tostring(drawn[#drawn].open) or 'nothing drawn')
+
+		-- THE ROSTER IS ASKED FOR ON EVERY OPEN AND NEVER CACHED: who is
+		-- connected, who is busy and who is close enough to hand a contact to
+		-- are all facts with a shelf life of seconds.
+		local asked = 0
+		local realTrigger = env.TriggerServerEvent
+		env.TriggerServerEvent = function(name, ...)
+			if name == module.Event.ASK_ROSTER then asked = asked + 1 end
+			return realTrigger and realTrigger(name, ...)
+		end
+
+		if mapped ~= nil then mapped.pressed() end
+		control.Pump(5)
+		check('pressing again closes it', module.HoloOpen() == false)
+		if mapped ~= nil then mapped.pressed() end
+		control.Pump(5)
+		check('and opening it again asks the server for a fresh roster', asked == 1, asked)
+		env.TriggerServerEvent = realTrigger
+
+		-- ── WHAT THE SCREEN IS GIVEN ─────────────────────────────────────────
+		-- Contacts, the people close enough to hand a contact to, and what
+		-- happened to the calls that did not happen. The last two are new and
+		-- both were asked for: with ALT gone there is no other way to name
+		-- somebody who is not already a contact, and "si il repond pas ou refuse
+		-- note le c'est important".
+		control.netEvents = control.netEvents or {}
+		local handler = control.netEvents[module.Event.ROSTER]
+		check('the client takes a roster from the server',
+			type(handler) == 'function')
+		if type(handler) == 'function' then
+			handler({
+				rows = { { id = 7, name = 'Contact' } },
+				recent = { { outcome = 'missed', name = 'Someone', atMs = 1 } },
+				onCall = false,
+			})
+			control.Pump(5)
+			local last = drawn[#drawn]
+			check('and hands the screen the contacts',
+				last ~= nil and #last.rows == 1 and last.rows[1].name == 'Contact')
+			-- AND NOTHING ABOUT WHO IS NEARBY. That list lasted one message: it
+			-- existed only because ALT had been taken off the feature, and the
+			-- owner put ALT back for exactly that job. Asserted as absent, because
+			-- two ways to hand over a contact is one too many.
+			check('and nothing about who is standing nearby, which the eye does now',
+				last ~= nil and last.nearby == nil, tostring(last and last.nearby))
+			check('and the calls that were missed or refused',
+				last ~= nil and #last.recent == 1 and last.recent[1].outcome == 'missed')
+		end
+	end
+end
+
+-- ── the seam no shared file can close ────────────────────────────────────────
+-- The card and the chip are `.vue` files. Nothing loadable from Lua can hold
+-- them to the channel Lua publishes on or to the keys Lua's catalogue carries,
+-- so this section reads them as text and does it here -- exactly as the glyph
+-- header section above reads `ui/src/modules/target/glyphs.ts`.
+--
+-- The failure it is written against is not hypothetical and it is not loud. A
+-- channel spelt one character differently is a view that mounts, reports ready,
+-- and never receives anything: no error, no warning, an empty corner of the
+-- screen. A locale key spelt differently renders AS THE KEY -- `useLocale`
+-- says "loudly wrong is the point" and it is right, but loudly wrong on a
+-- player's screen is still found by a player rather than by this file.
+section('calls: the page and Lua agree about the channel and about every word')
+do
+	local function sourceOf(path)
+		local handle = io.open(path, 'r')
+		if handle == nil then return nil end
+		local text = handle:read('a')
+		handle:close()
+		return text
+	end
+
+	local card = sourceOf('ui/src/modules/calls/IncomingCall.vue')
+	local chip = sourceOf('ui/src/modules/calls/CallLive.vue')
+	-- NOT `boot`, which is this file's own function for standing a runtime up.
+	-- The first version shadowed it here and the section below could no longer
+	-- boot a server to read the catalogue out of.
+	local registry = sourceOf('ui/src/boot/main.ts')
+	local holo = sourceOf('ui/src/modules/calls/HoloRoot.vue')
+	check('the incoming card is readable', card ~= nil)
+	check('the live chip is readable', chip ~= nil)
+	check('and the module registry is readable', registry ~= nil)
+	check('and the hologram is readable', holo ~= nil)
+
+	if card ~= nil and chip ~= nil and registry ~= nil then
+		-- ── the layer ────────────────────────────────────────────────────────
+		-- The owner's "il faut pas que ca gene la vision du joueur" is the
+		-- `overlay` layer and nothing else: `SurfaceRoot.vue` makes that layer
+		-- `pointer-events: none` for its whole height and never focuses it.
+		-- Either of these registered on `modal` would draw identically and be
+		-- the thing the owner said not to build, which is why the layer is
+		-- asserted from the registry rather than trusted to a comment.
+		-- The registration, found by walking the lines rather than by building a
+		-- pattern around the id. A HYPHEN IS A LUA PATTERN QUANTIFIER, so
+		-- `id:%s*'calls-incoming'` interpolated into a pattern matches
+		-- `id: 'calls'` followed by as little as possible, then `incoming'` --
+		-- which is nothing in this file, so both registrations read as absent
+		-- and the layer check under them could never fire. Found the first time
+		-- this section ran, which is the only reason it is not still true.
+		local function registrationOf(id)
+			for line in registry:gmatch('[^\n]+') do
+				if line:find("id: '" .. id .. "'", 1, true) then return line end
+			end
+			return nil
+		end
+
+		for _, id in ipairs({ 'calls-incoming', 'calls-live' }) do
+			local line = registrationOf(id)
+			check(('the %s view is registered'):format(id), line ~= nil)
+			check(('and %s is on the overlay layer, which takes no pointer'):format(id),
+				line ~= nil and line:find("surface:%s*'overlay'") ~= nil, line)
+		end
+
+		-- ── the channel ──────────────────────────────────────────────────────
+		-- `OPX.UI.Send` prefixes the surface id, so Lua's `'calls:view'`
+		-- arrives at the page as `'opx:calls:view'`. The two halves spell it
+		-- from two files that never see each other.
+		local view = sourceOf('modules/calls/client/view.lua') or ''
+		local channel = view:match("local CHANNEL = '([%w:_]+)'")
+		check('the Lua seam names a channel', channel ~= nil, channel)
+		local onPage = channel ~= nil and ('opx:' .. channel) or '?'
+		check('and the incoming card listens on exactly that channel, prefixed',
+			card:find("useBridge('" .. onPage .. "'", 1, true) ~= nil, onPage)
+		check('and so does the live chip',
+			chip:find("useBridge('" .. onPage .. "'", 1, true) ~= nil, onPage)
+
+		-- Every channel the page emits BACK has to be one `view.lua` wired a
+		-- handler for, or it is an intent that reaches nobody.
+		local wired = {}
+		for action in view:gmatch("'([%w]+)'") do wired[action] = true end
+		local unwired = {}
+		for _, page in ipairs({ card, chip }) do
+			for name in page:gmatch("emit%('opx:calls:([%w]+)'") do
+				if not wired[name] then unwired[#unwired + 1] = name end
+			end
+		end
+		table.sort(unwired)
+		check('every intent the page emits is one the Lua seam listens for',
+			#unwired == 0, table.concat(unwired, ', '))
+
+		-- ── neither view re-enables the pointer ──────────────────────────────
+		-- `SurfaceRoot.vue` makes the overlay layer `pointer-events: none` for
+		-- its whole height, and a child may override that -- CSS inherits the
+		-- value but a descendant with `auto` still receives events. What it
+		-- does NOT get is a cursor: the page only has one while some OTHER
+		-- module has taken it on the modal layer. So a control on either of
+		-- these views is clickable exactly when the inventory or the menu
+		-- happens to be open and dead the rest of the time.
+		--
+		-- This card shipped with one. It was a small × to wave the card away,
+		-- with `pointer-events: auto` and a written defence of the exception,
+		-- and the defence did not survive being asked which cursor would press
+		-- it. The dwell clock and the eye's re-pop row replaced it, and this
+		-- check is here so that the next person who wants a button on a
+		-- holocall card finds out from the suite rather than from a player.
+		local repointing = {}
+		for _, pair in ipairs({ { 'IncomingCall.vue', card }, { 'CallLive.vue', chip } }) do
+			-- Comments stripped, since both files now explain the rule in prose.
+			local styles = pair[2]:gsub('/%*.-%*/', '')
+			if styles:find('pointer%-events:%s*auto') then repointing[#repointing + 1] = pair[1] end
+		end
+		check('neither call view re-enables the pointer on a layer that has no cursor',
+			#repointing == 0, table.concat(repointing, ', '))
+
+		-- ── every word ───────────────────────────────────────────────────────
+		-- The page holds no English: every label is a key, and a key with no
+		-- catalogue line renders as itself.
+		local serverEnv, _, bootWhy = boot('server')
+		check('the server boots for the catalogue', bootWhy == nil, bootWhy)
+		if bootWhy == nil then
+			local module = serverEnv.OPX.Modules.Get('calls')
+			local english = (module.Catalogs or {}).en or {}
+			local french = (module.Catalogs or {}).fr or {}
+			local missing, seen = {}, 0
+			-- THE HOLOGRAM IS WALKED TOO, and it is the one that matters now: it
+			-- carries the whole feature's vocabulary, twenty-eight keys of it,
+			-- where the two views above carry a handful each. Left out, the check
+			-- would go on passing over the files that changed least.
+				for _, raw in ipairs({ card, chip, holo }) do
+				-- COMMENTS STRIPPED FIRST, which the pointer-events check above
+				-- already does and for a reason this check learned the hard way:
+				-- the hologram's own prose EXPLAINS this rule, quoting the
+				-- pattern, and the scanner dutifully reported the quotation as a
+				-- missing key.
+				local page = raw:gsub('/%*.-%*/', ''):gsub('%s*//[^\n]*', '')
+				-- EVERY `calls.*` LITERAL, not only the ones inside `t(...)`.
+				-- The hologram holds two lookup tables whose values are keys --
+				-- written that way precisely so this check could see them -- and
+				-- a scanner anchored on `t(` looked straight past both. Proved
+				-- by removing a French line and watching the suite stay green.
+				--
+				-- A literal ending in a dot is a PREFIX something concatenates
+				-- onto, not a key, and the only one is `calls.error.`: its
+				-- nineteen real keys are walked against `Model.REASONS` by the
+				-- check above this one.
+				for key in page:gmatch("'(calls%.[%w%.]+)'") do
+					if not key:find('%.$') then
+						seen = seen + 1
+						if english[key] == nil then missing[#missing + 1] = 'en:' .. key end
+						if french[key] == nil then missing[#missing + 1] = 'fr:' .. key end
+					end
+				end
+			end
+			table.sort(missing)
+			check('every key the two views ask for exists in both catalogues',
+				#missing == 0, table.concat(missing, ', '))
+			-- The count, so a regex that stopped matching could not make the
+			-- check above pass by finding nothing to check.
+			check('and the views really do ask for some', seen >= 20, seen)
+		end
+
+		-- ── A CLASS THAT DOES NOT EXIST STYLES NOTHING ───────────────────────
+		-- THE OWNER, on the first hologram: "je vois pas les text dans l'ui".
+		-- The view asked for `.op-title` and `.op-micro`. Neither is in the
+		-- design system -- `surface.css` defines `.op-label`, `.op-value`,
+		-- `.op-eyebrow`, `.op-copy` and `.op-truncate`, and that is the lot --
+		-- so every heading and every small label on that screen rendered with no
+		-- type preset at all. Nothing warns: an unknown class is not an error in
+		-- CSS, it is simply a selector that never matches.
+		--
+		-- So every `op-` class these views name must be defined SOMEWHERE the
+		-- browser will find it: the design system, or the file's own scoped
+		-- block. Checked across all three call views, because the one that got
+		-- it wrong was the newest.
+		do
+			local system = ''
+			for _, sheet in ipairs({ 'tokens.css', 'shapes.css', 'surface.css', 'fonts.css' }) do
+				system = system .. (sourceOf('ui/src/design-system/' .. sheet) or '')
+			end
+			check('the design system stylesheets are readable', #system > 0)
+
+			local unknown, used = {}, 0
+			for _, pair in ipairs({
+				{ 'IncomingCall.vue', card }, { 'CallLive.vue', chip }, { 'HoloRoot.vue', holo },
+			}) do
+				local file, body = pair[1], pair[2]
+				-- Comments stripped: these files discuss the rule in prose and
+				-- name the very classes they are explaining.
+				local code = body:gsub('/%*.-%*/', ''):gsub('<!%-%-.-%-%->', '')
+				local scoped = code:match('<style scoped>(.*)</style>') or ''
+				-- Classes as they appear in a `class="..."` attribute only. A
+				-- name inside a selector is a DEFINITION, not a use.
+				for attribute in code:gmatch('class="([^"]*)"') do
+					for name in attribute:gmatch('(op%-[%w%-]+)') do
+						used = used + 1
+						-- ESCAPED, because `-` is a Lua pattern quantifier: the first
+						-- version searched for `.op` followed by nothing followed by
+						-- `eyebrow` and reported all fifty classes as undefined,
+						-- including the eleven that plainly work on screen.
+						local literal = name:gsub('%-', '%%-')
+						if not system:find('%.' .. literal .. '[^%w%-]')
+							and not scoped:find('%.' .. literal .. '[^%w%-]') then
+							unknown[#unknown + 1] = file .. ':' .. name
+						end
+					end
+				end
+			end
+			table.sort(unknown)
+			check('every design-system class the call views name is really defined',
+				#unknown == 0, table.concat(unknown, ', '))
+			-- Non-vacuity: a regex that stopped matching would otherwise pass by
+			-- finding nothing to check.
+			check('and the views really do name some', used >= 10, used)
+		end
 	end
 end
 

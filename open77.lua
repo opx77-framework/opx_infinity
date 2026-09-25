@@ -113,6 +113,16 @@ shared_script "config/crafting.lua"
 -- same rows.
 shared_script "config/gunsmith.lua"
 shared_script "config/hauling.lua"
+-- AFTER every config it names, which is the only ordering rule it has: the map
+-- pins are sourced from garages, dealership, shops, teleports, gunsmith and
+-- hauling, and a reader who finds a category here should already have passed
+-- the block it comes from. It holds no coordinate of its own -- see its header
+-- for why, and for what actually suppressed the blips before this.
+shared_script "config/blips.lua"
+-- Shared: the client half reads the sound event names, the participant ceiling
+-- and the refusal windows here, and the server re-derives every bound the
+-- client thinks it knows. See modules/calls/module.lua.
+shared_script "config/calls.lua"
 shared_script "config/menu.lua"
 shared_script "config/form.lua"
 shared_script "config/panel.lua"
@@ -131,11 +141,26 @@ shared_script "lib/shared/result.lua"
 shared_script "lib/shared/table.lua"
 shared_script "lib/shared/string.lua"
 shared_script "lib/shared/math.lua"
--- The one job gate, ahead of every module that asks it a question. It was
--- `modules/elevators/shared/access.lua`'s own five branches until
--- `modules/teleports` wanted the same rule; a second hand-kept copy of an
--- access decision is how two surfaces end up disagreeing about who may pass.
+-- The job gate, ahead of every module that asks it a question. A `JOBS` block
+-- means one thing wherever it is written, and it is decided there: a hand-kept
+-- copy of an access decision is how two surfaces end up disagreeing about who
+-- may pass, and this file has been re-written by hand twice since it was
+-- factored out, each time losing a branch.
+shared_script "lib/shared/anchors.lua"
 shared_script "lib/shared/jobgate.lua"
+-- The placed-spot vocabulary, ahead of every module that places something. The
+-- same argument the job gate makes, about a different decision: `garages` and
+-- `dealership` held 334 `diff`-clean identical lines of it, and the copy that
+-- drifted would be the one drawing an AV pad at floor height or refusing a spot
+-- the other module accepted -- a car you can buy at a pad you cannot recall it
+-- at. `clothing`, `teleports` and `elevators` carried cut-down copies.
+shared_script "lib/shared/spots.lua"
+-- Whether a TweakDB record flies. A fact about the record, so it cannot be the
+-- three answers it was -- `garages`, `dealership` and the admin catalogue, over
+-- three config keys, one of which guarded neither its argument nor an emptied
+-- list. It lived in `lib/shared/text.lua`, which measures and cuts display text
+-- and does none of this.
+shared_script "lib/shared/vehicle.lua"
 shared_script "lib/shared/text.lua"
 shared_script "lib/shared/validate.lua"
 shared_script "lib/shared/hooks.lua"
@@ -512,6 +537,36 @@ shared_script "modules/gunsmith/shared/access.lua"
 server_script "modules/gunsmith/server/main.lua"
 client_script "modules/gunsmith/client/main.lua"
 
+-- AFTER ALL FIVE OF ITS SOURCES, and there is no server half to list. The map
+-- pins read the garages, dealership and teleports clients' own published lists
+-- and the shops, gunsmith and hauling config blocks, so every module it names
+-- is declared above it -- which is what lets its `optional` list be honest
+-- rather than a set of names resolved later.
+--
+-- It reaches into other modules and provides nothing back, exactly like `admin`
+-- below, and is placed here for the same reason. It is NOT last only because
+-- `admin` genuinely has to be: it lists what every other file registered.
+shared_script "modules/blips/module.lua"
+client_script "modules/blips/client/main.lua"
+-- Holocalls. AFTER `character`, whose citizen id a contact row is filed under
+-- and whose charInfo names who is calling -- a `requires`, so the dependency
+-- walk would order it correctly wherever this block sat; it is written here so
+-- the file reads in the order it runs. After `target` and `menu`, which are
+-- optional and carry every row and every entry the feature has. Before `admin`,
+-- which stays last.
+--
+-- `shared/model.lua` before either half: both of them index `M.Model`, and the
+-- server's `Init` builds a registry out of it on the first phase.
+shared_script "modules/calls/module.lua"
+shared_script "modules/calls/locales.lua"
+shared_script "modules/calls/shared/model.lua"
+server_script "modules/calls/server/main.lua"
+client_script "modules/calls/client/main.lua"
+-- The seam to the page, after the state half for the reason
+-- `modules/downed/client/view.lua` gives: the state half publishes on a local
+-- event and this is the only file that knows the other end is a CEF page.
+client_script "modules/calls/client/view.lua"
+
 -- LAST of the modules, because it reaches into nearly all of them and provides
 -- nothing back. Every contract it uses is optional bar `character`: without the
 -- menu, the form or the target eye it logs one line each and all 50 commands
@@ -626,7 +681,14 @@ permissions {
   -- nothing else.
   "state.write",
 
+  -- `MySQL` IS AN ALIAS OF `Open77.database`, so a grep for the namespace finds
+  -- nothing but comments while every character, vehicle and inventory row in the
+  -- resource goes through it. Removed on 2026-09-21 on exactly that evidence and
+  -- restored the same hour: the server came up with
+  -- `permission_denied:database.access` and "nobody will be able to connect".
+  -- See the header of `lib/server/storage.lua`, which says so in its second line.
   "database.access",
+
 
   "world.environment",
 
@@ -723,6 +785,65 @@ permissions {
 
   "players.disconnect",
 
+  -- THE HOLOCALL EYE-GLOW, one declaration per native handler and both names
+  -- out of the op77.76 catalogue rather than off a documentation page --
+  -- `open77_api server:Open77.players.setHoloCallEyes` prints this exact
+  -- manifest line, and the same for the reader. They arrived in
+  -- 2.31.13+op77.63, which is older than the op77.75 this ships against.
+  --
+  --   players.holocall.control  `Open77.players.setHoloCallEyes`, at the two
+  --                             call sites in `modules/calls/server/main.lua`
+  --                             that are the ONLY writers: `lightEyes` takes
+  --                             and renews a bounded lease for a participant,
+  --                             `darkenEyes` gives it back. Nothing else in
+  --                             this resource lights an eye
+  --   players.holocall.read     `Open77.players.getHoloCallEyes`, at the one
+  --                             call site in `eyesOn` in the same file. It is
+  --                             the sweep's watchdog and the `Eyes` contract
+  --                             entry underneath it: the reader answers for
+  --                             EVERY resource at once, so it cannot say whose
+  --                             lease is whose -- what it can say is that
+  --                             there is none at all, which for a live
+  --                             participant is a lease the platform dropped
+  --
+  -- The lease is BOUNDED AND RENEWED rather than held open, which is a decision
+  -- and not a detail; `config/calls.lua`'s EYES block and the header of
+  -- `modules/calls/server/main.lua` both say why, and the short version is the
+  -- one `modules/animations/client/walk.lua` already learned the hard way.
+  --
+  -- BOTH CALL SITES ARE ON THE SERVER, so a refusal of either lands in the
+  -- server journal and not on the player's machine -- unlike `camera.preview`
+  -- and `world.query` above, these two can be verified from the host.
+  -- `players.holocall.read` is enforced on the client as well and there is a
+  -- client `Open77.players.getHoloCallEyes` behind it; this resource does not
+  -- call it. The glow a client needs to know about is its own participation,
+  -- and the server already pushes that on `opx:net:calls:state`.
+  "players.holocall.control",
+  "players.holocall.read",
+
+  -- THE CALL'S AUDIO, and the two halves are two permissions because they are
+  -- two runtimes. The owner reported it as "quand il repond a l'appel on s'entend
+  -- pas", and the reason was that the feature shipped carrying a call's state and
+  -- its presentation and no voice at all.
+  --
+  -- `voice.manage` is the SERVER's, and every call site is in
+  -- `modules/calls/server/main.lua`: `Open77.voice.createChannel` in
+  -- `channelOf`, `addPlayer` in `joinVoice`, `removePlayer` in `leaveVoice`,
+  -- `removeChannel` in `dropChannel`. Membership is reachability and the server
+  -- owns reachability; a client asking to be on a call's channel would be a
+  -- client granting itself an ear.
+  --
+  -- `voice.client` is the CLIENT's, for `Open77.voice.setTransmitting` in
+  -- `modules/calls/client/main.lua`. It decides which route this machine's own
+  -- frames take, which is local presentation policy and cannot grant anything:
+  -- the card for it says in as many words that the server still validates every
+  -- recipient and membership. Undeclared, the membership would stand and the
+  -- player would HEAR the call while nobody heard them -- half a conversation,
+  -- refused silently on their own machine, which is the shape of failure this
+  -- manifest's comments keep coming back to.
+  "voice.manage",
+  "voice.client",
+
   "player.appearance.read",
   "player.cyberware.read",
   "player.appearance.edit",
@@ -737,12 +858,29 @@ permissions {
   "player.weapons.read",
   "puppets.present",
 
+  -- THE PERMISSION IS AN ARGUMENT, NOT A NAMESPACE, at the only three call
+  -- sites that need these two. `OPX.Lib.Native.Call('camera.orbit',
+  -- 'camera.preview', ...)` names the method and the permission as STRINGS, so
+  -- `Open77.camera` and `Open77.world` genuinely appear nowhere in this tree
+  -- outside comments -- and both of these were removed on 2026-09-21 on exactly
+  -- that evidence.
+  --
+  -- What it broke, reported from the game within the hour: the fitting room's
+  -- preview camera stopped turning the body (`camera.orbit` / `camera.clearOrbit`),
+  -- and the eye stopped resolving anything the ray had to reach for -- yourself,
+  -- the sky (`camera.screenRaycast`).
+  --
+  -- NOTHING SERVER-SIDE SAID SO. Both are CLIENT permissions, so the refusal
+  -- lands in the player's own log; the server journal showed zero
+  -- `permission_denied` and a clean boot, which is what they were checked
+  -- against. A client permission is verified in the game or not at all.
   "camera.preview",
+  "world.query",
+
   "player.travel",
 
   "input.actions",
 
-  "world.query",
   "players.controls",
 
   "players.animations.control",
@@ -760,6 +898,42 @@ permissions {
   "voice.client",
 
   "ui.vanilla.hud",
+
+  -- THE MAP PINS. `open77_permissions ui.vanilla.map` answers with a card
+  -- naming this exact manifest line and the 22 natives in `Open77.blips` it
+  -- gates, so the name is the catalogue's and not a guess.
+  --
+  -- The call sites, all in `modules/blips/client/main.lua` and all of them
+  -- gated on this ONE name:
+  --   Open77.blips.create   `create()`, the pin itself
+  --   Open77.blips.remove   `remove()`, a spot that went away or moved
+  --   Open77.blips.clear    `Runtime.Shutdown`, the whole set at stop
+  -- `Open77.blips.sprites` is the one function in the namespace that needs no
+  -- permission, and this resource does not call it.
+  --
+  -- CLIENT PERMISSION, WHICH IS WHY IT IS WORTH READING TWICE. The refusal is
+  -- `permission_denied:ui.vanilla.map`, it lands in the PLAYER's own log on the
+  -- player's own machine, and the server journal says nothing at all. Undeclared,
+  -- the map would simply stay empty -- which is indistinguishable from the bug
+  -- this module was written to fix, and is exactly how `camera.preview` and
+  -- `world.query` were removed from this block on 2026-09-21 against a clean
+  -- server boot and had to be put back within the hour.
+  --
+  -- That is also why `modules/blips/client/main.lua` spends its first
+  -- `OPX.Note` saying how many pins went up: a client permission is verified in
+  -- the game or it is not verified, and the operator cannot read the client log.
+  "ui.vanilla.map",
+
+  -- The plate above a head. The platform draws it labelled with the displayName
+  -- the Master vouches for -- the account gamertag -- and nothing here ever
+  -- overrode it, so a player who had just named their character still walked
+  -- around under their account name, on the first connection and on the
+  -- hundredth. `modules/character/client/state.lua` sets the override from the
+  -- name the server already publishes on the state bag.
+  --
+  -- CLIENT permission: a refusal lands in the player's own log and the server
+  -- journal says nothing. Verified in the game, or not verified.
+  "ui.nameplates",
 
   -- The staff module, and only the staff module. Every one of these gates a
   -- single call; none is reachable without passing the ACL first.

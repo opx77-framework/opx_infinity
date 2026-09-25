@@ -1,4 +1,4 @@
---- Server half: the dealers, what each one sells, and the purchase itself.
+--- Server half: the dealers, the showroom floor, the purchase and the sale.
 -- @author XEROX710
 --
 -- Everything the client believes is re-derived here before money moves: a
@@ -15,13 +15,25 @@
 -- could not be drawn -- is answered with a refund of exactly what was taken. The
 -- reverse order would hand out a free car every time a row could not be written.
 --
--- This module owns no vehicle and no plate. What a character owns, and every
--- rule about how much of it they may own, stays in one place: the vehicles
--- contract.
+-- This module owns no vehicle a player drives and no plate. What a character
+-- owns, and every rule about how much of it they may own, stays in one place:
+-- the vehicles contract. The one exception is the SHOWROOM, whose cars belong to
+-- nobody, are created straight through `Open77.vehicles` with no row anywhere,
+-- and are LOCKED -- an unlocked showroom car is a free car with an audience.
 --
--- A dealer captured in game lives in the database and is merged OVER the config
--- by key, so a dealer checked in at `config/dealership.lua` can be moved in game
--- and the checked-in value is what a database reset falls back to.
+-- SELLING TO SOMEBODY STANDING IN FRONT OF YOU. Inside a dealer's zone the eye
+-- grows a row on every other player, and a salesperson picks a model for them.
+-- Nothing is charged by that press: an OFFER is recorded and the BUYER'S OWN
+-- CLIENT confirms it, which is the owner's own choice over debiting an account
+-- because somebody else clicked something. The price is paid into the COMPANY
+-- BANK of the seller's job or gang and a configured percentage of it is paid to
+-- the seller.
+--
+-- THE PLACEMENT COMMANDS ARE GONE. `/opx.dealership.add` and `.remove` wrote a
+-- dealer into `opx77_dealerships`, so the shape of the world lived in a table
+-- nobody had a copy of. A dealer is written in `config/dealership.lua` now, and
+-- every row still in that table is ADOPTED at boot and printed as the line that
+-- would check it in -- see "the legacy adoption".
 --
 -- Every value off the wire goes through `safe` before it reaches a format
 -- string: a newline would forge a whole log line.
@@ -32,27 +44,57 @@ local Access = M.Access
 local Result = OPX.Result
 local Store = M.Storage
 
--- The dealers an operator checked in, and the ones captured in game.
+-- The dealers an operator checked in, and the ones adopted out of the legacy
+-- table at boot.
 local configSpots = {}
-local captured = {}
+local adopted = {}
 
--- Config overlaid by captured: the one list every read below uses.
+-- Config overlaid by the adoption: the one list every read below uses.
 local spots = {}
+
+-- The showroom. `previews` is what was placed, by key; `showroom` is the engine
+-- id each one is standing as, by the same key. Two tables and not one, because a
+-- preview that is placed and NOT standing -- the record was refused, the host
+-- said no -- is a thing an operator has to be able to see.
+local previews, showroom = {}, {}
+
+-- The two halves `previews` is merged from, and they are the dealer story told
+-- a second time. `configPreviews` is `PREVIEW.POINTS` in `config/dealership.lua`;
+-- `adoptedPreviews` is what `opx77_dealership_previews` still holds from before
+-- 2026-09-21, when the staff menu's Dev screen wrote showroom cars straight into
+-- it and the owner deleted the screen for exactly that reason.
+local configPreviews, adoptedPreviews = {}, {}
 
 -- Per-player rate-limit windows for requests that are not rate-limited by
 -- `OPX.Cooling`.
 local windows = {}
 
--- The capture request each connection has not answered yet: `{ at = ms }`, by
--- player id. `add` cannot know a facing, so it asks the client for one, and an
--- answer that never comes has to settle itself rather than leaving the operator
--- believing a dealer was placed.
-local pending = {}
+-- THERE IS NO PENDING PLACEMENT, and the table that used to be here went with
+-- the reason for it. `/opx.dealership.add` was a CHAT COMMAND: it had no facing
+-- of its own, so the server asked the operator's client for one and then had to
+-- cope with an answer that never came -- a timeout, a watcher thread and a
+-- "your client did not answer" toast, all to make one round trip survivable.
+--
+-- The placement path that replaced it ran ON THE CLIENT, so the client READ
+-- ITS OWN FACING before it said anything at all: one message, no waiting,
+-- nothing to expire. That path is still wired and nothing in this resource
+-- calls it -- the menu it belonged to is gone and a showroom car is a row in
+-- PREVIEW.POINTS in config/dealership.lua.
+--
+-- The offer each BUYER has not answered yet, by their player id. Keyed by the
+-- buyer and not by the seller: a buyer may only be deciding about one vehicle at
+-- a time, and a second offer replaces the first rather than queueing behind it.
+local offers = {}
 
--- The contracts, resolved in `Start`. `character` and `vehicles` nil means
--- nothing can be charged or owned and every purchase is refused; `garages` nil
--- costs one choice -- which garage the vehicle is filed under -- and nothing
--- else, because the vehicles module has a default of its own.
+-- THE NAME AN OFFER IS ANSWERED BY, and it is a counter rather than the clock.
+-- An offer is keyed by its BUYER, so a second one replaces the first -- and the
+-- answer to the first, already in flight, must not settle the second: a
+-- different car, at a different price, that the buyer never saw. The clock
+-- cannot tell them apart, because two offers made in the same millisecond carry
+-- the same one; a counter never repeats.
+local nextOffer = 0
+
+-- The contracts, resolved in `Start`.
 local character, vehicles, garages
 
 -- The currency a price is denominated in, settled in `Start`, and nil when the
@@ -60,9 +102,6 @@ local character, vehicles, garages
 local currency
 
 -- What is for sale, as the client reads it: `{ garage = {...}, avpad = {...} }`.
--- Built once in `Start`, because the formatted price needs the character
--- contract, and a client that formatted its own would be a second answer to the
--- same question.
 local stockFor = { [M.KIND.GARAGE] = {}, [M.KIND.AVPAD] = {} }
 
 -- Whether the loop that sweeps rate-limit windows is running.
@@ -96,28 +135,6 @@ local function within(player, limit, spanMs)
 	return true
 end
 
--- One capture request's identity, so a watcher cannot expire a request that
--- replaced it. `at` is monotonic and taken once.
-local function watchCapture(player, at, key)
-	if Access.CAPTURE_TIMEOUT_MS <= 0 then return end
-	CreateThread(function()
-		while true do
-			local entry = pending[player]
-			if entry == nil or entry.at ~= at then return end
-			if OPX.Now() - at >= Access.CAPTURE_TIMEOUT_MS then break end
-			Wait(100)
-		end
-		-- Still this request and still unanswered: say so, once.
-		local entry = pending[player]
-		if entry == nil or entry.at ~= at then return end
-		pending[player] = nil
-		Open77.log.warn(
-			('[dealership] player %d did not answer the capture of %s within %d ms; ' ..
-				'nothing was saved'):format(player, safe(key), Access.CAPTURE_TIMEOUT_MS))
-		OPX.NotifyLocale(player, 'dealership.captureNoAnswer', { key = safe(key) }, 'error')
-	end)
-end
-
 --- Answers the character this connection has loaded, or nil.
 -- The only ownership oracle there is: a citizen id in a payload is a claim.
 local function characterOf(source)
@@ -136,11 +153,19 @@ local function pointOf(source)
 	return { x = x, y = y, bucket = bucket or 0 }
 end
 
---- Rebuilds the merged list. Called once at load and after every capture.
+--- Rebuilds the merged list. Called once at load and after the adoption.
 local function rebuild()
 	spots = {}
 	for key, spot in pairs(configSpots) do spots[key] = spot end
-	for key, spot in pairs(captured) do spots[key] = spot end
+	for key, spot in pairs(adopted) do
+		-- CONFIG WINS, and this is the one precedence the rework reverses. A
+		-- captured row used to overlay the config file, because the command was
+		-- the authority and the file was the backup. There is no command now: the
+		-- file IS the dealer, and a stale row of the same name silently moving it
+		-- would be a dealer an operator cannot move by editing the one place they
+		-- are told to edit.
+		if spots[key] == nil then spots[key] = spot end
+	end
 end
 
 --- The dealers of one bucket, ready for the wire.
@@ -160,7 +185,7 @@ local function sync(player)
 	TriggerClientEvent(M.Event.STOCK, player, { kinds = stockFor })
 end
 
---- Sends every connected player their own list. Guarded: a capture must not
+--- Sends every connected player their own list. Guarded: a placement must not
 --- fail because one connection could not be read.
 local function syncAll()
 	local read, ids = pcall(Open77.players.all)
@@ -175,8 +200,14 @@ end
 
 --- Answers a destination garage a purchase named, or nil when it may not be used.
 -- The rules are all here and none of them are the client's: the named place has
--- to exist, be a place of the SAME category as the dealer (a car is not filed to
--- an AV pad) and be in the player's own routing bucket.
+-- to exist, be a garage of the SAME category as the dealer (a car is not filed
+-- to an AV pad) and have at least one location in the player's own routing
+-- bucket.
+--
+-- A GARAGE AND NOT A POINT. The garages rework made a garage a key with several
+-- locations, and a vehicle is filed under the KEY -- naming one of its markers
+-- here would file a car under a door, which is a car that comes out of exactly
+-- one location and nowhere else.
 -- @author XEROX710
 -- @param key any
 -- @param kind string
@@ -184,68 +215,69 @@ end
 -- @return table|nil
 local function destination(key, kind, bucket)
 	if garages == nil or type(key) ~= 'string' or key == '' then return nil end
-	local listed = garages.Spots()
-	local spot = type(listed) == 'table' and Access.Spot(listed, key) or nil
-	if spot == nil or spot.kind ~= kind or spot.bucket ~= bucket then return nil end
-	return spot
+	if type(garages.Garages) ~= 'function' then return nil end
+	local listed = garages.Garages()
+	local built = type(listed) == 'table' and listed[key] or nil
+	if built == nil or built.kind ~= kind then return nil end
+	for _, place in ipairs(type(built.locations) == 'table' and built.locations or {}) do
+		if place.bucket == bucket then return built end
+	end
+	return nil
 end
 
---- Buys one model from the dealer the connection is standing on.
--- @author XEROX710
--- @param source Source
--- @param dealerKey string|nil the dealer's name; the nearest one when omitted
--- @param entryKey string the stock row being bought
--- @param destKey string|nil the garage the vehicle is filed under
--- @return Result
-function M.Buy(source, dealerKey, entryKey, destKey)
-	if vehicles == nil then return Result.Err('dealership.noVehicles') end
-
-	local data = characterOf(source)
-	if data == nil or type(data.citizenId) ~= 'string' then
-		return Result.Err('dealership.noCharacter')
-	end
-	local at = pointOf(source)
-	if at == nil then return Result.Err('dealership.noPosition') end
-
-	local dealer = nil
+--- The dealer a request names, resolved against where the connection stands.
+-- @param at table the connection's point
+-- @param dealerKey any
+-- @return table|nil
+-- @return Result|nil
+local function dealerAt(at, dealerKey)
+	local dealer
 	if dealerKey == nil or dealerKey == '' then
 		dealer = Access.Nearest(spots, at.x, at.y)
 	else
 		dealer = Access.Spot(spots, dealerKey)
 	end
-	if dealer == nil then return Result.Err('dealership.noSuchSpot') end
-	if dealer.bucket ~= at.bucket then return Result.Err('dealership.wrongBucket') end
+	if dealer == nil then return nil, Result.Err('dealership.noSuchSpot') end
+	if dealer.bucket ~= at.bucket then return nil, Result.Err('dealership.wrongBucket') end
 
 	local flat = Access.FlatDistanceSquared(dealer, at.x, at.y)
 	if flat == nil or flat > Access.USE_RADIUS_SQ then
-		return Result.Err('dealership.tooFar', dealer.key)
+		return nil, Result.Err('dealership.tooFar', dealer.key)
 	end
+	return dealer, nil
+end
 
-	local entry = Access.Entry(entryKey)
-	if entry == nil then return Result.Err('dealership.noSuchEntry') end
-	-- WHAT THIS DEALER SELLS, and it is the dealer's category that decides: a
-	-- garage sells ground vehicles, a pad sells AVs. A row is refused rather
-	-- than quietly redirected to the dealer that does stock it.
-	if not Access.SoldHere(dealer.kind, entry) then
-		return Result.Err('dealership.notSold', entry.key)
-	end
-	if currency == nil then return Result.Err('dealership.noCurrency') end
+--- Whether a connection is anywhere inside one dealer's ZONE.
+-- Wider than `dealerAt`, and a different question: standing ON the marker is
+-- what buys, and being IN THE ROOM is what lets a salesperson walk a customer
+-- around it.
+-- @param at table|nil
+-- @param dealer table
+-- @return boolean
+local function inZone(at, dealer)
+	if at == nil or dealer == nil then return false end
+	if at.bucket ~= dealer.bucket then return false end
+	local flat = Access.FlatDistanceSquared(dealer, at.x, at.y)
+	return flat ~= nil and flat <= Access.ZONE_RADIUS_SQ
+end
 
-	-- Read before anything is charged, so the common refusal costs the player
-	-- nothing at all: the money is still re-checked by the removal itself, which
-	-- is the only check that counts -- this one is the courtesy.
-	local balance = character.GetMoney(source, currency)
-	if type(balance) ~= 'number' or balance < entry.price then
-		return Result.Err('dealership.cannotAfford', entry.key)
-	end
+-- ── the purchase itself ─────────────────────────────────────────────────────
 
-	local dest = nil
-	if type(destKey) == 'string' and destKey ~= '' then
-		dest = destination(destKey, dealer.kind, at.bucket)
-		if dest == nil then return Result.Err('dealership.noSuchGarage', destKey) end
-	end
-
-	-- ── the purchase ─────────────────────────────────────────────────────
+--- Charges the buyer, registers the vehicle and hands it over.
+-- @author XEROX710
+--
+-- THE ONE PLACE MONEY LEAVES A BUYER, and both doors go through it: the
+-- self-service `Buy` and the face-to-face `Accept`. A second copy for the second
+-- door would be a second answer to the question of what happens when the
+-- registration fails after the charge -- which is the one failure in this module
+-- that can cost a player money.
+-- @param source Source the BUYER's connection
+-- @param data table their PlayerData
+-- @param dealer table
+-- @param entry table the stock row
+-- @param dest table|nil the destination garage
+-- @return Result
+local function purchase(source, data, dealer, entry, dest)
 	local paid, refusal = character.RemoveMoney(source, currency, entry.price,
 		'dealership:' .. entry.key)
 	if not paid then
@@ -328,20 +360,6 @@ function M.Buy(source, dealerKey, entryKey, destKey)
 		end
 	end
 
-	local player = character.GetPlayer(source)
-	if player ~= nil then
-		OPX.Audit.Player(player, 'dealership.buy', tostring(plate), {
-			entry = entry.key,
-			dealer = dealer.key,
-			garage = dest ~= nil and dest.key or '',
-			price = tostring(entry.price),
-			currency = currency,
-		})
-	end
-	Open77.log.info(('[dealership] %s bought %s (%s) at %s for %d %s%s'):format(
-		tostring(data.citizenId), safe(entry.key), safe(entry.record), safe(dealer.key),
-		entry.price, currency, dest ~= nil and (' -> ' .. safe(dest.key)) or ''))
-
 	return Result.Ok({
 		plate = plate,
 		entry = entry.key,
@@ -353,6 +371,517 @@ function M.Buy(source, dealerKey, entryKey, destKey)
 		currency = currency,
 		spawned = spawned,
 	})
+end
+
+--- Buys one model from the dealer the connection is standing on.
+-- @author XEROX710
+-- @param source Source
+-- @param dealerKey string|nil the dealer's name; the nearest one when omitted
+-- @param entryKey string the stock row being bought
+-- @param destKey string|nil the garage the vehicle is filed under
+-- @return Result
+function M.Buy(source, dealerKey, entryKey, destKey)
+	if vehicles == nil then return Result.Err('dealership.noVehicles') end
+
+	local data = characterOf(source)
+	if data == nil or type(data.citizenId) ~= 'string' then
+		return Result.Err('dealership.noCharacter')
+	end
+	local at = pointOf(source)
+	if at == nil then return Result.Err('dealership.noPosition') end
+
+	local dealer, refusal = dealerAt(at, dealerKey)
+	if dealer == nil then return refusal end
+
+	local entry = Access.Entry(entryKey)
+	if entry == nil then return Result.Err('dealership.noSuchEntry') end
+	-- WHAT THIS DEALER SELLS, and it is the dealer's category that decides: a
+	-- garage sells ground vehicles, a pad sells AVs. A row is refused rather
+	-- than quietly redirected to the dealer that does stock it.
+	if not Access.SoldHere(dealer.kind, entry) then
+		return Result.Err('dealership.notSold', entry.key)
+	end
+	if currency == nil then return Result.Err('dealership.noCurrency') end
+
+	-- Read before anything is charged, so the common refusal costs the player
+	-- nothing at all: the money is still re-checked by the removal itself, which
+	-- is the only check that counts -- this one is the courtesy.
+	local balance = character.GetMoney(source, currency)
+	if type(balance) ~= 'number' or balance < entry.price then
+		return Result.Err('dealership.cannotAfford', entry.key)
+	end
+
+	local dest = nil
+	if type(destKey) == 'string' and destKey ~= '' then
+		dest = destination(destKey, dealer.kind, at.bucket)
+		if dest == nil then return Result.Err('dealership.noSuchGarage', destKey) end
+	end
+
+	local bought = purchase(source, data, dealer, entry, dest)
+	if not bought.ok then return bought end
+
+	local player = character.GetPlayer(source)
+	if player ~= nil then
+		OPX.Audit.Player(player, 'dealership.buy', tostring(bought.value.plate), {
+			entry = entry.key,
+			dealer = dealer.key,
+			garage = dest ~= nil and dest.key or '',
+			price = tostring(entry.price),
+			currency = currency,
+		})
+	end
+	Open77.log.info(('[dealership] %s bought %s (%s) at %s for %d %s%s'):format(
+		tostring(data.citizenId), safe(entry.key), safe(entry.record), safe(dealer.key),
+		entry.price, currency, dest ~= nil and (' -> ' .. safe(dest.key)) or ''))
+
+	return bought
+end
+
+-- ── the company bank ────────────────────────────────────────────────────────
+
+--- The company one connection sells for, or nil with the reason.
+-- @author XEROX710
+-- @param source Source
+-- @return string|nil kind
+-- @return string|nil group
+local function companyOf(source)
+	local data = characterOf(source)
+	if data == nil then return nil, nil end
+	local job = type(data.job) == 'table' and data.job.name or nil
+	local gang = type(data.gang) == 'table' and data.gang.name or nil
+	return Access.CompanyOf(job, gang)
+end
+
+--- Pays a sale into a company's account, answering what actually landed.
+-- @author XEROX710
+--
+-- THE DEPOSIT IS ONE STATEMENT AND THE ARITHMETIC IS THE DATABASE'S -- see
+-- `Store.Deposit`. A deposit that fails is NOT a failed sale: the buyer owns the
+-- vehicle and the seller has been paid, and undoing either from here would be
+-- two more writes that can fail in turn. It is said in the log with everything
+-- needed to settle it by hand, which is the same treatment a refund that fails
+-- gets in `purchase`.
+-- @param kind string
+-- @param group string
+-- @param amount integer
+-- @param plate any
+-- @return boolean
+local function bank(kind, group, amount, plate)
+	if amount <= 0 then return true end
+	local put = Store.Deposit(kind, group, amount)
+	if put == nil or not put.ok then
+		Open77.log.error(('[dealership] %d %s from the sale of %s did NOT reach the %s account ' ..
+			'of %s (%s) -- settle this by hand'):format(amount, tostring(currency), safe(plate),
+			kind, safe(group), tostring(put and put.detail or 'no answer')))
+		return false
+	end
+	return true
+end
+
+-- ── selling to another player ───────────────────────────────────────────────
+
+--- Offers one model to another player, who has to say yes themselves.
+-- @author XEROX710
+--
+-- NOTHING IS CHARGED HERE. The owner chose that the buyer's own client confirms
+-- over debiting them the moment a salesperson presses a row, and this function
+-- is the whole of that choice: it proves everything it can prove NOW, records
+-- the offer, and sends it. `Accept` proves all of it again, because everything
+-- provable here can have stopped being true by the time the buyer answers --
+-- they can walk out of the room, spend the money, or log off.
+-- @param seller Source
+-- @param buyer any the player id the seller picked off the eye
+-- @param entryKey any
+-- @return Result
+function M.Offer(seller, buyer, entryKey)
+	if vehicles == nil then return Result.Err('dealership.noVehicles') end
+	if currency == nil then return Result.Err('dealership.noCurrency') end
+
+	buyer = tonumber(buyer)
+	if buyer == nil or buyer == seller then return Result.Err('dealership.noSuchBuyer') end
+
+	local sellerData = characterOf(seller)
+	local buyerData = characterOf(buyer)
+	if sellerData == nil or buyerData == nil or type(buyerData.citizenId) ~= 'string' then
+		return Result.Err('dealership.noCharacter')
+	end
+
+	local kind, group = companyOf(seller)
+	if kind == nil then return Result.Err('dealership.noCompany') end
+
+	local sellerAt, buyerAt = pointOf(seller), pointOf(buyer)
+	if sellerAt == nil or buyerAt == nil then return Result.Err('dealership.noPosition') end
+
+	-- THE SELLER'S OWN NEAREST DEALER decides which showroom this is, and both
+	-- of them have to be standing in it: a salesperson who can sell to somebody
+	-- across the city is a salesperson who can sell to somebody who has never
+	-- seen a dealership.
+	local dealer = Access.Nearest(spots, sellerAt.x, sellerAt.y, Access.ZONE_RADIUS_SQ)
+	if dealer == nil or not inZone(sellerAt, dealer) then
+		return Result.Err('dealership.notInZone')
+	end
+	if not inZone(buyerAt, dealer) then return Result.Err('dealership.buyerNotInZone') end
+
+	local entry = Access.Entry(entryKey)
+	if entry == nil then return Result.Err('dealership.noSuchEntry') end
+	if not Access.SoldHere(dealer.kind, entry) then
+		return Result.Err('dealership.notSold', entry.key)
+	end
+
+	-- The courtesy check, so the common refusal costs nobody a round trip. The
+	-- removal itself is still the only one that counts.
+	local balance = character.GetMoney(buyer, currency)
+	if type(balance) ~= 'number' or balance < entry.price then
+		return Result.Err('dealership.buyerCannotAfford', entry.key)
+	end
+
+	local at = OPX.Now()
+	nextOffer = nextOffer + 1
+	local token = nextOffer
+	offers[buyer] = {
+		token = token,
+		at = at,
+		seller = seller,
+		sellerCitizen = sellerData.citizenId,
+		buyerCitizen = buyerData.citizenId,
+		dealer = dealer.key,
+		entry = entry.key,
+		price = entry.price,
+		kind = kind,
+		group = group,
+	}
+
+	local cut, company = Access.Split(entry.price)
+	TriggerClientEvent(M.Event.OFFERED, buyer, {
+		token = token,
+		entry = entry.key,
+		model = entry.label,
+		price = entry.price,
+		text = character.FormatMoney(entry.price, currency),
+		seller = OPX.DisplayNameOf(seller) or tostring(seller),
+		dealer = dealer.key,
+		label = dealer.label,
+		timeoutMs = Access.OFFER_TIMEOUT_MS,
+	})
+
+	-- The offer settles itself. Without this a buyer who simply walks away
+	-- leaves a row in `offers` that the seller is waiting on for ever, and the
+	-- seller is told nothing at all.
+	if Access.OFFER_TIMEOUT_MS > 0 then
+		CreateThread(function()
+			local deadline = at + Access.OFFER_TIMEOUT_MS
+			while OPX.Now() < deadline do
+				local live = offers[buyer]
+				if live == nil or live.token ~= token then return end
+				Wait(250)
+			end
+			local live = offers[buyer]
+			if live == nil or live.token ~= token then return end
+			offers[buyer] = nil
+			TriggerClientEvent(M.Event.SETTLED, live.seller, { ok = false,
+				error = 'dealership.offerExpired', entry = live.entry })
+			OPX.NotifyLocale(live.seller, 'dealership.offerExpired', nil, 'error')
+		end)
+	end
+
+	return Result.Ok({
+		buyer = buyer,
+		token = token,
+		entry = entry.key,
+		price = entry.price,
+		cut = cut,
+		company = company,
+		dealer = dealer.key,
+	})
+end
+
+--- The buyer's own answer to an offer. This is where the money moves.
+-- @author XEROX710
+-- @param buyer Source
+-- @param token any the offer's own name, so a stale answer cannot settle a new one
+-- @param yes boolean
+-- @return Result
+function M.Accept(buyer, token, yes)
+	local offer = offers[buyer]
+	if offer == nil then return Result.Err('dealership.noOffer') end
+	-- IDENTIFIED BY ITS OWN NAME. A second offer replaces the first -- the table
+	-- is keyed by the buyer -- and a confirm that was already in flight for the
+	-- first would otherwise buy the second: a different car, at a different
+	-- price, that the buyer never saw. It is a counter and not the clock,
+	-- because two offers made in the same millisecond carry the same clock.
+	if Access.FiniteNumber(token) ~= offer.token then return Result.Err('dealership.noOffer') end
+	offers[buyer] = nil
+
+	if yes ~= true then
+		TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
+			error = 'dealership.offerDeclined', entry = offer.entry })
+		OPX.NotifyLocale(offer.seller, 'dealership.offerDeclined', nil, 'error')
+		return Result.Err('dealership.offerDeclined')
+	end
+
+	if vehicles == nil then return Result.Err('dealership.noVehicles') end
+	if currency == nil then return Result.Err('dealership.noCurrency') end
+
+	-- EVERYTHING IS PROVED AGAIN. The buyer may have walked out of the room,
+	-- spent the money, changed character or logged off since the offer, and the
+	-- seller may have done the same.
+	local buyerData = characterOf(buyer)
+	if buyerData == nil or buyerData.citizenId ~= offer.buyerCitizen then
+		return Result.Err('dealership.noCharacter')
+	end
+	local sellerData = characterOf(offer.seller)
+	if sellerData == nil or sellerData.citizenId ~= offer.sellerCitizen then
+		return Result.Err('dealership.sellerGone')
+	end
+
+	local dealer = Access.Spot(spots, offer.dealer)
+	local buyerAt = pointOf(buyer)
+	local sellerAt = pointOf(offer.seller)
+	if dealer == nil or not inZone(buyerAt, dealer) then
+		return Result.Err('dealership.notInZone')
+	end
+	if not inZone(sellerAt, dealer) then return Result.Err('dealership.sellerGone') end
+
+	local entry = Access.Entry(offer.entry)
+	if entry == nil or entry.price ~= offer.price then
+		-- The catalogue was edited and reloaded under an open offer. Refused
+		-- rather than honoured at either price: one of them is not what the
+		-- buyer agreed to and the other is not what the shop sells for.
+		return Result.Err('dealership.noSuchEntry')
+	end
+
+	local bought = purchase(buyer, buyerData, dealer, entry, nil)
+	if not bought.ok then
+		TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
+			error = bought.error, entry = offer.entry })
+		return bought
+	end
+
+	-- ── where the money goes ─────────────────────────────────────────────
+	local cut, company = Access.Split(entry.price)
+	local paid = true
+	if cut > 0 then
+		local given, why = character.AddMoney(offer.seller, currency, cut,
+			'dealership:commission:' .. entry.key)
+		if not given then
+			paid = false
+			-- NOT A FAILED SALE, and it is banked to the company instead rather
+			-- than evaporating: the buyer owns the vehicle, and a commission
+			-- that could not be paid is money that belongs to somebody.
+			Open77.log.warn(('[dealership] the %d %s commission for %s could not be paid to ' ..
+				'player %d (%s); it is banked to the company instead'):format(cut,
+				tostring(currency), safe(entry.key), offer.seller, tostring(why)))
+			company = company + cut
+			cut = 0
+		end
+	end
+	local banked = bank(offer.kind, offer.group, company, bought.value.plate)
+
+	local player = character.GetPlayer(buyer)
+	if player ~= nil then
+		OPX.Audit.Player(player, 'dealership.sold', tostring(bought.value.plate), {
+			entry = entry.key,
+			dealer = dealer.key,
+			price = tostring(entry.price),
+			currency = currency,
+			seller = tostring(offer.sellerCitizen),
+			company = offer.kind .. ':' .. offer.group,
+			commission = tostring(cut),
+		})
+	end
+	Open77.log.info(('[dealership] %s sold %s (%s) to %s for %d %s; %d to the %s account of ' ..
+		'%s, %d commission'):format(tostring(offer.sellerCitizen), safe(entry.key),
+		safe(bought.value.plate), tostring(offer.buyerCitizen), entry.price, currency,
+		company, offer.kind, safe(offer.group), cut))
+
+	TriggerClientEvent(M.Event.SETTLED, offer.seller, {
+		ok = true, entry = offer.entry, model = entry.label,
+		cut = cut, company = company, banked = banked,
+	})
+	OPX.NotifyLocale(offer.seller, 'dealership.commission',
+		{ amount = character.FormatMoney(cut, currency), model = entry.label }, 'success')
+
+	bought.value.commission = cut
+	bought.value.banked = company
+	bought.value.paid = paid
+	return bought
+end
+
+-- ── the showroom ────────────────────────────────────────────────────────────
+
+--- Creates one preview vehicle, or answers why it could not be.
+-- @author XEROX710
+--
+-- THE LOCK IS ASKED FOR AT CREATION AND READ BACK. `Open77.vehicles.create`
+-- takes the flag names as booleans in its definition, and `flags` on a snapshot
+-- is the bitfield they land in -- so a lock the host silently dropped is
+-- visible, and a showroom car that anybody may drive away is a line in the
+-- journal rather than a surprise.
+--
+-- `persistent` and no `ttlMs`: a showroom car is furniture. One that despawned
+-- when nobody was looking would come back only when the resource restarted.
+-- @param spot table a preview point
+-- @return string|integer|nil the engine id
+-- @return string|nil why not
+local function raise(spot)
+	local entry = Access.Entry(spot.entry)
+	if entry == nil then return nil, 'no stock row named ' .. tostring(spot.entry) end
+	local api = Open77.vehicles
+	if type(api) ~= 'table' or type(api.create) ~= 'function' then
+		return nil, 'this host cannot create vehicles'
+	end
+
+	local locked = Access.PreviewLocked()
+	local created, id, reason = pcall(api.create, {
+		record = entry.record,
+		position = { x = spot.x, y = spot.y, z = spot.z + Access.PreviewLift() },
+		yaw = spot.heading,
+		bucket = spot.bucket,
+		locked = locked,
+		persistent = true,
+	})
+	if not created then return nil, tostring(id) end
+	if id == nil then return nil, tostring(reason or 'refused') end
+
+	if locked and type(api.get) == 'function' then
+		local read, snapshot = pcall(api.get, id)
+		local bits = type(api.flags) == 'table' and api.flags or nil
+		local mask = bits ~= nil and bits.locked or nil
+		local flags = read and type(snapshot) == 'table' and Access.FiniteNumber(snapshot.flags)
+			or nil
+		if mask ~= nil and flags ~= nil and (math.floor(flags) & math.floor(mask)) == 0 then
+			-- ASKED FOR AND NOT GIVEN. Said rather than retried: a second write
+			-- that the host refuses for the same reason is a second line saying
+			-- the same thing, and what an operator needs is to know the car is
+			-- open.
+			Open77.log.warn(('[dealership] the showroom car %s at %s came up UNLOCKED: anybody ' ..
+				'may drive it away'):format(safe(spot.key), safe(spot.dealer)))
+		end
+	end
+	return id, nil
+end
+
+--- Takes one preview vehicle out of the world. Never raises.
+local function lower(key)
+	local id = showroom[key]
+	if id == nil then return end
+	showroom[key] = nil
+	local api = Open77.vehicles
+	if type(api) == 'table' and type(api.remove) == 'function' then
+		local removed, answer = pcall(api.remove, id)
+		if not removed or answer ~= true then
+			Open77.log.warn(('[dealership] the showroom car %s was not removed: %s')
+				:format(safe(key), tostring(removed and answer or 'raised')))
+		end
+	end
+end
+
+--- Brings one preview point's car into line with what the point says.
+local function dress(spot)
+	lower(spot.key)
+	if not Access.PreviewsEnabled() then return end
+	local id, why = raise(spot)
+	if id == nil then
+		Open77.log.warn(('[dealership] the showroom car %s was not created: %s')
+			:format(safe(spot.key), tostring(why)))
+		return
+	end
+	showroom[spot.key] = id
+end
+
+--- Rebuilds the merged showroom. Called at load and after the adoption.
+-- CONFIG WINS, the same way and for the same reason it wins for dealers: the
+-- file is the copy somebody has, and a stale database row of the same key
+-- silently moving a car an operator moved in the file would be a car they cannot
+-- move by editing the one place they are told to edit.
+local function rebuildPreviews()
+	previews = {}
+	for key, spot in pairs(configPreviews) do previews[key] = spot end
+	for key, spot in pairs(adoptedPreviews) do
+		if previews[key] == nil then previews[key] = spot end
+	end
+end
+
+--- Stands a car on every point that has a dealer to stand in. Yields per car.
+-- @author XEROX710
+--
+-- ONE RESUME PER CAR, and this is the loop that needs it most in the resource:
+-- every pass is a `vehicles.create` round trip. A loop that did the whole floor
+-- in one resume runs out of the per-resume instruction budget partway down and
+-- the coroutine unwinds with NO error, NO log and NO refusal -- leaving the cars
+-- it reached standing and the rest silently missing. That failure has cost this
+-- codebase five outages; `core/shared/lifecycle.lua` `runPhase` and
+-- `modules/admin/client/target.lua` `register()` are the worked examples.
+--
+-- MUST BE CALLED FROM A THREAD. It is called from the boot thread and nowhere
+-- else; `Wait` outside one is a raise.
+--
+-- The per-dealer LIMIT is enforced here and not only at the config check,
+-- because an adopted row can push a configured floor over it and nothing
+-- validates the two together until they are merged.
+local function raiseFloor()
+	local keys = {}
+	for key in pairs(previews) do keys[#keys + 1] = key end
+	table.sort(keys)
+	local standing = {}
+	for index = 1, #keys do
+		Wait(0)
+		local spot = previews[keys[index]]
+		if spots[spot.dealer] == nil then
+			-- A preview whose dealer is gone is a car in a field. It is kept in
+			-- the table -- the dealer may come back on the next edit of the
+			-- config -- and simply not stood up.
+			Open77.log.warn(('[dealership] the showroom car %s names the dealer %s, ' ..
+				'which does not exist; it is not created')
+				:format(safe(spot.key), safe(spot.dealer)))
+		elseif Access.PREVIEW_LIMIT > 0
+			and (standing[spot.dealer] or 0) >= Access.PREVIEW_LIMIT then
+			Open77.log.warn(('[dealership] the showroom car %s is over PREVIEW.LIMIT (%d) for ' ..
+				'the dealer %s; it is not created')
+				:format(safe(spot.key), Access.PREVIEW_LIMIT, safe(spot.dealer)))
+		else
+			standing[spot.dealer] = (standing[spot.dealer] or 0) + 1
+			dress(spot)
+		end
+	end
+end
+
+--- How many previews one dealer's floor already holds.
+local function floorCount(dealerKey, except)
+	local total = 0
+	for key, spot in pairs(previews) do
+		if spot.dealer == dealerKey and key ~= except then total = total + 1 end
+	end
+	return total
+end
+
+-- THE TWO WRITERS ARE GONE. `M.PlacePreview` and `M.RemovePreview` stood here,
+-- and the whole of what they wrote is now `PREVIEW.POINTS` in
+-- `config/dealership.lua`. The reader below is untouched: rows an operator
+-- placed before today are still adopted at boot and still printed as the config
+-- line that recreates them, so nothing anybody put on a showroom floor is lost.
+--
+-- `Store.PlacePreview` and `Store.RemovePreview` go with them for the reason
+-- `modules/garages/server/storage.lua` gives about its own: a writer with no
+-- caller is one the next reader wires a new command to.
+
+--- Every preview point, as a client or a menu reads them.
+-- @author XEROX710
+-- @return table[]
+local function previewList()
+	local listed = {}
+	for _, spot in pairs(previews) do
+		local entry = Access.Entry(spot.entry)
+		listed[#listed + 1] = {
+			key = spot.key,
+			dealer = spot.dealer,
+			entry = spot.entry,
+			model = entry ~= nil and entry.label or spot.entry,
+			standing = showroom[spot.key] ~= nil,
+		}
+	end
+	table.sort(listed, function(left, right) return left.key < right.key end)
+	return listed
 end
 
 -- ── the doors ───────────────────────────────────────────────────────────────
@@ -397,24 +926,58 @@ local function onRequested(dealerKey, entryKey, destKey)
 	end)
 end
 
+--- One offer off the wire, from a salesperson to the player they picked.
+local function onOffered(buyer, entryKey)
+	local src = tonumber(source)
+	if src == nil then return end
+	if type(entryKey) ~= 'string' or entryKey == '' then
+		return OPX.Refuse(src, 'error.badRequest', M.Operation.OFFER)
+	end
+	if not within(src, Access.REQUESTS_PER_WINDOW, Access.REQUEST_WINDOW_MS) then
+		return OPX.Refuse(src, 'error.tooFast', M.Operation.OFFER)
+	end
+
+	CreateThread(function()
+		local offered = M.Offer(src, buyer, entryKey)
+		if not offered.ok then
+			OPX.Refuse(src, offered.error, M.Operation.OFFER)
+			OPX.NotifyLocale(src, offered.error, nil, 'error')
+			TriggerClientEvent(M.Event.SETTLED, src,
+				{ ok = false, error = offered.error, entry = entryKey })
+			return
+		end
+		OPX.NotifyLocale(src, 'dealership.offerSent', nil, 'info')
+	end)
+end
+
+--- One buyer's answer off the wire.
+local function onDecided(token, yes)
+	local src = tonumber(source)
+	if src == nil then return end
+	if not within(src, Access.REQUESTS_PER_WINDOW, Access.REQUEST_WINDOW_MS) then
+		return OPX.Refuse(src, 'error.tooFast', M.Operation.DECIDE)
+	end
+
+	CreateThread(function()
+		local settled = M.Accept(src, token, yes == true)
+		if not settled.ok then
+			OPX.Refuse(src, settled.error, M.Operation.DECIDE)
+			OPX.NotifyLocale(src, settled.error, nil, 'error')
+			TriggerClientEvent(M.Event.ANSWER, src, false, settled.error)
+			return
+		end
+		OPX.NotifyLocale(src, 'dealership.bought',
+			{ model = settled.value.model, plate = settled.value.plate }, 'success')
+		TriggerClientEvent(M.Event.ANSWER, src, true, nil, settled.value.entry, settled.value)
+	end)
+end
+
 -- ── the commands ────────────────────────────────────────────────────────────
 
 --- Registers one command from the config, or nothing when it is unnamed.
 local function register(name, opts, handler)
 	if type(name) ~= 'string' or name == '' then return end
 	OPX.Command.Register(name, opts, handler)
-end
-
---- Whether the ACL lets this player run a placement command.
--- The host resolves `command.<name>` before a COMMAND handler runs, and a net
--- event has no such gate of its own -- so the capture door asks the same
--- question here. An unreadable ACL answers no.
-local function aclAllows(player, name)
-	if type(name) ~= 'string' or name == '' then return false end
-	local acl = Open77.acl
-	if type(acl) ~= 'table' or type(acl.isAllowed) ~= 'function' then return false end
-	local read, allowed = pcall(acl.isAllowed, player, 'command.' .. name)
-	return read and allowed == true
 end
 
 --- Prints the stock the way the catalogue reads: class, model, price and which
@@ -441,161 +1004,35 @@ local function reportStock(source)
 	OPX.CommandResult(source, true, table.concat(entries, '\n'))
 end
 
---- Prints every dealer: kind, position and whether it came from config or the
---- database.
+--- Prints every dealer, every showroom car standing on its floor, and whether
+--- the dealer came from config or was adopted out of the legacy table.
 local function report(source)
 	local lines = {}
-	local keys, capturedCount = {}, 0
+	local keys, adoptedCount = {}, 0
 	for key in pairs(spots) do keys[#keys + 1] = key end
 	table.sort(keys)
 	for index = 1, #keys do
 		local spot = spots[keys[index]]
-		local fromDatabase = captured[spot.key] ~= nil
-		if fromDatabase then capturedCount = capturedCount + 1 end
+		local legacy = adopted[spot.key] ~= nil and configSpots[spot.key] == nil
+		if legacy then adoptedCount = adoptedCount + 1 end
 		lines[#lines + 1] = ('%s %s %s pos=%.2f,%.2f,%.2f yaw=%.1f bucket=%d %s'):format(
 			spot.key, spot.kind, spot.label, spot.x, spot.y, spot.z, spot.heading,
-			spot.bucket, fromDatabase and 'captured' or 'config')
+			spot.bucket, legacy and 'legacy' or 'config')
 	end
-	lines[#lines + 1] = ('%d dealer(s): %d from config, %d captured')
-		:format(#keys, #keys - capturedCount, capturedCount)
+	for _, preview in ipairs(previewList()) do
+		lines[#lines + 1] = ('  preview %s at %s: %s %s'):format(preview.key, preview.dealer,
+			preview.model, preview.standing and 'standing' or 'NOT STANDING')
+	end
+	lines[#lines + 1] = ('%d dealer(s): %d from config, %d adopted; %d showroom car(s)')
+		:format(#keys, #keys - adoptedCount, adoptedCount, #previewList())
 	OPX.CommandResult(source, true, table.concat(lines, '\n'))
 end
 
---- Saves one captured dealer: the position from the server, the heading from the
---- client that asked. Runs on a thread: the write yields.
-local function capture(player, kind, key, label, yaw, citizenId)
-	local at = pointOf(player)
-	if at == nil then
-		return OPX.NotifyLocale(player, 'dealership.noPosition', nil, 'error')
-	end
-	local read, position = pcall(Open77.players.position, player)
-	local z = read and type(position) == 'table' and coordinate(position.z) or nil
-	if z == nil then
-		return OPX.NotifyLocale(player, 'dealership.noPosition', nil, 'error')
-	end
-
-	local heading = Access.FiniteNumber(yaw)
-	if heading == nil then heading = 0.0 end
-	heading = heading % 360.0
-
-	local spot, why = Access.FromDefinition(key, {
-		KIND = kind, LABEL = label, X = at.x, Y = at.y, Z = z,
-		HEADING = heading, BUCKET = at.bucket,
-	})
-	if spot == nil then
-		-- Said in the node's log as well as to the player: a refusal only the
-		-- player can see leaves whoever reads the log unable to tell a capture
-		-- that was turned down from one that never arrived.
-		Open77.log.warn(('[dealership] player %d capture of %s refused: %s')
-			:format(player, safe(key), safe(why)))
-		OPX.NotifyLocale(player, 'dealership.captureFailed', nil, 'error')
-		return OPX.CommandResult(player, false, tostring(why))
-	end
-
-	local saved = Store.Upsert(spot, citizenId)
-	if not saved.ok then
-		Open77.log.warn(('[dealership] player %d could not save the capture of %s: %s')
-			:format(player, safe(key), safe(saved.detail)))
-		OPX.NotifyLocale(player, 'dealership.captureFailed', nil, 'error')
-		return OPX.CommandResult(player, false, 'could not save: ' .. tostring(saved.detail))
-	end
-	captured[key] = spot
-	rebuild()
-	-- The operator first and directly: they are looking at the marker they just
-	-- placed, and a fan-out that cannot read the roster would otherwise leave
-	-- the one person who cares without it.
-	sync(player)
-	syncAll()
-	Open77.log.info(('[dealership] %s captured as %s at %.2f,%.2f,%.2f yaw=%.1f by %d')
-		:format(key, kind, spot.x, spot.y, spot.z, spot.heading, player))
-	OPX.CommandResult(player, true, ('%s saved; check it in to survive a database reset:\n  %s = ' ..
-		'{ LABEL = %q, KIND = %q, X = %.2f, Y = %.2f, Z = %.2f, HEADING = %.1f, BUCKET = %d },')
-		:format(key, key, spot.label, spot.kind, spot.x, spot.y, spot.z, spot.heading,
-			spot.bucket))
-end
-
---- Registers the placement, listing and purchase commands.
+--- Registers the listing and purchase commands.
+-- `add` and `remove` are gone: they placed a dealer from a chat line into a
+-- table only one host had. See the header.
 local function registerCommands()
 	local names = type(M.Settings.COMMANDS) == 'table' and M.Settings.COMMANDS or {}
-
-	register(names.add, {
-		restricted = true,
-		help = 'dealership.help.add',
-		params = {
-			{ name = 'kind', optional = true, help = locale('dealership.help.addKind') },
-			{ name = 'key', optional = true, help = locale('dealership.help.addKey') },
-			{ name = 'label', optional = true, help = locale('dealership.help.addLabel') },
-		},
-	}, function(source, args)
-		-- THE KIND AND THE KEY ARE BOTH OPTIONAL, exactly as the garages
-		-- command they are modelled on: one rule decides the slots, and the
-		-- first word names the KIND when it is one and is the KEY otherwise.
-		local kind = type(args[1]) == 'string' and args[1]:lower() or ''
-		local first = 1
-		if Access.KINDS[kind] then
-			first = 2
-		else
-			kind = M.KIND.GARAGE
-		end
-		local key = type(args[first]) == 'string' and args[first] or ''
-		if #key > Access.MAX_KEY then
-			Open77.log.warn(('[dealership] player %d add refused: the key is %d characters, over %d')
-				:format(source, #key, Access.MAX_KEY))
-			return OPX.CommandResult(source, false,
-				('usage: add [garage|avpad] [key] [label] -- a key is 1 to %d characters'):format(
-					Access.MAX_KEY))
-		end
-		if #key == 0 then
-			-- Named back in the answer: a dealer whose key the operator never
-			-- learned could not be used or removed afterwards.
-			local index = 0
-			repeat index = index + 1 until spots[kind .. index] == nil
-			key = kind .. index
-		end
-		local label = ''
-		for index = first + 1, #args do
-			label = label .. (index > first + 1 and ' ' or '') .. tostring(args[index])
-		end
-		if #label > 64 then label = label:sub(1, 64) end
-
-		-- The position is read when the client answers; the HEADING is the
-		-- operator's own facing, and a chat command has none. Recorded before
-		-- the ask, so an answer that arrives immediately cannot be mistaken for
-		-- one that arrived before it was ever requested.
-		local at = OPX.Now()
-		pending[source] = { at = at }
-		TriggerClientEvent(M.Event.CAPTURE, source, kind, key, label)
-		Open77.log.info(('[dealership] asked player %d for the facing of %s %s')
-			:format(source, kind, key))
-		watchCapture(source, at, key)
-		OPX.CommandResult(source, true, 'capturing where you are standing; look the way a ' ..
-			'vehicle sold here should point')
-	end)
-
-	register(names.remove, {
-		restricted = true,
-		help = 'dealership.help.remove',
-		params = { { name = 'key', help = locale('dealership.help.removeKey') } },
-	}, function(source, args)
-		local key = type(args[1]) == 'string' and args[1] or ''
-		if #key == 0 then return OPX.CommandResult(source, false, 'usage: remove <key>') end
-		if captured[key] == nil then
-			return OPX.CommandResult(source, false, configSpots[key] ~= nil
-				and 'that dealer comes from config; edit config/dealership.lua to remove it'
-				or 'no captured dealer named ' .. key)
-		end
-		CreateThread(function()
-			local gone = Store.Delete(key)
-			if not gone.ok then
-				return OPX.CommandResult(source, false, 'could not delete: ' .. tostring(gone.detail))
-			end
-			captured[key] = nil
-			rebuild()
-			syncAll()
-			Open77.log.info(('[dealership] %s removed by %d'):format(key, source))
-			OPX.CommandResult(source, true, key .. ' removed.')
-		end)
-	end)
 
 	register(names.list, { restricted = true, help = 'dealership.help.list' }, function(source)
 		report(source)
@@ -638,14 +1075,20 @@ end
 
 -- ── the phases ──────────────────────────────────────────────────────────────
 
---- Builds the state from config and contributes this module's table. Never yields.
+--- Builds the state from config and contributes this module's tables. Never
+--- yields.
 -- @author XEROX710
 function M.Init()
 	configSpots = Access.SPOTS
-	captured = {}
+	adopted = {}
 	rebuild()
+	configPreviews = Access.PREVIEW_POINTS
+	adoptedPreviews = {}
+	showroom = {}
+	rebuildPreviews()
 	windows = {}
-	pending = {}
+	offers = {}
+	nextOffer = 0
 	running = false
 	currency = nil
 	stockFor = { [M.KIND.GARAGE] = {}, [M.KIND.AVPAD] = {} }
@@ -657,6 +1100,9 @@ end
 function M.Api()
 	OPX.Api.Provide('dealership', 1, {
 		Buy = M.Buy,
+		Offer = M.Offer,
+		Accept = M.Accept,
+		Previews = function() return Result.Ok({ previews = previewList() }) end,
 		Spots = function() return spots end,
 		Stock = function()
 			local listed = {}
@@ -666,19 +1112,32 @@ function M.Api()
 			end
 			return Result.Ok({ currency = currency, stock = listed })
 		end,
+		--- One company's balance, for whatever grows a bank screen next.
+		Balance = function(kind, group)
+			if type(kind) ~= 'string' or type(group) ~= 'string' then
+				return Result.Err('error.badRequest')
+			end
+			local read = Store.Balance(kind, group)
+			if not read.ok then return read end
+			local row = type(read.value) == 'table' and read.value or nil
+			return Result.Ok({ kind = kind, group = group,
+				balance = math.floor(Access.FiniteNumber(row and row.balance) or 0) })
+		end,
 		State = function()
 			local dealers = {}
 			for key, spot in pairs(spots) do
 				dealers[key] = { kind = spot.kind, label = spot.label,
-					captured = captured[key] ~= nil }
+					adopted = adopted[key] ~= nil and configSpots[key] == nil }
 			end
 			local total = OPX.Table.Count(Access.STOCK)
-			return Result.Ok({ dealers = dealers, stock = total, currency = currency })
+			return Result.Ok({ dealers = dealers, stock = total, currency = currency,
+				previews = #previewList(), standing = OPX.Table.Count(showroom) })
 		end,
 	})
 end
 
---- Resolves the contracts, reads the captured dealers and wires the doors.
+--- Resolves the contracts, adopts the legacy dealers, dresses the floor and
+--- wires the doors.
 -- @author XEROX710
 function M.Start()
 	character = OPX.Api.Get('character')
@@ -733,9 +1192,6 @@ function M.Start()
 		stockFor[kind] = rows
 	end
 
-	-- Both doors are registered whatever the database answered: an operator has
-	-- to be able to read back what the configuration says, and `add` is how a
-	-- database that answered nothing gets filled.
 	registerCommands()
 
 	RegisterNetEvent(M.Event.ASK, function()
@@ -745,51 +1201,46 @@ function M.Start()
 	end)
 
 	RegisterNetEvent(M.Event.BUY, onRequested)
-
-	-- The capture door, gated exactly as the command that opens it: a net event
-	-- has no host-side ACL check, so the same question is asked here.
-	RegisterNetEvent(M.Event.CAPTURED, function(kind, key, label, yaw)
-		local player = tonumber(source)
-		if player == nil then return end
-
-		-- Settled by the arrival itself, accepted or not: an answer is an
-		-- answer, and a "did not answer" warning after one has landed would be
-		-- a lie.
-		pending[player] = nil
-
-		local names = type(M.Settings.COMMANDS) == 'table' and M.Settings.COMMANDS or {}
-		if not aclAllows(player, names.add) then
-			Open77.log.warn(('[dealership] player %d tried to capture a dealer without %s')
-				:format(player, tostring(names.add)))
-			return OPX.Refuse(player, 'error.noPermission', M.Operation.CAPTURE)
-		end
-		if not within(player, Access.REQUESTS_PER_WINDOW, Access.REQUEST_WINDOW_MS) then
-			Open77.log.warn(('[dealership] player %d answered a capture too fast; refused')
-				:format(player))
-			return OPX.Refuse(player, 'error.tooFast', M.Operation.CAPTURE)
-		end
-
-		kind = type(kind) == 'string' and kind:lower() or ''
-		key = type(key) == 'string' and key or ''
-		label = type(label) == 'string' and label or ''
-		if #label > 64 then label = label:sub(1, 64) end
-		if not Access.KINDS[kind] or #key == 0 or #key > Access.MAX_KEY then
-			Open77.log.warn(('[dealership] player %d answered a capture for an unusable dealer')
-				:format(player))
-			return OPX.Refuse(player, 'error.badRequest', M.Operation.CAPTURE)
-		end
-
-		local data = characterOf(player)
-		CreateThread(function()
-			capture(player, kind, key, label, yaw, data and data.citizenId or nil)
-		end)
-	end)
+	RegisterNetEvent(M.Event.OFFER, onOffered)
+	RegisterNetEvent(M.Event.DECIDE, onDecided)
+	-- THE PLACEMENT DOOR IS GONE. `M.PlacePreview`, `M.RemovePreview`, the two
+	-- net handlers behind them and the `opx.dealership.place` right that gated
+	-- them all stood here until the owner said "retire cela aussi".
+	--
+	-- They were the runtime half of a feature that no longer has a runtime half:
+	-- the staff Dev screen was the only caller, it was removed on the owner's
+	-- word ("pass moi tous dans les config"), and the showroom is now written in
+	-- `PREVIEW.POINTS`. What was left was a door with no handle on the inside --
+	-- a wire verb nothing sends, guarded by an ACL right granted to somebody, on
+	-- a write path with no reader. That is worse than either having it or not:
+	-- it is a live entry point nobody exercises and therefore nobody notices.
+	--
+	-- The TABLE is untouched. `opx77_dealership_previews` is still created, still
+	-- read, and every row in it is still adopted at boot and still printed as the
+	-- config line that recreates it. Nothing an operator placed is lost.
 
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, function(playerId)
 		local player = tonumber(playerId)
 		if player ~= nil then
 			windows[player] = nil
-			pending[player] = nil
+			-- An offer whose buyer left is an offer nobody can answer. The seller
+			-- is told, rather than left waiting for a timeout that says nothing
+			-- about why.
+			local offer = offers[player]
+			if offer ~= nil then
+				offers[player] = nil
+				TriggerClientEvent(M.Event.SETTLED, offer.seller,
+					{ ok = false, error = 'dealership.buyerGone', entry = offer.entry })
+			end
+			-- And one whose SELLER left cannot be settled either: the commission
+			-- has nowhere to go and the zone check would refuse it anyway.
+			for buyer, live in pairs(offers) do
+				if live.seller == player then
+					offers[buyer] = nil
+					TriggerClientEvent(M.Event.SETTLED, buyer,
+						{ ok = false, error = 'dealership.sellerGone', entry = live.entry })
+				end
+			end
 		end
 	end)
 
@@ -797,35 +1248,133 @@ function M.Start()
 	CreateThread(function()
 		local rows = Store.FetchAll()
 		if not rows.ok then
-			Open77.log.error('[dealership] captured dealers could not be read: ' ..
+			Open77.log.error('[dealership] the legacy dealers could not be read: ' ..
 				tostring(rows.detail))
-			return
-		end
-		local loaded = type(rows.value) == 'table' and rows.value or {}
-		local accepted, refused = 0, 0
-		for index = 1, #loaded do
-			local row = loaded[index]
-			local spot, why = Access.FromDefinition(row.spot_key, {
-				KIND = row.kind, LABEL = row.label,
-				X = row.x, Y = row.y, Z = row.z, HEADING = row.heading, BUCKET = row.bucket,
-			})
-			if spot == nil then
-				refused = refused + 1
-				Open77.log.warn('[dealership] captured row refused: ' .. tostring(why))
-			else
-				accepted = accepted + 1
-				captured[spot.key] = spot
+		else
+			local loaded = type(rows.value) == 'table' and rows.value or {}
+			local accepted, refused = 0, 0
+			for index = 1, #loaded do
+				-- ONE RESUME PER ROW, for the reason written at the same loop in
+				-- `modules/garages/server/main.lua`: a resume that runs out of
+				-- instruction budget unwinds with no error and no log, leaving
+				-- the rows it reached and silently dropping the rest.
+				Wait(0)
+				local row = loaded[index]
+				local spot, why = Access.FromDefinition(row.spot_key, {
+					KIND = row.kind, LABEL = row.label,
+					X = row.x, Y = row.y, Z = row.z, HEADING = row.heading, BUCKET = row.bucket,
+				})
+				if spot == nil then
+					refused = refused + 1
+					Open77.log.warn('[dealership] a legacy dealer was refused: ' .. tostring(why))
+				else
+					accepted = accepted + 1
+					adopted[spot.key] = spot
+				end
+			end
+			rebuild()
+
+			local orphans = {}
+			for key in pairs(adopted) do
+				if configSpots[key] == nil then orphans[#orphans + 1] = key end
+			end
+			table.sort(orphans)
+			Open77.log.info(('[dealership] ready: %d config, %d adopted, %d refused; ' ..
+				'%d garage row(s) and %d avpad row(s) for sale in %s'):format(
+				OPX.Table.Count(configSpots), #orphans, refused,
+				#Access.For(M.KIND.GARAGE), #Access.For(M.KIND.AVPAD),
+				tostring(currency or 'no currency')))
+
+			-- EVERY ADOPTED DEALER, AS THE CONFIG LINE THAT WOULD RECREATE IT.
+			-- The line the old `add` handed the operator was handed to one
+			-- player, once, in a chat box. THIS IS THE OTHER HALF OF THE
+			-- MIGRATION: the adoption keeps the server running, and these lines
+			-- are how an operator stops needing it.
+			for index = 1, #orphans do
+				Wait(0)
+				local spot = adopted[orphans[index]]
+				Open77.log.info(('[dealership] config line: %s = { LABEL = %q, KIND = %q, ' ..
+					'X = %.2f, Y = %.2f, Z = %.2f, HEADING = %.1f, BUCKET = %d },')
+					:format(spot.key, spot.label, spot.kind, spot.x, spot.y, spot.z,
+						spot.heading, spot.bucket))
+			end
+			if #orphans > 0 then
+				Open77.log.warn(('[dealership] %d dealer(s) exist only in opx77_dealerships. ' ..
+					'The commands that made them are gone: paste the config line(s) above into ' ..
+					'config/dealership.lua, or they are one dropped database away from lost')
+					:format(#orphans))
 			end
 		end
-		rebuild()
+
+		-- ── the showroom, once the dealers are known ─────────────────────
+		--
+		-- A SHOWROOM CAR IS CONFIG NOW, exactly like the dealer it stands in.
+		-- `PREVIEW.POINTS` in `config/dealership.lua` is the list; the database
+		-- is read for the cars placed before 2026-09-21, when the staff menu's
+		-- Dev screen still wrote them, and every one of those is printed back
+		-- as the config line that recreates it. Same two halves as the dealer
+		-- migration above: the adoption keeps the floor dressed, and the lines
+		-- are how an operator stops needing it.
+		local floor = Store.FetchPreviews()
+		if not floor.ok then
+			Open77.log.error('[dealership] the showroom could not be read: ' ..
+				tostring(floor.detail))
+		else
+			local listed = type(floor.value) == 'table' and floor.value or {}
+			for index = 1, #listed do
+				-- ONE RESUME PER ROW. This loop no longer creates a vehicle --
+				-- `raiseFloor` below does -- but a coercion apiece is still
+				-- enough to walk into the per-resume instruction budget on a
+				-- large showroom, and a resume that runs out unwinds with no
+				-- error and no log.
+				Wait(0)
+				local row = listed[index]
+				local spot, why = Access.PreviewFromDefinition(row.preview_key, {
+					X = row.x, Y = row.y, Z = row.z, HEADING = row.heading, BUCKET = row.bucket,
+					DEALER = row.dealer_key, ENTRY = row.entry_key,
+				})
+				if spot == nil then
+					Open77.log.warn('[dealership] a legacy showroom car was refused: ' ..
+						tostring(why))
+				else
+					adoptedPreviews[spot.key] = spot
+				end
+			end
+			rebuildPreviews()
+
+			-- EVERY CAR THAT EXISTS ONLY IN THE DATABASE, as the config line
+			-- that would recreate it. Printed at EVERY start and not once into
+			-- one operator's chat box, which is what the Dev screen did and why
+			-- nobody ever had a copy of their own showroom.
+			local orphans = {}
+			for key in pairs(adoptedPreviews) do
+				if configPreviews[key] == nil then orphans[#orphans + 1] = key end
+			end
+			table.sort(orphans)
+			for index = 1, #orphans do
+				Wait(0)
+				local spot = adoptedPreviews[orphans[index]]
+				Open77.log.info(('[dealership] config line: %s = { X = %.2f, Y = %.2f, ' ..
+					'Z = %.2f, HEADING = %.1f, BUCKET = %d, DEALER = %q, ENTRY = %q },')
+					:format(spot.key, spot.x, spot.y, spot.z, spot.heading, spot.bucket,
+						spot.dealer, spot.entry))
+			end
+			if #orphans > 0 then
+				Open77.log.warn(('[dealership] %d showroom car(s) exist only in ' ..
+					'opx77_dealership_previews. The menu that placed them is gone: paste the ' ..
+					'config line(s) above into PREVIEW.POINTS in config/dealership.lua, or ' ..
+					'they are one dropped database away from lost'):format(#orphans))
+			end
+
+			raiseFloor()
+			Open77.log.info(('[dealership] showroom: %d from config, %d adopted, %d standing')
+				:format(OPX.Table.Count(configPreviews), #orphans,
+					OPX.Table.Count(showroom)))
+		end
+
 		-- A player who connected while the database was being read asked too
 		-- early and was told nothing; they ask again on their own cadence.
 		syncAll()
-		local inConfig = OPX.Table.Count(configSpots)
-		Open77.log.info(('[dealership] ready: %d config, %d captured, %d refused; ' ..
-			'%d garage row(s) and %d avpad row(s) for sale in %s'):format(
-			inConfig, accepted, refused, #Access.For(M.KIND.GARAGE), #Access.For(M.KIND.AVPAD),
-			tostring(currency or 'no currency')))
 	end)
 
 	-- A sweep for the rate-limit windows, so a long session does not accumulate
@@ -841,10 +1390,16 @@ function M.Start()
 	end)
 end
 
---- Stops the sweep. The dealers are already durable, so there is nothing to write.
+--- Takes the showroom down and stops the sweep.
+-- THE SHOWROOM IS THE ONLY THING THIS MODULE HAS TO CLEAN UP. Its cars are
+-- `persistent`, which is what stops them despawning when nobody is looking --
+-- and which means a reload that left them standing would leave a duplicate
+-- showroom behind every time.
 -- @author XEROX710
 function M.Stop()
 	running = false
+	for key in pairs(showroom) do lower(key) end
+	showroom = {}
 	windows = {}
-	pending = {}
+	offers = {}
 end

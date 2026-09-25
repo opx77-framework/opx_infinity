@@ -36,6 +36,17 @@ M.Event = {
 	-- stay on the LOCAL channel: the host dispatcher matches on the name alone,
 	-- so a local raise on a NET name would re-enter the wire handlers.
 	ACTION = OPX.Event(LOCAL, 'menu', 'action'),
+
+	-- Raised when a menu opens and when the last one closes, for anything that
+	-- has to stand aside while one is up. The HUD is the first reader: the owner
+	-- asked for the money block to go when a menu is open, and the HUD already
+	-- has the mechanism -- a SET of named screens holding the display, which
+	-- `entry`, `spawn` and `appearance` already write to. This is the fourth
+	-- name in it, not a fourth mechanism.
+	--
+	-- `{ open = boolean }`, and only on a CHANGE: a menu replacing another is
+	-- still a menu being open, and a listener does not want to see it flicker.
+	STATE = OPX.Event(LOCAL, 'menu', 'state'),
 }
 
 --- Names the host owns. Escape is swallowed by the plugin before any surface

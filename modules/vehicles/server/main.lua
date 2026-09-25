@@ -42,12 +42,10 @@ local PLATE_TRIES = 5
 -- although the host caps it too.
 local MAX_RECORD = 256
 
---- Answers a value as a finite number, or nil.
-local function finite(value)
-	value = tonumber(value)
-	if not OPX.Math.IsFinite(value) then return nil end
-	return value
-end
+--- Answers a value as a finite number, or nil. Named for what it RETURNS: four
+--- other files use a local called `finite` for the predicate, and one name for
+--- both is an `if finite(x) then` that is true for nil.
+local finiteNumber = OPX.Math.Finite
 
 --- Draws a plate in the configured shape.
 -- `OPX.String.Random` draws ASCII capitals and digits, which is what the column
@@ -75,10 +73,10 @@ end
 
 --- Copies a spawned vehicle's health, damage and flags onto its row.
 local function applyCondition(vehicle, record, snapshot)
-	vehicle.health = finite(snapshot.health) or vehicle.health
+	vehicle.health = finiteNumber(snapshot.health) or vehicle.health
 	vehicle.damage = Open77.vehicles.getDamage(record.id)
 	vehicle.metadata = vehicle.metadata or {}
-	vehicle.metadata.flags = finite(snapshot.flags)
+	vehicle.metadata.flags = finiteNumber(snapshot.flags)
 end
 
 --- Stores a new vehicle for a character under a fresh plate.
@@ -287,14 +285,14 @@ function M.Spawn(source, plateId, at)
 
 	-- A named place is read through the same coercions as the player's own, so a
 	-- NaN or a string from a caller cannot reach the engine as a coordinate.
-	local place, yaw, bucket = nil, nil, finite(position.bucket)
+	local place, yaw, bucket = nil, nil, finiteNumber(position.bucket)
 	if type(at) == 'table' then
-		local x, y, z = finite(at.x), finite(at.y), finite(at.z)
+		local x, y, z = finiteNumber(at.x), finiteNumber(at.y), finiteNumber(at.z)
 		if x ~= nil and y ~= nil and z ~= nil then
 			place = { x = x, y = y, z = z }
 		end
-		yaw = finite(at.yaw)
-		local atBucket = finite(at.bucket)
+		yaw = finiteNumber(at.yaw)
+		local atBucket = finiteNumber(at.bucket)
 		if place ~= nil and atBucket ~= nil then bucket = math.floor(atBucket) end
 	end
 	if place == nil then
@@ -319,18 +317,34 @@ function M.Spawn(source, plateId, at)
 
 	-- The stored damage and flags are given back, or a put-away-and-fetch cycle
 	-- would repair windows, lights, tyres, dents and the destroyed flag for free.
+	-- Both answer a boolean, and both were discarded -- so the free repair the
+	-- comment above says this prevents happened anyway whenever the host refused,
+	-- with nothing said. It is not worth refusing the spawn over, but it is worth
+	-- an operator being able to find it.
 	if type(vehicle.damage) == 'table' then
-		Open77.vehicles.setDamage(id, vehicle.damage)
+		if Open77.vehicles.setDamage(id, vehicle.damage) ~= true then
+			Open77.log.warn(('[vehicles] %s came out with its stored damage unapplied; ' ..
+				'this fetch repaired it for free'):format(plateId))
+		end
 	end
-	local flags = finite(vehicle.metadata and vehicle.metadata.flags)
-	if flags ~= nil then Open77.vehicles.update(id, { flags = flags }) end
+	local flags = finiteNumber(vehicle.metadata and vehicle.metadata.flags)
+	if flags ~= nil and Open77.vehicles.update(id, { flags = flags }) ~= true then
+		Open77.log.warn(('[vehicles] %s came out without its stored flags'):format(plateId))
+	end
 
 	-- The connection is read again after the database read, which yielded:
 	-- writing `live` for a character that left meanwhile would leave a vehicle
 	-- nothing will ever put away, so it is removed instead.
 	local still = characterOf(source)
 	if not still or still.citizenId ~= data.citizenId then
-		Open77.vehicles.remove(id)
+		-- The removal is the whole point of this branch -- the comment above says
+		-- it is here so there is no vehicle "nothing will ever put away" -- and a
+		-- discarded refusal produces precisely that orphan. It cannot be undone
+		-- from here, so it is named where an operator will find it.
+		if Open77.vehicles.remove(id) ~= true then
+			Open77.log.error(('[vehicles] %s was spawned for a character who left and could ' ..
+				'not be removed; it is in the world with nothing owning it'):format(plateId))
+		end
 		return done(Result.Err('vehicle.notLoggedIn', tostring(source)))
 	end
 
@@ -342,6 +356,29 @@ function M.Spawn(source, plateId, at)
 	-- The claim is given back only now, with `live` already written: a gap
 	-- between the two would be the same window in miniature.
 	return done(Result.Ok({ plate = plateId, id = id, recalled = recalled or nil }))
+end
+
+--- The engine id one plate is out as right now, or nil when it is not out.
+-- @author XEROX710
+--
+-- THE ONE READ IN THIS CONTRACT THAT DOES NOT TOUCH THE DATABASE, and that is
+-- the whole reason it exists beside `Get`, which answers the same fact among
+-- several others. `garages` asks it once per bring-out, to leave the vehicle it
+-- is about to fetch out of its own occupancy check -- a car left standing on the
+-- only exit of its own garage would otherwise be a car that can never be
+-- recalled. Through `Get` that question cost a `FetchOne`, which YIELDS: one
+-- more database round trip on the hottest path this module has, for a fact
+-- already sitting in memory.
+--
+-- It says nothing about ownership on purpose. A caller that needs to know whose
+-- vehicle it is has `Get` or `Spawn`, both of which prove it; this answers only
+-- "is there an entity for this plate, and which one".
+-- @param plateId string
+-- @return any|nil the engine id
+function M.LiveId(plateId)
+	if type(plateId) ~= 'string' then return nil end
+	local record = live[plateId]
+	return record and record.id or nil
 end
 
 --- Answers the plate of a vehicle this connection is sitting in, when it OWNS it.
@@ -405,7 +442,20 @@ function M.Store(plateId, garage)
 		Store.SetState(plateId, STATE.STORED, garage)
 	end
 
-	Open77.vehicles.remove(record.id)
+	-- THE ANSWER IS READ, AND IT WAS NOT. `Open77.vehicles.remove` answers a
+	-- boolean and this discarded it, after the row had already been moved to
+	-- STORED. A refused removal therefore ended as: the database says the car is
+	-- in the garage, and the car is still standing in the street. Fetching it
+	-- again spawns a second one on the same plate -- one row, two cars. That is
+	-- a duplication vector, not a cosmetic leak, so the state does not move
+	-- until the world has actually given the vehicle up.
+	if Open77.vehicles.remove(record.id) ~= true then
+		Open77.log.error(('[vehicles] %s could not be removed from the world; leaving it ' ..
+			'spawned rather than recording it as stored'):format(plateId))
+		Store.SetState(plateId, STATE.OUT, garage)
+		return Result.Err('vehicle.storeRefused', plateId)
+	end
+
 	live[plateId] = nil
 	return Result.Ok({ plate = plateId })
 end
@@ -590,6 +640,7 @@ function M.Api()
 		List = M.List,
 		Get = M.Get,
 		PlateOf = M.PlateOf,
+		LiveId = M.LiveId,
 		Occupied = M.Occupied,
 		Spawn = M.Spawn,
 		Store = M.Store,

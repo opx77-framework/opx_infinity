@@ -29,7 +29,28 @@ local running = false
 -- `Start`.
 local generation = 0
 
+-- How many DUE jobs one resume may run.
+--
+-- A CONSTANT HERE IS A THROUGHPUT LIMIT, and that much was true: a saturated
+-- pass comes straight back with `return 0`, so four per resume is four per
+-- frame however many are registered, and 44 are. At 30 fps with a menu open the
+-- cap binds on 893 passes out of 899.
+--
+-- AND IT STAYS AT FOUR ANYWAY. Raising it to ten was the wrong half of the
+-- problem,
+-- and it was raised on a simulation of THROUGHPUT while the thing the cap
+-- protects is the per-resume instruction BUDGET -- which nothing off-platform
+-- can measure, and whose failure mode is written at the top of this file: the
+-- loop is retired for the session, silently, taking the health bar, the
+-- prompts, every marker, the menu keys and the eye with it, with no line in any
+-- log. Ten of these jobs in one resume is `admin.tags` walking 32 bodies,
+-- `prompts.pass` sorting 32 groups, four independent distance sweeps and
+-- `admin.doors` deriving up to 256 doors, all on one budget.
+--
+-- The throughput complaint was real. The fix for it is eleven lines below, in
+-- how `nextAt` is rebased, and it costs nothing.
 local MAX_PER_TICK = 4
+
 local MAX_FAILURES = 3
 local IDLE_MS = 100
 
@@ -149,7 +170,21 @@ local function runJob(job, atMs)
 			return
 		end
 	end
-	job.nextAt = atMs + job.interval
+	-- REBASED ON ITS OWN DEADLINE, NOT ON THE PASS. `atMs` is the start of the
+	-- resume and every job run in it shares that one value, so the moment two
+	-- jobs of the same interval ran together they were locked in phase for the
+	-- rest of the session -- and `Every` above goes to the trouble of staggering
+	-- first runs precisely so that does not happen. The stagger was being undone
+	-- by the first collision, and each collision dragged more of a family onto
+	-- one resume, which is what made the cap bind on nearly every pass.
+	--
+	-- Keeping the phase is what buys back the throughput, without giving one
+	-- resume more work to do.
+	job.nextAt = job.nextAt + job.interval
+	-- A job that fell badly behind -- a stall, a long frame -- must not then run
+	-- a burst of catch-up passes to walk its missed deadlines forward one by one.
+	-- It gives up the missed ones and takes the next slot from now.
+	if job.nextAt <= atMs then job.nextAt = atMs + job.interval end
 end
 
 --- One pass: runs up to MAX_PER_TICK due jobs, resuming where the last pass left
@@ -162,11 +197,19 @@ local function tick()
 	local count = #jobs
 	if count == 0 then return IDLE_MS end
 
+	local perTick = MAX_PER_TICK
 	local ran, examined = 0, 0
-	while examined < count and ran < MAX_PER_TICK do
+	while examined < count and ran < perTick do
 		cursor = cursor % count + 1
 		examined = examined + 1
 		local job = jobs[cursor]
+		-- A STEP MAY EMPTY THIS LIST UNDER THE LOOP. `Stop()` replaces `jobs`
+		-- with a fresh table, and `count` was fixed before the first step ran, so
+		-- the next turn indexed past the end and raised `attempt to index a nil
+		-- value (local 'job')` -- caught by the `pcall` around the pass, so it
+		-- cost one log line that reads like a bug in the scheduler itself,
+		-- written at the moment the resource is stopping.
+		if job == nil then break end
 		if job.step and atMs >= job.nextAt then
 			runJob(job, atMs)
 			ran = ran + 1
@@ -179,12 +222,20 @@ local function tick()
 	-- happened to find nothing else due, so the health bar ran at a third of the
 	-- rate its own config names. The cap stays as the idle floor, and a pass that
 	-- hit MAX_PER_TICK with more still due comes straight back.
-	if ran >= MAX_PER_TICK then return 0 end
+	if ran >= perTick then return 0 end
 
+	-- `#jobs` AGAIN, NOT `count`. A step is allowed to register work -- the
+	-- target module registers its 25 ms resolve from the hover path, which is
+	-- itself a job -- and a job appended during this pass sits past the bound
+	-- taken before the steps ran. The sweep then never saw it and the pass slept
+	-- the idle floor, so the first run of a job asked for in 25 ms landed up to
+	-- 100 ms later.
 	local soonest
-	for index = 1, count do
+	for index = 1, #jobs do
 		local job = jobs[index]
-		if job.step and (soonest == nil or job.nextAt < soonest) then soonest = job.nextAt end
+		if job and job.step and (soonest == nil or job.nextAt < soonest) then
+			soonest = job.nextAt
+		end
 	end
 	if soonest == nil then return IDLE_MS end
 

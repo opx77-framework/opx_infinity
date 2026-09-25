@@ -27,7 +27,15 @@ local EN = {
 	['admin.done.revived'] = '{name} [{id}] revived.',
 	['admin.done.godOn'] = 'God mode on for {name} [{id}].',
 	['admin.done.godOff'] = 'God mode off for {name} [{id}].',
+	-- THE CAPTURE PATH'S TWO ANSWERS. The second is not a failure: the row is
+	-- copied either way, and what it says is that the HEADING in it is a zero
+	-- this host could not read rather than the way the operator is facing. A
+	-- config row pasted from it would stand a car facing north and nothing would
+	-- ever say why, which is the sort of thing an operator spends an afternoon on.
 	['admin.done.pos'] = 'Copied to the clipboard (bucket {bucket}): {row}',
+	['admin.done.posNoHeading'] =
+		'Copied to the clipboard (bucket {bucket}), but this host cannot read your ' ..
+		'facing, so HEADING is 0.0 and not a reading: {row}',
 	['admin.done.goto'] = 'Teleported to {name} [{id}], bucket {bucket}.',
 	['admin.done.bring'] = '{name} [{id}] brought to you.',
 	['admin.done.observe'] = 'Observing {name} [{id}] with noclip on. They can see you.',
@@ -262,7 +270,6 @@ local EN = {
 	['admin.help.selfModel'] = 'Wear an NPC body, or take it off and get your own back.',
 	['admin.help.playerModel'] = "Change a player's body to an NPC, or give them their own back.",
 	['admin.help.playerWardrobe'] = 'Open the fitting room on a player, with the whole catalogue and no cost.',
-	['admin.help.playerWardrobe'] = 'Open the fitting room on a player, with the whole catalogue and no cost.',
 	['admin.help.ped'] = 'a ped name from data/peds.lua, or off',
 	['admin.help.freeze'] = 'Toggle holding a player still.',
 	['admin.help.enter'] = 'Sit in a vehicle, driver seat first, even a locked one.',
@@ -277,6 +284,13 @@ local EN = {
 	['admin.menu.weapons'] = 'Weapons',
 	['admin.menu.world'] = 'World',
 	['admin.menu.server'] = 'Server',
+	['admin.menu.dev'] = 'Dev',
+	['admin.menu.section.devCapture'] = 'Capture',
+	['admin.menu.section.devInspect'] = 'Inspection',
+	['admin.menu.devNoInspection'] = 'Aim at something with ALT, then Inspect',
+	['admin.menu.devCopyLast'] = 'Copy the last inspection again',
+	['admin.menu.devCopied'] = 'Inspection copied',
+	['admin.menu.devCopyFailed'] = 'Nothing to copy',
 	['admin.menu.back'] = 'Back',
 	['admin.menu.more'] = 'More',
 	['admin.menu.close'] = 'Close',
@@ -517,6 +531,14 @@ local EN = {
 	['admin.field.label'] = 'Label',
 	['admin.field.time'] = 'HH:MM',
 	['admin.field.query'] = 'Words',
+	-- THE DEV SCREEN'S KEYS ARE GONE, all twenty-seven of them: the screen, its key,
+	-- its three sections, its seven rows, its four forms with their fields, and the
+	-- three answers the two contract-call rows had. The owner deleted that screen
+	-- on 2026-09-21; `modules/admin/client/menu.lua` says at length where each row
+	-- went. Not one of them is named from any Lua or Vue file any more, and the
+	-- French table below lost exactly the same keys in the same pass -- this repo
+	-- keeps the two in step, and a key in one table and not the other is a screen
+	-- that reads in English for half the server.
 
 	['admin.client.menuMissing'] = 'The staff menu needs the menu module, which is not running.',
 	['admin.client.menuBusy'] = 'Another menu is open. Close it first.',
@@ -549,6 +571,7 @@ local EN = {
 	['admin.target.folder.state'] = 'Health and view',
 	['admin.target.folder.moderation'] = 'Moderation',
 	['admin.target.folder.weather'] = 'Sky',
+	['admin.target.folder.dev'] = 'Dev',
 	['admin.target.noclip'] = 'Noclip',
 	['admin.target.god'] = 'God mode',
 	['admin.target.invisible'] = 'Invisible',
@@ -574,6 +597,9 @@ local EN = {
 	['admin.target.doorReset'] = 'Door back to default',
 	['admin.target.doorCopy'] = 'Copy the door id',
 	['admin.target.doorCopied'] = 'Door id copied: {door}',
+	['admin.target.inspect'] = 'Inspect',
+	['admin.target.inspected'] = 'Inspected the {kind} — copied',
+	['admin.target.inspectedNoCopy'] = 'Inspected the {kind} — no clipboard here',
 	['admin.target.clipboardMissing'] = 'The clipboard is not available.',
 	['admin.target.weatherPreset'] = '{preset}',
 	['admin.target.weatherNext'] = 'Roll the next weather',
@@ -618,6 +644,9 @@ local FR = {
 	['admin.done.godOn'] = 'Invincibilité activée pour {name} [{id}].',
 	['admin.done.godOff'] = 'Invincibilité retirée à {name} [{id}].',
 	['admin.done.pos'] = 'Copié dans le presse-papiers (bucket {bucket}) : {row}',
+	['admin.done.posNoHeading'] =
+		'Copié dans le presse-papiers (bucket {bucket}), mais cet hôte ne peut pas lire ' ..
+		"votre orientation : HEADING vaut 0.0 et n'est pas une mesure : {row}",
 	['admin.done.goto'] = 'Téléporté auprès de {name} [{id}], bucket {bucket}.',
 	['admin.done.bring'] = "{name} [{id}] amené jusqu'à vous.",
 	['admin.done.observe'] = 'Vous observez {name} [{id}], noclip activé. Cette personne vous voit.',
@@ -852,7 +881,6 @@ local FR = {
 	['admin.help.selfModel'] = "Prend le corps d'un PNJ, ou le retire pour retrouver le vôtre.",
 	['admin.help.playerModel'] = "Change le corps d'un joueur en PNJ, ou lui rend le sien.",
 	['admin.help.playerWardrobe'] = "Ouvre la cabine d'essayage sur un joueur, catalogue complet et sans frais.",
-	['admin.help.playerWardrobe'] = "Ouvre la cabine d'essayage sur un joueur, catalogue complet et sans frais.",
 	['admin.help.ped'] = 'un nom de PNJ du data/peds.lua, ou off',
 	['admin.help.freeze'] = 'Bascule un joueur figé sur place.',
 	['admin.help.enter'] = "Vous installe dans un véhicule, place conducteur d'abord, même verrouillé.",
@@ -867,6 +895,13 @@ local FR = {
 	['admin.menu.weapons'] = 'Armes',
 	['admin.menu.world'] = 'Monde',
 	['admin.menu.server'] = 'Serveur',
+	['admin.menu.dev'] = 'Dev',
+	['admin.menu.section.devCapture'] = 'Relever',
+	['admin.menu.section.devInspect'] = 'Inspection',
+	['admin.menu.devNoInspection'] = 'Visez quelque chose avec ALT puis Inspecter',
+	['admin.menu.devCopyLast'] = 'Recopier la dernière inspection',
+	['admin.menu.devCopied'] = 'Inspection copiée',
+	['admin.menu.devCopyFailed'] = 'Rien à copier',
 	['admin.menu.back'] = 'Retour',
 	['admin.menu.more'] = 'Suite',
 	['admin.menu.close'] = 'Fermer',
@@ -1130,6 +1165,7 @@ local FR = {
 	['admin.target.folder.state'] = 'Santé et affichage',
 	['admin.target.folder.moderation'] = 'Modération',
 	['admin.target.folder.weather'] = 'Ciel',
+	['admin.target.folder.dev'] = 'Dev',
 	['admin.target.noclip'] = 'Noclip',
 	['admin.target.god'] = 'Invincibilité',
 	['admin.target.invisible'] = 'Invisible',
@@ -1155,6 +1191,9 @@ local FR = {
 	['admin.target.doorReset'] = 'Porte par défaut',
 	['admin.target.doorCopy'] = "Copier l'identifiant de la porte",
 	['admin.target.doorCopied'] = 'Identifiant de porte copié : {door}',
+	['admin.target.inspect'] = 'Inspecter',
+	['admin.target.inspected'] = '{kind} inspecté — copié',
+	['admin.target.inspectedNoCopy'] = '{kind} inspecté — pas de presse-papiers ici',
 	['admin.target.clipboardMissing'] = "Le presse-papiers n'est pas disponible.",
 	['admin.target.weatherPreset'] = '{preset}',
 	['admin.target.weatherNext'] = 'Tirer la météo suivante',
