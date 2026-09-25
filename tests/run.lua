@@ -20743,7 +20743,19 @@ do
 			if sent.boards[index].kind == 'signup' then office = sent.boards[index] end
 		end
 		check('and it is the office they are standing on', office ~= nil and office.key == 'jobs_signup')
-		local offers = office and office.state and office.state.offers or {}
+		-- THE VERDICT RIDES ITS OWN EVENT, and the board row stays nine flat
+		-- values on purpose: a row carrying its verdict was nine levels deep and
+		-- several hundred values, past the client's decode window, and the host
+		-- dropped the whole board list without a word (see `Access.WireRow`).
+		-- So the offer list is read off the `state` event, keyed by the board it
+		-- is for -- and it is the board underfoot, because that is the only one
+		-- the server answers for.
+		local verdict = lastEvent(jobs.Event.STATE)
+		check('and the office\'s own verdict rides back beside it',
+			verdict ~= nil and verdict[1] == 'jobs_signup' and type(verdict[2]) == 'table',
+			verdict ~= nil and tostring(verdict[1]) or 'nothing sent')
+		local offers = verdict ~= nil and type(verdict[2]) == 'table'
+			and type(verdict[2].offers) == 'table' and verdict[2].offers or {}
 		check('which offers every job the config lists', #offers >= 7, tostring(#offers))
 		local byName = {}
 		for index = 1, #offers do byName[offers[index].job] = offers[index] end
@@ -21613,11 +21625,16 @@ do
 			mapping ~= nil and mapping.name == 'Read the board or manage the roster',
 			mapping and tostring(mapping.name))
 
-		-- The payload the server would send, in the shape `Access.Serialise`
-		-- writes. The client is handed it and decides only what to DRAW.
-		local function board(key, kind, job, x, y, state)
+		-- The payload the server would send, in the shape `Access.WireRow`
+		-- writes: WHERE THE MARKER IS and nothing else. A row carrying its
+		-- verdict was nine levels deep and several hundred values -- past the
+		-- host's decode window, which drops the payload whole and draws no
+		-- marker at all -- so what a player may DO at a board rides the `state`
+		-- event keyed by the board it is for, and the client is handed the
+		-- marker only and decides what to DRAW.
+		local function board(key, kind, job, x, y)
 			return { key = key, label = key, kind = kind, job = job, x = x, y = y, z = 0.0,
-				heading = 0.0, bucket = 0, state = state }
+				heading = 0.0, bucket = 0 }
 		end
 		-- A SCAN IS NOT A FIXED NUMBER OF ROUNDS. The client's scheduler runs a job
 		-- when its interval is up and the harness advances its clock by 100 ms a
@@ -21639,12 +21656,19 @@ do
 
 		control.placement.x, control.placement.y, control.placement.z = 0.0, 0.0, 0.0
 		control.netEvents[jobs.Event.SYNC]({ boards = {
-			board('jobs_signup', 'signup', 'ncpd', 0.0, 0.0, { kind = 'signup', job = 'ncpd',
-				open = true, top = 3, offers = {
-					{ job = 'ncpd', label = 'NCPD', open = true, canJoin = true, top = 3 },
-					{ job = 'maxtac', label = 'MaxTac', open = true, approval = true, top = 1 },
-				} }),
+			board('jobs_signup', 'signup', 'ncpd', 0.0, 0.0),
 		} })
+		-- THE VERDICT IS ITS OWN EVENT, keyed by the board it is for: the server
+		-- sends it for the one board the player is standing on, and the client
+		-- holds it under that key rather than inside the board row. A press that
+		-- lands before it does is answered `jobs.loading` and the list opens the
+		-- moment the verdict arrives -- so it is injected here the way the server
+		-- would answer, and the press below finds the list ready.
+		control.netEvents[jobs.Event.STATE]('jobs_signup', { kind = 'signup', job = 'ncpd',
+			open = true, top = 3, offers = {
+				{ job = 'ncpd', label = 'NCPD', open = true, canJoin = true, top = 3 },
+				{ job = 'maxtac', label = 'MaxTac', open = true, approval = true, top = 1 },
+			} })
 		settle(control, function() return markers() == base + 1 end, 60)
 
 		local report = contract.State().value
@@ -21783,7 +21807,7 @@ do
 		-- A BOARD THE CLIENT COULD NOT READ IS REFUSED AND NAMED rather than
 		-- drawn as something else: a KIND nobody defined has no marker preset.
 		control.netEvents[jobs.Event.SYNC]({ boards = {
-			board('bad', 'office', 'ncpd', 0.0, 0.0, {}),
+			board('bad', 'office', 'ncpd', 0.0, 0.0),
 		} })
 		control.Pump(4)
 		check('a board with an unknown kind is refused on the client too',
