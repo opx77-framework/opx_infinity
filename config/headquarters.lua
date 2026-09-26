@@ -82,13 +82,22 @@ OPX.Config.MODULES.headquarters = {
 	-- POI path lifts its markers by the same 0.06 m for exactly this reason.
 	GROUND_OFFSET = 0.06,
 
-	-- THE ONE GLYPH THE NAME ROW CARRIES. The strip is a prompts row and the
-	-- prompts contract draws no row without a key cap at all -- a row of pure
-	-- text is refused `prompts.keysRequired` -- so a label-only row names one
-	-- literal cap. It is not a key and it is not bound: there is nothing to
-	-- press at a headquarters, which is what makes it a designation and not a
-	-- door. Any short string that holds no space or control character will do.
-	KEYCAP = '!',
+	-- THE KEY THE NAME ROW WEARS. The strip is a prompts row and the prompts
+	-- contract draws no row without a key cap at all -- a row of pure text is
+	-- refused `prompts.keysRequired` -- and a cap that names no real key is a
+	-- key the player presses to nothing, which is what the old literal `!`
+	-- was. So the cap names a REAL keybind now: the same `ID`/`NAME`/`DEFAULT`
+	-- block every other surface declares, registered with the host and
+	-- rebindable in the player's own key settings, and the press answers with
+	-- the station's own name -- a designation says what it is when touched,
+	-- and does nothing else.
+	--
+	-- F8 because the rest of the keyboard is spoken for: E opens the shops,
+	-- the pads, the desks and the teleports, F boards the MaxTac AV, H/Y/X
+	-- are the phone, F6 flies and F7 dresses. F8 is the free one beside the
+	-- two panels that claim its neighbours. `DEFAULT = false` turns the press
+	-- AND the row off together, because a row with no cap is not drawn.
+	KEY = { ID = 'opx.headquarters.use', NAME = 'headquarters.key.use', DEFAULT = 'F8' },
 
 	-- The marker/scan loop. SCAN_MS also decides how long a marker stays up
 	-- after a read fails. POLL_MS is how often the client re-asks for the list,

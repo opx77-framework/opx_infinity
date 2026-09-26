@@ -8,6 +8,7 @@
 local EN = {
 	['headquarters.title'] = 'HEADQUARTERS',
 	['headquarters.prompt.value'] = 'Headquarters',
+	['headquarters.key.use'] = 'Read the station',
 	['headquarters.help.add'] = 'Capture where you stand as a headquarters: saved, set and printed for the config.',
 	['headquarters.help.addKey'] = 'The durable key (hq1, hq2, ... when empty).',
 	['headquarters.help.addLabel'] = 'What the name row shows (the key when empty).',
@@ -20,6 +21,7 @@ local EN = {
 local FR = {
 	['headquarters.title'] = 'QUARTIER GÉNÉRAL',
 	['headquarters.prompt.value'] = 'Quartier général',
+	['headquarters.key.use'] = 'Lire le lieu',
 	['headquarters.help.add'] = 'Capture votre position comme quartier général : enregistré, posé et imprimé pour la config.',
 	['headquarters.help.addKey'] = 'La clé durable (hq1, hq2, ... si vide).',
 	['headquarters.help.addLabel'] = 'Ce que la ligne de nom affiche (la clé si vide).',

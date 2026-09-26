@@ -33,10 +33,14 @@ local spots, markers = {}, {}
 local nearest, shown, shownLabel = nil, false, nil
 
 -- Whether each of the three failures was already logged: a marker that cannot
--- be drawn, a row that cannot be posted and a config that named no usable cap
+-- be drawn, a row that cannot be posted and a config that named no usable key
 -- are different problems and a player reading the log wants to know which one
 -- they have.
-local reportedMarkers, reportedStrip, reportedCap = false, false, false
+local reportedMarkers, reportedStrip, reportedKey = false, false, false
+
+-- Whether the host took the key mapping. The row wears no cap until it has:
+-- a row that promises a press with no key behind it is the `!` problem again.
+local keyRegistered = false
 
 -- Scheduler handles, so Stop can cancel them.
 local scanJob, askJob = nil, nil
@@ -144,22 +148,30 @@ end
 
 -- ── the strip ───────────────────────────────────────────────────────────────
 
+-- Names the key the row is bound to, or nil when it is off or was refused --
+-- a row with no key to name says nothing.
+local function keyLabel()
+	if not keyRegistered then return nil end
+	local declared = Access.KEY
+	return OPX.Lib.Input.KeyFor(declared.ID) or declared.DEFAULT
+end
+
 -- Brings the row in line with where the player is standing: on a headquarters,
--- it names the place; anywhere else, it is down. The row carries ONE literal
--- cap and no key, because the prompts contract draws no row without a cap and
--- there is nothing to press at a designation.
+-- it names the place; anywhere else, it is down. The row wears the REGISTERED
+-- key -- the same binding the press answers to -- because a cap that names no
+-- real key is a key the player presses to nothing.
 local function syncPrompt()
-	local cap = Access.KEYCAP
-	if cap == nil then
-		if nearest ~= nil and not reportedCap then
-			reportedCap = true
-			Open77.log.warn('[headquarters] KEYCAP is not a usable literal; the name row is not shown')
+	local key = Access.KEY
+	if key == nil then
+		if nearest ~= nil and not reportedKey then
+			reportedKey = true
+			Open77.log.warn('[headquarters] KEY is not a usable keybind block; the name row is not shown')
 		end
 		shown, shownLabel = false, nil
 		return
 	end
 
-	local want = nearest ~= nil and not captured()
+	local want = nearest ~= nil and keyLabel() ~= nil and not captured()
 	local label = want and nearest.label or nil
 	if want == shown and label == shownLabel then return end
 
@@ -179,7 +191,7 @@ local function syncPrompt()
 	local ran, answer
 	if want then
 		ran, answer = pcall(api.Show, OWNER, GROUP, { rows = { {
-			keys = { cap },
+			keys = { action = key.ID },
 			-- The operator's own words, and beside them the one word this
 			-- module knows in the player's own language.
 			label = label,
@@ -198,6 +210,30 @@ local function syncPrompt()
 		reportedStrip = true
 		Open77.log.warn('[headquarters] the name row was refused: ' .. failure)
 	end
+end
+
+-- ── the press ────────────────────────────────────────────────────────────────
+
+-- Shows one message as a replaced toast, or as a log line when no toast can be
+-- raised. One id, so a second press replaces the first rather than stacking.
+local function say(message)
+	local raised = OPX.Toast.Show({
+		id = 'opx.headquarters.read',
+		kind = 'info',
+		title = locale('headquarters.title'),
+		message = message,
+		durationMs = 4000,
+	})
+	if raised == nil then Open77.log.info('[headquarters] ' .. tostring(message)) end
+end
+
+-- THE PRESS. A designation answers when touched: it says its own name. The row
+-- is already naming the place while the player stands on it, so this is the
+-- same fact asked for rather than stumbled over -- and the one thing a station
+-- does that does not make it a door.
+local function readBack()
+	if nearest == nil then return end
+	say(tostring(nearest.label))
 end
 
 -- ── the surface the blips module reads ─────────────────────────────────────
@@ -229,7 +265,7 @@ function M.Report()
 		nearest = nearest and nearest.key or nil,
 		label = nearest and nearest.label or nil,
 		shown = shown,
-		keycap = Access.KEYCAP,
+		key = keyLabel(),
 	}
 end
 
@@ -255,13 +291,45 @@ end
 --- Clears everything this half holds. Never yields.
 function M.Init()
 	spots, markers = {}, {}
-	nearest, shown, shownLabel = nil, false, nil
-	reportedMarkers, reportedStrip, reportedCap = false, false, false
+	nearest, shown, shownLabel, keyRegistered = nil, false, nil, false
+	reportedMarkers, reportedStrip, reportedKey = false, false, false
 	scanJob, askJob = nil, nil
 end
 
---- Wires the server's one event and the two loops.
+--- Declares the key, wires the server's one event and the two loops.
 function M.Start()
+	-- The mapping's name is translated at registration and its id is stable,
+	-- because a player's rebind is stored under the id.
+	local key = Access.KEY
+	if key ~= nil and key.DEFAULT ~= false then
+		local called, ok, answer = pcall(RegisterKeyMapping, key.ID, locale(key.NAME),
+			key.DEFAULT, function()
+				if captured() then return end
+				local ran, failure = pcall(readBack)
+				if not ran then
+					Open77.log.error(('[headquarters] key %s: %s'):format(key.ID, tostring(failure)))
+				end
+			end)
+		-- Two answer shapes are documented for the host call: the effective key,
+		-- or `true, key`. Reading only one of them logs a working mapping as
+		-- refused.
+		local effective = nil
+		if called then
+			effective = type(ok) == 'string' and ok ~= '' and ok
+				or (ok == true and type(answer) == 'string' and answer ~= '' and answer) or nil
+		end
+		if not called or (ok ~= true and effective == nil) then
+			Open77.log.warn(('[headquarters] key mapping %s (%s) not registered: %s')
+				:format(key.ID, tostring(key.DEFAULT), tostring(called and answer or ok)))
+		else
+			keyRegistered = true
+		end
+	elseif key ~= nil then
+		-- Off on purpose rather than broken: `DEFAULT = false` is how an
+		-- operator turns the press and the row off together.
+		Open77.log.info('[headquarters] KEY.DEFAULT is off: the name row is not shown')
+	end
+
 	RegisterNetEvent(M.Event.SYNC, function(payload)
 		local listed = type(payload) == 'table' and payload.spots or nil
 		if type(listed) ~= 'table' then return end

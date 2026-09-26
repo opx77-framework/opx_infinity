@@ -111,18 +111,27 @@ Access.USE_RADIUS_SQ = USE_RADIUS * USE_RADIUS
 Access.SCAN_MS = math.floor(finiteNumber(Config.SCAN_MS) or 0)
 Access.POLL_MS = math.floor(finiteNumber(Config.POLL_MS) or 0)
 
---- The one glyph the name row carries, or nil when the config named nothing a
--- prompts row may hold.
+--- The key the name row wears and the press answers, or nil when the config
+-- named nothing a host key mapping may hold.
 --
--- The prompts contract draws no row without a key cap, so a headquarters row
--- carries one LITERAL cap -- see the header of `config/headquarters.lua`. A
--- value holding a space is not one literal but several, which is still legal
--- (`addKeys` splits on spaces) but is two caps wearing one name's clothes; a
--- control character is refused by that same rule. Neither is repaired here:
--- the row is drawn with no cap refused and the fault reported by `Problems`.
-local KEYCAP = type(Config.KEYCAP) == 'string' and Config.KEYCAP or nil
-if KEYCAP ~= nil and (KEYCAP == '' or #KEYCAP > 8 or KEYCAP:find('%c')) then KEYCAP = nil end
-Access.KEYCAP = KEYCAP
+-- The prompts contract draws no row without a key cap -- see the header of
+-- `config/headquarters.lua` -- and a cap that names no real key is a key the
+-- player presses to nothing. So the cap names a REGISTERED key: the same
+-- `ID`/`NAME`/`DEFAULT` block every other surface declares. `DEFAULT =
+-- false` is off on purpose (no press, and no row -- a row needs a cap); a
+-- block that is malformed is dropped here and the fault reported by
+-- `Problems`.
+local KEY = type(Config.KEY) == 'table' and Config.KEY or nil
+if KEY ~= nil then
+	if type(KEY.ID) ~= 'string' or KEY.ID == ''
+		or type(KEY.NAME) ~= 'string' or KEY.NAME == '' then
+		KEY = nil
+	elseif KEY.DEFAULT ~= false
+		and (type(KEY.DEFAULT) ~= 'string' or KEY.DEFAULT == '') then
+		KEY = nil
+	end
+end
+Access.KEY = KEY
 
 --- Answers the spot a point stands on, or nil. The nearest wins; at equal
 -- distance the key decides, so `pairs` order never chooses between two markers
@@ -291,8 +300,8 @@ function Access.Problems()
 		type(Config.MARKER) == 'table' and Config.MARKER[M.SLOT.HQ] or nil,
 		'MARKER.' .. M.SLOT.HQ, lines)
 
-	if KEYCAP == nil then
-		lines[#lines + 1] = 'KEYCAP must be a short string of printable characters'
+	if KEY == nil then
+		lines[#lines + 1] = 'KEY must declare ID and NAME, with DEFAULT a key name or false'
 	end
 
 	-- The spots are validated once at load; the errors are re-derived here so

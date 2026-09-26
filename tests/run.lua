@@ -6334,8 +6334,9 @@ end
 -- A HEADQUARTERS IS A MARKER AND A NAME, and both halves are under test: the
 -- server owns the list (a spot lives in a routing bucket a client cannot read
 -- for itself), and the client draws the marker and posts the one row that names
--- the place. Nothing is pressed at a headquarters and nothing is created at one
--- -- it DESIGNATES, and the tests below are the ones that keep it that way.
+-- the place. One key is bound at a headquarters and it only reads the place
+-- back -- it DESIGNATES, and nothing is created at one; the tests below are the
+-- ones that keep it that way.
 section('headquarters: the marker that designates the station')
 do
 	local env, control, why = boot('server')
@@ -6365,8 +6366,10 @@ do
 			look.lift == 0.06, tostring(look.lift))
 		check('and drawn from as far off as the config says',
 			Access.MaxDistance() == 150.0, tostring(Access.MaxDistance()))
-		check('the name row carries the one glyph the config named',
-			Access.KEYCAP == '!', tostring(Access.KEYCAP))
+		check('the name row wears the key the config named',
+			Access.KEY ~= nil and Access.KEY.ID == 'opx.headquarters.use'
+				and Access.KEY.DEFAULT == 'F8',
+			tostring(Access.KEY and Access.KEY.DEFAULT))
 
 		-- ── a spot is coerced, never trusted ────────────────────────────
 		local built = Access.Coerce({
@@ -6844,9 +6847,10 @@ do
 			options ~= nil and math.abs(options.position.z - (0.0 + hq.Access.Marker().lift)) < 1e-9,
 			options and tostring(options.position.z))
 
-		-- ── the name row, and nothing else ─────────────────────────────
-		-- A designation has no key: the row names the place and offers nothing
-		-- to press, and no mapping is registered for one.
+		-- ── the name row, and the one key beside it ──────────────────────
+		-- The row names the place; the key reads the name back. That is the
+		-- one press a designation answers to -- it creates nothing, and the
+		-- tests below are the ones that keep it that way.
 		local report = hq.Report()
 		check('standing on the marker names the place',
 			report.nearest == 'hq_north' and report.shown == true and report.label == 'NCPD HQ',
@@ -6857,11 +6861,33 @@ do
 			listed ~= nil and listed.ok == true and listed.value.count == 1
 				and listed.value.prompts[1] == 'spot',
 			listed and listed.ok and tostring(listed.value.count))
-		local bound = false
-		for id in pairs(cctl.keyMappings.byId) do
-			if type(id) == 'string' and id:find('headquarters', 1, true) then bound = true end
+
+		-- THE KEY. Declared to the host like every other surface's, so a
+		-- player can rebind it and the pause menu names it -- and the row
+		-- wears the same binding the press answers to.
+		local mapping = cctl.keyMappings.byId['opx.headquarters.use']
+		check('the key is declared to the host, so a player can rebind it', mapping ~= nil)
+		check('and defaults to F8, the free one beside the panels',
+			mapping ~= nil and mapping.key == 'F8', mapping and tostring(mapping.key))
+		check('and the pause menu is given a name for it, not a key',
+			mapping ~= nil and type(mapping.name) == 'string' and mapping.name ~= ''
+				and mapping.name:find('key', 1, true) == nil, mapping and tostring(mapping.name))
+		check('and the name row wears it', report.key == 'F8', tostring(report.key))
+
+		local page = cctl.pages[1]
+		local function lastToast(needle)
+			for index = #page.sent, 1, -1 do
+				local sent = page.sent[index]
+				if sent.channel == 'opx:notify:show' and type(sent.payload) == 'table'
+					and type(sent.payload.message) == 'string'
+					and sent.payload.message:find(needle, 1, true) ~= nil then
+					return sent.payload
+				end
+			end
+			return nil
 		end
-		check('and no key is bound, because there is nothing to press', bound == false)
+		mapping.pressed()
+		check('pressing it reads the place back', lastToast('NCPD HQ') ~= nil)
 
 		-- A LIST THAT WAS CLEARED takes its markers and its row down with it.
 		cctl.netEvents[hq.Event.SYNC]({ spots = {} })
@@ -6869,6 +6895,12 @@ do
 		check('a station the server no longer names loses its marker',
 			#cenv.Open77.markers.list() == 0, #cenv.Open77.markers.list())
 		check('and the name row comes down with it', hq.Report().shown == false)
+
+		-- And away from every station the press has nothing to read.
+		local before = #page.sent
+		mapping.pressed()
+		check('and away from a station the press answers nothing', #page.sent == before,
+			('%d message(s)'):format(#page.sent - before))
 
 		-- A SPOT THE CLIENT CANNOT READ is dropped and named, never taken as a
 		-- marker at 0,0,0.
