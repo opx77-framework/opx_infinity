@@ -726,11 +726,180 @@ function M.Save(identifier, loggedOut)
 	return saved
 end
 
+-- ── THE CYBERWARE IDENTITY ────────────────────────────────────────────────────
+-- `wiki/cyberware.md`: every implant transaction runs "on their own
+-- already-bound character", and the binder is the CHARACTER ADAPTER. This
+-- server runs no `open77_appearance` adapter -- THIS workflow is the trusted
+-- character workflow the wiki names ("the selected character key must come
+-- from your trusted character workflow"), so it binds the key it owns and
+-- nothing else. The wiki's "do not combine a second identity binder with the
+-- existing adapter" is honoured exactly: when an adapter resource is running,
+-- this stands down and lets it bind.
+--
+-- Without a binder the shop is dead in the quietest possible way: `current`
+-- reads "loading" for ever, every offer is refused `notReady`, and no log on
+-- the server says anything happened. That is what "the menu does not equip"
+-- looked like.
+
+-- source -> true, the bindings this workflow took (and only its own).
+local cyberwareBound = {}
+-- source -> { at, citizenId, outcome, reason }: the LAST thing the binder did
+-- for a connection, bound or not, so a "record not ready" can be diagnosed
+-- from what actually happened instead of guessed at.
+local cyberwareBinding = {}
+-- Whether the stopped support resource has been said out loud this boot.
+local warnedSupport = false
+
+--- Whether a character adapter resource is running -- the wiki's binder. When
+--- one is, this workflow stands down.
+-- @return boolean
+-- @return string|nil the adapter's name
+local function adapterPresent()
+	if type(GetResourceState) ~= 'function' then return false end
+	for _, name in ipairs({ 'open77_appearance', 'opx77_appearance' }) do
+		local ran, state = pcall(GetResourceState, name)
+		if ran and state == 'running' then return true, name end
+	end
+	return false
+end
+
+--- The support resource's state, as the host reports it.
+-- @return string
+local function supportState()
+	if type(GetResourceState) ~= 'function' then return 'unknown' end
+	local ran, state = pcall(GetResourceState, 'open77_cyberware')
+	return ran and tostring(state) or 'unknown'
+end
+
+--- Notes what the binder did for one connection.
+-- @param source number
+-- @param citizenId string|nil
+-- @param outcome string `bound`, `skipped` or `refused`
+-- @param reason string|nil
+local function note(source, citizenId, outcome, reason)
+	cyberwareBinding[source] = {
+		at = OPX.Now(), citizenId = citizenId, outcome = outcome, reason = reason,
+	}
+end
+
+--- Binds the platform's cyberware identity to the character key this workflow
+-- owns. Idempotent per session, and LOUD where it cannot bind: every implant,
+-- deck, dash and overdrive on this server waits on this one call, so a binder
+-- that stood down in silence made the whole clinic answer "not ready" with
+-- nothing in any log to say why.
+-- @author XEROX710
+-- @param source number
+-- @param citizenId string|nil
+function M.BindCyberware(source, citizenId)
+	if cyberwareBound[source] then return end
+	local present, adapter = adapterPresent()
+	if present then
+		return note(source, citizenId, 'skipped', 'adapter:' .. tostring(adapter))
+	end
+	local state = supportState()
+	if state ~= 'running' and state ~= 'unknown' then
+		if not warnedSupport then
+			warnedSupport = true
+			Open77.log.warn(('[character] open77_cyberware is %s: no character can be bound ' ..
+				'for chrome, so every implant is refused "not ready" -- add it to resources.load')
+				:format(state))
+		end
+		return note(source, citizenId, 'skipped', 'open77_cyberware:' .. state)
+	end
+	local api = type(Open77) == 'table' and Open77.cyberware or nil
+	if api == nil or type(api.bind) ~= 'function' then
+		return note(source, citizenId, 'skipped', 'no_bind_api')
+	end
+	if type(citizenId) ~= 'string' or citizenId == '' then
+		return note(source, citizenId, 'skipped', 'no_citizen')
+	end
+	local ran, ok, reason = pcall(api.bind, source, citizenId)
+	-- TRUTHY, NOT `== true`. The platform answers a mutation with a TABLE
+	-- (`{ok=true}`) or `nil, reason` -- the official adapter reads it as
+	-- `if ok then` -- and a strict `== true` called every successful bind a
+	-- refusal, logged a table address as its reason and bound again on every
+	-- placement.
+	local accepted = ran and ok ~= nil and ok ~= false
+		and not (type(ok) == 'table' and ok.ok == false)
+	if accepted then
+		cyberwareBound[source] = true
+		return note(source, citizenId, 'bound', nil)
+	end
+	local why = tostring((ran and (reason or (type(ok) == 'table' and (ok.reason or ok.error))))
+		or ok or 'refused')
+	note(source, citizenId, 'refused', why)
+	if ran and why == 'cyberware_storage_unavailable' then
+		-- The platform's own quiet case: said once per boot, not per join.
+		if not warnedSupport then
+			warnedSupport = true
+			Open77.log.warn('[character] the cyberware store is unavailable ' ..
+				'(cyberware_storage_unavailable): implants cannot be fitted until the ' ..
+				'server has a database for open77_cyberware')
+		end
+		return
+	end
+	Open77.log.warn(('[character] the cyberware identity of %s was refused: %s')
+		:format(tostring(citizenId), why))
+end
+
+--- Binds again: the platform's `bind` on a binding that FAILED (a restore
+--- that timed out, a store read that failed) starts it over, and on a healthy
+--- one answers ok and changes nothing -- so asking again is always safe, and
+--- it is the one lever a "not ready" record has.
+-- @author XEROX710
+-- @param source number
+-- @return table the binding note after the attempt
+function M.RebindCyberware(source)
+	source = tonumber(source)
+	if source == nil then return nil end
+	local player = M.Players[source]
+	local citizenId = player ~= nil and player.PlayerData ~= nil and player.PlayerData.citizenId or nil
+	cyberwareBound[source] = nil
+	M.BindCyberware(source, citizenId)
+	return cyberwareBinding[source]
+end
+
+--- What the binder last did for a connection, and the support resource's
+--- state, for a diagnosis.
+-- @author XEROX710
+-- @param source number
+-- @return table
+function M.CyberwareStatus(source)
+	source = tonumber(source)
+	local binding = source ~= nil and cyberwareBinding[source] or nil
+	local present, adapter = adapterPresent()
+	return {
+		bound = source ~= nil and cyberwareBound[source] == true,
+		outcome = binding ~= nil and binding.outcome or 'never',
+		reason = binding ~= nil and binding.reason or nil,
+		citizenId = binding ~= nil and binding.citizenId or nil,
+		ageMs = binding ~= nil and (OPX.Now() - binding.at) or nil,
+		support = supportState(),
+		adapter = present and adapter or nil,
+	}
+end
+
+--- Releases the binding this workflow took. Idempotent, and never anybody
+-- else's.
+-- @author XEROX710
+-- @param source number
+function M.UnbindCyberware(source)
+	cyberwareBinding[source] = nil
+	if not cyberwareBound[source] then return end
+	cyberwareBound[source] = nil
+	local api = type(Open77) == 'table' and Open77.cyberware or nil
+	if api ~= nil and type(api.unbind) == 'function' then
+		pcall(api.unbind, source)
+	end
+end
+
 --- Takes a loaded character out of the roster and announces it.
 local function unload(source)
 	local player = source and M.Players[source]
 	if not player then return nil end
 
+	-- The identity goes with the character it names.
+	M.UnbindCyberware(source)
 	M.UnregisterPlayer(player)
 
 	local session = OPX.Sessions[source]

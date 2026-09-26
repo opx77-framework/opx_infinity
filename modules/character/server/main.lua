@@ -836,6 +836,12 @@ function M.Api()
 		-- character's own row decides, as it always did.
 		PlaceCharacter = M.PlaceCharacter,
 
+		-- The cyberware identity: what the binder last did for a connection,
+		-- and the one lever a "not ready" record has (bind again). Read by the
+		-- ripperdoc's diagnosis; nothing else binds.
+		CyberwareStatus = M.CyberwareStatus,
+		RebindCyberware = M.RebindCyberware,
+
 		AddMoney = M.AddMoney,
 		RemoveMoney = M.RemoveMoney,
 		SetMoney = M.SetMoney,

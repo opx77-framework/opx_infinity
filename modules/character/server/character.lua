@@ -845,6 +845,12 @@ function M.PlaceCharacter(player, target)
 	local armor = tonumber(data.metadata.armor)
 	if OPX.Math.IsFinite(armor) and armor > 0 then Open77.players.setArmor(source, armor) end
 
+	-- The cyberware identity follows the body: the platform runs every implant
+	-- transaction "on their own already-bound character" (wiki/cyberware.md),
+	-- and this workflow is the character adapter on this server -- see the
+	-- identity block in `server/player.lua`.
+	M.BindCyberware(source, data.citizenId)
+
 	allowSampling(player)
 	return true
 end
