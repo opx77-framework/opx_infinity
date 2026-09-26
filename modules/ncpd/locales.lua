@@ -20,6 +20,9 @@ local EN = {
 	-- sentence and a call-out without one is a whole sentence on its own.
 	['ncpd.dispatch.rise'] = '{division} call-out: stage {stage}/6 at {x}, {y}',
 	['ncpd.dispatch.suspect'] = '{division} call-out: stage {stage}/6 — {name} at {x}, {y}',
+	-- The dispatch board's own title: the same two lines above, shouted. The
+	-- WORDS are the radio's own keys, so the board cannot drift from the air.
+	['ncpd.dispatch.title'] = 'DISPATCH',
 
 	-- Said when the engine's heat actually moved, which is the only moment the
 	-- worth saying anything about: the stars are the engine's own HUD.
@@ -109,6 +112,7 @@ local FR = {
 	['ncpd.cleared'] = 'La ville ne s\u{2019}intéresse plus à vous.',
 	['ncpd.dispatch.rise'] = '{division} : appel — palier {stage}/6 à {x}, {y}',
 	['ncpd.dispatch.suspect'] = '{division} : appel — palier {stage}/6, {name} à {x}, {y}',
+	['ncpd.dispatch.title'] = 'DISPATCH',
 	['ncpd.heatRaised'] = '{division} répond : chaleur {stage}/5.',
 	['ncpd.maxtacInbound'] = 'MaxTac arrive.',
 	['ncpd.seamUnavailable'] = 'Ce client ne peut pas lever de niveau de recherche.',

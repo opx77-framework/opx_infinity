@@ -189,6 +189,52 @@ RegisterNetEvent(M.Event.STAGE, function(payload)
 	})
 end)
 
+-- ── the dispatch board ─────────────────────────────────────────────────────────
+--
+-- THE CALL-OUT, SHOUTED. The server sends the locale KEY and its arguments and
+-- NOTHING about the presentation: the frame, the lifetime and the two clips that
+-- wrap it are read here, out of this client's own `ALERTS.DISPATCH` block -- the
+-- same bargain `modules/admin/client/announce.lua` makes, and for the same
+-- reason: a client that has the stinger files plays them, one that named `''`
+-- does not, and neither case can make a dispatch fail to arrive.
+--
+-- ONE TOAST ID, so a second dispatch replaces the board still on screen rather
+-- than stacking under it. A firefight that climbs three stages is one dispatch,
+-- the last.
+RegisterNetEvent(M.Event.DISPATCH, function(payload)
+	if type(payload) ~= 'table' then return end
+	local key = payload.key
+	if type(key) ~= 'string' or key == '' then return end
+	local args = type(payload.args) == 'table' and payload.args or nil
+
+	-- Read live and from this client's own copy: `OPX.Modules.Rebind` re-points
+	-- `M.Settings` after the shared scripts load, and a board a config disabled
+	-- must stay dark even for a payload that was already on the wire.
+	local alerts = type(M.Settings) == 'table' and M.Settings.ALERTS or nil
+	local board = type(alerts) == 'table' and alerts.DISPATCH or nil
+	if type(board) ~= 'table' or board.enabled == false then return end
+
+	-- A lifetime that is not a finite number is left to the runtime's own
+	-- default rather than refused: the words are the part that matters.
+	local durationMs = tonumber(board.DURATION_MS)
+	if durationMs == nil or durationMs ~= durationMs or durationMs < 0 then durationMs = nil end
+
+	local raised, why = OPX.Toast.Show({
+		id = 'opx.ncpd.dispatch',
+		kind = board.KIND,
+		title = locale('ncpd.dispatch.title'),
+		message = locale(key, args),
+		durationMs = durationMs,
+		-- Validated by the runtime rather than here: `core/client/notify.lua` is
+		-- the one place that decides what a toast may carry, and it drops a clip
+		-- name that is not a bare file name while still drawing the dispatch.
+		stinger = board.STINGER,
+	})
+	if raised == nil then
+		Open77.log.warn(('[ncpd] a dispatch was not drawn: %s'):format(tostring(why)))
+	end
+end)
+
 -- ── the crew door ─────────────────────────────────────────────────────────────
 --
 -- THE SERVER DECIDES AND THIS HALF ASKS. Which aircraft is boardable, who may

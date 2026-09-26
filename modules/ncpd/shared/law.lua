@@ -619,15 +619,19 @@ do
 					if canonical == nil then
 						warn(('ncpd: MAXTAC.BOARDING.SEATS entry %d is not a seat name')
 							:format(index))
-					elseif canonical == 'seat_front_left' then
-						-- The pilot seat is where the aircraft's own flight controls
-						-- are authored. A crew may fly from any seat, and offering
-						-- this one would take the seat a pilot would reach for.
-						warn('ncpd: MAXTAC.BOARDING.SEATS must not offer the pilot seat')
 					elseif not seated[canonical] then
 						-- Two spellings of one seat is one seat, not two: the list is
 						-- the seat ORDER a crew fills, and a duplicate would offer the
 						-- same seat twice and refuse the second body.
+						--
+						-- THE PILOT SEAT IS OFFERED, which is a deliberate reversal.
+						-- It used to be refused here -- "a crew may fly from any
+						-- seat" -- but that era ended when the platform widened the
+						-- flight envelope to every occupant of an AV record and
+						-- measured a back-seat pilot at 120 m/s: the seat a crew
+						-- member reaches for IS the one the flight controls are
+						-- authored at, and a validator that withholds it is a
+						-- validator deciding who flies.
 						seated[canonical] = true
 						seats[#seats + 1] = canonical
 					end

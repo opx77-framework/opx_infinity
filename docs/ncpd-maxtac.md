@@ -270,3 +270,45 @@ existing `hud` and `prompts` modules instead of drawing stars twice.
    enqueue); the content is `opx_infinity` (module + config + tests). Two repos, one
    contract: the bridge command vocabulary is the interface, and it should be frozen in P0
    before P1 is written against it.
+
+---
+
+## 8. The three things the owner asked for beside the design
+
+These landed after the design above and are worth knowing about here, because all
+three are surfaces of the same story — the city has to SEE its police working.
+
+**The dispatch board — "when crimes are committed they need to be shown and
+displayed on NCPD/MaxTac screens loudly".** The call-out (`ALERTS`) is radio
+traffic: a toast in the corner and a line on the scanner band. The dispatch
+board is the same moment shouted — one full-stress toast (`KIND = 'error'`,
+`DURATION_MS = 12000`) wrapped in two clips (`announce-open.mp3` /
+`announce-close.mp3`), on the screens of every ON-DUTY holder of the call-out's
+jobs. It rides the call-out and its cooldown exactly: a RISE, and only a rise.
+The wire carries the locale key and its arguments (same words as the radio),
+and each receiving client reads the frame, the lifetime and the clips out of its
+own `config/ncpd.lua` `ALERTS.DISPATCH` block — the same bargain the world
+announcement makes. `DISPATCH.JOBS` gives the board its own air crew (MaxTac
+alone); `enabled = false` darkens the board and leaves the radio standing.
+
+**The headquarters marker — "a marker we can configure like garages, clothing
+store, dealership so we can make NCPD/MaxTac headquarters".**
+`config/headquarters.lua` + `modules/headquarters`: a placed spot in the shared
+`lib/shared/spots.lua` vocabulary — a glowing ring marker and, while a player
+stands on it, one strip row naming the place. Marker + label ONLY, deliberately:
+nothing is pressed at a designation. It exists so an operator can say WHERE the
+station is and place the rest around it. Placement is config-only — capture with
+`/opx.admin.self.pos`, paste into `HEADQUARTERS`, verify with
+`/opx.headquarters.list`.
+
+**The MaxTac AV recall pads — "AV garage needs its own config to".**
+`config/avgarages.lua` is the garages machinery in its own file: the same
+`GARAGES`-shaped blocks (`KIND = 'avpad'`, MENU/ENTRY/EXITS), merged into the
+garages module at load, with one addition — every pad carries the job gate
+(`lib/shared/jobgate.lua` through the garages adapter). The `JOBS`/`ON_DUTY` at
+the top of the file decide who may list what is parked there, bring one out or
+put one away: a ground garage there is refused at boot (it belongs in
+`config/garages.lua`), a key named in both files belongs to the garages file,
+and a pad with no jobs named is said out loud because it is no gate. Refusals
+name the closest near-miss — job, rank or duty — through the same vocabulary
+every lift floor and armory bench uses.

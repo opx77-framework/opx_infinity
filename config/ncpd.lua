@@ -279,6 +279,59 @@ OPX.Config.MODULES.ncpd = {
 		-- Whether the call-out names the suspect. Off is the setting for a
 		-- server whose radio should not be a nameplate detector.
 		NAME_SUSPECT = true,
+
+		-- THE LOUD HALF OF THE CALL-OUT: the dispatch board on the screens of
+		-- everybody who answers for the city.
+		--
+		-- `callOut` above is radio traffic -- a toast in the corner and a line on
+		-- the scanner band -- and a wanted player two streets over is exactly the
+		-- thing nobody reads in the corner of a screen. This is the same moment
+		-- shouted: a full-stress toast on the overlay, wrapped in the two clips
+		-- the world announcement uses, for every on-duty holder of the jobs in
+		-- the call-out. ONE moment, ONE wording, three surfaces: the words are the
+		-- radio's own keys and arguments, so the board cannot drift from the air.
+		--
+		-- IT RIDES THE CALL-OUT AND NOT A TRIGGER OF ITS OWN. The cooldown, the
+		-- MIN_STAGE floor and "a RISE, and only a rise" above are exactly the
+		-- conditions under which a city wants its police screens lit up; a second
+		-- trigger would be a second thing to drift from them. `enabled = false`
+		-- takes the board down and leaves the radio alone.
+		--
+		-- Nothing about the SOUND crosses the wire. The two clips below are read
+		-- by each RECEIVING client out of its own copy of this file, exactly as
+		-- `modules/admin/client/announce.lua` reads its own -- a client that has
+		-- the files plays them, one that named `''` does not, and neither case can
+		-- make a dispatch fail to arrive. A name that is not a bare file name is
+		-- dropped and logged by `core/client/notify.lua`, and the words still
+		-- arrive.
+		DISPATCH = {
+			enabled = true,
+
+			-- The toast's frame. `error` is the loudest shape this overlay has --
+			-- an announcement arriving in the shape of a "saved" toast is one
+			-- players learn to ignore.
+			KIND = 'error',
+
+			-- How long the board holds the screen, in milliseconds. Longer than a
+			-- toast and shorter than an announcement: a dispatch is news with a
+			-- half-life, not a decree.
+			DURATION_MS = 12000,
+
+			-- The two stingers that wrap the dispatch, by BARE FILE NAME -- the
+			-- same files, and the same rule, as `config/admin.lua`'s ANNOUNCE block:
+			-- the page resolves a name against its own `web/audio/` and nothing
+			-- else is reachable from it. `''` turns one off.
+			STINGER = {
+				OPEN = 'announce-open.mp3',
+				CLOSE = 'announce-close.mp3',
+				VOLUME = 0.9,
+			},
+
+			-- WHOSE SCREENS LIGHT UP. `false` here is the call-out's own audience
+			-- (the JOBS list above); a list here is its own air crew -- a server
+			-- that wants MaxTac alone on the board names `{ 'maxtac', 'ncpd_maxtac' }`.
+			JOBS = false,
+		},
 	},
 
 	MAXTAC = {
@@ -415,10 +468,13 @@ OPX.Config.MODULES.ncpd = {
 			-- `AV.INSERTION.DROP_ALTITUDE`, so this is a radius around a hull 5 m
 			-- up: a walkable distance, not a reach through a wall.
 			REACH_METRES = 12.0,
-			-- The seats a crew takes, in the order they fill. The pilot seat is
-			-- not offered: any seat of an AV can fly it, and the seat closest to
-			-- the door is the one a body reaches first.
-			SEATS = { 'seat_front_right', 'seat_back_left', 'seat_back_right' },
+			-- The seats a crew takes, in the order they fill. THE CONTROLS GO
+			-- FIRST: the platform flies an AV from any seat a body holds, but the
+			-- cockpit is where the flight controls are authored, and "pilotable
+			-- from inside" is a crew reaching for them -- so the first body
+			-- through the door is placed where the flying is done and the rest
+			-- fill the cabin behind them.
+			SEATS = { 'seat_front_left', 'seat_front_right', 'seat_back_left', 'seat_back_right' },
 			-- The strip row names the player's own binding; the id is what a
 			-- rebind is stored under, so it must not change between builds.
 			KEY = { ID = 'opx.ncpd.board', NAME = 'ncpd.key.board', DEFAULT = 'F' },

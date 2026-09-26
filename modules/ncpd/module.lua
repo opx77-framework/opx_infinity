@@ -72,6 +72,15 @@ M.Event = {
 	-- thing to lose.
 	STAGE = OPX.Event(NET, 'ncpd', 'stage'),
 
+	-- Server to client, to the on-duty holders of the call-out's jobs: the loud
+	-- dispatch board. It carries the locale KEY and its arguments rather than a
+	-- sentence, for the reason `RADIO_LINE` does -- the page holds no English
+	-- and the catalogue is already there -- and NOTHING about the presentation:
+	-- the stinger, the frame and the lifetime are read by each receiving client
+	-- out of its own `ALERTS.DISPATCH` block, exactly as the world announcement
+	-- reads its own. One moment, one wording, three surfaces.
+	DISPATCH = OPX.Event(NET, 'ncpd', 'dispatch'),
+
 	-- Client to server. The stage its own engine is holding -- the ONLY report of a
 	-- real crime, because the engine charges its own score and never publishes it.
 	-- The payload is one number and the server attributes it to the connection it

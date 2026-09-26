@@ -338,6 +338,26 @@ local function callOut(citizenId, playerId, stage, previous)
 	-- keeps them off it.
 	M.Radio.Push('ncpd', key, args, playerId)
 
+	-- AND THE SAME MOMENT ON THE SCREENS, LOUD. The dispatch board is the same
+	-- key and the same arguments again, shouted: every receiver draws its own
+	-- toast out of its own `ALERTS.DISPATCH` block, so this half sends WORDS and
+	-- never a sound. `DISPATCH.JOBS` names its own air crew when the board is
+	-- not for everybody on the air; `false` is the call-out's own audience.
+	local dispatch = type(alerts.DISPATCH) == 'table' and alerts.DISPATCH or nil
+	if dispatch ~= nil and dispatch.enabled ~= false then
+		local board = type(dispatch.JOBS) == 'table' and dispatch.JOBS or nil
+		local aired = 0
+		walkOnDuty(board or alerts.JOBS, function(recipient)
+			if playerId ~= nil and recipient == playerId then return end
+			aired = aired + 1
+			TriggerClientEvent(M.Event.DISPATCH, recipient, { key = key, args = args })
+		end)
+		if aired > 0 then
+			Open77.log.info(('[ncpd] dispatch board: %d screen(s) lit for stage %d')
+				:format(aired, stage))
+		end
+	end
+
 	Open77.log.info(('[ncpd] call-out: %s rose to stage %d/%d at %.0f, %.0f -- %d on-duty holder(s) told')
 		:format(citizenId, stage, Law.StageCount, x, y, told))
 	return told
