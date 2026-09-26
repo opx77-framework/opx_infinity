@@ -31,6 +31,13 @@
 -- READ of that table: see "the legacy adoption" below, which is the whole of the
 -- migration and the reason removing the commands loses nothing.
 --
+-- ONE COMMAND IS BACK, and only for the AV pads: `/opx.avgarages.add` captures
+-- a pad where the operator stands and which way they face, prints the block to
+-- check into `config/avgarages.lua`, and sets it live for everyone at once --
+-- the headquarters bargain (`/opx.headquarters.add` is the worked example), on
+-- a table of its own (`opx77_avpads`) rather than the legacy one above, which
+-- stays read-only for ever.
+--
 -- Every value off the wire goes through `safe` before it reaches a format
 -- string: a newline would forge a whole log line.
 
@@ -40,10 +47,12 @@ local Access = M.Access
 local Result = OPX.Result
 local Store = M.Storage
 
--- The garages an operator wrote in config, and the ones adopted out of the
--- legacy table at boot.
+-- The garages an operator wrote in config, the ones adopted out of the legacy
+-- table at boot, and the pads an operator captured in game with
+-- `/opx.avgarages.add`: three layers, merged by `rebuild` below.
 local configGarages = {}
 local adopted = {}
+local captures = {}
 
 -- Config overlaid by the adoption, and the flat point table every read below
 -- uses. Both are rebuilt together and never separately: a point whose garage is
@@ -104,6 +113,40 @@ local function characterOf(source)
 	return player and player.PlayerData or nil
 end
 
+--- Whether this connection may use the garage a point belongs to, and when it
+-- may not, the catalogue key that says why.
+--
+-- ONLY THE ANNEX GATES. A garage of `config/garages.lua` carries no requirement
+-- and is open to whoever owns what comes out of it -- the ownership is the
+-- vehicles contract's question and always was. A pad of `config/avgarages.lua`
+-- is behind the job gate instead: `Access.Evaluate` is the one adapter over
+-- `lib/shared/jobgate.lua`, so `JOBS` and `ON_DUTY` there mean exactly what
+-- they mean on a lift floor and an armory bench.
+--
+-- THE GATE IS ON THE SERVER AND ON EVERY DOOR: the list, the bring-out and the
+-- put-away all pass through here, so a client that never draws the marker can
+-- still name the pad and must still be refused.
+-- @param source Source
+-- @param built table|nil the garage
+-- @return boolean
+-- @return string|nil the refusal key, when there is one
+local function mayUse(source, built)
+	if type(built) ~= 'table' or type(built.requirement) ~= 'table' then return true end
+	local data = characterOf(source)
+	local now = OPX.Now()
+	local snapshot = nil
+	if data ~= nil then
+		snapshot = {
+			job = type(data.job) == 'table' and data.job or nil,
+			jobs = type(data.jobs) == 'table' and data.jobs or nil,
+			atMs = now,
+		}
+	end
+	local ok, code = Access.Evaluate(built, snapshot, now)
+	if ok then return true end
+	return false, Access.GATE_REFUSAL[code] or 'garages.jobRequired'
+end
+
 --- Reads a connection's ground position and bucket, or nil.
 local function pointOf(source)
 	local position = Open77.players.position(source)
@@ -128,6 +171,14 @@ local function rebuild()
 		-- place they are told to edit.
 		if garages[key] == nil then garages[key] = built end
 	end
+	-- AND A CAPTURE WINS OVER BOTH, which is not a second exception but the
+	-- same rule read in the other direction: a legacy row is a leftover of a
+	-- command nobody runs any more and must never move what the file says, but
+	-- a capture is an operator moving a pad RIGHT NOW -- "capture and set" is
+	-- the whole promise of `/opx.avgarages.add`. What it set is what the server
+	-- serves until the operator checks the printed block in and drops the
+	-- capture with `/opx.avgarages.remove`.
+	for key, built in pairs(captures) do garages[key] = built end
 	for _, built in pairs(garages) do
 		for _, point in ipairs(Access.PointsOf(built)) do spots[point.key] = point end
 	end
@@ -350,6 +401,8 @@ function M.List(source, key)
 	if point == nil then return refusal end
 	local built = garages[point.garage]
 	if built == nil then return Result.Err('garages.noSuchSpot') end
+	local allowed, gateRefusal = mayUse(source, built)
+	if not allowed then return Result.Err(gateRefusal, built.label) end
 
 	local owned = vehicles.List(data.citizenId)
 	if not owned.ok then return owned end
@@ -380,6 +433,55 @@ function M.List(source, key)
 	})
 end
 
+--- Places the recalling pilot at the controls of the aircraft just brought out.
+-- @author XEROX710
+--
+-- THE HAND-OFF, AND THE ONLY ONE THERE IS. An AV that comes out of a pad
+-- materialises hovering a lift above the marker, and the mount of a hovering
+-- airframe is a thing a player has to go find. "Pilotable from inside" begins
+-- INSIDE, so the seat the flight controls are authored at is handed over the
+-- moment the hull exists -- the platform's own
+-- `Open77.vehicles.warpPlayerIntoVehicle`, the same authoritative mount the
+-- crew door uses, with `moveBucket = false` because the exit is already in the
+-- player's own bucket and no exit lock because this is a recall and not a ride.
+--
+-- BEST-EFFORT, AND THAT IS DELIBERATE. A host too old for the call, a seat the
+-- mount refuses, a pilot already seated (the command path can be typed from a
+-- car) -- every one of those answers is "the player climbs in themselves",
+-- which is what this call site always did. Nothing about the bring-out itself
+-- depends on the seat being taken.
+-- @param playerId number the recalling connection
+-- @param vehicleId any the hull just created
+-- @return string|nil the seat taken, when one was
+local function seatPilot(playerId, vehicleId)
+	local seat = Access.PilotSeat()
+	if seat == nil then return nil end
+	local api = Open77.vehicles
+	if type(api) ~= 'table' or type(api.warpPlayerIntoVehicle) ~= 'function' then
+		return nil
+	end
+	-- Only a body on foot. A recall through the command may be typed while
+	-- seated, and yanking a player out of one vehicle into another is not a
+	-- hand-off, it is a hijack.
+	if type(api.getPlayerSeat) == 'function' then
+		local read, held = pcall(api.getPlayerSeat, playerId)
+		if read and type(held) == 'table' then return nil end
+	end
+	local called, placed, refusal = pcall(api.warpPlayerIntoVehicle, playerId, vehicleId, seat, {
+		-- The hull was created in the player's own bucket; moving them would be
+		-- a routing change nobody asked for.
+		moveBucket = false,
+	})
+	if not called or placed ~= true then
+		Open77.log.warn(('[garages] %s is not placed at the controls of their own aircraft: %s')
+			:format(tostring(playerId), tostring(called and refusal or placed)))
+		return nil
+	end
+	Open77.log.info(('[garages] %s took the controls of their recalled aircraft in %s')
+		:format(tostring(playerId), seat))
+	return seat
+end
+
 --- Brings one of the connection's own vehicles out at a free exit of the
 --- location it is standing at.
 -- @author XEROX710
@@ -399,6 +501,8 @@ function M.Bring(source, key, wanted)
 	local built = garages[point.garage]
 	local place = locationOf(point)
 	if built == nil or place == nil then return Result.Err('garages.noSuchSpot') end
+	local allowed, gateRefusal = mayUse(source, built)
+	if not allowed then return Result.Err(gateRefusal, built.label) end
 
 	local owned = vehicles.List(data.citizenId)
 	if not owned.ok then return owned end
@@ -443,6 +547,15 @@ function M.Bring(source, key, wanted)
 	})
 	if not spawned.ok then return spawned end
 
+	-- THE PILOT IS PLACED, NOT LEFT TO CLIMB. Only at a pad, and only for an
+	-- AV: a ground garage hands over keys, not seats, and the seat is the one
+	-- `config/avgarages.lua` names.
+	local seated = nil
+	if built.kind == M.KIND.AVPAD and Access.IsAv(pick.record)
+		and type(spawned.value) == 'table' and spawned.value.id ~= nil then
+		seated = seatPilot(source, spawned.value.id)
+	end
+
 	return Result.Ok({
 		spot = point.key,
 		garage = built.key,
@@ -453,6 +566,8 @@ function M.Bring(source, key, wanted)
 		-- Forwarded, not decided here: whether the vehicle had to be moved is
 		-- the vehicles contract's answer, and this half only repeats it.
 		recalled = spawned.value and spawned.value.recalled or nil,
+		-- The seat the recall placed the pilot in, when it placed them at all.
+		seated = seated,
 	})
 end
 
@@ -488,6 +603,11 @@ function M.Use(source, key, wanted)
 		if point == nil then return refusal end
 		local built = garages[point.garage]
 		if built == nil then return Result.Err('garages.noSuchSpot') end
+		-- The put-away is a door too. A pad the player may not use is a pad
+		-- they may not FILL: a division's hangar is not a garage anybody may
+		-- leave a car in.
+		local allowed, gateRefusal = mayUse(source, built)
+		if not allowed then return Result.Err(gateRefusal, built.label) end
 		local put = vehicles.Store(seated.value.plate, built.key)
 		if not put.ok then return put end
 		return Result.Ok({
@@ -596,16 +716,18 @@ end
 -- came from config or was adopted out of the legacy table.
 local function report(source)
 	local lines = {}
-	local keys, adoptedCount = {}, 0
+	local keys, adoptedCount, capturedCount = {}, 0, 0
 	for key in pairs(garages) do keys[#keys + 1] = key end
 	table.sort(keys)
 	for index = 1, #keys do
 		local built = garages[keys[index]]
 		local legacy = adopted[built.key] ~= nil and configGarages[built.key] == nil
 		if legacy then adoptedCount = adoptedCount + 1 end
+		local captured = captures[built.key] ~= nil
+		if captured then capturedCount = capturedCount + 1 end
 		lines[#lines + 1] = ('%s %s %s %d location(s) %s'):format(
 			built.key, built.kind, built.label, #built.locations,
-			legacy and 'legacy' or 'config')
+			captured and 'captured' or legacy and 'legacy' or 'config')
 		for _, place in ipairs(built.locations) do
 			lines[#lines + 1] = ('  %d menu=%.2f,%.2f,%.2f in=%.2f,%.2f,%.2f yaw=%.1f ' ..
 				'exits=%d bucket=%d'):format(place.index,
@@ -614,8 +736,8 @@ local function report(source)
 				#place.exits, place.bucket)
 		end
 	end
-	lines[#lines + 1] = ('%d garage(s): %d from config, %d adopted'):format(#keys,
-		#keys - adoptedCount, adoptedCount)
+	lines[#lines + 1] = ('%d garage(s): %d from config, %d adopted, %d captured'):format(
+		#keys, #keys - adoptedCount - capturedCount, adoptedCount, capturedCount)
 	OPX.CommandResult(source, true, table.concat(lines, '\n'))
 end
 
@@ -662,6 +784,114 @@ local function export(source)
 	end)
 end
 
+-- ── the pad capture ─────────────────────────────────────────────────────────
+
+--- Builds one captured pad: one location whose menu, door and only exit are
+-- the captured point -- the shape `adopt` gives a legacy spot and the
+-- commented block in `config/avgarages.lua` declares -- with the annex's job
+-- gate hung on it, because a captured pad is a pad like any other and is not a
+-- door around the gate.
+-- @param key string
+-- @param label string
+-- @param x number
+-- @param y number
+-- @param z number
+-- @param heading number
+-- @param bucket number
+-- @return table|nil built
+-- @return string|nil why
+local function buildPad(key, label, x, y, z, heading, bucket)
+	local block = {
+		KIND = M.KIND.AVPAD,
+		LABEL = label ~= '' and label or key,
+		LOCATIONS = { {
+			BUCKET = bucket,
+			MENU = { X = x, Y = y, Z = z },
+			ENTRY = { X = x, Y = y, Z = z, HEADING = heading },
+			EXITS = { { X = x, Y = y, Z = z, HEADING = heading } },
+		} },
+	}
+	local problems = {}
+	local built = select(1, Access.CoerceGarages({ [key] = block }, problems))
+	built = built[key]
+	if built == nil then return nil, problems[1] or 'that pad was refused' end
+	local annex = Access.Annex()
+	if annex ~= nil then built.requirement = annex.gate end
+	return built
+end
+
+--- Captures one AV pad where the operator stands and sets it live. The facing
+-- is read because it is not decoration here: HEADING is the yaw a recalled AV
+-- is created with, and it is the one fact a pad capture cannot guess. Yields.
+-- @param player number
+-- @param key string
+-- @param label string
+local function capture(player, key, label)
+	local read, position = pcall(Open77.players.position, player)
+	position = read and type(position) == 'table' and position or nil
+	local x = position ~= nil and coordinate(position.x) or nil
+	local y = position ~= nil and coordinate(position.y) or nil
+	local z = position ~= nil and coordinate(position.z) or nil
+	if x == nil or y == nil or z == nil then
+		return OPX.CommandResult(player, false,
+			'your position could not be read; stand in the world first')
+	end
+	local heading = coordinate(position.heading) or 0.0
+	local bucket = integer(position.bucket) or 0
+	-- One validator, and it is the config file's own: a captured pad is read
+	-- through `CoerceGarages` exactly as a block pasted into
+	-- `config/avgarages.lua` is.
+	local built, why = buildPad(key, label, x, y, z, heading, bucket)
+	if built == nil then
+		Open77.log.warn(('[garages] player %d capture of %s refused: %s')
+			:format(player, tostring(key), tostring(why)))
+		return OPX.CommandResult(player, false, tostring(why))
+	end
+
+	local saved = Store.UpsertPad({
+		key = built.key, label = built.label,
+		x = x, y = y, z = z,
+		heading = heading, bucket = bucket, capturedBy = tostring(player),
+	})
+	if type(saved) ~= 'table' or saved.ok ~= true then
+		local detail = type(saved) == 'table' and saved.detail or 'no answer'
+		Open77.log.warn(('[garages] player %d could not save the capture of %s: %s')
+			:format(player, tostring(built.key), tostring(detail)))
+		return OPX.CommandResult(player, false, 'could not save: ' .. tostring(detail))
+	end
+
+	captures[built.key] = built
+	rebuild()
+	syncAll()
+	Open77.log.info(('[garages] pad %s captured at %.2f,%.2f,%.2f heading=%.1f bucket=%d by %d')
+		:format(built.key, x, y, z, heading, bucket, player))
+	OPX.CommandResult(player, true,
+		('%s set -- paste this into config/avgarages.lua to survive a database reset:\n%s')
+			:format(built.key, table.concat(configLines(built), '\n')))
+end
+
+--- Takes one captured pad away, and nothing else: a pad config names is not
+-- the command's to take, and the answer says which file does own it. Yields.
+-- @param player number
+-- @param key string
+local function uncapture(player, key)
+	if captures[key] == nil then
+		return OPX.CommandResult(player, false, configGarages[key] ~= nil
+			and 'that pad comes from config; edit config/avgarages.lua to move or remove it'
+			or 'no captured pad named ' .. key)
+	end
+	local gone = Store.DeletePad(key)
+	if type(gone) ~= 'table' or gone.ok ~= true then
+		return OPX.CommandResult(player, false, 'could not delete: '
+			.. tostring(type(gone) == 'table' and gone.detail or 'no answer'))
+	end
+	captures[key] = nil
+	rebuild()
+	syncAll()
+	Open77.log.info(('[garages] pad %s removed by %d'):format(key, player))
+	OPX.CommandResult(player, true, key .. ' removed.')
+end
+
 --- Registers the three commands that are left.
 -- `add` and `remove` are gone: they wrote a place every player uses into a table
 -- only one host had. See the header. `export` reads that table and writes
@@ -696,6 +926,54 @@ local function registerCommands()
 			OPX.NotifyLocale(source, 'garages.broughtOut', { plate = brought.value.plate }, 'success')
 			OPX.CommandResult(source, true, ('%s out at %s'):format(brought.value.plate,
 				brought.value.label))
+		end)
+	end)
+
+	-- THE PAD CAPTURE, the same bargain as `/opx.headquarters.add`. The names
+	-- come from `config/avgarages.lua` COMMANDS, and an annex that is off names
+	-- nothing -- which registers nothing.
+	local annex = Access.Annex()
+	local padNames = annex ~= nil and annex.commands or {}
+
+	register(padNames.add, {
+		restricted = true,
+		help = 'avgarages.help.add',
+		params = {
+			{ name = 'key', optional = true, help = locale('avgarages.help.addKey') },
+			{ name = 'label', optional = true, help = locale('avgarages.help.addLabel') },
+		},
+	}, function(source, args)
+		local key = type(args[1]) == 'string' and args[1] or ''
+		if #key > Access.MAX_KEY then
+			return OPX.CommandResult(source, false,
+				('usage: add [key] [label] -- a key is 1 to %d characters'):format(Access.MAX_KEY))
+		end
+		if #key == 0 then
+			-- Named back in the answer: a pad whose key the operator never
+			-- learned could not be removed or checked in afterwards.
+			local index = 0
+			repeat index = index + 1
+				until captures['maxtac_av' .. index] == nil and garages['maxtac_av' .. index] == nil
+			key = 'maxtac_av' .. index
+		end
+		local label = ''
+		for index = 2, #args do
+			label = label .. (index > 2 and ' ' or '') .. tostring(args[index])
+		end
+		CreateThread(function()
+			capture(source, key, label)
+		end)
+	end)
+
+	register(padNames.remove, {
+		restricted = true,
+		help = 'avgarages.help.remove',
+		params = { { name = 'key', help = locale('avgarages.help.removeKey') } },
+	}, function(source, args)
+		local key = type(args[1]) == 'string' and args[1] or ''
+		if #key == 0 then return OPX.CommandResult(source, false, 'usage: remove <key>') end
+		CreateThread(function()
+			uncapture(source, key)
 		end)
 	end)
 end
@@ -771,6 +1049,7 @@ end
 function M.Init()
 	configGarages = Access.GARAGES
 	adopted = {}
+	captures = {}
 	rebuild()
 	windows = {}
 	running = false
@@ -799,6 +1078,7 @@ function M.Api()
 			for key, built in pairs(garages) do
 				listed[key] = { kind = built.kind, label = built.label,
 					locations = #built.locations,
+					gated = built.requirement ~= nil,
 					adopted = adopted[key] ~= nil and configGarages[key] == nil }
 			end
 			return Result.Ok({ garages = listed })
@@ -906,6 +1186,40 @@ function M.Start()
 				'config/garages.lua, or they are one dropped database away from lost')
 				:format(#keys))
 		end
+	end)
+
+	-- THE PADS THE CAPTURE COMMAND ALREADY PLACED. Read up whatever the table
+	-- answers -- an operator has to be able to capture into a table that had
+	-- nothing -- one resume per row for the reason above, and the merge runs
+	-- when the last one is in.
+	CreateThread(function()
+		local rows = Store.FetchPads()
+		if type(rows) ~= 'table' or rows.ok ~= true then
+			Open77.log.error('[garages] captured pads could not be read: '
+				.. tostring(type(rows) == 'table' and rows.detail or 'no answer'))
+			return
+		end
+		local loaded = type(rows.value) == 'table' and rows.value or {}
+		local accepted = 0
+		for index = 1, #loaded do
+			Wait(0)
+			local record = loaded[index]
+			local built, why = nil, 'not a row'
+			if type(record) == 'table' then
+				built, why = buildPad(record.pad_key, record.label, record.x, record.y,
+					record.z, record.heading, record.bucket)
+			end
+			if built ~= nil then
+				accepted = accepted + 1
+				captures[built.key] = built
+			else
+				Open77.log.warn('[garages] a captured pad row was refused and skipped: '
+					.. tostring(why))
+			end
+		end
+		rebuild()
+		syncAll()
+		Open77.log.info(('[garages] %d captured pad(s) read from opx77_avpads'):format(accepted))
 	end)
 
 	-- A sweep for the rate-limit windows, so a long session does not accumulate

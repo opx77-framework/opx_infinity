@@ -94,9 +94,10 @@ M.Event = {
 -- Passed to `OPX.Refuse`: without it a client waiting on one of several requests
 -- cannot tell which `error.tooFast` is its own.
 --
--- `CAPTURE` is gone with the commands that opened it: nothing in this module
--- writes a place any more, and an operation name nothing raises is a name the
--- next reader wires a refusal up to.
+-- `CAPTURE` is still not an operation: the AV pad capture (`/opx.avgarages.add`)
+-- answers with `OPX.CommandResult` and raises no request a refusal would name,
+-- and an operation name nothing raises is a name the next reader wires a
+-- refusal up to.
 M.Operation = { BRING = 'garageBring', LIST = 'garageList' }
 
 --- The host raises this when a player rebinds or resets a mapping.

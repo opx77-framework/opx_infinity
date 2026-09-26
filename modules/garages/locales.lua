@@ -45,11 +45,23 @@ local EN = {
 	['garages.rateLimited'] = 'Slow down and try again in a moment.',
 	['garages.noVehicles'] = 'Vehicles are unavailable on this server.',
 
+	-- THE AV ANNEX'S OWN REFUSALS. A pad of `config/avgarages.lua` is behind the
+	-- job gate, and these name the three ways through it a player does not make
+	-- -- job, rank or duty -- whichever they were closest to.
+	['garages.jobRequired'] = 'That pad is for another crew. You do not hold the job.',
+	['garages.gradeTooLow'] = 'That pad needs more rank than you hold.',
+	['garages.offDuty'] = 'That pad is for the crew on duty. Clock on and try again.',
+
 	['garages.help.list'] = 'Show every garage: kind, locations and where it comes from.',
 	['garages.help.bring'] = 'Bring your own vehicle out at a garage you are standing at.',
 	['garages.help.bringKey'] = 'the garage name; the nearest point when omitted',
 	['garages.help.bringPlate'] = 'a plate you own; the first eligible one when omitted',
 	['garages.help.export'] = 'Hand over the paste-ready config block for every garage that lives only in the database.',
+	['avgarages.help.add'] = 'Capture a MaxTac AV pad where you stand and set it live; answers with the config block to check in.',
+	['avgarages.help.addKey'] = 'the pad name; a fresh maxtac_av<N> when omitted',
+	['avgarages.help.addLabel'] = 'the pad label; the key when omitted',
+	['avgarages.help.remove'] = 'Take a captured AV pad away again. Config pads are config/avgarages.lua\'s to remove.',
+	['avgarages.help.removeKey'] = 'the pad name',
 }
 
 local FR = {
@@ -82,11 +94,20 @@ local FR = {
 	['garages.rateLimited'] = 'Ralentissez et réessayez dans un instant.',
 	['garages.noVehicles'] = 'Les véhicules sont indisponibles sur ce serveur.',
 
+	['garages.jobRequired'] = 'Ce pad est pour une autre équipe. Vous n’avez pas ce métier.',
+	['garages.gradeTooLow'] = 'Ce pad exige un grade supérieur au vôtre.',
+	['garages.offDuty'] = 'Ce pad est pour l’équipe en service. Prenez votre service et réessayez.',
+
 	['garages.help.list'] = 'Affiche chaque garage : type, emplacements et origine.',
 	['garages.help.bring'] = 'Sort votre propre véhicule à un garage où vous êtes.',
 	['garages.help.bringKey'] = 'le nom du garage ; le point le plus proche si omis',
 	['garages.help.bringPlate'] = 'une plaque à vous ; la première éligible si omise',
 	['garages.help.export'] = 'Donne le bloc de config à coller pour chaque garage présent seulement dans la base.',
+	['avgarages.help.add'] = 'Capture un pad AV MaxTac où vous vous tenez et l\'active aussitôt ; répond avec le bloc de config à vérifier.',
+	['avgarages.help.addKey'] = 'le nom du pad ; un maxtac_av<N> neuf si omis',
+	['avgarages.help.addLabel'] = 'l\'étiquette du pad ; la clé si omise',
+	['avgarages.help.remove'] = 'Retire un pad AV capturé. Les pads de config sont à retirer dans config/avgarages.lua.',
+	['avgarages.help.removeKey'] = 'le nom du pad',
 }
 
 OPX.Locale.Register('en', EN)

@@ -436,10 +436,197 @@ function Access.PointsOf(built)
 	return listed
 end
 
---- The configured garages and their points, already validated.
+-- ── the AV annex: config/avgarages.lua ───────────────────────────────────
+
+--- The AV annex block, or nil when this server ships none or switched it off.
+-- `config/avgarages.lua` is the SAME machinery with two differences -- its own
+-- file, and a job gate -- and this is the seam where the second one lands. The
+-- block is read through `OPX.Config` and not through `M.Settings`, because it
+-- is ANOTHER module's config namespace by design: a MaxTac hangar is edited in
+-- its own file and must not become a block an operator finds by reading this
+-- module's.
+-- @return table|nil
+local function avAnnex()
+	local modules = type(OPX.Config) == 'table' and OPX.Config.MODULES or nil
+	local block = type(modules) == 'table' and modules.avgarages or nil
+	if type(block) ~= 'table' or block.enabled == false then return nil end
+	return block
+end
+
+--- The annex policy a captured pad is governed by, or nil when the annex is
+-- off. THE SAME GATE `CoerceAll` attaches to every configured pad -- a pad an
+-- operator captured in game is a pad like any other and is not a door around
+-- the job gate -- plus the capture command names, so the server reads one
+-- block for both and the two can never drift apart.
+-- @return table|nil { gate = { jobs, onDuty }, commands = { add, remove } }
+function Access.Annex()
+	local annex = avAnnex()
+	if type(annex) ~= 'table' then return nil end
+	local jobs = annex.JOBS
+	if jobs ~= nil and type(jobs) ~= 'table' then jobs = nil end
+	return {
+		gate = { jobs = jobs, onDuty = annex.ON_DUTY == true },
+		commands = type(annex.COMMANDS) == 'table' and annex.COMMANDS or {},
+	}
+end
+
+-- The four canonical seat names the runtime ever REPORTS, so a `PILOT_SEAT`
+-- the operator mistyped is a boot problem and not a seat the recall silently
+-- skips. Aliases the host would ACCEPT are deliberately not taken here: a
+-- config that says `driver` and a custody read that answers `seat_front_left`
+-- are two spellings of one seat, and the knob is the one place they are told
+-- apart.
+local PILOT_SEATS = {
+	seat_front_left = true,
+	seat_front_right = true,
+	seat_back_left = true,
+	seat_back_right = true,
+}
+
+--- The seat an AV recall places its pilot in, or nil for "hands off".
+-- @author XEROX710
+--
+-- THE DEFAULT IS THE CONTROLS. A config that predates the knob gets
+-- `seat_front_left` -- the seat the platform's own flight claim reaches for --
+-- because "the MaxTac AV is pilotable from inside" is the behaviour, and a
+-- knob that turns it on is how an operator opts OUT. `false` is that opt-out;
+-- a value that is neither `false` nor a canonical seat name reads as no seat
+-- at all and is reported by `Problems`.
+-- @return string|nil the canonical seat
+function Access.PilotSeat()
+	local block = avAnnex()
+	-- A REAL INDEX, NOT `and/or`: the knob's OFF value is `false`, and
+	-- `a and b or nil` cannot carry a false -- it would read "hands off" as
+	-- "unset" and hand over the seat the operator just refused.
+	local seat = nil
+	if type(block) == 'table' then seat = block.PILOT_SEAT end
+	if seat == false then return nil end
+	if seat == nil then return 'seat_front_left' end
+	if type(seat) == 'string' and PILOT_SEATS[seat] then return seat end
+	return nil
+end
+
+--- Builds every garage of BOTH files, and the flat point table under them.
+-- @author XEROX710
+--
+-- THE ANNEX IS MERGED, NOT LOADED ALONGSIDE. Both files name garages in one
+-- key space -- a vehicle's `garage` column may hold either -- so there is one
+-- map and one coercion, and the only annex-specific work is the rule that puts
+-- each annex garage behind the gate and the two refusals that keep the files
+-- honest: a key named in BOTH files is refused to the annex (config/garages.lua
+-- wins, exactly as config wins over a legacy row above), and an annex block
+-- that is not an `avpad` is refused whole. A ground garage in the division's
+-- hangar file is a garage the operator will look for in the wrong file.
+--
+-- THE GATE TRAVELS ON THE BUILT GARAGE as `requirement`, and nothing here
+-- decides it: `Access.Evaluate` below is the one adapter over
+-- `lib/shared/jobgate.lua`, and the server is the only half that asks.
+-- @param definitions any map of key -> garage block, from config/garages.lua
+-- @param annex any the config/avgarages.lua block, or nil
+-- @param problems table|nil collector, appended to
+-- @return table key -> garage
+-- @return table pointKey -> point
+function Access.CoerceAll(definitions, annex, problems)
+	local function refuse(line)
+		if problems ~= nil then problems[#problems + 1] = line end
+	end
+
+	local merged = {}
+	if type(definitions) == 'table' then
+		for key, raw in pairs(definitions) do merged[key] = raw end
+	end
+
+	local gated = {}
+	if type(annex) == 'table' then
+		local avGarages = annex.GARAGES
+		if avGarages ~= nil and type(avGarages) ~= 'table' then
+			refuse('avgarages: GARAGES must be a table of key -> garage')
+			avGarages = nil
+		end
+		local jobs = annex.JOBS
+		if jobs ~= nil and type(jobs) ~= 'table' then jobs = nil end
+		OPX.JobGate.Problems(jobs, 'avgarages', problems)
+		if avGarages ~= nil and next(avGarages) ~= nil and (jobs == nil or next(jobs) == nil) then
+			refuse('avgarages: JOBS names no job, so every pad below is PUBLIC')
+		end
+		-- THE KNOB IS VALIDATED WITH THE REST OF THE FILE. A `PILOT_SEAT` the
+		-- platform cannot spell is refused to no seat at all -- the recall then
+		-- leaves the pilot to climb in, exactly as before the knob existed --
+		-- and this line is what keeps that choice from being a silent one.
+		local seat = annex.PILOT_SEAT
+		if seat ~= nil and seat ~= false and not (type(seat) == 'string' and PILOT_SEATS[seat]) then
+			refuse('avgarages: PILOT_SEAT must be a canonical seat name or false')
+		end
+		for key, raw in pairs(avGarages or {}) do
+			if merged[key] ~= nil then
+				refuse(('%s: named in both config/garages.lua and config/avgarages.lua; ' ..
+					'the garages file wins'):format(tostring(key)))
+			else
+				local kind = type(raw) == 'table' and type(raw.KIND) == 'string'
+					and raw.KIND:lower() or ''
+				if kind ~= M.KIND.AVPAD then
+					refuse(('%s: an avgarages block must be KIND = "avpad"; a ground garage ' ..
+						'belongs in config/garages.lua'):format(tostring(key)))
+				else
+					merged[key] = raw
+					gated[key] = { jobs = jobs, onDuty = annex.ON_DUTY == true }
+				end
+			end
+		end
+	end
+
+	local garages, points = Access.CoerceGarages(merged, problems)
+	for key, requirement in pairs(gated) do
+		if garages[key] ~= nil then garages[key].requirement = requirement end
+	end
+	return garages, points
+end
+
+--- The refusal one gate answers with, by the code `lib/shared/jobgate.lua`
+-- names. The codes are internal; what a player reads is a catalogue key.
+Access.GATE_REFUSAL = {
+	no_character = 'garages.noCharacter',
+	job_stale = 'garages.noCharacter',
+	job_required = 'garages.jobRequired',
+	grade_too_low = 'garages.gradeTooLow',
+	off_duty = 'garages.offDuty',
+}
+
+--- Whether a character snapshot may use one garage, through the one adapter
+-- over `lib/shared/jobgate.lua`.
+-- @author XEROX710
+--
+-- A garage with NO requirement is public and costs no snapshot at all -- the
+-- ground garages every server carries are the common case and must not read a
+-- character roster for nothing. A gated garage closes on every doubt: no
+-- snapshot, a snapshot with no job table, a clock that cannot be read. The
+-- asymmetry is the job gate's own, and it is why this is an adapter and not a
+-- second copy of five branches.
+--
+-- THE GATE IS ASKED ONLY BY THE SERVER, off a snapshot stamped from the same
+-- clock read that is handed in as `nowMs`, so the age is exactly zero and no
+-- staleness bound is declared: a config knob that can never change an answer
+-- would be a lie in the config file.
+-- @param built table|nil a garage
+-- @param snapshot table|nil { job, jobs, atMs }
+-- @param nowMs number
+-- @return boolean
+-- @return string|nil no_such_spot, no_character, job_stale, job_required,
+--   grade_too_low, off_duty
+function Access.Evaluate(built, snapshot, nowMs)
+	-- Closed for a garage that is not a table: reading `.requirement` off a nil
+	-- raises out of whichever handler was asking, and every sibling adapter
+	-- answers closed here.
+	if type(built) ~= 'table' then return false, 'no_such_spot' end
+	local requirement = built.requirement
+	if type(requirement) ~= 'table' then return true end
+	return OPX.JobGate.Evaluate(requirement, snapshot, nowMs, { maxAgeMs = 0 })
+end
+
+--- The configured garages of BOTH files and their points, already validated.
 -- Read as empty rather than refused: every read is reachable from the contract.
 -- @author XEROX710
-Access.GARAGES, Access.SPOTS = Access.CoerceGarages(Config.GARAGES, nil)
+Access.GARAGES, Access.SPOTS = Access.CoerceAll(Config.GARAGES, avAnnex(), nil)
 
 -- Config keys that must be a finite number above zero.
 local NUMBERS = { 'USE_RADIUS', 'EXIT_CLEARANCE', 'SCAN_MS', 'POLL_MS', 'COOLDOWN_MS',
@@ -473,9 +660,10 @@ function Access.Problems()
 		OPX.Spots.MarkerProblems(declared, 'MARKER.' .. slot, lines)
 	end
 
-	-- GARAGES are validated once at load; the errors are re-derived here so the
-	-- diagnostic reports them rather than only the boot log.
-	Access.CoerceGarages(Config.GARAGES, lines)
+	-- The garages of BOTH files are validated once at load; the errors are
+	-- re-derived here so the diagnostic reports them rather than only the boot
+	-- log -- the AV annex's refusals included.
+	Access.CoerceAll(Config.GARAGES, avAnnex(), lines)
 
 	-- A CONFIG THAT STILL CARRIES THE OLD BLOCK IS SAID OUT LOUD. `SPOTS` was
 	-- what a garage was before the rework, and a file that still has one is a
