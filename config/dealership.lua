@@ -272,6 +272,11 @@ OPX.Config.MODULES.dealership = {
 	-- on the server can pay into and its bosses -- there are none -- withdraw
 	-- from.
 	COMPANY = {
+		-- THESE TWO ARE TOGGLES, NOT JOB GATES. `JOBS = true` means "a
+		-- seller's company may be their JOB"; gates elsewhere in this stack
+		-- say `{ jobName = minimumGrade }` and this file has NONE -- anybody
+		-- may walk in and buy from a dealer. A reader who meets `JOBS` here
+		-- first has been sent the wrong way once already.
 		JOBS = true,
 		GANGS = true,
 		EXCLUDED = { unemployed = true, none = true },

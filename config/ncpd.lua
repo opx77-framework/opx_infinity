@@ -264,7 +264,14 @@ OPX.Config.MODULES.ncpd = {
 		-- is one of these AND they are ON DUTY -- duty is the character
 		-- module's own field and not a second one, so a clocked-off officer
 		-- hears nothing, which is what clocking off is for.
-		JOBS = { 'ncpd', 'maxtac', 'ncpd_maxtac' },
+		--
+		-- `ncpd_maxtac` USED TO BE IN THIS LIST AND IS GONE (2026-09-26): a
+		-- draft division name, never in the character catalogue, held by no
+		-- character row in any database on the box (both schemas, live and
+		-- deleted, checked). The other three lists that carried it -- the
+		-- dispatch board below, `MAXTAC.OPT_IN.JOBS`, `BOARDING.JOBS` and
+		-- `config/avgarages.lua`'s pad gate -- say `maxtac` and nothing else.
+		JOBS = { 'ncpd', 'maxtac' },
 
 		-- Floor between two call-outs about the SAME suspect, so one firefight
 		-- that climbs three stages is one message rather than three.
@@ -329,7 +336,7 @@ OPX.Config.MODULES.ncpd = {
 
 			-- WHOSE SCREENS LIGHT UP. `false` here is the call-out's own audience
 			-- (the JOBS list above); a list here is its own air crew -- a server
-			-- that wants MaxTac alone on the board names `{ 'maxtac', 'ncpd_maxtac' }`.
+			-- that wants MaxTac alone on the board names `{ 'maxtac' }`.
 			JOBS = false,
 		},
 	},
@@ -339,7 +346,7 @@ OPX.Config.MODULES.ncpd = {
 		HEAT = 'Heat_5',
 		OPT_IN = {
 			RIGHT = 'opx.ncpd.maxtac',
-			JOBS = { 'maxtac', 'ncpd_maxtac' },
+			JOBS = { 'maxtac' },
 		},
 		FILL = 'bots',
 		RESPONSE_SECONDS = 20.0,
@@ -458,7 +465,7 @@ OPX.Config.MODULES.ncpd = {
 			-- Who may board: the division's jobs, and only while ON DUTY. The
 			-- check is the character module's own `job.onDuty`, the same one the
 			-- call-out uses, so a clocked-off officer cannot take a seat.
-			JOBS = { 'maxtac', 'ncpd_maxtac' },
+			JOBS = { 'maxtac' },
 			-- How long the aircraft holds at the street after the squad is out.
 			-- This is the window the crew walks up in; it is also the window in
 			-- which the row is on screen.

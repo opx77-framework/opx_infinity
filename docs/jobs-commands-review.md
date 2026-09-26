@@ -31,7 +31,6 @@ eyes on a live client.
 | `militech` | Militech (hidden) | — | — | ditto | — | no |
 | `delamain` | Delamain Driver (hidden) | — | — | ditto | — | no |
 | `bartender` | Bartender (hidden) | — | — | ditto | — | no |
-| `ncpd_maxtac` | *(gate alias, see review note R1)* | — | — | never assigned | — | listed in gates |
 
 Boss seats carry `bankAuth` (NCPD Captain, Trauma Director, Chrome Surgeon,
 Fixer, Arasaka/Militech/Bartender tops) — replicated, **nothing consumes it yet**.
@@ -59,8 +58,8 @@ Fixer, Arasaka/Militech/Bartender tops) — replicated, **nothing consumes it ye
 
 | Surface | File | Gate |
 |---|---|---|
-| Dispatch board + radio call-outs | `config/ncpd.lua` `ALERTS` | primary job ∈ {`ncpd`,`maxtac`,`ncpd_maxtac`} **and on duty** |
-| MaxTac AV summon + seats | `config/ncpd.lua` `MAXTAC.OPT_IN` | right `opx.ncpd.maxtac` or job ∈ {`maxtac`,`ncpd_maxtac`}; seats also need duty |
+| Dispatch board + radio call-outs | `config/ncpd.lua` `ALERTS` | primary job ∈ {`ncpd`,`maxtac`} **and on duty** |
+| MaxTac AV summon + seats | `config/ncpd.lua` `MAXTAC.OPT_IN` | right `opx.ncpd.maxtac` or job = `maxtac`; seats also need duty |
 | NCPD evidence lockers / armory | `config/shops.lua` | `ncpd = 0` + `ON_DUTY` (×2), `maxtac = 0` + `ON_DUTY` |
 | Trauma medical shop | `config/shops.lua` | `trauma = 0` + `ON_DUTY` |
 | Gunsmith counter (police) | `config/gunsmith.lua` | `ncpd = 1` / `maxtac = 0` + `ON_DUTY` |
@@ -71,7 +70,7 @@ Fixer, Arasaka/Militech/Bartender tops) — replicated, **nothing consumes it ye
 | Teleport to corpo floor | `config/teleports.lua` | `arasaka = 2` + `ON_DUTY` |
 | Skill trees | `config/skills.lua` | `ncpd = true`, `maxtac = true`, one public (`JOBS = nil`) |
 | Hauling sites | `config/hauling.lua` | open by default; `JOBS = { nomad = 0 }` whitelists, `ON_DUTY` narrows |
-| Dealership floor | `config/dealership.lua` | `JOBS = true` at line 275 (see review note R7) |
+| Dealership floor | `config/dealership.lua` | **public — anybody may buy.** (`COMPANY.JOBS`/`GANGS` are bank toggles, not gates; see R7) |
 
 ### 2c. Operator / setup commands (per job area)
 
@@ -96,13 +95,13 @@ deployment to the node first.
 
 | # | Area | Proven | Review notes |
 |---|---|---|---|
-| R1 | Job gates & `ncpd_maxtac` | [S] gate logic | `ncpd_maxtac` appears in `avgarages` `JOBS`, `ALERTS.JOBS` and `MAXTAC.OPT_IN.JOBS`, but `config/character.lua` never defines it and `/opx.job … ncpd_maxtac` would be a name no character can hold. **Decide**: it is either a historical alias for `maxtac` (then keep, it costs nothing) or dead config (then strip). Test in game: with a real `maxtac` character, confirm the dispatch board lights up and `/opx.ncpd.board` works — if both work, the alias is inert. |
+| R1 | ~~Job gates & `ncpd_maxtac`~~ **RESOLVED 2026-09-26 — dead config, stripped** | [S] | `ncpd_maxtac` was a draft division name kept in four gate lists (`avgarages` `JOBS`, `ALERTS.JOBS`, `MAXTAC.OPT_IN.JOBS`, `BOARDING.JOBS`) "for the old characters". Evidence says dead: the character catalogue never defined it, and no character row in any database on the box holds it — both RP schemas (prod + staging), live **and** soft-deleted, queried directly. Stripped from all four lists; the ncpd suite now pins the decision with a regression: a job name no catalogue defines does **not** open the AV seats, while `maxtac` does. In game this reduces to the normal check: a real `maxtac` trooper sees the dispatch board and boards the AV (checklist items 9–11). |
 | R2 | Jobs: boards & ladder [S] | suite covers terms, ladder, auto-promote, desk actions, capture shadows config | **[G]** Marker draw distance (150 m) and E-prompt at 4 m on a live map; **[G]** the hire scene — candidate within 8 m of the desk or the hire is refused with the right message; **[G]** MaxTac sign-up refusal text ("needs NCPD Detective") vs plain no; **[G]** `AUTO_PROMOTE` fires in play (90 min Cadet→Officer is long — shorten `LADDER` in a staging config to 1–2 min and watch the announcement). |
 | R3 | Pay & duty [S] logic | **[G]** Paycheck lands every 10 min into the bank while on duty; and for `offDutyPay` jobs (NCPD/MaxTac/Trauma/unemployed) while clocked off; **[G]** Merc/Fixer keep banking seniority with no shift to clock; **[G]** `/opx.duty` cooldown + refusal when a job has no shift. Watch `/opx.where` money before/after a tick. |
 | R4 | NCPD heat & AV [S] ledger | **[G]** Crime → wanted stage climbs; `/opx.ncpd.report <law> <p>` moves score→stage with division named; **[G]** dispatch board toast ONCE per `COOLDOWN_MS` per suspect, on the screens of on-duty `ALERTS.JOBS` only (off-duty officer sees nothing); **[G]** `/opx.ncpd.av` spawns the MaxTac AV (client-side spawn) and `/opx.ncpd.board` seats a player — refusal reasons (`not_boarding`/`too_far`/`no_seat`/off duty) must read differently. |
 | R5 | avgarages capture [S 17 checks] | **[D][G]** The new `/opx.avgarages.add` (capture + facing = recall yaw) is suite-green but **not deployed** to staging. In game: stand on the pad spot, face the recall direction, run it, check the answer line `maxtac_av1 = { … KIND = "avpad" … HEADING = … }`, paste into `config/avgarages.lua`; then as an on-duty MaxTac operator recall an AV at the pad and confirm it arrives **facing the captured heading** (270° test). Also confirm `uncapture` refuses config pads and unmasks a shadowed config row. |
 | R6 | avdrive autopilot [S] | **[G]** MaxTac AV is pilotable; autopilot flies to the map waypoint and lands; leaving the pilot seat cancels it (`avdrive.pilotLeft`). No typed command — verify the prompt/keybind only. |
-| R7 | Dealership `JOBS = true` | [S] spot logic | `config/dealership.lua` line 275 has `JOBS = true` inside a block — the gate readers expect a **table** of job→grade (`true` is likely treated as "no gate"). **[G]/review**: read the block it sits in and decide the intent; test that an unemployed player can reach the buy flow (probably intended: dealers are shops, not job perks). |
+| R7 | ~~Dealership `JOBS = true`~~ **RESOLVED 2026-09-26 — false positive in this chart, config is correct** | [S] | The `JOBS = true` at `config/dealership.lua:275` is **not a gate** — it sits inside `COMPANY` ("which groups have a company bank") and is one of two **toggles**: `COMPANY.JOBS ~= false` means "a seller's company may be their JOB", `COMPANY.GANGS` is its pair, and `EXCLUDED` names the absence-of-a-group rows. Readers expect a boolean there and get one; the dealership has no job gate at all (anybody buys). The misreading survived because nothing pinned the toggle semantics — now pinned: `dealership: COMPANY.JOBS is a toggle and not a job gate` (job wins over gang, `false` falls back to the gang, `EXCLUDED` skips, both-off is a boot warning), plus a comment in the config heading off the same mistake. |
 | R8 | Ripperdoc equip [S 3832 incl. 12 defs] | **[G]** The full live equip flow was never seen on a real client: fit a platform implant (Gorilla Arms), an ability (Sandevistan), and body chrome; verify the trade-in upgrade, capacity refusal text, durability bands (WORN/FAILING/BREAKS) and a ripperdoc repair. `/opx.clinic.diag` is the first stop for any "chrome record not ready". |
 | R9 | Clinic chair capture [S] | **[G]** Aim-at-Viktor's-chair capture snaps to the city's chair; `/opx.clinic.tune` nudges the seat within ±2 m; away from any chair `CHAIR_PROP` spawns one. Candidate log lines (`[ripperdoc] chair candidate …`) exist to debug wrong snaps. |
 | R10 | HQ stations [S] | **[G]** Capture draws marker + name strip for everyone at once, survives restart only after the config line is pasted; bucket handling (`BUCKET = 0`) in a bucketed server. Plus the **new map blip** (see §5 test) once deployed. |
@@ -154,7 +153,7 @@ its expected result.
 
 ### F. Corpo / misc surfaces
 23. ☐ `/opx.job <id> arasaka 2` + duty on → Arasaka elevator Counterintel floor opens; gunsmith counter works at `arasaka 0`. `militech 3` also passes Counterintel.
-24. ☐ Dealership: `/opx.dealership.stock` as anyone; buy at the dealer; confirm R7's `JOBS = true` intent against the actual refusal behaviour.
+24. ☐ Dealership: `/opx.dealership.stock` as anyone; buy at the dealer with an unemployed character (R7 is resolved — there is no job gate; the only "refusal" is `dealership.noCompany` on the SELLER side, which is the company bank, not access).
 25. ☐ Hauling: run one job un-jobbed; whitelist a site to `nomad` and confirm refusals.
 26. ☐ `/opx.garages.export` on staging → paste the 18 DB-only garages into `config/garages.lua`; `/opx.garages.bring` one out.
 

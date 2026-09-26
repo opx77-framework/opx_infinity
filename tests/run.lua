@@ -8612,6 +8612,71 @@ do
 	end
 end
 
+-- ── the toggle that is not a gate ───────────────────────────────────────────
+--
+-- REVIEW NOTE R7 IN `docs/jobs-commands-review.md` walked into this: the
+-- `JOBS = true` in `config/dealership.lua`'s COMPANY block was filed as a
+-- broken job gate -- "the gate readers expect a table of job -> grade". They
+-- do, at a GATE. This is not one: `COMPANY.JOBS` is a TOGGLE ("a seller's
+-- company may be their JOB"), read as `block.JOBS ~= false`, and `GANGS` is
+-- its pair. The company is who the SALE MONEY is banked for, and the
+-- dealership has no job gate at all -- anybody walks in and buys.
+--
+-- It fooled a careful reader because nothing pinned the difference, so this
+-- pins it: the toggles toggle, the EXCLUDED names are the absence of a group,
+-- and both-off is the one setting worth a boot warning (no seller anywhere has
+-- an account to pay into).
+section('dealership: COMPANY.JOBS is a toggle and not a job gate')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the company toggles', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local Access = OPX.Modules.Get('dealership').Access
+		local cfg = OPX.Config.MODULES.dealership
+
+		-- THE SHIPPED BLOCK, AS THE OWNERS WROTE IT: both toggles on.
+		local clean = true
+		local shipped = Access.Problems()
+		for index = 1, #shipped do
+			if shipped[index]:find('COMPANY', 1, true) then clean = false end
+		end
+		check('the shipped COMPANY block reports no fault', clean,
+			table.concat(shipped, ' / '))
+		local job, group = Access.CompanyOf('fixer', 'mox')
+		check('and a seller with both sells for their JOB, the customer\'s company',
+			job == 'job' and group == 'fixer', ('%s/%s'):format(tostring(job), tostring(group)))
+
+		-- JOBS = FALSE IS A TOGGLE FLIPPED, not a gate emptied.
+		cfg.COMPANY.JOBS = false
+		local viaGang, gangName = Access.CompanyOf('fixer', 'mox')
+		check('JOBS = false falls the seller back to their GANG',
+			viaGang == 'gang' and gangName == 'mox',
+			('%s/%s'):format(tostring(viaGang), tostring(gangName)))
+		local none = Access.CompanyOf('unemployed', 'none')
+		check('and the EXCLUDED names are the absence of a group, either way',
+			none == nil)
+
+		cfg.COMPANY.JOBS, cfg.COMPANY.GANGS = true, false
+		check('GANGS = false turns the gang half off beside it',
+			Access.CompanyOf('fixer', 'mox') == 'job' and Access.CompanyOf(nil, 'mox') == nil)
+
+		-- BOTH OFF is the one setting that is a fault of MEANING: with neither
+		-- banked no seller anywhere has a company, every face-to-face sale
+		-- refuses, and the whole feature is off without anything saying so.
+		cfg.COMPANY.JOBS, cfg.COMPANY.GANGS = false, false
+		local warned = false
+		local problems = Access.Problems()
+		for index = 1, #problems do
+			if problems[index]:find('COMPANY', 1, true) then warned = true end
+		end
+		check('and both off is a boot warning, not silence', warned,
+			table.concat(problems, ' / '))
+		cfg.COMPANY.JOBS, cfg.COMPANY.GANGS = true, true
+	end
+end
+
 section('dealership, client side')
 do
 	local cenv, cctl, cwhy = boot('client')
@@ -21448,7 +21513,7 @@ do
 		-- aircraft removed from underneath a player: a cleared stage takes the
 		-- response down, and a crewed hull is handed over rather than deleted.
 		local third, subject3 = 98, 99
-		onShift(third, 'citizen-ncpd-crew-two', 'ncpd_maxtac', true)
+		onShift(third, 'citizen-ncpd-crew-two', 'maxtac', true)
 		onShift(subject3, 'citizen-ncpd-crew-subject-two', nil, false)
 		local secondRun = Response.Apply('citizen-ncpd-crew-subject-two', subject3, 5)
 		check('a second insertion flies once the first is down',
@@ -21464,8 +21529,23 @@ do
 			z = door2.position.z, speed = 0.0 }
 		standing[third] = { x = door2.position.x, y = door2.position.y, z = door2.position.z,
 			bucket = 0 }
+		-- AND THE DIVISION NAME THAT NEVER EXISTED STAYS OUT. `ncpd_maxtac`
+		-- sat in four gate lists "for the old characters" -- and no character in
+		-- any database ever held it (both schemas on the box, live and deleted,
+		-- checked 2026-09-26), and the character catalogue never defined it. A
+		-- gate list is not a place for folklore: a name that matches nobody
+		-- invites the next reader to invent the job it names. The name is gone
+		-- and this is the check that keeps it gone -- same door, same standing
+		-- spot, only the job name differing, so the refusal can only be the gate.
+		local bogus = 100
+		onShift(bogus, 'citizen-ncpd-crew-bogus', 'ncpd_maxtac', true)
+		standing[bogus] = standing[third]
+		local turned = knock(bogus)
+		check('a division name no catalogue defines does not open the seats',
+			turned == nil or turned.ok ~= true,
+			turned and tostring(turned.seat or turned.reason) or 'no answer')
 		local aboard = knock(third)
-		check('and a trooper of the other division name may board it too',
+		check('and a trooper of the division may board it too',
 			aboard ~= nil and aboard.ok == true and type(aboard.seat) == 'string',
 			aboard and tostring(aboard.seat or aboard.reason))
 		local keptFrom = #control.vehicleRemoves

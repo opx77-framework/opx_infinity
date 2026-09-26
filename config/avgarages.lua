@@ -57,7 +57,14 @@ OPX.Config.MODULES.avgarages = {
 	-- An absent or emptied JOBS makes every pad below PUBLIC, which is a
 	-- choice a server may make and never an accident: the boot journal and
 	-- `/opx.garages.list` both say so.
-	JOBS = { maxtac = 0, ncpd_maxtac = 0 },
+	--
+	-- `ncpd_maxtac` USED TO SIT BESIDE `maxtac` HERE AND IS GONE (2026-09-26).
+	-- It was a draft division name: the character catalogue never defined it,
+	-- and no character row in any database on the box holds it -- both
+	-- schemas, live and deleted, checked. A gate list is not a place for
+	-- folklore; a name that matches nobody invites the next reader to invent
+	-- the job it names.
+	JOBS = { maxtac = 0 },
 	ON_DUTY = true,
 
 	-- WHERE THE RECALLING PILOT SITS. An aircraft comes out of a pad hovering a
