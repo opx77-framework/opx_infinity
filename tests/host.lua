@@ -1099,11 +1099,22 @@ function Host.Environment(side, database)
 		--
 		-- What is modelled, and each is a real 2.31 refusal from the platform
 		-- guide rather than a shape invented here:
-		--   * `color`, `colour`, `alpha`, `opacity`, `scale`, `shortRange` and
-		--     `category` are refused BY NAME as `unsupported_option:<key>`, and
-		--     `kind = "radius"` as `unsupported_kind:radius`. A mappin carries no
-		--     such field; opacity and scale live on the UI profile the SPRITE
-		--     resolves, shared by every pin using it.
+		--   * `colour`, `alpha`, `opacity`, `scale`, `shortRange` and `category`
+		--     are refused BY NAME as `unsupported_option:<key>`, and
+		--     `kind = "radius"` as `unsupported_kind:radius`. Opacity and scale
+		--     live on the UI profile the SPRITE resolves, shared by every pin
+		--     using it.
+		--   * `color` IS A REAL FIELD NOW -- exactly `#RRGGBB`/`#RRGGBBAA` --
+		--     since the native Ink adapter grew per-widget colours; this stub
+		--     refused it by name too, until the catalogue stopped listing it.
+		--     A malformed value is `invalid_argument`.
+		--   * `icon` is the custom SVG field: a resource-relative `.svg` path or
+		--     `{ asset = path, size = 16..128 }`. Non-SVG is
+		--     `blip_icon_requires_svg`, a URL/absolute/traversing path is
+		--     `invalid_argument`, and an out-of-bounds size likewise. The real
+		--     engine also answers `asset_not_declared:<path>`; this stub cannot
+		--     see the manifest's `files` block, so every well-formed path reads
+		--     as declared.
 		--   * `range` outside 0..4000 is `invalid_range`.
 		--   * `title` is capped at 128 bytes and `description` at 1024.
 		--   * the per-resource quota is 128; the 129th create is refused.
@@ -1125,9 +1136,31 @@ function Host.Environment(side, database)
 				if type(options.position) ~= 'table' and options.entity == nil then
 					return nil, 'invalid_argument'
 				end
-				for _, key in ipairs({ 'color', 'colour', 'alpha', 'opacity', 'scale',
+				for _, key in ipairs({ 'colour', 'alpha', 'opacity', 'scale',
 					'shortRange', 'category' }) do
 					if options[key] ~= nil then return nil, 'unsupported_option:' .. key end
+				end
+				if options.color ~= nil and options.color ~= false then
+					local colour = tostring(options.color)
+					if not (colour:match('^#%x%x%x%x%x%x$') or colour:match('^#%x%x%x%x%x%x%x%x$')) then
+						return nil, 'invalid_argument'
+					end
+				end
+				if options.icon ~= nil and options.icon ~= false then
+					local icon = options.icon
+					local asset = type(icon) == 'table' and icon.asset or icon
+					if type(icon) == 'table' and icon.size ~= nil then
+						local size = math.tointeger(icon.size)
+						if size == nil or size < 16 or size > 128 then
+							return nil, 'invalid_argument'
+						end
+					end
+					if type(asset) ~= 'string' or asset == '' then return nil, 'invalid_argument' end
+					if not asset:lower():match('%.svg$') then return nil, 'blip_icon_requires_svg' end
+					if asset:find('://', 1, true) or asset:match('^[/\\]')
+						or ('/' .. asset .. '/'):find('/../', 1, true) then
+						return nil, 'invalid_argument'
+					end
 				end
 				if options.kind ~= nil then
 					if tostring(options.kind) == 'radius' then return nil, 'unsupported_kind:radius' end
@@ -1447,10 +1480,16 @@ function Host.Environment(side, database)
 			-- the harness manufactured. `control.Life` sets a phase; a slot with
 			-- no life state at all is the not-incarnated case, which is a real
 			-- answer this host now gives and callers have to survive.
+			-- The CAUSE of the last death rides with the phase, as the card
+			-- says: a scripted kill (a placement, a staff move) is a death the
+			-- bus reports and not one a body suffered.
 			getLifeState = function(playerId)
-				local phase = lives[tonumber(playerId) or playerId]
+				local id = tonumber(playerId) or playerId
+				local phase = lives[id]
 				if phase == nil then return nil end
-				return { phase = phase }
+				local cause = world.causes and world.causes[id] or nil
+				return { phase = phase, cause = cause and cause.cause or nil,
+					weapon = cause and cause.weapon or nil }
 			end,
 			isDead = function(playerId)
 				return lives[tonumber(playerId) or playerId] == 'dead'
@@ -1459,10 +1498,13 @@ function Host.Environment(side, database)
 			-- bare `true` and changed nothing, so the placement sequence in
 			-- `modules/character` -- kill, then respawn on the point -- could not
 			-- be told from one that killed and left the body there.
-			kill = function(playerId)
+			kill = function(playerId, options)
 				local id = tonumber(playerId) or playerId
 				if lives[id] == nil then return false, 'not_incarnated' end
 				lives[id] = 'dead'
+				world.causes = world.causes or {}
+				world.causes[id] = { cause = type(options) == 'table' and options.cause or 'unknown',
+					weapon = type(options) == 'table' and options.weapon or nil }
 				world.transitions[#world.transitions + 1] = { playerId = id, verb = 'kill' }
 				return true
 			end,
@@ -1493,7 +1535,31 @@ function Host.Environment(side, database)
 				world.transitions[#world.transitions + 1] = { playerId = id, verb = 'revive' }
 				return true
 			end,
-			setArmor = function() return true end,
+			-- Armor and fall damage land in the chrome store (`control.chrome`),
+			-- read lazily: the store is built further down this environment.
+			setArmor = function(playerId, value)
+				local id = tonumber(playerId) or playerId
+				local store = control and control.chrome
+				if store ~= nil then
+					store.armor[id] = tonumber(value) or 0
+					store.writes[#store.writes + 1] = { 'setArmor', id, tonumber(value) or 0 }
+				end
+				return true
+			end,
+			setFallDamage = function(playerId, enabled)
+				local id = tonumber(playerId) or playerId
+				local store = control and control.chrome
+				if store ~= nil then
+					store.noFall[id] = enabled == false or nil
+					store.writes[#store.writes + 1] = { 'setFallDamage', id, enabled == true }
+				end
+				return true
+			end,
+			isFallDamageEnabled = function(playerId)
+				local id = tonumber(playerId) or playerId
+				local store = control and control.chrome
+				return not (store ~= nil and store.noFall[id] == true)
+			end,
 			-- The seat a connection is sitting in, or nil. The marker key's whole
 			-- behaviour turns on this answer -- it is what decides whether the key
 			-- puts a vehicle away or brings one out -- so a suite that could not
@@ -1999,6 +2065,30 @@ function Host.Environment(side, database)
 	}
 
 	Open77.cyberware = {
+		-- The identity seam, in the shape `wiki/cyberware.md` documents:
+		-- `bind(player, characterKey)` ties the admitted connection to the
+		-- character key a trusted workflow owns, and `unbind` releases it.
+		-- Recorded so a test can pin WHO bound WHAT and that only one binder
+		-- ever ran.
+		binds = {},
+		unbinds = {},
+		-- What the next `bind` answers instead of `true`.
+		refuseBind = nil,
+		bind = function(player, characterKey)
+			local seam = Open77.cyberware
+			seam.binds[#seam.binds + 1] = { player, characterKey }
+			if seam.refuseBind ~= nil then
+				local why = seam.refuseBind
+				seam.refuseBind = nil
+				return false, why
+			end
+			return true
+		end,
+		unbind = function(player)
+			local seam = Open77.cyberware
+			seam.unbinds[#seam.unbinds + 1] = player
+			return true
+		end,
 		-- What the next `define` answers instead of `{ok=true}`. It lives on
 		-- the API table -- the very object a resource holds -- so a boot
 		-- prelude can arm it before Start. The host's answers are TABLES
@@ -2092,6 +2182,197 @@ function Host.Environment(side, database)
 		end,
 		current = function() return nil end,
 	}
+
+	-- THE CHROME THE PLATFORM APPLIES, as a REAL store. The ripperdoc composes
+	-- stat bonuses on top of whatever it finds and gives the base back when the
+	-- chrome comes off; a stub that answered true and kept nothing could not
+	-- tell a bonus applied twice from one applied once, or a pool given back
+	-- from one left raised. Pools are the platform's own shape
+	-- (wiki/player-stats.md): points, a maximum, a rate and whether it runs.
+	local chromeHost = {
+		pools = {}, armor = {}, noFall = {}, writes = {},
+		defined = { dash = {}, reflex = {}, ability = {}, hack = {}, ice = {} },
+		grants = {}, revokes = {},
+		refuseGrant = nil,
+	}
+	local function poolsOf(player)
+		-- The client's `get()` names nobody: it is the local player, slot 1.
+		local id = tonumber(player) or player or 1
+		local pools = chromeHost.pools[id]
+		if pools == nil then
+			pools = {
+				health = { value = 100, maximum = 100, regenPerSecond = 0, regenEnabled = false },
+				stamina = { value = 100, maximum = 100, regenPerSecond = 20, regenEnabled = true },
+			}
+			chromeHost.pools[id] = pools
+		end
+		return pools
+	end
+	chromeHost.poolsOf = poolsOf
+	local function copyPool(pool)
+		return { value = pool.value, current = pool.value, maximum = pool.maximum,
+			max = pool.maximum, regenPerSecond = pool.regenPerSecond,
+			regenEnabled = pool.regenEnabled }
+	end
+	local function record(name, ...)
+		chromeHost.writes[#chromeHost.writes + 1] = { name, ... }
+	end
+	Open77.stats = {
+		get = function(player)
+			local pools = poolsOf(player)
+			local id = tonumber(player) or player or 1
+			return { playerId = id, armor = chromeHost.armor[id] or 0,
+				health = copyPool(pools.health), stamina = copyPool(pools.stamina) }
+		end,
+		setMax = function(player, pool, maximum)
+			local pools = poolsOf(player)
+			if pools[pool] == nil then return false, 'invalid_pool' end
+			pools[pool].maximum = maximum
+			pools[pool].value = math.min(pools[pool].value, maximum)
+			record('setMax', tonumber(player) or player, pool, maximum)
+			return true
+		end,
+		setRegenRate = function(player, pool, rate)
+			local pools = poolsOf(player)
+			if pools[pool] == nil then return false, 'invalid_pool' end
+			pools[pool].regenPerSecond = rate
+			record('setRegenRate', tonumber(player) or player, pool, rate)
+			return true
+		end,
+		setRegenEnabled = function(player, pool, enabled)
+			local pools = poolsOf(player)
+			if pools[pool] == nil then return false, 'invalid_pool' end
+			pools[pool].regenEnabled = enabled == true
+			record('setRegenEnabled', tonumber(player) or player, pool, enabled == true)
+			return true
+		end,
+	}
+	Open77.stats.getHealth = function(player) return Open77.stats.get(player).health end
+	Open77.stats.getStamina = function(player) return Open77.stats.get(player).stamina end
+
+	-- The movement modules and the hacking service: every definition kept, every
+	-- grant and revoke recorded, a grant refused on demand.
+	-- THE PLATFORM'S OWN LIMIT: eight definitions per module per resource, the
+	-- ninth answered `definition_limit` (measured on staging).
+	chromeHost.definitionLimit = 8
+	-- What `current` reports for a live grant: `ready` unless a test says
+	-- the projection is stuck (`pending`) or failed.
+	chromeHost.projectionStatus = nil
+	chromeHost.held = { dash = {}, reflex = {}, ability = {} }
+	local function grantModule(kind)
+		return {
+			define = function(definition)
+				local id = tostring(definition and definition.id)
+				if chromeHost.defined[kind][id] == nil then
+					local count = 0
+					for _ in pairs(chromeHost.defined[kind]) do count = count + 1 end
+					if count >= chromeHost.definitionLimit then return nil, 'definition_limit' end
+				end
+				chromeHost.defined[kind][id] = definition
+				return { ok = true }
+			end,
+			grant = function(player, definitionId)
+				if chromeHost.refuseGrant ~= nil then
+					local why = chromeHost.refuseGrant
+					chromeHost.refuseGrant = nil
+					return nil, why
+				end
+				if chromeHost.defined[kind][tostring(definitionId)] == nil then
+					return nil, 'definition_unavailable'
+				end
+				chromeHost.grants[#chromeHost.grants + 1] = { kind, tonumber(player) or player, definitionId }
+				chromeHost.held[kind][tonumber(player) or player] = definitionId
+				return { ok = true }
+			end,
+			revoke = function(player, definitionId)
+				chromeHost.revokes[#chromeHost.revokes + 1] = { kind, tonumber(player) or player, definitionId }
+				chromeHost.held[kind][tonumber(player) or player] = nil
+				return { ok = true }
+			end,
+			current = function(player)
+				local held = chromeHost.held[kind][tonumber(player) or player]
+				if held == nil then return nil end
+				return { definition = held, projection = { status = chromeHost.projectionStatus or 'ready' } }
+			end,
+		}
+	end
+	Open77.dash = grantModule('dash')
+	Open77.reflex = grantModule('reflex')
+	Open77.abilities = grantModule('ability')
+	Open77.hacking = {
+		define = function(definition)
+			chromeHost.defined.hack[tostring(definition and definition.id)] = definition
+			return { ok = true }
+		end,
+		defineIce = function(definition)
+			chromeHost.defined.ice[tostring(definition and definition.id)] = definition
+			return { ok = true }
+		end,
+	}
+
+	-- THE STREAMED WORLD AROUND THE LOCAL PLAYER, for the clinic's chair snap
+	-- and the menu recorder: what `world.nearby` sees, the geometry
+	-- `world.entityGeometry` answers per engine id, what sits under the
+	-- crosshair, what the inspector names, the menu state and the clipboard.
+	-- A test fills `control.scene`; an empty scene is a world with nothing in
+	-- it, which is the answer a capture in an empty street gets.
+	local scene = {
+		nearby = {}, geometry = {}, aimed = nil, inspected = nil, frames = {},
+		menu = { open = false, pause = false, source = '', scenario = '' },
+		clipboard = nil, capabilities = nil, nearbyCalls = 0,
+	}
+	chromeHost.scene = scene
+	Open77.world.nearby = function(radius)
+		scene.nearbyCalls = scene.nearbyCalls + 1
+		local out = {}
+		for _, row in ipairs(scene.nearby) do
+			if (tonumber(row.distance) or 0) <= (tonumber(radius) or math.huge) then
+				out[#out + 1] = row
+			end
+		end
+		return out
+	end
+	Open77.world.entityGeometry = function(engine)
+		local geometry = scene.geometry[tostring(engine)]
+		if geometry == nil then return nil, 'unknown_entity' end
+		return geometry
+	end
+	Open77.character.aimedEntity = function()
+		if scene.aimed == nil then return nil, 'nothing_aimed' end
+		return scene.aimed
+	end
+	Open77.character.frame = function(options)
+		local key = type(options) == 'table' and tostring(options.engineEntity) or 'self'
+		local frame = scene.frames[key]
+		if frame == nil then return nil, 'unknown_entity' end
+		return frame
+	end
+	Open77.inspector = {
+		target = function()
+			if scene.inspected == nil then return { valid = false } end
+			return scene.inspected
+		end,
+	}
+	Open77.session = {
+		menuState = function()
+			return { open = scene.menu.open, pause = scene.menu.pause,
+				source = scene.menu.source, scenario = scene.menu.scenario }
+		end,
+	}
+	Open77.clipboard = {
+		setText = function(text)
+			scene.clipboard = tostring(text)
+			return true
+		end,
+	}
+	local plainExports = Open77.exports.call
+	Open77.exports.call = function(resource, name, ...)
+		if resource == 'open77_cyberware' and name == 'capabilities' and scene.capabilities ~= nil then
+			local value = scene.capabilities
+			return { await = function() return value end, status = function() return 'resolved' end }
+		end
+		return plainExports(resource, name, ...)
+	end
 
 	Open77.database = database
 
@@ -2337,7 +2618,12 @@ function Host.Environment(side, database)
 		Wait = function() coroutine.yield() end,
 		GetGameTimer = function() return clock end,
 		GetCurrentResourceName = function() return 'opx_infinity' end,
-		GetResourceState = function() return 'stopped' end,
+		-- Every other resource reads as stopped unless a test says otherwise
+		-- (`control.resourceStates[name] = 'running'`).
+		GetResourceState = function(name)
+			local states = control ~= nil and control.resourceStates or nil
+			return states ~= nil and states[name] or 'stopped'
+		end,
 
 		-- Identity comes from the host and only from the host. `control.Admit`
 		-- below is how a test says a slot is occupied.
@@ -2515,6 +2801,8 @@ function Host.Environment(side, database)
 
 	-- What the harness hands back to a test.
 	control = {
+		-- Server resource states by name, read by `GetResourceState`.
+		resourceStates = {},
 		log = log,
 		commands = commands,
 		netEvents = netEvents,
@@ -2620,6 +2908,9 @@ function Host.Environment(side, database)
 		cyberware = cyberware,
 		animations = animations,
 		voice = voice,
+		-- The stat pools, armor, fall damage and the movement/hacking shelves
+		-- the ripperdoc's chrome is applied through.
+		chrome = chromeHost,
 
 		-- The keyboard: `input.captured` is another surface holding it, `input.keys`
 		-- is what each mapping answers to after a rebind.

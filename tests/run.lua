@@ -558,6 +558,25 @@ do
 		check('a session with an account can be isolated',
 			OPX.Buckets.Isolate(11) == true)
 
+		-- THE SHARED WORLD IS WHERE EVERYBODY LIVES, and nothing had ever
+		-- written its policy: the platform reads an unconfigured bucket as an
+		-- EMPTY one -- no crowd, no traffic, no police -- so the streets were
+		-- empty by construction and the prevention seam refused every spawn
+		-- with `population_suppressed`. `WORLD_POPULATION` takes the vanilla
+		-- figures, which is what the base game has. A selection bucket is a
+		-- waiting room and stays the empty one it is configured as -- the two
+		-- policies are separate questions and this is the pair that keeps them
+		-- separate.
+		local worldPolicy, selectionPolicy
+		for _, write in ipairs(control.world.population) do
+			if write.bucket == WORLD then worldPolicy = write.enabled end
+			if write.bucket == BASE + 11 then selectionPolicy = write.enabled end
+		end
+		check('the world bucket is populated with the vanilla figures',
+			worldPolicy == true, tostring(worldPolicy))
+		check('a selection bucket is still an empty waiting room',
+			selectionPolicy == false, tostring(selectionPolicy))
+
 		-- A leaving player must not be moved: the slot may already belong to
 		-- someone else, who would be dragged into an empty bucket.
 		OPX.Sessions[11].departing = true
@@ -5619,7 +5638,12 @@ do
 		-- recorded session. The vehicle is put away and created again AT the
 		-- spot now, which is what the marker promised in the first place.
 		--
-		-- Back at the dock, where the car this brings to the marker already is.
+		-- ON FOOT FIRST, and that is the feature talking: the pad above now
+		-- places the pilot at the controls of the aircraft it hands over, and
+		-- the marker's one door reads a seated body as "put it away". The
+		-- recall is the on-foot half of that door, so the pilot steps out of
+		-- the aircraft before walking back to the dock.
+		control.Seat(src, nil)
 		control.Stand(src, 0.0, 0.0, 0.0)
 		env.source = src
 		created = #control.vehicleCreates
@@ -6303,6 +6327,1106 @@ do
 		check('and nothing is sent', #cctl.serverEvents == mark)
 		check('and the verdict is published on the local bus',
 			#decisions == 1 and decisions[1].error == 'garages.noSuchSpot')
+	end
+end
+
+-- ── headquarters ───────────────────────────────────────────────────────────
+-- A HEADQUARTERS IS A MARKER AND A NAME, and both halves are under test: the
+-- server owns the list (a spot lives in a routing bucket a client cannot read
+-- for itself), and the client draws the marker and posts the one row that names
+-- the place. Nothing is pressed at a headquarters and nothing is created at one
+-- -- it DESIGNATES, and the tests below are the ones that keep it that way.
+section('headquarters: the marker that designates the station')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the headquarters module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local hq = OPX.Modules.Get('headquarters')
+		local Access = hq.Access
+		local contract = OPX.Api.Get('headquarters')
+
+		check('the headquarters module is running', OPX.Modules.IsRunning('headquarters'),
+			OPX.Modules.Record('headquarters').Reason)
+		check('and publishes its half of the contract',
+			contract ~= nil and type(contract.Spots) == 'function')
+		check('the shipped config reports no problems', #Access.Problems() == 0,
+			table.concat(Access.Problems(), ' | '))
+
+		-- ── the marker look ───────────────────────────────────────────
+		-- The ring an AV pad wears, because a headquarters is where the pads
+		-- are -- and a ring left at floor height draws nothing at all.
+		local look = Access.Marker()
+		check('the station glows as the ring of a pad',
+			look.shape == 'ring' and look.style == 'objective' and look.radius == 3.0,
+			('%s/%s/%s'):format(tostring(look.shape), tostring(look.style), tostring(look.radius)))
+		check('lifted clear of the floor it stands on',
+			look.lift == 0.06, tostring(look.lift))
+		check('and drawn from as far off as the config says',
+			Access.MaxDistance() == 150.0, tostring(Access.MaxDistance()))
+		check('the name row carries the one glyph the config named',
+			Access.KEYCAP == '!', tostring(Access.KEYCAP))
+
+		-- ── a spot is coerced, never trusted ────────────────────────────
+		local built = Access.Coerce({
+			hq_north = { LABEL = 'NCPD HQ', X = 10.0, Y = 20.0, Z = 5.0, BUCKET = 0 },
+			hq_air = { LABEL = 'MaxTac HQ', X = 30.0, Y = 40.0, Z = 6.0, BUCKET = 7 },
+			hq_bare = { X = 1.0, Y = 2.0, Z = 3.0 },
+		})
+		check('a headquarters with a label and a bucket is accepted',
+			built.hq_north ~= nil and built.hq_north.label == 'NCPD HQ'
+				and built.hq_north.bucket == 0)
+		check('and one with nothing said names itself',
+			built.hq_bare ~= nil and built.hq_bare.label == 'hq_bare'
+				and built.hq_bare.bucket == 0)
+		check('a coordinate that is not a number is refused, not placed at the origin',
+			select(1, Access.Coerce({ bad = { X = 0 / 0, Y = 0.0, Z = 0.0 } })).bad == nil)
+		check('and so is one outside the world',
+			select(1, Access.Coerce({ bad = { X = 9999999.0, Y = 0.0, Z = 0.0 } })).bad == nil)
+		check('and a bucket below zero',
+			select(1, Access.Coerce({ bad = { X = 0.0, Y = 0.0, Z = 0.0, BUCKET = -1 } })).bad == nil)
+		check('and a key the catalogue could not hold',
+			select(1, Access.Coerce({ [string.rep('k', 64)] = { X = 0.0, Y = 0.0, Z = 0.0 } }))[string.rep('k', 64)] == nil)
+
+		-- ── the list is the server's, and filtered by the bucket ─────────
+		-- A client that read the config for itself would draw markers in a
+		-- routing bucket it is not in. The server answers with the asker's own
+		-- bucket and nothing else.
+		local live = contract.Spots()
+		for key, spot in pairs(built) do live[key] = spot end
+		env.Open77.players.position = function() return { x = 0.0, y = 0.0, z = 0.0, bucket = 0 } end
+
+		local function lastEvent(name)
+			for index = #control.clientEvents, 1, -1 do
+				if control.clientEvents[index].name == name then return control.clientEvents[index] end
+			end
+			return nil
+		end
+
+		local src = 61
+		control.Admit(src, 'account-61')
+		env.source = src
+		control.netEvents[hq.Event.ASK]()
+		control.Pump(2)
+		local synced = lastEvent(hq.Event.SYNC)
+		local listed = synced ~= nil and type(synced[1]) == 'table' and synced[1].spots or nil
+		check('the ask answers with the points of the asker\'s own bucket',
+			type(listed) == 'table' and #listed == 2 and listed[1].key == 'hq_bare'
+				and listed[2].key == 'hq_north',
+			type(listed) == 'table' and tostring(#listed) or 'no sync')
+		check('and never with another bucket\'s station',
+			type(listed) == 'table' and (function()
+				for _, spot in ipairs(listed) do if spot.key == 'hq_air' then return false end end
+				return true
+			end)())
+
+		env.Open77.players.position = function() return { x = 0.0, y = 0.0, z = 0.0, bucket = 7 } end
+		control.netEvents[hq.Event.ASK]()
+		control.Pump(2)
+		synced = lastEvent(hq.Event.SYNC)
+		listed = synced ~= nil and type(synced[1]) == 'table' and synced[1].spots or nil
+		check('and a change of bucket is answered on the next ask',
+			type(listed) == 'table' and #listed == 1 and listed[1].key == 'hq_air',
+			type(listed) == 'table' and tostring(#listed) or 'no sync')
+
+		-- ── the operator's own reading ───────────────────────────────
+		check('the listing command is registered and ACL-gated',
+			control.commands['opx.headquarters.list'] ~= nil
+				and control.commands['opx.headquarters.list'].restricted == true)
+		control.commands['opx.headquarters.list'].run(src, {})
+		control.Pump(4)
+		local RESULT = env.OPX.Event(env.OPX.Channel.NET, 'runtime', 'commandResult')
+		local answered = {}
+		for index = 1, #control.clientEvents do
+			local entry = control.clientEvents[index]
+			if entry.name == RESULT and type(entry[1]) == 'table' then
+				answered[#answered + 1] = tostring(entry[1].text or '')
+			end
+		end
+		local dump = table.concat(answered, '\n')
+		check('and says where each station is, by name',
+			dump:find('NCPD HQ', 1, true) ~= nil and dump:find('MaxTac HQ', 1, true) ~= nil, dump)
+	end
+end
+
+section('headquarters: /opx.headquarters.add captures and sets the station')
+do
+	-- The station table the bridge answers with, and everything written to it.
+	-- The SQL is the real storage module's; this is only the bridge half.
+	local rows, wrote, deleted = {}, {}, {}
+	local function bridge()
+		return Host.Database({
+			scalar = function() return 1 end,
+			query = function(sql)
+				if sql:find('opx77_headquarters', 1, true) then return rows end
+				return {}
+			end,
+			update = function(sql)
+				if sql:find('INSERT INTO opx77_headquarters', 1, true) then
+					wrote[#wrote + 1] = sql
+				end
+				if sql:find('DELETE FROM opx77_headquarters', 1, true) then
+					deleted[#deleted + 1] = sql
+				end
+				return 0
+			end,
+			single = function() return nil end,
+		})
+	end
+
+	-- A station the database already holds, so the boot proves the READ path as
+	-- well as the one the command writes down.
+	rows[1] = { hq_key = 'hq_old', label = 'THE OLD HQ',
+		x = -1546.96, y = 1233.77, z = 11.52, bucket = 0 }
+
+	local env, control, why = boot('server', bridge())
+	check('the server boots with the headquarters and a database', why == nil, why)
+
+	-- The last client event with one name, or nil. Every verdict below is
+	-- asserted off the wire rather than off a return value, because the wire is
+	-- what the player's client actually reads.
+	local function lastEvent(name)
+		for index = #control.clientEvents, 1, -1 do
+			if control.clientEvents[index].name == name then return control.clientEvents[index] end
+		end
+		return nil
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local hq = OPX.Modules.Get('headquarters')
+		local contract = OPX.Api.Get('headquarters')
+		local RESULT = OPX.Event(OPX.Channel.NET, 'runtime', 'commandResult')
+
+		local function answers()
+			local out = {}
+			for index = 1, #control.clientEvents do
+				local entry = control.clientEvents[index]
+				if entry.name == RESULT and type(entry[1]) == 'table' then
+					out[#out + 1] = tostring(entry[1].text or '')
+				end
+			end
+			return table.concat(out, '\n')
+		end
+
+		check('the capture commands are registered and ACL-gated',
+			control.commands['opx.headquarters.add'] ~= nil
+				and control.commands['opx.headquarters.add'].restricted == true
+				and control.commands['opx.headquarters.remove'] ~= nil
+				and control.commands['opx.headquarters.remove'].restricted == true)
+
+		-- ── the read path: what the database already held ───────────────────
+		check('a captured station is read at boot beside the config ones',
+			contract.Spots().hq_old ~= nil and contract.Spots().hq_old.label == 'THE OLD HQ'
+				and contract.Spots().hq_old.x == -1546.96,
+			hq.Access and tostring(contract.Spots().hq_old and contract.Spots().hq_old.x) or 'absent')
+
+		-- ── one command, capture AND set ────────────────────────────────────
+		-- The operator stands at the station and types one line. The server
+		-- reads where they stand -- a headquarters has no facing, so there is
+		-- nothing to ask a client for and no routeway to gate.
+		env.Open77.players.position = function()
+			return { x = -1441.2, y = 129.6, z = 18.05, bucket = 0 }
+		end
+		env.Open77.players.all = function() return { 51 } end
+		local src = 51
+		control.Admit(src, 'account-51')
+
+		control.commands['opx.headquarters.add'].run(src, { 'hq_north', 'NCPD', 'HQ' })
+		control.Pump(8)
+		local saved = contract.Spots().hq_north
+		check('the station is captured where the operator stands, in one command',
+			saved ~= nil and saved.x == -1441.2 and saved.y == 129.6 and saved.z == 18.05
+				and saved.label == 'NCPD HQ' and saved.bucket == 0,
+			saved and ('%s %s,%s,%s'):format(tostring(saved.label),
+				tostring(saved.x), tostring(saved.y), tostring(saved.z)) or 'absent')
+		check('and written through the bridge', #wrote == 1, #wrote)
+
+		local synced = lastEvent(hq.Event.SYNC)
+		local listed = synced ~= nil and type(synced[1]) == 'table' and synced[1].spots or nil
+		check('and SET: every client is told at once, with no restart and no poll',
+			type(listed) == 'table' and (function()
+				for _, spot in ipairs(listed) do if spot.key == 'hq_north' then return true end end
+				return false
+			end)(),
+			type(listed) == 'table' and ('%d spot(s)'):format(#listed) or 'no sync')
+
+		check('and the answer hands the operator the config line to check in',
+			answers():find('hq_north = { LABEL = "NCPD HQ"', 1, true) ~= nil
+				and answers():find('BUCKET = 0 }', 1, true) ~= nil,
+			answers())
+
+		-- With no key and no label the command names both itself.
+		control.commands['opx.headquarters.add'].run(src, {})
+		control.Pump(8)
+		check('an unnamed capture is auto-named, and said back',
+			contract.Spots().hq1 ~= nil and answers():find('hq1 = {', 1, true) ~= nil,
+			answers())
+		check('and names itself on the label when none was given',
+			contract.Spots().hq1.label == 'hq1',
+			tostring(contract.Spots().hq1 and contract.Spots().hq1.label))
+
+		-- A capture whose position cannot be read places nothing.
+		env.Open77.players.position = function() return nil end
+		control.commands['opx.headquarters.add'].run(src, { 'hq_lost' })
+		control.Pump(8)
+		check('a capture with no world to read places nothing and says why',
+			contract.Spots().hq_lost == nil
+				and answers():find('stand in the world', 1, true) ~= nil,
+			answers())
+		env.Open77.players.position = function()
+			return { x = -1441.2, y = 129.6, z = 18.05, bucket = 0 }
+		end
+
+		-- ── a capture MOVES a station, it does not double it ───────────────
+		-- A config row and a capture of the same key are one headquarters: the
+		-- capture shadows the row, exactly as a captured chair shadows a
+		-- config one.
+		hq.Access.SPOTS.hq_ncpd = hq.Access.FromDefinition('hq_ncpd',
+			{ LABEL = 'NCPD HQ', X = 10.0, Y = 20.0, Z = 5.0, BUCKET = 0 })
+		hq.Access.SPOTS.hq_config_only = hq.Access.FromDefinition('hq_config_only',
+			{ LABEL = 'CONFIG ONLY', X = 30.0, Y = 40.0, Z = 6.0, BUCKET = 0 })
+		-- Counted off the live merge, not off the last sync: the injected
+		-- config rows are only folded into `spots` at the next rebuild, and
+		-- this is the count the merge must not move.
+		local before = OPX.Table.Count(hq.Hq.All())
+		control.commands['opx.headquarters.add'].run(src, { 'hq_ncpd', 'MOVED HQ' })
+		control.Pump(8)
+		check('a captured station shadows the config row of the same key',
+			contract.Spots().hq_ncpd ~= nil and contract.Spots().hq_ncpd.label == 'MOVED HQ'
+				and OPX.Table.Count(contract.Spots()) == before,
+			('%s at %d spot(s)'):format(
+				tostring(contract.Spots().hq_ncpd and contract.Spots().hq_ncpd.label),
+				OPX.Table.Count(contract.Spots())))
+
+		-- ── removing what was placed ──────────────────────────────────────
+		control.commands['opx.headquarters.remove'].run(src, { 'hq_north' })
+		control.Pump(8)
+		check('the remove command takes a captured station away',
+			contract.Spots().hq_north == nil)
+		check('and deleted it through the bridge', #deleted == 1, #deleted)
+
+		control.commands['opx.headquarters.remove'].run(src, { 'hq_config_only' })
+		control.Pump(8)
+		check('a config station is not the remove command\'s to take',
+			contract.Spots().hq_config_only ~= nil and #deleted == 1, #deleted)
+		check('and the refusal names the file that does own it',
+			answers():find('config/headquarters.lua', 1, true) ~= nil, answers())
+
+		-- The operator's own reading says which is which.
+		control.commands['opx.headquarters.list'].run(src, {})
+		control.Pump(8)
+		check('and the listing says where each station comes from',
+			answers():find('hq_old', 1, true) ~= nil
+				and answers():find('captured', 1, true) ~= nil
+				and answers():find('config', 1, true) ~= nil,
+			answers())
+	end
+end
+
+section('avgarages: /opx.avgarages.add captures and sets the pad')
+do
+	-- The pad table the bridge answers with, and everything written to it.
+	-- The SQL is the real storage module's; this is only the bridge half.
+	local rows, wrote, deleted = {}, {}, {}
+	local function bridge()
+		return Host.Database({
+			scalar = function() return 1 end,
+			query = function(sql)
+				if sql:find('opx77_avpads', 1, true) then return rows end
+				return {}
+			end,
+			update = function(sql)
+				if sql:find('INSERT INTO opx77_avpads', 1, true) then
+					wrote[#wrote + 1] = sql
+				end
+				if sql:find('DELETE FROM opx77_avpads', 1, true) then
+					deleted[#deleted + 1] = sql
+				end
+				return 0
+			end,
+			single = function() return nil end,
+		})
+	end
+
+	-- A pad the database already holds, so the boot proves the READ path as
+	-- well as the one the command writes down.
+	rows[1] = { pad_key = 'maxtac_old', label = 'THE OLD PAD',
+		x = -1527.21, y = -218.56, z = 7.86, heading = 199.6, bucket = 0 }
+
+	local env, control, why = boot('server', bridge())
+	check('the server boots with the garages and a pad database', why == nil, why)
+
+	-- The last client event with one name, or nil. Every verdict below is
+	-- asserted off the wire rather than off a return value, because the wire is
+	-- what the player's client actually reads.
+	local function lastEvent(name)
+		for index = #control.clientEvents, 1, -1 do
+			if control.clientEvents[index].name == name then return control.clientEvents[index] end
+		end
+		return nil
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local garages = OPX.Modules.Get('garages')
+		local contract = OPX.Api.Get('garages')
+		local RESULT = OPX.Event(OPX.Channel.NET, 'runtime', 'commandResult')
+
+		local function answers()
+			local out = {}
+			for index = 1, #control.clientEvents do
+				local entry = control.clientEvents[index]
+				if entry.name == RESULT and type(entry[1]) == 'table' then
+					out[#out + 1] = tostring(entry[1].text or '')
+				end
+			end
+			return table.concat(out, '\n')
+		end
+
+		check('the capture commands are registered and ACL-gated',
+			control.commands['opx.avgarages.add'] ~= nil
+				and control.commands['opx.avgarages.add'].restricted == true
+				and control.commands['opx.avgarages.remove'] ~= nil
+				and control.commands['opx.avgarages.remove'].restricted == true)
+
+		-- ── the read path: what the database already held ───────────────────
+		local old = contract.Garages().maxtac_old
+		check('a captured pad is read at boot beside the config ones',
+			old ~= nil and old.kind == 'avpad' and old.locations[1].entry.heading == 199.6,
+			old and ('%s heading %s'):format(tostring(old.kind),
+				tostring(old.locations[1].entry.heading)) or 'absent')
+
+		-- ── one command, capture AND set ────────────────────────────────────
+		-- The operator stands at the pad and faces the way an AV should come
+		-- out: the facing is the one fact a pad capture reads that a
+		-- headquarters capture has none to read.
+		env.Open77.players.position = function()
+			return { x = -1527.21, y = -218.56, z = 7.86, bucket = 0, heading = 270.0 }
+		end
+		env.Open77.players.all = function() return { 61 } end
+		local src = 61
+		control.Admit(src, 'account-61')
+
+		control.commands['opx.avgarages.add'].run(src, { 'maxtac_av1', 'MaxTac', 'AV', 'pad' })
+		control.Pump(8)
+		local saved = contract.Garages().maxtac_av1
+		check('the pad is captured where the operator stands, facing the way they face',
+			saved ~= nil and saved.kind == 'avpad'
+				and saved.locations[1].menu.x == -1527.21
+				and saved.locations[1].entry.heading == 270.0
+				and saved.label == 'MaxTac AV pad',
+			saved and ('%s heading %s'):format(tostring(saved.label),
+				tostring(saved.locations[1].entry.heading)) or 'absent')
+		check('and wears the annex job gate, because a captured pad is a pad like any other',
+			saved ~= nil and type(saved.requirement) == 'table',
+			saved and tostring(type(saved.requirement)) or 'absent')
+		check('and written through the bridge', #wrote == 1, #wrote)
+
+		local synced = lastEvent(garages.Event.SYNC)
+		local listed = synced ~= nil and type(synced[1]) == 'table' and synced[1].spots or nil
+		check('and SET: every client is told at once, with no restart and no poll',
+			type(listed) == 'table' and (function()
+				for _, spot in ipairs(listed) do if spot.garage == 'maxtac_av1' then return true end end
+				return false
+			end)(),
+			type(listed) == 'table' and ('%d spot(s)'):format(#listed) or 'no sync')
+
+		check('and the answer hands the operator the config block to check in',
+			answers():find('maxtac_av1 = { LABEL = "MaxTac AV pad", KIND = "avpad"', 1, true) ~= nil
+				and answers():find('HEADING = 270.0', 1, true) ~= nil
+				and answers():find('config/avgarages.lua', 1, true) ~= nil,
+			answers())
+
+		-- With no key and no label the command names both itself.
+		control.commands['opx.avgarages.add'].run(src, {})
+		control.Pump(8)
+		check('an unnamed capture is auto-named, and said back',
+			contract.Garages().maxtac_av2 ~= nil
+				and answers():find('maxtac_av2 = {', 1, true) ~= nil,
+			answers())
+		check('and names itself on the label when none was given',
+			contract.Garages().maxtac_av2.label == 'maxtac_av2',
+			tostring(contract.Garages().maxtac_av2 and contract.Garages().maxtac_av2.label))
+
+		-- A capture whose position cannot be read places nothing.
+		env.Open77.players.position = function() return nil end
+		control.commands['opx.avgarages.add'].run(src, { 'maxtac_lost' })
+		control.Pump(8)
+		check('a capture with no world to read places nothing and says why',
+			contract.Garages().maxtac_lost == nil
+				and answers():find('stand in the world', 1, true) ~= nil,
+			answers())
+		env.Open77.players.position = function()
+			return { x = -1527.21, y = -218.56, z = 7.86, bucket = 0, heading = 270.0 }
+		end
+
+		-- ── a capture MOVES a pad, it does not double it ───────────────────
+		-- A config block and a capture of the same key are one pad: the
+		-- capture shadows the block, exactly as a headquarters capture
+		-- shadows its config row.
+		local injected = select(1, garages.Access.CoerceGarages({ maxtac_cfg = {
+			LABEL = 'CONFIG PAD', KIND = 'avpad',
+			LOCATIONS = { {
+				BUCKET = 0,
+				MENU = { X = 10.0, Y = 20.0, Z = 5.0 },
+				ENTRY = { X = 10.0, Y = 20.0, Z = 5.0, HEADING = 90.0 },
+				EXITS = { { X = 10.0, Y = 20.0, Z = 5.0, HEADING = 90.0 } },
+			} },
+		} }, {}))
+		garages.Access.GARAGES.maxtac_cfg = injected.maxtac_cfg
+		control.commands['opx.avgarages.add'].run(src, { 'maxtac_cfg', 'MOVED PAD' })
+		control.Pump(8)
+		check('a captured pad shadows the config block of the same key',
+			contract.Garages().maxtac_cfg ~= nil and contract.Garages().maxtac_cfg.label == 'MOVED PAD',
+			tostring(contract.Garages().maxtac_cfg and contract.Garages().maxtac_cfg.label))
+
+		-- ── removing what was placed ──────────────────────────────────────
+		control.commands['opx.avgarages.remove'].run(src, { 'maxtac_av1' })
+		control.Pump(8)
+		check('the remove command takes a captured pad away',
+			contract.Garages().maxtac_av1 == nil)
+		check('and deleted it through the bridge', #deleted == 1, #deleted)
+
+		-- Dropping the capture unmasks the config pad it shadowed.
+		control.commands['opx.avgarages.remove'].run(src, { 'maxtac_cfg' })
+		control.Pump(8)
+		check('and unmasking is what removing a shadowing capture does',
+			contract.Garages().maxtac_cfg ~= nil
+				and contract.Garages().maxtac_cfg.label == 'CONFIG PAD',
+			tostring(contract.Garages().maxtac_cfg and contract.Garages().maxtac_cfg.label))
+
+		control.commands['opx.avgarages.remove'].run(src, { 'maxtac_cfg' })
+		control.Pump(8)
+		check('a config pad is not the remove command\'s to take',
+			contract.Garages().maxtac_cfg ~= nil and #deleted == 2, #deleted)
+		check('and the refusal names the file that does own it',
+			answers():find('comes from config', 1, true) ~= nil, answers())
+	end
+end
+
+section('headquarters, client side')
+do
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots with the headquarters module', cwhy == nil, cwhy)
+
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local hq = OPX.Modules.Get('headquarters')
+		local prompts = OPX.Api.Get('prompts')
+
+		check('the client half is running, not just loaded', OPX.Modules.IsRunning('headquarters'),
+			OPX.Modules.Record('headquarters').Reason)
+
+		-- The list is asked for on start, so a marker already in range does not
+		-- wait for the poll.
+		local asked = false
+		for index = 1, #cctl.serverEvents do
+			if cctl.serverEvents[index].name == hq.Event.ASK then asked = true end
+		end
+		check('the client asks for its stations on start', asked)
+
+		cctl.netEvents[hq.Event.SYNC]({ spots = {
+			{ key = 'hq_north', label = 'NCPD HQ', x = 0.0, y = 0.0, z = 0.0, bucket = 0 },
+		} })
+		cctl.Pump(6)
+
+		local drawn = cenv.Open77.markers.list()
+		check('the station is drawn as one marker in range', #drawn == 1, #drawn)
+		local options = drawn[1] ~= nil and cctl.markers.byId[drawn[1]] or nil
+		check('as the glowing ring the config asked for',
+			options ~= nil and options.shape == 'ring' and options.style == 'objective'
+				and options.radius == 3.0,
+			options and ('%s/%s/%s'):format(tostring(options.shape), tostring(options.style),
+				tostring(options.radius)))
+		check('at the station\'s own height, lifted clear of the surface',
+			options ~= nil and math.abs(options.position.z - (0.0 + hq.Access.Marker().lift)) < 1e-9,
+			options and tostring(options.position.z))
+
+		-- ── the name row, and nothing else ─────────────────────────────
+		-- A designation has no key: the row names the place and offers nothing
+		-- to press, and no mapping is registered for one.
+		local report = hq.Report()
+		check('standing on the marker names the place',
+			report.nearest == 'hq_north' and report.shown == true and report.label == 'NCPD HQ',
+			('%s/%s/%s'):format(tostring(report.nearest), tostring(report.shown),
+				tostring(report.label)))
+		local listed = prompts ~= nil and prompts.List('headquarters') or nil
+		check('and the strip holds exactly one row for it',
+			listed ~= nil and listed.ok == true and listed.value.count == 1
+				and listed.value.prompts[1] == 'spot',
+			listed and listed.ok and tostring(listed.value.count))
+		local bound = false
+		for id in pairs(cctl.keyMappings.byId) do
+			if type(id) == 'string' and id:find('headquarters', 1, true) then bound = true end
+		end
+		check('and no key is bound, because there is nothing to press', bound == false)
+
+		-- A LIST THAT WAS CLEARED takes its markers and its row down with it.
+		cctl.netEvents[hq.Event.SYNC]({ spots = {} })
+		cctl.Pump(6)
+		check('a station the server no longer names loses its marker',
+			#cenv.Open77.markers.list() == 0, #cenv.Open77.markers.list())
+		check('and the name row comes down with it', hq.Report().shown == false)
+
+		-- A SPOT THE CLIENT CANNOT READ is dropped and named, never taken as a
+		-- marker at 0,0,0.
+		cctl.netEvents[hq.Event.SYNC]({ spots = {
+			{ key = 'broken', label = 'BROKEN', x = 0 / 0, y = 0.0, z = 0.0 },
+		} })
+		cctl.Pump(6)
+		check('a spot the client cannot read is dropped, not placed at the origin',
+			#cenv.Open77.markers.list() == 0 and hq.Report().spots == 0,
+			('%d drawn, %d held'):format(#cenv.Open77.markers.list(), hq.Report().spots))
+	end
+end
+
+-- ── the AV annex: config/avgarages.lua ──────────────────────────────────────
+-- THE SAME MACHINERY, IN ITS OWN FILE, BEHIND A GATE. What is under test is
+-- first the merge -- a pad is accepted, a ground garage in the hangar file is
+-- refused, a key named in both files is refused to the annex -- and then the
+-- gate itself, driven over the real wire: a division's pad answers a roster to
+-- its own crew on duty and a refusal BY NAME to everybody else, on the list, on
+-- the bring-out and on the put-away alike.
+section('av garages: the pads the division keeps')
+do
+	-- The vehicle roster the bridge answers with. The SQL is the real storage
+	-- module's; this is only the bridge half.
+	local function bridge(rows)
+		return Host.Database({
+			scalar = function() return 1 end,
+			update = function() return 0 end,
+			query = function(sql, params)
+				if sql:find('opx77_vehicles', 1, true) then
+					local citizen = type(params) == 'table' and params.citizen or nil
+					local mine = {}
+					for index = 1, #rows do
+						if citizen == nil or rows[index].citizen_id == citizen then
+							mine[#mine + 1] = rows[index]
+						end
+					end
+					return mine
+				end
+				return {}
+			end,
+			single = function(sql, params)
+				if sql:find('COUNT(%*)') ~= nil then return { total = #rows } end
+				local plate = type(params) == 'table' and params.plate or nil
+				if plate ~= nil then
+					for index = 1, #rows do
+						if rows[index].plate == plate then return rows[index] end
+					end
+				end
+				return nil
+			end,
+		})
+	end
+
+	local function row(plate, record)
+		return {
+			plate = plate, citizen_id = 'citizen-pad', record = record,
+			appearance = nil, garage = 'impound', state = 1, health = 1.0,
+			body = nil, paint = nil, metadata = '{}',
+		}
+	end
+
+	local env, control, why = boot('server', bridge({
+		row('AA111AA', 'Vehicle.v_standard2_archer_hella_player'),
+		row('MAX0001', 'Vehicle.max_tac_av'),
+	}))
+	check('the server boots with the garages machinery and its AV annex', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local garages = OPX.Modules.Get('garages')
+		local Access = garages.Access
+		local contract = OPX.Api.Get('garages')
+		local character = OPX.Modules.Get('character')
+
+		check('the shipped config of BOTH files reports no problems',
+			#Access.Problems() == 0, table.concat(Access.Problems(), ' | '))
+		check('the shipped annex names no pads yet, because none was ever captured',
+			type(OPX.Config.MODULES.avgarages) == 'table'
+				and type(OPX.Config.MODULES.avgarages.GARAGES) == 'table'
+				and next(OPX.Config.MODULES.avgarages.GARAGES) == nil)
+		check('and its gate names the division',
+			OPX.Config.MODULES.avgarages.JOBS ~= nil
+				and OPX.Config.MODULES.avgarages.JOBS.maxtac == 0,
+			tostring(OPX.Config.MODULES.avgarages.JOBS ~= nil))
+		check('and no shipped ground garage wears a gate it did not ask for',
+			contract.Garages().garage1 ~= nil and contract.Garages().garage1.requirement == nil
+				and contract.Garages().garage2.requirement == nil)
+
+		-- ── the merge ────────────────────────────────────────────────
+		local function padBlock(x)
+			return { KIND = 'avpad', LABEL = 'THE HANGAR', LOCATIONS = { { BUCKET = 0,
+				MENU = { X = x, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = x, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = x, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } } }
+		end
+
+		local problems = {}
+		local builtMap = Access.CoerceAll({}, {
+			JOBS = { maxtac = 0 }, ON_DUTY = true,
+			GARAGES = { pad_hq = padBlock(0.0) },
+		}, problems)
+		check('an annex pad is accepted whole',
+			builtMap.pad_hq ~= nil and builtMap.pad_hq.kind == 'avpad' and #problems == 0,
+			table.concat(problems, ' | '))
+		check('and carries its gate on its back',
+			type(builtMap.pad_hq and builtMap.pad_hq.requirement) == 'table'
+				and builtMap.pad_hq.requirement.jobs.maxtac == 0
+				and builtMap.pad_hq.requirement.onDuty == true)
+
+		problems = {}
+		local refused = Access.CoerceAll({}, {
+			JOBS = { maxtac = 0 },
+			GARAGES = { ground = { KIND = 'garage', LOCATIONS = { { BUCKET = 0,
+				MENU = { X = 0.0, Y = 0.0, Z = 0.0 }, ENTRY = { X = 0.0, Y = 0.0, Z = 0.0 },
+				EXITS = { { X = 0.0, Y = 0.0, Z = 0.0 } } } } } },
+		}, problems)
+		check('a ground garage in the division\'s hangar file is refused whole',
+			refused.ground == nil and #problems == 1,
+			table.concat(problems, ' | '))
+
+		problems = {}
+		local shadowed = Access.CoerceAll({ shared = padBlock(0.0) }, {
+			JOBS = { maxtac = 0 },
+			GARAGES = { shared = padBlock(5.0) },
+		}, problems)
+		check('a key named in both files belongs to the garages file',
+			shadowed.shared ~= nil and shadowed.shared.locations[1].menu.x == 0.0
+				and shadowed.shared.requirement == nil and #problems == 1,
+			table.concat(problems, ' | '))
+
+		problems = {}
+		Access.CoerceAll({}, { JOBS = {}, GARAGES = { pad_hq = padBlock(0.0) } }, problems)
+		check('a gate that names no job is said out loud, because it is no gate',
+			#problems == 1, table.concat(problems, ' | '))
+
+		-- ── the gate itself, pure ───────────────────────────────────────
+		local now = OPX.Now()
+		local function snap(name, level, onDuty)
+			return { job = { name = name, grade = { level = level }, onDuty = onDuty == true },
+				jobs = name ~= nil and { [name] = level } or {}, atMs = now }
+		end
+		check('a garage with no gate is open to anybody, and costs no snapshot',
+			select(1, Access.Evaluate({ key = 'open' }, nil, now)) == true)
+		check('a pad is closed to nobody at all, rather than open to them',
+			select(1, Access.Evaluate(builtMap.pad_hq, nil, now)) == false)
+		check('open to the trooper on duty',
+			select(1, Access.Evaluate(builtMap.pad_hq, snap('maxtac', 0, true), now)) == true)
+		check('closed to the trooper who clocked off, and says it was duty',
+			select(2, Access.Evaluate(builtMap.pad_hq, snap('maxtac', 0, false), now)) == 'off_duty')
+		check('closed to the officer whose job it is not',
+			select(2, Access.Evaluate(builtMap.pad_hq, snap('ncpd', 0, true), now)) == 'job_required')
+		local ranked = { requirement = { jobs = { maxtac = 3 }, onDuty = false } }
+		check('and closed to the rank below the one it asked for',
+			select(2, Access.Evaluate(ranked, snap('maxtac', 2, true), now)) == 'grade_too_low')
+		check('every gate refusal is a word a player reads, not a code',
+			Access.GATE_REFUSAL.job_required == 'garages.jobRequired'
+				and Access.GATE_REFUSAL.grade_too_low == 'garages.gradeTooLow'
+				and Access.GATE_REFUSAL.off_duty == 'garages.offDuty')
+
+		-- ── the gate on every door, driven over the wire ───────────────────
+		local heldGarages, held = contract.Garages(), contract.Spots()
+		local pad = builtMap.pad_hq
+		heldGarages[pad.key] = pad
+		for _, point in ipairs(Access.PointsOf(pad)) do held[point.key] = point end
+
+		--- Puts a loaded character on a slot, with a job.
+		local function load(id, citizenId, jobName, grade, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local rank = grade or 0
+			character.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id),
+				jobs = jobName ~= nil and { [jobName] = rank } or {},
+				job = { name = jobName or 'unemployed',
+					grade = { level = jobName ~= nil and rank or 0 },
+					onDuty = onDuty == true },
+				money = { EDDIES = 0, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+
+		env.Open77.players.position = function() return { x = 0.0, y = 0.0, z = 0.0, bucket = 0 } end
+		Access.COOLDOWN_MS = 0
+
+		local function lastEvent(name)
+			for index = #control.clientEvents, 1, -1 do
+				if control.clientEvents[index].name == name then return control.clientEvents[index] end
+			end
+			return nil
+		end
+
+		-- What the pad answers this player, over the wire the client reads.
+		local function atPad(playerId)
+			env.source = playerId
+			control.netEvents[garages.Event.LIST](pad.locations[1].menu.key)
+			control.Pump(8)
+			return lastEvent(garages.Event.VEHICLES)
+		end
+
+		local trooper, offDuty, officer = 71, 72, 73
+		load(trooper, 'citizen-pad', 'maxtac', 0, true)
+		load(offDuty, 'citizen-pad-off', 'maxtac', 0, false)
+		load(officer, 'citizen-pad-ncpd', 'ncpd', 0, true)
+
+		local listed = atPad(officer)
+		local payload = listed ~= nil and type(listed[1]) == 'table' and listed[1] or nil
+		check('a trooper\'s pad refuses an officer of another job BY NAME',
+			payload ~= nil and payload.error == 'garages.jobRequired',
+			payload and tostring(payload.error))
+		listed = atPad(offDuty)
+		payload = listed ~= nil and type(listed[1]) == 'table' and listed[1] or nil
+		check('and refuses its own crew while they are clocked off, naming the duty',
+			payload ~= nil and payload.error == 'garages.offDuty',
+			payload and tostring(payload.error))
+
+		listed = atPad(trooper)
+		payload = listed ~= nil and type(listed[1]) == 'table' and listed[1] or nil
+		check('but answers the roster to its own crew on duty',
+			payload ~= nil and payload.garage == 'pad_hq' and type(payload.vehicles) == 'table',
+			payload and tostring(payload.error))
+		check('of the division\'s aircraft and not a ground car',
+			payload ~= nil and #payload.vehicles == 1 and payload.vehicles[1].plate == 'MAX0001',
+			payload and #payload.vehicles)
+
+		-- AND THE BRING-OUT IS THE SAME GATE: the roster above is what the pad
+		-- OFFERS, and the door decides again.
+		local created = #control.vehicleCreates
+		env.source = officer
+		control.netEvents[garages.Event.REQUEST](pad.locations[1].menu.key)
+		control.Pump(8)
+		check('and a bring-out is refused on the same words',
+			#control.vehicleCreates == created
+				and (function()
+					local answer = lastEvent(garages.Event.ANSWER)
+					return answer ~= nil and answer[2] == false and answer[3] == 'garages.jobRequired'
+				end)(),
+			lastEvent(garages.Event.ANSWER) and tostring(lastEvent(garages.Event.ANSWER)[3]))
+
+		env.source = trooper
+		control.netEvents[garages.Event.REQUEST](pad.locations[1].menu.key)
+		control.Pump(8)
+		local options = control.vehicleCreates[#control.vehicleCreates]
+		check('while the crew\'s own aircraft comes out on the pad',
+			#control.vehicleCreates == created + 1 and options ~= nil
+				and options.record == 'Vehicle.max_tac_av',
+			options and tostring(options.record))
+		check('lifted clear of the pad it materialises on',
+			options ~= nil and type(options.position) == 'table'
+				and math.abs(options.position.z - (0.0 + Access.AvLift())) < 1e-9,
+			options and options.position and tostring(options.position.z))
+
+		-- THE PILOT'S HAND-OFF, and it is the other half of "pilotable from
+		-- inside": the hull is out, and the owner who recalled it is placed at
+		-- the controls the moment it exists -- the platform's own mount, the
+		-- same one the crew door uses -- rather than left to find the mount of
+		-- an airframe hovering a lift above the pad.
+		check('and the recall places the pilot at the controls of their own aircraft',
+			#control.vehicleWarps == 1 and control.vehicleWarps[1].playerId == trooper
+				and control.vehicleWarps[1].seat == 'seat_front_left'
+				and type(control.vehicleWarps[1].options) == 'table'
+				and control.vehicleWarps[1].options.moveBucket == false
+				and control.vehicleWarps[1].options.exitLocked == nil,
+			('%d warp(s)'):format(#control.vehicleWarps))
+		check('the pad names the seat it hands over, by its canonical spelling',
+			Access.PilotSeat() == 'seat_front_left', tostring(Access.PilotSeat()))
+		local knob = OPX.Config.MODULES.avgarages.PILOT_SEAT
+		OPX.Config.MODULES.avgarages.PILOT_SEAT = false
+		check('false is hands off: the recall then leaves the pilot to climb in',
+			Access.PilotSeat() == nil)
+		OPX.Config.MODULES.avgarages.PILOT_SEAT = 'seat_roof'
+		check('and a seat the platform cannot spell is no seat at all, and says so',
+			Access.PilotSeat() == nil and (function()
+				for _, line in ipairs(Access.Problems()) do
+					if line:find('PILOT_SEAT', 1, true) then return true end
+				end
+				return false
+			end)())
+		OPX.Config.MODULES.avgarages.PILOT_SEAT = knob
+	end
+end
+
+-- ── the AV autopilot ─────────────────────────────────────────────────────────
+section('av auto-drive')
+do
+	-- WHAT IS DRIVEN HERE is `modules/avdrive/server/main.lua`, the same way the
+	-- MaxTac insertion is driven: the phase machine under test, with the host's
+	-- own seat and hull reads standing in for a pilot and an aircraft. THE
+	-- CADENCE IS CAPTURED, NOT AWAITED -- a test that slept would be asserting
+	-- on wall-clock -- so the scheduler is swapped for a handle this block
+	-- steps by hand, one tick per call, and the poses are what say where the
+	-- flight went. A create plus a remove reads the same as a flight that never
+	-- moved; the ROUTE is the claim.
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		update = function() return 0 end,
+		single = function() return nil end,
+		query = function() return {} end,
+	}))
+	check('a server with the autopilot aboard boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local avdrive = OPX.Modules.Get('avdrive')
+
+		local Scheduler = OPX.Scheduler
+		local job
+		Scheduler.Every = function(jobName, intervalMs, step)
+			job = { name = jobName, intervalMs = intervalMs, step = step }
+			return 1
+		end
+		Scheduler.Cancel = function() return true end
+
+		-- Every toast this half sends, by key. The words are the catalogue's
+		-- own and are not restated here; what is asserted is WHICH door answered.
+		local notices = {}
+		OPX.NotifyLocale = function(playerId, key, params, kind)
+			notices[#notices + 1] = { playerId = playerId, key = key, kind = kind }
+			return true
+		end
+
+		-- A SHORT FLIGHT ON SMALL NUMBERS: 10 m of climb over the start, 100 m
+		-- of cruise, and a hover 2 m above a pin 5 m up. The shipped numbers fly
+		-- a real route; these fly the same machine in three dozen deliberate
+		-- ticks. The cooldown is off: what is under test is the toggle, not its
+		-- window.
+		local config = OPX.Config.MODULES.avdrive
+		config.COOLDOWN_MS = 0
+		config.CRUISE_ALTITUDE = 10.0
+		config.CRUISE_SPEED = 50.0
+		config.CLIMB_SPEED = 10.0
+		config.DESCEND_SPEED = 5.0
+		config.HOVER_HEIGHT = 2.0
+		config.MAX_RANGE = 5000.0
+		config.MAX_MINUTES = 20.0
+		config.TICK_MS = 100
+
+		-- The pilot, a stranger and the hull, exactly as the host reads them.
+		local pilot, stranger = 51, 52
+		local hullId = '0x000000000000av01'
+		control.vehicles.byId[hullId] = {
+			id = hullId, record = 'Vehicle.max_tac_av', x = 0.0, y = 0.0, z = 0.0,
+		}
+		local seat = { vehicleId = hullId, seat = 'seat_front_left' }
+		env.Open77.vehicles.getPlayerSeat = function(playerId)
+			if playerId == pilot then return seat end
+			if playerId == stranger then return nil end
+			return nil
+		end
+
+		--- One press off the wire, exactly as a client sends it.
+		local function toggle(playerId, payload)
+			env.source = playerId
+			control.netEvents[avdrive.Event.TOGGLE](payload)
+			env.source = nil
+		end
+		local function lastNotice()
+			return notices[#notices]
+		end
+		--- One tick of the flight this block is watching. False when the run is
+		-- over: the step after the hand-over poses nothing, and that is what
+		-- ends the loop rather than a clock.
+		local function tick()
+			local before = #control.vehiclePoses
+			if job ~= nil then job.step() end
+			return #control.vehiclePoses > before
+		end
+		--- Every pose since a mark, as the definitions the host was handed.
+		local function posesFrom(from)
+			local list = {}
+			for index = from + 1, #control.vehiclePoses do
+				list[#list + 1] = control.vehiclePoses[index].definition
+			end
+			return list
+		end
+
+		-- ── every refusal is named ────────────────────────────────────────
+		toggle(stranger, { position = { x = 10.0, y = 0.0, z = 0.0 } })
+		check('a body seated in nothing is refused BY NAME',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.notSeated'
+				and lastNotice().playerId == stranger,
+			lastNotice() and tostring(lastNotice().key))
+		check('and nothing was posed for a refusal', #control.vehiclePoses == 0)
+
+		control.vehicles.byId['0xground'] = {
+			id = '0xground', record = 'Vehicle.v_standard2_archer_hella_player',
+			x = 0.0, y = 0.0, z = 0.0,
+		}
+		seat = { vehicleId = '0xground', seat = 'seat_front_left' }
+		toggle(pilot, { position = { x = 10.0, y = 0.0, z = 0.0 } })
+		check('a ground car under the pilot is refused as not an aircraft',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.notAv',
+			lastNotice() and tostring(lastNotice().key))
+
+		seat = { vehicleId = hullId, seat = 'seat_front_left' }
+		toggle(pilot, {})
+		check('a press with no pin at all is told to drop one',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.noWaypoint',
+			lastNotice() and tostring(lastNotice().key))
+		toggle(pilot, { unreadable = true })
+		check('while a map that cannot be read is named as its own failure',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.waypointUnavailable',
+			lastNotice() and tostring(lastNotice().key))
+		toggle(pilot, { position = { x = 1.0, y = 2.0, z = 999999.0 } })
+		check('a pin outside the world is not believed off the wire',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.noWaypoint',
+			lastNotice() and tostring(lastNotice().key))
+		toggle(pilot, { position = { x = 10000.0, y = 0.0, z = 0.0 } })
+		check('and a pin past the range ceiling is refused as too far',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.tooFar',
+			lastNotice() and tostring(lastNotice().key))
+		check('the aircraft is still untouched through every refusal',
+			#control.vehiclePoses == 0 and #control.vehiclePins == 0,
+			('%d pose(s), %d pin(s)'):format(#control.vehiclePoses, #control.vehiclePins))
+
+		-- ── the flight ─────────────────────────────────────────────────────
+		local posesAt, pinsAt = #control.vehiclePoses, #control.vehiclePins
+		toggle(pilot, { position = { x = 100.0, y = 0.0, z = 5.0 } })
+		check('a pilot with a pin is engaged',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.engaged',
+			lastNotice() and tostring(lastNotice().key))
+		check('and the hull is frozen for the flight, so the ride is the server\'s',
+			#control.vehiclePins == pinsAt + 1
+				and control.vehiclePins[#control.vehiclePins].frozen == true,
+			('%d pin(s)'):format(#control.vehiclePins - pinsAt))
+		check('at the configured cadence',
+			job ~= nil and job.intervalMs == 100, tostring(job and job.intervalMs))
+
+		local steps = 0
+		for _ = 1, 200 do
+			if not tick() then break end
+			steps = steps + 1
+		end
+		local poses = posesFrom(posesAt)
+		check('the flight flies its whole route: climb, cruise, descent',
+			steps > 30 and #poses == steps, ('%d step(s)'):format(steps))
+		check('climbing over the take-off to the cruise altitude first',
+			#poses > 0 and math.abs(poses[1].x - 0.0) < 0.001
+				and poses[1].z > 0.0 and poses[1].z < 15.0,
+			#poses > 0 and ('%.2f,%.2f,%.2f'):format(poses[1].x, poses[1].y, poses[1].z))
+		local function has(x, y, z)
+			for _, at in ipairs(poses) do
+				if math.abs(at.x - x) < 0.001 and math.abs(at.y - y) < 0.001
+					and math.abs(at.z - z) < 0.001 then return true end
+			end
+			return false
+		end
+		check('level at the cruise altitude over the take-off before it moves',
+			has(0.0, 0.0, 15.0))
+		check('across the whole leg at that altitude, once, and not before',
+			has(100.0, 0.0, 15.0))
+		check('and it ends holding at the hover above the pin',
+			has(100.0, 0.0, 7.0),
+			#poses > 0 and ('%.2f,%.2f,%.2f'):format(poses[#poses].x, poses[#poses].y, poses[#poses].z))
+		local turned = true
+		for _, at in ipairs(poses) do
+			if math.abs(at.yaw - 0.0) > 0.001 then turned = false end
+		end
+		check('one heading for the whole flight, aimed at the destination', turned)
+		check('the freeze comes off at the hand-over',
+			control.vehiclePins[#control.vehiclePins].frozen == false)
+		check('and the pilot is told the controls are theirs',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.arrived'
+				and lastNotice().kind == 'success',
+			lastNotice() and tostring(lastNotice().key))
+
+		-- ── the same key takes the controls back ─────────────────────────────
+		local before = #control.vehiclePoses
+		toggle(pilot, { position = { x = 100.0, y = 0.0, z = 5.0 } })
+		check('a second flight engages the same way',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.engaged',
+			lastNotice() and tostring(lastNotice().key))
+		tick()
+		tick()
+		tick()
+		check('three ticks into it, the aircraft is flying',
+			#control.vehiclePoses == before + 3, ('%d pose(s)'):format(#control.vehiclePoses - before))
+		toggle(pilot, {})
+		check('and the same key hands the controls back mid-flight',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.cancelled',
+			lastNotice() and tostring(lastNotice().key))
+		check('the freeze comes off with it',
+			control.vehiclePins[#control.vehiclePins].frozen == false)
+		check('and nothing is posed after the hand-over',
+			tick() == false and #control.vehiclePoses == before + 3)
+
+		-- ── a pilot who leaves the controls ─────────────────────────────────
+		toggle(pilot, { position = { x = 100.0, y = 0.0, z = 5.0 } })
+		check('a third flight engages',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.engaged',
+			lastNotice() and tostring(lastNotice().key))
+		tick()
+		seat = nil
+		tick()
+		check('stops the moment the seat read no longer names the pilot',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.pilotLeft',
+			lastNotice() and tostring(lastNotice().key))
+		check('and hands the aircraft back with it',
+			control.vehiclePins[#control.vehiclePins].frozen == false and tick() == false)
+
+		-- ── one pilot per airframe ─────────────────────────────────────────
+		seat = { vehicleId = hullId, seat = 'seat_front_left' }
+		env.Open77.vehicles.getPlayerSeat = function(playerId)
+			if playerId == pilot then return seat end
+			if playerId == stranger then return { vehicleId = hullId, seat = 'seat_back_left' } end
+			return nil
+		end
+		toggle(pilot, { position = { x = 10.0, y = 0.0, z = 0.0 } })
+		check('a fourth flight engages',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.engaged',
+			lastNotice() and tostring(lastNotice().key))
+		toggle(stranger, { position = { x = 10.0, y = 0.0, z = 0.0 } })
+		check('and a second body aboard the same airframe cannot fly it twice',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.busy'
+				and lastNotice().playerId == stranger,
+			lastNotice() and tostring(lastNotice().key))
+		toggle(pilot, {})
+		check('the pilot who engaged it is the one who releases it',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.cancelled',
+			lastNotice() and tostring(lastNotice().key))
+
+		-- ── the ceiling ─────────────────────────────────────────────────────
+		-- A fiftieth of a minute is twelve ticks of flight -- a third of the
+		-- route -- and then the run ends by name: a waypoint that cannot be
+		-- reached is a flight that ends, not an aircraft frozen at altitude for
+		-- ever.
+		config.MAX_MINUTES = 0.02
+		toggle(pilot, { position = { x = 100.0, y = 0.0, z = 5.0 } })
+		check('a fifth flight engages',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.engaged',
+			lastNotice() and tostring(lastNotice().key))
+		local capped = 0
+		for _ = 1, 200 do
+			if not tick() then break end
+			capped = capped + 1
+		end
+		check('a flight that outlives its ceiling is ended BY NAME',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.timeout',
+			lastNotice() and tostring(lastNotice().key))
+		check('and it ends early rather than flying the whole route',
+			capped > 0 and capped < steps, ('%d step(s) of %d'):format(capped, steps))
+		check('with the airframe handed back like every other end',
+			control.vehiclePins[#control.vehiclePins].frozen == false)
+
+		-- ── a module stop leaves nothing frozen in the sky ─────────────────────
+		toggle(pilot, { position = { x = 100.0, y = 0.0, z = 5.0 } })
+		check('a sixth flight engages',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.engaged',
+			lastNotice() and tostring(lastNotice().key))
+		avdrive.Stop()
+		check('a stop puts every flight down',
+			lastNotice() ~= nil and lastNotice().key == 'avdrive.cancelled',
+			lastNotice() and tostring(lastNotice().key))
+		check('and unfreezes the airframe under it',
+			control.vehiclePins[#control.vehiclePins].frozen == false)
+		check('a run that is down poses nothing more', tick() == false)
 	end
 end
 
@@ -8777,8 +9901,23 @@ do
 		check('and it is NOT sent to the entity-bound call, which would resolve it as a CName',
 			#cctl.effects.entityPlays == 0, #cctl.effects.entityPlays)
 		check('and the noclip native was really switched on', cctl.travels.noclip == true)
-		check('and the body is NOT reported on the way up -- the server already knew',
-			#cctl.serverEvents == mark)
+		-- THE BODY, AND NOT "NOTHING AT ALL HAPPENED". This used to assert the
+		-- raw count of client events across the window, and it was a hostage to
+		-- the scheduler's stagger: every module's own poll (`*:ask`, `*:sync`)
+		-- registers at boot with `nextAt = now + (registered * 17) % interval`,
+		-- so WHICH poll's first fire lands in this 400 ms window depends on how
+		-- many jobs the resource happens to carry. Adding a module re-rolls it --
+		-- `opx:net:teleports:ask` walked into the window the moment
+		-- `headquarters` joined the manifest -- and the failure named a toggle
+		-- that had sent nothing. What this check means is what its words say: on
+		-- the way up, the BODY is not reported. `NOCLIP_BODY` is the one event
+		-- that reports it, and none may fire here.
+		check('and the body is NOT reported on the way up -- the server already knew', (function()
+			for index = mark + 1, #cctl.serverEvents do
+				if cctl.serverEvents[index].name == admin.Event.NOCLIP_BODY then return false end
+			end
+			return true
+		end)())
 
 		-- ── and it RIDES the operator ─────────────────────────────────────
 		-- A world effect is placed once and then stays where it was put. An
@@ -11631,6 +12770,95 @@ do
 		-- `web/` is what the resource ships, so a name in the config that is not in
 		-- it is a stinger that silently never plays for anybody.
 		local shipped = admin.Section('ANNOUNCE').STINGER
+		for _, name in ipairs({ shipped.OPEN, shipped.CLOSE }) do
+			local file = io.open('web/audio/' .. tostring(name), 'rb')
+			check(('the pack ships the clip %s'):format(tostring(name)), file ~= nil)
+			if file ~= nil then file:close() end
+		end
+	end
+end
+
+
+-- ── the dispatch board, client side ────────────────────────────────────────
+-- The server sends the WORDS and this half shouts them: one toast, one id, and
+-- the frame and the two clips out of this client's own `ALERTS.DISPATCH` block
+-- -- the same bargain the world announcement makes, and for the same reason:
+-- nothing about the presentation crosses the wire, so a client that has the
+-- clips plays them and one that named `''` does not, and neither case can make
+-- a dispatch fail to arrive.
+section('the dispatch board on a screen')
+do
+	local env, control, why = boot('client')
+	check('client boots for the dispatch board', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local ncpd = OPX.Modules.Get('ncpd')
+		local locale = env.locale
+
+		-- The newest toast the runtime sent to the page, on any page: the
+		-- overlay is one surface, and a test that assumed which one would be
+		-- fragile.
+		local function lastToast()
+			local found
+			for _, page in ipairs(control.pages) do
+				for index = 1, #page.sent do
+					if page.sent[index].channel == 'opx:notify:show' then
+						found = page.sent[index].payload
+					end
+				end
+			end
+			return found
+		end
+
+		check('the dispatch channel is wired on this client',
+			control.netEvents[ncpd.Event.DISPATCH] ~= nil)
+
+		control.netEvents[ncpd.Event.DISPATCH]({
+			key = 'ncpd.dispatch.rise',
+			args = { division = 'NCPD', stage = 3, x = 120, y = -880, name = '' },
+		})
+		local toast = lastToast()
+		check('a dispatch raises a toast', toast ~= nil)
+		check('carrying the words of the call-out it rode in on',
+			toast ~= nil and tostring(toast.message):find('3/6', 1, true) ~= nil
+				and tostring(toast.message):find('120', 1, true) ~= nil
+				and tostring(toast.message):find('-880', 1, true) ~= nil,
+			toast and tostring(toast.message))
+		check('under the dispatch title, in this client\'s own language',
+			toast ~= nil and toast.title == locale('ncpd.dispatch.title'),
+			toast and tostring(toast.title))
+		check('on one fixed id, so a second board replaces the first',
+			toast ~= nil and toast.id == 'opx.ncpd.dispatch', toast and tostring(toast.id))
+		check('as the loudest shape the overlay has, per this client\'s config',
+			toast ~= nil and toast.kind == ncpd.Settings.ALERTS.DISPATCH.KIND
+				and toast.kind == 'error', toast and tostring(toast.kind))
+		check('for as long as the config holds it',
+			toast ~= nil and toast.durationMs == ncpd.Settings.ALERTS.DISPATCH.DURATION_MS
+				and toast.durationMs == 12000, toast and tostring(toast.durationMs))
+		check('wrapped in the two clips this client configured',
+			toast ~= nil and type(toast.stinger) == 'table'
+				and toast.stinger.open == 'announce-open.mp3'
+				and toast.stinger.close == 'announce-close.mp3',
+			toast and toast.stinger and tostring(toast.stinger.open))
+		check('at the configured volume',
+			toast ~= nil and toast.stinger ~= nil and toast.stinger.volume == 0.9,
+			toast and toast.stinger and tostring(toast.stinger.volume))
+
+		-- A BOARD A CONFIG SWITCHED OFF STAYS DARK, even for a payload that is
+		-- already on the wire: the block is read live, on every arrival.
+		ncpd.Settings.ALERTS.DISPATCH.enabled = false
+		local held = lastToast()
+		control.netEvents[ncpd.Event.DISPATCH]({ key = 'ncpd.dispatch.rise',
+			args = { division = 'NCPD', stage = 4, x = 0, y = 0, name = '' } })
+		check('a board the config switched off stays dark, whatever is on the wire',
+			lastToast() == held)
+		ncpd.Settings.ALERTS.DISPATCH.enabled = true
+
+		-- THE FILES A CLIENT ACTUALLY DOWNLOADS. `web/` is what the resource
+		-- ships, so a name in the config that is not in it is a stinger that
+		-- silently never plays for anybody.
+		local shipped = ncpd.Settings.ALERTS.DISPATCH.STINGER
 		for _, name in ipairs({ shipped.OPEN, shipped.CLOSE }) do
 			local file = io.open('web/audio/' .. tostring(name), 'rb')
 			check(('the pack ships the clip %s'):format(tostring(name)), file ~= nil)
@@ -15698,9 +16926,14 @@ do
 			created.model == 'crate.small' and created.model:find('%.mesh$') == nil,
 			tostring(created.model))
 
+		-- The crate is picked by ITS MODEL: the props registry is the platform's
+		-- shared world and other modules stand their own props in it (the clinic's
+		-- chairs among them), so the smallest id is somebody else's furniture.
 		local CRATE = nil
-		for id in pairs(props.byId) do
-			if CRATE == nil or id < CRATE then CRATE = id end
+		for id, prop in pairs(props.byId) do
+			if prop.model == 'crate.small' and (CRATE == nil or id < CRATE) then
+				CRATE = id
+			end
 		end
 		check('and the server holds a crate to race for', CRATE ~= nil)
 
@@ -15848,7 +17081,10 @@ do
 		-- refusal below leaves it there, because the gate is asked before the claim.
 		local GATED, gatedAt = nil, nil
 		for id, prop in pairs(props.byId) do
-			if id ~= CRATE and (GATED == nil or id < GATED) then GATED, gatedAt = id, prop end
+			if prop.model == 'crate.small' and id ~= CRATE
+				and (GATED == nil or id < GATED) then
+				GATED, gatedAt = id, prop
+			end
 		end
 		check('there is a second crate to gate', GATED ~= nil)
 		positions[9] = { x = gatedAt.x, y = gatedAt.y, z = gatedAt.z, bucket = 0 }
@@ -16019,9 +17255,14 @@ do
 		Access.Problems()
 		control.Pump(1)
 
+		-- The crate is picked by ITS MODEL: the props registry is the platform's
+		-- shared world and other modules stand their own props in it (the clinic's
+		-- chairs among them), so the smallest id is somebody else's furniture.
 		local CRATE = nil
-		for id in pairs(props.byId) do
-			if CRATE == nil or id < CRATE then CRATE = id end
+		for id, prop in pairs(props.byId) do
+			if prop.model == 'crate.small' and (CRATE == nil or id < CRATE) then
+				CRATE = id
+			end
 		end
 		local home = { x = props.byId[CRATE].x, y = props.byId[CRATE].y,
 			z = props.byId[CRATE].z }
@@ -16284,15 +17525,23 @@ do
 		Access.Problems()
 		control.Pump(1)
 
+		-- The crate is picked by ITS MODEL: the props registry is the platform's
+		-- shared world and other modules stand their own props in it (the clinic's
+		-- chairs among them), so the smallest id is somebody else's furniture.
 		local CRATE = nil
-		for id in pairs(props.byId) do
-			if CRATE == nil or id < CRATE then CRATE = id end
+		for id, prop in pairs(props.byId) do
+			if prop.model == 'crate.small' and (CRATE == nil or id < CRATE) then
+				CRATE = id
+			end
 		end
 		local home = { x = props.byId[CRATE].x, y = props.byId[CRATE].y,
 			z = props.byId[CRATE].z }
 		local SECOND = nil
-		for id in pairs(props.byId) do
-			if id ~= CRATE and (SECOND == nil or id < SECOND) then SECOND = id end
+		for id, prop in pairs(props.byId) do
+			if prop.model == 'crate.small' and id ~= CRATE
+				and (SECOND == nil or id < SECOND) then
+				SECOND = id
+			end
 		end
 
 		local function fire(player, event, ...)
@@ -19143,10 +20392,16 @@ do
 	check('and a seat that is not a seat is refused',
 		law.InSeat('roof') == nil and law.InSeat(nil) == nil and law.InSeat(9) == nil)
 	local crewDoor = law.Maxtac.Boarding
-	check('the shipped crew door validates, so a crew can get aboard at all',
+	-- THE CONTROLS GO FIRST, which is the reversal this suite pins. The
+	-- validator used to drop `seat_front_left` from any list that offered it --
+	-- "a crew may fly from any seat" -- and the platform then measured a
+	-- back-seat pilot at 120 m/s under the old ground envelope and widened the
+	-- flight envelope to every occupant of an AV record. The seat a crew
+	-- member reaches for is now the one it always was: where the controls are.
+	check('the shipped crew door validates, with the controls offered first',
 		crewDoor ~= nil and crewDoor.Seconds > 0.0 and crewDoor.ReachMetres > 0.0
-			and crewDoor.Seats[1] == 'seat_front_right' and #crewDoor.Jobs > 0
-			and crewDoor.RestSeconds >= 0.0,
+			and crewDoor.Seats[1] == 'seat_front_left' and crewDoor.Seats[2] == 'seat_front_right'
+			and #crewDoor.Jobs > 0 and crewDoor.RestSeconds >= 0.0,
 		tostring(crewDoor and crewDoor.Seats[1]))
 	check('Heat_0 has a threshold to cross and no division answering',
 		law.Division(0) == nil and law.Capacity(0) == 50,
@@ -19589,7 +20844,8 @@ do
 		-- A HOST THAT REFUSES IS NAMED, not left as an empty street: this is the
 		-- shape that says which record or which contract was missing.
 		control.npcs.refuse = 'no_spawn_contract'
-		local refused = Response.Apply('citizen-ncpd-b', subject, 2)		check('a refused spawn is reported as a refusal, with the record named',
+		local refused = Response.Apply('citizen-ncpd-b', subject, 2)
+		check('a refused spawn is reported as a refusal, with the record named',
 			refused.ok == true and #refused.value.refused > 0
 				and tostring(refused.value.refused[1]):find('no_spawn_contract', 1, true) ~= nil,
 			table.concat(refused.value.refused or {}, ', '))
@@ -20427,6 +21683,80 @@ do
 			#control.notices == mark)
 		check('and the division is standing down for real',
 			Ledger.Status('citizen-ncpd-suspect').stage == 0)
+
+		-- ── the dispatch board ──────────────────────────────────────────
+		-- THE CALL-OUT, SHOUTED. The same moment, the same words, one louder
+		-- surface: a full-stress toast on the screens of the same people the air
+		-- reached. The wire carries the locale KEY and its arguments and nothing
+		-- about the presentation -- each receiver reads the frame, the lifetime
+		-- and the two clips out of its own `ALERTS.DISPATCH` block -- so what is
+		-- decided here is WHOSE screens light up and with WHICH WORDS.
+		check('the board is its own name on the wire',
+			ncpd.Event.DISPATCH == 'opx:net:ncpd:dispatch', tostring(ncpd.Event.DISPATCH))
+
+		--- The dispatch boards sent since a mark: recipient -> payload.
+		local function boardsFrom(mark)
+			local out = {}
+			for index = mark + 1, #control.clientEvents do
+				local entry = control.clientEvents[index]
+				if entry.name == ncpd.Event.DISPATCH then out[entry.source] = entry[1] end
+			end
+			return out
+		end
+
+		mark = #control.clientEvents
+		report(suspect, 3)
+		local boards = boardsFrom(mark)
+		check('a rising stage lights up the officer on duty\'s screen', boards[officer] ~= nil)
+		check('and the trooper\'s, on the same moment the air speaks', boards[trooper] ~= nil)
+		check('but not a screen that is clocked off', boards[offDuty] == nil)
+		check('nor one with no job at all', boards[civilian] == nil)
+		check('and the suspect\'s own screen is left dark', boards[suspect] == nil)
+
+		local payload = boards[officer]
+		check('the board carries the words as a key and its arguments, never a sentence',
+			payload ~= nil and (payload.key == 'ncpd.dispatch.rise'
+				or payload.key == 'ncpd.dispatch.suspect')
+				and type(payload.args) == 'table'
+				and payload.args.stage == 3
+				and payload.args.x == 120 and payload.args.y == -880,
+			payload and ('%s at %s, %s'):format(tostring(payload.key),
+				tostring(payload.args and payload.args.x),
+				tostring(payload.args and payload.args.y)))
+
+		-- THE BOARD IS THE LOUDER HALF OF ONE CALL-OUT, and it comes down
+		-- without silencing the radio: `enabled = false` darkens the screens and
+		-- the call-out itself still arrives.
+		ncpd.Settings.ALERTS.DISPATCH.enabled = false
+		mark = #control.clientEvents
+		local noticeMark = #control.notices
+		report(suspect, 4)
+		check('a switched-off board darkens every screen', next(boardsFrom(mark)) == nil)
+		check('while the call-out itself still arrives', #control.notices > noticeMark)
+		ncpd.Settings.ALERTS.DISPATCH.enabled = true
+
+		-- AND THE BOARD MAY NAME ITS OWN AIR CREW, for the server that wants
+		-- MaxTac alone staring at the city.
+		ncpd.Settings.ALERTS.DISPATCH.JOBS = { 'maxtac' }
+		mark = #control.clientEvents
+		report(suspect, 5)
+		boards = boardsFrom(mark)
+		check('a board for its own crew lights up only theirs',
+			boards[trooper] ~= nil and boards[officer] == nil,
+			('trooper=%s officer=%s'):format(tostring(boards[trooper] ~= nil),
+				tostring(boards[officer] ~= nil)))
+		ncpd.Settings.ALERTS.DISPATCH.JOBS = false
+
+		-- AND THE SHIPPED CLIPS ARE BARE FILE NAMES, the only shape the page's
+		-- stinger rule accepts -- a name with a slash in it is dropped at the
+		-- receiving end and the operator hears nothing.
+		local stinger = ncpd.Settings.ALERTS.DISPATCH.STINGER
+		check('the shipped stingers are bare file names, the only shape the page accepts',
+			type(stinger) == 'table'
+				and tostring(stinger.OPEN):match('^[%w_%-]+%.%w+$') ~= nil
+				and tostring(stinger.CLOSE):match('^[%w_%-]+%.%w+$') ~= nil,
+			type(stinger) == 'table' and ('%s / %s'):format(tostring(stinger.OPEN),
+				tostring(stinger.CLOSE)) or 'no stinger block')
 	end
 end
 -- ── the crew door, client side ─────────────────────────────────────────────
@@ -22186,7 +23516,8 @@ do
 		-- @param playerId number
 		-- @return table|nil
 		local function knock(playerId)
-			local mark = #control.clientEvents				local ask = control.netEvents[ncpd.Event.RADIO]
+			local mark = #control.clientEvents
+				local ask = control.netEvents[ncpd.Event.RADIO]
 				if type(ask) ~= 'function' then return nil end
 				-- The host's dispatch shape: payload only, the sender in the
 				-- `source` global (teleports' `use` helper is the idiom).
@@ -22339,7 +23670,7 @@ do
 		-- same report the engine mirror makes, so the line under test is the one
 		-- the real crossing puts up -- with the SAME key and arguments as the
 		-- toast, which is why its wording cannot drift from the notification.
-		load(45, 'citizen-radio-suspect')			
+		load(45, 'citizen-radio-suspect')
 			local rawReport = control.netEvents[ncpd.Event.REPORT]
 			check('the engine report has a handler on the wire', type(rawReport) == 'function')
 			local function report(player, stage)
@@ -22894,7 +24225,7 @@ do
 			control2.Pump(1)
 			-- A fresh ledger over a real database: work, then a claim, then the
 			-- write-back the thread carries.
-			skillsApi2.Award(citizen, 'maxtac', 30)				
+			skillsApi2.Award(citizen, 'maxtac', 30)
 				live.source = src
 				control2.netEvents[skills.Event.SPEND]('maxtac_1')
 				live.source = nil
@@ -23108,10 +24439,144 @@ do
 	end
 end
 
+-- ── the cyberware identity ──────────────────────────────────────────────────
+-- `wiki/cyberware.md` runs every implant transaction "on their own
+-- already-bound character" and names the CHARACTER ADAPTER as the binder. This
+-- server runs no `open77_appearance` adapter, so `modules/character` -- the
+-- trusted character workflow that owns the character key -- binds it. Without
+-- a binder the ripperdoc shop dies the quietest death there is: `current` reads
+-- "loading" for ever, every offer is refused `notReady`, and no server log
+-- says anything happened at all. These checks pin the binder and its rules.
+section('the character workflow binds the cyberware identity')
+do
+	local env, control, why = boot('server', nil, function(e)
+		-- The host's resource-state seam, in the shape the platform answers
+		-- it: the support resource runs, and no adapter does.
+		e.GetResourceState = function(name)
+			return name == 'open77_cyberware' and 'running' or 'missing'
+		end
+	end)
+	check('the server boots with the character workflow', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local cyberware = env.Open77.cyberware
+
+		local function bindCount()
+			return #cyberware.binds
+		end
+
+		check('the workflow owns the identity seam',
+			type(character.BindCyberware) == 'function'
+				and type(character.UnbindCyberware) == 'function')
+
+		-- ── the binder ──────────────────────────────────────────────────────
+		character.BindCyberware(41, 'citizen-bound')
+		check('a placement binds the character key the workflow owns',
+			bindCount() == 1 and cyberware.binds[1][1] == 41
+				and cyberware.binds[1][2] == 'citizen-bound',
+			('%d bind(s)'):format(bindCount()))
+		character.BindCyberware(41, 'citizen-bound')
+		check('and one body binds once, not once per call',
+			bindCount() == 1, bindCount())
+
+		-- ── the one-binder rule ────────────────────────────────────────────
+		-- The wiki: "Do not combine a second identity binder with the
+		-- existing adapter." When an adapter is running, this stands down.
+		env.GetResourceState = function(name)
+			return (name == 'open77_appearance' or name == 'open77_cyberware')
+				and 'running' or 'missing'
+		end
+		character.BindCyberware(42, 'citizen-adapter')
+		check('with a character adapter running, this workflow stands down',
+			bindCount() == 1, bindCount())
+
+		env.GetResourceState = function() return 'missing' end
+		character.BindCyberware(43, 'citizen-nosupport')
+		check('and with no cyberware support resource there is nothing to bind to',
+			bindCount() == 1, bindCount())
+		env.GetResourceState = function(name)
+			return name == 'open77_cyberware' and 'running' or 'missing'
+		end
+
+		-- ── refusals ──────────────────────────────────────────────────────
+		-- `cyberware_storage_unavailable` is the platform's own quiet case
+		-- (its adapter prints nothing for it either); anything else is a
+		-- real refusal and is said out loud, once, with its reason.
+		cyberware.refuseBind = 'cyberware_storage_unavailable'
+		character.BindCyberware(44, 'citizen-unstored')
+		local identityLines = 0
+		for _, line in ipairs(control.log.warn) do
+			if line:find('cyberware identity', 1, true) then identityLines = identityLines + 1 end
+		end
+		check('an unconfigured store is the quiet case, not a log line',
+			identityLines == 0, identityLines)
+
+		cyberware.refuseBind = 'invalid_character_key'
+		character.BindCyberware(45, 'citizen-refused')
+		local said = false
+		for _, line in ipairs(control.log.warn) do
+			if line:find('cyberware identity', 1, true)
+				and line:find('invalid_character_key', 1, true) then said = true end
+		end
+		check('a real refusal is said out loud, with its reason', said)
+
+		-- ── the release ────────────────────────────────────────────────────
+		character.UnbindCyberware(41)
+		check('a departure releases the binding this workflow took',
+			#cyberware.unbinds == 1 and cyberware.unbinds[1] == 41,
+			('%d unbind(s)'):format(#cyberware.unbinds))
+		character.UnbindCyberware(41)
+		check('and releases it once', #cyberware.unbinds == 1, #cyberware.unbinds)
+		character.UnbindCyberware(42)
+		check('a binding this workflow never took is not its own to release',
+			#cyberware.unbinds == 1, #cyberware.unbinds)
+
+		-- ── the wiring: the body carries its identity ───────────────────────
+		-- Driven through the REAL `PlaceCharacter`: placement is what a join
+		-- goes through, and a bind hooked anywhere else is a bind a placement
+		-- never makes.
+		env.Open77.players.kill = function() return true end
+		env.Open77.players.setMaxHealth = function() return true end
+		env.Open77.players.respawn = function() return true end
+		env.Open77.players.revive = function() return true end
+		env.Open77.players.setArmor = function() return true end
+		env.Open77.players.getLifeState = function() return { phase = 'alive' } end
+		env.Open77.players.position = function()
+			return { x = 0.0, y = 0.0, z = 0.0, bucket = 0 }
+		end
+		local placed, placeWhy = nil, nil
+		env.CreateThread(function()
+			placed, placeWhy = character.PlaceCharacter({
+				PlayerData = {
+					citizenId = 'citizen-placed', source = 46, userId = 'account-46',
+					position = { x = 1.0, y = 2.0, z = 3.0, heading = 90.0 },
+					metadata = { health = 100, armor = 0 },
+				},
+			})
+		end)
+		control.Pump(8)
+		check('a placed character is bound as it lands',
+			placed == true and (function()
+				for _, row in ipairs(cyberware.binds) do
+					if row[1] == 46 and row[2] == 'citizen-placed' then return true end
+				end
+				return false
+			end)(), tostring(placeWhy))
+	end
+end
+
 section('the ripperdoc clinic: the chair, the offer and the money rule')
 do
 	local env, control, why = boot('server')
 	check('the server boots with the ripperdoc module', why == nil, why)
+	if control ~= nil then
+		-- The platform services the chrome reaches the body through.
+		for _, service in ipairs({ 'open77_cyberware', 'open77_dash', 'open77_reflex', 'open77_hacking' }) do
+			control.resourceStates[service] = 'running'
+		end
+	end
 
 	if why == nil then
 		local OPX = env.OPX
@@ -23124,8 +24589,11 @@ do
 
 		--- One press from one connection: the host names the sender in the
 		--- `source` global and delivers payload only (its own dispatch shape).
+		--- The per-player rate floor is cleared first: these presses are the
+		--- scenario, not a flood (the floor has its own check below).
 		local function press(player, name, ...)
 			local args = table.pack(...)
+			OPX.ForgetCooldowns(player)
 			env.source = player
 			control.netEvents[name](table.unpack(args, 1, args.n))
 			env.source = nil
@@ -23133,21 +24601,30 @@ do
 
 		check('the clinic declares its doors, its key and one refusal table',
 			type(Event.USE) == 'string' and type(Event.FRAME) == 'string'
-				and type(Event.VIEW) == 'string'
+				and type(Event.VIEW) == 'string' and type(Event.PROBE) == 'string'
+				and type(Event.RECORD) == 'string' and type(Event.BROWSE) == 'string'
 				and ripperdoc.Ripper.KEY.ID == 'opx.ripperdoc.use'
 				and ripperdoc.Ripper.KEY.DEFAULT == 'E'
-				and Refusal.cannotPay == 'ripperdoc.cannotPay')
+				and Refusal.cannotPay == 'ripperdoc.cannotPay'
+				and Refusal.overCapacity == 'ripperdoc.overCapacity'
+				and Refusal.systemFull == 'ripperdoc.systemFull')
 
-		-- THE TRAY, as the config declares it: the platform's two audited
-		-- slot/profile pairs and the wiki example clinic's own numbers.
+		-- THE TRAY: the operator's own pieces first, exactly as the config
+		-- writes them, then the whole base game behind them.
 		local catalog = ripperdoc.Ripper.Catalog()
 		local arms, legs = catalog[1], catalog[2]
 		check('the tray carries the platform pair at the wiki clinic prices',
-			#catalog == 2 and arms.SLOT == 'arms' and arms.PROFILE == 'gorilla_arms'
+			arms.SLOT == 'arms' and arms.PROFILE == 'gorilla_arms'
 				and legs.SLOT == 'legs' and legs.PROFILE == 'double_jump'
 				and arms.GRADES[1].PRICE == 100 and arms.GRADES[2].PRICE == 250
 				and legs.REMOVE == 25 and legs.GRADES[2].VALUE.jumpStaminaCost == 8,
 			('%d entries'):format(#catalog))
+		check('and the base game behind them: every piece Night City sells',
+			#catalog >= 115 and ripperdoc.Ripper.Entry('subdermal_armor') ~= nil
+				and ripperdoc.Ripper.Entry('apogee_sandevistan') ~= nil
+				and ripperdoc.Ripper.Entry('mantis_blades') ~= nil
+				and #ripperdoc.Ripper.Systems() == 10,
+			('%d entries, %d systems'):format(#catalog, #ripperdoc.Ripper.Systems()))
 
 		-- Both definitions are REGISTERED before anything may be staged: an
 		-- install against an undefined definition is refused by the store.
@@ -23158,16 +24635,20 @@ do
 			'one or both definitions are missing')
 
 		-- THE SHELF READS ITS OWN ANSWER. The store answers a TABLE, the
-		-- wiki's `{ok=...}`; a reader comparing it to `true` logged both
-		-- definitions as refused while swallowing the reason -- the first
-		-- staging boot printed exactly that. Acceptance must land in info,
-		-- and no false refusal may appear.
+		-- wiki's `{ok=...}`; a reader comparing it to `true` logged every
+		-- definition as refused while swallowing the reason. Acceptance must
+		-- land in info, and no false refusal may appear.
 		local infoLog = table.concat(control.log.info, ' | ')
 		local warnLog = table.concat(control.log.warn, ' | ')
-		local _, shelves = infoLog:gsub('is on the shelf', '')
-		check('the shelf accepts the store answer: two on the shelf, no false refusal',
-			shelves == 2 and warnLog:find('was refused') == nil,
-			('info=%s warn=%s'):format(infoLog, warnLog))
+		check('the shelf accepts the store answer: every kind on the shelf, no false refusal',
+			infoLog:find('the definition opx.ripperdoc.arms is on the shelf', 1, true) ~= nil
+				and infoLog:find('the dash ' .. ripperdoc.Ripper.DefinitionFor(ripperdoc.Ripper.Entry('dash'),
+					ripperdoc.Ripper.Grade(ripperdoc.Ripper.Entry('dash'), 'street')) .. ' is on the shelf', 1, true) ~= nil
+				and infoLog:find('reflex definition(s) serve every reflex grade', 1, true) ~= nil
+				and infoLog:find('the hack opx.ripperdoc.deck is on the shelf', 1, true) ~= nil
+				and infoLog:find('the ice opx.ripperdoc.self_ice is on the shelf', 1, true) ~= nil
+				and warnLog:find('was refused') == nil,
+			warnLog)
 
 		-- And a refusal keeps its REASON in the line. Same boot path, with
 		-- the store told to refuse the first definition only.
@@ -23237,6 +24718,10 @@ do
 			end
 			return found
 		end
+		local function flashOf(playerId)
+			local frame = frameOf(playerId)
+			return frame ~= nil and frame.flash ~= nil and frame.flash.key or nil
+		end
 
 		-- The staged work still waiting on its completion.
 		local function ticketFor(player)
@@ -23258,6 +24743,15 @@ do
 				and refused.flash.key == Refusal.noSuchChair,
 			refused and tostring(refused.mode) or 'no frame')
 
+		-- THE RATE FLOOR: a second press inside it is dropped whole -- no
+		-- frame, no work -- and one after it is heard.
+		local before = #control.clientEvents
+		env.source = 33
+		control.netEvents[Event.USE]('no_such_chair')
+		env.source = nil
+		check('a press inside the rate floor is dropped, not answered',
+			#control.clientEvents == before, ('%d event(s)'):format(#control.clientEvents - before))
+
 		press(32, Event.USE, 'clinic_watson')
 		local seated = frameOf(32)
 		check('the patient is seated on the platform chair workspot and their menu opens',
@@ -23266,70 +24760,102 @@ do
 				and control.animations.started[1][2] == 'chair'
 				and control.animations.started[1][3].x == -1441.2,
 			seated and tostring(seated.mode) or 'no frame')
+		check('the sitter frame carries the body, never the tray',
+			seated ~= nil and seated.catalogue == nil and type(seated.chrome) == 'table'
+				and seated.chrome.ready == false and #seated.chrome.systems == 10
+				and seated.chrome.capacity.max == 100 and seated.wallet == 500,
+			seated and tostring(seated.chrome) or 'no frame')
 
 		press(33, Event.USE, 'clinic_watson')
-		check('a taken chair says taken',
-			frameOf(33).flash.key == Refusal.taken,
-			tostring(frameOf(33).flash.key))
+		check('a taken chair says taken', flashOf(33) == Refusal.taken, tostring(flashOf(33)))
 
 		press(31, Event.USE, 'clinic_watson')
 		local desk = frameOf(31)
 		check('the ripperdoc operates the chair and reads their patient',
 			desk ~= nil and desk.mode == 'desk' and desk.patient == 32
-				and desk.patientName == 'Player 32' and #desk.catalogue == 2,
+				and desk.patientName == 'Player 32' and type(desk.chrome) == 'table',
 			desk and tostring(desk.mode) or 'no frame')
 
 		-- ── the offer, and the two doors ─────────────────────────────────
-			local function offer(player, entryId, gradeId, mode)
-				press(player, Event.OFFER, entryId, gradeId, mode)
-			end
+		local function offer(player, entryId, gradeId, mode)
+			press(player, Event.OFFER, entryId, gradeId, mode)
+		end
 		offer(32, 'arms', 'street', 'install')
 		check('a patient cannot offer while the chair is operated',
-			frameOf(32).flash.key == Refusal.notRipperdoc,
-			tostring(frameOf(32).flash.key))
+			flashOf(32) == Refusal.notRipperdoc, tostring(flashOf(32)))
 
 		offer(31, 'arms', 'nope', 'install')
 		check('a grade the tray does not carry is refused',
-			frameOf(31).flash.key == Refusal.noSuchGrade,
-			tostring(frameOf(31).flash.key))
+			flashOf(31) == Refusal.noSuchGrade, tostring(flashOf(31)))
 
-		-- THE NOT-READY PATH, at the offer: no record, no submission.
+		offer(31, 'nothing_at_all', 'street', 'install')
+		check('a piece the tray does not carry is refused',
+			flashOf(31) == Refusal.noSuchEntry, tostring(flashOf(31)))
+
+		-- THE NOT-READY PATH, at the offer: no record, no submission -- and
+		-- the refusal says WHY, in words the patient can act on.
 		offer(31, 'arms', 'street', 'install')
-		check('a record still loading refuses the offer outright',
-			frameOf(31).flash.key == Refusal.notReady and #charges == 0,
-			('%d charge(s)'):format(#charges))
+		local notReady = frameOf(31).flash
+		check('a record still loading refuses the offer outright, and says why',
+			notReady.key == Refusal.notReady and #charges == 0
+				and type(notReady.args.why) == 'string'
+				and notReady.args.why:find('^ripperdoc%.why%.') ~= nil,
+			('%s / %s'):format(tostring(notReady.key), tostring(notReady.args.why)))
+		check('and the diagnosis is journalled with the binding it found',
+			table.concat(control.log.warn, ' | '):find('player 32', 1, true) ~= nil,
+			'no journal line')
 
-		-- COMPENSATE, at the accept: the record vanishes between offer and
-		-- answer, and the price that was reserved comes straight back.
+		-- THE BODY CHANGED BETWEEN OFFER AND ANSWER: the record vanishes, and
+		-- the accept is checked against the rule book AGAIN before anything
+		-- is reserved -- nothing is charged, so nothing needs refunding.
 		control.cyberware.records[32] = { revision = 3 }
 		offer(31, 'arms', 'street', 'install')
-		check('the offer reaches both sides priced',
+		check('the offer reaches both sides priced, with the id it is answered by',
 			frameOf(32).offer ~= nil and frameOf(32).offer.price == 100
-				and frameOf(32).offer.by == 'Player 31' and frameOf(31).offer ~= nil,
+				and frameOf(32).offer.by == 'Player 31' and frameOf(31).offer ~= nil
+				and type(frameOf(32).offer.id) == 'number' and frameOf(32).offer.mode == 'install',
 			'no offer on the wire')
 		control.cyberware.records[32] = nil
-		press(32, Event.ANSWER, 'offer', true)
-		check('a reservation the record will not back is refunded at once',
-			#charges == 1 and #refunds == 1 and refunds[1][3] == 100
-				and frameOf(32).flash.key == Refusal.notReady,
-			('%d charge(s), %d refund(s)'):format(#charges, #refunds))
+		press(32, Event.ANSWER, 'offer', true, frameOf(32).offer.id)
+		check('an accept the record will not back is refused before any reservation',
+			#charges == 0 and #refunds == 0 and flashOf(32) == Refusal.notReady,
+			('%d charge(s), %d refund(s), %s'):format(#charges, #refunds, tostring(flashOf(32))))
 
-		-- With a record, the reserve-then-stage rule runs for real.
+		-- COMPENSATE: the store refuses the staging after the price was
+		-- reserved, and the price comes straight back.
 		control.cyberware.records[32] = { revision = 3 }
 		offer(31, 'arms', 'street', 'install')
-		press(32, Event.ANSWER, 'offer', false)
+		control.cyberware.refuse = 'lease_active'
+		press(32, Event.ANSWER, 'offer', true, frameOf(32).offer.id)
+		check('a staging the store refuses is refunded at once, with the store\'s reason',
+			#charges == 1 and #refunds == 1 and refunds[1][3] == 100
+				and flashOf(32) == Refusal.hostRefused
+				and frameOf(32).flash.args.why == 'lease_active',
+			('%d charge(s), %d refund(s)'):format(#charges, #refunds))
+
+		-- AN ANSWER NAMES THE OFFER IT ANSWERS: a stale accept for an offer
+		-- that was replaced is not an accept of the new one.
+		offer(31, 'arms', 'street', 'install')
+		local staleId = frameOf(32).offer.id
+		press(32, Event.ANSWER, 'offer', true, staleId + 100)
+		check('an answer naming another offer is refused and charges nothing',
+			#charges == 1 and flashOf(32) == Refusal.noOffer and frameOf(32).offer ~= nil,
+			('%d charge(s)'):format(#charges))
+		press(32, Event.ANSWER, 'offer', false, staleId)
 		check('a declined offer charges nothing',
 			#charges == 1 and frameOf(32).offer == nil,
 			('%d charge(s)'):format(#charges))
 
 		offer(31, 'arms', 'street', 'install')
-		press(32, Event.ANSWER, 'offer', true)
+		press(32, Event.ANSWER, 'offer', true, frameOf(32).offer.id)
 		local staged = control.cyberware.installs[#control.cyberware.installs]
 		check('an accepted offer reserves the price and stages the work',
 			#charges == 2 and charges[2][3] == 100 and staged ~= nil
 				and staged[1] == 32 and staged[2] == arms.DEFINITION and staged[3] == 'street'
 				and staged[4].expectedRevision == 3 and staged[4].operationId ~= nil,
 			('%d charge(s)'):format(#charges))
+		check('and the patient is told the work is under way',
+			frameOf(32).busy == true, tostring(frameOf(32).busy))
 
 		-- THE COMPLETION, in the host's own shape: a STRING player id and a
 		-- JSON result on the server-local event.
@@ -23349,7 +24875,7 @@ do
 		-- OPERATOR is paid through the jobs funnel -- the same `pay` every
 		-- shift and arrest goes through.
 		offer(31, 'arms', 'street', 'install')
-		press(32, Event.ANSWER, 'offer', true)
+		press(32, Event.ANSWER, 'offer', true, frameOf(32).offer.id)
 		ticket = ticketFor(32)
 		control.cyberware.complete(ticket, true)
 		control.Fire('onCyberwareOperationCompleted', tostring(32), ticket,
@@ -23360,17 +24886,35 @@ do
 				and awards[1][2] == 'ripperdoc' and awards[1][3] == 5
 				and fitted ~= nil and fitted.grade.id == 'street',
 			('%d award(s)'):format(#awards))
+		local wearing = frameOf(32).chrome
+		check('and the patient\'s frame shows it fitted, fresh, in its system',
+			wearing.ready == true and wearing.fitted[1] ~= nil and wearing.fitted[1].id == 'arms'
+				and wearing.fitted[1].points == 100 and wearing.fitted[1].state == 'optimal'
+				and wearing.capacity.used == arms.GRADES[1].CAPACITY,
+			wearing.fitted[1] and tostring(wearing.fitted[1].state) or 'nothing fitted')
 
-		-- THE SLOT RULES, read from the record: the arms slot is full now.
-		-- The refusal speaks to whoever pressed: the operator's own frame.
+		-- THE SLOT RULES, read from the record. The same grade again is
+		-- already fitted; a better one is an UPGRADE with the old grade
+		-- traded in; another arm in the one arm system does not fit.
+		offer(31, 'arms', 'street', 'install')
+		check('the grade already fitted says so',
+			flashOf(31) == Refusal.alreadyFitted, tostring(flashOf(31)))
 		offer(31, 'arms', 'elite', 'install')
-		check('a filled slot states its condition',
-			frameOf(31).flash.key == Refusal.slotFilled,
-			tostring(frameOf(31).flash.key))
+		local upgrade = frameOf(32).offer
+		check('a better grade is an upgrade, priced with the fitted grade traded in',
+			upgrade ~= nil and upgrade.mode == 'upgrade' and upgrade.grade == 'elite'
+				and upgrade.price == 250 - math.floor(100 * ripperdoc.Ripper.TradeIn()),
+			upgrade and ('%s at %s'):format(tostring(upgrade.mode), tostring(upgrade.price))
+				or tostring(flashOf(31)))
+		press(32, Event.ANSWER, 'offer', false, upgrade and upgrade.id)
+		offer(31, 'gorilla_arms_electric', 't3', 'install')
+		check('a second piece in a full system names the system',
+			flashOf(31) == Refusal.systemFull
+				and frameOf(31).flash.args.system == 'ripperdoc.system.arms',
+			tostring(flashOf(31)))
 		offer(31, 'legs', nil, 'remove')
 		check('an empty slot states its condition',
-			frameOf(31).flash.key == Refusal.slotEmpty,
-			tostring(frameOf(31).flash.key))
+			flashOf(31) == Refusal.slotEmpty, tostring(flashOf(31)))
 
 		-- ── self-service: the same funnel, nobody to pay ───────────────
 
@@ -23381,7 +24925,7 @@ do
 		check('with nobody operating, the patient may serve themselves',
 			frameOf(32).offer ~= nil and frameOf(32).offer.by == nil,
 			'no self offer')
-		press(32, Event.ANSWER, 'offer', true)
+		press(32, Event.ANSWER, 'offer', true, frameOf(32).offer.id)
 		ticket = ticketFor(32)
 		control.cyberware.complete(ticket, true)
 		control.Fire('onCyberwareOperationCompleted', tostring(32), ticket,
@@ -23393,8 +24937,11 @@ do
 		-- ── the stand ──────────────────────────────────────────────────────
 
 		press(32, Event.STAND)
-		check('standing stops the workspot and closes the panel',
-			#control.animations.stopped == 1 and control.animations.stopped[1][1] == 32
+		-- A PLACED action is torn down by its handle (`stopAt`, wiki
+		-- rp-animations.md), never by the player's plain `stop`.
+		check('standing stops the placed workspot by its handle and closes the panel',
+			#control.animations.stopped == 1 and control.animations.stopped[1][1] == nil
+				and control.animations.stopped[1][2] == 'pb-1'
 				and frameOf(32).mode == 'closed',
 			('%d stop(s)'):format(#control.animations.stopped))
 
@@ -23410,6 +24957,14 @@ do
 		check('the invitation reaches its addressee',
 			invited ~= nil and invited.mode == 'invite' and invited.from == 'Player 31',
 			invited and tostring(invited.mode) or 'no frame')
+		check('and the desk shows it outstanding',
+			frameOf(31).invite ~= nil and frameOf(31).invite.name == 'Player 32', 'no invite row')
+		press(31, Event.INVITE, 33)
+		check('one invitation at a time',
+			flashOf(31) == Refusal.busy, tostring(flashOf(31)))
+		press(33, Event.ANSWER, 'invite', true)
+		check('an answer to an invitation nobody sent is closed, not obeyed',
+			frameOf(33).mode == 'closed' and frameOf(33).why == 'noInvite', tostring(frameOf(33).why))
 		press(32, Event.ANSWER, 'invite', true)
 		check('accepting the invitation seats them and the desk sees the patient',
 			frameOf(32).mode == 'sitter' and frameOf(31).patient == 32,
@@ -23418,7 +24973,7 @@ do
 		-- ── a pull through the operator door, and BOTH completion doors ────
 
 		offer(31, 'legs', nil, 'remove')
-		press(32, Event.ANSWER, 'offer', true)
+		press(32, Event.ANSWER, 'offer', true, frameOf(32).offer.id)
 		ticket = ticketFor(32)
 		check('a ticket that is not ours is never consumed',
 			(function()
@@ -23442,15 +24997,1107 @@ do
 			('%d award(s), last charge %s'):format(#awards,
 				tostring(charges[#charges] and charges[#charges][3])))
 
+		-- AN OPERATOR WHO CLOCKS OFF is not paid for the work they started.
+		offer(31, 'arms', nil, 'remove')
+		press(32, Event.ANSWER, 'offer', true, frameOf(32).offer.id)
+		ticket = ticketFor(32)
+		characters.Players[31].PlayerData.job.onDuty = false
+		control.cyberware.complete(ticket, true)
+		env.onCyberwareOperationCompleted(tostring(32), ticket, Host.json.encode({ ok = true }))
+		check('an operator who went off duty mid-operation is not paid for it',
+			#awards == 2 and control.cyberware.records[32].arms == nil,
+			('%d award(s)'):format(#awards))
+		characters.Players[31].PlayerData.job.onDuty = true
+
 		-- THE PAYLOAD CEILING: one frame is one host payload (the bound
 		-- `core/client/ui.lua` states, enforced by the page stub).
 		check('a frame fits the host payload ceiling',
 			Host.PayloadNodes(frameOf(32)) <= Host.MAX_PAYLOAD_NODES,
 			tostring(Host.PayloadNodes(frameOf(32))))
 
+		-- A DEPARTURE frees the chair at once: the next patient is not told
+		-- it is taken by somebody who is no longer on the server.
+		control.Fire('onPlayerDisconnected', 32)
+		press(33, Event.USE, 'clinic_watson')
+		check('a patient who disconnects frees the chair for the next',
+			frameOf(33).mode == 'sitter', tostring(frameOf(33).mode))
+
 		-- The contracts go back the way the module published them.
 		contract.RemoveMoney, contract.AddMoney, jobsContract.Award =
 			realRemove, realAdd, realAward
+	end
+end
+
+-- ── the whole base-game tray ──────────────────────────────────────────────────
+-- Every piece Night City's ripperdocs sell is on the tray, filed under its body
+-- system. The body has the base game's slots and a capacity; the chrome the
+-- platform has no adapter for carries stat effects the server really applies;
+-- and every piece wears out. This section drives all of it through the same two
+-- doors a player uses -- the offer and the answer -- and reads the verdicts off
+-- the platform stores (`control.chrome`) and a real ledger table.
+section('the ripperdoc clinic: the whole base-game tray, its body rules and its effects')
+do
+	-- THE LEDGER'S TABLES, as rows: the chrome rows and the refund queue,
+	-- answered the way the bridge answers (rows for a read, affected rows for
+	-- a write). Everything else reads as empty.
+	local db = { chrome = {}, refunds = {}, nextRefund = 0, records = {} }
+	local function bridge()
+		return Host.Database({
+			scalar = function() return 1 end,
+			single = function() return nil end,
+			insert = function() return 1 end,
+			query = function(sql, params)
+				if sql:find('FROM opx77_ripperdoc_chrome', 1, true) then
+					local rows = {}
+					for _, row in pairs(db.chrome) do
+						if row.citizen_id == params.citizen then rows[#rows + 1] = row end
+					end
+					return rows
+				end
+				if sql:find('FROM opx77_ripperdoc_refund', 1, true) then
+					local rows = {}
+					for _, row in ipairs(db.refunds) do
+						if row.citizen_id == params.citizen then rows[#rows + 1] = row end
+					end
+					return rows
+				end
+				if sql:find('FROM opx77_ripperdoc_records', 1, true) then
+					local n = 0
+					for _, row in pairs(db.records) do
+						if row.build == params.build then n = n + 1 end
+					end
+					return { { n = n } }
+				end
+				return {}
+			end,
+			update = function(sql, params)
+				if sql:find('INSERT INTO opx77_ripperdoc_chrome', 1, true) then
+					db.chrome[params.citizen .. '|' .. params.entry] = {
+						citizen_id = params.citizen, entry_id = params.entry,
+						grade_key = params.grade, condition_points = params.points,
+						broken = params.broken,
+					}
+					return 1
+				end
+				if sql:find('DELETE FROM opx77_ripperdoc_chrome', 1, true) then
+					db.chrome[params.citizen .. '|' .. params.entry] = nil
+					return 1
+				end
+				if sql:find('INSERT INTO opx77_ripperdoc_refund', 1, true) then
+					db.nextRefund = db.nextRefund + 1
+					db.refunds[#db.refunds + 1] = { id = db.nextRefund, citizen_id = params.citizen,
+						money_type = params.money, amount = params.amount, reason = params.reason }
+					return 1
+				end
+				if sql:find('DELETE FROM opx77_ripperdoc_refund', 1, true) then
+					for index, row in ipairs(db.refunds) do
+						if row.id == params.id and row.citizen_id == params.citizen then
+							table.remove(db.refunds, index)
+							return 1
+						end
+					end
+					return 0
+				end
+				if sql:find('INSERT INTO opx77_ripperdoc_records', 1, true) then
+					db.records[params.record] = { name = params.name, quality = params.quality,
+						area = params.area, answer = params.answer, build = params.build }
+					return 1
+				end
+				return 0
+			end,
+		})
+	end
+
+	local env, control, why = boot('server', bridge())
+	check('the server boots with the whole tray and a ledger', why == nil, why)
+	if control ~= nil then
+		-- The platform services the chrome reaches the body through.
+		for _, service in ipairs({ 'open77_cyberware', 'open77_dash', 'open77_reflex', 'open77_hacking' }) do
+			control.resourceStates[service] = 'running'
+		end
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local characters = OPX.Modules.Get('character')
+		local contract = OPX.Api.Get('character')
+		local Event = ripperdoc.Event
+		local Refusal = ripperdoc.Ripper.Refusal
+		local Ripper, Chrome, Effects = ripperdoc.Ripper, ripperdoc.Chrome, ripperdoc.Effects
+		local chrome = control.chrome
+
+		local function press(player, name, ...)
+			local args = table.pack(...)
+			OPX.ForgetCooldowns(player)
+			env.source = player
+			control.netEvents[name](table.unpack(args, 1, args.n))
+			env.source = nil
+		end
+		local function frameOf(playerId)
+			local found = nil
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.FRAME and event.source == playerId then found = event[1] end
+			end
+			return found
+		end
+		local function flashOf(playerId)
+			local frame = frameOf(playerId)
+			return frame ~= nil and frame.flash ~= nil and frame.flash.key or nil
+		end
+		local function load(id, citizenId, eddies)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			characters.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id), jobs = {},
+				job = { name = 'unemployed', grade = { level = 0 }, onDuty = false },
+				money = { EDDIES = eddies or 50000, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+
+		-- ── the tray itself ──────────────────────────────────────────────────
+
+		-- The locale files, read as data: both languages, every key.
+		local catalogs = {}
+		local sandbox = { pairs = pairs, ipairs = ipairs, OPX = { Locale = { Register = function(code, strings)
+			catalogs[code] = strings
+		end } } }
+		local chunk = loadfile('modules/ripperdoc/locales.lua', 't', sandbox)
+		if chunk ~= nil then pcall(chunk) end
+		local en, fr = catalogs.en or {}, catalogs.fr or {}
+
+		local problems = {}
+		local function problem(text)
+			if #problems < 8 then problems[#problems + 1] = text end
+		end
+		local seen, systems = {}, {}
+		for _, system in ipairs(Ripper.Systems()) do systems[system.id] = system.SLOTS end
+		local KINDS = { implant = true, ice = true, grant = true, stat = true, rp = true }
+		local catalog = Ripper.Catalog()
+		for _, entry in ipairs(catalog) do
+			if seen[entry.id] then problem(entry.id .. ': listed twice') end
+			seen[entry.id] = true
+			if systems[entry.SYSTEM] == nil then problem(entry.id .. ': no such system') end
+			local kind = Ripper.KindOf(entry)
+			if not KINDS[kind] then problem(entry.id .. ': kind ' .. tostring(kind)) end
+			if en[entry.NAME] == nil or fr[entry.NAME] == nil then
+				problem(entry.id .. ': name not in both languages')
+			end
+			if entry.VANILLA and (en[entry.DESC] == nil or fr[entry.DESC] == nil) then
+				problem(entry.id .. ': description not in both languages')
+			end
+			if (tonumber(entry.REMOVE) or -1) < 0 then problem(entry.id .. ': no removal price') end
+			local lastPrice = 0
+			for _, grade in ipairs(entry.GRADES) do
+				if (tonumber(grade.PRICE) or 0) <= 0 or grade.PRICE % 1 ~= 0 then
+					problem(entry.id .. '.' .. tostring(grade.id) .. ': price')
+				end
+				if grade.PRICE < lastPrice then problem(entry.id .. ': prices fall with the grade') end
+				lastPrice = grade.PRICE
+				if (tonumber(grade.CAPACITY) or -1) < 0 then problem(entry.id .. ': capacity') end
+				if en[grade.NAME] == nil or fr[grade.NAME] == nil then
+					problem(entry.id .. '.' .. tostring(grade.id) .. ': grade name')
+				end
+				if kind == 'stat' and (type(grade.EFFECTS) ~= 'table' or next(grade.EFFECTS) == nil) then
+					problem(entry.id .. '.' .. tostring(grade.id) .. ': a stat piece with no effect')
+				end
+				if kind == 'grant' then
+					local shelf = chrome.defined[Ripper.GrantKind(entry) == 'ability' and 'ability'
+						or Ripper.GrantKind(entry)]
+					if shelf == nil or shelf[Ripper.DefinitionFor(entry, grade)] == nil then
+						problem(entry.id .. '.' .. grade.id .. ': grant not on the shelf')
+					end
+				end
+			end
+			if kind == 'implant' and control.cyberware.defined[Ripper.DefinitionFor(entry, nil)] == nil then
+				problem(entry.id .. ': implant definition not registered')
+			end
+			if kind == 'ice' and chrome.defined.ice[Ripper.DefinitionFor(entry, nil)] == nil then
+				problem(entry.id .. ': Self-ICE not on the hacking shelf')
+			end
+		end
+		check('every piece on the tray is whole: one id, a system, a kind, both languages, rising prices, on its shelf',
+			#problems == 0, table.concat(problems, '; '))
+
+		local enKeys, frKeys, missing = 0, 0, {}
+		for key in pairs(en) do
+			enKeys = enKeys + 1
+			if fr[key] == nil and #missing < 5 then missing[#missing + 1] = 'fr:' .. key end
+		end
+		for key in pairs(fr) do
+			frKeys = frKeys + 1
+			if en[key] == nil and #missing < 5 then missing[#missing + 1] = 'en:' .. key end
+		end
+		check('the two languages carry the same keys',
+			enKeys > 0 and enKeys == frKeys and #missing == 0,
+			('%d en, %d fr: %s'):format(enKeys, frKeys, table.concat(missing, ' ')))
+
+		-- THE CLIENT BUILDS THE SAME TRAY IN SLICES: a hundred-odd pieces with
+		-- five grades each is not one resume's work on the client budget.
+		Ripper.ResetCatalog()
+		check('a reset tray is not ready until it is warmed', Ripper.CatalogReady() == false)
+		local resumes = 0
+		local warm = coroutine.create(function() Ripper.WarmCatalog(3) end)
+		env.Wait = env.Wait
+		while coroutine.status(warm) ~= 'dead' and resumes < 1000 do
+			resumes = resumes + 1
+			local ok, failure = coroutine.resume(warm)
+			if not ok then error(failure) end
+		end
+		check('and warming it yields many times rather than once, and ends ready',
+			resumes > 10 and Ripper.CatalogReady() and #Ripper.Catalog() == #catalog,
+			('%d resume(s)'):format(resumes))
+
+		-- ── one patient, serving themselves ──────────────────────────────────
+
+		-- The clock of play is stopped while the other wear is measured, and
+		-- run by hand where it is the thing under test.
+		local durability = ripperdoc.Settings.DURABILITY
+		local lifespan = durability.LIFESPAN_HOURS
+		durability.LIFESPAN_HOURS = 0
+
+		local spot = { x = -1441.2, y = 129.6, z = 18.05 }
+		env.Open77.players.position = function() return { x = spot.x, y = spot.y, z = spot.z, bucket = 0 } end
+		env.Open77.players.all = function() return { 61 } end
+		load(61, 'citizen-tray')
+
+		local charges = {}
+		local realRemove = contract.RemoveMoney
+		contract.RemoveMoney = function(player, moneyType, amount, reason)
+			charges[#charges + 1] = { player, moneyType, amount, reason }
+			return realRemove(player, moneyType, amount, reason)
+		end
+
+		press(61, Event.USE, 'clinic_watson')
+		control.Pump(4)
+		check('the patient sits and their ledger is read',
+			frameOf(61).mode == 'sitter' and Chrome.Loaded('citizen-tray'),
+			tostring(frameOf(61).mode))
+
+		--- One self-service job, offered and accepted; answers the offer seen.
+		local function buy(entryId, gradeId, mode)
+			press(61, Event.OFFER, entryId, gradeId, mode or 'install')
+			local offered = frameOf(61).offer
+			if offered == nil then return nil, flashOf(61) end
+			press(61, Event.ANSWER, 'offer', true, offered.id)
+			control.Pump(2)
+			return offered
+		end
+
+		-- A STAT PIECE is instant: no platform staging, the ledger holds it.
+		local plating = Ripper.Entry('subdermal_armor')
+		local t1 = plating.GRADES[1]
+		local offered = buy('subdermal_armor', t1.id)
+		check('subdermal armor is offered at its tier price and fitted at once',
+			offered ~= nil and offered.price == t1.PRICE and charges[#charges][3] == t1.PRICE
+				and Chrome.Row('citizen-tray', 'subdermal_armor').grade == t1.id
+				and next(control.cyberware.pending) == nil,
+			offered and tostring(offered.price) or tostring(flashOf(61)))
+		check('and the ledger row is written',
+			db.chrome['citizen-tray|subdermal_armor'] ~= nil
+				and db.chrome['citizen-tray|subdermal_armor'].grade_key == t1.id,
+			'no row')
+		local body = frameOf(61).chrome
+		check('the frame counts it against its system and the body\'s capacity',
+			body.capacity.used == t1.CAPACITY
+				and (function()
+					for _, row in ipairs(body.systems) do
+						if row.id == 'integumentary' then return row.used == 1 and row.slots == 3 end
+					end
+					return false
+				end)(),
+			('%d capacity used'):format(body.capacity.used))
+
+		-- ITS EFFECT IS REAL: the plating charges toward its rating once the
+		-- body has gone unhurt long enough.
+		Effects.Pass(10)
+		check('the plating is applied to the body as armor',
+			chrome.armor[61] == t1.EFFECTS.armor,
+			('armor %s for a rating of %s'):format(tostring(chrome.armor[61]), tostring(t1.EFFECTS.armor)))
+
+		-- MAXIMUMS AND RATES go on top of the body's own and come back off.
+		local booster = Ripper.Entry('adrenaline_booster')
+		buy('adrenaline_booster', booster.GRADES[1].id)
+		Effects.Pass(1)
+		local pools = chrome.poolsOf(61)
+		check('an adrenaline booster raises the stamina maximum over the body\'s own',
+			pools.stamina.maximum == 100 + booster.GRADES[1].EFFECTS.staminaMax,
+			tostring(pools.stamina.maximum))
+		local coalescer = Ripper.Entry('scar_coalescer')
+		buy('scar_coalescer', coalescer.GRADES[1].id)
+		Effects.Pass(1)
+		check('a scar coalescer switches health regeneration on at its own rate',
+			pools.health.regenEnabled == true
+				and math.abs(pools.health.regenPerSecond - coalescer.GRADES[1].EFFECTS.healthRegen) < 0.001,
+			('%s at %s'):format(tostring(pools.health.regenEnabled), tostring(pools.health.regenPerSecond)))
+		local ankles = Ripper.Entry('fortified_ankles')
+		buy('fortified_ankles', ankles.GRADES[1].id)
+		Effects.Pass(1)
+		check('fortified ankles turn fall damage off',
+			chrome.noFall[61] == true, tostring(chrome.noFall[61]))
+
+		-- ── the body's rules ─────────────────────────────────────────────────
+
+		-- THE SYSTEM'S SLOTS: integumentary takes three.
+		local skin = {}
+		for _, entry in ipairs(catalog) do
+			if entry.SYSTEM == 'integumentary' and entry.id ~= 'subdermal_armor'
+				and not Ripper.IsPlatform(entry) and #skin < 3 then
+				skin[#skin + 1] = entry
+			end
+		end
+		buy(skin[1].id, skin[1].GRADES[1].id)
+		buy(skin[2].id, skin[2].GRADES[1].id)
+		local _, full = buy(skin[3].id, skin[3].GRADES[1].id)
+		check('a fourth piece in a three-slot system is refused and names the system',
+			full == Refusal.systemFull
+				and frameOf(61).flash.args.system == 'ripperdoc.system.integumentary'
+				and Chrome.Row('citizen-tray', skin[3].id).grade == '',
+			tostring(full))
+
+		-- THE CAPACITY: a body with little room left refuses what would not fit,
+		-- and says how much is free.
+		local capacity = ripperdoc.Settings.CAPACITY
+		local oldBase = capacity.BASE
+		capacity.BASE = frameOf(61).chrome.capacity.used + 1
+		local roomy = Ripper.Entry('titanium_bones')
+		local _, over = buy('titanium_bones', roomy.GRADES[1].id)
+		check('a piece the body has no capacity for is refused, with what is free',
+			over == Refusal.overCapacity and frameOf(61).flash.args.free == 1,
+			('%s free=%s'):format(tostring(over), tostring(frameOf(61).flash
+				and frameOf(61).flash.args.free)))
+		capacity.BASE = oldBase
+
+		-- THE UPGRADE: the fitted grade is traded in against the new one.
+		local t2 = plating.GRADES[2]
+		offered = buy('subdermal_armor', t2.id)
+		check('an upgrade is priced with the fitted grade traded in, and swaps the grade',
+			offered ~= nil and offered.mode == 'upgrade'
+				and offered.price == t2.PRICE - math.floor(t1.PRICE * Ripper.TradeIn())
+				and Chrome.Row('citizen-tray', 'subdermal_armor').grade == t2.id,
+			offered and tostring(offered.price) or 'no offer')
+		Effects.Pass(10)
+		-- Every plate on the body counts (the skin pieces carry their own).
+		local others = Effects.Totals('citizen-tray').armor - t2.EFFECTS.armor
+		check('and the body takes the better rating, on top of every other plate',
+			chrome.armor[61] == Effects.Totals('citizen-tray').armor and others >= 0,
+			('%s of %s'):format(tostring(chrome.armor[61]), tostring(Effects.Totals('citizen-tray').armor)))
+
+		-- THE PULL gives the body back: the booster comes out, the maximum
+		-- returns to the body's own.
+		offered = buy('adrenaline_booster', nil, 'remove')
+		Effects.Pass(1)
+		check('a pulled booster returns the stamina maximum to the body\'s own',
+			offered ~= nil and offered.price == booster.REMOVE and pools.stamina.maximum == 100
+				and Chrome.Row('citizen-tray', 'adrenaline_booster').grade == '',
+			tostring(pools.stamina.maximum))
+		buy('scar_coalescer', nil, 'remove')
+		buy('fortified_ankles', nil, 'remove')
+		Effects.Pass(1)
+		check('and the regeneration and the fall damage go back the way they were',
+			pools.health.regenEnabled == false and pools.health.regenPerSecond == 0
+				and chrome.noFall[61] == nil,
+			('%s at %s, noFall %s'):format(tostring(pools.health.regenEnabled),
+				tostring(pools.health.regenPerSecond), tostring(chrome.noFall[61])))
+
+		-- ── the lifecycle ────────────────────────────────────────────────────
+
+		-- DAMAGE wears the plating that took it, and nothing else.
+		local skinBefore = Chrome.Row('citizen-tray', skin[1].id).points
+		control.Fire('open77:playerDamaged', '61', '0', '200')
+		control.Pump(2)
+		local worn = Chrome.Row('citizen-tray', 'subdermal_armor').points
+		local life = Ripper.Lifecycle()
+		check('two hundred points of damage wear the plating by the policy\'s share',
+			math.abs(worn - (100 - life.DAMAGE_WEAR * 2)) < 0.001,
+			tostring(worn))
+		local armored = Ripper.Grade(skin[1], skin[1].GRADES[1].id).EFFECTS.armor
+		check('and a piece without plating is not worn by a hit',
+			(armored ~= nil and armored > 0)
+				or Chrome.Row('citizen-tray', skin[1].id).points == skinBefore,
+			tostring(Chrome.Row('citizen-tray', skin[1].id).points))
+
+		-- TIME wears everything, a little, every tick.
+		local beforeTick = Chrome.Row('citizen-tray', skin[2].id).points
+		durability.LIFESPAN_HOURS = lifespan
+		Chrome.Tick()
+		durability.LIFESPAN_HOURS = 0
+		control.Pump(2)
+		local perTick = 100 * life.TICK_SECONDS / (lifespan * 3600)
+		check('a tick of play wears every fitted piece by its lifespan share',
+			math.abs((beforeTick - Chrome.Row('citizen-tray', skin[2].id).points) - perTick) < 0.0001,
+			tostring(beforeTick - Chrome.Row('citizen-tray', skin[2].id).points))
+
+		-- DEATH wears everything.
+		local beforeDeath = Chrome.Row('citizen-tray', skin[2].id).points
+		control.Fire('onPlayerLifeStateChanged', '61', 'alive', 'dead')
+		control.Pump(2)
+		check('a death wears every fitted piece',
+			math.abs(beforeDeath - Chrome.Row('citizen-tray', skin[2].id).points - life.DEATH_WEAR) < 0.001,
+			tostring(Chrome.Row('citizen-tray', skin[2].id).points))
+
+		-- What every OTHER plate on the body is worth now.
+		others = Effects.Totals('citizen-tray').armor - t2.EFFECTS.armor
+		-- FAILING: below the line a piece gives half of what it is worth.
+		local row = Chrome.Row('citizen-tray', 'subdermal_armor')
+		Chrome.WearPiece(61, 'citizen-tray', plating, row.points - (life.FAILING_AT - 1))
+		check('a failing piece reads failing and is worth its failing share',
+			Ripper.ConditionState(Chrome.Row('citizen-tray', 'subdermal_armor').points, false) == 'failing'
+				and Effects.Totals('citizen-tray').armor
+					== math.floor(others + t2.EFFECTS.armor * life.FAILING_EFFECT),
+			tostring(Effects.Totals('citizen-tray').armor))
+
+		-- THE BREAK: zero is terminal until a ripperdoc says otherwise.
+		local broke = {}
+		env.AddEventHandler(Event.ON_BROKEN, function(payload) broke[#broke + 1] = payload end)
+		Chrome.WearPiece(61, 'citizen-tray', plating, 100)
+		control.Pump(2)
+		Effects.Pass(1)
+		check('at zero the plating breaks, says so, and stops counting',
+			Chrome.Row('citizen-tray', 'subdermal_armor').broken == true and #broke == 1
+				and broke[1].entry == 'subdermal_armor' and Effects.Totals('citizen-tray').armor == others,
+			('%d broken event(s)'):format(#broke))
+		check('and the armor it was holding comes off the body with it',
+			(chrome.armor[61] or 0) <= others, tostring(chrome.armor[61]))
+
+		-- THE REPAIR buys the wear back.
+		press(61, Event.OFFER, 'subdermal_armor', '', 'repair')
+		local repair = frameOf(61).offer
+		check('a broken piece is repaired at the policy price for its grade',
+			repair ~= nil and repair.mode == 'repair'
+				and repair.price == Ripper.RepairPrice(t2, 0, true),
+			repair and tostring(repair.price) or tostring(flashOf(61)))
+		press(61, Event.ANSWER, 'offer', true, repair and repair.id)
+		-- The plating waits out the last hit before it recharges.
+		control.Pump(70)
+		Effects.Pass(10)
+		check('and a repaired piece is whole and counting again',
+			Chrome.Row('citizen-tray', 'subdermal_armor').points == 100
+				and Chrome.Row('citizen-tray', 'subdermal_armor').broken == false
+				and chrome.armor[61] == others + t2.EFFECTS.armor,
+			tostring(chrome.armor[61]))
+
+		-- ── a power the platform will not grant ─────────────────────────────
+
+		-- A GRANT THE PLATFORM REFUSES is refunded, never kept for nothing: the
+		-- wallet ends where it started and nothing is fitted.
+		local wallet = characters.Players[61].PlayerData.money.EDDIES
+		chrome.refuseGrant = 'binding_not_ready'
+		local refusedGrant = buy('dash', 'street')
+		check('a grant the platform refuses gives the price back and fits nothing',
+			refusedGrant ~= nil and flashOf(61) == Refusal.hostRefused
+				and frameOf(61).flash.args.why == 'binding_not_ready'
+				and characters.Players[61].PlayerData.money.EDDIES == wallet
+				and Chrome.Row('citizen-tray', 'dash').grade == '',
+			('%s, wallet %s -> %s'):format(tostring(flashOf(61)), tostring(wallet),
+				tostring(characters.Players[61].PlayerData.money.EDDIES)))
+		local granted = buy('dash', 'street')
+		check('and granted, the power is armed on the platform under its grade\'s definition',
+			granted ~= nil and Chrome.Row('citizen-tray', 'dash').grade == 'street'
+				and chrome.grants[#chrome.grants][1] == 'dash'
+				and chrome.grants[#chrome.grants][3] == Ripper.DefinitionFor(Ripper.Entry('dash'),
+					Ripper.Grade(Ripper.Entry('dash'), 'street'))
+				and Chrome.Armed(61, 'dash') == true,
+			tostring(chrome.grants[#chrome.grants] and chrome.grants[#chrome.grants][3]))
+		buy('dash', nil, 'remove')
+		check('and pulled, it is revoked',
+			chrome.revokes[#chrome.revokes] ~= nil and chrome.revokes[#chrome.revokes][1] == 'dash'
+				and Chrome.Armed(61, 'dash') == false and Chrome.Row('citizen-tray', 'dash').grade == '')
+
+		-- ── the powers the platform can hold, and the ones it cannot deliver ──
+
+		-- EVERY GRADE OF EVERY POWER HAS A DEFINITION ON THE SHELF, and no
+		-- module is asked for more than the platform holds: the top
+		-- Sandevistans and Berserks were sold and ungrantable when every grade
+		-- minted its own.
+		local plan = Ripper.GrantPlan()
+		local perKind, unserved = {}, {}
+		for _, def in ipairs(plan.defs) do perKind[def.kind] = (perKind[def.kind] or 0) + 1 end
+		for _, entry in ipairs(catalog) do
+			if Ripper.IsGrant(entry) then
+				for _, grade in ipairs(entry.GRADES) do
+					local id = Ripper.DefinitionFor(entry, grade)
+					local kind = Ripper.GrantKind(entry)
+					if chrome.defined[kind][id] == nil and #unserved < 5 then
+						unserved[#unserved + 1] = entry.id .. '.' .. grade.id
+					end
+				end
+			end
+		end
+		local within = true
+		for _, count in pairs(perKind) do if count > Ripper.GrantLimit() then within = false end end
+		check('every grade of every power has a definition on the shelf, within the platform limit',
+			#unserved == 0 and within and table.concat(control.log.warn, ' | '):find('definition_limit') == nil,
+			table.concat(unserved, ', '))
+		check('and grades that configure a power the same way share one',
+			Ripper.DefinitionFor(Ripper.Entry('apogee_sandevistan'), Ripper.Entry('apogee_sandevistan').GRADES[1])
+				== Ripper.DefinitionFor(Ripper.Entry('falcon_sandevistan'), Ripper.Grade(Ripper.Entry('falcon_sandevistan'), 't5')))
+
+		-- A POWER WHOSE PLATFORM SERVICE IS NOT RUNNING is refused before
+		-- anybody pays: the order would be accepted and nothing would ever
+		-- reach the body.
+		local apogee = Ripper.Entry('apogee_sandevistan')
+		control.resourceStates.open77_reflex = 'stopped'
+		local before = #charges
+		local _, down = buy('apogee_sandevistan', apogee.GRADES[1].id)
+		check('a Sandevistan on a server not running open77_reflex is refused, naming the service',
+			down == Refusal.serviceDown and frameOf(61).flash.args.name == 'open77_reflex'
+				and #charges == before,
+			tostring(down))
+		control.resourceStates.open77_reflex = 'running'
+
+		-- A GRANT THAT NEVER REACHES THE BODY is taken back and refunded.
+		wallet = characters.Players[61].PlayerData.money.EDDIES
+		chrome.projectionStatus = 'pending'
+		local stuck = buy('apogee_sandevistan', apogee.GRADES[1].id)
+		check('the Apogee is sold and granted', stuck ~= nil and Chrome.Armed(61, 'apogee_sandevistan'),
+			tostring(flashOf(61)))
+		control.Pump(470)
+		check('and a grant still pending after its window is revoked and refunded',
+			Chrome.Armed(61, 'apogee_sandevistan') == false
+				and Chrome.Row('citizen-tray', 'apogee_sandevistan').grade == ''
+				and characters.Players[61].PlayerData.money.EDDIES == wallet
+				and table.concat(control.log.warn, ' | '):find('never became usable', 1, true) ~= nil,
+			('wallet %s -> %s'):format(tostring(wallet), tostring(characters.Players[61].PlayerData.money.EDDIES)))
+		chrome.projectionStatus = nil
+		local live = buy('apogee_sandevistan', apogee.GRADES[1].id)
+		control.Pump(4)
+		check('a grant the platform projects is live, journalled and explained to the patient',
+			live ~= nil and Chrome.Armed(61, 'apogee_sandevistan')
+				and table.concat(control.log.info, ' | '):find('apogee_sandevistan (t5) is live on the body', 1, true) ~= nil,
+			tostring(flashOf(61)))
+		buy('apogee_sandevistan', nil, 'remove')
+
+		-- ── an RP piece ──────────────────────────────────────────────────────
+
+		local rp = nil
+		for _, entry in ipairs(catalog) do
+			if rp == nil and Ripper.KindOf(entry) == 'rp' and entry.SYSTEM == 'frontal_cortex' then rp = entry end
+		end
+		local totalsBefore = Effects.Totals('citizen-tray')
+		local chargedBefore = #charges
+		local refusedRp, rpWhy = buy(rp.id, rp.GRADES[1].id)
+		check('a roleplay piece is off the shelf: refused by name, nothing charged, nothing worn',
+			refusedRp == nil and rpWhy == 'ripperdoc.notSold' and #charges == chargedBefore
+				and Chrome.Row('citizen-tray', rp.id).grade == '' and rp.HIDDEN == true
+				and Ripper.Sold(rp) == false,
+			('%s %s'):format(rp.id, tostring(rpWhy)))
+		-- The operator sells it again as roleplay chrome.
+		ripperdoc.Settings.VANILLA.SELL_RP = true
+		Ripper.ResetCatalog()
+		local sellable = Ripper.Entry(rp.id)
+		buy(rp.id, rp.GRADES[1].id)
+		local totalsAfter = Effects.Totals('citizen-tray')
+		check('with SELL_RP a roleplay piece is sold and worn, and changes no number',
+			sellable ~= nil and sellable.HIDDEN == nil
+				and Chrome.Row('citizen-tray', rp.id).grade == rp.GRADES[1].id
+				and totalsAfter.armor == totalsBefore.armor
+				and totalsAfter.healthMax == totalsBefore.healthMax
+				and totalsAfter.staminaMax == totalsBefore.staminaMax,
+			rp.id)
+		ripperdoc.Settings.VANILLA.SELL_RP = false
+		Ripper.ResetCatalog()
+		check('and back off the shelf, the one already worn can still be pulled',
+			Ripper.Entry(rp.id).HIDDEN == true and buy(rp.id, nil, 'remove') ~= nil
+				and Chrome.Row('citizen-tray', rp.id).grade == '',
+			tostring(flashOf(61)))
+
+		-- ── the refund that waits for its character ──────────────────────────
+
+		-- The patient's record is loaded, an implant is staged, and the
+		-- character is put down before the platform answers. The failed work
+		-- is refunded to the CHARACTER -- queued, and paid when it loads.
+		control.cyberware.records[61] = { revision = 1 }
+		buy('arms', 'street')
+		local ticket = nil
+		for id, staged in pairs(control.cyberware.pending) do
+			if staged.player == 61 then ticket = id end
+		end
+		characters.Players[61] = nil
+		characters.Registry.byCitizenId['citizen-tray'] = nil
+		control.cyberware.complete(ticket, false)
+		env.onCyberwareOperationCompleted('61', ticket, Host.json.encode({ ok = false }))
+		control.Pump(4)
+		check('a refund for a character that is not loaded is queued, not lost',
+			#db.refunds == 1 and db.refunds[1].citizen_id == 'citizen-tray' and db.refunds[1].amount == 100,
+			('%d queued'):format(#db.refunds))
+
+		local paid = {}
+		local realAdd = contract.AddMoney
+		contract.AddMoney = function(player, moneyType, amount, reason)
+			paid[#paid + 1] = { player, moneyType, amount, reason }
+			return realAdd(player, moneyType, amount, reason)
+		end
+		load(61, 'citizen-tray')
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded'), 61,
+			{ citizenId = 'citizen-tray' })
+		control.Pump(6)
+		check('and it is paid, once, the next time that character loads',
+			#paid == 1 and paid[1][3] == 100 and #db.refunds == 0,
+			('%d paid, %d still queued'):format(#paid, #db.refunds))
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded'), 61,
+			{ citizenId = 'citizen-tray' })
+		control.Pump(6)
+		check('a second load pays nothing more', #paid == 1, ('%d paid'):format(#paid))
+
+		-- ── a native fitting that fails: asked why, tried again, then refunded ──
+
+		local function ticketOf(player)
+			for id, staged in pairs(control.cyberware.pending) do
+				if staged.player == player then return id end
+			end
+			return nil
+		end
+		local function probesTo(player)
+			local out = {}
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.PROBE and event.source == player then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+		control.cyberware.records[61] = { revision = 2 }
+		press(61, Event.USE, 'clinic_watson')
+		control.Pump(4)
+		local walletBefore = characters.Players[61].PlayerData.money.EDDIES
+		local probesBefore = #probesTo(61)
+		buy('legs', 'training')
+		local first = ticketOf(61)
+		check('a legs fitting is staged and charged', first ~= nil
+			and characters.Players[61].PlayerData.money.EDDIES == walletBefore - 100,
+			tostring(flashOf(61)))
+		control.cyberware.complete(first, false)
+		env.onCyberwareOperationCompleted('61', first,
+			Host.json.encode({ ok = false, error = 'native_projection_failed' }))
+		control.Pump(2)
+		local asked = probesTo(61)
+		check('a native failure is NOT refunded at once: the patient\'s client is asked why',
+			characters.Players[61].PlayerData.money.EDDIES == walletBefore - 100
+				and #asked == probesBefore + 1 and tostring(asked[#asked]):find('^fail:') ~= nil
+				and flashOf(61) == 'ripperdoc.retrying',
+			('%s, %d probe(s), wallet %s'):format(tostring(flashOf(61)), #asked,
+				tostring(characters.Players[61].PlayerData.money.EDDIES)))
+		-- The client answers with what its legs projector says.
+		local noticesBefore = #control.notices
+		press(61, Event.PROBED, asked[#asked], {
+			legs = { phase = 'failed', reason = 'native_leg_slot_owned' },
+			local_ = { phase = 'ready' },
+		})
+		local told = control.notices[#control.notices]
+		check('and the reason its machine gave is journalled and told to the patient in words',
+			#control.notices == noticesBefore + 1 and told ~= nil and told.playerId == 61
+				and tostring(told.message):find('already carry chrome', 1, true) ~= nil
+				and table.concat(control.log.warn, ' | '):find('failed natively because native_leg_slot_owned', 1, true) ~= nil,
+			told ~= nil and tostring(told.message) or 'no notice')
+		control.Pump(60)
+		local second = ticketOf(61)
+		check('the fitting is staged again with the charge still held',
+			second ~= nil and second ~= first
+				and characters.Players[61].PlayerData.money.EDDIES == walletBefore - 100,
+			tostring(second))
+		control.cyberware.complete(second, false)
+		env.onCyberwareOperationCompleted('61', second,
+			Host.json.encode({ ok = false, error = 'native_projection_failed' }))
+		control.Pump(4)
+		check('a second native failure is refunded, once, and not tried a third time',
+			characters.Players[61].PlayerData.money.EDDIES == walletBefore and ticketOf(61) == nil,
+			('wallet %s'):format(tostring(characters.Players[61].PlayerData.money.EDDIES)))
+
+		-- The reason reader, on its own.
+		check('the native reason is read from the projector the piece uses',
+			Ripper.NativeReason({ legs = { phase = 'failed', reason = 'native_equipment_timeout' },
+				local_ = { phase = 'failed', reason = 'body_not_ready' } }, Ripper.Entry('legs'))
+				== 'native_equipment_timeout'
+			and Ripper.NativeReason({ legs = { phase = 'failed', reason = 'native_equipment_timeout' },
+				local_ = { phase = 'failed', reason = 'body_not_ready' } }, Ripper.Entry('arms'))
+				== 'body_not_ready'
+			and Ripper.NativeReason({ local_ = { phase = 'failed', reason = 'bad reason; drop' } },
+				Ripper.Entry('arms')) == nil
+			and Ripper.NativeWhyKey('native_leg_slot_owned') == 'ripperdoc.native.native_leg_slot_owned'
+			and Ripper.NativeWhyKey('something_new') == 'ripperdoc.native.other')
+
+		-- ── the base game's own records ─────────────────────────────────────
+
+		local legsEntry, armsEntry = Ripper.Entry('legs'), Ripper.Entry('gorilla_arms_toxic')
+		local paraline = Ripper.Entry('paraline_deck')
+		check('every grade carries its base-game record: tendons by quality, a Toxic arm as Chemical, a deck by Mk',
+			legsEntry.GRADES[1].RECORD == 'Items.AdvancedBoostedTendonsUncommon'
+				and armsEntry.GRADES[1].RECORD == 'Items.AdvancedStrongArmsChemicalUncommon'
+				and armsEntry.GRADES[#armsEntry.GRADES].RECORD == 'Items.AdvancedStrongArmsChemicalLegendary'
+				and paraline.GRADES[1].RECORD == 'Items.AdvancedMilitechParalineMKICommon'
+				and paraline.GRADES[#paraline.GRADES].RECORD == 'Items.AdvancedMilitechParalineMKVLegendary',
+			('%s / %s / %s'):format(tostring(legsEntry.GRADES[1].RECORD),
+				tostring(armsEntry.GRADES[1].RECORD), tostring(paraline.GRADES[1].RECORD)))
+		local listed = {}
+		for _, id in ipairs(ripperdoc.Records.IDS) do listed['Items.' .. id] = true end
+		local strays = {}
+		for pieceId, row in pairs(ripperdoc.Cyber.RECORDS) do
+			for index = 1, #row do
+				if row[index] and not listed[row[index]] and #strays < 5 then
+					strays[#strays + 1] = pieceId .. ':' .. tostring(row[index])
+				end
+			end
+		end
+		check('and every record the tray names is one the installed TweakDB really has',
+			#strays == 0 and #ripperdoc.Records.IDS > 1500, table.concat(strays, ' '))
+
+		-- ── the record reader ───────────────────────────────────────────────
+
+		local Reader = ripperdoc.Reader
+		local function resolves(player)
+			local out = {}
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.RESOLVE and event.source == player then out[#out + 1] = event end
+			end
+			return out
+		end
+		local started = Reader.Start(61)
+		local sent = resolves(61)
+		local batch = sent[#sent]
+		check('the reader hands one client a batch of record ids',
+			started == true and batch ~= nil and type(batch[3]) == 'table' and #batch[3] == 40
+				and batch[3][1] == 'Items.' .. ripperdoc.Records.IDS[1],
+			tostring(batch and #batch[3]))
+		check('and a second read is refused while one runs', Reader.Start(61) == false)
+		local answer = {}
+		for index, id in ipairs(batch[3]) do
+			answer[index] = { record = id, answer = 'ok', name = 'Name ' .. index, quality = 'Quality.Rare',
+				area = 'EquipmentArea.LegsCW' }
+		end
+		answer[#answer + 1] = { record = 'Items.NotAskedFor', answer = 'ok', name = 'forged' }
+		press(61, Event.RESOLVED, batch[1], batch[2], answer)
+		control.Pump(60)
+		local kept = 0
+		for _ in pairs(db.records) do kept = kept + 1 end
+		local next = resolves(61)
+		check('its answers are kept -- only the ids it was asked about -- and the next batch goes out',
+			kept == 40 and db.records['Items.NotAskedFor'] == nil
+				and db.records[batch[3][1]].name == 'Name 1' and #next == #sent + 1
+				and next[#next][2] == batch[2] + 1,
+			('%d kept, %d batch(es)'):format(kept, #next))
+		press(61, Event.RESOLVED, batch[1], batch[2], answer)
+		control.Pump(60)
+		check('an old batch answered again writes nothing', #resolves(61) == #next)
+		env.TriggerEvent(OPX.Host.PLAYER_DISCONNECTED, 61)
+		check('and the read ends when its client leaves', Reader.Status():find('the reader left', 1, true) ~= nil,
+			Reader.Status())
+
+		contract.RemoveMoney, contract.AddMoney = realRemove, realAdd
+		durability.LIFESPAN_HOURS = lifespan
+	end
+end
+
+-- ── the edges a review found ──────────────────────────────────────────────────
+-- A slot belongs to the implant that holds it; the ledger is read before it is
+-- trusted; a death is a death only when a body suffered it; a character's kit
+-- comes back with the character; work in flight survives the character that
+-- ordered it and the resource that staged it.
+section('the ripperdoc clinic: slots, relogs, deaths and work in flight')
+do
+	local db = { chrome = {}, refunds = {}, nextRefund = 0 }
+	local bridge = Host.Database({
+		scalar = function() return 1 end,
+		single = function() return nil end,
+		insert = function() return 1 end,
+		query = function(sql, params)
+			local rows = {}
+			if sql:find('FROM opx77_ripperdoc_chrome', 1, true) then
+				for _, row in pairs(db.chrome) do
+					if row.citizen_id == params.citizen then rows[#rows + 1] = row end
+				end
+			elseif sql:find('FROM opx77_ripperdoc_refund', 1, true) then
+				for _, row in ipairs(db.refunds) do
+					if row.citizen_id == params.citizen then rows[#rows + 1] = row end
+				end
+			end
+			return rows
+		end,
+		update = function(sql, params)
+			if sql:find('INSERT INTO opx77_ripperdoc_chrome', 1, true) then
+				db.chrome[params.citizen .. '|' .. params.entry] = {
+					citizen_id = params.citizen, entry_id = params.entry, grade_key = params.grade,
+					condition_points = params.points, broken = params.broken,
+				}
+			elseif sql:find('DELETE FROM opx77_ripperdoc_chrome', 1, true) then
+				db.chrome[params.citizen .. '|' .. params.entry] = nil
+			elseif sql:find('INSERT INTO opx77_ripperdoc_refund', 1, true) then
+				db.nextRefund = db.nextRefund + 1
+				db.refunds[#db.refunds + 1] = { id = db.nextRefund, citizen_id = params.citizen,
+					money_type = params.money, amount = params.amount, reason = params.reason }
+			end
+			return 1
+		end,
+	})
+
+	local env, control, why = boot('server', bridge)
+	check('the server boots', why == nil, why)
+	if control ~= nil then
+		-- The platform services the chrome reaches the body through.
+		for _, service in ipairs({ 'open77_cyberware', 'open77_dash', 'open77_reflex', 'open77_hacking' }) do
+			control.resourceStates[service] = 'running'
+		end
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local characters = OPX.Modules.Get('character')
+		local contract = OPX.Api.Get('character')
+		local Event = ripperdoc.Event
+		local Refusal = ripperdoc.Ripper.Refusal
+		local Ripper, Chrome = ripperdoc.Ripper, ripperdoc.Chrome
+		local durability = ripperdoc.Settings.DURABILITY
+		local lifespan = durability.LIFESPAN_HOURS
+		durability.LIFESPAN_HOURS = 0
+
+		local function press(player, name, ...)
+			local args = table.pack(...)
+			OPX.ForgetCooldowns(player)
+			env.source = player
+			control.netEvents[name](table.unpack(args, 1, args.n))
+			env.source = nil
+		end
+		local function frameOf(playerId)
+			local found = nil
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.FRAME and event.source == playerId then found = event[1] end
+			end
+			return found
+		end
+		local function flashOf(playerId)
+			local frame = frameOf(playerId)
+			return frame ~= nil and frame.flash ~= nil and frame.flash.key or nil
+		end
+		local function load(id, citizenId)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			characters.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id), jobs = {},
+				job = { name = 'unemployed', grade = { level = 0 }, onDuty = false },
+				money = { EDDIES = 50000, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+		local function unload(id, citizenId)
+			characters.Players[id] = nil
+			characters.Registry.byCitizenId[citizenId] = nil
+			env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'unloaded'), id,
+				{ citizenId = citizenId })
+		end
+		local function ticketFor(player)
+			for id, staged in pairs(control.cyberware.pending) do
+				if staged.player == player then return id end
+			end
+			return nil
+		end
+		local function buy(player, entryId, gradeId, mode)
+			press(player, Event.OFFER, entryId, gradeId, mode or 'install')
+			local offered = frameOf(player).offer
+			if offered == nil then return nil, flashOf(player) end
+			press(player, Event.ANSWER, 'offer', true, offered.id)
+			control.Pump(2)
+			return offered
+		end
+		local function complete(player, ok)
+			local ticket = ticketFor(player)
+			if ticket == nil then return nil end
+			control.cyberware.complete(ticket, ok ~= false)
+			env.onCyberwareOperationCompleted(tostring(player), ticket,
+				Host.json.encode({ ok = ok ~= false }))
+			control.Pump(2)
+			return ticket
+		end
+
+		local spot = { x = -1441.2, y = 129.6, z = 18.05 }
+		env.Open77.players.position = function() return { x = spot.x, y = spot.y, z = spot.z, bucket = 0 } end
+		env.Open77.players.all = function() return { 71 } end
+
+		-- ── the ledger is read before it is trusted ────────────────────────
+		-- The database says these arms are at 20; the platform record holds
+		-- them. A patient who sits before the ledger arrives must not have
+		-- them made fresh by the chair.
+		db.chrome['citizen-edge|arms'] = { citizen_id = 'citizen-edge', entry_id = 'arms',
+			grade_key = 'street', condition_points = 20, broken = 0 }
+		control.cyberware.records[71] = { revision = 1,
+			arms = { definition = 'opx.ripperdoc.arms', grade = { id = 'street' } } }
+		load(71, 'citizen-edge')
+		press(71, Event.USE, 'clinic_watson')
+		control.Pump(4)
+		check('sitting before the ledger is read does not make worn chrome fresh',
+			Chrome.Row('citizen-edge', 'arms').points == 20
+				and db.chrome['citizen-edge|arms'].condition_points == 20,
+			tostring(Chrome.Row('citizen-edge', 'arms').points))
+
+		-- ── a slot is the implant's that holds it ─────────────────────────
+		Chrome.WearPiece(71, 'citizen-edge', Ripper.Entry('arms'), 100)
+		control.Pump(2)
+		local removes = #control.cyberware.removes
+		check('broken arms are pulled by the platform', removes == 1 and ticketFor(71) ~= nil,
+			('%d remove(s)'):format(removes))
+		complete(71, true)
+		local electric = Ripper.Entry('gorilla_arms_electric')
+		local fitted = buy(71, 'gorilla_arms_electric', electric.GRADES[1].id)
+		check('another implant may go into the slot the broken one left',
+			fitted ~= nil and ticketFor(71) ~= nil, tostring(flashOf(71)))
+		complete(71, true)
+		check('and holds it', control.cyberware.records[71].arms ~= nil
+			and control.cyberware.records[71].arms.definition == Ripper.DefinitionFor(electric, nil))
+
+		local installs = #control.cyberware.installs
+		local _, refused = buy(71, 'arms', '', 'repair')
+		check('the broken arms cannot be refitted over the implant in their slot',
+			(refused == Refusal.systemFull or refused == Refusal.slotFilled)
+				and #control.cyberware.installs == installs,
+			tostring(refused))
+		removes = #control.cyberware.removes
+		buy(71, 'arms', nil, 'remove')
+		check('and pulling the broken arms touches the ledger alone, never the slot',
+			#control.cyberware.removes == removes and Chrome.Row('citizen-edge', 'arms').grade == ''
+				and control.cyberware.records[71].arms ~= nil,
+			('%d remove(s)'):format(#control.cyberware.removes - removes))
+
+		-- A break announced for a piece the slot does not hold pulls nothing.
+		env.TriggerEvent(Event.ON_BROKEN, { player = 71, citizen = 'citizen-edge', entry = 'arms',
+			grade = 'street' })
+		check('a break for an implant the slot does not hold pulls nothing',
+			#control.cyberware.removes == removes, ('%d'):format(#control.cyberware.removes))
+
+		-- A ledger row the record contradicts is forgotten.
+		db.chrome['citizen-edge|legs'] = nil
+		Chrome.Fit('citizen-edge', 'legs', 'training')
+		control.Pump(2)
+		press(71, Event.OFFER, 'subdermal_armor', 't1', 'install')
+		press(71, Event.ANSWER, 'offer', false, frameOf(71).offer and frameOf(71).offer.id)
+		control.Pump(2)
+		check('a platform piece the record does not hold stops being worn',
+			Chrome.Row('citizen-edge', 'legs').grade == '', tostring(Chrome.Row('citizen-edge', 'legs').grade))
+
+		-- ── a death is a death only when a body suffered it ─────────────────
+		local before = Chrome.Row('citizen-edge', 'gorilla_arms_electric').points
+		env.Open77.players.kill(71, { cause = 'script', weapon = 'opx_infinity:placement' })
+		control.Fire('onPlayerLifeStateChanged', '71', '5', 'dead', 'lua:opx_infinity')
+		control.Pump(2)
+		check('a scripted kill (a placement, a staff move) wears nothing',
+			Chrome.Row('citizen-edge', 'gorilla_arms_electric').points == before,
+			tostring(Chrome.Row('citizen-edge', 'gorilla_arms_electric').points))
+		env.Open77.players.respawn(71)
+		env.Open77.players.kill(71, { cause = 'bullet', weapon = 'pistol' })
+		control.Fire('onPlayerLifeStateChanged', '71', '7', 'dead', 'pvp_damage')
+		control.Fire('onPlayerLifeStateChanged', '71', '6', 'dead', 'pvp_damage')
+		control.Pump(2)
+		check('a real death wears, once, and a late copy of an older one does not',
+			math.abs(Chrome.Row('citizen-edge', 'gorilla_arms_electric').points
+				- (before - Ripper.Lifecycle().DEATH_WEAR)) < 1e-9,
+			tostring(Chrome.Row('citizen-edge', 'gorilla_arms_electric').points))
+		env.Open77.players.respawn(71)
+
+		-- ── the kit comes back with the character ──────────────────────────
+		buy(71, 'dash', 'street')
+		check('a dash is fitted and armed', Chrome.Armed(71, 'dash') == true)
+		unload(71, 'citizen-edge')
+		control.Pump(4)
+		check('the character put down takes its kit with it', Chrome.Armed(71, 'dash') == false)
+		load(71, 'citizen-edge')
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded'), 71,
+			{ citizenId = 'citizen-edge' })
+		control.Pump(6)
+		check('and the character loaded again has it back, without sitting anywhere',
+			Chrome.Armed(71, 'dash') == true and Chrome.Row('citizen-edge', 'dash').grade == 'street')
+
+		-- A grant the platform will not give yet (the body is still being
+		-- bound) is asked for again until it lands.
+		unload(71, 'citizen-edge')
+		control.Pump(4)
+		local refusing = true
+		local realGrant = env.Open77.dash.grant
+		env.Open77.dash.grant = function(...)
+			if refusing then return nil, 'binding_not_ready' end
+			return realGrant(...)
+		end
+		load(71, 'citizen-edge')
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded'), 71,
+			{ citizenId = 'citizen-edge' })
+		control.Pump(120)
+		check('a grant refused at arrival is not armed yet', Chrome.Armed(71, 'dash') == false)
+		refusing = false
+		control.Pump(60)
+		check('and is armed on the retry', Chrome.Armed(71, 'dash') == true)
+		env.Open77.dash.grant = realGrant
+		local said = 0
+		for _, line in ipairs(control.log.warn) do
+			if line:find('could not re-arm dash', 1, true) then said = said + 1 end
+		end
+		check('and the refusal was said once, not once per retry', said == 1, ('%d line(s)'):format(said))
+
+		-- ── work in flight outlives the character that ordered it ──────────
+		press(71, Event.USE, 'clinic_watson')
+		control.cyberware.records[71].arms = nil
+		local wallet = characters.Players[71].PlayerData.money.EDDIES
+		buy(71, 'arms', 'street')
+		local ticket = ticketFor(71)
+		check('an implant is staged and paid for',
+			ticket ~= nil and characters.Players[71].PlayerData.money.EDDIES == wallet - 100)
+		unload(71, 'citizen-edge')
+		load(71, 'citizen-other')
+		press(71, Event.USE, 'clinic_watson')
+		control.cyberware.records[71] = { revision = 9 }
+		local other = buy(71, 'legs', 'training')
+		check('the next character on the same slot is not refused as busy by it',
+			other ~= nil, tostring(flashOf(71)))
+		control.cyberware.complete(ticket, false)
+		env.onCyberwareOperationCompleted('71', ticket, Host.json.encode({ ok = false }))
+		control.Pump(4)
+		check('and the first character\'s failed work is refunded to IT, queued while it is away',
+			#db.refunds == 1 and db.refunds[1].citizen_id == 'citizen-edge' and db.refunds[1].amount == 100,
+			('%d queued'):format(#db.refunds))
+		check('while the second character\'s own work goes on',
+			ticketFor(71) ~= nil, 'the second ticket was consumed')
+
+		complete(71, true)
+
+		-- ── a probe is answered once ────────────────────────────────────────
+		local probeSent = nil
+		env.GetResourceState = function() return 'running' end
+		control.cyberware.records[71] = nil
+		press(71, Event.OFFER, 'deck', 'training', 'install')
+		for _, event in ipairs(control.clientEvents) do
+			if event.name == Event.PROBE and event.source == 71 then probeSent = event[1] end
+		end
+		local probed = 0
+		env.source = 71
+		for _ = 1, 3 do control.netEvents[Event.PROBED](probeSent, { local_ = { phase = 'Failed' } }) end
+		env.source = nil
+		for _, line in ipairs(control.log.warn) do
+			if line:find('client cyberware', 1, true) then probed = probed + 1 end
+		end
+		check('a probe answer is journalled once however often it is replayed',
+			probeSent ~= nil and probed == 1, ('%d line(s), nonce %s'):format(probed, tostring(probeSent)))
+
+		-- ── and the resource stopping gives the money back ────────────────
+		control.cyberware.records[71] = { revision = 12 }
+		buy(71, 'arms', 'street')
+		check('work is in flight', ticketFor(71) ~= nil)
+		local refunds = {}
+		local realAdd = contract.AddMoney
+		contract.AddMoney = function(player, moneyType, amount, reason)
+			refunds[#refunds + 1] = { player, amount }
+			return realAdd(player, moneyType, amount, reason)
+		end
+		ripperdoc.Stop()
+		check('stopping with work in flight refunds it, and says so',
+			#refunds == 1 and refunds[1][2] == 100
+				and table.concat(control.log.warn, ' | '):find('in flight', 1, true) ~= nil,
+			('%d refund(s)'):format(#refunds))
+		contract.AddMoney = realAdd
+		durability.LIFESPAN_HOURS = lifespan
 	end
 end
 
@@ -23463,11 +26110,17 @@ do
 		local OPX = env.OPX
 		local ripperdoc = OPX.Modules.Get('ripperdoc')
 		local Event = ripperdoc.Event
+		local scene = control.chrome.scene
 
 		local mapping = control.keyMappings.byId[ripperdoc.Ripper.KEY.ID]
 		check('the interaction key is declared and defaults to E',
 			mapping ~= nil and mapping.key == 'E' and type(mapping.pressed) == 'function',
 			mapping and tostring(mapping.key) or 'absent')
+
+		-- THE TRAY IS BUILT BEFORE IT IS NEEDED, a few rows per resume.
+		check('the tray was warmed in the background while the client came up',
+			ripperdoc.Ripper.CatalogReady() and #ripperdoc.Ripper.Catalog() >= 115,
+			('%d piece(s)'):format(#ripperdoc.Ripper.Catalog()))
 
 		local page = control.pages[#control.pages]
 		check('the clinic has a surface to draw on', page ~= nil, 'no page')
@@ -23493,42 +26146,138 @@ do
 			end
 
 			-- THE AUTO-OPEN, proven at the wire: a frame arrives and the page is
-			-- handed the whole menu -- with no key pressed and no knock sent.
+			-- handed the whole menu -- with no key pressed and no knock sent. The
+			-- frame carries the BODY only; the page is laid out from the shared
+			-- tray on this side.
 			local mark = #page.sent
-			control.netEvents[Event.FRAME]({
-				mode = 'sitter', chair = 'clinic_watson', name = 'ripperdoc.chair.watson',
-				attended = false, busy = false, offer = nil,
-				catalogue = { {
-					id = 'arms', name = 'ripperdoc.item.arms', slot = 'arms', remove = 50,
-					fitted = '', mine = false,
-					grades = { {
-						id = 'street', name = 'ripperdoc.grade.arms.street', price = 100,
-						owned = false, stats = { normalDamage = 15, chargedDamage = 35 },
-					} },
-				} },
-			})
+			local frame = {
+				mode = 'sitter', chair = 'clinic_watson', name = 'Watson Clinic',
+				attended = false, busy = false, offer = nil, wallet = 900, money = 'EDDIES',
+				chrome = {
+					ready = true,
+					fitted = { { id = 'arms', grade = 'street', points = 42, state = 'worn',
+						broken = false, inBody = true, repair = 30 } },
+					systems = { { id = 'arms', used = 1, slots = 1 } },
+					capacity = { used = 8, max = 100, enforced = true },
+				},
+			}
+			control.netEvents[Event.FRAME](frame)
 			local arrived = views('opx:ripperdoc:view', mark)
+			local shown = arrived[1]
 			check('the frame reaches the page whole -- the menu opens itself',
-				#arrived == 1 and arrived[1].mode == 'sitter'
-					and arrived[1].catalogue[1].grades[1].price == 100,
+				#arrived == 1 and shown.mode == 'sitter' and shown.chrome == nil
+					and shown.wallet == 900 and shown.ready == true,
 				('%d frame(s) on the page'):format(#arrived))
+			check('laid out as the body: every system with its slots, the one worn in opened first',
+				shown ~= nil and #shown.systems == 10 and shown.system == 'arms'
+					and shown.capacity.used == 8,
+				shown and tostring(shown.system) or 'nothing')
+			local armsRow = nil
+			for _, row in ipairs(shown and shown.pieces or {}) do
+				if row.id == 'arms' then armsRow = row end
+			end
+			check('the fitted piece reads first in its system, with its condition',
+				shown ~= nil and shown.pieces[1].id == 'arms' and armsRow.fitted == 'street'
+					and armsRow.points == 42 and armsRow.state == 'worn',
+				shown and shown.pieces[1] and tostring(shown.pieces[1].id) or 'no pieces')
+			check('and the piece opened in full: its grades priced, its numbers and its repair',
+				shown ~= nil and shown.detail ~= nil and shown.detail.id == 'arms'
+					and #shown.detail.grades == 3 and shown.detail.grades[1].price == 100
+					and shown.detail.grades[1].owned == true
+					and shown.detail.grades[1].stats[1].key == 'normalDamage'
+					and shown.detail.fitted.repair == 30,
+				shown and shown.detail and tostring(shown.detail.id) or 'no detail')
+			check('a laid-out page fits the host payload ceiling',
+				shown ~= nil and Host.PayloadNodes(shown) <= Host.MAX_PAYLOAD_NODES,
+				shown and tostring(Host.PayloadNodes(shown)) or 'nothing')
 
-			-- THE PRESSES: five intents, five server events, each naming only
-			-- what was pressed.
+			-- THE HEAVIEST PAGE THERE IS: a body with every slot of every system
+			-- filled at the top tier, plus a broken implant out of the body, with
+			-- every system browsed and every piece of it opened. One page is one
+			-- host payload, whatever the patient wears.
+			local full = { ready = true, fitted = {}, systems = {},
+				capacity = { used = 100, max = 100, enforced = true } }
+			for _, body in ipairs(ripperdoc.Ripper.Systems()) do
+				local taken = 0
+				for _, entry in ipairs(ripperdoc.Ripper.Catalog()) do
+					if entry.SYSTEM == body.id and taken < body.SLOTS then
+						taken = taken + 1
+						full.fitted[#full.fitted + 1] = { id = entry.id,
+							grade = entry.GRADES[#entry.GRADES].id, points = 13, state = 'failing',
+							broken = false, inBody = true, repair = 999 }
+					end
+				end
+				full.systems[#full.systems + 1] = { id = body.id, used = taken, slots = body.SLOTS }
+			end
+			full.fitted[#full.fitted + 1] = { id = 'legs', grade = 'apex', points = 0,
+				state = 'broken', broken = true, inBody = false, repair = 140 }
+			local heavy = { mode = 'sitter', chair = 'clinic_watson', name = 'Watson Clinic',
+				attended = false, busy = false, wallet = 999999, money = 'EDDIES', chrome = full,
+				offer = { id = 99, mode = 'upgrade', entry = 'subdermal_armor', grade = 't5',
+					name = 'ripperdoc.cw.subdermal_armor', gradeName = 'ripperdoc.tier.5',
+					price = 2800, by = 'Player 31' },
+				flash = { key = 'ripperdoc.overCapacity', args = { need = 20, free = 0 } } }
+			control.netEvents[Event.FRAME](heavy)
+			local heaviest, where = 0, ''
+			for _, body in ipairs(ripperdoc.Ripper.Systems()) do
+				for _, entry in ipairs(ripperdoc.Ripper.Catalog()) do
+					if entry.SYSTEM == body.id then
+						local before = #page.sent
+						control.PageEmit(page, 'opx:ripperdoc:browse', { piece = entry.id })
+						local drawn = views('opx:ripperdoc:view', before)[1]
+						local nodes = drawn ~= nil and Host.PayloadNodes(drawn) or math.huge
+						if nodes > heaviest then heaviest, where = nodes, entry.id end
+					end
+				end
+			end
+			check('the heaviest page -- a full body, any system, any piece -- is one host payload',
+				heaviest <= Host.MAX_PAYLOAD_NODES,
+				('%d nodes at %s (ceiling %d)'):format(heaviest, where, Host.MAX_PAYLOAD_NODES))
+			control.netEvents[Event.FRAME](frame)
+
+			-- BROWSING IS LOCAL: another system, then one piece in it, redrawn
+			-- from the last frame with nothing asked of the server.
+			local serverMark = #control.serverEvents
+			mark = #page.sent
+			control.PageEmit(page, 'opx:ripperdoc:browse', { system = 'integumentary' })
+			local browsed = views('opx:ripperdoc:view', mark)[1]
+			local allSkin = true
+			for _, row in ipairs(browsed and browsed.pieces or {}) do
+				local entry = ripperdoc.Ripper.Entry(row.id)
+				if entry == nil or entry.SYSTEM ~= 'integumentary' then allSkin = false end
+			end
+			check('a click on a system lays out that system\'s pieces',
+				browsed ~= nil and browsed.system == 'integumentary' and #browsed.pieces >= 10 and allSkin,
+				browsed and tostring(browsed.system) or 'no redraw')
+			mark = #page.sent
+			control.PageEmit(page, 'opx:ripperdoc:browse', { piece = 'subdermal_armor' })
+			local opened = views('opx:ripperdoc:view', mark)[1]
+			check('a click on a piece opens it, tiers, effects and description',
+				opened ~= nil and opened.detail.id == 'subdermal_armor'
+					and opened.detail.desc == 'ripperdoc.cw.subdermal_armor.desc'
+					and opened.detail.grades[1].effects[1].key == 'armor'
+					and opened.detail.kind == 'stat',
+				opened and opened.detail and tostring(opened.detail.id) or 'no redraw')
+			check('and browsing asked the server for nothing',
+				#control.serverEvents == serverMark,
+				('%d event(s)'):format(#control.serverEvents - serverMark))
+
+			-- THE PRESSES: every intent a server event, naming only what was
+			-- pressed.
 			mark = #control.serverEvents
 			control.PageEmit(page, 'opx:ripperdoc:offer',
-				{ entry = 'arms', grade = 'street', mode = 'install' })
+				{ entry = 'subdermal_armor', grade = 't2', mode = 'install' })
 			local sent = asked(Event.OFFER, mark)
 			check('a fit press is an intent naming entry, grade and mode',
-				sent ~= nil and sent[1] == 'arms' and sent[2] == 'street' and sent[3] == 'install',
+				sent ~= nil and sent[1] == 'subdermal_armor' and sent[2] == 't2' and sent[3] == 'install',
 				sent and tostring(sent[1]) or 'no event')
 
 			mark = #control.serverEvents
-			control.PageEmit(page, 'opx:ripperdoc:answer', { what = 'offer', accept = true })
+			control.PageEmit(page, 'opx:ripperdoc:answer', { what = 'offer', accept = true, offer = 7 })
 			sent = asked(Event.ANSWER, mark)
-			check('an answer names what it answers and whether',
-				sent ~= nil and sent[1] == 'offer' and sent[2] == true,
-				sent and tostring(sent[1]) or 'no event')
+			check('an answer names what it answers, whether, and the offer it saw',
+				sent ~= nil and sent[1] == 'offer' and sent[2] == true and sent[3] == 7,
+				sent and tostring(sent[3]) or 'no event')
 
 			mark = #control.serverEvents
 			control.PageEmit(page, 'opx:ripperdoc:invite', { player = 33 })
@@ -23545,6 +26294,15 @@ do
 			control.PageEmit(page, 'opx:ripperdoc:close', {})
 			check('and the operator door closes the same way',
 				asked(Event.CLOSE, mark) ~= nil, 'no event')
+
+			-- A CLOSED frame forgets what was being browsed.
+			mark = #page.sent
+			control.netEvents[Event.FRAME]({ mode = 'closed', why = 'stood' })
+			control.netEvents[Event.FRAME](frame)
+			local reopened = views('opx:ripperdoc:view', mark)
+			check('a closed menu reopens at the patient\'s own chrome, not where it was left',
+				#reopened == 2 and reopened[1].mode == 'closed' and reopened[2].system == 'arms',
+				('%d frame(s)'):format(#reopened))
 
 			-- FOCUS: the cursor is taken and the keyboard never (the game keeps
 			-- the movement keys and the E that works the chair).
@@ -23564,15 +26322,15 @@ do
 			-- THE PROMPT ROW: shown at the chair, gone away from it, and the
 			-- press reaches the chair it is standing on.
 			local prompts = OPX.Api.Get('prompts')
-			local shown, hidden = 0, 0
+			local promptShown, promptHidden = 0, 0
 			if prompts ~= nil then
 				local realShow, realHide = prompts.Show, prompts.Hide
 				prompts.Show = function(...)
-					shown = shown + 1
+					promptShown = promptShown + 1
 					return realShow(...)
 				end
 				prompts.Hide = function(...)
-					hidden = hidden + 1
+					promptHidden = promptHidden + 1
 					return realHide(...)
 				end
 			end
@@ -23595,7 +26353,7 @@ do
 				('%d marker(s)'):format(drawn))
 
 			check('the strip row appears at the chair',
-				prompts == nil or shown >= 1, ('%d show(s)'):format(shown))
+				prompts == nil or promptShown >= 1, ('%d show(s)'):format(promptShown))
 
 			mark = #control.serverEvents
 			mapping.pressed()
@@ -23607,8 +26365,188 @@ do
 			env.Open77.character.position = function() return 0.0, 0.0, 0.0 end
 			control.Pump(40)
 			check('and it is gone again from across the room',
-				prompts == nil or hidden >= 1,				('%d hide(s)'):format(hidden))
+				prompts == nil or promptHidden >= 1, ('%d hide(s)'):format(promptHidden))
 		end
+
+		-- ── the city's own ripperdoc chair ───────────────────────────────────
+		-- The server asks this client to find the chair the operator is at.
+		-- Viktor stands beside it (a body: never the chair), a crate sits
+		-- nearer (not a chair), and the chair itself answers the engine's
+		-- geometry with its own point, its floor and its forward.
+		scene.nearby = {
+			{ engineEntity = 9001, className = 'NPCPuppet', name = 'Viktor Vektor',
+				family = 'puppet', kind = 'populationNpc', distance = 1.1,
+				position = { x = 1, y = 1, z = 0 } },
+			{ engineEntity = 9002, className = 'gameObject', name = 'crate', family = 'object',
+				distance = 0.8, position = { x = 0.5, y = 0, z = 0 } },
+			{ engineEntity = 9003, className = 'gameObject', name = 'q000_ripperdoc_chair',
+				family = 'object', distance = 1.6, position = { x = 2.0, y = -1.0, z = 0.4 } },
+		}
+		scene.geometry['9003'] = { position = { x = 2.0, y = -1.0, z = 0.4 },
+			forward = { x = 1.0, y = 0.0, z = 0.0 }, bounds = { min = { x = 1.6, y = -1.4, z = 0.1 } } }
+		local snap, candidates = ripperdoc.Ripper.FindChair()
+		check('the chair search finds the ripperdoc chair and never the ripperdoc',
+			snap ~= nil and snap.engine == '9003' and snap.name == 'q000_ripperdoc_chair'
+				and #candidates == 2,
+			snap and tostring(snap.name) or ('%d candidate(s)'):format(#(candidates or {})))
+		check('and takes its point at the floor and its facing from the engine',
+			snap ~= nil and snap.x == 2.0 and snap.y == -1.0 and math.abs(snap.z - 0.1) < 1e-9
+				and snap.fx == 1.0 and snap.fy == 0.0 and math.abs(snap.yaw - 270.0) < 1e-9,
+			snap and ('%s,%s,%s yaw %s'):format(snap.x, snap.y, snap.z, tostring(snap.yaw)) or 'none')
+
+		-- A DOOR ACROSS THE ROOM IS NOT A CHAIR, crosshair or not: the aim
+		-- counts from right beside an object, and never for a door.
+		scene.aimed = { engineEntity = 9004, className = 'Door', family = 'door',
+			kind = 'door', distance = 5.5 }
+		snap = ripperdoc.Ripper.FindChair()
+		check('an aimed door is never the chair',
+			snap ~= nil and snap.engine == '9003', snap and tostring(snap.engine) or 'none')
+		scene.aimed = { engineEntity = 9005, className = 'gameObject', family = 'object',
+			distance = 5.5 }
+		snap = ripperdoc.Ripper.FindChair()
+		check('and an aimed object from across the room loses to a real chair',
+			snap ~= nil and snap.engine == '9003', snap and tostring(snap.engine) or 'none')
+
+		-- THE CITY'S CHAIR NEED NOT CALL ITSELF ONE: aimed at from beside it,
+		-- an object with no chair word in it is the chair.
+		scene.nearby = {}
+		scene.aimed = { engineEntity = 9006, className = 'gameObject', family = 'object',
+			distance = 1.2 }
+		scene.geometry['9006'] = { position = { x = 3.0, y = 3.0, z = 0.0 },
+			forward = { x = 0.0, y = -1.0, z = 0.0 } }
+		snap = ripperdoc.Ripper.FindChair()
+		check('an object aimed at from beside it is taken as the chair',
+			snap ~= nil and snap.engine == '9006' and snap.source == 'aim'
+				and math.abs(snap.yaw - 180.0) < 1e-9,
+			snap and tostring(snap.engine) or 'none')
+		scene.aimed = { engineEntity = 9006, className = 'gameObject', family = 'object',
+			distance = 4.0 }
+		snap = ripperdoc.Ripper.FindChair()
+		check('but not from four metres away, when nothing else reads as a chair',
+			snap == nil, snap and tostring(snap.engine) or 'none')
+
+		-- NO FACING FROM THE ENGINE: the snap says so, and borrows nobody's.
+		scene.aimed = { engineEntity = 9007, className = 'gameObject', family = 'object',
+			distance = 1.0, position = { x = 4.0, y = 4.0, z = 0.0 } }
+		snap = ripperdoc.Ripper.FindChair()
+		check('a chair the engine gives no facing for is sent without one',
+			snap ~= nil and snap.x == 4.0 and snap.yaw == nil and snap.fx == nil,
+			snap and tostring(snap.yaw) or 'none')
+		scene.aimed = nil
+
+		scene.nearby = {
+			{ engineEntity = 9003, className = 'gameObject', name = 'q000_ripperdoc_chair',
+				family = 'object', distance = 1.6, position = { x = 2.0, y = -1.0, z = 0.4 } },
+		}
+		local mark = #control.serverEvents
+		control.netEvents[Event.CAPTURE]('viktor', 'VIKTOR CHAIR')
+		control.Pump(6)
+		local answered = nil
+		for index = mark + 1, #control.serverEvents do
+			if control.serverEvents[index].name == Event.CAPTURED then answered = control.serverEvents[index] end
+		end
+		check('a capture answers, from its own thread, with the chair it found',
+			answered ~= nil and answered[1] == 'viktor' and answered[2] == 'VIKTOR CHAIR'
+				and type(answered[4]) == 'table' and answered[4].engine == '9003',
+			answered and tostring(answered[4] and answered[4].engine) or 'no answer')
+
+		scene.nearby, scene.geometry = {}, {}
+		mark = #control.serverEvents
+		control.netEvents[Event.CAPTURE]('street', 'STREET')
+		control.Pump(6)
+		answered = nil
+		for index = mark + 1, #control.serverEvents do
+			if control.serverEvents[index].name == Event.CAPTURED then answered = control.serverEvents[index] end
+		end
+		check('and with no chair around, an empty snap -- looked, found none',
+			answered ~= nil and type(answered[4]) == 'table' and next(answered[4]) == nil,
+			answered and tostring(answered[4]) or 'no answer')
+
+		-- THE CAPTURED CHAIRS, applied a few rows per resume: forty of them is
+		-- more than one resume's work on this runtime.
+		local many = {}
+		for index = 1, 40 do
+			many[index] = { id = ('clinic%02d'):format(index), NAME = 'CHAIR ' .. index,
+				X = index, Y = -index, Z = 1.0, YAW = 90.0,
+				SEAT = { FORWARD = 0.1, RIGHT = 0, UP = 0, YAW = 0 }, FX = 0, FY = 1,
+				VANILLA = { CLASS = 'gameObject', NAME = 'chair', ENGINE = tostring(index) } }
+		end
+		control.netEvents[Event.CHAIRS](many)
+		check('a long chair list is not applied in the resume that received it',
+			#ripperdoc.Ripper.Captured < 40, ('%d applied at once'):format(#ripperdoc.Ripper.Captured))
+		control.Pump(20)
+		check('and is all there a few frames later, the city\'s chairs without a prop',
+			#ripperdoc.Ripper.Captured == 40 and ripperdoc.Ripper.Captured[1].PROP == false,
+			('%d applied'):format(#ripperdoc.Ripper.Captured))
+		control.netEvents[Event.CHAIRS]({})
+		control.Pump(4)
+
+		-- ── the client half of a diagnosis ──────────────────────────────────
+		scene.capabilities = { localProjection = { phase = 'Failed', reason = 'restore_timeout' },
+			legsProjection = { phase = 'Idle' }, side = 'client' }
+		mark = #control.serverEvents
+		control.netEvents[Event.PROBE]('n-1')
+		control.Pump(4)
+		local probed = nil
+		for index = mark + 1, #control.serverEvents do
+			if control.serverEvents[index].name == Event.PROBED then probed = control.serverEvents[index] end
+		end
+		check('a probe answers with what open77_cyberware on this machine projects',
+			probed ~= nil and probed[1] == 'n-1' and type(probed[2]) == 'table'
+				and probed[2].local_ ~= nil and probed[2].local_.phase == 'Failed',
+			probed and tostring(probed[2] and probed[2].error) or 'no answer')
+
+		-- ── the base-game menu recorder ─────────────────────────────────────
+		-- Viktor's vendor screen opens and closes; the body's numbers moved in
+		-- between. The recorder writes both edges and what changed.
+		local lines = ripperdoc.Recorder.Lines()
+		local before = #lines
+		scene.nearby = { { engineEntity = 9001, className = 'NPCPuppet', family = 'populationNpc',
+			npcId = 3, distance = 1.1, position = { x = 1, y = 1, z = 0 } } }
+		control.Fire('open77:menuStateChanged', '1', '1', 'vanilla', 'MenuScenario_Vendor')
+		control.Pump(6)
+		control.chrome.poolsOf(1).health.maximum = 120
+		control.Fire('open77:menuStateChanged', '0', '0', 'vanilla', 'MenuScenario_Vendor')
+		control.Pump(10)
+		local text = table.concat(lines, '\n', before + 1)
+		check('a vanilla vendor menu is recorded by itself, open and close',
+			text:find('vanilla menu OPEN scenario=MenuScenario_Vendor', 1, true) ~= nil
+				and text:find('vanilla menu CLOSE scenario=MenuScenario_Vendor', 1, true) ~= nil,
+			text:sub(1, 200))
+		check('with what changed on the body while it was open',
+			text:find('stats.healthMax: 100 -> 120', 1, true) ~= nil, text:sub(1, 400))
+		check('and the snapshot names who was there',
+			text:find('NPCPuppet', 1, true) ~= nil, 'no nearby row')
+		local shipped = 0
+		for _, event in ipairs(control.serverEvents) do
+			if event.name == Event.RECORDED then shipped = shipped + 1 end
+		end
+		check('every line is sent to the server journal', shipped >= 4, ('%d line(s)'):format(shipped))
+
+		before = #lines
+		control.Fire('open77:menuStateChanged', '1', '1', 'vanilla', 'MenuScenario_Map')
+		control.Fire('open77:menuStateChanged', '0', '0', 'vanilla', 'MenuScenario_Map')
+		control.Pump(6)
+		check('a menu the policy does not name is not recorded unless switched on',
+			#lines == before, ('%d line(s)'):format(#lines - before))
+		control.netEvents[Event.RECORD]('on')
+		control.Pump(4)
+		control.Fire('open77:menuStateChanged', '1', '1', 'vanilla', 'MenuScenario_Map')
+		control.Pump(6)
+		control.Fire('open77:menuStateChanged', '0', '0', 'vanilla', 'MenuScenario_Map')
+		control.Pump(6)
+		text = table.concat(lines, '\n', before + 1)
+		check('and switched on, every vanilla menu is recorded',
+			text:find('recorder ON', 1, true) ~= nil
+				and text:find('OPEN scenario=MenuScenario_Map', 1, true) ~= nil,
+			text:sub(1, 200))
+		control.netEvents[Event.RECORD]('dump')
+		control.Pump(4)
+		check('and a dump copies the session to the clipboard',
+			type(scene.clipboard) == 'string' and scene.clipboard:find('MenuScenario_Map', 1, true) ~= nil,
+			tostring(scene.clipboard and #scene.clipboard))
+		control.netEvents[Event.RECORD]('off')
+		control.Pump(4)
 	end
 end
 
@@ -24704,7 +27642,36 @@ do
 					control.netEvents[HELLO]()
 					control.Pump(10)
 					env.source = nil
-					return #control.clientEvents == mark
+					-- NOTHING IS SWALLOWED TO MAKE THIS PASS: when the window is
+					-- not quiet, the names of what walked through it are the
+					-- report -- a stray from another module's cadence and this
+					-- hello being answered read the same on a bare count.
+					-- ONE NAME IS SET ASIDE, WRITTEN DOWN RATHER THAN TUNED
+					-- AROUND: the weather authority republishes its clock to
+					-- everyone every five seconds whether or not anyone speaks
+					-- (`weather/server/state.lua`, EVENT_SYNC), and no hello
+					-- answer could ever ride that channel. A window that opens
+					-- as one lands would be measuring the weather -- the check
+					-- failed on exactly that once. ONLY that one literal name:
+					-- any other channel, even one more stray from another
+					-- cadence, still fails the check and is named.
+					local AMBIENT = { ['opx:net:weather:sync'] = true }
+					local loud, quiet = {}, {}
+					for index = mark + 1, #control.clientEvents do
+						local event = control.clientEvents[index]
+						local line = ('%s->%s'):format(
+							tostring(event.name), tostring(event.source))
+						if AMBIENT[event.name] then
+							quiet[#quiet + 1] = line
+						else
+							loud[#loud + 1] = line
+						end
+					end
+					if #loud == 0 then return true end
+					-- The report names what failed AND what was set aside, so a
+					-- waiver never hides what walked through the window.
+					return false, ('%s  [set aside: %s]'):format(
+						table.concat(loud, ', '), table.concat(quiet, ', '))
 				end)())
 
 			-- ── a departing player is forgotten ──────────────────────────────
@@ -24720,7 +27687,8 @@ do
 					control.netEvents[HELLO]()
 					control.Pump(10)
 					env.source = nil
-					return #control.clientEvents > mark					end)())
+					return #control.clientEvents > mark
+					end)())
 		end
 	end
 end
@@ -24729,7 +27697,7 @@ section('the ripperdoc clinic: /opx.clinic.add places the chair')
 do
 	-- The chair table the bridge answers with, and everything written to it.
 	-- The SQL is the real storage module's; this is only the bridge half.
-	local rows, wrote, deleted = {}, {}, {}
+	local rows, wrote, deleted, seatWrites, seatDeletes = {}, {}, {}, {}, {}
 	local function bridge()
 		return Host.Database({
 			scalar = function() return 1 end,
@@ -24737,15 +27705,23 @@ do
 				if sql:find('opx77_ripperdoc', 1, true) then return rows end
 				return {}
 			end,
-			update = function(sql)
+			update = function(sql, params)
 				-- Only the writes: the schema runs `CREATE TABLE IF NOT EXISTS`
 				-- through the same bridge method, and counting that would make
 				-- "nothing was written" true of a boot rather than of a refusal.
-				if sql:find('INSERT INTO opx77_ripperdoc', 1, true) then
+				if sql:find('INSERT INTO opx77_ripperdoc (', 1, true) then
 					wrote[#wrote + 1] = sql
 				end
-				if sql:find('DELETE FROM opx77_ripperdoc', 1, true) then
+				if sql:find('DELETE FROM opx77_ripperdoc WHERE', 1, true) then
 					deleted[#deleted + 1] = sql
+				end
+				-- The seat beside the chair: what it snapped to and how the
+				-- patient sits in it.
+				if sql:find('INSERT INTO opx77_ripperdoc_seat', 1, true) then
+					seatWrites[#seatWrites + 1] = params
+				end
+				if sql:find('DELETE FROM opx77_ripperdoc_seat', 1, true) then
+					seatDeletes[#seatDeletes + 1] = params
 				end
 				return 0
 			end,
@@ -24758,7 +27734,21 @@ do
 	rows[1] = { chair_key = 'clinic_old', label = 'THE OLD CHAIR',
 		x = -1546.96, y = 1233.77, z = 11.52, yaw = 270.0 }
 
-	local env, control, why = boot('server', bridge())
+	-- The props the clinic spawns, so a chair snapped to the city's own can be
+	-- shown to spawn none.
+	local created, removedProps = {}, {}
+	local env, control, why = boot('server', bridge(), function(e)
+		e.Open77.props = {
+			create = function(spec)
+				created[#created + 1] = spec
+				return 'prop-' .. tostring(#created)
+			end,
+			remove = function(propId)
+				removedProps[#removedProps + 1] = propId
+				return true
+			end,
+		}
+	end)
 	check('the server boots with the clinic and a database', why == nil, why)
 
 	-- The last client event with one name, or nil. Every verdict below is
@@ -24860,7 +27850,8 @@ do
 			held and ('%s,%s,%s yaw %s'):format(held.X, held.Y, held.Z, tostring(held.YAW)))
 		check('and its name is the operator\'s own words',
 			held ~= nil and held.NAME == 'VICTOR CHAIR')
-		check('and the row was written through the bridge', #wrote == 1, #wrote)
+		check('and the row was written through the bridge, with its seat beside it',
+			#wrote == 1 and #seatWrites == 1 and seatWrites[1].key == 'victor', #wrote)
 		local synced = lastEvent(Event.CHAIRS)
 		check('and every client was told what chairs are there now',
 			synced ~= nil and type(synced[1]) == 'table' and #synced[1] == 2,
@@ -24880,7 +27871,8 @@ do
 		control.Pump(8)
 		check('the remove command takes a captured chair away',
 			ripperdoc.Ripper.Chair('victor') == nil)
-		check('and deleted it through the bridge', #deleted == 1, #deleted)
+		check('and deleted it through the bridge, seat and all',
+			#deleted == 1 and #seatDeletes == 1, ('%d/%d'):format(#deleted, #seatDeletes))
 		check('the chair the database held at boot is still there',
 			ripperdoc.Ripper.Chair('clinic_old') ~= nil)
 
@@ -24902,6 +27894,495 @@ do
 			#ripperdoc.Ripper.Chairs() == merged - 1
 				and ripperdoc.Ripper.Chair('clinic_watson').NAME == 'MOVED CHAIR',
 			('%d chair(s)'):format(#ripperdoc.Ripper.Chairs()))
+		ripperdoc.Ripper.SetCaptured({})
+
+		-- ── the city's own ripperdoc chair ────────────────────────────────
+		-- The client found the base-game chair the operator aimed at and sent
+		-- where it stands and which way it faces. The capture takes THAT --
+		-- the patient sits in the chair the city placed, and no prop is spawned.
+		local propsBefore = #created
+		env.source = src
+		control.netEvents[Event.CAPTURED]('viktor', 'VIKTOR CHAIR', 90.0, {
+			x = 1.5, y = -2.0, z = 0.25, yaw = 180.0, fx = 0.0, fy = -1.0,
+			class = 'gameObject', name = 'q000_ripperdoc_chair', engine = '4411',
+			source = 'aim',
+		})
+		env.source = nil
+		control.Pump(8)
+		local snapped = ripperdoc.Ripper.Chair('viktor')
+		check('a capture at a base-game chair takes the chair\'s own place and facing',
+			snapped ~= nil and snapped.X == 1.5 and snapped.Y == -2.0 and snapped.Z == 0.25
+				and snapped.YAW == 180.0 and snapped.FX == 0.0 and snapped.FY == -1.0,
+			snapped and ('%s,%s,%s yaw %s'):format(snapped.X, snapped.Y, snapped.Z,
+				tostring(snapped.YAW)) or 'not placed')
+		check('and remembers what it snapped to',
+			snapped ~= nil and snapped.VANILLA ~= nil and snapped.VANILLA.NAME == 'q000_ripperdoc_chair'
+				and snapped.VANILLA.ENGINE == '4411'
+				and seatWrites[#seatWrites].engine == '4411' and seatWrites[#seatWrites].fy == -1.0)
+		check('and spawns NO chair prop: the city\'s chair is the chair',
+			snapped ~= nil and snapped.PROP == false and #created == propsBefore,
+			('%d prop(s) spawned'):format(#created - propsBefore))
+		local anchor = ripperdoc.Ripper.Anchor(snapped)
+		check('the patient is posed on the chair\'s own point, facing its way',
+			anchor.x == 1.5 and anchor.y == -2.0 and anchor.z == 0.25 and anchor.yaw == 180.0,
+			('%s,%s,%s yaw %s'):format(anchor.x, anchor.y, anchor.z, anchor.yaw))
+
+		-- THE SEAT IS TUNED along the chair's own axes: forward is the way it
+		-- faces (-y here), right is to its right (-x), up is up.
+		control.commands['opx.clinic.tune'].run(src, { 'viktor', '0.1', '0.2', '0.05', '10' })
+		control.Pump(8)
+		local tuned = ripperdoc.Ripper.Anchor(ripperdoc.Ripper.Chair('viktor'))
+		check('a tuned seat moves along the chair\'s own axes and turns by the degrees given',
+			math.abs(tuned.x - (1.5 - 0.2)) < 1e-9 and math.abs(tuned.y - (-2.0 - 0.1)) < 1e-9
+				and math.abs(tuned.z - 0.30) < 1e-9 and tuned.yaw == 190.0,
+			('%.3f,%.3f,%.3f yaw %s'):format(tuned.x, tuned.y, tuned.z, tuned.yaw))
+		check('and the tune is written down, still with no prop',
+			seatWrites[#seatWrites].forward == 0.1 and seatWrites[#seatWrites].up == 0.05
+				and ripperdoc.Ripper.Chair('viktor').PROP == false and #created == propsBefore)
+		control.commands['opx.clinic.tune'].run(src, { 'viktor', 'far', '0', '0' })
+		control.Pump(4)
+		check('a tune that is not numbers moves nothing',
+			ripperdoc.Ripper.Chair('viktor').SEAT.FORWARD == 0.1)
+		control.commands['opx.clinic.tune'].run(src, { 'viktor', '9', '0', '0' })
+		control.Pump(4)
+		check('and a seat is nudged inside its chair, never carried out of it',
+			ripperdoc.Ripper.Chair('viktor').SEAT.FORWARD == 0,
+			tostring(ripperdoc.Ripper.Chair('viktor').SEAT.FORWARD))
+
+		-- A "chair" the client names across the room is not the chair the
+		-- operator is at: the capture falls back to where the operator stands,
+		-- and that chair gets a prop to sit on.
+		env.source = src
+		control.netEvents[Event.CAPTURED]('street', 'STREET CHAIR', 45.0, {
+			x = 80.0, y = 80.0, z = 0.0, yaw = 0.0, class = 'gameObject', name = 'chair', source = 'near',
+		})
+		env.source = nil
+		control.Pump(8)
+		local street = ripperdoc.Ripper.Chair('street')
+		check('a base-game chair out of snapping reach is refused, and the capture is where the operator stands',
+			street ~= nil and street.X == 0.0 and street.Y == 0.0 and street.YAW == 45.0
+				and street.VANILLA == nil and street.PROP ~= false and #created == propsBefore + 1,
+			street and ('%s,%s prop=%s'):format(street.X, street.Y, tostring(street.PROP)) or 'no chair')
+
+		check('and a chair with no engine facing writes its seat with every parameter bound',
+			seatWrites[#seatWrites].key == 'street' and seatWrites[#seatWrites].facing == 0
+				and seatWrites[#seatWrites].fx == 0 and seatWrites[#seatWrites].fy == 0,
+			tostring(seatWrites[#seatWrites].facing))
+
+		-- THE ENGINE GAVE NO FACING for the chair the operator aimed at: it is
+		-- taken to face the operator, and the answer says how to turn it.
+		env.source = src
+		control.netEvents[Event.CAPTURED]('blind', 'BLIND CHAIR', 30.0, {
+			x = 1.0, y = 1.0, z = 0.0, class = 'gameObject', name = '', engine = '77', source = 'aim',
+		})
+		env.source = nil
+		control.Pump(8)
+		local blind = ripperdoc.Ripper.Chair('blind')
+		check('a snapped chair with no engine facing faces the operator who aimed at it',
+			blind ~= nil and blind.YAW == 210.0 and blind.FX == nil and blind.PROP == false,
+			blind and tostring(blind.YAW) or 'no chair')
+
+		-- A NaN from a broken client is not a place.
+		env.source = src
+		control.netEvents[Event.CAPTURED]('nan', 'NAN', 0.0, { x = 0 / 0, y = 0, z = 0 })
+		env.source = nil
+		control.Pump(8)
+		check('a snap with a NaN in it is ignored, not carried to the engine',
+			ripperdoc.Ripper.Chair('nan') ~= nil and ripperdoc.Ripper.Chair('nan').VANILLA == nil
+				and ripperdoc.Ripper.Chair('nan').X == 0.0)
+
+		-- ── the diagnosis and the recorder doors ─────────────────────────────
+		check('the diagnosis and recorder commands are registered and ACL-gated',
+			control.commands['opx.clinic.diag'] ~= nil and control.commands['opx.clinic.diag'].restricted
+				and control.commands['opx.clinic.record'] ~= nil
+				and control.commands['opx.clinic.record'].restricted
+				and control.commands['opx.clinic.tune'].restricted)
+		local marked = #control.clientEvents
+		control.commands['opx.clinic.record'].run(src, { 'on' })
+		local toggled = lastEvent(Event.RECORD)
+		check('/opx.clinic.record switches the recorder on the operator\'s own client',
+			toggled ~= nil and #control.clientEvents > marked and toggled.source == src
+				and toggled[1] == 'on',
+			toggled and tostring(toggled[1]) or 'no event')
+		control.commands['opx.clinic.record'].run(src, { 'sideways' })
+		check('and refuses a mode it does not know',
+			lastEvent(Event.RECORD) == toggled)
+		env.source = src
+		control.netEvents[Event.RECORDED]('menu open scenario=MenuScenario_Vendor\nsecond line')
+		env.source = nil
+		local journal = table.concat(control.log.info, ' | ')
+		check('a recorder line lands in the server journal, on one line',
+			journal:find('[ripperdoc:rec]', 1, true) ~= nil
+				and journal:find('MenuScenario_Vendor second line', 1, true) ~= nil,
+			'no journal line')
+		env.source = src
+		control.netEvents[Event.RECORDED]('a flood')
+		env.source = nil
+		check('and a second line inside the floor is dropped',
+			select(2, table.concat(control.log.info, ' | '):gsub('a flood', '')) == 0)
+	end
+end
+
+-- ── the chair you can see, and the chrome that wears out ──────────────────────
+-- The patient sits on the platform's portable workspot -- a pose and its
+-- invisible device. What they LOOK at is a real prop this module spawns on the
+-- chair's own place, and what they WEAR is a condition number of its own: one
+-- per piece, moved only by the host's own wear events, and repaired at the
+-- tray for the wear it actually carries.
+section('the ripperdoc clinic: the chair you can see and the chrome that wears out')
+do
+	-- The platform doors this section stands in for: the props the patient
+	-- sees and the movement/hacking modules the kit is granted from. Every
+	-- call is captured, so the verdicts read what the module asked for rather
+	-- than what it says it asked for.
+	local created, removed, grants, revocations, definitions = {}, {}, {}, {}, {}
+	local function movement(name)
+		return {
+			define = function(definition)
+				definitions[#definitions + 1] = { name = name, definition = definition }
+				return { ok = true }
+			end,
+			grant = function(player, definitionId)
+				grants[#grants + 1] = { player, definitionId }
+				return { ok = true }
+			end,
+			revoke = function(player, definitionId)
+				revocations[#revocations + 1] = { player, definitionId }
+				return { ok = true }
+			end,
+		}
+	end
+
+	-- The chair table behind the capture, and every write the chrome ledger
+	-- makes: the section stands on its own database.
+	local function bridge()
+		return Host.Database({
+			scalar = function() return 1 end,
+			query = function() return {} end,
+			update = function() return 0 end,
+			single = function() return nil end,
+		})
+	end
+
+	local env, control, why = boot('server', bridge(), function(e)
+		-- THE PLATFORM'S OWN ANSWERS, exactly: `wiki/props.md` gives
+		-- `create`'s contract as "Prop ID as a decimal string, or nil,
+		-- reason" and `remove` as `boolean, reason?`, and the movement
+		-- modules return `{ok=true}` or `nil, reason` (`wiki/dash.md`). A
+		-- stub answering friendlier shapes than the platform hides a misread
+		-- return for ever -- the first staging boot was lied to exactly this
+		-- way ("the chair prop was refused: 1" for a chair that had spawned).
+		e.Open77.props = {
+			create = function(spec)
+				created[#created + 1] = spec
+				return 'prop-' .. tostring(#created)
+			end,
+			remove = function(propId)
+				removed[#removed + 1] = propId
+				return true
+			end,
+		}
+		e.Open77.dash = movement('dash')
+		e.Open77.reflex = movement('reflex')
+		e.Open77.abilities = movement('abilities')
+		e.Open77.hacking = movement('hacking')
+	end)
+	check('the server boots with the chair and the chrome', why == nil, why)
+	if control ~= nil then
+		-- The platform services the chrome reaches the body through.
+		for _, service in ipairs({ 'open77_cyberware', 'open77_dash', 'open77_reflex', 'open77_hacking' }) do
+			control.resourceStates[service] = 'running'
+		end
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local characters = OPX.Modules.Get('character')
+		local contract = OPX.Api.Get('character')
+		local Event = ripperdoc.Event
+		local Refusal = ripperdoc.Ripper.Refusal
+		local Chrome = ripperdoc.Chrome
+
+		local function press(player, name, ...)
+			local args = table.pack(...)
+			OPX.ForgetCooldowns(player)
+			env.source = player
+			control.netEvents[name](table.unpack(args, 1, args.n))
+			env.source = nil
+		end
+
+		local function load(id, citizenId, jobName, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			characters.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id),
+				jobs = jobName ~= nil and { [jobName] = 0 } or {},
+				job = { name = jobName or 'unemployed', grade = { level = 0 },
+					onDuty = onDuty == true },
+				money = { EDDIES = 5000, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+
+		-- The clock of play is stopped: every number below is one use's wear.
+		local durability = ripperdoc.Settings.DURABILITY
+		local lifespan = durability.LIFESPAN_HOURS
+		durability.LIFESPAN_HOURS = 0
+		local Ripper = ripperdoc.Ripper
+
+		local spot = { x = -1441.2, y = 129.6, z = 18.05 }
+		env.Open77.players.position = function()
+			return { x = spot.x, y = spot.y, z = spot.z, bucket = 0 }
+		end
+		env.Open77.players.all = function() return { 41, 42 } end
+
+		load(41, 'citizen-chrome-ripper', 'ripperdoc', true)
+		load(42, 'citizen-chrome-patient', 'bartender', true)
+
+		local charges = {}
+		local realRemove = contract.RemoveMoney
+		contract.RemoveMoney = function(player, moneyType, amount, reason)
+			charges[#charges + 1] = { player, moneyType, amount, reason }
+			return realRemove(player, moneyType, amount, reason)
+		end
+
+		local function frameOf(playerId)
+			local found = nil
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.FRAME and event.source == playerId then
+					found = event[1]
+				end
+			end
+			return found
+		end
+
+		local function ticketFor(player)
+			for id, staged in pairs(control.cyberware.pending) do
+				if staged.player == player then return id end
+			end
+			return nil
+		end
+
+		-- ── the chair the patient can see ───────────────────────────────────
+
+		check('every configured chair gets a visible prop on its own place',
+			#created == 1 and created[1].model == 'furniture.chair.metal'
+				and created[1].position.x == -1441.2 and created[1].position.y == 129.6
+				and created[1].position.z == 18.05 and created[1].yaw == 90.0,
+			('%d prop(s), first at %s'):format(#created,
+				created[1] and tostring(created[1].position.x) or 'none'))
+
+		-- A chair that moved is rebuilt rather than nudged, and the old prop
+		-- is removed by the STRING token the host answered with.
+		control.Allow(41, 'command.opx.clinic.add')
+		env.source = 41
+		control.netEvents[Event.CAPTURED]('clinic_watson', 'MOVED CHAIR', 180.0)
+		env.source = nil
+		control.Pump(8)
+		check('a chair that moved takes a fresh prop, and the old one goes by its token',
+			removed[1] == 'prop-1' and #created == 2 and created[2].yaw == 180.0,
+			('%d removed (%s), %d created'):format(#removed, tostring(removed[1]), #created))
+
+		-- THE REFUSAL KEEPS ITS REASON. The host answers `create` with
+		-- `nil, reason`; a reader that misread the shape printed the prop's
+		-- own id as the reason ("was refused: 1") for chairs it had just
+		-- spawned. A refusing host must surface the reason it gave, and a
+		-- refusal must never be mistaken for a token.
+		local _, refused, whyRefused = boot('server', bridge(), function(e)
+			e.Open77.props = {
+				create = function() return nil, 'template_backend_disabled' end,
+				remove = function() return true end,
+			}
+		end)
+		check('a refused chair prop is logged with the host\'s own reason',
+			whyRefused == nil and table.concat(refused.log.warn, ' | ')
+				:find('was refused: template_backend_disabled', 1, true) ~= nil,
+			table.concat(refused.log.warn, ' | '))
+
+		-- ── the tray on the wire ─────────────────────────────────────────────
+
+		press(42, Event.USE, 'clinic_watson')
+		local seated = frameOf(42)
+		check('the patient is seated with an empty body and every system open',
+			seated ~= nil and seated.mode == 'sitter' and type(seated.chrome) == 'table'
+				and #seated.chrome.fitted == 0 and #seated.chrome.systems == 10,
+			seated and tostring(seated.mode) or 'no frame')
+
+		-- THE MOVEMENT KIT IS A GRANT, not a staged operation: the definition
+		-- goes on the platform's own shelf at Start and the appointment arms it.
+		-- A grant's definition is its config's, shared by every grade that
+		-- configures the power the same way.
+		local dashStreetId = ripperdoc.Ripper.DefinitionFor(ripperdoc.Ripper.Entry('dash'),
+			ripperdoc.Ripper.Grade(ripperdoc.Ripper.Entry('dash'), 'street'))
+		local dashDefined, deckDefined = false, false
+		for _, row in ipairs(definitions) do
+			if row.name == 'dash' and row.definition.id == dashStreetId
+				and row.definition.profile == 'dash' then
+				dashDefined = true
+			end
+			-- ONE hack definition per deck, with the implant's own id and every
+			-- grade on it (`wiki/hacking.md`): a per-grade id was a deck the
+			-- hacking service had never heard of.
+			if row.name == 'hacking' and row.definition.id == 'opx.ripperdoc.deck'
+				and row.definition.grades ~= nil and row.definition.grades[2] ~= nil
+				and row.definition.grades[2].id == 'street'
+				and row.definition.grades[2].kind == 'overheat'
+				and row.definition.grades[2].staminaCost ~= nil then
+				deckDefined = true
+			end
+		end
+		check('every grade of the kit is defined on the platform shelf',
+			dashDefined and deckDefined, 'a movement or hacking definition is missing')
+
+		press(42, Event.OFFER, 'dash', 'street', 'install')
+		local offerFrame = frameOf(42)
+		check('the dash is offered as an appointment at its own price',
+			offerFrame ~= nil and offerFrame.offer ~= nil and offerFrame.offer.mode == 'install'
+				and offerFrame.offer.grade == 'street' and offerFrame.offer.price == 150,
+			offerFrame and offerFrame.offer and tostring(offerFrame.offer.price) or 'no offer')
+
+		press(42, Event.ANSWER, 'offer', true, offerFrame.offer.id)
+		check('and accepting GRANTS it -- no ticket, no staging',
+			#grants == 1 and grants[1][1] == 42
+				and grants[1][2] == dashStreetId
+				and ticketFor(42) == nil,
+			('%d grant(s)'):format(#grants))
+		check('the ledger remembers the grade the patient now wears',
+			Chrome.Row('citizen-chrome-patient', 'dash').grade == 'street',
+			tostring(Chrome.Row('citizen-chrome-patient', 'dash').grade))
+		check('and the money rule stands: the price is kept the moment the work is done',
+			charges[#charges] ~= nil and charges[#charges][3] == 150,
+			charges[#charges] and tostring(charges[#charges][3]) or 'no charge')
+
+		-- ── wear: the host's own events, and nobody else's ────────────────────
+
+		control.Fire('onDashChanged', 42, Host.json.encode({ phase = 'accepted' }))
+		control.Fire('onDashChanged', 42, Host.json.encode({ phase = 'refused' }))
+		control.Pump(4)
+		check('an accepted dash wears the legs one point and a refused one wears nothing',
+			Chrome.Row('citizen-chrome-patient', 'dash').points == 99,
+			tostring(Chrome.Row('citizen-chrome-patient', 'dash').points))
+		check('and nothing else is worn by it',
+			Chrome.Row('citizen-chrome-patient', 'arms').points == 100
+				and Chrome.Row('citizen-chrome-patient', 'reflex').points == 100,
+			'another piece moved')
+
+		-- A patient wearing no arms is not wearing arms that break: the event
+		-- belongs to somebody else's chrome.
+		control.Fire('onCyberwareMeleeHit', 41, 42, Host.json.encode({ ok = true }))
+		control.Pump(4)
+		check('a hit does not wear a piece the patient does not have',
+			Chrome.Row('citizen-chrome-patient', 'arms').grade == '', 'unowned arms were worn')
+
+		-- ── the break: zero is terminal until a ripperdoc says otherwise ──────
+
+		for _ = 1, 99 do
+			control.Fire('onDashChanged', 42, Host.json.encode({ phase = 'accepted' }))
+		end
+		control.Pump(12)
+		check('at zero the dash breaks',
+			Chrome.Row('citizen-chrome-patient', 'dash').broken == true
+				and Chrome.Row('citizen-chrome-patient', 'dash').points == 0,
+			('%s at %s'):format(tostring(Chrome.Row('citizen-chrome-patient', 'dash').broken),
+				tostring(Chrome.Row('citizen-chrome-patient', 'dash').points)))
+		check('and a broken grant piece is disarmed on the spot',
+			#revocations == 1 and revocations[1][2] == dashStreetId
+				and Chrome.Armed(42, 'dash') == false,
+			('%d revocation(s)'):format(#revocations))
+
+		-- THE REPAIR buys the wear back at the policy's share of the grade's
+		-- price.
+		local dashStreet = Ripper.Grade(Ripper.Entry('dash'), 'street')
+		press(42, Event.OFFER, 'dash', '', 'repair')
+		offerFrame = frameOf(42)
+		check('a repair offer prices the wear it buys back',
+			offerFrame ~= nil and offerFrame.offer ~= nil and offerFrame.offer.mode == 'repair'
+				and offerFrame.offer.price == Ripper.RepairPrice(dashStreet, 0, true)
+				and offerFrame.offer.grade == 'street',
+			offerFrame and offerFrame.offer and tostring(offerFrame.offer.price) or 'no offer')
+		press(42, Event.ANSWER, 'offer', true, offerFrame.offer.id)
+		control.Pump(4)
+		check('and a repaired kit piece is whole and armed again',
+			Chrome.Row('citizen-chrome-patient', 'dash').points == 100
+				and Chrome.Row('citizen-chrome-patient', 'dash').broken == false
+				and #grants == 2 and grants[2][2] == dashStreetId,
+			('%s at %s, %d grant(s)'):format(
+				tostring(Chrome.Row('citizen-chrome-patient', 'dash').broken),
+				tostring(Chrome.Row('citizen-chrome-patient', 'dash').points), #grants))
+
+		press(42, Event.OFFER, 'dash', '', 'repair')
+		check('a whole piece has nothing to repair and says so',
+			frameOf(42).flash.key == Refusal.healthy,
+			tostring(frameOf(42).flash.key))
+
+		-- ── the durable implant: a break is a pull ─────────────────────────────
+
+		-- The patient's durable record is LOADED (the wiki: `current` answers
+		-- nil while loading, and nil is `notReady`, never a silent proceed).
+		control.cyberware.records[42] = { revision = 1 }
+		press(42, Event.OFFER, 'arms', 'street', 'install')
+		press(42, Event.ANSWER, 'offer', true, frameOf(42).offer.id)
+		local staged = ticketFor(42)
+		check('an implant is still staged through the platform', staged ~= nil, 'no ticket')
+		control.cyberware.complete(staged, true)
+		env.onCyberwareOperationCompleted(tostring(42), staged, Host.json.encode({ ok = true }))
+		control.Pump(4)
+		check('and the completion is where the piece becomes the patient\'s',
+			Chrome.Row('citizen-chrome-patient', 'arms').grade == 'street'
+				and Chrome.Row('citizen-chrome-patient', 'arms').points == 100,
+			('%s at %s'):format(tostring(Chrome.Row('citizen-chrome-patient', 'arms').grade),
+				tostring(Chrome.Row('citizen-chrome-patient', 'arms').points)))
+
+		for _ = 1, 100 do
+			control.Fire('onCyberwareMeleeHit', 41, 42, Host.json.encode({ ok = true }))
+		end
+		control.Pump(12)
+		check('a hundred hits and the arms are broken',
+			Chrome.Row('citizen-chrome-patient', 'arms').broken == true,
+			tostring(Chrome.Row('citizen-chrome-patient', 'arms').broken))
+		local ripout = ticketFor(42)
+			check('and a broken implant is PULLED -- the platform record follows it out',
+				ripout ~= nil and #control.cyberware.removes == 1,
+				('%d remove(s), ticket %s'):format(#control.cyberware.removes, tostring(ripout)))
+		control.cyberware.complete(ripout, true)
+		check('the pull takes the slot with it',
+			control.cyberware.records[42] ~= nil and control.cyberware.records[42].arms == nil,
+			'the arms are still fitted')
+
+		-- A broken implant REMEMBERS its grade, and the repair fits it back on
+		-- the same staging every install takes.
+		press(42, Event.OFFER, 'arms', '', 'repair')
+		offerFrame = frameOf(42)
+		check('the repair names the grade the patient wore, at the wear\'s price',
+			offerFrame ~= nil and offerFrame.offer ~= nil and offerFrame.offer.grade == 'street'
+				and offerFrame.offer.price
+					== Ripper.RepairPrice(Ripper.Grade(Ripper.Entry('arms'), 'street'), 0, true),
+			offerFrame and offerFrame.offer and tostring(offerFrame.offer.grade) or 'no offer')
+		check('and the frame lists the broken implant as out of the body',
+			(function()
+				for _, row in ipairs(offerFrame.chrome.fitted) do
+					if row.id == 'arms' then return row.broken == true and row.inBody == false end
+				end
+				return false
+			end)(), 'no broken row')
+		press(42, Event.ANSWER, 'offer', true, offerFrame.offer.id)
+		staged = ticketFor(42)
+		check('and it is refitted as an install the platform stages', staged ~= nil, 'no ticket')
+		control.cyberware.complete(staged, true)
+		env.onCyberwareOperationCompleted(tostring(42), staged, Host.json.encode({ ok = true }))
+		control.Pump(4)
+		check('the patient walks out whole',
+			Chrome.Row('citizen-chrome-patient', 'arms').points == 100
+				and Chrome.Row('citizen-chrome-patient', 'arms').broken == false
+				and control.cyberware.records[42].arms ~= nil,
+			('%s at %s'):format(tostring(Chrome.Row('citizen-chrome-patient', 'arms').broken),
+				tostring(Chrome.Row('citizen-chrome-patient', 'arms').points)))
+
+		durability.LIFESPAN_HOURS = lifespan
 	end
 end
 
@@ -27599,12 +31080,15 @@ end
 
 -- ── the settings the engine refuses by name ─────────────────────────────────
 --
--- `Open77.blips` refuses `color`/`colour` with their own reason token. It is
--- not an oversight: a mappin carries no colour field, and opacity and scale
--- live on a UI profile the SPRITE resolves and every pin using it shares. So
--- the sprite IS the colour, and an operator who writes `COLOUR` has to be told
--- rather than quietly ignored -- a property accepted and silently discarded is
--- worse than one that is missing.
+-- THE BRITISH SPELLING IS WHAT THE ENGINE REFUSES NOW, and the refusal has to
+-- name what to use instead. `colour` answers `unsupported_option:colour`,
+-- while `color` -- exactly #RRGGBB/#RRGGBBAA -- is a real per-blip field since
+-- the native Ink adapter grew per-widget colours (this module's first version
+-- refused both, and said so at length). An operator who writes `COLOUR` has to
+-- be told rather than quietly ignored -- a property accepted and silently
+-- discarded is worse than one that is missing -- and the words must point at
+-- `COLOR`, or they send the operator straight back to the spelling the engine
+-- refuses. The message is checked for the replacement word on purpose.
 section('blips: colour is refused by name, and the refusal names the category')
 do
 	local env, control, why = boot('client')
@@ -27622,7 +31106,7 @@ do
 		for index = 1, #problems do
 			local line = problems[index]
 			if line:find('shops', 1, true) and line:find('COLOUR', 1, true)
-				and line:find('SPRITE', 1, true) then saidColour = true end
+				and line:find('COLOR', 1, true) then saidColour = true end
 			if line:find('garages', 1, true) and line:find('RANGE', 1, true) then
 				saidRange = true
 			end
@@ -27874,6 +31358,137 @@ do
 			blips.Runtime.Report().live > 0, blips.Runtime.Report().live)
 	end
 end
+
+-- ── the station's own pin ───────────────────────────────────────────────────
+--
+-- THE OWNER: "Give headquarters an optional map blip (icon and color per
+-- station in config/headquarters.lua) so players see the station on their
+-- map." OPTIONAL PER STATION is the whole shape: a headquarters is pinned when
+-- its own config row declares a `BLIP` block, and the look is the STATION's,
+-- not the category's -- the one source in this module where a point dresses
+-- itself. The positions still come from the headquarters client's own synced
+-- list, so captures are pinned the same as config rows and the bucket filter
+-- still holds. A station that declares no block is deliberately off the map.
+section('blips: a headquarters pin wears the look its own station declares')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the headquarters pins', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		local hq = OPX.Modules.Get('headquarters')
+		local Access = hq.Access
+
+		-- THE LOOK RESOLVER FIRST, on its own terms: every field falls back per
+		-- field, the way `OPX.Spots.Marker` resolves a marker look -- a good
+		-- colour with a bad sprite keeps the colour.
+		local cfg = OPX.Config.MODULES.headquarters
+		cfg.HEADQUARTERS = {
+			hq_gold = { LABEL = 'GOLD HQ', X = 100.0, Y = 200.0, Z = 5.0, BUCKET = 0,
+				BLIP = { SPRITE = 'quest', COLOR = '#FFCC00' } },
+			hq_plain = { LABEL = 'PLAIN HQ', X = 300.0, Y = 400.0, Z = 5.0, BUCKET = 0 },
+			hq_svg = { LABEL = 'SVG HQ', X = 500.0, Y = 600.0, Z = 5.0, BUCKET = 0,
+				BLIP = { ICON = { ASSET = 'assets/blips/hq.svg', SIZE = 56 }, COLOR = '#00CCFF80' } },
+			hq_str = { LABEL = 'STR HQ', X = 550.0, Y = 650.0, Z = 5.0, BUCKET = 0,
+				BLIP = { ICON = 'assets/blips/str.svg' } },
+			hq_broken = { LABEL = 'BROKEN HQ', X = 700.0, Y = 800.0, Z = 5.0, BUCKET = 0,
+				BLIP = { COLOR = 'red' } },
+			hq_bare = { LABEL = 'BARE HQ', X = 900.0, Y = 1000.0, Z = 5.0, BUCKET = 0,
+				BLIP = true },
+		}
+
+		check('a station with no BLIP block declares no pin', Access.BlipLook('hq_plain') == nil)
+		check('and a key that names no station has none either', Access.BlipLook('nope') == nil)
+		local gold = Access.BlipLook('hq_gold')
+		check('a declared pin resolves to the station\'s own sprite and colour',
+			gold ~= nil and gold.sprite == 'quest' and gold.color == '#FFCC00',
+			gold ~= nil and ('%s/%s'):format(tostring(gold.sprite), tostring(gold.color)) or 'nil')
+		local svg = Access.BlipLook('hq_svg')
+		check('a custom icon keeps its asset and its size, with its colour beside them',
+			svg ~= nil and type(svg.icon) == 'table' and svg.icon.asset == 'assets/blips/hq.svg'
+				and svg.icon.size == 56 and svg.color == '#00CCFF80')
+		local str = Access.BlipLook('hq_str')
+		check('a bare .svg path is carried as the engine takes it, as a string',
+			str ~= nil and str.icon == 'assets/blips/str.svg')
+		local bare = Access.BlipLook('hq_bare')
+		check('BLIP = true is the category defaults, with nothing of its own',
+			bare ~= nil and bare.sprite == nil and bare.icon == nil and bare.color == nil)
+		-- PER FIELD AND NOT AS A BLOCK: a colour the engine refuses is dropped,
+		-- and the pin the station asked for still stands on the defaults.
+		local broken = Access.BlipLook('hq_broken')
+		check('a bad field is dropped without costing the pin',
+			broken ~= nil and broken.color == nil)
+		local problems = Access.Problems()
+		local named = false
+		for index = 1, #problems do
+			if problems[index]:find('hq_broken', 1, true)
+				and problems[index]:find('COLOR', 1, true) then named = true end
+		end
+		check('and the dropped field is named for the operator, once',
+			named and #problems == 1, table.concat(problems, ' / '))
+
+		-- AND NOW THE PINS. The positions arrive the way they always do -- the
+		-- server's SYNC, which is also where a capture shows up -- and the look
+		-- is joined to them from config on every read.
+		control.netEvents[hq.Event.SYNC]({ spots = {
+			{ key = 'hq_gold', label = 'GOLD HQ', x = 100.0, y = 200.0, z = 5.0 },
+			{ key = 'hq_plain', label = 'PLAIN HQ', x = 300.0, y = 400.0, z = 5.0 },
+			{ key = 'hq_svg', label = 'SVG HQ', x = 500.0, y = 600.0, z = 5.0 },
+			{ key = 'hq_broken', label = 'BROKEN HQ', x = 700.0, y = 800.0, z = 5.0 },
+		} })
+		blips.Runtime.Sync()
+		control.Pump(20)
+		control.Pump(30)
+
+		local function pinOf(key)
+			for id, handle in pairs(blips.Runtime.Created()) do
+				if tostring(id):find(key, 1, true) then return control.blips.byId[handle] end
+			end
+			return nil
+		end
+
+		local goldPin = pinOf('hq_gold')
+		check('the station that declared a look is pinned', goldPin ~= nil)
+		check('wearing its own sprite and its own colour',
+			goldPin ~= nil and goldPin.sprite == 'quest' and goldPin.color == '#FFCC00',
+			goldPin ~= nil and ('%s/%s'):format(tostring(goldPin.sprite), tostring(goldPin.color))
+				or 'no pin')
+		check('and titled with the station\'s own name',
+			goldPin ~= nil and goldPin.title == 'GOLD HQ')
+		check('the station that declared none is deliberately not pinned',
+			pinOf('hq_plain') == nil)
+		local svgPin = pinOf('hq_svg')
+		check('a custom icon reaches the engine with its size and its colour',
+			svgPin ~= nil and type(svgPin.icon) == 'table'
+				and svgPin.icon.asset == 'assets/blips/hq.svg' and svgPin.icon.size == 56
+				and svgPin.color == '#00CCFF80')
+		local brokenPin = pinOf('hq_broken')
+		check('and a dropped field still leaves the pin the station asked for',
+			brokenPin ~= nil and brokenPin.color == nil)
+
+		-- A LOOK THAT CHANGED IS A REMAKE. A pin wearing the colour it was
+		-- created with is a pin pointing at what the config used to say, and the
+		-- signature is what decides it -- including the look, so an edit cannot
+		-- slip past the diff.
+		local before = 0
+		for _ in pairs(control.blips.byId) do before = before + 1 end
+		cfg.HEADQUARTERS.hq_gold.BLIP.COLOR = '#FF0000'
+		blips.Runtime.Sync()
+		control.Pump(20)
+		control.Pump(30)
+		local recoloured = pinOf('hq_gold')
+		check('a station\'s colour edited in config remakes the pin',
+			recoloured ~= nil and recoloured.color == '#FF0000',
+			recoloured ~= nil and tostring(recoloured.color) or 'no pin')
+		-- ONE PIN AND NOT TWO: the remake takes the old one down first.
+		local after = 0
+		for _ in pairs(control.blips.byId) do after = after + 1 end
+		check('and the old one was taken down, not left beside it',
+			after == before, ('%d before, %d after'):format(before, after))
+	end
+end
+
 -- ── the holocall ─────────────────────────────────────────────────────────────
 -- The owner asked for "appel vision": a player-to-player holocall with the
 -- game's own blue eye-glow on both parties, answered on the target eye rather

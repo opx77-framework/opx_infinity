@@ -24,6 +24,10 @@ so the row survives a database reset.
 | Export DB-only garages | `/opx.garages.export` | the paste-ready config block for every garage still living only in `opx77_garages` |
 | List garages | `/opx.garages.list` | |
 | Bring a stored vehicle out | `/opx.garages.bring [key] [plate]` | |
+| **NCPD/MaxTac headquarters** | `/opx.headquarters.add [key] [label]` | one command, capture AND set: key auto-named (`hq1`…), answer prints the line to check into `config/headquarters.lua` |
+| Headquarters remove / list | `/opx.headquarters.remove <key>` · `/opx.headquarters.list` | marker + name only — it designates the station where pads, garages and stores go |
+| **MaxTac AV recall pad** | *config only* — `config/avgarages.lua` `GARAGES` (`KIND = 'avpad'`) | same block shape as `config/garages.lua`; gated to the `JOBS`/`ON_DUTY` at the top of that file |
+
 | **Dealership spot** | `/opx.dealership.add [garage\|avpad] [key] [label]` | same shape as garages |
 | Remove dealer | `/opx.dealership.remove <key>` | |
 | List dealers | `/opx.dealership.list` | |
@@ -36,23 +40,144 @@ so the row survives a database reset.
 | Remove location | `/opx.admin.world.loc.remove <name>` | config rows are edited in `config/admin.lua` |
 | **Teleport points** | *config only* — `config/teleports.lua` `POINTS` | verify with `/opx.teleports.where [key]` |
 | **Elevators** | *config only* — `config/elevators.lua` `ELEVATORS` | verify with `/opx.elevators.where [key]` |
-| **Ripperdoc chair (clinic marker)** | `/opx.clinic.add [key] [label]` | key auto-named (`clinic1`…) |
+| **Ripperdoc chair (clinic marker)** | `/opx.clinic.add [key] [label]` | key auto-named (`clinic1`…); **aim at the base game's ripperdoc chair** and it snaps to it |
 | Chair remove / list | `/opx.clinic.remove <key>` · `/opx.clinic.list` | |
+| Nudge the seat inside a chair | `/opx.clinic.tune <key> <forward> <right> [up] [yaw]` | metres along the chair's own axes, degrees |
+| Why "chrome record not ready" | `/opx.clinic.diag [playerId]` | binding, support resource, body, capacity, every fitted piece, the client's projection |
+| Record the base-game menus | `/opx.clinic.record [on\|off\|snap\|dump] [playerId]` | lines land in the server journal as `[ripperdoc:rec]` |
 
 ### Ripperdoc chairs
 
-One command, like every other station: stand at the chair, look the way the
-patient should face, run **`/opx.clinic.add`** (or `/opx.clinic.add victor
-"VICTOR'S CHAIR"` to name it). It saves the chair to the database and prints
-the config line to check into `config/ripperdoc.lua` `CHAIRS`:
+One command, like every other station — and at a clinic the city already
+furnished, **the chair is the city's own**. Stand at the base game's ripperdoc
+chair (Viktor's, in Watson), **aim at it**, and run **`/opx.clinic.add`** (or
+`/opx.clinic.add viktor "VIKTOR'S CHAIR"` to name it). Your client looks for
+the chair — the object under your crosshair when you are within
+`SEAT.AIM_RADIUS` of it (the city's chair does not have to call itself one),
+otherwise anything within `SEAT.SCAN_RADIUS` whose class or name reads as a
+chair; a body, a car, a door or a weapon never counts — and sends back that
+object's own position and facing from the engine. The server takes it when it
+is within `SEAT.SNAP_RADIUS` of where it reads you standing, and:
+
+- the patient is posed **in that chair**, facing the way it faces, on the
+  platform's portable `chair` workspot (`Open77.animations.playAt`);
+- **no chair prop is spawned** — the one the city placed is the one they sit in.
+
+Every candidate the client saw is written to its log (`[ripperdoc] chair
+candidate …`), so a capture that picked the wrong object is fixed by aiming
+better and running it again. If the engine reports no facing for the chair,
+it is taken to face you (you were looking at it) and the reply says so —
+`/opx.clinic.tune <key> 0 0 0 180` turns it round. Away from any base-game chair the capture is where
+you stand, facing your way, and `CHAIR_PROP` spawns a chair there.
+
+If the pose sits a little off inside the chair, **`/opx.clinic.tune <key>
+<forward> <right> [up] [yaw]`** moves the seat along the chair's own axes
+(metres; forward is the way the chair faces) and turns the patient by the
+degrees given — stand up and sit again to see it. Offsets are held to ±2 m: a
+seat is nudged inside its chair, never carried out of it.
+
+The capture saves to the database (the chair, and beside it the seat: what it
+snapped to and the offsets) and prints the config line to check into
+`config/ripperdoc.lua` `CHAIRS`. A captured key shadows a config row of the
+same id (one chair moved, not two); config rows are edited by hand.
+
+### The tray: every piece of chrome in the base game
+
+The tray is the whole base-game catalogue — 115 pieces across the ten body
+systems, each with its own tiers — plus the operator's own `CATALOG` pieces,
+which win over a base-game piece of the same id. The menu reads like the base
+game's: body systems on the left with their slots (frontal cortex 3, operating
+system 1, arms 1, skeleton 2, nervous system 3, integumentary 3, face 1, hands 1,
+circulatory 3, legs 1), the system's pieces in the middle, the piece in full on
+the right with every tier, its price, its capacity and what it does **on this
+server**.
+
+What a piece does is the platform's decision, and the tray says which kind it is:
+
+| Kind | Pieces | What happens |
+|---|---|---|
+| **Platform implant** | Gorilla Arms family, Reinforced Tendons, every cyberdeck | durable `Open77.cyberware` implant, staged and completed by the platform |
+| **Counter-hack implant** | Self-ICE | durable implant with its ICE charges |
+| **Ability** | Kerenzikov, every Sandevistan and Berserk | a platform grant (dash / reflex overdrive / ground slam) |
+| **Body chrome** | plating, circulatory, skeleton and the rest | real stats: armor plating, max health, health regen, max stamina, stamina regen, no fall damage, capacity |
+| **Roleplay chrome** | chrome with no adapter on this platform | fitted, takes capacity, wears out — and says it has no combat effect |
+
+The body has a **capacity** (`CAPACITY.BASE`, raised by a Chrome Compressor):
+a piece that would not fit is refused and the refusal says how much is free. A
+better grade of a fitted piece is an **UPGRADE**: the working grade is traded
+in for `UPGRADE.TRADE_IN` of its price. The operating system holds one of a
+deck, a Sandevistan, a Berserk or the compressor, as in the base game —
+`SYSTEMS` raises any slot count. Prices are `VANILLA.PRICE_BY_TIER` (iconic
+pieces at `ICONIC_MULTIPLIER`, roleplay chrome at `RP_MULTIPLIER`); list an id
+in `VANILLA.EXCLUDE` to take it off the tray.
+
+### Durability: every piece wears out
+
+Every fitted piece has a **condition** (100 = fresh) and four things take it down:
+
+- **use** — the host's own action events on the piece that did the work
+  (melee hits on the arms, jumps on the legs, dashes, overdrives, slams, uploads);
+- **time** — `LIFESPAN_HOURS` of play from fresh to broken (iconic pieces last
+  `ICONIC_LIFESPAN` times longer);
+- **damage** — `DAMAGE_WEAR` points per 100 damage on every piece carrying armor plating;
+- **death** — `DEATH_WEAR` points off everything.
+
+Below `WORN_AT` a piece reads **WORN**; below `FAILING_AT` it is **FAILING** and
+gives only `FAILING_EFFECT` of what it is worth; at 0 it **BREAKS** and gives
+nothing (a broken implant is pulled by the platform, remembering its grade)
+until a ripperdoc **repairs** it — `REPAIR_FRACTION` of the grade's price for the
+share that is missing, never less than `REPAIR_MIN`. The player is told at each
+band. All of it is the `DURABILITY` block in `config/ripperdoc.lua`.
+
+### "Chrome record not ready"
+
+The platform only reports a patient's chrome once their character is **bound**
+(the character workflow does it on load) and their own client has
+**projected** it back (within 15 s). Until then implants and decks cannot be
+fitted — body chrome, abilities and roleplay chrome still can, and the menu says
+so in a banner. The refusal now names the reason (the chrome service is offline,
+the identity is not linked yet, the body is still syncing, a temporary loadout
+is active, the patient is down or in a vehicle), the server journals the full
+diagnosis, a binding stuck in "projecting" for `DIAGNOSTICS.REBIND_AFTER_MS` is
+bound again automatically, and **`/opx.clinic.diag [playerId]`** prints
+everything in one go — including what `open77_cyberware` on the patient's own
+machine reports.
+
+### Recording the base game's ripperdoc
+
+With `RECORDER.AUTO` on (shipped), every client records the base game's own
+vendor screens by itself: when Viktor's menu opens it writes a snapshot (the
+menu, the body's numbers, the native chrome, who and what is around), and when
+it closes it writes what changed. Lines land in the **server journal** as
+`[ripperdoc:rec]`. **`/opx.clinic.record on`** records every base-game menu on
+your client, `snap` takes one snapshot now, `dump` copies the whole session to
+your clipboard as JSON, `off` stops.
+
+### Headquarters
+
+One command does the whole capture: stand where the marker should be, run
+**`/opx.headquarters.add [key] [label]`** (or `/opx.headquarters.add` to let it
+name the station `hq1`, `hq2`, …). The server reads where you stand — a
+headquarters has no facing — saves the station, draws it for everyone at once,
+and answers with the config line to check into `config/headquarters.lua`
+`HEADQUARTERS`:
 
 ```lua
-  victor = { id = 'victor', NAME = "VICTOR'S CHAIR", X = -1546.96, Y = 1233.77, Z = 11.52, YAW = 0.0 },
+  hq_north = { LABEL = "NCPD HQ", X = -1527.21, Y = -218.56, Z = 7.86, BUCKET = 0 },
 ```
 
-The chair needs no mesh — the patient is seated on the platform's portable
-`chair` workspot. A captured key shadows a config row of the same id (one chair
-moved, not two); config rows are edited in `config/ripperdoc.lua` by hand.
+**The map pin is each station's own choice.** Add `BLIP` to a row to pin that
+station on the map — `BLIP = true` for the defaults, or dress it per station:
+`BLIP = { SPRITE = 'objective', COLOR = '#FFCC00' }` (sprite alias/variant/number,
+colour exactly `#RRGGBB`/`#RRGGBBAA`), or `BLIP = { ICON = { ASSET = 'assets/blips/hq.svg', SIZE = 56 } }`
+for a custom .svg declared in `open77.lua`. A row with no `BLIP` block is
+never pinned.
+
+The capture is live immediately and survives until the database resets; the
+line is the permanent record, so paste it in. `/opx.headquarters.remove <key>`
+takes a captured station back (a config row is not the command's to take), and
+a capture of a key that already exists in config **moves** that station rather
+than adding a second one.
 
 ### To make any placement permanent
 
@@ -106,6 +231,15 @@ as applicable). Captured rows live in the database; config rows survive resets.
 | `/opx.ncpd.clear [player]` | wipe the record | restricted |
 | `/opx.ncpd.laws` | print the law book | restricted |
 | `/opx.ncpd.board [seat]` | take a crew seat on the AV | restricted |
+
+**The dispatch board** is not a command. When a crime raises a wanted stage, the
+same call-out the radio carries is shouted on the screens of every on-duty
+holder of `ALERTS.JOBS`: one full-stress toast, wrapped in two clips, on one
+fixed id so a firefight is one board and not three. Tune it in `config/ncpd.lua`
+`ALERTS.DISPATCH` — `KIND`, `DURATION_MS`, the two `STINGER` clip names
+(`web/audio/`, bare file names), and `JOBS` to give the board its own air crew
+(e.g. MaxTac alone). `enabled = false` darkens the board and leaves the radio
+call-out standing.
 
 ## 5. INVENTORY / WEAPONS
 

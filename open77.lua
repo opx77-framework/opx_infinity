@@ -71,6 +71,19 @@ server_script "config/vehicles.lua"
 -- Shared, unlike the vehicles config above: the client draws the markers and so
 -- reads the radii, the kinds and the marker vocabulary here.
 shared_script "config/garages.lua"
+-- Shared, and it is the garages machinery in its own file: the MaxTac AV recall
+-- pads, gated by a job requirement. Both halves coerce the same rows -- the
+-- garages module merges this block into its own map at load -- so a block one
+-- half refused must be refused by the other.
+shared_script "config/avgarages.lua"
+-- Shared, though only the key binding is read on the client: the AV autopilot's
+-- flight numbers are the server's alone, and the one thing both halves need is
+-- the binding's name and id.
+shared_script "config/avdrive.lua"
+-- Shared like the garages config: the client draws the headquarters marker and
+-- reads the look and the name row's cap here, and both halves must refuse the
+-- same rows.
+shared_script "config/headquarters.lua"
 -- Shared because both halves read it: the client draws a board's marker and
 -- reads the radius, the marker vocabulary and the key, and the server re-derives
 -- every distance, term and ladder level from the same table.
@@ -330,6 +343,19 @@ client_script "modules/clothing/client/main.lua"
 -- work. Without this file the client half is never built.
 client_script "modules/clothing/client/exports.lua"
 
+-- NCPD and MaxTac headquarters: a marker and a name, designating the station
+-- the AV pads and garages around it are placed at. The third place-shaped
+-- module, sharing the spots vocabulary with `garages`, `dealership` and
+-- `clothing` and no subject with any of them. `prompts` is optional: without
+-- it the markers still draw and only the name row is missing. Its client half
+-- defines the phases on the module itself, so it wears no `exports.lua`.
+shared_script "modules/headquarters/module.lua"
+shared_script "modules/headquarters/locales.lua"
+shared_script "modules/headquarters/shared/access.lua"
+server_script "modules/headquarters/server/storage.lua"
+server_script "modules/headquarters/server/main.lua"
+client_script "modules/headquarters/client/main.lua"
+
 -- NCPD and MaxTac: the law book, the heat ledger, and the response the two
 -- divisions put on the street. After `character`, whose loaded character a heat
 -- score is bound to -- and which is the only ownership oracle this module trusts
@@ -369,10 +395,18 @@ client_script "modules/ncpd/client/radioview.lua"
 shared_script "modules/skills/module.lua"
 shared_script "modules/skills/locales.lua"
 shared_script "modules/ripperdoc/module.lua"
+-- The whole base-game tray: shared, because the page is drawn from it on the
+-- client and every offer is ruled from it on the server.
+shared_script "modules/ripperdoc/shared/cyberware.lua"
 shared_script "modules/ripperdoc/locales.lua"
 server_script "modules/ripperdoc/server/storage.lua"
+server_script "modules/ripperdoc/server/records.lua"
+server_script "modules/ripperdoc/server/reader.lua"
+server_script "modules/ripperdoc/server/chrome.lua"
+server_script "modules/ripperdoc/server/effects.lua"
 server_script "modules/ripperdoc/server/main.lua"
 client_script "modules/ripperdoc/client/main.lua"
+client_script "modules/ripperdoc/client/recorder.lua"
 client_script "modules/ripperdoc/client/view.lua"
 server_script "modules/skills/server/storage.lua"
 server_script "modules/skills/server/main.lua"
@@ -632,6 +666,19 @@ client_script "modules/admin/client/announce.lua"
 client_script "modules/admin/client/menu.lua"
 client_script "modules/admin/client/target.lua"
 
+-- The AV autopilot: a seated pilot, one key, and a hull posed to the pilot's
+-- own map waypoint and handed back at the hover. LAST AMONG THE MODULES ON
+-- PURPOSE: it depends on nothing and nothing depends on it, so its `Start` sits
+-- at the end of the boot order and cannot delay any other module's by a frame
+-- -- which is how a module added mid-list quietly moves every later module's
+-- first scheduled pass. The hull is read through `Open77.vehicles`, the
+-- waypoint through `Open77.blips.waypoint` (`ui.vanilla.map`, declared above),
+-- and the key survives a server whose vehicles are all admin-spawned.
+shared_script "modules/avdrive/module.lua"
+shared_script "modules/avdrive/locales.lua"
+server_script "modules/avdrive/server/main.lua"
+client_script "modules/avdrive/client/main.lua"
+
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
 
@@ -713,17 +760,62 @@ permissions {
   "world.population",
 
   -- The ripperdoc clinic's four, against the .87 cyberware contract:
-  -- `define` registers the clinic's two definitions at Start, `read` takes
+  -- `define` registers the clinic's definitions at Start, `read` takes
   -- the `current` record every offer consults ("consult `current` for
   -- slot-empty rules"), `manage` stages the install/remove and mints the
   -- operation id, and `animations.control` seats the patient on the
-  -- platform's own portable `chair` workspot. `players.cyberware.identity`
-  -- is deliberately NOT here: the appearance adapter binds characters, not
-  -- this shop.
+  -- platform's own portable `chair` workspot.
+  --
+  -- `identity` is the CHARACTER WORKFLOW's, not the shop's: `wiki/cyberware.md`
+  -- runs every implant transaction "on their own already-bound character" and
+  -- names the character adapter as the binder -- this server runs no
+  -- `open77_appearance` adapter, so `modules/character` binds the key it owns
+  -- (and stands down the moment one is present).
   "players.cyberware.define",
   "players.cyberware.read",
   "players.cyberware.manage",
+  "players.cyberware.identity",
+  -- The chrome that does not need a native adapter: `server/effects.lua` puts
+  -- a piece's no-fall-damage on the body with `Open77.players.setFallDamage`
+  -- (its health, stamina and armor go through `players.stats.apply`, below).
+  "players.life.falldamage",
+  -- CLIENT: the base-game menu recorder reads which vanilla menu scenario is
+  -- on screen (`Open77.session.menuState`, `open77:menuStateChanged`), and the
+  -- chair capture asks what the operator is aiming at
+  -- (`Open77.character.aimedEntity` needs `player.aim.read` beside
+  -- `world.query`). Client permissions: a refusal lands in the player's own
+  -- log, so both paths fall back rather than depend on them.
+  "session.menus",
+  "player.aim.read",
   "players.animations.control",
+
+  -- The movement kit's and the deck's, against the .87 movement and hacking
+  -- contracts. Each of `wiki/dash.md`, `wiki/reflex-overdrive.md` and
+  -- `wiki/ground-slam.md` names its own three as the manifest set for its
+  -- module, and `wiki/hacking.md`'s "Define abilities and install through
+  -- existing cyberware" example block names the deck's three the same way:
+  --   define    every grade's definition, registered at Start by
+  --             `modules/ripperdoc/server/chrome.lua`. Without these the boot
+  --             answers `permission_denied:players.<x>.define` per grade and
+  --             the shelf stays empty -- every kit install refused after it
+  --   manage    `grant`/`revoke`, the doors `arm`/`disarm` open at install
+  --             and remove: for a kit piece the grant IS the installation
+  --   read      the `current` reader the grant contract pairs with `manage`
+  --             (its `projection.status` is the platform's ready signal)
+  --   activate  the upload doors (`hacking.start`/`purge`) a fitted deck's
+  --             shots are entitled through as the definition provider
+  "players.dash.define",
+  "players.dash.manage",
+  "players.dash.read",
+  "players.reflex.define",
+  "players.reflex.manage",
+  "players.reflex.read",
+  "players.abilities.define",
+  "players.abilities.manage",
+  "players.abilities.read",
+  "players.hacking.define",
+  "players.hacking.read",
+  "players.hacking.activate",
 
   -- The police scanner's two, against `wiki/voice.md`: `voice.manage` owns the
   -- radio channels this module creates (channel mutations are resource-owned),
