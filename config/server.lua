@@ -108,6 +108,13 @@ OPX.Config.SERVER = {
 			-- Ambient population inside a selection bucket.
 			POPULATION = false,
 
+			-- Ambient population in the shared world, where the players
+			-- actually live. True takes the vanilla figures -- crowds, traffic
+			-- and prevention spawns -- exactly as the base game has them;
+			-- false leaves every street empty, which is what an unconfigured
+			-- bucket always was.
+			WORLD_POPULATION = true,
+
 			-- inactive, relaxed, strict or full; false leaves the host's own mode
 			-- alone.
 			LOCKDOWN = 'relaxed',

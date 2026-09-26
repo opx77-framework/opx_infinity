@@ -31,7 +31,7 @@ local LOCKDOWN_MODES = { inactive = true, relaxed = true, strict = true, full = 
 
 -- The bucket configuration, validated once at load: a bad value is named once
 -- and the shipped one is used in its place.
-local isolate, base, world, population, lockdown = true, 77000, 0, false, 'relaxed'
+local isolate, base, world, population, worldPopulation, lockdown = true, 77000, 0, false, true, 'relaxed'
 do
 	local wanted = type(Config.ENTRY) == 'table' and Config.ENTRY.BUCKET or nil
 	if type(wanted) ~= 'table' then
@@ -85,6 +85,15 @@ do
 		end
 	end
 
+	if wanted.WORLD_POPULATION ~= nil then
+		if type(wanted.WORLD_POPULATION) == 'boolean' then
+			worldPopulation = wanted.WORLD_POPULATION
+		else
+			Open77.log.warn('[bucket] ENTRY.BUCKET.WORLD_POPULATION is not a boolean: ' ..
+				'the world keeps the vanilla population')
+		end
+	end
+
 	if wanted.LOCKDOWN == false then
 		lockdown = nil
 	elseif wanted.LOCKDOWN ~= nil then
@@ -135,6 +144,43 @@ local function prepare(bucket)
 		host('setLockdownMode', bucket, lockdown)
 	end
 end
+
+-- The shared world's own policy, set once per VM for the reason `prepared`
+-- gives: the policy belongs to the bucket and outlives everyone standing in it,
+-- and a reload loses the fact that it was ever set.
+--
+-- POPULATION ONLY, AND DELIBERATELY NOT THE LOCKDOWN MODE. A selection bucket
+-- is a waiting room core shapes for whoever is standing in it; the shared
+-- world's entity policy is the host's own unless an operator says otherwise --
+-- `LOCKDOWN` documents that choice for the waiting rooms, and nothing here
+-- extends it to the world.
+--
+-- SET FROM ITS OWN THREAD, because `host` reads the API at call time and the
+-- global may not be installed when this file runs. A lazy call from `Move` or
+-- `Release` would be too late: a server that restarts with players already
+-- standing in the world would serve them empty streets until somebody changed
+-- bucket. An unconfigured bucket is an EMPTY one -- no crowd, no traffic, no
+-- police -- so the shared world was empty by construction and the prevention
+-- seam refused every spawn with `population_suppressed`.
+local worldPrepared = false
+
+local function prepareWorld()
+	if worldPrepared then return true end
+	local called, done = host('setPopulationEnabled', world, worldPopulation)
+	if not called or done == false then return false end
+	worldPrepared = true
+	Open77.log.info(('[bucket] world %d: ambient population %s'):format(
+		world, worldPopulation and 'on, the vanilla figures' or 'off'))
+	return true
+end
+
+CreateThread(function()
+	for _ = 1, 40 do
+		if prepareWorld() then return end
+		Wait(250)
+	end
+	Open77.log.warn('[bucket] the world population policy was not applied: no routing bucket api')
+end)
 
 --- Whether a bucket id lies in the selection range. Answers even with isolation
 --- switched off, so a position stored there by an earlier configuration is still
