@@ -19,7 +19,7 @@
 -- does not filter by routing bucket -- the servers already did, before the
 -- lists reached this client. It does not evaluate a job gate -- teleports
 -- already marked each entrance allowed or refused. It does not own a
--- coordinate. It reads five lists somebody else is authoritative for and turns
+-- coordinate. It reads six lists somebody else is authoritative for and turns
 -- them into pins, which means a blip cannot disagree with the thing it points
 -- at: if the pin is wrong, the list is wrong, and there is one place to fix it.
 --
@@ -55,15 +55,18 @@ local M = OPX.Modules.Declare{
 	requires = {},
 	-- Read for their positions, never called into beyond a plain list read. Each
 	-- is handled as absent when it is absent.
-	optional = { 'garages', 'dealership', 'teleports', 'shops', 'hud' },
+	optional = { 'garages', 'dealership', 'teleports', 'shops', 'hud', 'headquarters' },
 }
 
 --- The categories this module knows how to source, in the order they are built.
 -- The order is the order they consume the `MAX` budget in, so it is the order
 -- of what survives a server that has captured more spots than the platform's
--- 128-per-resource quota allows. Garages first because the owner named them
--- first and a player who cannot find their own car is the loudest case.
-M.ORDER = { 'garages', 'dealership', 'shops', 'teleports', 'jobs' }
+-- 128-per-resource quota allows. A headquarters first: it designates where the
+-- station is, every other category is placed around it, and it is a handful of
+-- pins that must survive the day the captures outnumber the quota. Garages
+-- next because the owner named them first and a player who cannot find their
+-- own car is the loudest case.
+M.ORDER = { 'headquarters', 'garages', 'dealership', 'shops', 'teleports', 'jobs' }
 
 --- The vanilla HUD component whose hide also hides mappins ON THE MINIMAP.
 -- Named here rather than spelled at the call site because the boot note quotes
@@ -86,13 +89,23 @@ M.QUOTA = 128
 --- category gets a boot line naming the category, the key and the replacement.
 --
 -- THE POINT IS THAT THEY ARE NAMED. Before the platform added these refusals an
--- unknown key was simply ignored, so `create{ sprite = 'loot', color = '#f00' }`
+-- unknown key was simply ignored, so `create{ sprite = 'loot', colour = '#f00' }`
 -- handed back a perfectly good blip that was not red and never said so. This
 -- table is that refusal moved one level earlier, to boot, where it can name the
 -- file the operator has open.
+--
+-- `COLOR` IS NOT AMONG THEM AND THAT IS NEW. This table used to refuse it with
+-- "a mappin has no such field", which was true when it was written (build
+-- 2.31.13+op77.76) and is not true since the native Ink adapter grew per-widget
+-- colours: `color` is now a real `create`/`update`/`setColor` field, exactly
+-- `#RRGGBB`/`#RRGGBBAA`, and `unsupported_option` belongs to the British
+-- spelling alone. What the engine still refuses is the platform catalogue's
+-- own list: `colour` (use `color`), `alpha`/`opacity` (the alpha bytes live in
+-- `color`), `scale` (per sprite, never per pin), `category`, `shortRange` (use
+-- `range`) and `kind`.
 M.REFUSED_KEYS = {
-	COLOR = 'SPRITE', COLOUR = 'SPRITE',
-	ALPHA = 'SPRITE', OPACITY = 'SPRITE', SCALE = 'SPRITE',
+	COLOUR = 'COLOR',
+	ALPHA = 'COLOR', OPACITY = 'COLOR', SCALE = 'SPRITE',
 	CATEGORY = 'SPRITE',
 	SHORTRANGE = 'RANGE', SHORT_RANGE = 'RANGE',
 }

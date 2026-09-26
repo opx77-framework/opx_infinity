@@ -1,4 +1,4 @@
---- Turns five lists somebody else owns into real Cyberpunk mappins.
+--- Turns the six lists somebody else owns into real Cyberpunk mappins.
 -- @author dop42
 --
 -- READ `config/blips.lua` FIRST. It carries the measurement that started this
@@ -78,10 +78,18 @@ local function positiveMs(value, fallback)
 	return number
 end
 
+--- Whether a value is the platform's own colour spelling: exactly #RRGGBB or
+-- #RRGGBBAA. `color` is a real `create` field since the native Ink adapter
+-- grew per-widget colours; `colour` is what the engine refuses by name.
+local function hexColor(value)
+	return type(value) == 'string'
+		and (value:match('^#%x%x%x%x%x%x$') ~= nil or value:match('^#%x%x%x%x%x%x%x%x$') ~= nil)
+end
+
 --- Validates one category block, answering the usable form or nil and why.
 --
 -- EVERY FAULT IS NAMED WITH ITS CATEGORY. An operator reading a boot log wants
--- to know which of the five blocks they have to open, and "SPRITE must be a
+-- to know which of the blocks they have to open, and "SPRITE must be a
 -- string" without that word is a message that sends them to read all of them.
 -- @param name string
 -- @param raw any
@@ -100,8 +108,7 @@ local function category(name, raw, problems)
 		local instead = type(key) == 'string' and M.REFUSED_KEYS[key:upper()] or nil
 		if instead ~= nil then
 			problems[#problems + 1] = ('%s: %s is refused by the engine ' ..
-				'(`unsupported_option:%s`) and cannot be honoured -- a mappin has no ' ..
-				'such field. Use %s instead; a Cyberpunk sprite carries its own colour.')
+				'(`unsupported_option:%s`) and cannot be honoured. Use %s instead.')
 				:format(name, tostring(key), tostring(key):lower(), instead)
 		end
 	end
@@ -134,12 +141,22 @@ local function category(name, raw, problems)
 		return nil
 	end
 
+	-- A tint over the whole category. `color` is a real per-blip field now
+	-- (see `M.REFUSED_KEYS`), so it is carried here and never sent under the
+	-- British spelling the engine refuses.
+	local color = raw.COLOR
+	if color ~= nil and not hexColor(color) then
+		problems[#problems + 1] = ('%s: COLOR must be #RRGGBB or #RRGGBBAA'):format(name)
+		color = nil
+	end
+
 	return {
 		name = name,
 		sprite = sprite,
 		label = (type(label) == 'string' and label ~= '') and label or name,
 		range = range,
 		walls = raw.WALLS == true,
+		color = color,
 	}
 end
 
@@ -204,7 +221,7 @@ end
 -- them cite -- four lifts whose coordinates passed every shape check and
 -- matched nothing in Night City, silently, for weeks. A pin in the sea off
 -- Night City would read as this feature being broken.
-local function point(out, key, label, x, y, z)
+local function point(out, key, label, x, y, z, look)
 	x, y, z = tonumber(x), tonumber(y), tonumber(z)
 	if x == nil or y == nil or z == nil then return false end
 	if x ~= x or y ~= y or z ~= z then return false end
@@ -213,6 +230,9 @@ local function point(out, key, label, x, y, z)
 		key = key,
 		label = (type(label) == 'string' and label ~= '') and label or key,
 		x = x, y = y, z = z,
+		-- The per-point look (a headquarters station's own sprite/icon/colour),
+		-- or nil where the point wears its category's. See `create` below.
+		look = look,
 	}
 	return true
 end
@@ -292,7 +312,29 @@ local function pointsOf(name)
 		if not point(out, key, label, x, y, z) then skipped = skipped + 1 end
 	end
 
-	if name == 'garages' or name == 'dealership' then
+	if name == 'headquarters' then
+		-- THE STATION'S OWN CHOICE, AND THE ONE SOURCE WHOSE LOOK IS NOT THE
+		-- CATEGORY'S. Positions come from the headquarters client's own list
+		-- -- the server filtered it to this player's routing bucket and
+		-- captures live in the database, so the config is not the list. The
+		-- PIN LOOK rides each point as `spot.blip`, resolved by the
+		-- headquarters module from the `BLIP` block of the station's own row
+		-- in `config/headquarters.lua`; a station that declares none is
+		-- deliberately not pinned at all, which is what makes the pin the
+		-- station's own choice rather than this module's opinion.
+		local hqSpots = accessor('headquarters', 'Spots')
+		if hqSpots == nil then return out, skipped end
+		local read, list = pcall(hqSpots)
+		if not read or type(list) ~= 'table' then return out, skipped end
+		for key, spot in pairs(list) do
+			if type(spot) == 'table' and type(spot.blip) == 'table' then
+				if not point(out, tostring(key), spot.label, spot.x, spot.y, spot.z, spot.blip) then
+					skipped = skipped + 1
+				end
+			end
+		end
+
+	elseif name == 'garages' or name == 'dealership' then
 		-- The spots this client was TOLD ABOUT, which is not the same list as
 		-- `config/<name>.lua`: garage and dealer spots are captured in game and
 		-- live in the database, and the server filters what it sends to this
@@ -443,9 +485,23 @@ end
 -- lists change when an operator captures a spot, which is to say almost never,
 -- so the cost is a handful of engine calls a week.
 local function signatureOf(entry, block)
-	return ('%s|%s|%.3f|%.3f|%.3f|%s|%s|%s'):format(
+	-- A look is part of what a pin is: a station whose colour or icon changed
+	-- is remade, not left wearing the look it was created with. The icon is
+	-- spelled by what it NAMES -- `tostring` on its table would be its address,
+	-- a different string every rebuild, and every HQ pin would be remade on
+	-- every pass.
+	local look = entry.look or {}
+	local icon = look.icon
+	local iconPart
+	if type(icon) == 'table' then
+		iconPart = tostring(icon.asset) .. '@' .. tostring(icon.size)
+	else
+		iconPart = tostring(icon)
+	end
+	return ('%s|%s|%.3f|%.3f|%.3f|%s|%s|%s|%s|%s|%s|%s'):format(
 		block.name, entry.label, entry.x, entry.y, entry.z,
-		tostring(block.sprite), tostring(block.range), tostring(block.walls))
+		tostring(block.sprite), tostring(block.range), tostring(block.walls),
+		tostring(block.color), tostring(look.sprite), iconPart, tostring(look.color))
 end
 
 --- Every blip this config wants right now, keyed by a stable id.
@@ -494,9 +550,13 @@ end
 local function create(entry, block)
 	local native = api()
 	if native == nil then return nil, 'ui.vanilla.map is unavailable on this host' end
+	-- THE POINT'S OWN LOOK WINS, PER FIELD. A headquarters station may name
+	-- its own sprite, its own custom SVG icon and its own colour in
+	-- `config/headquarters.lua`; everything else wears the category block.
+	local look = entry.look or {}
 	local options = {
 		position = { x = entry.x, y = entry.y, z = entry.z },
-		sprite = block.sprite,
+		sprite = look.sprite or block.sprite,
 		-- `title` and `description` are Open77's own mappin data and are what the
 		-- fullscreen map's tooltip shows when the pin is highlighted. The POINT's
 		-- own label is the title, because that is the operator's word for this
@@ -514,6 +574,9 @@ local function create(entry, block)
 	-- accepted by the engine, but sending the key says this module has an
 	-- opinion about range on every blip, and `get(id).range` reading 0 would
 	-- then be indistinguishable from a gate that was set and cleared.
+	if look.icon ~= nil then options.icon = look.icon end
+	local color = look.color or block.color
+	if color ~= nil then options.color = color end
 	if block.range > 0 then options.range = block.range end
 
 	local read, id, reason = pcall(native.create, options)

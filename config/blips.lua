@@ -71,29 +71,32 @@
 -- answer is in the server journal rather than in somebody's memory.
 --
 -- ============================================================================
--- COLOUR: THE ENGINE REFUSES IT BY NAME, AND THE SPRITE IS THE COLOUR
+-- COLOUR: PER BLIP SINCE THE NATIVE INK ADAPTER GREW ONE
 -- ============================================================================
 --
--- There is no colour setting below and there cannot be one. `Open77.blips`
--- REFUSES `color` and `colour` by name, with their own reason token
--- (`unsupported_option:color`), on `create` and `update` alike. So does
--- `alpha`, `opacity`, `scale`, `shortRange`, `category` and `kind = "radius"`.
+-- THIS SECTION USED TO SAY THERE CANNOT BE A COLOUR SETTING, and it was true
+-- when it was written (build 2.31.13+op77.76): `Open77.blips` refused `color`
+-- by name, a Cyberpunk mappin carries no colour field of its own, and the only
+-- colour a pin had was the one baked into its sprite. That is why `SPRITE`
+-- below is named for what it does, and that part stands -- picking `danger`
+-- over `objective` is still how a blip becomes red with no tint at all.
 --
--- It is not an oversight. A Cyberpunk mappin (`gamemappinsMappinData`) carries
--- seven fields and not one is a colour; opacity and scale live on the UI
--- RUNTIME PROFILE, which is resolved FROM THE SPRITE and shared by every pin
--- using it -- so a per-blip colour would restyle every other resource's blips
--- of the same sprite at the same time.
+-- WHAT CHANGED is the platform's own per-widget Ink adapter: `color` is now a
+-- real `create`/`update`/`setColor` field, exactly `#RRGGBB`/`#RRGGBBAA` (the
+-- alpha bytes live in it, because `alpha` is refused), and a custom SVG `icon`
+-- compiles under the real mappin widget. So a CATEGORY may carry `COLOR`
+-- below, and -- the case the owner asked for -- a headquarters station names
+-- its OWN sprite, icon and colour per station, in `config/headquarters.lua`'s
+-- `BLIP` block. The engine still refuses `colour`, `alpha`, `opacity`, `scale`,
+-- `category`, `shortRange` and `kind` by name, and a boot warning names those.
 --
--- WHAT IS PER-BLIP IS THE SPRITE, AND CYBERPUNK'S SPRITES CARRY THEIR OWN
--- COLOURS. Picking `danger` over `objective` is how a blip becomes red here.
--- So `SPRITE` below IS the colour setting, and it is named for what it does.
---
--- An operator who writes `COLOUR = '#ff0000'` anyway gets a BOOT WARNING naming
--- the category and saying this, rather than a key that is quietly dropped. The
--- platform's own guide makes the argument for that better than this comment
--- can: "A property accepted and silently discarded is worse than one that is
--- missing, because nothing in the resource can tell the difference."
+-- WHAT IS STILL TRUE and worth keeping: a per-blip colour touches only the one
+-- pin (the platform's own measurements: opacity and scale remain per SPRITE,
+-- on the shared UI runtime profile), and an operator who writes the British
+-- spelling gets a boot warning naming the category rather than a key that is
+-- quietly dropped. The platform's own guide makes that argument better than
+-- this comment can: "A property accepted and silently discarded is worse than
+-- one that is missing, because nothing in the resource can tell the difference."
 --
 -- ============================================================================
 -- SPRITES, AND WHICH ONES ARE ACTUALLY ON THE BIG MAP
@@ -140,6 +143,14 @@
 --                        `shared_script`, read directly -- no event carries it.
 --   jobs                 static, and TWO sources: every gunsmith armoury's
 --                        BENCH, and every hauling site's DROPOFFS.
+--   headquarters         DATABASE positions, CONFIG look. The list is the
+--                        headquarters client's own `Runtime.Spots()` (captured
+--                        stations live in `opx77_headquarters` and the server
+--                        filters to the asker's bucket); the pin look is per
+--                        station, the `BLIP` block of the station's row in
+--                        `config/headquarters.lua`. A station with no `BLIP`
+--                        block is deliberately not pinned -- the pin is the
+--                        station's own choice, not this module's opinion.
 --
 -- A POINT WHOSE X, Y AND Z ARE ALL EXACTLY ZERO IS SKIPPED AND COUNTED. Most of
 -- `config/gunsmith.lua` and all of `config/hauling.lua` ship as unsurveyed
@@ -193,6 +204,19 @@ OPX.Config.MODULES.blips = {
 	-- and a garage glowing through the building in front of you is a HUD effect
 	-- nobody asked for.
 	CATEGORIES = {
+		-- THE STATIONS. Only a headquarters whose own row in
+		-- `config/headquarters.lua` declares a `BLIP` block is pinned, and each
+		-- of them may wear its own SPRITE, ICON and COLOR from that block. This
+		-- block is the DEFAULTS and the one switch: `SHOW = false` takes every
+		-- headquarters pin off the map at once.
+		headquarters = {
+			SHOW = true,
+			SPRITE = 'objective',
+			LABEL = 'Headquarters',
+			RANGE = 0,
+			WALLS = false,
+		},
+
 		-- Where a player's own cars come out. The one the owner names first.
 		garages = {
 			SHOW = true,
