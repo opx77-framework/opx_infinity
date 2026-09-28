@@ -93,7 +93,7 @@ end
 -- and reading only the second logged a working mapping as refused (the
 -- scanner's own lesson).
 function M.Start()
-	local declared = M.Skill.KEY
+	local declared = M.Skill.KeySettings()
 	if declared.DEFAULT ~= false then
 		local called, ok, answer = pcall(RegisterKeyMapping, declared.ID, locale(declared.NAME),
 			declared.DEFAULT, function()
@@ -132,7 +132,7 @@ function M.Start()
 		show({
 			kind = 'frame',
 			frame = payload,
-			key = bound or M.Skill.KEY.DEFAULT,
+			key = bound or M.Skill.KeySettings().DEFAULT,
 			fresh = not was,
 		})
 	end)

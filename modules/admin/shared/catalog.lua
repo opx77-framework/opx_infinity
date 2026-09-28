@@ -62,7 +62,7 @@ do
 end
 
 --- Whether a record is an AV, by the one rule: `OPX.Vehicle.IsAvRecord` over
---- `OPX.Config.SHARED.AV_PREFIXES`.
+--- `OPX.Config.SHARED.AV_MATCHES`.
 --
 -- This was the third hand-written copy of that rule, over a third config key,
 -- and it was the one that behaved differently: no guard on the argument, and no

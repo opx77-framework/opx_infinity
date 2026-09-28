@@ -45,6 +45,8 @@ so the row survives a database reset.
 | Nudge the seat inside a chair | `/opx.clinic.tune <key> <forward> <right> [up] [yaw]` | metres along the chair's own axes, degrees |
 | Why "chrome record not ready" | `/opx.clinic.diag [playerId]` | binding, support resource, body, capacity, every fitted piece, the client's projection |
 | Record the base-game menus | `/opx.clinic.record [on\|off\|snap\|dump] [playerId]` | lines land in the server journal as `[ripperdoc:rec]` |
+| **Your Sandevistan key** (any player) | `/opx.sandy.key [key\|reset]` | no argument says the key; a key rebinds the platform's "Overdrive" action on your machine; `reset` restores `POWER_KEYS.reflex` |
+| Test the Sandevistan (staff) | `/opx.sandy.test [seconds]` | the whole presentation on your own body — clock, screen, Smasher's look — without the overdrive; 1–15 s, 9 by default |
 
 ### Ripperdoc chairs
 
@@ -110,6 +112,175 @@ deck, a Sandevistan, a Berserk or the compressor, as in the base game —
 `SYSTEMS` raises any slot count. Prices are `VANILLA.PRICE_BY_TIER` (iconic
 pieces at `ICONIC_MULTIPLIER`, roleplay chrome at `RP_MULTIPLIER`); list an id
 in `VANILLA.EXCLUDE` to take it off the tray.
+
+### The Sandevistans: the key, the look, the time, and the chair
+
+Every Sandevistan is the platform's **reflex overdrive** (`open77_reflex`): the
+owner's body moves, swings and reloads faster. A piece named in
+`SANDEVISTAN.LOOK` — the **Militech Apogee** out of the box — adds the rest of
+a Sandevistan on top: the look on the body, the world slowing, and the screen.
+
+- **The key.** One action on the player's machine engages every Sandevistan:
+  "Overdrive: engage the reflex boost", registered by `open77_reflex` with
+  `POWER_KEYS.reflex` (`x` out of the box) as its default. A player rebinds it
+  under **Pause › Settings › KEY BINDINGS** or with **`/opx.sandy.key <key>`**
+  (`/opx.sandy.key` alone says the key, `reset` restores the default); either
+  one is kept on their machine and follows them to every server. The "is live"
+  message names the key they really have bound.
+- **The look — Adam Smasher's own Sandevistan.** The Apogee wears `smasher`
+  and is registered with `presentation = 'none'`, so the platform's blue glow
+  is off and the look is drawn instead, **by every client, on the owner's body
+  and on the owner's own screen too**. It is read out of Smasher's 2.31 entity
+  (`base\characters\entities\boss\adam_smasher.ent`, spawners `fx_sandevistan`
+  and `fx_animalboss`):
+  - as it engages, his **teleport blink** (`fx_sandevistan_start` →
+    `ch_adam_smasher_sandevistan_teleport_start.effect`: debris, smoke and a
+    cracked-ground decal) goes off at the body's feet and is left there, his
+    dash sound plays on the body, and on everybody else's view the body's own
+    authored Sandevistan start (`fx_sandevistan_left/right`) plays;
+  - for the whole boost his **afterimage trails** (`sandevistan_trails_smasher`
+    → `ch_npc_sandevistan_trail.effect`, restarted every 1.8 s because each is
+    two seconds long) run from the hands, the feet, the chest and the head,
+    with his **aberration trails** (`fx_sandevistan_trails_left/_right`: the
+    chromatic smear and the blurred afterimage left behind) on the hips and
+    chest, his **loops**
+    (`fx_sandevistan_loop` → `ch_oda_sandevistan_loop.effect`, `sandevistan_loop`
+    → `ch_npc_ability_kerenzikov_center_loop.effect`) sit on the hips with the
+    centre flash, the eyes glow gold on everybody else's view (the base game's
+    NPC Sandevistan buff), and the plate reads `Name // SANDEVISTAN` in red;
+  - at the end his **end blink** (`fx_sandevistan_end`) goes off where the body
+    stands. Every layer comes off the moment the boost ends — by time, death,
+    a car door or a staff cancel.
+
+  Each client binds the layers by the slot names of the body it draws on: the
+  owner's own body names them `hips`, `left_foot`, `right_foot`…, everybody
+  else's `Hips`, `LeftFoot`…. **In third person the owner sees it on their own
+  model**: the platform's self-view body is drawn exactly where their own body
+  is, so the trails bound to their hips, feet, chest and head are what the
+  model wears — plus the head trail, minus the hand trails (their own hands
+  are posed for first person). The `opx_sandy_view` REDscript lights the
+  model's own gold eyes (`eye_glow_gold`) while the camera is really behind
+  it, and the look's `body = true` layers (Smasher's start pair and his loop
+  file) stand down on the owner's own body there. Up to opx_sandy_view 1.4.3
+  the model also played the NPC Sandevistan echoes its template authors
+  (`fx_sandevistan_left/right`, `fx_sandevistan_versus_loop`); since 1.4.4 it
+  does not — they smeared copies of the screen around the body.
+  The same REDscript keeps the model **as fast as V**: it is a body of its own
+  that the world's dilation would otherwise slow like any NPC, so it gets the
+  exemption V has for the boost. Switching view mid-boost switches all of it
+  over. In first person the head trail stays off (it would be in their eyes).
+- **His ghost trail — afterimages of the player's own model.** Smasher's
+  afterimages are copies of his own body left behind where he just was.
+  `opx_sandy_view` ships an archive (made from the base game's own files; see
+  `extras/opx_sandy_view/tools/ghost/README.md`) that carries V's own two
+  body files, `t0_000_base__full.app` and its censored cut, with **every
+  player body** given four layers of a copy of **its own body, arms and
+  head** — V's own third-person body (torso, legs, feet), arms and hands, and
+  base head, in Smasher's armour look — switched off. The game loads those
+  files in place of the base game's by their path, so **no loader is needed**
+  (up to 1.4.7 they were an ArchiveXL patch, and a player whose game had no
+  ArchiveXL saw no trail at all). For a boost the view's REDscript switches
+  them on and places them **every frame** where the body was 0.08, 0.16, 0.24
+  and 0.32 s before, relative to where it is now: four afterimages along the
+  path the player really ran, about half a metre apart at a sprint, none
+  while standing still, never inside the camera. **The owner sees it on their
+  own third-person model** (never in first person), and **every other player
+  near enough to have the owner's body streamed sees it on the owner** (the
+  look plays the trigger `opx_sandy_ghost_on` on their copy of the owner for
+  the whole boost — a player who walks up mid-boost gets it the moment the
+  body arrives — and that body answers it with a watch of its own; not while
+  seated in a vehicle). On a machine the boost slows, the owner's body keeps
+  full speed (the exemption the owner's own model gets), so everybody near a
+  Sandevistan sees its owner fast in a slowed world. `docs/sandevistan.md`
+  has how it works and every build on the way.
+- **The time — the base game's own.** The owner's world runs at
+  `TIME.SELF_SCALE` (0.15, the Apogee's rate) while their body does not slow:
+  the `opx_sandy_view` resource claims the owner's clock (reason
+  `open77:opx_sandy_view`, the one slow-motion a session allows) and its
+  REDscript exempts V from it every frame — exactly what
+  `SandevistanEvents.OnEnter` does with `SetIgnoreTimeDilationOnLocalPlayerZero`.
+  NPCs, traffic, physics, particles and sound slow; V does not. Everybody within
+  `TIME.RADIUS` (30 m) of the owner — including whoever walks in mid-boost —
+  runs at `TIME.NEARBY_SCALE` (0.15) for the boost, body and all, so on the
+  owner's screen they move in slow motion. On a build with the platform's
+  dilation lease the lease does the owner's clock instead; where neither can,
+  the owner's whole view runs at `TIME.SELF_FALLBACK_SCALE` (0.5), body
+  included (set it to 1 to turn that off). Everybody gets real time back when
+  the boost ends, or leaves the radius.
+- **The screen — the base game's own.** In Cyberpunk 2077 the Sandevistan
+  screen is not an effect (the player buff's VFX and SFX lists are empty):
+  `SandevistanEvents.OnEnter` sets the camera's time-dilation curve
+  `Sandevistan` over the slowed clock, the muffled sound is the engine's own
+  answer to a slowed world, and the keyboard plays `SlowMotion`. The
+  `opx_sandy_view` REDscript does all three from the player state machine the
+  frame the owner's clock lands, so nothing is laid over it; the owner also
+  hears the base game's `time_dilation_sandevistan_enter/exit`.
+  `opx_sandy_view` is a preload with executable content, so the server must
+  run with `requiredMods.unsecured = true` (the staging deploy sets it, and
+  puts everything back if the server does not come up with it); players boot
+  the game once more through the launcher to install a new version. Without
+  it the owner gets the stand-in instead: a glitch flash (`SCREEN.START`,
+  `damage.emp`) and the drug-smear overlay (`SCREEN.ALIAS`, `drugged`).
+- **Animations.** The base game has none for V's Sandevistan: no body
+  animation — the afterimages are authored for NPCs and Adam Smasher, which is
+  what the look puts on the player. What moves is the world, slowed around a
+  body that is not.
+- **Testing it.** `/opx.sandy.test [seconds]` (staff) runs the whole
+  Sandevistan on your own body without the overdrive — the clock, the screen,
+  the look — so the presentation can be checked on its own. Every link is
+  written down on the way:
+  - the **client log** (`red4ext/logs/open77-*.log`): `[ripperdoc] Sandevistan:
+    the server says this player holds …`, `the overdrive is on this client …`,
+    `the overdrive engaged on this body …` (and, if nothing followed, `… the
+    server sent no Sandevistan for it`), `Sandevistan active from the server …`,
+    `Sandevistan engaged for … ms: world …; screen …`, `Sandevistan clock on
+    this machine: world at 0.15 …; claims: opx_sandy_view …`, `Sandevistan look
+    on this player's own body: 12 of 12 layer(s) …, first person` (third person:
+    `8 of 8 layer(s) …, 3 worn by the third-person model itself`), and the
+    REDscript's own `Open77 pristine player bootstrap trace: opx_sandy_view on:
+    claim true, …, V exempted true, engine says V ignores the world's dilation
+    true, camera curve Sandevistan true, keyboard true` and, in third person,
+    `opx_sandy_view ghost: this game gives player bodies the ghost trail's
+    parts -- the third-person model has 16 of 16` (said once as the model
+    attaches; `0 of 16` says this game does not load the archive's copy of V's
+    body), `opx_sandy_view model: third-person model on V true, camera behind
+    it true, exempt from the world's dilation true, Smasher's look on it true,
+    his ghost trail 16 of 16 parts`, `opx_sandy_view ghost: the owner's
+    third-person model lit -- 16 of 16 parts …; 4 afterimages, 0.08 s apart,
+    placed every frame`, `opx_sandy_view afterimages: … placed N times in X s,
+    4 of 4 showing` (how often they really move) and `… 4 of 4 shown, the
+    farthest X m behind; the engine has the farthest shown X m from the body`
+    (read back from the engine), `opx_sandy_view owner: boost on, …` / `… the
+    boost is over, V runs with the world again`, and on every OTHER player's
+    machine near the owner `opx_sandy_view ghost: a boosted player's body lit
+    -- …`, `… the boosted player's body keeps full speed on this machine …;
+    this machine is slowed by it, world 0.15` and `… ghost trail is off`
+    (`… has no ghost parts yet …`: that body is still being dressed, or that
+    game does not load the archive's copy of V's body);
+  - the **server journal**: `[ripperdoc] player N: overdrive accepted/active/…
+    -- armed piece …, look …`, `player N: Sandevistan (smasher, …) for … ms`,
+    and what each client reported back (`player N's client: Sandevistan
+    engaged …`, `… clock …`, `… drew player N's Sandevistan: …`).
+- **The cooldown.** Every Sandevistan the ripperdoc sells comes back
+  `SANDEVISTAN.COOLDOWN_MS` (**20 s**) after its boost ends — the platform
+  starts the cooldown when the boost is over — whatever its grade said; a
+  boost never outlasts it. The tray shows it as the piece's COOLDOWN.
+- **The real item.** A piece in `SANDEVISTAN.WEAR` (the **Militech Apogee**)
+  is also the base game's own item in the **Operating System** slot: the
+  owner's client asks `opx_sandy_view` for it (a half-second message on the
+  clock, the only door a Lua resource has to the REDscript), and the REDscript
+  fits `Items.AdvancedSandevistanApogee` with the base game's own equipment
+  system, checks it every second, fits it again if something took it off, and
+  takes off — and out of the inventory — only what it fitted when the
+  ripperdoc takes the piece out. While it is fitted the base game's own
+  Sandevistan activation is off: the key and the slowdown stay the
+  ripperdoc's. The client log says `opx_sandy_view real item: … is fitted in
+  the Operating System slot` (or, after five tries, why not).
+- **The chair.** A power bought in the chair reaches a body sitting in a
+  workspot, which `open77_reflex` does not keep. It is projected again once the
+  patient stands up and their body is free, so the key works straight away —
+  no relog. A client that loses the overdrive later (a respawn on a new body)
+  asks for it again, never inside the power's own cooldown.
 
 ### Durability: every piece wears out
 

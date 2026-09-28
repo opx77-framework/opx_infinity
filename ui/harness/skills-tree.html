@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OPEN//77 skill tree harness</title>
+<!--
+  THE SKILL TREE, FRAMED AGAINST THE REAL PAGE -- and the answer to two questions:
+  can a player READ it, and can a player SEE all of it. The tree is drawn by the
+  same `ui/src/boot/main.ts` the game mounts, on a fake bridge that DELIVERS a frame
+  the way the state half would.
+
+  Two regressions are pinned here, one per question:
+
+  1. A node row is a real <button>, and a <button> is a user-agent object -- the
+     host paints a light ground and a bevel behind every one that no rule has taken
+     away. On this surface that was WHITE ROWS with light text on them. The checks
+     read the COMPUTED style the player gets: a control row carries the dark plate,
+     a readout row is unfilled, no row wears the UA bevel, and the names clear a
+     contrast floor against the ground they are on.
+
+  2. The panel used to be a fixed 980px plane with no bounds and no scroll: on a
+     narrower or shorter surface it hung off both edges and whole trunks were
+     simply not on screen. The frame below carries NINE nodes in its first trunk
+     (the page once sliced rows past the eighth on its own) and the checks say
+     every row is drawn, the panel stays inside the viewport, and the chains
+     scroll far enough to reach the bottom row.
+
+  Run it with the dev server:  npm run dev  ->  /harness/skills-tree.html
+-->
+<style>
+  html, body { margin: 0; background: #080e19; color: #f2f6f8;
+               font: 13px/1.5 "Cascadia Mono", Consolas, monospace; }
+  #result { position: fixed; left: 0; top: 0; margin: 0; padding: 15px;
+            white-space: pre-wrap; z-index: 9999;
+            background: rgba(8, 14, 25, 0.85); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<pre id="result">running…</pre>
+<script>
+/* A FAKE BRIDGE, INSTALLED BEFORE THE APP. It has to be this and not the app's own
+   dev shim: a shim answers by itself, and this harness has to DELIVER payloads TO
+   the app. It must be a plain script, because the app's import is a module and
+   modules run after this. */
+window.__opx = { handlers: {}, emitted: [] };
+window.Open77 = {
+  on: function (channel, handler) {
+    (window.__opx.handlers[channel] = window.__opx.handlers[channel] || []).push(handler);
+  },
+  emit: function (channel, payload) {
+    window.__opx.emitted.push({ channel: channel, payload: payload });
+  }
+};
+window.__deliver = function (channel, payload) {
+  var list = window.__opx.handlers[channel] || [];
+  for (var index = 0; index < list.length; index++) list[index](payload);
+};
+</script>
+<script type="module">
+import '/src/boot/main.ts'
+
+const results = []
+let failed = 0
+
+function check(name, ok, detail) {
+  if (!ok) failed += 1
+  results.push((ok ? 'ok   ' : 'FAIL ') + name + (ok || detail === undefined ? '' : '  -- ' + detail))
+  draw()
+}
+
+function draw() {
+  const text = results.join('\n') + '\n\n' + (failed === 0 ? 'PASS' : failed + ' FAILED')
+  document.getElementById('result').textContent = text
+  window.__RESULT__ = { failed, results }
+}
+
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
+
+/** A css colour as [r, g, b, a], or null. */
+function paint(value) {
+  const parts = /rgba?\(([^)]+)\)/.exec(value || '')
+  if (!parts) return null
+  const nums = parts[1].split(',').map((part) => parseFloat(part))
+  return [nums[0], nums[1], nums[2], nums.length > 3 ? nums[3] : 1]
+}
+
+/** Relative luminance of an opaque rgb triple. */
+function luminance(rgb) {
+  const channel = (raw) => {
+    const step = raw / 255
+    return step <= 0.04045 ? step / 12.92 : Math.pow((step + 0.055) / 1.055, 2.4)
+  }
+  return 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2])
+}
+
+/** WCAG contrast between a text colour and the ground it sits on. */
+function contrast(fg, bg) {
+  const light = luminance(fg) + 0.05
+  const dark = luminance(bg) + 0.05
+  return light > dark ? light / dark : dark / light
+}
+
+/** A colour with alpha flattened onto its ground -- what the player's eye
+ *  actually gets. Reading the rgb triple alone would call a 0.72-alpha grey
+ *  readable when it lands at 3.9:1 on the plate. */
+function blend(fg, bg) {
+  const alpha = fg.length > 3 ? fg[3] : 1
+  return [0, 1, 2].map((at) => alpha * fg[at] + (1 - alpha) * bg[at])
+}
+
+const show = (payload) => window.__deliver('opx:skills:view', payload)
+
+/** The frame the state half sends: three trunks, states down the chain. The
+ *  first trunk carries NINE nodes on purpose -- past the page's old silent
+ *  eight -- so a slice that comes back fails the battery below. */
+function frame() {
+  const node = (id, name, state, why) => ({
+    id, name, desc: 'skills.desc.' + id, perk: 'demo.perk',
+    value: 2, cost: 1, state, why: why || ''
+  })
+  const letter = (at) => String.fromCharCode(97 + at)
+  return {
+    kind: 'frame',
+    fresh: true,
+    key: 'F3',
+    frame: {
+      open: true,
+      level: 3,
+      xp: 40,
+      need: 300,
+      points: 2,
+      depth: 9,
+      branches: [1, 2, 3].map((branch) => ({
+        id: 'trunk' + branch,
+        name: 'skills.branch.trunk' + branch,
+        rank: branch,
+        xp: 45,
+        need: 100,
+        nodes: Array.from({ length: branch === 1 ? 9 : 4 }, (unused, at) =>
+          at === 0
+            ? node('n' + branch + letter(at), 'skills.node.' + branch + letter(at), 'unlocked')
+            : at === 1
+              ? node('n' + branch + letter(at), 'skills.node.' + branch + letter(at), 'available')
+              : node('n' + branch + letter(at), 'skills.node.' + branch + letter(at), 'locked', 'skills.rank'))
+      }))
+    }
+  }
+}
+
+async function run() {
+  window.__deliver('opx:locale:set', {
+    strings: {
+      'skills.level': 'LEVEL {level}',
+      'skills.xp': '{xp}/{need} XP',
+      'skills.points': '{points} PT',
+      'skills.trunkRank': 'RANK {rank}/{depth}',
+      'skills.branchXp': '{xp}/{need} INTO THIS TRUNK',
+      'skills.spend': 'UNLOCK · {cost} PT',
+      'skills.stow': 'CLOSE [{key}]',
+      'skills.detail': 'SELECT A NODE'
+    },
+    first: true
+  })
+  await sleep(60)
+  show(frame())
+  await sleep(120)
+
+  check('the tree is up', document.querySelector('.tree') !== null)
+
+  const control = document.querySelector('.node:not(.dark)')
+  const readout = document.querySelector('.node.dark')
+
+  const rows = document.querySelectorAll('.node')
+  check('a control row exists for every state the frame declared',
+    rows.length === 17, rows.length + ' row(s)')
+  check('every node the frame carried is drawn -- nothing is sliced away',
+    rows.length === 17 && document.querySelector('[data-node-id="n1i"]') !== null,
+    rows.length + ' row(s)')
+
+  const unitBox = document.querySelector('.tree .unit').getBoundingClientRect()
+  check('the panel stays inside the viewport at any surface size',
+    unitBox.left >= -0.5 && unitBox.right <= window.innerWidth + 0.5
+      && unitBox.top >= -0.5 && unitBox.bottom <= window.innerHeight + 0.5,
+    JSON.stringify({ l: Math.round(unitBox.left), r: Math.round(unitBox.right),
+      t: Math.round(unitBox.top), b: Math.round(unitBox.bottom),
+      vw: window.innerWidth, vh: window.innerHeight }))
+
+  // REACHABLE, not just present: the chains are the scroll region, so the
+  // bottom row must come into view when the region is scrolled to its end.
+  const chains = document.querySelector('.branches')
+  chains.scrollTop = chains.scrollHeight
+  const last = document.querySelector('[data-node-id="n1i"]')
+  const chainBox = chains.getBoundingClientRect()
+  const lastBox = last ? last.getBoundingClientRect() : null
+  check('the chains scroll to the bottom row, so no skill is stranded',
+    lastBox !== null && lastBox.bottom <= chainBox.bottom + 1
+      && lastBox.top >= chainBox.top - 1,
+    lastBox ? 'last row bottom ' + Math.round(lastBox.bottom) + ' of ' + Math.round(chainBox.bottom) : 'no row')
+  chains.scrollTop = 0
+
+  const controlGround = control ? paint(getComputedStyle(control).backgroundColor) : null
+  check('a control row carries the dark plate, not the host\'s light ground',
+    controlGround !== null && controlGround[3] > 0 && luminance(controlGround) < 0.1,
+    control ? getComputedStyle(control).backgroundColor : 'no row')
+
+  const readoutGround = readout ? paint(getComputedStyle(readout).backgroundColor) : null
+  check('a readout row is unfilled: the bay shows through',
+    readoutGround !== null && (readoutGround[3] === 0 || luminance(readoutGround) < 0.1),
+    readout ? getComputedStyle(readout).backgroundColor : 'no row')
+
+  check('no row wears the user-agent bevel',
+    control !== null && readout !== null
+      && getComputedStyle(control).borderTopWidth === '0px'
+      && getComputedStyle(readout).borderTopWidth === '0px',
+    control ? getComputedStyle(control).borderTopWidth : 'no row')
+
+  const name = control ? control.querySelector('.node-name') : null
+  const nameInk = name ? paint(getComputedStyle(name).color) : null
+  check('the node name clears a contrast floor against its own ground',
+    nameInk !== null && controlGround !== null && contrast(nameInk, controlGround) >= 4.5,
+    nameInk && controlGround ? contrast(nameInk, controlGround).toFixed(2) : 'no pair')
+
+  // A READOUT ROW IS UNFILLED, so its ground is the unit's own plate -- and
+  // its name is read as often as any control's. Flattened alpha first: a 0.72
+  // grey looked fine as an rgb triple and landed at 3.9:1 on the plate.
+  const unitGround = paint(getComputedStyle(document.querySelector('.tree .unit')).backgroundColor)
+  const lockedName = readout ? readout.querySelector('.node-name') : null
+  const lockedInk = lockedName ? paint(getComputedStyle(lockedName).color) : null
+  check('a locked row\'s name clears the same contrast floor',
+    lockedInk !== null && unitGround !== null && contrast(blend(lockedInk, unitGround), unitGround) >= 4.5,
+    lockedInk && unitGround ? contrast(blend(lockedInk, unitGround), unitGround).toFixed(2) : 'no pair')
+
+  const why = readout ? readout.querySelector('.why') : null
+  const whyInk = why ? paint(getComputedStyle(why).color) : null
+  check('a locked row still STATES ITS REQUIREMENT',
+    why !== null && (why.textContent || '').trim().length > 0)
+  check('and the requirement is readable on the same floor',
+    whyInk !== null && unitGround !== null && contrast(blend(whyInk, unitGround), unitGround) >= 4.5,
+    whyInk && unitGround ? contrast(blend(whyInk, unitGround), unitGround).toFixed(2) : 'no pair')
+
+  draw()
+}
+
+run()
+</script>
+</body>
+</html>

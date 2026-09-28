@@ -59,6 +59,16 @@
   --aug-tr: var(--op-cut-sm);
   background: var(--op-plate);
   color: var(--op-red-text);
+  /* A CONTROL IS A CLOSED BOX, and the box is the AUG stroke -- never the
+     host's own. A real <button> wearing the frame is a user-agent object
+     first: the host paints an outset bevel and a light ground behind every
+     one until a rule takes them away (the skill tree's white rows were
+     exactly that). `border: 0` and `appearance` off are that rule, once,
+     for every framed control -- harmless on the divs that also wear the
+     frame, which have no host chrome to take away. */
+  -webkit-appearance: none;
+  appearance: none;
+  border: 0;
 }
 
 /* The bay: the same idea one step up, for anything holding a list or a grid.

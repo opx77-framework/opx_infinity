@@ -80,6 +80,13 @@ function OPX.Now()
 	if resolvedTimer == nil then
 		resolvedTimer = GetGameTimer or false
 	end
-	if resolvedTimer then return resolvedTimer() end
-	return math.floor(Open77.time.monotonic() * 1000)
+	-- WHOLE MILLISECONDS, WHATEVER THE TIMER ANSWERS. The platform's
+	-- `GetGameTimer` carries a fraction (`227832.75839999` on the box that
+	-- found this), and `%d` raises on one -- the record reader's nonce and
+	-- the stand-up re-projection token both died printing it, which left
+	-- records unread and a fitted Sandevistan dead until the next session.
+	-- The contract has always been an integer; make it one.
+	local at = tonumber(resolvedTimer and resolvedTimer() or Open77.time.monotonic() * 1000)
+	if at == nil or at ~= at or at == math.huge or at == -math.huge then return 0 end
+	return math.floor(at)
 end

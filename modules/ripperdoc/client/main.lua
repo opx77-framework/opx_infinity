@@ -657,6 +657,9 @@ function M.Start()
 	-- The page's intents come through the view seam into `FromView`.
 	M.RipperView.Start()
 	if M.Recorder ~= nil then M.Recorder.Start() end
+	-- The Sandevistan on this machine: its look on every boosted body, its key,
+	-- and the power this client lost (`client/sandevistan.lua`).
+	if M.Sandy ~= nil then M.Sandy.Start() end
 
 	-- The scan: one position read per pass, at clothing's own half-second.
 	running = true
@@ -678,6 +681,7 @@ end
 function M.Stop()
 	running = false
 	if M.Recorder ~= nil then M.Recorder.Stop() end
+	if M.Sandy ~= nil then M.Sandy.Stop() end
 	M.RipperView.Stop()
 	local api = OPX.Api.Get('prompts')
 	if api ~= nil and type(api.Hide) == 'function' then

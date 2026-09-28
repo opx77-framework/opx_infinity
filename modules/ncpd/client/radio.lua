@@ -283,7 +283,7 @@ RegisterNetEvent(M.Event.RADIO_STATE, function(payload)
 	open = true
 	frame = {
 		open = true,
-		key = bound or M.Radio.KEY.DEFAULT,
+		key = bound or M.Radio.KeySettings().DEFAULT,
 		-- Where this machine last parked it, or nil for the built-in dock.
 		at = savedPlace(),
 		tuned = first or (channels[1] and channels[1].id) or nil,
@@ -362,7 +362,7 @@ end
 -- documented for `RegisterKeyMapping` -- the effective key, or `true, key` --
 -- and reading only the second logged a working mapping as refused.
 function M.Radio.Start()
-	local declared = M.Radio.KEY
+	local declared = M.Radio.KeySettings()
 	if declared.DEFAULT == false then return end
 
 	local called, ok, answer = pcall(RegisterKeyMapping, declared.ID, locale(declared.NAME),

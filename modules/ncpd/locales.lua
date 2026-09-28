@@ -102,6 +102,9 @@ local EN = {
 	['ncpd.help.laws'] = 'every offence this server scores, and what it costs',
 	['ncpd.help.law'] = 'a law id from the book (`/opx.ncpd.laws`)',
 	['ncpd.help.stage'] = 'a heat stage, 0 to 5',
+	['ncpd.help.bots'] = 'put a killable crowd on the street, for testing the wanted ladder',
+	['ncpd.help.botsAction'] = '`spawn [count]`, `clear`, or `status`',
+	['ncpd.help.botsCount'] = 'how many civilians to place (the config caps the crowd)',
 	['ncpd.help.player'] = 'a player id ; you, when omitted',
 }
 
@@ -179,6 +182,9 @@ local FR = {
 	['ncpd.help.laws'] = 'chaque infraction notée par ce serveur, et son coût',
 	['ncpd.help.law'] = 'un identifiant du code (`/opx.ncpd.laws`)',
 	['ncpd.help.stage'] = 'un palier de chaleur, 0 à 5',
+	['ncpd.help.bots'] = 'poser une foule tuable dans la rue, pour tester l\u{2019}échelle de recherche',
+	['ncpd.help.botsAction'] = '`spawn [nombre]`, `clear` ou `status`',
+	['ncpd.help.botsCount'] = 'combien de civils placer (la config limite la foule)',
 	['ncpd.help.player'] = 'un identifiant de joueur ; vous, si omis',
 }
 

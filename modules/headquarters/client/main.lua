@@ -1,11 +1,14 @@
 --- Client half: the markers, and the one row that names the place.
 -- @author XEROX710
 --
--- WHAT IS DRAWN HERE IS A HINT. The marker is a light on the floor and the row
--- is a name; neither decides anything, and nothing happens when one is touched.
--- A headquarters DESIGNATES -- it says where the station is, so an operator can
--- place the MaxTac AV pads, the garages and the stores around it and a player
--- can find the door. The moment it does something it is a different module.
+-- WHAT IS DRAWN HERE IS A HINT WITH ONE KEY BEHIND IT. The marker is a light
+-- on the floor and the row is a name; the key the row wears is what the station
+-- DOES when touched, and that is the operator's `PRESS` block: say the
+-- station's own name, or open the options `MENU.ROWS` declares. A headquarters
+-- still DESIGNATES -- it says where the station is, so an operator can place
+-- the MaxTac AV pads, the garages and the stores around it -- and the one
+-- thing it does beyond that is the operator's own list of options, which is
+-- what keeps it a designation rather than a door.
 --
 -- The points come from the server and never from `config/headquarters.lua`
 -- directly: the server filters the list to this player's own routing bucket,
@@ -26,6 +29,11 @@ local Access = M.Access
 local OWNER = 'headquarters'
 local GROUP = 'spot'
 
+-- What the MENU contract records as this module's own: `owner` and `id` come
+-- back on every row action, and they are how this file knows a close is its
+-- close.
+local MENU_ID = 'headquarters.options'
+
 -- The point list as the server last sent it, and the markers drawn for it.
 local spots, markers = {}, {}
 
@@ -36,7 +44,7 @@ local nearest, shown, shownLabel = nil, false, nil
 -- be drawn, a row that cannot be posted and a config that named no usable key
 -- are different problems and a player reading the log wants to know which one
 -- they have.
-local reportedMarkers, reportedStrip, reportedKey = false, false, false
+local reportedMarkers, reportedStrip, reportedKey, reportedMenu = false, false, false, false
 
 -- Whether the host took the key mapping. The row wears no cap until it has:
 -- a row that promises a press with no key behind it is the `!` problem again.
@@ -216,24 +224,163 @@ end
 
 -- Shows one message as a replaced toast, or as a log line when no toast can be
 -- raised. One id, so a second press replaces the first rather than stacking.
+-- How long it stays is the operator's `PRESS.TOAST_MS`.
 local function say(message)
 	local raised = OPX.Toast.Show({
 		id = 'opx.headquarters.read',
 		kind = 'info',
 		title = locale('headquarters.title'),
 		message = message,
-		durationMs = 4000,
+		durationMs = Access.Press().toastMs,
 	})
 	if raised == nil then Open77.log.info('[headquarters] ' .. tostring(message)) end
 end
 
--- THE PRESS. A designation answers when touched: it says its own name. The row
--- is already naming the place while the player stands on it, so this is the
--- same fact asked for rather than stumbled over -- and the one thing a station
--- does that does not make it a door.
+-- THE DESIGNATION'S OWN ANSWER, AND THE FALLBACK FOR EVERY OTHER ONE. It says
+-- its own name. The row is already naming the place while the player stands on
+-- it, so this is the same fact asked for rather than stumbled over -- and it
+-- is what the press does when the menu has no rows, when no menu contract is
+-- installed, or when `PRESS.ACTION` says `read`. The key always answers.
 local function readBack()
 	if nearest == nil then return end
 	say(tostring(nearest.label))
+end
+
+-- ── the options ──────────────────────────────────────────────────────────────────
+
+-- The open menu's handle, and the row handler declared ahead of the function
+-- that installs it.
+local menuHandle, onMenuRow = nil, nil
+
+-- The menu contract, or nil with one line said about it.
+local function menuApi()
+	local api = OPX.Api.Get('menu')
+	if api == nil or type(api.Open) ~= 'function' then
+		if not reportedMenu then
+			reportedMenu = true
+			Open77.log.info('[headquarters] no menu contract: the press only reads the station name')
+		end
+		return nil
+	end
+	return api
+end
+
+-- Takes the options down for a reason of this file's own.
+local function takeMenuDown()
+	local closing = menuHandle
+	menuHandle = nil
+	local api = OPX.Api.Get('menu')
+	if closing ~= nil and api ~= nil and type(api.Close) == 'function' then
+		pcall(api.Close, closing, 'headquarters')
+	end
+end
+
+-- Runs one option row. A COMMAND row is executed exactly as the chat box would
+-- -- the same event, the same tokens, and the same ACL waiting on the far end
+-- -- and a row that carries no command speaks the station's own name.
+local function runRow(row)
+	if row.command == nil then
+		readBack()
+		return
+	end
+	local tokens = {}
+	for piece in tostring(row.command):gsub('^/', ''):gmatch('%S+') do
+		tokens[#tokens + 1] = piece
+	end
+	if #tokens == 0 then return end
+	local sent, reason = TriggerServerEvent(M.Host.COMMAND_EXECUTE, table.unpack(tokens))
+	if not sent then
+		Open77.log.warn(('[headquarters] option %s not sent: %s')
+			:format(tostring(row.id), tostring(reason)))
+	end
+end
+
+-- Opens the operator's options on the station the player stands on. Answers
+-- whether it opened, so the press can fall back to reading the name.
+local function openMenu()
+	local rows = Access.MenuRows()
+	local api = nil
+	if #rows > 0 then api = menuApi() end
+	if api == nil then return false end
+
+	local items = {}
+	for index = 1, #rows do
+		local row = rows[index]
+		items[#items + 1] = {
+			id = row.id,
+			-- The operator's own words, shown as written.
+			label = row.label,
+			data = { row = index },
+		}
+	end
+	items[#items + 1] = { separator = true, label = '' }
+	items[#items + 1] = { id = 'close', label = locale('headquarters.menu.close'), close = true }
+
+	local where = Access.MenuChrome()
+	local opened = api.Open({
+		owner = OWNER,
+		id = MENU_ID,
+		title = tostring(nearest.label),
+		on = onMenuRow,
+		anchor = where.ANCHOR,
+		width = where.WIDTH,
+		height = where.HEIGHT,
+		maxHeight = where.MAX_HEIGHT_VH,
+		rows = where.VISIBLE_ROWS,
+		items = items,
+	})
+	if opened == nil or opened.ok ~= true then
+		local failure = type(opened) == 'table' and tostring(opened.error or 'refused') or 'refused'
+		if not reportedMenu then
+			reportedMenu = true
+			Open77.log.warn('[headquarters] the options did not open: ' .. failure)
+		end
+		return false
+	end
+	menuHandle = opened.value.handle
+	return true
+end
+
+-- Acts on a row the menu raised. The shape is checked because the menu also
+-- raises every action on its own public bus.
+onMenuRow = function(payload)
+	if type(payload) ~= 'table' or payload.owner ~= OWNER or payload.menu ~= MENU_ID then return end
+	if payload.action == 'close' then
+		-- A close for a menu this file has already replaced can land after the
+		-- new handle; it is not ours to act on.
+		if payload.reason == 'reopened' or payload.handle ~= menuHandle then return end
+		menuHandle = nil
+		return
+	end
+	if payload.action ~= 'select' or captured() then return end
+	local data = payload.data
+	local index = type(data) == 'table' and tonumber(data.row) or nil
+	local row = index ~= nil and Access.MenuRows()[index] or nil
+	if row == nil then return end
+	-- The pick takes the options down first: whatever the row does next
+	-- speaks for itself and should not compete with the panel.
+	takeMenuDown()
+	local ran, failure = pcall(runRow, row)
+	if not ran then
+		Open77.log.error(('[headquarters] option %s: %s')
+			:format(tostring(row.id), tostring(failure)))
+	end
+end
+
+-- THE PRESS. `PRESS.ACTION` decides what the station does when touched:
+-- `menu` opens the operator's options and `read` says the name. A menu that
+-- cannot open -- no rows, no contract -- falls back to the name, so the key
+-- always answers. A second press takes the options down, the same bargain the
+-- garages list makes.
+local function press()
+	if nearest == nil then return end
+	if menuHandle ~= nil then
+		return takeMenuDown()
+	end
+	if Access.Press().action == 'menu' and openMenu() then
+		return
+	end
+	readBack()
 end
 
 -- ── the surface the blips module reads ─────────────────────────────────────
@@ -266,6 +413,8 @@ function M.Report()
 		label = nearest and nearest.label or nil,
 		shown = shown,
 		key = keyLabel(),
+		menu = menuHandle ~= nil,
+		press = Access.Press().action,
 	}
 end
 
@@ -278,10 +427,14 @@ local function scan()
 	local x, y = playerXY()
 	if x == nil then
 		nearest = nil
+		takeMenuDown()
 		syncPrompt()
 		return
 	end
 	nearest = Access.Nearest(spots, x, y)
+	-- The options belong to the station: walking off it takes them down, the
+	-- same as the row coming off.
+	if nearest == nil then takeMenuDown() end
 	syncPrompt()
 	reconcile(x, y)
 end
@@ -292,7 +445,8 @@ end
 function M.Init()
 	spots, markers = {}, {}
 	nearest, shown, shownLabel, keyRegistered = nil, false, nil, false
-	reportedMarkers, reportedStrip, reportedKey = false, false, false
+	reportedMarkers, reportedStrip, reportedKey, reportedMenu = false, false, false, false
+	menuHandle = nil
 	scanJob, askJob = nil, nil
 end
 
@@ -305,7 +459,7 @@ function M.Start()
 		local called, ok, answer = pcall(RegisterKeyMapping, key.ID, locale(key.NAME),
 			key.DEFAULT, function()
 				if captured() then return end
-				local ran, failure = pcall(readBack)
+				local ran, failure = pcall(press)
 				if not ran then
 					Open77.log.error(('[headquarters] key %s: %s'):format(key.ID, tostring(failure)))
 				end
@@ -384,6 +538,7 @@ function M.Stop()
 		askJob = nil
 	end
 	clearMarkers()
+	takeMenuDown()
 	local api = OPX.Api.Get('prompts')
 	if shown and api ~= nil and type(api.Hide) == 'function' then
 		pcall(api.Hide, OWNER, GROUP)

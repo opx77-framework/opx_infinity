@@ -424,6 +424,24 @@ function M.List(source, key)
 		return left.plate < right.plate
 	end)
 
+	-- THE DIVISION'S OWN AIRCRAFT COME FIRST, ahead of what the character
+	-- already owns: the hangar's offering, then their own rows in their own
+	-- order. A fleet row carries no plate -- it is not owned yet, it is ISSUED
+	-- when picked -- and the client shows its label where a plate would be.
+	if type(built.fleet) == 'table' and #built.fleet > 0 then
+		local offering = {}
+		for index = 1, #built.fleet do
+			local hull = built.fleet[index]
+			offering[#offering + 1] = {
+				record = hull.record,
+				label = hull.label,
+				fleet = true,
+			}
+		end
+		for index = 1, #listed do offering[#offering + 1] = listed[index] end
+		listed = offering
+	end
+
 	return Result.Ok({
 		spot = point.key,
 		garage = built.key,
@@ -571,6 +589,93 @@ function M.Bring(source, key, wanted)
 	})
 end
 
+--- Issues one hull of the division's stock at a free exit of the pad the
+--- connection is standing at.
+-- @author XEROX710
+--
+-- THE OFFERING IS THE PAD'S OWN AND NEVER THE WIRE'S. The client asks for a
+-- record; the record is only honoured if it is on the pad's FLEET, so a
+-- hand-crafted request names nothing the config did not offer. A ground
+-- garage issues nothing at all.
+--
+-- ISSUED, NOT BORROWED. The hull is REGISTERED under the character's name and
+-- filed at the pad the moment it exists, so it stores, recalls and persists
+-- exactly like a vehicle they always owned -- and the vehicles module's own
+-- per-character limit is what stops a division's stock being drawn on without
+-- end. `M.Bring`'s exit choice, AV lift and pilot seat are the same ones, on
+-- purpose: a hull that comes out of a pad comes out one way.
+-- @param source Source
+-- @param key string|nil the point name; the nearest one when omitted
+-- @param record string the TweakDB record the caller asks the pad to issue
+-- @return Result
+function M.Issue(source, key, record)
+	if vehicles == nil then return Result.Err('garages.noVehicles') end
+
+	local data = characterOf(source)
+	if data == nil or type(data.citizenId) ~= 'string' then
+		return Result.Err('garages.noCharacter')
+	end
+	local point, refusal = resolve(source, key)
+	if point == nil then return refusal end
+	local built = garages[point.garage]
+	local place = locationOf(point)
+	if built == nil or place == nil then return Result.Err('garages.noSuchSpot') end
+	local allowed, gateRefusal = mayUse(source, built)
+	if not allowed then return Result.Err(gateRefusal, built.label) end
+
+	-- `false`, a block the coercion refused and a LIST WITH NOTHING ON IT
+	-- are one answer: this pad issues none of the division's aircraft. The
+	-- other refusal is for a pad that HAS a stock and was asked for a hull
+	-- that is not on it.
+	if type(built.fleet) ~= 'table' or #built.fleet == 0 then
+		return Result.Err('garages.fleetNotHere', built.label)
+	end
+	local hull = nil
+	for index = 1, #built.fleet do
+		if built.fleet[index].record == record then
+			hull = built.fleet[index]
+			break
+		end
+	end
+	if hull == nil then return Result.Err('garages.fleetNotOffered', record) end
+
+	local exit, slot = freeExit(place, nil)
+	if exit == nil then
+		Open77.log.info(('[garages] %s: every exit of %s location %d is occupied; no %s is issued')
+			:format(tostring(data.citizenId), safe(built.key), place.index, safe(record)))
+		return Result.Err('garages.noFreeExit', built.label)
+	end
+
+	local z = exit.z
+	if Access.IsAv(record) then z = z + Access.AvLift() end
+
+	local registered = vehicles.Register(data.citizenId, record, { garage = built.key })
+	if not registered.ok then return registered end
+
+	local spawned = vehicles.Spawn(source, registered.value.plate, {
+		x = exit.x, y = exit.y, z = z,
+		yaw = exit.heading,
+		bucket = exit.bucket,
+	})
+	if not spawned.ok then return spawned end
+
+	local seated = nil
+	if Access.IsAv(record) and type(spawned.value) == 'table' and spawned.value.id ~= nil then
+		seated = seatPilot(source, spawned.value.id)
+	end
+
+	return Result.Ok({
+		spot = point.key,
+		garage = built.key,
+		label = built.label,
+		exit = slot,
+		plate = registered.value.plate,
+		issued = true,
+		id = spawned.value and spawned.value.id or nil,
+		seated = seated,
+	})
+end
+
 --- The marker's one door: PUT AWAY when the connection is sitting in its own
 --- vehicle, and BRING OUT otherwise.
 -- ONE DECISION, MADE HERE. The player presses one key on one marker, and which
@@ -625,11 +730,15 @@ end
 -- ── the doors ───────────────────────────────────────────────────────────────
 
 --- One request off the wire. Rate-limited, then answered either way.
-local function onRequested(key, plate)
+-- A `record` means "issue me a hull of the division's stock" and rides the
+-- same window and cooldown a bring-out does; with none it is a bring-out or a
+-- put-away, as `M.Use` decides.
+local function onRequested(key, plate, record)
 	local src = tonumber(source)
 	if src == nil then return end
 	if key ~= nil and type(key) ~= 'string' then key = nil end
 	if plate ~= nil and type(plate) ~= 'string' then plate = nil end
+	if record ~= nil and type(record) ~= 'string' then record = nil end
 
 	-- THE DECLARED COOLDOWN, WHICH WAS DECLARED AND NOT ENFORCED. `COOLDOWN_MS`
 	-- is written in `config/garages.lua`, read into `Access.COOLDOWN_MS` and
@@ -652,7 +761,12 @@ local function onRequested(key, plate)
 	end
 
 	CreateThread(function()
-		local used = M.Use(src, key, plate)
+		local used = nil
+		if record ~= nil then
+			used = M.Issue(src, key, record)
+		else
+			used = M.Use(src, key, plate)
+		end
 		if not used.ok then
 			-- The refusal AND a toast of the same code: without the toast the
 			-- player would not know why nothing happened.
@@ -668,15 +782,19 @@ local function onRequested(key, plate)
 		-- a car that came from the roster, one that had to be moved to this
 		-- marker first, and one the player just handed over.
 		local value = used.value
-		local action = value.stored and 'stored' or (value.recalled and 'recalled' or 'brought')
+		local action = value.issued and 'issued'
+			or (value.stored and 'stored' or (value.recalled and 'recalled' or 'brought'))
 		if value.stored then
 			OPX.NotifyLocale(src, 'garages.storedAway', { plate = value.plate }, 'success')
+		elseif value.issued then
+			OPX.NotifyLocale(src, 'garages.issuedOut', { plate = value.plate }, 'success')
 		else
 			OPX.NotifyLocale(src, 'garages.broughtOut', { plate = value.plate }, 'success')
 		end
 		TriggerClientEvent(M.Event.ANSWER, src, key, true, nil, value.plate, action)
 		Open77.log.info(('[garages] player %d %s %s at %s%s'):format(src,
-			action == 'stored' and 'put away' or (action == 'recalled' and 'moved' or 'brought out'),
+			action == 'stored' and 'put away' or (action == 'recalled' and 'moved'
+				or (action == 'issued' and 'issued' or 'brought out')),
 			safe(value.plate), safe(value.garage),
 			value.exit ~= nil and (' exit ' .. tostring(value.exit)) or ''))
 	end)

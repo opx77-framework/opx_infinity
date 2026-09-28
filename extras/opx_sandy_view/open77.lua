@@ -1,0 +1,148 @@
+-- opx_sandy_view -- the base game's own Sandevistan for the ripperdoc's
+-- Sandevistans (opx_infinity): the owner's world slowed around a body that is
+-- not, and the Sandevistan screen, shipped to every player's game as a preload.
+--
+-- WHY A RESOURCE OF ITS OWN. The base game's Sandevistan is two things a Lua
+-- resource cannot do alone: the camera's time-dilation curve `Sandevistan`
+-- (`SandevistanEvents.OnEnter` -> `SetCameraTimeDilationCurve`), which only a
+-- REDscript in the player state machine can set, and V exempt from the world's
+-- slowdown (`SetIgnoreTimeDilationOnLocalPlayerZero`). This resource's CLIENT
+-- script holds the owner's clock as a platform time-scale claim -- reason
+-- `open77:opx_sandy_view`, the owner's alone -- and its REDscript sees that
+-- reason and does the other two. That REDscript is executable content, and a
+-- preload with executable content is only accepted on a server with
+-- `requiredMods.unsecured = true`. Keeping it out of opx_infinity means a
+-- server that refuses it loses this one layer, never the ripperdoc.
+--
+-- WHAT IT CARRIES: `dist/opx_sandy_view.zip` = `r6/scripts/opx_infinity/
+-- OpxSandevistanView.reds` (source in `src/`) and, from 1.4.0,
+-- `archive/pc/mod/opx_sandy_ghost.archive` (source in `src/archive/`, built
+-- from the base game's own files by `tools/ghost/`; 1.4.0-1.4.7 also shipped
+-- an ArchiveXL `opx_sandy_ghost.xl`, gone in 1.4.8), and
+-- the client exports `engage(scale, ms, easeMs)` / `release(easeMs)` /
+-- `wear(code)` / `info()` that opx_infinity calls on the owner's machine. The
+-- server reads `GetResourceState("opx_sandy_view")` to know every player has
+-- the REDscript.
+--
+-- ADAM SMASHER'S GHOST TRAIL, ON THE PLAYER'S OWN MODEL (1.4.2). His
+-- Sandevistan afterimages are his meshes drawn with the base game's
+-- `sandevistan_multilayer.mt`, switched on by a `customParameter0` effect;
+-- the shader draws the copies BEHIND a body that moves (run, dash, jump). The
+-- archive's ArchiveXL patch gives every player body (V's
+-- `t0_000_base__full.app`, both cuts) a copy of the player's OWN body, arms
+-- and head on that shader (`opx_sandy_ghost_body` / `_arm_l` / `_arm_r` /
+-- `_head`: V's own meshes with one appearance added, as V's own garment
+-- components), switched off, and the effect spawner that drives them -- so
+-- the afterimages are the player's silhouette. (From 1.4.8 the archive
+-- carries those two body files themselves, the base game's own with the parts
+-- added, instead of an ArchiveXL patch of them: see 1.4.8 below.) The
+-- REDscript switches them on
+-- for a boosted body -- the owner's third-person model on the owner's screen,
+-- and every other player's copy of the owner on theirs, i.e. on every machine
+-- the owner's body is streamed to (the look plays the trigger
+-- `opx_sandy_ghost_on` on it) -- and a tenth of a second later starts the
+-- archive's own effects (`opx_sandy_ghost_trail`, then `_hold`: Smasher's
+-- peak held for 30 s, no loop). 1.4.1 hung the parts on plain skinned
+-- components with Smasher's masked material and started his looping effect in
+-- the same frame, and drew nothing. Up to 1.4.7 it needed the platform's
+-- `archivexl` loader resource in the server's `resources.load`; 1.4.8 needs no
+-- loader at all.
+--
+-- 1.4.3 (a test build) found why nothing showed: Open77's self view parks the
+-- third-person model with `TemporaryHide(true)` on every skinned mesh and
+-- lifts only what it hid, by name, so the ghost's parts -- switched on later --
+-- stayed hidden. Un-hidden, they drew, and the player's screenshots showed the
+-- trail stretched metres behind the body and broken into fragments.
+--
+-- 1.4.4 (calibration) un-hid a part only for its first half second and began
+-- at 0.1 of Smasher's strength: the player saw no ghost at all.
+--
+-- 1.4.5 played Smasher's own strength, (1.5, 1), held and started three
+-- times, the parts un-hidden: its log shows every step ran, and the player saw
+-- no trail -- the shader's own copies do not show on these bodies.
+--
+-- 1.4.6 draws the afterimages itself: four layers of the ghost's parts (V's
+-- own body, arms and head in Smasher's look), placed every frame where the
+-- body was 0.08 / 0.16 / 0.24 / 0.32 s before -- the path it really ran --
+-- each shown once it is 0.35 m from the body and un-hidden every frame; on
+-- the owner's model and every other player's copy (not in a vehicle).
+--
+-- 1.4.7: 1.4.6's next-frame ticker ran twice and stopped, so no afterimage
+-- was ever placed; the ticker is now a 5 ms real-time timer, and the watch
+-- that lit the body places them too, every tenth of a second. Confirmed in
+-- game: the trail follows the owner's third-person model.
+--
+-- 1.4.8: the second player of a two-player test saw no trail at all -- on the
+-- boosted player or on their own model -- and their log said "0 of 16 parts
+-- (none), its effect spawner MISSING": their game runs no ArchiveXL (RED4ext
+-- loaded one plugin, Open77), so the patch that gave player bodies the parts
+-- never ran there. The archive now carries V's two body files themselves
+-- (`base\characters\common\player_base_bodies\appearances\
+-- t0_000_base__full.app` and `..._censored.app`: the base game's own, every
+-- field kept, the patch's parts appended to each of the 36 appearances), which
+-- the game loads by their depot path with no plugin; the `.xl` is gone, so a
+-- game that does run ArchiveXL does not add the parts twice. The REDscript
+-- also keeps a boosted player's body at full speed on every machine the boost
+-- slows (the owner's model's own exemption), says on each machine how many
+-- ghost parts that game gives player bodies, and reads the farthest
+-- afterimage back from the engine.
+--
+-- THE REAL ITEM (1.4.2). The ripperdoc's Apogee is also the base game's own
+-- item in the Operating System slot: `wear(code)` passes the request to the
+-- REDscript through the clock, and it finds the item in the inventory by its
+-- record, gives it only when there is none, fits that very item with the base
+-- game's own equipment system and reads the slot back (and takes off only what
+-- it fitted). 1.4.1 asked the equipment system for an id made from the record,
+-- which the inventory never holds, and fitted nothing.
+--
+-- THE THIRD-PERSON MODEL (1.3.x). In third person the platform draws the
+-- owner as a body of its own (the self view), which the world's dilation
+-- would slow like any NPC while it moves at the owner's speed. For the boost
+-- the REDscript exempts that body exactly as it exempts V, and -- while the
+-- camera really is behind it -- lights its gold eyes (`eye_glow_gold`, a name
+-- its template authors); opx_infinity's look stands its `body = true` layers
+-- down there. Up to 1.4.3 it also played the NPC echoes the template authors
+-- (`fx_sandevistan_left` / `_right`, `fx_sandevistan_versus_loop`); 1.4.4
+-- took them off -- they smeared copies of the screen around the body. 1.3.1: each self-view
+-- body is watched by its own real-time callback; nothing is shared between
+-- NPC bodies (1.3.0 wrote one list from the engine's parallel attach
+-- callbacks and crashed a few seconds into the world).
+--
+-- WHAT IT SAYS. The REDscript writes one line to the Open77 client log each
+-- time what it does changes (`Open77 pristine player bootstrap trace:
+-- opx_sandy_view on: claim true, ..., V exempted true, engine says V ignores
+-- the world's dilation true, camera curve Sandevistan true, keyboard true`,
+-- and for the third-person model `opx_sandy_view model: third-person model on
+-- V true, camera behind it true, exempt from the world's dilation true,
+-- Smasher's look on it true`, and for the ghost `opx_sandy_view ghost: the
+-- owner's third-person model lit -- 16 of 16 parts (entGarmentSkinnedMeshComponent),
+-- 16 switched on, its effect spawner there; 4 afterimages, 0.08 s apart` and
+-- `opx_sandy_view afterimages: ... placed N times in X s, 4 of 4 showing`), so a
+-- test in game is read back from the player's own log. `docs/sandevistan.md`
+-- in the opx_infinity repository is the full record.
+--
+-- A change to the .reds needs a server restart AND every player's launcher to
+-- boot the game again (the required-mod digest changes).
+resource "opx_sandy_view"
+version "1.4.8"
+open77_version ">=0.0.1"
+auto_start true
+
+preload_mod "dist/opx_sandy_view.zip"
+
+-- No `dependency`, and from 1.4.8 no loader either: the ghost trail's parts
+-- are in the archive's own copies of V's body files. (Up to 1.4.7 they were an
+-- ArchiveXL patch and needed the platform's `archivexl` loader in
+-- `resources.load` -- and never as a `dependency`: a client only receives the
+-- resources that carry client files, `archivexl` carries none, and a client
+-- refuses to activate a resource whose dependency it does not have --
+-- 2026-09-27 06:52, every join ended with `server resource activation failed:
+-- opx_sandy_view:missing_dependency: archivexl`. And a player whose launcher
+-- never put ArchiveXL on their game got no trail at all, 2026-09-27 18:45.)
+
+server_script "server/main.lua"
+client_script "client/main.lua"
+
+-- The owner's clock is a platform time-scale claim held by THIS resource, so
+-- its reason is `open77:opx_sandy_view` and the REDscript can tell it apart.
+permissions { "world.timescale" }

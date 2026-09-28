@@ -191,6 +191,9 @@ M.Command = {
 	-- door and the key share ONE implementation (`Av.Board`) -- two doors, one
 	-- decision.
 	BOARD = 'opx.ncpd.board',
+	-- The operator's crowd of mortal civilians: the rig a kill is tested
+	-- against. See `server/bots.lua` and `BOTS` in `config/ncpd.lua`.
+	BOTS = 'opx.ncpd.bots',
 }
 
 --- The police scanner: its bands, its key, and every refusal it can read.
@@ -247,12 +250,16 @@ M.Radio = {
 
 	-- The key, in the same shape as the crew door's: the id is stable because a
 	-- player's rebind is stored under it, and `DEFAULT = false` would be a real
-	-- declaration of "no default binding".
+	-- declaration of "no default binding". THE SHIPPED DEFAULT, and nothing
+	-- more -- `RADIO.KEY` in `config/ncpd.lua` is the operator's answer and
+	-- wins whenever it is a usable block (see `M.Radio.KeySettings`).
 	KEY = { ID = 'opx.ncpd.radio', NAME = 'ncpd.key.radio', DEFAULT = 'F2' },
 
 	-- Lines the feed keeps for a scanner that stows and comes back. Bounded so
 	-- the frame carrying them is one host payload -- the ceiling is 1024 value
-	-- nodes and one line is about ten -- and capped again on the page.
+	-- nodes and one line is about ten -- and capped again on the page. THE
+	-- SHIPPED DEFAULT -- `RADIO.BACKLOG` in `config/ncpd.lua` wins whenever it
+	-- is a usable number (see `M.Radio.Backlog`).
 	BACKLOG = 30,
 
 	-- ONE TABLE, TWO READERS, exactly as `M.BoardRefusal` is: the server refuses
@@ -268,3 +275,59 @@ M.Radio = {
 		failed = 'ncpd.radio.failed',
 	},
 }
+
+--- The scanner's key declaration: the one the operator configured, or the
+--- shipped one.
+--
+-- Read on every ask rather than captured once, the same reason `M.Skill.Branches`
+-- resolves on every read: config is live, and a block an operator fixed must
+-- take effect without a code change. A `KEY` block that is not one -- no ID or
+-- no NAME, or a DEFAULT that is neither a key name nor `false` -- falls back to
+-- the declaration above rather than leaving the scanner unreachable.
+-- @return table `{ ID, NAME, DEFAULT }`
+function M.Radio.KeySettings()
+	local declared = type(M.Settings) == 'table' and type(M.Settings.RADIO) == 'table'
+		and M.Settings.RADIO.KEY or nil
+	if declared ~= nil
+		and type(declared.ID) == 'string' and declared.ID ~= ''
+		and type(declared.NAME) == 'string' and declared.NAME ~= '' then
+		local default = declared.DEFAULT
+		if default == false or (type(default) == 'string' and default ~= '') then
+			return { ID = declared.ID, NAME = declared.NAME, DEFAULT = default }
+		end
+	end
+	return M.Radio.KEY
+end
+
+--- The bands the scanner draws, as the config declares them, or the shipped
+--- four when the configured list is not one -- empty, or a row that is not a
+--- band (a row must at least name its id, the one thing the wire and the
+--- voice route are keyed by).
+-- @return table array of `{ id, NAME, FREQ, ... }`, never empty
+function M.Radio.Bands()
+	local configured = type(M.Settings) == 'table' and type(M.Settings.RADIO) == 'table'
+		and M.Settings.RADIO.CHANNELS or nil
+	if type(configured) == 'table' and #configured > 0 then
+		for i = 1, #configured do
+			local band = configured[i]
+			if type(band) ~= 'table' or type(band.id) ~= 'string' or band.id == '' then
+				configured = nil
+				break
+			end
+		end
+		if configured ~= nil then return configured end
+	end
+	return M.Radio.CHANNELS
+end
+
+--- How many lines the feed keeps for a stowed scanner. A configured value
+--- that is not a count (not a number, or negative) falls back to the shipped
+--- one rather than emptying or flooding the ring.
+-- @return integer at least 0
+function M.Radio.Backlog()
+	local configured = type(M.Settings) == 'table' and type(M.Settings.RADIO) == 'table'
+		and M.Settings.RADIO.BACKLOG or nil
+	local count = tonumber(configured)
+	if count ~= nil and count >= 0 then return math.floor(count) end
+	return M.Radio.BACKLOG
+end

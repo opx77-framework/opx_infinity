@@ -95,6 +95,28 @@ M.Event = {
 	-- A page-local intent: which body system the patient is browsing, or which
 	-- piece they opened. Never leaves the client -- the tray is shared data.
 	BROWSE = OPX.Event(LOCAL, 'ripperdoc', 'browse'),
+
+	-- THE MOVEMENT KIT ON THE PATIENT'S OWN MACHINE. `KIT` tells one player
+	-- which powers the server holds for them, the default key each answers to
+	-- and the look it wears -- and, once they are up out of the chair, a
+	-- one-use token to have the powers fitted in it projected again
+	-- (`REPROJECT` back). `server/sandevistan.lua` says why a power fitted in
+	-- the chair has to be.
+	KIT = OPX.Event(NET, 'ripperdoc', 'kit'),
+	REPROJECT = OPX.Event(NET, 'ripperdoc', 'reproject'),
+
+	-- A Sandevistan's look, to every client: whose, which phase, which look
+	-- and how long it has left. `client/sandevistan.lua` draws it on the body.
+	SANDY = OPX.Event(NET, 'ripperdoc', 'sandy'),
+
+	-- `/opx.sandy.key`, carried to the caller's own machine: only a client can
+	-- read or rebind its own key.
+	KEYBIND = OPX.Event(NET, 'ripperdoc', 'keybind'),
+
+	-- What a client did with a Sandevistan phase -- its clock, its screen, the
+	-- doors its build has, the body it drew on -- sent back once per boost so
+	-- the server's journal holds both halves of every test.
+	SANDYREPORT = OPX.Event(NET, 'ripperdoc', 'sandyreport'),
 }
 
 -- The two namespaces the module's own files fill. Created here, beside each
@@ -405,7 +427,40 @@ local function vanillaEntries(taken, yieldEvery)
 	return out
 end
 
-local cache = { config = nil, policy = nil, list = nil, byId = nil }
+--- THE SANDEVISTAN'S COOLDOWN (config `SANDEVISTAN.COOLDOWN_MS`): one number
+--- for every Sandevistan the tray sells, or nil when each grade keeps its own.
+--- Clamped to 1-120 s, the platform's own range for a power's cooldown.
+-- @return number|nil ms
+function M.Ripper.SandyCooldown()
+	local sandy = type(M.Settings.SANDEVISTAN) == 'table' and M.Settings.SANDEVISTAN or nil
+	if sandy == nil then return nil end
+	local ms = OPX.Math.Finite(sandy.COOLDOWN_MS)
+	if ms == nil or ms <= 0 then return nil end
+	return math.floor(math.max(1000, math.min(120000, ms)))
+end
+
+--- Puts every grade of one Sandevistan on the tray's cooldown: `cooldownMs`
+--- and `chargeRegenMs` become it, and a boost never outlasts it (the platform
+--- refuses a duration past the cooldown). Each grade's VALUE is COPIED: the
+--- config's own table is never written (a reload must find the file's values).
+-- @param entry table
+-- @param cooldown number|nil
+local function onSandyCooldown(entry, cooldown)
+	if cooldown == nil or M.Ripper.GrantKind(entry) ~= 'reflex' then return end
+	for _, grade in ipairs(type(entry.GRADES) == 'table' and entry.GRADES or {}) do
+		if type(grade) == 'table' and type(grade.VALUE) == 'table' then
+			local value = {}
+			for key, field in pairs(grade.VALUE) do value[key] = field end
+			value.cooldownMs = cooldown
+			value.chargeRegenMs = cooldown
+			local duration = tonumber(value.durationMs)
+			if duration ~= nil and duration > cooldown then value.durationMs = cooldown end
+			grade.VALUE = value
+		end
+	end
+end
+
+local cache = { config = nil, policy = nil, cooldown = nil, list = nil, byId = nil }
 
 --- Builds the whole tray and caches it.
 -- @param yieldEvery integer|nil rows per resume; nil builds in one go
@@ -413,20 +468,23 @@ local cache = { config = nil, policy = nil, list = nil, byId = nil }
 local function buildCatalog(yieldEvery)
 	local config = configCatalog()
 	local policy = M.Ripper.VanillaPolicy()
+	local cooldown = M.Ripper.SandyCooldown()
 	local list, byId, taken = {}, {}, {}
 	for _, raw in ipairs(config) do
 		local entry = normalizeConfig(raw)
 		if entry ~= nil and byId[entry.id] == nil then
+			onSandyCooldown(entry, cooldown)
 			list[#list + 1] = entry
 			byId[entry.id] = entry
 			taken[entry.id] = true
 		end
 	end
 	for _, entry in ipairs(vanillaEntries(taken, yieldEvery)) do
+		onSandyCooldown(entry, cooldown)
 		list[#list + 1] = entry
 		byId[entry.id] = entry
 	end
-	cache.config, cache.policy, cache.list, cache.byId = config, policy, list, byId
+	cache.config, cache.policy, cache.cooldown, cache.list, cache.byId = config, policy, cooldown, list, byId
 	return list
 end
 
@@ -435,6 +493,7 @@ end
 function M.Ripper.CatalogReady()
 	return cache.list ~= nil and cache.config == configCatalog()
 		and cache.policy == M.Ripper.VanillaPolicy()
+		and cache.cooldown == M.Ripper.SandyCooldown()
 end
 
 --- The whole tray: the config's pieces, then the base game's.
@@ -457,7 +516,7 @@ end
 --- Forgets the built tray, so the next read builds it again (tests that edit
 --- the config in place, and a reload).
 function M.Ripper.ResetCatalog()
-	cache.config, cache.policy, cache.list, cache.byId = nil, nil, nil, nil
+	cache.config, cache.policy, cache.cooldown, cache.list, cache.byId = nil, nil, nil, nil, nil
 end
 
 --- The kind of an entry: `implant`, `ice`, `grant`, `stat` or `rp`.
@@ -1003,6 +1062,91 @@ function M.Ripper.DefinitionFor(entry, grade)
 	return base
 end
 
+-- ── the keys the powers answer to ─────────────────────────────────────────
+--
+-- ONE KEY PER POWER CLASS, NOT PER PIECE. The platform registers ONE
+-- rebindable action per movement module on the player's machine -- for the
+-- Sandevistans that is `open77_reflex`'s `reflex_overdrive`, "Overdrive: engage
+-- the reflex boost" -- and a definition's `inputKey` is only that action's
+-- DEFAULT (`wiki/reflex-overdrive.md`). Two Sandevistans shipping two defaults
+-- would move a player's key every time they changed chrome, so the default is
+-- the class's: `POWER_KEYS` in `config/ripperdoc.lua`, then the piece's own
+-- `POWER.KEY`, then the shipped one here. A player's own rebind (Pause >
+-- Settings > KEY BINDINGS, or `/opx.sandy.key`) wins over all three and
+-- follows them to every server.
+M.Ripper.POWER_KEYS = { reflex = 'x', dash = 'z', ability = 'l' }
+
+-- The action a Sandevistan is engaged through on the player's machine: the
+-- mapping `open77_reflex` registers from the definition's `inputKey`.
+M.Ripper.SANDY_MAPPING = { RESOURCE = 'open77_reflex', ID = 'reflex_overdrive' }
+
+-- The platform's own vocabulary for a movement `inputKey`, copied from the
+-- reflex client's `validKey`: one lowercase letter or digit, f1..f12, or one of
+-- these named keys. Anything else is refused by the player's client, which
+-- acks the projection as failed and leaves the power dead.
+local NAMED_KEYS = {}
+for name in ('space enter return tab shift ctrl control alt capslock backspace insert'
+	.. ' delete home end pageup pagedown up down left right'):gmatch('%S+') do
+	NAMED_KEYS[name] = true
+end
+
+--- A key in the platform's `inputKey` vocabulary, lowercased, or nil.
+-- @param key any
+-- @return string|nil
+function M.Ripper.PowerKeyValid(key)
+	if type(key) ~= 'string' then return nil end
+	local lowered = key:lower()
+	if lowered:match('^[a-z0-9]$') or lowered:match('^f[1-9]$') or lowered:match('^f1[0-2]$')
+		or NAMED_KEYS[lowered] then
+		return lowered
+	end
+	return nil
+end
+
+--- The default key a piece's power is registered under, lowercase, or nil for a
+--- piece that is not a movement power.
+-- @param entry table
+-- @return string|nil
+function M.Ripper.PowerKey(entry)
+	local kind = M.Ripper.GrantKind(entry)
+	if kind ~= 'dash' and kind ~= 'reflex' and kind ~= 'ability' then return nil end
+	local keys = type(M.Settings.POWER_KEYS) == 'table' and M.Settings.POWER_KEYS or {}
+	local power = type(entry.POWER) == 'table' and entry.POWER or {}
+	return M.Ripper.PowerKeyValid(keys[kind]) or M.Ripper.PowerKeyValid(power.KEY)
+		or M.Ripper.POWER_KEYS[kind]
+end
+
+--- The mapping a Sandevistan is engaged through on the player's machine.
+-- @return table { RESOURCE, ID }
+function M.Ripper.SandyMapping()
+	local sandy = type(M.Settings.SANDEVISTAN) == 'table' and M.Settings.SANDEVISTAN or {}
+	local mapping = type(sandy.MAPPING) == 'table' and sandy.MAPPING or {}
+	return {
+		RESOURCE = type(mapping.RESOURCE) == 'string' and mapping.RESOURCE ~= ''
+			and mapping.RESOURCE or M.Ripper.SANDY_MAPPING.RESOURCE,
+		ID = type(mapping.ID) == 'string' and mapping.ID ~= '' and mapping.ID
+			or M.Ripper.SANDY_MAPPING.ID,
+	}
+end
+
+-- ── what a Sandevistan looks like on the body ─────────────────────────────
+
+--- The look a piece's overdrive wears on the body (config `SANDEVISTAN`), or
+--- nil when it keeps the platform's own presentation.
+-- @param entry table
+-- @return table|nil the look
+-- @return string|nil its name
+function M.Ripper.SandyLook(entry)
+	if type(entry) ~= 'table' or M.Ripper.GrantKind(entry) ~= 'reflex' then return nil, nil end
+	local sandy = type(M.Settings.SANDEVISTAN) == 'table' and M.Settings.SANDEVISTAN or nil
+	if sandy == nil or sandy.enabled == false then return nil, nil end
+	local chosen = type(sandy.LOOK) == 'table' and sandy.LOOK[entry.id] or nil
+	if type(chosen) ~= 'string' then return nil, nil end
+	local look = type(sandy.LOOKS) == 'table' and sandy.LOOKS[chosen] or nil
+	if type(look) ~= 'table' then return nil, nil end
+	return look, chosen
+end
+
 -- ── the grant definitions ──────────────────────────────────────────────────
 --
 -- THE PLATFORM HOLDS AT MOST A FEW DEFINITIONS PER MODULE PER RESOURCE: staging
@@ -1014,8 +1158,9 @@ end
 -- the nearest config that fits. The id is a hash of the config, so it is the
 -- same on every boot whatever order the tray is built in.
 
---- The config a grade grants: the module's own config verbatim, with the
---- piece's key as the default binding.
+--- The config a grade grants: the module's own config verbatim, with the power
+--- class's key as the default binding (`M.Ripper.PowerKey`) and, for a
+--- Sandevistan that wears its own look, no platform presentation.
 -- @param entry table
 -- @param grade table
 -- @return table
@@ -1024,8 +1169,14 @@ function M.Ripper.GrantConfig(entry, grade)
 	for field, value in pairs(type(grade) == 'table' and type(grade.VALUE) == 'table' and grade.VALUE or {}) do
 		config[field] = value
 	end
-	local power = type(entry) == 'table' and type(entry.POWER) == 'table' and entry.POWER or {}
-	if config.inputKey == nil and type(power.KEY) == 'string' then config.inputKey = power.KEY end
+	local key = type(entry) == 'table' and M.Ripper.PowerKey(entry) or nil
+	if config.inputKey == nil and key ~= nil then config.inputKey = key end
+	-- A SANDEVISTAN WITH ITS OWN LOOK asks the platform to draw nothing: the
+	-- platform's `native` presentation is a blue glow, sparks at the feet and
+	-- the Berserk's sounds, and it would play UNDER the look this server
+	-- draws (`server/sandevistan.lua`). `none` still runs every phase and
+	-- every release path; it only switches the platform's picture off.
+	if M.Ripper.SandyLook(entry) ~= nil then config.presentation = 'none' end
 	return config
 end
 
@@ -1116,6 +1267,11 @@ function M.Ripper.GrantPlan()
 		for _, slot in ipairs(bucket.order) do kept[#kept + 1] = slot end
 		if #kept > limit then
 			table.sort(kept, function(a, b)
+				-- A config that draws its OWN look is kept first: served by the
+				-- nearest other config, a Sandevistan bought for its look would
+				-- wear the platform's instead.
+				local ownA, ownB = a.config.presentation == 'none', b.config.presentation == 'none'
+				if ownA ~= ownB then return ownA end
 				if #a.grades ~= #b.grades then return #a.grades > #b.grades end
 				if a.tier ~= b.tier then return a.tier > b.tier end
 				return a.key < b.key
@@ -1131,10 +1287,21 @@ function M.Ripper.GrantPlan()
 		end
 		for _, slot in ipairs(bucket.order) do
 			if not keptSet[slot] then
+				-- THE LOOK DECIDES FIRST. A grade the platform should draw must
+				-- not be served by a definition that asks it to draw nothing
+				-- (nor the other way round): that grade would be a Sandevistan
+				-- nobody could see. Only when no config of its class was kept
+				-- does any config do.
+				local own = slot.config.presentation == 'none'
 				local best, gap = nil, math.huge
-				for _, candidate in ipairs(kept) do
-					local d = distance(slot.config, candidate.config) + distance(candidate.config, slot.config)
-					if d < gap then best, gap = candidate, d end
+				for pass = 1, 2 do
+					for _, candidate in ipairs(kept) do
+						if pass == 2 or (candidate.config.presentation == 'none') == own then
+							local d = distance(slot.config, candidate.config) + distance(candidate.config, slot.config)
+							if d < gap then best, gap = candidate, d end
+						end
+					end
+					if best ~= nil then break end
 				end
 				slot.id = best ~= nil and best.id or nil
 				slot.servedBy = best

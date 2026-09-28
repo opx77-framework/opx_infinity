@@ -6875,6 +6875,13 @@ do
 		check('and the name row wears it', report.key == 'F8', tostring(report.key))
 
 		local page = cctl.pages[1]
+		-- The last payload a channel was sent, or nil.
+		local function lastDrawn(channel)
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == channel then return page.sent[index] end
+			end
+			return nil
+		end
 		local function lastToast(needle)
 			for index = #page.sent, 1, -1 do
 				local sent = page.sent[index]
@@ -6886,8 +6893,101 @@ do
 			end
 			return nil
 		end
+		-- The absolute index of a drawn row, which is what a page points at.
+		local function pickOf(opened, label)
+			if opened == nil then return nil end
+			for position = 1, #opened.payload.rows do
+				if opened.payload.rows[position].label == label then
+					return opened.payload.first + position - 1
+				end
+			end
+			return nil
+		end
+
+		-- ── THE PRESS OPENS THE OPERATOR'S OPTIONS ─────────────────────
+		-- `PRESS.ACTION = 'menu'` is the shipped answer: the press opens the
+		-- rows `MENU.ROWS` declares, at the geometry `MENU` names. The name
+		-- read-back is not gone -- it is what a row with no COMMAND does -- so
+		-- the key always answers and the designation stays a designation.
 		mapping.pressed()
-		check('pressing it reads the place back', lastToast('NCPD HQ') ~= nil)
+		local opened = lastDrawn('opx:menu:open')
+		check('pressing it opens the station\'s options',
+			opened ~= nil and hq.Report().menu == true and hq.Report().press == 'menu',
+			('%s/%s'):format(tostring(opened ~= nil), tostring(hq.Report().menu)))
+		check('titled with the station\'s own name, not the module\'s',
+			opened ~= nil and opened.payload.title == 'NCPD HQ',
+			opened and tostring(opened.payload.title))
+		local chrome = hq.Access.MenuChrome()
+		check('at the geometry the config asked for',
+			opened ~= nil and opened.payload.anchor == chrome.ANCHOR
+				and opened.payload.width == chrome.WIDTH
+				and opened.payload.height == chrome.HEIGHT
+				and opened.payload.maxHeight == chrome.MAX_HEIGHT_VH,
+			opened and ('%s %sx%s/%svh'):format(tostring(opened.payload.anchor),
+				tostring(opened.payload.width), tostring(opened.payload.height),
+				tostring(opened.payload.maxHeight)))
+		check('holding the operator\'s row, and the close every panel carries',
+			opened ~= nil and opened.payload.total == 3
+				and opened.payload.rows[1] ~= nil
+				and opened.payload.rows[1].label == 'Read the station',
+			opened and tostring(opened.payload.total))
+
+		-- A ROW WITH NO COMMAND SAYS THE STATION'S OWN NAME -- the read the
+		-- designation has always answered with, now one option among the
+		-- operator's.
+		cctl.PageEmit(page, 'opx:menu:choose',
+			{ handle = opened ~= nil and opened.payload.handle or 0,
+				index = pickOf(opened, 'Read the station') or 0 })
+		check('a row with no command reads the place back', lastToast('NCPD HQ') ~= nil)
+		check('and the options come down first, so the words are not behind a panel',
+			hq.Report().menu == false, tostring(hq.Report().menu))
+
+		-- A SECOND PRESS TAKES THE OPTIONS DOWN, the same bargain the garages
+		-- list makes; the press after that opens them again.
+		mapping.pressed()
+		check('a second press opens them again', hq.Report().menu == true,
+			tostring(hq.Report().menu))
+		mapping.pressed()
+		check('and the press after that takes them down', hq.Report().menu == false
+			and lastDrawn('opx:menu:close') ~= nil, tostring(hq.Report().menu))
+
+		-- A COMMAND ROW IS EXECUTED, exactly as the chat box would: the same
+		-- event, the same tokens, and the same ACL waiting on the far end.
+		local hqConfig = OPX.Config.MODULES.headquarters
+		local shippedRows = hqConfig.MENU.ROWS
+		hqConfig.MENU.ROWS = {
+			{ ID = 'call', LABEL = 'Call it in', COMMAND = '/opx.ncpd.status' },
+		}
+		mapping.pressed()
+		opened = lastDrawn('opx:menu:open')
+		local before = #cctl.serverEvents
+		cctl.PageEmit(page, 'opx:menu:choose',
+			{ handle = opened ~= nil and opened.payload.handle or 0,
+				index = pickOf(opened, 'Call it in') or 0 })
+		local sent = nil
+		for index = #cctl.serverEvents, 1, -1 do
+			if cctl.serverEvents[index].name == hq.Host.COMMAND_EXECUTE then
+				sent = cctl.serverEvents[index]
+				break
+			end
+		end
+		check('a COMMAND row runs its command over the chat box\'s own wire',
+			sent ~= nil and #cctl.serverEvents > before and sent[1] == 'opx.ncpd.status',
+			sent and tostring(sent[1]))
+		hqConfig.MENU.ROWS = shippedRows
+
+		-- THE OPTIONS BELONG TO THE STATION: walking off it takes them down,
+		-- the same as the row coming off.
+		mapping.pressed()
+		check('the press opens the options once more', hq.Report().menu == true,
+			tostring(hq.Report().menu))
+		cctl.placement.x, cctl.placement.y = 20.0, 0.0
+		settle(cctl, function() return hq.Report().nearest == nil end)
+		check('walking off the station takes the options down', hq.Report().menu == false
+			and hq.Report().shown == false,
+			('%s/%s'):format(tostring(hq.Report().menu), tostring(hq.Report().shown)))
+		cctl.placement.x, cctl.placement.y = 0.0, 0.0
+		settle(cctl, function() return hq.Report().nearest == 'hq_north' end)
 
 		-- A LIST THAT WAS CLEARED takes its markers and its row down with it.
 		cctl.netEvents[hq.Event.SYNC]({ spots = {} })
@@ -6897,10 +6997,10 @@ do
 		check('and the name row comes down with it', hq.Report().shown == false)
 
 		-- And away from every station the press has nothing to read.
-		local before = #page.sent
+		local quiet = #page.sent
 		mapping.pressed()
-		check('and away from a station the press answers nothing', #page.sent == before,
-			('%d message(s)'):format(#page.sent - before))
+		check('and away from a station the press answers nothing', #page.sent == quiet,
+			('%d message(s)'):format(#page.sent - quiet))
 
 		-- A SPOT THE CLIENT CANNOT READ is dropped and named, never taken as a
 		-- marker at 0,0,0.
@@ -6928,7 +7028,23 @@ do
 	local function bridge(rows)
 		return Host.Database({
 			scalar = function() return 1 end,
-			update = function() return 0 end,
+			update = function(sql, params)
+				-- THE ROW A REGISTRATION WRITES IS REMEMBERED, in the column
+				-- shape the storage reads back, so an issued hull can be fetched
+				-- by the plate it was just handed and listed beside the rows that
+				-- were there from the start.
+				if sql:find('INSERT INTO opx77_vehicles', 1, true)
+					and type(params) == 'table' then
+					rows[#rows + 1] = {
+						plate = params.plate, citizen_id = params.citizen,
+						record = params.record, appearance = params.appearance,
+						garage = params.garage, state = params.state,
+						health = params.health, body = params.body,
+						paint = params.paint, metadata = params.metadata or '{}',
+					}
+				end
+				return 0
+			end,
 			query = function(sql, params)
 				if sql:find('opx77_vehicles', 1, true) then
 					local citizen = type(params) == 'table' and params.citizen or nil
@@ -7182,6 +7298,168 @@ do
 				return false
 			end)())
 		OPX.Config.MODULES.avgarages.PILOT_SEAT = knob
+
+		-- ── the division's own aircraft: the FLEET ─────────────────────
+		-- STOCK NOBODY OWNS YET. `FLEET` is the hangar's own offering -- the
+		-- rows the list shows AHEAD of everything the character already owns,
+		-- carrying a label where a plate would be -- and picking one ISSUES
+		-- it: registered under their name, filed at the pad, out on a free
+		-- exit and seated like a vehicle they always owned. The offering is
+		-- the PAD's own and never the wire's: a hand-crafted record names
+		-- nothing the config did not put on the list.
+		local fleetProblems = {}
+		local stockPad, shutPad, barePad = padBlock(3.5), padBlock(-3.5), padBlock(1.5)
+		stockPad.FLEET = {
+			{ RECORD = 'Vehicle.av_luxury', LABEL = 'Luxury AV' },
+			{ RECORD = 'Vehicle.av_militech' },
+		}
+		-- `FLEET = false` is a pad that issues nothing at all, and must read
+		-- as "no fleet here" rather than "a fleet without that hull".
+		shutPad.FLEET = false
+		-- `FLEET = {}` is the same choice said another way -- an offering
+		-- with nothing on it -- and must read the same, not as "a fleet
+		-- without that hull".
+		barePad.FLEET = {}
+		local fleetMap = Access.CoerceAll({}, {
+			JOBS = { maxtac = 0 }, ON_DUTY = true,
+			FLEET = { { RECORD = 'Vehicle.q001_trauma_av', LABEL = 'Trauma AV' } },
+			GARAGES = { pad_stock = stockPad, pad_shut = shutPad, pad_bare = barePad },
+		}, fleetProblems)
+		check('a pad\'s own FLEET replaces the file\'s, and comes through whole',
+			#fleetProblems == 0 and fleetMap.pad_stock ~= nil
+				and type(fleetMap.pad_stock.fleet) == 'table'
+				and #fleetMap.pad_stock.fleet == 2
+				and fleetMap.pad_stock.fleet[1].record == 'Vehicle.av_luxury'
+				and fleetMap.pad_stock.fleet[1].label == 'Luxury AV',
+			table.concat(fleetProblems, ' | '))
+		check('and FLEET = false stays a pad that issues nothing, not an empty offering',
+			fleetMap.pad_shut ~= nil and fleetMap.pad_shut.fleet == false,
+			tostring(fleetMap.pad_shut ~= nil and fleetMap.pad_shut.fleet))
+		check('and FLEET = {} is kept as an offering with nothing on it',
+			fleetMap.pad_bare ~= nil and type(fleetMap.pad_bare.fleet) == 'table'
+				and #fleetMap.pad_bare.fleet == 0,
+			tostring(fleetMap.pad_bare ~= nil and type(fleetMap.pad_bare.fleet)))
+		local stock, shut, bare = fleetMap.pad_stock, fleetMap.pad_shut, fleetMap.pad_bare
+		-- The request window is the module's own guard against a client that
+		-- hammers the door, and this block walks through the door seven times
+		-- in one tick: it is lifted here, exactly as the cooldown was above,
+		-- so the checks read the fleet and not the rate limiter.
+		local windowLimit = Access.REQUESTS_PER_WINDOW
+		Access.REQUESTS_PER_WINDOW = 0
+		heldGarages[stock.key] = stock
+		heldGarages[shut.key] = shut
+		heldGarages[bare.key] = bare
+		for _, point in ipairs(Access.PointsOf(stock)) do held[point.key] = point end
+		for _, point in ipairs(Access.PointsOf(shut)) do held[point.key] = point end
+		for _, point in ipairs(Access.PointsOf(bare)) do held[point.key] = point end
+
+		env.source = trooper
+		control.netEvents[garages.Event.LIST](stock.locations[1].menu.key)
+		control.Pump(8)
+		local offering = lastEvent(garages.Event.VEHICLES)
+		local roster = offering ~= nil and type(offering[1]) == 'table'
+			and offering[1].vehicles or nil
+		check('the stock is offered ahead of everything the character owns',
+			roster ~= nil and #roster == 3
+				and roster[1].fleet == true and roster[1].record == 'Vehicle.av_luxury'
+				and roster[1].label == 'Luxury AV',
+			roster and tostring(#roster))
+		check('in the operator\'s order, an absent LABEL showing the record itself',
+			roster ~= nil and roster[2].fleet == true
+				and roster[2].record == 'Vehicle.av_militech'
+				and roster[2].label == 'Vehicle.av_militech')
+		check('and the character\'s own rows come after, plates and all',
+			roster ~= nil and roster[3].plate == 'MAX0001' and roster[3].fleet == nil)
+
+		-- THE ISSUE, and the one way a hull comes out of a pad: a free exit,
+		-- the AV lift under it, and the pilot at the controls from the first
+		-- moment it exists.
+		local created, warps = #control.vehicleCreates, #control.vehicleWarps
+		-- The pilot has stepped out of the aircraft the recall handed them:
+		-- the hand-off is for a body ON FOOT -- yanking a seated one across is
+		-- a hijack, and the seat ledger the guard reads has to say so.
+		env.Open77.vehicles.forcePlayerOutOfVehicle(trooper)
+		env.source = trooper
+		control.netEvents[garages.Event.REQUEST](stock.locations[1].menu.key,
+			nil, 'Vehicle.av_luxury')
+		control.Pump(8)
+		local answer = lastEvent(garages.Event.ANSWER)
+		local issued = answer ~= nil and answer[2] == true
+			and type(answer[4]) == 'string' and answer[4] or nil
+		check('picking a hull issues it, and the answer names its fresh plate',
+			issued ~= nil and answer[5] == 'issued',
+			answer and ('%s/%s'):format(tostring(answer[5]), tostring(answer[4])))
+		local out = control.vehicleCreates[#control.vehicleCreates]
+		check('out on a free exit of the pad, lifted clear like any AV',
+			#control.vehicleCreates == created + 1 and out ~= nil
+				and out.record == 'Vehicle.av_luxury'
+				and type(out.position) == 'table'
+				and math.abs(out.position.z - (0.0 + Access.AvLift())) < 1e-9,
+			out and out.position and tostring(out.position.z))
+		check('with the pilot placed at the controls the moment it exists',
+			#control.vehicleWarps == warps + 1
+				and control.vehicleWarps[#control.vehicleWarps].playerId == trooper
+				and control.vehicleWarps[#control.vehicleWarps].seat == 'seat_front_left',
+			('%d warp(s)'):format(#control.vehicleWarps - warps))
+		check('ISSUED, not borrowed: the hull is registered under the character, filed at the pad',
+			(function()
+				env.source = trooper
+				control.netEvents[garages.Event.LIST](stock.locations[1].menu.key)
+				control.Pump(8)
+				local again = lastEvent(garages.Event.VEHICLES)
+				local mine = again ~= nil and type(again[1]) == 'table'
+					and again[1].vehicles or nil
+				for index = 1, mine ~= nil and #mine or 0 do
+					if mine[index].plate == issued and mine[index].here == true then
+						return true
+					end
+				end
+				return false
+			end)())
+
+		-- AND NOTHING THE LIST DID NOT OFFER. The wire's record is a claim;
+		-- the config's list is the offering.
+		env.source = trooper
+		control.netEvents[garages.Event.REQUEST](stock.locations[1].menu.key,
+			nil, 'Vehicle.q001_police_av')
+		control.Pump(8)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('a hull the pad does not carry is refused BY NAME, and created nothing',
+			answer ~= nil and answer[2] == false and answer[3] == 'garages.fleetNotOffered'
+				and #control.vehicleCreates == created + 1,
+			answer and tostring(answer[3]))
+		env.source = trooper
+		control.netEvents[garages.Event.REQUEST](shut.locations[1].menu.key,
+			nil, 'Vehicle.av_luxury')
+		control.Pump(8)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and a pad that declares FLEET = false issues nothing, on its own words',
+			answer ~= nil and answer[2] == false and answer[3] == 'garages.fleetNotHere',
+			answer and tostring(answer[3]))
+		env.source = trooper
+		control.netEvents[garages.Event.REQUEST](bare.locations[1].menu.key,
+			nil, 'Vehicle.av_luxury')
+		control.Pump(8)
+		answer = lastEvent(garages.Event.ANSWER)
+		check('and an empty FLEET list is that same refusal, never "without that hull"',
+			answer ~= nil and answer[2] == false and answer[3] == 'garages.fleetNotHere',
+			answer and tostring(answer[3]))
+		-- A pad that issues nothing OFFERS nothing: the list carries no fleet
+		-- rows at all, whatever the file's list holds.
+		env.source = trooper
+		control.netEvents[garages.Event.LIST](shut.locations[1].menu.key)
+		control.Pump(8)
+		local quiet = lastEvent(garages.Event.VEHICLES)
+		local parked = quiet ~= nil and type(quiet[1]) == 'table' and quiet[1].vehicles or {}
+		check('and a pad that issues nothing offers nothing on its list',
+			(function()
+				for index = 1, #parked do
+					if parked[index].fleet == true then return false end
+				end
+				return quiet ~= nil
+			end)(),
+			('%d row(s)'):format(#parked))
+		Access.REQUESTS_PER_WINDOW = windowLimit
 	end
 end
 
@@ -11929,6 +12207,25 @@ do
 	check('there are keys to compare', counted > 400, ('%d English keys'):format(counted))
 	check('and every one of them is written in both languages',
 		#gaps == 0, table.concat(gaps, '; '))
+
+	-- THE ESCAPE THAT RENDERS AS ITSELF. A doubled backslash before `u{` is not
+	-- an escape at all -- it is a literal backslash plus the TEXT `u{2019}`, so
+	-- the player reads `Scavenger\u{2019}s Eye` where the sentence promised an
+	-- apostrophe. Fifty-seven of these shipped in one file before anyone looked.
+	-- The needle is built from bytes so this source never contains the doubled
+	-- form itself.
+	local doubled = string.char(92, 92, 117, 123)
+	local mangled = {}
+	for _, file in ipairs(files) do
+		local handle = io.open(file, 'rb')
+		if handle then
+			local data = handle:read('a')
+			handle:close()
+			if data:find(doubled, 1, true) ~= nil then mangled[#mangled + 1] = file end
+		end
+	end
+	check('no locale sentence renders its own escape as text',
+		#mangled == 0, table.concat(mangled, ', '))
 end
 
 
@@ -12513,19 +12810,14 @@ do
 		local members = air and air.members or {}
 		check('holding the six AVs', #members == 6, #members)
 
-		-- DERIVED, NEVER DECLARED: every Air row's record matches the configured
-		-- prefixes, and every row the rule calls air carries the flag.
-		local prefixes = OPX.Config.SHARED.AV_PREFIXES or {}
-		local function isAir(record)
-			local lowered = tostring(record):lower()
-			for _, prefix in ipairs(prefixes) do
-				if lowered:sub(1, #prefix) == prefix then return true end
-			end
-			return false
-		end
+		-- DERIVED, NEVER DECLARED: every Air row's record is one the SHARED air
+		-- rule calls air (`OPX.Vehicle.IsAvRecord`), and every row the rule calls
+		-- air carries the flag. The shared rule is the only arbiter -- a second
+		-- matcher written here would be a second rule to drift from it.
+		local IsAv = OPX.Vehicle.IsAvRecord
 		local wrong = {}
 		for _, entry in ipairs(members) do
-			if entry.av ~= true or not isAir(entry.record) then wrong[#wrong + 1] = entry.name end
+			if entry.av ~= true or not IsAv(entry.record) then wrong[#wrong + 1] = entry.name end
 		end
 		check('every one of them an AV by its record', #wrong == 0, table.concat(wrong, ' '))
 
@@ -12536,7 +12828,7 @@ do
 		for _, class in ipairs(classes) do
 			if class.key ~= 'air' then
 				for _, entry in ipairs(class.members) do
-					if entry.av == true or isAir(entry.record) then
+					if entry.av == true or IsAv(entry.record) then
 						strays[#strays + 1] = entry.name
 					end
 				end
@@ -18236,16 +18528,19 @@ do
 				read == true and answer == false, tostring(read) .. ' ' .. tostring(answer))
 		end
 
-		-- ONE KEY MOVES ALL THREE. Emptying the operator's list falls back to the
-		-- documented pair rather than meaning "nothing flies", and pointing it
-		-- somewhere else moves the garage, the dealer and the catalogue together.
-		local real = OPX.Config.SHARED.AV_PREFIXES
-		OPX.Config.SHARED.AV_PREFIXES = {}
-		check('an emptied list still calls the documented pair air',
+		-- ONE KEY MOVES ALL THREE. Emptying the operator's list falls back to
+		-- the shipped default rather than meaning "nothing flies", and pointing
+		-- it somewhere else moves the garage, the dealer and the catalogue
+		-- together. The list is REPLACED rather than edited in place: the rule
+		-- rebuilds its normalised entries when the config table is swapped and
+		-- would not notice an edit made under the old one.
+		local real = OPX.Config.SHARED.AV_MATCHES
+		OPX.Config.SHARED.AV_MATCHES = {}
+		check('an emptied list still calls the shipped default air',
 			garages.Access.IsAv(AIR) == true and dealership.Access.IsAv(AIR) == true,
 			('%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
 				tostring(dealership.Access.IsAv(AIR))))
-		OPX.Config.SHARED.AV_PREFIXES = { 'vehicle.v_standard2_' }
+		OPX.Config.SHARED.AV_MATCHES = { 'vehicle.v_standard2_' }
 		check('and changing the one list moves both readers off the old answer',
 			garages.Access.IsAv(AIR) == false and dealership.Access.IsAv(AIR) == false,
 			('%s/%s'):format(tostring(garages.Access.IsAv(AIR)),
@@ -18254,7 +18549,24 @@ do
 			garages.Access.IsAv(GROUND) == true and dealership.Access.IsAv(GROUND) == true,
 			('%s/%s'):format(tostring(garages.Access.IsAv(GROUND)),
 				tostring(dealership.Access.IsAv(GROUND))))
-		OPX.Config.SHARED.AV_PREFIXES = real
+
+		-- AND THE WORD RULE THE LIST IS MATCHED WITH. An entry names a WORD,
+		-- not three letters in the middle of one: the Quadra Type-66 AVENGER is
+		-- a car whose record carries `_avenger`, while the batty, the trauma
+		-- team's hull and the MaxTac line all close the word first.
+		OPX.Config.SHARED.AV_MATCHES = { '_av', '_heli' }
+		check('the word the entry lands on decides, not the three letters',
+			OPX.Vehicle.IsAvRecord('Vehicle.type66_avenger_player') == false
+				and OPX.Vehicle.IsAvRecord('Vehicle.batty_av') == true
+				and OPX.Vehicle.IsAvRecord('Vehicle.max_tac_av1') == true
+				and OPX.Vehicle.IsAvRecord('Vehicle.q001_trauma_av') == true,
+			('%s/%s/%s/%s'):format(
+				tostring(OPX.Vehicle.IsAvRecord('Vehicle.type66_avenger_player')),
+				tostring(OPX.Vehicle.IsAvRecord('Vehicle.batty_av')),
+				tostring(OPX.Vehicle.IsAvRecord('Vehicle.max_tac_av1')),
+				tostring(OPX.Vehicle.IsAvRecord('Vehicle.q001_trauma_av'))))
+
+		OPX.Config.SHARED.AV_MATCHES = real
 		check('and putting it back puts them both back',
 			garages.Access.IsAv(AIR) == true and garages.Access.IsAv(GROUND) == false)
 	end
@@ -20861,6 +21173,27 @@ do
 			'Character.prevention_av_maxtac_rifle_wa',
 			'Character.prevention_maxtac_rifle_ma',
 			'Character.prevention_maxtac_rifle_wa',
+			-- THE CROWD'S OWN NAMESPACE, from the same extraction: the
+			-- civilian family `BOTS.RECORDS` draws on. Every row below was
+			-- verified against the 2.31 CSV as `crowd`/`candidate` WITH a
+			-- resolved entity template (`citizen__ep1_*.ent`) -- the same
+			-- standard the rows above were vendored by.
+			'Character.DefaultNCResidentMale',
+			'Character.DefaultNCResidentFemale',
+			'Character.AsianMale',
+			'Character.AsianFemale',
+			'Character.CreoleMan',
+			'Character.CreoleWoman',
+			'Character.TenantMale',
+			'Character.TenantWoman',
+			'Character.YoungsterMale',
+			'Character.YoungsterFemale',
+			'Character.SlackerMale',
+			'Character.SlackerFemale',
+			'Character.MorningCrowdMan',
+			'Character.MorningCrowdWoman',
+			'Character.NightlifeMale',
+			'Character.NightlifeWoman',
 		}) do
 			spawnable[name] = true
 		end
@@ -23757,15 +24090,19 @@ do
 		told = Radio.Push('pirate', 'ncpd.dispatch.rise', nil)
 		check('a line for a band that does not exist goes up on none', told == 0)
 
-		-- ── the backlog a reopened scanner reads ──────────────────────────────
-		for _ = 1, Radio.BACKLOG + 10 do
+		-- ── the backlog a reopened scanner reads ──────────────────────────
+		-- THE RING BOUND IS CONFIG, and it is read live: the knob is
+		-- `RADIO.BACKLOG`, so a reopened scanner comes back to the OPERATOR's
+		-- number of lines rather than the shipped one.
+		OPX.Config.MODULES.ncpd.RADIO.BACKLOG = 5
+		for _ = 1, Radio.Backlog() + 10 do
 			Radio.Push('ncpd', 'ncpd.dispatch.rise',
 				{ division = 'NCPD', stage = 1, x = 0, y = 0, name = '' })
 		end
 		Radio.Push('ncpd', 'ncpd.cleared', nil)
 		local back = knock(41)
 		check('a reopened scanner comes back to the ring bound, newest last',
-			back ~= nil and back.open == true and #back.lines == Radio.BACKLOG
+			back ~= nil and back.open == true and #back.lines == Radio.Backlog()
 				and back.lines[#back.lines].key == 'ncpd.cleared',
 			back ~= nil and ('%d line(s), last %s'):format(#back.lines,
 				tostring(back.lines[#back.lines] and back.lines[#back.lines].key)) or 'no answer')
@@ -23776,6 +24113,7 @@ do
 			back ~= nil and type(back.lines[1].key) == 'string'
 				and type(back.lines[1].args) == 'table'
 				and type(back.lines[1].at) == 'number')
+		OPX.Config.MODULES.ncpd.RADIO.BACKLOG = 30
 
 		-- ── the sites that put traffic on the air, driven for real ─────────────
 		-- THE CALL-OUT IS THE DISPATCH BAND. A stage rise is driven through the
@@ -24115,6 +24453,62 @@ do
 		check('stowing the scanner releases a held key',
 			afterStow ~= nil and afterStow[1] == false,
 			afterStow and tostring(afterStow[1]) or 'nothing')
+
+		-- ── THE KNOBS ARE CONFIG; the module's own values are only the ─────
+		-- shipped fallbacks. `RADIO.KEY` is read on every ask -- what the
+		-- mapping registers under, and what the frame names as its stow cap
+		-- -- so a key an operator fixes takes effect without a code change.
+		-- A block that is not one falls back to the shipped values rather
+		-- than leaving the scanner unreachable or its ring unbounded.
+		local shipped = Radio.KEY
+		check('the shipped key declaration is what a config has not overridden',
+			Radio.KeySettings().ID == shipped.ID
+				and Radio.KeySettings().DEFAULT == shipped.DEFAULT)
+		local ncpdConfig = OPX.Config.MODULES.ncpd
+		local keep = ncpdConfig.RADIO
+		ncpdConfig.RADIO = {
+			KEY = { ID = 'opx.ncpd.custom', NAME = 'ncpd.key.custom', DEFAULT = 'F6' },
+			BACKLOG = 5,
+			CHANNELS = { { id = 'ncpd', NAME = 'ncpd.radio.channel.ncpd', FREQ = '154.980' } },
+		}
+		check('a configured RADIO block is what the scanner reads, knob by knob',
+			Radio.KeySettings().ID == 'opx.ncpd.custom'
+				and Radio.KeySettings().DEFAULT == 'F6'
+				and Radio.Backlog() == 5
+				and #Radio.Bands() == 1 and Radio.Bands()[1].id == 'ncpd',
+			('%s/%s/%s/%d band(s)'):format(tostring(Radio.KeySettings().ID),
+				tostring(Radio.KeySettings().DEFAULT), tostring(Radio.Backlog()),
+				#Radio.Bands()))
+		Radio.Start()
+		local mine = control.keyMappings.byId['opx.ncpd.custom']
+		check('and what the mapping registers under, so the pause menu names it',
+			mine ~= nil and mine.key == 'F6', mine and tostring(mine.key))
+		control.netEvents[ncpd.Event.RADIO_STATE]({
+			open = true,
+			channels = { { id = 'ncpd', name = 'ncpd.radio.channel.ncpd',
+				freq = '154.980', hear = true } },
+			lines = {},
+		})
+		local custom = views('frame')
+		check('and what the frame names as its stow cap',
+			custom ~= nil and custom.frame.key == 'F6',
+			custom and tostring(custom.frame.key) or 'no frame')
+		local broken = true
+		for _, block in ipairs({
+			{ NAME = 'ncpd.key.custom', DEFAULT = 'F6' },
+			{ ID = 'opx.ncpd.custom', NAME = '', DEFAULT = 'F6' },
+			{ ID = 'opx.ncpd.custom', NAME = 'ncpd.key.custom', DEFAULT = 12 },
+			{ KEY = { ID = '', NAME = 'ncpd.key.custom', DEFAULT = 'F6' },
+				BACKLOG = -1, CHANNELS = { { NAME = 'no id at all' } } },
+		}) do
+			ncpdConfig.RADIO = block
+			broken = broken and Radio.KeySettings().ID == shipped.ID
+				and Radio.Backlog() == Radio.BACKLOG
+				and Radio.Bands() == Radio.CHANNELS
+		end
+		check('a RADIO block that is not one falls back to the shipped values, knob by knob',
+			broken)
+		ncpdConfig.RADIO = keep
 	end
 end
 
@@ -24187,6 +24581,45 @@ do
 			end
 			return lines, heard
 		end
+
+		-- THE KNOCK: the door the panel actually uses. The net door was untested
+		-- while the contract was: a press is a knock, and the answer is either the
+		-- whole frame or the one sentence saying why not. `source` is read as the
+		-- host types it -- a connection id can arrive as text -- so both shapes
+		-- must find the same character.
+		--- The STATE answer to one knock from a slot.
+		-- @param id number|string
+		-- @return table|nil
+		local function knock(id)
+			local mark = #control.clientEvents
+			env.source = id
+			control.netEvents[skills.Event.ASK]()
+			env.source = nil
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == skills.Event.STATE and event.source == tonumber(id) then
+					return event[1]
+				end
+			end
+			return nil
+		end
+
+		local asked = knock(src)
+		check('the knock answers with the whole tree',
+			asked ~= nil and asked.open == true and #asked.branches == 3,
+			asked and ('%d trunk(s)'):format(#(asked.branches or {})) or 'no answer')
+		check('and the frame is one host payload, panel and all',
+			asked ~= nil and Host.PayloadNodes({ kind = 'frame', frame = asked }) <= Host.MAX_PAYLOAD_NODES,
+			asked and ('%d nodes'):format(Host.PayloadNodes({ kind = 'frame', frame = asked })) or 'no answer')
+		check('a knock arriving as text finds the same character',
+			(function()
+				local answer = knock(tostring(src))
+				return answer ~= nil and answer.open == true
+			end)())
+		local stranger = knock(73)
+		check('and a slot with no character is refused by name',
+			stranger ~= nil and stranger.open == false and stranger.reason == 'noCharacter',
+			stranger and tostring(stranger.reason) or 'no answer')
 
 		-- ── THE FUNNEL: the jobs bank's own completion seam ─────────────────
 		-- `jobs.Award` is what an arrest or a delivery pays through, and `pay` is
@@ -24548,6 +24981,46 @@ do
 		-- Two frames: the first knock\u{2019}s and the refused spend\u{2019}s refresh. A
 		-- refusal that closes the panel draws none.
 		check('and the panel stays down for it', frames == 2, ('%d frame(s)'):format(frames))
+
+		-- ── THE KEY IS CONFIG, and the shipped declaration is only its ──────
+		-- fallback. The block is read on every ask -- what the mapping
+		-- registers under, and what the frame names as its stow cap -- so a
+		-- key an operator fixes takes effect without a code change. A block
+		-- that is not one falls back to the shipped key rather than leaving
+		-- the tree unreachable.
+		local shipped = Skill.KEY
+		check('the shipped key declaration is what a config has not overridden',
+			Skill.KeySettings().ID == shipped.ID
+				and Skill.KeySettings().DEFAULT == shipped.DEFAULT)
+		local skillsConfig = OPX.Config.MODULES.skills
+		local keep = skillsConfig.KEY
+		skillsConfig.KEY = { ID = 'opx.skills.custom', NAME = 'skills.key.custom', DEFAULT = 'F6' }
+		check('a configured KEY block is what the tree reads',
+			Skill.KeySettings().ID == 'opx.skills.custom'
+				and Skill.KeySettings().DEFAULT == 'F6',
+			('%s/%s'):format(tostring(Skill.KeySettings().ID),
+				tostring(Skill.KeySettings().DEFAULT)))
+		skills.Start()
+		local mine = control.keyMappings.byId['opx.skills.custom']
+		check('and what the mapping registers under, so the pause menu names it',
+			mine ~= nil and mine.key == 'F6', mine and tostring(mine.key))
+		control.netEvents[skills.Event.STATE]({ open = true, level = 1, xp = 0,
+			need = 100, points = 0, depth = 1, branches = {} })
+		local custom = views('frame')
+		check('and what the panel names as its stow cap',
+			custom ~= nil and custom.key == 'F6',
+			custom and tostring(custom.key) or 'no frame')
+		local broken = true
+		for _, block in ipairs({
+			{ NAME = 'skills.key.custom', DEFAULT = 'F6' },
+			{ ID = 'opx.skills.custom', NAME = '', DEFAULT = 'F6' },
+			{ ID = 'opx.skills.custom', NAME = 'skills.key.custom', DEFAULT = 12 },
+		}) do
+			skillsConfig.KEY = block
+			broken = broken and Skill.KeySettings().ID == shipped.ID
+		end
+		check('a KEY block that is not one falls back to the shipped key', broken)
+		skillsConfig.KEY = keep
 	end
 end
 
@@ -25140,6 +25613,11 @@ do
 	end
 end
 
+-- What the server really sent for one Apogee boost, kept so the client section
+-- below can replay it on two machines -- the owner's and a player standing
+-- next to them -- end to end, off the server's own payloads.
+local sandyWire = {}
+
 -- ── the whole base-game tray ──────────────────────────────────────────────────
 -- Every piece Night City's ripperdocs sell is on the tray, filed under its body
 -- system. The body has the base game's slots and a capacity; the chrome the
@@ -25220,7 +25698,22 @@ do
 		})
 	end
 
-	local env, control, why = boot('server', bridge())
+	-- THE PLATFORM'S CLOCK HAS A FRACTION IN IT. Its `GetGameTimer` answers
+	-- thousandths with a remainder (`227832.75839999` on the box that found
+	-- it), and every millisecond this clinic stamps -- the record reader's
+	-- nonce, the stand-up re-projection token, the probe's nonce -- is
+	-- printed as a whole number. Two of those prints raised on the fraction
+	-- and stranded exactly what this section is about: records never read,
+	-- and a grant fitted in the chair dead on standing. So the whole clinic
+	-- below runs on the timer's real SHAPE -- the harness's own advance plus
+	-- the remainder -- and a `%d` of a timestamp fails here the way it fails
+	-- on the server.
+	local function prelude(e)
+		local real = e.GetGameTimer
+		e.GetGameTimer = function() return real() + 0.5 end
+	end
+
+	local env, control, why = boot('server', bridge(), prelude)
 	check('the server boots with the whole tray and a ledger', why == nil, why)
 	if control ~= nil then
 		-- The platform services the chrome reaches the body through.
@@ -25238,6 +25731,10 @@ do
 		local Refusal = ripperdoc.Ripper.Refusal
 		local Ripper, Chrome, Effects = ripperdoc.Ripper, ripperdoc.Chrome, ripperdoc.Effects
 		local chrome = control.chrome
+
+		local stamped = OPX.Now()
+		check('a fractional host clock is read as whole milliseconds',
+			stamped == math.floor(stamped), tostring(stamped))
 
 		local function press(player, name, ...)
 			local args = table.pack(...)
@@ -25646,8 +26143,42 @@ do
 			#unserved == 0 and within and table.concat(control.log.warn, ' | '):find('definition_limit') == nil,
 			table.concat(unserved, ', '))
 		check('and grades that configure a power the same way share one',
-			Ripper.DefinitionFor(Ripper.Entry('apogee_sandevistan'), Ripper.Entry('apogee_sandevistan').GRADES[1])
-				== Ripper.DefinitionFor(Ripper.Entry('falcon_sandevistan'), Ripper.Grade(Ripper.Entry('falcon_sandevistan'), 't5')))
+			Ripper.DefinitionFor(Ripper.Entry('falcon_sandevistan'), Ripper.Grade(Ripper.Entry('falcon_sandevistan'), 't5'))
+				== Ripper.DefinitionFor(Ripper.Entry('zetatech_sandevistan'), Ripper.Grade(Ripper.Entry('zetatech_sandevistan'), 't5')))
+
+		-- THE APOGEE WEARS ITS OWN LOOK. It is the one Sandevistan that asks the
+		-- platform to draw nothing (`presentation = 'none'`) -- the server draws
+		-- Smasher's look instead -- so it no longer shares the Falcon's top
+		-- definition, and the Falcon keeps the platform's own.
+		local apogeePiece = Ripper.Entry('apogee_sandevistan')
+		local falconTop = Ripper.Grade(Ripper.Entry('falcon_sandevistan'), 't5')
+		local apogeeId = Ripper.DefinitionFor(apogeePiece, apogeePiece.GRADES[1])
+		local falconId = Ripper.DefinitionFor(Ripper.Entry('falcon_sandevistan'), falconTop)
+		local apogeeDef, falconDef = chrome.defined.reflex[apogeeId], chrome.defined.reflex[falconId]
+		check('the Apogee is on its own definition: the heavy tier, the reflex key, the platform\'s picture off',
+			apogeeDef ~= nil and falconDef ~= nil and apogeeId ~= falconId
+				and apogeeDef.config.presentation == 'none' and apogeeDef.config.inputKey == 'x'
+				and apogeeDef.config.tier == 'reflex_heavy' and apogeeDef.profile == 'reflex_overdrive'
+				and falconDef.config.presentation == 'native'
+				and select(2, Ripper.SandyLook(apogeePiece)) == 'smasher'
+				and Ripper.SandyLook(Ripper.Entry('falcon_sandevistan')) == nil,
+			('%s / %s'):format(tostring(apogeeId), tostring(falconId)))
+
+		-- ONE KEY PER POWER CLASS, from POWER_KEYS, in the platform's lowercase;
+		-- a key the platform cannot bind falls back to the piece's own.
+		local keys = ripperdoc.Settings.POWER_KEYS
+		local shippedKey = keys.reflex
+		keys.reflex = 'V'
+		local rekeyed = Ripper.GrantConfig(apogeePiece, apogeePiece.GRADES[1]).inputKey
+		keys.reflex = 'mouse1'
+		local refusedKey = Ripper.GrantConfig(apogeePiece, apogeePiece.GRADES[1]).inputKey
+		keys.reflex = 'F5'
+		local functionKey = Ripper.PowerKey(Ripper.Entry('falcon_sandevistan'))
+		keys.reflex = shippedKey
+		check('POWER_KEYS sets the key every Sandevistan engages on, and one the platform cannot bind falls back',
+			rekeyed == 'v' and refusedKey == 'x' and functionKey == 'f5'
+				and Ripper.PowerKey(Ripper.Entry('dash')) == 'z' and Ripper.PowerKey(Ripper.Entry('subdermal_armor')) == nil,
+			('%s %s %s'):format(tostring(rekeyed), tostring(refusedKey), tostring(functionKey)))
 
 		-- A POWER WHOSE PLATFORM SERVICE IS NOT RUNNING is refused before
 		-- anybody pays: the order would be accepted and nothing would ever
@@ -25682,6 +26213,376 @@ do
 			live ~= nil and Chrome.Armed(61, 'apogee_sandevistan')
 				and table.concat(control.log.info, ' | '):find('apogee_sandevistan (t5) is live on the body', 1, true) ~= nil,
 			tostring(flashOf(61)))
+
+		-- ── the Apogee on the body ──────────────────────────────────────────
+
+		local function kitsTo(playerId)
+			local out = {}
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.KIT and event.source == playerId then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+		local kits = kitsTo(61)
+		local lastKit, announced = kits[#kits], false
+		for _, sent in ipairs(kits) do
+			if sent.announce == 'apogee_sandevistan' then announced = true end
+		end
+		check('the patient\'s machine is told what it holds -- the Apogee, on the reflex key, in the Smasher look -- and it is announced there, where the real key is known',
+			lastKit ~= nil and type(lastKit.grants) == 'table' and lastKit.grants.reflex ~= nil
+				and lastKit.grants.reflex.entry == 'apogee_sandevistan' and lastKit.grants.reflex.key == 'x'
+				and lastKit.grants.reflex.look == 'smasher' and announced,
+			('%d kit(s)'):format(#kits))
+
+		-- ARMED IN THE CHAIR IS NOT ARMED: the patient sits in a workspot, and
+		-- the reflex client drops a projection it cannot put on the body. The
+		-- power is projected again once they are up -- with a one-use token
+		-- their machine sends back when the workspot has really let go.
+		check('a power armed while the patient sits in the chair is marked to be projected again',
+			Chrome.Stale(61) == true)
+		local grantsBefore, revokesBefore = #chrome.grants, #chrome.revokes
+		press(61, Event.STAND)
+		local token = nil
+		for _, sent in ipairs(kitsTo(61)) do
+			if sent.reproject ~= nil then token = sent.reproject end
+		end
+		check('standing up hands the patient\'s machine a one-use token', type(token) == 'string')
+		press(61, Event.REPROJECT, 'forged-token')
+		check('a token the server never issued projects nothing',
+			#chrome.grants == grantsBefore and #chrome.revokes == revokesBefore)
+		press(61, Event.REPROJECT, token)
+		check('the token projects the chair\'s power again: revoked, then granted anew on the same definition',
+			#chrome.revokes == revokesBefore + 1 and #chrome.grants == grantsBefore + 1
+				and chrome.grants[#chrome.grants][1] == 'reflex'
+				and chrome.grants[#chrome.grants][3] == apogeeId
+				and Chrome.Armed(61, 'apogee_sandevistan') and Chrome.Stale(61) == false,
+			('%d revoke(s), %d grant(s)'):format(#chrome.revokes - revokesBefore, #chrome.grants - grantsBefore))
+		press(61, Event.REPROJECT, token)
+		check('and the token is good once', #chrome.grants == grantsBefore + 1)
+
+		-- THE LOOK. Every phase of an Apogee boost goes to every client in the
+		-- Smasher look and its sound is played on the body by the server; the
+		-- look itself -- Smasher's blink, trails and loops -- is drawn by every
+		-- client (below), so the server binds nothing to the body.
+		local smasher = ripperdoc.Settings.SANDEVISTAN.LOOKS.smasher
+		local sounds, attaches, removes = {}, {}, {}
+		local realEffects = env.Open77.effects
+		env.Open77.effects = {
+			sound = function(target, event, options)
+				sounds[#sounds + 1] = { target = target, event = event, options = options }
+				return true
+			end,
+			attach = function(target, effect, options)
+				attaches[#attaches + 1] = { target = target, effect = effect, options = options }
+				return 'fx-' .. #attaches
+			end,
+			remove = function(id)
+				removes[#removes + 1] = id
+				return true
+			end,
+		}
+		-- THE WORLD AROUND: 62 stands ten metres off, 63 two hundred, 64 close
+		-- but in another bucket.
+		local realPosition, realAll = env.Open77.players.position, env.Open77.players.all
+		local spots = {
+			[61] = { x = 0.0, y = 0.0, z = 0.0, bucket = 0 }, [62] = { x = 10.0, y = 0.0, z = 0.0, bucket = 0 },
+			[63] = { x = 200.0, y = 0.0, z = 0.0, bucket = 0 }, [64] = { x = 5.0, y = 0.0, z = 0.0, bucket = 7 },
+		}
+		env.Open77.players.position = function(id)
+			local at = spots[tonumber(id)]
+			return at and { x = at.x, y = at.y, z = at.z, bucket = at.bucket } or nil
+		end
+		env.Open77.players.all = function() return { 61, 62, 63, 64 } end
+		local function lookEvents()
+			local out = {}
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.SANDY and event.source == -1 then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+		local function toldTo(target)
+			local out = {}
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.SANDY and tonumber(event.source) == target then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+		local activation = ('ab'):rep(16)
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ activation = activation, player = 61,
+			phase = 'accepted', tier = 'reflex_heavy', presentation = 'none' }))
+		local looks = lookEvents()
+		local accepted = looks[#looks]
+		check('an accepted Apogee boost goes to every client in the Smasher look, and its sound is on the body',
+			accepted ~= nil and accepted.phase == 'accepted' and accepted.look == 'smasher'
+				and accepted.player == 61 and accepted.activation == activation
+				and #sounds == 1 and sounds[1].target.kind == 'player' and sounds[1].target.id == '61'
+				and sounds[1].event == smasher.SOUND
+				and sounds[1].options.actionId == 'opx-sandy:' .. activation,
+			('%d look event(s), %d sound(s)'):format(#looks, #sounds))
+		check('and the server binds nothing to the body: Smasher\'s blink is every client\'s to draw',
+			#attaches == 0 and smasher.BURST == nil and type(smasher.BLINK) == 'table'
+				and smasher.BLINK.START.effect:find('boss_adam_shasher\\ch_adam_smasher_sandevistan_teleport_start.effect', 1, true) ~= nil
+				and smasher.BLINK.END.effect:find('boss_adam_shasher\\ch_adam_smasher_sandevistan_teleport_end.effect', 1, true) ~= nil,
+			('%d attach(es)'):format(#attaches))
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ activation = activation, player = 61,
+			phase = 'active', tier = 'reflex_heavy', expiresAtMs = 109000, serverTimeMs = 100000 }))
+		looks = lookEvents()
+		check('the active phase says how long the boost has left, read inside the one payload',
+			looks[#looks].phase == 'active' and looks[#looks].remainingMs == 9250
+				and looks[#looks].tier == 'reflex_heavy' and ripperdoc.Sandy.Active(61),
+			tostring(looks[#looks].remainingMs))
+		check('and tells the owner\'s machine how slow its world runs: the Apogee\'s 0.15, or the fallback',
+			looks[#looks].scale == smasher.TIME.SELF_SCALE and looks[#looks].scale == 0.15
+				and looks[#looks].fallbackScale == smasher.TIME.SELF_FALLBACK_SCALE
+				and looks[#looks].easeMs == smasher.TIME.EASE_MS)
+		check('and does not claim the base game\'s own screen while the view resource is not running',
+			looks[#looks].view == false)
+		-- Adam Smasher's own Sandevistan, as his 2.31 entity authors it: the
+		-- teleport blink, `sandevistan_trails_smasher` (ch_npc_sandevistan_trail),
+		-- the Oda loop, the Kerenzikov centre loop and the centre flash -- and
+		-- NOT his three tiers, which are a material parameter on his own body
+		-- shader and draw nothing on a player.
+		local trails, loops, tiers = 0, 0, 0
+		for _, spec in ipairs(smasher.LAYERS or {}) do
+			if spec.effect:find('ch_npc_sandevistan_trail.effect', 1, true) ~= nil and spec.every ~= nil then
+				trails = trails + 1
+			end
+			if spec.effect:find('ch_oda_sandevistan_loop.effect', 1, true) ~= nil
+				or spec.effect:find('ch_npc_ability_kerenzikov_center_loop.effect', 1, true) ~= nil then
+				loops = loops + 1
+			end
+			if spec.effect:find('ch_smasher_sandevistan_', 1, true) ~= nil then tiers = tiers + 1 end
+		end
+		check('the look is Smasher\'s own trails (restarted, on hands, feet, chest and head) and loops, never his ' ..
+			'material-only tiers, and the server binds none of it',
+			#attaches == 0 and smasher.ATTACH == nil and trails == 6 and loops == 2 and tiers == 0,
+			('%d trail(s), %d loop(s), %d tier(s)'):format(trails, loops, tiers))
+		local slowed = toldTo(62)
+		check('the world around them slows: a player ten metres off is told to run at 0.15 for the boost',
+			#slowed == 1 and slowed[1].phase == 'slow' and slowed[1].player == 61
+				and slowed[1].scale == smasher.TIME.NEARBY_SCALE and slowed[1].remainingMs == 9250
+				and slowed[1].activation == activation,
+			('%d event(s) to 62'):format(#slowed))
+		check('and nobody out of range, or in another bucket, is slowed',
+			#toldTo(63) == 0 and #toldTo(64) == 0 and #toldTo(61) == 0)
+		spots[63] = { x = 20.0, y = 0.0, z = 0.0, bucket = 0 }
+		ripperdoc.Sandy.Sweep()
+		local walkedIn = toldTo(63)
+		check('a player who walks into a running Sandevistan is slowed for what is left of it',
+			#walkedIn == 1 and walkedIn[1].phase == 'slow' and walkedIn[1].remainingMs <= 9250
+				and walkedIn[1].remainingMs > 8000 and #toldTo(62) == 1,
+			('%d event(s) to 63'):format(#walkedIn))
+		spots[62] = { x = 35.0, y = 0.0, z = 0.0, bucket = 0 }
+		ripperdoc.Sandy.Sweep()
+		check('one on the edge of the radius is not let go and slowed again on every step', #toldTo(62) == 1)
+		spots[62] = { x = 60.0, y = 0.0, z = 0.0, bucket = 0 }
+		ripperdoc.Sandy.Sweep()
+		slowed = toldTo(62)
+		check('one who walks well out of it gets their clock back',
+			#slowed == 2 and slowed[2].phase == 'release' and slowed[2].player == 61)
+		local _, tooSoon = ripperdoc.Sandy.Recover(61)
+		check('a power the client says it lost is not projected again inside the cooldown of its last use',
+			tooSoon == 'cooling_down', tostring(tooSoon))
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ activation = activation, player = 61,
+			phase = 'completed', tier = 'reflex_heavy' }))
+		looks = lookEvents()
+		check('and the end goes out, so every client takes the look down',
+			looks[#looks].phase == 'completed' and looks[#looks].look == 'smasher'
+				and not ripperdoc.Sandy.Active(61))
+		check('and the end removes nothing the server never bound',
+			#removes == 0 and #attaches == 0, ('%d removed, %d attached'):format(#removes, #attaches))
+		local released = toldTo(63)
+		check('and everybody it still slowed is handed their clock back, once',
+			#released == 2 and released[2].phase == 'release' and #toldTo(62) == 2)
+		-- The wire, for the replay on the two machines below.
+		for _, event in ipairs(lookEvents()) do
+			if event.activation == activation then sandyWire[#sandyWire + 1] = { to = -1, payload = event } end
+		end
+		for _, event in ipairs(toldTo(63)) do sandyWire[#sandyWire + 1] = { to = 63, payload = event } end
+		table.sort(sandyWire, function(a, b)
+			local order = { accepted = 1, active = 2, slow = 3, release = 4, completed = 5 }
+			return (order[a.payload.phase] or 9) < (order[b.payload.phase] or 9)
+		end)
+		control.resourceStates['opx_sandy_view'] = 'running'
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ activation = ('cd'):rep(16), player = 61,
+			phase = 'active', tier = 'reflex', expiresAtMs = 106000, serverTimeMs = 100000 }))
+		local viewed = lookEvents()
+		check('with opx_sandy_view running, the owner\'s machine is told the base game\'s own screen ships',
+			viewed[#viewed].phase == 'active' and viewed[#viewed].view == true
+				and ripperdoc.Settings.SANDEVISTAN.VIEW.RESOURCE == 'opx_sandy_view')
+		control.resourceStates['opx_sandy_view'] = nil
+		check('the lighter tier is drawn by the clients too', #attaches == 0 and viewed[#viewed].tier == 'reflex')
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ activation = ('cd'):rep(16), player = 61,
+			phase = 'cancelled', tier = 'reflex' }))
+		-- Nobody in range: the journal names the nearest player (64 is nearer,
+		-- in another bucket).
+		spots[63] = { x = 200.0, y = 0.0, z = 0.0, bucket = 0 }
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ activation = ('aa'):rep(16), player = 61,
+			phase = 'active', tier = 'reflex', expiresAtMs = 106000, serverTimeMs = 100000 }))
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ activation = ('aa'):rep(16), player = 61,
+			phase = 'cancelled', tier = 'reflex' }))
+		env.Open77.players.position, env.Open77.players.all = realPosition, realAll
+		looks = lookEvents()
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ phase = 'accepted', player = 61 }))
+		check('a phase with no activation id is not drawn', #lookEvents() == #looks)
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ activation = ('ef'):rep(16), player = 61,
+			phase = 'active', tier = 'reflex', expiresAtMs = 106000, serverTimeMs = 100000 }))
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ activation = ('cd'):rep(16), player = 61,
+			phase = 'completed', tier = 'reflex' }))
+		check('a late end of an older boost does not end the newer one', ripperdoc.Sandy.Active(61))
+		env.TriggerEvent('onReflexChanged', '61', env.json.encode({ activation = ('ef'):rep(16), player = 61,
+			phase = 'completed', tier = 'reflex' }))
+		check('and the boost\'s own end does', not ripperdoc.Sandy.Active(61))
+		-- The Apogee's cooldown (25 s) runs from the END of its 9 s boost.
+		local lostBefore = #chrome.grants
+		control.Pump(350)
+		local recoveredNow, recoverWhy = ripperdoc.Sandy.Recover(61)
+		local _, secondWhy = ripperdoc.Sandy.Recover(61)
+		check('after the cooldown a lost overdrive is projected again, and not twice in a row',
+			recoveredNow == true and #chrome.grants == lostBefore + 1 and secondWhy == 'too_soon',
+			('%s %s %s'):format(tostring(recoveredNow), tostring(recoverWhy), tostring(secondWhy)))
+		env.Open77.effects = realEffects
+
+		-- THE KEY, per player: the command carries it to the caller's own
+		-- machine, which rebinds the platform's action; a key the platform
+		-- cannot bind is refused before it leaves.
+		local keyCommand = control.commands['opx.sandy.key']
+		local function keybinds()
+			local out = {}
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.KEYBIND and event.source == 61 then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+		check('/opx.sandy.key is registered for every player', keyCommand ~= nil and keyCommand.restricted == false)
+		if keyCommand ~= nil then
+			keyCommand.run(61, { 'v' })
+			keyCommand.run(61, { 'mouse1' })
+			keyCommand.run(61, { 'reset' })
+			keyCommand.run(61, {})
+		end
+		local sent = keybinds()
+		check('and it carries a key in the mapping\'s own case, reset and a plain question, never a key the platform refuses',
+			#sent == 3 and sent[1] == 'V' and sent[2] == 'reset' and sent[3] == '',
+			table.concat(sent, ','))
+
+		-- THE JOURNAL: every overdrive phase, with what the ripperdoc made of it.
+		local journal = table.concat(control.log.info, '\n')
+		check('every overdrive phase is journalled with the piece armed on the player and its look',
+			journal:find('[ripperdoc] player 61: overdrive active (definition', 1, true) ~= nil
+				and journal:find('armed piece apogee_sandevistan, look smasher', 1, true) ~= nil)
+		check('and so is every player a boost slows, with how far off they stood, and every release, with why',
+			journal:find('[ripperdoc] player 61: Sandevistan slows player 62 (10.0 m away) to 0.15 for 9250 ms', 1,
+					true) ~= nil
+				and journal:find('[ripperdoc] player 61: Sandevistan slows player 63 (20.0 m away) to 0.15 for ', 1,
+					true) ~= nil
+				and journal:find('[ripperdoc] player 61: Sandevistan no longer slows player 62 (60.0 m away, past ' ..
+					'37.5 m)', 1, true) ~= nil
+				and journal:find('[ripperdoc] player 61: Sandevistan no longer slows player 63 (the boost completed)',
+					1, true) ~= nil
+				and journal:find('0 player(s) slowed nearby (within 30 m; nearest: player 62 at 60.0 m)', 1,
+					true) ~= nil)
+		local infoAt = #control.log.info
+		ripperdoc.Sandy.OnReport(61, { role = 'owner', activation = 'x', clock = '0.15, this body exempt (base game)',
+			screen = 'the base game\'s own (camera curve Sandevistan)', view = true, remainingMs = 9250,
+			doors = { lease = false, timescale = true, screen = true, playEntity = true, callSync = true } })
+		ripperdoc.Sandy.OnReport(62, { role = 'observer', owner = 61, plays = 9, layers = 8, plated = true, doors = {} })
+		ripperdoc.Sandy.OnReport(61, { role = 'clock', activation = 'x',
+			clock = 'world at 0.15, engine dilation active; claims: opx_sandy_view 0.15 (holding)' })
+		local reported = table.concat(control.log.info, '\n', infoAt + 1)
+		check('each client\'s own account of a boost lands in the server\'s journal beside it',
+			reported:find('player 61\'s client: Sandevistan engaged for 9250 ms -- world 0.15, this body exempt ' ..
+				'(base game)', 1, true) ~= nil and reported:find('lease=no timescale=yes', 1, true) ~= nil
+				and reported:find('player 62\'s client drew player 61\'s Sandevistan: 9 effect(s) on the ' ..
+					'body (8 layer(s) of the look), plate yes', 1, true) ~= nil
+				and reported:find('player 61\'s client: Sandevistan clock -- world at 0.15, engine dilation ' ..
+					'active; claims: opx_sandy_view 0.15 (holding)', 1, true) ~= nil,
+			reported:sub(1, 300))
+		ripperdoc.Sandy.OnReport(62, { role = 'slowed', owner = 61, activation = 'x', door = 'timescale',
+			clock = 'world at 0.15, engine dilation active; claims: opx_infinity 0.15 (holding)',
+			doors = { lease = false, timescale = true } })
+		ripperdoc.Sandy.OnReport(64, { role = 'slowed', owner = 61, activation = 'x',
+			why = 'permission_denied:world.timescale', clock = 'world at 1.00, engine dilation off; claims: none',
+			doors = {} })
+		local slowedLines = table.concat(control.log.info, '\n', infoAt + 1)
+		check('and so is each slowed machine\'s: which door holds its clock and what the engine really runs at -- ' ..
+			'or that every door refused, and why',
+			slowedLines:find('player 62\'s client: slowed by player 61\'s Sandevistan -- held by timescale; clock ' ..
+				'world at 0.15, engine dilation active; claims: opx_infinity 0.15 (holding)', 1, true) ~= nil
+				and slowedLines:find('player 64\'s client: slowed by player 61\'s Sandevistan -- REFUSED: ' ..
+					'permission_denied:world.timescale', 1, true) ~= nil,
+			slowedLines:sub(-400))
+		for _ = 1, 30 do ripperdoc.Sandy.OnReport(63, { role = 'observer', owner = 61, plays = 1 }) end
+		local flooded = 0
+		for index = infoAt + 1, #control.log.info do
+			if control.log.info[index]:find('player 63\'s client', 1, true) then flooded = flooded + 1 end
+		end
+		check('and one client cannot flood it', flooded == 20, tostring(flooded))
+
+		-- /opx.sandy.test: the whole presentation without the overdrive.
+		local testCommand = control.commands['opx.sandy.test']
+		check('/opx.sandy.test is registered, for the staff only',
+			testCommand ~= nil and testCommand.restricted == true)
+		if testCommand ~= nil then
+			local lookAt = #lookEvents()
+			testCommand.run(61, { '3' })
+			local seen = lookEvents()
+			local started = seen[lookAt + 1] ~= nil and seen[lookAt + 2] ~= nil
+			check('it runs an accepted and an active phase on the caller, in the Apogee\'s look, for the seconds asked',
+				started and seen[lookAt + 1].phase == 'accepted' and seen[lookAt + 2].phase == 'active'
+					and seen[lookAt + 2].player == 61 and seen[lookAt + 2].look == 'smasher'
+					and seen[lookAt + 2].remainingMs == 3000 and ripperdoc.Sandy.Active(61),
+				started and tostring(seen[lookAt + 2].remainingMs) or 'nothing sent')
+			control.Pump(40)
+			seen = lookEvents()
+			check('and ends it on its own', seen[#seen].phase == 'completed' and not ripperdoc.Sandy.Active(61))
+		end
+
+		-- Back in the chair for the rest of the tray.
+		press(61, Event.USE, 'clinic_watson')
+		control.Pump(4)
+
+		-- A SANDEVISTAN WORN BEFORE THE CHAIR died the first frame the patient
+		-- sat, so standing up hands a token for it too -- and it goes back on
+		-- through the cooldown gate, not around it.
+		check('sitting with a Sandevistan already worn marks nothing stale', Chrome.Stale(61) == false)
+		grantsBefore, revokesBefore = #chrome.grants, #chrome.revokes
+		press(61, Event.STAND)
+		token = nil
+		for _, sent in ipairs(kitsTo(61)) do
+			if sent.reproject ~= nil then token = sent.reproject end
+		end
+		press(61, Event.REPROJECT, token)
+		check('and standing up puts the Sandevistan they already wore back on',
+			type(token) == 'string' and #chrome.revokes == revokesBefore + 1
+				and #chrome.grants == grantsBefore + 1 and Chrome.Armed(61, 'apogee_sandevistan'),
+			('%s, %d revoke(s), %d grant(s)'):format(tostring(token), #chrome.revokes - revokesBefore,
+				#chrome.grants - grantsBefore))
+		press(61, Event.USE, 'clinic_watson')
+		control.Pump(4)
+
+		-- THE LOOK DECIDES WHICH DEFINITION SERVES A GRADE: past the platform's
+		-- limit a grade is served by the nearest kept config, and a grade the
+		-- platform should draw is never served by one that asks it to draw
+		-- nothing -- that would be a Sandevistan nobody can see.
+		local invisible = {}
+		for _, entry in ipairs(catalog) do
+			if Ripper.GrantKind(entry) == 'reflex' then
+				local styled = Ripper.SandyLook(entry) ~= nil
+				for _, grade in ipairs(entry.GRADES) do
+					local def = chrome.defined.reflex[Ripper.DefinitionFor(entry, grade)]
+					if def == nil or (def.config.presentation == 'none') ~= styled then
+						invisible[#invisible + 1] = entry.id .. '.' .. grade.id
+					end
+				end
+			end
+		end
+		check('every Sandevistan grade is drawn by exactly one side: the platform, or its own look',
+			#invisible == 0, table.concat(invisible, ', '))
 		buy('apogee_sandevistan', nil, 'remove')
 
 		-- ── an RP piece ──────────────────────────────────────────────────────
@@ -25909,6 +26810,1175 @@ end
 -- trusted; a death is a death only when a body suffered it; a character's kit
 -- comes back with the character; work in flight survives the character that
 -- ordered it and the resource that staged it.
+-- ── the Sandevistan on the player's own machine ──────────────────────────────
+--
+-- The client half of the Apogee: the Smasher look played by name on the boosted
+-- body and stopped on the end, the plate, the effective key, the one-use token
+-- handed back once the chair's workspot has let go, and the watch that asks
+-- again for an overdrive `open77_reflex` no longer holds.
+section('the ripperdoc clinic: the Sandevistan on this machine')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the Sandevistan half', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local Sandy, Event = ripperdoc.Sandy, ripperdoc.Event
+		local look = ripperdoc.Settings.SANDEVISTAN.LOOKS.smasher
+		-- WHO THIS MACHINE IS, the way the platform answers opx_infinity: the
+		-- roster says (`Open77.players.localId`, ungated) and the network status
+		-- does NOT -- it is behind `network.client`, which this resource does not
+		-- declare. Relying on it is what kept the owner's clock from ever running.
+		env.Open77.network = env.Open77.network or {}
+		env.Open77.network.status = function() return nil, 'permission_denied:network.client' end
+		local me = 5
+		env.Open77.players.localId = function() return me end
+		local streamed = { ['61'] = '4242' }
+		env.Open77.vfx.resolveTarget = function(target) return streamed[target.id] end
+		-- THE BODIES' SLOTS, as the 2.31 templates name them: this player's own
+		-- body (`player_{ma,wa}_fpp.ent`: `hips`, `left_foot`, `right_foot`...)
+		-- and everybody else's (`player_proxy_*.ent`: `Hips`, `LeftFoot`...).
+		local ownSlots = { hips = true, left_foot = true, right_foot = true, trajectory = true, Chest = true,
+			LeftHand = true, RightHand = true, Legs = true, Head = true }
+		local proxySlots = { Hips = true, LeftFoot = true, RightFoot = true, Chest = true, LeftHand = true,
+			RightHand = true, Legs = true, Head = true }
+		local attached = {}
+		env.Open77.vfx.attach = function(handle, entity, slot)
+			local slots = tostring(entity) == '1' and ownSlots or proxySlots
+			if not slots[slot] then return false, 'not_found' end
+			attached[#attached + 1] = { handle = handle, entity = tostring(entity), slot = slot,
+				effect = control.effects.live[handle] }
+			return true
+		end
+		-- Where the bodies stand (`Open77.character.position(id)`), for the blinks.
+		local stands = { [4242] = { 10, 20, 30 }, [777] = { 1, 2, 3 } }
+		env.Open77.character.position = function(id)
+			local at = id == nil and { 5, 5, 5 } or stands[id]
+			if at == nil then return nil, 'entity_not_found' end
+			return at[1], at[2], at[3]
+		end
+		local function attachedTo(entity, from)
+			local out, slots = {}, {}
+			for index = from or 1, #attached do
+				local row = attached[index]
+				if row.entity == entity then
+					out[#out + 1] = row
+					slots[row.slot] = (slots[row.slot] or 0) + 1
+				end
+			end
+			return out, slots
+		end
+		local function worldPlays(effectPart, from)
+			local out = {}
+			for index = from or 1, #control.effects.plays do
+				local play = control.effects.plays[index]
+				if tostring(play.effect):find(effectPart, 1, true) ~= nil and play.options ~= nil
+					and type(play.options.position) == 'table'
+					and not (play.options.position.x == 0 and play.options.position.y == 0 and play.options.position.z == 0) then
+					out[#out + 1] = play
+				end
+			end
+			return out
+		end
+		local function said(part)
+			for index = #control.log.info, 1, -1 do
+				if tostring(control.log.info[index]):find(part, 1, true) ~= nil then return control.log.info[index] end
+			end
+			return nil
+		end
+		local contract = OPX.Api.Get('character')
+		contract.GetPlayerName = function(player) return player == 61 and 'Adam' or nil end
+		local toasts = {}
+		OPX.Toast.Locale = function(key, params, kind) toasts[#toasts + 1] = { key = key, params = params } end
+
+		local function playsOn(entity, from)
+			local out = {}
+			for index = from or 1, #control.effects.entityPlays do
+				local play = control.effects.entityPlays[index]
+				if play.options ~= nil and play.options.entity == entity then out[play.effect] = play.options end
+			end
+			return out
+		end
+
+		local attachedBefore = #attached
+		Sandy.OnPhase({ player = 61, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 9000 })
+		local plays = playsOn('4242')
+		local missing = {}
+		for _, name in ipairs(look.LOOP) do if plays[name] == nil then missing[#missing + 1] = name end end
+		check('an active Apogee boost plays what that player\'s body authors for a Sandevistan by name, for as ' ..
+			'long as it runs -- the golden eyes of the base game\'s own Sandevistan buff',
+			#missing == 0 and plays['eye_glow_gold'] ~= nil and plays['eye_glow_gold'].duration >= 8.5
+				and plays['eye_glow_gold'].duration <= 9.0,
+			table.concat(missing, ', '))
+		local onProxy, proxyAt = attachedTo('4242', attachedBefore + 1)
+		check('and binds Adam Smasher\'s own trails to that body\'s hands, feet, chest and head, his ' ..
+			'aberration trails to its hips and chest, and his loops and flash to its hips, by that body\'s own ' ..
+			'slot names -- not the owner-only start effects',
+			#onProxy == 11 and proxyAt.LeftHand == 1 and proxyAt.RightHand == 1 and proxyAt.LeftFoot == 1
+				and proxyAt.RightFoot == 1 and proxyAt.Chest == 2 and proxyAt.Head == 1 and proxyAt.Hips == 4,
+			('%d layer(s)'):format(#onProxy))
+		local realTime = true
+		for _, play in ipairs(control.effects.plays) do
+			for _, row in ipairs(onProxy) do
+				if play.id == row.handle and play.options.ignoreTimeDilation ~= true then realTime = false end
+			end
+		end
+		check('each a real-time effect on a body that runs in real time, and the journal says what went on',
+			realTime and said('Sandevistan look on player 61: 11 of 11 layer(s) on the body') ~= nil,
+			tostring(said('Sandevistan look on player 61')))
+		local trailPlays = #attachedTo('4242')
+		control.Pump(20)
+		local _, restarted = attachedTo('4242', attachedBefore + 12)
+		check('a two-second trail is restarted before it runs out, the loops are not',
+			restarted.LeftFoot == 1 and restarted.Chest == 2 and restarted.Head == 1 and restarted.Hips == 1,
+			('%d re-bound'):format(#attachedTo('4242') - trailPlays))
+		local plate = control.plates.byId[61]
+		check('and the plate carries it past where particles still read',
+			plate ~= nil and plate.label == 'Adam' .. look.PLATE.SUFFIX and plate.color == look.PLATE.COLOR,
+			plate and tostring(plate.label) or 'no plate')
+		local handles = #Sandy.Shown()[61].handles
+		local stoppedBefore = #control.effects.stopped
+		local endBlinks = #worldPlays('ch_adam_smasher_sandevistan_teleport_end.effect')
+		Sandy.OnPhase({ player = 61, phase = 'cancelled' })
+		check('the end stops every handle it started and gives the plate back its name',
+			handles > 0 and #control.effects.stopped == stoppedBefore + handles
+				and Sandy.Shown()[61] == nil and control.plates.byId[61] ~= nil
+				and control.plates.byId[61].label == 'Adam',
+			('%d handle(s), %d stopped'):format(handles, #control.effects.stopped - stoppedBefore))
+		check('and Smasher\'s end blink goes off where the body stands, left in the world',
+			#worldPlays('ch_adam_smasher_sandevistan_teleport_end.effect') == endBlinks + 1)
+
+		local count = #control.effects.entityPlays
+		Sandy.OnPhase({ player = 61, phase = 'active', look = 'not-a-look', remainingMs = 5000 })
+		check('a look the config does not carry draws nothing', #control.effects.entityPlays == count)
+
+		-- A BODY THAT STREAMS IN MID-BOOST still gets the look.
+		Sandy.OnPhase({ player = 62, phase = 'active', look = 'smasher', tier = 'reflex', remainingMs = 6000 })
+		check('a boosted body that is not here yet is held, not drawn', #control.effects.entityPlays == count)
+		streamed['62'] = '777'
+		control.Pump(6)
+		plays = playsOn('777', count + 1)
+		check('and drawn the moment it streams in',
+			plays['eye_glow_gold'] ~= nil and #attachedTo('777') == 11)
+		-- THE ACCEPT, on somebody else's body: the effects the body authors for
+		-- a Sandevistan's start (with the dash sound), and Smasher's blink.
+		local startBlinks = #worldPlays('ch_adam_smasher_sandevistan_teleport_start.effect')
+		local startPlays = #control.effects.entityPlays
+		Sandy.OnPhase({ player = 62, phase = 'accepted', look = 'smasher', tier = 'reflex' })
+		plays = playsOn('777', startPlays + 1)
+		check('an accepted boost plays the body\'s own Sandevistan start and Smasher\'s blink at its feet',
+			plays['fx_sandevistan_left'] ~= nil and plays['fx_sandevistan_right'] ~= nil
+				and #worldPlays('ch_adam_smasher_sandevistan_teleport_start.effect') == startBlinks + 1)
+		control.Pump(70)
+		check('and taken down at its own deadline, whatever the wire says', Sandy.Shown()[62] == nil)
+
+		-- A BODY THAT GOES AND COMES BACK under a new handle mid-boost wears the
+		-- whole look again, loops and authored effects included -- not just the
+		-- trails that happen to restart.
+		streamed['62'] = '777'
+		Sandy.OnPhase({ player = 62, phase = 'active', look = 'smasher', tier = 'reflex', remainingMs = 6000,
+			activation = 'b-1' })
+		streamed['62'] = '778'
+		local namesBefore = #control.effects.entityPlays
+		control.Pump(2)
+		local _, again = attachedTo('778')
+		check('a body back under a new handle gets the whole look again, loops and all',
+			(again.Hips or 0) == 4 and again.LeftFoot == 1 and playsOn('778', namesBefore + 1)['eye_glow_gold'] ~= nil,
+			('%d layer(s) on the new body'):format(#attachedTo('778')))
+		-- A LATE END for an older boost does not cut a newer one short.
+		Sandy.OnPhase({ player = 62, phase = 'completed', activation = 'b-0' })
+		check('a late end of an older boost leaves the running one alone', Sandy.Shown()[62] ~= nil)
+		Sandy.OnPhase({ player = 62, phase = 'completed', activation = 'b-1' })
+		check('and its own end takes it down', Sandy.Shown()[62] == nil)
+
+		-- THE OWNER'S OWN BOOST: the screen, and the world slowing. This
+		-- machine is player 5.
+		local screens, scales = {}, {}
+		env.Open77.vfx.screen = function(alias, options)
+			screens[#screens + 1] = { alias = alias, options = options }
+			return 'screen-' .. #screens
+		end
+		env.Open77.world = env.Open77.world or {}
+		local realScale = env.Open77.world.setTimeScale
+		env.Open77.world.setTimeScale = function(scale, options)
+			scales[#scales + 1] = { scale = scale, options = options or {} }
+			return true
+		end
+		env.Open77.dilation = nil
+		local function stopped(handle)
+			for _, id in ipairs(control.effects.stopped) do if id == handle then return true end end
+			return false
+		end
+		local playsBeforeOwn = #control.effects.entityPlays
+		Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 8000,
+			activation = 'own-1', scale = 0.15, fallbackScale = 0.5, easeMs = 250 })
+		check('the owner\'s own boost is recognised as theirs from the roster, with the network status refused ' ..
+			'(opx_infinity does not declare network.client) -- and it says so in the journal',
+			said('Sandevistan active from the server for this player') ~= nil
+				and said('Sandevistan engaged for 8000 ms') ~= nil,
+			tostring(said('Sandevistan engaged')))
+		-- And with no roster answer either, the body the platform resolves as
+		-- this machine's own (`1`) is enough.
+		local realLocal = env.Open77.players.localId
+		env.Open77.players.localId = function() return nil, 'no_session' end
+		streamed['5'] = '1'
+		Sandy.OnPhase({ player = 5, phase = 'accepted', look = 'smasher', tier = 'reflex_heavy', activation = 'own-1' })
+		check('with no roster answer, the body resolved as this machine\'s own still makes the boost theirs',
+			said('Sandevistan accepted from the server for this player') ~= nil)
+		env.Open77.players.localId = realLocal
+		streamed['5'] = nil
+		check('the owner\'s own boost flashes their screen as it engages, then holds the look\'s overlay on it',
+			#screens == 2 and screens[1].alias == look.SCREEN.START
+				and screens[2].alias == look.SCREEN.ALIAS and screens[2].options.strength == look.SCREEN.STRENGTH
+				and screens[2].options.duration == 8,
+			('%d screen(s)'):format(#screens))
+		check('and on a build without the dilation lease, the owner\'s whole view slows at the fallback rate',
+			#scales == 1 and scales[1].scale == 0.5 and scales[1].options.durationMs == 8000
+				and scales[1].options.easeMs == 250,
+			('%d time scale(s)'):format(#scales))
+		local mine, mineAt = attachedTo('1')
+		check('and Smasher\'s look goes onto the owner\'s own body by ITS slot names -- `hips`, `left_foot` -- ' ..
+			'in first person with the hands and without the head, with nothing played by a name that body does ' ..
+			'not author',
+			#control.effects.entityPlays == playsBeforeOwn and #mine == 12 and mineAt.hips == 6
+				and mineAt.left_foot == 1 and mineAt.right_foot == 1 and mineAt.Chest == 2
+				and mineAt.LeftHand == 1 and mineAt.RightHand == 1 and mineAt.Head == nil
+				and said('Sandevistan look on this player\'s own body: 12 of 12 layer(s)') ~= nil,
+			('%d layer(s) on the own body'):format(#mine))
+		Sandy.OnPhase({ player = 61, phase = 'slow', scale = 0.15, remainingMs = 5000, activation = 'other-1' })
+		check('a player in their own Sandevistan is not slowed by somebody else\'s', #scales == 1)
+		Sandy.OnPhase({ player = 5, phase = 'completed', activation = 'own-1' })
+		check('the end takes the overlay down and hands the clock back -- to the other boost still slowing them',
+			stopped('screen-2') and #scales == 3 and scales[2].scale == 1 and scales[3].scale == 0.15
+				and Sandy.Shown()[5] == nil,
+			('%d time scale(s)'):format(#scales))
+		Sandy.OnPhase({ player = 61, phase = 'release', activation = 'other-1' })
+		check('and that boost\'s release gives this machine real time again',
+			#scales == 4 and scales[4].scale == 1 and next(Sandy.SlowedBy()) == nil)
+		check('and says so in its journal',
+			said('Sandevistan: player 61\'s boost no longer slows this machine -- real time again') ~= nil)
+		Sandy.OnPhase({ player = 62, phase = 'slow', scale = 0.3, remainingMs = 1000, activation = 'other-2' })
+		check('a nearby boost slows this machine, body and all', #scales == 5 and scales[5].scale == 0.3
+			and scales[5].options.durationMs == 1000)
+		check('and the slowed machine says so in its own journal: whose boost, how slow, for how long, and which ' ..
+			'door holds its clock',
+			said('Sandevistan: player 62\'s boost slows this machine -- world 0.30 for 1000 ms, this client\'s ' ..
+				'time scale') ~= nil,
+			tostring(said('boost slows this machine')))
+		local slowedFrom = #control.serverEvents
+		control.Pump(20)
+		check('and a slowdown whose release never arrives ends at its own deadline',
+			next(Sandy.SlowedBy()) == nil and scales[#scales].scale == 1, ('%d'):format(#scales))
+		local slowedReport = nil
+		for index = slowedFrom + 1, #control.serverEvents do
+			local event = control.serverEvents[index]
+			if event.name == Event.SANDYREPORT and type(event[1]) == 'table' and event[1].role == 'slowed' then
+				slowedReport = event[1]
+			end
+		end
+		check('and once its ease has landed it reads the engine\'s clock back and tells the server -- slowed by ' ..
+			'player 62, through its own time scale -- so the server\'s journal says who really ran slow',
+			slowedReport ~= nil and slowedReport.owner == 62 and slowedReport.door == 'timescale'
+				and slowedReport.activation == 'other-2' and type(slowedReport.clock) == 'string'
+				and said('Sandevistan clock on this machine, slowed by player 62: ') ~= nil,
+			slowedReport and tostring(slowedReport.clock) or 'no report')
+		Sandy.OnPhase({ player = 5, phase = 'slow', scale = 0.15, remainingMs = 5000, activation = 'self' })
+		check('nobody is slowed by their own boost', next(Sandy.SlowedBy()) == nil)
+
+		-- WITH THE LEASE (the platform's `Open77.dilation`): the base game's
+		-- asymmetry, the world slowed and the owner's body exempt.
+		local leases = {}
+		env.Open77.dilation = {
+			authorise = function(reason, ms) leases[#leases + 1] = { 'authorise', reason, ms } return true end,
+			apply = function(request) leases[#leases + 1] = { 'apply', request } return true end,
+			release = function(reason, ease) leases[#leases + 1] = { 'release', reason, ease } return true end,
+			clear = function(reason) leases[#leases + 1] = { 'clear', reason } return true end,
+		}
+		local scalesBefore = #scales
+		Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 8000,
+			activation = 'own-2', scale = 0.15, fallbackScale = 0.5, easeMs = 250 })
+		local applied = leases[2] and leases[2][2] or {}
+		check('where the build carries the dilation lease, the owner\'s world runs at 0.15 and their body is exempt',
+			leases[1] ~= nil and leases[1][1] == 'authorise' and leases[1][2] == 'sandevistan'
+				and applied.worldScale == 0.15 and applied.exemptSelf == true
+				and applied.easeOut == 'SandevistanEaseOut' and applied.durationMs == 8000
+				and #scales == scalesBefore,
+			('%d lease call(s)'):format(#leases))
+		Sandy.OnPhase({ player = 5, phase = 'cancelled', activation = 'own-2' })
+		check('and the lease is given back when it ends',
+			leases[#leases][1] == 'clear' and leases[#leases - 1][1] == 'release'
+				and leases[#leases - 1][3] == 'SandevistanEaseOut')
+		local leasesBefore, scalesNear = #leases, #scales
+		Sandy.OnPhase({ player = 61, phase = 'slow', scale = 0.15, remainingMs = 4000, activation = 'other-3' })
+		check('a player near somebody else\'s boost runs the platform\'s time scale, body and all -- the ' ..
+			'`sandevistan` reason, and the base game\'s screen that answers to it, stay the owner\'s',
+			#leases == leasesBefore and #scales == scalesNear + 1 and scales[#scales].scale == 0.15)
+		Sandy.OnPhase({ player = 61, phase = 'release', activation = 'other-3' })
+		check('and is let go on the release', scales[#scales].scale == 1 and next(Sandy.SlowedBy()) == nil)
+		local scaleDoor = env.Open77.world.setTimeScale
+		env.Open77.world.setTimeScale = nil
+		Sandy.OnPhase({ player = 61, phase = 'slow', scale = 0.15, remainingMs = 4000, activation = 'other-4' })
+		applied = leases[leasesBefore + 2] and leases[leasesBefore + 2][2] or {}
+		check('on a build without the time scale the lease slows them instead, body and all',
+			applied.worldScale == 0.15 and applied.playerScale == 0.15 and applied.exemptSelf == false)
+		Sandy.OnPhase({ player = 61, phase = 'release', activation = 'other-4' })
+		check('and lets go on the release', leases[#leases][1] == 'clear' and next(Sandy.SlowedBy()) == nil)
+		env.Open77.world.setTimeScale = scaleDoor
+
+		-- THE BASE GAME'S OWN SCREEN. With the lease and the world's view
+		-- REDscript (opx_sandy_view, `view` on the wire), the camera's own
+		-- `Sandevistan` curve rides the `sandevistan` dilation: nothing is laid
+		-- over it.
+		local screensBefore = #screens
+		Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 6000,
+			activation = 'own-3', scale = 0.15, fallbackScale = 0.5, easeMs = 250, view = true })
+		local last = leases[#leases]
+		check('with the lease and the view REDscript shipped, the owner\'s screen is the base game\'s own: ' ..
+			'the `sandevistan` dilation with them exempt, and no stand-in over it',
+			#screens == screensBefore and last[1] == 'apply' and last[2].reason == 'sandevistan'
+				and last[2].exemptSelf == true and last[2].worldScale == 0.15,
+			('%d screen(s)'):format(#screens - screensBefore))
+		Sandy.OnPhase({ player = 5, phase = 'completed', activation = 'own-3' })
+		env.Open77.dilation = nil
+		Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 6000,
+			activation = 'own-4', scale = 0.15, fallbackScale = 0.5, easeMs = 250, view = true })
+		check('and without the lease the curve has no dilation to ride, so the stand-in plays after all',
+			#screens == screensBefore + 2)
+		Sandy.OnPhase({ player = 5, phase = 'completed', activation = 'own-4' })
+		env.Open77.dilation = nil
+
+		-- END TO END, off the server's own payloads: one Apogee boost as the
+		-- owner's machine (player 61) and as the machine of the player who
+		-- walked into it (63) see it, on a build without the lease.
+		local function replay(me)
+			env.Open77.players.localId = function() return me end
+			streamed['61'] = me == 61 and '1' or '4242'
+			local from = { screens = #screens, scales = #scales, plays = #control.effects.entityPlays,
+				stopped = #control.effects.stopped }
+			local seen = {}
+			for _, sent in ipairs(sandyWire) do
+				if sent.to == -1 or sent.to == me then
+					Sandy.OnPhase(sent.payload)
+					seen[#seen + 1] = sent.payload.phase
+					if sent.payload.phase == 'active' then
+						from.duringScales = #scales
+						from.shown = Sandy.Shown()[61] ~= nil
+						from.plays2 = #control.effects.entityPlays
+					end
+				end
+			end
+			return from, table.concat(seen, ',')
+		end
+		local owner, ownerSaw = replay(61)
+		check('the owner\'s machine, fed the server\'s own wire, engages the whole Sandevistan: nothing played by ' ..
+			'a name their own body does not author, the stand-in on their screen while the view is not shipped, ' ..
+			'their world slowed',
+			ownerSaw == 'accepted,active,completed' and owner.shown
+				and owner.plays2 == owner.plays
+				and #screens - owner.screens == 2 and screens[#screens].alias == look.SCREEN.ALIAS
+				and scales[owner.scales + 1] ~= nil and scales[owner.scales + 1].scale == look.TIME.SELF_FALLBACK_SCALE,
+			ownerSaw)
+		check('and the wire\'s end takes all of it down and hands their clock back',
+			Sandy.Shown()[61] == nil and stopped('screen-' .. #screens) and scales[#scales].scale == 1)
+		local near, nearSaw = replay(63)
+		check('the machine of a player standing in it draws the look on the owner\'s body and runs slow for it',
+			nearSaw == 'accepted,active,slow,release,completed' and near.shown
+				and playsOn('4242', near.plays + 1)['eye_glow_gold'] ~= nil
+				and #screens == near.screens
+				and scales[near.scales + 1] ~= nil and scales[near.scales + 1].scale == look.TIME.NEARBY_SCALE,
+			nearSaw)
+		check('and is handed real time back, with the look taken down',
+			scales[#scales].scale == 1 and Sandy.Shown()[61] == nil and next(Sandy.SlowedBy()) == nil)
+		env.Open77.players.localId = function() return 5 end
+		env.Open77.world.setTimeScale = realScale
+
+		-- THE VIEW RESOURCE (extras/opx_sandy_view): a preload carrying the one
+		-- REDscript that sets the camera's `Sandevistan` curve, the way
+		-- `SandevistanEvents.OnEnter` does, the frame a `sandevistan` dilation
+		-- lands. Compiled against the 2.31 scripts off-line; here, the shape.
+		local function slurp(path)
+			local handle = io.open(path, 'r')
+			if handle == nil then return '' end
+			local text = handle:read('a')
+			handle:close()
+			return text
+		end
+		local manifest = slurp('extras/opx_sandy_view/open77.lua')
+		local reds = slurp('extras/opx_sandy_view/src/r6/scripts/opx_infinity/OpxSandevistanView.reds')
+		check('the view resource preloads its package and has a client half to say it is up',
+			manifest:find('resource "opx_sandy_view"', 1, true) ~= nil
+				and manifest:find('preload_mod "dist/opx_sandy_view.zip"', 1, true) ~= nil
+				and manifest:find('client_script "client/main.lua"', 1, true) ~= nil
+				and slurp('extras/opx_sandy_view/client/main.lua') ~= '')
+		check('and its REDscript sets the base game\'s own curve, on the base game\'s own reason, from the ' ..
+			'player state machine',
+			reds:find('@wrapMethod(StaminaTransition)', 1, true) ~= nil
+				and reds:find('SetCameraTimeDilationCurve(n"Sandevistan")', 1, true) ~= nil
+				and reds:find('IsTimeDilationActive(n"sandevistan")', 1, true) ~= nil
+				and reds:find('wrappedMethod(timeDelta, stateContext, scriptInterface)', 1, true) ~= nil)
+		-- V's own per-frame function (the model's watch has a boost test of its own).
+		local viewFunction = reds:match('public static func OpxSandevistanView%((.-)\n}') or ''
+		local boostBlock = viewFunction:match('if boost {(.-)} else {') or ''
+		-- The owner's own real-time watch: the stamina machine's update does not
+		-- run every frame in a session (1.3.1's log saw a boost start and never end).
+		local ownerStep = reds:match('public static func OpxSandevistanOwnerStep%((.-)\n}') or ''
+		check('the REDscript holds the exemption EVERY frame the boost is live (vanilla\'s own clean-ups reset ' ..
+			'it), and the owner\'s own real-time watch holds it too, lights the keyboard like the base game, ' ..
+			'hands both back the moment the boost ends and writes each change to the client log',
+			boostBlock:find('SetIgnoreTimeDilationOnLocalPlayerZero(true)', 1, true) ~= nil
+				and boostBlock:find('exempt', 1, true) ~= nil
+				and ownerStep:find('SetIgnoreTimeDilationOnLocalPlayerZero(true)', 1, true) ~= nil
+				and ownerStep:find('SetIgnoreTimeDilationOnLocalPlayerZero(false)', 1, true) ~= nil
+				and ownerStep:find('PlayAnimation(n"SlowMotion", true)', 1, true) ~= nil
+				and ownerStep:find('StopAnimation(n"SlowMotion")', 1, true) ~= nil
+				and reds:find('OpxSandevistanOwnerWatch(this)', 1, true) ~= nil
+				and reds:find('Open77PlayerResetTrace(line)', 1, true) ~= nil
+				and reds:find('IsIgnoringGlobalTimeDilation()', 1, true) ~= nil
+				and reds:find('native func Open77PlayerResetTrace', 1, true) == nil
+				and reds:find('if !asked {', 1, true) ~= nil
+				and reds:find('tenths', 1, true) == nil and reds:find('IsControlledByLocalPeer()', 1, true) ~= nil
+				and manifest:find('version "1.4.8"', 1, true) ~= nil)
+		check('and exempts this body from the owner\'s own clock -- the view\'s claim, reason open77:opx_sandy_view ' ..
+			'-- the way SetTimeDilationGlobal does for `sandevistan`, and gives it back on a new body',
+			reds:find('IsTimeDilationActive(n"open77:opx_sandy_view")', 1, true) ~= nil
+				and reds:find('SetIgnoreTimeDilationOnLocalPlayerZero(true)', 1, true) ~= nil
+				and reds:find('SetIgnoreTimeDilationOnLocalPlayerZero(false)', 1, true) ~= nil
+				and reds:find('@wrapMethod(PlayerPuppet)', 1, true) ~= nil
+				and manifest:find('permissions { "world.timescale" }', 1, true) ~= nil)
+		-- THE OWNER'S THIRD-PERSON MODEL: the platform's self-view body, an
+		-- NPCPuppet on V's own template the world's dilation would slow. Its
+		-- template (`player_proxy_{ma,wa}_mirror.ent`) authors Smasher's start
+		-- pair, the loop file of his `fx_sandevistan_loop` and `eye_glow_gold`.
+		check('the view\'s REDscript keeps the owner\'s third-person model as fast as V, puts Smasher\'s own ' ..
+			'Sandevistan on it by name only while the camera is really behind it, and hands both back',
+			reds:find('@wrapMethod(NPCPuppet)', 1, true) ~= nil
+				and reds:find('t"Character.Open77ProxyMaleMirror"', 1, true) ~= nil
+				and reds:find('t"Character.Open77ProxyFemaleMirror"', 1, true) ~= nil
+				and reds:find('SetIndividualTimeDilation(n"opx_sandy_view", 1.0, 30.0, n"None", n"None", true, true)',
+					1, true) ~= nil
+				and reds:find('UnsetIndividualTimeDilation()', 1, true) ~= nil
+				-- 1.4.4: the eye glow only; the NPC Sandevistan's screen-space
+				-- echoes (left/right, the versus loop) smeared copies of the screen
+				-- around the body and are no longer started -- only stopped.
+				and reds:find('StartEffectEvent(body, n"fx_sandevistan_versus_loop")', 1, true) == nil
+				and reds:find('StartEffectEvent(body, n"eye_glow_gold")', 1, true) ~= nil
+				and reds:find('StartEffectEvent(body, n"fx_sandevistan_left")', 1, true) == nil
+				and reds:find('StartEffectEvent(body, n"fx_sandevistan_right")', 1, true) == nil
+				and reds:find('StopEffectEvent(body, n"eye_glow_gold")', 1, true) ~= nil
+				and reds:find('StopEffectEvent(body, n"fx_sandevistan_versus_loop")', 1, true) ~= nil
+				and reds:find('GetActiveCameraWorldTransform(camera)', 1, true) ~= nil
+				and reds:find('extends DelayCallback', 1, true) ~= nil
+				and reds:find('DelayCallback(tick, 0.25, false)', 1, true) ~= nil
+				and reds:find('DelayCallback(next, interval, false)', 1, true) ~= nil
+				and reds:find('third-person model on V', 1, true) ~= nil
+				-- redscript 0.5 has no `continue`; the game's compiler would refuse the whole bundle.
+				and reds:find('continue;', 1, true) == nil)
+		-- THE ATTACH WRAP RUNS ON THE ENGINE'S WORKER THREADS, MANY BODIES AT
+		-- ONCE (1.3.0 crashed a few seconds into the world by rewriting one
+		-- shared list from it): it may read the attaching body's own record and
+		-- start that body's own watch, and nothing else.
+		local attachWrap = reds:match('@wrapMethod%(NPCPuppet%)(.-)\n}') or ''
+		check('and the NPC attach wrap shares nothing between bodies: no list, no scriptable system, no ' ..
+			'field, no crowd lookup -- the record, then the self view\'s body\'s own watch',
+			attachWrap:find('GetRecordID()', 1, true) ~= nil
+				and attachWrap:find('OpxSandevistanModelWatch(this)', 1, true) ~= nil
+				and attachWrap:find('GetScriptableSystemsContainer', 1, true) == nil
+				and attachWrap:find('ArrayPush', 1, true) == nil
+				and attachWrap:find('IsCrowd', 1, true) == nil
+				and attachWrap:find('this.m_', 1, true) == nil
+				and reds:find('ScriptableSystem', 1, true) == nil
+				and reds:find('m_others', 1, true) == nil,
+			attachWrap)
+		local bodyLayers = 0
+		for _, spec in ipairs(look.LAYERS) do
+			if spec.body == true then bodyLayers = bodyLayers + 1 end
+		end
+		check('and the look marks exactly those three as worn by the model itself',
+			bodyLayers == 3, tostring(bodyLayers))
+
+		-- THE REAL ITEM (1.4.0): the base game's own Militech Apogee in the
+		-- Operating System slot, asked for through the clock.
+		-- 1.4.2: the item is looked up in the inventory BY ITS RECORD -- an id
+		-- made from the record is not the one the inventory holds (1.4.1's log:
+		-- "NOT fitted after 5 tries (not in the inventory)", while the base game's
+		-- EquipRequest gave a new Apogee on every try) -- given only when there is
+		-- none, fitted on that very id and read back from the slot.
+		local wear = reds:match('public static func OpxSandevistanWear%((.-)\n}') or ''
+		check('the REDscript reads the view\'s message claim (0.999 - code / 10000, two agreeing samples), ' ..
+			'knows only the Apogee, finds it in the inventory by its record, gives it only when there is none, ' ..
+			'fits that very item and reads the slot back, and takes off only what it fitted -- every copy',
+			reds:find('OpxSandevistanClaimCode(scale)', 1, true) ~= nil
+				and reds:find('RoundF((0.999 - scale) * 10000.0)', 1, true) ~= nil
+				and reds:find('tick.codeSeen == 2', 1, true) ~= nil
+				and reds:find('t"Items.AdvancedSandevistanApogee"', 1, true) ~= nil
+				and (wear:find('OpxSandevistanOwned(player, transactions, wanted)', 1, true) or math.huge)
+					< (wear:find('transactions.GiveItem(player, ItemID.FromTDBID(wanted), 1)', 1, true) or -1)
+				and wear:find('new GameplayEquipRequest()', 1, true) ~= nil
+				and wear:find('request.itemID = item;', 1, true) ~= nil
+				and wear:find('request.addToInventory = false;', 1, true) ~= nil
+				and wear:find('data.OnGameplayEquipRequest(request);', 1, true) ~= nil
+				and wear:find('data.GetActiveItem(gamedataEquipmentArea.SystemReplacementCW)', 1, true) ~= nil
+				and wear:find('new EquipRequest()', 1, true) == nil
+				and wear:find('GetItemData(tick.game, player, ItemID.FromTDBID(wanted))', 1, true) == nil
+				and reds:find('transactions.GetItemList(player, items)', 1, true) ~= nil
+				and reds:find('ItemID.GetTDBID(items[i].GetID()) == record', 1, true) ~= nil
+				and wear:find('new UnequipRequest()', 1, true) ~= nil
+				and wear:find('RemoveItemByTDBID(player, gone, copies, true)', 1, true) ~= nil
+				and reds:find('SetFact(n"opx_sandy_wear", code)', 1, true) ~= nil
+				and reds:find('n"opx_sandy_fitted"', 1, true) ~= nil)
+		check('and while the ripperdoc asks for one, the base game\'s own Sandevistan activation is off',
+			reds:find('@wrapMethod(SandevistanDecisions)', 1, true) ~= nil
+				and reds:find('GetFact(scriptInterface.GetGame(), n"opx_sandy_wear") != 0', 1, true) ~= nil
+				and ripperdoc.Settings.SANDEVISTAN.WEAR.apogee_sandevistan == 1)
+
+		-- SMASHER'S GHOST TRAIL ON THE PLAYER'S OWN MODEL. 1.4.2-1.4.5 left
+		-- the copies to his shader (`customParameter0` from his effect): the
+		-- parts lit, the effect started, and no trail showed. 1.4.6 draws the
+		-- afterimages itself: four layers of the ghost's parts, each placed
+		-- every frame where the body was k x 0.08 s before.
+		local ghostParts = {}
+		local layerBody = reds:match('public static func OpxSandyLayerParts%((.-)\n}') or ''
+		for name in layerBody:gmatch('n"(opx_sandy_ghost%d_[%w_]+)"') do ghostParts[#ghostParts + 1] = name end
+		local expectedParts = {}
+		for layer = 1, 4 do
+			for _, kind in ipairs({ 'body', 'arm_l', 'arm_r', 'head' }) do
+				expectedParts[#expectedParts + 1] = ('opx_sandy_ghost%d_%s'):format(layer, kind)
+			end
+		end
+		local partsInOrder = #ghostParts == #expectedParts
+		for index, name in ipairs(expectedParts) do
+			if ghostParts[index] ~= name then partsInOrder = false end
+		end
+		local allParts = reds:match('public static func OpxSandyGhostParts%(%)(.-)\n}') or ''
+		local ghostSet = reds:match('public final func OpxSandyGhostSet%(on: Bool%)(.-)\n}') or ''
+		local ghostWhat = reds:match('public final func OpxSandyGhostWhat%(%)(.-)\n}') or ''
+		local ghostLight = reds:match('public static func OpxSandyGhostLight%((.-)\n}') or ''
+		local ghostDrive = reds:match('public static func OpxSandyGhostDrive%((.-)\n}') or ''
+		local ghostOff = reds:match('public static func OpxSandyGhostOff%((.-)\n}') or ''
+		local spawnCb = reds:match('protected cb func OnOpxSandyGhostSpawn%(evt: ref<entSpawnEffectEvent>%)(.-)\n}') or ''
+		local killCb = reds:match('protected cb func OnOpxSandyGhostKill%(evt: ref<entKillEffectEvent>%)(.-)\n}') or ''
+		local ghostStep = reds:match('public static func OpxSandyGhostStep%((.-)\n}') or ''
+		local partsSet = reds:match('public final func OpxSandyPartsSet%(parts: array<CName>, on: Bool, unhide: Bool%)(.-)\n}') or ''
+		local layerPlace = reds:match('public final func OpxSandyLayerPlace%((.-)\n}') or ''
+		local trailOn = reds:match('public static func OpxSandyTrailOn%((.-)\n}') or ''
+		local trailOff = reds:match('public static func OpxSandyTrailOff%((.-)\n}') or ''
+		local trailFrame = reds:match('public static func OpxSandyTrailFrame%((.-)\n}') or ''
+		local trailStep = reds:match('public static func OpxSandyTrailStep%((.-)\n}') or ''
+		local staminaHook = reds:match('@wrapMethod%(StaminaTransition%)(.-)\n}') or ''
+		local function returns(name, value)
+			local body = reds:match('public static func ' .. name .. '%(%)(.-)\n}') or ''
+			return body:find('return ' .. value .. ';', 1, true) ~= nil
+		end
+		check('the REDscript knows four layers of the ghost\'s parts -- the player\'s own body, arms and head, ' ..
+			'opx_sandy_ghost1_* to opx_sandy_ghost4_* -- places them 0.08 s apart, shows a layer from 0.35 m ' ..
+			'behind the body and hides it again under 0.25 m',
+			partsInOrder and returns('OpxSandyTrailLayers', '4') and returns('OpxSandyTrailSpacing', '0.08')
+				and returns('OpxSandyTrailShowAt', '0.35') and returns('OpxSandyTrailHideAt', '0.25')
+				and allParts:find('let some: array<CName> = OpxSandyLayerParts(layer);', 1, true) ~= nil
+				and ghostSet:find('return this.OpxSandyPartsSet(OpxSandyGhostParts(), on, false);', 1, true) ~= nil
+				and partsSet:find('if NotEquals(component.IsEnabled(), on) {', 1, true) ~= nil
+				and partsSet:find('component.Toggle(on);', 1, true) ~= nil,
+			('%d part(s)'):format(#ghostParts))
+		local ticker = reds:match('public class OpxSandyTrailTicker extends DelayCallback {(.-)\n}') or ''
+		local trailTick = reds:match('public static func OpxSandyTrailTick%((.-)\n}') or ''
+		check('every frame -- a 5 ms real-time timer of the delay system (the stamina machine\'s update does not ' ..
+			'run every frame in a session, and 1.4.6\'s next-frame callback ran twice and stopped), restarted ' ..
+			'when it stops, and the lighting watch every tenth of a second -- every lit body\'s afterimages are placed ' ..
+			'once: the body\'s place and turn recorded, a jump of more than 4 m starting the history again, and ' ..
+			'each layer put where the body was, between the two frames around that moment, relative to where it ' ..
+			'is now',
+			ticker:find('OpxSandyTrailFrame(player);', 1, true) ~= nil
+				and ticker:find('DelayCallback(next, 0.005, false);', 1, true) ~= nil
+				and reds:find('DelayCallbackNextFrame', 1, true) == nil
+				and ghostDrive:find('OpxSandyTrailFrame(GetPlayer(body.GetGame()));', 1, true) ~= nil
+				and ticker:find('player.opxSandyTrailTicking = false;', 1, true) ~= nil
+				and trailTick:find('DelayCallback(ticker, 0.005, false);', 1, true) ~= nil
+				and trailTick:find('now - player.opxSandyTrailClock < 0.5', 1, true) ~= nil
+				and trailOn:find('OpxSandyTrailTick(player);', 1, true) ~= nil
+				and staminaHook:find('OpxSandyTrailFrame', 1, true) == nil
+				and reds:find('@addField(PlayerPuppet)\npublic let opxSandyTrails: array<ref<OpxSandyTrail>>;', 1, true) ~= nil
+				and trailFrame:find('EngineTime.ToFloat(GameInstance.GetEngineTime(player.GetGame()))', 1, true) ~= nil
+				and trailFrame:find('if now <= player.opxSandyTrailClock {', 1, true) ~= nil
+				and trailFrame:find('if !IsDefined(body) || !body.IsAttached() {', 1, true) ~= nil
+				and trailFrame:find('OpxSandyTrailStep(trail, body, now, eye, hasEye);', 1, true) ~= nil
+				and trailStep:find('let here: Vector4 = body.GetWorldPosition();', 1, true) ~= nil
+				and trailStep:find('let turn: Quaternion = body.GetWorldOrientation();', 1, true) ~= nil
+				and trailStep:find('if Vector4.Length(jump) > 4.0 {', 1, true) ~= nil
+				and trailStep:find('let at: Float = now - Cast<Float>(layer) * OpxSandyTrailSpacing();', 1, true) ~= nil
+				and trailStep:find('Vector4.Lerp(trail.places[k], trail.places[k + 1], (at - trail.times[k]) / span)', 1, true) ~= nil
+				and trailStep:find('show = distance > OpxSandyTrailHideAt();', 1, true) ~= nil
+				and trailStep:find('show = distance > OpxSandyTrailShowAt();', 1, true) ~= nil
+				and trailStep:find('placed = Quaternion.TransformInverse(turn, away);', 1, true) ~= nil
+				and trailStep:find('turned = Quaternion.Conjugate(turn) * trail.turns[k];', 1, true) ~= nil
+				and trailStep:find('body.OpxSandyLayerPlace(layer, show, placed, turned);', 1, true) ~= nil
+				-- never inside the camera: the third-person camera trails the body
+				-- by about as far as the farthest afterimage
+				and returns('OpxSandyTrailClearOfCamera', '0.9')
+				and trailFrame:find('cameras.GetActiveCameraWorldTransform(camera)', 1, true) ~= nil
+				and trailStep:find('if Vector4.Length(fromEye) < OpxSandyTrailClearOfCamera() {', 1, true) ~= nil)
+		check('a layer that shows is moved by its own placement, switched on if something switched it off and ' ..
+			'UN-HIDDEN every frame (Open77 hides every skinned mesh of a body it dresses or parks); one that does ' ..
+			'not is moved back onto the body and hidden',
+			layerPlace:find('visual.SetLocalPosition(placed);', 1, true) ~= nil
+				and layerPlace:find('visual.SetLocalOrientation(turned);', 1, true) ~= nil
+				and layerPlace:find('visual.Toggle(true);', 1, true) ~= nil
+				and layerPlace:find('visual.TemporaryHide(false);', 1, true) ~= nil
+				and layerPlace:find('visual.SetLocalPosition(new Vector4(0.0, 0.0, 0.0, 1.0));', 1, true) ~= nil
+				and layerPlace:find('visual.TemporaryHide(true);', 1, true) ~= nil
+				and (layerPlace:find('visual.TemporaryHide(false);', 1, true) or math.huge)
+					< (layerPlace:find('visual.TemporaryHide(true);', 1, true) or -1)
+				and reds:find('OpxSandyProbe', 1, true) == nil
+				and reds:find('opx_sandy_probe', 1, true) == nil)
+		check('lighting a body switches every part on, hidden on the body, and keeps its afterimages from that ' ..
+			'frame on; its step keeps the parts on and the body kept; off, the afterimages go first, then every ' ..
+			'part -- and Smasher\'s effect is played by nothing any more',
+			ghostLight:find('run.parts = body.OpxSandyGhostSet(true);', 1, true) ~= nil
+				and ghostLight:find('body.OpxSandyLayerPlace(layer, false,', 1, true) ~= nil
+				and ghostLight:find('OpxSandyTrailOn(body, who);', 1, true) ~= nil
+				and ghostDrive:find('let parts: Int32 = body.OpxSandyGhostSet(true);', 1, true) ~= nil
+				and ghostDrive:find('OpxSandyTrailOn(body, who);', 1, true) ~= nil
+				and trailOn:find('if Equals(player.opxSandyTrails[i].id, id) {', 1, true) ~= nil
+				and trailOn:find('ArrayPush(player.opxSandyTrails, trail);', 1, true) ~= nil
+				and trailOff:find('ArrayErase(player.opxSandyTrails, i);', 1, true) ~= nil
+				and (ghostOff:find('OpxSandyTrailOff(body);', 1, true) or math.huge)
+					< (ghostOff:find('body.OpxSandyGhostSet(false);', 1, true) or -1)
+				and reds:find('opx_sandy_ghost_x150', 1, true) == nil
+				and reds:find('StartEffectEvent(body, run.effect', 1, true) == nil
+				and reds:find('opx_sandy_ghost_trail', 1, true) == nil
+				and reds:find('opx_sandy_ghost_hold', 1, true) == nil
+				and reds:find('opx_sandy_ghost_high', 1, true) == nil
+				and reds:find('OpxSandyGhostNextTrial', 1, true) == nil
+				and reds:find('opx_sandy_trial', 1, true) == nil)
+		check('and every lighting says what the body really carries -- the parts, their class, how many the ' ..
+			'engine says are on, whether the spawner came with them -- a body re-dressed mid-boost is said, ' ..
+			'and the afterimages say how often they are placed and how many show',
+			ghostWhat:find('GetClassName()', 1, true) ~= nil
+				and ghostWhat:find('component.IsEnabled()', 1, true) ~= nil
+				and ghostWhat:find('n"opx_sandy_ghost_fx"', 1, true) ~= nil
+				and ghostLight:find('OpxSandyGhostWhat()', 1, true) ~= nil
+				and ghostDrive:find('if parts != run.parts {', 1, true) ~= nil
+				and trailStep:find('"opx_sandy_view afterimages: " + trail.who + " -- placed "', 1, true) ~= nil
+				and trailStep:find('if showing != trail.saidShowing && now - trail.saidAt >= 0.5 {', 1, true) ~= nil)
+		-- The build script: four layers of the same four parts, and Smasher's
+		-- peak kept as one held effect (played by nothing).
+		local ghostBuild = slurp('extras/opx_sandy_view/tools/ghost/build.py')
+		check('the build script gives every player body four layers of the ghost\'s parts and keeps Smasher\'s ' ..
+			'peak as one effect held from its first frame to its last',
+			ghostBuild:find('LAYERS = 4', 1, true) ~= nil
+				and ghostBuild:find("PART_KINDS = ['body', 'arm_l', 'arm_r', 'head']", 1, true) ~= nil
+				and ghostBuild:find("STRENGTHS = [('x150', 1.50)]", 1, true) ~= nil
+				and ghostBuild:find("save(held_effect([(0, peak), (1, peak)], 16), 'opx_sandy_ghost_%s.effect.json' % tag)",
+					1, true) ~= nil
+				and ghostBuild:find('(0.995, peak)', 1, true) == nil)
+		check('and every other player\'s copy of a boosted player answers the look\'s trigger with a watch of its ' ..
+			'own: the ghost lit as soon as the body has its parts (a body still dressing has none yet) and it is ' ..
+			'not seated in a vehicle, driven every tenth of a second, and off when the trigger stops, a newer ' ..
+			'trigger supersedes it, or the body leaves',
+			spawnCb:find('n"opx_sandy_ghost_on"', 1, true) ~= nil
+				and spawnCb:find('this.opxSandyGhostWanted = true;', 1, true) ~= nil
+				and spawnCb:find('OpxSandyGhostWatch(this, this.opxSandyGhostGen);', 1, true) ~= nil
+				and killCb:find('n"opx_sandy_ghost_on"', 1, true) ~= nil
+				and killCb:find('this.opxSandyGhostWanted = false;', 1, true) ~= nil
+				and killCb:find('OpxSandyGhostOff(this)', 1, true) ~= nil
+				and ghostStep:find('body.opxSandyGhostGen != tick.gen || !body.opxSandyGhostWanted', 1, true) ~= nil
+				and (ghostStep:find('body.OpxSandyGhostFound() > 0', 1, true) or math.huge)
+					< (ghostStep:find('OpxSandyGhostLight(body, "a boosted player\'s body")', 1, true) or -1)
+				and (ghostStep:find('if VehicleComponent.IsMountedToVehicle(tick.game, body) {', 1, true) or math.huge)
+					< (ghostStep:find('OpxSandyGhostLight(body, "a boosted player\'s body")', 1, true) or -1)
+				and ghostStep:find('OpxSandyGhostDrive(body, tick.run, interval, "a boosted player\'s body")', 1, true) ~= nil
+				and ghostStep:find('OpxSandyGhostOff(body)', 1, true) ~= nil
+				and ghostStep:find('DelayCallback(next, interval, false)', 1, true) ~= nil
+				and reds:find('@addField(NPCPuppet)\npublic let opxSandyGhostGen: Int32;', 1, true) ~= nil
+				and reds:find('@addField(NPCPuppet)\npublic let opxSandyGhostWanted: Bool;', 1, true) ~= nil
+				and reds:find('@addMethod(NPCPuppet)\nprotected cb func OnOpxSandyGhostSpawn', 1, true) ~= nil
+				and reds:find('@addMethod(NPCPuppet)\nprotected cb func OnOpxSandyGhostKill', 1, true) ~= nil)
+		local pace = reds:match('public static func OpxSandyGhostPace%((.-)\n}') or ''
+		local unpace = reds:match('public static func OpxSandyGhostUnpace%((.-)\n}') or ''
+		local readyStep = reds:match('public static func OpxSandyGhostReadyStep%((.-)\n}') or ''
+		local readBack = reds:match('public final func OpxSandyLayerReadBack%((.-)\n}') or ''
+		check('on every machine a boost slows, the boosted player\'s body keeps full speed for the boost -- the ' ..
+			'exemption the owner\'s own model gets -- and runs with the world again when the trigger stops or the ' ..
+			'body leaves; its line says whether this machine is slowed by it (opx_infinity\'s claim)',
+			pace:find('SetIndividualTimeDilation(n"opx_sandy_view", 1.0, 30.0, n"None", n"None", true, true);', 1,
+					true) ~= nil
+				and pace:find('if !body.HasIndividualTimeDilation(n"opx_sandy_view") {', 1, true) ~= nil
+				and pace:find('IsTimeDilationActive(n"open77:opx_infinity")', 1, true) ~= nil
+				and unpace:find('body.UnsetIndividualTimeDilation();', 1, true) ~= nil
+				and ghostStep:find('tick.pace = OpxSandyGhostPace(body, tick.game, tick.pace);', 1, true) ~= nil
+				and (ghostStep:find('OpxSandyGhostUnpace(body);', 1, true) or math.huge)
+					< (ghostStep:find('tick.pace = OpxSandyGhostPace', 1, true) or -1)
+				and killCb:find('OpxSandyGhostUnpace(this);', 1, true) ~= nil)
+		check('the third-person model says once how many ghost parts this game gives player bodies -- or, with ' ..
+			'none after five seconds, that this game does not load the archive\'s copy of V\'s body -- and the ' ..
+			'afterimage lines read the farthest shown one back from the engine',
+			readyStep:find('body.OpxSandyGhostFound()', 1, true) ~= nil
+				and readyStep:find("this game gives player bodies the ghost trail's parts", 1, true) ~= nil
+				and readyStep:find('does not load opx_sandy_ghost.archive', 1, true) ~= nil
+				and reds:find('tick.checks = OpxSandyGhostReadyStep(body, tick.checks);', 1, true) ~= nil
+				and reds:find('next.checks = tick.checks;', 1, true) ~= nil
+				and readBack:find('Matrix.GetTranslation(visual.GetLocalToWorld())', 1, true) ~= nil
+				and trailStep:find('body.OpxSandyLayerReadBack(farLayer)', 1, true) ~= nil
+				and reds:find('has no ArchiveXL patch', 1, true) == nil)
+		check('and the owner\'s own third-person model wears it while the camera is behind it, driven every step, ' ..
+			'never in first person',
+			reds:find('tick.run = OpxSandyGhostLight(body, "the owner\'s third-person model");', 1, true) ~= nil
+				and reds:find('tick.ghost = OpxSandyGhostDrive(body, tick.run, interval, "the owner\'s third-person model");',
+					1, true) ~= nil
+				and reds:find('next.run = tick.run;', 1, true) ~= nil
+				and (reds:match('public static func OpxSandevistanModelUnlight%((.-)\n}') or '')
+					:find('OpxSandyGhostOff(body)', 1, true) ~= nil)
+		local triggered = false
+		for _, name in ipairs(type(look.LOOP) == 'table' and look.LOOP or {}) do
+			if name == 'opx_sandy_ghost_on' then triggered = true end
+		end
+		check('the look plays the trigger on everybody else\'s copy of the owner for the whole boost', triggered)
+
+		-- THE ARCHIVE: V's own two body files with the parts in them, the
+		-- player's own meshes and the shader's material, made from the base
+		-- game's own files, every segment stored (read back here from its own
+		-- RDAR index: FNV-1a 64 path hashes, stored = zSize equals size).
+		-- 1.4.8: no ArchiveXL patch -- a game without ArchiveXL (the second
+		-- player's, 2026-09-27: RED4ext loaded Open77 alone) never got the parts.
+		local archive = ''
+		local archiveHandle = io.open('extras/opx_sandy_view/src/archive/pc/mod/opx_sandy_ghost.archive', 'rb')
+		if archiveHandle ~= nil then
+			archive = archiveHandle:read('a')
+			archiveHandle:close()
+		end
+		local xl = slurp('extras/opx_sandy_view/src/archive/pc/mod/opx_sandy_ghost.xl')
+		local function fnv64(text)
+			local hash = -3750763034362895579 -- 0xcbf29ce484222325
+			text = text:lower()
+			for index = 1, #text do
+				hash = (hash ~ text:byte(index)) * 1099511628211
+			end
+			return hash
+		end
+		local archived, allStored, segmentCount, fileTotal = {}, true, 0, 0
+		if archive:sub(1, 4) == 'RDAR' then
+			local _, indexAt = string.unpack('<I4I8', archive, 5)
+			local base = indexAt + 1
+			local fileCount, segmentTotal = string.unpack('<I4I4', archive, base + 16)
+			fileTotal = fileCount
+			local at = base + 28
+			for _ = 1, fileCount do
+				archived[string.unpack('<i8', archive, at)] = true
+				at = at + 56
+			end
+			for _ = 1, segmentTotal do
+				local _, zsize, size = string.unpack('<I8I4I4', archive, at)
+				if zsize ~= size then allStored = false end
+				at = at + 16
+				segmentCount = segmentCount + 1
+			end
+		end
+		local shipped = { 'base\\characters\\common\\player_base_bodies\\appearances\\t0_000_base__full.app',
+			'base\\characters\\common\\player_base_bodies\\appearances\\t0_000_base__full_censored.app',
+			'opx\\sandy\\ghost\\opx_sandy_ghost.mi',
+			'opx\\sandy\\ghost\\opx_sandy_ghost_x150.effect',
+			'opx\\sandy\\ghost\\v_body_ma.mesh', 'opx\\sandy\\ghost\\v_body_wa.mesh',
+			'opx\\sandy\\ghost\\v_head_ma.mesh', 'opx\\sandy\\ghost\\v_head_wa.mesh',
+			'opx\\sandy\\ghost\\v_arm_l_ma.mesh', 'opx\\sandy\\ghost\\v_arm_r_ma.mesh',
+			'opx\\sandy\\ghost\\v_arm_l_wa.mesh', 'opx\\sandy\\ghost\\v_arm_r_wa.mesh' }
+		local present, smasherParts = 0, 0
+		for _, path in ipairs(shipped) do
+			if archived[fnv64(path)] then present = present + 1 end
+		end
+		for _, path in ipairs({ 'opx\\sandy\\ghost\\smasher_arms.mesh', 'opx\\sandy\\ghost\\smasher_head.mesh',
+			'opx\\sandy\\ghost\\smasher_armor.mesh' }) do
+			if archived[fnv64(path)] then smasherParts = smasherParts + 1 end
+		end
+		check('the view ships the ghost\'s archive -- V\'s own two body files with the parts in every ' ..
+			'appearance, the player\'s own body, arms and head for both genders on Smasher\'s Sandevistan shader, ' ..
+			'and that material; nothing of Smasher\'s body; every segment stored -- and no ArchiveXL patch, so a ' ..
+			'game without ArchiveXL gets the parts too',
+			present == #shipped and smasherParts == 0 and fileTotal == #shipped and allStored
+				and not archived[fnv64('opx\\sandy\\ghost\\opx_sandy_ghost_patch.app')]
+				and archive:find('t0_000_pma_base__full', 1, true) ~= nil
+				and archive:find('t0_000_pwa_base__full', 1, true) ~= nil
+				and archive:find('t0_000_pwa_base__01_ca_pale', 1, true) ~= nil
+				and segmentCount > #shipped
+				and archive:find('opx\\sandy\\ghost\\opx_sandy_ghost.mi', 1, true) ~= nil
+				and archive:find('base\\fx\\_shaders\\sandevistan_multilayer.mt', 1, true) ~= nil
+				and archive:find('ml_t0_002_mm_armor__adam_smasher.mlsetup', 1, true) ~= nil
+				-- 1.4.2: the parts are V's own garment components, the effects are
+				-- the archive's own material tracks with no loop marker.
+				and archive:find('entGarmentSkinnedMeshComponent', 1, true) ~= nil
+				and archive:find('effectTrackItemMaterialParameter', 1, true) ~= nil
+				and archive:find('effectTrackItemLoopMarker', 1, true) == nil
+				-- 1.4.6: four layers of parts, one held effect, none of the test
+				-- build's probes and none of the calibration strengths.
+				and archive:find('opx_sandy_ghost1_body', 1, true) ~= nil
+				and archive:find('opx_sandy_ghost4_head', 1, true) ~= nil
+				and archive:find('opx_sandy_ghost_x150', 1, true) ~= nil
+				and archive:find('opx_sandy_ghost_x010', 1, true) == nil
+				and archive:find('opx_sandy_ghost_trail', 1, true) == nil
+				and archive:find('opx_sandy_probe', 1, true) == nil
+				and xl == ''
+				and manifest:find('\ndependency', 1, true) == nil,
+			('%d of %d file(s), %d in the index, %d segment(s)'):format(present, #shipped, fileTotal, segmentCount))
+		-- A client receives only the resources that carry client files, and a
+		-- client refuses a resource whose dependency it does not have (2026-09-27:
+		-- every join ended `opx_sandy_view:missing_dependency: archivexl`). From
+		-- 1.4.8 there is no loader to depend on at all.
+		local viewServer = slurp('extras/opx_sandy_view/server/main.lua')
+		check('the view declares no manifest dependency a client could not satisfy, and its server script says ' ..
+			'the ghost trail ships in the preload\'s own archive, with no loader to check',
+			manifest:find('\ndependency', 1, true) == nil
+				and viewServer:find('no ArchiveXL needed', 1, true) ~= nil
+				and viewServer:find("GetResourceState, 'archivexl'", 1, true) == nil)
+
+		-- THE COOLDOWN: one for every Sandevistan the tray sells.
+		ripperdoc.Ripper.ResetCatalog()
+		local sandyGrades, onCooldown, withinIt = 0, 0, 0
+		for _, entry in ipairs(ripperdoc.Ripper.Catalog()) do
+			if ripperdoc.Ripper.GrantKind(entry) == 'reflex' then
+				for _, grade in ipairs(entry.GRADES) do
+					sandyGrades = sandyGrades + 1
+					local config = ripperdoc.Ripper.GrantConfig(entry, grade)
+					if config.cooldownMs == 20000 and config.chargeRegenMs == 20000 then onCooldown = onCooldown + 1 end
+					if (tonumber(config.durationMs) or 0) <= 20000 then withinIt = withinIt + 1 end
+				end
+			end
+		end
+		check('every Sandevistan on the tray comes back 20 s after its boost ends, and no boost outlasts that',
+			ripperdoc.Settings.SANDEVISTAN.COOLDOWN_MS == 20000 and sandyGrades >= 5
+				and onCooldown == sandyGrades and withinIt == sandyGrades,
+			('%d grade(s), %d on 20 s'):format(sandyGrades, onCooldown))
+		local configured = nil
+		for _, raw in ipairs(type(ripperdoc.Settings.CATALOG) == 'table' and ripperdoc.Settings.CATALOG or {}) do
+			if raw.id == 'reflex' then configured = raw.GRADES[1].VALUE.cooldownMs end
+		end
+		check('and the config\'s own grade is left as the file has it (the tray holds a copy)', configured == 30000,
+			tostring(configured))
+		local savedCooldown = ripperdoc.Settings.SANDEVISTAN.COOLDOWN_MS
+		ripperdoc.Settings.SANDEVISTAN.COOLDOWN_MS = nil
+		local ownCooldown = nil
+		for _, entry in ipairs(ripperdoc.Ripper.Catalog()) do
+			if entry.id == 'apogee_sandevistan' then ownCooldown = entry.GRADES[#entry.GRADES].VALUE.cooldownMs end
+		end
+		ripperdoc.Settings.SANDEVISTAN.COOLDOWN_MS = savedCooldown
+		ripperdoc.Ripper.ResetCatalog()
+		check('and with no cooldown configured, the tray is built again and every grade keeps its own',
+			ownCooldown ~= nil and ownCooldown ~= 20000, tostring(ownCooldown))
+
+		-- THE VIEW'S CLIENT: the owner's clock claimed under its own name.
+		local viewExports, viewScales = {}, {}
+		local viewEnv = setmetatable({
+			exports = function(name, fn) viewExports[name] = fn end,
+			GetCurrentResourceName = function() return 'opx_sandy_view' end,
+			Open77 = { world = { setTimeScale = function(scale, options)
+				viewScales[#viewScales + 1] = { scale = scale, options = options or {} }
+				return true
+			end } },
+		}, { __index = _G })
+		local viewChunk = loadfile('extras/opx_sandy_view/client/main.lua', 't', viewEnv)
+		if viewChunk ~= nil then viewChunk() end
+		local engaged = viewExports.engage ~= nil and viewExports.engage(0.15, 8000, 250)
+		local refused = viewExports.engage ~= nil and viewExports.engage(1, 8000, 0)
+		local released = viewExports.release ~= nil and viewExports.release(250)
+		check('the view\'s client claims the owner\'s clock at the asked scale for the boost, refuses a clock ' ..
+			'that would not slow, and gives it back',
+			engaged == true and refused == false and released == true and #viewScales == 2
+				and viewScales[1].scale == 0.15 and viewScales[1].options.durationMs == 8000
+				and viewScales[1].options.easeMs == 250 and viewScales[2].scale == 1
+				and viewExports.info().reason == 'open77:opx_sandy_view',
+			('%d claim(s)'):format(#viewScales))
+		local wearSent = viewExports.wear ~= nil and viewExports.wear(1)
+		local wearBad = viewExports.wear ~= nil and viewExports.wear(12)
+		check('the view\'s client carries the real item\'s request as a half-second message claim the ' ..
+			'REDscript decodes (0.999 - code / 10000), and refuses a code it cannot carry',
+			wearSent == true and wearBad == false and #viewScales == 3
+				and math.abs(viewScales[3].scale - 0.9989) < 1e-9 and viewScales[3].options.durationMs == 600
+				and viewScales[3].options.easeMs == 0,
+			('%d claim(s)'):format(#viewScales))
+		viewExports.engage(0.15, 8000, 250)
+		local wearBoosting = viewExports.wear(1)
+		viewExports.release(0)
+		check('and never over the owner\'s boost', wearBoosting == false and viewExports.info().version == '1.4.8')
+
+		-- THE OWNER'S CLOCK ON EVERY CURRENT BUILD: no lease, the view shipped.
+		local viewCalls, viewRefuse = {}, false
+		local realSync = env.Open77.exports.callSync
+		env.Open77.exports.callSync = function(resource, name, ...)
+			viewCalls[#viewCalls + 1] = { resource = resource, name = name, args = { ... } }
+			if viewRefuse then error('export_not_found:' .. tostring(resource)) end
+			return true
+		end
+		local ownScales = {}
+		env.Open77.world.setTimeScale = function(scale, options)
+			ownScales[#ownScales + 1] = { scale = scale, options = options or {} }
+			return true
+		end
+		env.Open77.dilation = nil
+		local function lastReport()
+			for index = #control.serverEvents, 1, -1 do
+				local event = control.serverEvents[index]
+				if event.name == Event.SANDYREPORT then return event[1], index end
+			end
+			return nil, 0
+		end
+		local screensAt = #screens
+		local _, reportsAt = lastReport()
+		Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 8000,
+			activation = 'own-v', scale = 0.15, fallbackScale = 0.5, easeMs = 250, view = true })
+		check('on a build without the lease, with the view shipped, the owner\'s clock is the view\'s claim at ' ..
+			'the Apogee\'s 0.15 -- the REDscript keeps this body at full speed -- and not the fallback',
+			#viewCalls == 1 and viewCalls[1].resource == 'opx_sandy_view' and viewCalls[1].name == 'engage'
+				and viewCalls[1].args[1] == 0.15 and viewCalls[1].args[2] == 8000 and viewCalls[1].args[3] == 250
+				and #ownScales == 0,
+			('%d view call(s), %d own scale(s)'):format(#viewCalls, #ownScales))
+		check('and nothing is laid over the base game\'s own screen', #screens == screensAt)
+		local told, toldAt = lastReport()
+		check('and the owner\'s machine tells the server what it did, and which doors its build has',
+			toldAt > reportsAt and told.role == 'owner' and told.activation == 'own-v'
+				and tostring(told.clock):find('exempt', 1, true) ~= nil and told.view == true
+				and told.doors.lease == false and told.doors.timescale == true and told.doors.callSync == true,
+			told and tostring(told.clock) or 'no report')
+		Sandy.OnPhase({ player = 5, phase = 'completed', activation = 'own-v' })
+		check('and the view\'s claim is given back when the boost ends',
+			#viewCalls == 2 and viewCalls[2].name == 'release')
+
+		-- THE REAL ITEM, from the kit: asked for when the kit names the Apogee,
+		-- again 4 s and 12 s later, never over a boost, "none" once it is gone.
+		local kitBefore = Sandy.Kit()
+		local wearState = Sandy.Wear()
+		wearState.code, wearState.sent, wearState.due, wearState.said = nil, nil, {}, nil
+		Sandy.OnKit({ grants = {} })
+		check('a player who never held a Sandevistan with an item is never asked about one',
+			wearState.code == nil and #wearState.due == 0)
+		local wearFrom = #viewCalls
+		local wearNow = OPX.Now()
+		Sandy.OnKit({ grants = { reflex = { entry = 'apogee_sandevistan', look = 'smasher', key = 'x' } } })
+		Sandy.WearTick(wearNow + 1000)
+		local firstWear = viewCalls[wearFrom + 1]
+		Sandy.WearTick(wearNow + 2000)
+		local notYet = #viewCalls
+		Sandy.WearTick(wearNow + 5000)
+		Sandy.WearTick(wearNow + 13000)
+		check('the kit\'s Apogee is asked of the view as code 1, then again 4 s and 12 s later',
+			firstWear ~= nil and firstWear.name == 'wear' and firstWear.args[1] == 1 and notYet == wearFrom + 1
+				and #viewCalls == wearFrom + 3 and viewCalls[#viewCalls].args[1] == 1,
+			('%d call(s)'):format(#viewCalls - wearFrom))
+		Sandy.OnKit({ grants = {} })
+		Sandy.WearTick(wearNow + 20000)
+		check('and "none" once the ripperdoc takes it out',
+			viewCalls[#viewCalls].name == 'wear' and viewCalls[#viewCalls].args[1] == 0)
+		Sandy.OnKit({ grants = kitBefore })
+		viewRefuse = true
+		Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 8000,
+			activation = 'own-w', scale = 0.15, fallbackScale = 0.5, easeMs = 250, view = true })
+		told = lastReport()
+		check('a view that does not answer falls back to the whole view at 0.5 with the stand-in screen, and the ' ..
+			'report says why',
+			#ownScales == 1 and ownScales[1].scale == 0.5 and #screens == screensAt + 2
+				and tostring(told.why):find('view:', 1, true) ~= nil,
+			told and tostring(told.why) or 'no report')
+		Sandy.OnPhase({ player = 5, phase = 'completed', activation = 'own-w' })
+		viewRefuse = false
+		streamed['61'] = '4242'
+		_, reportsAt = lastReport()
+		Sandy.OnPhase({ player = 61, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 5000,
+			activation = 'obs-1', scale = 0.15 })
+		told, toldAt = lastReport()
+		check('a machine that draws somebody else\'s Sandevistan reports how many of the look\'s effects it put ' ..
+			'on the body, once',
+			toldAt > reportsAt and told.role == 'observer' and told.owner == 61 and told.layers == 11
+				and told.plays == #look.LOOP + 11)
+		Sandy.OnPhase({ player = 61, phase = 'completed', activation = 'obs-1' })
+		env.Open77.exports.callSync = realSync
+		env.Open77.world.setTimeScale = realScale
+
+		-- THE KEY: the announcement reads the player's own binding.
+		env.Open77.input.mappings = function()
+			return { { resource = 'open77_reflex', id = 'reflex_overdrive', key = 'V' } }
+		end
+		Sandy.OnKit({ grants = { reflex = { entry = 'apogee_sandevistan', name = 'ripperdoc.cw.apogee_sandevistan',
+			key = 'x', look = 'smasher' } }, announce = 'apogee_sandevistan' })
+		local told = toasts[#toasts]
+		check('the Apogee is announced with the key this player really has bound, and its name in words',
+			told ~= nil and told.key == 'ripperdoc.howto.reflex' and told.params.key == 'V'
+				and told.params.name == OPX.Locale.Text('ripperdoc.cw.apogee_sandevistan')
+				and told.params.name ~= 'ripperdoc.cw.apogee_sandevistan',
+			told and tostring(told.params.key) or 'no toast')
+		local rebinds = {}
+		env.Open77.input.rebind = function(resource, id, key)
+			rebinds[#rebinds + 1] = { resource, id, key }
+			return true, key
+		end
+		env.Open77.input.reset = function(resource, id)
+			rebinds[#rebinds + 1] = { resource, id, 'reset' }
+			return true, 'X'
+		end
+		Sandy.Rebind('B')
+		Sandy.Rebind('reset')
+		check('/opx.sandy.key rebinds the platform\'s own overdrive action on this machine',
+			#rebinds == 2 and rebinds[1][1] == 'open77_reflex' and rebinds[1][2] == 'reflex_overdrive'
+				and rebinds[1][3] == 'B' and rebinds[2][3] == 'reset'
+				and toasts[#toasts].key == 'ripperdoc.key.set')
+
+		-- THE CHAIR'S TOKEN goes back only once the body is really free.
+		local inWorkspot = true
+		env.Open77.character.state = function()
+			return { attached = true, alive = true, inWorkspot = inWorkspot, vehicle = { mounted = false } }
+		end
+		local function asked(from)
+			local out = {}
+			for index = from or 1, #control.serverEvents do
+				local event = control.serverEvents[index]
+				if event.name == Event.REPROJECT then out[#out + 1] = event end
+			end
+			return out
+		end
+		local sentBefore = #control.serverEvents
+		Sandy.OnKit({ grants = { reflex = { entry = 'apogee_sandevistan', key = 'x', look = 'smasher' } },
+			reproject = 'token-1' })
+		control.Pump(8)
+		check('the token waits while the body is still in the chair\'s workspot', #asked(sentBefore + 1) == 0)
+		inWorkspot = false
+		control.Pump(4)
+		local handed = asked(sentBefore + 1)
+		check('and goes back once the body is free, once',
+			#handed == 1 and handed[1][1] == 'token-1', ('%d'):format(#handed))
+
+		-- THE LOST POWER: open77_reflex says it holds no overdrive while the
+		-- server says it does.
+		local holds = false
+		local plainCall = env.Open77.exports.call
+		env.Open77.exports.call = function(resource, name, ...)
+			if resource == 'open77_reflex' and name == 'capabilities' then
+				local value = { projection = holds and 'ready' or 'absent' }
+				return { await = function() return value end }
+			end
+			return plainCall(resource, name, ...)
+		end
+		sentBefore = #control.serverEvents
+		control.Pump(90)
+		local lost = asked(sentBefore + 1)
+		check('an overdrive the server holds and this client lost is asked for again, once, and without a token',
+			#lost == 1 and lost[1][1] == '' and lost[1][2] == 'reflex', ('%d'):format(#lost))
+		holds = true
+		sentBefore = #control.serverEvents
+		control.Pump(90)
+		check('and nothing is asked while the client holds it', #asked(sentBefore + 1) == 0)
+		check('the journal says the power is lost, then back on this client with the key that engages it',
+			said('the overdrive the server holds is not on this client') ~= nil
+				and said('the overdrive is on this client (open77_reflex projection ready): V engages apogee_sandevistan') ~= nil,
+			tostring(said('the overdrive is on this client')))
+		env.Open77.exports.call = plainCall
+
+		-- THE JOURNAL OF A PRESS: open77_reflex's own `state` says the overdrive
+		-- engaged on this body; the server's Sandevistan for it is looked for.
+		local reflexPhase = 'idle'
+		local syncBefore = env.Open77.exports.callSync
+		env.Open77.exports.callSync = function(resource, name, ...)
+			if resource == 'open77_reflex' and name == 'state' then
+				return { phase = reflexPhase, kind = 'reflex_heavy', remainingMs = 9000 }
+			end
+			return syncBefore(resource, name, ...)
+		end
+		reflexPhase = 'active'
+		control.Pump(2)
+		check('the overdrive engaging on this body is written to the journal',
+			said('the overdrive engaged on this body (reflex_heavy, 9000 ms left) -- waiting for the server\'s Sandevistan') ~= nil)
+		control.Pump(35)
+		check('and so is a Sandevistan the server never sent for it, which says which half to look at',
+			said('the overdrive engaged here') ~= nil and said('the server sent no Sandevistan for it') ~= nil)
+		reflexPhase = 'idle'
+		control.Pump(2)
+		check('and its end', said('the overdrive on this body ended') ~= nil)
+		-- A piece the platform draws (no look) expects no Sandevistan from the
+		-- server, so its press is never reported as a missing one.
+		Sandy.OnKit({ grants = { reflex = { entry = 'sandevistan_mk1', key = 'x' } } })
+		local warnedBefore = 0
+		for _, line in ipairs(control.log.info) do
+			if line:find('the server sent no Sandevistan for it', 1, true) then warnedBefore = warnedBefore + 1 end
+		end
+		reflexPhase = 'active'
+		control.Pump(40)
+		reflexPhase = 'idle'
+		control.Pump(2)
+		local warnedAfter = 0
+		for _, line in ipairs(control.log.info) do
+			if line:find('the server sent no Sandevistan for it', 1, true) then warnedAfter = warnedAfter + 1 end
+		end
+		check('a Sandevistan the platform draws itself is never reported as one the server forgot',
+			warnedAfter == warnedBefore)
+		env.Open77.exports.callSync = syncBefore
+		Sandy.OnKit({ grants = {} })
+		check('a kit without the power is journalled once', said('the server says this player holds no overdrive') ~= nil)
+		Sandy.OnKit({ grants = { reflex = { entry = 'apogee_sandevistan', key = 'x', look = 'smasher' } } })
+		check('and the power coming back, with its look and the key this player has bound',
+			said('the server says this player holds apogee_sandevistan (look smasher); engaged on V') ~= nil,
+			tostring(said('the server says this player holds')))
+
+		-- THIRD PERSON: the owner's model is the platform's self-view body, drawn
+		-- where their own body is; their own hands are posed for first person, so
+		-- the hand trails come off and the head trail goes on.
+		env.Open77.perspective = { state = function() return { mode = 'tps' } end }
+		local tpsFrom = #attached
+		Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 8000,
+			activation = 'own-tps', scale = 0.15, fallbackScale = 0.5, easeMs = 250 })
+		local tpsMine, tpsAt = attachedTo('1', tpsFrom + 1)
+		check('in third person the owner\'s model wears the look: the head trail on, the hand trails off',
+			#tpsMine == 11 and tpsAt.Head == 1 and tpsAt.LeftHand == nil and tpsAt.RightHand == nil
+				and tpsAt.hips == 6 and said('Sandevistan look on this player\'s own body: 11 of 11 layer(s)') ~= nil
+				and said('third person') ~= nil,
+			('%d layer(s) in third person'):format(#tpsMine))
+		env.Open77.perspective = { state = function() return { mode = 'fpp' } end }
+		control.Pump(20)
+		local _, backInFirst = attachedTo('1', tpsFrom + 12)
+		check('and a switch back to first person mid-boost puts the hand trails on and takes the head off',
+			(backInFirst.LeftHand or 0) >= 1 and (backInFirst.RightHand or 0) >= 1 and backInFirst.Head == nil)
+		Sandy.OnPhase({ player = 5, phase = 'completed', activation = 'own-tps' })
+
+		-- THE MODEL WEARS ITS OWN where the world ships the base-game view:
+		-- the look's `body` layers (Smasher's start pair and his loop) stand
+		-- down on this body in third person -- opx_sandy_view's REDscript plays
+		-- them on the model by name -- and come back here in first person.
+		env.Open77.perspective = { state = function() return { mode = 'tps' } end }
+		local viewFrom = #attached
+		Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 8000,
+			activation = 'own-tps-view', scale = 0.15, fallbackScale = 0.5, easeMs = 250, view = true })
+		local viewMine, viewAt = attachedTo('1', viewFrom + 1)
+		local function effectsIn(rows, part)
+			local count, handle = 0, nil
+			for _, row in ipairs(rows) do
+				if tostring(row.effect):find(part, 1, true) ~= nil then count, handle = count + 1, row.handle end
+			end
+			return count, handle
+		end
+		check('with the base-game view shipped, the owner\'s third-person model wears Smasher\'s start and ' ..
+			'loop itself: their copies on this body stand down, the trails stay',
+			#viewMine == 8 and effectsIn(viewMine, 'ch_oda_sandevistan_loop') == 0
+				and effectsIn(viewMine, 'ch_npc_sandevistan_left.effect') == 0
+				and effectsIn(viewMine, 'ch_npc_sandevistan_right.effect') == 0
+				and viewAt.Head == 1 and viewAt.hips == 3
+				and said('Sandevistan look on this player\'s own body: 8 of 8 layer(s)') ~= nil
+				and said('3 worn by the third-person model itself') ~= nil,
+			('%d layer(s), hips %s'):format(#viewMine, tostring(viewAt.hips)))
+		env.Open77.perspective = { state = function() return { mode = 'fpp' } end }
+		control.Pump(20)
+		local backMine = attachedTo('1', viewFrom + #viewMine + 1)
+		local odaBack, odaHandle = effectsIn(backMine, 'ch_oda_sandevistan_loop')
+		check('and back in first person the loop comes back on this body, while the start it never played ' ..
+			'there is spent, not played late',
+			odaBack == 1 and effectsIn(backMine, 'ch_npc_sandevistan_left.effect') == 0
+				and effectsIn(backMine, 'ch_npc_sandevistan_right.effect') == 0,
+			('oda %d'):format(odaBack))
+		env.Open77.perspective = { state = function() return { mode = 'tps' } end }
+		control.Pump(3)
+		local odaStopped = false
+		for _, id in ipairs(control.effects.stopped) do
+			if odaHandle ~= nil and id == odaHandle then odaStopped = true end
+		end
+		check('and a switch back to third person takes that copy off again: the model wears its own',
+			odaStopped and control.effects.live[odaHandle] == nil)
+		Sandy.OnPhase({ player = 5, phase = 'completed', activation = 'own-tps-view' })
+		env.Open77.perspective = nil
+	end
+end
+
 section('the ripperdoc clinic: slots, relogs, deaths and work in flight')
 do
 	local db = { chrome = {}, refunds = {}, nextRefund = 0 }
@@ -32949,6 +35019,266 @@ do
 			-- finding nothing to check.
 			check('and the views really do name some', used >= 10, used)
 		end
+	end
+end
+
+section('ncpd bots: the crowd, the kill and the book')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the ncpd module in it', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local ncpd = OPX.Modules.Get('ncpd')
+		local character = OPX.Modules.Get('character')
+		local Ledger, Response = ncpd.Ledger, ncpd.Response
+
+		--- Puts a loaded character on a slot, the way `character.RegisterPlayer`
+		-- fills its own roster. A charge is bound to a citizen id, and the
+		-- killer the platform names is a CONNECTION -- so a body that can be
+		-- booked needs both halves.
+		-- @param id number
+		-- @param citizenId string
+		-- @return table the Player the contract reads
+		local function load(id, citizenId)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					money = { EDDIES = 0 } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+			return character.Players[id]
+		end
+
+		load(1, 'citizen-bots')
+		control.Stand(1, 0.0, 0.0, 0.0)
+
+		-- THE RIG'S KNOBS, as an operator sets them for a session: a small
+		-- crowd, straight back on its feet, every kill booked. Read live, so
+		-- the whole block is one assignment.
+		OPX.Config.MODULES.ncpd.BOTS = {
+			LAW = 'murder', CHARGE = true, FLEE = true,
+			COUNT = 4, MAX = 6, SPREAD = 20.0, WANDER = 8.0,
+			RESPAWN = true, RESPAWN_SECONDS = 0,
+			RECORDS = { 'Character.DefaultNCResidentMale', 'Character.DefaultNCResidentFemale' },
+		}
+
+		-- THE DOOR IS THE OPERATOR'S: the host refuses a restricted line
+		-- before a handler runs, and the handler asks the ACL again.
+		control.acl.granted['1'] = { ['command.opx.ncpd.bots'] = true }
+		local command = control.commands['opx.ncpd.bots']
+		check('the crowd door is registered', command ~= nil)
+		check('and restricted, which is the host\u{2019}s whole permission check',
+			command ~= nil and command.restricted == true,
+			command and tostring(command.restricted) or 'not registered')
+
+		--- The id the harness gave the nth body it was asked to create: ids are
+		-- handed out in order (`npc-1`, `npc-2`, ...), so a create's place in
+		-- the log IS its id.
+		-- @param index integer
+		-- @return string
+		local function bodyId(index)
+			return ('npc-%d'):format(index)
+		end
+
+		--- Whether a create is one of the crowd's bodies rather than a
+		-- response unit: the record alone decides it.
+		-- @param create table|nil
+		-- @return boolean
+		local function isOurs(create)
+			local record = type(create) == 'table' and tostring(create.record) or ''
+			return record == 'Character.DefaultNCResidentMale'
+				or record == 'Character.DefaultNCResidentFemale'
+		end
+
+		-- ── THE SPAWN ────────────────────────────────────────────
+		local before = #control.npcCreates
+		control.commands['opx.ncpd.bots'].run(1, { 'spawn', '4' })
+		check('the crowd stands around the caller', #control.npcCreates == before + 4,
+			('%d create(s)'):format(#control.npcCreates - before))
+		check('every body a civilian the catalogue knows',
+			(function()
+				for index = before + 1, before + 4 do
+					if not isOurs(control.npcCreates[index]) then return false end
+				end
+				return true
+			end)())
+		check('and mortal: the one thing a kill needs',
+			control.npcCreates[before + 1] ~= nil
+				and control.npcCreates[before + 1].damagePolicy == 'mortal',
+			control.npcCreates[before + 1] and tostring(control.npcCreates[before + 1].damagePolicy))
+		local wanders = 0
+		for _, task in ipairs(control.npcTasks) do
+			if task.task == 'wander' then wanders = wanders + 1 end
+		end
+		check('and every body told to wander like a pedestrian', wanders == 4,
+			('%d wander(s)'):format(wanders))
+		check('spread around the caller rather than stacked on one metre',
+			(function()
+				local first = control.npcCreates[before + 1].position
+				for index = before + 2, before + 4 do
+					local at = control.npcCreates[index].position
+					if math.abs(at.x - first.x) > 0.5 or math.abs(at.y - first.y) > 0.5 then
+						return true
+					end
+				end
+				return false
+			end)())
+
+		-- ── THE FIRST KILLS ───────────────────────────────────────
+		-- `onNpcDied(npcId, source, cause)`, as the platform raises it: the
+		-- source names the killer, and a first murder sits below the
+		-- threshold the ladder is entered by -- booked, not yet wanted.
+		local killed = {}
+
+		--- Books one murder to player 1, however the platform spells them.
+		-- @param id string the body's id
+		-- @param naming string how the source is spelled
+		local function kill(id, naming)
+			killed[id] = true
+			env.TriggerEvent('onNpcDied', id, naming, 'firearm')
+		end
+
+		kill(bodyId(before + 1), '1')
+		local status = Ledger.Status('citizen-bots')
+		check('one kill is booked, below the threshold the ladder is entered by',
+			status.stage == 0 and status.score == 40,
+			('stage %d score %s'):format(status.stage, tostring(status.score)))
+
+		-- THE SECOND, named the other way the platform spells a source, is
+		-- the same killer to the book.
+		kill(bodyId(before + 2), 'player:1')
+		status = Ledger.Status('citizen-bots')
+		check('the second kill crosses into wanted, whichever way the source is spelled',
+			status.stage == 1 and status.wanted == true,
+			('stage %d score %s'):format(status.stage, tostring(status.score)))
+		check('and the response is on the street for it',
+			Response.Status('citizen-bots').npcs > 0,
+			tostring(Response.Status('citizen-bots').npcs))
+		-- ONE TELL, not two: the first murder is booked below the threshold
+		-- and moves no stage -- a stage that did not move is a heartbeat, not
+		-- an event -- so it is the CROSSING that reaches the client.
+		local told, tell = 0, nil
+		for _, event in ipairs(control.clientEvents) do
+			if event.name == ncpd.Event.STAGE and event.source == 1 then
+				told = told + 1
+				tell = event[1]
+			end
+		end
+		check('and the crossing is the one tell the killer\u{2019}s client gets',
+			told == 1 and tell ~= nil and tell.stage == 1 and tell.previous == 0,
+			('%d tell(s), stage %s'):format(told, tell and tostring(tell.stage) or 'none'))
+
+		-- ── THE SCATTER ────────────────────────────────────────────
+		local fled = 0
+		env.TriggerEvent('onNpcDamaged', bodyId(before + 3), '1', '25', '75', 'firearm')
+		env.TriggerEvent('onNpcDamaged', bodyId(before + 3), '1', '25', '50', 'firearm')
+		for _, task in ipairs(control.npcTasks) do
+			if task.task == 'flee' and task.target ~= nil and task.target.playerId == 1 then
+				fled = fled + 1
+			end
+		end
+		check('the first wound scatters the body from the player who landed it', fled == 1,
+			('%d flee(s)'):format(fled))
+
+		-- ── THE JOURNEY: kills alone, all the way up ─────────
+		-- THE FIFTH STAR IS MEANT TO BE HARD: the ladder's capacities sum to
+		-- some thirty murders, and a crowd that comes back under the gun is
+		-- exactly what supplies them. No console line raises the stage here;
+		-- every step up is a body on the street.
+		--- Kills the newest standing crowd body and returns its id.
+		-- @return string|nil
+		local function killNewest()
+			for index = #control.npcCreates, 1, -1 do
+				local id = bodyId(index)
+				if not killed[id] and isOurs(control.npcCreates[index]) then
+					kill(id, '1')
+					return id
+				end
+			end
+			return nil
+		end
+
+		local spent = 0
+		while Ledger.Status('citizen-bots').stage < ncpd.Law.StageCount and spent < 60 do
+			if killNewest() ~= nil then spent = spent + 1 end
+			control.Pump(2) -- a body comes back where the last one fell
+		end
+		status = Ledger.Status('citizen-bots')
+		check('kills alone carry the killer all the way up to MaxTac',
+			status.stage == ncpd.Law.StageCount and status.division == ncpd.DIVISION.MAXTAC,
+			('stage %d after %d kill(s)'):format(status.stage, spent))
+		local top = nil
+		for _, event in ipairs(control.clientEvents) do
+			if event.name == ncpd.Event.STAGE and event.source == 1
+				and event[1] ~= nil and event[1].stage == ncpd.Law.StageCount then
+				top = event[1]
+			end
+		end
+		check('and the client is told the aircraft is answering',
+			top ~= nil and top.av == true, top and tostring(top.av) or 'no tell')
+
+		-- ── THE STREET CLEARS ─────────────────────────────────────────
+		local off = #control.npcRemoves
+		control.commands['opx.ncpd.bots'].run(1, { 'clear' })
+		check('clear takes the crowd back off the street',
+			#control.npcRemoves > off and ncpd.Bots.Live() == 0,
+			('%d removed'):format(#control.npcRemoves - off))
+
+		-- A KILL OF A BODY THAT IS NOT THE CROWD'S books nothing: the filter
+		-- is the id the module placed, not the event that arrived.
+		local stageBefore = Ledger.Status('citizen-bots').stage
+		env.TriggerEvent('onNpcDied', 'npc-not-ours', '1', 'firearm')
+		check('a body the crowd never placed charges nobody',
+			Ledger.Status('citizen-bots').stage == stageBefore)
+
+		-- ── THE DOOR SHUT ───────────────────────────────────────────
+		-- `CHARGE = false` is the server whose engine already scores these
+		-- kills on its own mirror: the crowd stands and falls, and the book
+		-- never hears of it.
+		OPX.Config.MODULES.ncpd.BOTS = {
+			LAW = 'murder', CHARGE = false, FLEE = false, RESPAWN = false,
+			COUNT = 2, MAX = 2, SPREAD = 10.0, WANDER = 0,
+			RECORDS = { 'Character.DefaultNCResidentMale' },
+		}
+		local quiet = #control.npcCreates
+		control.commands['opx.ncpd.bots'].run(1, { 'spawn', '2' })
+		check('the door shut, the crowd still stands', #control.npcCreates == quiet + 2)
+		local still = 0
+		for index = quiet + 1, quiet + 2 do
+			local at = control.npcCreates[index].position
+			if math.abs(at.x) <= 10.0 and math.abs(at.y) <= 10.0 then still = still + 1 end
+		end
+		check('and stands where it was placed, inside the spread it was given', still == 2,
+			('%d in place'):format(still))
+		local scoreBefore = Ledger.Status('citizen-bots').score
+		local wandersBefore = 0
+		for _, task in ipairs(control.npcTasks) do
+			if task.task == 'wander' then wandersBefore = wandersBefore + 1 end
+		end
+		killNewest()
+		local after = Ledger.Status('citizen-bots')
+		check('but a kill books nothing',
+			after.score == scoreBefore and after.stage == stageBefore,
+			('stage %d score %s'):format(after.stage, tostring(after.score)))
+		local wandersAfter = 0
+		for _, task in ipairs(control.npcTasks) do
+			if task.task == 'wander' then wandersAfter = wandersAfter + 1 end
+		end
+		check('and nothing wanders or comes back', wandersAfter == wandersBefore,
+			('%d wander(s)'):format(wandersAfter))
+
+		-- ── THE SWITCH OFF ────────────────────────────────────────────
+		OPX.Config.MODULES.ncpd.BOTS = false
+		local closed = #control.npcCreates
+		control.commands['opx.ncpd.bots'].run(1, { 'spawn', '2' })
+		check('BOTS = false places nobody at all', #control.npcCreates == closed)
+		check('and the status still answers, so the rig is observable when off',
+			ncpd.Bots.Status().live ~= nil)
 	end
 end
 

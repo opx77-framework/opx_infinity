@@ -478,6 +478,25 @@ local function charge(citizenId, lawId, options)
 	return charged
 end
 
+--- Charges a crime to the character a connection has loaded, by connection.
+--
+-- THE DOOR A BOT'S KILLER IS CHARGED THROUGH (`server/bots.lua`) and the body
+-- of the contract's own `ReportPlayer` below: one path from a connection to a
+-- charge, written once, so the crowd and every other resource meet the same
+-- refusal when the connection holds no character.
+-- @param playerId number
+-- @param lawId string
+-- @param options table|nil
+-- @return table a `Result`
+local function chargePlayer(playerId, lawId, options)
+	local data = characterOf(playerId)
+	if data == nil then return OPX.Result.Err('ncpd.noCitizen') end
+	return charge(data.citizenId, lawId, options)
+end
+
+-- `server/bots.lua` charges a killed body's killer through here.
+M.ChargePlayer = chargePlayer
+
 --- One decay pass: drain every score, and publish the characters that fell free.
 -- @param nowMs integer|nil
 -- @return integer how many characters were dropped
@@ -708,6 +727,48 @@ local function registerCommands()
 		end
 		OPX.CommandResult(source, true, table.concat(lines, '\n'))
 	end)
+
+	-- THE CROWD DOOR: the rig an operator kills to watch the ladder work.
+	-- The verbs are three and the answers name themselves: a crowd placed,
+	-- a street taken back, or where the bodies stand.
+	register(names.BOTS, {
+		help = 'ncpd.help.bots',
+		params = {
+			{ name = 'action', help = 'ncpd.help.botsAction' },
+			{ name = 'count', optional = true, help = 'ncpd.help.botsCount' },
+		},
+	}, function(source, args)
+		local bots = M.Bots
+		if bots == nil then
+			return OPX.CommandResult(source, false, 'the crowd is not in this build')
+		end
+		local action = tostring(args[1] or ''):lower()
+		if action == 'spawn' then
+			local at = positionOf(source)
+			if at == nil then
+				return OPX.CommandResult(source, false, 'no position of yours the host can read')
+			end
+			local made, why = bots.Spawn(at, tonumber(args[2]))
+			if made == 0 then
+				return OPX.CommandResult(source, false,
+					('the crowd is not placed: %s'):format(tostring(why or 'refused')))
+			end
+			return OPX.CommandResult(source, true,
+				('%d civilian(s) around you (%d standing)'):format(made, bots.Live()))
+		elseif action == 'clear' then
+			return OPX.CommandResult(source, true,
+				('%d civilian(s) taken off the street'):format(bots.Clear('an operator asked')))
+		elseif action == 'status' then
+			local status = bots.Status()
+			return OPX.CommandResult(source, true, table.concat({
+				('standing : %d'):format(status.live),
+				('placed   : %d'):format(status.placed),
+				('booked   : %d kill(s) charged'):format(status.booked),
+			}, '\n'))
+		end
+		return OPX.CommandResult(source, false,
+			'usage: /opx.ncpd.bots spawn [count] | clear | status')
+	end)
 end
 
 -- ── the engine's own heat, mirrored ───────────────────────────────────────────
@@ -794,9 +855,7 @@ function M.Api()
 		-- @param options table|nil
 		-- @return table a `Result`
 		ReportPlayer = function(playerId, lawId, options)
-			local data = characterOf(playerId)
-			if data == nil then return OPX.Result.Err('ncpd.noCitizen') end
-			return charge(data.citizenId, lawId, options)
+			return chargePlayer(playerId, lawId, options)
 		end,
 
 		--- Where a citizen stands, after the drain.
@@ -894,6 +953,10 @@ function M.Start()
 	-- by the same audience rule the line feed pushes with (`server/radio.lua`).
 	M.Radio.VoiceStart()
 
+	-- The operator's crowd, when the build carries it: mortal civilians whose
+	-- deaths are charged through the door above.
+	if M.Bots ~= nil and type(M.Bots.Start) == 'function' then M.Bots.Start() end
+
 	-- The crew door's own ask, and it carries nothing at all. The player comes
 	-- from the connection, the permission from the module's own duty rule, the
 	-- hull and the distance from the controller's own reads -- so a modified
@@ -933,6 +996,7 @@ end
 --- Deregisters the surface and takes every response down.
 function M.Stop()
 	M.running = false
+	if M.Bots ~= nil and type(M.Bots.Stop) == 'function' then M.Bots.Stop() end
 	-- The aircraft first: `Response.ReleaseAll` walks the responses it still
 	-- holds, and an insertion is not one of them -- it is a run of its own that
 	-- would otherwise keep posing an airframe in a bucket nothing owns again.

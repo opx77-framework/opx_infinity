@@ -12,6 +12,10 @@
 --     (`config/headquarters.lua` designates the place) and moved when the
 --     headquarters moves; a file of its own is what lets that happen without
 --     wading through every ground garage on the server.
+--   * IT ISSUES THE DIVISION'S OWN AIRCRAFT. `FLEET` below is every hull the
+--     hangar may hand out -- the MaxTac birds included -- offered at the menu
+--     beside whatever a character already owns. A ground garage recalls what
+--     you parked; a pad also issues what the division flies.
 --   * IT IS GATED. Every pad below is behind the job gate
 --     (`lib/shared/jobgate.lua`, the same decision an armoury, a lift floor and
 --     a hauling site make): only the jobs in `JOBS`, on the duty state
@@ -81,6 +85,64 @@ OPX.Config.MODULES.avgarages = {
 	-- A name the platform cannot spell is a boot problem and no seat at all,
 	-- never a silently substituted one.
 	PILOT_SEAT = 'seat_front_left',
+
+	-- THE DIVISION'S OWN AIRCRAFT: every hull a pad may hand out, the MaxTac
+	-- birds included. The rows ride the hangar menu beside the vehicles a
+	-- character already owns, so "all the AVs" is one list an operator edits
+	-- rather than a code change.
+	--
+	-- A picked hull is ISSUED, not borrowed: it is registered under the
+	-- character's name and filed at the pad, so it stores, recalls and persists
+	-- exactly like a vehicle they own -- and it counts against the garage limit
+	-- the vehicles module enforces, because a division's stock is drawn on and
+	-- never duplicated. WHO may draw is the gate above; WHAT may be drawn is
+	-- this list, and a record not on it is refused by name even when a client
+	-- asks for it directly.
+	--
+	-- RECORD is the TweakDB vehicle record. LABEL is the operator's own words
+	-- and is never translated -- a row shows it exactly as a station shows its
+	-- LABEL -- and an absent LABEL shows the record. The order below is the
+	-- menu's order. A pad may carry its own `FLEET = { ... }` to replace this
+	-- list, or `FLEET = false` to issue nothing at all -- and `FLEET = {}` is
+	-- that same choice said another way. Both read as "this garage issues none
+	-- of the division's aircraft"; "the hangar does not issue that hull" is
+	-- only ever said by a pad that HAS a list, about a record not on it.
+	--
+	-- The drones, the public trains, `av_test` and the cosmetic `_quest` /
+	-- `_no_thruster` variants are left out of the shipped list on purpose: a
+	-- hangar issues aircraft a crew flies. Add any of them here if this server
+	-- wants them.
+	FLEET = {
+		{ RECORD = 'Vehicle.av_luxury', LABEL = 'Luxury AV' },
+		{ RECORD = 'Vehicle.av_militech', LABEL = 'Militech AV' },
+		{ RECORD = 'Vehicle.av_militech_manticore', LABEL = 'Militech Manticore' },
+		{ RECORD = 'Vehicle.av_rayfield_excalibur', LABEL = 'Rayfield Excalibur' },
+		{ RECORD = 'Vehicle.av_trauma', LABEL = 'Trauma Team AV' },
+		{ RECORD = 'Vehicle.av_kurt_barghest', LABEL = 'Barghest AV' },
+		{ RECORD = 'Vehicle.av_zetatech_atlus', LABEL = 'Zetatech Atlus' },
+		{ RECORD = 'Vehicle.av_zetatech_octant', LABEL = 'Zetatech Octant' },
+		{ RECORD = 'Vehicle.av_zetatech_surveyor', LABEL = 'Zetatech Surveyor' },
+		{ RECORD = 'Vehicle.av_zetatech_valgus', LABEL = 'Zetatech Valgus' },
+		{ RECORD = 'Vehicle.batty_av', LABEL = 'Batty AV' },
+		{ RECORD = 'Vehicle.q001_luxury_av', LABEL = 'Luxury AV (Q001)' },
+		{ RECORD = 'Vehicle.q001_police_av', LABEL = 'Police AV' },
+		{ RECORD = 'Vehicle.q001_trauma_av', LABEL = 'Trauma Team AV (Q001)' },
+		{ RECORD = 'Vehicle.mq027_news_av', LABEL = 'Zetatech News AV' },
+		{ RECORD = 'Vehicle.q110_huge_cargo_av', LABEL = 'Cargo AV' },
+		{ RECORD = 'Vehicle.q110_max_tac_heli', LABEL = 'MaxTac Helicopter' },
+		{ RECORD = 'Vehicle.max_tac_av', LABEL = 'MaxTac AV' },
+		{ RECORD = 'Vehicle.max_tac_av1', LABEL = 'MaxTac AV 1' },
+		{ RECORD = 'Vehicle.max_tac_av2', LABEL = 'MaxTac AV 2' },
+		{ RECORD = 'Vehicle.max_tac_av3', LABEL = 'MaxTac AV 3' },
+		{ RECORD = 'Vehicle.max_tac_av_2nd_wave1', LABEL = 'MaxTac AV (2nd wave 1)' },
+		{ RECORD = 'Vehicle.max_tac_av_2nd_wave2', LABEL = 'MaxTac AV (2nd wave 2)' },
+		{ RECORD = 'Vehicle.max_tac_av_2nd_wave3', LABEL = 'MaxTac AV (2nd wave 3)' },
+		{ RECORD = 'Vehicle.mq030_max_tac_av', LABEL = 'MaxTac AV (MQ030)' },
+		{ RECORD = 'Vehicle.q001_max_tac_av', LABEL = 'MaxTac AV (Q001)' },
+		{ RECORD = 'Vehicle.q001_maxtac_av', LABEL = 'MaxTac AV (Q001 variant)' },
+		{ RECORD = 'Vehicle.q304_max_tac_av', LABEL = 'MaxTac AV (Q304)' },
+		{ RECORD = 'Vehicle.q304_max_tac_av_detailed', LABEL = 'MaxTac AV (Q304 detailed)' },
+	},
 
 	-- THE CAPTURE COMMANDS, and nothing is named when a name is emptied:
 	-- `add = ''` switches the capture path off and leaves the file the whole

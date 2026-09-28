@@ -334,12 +334,24 @@ local function openList(payload)
 	local items = {}
 	for index = 1, #rows do
 		local row = rows[index]
-		items[#items + 1] = {
-			id = tostring(row.plate),
-			label = tostring(row.plate),
-			value = locale(row.here and 'garages.list.here' or 'garages.list.away'),
-			data = { plate = row.plate },
-		}
+		if row.fleet then
+			-- A fleet row is the division's own offering: its LABEL where an
+			-- owned row shows a plate, and the record it is issued under. The
+			-- label is the operator's words and is shown untranslated.
+			items[#items + 1] = {
+				id = tostring(row.record),
+				label = tostring(row.label or row.record),
+				value = locale('garages.list.fleet'),
+				data = { record = row.record },
+			}
+		else
+			items[#items + 1] = {
+				id = tostring(row.plate),
+				label = tostring(row.plate),
+				value = locale(row.here and 'garages.list.here' or 'garages.list.away'),
+				data = { plate = row.plate },
+			}
+		end
 	end
 	items[#items + 1] = { separator = true, label = '' }
 	items[#items + 1] = { id = 'close', label = locale('garages.close'), close = true }
@@ -370,18 +382,23 @@ local function openList(payload)
 	syncPrompt()
 end
 
--- Sends the bring-out this file has already decided to offer.
-local function bring(plate)
+-- Sends the bring-out -- or the fleet issue -- this file has already decided
+-- to offer. A row carries a plate (a vehicle the character owns) or a record
+-- (a hull of the division's stock to issue), never both.
+local function bring(data)
 	local key = listing
 	takeDown()
 	if type(key) ~= 'string' then return end
-	local sent, reason = TriggerServerEvent(M.Event.REQUEST, key, plate)
+	local plate = type(data.plate) == 'string' and data.plate or nil
+	local record = type(data.record) == 'string' and data.record or nil
+	if plate == nil and record == nil then return end
+	local sent, reason = TriggerServerEvent(M.Event.REQUEST, key, plate, record)
 	if not sent then
 		local verdict = { ok = false, error = tostring(reason or 'not_sent'), source = 'client' }
 		publish(verdict)
 		return say('error', locale('garages.refused'))
 	end
-	publish({ ok = true, queued = true, spot = key, plate = plate, source = 'menu' })
+	publish({ ok = true, queued = true, spot = key, plate = plate, record = record, source = 'menu' })
 end
 
 -- Acts on a row the list raised. The shape is checked because the menu also
@@ -397,8 +414,10 @@ onRow = function(payload)
 	end
 	if payload.action ~= 'select' or captured() then return end
 	local data = payload.data
-	if type(data) ~= 'table' or type(data.plate) ~= 'string' then return end
-	bring(data.plate)
+	if type(data) ~= 'table' or (type(data.plate) ~= 'string' and type(data.record) ~= 'string') then
+		return
+	end
+	bring(data)
 end
 
 -- ── the request ─────────────────────────────────────────────────────────────

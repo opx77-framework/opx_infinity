@@ -348,8 +348,6 @@ const shown = computed<Row[]>(() => contacts.value)
               <button class="pill op-eyebrow" type="button" @click="callRow(row)">
                 {{ onCall ? t('calls.holo.add') : t('calls.holo.call') }}
               </button>
-              <button
-              </button>
             </template>
           </li>
           <li v-if="shown.length === 0" class="empty op-copy">

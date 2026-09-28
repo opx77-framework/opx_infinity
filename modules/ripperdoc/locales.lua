@@ -957,7 +957,31 @@ for key, pair in pairs({
 	['ripperdoc.howto.dash'] = {
 		'{name} is live: press {key} to dash.', '{name} est actif : appuyez sur {key} pour foncer.' },
 	['ripperdoc.howto.reflex'] = {
-		'{name} is live: press {key} to overdrive.', '{name} est actif : appuyez sur {key} pour l\'overdrive.' },
+		'{name} is live: press {key} to engage it. Rebind it in Pause > Settings > Key bindings, or with /opx.sandy.key.',
+		'{name} est actif : appuyez sur {key} pour l\'enclencher. Changez la touche dans Pause > Paramètres > Raccourcis, ou avec /opx.sandy.key.' },
+	['ripperdoc.key.current'] = {
+		'Your Sandevistan engages on {key}. /opx.sandy.key <key> changes it.',
+		'Votre Sandevistan s\'enclenche sur {key}. /opx.sandy.key <touche> la change.' },
+	['ripperdoc.key.set'] = {
+		'Your Sandevistan now engages on {key}.', 'Votre Sandevistan s\'enclenche maintenant sur {key}.' },
+	['ripperdoc.key.invalid'] = {
+		'{key} cannot be a Sandevistan key: use one letter or digit, F1 to F12, or space, shift, ctrl, alt, tab.',
+		'{key} ne peut pas être une touche de Sandevistan : une lettre ou un chiffre, F1 à F12, ou espace, shift, ctrl, alt, tab.' },
+	['ripperdoc.key.refused'] = {
+		'Your game refused that key ({why}).', 'Votre jeu a refusé cette touche ({why}).' },
+	['ripperdoc.key.unavailable'] = {
+		'Your client cannot rebind keys; use Pause > Settings > Key bindings.',
+		'Votre client ne peut pas changer les touches ; passez par Pause > Paramètres > Raccourcis.' },
+	['ripperdoc.help.key'] = {
+		'Show or change the key that engages your Sandevistan.',
+		'Affiche ou change la touche qui enclenche votre Sandevistan.' },
+	['ripperdoc.help.keyArg'] = {
+		'A key (X, V, F5, space...), or reset.', 'Une touche (X, V, F5, espace...), ou reset.' },
+	['ripperdoc.help.test'] = {
+		'Run a whole Sandevistan on yourself without the overdrive: the slowed world, the screen and the look.',
+		'Lance un Sandevistan complet sur vous sans la surcharge : le monde ralenti, l\'ecran et l\'apparence.' },
+	['ripperdoc.help.testArg'] = {
+		'Seconds, 1 to 15 (9 by default).', 'Secondes, de 1 a 15 (9 par defaut).' },
 	['ripperdoc.howto.ability'] = {
 		'{name} is live: with a blunt weapon out, press {key} to slam.',
 		'{name} est actif : arme contondante en main, appuyez sur {key} pour frapper le sol.' },

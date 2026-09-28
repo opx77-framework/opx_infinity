@@ -57,6 +57,14 @@ M.Event = {
 	SYNC = OPX.Event(NET, 'headquarters', 'sync'),
 }
 
+-- Host names this module speaks but does not own. The command line the chat
+-- box feeds the server is `open77:command:execute`, and a menu option runs
+-- exactly what a typed line runs: the same name, the same tokens, and the
+-- same ACL waiting on the far end.
+M.Host = {
+	COMMAND_EXECUTE = 'open77:command:execute',
+}
+
 -- The captured stations and the map every reader merges them into. A capture
 -- is a headquarters an operator placed in game, kept in the database and
 -- merged into `M.Hq.All()` so every reader sees both without knowing which is

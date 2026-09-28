@@ -584,7 +584,7 @@ M.Data.VEHICLES = {
 		{ NAME = 'cortes_police_sheriff', LABEL = 'Villefort Cortes sheriff', CLASS = 'police',
 			RECORD = 'Vehicle.v_standard2_villefort_cortes_police_sheriff' },
 
-		-- Air. EVERY record here starts with one of `AV_PREFIXES` in
+		-- Air. EVERY record here carries one of `AV_MATCHES` in
 		-- `config/shared.lua` -- the server's one air list, not a staff one -- which
 		-- is what makes the class air in the first place: the module neither
 		-- declares a record's category nor lets a row disagree with it, and the

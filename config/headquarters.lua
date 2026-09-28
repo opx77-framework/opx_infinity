@@ -88,9 +88,9 @@ OPX.Config.MODULES.headquarters = {
 	-- key the player presses to nothing, which is what the old literal `!`
 	-- was. So the cap names a REAL keybind now: the same `ID`/`NAME`/`DEFAULT`
 	-- block every other surface declares, registered with the host and
-	-- rebindable in the player's own key settings, and the press answers with
-	-- the station's own name -- a designation says what it is when touched,
-	-- and does nothing else.
+	-- rebindable in the player's own key settings. What the press DOES is the
+	-- `PRESS` block below -- this file decides, and the player rebinds which
+	-- key it is.
 	--
 	-- F8 because the rest of the keyboard is spoken for: E opens the shops,
 	-- the pads, the desks and the teleports, F boards the MaxTac AV, H/Y/X
@@ -98,6 +98,56 @@ OPX.Config.MODULES.headquarters = {
 	-- two panels that claim its neighbours. `DEFAULT = false` turns the press
 	-- AND the row off together, because a row with no cap is not drawn.
 	KEY = { ID = 'opx.headquarters.use', NAME = 'headquarters.key.use', DEFAULT = 'F8' },
+
+	-- WHAT THE PRESS OPENS. The strip names the station while a player stands
+	-- on it; the key is what the station DOES when touched, and that choice
+	-- lives here:
+	--
+	--   ACTION = 'menu'   open the operator's options, `MENU.ROWS` below
+	--   ACTION = 'read'   say the station's own name and stop
+	--
+	-- `read` is the designation's own answer and the fallback whenever the menu
+	-- has no rows or no menu contract is installed -- the key always answers,
+	-- even with every option taken away.
+	--
+	-- TOAST_MS is how long a spoken line stays up: the name `read` says, and
+	-- any option row that speaks instead of running something.
+	PRESS = {
+		ACTION = 'menu',
+		TOAST_MS = 4000,
+	},
+
+	-- THE OPTIONS THE PRESS OPENS -- this server's headquarters, in the
+	-- operator's own words. Rows are added, renamed and removed HERE and never
+	-- in code: the press runs what this list says and nothing else.
+	--
+	-- Each row is { ID = ..., LABEL = ..., COMMAND = ... }:
+	--
+	--   COMMAND = 'opx.where'   runs that command for the player, exactly as
+	--                             typing it in chat would
+	--   no COMMAND              says the station's own name -- the `read`
+	--                             answer, worn as a row
+	--
+	-- ID names the row in the log and the answers and is never translated;
+	-- LABEL is the operator's own words and is shown as written; COMMAND is the
+	-- command line without its leading slash. A row whose COMMAND names a
+	-- command the player may not run is refused by the server exactly as a
+	-- typed line would be -- the ACL doing its job, not a menu fault.
+	--
+	-- ANCHOR/WIDTH/HEIGHT/MAX_HEIGHT_VH/VISIBLE_ROWS are the menu's geometry,
+	-- the same five knobs `config/garages.lua` documents; the menu module
+	-- clamps every value it is handed.
+	MENU = {
+		ANCHOR = 'center',
+		WIDTH = 560,
+		HEIGHT = 220,
+		MAX_HEIGHT_VH = 40,
+		VISIBLE_ROWS = 6,
+		ROWS = {
+			{ ID = 'info', LABEL = 'Read the station' },
+			-- { ID = 'where', LABEL = 'Where am I?', COMMAND = 'opx.where' },
+		},
+	},
 
 	-- The marker/scan loop. SCAN_MS also decides how long a marker stays up
 	-- after a read fails. POLL_MS is how often the client re-asks for the list,

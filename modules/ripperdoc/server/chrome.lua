@@ -41,6 +41,9 @@ local ledger = {}
 local asked = {}
 -- player key -> entry id -> definition id, the grants armed right now
 local armed = {}
+-- player key -> entry id -> true: grants armed while the player sat in a chair,
+-- which their own client never kept (see `M.Chrome.Reproject`)
+local stale = {}
 -- definition id -> true, the definitions the platform accepted at Start
 local shelf = {}
 -- citizen id -> the player it was last seen on, for the tick's notifications
@@ -315,6 +318,19 @@ local function arm(player, entry, grade)
 		end
 	end
 	armed[key][entry.id] = definitionId
+	-- ARMED IN THE CHAIR IS NOT ARMED. The patient sits in a workspot, and the
+	-- movement clients refuse a body in one: `open77_reflex` takes the
+	-- projection, acks it -- so the server reads `ready` -- then finds no
+	-- usable body on its next frame and drops it for good, because only a NEW
+	-- revision ever rebuilds it. That was "the Apogee is fitted and does
+	-- nothing": the key was dead until the next session. So a grant armed on a
+	-- seated player is marked, and projected again once they are up
+	-- (`M.Chrome.Reproject`, from the stand in `server/main.lua`).
+	if type(M.Ripper.Seated) == 'function' and M.Ripper.Seated(player) then
+		stale[key] = stale[key] or {}
+		stale[key][entry.id] = true
+	end
+	M.Chrome.PushKit(player)
 	return true, nil
 end
 
@@ -323,6 +339,7 @@ end
 -- @param entry table
 local function disarm(player, entry)
 	local key = M.Ripper.KeyOf(player)
+	if stale[key] ~= nil then stale[key][entry.id] = nil end
 	local definitionId = armed[key] ~= nil and armed[key][entry.id] or nil
 	if definitionId == nil then return end
 	armed[key][entry.id] = nil
@@ -330,6 +347,128 @@ local function disarm(player, entry)
 	if module ~= nil and type(module.revoke) == 'function' then
 		pcall(module.revoke, player, definitionId)
 	end
+	M.Chrome.PushKit(player)
+end
+
+--- The piece whose grant of one power kind is armed on a player, or nil.
+-- @param player number
+-- @param kind string `dash`, `reflex` or `ability`
+-- @return table|nil entry
+function M.Chrome.ArmedEntry(player, kind)
+	for entryId in pairs(armed[M.Ripper.KeyOf(player)] or {}) do
+		local entry = M.Ripper.Entry(entryId)
+		if entry ~= nil and M.Ripper.GrantKind(entry) == kind then return entry end
+	end
+	return nil
+end
+
+--- The definition id a piece's grant is armed under on a player, or nil.
+-- @param player number
+-- @param entryId string
+-- @return string|nil
+function M.Chrome.ArmedDefinition(player, entryId)
+	local held = armed[M.Ripper.KeyOf(player)]
+	return held ~= nil and held[entryId] or nil
+end
+
+--- Whether a player holds a grant that was armed while they sat in a chair --
+--- any, or the one piece named.
+-- @param player number
+-- @param entryId string|nil
+-- @return boolean
+function M.Chrome.Stale(player, entryId)
+	local marks = stale[M.Ripper.KeyOf(player)]
+	if marks == nil then return false end
+	if entryId ~= nil then return marks[entryId] == true end
+	return next(marks) ~= nil
+end
+
+--- What one player holds, as their own machine needs it: every movement power
+--- armed on them, the default key it answers to and the look it wears.
+-- @param player number
+-- @return table kind -> { entry, name, key, look }
+function M.Chrome.Kit(player)
+	local grants = {}
+	for entryId in pairs(armed[M.Ripper.KeyOf(player)] or {}) do
+		local entry = M.Ripper.Entry(entryId)
+		local kind = entry ~= nil and M.Ripper.GrantKind(entry) or nil
+		if kind == 'dash' or kind == 'reflex' or kind == 'ability' then
+			local _, look = M.Ripper.SandyLook(entry)
+			grants[kind] = { entry = entryId, name = entry.NAME, key = M.Ripper.PowerKey(entry),
+				look = look }
+		end
+	end
+	return grants
+end
+
+--- Tells a player's own machine what it holds (`M.Event.KIT`), with anything
+--- `extra` adds: `announce` (a piece just became usable) or `reproject` (a
+--- one-use token to ask for the chair's grants again once standing).
+-- @param player number
+-- @param extra table|nil
+-- @return boolean sent
+function M.Chrome.PushKit(player, extra)
+	local target = tonumber(player)
+	if target == nil or target <= 0 then return false end
+	local payload = { grants = M.Chrome.Kit(target) }
+	-- A token not yet handed back rides every kit, so a request the server
+	-- could not take (the patient sat down again first) is simply sent again.
+	if type(M.Ripper.PendingReproject) == 'function' then
+		payload.reproject = M.Ripper.PendingReproject(target)
+	end
+	for field, value in pairs(type(extra) == 'table' and extra or {}) do payload[field] = value end
+	local sent = pcall(TriggerClientEvent, M.Event.KIT, target, payload)
+	return sent
+end
+
+--- Gives a player's own client a FRESH projection of the powers the server
+--- holds on them: each one revoked and granted again, so the platform sends a
+--- new revision and the client builds it against the body it has NOW. `only`
+--- narrows it: `'stale'` is what was armed while they sat in a chair, a power
+--- kind (`'reflex'`) is that power alone, nil is everything.
+-- @param player number
+-- @param only string|nil
+-- @return integer how many were projected again
+function M.Chrome.Reproject(player, only)
+	local key = M.Ripper.KeyOf(player)
+	local held = armed[key]
+	if held == nil then return 0 end
+	local citizenId = citizenOf(player)
+	local targets = {}
+	for entryId in pairs(held) do
+		local entry = M.Ripper.Entry(entryId)
+		if entry ~= nil and M.Ripper.IsGrant(entry) and (only == nil
+			or (only == 'stale' and stale[key] ~= nil and stale[key][entryId] == true)
+			or only == M.Ripper.GrantKind(entry)) then
+			targets[#targets + 1] = entry
+		end
+	end
+	local done, missed = 0, 0
+	for _, entry in ipairs(targets) do
+		local grade = M.Ripper.Grade(entry, M.Chrome.Row(citizenId, entry.id).grade)
+		if grade ~= nil then
+			disarm(player, entry)
+			local granted, why = arm(player, entry, grade)
+			if granted then
+				done = done + 1
+			else
+				missed = missed + 1
+				Open77.log.warn(('[ripperdoc] %s could not be projected again on player %s: %s (retrying)')
+					:format(entry.id, tostring(player), tostring(why)))
+			end
+		end
+	end
+	-- A grant the platform turned away straight after its own revoke is asked
+	-- for again in a moment rather than at the next wear tick, a minute away.
+	if missed > 0 then
+		CreateThread(function()
+			for _ = 1, 3 do
+				Wait(2000)
+				if M.Chrome.Ensure(player) == 0 then return end
+			end
+		end)
+	end
+	return done
 end
 
 --- Arms every fitted, unbroken grant the patient owns and does not hold yet.
@@ -751,6 +890,7 @@ function M.Chrome.Start()
 	local function release(player)
 		if player == nil then return end
 		armed[M.Ripper.KeyOf(player)] = nil
+		stale[M.Ripper.KeyOf(player)] = nil
 		ensureWarned[M.Ripper.KeyOf(player)] = nil
 		deathRevision[player] = nil
 		for citizenId, holder in pairs(holders) do
@@ -774,6 +914,7 @@ function M.Chrome.Start()
 			if entry ~= nil then disarm(player, entry) end
 		end
 		armed[key] = nil
+		stale[key] = nil
 		local citizenId = type(data) == 'table' and data.citizenId or nil
 		if type(citizenId) == 'string' then
 			CreateThread(function() M.Chrome.Forget(citizenId) end)
@@ -857,6 +998,7 @@ end
 --- Resets the ledger and the grants (a reload starts clean).
 function M.Chrome.Init()
 	ledger, asked, armed, shelf, holders = {}, {}, {}, {}, {}
+	stale = {}
 	ensureWarned, deathRevision = {}, {}
 	warnedRead = false
 	ticking = false

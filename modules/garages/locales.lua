@@ -26,9 +26,11 @@ local EN = {
 	['garages.menu.title'] = '{garage}',
 	['garages.list.here'] = 'Parked here',
 	['garages.list.away'] = 'Elsewhere',
+	['garages.list.fleet'] = 'Division stock',
 
 	['garages.broughtOut'] = 'Brought out {plate}.',
 	['garages.storedAway'] = 'Put away {plate}.',
+	['garages.issuedOut'] = 'Issued to you: {plate}.',
 
 	['garages.noSuchSpot'] = 'There is no garage here.',
 	['garages.noCharacter'] = 'Your record could not be read.',
@@ -44,6 +46,11 @@ local EN = {
 		'Every exit at {garage} is blocked. Move what is parked there and try again.',
 	['garages.rateLimited'] = 'Slow down and try again in a moment.',
 	['garages.noVehicles'] = 'Vehicles are unavailable on this server.',
+
+	-- THE DIVISION'S STOCK, and the two refusals an issue earns: a garage that
+	-- issues nothing, and a hull the hangar does not fly.
+	['garages.fleetNotHere'] = 'This garage issues none of the division\'s aircraft.',
+	['garages.fleetNotOffered'] = 'The hangar does not issue that hull.',
 
 	-- THE AV ANNEX'S OWN REFUSALS. A pad of `config/avgarages.lua` is behind the
 	-- job gate, and these name the three ways through it a player does not make
@@ -78,9 +85,11 @@ local FR = {
 	['garages.menu.title'] = '{garage}',
 	['garages.list.here'] = 'Garé ici',
 	['garages.list.away'] = 'Ailleurs',
+	['garages.list.fleet'] = 'Stock de la division',
 
 	['garages.broughtOut'] = 'Sorti : {plate}.',
 	['garages.storedAway'] = 'Rangé : {plate}.',
+	['garages.issuedOut'] = 'Assigné : {plate}.',
 
 	['garages.noSuchSpot'] = 'Il n’y a pas de garage ici.',
 	['garages.noCharacter'] = "Votre fiche n'a pas pu être lue.",
@@ -93,6 +102,9 @@ local FR = {
 		'Toutes les sorties de {garage} sont bloquées. Dégagez-en une et réessayez.',
 	['garages.rateLimited'] = 'Ralentissez et réessayez dans un instant.',
 	['garages.noVehicles'] = 'Les véhicules sont indisponibles sur ce serveur.',
+
+	['garages.fleetNotHere'] = "Ce garage n'assigne aucune machine de la division.",
+	['garages.fleetNotOffered'] = "Le hangar n'assigne pas cette coque.",
 
 	['garages.jobRequired'] = 'Ce pad est pour une autre équipe. Vous n’avez pas ce métier.',
 	['garages.gradeTooLow'] = 'Ce pad exige un grade supérieur au vôtre.',

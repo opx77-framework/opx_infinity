@@ -63,8 +63,32 @@ M.Skill = {}
 M.SkillView = {}
 
 -- The key, in the same shape as the scanner's and the crew door's: the id is
--- stable because a player's rebind is stored under it.
+-- stable because a player's rebind is stored under it. THE SHIPPED DEFAULT,
+-- and nothing more -- `KEY` in `config/skills.lua` is the operator's answer
+-- and wins whenever it is a usable block.
 M.Skill.KEY = { ID = 'opx.skills.tree', NAME = 'skills.key.tree', DEFAULT = 'F3' }
+
+--- The key declaration the operator configured, or the shipped one.
+--
+-- Read on every ask rather than captured once, the same reason `M.Skill.Branches`
+-- resolves on every read: config is live, and a block an operator fixed must
+-- take effect without a code change. A `KEY` block that is not one -- no ID or
+-- no NAME, or a DEFAULT that is neither a key name nor `false` -- falls back to
+-- the declaration above rather than leaving the tree unreachable.
+-- @return table `{ ID, NAME, DEFAULT }`
+function M.Skill.KeySettings()
+	local declared = type(M.Settings) == 'table' and type(M.Settings.KEY) == 'table'
+		and M.Settings.KEY or nil
+	if declared ~= nil
+		and type(declared.ID) == 'string' and declared.ID ~= ''
+		and type(declared.NAME) == 'string' and declared.NAME ~= '' then
+		local default = declared.DEFAULT
+		if default == false or (type(default) == 'string' and default ~= '') then
+			return { ID = declared.ID, NAME = declared.NAME, DEFAULT = default }
+		end
+	end
+	return M.Skill.KEY
+end
 
 -- ONE TABLE, TWO READERS, exactly as `M.Radio.Refusal` is: the server refuses
 -- with a code, a player reads a sentence, and the map between them lives here

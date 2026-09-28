@@ -1269,6 +1269,10 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
+  /* The host's own chrome goes first; the 1px dark edge below is the DEVICE's
+     bevel, painted on purpose (the house reset, see `.op-frame`). */
+  -webkit-appearance: none;
+  appearance: none;
   border: 1px solid #0e1013;
   border-radius: 7px;
   background: linear-gradient(180deg, #2a2d32 0%, #1d1f24 100%);
@@ -1424,6 +1428,8 @@ onUnmounted(() => {
   width: 100%;
   margin: 6px 0 2px;
   padding: 15px;
+  -webkit-appearance: none;
+  appearance: none;
   border: 1px solid #0e1013;
   border-radius: 9px;
   background:
@@ -1490,6 +1496,8 @@ onUnmounted(() => {
 
 .stow {
   padding: 7px 14px;
+  -webkit-appearance: none;
+  appearance: none;
   border: 1px solid #0e1013;
   border-radius: 6px;
   background: linear-gradient(180deg, #26292e 0%, #1a1c20 100%);

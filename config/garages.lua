@@ -121,7 +121,7 @@ OPX.Config.MODULES.garages = {
 	AV_LIFT = 1.2,
 
 	-- WHICH RECORDS ARE AVs IS NOT A GARAGE SETTING. It is one list,
-	-- `AV_PREFIXES` in `config/shared.lua`, read by one helper: this module, the
+	-- `AV_MATCHES` in `config/shared.lua`, read by one helper: this module, the
 	-- dealership and the admin catalogue each used to carry their own, and a
 	-- record that flies at a dealer and not in a garage is a car you can buy at a
 	-- pad you cannot recall it at.

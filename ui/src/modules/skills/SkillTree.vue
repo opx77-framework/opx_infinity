@@ -92,8 +92,6 @@ interface Line {
 
 const { t } = useLocale()
 
-/** The page's own ceilings, repeating Lua's rather than trusting the sender. */
-const MAX_NODES = 8
 /** A press nobody can spend through twice: the double-click's own ceiling. */
 const SPEND_DEDUPE_MS = 300
 
@@ -215,7 +213,11 @@ useBridge('opx:skills:view', (payload: Payload) => {
           const id = text(entry.id)
           if (!id) continue
           const nodes: Node[] = []
-          for (const raw of list<Payload>(entry.nodes).slice(0, MAX_NODES)) {
+          // EVERY NODE THE FRAME CARRIED, with no page-side ceiling: the frame
+          // is the server's own truth and the host's payload bound is the only
+          // size it can arrive at. A slice here silently swallowed rows past the
+          // cut -- a trunk with nine nodes showed eight and no one was told.
+          for (const raw of list<Payload>(entry.nodes)) {
             const nodeId = text(raw.id)
             if (!nodeId) continue
             const state = text(raw.state)
@@ -368,13 +370,15 @@ onUnmounted(() => {
                   <button
                     type="button"
                     class="node op-enter"
+                    :data-node-id="node.id"
                     :class="{
+                      'op-frame': node.state !== 'locked',
                       dark: node.state === 'locked',
                       'is-on': node.state === 'unlocked',
                       'is-picked': picked?.node.id === node.id
                     }"
                     :data-augmented-ui="node.state === 'locked' ? undefined : 'tr-clip border'"
-                    :style="{ '--op-slot': Math.min(8, ni + 1) }"
+                    :style="{ '--op-slot': Math.min(8, ni + 1) /* the stagger's own cap: rows past the eighth enter together */ }"
                     @click="select(branch, node)"
                   >
                     <span class="op-eyebrow ord">{{ count(ni + 1) }}</span>
@@ -428,8 +432,9 @@ onUnmounted(() => {
 
 <style scoped>
 /* Centred and unrotated (rule 5): a chart read head-on, not a device held up
-   at an angle. Wide enough for three trunks side by side, each with its own
-   head, its gauge and five plates down the chain. */
+   at an angle. Roomy enough for three trunks side by side -- each with its own
+   head, its gauge and its plates down the chain -- and bounded by the viewport
+   below that, where the trunks wrap and the chains scroll. */
 .room {
   position: fixed;
   inset: 0;
@@ -448,14 +453,23 @@ onUnmounted(() => {
   visibility: visible;
 }
 
+/* BOUNDED BY THE VIEWPORT, like every panel here (the holo's own
+   `min(..., 100vw)` and the downed view's `max-height: 100vh`): a fixed 980px
+   plane on a narrower surface hung off BOTH edges and took whole trunks with
+   it -- the tree clipped, and a skill the frame carried was simply not on
+   screen. Wide when there is room, contained when there is not. */
 .unit {
-  width: 980px;
+  width: min(980px, calc(100vw - var(--op-inset-x) * 2));
+  max-height: calc(100vh - var(--op-inset-y) * 2);
+  display: flex;
   --aug-tl: var(--op-cut-lg);
   --aug-br: var(--op-cut-lg);
   background: var(--op-plate-quiet);
 }
 
 .unit-inner {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--op-space-3);
@@ -467,6 +481,7 @@ onUnmounted(() => {
   align-items: flex-end;
   justify-content: space-between;
   gap: var(--op-space-4);
+  flex-wrap: wrap;
 }
 
 .head-text {
@@ -475,10 +490,14 @@ onUnmounted(() => {
   gap: var(--op-space-2);
 }
 
+/* Every READABLE readout is at `--op-text-dim`, not `--op-text-faint`: the
+   faint tone measured 3.93:1 against this plate, under the 4.5 floor the tree's
+   own harness sets, and a micro-label is still a sentence a player reads. The
+   hierarchy is type and size, not an unreadable grey. */
 .head .op-eyebrow {
   font-family: var(--op-font-mono);
   letter-spacing: var(--op-track-micro);
-  color: var(--op-text-faint);
+  color: var(--op-text-dim);
 }
 
 .title {
@@ -514,7 +533,7 @@ onUnmounted(() => {
   gap: var(--op-space-3);
   font-family: var(--op-font-mono);
   letter-spacing: var(--op-track-micro);
-  color: var(--op-text-faint);
+  color: var(--op-text-dim);
 }
 
 .readouts .pts {
@@ -542,11 +561,22 @@ onUnmounted(() => {
   color: var(--op-red);
 }
 
+/* THE TRUNKS: as many across as the room takes, wrapping when it does not --
+   a third column that never fit was a third trunk nobody read. THIS is the
+   scroll region: header, detail and the close stay put while the chains move
+   under them, so the one control and the readout of what a press buys are
+   never scrolled away from the node being weighed. */
 .branches {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
   gap: var(--op-space-4);
   align-items: start;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--op-line) transparent;
 }
 
 .branch-head {
@@ -560,7 +590,7 @@ onUnmounted(() => {
 .branch-head .rank {
   font-family: var(--op-font-mono);
   letter-spacing: var(--op-track-micro);
-  color: var(--op-text-faint);
+  color: var(--op-text-dim);
 }
 
 .branch-name {
@@ -612,7 +642,7 @@ onUnmounted(() => {
 .trunk-read {
   font-family: var(--op-font-mono);
   letter-spacing: var(--op-track-micro);
-  color: var(--op-text-faint);
+  color: var(--op-text-dim);
   white-space: nowrap;
 }
 
@@ -641,6 +671,16 @@ onUnmounted(() => {
   padding: var(--op-space-2) var(--op-space-3);
   text-align: left;
   cursor: pointer;
+  /* A BUTTON IS A USER-AGENT OBJECT until told otherwise: the host paints its
+     own light ground and bevel behind every one, and on a bare <button> that
+     light ground was the white box the tree's rows sat on -- light text on
+     white, unreadable. `appearance` off and NO ground here: the ground is the
+     state's to give -- `op-frame` (a control, rule 2) or `.dark` below (a
+     readout). */
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  color: inherit;
 }
 
 .node .ord,
@@ -648,7 +688,7 @@ onUnmounted(() => {
 .node .why {
   font-family: var(--op-font-mono);
   letter-spacing: var(--op-track-micro);
-  color: var(--op-text-faint);
+  color: var(--op-text-dim);
   white-space: nowrap;
 }
 
@@ -702,16 +742,21 @@ onUnmounted(() => {
    (rule 8). It still inspects -- a press opens the detail strip -- so it is a
    button wearing a readout's clothes. */
 .node.dark {
+  /* The readout row: no frame and NO GROUND -- the bay's own plate shows
+     through (rule 2: a readout is a line of type, not a box). */
+  background: transparent;
   border-bottom: 1px solid var(--op-line);
 }
 
 .node.dark .node-name {
-  color: var(--op-text-faint);
+  color: var(--op-text-dim);
 }
 
+/* The pick lifts the readout row to the full voice -- selection is the one
+   thing that earns it on a row that is otherwise a statement. */
 .node.dark.is-picked .node-name,
 .node.dark.is-picked .why {
-  color: var(--op-text-dim);
+  color: var(--op-text);
 }
 
 .node.dark.is-picked {
@@ -751,7 +796,7 @@ onUnmounted(() => {
 }
 
 .empty {
-  color: var(--op-text-faint);
+  color: var(--op-text-dim);
 }
 
 .spend {
@@ -763,6 +808,9 @@ onUnmounted(() => {
   color: var(--op-red-hi);
   cursor: pointer;
   white-space: nowrap;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
 }
 
 .foot {
@@ -778,5 +826,8 @@ onUnmounted(() => {
   text-transform: uppercase;
   color: var(--op-text);
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
 }
 </style>

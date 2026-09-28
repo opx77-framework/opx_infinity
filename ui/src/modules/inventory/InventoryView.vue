@@ -1358,6 +1358,17 @@ try {
   padding: var(--op-space-3) 0 var(--op-space-2);
 }
 
+/* THE HOST'S BUTTON IS AN OBJECT: it paints a light ground and an outset
+   bevel behind every one until a rule takes them away. No control on this
+   surface wants either -- the ground is the plate and the stroke is the AUG
+   layer -- so the host's chrome goes once, here, for every button the
+   surface draws. The house reset; see `.op-frame` in the design system. */
+button {
+  -webkit-appearance: none;
+  appearance: none;
+  border: 0;
+}
+
 .tab {
   flex: none;
   margin: 0;

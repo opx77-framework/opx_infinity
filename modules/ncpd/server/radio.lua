@@ -23,7 +23,7 @@
 local M = OPX.Modules.Get('ncpd')
 local Law = M.Law
 
--- The traffic ring and its ids. Bounded by `M.Radio.BACKLOG` so the frame that
+-- The traffic ring and its ids. Bounded by `M.Radio.Backlog()` so the frame that
 -- carries it is one host payload (a line is about ten value nodes against a
 -- ceiling of 1024), oldest dropped first.
 local ring = {}
@@ -67,7 +67,7 @@ function M.Radio.VoiceStart()
 		Open77.log.warn('[ncpd] radio: no voice contract (Open77.voice): the scanner carries text only and nobody can talk')
 		return false
 	end
-	for _, band in ipairs(M.Radio.CHANNELS) do
+	for _, band in ipairs(M.Radio.Bands()) do
 		local made, why = voice.createChannel({
 			name = ('%s %s'):format(band.FREQ, band.id),
 			mode = 'radio',
@@ -101,7 +101,7 @@ function M.Radio.VoiceSeat(source)
 	if voice == nil then return end
 	local data = dataOf(source)
 	local held = seated[source]
-	for _, band in ipairs(M.Radio.CHANNELS) do
+	for _, band in ipairs(M.Radio.Bands()) do
 		local id = voiceIds[band.id]
 		if id ~= nil then
 			local should = data ~= nil and mayHear(source, data, band.id) == true
@@ -251,7 +251,7 @@ end
 --
 -- `except` is the suspect of a call-out: named lines go out to the band and
 -- never back to the body they name.
--- @param channel string `M.Radio.CHANNELS[].id`
+-- @param channel string `M.Radio.Bands()[].id`
 -- @param key string locale key
 -- @param args table|nil locale arguments
 -- @param except number|nil a connection to keep off this line
@@ -272,7 +272,7 @@ function M.Radio.Push(channel, key, args, except)
 		at = OPX.Now(),
 	}
 	ring[#ring + 1] = line
-	if #ring > M.Radio.BACKLOG then table.remove(ring, 1) end
+	if #ring > M.Radio.Backlog() then table.remove(ring, 1) end
 
 	local told = 0
 	eachListener(channel, function(source)
@@ -323,7 +323,7 @@ RegisterNetEvent(M.Event.RADIO, function()
 
 	local heard = {}
 	local any = false
-	for _, band in ipairs(M.Radio.CHANNELS) do
+	for _, band in ipairs(M.Radio.Bands()) do
 		heard[band.id] = mayHear(source, data, band.id) == true
 		any = any or heard[band.id]
 	end
@@ -337,7 +337,7 @@ RegisterNetEvent(M.Event.RADIO, function()
 	M.Radio.VoiceSeat(source)
 
 	local channels = {}
-	for _, band in ipairs(M.Radio.CHANNELS) do
+	for _, band in ipairs(M.Radio.Bands()) do
 		channels[#channels + 1] = {
 			id = band.id,
 			name = band.NAME,

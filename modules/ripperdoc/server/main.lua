@@ -52,6 +52,9 @@ local character, jobs = nil, nil
 local seats = {}
 -- normalized player key -> { chair, role, player }
 local where = {}
+-- normalized player key -> { token, at }: the one-use ticket a patient who
+-- stood up hands back to have the powers armed in the chair projected again
+local reprojects = {}
 -- normalized patient key -> the staged transaction awaiting its completion.
 local pending = {}
 -- ticket -> a staged transaction whose character left before it completed.
@@ -115,6 +118,24 @@ end
 -- ("Player IDs follow host string conventions") and as numbers in this
 -- runtime's handlers; one key for both so a ticket matches its patient.
 local keyOf = M.Ripper.KeyOf
+
+--- Whether a player sits in a clinic chair right now, as the patient. The
+--- chrome ledger asks when it arms a power: a power armed on a seated body
+--- never reaches it (`M.Chrome.Reproject`).
+-- @param player number
+-- @return boolean
+function M.Ripper.Seated(player)
+	local at = where[keyOf(player)]
+	return at ~= nil and at.role == 'sitter'
+end
+
+--- The reprojection token a player was handed and has not given back, or nil.
+-- @param player number
+-- @return string|nil
+function M.Ripper.PendingReproject(player)
+	local issued = reprojects[keyOf(player)]
+	return issued ~= nil and issued.token or nil
+end
 
 --- The cyberware store, or nil on a host without it.
 local function store()
@@ -698,6 +719,19 @@ local function unseat(key, why, tell)
 		refresh(seat, nil, nil)
 	end
 	if tell then pushTo(at.player, { mode = 'closed', why = why }) end
+	-- THE POWERS ARMED IN THE CHAIR GO ON AGAIN ONCE THE PATIENT IS UP. They
+	-- reached a body that sat in a workspot, which the movement clients will
+	-- not use and do not keep (`M.Chrome.Reproject` says how that looked from
+	-- the game) -- and a Sandevistan the patient ALREADY wore died the first
+	-- frame they sat, for the same reason. Only the patient's machine knows
+	-- when the workspot has really let go of the body, so it is handed a
+	-- one-use token and asks with it.
+	if at.role == 'sitter' and tell and why ~= 'unloaded'
+		and (M.Chrome.Stale(at.player) or M.Chrome.ArmedEntry(at.player, 'reflex') ~= nil) then
+		local token = ('%d:%d'):format(OPX.Now(), math.random(1, 1073741823))
+		reprojects[key] = { token = token, at = OPX.Now() }
+		M.Chrome.PushKit(at.player, { reproject = token })
+	end
 end
 
 -- ── money ───────────────────────────────────────────────────────────────────
@@ -995,12 +1029,15 @@ end
 -- @param entry table
 local function howTo(player, entry)
 	local power = type(entry.POWER) == 'table' and entry.POWER or {}
-	local key = type(power.KEY) == 'string' and power.KEY:upper() or '?'
+	local key = (M.Ripper.PowerKey(entry) or (type(power.KEY) == 'string' and power.KEY) or '?'):upper()
 	local kind = M.Ripper.GrantKind(entry) or M.Ripper.KindOf(entry)
 	if M.Ripper.KindOf(entry) == 'implant' and entry.SLOT == 'arms' then kind = 'arms' end
 	if M.Ripper.KindOf(entry) == 'implant' and entry.SLOT == 'legs' then kind = 'legs' end
+	-- THE NAME IS TRANSLATED HERE. It went out as its catalogue KEY, so the
+	-- patient read "ripperdoc.cw.apogee_sandevistan is live" -- interpolation
+	-- puts a parameter in as it is, it does not look it up.
 	pcall(OPX.NotifyLocale, player, 'ripperdoc.howto.' .. tostring(kind),
-		{ name = entry.NAME, key = key }, 'info')
+		{ name = locale(entry.NAME), key = key }, 'info')
 end
 M.Ripper.HowTo = howTo
 
@@ -1024,7 +1061,11 @@ watchGrant = function(player, citizen, entry, gradeId, price)
 			if last == 'ready' or last == 'unknown' then
 				Open77.log.info(('[ripperdoc] player %d: %s (%s) is live on the body (%s)')
 					:format(player, entry.id, tostring(gradeId), last))
-				howTo(player, entry)
+				-- A POWER IS EXPLAINED BY THE PATIENT'S OWN MACHINE, because only
+				-- it knows the key the power answers to there: the platform's
+				-- action carries our default until the player rebinds it, and
+				-- then it carries theirs (`client/sandevistan.lua`).
+				M.Chrome.PushKit(player, { announce = entry.id })
 				return
 			end
 			if last == 'failed' or last == 'removed' then break end
@@ -1814,7 +1855,12 @@ local function diagnosisReport(source, target)
 	lines[#lines + 1] = ('player %d citizen=%s record=%s'):format(target,
 		tostring(state.citizen), state.ready and 'ready' or ('not ready (' .. code .. ')'))
 	lines[#lines + 1] = 'binding ' .. flat(detail.binding)
-	lines[#lines + 1] = ('capacity %d/%d, %d piece(s)'):format(state.used, state.capacity, #state.list)
+	-- Capacity is a sum of effect-scaled numbers (a worn piece counts for a
+	-- fraction of its effect), so it reaches this line with a fraction in it
+	-- -- and `%d` raises on one. The same treatment the points line below
+	-- already gives its own number.
+	lines[#lines + 1] = ('capacity %d/%d, %d piece(s)'):format(
+		math.floor(state.used + 0.5), math.floor(state.capacity + 0.5), #state.list)
 	for _, piece in ipairs(state.list) do
 		lines[#lines + 1] = ('  %s %s %d%% %s%s'):format(piece.id, piece.grade,
 			math.floor(piece.points + 0.5), piece.state, piece.inBody and '' or ' (out of the body)')
@@ -1838,6 +1884,57 @@ end
 --- commands.
 local function registerCommands()
 	local names = type(M.Settings.COMMANDS) == 'table' and M.Settings.COMMANDS or {}
+
+	-- THE SANDEVISTAN KEY, on the caller's own machine: which key engages the
+	-- overdrive, a new one, or `reset` back to POWER_KEYS.reflex. UNRESTRICTED
+	-- because it reads and rebinds the caller's own binding and nothing else;
+	-- the rebind is the platform's own (`Open77.input.rebind`), persisted on
+	-- their machine and kept on every server.
+	register(names.key, {
+		restricted = false,
+		help = 'ripperdoc.help.key',
+		params = {
+			{ name = 'key', optional = true, help = locale('ripperdoc.help.keyArg') },
+		},
+	}, function(source, args)
+		local player = tonumber(source)
+		if player == nil or player <= 0 then
+			return OPX.CommandResult(source, false, 'in game only: the key lives on the player\'s machine')
+		end
+		local wanted = type(args[1]) == 'string' and OPX.String.Trim(args[1]) or ''
+		if wanted:lower() == 'reset' or wanted == '' then
+			wanted = wanted:lower()
+		else
+			local key = M.Ripper.PowerKeyValid(wanted)
+			if key == nil then
+				pcall(OPX.NotifyLocale, player, 'ripperdoc.key.invalid', { key = wanted }, 'error')
+				return
+			end
+			wanted = key:upper()
+		end
+		pcall(TriggerClientEvent, M.Event.KEYBIND, player, wanted)
+	end)
+
+	-- A WHOLE SANDEVISTAN WITHOUT THE OVERDRIVE, on the caller: the look, the
+	-- layers, the slowed world and the screen, through the same code as a real
+	-- boost. Restricted, because it slows everybody near the caller.
+	register(names.test, {
+		restricted = true,
+		help = 'ripperdoc.help.test',
+		params = {
+			{ name = 'seconds', optional = true, help = locale('ripperdoc.help.testArg') },
+		},
+	}, function(source, args)
+		local player = tonumber(source)
+		if player == nil or player <= 0 then
+			return OPX.CommandResult(source, false, 'in game only: the test runs on the caller')
+		end
+		local seconds = math.floor(tonumber(args[1]) or 9)
+		seconds = math.max(1, math.min(15, seconds))
+		local done, why = M.Sandy.Simulate(player, seconds * 1000, 'reflex_heavy')
+		OPX.CommandResult(source, done == true, done and
+			('a %d s Sandevistan on you, without the overdrive'):format(seconds) or ('refused: ' .. tostring(why)))
+	end)
 
 	register(names.add, {
 		restricted = true,
@@ -2045,6 +2142,7 @@ end
 --- Resets the module's world (a reload starts clean).
 function M.Init()
 	seats, where, pending, orphans, recordedBudget = {}, {}, {}, {}, {}
+	reprojects = {}
 	offerSeq = 0
 	captures, captureAsked, propsOf = {}, {}, {}
 	diagnosed, rebound, probes, recording = {}, {}, {}, {}
@@ -2054,6 +2152,7 @@ function M.Init()
 	OPX.Schema.Add(M.Storage.SCHEMA)
 	M.Chrome.Init()
 	M.Effects.Init()
+	M.Sandy.Init()
 end
 
 --- Wires the doors: the press, the intents, the completion, the commands.
@@ -2062,6 +2161,8 @@ function M.Start()
 	-- beside the cyberware one, and every host wear event starts counting.
 	M.Chrome.Start()
 	M.Effects.Start()
+	-- The Sandevistan's look on the body, and the overdrive a client lost.
+	M.Sandy.Start()
 
 	-- THE SHELF. An install against a definition the store does not know is
 	-- refused by the platform itself, so registration is the clinic's
@@ -2170,6 +2271,39 @@ function M.Start()
 			return pushTo(player, { mode = 'closed', why = 'noSeat' })
 		end
 		unseat(key, 'stood', true)
+	end)
+
+	-- THE POWERS FITTED IN THE CHAIR, ONCE THE PATIENT IS UP (see `unseat`).
+	-- The token is the server's own and good once. Without one the request is
+	-- the player's machine saying its overdrive went missing (a respawn on a
+	-- new body, a restart of `open77_reflex`), which `M.Sandy.Recover` answers
+	-- under its own limits -- never inside the power's cooldown.
+	RegisterNetEvent(M.Event.REPROJECT, function(token, kind)
+		local player = sender()
+		if player == nil then return end
+		local key = keyOf(player)
+		-- Still in a chair: nothing projected now would stick. The token is
+		-- kept, and rides the next kit (`M.Ripper.PendingReproject`).
+		if M.Ripper.Seated(player) then return end
+		if type(token) == 'string' and token ~= '' then
+			local issued = reprojects[key]
+			if issued == nil or issued.token ~= token then return end
+			reprojects[key] = nil
+			local reflex = M.Chrome.ArmedEntry(player, 'reflex')
+			local freshReflex = reflex ~= nil and M.Chrome.Stale(player, reflex.id)
+			local done = M.Chrome.Reproject(player, 'stale')
+			-- A Sandevistan worn BEFORE they sat is not stale -- it was fine
+			-- until the chair -- and goes back on through the cooldown gate.
+			if reflex ~= nil and not freshReflex then
+				local recovered = M.Sandy.Recover(player, true)
+				if recovered then done = done + 1 end
+			end
+			Open77.log.info(('[ripperdoc] player %d is up out of the chair: %d power(s) projected again')
+				:format(player, done))
+			return
+		end
+		if throttled(player, 'reproject') then return end
+		if kind == 'reflex' then M.Sandy.Recover(player) end
 	end)
 
 	-- THE OPERATOR STEPS AWAY. The patient's menu stays -- with nobody at the
@@ -2372,6 +2506,9 @@ function M.Start()
 		local player = sender()
 		if player == nil or throttled(player, 'ask') then return end
 		syncChairs(player)
+		-- And what the server holds on them: a kit armed before this client's
+		-- half was listening (a fast arrival) would otherwise never reach it.
+		M.Chrome.PushKit(player)
 	end)
 
 	-- THE CLIENT HALF OF A DIAGNOSIS: what `open77_cyberware` on the
@@ -2533,6 +2670,7 @@ function M.Start()
 		if player == nil then return end
 		unseat(keyOf(player), 'left', false)
 		orphan(keyOf(player))
+		reprojects[keyOf(player)] = nil
 		diagnosed[player], rebound[player], probes[player], recording[player] = nil, nil, nil, nil
 		recordedBudget[player] = nil
 		M.Reader.Left(player)
@@ -2590,6 +2728,7 @@ function M.Stop()
 				tostring(op.patientCitizen), tonumber(op.price) or 0))
 		pcall(compensate, op.patientCitizen, op.patient, op.price, 'ripperdoc:refund')
 	end
+	M.Sandy.Stop()
 	M.Effects.Stop()
 	M.Chrome.Stop()
 	for _, dirty in ipairs(M.Chrome.Dirty()) do

@@ -27,6 +27,16 @@
 -- have everything and the choice is real.
 
 OPX.Config.MODULES.skills = {
+	-- THE TREE'S KEY. The same `ID`/`NAME`/`DEFAULT` block every other surface
+	-- declares: `ID` is what a player's rebind is stored under and must not
+	-- change between builds, `NAME` is the pause menu's label for it (a locale
+	-- key), and `DEFAULT` is the key it arrives on -- `false` registers no
+	-- mapping at all, which is how a server that binds it elsewhere turns this
+	-- one off. The tree opens from this key and nothing else, which is why the
+	-- block lives HERE: `M.Skill.KEY` in the module is only the shipped
+	-- fallback, and this is the operator's answer.
+	KEY = { ID = 'opx.skills.tree', NAME = 'skills.key.tree', DEFAULT = 'F3' },
+
 	-- Jobs bank points -> character XP. A five-point arrest is fifty XP.
 	XP_PER_POINT = 10,
 

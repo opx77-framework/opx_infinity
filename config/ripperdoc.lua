@@ -103,6 +103,19 @@ OPX.Config.MODULES.ripperdoc = {
 		-- every base-game cyberware record through your own client,
 		-- `/opx.clinic.records status` says how far it got.
 		records = 'opx.clinic.records',
+		-- THE SANDEVISTAN KEY, per player and unrestricted (it touches the
+		-- caller's own machine and nothing else): `/opx.sandy.key` says which
+		-- key engages the overdrive, `/opx.sandy.key v` rebinds it, and
+		-- `/opx.sandy.key reset` gives it back to POWER_KEYS.reflex below. The
+		-- same rebind is in Pause > Settings > KEY BINDINGS as "Overdrive:
+		-- engage the reflex boost", and either one follows the player to every
+		-- server.
+		key = 'opx.sandy.key',
+		-- A whole Sandevistan on the caller WITHOUT the overdrive -- the look,
+		-- the layers, the slowed world and the screen, through the same code --
+		-- for testing the presentation on its own: `/opx.sandy.test [seconds]`.
+		-- Restricted: it slows every player near the caller.
+		test = 'opx.sandy.test',
 	},
 
 	-- WHO WORKS THE CHAIR. A ripperdoc presses the chair and gets the desk;
@@ -188,6 +201,210 @@ OPX.Config.MODULES.ripperdoc = {
 
 	-- AN UPGRADE trades the fitted grade in for this fraction of its price.
 	UPGRADE = { TRADE_IN = 0.5 },
+
+	-- THE KEYS THE POWERS ANSWER TO, by power class: every Sandevistan engages
+	-- on `reflex`, Kerenzikov dashes on `dash` and a Berserk slams on
+	-- `ability`. This is the DEFAULT the platform registers the action under on
+	-- the player's machine (`inputKey`); a player's own rebind wins over it and
+	-- is never overwritten by a change here. The platform's vocabulary: one
+	-- letter or digit, f1..f12, or space, enter, tab, shift, ctrl, alt,
+	-- capslock, backspace, insert, delete, home, end, pageup, pagedown, up,
+	-- down, left, right. Anything else falls back to the piece's own key.
+	POWER_KEYS = { reflex = 'x', dash = 'z', ability = 'l' },
+
+	-- THE SANDEVISTAN. The platform's overdrive is a speed buff on the owner's
+	-- own body; everything else a Sandevistan is -- the world slowing, the look
+	-- on the body, the screen -- is drawn here, for a piece named in LOOK (its
+	-- definition is registered with `presentation = 'none'`, so the platform's
+	-- blue glow is off). A piece not named keeps the platform's own.
+	--
+	-- A look, field by field:
+	--   BLINK          one cooked `.effect` at the body's feet as the boost is
+	--                  accepted (START) and as it ends (END), left where it
+	--                  went off for `seconds`: Adam Smasher's own
+	--                  `fx_sandevistan_start` / `fx_sandevistan_end`
+	--   LAYERS         cooked `.effect` files bound to the boosted body by
+	--                  EVERY client that has it streamed, the owner's own
+	--                  included, for the whole boost: `slots` is the first body
+	--                  slot the body has (a player's own body names them
+	--                  `hips`, `left_foot`...; everybody else's `Hips`,
+	--                  `LeftFoot`...), `every` restarts a one-shot effect so it
+	--                  lasts the boost, `once` plays it once as the boost
+	--                  starts, `who` = 'self' / 'others' limits it to the
+	--                  owner's own body or to everybody else's, and `self` =
+	--                  'fpp' / 'tps' limits it on the OWNER'S OWN body to first
+	--                  or third person (their own hands are posed for first
+	--                  person; a trail on their head would be in their eyes).
+	--                  In third person the owner's model is the platform's
+	--                  self-view body, drawn exactly where their own body is:
+	--                  what is bound to their body's hips, feet, chest and head
+	--                  is what their third-person model wears. `body` = true
+	--                  marks a layer that stands down on the owner's own body
+	--                  where the world ships VIEW (Smasher's start pair and the
+	--                  loop file of his fx_sandevistan_loop): up to
+	--                  opx_sandy_view 1.4.3 the model played them itself by
+	--                  the names its template authors; since 1.4.4 it lights
+	--                  only eye_glow_gold -- the NPC echoes smeared copies of
+	--                  the screen around the body
+	--   START          effects the BODY authors, played by name once as the
+	--                  boost is accepted -- on everybody else's body only
+	--   LOOP           effects the body authors, held by name for the boost
+	--                  on everybody else's body only (the owner's own body
+	--                  authors none of them; their third-person model does,
+	--                  and VIEW's REDscript lights its eye_glow_gold)
+	--   TIME           SELF_SCALE is how fast the world runs for the OWNER
+	--                  while their body does not slow (the Apogee's own 0.15):
+	--                  the owner's clock is claimed by VIEW's resource and its
+	--                  REDscript exempts their body, exactly the base game's
+	--                  asymmetry; on a build with the platform's dilation lease
+	--                  (`Open77.dilation`) the lease does it instead. Where
+	--                  neither can, the owner's whole view runs at
+	--                  SELF_FALLBACK_SCALE (body included); 1 turns that off.
+	--                  NEARBY_SCALE is how fast every player within RADIUS
+	--                  metres runs for the boost -- world and body -- on any
+	--                  build, which is also what makes THEM move in slow motion
+	--                  on the owner's screen; a player who walks into the radius
+	--                  mid-boost is slowed too, one who leaves it (RADIUS x 1.25)
+	--                  is let go. RADIUS 0 slows nobody else. EASE_MS eases.
+	--   SCREEN         the owner's screen when the base game's own one cannot
+	--                  be had: a platform screen alias (`Open77.vfx.screen`,
+	--                  STRENGTH picks its tier) held for the boost, with START a
+	--                  one-shot alias as it engages. The base game's Sandevistan
+	--                  screen is the camera's time-dilation curve `Sandevistan`
+	--                  over a slowed clock, which only REDscript can set; VIEW
+	--                  below ships that REDscript, and while it runs the owner
+	--                  gets the real screen and this stand-in stays off
+	--   SOUND          one positioned sound at activation, heard on the body
+	--   SELF           false keeps the look's layers and blinks off the
+	--                  owner's own body (their screen and clock are unaffected)
+	--   PLATE          the nameplate while boosted -- past ~20 m it is the only
+	--                  cue anybody can read (the platform's own marker cannot
+	--                  run here: this resource owns the plates)
+	--
+	-- THE `smasher` LOOK IS ADAM SMASHER'S OWN SANDEVISTAN, read out of his
+	-- 2.31 entity (`base\characters\entities\boss\adam_smasher.ent`, the
+	-- `fx_sandevistan` and `fx_animalboss` effect spawners) and put on a player:
+	--   fx_sandevistan_start/_end   -> ch_adam_smasher_sandevistan_teleport_start/_end (Root)  = BLINK
+	--   sandevistan_trails_smasher  -> ch_npc_sandevistan_trail on wrists, heels, spine, arms  = the trail LAYERS
+	--   fx_sandevistan_loop         -> ch_oda_sandevistan_loop (Trajectory, Hips)              = a LAYER
+	--   sandevistan_loop            -> ch_npc_ability_kerenzikov_center_loop (Root)            = a LAYER
+	--   fx_sandevistan_left/_right  -> ch_npc_sandevistan_left/_right (Hips), with the dash sound = START
+	--   fx_sandevistan_center       -> ch_npc_sandevistan_center (Trajectory), a flash       = a LAYER, once
+	-- HIS GHOST TRAIL -- the afterimages he leaves when he dashes -- is drawn
+	-- by VIEW on the player's own model: its archive gives every player body
+	-- four layers of a copy of ITS OWN body, arms and head in his armour look
+	-- (switched off), and its REDscript places them every frame where the body
+	-- was 0.08 / 0.16 / 0.24 / 0.32 s before (opx_sandy_view 1.4.7, confirmed
+	-- in game; his own `sandevistan_multilayer.mt` copies, switched on by his
+	-- `ch_smasher_sandevistan_*.effect`, never showed on a player body --
+	-- `docs/sandevistan.md` has every build). It is lit by the LOOP trigger
+	-- `opx_sandy_ghost_on` below (everybody else's copy of the owner, on every
+	-- machine the owner is streamed to) and by VIEW's REDscript on the owner's
+	-- own third-person model.
+	-- A trail effect is 2 s long, so it is restarted every 1.8 s; each is a
+	-- real-time effect on a body that runs in real time.
+	SANDEVISTAN = {
+		enabled = true,
+		LOOK = { apogee_sandevistan = 'smasher' },
+		LOOKS = {
+			smasher = {
+				BLINK = {
+					START = { effect = 'base\\fx\\characters\\boss_adam_shasher\\ch_adam_smasher_sandevistan_teleport_start.effect',
+						seconds = 15 },
+					END = { effect = 'base\\fx\\characters\\boss_adam_shasher\\ch_adam_smasher_sandevistan_teleport_end.effect',
+						seconds = 15 },
+				},
+				LAYERS = {
+					-- `sandevistan_trails_smasher`: his afterimage trail on the
+					-- wrists, heels, chest and head.
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_trail.effect',
+						slots = { 'LeftHand' }, every = 1.8, self = 'fpp' },
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_trail.effect',
+						slots = { 'RightHand' }, every = 1.8, self = 'fpp' },
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_trail.effect',
+						slots = { 'LeftFoot', 'left_foot' }, every = 1.8 },
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_trail.effect',
+						slots = { 'RightFoot', 'right_foot' }, every = 1.8 },
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_trail.effect',
+						slots = { 'Chest' }, every = 1.8 },
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_trail.effect',
+						slots = { 'Head' }, every = 1.8, self = 'tps' },
+					-- `fx_sandevistan_trails_left/_right`: the same trails with the
+					-- chromatic aberration and the blurred afterimage left behind.
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_trail_left.effect',
+						slots = { 'Hips', 'hips', 'Legs' }, every = 1.8 },
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_trail_right.effect',
+						slots = { 'Chest' }, every = 1.8 },
+					-- `fx_sandevistan_left/_right` on the owner's own body, once as
+					-- it engages (everybody else's body plays them by name, START).
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_left.effect',
+						slots = { 'Hips', 'hips', 'Legs' }, once = true, who = 'self', body = true },
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_right.effect',
+						slots = { 'Hips', 'hips', 'Legs' }, once = true, who = 'self', body = true },
+					-- `fx_sandevistan_loop` (off on the owner's own body where
+					-- VIEW ships: `body = true`).
+					{ effect = 'base\\fx\\characters\\boss_cyberninja\\sandevistan\\ch_oda_sandevistan_loop.effect',
+						slots = { 'Hips', 'hips', 'Legs' }, body = true },
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_ability_kerenzikov_center_loop.effect',
+						slots = { 'Hips', 'hips', 'Legs' } },
+					{ effect = 'base\\fx\\characters\\npc\\abilities\\ch_npc_sandevistan_center.effect',
+						slots = { 'Hips', 'hips', 'Legs' }, once = true },
+				},
+				START = { 'fx_sandevistan_left', 'fx_sandevistan_right' },
+				START_SECONDS = 3,
+				-- `opx_sandy_ghost_on` is HIS GHOST TRAIL: the trigger VIEW's
+				-- archive gives every player body, answered by VIEW's REDscript
+				-- on the body that plays it (its four afterimages lit and placed
+				-- every frame; undone when the look stops it).
+				LOOP = { 'eye_glow_gold', 'opx_sandy_ghost_on' },
+				TIME = { SELF_SCALE = 0.15, SELF_FALLBACK_SCALE = 0.5, NEARBY_SCALE = 0.15, RADIUS = 30,
+					EASE_MS = 250 },
+				SCREEN = { ALIAS = 'drugged', STRENGTH = 0.5, START = 'damage.emp' },
+				SOUND = 'nme_ability_sandevistan_dash_long',
+				-- The owner's own ears: the base game's Sandevistan enter and
+				-- exit, on their own body.
+				SELF_SOUND = { ENTER = 'time_dilation_sandevistan_enter', EXIT = 'time_dilation_sandevistan_exit' },
+				SELF = true,
+				PLATE = { SUFFIX = ' // SANDEVISTAN', COLOR = '#FF2D55' },
+			},
+		},
+		-- The action a Sandevistan is engaged through on the player's machine
+		-- (what `/opx.sandy.key` rebinds). The platform's own; change it only
+		-- if the platform renames it.
+		MAPPING = { RESOURCE = 'open77_reflex', ID = 'reflex_overdrive' },
+		-- THE COOLDOWN, one for every Sandevistan the ripperdoc sells: after a
+		-- boost ENDS the power is back this many ms later (the platform starts
+		-- the cooldown when the boost is over). It replaces each grade's own
+		-- `cooldownMs` and `chargeRegenMs` when the tray is built, and a boost
+		-- never outlasts it. nil keeps every grade's own.
+		COOLDOWN_MS = 20000,
+		-- THE REAL ITEM. A piece named here is also the base game's own item in
+		-- the Operating System slot, fitted by VIEW's REDscript with the base
+		-- game's equipment system (the inventory, the paperdoll and every stat
+		-- read of the slot see it), taken off and out of the inventory when the
+		-- ripperdoc takes the piece out. The number is the code VIEW's REDscript
+		-- knows: 1 = Items.AdvancedSandevistanApogee. While it is fitted the
+		-- base game's own Sandevistan activation is off: the key and the
+		-- slowdown stay the ripperdoc's.
+		WEAR = { apogee_sandevistan = 1 },
+		-- THE BASE GAME'S OWN SANDEVISTAN SCREEN. `SandevistanEvents.OnEnter`
+		-- sets the camera's time-dilation curve `Sandevistan` and slows the
+		-- world under the reason `sandevistan` with V exempt; the curve is what
+		-- the screen looks like, and only REDscript can set it. The resource
+		-- named here (`extras/opx_sandy_view` in this repo) ships that REDscript
+		-- to every player as a preload; while it is running on the server the
+		-- owner's screen is the base game's own and SCREEN's stand-in is off.
+		-- Its preload is executable content, so it only starts on a server with
+		-- `requiredMods.unsecured = true`. false turns it off.
+		VIEW = { RESOURCE = 'opx_sandy_view' },
+		-- A PLAYER WHOSE OWN CLIENT LOST THE POWER while the server still holds
+		-- it asks for it again. `open77_reflex` drops the overdrive the first
+		-- frame its body is in ANY workspot -- the clinic chair, a sit or lean
+		-- emote -- or on a new body after a respawn, and only a new projection
+		-- brings it back. The server re-projects it at most once per AFTER_MS,
+		-- and never inside the power's own boost and cooldown from its last use.
+		RECOVER = { AFTER_MS = 15000 },
+	},
 
 	-- THE POWERS' DEFINITIONS. The platform holds at most DEFINITION_LIMIT
 	-- dash, overdrive and ground-slam definitions per resource (8 on the

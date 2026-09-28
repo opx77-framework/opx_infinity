@@ -32,49 +32,73 @@
 
 OPX.Vehicle = {}
 
--- The pair `open77_avcleanup` sweeps the world by, read when the operator's list
--- is empty or unusable. An empty list must not mean "nothing flies": it means
--- the operator has not said, and the documented pair is what the platform itself
--- says.
-local AV_FALLBACK = { 'vehicle.av_', 'vehicle.max_tac_av' }
+-- The names `open77_avcleanup` sweeps the world by, read when the operator's
+-- list is empty or unusable. An empty list must not mean "nothing flies": it
+-- means the operator has not said, and the documented default is what the
+-- platform itself says.
+local AV_FALLBACK = { 'vehicle.av_', 'vehicle.max_tac', '_av', '_heli' }
 
 -- The normalised list, and the config table it was built from. Rebuilt when that
 -- table is REPLACED rather than on every call, because the admin catalogue asks
 -- this question once per vehicle row inside a load-time instruction budget the
 -- host will cancel the resource set for overrunning. Editing the list in place
 -- will not be noticed; replacing it will.
-local avPrefixes, avSource = nil, nil
+local avEntries, avSource = nil, nil
+
+-- Whether an entry found at `at` in `lowered` names a whole WORD and not three
+-- letters in the middle of one. The word's end is what keeps `_av` from
+-- declaring the Quadra Type-66 AVENGER an aircraft: its record carries
+-- `_avenger`, whose `_av` runs straight on into `enger`. Either the entry
+-- itself closes the word -- `vehicle.av_` names the whole family -- or the
+-- name ends with the entry, or one of `_`, `.` and a digit follows it.
+local function wordEntry(lowered, entry, at)
+	local last = at + #entry - 1
+	local tail = entry:sub(-1)
+	if tail == '_' or tail == '.' or (tail >= '0' and tail <= '9') then return true end
+	if last >= #lowered then return true end
+	local char = lowered:sub(last + 1, last + 1)
+	return char == '_' or char == '.' or (char >= '0' and char <= '9')
+end
 
 --- Whether a TweakDB vehicle record names an AV.
 -- @author dop42
 --
--- The one reader of `OPX.Config.SHARED.AV_PREFIXES`. The comparison is
--- lower-cased because the database column and the wire disagree about case.
+-- The one reader of `OPX.Config.SHARED.AV_MATCHES`. Each entry is matched
+-- lower-cased -- the database column and the wire disagree about case -- and
+-- either names the record's start or lands on a word's end, which is the
+-- difference between `vehicle.batty_av` being an aircraft and the Quadra
+-- Type-66 AVENGER being one. A config written before the entries grew past
+-- prefixes may still say `AV_PREFIXES`; both names are read.
 -- @param record any
 -- @return boolean
 function OPX.Vehicle.IsAvRecord(record)
 	if type(record) ~= 'string' then return false end
 
-	local configured = type(OPX.Config) == 'table' and type(OPX.Config.SHARED) == 'table'
-		and OPX.Config.SHARED.AV_PREFIXES or nil
-	if avPrefixes == nil or avSource ~= configured then
+	local shared = type(OPX.Config) == 'table' and type(OPX.Config.SHARED) == 'table'
+		and OPX.Config.SHARED or nil
+	local configured = shared and (shared.AV_MATCHES or shared.AV_PREFIXES) or nil
+	if avEntries == nil or avSource ~= configured then
 		local list = {}
 		if type(configured) == 'table' then
 			for index = 1, #configured do
-				local prefix = configured[index]
-				if type(prefix) == 'string' and prefix ~= '' then
-					list[#list + 1] = prefix:lower()
+				local entry = configured[index]
+				if type(entry) == 'string' and entry ~= '' then
+					list[#list + 1] = entry:lower()
 				end
 			end
 		end
 		if #list == 0 then list = AV_FALLBACK end
-		avPrefixes, avSource = list, configured
+		avEntries, avSource = list, configured
 	end
 
 	local lowered = record:lower()
-	for index = 1, #avPrefixes do
-		local prefix = avPrefixes[index]
-		if lowered:sub(1, #prefix) == prefix then return true end
+	for index = 1, #avEntries do
+		local entry = avEntries[index]
+		local at = lowered:find(entry, 1, true)
+		while at ~= nil do
+			if wordEntry(lowered, entry, at) then return true end
+			at = lowered:find(entry, at + 1, true)
+		end
 	end
 	return false
 end

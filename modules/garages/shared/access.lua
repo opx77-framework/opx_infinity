@@ -506,6 +506,38 @@ function Access.PilotSeat()
 	return nil
 end
 
+-- Normalises one `FLEET` block -- the division's own aircraft a pad may
+-- issue. `false` is a pad that issues nothing, a list is its hulls in the
+-- order the menu shows them, and anything else is refused whole. Each row
+-- carries a RECORD the vehicles contract can create; LABEL is the operator's
+-- own words and may be absent, in which case the row shows its record.
+-- Returns the list and the faults to report against it.
+local function fleetOf(raw)
+	if raw == nil then return nil, {} end
+	-- `false` is KEPT as false rather than flattened to an empty list: the
+	-- built garage then reads as "issues nothing" (`M.Issue` answers
+	-- `fleetNotHere`) instead of "issues everything but that hull".
+	if raw == false then return false, {} end
+	if type(raw) ~= 'table' then
+		return nil, { 'FLEET must be a list of hull rows or false' }
+	end
+	local list, faults = {}, {}
+	for index = 1, #raw do
+		local row = raw[index]
+		if type(row) ~= 'table' or type(row.RECORD) ~= 'string' or row.RECORD == '' then
+			faults[#faults + 1] = ('FLEET row %d must carry a non-empty RECORD'):format(index)
+		elseif row.LABEL ~= nil and type(row.LABEL) ~= 'string' then
+			faults[#faults + 1] = ('FLEET row %d LABEL must be a string'):format(index)
+		else
+			list[#list + 1] = {
+				record = row.RECORD,
+				label = (type(row.LABEL) == 'string' and row.LABEL ~= '') and row.LABEL or row.RECORD,
+			}
+		end
+	end
+	return list, faults
+end
+
 --- Builds every garage of BOTH files, and the flat point table under them.
 -- @author XEROX710
 --
@@ -536,7 +568,7 @@ function Access.CoerceAll(definitions, annex, problems)
 		for key, raw in pairs(definitions) do merged[key] = raw end
 	end
 
-	local gated = {}
+	local gated, fleets = {}, {}
 	if type(annex) == 'table' then
 		local avGarages = annex.GARAGES
 		if avGarages ~= nil and type(avGarages) ~= 'table' then
@@ -570,6 +602,15 @@ function Access.CoerceAll(definitions, annex, problems)
 				else
 					merged[key] = raw
 					gated[key] = { jobs = jobs, onDuty = annex.ON_DUTY == true }
+					-- A pad's own FLEET replaces the file's; `false` is a pad
+					-- that issues nothing, and an absent one is the file's list.
+					local stock = annex.FLEET
+					if type(raw) == 'table' and raw.FLEET ~= nil then stock = raw.FLEET end
+					local fleet, faults = fleetOf(stock)
+					for index = 1, #faults do
+						refuse(('%s: %s'):format(tostring(key), faults[index]))
+					end
+					fleets[key] = fleet
 				end
 			end
 		end
@@ -578,6 +619,11 @@ function Access.CoerceAll(definitions, annex, problems)
 	local garages, points = Access.CoerceGarages(merged, problems)
 	for key, requirement in pairs(gated) do
 		if garages[key] ~= nil then garages[key].requirement = requirement end
+	end
+	-- The fleet rides the built garage beside the requirement: `M.List` offers
+	-- it and `M.Issue` refuses anything that is not on it.
+	for key, fleet in pairs(fleets) do
+		if garages[key] ~= nil then garages[key].fleet = fleet end
 	end
 	return garages, points
 end

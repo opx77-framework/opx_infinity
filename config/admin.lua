@@ -215,7 +215,7 @@ OPX.Config.MODULES.admin = {
 		SPAWN_OFFSET = { X = 3.0, Y = 0.0, Z = 0.25 },
 
 		-- WHICH RECORDS ARE AVs IS NOT AN ADMIN SETTING. It is one list,
-		-- `AV_PREFIXES` in `config/shared.lua`, read by one helper. This key was
+		-- `AV_MATCHES` in `config/shared.lua`, read by one helper. This key was
 		-- the third copy and the one whose code differed: emptying it alone
 		-- reclassified every AV as ground in the staff catalogue while the garage
 		-- and the dealer went on calling the same records air. The answer still

@@ -341,6 +341,36 @@ OPX.Config.MODULES.ncpd = {
 		},
 	},
 
+	-- THE POLICE SCANNER'S THREE KNOBS. `modules/ncpd/module.lua` carries the
+	-- same three values as its own shipped fallbacks; a usable block here wins
+	-- on every read (the same live-config rule as `config/skills.lua`'s KEY),
+	-- so the bands, the backlog and the key are dial settings rather than code.
+	--
+	-- KEY is the same shape as the crew door's: the id is stable because a
+	-- player's rebind is stored under it, and `DEFAULT = false` is a real
+	-- declaration of "no default binding" (the scanner simply ships without a
+	-- key). A KEY block that is not one -- no ID or no NAME, or a DEFAULT that
+	-- is neither a key name nor `false` -- falls back to the shipped block
+	-- rather than leaving the scanner unreachable.
+	--
+	-- BACKLOG is how many lines the feed keeps for a scanner that stows and
+	-- comes back: bounded so the frame carrying them is one host payload (the
+	-- ceiling is 1024 value nodes and one line is about ten) and capped again
+	-- on the page. CHANNELS are vocabulary -- id, the locale key the row names
+	-- itself with, and the frequency the row's micro-label states -- and the
+	-- audience rule stays the server's (`server/radio.lua` says who HEARS a
+	-- band; nothing here does).
+	RADIO = {
+		KEY = { ID = 'opx.ncpd.radio', NAME = 'ncpd.key.radio', DEFAULT = 'F2' },
+		BACKLOG = 30,
+		CHANNELS = {
+			{ id = 'ncpd',     NAME = 'ncpd.radio.channel.ncpd',     FREQ = '154.980' },
+			{ id = 'tactical', NAME = 'ncpd.radio.channel.tactical', FREQ = '155.475' },
+			{ id = 'maxtac',   NAME = 'ncpd.radio.channel.maxtac',   FREQ = '39.720' },
+			{ id = 'air',      NAME = 'ncpd.radio.channel.air',      FREQ = '45.880' },
+		},
+	},
+
 	MAXTAC = {
 		STAGE = 5,
 		HEAT = 'Heat_5',
@@ -497,6 +527,63 @@ OPX.Config.MODULES.ncpd = {
 			REST_SECONDS = 1.0,
 			-- How often the crew's seats are read while they hold the hull.
 			CUSTODY_MS = 1000,
+		},
+	},
+
+	-- THE TEST CROWD: mortal civilians a player can kill, so the wanted ladder
+	-- can be driven with real bodies (`modules/ncpd/server/bots.lua`). Placed
+	-- on demand with `/opx.ncpd.bots spawn [count]`, taken off the street with
+	-- `clear`. THE KILL IS A CRIME: a death with a player behind it is charged
+	-- as `LAW` through the module's own charge path, so the ladder climbs, the
+	-- response stands up and MaxTac answers exactly as they would for any
+	-- other murder.
+	--
+	-- `BOTS = false` switches the whole rig off: the command refuses by name
+	-- and no death is ever charged. Every field below falls back to the
+	-- shipped value when it is not usable, and is read on every ask -- the
+	-- same live-config rule as the radio's KEY block.
+	BOTS = {
+		-- The law a kill is charged as -- any id from `/opx.ncpd.laws`.
+		LAW = 'murder',
+		-- FALSE books nothing and leaves the ladder to whatever else scores
+		-- the kill -- the engine's own heat, mirrored by the client. Set it
+		-- when your engine already counts these deaths, or one kill climbs
+		-- twice.
+		CHARGE = true,
+		-- How many one `spawn` places, and how many may stand at once.
+		COUNT = 24,
+		MAX = 64,
+		-- How far from the asker the crowd stands (metres), and how far each
+		-- body wanders from its own spot. `WANDER = 0` pins them.
+		SPREAD = 45.0,
+		WANDER = 12.0,
+		-- The first wound sends a body fleeing from the player who landed it,
+		-- the way a pedestrian would.
+		FLEE = true,
+		-- A killed body comes back this many seconds later, where it fell, so
+		-- a long test does not run out of victims.
+		RESPAWN = true,
+		RESPAWN_SECONDS = 25.0,
+		-- The bodies themselves: the civilian family of the admin ped
+		-- catalogue (`modules/admin/data/peds.lua`). A row that is not a
+		-- usable `Character.*` id is dropped rather than placed.
+		RECORDS = {
+			'Character.DefaultNCResidentMale',
+			'Character.DefaultNCResidentFemale',
+			'Character.AsianMale',
+			'Character.AsianFemale',
+			'Character.CreoleMan',
+			'Character.CreoleWoman',
+			'Character.TenantMale',
+			'Character.TenantWoman',
+			'Character.YoungsterMale',
+			'Character.YoungsterFemale',
+			'Character.SlackerMale',
+			'Character.SlackerFemale',
+			'Character.MorningCrowdMan',
+			'Character.MorningCrowdWoman',
+			'Character.NightlifeMale',
+			'Character.NightlifeWoman',
 		},
 	},
 }

@@ -133,6 +133,93 @@ if KEY ~= nil then
 end
 Access.KEY = KEY
 
+-- ── the press and its options ─────────────────────────────────────────────
+
+-- The PRESS block, normalised: what the key does and how long a spoken line
+-- stays up. READ ON EVERY ASK rather than once at load, like `BlipLook` above:
+-- the press is the operator's live vocabulary, and a value the operator got
+-- wrong is a fault `Problems` names AND its shipped default -- never a key
+-- that answers nothing.
+local function pressOf()
+	local block = type(Config.PRESS) == 'table' and Config.PRESS or {}
+	local faults = {}
+	local action = block.ACTION
+	if action == nil then action = 'menu' end
+	if action ~= 'menu' and action ~= 'read' then
+		faults[#faults + 1] = "PRESS.ACTION must be 'menu' or 'read'"
+		action = 'menu'
+	end
+	local toastMs = block.TOAST_MS
+	if toastMs == nil then toastMs = 4000 end
+	if type(toastMs) ~= 'number' or toastMs ~= toastMs or toastMs < 0 or toastMs > 60000 then
+		faults[#faults + 1] = 'PRESS.TOAST_MS must be a number of milliseconds, 0 to 60000'
+		toastMs = 4000
+	end
+	return { action = action, toastMs = toastMs }, faults
+end
+
+-- The MENU's option rows, normalised to { id, label, command } in the order
+-- the operator wrote them. A row that is not one is dropped with a fault
+-- naming its place, and an EMPTY list is a choice rather than a fault: the
+-- press then says the station's name and stops.
+local function rowsOf()
+	local block = type(Config.MENU) == 'table' and Config.MENU or {}
+	local rows, faults = {}, {}
+	local raw = block.ROWS
+	if raw == nil then return rows, faults end
+	if type(raw) ~= 'table' then
+		faults[#faults + 1] = 'MENU.ROWS must be a list of option rows'
+		return rows, faults
+	end
+	for index = 1, #raw do
+		local row = raw[index]
+		if type(row) ~= 'table' or type(row.LABEL) ~= 'string' or row.LABEL == '' then
+			faults[#faults + 1] = ('MENU.ROWS row %d must carry a non-empty LABEL'):format(index)
+		elseif row.ID ~= nil and type(row.ID) ~= 'string' then
+			faults[#faults + 1] = ('MENU.ROWS row %d ID must be a string'):format(index)
+		elseif row.COMMAND ~= nil and (type(row.COMMAND) ~= 'string' or row.COMMAND == '') then
+			faults[#faults + 1] = ('MENU.ROWS row %d COMMAND must be a non-empty string'):format(index)
+		else
+			rows[#rows + 1] = {
+				id = (type(row.ID) == 'string' and row.ID ~= '') and row.ID or ('row' .. index),
+				label = row.LABEL,
+				command = (type(row.COMMAND) == 'string' and row.COMMAND ~= '') and row.COMMAND or nil,
+			}
+		end
+	end
+	return rows, faults
+end
+
+--- What the key does when pressed, and how long a spoken line stays up.
+-- @author XEROX710
+-- @return table { action = 'menu'|'read', toastMs = number }
+function Access.Press()
+	return (pressOf())
+end
+
+--- The options the press's menu opens, in the order they are shown.
+-- @author XEROX710
+-- @return table[] { id, label, command|nil }
+function Access.MenuRows()
+	return (rowsOf())
+end
+
+--- The menu's geometry, with the shipped panel as the fallback so a config
+-- that lost its MENU block still opens a readable panel. The menu module
+-- clamps every value it is handed.
+-- @author XEROX710
+-- @return table
+function Access.MenuChrome()
+	local block = type(Config.MENU) == 'table' and Config.MENU or {}
+	return {
+		ANCHOR = type(block.ANCHOR) == 'string' and block.ANCHOR or 'center',
+		WIDTH = finiteNumber(block.WIDTH) or 560,
+		HEIGHT = finiteNumber(block.HEIGHT) or 220,
+		MAX_HEIGHT_VH = finiteNumber(block.MAX_HEIGHT_VH) or 40,
+		VISIBLE_ROWS = finiteNumber(block.VISIBLE_ROWS) or 6,
+	}
+end
+
 --- Answers the spot a point stands on, or nil. The nearest wins; at equal
 -- distance the key decides, so `pairs` order never chooses between two markers
 -- a metre apart.
@@ -303,6 +390,14 @@ function Access.Problems()
 	if KEY == nil then
 		lines[#lines + 1] = 'KEY must declare ID and NAME, with DEFAULT a key name or false'
 	end
+
+	-- The press and its options are re-derived the same way the spots are: a
+	-- row the normaliser dropped is a row the menu will never show, and this
+	-- diagnostic is the only place that says so.
+	local _, pressFaults = pressOf()
+	for index = 1, #pressFaults do lines[#lines + 1] = pressFaults[index] end
+	local _, rowFaults = rowsOf()
+	for index = 1, #rowFaults do lines[#lines + 1] = rowFaults[index] end
 
 	-- The spots are validated once at load; the errors are re-derived here so
 	-- the diagnostic reports them rather than only the boot log. The BLIP

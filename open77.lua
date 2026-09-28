@@ -380,6 +380,9 @@ server_script "modules/ncpd/server/radio.lua"
 -- it for an aircraft: `M.Av` has to exist by the time a stage is applied.
 server_script "modules/ncpd/server/av.lua"
 server_script "modules/ncpd/server/response.lua"
+-- The operator's crowd of mortal civilians: bodies a kill can be booked
+-- against. Before `main.lua`, which starts it and hands it the charge door.
+server_script "modules/ncpd/server/bots.lua"
 server_script "modules/ncpd/server/main.lua"
 client_script "modules/ncpd/client/main.lua"
 -- The scanner's two halves: its state and rules, then the view seam that is the
@@ -403,11 +406,13 @@ server_script "modules/ripperdoc/server/storage.lua"
 server_script "modules/ripperdoc/server/records.lua"
 server_script "modules/ripperdoc/server/reader.lua"
 server_script "modules/ripperdoc/server/chrome.lua"
+server_script "modules/ripperdoc/server/sandevistan.lua"
 server_script "modules/ripperdoc/server/effects.lua"
 server_script "modules/ripperdoc/server/main.lua"
 client_script "modules/ripperdoc/client/main.lua"
 client_script "modules/ripperdoc/client/recorder.lua"
 client_script "modules/ripperdoc/client/view.lua"
+client_script "modules/ripperdoc/client/sandevistan.lua"
 server_script "modules/skills/server/storage.lua"
 server_script "modules/skills/server/main.lua"
 client_script "modules/skills/client/main.lua"
@@ -747,6 +752,21 @@ permissions {
   -- appears. The staff noclip pop is the reason this line is here -- without it
   -- there was no pop at all, and nothing on the server said why.
   "world.effects",
+
+  -- THE SANDEVISTAN'S TIME AND SCREEN (`modules/ripperdoc/client/sandevistan.lua`).
+  --   world.timescale  `Open77.world.setTimeScale` on the players AROUND a
+  --                    boosted one, for the boost and not a millisecond more --
+  --                    and on the owner's own view where the build has no lease
+  --   world.dilation   `Open77.dilation.authorise/apply/release`, the lease
+  --                    that lets the owner's world slow while their body does
+  --                    not; a build without it has no table, and the owner's
+  --                    whole view then slows at the look's SELF_FALLBACK_SCALE
+  --   vfx.screen       the owner's own full-screen overlay for the boost
+  -- All three are CLIENT permissions, and a refusal only ever costs the one
+  -- layer it gates.
+  "world.timescale",
+  "world.dilation",
+  "vfx.screen",
 
   -- The per-bucket ambient policy, which is what decides whether the engine's
   -- own police -- the units a heat stage spawns and the MaxTac AV -- may exist at

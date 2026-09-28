@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OPEN//77 button chrome audit</title>
+<!--
+  EVERY SURFACE, EVERY BUTTON, ONE QUESTION: does the player see the host's own
+  chrome anywhere. A <button> is a user-agent object -- the host paints a light
+  ground and an outset bevel behind every one until a rule takes them away. The
+  skill tree lost its readability to exactly that; this page is the sweep that
+  finds every other one.
+
+  Each surface is drawn by the same `ui/src/boot/main.ts` the game mounts, on a
+  fake bridge that DELIVERS the payloads Lua would. A surface's buttons are the
+  ones that appear when its payload lands, so shared class names between
+  surfaces cannot steal each other's verdicts.
+
+  The battery, per button, is the computed style the player gets:
+    -- UA BEVEL: `border-top-style: outset` is the host's, never an author's.
+    -- UA GROUND: no background at all and a visible border means the host's
+       light ground shows inside the box (the white the skill tree had).
+    -- hygiene: `appearance: none` is what the house fix sets; its absence on
+       an otherwise clean button is reported, not failed.
+  Run it with the dev server:  npm run dev  ->  /harness/ua-chrome.html
+-->
+<style>
+  html, body { margin: 0; background: #080e19; color: #f2f6f8;
+               font: 13px/1.5 "Cascadia Mono", Consolas, monospace; }
+  #result { position: fixed; left: 0; top: 0; margin: 0; padding: 15px;
+            white-space: pre-wrap; z-index: 9999; max-height: 100vh;
+            overflow: auto; background: rgba(8, 14, 25, 0.92); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<pre id="result">running…</pre>
+<script>
+/* A FAKE BRIDGE, INSTALLED BEFORE THE APP. It has to be this and not the app's
+   own dev shim: a shim answers by itself, and this harness has to DELIVER
+   payloads TO the app. Plain script, because the app's import is a module and
+   modules run after this. */
+window.__opx = { handlers: {}, emitted: [] };
+window.Open77 = {
+  on: function (channel, handler) {
+    (window.__opx.handlers[channel] = window.__opx.handlers[channel] || []).push(handler);
+  },
+  emit: function (channel, payload) {
+    window.__opx.emitted.push({ channel: channel, payload: payload });
+  }
+};
+window.__deliver = function (channel, payload) {
+  var list = window.__opx.handlers[channel] || [];
+  for (var index = 0; index < list.length; index++) list[index](payload);
+};
+</script>
+<script type="module">
+import '/src/boot/main.ts'
+
+const results = []
+let failed = 0
+
+function check(name, ok, detail) {
+  if (!ok) failed += 1
+  results.push((ok ? 'ok   ' : 'FAIL ') + name + (ok || detail === undefined ? '' : '  --  ' + detail))
+  draw()
+}
+
+function draw() {
+  const text = results.join('\n') + '\n\n' + (failed === 0 ? 'PASS' : failed + ' FAILED')
+  document.getElementById('result').textContent = text
+  window.__RESULT__ = { failed, results }
+}
+
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
+
+/** A css colour as [r, g, b, a], or null. */
+function paint(value) {
+  const parts = /rgba?\\(([^)]+)\\)/.exec(value || '')
+  if (!parts) return null
+  const nums = parts[1].split(',').map((part) => parseFloat(part))
+  return [nums[0], nums[1], nums[2], nums.length > 3 ? nums[3] : 1]
+}
+
+/** Relative luminance of an opaque rgb triple. */
+function luminance(rgb) {
+  const channel = (raw) => {
+    const step = raw / 255
+    return step <= 0.04045 ? step / 12.92 : Math.pow((step + 0.055) / 1.055, 2.4)
+  }
+  return 0.2126 * channel(rgb[0]) + 0.7122 * channel(rgb[1]) + 0.0722 * channel(rgb[2])
+}
+
+/** Every button the document holds right now. */
+function buttons() {
+  return Array.from(document.querySelectorAll('#app button'))
+}
+
+/**
+ * The verdict for one button. Returns { tag, why, hygiene, row }.
+ * The two FAIL arms are the host's own painting, and nothing else:
+ * `outset` is the UA bevel; a bordered box with no ground at all is the UA
+ * light ground showing through. A deliberately bare text button (`border: 0`,
+ * no ground) is clean and says so.
+ */
+function verdictOf(el) {
+  const s = getComputedStyle(el)
+  const ground = paint(s.backgroundColor)
+  const hasImage = s.backgroundImage !== 'none'
+  const hasGround = hasImage || (ground !== null && ground[3] > 0)
+  const bordered = s.borderTopWidth !== '0px' && s.borderTopStyle !== 'none'
+  const uaBevel = s.borderTopStyle === 'outset' || s.borderTopStyle === 'ridge'
+  const lightGround = !hasImage && ground !== null && ground[3] > 0 && luminance(ground) > 0.5
+  // ONLY THE HOST'S OWN PAINTING FAILS. An outlined, unfilled button is a
+  // design (the call eye's ghost act/pill rows are exactly that): the author
+  // took both paints away and drew a stroke of their own.
+  const why = []
+  if (uaBevel) why.push('UA bevel (' + s.borderTopStyle + ' ' + s.borderTopWidth + ')')
+  if (lightGround) why.push('UA ground (' + s.backgroundColor + ')')
+  const notes = []
+  if (s.appearance !== 'none') notes.push('appearance ' + s.appearance)
+  if (!hasGround && bordered && !uaBevel) notes.push('ghost: outlined, unfilled')
+  const hygiene = notes.join('; ')
+  const cls = (el.getAttribute('class') || '(none)').replace(/\\s+/g, ' ').trim()
+  return {
+    bad: why.length > 0,
+    why: why.join('; '),
+    hygiene,
+    row: '  ' + cls + '  | border ' + s.borderTopStyle + ' ' + s.borderTopWidth
+      + ' | ground ' + (hasImage ? 'image' : s.backgroundColor) + ' | ' + (hygiene || 'appearance none')
+  }
+}
+
+/** The buttons that exist right now, for a set-difference after a payload.
+    NOT a count: a surface that re-renders replaces its elements, and document
+    order moves under any diff that only counts. */
+function snapshot() {
+  return new Set(buttons())
+}
+
+/** Audits the buttons that appeared since `before`, under one surface name. */
+function audit(surface, before) {
+  const fresh = buttons().filter((el) => !before.has(el))
+  if (fresh.length === 0) {
+    check(surface + ': rendered buttons to audit', false, 'none appeared')
+    return
+  }
+  const dirty = []
+  const hygiene = []
+  for (const el of fresh) {
+    const v = verdictOf(el)
+    if (v.bad) dirty.push(v.row + '  >> ' + v.why)
+    else if (v.hygiene) hygiene.push(v.row)
+  }
+  check(surface + ': ' + fresh.length + ' button(s) free of host chrome',
+    dirty.length === 0, dirty.length > 0 ? dirty[0] : '')
+  for (const line of dirty) results.push('       ' + line)
+  for (const line of hygiene) results.push('       hygiene: ' + line)
+  draw()
+}
+
+async function run() {
+  window.__deliver('opx:locale:set', { strings: {}, first: true })
+  await sleep(80)
+
+  // ── the radio scanner ──────────────────────────────────────────────────
+  let mark = snapshot()
+  window.__deliver('opx:radio:view', {
+    kind: 'frame',
+    frame: {
+      channels: [
+        { id: 'ncpd', name: 'ncpd.radio.band.ncpd', freq: '155.310', hear: true },
+        { id: 'maxtac', name: 'ncpd.radio.band.maxtac', freq: '155.770', hear: true },
+        { id: 'ems', name: 'ncpd.radio.band.ems', freq: '155.100', hear: true }
+      ],
+      lines: [],
+      key: 'F2',
+      at: { x: 10, y: 20 }
+    }
+  })
+  await sleep(120)
+  audit('radio scanner (key / ptt / stow)', mark)
+
+  // ── the call eye ───────────────────────────────────────────────────────
+  mark = snapshot()
+  window.__deliver('opx:calls:holo', {
+    open: true,
+    rows: [{ id: 1, name: 'Vik' }, { id: 2, name: 'Mama', refusal: 'calls.refused' }],
+    recent: [{ outcome: 'missed', name: 'Vik' }],
+    call: { name: 'Vik' },
+    invite: {},
+    outgoing: {},
+    anchor: 'right',
+    answerKey: 'F6',
+    declineKey: 'F7'
+  })
+  await sleep(120)
+  audit('call eye (shut / act / tab / pill)', mark)
+
+  // ── the input form ─────────────────────────────────────────────────────
+  mark = snapshot()
+  window.__deliver('opx:form:open', {
+    handle: 'form-audit',
+    anchor: 'center',
+    width: 420,
+    title: 'INPUT',
+    rows: [
+      { id: 'a', kind: 'choice', label: 'CHOICE', value: 'one', min: 0, max: 3, number: 1 },
+      { id: 'b', kind: 'slider', label: 'SLIDER', value: '5', min: 0, max: 10, number: 5 },
+      { id: 'c', kind: 'text', label: 'TEXT', text: 'typed' }
+    ],
+    keys: [{ key: 'E', label: 'OK' }]
+  })
+  await sleep(120)
+  audit('input form (mark steppers)', mark)
+
+  // ── the panel ──────────────────────────────────────────────────────────
+  mark = snapshot()
+  window.__deliver('opx:panel:open', {
+    handle: 'panel-audit',
+    eyebrow: 'SHOP',
+    title: 'STORE',
+    tabs: [{ id: 'a', label: 'GOODS' }, { id: 'b', label: 'JOBS' }],
+    tab: 'a',
+    actions: [{ id: 'buy', label: 'BUY' }, { id: 'sell', label: 'SELL', disabled: true }],
+    tools: [{ id: 'sort', label: 'SORT' }],
+    groups: [{ id: 'all', label: 'ALL' }],
+    search: 'filter',
+    summary: { label: 'EDDIES', value: '1 000' }
+  })
+  await sleep(80)
+  window.__deliver('opx:panel:items', {
+    handle: 'panel-audit',
+    items: [{ id: 'i1', tab: 'a', label: 'Pistol', detail: '500' }],
+    done: true
+  })
+  await sleep(120)
+  audit('panel (tab / row / tool / group buttons)', mark)
+
+  // ── the inventory ──────────────────────────────────────────────────────
+  mark = snapshot()
+  window.__deliver('opx:inventory:config', { labels: { own: 'PACK', other: 'TRUNK' } })
+  await sleep(40)
+  window.__deliver('opx:inventory:open', {
+    handle: 'inv-audit',
+    config: { labels: { own: 'PACK', other: 'TRUNK' } },
+    primary: { id: 1, kind: 'bag', title: 'PACK', slots: 12, items: [] },
+    secondary: { id: 2, kind: 'trunk', title: 'TRUNK', slots: 8, items: [] }
+  })
+  await sleep(120)
+  audit('inventory (tab / row buttons)', mark)
+
+  // ── the ripperdoc chair ────────────────────────────────────────────────
+  mark = snapshot()
+  window.__deliver('opx:ripperdoc:view', {
+    mode: 'desk',
+    name: 'Vik',
+    attended: true,
+    ready: true,
+    seated: true,
+    patientName: 'V',
+    offer: { id: 1 },
+    capacity: { used: 1, max: 5, enforced: true },
+    systems: [
+      { id: 1, name: 'ripperdoc.system.frontal', points: 3, slots: 5 },
+      { id: 2, name: 'ripperdoc.system.skeleton', points: 1, slots: 5 }
+    ]
+  })
+  await sleep(120)
+  audit('ripperdoc (system / piece / grade / chip buttons)', mark)
+
+  // ── the skill tree, already fixed: the audit must not regress it ───────
+  mark = snapshot()
+  const node = (id, name, state, why) => ({
+    id, name, desc: 'skills.desc.' + id, perk: 'demo.perk',
+    value: 2, cost: 1, state, why: why || ''
+  })
+  window.__deliver('opx:skills:view', {
+    kind: 'frame',
+    fresh: true,
+    key: 'F3',
+    frame: {
+      open: true, level: 3, xp: 40, need: 300, points: 2, depth: 5,
+      branches: [1, 2, 3].map((branch) => ({
+        id: 'trunk' + branch, name: 'skills.branch.trunk' + branch, rank: branch,
+        xp: 45, need: 100,
+        nodes: [
+          node('n' + branch + 'a', 'skills.node.' + branch + 'a', 'unlocked'),
+          node('n' + branch + 'b', 'skills.node.' + branch + 'b', 'available'),
+          node('n' + branch + 'c', 'skills.node.' + branch + 'c', 'locked', 'skills.rank')
+        ]
+      }))
+    }
+  })
+  await sleep(120)
+  audit('skill tree (the fixed surface)', mark)
+
+  draw()
+}
+
+run()
+</script>
+</body>
+</html>

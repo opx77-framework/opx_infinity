@@ -45,16 +45,42 @@ local function finite(value)
 	return number
 end
 
---- The character a connection has loaded, as the character contract sees it.
+--- The citizen id as the ledger keys it: the row's text, whatever the host's
+-- database typed the column as. A bridge that answers a numeric-looking id as a
+-- number must still find the same record the load keyed.
+-- @param data table PlayerData
+-- @return string|nil
+local function citizenOf(data)
+	local citizenId = data.citizenId
+	if type(citizenId) == 'string' and citizenId ~= '' then return citizenId end
+	if type(citizenId) == 'number' then return tostring(citizenId) end
+	return nil
+end
+
+--- The character a connection has loaded, as the character contract sees it,
+-- and -- when there is none to read -- why. The contract is re-read on every
+-- look, the way the ripperdoc's reader does it: captured once at Start, a nil
+-- answer there would refuse every knock for the life of the VM.
 -- @param source number
 -- @return table|nil PlayerData
+-- @return string|nil citizenId as the ledger keys it
+-- @return string|nil why, when there is nothing to read
 local function dataOf(source)
-	if character == nil or type(character.GetPlayer) ~= 'function' then return nil end
+	if character == nil then character = OPX.Api.Get('character') end
+	if character == nil or type(character.GetPlayer) ~= 'function' then
+		return nil, nil, 'no character contract'
+	end
 	local read, player = pcall(character.GetPlayer, source)
-	if not read or type(player) ~= 'table' then return nil end
-	local data = player.PlayerData
-	if type(data) ~= 'table' or type(data.citizenId) ~= 'string' then return nil end
-	return data
+	if not read then return nil, nil, 'the roster raised: ' .. tostring(player) end
+	if type(player) ~= 'table' then return nil, nil, 'no character is loaded' end
+	-- The contract answers the PLAYER object and the facts live on its
+	-- PlayerData -- but a reader that accepts the facts bare costs nothing.
+	local data = type(player.PlayerData) == 'table' and player.PlayerData or player
+	local citizenId = citizenOf(data)
+	if citizenId == nil then
+		return nil, nil, 'its citizen id reads as ' .. type(data.citizenId)
+	end
+	return data, citizenId
 end
 
 --- Runs fn for every connection currently holding this character.
@@ -68,8 +94,8 @@ local function eachHolder(citizenId, fn)
 	for index_ = 1, #ids do
 		local source = tonumber(ids[index_])
 		if source ~= nil and source > 0 then
-			local data = dataOf(source)
-			if data ~= nil and data.citizenId == citizenId then fn(source) end
+			local data, held = dataOf(source)
+			if data ~= nil and held == citizenId then fn(source) end
 		end
 	end
 end
@@ -442,12 +468,14 @@ function M.Start()
 		-- here shadowed it with the empty payload (the scanner's own bug).
 		source = tonumber(source)
 		if source == nil or source <= 0 then return end
-		local data = dataOf(source)
+		local data, citizenId, why = dataOf(source)
 		if data == nil then
+			Open77.log.warn(('[skills] %s knocked and could not be read: %s')
+				:format(tostring(source), tostring(why)))
 			TriggerClientEvent(M.Event.STATE, source, { open = false, reason = 'noCharacter' })
 			return
 		end
-		TriggerClientEvent(M.Event.STATE, source, frameOf(data.citizenId))
+		TriggerClientEvent(M.Event.STATE, source, frameOf(citizenId))
 	end)
 
 	-- The one intent. Every answer is a fresh frame -- a refusal rides on it as
@@ -457,13 +485,15 @@ function M.Start()
 		-- payload, not the second parameter behind a phantom source.
 		source = tonumber(source)
 		if source == nil or source <= 0 then return end
-		local data = dataOf(source)
+		local data, citizenId, why = dataOf(source)
 		if data == nil then
+			Open77.log.warn(('[skills] %s spent and could not be read: %s')
+				:format(tostring(source), tostring(why)))
 			TriggerClientEvent(M.Event.STATE, source, { open = false, reason = 'noCharacter' })
 			return
 		end
-		local claimed, refusal = unlock(data.citizenId, nodeId)
-		local frame = frameOf(data.citizenId)
+		local claimed, refusal = unlock(citizenId, nodeId)
+		local frame = frameOf(citizenId)
 		if not claimed then frame.refused = refusal end
 		TriggerClientEvent(M.Event.STATE, source, frame)
 	end)

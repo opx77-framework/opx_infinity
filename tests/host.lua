@@ -327,7 +327,7 @@ function Host.Environment(side, database)
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
 	local vehicleWarps, vehicleLocks, vehicleEjects
 	local bodies, effects, travels, notices, placement, lifts, trips
-	local npcs, npcCreates, npcRemoves, npcAttitudes, npcGroups, population
+	local npcs, npcCreates, npcRemoves, npcAttitudes, npcGroups, npcTasks, population
 	-- The blue holocall eye-glow leases, by player id. A REAL LEASE STORE and
 	-- not an accepting stub, for the reason the bag store above gives about
 	-- itself: `modules/calls` renews a bounded lease every sweep, releases it on
@@ -864,6 +864,22 @@ function Host.Environment(side, database)
 			-- `ai.native` and passes whatever it finds.
 			ai = { native = 'native', passive = 'passive', hostile = 'hostile' },
 			damage = { mortal = 'mortal', immortal = 'immortal', invulnerable = 'invulnerable' },
+			-- The two task verbs the crowd uses, recorded by name: a body is
+			-- only "walking around like a pedestrian" if something asked it to
+			-- wander, and a scatter is only real if a `flee` was issued. NO
+			-- `enterVehicle` here on purpose -- the response's seating tests
+			-- prove what happens when that verb is absent, and stubbing it
+			-- would silently rewrite them.
+			tasks = {
+				wander = function(id, options)
+					npcTasks[#npcTasks + 1] = { id = id, task = 'wander', options = options }
+					return ('task-%d'):format(#npcTasks)
+				end,
+				flee = function(id, target, options)
+					npcTasks[#npcTasks + 1] = { id = id, task = 'flee', target = target, options = options }
+					return ('task-%d'):format(#npcTasks)
+				end,
+			},
 		},
 
 		-- Network elevators. A REAL flag store and not an accepting stub, because
@@ -2428,6 +2444,8 @@ function Host.Environment(side, database)
 	npcAttitudes = {}
 	-- Every `setGroup` a resource made, in order.
 	npcGroups = {}
+	-- Every task a body was given, in order: `wander` and `flee` only.
+	npcTasks = {}
 	-- A REAL per-bucket ambient policy, not an accepting stub. The default is
 	-- the empty policy every Open77 client starts from -- no crowd, no traffic,
 	-- NO POLICE -- which is exactly the state a heat stage has to be able to
@@ -2956,6 +2974,10 @@ function Host.Environment(side, database)
 		-- one. Read by the squad checks: the rows say who is aimed at, the
 		-- groups say who is not aimed at, and a squad needs both.
 		npcGroups = npcGroups,
+		-- Every task a body was given. Read by the crowd checks: the wander
+		-- that makes a body a pedestrian and the flee that makes it a
+		-- frightened one.
+		npcTasks = npcTasks,
 		-- The ambient policy, and every write to it. Read by the NCPD checks: the
 		-- bit a stage has to move, and the two it must not touch.
 		population = population,

@@ -81,7 +81,7 @@ OPX.Config.MODULES.dealership = {
 	AV_LIFT = 1.2,
 
 	-- WHICH RECORDS ARE AVs IS NOT A DEALERSHIP SETTING. It is one list,
-	-- `AV_PREFIXES` in `config/shared.lua`, read by one helper, which is what
+	-- `AV_MATCHES` in `config/shared.lua`, read by one helper, which is what
 	-- puts a record in the air category for every part of the server or for none
 	-- of it. This key used to claim that and be a second copy of it.
 
