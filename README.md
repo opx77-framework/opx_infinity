@@ -32,8 +32,10 @@ npm run typecheck && npm run build                  # only if ui/ changed
 ```
 
 `open77.lua` is the manifest DSL, not Lua — `auto_start true` does not parse, so it
-is excluded from the syntax check. Every Lua file must be listed in the manifest or
-CI fails: a file nobody listed never loads, and nothing else tells you.
+is excluded from the syntax check. Every Lua file must be listed in the manifest of
+the resource it belongs to or CI fails: a file nobody listed never loads, and nothing
+else tells you. That is the root `open77.lua`, or, for a file inside a folder with an
+`open77.lua` of its own (`extras/opx_sandy_view`), that folder's.
 
 `npm run build` writes `web/index.html`, which **is** the shipped bundle. The sources
 under `ui/` never leave the repository.

@@ -12,7 +12,10 @@ jobs:
   lua:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # THE ACTIONS' OWN RUNTIME: v7 of checkout and setup-node run on Node 24.
+      # v4 targeted Node 20, which GitHub has deprecated; every run carried the
+      # warning while the runner forced them onto Node 24 anyway.
+      - uses: actions/checkout@v7
 
       # THE SUITE LOADS THE REAL LIBRARY, not a stub -- a stub would pass while
       # the two repositories drifted apart, which is the one thing it is there
@@ -27,7 +30,7 @@ jobs:
       # OPX_LIB_TOKEN secret: github.token is scoped to this repository alone.
       # Making opx_lib public removes the need for the secret entirely.
       - name: The library the client half imports
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: opx77-framework/opx_lib
           path: opx_lib
@@ -50,20 +53,29 @@ jobs:
       # `require`, and a shared script runs in both. A metatable in a shared file
       # therefore passes every test above and then refuses the whole resource at
       # activation, taking the session with it. This step reads the manifest's own
-      # script kinds and refuses a global the named runtime does not have.
+      # script kinds and refuses a global the named runtime does not have -- in
+      # every resource of the tree, extras/opx_sandy_view's included.
       - name: Sandbox globals
         run: python3 tools/check-sandbox-globals.py
 
       # Every script the resource ships has to be listed, one per line. A glob
       # would be worse than useless here: an empty one refuses the whole set it
       # belongs to, and the failure only shows up after a rename.
+      #
+      # EVERY RESOURCE IN THE TREE, not only the root one. A folder with an
+      # open77.lua of its own is a resource of its own -- extras/opx_sandy_view,
+      # the Sandevistan's preload, is one -- and its paths are relative to that
+      # folder, which is how the platform reads them.
       - name: Every manifest path exists
         run: |
           missing=0
-          while read -r file; do
-            [ -f "$file" ] || { echo "manifest lists a file that is not there: $file"; missing=1; }
-          done < <(grep -oE '^\s*(shared|server|client)_script\s+"[^"]+"' open77.lua \
-                   | sed -E 's/.*"([^"]+)"/\1/')
+          while read -r manifest; do
+            dir=$(dirname "$manifest")
+            while read -r file; do
+              [ -f "$dir/$file" ] || { echo "${manifest#./} lists a file that is not there: $file"; missing=1; }
+            done < <(grep -oE '^\s*(shared|server|client)_script\s+"[^"]+"' "$manifest" \
+                     | sed -E 's/.*"([^"]+)"/\1/')
+          done < <(find . -name open77.lua -not -path './.git/*' -not -path './opx_lib/*' | sort)
           exit $missing
 
       # A parked file is one the manifest names on a commented-out script line:
@@ -71,24 +83,43 @@ jobs:
       # edit in open77.lua rather than a change here, and the job still prints
       # what is parked so it cannot be forgotten. A file in neither list is
       # forgotten, and still fails.
+      #
+      # A FILE ANSWERS TO THE MANIFEST OF THE RESOURCE IT IS IN: the nearest
+      # folder above it that has an open77.lua. extras/opx_sandy_view's scripts
+      # are listed in extras/opx_sandy_view/open77.lua, which the platform loads
+      # as a resource of its own; held to the root manifest they read as
+      # forgotten -- f5ded16 went red on exactly those three files.
       - name: Every Lua file is in the manifest
         run: |
           orphans=0
           paths() {
-            grep -oE "$1"'(shared|server|client)_script\s+"[^"]+"' open77.lua \
+            grep -oE "$1"'(shared|server|client)_script\s+"[^"]+"' "$2" \
               | sed -E 's/.*"([^"]+)"/\1/' | sort -u
           }
-          listed=$(paths '^\s*')
-          parked=$(paths '^\s*--\s*')
+          declare -A listed parked
+          resources=()
+          while read -r manifest; do
+            dir=$(dirname "$manifest")
+            resources+=("$dir")
+            listed[$dir]=$(paths '^\s*' "$manifest")
+            parked[$dir]=$(paths '^\s*--\s*' "$manifest")
+          done < <(find . -name open77.lua -not -path './.git/*' -not -path './opx_lib/*')
           while read -r file; do
-            rel=${file#./}
+            owner=.
+            for dir in "${resources[@]}"; do
+              case "$file" in
+                "$dir"/*) if [ ${#dir} -gt ${#owner} ]; then owner=$dir; fi ;;
+              esac
+            done
+            rel=${file#"$owner"/}
             case "$rel" in tests/*|open77.lua) continue ;; esac
-            if echo "$listed" | grep -qxF "$rel"; then
+            if echo "${listed[$owner]}" | grep -qxF "$rel"; then
               continue
-            elif echo "$parked" | grep -qxF "$rel"; then
-              echo "parked, so it does not load yet: $rel"
+            elif echo "${parked[$owner]}" | grep -qxF "$rel"; then
+              echo "parked, so it does not load yet: ${file#./}"
             else
-              echo "not listed in the manifest, so it never loads: $rel"
+              manifest=${owner#./}/open77.lua
+              echo "not listed in ${manifest#./}, so it never loads: ${file#./}"
               orphans=1
             fi
           done < <(find . -name '*.lua' -not -path './.git/*' -not -path './opx_lib/*')
@@ -116,13 +147,13 @@ jobs:
   ui:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # THE NODE MAJOR THE BUNDLE IS BUILT WITH. The lockfile pins every tool,
       # but the runner's Node is ours to choose, and the step above compares
       # bytes: the runner should be the machine that commits, so this pins the
       # major the maintainers build on.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm

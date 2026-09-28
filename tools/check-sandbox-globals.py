@@ -17,6 +17,11 @@ metatable in a shared file passes every test and then refuses the whole resource
 the client -- the session ends with `resource_activation_failed` at activation,
 before a single module starts. That is the failure this gate exists for.
 
+Every resource in the tree is checked: the root manifest's scripts, and those of each
+folder below it with an `open77.lua` of its own (`extras/opx_sandy_view`, the
+Sandevistan's preload, is one). Their scripts run in the same two sandboxes, and
+their paths are relative to their own folder.
+
 Usage: tools/check-sandbox-globals.py   (run from the repository root)
 Exit 0 clean, 1 on any violation.
 """
@@ -78,29 +83,47 @@ def shadowed(code, name):
     return re.search(r"\blocal\s+" + name + r"\s*[,=]", code) is not None
 
 
+# Not ours, or not a resource: the library the suite clones in, and build tooling.
+NOT_RESOURCES = {".git", "opx_lib", "node_modules"}
+
+
+def resources(root):
+    """Every folder that is a resource: the root first, then each one below it with an
+    `open77.lua` of its own."""
+    found = []
+    for folder, subfolders, files in os.walk(root):
+        subfolders[:] = sorted(d for d in subfolders if d not in NOT_RESOURCES)
+        if "open77.lua" in files:
+            found.append(folder)
+    return found
+
+
 def main():
     root = os.getcwd()
-    manifest = open(os.path.join(root, "open77.lua"), encoding="utf-8").read()
 
     problems = []
     checked = 0
-    for kind, relative in MANIFEST.findall(manifest):
-        path = os.path.join(root, relative)
-        if not os.path.exists(path):
-            continue          # the "every manifest path exists" gate owns missing files
-        checked += 1
-        code = strip_code(open(path, encoding="utf-8", errors="replace").read())
-        for runtime in RUNS_IN[kind]:
-            for name in sorted(REMOVED[runtime]):
-                if shadowed(code, name):
-                    continue
-                for match in pattern_for(name).finditer(code):
-                    line = code[:match.start()].count("\n") + 1
-                    problems.append(
-                        f"  {relative}:{line}  `{name}` is removed by the {runtime} sandbox "
-                        f"({kind} runs there)")
+    folders = resources(root)
+    for folder in folders:
+        manifest = open(os.path.join(folder, "open77.lua"), encoding="utf-8").read()
+        for kind, relative in MANIFEST.findall(manifest):
+            path = os.path.join(folder, relative)
+            if not os.path.exists(path):
+                continue      # the "every manifest path exists" gate owns missing files
+            checked += 1
+            shown = os.path.relpath(path, root).replace(os.sep, "/")
+            code = strip_code(open(path, encoding="utf-8", errors="replace").read())
+            for runtime in RUNS_IN[kind]:
+                for name in sorted(REMOVED[runtime]):
+                    if shadowed(code, name):
+                        continue
+                    for match in pattern_for(name).finditer(code):
+                        line = code[:match.start()].count("\n") + 1
+                        problems.append(
+                            f"  {shown}:{line}  `{name}` is removed by the {runtime} sandbox "
+                            f"({kind} runs there)")
 
-    print(f"sandbox globals: {checked} manifest script(s) checked")
+    print(f"sandbox globals: {checked} manifest script(s) checked in {len(folders)} resource(s)")
     if problems:
         print(f"{len(problems)} violation(s):")
         for problem in sorted(set(problems)):
