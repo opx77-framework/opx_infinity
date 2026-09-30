@@ -126,6 +126,52 @@ OPX.Config.MODULES.avdoor = {
 	-- is over, and one pass is one `vehicles.all` plus one position per player.
 	SCAN_MS = 500,
 
+	-- THE WATCH: WHERE EVERY SCREEN DRAWS AN AIRCRAFT, AND WHERE THE SERVER HAS IT.
+	--
+	-- THE OWNER, 2026-09-30: "the av is driving away on other player screen going
+	-- through buildings but when i move it comes back to same spot on other play
+	-- screen". The pilot's own client log of that flight cannot show it -- the
+	-- pilot's screen is the one that was right -- and nothing on the server wrote a
+	-- line about an aircraft's authority, so the drift left no evidence anywhere a
+	-- log collection reaches. This block is that evidence, on both sides:
+	--
+	--   * EVERY CLIENT, every `SIGHT_MS`, compares where its engine DRAWS each
+	--     aircraft it does not simulate itself (the entity's own frame) with
+	--     where the server's last sample put it (the client snapshot), for the
+	--     nearest `MAX_HULLS` within `RANGE`. Drawn more than `DRIFT_METRES` away
+	--     (plus `DRIFT_PER_SPEED` metres per m/s the hull is moving, because an
+	--     observer draws a moving hull a jitter buffer behind its newest sample)
+	--     opens an EPISODE: one line in that client's log and one report to the
+	--     server, which writes it to ITS journal with its own reads beside it --
+	--     the physics owner, the epoch, who is seated, the freeze. Under
+	--     `SETTLE_METRES` twice in a row closes it, with how long it lasted and
+	--     how far it got. An open episode is reported again every `REPEAT_MS`.
+	--   * THE SERVER journals every change of an aircraft's physics owner
+	--     (`onVehicleAuthorityChanged`, with the platform's reason) and every
+	--     canonical move bigger than `JUMP_METRES` between two scans, which is
+	--     faster than any AV flies.
+	--   * `HEAL`: an EMPTY, unfrozen aircraft that a client reports drawing far
+	--     from where the server has it is re-published where it stands
+	--     (`setTransform` to its own canonical pose and heading), which starts a
+	--     new authority epoch and makes every viewer drop its buffered path and
+	--     draw the hull where the server has it. At most once per `HEAL_EVERY_MS`
+	--     per hull, and never with anybody aboard: a seated pilot's lease is
+	--     theirs, and a server pose would fight it.
+	--
+	-- `WATCH = false` switches all of it off.
+	WATCH = {
+		SIGHT_MS = 500,
+		RANGE = 350.0,
+		MAX_HULLS = 3,
+		DRIFT_METRES = 10.0,
+		DRIFT_PER_SPEED = 0.4,
+		SETTLE_METRES = 4.0,
+		REPEAT_MS = 5000,
+		JUMP_METRES = 45.0,
+		HEAL = true,
+		HEAL_EVERY_MS = 10000,
+	},
+
 	-- THE EXIT, ON THE SCREEN. A native quest fade -- out as the mount drops,
 	-- held through everything the platform does to the body, and back in on a
 	-- body that is standing beside the open door -- so the cut the platform makes

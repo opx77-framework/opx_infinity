@@ -15639,6 +15639,512 @@ do
 			contract.IsDown(PLAYER).value.down == false)
 	end
 end
+-- ── a page that mounted before the modules started ──────────────────────────
+-- THE OWNER'S LOG OF 2026-09-29, 21:05:11: `downed view: show arrived before
+-- config; drawing keys`, four minutes after the module started. A page whose
+-- assets are warm in the CEF cache (every reconnection) reports ready BEFORE the
+-- modules have registered their page handlers; the surface holds that `ready` and
+-- replays it to the first handler registered on it -- and three view seams
+-- registered their state-to-page handler AFTER that loop, so the replayed ready
+-- published its `config` into nothing and the page kept no strings.
+section('a page that mounted before the modules started still gets its strings (downed, chat, calls)')
+do
+	local env, control = Host.Environment('client')
+	local failure = nil
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk, why = loadfile(file, 't', env)
+		if not chunk then failure = why break end
+		local ok, raised = pcall(chunk)
+		if not ok then failure = raised break end
+	end
+	check('the client loads', failure == nil, failure)
+	if failure == nil then
+		control.Fire('onClientResourceStart', 'opx_infinity')
+		local frames = 0
+		while #control.pages == 0 and frames < 500 do
+			control.Pump(1)
+			frames = frames + 1
+		end
+		local page = control.pages[1]
+		check('the page exists before the modules have started', page ~= nil
+			and not env.OPX.Modules.IsRunning('downed'), tostring(page))
+		if page ~= nil then
+			-- The warm cache: the page is up and every view on it reports ready now.
+			control.PageEmit(page, 'opx:ready', {})
+			control.PageEmit(page, 'opx:downed:ready', {})
+			control.PageEmit(page, 'opx:chat:ready', { surface = 'interactive' })
+			control.PageEmit(page, 'opx:calls:ready', {})
+			control.Pump(240)
+			check('and they have started since', env.OPX.Modules.IsRunning('downed')
+				and env.OPX.Modules.IsRunning('chat') and env.OPX.Modules.IsRunning('calls'))
+
+			local function sent(channel, kind)
+				for _, one in ipairs(page.sent) do
+					if one.channel == channel and type(one.payload) == 'table'
+						and (kind == nil or one.payload.kind == kind) then
+						return one.payload
+					end
+				end
+				return nil
+			end
+			local config = sent('opx:downed:view', 'config')
+			check('the down screen got its catalogue from the replayed ready',
+				config ~= nil and type(config.text) == 'table'
+					and config.text['medic.screen.title'] == env.locale('medic.screen.title'))
+			check('the chat input got its config from the replayed ready',
+				sent('opx:chat:view', 'config') ~= nil)
+			check('and the call card its state', sent('opx:calls:view', 'state') ~= nil)
+
+			-- And the first death of the session draws sentences, not keys.
+			page.sent = {}
+			control.netEvents[env.OPX.Event(env.OPX.Channel.NET, 'downed', 'state')]({
+				down = true, waiting = false, giveUpInMs = 120000, downForMs = 0 })
+			check('a death after an early mount shows the screen', sent('opx:downed:view', 'show') ~= nil)
+		end
+	end
+end
+
+-- ── the stock HUD after a death ─────────────────────────────────────────────
+-- A HIDE IS A CLAIM IN THE RESOURCE'S NAME. The HUD module hides seven stock
+-- components for good; the down screen hides all thirteen and gives them back
+-- when the player stands up -- and, the two being one resource, giving them back
+-- erased the HUD's claims too. The stock HUD then sat over this one, and the
+-- vanilla hub menu opened, until the next character load.
+section('the stock HUD stays under the OPX HUD after a death and a revive')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the hud and downed modules', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local function hidden()
+			local out = {}
+			for name, owners in pairs(control.hud.claims) do
+				if next(owners) ~= nil then out[#out + 1] = name end
+			end
+			table.sort(out)
+			return table.concat(out, ',')
+		end
+		local function listOf(names)
+			local out = {}
+			for _, name in ipairs(names) do out[#out + 1] = name:lower() end
+			table.sort(out)
+			return table.concat(out, ',')
+		end
+		local wanted = {}
+		for component, shown in pairs(OPX.Config.MODULES.hud.VANILLA or {}) do
+			if shown == false then wanted[#wanted + 1] = component end
+		end
+		local steady = hidden()
+		check('after boot the HUD hides what its config says, and only that',
+			#wanted > 0 and steady:lower() == listOf(wanted), steady .. ' vs ' .. listOf(wanted))
+		local STATE = OPX.Event(OPX.Channel.NET, 'downed', 'state')
+		control.netEvents[STATE]({ down = true, waiting = false, giveUpInMs = 120000, downForMs = 0 })
+		control.Pump(5)
+		check('down, every stock component is hidden',
+			hidden():lower() == listOf(OPX.Config.MODULES.downed.VANILLA_HUD), hidden())
+		control.netEvents[STATE]({ down = false })
+		control.Pump(5)
+		check('revived, the HUD\'s own set is hidden again -- not nothing', hidden() == steady, hidden())
+		control.Pump(600)
+		check('and it stays that way', hidden() == steady, hidden())
+	end
+end
+
+-- ── the Trauma Team ─────────────────────────────────────────────────────────
+-- THE AUDIT OF 2026-09-30: the Trauma Team job had no gameplay. WAIT FOR HELP
+-- stored a flag and told the downed player "Help has been called" while nobody
+-- was called, and only a staff command could stand a body up. These two
+-- sections walk the loop the job is for: the page, the row, the treatment, the
+-- revive and the pay, and every door that must stay shut.
+section('trauma team: a distress signal pages the on-duty medics, and a medic over the body revives it')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the downed module and its trauma half', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local downed = OPX.Modules.Get('downed')
+		local character = OPX.Modules.Get('character')
+		local contract = OPX.Api.Get('downed')
+		local Event = downed.TraumaEvent
+		check('the trauma half is loaded and wired', type(downed.Trauma) == 'table'
+			and type(downed.Trauma.Treat) == 'function' and control.netEvents[Event.TREAT] ~= nil)
+
+		local function load(id, citizenId, name, job, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId, name = name,
+					money = { EDDIES = 0, BANK = 0 },
+					job = { name = job, label = job, onDuty = onDuty == true, grade = { level = 0 } } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+		end
+		local PATIENT, MEDIC, OFFSHIFT, STRANGER, FARMEDIC = 71, 72, 73, 74, 75
+		load(PATIENT, 'CIT-PATIENT', 'Jackie Welles', 'unemployed', false)
+		load(MEDIC, 'CIT-MEDIC', 'Nina Kraviz', 'trauma', true)
+		load(OFFSHIFT, 'CIT-OFF', 'Off Shift', 'trauma', false)
+		load(STRANGER, 'CIT-STRANGER', 'Some Choom', 'unemployed', false)
+		load(FARMEDIC, 'CIT-FAR', 'Far Medic', 'trauma', true)
+
+		-- THE BODY'S PLACE IS THE LIFE STATE'S, and the position read of a dead body
+		-- is deliberately somewhere else: the platform answers nil for it two seconds
+		-- after a death, so a treatment measured against it would measure nothing.
+		local dead = { [PATIENT] = true }
+		env.Open77.ready.isReady = function() return true end
+		env.Open77.players.getLifeState = function(id)
+			if dead[id] then return { phase = 'dead', position = { x = 100.0, y = 200.0, z = 30.0 }, bucket = 0 } end
+			return { phase = 'alive', bucket = 0 }
+		end
+		env.Open77.players.isDead = function(id) return dead[id] == true end
+		local revives = {}
+		env.Open77.players.revive = function(playerId, options)
+			revives[#revives + 1] = { playerId = playerId, options = options }
+			dead[playerId] = nil
+			return true
+		end
+		control.Stand(PATIENT, 900.0, 900.0, 30.0)
+		control.Stand(MEDIC, 102.0, 200.0, 30.0)
+		control.Stand(OFFSHIFT, 103.0, 201.0, 30.0)
+		control.Stand(STRANGER, 101.0, 199.0, 30.0)
+		control.Stand(FARMEDIC, 400.0, 200.0, 30.0)
+
+		local function sentTo(playerId, name, from)
+			local out = {}
+			for index = (from or 0) + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == name and event.source == playerId then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+		local function last(list) return list[#list] end
+		local STATE = OPX.Event(OPX.Channel.NET, 'downed', 'state')
+		local WAIT = OPX.Event(OPX.Channel.NET, 'downed', 'wait')
+		local function as(playerId, name, payload)
+			env.source = playerId
+			control.netEvents[name](payload)
+			env.source = nil
+		end
+
+		control.Fire('onPlayerLifeStateChanged', PATIENT)
+		check('the patient goes down', settle(control, function()
+			local answer = contract.IsDown(PATIENT)
+			return answer.ok and answer.value.down == true
+		end, 20))
+
+		-- ── the page ────────────────────────────────────────────────────────
+		local mark = #control.clientEvents
+		as(PATIENT, WAIT)
+		local page = last(sentTo(MEDIC, Event.PAGE, mark))
+		check('WAIT FOR HELP pages an on-duty medic: who, and where the body lies',
+			page ~= nil and page.patient == PATIENT and page.name == 'Jackie Welles'
+				and page.x == 100 and page.y == 200 and page.seconds == 300,
+			page and ('%s %s %s'):format(tostring(page.patient), tostring(page.x), tostring(page.y)) or 'no page')
+		check('and an on-duty medic across the map too: a page is not a reach',
+			#sentTo(FARMEDIC, Event.PAGE, mark) == 1)
+		check('but not a medic who is clocked off, nor a stranger, nor the patient',
+			#sentTo(OFFSHIFT, Event.PAGE, mark) == 0 and #sentTo(STRANGER, Event.PAGE, mark) == 0
+				and #sentTo(PATIENT, Event.PAGE, mark) == 0)
+		local state = last(sentTo(PATIENT, STATE, mark))
+		check('the down screen is told how many were paged', state ~= nil and state.waiting == true
+			and state.paged == 2, state and tostring(state.paged))
+
+		character.Players[OFFSHIFT].PlayerData.job.onDuty = true
+		local late = #control.clientEvents
+		control.Pump(11)
+		check('a medic who clocks in while somebody waits is paged too',
+			#sentTo(OFFSHIFT, Event.PAGE, late) == 1 and #sentTo(MEDIC, Event.PAGE, late) == 0)
+		state = last(sentTo(PATIENT, STATE, late))
+		check('and the screen\'s count follows', state ~= nil and state.paged == 3, state and tostring(state.paged))
+		character.Players[OFFSHIFT].PlayerData.job.onDuty = false
+
+		-- ── the row ─────────────────────────────────────────────────────────
+		-- From the start of the section: the pass that saw the body go down told
+		-- the medic already, and says it again only when it changes.
+		local near = sentTo(MEDIC, Event.NEAR, 0)
+		check('a medic within reach of the body is told it is there, by name',
+			#near == 1 and last(near).patient == PATIENT and last(near).name == 'Jackie Welles', #near)
+		check('and a medic out of reach is not', #sentTo(FARMEDIC, Event.NEAR, 0) == 0
+			or last(sentTo(FARMEDIC, Event.NEAR, 0)).patient == nil)
+
+		-- ── every door that must stay shut ──────────────────────────────────
+		local T = downed.Trauma
+		check('a stranger is refused as not a medic', select(2, T.Treat(STRANGER, PATIENT)) == 'not_medic')
+		check('a medic off the clock too', select(2, T.Treat(OFFSHIFT, PATIENT)) == 'not_medic')
+		check('a medic out of reach is told to get closer', select(2, T.Treat(FARMEDIC, PATIENT)) == 'too_far')
+		check('a body that is not down needs no medic', select(2, T.Treat(MEDIC, STRANGER)) == 'not_down')
+		check('and a medic cannot treat themselves', select(2, T.Treat(MEDIC, MEDIC)) == 'self')
+
+		-- ── the treatment ───────────────────────────────────────────────────
+		local started = #control.clientEvents
+		as(MEDIC, Event.TREAT, { patient = PATIENT })
+		local run = last(sentTo(MEDIC, Event.RUN, started))
+		check('the key starts the treatment: the medic\'s bar, on the server\'s clock',
+			run ~= nil and run.patient == PATIENT and run.durationMs == 6000 and run.name == 'Jackie Welles')
+		local told = last(sentTo(PATIENT, Event.NOTICE, started))
+		check('and the patient is told who is working on them',
+			told ~= nil and told.key == 'medic.notice.treating' and told.args.name == 'Nina Kraviz')
+		check('a second medic cannot start on the same body', select(2, T.Treat(FARMEDIC, PATIENT)) ~= nil
+			and select(2, T.Treat(FARMEDIC, PATIENT)) ~= true)
+		control.Stand(FARMEDIC, 101.0, 201.0, 30.0)
+		check('even from beside it: it is taken', select(2, T.Treat(FARMEDIC, PATIENT)) == 'taken')
+		check('and the medic cannot start a second one', select(2, T.Treat(MEDIC, PATIENT)) == 'busy')
+
+		-- A DONE BEFORE THE CLOCK ALLOWS IS NOT A TREATMENT.
+		control.Pump(20)
+		local early = #control.clientEvents
+		as(MEDIC, Event.DONE)
+		local answer = last(sentTo(MEDIC, Event.ANSWER, early))
+		check('a bar reported finished two seconds in is refused and the treatment stopped',
+			answer ~= nil and answer.ok == false and answer.code == 'too_soon' and #revives == 0
+				and contract.IsDown(PATIENT).value.down == true)
+		check('the patient is told the medic stopped',
+			last(sentTo(PATIENT, Event.NOTICE, early)) ~= nil
+				and last(sentTo(PATIENT, Event.NOTICE, early)).key == 'medic.notice.stopped')
+		check('and the medic must catch their breath before the next one',
+			select(2, T.Treat(MEDIC, PATIENT)) == 'cooldown')
+
+		-- A MEDIC WHO WALKS OFF IS NOT TREATING ANYBODY.
+		control.Pump(31)
+		OPX.ForgetCooldowns(MEDIC)
+		check('after the cooldown the medic may start again', T.Treat(MEDIC, PATIENT) == true)
+		control.Stand(MEDIC, 130.0, 200.0, 30.0)
+		local walked = #control.clientEvents
+		control.Pump(12)
+		answer = last(sentTo(MEDIC, Event.ANSWER, walked))
+		check('walking away from the body stops the treatment by name',
+			answer ~= nil and answer.ok == false and answer.code == 'too_far' and #revives == 0)
+		control.Stand(MEDIC, 102.0, 200.0, 30.0)
+
+		-- THE WHOLE TREATMENT.
+		control.Pump(31)
+		OPX.ForgetCooldowns(MEDIC)
+		local whole = #control.clientEvents
+		as(MEDIC, Event.TREAT, { patient = PATIENT })
+		control.Pump(61)
+		as(MEDIC, Event.DONE)
+		answer = last(sentTo(MEDIC, Event.ANSWER, whole))
+		check('a treatment seen through revives the patient where they lie, at the revive health',
+			#revives == 1 and revives[1].playerId == PATIENT and revives[1].options.health == 0.35
+				and contract.IsDown(PATIENT).value.down == false)
+		check('and pays the medic into the bank, once',
+			answer ~= nil and answer.ok == true and answer.reward == 150
+				and character.Players[MEDIC].PlayerData.money.BANK == 150,
+			tostring(character.Players[MEDIC].PlayerData.money.BANK))
+		check('every paged medic\'s pin comes down with the patient up',
+			#sentTo(MEDIC, Event.UNPAGE, whole) == 1 and #sentTo(FARMEDIC, Event.UNPAGE, whole) == 1
+				and #sentTo(OFFSHIFT, Event.UNPAGE, whole) == 1)
+
+		-- THE SAME PATIENT STRAIGHT BACK DOWN IS A REVIVE, NOT A PAYCHECK.
+		dead[PATIENT] = true
+		control.Fire('onPlayerLifeStateChanged', PATIENT)
+		settle(control, function() return contract.IsDown(PATIENT).value.down == true end, 20)
+		as(PATIENT, WAIT)
+		control.Pump(31)
+		OPX.ForgetCooldowns(MEDIC)
+		local again = #control.clientEvents
+		as(MEDIC, Event.TREAT, { patient = PATIENT })
+		control.Pump(61)
+		as(MEDIC, Event.DONE)
+		answer = last(sentTo(MEDIC, Event.ANSWER, again))
+		check('the same patient revived again inside the window is revived, and not paid for',
+			#revives == 2 and answer ~= nil and answer.ok == true and answer.reward == 0
+				and character.Players[MEDIC].PlayerData.money.BANK == 150)
+
+		-- ── the console door ────────────────────────────────────────────────
+		dead[PATIENT] = true
+		control.Fire('onPlayerLifeStateChanged', PATIENT)
+		settle(control, function() return contract.IsDown(PATIENT).value.down == true end, 20)
+		control.Pump(31)
+		check('/opx.treat is open to every player', control.commands['opx.treat'] ~= nil
+			and control.commands['opx.treat'].restricted ~= true)
+		local typed = #control.clientEvents
+		control.commands['opx.treat'].run(MEDIC, {}, 'opx.treat')
+		check('and starts the treatment of the nearest body in reach', #sentTo(MEDIC, Event.RUN, typed) == 1)
+
+		-- A MEDIC WHO LEAVES MID-TREATMENT.
+		local left = #control.clientEvents
+		control.Fire('onPlayerDisconnected', tostring(MEDIC))
+		check('a medic who disconnects mid-treatment stops it, and the patient is told',
+			last(sentTo(PATIENT, Event.NOTICE, left)) ~= nil
+				and last(sentTo(PATIENT, Event.NOTICE, left)).key == 'medic.notice.stopped'
+				and T.Status().treating == 0)
+
+		-- ── a medic who goes down ───────────────────────────────────────────
+		dead[FARMEDIC] = true
+		control.Fire('onPlayerLifeStateChanged', FARMEDIC)
+		settle(control, function() return contract.IsDown(FARMEDIC).value.down == true end, 20)
+		local own = #control.clientEvents
+		as(FARMEDIC, WAIT)
+		local ownPages = sentTo(FARMEDIC, Event.PAGE, own)
+		check('an on-duty medic who goes down is not paged about themselves',
+			#ownPages == 0 and #sentTo(OFFSHIFT, Event.PAGE, own) == 0, #ownPages .. ' page(s)')
+		dead[FARMEDIC] = nil
+
+		-- ── TRAUMA off ──────────────────────────────────────────────────────
+		local shipped = downed.Settings.TRAUMA.enabled
+		downed.Settings.TRAUMA.enabled = false
+		check('with the Trauma Team off nobody can treat', select(2, T.Treat(FARMEDIC, PATIENT)) == 'off')
+		downed.Settings.TRAUMA.enabled = shipped
+	end
+end
+
+section('trauma team: the medic\'s screen draws the page, the row and the bar, and the patient\'s says the truth')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the trauma half', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local downed = OPX.Modules.Get('downed')
+		local Event = downed.TraumaEvent
+		local prompts = OPX.Api.Get('prompts')
+		local page = control.pages[1]
+		local mapping = control.keyMappings.byId['opx.downed.treat']
+		check('the treat key is declared to the host on E', mapping ~= nil and mapping.key == 'E',
+			mapping and tostring(mapping.key))
+		local function rowUp()
+			local listed = prompts ~= nil and prompts.List('downed') or nil
+			return listed ~= nil and listed.ok and listed.value.count == 1
+		end
+
+		-- ── the page, on the map ────────────────────────────────────────────
+		local blipsBefore = #control.blips.created
+		control.netEvents[Event.PAGE]({ patient = 71, name = 'Jackie Welles', x = 100, y = 200, z = 30,
+			seconds = 60, sprite = 'objective' })
+		local pin = control.blips.created[#control.blips.created]
+		local pinned = pin ~= nil and control.blips.byId[pin] or nil
+		check('a page pins the body on the medic\'s map', #control.blips.created == blipsBefore + 1
+			and pinned ~= nil and pinned.position.x == 100 and pinned.position.y == 200)
+		local toast = nil
+		for index = #page.sent, 1, -1 do
+			local sent = page.sent[index]
+			if sent.channel == 'opx:notify:show' and type(sent.payload) == 'table'
+				and type(sent.payload.message) == 'string'
+				and sent.payload.message:find('Jackie Welles', 1, true) ~= nil then
+				toast = sent.payload
+				break
+			end
+		end
+		check('and names the patient and the place in a loud toast',
+			toast ~= nil and toast.message == env.locale('medic.page.body', { name = 'Jackie Welles', x = 100, y = 200 }))
+		control.netEvents[Event.UNPAGE](71)
+		check('the pin comes down when the patient is up',
+			control.blips.removed[#control.blips.removed] == pin)
+
+		-- ── the row and the key ─────────────────────────────────────────────
+		check('no row before the server names a body', not rowUp())
+		control.netEvents[Event.NEAR]({ patient = 71, name = 'Jackie Welles' })
+		check('the server naming a body in reach puts the row up', rowUp()
+			and downed.TraumaClient.Status().label == env.locale('medic.row.treat', { name = 'Jackie Welles' }))
+		local sentFrom = #control.serverEvents
+		mapping.pressed()
+		local asked = control.serverEvents[#control.serverEvents]
+		check('the key sends the body\'s id and nothing more',
+			#control.serverEvents == sentFrom + 1 and asked.name == Event.TREAT and asked[1].patient == 71)
+
+		-- ── the bar ─────────────────────────────────────────────────────────
+		control.netEvents[Event.RUN]({ patient = 71, name = 'Jackie Welles', durationMs = 6000 })
+		local progress = OPX.Api.Get('progress')
+		local bar = progress.State()
+		check('the server starting it puts the bar up, and takes the row down',
+			bar.ok and bar.value.open == true and bar.value.owner == 'downed' and not rowUp())
+		local doneFrom = #control.serverEvents
+		control.Pump(70)
+		local done = nil
+		for index = doneFrom + 1, #control.serverEvents do
+			if control.serverEvents[index].name == Event.DONE then done = control.serverEvents[index] end
+		end
+		check('a bar that runs out reports it to the server', done ~= nil)
+		control.netEvents[Event.ANSWER]({ ok = true, name = 'Jackie Welles', reward = 150, account = 'BANK' })
+		check('and the answer puts the row back when a body is still in reach', rowUp())
+		control.netEvents[Event.NEAR]({})
+		check('the server saying nobody is in reach takes it down', not rowUp())
+
+		-- ── the patient's own screen ────────────────────────────────────────
+		local function drew(kind)
+			for index = #page.sent, 1, -1 do
+				local one = page.sent[index]
+				if one.channel == 'opx:downed:view' and one.payload.kind == kind then return one.payload end
+			end
+			return nil
+		end
+		local STATE = OPX.Event(OPX.Channel.NET, 'downed', 'state')
+		control.netEvents[STATE]({ down = true, waiting = false, giveUpInMs = 120000, downForMs = 0 })
+		page.sent = {}
+		control.netEvents[STATE]({ down = true, waiting = true, paged = 2, giveUpInMs = 110000, downForMs = 10000 })
+		local config = drew('config')
+		check('waiting, the screen says how many medics the signal reached',
+			config ~= nil and config.text['medic.wait.activeHint'] == env.locale('medic.wait.paged', { count = 2 }),
+			config and config.text['medic.wait.activeHint'])
+		page.sent = {}
+		control.netEvents[STATE]({ down = true, waiting = true, paged = 0, giveUpInMs = 100000, downForMs = 20000 })
+		config = drew('config')
+		check('and that nobody is on duty when nobody is, instead of a promise',
+			config ~= nil and config.text['medic.wait.activeHint'] == env.locale('medic.wait.nobody'))
+		page.sent = {}
+		control.netEvents[Event.NOTICE]({ key = 'medic.notice.treating', args = { name = 'Nina Kraviz' } })
+		check('a medic starting on them is a line on their screen',
+			drew('notice') ~= nil and drew('notice').text == env.locale('medic.notice.treating', { name = 'Nina Kraviz' }))
+		page.sent = {}
+		control.netEvents[Event.NOTICE]({ key = 'admin.done.healed', args = {} })
+		check('and the server cannot put any other catalogue line there', drew('notice') == nil)
+		control.netEvents[STATE]({ down = false })
+	end
+end
+
+-- ── the bucket a body wakes in ───────────────────────────────────────────────
+-- `getLifeState().position` is `{ x, y, z }` with the bucket at the TOP level of
+-- the life state, and a dead body's own position read answers nil two seconds
+-- after the death. A give-up two minutes later read neither and woke everybody in
+-- bucket 0; the staff placement of a dead body did the same.
+section('a body wakes in the bucket it fell in, however long it lay there')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local PLAYER = 81
+		local GIVE_UP = OPX.Event(OPX.Channel.NET, 'downed', 'giveup')
+		control.Admit(PLAYER, 'user-bucket')
+		env.Open77.ready.isReady = function() return true end
+		env.Open77.players.getLifeState = function()
+			return { phase = 'dead', position = { x = 10.0, y = 20.0, z = 30.0 }, bucket = 9 }
+		end
+		env.Open77.players.isDead = function() return true end
+		-- The platform's answer for a body dead more than two seconds.
+		env.Open77.players.position = function() return nil end
+		local character = OPX.Api.Get('character')
+		character.GetPlayer = function() return { PlayerData = { citizenId = 'CIT-BUCKET' } } end
+		local respawns = {}
+		env.Open77.players.respawn = function(playerId, options)
+			respawns[#respawns + 1] = { playerId = playerId, options = options }
+			return true
+		end
+		local contract = OPX.Api.Get('downed')
+		control.Fire('onPlayerLifeStateChanged', PLAYER)
+		check('the body goes down', settle(control, function()
+			return contract.IsDown(PLAYER).value.down == true
+		end, 20))
+		control.Pump(1250)
+		env.source = PLAYER
+		control.netEvents[GIVE_UP]()
+		env.source = nil
+		check('giving up two minutes later wakes them in bucket 9, where they fell',
+			#respawns == 1 and respawns[1].options.bucket == 9,
+			respawns[1] and tostring(respawns[1].options.bucket))
+
+		-- The staff placement of a dead body reads the same field.
+		local admin = OPX.Modules.Get('admin')
+		respawns = {}
+		local placed = admin.Server.Place(PLAYER, { x = 1.0, y = 2.0, z = 3.0 }, 0.0, nil, 'tests')
+		check('a staff placement of a dead body keeps its bucket too',
+			placed == true and #respawns == 1 and respawns[1].options.bucket == 9,
+			tostring(placed) .. ' ' .. (respawns[1] and tostring(respawns[1].options.bucket) or 'none'))
+	end
+end
+
 -- ── one staff action, one message ───────────────────────────────────────────
 -- THREE NOTIFICATIONS FOR ONE GIVE, reported by the owner: giving themselves an
 -- item as staff put the same sentence on screen twice -- once titled STAFF and
@@ -43924,6 +44430,62 @@ do
 			#fades == 0 and #teles == 0, ('%d fade(s), %d move(s)'):format(#fades, #teles))
 		check('and the journal says it was left alone', logged('info', farFrom, 'a move made elsewhere') == 1)
 
+		-- ── the engine dragged the hull back to where its flight began ───────
+		-- The log of 2026-09-30 (00:33:37): the exit un-masked a hull that had been
+		-- flown 37 m off its pad, and 37 ms later the engine read that hull 37.3 m
+		-- from the body that had been flying it. That is not a body left far from
+		-- its hull -- the body is exactly where it flew it -- and the exit used to
+		-- treat it as one: no placement, no fade, and the door row late.
+		settle()
+		forget()
+		sit(4242, 'seat_front_left')
+		check('while aboard, the frame the hull flies at is kept for the exit', avdoor.Status().flown == true)
+		local dragged = scene.geometry['vehicle:4242'].position
+		local flownX, flownY, flownZ = dragged.x, dragged.y, dragged.z
+		local dragFrom = #control.log.info
+		scene.geometry['vehicle:4242'].position = { x = HULL.x + 30.0, y = HULL.y + 22.0, z = HULL.z }
+		stepOut()
+		check('a hull the engine reads 37 m from the body is still an exit: the body goes beside the door of the hull where it flew',
+			pumpUntil(function() return #teles >= 1 and outs() >= 1 end)
+				and near(teles[1].x, HULL.x - 6.0) and near(teles[1].y, HULL.y + 1.5),
+			teles[1] and ('%.2f %.2f'):format(teles[1].x, teles[1].y)
+				or ('not moved, %d fade(s)'):format(#fades))
+		check('and the journal says which frame it used', logged('info', dragFrom, 'using the frame it flew at') == 1)
+		check('and it does not call it a move made elsewhere', logged('info', dragFrom, 'a move made elsewhere') == 0)
+		scene.geometry['vehicle:4242'].position = { x = flownX, y = flownY, z = flownZ }
+		settle()
+
+		-- A read taken AFTER the engine dragged the hull, while the seat is not yet
+		-- flagged, must not replace the good one: the body is not inside that frame.
+		forget()
+		sit(4242, 'seat_front_left')
+		scene.geometry['vehicle:4242'].position = { x = HULL.x + 30.0, y = HULL.y + 22.0, z = HULL.z }
+		control.Pump(12)
+		stepOut()
+		check('a frame the body is not inside is never kept: the exit still uses the one it flew at',
+			pumpUntil(function() return #teles >= 1 end)
+				and near(teles[1].x, HULL.x - 6.0) and near(teles[1].y, HULL.y + 1.5),
+			teles[1] and ('%.2f %.2f'):format(teles[1].x, teles[1].y) or 'not moved')
+		scene.geometry['vehicle:4242'].position = { x = flownX, y = flownY, z = flownZ }
+		settle()
+
+		-- Dragged AND moved: the body is far from the frame it flew at as well, so
+		-- it really was taken somewhere else, and is left alone.
+		forget()
+		sit(4242, 'seat_front_left')
+		local movedFrom = #control.log.info
+		scene.geometry['vehicle:4242'].position = { x = HULL.x + 30.0, y = HULL.y + 22.0, z = HULL.z }
+		control.placement.x = HULL.x + 500.0
+		stepOut()
+		control.Pump(30)
+		check('a body far from the hull it flew at AND from the engine\'s frame was moved: nothing is placed',
+			#fades == 0 and #teles == 0, ('%d fade(s), %d move(s)'):format(#fades, #teles))
+		check('and the journal says it was left alone', logged('info', movedFrom, 'a move made elsewhere') == 1)
+		check('and never claims to have used the frame the hull flew at',
+			logged('info', movedFrom, 'using the frame it flew at') == 0)
+		scene.geometry['vehicle:4242'].position = { x = flownX, y = flownY, z = flownZ }
+		settle()
+
 		-- ── a passenger's seat: its own side, a shorter hold ─────────────────
 		forget()
 		sit(4242, 'seat_back_right')
@@ -44117,6 +44679,300 @@ do
 				and tostring(silent[1].reason):find('sfx', 1, true) ~= nil,
 			silent[1] and tostring(silent[1].reason) or 'no answer')
 		env.Open77.sfx = savedSfx
+	end
+end
+
+section('avdoor: the watch journals an aircraft\'s hands, its jumps and every viewer\'s sight, and heals an empty hull')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the avdoor watch in it', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local avdoor = OPX.Modules.Get('avdoor')
+		check('the watch half is loaded beside the door', type(avdoor.Watch) == 'table'
+			and type(avdoor.Watch.Sight) == 'function' and type(avdoor.Watch.Observe) == 'function')
+
+		local function lines(list, from, needle)
+			local found = {}
+			for index = from + 1, #list do
+				if tostring(list[index]):find(needle, 1, true) then found[#found + 1] = tostring(list[index]) end
+			end
+			return found
+		end
+		local function entryOf(id)
+			for _, entry in ipairs(control.vehicles.world) do
+				if entry.id == id then return entry end
+			end
+			return nil
+		end
+
+		local av = env.Open77.vehicles.create({ record = 'Vehicle.max_tac_av',
+			position = { x = 100.0, y = 200.0, z = 30.0 }, bucket = 0 })
+		local car = env.Open77.vehicles.create({ record = 'Vehicle.v_sport1_quadra_turbo',
+			position = { x = 150.0, y = 200.0, z = 30.0 }, bucket = 0 })
+		local hull, sedan = entryOf(av), entryOf(car)
+		local avKey = avdoor.DecimalId(av)
+		hull.physicsOwner, hull.authorityEpoch, hull.heading = 2, 3, 90.0
+		hull.occupants = { { playerId = 2, seat = 'seat_front_left' } }
+
+		-- ── authority ───────────────────────────────────────────────────────
+		local infoFrom = #control.log.info
+		control.Fire('onVehicleAuthorityChanged', av, '2', '3', 'driverclaim')
+		local said = lines(control.log.info, infoFrom, '[avdoor] authority: aircraft ' .. avKey)
+		check('an aircraft changing hands is one line: who simulates it, the epoch, the reason, who is seated',
+			#said == 1 and said[1]:find('simulated by player 2 now (epoch 3, driverclaim)', 1, true) ~= nil
+				and said[1]:find('seated 2:seat_front_left', 1, true) ~= nil
+				and said[1]:find('100.0, 200.0, 30.0', 1, true) ~= nil, said[1] or (#said .. ' line(s)'))
+		control.Fire('onVehicleAuthorityChanged', car, '5', '1', 'driverclaim')
+		check('a car changing hands is not the watch\'s business',
+			#lines(control.log.info, infoFrom, 'authority: aircraft ' .. avdoor.DecimalId(car)) == 0)
+		control.Fire('onVehicleAuthorityChanged', av, '0', '4', 'driverrelease')
+		said = lines(control.log.info, infoFrom, '[avdoor] authority: aircraft ' .. avKey)
+		check('and a release reads as nobody simulating it',
+			#said == 2 and said[2]:find('simulated by nobody now (epoch 4, driverrelease)', 1, true) ~= nil,
+			said[2] or (#said .. ' line(s)'))
+		for epoch = 5, 13 do
+			control.Fire('onVehicleAuthorityChanged', av, tostring(epoch % 2 == 0 and 2 or 0), tostring(epoch), 'serverrevoke')
+		end
+		said = lines(control.log.info, infoFrom, '[avdoor] authority: aircraft ' .. avKey)
+		check('a hull fought over is six lines in ten seconds, not one per change', #said == 6, #said .. ' line(s)')
+		control.Pump(101)
+		control.Fire('onVehicleAuthorityChanged', av, '2', '14', 'driverclaim')
+		local summary = lines(control.log.info, infoFrom, 'changed hands 5 more time(s)')
+		said = lines(control.log.info, infoFrom, 'is simulated by player 2 now (epoch 14')
+		check('and the next window says how many it did not write, then writes again',
+			#summary == 1 and #said == 1, #summary .. '/' .. #said)
+
+		-- ── jumps ───────────────────────────────────────────────────────────
+		control.Admit(7, 'account-7')
+		control.Stand(7, 100.0, 230.0, 30.0)
+		avdoor.Scan()
+		local warnFrom = #control.log.warn
+		hull.position = { x = 104.0, y = 200.0, z = 36.0 }
+		control.Pump(5)
+		avdoor.Scan()
+		check('a move an aircraft can fly is not a jump', #lines(control.log.warn, warnFrom, '[avdoor] jump:') == 0)
+		hull.position = { x = 164.0, y = 200.0, z = 36.0 }
+		control.Pump(5)
+		avdoor.Scan()
+		local jumped = lines(control.log.warn, warnFrom, '[avdoor] jump: aircraft ' .. avKey)
+		check('a canonical move no aircraft flies is a line, with the owner, the epoch and the seats',
+			#jumped == 1 and jumped[1]:find('moved 60.0 m', 1, true) ~= nil
+				and jumped[1]:find('owner player 2, epoch 3', 1, true) ~= nil
+				and jumped[1]:find('seated 2:seat_front_left', 1, true) ~= nil, jumped[1] or 'no line')
+		hull.frozen = true
+		hull.position = { x = 100.0, y = 200.0, z = 30.0 }
+		control.Pump(5)
+		avdoor.Scan()
+		check('a frozen hull is one a server poses on purpose: its moves are not jumps',
+			#lines(control.log.warn, warnFrom, '[avdoor] jump:') == 1)
+		hull.frozen = nil
+		sedan.position = { x = 450.0, y = 200.0, z = 30.0 }
+		control.Pump(5)
+		avdoor.Scan()
+		check('and a car is not watched at all', #lines(control.log.warn, warnFrom, '[avdoor] jump:') == 1)
+		hull.position = { x = 100.0, y = 200.0, z = 30.0 }
+		control.Pump(5)
+		avdoor.Scan()
+
+		-- ── sights ──────────────────────────────────────────────────────────
+		local function report(extra)
+			local payload = { id = avKey, state = 'open', drawn = { x = 160.0, y = 200.0, z = 30.0 },
+				sampled = { x = 100.0, y = 200.0, z = 30.0 }, metres = 60.0, worst = 60.0, seconds = 0.0,
+				owner = 2, epoch = 3, speed = 0.0, seated = false, sampleAgeMs = 3200.0 }
+			for key, value in pairs(extra or {}) do payload[key] = value end
+			return payload
+		end
+		local poses = #control.vehiclePoses
+		warnFrom = #control.log.warn
+		local done = avdoor.Watch.Sight(7, report())
+		local sight = lines(control.log.warn, warnFrom, '[avdoor] sight: player 7 draws aircraft ' .. avKey)
+		check('a viewer\'s sight of a crewed hull is journalled beside the server\'s own reads, and nothing moves',
+			done == 'logged' and #sight == 1 and sight[1]:find('60.0 m from where the server has it', 1, true) ~= nil
+				and sight[1]:find('seated 2:seat_front_left', 1, true) ~= nil
+				and sight[1]:find('last sample 3200 ms old', 1, true) ~= nil
+				and #control.vehiclePoses == poses, tostring(done) .. ' ' .. (sight[1] or 'no line'))
+
+		hull.occupants = {}
+		local infoMark = #control.log.info
+		done = avdoor.Watch.Sight(7, report())
+		local pose = control.vehiclePoses[#control.vehiclePoses]
+		check('an EMPTY hull drawn far from the server is re-published where the server has it, heading kept',
+			done == 'healed' and #control.vehiclePoses == poses + 1 and pose.id == av
+				and pose.definition.x == 100.0 and pose.definition.y == 200.0 and pose.definition.z == 30.0
+				and pose.definition.yaw == 90.0
+				and #lines(control.log.info, infoMark, '[avdoor] heal: aircraft ' .. avKey) == 1,
+			tostring(done))
+		check('and not again inside the heal window', avdoor.Watch.Sight(7, report({ state = 'still' })) == 'logged'
+			and #control.vehiclePoses == poses + 1)
+		control.Pump(101)
+		check('but again once the window has passed', avdoor.Watch.Sight(7, report({ state = 'still' })) == 'healed'
+			and #control.vehiclePoses == poses + 2)
+		control.Pump(101)
+		hull.frozen = true
+		check('a frozen hull is never healed: a server is posing it', avdoor.Watch.Sight(7, report()) == 'logged'
+			and #control.vehiclePoses == poses + 2)
+		hull.frozen = nil
+		check('and a hull drawn where the server has it needs no heal',
+			avdoor.Watch.Sight(7, report({ drawn = { x = 103.0, y = 200.0, z = 30.0 } })) == 'logged'
+				and #control.vehiclePoses == poses + 2)
+		local shipped = avdoor.Settings.WATCH.HEAL
+		avdoor.Settings.WATCH.HEAL = false
+		check('HEAL = false journals and never moves', avdoor.Watch.Sight(7, report()) == 'logged'
+			and #control.vehiclePoses == poses + 2)
+		avdoor.Settings.WATCH.HEAL = shipped
+
+		-- ── a report is checked before it is believed ────────────────────────
+		check('a report about a car is ignored', avdoor.Watch.Sight(7, report({ id = avdoor.DecimalId(car) })) == 'ignored')
+		check('and one about a hull nobody listed', avdoor.Watch.Sight(7, report({ id = '987654321' })) == 'ignored')
+		check('and one whose drawn point is not a number',
+			avdoor.Watch.Sight(7, report({ drawn = { x = 0 / 0, y = 200.0, z = 30.0 } })) == 'ignored')
+		check('and one outside the world', avdoor.Watch.Sight(7, report({ drawn = { x = 5e6, y = 200.0, z = 30.0 } }))
+			== 'ignored')
+		check('and one that names no state the client sends', avdoor.Watch.Sight(7, report({ state = 'heal' }))
+			== 'ignored')
+		control.Stand(7, 100.0, 900.0, 30.0)
+		check('and one from a body too far away to have been sent the hull at all',
+			avdoor.Watch.Sight(7, report()) == 'ignored')
+		control.Stand(7, 100.0, 230.0, 30.0)
+		control.Bucket(7, 4)
+		check('and one from another bucket', avdoor.Watch.Sight(7, report()) == 'ignored')
+		control.Bucket(7, 0)
+		infoMark = #control.log.info
+		check('a closing report is one line saying how long and how far',
+			avdoor.Watch.Sight(7, report({ state = 'closed', drawn = { x = 101.0, y = 200.0, z = 30.0 },
+				seconds = 12.5, worst = 88.0 })) == 'logged'
+				and #lines(control.log.info, infoMark, 'where the server has it again (1.0 m off) after 12.5 s, 88.0 m at worst') == 1)
+
+		-- ── through the wire, cooled ────────────────────────────────────────
+		control.Pump(101)
+		warnFrom = #control.log.warn
+		env.source = 7
+		control.netEvents[avdoor.Event.SIGHT](report())
+		control.netEvents[avdoor.Event.SIGHT](report())
+		env.source = nil
+		check('the wire takes a report, and a second one inside 300 ms is dropped',
+			#lines(control.log.warn, warnFrom, '[avdoor] sight: player 7') == 1)
+
+		-- ── WATCH = false ───────────────────────────────────────────────────
+		local shippedWatch = avdoor.Settings.WATCH
+		avdoor.Settings.WATCH = false
+		check('WATCH = false: no sight is read and no jump is measured',
+			avdoor.Watch.Sight(7, report()) == 'ignored' and avdoor.Watch.Observe({}) == 0)
+		avdoor.Settings.WATCH = shippedWatch
+		control.Fire('onPlayerDisconnected', '7')
+		check('a reporter that leaves takes its open sights with it', avdoor.Watch.Status().sights == 0)
+	end
+end
+
+section('avdoor: every client measures where it draws an aircraft against the server\'s last sample')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the avdoor watch', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local avdoor = OPX.Modules.Get('avdoor')
+		local scene = control.chrome.scene
+		local near = { { id = 4343, distance = 30.0 } }
+		env.Open77.vehicles.nearby = function() return near end
+		control.vehicles.byId[4343] = { id = 4343, record = 'Vehicle.max_tac_av', entity = 91,
+			position = { x = 100.0, y = 200.0, z = 30.0 }, physicsOwner = 2, authorityEpoch = 3,
+			speed = 0.0, locallyOwned = false, streamed = true, packetAgeMs = 3200 }
+		control.vehicles.byId[4444] = { id = 4444, record = 'Vehicle.v_sport1_quadra_turbo', entity = 92,
+			position = { x = 120.0, y = 200.0, z = 30.0 }, locallyOwned = false, streamed = true }
+		scene.geometry['vehicle:4343'] = { attached = true, entity = 91,
+			position = { x = 101.0, y = 200.0, z = 31.0 }, forward = { x = 0.0, y = 1.0, z = 0.0 } }
+		scene.geometry['vehicle:4444'] = { attached = true, entity = 92,
+			position = { x = 300.0, y = 200.0, z = 30.0 }, forward = { x = 0.0, y = 1.0, z = 0.0 } }
+
+		local function sights(from)
+			local out = {}
+			for index = from + 1, #control.serverEvents do
+				local event = control.serverEvents[index]
+				if event.name == avdoor.Event.SIGHT then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+		local from = #control.serverEvents
+		check('an aircraft drawn where its sample is: measured, and nothing is said',
+			avdoor.Sight(1000, nil) == 1 and #sights(from) == 0)
+		control.vehicles.byId[4343].speed = 30.0
+		scene.geometry['vehicle:4343'].position = { x = 115.0, y = 200.0, z = 30.0 }
+		check('a hull flying at 30 m/s drawn 15 m behind its newest sample is the jitter buffer, not a drift',
+			avdoor.Sight(1200, nil) == 1 and #sights(from) == 0)
+		control.vehicles.byId[4343].speed = 0.0
+		scene.geometry['vehicle:4343'].position = { x = 101.0, y = 200.0, z = 31.0 }
+		near = { { id = 4444, distance = 20.0 }, { id = 4343, distance = 30.0 } }
+		check('a car is never measured, however far it is drawn from its sample',
+			avdoor.Sight(1500, nil) == 1 and #sights(from) == 0)
+
+		scene.geometry['vehicle:4343'].position = { x = 160.0, y = 200.0, z = 30.0 }
+		local warnFrom = #control.log.warn
+		avdoor.Sight(2000, nil)
+		local sent = sights(from)
+		check('drawn 60 m from its sample opens an episode: a line here and a report to the server',
+			#sent == 1 and sent[1].state == 'open' and sent[1].id == '4343' and sent[1].metres == 60.0
+				and sent[1].drawn.x == 160.0 and sent[1].sampled.x == 100.0 and sent[1].owner == 2
+				and sent[1].epoch == 3 and sent[1].sampleAgeMs == 3200
+				and #control.log.warn > warnFrom
+				and tostring(control.log.warn[#control.log.warn]):find('is drawn 60.0 m from where its last sample', 1, true) ~= nil,
+			#sent .. ' report(s)')
+		avdoor.Sight(2500, nil)
+		check('and says nothing more while it lasts, until the repeat', #sights(from) == 1)
+		avdoor.Sight(7200, nil)
+		local still = sights(from)
+		check('an episode that lasts is reported again after REPEAT_MS, with how long and how far',
+			#still == 2 and still[2].state == 'still' and still[2].seconds == 5.2 and still[2].worst == 60.0,
+			#still .. ' report(s)')
+
+		control.vehicles.byId[4343].speed = 30.0
+		scene.geometry['vehicle:4343'].position = { x = 112.0, y = 200.0, z = 30.0 }
+		avdoor.Sight(7700, nil)
+		avdoor.Sight(8200, nil)
+		check('a fast hull a few metres behind its sample is not calm yet, but is not a new episode either',
+			#sights(from) == 2)
+		control.vehicles.byId[4343].speed = 0.0
+		scene.geometry['vehicle:4343'].position = { x = 101.0, y = 200.0, z = 30.0 }
+		avdoor.Sight(8700, nil)
+		check('one calm look does not close it', #sights(from) == 2)
+		avdoor.Sight(9200, nil)
+		local closed = sights(from)
+		check('two calm looks close it, with how long it lasted and the worst of it',
+			#closed == 3 and closed[3].state == 'closed' and closed[3].worst == 60.0 and closed[3].seconds == 7.2,
+			#closed .. ' report(s)')
+
+		control.vehicles.byId[4343].locallyOwned = true
+		scene.geometry['vehicle:4343'].position = { x = 400.0, y = 200.0, z = 30.0 }
+		check('a hull this client simulates is never measured: it is drawn where this client puts it',
+			avdoor.Sight(9700, nil) == 0 and #sights(from) == 3)
+		control.vehicles.byId[4343].locallyOwned = false
+
+		-- Three hulls go wrong at once: one report per look, openings first.
+		for index, id in ipairs({ 4501, 4502, 4503 }) do
+			control.vehicles.byId[id] = { id = id, record = 'Vehicle.max_tac_av', entity = 100 + index,
+				position = { x = 100.0 * index, y = 0.0, z = 30.0 }, physicsOwner = 0, authorityEpoch = 1,
+				speed = 0.0, locallyOwned = false, streamed = true }
+			scene.geometry['vehicle:' .. id] = { attached = true, entity = 100 + index,
+				position = { x = 100.0 * index + 50.0, y = 0.0, z = 30.0 }, forward = { x = 0.0, y = 1.0, z = 0.0 } }
+		end
+		near = { { id = 4501, distance = 10.0 }, { id = 4502, distance = 20.0 }, { id = 4503, distance = 30.0 } }
+		local burst = #control.serverEvents
+		avdoor.Sight(10200, nil)
+		check('three hulls opening together send one report per look', #sights(burst) == 1)
+		avdoor.Sight(10700, nil)
+		avdoor.Sight(11200, nil)
+		local all3 = sights(burst)
+		check('and the other two on the next looks, none lost',
+			#all3 == 3 and all3[1].id ~= all3[2].id and all3[2].id ~= all3[3].id and all3[1].id ~= all3[3].id,
+			#all3 .. ' report(s)')
+		near = {}
+		avdoor.Sight(30000, nil)
+		check('episodes whose hulls are gone end quietly', #sights(burst) == 3)
+
+		local shippedWatch = avdoor.Settings.WATCH
+		avdoor.Settings.WATCH = false
+		check('WATCH = false measures nothing', avdoor.Sight(31000, nil) == 0)
+		avdoor.Settings.WATCH = shippedWatch
 	end
 end
 

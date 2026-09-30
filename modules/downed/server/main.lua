@@ -142,6 +142,9 @@ local function pushState(playerId)
 		downForMs = atMs - record.sinceMs,
 		giveUpInMs = math.max(0, record.sinceMs + giveUpMs - atMs),
 		waitingForMs = record.waitingSinceMs and (atMs - record.waitingSinceMs) or nil,
+		-- How many Trauma Team medics the distress signal reached (`server/trauma.lua`),
+		-- so the screen says that instead of a promise: nil until the signal is sent.
+		paged = record.waiting and record.paged or nil,
 	})
 end
 
@@ -150,6 +153,17 @@ local function goDown(playerId, life, citizenId)
 	if down[playerId] ~= nil then return end
 	local position = type(life) == 'table' and type(life.position) == 'table' and life.position
 		or positionOf(playerId)
+	-- THE BUCKET IS READ NOW, WHILE IT CAN BE. `getLifeState().position` is
+	-- `{ x, y, z }` with the bucket at the TOP level of the life state, and
+	-- `Open77.players.position` answers nil for a body dead for more than two
+	-- seconds (`wiki/server-api.md`) -- so a give-up two minutes later had no
+	-- bucket to read and woke everybody in bucket 0.
+	local bucket = type(life) == 'table' and tonumber(life.bucket) or nil
+	if bucket == nil and type(position) == 'table' then bucket = tonumber(position.bucket) end
+	if bucket == nil then
+		local here = positionOf(playerId)
+		bucket = here and here.bucket or nil
+	end
 	local resumed = restoring[playerId]
 	restoring[playerId] = nil
 	if resumed and resumed.citizenId ~= citizenId then resumed = nil end
@@ -158,6 +172,7 @@ local function goDown(playerId, life, citizenId)
 		sinceMs = OPX.Now() - (resumed and resumed.downForMs or 0),
 		waiting = resumed ~= nil and resumed.waiting == true,
 		position = position,
+		bucket = bucket,
 		citizenId = citizenId,
 	}
 	if record.waiting then record.waitingSinceMs = record.sinceMs end
@@ -175,6 +190,12 @@ local function getUp(playerId, why, keep)
 	local record = down[playerId]
 	if record == nil then return end
 	down[playerId] = nil
+	-- The page is over and so is any treatment: the pins come down on every
+	-- medic's map and a medic still kneeling is told why the bar stopped.
+	if M.Trauma ~= nil then
+		local ran, failure = pcall(M.Trauma.Stood, playerId, why)
+		if not ran then Open77.log.error('[downed] the trauma page could not be closed: ' .. tostring(failure)) end
+	end
 	audit('downed.up', playerId, true, why)
 	pushState(playerId)
 	if keep then
@@ -325,6 +346,18 @@ local function onWait()
 		record.waiting = true
 		record.waitingSinceMs = OPX.Now()
 		audit('downed.wait', playerId, true, nameOf(playerId))
+		-- THE SIGNAL GOES OUT. The screen used to say "Help has been called" and
+		-- nothing was called: the Trauma Team is paged here (`server/trauma.lua`),
+		-- and the count goes back to the screen with the state.
+		record.paged = 0
+		if M.Trauma ~= nil then
+			local ran, count = pcall(M.Trauma.Page, playerId, record)
+			if ran then
+				record.paged = tonumber(count) or 0
+			else
+				Open77.log.error('[downed] the distress signal could not be sent: ' .. tostring(count))
+			end
+		end
 	end
 	pushState(playerId)
 end
@@ -351,12 +384,16 @@ local function onGiveUp()
 	end
 
 	local respawn = type(M.Settings.RESPAWN) == 'table' and M.Settings.RESPAWN or {}
+	-- In the bucket they fell in: waking somebody into the shared world out of an
+	-- instance puts a body where nobody expects one. The record holds it (read
+	-- when they went down); a body's own position read is only there for two
+	-- seconds after a death, and the world bucket is the floor.
+	local bucket = record.bucket
+	if bucket == nil and here ~= nil then bucket = tonumber(here.bucket) end
 	local ok, reason = Open77.players.respawn(playerId, {
 		position = { x = point.x, y = point.y, z = point.z },
 		heading = point.heading,
-		-- In the bucket they fell in: waking somebody into the shared world out
-		-- of an instance puts a body where nobody expects one.
-		bucket = here and here.bucket or 0,
+		bucket = OPX.Buckets.PlacementOf(bucket),
 		health = clamp(respawn.HEALTH, 0.01, 1.0, 0.5),
 		graceMs = math.floor(clamp(respawn.GRACE_MS, 0, 60000, 5000)),
 	})
@@ -374,6 +411,10 @@ local function departed(rawPlayerId)
 	local playerId = tonumber(rawPlayerId) or 0
 	local record = down[playerId]
 	down[playerId], checked[playerId], restoring[playerId] = nil, nil, nil
+	if M.Trauma ~= nil then
+		local ran, failure = pcall(M.Trauma.Departed, playerId)
+		if not ran then Open77.log.error('[downed] the trauma books could not let go: ' .. tostring(failure)) end
+	end
 
 	local prefix = tostring(playerId) .. ':'
 	for slot in pairs(lastRequest) do
@@ -462,7 +503,7 @@ local function list()
 			waiting = record.waiting,
 			downForMs = atMs - record.sinceMs,
 			position = position and { x = position.x, y = position.y, z = position.z,
-				bucket = position.bucket } or nil,
+				bucket = position.bucket or record.bucket } or nil,
 		}
 	end
 	table.sort(rows, function(a, b)
@@ -484,10 +525,26 @@ local function checkLocales()
 	end
 end
 
+--- What `server/trauma.lua` reads of this half: the records and the one revive
+--- path. Nothing else writes a record.
+M.Internal = {
+	Record = function(playerId) return down[playerId] end,
+	Records = function() return down end,
+	Revive = function(playerId, why) return reviveNow(playerId, why) end,
+	Push = function(playerId) return pushState(playerId) end,
+	Position = function(playerId) return positionOf(playerId) end,
+	Life = function(playerId) return lifeOf(playerId) end,
+	IsDead = function(playerId) return isDead(playerId) end,
+	Name = function(playerId) return nameOf(playerId) end,
+	PlayerIds = function() return playerIds() end,
+	Character = function() return character end,
+}
+
 --- Builds the state and contributes the table.
 -- @author dop42
 function M.Init()
 	down, restoring, checked, lastRequest = {}, {}, {}, {}
+	if M.Trauma ~= nil then M.Trauma.Reset() end
 	giveUpMs = math.floor(clamp(M.Settings.GIVE_UP_AFTER_S, 0, 3600, 120) * 1000)
 	OPX.Schema.Add(M.Storage.SCHEMA)
 end
@@ -525,6 +582,7 @@ function M.Start()
 	RegisterNetEvent(EVENT_WAIT, onWait)
 	RegisterNetEvent(EVENT_GIVE_UP, onGiveUp)
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, departed)
+	if M.Trauma ~= nil then M.Trauma.Start() end
 
 	-- The fast path. On a thread, because reading the identity may yield.
 	AddEventHandler('onPlayerLifeStateChanged', function(playerId)
@@ -537,6 +595,12 @@ function M.Start()
 		for _, playerId in ipairs(playerIds()) do observe(playerId) end
 		for playerId in pairs(down) do
 			if nameOf(playerId) == nil then getUp(playerId, 'gone', true) end
+		end
+		-- The Trauma Team's pass: a medic who clocked in is paged, a medic over a
+		-- body is shown the row, a treatment whose medic walked off is stopped.
+		if M.Trauma ~= nil then
+			local ran, failure = pcall(M.Trauma.Tick)
+			if not ran then Open77.log.error('[downed] the trauma pass failed: ' .. tostring(failure)) end
 		end
 	end
 

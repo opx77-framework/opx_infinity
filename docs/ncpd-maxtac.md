@@ -443,6 +443,36 @@ through the platform's own fan-out (`SOUNDS.RESCUE`, on by default), addressed t
 listener alone, so nobody hears it twice; "this hull is not streamed here" is not a
 refusal and is not rescued.
 
+**Where every screen draws the aircraft — "the av is driving away on other player
+screen going through buildings but when i move it comes back to same spot".** The
+pilot's own log of that flight is the log of the screen that was right, and neither the
+platform's vehicle authority service nor this resource journalled an aircraft's owner,
+epoch or a viewer's picture of it, so the drift left no evidence anywhere `logs.cmd`
+reaches. The watch (`WATCH` in `config/avdoor.lua`, `modules/avdoor/server/watch.lua`)
+is that evidence:
+
+- every client, twice a second, compares where its engine DRAWS each nearby aircraft it
+  does not simulate (`world.entityGeometry`) with the newest sample it holds (the client
+  snapshot's `position`); farther apart than `DRIFT_METRES` plus `DRIFT_PER_SPEED` per
+  m/s opens an episode -- a `[avdoor] sight:` line on that client and a report to the
+  server -- repeated every `REPEAT_MS` while it lasts and closed with how long and how
+  far once it is under `SETTLE_METRES` twice;
+- the server writes each report beside its own reads (`[avdoor] sight: player N draws
+  aircraft ...`: the physics owner, the epoch, who is seated, the freeze, the speed, the
+  client's own owner/epoch and how old its sample was), every change of an aircraft's
+  physics owner (`[avdoor] authority:`, with the platform's reason, six lines per hull
+  per ten seconds at most), and every canonical move bigger than `JUMP_METRES` between
+  two scans on a hull nobody froze (`[avdoor] jump:`);
+- `HEAL`: an EMPTY, unfrozen aircraft that a viewer draws far from where the server has
+  it is re-published where the server has it (`setTransform` to its own position and
+  heading), once per `HEAL_EVERY_MS` at most, which starts a new authority epoch and
+  makes every viewer drop its buffered path (`[avdoor] heal:`). A hull with anybody
+  aboard is never touched.
+
+Read together, the lines say which side moved the aircraft: a `sight` with the server's
+pose still where the pilot is and a sample that is old points at the viewer's own
+projection; a `jump` or a string of `authority` changes points at the server's pose.
+
 ---
 
 ## 9. A kill reaches the board — the road, and its limits

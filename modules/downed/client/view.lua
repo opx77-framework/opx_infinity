@@ -92,20 +92,26 @@ function View.Start()
 	-- raises the screen, and an announcement with no handler is dropped.
 	OPX.UI.On(SURFACE, 'focus:set', onFocus)
 
+	-- The state half to the page, FIRST. The first payload a view ever causes is
+	-- the `config` that `FromView('ready')` publishes straight back -- and a page
+	-- that mounted before this module started (a warm CEF cache: every
+	-- reconnection) had its `downed:ready` held by the surface and REPLAYED,
+	-- synchronously, to the first handler registered on it below. With this
+	-- handler registered after that loop, the replayed ready published `config`
+	-- into nothing, the page kept no strings, and the first death of the session
+	-- drew raw keys (`downed view: show arrived before config; drawing keys`,
+	-- owner's log of 2026-09-29 21:05:11).
+	AddEventHandler(EVENT_VIEW, function(payload)
+		if type(payload) ~= 'table' then return end
+		OPX.UI.Send(SURFACE, CHANNEL, payload)
+	end)
+
 	-- The page to the state half.
 	for _, action in ipairs(ACTIONS) do
 		OPX.UI.On(SURFACE, 'downed:' .. action, function(payload)
 			M.FromView(action, payload)
 		end)
 	end
-
-	-- The state half to the page. Registered BEFORE anything can publish: the
-	-- first payload a view ever causes is the `config` that `FromView('ready')`
-	-- publishes straight back, and a handler added after that would miss it.
-	AddEventHandler(EVENT_VIEW, function(payload)
-		if type(payload) ~= 'table' then return end
-		OPX.UI.Send(SURFACE, CHANNEL, payload)
-	end)
 end
 
 --- Gives the focus back on the way out.

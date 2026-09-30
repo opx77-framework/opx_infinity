@@ -1036,6 +1036,16 @@ function M.Start()
 		if type(payload) ~= 'table' then return end
 		downHeard = downHeard + 1
 		setDown(payload.down == true)
+		-- THE STOCK HUD THIS ONE REPLACES GOES BACK UNDER, AFTER EVERY DOWN. A hide
+		-- is a claim held in the RESOURCE's name, and `modules/downed` is the same
+		-- resource: standing a player up, it gives back the thirteen components it
+		-- hid -- which erases this module's claims on the seven it hides for good
+		-- (`HudComponents.hpp`: `SetVisible(owner, c, true)` releases that owner's
+		-- claim). The stock health, stamina, ammo, compass, clock and speedometer
+		-- then sat over this HUD, and the vanilla hub menu opened, until the next
+		-- character load. The downed module raises this event after its release,
+		-- so re-applying here is the last word.
+		if payload.down ~= true then applyVanilla() end
 	end)
 
 	AddEventHandler(EVENT_ENTRY_STATE, function(payload)

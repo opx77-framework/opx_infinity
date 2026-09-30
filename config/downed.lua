@@ -28,6 +28,59 @@ OPX.Config.MODULES.downed = {
 		GRACE_MS = 3000,
 	},
 
+	-- THE TRAUMA TEAM: WHO HEARS A DISTRESS SIGNAL, AND WHO ANSWERS IT.
+	--
+	-- THE AUDIT OF 2026-09-30 FOUND THE JOB HAD NO GAMEPLAY. A paramedic could
+	-- sign up and clock in, and then nothing: WAIT FOR HELP stored a flag and
+	-- told the downed player "Help has been called" while nobody was called, and
+	-- the only thing that could stand a body up was a staff command. This block is
+	-- the other half of that button.
+	--
+	--   * THE PAGE. Pressing WAIT FOR HELP pages every connected player whose
+	--     primary job is in `JOBS` and who is ON DUTY: a loud toast with the
+	--     patient's name and where they fell (rounded to `PAGE.ROUND_METRES`), and
+	--     a pin on their map for `PAGE.PIN_SECONDS` that comes down the moment the
+	--     patient is up. A medic who clocks in while somebody is still waiting is
+	--     paged too. The down screen says how many were paged -- or that nobody is
+	--     on duty -- instead of a promise nobody keeps.
+	--   * THE TREATMENT. An on-duty medic within `TREAT.REACH_METRES` of a downed
+	--     body sees a row and presses `KEY` (or types `/opx.treat`): the SERVER
+	--     checks the job, the duty, that the medic is up and the patient is down,
+	--     the distance to the body and the cooldown, and starts a
+	--     `TREAT.SECONDS` bar on the medic's screen; the patient is told a medic is
+	--     working on them. When the bar runs out the server checks everything again
+	--     -- a medic who walked off or went down, or a patient who is already up,
+	--     is no treatment -- and revives the patient where they lie at
+	--     `REVIVE.HEALTH`.
+	--   * THE PAY. `REWARD.AMOUNT` into the medic's `REWARD.ACCOUNT` per revive, at
+	--     most once per `REWARD.PER_PATIENT_MS` for the same patient's character,
+	--     so two friends taking turns on the floor are not a money machine. `0`
+	--     pays nothing; the job's salary is paid either way.
+	--
+	-- `enabled = false` (or `TRAUMA = false`) is the old screen: nobody is paged,
+	-- nobody but staff revives, and the down screen says nobody is coming.
+	TRAUMA = {
+		enabled = true,
+		JOBS = { 'trauma' },
+		KEY = { ID = 'opx.downed.treat', NAME = 'medic.key.treat', DEFAULT = 'E' },
+		PAGE = {
+			ROUND_METRES = 5.0,
+			PIN_SECONDS = 300,
+			PIN_SPRITE = 'objective',
+			TOAST_MS = 12000,
+		},
+		TREAT = {
+			REACH_METRES = 4.0,
+			SECONDS = 6,
+			COOLDOWN_MS = 3000,
+		},
+		REWARD = {
+			AMOUNT = 150,
+			ACCOUNT = 'BANK',
+			PER_PATIENT_MS = 600000,
+		},
+	},
+
 	-- Callers allowed to revive, and callers allowed to set the screen aside
 	-- while their own surface is up. A caller now gives its own name, so both are
 	-- switches rather than boundaries.

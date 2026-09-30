@@ -25,7 +25,16 @@
 --      (`EXIT`, the guard);
 --   3. keeps the screen covered until the body has been still for
 --      `EXIT.SETTLE_MS` -- the player never sees a throw or an eject.
--- The server opens that door for everybody as the seat empties.
+-- The server opens that door for everybody as the seat empties. The hull's
+-- place is the frame it FLEW at, read while the body was aboard (`keepFlown`):
+-- an exit un-masks a hull flown off its pad and the engine drags it back to
+-- where the flight began for a fifth of a second, so its frame at that instant
+-- is not where the body stepped out.
+--
+-- THE WATCH. Every client measures where it draws each nearby aircraft it does
+-- not simulate against the server's newest sample of it, and tells the server
+-- when the two part (`WATCH`, see `M.Sight`), so a drift on somebody else's
+-- screen is a line in the server's journal and not only a report.
 --
 -- THE VOICE. While this client is the one flying a MaxTac AV (its seat is in
 -- the hull and the hull is simulated here), the flight is read four times a
@@ -77,6 +86,15 @@ local heard = {}
 -- The one scheduler job.
 local watchJob = nil
 
+-- THE WATCH (`WATCH` in the config): the open drift episodes, by hull id as
+-- text -- `{ since, worst, calm, reportedAt, seenAt, last }` -- the reports
+-- owed to the server (one goes out per look), when the last look was, and
+-- whether this client's snapshots carry a position at all.
+local sights = {}
+local sightQueue = {}
+local sightAt = 0
+local sightBlind = false
+
 -- How often the flight is read while this client flies a MaxTac AV.
 local FLIGHT_MS = 250
 
@@ -96,6 +114,13 @@ local ASK_HOLD_MS = 1200
 -- began it: a second `leaving` for the same hull inside this is not a second
 -- fade and a second placement.
 local EXIT_HOLD_MS = 5000
+
+-- How often the hull's frame is read while the body sits in an aircraft. The
+-- read is the frame the hull FLEW at, kept because the engine's own frame is not
+-- to be trusted at the moment of the exit (see `beginGuard`). It needs no age
+-- bound: it is only ever used while the body is still inside it, and a hull that
+-- had moved on would have taken the body with it.
+local FRAME_MS = 250
 
 local function settings()
 	return type(M.Settings) == 'table' and M.Settings or {}
@@ -294,6 +319,7 @@ function M.Status()
 		key = keyLabel(),
 		seated = lastSeat ~= nil,
 		aircraft = lastSeat ~= nil and lastSeat.aircraft == true or false,
+		flown = lastSeat ~= nil and lastSeat.flown ~= nil or false,
 		fading = fading ~= nil,
 		guarding = guard ~= nil,
 		placements = guard ~= nil and guard.placements or nil,
@@ -406,6 +432,37 @@ local function hullFrame(id)
 		end
 	end
 	return nil
+end
+
+--- Reads the frame of the aircraft the body sits in and keeps it, when the body
+--- is inside it.
+--
+-- THE FRAME THE HULL FLEW AT. An AV is flown kinematically: the platform moves
+-- its root with the whole-vehicle mover while the chassis is masked, and the
+-- chassis body stays where the flight began. The moment an exit un-masks it the
+-- engine drags the root back to that body -- measured in the client log of
+-- 2026-09-30 (00:33:37): `vflt-parkexit-unmask`, and 37 ms later the engine's
+-- frame for the hull was 37.3 m from the body that had just been flying it --
+-- and the platform's own pump then puts the hull back where it flew, about
+-- 190 ms after. A guard that measured the engine's frame at that instant took
+-- a hull flown off its pad for a body left far from it and did nothing: no
+-- placement, no fade, the door row late. So the frame is read here, while the
+-- body is aboard and inside the hull, and the exit uses it when the engine's
+-- own frame is not where the body was.
+-- @param id any the hull, as the seat names it
+-- @param previous table|nil the frame kept so far
+-- @return table|nil `{ x, y, z, fx, fy, at }`
+local function keepFlown(id, previous)
+	local now = OPX.Now()
+	if previous ~= nil and now - previous.at < FRAME_MS then return previous end
+	local frame = hullFrame(id)
+	local at = myself()
+	if frame == nil or at == nil then return previous end
+	-- A frame the body is not inside is not the frame the hull flew at: an engine
+	-- that has already dragged the hull elsewhere must not overwrite a good one.
+	if across(at, frame) > M.ExitSettings().near then return previous end
+	frame.at = now
+	return frame
 end
 
 --- The height of the static ground under a point, or nil.
@@ -580,6 +637,21 @@ local function beginGuard(was)
 	if exit.off or not exit.place then return 'off' end
 	local at = myself()
 	local frame = hullFrame(was.vehicleId)
+	-- THE ENGINE'S FRAME IS NOT WHERE THE HULL FLEW when the exit un-masked a hull
+	-- that was flown off its pad (see `keepFlown`). The body is still where it
+	-- flew, so a frame kept while it was aboard -- and still where the body is --
+	-- is the hull the exit is about; a body that is far from BOTH frames really
+	-- was moved elsewhere.
+	local flown = was.flown
+	if at ~= nil and flown ~= nil and across(at, flown) <= exit.near
+		and (frame == nil or across(at, frame) > exit.near) then
+		Open77.log.info(('[avdoor] exit from %s: the engine reads the hull %s from the body (it un-masks '
+			.. 'a hull flown off its pad and drags it back there); using the frame it flew at, %.1f m from the body')
+			:format(tostring(was.vehicleId),
+				frame ~= nil and ('%.1f m'):format(across(at, frame)) or 'nowhere',
+				across(at, flown)))
+		frame = flown
+	end
 	if at == nil or frame == nil then
 		Open77.log.info(('[avdoor] exit from %s: the hull or the body could not be read, so the body '
 			.. 'is not placed'):format(tostring(was.vehicleId)))
@@ -647,10 +719,17 @@ local function watchSeat(seat)
 		if seat.exiting ~= true then lastExit = nil end
 		local known = lastSeat ~= nil and sameId(lastSeat.vehicleId, seat.vehicleId)
 		local kind = kindOf(seat.vehicleId)
+		local aircraft = (known and lastSeat.aircraft == true) or (kind ~= nil and kind.aircraft == true)
+		-- The frame the hull flies at is kept while the body is aboard. A frame the
+		-- engine has already spoiled is never kept: `keepFlown` takes only one the
+		-- body is still inside.
+		local flown = known and lastSeat.flown or nil
+		if aircraft then flown = keepFlown(seat.vehicleId, flown) end
 		lastSeat = {
 			vehicleId = seat.vehicleId,
-			aircraft = (known and lastSeat.aircraft == true) or (kind ~= nil and kind.aircraft == true),
+			aircraft = aircraft,
 			seat = M.SeatName(seat.seat) or (known and lastSeat.seat or nil),
+			flown = flown,
 		}
 	else
 		lastSeat = nil
@@ -819,6 +898,211 @@ local function acknowledge(payload, answer)
 	})
 end
 
+-- ── the watch ─────────────────────────────────────────────────────────────────
+--
+-- WHERE THIS SCREEN DRAWS AN AIRCRAFT, AGAINST WHERE THE SERVER'S LAST SAMPLE
+-- PUT IT. The owner's report of 2026-09-30 -- an AV "driving away ... going
+-- through buildings" on the other player's screen and back "to the same spot"
+-- when the pilot moved -- is a picture only the OTHER screen had, and nothing
+-- on that machine wrote a line about it. Every look, for the nearest aircraft
+-- this client does not simulate itself, the engine's own frame for the hull
+-- (`world.entityGeometry`, what is drawn) is measured against the snapshot's
+-- position (the newest sample this client holds). Farther apart than
+-- `M.DriftLimit` opens an episode: a line here and a report to the server, which
+-- writes its own reads beside it. The report is evidence, never a command.
+
+--- A point `{ x, y, z }` from a table with x/y/z or [1]/[2]/[3], or nil.
+local function pointFrom(value)
+	if type(value) ~= 'table' then return nil end
+	local x, y, z = finite(value.x or value[1]), finite(value.y or value[2]), finite(value.z or value[3])
+	if x == nil or y == nil or z == nil then return nil end
+	return { x = x, y = y, z = z }
+end
+
+local function apart3(a, b)
+	local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+	return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+local function tenth(value)
+	local number = finite(value)
+	if number == nil then return nil end
+	return math.floor(number * 10.0 + 0.5) / 10.0
+end
+
+local function rounded(point)
+	if point == nil then return nil end
+	return { x = tenth(point.x), y = tenth(point.y), z = tenth(point.z) }
+end
+
+--- The aircraft near this body, nearest first: `{ id, snapshot }`.
+-- @param watchCfg table `M.WatchSettings()`
+-- @return table[]
+local function aircraftNear(watchCfg)
+	local api = vehiclesApi()
+	if api == nil then return {} end
+	local entries = nil
+	if type(api.nearby) == 'function' then
+		local read, answer = pcall(api.nearby, watchCfg.range)
+		if read and type(answer) == 'table' then entries = answer end
+		-- `nil, reason` is the call working: nothing in range, or no body yet.
+		if read and answer == nil then return {} end
+	end
+	local me = nil
+	if entries == nil then
+		if type(api.all) ~= 'function' then return {} end
+		local read, answer = pcall(api.all)
+		if not read or type(answer) ~= 'table' then return {} end
+		entries = answer
+		me = myself()
+		if me == nil then return {} end
+	end
+	local found = {}
+	for _, entry in ipairs(entries) do
+		if #found >= watchCfg.hulls * 4 then break end
+		local id = type(entry) == 'table' and (entry.id or entry.vehicleId) or nil
+		if id ~= nil then
+			local kind = kindOf(id)
+			if kind ~= nil and kind.aircraft == true then
+				local snapshot = hull(id)
+				if snapshot ~= nil then
+					local distance = finite(entry.distance)
+					if me ~= nil then
+						local at = pointFrom(snapshot.position)
+						distance = at ~= nil and apart3(me, at) or nil
+					end
+					if distance == nil or distance <= watchCfg.range then
+						found[#found + 1] = { id = id, snapshot = snapshot, distance = distance or 0.0 }
+					end
+				end
+			end
+		end
+	end
+	table.sort(found, function(a, b) return a.distance < b.distance end)
+	return found
+end
+
+--- Owes the server one report; the most telling kind first.
+local function owe(report)
+	local rank = { open = 1, closed = 2, still = 3 }
+	for index, queued in ipairs(sightQueue) do
+		if queued.id == report.id then
+			-- One report per hull in the queue: the newer word replaces the older,
+			-- unless the older opened an episode the server has not heard of yet.
+			if not (queued.state == 'open' and report.state == 'still') then sightQueue[index] = report end
+			return
+		end
+	end
+	sightQueue[#sightQueue + 1] = report
+	table.sort(sightQueue, function(a, b) return (rank[a.state] or 9) < (rank[b.state] or 9) end)
+end
+
+--- One hull, one look.
+-- @param id any
+-- @param snapshot table this client's snapshot
+-- @param now number
+-- @param watchCfg table
+-- @param seat table|nil this client's seat read
+local function sightOne(id, snapshot, now, watchCfg, seat)
+	local key = M.DecimalId(id) or tostring(id)
+	local sampled = pointFrom(snapshot.position)
+	if sampled == nil then
+		if not sightBlind then
+			sightBlind = true
+			Open77.log.info('[avdoor] sight: this client\'s vehicle snapshot carries no position, so the watch '
+				.. 'cannot compare what it draws with the server\'s samples here')
+		end
+		return
+	end
+	local frame = hullFrame(id)
+	if frame == nil then return end
+	local drawn = { x = frame.x, y = frame.y, z = frame.z }
+	local metres = apart3(drawn, sampled)
+	local speed = finite(snapshot.speed) or 0.0
+	local limit = M.DriftLimit(watchCfg, speed)
+	local seatedHere = seat ~= nil and sameId(seat.vehicleId, id)
+	local episode = sights[key]
+
+	local function report(state)
+		return {
+			id = key, state = state, drawn = rounded(drawn), sampled = rounded(sampled),
+			metres = tenth(metres), worst = tenth(episode and episode.worst or metres),
+			seconds = episode and tenth((now - episode.since) / 1000.0) or 0.0,
+			owner = tonumber(snapshot.physicsOwner), epoch = tonumber(snapshot.authorityEpoch),
+			frozen = snapshot.frozen == true, speed = tenth(speed), seated = seatedHere,
+			sampleAgeMs = tenth(snapshot.packetAgeMs), extrapolating = snapshot.extrapolating == true,
+		}
+	end
+
+	if episode == nil then
+		if metres <= limit then return end
+		episode = { since = now, worst = metres, calm = 0, reportedAt = now, seenAt = now }
+		sights[key] = episode
+		Open77.log.warn(('[avdoor] sight: aircraft %s is drawn %.1f m from where its last sample puts it '
+			.. '(limit %.1f m at %.1f m/s; owner %s, epoch %s%s%s%s%s): drawn %.1f, %.1f, %.1f -- sample %.1f, %.1f, %.1f')
+			:format(key, metres, limit, speed, tostring(snapshot.physicsOwner or '?'),
+				tostring(snapshot.authorityEpoch or '?'),
+				snapshot.locallyOwned == true and ', simulated here' or '',
+				snapshot.frozen == true and ', frozen' or '',
+				seatedHere and ', this body is seated in it' or '',
+				finite(snapshot.packetAgeMs) ~= nil and (', sample %.0f ms old'):format(finite(snapshot.packetAgeMs)) or '',
+				drawn.x, drawn.y, drawn.z, sampled.x, sampled.y, sampled.z))
+		owe(report('open'))
+		return
+	end
+
+	episode.seenAt = now
+	if metres > episode.worst then episode.worst = metres end
+	if metres <= watchCfg.settle then
+		episode.calm = episode.calm + 1
+		if episode.calm >= 2 then
+			Open77.log.info(('[avdoor] sight: aircraft %s is drawn where its sample is again after %.1f s '
+				.. '(%.1f m at worst)'):format(key, (now - episode.since) / 1000.0, episode.worst))
+			owe(report('closed'))
+			sights[key] = nil
+		end
+		return
+	end
+	episode.calm = 0
+	if now - episode.reportedAt >= watchCfg.repeatMs then
+		episode.reportedAt = now
+		Open77.log.warn(('[avdoor] sight: aircraft %s is still drawn %.1f m from its sample after %.1f s '
+			.. '(%.1f m at worst; owner %s, epoch %s)'):format(key, metres, (now - episode.since) / 1000.0,
+			episode.worst, tostring(snapshot.physicsOwner or '?'), tostring(snapshot.authorityEpoch or '?')))
+		owe(report('still'))
+	end
+end
+
+--- One look over the nearest aircraft, and at most one report sent.
+-- @param now number
+-- @param seat table|nil
+-- @return integer how many hulls were measured
+function M.Sight(now, seat)
+	local watchCfg = M.WatchSettings()
+	if watchCfg.off then return 0 end
+	now = now or OPX.Now()
+	local measured = 0
+	for _, near in ipairs(aircraftNear(watchCfg)) do
+		if measured >= watchCfg.hulls then break end
+		-- A hull this client simulates is drawn where this client puts it, and that
+		-- is the pose it reports: there is nothing to compare.
+		if near.snapshot.locallyOwned ~= true and near.snapshot.streamed ~= false then
+			measured = measured + 1
+			sightOne(near.id, near.snapshot, now, watchCfg, seat)
+		end
+	end
+	-- An episode whose hull has not been measured for a while (gone, out of range,
+	-- now simulated here) is over, quietly: there is nothing left to compare.
+	for key, episode in pairs(sights) do
+		if now - (episode.seenAt or episode.since) > math.max(5000, watchCfg.sight * 4) then
+			sights[key] = nil
+		end
+	end
+	local report = table.remove(sightQueue, 1)
+	if report ~= nil then TriggerServerEvent(M.Event.SIGHT, report) end
+	return measured
+end
+
 --- One pass: the seat, the fade, the row, and -- four times a second while
 --- this client flies a MaxTac AV -- the flight.
 local function watch()
@@ -832,6 +1116,13 @@ local function watch()
 			readFlight(seat)
 		end
 	end
+	if now - sightAt >= M.WatchSettings().sight then
+		sightAt = now
+		local ran, failure = pcall(M.Sight, now, seat)
+		if not ran then
+			Open77.log.warn('[avdoor] the sight check failed: ' .. tostring(failure))
+		end
+	end
 end
 
 -- ── the phases ───────────────────────────────────────────────────────────────
@@ -842,6 +1133,7 @@ function M.Init()
 	lastSeat, fading, flight, flightAt, heard, kinds = nil, nil, nil, 0, {}, {}
 	guard, guardJob, lastExit, askedAt = nil, nil, nil, nil
 	watchJob = nil
+	sights, sightQueue, sightAt, sightBlind = {}, {}, 0, false
 end
 
 function M.Start()

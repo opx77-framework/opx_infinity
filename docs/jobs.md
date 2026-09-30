@@ -139,6 +139,37 @@ can set a tree outright with `/opx.skills.level` (see `docs/commands.md`).
 
 ---
 
+## Trauma Team — the page, the treatment, the pay
+
+Until 2026-09-30 the Trauma Team was a salary and nothing else: **WAIT FOR HELP** on the
+down screen stored a flag and said "Help has been called" while nobody was called, and
+only a staff command could stand a body up. The loop (`TRAUMA` in `config/downed.lua`,
+`modules/downed/server/trauma.lua`):
+
+1. **The page.** A downed player presses **WAIT FOR HELP**. Every connected player whose
+   worked job is in `JOBS` (`trauma`) and who is **on duty** (`/opx.duty`) gets a loud
+   toast — who is down and where, rounded to `PAGE.ROUND_METRES` — and a pin on the map
+   for `PAGE.PIN_SECONDS`; the pin comes down the moment the patient is up. A medic who
+   clocks in while somebody is still waiting is paged too. The patient's screen says how
+   many medics were paged, or that **none is on duty** — never a promise nobody keeps.
+2. **The treatment.** Within `TREAT.REACH_METRES` (4 m) of a downed body an on-duty medic
+   sees **Treat <name>** on the strip and presses **E** (`opx.downed.treat`, rebindable),
+   or types `/opx.treat`. The server checks the job, the duty, that the medic is up and
+   the patient down, the distance to the body (the body's own place, from the life
+   state) and the cooldown, then runs a `TREAT.SECONDS` (6 s) bar on the medic's screen;
+   the patient reads "<medic> of the Trauma Team is working on you". Walking off, going
+   down or leaving stops it by name. When the bar runs out everything is checked again
+   and the patient is revived where they lie at `REVIVE.HEALTH`.
+3. **The pay.** `REWARD.AMOUNT` (150) into the medic's `REWARD.ACCOUNT` (BANK) per revive,
+   at most once per `REWARD.PER_PATIENT_MS` (10 min) for the same patient's character —
+   a patient straight back down is revived for free. The salary is paid either way.
+
+The server journal has a `[downed] trauma:` line for every page (with `N medic(s) paged`,
+and `CLOCKED OFF` named when that is why nobody was), every treatment started, stopped
+and finished, and every payment. `TRAUMA.enabled = false` is the old screen.
+
+---
+
 ## Job vehicles — what each rank finds in the garage
 
 Every NCPD and MaxTac member finds their job's vehicles **at the top of every garage

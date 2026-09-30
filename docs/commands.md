@@ -530,6 +530,15 @@ booked, refusals by reason); the server journal says `N on-duty holder(s) told` 
 every call-out, with `CLOCKED OFF` named when the reason is duty.
 `/opx.ncpd.report murder <player>` stages one without a gun.
 
+## 4b. TRAUMA TEAM (job: medical)
+
+| Command | Args | Who |
+|---|---|---|
+| `/opx.treat` | treats the downed player nearest to you, within 4 m — the same as **E** on the **Treat** row | everyone; refused unless you work `trauma` and are on duty |
+
+A downed player's **WAIT FOR HELP** pages every on-duty Trauma Team medic (toast and map
+pin); see [`jobs.md`, Trauma Team](jobs.md#trauma-team--the-page-the-treatment-the-pay).
+
 ## 5. INVENTORY / WEAPONS
 
 | Command | Args |

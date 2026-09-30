@@ -131,6 +131,17 @@ function View.Start()
 	-- opens the box, and an announcement with no handler is dropped, not queued.
 	OPX.UI.On(SURFACE, 'focus:set', onFocus)
 
+	-- The state half to the page, FIRST. The first payload a view ever causes is
+	-- the `config` that `FromView('ready')` publishes straight back, and a page
+	-- that mounted before this module started had its `chat:ready` held by the
+	-- surface and REPLAYED, synchronously, to the first handler registered on it
+	-- below -- so with this handler registered after that loop the replayed ready
+	-- published `config` into nothing (the same fault `modules/downed` shipped).
+	AddEventHandler(M.Event.VIEW, function(payload)
+		if type(payload) ~= 'table' then return end
+		OPX.UI.Send(payload.surface or SURFACE, CHANNEL, payload)
+	end)
+
 	-- The page to the state half. Every action the seam documents, and nothing
 	-- else: an unknown action reaching `FromView` is ignored there, not here.
 	for _, action in ipairs({ 'ready', 'submit', 'close', 'diag' }) do
@@ -138,14 +149,6 @@ function View.Start()
 			M.FromView(action, payload)
 		end)
 	end
-
-	-- The state half to the page. Registered BEFORE anything can publish: the
-	-- first payload a view ever causes is the `config` that `FromView('ready')`
-	-- publishes straight back, and a handler added after that would miss it.
-	AddEventHandler(M.Event.VIEW, function(payload)
-		if type(payload) ~= 'table' then return end
-		OPX.UI.Send(payload.surface or SURFACE, CHANNEL, payload)
-	end)
 
 	local keys = M.Settings.KEYS
 	local key = type(keys) == 'table' and keys.OPEN or nil

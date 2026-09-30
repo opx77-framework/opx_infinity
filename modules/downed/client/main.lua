@@ -35,8 +35,9 @@ local HOLD_MS = 500
 -- however many minutes later.
 local HOLD_LAPSE_MS = 1000
 
--- What the server last said.
-local state = { down = false, waiting = false, giveUpInMs = 0, downForMs = 0 }
+-- What the server last said. `paged` is how many Trauma Team medics the
+-- distress signal reached, nil until it is sent.
+local state = { down = false, waiting = false, giveUpInMs = 0, downForMs = 0, paged = nil }
 
 -- When the live GIVE UP press began and when it was last reported, by this
 -- client's clock. Both nil while nothing is pressed.
@@ -120,6 +121,21 @@ local function forgetPress()
 	holdingSinceMs, holdingSeenMs = nil, nil
 end
 
+-- Every string the view draws, from the active catalogue. THE WAITING HINT IS
+-- THE SERVER'S WORD: the screen used to say "Help has been called" whether or
+-- not anybody was, and it now says how many Trauma Team medics the signal
+-- reached -- or that none is on duty -- once the server has answered.
+local function strings()
+	local text = {}
+	for _, key in ipairs(TEXT_KEYS) do text[key] = locale(key) end
+	if state.waiting and state.paged ~= nil then
+		text['medic.wait.activeHint'] = state.paged > 0
+			and locale('medic.wait.paged', { count = state.paged })
+			or locale('medic.wait.nobody')
+	end
+	return text
+end
+
 -- Shows the screen with the held state, or hides it.
 local function draw()
 	if not state.down then
@@ -145,8 +161,11 @@ end
 local function apply(payload)
 	local wasDown = state.down
 	local wasWaiting = state.waiting
+	local wasPaged = state.paged
 	state.down = payload.down == true
 	state.waiting = state.down and payload.waiting == true
+	local paged = tonumber(payload.paged)
+	state.paged = state.waiting and paged ~= nil and math.max(0, math.floor(paged)) or nil
 	state.giveUpInMs = math.max(0, math.floor(tonumber(payload.giveUpInMs) or 0))
 	state.downForMs = math.max(0, math.floor(tonumber(payload.downForMs) or 0))
 	if not state.down then forgetPress() end
@@ -169,6 +188,11 @@ local function apply(payload)
 		hideVanillaHud(false)
 	end
 
+	-- The page takes its strings in one `config`, so a hint that changed is the
+	-- whole catalogue again.
+	if state.waiting ~= wasWaiting or state.paged ~= wasPaged then
+		publish('config', { text = strings() })
+	end
 	draw()
 	if state.down ~= wasDown then OPX.Toast.SetDown(state.down) end
 	if state.down ~= wasDown or state.waiting ~= wasWaiting then
@@ -242,9 +266,7 @@ end
 -- @param payload table|nil
 function M.FromView(action, payload)
 	if action == 'ready' then
-		local text = {}
-		for _, key in ipairs(TEXT_KEYS) do text[key] = locale(key) end
-		publish('config', { text = text })
+		publish('config', { text = strings() })
 		draw()
 		announce()
 	elseif action == 'wait' then
@@ -307,10 +329,11 @@ end
 --- Builds the held state.
 -- @author dop42
 function M.Init()
-	state = { down = false, waiting = false, giveUpInMs = 0, downForMs = 0 }
+	state = { down = false, waiting = false, giveUpInMs = 0, downForMs = 0, paged = nil }
 	suspenders = {}
 	hudHidden = false
 	forgetPress()
+	if M.TraumaClient ~= nil then M.TraumaClient.Reset() end
 end
 
 --- Publishes the local player's state and the suspend switch.
@@ -337,6 +360,20 @@ function M.Start()
 	end)
 	RegisterNetEvent(EVENT_REFUSED, onRefused)
 
+	-- ONE LINE FROM THE SERVER ON THIS PLAYER'S DOWN SCREEN: a Trauma Team medic
+	-- started working on them, or stopped. A key outside `medic.notice.` is
+	-- dropped, so the server can only ever say what the catalogue says.
+	RegisterNetEvent(M.TraumaEvent.NOTICE, function(payload)
+		if type(payload) ~= 'table' or type(payload.key) ~= 'string' then return end
+		if payload.key:sub(1, 13) ~= 'medic.notice.' then return end
+		if not state.down then return end
+		local args = type(payload.args) == 'table' and payload.args or nil
+		publish('notice', { text = locale(payload.key, args) })
+	end)
+
+	-- The medic's side of the Trauma Team: the page, the row and the bar.
+	if M.TraumaClient ~= nil then M.TraumaClient.Start() end
+
 	-- A world change can stand a body up unannounced, so the state is asked for
 	-- again.
 	AddEventHandler(OPX.Host.WORLD_READY, announce)
@@ -352,6 +389,7 @@ end
 --- Hands the input back and clears a raised down state.
 -- @author dop42
 function M.Stop()
+	if M.TraumaClient ~= nil then M.TraumaClient.Stop() end
 	release()
 	forgetPress()
 	M.View.Shutdown()

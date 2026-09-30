@@ -48,5 +48,11 @@ OPX.Host = {
 	-- whenever who sits where in it changes; the snapshot's `occupants` is the
 	-- new ledger.
 	VEHICLE_OCCUPANCY_CHANGED = 'onVehicleOccupancyChanged',
+	-- Raised on the server as `(id, owner, epoch, reason)`, every argument as
+	-- text, whenever the client simulating a vehicle changes (`wiki/vehicles.md`,
+	-- "Server events"); `reason` is `driverclaim`, `driverrelease`,
+	-- `leaseexpired`, `playerdisconnected`, `validationfailed`, `serverrevoke`
+	-- or `none`.
+	VEHICLE_AUTHORITY_CHANGED = 'onVehicleAuthorityChanged',
 	TUNABLE_CHANGED = 'onTunableChanged',
 }

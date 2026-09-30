@@ -66,6 +66,13 @@ M.Event = {
 	-- no line in the server's log and none in the pilot's. A refusal by the
 	-- host is rescued through the platform's own fan-out (`SOUNDS.RESCUE`).
 	PLAYED = OPX.Event(NET, 'avdoor', 'played'),
+	-- Client to server, from any client: an aircraft this client does not
+	-- simulate is drawn far from where the server's last sample put it (`WATCH`),
+	-- or has come back. `{ id, state = 'open'|'still'|'closed', drawn, sampled,
+	-- metres, worst, seconds, owner, epoch, frozen, speed, seated }`. It carries
+	-- no authority: the server journals it beside its own reads, and at most
+	-- re-publishes an EMPTY hull where the server already has it.
+	SIGHT = OPX.Event(NET, 'avdoor', 'sight'),
 	-- The client's own bus: every verdict, local refusals included.
 	ON_DECISION = OPX.Event(LOCAL, 'avdoor', 'decision'),
 }
@@ -221,6 +228,42 @@ function M.ExitSettings()
 		reassertEvery = math.floor(M.Number(block.DOOR_REASSERT_MS, 100, 5000, 400)),
 		reassertFor = math.floor(M.Number(block.DOOR_REASSERT_FOR_MS, 0, 30000, 3200)),
 	}
+end
+
+--- The watch settings (`WATCH`), each one inside a band; a missing or malformed
+--- block is the defaults, and `WATCH = false` is no watch at all.
+-- @return table
+function M.WatchSettings()
+	local declared = nil
+	if type(M.Settings) == 'table' then declared = M.Settings.WATCH end
+	local block = type(declared) == 'table' and declared or {}
+	return {
+		off = declared == false,
+		sight = math.floor(M.Number(block.SIGHT_MS, 100, 10000, 500)),
+		range = M.Number(block.RANGE, 10.0, 1000.0, 350.0),
+		hulls = math.floor(M.Number(block.MAX_HULLS, 1, 16, 3)),
+		drift = M.Number(block.DRIFT_METRES, 1.0, 500.0, 10.0),
+		perSpeed = M.Number(block.DRIFT_PER_SPEED, 0.0, 5.0, 0.4),
+		settle = M.Number(block.SETTLE_METRES, 0.5, 100.0, 4.0),
+		repeatMs = math.floor(M.Number(block.REPEAT_MS, 500, 600000, 5000)),
+		jump = M.Number(block.JUMP_METRES, 5.0, 5000.0, 45.0),
+		heal = declared ~= false and block.HEAL ~= false,
+		healEvery = math.floor(M.Number(block.HEAL_EVERY_MS, 1000, 600000, 10000)),
+	}
+end
+
+--- The drift at which a hull moving at `speed` m/s counts as drawn elsewhere.
+-- An observer draws a moving hull a jitter buffer (75 to 180 ms, plus up to
+-- 180 ms of prediction) behind its newest sample, so a fast hull is always
+-- some metres from it; that much is not a drift.
+-- @param watch table `M.WatchSettings()`
+-- @param speed number|nil
+-- @return number metres
+function M.DriftLimit(watch, speed)
+	local moving = tonumber(speed)
+	if moving == nil or moving ~= moving or moving < 0 then moving = 0.0 end
+	if moving > 200.0 then moving = 200.0 end
+	return watch.drift + watch.perSpeed * moving
 end
 
 --- Which side of the hull a seat's door is on: `1` for the left, `-1` for the

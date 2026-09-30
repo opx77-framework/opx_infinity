@@ -279,10 +279,14 @@ shared_script "modules/downed/module.lua"
 shared_script "modules/downed/locales.lua"
 server_script "modules/downed/server/storage.lua"
 server_script "modules/downed/server/main.lua"
+-- The Trauma Team: the page a distress signal sends, the treatment, the pay.
+server_script "modules/downed/server/trauma.lua"
 client_script "modules/downed/client/main.lua"
 -- The seam's other end. `main.lua` owns the state machine and draws nothing;
 -- this is the only file that knows the down screen is a CEF page.
 client_script "modules/downed/client/view.lua"
+-- The medic's side of the Trauma Team: the page, the pin, the row, the bar.
+client_script "modules/downed/client/trauma.lua"
 
 shared_script "modules/menu/module.lua"
 shared_script "modules/menu/locales.lua"
@@ -717,6 +721,7 @@ client_script "modules/avdrive/client/main.lua"
 shared_script "modules/avdoor/module.lua"
 shared_script "modules/avdoor/locales.lua"
 server_script "modules/avdoor/server/main.lua"
+server_script "modules/avdoor/server/watch.lua"
 client_script "modules/avdoor/client/main.lua"
 
 server_script "core/server/boot.lua"

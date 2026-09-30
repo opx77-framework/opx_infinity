@@ -599,8 +599,10 @@ end
 
 -- ── the scan ──────────────────────────────────────────────────────────────────
 
---- Every aircraft that exists, with where it stands and its bucket.
--- @return table[] `{ id, at, bucket }`
+--- Every aircraft that exists, with where it stands and its bucket. `entry` is
+--- the snapshot `all` answered, for the watch (`server/watch.lua`), which reads
+--- its owner, epoch and seats without a second host call.
+-- @return table[] `{ id, at, bucket, entry }`
 local function aircraftNow()
 	local api = Open77.vehicles
 	if type(api) ~= 'table' or type(api.all) ~= 'function' then return {} end
@@ -611,7 +613,7 @@ local function aircraftNow()
 		if type(entry) == 'table' and entry.id ~= nil and aircraft(entry.record) then
 			local at = pointOf(entry)
 			if at ~= nil then
-				hulls[#hulls + 1] = { id = entry.id, at = at, bucket = tonumber(entry.bucket) or 0 }
+				hulls[#hulls + 1] = { id = entry.id, at = at, bucket = tonumber(entry.bucket) or 0, entry = entry }
 			end
 		end
 	end
@@ -673,6 +675,12 @@ function M.Scan()
 	local read, ids = pcall(players.all)
 	if not read or type(ids) ~= 'table' then return 0 end
 	local hulls = aircraftNow()
+	-- The watch measures the same list against the last one (`server/watch.lua`):
+	-- a canonical move no aircraft flies is a line in the journal.
+	if M.Watch ~= nil then
+		local watched, failure = pcall(M.Watch.Observe, hulls)
+		if not watched then Open77.log.warn('[avdoor] the watch failed: ' .. tostring(failure)) end
+	end
 	local open, present = 0, {}
 	for _, raw in ipairs(ids) do
 		local playerId = tonumber(raw)
@@ -887,6 +895,7 @@ local function reset()
 	doorLedger, occupancy, pending, boarding, heardBy, warned = {}, {}, {}, {}, {}, {}
 	soundSerial = 0
 	scanJob, tendJob = nil, nil
+	if M.Watch ~= nil then M.Watch.Reset() end
 end
 
 function M.Init()
@@ -1014,8 +1023,13 @@ function M.Start()
 		if id ~= nil then
 			told[id] = nil
 			boarding[id] = nil
+			if M.Watch ~= nil then M.Watch.Forget(id) end
 		end
 	end)
+
+	-- THE WATCH: every aircraft's change of hands, and every viewer's word about
+	-- where it draws one (`server/watch.lua`).
+	if M.Watch ~= nil and M.WatchSettings().off ~= true then M.Watch.Start() end
 
 	if type(OPX.Command) == 'table' and type(OPX.Command.Register) == 'function' then
 		local registered, failure = pcall(OPX.Command.Register, M.Command.WHY, {

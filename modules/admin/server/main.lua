@@ -498,7 +498,17 @@ function Server.Place(playerId, point, heading, bucket, why)
 	local recovery = Server.Recovery()
 	if bucket == nil then
 		local position = Server.PositionOf(playerId)
-		bucket = position and position.bucket or 0
+		bucket = position and tonumber(position.bucket) or nil
+		-- A BODY DEAD FOR MORE THAN TWO SECONDS HAS NO POSITION READ AT ALL
+		-- (`wiki/server-api.md`), so its bucket is the life state's -- the top-level
+		-- `bucket` of `getLifeState`, not a field of its position -- and the world
+		-- bucket is the floor. A literal 0 put a dead player in an instance back
+		-- in bucket 0 on a server whose world bucket is not 0.
+		if bucket == nil then
+			local read, life = pcall(Open77.players.getLifeState, playerId)
+			bucket = read and type(life) == 'table' and tonumber(life.bucket) or nil
+		end
+		if bucket == nil then bucket = OPX.Buckets.PlacementOf(nil) end
 	end
 
 	local killed = false
