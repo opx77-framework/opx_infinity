@@ -341,6 +341,152 @@ OPX.Config.MODULES.ncpd = {
 		},
 	},
 
+	-- ── A KILL IS CALLED IN THE MOMENT IT HAPPENS ──────────────────────────
+	--
+	-- THE OWNER, 2026-09-29: "im not seeing the alert when somebody kills
+	-- somebody or a npc ... maxtac ncpd should get alerted". Two faults, both
+	-- measured before this block was written:
+	--
+	--   * THE CALL-OUT ABOVE ONLY EVER FIRED ON A STAGE THAT ROSE, and one murder
+	--     does not raise one: `murder` scores 40 and `Heat_0` is left at 50, so a
+	--     single body on the street moved no stage and told nobody. That rule is
+	--     right for a WANTED LEVEL and wrong for a body -- a dispatcher does not
+	--     wait for the second corpse.
+	--   * A PLAYER KILLED BY A PLAYER WAS NEVER CHARGED AT ALL. The platform
+	--     raises `open77:playerKilled(victim, killer, context)` for every
+	--     attributed player death and nothing in this resource listened.
+	--
+	-- So a kill is charged here, and a charge of a law named in `CALL_OUT` is
+	-- called in AT ONCE -- the toast, the scanner line and the loud dispatch
+	-- board -- to everybody on duty in `ALERTS.JOBS`, with the scene pinned on
+	-- their map. The stage still rises (or does not) by the book exactly as
+	-- before; the call-out below is the body, the one above is the manhunt.
+	--
+	-- WHAT CANNOT BE SEEN FROM HERE, said so nobody hunts for it: the base
+	-- game's own street crowd lives on each client alone, and the platform build
+	-- players run does not publish the engine's crime reading
+	-- (`Open77.prevention.state` has no `engineHeat` -- every client log says
+	-- so at boot). A pedestrian of the vanilla crowd is therefore invisible to
+	-- the server.
+	--
+	-- WHAT CAN, AND HOW (2026-09-29, the second look, after "still no toast"):
+	--   * A PLAYER KILLED BY A PLAYER, from three doors that agree on one
+	--     charge: the lethal `open77:playerDamaged`, `open77:playerDied` and
+	--     `open77:playerKilled`. The platform raises the last only for a death
+	--     the host could ATTRIBUTE (an unattributed one raises `playerDied`
+	--     alone), so the first two are the net under it.
+	--   * A SERVER-OWNED NPC -- the police units this module stands up, the
+	--     MaxTac ground squad, the test crowd -- ONLY THROUGH `HITS` BELOW. The
+	--     platform does not carry a player's shot at an NPC to the server at
+	--     all, so before that block existed these bodies could not die
+	--     server-side, `onNpcDied` never fired, and this whole section was
+	--     waiting for an event no player could cause.
+	HOMICIDE = {
+		enabled = true,
+
+		-- Which deaths are charged. PLAYERS is a player killed by a player (the
+		-- platform's own attributed death); NPCS is a server-owned NPC killed by a
+		-- player. The test crowd books its own kills through `BOTS` below and is
+		-- never charged twice.
+		PLAYERS = true,
+		NPCS = true,
+
+		-- The law a kill is charged as, and the one for a kill of the city's own:
+		-- an ON-DUTY holder of `ALERTS.JOBS`, or a unit this module put on the
+		-- street. Any id from `/opx.ncpd.laws`.
+		LAW = 'murder',
+		POLICE_LAW = 'murderPolice',
+
+		-- An officer ON DUTY in `ALERTS.JOBS` who kills is not charged and not
+		-- called in: use of force is the job, and a squad that became wanted for
+		-- stopping a wanted player would be hunting itself. Off the clock they
+		-- answer like anybody else.
+		EXEMPT_ON_DUTY = true,
+
+		-- The laws that are a body on the street, and the sentence each is called
+		-- in with (a catalogue key; `<key>Named` is the variant that names the
+		-- suspect, used when `ALERTS.NAME_SUSPECT` allows it). A charge of any of
+		-- these is called in whoever charged it -- this block, the test crowd,
+		-- `/opx.ncpd.report murder`, or another resource through the contract.
+		CALL_OUT = {
+			murder = 'ncpd.dispatch.homicide',
+			murderPolice = 'ncpd.dispatch.officerDown',
+		},
+
+		-- Floor between two kill call-outs about the SAME suspect, in
+		-- milliseconds: a spree is one call-out every few seconds, not one per
+		-- body. 0 calls every one in.
+		COOLDOWN_MS = 8000,
+
+		-- How long after a hit a player's death is still put down to the player
+		-- who landed it, in milliseconds. The platform raises `playerKilled` only
+		-- for a death it could attribute; one that arrives as a bare `playerDied`
+		-- is charged to whoever hit the victim last inside this window (never a
+		-- fall, the environment or a script). 0 turns the fallback off.
+		ATTRIBUTION_MS = 8000,
+
+		-- Seconds the scene stays pinned on the map of everybody who was told.
+		-- 0 pins nothing. The pin is drawn by each receiving client and removed
+		-- by it; nothing about it is stored.
+		PIN_SECONDS = 120,
+		PIN_SPRITE = 'objective',
+	},
+
+	-- ── THE HIT RELAY: A PLAYER'S SHOT AT ONE OF OUR BODIES ──────────────────
+	--
+	-- A player who shoots a server-owned NPC -- an officer of the response, a
+	-- MaxTac trooper, a body of the test crowd -- hits a body the SERVER owns,
+	-- and the platform does not carry that hit to the server: the shooter's
+	-- client raises `open77:npcHit` for its own player and stops there
+	-- (`docs/combat.md`: "these are observations, not applications"; the
+	-- platform's own research, E6/F8: "no client-side hit on an NPC reaches the
+	-- server today"). A resource has to forward it and apply the damage itself.
+	-- This one did neither, so an officer stood at 100/100 for ever, nobody
+	-- could kill one server-side, `onNpcDied` never fired and the murder
+	-- call-out above waited for a death no player could cause.
+	--
+	-- `client/hits.lua` forwards the event (bounded, and coalesced per body).
+	-- `server/hits.lua` admits it and prices it. THE NUMBER IS THE SERVER'S:
+	-- the engine's damage is only a hint, clamped into MIN_DAMAGE..MAX_DAMAGE
+	-- (a gang record's rifle is priced for a levelled solo player), and the
+	-- body part is derived from the intercept's height against the body's own
+	-- canonical position, never taken from the client. A hit is refused for a
+	-- body this module does not own, a shooter who is dead, out of range, in
+	-- another bucket, faster than MIN_INTERVAL_MS or past MAX_DPS.
+	--
+	-- `enabled = false` takes the relay down and leaves every body server-side
+	-- immortal again, which is what the platform does on its own.
+	HITS = {
+		enabled = true,
+
+		-- What one relayed hit is worth, on the 100-point scale the bodies are
+		-- created with. The engine's own number is used when it lies between the
+		-- two and clamped to them when it does not; a report with no usable
+		-- number is worth FALLBACK_DAMAGE.
+		MIN_DAMAGE = 12.0,
+		MAX_DAMAGE = 60.0,
+		FALLBACK_DAMAGE = 34.0,
+
+		-- A hit at or above this height over the body's feet is a headshot and
+		-- is worth HEADSHOT times as much.
+		HEAD_METRES = 1.55,
+		HEADSHOT = 2.0,
+
+		-- The farthest a shooter may be from the body they hit, in metres.
+		MAX_RANGE_METRES = 120.0,
+
+		-- Floor between two accepted hits from the same shooter, and the most
+		-- damage one shooter may land in a second. A shotgun burst arrives as one
+		-- report (the client sums the pellets), so neither bites a real weapon.
+		MIN_INTERVAL_MS = 45,
+		MAX_DPS = 480.0,
+
+		-- If a hit looked lethal and the platform has not raised `onNpcDied` this
+		-- many milliseconds later, the body's own health is read and the death is
+		-- booked from there. 0 turns the check off.
+		DEATH_CHECK_MS = 900,
+	},
+
 	-- THE POLICE SCANNER'S THREE KNOBS. `modules/ncpd/module.lua` carries the
 	-- same three values as its own shipped fallbacks; a usable block here wins
 	-- on every read (the same live-config rule as `config/skills.lua`'s KEY),
@@ -383,13 +529,23 @@ OPX.Config.MODULES.ncpd = {
 
 		-- The insertion. `Vehicle.max_tac_av` is a Zetatech Surveyor in MaxTac
 		-- camo carrying a rifleman, a mantis-blade, a netrunner and an elite
-		-- sniper; the variants below are the same airframe with swapped crew
-		-- (`max_tac_av2` carries the LMG), and the `2nd_wave` set is what the
-		-- engine sends after a squad is wiped. ONE_AT_A_TIME is the engine's own
-		-- rule (`CanRequestAVSpawn` refuses a second), kept here so a server
-		-- cannot ask for two and be silently refused.
+		-- sniper. The camo is the base game's optical cloak, lifted there only
+		-- by the prevention AI; opx_sandy_view (1.4.10, `OpxMaxTacAv.reds`)
+		-- draws every AV of these records in the airframe's visible MaxTac
+		-- livery on each player's game instead, so this stays the record the
+		-- platform flies as an AV. The variants below are the same airframe
+		-- with swapped crew (`max_tac_av2` carries the LMG), and the `2nd_wave`
+		-- set is what the engine sends after a squad is wiped. ONE_AT_A_TIME is
+		-- the engine's own rule (`CanRequestAVSpawn` refuses a second), kept
+		-- here so a server cannot ask for two and be silently refused.
 		AV = {
 			RECORD = 'Vehicle.max_tac_av',
+			-- The livery the insertion's aircraft is created in, on every
+			-- player's game: the same airframe's visible MaxTac livery rather
+			-- than the record's cloak. The platform applies a create's appearance
+			-- on every client since its 2026-09-14 build; `OpxMaxTacAv.reds` is
+			-- the second line for a client that does not. false: the record's own.
+			APPEARANCE = 'zetatech_surveyor__basic_ep1_maxtac_01',
 			VARIANTS = { 'max_tac_av1', 'max_tac_av2', 'max_tac_av3', 'max_tac_av_LMG_mb' },
 			SECOND_WAVE = { 'max_tac_av_2nd_wave1', 'max_tac_av_2nd_wave2', 'max_tac_av_2nd_wave3' },
 			ONE_AT_A_TIME = true,
@@ -423,6 +579,21 @@ OPX.Config.MODULES.ncpd = {
 				-- cost on every viewer: ten a second is smooth at cruise and does
 				-- not make one aircraft the most expensive thing in the bucket.
 				TICK_MS = 100,
+			},
+
+			-- THE AIRCRAFT'S OWN VOICE, from the base game's MaxTac AV (2.31
+			-- scripts): `AvStartDescentSFXBehaviour` as it drops, the
+			-- `MaxTacFearEvent` horn as the squad bails out onto the street,
+			-- `AvHoverIdleSFXBehaviour` while it hangs there, and
+			-- `AvStartAscentSFXBehaviour` as it leaves -- the base game plays each
+			-- on the airframe's `vehicle_general_emitter`. The server plays them on
+			-- the airframe (`Open77.effects.sound`, kind `vehicle`), so everyone
+			-- near it hears them from where the aircraft is. `false` silences one.
+			SOUNDS = {
+				DESCEND = 'av_maxtac_start_descent',
+				DEPLOY = 'av_maxtac_descent_horn',
+				HOLD = 'av_maxtac_hover_idle',
+				CLIMB = 'av_maxtac_start_ascent',
 			},
 		},
 
@@ -527,6 +698,13 @@ OPX.Config.MODULES.ncpd = {
 			REST_SECONDS = 1.0,
 			-- How often the crew's seats are read while they hold the hull.
 			CUSTODY_MS = 1000,
+			-- THE HULL WAITS FOR ITS CREW. The owner, 2026-09-29: "not being able
+			-- to reboard the maxtac av after landing". Once the last crew member
+			-- has stepped out, the aircraft stays parked where they left it for
+			-- this many seconds, with the aircraft door on it (`config/avdoor.lua`,
+			-- key F) open to the division on duty; whoever climbs back in rejoins
+			-- the crew. 0 is the old shape: she leaves the moment they are out.
+			PARK_SECONDS = 600,
 		},
 	},
 

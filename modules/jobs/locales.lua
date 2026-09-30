@@ -15,9 +15,6 @@ local EN = {
 	['jobs.key.use'] = 'Read the board or manage the roster',
 	['jobs.prompt.signup'] = 'Read the work on offer',
 	['jobs.prompt.boss'] = 'Manage the roster',
-	-- Said instead of the row above while the player already holds the job, so
-	-- the same key does not read as an invitation to sign up again.
-	['jobs.prompt.quit'] = 'Hand in your notice',
 
 	-- ── the menu ────────────────────────────────────────────────────────────
 	['jobs.menu.jobs'] = 'WORK ON OFFER',
@@ -29,6 +26,8 @@ local EN = {
 	['jobs.row.close'] = 'Close',
 	['jobs.row.back'] = 'Back',
 	['jobs.row.join'] = 'Sign up',
+	-- A job held beside the worked one: this row makes it the worked one.
+	['jobs.row.work'] = 'Work this job',
 	['jobs.row.leave'] = 'Hand in your notice',
 	['jobs.row.hire'] = 'Hire somebody standing here',
 	['jobs.row.fire'] = 'Dismiss',
@@ -46,17 +45,30 @@ local EN = {
 	['jobs.status.boss'] = 'Boss',
 	['jobs.status.top'] = 'Top rank',
 	['jobs.status.progress'] = '{points} / {required} to {next}',
+	-- An invitation job: the time is banked and the rank is granted at the desk.
+	-- A row's value is cut at 48 characters, grade name and all: keep it short.
+	['jobs.status.progressDesk'] = '{points} / {required}, {next} at the desk',
+	-- Held beside the worked job: it banks no time and opens nothing.
+	['jobs.status.idle'] = 'Held, not worked',
 	['jobs.status.roster'] = '{count} member(s)  |  ladder {top} level(s)',
 	['jobs.noList'] = 'The list could not be opened.',
 
 	-- ── what the server says back ───────────────────────────────────────────
 	['jobs.joined'] = 'You are on the books for {job}.',
+	['jobs.joinedBeside'] =
+		'You are on the books for {job}, beside the job you work. Choose "Work this job" ' ..
+		'on its row to work it.',
+	['jobs.working'] = 'You now work {job}.',
 	['jobs.left'] = 'You have left {job}.',
 	['jobs.hired'] = 'You have been taken on by {job}.',
+	['jobs.hiredBeside'] =
+		'You have been taken on by {job}, beside the job you work. Choose "Work this job" ' ..
+		'on its row at the employment board to work it.',
 	['jobs.fired'] = 'You have been dismissed from {job}.',
-	['jobs.promoted'] = 'You have been promoted in {job} to grade {grade}.',
-	['jobs.demoted'] = 'You have been demoted in {job} to grade {grade}.',
-	['jobs.promotedAuto'] = 'Your time served has earned you grade {grade} in {job}.',
+	-- {job} is the catalogue's own name for the job and {grade} the rank's.
+	['jobs.promoted'] = 'You have been promoted to {grade} in {job}.',
+	['jobs.demoted'] = 'You have been demoted to {grade} in {job}.',
+	['jobs.promotedAuto'] = 'Your time served has earned you {grade} in {job}.',
 	['jobs.deskDone'] = '{action} done.',
 	['jobs.refused'] = 'That could not be done.',
 
@@ -68,11 +80,17 @@ local EN = {
 	['jobs.noSuchJob'] = 'There is no such job here.',
 	['jobs.alreadyMember'] = 'You already work that job.',
 	['jobs.notMember'] = 'That person does not work this job.',
+	['jobs.notYours'] = 'You do not hold that job.',
+	['jobs.alreadyWorking'] = 'That is already the job you work.',
 	['jobs.notOpen'] = 'That job is not on offer.',
 	['jobs.byInvitation'] = 'That job is by invitation: somebody holding its boss rank has to take you on.',
 	['jobs.needsJob'] = 'You do not work the job this one requires.',
 	['jobs.needsGrade'] = 'Your rank is not high enough for this one.',
 	['jobs.needsRight'] = 'You do not hold the clearance this one requires.',
+	-- The same two refusals with the requirement named, which is what the board
+	-- shows: the server says which job and which rank the terms ask for.
+	['jobs.needsRank'] = 'Needs {need} {rank} or above',
+	['jobs.needsJobNamed'] = 'Needs {need}',
 	['jobs.lastBoss'] = 'That would leave the job with nobody in charge of it.',
 	['jobs.notBoss'] = 'You do not hold the boss rank of that job.',
 	['jobs.topRank'] = 'They already hold the top rank.',
@@ -113,7 +131,6 @@ local FR = {
 	['jobs.key.use'] = 'Lire le tableau ou gérer l’effectif',
 	['jobs.prompt.signup'] = 'Lire les emplois proposés',
 	['jobs.prompt.boss'] = 'Gérer l’effectif',
-	['jobs.prompt.quit'] = 'Démissionner',
 
 	['jobs.menu.jobs'] = 'EMPLOIS PROPOSÉS',
 	['jobs.menu.job'] = '{job}',
@@ -124,6 +141,7 @@ local FR = {
 	['jobs.row.close'] = 'Fermer',
 	['jobs.row.back'] = 'Retour',
 	['jobs.row.join'] = 'S’inscrire',
+	['jobs.row.work'] = 'Exercer ce métier',
 	['jobs.row.leave'] = 'Démissionner',
 	['jobs.row.hire'] = 'Embaucher quelqu’un présent ici',
 	['jobs.row.fire'] = 'Licencier',
@@ -140,16 +158,26 @@ local FR = {
 	['jobs.status.boss'] = 'Chef',
 	['jobs.status.top'] = 'Échelon le plus élevé',
 	['jobs.status.progress'] = '{points} / {required} pour {next}',
+	['jobs.status.progressDesk'] = '{points} / {required}, {next} au bureau',
+	-- Court : la colonne est coupée à 48 caractères, grade compris.
+	['jobs.status.idle'] = 'Non exercé',
 	['jobs.status.roster'] = '{count} membre(s)  |  échelle {top} niveau(x)',
 	['jobs.noList'] = 'La liste n’a pas pu s’ouvrir.',
 
 	['jobs.joined'] = 'Vous êtes inscrit pour {job}.',
+	['jobs.joinedBeside'] =
+		'Vous êtes inscrit pour {job}, à côté du métier que vous exercez. Choisissez ' ..
+		'« Exercer ce métier » sur sa ligne pour l’exercer.',
+	['jobs.working'] = 'Vous exercez désormais {job}.',
 	['jobs.left'] = 'Vous avez quitté {job}.',
 	['jobs.hired'] = 'Vous avez été embauché par {job}.',
+	['jobs.hiredBeside'] =
+		'Vous avez été embauché par {job}, à côté du métier que vous exercez. Choisissez ' ..
+		'« Exercer ce métier » sur sa ligne au bureau d’emploi pour l’exercer.',
 	['jobs.fired'] = 'Vous avez été licencié de {job}.',
-	['jobs.promoted'] = 'Vous avez été promu dans {job} à l’échelon {grade}.',
-	['jobs.demoted'] = 'Vous avez été rétrogradé dans {job} à l’échelon {grade}.',
-	['jobs.promotedAuto'] = 'Votre ancienneté vous vaut l’échelon {grade} dans {job}.',
+	['jobs.promoted'] = 'Vous avez été promu au grade {grade} dans {job}.',
+	['jobs.demoted'] = 'Vous avez été rétrogradé au grade {grade} dans {job}.',
+	['jobs.promotedAuto'] = 'Votre ancienneté vous vaut le grade {grade} dans {job}.',
 	['jobs.deskDone'] = '{action} effectué.',
 	['jobs.refused'] = 'Cela n’a pas pu être fait.',
 
@@ -161,12 +189,16 @@ local FR = {
 	['jobs.noSuchJob'] = 'Cet emploi n’existe pas ici.',
 	['jobs.alreadyMember'] = 'Vous occupez déjà cet emploi.',
 	['jobs.notMember'] = 'Cette personne n’occupe pas cet emploi.',
+	['jobs.notYours'] = 'Vous n’occupez pas cet emploi.',
+	['jobs.alreadyWorking'] = 'C’est déjà le métier que vous exercez.',
 	['jobs.notOpen'] = 'Cet emploi n’est pas proposé.',
 	['jobs.byInvitation'] =
 		'Cet emploi se fait sur invitation : quelqu’un détenant le grade de chef doit vous engager.',
 	['jobs.needsJob'] = 'Vous n’occupez pas l’emploi exigé par celui-ci.',
 	['jobs.needsGrade'] = 'Votre grade est trop bas pour celui-ci.',
 	['jobs.needsRight'] = 'Vous n’avez pas l’habilitation exigée.',
+	['jobs.needsRank'] = 'Exige le grade {rank} ({need}) ou supérieur',
+	['jobs.needsJobNamed'] = 'Exige l’emploi {need}',
 	['jobs.lastBoss'] = 'Cela laisserait l’emploi sans personne à sa tête.',
 	['jobs.notBoss'] = 'Vous ne détenez pas le grade de chef de cet emploi.',
 	['jobs.topRank'] = 'Cette personne détient déjà le grade le plus élevé.',

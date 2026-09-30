@@ -220,6 +220,36 @@ OPX.Config.MODULES.character = {
 			},
 		},
 
+		-- THE BOARD'S CORPORATE JOB: a desk career anyone may sign for. Arasaka and
+		-- Militech below are named employers an operator hands out; this is the
+		-- open door, and the skill tree's corporate trunk drinks all three.
+		corp = {
+			label = 'Corporate',
+			type = 'corpo',
+			defaultDuty = false,
+			offDutyPay = false,
+			grades = {
+				[0] = { name = 'Intern', payment = 150 },
+				[1] = { name = 'Associate', payment = 320 },
+				[2] = { name = 'Director', payment = 560, isBoss = true, bankAuth = true },
+			},
+		},
+
+		-- THE ROAD: clan work out of the Badlands. Always on duty like a merc -- a
+		-- nomad is working whenever they are driving -- and the skill tree's
+		-- nomad trunk drinks it, with the Delamain drivers beside it.
+		nomad = {
+			label = 'Nomad',
+			type = 'transport',
+			defaultDuty = true,
+			offDutyPay = false,
+			grades = {
+				[0] = { name = 'Drifter', payment = 90 },
+				[1] = { name = 'Clan Runner', payment = 210 },
+				[2] = { name = 'Road Warden', payment = 380, isBoss = true },
+			},
+		},
+
 		trauma = {
 			label = 'Trauma Team',
 			type = 'medical',

@@ -201,11 +201,56 @@ end)
 -- ONE TOAST ID, so a second dispatch replaces the board still on screen rather
 -- than stacking under it. A firefight that climbs three stages is one dispatch,
 -- the last.
+--- Pins a called-in scene on this player's own map for as long as the server
+--- said, and takes the pin down again. Nothing about it is stored anywhere: a
+--- pin is a hint on one map, created and removed by the client that draws it.
+-- @param scene table `{ x, y, z, seconds, sprite, label }`
+-- @return string|nil the blip id
+local function pinScene(scene)
+	if type(scene) ~= 'table' then return nil end
+	local x, y, z = tonumber(scene.x), tonumber(scene.y), tonumber(scene.z) or 0.0
+	local seconds = tonumber(scene.seconds)
+	if x == nil or y == nil or seconds == nil or seconds <= 0 then return nil end
+	local blips = Open77 and Open77.blips
+	if type(blips) ~= 'table' or type(blips.create) ~= 'function' then return nil end
+	local label = type(scene.label) == 'string' and locale(scene.label) or locale('ncpd.dispatch.title')
+	local read, id, why = pcall(blips.create, {
+		position = { x = x, y = y, z = z },
+		sprite = type(scene.sprite) == 'string' and scene.sprite or 'objective',
+		title = label,
+		description = locale('ncpd.dispatch.title'),
+		active = true,
+		visibleThroughWalls = false,
+	})
+	if not read or type(id) ~= 'string' or id == '' then
+		Open77.log.warn(('[ncpd] the scene was not pinned: %s')
+			:format(tostring(read and why or id)))
+		return nil
+	end
+	-- MEASURED ON THE MODULE'S OWN CLOCK, not trusted to one long `Wait`: a
+	-- resume can come back early (a world reload, a host that yields per
+	-- frame), and a pin that fell off early is a scene nobody drives to.
+	local deadline = OPX.Now() + math.floor(math.min(seconds, 900) * 1000)
+	CreateThread(function()
+		while OPX.Now() < deadline do Wait(500) end
+		if type(blips.remove) == 'function' then pcall(blips.remove, id) end
+	end)
+	return id
+end
+
 RegisterNetEvent(M.Event.DISPATCH, function(payload)
 	if type(payload) ~= 'table' then return end
 	local key = payload.key
 	if type(key) ~= 'string' or key == '' then return end
 	local args = type(payload.args) == 'table' and payload.args or nil
+
+	-- Said in the client log the moment it arrives, so a call-out that never
+	-- reached a screen can be told from one that arrived and was not drawn.
+	Open77.log.info(('[ncpd] dispatch received: %s%s'):format(key, payload.scene ~= nil and ' (with a scene)' or ''))
+
+	-- A called-in body carries its scene; the pin goes up whatever the board
+	-- does below, because the pin is where the officer drives.
+	if payload.scene ~= nil then pinScene(payload.scene) end
 
 	-- Read live and from this client's own copy: `OPX.Modules.Rebind` re-points
 	-- `M.Settings` after the shared scripts load, and a board a config disabled
@@ -644,6 +689,10 @@ function M.Start()
 	-- seam is a file of its own.
 	if M.Radio.Start then M.Radio.Start() end
 	if M.RadioView and M.RadioView.Start then M.RadioView.Start() end
+
+	-- The hit relay's client half: this player's own shots at the server's bodies,
+	-- forwarded for the server to price (`server/hits.lua` says why it must be).
+	if M.Hits and M.Hits.Start then M.Hits.Start() end
 end
 
 --- Stops the two polls and takes the row down. The next session reports its
@@ -661,4 +710,5 @@ function M.Stop()
 	-- half forgets the frame.
 	if M.RadioView and M.RadioView.Stop then M.RadioView.Stop() end
 	if M.Radio.Stop then M.Radio.Stop() end
+	if M.Hits and M.Hits.Stop then M.Hits.Stop() end
 end

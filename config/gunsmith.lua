@@ -133,18 +133,25 @@ OPX.Config.MODULES.gunsmith = {
 
 			QUEUE = 4,
 
+			-- A RECIPE'S GRADE IS RAISED UNDER EVERY JOB THE DOOR NAMES, MaxTac's
+			-- included (`Access.Requirement`), so the two issue rounds ask for
+			-- nothing past the door itself. At GRADE 1 they asked the same Officer
+			-- rank the door already asks of NCPD -- and asked it of MaxTac too,
+			-- whose ladder is Operator (0) and Squad Lead (1): an Operator was let
+			-- in and could make nothing. The marksman rounds stay a Detective's,
+			-- which no MaxTac grade reaches: a rank the division does not have.
 			RECIPES = {
 				{ KEY = 'handgun_rounds', ICON = 'ammo',
 					LABEL = 'Service rounds',
 					INPUTS = { scrap_metal = 2 },
 					OUTPUT = 'ammo_handgun', COUNT = 60,
-					SECONDS = 120, PRICE = 0, GRADE = 1 },
+					SECONDS = 120, PRICE = 0, GRADE = 0 },
 
 				{ KEY = 'rifle_rounds', ICON = 'ammo',
 					LABEL = 'Patrol rifle rounds',
 					INPUTS = { scrap_metal = 3 },
 					OUTPUT = 'ammo_rifle', COUNT = 60,
-					SECONDS = 180, PRICE = 0, GRADE = 1 },
+					SECONDS = 180, PRICE = 0, GRADE = 0 },
 
 				{ KEY = 'sniper_rounds', ICON = 'ammo',
 					LABEL = 'Marksman rounds',

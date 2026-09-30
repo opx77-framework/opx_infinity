@@ -60,6 +60,9 @@ M.Event = {
 	DETAIL = OPX.Event(NET, 'jobs', 'detail'),
 	JOIN = OPX.Event(NET, 'jobs', 'join'),
 	LEAVE = OPX.Event(NET, 'jobs', 'leave'),
+	-- Makes a job the character already holds the one they WORK: the primary
+	-- job every gate, the duty key, the pay and the seniority read.
+	WORK = OPX.Event(NET, 'jobs', 'work'),
 	BOSS = OPX.Event(NET, 'jobs', 'boss'),
 	CAPTURED = OPX.Event(NET, 'jobs', 'captured'),
 
@@ -95,6 +98,7 @@ M.Event = {
 M.Operation = {
 	JOIN = 'jobsJoin',
 	LEAVE = 'jobsLeave',
+	WORK = 'jobsWork',
 	BOSS = 'jobsBoss',
 	CAPTURE = 'jobsCapture',
 }

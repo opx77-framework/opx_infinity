@@ -226,6 +226,12 @@ local function officer(record, at, yaw, bucket, held, target, group)
 		-- Mortal on purpose: a wanted player is allowed to fight their way out,
 		-- and an immortal response is a wall rather than a chase.
 		damagePolicy = damage and damage.mortal or nil,
+		-- The 100-point scale a relayed hit is priced on (`server/hits.lua`),
+		-- said outright: the platform projects a body's health as a fraction of
+		-- its maximum, and a hit priced on one scale against a pool on another
+		-- is a body that dies in one shot or in fifty.
+		health = 100,
+		maxHealth = 100,
 		aiMode = ai and ai.native or nil,
 		despawnWhenUnobserved = false,
 		persistent = false,
@@ -653,6 +659,7 @@ function Response.Apply(citizenId, playerId, stage)
 				target = { x = at.x, y = at.y, z = at.z },
 				bucket = at.bucket,
 				record = maxtac.AvRecord,
+				appearance = maxtac.AvAppearance,
 				plan = insertion,
 				oneAtATime = maxtac.AvOneAtATime,
 				-- The squad rides in and steps out. `onMount` is the descent's
@@ -741,6 +748,37 @@ function Response.Status(citizenId)
 		vehicles = #(held.vehicles or {}),
 		npcs = #(held.npcs or {}),
 	}
+end
+
+--- Whether an NPC is one of the units this module put on the street: an
+--- officer or a trooper of any character's response. The kill handler asks it,
+--- because a body the city sent is `POLICE_LAW` and not a pedestrian.
+-- @param npcId any as the host spells it
+-- @return boolean
+function Response.OwnsNpc(npcId)
+	local wanted = tostring(npcId)
+	for _, held in pairs(deployed) do
+		for _, id in ipairs(held.npcs or {}) do
+			if tostring(id) == wanted then return true end
+		end
+	end
+	return false
+end
+
+--- The id of one of this module's units exactly as `Open77.npcs.create` handed it
+--- back, or nil for a body that is not one. The hit relay (`server/hits.lua`)
+--- names a body to the host by THIS value and never by the client's spelling of
+--- it: a 64-bit id is not something to round-trip through a text field twice.
+-- @param npcId any as the host or a client spells it
+-- @return any|nil
+function Response.IdOf(npcId)
+	local wanted = tostring(npcId)
+	for _, held in pairs(deployed) do
+		for _, id in ipairs(held.npcs or {}) do
+			if tostring(id) == wanted then return id end
+		end
+	end
+	return nil
 end
 
 --- How many characters have a response standing.

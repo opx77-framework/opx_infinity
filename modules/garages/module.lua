@@ -34,6 +34,14 @@
 -- vehicle and creates no row. A spot with nothing eligible answers a refusal
 -- that says so, rather than handing out a car the player does not have.
 --
+-- THE ONE EXCEPTION IS THE JOB'S OWN FLEET, and it is still no row. Every
+-- holder of a job in `config/garages.lua` JOB_VEHICLES finds that job's
+-- vehicles at the top of every garage list of the right kind -- at their grade,
+-- on duty -- with nothing granted first. They are SIGNED OUT through the
+-- `vehicles` contract, never owned: no plate, nothing to sell or hand over,
+-- back to the pool at a door, and back on their own when the job, the grade or
+-- the shift is gone.
+--
 -- The marker is the engine's own (`world.markers`), so there is no geometry of
 -- our own to keep in step with a screen: the four styles and two shapes are the
 -- ones the host accepts, and `config/garages.lua` picks one per kind.

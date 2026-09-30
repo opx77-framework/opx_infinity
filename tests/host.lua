@@ -325,9 +325,24 @@ function Host.Environment(side, database)
 	-- while the vehicle it created sat in the world.
 	local control
 	local markers, input, acl, keyMappings, vehicles, vehicleCreates, vehicleRemoves, seats
-	local vehicleWarps, vehicleLocks, vehicleEjects
+	local vehicleWarps, vehicleLocks, vehicleEjects, vehicleDoors
+	--- Whether the host knows a hull: the per-id store, a snapshot every hull
+	--- projects, or a hull that was created. What `get` answers for it, without
+	--- calling the API table's own `get` (the door stubs live inside it).
+	local function hullKnown(id)
+		if id == nil then return false end
+		if vehicles.byId[id] ~= nil or vehicles.snapshot ~= nil then return true end
+		for index = 1, #vehicles.world do
+			if vehicles.world[index].id == id then return true end
+		end
+		return false
+	end
 	local bodies, effects, travels, notices, placement, lifts, trips
 	local npcs, npcCreates, npcRemoves, npcAttitudes, npcGroups, npcTasks, population
+	-- The health ledger of the bodies `create` made, every `applyDamage` a resource
+	-- asked for, and the events the platform would raise for them that a test asked
+	-- to have held back (`npcs.defer`).
+	local npcState, npcDamage, npcHeld
 	-- The blue holocall eye-glow leases, by player id. A REAL LEASE STORE and
 	-- not an accepting stub, for the reason the bag store above gives about
 	-- itself: `modules/calls` renews a bounded lease every sweep, releases it on
@@ -805,6 +820,39 @@ function Host.Environment(side, database)
 				seats[tonumber(playerId) or playerId] = nil
 				return true
 			end,
+			-- THE DOORS, as the platform's server API answers them. A door call on a
+			-- hull the host does not know is `false, 'vehicle_not_found'` (`open`
+			-- and `close`) or `nil, 'vehicle_not_found'` (`isDoorOpen`), the two
+			-- shapes the card gives; `vehicles.doorRefuse` is a reason that turns
+			-- every call down. Every call is recorded with its arguments.
+			openDoor = function(id, door)
+				vehicleDoors[#vehicleDoors + 1] = { op = 'open', id = id, door = door }
+				if vehicles.doorRefuse ~= nil then return false, tostring(vehicles.doorRefuse) end
+				if not hullKnown(id) then return false, 'vehicle_not_found' end
+				vehicles.doorState[tostring(id) .. '|' .. tostring(door)] = true
+				return true
+			end,
+			closeDoor = function(id, door)
+				vehicleDoors[#vehicleDoors + 1] = { op = 'close', id = id, door = door }
+				if vehicles.doorRefuse ~= nil then return false, tostring(vehicles.doorRefuse) end
+				if not hullKnown(id) then return false, 'vehicle_not_found' end
+				vehicles.doorState[tostring(id) .. '|' .. tostring(door)] = false
+				return true
+			end,
+			setDoorOpen = function(id, door, opened)
+				vehicleDoors[#vehicleDoors + 1] = { op = 'set', id = id, door = door, open = opened == true }
+				if vehicles.doorRefuse ~= nil then return false, tostring(vehicles.doorRefuse) end
+				if not hullKnown(id) then return false, 'vehicle_not_found' end
+				vehicles.doorState[tostring(id) .. '|' .. tostring(door)] = opened == true
+				return true
+			end,
+			isDoorOpen = function(id, door)
+				if not hullKnown(id) then return nil, 'vehicle_not_found' end
+				return vehicles.doorState[tostring(id) .. '|' .. tostring(door)] == true
+			end,
+			isLocked = function(id)
+				return vehicles.locked[tostring(id)] == true
+			end,
 		},
 
 		-- Spawned characters. The police response is the only thing in this
@@ -824,7 +872,56 @@ function Host.Environment(side, database)
 				-- hands out distinct ones: a constant id makes every officer the same
 				-- officer to anything matching by id.
 				npcs.next = (npcs.next or 0) + 1
-				return ('npc-%d'):format(npcs.next)
+				local id = ('npc-%d'):format(npcs.next)
+				-- The canonical ledger: health as the platform keeps it, and the
+				-- place the body was put, so a resource that reads `get` sees what
+				-- it created and a hit can be priced against it.
+				local at = type(options) == 'table' and options.position or nil
+				npcState[id] = {
+					id = id,
+					health = type(options) == 'table' and tonumber(options.health) or 100,
+					maxHealth = type(options) == 'table' and tonumber(options.maxHealth) or 100,
+					x = at and tonumber(at.x) or 0.0, y = at and tonumber(at.y) or 0.0,
+					z = at and tonumber(at.z) or 0.0,
+					bucket = type(options) == 'table' and tonumber(options.bucket) or 0,
+					record = type(options) == 'table' and options.record or nil,
+				}
+				return id
+			end,
+			-- `get` answers a body this resource created, as the card says
+			-- ("owned NPC snapshot or nil") -- a stranger's id is nil, which is the
+			-- whole of the platform's own ownership rule.
+			get = function(id)
+				local row = npcState[tostring(id)]
+				if row == nil or row.removed then return nil end
+				return { id = row.id, health = row.health, maxHealth = row.maxHealth,
+					x = row.x, y = row.y, z = row.z, bucket = row.bucket, record = row.record }
+			end,
+			-- Damage as the platform applies it: recorded, subtracted from the
+			-- ledger, and -- when it ends the body -- announced with the two events
+			-- the wiki names, their arguments as text. `npcs.silentDeath` is a
+			-- platform that raises no `onNpcDied`; `npcs.defer` holds the events
+			-- back until `control.ReleaseNpcEvents()`.
+			applyDamage = function(id, amount, source, cause)
+				npcDamage[#npcDamage + 1] = { id = id, amount = amount, source = source, cause = cause }
+				if npcs.refuseDamage ~= nil then return false, tostring(npcs.refuseDamage) end
+				local row = npcState[tostring(id)]
+				if row == nil or row.removed then return false, 'npc_not_found' end
+				if row.health <= 0 then return false, 'npc_dead' end
+				row.health = math.max(0, row.health - (tonumber(amount) or 0))
+				local function raise(name, ...)
+					local args = { ... }
+					local function run()
+						for _, fn in ipairs(handlers[name] or {}) do fn(table.unpack(args)) end
+					end
+					if npcs.defer then npcHeld[#npcHeld + 1] = run else run() end
+				end
+				raise('onNpcDamaged', tostring(id), tostring(source), tostring(amount),
+					tostring(row.health), tostring(cause))
+				if row.health <= 0 and not npcs.silentDeath then
+					raise('onNpcDied', tostring(id), tostring(source), tostring(cause))
+				end
+				return true
 			end,
 			-- Every attitude row a resource puts on a body, in order. This is the
 			-- only place the harness can see WHOSE SIDE an officer is on, and that
@@ -855,6 +952,8 @@ function Host.Environment(side, database)
 			end,
 			remove = function(id)
 				npcRemoves[#npcRemoves + 1] = id
+				local row = npcState[tostring(id)]
+				if row ~= nil then row.removed = true end
 				return true
 			end,
 			update = function() return true end,
@@ -2348,8 +2447,12 @@ function Host.Environment(side, database)
 		end
 		return out
 	end
+	-- A TYPED REFERENCE (`{ kind, id }`) is keyed `kind:id`, an engine entity
+	-- by its number, the two forms the card takes.
 	Open77.world.entityGeometry = function(engine)
-		local geometry = scene.geometry[tostring(engine)]
+		local key = tostring(engine)
+		if type(engine) == 'table' then key = tostring(engine.kind) .. ':' .. tostring(engine.id) end
+		local geometry = scene.geometry[key]
 		if geometry == nil then return nil, 'unknown_entity' end
 		return geometry
 	end
@@ -2427,7 +2530,10 @@ function Host.Environment(side, database)
 	-- two calls did, and a hand-written list would let a test assert an exit is
 	-- blocked by a car the runtime never created.
 	vehicles = { refuse = nil, snapshot = nil, poseRefuse = nil, byId = {}, updates = {},
-		refuseUpdate = nil, world = {} }
+		refuseUpdate = nil, world = {},
+		-- The doors, `id|door` -> open, and the entry locks, id as text -> true.
+		-- `doorRefuse` is a reason: every door call is answered `false, <reason>`.
+		doorState = {}, locked = {}, doorRefuse = nil }
 	vehicleCreates = {}
 	vehicleRemoves = {}
 	-- The crew door's own ledgers: the mounts, the exit locks and the forced
@@ -2435,10 +2541,14 @@ function Host.Environment(side, database)
 	vehicleWarps = {}
 	vehicleLocks = {}
 	vehicleEjects = {}
+	vehicleDoors = {}
 	-- Every pose a vehicle was told to take, and every pin put on one.
 	vehiclePoses = {}
 	vehiclePins = {}
 	npcs = { refuse = nil }
+	npcState = {}
+	npcDamage = {}
+	npcHeld = {}
 	npcCreates = {}
 	npcRemoves = {}
 	npcAttitudes = {}
@@ -2955,6 +3065,9 @@ function Host.Environment(side, database)
 		vehicleWarps = vehicleWarps,
 		vehicleLocks = vehicleLocks,
 		vehicleEjects = vehicleEjects,
+		-- Every door the server was asked to swing, in order, with the state each
+		-- hull's doors are in NOW (`vehicles.doorState`).
+		vehicleDoors = vehicleDoors,
 
 		-- The flight a vehicle was given, in order, and the pins put on one. Read
 		-- by the MaxTac checks: an insertion has to be provable as a RUN -- out at
@@ -2966,6 +3079,16 @@ function Host.Environment(side, database)
 		-- The same two for characters, so a response can be counted rather than
 		-- assumed: what arrived, where, and whether it was refused.
 		npcs = npcs,
+		-- The health ledger, and every `applyDamage` asked of it.
+		npcState = npcState,
+		npcDamage = npcDamage,
+		-- Plays the events `npcs.defer` held back, in the order they were raised.
+		ReleaseNpcEvents = function()
+			local held = npcHeld
+			npcHeld = {}
+			for _, run in ipairs(held) do run() end
+			return #held
+		end,
 		npcCreates = npcCreates,
 		npcRemoves = npcRemoves,
 		npcAttitudes = npcAttitudes,

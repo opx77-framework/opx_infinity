@@ -119,6 +119,12 @@ M.Event = {
 	SANDYREPORT = OPX.Event(NET, 'ripperdoc', 'sandyreport'),
 }
 
+--- Names the host owns. Escape is swallowed by the plugin before any surface
+--- sees it and arrives as this instead, so it cannot be renamed here.
+M.Host = {
+	PAUSE_KEY = 'open77:pauseKey',
+}
+
 -- The two namespaces the module's own files fill. Created here, beside each
 -- other, so no file has to index a table that does not exist yet (the reason
 -- `modules/skills/module.lua` gives for owning the namespaces in one place).
@@ -852,10 +858,11 @@ function M.Ripper.KeyOf(player)
 	return tonumber(player) or tostring(player)
 end
 
---- The piece a host wear event wears down, and how much one use costs it.
+--- The piece a host wear event wears down, and the weight one use of it carries
+--- (`M.Ripper.WearWeight`: a use costs `USE_MINUTES` of life times this).
 -- @param eventName string a key of `DURABILITY.WEAR_BY`
 -- @return table|nil the entry
--- @return number points
+-- @return number weight
 function M.Ripper.WearEntry(eventName)
 	local durability = M.Ripper.Durability()
 	if durability.enabled == false then return nil, 0 end
@@ -863,9 +870,7 @@ function M.Ripper.WearEntry(eventName)
 	if type(id) ~= 'string' then return nil, 0 end
 	local entry = M.Ripper.Entry(id)
 	if entry == nil then return nil, 0 end
-	local points = tonumber(entry.WEAR) or tonumber(durability.WEAR) or 1
-	if points < 0 then points = 0 end
-	return entry, points
+	return entry, M.Ripper.WearWeight(entry)
 end
 
 --- The pricing of a repair appointment.
@@ -877,13 +882,22 @@ end
 
 -- ── the lifecycle ─────────────────────────────────────────────────────────
 --
--- CHROME IS NOT FOREVER. Every fitted piece carries one condition number
--- (100 fresh, 0 broken) and four things take it down: the use its own power
--- sees (a punch, a jump, an overdrive), the hours it is simply worn, the
--- damage the body under it takes, and a death. The number has four bands the
--- player can read -- OPTIMAL, WORN, FAILING, BROKEN -- and the last two cost
--- them: a failing piece gives only part of what it is worth, a broken one
--- gives nothing (and a broken implant is pulled), until a ripperdoc repairs it.
+-- CHROME IS NOT FOREVER, AND IT AGES IN REAL DAYS. Every fitted piece carries
+-- one condition number (100 fresh, 0 broken) and a LIFE: `LIFESPAN_DAYS` of
+-- calendar time from its fitting (or its last repair) to broken, running
+-- whether its owner is online or not. What the body does to it on top -- the
+-- use its own power sees (a punch, a jump, an overdrive), the damage the body
+-- under it takes, a death -- takes extra life off, counted in MINUTES of its
+-- life and never more than `WEAR_DAYS` of it: a piece worked hard every day
+-- still breaks no sooner than `LIFESPAN_DAYS - WEAR_DAYS` days in. The
+-- character's level (the skill tree) stretches the whole life, `LEVEL_LIFESPAN`
+-- times as long at the level cap. The number has four bands the player can
+-- read -- OPTIMAL, WORN, FAILING, BROKEN -- and the last two cost them: a
+-- failing piece gives only part of what it is worth, a broken one gives
+-- nothing (and a broken implant is pulled), until a ripperdoc repairs it.
+
+--- Seconds in a real day.
+M.Ripper.DAY_SECONDS = 86400
 
 --- One number from the durability block, finite and inside its bounds.
 -- @param key string
@@ -901,14 +915,21 @@ end
 -- @return table
 function M.Ripper.Lifecycle()
 	return {
-		-- Hours of play from fresh to broken by wear alone; 0 turns the clock off.
-		LIFESPAN_HOURS = lifecycleNumber('LIFESPAN_HOURS', 24, 0, 10000),
-		-- An iconic piece is built to last: its clock runs this much slower.
-		ICONIC_LIFESPAN = lifecycleNumber('ICONIC_LIFESPAN', 1.5, 0.1, 100),
+		-- Real days from fresh to broken by the calendar alone, online or not;
+		-- 0 switches durability off (nothing wears at all).
+		LIFESPAN_DAYS = lifecycleNumber('LIFESPAN_DAYS', 6, 0, 3650),
+		-- The most extra life use, damage and deaths may take off one life.
+		WEAR_DAYS = lifecycleNumber('WEAR_DAYS', 1, 0, 3650),
+		-- Minutes of life one use costs (times the piece's WEAR weight), 100
+		-- damage costs a plating piece, and a death costs every piece.
+		USE_MINUTES = lifecycleNumber('USE_MINUTES', 0.5, 0, 1440),
+		DAMAGE_MINUTES = lifecycleNumber('DAMAGE_MINUTES', 4, 0, 1440),
+		DEATH_MINUTES = lifecycleNumber('DEATH_MINUTES', 60, 0, 14400),
+		-- An iconic piece's whole life is this many times as long.
+		ICONIC_LIFESPAN = lifecycleNumber('ICONIC_LIFESPAN', 1, 0.1, 100),
+		-- How many times as long the whole life is at the level cap.
+		LEVEL_LIFESPAN = lifecycleNumber('LEVEL_LIFESPAN', 1.5, 1, 100),
 		TICK_SECONDS = lifecycleNumber('TICK_SECONDS', 60, 5, 3600),
-		DEATH_WEAR = lifecycleNumber('DEATH_WEAR', 4, 0, 100),
-		-- Points off every armor-bearing piece per 100 damage the body takes.
-		DAMAGE_WEAR = lifecycleNumber('DAMAGE_WEAR', 1.5, 0, 100),
 		WORN_AT = lifecycleNumber('WORN_AT', 60, 0, 100),
 		FAILING_AT = lifecycleNumber('FAILING_AT', 25, 0, 100),
 		FAILING_EFFECT = lifecycleNumber('FAILING_EFFECT', 0.5, 0, 1),
@@ -916,6 +937,161 @@ function M.Ripper.Lifecycle()
 		REPAIR_FRACTION = lifecycleNumber('REPAIR_FRACTION', 0.35, 0, 10),
 		REPAIR_MIN = lifecycleNumber('REPAIR_MIN', 10, 0, 1000000),
 	}
+end
+
+--- How far up the skill tree a character is, 0 at level 1 and 1 at the cap:
+--- `(level - 1) / (cap - 1)`, clamped. No cap (or a cap of 1) is 0.
+-- @param level number|nil
+-- @param cap number|nil
+-- @return number 0..1
+function M.Ripper.LevelFraction(level, cap)
+	level, cap = OPX.Math.Finite(level), OPX.Math.Finite(cap)
+	if level == nil or cap == nil or cap <= 1 then return 0 end
+	return math.max(0, math.min(1, (level - 1) / (cap - 1)))
+end
+
+--- How many times as long a life is at this level: 1 at level 1,
+--- `LEVEL_LIFESPAN` at the cap, linear between.
+-- @param level number|nil
+-- @param cap number|nil
+-- @param life table|nil `M.Ripper.Lifecycle()`, read when absent
+-- @return number
+function M.Ripper.LevelFactor(level, cap, life)
+	life = life or M.Ripper.Lifecycle()
+	return 1 + (life.LEVEL_LIFESPAN - 1) * M.Ripper.LevelFraction(level, cap)
+end
+
+--- One character's level and the level cap, as the skill tree says
+--- (`OPX.Api.Get('skills').Level(citizenId)` -> `level, cap`). A server with no
+--- tree -- or a tree that cannot say -- answers level 1, which is no bonus.
+-- @param citizenId string|nil
+-- @return number level
+-- @return number cap
+function M.Ripper.LevelOf(citizenId)
+	if type(citizenId) ~= 'string' or citizenId == '' then return 1, 1 end
+	local skills = OPX.Api.Get('skills')
+	local reader = type(skills) == 'table' and skills.Level or nil
+	if type(reader) ~= 'function' then return 1, 1 end
+	local ran, level, cap = pcall(reader, citizenId)
+	if not ran then return 1, 1 end
+	-- A record (or a Result carrying one) is read as well as the pair.
+	if type(level) == 'table' then
+		local record = type(level.value) == 'table' and level.value or level
+		level, cap = record.level, record.cap or cap
+	end
+	level, cap = OPX.Math.Finite(level), OPX.Math.Finite(cap)
+	if level == nil then return 1, 1 end
+	return math.max(1, level), math.max(1, cap or 1)
+end
+
+--- Real seconds one piece lasts from fresh to broken by the calendar alone,
+--- for a character at this level: the lifespan, stretched by the level and --
+--- for an iconic piece -- by `ICONIC_LIFESPAN`. 0 when durability is off.
+-- @param entry table|nil
+-- @param level number|nil
+-- @param cap number|nil
+-- @param life table|nil `M.Ripper.Lifecycle()`, read when absent
+-- @return number seconds
+function M.Ripper.LifeSeconds(entry, level, cap, life)
+	life = life or M.Ripper.Lifecycle()
+	if M.Ripper.Durability().enabled == false or life.LIFESPAN_DAYS <= 0 then return 0 end
+	local iconic = (type(entry) == 'table' and entry.ICONIC == true) and life.ICONIC_LIFESPAN or 1
+	return life.LIFESPAN_DAYS * M.Ripper.DAY_SECONDS * M.Ripper.LevelFactor(level, cap, life) * iconic
+end
+
+--- The most condition use, damage and deaths may take off one life, in
+--- points. The level and the iconic factor stretch the life AND this cap
+--- together, so in points it is one number: `100 x WEAR_DAYS / LIFESPAN_DAYS`.
+-- @param life table|nil `M.Ripper.Lifecycle()`, read when absent
+-- @return number points
+function M.Ripper.WearCapPoints(life)
+	life = life or M.Ripper.Lifecycle()
+	if life.LIFESPAN_DAYS <= 0 then return 0 end
+	return 100 * math.min(life.WEAR_DAYS, life.LIFESPAN_DAYS) / life.LIFESPAN_DAYS
+end
+
+-- ── the wall clock ────────────────────────────────────────────────────────
+--
+-- A LIFE IS CALENDAR TIME, so it needs a clock that keeps running while the
+-- server does not: the platform's own wall clock (`GetUnixTime`, fractional
+-- seconds, or `Open77.time.unix`), else the database's `UNIX_TIMESTAMP()` read
+-- once at Start and advanced by the server's own timer. With neither, the
+-- monotonic timer is all there is: chrome then ages only while this server
+-- runs, and a stamp from one boot is never read against another's (a stamp
+-- under `WALL_FLOOR` is not a wall-clock reading).
+
+--- The smallest reading taken for a wall clock (2001): anything below is a
+--- monotonic timer, never a date.
+M.Ripper.WALL_FLOOR = 1e9
+
+-- The database's clock at Start and `OPX.Now()` when it was read, or nil.
+local unixAnchor = nil
+
+--- A reading in unix seconds, or nil when it cannot be one. A reading in
+--- milliseconds is humoured.
+-- @param value any
+-- @return number|nil
+local function unixSeconds(value)
+	local seconds = OPX.Math.Finite(value)
+	if seconds == nil then return nil end
+	if seconds >= 1e11 then seconds = seconds / 1000 end
+	if seconds < M.Ripper.WALL_FLOOR or seconds >= 1e11 then return nil end
+	return seconds
+end
+
+--- The platform's own wall clock, or nil on a host without one. Read at every
+--- call and never captured: a global the host installs late is still found.
+-- @return number|nil unix seconds
+function M.Ripper.PlatformUnix()
+	if type(GetUnixTime) == 'function' then
+		local ran, value = pcall(GetUnixTime)
+		local seconds = ran and unixSeconds(value) or nil
+		if seconds ~= nil then return seconds end
+	end
+	local time = type(Open77) == 'table' and Open77.time or nil
+	if type(time) == 'table' and type(time.unix) == 'function' then
+		local ran, value = pcall(time.unix)
+		local seconds = ran and unixSeconds(value) or nil
+		if seconds ~= nil then return seconds end
+	end
+	return nil
+end
+
+--- Now, in unix seconds: the platform's wall clock, else the database's clock
+--- from Start advanced by the server's timer, else the server's timer alone.
+-- @return number seconds
+-- @return string `platform`, `database` or `monotonic`
+function M.Ripper.UnixNow()
+	local platform = M.Ripper.PlatformUnix()
+	if platform ~= nil then return platform, 'platform' end
+	if unixAnchor ~= nil then
+		return unixAnchor.unix + (OPX.Now() - unixAnchor.at) / 1000, 'database'
+	end
+	return OPX.Now() / 1000, 'monotonic'
+end
+
+--- Takes the database's clock (`SELECT UNIX_TIMESTAMP()`, read at Start) as
+--- the wall clock for a host without one of its own. nil forgets it.
+-- @param unix any unix seconds
+-- @param at number|nil `OPX.Now()` when it was read
+-- @return boolean taken
+function M.Ripper.AnchorUnix(unix, at)
+	if unix == nil then
+		unixAnchor = nil
+		return false
+	end
+	local seconds = unixSeconds(unix)
+	if seconds == nil then return false end
+	unixAnchor = { unix = seconds, at = tonumber(at) or OPX.Now() }
+	return true
+end
+
+--- Whether a stamp is a wall-clock reading (and so comparable with another
+--- one across restarts), rather than a monotonic timer's.
+-- @param seconds any
+-- @return boolean
+function M.Ripper.WallClock(seconds)
+	return unixSeconds(seconds) ~= nil
 end
 
 --- The band a condition is in.
@@ -1003,14 +1179,16 @@ function M.Ripper.WearSelector(eventName)
 	return type(selector) == 'string' and selector or nil
 end
 
---- What one use costs one piece.
+--- The weight one use of a piece carries: its own `WEAR` (a Sandevistan's
+--- overdrive is harder on it than a dash), else `DURABILITY.WEAR`, else 1. A
+--- use costs `USE_MINUTES` of the piece's life times this.
 -- @param entry table
 -- @return number
-function M.Ripper.WearPoints(entry)
-	local points = tonumber(type(entry) == 'table' and entry.WEAR or nil)
+function M.Ripper.WearWeight(entry)
+	local weight = tonumber(type(entry) == 'table' and entry.WEAR or nil)
 		or tonumber(M.Ripper.Durability().WEAR) or 1
-	if points ~= points or points < 0 then return 0 end
-	return points
+	if weight ~= weight or weight < 0 then return 0 end
+	return weight
 end
 
 --- How a piece is held: `hacking` (a durable implant with a hack beside it),
@@ -1130,6 +1308,133 @@ function M.Ripper.SandyMapping()
 end
 
 -- ── what a Sandevistan looks like on the body ─────────────────────────────
+
+-- ── how long a Sandevistan's boost runs ───────────────────────────────────
+--
+-- THE BOOST GROWS WITH THE CHARACTER. The platform's overdrive is capped at
+-- 15 s by its own client and its definitions are shared by grade, so the
+-- definitions never change with a level. What the ripperdoc draws of a boost
+-- -- the look, the owner's slowed world, the players slowed around them, the
+-- screen -- is its own, and THAT runs for the level-scaled time: the grade's
+-- own `durationMs` at level 1, `SANDEVISTAN.LEVEL_SECONDS` at the level cap
+-- (the first number for a tier-1 grade, the second for tier 5, linear
+-- between), linear in the level. A Sandevistan the platform draws (no LOOK)
+-- has nothing of the ripperdoc's to lengthen and keeps the platform's boost.
+
+--- The longest boost the ripperdoc runs, in seconds: the clients hold a boost
+--- for at most 45 s (a boost and its 250 ms margin, `CAP_MS` in both
+--- `server/sandevistan.lua` and `client/sandevistan.lua`, and opx_sandy_view
+--- 1.4.9's own claim ceiling).
+M.Ripper.SANDY_MAX_SECONDS = 44
+
+--- `SANDEVISTAN.LEVEL_SECONDS`, bounded: what a tier-1 and a tier-5 grade's
+--- boost lasts at the level cap. nil when it is not set (every level then runs
+--- the grade's own duration).
+-- @return table|nil { lo, hi } seconds
+function M.Ripper.SandyLevelSeconds()
+	local sandy = type(M.Settings.SANDEVISTAN) == 'table' and M.Settings.SANDEVISTAN or {}
+	local pair = type(sandy.LEVEL_SECONDS) == 'table' and sandy.LEVEL_SECONDS or nil
+	if pair == nil then return nil end
+	local lo, hi = OPX.Math.Finite(pair[1]), OPX.Math.Finite(pair[2])
+	if lo == nil and hi == nil then return nil end
+	lo, hi = lo or hi, hi or lo
+	local most = M.Ripper.SANDY_MAX_SECONDS
+	return { math.max(0.5, math.min(most, lo)), math.max(0.5, math.min(most, hi)) }
+end
+
+--- How long one Sandevistan's boost runs for a character at this level --
+--- never shorter than the grade's own.
+-- @param tier number the grade's tier, 1..5
+-- @param baseMs number the grade's own `durationMs` (what level 1 runs)
+-- @param level number|nil
+-- @param cap number|nil
+-- @return integer ms
+function M.Ripper.SandyBoostMs(tier, baseMs, level, cap)
+	local base = math.max(500, OPX.Math.Finite(baseMs) or 6000)
+	local seconds = M.Ripper.SandyLevelSeconds()
+	local fraction = M.Ripper.LevelFraction(level, cap)
+	if seconds == nil or fraction <= 0 then return math.floor(base + 0.5) end
+	tier = math.max(1, math.min(5, math.floor(tonumber(tier) or 1)))
+	local target = (seconds[1] + (seconds[2] - seconds[1]) * (tier - 1) / 4) * 1000
+	-- A level lengthens a boost and never shortens it: the platform's own
+	-- overdrive runs its definition's time whatever the ripperdoc draws.
+	return math.floor(math.max(base, base + (target - base) * fraction) + 0.5)
+end
+
+--- A grade's own boost, in ms: the `durationMs` of the definition that
+--- serves it (past the platform's definition limit that is the nearest kept
+--- config, which is what the platform really runs), else its own config's.
+-- @param entry table
+-- @param grade table
+-- @return number ms
+function M.Ripper.SandyBaseMs(entry, grade)
+	local plan = M.Ripper.GrantPlan()
+	local id = plan.byGrade[tostring(entry.id) .. '|' .. tostring(grade.id)]
+	for _, def in ipairs(id ~= nil and plan.defs or {}) do
+		if def.id == id and type(def.config) == 'table' then
+			local ms = OPX.Math.Finite(def.config.durationMs)
+			if ms ~= nil then return ms end
+		end
+	end
+	return OPX.Math.Finite(M.Ripper.GrantConfig(entry, grade).durationMs) or 6000
+end
+
+--- WHAT THE CHARACTER'S LEVEL IS WORTH TO THEIR CHROME, for a page that shows
+--- it (the skill tree): how long a (non-iconic) piece lasts and how much of
+--- that hard use may take, in days, and the shortest and longest Sandevistan
+--- boost the ripperdoc runs, in seconds -- at this level, at level 1 (`Base`)
+--- and at the cap (`Max`). A tray whose Sandevistans the ripperdoc does not
+--- draw answers their own boosts, which no level lengthens. Durability off
+--- answers 0 days.
+-- @param level number
+-- @param cap number
+-- @return table { lifeDays, lifeBaseDays, lifeMaxDays, wearDays, activeSeconds = {lo, hi},
+--   activeBaseSeconds = {lo, hi}, activeMaxSeconds = {lo, hi} }
+function M.Ripper.ChromeLevel(level, cap)
+	local life = M.Ripper.Lifecycle()
+	level = OPX.Math.Finite(level) or 1
+	cap = OPX.Math.Finite(cap)
+	local days = M.Ripper.LifeSeconds(nil, 1, 1, life) / M.Ripper.DAY_SECONDS
+	local wear = days > 0 and math.min(life.WEAR_DAYS, life.LIFESPAN_DAYS) or 0
+	-- Rounded by dividing, so 32.5 is 32.5 and 7.42 is 7.42 to the last bit.
+	local function round(value, places)
+		local scale = 10 ^ places
+		return math.floor(value * scale + 0.5) / scale
+	end
+	-- The Sandevistan grades the ripperdoc draws, and so lengthens; with none,
+	-- every Sandevistan grade at the platform's own boost.
+	local drawn, own = {}, {}
+	for _, entry in ipairs(M.Ripper.Catalog()) do
+		if M.Ripper.GrantKind(entry) == 'reflex' then
+			local styled = M.Ripper.SandyLook(entry) ~= nil
+			for _, grade in ipairs(type(entry.GRADES) == 'table' and entry.GRADES or {}) do
+				local row = { tier = grade.TIER, base = M.Ripper.SandyBaseMs(entry, grade) }
+				if styled then drawn[#drawn + 1] = row else own[#own + 1] = row end
+			end
+		end
+	end
+	local scaled = #drawn > 0
+	local grades = scaled and drawn or own
+	local function range(at)
+		local lo, hi = nil, nil
+		for _, row in ipairs(grades) do
+			local ms = scaled and M.Ripper.SandyBoostMs(row.tier, row.base, at, cap) or row.base
+			lo = (lo == nil or ms < lo) and ms or lo
+			hi = (hi == nil or ms > hi) and ms or hi
+		end
+		return { round((lo or 0) / 1000, 1), round((hi or 0) / 1000, 1) }
+	end
+	local factor = M.Ripper.LevelFactor(level, cap, life)
+	return {
+		lifeDays = round(days * factor, 2),
+		lifeBaseDays = round(days, 2),
+		lifeMaxDays = round(days * life.LEVEL_LIFESPAN, 2),
+		wearDays = round(wear * factor, 2),
+		activeSeconds = range(level),
+		activeBaseSeconds = range(1),
+		activeMaxSeconds = range(cap or 1),
+	}
+end
 
 --- The look a piece's overdrive wears on the body (config `SANDEVISTAN`), or
 --- nil when it keeps the platform's own presentation.

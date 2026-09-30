@@ -111,8 +111,12 @@ local function paycheck()
 		if eligible then
 			if OPX.Hooks.Trigger('paycheck:before', { player = player, amount = payment }) then
 				if M.AddMoney(player, M.PaycheckType, payment, 'paycheck:' .. job.name) then
-					OPX.NotifyLocale(player.PlayerData.source, 'money.paycheck',
-						{ amount = payment, type = M.PaycheckType, job = job.label }, 'success')
+					-- SAID AS WHERE IT WENT. A paycheck paid into the account is
+					-- money the player has to go and draw at a bank branch
+					-- (`modules/bank`), and "You received 150 BANK" never said so.
+					OPX.NotifyLocale(player.PlayerData.source,
+						M.PaycheckType == 'BANK' and 'money.paycheckBank' or 'money.paycheck',
+						{ amount = M.FormatMoney(payment), type = M.PaycheckType, job = job.label }, 'success')
 					TriggerEvent(M.Event.IN_PAYCHECK,
 						player.PlayerData.source, payment, job.name)
 				end

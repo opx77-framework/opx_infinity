@@ -267,7 +267,7 @@ OPX.Config.MODULES.appearance = {
 	-- hands the room to a character the game's own creator has just built and to
 	-- nobody else, so for a RETURNING player the fitting room had no door at
 	-- all: the state machines ran, the catalogue streamed, and nothing was ever
-	-- drawn on anybody's screen. F7 because the other modules hold F3, F9, I, T,
+	-- drawn on anybody's screen. F7 because the other modules hold F3, F4, F9, I, T,
 	-- X, E, ALT and the page keys, and a player's rebind lands here.
 	KEY = { ID = 'opx.appearance.panel', NAME = 'appearance.key.panel', DEFAULT = 'F7' },
 }

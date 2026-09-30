@@ -113,9 +113,16 @@ OPX.Config.MODULES.ripperdoc = {
 		key = 'opx.sandy.key',
 		-- A whole Sandevistan on the caller WITHOUT the overdrive -- the look,
 		-- the layers, the slowed world and the screen, through the same code --
-		-- for testing the presentation on its own: `/opx.sandy.test [seconds]`.
-		-- Restricted: it slows every player near the caller.
+		-- for testing the presentation on its own: `/opx.sandy.test [seconds]`
+		-- (1 to 44: as long as the longest level-scaled boost). Restricted: it
+		-- slows every player near the caller.
 		test = 'opx.sandy.test',
+		-- THE ADMIN'S OVERRIDE, on the caller's own body: `/opx.clinic.chrome
+		-- full` puts a fresh life on every piece fitted on you (repaired,
+		-- re-armed, a broken implant fitted back), `/opx.clinic.chrome 40` sets
+		-- them all to 40% (the time left matching it), `/opx.clinic.chrome 0`
+		-- breaks them all exactly the way wear does. Restricted.
+		chrome = 'opx.clinic.chrome',
 	},
 
 	-- WHO WORKS THE CHAIR. A ripperdoc presses the chair and gets the desk;
@@ -292,9 +299,9 @@ OPX.Config.MODULES.ripperdoc = {
 	--   fx_sandevistan_center       -> ch_npc_sandevistan_center (Trajectory), a flash       = a LAYER, once
 	-- HIS GHOST TRAIL -- the afterimages he leaves when he dashes -- is drawn
 	-- by VIEW on the player's own model: its archive gives every player body
-	-- four layers of a copy of ITS OWN body, arms and head in his armour look
+	-- twelve layers of a copy of ITS OWN body, arms and head in his armour look
 	-- (switched off), and its REDscript places them every frame where the body
-	-- was 0.08 / 0.16 / 0.24 / 0.32 s before (opx_sandy_view 1.4.7, confirmed
+	-- was 0.045, 0.09 ... 0.54 s before (opx_sandy_view 1.4.9; 1.4.7 confirmed
 	-- in game; his own `sandevistan_multilayer.mt` copies, switched on by his
 	-- `ch_smasher_sandevistan_*.effect`, never showed on a player body --
 	-- `docs/sandevistan.md` has every build). It is lit by the LOOP trigger
@@ -354,7 +361,7 @@ OPX.Config.MODULES.ripperdoc = {
 				START_SECONDS = 3,
 				-- `opx_sandy_ghost_on` is HIS GHOST TRAIL: the trigger VIEW's
 				-- archive gives every player body, answered by VIEW's REDscript
-				-- on the body that plays it (its four afterimages lit and placed
+				-- on the body that plays it (its twelve afterimages lit and placed
 				-- every frame; undone when the look stops it).
 				LOOP = { 'eye_glow_gold', 'opx_sandy_ghost_on' },
 				TIME = { SELF_SCALE = 0.15, SELF_FALLBACK_SCALE = 0.5, NEARBY_SCALE = 0.15, RADIUS = 30,
@@ -375,9 +382,27 @@ OPX.Config.MODULES.ripperdoc = {
 		-- THE COOLDOWN, one for every Sandevistan the ripperdoc sells: after a
 		-- boost ENDS the power is back this many ms later (the platform starts
 		-- the cooldown when the boost is over). It replaces each grade's own
-		-- `cooldownMs` and `chargeRegenMs` when the tray is built, and a boost
-		-- never outlasts it. nil keeps every grade's own.
+		-- `cooldownMs` and `chargeRegenMs` when the tray is built, and the
+		-- platform's own boost never outlasts it. nil keeps every grade's own.
+		-- A boost the character's level lengthened (LEVEL_SECONDS) outlasts the
+		-- platform's: its cooldown still runs from ITS end -- the grant is held
+		-- back from the moment the platform's overdrive completes until the
+		-- boost is over and this cooldown has passed.
 		COOLDOWN_MS = 20000,
+		-- THE BOOST GROWS WITH THE CHARACTER'S LEVEL (the skill tree): at level
+		-- 1 a Sandevistan's boost is its grade's own `durationMs` (6 to 9 s on
+		-- this tray); at the level cap it is LEVEL_SECONDS -- the first number
+		-- for a tier-1 grade, the second for tier 5, linear between (30, 32.5,
+		-- 35, 37.5, 40 s) -- and linear in the level in between. The
+		-- platform's overdrive (the speed) is capped at 15 s by its own client
+		-- and its definitions are shared by grade, so they never change with a
+		-- level: what grows is the boost the ripperdoc draws -- the look, the
+		-- owner's slowed world, the players slowed around them, the screen.
+		-- So it applies to a Sandevistan with a LOOK above; one the platform
+		-- draws keeps the platform's boost. Each number at most 44 (the clients
+		-- hold a boost for 45 s at most). nil keeps every grade's own at every
+		-- level.
+		LEVEL_SECONDS = { 30, 40 },
 		-- THE REAL ITEM. A piece named here is also the base game's own item in
 		-- the Operating System slot, fitted by VIEW's REDscript with the base
 		-- game's equipment system (the inventory, the paperdoll and every stat
@@ -464,21 +489,49 @@ OPX.Config.MODULES.ripperdoc = {
 			X = -1441.2, Y = 129.6, Z = 18.05, YAW = 90.0 },
 	},
 
-	-- HOW LONG THE CHROME LASTS. Every fitted piece carries one CONDITION
-	-- (100 = fresh, 0 = broken) and four things take it down:
+	-- HOW LONG THE CHROME LASTS: REAL DAYS. Every fitted piece carries one
+	-- CONDITION (100 = fresh, 0 = broken) and a LIFE:
+	--   time    `LIFESPAN_DAYS` (6) real calendar days from its fitting or its
+	--           last repair to broken, whether its owner is online or not --
+	--           worn every `TICK_SECONDS` while they play, and the time they
+	--           were away caught up when they come back
 	--   use     the host's own action events, on the piece that did the work
-	--           (`WEAR_BY` below, `WEAR` points a use unless a piece names its own)
-	--   time    `LIFESPAN_HOURS` of play from fresh to broken by wear alone,
-	--           checked every `TICK_SECONDS`; an iconic piece lasts
-	--           `ICONIC_LIFESPAN` times longer
-	--   damage  `DAMAGE_WEAR` points per 100 damage the body takes, on every
-	--           piece that carries armor plating
-	--   death   `DEATH_WEAR` points off everything
+	--           (`WEAR_BY` below): `USE_MINUTES` of its life per use, times the
+	--           piece's own `WEAR` weight (`WEAR` here when it names none)
+	--   damage  `DAMAGE_MINUTES` of life per 100 damage the body takes, on
+	--           every piece that carries armor plating
+	--   death   `DEATH_MINUTES` of life off everything
+	-- Use, damage and deaths together never take more than `WEAR_DAYS` (1) of
+	-- one life: a piece worked as hard as a piece can be still lasts 5 days,
+	-- and one that is barely used lasts 6 -- never sooner, never forever.
+	--
+	-- THE EXTRA WEAR, PRICED. 30 s of life a use, 4 min per 100 damage, an hour
+	-- a death, against 24 h of allowance: a hard 4-hour evening -- ~600 punches
+	-- on the arms (5 h), ~400 double jumps on the legs (3.3 h), ~30 Sandevistan
+	-- boosts at weight 2 (0.5 h), ~5000 damage soaked by the plating (3.3 h),
+	-- five deaths (5 h on everything) -- spends roughly 5 to 10 hours of a
+	-- piece's allowance: a fair part of the day, not all of it. Two or three
+	-- such evenings in one life spend it whole, and then only the calendar
+	-- decides.
+	--
+	-- THE LEVEL (the skill tree) STRETCHES THE WHOLE LIFE: `LEVEL_LIFESPAN`
+	-- (1.5) times as long at the level cap -- 6 days become 9, and the
+	-- allowance 1 day becomes 1.5 -- linear from level 1. An iconic piece's
+	-- whole life is `ICONIC_LIFESPAN` times as long (1: every piece lasts the
+	-- same 5 to 6 days, as the owner asked).
+	--
 	-- Below `WORN_AT` a piece reads WORN; below `FAILING_AT` it is FAILING and
 	-- gives only `FAILING_EFFECT` of what it is worth; at 0 it BREAKS and gives
-	-- nothing (a broken implant is pulled) until a ripperdoc repairs it. A
-	-- repair costs `REPAIR_FRACTION` of the grade's price for the share that
-	-- is missing, and never less than `REPAIR_MIN`.
+	-- nothing (a broken implant is pulled) until a ripperdoc repairs it -- a new
+	-- life from that day. A repair costs `REPAIR_FRACTION` of the grade's price
+	-- for the share that is missing, and never less than `REPAIR_MIN`. The
+	-- tray shows how long each piece has left. `/opx.clinic.chrome` sets the
+	-- condition of everything fitted on an admin. `LIFESPAN_DAYS = 0` (or
+	-- `enabled = false`) switches wear off entirely.
+	--
+	-- WHEN THIS FIRST RUNS, every piece already fitted goes back to fresh --
+	-- once (a piece with no life yet predates real days), broken ones working
+	-- again: a broken implant is fitted back into the body for free.
 	--
 	-- `WEAR_BY` maps each host wear event to what it wears: a piece id (and so
 	-- its family -- `arms` wears whichever Gorilla Arms are fitted), or
@@ -486,12 +539,15 @@ OPX.Config.MODULES.ripperdoc = {
 	DURABILITY = {
 		enabled = true,
 		PRICE_PER_POINT = 2,
+		LIFESPAN_DAYS = 6,
+		WEAR_DAYS = 1,
+		USE_MINUTES = 0.5,
+		DAMAGE_MINUTES = 4,
+		DEATH_MINUTES = 60,
 		WEAR = 1,
-		LIFESPAN_HOURS = 24,
-		ICONIC_LIFESPAN = 1.5,
+		LEVEL_LIFESPAN = 1.5,
+		ICONIC_LIFESPAN = 1,
 		TICK_SECONDS = 60,
-		DAMAGE_WEAR = 1.5,
-		DEATH_WEAR = 4,
 		WORN_AT = 60,
 		FAILING_AT = 25,
 		FAILING_EFFECT = 0.5,

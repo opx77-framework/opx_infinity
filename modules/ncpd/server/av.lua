@@ -89,6 +89,10 @@ end
 --- Live runs, by the citizen the insertion was called for.
 local runs = {}
 
+-- The door a parked hull is given (`modules/avdoor`), defined below `finish`
+-- and read by it.
+local parkDoor
+
 --- The run in flight, when `AV.ONE_AT_A_TIME` is set. The config's own rule, kept
 --- here so a second summon is refused by name instead of quietly queueing behind
 --- an aircraft that is already inbound.
@@ -418,6 +422,11 @@ local function finish(citizenId, why, force)
 		OPX.Scheduler.Cancel(run.handle)
 		run.handle = nil
 	end
+	-- A parked hull had a door on it (`parkDoor`); it goes with the hull.
+	if run.doorParked == true then
+		local door = OPX.Api.Get('avdoor')
+		if door ~= nil and type(door.Forget) == 'function' then pcall(door.Forget, run.avId) end
+	end
 	disband(run, why)
 	local contract = vehicles()
 	if contract ~= nil then
@@ -432,7 +441,7 @@ local function finish(citizenId, why, force)
 	Open77.log.info(('[ncpd] MaxTac AV down for %s after %s: %.0fs in the air')
 		:format(tostring(citizenId), tostring(why), run.clock))
 	M.Radio.Push('maxtac', 'ncpd.radio.maxtac.down',
-		{ citizen = citizenId, seconds = math.floor(run.clock + 0.5) })
+		{ citizen = run.suspect or citizenId, seconds = math.floor(run.clock + 0.5) })
 	return true
 end
 
@@ -447,6 +456,55 @@ local function callHook(citizenId, hook, what, drop, run)
 	local ok, failure = pcall(hook, drop, run)
 	if not ok then
 		Open77.log.error(('[ncpd] %s for %s: %s'):format(what, tostring(citizenId), tostring(failure)))
+	end
+end
+
+--- An Open77 id as the decimal string the effects targets take
+--- (`id=decimalStringOrInteger`), or nil when it is not one.
+-- @param id any
+-- @return string|nil
+local function decimalId(id)
+	if type(id) == 'number' and id == math.floor(id) and id >= 0 then return ('%d'):format(id) end
+	if type(id) ~= 'string' then return nil end
+	if id:match('^%d+$') then return id end
+	local hex = id:match('^0[xX](%x+)$')
+	-- Sixteen digits fit a signed 64-bit integer only below 0x8...
+	if hex ~= nil and (#hex < 16 or (#hex == 16 and tonumber(hex:sub(1, 1), 16) < 8)) then
+		return ('%d'):format(tonumber(hex, 16))
+	end
+	return nil
+end
+
+-- Whether a missing sound host was already said once.
+local warnedSound = false
+
+--- One of the aircraft's own sounds, on the airframe, for everyone near it.
+--- `which` is `Descend`, `Deploy`, `Hold` or `Climb` (config `AV.SOUNDS`).
+-- @param run table
+-- @param which string
+-- @param seconds number how long the event may run
+local function airframeSound(run, which, seconds)
+	local law = M.Law
+	local sounds = law ~= nil and law.Maxtac ~= nil and law.Maxtac.AvSounds or nil
+	local event = sounds ~= nil and sounds[which] or nil
+	if event == nil then return end
+	local effects = type(Open77) == 'table' and Open77.effects or nil
+	if type(effects) ~= 'table' or type(effects.sound) ~= 'function' then
+		if not warnedSound then
+			warnedSound = true
+			Open77.log.warn('[ncpd] no Open77.effects.sound on this host: the MaxTac AV flies silent')
+		end
+		return
+	end
+	local id = decimalId(run.avId) or tostring(run.avId)
+	local ran, ok, why = pcall(effects.sound, { kind = 'vehicle', id = id }, event, {
+		duration = math.max(0.05, math.min(60.0, seconds)),
+		actionId = ('opx-maxtac-av:%s:%s'):format(id, which),
+	})
+	-- The host answers `true`, or `nil, reason` (`false, reason` for a refusal).
+	if not ran or ok == nil or ok == false then
+		Open77.log.warn(('[ncpd] the MaxTac AV sound %s (%s) was refused: %s')
+			:format(event, which, tostring((ran and why) or ok)))
 	end
 end
 
@@ -528,6 +586,50 @@ function Av.Step(citizenId)
 	run.phaseClock = 0.0
 	if following == PHASE.BOARD then announceDoor(run, doorState(run)) end
 	run.phaseClock = 0.0
+
+	-- The aircraft's own voice, the base game's: the drop starting, the horn
+	-- the moment it is down and the squad bails out, the hover while it holds
+	-- at the street, and the climb out.
+	if following == PHASE.DESCEND then
+		airframeSound(run, 'Descend', duration(run, PHASE.DESCEND) + 1.0)
+	elseif following == PHASE.DEPLOY then
+		airframeSound(run, 'Deploy', 6.0)
+	elseif following == PHASE.BOARD then
+		airframeSound(run, 'Hold', duration(run, PHASE.BOARD))
+	elseif following == PHASE.CLIMB then
+		airframeSound(run, 'Climb', duration(run, PHASE.CLIMB) + 1.0)
+	end
+end
+
+--- Puts the aircraft door on a parked hull: the division's own duty rule
+--- decides who may climb back in, and a boarding rejoins the crew.
+-- @param run table
+-- @return boolean whether a door went up
+parkDoor = function(run)
+	local door = OPX.Api.Get('avdoor')
+	if door == nil or type(door.Allow) ~= 'function' then return false end
+	local ran, placed = pcall(door.Allow, run.avId, {
+		mayBoard = function(playerId)
+			local rule = M.MayCrew
+			if type(rule) ~= 'function' then return false, 'not_crew' end
+			local permit = rule(playerId)
+			if permit == true then return true end
+			return false, 'not_crew'
+		end,
+		-- The run's key is read at the moment of the boarding, not captured
+		-- here: a parked hull steps aside for a new insertion of the same
+		-- suspect (`Av.Insert`) and is filed under a key of its own.
+		--
+		-- A BODY THAT ONLY RIDES ALONG IS NOT THE CREW. The door lets anybody
+		-- sit in a free passenger seat of the parked hull (`PASSENGERS`); only a
+		-- trooper the duty rule admitted to the controls rejoins the run, with
+		-- its custody, its park window and its radio line.
+		onBoard = function(playerId, seat, role)
+			if role == 'passenger' then return end
+			Av.Rejoin(run.citizenId, playerId, seat)
+		end,
+	})
+	return ran and placed == true
 end
 
 --- Whether the hull is standing still at street level.
@@ -587,10 +689,68 @@ function Av.Custody(citizenId)
 	end
 
 	if aboard(run) == 0 then
+		-- PARKED, NOT TAKEN AWAY. The owner, 2026-09-29: "not being able to
+		-- reboard the maxtac av after landing". Stepping out used to end the run
+		-- on the spot and remove the airframe from under the crew's feet; now it
+		-- stands where they left it for `BOARDING.PARK_SECONDS`, with a door on it
+		-- (`modules/avdoor`) that the division's own duty rule opens. Whoever
+		-- climbs back in rejoins the crew and the custody reads go on; a hull
+		-- nobody comes back to leaves when the window runs out.
+		local park = run.boarding ~= nil and tonumber(run.boarding.ParkSeconds) or 0
+		if park ~= nil and park > 0 then
+			local now = OPX.Now()
+			if run.parkedSince == nil then
+				run.parkedSince = now
+				-- The insertion is over once a crew has had her: the one-at-a-time
+				-- slot is freed, so a second suspect across town is not refused a
+				-- MaxTac AV because this one is standing on a rooftop.
+				if inbound == run then inbound = nil end
+				if run.doorParked ~= true then run.doorParked = parkDoor(run) == true end
+				Open77.log.info(('[ncpd] the crew of the MaxTac AV for %s stepped out: she is parked for %.0fs%s')
+					:format(tostring(citizenId), park,
+						run.doorParked and ', the door is open to the division'
+							or ', NO door (the avdoor module is not running)'))
+				M.Radio.Push('maxtac', 'ncpd.radio.maxtac.parked',
+					{ citizen = run.suspect or citizenId, seconds = math.floor(park + 0.5) })
+				return
+			end
+			if now - run.parkedSince < park * 1000 then return end
+			Open77.log.info(('[ncpd] the MaxTac AV for %s stood parked for %.0fs with nobody aboard')
+				:format(tostring(citizenId), park))
+			finish(citizenId, 'she stood parked with nobody aboard', true)
+			return
+		end
 		Open77.log.info(('[ncpd] the crew of the MaxTac AV for %s has stepped out')
 			:format(tostring(citizenId)))
 		finish(citizenId, 'the crew stepped out', true)
 	end
+end
+
+--- A body climbed back into a parked hull through the aircraft door: they are
+--- crew again, the park window stops, and the custody reads carry on. No exit
+--- lock -- the lock is for the ride IN, and this crew is flying their own bird.
+-- @param citizenId string the run's suspect
+-- @param playerId number
+-- @param seat string
+-- @return boolean
+function Av.Rejoin(citizenId, playerId, seat)
+	local run = runs[citizenId]
+	if run == nil then return false end
+	local found = nil
+	for _, entry in ipairs(run.crew) do
+		if entry.playerId == playerId then found = entry end
+	end
+	if found == nil then
+		found = { playerId = playerId }
+		run.crew[#run.crew + 1] = found
+	end
+	found.seat, found.aboard, found.locked = seat, true, false
+	run.parkedSince = nil
+	Open77.log.info(('[ncpd] %s climbed back into the MaxTac AV for %s in %s')
+		:format(tostring(playerId), tostring(citizenId), tostring(seat)))
+	M.Radio.Push('maxtac', 'ncpd.radio.maxtac.boarded',
+		{ citizen = run.suspect or citizenId, seat = tostring(seat) })
+	return true
 end
 
 --- Flies a MaxTac AV in and puts the squad on the street from it.
@@ -609,6 +769,16 @@ function Av.Insert(request)
 
 	local citizenId = request.citizenId
 	if type(citizenId) ~= 'string' or citizenId == '' then return nil, 'no_citizen' end
+	-- A HULL PARKED FOR ITS CREW STEPS ASIDE. It is no longer an insertion --
+	-- the crew had her and stepped out -- so a second stage for the same
+	-- suspect inside her park window is flown a new aircraft, and the parked
+	-- one is filed under a key of its own for the rest of its window.
+	local parked = runs[citizenId]
+	if parked ~= nil and parked.parkedSince ~= nil and aboard(parked) == 0 then
+		runs[citizenId] = nil
+		parked.citizenId = ('%s#parked:%s'):format(citizenId, tostring(parked.avId))
+		runs[parked.citizenId] = parked
+	end
 	if runs[citizenId] ~= nil then return nil, 'already_inbound' end
 	if inbound ~= nil and request.oneAtATime ~= false then return nil, 'one_at_a_time' end
 
@@ -635,6 +805,8 @@ function Av.Insert(request)
 	local createFlags = (flags.engineOn or 0) + (flags.lightsOn or 0)
 	local avId, reason = contract.create({
 		record = request.record or 'Vehicle.max_tac_av',
+		appearance = type(request.appearance) == 'string' and request.appearance ~= ''
+			and request.appearance or nil,
 		position = { x = geometry.start.x, y = geometry.start.y, z = geometry.start.z },
 		yaw = bearingTo(geometry.start, geometry.hover),
 		bucket = request.bucket,
@@ -652,6 +824,9 @@ function Av.Insert(request)
 	local run = {
 		avId = avId,
 		citizenId = citizenId,
+		-- The suspect she was flown for, kept when a parked hull is filed under
+		-- a key of its own, so what the band hears names a person.
+		suspect = citizenId,
 		plan = plan,
 		geometry = geometry,
 		phase = PHASE.APPROACH,
@@ -910,6 +1085,15 @@ function Av.Retract(citizenId, why)
 			unlock(run, entry, why or 'the insertion was retracted')
 		end
 		handOver(run, why or 'the insertion was retracted')
+		return false
+	end
+	-- A PARKED HULL IS THE CREW'S, NOT THE STAGE'S. The arrest that clears a
+	-- stage is exactly the moment a crew walks back to the aircraft it came
+	-- in, so she stands out her park window whatever happens to the response
+	-- that called her; `Av.Custody` takes her away when the window is over.
+	if run.parkedSince ~= nil then
+		Open77.log.info(('[ncpd] the MaxTac AV for %s stays parked for her crew (%s)')
+			:format(tostring(citizenId), tostring(why or 'retracted')))
 		return false
 	end
 	return finish(citizenId, why or 'retracted')

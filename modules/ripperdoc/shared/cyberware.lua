@@ -312,6 +312,136 @@ function M.Cyber.RecordFor(entryId, tier, index)
 	return nil
 end
 
+-- ── the picture of each piece ─────────────────────────────────────────────
+--
+-- THE BASE GAME'S OWN ICON, one per piece, the picture its inventory and its
+-- ripperdoc draw. Read out of the installed game (2.31), never drawn or
+-- guessed: a piece's item record (the RECORDS above, or the record whose
+-- English display name is the piece's own) names an `iconPath`; the
+-- `UIIcon.<iconPath>` record names the atlas and the part; the part is cut out
+-- of the atlas texture at its own rectangle. Every variant of a family shares
+-- its family's picture there (the four Gorilla Arms are one icon), and so they
+-- do here. A config entry may name its own with `ICON`. The files are
+-- `ui/public/images/cyberware/<PictureOf(name)>.webp`, shipped as
+-- `web/images/cyberware/` (see `PictureOf` below for why not the name itself).
+--
+-- The Tetratronic Rippler Canto has no cyberware item of its own in the base
+-- game's content: it shows the Tetratronic decks' picture.
+M.Cyber.ICONS = {
+	adrenaline_booster = 'cw_circulatory_staminaregenbooster', adrenaline_converter = 'detectorrush',
+	adreno_trigger = 'detectorrush', apogee_sandevistan = 'cw_system_sandevistanedgerunner',
+	arms = 'cw_arms_strongarms', atomic_sensors = 'troublefinder',
+	axolotl = 'cw_skeleton_subdermalcoprocessor', ballistic_coprocessor = 'cw_hands_powergrip',
+	bioconductors = 'cw_circulatory_bioconductors', biodyne_berserk = 'cw_system_berserkc2',
+	biomonitor = 'cw_circulatory_healthmonitor', bionic_joints = 'agilejoints',
+	biotech_deck = 'cw_system_biotechcyberdeck', bis_faceplate = 'cw_facemask',
+	black_mamba = 'cw_nervoussystem_hardbeat', blood_pump = 'cw_circulatory_bloodpump',
+	camillo_ram_manager = 'cw_frontalcortex_memoryreplenishment',
+	canto_deck = 'cw_system_tetratroniccyberdeck', carapace = 'cw_skeleton_weirdtankyplating',
+	cellular_adapter = 'paindistributor', chitin = 'cw_integumentary_subdermalarmor_iconic',
+	chrome_compressor = 'cw_os_capacity_booster', clutch_padding = 'cw_skeleton_shockabsorber',
+	cogito_lattice = 'cw_integumentary_neuroactivearmor_capacitors',
+	countershell = 'cw_skeleton_suddenaid', cox2_optimizer = 'cw_circulatory_bioconductors',
+	dash = 'cw_nervoussystem_kerenzikov', deck = 'cw_cyberdeck_arasaka',
+	deep_field_interface = 'cw_frontalcortex_improvedperception',
+	defenzikov = 'cw_skeleton_platingglitch', dense_marrow = 'cw_skeleton_densemarrow',
+	electromag_recycler = 'cw_circulatory_dischargeconnector',
+	epimorphic_skeleton = 'cw_skeleton_endoskeleton',
+	ex_disk = 'cw_frontalcortex_braincapacitybooster', falcon_sandevistan = 'cw_system_sandevistanc4',
+	feedback_circuit = 'cw_circulatory_dischargeconnector', feen_x = 'cw_skeleton_neurasync_adapters',
+	fortified_ankles = 'cw_legs_reinforcedmuscles', gorilla_arms_electric = 'cw_arms_strongarms',
+	gorilla_arms_thermal = 'cw_arms_strongarms', gorilla_arms_toxic = 'cw_arms_strongarms',
+	handle_wrap = 'cw_hands_knifesharpener', heal_on_kill = 'cw_frontalcortex_healonkill',
+	immovable_force = 'cw_hands_recoil_iconic', isometric_stabilizer = 'cw_skeleton_shockabsorber',
+	jenkins_tendons = 'jenkinstendons', kerenzikov_boost = 'cw_skeleton_kerenziovboostsystem',
+	kinetic_frame = 'cw_skeleton_microvibrationsgenerator', kiroshi_basic = 'cw_eyes_kiroshioptics',
+	kiroshi_clairvoyant = 'cw_eyes_4eye', kiroshi_cockatrice = 'cw_eyes_critical_iconic',
+	kiroshi_doomsayer = 'cw_eyes_2eye', kiroshi_oracle = 'cw_eyes_3eye',
+	kiroshi_sentry = 'cw_eyes_2eye', kiroshi_stalker = 'cw_eyes_4eye',
+	leeroy_ligaments = 'cw_legs_speed_iconic', legs = 'cw_legs_boostedtendons',
+	lynx_paws = 'cw_legs_catpaws', mantis_blades = 'cw_arms_mantisblades',
+	mantis_blades_electric = 'cw_arms_mantisblades', mantis_blades_maxtac = 'cw_arms_mantisblades',
+	mantis_blades_thermal = 'cw_arms_mantisblades', mantis_blades_toxic = 'cw_arms_mantisblades',
+	mechatronic_core = 'cw_frontalcortex_roboticcore', memory_boost = 'cw_frontalcortex_memoryboost',
+	microgenerator = 'cw_hands_electricexplosion', microrotors = 'cw_skeleton_cyberrotors',
+	militech_berserk = 'cw_system_berserkc4', monowire = 'cw_arms_nanowires',
+	monowire_electric = 'cw_arms_nanowires', monowire_thermal = 'cw_arms_nanowires',
+	monowire_toxic = 'cw_arms_nanowires', nano_plating = 'cw_skeleton_nanotechplates',
+	neofiber = 'cw_nervoussystem_neofibre', netdriver_deck = 'cw_cyberdeck_netwatch_netdriver',
+	newton_module = 'cw_skeleton_subdermalcoprocessor', optical_camo = 'cw_integumentary_opticalcamo',
+	pain_editor = 'cw_skeleton_paineditor', painducer = 'cw_nervoussystem_painducer',
+	para_bellum = 't_1000', paraline_deck = 'cw_system_militechcyberdeck',
+	peripheral_inverse = 'cw_skeleton_proximityreducer',
+	projectile_launcher = 'cw_arms_projectilelauncher',
+	projectile_launcher_electric = 'cw_arms_projectilelauncher',
+	projectile_launcher_thermal = 'cw_arms_projectilelauncher',
+	projectile_launcher_toxic = 'cw_arms_projectilelauncher',
+	proxishield = 'cw_skeleton_proximityreducer', quantum_tuner = 'timebank',
+	ram_reallocator = 'cw_frontalcortex_memoryreplenishment', ram_recoup = 'compilingskeleton',
+	ram_upgrade = 'cw_frontalcortex_fastaccessmemory', rangeguard = 'cw_integumentary_extra',
+	rara_avis = 't_1000', raven_deck = 'cw_system_ravencyberdeck', reflex = 'cw_system_sandevistanc2',
+	reflex_tuner = 'cw_nervoussystem_reflexrecorder', revulsor = 'cw_nervoussystem_reflexrecorder',
+	rippler_deck = 'cw_system_tetratroniccyberdeck', scar_coalescer = 'nopainnogain',
+	scarab = 'cw_skeleton_rapidmusclenurish', second_heart = 'cw_circulatory_secondheart',
+	self_ice = 'cw_frontalcortex_antivirus', shock_absorber = 'cw_hands_recoil',
+	shock_n_awe = 'cw_immunesystem_electroshockmechanism', slam = 'cw_system_berserkc1',
+	smart_link = 'cw_hands_smartlink', spring_joints = 'cw_skeleton_jointlock',
+	stabber = 'cw_toxinmixer', subdermal_armor = 'cw_integumentary_subdermalarmorcommon',
+	synaptic_accelerator = 'cw_nervoussystem_synapticaccelerator',
+	tattoo_johnny = 'icon_tattoo_johnny', tattoo_together = 'icon_tattoo_johnny',
+	tattoo_tyger_claws = 'icon_tattoo_tyger', threatevac = 'catchmeifyoucan',
+	titanium_bones = 'cw_skeleton_titaniuminfusedbones', tyrosine_injector = 'cw_painspliter',
+	universal_booster = 'cw_circulatory_enhancedbloodvessels',
+	visual_cortex_support = 'cw_frontalcortex_improvedperception',
+	warp_dancer = 'cw_system_sandevistanc3', zetatech_berserk = 'cw_system_berserkc3',
+	zetatech_sandevistan = 'cw_system_sandevistanc1',
+}
+
+-- What an icon name may be spelled with: it becomes a file name on the page.
+local ICON_PATTERN = '^[a-z0-9_]+$'
+
+--- The picture one piece is drawn with, or nil.
+-- @param entry table a catalogue entry
+-- @return string|nil the file stem under `images/cyberware/`
+function M.Cyber.IconFor(entry)
+	if type(entry) ~= 'table' then return nil end
+	local named = type(entry.ICON) == 'string' and entry.ICON or M.Cyber.ICONS[entry.id]
+	if type(named) ~= 'string' or #named > 64 or named:match(ICON_PATTERN) == nil then return nil end
+	return named
+end
+
+--- The file one picture ships as: eight hex characters, the 32-bit FNV-1a of
+-- its name (`cw_arms_strongarms` -> `7866c4b0`), so `web/images/cyberware/
+-- 7866c4b0.webp`.
+--
+-- WHY NOT THE NAME. A client installs a server's resources under `<game>\red4ext\
+-- plugins\Open77\cache\server-resources\sets\<64-hex digest>\resources\opx_infinity\`
+-- -- 200 characters before a file's own path on a Steam install in
+-- `C:\Program Files (x86)` -- and Windows gives up at 259. The base game's names
+-- made paths of up to 70 characters (`web/images/cyberware/
+-- cw_integumentary_neuroactivearmor_capacitors.webp`); past 59 the client could
+-- not see the file, refused the whole resource and never joined
+-- (`invalid_web_file:web/images/cyberware/cw_circulatory_enhancedbloodvessels.webp`,
+-- 2026-09-28). Every picture is now 34 characters long; the longest path this
+-- resource ships is its fonts' 46.
+-- @param icon string|nil an icon name (`IconFor`)
+-- @return string|nil the file stem under `images/cyberware/`
+function M.Cyber.PictureOf(icon)
+	if type(icon) ~= 'string' or #icon > 64 or icon:match(ICON_PATTERN) == nil then return nil end
+	local hash = 0x811C9DC5
+	for index = 1, #icon do
+		hash = ((hash ~ icon:byte(index)) * 0x01000193) & 0xFFFFFFFF
+	end
+	return ('%08x'):format(hash)
+end
+
+--- The file one piece's picture ships as, or nil (`PictureOf(IconFor(entry))`).
+-- @param entry table a catalogue entry
+-- @return string|nil
+function M.Cyber.PictureFor(entry)
+	return M.Cyber.PictureOf(M.Cyber.IconFor(entry))
+end
+
 -- ── the builders ──────────────────────────────────────────────────────────
 
 --- A value at one tier of a range that runs from the first tier to tier 5.

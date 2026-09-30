@@ -13,7 +13,8 @@
 -- and cadences it scans at, how long a capture may take, and what a broken one
 -- of those reads as. Those are numbers about THIS surface, not about what a spot
 -- is, and a shared file that owned them would be forcing a dealer and a garage
--- to poll at the same rate for no reason.
+-- to poll at the same rate for no reason. The job fleet is this module's too --
+-- `JOB_VEHICLES`, who may take which row out, below the AV annex.
 --
 -- Every value is coerced and never trusted: a coordinate that is a string, a
 -- NaN, an unknown KIND or a radius outside the engine's range reads as a
@@ -674,9 +675,266 @@ end
 -- @author XEROX710
 Access.GARAGES, Access.SPOTS = Access.CoerceAll(Config.GARAGES, avAnnex(), nil)
 
+-- ── the job fleet: config/garages.lua JOB_VEHICLES ─────────────────────────
+
+--- The widest fleet KEY. It is the slot a job vehicle is held under and a menu
+--- row's id, so it is a bounded word, as wide as a garage key.
+Access.MAX_JOB_KEY = 48
+
+-- What a KEY may be spelled with: a menu row id accepts these and nothing else.
+local JOB_KEY_PATTERN = '^[%w_%-%.]+$'
+
+-- The longest RECORD a row may name, the vehicles module's own ceiling.
+local MAX_JOB_RECORD = 256
+
+--- Whether the PLATFORM flies a record as an aircraft: a `Vehicle.av_*` record,
+--- or exactly `Vehicle.max_tac_av`, spelled in that case
+--- (`client/src/api/VehicleFlight.cpp` `IsAvRecord`). Narrower than this
+--- server's own AV rule, which also sorts hulls like `Vehicle.q001_police_av`
+--- onto a pad: those come out and stay on the ground.
+--- @param record string
+--- @return boolean
+function Access.PlatformFlies(record)
+	if type(record) ~= 'string' then return false end
+	return record:sub(1, #'Vehicle.av_') == 'Vehicle.av_' or record == 'Vehicle.max_tac_av'
+end
+
+-- The longest APPEARANCE a row may name: the vehicles table's own column
+-- (`appearance VARCHAR(128)`), so a job vehicle's variant is spelled within
+-- what an owned one's may be.
+local MAX_JOB_APPEARANCE = 128
+
+-- What an APPEARANCE may be spelled with: an entity appearance name is one
+-- CName of letters, digits and underscores (`zetatech_atlus_ncpd_01`).
+local JOB_APPEARANCE_PATTERN = '^[%w_]+$'
+
+--- The character catalogue's jobs, or nil when it cannot be read -- in which
+--- case job and grade names go unchecked rather than every row being refused.
+local function jobCatalogue()
+	local modules = type(OPX.Config) == 'table' and OPX.Config.MODULES or nil
+	local character = type(modules) == 'table' and modules.character or nil
+	local jobs = type(character) == 'table' and character.JOBS or nil
+	return type(jobs) == 'table' and jobs or nil
+end
+
+--- Builds the job fleet out of the `JOB_VEHICLES` block.
+-- @author XEROX710
+--
+-- A ROW IS REFUSED ALONE, never the fleet: a typo in the Captain's armoured car
+-- must not take the Cadet's patrol car away from every Cadet on the server. A
+-- job or a grade the character catalogue does not define is refused whole --
+-- rows for a rank nobody can hold are rows listed to nobody -- and every
+-- refusal is a boot line naming the job, the grade and the row.
+--
+-- The order is the list's order: grade by grade from the lowest, and within a
+-- grade the order written, so a Captain's list reads the way the ladder does.
+-- @param raw any the JOB_VEHICLES block
+-- @param problems table|nil collector, appended to
+-- @return table { byKey = { [key] = row }, byJob = { [job] = { onDuty, rows } } }
+function Access.CoerceJobFleet(raw, problems)
+	local fleet = { byKey = {}, byJob = {} }
+	local function refuse(line)
+		if problems ~= nil then problems[#problems + 1] = line end
+	end
+	if raw == nil then return fleet end
+	if type(raw) ~= 'table' then
+		refuse('JOB_VEHICLES must be a table of job name -> { ON_DUTY, GRADES }')
+		return fleet
+	end
+	local catalogue = jobCatalogue()
+
+	local names = {}
+	for name in pairs(raw) do
+		if type(name) == 'string' and name ~= '' then
+			names[#names + 1] = name
+		else
+			refuse('JOB_VEHICLES is keyed by job name; ' .. tostring(name) .. ' is not one')
+		end
+	end
+	table.sort(names)
+
+	-- One row, or nil with the line that says why.
+	local function coerceRow(row, jobName, level, onDuty, where)
+		if type(row) ~= 'table' then return nil, where .. ' must be a table' end
+		local key = row.KEY
+		if type(key) ~= 'string' or #key == 0 or #key > Access.MAX_JOB_KEY
+			or key:match(JOB_KEY_PATTERN) == nil then
+			return nil, ('%s KEY must be 1 to %d letters, digits, _ - or .')
+				:format(where, Access.MAX_JOB_KEY)
+		end
+		if fleet.byKey[key] ~= nil then
+			return nil, ('%s KEY %s is already the key of another row; a KEY is unique ' ..
+				'across every job'):format(where, key)
+		end
+		local record = row.RECORD
+		if type(record) ~= 'string' or record == '' or #record > MAX_JOB_RECORD then
+			return nil, ('%s (%s) RECORD must be a vehicle record of 1 to %d characters')
+				:format(where, key, MAX_JOB_RECORD)
+		end
+		if type(row.LABEL) ~= 'string' or row.LABEL == '' then
+			return nil, ('%s (%s) LABEL must name the vehicle -- a catalogue key in ' ..
+				'modules/garages/locales.lua'):format(where, key)
+		end
+		-- OPTIONAL: the livery, one of the appearance names the record's entity
+		-- template carries. Absent, the record's own. Only the spelling can be
+		-- checked here: a name the template does not carry is drawn as the
+		-- record's own livery, and the engine says nothing about it.
+		local appearance = row.APPEARANCE
+		if appearance ~= nil and (type(appearance) ~= 'string' or #appearance == 0
+			or #appearance > MAX_JOB_APPEARANCE or appearance:match(JOB_APPEARANCE_PATTERN) == nil) then
+			return nil, ('%s (%s) APPEARANCE must be an appearance name of 1 to %d letters, ' ..
+				'digits or _'):format(where, key, MAX_JOB_APPEARANCE)
+		end
+		return {
+			key = key,
+			job = jobName,
+			grade = level,
+			record = record,
+			appearance = appearance,
+			label = row.LABEL,
+			onDuty = onDuty,
+			-- The record's own fact, by the one AV rule: which kind of garage the
+			-- row comes out of is never written by hand.
+			av = Access.IsAv(record),
+		}
+	end
+
+	for index = 1, #names do
+		local jobName = names[index]
+		local block = raw[jobName]
+		local where = 'JOB_VEHICLES.' .. jobName
+		local defined = catalogue ~= nil and catalogue[jobName] or nil
+		if type(block) ~= 'table' then
+			refuse(where .. ' must be a table of ON_DUTY and GRADES')
+		elseif catalogue ~= nil and type(defined) ~= 'table' then
+			refuse(where .. ': config/character.lua defines no job of that name')
+		elseif type(block.GRADES) ~= 'table' then
+			refuse(where .. '.GRADES must be a table of grade -> list of vehicle rows')
+		else
+			if block.ON_DUTY ~= nil and type(block.ON_DUTY) ~= 'boolean' then
+				refuse(where .. '.ON_DUTY must be true or false; read as true')
+			end
+			-- ON BY DEFAULT, the MaxTac pads' own rule: a job's vehicles are for
+			-- the crew on duty unless the file says otherwise, in as many words.
+			local onDuty = block.ON_DUTY ~= false
+			local levels = {}
+			for level in pairs(block.GRADES) do
+				if math.type(level) == 'integer' and level >= 0 then
+					levels[#levels + 1] = level
+				else
+					refuse(('%s.GRADES is keyed by grade number from 0; %s is not one')
+						:format(where, tostring(level)))
+				end
+			end
+			table.sort(levels)
+			local entry = { onDuty = onDuty, rows = {} }
+			for at = 1, #levels do
+				local level = levels[at]
+				local rows = block.GRADES[level]
+				local grades = type(defined) == 'table' and defined.grades or nil
+				if catalogue ~= nil and (type(grades) ~= 'table' or grades[level] == nil) then
+					refuse(('%s grade %d: config/character.lua gives %s no such grade')
+						:format(where, level, jobName))
+				elseif type(rows) ~= 'table' then
+					refuse(('%s grade %d must be a list of vehicle rows'):format(where, level))
+				else
+					for slot = 1, #rows do
+						local built, why = coerceRow(rows[slot], jobName, level, onDuty,
+							('%s grade %d row %d'):format(where, level, slot))
+						if built == nil then
+							refuse(why)
+						else
+							fleet.byKey[built.key] = built
+							entry.rows[#entry.rows + 1] = built
+							-- Kept, and said: an aircraft by this server's rule that
+							-- the platform will not fly comes out of a pad and never
+							-- leaves it.
+							if built.av and not Access.PlatformFlies(built.record) then
+								refuse(('%s grade %d row %d (%s): %s is an AV here, but the platform ' ..
+									'flies only Vehicle.av_* and Vehicle.max_tac_av: it comes out and ' ..
+									'never leaves the ground'):format(where, level, slot, built.key, built.record))
+							end
+						end
+					end
+				end
+			end
+			fleet.byJob[jobName] = entry
+		end
+	end
+	return fleet
+end
+
+--- The job fleet this server ships, already validated.
+-- @author XEROX710
+Access.JOB_FLEET = Access.CoerceJobFleet(Config.JOB_VEHICLES, nil)
+
+--- Milliseconds between two passes over the job vehicles that are out. A value
+--- the config got wrong reads as the shipped five seconds, and `Problems` says
+--- so: a pass that never ran would leave a fired officer his patrol car.
+Access.JOB_SWEEP_MS = math.floor(finiteNumber(Config.JOB_SWEEP_MS) or 0)
+if Access.JOB_SWEEP_MS <= 0 then Access.JOB_SWEEP_MS = 5000 end
+
+--- Whether a character snapshot may take out one fleet row, and when it may
+--- not, the closest near-miss.
+-- @author XEROX710
+--
+-- THE JOB GATE, UNCHANGED: `{ jobs = { [job] = grade }, onDuty }` through
+-- `lib/shared/jobgate.lua` with the default PRIMARY membership -- the worked
+-- job, the one that is clocked on -- and a snapshot stamped by the caller at
+-- `nowMs`, exactly as the pad adapter above asks it. A row that is not a table
+-- closes, for the reason every adapter closes on a subject it cannot read.
+-- @param row table|nil a fleet row
+-- @param snapshot table|nil { job, jobs, atMs }
+-- @param nowMs number
+-- @return boolean
+-- @return string|nil no_character, job_stale, job_required, grade_too_low, off_duty
+function Access.JobVehicleVerdict(row, snapshot, nowMs)
+	if type(row) ~= 'table' or type(row.job) ~= 'string' then return false, 'job_required' end
+	return OPX.JobGate.Evaluate({ jobs = { [row.job] = row.grade }, onDuty = row.onDuty ~= false },
+		snapshot, nowMs, { maxAgeMs = 0 })
+end
+
+--- Every fleet row a snapshot may take out at a garage of one kind, in the
+--- fleet's order.
+-- @author XEROX710
+--
+-- Only the PRIMARY job's rows are read: a detective hired into MaxTac is
+-- MaxTac's while MaxTac is the job they work, which is what the gate says too.
+-- `kind` nil is every row of either kind.
+-- @param snapshot table|nil { job, jobs, atMs }
+-- @param nowMs number
+-- @param kind string|nil `garage` or `avpad`
+-- @param fleet table|nil a built fleet; the shipped one by default
+-- @return table[] rows
+function Access.JobFleetFor(snapshot, nowMs, kind, fleet)
+	fleet = type(fleet) == 'table' and fleet or Access.JOB_FLEET
+	local list = {}
+	if type(snapshot) ~= 'table' or type(snapshot.job) ~= 'table' then return list end
+	local block = fleet.byJob[snapshot.job.name]
+	if type(block) ~= 'table' then return list end
+	for index = 1, #block.rows do
+		local row = block.rows[index]
+		if kind == nil or row.av == (kind == M.KIND.AVPAD) then
+			if (Access.JobVehicleVerdict(row, snapshot, nowMs)) then list[#list + 1] = row end
+		end
+	end
+	return list
+end
+
+--- The refusal a player reads for one job-vehicle verdict, by the code
+-- `lib/shared/jobgate.lua` names. Its own words and not the pad's: a pad
+-- refuses a PLACE, and these refuse one vehicle in a list the player can see.
+Access.JOB_REFUSAL = {
+	no_character = 'garages.noCharacter',
+	job_stale = 'garages.noCharacter',
+	job_required = 'garages.job.required',
+	grade_too_low = 'garages.job.gradeTooLow',
+	off_duty = 'garages.job.offDuty',
+}
+
 -- Config keys that must be a finite number above zero.
 local NUMBERS = { 'USE_RADIUS', 'EXIT_CLEARANCE', 'SCAN_MS', 'POLL_MS', 'COOLDOWN_MS',
-	'REQUEST_WINDOW_MS', 'REQUESTS_PER_WINDOW' }
+	'REQUEST_WINDOW_MS', 'REQUESTS_PER_WINDOW', 'JOB_SWEEP_MS' }
 
 --- Lists every configuration error visible without a world, sorted.
 -- @author XEROX710
@@ -710,6 +968,10 @@ function Access.Problems()
 	-- re-derived here so the diagnostic reports them rather than only the boot
 	-- log -- the AV annex's refusals included.
 	Access.CoerceAll(Config.GARAGES, avAnnex(), lines)
+
+	-- And the job fleet the same way, row by row, against the character
+	-- catalogue's own jobs and grades.
+	Access.CoerceJobFleet(Config.JOB_VEHICLES, lines)
 
 	-- A CONFIG THAT STILL CARRIES THE OLD BLOCK IS SAID OUT LOUD. `SPOTS` was
 	-- what a garage was before the rework, and a file that still has one is a

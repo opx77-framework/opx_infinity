@@ -24,6 +24,16 @@ local EN = {
 	-- WORDS are the radio's own keys, so the board cannot drift from the air.
 	['ncpd.dispatch.title'] = 'DISPATCH',
 
+	-- A BODY ON THE STREET, called in the moment it is charged (config
+	-- `HOMICIDE`). The same two-key rule as the stage call-out: the named
+	-- variant is its own sentence. `.pin` is the map pin's title.
+	['ncpd.dispatch.homicide'] = 'Homicide reported at {x}, {y}',
+	['ncpd.dispatch.homicideNamed'] = 'Homicide reported at {x}, {y} — suspect: {name}',
+	['ncpd.dispatch.homicide.pin'] = 'Homicide',
+	['ncpd.dispatch.officerDown'] = 'Officer down at {x}, {y}!',
+	['ncpd.dispatch.officerDownNamed'] = 'Officer down at {x}, {y}! Suspect: {name}',
+	['ncpd.dispatch.officerDown.pin'] = 'Officer down',
+
 	-- Said when the engine's heat actually moved, which is the only moment the
 	-- worth saying anything about: the stars are the engine's own HUD.
 	['ncpd.heatRaised'] = '{division} is answering: heat {stage}/5.',
@@ -91,6 +101,7 @@ local EN = {
 	['ncpd.radio.maxtac.boarded'] = 'Crew aboard the MaxTac AV for {citizen} ({seat}).',
 	['ncpd.radio.maxtac.crew'] = 'The MaxTac AV for {citizen} is the crew\u{2019}s \u{2014} {crew} aboard.',
 	['ncpd.radio.maxtac.down'] = 'MaxTac AV down for {citizen} \u{2014} {seconds}s in the air.',
+	['ncpd.radio.maxtac.parked'] = 'MaxTac AV parked for {citizen} \u{2014} the crew may climb back in for {seconds}s.',
 
 	['ncpd.help.status'] = 'where the city stands on you, or on a named player',
 	['ncpd.help.report'] = 'charge somebody with an offence from the law book',
@@ -116,6 +127,12 @@ local FR = {
 	['ncpd.dispatch.rise'] = '{division} : appel — palier {stage}/6 à {x}, {y}',
 	['ncpd.dispatch.suspect'] = '{division} : appel — palier {stage}/6, {name} à {x}, {y}',
 	['ncpd.dispatch.title'] = 'DISPATCH',
+	['ncpd.dispatch.homicide'] = 'Homicide signalé en {x}, {y}',
+	['ncpd.dispatch.homicideNamed'] = 'Homicide signalé en {x}, {y} — suspect : {name}',
+	['ncpd.dispatch.homicide.pin'] = 'Homicide',
+	['ncpd.dispatch.officerDown'] = 'Agent à terre en {x}, {y} !',
+	['ncpd.dispatch.officerDownNamed'] = 'Agent à terre en {x}, {y} ! Suspect : {name}',
+	['ncpd.dispatch.officerDown.pin'] = 'Agent à terre',
 	['ncpd.heatRaised'] = '{division} répond : chaleur {stage}/5.',
 	['ncpd.maxtacInbound'] = 'MaxTac arrive.',
 	['ncpd.seamUnavailable'] = 'Ce client ne peut pas lever de niveau de recherche.',
@@ -161,7 +178,7 @@ local FR = {
 	['ncpd.radio.channel.maxtac'] = 'MaxTac \u{2014} Ops',
 	['ncpd.radio.noCitizen'] = 'Votre fiche est illisible.',
 	['ncpd.radio.notOnDuty'] = 'Le scanner exige que vous soyez en service.',
-	['ncpd.radio.notDivision'] = 'Aucune division ne r\u{2019}épond à travers vous.',
+	['ncpd.radio.notDivision'] = 'Aucune division ne répond à travers vous.',
 	['ncpd.radio.menuOpen'] = 'Fermez d\u{2019}abord le menu.',
 	['ncpd.radio.failed'] = 'Le scanner n\u{2019}a pas pu s\u{2019}ouvrir ({reason}).',
 	['ncpd.radio.maxtac.inbound'] = 'AV MaxTac en approche pour {citizen} \u{2014} {seconds}s avant le déploiement.',
@@ -169,6 +186,7 @@ local FR = {
 	['ncpd.radio.maxtac.boarded'] = 'Équipage à bord de l\u{2019}AV MaxTac pour {citizen} ({seat}).',
 	['ncpd.radio.maxtac.crew'] = 'L\u{2019}AV MaxTac pour {citizen} est à l\u{2019}équipage \u{2014} {crew} à bord.',
 	['ncpd.radio.maxtac.down'] = 'AV MaxTac au sol pour {citizen} \u{2014} {seconds}s en vol.',
+	['ncpd.radio.maxtac.parked'] = 'AV MaxTac posé pour {citizen} \u{2014} l\u{2019}équipage peut remonter pendant {seconds}s.',
 	['ncpd.unknownLaw'] = 'Infraction inconnue.',
 	['ncpd.unknownStage'] = 'Ce n\u{2019}est pas un palier de chaleur.',
 	['ncpd.offline'] = 'Ce joueur n\u{2019}est pas connecté.',

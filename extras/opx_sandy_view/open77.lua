@@ -15,14 +15,21 @@
 -- server that refuses it loses this one layer, never the ripperdoc.
 --
 -- WHAT IT CARRIES: `dist/opx_sandy_view.zip` = `r6/scripts/opx_infinity/
--- OpxSandevistanView.reds` (source in `src/`) and, from 1.4.0,
+-- OpxSandevistanView.reds` (source in `src/`), from 1.4.10
+-- `r6/scripts/opx_infinity/OpxMaxTacAv.reds` (the MaxTac AV's visible
+-- livery, below), from 1.4.11 `r6/scripts/opx_infinity/OpxQuests.reds` (the
+-- base game's missions, playable in a session, below; from 1.4.13 it opens
+-- Phantom Liberty on a world that never started it; from 1.4.14 it writes the
+-- fullscreen map's steps to the client log; 1.4.15 stops opening the map from
+-- crashing the game) and, from 1.4.0,
 -- `archive/pc/mod/opx_sandy_ghost.archive` (source in `src/archive/`, built
 -- from the base game's own files by `tools/ghost/`; 1.4.0-1.4.7 also shipped
--- an ArchiveXL `opx_sandy_ghost.xl`, gone in 1.4.8), and
+-- an ArchiveXL `opx_sandy_ghost.xl`, gone in 1.4.8; the legs of a female V's
+-- afterimages from 1.4.12), and
 -- the client exports `engage(scale, ms, easeMs)` / `release(easeMs)` /
--- `wear(code)` / `info()` that opx_infinity calls on the owner's machine. The
--- server reads `GetResourceState("opx_sandy_view")` to know every player has
--- the REDscript.
+-- `wear(code)` / `develop(code)` / `info()` that opx_infinity calls on the
+-- owner's machine. The server reads `GetResourceState("opx_sandy_view")` to
+-- know every player has the REDscript.
 --
 -- ADAM SMASHER'S GHOST TRAIL, ON THE PLAYER'S OWN MODEL (1.4.2). His
 -- Sandevistan afterimages are his meshes drawn with the base game's
@@ -87,6 +94,112 @@
 -- ghost parts that game gives player bodies, and reads the farthest
 -- afterimage back from the engine.
 --
+-- 1.4.9: Adam Smasher's ghost trail, more aggressive with way more clones:
+-- TWELVE layers of the ghost's parts (48 parts, `opx_sandy_ghost1_*` ..
+-- `opx_sandy_ghost12_*`, the new layers exact copies of the first four's
+-- components, in the archive's own copies of V's two body files), placed
+-- 0.045 s apart -- the farthest where the body was 0.54 s before -- each shown
+-- once it is 0.2 m from the body (hidden under 0.1 m); everything else about
+-- how a layer is drawn is unchanged. Boosts of up to 40 s (level-scaled): the
+-- owner's clock claim is capped at 45 s (was 20 s), and the REDscript's own
+-- 30 s windows -- the watch that draws a boosted player's trail on everyone
+-- else's machine, and the full-speed exemption of the owner's model and of
+-- that body -- now last 60 s. New client export `develop(code)`: code 10, the
+-- same clock message the real item uses, has the REDscript max the BASE
+-- GAME's own development on this machine (level, street cred, attributes,
+-- skills, perk and relic points, with the base game's own
+-- `PlayerDevelopmentData`), once per request, remembered for the session and
+-- applied again on a new body -- for an admin's "max all levels".
+--
+-- 1.4.10: the afterimages had no ARMS or HANDS (reported 2026-09-28). V's arm
+-- meshes keep their own materials as `preloadLocalMaterialInstances`, and a
+-- mesh in that mode reads an external material from
+-- `preloadExternalMaterials`; up to 1.4.9 the ghost's material was listed in
+-- `externalMaterials`, where the body and the head (plain local buffers) read
+-- it, so the arms' ghost appearance named a material that was not there. The
+-- four arm meshes now list it where they look for it; nothing else in the
+-- archive changed, byte for byte. And the MaxTac AV came out INVISIBLE --
+-- stickers, one door, thrusters and lights -- because every one of its
+-- TweakDB records names the base game's cloaked livery
+-- (`zetatech_surveyor__basic_maxtac_camo_01`, the `maxtac_cloak` mesh
+-- appearance, which only the base game's prevention AI ever lifts) and the
+-- platform spawns a vehicle from its record alone. A second REDscript,
+-- `OpxMaxTacAv.reds`, schedules the same airframe's visible MaxTac livery
+-- (`zetatech_surveyor__basic_ep1_maxtac_01`) on every AV of those records the
+-- moment the game attaches it, on every machine, in a multiplayer session,
+-- and says so in the client log (`opx_sandy_view maxtac av: ... drawn in the
+-- visible livery ...`).
+--
+-- 1.4.11: THE BASE GAME'S MISSIONS, PLAYABLE (reported 2026-09-28: a side job
+-- started by talking to an NPC stalled mid-task, or on a black/loading screen
+-- after a conversation). Open77's multiplayer policy switches off, all
+-- session, the pieces a mission waits on: the phone (a quest's holocall never
+-- rang, so its `phonecall_*` fact never moved), quest loot (containers,
+-- bodies and pickups hidden and emptied), the scanner, the tracker and every
+-- quest marker, the quest toasts, and V's own lines in a conversation. A third
+-- REDscript, `OpxQuests.reds`, puts the base game's own behaviour back for
+-- exactly those pieces, as the outermost wrapper of the same base-game methods
+-- (the platform's folder compiles first), and says at every attach whether it
+-- is really outermost (`opx_sandy_view quests: missions restored ...`). Other
+-- players' bodies stay unscannable and unhackable; loot comes back only for a
+-- quest's own items. And the Sandevistan user is really faster: while the
+-- boost holds, V's `MaxSpeed` gets one more multiplier (x1.5 on top of the
+-- platform's overdrive), taken off the moment it ends.
+--
+-- 1.4.12: THE LEGS (reported 2026-09-28: the afterimages had no legs, on a
+-- female V). Her body component in V's body files hides the body mesh's chunks
+-- 5-7 -- the knees, the calves and the feet -- because the base game draws
+-- those from a part of their own (`l0_000_pwa_base__cs_flat`, chosen by the
+-- footwear), and every afterimage's body part copied that mask and had no such
+-- part: the trail ended at mid-thigh. Every body part now shows every chunk
+-- (a male V's always did); the body mesh's own chunks 5-7 are those same legs
+-- (the flat part's vertex counts, within 2.6 cm). In the archive only V's two
+-- body files change, and in them only those masks. Every player boots the
+-- game again through the launcher once (the preload changed).
+--
+-- 1.4.13: PHANTOM LIBERTY ON EVERY WORLD (reported 2026-09-28 on a female V:
+-- "the NPCs are gone and I can't start the quest"). The platform enters a
+-- session on `NCMP-Template-M` for a male V -- Phantom Liberty under way,
+-- `ep1_active` and `ep1_side_content` at 1 -- and on `NCMP-Template-F` for a
+-- female V: a save from before The Heist that never started it, both at 0. In
+-- the base game's graph Dogtown's communities (the Barghest, the markets, the
+-- stadium, the Heavy Hearts), its vendors, its gate, its gigs and street
+-- stories, and the story itself all wait on those two facts, so a female V saw
+-- Dogtown's crowd and nothing else. `OpxQuests.reds` sets each one that reads
+-- 0 to 1, five seconds after the local body attaches, on a game that has the
+-- expansion; the base game's graph does the rest, and Songbird calls to start
+-- "Dog Eat Dog". The male save is left as it is. Every player boots the game
+-- again through the launcher once (the preload changed).
+--
+-- 1.4.15: OPENING THE MAP NO LONGER CRASHES THE GAME. The crash probe's record
+-- (an access violation, a read at 0x38, `Cyberpunk2077.exe+0xBF9A5D`) is the
+-- game's own native `IMappin.GetScriptData` reading the data pointer of a
+-- `gamemappinsRuntimeMappin` that has none: the marker the fullscreen map makes
+-- for the player's own arrow, drawn from `gameuiWorldMapPlayerInitData` and never
+-- registered. `OpxQuests.reds`' marker gate asked every marker for its script
+-- data first -- the arrow included, and before the `opx_quests_off` switch --
+-- where the base game's own body and the platform's wrapper look at the init
+-- data and never touch the arrow. The gate now judges the init data first, the
+-- object's class next, the off switch after, and reads a marker's data last; the
+-- map's own wrapper also passes a runtime marker on after a class test alone,
+-- and writes each marker it is asked about (`map: marker asked N: ...`) before
+-- judging it. Every player boots the game again through the launcher once (the
+-- preload changed).
+--
+-- 1.4.14: THE MAP, STEP BY STEP IN THE CLIENT LOG (reported 2026-09-29: "when I
+-- open the map the game hard crashes", from a second PC, then reproduced on the
+-- owner's own). The crash probe's record puts the fault in the game, ~80 ms
+-- after the platform's map setup began; the client log stops at
+-- `map:composition=ready` and says nothing of the step the game died in (the
+-- cause was found in 1.4.15, above).
+-- `OpxQuests.reds` now writes each step the map takes --
+-- `map: opening`, `tooltips hidden 1`, `tooltips hidden 2`, `opened`, `reading
+-- the zoom levels`, `scene attaching`, `scene attached`, every quest marker,
+-- `closed` -- so the last line after a crash is the step it died in. Nothing on
+-- the map changes: each wrapper runs the wrapped method and returns what it
+-- returned. Every player boots the game again through the launcher once (the
+-- preload changed).
+--
 -- THE REAL ITEM (1.4.2). The ripperdoc's Apogee is also the base game's own
 -- item in the Operating System slot: `wear(code)` passes the request to the
 -- REDscript through the clock, and it finds the item in the inventory by its
@@ -115,16 +228,18 @@
 -- and for the third-person model `opx_sandy_view model: third-person model on
 -- V true, camera behind it true, exempt from the world's dilation true,
 -- Smasher's look on it true`, and for the ghost `opx_sandy_view ghost: the
--- owner's third-person model lit -- 16 of 16 parts (entGarmentSkinnedMeshComponent),
--- 16 switched on, its effect spawner there; 4 afterimages, 0.08 s apart` and
--- `opx_sandy_view afterimages: ... placed N times in X s, 4 of 4 showing`), so a
--- test in game is read back from the player's own log. `docs/sandevistan.md`
--- in the opx_infinity repository is the full record.
+-- owner's third-person model lit -- 48 of 48 parts (entGarmentSkinnedMeshComponent),
+-- 48 switched on, its effect spawner there; 12 afterimages, 0.045 s apart` and
+-- `opx_sandy_view afterimages: ... placed N times in X s, 12 of 12 showing`, and
+-- for the development `opx_sandy_view development: maxed on this machine
+-- (asked for) -- level 1 -> 60, ...`), so a test in game is read back from the
+-- player's own log. `docs/sandevistan.md` in the opx_infinity repository is
+-- the full record.
 --
 -- A change to the .reds needs a server restart AND every player's launcher to
 -- boot the game again (the required-mod digest changes).
 resource "opx_sandy_view"
-version "1.4.8"
+version "1.4.15"
 open77_version ">=0.0.1"
 auto_start true
 

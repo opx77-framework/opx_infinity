@@ -4,7 +4,53 @@ The archive is made from the base game's own files (Cyberpunk 2077 2.31); no
 other mod's files are in it. It draws the afterimages with the player's OWN
 silhouette (1.4.0 drew twenty parts of Smasher's body instead).
 
-**1.4.8 (this build): no loader.** The sixteen parts and the effect spawner
+**1.4.12 (this build): the legs.** A female V's afterimages ended at
+mid-thigh (reported 2026-09-28). Her body component in V's body files keeps
+chunks 5-7 of `t0_000_pwa_base__full.mesh` hidden (chunk mask
+`0xFFFFFFFFFFFFFF1F`): the knees, the calves and the feet, which the base game
+draws from a part of their own, `l0_000_pwa_base__cs_flat`
+(`l0_000_base__cs_flat.app`, the variant chosen by the footwear). Up to 1.4.11
+`build.py` gave every afterimage's body part V's own mask, and the ghost has
+no such part -- so the trail had no legs. The body mesh's own chunks 5-7 are
+those same legs: 260, 396 and 848 vertices, the flat part's three chunks,
+and within 2.6 cm of them (its garment vertices compared point by point), on
+vertex factories the ghost's material template lists
+(`MVF_GarmentMeshSkinned` / `ExtSkinned`). So every body part now shows every
+chunk, as a male V's always did (his body component shows all of them).
+`merge.py` checks it for every part of every appearance. Only the two body
+files change, and in them only those masks: 216 parts per file (18 female
+appearances x 12 layers); V's own female body component keeps its mask.
+
+**1.4.10: the afterimages' arms and hands.** V's arm meshes
+(`a0_000_p?a_base_hq__l/r.mesh`) keep their own materials as
+`preloadLocalMaterialInstances` (with `forceLoadAllAppearances`), and a mesh in
+that mode reads an external material from `preloadExternalMaterials`. Up to
+1.4.9 `build.py` wrote the ghost's material to `externalMaterials` on every
+mesh -- which V's body and head (plain `localMaterialBuffer`s) read, and the
+arms do not -- so the arms' `opx_sandy_ghost` appearance named a material
+entry with nothing behind it, and every afterimage had its body and head and
+no arms or hands (reported 2026-09-28). `ghost_mesh` now puts the material in
+the list the mesh reads. The four arm meshes are the only files that change,
+and in them only that list: WolvenKit reads 1.4.9's and 1.4.10's arm meshes
+back identical but for `externalMaterials` (now empty) and
+`preloadExternalMaterials` (now the ghost's material).
+
+**1.4.9: twelve layers -- Adam Smasher's trail, more aggressive,
+with way more clones.** Every appearance of V's two body files now carries 48
+parts and the spawner: `opx_sandy_ghost1_body` / `_arm_l` / `_arm_r` / `_head`
+up to `opx_sandy_ghost12_*`, which the REDscript places 0.045 s apart (the
+farthest where the body was 0.54 s before) and shows once 0.2 m from the body.
+The layer count is one number, `LAYERS = 12`, in `build.py` and in `merge.py`
+(which checks it against build.py's manifest). Layers 5-12 are exact copies of
+the first four's components -- the same meshes, material, flags, bindings,
+chunk masks and appearance -- with their own names and fresh ids and cruid
+entries; layers 1-4, the spawner and its descriptors keep 1.4.8's ids (the
+same draws in the same order), and the spawner's two descriptors name all 48
+parts (`opx_sandy_ghost_x150`'s component mask: 48 bits). The eight meshes,
+the material and the effect are 1.4.8's, byte for byte. Twelve files, as in
+1.4.8.
+
+**1.4.8: no loader.** The sixteen parts and the effect spawner
 are no longer an ArchiveXL patch of V's body: the archive carries V's two
 body files themselves -- `base\characters\common\player_base_bodies\
 appearances\t0_000_base__full.app` and `..._censored.app`, the base game's
@@ -89,7 +135,7 @@ What it holds (`src/archive/pc/mod/`):
 
 | path | what |
 |---|---|
-| `base\characters\common\player_base_bodies\appearances\t0_000_base__full.app` and `t0_000_base__full_censored.app` | V's own body files (the base game's, every field kept) with, in each of the 36 appearances, four layers of the parts -- `opx_sandy_ghost1_body`, `_arm_l`, `_arm_r`, `_head` ... `opx_sandy_ghost4_*` -- on that appearance's gender (switched off, no shadows, V's own chunk mask on the bodies) and the effect spawner `opx_sandy_ghost_fx` appended after V's own body component |
+| `base\characters\common\player_base_bodies\appearances\t0_000_base__full.app` and `t0_000_base__full_censored.app` | V's own body files (the base game's, every field kept) with, in each of the 36 appearances, twelve layers of the parts (four up to 1.4.8) -- `opx_sandy_ghost1_body`, `_arm_l`, `_arm_r`, `_head` ... `opx_sandy_ghost12_*`, 48 parts -- on that appearance's gender (switched off, no shadows, every chunk shown -- V's own chunk mask on the bodies up to 1.4.11, which left a female V's afterimages without legs) and the effect spawner `opx_sandy_ghost_fx` appended after V's own body component |
 | `opx\sandy\ghost\v_body_ma.mesh` / `v_body_wa.mesh` | V's own third-person body (`t0_000_pma_base__full.mesh` / `t0_000_pwa_base__full.mesh`: torso, legs, feet -- the arms are a customization group of their own) plus one appearance, `opx_sandy_ghost` (first), every chunk on `opx_sandy_ghost.mi` |
 | `opx\sandy\ghost\v_arm_l_ma.mesh`, `v_arm_r_ma.mesh`, `v_arm_l_wa.mesh`, `v_arm_r_wa.mesh` | V's own arms and hands (`a0_000_p?a_base_hq__l/r.mesh`, what `a0_000_base__full.app` puts on every player), the same appearance added |
 | `opx\sandy\ghost\v_head_ma.mesh` / `v_head_wa.mesh` | V's base head (`h0_000_p?a_c__basehead.mesh`), the same appearance added, its 244 face-rig bones re-rigged onto `Head` |
@@ -103,8 +149,8 @@ the player skeleton lacks AND gives it the new bone's inverse bind matrix and
 bind position, so the vertex rides that bone rigidly.
 
 The effect spawner's descriptors: `opx_sandy_ghost_x150` on the archive's own
-effect, both `customParameter0` tracks on all sixteen parts (played by nothing
-in 1.4.6), and `opx_sandy_ghost_on`, a trigger that drives nothing -- another
+effect, both `customParameter0` tracks on every part (48 from 1.4.9; played by
+nothing since 1.4.6), and `opx_sandy_ghost_on`, a trigger that drives nothing -- another
 client plays it on a boosted player's body, and the REDscript answers it by
 lighting that body's afterimages. A spawner inside a part merged into a body receives the effect events
 sent to that body, as CDPR's own `fx_thruster_boots` does inside the thruster
@@ -125,8 +171,9 @@ body covers its own ghost; running, dashing and jumping leave the trail.
    names (`rigs.json`).
 2. `WolvenKit.CLI convert serialize` them to JSON (`json/` for Smasher's and
    V's body `.app`, `v/json/` for V's meshes).
-3. `python3 build.py` writes the patch, the eight meshes, the material and the
-   effect as WolvenKit JSON (`build_v146/json/`); `python3 merge.py` appends
+3. `python3 build.py` writes the patch (`LAYERS` layers of the parts: 12), the
+   eight meshes, the material and the effect as WolvenKit JSON
+   (`build_v146/json/`, and `build_v146/manifest.json`); `python3 merge.py` appends
    the patch's parts to each appearance of V's two body files
    (`build_v148/json/`, and checks that the result minus the parts IS the base
    game's file, handles resolved); `WolvenKit.CLI convert deserialize` makes
@@ -142,6 +189,50 @@ body covers its own ghost; running, dashing and jumping leave the trail.
    CRC-64/XZ from the counts on).
 5. (Up to 1.4.7, `opx_sandy_ghost.xl` declared the ArchiveXL patch; 1.4.8 has
    none.)
+
+Checked for 1.4.12 (archive 5,849,088 bytes, 12 files, 246 segments, all
+stored; md5 `a4a27a2f1c3009f609429ffb6260f82b`): the independent reader
+(`tools/unpack.py`) confirms the RDAR index CRC and every CR2W header,
+buffer-table and buffer CRC; ten of the twelve files are byte for byte 1.4.10's
+(the eight meshes, the material, the effect); WolvenKit reads the two body
+files back equal to what `merge.py` wrote (handles resolved), and those equal
+1.4.10's in every field but 432 `chunkMask` values per file (18 female
+appearances x 12 body parts, in the compiled package and the components list),
+`0xFFFFFFFFFFFFFF1F` -> `0x7FFFFFFFFFFFFFFF`. In the read-back, every ghost
+body part of both genders shows every chunk, and V's own female body
+component still hides chunks 5-7. The compiled package stores a mask equal to
+the default not at all, so each female appearance's buffer is 192 bytes (12 x
+16) shorter.
+
+Checked for 1.4.10 (archive 5,853,184 bytes, 12 files, 246 segments, all
+stored; md5 `7ce92a40b60add236f09735b112945d7`): an independent reader
+confirms the RDAR index CRC and every CR2W header, buffer-table and buffer CRC;
+of the twelve files, eight are byte for byte 1.4.9's (both body files, the
+body and head meshes, the material, the effect) and the four arm meshes
+differ; WolvenKit reads each arm mesh back equal to what build.py wrote
+(handles resolved), and equal to 1.4.9's in every field but
+`externalMaterials` (empty) and `preloadExternalMaterials` (the ghost's
+material); each arm mesh's buffers are still the base game's (21 / 21 and
+16 / 16 read back equal); in all four the ghost appearance's chunks name the
+entry `opx_sandy_ghost` (not a local instance, index 0), and every appearance
+has the same chunk count (4 left, 3 right).
+
+Checked for 1.4.9 (archive 5,853,184 bytes, 12 files, 246 segments, all
+stored; md5 `74e6d9f664ba6126c9ec1ef90532e082`): an independent reader confirms
+the RDAR index CRC and every CR2W header, buffer-table and buffer CRC;
+WolvenKit reads all twelve files back equal to what build.py and merge.py
+wrote (handles resolved; paths as their FNV-1a 64 hashes); each merged body
+file minus the appended parts equals the base game's own (handles resolved);
+every one of the 36 appearances of both files carries the 48 parts in order
+(`opx_sandy_ghost1_*` .. `opx_sandy_ghost12_*`) and the spawner, with unique
+component ids (the base game's own included) and a cruid entry for each;
+layers 1-4 equal 1.4.8's parts field for field, ids included; every part of
+layers 5-12 equals the same kind of part of layer 1 in every field but its
+name and id (the mesh on that appearance's gender, the appearance, flags,
+bindings, chunk mask); the spawner equals 1.4.8's but for the 48 part names
+and x150's 48-bit mask; the eight meshes, the material and the effect are
+byte for byte 1.4.8's (so their buffers are still the base game's), and the
+archive's twelve path hashes are 1.4.8's.
 
 Checked for 1.4.8: WolvenKit reads all twelve files back from the packed
 archive equal to what build.py and merge.py wrote (handles resolved; mesh and

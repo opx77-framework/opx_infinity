@@ -80,6 +80,10 @@ shared_script "config/avgarages.lua"
 -- flight numbers are the server's alone, and the one thing both halves need is
 -- the binding's name and id.
 shared_script "config/avdrive.lua"
+-- Shared: the client reads the reach, the key, the exit fade and the flight
+-- sounds to draw the aircraft door and read a flight; the server re-derives
+-- every decision (who may fly what, the distance, the seat) from the same file.
+shared_script "config/avdoor.lua"
 -- Shared like the garages config: the client draws the headquarters marker and
 -- reads the look and the name row's cap here, and both halves must refuse the
 -- same rows.
@@ -98,6 +102,10 @@ shared_script "config/dealership.lua"
 -- Shared like the two above: the client draws a store's marker and reads the
 -- radius and the key here, and both halves must refuse the same rows.
 shared_script "config/clothing.lua"
+-- Shared like the clothing config: the client draws a branch's marker and reads
+-- the radius, the key and the quick amounts; the server re-derives every
+-- distance, balance and amount from the same table.
+shared_script "config/bank.lua"
 -- Shared because both halves read it: the server scores from the law book and
 -- the client later shows which division is answering. It must also run before
 -- `modules/ncpd/module.lua` declares, which every shared config does.
@@ -343,6 +351,18 @@ client_script "modules/clothing/client/main.lua"
 -- work. Without this file the client half is never built.
 client_script "modules/clothing/client/exports.lua"
 
+-- Bank branches: a marker, a key and a menu that moves money between the
+-- account a paycheck is paid into and the cash in hand. The fourth
+-- place-shaped module after `garages`, `dealership` and `clothing`, sharing
+-- their spot vocabulary. The server half needs the character contract for
+-- every transaction; `menu`, `form` and `prompts` are optional client surfaces.
+shared_script "modules/bank/module.lua"
+shared_script "modules/bank/locales.lua"
+shared_script "modules/bank/shared/access.lua"
+server_script "modules/bank/server/storage.lua"
+server_script "modules/bank/server/main.lua"
+client_script "modules/bank/client/main.lua"
+
 -- NCPD and MaxTac headquarters: a marker and a name, designating the station
 -- the AV pads and garages around it are placed at. The third place-shaped
 -- module, sharing the spots vocabulary with `garages`, `dealership` and
@@ -383,15 +403,21 @@ server_script "modules/ncpd/server/response.lua"
 -- The operator's crowd of mortal civilians: bodies a kill can be booked
 -- against. Before `main.lua`, which starts it and hands it the charge door.
 server_script "modules/ncpd/server/bots.lua"
+-- The hit relay: what turns a player's shot at one of the bodies above into
+-- damage and so into a death. The platform does not carry that shot to the
+-- server on its own. Before `main.lua`, which starts it and hands it the reads.
+server_script "modules/ncpd/server/hits.lua"
 server_script "modules/ncpd/server/main.lua"
 client_script "modules/ncpd/client/main.lua"
+-- The relay's client half: the host's own `open77:npcHit`, forwarded.
+client_script "modules/ncpd/client/hits.lua"
 -- The scanner's two halves: its state and rules, then the view seam that is the
 -- only file here that knows the other end is a CEF page (README: the view seam).
 client_script "modules/ncpd/client/radio.lua"
 client_script "modules/ncpd/client/radioview.lua"
 
 -- The skill tree: the character's own ledger, fed by the jobs bank's funnel
--- (`jobs.Event.PAID`) and drawn as three trunks of nodes a level's point may
+-- (`jobs.Event.PAID`) and drawn as seven trunks of nodes a level's point may
 -- buy. Before the jobs scripts are not required -- the hook is one guarded
 -- subscription in `Start` -- but after them so the funnel is never subscribed
 -- before it exists on a fresh boot.
@@ -684,6 +710,15 @@ shared_script "modules/avdrive/locales.lua"
 server_script "modules/avdrive/server/main.lua"
 client_script "modules/avdrive/client/main.lua"
 
+-- The aircraft door: board a parked AV you may fly (key F), step out of one
+-- behind a native fade, and hear a player-flown MaxTac AV. After `avdrive` for
+-- the same reason it sits last: it reads the vehicles module's books and the
+-- ncpd module's parked hulls through their contracts and nothing waits on it.
+shared_script "modules/avdoor/module.lua"
+shared_script "modules/avdoor/locales.lua"
+server_script "modules/avdoor/server/main.lua"
+client_script "modules/avdoor/client/main.lua"
+
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
 
@@ -767,6 +802,11 @@ permissions {
   "world.timescale",
   "world.dilation",
   "vfx.screen",
+  -- THE AIRCRAFT DOOR'S EXIT FADE (`modules/avdoor/client/main.lua`):
+  -- `Open77.screen.fadeOut`/`fadeIn`, the native quest fade that covers the
+  -- platform's one-cut AV exit. A CLIENT permission; refused, the exit is the
+  -- same cut it always was and nothing else changes.
+  "screen.effects",
 
   -- The per-bucket ambient policy, which is what decides whether the engine's
   -- own police -- the units a heat stage spawns and the MaxTac AV -- may exist at

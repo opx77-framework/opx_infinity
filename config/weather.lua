@@ -43,5 +43,13 @@ OPX.Config.MODULES.weather = {
 		TIME = { NAME = 'opx.time', RESTRICTED = true },
 		TIME_FREEZE = { NAME = 'opx.time.freeze', RESTRICTED = true },
 		DAY_LENGTH = { NAME = 'opx.time.length', RESTRICTED = true },
+		-- A PLAYER'S OWN TIME SKIP, for a mission's "wait until" or "come back
+		-- tomorrow" step. The base game's time skip is refused in a session, and
+		-- at the engine's rate a day is three real hours. `/opx.wait <hours>`
+		-- moves the clock on the asking player's game only, 1 to 23 hours ahead;
+		-- the shared hour stands back on that game for 20 minutes (the same hold
+		-- a mission's own move of the clock gets) and then comes back. Nobody
+		-- else's sky moves. Open to every player; '' switches it off.
+		WAIT = { NAME = 'opx.wait', RESTRICTED = false },
 	},
 }

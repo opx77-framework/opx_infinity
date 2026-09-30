@@ -26,33 +26,35 @@ eyes on a live client.
 | `merc` | Mercenary | Street Merc→Solo→Edgerunner→**Legend** | 60/300/900 | open | always on duty | no |
 | `fixer` | Fixer | Runner→Broker→**Fixer** | 60/300 | open | always on duty | no |
 | `netrunner` | Netrunner | Script Kiddie→Netrunner→**Blackwall Diver** | 60/300 | open | no (clock in) | no |
+| `corp` | Corporate | Intern→Associate→**Director** | 120/480 | open | no (clock in) | no |
+| `nomad` | Nomad | Drifter→Clan Runner→**Road Warden** | 60/300 | open | always on duty | no |
 | `unemployed` | Unemployed | Freelancer | — | default job | yes | no |
 | `arasaka` | Arasaka (hidden) | 4 grades | — | **not offered on any board** — `/opx.job <p> arasaka <g>` only | — | no |
 | `militech` | Militech (hidden) | — | — | ditto | — | no |
-| `delamain` | Delamain Driver (hidden) | — | — | ditto | — | no |
+| `cabbie` | Delamain Driver (hidden) | — | — | ditto | — | no |
 | `bartender` | Bartender (hidden) | — | — | ditto | — | no |
 
 Boss seats carry `bankAuth` (NCPD Captain, Trauma Director, Chrome Surgeon,
-Fixer, Arasaka/Militech/Bartender tops) — replicated, **nothing consumes it yet**.
+Fixer, Corporate Director, Arasaka/Militech/Bartender tops) — replicated, **nothing consumes it yet**.
 
 ## 2. Job → commands chart
 
 ### 2a. Commands a job-holder runs (gameplay)
 
-| Command | NCPD | MaxTac | Trauma | Ripperdoc | Merc | Fixer | Netrunner | Gate |
-|---|---|---|---|---|---|---|---|---|
-| `/opx.duty` | ✔ | ✔ | ✔ | ✔ | — (always on) | — (always on) | ✔ | everyone |
-| **E on signup board** (join/leave/standing) | ✔ | shows only | ✔ | ✔ | ✔ | ✔ | ✔ | everyone, 4 m radius |
-| **E on boss desk** (hire/promote/demote/fire) | Captain | Squad Lead | Director | Chrome Surgeon | Legend | Fixer grade 2 | Blackwall Diver | **boss grade**, candidate within 8 m |
-| `/opx.jobs.hire/promote/demote/fire <job> <id>` | boss | boss | boss | boss | boss | boss | boss | boss grade, no ACL |
-| `/opx.jobs.join/leave/roster/rank` | operator | operator | operator | operator | operator | operator | operator | ACL `command.opx.jobs.*` |
-| `/opx.ncpd.status/report/heat/clear/laws` | ✔ | ✔ | — | — | — | — | — | ACL (all `restricted`) |
-| `/opx.ncpd.av` (call the MaxTac AV) | ✔ | ✔ | — | — | — | — | — | ACL |
-| `/opx.ncpd.board [seat]` (AV crew seat) | on duty, **division rule** | on duty, division rule | — | — | — | — | — | job ∈ MAXTAC `OPT_IN.JOBS` **and on duty**, or right `opx.ncpd.maxtac` |
-| AV pad garage (MaxTac AV recall) | — | ✔ | — | — | — | — | — | `avgarages` `JOBS = { maxtac = 0 }`, `ON_DUTY = true` |
-| AV autopilot (avdrive) | via seat | ✔ | — | — | — | — | — | pilot of a piloted AV |
-| `/opx.clinic.*` tray (fit/repair chrome) | patient | patient | patient | **rip works here** | patient | patient | patient | interaction; ripperdoc job is scene-only |
-| `/opx.withdraw` | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | everyone |
+| Command | NCPD | MaxTac | Trauma | Ripperdoc | Merc | Fixer | Netrunner | Corp | Nomad | Gate |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `/opx.duty` | ✔ | ✔ | ✔ | ✔ | — (always on) | — (always on) | ✔ | ✔ | — (always on) | everyone |
+| **E on signup board** (sign up / work this job / hand in your notice / standing) | ✔ | shows only; a hired operator **works** it here | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | everyone, 4 m radius |
+| **E on boss desk** (hire/promote/demote/fire) | Captain | Squad Lead | Regional Director | — no desk ships | — | — | — | — | — | **boss grade**, candidate within 8 m. Only `jobs_desk_city`, `jobs_desk_maxtac` and `jobs_desk_trauma` ship; the other bosses use the commands below, or place a desk with `/opx.jobs.add boss <job>` |
+| `/opx.jobs.hire/promote/demote/fire <job> <id>` | boss | boss | boss | boss | boss | boss | boss | boss | boss | boss grade, no ACL |
+| `/opx.jobs.join/leave/roster/rank` | operator | operator | operator | operator | operator | operator | operator | operator | operator | ACL `command.opx.jobs.*` |
+| `/opx.ncpd.status/report/heat/clear/laws` | ✔ | ✔ | — | — | — | — | — | — | — | ACL (all `restricted`) |
+| `/opx.ncpd.av` (the engine's AV route — spawns nothing on this build; `/opx.ncpd.heat 5` flies it) | ✔ | ✔ | — | — | — | — | — | — | — | ACL |
+| `/opx.ncpd.board [seat]` (AV crew seat) | on duty, **division rule** | on duty, division rule | — | — | — | — | — | — | — | job ∈ MAXTAC `OPT_IN.JOBS` **and on duty**, or right `opx.ncpd.maxtac` |
+| AV pad garage (MaxTac AV recall) | — | ✔ | — | — | — | — | — | — | — | `avgarages` `JOBS = { maxtac = 0 }`, `ON_DUTY = true` |
+| AV autopilot (avdrive) | via seat | ✔ | — | — | — | — | — | — | — | pilot of a piloted AV |
+| `/opx.clinic.*` tray (fit/repair chrome) | patient | patient | patient | **rip works here** | patient | patient | patient | patient | patient | interaction; ripperdoc job is scene-only |
+| `/opx.withdraw` | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | ✔ | everyone |
 
 ### 2b. Job-gated SURFACES (not commands)
 
@@ -60,15 +62,14 @@ Fixer, Arasaka/Militech/Bartender tops) — replicated, **nothing consumes it ye
 |---|---|---|
 | Dispatch board + radio call-outs | `config/ncpd.lua` `ALERTS` | primary job ∈ {`ncpd`,`maxtac`} **and on duty** |
 | MaxTac AV summon + seats | `config/ncpd.lua` `MAXTAC.OPT_IN` | right `opx.ncpd.maxtac` or job = `maxtac`; seats also need duty |
-| NCPD evidence lockers / armory | `config/shops.lua` | `ncpd = 0` + `ON_DUTY` (×2), `maxtac = 0` + `ON_DUTY` |
-| Trauma medical shop | `config/shops.lua` | `trauma = 0` + `ON_DUTY` |
-| Gunsmith counter (police) | `config/gunsmith.lua` | `ncpd = 1` / `maxtac = 0` + `ON_DUTY` |
+| Uniforms at the tailors (`LOOKS`) | `config/shops.lua` | NCPD patrol set + issue suit `ncpd = 0` + `ON_DUTY`; MaxTac field kit `maxtac = 0` + `ON_DUTY`; Trauma Team outfit `trauma = 0` + `ON_DUTY` — free, offered at a `SHOPS` counter (Jinguji, Second-hand Watson) |
+| Gunsmith counter (police) | `config/gunsmith.lua` | door `ncpd = 1` / `maxtac = 0` + `ON_DUTY`; service and patrol rounds at the door's own rank, marksman rounds NCPD Detective+ |
 | Gunsmith counter (corpo) | `config/gunsmith.lua` | `arasaka = 0` + `ON_DUTY` |
 | Elevators — NCPD HQ | `config/elevators.lua` | Bullpen `ncpd 0`/`maxtac 0`; Holding `ncpd 1` + duty; Evidence `ncpd 2` + duty |
 | Elevators — Arasaka Tower | `config/elevators.lua` | Analytics `arasaka 0`; Counterintel `arasaka 2`/`militech 3`; Executive `arasaka 3` + duty |
 | Elevators — back rooms | `config/elevators.lua` | `ripperdoc 1`/`trauma 2`; Booths `fixer 0`/`merc 2`; Cellar `fixer 2` |
-| Teleport to corpo floor | `config/teleports.lua` | `arasaka = 2` + `ON_DUTY` |
-| Skill trees | `config/skills.lua` | `ncpd = true`, `maxtac = true`, one public (`JOBS = nil`) |
+| Teleport to corpo floor | `config/teleports.lua` | `arasaka = 2` + `ON_DUTY` — **a disabled example at 0,0,0** |
+| Skill trees | `config/skills.lua` | seven trunks, fed by the work each names: NCPD ← `ncpd`; MaxTac ← `maxtac`; Corp ← `corp` (+ `arasaka`/`militech`); Nomad ← `nomad` (+ `cabbie`); Street ← every other job (`JOBS = nil`); Ripperdoc ← `ripperdoc`/`trauma`; **Fixer** (the top, Night City Legend) ← `fixer`/`merc`. Staff lever `/opx.skills.level` (restricted) |
 | Hauling sites | `config/hauling.lua` | open by default; `JOBS = { nomad = 0 }` whitelists, `ON_DUTY` narrows |
 | Dealership floor | `config/dealership.lua` | **public — anybody may buy.** (`COMPANY.JOBS`/`GANGS` are bank toggles, not gates; see R7) |
 
@@ -120,19 +121,19 @@ one civilian) where a test needs a counterpart. Tick as you go; every item names
 its expected result.
 
 ### A. Jobs & pay
-1. ☐ Stand within 4 m of the EMPLOYMENT board, press **E** → board lists 7 jobs with YOUR standing on each (MaxTac row shows the approval terms, not a join button).
+1. ☐ Stand within 4 m of the EMPLOYMENT board, press **E** → board lists 9 jobs with YOUR standing on each (MaxTac row shows the approval terms, not a join button).
 2. ☐ Join **NCPD** as Cadet → grade 0 appears in `/opx.where`; `/opx.duty` toggles duty (2 s cooldown).
 3. ☐ (Fast ladder test) set `LADDER = { [1] = 1.0 }` in staging `config/jobs.lua`, restart, clock in, wait 1 min → auto-promotion announcement to Officer. Revert after.
 4. ☐ Wait one 10-minute paycheck while on duty → bank rises by the grade's `payment`. Clock off and confirm NCPD still pays (`offDutyPay`), and that a Ripperdoc does **not**.
-5. ☐ As NCPD Captain (boss), stand a second player within 8 m of the NCPD desk → **E** desk, hire → candidate at grade 0. Promote → demote → fire, each with the 5 s roster cooldown respected.
-6. ☐ Try `/opx.jobs.hire ncpd 3` from >8 m away → refused (hire needs the scene).
-7. ☐ Attempt MaxTac join from the board → refusal naming "NCPD Detective". `/opx.job <id> maxtac 1` as staff → join works; Squad Lead can then hire at the MaxTac desk.
+5. ☐ As NCPD Captain (boss), stand a second player within 8 m of the NCPD desk → **E** desk, hire → candidate at grade 0. Promote → demote → fire, each with the 2 s roster cooldown respected; the promoted player stays on the clock.
+6. ☐ The desk's hire press refuses a candidate >8 m away (`jobs.candidateAway`). The typed `/opx.jobs.hire ncpd 3` names a connection and does **not** measure the distance, by design.
+7. ☐ MaxTac row as a Cadet → "Needs NCPD Detective or above"; as a Detective → "By invitation only". `/opx.job <id> maxtac 1` seats a first Squad Lead, who hires the Detective at the MaxTac desk; the Detective then picks **Work this job** on the MaxTac row at the office.
 
 ### B. NCPD / MaxTac
 8. ☐ As civilian, commit a crime; as on-duty NCPD, watch the dispatch board toast fire **once** (one suspect climbing stages = one toast per `COOLDOWN_MS`), positions rounded to 10 m.
 9. ☐ Off-duty officer sees/heard **nothing** (no radio call-out, no board).
 10. ☐ `/opx.ncpd.report <law> <p>` → score/stage readout; `/opx.ncpd.status` shows stage + division; `/opx.ncpd.clear` wipes it.
-11. ☐ At stage 5, `/opx.ncpd.av` → MaxTac AV spawns; `/opx.ncpd.board` takes a seat; second call for the same player → `no_seat`/`not_boarding` reasons read distinctly.
+11. ☐ `/opx.ncpd.heat 5` on a test player → the server flies the MaxTac AV in (`/opx.ncpd.av` alone asks the engine route, which spawns nothing on this build); `/opx.ncpd.board` takes a seat; second call for the same player → `no_seat`/`not_boarding` reasons read distinctly.
 12. ☐ Pilot the AV (avdrive) → autopilot to a map waypoint, lands, hands control back; leaving the seat cancels autopilot.
 
 ### C. AV pads (new capture command — deploy first)

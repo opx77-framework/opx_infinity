@@ -87,6 +87,14 @@ M.Event = {
 	-- arrived on, so a client cannot report a crime for anybody but itself.
 	REPORT = OPX.Event(NET, 'ncpd', 'engine'),
 
+	-- Client to server. The local player's own shot landed on an NPC: the host's
+	-- `open77:npcHit`, which only the SHOOTER's client raises and which the
+	-- platform does not carry to the server on its own. The payload names the
+	-- body, the engine's damage and the height of the intercept and nothing the
+	-- server has to believe -- it prices the hit itself and refuses a body that
+	-- is not this module's (`server/hits.lua`).
+	NPC_HIT = OPX.Event(NET, 'ncpd', 'npcHit'),
+
 	-- Client to server. A body is at the crew door of the MaxTac aircraft and
 	-- wants in. IT CARRIES NOTHING, deliberately: the server resolves the player
 	-- from the connection it arrived on, the hull from its own runs, and the

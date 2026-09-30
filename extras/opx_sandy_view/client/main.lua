@@ -11,11 +11,14 @@
 --
 -- Called by opx_infinity (modules/ripperdoc/client/sandevistan.lua) through
 -- `Open77.exports.callSync("opx_sandy_view", ...)`: `engage` / `release` for
--- the owner's clock, `wear` for the real item, `info` for the report.
+-- the owner's clock, `wear` for the real item, `develop` for the base game's
+-- own development (an admin's "max all levels"), `info` for the report.
 
--- The claim never outlives a boost: the platform's own ceiling is an hour, the
--- overdrive's is fifteen seconds.
-local MAX_MS = 20000
+-- The claim never outlives a boost: the platform's own ceiling is an hour; the
+-- ripperdoc runs a Sandevistan for up to 40 s (level-scaled), 45 s with its
+-- ease (up to 1.4.8 this was 20 s, which would have ended a longer boost's
+-- slowed world halfway).
+local MAX_MS = 45000
 local holding = false
 
 local function door()
@@ -74,7 +77,29 @@ exports('wear', function(code)
 	return ok == true, why
 end)
 
+-- THE BASE GAME'S DEVELOPMENT (1.4.9). An admin's "max all levels" on the
+-- server also maxes the base game's own development on the admin's machine,
+-- through the same clock message with codes the real item never uses (0-9 are
+-- its): 10 = the character's level, street cred, attributes, skills, perk and
+-- relic points to the base game's own maxima. The REDscript applies it once
+-- per request with the base game's own PlayerDevelopmentData, remembers it for
+-- the session and applies it again on a new body.
+local DEVELOP = { [10] = 'max everything' }
+
+--- Asks the REDscript for the development `code` names; answers true or false, why.
+--- Never over a boost: the boost's own claim is the one that must hold.
+exports('develop', function(code)
+	local world = door()
+	if world == nil then return false, 'no_timescale_on_this_build' end
+	code = tonumber(code)
+	if code == nil or DEVELOP[code] == nil then return false, 'invalid_code' end
+	if holding then return false, 'boosting' end
+	local ran, ok, why = pcall(world.setTimeScale, WEAR_BASE - code * WEAR_STEP, { durationMs = WEAR_MS, easeMs = 0 })
+	if not ran then return false, tostring(ok) end
+	return ok == true, why
+end)
+
 --- What this resource is, for opx_infinity's report.
 exports('info', function()
-	return { version = '1.4.8', reason = 'open77:' .. GetCurrentResourceName(), holding = holding }
+	return { version = '1.4.15', reason = 'open77:' .. GetCurrentResourceName(), holding = holding }
 end)

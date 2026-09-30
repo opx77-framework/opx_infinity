@@ -91,6 +91,12 @@ OPX.Config.MODULES.avgarages = {
 	-- character already owns, so "all the AVs" is one list an operator edits
 	-- rather than a code change.
 	--
+	-- NOT TO BE CONFUSED WITH THE JOB FLEET. The AV the MaxTac role needs is
+	-- already at the top of every pad's list for every operator on duty, BY
+	-- DEFAULT and never owned -- `config/garages.lua` JOB_VEHICLES, under the
+	-- job's own caption. What this list adds below it is stock a pad ISSUES,
+	-- which then belongs to whoever drew it.
+	--
 	-- A picked hull is ISSUED, not borrowed: it is registered under the
 	-- character's name and filed at the pad, so it stores, recalls and persists
 	-- exactly like a vehicle they own -- and it counts against the garage limit

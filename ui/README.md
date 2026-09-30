@@ -155,6 +155,33 @@ reach it** — mirror it by hand or the two drift. And `ui/public/` is a Vite pu
 directory, so **`npm run build` copies `ui/public/loading.html` over `web/loading.html`**:
 edit the one under `ui/public/`, and expect the built copy to follow.
 
+### The ripperdoc screen is the base game's, not ours
+
+`modules/ripperdoc/Ripperdoc.vue` is the second exception, and it is one on purpose:
+the players asked for the clinic to be the base game's own 2.0 ripperdoc screen, so
+it follows the game's widget (`base\gameplay\gui\fullscreen\ripperdoc\ripperdoc.inkwidget`,
+2.31) instead of the contract above. Its header comment says where each part comes
+from; in short:
+
+- **Layout** in the widget's own 3840x2160 units (`--u`, one unit per 4K pixel,
+  scaled by the screen's height): the body in the middle, the ten systems at the
+  widget's anchors, the capacity and armor meters left and right, a system opened as
+  the widget's inventory tab, the item tooltip docked beside it, the purchase popup.
+- **Shapes** are the game's own atlas parts, not augmented-ui: white, sliced where
+  the atlas slices them, and tinted with `-webkit-mask-box-image`. They are cut by
+  `tools/ripperdoc-art.py` into `modules/ripperdoc/art/` and inlined by the build;
+  the paperdoll bodies go to `public/images/ripperdoc/`.
+- **Colour** is the game's, read from its inkstyles (`MainColors.*`, `Rarity.*`),
+  declared once as `--rd-*` on the component's root. The operator's theme does not
+  recolour this screen, and a green, a yellow and the five tier colours appear on it,
+  because they appear on the game's.
+- **Type** is the game's face, Rajdhani, at the widget's sizes; `design-system/fonts.css`
+  carries its Medium weight for this screen.
+
+What still holds here is everything that is not the look: the page decides nothing,
+every press is an intent, every list is bounded and coerced, and every file it ships
+keeps inside the path budget.
+
 ---
 
 ## The one sprite left

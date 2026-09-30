@@ -272,6 +272,13 @@ OPX.Config.MODULES.admin = {
 		WEATHER_FREEZE = 'opx.weather.freeze',
 		TIME = 'opx.time',
 		TIME_FREEZE = 'opx.time.freeze',
+		-- The levels, for testing or for fun: Myself and each player's page run
+		-- `max` -- the skill tree at its cap AND the base game's own levels maxed
+		-- on that player's machine (`config/skills.lua` DEVELOP) -- and `reset`.
+		SKILLS_LEVEL = 'opx.skills.level',
+		-- The ripperdoc's override on the operator's own body: `full` puts a
+		-- fresh life on every piece of chrome fitted (Myself only).
+		CHROME = 'opx.clinic.chrome',
 	},
 
 	-- Weather names the sky screen offers. They are the NAME column of

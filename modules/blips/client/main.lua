@@ -237,6 +237,36 @@ local function point(out, key, label, x, y, z, look)
 	return true
 end
 
+--- A counter that hands the resume back every `every` units of work.
+--
+-- THE CLIENT'S TIME BUDGET IS PER RESUME, AND IT IS ENFORCED EVERY 10,000 VM
+-- INSTRUCTIONS: the platform's count hook (`kInstructionHookStep`) checks the
+-- clock only then, against a deadline that is this resource's share of the
+-- frame's two milliseconds -- or already past, when the frame is busy. So a
+-- resume that stays under ten thousand instructions can never be cut, and one
+-- that runs past it is cut whenever the frame is busy. The derivation below ran
+-- whole in one resume -- every source, every signature, the sort -- and the
+-- client log carried `[blips] reconcile: ... script execution budget exceeded`
+-- 70 to 80 times a session (2026-09-27 and -28), each one a pass thrown away.
+-- A unit is roughly a hundred instructions; a slice of SLICE_UNITS stays far
+-- under the hook's first check.
+--
+-- WITHOUT A STEP IT DOES NOTHING: a test calling `Runtime.Wanted()` directly is
+-- not on a thread and must not yield.
+local SLICE_UNITS = 32
+
+local function spender(step, every)
+	if type(step) ~= 'function' then return function() end end
+	local spent = 0
+	return function(units)
+		spent = spent + (units or 1)
+		if spent >= every then
+			spent = 0
+			step()
+		end
+	end
+end
+
 --- Whether the local character passes one place's JOBS block.
 --
 -- THE OWNER: "fait en sorte que les blips job on les voit uniquement si on fait
@@ -305,11 +335,26 @@ end
 -- @param name string one of `M.ORDER`
 -- @return table list of points
 -- @return integer skipped
-local function pointsOf(name)
+local function pointsOf(name, spend)
+	spend = spend or function() end
 	local out, skipped = {}, 0
 
+	-- A LIVE LIST IS COPIED BEFORE IT IS WALKED IN SLICES. `spend` may yield,
+	-- and a `pairs` walk that is suspended while its table's owner adds a key is
+	-- undefined behaviour in Lua. The other modules' lists (headquarters,
+	-- garages, dealership, teleports) are their live state, so their pairs are
+	-- taken in one cheap pass (a few instructions each) and the costly part runs
+	-- over the copy; the config tables (`shops`, `gunsmith`, `hauling`) never
+	-- change at run time and are walked directly.
 	local function add(key, label, x, y, z)
+		spend()
 		if not point(out, key, label, x, y, z) then skipped = skipped + 1 end
+	end
+	local function snapshot(list)
+		local pairsOf = {}
+		for key, value in pairs(list) do pairsOf[#pairsOf + 1] = { key, value } end
+		spend(math.ceil(#pairsOf / 10))
+		return pairsOf
 	end
 
 	if name == 'headquarters' then
@@ -326,7 +371,9 @@ local function pointsOf(name)
 		if hqSpots == nil then return out, skipped end
 		local read, list = pcall(hqSpots)
 		if not read or type(list) ~= 'table' then return out, skipped end
-		for key, spot in pairs(list) do
+		for _, pair in ipairs(snapshot(list)) do
+			local key, spot = pair[1], pair[2]
+			spend()
 			if type(spot) == 'table' and type(spot.blip) == 'table' then
 				if not point(out, tostring(key), spot.label, spot.x, spot.y, spot.z, spot.blip) then
 					skipped = skipped + 1
@@ -334,7 +381,7 @@ local function pointsOf(name)
 			end
 		end
 
-	elseif name == 'garages' or name == 'dealership' then
+	elseif name == 'garages' or name == 'dealership' or name == 'bank' then
 		-- The spots this client was TOLD ABOUT, which is not the same list as
 		-- `config/<name>.lua`: garage and dealer spots are captured in game and
 		-- live in the database, and the server filters what it sends to this
@@ -345,7 +392,8 @@ local function pointsOf(name)
 		if spots == nil then return out, skipped end
 		local read, list = pcall(spots)
 		if not read or type(list) ~= 'table' then return out, skipped end
-		for key, spot in pairs(list) do
+		for _, pair in ipairs(snapshot(list)) do
+			local key, spot = pair[1], pair[2]
 			if type(spot) == 'table' then add(tostring(key), spot.label, spot.x, spot.y, spot.z) end
 		end
 
@@ -357,7 +405,8 @@ local function pointsOf(name)
 		if entrances == nil then return out, skipped end
 		local read, list = pcall(entrances)
 		if not read or type(list) ~= 'table' then return out, skipped end
-		for key, entrance in pairs(list) do
+		for _, pair in ipairs(snapshot(list)) do
+			local key, entrance = pair[1], pair[2]
 			if type(entrance) == 'table' then
 				add(tostring(key), entrance.label, entrance.x, entrance.y, entrance.z)
 			end
@@ -386,6 +435,7 @@ local function pointsOf(name)
 		if type(armouries) == 'table' then
 			local membership = guns.MEMBERSHIP
 			for key, raw in pairs(armouries) do
+				spend(2)
 				local bench = type(raw) == 'table' and raw.BENCH or nil
 				-- The armoury's own JOBS block, read straight off the config the
 				-- gunsmith module gates the bench with. An ungated armoury is
@@ -408,6 +458,7 @@ local function pointsOf(name)
 		if type(sites) == 'table' then
 			local membership = haul.MEMBERSHIP
 			for siteKey, site in pairs(sites) do
+				spend(2)
 				local drops = type(site) == 'table' and site.DROPOFFS or nil
 				-- THE GATE IS ON THE SITE, NOT ON THE DROP-OFF, which is where
 				-- `modules/hauling` puts it too: a site's JOBS block is what makes
@@ -451,6 +502,7 @@ local function pointsOf(name)
 					-- making the key per-point produces two. The break is the cheap
 					-- early exit it looks like and no more.
 					for _, spot in ipairs(site.POINTS) do
+						spend()
 						if type(spot) == 'table' and point(out, 'site\1' .. tostring(siteKey),
 							site.LABEL, spot.X, spot.Y, spot.Z) then
 							break
@@ -506,11 +558,16 @@ end
 
 --- Every blip this config wants right now, keyed by a stable id.
 -- @author dop42
+-- @param step function|nil called between slices of the work -- the reconcile
+-- thread passes `Wait(0)`, so no resume runs long (see `spender`); nil runs it
+-- whole, which is what a test calling this directly wants
 -- @return table id -> { entry, block, signature }
 -- @return integer how many blank points were skipped
 -- @return integer how many were dropped over `MAX`
-function Runtime.Wanted()
+function Runtime.Wanted(step)
+	local spend = spender(step, SLICE_UNITS)
 	local blocks = Runtime.Categories()
+	spend(10)
 	local limit = math.tointeger(settings().MAX) or M.QUOTA
 	-- Clamped to the platform's own per-resource quota rather than trusted: a
 	-- config asking for 300 is asking the engine to refuse 172 creates one at a
@@ -522,14 +579,25 @@ function Runtime.Wanted()
 	for _, name in ipairs(M.ORDER) do
 		local block = blocks[name]
 		if block ~= nil then
-			local list, blanks = pointsOf(name)
+			local list, blanks = pointsOf(name, spend)
 			skipped = skipped + blanks
 			-- Sorted so the set that survives the cap is the SAME set every pass.
 			-- `pairs` order is not stable between runs, and without this a server
 			-- over the quota would draw a different arbitrary 128 on every
 			-- reconcile -- pins flickering in and out with nothing changing.
-			table.sort(list, function(a, b) return a.key < b.key end)
+			--
+			-- ONLY WHEN THE CAP WILL CUT THIS LIST: a list that fits whole needs no
+			-- order, and the sort is the one step no slice can split -- 128 keys
+			-- with a Lua comparator are several thousand instructions in a single
+			-- call.
+			if count + #list > limit then
+				table.sort(list, function(a, b) return a.key < b.key end)
+				spend(math.ceil(#list / 3))
+			end
 			for index = 1, #list do
+				-- A signature is a twelve-field `string.format`: the costliest
+				-- line of the derivation, so it is counted as such.
+				spend(2)
 				if count >= limit then
 					capped = capped + (#list - index + 1)
 					break
@@ -698,7 +766,7 @@ end
 
 --- One reconcile: derive, diff, apply, and say so once.
 local function pass()
-	local wanted, skipped, capped = Runtime.Wanted()
+	local wanted, skipped, capped = Runtime.Wanted(function() Wait(0) end)
 	local count = 0
 	for _ in pairs(wanted) do count = count + 1 end
 

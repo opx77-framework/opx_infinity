@@ -31,6 +31,11 @@ local FOCUS = {
 local frame = nil
 local browsing = { system = nil, piece = nil }
 
+-- What the page has up: a sitter's or a desk's screen, an invitation, or
+-- nothing ('sitter', 'desk', 'invite' or nil). Escape is the clinic's only
+-- while one is.
+local showing = nil
+
 -- The page's ceilings, stated once: a system's piece list and a piece's
 -- grades. The largest base-game system holds 17 pieces.
 local MAX_PIECES = 24
@@ -176,20 +181,26 @@ local function rowOf(entry, fitted)
 	local grades = type(entry.GRADES) == 'table' and entry.GRADES or {}
 	local first, last = grades[1], grades[#grades]
 	-- LEAN ON PURPOSE: a system is up to seventeen of these in one payload
-	-- beside the body, the piece and the worn strip, under the host's node
-	-- ceiling. A field that would say "no" is left out and the page reads the
-	-- absence as the no.
+	-- beside the body (every system with its filled slots) and the piece, under
+	-- the host's node ceiling. A field that would say "no" is left out and the
+	-- page reads the absence as the no.
 	local row = {
 		id = entry.id,
 		name = entry.NAME,
 		kind = entry.KIND,
 		tierFrom = first ~= nil and first.TIER or 1,
 		priceFrom = first ~= nil and first.PRICE or 0,
+		-- The base game's own picture of the piece: the file it ships as
+		-- (`M.Cyber.PictureFor`, eight hex characters).
+		icon = M.Cyber.PictureFor(entry),
 	}
 	if last ~= nil and last ~= first then row.tierTo = last.TIER end
 	if entry.ICONIC == true then row.iconic = true end
 	if fitted ~= nil then
 		row.fitted, row.points, row.state = fitted.grade, fitted.points, fitted.state
+		-- The worn grade's tier: the colour the piece wears in the grid.
+		local worn = M.Ripper.Grade(entry, fitted.grade)
+		if worn ~= nil and worn.TIER ~= row.tierFrom then row.tier = worn.TIER end
 		if fitted.broken == true then row.broken = true end
 	end
 	return row
@@ -214,9 +225,11 @@ local function detailOf(entry, fitted)
 			id = grade.id, name = grade.NAME, tier = grade.TIER, price = grade.PRICE,
 			capacity = grade.CAPACITY,
 			hack = type(grade.HACK) == 'table' and grade.HACK.kind or nil,
-			record = grade.RECORD,
-			game = grade.RECORD ~= nil and gameName(grade.RECORD) or nil,
 		}
+		-- What the base game itself calls the item the grade is (its record's
+		-- display name, in the player's language); the record id stays here.
+		local game = grade.RECORD ~= nil and gameName(grade.RECORD) or ''
+		if game ~= '' then row.game = game end
 		if upgrade then
 			row.upgrade, row.cost = true, math.max(0, (grade.PRICE or 0) - credit)
 		end
@@ -230,6 +243,7 @@ local function detailOf(entry, fitted)
 		id = entry.id,
 		name = entry.NAME,
 		desc = entry.DESC,
+		icon = M.Cyber.PictureFor(entry),
 		kind = entry.KIND,
 		system = entry.SYSTEM,
 		power = M.Ripper.GrantKind(entry),
@@ -237,17 +251,43 @@ local function detailOf(entry, fitted)
 		remove = entry.REMOVE,
 		unsold = entry.HIDDEN == true or nil,
 		-- The two yes-or-no facts ride only when they are yes: `pulled` is a
-		-- broken implant the platform took out of the body.
+		-- broken implant the platform took out of the body. `left` is how long
+		-- the piece has before it breaks at the rate the calendar wears it now,
+		-- `wear` / `wearCap` its hard-use allowance spent and whole -- seconds of
+		-- its life, absent on a broken piece or with durability off.
 		fitted = fitted ~= nil and {
 			grade = fitted.grade, points = fitted.points, state = fitted.state,
 			broken = fitted.broken == true or nil, pulled = fitted.inBody == false or nil,
 			repair = fitted.repair,
+			left = fitted.left, wear = fitted.left ~= nil and fitted.wear or nil,
+			wearCap = fitted.left ~= nil and fitted.wearCap or nil,
 		} or nil,
 		grades = grades,
 	}
 end
 
---- The body systems with what each holds, and the one being browsed.
+--- One fitted piece as a filled slot on the body: what the base game's slot
+--- shows -- the picture, the tier's colour -- and the condition beside it.
+-- @param row table the frame's fitted row
+-- @param entry table
+-- @return table
+local function slotOf(row, entry)
+	local grade = M.Ripper.Grade(entry, row.grade)
+	local slot = {
+		id = row.id,
+		name = entry.NAME,
+		icon = M.Cyber.PictureFor(entry),
+		tier = grade ~= nil and grade.TIER or 1,
+		state = row.broken == true and 'broken' or row.state,
+		points = row.points,
+	}
+	if entry.ICONIC == true then slot.iconic = true end
+	return slot
+end
+
+--- The body systems with their slots and what fills them, and the one being
+--- browsed. A fitted piece sits in its own system, in the order the frame
+--- lists it; a broken implant the platform pulled still holds its slot.
 -- @param chrome table|nil
 -- @return table
 local function systemsOf(chrome)
@@ -256,13 +296,61 @@ local function systemsOf(chrome)
 	for _, row in ipairs(rows) do
 		if type(row) == 'table' then used[row.id] = row end
 	end
+	local worn = {}
+	local fitted = type(chrome) == 'table' and type(chrome.fitted) == 'table' and chrome.fitted or {}
+	for _, row in ipairs(fitted) do
+		local entry = type(row) == 'table' and M.Ripper.Entry(row.id) or nil
+		if entry ~= nil and type(entry.SYSTEM) == 'string' then
+			local list = worn[entry.SYSTEM] or {}
+			worn[entry.SYSTEM] = list
+			list[#list + 1] = slotOf(row, entry)
+		end
+	end
 	local out = {}
 	for _, system in ipairs(M.Ripper.Systems()) do
 		local seen = used[system.id]
 		out[#out + 1] = { id = system.id, used = seen ~= nil and seen.used or 0,
-			slots = seen ~= nil and seen.slots or system.SLOTS }
+			slots = seen ~= nil and seen.slots or system.SLOTS, worn = worn[system.id] or {} }
 	end
 	return out
+end
+
+--- The body family the paperdoll draws: the appearance module's answer for
+--- this client's character, 'female' or 'male', or nil when it has none.
+-- Read once per opening; the family does not change under a sitting patient.
+local family = nil
+
+--- @return string|nil
+local function familyOf()
+	if family ~= nil then return family end
+	local appearance = OPX.Api.Get('appearance')
+	if appearance == nil or type(appearance.GetFamily) ~= 'function' then return nil end
+	local ran, result = pcall(appearance.GetFamily)
+	local value = ran and type(result) == 'table' and result.ok == true and type(result.value) == 'table'
+		and result.value.family or nil
+	if value == 'female' or value == 'male' then family = value end
+	return family
+end
+
+--- The plating the patient's chrome adds up to, the way the server composes
+--- it (`server/effects.lua` `Totals`): every fitted grade's armor at the
+--- condition's factor, capped at `EFFECTS.ARMOR_CAP` -- the armor meter's
+--- reading and its top.
+-- @param chrome table
+-- @return table { now, max }
+local function armorOf(chrome)
+	local block = type(M.Settings.EFFECTS) == 'table' and M.Settings.EFFECTS or {}
+	local cap = OPX.Math.Finite(block.ARMOR_CAP)
+	if cap == nil or cap < 0 then cap = 80 end
+	local total = 0
+	for _, row in ipairs(type(chrome.fitted) == 'table' and chrome.fitted or {}) do
+		local entry = type(row) == 'table' and M.Ripper.Entry(row.id) or nil
+		local grade = entry ~= nil and M.Ripper.Grade(entry, row.grade) or nil
+		local effects = grade ~= nil and grade.EFFECTS or nil
+		local armor = type(effects) == 'table' and tonumber(effects.armor) or nil
+		if armor ~= nil then total = total + armor * M.Ripper.EffectFactor(row.points, row.broken) end
+	end
+	return { now = math.floor(math.min(total, cap)), max = math.floor(cap) }
 end
 
 --- The page payload for a sitter or a desk frame: the frame's own fields plus
@@ -320,20 +408,27 @@ local function compose(source)
 
 	out.ready = chrome.ready == true
 	out.capacity = chrome.capacity
+	out.armor = armorOf(chrome)
 	out.systems = systems
 	out.system = system
 	out.pieces = pieces
 	out.detail = selected ~= nil and detailOf(selected, fitted[selected.id]) or nil
-	-- Everything fitted anywhere, by name, for the summary strip.
-	local worn = {}
-	for _, row in ipairs(type(chrome.fitted) == 'table' and chrome.fitted or {}) do
-		local entry = M.Ripper.Entry(row.id)
-		if entry ~= nil then
-			worn[#worn + 1] = { id = row.id, name = entry.NAME, state = row.state,
-				points = row.points }
-		end
+	-- The paperdoll's body: the patient's own on a sitter's page. The desk
+	-- cannot read another player's family, and draws the default body.
+	if source.mode == 'sitter' then out.family = familyOf() end
+	-- The one offer's piece as the confirmation draws it, the way the game's
+	-- purchase popup does: its picture and the colour of the tier offered.
+	local offer = source.offer
+	local offered = type(offer) == 'table' and M.Ripper.Entry(tostring(offer.entry or '')) or nil
+	if offered ~= nil then
+		local copy = {}
+		for key, value in pairs(offer) do copy[key] = value end
+		local grade = M.Ripper.Grade(offered, offer.grade)
+		copy.icon = M.Cyber.PictureFor(offered)
+		copy.tier = grade ~= nil and grade.TIER or 1
+		if offered.ICONIC == true then copy.iconic = true end
+		out.offer = copy
 	end
-	out.worn = worn
 	return out
 end
 
@@ -363,13 +458,28 @@ local function onFrame(payload)
 	local mode = payload.mode
 	if mode == 'sitter' or mode == 'desk' then
 		frame = payload
+		showing = mode
 		return draw()
 	end
+	if mode == 'invite' then showing = mode end
 	if mode == 'closed' then
 		frame = nil
+		showing = nil
 		browsing.system, browsing.piece = nil, nil
+		family = nil
 	end
 	toPage(payload)
+end
+
+--- ESCAPE, THE PLATFORM'S WAY. The pause plugin swallows the key before any
+--- page sees it and raises `open77:pauseKey` instead, and the pause menu
+--- stands back while a surface holds the input -- which the clinic's page does
+--- (it takes the cursor). So the clinic answers the key itself: the page steps
+--- back the way its ESC hint says -- out of a system to the body, then out of
+--- the chair, away from the desk, or declining an invitation. With nothing up,
+--- the key is left to the pause menu.
+local function onPauseKey()
+	if showing ~= nil then toPage({ mode = 'escape' }) end
 end
 
 --- The page asked to look at another system or piece: redrawn from the last
@@ -404,12 +514,15 @@ function M.RipperView.Start()
 	end
 
 	AddEventHandler(M.Event.VIEW, onFrame)
+	AddEventHandler(M.Host.PAUSE_KEY, onPauseKey)
 end
 
 --- Takes the seam down and gives up anything the page still holds.
 function M.RipperView.Stop()
 	M.RipperView.Release()
 	frame = nil
+	showing = nil
 	browsing.system, browsing.piece = nil, nil
+	family = nil
 	toPage({ mode = 'closed', why = 'stop' })
 end

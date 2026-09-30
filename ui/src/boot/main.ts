@@ -115,10 +115,11 @@ registerModule({ id: 'downed', surface: 'modal', component: DownedView })
 // keeps the F2 that stows it working while it is up.
 registerModule({ id: 'ncpd-radio', surface: 'modal', component: RadioScanner })
 
-// The skill tree: three trunks of job work, centred and unrotated (a chart,
-// not a device). `modal` for the pointer -- a node nobody can press is the
-// same as no tree -- while the keyboard stays with the game, which is what
-// keeps the F3 that stows it working while it is up.
+// The skill tree: seven trunks of job work, centred and unrotated (a chart,
+// not a device). `modal` for the pointer and the keyboard -- a node nobody can
+// press is the same as no tree, and a character walking off mid-choice is the
+// same as no choice. No key mapping fires while the page holds the keyboard,
+// so the page catches the F4 that stows it itself.
 registerModule({ id: 'skills-tree', surface: 'modal', component: SkillTree })
 
 // The ripperdoc clinic: the tray and the chair, centred and unrotated (a menu,

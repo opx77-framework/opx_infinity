@@ -21,6 +21,13 @@ local EVENT_SYNC = OPX.Event(OPX.Channel.NET, 'weather', 'sync')
 -- Server to client answer to a staff command.
 local EVENT_NOTICE = OPX.Event(OPX.Channel.NET, 'weather', 'notice')
 
+-- Server to client: move this player's own clock ahead (`/opx.wait`).
+local EVENT_SKIP = OPX.Event(OPX.Channel.NET, 'weather', 'skip')
+
+-- The widest skip, in whole hours: `setTime` goes to the NEXT occurrence of an
+-- hour, so 24 would land where it started.
+local MAX_SKIP_HOURS = 23
+
 -- Local event raised after a snapshot is accepted, and the integration point
 -- other resources listen on: a client's local events cross resources, a
 -- server's do not. It must stay on the LOCAL channel -- the host dispatcher
@@ -63,6 +70,151 @@ local lastTimeFrozen = nil
 -- Whether this module has stopped, so a deferred snapshot is not applied after
 -- the locks have been handed back.
 local stopped = false
+
+-- ── the game's own clock in a mission ───────────────────────────────────────
+--
+-- THE BASE GAME'S MISSIONS MOVE THE CLOCK THEMSELVES. A conversation that ends
+-- "later that night", a fade to the next morning, a "wait until 22:00" step: the
+-- quest sets the hour and then waits for it. This module used to put the
+-- server's hour back within half a second of any drift past the tolerance, so
+-- the quest set 22:00, the correction put 14:00 back, and a quest waiting on
+-- the night never saw it -- the black or loading screen after the talk never
+-- ended, or the step never completed.
+--
+-- So a move of the engine's clock that its own running cannot explain is taken
+-- as the game's (a mission's), and the server's hour stands back for
+-- QUEST_HOLD_MS, re-armed by every further move. Past the hold the ordinary
+-- correction resumes. A world entry (join, body reload) re-reads the save's
+-- own clock, which is the one other thing that moves the hour; it is forgotten
+-- there and never taken for a mission.
+
+-- Real milliseconds the server's hour stands back after the game moved its
+-- clock. Twenty minutes: a mission's night or morning, then the shared hour.
+local QUEST_HOLD_MS = 20 * 60 * 1000
+
+-- The engine's clock rate out of the box: a game day in three real hours.
+local ENGINE_RATE = 8
+
+-- Real milliseconds after a world entry during which a clock move is the
+-- save's own hour coming in, not a mission.
+local WORLD_ENTRY_GRACE_MS = 30000
+
+-- Real milliseconds a `setTime` of this module's may take to show in the
+-- engine's reading. Until it shows, the reading is still the hour from before
+-- the write, and that is not the game putting its own hour back.
+local WRITE_LANDS_MS = 3000
+
+-- The engine's clock as last read (`seconds`, second of day) and when (`atMs`).
+-- Read on every pass, so the time since the last reading stays one pass long
+-- and a mission's move is never lost inside a long stretch of natural running.
+local engineLast = nil
+
+-- This module's last write until the engine is seen to hold it: the engine's
+-- reading before it (`from`, `fromAtMs`), the second written (`to`, `atMs`),
+-- and until when a reading still at `from` is taken as the write not landed yet.
+local pendingWrite = nil
+
+-- Until when the server's hour stands back; nil when it does not.
+local questHoldUntilMs = nil
+
+-- When the world last came up.
+local worldEnteredAtMs = nil
+
+-- The shortest signed distance from `origin` to `target` in game seconds, in
+-- [-12h, 12h).
+local function signedDelta(target, origin)
+	local half = Clock.DAY_SECONDS / 2
+	return Clock.Normalize(target - origin + half) - half
+end
+
+-- Whether the engine's clock went from `seconds` (read at `atMs`) somewhere its
+-- own running cannot take it: further ahead than the rate allows (with room for
+-- a hitch), or back by more than the tolerance. Slower is never a move: a
+-- slowed world (a Sandevistan nearby) runs its clock slower.
+local function unexplained(seconds, atMs, liveSeconds, nowMs)
+	local rate = ENGINE_RATE
+	local state = Projection.state
+	if state ~= nil and Clock.Finite(state.rate) and state.rate > rate then rate = state.rate end
+	local natural = math.max(0, nowMs - atMs) / 1000 * rate
+	local moved = signedDelta(liveSeconds, seconds)
+	return moved > natural * 1.5 + DRIFT_TOLERANCE or moved < -DRIFT_TOLERANCE
+end
+
+-- Whether the engine's clock moved in a way nothing but the game explains since
+-- the last reading. Never inside a world entry's grace: that is the save's hour.
+local function movedByGame(liveSeconds, nowMs)
+	if engineLast == nil then return false end
+	if worldEnteredAtMs ~= nil and nowMs - worldEnteredAtMs < WORLD_ENTRY_GRACE_MS then return false end
+	return unexplained(engineLast.seconds, engineLast.atMs, liveSeconds, nowMs)
+end
+
+-- Formats a second of day as HH:MM for the log.
+local function hhmm(seconds)
+	local hour, minute = Clock.ToHms(seconds)
+	return ('%02d:%02d'):format(hour, minute)
+end
+
+--- Whether the server's hour is standing back for a mission, for the tests.
+-- @return boolean
+function Projection.QuestHeld()
+	return questHoldUntilMs ~= nil and OPX.Now() < questHoldUntilMs
+end
+
+--- Forgets the engine's last reading: the world came up with its save's hour.
+-- A mission's hold ends here too: a world entry loads the save again, and the
+-- mission that moved the clock went with the world it ran in. The next pass
+-- writes the server's hour whatever it last decided (a held server clock
+-- projects the same second forever, so "that second was already decided" would
+-- leave the save's hour standing).
+function Projection.WorldEntered()
+	engineLast = nil
+	pendingWrite = nil
+	worldEnteredAtMs = OPX.Now()
+	lastAppliedSecond = nil
+	if questHoldUntilMs ~= nil then
+		questHoldUntilMs = nil
+		Open77.log.info('a world entry ends the mission\'s clock hold; back on the server\'s hour')
+	end
+end
+
+-- Reads the engine's clock, and decides whether the game moved it: the one
+-- place the hold is armed. Runs on every pass, before anything returns early, so
+-- a mission's move is seen even while the server's second stands still (a held
+-- server clock). Answers the reading in seconds of day, or nil when the engine
+-- gave none.
+local function observe(nowMs)
+	local live = Open77.environment.getTime()
+	if type(live) ~= 'table' then return nil end
+	local liveSeconds = Clock.Normalize(
+		(tonumber(live.hour) or 0) * 3600 + (tonumber(live.minute) or 0) * 60
+		+ (tonumber(live.second) or 0))
+
+	local write = pendingWrite
+	if write ~= nil then
+		if nowMs >= write.untilMs or not unexplained(write.to, write.atMs, liveSeconds, nowMs) then
+			-- Landed (the reading follows the write), or past the time a write
+			-- takes to land: either way, ordinary readings from here.
+			pendingWrite = nil
+		elseif not unexplained(write.from, write.fromAtMs, liveSeconds, nowMs) then
+			-- Still the hour from before the write, run on: the write has not
+			-- landed yet. Compared against the write, this reading would look like
+			-- the game putting its hour back. It is not; nothing is decided on it.
+			return liveSeconds
+		end
+	end
+
+	if movedByGame(liveSeconds, nowMs) then
+		if not Projection.QuestHeld() then
+			Open77.log.info(('the game moved its own clock %s -> %s (a mission); the server\'s ' ..
+				'hour stands back for %d min'):format(hhmm(engineLast.seconds), hhmm(liveSeconds),
+				math.floor(QUEST_HOLD_MS / 60000)))
+		end
+		questHoldUntilMs = nowMs + QUEST_HOLD_MS
+		pendingWrite = nil
+	end
+	engineLast = { seconds = liveSeconds, atMs = nowMs }
+	return liveSeconds
+end
 
 -- Configured command names, lowercased, to recognise our own answers.
 local COMMAND_NAMES = {}
@@ -199,6 +351,23 @@ local function applyTime(allowRewind)
 	end
 
 	local whole = math.floor(expected)
+	local nowMs = OPX.Now()
+	local liveSeconds = observe(nowMs)
+
+	if questHoldUntilMs ~= nil then
+		if nowMs < questHoldUntilMs then
+			-- Remembered as decided: the pass after the hold compares against it.
+			lastAppliedSecond = whole
+			return
+		end
+		questHoldUntilMs = nil
+		-- Not "already decided": with a held server clock the second never
+		-- changes, and the mission's hour would otherwise stand for good.
+		lastAppliedSecond = nil
+		Open77.log.info(('the mission\'s clock hold is over; back on the server\'s hour (%s)')
+			:format(hhmm(whole)))
+	end
+
 	if lastAppliedSecond ~= nil and whole == lastAppliedSecond then return end
 
 	-- `setTime` goes to the NEXT occurrence of an hour, so a packet one second
@@ -207,12 +376,8 @@ local function applyTime(allowRewind)
 		if Clock.ForwardDelta(whole, lastAppliedSecond) > Clock.DAY_SECONDS / 2 then return end
 	end
 
-	local live = Open77.environment.getTime()
-	if type(live) == 'table' then
-		local liveSeconds = Clock.Normalize(
-			(tonumber(live.hour) or 0) * 3600 + (tonumber(live.minute) or 0) * 60
-			+ (tonumber(live.second) or 0))
-		local target = Clock.Normalize(whole)
+	local target = Clock.Normalize(whole)
+	if liveSeconds ~= nil then
 		local drift = math.min(Clock.ForwardDelta(target, liveSeconds),
 			Clock.ForwardDelta(liveSeconds, target))
 		if drift <= DRIFT_TOLERANCE then
@@ -227,6 +392,15 @@ local function applyTime(allowRewind)
 	local ok, reason = Open77.environment.setTime(hour, minute, second)
 	if ok then
 		lastAppliedSecond = whole
+		-- Our own move: the next reading starts from it. Until the engine is
+		-- seen to hold it, a reading still at the old hour is the write not
+		-- landed yet, not the game moving its clock back.
+		local atMs = OPX.Now()
+		if liveSeconds ~= nil then
+			pendingWrite = { from = liveSeconds, fromAtMs = nowMs, to = target, atMs = atMs,
+				untilMs = atMs + WRITE_LANDS_MS }
+		end
+		engineLast = { seconds = target, atMs = atMs }
 	else
 		Open77.log.warn('time apply failed: ' .. tostring(reason))
 	end
@@ -435,6 +609,38 @@ local function projectedState()
 	}
 end
 
+-- THIS PLAYER'S OWN TIME SKIP (`/opx.wait <hours>`), for a mission's "wait
+-- until" step: the base game's own time skip is refused in a session. The
+-- engine's clock moves ahead on this game only, and the shared hour stands back
+-- for the mission hold -- exactly what a mission's own move of the clock gets
+-- -- then the ordinary correction brings the shared hour back. The hold is armed
+-- BEFORE the write, so the correction can never race the skip.
+local function onSkip(hours)
+	hours = tonumber(hours)
+	if not Clock.Whole(hours, 1) or hours > MAX_SKIP_HOURS then return end
+	if not Projection.available or stopped then return end
+	local live = Open77.environment.getTime()
+	if type(live) ~= 'table' then
+		Open77.log.warn('time skip refused: the engine gave no time to move from')
+		return
+	end
+	local from = Clock.Normalize((tonumber(live.hour) or 0) * 3600
+		+ (tonumber(live.minute) or 0) * 60 + (tonumber(live.second) or 0))
+	local target = Clock.Normalize(from + hours * 3600)
+	local nowMs = OPX.Now()
+	questHoldUntilMs = nowMs + QUEST_HOLD_MS
+	pendingWrite = nil
+	engineLast = { seconds = target, atMs = nowMs }
+	local hour, minute, second = Clock.ToHms(target)
+	local ok, reason = Open77.environment.setTime(hour, minute, second)
+	if not ok then
+		Open77.log.warn('time skip failed: ' .. tostring(reason))
+		return
+	end
+	Open77.log.info(('this player moved their own clock %d h ahead (%s -> %s); the server\'s hour ' ..
+		'stands back for %d min'):format(hours, hhmm(from), hhmm(target), math.floor(QUEST_HOLD_MS / 60000)))
+end
+
 --- Reads the configured command names and looks for the environment natives.
 -- @author dop42
 function M.Init()
@@ -481,6 +687,11 @@ function M.Start()
 	if not Projection.available then return end
 
 	RegisterNetEvent(EVENT_SYNC, onSync)
+	RegisterNetEvent(EVENT_SKIP, onSkip)
+
+	-- A world entry brings the save's own hour: not a mission's move.
+	Projection.WorldEntered()
+	AddEventHandler(OPX.Host.WORLD_READY, Projection.WorldEntered)
 
 	-- The clock lock is released before anything else: a client returning into a
 	-- lock left by a previous generation would never thaw.

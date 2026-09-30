@@ -400,10 +400,18 @@ end
 -- @return table|nil
 -- @return number|nil squared distance
 function OPX.Spots.Nearest(spots, x, y, radiusSq)
+	-- THE POSITION IS COERCED ONCE, NOT ONCE PER SPOT. This runs on every scan of
+	-- every marker module, and on a client every resume is on a clock checked
+	-- each 10,000 VM instructions: two coercions per spot made it ~100
+	-- instructions a spot, most of the budget of a scan over a long list. The
+	-- answer is the same -- the spots were coerced when they were read in.
+	x, y = coordinate(x), coordinate(y)
+	if x == nil or y == nil then return nil end
 	local best, bestDistance
 	for _, spot in pairs(spots) do
-		local flat = OPX.Spots.FlatDistanceSquared(spot, x, y)
-		if flat ~= nil and flat <= radiusSq and
+		local dx, dy = x - spot.x, y - spot.y
+		local flat = dx * dx + dy * dy
+		if flat <= radiusSq and
 			(bestDistance == nil or flat < bestDistance or
 				(flat == bestDistance and spot.key < best.key)) then
 			best, bestDistance = spot, flat

@@ -152,14 +152,21 @@ OPX.Config.MODULES.hud = {
 		weapon = false,
 		speedometer = false,
 
-		-- DEAD CHROME ON THIS SERVER. There are no quests, so the tracker draws
-		-- single-player objectives over a multiplayer world.
-		questTracker = false,
+		-- THE BASE GAME'S MISSIONS ARE PLAYABLE HERE NOW (opx_sandy_view 1.4.11,
+		-- `OpxQuests.reds`), so this is on. It was `false` under "there are no
+		-- quests" -- and with the missions open, a player who started a side job
+		-- by talking to an NPC saw no objective, no countdown and no "wait for the
+		-- call", which read as the job being stuck (reported 2026-09-28). The
+		-- platform hides the tracker on its own; the preload shows it again only
+		-- while this says `true`, so `false` still hides it.
+		questTracker = true,
 
-		-- WE OWN NOTIFICATIONS. `core/client/notify.lua` and the overlay draw
-		-- every message this runtime sends; the vanilla stack would be a second,
-		-- differently-styled one saying things nobody here raises.
-		vanillaNotifications = false,
+		-- ON FOR THE MISSIONS. `core/client/notify.lua` and the overlay still draw
+		-- every message this runtime sends; the base game's own stack is where a
+		-- mission says "new quest", "objective updated", "quest completed" and
+		-- "item received", which nothing here replaces. `false` hides that stack
+		-- again (and a mission's toasts with it).
+		vanillaNotifications = true,
 
 		-- THE VANILLA INVENTORY AND CHARACTER SCREENS. This runtime has its own
 		-- for both, and two inventories over one body is the double-surface
@@ -172,11 +179,13 @@ OPX.Config.MODULES.hud = {
 		-- `crosshair` is how a player aims. Hiding it is not a style choice, it
 		-- is taking away the weapon's usability.
 		crosshair = true,
-		-- `scanner` is real gameplay and we replace nothing it does.
+		-- `scanner` is real gameplay and we replace nothing it does. The platform
+		-- refuses the scanner in a session; the preload (`OpxQuests.reds`) gives it
+		-- back while this says `true` -- missions scan clues and braindances.
 		scanner = true,
-		-- `phone` is the one genuinely open question. It is the vanilla contacts
-		-- list, which is single-player content -- but it is also a screen players
-		-- reach for, and nothing here replaces it yet. Shown until something does.
+		-- `phone` is the base game's phone: a mission's holocalls, its texts and
+		-- "call X" steps. The platform hides it; the preload shows it again while
+		-- this says `true`. `false` keeps it hidden (calls still connect).
 		phone = true,
 	},
 }

@@ -10,7 +10,9 @@
 -- This module creates no vehicle of its own: it hands the plate to the
 -- `vehicles` contract, which re-proves the ownership from the character roster
 -- before it moves anything. Two owners of the same question would be one too
--- many, and the plate is the one this half does not own.
+-- many, and the plate is the one this half does not own. A JOB VEHICLE is the
+-- same bargain with no plate in it: this half proves the job, the grade and the
+-- duty (`config/garages.lua` JOB_VEHICLES), and the contract signs it out.
 --
 -- A GARAGE IS A KEY AND THE KEY IS IN SEVERAL PLACES. What a player walks up to
 -- is a POINT -- a menu point or a door -- and every point knows which garage it
@@ -59,6 +61,14 @@ local captures = {}
 -- not in `garages` is a marker that opens a list of nothing.
 local garages = {}
 local spots = {}
+
+-- WHICH LIST THIS IS, sent with it: the moment this half first built one and
+-- how many times it has been rebuilt since. `spots` changes in `rebuild` and
+-- nowhere else, so two SYNCs of the same revision for the same bucket are the
+-- same list, and a client that already holds it has nothing to do. That is
+-- most of them: every client asks every POLL_MS, and taking a list in costs a
+-- client far more than drawing one (see the client's `takeIn`).
+local listMark, listRevision = nil, 0
 
 -- Per-player rate-limit windows for requests that are not rate-limited by
 -- `OPX.Cooling`.
@@ -147,6 +157,100 @@ local function mayUse(source, built)
 	return false, Access.GATE_REFUSAL[code] or 'garages.jobRequired'
 end
 
+-- ── the job fleet ───────────────────────────────────────────────────────────
+--
+-- WHAT A JOB BRINGS WITH IT, listed at every garage of the right kind to every
+-- holder of the job at the row's grade, on duty -- `config/garages.lua`
+-- JOB_VEHICLES. Decided here, from the character roster, at the moment of
+-- every list and every take-out: the fleet is never granted, stored or cached
+-- per character, which is why a member hired a year ago and one hired a minute
+-- ago find the same rows, and why a member who leaves finds none.
+--
+-- SIGNED OUT, NEVER OWNED. What comes out is the vehicles contract's job
+-- vehicle -- no row, no plate -- and what goes back at a door goes back to the
+-- pool. See `SpawnJob` in `modules/vehicles/server/main.lua`.
+
+-- The handle of the pass that takes back what nobody may keep, set in `Start`.
+local sweepJob = nil
+
+--- The job fields of one loaded character, stamped now: the gate's snapshot.
+local function snapshotOf(data, now)
+	return {
+		job = type(data.job) == 'table' and data.job or nil,
+		jobs = type(data.jobs) == 'table' and data.jobs or nil,
+		atMs = now,
+	}
+end
+
+--- Whether the vehicles contract can sign a job vehicle out at all. A row it
+--- cannot bring out is a row that must not be listed.
+local function jobFleetAvailable()
+	return vehicles ~= nil and type(vehicles.SpawnJob) == 'function'
+		and type(vehicles.ReturnJob) == 'function'
+end
+
+--- The engine id one character's job vehicle is out as, or nil.
+local function jobLiveId(citizenId, slot)
+	if vehicles == nil or type(vehicles.JobLiveId) ~= 'function' then return nil end
+	return vehicles.JobLiveId(citizenId, slot)
+end
+
+--- The fleet rows one loaded character may take out of one garage, in order.
+local function jobRowsFor(data, built)
+	if data == nil or not jobFleetAvailable() then return {} end
+	local now = OPX.Now()
+	return Access.JobFleetFor(snapshotOf(data, now), now, built.kind)
+end
+
+--- Takes back every job vehicle whose holder may no longer have it out.
+-- @author XEROX710
+--
+-- LEAVING THE JOB TAKES THE JOB'S VEHICLES WITH IT. A list is decided afresh
+-- at every open, so a member who leaves, drops below a row's grade or clocks
+-- off stops being OFFERED the rows at once; this is the other half, for the
+-- vehicle already out. Each one is held against its holder exactly as a
+-- take-out would be -- the character still loaded, the row still in the fleet,
+-- the job, the grade and the duty -- and one that fails goes back to the pool.
+--
+-- NOBODY IS PULLED OUT OF ONE. A vehicle somebody is sitting in is left for a
+-- later pass (`ReturnJob` refuses it), and goes back the first pass it is
+-- empty: an officer fired at the wheel finishes the drive and loses the car at
+-- the kerb, not in the middle of the road.
+-- @param onlyCitizen string|nil one holder, or every holder when nil
+-- @return integer how many went back
+local function sweepJobFleet(onlyCitizen)
+	if vehicles == nil or type(vehicles.JobVehicles) ~= 'function'
+		or type(vehicles.ReturnJob) ~= 'function' then
+		return 0
+	end
+	local held = vehicles.JobVehicles(onlyCitizen)
+	local now = OPX.Now()
+	local returned = 0
+	for index = 1, #held do
+		local entry = held[index]
+		local row = Access.JOB_FLEET.byKey[entry.slot]
+		local player = character ~= nil and character.GetPlayerByCitizenId(entry.citizenId) or nil
+		local data = type(player) == 'table' and player.PlayerData or nil
+		local entitled = row ~= nil and data ~= nil
+			and (Access.JobVehicleVerdict(row, snapshotOf(data, now), now))
+		if not entitled then
+			local back = vehicles.ReturnJob(entry.citizenId, entry.slot)
+			if back.ok then
+				returned = returned + 1
+				Open77.log.info(('[garages] job vehicle %s of %s back to the pool: its holder no ' ..
+					'longer holds the job, the grade or the shift it was signed out for')
+					:format(safe(entry.slot), safe(entry.citizenId)))
+				local holder = data ~= nil and tonumber(data.source) or nil
+				if holder ~= nil then
+					OPX.NotifyLocale(holder, 'garages.jobRecalled',
+						{ vehicle = locale(row ~= nil and row.label or tostring(entry.slot)) }, 'info')
+				end
+			end
+		end
+	end
+	return returned
+end
+
 --- Reads a connection's ground position and bucket, or nil.
 local function pointOf(source)
 	local position = Open77.players.position(source)
@@ -161,6 +265,8 @@ end
 -- Called once at load and once when the legacy adoption has finished.
 local function rebuild()
 	garages, spots = {}, {}
+	listMark = listMark or OPX.Now()
+	listRevision = listRevision + 1
 	for key, built in pairs(configGarages) do garages[key] = built end
 	for key, built in pairs(adopted) do
 		-- CONFIG WINS, and this is the one precedence the rework reverses. A
@@ -205,7 +311,8 @@ local function sync(player)
 	if type(player) ~= 'number' then return end
 	local at = pointOf(player)
 	if at == nil then return end
-	TriggerClientEvent(M.Event.SYNC, player, { spots = payloadFor(at.bucket) })
+	TriggerClientEvent(M.Event.SYNC, player, { spots = payloadFor(at.bucket),
+		rev = ('%d.%d.%s'):format(listMark or 0, listRevision, tostring(at.bucket)) })
 end
 
 --- Sends every connected player their own list. Guarded: the adoption must not
@@ -442,12 +549,37 @@ function M.List(source, key)
 		listed = offering
 	end
 
+	-- AND THE JOB'S OWN VEHICLES COME FIRST OF ALL: what the character's job
+	-- brings with it, at this kind of garage, at their grade, on duty. A row
+	-- carries its fleet KEY where an owned row carries a plate, its LABEL as the
+	-- catalogue key the client reads in the player's language, and whether it
+	-- is already out -- in which case picking it brings it here.
+	local jobRows = jobRowsFor(data, built)
+	if #jobRows > 0 then
+		local signed = {}
+		for index = 1, #jobRows do
+			local row = jobRows[index]
+			signed[#signed + 1] = {
+				job = row.key,
+				label = row.label,
+				record = row.record,
+				out = jobLiveId(data.citizenId, row.key) ~= nil,
+			}
+		end
+		for index = 1, #listed do signed[#signed + 1] = listed[index] end
+		listed = signed
+	end
+
 	return Result.Ok({
 		spot = point.key,
 		garage = built.key,
 		label = built.label,
 		kind = built.kind,
 		vehicles = listed,
+		-- The job the rows above belong to, for the section the list is drawn
+		-- under: the catalogue's own name for it, never a translation.
+		jobName = #jobRows > 0 and data.job.name or nil,
+		jobLabel = #jobRows > 0 and tostring(data.job.label or data.job.name) or nil,
 	})
 end
 
@@ -676,6 +808,87 @@ function M.Issue(source, key, record)
 	})
 end
 
+--- Signs one of the job's own vehicles out at a free exit of the garage the
+--- connection is standing at.
+-- @author XEROX710
+--
+-- THE NORMAL PATH, ONE ROW DIFFERENT. The point, the reach, the bucket and the
+-- garage's own gate are `M.Bring`'s, and so are the exit choice, the AV lift
+-- and the pilot seat: a job vehicle comes out the way everything else does.
+-- What differs is what is proved. Not ownership -- nobody owns one -- but that
+-- the slot the wire names is a row of THIS character's job, at their grade, on
+-- duty, of the kind this garage holds. The wire's slot is a claim; the roster
+-- and the config are the answer, and a refusal names the closest near-miss.
+-- @param source Source
+-- @param key string|nil the point name; the nearest one when omitted
+-- @param slot string the fleet row's KEY the caller asks for
+-- @return Result
+function M.TakeJob(source, key, slot)
+	if not jobFleetAvailable() then return Result.Err('garages.noVehicles') end
+
+	local data = characterOf(source)
+	if data == nil or type(data.citizenId) ~= 'string' then
+		return Result.Err('garages.noCharacter')
+	end
+	local point, refusal = resolve(source, key)
+	if point == nil then return refusal end
+	local built = garages[point.garage]
+	local place = locationOf(point)
+	if built == nil or place == nil then return Result.Err('garages.noSuchSpot') end
+	local allowed, gateRefusal = mayUse(source, built)
+	if not allowed then return Result.Err(gateRefusal, built.label) end
+
+	-- A slot no row carries, and a row of the other kind, are one answer: it
+	-- does not come out HERE. An AV is not driven out of a ground garage.
+	local row = type(slot) == 'string' and Access.JOB_FLEET.byKey[slot] or nil
+	if row == nil or row.av ~= (built.kind == M.KIND.AVPAD) then
+		return Result.Err('garages.job.notHere', built.label)
+	end
+	local now = OPX.Now()
+	local entitled, code = Access.JobVehicleVerdict(row, snapshotOf(data, now), now)
+	if not entitled then
+		return Result.Err(Access.JOB_REFUSAL[code] or 'garages.job.required', built.label)
+	end
+
+	-- THE VEHICLE BEING FETCHED DOES NOT BLOCK ITS OWN BAY, for the reason
+	-- `M.Bring` gives.
+	local outNow = jobLiveId(data.citizenId, row.key)
+	local exit, exitSlot = freeExit(place, outNow)
+	if exit == nil then
+		Open77.log.info(('[garages] %s: every exit of %s location %d is occupied; job vehicle %s ' ..
+			'stays in'):format(tostring(data.citizenId), safe(built.key), place.index, safe(row.key)))
+		return Result.Err('garages.noFreeExit', built.label)
+	end
+
+	local z = exit.z
+	if row.av then z = z + Access.AvLift() end
+
+	local spawned = vehicles.SpawnJob(source, row.key, row.record, {
+		x = exit.x, y = exit.y, z = z,
+		yaw = exit.heading,
+		bucket = exit.bucket,
+	}, { job = row.job, appearance = row.appearance })
+	if not spawned.ok then return spawned end
+
+	local seated = nil
+	if built.kind == M.KIND.AVPAD and row.av
+		and type(spawned.value) == 'table' and spawned.value.id ~= nil then
+		seated = seatPilot(source, spawned.value.id)
+	end
+
+	return Result.Ok({
+		spot = point.key,
+		garage = built.key,
+		label = built.label,
+		exit = exitSlot,
+		job = row.key,
+		vehicle = row.label,
+		id = spawned.value and spawned.value.id or nil,
+		recalled = spawned.value and spawned.value.recalled or nil,
+		seated = seated,
+	})
+end
+
 --- The marker's one door: PUT AWAY when the connection is sitting in its own
 --- vehicle, and BRING OUT otherwise.
 -- ONE DECISION, MADE HERE. The player presses one key on one marker, and which
@@ -724,21 +937,50 @@ function M.Use(source, key, wanted)
 		})
 	end
 
+	-- A JOB VEHICLE DRIVEN IN GOES BACK TO THE POOL. The same door, the same
+	-- seat oracle, the same gate -- and never `Store`: a job vehicle has no row
+	-- to file under this garage, and filing one would be the moment it became
+	-- somebody's car. It is simply taken off the street; its driver is the one
+	-- pressing the key, so being aboard is the point and not a refusal.
+	local seatedJob = type(vehicles.JobOccupied) == 'function' and vehicles.JobOccupied(source) or nil
+	if seatedJob ~= nil and seatedJob.ok and seatedJob.value ~= nil
+		and type(vehicles.ReturnJob) == 'function' then
+		local point, refusal = resolve(source, key)
+		if point == nil then return refusal end
+		local built = garages[point.garage]
+		if built == nil then return Result.Err('garages.noSuchSpot') end
+		local allowed, gateRefusal = mayUse(source, built)
+		if not allowed then return Result.Err(gateRefusal, built.label) end
+		local back = vehicles.ReturnJob(data.citizenId, seatedJob.value.slot, { force = true })
+		if not back.ok then return back end
+		local row = Access.JOB_FLEET.byKey[seatedJob.value.slot]
+		return Result.Ok({
+			spot = point.key,
+			garage = built.key,
+			label = built.label,
+			job = seatedJob.value.slot,
+			vehicle = row ~= nil and row.label or seatedJob.value.slot,
+			returned = true,
+		})
+	end
+
 	return M.Bring(source, key, wanted)
 end
 
 -- ── the doors ───────────────────────────────────────────────────────────────
 
 --- One request off the wire. Rate-limited, then answered either way.
--- A `record` means "issue me a hull of the division's stock" and rides the
--- same window and cooldown a bring-out does; with none it is a bring-out or a
--- put-away, as `M.Use` decides.
-local function onRequested(key, plate, record)
+-- A `record` means "issue me a hull of the division's stock" and a `job` means
+-- "sign me out this row of my job's fleet"; both ride the same window and
+-- cooldown a bring-out does. With neither it is a bring-out or a put-away, as
+-- `M.Use` decides.
+local function onRequested(key, plate, record, job)
 	local src = tonumber(source)
 	if src == nil then return end
 	if key ~= nil and type(key) ~= 'string' then key = nil end
 	if plate ~= nil and type(plate) ~= 'string' then plate = nil end
 	if record ~= nil and type(record) ~= 'string' then record = nil end
+	if job ~= nil and type(job) ~= 'string' then job = nil end
 
 	-- THE DECLARED COOLDOWN, WHICH WAS DECLARED AND NOT ENFORCED. `COOLDOWN_MS`
 	-- is written in `config/garages.lua`, read into `Access.COOLDOWN_MS` and
@@ -762,7 +1004,9 @@ local function onRequested(key, plate, record)
 
 	CreateThread(function()
 		local used = nil
-		if record ~= nil then
+		if job ~= nil then
+			used = M.TakeJob(src, key, job)
+		elseif record ~= nil then
 			used = M.Issue(src, key, record)
 		else
 			used = M.Use(src, key, plate)
@@ -777,26 +1021,35 @@ local function onRequested(key, plate, record)
 				tostring(used.error)))
 			return
 		end
-		-- The action travels with the answer and into the line, because the three
+		-- The action travels with the answer and into the line, because the
 		-- outcomes read the same from the outside and do not mean the same thing:
 		-- a car that came from the roster, one that had to be moved to this
-		-- marker first, and one the player just handed over.
+		-- marker first, one the player just handed over, and a job vehicle that
+		-- went back to the pool. A job vehicle names its fleet KEY as the answer's
+		-- last argument, where an owned one names its plate.
 		local value = used.value
 		local action = value.issued and 'issued'
-			or (value.stored and 'stored' or (value.recalled and 'recalled' or 'brought'))
+			or (value.stored and 'stored' or (value.returned and 'returned'
+				or (value.recalled and 'recalled' or 'brought')))
 		if value.stored then
 			OPX.NotifyLocale(src, 'garages.storedAway', { plate = value.plate }, 'success')
+		elseif value.returned then
+			OPX.NotifyLocale(src, 'garages.jobReturned',
+				{ vehicle = locale(tostring(value.vehicle)) }, 'success')
 		elseif value.issued then
 			OPX.NotifyLocale(src, 'garages.issuedOut', { plate = value.plate }, 'success')
+		elseif value.job ~= nil then
+			OPX.NotifyLocale(src, 'garages.jobOut',
+				{ vehicle = locale(tostring(value.vehicle)) }, 'success')
 		else
 			OPX.NotifyLocale(src, 'garages.broughtOut', { plate = value.plate }, 'success')
 		end
-		TriggerClientEvent(M.Event.ANSWER, src, key, true, nil, value.plate, action)
-		Open77.log.info(('[garages] player %d %s %s at %s%s'):format(src,
-			action == 'stored' and 'put away' or (action == 'recalled' and 'moved'
-				or (action == 'issued' and 'issued' or 'brought out')),
-			safe(value.plate), safe(value.garage),
-			value.exit ~= nil and (' exit ' .. tostring(value.exit)) or ''))
+		TriggerClientEvent(M.Event.ANSWER, src, key, true, nil, value.plate, action, value.job)
+		local verbs = { stored = 'put away', recalled = 'moved', issued = 'issued',
+			returned = 'returned to the pool', brought = 'brought out' }
+		Open77.log.info(('[garages] player %d %s %s%s at %s%s'):format(src, verbs[action],
+			value.job ~= nil and 'job vehicle ' or '', safe(value.plate or value.job),
+			safe(value.garage), value.exit ~= nil and (' exit ' .. tostring(value.exit)) or ''))
 	end)
 end
 
@@ -856,6 +1109,22 @@ local function report(source)
 	end
 	lines[#lines + 1] = ('%d garage(s): %d from config, %d adopted, %d captured'):format(
 		#keys, #keys - adoptedCount - capturedCount, adoptedCount, capturedCount)
+	-- THE JOB FLEET, one line per job: every row as `key@grade`, `(av)` for the
+	-- ones that come out of a pad, and whether the job has to be clocked on --
+	-- so an operator reads what a Cadet and a Captain find without a list open.
+	local jobNames = {}
+	for name in pairs(Access.JOB_FLEET.byJob) do jobNames[#jobNames + 1] = name end
+	table.sort(jobNames)
+	for index = 1, #jobNames do
+		local block = Access.JOB_FLEET.byJob[jobNames[index]]
+		local rows = {}
+		for at = 1, #block.rows do
+			local row = block.rows[at]
+			rows[#rows + 1] = ('%s@%d%s'):format(row.key, row.grade, row.av and '(av)' or '')
+		end
+		lines[#lines + 1] = ('job fleet %s%s: %s'):format(jobNames[index],
+			block.onDuty and ' (on duty)' or '', #rows > 0 and table.concat(rows, ' ') or 'none')
+	end
 	OPX.CommandResult(source, true, table.concat(lines, '\n'))
 end
 
@@ -1182,6 +1451,9 @@ function M.Api()
 		Bring = M.Bring,
 		Use = M.Use,
 		List = M.List,
+		-- A row of the job's own fleet, signed out at the garage underfoot:
+		-- `(source, point|nil, fleetKey)`, gated exactly as the list is.
+		TakeJob = M.TakeJob,
 		-- The DRAWN POINTS, by point key. What a marker is, and nothing about
 		-- what a vehicle is filed under.
 		Spots = function() return spots end,
@@ -1236,6 +1508,27 @@ function M.Start()
 		local player = tonumber(playerId)
 		if player ~= nil then windows[player] = nil end
 	end)
+
+	-- THE JOB FLEET FOLLOWS THE JOB. A change the character module announces --
+	-- a new job or grade through `/opx.job` or a desk, a clock-on or clock-off --
+	-- is acted on for that holder AT ONCE, inside the announcement: a pass reads
+	-- memory and removes a vehicle, and nothing in it yields. It is guarded,
+	-- because the announcement is raised from inside the character module's own
+	-- write and a raise here must never reach back into it. The pass below
+	-- catches the changes that announce nothing, a dismissal among them.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'job'), function(playerId)
+		local player = tonumber(playerId)
+		if player == nil then return end
+		local data = characterOf(player)
+		if data == nil or type(data.citizenId) ~= 'string' then return end
+		local ran, failure = pcall(sweepJobFleet, data.citizenId)
+		if not ran then
+			Open77.log.warn('[garages] the job fleet could not follow a job change: ' ..
+				tostring(failure))
+		end
+	end)
+	sweepJob = OPX.Scheduler.Every('garages:jobfleet', function() return Access.JOB_SWEEP_MS end,
+		function() sweepJobFleet(nil) end)
 
 	running = true
 	CreateThread(function()
@@ -1358,4 +1651,16 @@ end
 function M.Stop()
 	running = false
 	windows = {}
+	if sweepJob ~= nil then
+		OPX.Scheduler.Cancel(sweepJob)
+		sweepJob = nil
+	end
+end
+
+--- One pass of the job-fleet sweep, for one holder or for everyone. The same
+--- function the scheduler runs, published on the module for a diagnostic.
+-- @param citizenId string|nil
+-- @return integer how many went back to the pool
+function M.SweepJobFleet(citizenId)
+	return sweepJobFleet(citizenId)
 end

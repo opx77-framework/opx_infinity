@@ -10,10 +10,16 @@
 -- TWO CURRENCIES, AND THEY BUY DIFFERENT THINGS. Total work raises the
 -- CHARACTER's level, and a level banks a point. A point unlocks a node in a
 -- trunk -- but only as deep as THAT TRUNK has been fed: NCPD work deepens the
--- NCPD trunk, MaxTac work the air trunk, and everything a street job earns goes
--- to the street trunk. A point cannot buy into a rank the work has not reached,
--- which is what makes this a skill tree rather than a shop: the tree is a map
--- of what this character has actually done.
+-- NCPD trunk, a fixer's contracts the fixer trunk, and work no trunk names goes
+-- to the street. A point cannot buy into a rank the work has not reached, which
+-- is what makes this a skill tree rather than a shop: the tree is a map of what
+-- this character has actually done.
+--
+-- SEVEN TRUNKS, AND THE ORDER IS THE PICTURE. The panel draws them left to
+-- right in the order below, and the LAST one is drawn as the top of the tree:
+-- the fixer, whose last node -- Night City Legend -- is the highest a character
+-- can climb. Reordering this list re-draws the page; nothing else names an
+-- index.
 --
 -- THE PERKS ARE DECLARED, NOT INVENTED. Each node names a perk id and a value.
 -- Nothing in this repo applies them -- gameplay systems read them through
@@ -22,9 +28,14 @@
 -- persists. The value on the node is content (rule 8): the one number the
 -- surface may state as fact.
 --
+-- A NODE'S `id` IS WHAT A CHARACTER'S UNLOCK IS STORED UNDER, so an id is never
+-- reused for a different perk by accident and never renamed at all: `ncpd_5`
+-- and `street_5` are the NCPD and street capstones they always were, and Night
+-- City Legend -- once NCPD's -- is `fixer_5` now, at the top of the fixer.
+--
 -- COSTS RAMP (1, 1, 2, 2, 3 per trunk). A level cap of 20 banks 19 points
--- against 27 points of nodes across the three trunks, so a character cannot
--- have everything and the choice is real.
+-- against 63 points of nodes across the seven trunks, so a character can take
+-- about two trunks to the top, and the choice of which is real.
 
 OPX.Config.MODULES.skills = {
 	-- THE TREE'S KEY. The same `ID`/`NAME`/`DEFAULT` block every other surface
@@ -35,7 +46,33 @@ OPX.Config.MODULES.skills = {
 	-- one off. The tree opens from this key and nothing else, which is why the
 	-- block lives HERE: `M.Skill.KEY` in the module is only the shipped
 	-- fallback, and this is the operator's answer.
-	KEY = { ID = 'opx.skills.tree', NAME = 'skills.key.tree', DEFAULT = 'F3' },
+	--
+	-- F4, NOT F3: F3 is the animation picker's (`config/animations.lua`), and
+	-- every mapping on a pressed key fires -- a tree shipped on F3 opened the
+	-- picker over itself on every press. A player who rebound it keeps theirs:
+	-- the rebind is stored under `ID`, which does not change.
+	KEY = { ID = 'opx.skills.tree', NAME = 'skills.key.tree', DEFAULT = 'F4' },
+
+	-- ACL-gated: refused unless the caller holds `command.<name>`.
+	--   level  `/opx.skills.level <max|reset|1..cap> [playerId]` -- a staff or
+	--          testing lever, never a player's: `max` puts a character at the
+	--          cap with every trunk fed to its full depth, the points to buy
+	--          every node still locked, AND the base game's own levels maxed on
+	--          that player's machine (DEVELOP below); a number sets that level
+	--          and re-banks the points it is worth; `reset` starts them over.
+	--          The player defaults to the caller; the console must name one.
+	COMMANDS = {
+		level = 'opx.skills.level',
+	},
+
+	-- THE BASE GAME'S OWN LEVELS, which `max` also maxes. The preload named here
+	-- exports `develop(code)` on the client (opx_sandy_view 1.4.9+): code 10 sets
+	-- the base game's Level, Street Cred, attributes, skills, perk and relic
+	-- points to their tops on THAT machine and answers `ok, why`. Nothing here
+	-- can reach those numbers any other way -- they are the engine's, not ours --
+	-- so a server without the preload gets the tree maxed and a toast saying the
+	-- base game was not. `RESOURCE = false` turns the request off.
+	DEVELOP = { RESOURCE = 'opx_sandy_view', EXPORT = 'develop', CODE = 10 },
 
 	-- Jobs bank points -> character XP. A five-point arrest is fifty XP.
 	XP_PER_POINT = 10,
@@ -50,12 +87,21 @@ OPX.Config.MODULES.skills = {
 	-- (0 XP), rank 2 the second (100 XP into the trunk), and so on.
 	BRANCH_STEP = 100,
 
+	-- Per trunk:
+	--   id     the trunk's durable name: stored work is keyed by it
+	--   NAME   its locale key
+	--   FEED   the locale key of the line that says what work feeds it
+	--   ICON   its emblem: a name from the shared glyph set (`OPX.Glyphs`)
+	--   JOBS   the jobs (the character catalogue's names) whose credited work
+	--          deepens it. ONE trunk declares none: that one is the catch-all,
+	--          and every job no other trunk names falls to it.
+	--   NODES  its chain, rank 1 first
 	BRANCHES = {
 		{
 			id = 'ncpd',
 			NAME = 'skills.branch.ncpd',
-			-- Work fed to this trunk. A job no trunk names falls to the trunk
-			-- that declares no jobs at all (the street, below).
+			FEED = 'skills.feed.ncpd',
+			ICON = 'shield',
 			JOBS = { ncpd = true },
 			NODES = {
 				{ id = 'ncpd_1', NAME = 'skills.node.ncpd1', DESC = 'skills.desc.ncpd1',
@@ -67,12 +113,14 @@ OPX.Config.MODULES.skills = {
 				{ id = 'ncpd_4', NAME = 'skills.node.ncpd4', DESC = 'skills.desc.ncpd4',
 					PERK = 'ncpd.command', VALUE = 15, COST = 2 },
 				{ id = 'ncpd_5', NAME = 'skills.node.ncpd5', DESC = 'skills.desc.ncpd5',
-					PERK = 'ncpd.legend', VALUE = 25, COST = 3 },
+					PERK = 'ncpd.response', VALUE = 25, COST = 3 },
 			},
 		},
 		{
 			id = 'maxtac',
 			NAME = 'skills.branch.maxtac',
+			FEED = 'skills.feed.maxtac',
+			ICON = 'weapon',
 			JOBS = { maxtac = true },
 			NODES = {
 				{ id = 'maxtac_1', NAME = 'skills.node.maxtac1', DESC = 'skills.desc.maxtac1',
@@ -88,10 +136,55 @@ OPX.Config.MODULES.skills = {
 			},
 		},
 		{
+			id = 'corp',
+			NAME = 'skills.branch.corp',
+			FEED = 'skills.feed.corp',
+			ICON = 'server',
+			-- `corp` is the board's own corporate job; Arasaka and Militech are
+			-- the catalogue's corporate employers, given by an operator.
+			JOBS = { corp = true, arasaka = true, militech = true },
+			NODES = {
+				{ id = 'corp_1', NAME = 'skills.node.corp1', DESC = 'skills.desc.corp1',
+					PERK = 'corp.access', VALUE = 5, COST = 1 },
+				{ id = 'corp_2', NAME = 'skills.node.corp2', DESC = 'skills.desc.corp2',
+					PERK = 'corp.expense', VALUE = 10, COST = 1 },
+				{ id = 'corp_3', NAME = 'skills.node.corp3', DESC = 'skills.desc.corp3',
+					PERK = 'corp.leverage', VALUE = 15, COST = 2 },
+				{ id = 'corp_4', NAME = 'skills.node.corp4', DESC = 'skills.desc.corp4',
+					PERK = 'corp.budget', VALUE = 20, COST = 2 },
+				{ id = 'corp_5', NAME = 'skills.node.corp5', DESC = 'skills.desc.corp5',
+					PERK = 'corp.board', VALUE = 30, COST = 3 },
+			},
+		},
+		{
+			id = 'nomad',
+			NAME = 'skills.branch.nomad',
+			FEED = 'skills.feed.nomad',
+			ICON = 'vehicle',
+			-- The road: the board's nomad clans and the Delamain drivers. Hauling
+			-- pays its crates straight to the wallet and credits no job bank, so
+			-- it has no job name to list here (see docs/jobs.md).
+			JOBS = { nomad = true, cabbie = true },
+			NODES = {
+				{ id = 'nomad_1', NAME = 'skills.node.nomad1', DESC = 'skills.desc.nomad1',
+					PERK = 'nomad.handling', VALUE = 5, COST = 1 },
+				{ id = 'nomad_2', NAME = 'skills.node.nomad2', DESC = 'skills.desc.nomad2',
+					PERK = 'nomad.clan', VALUE = 10, COST = 1 },
+				{ id = 'nomad_3', NAME = 'skills.node.nomad3', DESC = 'skills.desc.nomad3',
+					PERK = 'nomad.cargo', VALUE = 15, COST = 2 },
+				{ id = 'nomad_4', NAME = 'skills.node.nomad4', DESC = 'skills.desc.nomad4',
+					PERK = 'nomad.speed', VALUE = 20, COST = 2 },
+				{ id = 'nomad_5', NAME = 'skills.node.nomad5', DESC = 'skills.desc.nomad5',
+					PERK = 'nomad.chief', VALUE = 30, COST = 3 },
+			},
+		},
+		{
 			id = 'street',
 			NAME = 'skills.branch.street',
+			FEED = 'skills.feed.street',
+			ICON = 'map',
 			-- THE CATCH-ALL: no jobs declared means every job no other trunk
-			-- names -- hauling, gunsmithing, whatever the server runs.
+			-- names -- netrunning, bartending, whatever the server runs.
 			JOBS = nil,
 			NODES = {
 				{ id = 'street_1', NAME = 'skills.node.street1', DESC = 'skills.desc.street1',
@@ -103,7 +196,47 @@ OPX.Config.MODULES.skills = {
 				{ id = 'street_4', NAME = 'skills.node.street4', DESC = 'skills.desc.street4',
 					PERK = 'street.scavenge', VALUE = 15, COST = 2 },
 				{ id = 'street_5', NAME = 'skills.node.street5', DESC = 'skills.desc.street5',
-					PERK = 'street.fixer', VALUE = 20, COST = 3 },
+					PERK = 'street.cred', VALUE = 20, COST = 3 },
+			},
+		},
+		{
+			id = 'ripperdoc',
+			NAME = 'skills.branch.ripperdoc',
+			FEED = 'skills.feed.ripperdoc',
+			ICON = 'heal',
+			JOBS = { ripperdoc = true, trauma = true },
+			NODES = {
+				{ id = 'ripperdoc_1', NAME = 'skills.node.ripperdoc1', DESC = 'skills.desc.ripperdoc1',
+					PERK = 'ripperdoc.precision', VALUE = 5, COST = 1 },
+				{ id = 'ripperdoc_2', NAME = 'skills.node.ripperdoc2', DESC = 'skills.desc.ripperdoc2',
+					PERK = 'ripperdoc.triage', VALUE = 10, COST = 1 },
+				{ id = 'ripperdoc_3', NAME = 'skills.node.ripperdoc3', DESC = 'skills.desc.ripperdoc3',
+					PERK = 'ripperdoc.calibration', VALUE = 15, COST = 2 },
+				{ id = 'ripperdoc_4', NAME = 'skills.node.ripperdoc4', DESC = 'skills.desc.ripperdoc4',
+					PERK = 'ripperdoc.surgery', VALUE = 20, COST = 2 },
+				{ id = 'ripperdoc_5', NAME = 'skills.node.ripperdoc5', DESC = 'skills.desc.ripperdoc5',
+					PERK = 'ripperdoc.mastery', VALUE = 30, COST = 3 },
+			},
+		},
+		{
+			-- THE TOP OF THE TREE: the last trunk is drawn as the apex, and its
+			-- last node is the highest a character can reach.
+			id = 'fixer',
+			NAME = 'skills.branch.fixer',
+			FEED = 'skills.feed.fixer',
+			ICON = 'star',
+			JOBS = { fixer = true, merc = true },
+			NODES = {
+				{ id = 'fixer_1', NAME = 'skills.node.fixer1', DESC = 'skills.desc.fixer1',
+					PERK = 'fixer.contacts', VALUE = 5, COST = 1 },
+				{ id = 'fixer_2', NAME = 'skills.node.fixer2', DESC = 'skills.desc.fixer2',
+					PERK = 'fixer.cut', VALUE = 10, COST = 1 },
+				{ id = 'fixer_3', NAME = 'skills.node.fixer3', DESC = 'skills.desc.fixer3',
+					PERK = 'fixer.afterlife', VALUE = 15, COST = 2 },
+				{ id = 'fixer_4', NAME = 'skills.node.fixer4', DESC = 'skills.desc.fixer4',
+					PERK = 'fixer.kingmaker', VALUE = 20, COST = 2 },
+				{ id = 'fixer_5', NAME = 'skills.node.fixer5', DESC = 'skills.desc.fixer5',
+					PERK = 'fixer.legend', VALUE = 30, COST = 3 },
 			},
 		},
 	},

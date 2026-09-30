@@ -28,6 +28,16 @@ local claiming
 -- names the character that left.
 local owners
 
+-- JOB VEHICLES that are out, by `<citizenId>/<slot>`. SEPARATE FROM `live` and
+-- that is the whole design: `live` is plate -> owned row, and six functions read
+-- it as exactly that -- the save loop writes a row back, `Store` files one under
+-- a garage, `Occupied` proves a car is the connection's OWN. A job vehicle has
+-- no row and no plate, so none of those may ever see it, and a job car that
+-- reached `live` would be one `Store` away from being filed as somebody's car.
+-- Rebuilt empty by `Init` with `live`: the host removes what this resource
+-- created when it stops.
+local jobLive
+
 -- The character contract, resolved in `Start`. Nil means nobody can prove they
 -- own anything, and every door refuses.
 local character
@@ -41,6 +51,14 @@ local PLATE_TRIES = 5
 -- Longest TweakDB record accepted. Refused here for a reason a caller can read,
 -- although the host caps it too.
 local MAX_RECORD = 256
+
+-- Longest job-vehicle slot accepted: the fleet key a garage names, which
+-- `modules/garages/shared/access.lua` caps at the same width.
+local MAX_SLOT = 48
+
+-- Longest appearance name a job vehicle is created in: the `appearance` column
+-- an owned vehicle's is kept in (VARCHAR(128)), which the fleet caps the same.
+local MAX_APPEARANCE = 128
 
 --- Answers a value as a finite number, or nil. Named for what it RETURNS: four
 --- other files use a local called `finite` for the predicate, and one name for
@@ -483,6 +501,236 @@ function M.StoreAll(citizenId)
 	return stored
 end
 
+-- ── job vehicles: out, but never owned ──────────────────────────────────────
+--
+-- A JOB VEHICLE IS SIGNED OUT, NOT GIVEN. The garages module decides WHO may
+-- take one and WHERE it comes out (`config/garages.lua` JOB_VEHICLES); this is
+-- the half that makes it exist, because every vehicle a player takes out goes
+-- through this module and a second creator would be a second answer to "what
+-- does this player have out".
+--
+-- IT HAS NO ROW AND NO PLATE, and that one fact is every guarantee the owner
+-- asked for. Nothing that sells, hands over, stores or counts a car can reach
+-- one: they all speak in plates. `PlateOf` answers nil for it, so its boot is
+-- the memory-only storage of a vehicle nobody owns; the save loop never writes
+-- it; `Store` and `Occupied` never see it. It is fresh every time it comes out
+-- -- the pool maintains its own.
+--
+-- ONE PER SLOT PER CHARACTER, keyed `<citizenId>/<slot>`: taking a slot that is
+-- already out MOVES it to the named place, the promise `Spawn` makes for a
+-- recalled car, and refuses while anybody is aboard. Nothing here yields -- no
+-- database stands behind a job vehicle -- and the claim `Spawn` takes is taken
+-- here all the same, so a yield added later cannot reopen the race `Spawn`
+-- closed: two cars out of one slot.
+
+--- The key one job vehicle is held under.
+local function jobKey(citizenId, slot)
+	return ('%s/%s'):format(tostring(citizenId), tostring(slot))
+end
+
+--- Whether anybody is sitting in a vehicle, read off the host's own snapshot.
+local function occupied(snapshot)
+	local occupants = type(snapshot) == 'table' and snapshot.occupants or nil
+	return type(occupants) == 'table' and #occupants > 0
+end
+
+--- Signs a job vehicle out to a loaded character, at a place the caller named.
+-- @author XEROX710
+--
+-- THE PLACE IS REQUIRED. A job vehicle only ever comes out at a marker the
+-- garages module chose and validated, so there is no beside-the-player path
+-- for one to take: a request with no place is a caller's mistake, refused.
+-- @param source Source
+-- @param slot string the fleet row's key, one vehicle per character per slot
+-- @param record string a TweakDB vehicle record
+-- @param at table position { x, y, z }, yaw, bucket
+-- @param tag table|nil { job = string, appearance = string|nil } -- the job is
+-- carried for whoever lists them; the appearance is the livery the vehicle is
+-- created in, on every player's game (the platform applies a create's
+-- appearance on every client since its 2026-09-14 build)
+-- @return Result Ok({ slot, id, recalled })
+function M.SpawnJob(source, slot, record, at, tag)
+	local data = characterOf(source)
+	if not data then return Result.Err('vehicle.notLoggedIn', tostring(source)) end
+	if type(slot) ~= 'string' or slot == '' or #slot > MAX_SLOT then
+		return Result.Err('error.badRequest', 'slot')
+	end
+	if type(record) ~= 'string' or record == '' then return Result.Err('error.badRequest', 'record') end
+	if #record > MAX_RECORD then return Result.Err('vehicle.badRecord', 'record is too long') end
+	if type(at) ~= 'table' then return Result.Err('error.badRequest', 'at') end
+	-- The same coercions a named place gets in `Spawn`: a NaN or a string from a
+	-- caller never reaches the engine as a coordinate.
+	local x, y, z = finiteNumber(at.x), finiteNumber(at.y), finiteNumber(at.z)
+	if x == nil or y == nil or z == nil then return Result.Err('error.badRequest', 'at') end
+
+	local key = jobKey(data.citizenId, slot)
+	local claim = 'job:' .. key
+	if claiming[claim] then return Result.Err('vehicle.busy', slot) end
+	claiming[claim] = true
+	local function done(result)
+		claiming[claim] = nil
+		return result
+	end
+
+	-- ALREADY OUT: moved to the named place, never duplicated, and never taken
+	-- from under somebody sitting in it.
+	local recalled = false
+	local held = jobLive[key]
+	if held ~= nil then
+		local snapshot = Open77.vehicles.get(held.id)
+		if occupied(snapshot) then return done(Result.Err('vehicle.occupied', slot)) end
+		-- A refused removal leaves it standing where it is, and a second one is
+		-- NOT created beside it: one slot, one vehicle. A vehicle the host no
+		-- longer knows at all is simply gone, and is forgotten.
+		if Open77.vehicles.remove(held.id) ~= true and snapshot ~= nil then
+			Open77.log.error(('[vehicles] job vehicle %s of %s could not be taken off the street ' ..
+				'to be moved; it stays where it is'):format(slot, tostring(data.citizenId)))
+			return done(Result.Err('vehicle.storeRefused', slot))
+		end
+		jobLive[key] = nil
+		recalled = true
+	end
+
+	local bucket = finiteNumber(at.bucket)
+	if bucket == nil then
+		local position = Open77.players.position(source)
+		bucket = type(position) == 'table' and finiteNumber(position.bucket) or 0
+	end
+
+	local appearance = type(tag) == 'table' and type(tag.appearance) == 'string'
+		and tag.appearance ~= '' and #tag.appearance <= MAX_APPEARANCE and tag.appearance or nil
+	local id, reason = Open77.vehicles.create({
+		record = record,
+		appearance = appearance,
+		position = { x = x, y = y, z = z },
+		yaw = finiteNumber(at.yaw),
+		bucket = math.floor(bucket),
+		health = 1.0,
+	})
+	if id == nil then return done(Result.Err('vehicle.spawnRefused', tostring(reason))) end
+
+	jobLive[key] = {
+		id = id,
+		citizenId = data.citizenId,
+		slot = slot,
+		record = record,
+		job = type(tag) == 'table' and type(tag.job) == 'string' and tag.job or nil,
+	}
+	-- The departure reads this map to find whose vehicles to take back, exactly
+	-- as it does for a car of their own.
+	owners[source] = data.citizenId
+	OPX.Audit.Player(character.GetPlayer(source), 'vehicle.job', slot,
+		{ id = tostring(id), record = record })
+	return done(Result.Ok({ slot = slot, id = id, recalled = recalled or nil }))
+end
+
+--- The engine id one character's job vehicle is out as, or nil.
+-- Memory only, like `LiveId`: the garages module asks it once per list row and
+-- once per bring-out, to leave the vehicle it is fetching out of its own exit.
+-- @author XEROX710
+-- @param citizenId CitizenId
+-- @param slot string
+-- @return any|nil
+function M.JobLiveId(citizenId, slot)
+	if type(citizenId) ~= 'string' or type(slot) ~= 'string' then return nil end
+	local held = jobLive[jobKey(citizenId, slot)]
+	return held and held.id or nil
+end
+
+--- The job vehicle this connection is sitting in, when it is signed out to them.
+-- The oracle for "return this at the door", on the terms `Occupied` answers a
+-- car of their own: the host's seat assignment names the vehicle and this
+-- module's own table names the holder. A job vehicle somebody else signed out
+-- answers nothing, exactly as a car the connection is only riding in does.
+-- @author XEROX710
+-- @param source Source
+-- @return Result Ok({ slot, id, job }) | Ok(nil)
+function M.JobOccupied(source)
+	local data = characterOf(source)
+	if data == nil then return Result.Err('vehicle.notLoggedIn', tostring(source)) end
+	local players = Open77.players
+	if type(players) ~= 'table' or type(players.getVehicleSeat) ~= 'function' then
+		return Result.Ok(nil)
+	end
+	local read, assignment = pcall(players.getVehicleSeat, source)
+	if not read or type(assignment) ~= 'table' or assignment.vehicleId == nil then
+		return Result.Ok(nil)
+	end
+	-- Compared as text, for the reason `Occupied` gives.
+	for _, held in pairs(jobLive) do
+		if tostring(held.id) == tostring(assignment.vehicleId) and held.citizenId == data.citizenId then
+			return Result.Ok({ slot = held.slot, id = held.id, job = held.job })
+		end
+	end
+	return Result.Ok(nil)
+end
+
+--- Takes one job vehicle off the street and back to the pool.
+-- @author XEROX710
+--
+-- REFUSED WHILE ANYBODY IS ABOARD unless `force` says the caller is the one
+-- aboard: the garage door returns the car its own driver drove in, and the
+-- sweep that takes a car back from somebody who lost the job waits for it to be
+-- empty -- nothing is yanked out from under a driver.
+-- @param citizenId CitizenId
+-- @param slot string
+-- @param options table|nil { force = boolean }
+-- @return Result Ok({ slot })
+function M.ReturnJob(citizenId, slot, options)
+	local key = jobKey(citizenId, slot)
+	local held = jobLive[key]
+	if held == nil then return Result.Err('vehicle.notSpawned', tostring(slot)) end
+	local snapshot = Open77.vehicles.get(held.id)
+	local force = type(options) == 'table' and options.force == true
+	if not force and occupied(snapshot) then return Result.Err('vehicle.occupied', tostring(slot)) end
+	-- The answer is read, for the reason `Store` reads it: a refused removal of a
+	-- vehicle the host still knows is a car still standing in the street, and it
+	-- stays tracked rather than being forgotten into an orphan.
+	if Open77.vehicles.remove(held.id) ~= true and snapshot ~= nil then
+		Open77.log.error(('[vehicles] job vehicle %s of %s could not be taken off the street; ' ..
+			'it stays out'):format(tostring(slot), tostring(citizenId)))
+		return Result.Err('vehicle.storeRefused', tostring(slot))
+	end
+	jobLive[key] = nil
+	return Result.Ok({ slot = slot })
+end
+
+--- Every job vehicle that is out, of one character or of everyone, in a fixed
+--- order. Copies, so a caller walking them may return any of them as it goes.
+-- @author XEROX710
+-- @param citizenId CitizenId|nil
+-- @return table[] { citizenId, slot, id, record, job }
+function M.JobVehicles(citizenId)
+	local list = {}
+	for _, held in pairs(jobLive) do
+		if citizenId == nil or held.citizenId == citizenId then
+			list[#list + 1] = { citizenId = held.citizenId, slot = held.slot, id = held.id,
+				record = held.record, job = held.job }
+		end
+	end
+	table.sort(list, function(left, right)
+		if left.citizenId ~= right.citizenId then return left.citizenId < right.citizenId end
+		return left.slot < right.slot
+	end)
+	return list
+end
+
+--- Takes every job vehicle of one character, or of everyone, back at once --
+--- somebody aboard or not. For the departure and the stop, where the holder is
+--- gone and nothing is left to wait for.
+-- @param citizenId CitizenId|nil
+-- @return integer how many went back
+local function returnAllJob(citizenId)
+	local held = M.JobVehicles(citizenId)
+	local returned = 0
+	for index = 1, #held do
+		if M.ReturnJob(held[index].citizenId, held[index].slot, { force = true }).ok then
+			returned = returned + 1
+		end
+	end
+	return returned
+end
+
 --- Saves, or puts away, one vehicle that is out.
 local function savePlate(plateId)
 	local record = live[plateId]
@@ -534,6 +782,14 @@ local function departed(rawPlayerId)
 	owners[source] = nil
 	if citizenId == nil then return end
 
+	-- The job vehicles first, and here: nothing about one yields, and a vehicle
+	-- signed out to somebody who has left is signed out to nobody.
+	local returned = returnAllJob(citizenId)
+	if returned > 0 then
+		Open77.log.debug(('[vehicles] %s left with %d job vehicle(s) out; back to the pool')
+			:format(citizenId, returned))
+	end
+
 	-- On a thread: this handler must return, and every write yields.
 	CreateThread(function()
 		local stored = M.StoreAll(citizenId)
@@ -546,6 +802,7 @@ end
 
 --- Forgets a spawned vehicle the host removed and marks it stored.
 local function removed(id, reason)
+	local raw = id
 	id = tonumber(id)
 	for plateId, record in pairs(live) do
 		if record.id == id then
@@ -555,6 +812,17 @@ local function removed(id, reason)
 			live[plateId] = nil
 			CreateThread(function() Store.SetState(plateId, STATE.STORED) end)
 			Open77.log.info(('[vehicles] %s removed: %s'):format(plateId, tostring(reason)))
+			return
+		end
+	end
+	-- A job vehicle the host took away is back in the pool: there is no row to
+	-- write, only an entry to forget. Compared as text as well as by number,
+	-- because a job vehicle's id is kept exactly as the host handed it over.
+	for key, held in pairs(jobLive) do
+		if held.id == id or tostring(held.id) == tostring(raw) then
+			jobLive[key] = nil
+			Open77.log.info(('[vehicles] job vehicle %s of %s removed: %s')
+				:format(held.slot, held.citizenId, tostring(reason)))
 			return
 		end
 	end
@@ -629,6 +897,7 @@ function M.Init()
 	live = {}
 	claiming = {}
 	owners = {}
+	jobLive = {}
 	OPX.Schema.Add(M.Storage.SCHEMA)
 end
 
@@ -645,6 +914,14 @@ function M.Api()
 		Spawn = M.Spawn,
 		Store = M.Store,
 		StoreAll = M.StoreAll,
+		-- JOB VEHICLES: signed out, never owned. See the section above
+		-- `savePlate` -- no row, no plate, so nothing that speaks in plates can
+		-- ever reach one.
+		SpawnJob = M.SpawnJob,
+		JobLiveId = M.JobLiveId,
+		JobOccupied = M.JobOccupied,
+		ReturnJob = M.ReturnJob,
+		JobVehicles = M.JobVehicles,
 	})
 end
 
@@ -688,6 +965,11 @@ end
 -- one. The save loop is what guarantees the condition survives; this is the last
 -- chance to write the rest.
 function M.Stop()
+	-- The job vehicles have nothing to write, so they go first and all at once.
+	local returned = returnAllJob(nil)
+	if returned > 0 then
+		Open77.log.info(('[vehicles] returned %d job vehicle(s) to the pool on stop'):format(returned))
+	end
 	local stored = M.StoreAll(nil)
 	if stored > 0 then
 		Open77.log.info(('[vehicles] stored %d vehicle(s) on stop'):format(stored))

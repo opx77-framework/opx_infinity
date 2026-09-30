@@ -41,25 +41,56 @@
 -- export answers `projection = "absent"`) and asks once; `Recover` projects
 -- the overdrive again, at most once per `RECOVER.AFTER_MS` and never inside
 -- the cooldown of its last use, so asking cannot be a way to skip one.
+--
+-- THE BOOST GROWS WITH THE CHARACTER (`M.Ripper.SandyBoostMs`). At the
+-- `active` phase the look and the time run for the level-scaled boost: the
+-- platform's own remaining time plus what the level adds. The platform's
+-- overdrive -- its speed, capped at 15 s by its own client -- still ends when
+-- its definition says, so its `completed` arrives first; the ripperdoc's boost
+-- goes on to its own deadline (a platform `cancelled` still ends it, and so
+-- does the owner's death). The platform starts its cooldown when ITS overdrive
+-- ends, which is too early, so the reflex grant is HELD BACK from that moment
+-- (`M.Chrome.HoldBack`: revoked, and re-armed by nothing) until the
+-- ripperdoc's boost is over and `cooldownMs` more has passed. An activation
+-- that still lands inside that window is journalled and never redrawn.
 
 local M = OPX.Modules.Get('ripperdoc')
 
 M.Sandy = {}
 
--- player -> { activation, look, expires } while a styled boost runs
+-- player -> { activation, look, expires, ... } while a styled boost runs: `real`
+-- for an overdrive (not a test), `entryId`, `extendMs` (what the level adds to
+-- the platform's boost), `cooldownMs`, `platformDone` once the platform's own
+-- overdrive completed and the ripperdoc's goes on
 local active = {}
--- player -> { at, cooldownMs }: the last accepted activation, for Recover
+-- player -> { at, cooldownMs }: from the last accepted activation -- and, once
+-- a boost ends, from its end -- for Recover
 local lastUse = {}
 -- player -> when a recovery was last granted
 local recovered = {}
+-- player -> { entry, activation, since, releaseAt }: a reflex grant held back
+-- until the ripperdoc's own boost has ended and its cooldown passed
+local holds = {}
+-- player -> activation id: the last racing activation journalled, so a race
+-- is said once, not once per phase
+local raced = {}
 -- Whether the sound door was found missing (said once)
 local warnedSound = false
 -- The deadline watch's run flag, so Stop ends it.
 local watching = false
 
--- The client's own ceiling on one boost is 15 000 ms; the extra is delivery
--- margin, the same the platform's presentation gives its own leases.
-local CAP_MS = 15500
+-- THE CLIENTS' CEILING ON ONE BOOST: a level-scaled boost of up to 44 s
+-- (`M.Ripper.SANDY_MAX_SECONDS`) plus the 250 ms delivery margin every boost
+-- carries, inside the 45 s opx_sandy_view 1.4.9 holds the owner's clock for.
+-- `client/sandevistan.lua` holds the same number.
+local CAP_MS = 45000
+M.Sandy.CAP_MS = CAP_MS
+
+-- How much longer than the platform's overdrive a boost must run before the
+-- grant is held back for it. At level 1 the ripperdoc's boost IS the
+-- platform's (plus its delivery margin), and the platform's own cooldown is
+-- the boost's: nothing is held, and the platform's `completed` ends it.
+local HOLD_SLACK_MS = 1000
 
 -- Defined below, used above it.
 local slowAround
@@ -110,6 +141,25 @@ end
 local function cooldownOf(player, entry)
 	return math.max(0, tonumber(configOf(player, entry).cooldownMs) or 0)
 end
+
+--- How long this player's boost runs: the level-scaled time for the grade
+--- they wear, from the platform's own duration at level 1
+--- (`M.Ripper.SandyBoostMs`).
+-- @param player number
+-- @param entry table
+-- @return integer ms the boost
+-- @return integer ms the platform's own (what level 1 runs)
+-- @return number level
+-- @return number cap
+local function boostMs(player, entry)
+	local citizenId = M.Chrome.CitizenOf(player)
+	local level, cap = M.Ripper.LevelOf(citizenId)
+	local base = math.max(500, tonumber(configOf(player, entry).durationMs) or 6000)
+	local grade = M.Ripper.Grade(entry, M.Chrome.Row(citizenId, entry.id).grade)
+	local tier = grade ~= nil and grade.TIER or entry.TIER or 1
+	return M.Ripper.SandyBoostMs(tier, base, level, cap), base, level, cap
+end
+M.Sandy.BoostMs = boostMs
 
 --- One positioned sound on the boosted body, once per activation.
 -- @param player number
@@ -205,12 +255,12 @@ M.Sandy.ViewReady = viewReady
 -- @return table player id -> metres
 -- @return boolean whether the boosted player has a position
 local function nearby(player, radius)
-	if radius <= 0 then return {}, {}, true end
+	if radius <= 0 then return {}, {}, true, {} end
 	local origin = positionOf(player)
-	if origin == nil then return {}, {}, false end
+	if origin == nil then return {}, {}, false, {} end
 	local api = Open77.players
 	local read, ids = pcall(api.all)
-	local out, distances = {}, {}
+	local out, distances, seatedSet = {}, {}, {}
 	for _, raw in ipairs(read and type(ids) == 'table' and ids or {}) do
 		local other = tonumber(raw)
 		if other ~= nil and other ~= player then
@@ -220,7 +270,23 @@ local function nearby(player, radius)
 				local asked, answer = pcall(api.isDead, other)
 				dead = asked and answer == true
 			end
-			if at ~= nil and not dead
+			-- A SEATED PLAYER IS NEVER SLOWED. Their client is simulating the
+			-- vehicle they sit in (the platform's physics owner), and a slowed
+			-- clock is a slowed aircraft or car that every other player watches
+			-- crawl and then lurch: measured 2026-09-28 23:45:12, a pilot 11 s
+			-- into a MaxTac AV flight had their world put at 0.15 for 21 s by a
+			-- boost nearby, and the owner reported the AV "moving around" and
+			-- "disappearing on other player screen". The boost still shows on
+			-- them; their clock is left alone. Leaving the seat puts them back in
+			-- range on the next sweep.
+			local seated = false
+			local vehicles = Open77.vehicles
+			if type(vehicles) == 'table' and type(vehicles.getPlayerSeat) == 'function' then
+				local asked, seat = pcall(vehicles.getPlayerSeat, other)
+				seated = asked and type(seat) == 'table' and seat.vehicleId ~= nil
+			end
+			if seated then seatedSet[other] = true end
+			if at ~= nil and not dead and not seated
 				and (tonumber(at.bucket) or 0) == (tonumber(origin.bucket) or 0) then
 				local dx, dy, dz = at.x - origin.x, at.y - origin.y, (at.z or 0) - (origin.z or 0)
 				local squared = dx * dx + dy * dy + dz * dz
@@ -229,7 +295,7 @@ local function nearby(player, radius)
 			end
 		end
 	end
-	return out, distances, true
+	return out, distances, true, seatedSet
 end
 
 --- The nearest other player in `distances`, as words for the journal.
@@ -303,6 +369,19 @@ end
 local function finish(player, phase, activation)
 	local row = active[player]
 	active[player] = nil
+	-- THE COOLDOWN RUNS FROM HERE, the end of the ripperdoc's own boost: what
+	-- Recover measures, and when a grant held back for it comes back.
+	if row ~= nil and row.real then
+		local now = OPX.Now()
+		lastUse[player] = { at = now, cooldownMs = row.cooldownMs or 0 }
+		local hold = holds[player]
+		if hold ~= nil and hold.releaseAt == nil and hold.activation == row.activation then
+			hold.releaseAt = now + (row.cooldownMs or 0)
+			Open77.log.info(('[ripperdoc] player %d: the Sandevistan is over (%s); its %s grant comes back ' ..
+				'after the %d ms cooldown'):format(player, tostring(phase), tostring(hold.entry),
+				math.floor(row.cooldownMs or 0)))
+		end
+	end
 	local effects = type(Open77) == 'table' and Open77.effects or nil
 	for _, handle in ipairs(row ~= nil and row.handles or {}) do
 		if type(effects) == 'table' and type(effects.remove) == 'function' then
@@ -334,10 +413,10 @@ slowAround = function(player, row)
 	local radius = tonumber(time.RADIUS) or 0
 	local remaining = math.floor(row.expires - OPX.Now())
 	local count = 0
-	local distances, placed = {}, true
+	local distances, placed, seatedSet = {}, true, {}
 	if radius > 0 and remaining >= 250 then
 		local inside
-		inside, distances, placed = nearby(player, radius)
+		inside, distances, placed, seatedSet = nearby(player, radius)
 		for _, other in ipairs(inside) do
 			if not row.slowed[other] then
 				row.slowed[other] = true
@@ -362,6 +441,7 @@ slowAround = function(player, row)
 			Open77.log.info(('[ripperdoc] player %d: Sandevistan no longer slows player %d (%s)'):format(player, other,
 				remaining < 250 and 'the boost is ending'
 					or distances[other] ~= nil and ('%.1f m away, past %.1f m'):format(distances[other], radius * 1.25)
+					or seatedSet[other] and 'seated in a vehicle'
 					or 'gone, dead or in another bucket'))
 		end
 	end
@@ -402,14 +482,24 @@ local function run(player, phase, activation, value, look, lookName, entry)
 		if remaining <= 0 then
 			remaining = entry ~= nil and tonumber(configOf(player, entry).durationMs) or 6000
 		end
-		remaining = math.max(500, math.min(CAP_MS, math.floor(remaining + 250)))
+		-- THE LEVEL'S SHARE: what the character's level adds to the
+		-- platform's own boost runs on top of it (nothing at level 1).
+		local extend, level, cap = 0, 1, 1
+		if entry ~= nil then
+			local boost, base
+			boost, base, level, cap = boostMs(player, entry)
+			extend = math.max(0, boost - base)
+		end
+		remaining = math.max(500, math.min(CAP_MS, math.floor(remaining + extend + 250)))
 		local tier = value.tier == 'reflex' and 'reflex' or 'reflex_heavy'
 		local time = timeOf(look)
 		-- A second `active` for the same boost is not a second boost.
 		if active[player] ~= nil and active[player].activation == activation then return end
 		if active[player] ~= nil then finish(player, 'cancelled', active[player].activation) end
 		local row = { activation = activation, look = lookName, expires = OPX.Now() + remaining,
-			handles = attach(player, look, tier, remaining), slowed = {}, time = time }
+			handles = attach(player, look, tier, remaining), slowed = {}, time = time,
+			real = entry ~= nil, entryId = entry ~= nil and entry.id or nil, extendMs = extend,
+			cooldownMs = entry ~= nil and cooldownOf(player, entry) or 0, level = level, cap = cap }
 		active[player] = row
 		local view = viewReady()
 		broadcast({ player = player, phase = 'active', activation = activation, look = lookName,
@@ -422,18 +512,49 @@ local function run(player, phase, activation, value, look, lookName, entry)
 		-- and again every half second by the sweep for whoever walks in or out).
 		local count = slowAround(player, row)
 		Open77.log.info(('[ripperdoc] player %d: Sandevistan (%s, %s) for %d ms, drawn by every client%s, ' ..
-			'%d player(s) slowed nearby%s, base-game screen %s'):format(player, lookName, tier, remaining,
+			'%d player(s) slowed nearby%s, base-game screen %s%s'):format(player, lookName, tier, remaining,
 			#row.handles > 0 and (' + ' .. #row.handles .. ' server layer(s)') or '', count,
 			count == 0 and row.nearest ~= nil and (' (within %d m; %s)'):format(math.floor(tonumber(time.RADIUS) or 0),
 				row.nearest) or '',
-			view and 'shipped' or 'not shipped (stand-in)'))
+			view and 'shipped' or 'not shipped (stand-in)',
+			entry ~= nil and ('; level %d of %d adds %d ms to the platform\'s own'):format(math.floor(level),
+				math.floor(cap), extend) or ''))
 		return
 	end
 	-- Only the boost it names: a late end of an older boost (this file's own
 	-- deadline, then the platform's) must not cut a newer one short.
-	if terminal and (active[player] == nil or active[player].activation == activation) then
-		finish(player, phase, activation)
+	if terminal then M.Sandy.PlatformEnded(player, phase, activation) end
+end
+
+--- The platform says its overdrive is over. A boost the level lengthened
+--- goes on to its own deadline when the platform merely COMPLETED -- and the
+--- grant is held back from now until the boost is over and its cooldown has
+--- passed, because the platform's own cooldown starts now; anything else ends
+--- it here (a `cancelled`, a boost at the platform's own length, a deadline
+--- that has come).
+-- @param player number
+-- @param phase string `completed` or `cancelled`
+-- @param activation string
+function M.Sandy.PlatformEnded(player, phase, activation)
+	local row = active[player]
+	if row ~= nil and row.activation ~= activation then return end
+	local now = OPX.Now()
+	if row ~= nil and phase == 'completed' and row.real and (row.extendMs or 0) > HOLD_SLACK_MS
+		and row.expires - now > HOLD_SLACK_MS then
+		if row.platformDone then return end
+		row.platformDone = true
+		local entry = M.Ripper.Entry(tostring(row.entryId))
+		if entry ~= nil then
+			M.Chrome.HoldBack(player, entry)
+			holds[player] = { entry = entry.id, activation = activation, since = now }
+		end
+		Open77.log.info(('[ripperdoc] player %d: the platform\'s overdrive completed and the Sandevistan runs ' ..
+			'on for %d ms more (level %d of %d) -- the %s grant is HELD until that ends and its %d ms cooldown ' ..
+			'has passed'):format(player, math.floor(row.expires - now), math.floor(row.level or 1),
+			math.floor(row.cap or 1), tostring(row.entryId), math.floor(row.cooldownMs or 0)))
+		return
 	end
+	finish(player, phase, activation)
 end
 
 --- One phase of one overdrive, as the authority reports it.
@@ -448,15 +569,11 @@ function M.Sandy.OnReflex(rawPlayer, encoded)
 	local activation = tostring(value.activation or '')
 	if activation == '' then return end
 	local entry = M.Chrome.ArmedEntry(player, 'reflex')
-
-	-- The cooldown clock Recover respects runs for every overdrive, styled or
-	-- not -- from the ACCEPT, over the boost and then the cooldown, which the
-	-- platform starts when the boost ends.
-	if phase == 'accepted' and entry ~= nil then
-		local config = configOf(player, entry)
-		lastUse[player] = { at = OPX.Now(),
-			cooldownMs = cooldownOf(player, entry) + math.max(0, tonumber(config.durationMs) or 0) }
-	end
+	local row = active[player]
+	local ours = row ~= nil and row.activation == activation
+	-- The boost's own piece while its grant is held back (revoked, so nothing
+	-- is armed): the phases of THAT boost are still its piece's.
+	if entry == nil and ours and row.entryId ~= nil then entry = M.Ripper.Entry(row.entryId) end
 
 	local terminal = phase == 'completed' or phase == 'cancelled'
 	local look, lookName = nil, nil
@@ -469,12 +586,34 @@ function M.Sandy.OnReflex(rawPlayer, encoded)
 				value.reason ~= nil and (', ' .. tostring(value.reason)) or '',
 				entry ~= nil and entry.id or 'NONE', lookName or 'none (the platform draws it)'))
 	end
+
+	-- A RACE: an activation that still landed inside the running boost or its
+	-- cooldown (a press on its way as the grant was held back, a second charge)
+	-- is never drawn -- the boost on screen and its cooldown stand -- and it
+	-- touches no clock. Said once per activation.
+	if (phase == 'accepted' or phase == 'active') and not ours
+		and ((row ~= nil and row.real) or holds[player] ~= nil) then
+		if raced[player] ~= activation then
+			raced[player] = activation
+			Open77.log.warn(('[ripperdoc] player %d: overdrive %s arrived %s -- not drawn; the running boost ' ..
+				'and its cooldown stand'):format(player, activation, row ~= nil and 'inside the running Sandevistan'
+				or 'inside the Sandevistan\'s cooldown (its grant is held)'))
+		end
+		return
+	end
+
+	-- The cooldown clock Recover respects runs for every overdrive, styled or
+	-- not -- from the ACCEPT, over the boost (as long as the level makes it)
+	-- and then the cooldown; once the boost ends, from its end (`finish`).
+	if phase == 'accepted' and entry ~= nil then
+		local boost = boostMs(player, entry)
+		lastUse[player] = { at = OPX.Now(), cooldownMs = cooldownOf(player, entry) + math.max(0, boost) }
+	end
+
 	if look == nil then
 		-- Not ours to draw -- unless a styled boost of this player is still on
 		-- screen and this is its end (a piece pulled mid-boost).
-		if terminal and active[player] ~= nil and active[player].activation == activation then
-			finish(player, phase, activation)
-		end
+		if terminal and ours then M.Sandy.PlatformEnded(player, phase, activation) end
 		return
 	end
 	run(player, phase, activation, value, look, lookName, entry)
@@ -600,6 +739,9 @@ end
 function M.Sandy.Recover(player, chair)
 	player = tonumber(player)
 	if player == nil then return false, 'no_player' end
+	-- A grant held back for a boost and its cooldown is not lost: it comes back
+	-- when that is over, and asking cannot bring it back sooner.
+	if holds[player] ~= nil or M.Chrome.HeldBack(player) then return false, 'held' end
 	local entry = M.Chrome.ArmedEntry(player, 'reflex')
 	if entry == nil then return false, 'not_armed' end
 	local now = OPX.Now()
@@ -644,22 +786,75 @@ function M.Sandy.Start()
 		local player = tonumber(playerId)
 		if player == nil then return end
 		if active[player] ~= nil then finish(player, 'cancelled', active[player].activation) end
+		-- The hold goes with the session (the grant already has).
 		lastUse[player], recovered[player], reports[player] = nil, nil, nil
+		holds[player], raced[player] = nil, nil
+	end)
+	-- A BOOST THE LEVEL LENGTHENED OUTLIVES THE PLATFORM'S OVERDRIVE, and with
+	-- it every release the platform would have made: a death ends it here.
+	AddEventHandler('onPlayerLifeStateChanged', function(playerId, _, phase)
+		local player = tonumber(playerId)
+		if player == nil or tostring(phase) ~= 'dead' or active[player] == nil then return end
+		Open77.log.info(('[ripperdoc] player %d: the Sandevistan ends -- the owner is down'):format(player))
+		finish(player, 'cancelled', active[player].activation)
+	end)
+	-- A character put down on a connection that stays: its boost ends, and its
+	-- hold goes with its grants (`server/chrome.lua` drops them).
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'unloaded'), function(playerId)
+		local player = tonumber(playerId)
+		if player == nil then return end
+		if active[player] ~= nil then finish(player, 'cancelled', active[player].activation) end
+		holds[player], raced[player] = nil, nil
 	end)
 	-- THE DEADLINE BEHIND THE PHASES: a terminal phase that never arrives
-	-- still ends the look, the layers and every slowdown on time.
+	-- still ends the look, the layers and every slowdown on time. A boost the
+	-- platform already finished its part of ends exactly at its deadline:
+	-- nothing more is coming from the platform for it.
 	watching = true
 	CreateThread(function()
 		while watching do
 			Wait(500)
-			local now = OPX.Now()
-			for player, row in pairs(active) do
-				if now >= row.expires + 1000 then finish(player, 'completed', row.activation) end
-			end
-			local ran, failure = pcall(M.Sandy.Sweep)
+			local ran, failure = pcall(M.Sandy.Watch, OPX.Now())
+			if not ran then Open77.log.warn('[ripperdoc] the Sandevistan watch raised: ' .. tostring(failure)) end
+			ran, failure = pcall(M.Sandy.Sweep)
 			if not ran then Open77.log.warn('[ripperdoc] the Sandevistan sweep raised: ' .. tostring(failure)) end
 		end
 	end)
+end
+
+--- One pass of the deadline watch: every boost past its deadline ends, and
+--- every grant held back whose boost is over and whose cooldown has passed
+--- comes back. Public for the tests, which drive it with their own clock.
+-- @param now number `OPX.Now()`
+function M.Sandy.Watch(now)
+	local due = {}
+	for player, row in pairs(active) do
+		if now >= row.expires + (row.platformDone and 0 or 1000) then due[#due + 1] = player end
+	end
+	for _, player in ipairs(due) do finish(player, 'completed', active[player].activation) end
+	local back = {}
+	for player, hold in pairs(holds) do
+		-- A boost that ended by any door that did not start the cooldown
+		-- (none should) starts it now: a hold never outlives its purpose.
+		if hold.releaseAt == nil and (active[player] == nil or active[player].activation ~= hold.activation) then
+			hold.releaseAt = now + cooldownOf(player, M.Ripper.Entry(hold.entry) or { id = hold.entry })
+		end
+		if hold.releaseAt ~= nil and now >= hold.releaseAt then back[#back + 1] = player end
+	end
+	for _, player in ipairs(back) do
+		local hold = holds[player]
+		holds[player] = nil
+		local armed = M.Chrome.GiveBack(player, hold.entry)
+		Open77.log.info(('[ripperdoc] player %d: the Sandevistan\'s cooldown is over -- its %s grant is back%s')
+			:format(player, tostring(hold.entry), armed and '' or ' (not armed yet: asked again)'))
+	end
+end
+
+--- Whether a player's reflex grant is held back for a boost and its cooldown.
+-- @param player number
+-- @return boolean
+function M.Sandy.Held(player)
+	return holds[tonumber(player)] ~= nil
 end
 
 --- Ends every styled boost with the resource.
@@ -668,11 +863,11 @@ function M.Sandy.Stop()
 	local players = {}
 	for player in pairs(active) do players[#players + 1] = player end
 	for _, player in ipairs(players) do finish(player, 'cancelled', active[player].activation) end
-	active = {}
+	active, holds, raced = {}, {}, {}
 end
 
 --- A reload starts clean.
 function M.Sandy.Init()
-	active, lastUse, recovered = {}, {}, {}
+	active, lastUse, recovered, holds, raced = {}, {}, {}, {}, {}
 	warnedSound = false
 end

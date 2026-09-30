@@ -1,6 +1,6 @@
 // OPX Infinity -- the base game's own Sandevistan, for the ripperdoc's
 // Sandevistans (opx_infinity, modules/ripperdoc/client/sandevistan.lua), on the
-// player's own machine. opx_sandy_view 1.4.8.
+// player's own machine. opx_sandy_view 1.4.15.
 //
 // WHAT THE BASE GAME DOES. `SandevistanEvents.OnEnter` (2.31):
 //
@@ -26,8 +26,9 @@
 // resource has no other way to reach this script -- held for 600 ms at
 // `0.999 - code / 10000` (the world 0.1 % slower for half a second): code 1
 // asks for the Militech Apogee Sandevistan in the Operating System slot, 0 for
-// none. A code is taken only when two samples in a row agree, so an ease can
-// never be read as one.
+// none (codes 0-9 are the real item's); code 10 (1.4.9) asks for this machine's
+// player's development maxed (see `OpxSandevistanDevelop`). A code is taken
+// only when two samples in a row agree, so an ease can never be read as one.
 //
 // WHAT RUNS WHERE (1.4.0). Everything that has to happen on time runs on the
 // game's delay system, in real time, one watch per body, each holding its own
@@ -88,7 +89,8 @@
 // spawner `opx_sandy_ghost_fx`, with a trigger that drives nothing
 // (`opx_sandy_ghost_on`). Up to 1.4.5 one set of four parts
 // (`opx_sandy_ghost_body`, `_arm_l`, `_arm_r`, `_head`); from 1.4.6 four
-// layers of them (`opx_sandy_ghost1_*` .. `opx_sandy_ghost4_*`).
+// layers of them (`opx_sandy_ghost1_*` .. `opx_sandy_ghost4_*`); from 1.4.9
+// twelve (`opx_sandy_ghost1_*` .. `opx_sandy_ghost12_*`, 48 parts).
 //
 // 1.4.2, after 1.4.1 switched its parts on and drew nothing: the parts are
 // V's own garment components (V's meshes are garment meshes), the material is
@@ -166,13 +168,56 @@
 //     this game gives player bodies -- 16 of 16, or 0 and why;
 //   * the afterimage lines read the farthest one's part back from the engine
 //     (`GetLocalToWorld`), so "shown" is measured where the engine drew it.
+//
+// 1.4.9: Adam Smasher's trail, more aggressive, with way more clones: TWELVE
+// layers (the archive's 48 parts, `opx_sandy_ghost1_*` .. `opx_sandy_ghost12_*`,
+// every new layer an exact copy of the first four's parts) placed 0.045 s
+// apart -- the farthest where the body was 0.54 s before -- and a layer shows
+// once it is more than 0.2 m from the body (hidden again under 0.1 m, the
+// same 0.1 m of hysteresis as before); the history is kept for the farthest
+// one, and the model's readiness line expects all 48 parts (an older archive's
+// 16 is said as such). How a layer is placed, shown, un-hidden and kept clear
+// of the camera is unchanged. Also:
+//   * boosts of up to 40 s (level-scaled) plus their ease, 45 s: the watch of
+//     another player's boosted body gave up at 30 s ("the boost outlived its
+//     ceiling": trail off, full speed off), and the individual dilation that
+//     keeps the owner's model and a boosted body at full speed lapsed at 30 s
+//     (set again within a tenth of a second). Both now last 60 s
+//     (`OpxSandevistanBoostCeiling`); the owner's claim is the client
+//     script's, capped at 45 s;
+//   * code 10 of the clock message maxes the base game's own development on
+//     this machine -- level, street cred, attributes, skills, perk and relic
+//     points -- with the base game's own `PlayerDevelopmentData`, once per
+//     request, remembered for the session (quest fact `opx_sandy_develop`)
+//     and applied again on a new body (`OpxSandevistanDevelop`).
+//
+// 1.4.10: nothing in this script changed. The afterimages had no arms or
+// hands: V's arm meshes read an external material from
+// `preloadExternalMaterials` (they keep their own as
+// `preloadLocalMaterialInstances`), and the archive listed the ghost's in
+// `externalMaterials` -- fixed in the archive's four arm meshes. The
+// package's second script, `OpxMaxTacAv.reds`, draws the MaxTac AV in its
+// visible livery.
+//
+// 1.4.11: THE USER IS REALLY FASTER. The boost slowed the owner's world and
+// kept V at real time, and the platform's reflex overdrive (the grant behind
+// every ripperdoc Sandevistan) raises `MaxSpeed` by 1.25 or 1.55 -- so to
+// everyone watching, a Sandevistan user ran barely faster than anybody else
+// ("people using the sandevistan need a speed boost, one that is faster",
+// 2026-09-28). While the boost holds, the owner's watch now puts one more
+// multiplier on V's own `MaxSpeed` (`OpxSandevistanSpeedBoost`, x1.5 on top of
+// the overdrive's), through the base game's stats system, and takes it off
+// the moment the boost ends -- on V's own machine, so every player sees V
+// cover the ground that much faster. The package's third script,
+// `OpxQuests.reds`, makes the base game's missions playable.
 
 // WHAT IT SAYS. Each change is one line in the Open77 client log, through the
 // platform's REDscript trace (`Open77 pristine player bootstrap trace: ...`,
 // written only when the text changes): `opx_sandy_view owner: ...`,
 // `opx_sandy_view model: ...`, `opx_sandy_view real item: ...`,
 // `opx_sandy_view ghost: ...`, `opx_sandy_view afterimages: ...` (how often
-// they are placed, and how many show) and `opx_sandy_view curve: ...`.
+// they are placed, and how many show), `opx_sandy_view curve: ...` and
+// `opx_sandy_view development: ...` (what the maximum changed, before -> after).
 
 @wrapMethod(StaminaTransition)
 protected final func OnUpdate(timeDelta: Float, stateContext: ref<StateContext>, scriptInterface: ref<StateGameScriptInterface>) -> Void {
@@ -231,17 +276,37 @@ public static func OpxSandevistanClaimCode(scale: Float) -> Int32 {
     return -1;
   };
   let code: Int32 = RoundF((0.999 - scale) * 10000.0);
-  if code < 0 || code > 9 {
+  if code < 0 || code > OpxSandevistanDevelopCode() {
     return -1;
   };
   if AbsF(scale - (0.999 - Cast<Float>(code) * 0.0001)) > 0.00003 {
     return -1;
   };
-  // Only a code this file knows: none, or an item it can fit.
+  // Only a code this file knows: the development maxed (10), none (0), or an
+  // item it can fit (1-9).
+  if code == OpxSandevistanDevelopCode() {
+    return code;
+  };
   if code != 0 && !TDBID.IsValid(OpxSandevistanWearRecord(code)) {
     return -1;
   };
   return code;
+}
+
+// The code that asks for this machine's player's development maxed (1.4.9):
+// past the real item's 0-9, so the two never meet.
+public static func OpxSandevistanDevelopCode() -> Int32 {
+  return 10;
+}
+
+// Seconds past the longest boost: the ripperdoc runs a Sandevistan for up to
+// 40 s (level-scaled), 45 s with its ease -- the owner's claim is capped there
+// (client/main.lua, MAX_MS) -- and nothing below may end before it. The watch
+// of another player's boosted body gives up here, and the individual dilation
+// that keeps a body at full speed lasts this long (up to 1.4.8: 30 s, over a
+// boost of at most 15.5 s).
+public static func OpxSandevistanBoostCeiling() -> Float {
+  return 60.0;
 }
 
 // The base-game item a code asks for.
@@ -321,7 +386,9 @@ public static func OpxSandevistanView(stateContext: ref<StateContext>, scriptInt
 // ── the owner's watch ──────────────────────────────────────────────────────
 
 // `state` bits: 1 boost, 2 V exempted, 4 the engine says V ignores the world's
-// dilation, 8 the keyboard lit.
+// dilation, 8 the keyboard lit. `developIn`: seconds until the development is
+// maxed on this body (below 0: nothing pending), `developTries` how often it
+// found no development data yet, `developWhy` what the line says asked for it.
 public class OpxSandevistanOwnerTick extends DelayCallback {
   public let player: wref<PlayerPuppet>;
   public let game: GameInstance;
@@ -332,6 +399,9 @@ public class OpxSandevistanOwnerTick extends DelayCallback {
   public let tries: Int32;
   public let triedFor: Int32;
   public let said: String;
+  public let developIn: Float;
+  public let developTries: Int32;
+  public let developWhy: String;
 
   public func Call() -> Void {
     OpxSandevistanOwnerStep(this);
@@ -345,7 +415,49 @@ public static func OpxSandevistanOwnerWatch(player: ref<PlayerPuppet>) -> Void {
   tick.code = -1;
   tick.triedFor = -1;
   tick.wearIn = 1.0;
+  // A new body: the development maxed earlier this session (quest fact
+  // `opx_sandy_develop`) is applied to it again, a second after it attaches.
+  tick.developIn = 1.0;
+  tick.developWhy = "again on a new body, as asked earlier this session";
   GameInstance.GetDelaySystem(tick.game).DelayCallback(tick, 0.25, false);
+}
+
+// 1.4.11: how much faster V runs while the boost holds, on top of the
+// platform's own overdrive multiplier. The base game's stats system applies it
+// (`gameStatModifierType.Multiplier` on `MaxSpeed`, the stat the platform's
+// overdrive raises too).
+public static func OpxSandevistanSpeedBoost() -> Float {
+  return 1.5;
+}
+
+@addField(PlayerPuppet)
+public let m_opxSandySpeed: ref<gameStatModifierData>;
+
+// Puts the boost's speed on V, or takes it off. True when it changed.
+public static func OpxSandevistanSpeed(player: ref<PlayerPuppet>, on: Bool) -> Bool {
+  let stats: ref<StatsSystem> = GameInstance.GetStatsSystem(player.GetGame());
+  if !IsDefined(stats) {
+    return false;
+  };
+  let id: StatsObjectID = Cast<StatsObjectID>(player.GetEntityID());
+  if on {
+    if IsDefined(player.m_opxSandySpeed) {
+      return false;
+    };
+    let speed: ref<gameStatModifierData> = RPGManager.CreateStatModifier(gamedataStatType.MaxSpeed,
+      gameStatModifierType.Multiplier, OpxSandevistanSpeedBoost());
+    if !stats.AddModifier(id, speed) {
+      return false;
+    };
+    player.m_opxSandySpeed = speed;
+    return true;
+  };
+  if !IsDefined(player.m_opxSandySpeed) {
+    return false;
+  };
+  stats.RemoveModifier(id, player.m_opxSandySpeed);
+  player.m_opxSandySpeed = null;
+  return true;
 }
 
 public static func OpxSandevistanOwnerStep(tick: ref<OpxSandevistanOwnerTick>) -> Void {
@@ -380,6 +492,11 @@ public static func OpxSandevistanOwnerStep(tick: ref<OpxSandevistanOwnerTick>) -
       lit = false;
     };
   };
+  // 1.4.11: V's own speed, for as long as the boost holds -- and never past it.
+  if OpxSandevistanSpeed(player, boost) {
+    Open77PlayerResetTrace("opx_sandy_view owner: speed " + (boost ? "x" + FloatToStringPrec(OpxSandevistanSpeedBoost(), 2) + " on" : "back to normal")
+      + " -- MaxSpeed " + FloatToStringPrec(GameInstance.GetStatsSystem(tick.game).GetStatValue(Cast<StatsObjectID>(player.GetEntityID()), gamedataStatType.MaxSpeed), 2));
+  };
   let ignoring: Bool = player.IsIgnoringGlobalTimeDilation() || player.IsIgnoringTimeDilation();
   let state: Int32 = 0;
   if boost {
@@ -410,7 +527,15 @@ public static func OpxSandevistanOwnerStep(tick: ref<OpxSandevistanOwnerTick>) -
       tick.code = code;
       tick.codeSeen = 1;
     };
-    if tick.codeSeen == 2 && GetFact(tick.game, n"opx_sandy_wear") != code {
+    if tick.codeSeen == 2 && code == OpxSandevistanDevelopCode() {
+      // The development maxed: once for this request, now, and remembered
+      // for the session so that a new body gets it too.
+      GameInstance.GetQuestsSystem(tick.game).SetFact(n"opx_sandy_develop", code);
+      tick.developIn = 0.0;
+      tick.developTries = 0;
+      tick.developWhy = "asked for";
+    };
+    if tick.codeSeen == 2 && code != OpxSandevistanDevelopCode() && GetFact(tick.game, n"opx_sandy_wear") != code {
       GameInstance.GetQuestsSystem(tick.game).SetFact(n"opx_sandy_wear", code);
       tick.tries = 0;
       tick.wearIn = 0.0;
@@ -425,6 +550,26 @@ public static func OpxSandevistanOwnerStep(tick: ref<OpxSandevistanOwnerTick>) -
     tick.wearIn = 1.0;
     OpxSandevistanWear(tick, player);
   };
+  // The development maxed, when due: once per request, and once per new body
+  // while the session remembers it; a body with no development data yet is
+  // asked again a second later, five times.
+  if tick.developIn >= 0.0 {
+    tick.developIn -= interval;
+    if tick.developIn <= 0.0 {
+      tick.developIn = -1.0;
+      if GetFact(tick.game, n"opx_sandy_develop") == OpxSandevistanDevelopCode() {
+        tick.developTries += 1;
+        if !OpxSandevistanDevelop(player, tick.developWhy) {
+          if tick.developTries < 5 {
+            tick.developIn = 1.0;
+          } else {
+            Open77PlayerResetTrace("opx_sandy_view development: NOT maxed (" + tick.developWhy
+              + ") -- the base game has no development data for this body after 5 tries");
+          };
+        };
+      };
+    };
+  };
   let next: ref<OpxSandevistanOwnerTick> = new OpxSandevistanOwnerTick();
   next.player = tick.player;
   next.game = tick.game;
@@ -435,6 +580,9 @@ public static func OpxSandevistanOwnerStep(tick: ref<OpxSandevistanOwnerTick>) -
   next.tries = tick.tries;
   next.triedFor = tick.triedFor;
   next.said = tick.said;
+  next.developIn = tick.developIn;
+  next.developTries = tick.developTries;
+  next.developWhy = tick.developWhy;
   GameInstance.GetDelaySystem(tick.game).DelayCallback(next, interval, false);
 }
 
@@ -584,6 +732,127 @@ public static func OpxSandevistanOwnedCount(player: ref<PlayerPuppet>, transacti
   return count;
 }
 
+// ── the base game's development, maxed (1.4.9) ─────────────────────────────
+//
+// An admin's "max all levels" on the server also maxes the BASE GAME's own
+// development on the admin's machine: the client script's `develop(10)` holds
+// code 10 in the clock, and the owner's watch answers it here, with the base
+// game's own `PlayerDevelopmentData` and the game's own maxima:
+//
+//   1. the five attributes (Body = `Strength`, Reflexes, Technical Ability,
+//      Intelligence, Cool) to their record's cap (`BaseStats.<type>`, `Max()`:
+//      20) -- first, since a skill tied to an attribute is capped by it and a
+//      perk's tier asks for attribute points;
+//   2. Level, Street Cred and the five skills (Solo, Shinobi, Engineer,
+//      Netrunner, Headhunter) to their record's `maxLevel`
+//      (`GetProficiencyAbsoluteMaxLevel`: 60, 50, 60), through `SetLevel` with
+//      `isDebug` -- the level-ups' own points are not given, step 4 gives them;
+//   3. the relic points to their maximum: the Espionage proficiency to its
+//      `maxLevel` through `SetLevel` without `isDebug`, which is how the base
+//      game's own relic terminals give them (each level one relic point);
+//   4. perk points: as many as buying every perk of the five attribute trees
+//      costs (`NewPerks.<attribute>AttributeData`, one point a level), less
+//      the levels already bought and the points unspent.
+//
+// Nothing already at its maximum is touched, and one line says what changed,
+// before -> after. Answers false when the body has no development data yet.
+public static func OpxSandevistanDevelop(player: ref<PlayerPuppet>, why: String) -> Bool {
+  if !IsDefined(player) {
+    return false;
+  };
+  let data: ref<PlayerDevelopmentData> = PlayerDevelopmentSystem.GetData(player);
+  if !IsDefined(data) {
+    return false;
+  };
+  let changed: String = "";
+  // 1. The attributes.
+  let attributes: array<gamedataStatType> = [gamedataStatType.Strength, gamedataStatType.Reflexes,
+    gamedataStatType.TechnicalAbility, gamedataStatType.Intelligence, gamedataStatType.Cool];
+  let attributeNames: array<String> = ["body", "reflexes", "technical ability", "intelligence", "cool"];
+  let i: Int32 = 0;
+  while i < ArraySize(attributes) {
+    let most: Float = 20.0;
+    let record: ref<Stat_Record> = data.GetAttributeRecord(attributes[i]);
+    if IsDefined(record) && record.Max() > 0.0 {
+      most = record.Max();
+    };
+    let before: Float = data.GetAttributeValue(attributes[i]);
+    if before < most {
+      data.SetAttribute(attributes[i], most);
+      changed += OpxSandevistanDevelopSaid(attributeNames[i], RoundF(before), RoundF(data.GetAttributeValue(attributes[i])));
+    };
+    i += 1;
+  };
+  // 2. Level, Street Cred and the skills.
+  let levels: array<gamedataProficiencyType> = [gamedataProficiencyType.Level, gamedataProficiencyType.StreetCred,
+    gamedataProficiencyType.StrengthSkill, gamedataProficiencyType.ReflexesSkill,
+    gamedataProficiencyType.TechnicalAbilitySkill, gamedataProficiencyType.IntelligenceSkill,
+    gamedataProficiencyType.CoolSkill];
+  let levelNames: array<String> = ["level", "street cred", "solo", "shinobi", "engineer", "netrunner", "headhunter"];
+  i = 0;
+  while i < ArraySize(levels) {
+    let level: Int32 = data.GetProficiencyLevel(levels[i]);
+    let top: Int32 = data.GetProficiencyAbsoluteMaxLevel(levels[i]);
+    if level >= 0 && level < top {
+      data.SetLevel(levels[i], top, telemetryLevelGainReason.IsDebug, true);
+      changed += OpxSandevistanDevelopSaid(levelNames[i], level, data.GetProficiencyLevel(levels[i]));
+    };
+    i += 1;
+  };
+  // 3. The relic points.
+  let relic: Int32 = data.GetProficiencyLevel(gamedataProficiencyType.Espionage);
+  let relicTop: Int32 = data.GetProficiencyAbsoluteMaxLevel(gamedataProficiencyType.Espionage);
+  if relic >= 0 && relic < relicTop {
+    let relicPoints: Int32 = data.GetDevPoints(gamedataDevelopmentPointType.Espionage);
+    data.SetLevel(gamedataProficiencyType.Espionage, relicTop, telemetryLevelGainReason.IsDebug, false);
+    changed += OpxSandevistanDevelopSaid("relic points", relicPoints, data.GetDevPoints(gamedataDevelopmentPointType.Espionage))
+      + " (relic level " + IntToString(relic) + " -> " + IntToString(data.GetProficiencyLevel(gamedataProficiencyType.Espionage)) + ")";
+  };
+  // 4. The perk points.
+  let trees: array<gamedataAttributeDataType> = [gamedataAttributeDataType.BodyAttributeData,
+    gamedataAttributeDataType.ReflexesAttributeData, gamedataAttributeDataType.TechnicalAbilityAttributeData,
+    gamedataAttributeDataType.IntelligenceAttributeData, gamedataAttributeDataType.CoolAttributeData];
+  let perks: array<wref<NewPerk_Record>>;
+  let cost: Int32 = 0;
+  let bought: Int32 = 0;
+  i = 0;
+  while i < ArraySize(trees) {
+    let tree: ref<AttributeData_Record> = RPGManager.GetAttributeDataRecord(trees[i]);
+    if IsDefined(tree) {
+      ArrayClear(perks);
+      tree.Perks(perks);
+      let j: Int32 = 0;
+      while j < ArraySize(perks) {
+        if IsDefined(perks[j]) {
+          cost += perks[j].GetLevelsCount();
+          bought += data.IsNewPerkBought(perks[j].Type());
+        };
+        j += 1;
+      };
+    };
+    i += 1;
+  };
+  let perkPoints: Int32 = data.GetDevPoints(gamedataDevelopmentPointType.Primary);
+  if cost - bought > perkPoints {
+    data.AddDevelopmentPoints(cost - bought - perkPoints, gamedataDevelopmentPointType.Primary);
+    changed += OpxSandevistanDevelopSaid("perk points", perkPoints, data.GetDevPoints(gamedataDevelopmentPointType.Primary))
+      + " (every perk: " + IntToString(cost) + ", " + IntToString(bought) + " bought)";
+  };
+  if StrLen(changed) == 0 {
+    Open77PlayerResetTrace("opx_sandy_view development: maxed on this machine (" + why
+      + ") -- nothing changed, already at every maximum");
+  } else {
+    Open77PlayerResetTrace("opx_sandy_view development: maxed on this machine (" + why + ") -- "
+      + StrRight(changed, StrLen(changed) - 2));
+  };
+  return true;
+}
+
+// One change of the development line: ", name before -> after".
+public static func OpxSandevistanDevelopSaid(name: String, before: Int32, after: Int32) -> String {
+  return ", " + name + " " + IntToString(before) + " -> " + IntToString(after);
+}
+
 // ── the third-person model's watch ─────────────────────────────────────────
 
 // `state` bits: 1 the boost is on, 2 the body stands on V, 4 the camera stands
@@ -639,9 +908,10 @@ public static func OpxSandevistanModelStep(tick: ref<OpxSandevistanModelTick>) -
       tick.started = false;
     };
     // The same exemption V has, asserted again whenever the engine no
-    // longer holds it.
+    // longer holds it, and long enough for the longest boost (up to 1.4.8 it
+    // lapsed after 30 s).
     if !body.HasIndividualTimeDilation(n"opx_sandy_view") {
-      body.SetIndividualTimeDilation(n"opx_sandy_view", 1.0, 30.0, n"None", n"None", true, true);
+      body.SetIndividualTimeDilation(n"opx_sandy_view", 1.0, OpxSandevistanBoostCeiling(), n"None", n"None", true, true);
     };
     tick.exempted = true;
     ignoring = body.IsIgnoringGlobalTimeDilation();
@@ -732,19 +1002,27 @@ public static func OpxSandevistanModelStep(tick: ref<OpxSandevistanModelTick>) -
 }
 
 // Whether this game gives player bodies the ghost's parts, said once per
-// third-person model: as soon as its parts are there (they come with the body's
-// appearance, so on its first steps), or -- five seconds of steps without them
-// -- that they are not, and why that can be. Answers the checks left (0: said).
+// third-person model: as soon as ALL of them are there (all 48: they come with
+// the body's appearance, so on its first steps), or -- five seconds of steps
+// without all of them -- how many it has and why that can be (an older
+// archive's copy of V's body has 16: only its layers can show). Answers the
+// checks left (0: said).
 public static func OpxSandyGhostReadyStep(body: ref<NPCPuppet>, checks: Int32) -> Int32 {
   let found: Int32 = body.OpxSandyGhostFound();
-  if found > 0 {
+  let expected: Int32 = OpxSandyGhostCount();
+  if found >= expected {
     Open77PlayerResetTrace("opx_sandy_view ghost: this game gives player bodies the ghost trail's parts -- the third-person model has "
-      + IntToString(found) + " of " + IntToString(OpxSandyGhostCount()) + " (opx_sandy_ghost.archive's copy of V's body)");
+      + IntToString(found) + " of " + IntToString(expected) + " (opx_sandy_ghost.archive's copy of V's body)");
     return 0;
   };
   if checks <= 1 {
-    Open77PlayerResetTrace("opx_sandy_view ghost: the third-person model has 0 of " + IntToString(OpxSandyGhostCount())
-      + " ghost parts -- this game does not load opx_sandy_ghost.archive's copy of V's body (not installed, or another archive's copy of t0_000_base__full.app comes first): no ghost trail on this machine");
+    if found > 0 {
+      Open77PlayerResetTrace("opx_sandy_view ghost: the third-person model has only " + IntToString(found) + " of "
+        + IntToString(expected) + " ghost parts -- this game loads an OLDER opx_sandy_ghost.archive's copy of V's body (1.4.6-1.4.8's had 16): only the layers it has will show");
+    } else {
+      Open77PlayerResetTrace("opx_sandy_view ghost: the third-person model has 0 of " + IntToString(expected)
+        + " ghost parts -- this game does not load opx_sandy_ghost.archive's copy of V's body (not installed, or another archive's copy of t0_000_base__full.app comes first): no ghost trail on this machine");
+    };
     return 0;
   };
   return checks - 1;
@@ -798,45 +1076,48 @@ public static func OpxSandevistanCameraBehind(player: ref<PlayerPuppet>, was: Bo
 
 // ── Smasher's ghost trail, on the player's own model ───────────────────────
 //
-// FOUR AFTERIMAGES, placed by this file every frame (a 5 ms ticker of the
-// delay system, `OpxSandyTrailTicker`). The archive gives every
-// player body four layers of the ghost -- `opx_sandy_ghost1_body` / `_arm_l` /
-// `_arm_r` / `_head` up to `opx_sandy_ghost4_*`, V's own body, arms and head in
-// Smasher's Sandevistan look, all switched off. A lit body keeps a short
-// history of where it stood (its world position and turn, every frame), and
-// layer k is placed where the body was k x 0.08 s before -- its parts moved there
+// TWELVE AFTERIMAGES (1.4.9; 1.4.6-1.4.8: four, 0.08 s apart, shown from
+// 0.35 m), placed by this file every frame (a 5 ms ticker of the delay system,
+// `OpxSandyTrailTicker`). The archive gives every player body twelve layers of
+// the ghost -- `opx_sandy_ghost1_body` / `_arm_l` / `_arm_r` / `_head` up to
+// `opx_sandy_ghost12_*`, V's own body, arms and head in Smasher's Sandevistan
+// look, all switched off. A lit body keeps a short history of where it stood
+// (its world position and turn, every frame), and layer k is placed where the
+// body was k x 0.045 s before (the farthest, 0.54 s) -- its parts moved there
 // by their own placement (`SetLocalPosition` / `SetLocalOrientation`, relative
 // to the body), each in the body's pose of this frame, as Smasher's own copies
-// are. A layer shows once it is more than 0.35 m from the body (hidden again
-// under 0.25 m), so a body that stands still has none and a sprint leaves four,
-// about half a metre apart, along the path it really ran.
+// are. A layer shows once it is more than 0.2 m from the body (hidden again
+// under 0.1 m), so a body that stands still has none and a sprint leaves
+// twelve, about 0.4 m apart, along the path it really ran.
 
+// How many layers the archive gives a body (build.py's and merge.py's LAYERS).
 public static func OpxSandyTrailLayers() -> Int32 {
-  return 4;
+  return 12;
 }
 
 // Seconds between one afterimage and the next.
 public static func OpxSandyTrailSpacing() -> Float {
-  return 0.08;
+  return 0.045;
 }
 
-// Metres from the body at which a layer shows, and back under which it hides.
+// Metres from the body at which a layer shows, and back under which it hides
+// (the same 0.1 m of hysteresis 1.4.6-1.4.8 had, at 0.35 / 0.25 m).
 public static func OpxSandyTrailShowAt() -> Float {
-  return 0.35;
+  return 0.2;
 }
 
 public static func OpxSandyTrailHideAt() -> Float {
-  return 0.25;
+  return 0.1;
 }
 
 // No afterimage stands closer than this to the camera (its middle, a metre
-// above its feet): the third-person camera trails the body by about as far as
-// the farthest afterimage, and a body drawn inside the lens fills the screen.
+// above its feet): the third-person camera trails the body within the reach
+// of the farther afterimages, and a body drawn inside the lens fills the screen.
 public static func OpxSandyTrailClearOfCamera() -> Float {
   return 0.9;
 }
 
-// Layer `layer`'s four parts (1 = the nearest afterimage).
+// Layer `layer`'s four parts (1 = the nearest afterimage, 12 the farthest).
 public static func OpxSandyLayerParts(layer: Int32) -> array<CName> {
   if layer <= 1 {
     return [n"opx_sandy_ghost1_body", n"opx_sandy_ghost1_arm_l", n"opx_sandy_ghost1_arm_r", n"opx_sandy_ghost1_head"];
@@ -847,7 +1128,31 @@ public static func OpxSandyLayerParts(layer: Int32) -> array<CName> {
   if layer == 3 {
     return [n"opx_sandy_ghost3_body", n"opx_sandy_ghost3_arm_l", n"opx_sandy_ghost3_arm_r", n"opx_sandy_ghost3_head"];
   };
-  return [n"opx_sandy_ghost4_body", n"opx_sandy_ghost4_arm_l", n"opx_sandy_ghost4_arm_r", n"opx_sandy_ghost4_head"];
+  if layer == 4 {
+    return [n"opx_sandy_ghost4_body", n"opx_sandy_ghost4_arm_l", n"opx_sandy_ghost4_arm_r", n"opx_sandy_ghost4_head"];
+  };
+  if layer == 5 {
+    return [n"opx_sandy_ghost5_body", n"opx_sandy_ghost5_arm_l", n"opx_sandy_ghost5_arm_r", n"opx_sandy_ghost5_head"];
+  };
+  if layer == 6 {
+    return [n"opx_sandy_ghost6_body", n"opx_sandy_ghost6_arm_l", n"opx_sandy_ghost6_arm_r", n"opx_sandy_ghost6_head"];
+  };
+  if layer == 7 {
+    return [n"opx_sandy_ghost7_body", n"opx_sandy_ghost7_arm_l", n"opx_sandy_ghost7_arm_r", n"opx_sandy_ghost7_head"];
+  };
+  if layer == 8 {
+    return [n"opx_sandy_ghost8_body", n"opx_sandy_ghost8_arm_l", n"opx_sandy_ghost8_arm_r", n"opx_sandy_ghost8_head"];
+  };
+  if layer == 9 {
+    return [n"opx_sandy_ghost9_body", n"opx_sandy_ghost9_arm_l", n"opx_sandy_ghost9_arm_r", n"opx_sandy_ghost9_head"];
+  };
+  if layer == 10 {
+    return [n"opx_sandy_ghost10_body", n"opx_sandy_ghost10_arm_l", n"opx_sandy_ghost10_arm_r", n"opx_sandy_ghost10_head"];
+  };
+  if layer == 11 {
+    return [n"opx_sandy_ghost11_body", n"opx_sandy_ghost11_arm_l", n"opx_sandy_ghost11_arm_r", n"opx_sandy_ghost11_head"];
+  };
+  return [n"opx_sandy_ghost12_body", n"opx_sandy_ghost12_arm_l", n"opx_sandy_ghost12_arm_r", n"opx_sandy_ghost12_head"];
 }
 
 // Every part of every layer.
@@ -998,8 +1303,9 @@ public final func OpxSandyGhostWhat() -> String {
 
 // ── The afterimages' history, kept every frame ─────────────────────────────
 
-// One lit body's afterimages: where it stood, frame by frame, for the last
-// half second or so, and which layers show.
+// One lit body's afterimages: where it stood, frame by frame, for as long as
+// the farthest afterimage needs and a quarter second more (12 x 0.045 s +
+// 0.25 s: about 0.8 s), and which layers show.
 public class OpxSandyTrail extends IScriptable {
   public let body: wref<GameObject>;
   public let id: EntityID;
@@ -1152,7 +1458,7 @@ public static func OpxSandyTrailFrame(player: ref<PlayerPuppet>) -> Void {
 }
 
 // One frame of one body: this frame's place and turn recorded, then each layer
-// placed where the body was `layer` x 0.08 s ago (between the two frames
+// placed where the body was `layer` x 0.045 s ago (between the two frames
 // around that moment), relative to where it is now -- and not shown where it
 // would stand in the camera.
 public static func OpxSandyTrailStep(trail: ref<OpxSandyTrail>, body: ref<GameObject>, now: Float, eye: Vector4, hasEye: Bool) -> Void {
@@ -1289,8 +1595,8 @@ public static func OpxSandyGhostLight(body: ref<GameObject>, who: String) -> ref
   };
   OpxSandyTrailOn(body, who);
   Open77PlayerResetTrace("opx_sandy_view ghost: " + who + " lit -- " + body.OpxSandyGhostWhat()
-    + "; " + IntToString(OpxSandyTrailLayers()) + " afterimages, " + FloatToStringPrec(OpxSandyTrailSpacing(), 2)
-    + " s apart, placed every frame");
+    + "; " + IntToString(OpxSandyTrailLayers()) + " afterimages, " + FloatToStringPrec(OpxSandyTrailSpacing(), 3)
+    + " s apart, shown from " + FloatToStringPrec(OpxSandyTrailShowAt(), 2) + " m, placed every frame");
   return run;
 }
 
@@ -1333,10 +1639,11 @@ public let opxSandyGhostGen: Int32;
 public let opxSandyGhostWanted: Bool;
 
 // `run` is the ghost once the body has its parts; `said` whether the "not
-// dressed yet" line was written; `left` the watch's own ceiling in seconds (a
-// boost is never longer than 15.5 s; the trigger's end is what normally ends
-// it); `pace` what the last line said of this machine's clock and the body's
-// exemption (see `OpxSandyGhostPace`).
+// dressed yet" line was written; `left` the watch's own ceiling in seconds
+// (`OpxSandevistanBoostCeiling`, past the longest boost -- 40 s and its ease;
+// up to 1.4.8 it was 30 s, which a boost of 40 s would have outlived; the
+// trigger's end is what normally ends it); `pace` what the last line said of
+// this machine's clock and the body's exemption (see `OpxSandyGhostPace`).
 public class OpxSandyGhostTick extends DelayCallback {
   public let body: wref<NPCPuppet>;
   public let game: GameInstance;
@@ -1356,7 +1663,7 @@ public static func OpxSandyGhostWatch(body: ref<NPCPuppet>, gen: Int32) -> Void 
   tick.body = body;
   tick.game = body.GetGame();
   tick.gen = gen;
-  tick.left = 30.0;
+  tick.left = OpxSandevistanBoostCeiling();
   OpxSandyGhostStep(tick);
 }
 
@@ -1427,7 +1734,7 @@ public static func OpxSandyGhostStep(tick: ref<OpxSandyGhostTick>) -> Void {
 // is, with the answer the engine gives about the body; answers what it said.
 public static func OpxSandyGhostPace(body: ref<NPCPuppet>, game: GameInstance, said: String) -> String {
   if !body.HasIndividualTimeDilation(n"opx_sandy_view") {
-    body.SetIndividualTimeDilation(n"opx_sandy_view", 1.0, 30.0, n"None", n"None", true, true);
+    body.SetIndividualTimeDilation(n"opx_sandy_view", 1.0, OpxSandevistanBoostCeiling(), n"None", n"None", true, true);
   };
   let time: ref<TimeSystem> = GameInstance.GetTimeSystem(game);
   let clock: String = "not slowed by it (out of its range, or its slowdown not here yet)";

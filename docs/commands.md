@@ -16,17 +16,19 @@ so the row survives a database reset.
 
 | What you're placing | Command (stand on the spot, face its direction) | Args |
 |---|---|---|
-| **Job signup board** | `/opx.jobs.add [key] <job>` | `job` required (e.g. `ncpd`); `key` auto-named (`signup1`…) if omitted |
+| **Job signup board** | `/opx.jobs.add [key] <job>` | `job` required (e.g. `ncpd`); `key` auto-named (`signup1`…) if omitted — `/opx.jobs.add ncpd` works |
 | **Job boss desk** | `/opx.jobs.add boss [key] <job>` | same; a desk shows only to the boss grade + its capturer |
 | Remove a board | `/opx.jobs.remove <key>` | only captured boards; config rows are edited in `config/jobs.lua` |
 | List all boards | `/opx.jobs.list` | prints kind, job, pos, yaw, bucket, captured/config |
 | Garage (config now) | edit `config/garages.lua` | `add`/`remove` are **gone** — nothing places a garage in game; capture a point with `/opx.admin.self.pos` and paste it in |
 | Export DB-only garages | `/opx.garages.export` | the paste-ready config block for every garage still living only in `opx77_garages` |
-| List garages | `/opx.garages.list` | |
+| List garages | `/opx.garages.list` | every garage, then one `job fleet <job>` line per job: `key@grade`, `(av)` for aircraft |
 | Bring a stored vehicle out | `/opx.garages.bring [key] [plate]` | |
 | **NCPD/MaxTac headquarters** | `/opx.headquarters.add [key] [label]` | one command, capture AND set: key auto-named (`hq1`…), answer prints the line to check into `config/headquarters.lua` |
 | Headquarters remove / list | `/opx.headquarters.remove <key>` · `/opx.headquarters.list` | marker + name only — it designates the station where pads, garages and stores go |
-| **MaxTac AV recall pad** | *config only* — `config/avgarages.lua` `GARAGES` (`KIND = 'avpad'`) | same block shape as `config/garages.lua`; gated to the `JOBS`/`ON_DUTY` at the top of that file |
+| **MaxTac AV recall pad** | `/opx.avgarages.add [key] [label]` (restricted) · `/opx.avgarages.remove <key>` | captures AND sets the pad where you stand, facing = the recall heading; the answer prints the `config/avgarages.lua` `GARAGES` line to check in. Gated to the `JOBS`/`ON_DUTY` at the top of that file (MaxTac, on duty). **None ships**: until one is placed, the MaxTac AV row has nowhere to come out |
+| **NCPD / MaxTac job vehicles** | *config only* — `config/garages.lua` `JOB_VEHICLES` (per job, per grade) | in every member's garage list **by default**, on duty; signed out, never owned; verify with `/opx.garages.list` (the `job fleet <job>` lines). Table: [docs/jobs.md](jobs.md#job-vehicles--what-each-rank-finds-in-the-garage) |
+| NCPD air unit pad | *config only* — a public `KIND = 'avpad'` garage in `config/garages.lua` (capture the point with `/opx.admin.self.pos`) | the NCPD AV (Detective+) comes out of any pad NCPD may use; the MaxTac hangars are MaxTac's. **None ships** |
 
 | **Dealership spot** | `/opx.dealership.add [garage\|avpad] [key] [label]` | same shape as garages |
 | Remove dealer | `/opx.dealership.remove <key>` | |
@@ -36,6 +38,8 @@ so the row survives a database reset.
 | **Clothing store** | `/opx.clothing.add [key] [label]` | key auto-named (`store1`…) |
 | Remove store | `/opx.clothing.remove <key>` | |
 | List stores | `/opx.clothing.list` | |
+| **Bank branch** | `/opx.bank.add [key] [label]` | key auto-named (`bank1`…); the answer prints the `config/bank.lua` line to check in. **E** at its marker opens the branch menu: both balances, quick amounts, everything, another amount |
+| Remove / list branches | `/opx.bank.remove <key>` · `/opx.bank.list` | config rows are edited in `config/bank.lua` |
 | **Admin travel location** | `/opx.admin.world.loc.add <name> [label]` | captures where you stand; feeds `player.send` |
 | Remove location | `/opx.admin.world.loc.remove <name>` | config rows are edited in `config/admin.lua` |
 | **Teleport points** | *config only* — `config/teleports.lua` `POINTS` | verify with `/opx.teleports.where [key]` |
@@ -45,8 +49,9 @@ so the row survives a database reset.
 | Nudge the seat inside a chair | `/opx.clinic.tune <key> <forward> <right> [up] [yaw]` | metres along the chair's own axes, degrees |
 | Why "chrome record not ready" | `/opx.clinic.diag [playerId]` | binding, support resource, body, capacity, every fitted piece, the client's projection |
 | Record the base-game menus | `/opx.clinic.record [on\|off\|snap\|dump] [playerId]` | lines land in the server journal as `[ripperdoc:rec]` |
+| **Set your own chrome's condition** (staff) | `/opx.clinic.chrome <full\|0-100>` | every piece fitted on **you**: `full` = a fresh life on everything (repaired, re-armed, a broken implant fitted back for free), a number = that condition with the time left matching it, `0` = everything broken exactly as wear breaks it; answers each piece, its new condition and time left; in game only |
 | **Your Sandevistan key** (any player) | `/opx.sandy.key [key\|reset]` | no argument says the key; a key rebinds the platform's "Overdrive" action on your machine; `reset` restores `POWER_KEYS.reflex` |
-| Test the Sandevistan (staff) | `/opx.sandy.test [seconds]` | the whole presentation on your own body — clock, screen, Smasher's look — without the overdrive; 1–15 s, 9 by default |
+| Test the Sandevistan (staff) | `/opx.sandy.test [seconds]` | the whole presentation on your own body — clock, screen, Smasher's look — without the overdrive; 1–44 s (a level-scaled boost's whole length), 9 by default |
 
 ### Ripperdoc chairs
 
@@ -261,10 +266,26 @@ a Sandevistan on top: the look on the body, the world slowing, and the screen.
     -- armed piece …, look …`, `player N: Sandevistan (smasher, …) for … ms`,
     and what each client reported back (`player N's client: Sandevistan
     engaged …`, `… clock …`, `… drew player N's Sandevistan: …`).
+- **How long a boost runs — it grows with the owner.** At level 1 a
+  Sandevistan's boost is its grade's own (the Apogee's 9 s); at the skill
+  tree's level cap it is `SANDEVISTAN.LEVEL_SECONDS` — **30 s** for a tier-1
+  grade up to **40 s** for tier 5 (the Apogee) — linear in the level between.
+  The platform's overdrive (the speed) still stops at its own 15 s ceiling and
+  its definitions never change with a level; what runs on is everything the
+  ripperdoc draws: the look, the owner's slowed world, the players slowed
+  around them, the screen. A Sandevistan with no `LOOK` is the platform's to
+  draw and keeps the platform's boost.
 - **The cooldown.** Every Sandevistan the ripperdoc sells comes back
-  `SANDEVISTAN.COOLDOWN_MS` (**20 s**) after its boost ends — the platform
-  starts the cooldown when the boost is over — whatever its grade said; a
-  boost never outlasts it. The tray shows it as the piece's COOLDOWN.
+  `SANDEVISTAN.COOLDOWN_MS` (**20 s**) after its boost ends, whatever its grade
+  said. For a boost the level lengthened, that is the end of the ripperdoc's
+  boost, not the platform's: from the moment the platform's overdrive
+  completes, the player's reflex grant is **held back** (revoked, and re-armed
+  by nothing — not a re-projection, not the chair, not the lost-power watch)
+  until the boost is over and the 20 s have passed, then armed again (a
+  disconnect clears the hold with the session). The
+  server journal says `... the grant is HELD ...` and `... grant is back`; a
+  press that still lands inside is journalled and never drawn. The tray shows
+  the cooldown as the piece's COOLDOWN.
 - **The real item.** A piece in `SANDEVISTAN.WEAR` (the **Militech Apogee**)
   is also the base game's own item in the **Operating System** slot: the
   owner's client asks `opx_sandy_view` for it (a half-second message on the
@@ -282,23 +303,67 @@ a Sandevistan on top: the look on the body, the world slowing, and the screen.
   no relog. A client that loses the overdrive later (a respawn on a new body)
   asks for it again, never inside the power's own cooldown.
 
-### Durability: every piece wears out
+### Durability: chrome lasts real days
 
-Every fitted piece has a **condition** (100 = fresh) and four things take it down:
+Every fitted piece has a **condition** (100 = fresh, 0 = broken) and a **life
+in real days**:
 
-- **use** — the host's own action events on the piece that did the work
-  (melee hits on the arms, jumps on the legs, dashes, overdrives, slams, uploads);
-- **time** — `LIFESPAN_HOURS` of play from fresh to broken (iconic pieces last
-  `ICONIC_LIFESPAN` times longer);
-- **damage** — `DAMAGE_WEAR` points per 100 damage on every piece carrying armor plating;
-- **death** — `DEATH_WEAR` points off everything.
+- **time** — `LIFESPAN_DAYS` (**6**) real calendar days from its fitting or its
+  last repair to broken, **online or not**. While the player plays, every
+  `TICK_SECONDS` wears their chrome by the time since it was last worn; the time
+  they spent away is caught up the next time their character loads (one journal
+  line: `chrome caught up over N h`).
+- **hard use** — on top of the calendar, three things take extra life off,
+  counted in minutes of it:
+  - **use** — `USE_MINUTES` (**0.5**) per use, times the piece's own `WEAR`
+    weight, on the piece that did the work (melee hits on the arms, jumps on
+    the legs, dashes, overdrives, slams, uploads: `WEAR_BY`);
+  - **damage** — `DAMAGE_MINUTES` (**4**) per 100 damage, on every piece
+    carrying armor plating;
+  - **death** — `DEATH_MINUTES` (**60**) off everything.
+
+  Together they never take more than `WEAR_DAYS` (**1**) of one life: a piece
+  worked as hard as a piece can be still lasts **5 days**, one barely used lasts
+  6 — never sooner. A hard four-hour evening (hundreds of punches or jumps,
+  thousands of damage soaked, a few deaths) spends roughly 5 to 10 hours of that
+  day; two or three such evenings spend it whole, and then only the calendar
+  decides.
+- **the level** — the character's level on the skill tree stretches the whole
+  life: `LEVEL_LIFESPAN` (**1.5**) times as long at the level cap (**9 days**,
+  and 1.5 days of hard use), linear from level 1. An iconic piece's whole life
+  is `ICONIC_LIFESPAN` times as long (**1**: every piece lasts the same).
 
 Below `WORN_AT` a piece reads **WORN**; below `FAILING_AT` it is **FAILING** and
 gives only `FAILING_EFFECT` of what it is worth; at 0 it **BREAKS** and gives
-nothing (a broken implant is pulled by the platform, remembering its grade)
-until a ripperdoc **repairs** it — `REPAIR_FRACTION` of the grade's price for the
-share that is missing, never less than `REPAIR_MIN`. The player is told at each
-band. All of it is the `DURABILITY` block in `config/ripperdoc.lua`.
+nothing (a broken implant is pulled by the platform, remembering its grade — one
+that broke while its owner was away is pulled once their record reads) until a
+ripperdoc **repairs** it — `REPAIR_FRACTION` of the grade's price for the share
+that is missing, never less than `REPAIR_MIN` — which is a new life from that
+day. The player is told at each band, and every break is journalled. The tray
+shows how long each piece has left (`4D 06H LEFT`) and how much of its hard-use
+allowance is spent. `LIFESPAN_DAYS = 0` or `enabled = false` switches wear off.
+All of it is the `DURABILITY` block in `config/ripperdoc.lua`.
+
+**The one-time reset.** Real days keep a piece's life in a table of its own,
+`opx77_ripperdoc_life`. A piece fitted before it existed has no life row, and
+the first time its owner loads it goes back to fresh — **once**, journalled per
+piece (`the one-time chrome reset`): 100%, a new 6-day life from then. A broken
+grant comes back armed; a broken implant the break pulled out of the body is
+fitted back for free (and a broken implant whose slot now holds another piece
+stays broken, repairable once the slot is free).
+
+**The admin's override.** `/opx.clinic.chrome <full|0-100>` (staff, in game)
+sets every piece fitted on the caller: `full` puts a fresh life on everything —
+repaired, the grants armed again, a broken implant fitted back for free; a
+number sets that condition with the calendar's wear already matching it (so the
+time left is that share of the life) and no hard use; `0` breaks everything,
+exactly as wear does (grants dropped, implants pulled). It answers each piece,
+its new condition and its time left, and journals it.
+
+**What the level is worth**, for the skill tree to show:
+`OPX.Api.Get('ripperdoc').ChromeLevel(level, cap)` answers `lifeDays`,
+`lifeBaseDays`, `lifeMaxDays`, `wearDays` and the Sandevistan boost range
+`activeSeconds`, `activeBaseSeconds`, `activeMaxSeconds` (`{lo, hi}`).
 
 ### "Chrome record not ready"
 
@@ -389,7 +454,32 @@ as applicable). Captured rows live in the database; config rows survive resets.
 | `/opx.gang <playerId\|citizenId> <gang> [grade]` | set gang | restricted |
 | `/opx.group <job\|gang> <name>` | list members | restricted |
 | `/opx.save` | save everyone | restricted |
-| `/opx.withdraw <amount>` | cash out banked money | everyone |
+| `/opx.withdraw <amount>` | turn EDDIES into `eddies` notes in your bag (use the stack to pay them back in); **BANK is untouched** — BANK becomes EDDIES at a **bank branch** (E at its marker, `modules/bank`) | everyone |
+| `/opx.skills.level <max\|reset\|1..20> [playerId]` | **skill tree**: set a character's level — for testing or for fun | restricted |
+
+**The skill tree lever** (`config/skills.lua` `COMMANDS.level`). The player defaults to
+the caller; the console must name one. It is also on the staff menu (F9): **Myself →
+LEVELS → Max all levels** (tree + base game) and **Reset levels** (asks first), the same two
+on every player's page for that player, and on Myself **Repair all chrome**
+(`/opx.clinic.chrome full`) — `config/admin.lua` LINKS `SKILLS_LEVEL` and `CHROME`, each
+greyed when the ACL refuses its command.
+
+- `max` — level 20 (the cap) with a full bar, every trunk fed to its full depth, and the
+  points to buy every node still locked (never fewer than they held) — **and the base
+  game's own levels maxed on that player's machine**: Level, Street Cred, attributes,
+  skills, perk and relic points, through the `opx_sandy_view` preload's `develop` export
+  (1.4.9+, `DEVELOP` in the config; `RESOURCE = false` turns it off). The caller is told
+  it was *asked*; the journal says what the machine answered —
+  `[skills] player N: base-game development maxed on their client`, or `… refused on
+  their client: <why>` (`invalid_code`, `boosting`, `no_timescale_on_this_build`, or the
+  preload not running) — and the player is toasted either way.
+- `1..20` — that level with no XP into it; the points it banks, less what the claimed
+  nodes cost (never below zero). Trunks and claimed nodes are kept.
+- `reset` — level 1, nothing fed, nothing claimed, nothing banked.
+
+Every use is written back, journalled (`[skills] … set player N (<citizen>) to <verb>:
+level L/20, P point(s) to spend`), and toasted to the player; a tree they have open
+redraws on the spot, and a closed one stays closed.
 
 ## 4. NCPD (job: law desk)
 
@@ -398,10 +488,11 @@ as applicable). Captured rows live in the database; config rows survive resets.
 | `/opx.ncpd.status [player]` | heat/stage readout | restricted |
 | `/opx.ncpd.report <law> [player]` | charge a player | restricted |
 | `/opx.ncpd.heat <stage> [player]` | set heat stage | restricted |
-| `/opx.ncpd.av [player]` | call the MaxTac AV | restricted |
+| `/opx.ncpd.av [player]` | asks the engine's own AV route — on this build it answers ticket 0 and **nothing spawns**; `/opx.ncpd.heat 5` is what flies the MaxTac AV and its squad | restricted |
 | `/opx.ncpd.clear [player]` | wipe the record | restricted |
 | `/opx.ncpd.laws` | print the law book | restricted |
-| `/opx.ncpd.board [seat]` | take a crew seat on the AV | restricted |
+| `/opx.ncpd.board [seat]` | take a crew seat on the AV (needs the AV holding at street level, you on duty as MaxTac or holding `opx.ncpd.maxtac`) | restricted |
+| `/opx.ncpd.bots <spawn [count]\|clear\|status>` | civilians to test the ladder on: 24 by default (64 max), each kill charged as `murder` | restricted |
 
 **The dispatch board** is not a command. When a crime raises a wanted stage, the
 same call-out the radio carries is shouted on the screens of every on-duty
@@ -411,6 +502,33 @@ fixed id so a firefight is one board and not three. Tune it in `config/ncpd.lua`
 (`web/audio/`, bare file names), and `JOBS` to give the board its own air crew
 (e.g. MaxTac alone). `enabled = false` darkens the board and leaves the radio
 call-out standing.
+
+**A kill is called in too** (`config/ncpd.lua` `HOMICIDE`). A player killed by a
+player, or a body of this server's own killed by a player, charges the killer `murder`
+(an officer on duty killed: `murderPolice`, "Officer down") and puts the call-out on
+the board, the scanner and a toast for every ON-DUTY holder of `ALERTS.JOBS`
+(`ncpd`, `maxtac`), with a map pin at the scene for `PIN_SECONDS`. Officers on duty
+are not charged; the suspect and the victim are not told; one killer is called in at
+most every `COOLDOWN_MS`.
+
+*Whose kills the server can see.* Players (any of the three events the platform
+raises for a death: the attributed kill, the lethal hit, the bare death, with the
+last player to hurt the victim inside `ATTRIBUTION_MS` blamed for one that names
+nobody — never for a fall, the environment or a script), and the bodies this
+resource stands on the street: the response's police units, the MaxTac squad and the
+`/opx.ncpd.bots` crowd. The platform does not carry a player's shot at an NPC to the
+server, so `client/hits.lua` forwards it and `server/hits.lua` prices and applies it
+(`HITS` in `config/ncpd.lua`); see
+[`ncpd-maxtac.md` §9](ncpd-maxtac.md#9-a-kill-reaches-the-board--the-road-and-its-limits).
+The street crowd the base game spawns on each client never reaches the server, so
+those kills are **not** seen.
+
+*Nobody was told?* The audience is **on duty** in `ncpd` or `maxtac`: a job change
+starts off duty, and `/opx.duty` clocks in. `/opx.ncpd.status` prints
+`on the air: N on duty in ncpd/maxtac` and a `hit relay` line (hits applied, kills
+booked, refusals by reason); the server journal says `N on-duty holder(s) told` on
+every call-out, with `CLOCKED OFF` named when the reason is duty.
+`/opx.ncpd.report murder <player>` stages one without a gun.
 
 ## 5. INVENTORY / WEAPONS
 
@@ -439,6 +557,7 @@ call-out standing.
 | `/opx.admin.vehicle.repair [vehicleId\|near] [scope]` | scope default `full` |
 | `/opx.admin.vehicle.enter <vehicleId\|near>` | in game |
 | `/opx.admin.vehicle.flag <vehicleId\|near> <flag> [on\|off]` | |
+| `/opx.avdoor.why` | **everyone**: why the aircraft nearest to you does or does not open its door (**F**) to you, and how far it is |
 
 ## 7. STAFF — self / player / world / moderation
 
@@ -490,6 +609,7 @@ call-out standing.
 | `/opx.time <HH:MM[:SS]>` | | restricted |
 | `/opx.time.freeze <on\|off>` | | restricted |
 | `/opx.time.length <realMinutes>` | | restricted |
+| `/opx.wait <hours>` | 1 to 23: moves **your own** clock ahead for a mission's wait; the shared hour comes back on your game after 20 minutes | everyone |
 
 ## 9. ANIMATIONS / APPEARANCE / DIAGNOSTICS
 

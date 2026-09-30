@@ -255,8 +255,7 @@ local function keyLabel()
 end
 
 -- The offer this player already holds on the board they are standing on, if any.
--- Read from the server's own state so the row never invites somebody to sign up
--- for the job they are already working.
+-- Read from the server's own state; the report says it, for a diagnostic.
 local function heldOffer()
 	if nearest == nil then return nil end
 	local state = states[nearest.key]
@@ -288,14 +287,13 @@ local function syncPrompt()
 	shown = want
 	local ran, answer
 	if want then
-		local row = nil
-		if nearest.kind == M.KIND.BOSS then
-			row = locale('jobs.prompt.boss')
-		elseif heldOffer() ~= nil then
-			row = locale('jobs.prompt.quit')
-		else
-			row = locale('jobs.prompt.signup')
-		end
+		-- A SIGN-UP BOARD IS THE OFFICE FOR EVERY JOB, so its row always reads
+		-- as one. It used to say "Hand in your notice" to anybody holding any
+		-- job on offer, which is the one thing the key did NOT do: it opens the
+		-- list, where signing on to another job, working one and leaving one
+		-- are three rows of their own.
+		local row = nearest.kind == M.KIND.BOSS and locale('jobs.prompt.boss')
+			or locale('jobs.prompt.signup')
 		ran, answer = pcall(api.Show, OWNER, GROUP, { rows = { {
 			keys = { action = keySettings().ID },
 			-- Short on purpose: the strip never wraps a line.
@@ -339,6 +337,22 @@ end
 
 -- ── the rows ────────────────────────────────────────────────────────────────
 
+-- What stands between this player and a job, in words: the requirement BY NAME
+-- when the server named one ("Needs NCPD Detective or above"), the refusal's own
+-- sentence otherwise. Nothing is derived: `needs` is the server's.
+-- @param state table
+-- @return string|nil
+local function missingText(state)
+	local needs = type(state.needs) == 'table' and state.needs or nil
+	if needs ~= nil and type(needs.job) == 'string' then
+		if type(needs.grade) == 'string' then
+			return locale('jobs.needsRank', { need = needs.job, rank = needs.grade })
+		end
+		return locale('jobs.needsJobNamed', { need = needs.job })
+	end
+	return state.missing ~= nil and locale(state.missing, { job = state.job }) or nil
+end
+
 -- The right-hand column of one job row: what the player's own standing is.
 -- Nothing here is derived -- `state` is the server's answer.
 -- @param state table
@@ -347,10 +361,19 @@ local function statusOf(state)
 	if type(state.held) == 'number' then
 		local parts = { state.grade or ('grade ' .. tostring(state.held)) }
 		if state.isBoss then parts[#parts + 1] = locale('jobs.status.boss') end
+		-- A job held beside the one worked banks no time and opens no gate, so
+		-- its row says that rather than a progress figure that is not moving.
+		if state.working ~= true then
+			parts[#parts + 1] = locale('jobs.status.idle')
+			return table.concat(parts, '  |  ')
+		end
 		if state.next == nil then
 			parts[#parts + 1] = locale('jobs.status.top')
 		elseif type(state.points) == 'number' and type(state.required) == 'number' then
-			parts[#parts + 1] = locale('jobs.status.progress', {
+			-- An invitation job banks the time and never moves on it: the rank
+			-- is a Squad Lead's to grant at the desk, so the row says where.
+			parts[#parts + 1] = locale(state.approval == true and 'jobs.status.progressDesk'
+				or 'jobs.status.progress', {
 				points = ('%.0f'):format(state.points),
 				required = ('%.0f'):format(state.required),
 				next = state.nextGrade or ('grade ' .. tostring(state.next)),
@@ -358,13 +381,17 @@ local function statusOf(state)
 		end
 		return table.concat(parts, '  |  ')
 	end
-	if state.approval == true then return locale('jobs.status.approval') end
+	-- "By invitation" is what somebody who meets every requirement is told; a
+	-- requirement they do not meet is named instead, here as on the job's own
+	-- screen (the server asks the requirements first, `Access.MeetsTerms`).
+	if state.approval == true and (state.missing == nil or state.missing == 'jobs.byInvitation') then
+		return locale('jobs.status.approval')
+	end
 	if state.open ~= true then return locale('jobs.status.closed') end
 	if state.canJoin == true then return locale('jobs.status.open') end
 	-- Shown but not joinable, and the reason is the server's own: the same
 	-- refusal the press would get, before the press.
-	return state.missing ~= nil and locale(state.missing, { job = state.job })
-		or locale('jobs.status.closed')
+	return missingText(state) or locale('jobs.status.closed')
 end
 
 -- The rows of one job's own screen: the ladder, then the one action that applies
@@ -386,6 +413,11 @@ local function jobRows(state)
 
 	if type(state.held) == 'number' then
 		items[#items + 1] = { separator = true, label = '' }
+		-- A job held and not worked: the one row that makes it the worked one.
+		if state.working ~= true then
+			items[#items + 1] = { id = 'work', label = locale('jobs.row.work'),
+				data = { action = 'work', job = state.job } }
+		end
 		items[#items + 1] = { id = 'leave', label = locale('jobs.row.leave'),
 			data = { action = 'leave', job = state.job } }
 	else
@@ -395,8 +427,13 @@ local function jobRows(state)
 				value = state.grade or locale('jobs.row.entry'),
 				data = { action = 'join', job = state.job } }
 		else
+			-- The value column is cut at 48 characters, and "by invitation" is a
+			-- sentence of eighty: the column says it short and the hint under the
+			-- row says it whole.
+			local reason = missingText(state)
 			items[#items + 1] = { id = 'wait', label = locale('jobs.status.closed'),
-				value = state.missing ~= nil and locale(state.missing, { job = state.job }) or nil }
+				value = state.missing == 'jobs.byInvitation' and locale('jobs.status.approval') or reason,
+				description = reason }
 		end
 	end
 
@@ -725,9 +762,26 @@ local function join(key, job)
 	return verdict
 end
 
--- Sends the notice for the job a board stands for.
+-- Sends the notice for the job whose row was pressed. THE JOB IS SENT: a sign-up
+-- board is one office for every job, and a notice that named only the board was
+-- read as a notice for the board's headline job, whichever row it came from.
 local function leave(key, job)
-	local sent, reason = TriggerServerEvent(M.Event.LEAVE, key)
+	local sent, reason = TriggerServerEvent(M.Event.LEAVE, key, job)
+	if not sent then
+		local verdict = { ok = false, error = tostring(reason or 'not_sent'), source = 'client' }
+		publish(verdict)
+		say('error', locale('jobs.refused'))
+		return verdict
+	end
+	local verdict = { ok = true, queued = true, board = key, job = job, source = 'key' }
+	publish(verdict)
+	return verdict
+end
+
+-- Asks for a job this character already holds to become the one they work.
+-- `M.Work` on the other side re-checks the membership and the board.
+local function work(key, job)
+	local sent, reason = TriggerServerEvent(M.Event.WORK, key, job)
 	if not sent then
 		local verdict = { ok = false, error = tostring(reason or 'not_sent'), source = 'client' }
 		publish(verdict)
@@ -768,6 +822,7 @@ onRow = function(payload)
 
 	if current.screen == 'job' then
 		if data.action == 'join' then return join(current.board, data.job) end
+		if data.action == 'work' then return work(current.board, data.job) end
 		if data.action == 'leave' then return leave(current.board, data.job) end
 		return
 	end

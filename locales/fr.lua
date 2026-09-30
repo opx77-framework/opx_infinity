@@ -32,6 +32,7 @@ OPX.Locale.Register('fr', {
 	['weather.usage.time'] = 'utilisation : <HH:MM[:SS]>',
 	['weather.usage.timeFreeze'] = 'utilisation : <on|off>',
 	['weather.usage.dayLength'] = 'utilisation : <realMinutes>',
+	['weather.usage.wait'] = 'utilisation : <heures>',
 
 	['weather.error.invalidTime'] = "Ce n'est pas une heure valide. Utilisez HH:MM ou HH:MM:SS.",
 	['weather.error.invalidDayLength'] = 'Une journée dure entre 1 minute et 7 jours.',
@@ -41,6 +42,9 @@ OPX.Locale.Register('fr', {
 	['weather.error.invalidTransition'] = 'Une transition dure entre 0 et 300 secondes.',
 	['weather.error.noPresets'] = "Aucun préréglage météo n'est configuré.",
 	['weather.error.unknown'] = "Cette action n'a pas abouti.",
+	['weather.error.invalidHours'] = 'Attendez entre 1 et 23 heures entières.',
+	['weather.error.playersOnly'] = 'Seul un joueur en jeu peut avancer sa propre horloge.',
+	['weather.wait.done'] = "Votre horloge avance de {hours} h, dans votre jeu seulement. L'heure commune revient dans 20 minutes.",
 
 	['weather.help.status'] = "Affiche l'heure et la météo synchronisées.",
 	['weather.help.presets'] = 'Liste les préréglages météo configurés.',
@@ -55,4 +59,6 @@ OPX.Locale.Register('fr', {
 	['weather.help.timeFreeze'] = "Fige ou relance l'horloge.",
 	['weather.help.dayLength'] = "Définit la durée d'une journée en minutes réelles.",
 	['weather.help.dayLength.minutes'] = '180 correspond à la cadence du moteur',
+	['weather.help.wait'] = "Avancez votre propre horloge, pour l'attente d'une mission.",
+	['weather.help.wait.hours'] = 'heures entières, de 1 à 23',
 })

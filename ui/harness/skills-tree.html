@@ -4,40 +4,68 @@
 <meta charset="utf-8">
 <title>OPEN//77 skill tree harness</title>
 <!--
-  THE SKILL TREE, FRAMED AGAINST THE REAL PAGE -- and the answer to two questions:
-  can a player READ it, and can a player SEE all of it. The tree is drawn by the
-  same `ui/src/boot/main.ts` the game mounts, on a fake bridge that DELIVERS a frame
-  the way the state half would.
+  THE SKILL TREE, FRAMED AGAINST THE REAL PAGE -- and the answer to four
+  questions: can a player SEE all of it, can a player READ it, does every
+  control do what it says, and does a press still say exactly what it said
+  before. The tree is drawn by the same `ui/src/boot/main.ts` the game mounts,
+  on a fake bridge that DELIVERS frames the way the state half would: the
+  config's own tree (`config/skills.lua`, read raw -- trunks, order, emblems,
+  feeds, node ids, perks, values, costs) in the strings
+  `modules/skills/locales.lua` really holds (read raw, both tables, Lua's
+  escapes resolved).
 
-  Two regressions are pinned here, one per question:
+  The regressions pinned here:
 
-  1. A node row is a real <button>, and a <button> is a user-agent object -- the
-     host paints a light ground and a bevel behind every one that no rule has taken
-     away. On this surface that was WHITE ROWS with light text on them. The checks
-     read the COMPUTED style the player gets: a control row carries the dark plate,
-     a readout row is unfilled, no row wears the UA bevel, and the names clear a
-     contrast floor against the ground they are on.
+  1. "Not showing all the skills, the page isn't big enough." Every one of the
+     seven trunks' thirty-five tiles must lie whole inside the viewport AND
+     inside every box that clips it, with its name laid out and uncut, with no
+     scroll anywhere, at every 16:9 size from 720p to 1440p -- and the panel must
+     actually use the screen.
 
-  2. The panel used to be a fixed 980px plane with no bounds and no scroll: on a
-     narrower or shorter surface it hung off both edges and whole trunks were
-     simply not on screen. The frame below carries NINE nodes in its first trunk
-     (the page once sliced rows past the eighth on its own) and the checks say
-     every row is drawn, the panel stays inside the viewport, and the chains
-     scroll far enough to reach the bottom row.
+  2. A deeper trunk than the screen holds is REACHABLE: the stress frame carries
+     NINE nodes in its first trunk, and each one is scrolled into view and found
+     whole, uncovered by the pinned roots and gates.
+
+  3. Every control works, and the protocol is the one Lua reads: a press
+     inspects, BUY on an `available` node emits `opx:skills:spend { node }` once
+     per 300ms, and the frame that answers redraws the tree (the node claimed,
+     the points down, the next node available). Escape, the close control and
+     the player's own stow key (the frame's `key`, caught by the page because
+     no key mapping fires while it holds the keyboard) each emit
+     `opx:skills:close {}` -- and two of them for one press are one ask.
+
+  4. A node row is a real <button>, and a <button> is a user-agent object -- the
+     host paints a light ground and a bevel behind every one that no rule has
+     taken away. The checks read the computed style: a control tile carries the
+     dark plate, a locked tile is unfilled, no tile wears the bevel, and names
+     clear a 4.5:1 floor.
+
+  5. The last trunk is the top of the tree: its root is the one framed and
+     named the apex, and its last node -- Night City Legend -- is lit even
+     while it is locked. Each trunk wears its own emblem and each perk its own
+     picture.
 
   Run it with the dev server:  npm run dev  ->  /harness/skills-tree.html
+  The battery runs at whatever size the window is; a driver sets the size.
+    ?lang=fr                      the French table
+    ?shot=1&frame=realistic       draw one frame and stop (no battery, no
+          |nochrome|stress        overlay): for screenshots
+          |maxed|legend
+    &pick=<node id>               ...with that node pressed first
 -->
 <style>
-  html, body { margin: 0; background: #080e19; color: #f2f6f8;
-               font: 13px/1.5 "Cascadia Mono", Consolas, monospace; }
-  #result { position: fixed; left: 0; top: 0; margin: 0; padding: 15px;
-            white-space: pre-wrap; z-index: 9999;
-            background: rgba(8, 14, 25, 0.85); }
+  /* The night street behind the surface: the page itself is transparent. */
+  html { background: #07090d !important; }
+  #result { position: fixed; left: 0; bottom: 0; margin: 0; padding: 12px 15px;
+            max-height: 60vh; overflow: auto; white-space: pre-wrap; z-index: 9999;
+            pointer-events: none; color: #f2f6f8;
+            font: 12px/1.45 "Cascadia Mono", Consolas, monospace;
+            background: rgba(8, 14, 25, 0.9); }
 </style>
 </head>
 <body>
 <div id="app"></div>
-<pre id="result">running…</pre>
+<pre id="result" hidden>running…</pre>
 <script>
 /* A FAKE BRIDGE, INSTALLED BEFORE THE APP. It has to be this and not the app's own
    dev shim: a shim answers by itself, and this harness has to DELIVER payloads TO
@@ -59,6 +87,12 @@ window.__deliver = function (channel, payload) {
 </script>
 <script type="module">
 import '/src/boot/main.ts'
+import catalogue from '../../modules/skills/locales.lua?raw'
+import config from '../../config/skills.lua?raw'
+
+const params = new URLSearchParams(location.search)
+const lang = params.get('lang') === 'fr' ? 'fr' : 'en'
+const shot = params.get('shot') === '1'
 
 const results = []
 let failed = 0
@@ -66,16 +100,153 @@ let failed = 0
 function check(name, ok, detail) {
   if (!ok) failed += 1
   results.push((ok ? 'ok   ' : 'FAIL ') + name + (ok || detail === undefined ? '' : '  -- ' + detail))
-  draw()
 }
 
-function draw() {
-  const text = results.join('\n') + '\n\n' + (failed === 0 ? 'PASS' : failed + ' FAILED')
-  document.getElementById('result').textContent = text
-  window.__RESULT__ = { failed, results }
+function draw(done) {
+  const text = `${innerWidth}x${innerHeight} ${lang}\n` + results.join('\n') + '\n\n'
+    + (failed === 0 ? 'PASS' : failed + ' FAILED')
+  const pane = document.getElementById('result')
+  pane.textContent = text
+  pane.hidden = !done
+  window.__RESULT__ = { failed, results, done }
 }
 
-const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+/** Long enough for the whole entrance stagger to land. */
+const settle = () => sleep(750)
+
+/** The catalogue as the server loads it: both tables, Lua's escapes resolved. */
+function tables(source) {
+  const out = { en: {}, fr: {} }
+  const unescape = (body) => body.replace(/\\(u\{([0-9a-fA-F]+)\}|.)/g, (whole, esc, hex) => {
+    if (hex) return String.fromCodePoint(parseInt(hex, 16))
+    return esc === 'n' ? '\n' : esc === 't' ? '\t' : esc
+  })
+  let table = null
+  for (const line of source.split(/\r?\n/)) {
+    const open = /^local\s+(EN|FR)\s*=\s*\{/.exec(line)
+    if (open) { table = open[1].toLowerCase(); continue }
+    if (/^\}/.test(line)) { table = null; continue }
+    const row = table && /^\s*\['([^']+)'\]\s*=\s*'((?:[^'\\]|\\.)*)'/.exec(line)
+    if (row) out[table][row[1]] = unescape(row[2])
+  }
+  return out
+}
+
+const strings = tables(catalogue)[lang]
+const say = (key) => strings[key] === undefined ? key : strings[key]
+
+/** The tree as `config/skills.lua` declares it: the trunks in order, each with
+ *  its name, feed and emblem, and its chain of nodes. Read raw, so the harness
+ *  draws the shipped tree and cannot drift from it. */
+function trunksOf(source) {
+  const heads = [...source.matchAll(
+    /id = '(\w+)',\s*NAME = '(skills\.branch\.\w+)',\s*FEED = '([^']+)',\s*ICON = '(\w+)'/g)]
+  return heads.map((head, at) => {
+    const body = source.slice(head.index, at + 1 < heads.length ? heads[at + 1].index : undefined)
+    const nodes = [...body.matchAll(
+      /\{ id = '(\w+)', NAME = '([^']+)', DESC = '([^']+)',\s*PERK = '([^']+)', VALUE = ([\d.]+), COST = ([\d.]+) \}/g)]
+      .map((row) => ({ id: row[1], name: row[2], desc: row[3], perk: row[4], value: Number(row[5]), cost: Number(row[6]) }))
+    return { id: head[1], name: head[2], feed: head[3], icon: head[4], nodes }
+  })
+}
+
+const TRUNKS = trunksOf(config)
+
+/* -- THE FRAMES ----------------------------------------------------------------
+   As `frameOf` in modules/skills/server/main.lua draws them. Level 7 of 20 with
+   three points in hand (six banked, three spent), and every state the server
+   names somewhere on the tree:
+     U claimed   A available   R locked by the trunk's rank
+     P locked by the node before it   N locked by the points */
+const REALISTIC = {
+  ncpd: [3, 45, 'UUARR'],
+  maxtac: [3, 60, 'UAPRR'],
+  corp: [1, 20, 'ARRRR'],
+  nomad: [2, 30, 'APRRR'],
+  street: [3, 80, 'APPRR'],
+  ripperdoc: [1, 0, 'ARRRR'],
+  fixer: [2, 55, 'APRRR']
+}
+const WHY = { R: 'skills.rank', P: 'skills.prereq', N: 'skills.noPoints' }
+const STATE = { U: 'unlocked', A: 'available', R: 'locked', P: 'locked', N: 'locked' }
+
+function frameOf({ level, xp, need, points, cap = 20, chrome = true, states }) {
+  const frame = {
+    open: true, level, xp, need, points, depth: 5,
+    branches: TRUNKS.map((trunk) => {
+      const [rank, into, marks] = states[trunk.id]
+      return {
+        id: trunk.id, name: trunk.name, icon: trunk.icon, feed: trunk.feed,
+        rank, xp: into, need: 100,
+        nodes: trunk.nodes.map((node, at) => ({
+          id: node.id, name: node.name, desc: node.desc, perk: node.perk,
+          value: node.value, cost: node.cost,
+          state: STATE[marks[at]], why: WHY[marks[at]] || ''
+        }))
+      }
+    })
+  }
+  if (cap) frame.cap = cap
+  if (chrome) {
+    // What the ripperdoc answers for this level: level 1 to the cap, straight.
+    const at = cap > 1 ? (Math.min(level, cap) - 1) / (cap - 1) : 0
+    const along = (from, to) => from + (to - from) * at
+    frame.chrome = {
+      lifeDays: along(6, 9), lifeBaseDays: 6, lifeMaxDays: 9, wearDays: 1,
+      activeSeconds: [along(6, 30), along(9, 40)], activeBaseSeconds: [6, 9], activeMaxSeconds: [30, 40]
+    }
+  }
+  return { kind: 'frame', fresh: true, key: 'F3', frame }
+}
+
+function realistic({ chrome = true, cap = 20 } = {}) {
+  return frameOf({ level: 7, xp: 340, need: 700, points: 3, cap, chrome, states: REALISTIC })
+}
+
+/** The server's answer to BUY on maxtac_2: claimed, a point spent, and the node
+ *  above it reachable now that the one before it is. */
+function afterBuy() {
+  const states = Object.assign({}, REALISTIC, { maxtac: [3, 60, 'UUARR'] })
+  return Object.assign(frameOf({ level: 7, xp: 340, need: 700, points: 2, states }), { fresh: false })
+}
+
+/** An admin's `max`: the cap, every trunk full, the first node of each bought
+ *  or buyable and the rest waiting on the chain. */
+function maxed() {
+  const states = {}
+  for (const trunk of TRUNKS) states[trunk.id] = [5, 0, trunk.id === 'ncpd' ? 'UAPPP' : 'APPPP']
+  return frameOf({ level: 20, xp: 2000, need: 2000, points: 62, states })
+}
+
+/** Everything claimed: the whole tree lit, the legend at its top. */
+function legend() {
+  const states = {}
+  for (const trunk of TRUNKS) states[trunk.id] = [5, 0, 'UUUUU']
+  return frameOf({ level: 20, xp: 2000, need: 2000, points: 0, states })
+}
+
+/** The stress case: the NCPD trunk carries NINE nodes -- deeper than the five
+ *  ranks any screen draws whole. */
+function stress() {
+  const payload = realistic()
+  const nodes = payload.frame.branches[0].nodes
+  for (let at = 5; at < 9; at += 1) {
+    const base = TRUNKS[0].nodes[at - 5]
+    nodes.push(Object.assign({}, base, { id: `ncpd_${at + 1}`, state: 'locked', why: 'skills.rank' }))
+  }
+  payload.frame.depth = 9
+  return payload
+}
+
+const FRAMES = { realistic, nochrome: () => realistic({ chrome: false, cap: 0 }), stress, maxed, legend }
+/** For a driver that presses with a real pointer and keyboard and then has
+ *  to answer as the server would. */
+window.__FRAMES__ = Object.assign({ afterBuy }, FRAMES)
+
+const show = (payload) => window.__deliver('opx:skills:view', payload)
+
+/* -- WHAT THE EYE GETS -------------------------------------------------------- */
 
 /** A css colour as [r, g, b, a], or null. */
 function paint(value) {
@@ -109,137 +280,605 @@ function blend(fg, bg) {
   return [0, 1, 2].map((at) => alpha * fg[at] + (1 - alpha) * bg[at])
 }
 
-const show = (payload) => window.__deliver('opx:skills:view', payload)
+/** The ground a text sits on: the nearest ancestor that paints one. */
+function groundOf(el) {
+  for (let at = el; at; at = at.parentElement) {
+    const ground = paint(getComputedStyle(at).backgroundColor)
+    if (ground && ground[3] > 0) return ground
+  }
+  return null
+}
 
-/** The frame the state half sends: three trunks, states down the chain. The
- *  first trunk carries NINE nodes on purpose -- past the page's old silent
- *  eight -- so a slice that comes back fails the battery below. */
-function frame() {
-  const node = (id, name, state, why) => ({
-    id, name, desc: 'skills.desc.' + id, perk: 'demo.perk',
-    value: 2, cost: 1, state, why: why || ''
-  })
-  const letter = (at) => String.fromCharCode(97 + at)
-  return {
-    kind: 'frame',
-    fresh: true,
-    key: 'F3',
-    frame: {
-      open: true,
-      level: 3,
-      xp: 40,
-      need: 300,
-      points: 2,
-      depth: 9,
-      branches: [1, 2, 3].map((branch) => ({
-        id: 'trunk' + branch,
-        name: 'skills.branch.trunk' + branch,
-        rank: branch,
-        xp: 45,
-        need: 100,
-        nodes: Array.from({ length: branch === 1 ? 9 : 4 }, (unused, at) =>
-          at === 0
-            ? node('n' + branch + letter(at), 'skills.node.' + branch + letter(at), 'unlocked')
-            : at === 1
-              ? node('n' + branch + letter(at), 'skills.node.' + branch + letter(at), 'available')
-              : node('n' + branch + letter(at), 'skills.node.' + branch + letter(at), 'locked', 'skills.rank'))
-      }))
+function inkFloor(name, el) {
+  const ink = el ? paint(getComputedStyle(el).color) : null
+  const ground = el ? groundOf(el) : null
+  const ratio = ink && ground ? contrast(blend(ink, ground), ground) : 0
+  check(name, ratio >= 4.5, ratio ? ratio.toFixed(2) + ':1' : 'no pair')
+}
+
+/* -- WHERE THINGS ARE ----------------------------------------------------------- */
+
+const rect = (el) => el.getBoundingClientRect()
+/** Every query is scoped to the tree: other modules mount their own `.stow`,
+ *  `.side` and `.room` on the same page. */
+const q = (selector) => document.querySelector('.tree ' + selector)
+const qa = (selector) => Array.from(document.querySelectorAll('.tree ' + selector))
+const box = (r) => `[${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.right)}x${Math.round(r.bottom)}]`
+
+/** Every ancestor that clips: a scroll box or a hidden overflow. */
+function clippers(el) {
+  const out = []
+  for (let at = el.parentElement; at && at !== document.body; at = at.parentElement) {
+    const style = getComputedStyle(at)
+    if (style.overflowX !== 'visible' || style.overflowY !== 'visible') out.push(at)
+  }
+  return out
+}
+
+/** Why `el` is not wholly on screen right now, or '' when it is: inside the
+ *  viewport, and inside the visible rect of every box that clips it. */
+function hiddenWhy(el) {
+  const r = rect(el)
+  if (r.width < 1 || r.height < 1) return 'no size ' + box(r)
+  if (r.left < -0.5 || r.top < -0.5 || r.right > innerWidth + 0.5 || r.bottom > innerHeight + 0.5) {
+    return 'off the viewport ' + box(r)
+  }
+  for (const clip of clippers(el)) {
+    const c = rect(clip)
+    // The visible rect of a scroll box is its client area, not its border box.
+    const left = c.left + clip.clientLeft * (c.width / (clip.offsetWidth || 1))
+    const top = c.top + clip.clientTop * (c.height / (clip.offsetHeight || 1))
+    const right = left + clip.clientWidth * (c.width / (clip.offsetWidth || 1))
+    const bottom = top + clip.clientHeight * (c.height / (clip.offsetHeight || 1))
+    if (r.left < left - 0.5 || r.top < top - 0.5 || r.right > right + 0.5 || r.bottom > bottom + 0.5) {
+      return 'clipped by .' + (clip.className || clip.tagName).toString().split(' ')[0] + ' ' + box(r)
     }
   }
+  return ''
+}
+
+/** Whatever is on top at an element's centre is the element (or inside it). */
+function uncovered(el) {
+  const r = rect(el)
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+  return hit && (hit === el || el.contains(hit)) ? '' : 'covered by ' + (hit ? String(hit.className.baseVal ?? hit.className) : 'nothing')
+}
+
+/** Nothing on the page runs off to the side. */
+function sidewaysWhy() {
+  const page = document.scrollingElement || document.documentElement
+  if (page.scrollWidth > innerWidth + 1) return 'the page scrolls sideways: ' + page.scrollWidth
+  const tree = document.querySelector('.tree')
+  const room = tree && tree.closest('.room')
+  if (room && room.scrollWidth > room.clientWidth + 1) return 'the room scrolls sideways: ' + room.scrollWidth
+  const scroller = q('.scroller')
+  if (scroller && scroller.scrollWidth > scroller.clientWidth + 1) {
+    return 'the tree scrolls sideways: ' + scroller.scrollWidth + ' > ' + scroller.clientWidth
+  }
+  for (const el of qa('.unit *')) {
+    const r = rect(el)
+    if (r.width > 0 && (r.left < -0.5 || r.right > innerWidth + 0.5)) {
+      return 'off the side: .' + String(el.className.baseVal ?? el.className).split(' ')[0] + ' ' + box(r)
+    }
+  }
+  return ''
+}
+
+/** Scrolls every box that holds `el` until it is in view, and says whether it
+ *  then lies whole on screen -- and uncovered: the roots and the gates are
+ *  pinned, so a tile scrolled under one would be "inside" its box and unseen. */
+function reach(el) {
+  el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  return hiddenWhy(el) || uncovered(el)
+}
+
+/** A real press: whatever is on top at the tile's centre is what gets clicked,
+ *  so a tile covered by anything -- or a layer that refuses the pointer --
+ *  fails here the way it would under a player's cursor. */
+function pressAt(el) {
+  // Below the design surface the room scrolls: bring it into view first, as
+  // a player would.
+  el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  const r = rect(el)
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+  if (!hit || !(hit === el || el.contains(hit))) return false
+  hit.click()
+  return true
+}
+
+/** Every label in the tree that the shipped strings cut short: a one-line
+ *  label past its ellipsis, or a clamped name that lost a line or a word. */
+function cutShort() {
+  const name = (el) => String(el.className.baseVal ?? el.className).split(' ')[0] + ' "' + el.textContent.trim().slice(0, 40) + '"'
+  const cut = qa('.op-truncate').filter((el) => el.getClientRects().length > 0 && el.scrollWidth > el.clientWidth + 1)
+  // A clamp that bites hides a whole line; a tight line-height alone lets the
+  // face's own ascent overhang by a pixel or two, which is not a lost line.
+  const clamped = qa('.tile-name, .detail-name').filter((el) =>
+    el.scrollHeight > el.clientHeight + parseFloat(getComputedStyle(el).lineHeight) / 2)
+  // A name may wrap between words, never inside one: `overflow-wrap` breaks a
+  // word too wide for the tile rather than cutting it, which is the right
+  // fallback for an operator's string and a failure for a shipped one.
+  const broken = qa('.tile-name, .detail-name, .trunk-name').filter((el) => {
+    const node = el.firstChild
+    if (!node || node.nodeType !== Node.TEXT_NODE) return false
+    for (const word of node.data.matchAll(/\S+/g)) {
+      const range = document.createRange()
+      range.setStart(node, word.index)
+      range.setEnd(node, word.index + word[0].length)
+      if (range.getClientRects().length > 1) return true
+    }
+    return false
+  })
+  return [...cut, ...clamped, ...broken].map(name)
+}
+
+/** Every box whose content spills out of it sideways: a row that does not
+ *  wrap (`nowrap`, a flex line) and holds more than its column gives it draws
+ *  over its neighbour, and no ellipsis says so. Scroll boxes and truncating
+ *  labels are judged elsewhere; an inline box has no width to hold to. */
+function spilt() {
+  const out = []
+  for (const el of qa('.unit *')) {
+    if (el.clientWidth === 0 || getComputedStyle(el).overflowX !== 'visible') continue
+    if (el.scrollWidth > el.clientWidth + 1) {
+      out.push(String(el.className.baseVal ?? el.className).split(' ')[0] + ` ${el.scrollWidth}>${el.clientWidth} "`
+        + el.textContent.trim().replace(/\s+/g, ' ').slice(0, 40) + '"')
+    }
+  }
+  return out
+}
+
+/** Every clipping label whose accents stand taller than the box that clips
+ *  it: the font's own content area (ascent to descent) must lie inside the
+ *  clip, or the grave on SIÈGE is the first thing it takes -- the label still
+ *  fits, still has its width, and reads SIEGE. Only text with marks to lose
+ *  is judged. */
+function clippedAccents() {
+  const out = []
+  for (const el of qa('.op-truncate, .tile-name, .detail-name')) {
+    if (!el.getClientRects().length || !/[À-ÖØ-Ýà-öø-ýŒœŸÿ]/.test(el.textContent || '')) continue
+    const style = getComputedStyle(el)
+    if (style.overflowX === 'visible' && style.overflowY === 'visible') continue
+    const clip = rect(el)
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    const area = range.getBoundingClientRect()
+    if (area.top < clip.top - 0.5 || area.bottom > clip.bottom + 0.5) {
+      out.push(String(el.className.baseVal ?? el.className).split(' ')[0] + ' "' + el.textContent.trim().slice(0, 30)
+        + `" ${(clip.top - area.top).toFixed(1)}px above, ${(area.bottom - clip.bottom).toFixed(1)}px below`)
+    }
+  }
+  return out
+}
+
+const tiles = () => qa('.tile[data-node-id]')
+const tile = (id) => q(`.tile[data-node-id="${id}"]`)
+const roots = () => qa('.trunk[data-branch-id]')
+const emitted = (channel) => window.__opx.emitted.filter((entry) => entry.channel === channel)
+const available = (payload) => payload.frame.branches.reduce(
+  (sum, branch) => sum + branch.nodes.filter((node) => node.state === 'available').length, 0)
+const key = (name, extra = {}) => window.dispatchEvent(new KeyboardEvent('keydown', Object.assign({ key: name, bubbles: true }, extra)))
+const pathsOf = (svg) => svg ? Array.from(svg.querySelectorAll('path')).map((path) => path.getAttribute('d')).join('|') : ''
+/** The scale the fit applied: the panel's drawn width over its laid-out width. */
+const scaleOf = () => {
+  const unit = q('.unit')
+  return unit ? rect(unit).width / unit.offsetWidth : 1
+}
+
+/* -- THE BATTERY ---------------------------------------------------------------- */
+
+async function battery() {
+  const whole = innerWidth >= 1280 && innerHeight >= 720
+  const total = TRUNKS.reduce((sum, trunk) => sum + trunk.nodes.length, 0)
+  check('the config was read: seven trunks of five, the fixer last',
+    TRUNKS.length === 7 && total === 35 && TRUNKS[6].id === 'fixer'
+      && TRUNKS[6].nodes[4].id === 'fixer_5' && TRUNKS[6].nodes[4].perk === 'fixer.legend',
+    TRUNKS.map((trunk) => trunk.id + ':' + trunk.nodes.length).join(' '))
+
+  // ── 1. the realistic frame: all of it on screen, all of it readable ──────
+  const first = realistic()
+  show(first)
+  await settle()
+  check('the tree is up', document.querySelector('.tree .unit') !== null)
+
+  const drawn = tiles()
+  check('every node the frame carried is drawn: 35', drawn.length === total, drawn.length + ' tile(s)')
+
+  const nameless = drawn.filter((el) => {
+    const name = el.querySelector('.tile-name')
+    return !name || rect(name).width < 24 || !(name.textContent || '').trim()
+  })
+  check('every tile shows its NAME -- a locked one too',
+    nameless.length === 0, nameless.map((el) => el.dataset.nodeId).join(', '))
+
+  const short = cutShort()
+  check(`no label and no name is cut short at the shipped ${lang} strings`, short.length === 0, short.join('; '))
+  const spill = spilt()
+  check('and nothing spills out of its box over a neighbour', spill.length === 0, spill.join('; '))
+  const marks = clippedAccents()
+  check('and no clipped label loses the accents over its capitals', marks.length === 0, marks.join('; '))
+
+  const scale = scaleOf()
+  const small = drawn.filter((el) => parseFloat(getComputedStyle(el.querySelector('.tile-name')).fontSize) * scale < 12.5)
+  check(`every tile name is drawn at 13px or more on screen (scale ${scale.toFixed(2)})`, small.length === 0,
+    small.map((el) => el.dataset.nodeId).join(', '))
+
+  const mute = tiles().filter((el) => el.dataset.state === 'locked'
+    && !((el.querySelector('.state') || {}).textContent || '').trim())
+  check('every locked tile states its requirement', mute.length === 0,
+    mute.map((el) => el.dataset.nodeId).join(', '))
+
+  const rank4 = tile('ncpd_4')
+  check('a rank-locked tile names the rank it needs',
+    rank4 !== null && rank4.querySelector('.state').textContent.includes(say('skills.req.rank').replace('{rank}', '04')),
+    rank4 ? rank4.querySelector('.state').textContent.trim() : 'no tile')
+  const after = tile('street_2')
+  check('a chain-locked tile names the node before it',
+    after !== null && after.querySelector('.state').textContent.includes(say('skills.req.prereq').replace('{node}', '01')),
+    after ? after.querySelector('.state').textContent.trim() : 'no tile')
+
+  if (whole) {
+    const hidden = []
+    for (const el of tiles()) {
+      const why = hiddenWhy(el) || uncovered(el)
+      if (why) hidden.push(el.dataset.nodeId + ' ' + why)
+    }
+    check(`all 35 tiles lie whole and uncovered inside the viewport and every box that clips them (${innerWidth}x${innerHeight}, no scroll)`,
+      hidden.length === 0, hidden.join('; '))
+    for (const selector of ['.trunk', '.gate', '.side', '.band', '.foot', '.top']) {
+      const off = qa(selector).map(hiddenWhy).filter(Boolean)
+      check(`and every ${selector} is whole on screen too`, off.length === 0, off.join('; '))
+    }
+    const sideways = sidewaysWhy()
+    check('nothing overflows sideways', sideways === '', sideways)
+    const scroller = q('.scroller')
+    check('the tree needs no scroll at the shipped depth',
+      scroller.scrollHeight <= scroller.clientHeight + 1 && scroller.scrollWidth <= scroller.clientWidth + 1,
+      `${scroller.scrollWidth}x${scroller.scrollHeight} in ${scroller.clientWidth}x${scroller.clientHeight}`)
+    const room = document.querySelector('.tree').closest('.room')
+    check('and neither does the room', room.scrollHeight <= room.clientHeight + 1 && room.scrollWidth <= room.clientWidth + 1,
+      `${room.scrollWidth}x${room.scrollHeight} in ${room.clientWidth}x${room.clientHeight}`)
+    const unit = rect(document.querySelector('.tree .unit'))
+    check('the panel uses the screen, not a box in the middle of it',
+      unit.width >= innerWidth * 0.9 && unit.height >= innerHeight * 0.9,
+      `${Math.round(unit.width)}x${Math.round(unit.height)} of ${innerWidth}x${innerHeight}`)
+  } else {
+    const stranded = tiles().map((el) => { const why = reach(el); return why ? el.dataset.nodeId + ' ' + why : '' }).filter(Boolean)
+    check(`below the design surface (${innerWidth}x${innerHeight}) every tile is reachable by scroll`,
+      stranded.length === 0, stranded.join('; '))
+  }
+
+  // ── 2. seven trunks, each its own, the fixer at the top ──────────────────
+  const heads = roots()
+  check('the seven roots stand in the config\'s order',
+    heads.map((el) => el.dataset.branchId).join(',') === TRUNKS.map((trunk) => trunk.id).join(','),
+    heads.map((el) => el.dataset.branchId).join(','))
+  const unnamed = heads.filter((el, at) => (el.querySelector('.trunk-name') || {}).textContent !== say(TRUNKS[at].name)
+    || ((el.querySelector('.trunk-feed') || {}).textContent || '').trim() !== say(TRUNKS[at].feed))
+  check('each root names its trunk and the work that feeds it, in the player\'s language',
+    unnamed.length === 0, unnamed.map((el) => el.dataset.branchId).join(', '))
+  const emblems = heads.map((el) => pathsOf(el.querySelector('.emblem')))
+  check('and wears its own emblem: seven, all different',
+    emblems.every(Boolean) && new Set(emblems).size === 7, emblems.map((d) => d.length).join(','))
+  const samePicture = TRUNKS.filter((trunk) => {
+    const glyphs = trunk.nodes.map((node) => pathsOf(tile(node.id) && tile(node.id).querySelector('.glyph')))
+    return !glyphs.every(Boolean) || new Set(glyphs).size !== glyphs.length
+  })
+  check('every perk draws its own picture: no two nodes of a trunk share one',
+    samePicture.length === 0, samePicture.map((trunk) => trunk.id).join(', '))
+  const apexes = qa('.trunk.apex')
+  const chip = apexes.length === 1 ? apexes[0].querySelector('.apex-chip') : null
+  check('the last trunk -- the fixer -- is the one root framed and named the apex',
+    apexes.length === 1 && apexes[0].dataset.branchId === 'fixer' && chip !== null
+      && chip.textContent.trim() === say('skills.apex') && hiddenWhy(chip) === '' && uncovered(chip) === '',
+    apexes.map((el) => el.dataset.branchId).join(',') + (chip ? ' ' + (hiddenWhy(chip) || uncovered(chip)) : ' no chip'))
+  const legendTile = tile('fixer_5')
+  const plainLocked = tile('fixer_4')
+  check('and its last node, Night City Legend, is the legend: lit while it is still locked',
+    legendTile !== null && legendTile.classList.contains('legend') && legendTile.dataset.state === 'locked'
+      && plainLocked !== null && !plainLocked.classList.contains('legend')
+      && getComputedStyle(legendTile).backgroundImage !== getComputedStyle(plainLocked).backgroundImage,
+    legendTile ? legendTile.className : 'no tile')
+  check('by its own name', (legendTile && legendTile.querySelector('.tile-name').textContent) === say('skills.node.fixer5'))
+  inkFloor('the legend\'s name clears 4.5:1', legendTile && legendTile.querySelector('.tile-name'))
+  const top = legendTile ? rect(legendTile).top : 0
+  check('and it is drawn at the crown: no tile of the tree sits above its row',
+    tiles().every((el) => rect(el).top >= top - 1))
+
+  // ── 3. what a player reads ────────────────────────────────────────────────
+  const control = q('.tile[data-state="available"]')
+  const claimed = q('.tile[data-state="unlocked"]')
+  const locked = q('.tile[data-state="locked"]:not(.legend)')
+  const controlGround = control ? paint(getComputedStyle(control).backgroundColor) : null
+  check('a control tile carries the dark plate, not the host\'s light ground',
+    controlGround !== null && controlGround[3] > 0 && luminance(controlGround) < 0.1,
+    control ? getComputedStyle(control).backgroundColor : 'no tile')
+  const lockedGround = locked ? paint(getComputedStyle(locked).backgroundColor) : null
+  check('a locked tile is a readout: unfilled, the bay shows through',
+    lockedGround !== null && lockedGround[3] === 0,
+    locked ? getComputedStyle(locked).backgroundColor : 'no tile')
+  const bevel = tiles().filter((el) => getComputedStyle(el).borderTopWidth !== '0px'
+    || getComputedStyle(el).appearance !== 'none')
+  check('no tile wears the user-agent bevel', bevel.length === 0,
+    bevel.map((el) => el.dataset.nodeId).join(', '))
+  inkFloor('an available tile\'s name clears 4.5:1', control && control.querySelector('.tile-name'))
+  inkFloor('a claimed tile\'s name clears 4.5:1', claimed && claimed.querySelector('.tile-name'))
+  inkFloor('a locked tile\'s name clears 4.5:1', locked && locked.querySelector('.tile-name'))
+  inkFloor('and its requirement does too', locked && locked.querySelector('.state'))
+  inkFloor('a trunk\'s feed line clears 4.5:1', q('.trunk-feed'))
+  inkFloor('a trunk\'s XP line clears 4.5:1', q('.trunk .dim'))
+
+  // ── 4. the chrome band, from the frame's numbers ─────────────────────────
+  const band = q('.band')
+  check('the chrome band is drawn when the frame carries `chrome`', band !== null)
+  const bandText = band ? band.textContent.replace(/\s+/g, ' ') : ''
+  const dot = say('skills.decimal')
+  const num = (text) => text.replace('.', dot)
+  check('it states the life now, at level 1 and at the cap',
+    bandText.includes(say('skills.chrome.days').replace('{days}', num('6.9')))
+      && bandText.includes(say('skills.chrome.days').replace('{days}', '6'))
+      && bandText.includes(say('skills.chrome.days').replace('{days}', '9')), bandText.slice(0, 160))
+  check('and the boost now and at the cap',
+    bandText.includes(say('skills.chrome.secs').replace('{lo}', num('13.6')).replace('{hi}', num('18.8')))
+      && bandText.includes(say('skills.chrome.secs').replace('{lo}', '30').replace('{hi}', '40')), bandText.slice(0, 200))
+  check('and the wear', bandText.includes(say('skills.chrome.wear').replace('{days}', say('skills.chrome.days').replace('{days}', '1'))))
+  check('the level track runs 1..cap with NOW on the character\'s level',
+    q('.track-bar') !== null
+      && getComputedStyle(q('.track-bar')).getPropertyValue('--cells').trim() === '20'
+      && (q('.track-here') || {}).textContent === '07')
+  check('the header states the level against the cap',
+    (q('.level') || {}).textContent.replace(/\s+/g, '').includes('07/20'))
+
+  // ── 5. select, BUY, and the answer ───────────────────────────────────────
+  window.__opx.emitted.length = 0
+  const pick = tile('maxtac_2')
+  check('an available tile takes a real press at its centre', pick !== null && pressAt(pick))
+  await sleep(60)
+  const side = q('.side')
+  check('and the detail column shows that node', side && side.dataset.picked === 'maxtac_2', side && side.dataset.picked)
+  check('by name, large', (q('.detail-name') || {}).textContent === say('skills.node.maxtac2'))
+  const lit = q('.desc .hl')
+  check('with the perk\'s value lit inside its own sentence',
+    lit !== null && lit.textContent.replace(/\s/g, '') === '+10%', lit ? lit.textContent : 'nothing lit')
+  check('the perk id, value and cost are stated',
+    side.textContent.includes('maxtac.boarding') && side.textContent.includes('+10')
+      && side.textContent.includes(say('skills.cost').replace('{cost}', '1')))
+  const shortPicked = cutShort()
+  check('nothing in the detail column is cut short either', shortPicked.length === 0, shortPicked.join('; '))
+  const spillPicked = spilt()
+  check('and nothing in it spills out of its box', spillPicked.length === 0, spillPicked.join('; '))
+  check('a press on a tile never spends by itself', emitted('opx:skills:spend').length === 0)
+  const buy = q('.side .buy')
+  check('the one control is there for an available node', buy !== null)
+  if (buy) {
+    check('and it takes a real press', pressAt(buy))
+    buy.click()
+    await sleep(20)
+    const spent = emitted('opx:skills:spend')
+    check('BUY emits opx:skills:spend with that node, once (the 300ms dedupe)',
+      spent.length === 1 && spent[0].payload.node === 'maxtac_2' && Object.keys(spent[0].payload).length === 1,
+      JSON.stringify(spent))
+    await sleep(320)
+    buy.click()
+    check('and again once the dedupe has passed', emitted('opx:skills:spend').length === 2)
+  }
+  check('and the page does not claim the node itself: it waits for the answer',
+    (tile('maxtac_2') || {}).dataset.state === 'available')
+
+  // THE ANSWER: the server's fresh frame for the same tree.
+  show(afterBuy())
+  await sleep(80)
+  const bought = tile('maxtac_2')
+  check('the answer redraws the node as claimed',
+    bought !== null && bought.dataset.state === 'unlocked' && bought.classList.contains('is-on'),
+    bought ? bought.dataset.state : 'no tile')
+  check('the points in hand drop by its cost',
+    ((q('.purse-num') || {}).textContent || '').trim() === '02', (q('.purse-num') || {}).textContent)
+  check('and the node above it is available now',
+    (tile('maxtac_3') || {}).dataset.state === 'available', (tile('maxtac_3') || {}).dataset.state)
+  check('the pick is kept, rebound to the answer: claimed, and no control left on it',
+    side.dataset.picked === 'maxtac_2' && (q('.verdict') || {}).textContent === say('skills.unlocked')
+      && q('.side .buy') === null)
+  // The dedupe is one node's: the next node up, bought the moment its answer
+  // lands, is a second intent and not a double-click.
+  const next = tile('maxtac_3')
+  const pressedNext = next !== null && pressAt(next)
+  await sleep(40)
+  const buyNext = q('.side .buy')
+  const boughtNext = buyNext !== null && pressAt(buyNext)
+  await sleep(20)
+  const spends = emitted('opx:skills:spend')
+  check('and the node above is bought at once: another node is another intent, not a double press',
+    pressedNext && boughtNext && spends.length === 3 && spends[2].payload.node === 'maxtac_3', JSON.stringify(spends))
+  const hints = q('.hints')
+  check('the input hints say select, buy and close, with the stow key and Escape',
+    hints && [say('skills.hint.select'), say('skills.hint.buy'), say('skills.hint.close'), say('skills.cap.esc'), 'F3']
+      .every((word) => hints.textContent.includes(word)))
+
+  const shut = tile('ncpd_4')
+  check('a locked tile still takes a press (it inspects)', shut !== null && pressAt(shut))
+  await sleep(60)
+  check('the detail column shows it', side.dataset.picked === 'ncpd_4')
+  check('with the server\'s own sentence for why it is closed',
+    (q('.verdict') || {}).textContent === say('skills.rank'))
+  check('and no control at all', q('.side .buy') === null)
+  check('still nothing more spent for a locked node', emitted('opx:skills:spend').length === 3)
+  if (whole) {
+    const off = hiddenWhy(q('.side'))
+    check('the detail column stays whole on screen with a node picked', off === '', off)
+  }
+
+  // EVERY NODE'S DETAIL READS WHOLE: all thirty-five pressed in turn, each
+  // column checked for a cut label, a spill, a lit value broken across two
+  // lines (`+30 %` is one figure), and a column that runs off the screen.
+  const unread = []
+  for (const el of tiles()) {
+    if (!pressAt(el)) { unread.push(el.dataset.nodeId + ' could not be pressed'); continue }
+    await sleep(25)
+    const id = el.dataset.nodeId
+    if (side.dataset.picked !== id) unread.push(id + ' not shown')
+    const value = q('.desc .hl')
+    if (!value || value.getClientRects().length !== 1) unread.push(id + ' value broken: ' + (value ? value.textContent : 'none'))
+    const cut = cutShort().concat(spilt(), clippedAccents())
+    if (cut.length) unread.push(id + ' ' + cut.join(', '))
+    if (whole && hiddenWhy(side)) unread.push(id + ' ' + hiddenWhy(side))
+    if (side.scrollHeight > side.clientHeight + 1) unread.push(id + ' the column scrolls')
+  }
+  check('every one of the 35 nodes, pressed, reads whole in the detail column', unread.length === 0, unread.join('; '))
+  pressAt(tile('ncpd_4'))
+  await sleep(40)
+
+  // AN ADMIN'S `max` ON THE OPEN TREE: a follow-up frame, redrawn in place.
+  show(Object.assign(maxed(), { fresh: false }))
+  await sleep(80)
+  check('an admin\'s max redraws the open tree at the cap, the pick kept',
+    (q('.level') || {}).textContent.replace(/\s+/g, '').includes('20/20')
+      && (q('.xp') || {}).textContent.includes(say('skills.maxLevel'))
+      && side.dataset.picked === 'ncpd_4' && (tile('ncpd_4') || {}).dataset.state === 'locked'
+      && ((q('.purse-num') || {}).textContent || '').trim() === '62')
+  check('and every trunk says it is at its top rank',
+    roots().every((el) => el.textContent.includes(say('skills.trunkMax'))))
+
+  // ── 6. stowing: Escape, the stow key, the close control ──────────────────
+  window.__opx.emitted.length = 0
+  key('Escape')
+  await sleep(20)
+  const closes = emitted('opx:skills:close')
+  check('Escape asks to stow: opx:skills:close {}',
+    closes.length === 1 && Object.keys(closes[0].payload).length === 0, JSON.stringify(closes))
+  await sleep(320)
+  key('F3')
+  await sleep(20)
+  check('the player\'s own stow key, caught by the page, asks the same',
+    emitted('opx:skills:close').length === 2, emitted('opx:skills:close').length)
+  await sleep(320)
+  key('F3')
+  key('Escape')
+  await sleep(20)
+  check('one press that reaches two doors -- the stow key and Escape -- is one ask',
+    emitted('opx:skills:close').length === 3, emitted('opx:skills:close').length)
+  await sleep(320)
+  key('F3', { repeat: true })
+  key('F4')
+  await sleep(20)
+  check('a held key\'s repeats and a key that is not the binding ask nothing',
+    emitted('opx:skills:close').length === 3, emitted('opx:skills:close').length)
+  const stow = q('.stow')
+  check('the close control asks the same', stow !== null && pressAt(stow) && emitted('opx:skills:close').length === 4)
+  check('and the panel waits for the answer instead of closing itself', document.querySelector('.tree') !== null)
+
+  // A player who rebound the key: the frame says F6, and F6 is the stow key.
+  await sleep(320)
+  show(Object.assign(realistic(), { key: 'F6', fresh: false }))
+  await sleep(60)
+  key('F3')
+  await sleep(20)
+  check('a rebound stow key: the old F3 asks nothing', emitted('opx:skills:close').length === 4)
+  key('F6')
+  await sleep(20)
+  check('and the new one asks to stow', emitted('opx:skills:close').length === 5)
+  check('and the close control and the hint both name it',
+    (q('.stow') || {}).textContent.includes('F6') && (q('.hints') || {}).textContent.includes('F6'))
+  // A letter binding: the key types a lower-case `k`, and it is still the K.
+  await sleep(320)
+  show(Object.assign(realistic(), { key: 'K', fresh: false }))
+  await sleep(60)
+  key('k')
+  await sleep(20)
+  check('a letter binding is heard whatever case the key types', emitted('opx:skills:close').length === 6)
+
+  // ── 7. a server that sends no cap and no chrome ──────────────────────────
+  const plain = FRAMES.nochrome()
+  show(plain)
+  await settle()
+  check('a frame without cap/chrome still draws the tree', tiles().length === total, tiles().length + ' tile(s)')
+  check('with no chrome band', q('.band') === null)
+  check('and no cap after the level', q('.level-cap') === null)
+  check('a fresh frame swept the pick', q('.side').dataset.picked === '')
+  if (whole) {
+    const hidden = tiles().map((el) => (hiddenWhy(el) ? el.dataset.nodeId + ' ' + hiddenWhy(el) : '')).filter(Boolean)
+    check('and every tile is still whole on screen', hidden.length === 0, hidden.join('; '))
+  }
+  const quick = qa('.side .quick')
+  check(`with nothing picked, the column lists what the points buy now (${available(plain)})`,
+    quick.length === available(plain), quick.length)
+  const cutQuick = cutShort()
+  check('and nothing in that list is cut short', cutQuick.length === 0, cutQuick.join('; '))
+  const spillQuick = spilt()
+  check('or spills out of its box', spillQuick.length === 0, spillQuick.join('; '))
+  if (whole) {
+    const offQuick = quick.map((el) => hiddenWhy(el)).filter(Boolean)
+    check('and every entry of it is on screen', offQuick.length === 0, offQuick.join('; '))
+  }
+
+  // ── 8. a trunk deeper than the screen ────────────────────────────────────
+  show(stress())
+  await settle()
+  check('the stress frame draws all 39 nodes, the ninth included',
+    tiles().length === total + 4 && tile('ncpd_9') !== null, tiles().length + ' tile(s)')
+  if (whole) {
+    check('and a tree taller than the screen opens at its roots, where rank 1 is',
+      hiddenWhy(tile('ncpd_1')) === '' && uncovered(tile('ncpd_1')) === '',
+      hiddenWhy(tile('ncpd_1')) || uncovered(tile('ncpd_1')))
+  }
+  const stranded = []
+  for (let at = 1; at <= 9; at += 1) {
+    const el = tile('ncpd_' + at)
+    const why = el ? reach(el) : 'missing'
+    if (why) stranded.push('ncpd_' + at + ' ' + why)
+  }
+  check('every node of the nine is reachable by scroll, whole and uncovered once there',
+    stranded.length === 0, stranded.join('; '))
+  // Below the design surface the whole room scrolls too; at full size only the
+  // tree slides, and its roots and gates must stay.
+  if (whole) {
+    reach(tile('ncpd_9'))
+    const head = q('.trunk[data-branch-id="ncpd"]')
+    check('the trunk\'s root stays on screen while its crown is scrolled into view',
+      head !== null && hiddenWhy(head) === '', head ? hiddenWhy(head) : 'no root')
+    const gate = q('.rank[data-tier="9"] .gate .op-eyebrow')
+    check('and so does the gate naming the crown\'s rank', gate !== null && hiddenWhy(gate) === '',
+      gate ? hiddenWhy(gate) : 'no gate')
+  }
+  q('.scroller').scrollLeft = 0
+
+  // ── 9. news, then the close ──────────────────────────────────────────────
+  window.__deliver('opx:skills:view', { kind: 'gain', line: { key: 'skills.gain.work', args: { xp: 50 }, level: 0, points: 0 } })
+  await sleep(30)
+  check('work credited reaches the foot strip',
+    ((q('.gain') || {}).textContent || '').includes('50'))
+  window.__deliver('opx:skills:view', { kind: 'close', why: 'view' })
+  await sleep(60)
+  check('a close takes the panel down', document.querySelector('.tree') === null)
+  window.__opx.emitted.length = 0
+  key('F3')
+  key('Escape')
+  await sleep(20)
+  check('and a closed tree hears no key at all', emitted('opx:skills:close').length === 0)
 }
 
 async function run() {
-  window.__deliver('opx:locale:set', {
-    strings: {
-      'skills.level': 'LEVEL {level}',
-      'skills.xp': '{xp}/{need} XP',
-      'skills.points': '{points} PT',
-      'skills.trunkRank': 'RANK {rank}/{depth}',
-      'skills.branchXp': '{xp}/{need} INTO THIS TRUNK',
-      'skills.spend': 'UNLOCK · {cost} PT',
-      'skills.stow': 'CLOSE [{key}]',
-      'skills.detail': 'SELECT A NODE'
-    },
-    first: true
-  })
+  window.__deliver('opx:locale:set', { strings, first: true })
   await sleep(60)
-  show(frame())
-  await sleep(120)
-
-  check('the tree is up', document.querySelector('.tree') !== null)
-
-  const control = document.querySelector('.node:not(.dark)')
-  const readout = document.querySelector('.node.dark')
-
-  const rows = document.querySelectorAll('.node')
-  check('a control row exists for every state the frame declared',
-    rows.length === 17, rows.length + ' row(s)')
-  check('every node the frame carried is drawn -- nothing is sliced away',
-    rows.length === 17 && document.querySelector('[data-node-id="n1i"]') !== null,
-    rows.length + ' row(s)')
-
-  const unitBox = document.querySelector('.tree .unit').getBoundingClientRect()
-  check('the panel stays inside the viewport at any surface size',
-    unitBox.left >= -0.5 && unitBox.right <= window.innerWidth + 0.5
-      && unitBox.top >= -0.5 && unitBox.bottom <= window.innerHeight + 0.5,
-    JSON.stringify({ l: Math.round(unitBox.left), r: Math.round(unitBox.right),
-      t: Math.round(unitBox.top), b: Math.round(unitBox.bottom),
-      vw: window.innerWidth, vh: window.innerHeight }))
-
-  // REACHABLE, not just present: the chains are the scroll region, so the
-  // bottom row must come into view when the region is scrolled to its end.
-  const chains = document.querySelector('.branches')
-  chains.scrollTop = chains.scrollHeight
-  const last = document.querySelector('[data-node-id="n1i"]')
-  const chainBox = chains.getBoundingClientRect()
-  const lastBox = last ? last.getBoundingClientRect() : null
-  check('the chains scroll to the bottom row, so no skill is stranded',
-    lastBox !== null && lastBox.bottom <= chainBox.bottom + 1
-      && lastBox.top >= chainBox.top - 1,
-    lastBox ? 'last row bottom ' + Math.round(lastBox.bottom) + ' of ' + Math.round(chainBox.bottom) : 'no row')
-  chains.scrollTop = 0
-
-  const controlGround = control ? paint(getComputedStyle(control).backgroundColor) : null
-  check('a control row carries the dark plate, not the host\'s light ground',
-    controlGround !== null && controlGround[3] > 0 && luminance(controlGround) < 0.1,
-    control ? getComputedStyle(control).backgroundColor : 'no row')
-
-  const readoutGround = readout ? paint(getComputedStyle(readout).backgroundColor) : null
-  check('a readout row is unfilled: the bay shows through',
-    readoutGround !== null && (readoutGround[3] === 0 || luminance(readoutGround) < 0.1),
-    readout ? getComputedStyle(readout).backgroundColor : 'no row')
-
-  check('no row wears the user-agent bevel',
-    control !== null && readout !== null
-      && getComputedStyle(control).borderTopWidth === '0px'
-      && getComputedStyle(readout).borderTopWidth === '0px',
-    control ? getComputedStyle(control).borderTopWidth : 'no row')
-
-  const name = control ? control.querySelector('.node-name') : null
-  const nameInk = name ? paint(getComputedStyle(name).color) : null
-  check('the node name clears a contrast floor against its own ground',
-    nameInk !== null && controlGround !== null && contrast(nameInk, controlGround) >= 4.5,
-    nameInk && controlGround ? contrast(nameInk, controlGround).toFixed(2) : 'no pair')
-
-  // A READOUT ROW IS UNFILLED, so its ground is the unit's own plate -- and
-  // its name is read as often as any control's. Flattened alpha first: a 0.72
-  // grey looked fine as an rgb triple and landed at 3.9:1 on the plate.
-  const unitGround = paint(getComputedStyle(document.querySelector('.tree .unit')).backgroundColor)
-  const lockedName = readout ? readout.querySelector('.node-name') : null
-  const lockedInk = lockedName ? paint(getComputedStyle(lockedName).color) : null
-  check('a locked row\'s name clears the same contrast floor',
-    lockedInk !== null && unitGround !== null && contrast(blend(lockedInk, unitGround), unitGround) >= 4.5,
-    lockedInk && unitGround ? contrast(blend(lockedInk, unitGround), unitGround).toFixed(2) : 'no pair')
-
-  const why = readout ? readout.querySelector('.why') : null
-  const whyInk = why ? paint(getComputedStyle(why).color) : null
-  check('a locked row still STATES ITS REQUIREMENT',
-    why !== null && (why.textContent || '').trim().length > 0)
-  check('and the requirement is readable on the same floor',
-    whyInk !== null && unitGround !== null && contrast(blend(whyInk, unitGround), unitGround) >= 4.5,
-    whyInk && unitGround ? contrast(blend(whyInk, unitGround), unitGround).toFixed(2) : 'no pair')
-
-  draw()
+  if (shot) {
+    const make = FRAMES[params.get('frame')] || realistic
+    show(make())
+    await settle()
+    const pick = params.get('pick')
+    if (pick && tile(pick)) {
+      tile(pick).scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      tile(pick).click()
+      await sleep(80)
+    }
+    window.__SHOT__ = true
+    return
+  }
+  try {
+    await battery()
+  } catch (error) {
+    check('the battery ran to the end', false, String(error && error.stack || error))
+  }
+  draw(true)
 }
 
 run()

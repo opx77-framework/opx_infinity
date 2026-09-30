@@ -690,6 +690,26 @@ function M.Login(source, citizenId)
 	local player = M.CreatePlayer(entity, false)
 	player.PlayerData.jobs = groups.value.jobs
 	player.PlayerData.gangs = groups.value.gangs
+
+	-- THE MEMBERSHIP ROW IS THE GRADE. The worked job's grade is stored twice --
+	-- in the character's own `job` column and in its membership row -- and a
+	-- change made while the character was away reaches only the row: a boss who
+	-- promotes somebody offline moves their membership, because nobody is loaded
+	-- to move the column with. Read back as it was, the column paid and gated the
+	-- old rank until the next change of job. The row wins, and the next save
+	-- writes the column to match. (Duty is the job's default either way: a
+	-- session always starts there.)
+	local worked = player.PlayerData.job
+	local held = type(worked) == 'table' and type(player.PlayerData.jobs) == 'table'
+		and tonumber(player.PlayerData.jobs[worked.name]) or nil
+	if held ~= nil and type(worked.grade) == 'table' and held ~= worked.grade.level then
+		local regraded = M.Groups.ResolveJob(worked.name, held)
+		if regraded.ok then
+			Open77.log.info(('[character] %s: %s grade %s on the record, %d on the roster; the roster wins')
+				:format(citizenId, tostring(worked.name), tostring(worked.grade.level), held))
+			player.PlayerData.job = regraded.value
+		end
+	end
 	for key, value in pairs(extras.data) do player.PlayerData[key] = value end
 
 	M.RegisterPlayer(player)

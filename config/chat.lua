@@ -22,7 +22,12 @@ OPX.Config.MODULES.chat = {
 	--
 	-- This is the one number to move if it lands wrong. Nothing in the code
 	-- depends on it.
-	OFFSET = 48,
+	--
+	-- 88 AND NOT 48 SINCE THE OPX BADGE (2026-09-29, `extras/opx_logo_hud`): the
+	-- badge fills the platform's reserved top strip, 76 px at 1080 (the design
+	-- system's CHROME_STRIP, 7% of the height), and a box at 48 drew its input
+	-- line across the lower half of the logo. 88 is the strip plus a 12 px gap.
+	OFFSET = 88,
 	WIDTH = 620,
 
 	-- Lines kept on screen; older ones fall off the top.

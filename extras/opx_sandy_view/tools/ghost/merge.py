@@ -1,5 +1,14 @@
-"""Builds opx_sandy_view's ghost-trail package (1.4.8): the ghost's parts are IN
-V's own body files, so no loader is needed to put them there.
+"""Builds opx_sandy_view's ghost-trail package (1.4.8 - 1.4.12): the ghost's parts
+are IN V's own body files, so no loader is needed to put them there.
+
+1.4.12: every body part shows every chunk of V's body -- a female V's
+afterimages had no legs, because build.py gave her parts her own body
+component's mask, which leaves the knees, calves and feet to a part the ghost
+does not have. Checked below for every appearance.
+
+1.4.9: twelve layers (`LAYERS`, the number build.py builds): forty-eight parts
+and the spawner appended to each appearance, where 1.4.8 appended sixteen.
+Nothing else here changed.
 
 1.4.0-1.4.7 added the sixteen parts and the effect spawner to V's body with an
 ArchiveXL patch of `t0_000_base__full.app` (and its censored cut). A player
@@ -22,7 +31,9 @@ add the parts twice.
 
 Inputs: the base game's two files as WolvenKit JSON (`json/`), and the
 package `build.py` writes (`build_v146/json/opx/sandy/ghost/`: the patch this
-merges, the meshes, the material and the effect -- unchanged since 1.4.6).
+merges, the meshes, the material and the effect -- the last three unchanged
+since 1.4.6 -- and `build_v146/manifest.json`, whose layer count must be this
+file's).
 
 Output: `build_v148/json/` (the two merged files) for `WolvenKit.CLI convert
 deserialize`, and `build_v148/manifest.json`.
@@ -39,7 +50,10 @@ OUT = os.path.join(HERE, 'build_v148', 'json')
 DEPOT_DIR = 'base\\characters\\common\\player_base_bodies\\appearances'
 FILES = ['t0_000_base__full.app', 't0_000_base__full_censored.app']
 
-LAYERS, KINDS = 4, ['body', 'arm_l', 'arm_r', 'head']
+# The layer count build.py built (1.4.6-1.4.8: 4; 1.4.9: 12), checked against
+# its manifest below.
+LAYERS = 12
+KINDS = ['body', 'arm_l', 'arm_r', 'head']
 PARTS = ['opx_sandy_ghost%d_%s' % (layer, kind) for layer in range(1, LAYERS + 1) for kind in KINDS]
 SPAWNER = 'opx_sandy_ghost_fx'
 
@@ -106,6 +120,8 @@ def gender_of(name):
     raise ValueError(name)
 
 
+built = load(os.path.join(HERE, 'build_v146', 'manifest.json'))
+assert built.get('layers') == LAYERS and built['parts'] == PARTS, 'build.py built another layer count'
 patch = load(PATCH)
 patch_apps = {a['Data']['name']['$value']: a['Data'] for a in patch['Data']['RootChunk']['appearances']}
 assert len(patch_apps) == 36, len(patch_apps)
@@ -138,6 +154,8 @@ for name in FILES:
             path = c['mesh']['DepotPath']['$value']
             assert path.endswith('_%s.mesh' % g), (app_name, path)
             assert c['isEnabled'] == 0 and c['castShadows'] == 'Never'
+            # Every chunk shows: a body's knees, calves and feet included.
+            assert c['chunkMask'] == str((1 << 63) - 1), (app_name, c['name']['$value'], c['chunkMask'])
         # The compiled package: chunks appended, their ids in the cruid map.
         cruids = cd['CruidDict']
         assert sorted(int(k) for k in cruids) == list(range(vanilla)), (app_name, cruids)

@@ -11,8 +11,6 @@ local EN = {
 	['ripperdoc.prompt'] = 'Sit / Attend',
 
 	-- The two heads: the tray the patient reads, the desk the operator works.
-	['ripperdoc.tray'] = 'TRAY',
-	['ripperdoc.desk'] = 'DESK',
 	['ripperdoc.chair'] = '{name}',
 	['ripperdoc.patient'] = 'PATIENT {name}',
 	['ripperdoc.vacant'] = 'NO PATIENT SEATED',
@@ -68,11 +66,6 @@ local EN = {
 	['ripperdoc.stat.range'] = 'RANGE',
 
 	-- The verbs, with the price spoken in them.
-	['ripperdoc.price'] = '€$ {price}',
-	['ripperdoc.fit'] = 'FIT {price}',
-	['ripperdoc.pull'] = 'PULL {price}',
-	['ripperdoc.repair'] = 'REPAIR {price}',
-	['ripperdoc.fitted'] = 'FITTED',
 	['ripperdoc.empty'] = 'EMPTY',
 	['ripperdoc.removeFirst'] = 'PULL FIRST',
 	['ripperdoc.condition'] = 'CONDITION {points}%',
@@ -83,11 +76,6 @@ local EN = {
 	['ripperdoc.stepAway'] = 'STEP AWAY',
 
 	-- The one offer at a time, as both sides read it.
-	['ripperdoc.offer'] = 'THE RIPPERDOC OFFERS',
-	['ripperdoc.offerSelf'] = 'CONFIRM',
-	['ripperdoc.offerFit'] = 'Fit {name} ({grade}) for {price}?',
-	['ripperdoc.offerPull'] = 'Pull {name} for {price}?',
-	['ripperdoc.offerRepair'] = 'Repair {name} for {price}?',
 	['ripperdoc.accept'] = 'ACCEPT',
 	['ripperdoc.decline'] = 'DECLINE',
 	['ripperdoc.working'] = 'WORK IN PROGRESS',
@@ -188,15 +176,9 @@ local EN = {
 	['ripperdoc.tiers'] = 'TIER {from}–{to}',
 	['ripperdoc.tierOne'] = 'TIER {from}',
 	['ripperdoc.from'] = 'FROM €$ {price}',
-	['ripperdoc.upgrade'] = 'UPGRADE {price}',
-	['ripperdoc.refit'] = 'REFIT {price}',
-	['ripperdoc.wallet'] = 'BALANCE €$ {amount}',
-	['ripperdoc.fittedChrome'] = 'FITTED CHROME',
-	['ripperdoc.nothingFitted'] = 'Nothing fitted yet.',
 	['ripperdoc.outOfBody'] = 'PULLED WHEN IT BROKE -- REPAIR TO REFIT',
 	['ripperdoc.inviteOut'] = 'INVITED {name}',
 	['ripperdoc.notReadyBanner'] = 'CHROME RECORD NOT READY -- implants cannot be fitted right now. Everything else can.',
-	['ripperdoc.offerUpgrade'] = 'Upgrade {name} to {grade} for {price}?',
 	['ripperdoc.offerWithdrawn'] = 'Offer declined.',
 	['ripperdoc.done.upgrade'] = '{grade} upgraded.',
 	['ripperdoc.refunded'] = 'A ripperdoc refund of €$ {amount} was paid to you.',
@@ -478,8 +460,6 @@ local FR = {
 	['ripperdoc.key.use'] = 'Fauteuil de ripperdoc',
 	['ripperdoc.prompt'] = "S'asseoir / Servir",
 
-	['ripperdoc.tray'] = 'PLATEAU',
-	['ripperdoc.desk'] = 'BUREAU',
 	['ripperdoc.chair'] = '{name}',
 	['ripperdoc.patient'] = 'PATIENT {name}',
 	['ripperdoc.vacant'] = 'AUCUN PATIENT',
@@ -533,11 +513,6 @@ local FR = {
 	['ripperdoc.stat.uploadMs'] = 'TÉLÉVERSEMENT',
 	['ripperdoc.stat.range'] = 'PORTÉE',
 
-	['ripperdoc.price'] = '€$ {price}',
-	['ripperdoc.fit'] = 'POSER {price}',
-	['ripperdoc.pull'] = 'RETIRER {price}',
-	['ripperdoc.repair'] = 'RÉPARER {price}',
-	['ripperdoc.fitted'] = 'POSÉ',
 	['ripperdoc.empty'] = 'VIDE',
 	['ripperdoc.removeFirst'] = 'RETIRER D’ABORD',
 	['ripperdoc.condition'] = 'ÉTAT {points} %',
@@ -547,11 +522,6 @@ local FR = {
 	['ripperdoc.leave'] = 'SE LEVER',
 	['ripperdoc.stepAway'] = "S'ÉCARTER",
 
-	['ripperdoc.offer'] = 'LE RIPPERDOC PROPOSE',
-	['ripperdoc.offerSelf'] = 'CONFIRMER',
-	['ripperdoc.offerFit'] = 'Poser {name} ({grade}) pour {price} ?',
-	['ripperdoc.offerPull'] = 'Retirer {name} pour {price} ?',
-	['ripperdoc.offerRepair'] = 'Réparer {name} pour {price} ?',
 	['ripperdoc.accept'] = 'ACCEPTER',
 	['ripperdoc.decline'] = 'REFUSER',
 	['ripperdoc.working'] = 'TRAVAIL EN COURS',
@@ -649,15 +619,9 @@ local FR = {
 	['ripperdoc.tiers'] = 'NIVEAU {from}–{to}',
 	['ripperdoc.tierOne'] = 'NIVEAU {from}',
 	['ripperdoc.from'] = 'DÈS {price} €$',
-	['ripperdoc.upgrade'] = 'AMÉLIORER {price}',
-	['ripperdoc.refit'] = 'REPOSER {price}',
-	['ripperdoc.wallet'] = 'SOLDE {amount} €$',
-	['ripperdoc.fittedChrome'] = 'CHROME POSÉ',
-	['ripperdoc.nothingFitted'] = 'Rien de posé pour l’instant.',
 	['ripperdoc.outOfBody'] = 'RETIRÉ EN TOMBANT EN PANNE -- RÉPARER POUR REPOSER',
 	['ripperdoc.inviteOut'] = '{name} INVITÉ',
 	['ripperdoc.notReadyBanner'] = 'DOSSIER CHROME PAS PRÊT -- les implants ne peuvent pas être posés pour l’instant. Le reste, si.',
-	['ripperdoc.offerUpgrade'] = 'Améliorer {name} en {grade} pour {price} ?',
 	['ripperdoc.offerWithdrawn'] = 'Offre refusée.',
 	['ripperdoc.done.upgrade'] = '{grade} amélioré.',
 	['ripperdoc.refunded'] = 'Un remboursement de ripperdoc de {amount} €$ vous a été versé.',
@@ -981,7 +945,21 @@ for key, pair in pairs({
 		'Run a whole Sandevistan on yourself without the overdrive: the slowed world, the screen and the look.',
 		'Lance un Sandevistan complet sur vous sans la surcharge : le monde ralenti, l\'ecran et l\'apparence.' },
 	['ripperdoc.help.testArg'] = {
-		'Seconds, 1 to 15 (9 by default).', 'Secondes, de 1 a 15 (9 par defaut).' },
+		'Seconds, 1 to 44 (9 by default).', 'Secondes, de 1 a 44 (9 par defaut).' },
+	['ripperdoc.help.chrome'] = {
+		'Set the condition of every piece of chrome fitted on you.',
+		'Règle l\'état de chaque pièce de chrome posée sur vous.' },
+	['ripperdoc.help.chromeArg'] = {
+		'full (a fresh life on everything), or a condition from 0 to 100 (0 breaks everything).',
+		'full (une vie neuve pour tout), ou un état de 0 à 100 (0 casse tout).' },
+
+	-- How long a fitted piece has left, and its hard-use allowance.
+	['ripperdoc.lifeLeft'] = {
+		'{days}D {hours}H LEFT', '{days} J {hours} H RESTANTS' },
+	['ripperdoc.lifeLeftHours'] = {
+		'{hours}H {minutes}M LEFT', '{hours} H {minutes} MIN RESTANTES' },
+	['ripperdoc.hardUse'] = {
+		'HARD USE {used}H / {cap}H', 'USURE INTENSIVE {used} H / {cap} H' },
 	['ripperdoc.howto.ability'] = {
 		'{name} is live: with a blunt weapon out, press {key} to slam.',
 		'{name} est actif : arme contondante en main, appuyez sur {key} pour frapper le sol.' },
@@ -1061,6 +1039,46 @@ for key, pair in pairs({
 		'Read every base-game cyberware record through a client.',
 		'Lit chaque record cyberware du jeu de base à travers un client.' },
 	['ripperdoc.help.recordsMode'] = { 'read or status.', 'read ou status.' },
+
+	-- The clinic's screen: the base game's own ripperdoc, the words its
+	-- widget writes.
+	['ripperdoc.back'] = { 'BACK', 'RETOUR' },
+	['ripperdoc.capacityTitle'] = { 'CYBERWARE CAPACITY', 'CAPACITÉ CYBERNÉTIQUE' },
+	['ripperdoc.capacityText'] = {
+		'Every piece of chrome takes capacity. A piece that would go past the limit cannot be fitted.',
+		'Chaque pièce de chrome prend de la capacité. Une pièce qui dépasserait la limite ne peut pas être posée.' },
+	['ripperdoc.armorTitle'] = { 'ARMOR', 'ARMURE' },
+	['ripperdoc.armorText'] = {
+		'The plating this chrome adds to the body, up to {max}. It recharges once the body stops taking damage.',
+		'Le blindage que ce chrome ajoute au corps, jusqu\'à {max}. Il se recharge quand le corps cesse d\'encaisser.' },
+	['ripperdoc.capacityCost'] = { 'CAPACITY', 'CAPACITÉ' },
+	['ripperdoc.emptySlot'] = { 'EMPTY SLOT', 'EMPLACEMENT LIBRE' },
+	['ripperdoc.pickSystem'] = {
+		'Select it to see the chrome this system takes.',
+		'Sélectionnez-le pour voir le chrome que ce système accepte.' },
+	['ripperdoc.installed'] = { 'INSTALLED', 'INSTALLÉ' },
+	['ripperdoc.act.install'] = { 'PURCHASE', 'ACHETER' },
+	['ripperdoc.act.upgrade'] = { 'UPGRADE', 'AMÉLIORER' },
+	['ripperdoc.act.repair'] = { 'REPAIR', 'RÉPARER' },
+	['ripperdoc.act.refit'] = { 'REFIT', 'REPOSER' },
+	['ripperdoc.act.remove'] = { 'REMOVE', 'RETIRER' },
+	['ripperdoc.act.propose'] = { 'PROPOSE', 'PROPOSER' },
+	['ripperdoc.confirm'] = { 'CONFIRM', 'CONFIRMER' },
+	['ripperdoc.cancel'] = { 'CANCEL', 'ANNULER' },
+	['ripperdoc.offerBy'] = { 'OFFERED BY {name}', 'PROPOSÉ PAR {name}' },
+	['ripperdoc.waitPatient'] = { 'Waiting for the patient to answer.', 'En attente de la réponse du patient.' },
+	['ripperdoc.lockedAttended'] = {
+		'The ripperdoc at the desk works the chair: their offers come to you here.',
+		'Le ripperdoc au bureau tient le fauteuil : ses offres vous arrivent ici.' },
+	['ripperdoc.gridEmpty'] = {
+		'This clinic carries nothing for this system.', 'Cette clinique n\'a rien pour ce système.' },
+	['ripperdoc.tierPick'] = { 'TIER', 'NIVEAU' },
+	-- The confirmation's question, as the game's purchase popup asks it.
+	['ripperdoc.ask.install'] = { 'PURCHASE AND INSTALL THIS CYBERWARE?', 'ACHETER ET POSER CE CYBERWARE ?' },
+	['ripperdoc.ask.upgrade'] = { 'UPGRADE THIS CYBERWARE?', 'AMÉLIORER CE CYBERWARE ?' },
+	['ripperdoc.ask.remove'] = { 'REMOVE THIS CYBERWARE?', 'RETIRER CE CYBERWARE ?' },
+	['ripperdoc.ask.repair'] = { 'REPAIR THIS CYBERWARE?', 'RÉPARER CE CYBERWARE ?' },
+	['ripperdoc.ask.refit'] = { 'REFIT THIS CYBERWARE?', 'REPOSER CE CYBERWARE ?' },
 }) do
 	EN[key], FR[key] = pair[1], pair[2]
 end

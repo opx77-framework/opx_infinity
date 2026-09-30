@@ -1,4 +1,4 @@
---- Every SQL statement this module runs, and the two tables it owns.
+--- Every SQL statement this module runs, and the tables it owns.
 -- @author XEROX710
 --
 -- This is the only file in the module allowed to carry SQL, and a CI check
@@ -80,6 +80,25 @@ CREATE TABLE IF NOT EXISTS opx77_ripperdoc_refund (
     reason VARCHAR(96) NOT NULL DEFAULT '',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_citizen (citizen_id)
+) ENGINE=InnoDB
+]],
+	-- THE LIFE OF EACH PIECE, beside its condition row and not inside it: a
+	-- NEW table rather than new columns, because this runtime has no
+	-- migration step (the seat's own reason). `points` is the precise
+	-- condition, `use_wear` the extra wear use, damage and deaths have taken
+	-- (points), `worn_at` when the calendar last wore it and `started_at` when
+	-- this life began (unix seconds). A condition row with no life row
+	-- predates real-day durability: the one-time reset.
+	[[
+CREATE TABLE IF NOT EXISTS opx77_ripperdoc_life (
+    citizen_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    entry_id VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    points DOUBLE NOT NULL DEFAULT 100,
+    use_wear DOUBLE NOT NULL DEFAULT 0,
+    worn_at BIGINT NOT NULL DEFAULT 0,
+    started_at BIGINT NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (citizen_id, entry_id)
 ) ENGINE=InnoDB
 ]],
 	-- THE BASE GAME'S OWN WORD ON EACH CYBERWARE RECORD, read through a live
@@ -191,6 +210,64 @@ function M.Storage.DeleteChrome(citizenId, entryId)
 DELETE FROM opx77_ripperdoc_chrome
  WHERE citizen_id = @citizen AND entry_id = @entry
   ]], { citizen = citizenId, entry = entryId })
+end
+
+--- Every life row of one patient.
+-- @author XEROX710
+-- @param citizenId string
+-- @return Result carrying an array of rows
+function M.Storage.FetchLife(citizenId)
+	return Storage.Query([[
+SELECT entry_id, points, use_wear, worn_at, started_at
+  FROM opx77_ripperdoc_life
+ WHERE citizen_id = @citizen
+  ]], { citizen = citizenId })
+end
+
+--- Records one piece's life, creating the row at its first write. One
+-- statement, for the reason the condition upsert is one.
+-- @author XEROX710
+-- @param citizenId string
+-- @param entryId string
+-- @param points number the precise condition, 0..100
+-- @param useWear number the extra wear taken so far, in points
+-- @param wornAt integer unix seconds the calendar last wore it
+-- @param startedAt integer unix seconds this life began
+-- @return Result
+function M.Storage.UpsertLife(citizenId, entryId, points, useWear, wornAt, startedAt)
+	return Storage.Execute([[
+INSERT INTO opx77_ripperdoc_life (citizen_id, entry_id, points, use_wear, worn_at, started_at)
+VALUES (@citizen, @entry, @points, @useWear, @wornAt, @startedAt)
+ON DUPLICATE KEY UPDATE points = @points, use_wear = @useWear, worn_at = @wornAt,
+    started_at = @startedAt
+  ]], {
+		citizen = citizenId,
+		entry = entryId,
+		points = points,
+		useWear = useWear,
+		wornAt = wornAt,
+		startedAt = startedAt,
+	})
+end
+
+--- Forgets one piece's life -- a pull, with its condition row.
+-- @author XEROX710
+-- @param citizenId string
+-- @param entryId string
+-- @return Result
+function M.Storage.DeleteLife(citizenId, entryId)
+	return Storage.Execute([[
+DELETE FROM opx77_ripperdoc_life
+ WHERE citizen_id = @citizen AND entry_id = @entry
+  ]], { citizen = citizenId, entry = entryId })
+end
+
+--- The database's own wall clock, for a host with none of its own: read once
+-- at Start and advanced by the server's timer (`M.Ripper.AnchorUnix`).
+-- @author XEROX710
+-- @return Result carrying an array with one row { now }
+function M.Storage.UnixNow()
+	return Storage.Query('SELECT UNIX_TIMESTAMP() AS now')
 end
 
 --- Every seat row, keyed by chair.

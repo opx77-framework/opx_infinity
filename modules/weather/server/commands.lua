@@ -14,6 +14,13 @@ M.Commands = {}
 -- Server to client answer to a staff command.
 local EVENT_NOTICE = OPX.Event(OPX.Channel.NET, 'weather', 'notice')
 
+-- Server to client: move that player's own clock ahead (`/opx.wait`).
+local EVENT_SKIP = OPX.Event(OPX.Channel.NET, 'weather', 'skip')
+
+-- The widest skip a player may ask for, in whole hours. The engine's `setTime`
+-- goes to the NEXT occurrence of an hour, so 24 would land where it started.
+local MAX_WAIT_HOURS = 23
+
 -- Chat suggestion text and parameter help keys per command entry. The
 -- `weather.help.*` keys are read through a variable, never as a literal.
 local HELP = {
@@ -36,6 +43,9 @@ local HELP = {
 	DAY_LENGTH = { text = 'weather.help.dayLength', params = {
 		{ name = 'minutes', help = 'weather.help.dayLength.minutes' },
 	} },
+	WAIT = { text = 'weather.help.wait', params = {
+		{ name = 'hours', help = 'weather.help.wait.hours' },
+	} },
 }
 
 -- Catalogue key a player reads for each refusal code. The codes stay codes on
@@ -47,6 +57,7 @@ local ERROR_KEYS = {
 	unknown_preset = 'weather.error.unknownPreset',
 	invalid_transition = 'weather.error.invalidTransition',
 	no_presets = 'weather.error.noPresets',
+	invalid_hours = 'weather.error.invalidHours',
 }
 
 -- Commands actually registered, for suggestions and the boot line.
@@ -296,6 +307,27 @@ local function onDayLength(source, args, raw)
 	accept(source, raw)
 end
 
+-- Moves the asking player's own clock ahead, for a mission's wait. The shared
+-- clock is not touched: the client half moves its engine clock and holds the
+-- shared hour back on that game for the mission hold (20 minutes).
+local function onWait(source, args, raw)
+	if not toPlayer(source) then
+		return refuse(source, raw, 'weather.error.playersOnly', nil,
+			'wait moves a player\'s own clock: run it in game')
+	end
+	if cooled(source, 'wait') then return end
+	if count(args) ~= 1 then
+		return refuse(source, raw, 'weather.usage.wait', nil, 'usage: <hours>')
+	end
+	local hours = tonumber(args[1])
+	if not Clock.Whole(hours, 1) or hours > MAX_WAIT_HOURS then
+		return refuseCode(source, raw, 'invalid_hours')
+	end
+	local player = math.floor(tonumber(source))
+	TriggerClientEvent(EVENT_SKIP, player, hours)
+	notice(source, raw, 'success', locale('weather.wait.done', { hours = hours }))
+end
+
 -- Sends the registered commands to the player as chat suggestions. The preset
 -- names come from configuration rather than from a catalogue that would have to
 -- repeat them.
@@ -344,6 +376,8 @@ function M.Commands.Register()
 	register('TIME', onTime, true)
 	register('TIME_FREEZE', onTimeFreeze, true)
 	register('DAY_LENGTH', onDayLength, true)
+	-- Not a mutation of the shared state: the asking player's own clock.
+	register('WAIT', onWait)
 
 	RegisterNetEvent('chat:ready', onChatReady)
 

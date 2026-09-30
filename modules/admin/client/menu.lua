@@ -489,6 +489,31 @@ end
 
 -- ── the screens ─────────────────────────────────────────────────────────────
 
+-- THE LEVELS, on Myself and on a player's page: the skill tree's lever
+-- (`/opx.skills.level`), whose `max` also maxes the base game's own levels on
+-- that player's machine, and on Myself the ripperdoc's chrome override. Each
+-- row is there only while its LINKS name is, and greyed when the ACL refuses it.
+local function levelRows(target)
+	local link = links()
+	local rows = {}
+	if link.SKILLS_LEVEL then
+		local max, reset = { link.SKILLS_LEVEL, 'max' }, { link.SKILLS_LEVEL, 'reset' }
+		if target ~= 'me' then
+			max[#max + 1], reset[#reset + 1] = target, target
+		end
+		rows[#rows + 1] = icon(command('levelsMax', 'admin.menu.levelsMax', max, nil,
+			{ value = locale('admin.menu.levelsMaxValue') }), 'star')
+		rows[#rows + 1] = icon(guarded('levelsReset', 'admin.menu.levelsReset', reset,
+			target == 'me' and 'admin.confirm.levelsReset' or 'admin.confirm.levelsResetPlayer'), 'refresh')
+	end
+	if target == 'me' and link.CHROME then
+		rows[#rows + 1] = icon(command('chromeFull', 'admin.menu.chromeFull', { link.CHROME, 'full' }),
+			'tool')
+	end
+	if #rows > 0 then table.insert(rows, 1, section('admin.menu.section.levels')) end
+	return rows
+end
+
 local SCREENS = {}
 
 -- EVERY ROW CARRIES A GLYPH NOW, and the note that used to stand here said the
@@ -615,6 +640,8 @@ SCREENS.player = function(id)
 		items[#items + 1] = go('inventory', 'admin.menu.inventory', 'playerInventory', id,
 			{ icon = 'box' })
 	end
+
+	append(items, levelRows(target))
 
 	items[#items + 1] = section('admin.menu.section.moderation')
 	items[#items + 1] = icon(form('kick', 'admin.menu.kick', 'kick', id, Command.MODERATE_KICK),
@@ -955,9 +982,9 @@ SCREENS.self = function()
 		icon(command('heal', 'admin.menu.heal', { Command.SELF_HEAL }), 'heal'),
 		icon(command('revive', 'admin.menu.revive', { Command.SELF_REVIVE }), 'heart'),
 		icon(switch('god', 'admin.menu.god', { Command.SELF_GOD }, Client.GodMode()), 'shield'),
-
-		section('admin.menu.section.weapons'),
-	}, weaponRows('me', 'admin.menu.giveMe'))
+	}, levelRows('me'))
+	append(items, { section('admin.menu.section.weapons') })
+	append(items, weaponRows('me', 'admin.menu.giveMe'))
 	if inventoryUp() then
 		items[#items + 1] = section('admin.menu.section.inventory')
 		append(items, bagRows('me'))

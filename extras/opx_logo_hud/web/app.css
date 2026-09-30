@@ -1,0 +1,35 @@
+/* The OPX badge, top centre.
+ *
+ * The page is 1920x1080 and the platform scales it to the screen, so every
+ * length here is a length at 1080. The badge is the platform's CHROME_STRIP:
+ * the top 76 px, the band the pre-alpha watermark held. A SOLID plate -- the
+ * logo's own near-black -- behind the picture, so the logo reads the same over
+ * a lit street and a night sky, and one cyan rule under it.
+ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%; height: 100%; overflow: hidden;
+  background: transparent;
+  /* Passive: never a click, never a text selection. */
+  pointer-events: none; user-select: none;
+}
+
+.badge {
+  position: absolute; top: 0; left: 50%;
+  transform: translateX(-50%);
+  height: 76px;
+  display: flex; align-items: center;
+  padding: 0 14px;
+  background: #0d0c11;
+  border-radius: 0 0 6px 6px;
+  box-shadow:
+    0 2px 0 0 rgba(0, 229, 255, 0.55),
+    0 4px 12px rgba(0, 0, 0, 0.6);
+}
+
+.badge img {
+  display: block;
+  height: 76px; width: auto;
+}

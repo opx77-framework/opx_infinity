@@ -133,10 +133,18 @@ OPX.Config.MODULES.inventory = {
 
 	-- Weapons drawn from the bag. SLOT is the game weapon slot an inventory
 	-- weapon occupies; REMOVE_UNBACKED takes off any weapon no bag item backs.
+	--
+	-- REMOVE_UNBACKED IS OFF SINCE THE BASE GAME'S MISSIONS ARE PLAYABLE
+	-- (opx_sandy_view 1.4.11). A mission hands V a weapon the bag never saw --
+	-- a gun a fixer gives, one a quest equips for a fight -- and the 5 s scan
+	-- took it straight back off, so a "shoot / use / bring X" step stalled. A bag
+	-- weapon that leaves the bag is still put away (`Weapons.CheckHeld`); only
+	-- the sweep of every OTHER weapon is off. `true` brings it back, and takes the
+	-- missions' weapons with it.
 	WEAPONS = {
 		ENABLED = true,
 		SLOT = 1,
-		REMOVE_UNBACKED = true,
+		REMOVE_UNBACKED = false,
 		SCAN_MS = 5000,
 		AMMO_SYNC_MS = 2000,
 	},

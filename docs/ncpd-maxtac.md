@@ -273,10 +273,12 @@ existing `hud` and `prompts` modules instead of drawing stars twice.
 
 ---
 
-## 8. The three things the owner asked for beside the design
+## 8. The six things the owner asked for beside the design
 
-These landed after the design above and are worth knowing about here, because all
-three are surfaces of the same story — the city has to SEE its police working.
+These landed after the design above and are worth knowing about here. The first
+three are surfaces of the same story — the city has to SEE its police working —
+and the last three are what its officers fly and drive: the job fleet, the
+aircraft's own voice, and the way back into the aircraft.
 
 **The dispatch board — "when crimes are committed they need to be shown and
 displayed on NCPD/MaxTac screens loudly".** The call-out (`ALERTS`) is radio
@@ -312,3 +314,242 @@ put one away: a ground garage there is refused at boot (it belongs in
 and a pad with no jobs named is said out loud because it is no gate. Refusals
 name the closest near-miss — job, rank or duty — through the same vocabulary
 every lift floor and armory bench uses.
+
+**The job fleet — "give all maxtac and ncpd workers the vehicles they need in there
+garage with proper labels" and "required avs for the role job needs to be in the
+garage for players by defualt".** `config/garages.lua` `JOB_VEHICLES` declares, per
+job and grade, the vehicles every member finds at the top of every garage list —
+by default, owning nothing and granted nothing (the table is in
+[`docs/jobs.md`](jobs.md#job-vehicles--what-each-rank-finds-in-the-garage)). The
+ground rows are the player-usable police records the prevention records in §3 are
+built on, climbing with rank the way the heat ladder climbs (Cortes → Hella and the
+Apollo bike → Emperor and Merrimac → Hellhound); MaxTac's are the MaxTac Merrimac and
+`Vehicle.max_tac_av`, the Surveyor the insertion flies, listed at the MaxTac hangars
+(and any pad MaxTac may use) to every operator on duty. They are job vehicles,
+signed out through the `vehicles` contract with **no row and no plate**: not
+sellable, not transferable, never a car of the member's own, back to the pool at a
+garage door, and taken back when the job, the grade or the shift is gone (never
+from under a driver).
+
+*The NCPD air unit.* NCPD has no AV in the prevention ladder (the `Heat_5`
+aircraft is MaxTac's), but the base game does put an aerodyne in NCPD service.
+The platform flies as an AV only a `Vehicle.av_*` record, or exactly
+`Vehicle.max_tac_av` (`client/src/api/VehicleFlight.cpp` `IsAvRecord`). So the two
+NCPD records in the base game's tweak sources can't be flown:
+`Vehicle.q001_police_av` (the prologue's) and `Vehicle.sq026_av_ncpd` (a quest's).
+This server's own AV rule (`AV_MATCHES`) calls them aircraft, so they came out of a
+pad and never left it.
+
+The fleet ships `Vehicle.av_zetatech_atlus`, created in the Atlus's own NCPD livery,
+`zetatech_atlus_ncpd_01`:
+
+- Its template (`base\vehicles\special\av_zetatech_atlus_basic_02.ent`) carries
+  that appearance, read from the 2.31 archive. `sq026_av_ncpd` is the same Atlus in
+  it.
+- The row's `APPEARANCE` is passed to `Open77.vehicles.create`. The platform applies
+  a create's appearance on every client (C10, since its 2026-09-14 build).
+- The livery belongs to the row, not the record. A civilian's Atlus from the
+  dealer keeps the record's own Trauma Team livery.
+- The MaxTac rows now do the same with `zetatech_surveyor__basic_ep1_maxtac_01`:
+  the garage row and `MAXTAC.AV.APPEARANCE` for the insertion.
+- `config/garages.lua` says at boot when an AV row names a hull the platform won't
+  fly.
+
+**Where the NCPD AV shows.** An AV row shows at an `avpad` the player may use. The
+MaxTac hangars (`config/avgarages.lua`) are MaxTac's, so NCPD's AV needs a public
+`KIND = 'avpad'` garage in `config/garages.lua` `GARAGES`. Nothing is shipped, because
+a pad at a coordinate nobody stood on is a pad an AV can't land on. Stand on the
+station's pad, copy the point with `/opx.admin.self.pos`, and write the block.
+
+**The aircraft's own voice — "give the maxtac av the sfx from the in game maxtac av
+when it lands releasing the maxtac assault troopers".** The base game's MaxTac AV
+plays four Wwise events on its `vehicle_general_emitter` (2.31 scripts):
+`av_maxtac_start_descent` as it drops (`AvStartDescentSFXBehaviour`), the
+`av_maxtac_descent_horn` blast when its squad bails out (`MaxTacFearEvent`, 2.5 s
+after the passengers register), `av_maxtac_hover_idle` while it hangs over the
+street (`AvHoverIdleSFXBehaviour`) and `av_maxtac_start_ascent` as it leaves
+(`AvStartAscentSFXBehaviour`). The insertion (`modules/ncpd/server/av.lua`) plays the
+same four on the airframe from the server (`Open77.effects.sound`, kind `vehicle`),
+so everyone near it hears them from where the aircraft is: the drop at the start of
+the descent, the horn the moment the aircraft is down (the squad steps out
+`DEPLOY_SECONDS` later, as in the base game), the hover for the street hold, and the
+climb. `config/ncpd.lua` `MAXTAC.AV.SOUNDS` names them; `false` silences one.
+
+**Back into the aircraft — "not being able to reboard the maxtac av after landing
+... i dont even see press f".** The base game authors no way into an aircraft (V
+boards one in a scene), so an AV used to be boarded once: by the pad's hand-off, or
+through the crew door's twenty-second hold. `modules/avdoor` is the door every
+aircraft now has. The SERVER finds it -- only the server holds a vehicle's world
+position -- by measuring every player on foot against the aircraft in their bucket
+every `SCAN_MS`, judging the nearest in reach (`REACH_METRES`), and telling that one
+client its door; the row reads *Board* and **F** seats them through
+`warpPlayerIntoVehicle`, judged again from scratch. Who may FLY what: a rule the
+hull's owner registered, the character a pad issued it to, or an on-duty holder of
+the job it belongs to. The insertion registers its own: when a crew steps out of the
+MaxTac AV she is **parked for `BOARDING.PARK_SECONDS`** (600) instead of removed,
+any MaxTac trooper on duty climbs back in, and a cleared stage no longer takes a
+parked hull away (a new stage for the same suspect flies a new aircraft beside her).
+`/opx.avdoor.why` says, for the aircraft nearest to you, what the door answers.
+
+**Other players can ride — "make sure other players can mount in av".**
+`PASSENGERS = true` (the shipped default): anybody within reach of a parked aircraft
+may take a FREE passenger seat (`seat_front_right`, `seat_back_left`,
+`seat_back_right`); the pilot's seat, `seat_front_left`, is never offered to a
+passenger, and the aircraft's owner rule still decides who flies. A rule can close
+the passenger seats for its own hull with `passengers = false`. The seat's own door
+swings open as the body boards (`DOORS`) and the body is seated `BOARD.DELAY_MS`
+later, judged again then, so it steps in through an open door rather than popping in.
+`/opx.avdoor.why` names the seat a passenger would get, or why there is none.
+
+**Stepping out — "the player gets thrown out av and the av door doesnt open for
+some".** The platform's animated AV exit crashed the game and is switched off in its
+own client, so the engine drops the mount and carries the body out in one cut. The
+client log of 2026-09-29 21:04:35 has the whole exit to the millisecond: the body is
+put at the cockpit's exit point INSIDE the hull, the platform wakes the chassis and
+reports a car impact on the body at +0.38 s, and its own deferred eject moves the
+body 3.5 m behind and 2 m UNDER the hull's centre at about +1.7 s. The old fade was
+back before +1.5 s, so the player watched the throw. Three parts fix it, all in
+`config/avdoor.lua`:
+
+- *The screen* (`EXIT_FADE`): out as the mount drops and held for `HOLD_MS` after a
+  pilot's exit (`PASSENGER_HOLD_MS` for the other seats, which the platform does not
+  eject), until the body has been still for `EXIT.SETTLE_MS`, never past
+  `MAX_HOLD_MS`, then back in on a body that is standing beside the open door.
+- *The body* (`EXIT`, client guard): for `GUARD_MS` after the mount drops the body is
+  kept on the ground `SIDE_METRES` out from the hull's centre on its door's side (a
+  metre clear of the hull's 5 m half-width, inside `REACH_METRES`, so the boarding row
+  is up the moment the screen is). A jump of more than `JUMP_METRES` between two looks
+  is the platform's eject and is put back; a body left inside `DANGER_METRES` when the
+  guard ends is moved once more; a body in flight (over `MAX_AIR_METRES`) falls from
+  the door's height and is never carried down; a seat lost more than `NEAR_METRES`
+  from the hull is a teleport and is left alone. `PLACE = false` is the old fade only.
+- *The door* (`EXIT`, server): the seat's door opens as the seat empties, for every
+  viewer -- the door the platform opens is a local actuation that only the parked owner
+  reports, so nobody else was told it opened -- stays open `DOOR_HOLD_MS`, and is
+  looked at every `DOOR_REASSERT_MS` for `DOOR_REASSERT_FOR_MS` and opened again if the
+  platform's own engine shut it. Every one of those reads is journalled.
+
+**The aircraft's voice, heard by everyone — "make sure maxtac av sound is heard from
+all players not just the pilot".** The pilot's client reads the flight -- the seated
+body's height over the ground (`Open77.world.groundZ`) and the climb rate -- and the
+server, after checking the asker really is seated in that hull, plays the base game's
+`av_maxtac_start_ascent`, `av_maxtac_start_descent` and `av_maxtac_descent_horn` on
+the airframe to EVERY player within `SOUNDS.RANGE` -- the pilot included -- rather
+than relying on the pilot's client to fan it out. Each listener's client answers
+what it did with the event (`played`, or the reason it could not) and the server
+writes every answer to ITS journal, because a sound that fails on somebody else's
+machine leaves no line anywhere else. A listener the host REFUSED is given the sound
+through the platform's own fan-out (`SOUNDS.RESCUE`, on by default), addressed to that
+listener alone, so nobody hears it twice; "this hull is not streamed here" is not a
+refusal and is not rescued.
+
+---
+
+## 9. A kill reaches the board — the road, and its limits
+
+"When other player kills ncpd or other player there still isnt no toast screen
+showing illegal activities/murder happening for ncpd/maxtac" (the owner, 2026-09-29,
+after the call-out of §8 had shipped and passed its tests). The call-out itself was
+right; the kill never reached it. Everything the earlier tests did was hand the
+module a death, which is a thing the platform only does in two of the three cases
+that matter.
+
+**The chain, and where it was broken.** A kill is charged by `server/main.lua`
+(`HOMICIDE`): `charge` → the ledger's book moves → `sceneCallOut` puts one toast, one
+scanner line, one dispatch-board frame and one map pin on every ON-DUTY holder of
+`ALERTS.JOBS`. A murder is worth 40 points and the first star needs 50, so a single
+kill is called in whatever stage it lands on (`HOMICIDE.CALL_OUT`), one call-out per
+suspect per `COOLDOWN_MS`. The chain is entered by a death, and there are four ways
+one arrives:
+
+- *An attributed player kill* — `open77:playerKilled(victim, killer, context)`. The
+  platform raises it only for a death its damage authority could attribute; an
+  unattributed one raises `open77:playerDied` alone. That was the whole of what the
+  module listened to.
+- *A lethal hit* — `open77:playerDamaged(victim, attacker, amount, kind, weapon, part,
+  health, maxHealth, lethal, downed)`, every argument text, `lethal` `"1"` on the hit
+  that ends the victim.
+- *A bare death* — `open77:playerDied(player, context)`, raised for every death. The
+  context may name a killer; when it does not, the last player to hurt the victim
+  inside `HOMICIDE.ATTRIBUTION_MS` (8 s) is put down for it, and NEVER for a fall, the
+  environment or a script, and never an NPC (an NPC's id is a 64-bit number, not a
+  connection). `0` turns the fallback off; a lethal hit still charges by itself.
+- *A body of ours killed by a player* — `onNpcDied(npc, source, cause)`. **This one
+  the platform never raised for a player's shot.** A player's hit on a server-owned
+  NPC is raised as `open77:npcHit` on the SHOOTER's client alone and goes no further
+  (`docs/combat.md`: the three NPC combat events are "observations, not
+  applications"). A police unit stood at 100/100 for ever, `onNpcDied` never fired,
+  and the murder call-out waited for a death no player could cause.
+
+One death is one charge, however many of these report it: the module remembers a
+victim's booked death for five seconds and a body's for a minute, so the first
+report wins and a second, from any door, finds the mark and stands down.
+
+**The hit relay.** `client/hits.lua` subscribes the host's local event
+(`AddEventHandler`, not `RegisterNetEvent` -- the platform's own cordon mode shipped
+that mistake) and, ten times a second at most, sends the server one small table per
+body hit: the body's id as TEXT (a 64-bit id does not survive a Lua double), the
+engine's damage and the intercept's height, the pellets of one shot summed. It sends
+at most eight bodies per send and holds at most 32; it forgets everything on stop.
+`server/hits.lua` decides everything else, and trusts the client for none of it:
+
+- *Whose body*: only a unit the response placed or a body of the test crowd; the ids
+  are looked up in those two tables and the platform refuses `applyDamage` on any
+  other NPC anyway. A hit on somebody else's NPC is counted `not_ours` and costs nothing.
+- *The number*: the engine's damage is a hint clamped to `MIN_DAMAGE..MAX_DAMAGE`
+  (12..60 -- a gang record's rifle is priced for a levelled solo player), a report
+  with none is worth `FALLBACK_DAMAGE`, and a hit whose height is `HEAD_METRES` over the
+  body's own feet is a headshot worth `HEADSHOT`× (2). The client never names a body part.
+- *The shooter*: a character loaded, alive, in the body's bucket, inside
+  `MAX_RANGE_METRES` (120), no faster than `MIN_INTERVAL_MS` (45) and no more than
+  `MAX_DPS` (480) in a second. An on-duty holder of the call-out's jobs is refused
+  `friendly` against the city's own units (and, on a crowd body, is not charged).
+- *The damage*: `Open77.npcs.applyDamage(id, amount, 'player:<id>', 'firearm')`, which
+  the platform answers with `onNpcDamaged` and, at zero, `onNpcDied` -- the event the
+  kill rule already charged. Every body is created on the platform's 100-point scale
+  (`health = 100, maxHealth = 100`), so a unit takes four ordinary hits.
+- *The backstop*: a hit that looked lethal is checked `DEATH_CHECK_MS` later, and a
+  body that is dead (or gone) with no `onNpcDied` heard since is booked from its own
+  health through the same one-death-one-charge door, so a platform that stays silent is
+  not a murder nobody was told about.
+
+Every refusal is counted and named, and said once per reason every ten seconds in the
+journal (the ordinary `not_ours` only counted): a relay that admits nothing says why.
+`HITS = false` or `enabled = false` takes it down; the knobs are read live and each
+one falls back to its shipped value when it is outside what it means.
+
+**Who is told.** The on-duty holders of `ALERTS.JOBS` (`ncpd`, `maxtac`), and only
+them. A job change starts OFF duty, so an officer who has just been given the job
+hears nothing until `/opx.duty`; when a call-out reaches nobody the journal now says
+why (`0 on-duty holder(s) told (2 of 5 connected hold ncpd/maxtac but are CLOCKED
+OFF ...)`). `/opx.ncpd.status` prints `on the air: N on duty in ncpd/maxtac` and a
+`hit relay` line with what was applied and refused. The client logs
+`[ncpd] dispatch received: <key>` when the board's frame arrives and
+`[ncpd] hit relay: N report(s) sent` every few seconds while it is forwarding.
+
+**What it cannot see.** The pedestrians and police the base game spawns on each
+client are not the server's: their deaths are never reported to it, and this build's
+client cannot read the engine's wanted level either (`crimes cannot charge the
+ledger` in the client log), so a vanilla passer-by killed with a gun is not a murder
+the server hears of. The call-out covers what the server can know: players, the
+response's units (police, MaxTac ground squad) and the `/opx.ncpd.bots` crowd.
+
+**Testing it.** Two players, one of them on a job in `ALERTS.JOBS` and clocked in
+(`/opx.job <playerId> ncpd 0`, then `/opx.duty` as that player):
+
+1. `/opx.ncpd.report murder <the other player>` -- the toast, the scanner line, the
+   board and the pin, with no gun; proves the audience and the surfaces.
+2. `/opx.ncpd.bots spawn 3`, shoot one -- four ordinary hits kill it; the journal
+   reads `player N hit npc <id> (crowd)` per shot, `... charged with murder for
+   killing npc <id>` once, and the call-out reaches the officer.
+3. Have the other player wanted (`/opx.ncpd.heat 2 <player>`), shoot one of the
+   units that arrive -- the same road, `officer down`, `murderPolice`.
+4. Kill the other player -- the journal reads `player kill seen (playerKilled|
+   playerDied|lethal hit|recent hit)` and `... charged with murder for killing player
+   N`. The TOAST for a player-on-player kill needs a THIRD player on duty in `ncpd` or
+   `maxtac`: the killer and the victim are kept off the air, and an on-duty officer who
+   kills is not charged (`... killed player N on duty: use of force, not charged`), so
+   with two players the journal, not the screen, is the proof. The bots of step 2 give a
+   two-player test that does reach a screen.
+5. `/opx.ncpd.status` -- `hit relay : ... applied, ... lethal, ... booked; refused: ...`.
+

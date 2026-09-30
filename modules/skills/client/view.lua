@@ -26,11 +26,15 @@ local CHANNEL = 'skills:view'
 -- `OPX.UI.AcquireFocus`. Nothing else calls it, so an owner no module claims is
 -- an owner nobody acquires -- and the game keeps the keyboard.
 --
--- `keyboard = false`, like the scanner and the cursor-mode menus: the tree is a
--- chart to read and press, not a dialog -- the game keeps the movement keys and
--- the F3 that stows it, and nodes are chosen by clicking them.
+-- A MODAL, `keyboard = true`: while the tree is up the character does not walk
+-- off mid-choice, and Escape reaches the page and stows it. On this platform no
+-- key mapping fires while a page holds the keyboard (`modules/downed` learnt
+-- the same), so the F4 that stows it is caught BY THE PAGE, which knows the
+-- player's own binding from the frame and asks to close; a build whose mapping
+-- fires anyway sends the same close twice, and `M.Skill.Close` is one close
+-- however many doors ask (client/main.lua).
 local FOCUS = {
-	['skills.tree'] = { keyboard = false, cursor = true },
+	['skills.tree'] = { keyboard = true, cursor = true },
 }
 
 --- Answers the surface-wide focus broadcast for this module's own owners.

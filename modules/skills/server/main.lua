@@ -12,6 +12,15 @@
 -- ceiling; a character at the top of the ladder is still doing work, so the XP
 -- is what was credited by the bank (its own truth) and the level cap is this
 -- module's own (`LEVEL_CAP`). Two ceilings, each owning its own fact.
+--
+-- ONE LEVER BESIDE THE FUNNEL, AND IT IS STAFF'S. `opx.skills.level` puts a
+-- character at the cap, at a level, or back at the start, for testing or for
+-- fun. It moves the same record the funnel does, writes it back the same way,
+-- and tells the player's client to re-ask -- an OPEN tree redraws, a closed one
+-- stays closed. `max` also asks the player's own machine to max the base
+-- game's levels (the preload in `DEVELOP`), which nothing on a server can
+-- reach any other way; the client reports what it answered and it is
+-- journalled here.
 
 local M = OPX.Modules.Get('skills')
 local Result = OPX.Result
@@ -31,6 +40,18 @@ local dirty = {}
 --- node id -> { branch = id, rank = integer, node = node }, rebuilt at Init.
 local index = {}
 
+--- connection -> { nonce, at, citizenId }: a base-game develop request that
+-- has gone out and not been answered. A report that matches none is ignored.
+local developing = {}
+local developCount = 0
+
+--- How long a develop request waits for its report before it is stale.
+local DEVELOP_TTL_MS = 60000
+
+--- Whether a malformed `ripperdoc.ChromeLevel` answer has been named already:
+-- the frame is drawn on every knock, and one line says it.
+local chromeNamed = false
+
 -- ── the small things ────────────────────────────────────────────────────────
 
 --- A finite number or nil: NaN and infinities are refusals everywhere here,
@@ -43,6 +64,16 @@ local function finite(value)
 		return nil
 	end
 	return number
+end
+
+--- Text bounded for a journal line: a client's words never reach the log raw.
+-- @param value any
+-- @return string
+local function safe(value)
+	if type(OPX.Audit) == 'table' and type(OPX.Audit.Safe) == 'function' then
+		return OPX.Audit.Safe(tostring(value), 96)
+	end
+	return (tostring(value):sub(1, 96):gsub('[%c]', ' '))
 end
 
 --- The citizen id as the ledger keys it: the row's text, whatever the host's
@@ -150,7 +181,7 @@ local function branchesColumn(record)
 	local column = {}
 	for _, id in ipairs(pairs_) do
 		column[#column + 1] = ('%s:%s'):format(id, tostring(record.branches[id]))
-end
+	end
 	local joined = table.concat(column, ';')
 	if #joined > 240 then return joined:sub(1, 240) end
 	return joined
@@ -220,6 +251,45 @@ local function nodeState(record, branchId, rankOf, rank, node)
 	return 'available'
 end
 
+--- A trunk's emblem, if it names one the shared glyph set can draw. A name the
+-- set does not hold is left off the wire rather than sent to a page that would
+-- draw nothing for it (it was named at Init).
+-- @param branch table
+-- @return string|nil
+local function iconOf(branch)
+	local icon = branch.ICON
+	if type(icon) ~= 'string' or type(OPX.Glyphs) ~= 'table' or not OPX.Glyphs[icon] then return nil end
+	return icon
+end
+
+--- What the character level does for fitted chrome, as the ripperdoc answers
+-- it -- or nil, which draws no band. Asked lazily on every frame: the
+-- ripperdoc is optional and may start after this module, and a server without
+-- one simply has a tree with no band. The answer is kept only when it is
+-- exactly the page's contract (`M.Skill.ChromeShape`); a wrong one is named
+-- once and left off.
+-- @param level integer
+-- @param cap integer
+-- @return table|nil
+local function chromeFor(level, cap)
+	local ripperdoc = OPX.Api.Get('ripperdoc')
+	if type(ripperdoc) ~= 'table' or type(ripperdoc.ChromeLevel) ~= 'function' then return nil end
+	local ran, answer = pcall(ripperdoc.ChromeLevel, level, cap)
+	if ran and answer == nil then return nil end
+	local block, why = nil, nil
+	if ran then
+		block, why = M.Skill.ChromeShape(answer)
+	else
+		why = 'it raised: ' .. tostring(answer)
+	end
+	if block == nil and not chromeNamed then
+		chromeNamed = true
+		Open77.log.warn('[skills] ripperdoc.ChromeLevel answered something the panel does not draw, '
+			.. 'so the tree shows no chrome band: ' .. tostring(why))
+	end
+	return block
+end
+
 --- The one frame every answer sends: the whole tree as this record stands.
 -- Never refused on its own -- a knock from a character with no record is a
 -- tree of zeroes -- so the panel can always draw somebody.
@@ -228,6 +298,7 @@ end
 local function frameOf(citizenId)
 	local record = records[citizenId]
 	local level = record ~= nil and record.level or 1
+	local cap = M.Skill.Cap()
 	local branches = {}
 	for _, branch in ipairs(M.Skill.Branches()) do
 		local earned = record ~= nil and branchXp(record, branch.id) or 0.0
@@ -251,6 +322,10 @@ local function frameOf(citizenId)
 		branches[#branches + 1] = {
 			id = branch.id,
 			name = branch.NAME,
+			-- What the page draws the trunk with: its emblem, and the line that
+			-- says which work feeds it. Both optional on the wire.
+			icon = iconOf(branch),
+			feed = type(branch.FEED) == 'string' and branch.FEED ~= '' and branch.FEED or nil,
 			rank = math.min(rank, math.max(#list, 1)),
 			xp = earned % (tonumber(M.Settings.BRANCH_STEP) or 100),
 			-- The step itself, so the panel's trunk gauge states a real
@@ -262,11 +337,15 @@ local function frameOf(citizenId)
 	return {
 		open = true,
 		level = level,
+		-- The cap, so the panel states the level against it and draws the
+		-- level track 1..cap.
+		cap = cap,
 		xp = record ~= nil and record.xp or 0.0,
 		need = M.Skill.Need(level),
 		points = record ~= nil and record.points or 0,
 		depth = M.Skill.Depth(),
 		branches = branches,
+		chrome = chromeFor(level, cap),
 	}
 end
 
@@ -286,7 +365,7 @@ local function earn(citizenId, jobName, credited)
 	record.branches = record.branches or {}
 	record.branches[branchId] = branchXp(record, branchId) + xp
 
-	local cap = math.max(1, math.floor(finite(M.Settings.LEVEL_CAP) or 20))
+	local cap = M.Skill.Cap()
 	local perLevel = math.max(1, math.floor(finite(M.Settings.POINTS_PER_LEVEL) or 1))
 	local leveled = 0
 	local banked = 0
@@ -349,6 +428,197 @@ local function unlock(citizenId, nodeId)
 	return true
 end
 
+-- ── the staff lever ─────────────────────────────────────────────────────────
+
+--- What the declared nodes cost, split by whether this record holds them:
+-- the points already spent, and the points every node still locked would take.
+-- Nodes the config no longer declares are neither -- an unlock left behind by
+-- a removed node is not a point anybody spent on this tree.
+-- @param record table
+-- @return number spent
+-- @return number missing
+local function nodeCosts(record)
+	local spent, missing = 0, 0
+	for _, branch in ipairs(M.Skill.Branches()) do
+		for _, node in ipairs(type(branch.NODES) == 'table' and branch.NODES or {}) do
+			local cost = finite(node.COST) or 1
+			if record.nodes[node.id] == true then spent = spent + cost else missing = missing + cost end
+		end
+	end
+	return spent, missing
+end
+
+--- The lever's arithmetic on one record. No wire and no disk: the caller does
+--- both, so this is the part a test can read whole.
+---   max    the cap, a full XP bar, every trunk fed to its full depth, and the
+---          points to buy every node still locked (never fewer than it held)
+---   set    that level, no XP into it, and the points that level banks minus
+---          what the claimed nodes cost -- never below zero; trunks untouched
+---   reset  level 1, nothing fed, nothing claimed, nothing banked
+-- @param record table
+-- @param mode string `max`, `set` or `reset`
+-- @param level integer|nil for `set`
+function M.Skill.ApplyLevel(record, mode, level)
+	local cap = M.Skill.Cap()
+	if mode == 'reset' then
+		record.level, record.xp, record.points = 1, 0.0, 0
+		record.nodes, record.branches = {}, {}
+		return
+	end
+	if mode == 'max' then
+		local step = math.max(0, tonumber(M.Settings.BRANCH_STEP) or 100)
+		record.level = cap
+		record.xp = M.Skill.Need(cap)
+		record.branches = record.branches or {}
+		for _, branch in ipairs(M.Skill.Branches()) do
+			local depth = type(branch.NODES) == 'table' and #branch.NODES or 0
+			local full = math.max(0, depth - 1) * step
+			record.branches[branch.id] = math.max(branchXp(record, branch.id), full)
+		end
+		local _, missing = nodeCosts(record)
+		record.points = math.max(math.floor(finite(record.points) or 0), missing)
+		return
+	end
+	local target = math.max(1, math.min(math.floor(tonumber(level) or 1), cap))
+	local spent = nodeCosts(record)
+	record.level = target
+	record.xp = 0.0
+	record.points = math.max(0, M.Skill.Banked(target) - spent)
+end
+
+--- Asks one player's machine to max the base game's own levels, through the
+--- preload `DEVELOP` names. What it answers comes back on `DEVELOPED` and is
+--- journalled there; this only sends the request and remembers it.
+-- @param target number the connection
+-- @param citizenId string
+-- @return boolean asked
+-- @return string|nil why not
+local function askDevelop(target, citizenId)
+	if M.Skill.DevelopSettings() == nil then return false, 'DEVELOP is off in config/skills.lua' end
+	developCount = developCount + 1
+	local nonce = ('%d:%d'):format(OPX.Now(), developCount)
+	developing[target] = { nonce = nonce, at = OPX.Now(), citizenId = citizenId }
+	local sent, failure = pcall(TriggerClientEvent, M.Event.DEVELOP, target, nonce)
+	if not sent then
+		developing[target] = nil
+		return false, 'the request could not be sent: ' .. tostring(failure)
+	end
+	return true
+end
+
+--- `/opx.skills.level <max|reset|1..cap> [playerId]`.
+-- @param source number|nil the caller; 0 or nil is the console
+-- @param args string[]
+local function levelCommand(source, args)
+	local caller = tonumber(source) or 0
+	local cap = M.Skill.Cap()
+	local name = type(M.Settings.COMMANDS) == 'table' and M.Settings.COMMANDS.level or 'opx.skills.level'
+	local usage = ('usage: %s <max|reset|1..%d> [playerId]'):format(tostring(name), cap)
+
+	local verb = type(args[1]) == 'string' and args[1]:lower() or ''
+	local mode, level = nil, nil
+	if verb == 'max' or verb == 'reset' then
+		mode = verb
+	else
+		local asked = tonumber(verb)
+		if asked ~= nil and asked == math.floor(asked) and asked >= 1 and asked <= cap then
+			mode, level = 'set', math.floor(asked)
+		end
+	end
+	if mode == nil then return OPX.CommandResult(source, false, usage) end
+
+	local target = caller
+	if args[2] ~= nil and args[2] ~= '' then
+		target = tonumber(args[2])
+		if target == nil or target <= 0 or target ~= math.floor(target) then
+			return OPX.CommandResult(source, false, usage)
+		end
+	elseif caller <= 0 then
+		return OPX.CommandResult(source, false, usage .. ' -- the console has no character, so it must name a player')
+	end
+
+	local data, citizenId, why = dataOf(target)
+	if data == nil then
+		return OPX.CommandResult(source, false,
+			('player %d has no character to level: %s'):format(target, tostring(why)))
+	end
+
+	local record = recordOf(citizenId)
+	M.Skill.ApplyLevel(record, mode, level)
+	dirty[citizenId] = true
+	flushSoon(citizenId)
+
+	local actor = caller > 0 and ('player ' .. caller) or 'the console'
+	local line = ('[skills] %s set player %d (%s) to %s: level %d/%d, %d point(s) to spend')
+		:format(actor, target, citizenId, verb, record.level, cap, record.points)
+	Open77.log.info(line)
+	OPX.Audit.Log({
+		event = 'skills.level',
+		message = line,
+		source = caller > 0 and caller or nil,
+		data = { target = target, citizenId = citizenId, mode = mode, level = record.level,
+			cap = cap, points = record.points },
+	})
+
+	-- The player is told in their own language, and an OPEN tree redraws: the
+	-- client re-asks only when its panel is up, so a closed one stays closed.
+	local notice = {
+		key = 'skills.admin.' .. mode,
+		args = { level = record.level, cap = cap, points = record.points },
+	}
+	eachHolder(citizenId, function(holder)
+		local sent, failure = pcall(TriggerClientEvent, M.Event.REFRESH, holder, notice)
+		if not sent then Open77.log.warn('[skills] refresh refused: ' .. tostring(failure)) end
+	end)
+
+	local extra = ''
+	if mode == 'max' then
+		local asked, notAsked = askDevelop(target, citizenId)
+		extra = asked and '; the base game\'s levels were asked of their client (see the journal)'
+			or ('; the base game\'s levels were NOT asked: ' .. tostring(notAsked))
+		if not asked then
+			Open77.log.warn(('[skills] player %d: base-game development not asked: %s')
+				:format(target, tostring(notAsked)))
+		end
+	end
+	OPX.CommandResult(source, true, ('player %d (%s): %s -> level %d/%d, %d point(s) to spend%s')
+		:format(target, citizenId, verb, record.level, cap, record.points, extra))
+end
+
+--- Takes a develop report from the machine it was asked of. A report nobody
+--- asked for -- no request out, the wrong nonce, or one gone stale -- is named
+--- and dropped: this door only ever writes a journal line, and it writes the
+--- line for the request that is actually out.
+-- @param source number
+-- @param nonce any
+-- @param ok any
+-- @param why any
+local function developed(source, nonce, ok, why)
+	local pending = developing[source]
+	if pending == nil or pending.nonce ~= nonce or OPX.Now() - pending.at > DEVELOP_TTL_MS then
+		Open77.log.warn(('[skills] player %d: a base-game development report nobody asked for was ignored')
+			:format(source))
+		return
+	end
+	developing[source] = nil
+	local line
+	if ok == true then
+		line = ('[skills] player %d: base-game development maxed on their client'):format(source)
+		Open77.log.info(line)
+	else
+		line = ('[skills] player %d: base-game development refused on their client: %s')
+			:format(source, safe(why ~= nil and why or 'refused'))
+		Open77.log.warn(line)
+	end
+	OPX.Audit.Log({
+		event = 'skills.develop',
+		severity = ok == true and 'info' or 'warn',
+		message = line,
+		source = source,
+		data = { citizenId = pending.citizenId },
+	})
+end
+
 -- ── the phases ──────────────────────────────────────────────────────────────
 
 --- Builds the index from config. Never yields.
@@ -356,13 +626,24 @@ end
 function M.Init()
 	records, dirty = {}, {}
 	index = {}
+	developing, developCount = {}, 0
+	chromeNamed = false
 
 	local problems = {}
 	local seen = {}
+	local trunks = {}
 	for _, branch in ipairs(M.Skill.Branches()) do
 		if type(branch.id) ~= 'string' or branch.id == '' then
 			problems[#problems + 1] = 'a branch has no id and is ignored'
 		else
+			if trunks[branch.id] then
+				problems[#problems + 1] = ('branch %q is declared twice'):format(branch.id)
+			end
+			trunks[branch.id] = true
+			if branch.ICON ~= nil and iconOf(branch) == nil then
+				problems[#problems + 1] = ('branch %q names ICON %q, which the shared glyph set does not draw')
+					:format(branch.id, tostring(branch.ICON))
+			end
 			local list = type(branch.NODES) == 'table' and branch.NODES or {}
 			if #list == 0 then
 				problems[#problems + 1] = ('branch %q declares no nodes'):format(branch.id)
@@ -425,6 +706,19 @@ function M.Api()
 				end
 			end
 			return total
+		end,
+
+		--- A character's level and the cap it climbs to, as two whole numbers:
+		-- what the ripperdoc scales chrome by. A citizen with no ledger is a
+		-- level-1 character -- the same answer the knock gives.
+		-- @param citizenId string
+		-- @return integer level
+		-- @return integer cap
+		Level = function(citizenId)
+			local cap = M.Skill.Cap()
+			local record = type(citizenId) == 'string' and records[citizenId] or nil
+			if record == nil then return 1, cap end
+			return math.max(1, math.min(math.floor(finite(record.level) or 1), cap)), cap
 		end,
 
 		--- The whole tree, as `frameOf` draws it.
@@ -497,6 +791,27 @@ function M.Start()
 		if not claimed then frame.refused = refusal end
 		TriggerClientEvent(M.Event.STATE, source, frame)
 	end)
+
+	-- What the player's machine did with a base-game develop request.
+	RegisterNetEvent(M.Event.DEVELOPED, function(nonce, ok, why)
+		source = tonumber(source)
+		if source == nil or source <= 0 then return end
+		developed(source, nonce, ok, why)
+	end)
+
+	-- The staff lever. Restricted: the host asks the ACL for `command.<name>`
+	-- before the handler runs. Unnamed in config is unregistered.
+	local names = type(M.Settings.COMMANDS) == 'table' and M.Settings.COMMANDS or {}
+	if type(names.level) == 'string' and names.level ~= '' then
+		OPX.Command.Register(names.level, {
+			restricted = true,
+			help = 'skills.help.level',
+			params = {
+				{ name = 'level', help = 'skills.help.levelValue' },
+				{ name = 'playerId', optional = true, help = 'skills.help.levelPlayer' },
+			},
+		}, levelCommand)
+	end
 
 	-- What the database already holds. The knock needs no record to answer, so
 	-- this load may land late without a player ever noticing.

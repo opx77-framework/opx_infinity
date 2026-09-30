@@ -40,6 +40,7 @@ OPX.Locale.Register('en', {
 	['weather.usage.time'] = 'usage: <HH:MM[:SS]>',
 	['weather.usage.timeFreeze'] = 'usage: <on|off>',
 	['weather.usage.dayLength'] = 'usage: <realMinutes>',
+	['weather.usage.wait'] = 'usage: <hours>',
 
 	['weather.error.invalidTime'] = 'That is not a time of day. Use HH:MM or HH:MM:SS.',
 	['weather.error.invalidDayLength'] = 'A day lasts between 1 minute and 7 days.',
@@ -49,6 +50,9 @@ OPX.Locale.Register('en', {
 	['weather.error.invalidTransition'] = 'A transition lasts between 0 and 300 seconds.',
 	['weather.error.noPresets'] = 'No weather preset is configured.',
 	['weather.error.unknown'] = 'That could not be done.',
+	['weather.error.invalidHours'] = 'Wait between 1 and 23 whole hours.',
+	['weather.error.playersOnly'] = 'Only a player in game can move their own clock.',
+	['weather.wait.done'] = 'Your clock moves {hours} h ahead, on your game only. The shared hour comes back in 20 minutes.',
 
 	['weather.help.status'] = 'Show the synchronized time and weather.',
 	['weather.help.presets'] = 'List the configured weather presets.',
@@ -63,4 +67,6 @@ OPX.Locale.Register('en', {
 	['weather.help.timeFreeze'] = 'Hold or release the clock.',
 	['weather.help.dayLength'] = 'Set how many real minutes a day takes.',
 	['weather.help.dayLength.minutes'] = "180 matches the engine's own rate",
+	['weather.help.wait'] = "Move your own clock ahead, for a mission's wait.",
+	['weather.help.wait.hours'] = 'whole hours, 1 to 23',
 })

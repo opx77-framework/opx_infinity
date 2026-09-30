@@ -28,6 +28,9 @@ local Response = M.Response
 
 local character, hud
 
+-- Whether the two kill handlers are subscribed; see `M.Start`.
+local killHandlers = false
+
 --- The ladder as one phrase: `ncpd 1-4, maxtac 5`.
 -- @return string
 local function ladder()
@@ -153,6 +156,17 @@ local function mayBoard(data)
 	return 'notDivision'
 end
 
+--- The division's own boarding rule, for a door another module holds: the
+--- aircraft door (`modules/avdoor`) asks it about a parked MaxTac AV, so a hull
+--- the crew stepped out of opens to exactly the people the crew door opened to.
+-- @param playerId number
+-- @return boolean|string `true`, or the reason to refuse
+function M.MayCrew(playerId)
+	local data = characterOf(tonumber(playerId))
+	if data == nil then return 'noCitizen' end
+	return mayBoard(data)
+end
+
 --- The sentence a crew-door refusal is read as.
 --
 -- ONE TABLE, TWO DOORS. The aircraft controller answers with a code, and
@@ -232,6 +246,42 @@ end
 local function eachOnCall(fn)
 	local alerts = type(M.Settings) == 'table' and M.Settings.ALERTS or nil
 	return walkOnDuty(type(alerts) == 'table' and alerts.JOBS or nil, fn)
+end
+
+--- Why a call-out reached nobody, in words for the log.
+--
+-- "0 on-duty holder(s) told" is the line an operator reads when a toast never
+-- appeared, and on its own it cannot tell an empty city from an officer who never
+-- clocked in: a job change starts OFF the clock (`docs/jobs.md`), and the call-out
+-- is for whoever is ON it. This counts the two apart.
+-- @return string
+local function nobodyNote()
+	local alerts = type(M.Settings) == 'table' and M.Settings.ALERTS or nil
+	local listed = type(alerts) == 'table' and alerts.JOBS or nil
+	if type(listed) ~= 'table' then return ' (no jobs are on the air)' end
+
+	local read, ids = pcall(Open77.players.all)
+	if not read or type(ids) ~= 'table' then return '' end
+
+	local clockedOff, connected = 0, #ids
+	for index = 1, #ids do
+		local who = characterOf(tonumber(ids[index]))
+		local job = who ~= nil and who.job or nil
+		if type(job) == 'table' and job.onDuty ~= true and type(job.name) == 'string' then
+			for _, name in ipairs(listed) do
+				if name == job.name then
+					clockedOff = clockedOff + 1
+					break
+				end
+			end
+		end
+	end
+	local jobs = table.concat(listed, '/')
+	if clockedOff > 0 then
+		return (' (%d of %d connected hold %s but are CLOCKED OFF: they hear nothing until /opx.duty)')
+			:format(clockedOff, connected, jobs)
+	end
+	return (' (%d connected, none of them an on-duty %s)'):format(connected, jobs)
 end
 
 --- Tells the air division where the crew door is, while it is open.
@@ -358,8 +408,161 @@ local function callOut(citizenId, playerId, stage, previous)
 		end
 	end
 
-	Open77.log.info(('[ncpd] call-out: %s rose to stage %d/%d at %.0f, %.0f -- %d on-duty holder(s) told')
-		:format(citizenId, stage, Law.StageCount, x, y, told))
+	Open77.log.info(('[ncpd] call-out: %s rose to stage %d/%d at %.0f, %.0f -- %d on-duty holder(s) told%s')
+		:format(citizenId, stage, Law.StageCount, x, y, told, told == 0 and nobodyNote() or ''))
+	return told
+end
+
+-- ── the body on the street ───────────────────────────────────────────────────
+--
+-- A KILL IS CALLED IN WHETHER OR NOT A STAGE MOVES. `callOut` above is the
+-- manhunt and answers a RISE; this is the body, and it answers the charge. See
+-- `HOMICIDE` in `config/ncpd.lua` for the two faults it closes: one murder never
+-- crossed `Heat_0` and so told nobody, and a player killed by a player was never
+-- charged at all.
+
+-- When each suspect's last kill was called in, so a spree is one call-out every
+-- few seconds rather than one per body.
+local sceneCalled = {}
+
+--- The `HOMICIDE` block, or nil when it is off. Read live, the same rule as the
+--- rest of `M.Settings`: a config reload is a new answer on the next kill.
+-- @return table|nil
+local function homicide()
+	local block = type(M.Settings) == 'table' and M.Settings.HOMICIDE or nil
+	if type(block) ~= 'table' or block.enabled == false then return nil end
+	return block
+end
+
+--- Whether a character is ON DUTY in one of the jobs on the air.
+-- The same two fields `walkOnDuty` reads -- the character module's own duty
+-- flag and the call-out's own job list -- so "who hears the call" and "who is
+-- the city" cannot disagree.
+-- @param data table|nil PlayerData
+-- @return boolean
+local function onCall(data)
+	if type(data) ~= 'table' then return false end
+	local job = data.job
+	if type(job) ~= 'table' or job.onDuty ~= true or type(job.name) ~= 'string' then return false end
+	local alerts = type(M.Settings) == 'table' and M.Settings.ALERTS or nil
+	local listed = type(alerts) == 'table' and alerts.JOBS or nil
+	if type(listed) ~= 'table' then return false end
+	for _, name in ipairs(listed) do
+		if name == job.name then return true end
+	end
+	return false
+end
+
+--- A point as `{ x, y, z }`, from either shape the host answers in -- a
+--- snapshot carrying `position`, or the flat position itself -- or nil.
+-- @param value any
+-- @return table|nil
+local function pointOf(value)
+	if type(value) ~= 'table' then return nil end
+	local at = type(value.position) == 'table' and value.position or value
+	local x, y, z = tonumber(at.x), tonumber(at.y), tonumber(at.z)
+	if x == nil or y == nil or x ~= x or y ~= y then return nil end
+	if z == nil or z ~= z then z = 0.0 end
+	return { x = x, y = y, z = z }
+end
+
+--- Calls a kill in to everybody on duty, at the scene.
+--
+-- THE SAME THREE SURFACES AS A STAGE CALL-OUT -- the toast, the scanner line
+-- and the loud board -- with the same audience and the same rule that the
+-- suspect is never told about themselves. What is added is the SCENE: it rides
+-- the board to each receiving client, which pins it on that player's own map
+-- for `PIN_SECONDS` and takes the pin down again itself.
+-- @param citizenId string the suspect
+-- @param playerId number|nil their connection
+-- @param lawId string the law they were just charged with
+-- @param at table|nil where the body is; the suspect's own position when nil
+-- @param victim number|nil a player who is the body, kept off the air like the
+--   suspect: an officer is not called to their own death
+-- @return integer how many were told
+local function sceneCallOut(citizenId, playerId, lawId, at, victim)
+	local block = homicide()
+	if block == nil then return 0 end
+	local calls = type(block.CALL_OUT) == 'table' and block.CALL_OUT or nil
+	local base = calls ~= nil and calls[lawId] or nil
+	if type(base) ~= 'string' or base == '' then return 0 end
+	local alerts = type(M.Settings) == 'table' and M.Settings.ALERTS or nil
+	if type(alerts) ~= 'table' or alerts.enabled == false then return 0 end
+
+	local where = pointOf(at)
+	if where == nil and playerId ~= nil then where = positionOf(playerId) end
+	if where == nil then
+		Open77.log.info(('[ncpd] %s charged with %s: no call-out, the scene could not be read')
+			:format(citizenId, tostring(lawId)))
+		return 0
+	end
+
+	local now = OPX.Now()
+	local cooldown = tonumber(block.COOLDOWN_MS) or 8000
+	local last = sceneCalled[citizenId]
+	if cooldown > 0 and last ~= nil and now - last < cooldown then
+		Open77.log.info(('[ncpd] %s charged with %s: no call-out, one went out %d ms ago')
+			:format(citizenId, tostring(lawId), now - last))
+		return 0
+	end
+	sceneCalled[citizenId] = now
+
+	-- Rounded exactly as a stage call-out is, for the same reason: the scene is
+	-- where the suspect WAS a moment ago, and radio traffic is a place, not a fix.
+	local round = tonumber(alerts.ROUND_METRES) or 0.0
+	local x, y = where.x, where.y
+	if round > 0 then
+		x = math.floor(where.x / round + 0.5) * round
+		y = math.floor(where.y / round + 0.5) * round
+	end
+	if x == 0 then x = 0 end
+	if y == 0 then y = 0 end
+
+	local name = nil
+	if alerts.NAME_SUSPECT ~= false and playerId ~= nil then
+		local data = characterOf(playerId)
+		local read = data ~= nil and tostring(data.name or '') or ''
+		if read ~= '' then name = read end
+	end
+	local key = name ~= nil and (base .. 'Named') or base
+	local args = { x = math.floor(x), y = math.floor(y), name = name or '' }
+
+	local seconds = tonumber(block.PIN_SECONDS) or 0
+	if seconds ~= seconds or seconds < 0 then seconds = 0 end
+	if seconds > 900 then seconds = 900 end
+	local scene = nil
+	if seconds > 0 then
+		scene = {
+			x = math.floor(x), y = math.floor(y), z = math.floor(where.z + 0.5),
+			seconds = seconds,
+			sprite = type(block.PIN_SPRITE) == 'string' and block.PIN_SPRITE or 'objective',
+			label = base .. '.pin',
+		}
+	end
+
+	local function silent(recipient)
+		return (playerId ~= nil and recipient == playerId) or (victim ~= nil and recipient == victim)
+	end
+	local told = 0
+	eachOnCall(function(recipient)
+		if silent(recipient) then return end
+		told = told + 1
+		OPX.NotifyLocale(recipient, key, args, 'error')
+	end)
+
+	M.Radio.Push('ncpd', key, args, playerId)
+
+	local dispatch = type(alerts.DISPATCH) == 'table' and alerts.DISPATCH or nil
+	if dispatch ~= nil and dispatch.enabled ~= false then
+		local board = type(dispatch.JOBS) == 'table' and dispatch.JOBS or nil
+		walkOnDuty(board or alerts.JOBS, function(recipient)
+			if silent(recipient) then return end
+			TriggerClientEvent(M.Event.DISPATCH, recipient, { key = key, args = args, scene = scene })
+		end)
+	end
+
+	Open77.log.info(('[ncpd] call-out: %s charged with %s at %.0f, %.0f -- %d on-duty holder(s) told%s')
+		:format(citizenId, tostring(lawId), x, y, told, told == 0 and nobodyNote() or ''))
 	return told
 end
 
@@ -475,6 +678,15 @@ local function charge(citizenId, lawId, options)
 	if verdict.crossed == true or verdict.stage ~= verdict.previous then
 		publish(citizenId, verdict, { reason = 'crime' })
 	end
+
+	-- THE BODY, WHATEVER THE STAGE DID. A law `HOMICIDE.CALL_OUT` names is
+	-- called in on the charge itself, so every door that charges one -- a kill
+	-- below, the test crowd, the console, another resource's contract call --
+	-- reaches the people on duty the same way. `at` is the scene when the caller
+	-- knows it; `playerId` is the suspect's connection when the caller has it.
+	local opts = type(options) == 'table' and options or {}
+	local suspect = tonumber(opts.playerId) or sourceOf(citizenId)
+	sceneCallOut(citizenId, suspect, tostring(lawId), opts.at, tonumber(opts.victim))
 	return charged
 end
 
@@ -491,11 +703,253 @@ end
 local function chargePlayer(playerId, lawId, options)
 	local data = characterOf(playerId)
 	if data == nil then return OPX.Result.Err('ncpd.noCitizen') end
-	return charge(data.citizenId, lawId, options)
+	local opts = {}
+	if type(options) == 'table' then
+		for key, value in pairs(options) do opts[key] = value end
+	end
+	-- The connection the charge arrived on IS the suspect: said here once so
+	-- the call-out names and excludes the right body without a second lookup.
+	if opts.playerId == nil then opts.playerId = playerId end
+	return charge(data.citizenId, lawId, opts)
 end
 
 -- `server/bots.lua` charges a killed body's killer through here.
 M.ChargePlayer = chargePlayer
+
+--- A death's context as a table, from either shape the host raises it in: JSON
+--- text or an already-decoded table. Nil when it is neither.
+-- @param context any
+-- @return table|nil
+local function contextOf(context)
+	if type(context) == 'table' then return context end
+	if type(context) ~= 'string' or context == '' then return nil end
+	if type(json) ~= 'table' or type(json.decode) ~= 'function' then return nil end
+	local read, decoded = pcall(json.decode, context)
+	if read and type(decoded) == 'table' then return decoded end
+	return nil
+end
+
+-- When each victim's death was last booked, and for how long a second report of
+-- it is the same death: far longer than the three events of one kill take to
+-- arrive, far shorter than the respawn that has to come before the next one.
+local deathBooked = {}
+local DEATH_MEMORY_MS = 5000
+
+-- When each body's death was last booked, by id as text. A death is reported by
+-- the platform's `onNpcDied` and, when that is missing, by the hit relay reading
+-- the body's own health; a minute is the same bound the crowd keeps for its own.
+local npcBooked = {}
+local NPC_MEMORY_MS = 60000
+
+-- The last player to hurt each player, so a death that arrives with no killer
+-- can still be put down to whoever had just shot them. `{ by, at }` per victim.
+local lastHurt = {}
+
+--- The player a death's source names, or nil when it names nobody alive.
+-- The platform passes a source as it has it -- a player id as text, or an
+-- opaque script name like `resource:arena` (`wiki/npcs.md`) -- and the character
+-- contract is the real test of whether a connection was behind it.
+-- @param value any
+-- @return number|nil
+local function killerOf(value)
+	local id = tonumber(value)
+	if id == nil then id = tonumber(tostring(value):match('player:(%d+)')) end
+	if id == nil or id ~= math.floor(id) or id <= 0 then return nil end
+	-- A connection is a small number; an NPC's id is a 64-bit one. An NPC that
+	-- killed a player is not a player who killed one, and reading its id as a slot
+	-- would charge whoever happened to hold that slot's low bits.
+	if id >= 1048576 then return nil end
+	return id
+end
+
+--- A player killed by a player: the platform's own attributed death.
+--
+-- `open77:playerKilled(victimId, killerId, contextJson)` is raised into every
+-- running resource for a death whose killer the host's damage authority named
+-- (`wiki/player-life.md`; an unattributed death raises only `playerDied`). The
+-- context carries the body's position, which is the scene.
+-- @param victimId any
+-- @param killerId any
+-- @param context string|table|nil
+local function onPlayerKilled(victimId, killerId, context, via)
+	local block = homicide()
+	if block == nil or block.PLAYERS == false then return end
+	local victim = tonumber(victimId)
+	local killer = killerOf(killerId)
+	if killer == nil or killer == victim then return end
+
+	-- ONE DEATH, ONE CHARGE, HOWEVER MANY DOORS REPORT IT. The lethal damage, the
+	-- death and the attributed kill are three events for one body, and the first
+	-- to arrive books it; the others find the mark and stand down.
+	local now = OPX.Now()
+	local key = victim ~= nil and victim or tostring(victimId)
+	local booked = deathBooked[key]
+	if booked ~= nil and now - booked < DEATH_MEMORY_MS then return end
+	deathBooked[key] = now
+	for other, when in pairs(deathBooked) do
+		if now - when >= DEATH_MEMORY_MS then deathBooked[other] = nil end
+	end
+
+	Open77.log.info(('[ncpd] player kill seen (%s): victim %s, killer %d')
+		:format(tostring(via or 'playerKilled'), tostring(victimId), killer))
+
+	local suspect = characterOf(killer)
+	if suspect == nil then
+		Open77.log.info(('[ncpd] player %d killed player %s with no character loaded: nobody to charge')
+			:format(killer, tostring(victimId)))
+		return
+	end
+	if block.EXEMPT_ON_DUTY ~= false and onCall(suspect) then
+		Open77.log.info(('[ncpd] %s killed player %s on duty: use of force, not charged')
+			:format(suspect.citizenId, tostring(victimId)))
+		return
+	end
+
+	local dead = victim ~= nil and characterOf(victim) or nil
+	local law = (dead ~= nil and onCall(dead)) and block.POLICE_LAW or block.LAW
+	if type(law) ~= 'string' or law == '' then law = 'murder' end
+
+	local scene = nil
+	local read = contextOf(context)
+	if read ~= nil then scene = pointOf(read.position) end
+	if scene == nil and victim ~= nil then scene = positionOf(victim) end
+
+	local charged = charge(suspect.citizenId, law, { at = scene, playerId = killer, victim = victim })
+	if charged.ok ~= true then
+		Open77.log.warn(('[ncpd] the killing of player %s could not be charged to %s: %s')
+			:format(tostring(victimId), suspect.citizenId, tostring(charged.error)))
+	else
+		Open77.log.info(('[ncpd] %s charged with %s for killing player %s')
+			:format(suspect.citizenId, law, tostring(victimId)))
+	end
+end
+
+--- A server NPC killed by a player: `onNpcDied(npcId, source, cause)`.
+--
+-- The test crowd books its own kills (`server/bots.lua`) and is skipped here by
+-- the id it placed, so a crowd death is charged exactly once. A unit this
+-- module put on the street is the city's own, and a kill of one is
+-- `POLICE_LAW`.
+-- @param npcId any
+-- @param source any
+local function onNpcKilled(npcId, source)
+	local block = homicide()
+	if block == nil or block.NPCS == false then return end
+	if M.Bots ~= nil and type(M.Bots.Owns) == 'function' and M.Bots.Owns(npcId) then return end
+
+	-- ONE BODY, ONE CHARGE. The platform's `onNpcDied` and the hit relay's own
+	-- reading of a body's health (`server/hits.lua`) can both report one death.
+	local now = OPX.Now()
+	local key = tostring(npcId)
+	local booked = npcBooked[key]
+	if booked ~= nil and now - booked < NPC_MEMORY_MS then return end
+	npcBooked[key] = now
+	for other, when in pairs(npcBooked) do
+		if now - when >= NPC_MEMORY_MS then npcBooked[other] = nil end
+	end
+
+	local killer = killerOf(source)
+	if killer == nil then
+		Open77.log.info(('[ncpd] npc %s died with nobody to charge (source %s)')
+			:format(key, tostring(source)))
+		return
+	end
+	local suspect = characterOf(killer)
+	if suspect == nil then
+		Open77.log.info(('[ncpd] player %d killed npc %s with no character loaded: nobody to charge')
+			:format(killer, key))
+		return
+	end
+	if block.EXEMPT_ON_DUTY ~= false and onCall(suspect) then
+		Open77.log.info(('[ncpd] %s killed npc %s on duty: use of force, not charged')
+			:format(suspect.citizenId, key))
+		return
+	end
+
+	local police = type(Response.OwnsNpc) == 'function' and Response.OwnsNpc(npcId)
+	local law = police and block.POLICE_LAW or block.LAW
+	if type(law) ~= 'string' or law == '' then law = 'murder' end
+
+	local scene = nil
+	local npcs = Open77.npcs
+	if type(npcs) == 'table' and type(npcs.get) == 'function' then
+		local read, snapshot = pcall(npcs.get, npcId)
+		if read then scene = pointOf(snapshot) end
+	end
+
+	local charged = charge(suspect.citizenId, law, { at = scene, playerId = killer })
+	if charged.ok ~= true then
+		Open77.log.warn(('[ncpd] the killing of npc %s could not be charged to %s: %s')
+			:format(key, suspect.citizenId, tostring(charged.error)))
+	else
+		Open77.log.info(('[ncpd] %s charged with %s for killing npc %s%s')
+			:format(suspect.citizenId, law, key, police and ' (a unit of the response)' or ''))
+	end
+end
+
+--- A player hurt by a player: remembered, and a lethal hit is a kill at once.
+--
+-- `open77:playerDamaged(victim, attacker, amount, kind, weapon, part, health,
+-- maxHealth, lethal, downed)`, every argument text. The attacker of a player hit
+-- by an NPC is that NPC's id, which `killerOf` refuses as a slot.
+-- @param victimId any
+-- @param attackerId any
+-- @param lethal any `"1"` on the hit that ends the victim
+local function onPlayerHurt(victimId, attackerId, _, _, _, _, _, _, lethal)
+	local block = homicide()
+	if block == nil or block.PLAYERS == false then return end
+	local victim = tonumber(victimId)
+	local attacker = killerOf(attackerId)
+	if victim == nil or attacker == nil or attacker == victim then return end
+
+	local now = OPX.Now()
+	lastHurt[victim] = { by = attacker, at = now }
+	local window = tonumber(block.ATTRIBUTION_MS) or 8000
+	for other, row in pairs(lastHurt) do
+		if now - row.at >= math.max(window, 1000) then lastHurt[other] = nil end
+	end
+
+	if lethal == '1' or lethal == 1 or lethal == true or lethal == 'true' then
+		onPlayerKilled(victim, attacker, nil, 'lethal hit')
+	end
+end
+
+--- A player died: `open77:playerDied(playerId, contextJson)`.
+--
+-- Raised for EVERY death, attributed or not (`open77:playerKilled` only for one
+-- the host could attribute). The context may name a killer; when it does not, the
+-- last player to hurt the victim inside `HOMICIDE.ATTRIBUTION_MS` is put down for
+-- it -- never for a fall, the environment or a script, which are not anybody's
+-- murder.
+-- @param playerId any
+-- @param context string|table|nil
+local function onPlayerDied(playerId, context)
+	local block = homicide()
+	if block == nil or block.PLAYERS == false then return end
+	local victim = tonumber(playerId)
+	if victim == nil then return end
+
+	local read = contextOf(context)
+	local killer = read ~= nil and killerOf(read.killer or read.killerPlayerId) or nil
+	local via = 'playerDied'
+	if killer == nil then
+		local cause = read ~= nil and tostring(read.cause or '') or ''
+		local window = tonumber(block.ATTRIBUTION_MS) or 8000
+		local row = lastHurt[victim]
+		if window > 0 and row ~= nil and OPX.Now() - row.at < window
+			and cause ~= 'script' and cause ~= 'fall' and cause ~= 'environment' then
+			killer = row.by
+			via = 'recent hit'
+		end
+	end
+	if killer == nil then
+		Open77.log.info(('[ncpd] player %d died with nobody to charge (cause %s)')
+			:format(victim, tostring(read ~= nil and read.cause or 'unknown')))
+		return
+	end
+	lastHurt[victim] = nil
+	onPlayerKilled(victim, killer, context, via)
+end
 
 --- One decay pass: drain every score, and publish the characters that fell free.
 -- @param nowMs integer|nil
@@ -583,6 +1037,25 @@ local function registerCommands()
 		end
 		local status = Ledger.Status(data.citizenId)
 		local response = Response.Status(data.citizenId)
+
+		-- WHO A CALL-OUT WOULD REACH RIGHT NOW, and what the hit relay has done:
+		-- the two facts that say why a kill was or was not called in.
+		local alerts = type(M.Settings) == 'table' and M.Settings.ALERTS or nil
+		local onAir = eachOnCall(function() end)
+		local jobs = type(alerts) == 'table' and type(alerts.JOBS) == 'table'
+			and table.concat(alerts.JOBS, '/') or '?'
+		local relay = M.Hits ~= nil and type(M.Hits.Status) == 'function' and M.Hits.Status() or nil
+		local relayed = 'off'
+		if relay ~= nil then
+			local why = {}
+			for reason, count in pairs(relay.refused) do
+				why[#why + 1] = ('%s %d'):format(reason, count)
+			end
+			table.sort(why)
+			relayed = ('%d seen, %d applied, %d lethal%s'):format(relay.seen, relay.applied,
+				relay.lethal, #why > 0 and (', refused: ' .. table.concat(why, ', ')) or '')
+		end
+
 		OPX.CommandResult(source, true, table.concat({
 			('citizen   : %s'):format(data.citizenId),
 			('stage     : %d/%d (%s)%s'):format(status.stage, Law.StageCount,
@@ -592,6 +1065,8 @@ local function registerCommands()
 			('quiet for : %.0fs'):format(status.sinceSeconds),
 			('on street : %d unit(s), %d vehicle(s) [stage %d]'):format(
 				response.npcs, response.vehicles, response.stage),
+			('on the air: %d on duty in %s (a call-out reaches only them)'):format(onAir, jobs),
+			('hit relay : %s'):format(relayed),
 		}, '\n'))
 	end)
 
@@ -949,6 +1424,41 @@ function M.Start()
 	registerCommands()
 	RegisterNetEvent(M.Event.REPORT, onEngineStage)
 
+	-- THE KILLS (`HOMICIDE` in config). Subscribed ONCE, the rule the crowd's
+	-- own handlers keep: `M.Start` runs again on a module restart, and a second
+	-- pair of handlers would charge and call in every body twice.
+	if not killHandlers then
+		killHandlers = true
+		AddEventHandler('open77:playerKilled', function(victimId, killerId, context)
+			local ran, failure = pcall(onPlayerKilled, victimId, killerId, context, 'playerKilled')
+			if not ran then
+				Open77.log.error('[ncpd] a player kill could not be read: ' .. tostring(failure))
+			end
+		end)
+		-- THE TWO NETS UNDER IT. The host raises `playerKilled` only for a death it
+		-- could attribute; the lethal hit and the bare death are how a kill it did
+		-- not attribute still reaches the book. One death is one charge whichever
+		-- of the three comes first (`deathBooked`).
+		AddEventHandler('open77:playerDamaged', function(...)
+			local ran, failure = pcall(onPlayerHurt, ...)
+			if not ran then
+				Open77.log.error('[ncpd] a player hit could not be read: ' .. tostring(failure))
+			end
+		end)
+		AddEventHandler('open77:playerDied', function(playerId, context)
+			local ran, failure = pcall(onPlayerDied, playerId, context)
+			if not ran then
+				Open77.log.error('[ncpd] a player death could not be read: ' .. tostring(failure))
+			end
+		end)
+		AddEventHandler('onNpcDied', function(npcId, killer)
+			local ran, failure = pcall(onNpcKilled, npcId, killer)
+			if not ran then
+				Open77.log.error('[ncpd] an npc kill could not be read: ' .. tostring(failure))
+			end
+		end)
+	end
+
 	-- The airwaves: one voice channel per band on the host's own VOIP, seated
 	-- by the same audience rule the line feed pushes with (`server/radio.lua`).
 	M.Radio.VoiceStart()
@@ -956,6 +1466,37 @@ function M.Start()
 	-- The operator's crowd, when the build carries it: mortal civilians whose
 	-- deaths are charged through the door above.
 	if M.Bots ~= nil and type(M.Bots.Start) == 'function' then M.Bots.Start() end
+
+	-- THE HIT RELAY (`server/hits.lua`): what turns a player's shot at one of this
+	-- module's bodies into damage, and so into a death the handlers above can
+	-- charge. The platform does not carry that shot to the server on its own.
+	if M.Hits ~= nil and type(M.Hits.Start) == 'function' then
+		M.Hits.Start({
+			characterOf = characterOf,
+			positionOf = positionOf,
+			onCall = onCall,
+			-- Whose body it is, by the two tables that placed one: the id the
+			-- host was handed back, and which kind of body it is.
+			resolve = function(key)
+				local id = Response.IdOf(key)
+				if id ~= nil then return id, 'police' end
+				if M.Bots ~= nil and type(M.Bots.IdOf) == 'function' then
+					id = M.Bots.IdOf(key)
+					if id ~= nil then return id, 'crowd' end
+				end
+				return nil
+			end,
+			-- The one door a body's death is booked through when the platform
+			-- raised no event for it: the crowd first (it books its own), then
+			-- the module's kill rule (which leaves the crowd's to the crowd).
+			died = function(npcId, source, cause)
+				if M.Bots ~= nil and type(M.Bots.Died) == 'function' then
+					M.Bots.Died(npcId, source, cause)
+				end
+				onNpcKilled(npcId, source)
+			end,
+		})
+	end
 
 	-- The crew door's own ask, and it carries nothing at all. The player comes
 	-- from the connection, the permission from the module's own duty rule, the
@@ -996,6 +1537,9 @@ end
 --- Deregisters the surface and takes every response down.
 function M.Stop()
 	M.running = false
+	sceneCalled = {}
+	deathBooked, npcBooked, lastHurt = {}, {}, {}
+	if M.Hits ~= nil and type(M.Hits.Stop) == 'function' then M.Hits.Stop() end
 	if M.Bots ~= nil and type(M.Bots.Stop) == 'function' then M.Bots.Stop() end
 	-- The aircraft first: `Response.ReleaseAll` walks the responses it still
 	-- holds, and an insertion is not one of them -- it is a run of its own that

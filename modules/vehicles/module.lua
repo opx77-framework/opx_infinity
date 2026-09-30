@@ -12,6 +12,12 @@
 --
 -- Only vehicles this module spawned have a row. One created by anything else
 -- answers no plate at all, and nothing durable may be attached to it.
+--
+-- JOB VEHICLES ARE THE ONE KIND THIS MODULE CREATES WITHOUT A ROW. A job's
+-- fleet (`config/garages.lua` JOB_VEHICLES) is signed out to a member, never
+-- owned: it is held in memory by holder and slot beside `live`, has no plate,
+-- and so answers no plate either -- which is what keeps it from ever being
+-- stored, sold, handed over or counted as a car of theirs.
 
 local M = OPX.Modules.Declare{
 	id = 'vehicles',

@@ -163,7 +163,9 @@ local function leaveGroup(player, groupType, name)
 end
 
 --- Makes a job at a grade the primary one, joining it if need be.
--- Duty comes from the job's own `defaultDuty` rather than being carried over.
+-- Duty comes from the job's own `defaultDuty` rather than being carried over --
+-- when the JOB changes. A new grade in the job already being worked keeps the
+-- shift it happened in (see below).
 -- @author dop42
 -- @param identifier Player|Source|CitizenId
 -- @param name string
@@ -176,6 +178,20 @@ function M.Groups.SetJob(identifier, name, grade)
 
 		local joined = joinGroup(player, 'job', name, resolved.value.grade.level)
 		if not joined.ok then return joined end
+
+		-- A PROMOTION IS NOT A NEW SHIFT. A job that changes starts off the
+		-- clock, which is what `defaultDuty` is for; a grade that changes inside
+		-- the job being worked is the same shift, and it used to clock its holder
+		-- out: an officer promoted on patrol -- by a Captain at the desk, or by
+		-- their own time served -- lost the radio, the patrol car, the call-outs
+		-- and the seniority clock to the promotion, until they noticed and typed
+		-- `/opx.duty` again. Only ON is carried: somebody off the clock stays off.
+		-- READ AFTER THE WRITE, which waits on the database: a `/opx.duty` typed
+		-- while the row was being written is the shift that stands.
+		local current = player.PlayerData.job
+		if type(current) == 'table' and current.name == name and current.onDuty == true then
+			resolved.value.onDuty = true
+		end
 
 		player.PlayerData.job = resolved.value
 		player.Functions.UpdatePlayerData()
@@ -234,7 +250,39 @@ function M.Groups.AddPlayerToJob(identifier, name, grade)
 	end)
 end
 
---- Removes a job membership, falling back to the default job.
+--- The job a character falls back to working when the one they work is taken
+--- away: another job they still hold, or the default job when they hold none.
+--
+-- ANOTHER JOB STILL HELD COMES BEFORE THE DEFAULT. A character holds any number
+-- of jobs and works one, and taking away the one they worked used to drop them
+-- to the default whatever else they held: a MaxTac operator -- an NCPD Detective
+-- by definition -- dismissed from the division was left Unemployed with the badge
+-- still on the books, and no patrol car, no radio and a freelancer's pay until
+-- somebody moved them by hand. The job held at the highest grade is worked
+-- instead, ties broken by name so the answer never depends on table order; like
+-- any change of job it starts off the clock (`ResolveJob` reads `defaultDuty`).
+-- @param player Player
+-- @return Result the PlayerData.job shape
+local function fallbackJob(player)
+	local default = M.Settings.PLAYER.DEFAULT_JOB
+	local best, bestGrade = nil, -1
+	for held, grade in pairs(type(player.PlayerData.jobs) == 'table' and player.PlayerData.jobs or {}) do
+		local level = tonumber(grade)
+		if type(held) == 'string' and held ~= default and level ~= nil
+			and M.Groups.GetJob(held) ~= nil
+			and (level > bestGrade or (best ~= nil and level == bestGrade and held < best)) then
+			best, bestGrade = held, level
+		end
+	end
+	if best ~= nil then
+		local resolved = M.Groups.ResolveJob(best, bestGrade)
+		if resolved.ok then return resolved end
+	end
+	return M.Groups.ResolveJob(default, 0)
+end
+
+--- Removes a job membership, falling back to another job still held, or to the
+--- default job.
 -- The fallback matters: a fired employee would otherwise keep drawing the salary.
 -- The announcement happens even for a job that was not primary, because
 -- `leaveGroup` has changed `PlayerData.jobs`.
@@ -249,7 +297,7 @@ function M.Groups.RemovePlayerFromJob(identifier, name)
 
 		local announced = false
 		if player.PlayerData.job.name == name then
-			local fallback = M.Groups.ResolveJob(M.Settings.PLAYER.DEFAULT_JOB, 0)
+			local fallback = fallbackJob(player)
 			if fallback.ok then
 				player.PlayerData.job = fallback.value
 				player.Functions.UpdatePlayerData()

@@ -5,9 +5,10 @@
 -- WHAT THIS IS FOR. Jobs measure work (the seniority bank), the engine measures
 -- heat, and nothing measured the CHARACTER -- how far this body has come from
 -- the day it arrived in Night City. This module is that ledger, drawn as a
--- tree: three trunks (the NCPD, the air division, and the street), five nodes
--- down each, every node a claim the work has to reach before a point may buy
--- it.
+-- tree: seven trunks (the NCPD, MaxTac, the corps, the nomads, the street, the
+-- ripperdocs and -- at the top -- the fixers), five nodes up each, every node a
+-- claim the work has to reach before a point may buy it. The trunks are
+-- config (`config/skills.lua` BRANCHES): nothing in the module counts them.
 --
 -- THE FUNNEL IS THE JOBS BANK'S OWN. `modules/jobs/server/main.lua`'s `pay` is
 -- the single place a job's work is ever credited -- the tick's wages and
@@ -52,6 +53,17 @@ M.Event = {
 	STATE = OPX.Event(NET, 'skills', 'state'),
 	GAIN = OPX.Event(NET, 'skills', 'gain'),
 
+	-- Server to client: somebody else moved this character's ledger (an admin
+	-- level change). It carries the sentence to toast, and an OPEN tree
+	-- re-asks for its frame -- a closed one stays closed.
+	REFRESH = OPX.Event(NET, 'skills', 'refresh'),
+
+	-- The base game's own levels, maxed on the player's machine: the server
+	-- asks (`develop`, with a nonce), the client runs the preload's export and
+	-- reports what it answered (`developed`), and the server journals it.
+	DEVELOP = OPX.Event(NET, 'skills', 'develop'),
+	DEVELOPED = OPX.Event(NET, 'skills', 'developed'),
+
 	-- Client-local: what the state half says the page should draw.
 	SKILL_VIEW = OPX.Event(LOCAL, 'skills', 'view'),
 }
@@ -66,7 +78,7 @@ M.SkillView = {}
 -- stable because a player's rebind is stored under it. THE SHIPPED DEFAULT,
 -- and nothing more -- `KEY` in `config/skills.lua` is the operator's answer
 -- and wins whenever it is a usable block.
-M.Skill.KEY = { ID = 'opx.skills.tree', NAME = 'skills.key.tree', DEFAULT = 'F3' }
+M.Skill.KEY = { ID = 'opx.skills.tree', NAME = 'skills.key.tree', DEFAULT = 'F4' }
 
 --- The key declaration the operator configured, or the shipped one.
 --
@@ -156,4 +168,70 @@ function M.Skill.Depth()
 		if nodes > deepest then deepest = nodes end
 	end
 	return deepest
+end
+
+--- The character level cap: a whole number, at least 1. One reader, so the
+--- ledger, the frame, the admin lever and the API all stop at the same top.
+-- @return integer
+function M.Skill.Cap()
+	local cap = OPX.Math.Finite(M.Settings.LEVEL_CAP)
+	if cap == nil then return 20 end
+	return math.max(1, math.floor(cap))
+end
+
+--- The points a character has banked by reaching `level`: one grant per level
+--- crossed, so level 1 has banked nothing.
+-- @param level integer
+-- @return integer
+function M.Skill.Banked(level)
+	local per = math.max(1, math.floor(tonumber(M.Settings.POINTS_PER_LEVEL) or 1))
+	return math.max(0, math.floor(tonumber(level) or 1) - 1) * per
+end
+
+--- The base game's develop request as the config sets it, or nil when it is
+--- turned off (`DEVELOP.RESOURCE = false`) or not a block at all.
+-- @return table|nil `{ RESOURCE, EXPORT, CODE }`
+function M.Skill.DevelopSettings()
+	local block = type(M.Settings.DEVELOP) == 'table' and M.Settings.DEVELOP or nil
+	if block == nil or type(block.RESOURCE) ~= 'string' or block.RESOURCE == '' then return nil end
+	local export = type(block.EXPORT) == 'string' and block.EXPORT ~= '' and block.EXPORT or 'develop'
+	local code = OPX.Math.Finite(block.CODE) or 10
+	return { RESOURCE = block.RESOURCE, EXPORT = export, CODE = math.floor(code) }
+end
+
+--- What the panel's chrome band draws, and nothing else: four finite numbers
+--- and three pairs of them (the page's contract, `ui/src/modules/skills`). A
+--- NUMBER, and only one: the contract is numbers, so a numeric string is
+--- refused here rather than coerced the way `OPX.Math.Finite` would.
+-- @param value any
+-- @return number|nil
+local function finiteNumber(value)
+	if type(value) ~= 'number' then return nil end
+	return OPX.Math.Finite(value)
+end
+
+--- `ripperdoc.ChromeLevel`'s answer, kept only when it is EXACTLY the shape the
+--- panel draws. Anything else answers nil and why: a band drawn from a
+--- half-understood table would state numbers nobody sent. The copy carries the
+--- seven contract fields and nothing more, so what reaches the wire is the
+--- contract whatever else the answer held.
+-- @param value any
+-- @return table|nil a fresh copy
+-- @return string|nil why not
+function M.Skill.ChromeShape(value)
+	if type(value) ~= 'table' then return nil, 'not a table' end
+	local out = {}
+	for _, field in ipairs({ 'lifeDays', 'lifeBaseDays', 'lifeMaxDays', 'wearDays' }) do
+		local number = finiteNumber(value[field])
+		if number == nil then return nil, field .. ' is not a finite number' end
+		out[field] = number
+	end
+	for _, field in ipairs({ 'activeSeconds', 'activeBaseSeconds', 'activeMaxSeconds' }) do
+		local pair = value[field]
+		if type(pair) ~= 'table' or #pair ~= 2 then return nil, field .. ' is not a pair' end
+		local lo, hi = finiteNumber(pair[1]), finiteNumber(pair[2])
+		if lo == nil or hi == nil then return nil, field .. ' is not a pair of finite numbers' end
+		out[field] = { lo, hi }
+	end
+	return out
 end

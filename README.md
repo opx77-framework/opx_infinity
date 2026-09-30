@@ -304,9 +304,11 @@ could read.
 `jobs` is a **place**, like a garage spot, a dealer and a store: stand on the marker,
 press its key — **E**, its own mapping again — and a menu opens. There are two kinds of
 board and they are not the same thing. A **sign-up board** is one employment office: it
-lists **every** job the character catalogue defines with your own standing against each —
-the grade you hold, how far the next rank is, or what the terms are missing — and any of
-them may be taken there. A **desk** is one division's, is shown only to the holder of that
+lists **every** job `config/jobs.lua` offers (nine ship) with your own standing against
+each — the grade you hold, how far the next rank is, or what the terms are missing — and
+any of them may be taken there. A character holds any number of jobs and **works one**:
+a job taken while another is worked is held beside it, and its row at the office offers
+**Work this job** (switch to it) and **Hand in your notice** (leave that job). A **desk** is one division's, is shown only to the holder of that
 job's boss grade — and to whoever captured it, so an operator can see where they put it,
 which is a placement aid and not a promotion: every desk action re-derives that grade on
 the server and the roster is attached only for its holder — and is where a roster is
@@ -358,15 +360,16 @@ lands — because a feature nobody can find is a feature nobody has, and because
 drawn only within `MAX_DISTANCE`: the office stood at the platform's old default spawn,
 kilometres from every spawn this server offers, and read in game as *the job marker isn't
 appearing*. The desks are spaced 7 m off the office and not less, because `USE_RADIUS` is
-4 and two boards closer than that are two boards whose presses cannot be told apart. `/opx.jobs.add <signup|boss> <key>
-<job> [label]` captures one where the operator is standing, facing the way the board
+4 and two boards closer than that are two boards whose presses cannot be told apart. `/opx.jobs.add [signup|boss] [key]
+<job>` captures one where the operator is standing, facing the way the board
 should point — a chat line has no facing of its own, so the client is asked — and prints
 the line to check into `config/jobs.lua` so it survives a database reset;
 `/opx.jobs.remove <key>` deletes a captured one and refuses a configured one, and
 `/opx.jobs.list` names every board, its kind, its job, its position, its bucket and its
-origin. The rest are `/opx.jobs.join <key>`, `/opx.jobs.leave`, `/opx.jobs.roster
-[job]`, `/opx.jobs.rank [citizen]`, `/opx.jobs.promote|demote <citizen> [job]`, which
-are the same doors the menu uses for a client whose list could not open. The placement
+origin. The rest are `/opx.jobs.join <job>`, `/opx.jobs.leave <job>`, `/opx.jobs.roster
+<job>`, `/opx.jobs.rank <job> [citizenId]`, and the boss's own
+`/opx.jobs.hire <job> <playerId>` and `/opx.jobs.promote|demote|fire <job> <citizenId>`,
+which are the same doors the menu uses for a client whose list could not open. The placement
 commands are ACL-gated under `command.opx.jobs.*` — they write a place every player
 uses — and the boss actions are **not** in that list: a desk is granted by a grade and not
 by an operator's ACL file, and the server checks that grade itself every time.
@@ -374,6 +377,8 @@ by an operator's ACL file, and the server checks that grade itself every time.
 Hiring is a **scene**: the candidate must be standing within `HIRE_RADIUS` of the desk,
 re-derived on the server from the connection it is acting on rather than trusted from the
 boss's client, because hiring somebody across the map is not something anybody can see.
+(The typed `/opx.jobs.hire` is the one door that does not measure it: it names a
+connection, and is how the boss of a job with no desk hires at all.)
 The bank is this module's own and is the one thing it stores: it starts at nothing when
 somebody joins, is deleted when they are dismissed so a rehire starts at the bottom
 rather than walking back in at the rank they left, and is written back on a cadence and
@@ -454,6 +459,18 @@ player named is not the client running it, and the client reads the effect back 
 `prevention.blockvehicle` are on the same queue. The engine's own AV route spawns
 nothing, which is why the aircraft is an Open77 vehicle the server flies. The
 reasoning, every record involved and the build order are in `docs/ncpd-maxtac.md`.
+
+### The base game's missions
+
+Side jobs picked up from NPCs are playable: the phone rings for a quest's call (answer
+with a press of T), a quest's own items can be taken, the scanner works, and the
+tracker, the markers and the quest toasts show. The preload's `OpxQuests.reds`
+(opx_sandy_view 1.4.11) gives those back from the platform's multiplayer policy. On this
+side, the weather clock stands back for 20 minutes when a mission moves the hour itself,
+`config/hud.lua` leaves the tracker and the toasts to the game, and a weapon a mission
+hands over is no longer taken off (`REMOVE_UNBACKED = false`). What each piece does, how
+to read it in the client log, the switches and what stays the platform's are in
+`docs/missions.md`.
 
 ### The grants a staff panel needs
 
@@ -654,11 +671,37 @@ box-shadow; augment containers, not cells).
 One page, two layers: `overlay` is a HUD and never takes focus, `modal` does.
 `open77_pause` owns Escape — never bind it.
 
+**Pictures ship in `ui/public/images/` and are the game's own.** The build copies
+them to `web/images/`, and a page reads them relative to itself (the surface has no
+network). The ripperdoc's are one per base-game icon, cut out of the installed
+game's own 2.31 item-icon atlases at the rectangle the icon's `UIIcon` record names.
+`modules/ripperdoc/shared/cyberware.lua` `ICONS` says which icon each piece uses, and
+`PictureOf` the file it ships as: `images/cyberware/<8 hex>.webp`, the FNV-1a of the
+icon's name. To cut one again, flip the decoded atlas texture vertically first: the
+game stores it bottom row first, and read top-down every rectangle misses its icon.
+
+The ripperdoc screen's own art comes out of the game the same way, and from one
+script: `tools/ripperdoc-art.py` cuts the hologram bodies of the base game's
+paperdoll (`woman_body` / `man_body`, one picture per body system) and the meters'
+backgrounds into `ui/public/images/ripperdoc/`, and the white shapes the screen is
+drawn with (tile, tooltip, label, button and tab frames, and the capacity, armor and
+eddies icons) into `ui/src/modules/ripperdoc/art/`, where the build inlines them.
+Its docstring lists the game files it reads and how to convert them.
+
+**Keep every shipped path short.** A client installs a server's resources 200
+characters deep (`<game>\red4ext\plugins\Open77\cache\server-resources\sets\<digest>\
+resources\opx_infinity\` on a Steam install in Program Files), and Windows stops at
+259: a file whose path in this repository is longer than 59 characters is one the
+client cannot see, and it refuses the whole resource (`invalid_web_file:...`, then
+back to the server browser). The tests hold every file under `web/`, `core/`,
+`modules/`, `lib/`, `config/` and `locales/` to 47.
+
 **Hard-code no colour.** The server's theme (`config/theme.lua`) reaches a page by
 writing CSS custom properties onto `:root` at runtime. A literal `#ff3b47` is a
-surface the operator cannot recolour. The join screen (`web/loading.html`) is the one
-exception and it is documented in place: it runs before the bundle exists, so it
-carries a labelled hand copy of the tokens.
+surface the operator cannot recolour. There are two exceptions, both documented in
+`ui/README.md`: the join screen (`web/loading.html`) runs before the bundle exists, so
+it carries a labelled hand copy of the tokens; and the ripperdoc screen is drawn in the
+base game's own colours, read from its inkstyles, because it is the game's screen.
 
 ---
 

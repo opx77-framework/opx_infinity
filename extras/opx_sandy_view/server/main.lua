@@ -12,4 +12,13 @@ AddEventHandler('onResourceStart', function(name)
 	-- for it (whatever else in this world may use it).
 	print('[opx_sandy_view] the ghost trail ships in this preload\'s own archive ' ..
 		'(archive/pc/mod/opx_sandy_ghost.archive: V\'s body files with the parts) -- no ArchiveXL needed')
+	-- 1.4.10: the MaxTac AV's records all name the base game's cloaked livery,
+	-- which nothing lifts in a session; the second REDscript draws the
+	-- airframe's visible one on every player's game.
+	print('[opx_sandy_view] the MaxTac AV is drawn in its visible livery on every player\'s game ' ..
+		'(r6/scripts/opx_infinity/OpxMaxTacAv.reds)')
+	-- 1.4.11: the base game's missions -- phone, quest loot, scanner, tracker,
+	-- markers, toasts and V's lines -- given back from the platform's policy.
+	print('[opx_sandy_view] the base game\'s missions are playable on every player\'s game ' ..
+		'(r6/scripts/opx_infinity/OpxQuests.reds; each client log says whether it runs)')
 end)

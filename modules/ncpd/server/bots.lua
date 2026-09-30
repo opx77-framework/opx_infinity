@@ -98,6 +98,38 @@ local placed = 0
 local booked = 0
 local handlers = false
 
+-- Bodies of the crowd that died a moment ago, by id, with when. THE KILL
+-- HANDLER IN `server/main.lua` ASKS `Owns` about the same `onNpcDied` this file
+-- answers, and the order two handlers of one host event run in is not a promise
+-- anybody wrote down: had this file already dropped the body from `live`, the
+-- other would have read a stranger and charged the kill a second time. A minute
+-- is far longer than one event's delivery and short enough to stay tiny.
+local fallen = {}
+local FALLEN_MS = 60000
+
+--- Whether a body is (or a moment ago was) one of the crowd's. The door the
+--- module's own kill handler uses to leave the crowd's kills to this file.
+-- @param id any the npc id as the host spells it
+-- @return boolean
+function M.Bots.Owns(id)
+	local key = tostring(id)
+	if live[key] ~= nil then return true end
+	local when = fallen[key]
+	return when ~= nil and OPX.Now() - when < FALLEN_MS
+end
+
+--- The id of a body that is STILL STANDING, exactly as `Open77.npcs.create` handed
+--- it back, or nil. Unlike `Owns` this forgets a body the moment it falls: it is
+--- what the hit relay (`server/hits.lua`) resolves a client's report through, and
+--- a report about a corpse is not a hit.
+-- @param id any the npc id as a client or the host spells it
+-- @return any|nil
+function M.Bots.IdOf(id)
+	local bot = live[tostring(id)]
+	if bot == nil then return nil end
+	return bot.id
+end
+
 --- Whether a record id is one the platform could spawn: `Character.` followed
 -- by its own identifier alphabet (ASCII letters, digits, `_`, `-`, `.`), as
 -- `wiki/npcs.md` states it.
@@ -285,6 +317,51 @@ local function killerOf(killer)
 	return id
 end
 
+--- One body of the crowd has died: it is booked against whoever the source names,
+--- the body is remembered as fallen, and a respawn is scheduled when the knobs say
+--- so. A body that is not the crowd's is ignored, and a second report of the same
+--- death finds the body already gone and does nothing.
+-- @param npcId any
+-- @param killer any the `source` argument of `onNpcDied`
+-- @param cause any
+function M.Bots.Died(npcId, killer, cause)
+	local key = tostring(npcId)
+	local knobs = M.Bots.Knobs()
+	local bot = live[key]
+	if bot == nil or knobs == nil then return end
+	live[key] = nil
+	local now = OPX.Now()
+	for id, when in pairs(fallen) do
+		if now - when >= FALLEN_MS then fallen[id] = nil end
+	end
+	fallen[key] = now
+
+	local by = killerOf(killer)
+	if knobs.CHARGE and by ~= nil then
+		-- THE ONE PATH. `M.ChargePlayer` is `charge` under a connection:
+		-- the ledger moves, the response stands up, the client is told.
+		booked = booked + 1
+		local charged = M.ChargePlayer(by, knobs.LAW)
+		if charged == nil or charged.ok ~= true then
+			booked = booked - 1
+			Open77.log.warn(('[ncpd] a crowd death could not be charged to player %d: %s')
+				:format(by, tostring(charged ~= nil and charged.error or 'no answer')))
+		end
+	elseif knobs.CHARGE then
+		Open77.log.info(('[ncpd] a crowd body died with nobody to charge (source %s, %s)')
+			:format(tostring(killer), tostring(cause)))
+	end
+
+	if knobs.RESPAWN then
+		local ticket = generation
+		CreateThread(function()
+			Wait(math.floor(knobs.RESPAWN_SECONDS * 1000))
+			if ticket ~= generation or M.Bots.Knobs() == nil then return end
+			M.Bots.Spawn(bot.at, 1)
+		end)
+	end
+end
+
 --- Subscribes to the platform's own death and damage reports. ONCE: a resource
 -- restart re-runs `M.Start`, and two handlers would book every kill twice.
 function M.Bots.Start()
@@ -293,38 +370,11 @@ function M.Bots.Start()
 
 	-- `onNpcDied(npcId, source, cause)`, host-wide (`wiki/npcs.md`), so the
 	-- crowd filters by the ids it placed. The arguments are strings, as
-	-- every server resource event's are.
+	-- every server resource event's are. The body of the handler is `M.Bots.Died`,
+	-- a door of its own, so a death the hit relay books from a body's health
+	-- (`server/hits.lua`) is the same booking as one the platform announced.
 	AddEventHandler('onNpcDied', function(npcId, killer, cause)
-		local key = tostring(npcId)
-		local knobs = M.Bots.Knobs()
-		local bot = live[key]
-		if bot == nil or knobs == nil then return end
-		live[key] = nil
-
-		local by = killerOf(killer)
-		if knobs.CHARGE and by ~= nil then
-			-- THE ONE PATH. `M.ChargePlayer` is `charge` under a connection:
-			-- the ledger moves, the response stands up, the client is told.
-			booked = booked + 1
-			local charged = M.ChargePlayer(by, knobs.LAW)
-			if charged == nil or charged.ok ~= true then
-				booked = booked - 1
-				Open77.log.warn(('[ncpd] a crowd death could not be charged to player %d: %s')
-					:format(by, tostring(charged ~= nil and charged.error or 'no answer')))
-			end
-		elseif knobs.CHARGE then
-			Open77.log.info(('[ncpd] a crowd body died with nobody to charge (source %s, %s)')
-				:format(tostring(killer), tostring(cause)))
-		end
-
-		if knobs.RESPAWN then
-			local ticket = generation
-			CreateThread(function()
-				Wait(math.floor(knobs.RESPAWN_SECONDS * 1000))
-				if ticket ~= generation or M.Bots.Knobs() == nil then return end
-				M.Bots.Spawn(bot.at, 1)
-			end)
-		end
+		M.Bots.Died(npcId, killer, cause)
 	end)
 
 	-- `onNpcDamaged(npcId, source, amount, health, cause)`, also host-wide.

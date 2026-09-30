@@ -314,10 +314,15 @@ local function chromeFor(player)
 	local state = patientState(player)
 	local fitted = {}
 	for _, piece in ipairs(state.list) do
+		-- HOW LONG IT HAS LEFT, at the rate the calendar wears it for this
+		-- character now, and how much of its extra-wear allowance is spent --
+		-- in seconds of its life. Absent for a broken piece.
+		local life = M.Chrome.Life(state.citizen, piece.id)
 		fitted[#fitted + 1] = {
 			id = piece.id, grade = piece.grade, points = math.floor(piece.points + 0.5),
 			state = piece.state, broken = piece.broken, inBody = piece.inBody,
 			repair = piece.repair,
+			left = life.left, wear = life.wear, wearCap = life.wearCap,
 		}
 	end
 	local systems = {}
@@ -1338,10 +1343,14 @@ function finish(key, op, done, why)
 		if op.mode == 'remove' then
 			M.Chrome.Pull(op.patientCitizen, tostring(op.entry))
 		else
-			M.Chrome.Fit(op.patientCitizen, tostring(op.entry), tostring(op.grade or ''))
+			-- A free refit (the one-time reset, an admin) starts its life at
+			-- the condition it was given.
+			M.Chrome.Fit(op.patientCitizen, tostring(op.entry), tostring(op.grade or ''), op.condition)
 		end
-		Open77.log.info(('[ripperdoc] player %s: the %s of %s (%s) completed on the platform')
-			:format(tostring(op.patient), tostring(op.mode), tostring(op.entry), tostring(op.grade)))
+		Open77.log.info(('[ripperdoc] player %s: the %s of %s (%s) completed on the platform%s')
+			:format(tostring(op.patient), tostring(op.mode), tostring(op.entry), tostring(op.grade),
+				op.free ~= nil and (' -- fitted back for free (%s), at %d%%'):format(op.free,
+					math.floor(tonumber(op.condition) or 100)) or ''))
 		if op.mode ~= 'remove' and key ~= nil and M.Ripper.Entry(tostring(op.entry)) ~= nil then
 			howTo(op.patient, M.Ripper.Entry(tostring(op.entry)))
 		end
@@ -1465,6 +1474,124 @@ local function sweepPending()
 			end
 		end
 	end
+end
+
+-- ── an implant made whole out of the body ───────────────────────────────────
+
+-- "player|entry" -> { at, revision }: the last pull of a broken implant asked
+-- for, and the record revision it was asked against -- so the reconcile does
+-- not ask again while that pull is in flight (the record has not moved).
+local pullAsked = {}
+
+--- PULLS A BROKEN IMPLANT out of the body through the same remove staging
+--- every sale uses, minus the money -- nobody paid for this pull, and its
+--- completion is nobody's to settle. Only when the slot holds THIS piece (a
+--- remove is by slot) and the character is still the one that broke it. The
+--- answer to `ON_BROKEN`, and -- throttled -- to a break the calendar caught up
+--- before the patient's record read (`M.Ripper.Refit`).
+-- @param player any
+-- @param entryId any
+-- @param citizen string|nil
+-- @param throttle boolean|nil not again while the last pull asked for is in
+-- flight (the record has not moved since, for up to 30 s)
+-- @return boolean whether a pull was staged
+function M.Ripper.PullBroken(player, entryId, citizen, throttle)
+	local entry = M.Ripper.Entry(tostring(entryId or ''))
+	if entry == nil or not M.Ripper.IsPlatform(entry) then return false end
+	player = tonumber(player)
+	if player == nil then return false end
+	local api = store()
+	local record = recordOf(player)
+	if api == nil or type(api.remove) ~= 'function' or type(record) ~= 'table' then return false end
+	-- THE SLOT MUST HOLD THIS PIECE: a remove is by slot, and a slot that
+	-- holds something else now is not this break's to empty.
+	local implant = implantOf(record, entry.SLOT)
+	if implant == nil or tostring(implant.definition or '') ~= M.Ripper.DefinitionFor(entry, nil) then
+		return false
+	end
+	-- And the character must still be the one that broke it.
+	if citizen ~= nil and (data(player) or {}).citizenId ~= citizen then return false end
+	local asked = player .. '|' .. entry.id
+	local last = pullAsked[asked]
+	if throttle and last ~= nil and last.revision == record.revision and OPX.Now() - last.at < 30000 then
+		return false
+	end
+	pullAsked[asked] = { at = OPX.Now(), revision = record.revision }
+	local okId, operationId = pcall(api.newOperationId)
+	local ran, out, why = pcall(api.remove, player, {
+		slot = entry.SLOT, expectedRevision = record.revision,
+		operationId = okId and operationId or nil,
+	})
+	if not (ran and type(out) == 'table' and out.ok == true) then
+		Open77.log.warn(('[ripperdoc] the broken %s could not be pulled: %s')
+			:format(entry.id, tostring((ran and why) or out or 'refused')))
+		return false
+	end
+	Open77.log.info(('[ripperdoc] %s broke on player %d and was pulled%s'):format(entry.id, player,
+		throttle and ' (it broke before the record read)' or ''))
+	return true
+end
+
+--- FITS BACK, FOR FREE, what the one-time reset or an admin made whole while
+--- it was out of the body -- a break pulls an implant, and a ledger that says
+--- "whole" over an empty slot would be forgotten by the next frame. Through
+--- the same staging every sale uses, and settled by the same completion
+--- (`finish`, which starts its life at the condition it was given), one at a
+--- time. An implant the record still holds is mended where it is; one whose
+--- slot now holds something else stays broken, repairable at a chair. Called
+--- on the arrival, every tick and by the admin. Answers how many still wait.
+-- @param player number
+-- @return integer
+function M.Ripper.Refit(player)
+	player = tonumber(player)
+	local citizen = player ~= nil and (data(player) or {}).citizenId or nil
+	if citizen == nil then return 0 end
+	-- A BROKEN IMPLANT STILL IN THE BODY -- it ran out while its owner was
+	-- away, and was caught up before their record read -- is pulled now.
+	for _, entry in ipairs(M.Chrome.BrokenImplants(citizen)) do
+		M.Ripper.PullBroken(player, entry.id, citizen, true)
+	end
+	local waiting = M.Chrome.Refits(citizen)
+	if #waiting == 0 then return 0 end
+	local key = keyOf(player)
+	-- One staged operation per patient: the next waits for this one's end.
+	if pending[key] ~= nil then return #waiting end
+	local api = store()
+	local record = recordOf(player)
+	if api == nil or record == nil then return #waiting end
+	for _, item in ipairs(waiting) do
+		local entry, row = item.entry, item.row
+		local implant = implantOf(record, entry.SLOT)
+		local definition = implant ~= nil and tostring(implant.definition or '') or ''
+		if definition == M.Ripper.DefinitionFor(entry, nil) then
+			-- Still in the body (its pull never came): whole where it is.
+			Open77.log.info(('[ripperdoc] player %d: %s is still in the body -- made whole there (%s), at %d%%')
+				:format(player, entry.id, tostring(row.refit.why), math.floor(tonumber(row.refit.points) or 100)))
+			M.Chrome.Mend(citizen, entry.id, row.refit.points)
+		elseif implant ~= nil then
+			M.Chrome.RefitRefused(citizen, entry.id, 'its slot holds ' .. (definition ~= '' and definition or 'another implant'))
+		else
+			row.refit.tries = (row.refit.tries or 0) + 1
+			local op = {
+				mode = 'repair', entry = entry.id, grade = row.grade, name = entry.NAME, price = 0,
+				patient = player, patientCitizen = citizen,
+				facts = { mode = 'repair', grade = row.grade, refit = true },
+				condition = row.refit.points, free = row.refit.why,
+			}
+			op.slot = entry.SLOT
+			local staged, why = stage(player, entry, op)
+			if staged then
+				pending[key] = op
+				Open77.log.info(('[ripperdoc] player %d: %s (%s) is whole again (%s) -- fitted back into the body ' ..
+					'for free, at %d%%'):format(player, entry.id, tostring(row.grade), tostring(row.refit.why),
+					math.floor(tonumber(row.refit.points) or 100)))
+				return #M.Chrome.Refits(citizen)
+			end
+			Open77.log.warn(('[ripperdoc] player %d: %s could not be fitted back yet (try %d): %s')
+				:format(player, entry.id, row.refit.tries, tostring(why)))
+		end
+	end
+	return #M.Chrome.Refits(citizen)
 end
 
 -- ── the placement commands ──────────────────────────────────────────────────
@@ -1862,8 +1989,12 @@ local function diagnosisReport(source, target)
 	lines[#lines + 1] = ('capacity %d/%d, %d piece(s)'):format(
 		math.floor(state.used + 0.5), math.floor(state.capacity + 0.5), #state.list)
 	for _, piece in ipairs(state.list) do
-		lines[#lines + 1] = ('  %s %s %d%% %s%s'):format(piece.id, piece.grade,
-			math.floor(piece.points + 0.5), piece.state, piece.inBody and '' or ' (out of the body)')
+		local life = M.Chrome.Life(state.citizen, piece.id)
+		local hours = life.left ~= nil and math.floor(life.left / 3600) or nil
+		lines[#lines + 1] = ('  %s %s %d%% %s%s%s'):format(piece.id, piece.grade,
+			math.floor(piece.points + 0.5), piece.state, piece.inBody and '' or ' (out of the body)',
+			hours ~= nil and (', %dd %02dh left, hard use %.1f of %.1f h'):format(hours // 24, hours % 24,
+				(life.wear or 0) / 3600, (life.wearCap or 0) / 3600) or '')
 	end
 	if M.Effects ~= nil then
 		lines[#lines + 1] = 'effects ' .. flat(M.Effects.Totals(state.citizen))
@@ -1929,11 +2060,79 @@ local function registerCommands()
 		if player == nil or player <= 0 then
 			return OPX.CommandResult(source, false, 'in game only: the test runs on the caller')
 		end
+		-- Up to the longest boost a level can make (`M.Ripper.SANDY_MAX_SECONDS`),
+		-- so a 40 s boost's presentation can be checked end to end.
 		local seconds = math.floor(tonumber(args[1]) or 9)
-		seconds = math.max(1, math.min(15, seconds))
+		seconds = math.max(1, math.min(M.Ripper.SANDY_MAX_SECONDS, seconds))
 		local done, why = M.Sandy.Simulate(player, seconds * 1000, 'reflex_heavy')
 		OPX.CommandResult(source, done == true, done and
 			('a %d s Sandevistan on you, without the overdrive'):format(seconds) or ('refused: ' .. tostring(why)))
+	end)
+
+	-- THE ADMIN'S OVERRIDE: every piece of chrome fitted on the CALLER set at
+	-- once -- `full` (a fresh life on everything: repaired, re-armed, a broken
+	-- implant fitted back), a condition from 1 to 100 (a life with that much
+	-- left), or 0 (everything broken, exactly as wear breaks it). Restricted,
+	-- and in game only: it is the caller's own body.
+	register(names.chrome, {
+		restricted = true,
+		help = 'ripperdoc.help.chrome',
+		params = {
+			{ name = 'condition', help = locale('ripperdoc.help.chromeArg') },
+		},
+	}, function(source, args)
+		local player = tonumber(source)
+		if player == nil or player <= 0 then
+			return OPX.CommandResult(source, false, 'in game only: it sets the chrome fitted on the caller')
+		end
+		local wanted = type(args[1]) == 'string' and OPX.String.Trim(args[1]):lower() or ''
+		local value = wanted == 'full' and 100 or OPX.Math.Finite(tonumber(wanted))
+		if value == nil or value < 0 or value > 100 then
+			return OPX.CommandResult(source, false,
+				'usage: chrome <full|0-100> -- the condition of every piece fitted on you')
+		end
+		local citizen = (data(player) or {}).citizenId
+		if citizen == nil then return OPX.CommandResult(source, false, 'no character is loaded on you') end
+		CreateThread(function()
+			M.Chrome.Hold(citizen, player)
+			M.Chrome.Load(citizen)
+			if not M.Chrome.Loaded(citizen) then
+				return OPX.CommandResult(source, false, 'your chrome could not be read: try again')
+			end
+			-- Whatever the platform's record holds and the ledger has not taken
+			-- in yet is taken in first, so it is set too.
+			patientState(player)
+			local set = M.Chrome.SetAll(player, citizen, value)
+			if #set == 0 then
+				return OPX.CommandResult(source, true, 'you have no chrome fitted: nothing to set')
+			end
+			local lines = {}
+			for _, row in ipairs(set) do
+				local entry = M.Ripper.Entry(row.id)
+				local life = M.Chrome.Life(citizen, row.id)
+				local now = M.Chrome.Row(citizen, row.id)
+				local left
+				if now.broken and now.refit ~= nil then
+					left = 'out of the body: being fitted back for free'
+				elseif now.broken and row.refit then
+					left = 'still broken: it cannot go back in (its slot holds another implant)'
+				elseif now.broken then
+					left = 'broken'
+				elseif life.left ~= nil then
+					local hours = math.floor(life.left / 3600)
+					left = ('%dd %02dh left'):format(hours // 24, hours % 24)
+				else
+					left = 'no clock (durability off)'
+				end
+				lines[#lines + 1] = ('%s (%s): %d%% -> %d%%, %s'):format(
+					entry ~= nil and locale(entry.NAME) or row.id, tostring(row.grade),
+					math.floor(row.before + 0.5), math.floor(row.after + 0.5), left)
+			end
+			Open77.log.info(('[ripperdoc] player %d (%s) set their own chrome to %s: %s'):format(player, citizen,
+				wanted == 'full' and 'full' or ('%d%%'):format(math.floor(value + 0.5)), table.concat(lines, '; ')))
+			OPX.CommandResult(source, true, ('%d piece(s) set to %s:\n%s'):format(#set,
+				wanted == 'full' and 'full' or ('%d%%'):format(math.floor(value + 0.5)), table.concat(lines, '\n')))
+		end)
 	end)
 
 	register(names.add, {
@@ -2146,6 +2345,7 @@ function M.Init()
 	offerSeq = 0
 	captures, captureAsked, propsOf = {}, {}, {}
 	diagnosed, rebound, probes, recording = {}, {}, {}, {}
+	pullAsked = {}
 	M.Reader.Reset()
 	rebuild()
 	M.Ripper.ResetCatalog()
@@ -2633,33 +2833,7 @@ function M.Start()
 	-- A grant was disarmed by the ledger; stat chrome simply stops counting.
 	AddEventHandler(M.Event.ON_BROKEN, function(payload)
 		if type(payload) ~= 'table' then return end
-		local entry = M.Ripper.Entry(tostring(payload.entry or ''))
-		if entry == nil or not M.Ripper.IsPlatform(entry) then return end
-		local player = tonumber(payload.player)
-		if player == nil then return end
-		local api = store()
-		local record = recordOf(player)
-		if api == nil or type(api.remove) ~= 'function' or type(record) ~= 'table' then return end
-		-- THE SLOT MUST HOLD THIS PIECE: a remove is by slot, and a slot that
-		-- holds something else now is not this break's to empty.
-		local implant = implantOf(record, entry.SLOT)
-		if implant == nil or tostring(implant.definition or '') ~= M.Ripper.DefinitionFor(entry, nil) then
-			return
-		end
-		-- And the character must still be the one that broke it.
-		if payload.citizen ~= nil and (data(player) or {}).citizenId ~= payload.citizen then return end
-		local okId, operationId = pcall(api.newOperationId)
-		local ran, out, why = pcall(api.remove, player, {
-			slot = entry.SLOT, expectedRevision = record.revision,
-			operationId = okId and operationId or nil,
-		})
-		if not (ran and type(out) == 'table' and out.ok == true) then
-			Open77.log.warn(('[ripperdoc] the broken %s could not be pulled: %s')
-				:format(tostring(payload.entry), tostring((ran and why) or out or 'refused')))
-			return
-		end
-		Open77.log.info(('[ripperdoc] %s broke on player %d and was pulled')
-			:format(tostring(payload.entry), player))
+		M.Ripper.PullBroken(payload.player, payload.entry, payload.citizen)
 	end)
 
 	-- A departure frees the seat NOW, and a character put down on a
@@ -2756,6 +2930,18 @@ function M.Api()
 		-- @return table
 		Effects = function(player)
 			return M.Effects.Totals((data(player) or {}).citizenId)
+		end,
+		--- What a character's level is worth to their chrome, for the skill
+		-- tree to show: how long a (non-iconic) piece lasts and the most hard
+		-- use may take off it, in days, and the shortest and longest
+		-- Sandevistan boost the ripperdoc runs, in seconds -- at this level,
+		-- at level 1 (`Base`) and at the cap (`Max`).
+		-- @param level number
+		-- @param cap number
+		-- @return table { lifeDays, lifeBaseDays, lifeMaxDays, wearDays, activeSeconds = {lo, hi},
+		--   activeBaseSeconds = {lo, hi}, activeMaxSeconds = {lo, hi} }
+		ChromeLevel = function(level, cap)
+			return M.Ripper.ChromeLevel(level, cap)
 		end,
 	})
 end

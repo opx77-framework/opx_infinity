@@ -17,7 +17,16 @@
    (~15 KB) but it is 15 KB on every surface, so do not add one speculatively.
    ========================================================================== */
 
-/* display - 600 for row labels, 700 for titles and headings */
+/* display - 600 for row labels, 700 for titles and headings; 500 is the base
+   game's own body weight (MainColors.BodyFontWeight "Medium"), which the
+   ripperdoc screen writes nearly everything in */
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 500;
+  font-display: block;
+  src: url('@fontsource/rajdhani/files/rajdhani-latin-500-normal.woff2') format('woff2');
+}
 @font-face {
   font-family: 'Rajdhani';
   font-style: normal;

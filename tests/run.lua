@@ -6330,6 +6330,241 @@ do
 	end
 end
 
+-- ── the list, in slices ────────────────────────────────────────────────────
+-- THE CLIENT LOG (2026-09-27 and -28): `garages/client/main.lua:582: Open77
+-- script execution budget exceeded`, from the SYNC handler, every fifteen
+-- seconds while the world loaded. A client resume has a TIME budget -- the
+-- frame's two milliseconds split between every running resource, some sixty
+-- microseconds each on the live server -- and the handler read the whole list
+-- (`Access.FromWire`, ~380 VM instructions a point) and then scanned, in one
+-- resume, on every poll. Now: the server names each list with a revision, a
+-- client that holds that revision reads nothing, and a new list is read four
+-- points per resume on a thread of its own and drawn in a resume after that.
+section('garages: the list is read in slices, and the same list never twice')
+do
+	-- The pad table's bridge, so the capture below is written and SET.
+	local senv, sctl, swhy = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		query = function() return {} end,
+		update = function() return 0 end,
+		single = function() return nil end,
+	}))
+	check('the server boots for the list revision', swhy == nil, swhy)
+	if swhy == nil then
+		local garages = senv.OPX.Modules.Get('garages')
+		local function lastSync()
+			for index = #sctl.clientEvents, 1, -1 do
+				local event = sctl.clientEvents[index]
+				if event.name == garages.Event.SYNC then return event[1] end
+			end
+			return nil
+		end
+		local bucket = 0
+		senv.Open77.players.position = function()
+			return { x = -1527.21, y = -218.56, z = 7.86, bucket = bucket, heading = 270.0 }
+		end
+		senv.Open77.players.all = function() return { 61 } end
+		sctl.Admit(61, 'account-61')
+		senv.source = 61
+		sctl.netEvents[garages.Event.ASK]()
+		sctl.Pump(2)
+		local first = lastSync()
+		sctl.netEvents[garages.Event.ASK]()
+		sctl.Pump(2)
+		local again = lastSync()
+		check('every SYNC names the list it carries, and asking again for an unchanged list names the same one',
+			type(first) == 'table' and type(first.rev) == 'string' and first.rev ~= ''
+				and type(again) == 'table' and again ~= first and again.rev == first.rev,
+			('%s / %s'):format(tostring(first and first.rev), tostring(again and again.rev)))
+		bucket = 7
+		sctl.netEvents[garages.Event.ASK]()
+		sctl.Pump(2)
+		local elsewhere = lastSync()
+		check('a player in another routing bucket is sent another revision (another list)',
+			elsewhere ~= nil and elsewhere.rev ~= first.rev, tostring(elsewhere and elsewhere.rev))
+		bucket = 0
+		sctl.commands['opx.avgarages.add'].run(61, { 'rev_test_pad', 'Rev', 'Pad', 'pad' })
+		sctl.Pump(8)
+		local rebuilt = lastSync()
+		local carries = false
+		for _, spot in ipairs(rebuilt and rebuilt.spots or {}) do
+			if spot.garage == 'rev_test_pad' then carries = true end
+		end
+		check('and a capture that rebuilds the list is sent under a new revision, carrying it',
+			rebuilt ~= nil and rebuilt.rev ~= first.rev and carries,
+			('%s, %s'):format(tostring(rebuilt and rebuilt.rev), tostring(carries)))
+	end
+
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots for the sliced read', cwhy == nil, cwhy)
+	if cwhy == nil then
+		local garages = cenv.OPX.Modules.Get('garages')
+		local Runtime = garages.Runtime
+		local realFromWire = garages.Access.FromWire
+		local reads = 0
+		garages.Access.FromWire = function(raw)
+			reads = reads + 1
+			return realFromWire(raw)
+		end
+		local function spotsOf(count, prefix)
+			local list = {}
+			for index = 1, count do
+				list[index] = { key = ('%s%d#1'):format(prefix, index), label = prefix .. index,
+					kind = 'garage', garage = prefix .. index, role = 'menu', location = 1,
+					x = index * 1000.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 }
+			end
+			return list
+		end
+		local function held(prefix)
+			local count = 0
+			for key in pairs(Runtime.Garages()) do
+				if key:sub(1, #prefix) == prefix then count = count + 1 end
+			end
+			return count
+		end
+
+		cctl.Pump(4)
+		local before = Runtime.Report().spots
+		reads = 0
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(10, 'a'), rev = 'r1' })
+		check('the SYNC handler itself reads nothing: the list is taken in on a thread of its own',
+			reads == 0 and Runtime.Report().spots == before,
+			('%d read, %d held'):format(reads, Runtime.Report().spots))
+		local most, rounds = 0, 0
+		for _ = 1, 10 do
+			local at = reads
+			cctl.Pump(1)
+			rounds = rounds + 1
+			if reads - at > most then most = reads - at end
+			if Runtime.Report().spots == 10 then break end
+		end
+		check('four points at most in any one resume, and the whole list adopted',
+			most <= 4 and reads == 10 and held('a') == 10,
+			('%d at most, %d read, %d held, %d round(s)'):format(most, reads, held('a'), rounds))
+
+		reads = 0
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(10, 'a'), rev = 'r1' })
+		cctl.Pump(6)
+		check('the revision this client already holds is not read again', reads == 0 and held('a') == 10,
+			('%d read'):format(reads))
+
+		reads = 0
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(3, 'b'), rev = 'r2' })
+		cctl.Pump(6)
+		check('a new revision is read and replaces the list', reads == 3 and held('b') == 3 and held('a') == 0,
+			('%d read, %d b, %d a'):format(reads, held('b'), held('a')))
+
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(10, 'c'), rev = 'r3' })
+		cctl.Pump(1)
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(2, 'd'), rev = 'r4' })
+		cctl.Pump(8)
+		check('a list that lands while another is being read replaces it: only the newest is adopted',
+			held('d') == 2 and held('c') == 0 and Runtime.Report().spots == 2,
+			('%d d, %d c'):format(held('d'), held('c')))
+
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(10, 'e'), rev = 'r5' })
+		cctl.Pump(1)
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(2, 'd'), rev = 'r4' })
+		cctl.Pump(8)
+		check('even the list held before it, when that is what the server says last',
+			held('d') == 2 and held('e') == 0, ('%d d, %d e'):format(held('d'), held('e')))
+
+		reads = 0
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(2, 'f') })
+		cctl.Pump(6)
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(2, 'f') })
+		cctl.Pump(6)
+		check('a list with no revision (a server before this change) is read every time',
+			reads == 4 and held('f') == 2, ('%d read'):format(reads))
+
+		-- A READ THAT FAILS -- the budget running out mid-read, say, which
+		-- unwinds whatever was running -- is said, frees the thread, and the next
+		-- SYNC of that same list is read again rather than skipped as held.
+		local raised = false
+		garages.Access.FromWire = function(raw)
+			reads = reads + 1
+			if not raised then
+				raised = true
+				error('Open77 script execution budget exceeded')
+			end
+			return realFromWire(raw)
+		end
+		local warned = #cctl.log.warn
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(3, 'h'), rev = 'r7' })
+		cctl.Pump(6)
+		local said = table.concat(cctl.log.warn, ' | ', warned + 1)
+		reads = 0
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(3, 'h'), rev = 'r7' })
+		cctl.Pump(6)
+		check('a read that fails is said, and the same list is read again on its next SYNC, not skipped as held',
+			said:find('the point list was not taken in', 1, true) ~= nil and reads == 3 and held('h') == 3,
+			('%s; %d read, %d held'):format(said, reads, held('h')))
+		garages.Access.FromWire = function(raw)
+			reads = reads + 1
+			return realFromWire(raw)
+		end
+
+		-- A HOST THAT REFUSES THE THREAD (`task_limit_or_stopping`) must not leave
+		-- the door shut for the session: the next SYNC of the same list is read.
+		local realCreateThread = cenv.CreateThread
+		cenv.CreateThread = function() return nil, 'task_limit_or_stopping' end
+		warned = #cctl.log.warn
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(2, 'k'), rev = 'r8' })
+		cctl.Pump(4)
+		cenv.CreateThread = realCreateThread
+		local refusedSaid = table.concat(cctl.log.warn, ' | ', warned + 1)
+		reads = 0
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(2, 'k'), rev = 'r8' })
+		cctl.Pump(6)
+		check('a thread the host refuses is said, and the same list is read on its next SYNC',
+			refusedSaid:find('task_limit_or_stopping', 1, true) ~= nil and reads == 2 and held('k') == 2,
+			('%s; %d read, %d held'):format(refusedSaid, reads, held('k')))
+
+		cenv.Open77.character.position = function() return 1000.0, 0.0, 0.0 end
+		cctl.netEvents[garages.Event.SYNC]({ spots = spotsOf(1, 'g'), rev = 'r6' })
+		cctl.Pump(6)
+		check('and a list read in slices is still drawn: the marker in range goes up',
+			#cenv.Open77.markers.list() == 1, #cenv.Open77.markers.list())
+
+		-- TWENTY POINTS IN RANGE AT ONCE (a player arriving at a busy lot): the
+		-- first draw makes at most six markers, and the scans after it make the
+		-- rest -- no single resume creates twenty.
+		local crowd = {}
+		for index = 1, 20 do
+			crowd[index] = { key = ('lot%d#1'):format(index), label = 'LOT ' .. index, kind = 'garage',
+				garage = 'lot' .. index, role = 'menu', location = 1,
+				x = 1000.0 + index, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 }
+		end
+		-- COUNTED PER RESUME, which is what the budget is per: the list's own
+		-- reader thread and the scheduler's scan are two resumes, and both may
+		-- land in one harness round (which one does depends on how many other
+		-- jobs the scheduler is rotating through, so a count per round moved
+		-- whenever a module was added).
+		local most = 0
+		local perResume = {}
+		local realCreateMarker = cenv.Open77.markers.create
+		cenv.Open77.markers.create = function(...)
+			local thread = tostring(coroutine.running())
+			perResume[thread] = (perResume[thread] or 0) + 1
+			return realCreateMarker(...)
+		end
+		cctl.netEvents[garages.Event.SYNC]({ spots = crowd, rev = 'r9' })
+		for _ = 1, 30 do
+			perResume = {}
+			cctl.Pump(1)
+			for _, count in pairs(perResume) do
+				if count > most then most = count end
+			end
+		end
+		cenv.Open77.markers.create = realCreateMarker
+		check('twenty points in range are drawn a few at a time -- six at most in one pass -- and all of them ' ..
+			'are up a few scans later',
+			most <= 6 and #cenv.Open77.markers.list() == 20,
+			('%d at most in one resume, %d drawn'):format(most, #cenv.Open77.markers.list()))
+		garages.Access.FromWire = realFromWire
+	end
+end
+
 -- ── headquarters ───────────────────────────────────────────────────────────
 -- A HEADQUARTERS IS A MARKER AND A NAME, and both halves are under test: the
 -- server owns the list (a spot lives in a routing bucket a client cannot read
@@ -7240,8 +7475,14 @@ do
 		check('but answers the roster to its own crew on duty',
 			payload ~= nil and payload.garage == 'pad_hq' and type(payload.vehicles) == 'table',
 			payload and tostring(payload.error))
+		-- THE JOB'S OWN AV HEADS THE LIST NOW (config/garages.lua JOB_VEHICLES):
+		-- every MaxTac operator on duty finds the division's AV at a pad, owned
+		-- or not. What the character OWNS is still the aircraft and never the
+		-- ground car.
 		check('of the division\'s aircraft and not a ground car',
-			payload ~= nil and #payload.vehicles == 1 and payload.vehicles[1].plate == 'MAX0001',
+			payload ~= nil and #payload.vehicles == 2
+				and payload.vehicles[1].job == 'maxtac_av'
+				and payload.vehicles[2].plate == 'MAX0001',
 			payload and #payload.vehicles)
 
 		-- AND THE BRING-OUT IS THE SAME GATE: the roster above is what the pad
@@ -7359,17 +7600,19 @@ do
 		local offering = lastEvent(garages.Event.VEHICLES)
 		local roster = offering ~= nil and type(offering[1]) == 'table'
 			and offering[1].vehicles or nil
+		-- Behind the job's own AV, which heads the list of every MaxTac operator
+		-- on duty: the stock, then what the character owns.
 		check('the stock is offered ahead of everything the character owns',
-			roster ~= nil and #roster == 3
-				and roster[1].fleet == true and roster[1].record == 'Vehicle.av_luxury'
-				and roster[1].label == 'Luxury AV',
+			roster ~= nil and #roster == 4 and roster[1].job == 'maxtac_av'
+				and roster[2].fleet == true and roster[2].record == 'Vehicle.av_luxury'
+				and roster[2].label == 'Luxury AV',
 			roster and tostring(#roster))
 		check('in the operator\'s order, an absent LABEL showing the record itself',
-			roster ~= nil and roster[2].fleet == true
-				and roster[2].record == 'Vehicle.av_militech'
-				and roster[2].label == 'Vehicle.av_militech')
+			roster ~= nil and roster[3].fleet == true
+				and roster[3].record == 'Vehicle.av_militech'
+				and roster[3].label == 'Vehicle.av_militech')
 		check('and the character\'s own rows come after, plates and all',
-			roster ~= nil and roster[3].plate == 'MAX0001' and roster[3].fleet == nil)
+			roster ~= nil and roster[4].plate == 'MAX0001' and roster[4].fleet == nil)
 
 		-- THE ISSUE, and the one way a hull comes out of a pad: a free exit,
 		-- the AV lift under it, and the pilot at the controls from the first
@@ -7460,6 +7703,789 @@ do
 			end)(),
 			('%d row(s)'):format(#parked))
 		Access.REQUESTS_PER_WINDOW = windowLimit
+	end
+end
+
+-- ── the job fleet ────────────────────────────────────────────────────────────
+section('garages: the job fleet every NCPD and MaxTac member finds by default')
+do
+	-- THE OWNER'S WORDS ARE THE SPEC: "give all maxtac and ncpd workers the
+	-- vehicles they need in there garage with proper labels" and "required avs
+	-- for the role job needs to be in the garage for players by defualt". So
+	-- what is under test is WHO finds WHAT, at WHICH grade and WHERE -- over the
+	-- wire the client reads -- and that what they find is SIGNED OUT, never
+	-- owned: no row is ever written for one, so nothing that sells, hands over
+	-- or stores a car can reach it.
+	local rows, inserts, updates = {}, {}, {}
+	rows[1] = { plate = 'OWN0001', citizen_id = 'citizen-officer',
+		record = 'Vehicle.v_standard2_archer_hella_player', appearance = nil, garage = 'impound',
+		state = 1, health = 1.0, body = nil, paint = nil, metadata = '{}' }
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		-- EVERY WRITE TO A VEHICLE ROW IS KEPT: "no row, before or after" is only
+		-- a claim a test can make when it can see every INSERT and UPDATE.
+		update = function(sql, params)
+			if sql:find('INSERT INTO opx77_vehicles', 1, true) then inserts[#inserts + 1] = params end
+			if sql:find('UPDATE opx77_vehicles', 1, true) then updates[#updates + 1] = params end
+			return 0
+		end,
+		query = function(sql, params)
+			if sql:find('opx77_vehicles', 1, true) then
+				local citizen = type(params) == 'table' and params.citizen or nil
+				local mine = {}
+				for index = 1, #rows do
+					if citizen == nil or rows[index].citizen_id == citizen then mine[#mine + 1] = rows[index] end
+				end
+				return mine
+			end
+			return {}
+		end,
+		single = function(sql, params)
+			local plate = type(params) == 'table' and params.plate or nil
+			for index = 1, #rows do
+				if plate ~= nil and rows[index].plate == plate then return rows[index] end
+			end
+			return nil
+		end,
+	}))
+	check('the server boots with the job fleet aboard', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local garages = OPX.Modules.Get('garages')
+		local Access = garages.Access
+		local contract = OPX.Api.Get('garages')
+		local vehicleApi = OPX.Api.Get('vehicles')
+		local characterApi = OPX.Api.Get('character')
+		local character = OPX.Modules.Get('character')
+		local fleet = Access.JOB_FLEET
+
+		local function lastEvent(name)
+			for index = #control.clientEvents, 1, -1 do
+				if control.clientEvents[index].name == name then return control.clientEvents[index] end
+			end
+			return nil
+		end
+
+		-- Every toast, by key, and still sent: the words are the catalogue's.
+		local notices = {}
+		local notify = OPX.NotifyLocale
+		OPX.NotifyLocale = function(playerId, key, params, kind)
+			notices[#notices + 1] = { playerId = playerId, key = key, params = params, kind = kind }
+			return notify(playerId, key, params, kind)
+		end
+		local function noticeSince(mark, playerId, key)
+			for index = mark + 1, #notices do
+				if notices[index].playerId == playerId and notices[index].key == key then
+					return notices[index]
+				end
+			end
+			return nil
+		end
+
+		-- ── the fleet the server ships ─────────────────────────────────────
+		check('the shipped config, job fleet included, reports no problems',
+			#Access.Problems() == 0, table.concat(Access.Problems(), ' | '))
+
+		local function ladder(job)
+			local out = {}
+			local block = fleet.byJob[job]
+			for _, row in ipairs(block ~= nil and block.rows or {}) do
+				out[#out + 1] = ('%s@%d%s'):format(row.key, row.grade, row.av and '(av)' or '')
+			end
+			return table.concat(out, ' ')
+		end
+		check('NCPD climbs with the rank: patrol car, bike, SUV, interceptor, air unit, armour',
+			ladder('ncpd') == 'ncpd_cortes@0 ncpd_hella@1 ncpd_apollo@1 ncpd_emperor@2 '
+				.. 'ncpd_merrimac@2 ncpd_av@2(av) ncpd_hellhound@3', ladder('ncpd'))
+		check('MaxTac brings its AV and its ground unit from its first grade',
+			ladder('maxtac') == 'maxtac_av@0(av) maxtac_merrimac@0', ladder('maxtac'))
+		check('the AV the MaxTac role requires is the division\'s own insertion record',
+			fleet.byKey.maxtac_av ~= nil
+				and fleet.byKey.maxtac_av.record == OPX.Config.MODULES.ncpd.MAXTAC.AV.RECORD,
+			fleet.byKey.maxtac_av and fleet.byKey.maxtac_av.record)
+		-- THE PLATFORM FLIES ONLY `Vehicle.av_*` AND `Vehicle.max_tac_av`. The
+		-- prologue's `Vehicle.q001_police_av` was an aircraft by this server's
+		-- own rule and came out of a pad that it never left. NCPD's air unit is
+		-- the Atlus the base game puts in NCPD service, in its NCPD livery -- a
+		-- livery of the ROW, so a civilian's Atlus keeps its own.
+		check('and NCPD\'s air unit is an Atlus the platform flies, in the Atlus\'s own NCPD livery',
+			fleet.byKey.ncpd_av ~= nil and fleet.byKey.ncpd_av.record == 'Vehicle.av_zetatech_atlus'
+				and fleet.byKey.ncpd_av.appearance == 'zetatech_atlus_ncpd_01'
+				and OPX.Vehicle.IsAvRecord(fleet.byKey.ncpd_av.record)
+				and Access.PlatformFlies(fleet.byKey.ncpd_av.record),
+			fleet.byKey.ncpd_av and ('%s %s'):format(fleet.byKey.ncpd_av.record,
+				tostring(fleet.byKey.ncpd_av.appearance)))
+		check('and the MaxTac AV comes out in the airframe\'s visible livery, not the record\'s cloak',
+			fleet.byKey.maxtac_av ~= nil
+				and fleet.byKey.maxtac_av.appearance == 'zetatech_surveyor__basic_ep1_maxtac_01',
+			fleet.byKey.maxtac_av and tostring(fleet.byKey.maxtac_av.appearance))
+		local grounded = {}
+		for key, row in pairs(fleet.byKey) do
+			if row.av and not Access.PlatformFlies(row.record) then grounded[#grounded + 1] = key end
+		end
+		table.sort(grounded)
+		check('every aircraft the job fleet ships is one the platform flies',
+			#grounded == 0, table.concat(grounded, ', '))
+		check('the platform\'s rule, exactly: Vehicle.av_* or Vehicle.max_tac_av, in that case',
+			Access.PlatformFlies('Vehicle.av_militech_manticore') and Access.PlatformFlies('Vehicle.max_tac_av')
+				and not Access.PlatformFlies('Vehicle.q001_police_av')
+				and not Access.PlatformFlies('Vehicle.max_tac_av1')
+				and not Access.PlatformFlies('vehicle.av_zetatech_atlus')
+				and not Access.PlatformFlies(nil))
+		local diagnosed = {}
+		Access.CoerceJobFleet({ ncpd = { GRADES = { [2] = {
+			{ KEY = 'old_av', RECORD = 'Vehicle.q001_police_av', LABEL = 'x' },
+			{ KEY = 'bad_livery', RECORD = 'Vehicle.av_zetatech_atlus', LABEL = 'x', APPEARANCE = 'ncpd 01' },
+		} } } }, diagnosed)
+		local saidGrounded, saidLivery = false, false
+		for _, line in ipairs(diagnosed) do
+			if line:find('old_av', 1, true) and line:find('never leaves the ground', 1, true) then saidGrounded = true end
+			if line:find('bad_livery', 1, true) and line:find('APPEARANCE', 1, true) then saidLivery = true end
+		end
+		check('a hull the platform will not fly is said at boot, and a livery that is no name is refused',
+			saidGrounded and saidLivery, table.concat(diagnosed, ' | '))
+		check('both jobs want the shift clocked on, the MaxTac pads\' own rule',
+			fleet.byJob.ncpd.onDuty == true and fleet.byJob.maxtac.onDuty == true)
+
+		-- THE GROUND CARS ARE THE PLAYER-USABLE POLICE RECORDS, the ones the staff
+		-- catalogue already spawns, and never the prevention records the NPC
+		-- police arrive in -- those carry a crew of their own.
+		local staff = {}
+		local admin = OPX.Modules.Get('admin')
+		local catalogue = admin ~= nil and admin.Data ~= nil and admin.Data.VEHICLES or nil
+		for _, entry in ipairs(catalogue ~= nil and catalogue.VEHICLES or {}) do
+			staff[entry.RECORD] = true
+		end
+		local stray = {}
+		for key, row in pairs(fleet.byKey) do
+			if not row.av and not staff[row.record] then stray[#stray + 1] = key end
+			if row.record:find('prevention', 1, true) or row.record:find('_heat_', 1, true) then
+				stray[#stray + 1] = key
+			end
+		end
+		table.sort(stray)
+		check('every ground row is a base-game police record the staff catalogue spawns',
+			#stray == 0, table.concat(stray, ', '))
+
+		-- ── the names, in both languages ───────────────────────────────────
+		local catalogs = {}
+		local sandbox = { pairs = pairs, ipairs = ipairs, OPX = { Locale = {
+			Register = function(code, strings) catalogs[code] = strings end } } }
+		local chunk = loadfile('modules/garages/locales.lua', 't', sandbox)
+		if chunk ~= nil then pcall(chunk) end
+		local en, fr = catalogs.en or {}, catalogs.fr or {}
+		local unnamed = {}
+		for key, row in pairs(fleet.byKey) do
+			local english, french = en[row.label], fr[row.label]
+			if type(english) ~= 'string' or english == '' or type(french) ~= 'string'
+				or french == '' or english == french
+				or english:find('Vehicle.', 1, true) or french:find('Vehicle.', 1, true) then
+				unnamed[#unnamed + 1] = key
+			end
+		end
+		table.sort(unnamed)
+		check('every row carries a proper name in English AND in French, never its record',
+			#unnamed == 0, table.concat(unnamed, ', '))
+		local words = { 'garages.list.jobSection', 'garages.list.fleetSection',
+			'garages.list.ownSection', 'garages.list.jobReady', 'garages.list.jobOut',
+			'garages.list.jobHint', 'garages.jobOut', 'garages.jobReturned', 'garages.jobRecalled',
+			'garages.job.notHere', 'garages.job.required', 'garages.job.gradeTooLow',
+			'garages.job.offDuty' }
+		local lonely = {}
+		for _, key in ipairs(words) do
+			if type(en[key]) ~= 'string' or type(fr[key]) ~= 'string' or en[key] == fr[key] then
+				lonely[#lonely + 1] = key
+			end
+		end
+		check('and every word the list and its toasts say is in both catalogues',
+			#lonely == 0, table.concat(lonely, ', '))
+		local active = OPX.Locale.Current()
+		OPX.Locale.Set('fr')
+		local frenchCortes = env.locale(fleet.byKey.ncpd_cortes.label)
+		local frenchAv = env.locale(fleet.byKey.maxtac_av.label)
+		OPX.Locale.Set('en')
+		local englishCortes = env.locale(fleet.byKey.ncpd_cortes.label)
+		local englishAv = env.locale(fleet.byKey.maxtac_av.label)
+		OPX.Locale.Set(active)
+		check('and the runtime reads them back in the language the server speaks',
+			englishCortes == 'Villefort Cortes patrol car'
+				and frenchCortes == 'Voiture de patrouille Villefort Cortes'
+				and englishAv == 'MaxTac AV (Zetatech Surveyor)'
+				and frenchAv == 'AV MaxTac (Zetatech Surveyor)',
+			('%s / %s / %s / %s'):format(englishCortes, frenchCortes, englishAv, frenchAv))
+
+		-- ── a broken row is named at boot, alone ───────────────────────────
+		local problems = {}
+		local broken = Access.CoerceJobFleet({
+			ncpd = { GRADES = {
+				[0] = {
+					{ KEY = 'twin', RECORD = 'Vehicle.v_standard2_villefort_cortes_police', LABEL = 'a' },
+					{ KEY = 'twin', RECORD = 'Vehicle.v_standard2_archer_hella_police', LABEL = 'b' },
+					{ KEY = 'two words', RECORD = 'Vehicle.v_standard2_archer_hella_police', LABEL = 'c' },
+					{ KEY = 'unnamed', RECORD = 'Vehicle.v_standard2_archer_hella_police' },
+				},
+				[9] = { { KEY = 'phantom', RECORD = 'Vehicle.v_standard2_archer_hella_police', LABEL = 'd' } },
+			} },
+			nobody = { GRADES = { [0] = { { KEY = 'orphan', RECORD = 'Vehicle.x', LABEL = 'e' } } } },
+		}, problems)
+		check('a broken row is refused alone and named, and the rest of the fleet stands',
+			broken.byKey.twin ~= nil
+				and broken.byKey.twin.record == 'Vehicle.v_standard2_villefort_cortes_police'
+				and broken.byKey['two words'] == nil and broken.byKey.unnamed == nil
+				and broken.byJob.ncpd ~= nil and #broken.byJob.ncpd.rows == 1,
+			table.concat(problems, ' | '))
+		check('a grade the job does not have and a job nobody defined are refused, not listed to nobody',
+			broken.byKey.phantom == nil and broken.byKey.orphan == nil and broken.byJob.nobody == nil
+				and #problems == 5 and table.concat(problems, ' | '):find('grade 9', 1, true) ~= nil
+				and table.concat(problems, ' | '):find('JOB_VEHICLES.nobody', 1, true) ~= nil,
+			table.concat(problems, ' | '))
+
+		-- ── who finds what, pure ───────────────────────────────────────────
+		local now = OPX.Now()
+		local function snap(name, level, onDuty)
+			return { job = { name = name, grade = { level = level }, onDuty = onDuty == true },
+				jobs = { [name] = level }, atMs = now }
+		end
+		local function keysOf(list)
+			local out = {}
+			for _, row in ipairs(list) do out[#out + 1] = row.key end
+			return table.concat(out, ' ')
+		end
+		check('the grade is a floor: a Captain finds every row below the Captain\'s own',
+			keysOf(Access.JobFleetFor(snap('ncpd', 3, true), now, 'garage'))
+				== 'ncpd_cortes ncpd_hella ncpd_apollo ncpd_emperor ncpd_merrimac ncpd_hellhound')
+		check('and the kind of garage decides which half of the fleet: a pad lists the aircraft',
+			keysOf(Access.JobFleetFor(snap('ncpd', 3, true), now, 'avpad')) == 'ncpd_av')
+		local relaxed = Access.CoerceJobFleet({ ncpd = { ON_DUTY = false, GRADES = { [0] = {
+			{ KEY = 'k', RECORD = 'Vehicle.v_standard2_villefort_cortes_police',
+				LABEL = 'garages.job.vehicle.ncpdCortes' } } } } })
+		check('ON_DUTY = false is the file\'s own choice, in so many words, and only then is the shift optional',
+			#Access.JobFleetFor(snap('ncpd', 0, false), now, 'garage', relaxed) == 1
+				and #Access.JobFleetFor(snap('ncpd', 0, false), now, 'garage') == 0)
+
+		-- ── the garages, as the server holds them ──────────────────────────
+		local heldGarages, held = contract.Garages(), contract.Spots()
+		local function hang(map, key)
+			local built = map[key]
+			heldGarages[key] = built
+			for _, point in ipairs(Access.PointsOf(built)) do held[point.key] = point end
+			return built
+		end
+		-- Six exits ten metres apart, so a vehicle already standing on one never
+		-- makes a check about something else read as a blocked bay.
+		local function bay(kind, x, label)
+			local exits = {}
+			for slot = 1, 6 do exits[slot] = { X = x + 10.0 * slot, Y = 40.0, Z = 0.0, HEADING = 90.0 } end
+			return { KIND = kind, LABEL = label, LOCATIONS = { { BUCKET = 0,
+				MENU = { X = x, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = x, Y = 20.0, Z = 0.0, HEADING = 90.0 },
+				EXITS = exits } } }
+		end
+		local yard = hang(Access.CoerceGarages({ jf_yard = bay('garage', 1000.0, 'MOTOR POOL') }), 'jf_yard')
+		local pad = hang(Access.CoerceGarages({ jf_pad = bay('avpad', 2000.0, 'STATION PAD') }), 'jf_pad')
+		local hangar = hang(Access.CoerceAll({}, { JOBS = { maxtac = 0 }, ON_DUTY = true,
+			GARAGES = { jf_hangar = bay('avpad', 3000.0, 'MAXTAC HANGAR') } }), 'jf_hangar')
+		check('a public garage, a public pad and a MaxTac hangar stand for this section',
+			yard ~= nil and pad ~= nil and hangar ~= nil and hangar.requirement ~= nil
+				and yard.requirement == nil and pad.requirement == nil)
+
+		local LABELS = { ncpd = 'NCPD', maxtac = 'MaxTac', unemployed = 'Unemployed' }
+		--- A loaded character, in the shape `character.ResolveJob` writes.
+		local function load(id, citizenId, jobName, grade, onDuty, memberships)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			character.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id),
+				jobs = memberships or { [jobName] = grade },
+				job = { name = jobName, label = LABELS[jobName], grade = { level = grade },
+					onDuty = onDuty == true },
+				money = { EDDIES = 0, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+		local civ, cadet, officer, detective, captain = 101, 102, 103, 104, 105
+		local offDuty, operator, lead, resting = 106, 107, 108, 109
+		load(civ, 'citizen-civ', 'unemployed', 0, true)
+		load(cadet, 'citizen-cadet', 'ncpd', 0, true)
+		load(officer, 'citizen-officer', 'ncpd', 1, true)
+		load(detective, 'citizen-detective', 'ncpd', 2, true)
+		load(captain, 'citizen-captain', 'ncpd', 3, true)
+		load(offDuty, 'citizen-offduty', 'ncpd', 3, false)
+		-- A MaxTac operator is still an NCPD Detective by membership: MaxTac takes
+		-- nobody below it. The fleet is the WORKED job's, which is MaxTac.
+		load(operator, 'citizen-operator', 'maxtac', 0, true, { ncpd = 2, maxtac = 0 })
+		load(lead, 'citizen-lead', 'maxtac', 1, true)
+		load(resting, 'citizen-resting', 'maxtac', 0, false)
+
+		-- The floors that are not under test here, lifted: this section walks
+		-- through the same doors dozens of times in a few seconds.
+		local cooldown, windowLimit = Access.COOLDOWN_MS, Access.REQUESTS_PER_WINDOW
+		Access.COOLDOWN_MS, Access.REQUESTS_PER_WINDOW = 0, 0
+		-- AND THE SENIORITY CLOCK, which is not under test either: left running it
+		-- promotes these characters on the harness's own clock, and a promotion
+		-- is a `SetJob` -- a new grade, and a new fleet -- in the middle of a
+		-- check about something else.
+		local seniority = OPX.Config.MODULES.jobs.SENIORITY
+		local ticking = seniority.enabled
+		seniority.enabled = false
+
+		local function listAt(playerId, built)
+			local menu = built.locations[1].menu
+			control.Stand(playerId, menu.x, menu.y, menu.z)
+			env.source = playerId
+			control.netEvents[garages.Event.LIST](menu.key)
+			control.Pump(8)
+			local event = lastEvent(garages.Event.VEHICLES)
+			return event ~= nil and type(event[1]) == 'table' and event[1] or {}
+		end
+		local function jobsListed(payload)
+			local out = {}
+			for _, row in ipairs(type(payload.vehicles) == 'table' and payload.vehicles or {}) do
+				if type(row.job) == 'string' then out[#out + 1] = row.job end
+			end
+			return table.concat(out, ' ')
+		end
+		-- One request off the wire, exactly as the client's list sends it:
+		-- (point, plate, record, job).
+		local function request(playerId, built, slot)
+			local menu = built.locations[1].menu
+			control.Stand(playerId, menu.x, menu.y, menu.z)
+			env.source = playerId
+			control.netEvents[garages.Event.REQUEST](menu.key, nil, nil, slot)
+			control.Pump(8)
+			return lastEvent(garages.Event.ANSWER) or {}
+		end
+
+		-- ── who finds what, over the wire ──────────────────────────────────
+		local civilian = listAt(civ, yard)
+		check('somebody with no such job finds nothing new at a garage',
+			jobsListed(civilian) == '' and civilian.jobName == nil and #civilian.vehicles == 0,
+			jobsListed(civilian))
+		check('nor at a pad', jobsListed(listAt(civ, pad)) == '')
+		local cadetList = listAt(cadet, yard)
+		check('a Cadet on duty finds the patrol car, owning nothing and granted nothing first',
+			jobsListed(cadetList) == 'ncpd_cortes', jobsListed(cadetList))
+		check('under the job\'s own name, for the section it is drawn under',
+			cadetList.jobName == 'ncpd' and cadetList.jobLabel == 'NCPD',
+			tostring(cadetList.jobLabel))
+		check('named by a catalogue key and never by its record, and ready to come out',
+			cadetList.vehicles ~= nil and cadetList.vehicles[1] ~= nil
+				and cadetList.vehicles[1].label == 'garages.job.vehicle.ncpdCortes'
+				and cadetList.vehicles[1].out == false and cadetList.vehicles[1].plate == nil)
+		local officerList = listAt(officer, yard)
+		check('an Officer finds the Cadet\'s car and the Officer\'s own, ahead of the car they own',
+			jobsListed(officerList) == 'ncpd_cortes ncpd_hella ncpd_apollo'
+				and #officerList.vehicles == 4 and officerList.vehicles[4].plate == 'OWN0001',
+			jobsListed(officerList))
+		check('a Detective adds the SUV and the interceptor at a garage, and no aircraft there',
+			jobsListed(listAt(detective, yard))
+				== 'ncpd_cortes ncpd_hella ncpd_apollo ncpd_emperor ncpd_merrimac')
+		check('and finds the NCPD air unit at a pad NCPD may use',
+			jobsListed(listAt(detective, pad)) == 'ncpd_av')
+		check('which an Officer does not: the air unit is a Detective\'s',
+			jobsListed(listAt(officer, pad)) == '')
+		check('a Captain finds the whole ladder, the armour at the top',
+			jobsListed(listAt(captain, yard))
+				== 'ncpd_cortes ncpd_hella ncpd_apollo ncpd_emperor ncpd_merrimac ncpd_hellhound')
+		check('and a Captain who clocked off finds none of it',
+			jobsListed(listAt(offDuty, yard)) == '')
+		check('a MaxTac operator finds MaxTac\'s ground unit, not NCPD\'s cars',
+			jobsListed(listAt(operator, yard)) == 'maxtac_merrimac')
+		local hangarList = listAt(operator, hangar)
+		check('and THE AV THE ROLE REQUIRES at the division\'s hangar, by default, owning nothing',
+			jobsListed(hangarList) == 'maxtac_av' and #hangarList.vehicles == 1,
+			jobsListed(hangarList))
+		check('as does the Squad Lead', jobsListed(listAt(lead, hangar)) == 'maxtac_av')
+		check('and at any pad MaxTac may use', jobsListed(listAt(operator, pad)) == 'maxtac_av')
+		check('an operator off duty is refused the hangar itself, by the pad\'s own gate',
+			listAt(resting, hangar).error == 'garages.offDuty')
+		check('and the hangar stays MaxTac\'s: an NCPD Detective is refused it',
+			listAt(detective, hangar).error == 'garages.jobRequired')
+
+		-- ── a NEW member finds them at once ───────────────────────────────
+		local hired = nil
+		env.CreateThread(function()
+			hired = characterApi.SetJob(civ, 'ncpd', 0)
+			if hired ~= nil and hired.ok then characterApi.SetJobDuty(civ, true) end
+		end)
+		control.Pump(6)
+		check('somebody hired this minute finds the Cadet\'s car the moment they clock on',
+			hired ~= nil and hired.ok and jobsListed(listAt(civ, yard)) == 'ncpd_cortes',
+			hired and tostring(hired.error))
+
+		-- ── out through the normal door ────────────────────────────────────
+		local created = #control.vehicleCreates
+		local mark = #notices
+		local answer = request(cadet, yard, 'ncpd_cortes')
+		local car = control.vehicleCreates[#control.vehicleCreates]
+		check('picking the row signs the patrol car out, and the answer names the row',
+			answer[2] == true and answer[5] == 'brought' and answer[6] == 'ncpd_cortes'
+				and answer[4] == nil and #control.vehicleCreates == created + 1,
+			('%s %s %s'):format(tostring(answer[2]), tostring(answer[3]), tostring(answer[5])))
+		check('on the first free exit, facing its heading, as the record the row names',
+			car ~= nil and car.record == 'Vehicle.v_standard2_villefort_cortes_police'
+				and car.position.x == 1010.0 and car.position.y == 40.0 and car.yaw == 90.0,
+			car and ('%s at %s,%s'):format(tostring(car.record), tostring(car.position.x),
+				tostring(car.position.y)))
+		local told = noticeSince(mark, cadet, 'garages.jobOut')
+		check('and the player is told which vehicle, by its name',
+			told ~= nil and told.params.vehicle == 'Villefort Cortes patrol car',
+			told and tostring(told.params.vehicle))
+
+		-- ── signed out, never owned ────────────────────────────────────────
+		local carId = vehicleApi.JobLiveId('citizen-cadet', 'ncpd_cortes')
+		local owned = nil
+		env.CreateThread(function() owned = vehicleApi.List('citizen-cadet') end)
+		control.Pump(4)
+		check('NO ROW: the character owns nothing, so there is nothing to sell or hand over',
+			carId ~= nil and #inserts == 0 and owned ~= nil and owned.ok and #owned.value == 0,
+			owned and owned.ok and #owned.value)
+		check('NO PLATE: nothing that speaks in plates -- a boot, a sale, a transfer -- can name it',
+			vehicleApi.PlateOf(carId) == nil)
+		local asPlate = nil
+		env.CreateThread(function() asPlate = vehicleApi.Spawn(cadet, 'ncpd_cortes') end)
+		control.Pump(4)
+		check('and its fleet key is no plate: the owned-car door refuses it',
+			asPlate ~= nil and asPlate.ok == false, asPlate and tostring(asPlate.error))
+		check('the list now says it is on the street',
+			listAt(cadet, yard).vehicles[1].out == true)
+
+		local removedCount = #control.vehicleRemoves
+		created = #control.vehicleCreates
+		answer = request(cadet, yard, 'ncpd_cortes')
+		check('picking it again brings THAT car to the exit: moved, never a second one',
+			answer[2] == true and answer[5] == 'recalled'
+				and #control.vehicleCreates == created + 1
+				and #control.vehicleRemoves == removedCount + 1
+				and #vehicleApi.JobVehicles('citizen-cadet') == 1,
+			('%s %s'):format(tostring(answer[3]), tostring(answer[5])))
+		local liveId = vehicleApi.JobLiveId('citizen-cadet', 'ncpd_cortes')
+		control.vehicles.byId[liveId] = { id = liveId, occupants = { 999 },
+			record = 'Vehicle.v_standard2_villefort_cortes_police' }
+		created = #control.vehicleCreates
+		answer = request(cadet, yard, 'ncpd_cortes')
+		check('and a car somebody is sitting in is not moved out from under them',
+			answer[2] == false and answer[3] == 'vehicle.occupied'
+				and #control.vehicleCreates == created, tostring(answer[3]))
+		control.vehicles.byId[liveId] = nil
+
+		-- ── the wire's slot is a claim ─────────────────────────────────────
+		local function refused(playerId, built, slot)
+			local before = #control.vehicleCreates
+			local said = request(playerId, built, slot)
+			if said[2] ~= false or #control.vehicleCreates ~= before then return nil end
+			return said[3]
+		end
+		check('a hand-made request above the rank is refused by name, and creates nothing',
+			refused(cadet, yard, 'ncpd_hellhound') == 'garages.job.gradeTooLow')
+		check('another job\'s row is refused by name',
+			refused(operator, yard, 'ncpd_cortes') == 'garages.job.required')
+		check('somebody with no such job is refused the same way',
+			refused(offDuty, yard, 'maxtac_merrimac') == 'garages.job.required')
+		check('and clocked off is refused on the duty',
+			refused(offDuty, yard, 'ncpd_cortes') == 'garages.job.offDuty')
+		check('an aircraft is not driven out of a ground garage',
+			refused(detective, yard, 'ncpd_av') == 'garages.job.notHere')
+		check('nor a car out of a pad', refused(detective, pad, 'ncpd_emperor') == 'garages.job.notHere')
+		check('and a slot no row carries is no row at all',
+			refused(captain, yard, 'ncpd_batmobile') == 'garages.job.notHere')
+
+		-- ── the aircraft, out of a pad ─────────────────────────────────────
+		local warps = #control.vehicleWarps
+		answer = request(detective, pad, 'ncpd_av')
+		local bird = control.vehicleCreates[#control.vehicleCreates]
+		check('the NCPD air unit comes out of the pad, lifted clear of it',
+			answer[2] == true and bird ~= nil and bird.record == 'Vehicle.av_zetatech_atlus'
+				and math.abs(bird.position.z - Access.AvLift()) < 1e-9, tostring(answer[3]))
+		check('created in its NCPD livery, which the platform applies on every player\'s game',
+			bird ~= nil and bird.appearance == 'zetatech_atlus_ncpd_01',
+			bird and tostring(bird.appearance))
+		check('with its pilot placed at the controls, like any aircraft out of a pad',
+			#control.vehicleWarps == warps + 1
+				and control.vehicleWarps[#control.vehicleWarps].playerId == detective)
+		env.Open77.vehicles.forcePlayerOutOfVehicle(detective)
+		answer = request(operator, hangar, 'maxtac_av')
+		bird = control.vehicleCreates[#control.vehicleCreates]
+		check('and the MaxTac AV out of the division\'s hangar, the way the role needs it',
+			answer[2] == true and answer[6] == 'maxtac_av' and bird ~= nil
+				and bird.record == 'Vehicle.max_tac_av'
+				and bird.appearance == 'zetatech_surveyor__basic_ep1_maxtac_01'
+				and math.abs(bird.position.z - Access.AvLift()) < 1e-9
+				and control.vehicleWarps[#control.vehicleWarps].playerId == operator,
+			tostring(answer[3]))
+		env.Open77.vehicles.forcePlayerOutOfVehicle(operator)
+
+		-- ── back to the pool at the door ───────────────────────────────────
+		local cortesId = vehicleApi.JobLiveId('citizen-cadet', 'ncpd_cortes')
+		control.Seat(officer, { vehicleId = cortesId, seat = 'seat_front_right' })
+		local other = vehicleApi.JobOccupied(officer)
+		check('somebody else\'s job car is not theirs to return: the door sees none',
+			other.ok and other.value == nil)
+		control.Seat(officer, nil)
+		control.Seat(cadet, { vehicleId = cortesId, seat = 'seat_front_left' })
+		check('and to the owned-car oracle it is nobody\'s car at all',
+			vehicleApi.Occupied(cadet).ok and vehicleApi.Occupied(cadet).value == nil)
+		local entry = yard.locations[1].entry
+		removedCount = #control.vehicleRemoves
+		local writes = #updates
+		mark = #notices
+		control.Stand(cadet, entry.x, entry.y, entry.z)
+		env.source = cadet
+		control.netEvents[garages.Event.REQUEST](entry.key)
+		control.Pump(8)
+		answer = lastEvent(garages.Event.ANSWER) or {}
+		check('driven into the door, it goes back to the pool',
+			answer[2] == true and answer[5] == 'returned' and answer[6] == 'ncpd_cortes'
+				and #control.vehicleRemoves == removedCount + 1
+				and vehicleApi.JobLiveId('citizen-cadet', 'ncpd_cortes') == nil,
+			('%s %s'):format(tostring(answer[3]), tostring(answer[5])))
+		check('and nothing was filed under the garage: no row, before or after',
+			#updates == writes and #inserts == 0)
+		check('and the player is told it went back', noticeSince(mark, cadet, 'garages.jobReturned') ~= nil)
+		control.Seat(cadet, nil)
+
+		-- ── leaving the job takes them back ────────────────────────────────
+		-- AT ONCE means inside the announcement: read with NO pump in between,
+		-- because this harness wakes every scheduled pass on every pump and the
+		-- sweep on JOB_SWEEP_MS would otherwise answer for the event.
+		answer = request(cadet, yard, 'ncpd_cortes')
+		removedCount = #control.vehicleRemoves
+		mark = #notices
+		local clocked = characterApi.SetJobDuty(cadet, false)
+		check('clocking off takes the job\'s car back at once, on the announcement itself',
+			answer[2] == true and clocked ~= nil and clocked.ok
+				and vehicleApi.JobLiveId('citizen-cadet', 'ncpd_cortes') == nil
+				and #control.vehicleRemoves == removedCount + 1)
+		control.Pump(2)
+		check('and says so', noticeSince(mark, cadet, 'garages.jobRecalled') ~= nil)
+		check('and the list offers nothing until the shift starts again',
+			jobsListed(listAt(cadet, yard)) == '')
+		characterApi.SetJobDuty(cadet, true)
+		control.Pump(4)
+		check('back on duty the row is there again, with nothing granted',
+			jobsListed(listAt(cadet, yard)) == 'ncpd_cortes')
+
+		-- A DISMISSAL ANNOUNCES NOTHING a module can listen for -- the character
+		-- module raises no job event when it removes one -- so the pass on
+		-- JOB_SWEEP_MS is what takes the car back.
+		answer = request(officer, yard, 'ncpd_hella')
+		removedCount = #control.vehicleRemoves
+		local fired = nil
+		env.CreateThread(function() fired = characterApi.RemovePlayerFromJob(officer, 'ncpd') end)
+		settle(control, function()
+			return vehicleApi.JobLiveId('citizen-officer', 'ncpd_hella') == nil
+		end, 120)
+		check('a dismissed Officer loses the patrol car on the next pass all the same',
+			answer[2] == true and fired ~= nil and fired.ok
+				and character.Players[officer].PlayerData.job.name == 'unemployed'
+				and vehicleApi.JobLiveId('citizen-officer', 'ncpd_hella') == nil
+				and #control.vehicleRemoves == removedCount + 1,
+			fired and tostring(fired.error))
+		local after = listAt(officer, yard)
+		check('LEAVING THE JOB REMOVES THEM: the list is the car they own and nothing of the job\'s',
+			jobsListed(after) == '' and #after.vehicles == 1 and after.vehicles[1].plate == 'OWN0001',
+			jobsListed(after))
+
+		-- NOTHING IS PULLED OUT FROM UNDER A DRIVER: a Detective demoted at the
+		-- wheel drives on, and the SUV goes back the first pass it stands empty.
+		answer = request(detective, yard, 'ncpd_emperor')
+		local suvId = vehicleApi.JobLiveId('citizen-detective', 'ncpd_emperor')
+		control.vehicles.byId[suvId] = { id = suvId, occupants = { detective },
+			record = 'Vehicle.v_standard3_chevalier_emperor_police' }
+		-- Read on the demoting thread itself, the moment `SetJob` returns: no
+		-- other pass can have run in between, so what went back went back on the
+		-- announcement.
+		local demoted, airAfter, suvAfter = nil, 'unread', 'unread'
+		env.CreateThread(function()
+			demoted = characterApi.SetJob(detective, 'ncpd', 1)
+			airAfter = vehicleApi.JobLiveId('citizen-detective', 'ncpd_av')
+			suvAfter = vehicleApi.JobLiveId('citizen-detective', 'ncpd_emperor')
+		end)
+		control.Pump(6)
+		check('a Detective demoted at the wheel keeps the SUV while sitting in it',
+			answer[2] == true and demoted ~= nil and demoted.ok and suvAfter ~= nil
+				and suvAfter ~= 'unread'
+				and vehicleApi.JobLiveId('citizen-detective', 'ncpd_emperor') ~= nil)
+		check('while the air unit, a Detective\'s and empty, went back with the rank at once',
+			airAfter == nil and vehicleApi.JobLiveId('citizen-detective', 'ncpd_av') == nil)
+		-- A new grade in the job being worked keeps its shift, so the Officer is
+		-- still on the clock -- and clocking on again changes nothing: the SUV
+		-- is still not theirs.
+		check('a demotion on the clock is still on the clock',
+			character.Players[detective].PlayerData.job.onDuty == true)
+		characterApi.SetJobDuty(detective, true)
+		control.Pump(4)
+		check('and clocking back on as an Officer does not make the SUV theirs again, only still aboard',
+			vehicleApi.JobLiveId('citizen-detective', 'ncpd_emperor') ~= nil
+				and character.Players[detective].PlayerData.job.grade.level == 1
+				and character.Players[detective].PlayerData.job.onDuty == true)
+		control.vehicles.byId[suvId] = nil
+		settle(control, function()
+			return vehicleApi.JobLiveId('citizen-detective', 'ncpd_emperor') == nil
+		end, 120)
+		check('and the SUV goes back the first pass nobody is aboard',
+			vehicleApi.JobLiveId('citizen-detective', 'ncpd_emperor') == nil)
+		check('the Officer\'s rows stay theirs', jobsListed(listAt(detective, yard))
+			== 'ncpd_cortes ncpd_hella ncpd_apollo')
+
+		-- A CHARACTER THAT GOES BACK TO THE SELECTION SCREEN is a holder who is
+		-- no longer loaded, and the pass treats them exactly so.
+		check('the operator still has the MaxTac AV out',
+			vehicleApi.JobLiveId('citizen-operator', 'maxtac_av') ~= nil)
+		character.Players[operator] = nil
+		character.Registry.byCitizenId['citizen-operator'] = nil
+		settle(control, function()
+			return vehicleApi.JobLiveId('citizen-operator', 'maxtac_av') == nil
+		end, 120)
+		check('and loses it once the character is no longer loaded',
+			vehicleApi.JobLiveId('citizen-operator', 'maxtac_av') == nil)
+
+		-- AND A DEPARTURE TAKES EVERYTHING BACK AT ONCE, aboard or not: the
+		-- holder is gone and there is nobody to wait for.
+		answer = request(lead, hangar, 'maxtac_av')
+		removedCount = #control.vehicleRemoves
+		local left = pcall(control.Fire, OPX.Host.PLAYER_DISCONNECTED, lead)
+		control.Pump(4)
+		check('a Squad Lead who leaves the server takes the AV with them, back to the pool',
+			answer[2] == true and left
+				and vehicleApi.JobLiveId('citizen-lead', 'maxtac_av') == nil
+				and #control.vehicleRemoves == removedCount + 1, tostring(answer[3]))
+
+		-- ── the operator's read-out ────────────────────────────────────────
+		local RESULT = OPX.Event(OPX.Channel.NET, 'runtime', 'commandResult')
+		local before = #control.clientEvents
+		control.commands['opx.garages.list'].run(captain, {})
+		control.Pump(2)
+		local said = {}
+		for index = before + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == RESULT and type(event[1]) == 'table' then said[#said + 1] = tostring(event[1].text) end
+		end
+		said = table.concat(said, '\n')
+		check('/opx.garages.list names each job\'s fleet, grade by grade',
+			said:find('job fleet maxtac (on duty): maxtac_av@0(av) maxtac_merrimac@0', 1, true) ~= nil
+				and said:find('job fleet ncpd (on duty): ncpd_cortes@0 ', 1, true) ~= nil, said:sub(-200))
+
+		Access.COOLDOWN_MS, Access.REQUESTS_PER_WINDOW = cooldown, windowLimit
+		seniority.enabled = ticking
+		OPX.NotifyLocale = notify
+	end
+end
+
+section('garages, client side: the job section of the list')
+do
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots for the job section', cwhy == nil, cwhy)
+
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local garages = OPX.Modules.Get('garages')
+		local Runtime = garages.Runtime
+		local page = cctl.pages[1]
+		local function lastDrawn(channel)
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == channel then return page.sent[index] end
+			end
+			return nil
+		end
+		local function labels(opened)
+			local out = {}
+			for _, row in ipairs(opened ~= nil and opened.payload.rows or {}) do
+				out[#out + 1] = (row.rule and '# ' or '') .. tostring(row.label)
+					.. (row.value ~= nil and (' = ' .. tostring(row.value)) or '')
+			end
+			return table.concat(out, ' | ')
+		end
+
+		cctl.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'jf_yard#1', label = 'MOTOR POOL', kind = 'garage', garage = 'jf_yard',
+				role = 'menu', location = 1, x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+		} })
+		cctl.Pump(6)
+
+		-- What `M.List` answers an NCPD Officer who owns one car, one of whose
+		-- job rows is already out.
+		local officer = { spot = 'jf_yard#1', garage = 'jf_yard', label = 'MOTOR POOL', kind = 'garage',
+			jobName = 'ncpd', jobLabel = 'NCPD', vehicles = {
+				{ job = 'ncpd_cortes', label = 'garages.job.vehicle.ncpdCortes',
+					record = 'Vehicle.v_standard2_villefort_cortes_police', out = false },
+				{ job = 'ncpd_hella', label = 'garages.job.vehicle.ncpdHella',
+					record = 'Vehicle.v_standard2_archer_hella_police', out = true },
+				{ job = 'ncpd_apollo', label = 'garages.job.vehicle.ncpdApollo',
+					record = 'Vehicle.v_sportbike3_brennan_apollo_police', out = false },
+				{ plate = 'OWN0001', record = 'Vehicle.v_standard2_archer_hella_player', here = true },
+			} }
+		cctl.netEvents[garages.Event.VEHICLES](officer)
+		cctl.Pump(2)
+		local opened = lastDrawn('opx:menu:open')
+		local rows = opened ~= nil and opened.payload.rows or {}
+		check('the job\'s vehicles are a section of their own, under the job\'s name',
+			rows[1] ~= nil and rows[1].rule == true and rows[1].label == 'NCPD service vehicles',
+			labels(opened))
+		check('each named in words, with the vehicle glyph, and ready',
+			rows[2] ~= nil and rows[2].label == 'Villefort Cortes patrol car'
+				and rows[2].value == 'Ready' and rows[2].icon == 'vehicle', labels(opened))
+		check('and the one already out says it is on the street',
+			rows[3] ~= nil and rows[3].label == 'Archer Hella patrol car'
+				and rows[3].value == 'On the street', labels(opened))
+		check('the car they own follows under a caption of its own',
+			rows[5] ~= nil and rows[5].rule == true and rows[5].label == 'Your vehicles'
+				and rows[6] ~= nil and rows[6].label == 'OWN0001' and rows[6].value == 'Parked here',
+			labels(opened))
+		check('and the row under the cursor says what a job vehicle is',
+			opened ~= nil and type(opened.payload.hint) == 'string'
+				and opened.payload.hint:find('cannot be sold', 1, true) ~= nil,
+			opened and tostring(opened.payload.hint))
+
+		-- PICKED, it asks for the ROW and never for a plate or a record.
+		local before = #cctl.serverEvents
+		cctl.PageEmit(page, 'opx:menu:choose',
+			{ handle = opened ~= nil and opened.payload.handle or 0, index = opened ~= nil and opened.payload.first + 1 or 0 })
+		local sent = nil
+		for index = #cctl.serverEvents, before + 1, -1 do
+			if cctl.serverEvents[index].name == garages.Event.REQUEST then
+				sent = cctl.serverEvents[index]
+				break
+			end
+		end
+		check('picking one asks the server for that row of the fleet, and only that',
+			sent ~= nil and sent[1] == 'jf_yard#1' and sent[2] == nil and sent[3] == nil
+				and sent[4] == 'ncpd_cortes' and Runtime.Report().listing == nil,
+			sent and ('%s %s %s %s'):format(tostring(sent[1]), tostring(sent[2]), tostring(sent[3]),
+				tostring(sent[4])))
+
+		-- A LIST WITH NO JOB ROWS IS DRAWN EXACTLY AS IT ALWAYS WAS: no caption,
+		-- nothing moved -- for a civilian, nothing about their garage changed.
+		cctl.netEvents[garages.Event.VEHICLES]({ spot = 'jf_yard#1', garage = 'jf_yard',
+			label = 'MOTOR POOL', kind = 'garage', vehicles = {
+				{ plate = 'OWN0002', record = 'Vehicle.v_standard2_archer_hella_player', here = false },
+			} })
+		cctl.Pump(2)
+		opened = lastDrawn('opx:menu:open')
+		rows = opened ~= nil and opened.payload.rows or {}
+		check('a list with no job rows carries no caption at all, exactly as before',
+			rows[1] ~= nil and rows[1].rule == nil and rows[1].label == 'OWN0002'
+				and rows[1].value == 'Elsewhere', labels(opened))
+		Runtime.Use('test')
+
+		-- AND IN FRENCH, every word of it: the page holds no English.
+		local active = OPX.Locale.Current()
+		OPX.Locale.Set('fr')
+		cctl.netEvents[garages.Event.VEHICLES](officer)
+		cctl.Pump(2)
+		opened = lastDrawn('opx:menu:open')
+		rows = opened ~= nil and opened.payload.rows or {}
+		check('in French the section, the names and the states are French',
+			rows[1] ~= nil and rows[1].label == 'Véhicules de service NCPD'
+				and rows[2].label == 'Voiture de patrouille Villefort Cortes'
+				and rows[2].value == 'Disponible' and rows[3].value == 'Dans la rue'
+				and rows[4].label == 'Moto de patrouille Brennan Apollo'
+				and rows[5].label == 'Vos véhicules' and rows[6].value == 'Garé ici',
+			labels(opened))
+		OPX.Locale.Set(active)
 	end
 end
 
@@ -11587,6 +12613,155 @@ do
 	end
 end
 
+-- ── the levels on the staff menu ─────────────────────────────────────────────
+-- THE OWNER'S REPORT (2026-09-28): "im not seeing admin controlls in admin panel
+-- to max all in game levels and base game client levels". The lever existed
+-- only as a typed line, `/opx.skills.level max`, whose `max` also maxes the base
+-- game's own levels on that player's machine. Myself and every player's page
+-- now carry it (LINKS.SKILLS_LEVEL), `reset` behind a confirmation, and Myself
+-- the ripperdoc's chrome override (LINKS.CHROME) -- each greyed when the ACL
+-- refuses its command, as every row of this menu is.
+section('the staff menu maxes a character\'s levels, the base game\'s with them')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the level rows', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+
+		local sent = {}
+		env.TriggerServerEvent = function(name, ...)
+			sent[#sent + 1] = { name = name, args = { ... } }
+			return true
+		end
+		local function lastLine()
+			for index = #sent, 1, -1 do
+				if sent[index].name == admin.Host.COMMAND_EXECUTE then
+					local words = {}
+					for _, word in ipairs(sent[index].args) do words[#words + 1] = tostring(word) end
+					return table.concat(words, ' ')
+				end
+			end
+			return nil
+		end
+
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(handle, spec)
+				specs[#specs + 1] = spec
+				return realMenu.Update(handle, spec)
+			end,
+		}, { __index = realMenu })
+		local function rowOf(id)
+			for _, item in ipairs((specs[#specs] or {}).items or {}) do
+				if item.id == id then return item end
+			end
+			return nil
+		end
+		local function act(itemId)
+			local item = rowOf(itemId)
+			if item == nil then return false end
+			local on
+			for index = #specs, 1, -1 do
+				if specs[index].on then on = specs[index].on break end
+			end
+			if on == nil then return false end
+			on({ action = 'select', itemId = itemId, handle = 1, data = item.data })
+			return true
+		end
+		local function line(tokens)
+			return type(tokens) == 'table' and table.concat(tokens, ' ') or nil
+		end
+
+		local granted = { ['opx.skills.level'] = true, ['opx.clinic.chrome'] = true }
+		control.netEvents[admin.Event.OPEN]({ access = granted, aclKnown = true, inventory = false })
+		control.Pump(10)
+		admin.Menu.OpenAt('self')
+		control.Pump(10)
+		local max, reset, chrome = rowOf('levelsMax'), rowOf('levelsReset'), rowOf('chromeFull')
+		check('Myself carries the levels: max all of them (the tree and the base game), reset, and a fresh life ' ..
+			'on every piece of chrome fitted',
+			max ~= nil and not max.disabled and reset ~= nil and not reset.disabled
+				and chrome ~= nil and not chrome.disabled
+				and type(max.data) == 'table' and line(max.data.run) == 'opx.skills.level max'
+				and type(reset.data) == 'table' and line(reset.data.confirm) == 'opx.skills.level reset'
+				and reset.data.run == nil
+				and type(chrome.data) == 'table' and line(chrome.data.run) == 'opx.clinic.chrome full',
+			('%s / %s / %s'):format(tostring(max and line(max.data.run)),
+				tostring(reset and line(reset.data.confirm)), tostring(chrome and line(chrome.data.run))))
+		check('under a LEVELS heading, between the health rows and the weapons',
+			(function()
+				local items = (specs[#specs] or {}).items or {}
+				local at = {}
+				for index, item in ipairs(items) do
+					if item.id then at[item.id] = index end
+					if item.separator and item.label == 'LEVELS' then at.heading = index end
+				end
+				return at.heading ~= nil and at.god ~= nil and at.levelsMax ~= nil and at.chromeFull ~= nil
+					and at.god < at.heading and at.heading < at.levelsMax and at.levelsMax < at.levelsReset
+					and at.levelsReset < at.chromeFull
+			end)())
+
+		sent = {}
+		act('levelsMax')
+		control.Pump(6)
+		check('pressing Max all levels sends the line for the operator themselves',
+			lastLine() == 'opx.skills.level max', tostring(lastLine()))
+		sent = {}
+		act('levelsReset')
+		control.Pump(6)
+		check('Reset levels asks first and sends nothing', lastLine() == nil, tostring(lastLine()))
+		act('confirm')
+		control.Pump(6)
+		check('and sends the reset once it is confirmed',
+			lastLine() == 'opx.skills.level reset', tostring(lastLine()))
+		sent = {}
+		admin.Menu.OpenAt('self')
+		control.Pump(10)
+		act('chromeFull')
+		control.Pump(6)
+		check('Repair all chrome sends the ripperdoc\'s override on the operator\'s own body',
+			lastLine() == 'opx.clinic.chrome full', tostring(lastLine()))
+
+		admin.Menu.OpenAt('player', 7)
+		control.Pump(10)
+		local theirMax, theirReset = rowOf('levelsMax'), rowOf('levelsReset')
+		check('a player\'s page carries max and reset for THAT player, and no chrome row (the override is the ' ..
+			'operator\'s own body only)',
+			theirMax ~= nil and line(theirMax.data.run) == 'opx.skills.level max 7'
+				and theirReset ~= nil and line(theirReset.data.confirm) == 'opx.skills.level reset 7'
+				and rowOf('chromeFull') == nil,
+			('%s / %s'):format(tostring(theirMax and line(theirMax.data.run)),
+				tostring(theirReset and line(theirReset.data.confirm))))
+		sent = {}
+		act('levelsMax')
+		control.Pump(6)
+		check('and pressing it sends the line naming them',
+			lastLine() == 'opx.skills.level max 7', tostring(lastLine()))
+
+		control.netEvents[admin.Event.ACCESS]({ access = {}, aclKnown = true, inventory = false })
+		control.Pump(10)
+		admin.Menu.OpenAt('self')
+		control.Pump(10)
+		local refusedMax, refusedChrome = rowOf('levelsMax'), rowOf('chromeFull')
+		check('an operator the ACL refuses sees both rows greyed, not missing',
+			refusedMax ~= nil and refusedMax.disabled == true
+				and refusedChrome ~= nil and refusedChrome.disabled == true)
+
+		local links = admin.Section('LINKS')
+		local keptLevel, keptChrome = links.SKILLS_LEVEL, links.CHROME
+		links.SKILLS_LEVEL, links.CHROME = false, false
+		admin.Menu.OpenAt('self')
+		control.Pump(10)
+		check('and a server that empties the two LINKS names has no level rows at all',
+			rowOf('levelsMax') == nil and rowOf('levelsReset') == nil and rowOf('chromeFull') == nil)
+		links.SKILLS_LEVEL, links.CHROME = keptLevel, keptChrome
+	end
+end
+
 -- ── one press, one outcome ───────────────────────────────────────────────────
 -- The owner's report was "des fois aussi je recois des message du style slow
 -- down dans le menu admin mais cela marche quand meme": a Slow down toast on a
@@ -12226,6 +13401,121 @@ do
 	end
 	check('no locale sentence renders its own escape as text',
 		#mangled == 0, table.concat(mangled, ', '))
+end
+
+-- ── an apostrophe is an elision, never a letter ─────────────────────────────
+-- THE ACCENT THAT BECAME AN APOSTROPHE. The skill tree's French shipped with
+-- every accented letter replaced by `\u{2019}` -- `ARBRE DE COMP\u{2019}TENCES`,
+-- `Pas l\u{2019}ger`, `n\u{2019}ud` for `nœud` -- and it loads, renders and passes
+-- every key-for-key check, because the keys were all there. What gives it away
+-- is French itself: a real apostrophe only ever follows an elided word (`l`,
+-- `d`, `qu`, `jusqu`...) and only ever comes before a vowel or an `h`. Every
+-- French string in every catalogue is read for one that breaks that rule, and
+-- for the one shape of a lost `œ` that happens to keep it (`n\u{2019}ud`,
+-- `c\u{2019}ur`, `s\u{2019}ur`). Only the typographic apostrophe is judged: a
+-- plain `'` in these catalogues quotes a command (`'/'`, `'signup'`) or names
+-- a brand, and that is not what a mangled accent turns into.
+section('no French sentence spells a letter as an apostrophe')
+do
+	local files = { 'locales/fr.lua' }
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'shared')) do
+		if file:match('^modules/.*locales%.lua$') then files[#files + 1] = file end
+	end
+
+	local ELIDED = {
+		l = true, d = true, j = true, m = true, n = true, s = true, t = true, c = true,
+		qu = true, jusqu = true, lorsqu = true, puisqu = true, quoiqu = true,
+		presqu = true, quelqu = true, aujourd = true, entr = true,
+	}
+	-- What an elision may stand before: a vowel or an h, accented or not.
+	local OPENS = {}
+	for _, code in utf8.codes('aeiouyhàâäéèêëîïôöùûüÿæœAEIOUYHÀÂÄÉÈÊËÎÏÔÖÙÛÜŸÆŒ') do
+		OPENS[code] = true
+	end
+	local APOSTROPHE = 0x2019
+	local function isLetter(code)
+		return code ~= nil and ((code >= 65 and code <= 90) or (code >= 97 and code <= 122)
+			or (code >= 0xC0 and code <= 0x24F and code ~= 0xD7 and code ~= 0xF7))
+	end
+
+	--- Every French string a file registers, read line by line out of the
+	-- source (a value may continue over the next lines), as `key -> text`.
+	local function frenchOf(file)
+		local found, block, pending, key, lines = {}, nil, nil, nil, 0
+		local function settle(text)
+			local chunk = load('return {' .. text .. '\n}', '=locale', 't', {})
+			if chunk == nil then return false end
+			local ok, value = pcall(chunk)
+			if ok and type(value) == 'table' and type(value[1]) == 'string' then
+				found[key] = value[1]
+				return true
+			end
+			return false
+		end
+		local handle = io.open(file, 'r')
+		if handle == nil then return nil end
+		for line in handle:lines() do
+			if line:match('^local FR = {') or line:match("Register%('fr', {") then
+				block, pending = 'fr', nil
+			elseif line:match('^local [%u_]+ = {') or line:match("Register%('%a%a', {") then
+				block, pending = nil, nil
+			elseif line:match('^}') then
+				block, pending = nil, nil
+			elseif block == 'fr' then
+				local named, rest = line:match("^%s*%[%s*'([^']+)'%s*%]%s*=%s*(.*)$")
+				if named ~= nil then
+					key, pending = named, nil
+					if not settle(rest) then pending, lines = rest, 0 end
+				elseif pending ~= nil then
+					pending, lines = pending .. '\n' .. line, lines + 1
+					if settle(pending) or lines > 8 then pending = nil end
+				end
+			end
+		end
+		handle:close()
+		return found
+	end
+
+	local read, broken = 0, {}
+	for _, file in ipairs(files) do
+		for key, text in pairs(frenchOf(file) or {}) do
+			read = read + 1
+			local codes = {}
+			local valid = pcall(function()
+				for _, code in utf8.codes(text) do codes[#codes + 1] = code end
+			end)
+			if not valid then
+				broken[#broken + 1] = ('%s %s: not UTF-8'):format(file, key)
+			else
+				for at, code in ipairs(codes) do
+					if code == APOSTROPHE then
+						local word, back = {}, at - 1
+						while back >= 1 and isLetter(codes[back]) do
+							table.insert(word, 1, utf8.char(codes[back]))
+							back = back - 1
+						end
+						local tail, ahead = {}, at + 1
+						while ahead <= #codes and isLetter(codes[ahead]) do
+							tail[#tail + 1] = utf8.char(codes[ahead])
+							ahead = ahead + 1
+						end
+						local elided = table.concat(word):lower()
+						local after = table.concat(tail):lower()
+						local fine = ELIDED[elided] == true and OPENS[codes[at + 1]] == true
+							and after:match('^ud') == nil and after ~= 'ur' and after ~= 'urs'
+						if not fine then
+							broken[#broken + 1] = ('%s %s: %s\u{2019}%s'):format(file, key,
+								table.concat(word), table.concat(tail))
+						end
+					end
+				end
+			end
+		end
+	end
+	table.sort(broken)
+	check('the French catalogues were read', read > 2000, ('%d French string(s)'):format(read))
+	check('and every apostrophe in them is an elision, not a letter that was lost',
+		#broken == 0, table.concat(broken, ' | '))
 end
 
 
@@ -13261,6 +14551,86 @@ end
 -- TWO DEFECTS THE OWNER FOUND BY PLAYING, and both are the same mistake in
 -- different clothes: a number read from the wrong place, and a state read from
 -- the wrong place.
+-- ── the mission's HUD ────────────────────────────────────────────────────────
+-- A side job started by talking to an NPC showed no objective, no toast and no
+-- call: this HUD hid the tracker and the vanilla notification stack itself,
+-- on top of the platform. The preload (`OpxQuests.reds`) shows them again only
+-- while these components are left to the game, so the flags ARE the switch.
+section('missions: the HUD leaves the tracker, the toasts, the phone and the scanner to the game')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		control.Pump(20)
+		local claims = control.hud.claims
+		local function hidden(name) return next(claims[name] or {}) ~= nil end
+		check('the stock component table is read at all', claims.compass ~= nil,
+			'no claim recorded on compass')
+		check('the compass is still hidden (replaced by our own)', hidden('compass'))
+		for _, name in ipairs({ 'questTracker', 'vanillaNotifications', 'phone', 'scanner' }) do
+			check(name .. ' is left to the game', not hidden(name))
+		end
+	end
+end
+
+-- ── a mission's weapon ───────────────────────────────────────────────────────
+-- With the base game's missions playable, a quest hands V weapons the bag never
+-- saw. The 5 s scan took every one of them back off (REMOVE_UNBACKED), so a
+-- "shoot / use / bring X" step stalled. Off as shipped; the switch still works.
+section('weapons: a weapon a mission gave is not taken off')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	local inventory = why == nil and env.OPX.Modules.Get('inventory') or nil
+	if type(inventory) == 'table' and type(inventory.Weapons) == 'table' then
+		local Options = inventory.Options
+		check('the shipped config reads REMOVE_UNBACKED as off', Options.REMOVE_UNBACKED == false,
+			tostring(Options.REMOVE_UNBACKED))
+
+		local removed, asked = {}, 0
+		local realWeapons = env.Open77.weapons
+		env.Open77.weapons = {
+			assign = function() return 'assign-1' end,
+			setAmmo = function() return 'ammo-1' end,
+			remove = function(playerId, slot)
+				removed[#removed + 1] = ('%s:%s'):format(tostring(playerId), tostring(slot))
+				return 'remove-' .. #removed
+			end,
+			requestSnapshot = function()
+				asked = asked + 1
+				return 'snap-' .. asked
+			end,
+		}
+		local Players = inventory.Players
+		local realList, realGate = Players.List, Players.GateOpen
+		Players.List = function() return { { source = 7 } } end
+		Players.GateOpen = function(source) return source == 7 end
+
+		-- The weapon a mission handed over: equipped in slot 2, nothing in the
+		-- bag behind it, not locked.
+		local QUEST_ROW = { { slot = 2, equipped = true, locked = false, tweakDbId = '0x2A11F00D' } }
+
+		inventory.Weapons.Scan()
+		check('the scan asks the player\'s client what it holds', asked == 1, asked)
+		control.Fire('open77:weapons:completed', 7, 'snap-1', 'snapshot', true, nil, QUEST_ROW)
+		check('and a weapon nothing in the bag backs is left in the player\'s hands',
+			#removed == 0, table.concat(removed, ','))
+
+		Options.REMOVE_UNBACKED = true
+		inventory.Weapons.Scan()
+		control.Fire('open77:weapons:completed', 7, 'snap-2', 'snapshot', true, nil, QUEST_ROW)
+		check('while REMOVE_UNBACKED = true still takes it off, slot and all',
+			#removed == 1 and removed[1] == '7:2', table.concat(removed, ','))
+
+		Options.REMOVE_UNBACKED = false
+		Players.List, Players.GateOpen = realList, realGate
+		env.Open77.weapons = realWeapons
+	else
+		check('the inventory weapons are there', false)
+	end
+end
+
 section('weapons: the magazine and the hand')
 do
 	local env, _, why = boot('server')
@@ -21503,6 +22873,18 @@ do
 		local third = 83
 		load(third, 'citizen-ncpd-c')
 		local avFrom, npcFrom, poseFrom = #control.vehicleCreates, #control.npcCreates, #control.vehiclePoses
+		-- THE AIRCRAFT'S VOICE is the server's too: every sound it plays on the
+		-- airframe is recorded here with how many troopers stood at that moment.
+		local avSounds = {}
+		local realEffects = env.Open77.effects
+		env.Open77.effects = {
+			sound = function(target, event, options)
+				local pose = control.vehiclePoses[#control.vehiclePoses]
+				avSounds[#avSounds + 1] = { target = target, event = event, options = options,
+					z = pose ~= nil and pose.definition.z or nil, poses = #control.vehiclePoses }
+				return true
+			end,
+		}
 		local lifted = Response.Apply('citizen-ncpd-c', third, 5)
 		local airframe = airframeFrom(avFrom)
 		local avNote = airframe == nil
@@ -21511,6 +22893,12 @@ do
 				span(airframe.position, origin), airframe.position.z)
 		check('the MaxTac stage flies an airframe in rather than only raising a star',
 			lifted.ok == true and lifted.value.av == true and airframe ~= nil, avNote)
+		-- The record names the base game's optical cloak: created in it, the
+		-- aircraft is stickers, one door and thrusters on every screen.
+		check('in the airframe\'s visible MaxTac livery, never the record\'s cloak',
+			airframe ~= nil and airframe.appearance == 'zetatech_surveyor__basic_ep1_maxtac_01'
+				and Law.Maxtac.AvAppearance == 'zetatech_surveyor__basic_ep1_maxtac_01',
+			airframe and tostring(airframe.appearance))
 		check('and it starts out along its approach and high, not over the player',
 			airframe ~= nil and math.abs(airframe.position.z - plan.ApproachAltitude) < 0.001
 				and math.abs(span(airframe.position, origin) - plan.ApproachMetres) < 0.01,
@@ -21620,6 +23008,39 @@ do
 			control.vehicleRemoves[#control.vehicleRemoves] == avId
 				and AV.IsInbound('citizen-ncpd-c') == false and AV.Inbound() == 0,
 			('%d removal(s), %d inbound'):format(#control.vehicleRemoves, AV.Inbound()))
+		env.Open77.effects = realEffects
+
+		-- The base game's own MaxTac AV sounds, in the base game's order, on the
+		-- airframe itself (reported 2026-09-28: "give the maxtac av the sfx from
+		-- the in game maxtac av when it lands releasing the troopers").
+		local heard = {}
+		for _, played in ipairs(avSounds) do heard[#heard + 1] = played.event end
+		local sounds = Law.Maxtac.AvSounds
+		check('the shipped config names the base game\'s four MaxTac AV events',
+			sounds.Descend == 'av_maxtac_start_descent' and sounds.Deploy == 'av_maxtac_descent_horn'
+				and sounds.Hold == 'av_maxtac_hover_idle' and sounds.Climb == 'av_maxtac_start_ascent')
+		check('the airframe drops, sounds its horn, hangs at the street and climbs out, in that order',
+			table.concat(heard, ',') == 'av_maxtac_start_descent,av_maxtac_descent_horn,'
+				.. 'av_maxtac_hover_idle,av_maxtac_start_ascent', table.concat(heard, ','))
+		local decimal = tostring(tonumber(avId:match('^0x(%x+)$'), 16))
+		local onHull = #avSounds > 0
+		for _, played in ipairs(avSounds) do
+			if played.target.kind ~= 'vehicle' or played.target.id ~= decimal then onHull = false end
+		end
+		check('every one on the airframe itself, by its id as a decimal string', onHull,
+			avSounds[1] and ('%s %s vs %s'):format(avSounds[1].target.kind, avSounds[1].target.id, decimal))
+		-- THE HORN IS THE MOMENT IT IS DOWN: the pose it sounds on is the drop
+		-- altitude, and the squad steps out DEPLOY_SECONDS later (the base game
+		-- sounds it, then its squad jumps out), with the hover after that.
+		local horn = avSounds[2]
+		local deployPoses = math.floor(plan.DeploySeconds * 1000 / plan.TickMs + 0.5)
+		check('and the horn sounds the moment the aircraft is down, before the squad steps out, once',
+			horn ~= nil and horn.event == 'av_maxtac_descent_horn'
+				and math.abs(horn.z - plan.DropAltitude) < 0.001
+				and avSounds[3] ~= nil and avSounds[3].poses - horn.poses == deployPoses
+				and horn.options.actionId == ('opx-maxtac-av:%s:Deploy'):format(decimal),
+			horn and ('horn at %.1fm, %d pose(s) before the hover (deploy is %d)'):format(horn.z,
+				avSounds[3] and avSounds[3].poses - horn.poses or -1, deployPoses))
 
 		-- ── a cleared stage takes the aircraft down ─────────────────────────
 		-- An aircraft still holding a bucket its own response no longer owns
@@ -21862,16 +23283,152 @@ do
 		check('but the aircraft is still theirs: nothing is removed under them',
 			AV.IsInbound('citizen-ncpd-crew-subject') == true)
 
-		-- ── the crew steps out, and only then does the run end ───────────
+		-- ── the crew steps out: she is PARKED for them, not taken away ─────
+		-- The owner, 2026-09-29: "not being able to reboard the maxtac av after
+		-- landing". Stepping out used to end the run and remove the airframe
+		-- from under the crew's feet; she now stands where they left her for
+		-- `BOARDING.PARK_SECONDS`, with an aircraft door (`modules/avdoor`) the
+		-- division's own duty rule opens.
+		check('the shipped config parks her for her crew for minutes, not seconds',
+			boarding.ParkSeconds >= 60, tostring(boarding.ParkSeconds))
+		local shippedPark = boarding.ParkSeconds
+		boarding.ParkSeconds = 1
+		-- The hull as the host reads her parked on the street: a record the
+		-- door knows for an aircraft, in the crew's bucket, standing still.
+		control.vehicles.snapshot = { x = door.position.x, y = door.position.y,
+			z = door.position.z, speed = 0.0, record = 'Vehicle.max_tac_av', bucket = 0 }
 		control.Seat(crew, nil)
 		local removedFrom = #control.vehicleRemoves
 		avJob.step()
-		check('the run ends when the last of the crew is out',
+		check('when the last of the crew is out she stays, parked for them',
+			AV.IsInbound('citizen-ncpd-crew-subject') == true and #control.vehicleRemoves == removedFrom,
+			('%d removal(s)'):format(#control.vehicleRemoves - removedFrom))
+
+		-- ── the aircraft door on the parked hull ────────────────────────────
+		local avdoor = OPX.Api.Get('avdoor')
+		check('the aircraft door contract is running beside the division',
+			avdoor ~= nil and type(avdoor.Verdict) == 'function' and type(avdoor.Board) == 'function')
+		local verdict, verdictWhy = avdoor.Verdict(crew, opened.avId)
+		check('the trooper on duty who flew her is offered the pilot\'s seat',
+			verdict ~= nil and verdict.role == 'pilot' and verdict.seat == 'seat_front_left',
+			verdict and verdict.seat or tostring(verdictWhy))
+		standing[offCrew] = standing[crew]
+		local offVerdict, offWhy = avdoor.Verdict(offCrew, opened.avId)
+		check('a trooper of the division who is clocked off is not offered the controls, only a seat beside them',
+			offVerdict ~= nil and offVerdict.role == 'passenger' and offVerdict.seat ~= 'seat_front_left',
+			offVerdict and ('%s in %s'):format(offVerdict.role, offVerdict.seat) or tostring(offWhy))
+		standing[stranger] = standing[crew]
+		local _, strangerWhy = avdoor.Verdict(stranger, opened.avId)
+		check('and a connection with no character is refused as one', strangerWhy == 'no_character',
+			tostring(strangerWhy))
+
+		-- THROUGH THE WIRE, the way the key reaches it: the payload names the
+		-- hull and nothing else, and the answer goes to that connection alone.
+		-- A trooper of the division who was NOT in her first crew climbs in:
+		-- the door is the division's, not the first crew's.
+		local wing = 101
+		onShift(wing, 'citizen-ncpd-crew-wing', 'maxtac', true)
+		standing[wing] = standing[crew]
+		local avdoorModule = OPX.Modules.Get('avdoor')
+
+		--- Presses the aircraft key as one connection and waits for the answer:
+		--- the seat's door swings first and the body is seated a moment later.
+		local function press(playerId)
+			local from = #control.clientEvents
+			env.source = playerId
+			control.netEvents[avdoorModule.Event.BOARD]({ id = tostring(opened.avId) })
+			env.source = nil
+			local function answered()
+				for index = from + 1, #control.clientEvents do
+					local event = control.clientEvents[index]
+					if event.name == avdoorModule.Event.BOARDED and event.source == playerId then
+						return event[1]
+					end
+				end
+				return nil
+			end
+			for _ = 1, 20 do
+				if answered() ~= nil then break end
+				control.Pump(1)
+			end
+			return answered()
+		end
+
+		-- A BODY THAT ONLY RIDES ALONG IS NOT HER CREW. The clocked-off trooper
+		-- sits beside where the pilot will sit: the seat is hers, the run's
+		-- custody, its park window and its radio are not.
+		-- (The park window is long while the seats fill: a door that swings for half
+		-- a second is time the window would otherwise spend.)
+		boarding.ParkSeconds = 30
+		local crewBefore = #AV.Crew('citizen-ncpd-crew-subject')
+		local rode = press(offCrew)
+		check('a trooper who is clocked off climbs in as a passenger, not at the controls',
+			rode ~= nil and rode.ok == true and rode.role == 'passenger' and rode.seat ~= 'seat_front_left',
+			rode and tostring(rode.seat or rode.reason) or 'no answer')
+		avJob.step()
+		check('and is not her crew: the run\'s custody is what it was',
+			#AV.Crew('citizen-ncpd-crew-subject') == crewBefore
+				and AV.IsInbound('citizen-ncpd-crew-subject') == true,
+			('%d crew'):format(#AV.Crew('citizen-ncpd-crew-subject')))
+		control.Seat(offCrew, nil)
+		OPX.ForgetCooldowns(offCrew)
+
+		local warpsFrom = #control.vehicleWarps
+		OPX.ForgetCooldowns(wing)
+		local climbed = press(wing)
+		boarding.ParkSeconds = 1
+		check('a trooper of the division on duty climbs in through the aircraft door',
+			climbed ~= nil and climbed.ok == true and climbed.seat == 'seat_front_left',
+			climbed and tostring(climbed.seat or climbed.reason) or 'no answer')
+		local rewarp = control.vehicleWarps[#control.vehicleWarps]
+		check('through the platform\'s own mount, into her, with no exit lock and no bucket change',
+			#control.vehicleWarps == warpsFrom + 1 and rewarp.playerId == wing
+				and tostring(rewarp.id) == tostring(opened.avId)
+				and type(rewarp.options) == 'table' and rewarp.options.moveBucket == false
+				and rewarp.options.exitLocked ~= true)
+		avJob.step()
+		local rejoined = AV.Crew('citizen-ncpd-crew-subject')
+		local wingAboard = false
+		for _, entry in ipairs(rejoined) do
+			if entry.playerId == wing and entry.aboard == true and entry.locked == false then wingAboard = true end
+		end
+		check('and is her crew now: the custody read finds them aboard, with no lock to lift',
+			wingAboard and AV.IsInbound('citizen-ncpd-crew-subject') == true, ('%d crew'):format(#rejoined))
+		-- The first park window runs out with somebody aboard: nothing happens,
+		-- because a crew aboard is a crew aboard, whoever they are.
+		control.Pump(12)
+		avJob.step()
+		check('her park window running out with a crew aboard takes nothing from under them',
+			AV.IsInbound('citizen-ncpd-crew-subject') == true and #control.vehicleRemoves == removedFrom)
+
+		-- ── out again: a FRESH window, and then she goes ────────────────────
+		control.Seat(wing, nil)
+		avJob.step()
+		check('out again, she is parked again for a window of her own, not the one that ran out',
+			AV.IsInbound('citizen-ncpd-crew-subject') == true and #control.vehicleRemoves == removedFrom)
+		control.Pump(12)
+		avJob.step()
+		check('and once her park window is over with nobody aboard, the run ends',
 			AV.IsInbound('citizen-ncpd-crew-subject') == false and AV.Inbound() == 0)
 		check('and the airframe is taken out of the world with it',
 			control.vehicleRemoves[#control.vehicleRemoves] == opened.avId
 				and #control.vehicleRemoves > removedFrom,
 			tostring(control.vehicleRemoves[#control.vehicleRemoves]))
+		-- The division's duty rule goes with the run: a trooper on duty is no longer
+		-- offered the controls of a hull that stands there (the stub still reads a
+		-- hull for every id), and once the host forgets the hull there is no door.
+		local afterVerdict = avdoor.Verdict(crew, opened.avId)
+		check('and her duty rule goes with her: the controls are nobody\'s by right any more',
+			afterVerdict == nil or afterVerdict.role ~= 'pilot',
+			afterVerdict and afterVerdict.role or 'refused')
+		local shelved = control.vehicles.snapshot
+		control.vehicles.snapshot = nil
+		local _, goneWhy = avdoor.Verdict(crew, opened.avId)
+		check('and her door goes with her: a hull the host does not have has no door',
+			goneWhy == 'no_aircraft', tostring(goneWhy))
+		control.vehicles.snapshot = shelved
+		control.vehicles.snapshot = { x = door.position.x, y = door.position.y,
+			z = door.position.z, speed = 0.0 }
 
 		-- ── a retracted insertion does not drop a crew out of the sky ────
 		-- The other way the lock comes off, and the shape that used to end in an
@@ -21925,16 +23482,33 @@ do
 		check('and lifts the lock by name, so the crew is not trapped in it',
 			unlocksFrom(liftsFrom) == 1, ('%d unlock(s)'):format(unlocksFrom(liftsFrom)))
 		control.Seat(third, nil)
+		local parkedFrom = #control.vehicleRemoves
 		avJob.step()
-		check('and it is removed once they are out',
-			AV.IsInbound('citizen-ncpd-crew-subject-two') == false
-				and AV.Inbound() == 0, tostring(AV.Inbound()) .. ' still inbound')
+		check('and once they are out she stands parked for them too',
+			AV.IsInbound('citizen-ncpd-crew-subject-two') == true
+				and #control.vehicleRemoves == parkedFrom, tostring(AV.Inbound()) .. ' inbound')
+		-- A cleared stage does not take a PARKED hull away: the arrest that
+		-- clears it is when a crew walks back to her.
+		Response.Release('citizen-ncpd-crew-subject-two')
+		check('a stage cleared again leaves the parked hull to her crew',
+			AV.IsInbound('citizen-ncpd-crew-subject-two') == true and #control.vehicleRemoves == parkedFrom)
+
+		-- A NEW STAGE FOR THE SAME SUSPECT IS FLOWN A NEW AIRCRAFT. The parked
+		-- one is the crew's now, not an insertion, so it steps aside rather
+		-- than refusing the next one as "already inbound".
+		local thirdRun = Response.Apply('citizen-ncpd-crew-subject-two', subject3, 5)
+		check('a new stage for the same suspect flies a new aircraft beside the parked one',
+			thirdRun.ok == true and thirdRun.value.av == true and AV.Inbound() == 2,
+			thirdRun.ok == true and table.concat(thirdRun.value.refused or {}, ', ')
+				.. (' / %d inbound'):format(AV.Inbound()) or 'refused')
+		boarding.ParkSeconds = shippedPark
 
 		control.vehicles.snapshot = pinned
 		env.Open77.players.position = realPosition
 		check('no aircraft is left in the air when the crew door block ends',
-			AV.RetractAll('the crew check is over') == 0 and AV.Inbound() == 0,
+			AV.RetractAll('the crew check is over') == 2 and AV.Inbound() == 0,
 			tostring(AV.Inbound()) .. ' still inbound')
+		Response.Release('citizen-ncpd-crew-subject-two')
 
 		-- ── a group the host refuses is reported, not fatal ─────────────────────
 		-- The officers still stand -- they exist in the world either way -- and the
@@ -22612,6 +24186,24 @@ do
 			asked ~= nil and #control.clientEvents > mark and asked.source == src)
 		check('naming the kind, the job and the key it was given',
 			asked ~= nil and asked[1] == 'boss' and asked[2] == 'ncpd' and asked[3] == 'jobs_desk_new',
+			asked and ('%s/%s/%s'):format(tostring(asked[1]), tostring(asked[2]), tostring(asked[3])))
+
+		-- THE KEY IS THE OPTIONAL WORD, as the usage says: one word after the
+		-- kind is the job, and a key is minted for it. It used to be read as the
+		-- key, leaving no job, and the command refused its own documented form.
+		mark = #control.clientEvents
+		control.commands['opx.jobs.add'].run(src, { 'boss', 'ncpd' })
+		asked = lastEvent(jobs.Event.CAPTURE)
+		check('with the key left out, the one word after the kind is the job and a key is minted',
+			#control.clientEvents > mark and asked ~= nil and asked[1] == 'boss' and asked[2] == 'ncpd'
+				and type(asked[3]) == 'string' and asked[3]:match('^boss%d+$') ~= nil,
+			asked and ('%s/%s/%s'):format(tostring(asked[1]), tostring(asked[2]), tostring(asked[3])))
+		mark = #control.clientEvents
+		control.commands['opx.jobs.add'].run(src, { 'trauma' })
+		asked = lastEvent(jobs.Event.CAPTURE)
+		check('and a lone job is a sign-up board for it, keyed for it',
+			#control.clientEvents > mark and asked ~= nil and asked[1] == 'signup' and asked[2] == 'trauma'
+				and type(asked[3]) == 'string' and asked[3]:match('^signup%d+$') ~= nil,
 			asked and ('%s/%s/%s'):format(tostring(asked[1]), tostring(asked[2]), tostring(asked[3])))
 
 		-- A JOB THE CONFIG DOES NOT OFFER CANNOT BE CAPTURED: a board for work that
@@ -23642,6 +25234,1254 @@ do
 	end
 end
 
+section('jobs, end to end: every job on the board, walked by one character each')
+do
+	-- WHAT THE OTHER JOB SECTIONS DO NOT DO. Each module's gate has a section of
+	-- its own, driven with a character built by hand at whatever grade the check
+	-- wanted. What no section did was START WHERE A PLAYER STARTS -- a character
+	-- with no job, standing at the employment office -- and walk it through the
+	-- whole of a job on the shipped config: the sign, the shift, the paycheck,
+	-- every rank of the ladder, and at every rank the doors that rank opens. That
+	-- walk is where the job system was broken, and every one of these was live
+	-- until this section found it:
+	--   * "Hand in your notice" on any row of the office left NCPD, whatever row
+	--     it was pressed on (the office's own headline job);
+	--   * a second job could never be WORKED: no player-facing way moved the
+	--     primary, so an NCPD Detective hired into MaxTac stayed NCPD for good;
+	--   * MaxTac banked no time at all, and its skill trunk was never fed;
+	--   * a promotion clocked its holder out, radio, patrol car and all;
+	--   * a MaxTac operator dismissed from the division was left Unemployed with
+	--     the NCPD badge still on the books;
+	--   * the skill tree shipped on F3, the animation picker's key.
+	--
+	-- THE SERVER'S CLOCK IS MOVABLE HERE, and that is what makes pay testable at
+	-- all: the paycheck is due ten minutes of `OPX.Now` apart, and the harness
+	-- moves 100 ms a round. `skew` is added to the game timer the runtime reads
+	-- (`OPX.Now` resolves it on first use, so it is wrapped before anything
+	-- loads); one `payday()` is one interval, and one paycheck.
+	local skew = 0
+	local db = { groups = {}, banks = {}, characters = {} }
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		-- A stored character, for the one check below that logs somebody in.
+		single = function(sql, params)
+			if sql:find('FROM opx77_characters', 1, true) and type(params) == 'table' then
+				return db.characters[params.citizen]
+			end
+			return nil
+		end,
+		update = function(sql, params)
+			params = type(params) == 'table' and params or {}
+			if sql:find('INSERT INTO opx77_character_groups', 1, true) then
+				db.groups[('%s|%s|%s'):format(params.citizen, params.type, params.name)] =
+					{ citizen = params.citizen, type = params.type, name = params.name, grade = params.grade }
+			elseif sql:find('DELETE FROM opx77_character_groups', 1, true) then
+				db.groups[('%s|%s|%s'):format(params.citizen, params.type, params.name)] = nil
+			elseif sql:find('INSERT INTO opx77_job_seniority', 1, true) then
+				db.banks[('%s|%s'):format(params.citizen, tostring(params.job))] = params.points
+			elseif sql:find('DELETE FROM opx77_job_seniority', 1, true) then
+				db.banks[('%s|%s'):format(params.citizen, tostring(params.job))] = nil
+			end
+			return 0
+		end,
+		query = function(sql, params)
+			params = type(params) == 'table' and params or {}
+			-- The roster: the one statement that joins the two tables.
+			if sql:find('opx77_character_groups', 1, true) and sql:find('opx77_characters', 1, true) then
+				local rows = {}
+				for _, row in pairs(db.groups) do
+					if row.type == params.type and row.name == params.name then
+						rows[#rows + 1] = { citizen_id = row.citizen, grade = row.grade,
+							name = 'Journey ' .. row.citizen,
+							char_info = ('{"firstName":"Journey","lastName":"%s"}'):format(row.citizen) }
+					end
+				end
+				table.sort(rows, function(left, right)
+					if left.grade ~= right.grade then return left.grade > right.grade end
+					return left.citizen_id < right.citizen_id
+				end)
+				return rows
+			end
+			-- One character's memberships, which a login and an offline change read.
+			if sql:find('FROM opx77_character_groups', 1, true) and params.citizen ~= nil then
+				local rows = {}
+				for _, row in pairs(db.groups) do
+					if row.citizen == params.citizen then
+						rows[#rows + 1] = { group_type = row.type, group_name = row.name, grade = row.grade }
+					end
+				end
+				return rows
+			end
+			return {}
+		end,
+	}), function(e)
+		local timer = e.GetGameTimer
+		e.GetGameTimer = function() return timer() + skew end
+	end)
+	check('the server boots for the journeys, with a movable clock', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local jobs = OPX.Modules.Get('jobs')
+		local JobsAccess = jobs.Access
+		local characters = OPX.Modules.Get('character')
+		local character = OPX.Api.Get('character')
+		local contract = OPX.Api.Get('jobs')
+		local skillsApi = OPX.Api.Get('skills')
+		local Skill = OPX.Modules.Get('skills').Skill
+		local ncpd = OPX.Modules.Get('ncpd')
+		local shops = OPX.Modules.Get('shops')
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local Elevators = OPX.Modules.Get('elevators').Access
+		local Gunsmith = OPX.Modules.Get('gunsmith').Access
+		local Garages = OPX.Modules.Get('garages').Access
+		local settings = OPX.Config.MODULES.jobs
+		local MONEY = OPX.Config.MODULES.character.MONEY
+		local seniority = settings.SENIORITY
+		local OFFICE = settings.BOARDS.jobs_signup
+
+		-- THE LEVERS THIS SECTION HOLDS, and why each: the request window is a
+		-- stuck-key guard (the walk asks a hundred times a minute), the
+		-- seniority clock is driven by hand below (left running it banks a
+		-- point for every on-duty character on every round the harness pumps),
+		-- and the call-out floor is per suspect and there is one suspect.
+		local shippedWindow, shippedTick = settings.REQUESTS_PER_WINDOW, seniority.POINTS_PER_TICK
+		local shippedCallout = ncpd.Settings.ALERTS.COOLDOWN_MS
+		settings.REQUESTS_PER_WINDOW = 1000
+		seniority.enabled = false
+		ncpd.Settings.ALERTS.COOLDOWN_MS = 0
+
+		-- ── the wire, as a client uses it ────────────────────────────────────
+		local function send(id, name, ...)
+			local handler = control.netEvents[name]
+			-- A door nobody wired is a failed check, never a crash that takes
+			-- the rest of the walk down with it.
+			if type(handler) ~= 'function' then
+				return check(('the wire has a handler for %s'):format(tostring(name)), false)
+			end
+			OPX.ForgetCooldowns(id)
+			env.source = id
+			handler(...)
+			env.source = nil
+		end
+		local COMMAND_ANSWER = OPX.Event(OPX.Channel.NET, 'runtime', 'commandAnswer')
+		--- Runs one command as `id` typed it, and answers the line it was
+		--- answered with.
+		local function command(id, name, args)
+			OPX.ForgetCooldowns(id)
+			local from = #control.clientEvents
+			control.commands[name].run(id, args or {})
+			control.Pump(6)
+			for index = #control.clientEvents, from + 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == COMMAND_ANSWER and event.source == id then return tostring(event[3]) end
+			end
+			return ''
+		end
+		local function lastTo(id, name, from)
+			for index = #control.clientEvents, (from or 0) + 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == name and event.source == id then return event end
+			end
+			return nil
+		end
+		local function heard(id, from)
+			local out = {}
+			for index = from + 1, #control.notices do
+				if control.notices[index].playerId == id then
+					out[#out + 1] = tostring(control.notices[index].message)
+				end
+			end
+			return out
+		end
+		local function said(id, from, fragment)
+			for _, message in ipairs(heard(id, from)) do
+				if message:find(fragment, 1, true) then return true end
+			end
+			return false
+		end
+
+		-- ── a character, from nothing ────────────────────────────────────────
+		-- A REAL `Player`, built by the character module's own constructor
+		-- around a stored row that names no job: the default job, the default
+		-- duty and the shipped purse, exactly what the office sees on a new
+		-- character's first day.
+		local function arrive(id, citizenId)
+			local userId = 'account-' .. citizenId
+			control.Admit(id, userId)
+			OPX.EnsureSession(id)
+			local player = characters.CreatePlayer({
+				citizenId = citizenId, source = id, userId = userId,
+				name = 'Journey ' .. citizenId,
+				charInfo = { firstName = 'Journey', lastName = citizenId },
+				money = { EDDIES = 500, BANK = 5000 },
+			}, false)
+			player.PlayerData.jobs = {}
+			characters.Players[id] = player
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId[userId] = id
+			control.Stand(id, OFFICE.X, OFFICE.Y, OFFICE.Z)
+			return player.PlayerData
+		end
+		local function standOn(id, board) control.Stand(id, board.X, board.Y, board.Z) end
+
+		-- What the office says about one job, to this character, standing on it.
+		local function offerOf(id, job)
+			standOn(id, OFFICE)
+			send(id, jobs.Event.DETAIL, 'jobs_signup')
+			local verdict = lastTo(id, jobs.Event.STATE)
+			local offers = verdict ~= nil and type(verdict[2]) == 'table' and verdict[2].offers or {}
+			for _, offer in ipairs(offers) do
+				if offer.job == job then return offer, offers, verdict[2] end
+			end
+			return nil, offers, verdict and verdict[2]
+		end
+
+		-- The paycheck ledger: every paycheck the character module pays, as it
+		-- announces them.
+		local paychecks = {}
+		env.AddEventHandler(characters.Event.IN_PAYCHECK, function(source, amount, jobName)
+			paychecks[#paychecks + 1] = { source = tonumber(source), amount = amount, job = jobName }
+		end)
+		--- One paycheck interval, for everybody loaded: source -> { amount, job }.
+		--- The pass that pays runs the autosave first, and the autosave writes a
+		--- row per character -- so it takes as many rounds as there are people,
+		--- and the section waits for the paycheck rather than guessing them. The
+		--- newcomer below is on the default job, paid off the clock, so every
+		--- interval pays somebody and the wait always ends.
+		local function payday()
+			local from = #paychecks
+			skew = skew + (tonumber(MONEY.PAYCHECK_MINUTES) or 10) * 60000 + 1000
+			settle(control, function() return #paychecks > from end, 400)
+			control.Pump(1)
+			local out = {}
+			for index = from + 1, #paychecks do out[paychecks[index].source] = paychecks[index] end
+			return out
+		end
+
+		--- One pass of the seniority clock at `points` a pass, and back off.
+		local function tickOnce(points)
+			seniority.enabled = true
+			seniority.POINTS_PER_TICK = points
+			control.Pump(1)
+			seniority.enabled = false
+			seniority.POINTS_PER_TICK = shippedTick
+			control.Pump(6)
+		end
+
+		-- XP fed into every trunk of one character's tree, by trunk.
+		local function fed(citizenId)
+			local out = {}
+			local state = skillsApi.State(citizenId)
+			for _, branch in ipairs(state.ok and state.value.branches or {}) do
+				out[branch.id] = ((branch.rank or 1) - 1) * (branch.need or 100) + (branch.xp or 0)
+			end
+			return out
+		end
+
+		-- The job fields of a loaded character, stamped now: the snapshot the
+		-- elevator, armoury and garage servers build (`jobSnapshot`).
+		local function snapOf(id)
+			local data = characters.Players[id].PlayerData
+			return { job = data.job, jobs = data.jobs, atMs = OPX.Now() }
+		end
+		local function floorsOpen(key, id)
+			local open = {}
+			for _, row in ipairs(Elevators.List(key, snapOf(id), OPX.Now())) do
+				if row.ok then open[#open + 1] = row.label end
+			end
+			return table.concat(open, ', ')
+		end
+		local function fleet(id, kind)
+			local keys = {}
+			for _, row in ipairs(Garages.JobFleetFor(snapOf(id), OPX.Now(), kind)) do keys[#keys + 1] = row.key end
+			return table.concat(keys, ' ')
+		end
+		local function mayMake(id, recipe)
+			return (Gunsmith.MayMake('ncpd_watson_armoury', recipe, snapOf(id), OPX.Now())) == true
+		end
+		local function armouryDoor(id)
+			return (Gunsmith.Evaluate(Gunsmith.Armoury('ncpd_watson_armoury'), snapOf(id), OPX.Now())) == true
+		end
+		-- The AV pad's gate, as `config/avgarages.lua` ships it, on a pad built
+		-- the way `/opx.avgarages.add` builds one.
+		local avConfig = OPX.Config.MODULES.avgarages
+		local pad = Garages.CoerceAll({}, { JOBS = avConfig.JOBS, ON_DUTY = avConfig.ON_DUTY,
+			GARAGES = { journey_pad = { KIND = 'avpad', LABEL = 'JOURNEY PAD', LOCATIONS = { {
+				BUCKET = 0, MENU = { X = 0.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 0.0, Y = 20.0, Z = 0.0, HEADING = 90.0 },
+				EXITS = { { X = 10.0, Y = 40.0, Z = 0.0, HEADING = 90.0 } } } } } } }).journey_pad
+		local function padOpen(id) return (Garages.Evaluate(pad, snapOf(id), OPX.Now())) == true end
+
+		-- The looks the tailor at Jinguji offers this character.
+		local JINGUJI = OPX.Config.MODULES.shops.SHOPS.jinguji
+		local function looks(id)
+			control.Stand(id, JINGUJI.X, JINGUJI.Y, JINGUJI.Z)
+			local from = #control.clientEvents
+			send(id, shops.Event.OPEN, 'jinguji')
+			control.Pump(6)
+			local answer = lastTo(id, shops.Event.LOOKS, from)
+			local ids = {}
+			for _, row in ipairs(answer ~= nil and type(answer[1]) == 'table' and answer[1].looks or {}) do
+				-- The priced look every shop carries is nobody's job.
+				if row.id ~= 'corpo_black' then ids[#ids + 1] = tostring(row.id) end
+			end
+			table.sort(ids)
+			return table.concat(ids, ' ')
+		end
+
+		-- The scanner: which bands this character hears, or why it stays shut.
+		local function scanner(id)
+			local from = #control.clientEvents
+			send(id, ncpd.Event.RADIO)
+			local answer = lastTo(id, ncpd.Event.RADIO_STATE, from)
+			local frame = answer ~= nil and answer[1] or nil
+			if type(frame) ~= 'table' then return 'no answer' end
+			if frame.open ~= true then return tostring(frame.reason) end
+			local bands = {}
+			for _, band in ipairs(frame.channels or {}) do
+				if band.hear then bands[#bands + 1] = band.id end
+			end
+			return table.concat(bands, ' ')
+		end
+
+		-- The call-out: a suspect's stage rises, and who is told.
+		local SUSPECT = 399
+		arrive(SUSPECT, 'journey-suspect')
+		control.Stand(SUSPECT, 120.0, -880.0, 20.0)
+		local function calledOut(id)
+			send(SUSPECT, ncpd.Event.REPORT, 0)
+			control.Pump(2)
+			local from, told = #control.clientEvents, false
+			send(SUSPECT, ncpd.Event.REPORT, 1)
+			control.Pump(4)
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == ncpd.Event.DISPATCH and event.source == id then told = true end
+			end
+			send(SUSPECT, ncpd.Event.REPORT, 0)
+			control.Pump(2)
+			return told
+		end
+
+		-- The MaxTac crew door: what the knock answers this character. With no
+		-- aircraft holding, a crew member is refused by the AIRCRAFT; anybody
+		-- else is refused by the door's own rule first.
+		local function crewDoor(id)
+			local from = #control.clientEvents
+			send(id, ncpd.Event.BOARD)
+			control.Pump(3)
+			local answer = lastTo(id, ncpd.Event.BOARDED, from)
+			local reason = answer ~= nil and type(answer[1]) == 'table' and answer[1].reason or nil
+			if reason == 'notOnDuty' or reason == 'notDivision' then return reason end
+			return 'crew'
+		end
+
+		-- The clinic chair: what a press at the shipped chair makes you.
+		local chair = ripperdoc.Ripper.Chair('clinic_watson')
+		local function atChair(id)
+			control.Stand(id, chair.X, chair.Y, chair.Z)
+			local from = #control.clientEvents
+			send(id, ripperdoc.Event.USE, 'clinic_watson')
+			control.Pump(2)
+			local answer = lastTo(id, ripperdoc.Event.FRAME, from)
+			local mode = answer ~= nil and type(answer[1]) == 'table' and answer[1].mode or 'no frame'
+			-- Out of the chair again, by the door the role has.
+			if mode == 'sitter' then send(id, ripperdoc.Event.STAND) end
+			if mode == 'desk' then send(id, ripperdoc.Event.CLOSE) end
+			control.Pump(2)
+			return mode
+		end
+
+		local function clockOn(id)
+			if characters.Players[id].PlayerData.job.onDuty ~= true then command(id, 'opx.duty') end
+			return characters.Players[id].PlayerData.job.onDuty == true
+		end
+		local function clockOff(id)
+			if characters.Players[id].PlayerData.job.onDuty == true then command(id, 'opx.duty') end
+			return characters.Players[id].PlayerData.job.onDuty ~= true
+		end
+
+		-- ── the office lists the work on offer ───────────────────────────────
+		local newcomer = 300
+		arrive(newcomer, 'journey-newcomer')
+		local _, offers, office = offerOf(newcomer, 'ncpd')
+		local listed = {}
+		for _, offer in ipairs(offers) do listed[#listed + 1] = offer.job end
+		check('the office offers the nine jobs of config/jobs.lua, in order',
+			table.concat(listed, ' ') == 'corp fixer maxtac merc ncpd netrunner nomad ripperdoc trauma',
+			table.concat(listed, ' '))
+		local open, invitation = 0, 0
+		for _, offer in ipairs(offers) do
+			if offer.canJoin == true then open = open + 1 end
+			if offer.approval == true then invitation = invitation + 1 end
+		end
+		check('eight are open to a newcomer and MaxTac is by invitation',
+			open == 8 and invitation == 1, ('%d open, %d by invitation'):format(open, invitation))
+		local _, values = JobsAccess.Fits('jobs_signup', office)
+		check('and the whole verdict fits the client\'s window with room to spare',
+			(JobsAccess.Fits('jobs_signup', office)) == true, tostring(values))
+
+		-- ── the walk ─────────────────────────────────────────────────────────
+		--- Walks one open job from the office to the top of its ladder, calling
+		--- `atGrade(id, level)` at every rank for the doors that rank opens.
+		-- @param spec table { id, citizen, job, trunk, atGrade }
+		local function walk(spec)
+			local id, citizenId, job = spec.id, spec.citizen, spec.job
+			local definition = character.GetJob(job)
+			local terms = JobsAccess.Terms(job)
+			local label = definition.label
+			local data = arrive(id, citizenId)
+
+			local offer = offerOf(id, job)
+			check(('%s: the office offers it to a newcomer'):format(label),
+				offer ~= nil and offer.open == true and offer.canJoin == true and offer.held == nil)
+
+			-- ── signing on ─────────────────────────────────────────────────
+			local mark = #control.notices
+			send(id, jobs.Event.JOIN, 'jobs_signup', job)
+			control.Pump(6)
+			check(('%s: signing on makes it the job they work, as %s'):format(label, definition.grades[0].name),
+				data.job.name == job and data.job.grade.level == 0 and data.jobs[job] == 0,
+				('%s grade %s'):format(tostring(data.job.name), tostring(data.job.grade and data.job.grade.level)))
+			check(('%s: and they are told so in the catalogue\'s own words'):format(label),
+				said(id, mark, 'on the books for ' .. label), table.concat(heard(id, mark), ' | '))
+			check(('%s: the membership row is written'):format(label),
+				db.groups[('%s|job|%s'):format(citizenId, job)] ~= nil)
+
+			-- ── the shift ─────────────────────────────────────────────────
+			if definition.defaultDuty == true then
+				check(('%s: always on the clock from the first minute'):format(label), data.job.onDuty == true)
+				local answer = command(id, 'opx.duty')
+				check(('%s: /opx.duty has no shift to clock, and says so'):format(label),
+					data.job.onDuty == true and answer:find('no shifts', 1, true) ~= nil, answer)
+			else
+				check(('%s: starts off the clock'):format(label), data.job.onDuty ~= true)
+				check(('%s: /opx.duty clocks them on'):format(label), clockOn(id))
+			end
+
+			-- ── the pay ───────────────────────────────────────────────────
+			local payMark = #control.notices
+			local paid = payday()
+			check(('%s: a paycheck of %d on the clock, into BANK'):format(label, definition.grades[0].payment),
+				paid[id] ~= nil and paid[id].amount == definition.grades[0].payment and paid[id].job == job,
+				paid[id] and ('%s %s'):format(tostring(paid[id].amount), tostring(paid[id].job)) or 'not paid')
+			check(('%s: and the toast says it went into the bank account, and where to draw it'):format(label),
+				said(id, payMark, 'paid into your bank account. Draw it as cash at any bank branch.'),
+				table.concat(heard(id, payMark), ' | '))
+			if definition.defaultDuty ~= true then
+				clockOff(id)
+				local off = payday()
+				if definition.offDutyPay == true then
+					check(('%s: and paid off the clock too'):format(label), off[id] ~= nil)
+				else
+					check(('%s: and nothing off the clock'):format(label), off[id] == nil)
+				end
+				clockOn(id)
+			end
+
+			-- ── the work feeds the tree ──────────────────────────────────
+			check(('%s: its work feeds the %s trunk'):format(label, spec.trunk), Skill.BranchOf(job) == spec.trunk,
+				tostring(Skill.BranchOf(job)))
+			local before = fed(citizenId)
+			local banked = contract.Bank(citizenId, job)
+			tickOnce(1.0)
+			local after = fed(citizenId)
+			local others = 0
+			for trunk, xp in pairs(after) do
+				if trunk ~= spec.trunk and xp ~= (before[trunk] or 0) then others = others + 1 end
+			end
+			check(('%s: a minute on the clock banks a point and ten XP into that trunk alone'):format(label),
+				contract.Bank(citizenId, job) == banked + 1.0
+					and (after[spec.trunk] or 0) - (before[spec.trunk] or 0) == 10 and others == 0,
+				('bank %.1f, trunk +%s, %d other trunk(s) moved'):format(contract.Bank(citizenId, job),
+					tostring((after[spec.trunk] or 0) - (before[spec.trunk] or 0)), others))
+
+			-- ── every rank ────────────────────────────────────────────────
+			spec.atGrade(id, 0)
+			local levels = {}
+			for level in pairs(terms.ladder) do levels[#levels + 1] = level end
+			table.sort(levels)
+			for _, level in ipairs(levels) do
+				local need = terms.ladder[level]
+				-- Just short of the rank: no promotion.
+				contract.Award(citizenId, job, math.max(0, need - 0.5 - contract.Bank(citizenId, job)))
+				tickOnce(0.1)
+				local short = data.job.grade.level
+				contract.Award(citizenId, job, math.max(0, need - contract.Bank(citizenId, job)))
+				mark = #control.notices
+				tickOnce(0.1)
+				local rank = definition.grades[level]
+				check(('%s: %.0f minutes on the clock make them %s'):format(label, need, rank.name),
+					short == level - 1 and data.job.grade.level == level and data.jobs[job] == level,
+					('short of it %s, at it %s'):format(tostring(short), tostring(data.job.grade.level)))
+				check(('%s: told "%s" by name, and still on the clock'):format(label, rank.name),
+					said(id, mark, ('earned you %s in %s'):format(rank.name, label)) and data.job.onDuty == true,
+					table.concat(heard(id, mark), ' | '))
+				local wage = payday()
+				check(('%s: %s is paid %d'):format(label, rank.name, rank.payment),
+					wage[id] ~= nil and wage[id].amount == rank.payment,
+					wage[id] and tostring(wage[id].amount) or 'not paid')
+				spec.atGrade(id, level)
+				-- The floor between two promotions of one character.
+				skew = skew + (tonumber(seniority.PROMOTION_COOLDOWN_MS) or 5000) + 1000
+			end
+
+			local top = offerOf(id, job)
+			local boss = definition.grades[levels[#levels]].isBoss == true
+			check(('%s: the top of the ladder reads as the top, and as the boss'):format(label),
+				top ~= nil and top.held == levels[#levels] and top.next == nil and top.working == true
+					and top.isBoss == boss and boss == true,
+				top and ('held %s next %s boss %s'):format(tostring(top.held), tostring(top.next),
+					tostring(top.isBoss)) or 'no offer')
+			return data
+		end
+
+		-- ── NCPD ─────────────────────────────────────────────────────────────
+		local NCPD_FLEET = {
+			[0] = 'ncpd_cortes',
+			[1] = 'ncpd_cortes ncpd_hella ncpd_apollo',
+			[2] = 'ncpd_cortes ncpd_hella ncpd_apollo ncpd_emperor ncpd_merrimac',
+			[3] = 'ncpd_cortes ncpd_hella ncpd_apollo ncpd_emperor ncpd_merrimac ncpd_hellhound',
+		}
+		local NCPD_FLOORS = {
+			[0] = 'Street, Front Desk, Bullpen',
+			[1] = 'Street, Front Desk, Bullpen, Holding',
+			[2] = 'Street, Front Desk, Bullpen, Holding, Evidence',
+			[3] = 'Street, Front Desk, Bullpen, Holding, Evidence',
+		}
+		local cop = walk({ id = 301, citizen = 'journey-ncpd', job = 'ncpd', trunk = 'ncpd',
+			atGrade = function(id, level)
+				local rank = character.GetJob('ncpd').grades[level].name
+				check(('NCPD %s: the motor pool lists %s'):format(rank, NCPD_FLEET[level]),
+					fleet(id, 'garage') == NCPD_FLEET[level], fleet(id, 'garage'))
+				check(('NCPD %s: the air unit only from Detective'):format(rank),
+					fleet(id, 'avpad') == (level >= 2 and 'ncpd_av' or ''), fleet(id, 'avpad'))
+				check(('NCPD %s: the Watson lift opens %s'):format(rank, NCPD_FLOORS[level]),
+					floorsOpen('ncpd_watson', id) == NCPD_FLOORS[level], floorsOpen('ncpd_watson', id))
+				check(('NCPD %s: the armoury from Officer, marksman rounds from Detective'):format(rank),
+					armouryDoor(id) == (level >= 1) and mayMake(id, 'handgun_rounds') == (level >= 1)
+						and mayMake(id, 'rifle_rounds') == (level >= 1) and mayMake(id, 'sniper_rounds') == (level >= 2))
+				check(('NCPD %s: the tailor hands out the patrol set and the issue suit'):format(rank),
+					looks(id) == 'ncpd_issue_suit ncpd_patrol', looks(id))
+				check(('NCPD %s: the scanner hears the three city bands, not MaxTac\'s'):format(rank),
+					scanner(id) == 'ncpd tactical air', scanner(id))
+				check(('NCPD %s: the dispatch board lights up for a call-out'):format(rank), calledOut(id))
+				check(('NCPD %s: the MaxTac crew door is not theirs'):format(rank), crewDoor(id) == 'notDivision',
+					crewDoor(id))
+				check(('NCPD %s: no MaxTac pad'):format(rank), padOpen(id) == false)
+			end })
+		-- Off the clock, the job is a title: no car, no scanner, no dispatch.
+		clockOff(301)
+		check('NCPD off the clock: no patrol car, no scanner, no call-outs, no uniform, no Holding',
+			fleet(301, 'garage') == '' and scanner(301) == 'notOnDuty' and calledOut(301) == false
+				and looks(301) == '' and floorsOpen('ncpd_watson', 301) == 'Street, Front Desk, Bullpen')
+		clockOn(301)
+
+		-- THE DESK. The Captain is the boss grade, so the NCPD desk is drawn for
+		-- them, and a newcomer standing at it can be taken on there.
+		local deskCity = settings.BOARDS.jobs_desk_city
+		standOn(301, deskCity)
+		send(301, jobs.Event.ASK)
+		local synced = lastTo(301, jobs.Event.SYNC)
+		local desks = {}
+		for _, board in ipairs(synced ~= nil and type(synced[1]) == 'table' and synced[1].boards or {}) do
+			if board.kind == 'boss' then desks[#desks + 1] = board.key end
+		end
+		check('NCPD Captain: the NCPD desk is drawn for them, and no other',
+			table.concat(desks, ' ') == 'jobs_desk_city', table.concat(desks, ' '))
+		local recruit = 311
+		local recruitData = arrive(recruit, 'journey-recruit')
+		control.Stand(recruit, deskCity.X + 2.0, deskCity.Y, deskCity.Z)
+		local mark = #control.notices
+		send(301, jobs.Event.BOSS, 'jobs_desk_city', 'hire', recruit, 'test')
+		control.Pump(6)
+		check('NCPD Captain: hires a newcomer standing at the desk, as a Cadet they work',
+			recruitData.job.name == 'ncpd' and recruitData.job.grade.level == 0
+				and said(recruit, mark, 'taken on by NCPD'), table.concat(heard(recruit, mark), ' | '))
+		mark = #control.notices
+		send(301, jobs.Event.BOSS, 'jobs_desk_city', 'promote', 'journey-recruit', 'test')
+		control.Pump(6)
+		check('NCPD Captain: promotes them to Officer, by name',
+			recruitData.job.grade.level == 1 and said(recruit, mark, 'promoted to Officer in NCPD'),
+			table.concat(heard(recruit, mark), ' | '))
+		mark = #control.notices
+		send(301, jobs.Event.BOSS, 'jobs_desk_city', 'demote', 'journey-recruit', 'test')
+		control.Pump(6)
+		check('NCPD Captain: demotes them back to Cadet, by name',
+			recruitData.job.grade.level == 0 and said(recruit, mark, 'demoted to Cadet in NCPD'),
+			table.concat(heard(recruit, mark), ' | '))
+		mark = #control.notices
+		send(301, jobs.Event.BOSS, 'jobs_desk_city', 'fire', 'journey-recruit', 'test')
+		control.Pump(6)
+		check('NCPD Captain: dismisses them, and they are Unemployed again',
+			recruitData.jobs.ncpd == nil and recruitData.job.name == 'unemployed'
+				and said(recruit, mark, 'dismissed from NCPD'), table.concat(heard(recruit, mark), ' | '))
+
+		-- A RANK MOVED WHILE ITS HOLDER WAS AWAY. The Captain promotes an officer
+		-- who is not loaded: the roster row moves, and the character's own record
+		-- -- which nobody is loaded to move -- does not. Logging in, the roster
+		-- is the rank they work: the record used to pay and gate the old one
+		-- until their next change of job.
+		local away = 'journey-away'
+		db.characters[away] = { citizen_id = away, user_id = 'account-' .. away, cid = 1,
+			name = 'Journey Away', char_info = '{"firstName":"Journey","lastName":"Away"}',
+			money = '{"EDDIES":500,"BANK":5000}', job = '{"name":"ncpd","grade":{"level":0}}',
+			gang = '{}', metadata = '{}' }
+		db.groups[away .. '|job|ncpd'] = { citizen = away, type = 'job', name = 'ncpd', grade = 0 }
+		command(301, 'opx.jobs.promote', { 'ncpd', away })
+		check('NCPD Captain: promotes an officer who is away, and the roster row moves',
+			db.groups[away .. '|job|ncpd'] ~= nil and db.groups[away .. '|job|ncpd'].grade == 1,
+			db.groups[away .. '|job|ncpd'] and tostring(db.groups[away .. '|job|ncpd'].grade))
+		local awayId = 315
+		control.Admit(awayId, 'account-' .. away)
+		OPX.EnsureSession(awayId)
+		local logged = nil
+		env.CreateThread(function() logged = characters.Login(awayId, away) end)
+		control.Pump(10)
+		local backJob = logged ~= nil and logged.ok and logged.value.PlayerData.job or nil
+		check('and logging in, they work NCPD as the Officer the roster says, paid as one',
+			backJob ~= nil and backJob.name == 'ncpd' and backJob.grade.level == 1 and backJob.payment == 260,
+			logged and (logged.ok and ('%s %s'):format(tostring(backJob and backJob.name),
+				tostring(backJob and backJob.grade.level)) or tostring(logged.error)) or 'no answer')
+
+		-- ── MaxTac ───────────────────────────────────────────────────────────
+		-- MaxTac takes nobody who is not an NCPD Detective, and nobody at the
+		-- sign: a Squad Lead takes them on at the desk. So the walk is an NCPD
+		-- career first.
+		local trooperId, trooperCitizen = 302, 'journey-maxtac'
+		local trooper = arrive(trooperId, trooperCitizen)
+		send(trooperId, jobs.Event.JOIN, 'jobs_signup', 'ncpd')
+		control.Pump(6)
+		local asCadet = offerOf(trooperId, 'maxtac')
+		check('MaxTac, to a Cadet: the office names the rank it asks for, not "by invitation"',
+			asCadet ~= nil and asCadet.canJoin ~= true and asCadet.missing == 'jobs.needsGrade'
+				and type(asCadet.needs) == 'table' and asCadet.needs.job == 'NCPD'
+				and asCadet.needs.grade == 'Detective',
+			asCadet and ('%s %s %s'):format(tostring(asCadet.missing),
+				tostring(asCadet.needs and asCadet.needs.job), tostring(asCadet.needs and asCadet.needs.grade)))
+		local sentence = OPX.Locale.Text('jobs.needsRank', { need = asCadet and asCadet.needs
+			and asCadet.needs.job, rank = asCadet and asCadet.needs and asCadet.needs.grade })
+		check('MaxTac: and the sentence the board draws for it reads "Needs NCPD Detective or above"',
+			sentence == 'Needs NCPD Detective or above', sentence)
+		clockOn(trooperId)
+		for _, level in ipairs({ 1, 2 }) do
+			contract.Award(trooperCitizen, 'ncpd', math.max(0, JobsAccess.Terms('ncpd').ladder[level]
+				- contract.Bank(trooperCitizen, 'ncpd')))
+			tickOnce(0.1)
+			skew = skew + 6000
+		end
+		check('MaxTac: the candidate made Detective on the clock', trooper.job.name == 'ncpd'
+			and trooper.job.grade.level == 2, tostring(trooper.job.grade.level))
+		local asDetective = offerOf(trooperId, 'maxtac')
+		check('MaxTac, to a Detective: the office says it is by invitation, and nothing else is missing',
+			asDetective ~= nil and asDetective.missing == 'jobs.byInvitation' and asDetective.needs == nil,
+			asDetective and tostring(asDetective.missing))
+		send(trooperId, jobs.Event.JOIN, 'jobs_signup', 'maxtac')
+		control.Pump(6)
+		check('MaxTac: a Detective signing at the office is refused, and nothing is written',
+			trooper.jobs.maxtac == nil and db.groups[trooperCitizen .. '|job|maxtac'] == nil)
+
+		-- THE FIRST SQUAD LEAD IS AN OPERATOR'S: `/opx.job` is the door, because
+		-- a desk nobody holds the boss grade of is drawn for nobody.
+		local leadId, leadCitizen = 303, 'journey-lead'
+		local lead = arrive(leadId, leadCitizen)
+		command(leadId, 'opx.job', { tostring(leadId), 'maxtac', '1' })
+		check('MaxTac: /opx.job seats the first Squad Lead', lead.job.name == 'maxtac'
+			and lead.job.grade.level == 1 and lead.job.isBoss == true, tostring(lead.job.name))
+		local deskMaxtac = settings.BOARDS.jobs_desk_maxtac
+		standOn(leadId, deskMaxtac)
+		control.Stand(trooperId, deskMaxtac.X + 3.0, deskMaxtac.Y, deskMaxtac.Z)
+		send(leadId, jobs.Event.DETAIL, 'jobs_desk_maxtac')
+		local deskState = lastTo(leadId, jobs.Event.STATE)
+		local candidates = {}
+		for _, candidate in ipairs(deskState ~= nil and type(deskState[2]) == 'table'
+			and deskState[2].candidates or {}) do
+			candidates[#candidates + 1] = tostring(candidate.source)
+		end
+		check('MaxTac: the Squad Lead\'s desk lists the Detective standing at it',
+			table.concat(candidates, ' '):find(tostring(trooperId), 1, true) ~= nil, table.concat(candidates, ' '))
+		mark = #control.notices
+		send(leadId, jobs.Event.BOSS, 'jobs_desk_maxtac', 'hire', trooperId, 'test')
+		control.Pump(6)
+		check('MaxTac: hired at the desk, BESIDE the badge they work, and told how to work it',
+			trooper.jobs.maxtac == 0 and trooper.job.name == 'ncpd'
+				and said(trooperId, mark, 'taken on by MaxTac, beside the job you work'),
+			table.concat(heard(trooperId, mark), ' | '))
+		local held = offerOf(trooperId, 'maxtac')
+		local badge = offerOf(trooperId, 'ncpd')
+		check('MaxTac: the office shows it held and not worked, with the badge as the job worked',
+			held ~= nil and held.held == 0 and held.working == nil and badge ~= nil and badge.working == true)
+
+		-- WORKING IT. The row the client draws for a held job nobody works.
+		mark = #control.notices
+		send(trooperId, jobs.Event.WORK, 'jobs_signup', 'maxtac')
+		control.Pump(6)
+		check('MaxTac: "Work this job" makes them an Operator, off the clock like any new job',
+			trooper.job.name == 'maxtac' and trooper.job.grade.level == 0 and trooper.job.onDuty ~= true
+				and trooper.jobs.ncpd == 2 and said(trooperId, mark, 'You now work MaxTac'),
+			table.concat(heard(trooperId, mark), ' | '))
+		mark = #control.notices
+		send(trooperId, jobs.Event.WORK, 'jobs_signup', 'maxtac')
+		control.Pump(6)
+		check('MaxTac: working it again is refused by name', said(trooperId, mark, 'already the job you work'),
+			table.concat(heard(trooperId, mark), ' | '))
+		check('MaxTac: /opx.duty clocks the Operator on', clockOn(trooperId))
+
+		local wage = payday()
+		check('MaxTac: an Operator is paid 460, and off the clock too',
+			wage[trooperId] ~= nil and wage[trooperId].amount == 460 and wage[trooperId].job == 'maxtac')
+		local before = fed(trooperCitizen)
+		tickOnce(1.0)
+		local after = fed(trooperCitizen)
+		check('MaxTac: time on the clock is BANKED, and feeds the MaxTac trunk',
+			contract.Bank(trooperCitizen, 'maxtac') == 1.0 and (after.maxtac or 0) - (before.maxtac or 0) == 10,
+			('bank %.1f'):format(contract.Bank(trooperCitizen, 'maxtac')))
+		contract.Award(trooperCitizen, 'maxtac', 300)
+		tickOnce(0.1)
+		local banked = offerOf(trooperId, 'maxtac')
+		check('MaxTac: a full ladder of time does NOT promote -- the Squad Lead does, at the desk',
+			trooper.job.grade.level == 0 and banked ~= nil and banked.approval == true and banked.next == 1
+				and banked.points >= banked.required,
+			banked and ('%s / %s'):format(tostring(banked.points), tostring(banked.required)))
+
+		check('MaxTac Operator: the motor pool lists the MaxTac Merrimac', fleet(trooperId, 'garage') == 'maxtac_merrimac',
+			fleet(trooperId, 'garage'))
+		check('MaxTac Operator: a pad lists the MaxTac AV', fleet(trooperId, 'avpad') == 'maxtac_av',
+			fleet(trooperId, 'avpad'))
+		check('MaxTac Operator: the MaxTac pads open to them on the clock', padOpen(trooperId))
+		check('MaxTac Operator: the Watson lift opens the Bullpen and Holding, not Evidence',
+			floorsOpen('ncpd_watson', trooperId) == 'Street, Front Desk, Bullpen, Holding',
+			floorsOpen('ncpd_watson', trooperId))
+		check('MaxTac Operator: the armoury makes the issue rounds for them, and not the marksman rounds',
+			armouryDoor(trooperId) and mayMake(trooperId, 'handgun_rounds') and mayMake(trooperId, 'rifle_rounds')
+				and not mayMake(trooperId, 'sniper_rounds'))
+		check('MaxTac Operator: the tailor hands out the field kit', looks(trooperId) == 'maxtac_field_kit',
+			looks(trooperId))
+		check('MaxTac Operator: the scanner hears every band', scanner(trooperId) == 'ncpd tactical maxtac air',
+			scanner(trooperId))
+		check('MaxTac Operator: the dispatch board lights up for a call-out', calledOut(trooperId))
+		check('MaxTac Operator: the crew door is theirs (refused only for want of an aircraft)',
+			crewDoor(trooperId) == 'crew', crewDoor(trooperId))
+		clockOff(trooperId)
+		check('MaxTac off the clock: no pad, no scanner, no crew door',
+			padOpen(trooperId) == false and scanner(trooperId) == 'notOnDuty' and crewDoor(trooperId) == 'notOnDuty')
+		clockOn(trooperId)
+
+		mark = #control.notices
+		standOn(leadId, deskMaxtac)
+		send(leadId, jobs.Event.BOSS, 'jobs_desk_maxtac', 'promote', trooperCitizen, 'test')
+		control.Pump(6)
+		check('MaxTac: the Squad Lead promotes them at the desk -- Squad Lead, by name, still on the clock',
+			trooper.job.grade.level == 1 and trooper.job.onDuty == true
+				and said(trooperId, mark, 'promoted to Squad Lead in MaxTac'),
+			table.concat(heard(trooperId, mark), ' | '))
+		send(leadId, jobs.Event.BOSS, 'jobs_desk_maxtac', 'demote', trooperCitizen, 'test')
+		control.Pump(6)
+		check('MaxTac: and demotes them back to Operator', trooper.job.grade.level == 0)
+		mark = #control.notices
+		send(leadId, jobs.Event.BOSS, 'jobs_desk_maxtac', 'fire', trooperCitizen, 'test')
+		control.Pump(6)
+		check('MaxTac: dismissed from the division, they are back at NCPD as the Detective they are',
+			trooper.jobs.maxtac == nil and trooper.job.name == 'ncpd' and trooper.job.grade.level == 2
+				and said(trooperId, mark, 'dismissed from MaxTac') and said(trooperId, mark, 'You now work NCPD'),
+			('%s %s | %s'):format(tostring(trooper.job.name), tostring(trooper.job.grade.level),
+				table.concat(heard(trooperId, mark), ' | ')))
+
+		-- ── Trauma Team ──────────────────────────────────────────────────────
+		local TRAUMA_FLOORS = { [0] = 'Street, Clinic', [1] = 'Street, Clinic',
+			[2] = 'Street, Clinic, Back Room', [3] = 'Street, Clinic, Back Room' }
+		walk({ id = 304, citizen = 'journey-trauma', job = 'trauma', trunk = 'ripperdoc',
+			atGrade = function(id, level)
+				local rank = character.GetJob('trauma').grades[level].name
+				check(('Trauma %s: the tailor hands out the Trauma Team outfit'):format(rank),
+					looks(id) == 'trauma_team', looks(id))
+				check(('Trauma %s: the clinic lift opens %s'):format(rank, TRAUMA_FLOORS[level]),
+					floorsOpen('vik_clinic', id) == TRAUMA_FLOORS[level], floorsOpen('vik_clinic', id))
+				check(('Trauma %s: a clinic chair seats them as a patient, not at the desk'):format(rank),
+					atChair(id) == 'sitter', atChair(id))
+				check(('Trauma %s: no police scanner, no fleet'):format(rank),
+					scanner(id) == 'notDivision' and fleet(id, 'garage') == '')
+			end })
+
+		-- ── Ripperdoc ────────────────────────────────────────────────────────
+		local doc = walk({ id = 305, citizen = 'journey-ripperdoc', job = 'ripperdoc', trunk = 'ripperdoc',
+			atGrade = function(id, level)
+				local rank = character.GetJob('ripperdoc').grades[level].name
+				check(('Ripperdoc %s: on the clock, the chair is theirs to operate'):format(rank),
+					atChair(id) == 'desk', atChair(id))
+				check(('Ripperdoc %s: the clinic lift\'s back room from Ripperdoc'):format(rank),
+					floorsOpen('vik_clinic', id) == (level >= 1 and 'Street, Clinic, Back Room' or 'Street, Clinic'),
+					floorsOpen('vik_clinic', id))
+			end })
+		clockOff(305)
+		check('Ripperdoc off the clock: the chair seats them as a patient', atChair(305) == 'sitter', atChair(305))
+		clockOn(305)
+		-- A finished operation is paid to the operator as work, not money.
+		local docBefore = fed('journey-ripperdoc')
+		local awarded = contract.Award('journey-ripperdoc', 'ripperdoc', 5)
+		check('Ripperdoc: a finished operation\'s five points feed the ripperdoc trunk fifty XP',
+			awarded.ok and (fed('journey-ripperdoc').ripperdoc or 0) - (docBefore.ripperdoc or 0) == 50)
+
+		-- ── Mercenary ────────────────────────────────────────────────────────
+		walk({ id = 306, citizen = 'journey-merc', job = 'merc', trunk = 'fixer',
+			atGrade = function(id, level)
+				local rank = character.GetJob('merc').grades[level].name
+				check(('Merc %s: the Afterlife lift opens the Booths from Edgerunner, never the Cellar'):format(rank),
+					floorsOpen('afterlife', id) == (level >= 2 and 'Main Floor, Booths' or 'Main Floor'),
+					floorsOpen('afterlife', id))
+				check(('Merc %s: no police, no uniform, no fleet'):format(rank),
+					scanner(id) == 'notDivision' and looks(id) == '' and fleet(id, 'garage') == '')
+			end })
+
+		-- ── Fixer ────────────────────────────────────────────────────────────
+		walk({ id = 307, citizen = 'journey-fixer', job = 'fixer', trunk = 'fixer',
+			atGrade = function(id, level)
+				local rank = character.GetJob('fixer').grades[level].name
+				check(('Fixer %s: the Afterlife Booths, and the Cellar once made'):format(rank),
+					floorsOpen('afterlife', id) == (level >= 2 and 'Main Floor, Booths, Cellar'
+						or 'Main Floor, Booths'), floorsOpen('afterlife', id))
+			end })
+
+		-- ── Netrunner, Corporate, Nomad: the jobs with no door of their own ───
+		for _, open in ipairs({
+			{ id = 308, job = 'netrunner', trunk = 'street' },
+			{ id = 309, job = 'corp', trunk = 'corp' },
+			{ id = 310, job = 'nomad', trunk = 'nomad' },
+		}) do
+			walk({ id = open.id, citizen = 'journey-' .. open.job, job = open.job, trunk = open.trunk,
+				atGrade = function(id, level)
+					local label = character.GetJob(open.job).label
+					local rank = character.GetJob(open.job).grades[level].name
+					check(('%s %s: no lift floor past the public ones, no uniform, no fleet, no scanner'):format(label, rank),
+						floorsOpen('ncpd_watson', id) == 'Street, Front Desk'
+							and floorsOpen('afterlife', id) == 'Main Floor'
+							and floorsOpen('vik_clinic', id) == 'Street, Clinic'
+							and looks(id) == '' and fleet(id, 'garage') == '' and scanner(id) == 'notDivision',
+						('%s | %s | %s | %s'):format(floorsOpen('ncpd_watson', id), floorsOpen('afterlife', id),
+							looks(id), scanner(id)))
+				end })
+		end
+		-- HAULING HAS NO GATE, by the owner's own words: a nomad hauls like anybody.
+		local gated = 0
+		for _, site in pairs(OPX.Config.MODULES.hauling.SITES or {}) do
+			if type(site) == 'table' and site.JOBS ~= nil then gated = gated + 1 end
+		end
+		check('Nomad: hauling is open to anybody, a nomad included (no site names a job)', gated == 0,
+			tostring(gated))
+
+		-- ── two jobs, one worked: the office's three rows ────────────────────
+		-- A newcomer signs on as a paramedic, then as a merc beside it. The
+		-- merc job is held, then worked, then the Trauma job is handed back --
+		-- and the notice on a row leaves THAT row's job, whatever the office's
+		-- headline job is.
+		local twoId = 313
+		local two = arrive(twoId, 'journey-two')
+		send(twoId, jobs.Event.JOIN, 'jobs_signup', 'trauma')
+		control.Pump(6)
+		mark = #control.notices
+		send(twoId, jobs.Event.JOIN, 'jobs_signup', 'merc')
+		control.Pump(6)
+		check('two jobs: signing on to a second job holds it beside the one worked, and says so',
+			two.jobs.merc == 0 and two.job.name == 'trauma'
+				and said(twoId, mark, 'on the books for Mercenary, beside the job you work'),
+			table.concat(heard(twoId, mark), ' | '))
+		local second = offerOf(twoId, 'merc')
+		check('two jobs: the office shows the second as held, not worked',
+			second ~= nil and second.held == 0 and second.working == nil)
+		mark = #control.notices
+		send(twoId, jobs.Event.WORK, 'jobs_signup', 'merc')
+		control.Pump(6)
+		check('two jobs: "Work this job" switches to it, on the clock at once for a job with no shifts',
+			two.job.name == 'merc' and two.job.onDuty == true and two.jobs.trauma == 0
+				and said(twoId, mark, 'You now work Mercenary'), table.concat(heard(twoId, mark), ' | '))
+		mark = #control.notices
+		send(twoId, jobs.Event.LEAVE, 'jobs_signup', 'trauma')
+		control.Pump(6)
+		check('two jobs: the notice on the Trauma row leaves THE TRAUMA JOB, not the office\'s NCPD',
+			two.jobs.trauma == nil and two.jobs.merc == 0 and two.job.name == 'merc'
+				and said(twoId, mark, 'left Trauma Team'), table.concat(heard(twoId, mark), ' | '))
+		mark = #control.notices
+		send(twoId, jobs.Event.LEAVE, 'jobs_signup', 'ncpd')
+		control.Pump(6)
+		check('two jobs: a notice for a job not held is refused by name',
+			two.jobs.merc == 0 and said(twoId, mark, 'do not hold that job'), table.concat(heard(twoId, mark), ' | '))
+		mark = #control.notices
+		send(twoId, jobs.Event.WORK, 'jobs_signup', 'trauma')
+		control.Pump(6)
+		check('two jobs: working a job not held is refused by name', two.job.name == 'merc'
+			and said(twoId, mark, 'do not hold that job'))
+		send(twoId, jobs.Event.LEAVE, 'jobs_signup', 'merc')
+		control.Pump(6)
+		check('two jobs: leaving the last job held leaves them Unemployed', two.job.name == 'unemployed'
+			and next(two.jobs) == nil)
+
+		-- THE JOB WORKED NEXT IS THE HIGHEST GRADE STILL HELD, and a tie is
+		-- broken by name, never by the order a table happens to walk in.
+		local tieId = 314
+		local tie = arrive(tieId, 'journey-tie')
+		for _, job in ipairs({ 'nomad', 'merc', 'fixer' }) do
+			send(tieId, jobs.Event.JOIN, 'jobs_signup', job)
+			control.Pump(6)
+		end
+		send(tieId, jobs.Event.LEAVE, 'jobs_signup', 'nomad')
+		control.Pump(6)
+		check('losing the worked job with two held at one grade works the first by name',
+			tie.job.name == 'fixer' and tie.jobs.merc == 0 and tie.jobs.nomad == nil, tostring(tie.job.name))
+		local raised = nil
+		env.CreateThread(function() raised = character.AddPlayerToJob('journey-tie', 'merc', 1) end)
+		control.Pump(6)
+		send(tieId, jobs.Event.LEAVE, 'jobs_signup', 'fixer')
+		control.Pump(6)
+		check('and with one held higher, that one', raised ~= nil and raised.ok and tie.job.name == 'merc'
+			and tie.job.grade.level == 1, tostring(tie.job.name))
+
+		-- THE LAST BOSS STAYS, at the office as at the desk: the only Chrome
+		-- Surgeon handing in their notice would leave the job nobody can run.
+		standOn(305, OFFICE)
+		mark = #control.notices
+		send(305, jobs.Event.LEAVE, 'jobs_signup', 'ripperdoc')
+		control.Pump(6)
+		check('the last boss of a job cannot hand in their notice, and is told why',
+			doc.jobs.ripperdoc == 2 and said(305, mark, 'nobody in charge'), table.concat(heard(305, mark), ' | '))
+
+		-- ── a desk-less boss works by command ────────────────────────────────
+		-- Merc, Fixer, Ripperdoc, Netrunner, Corporate and Nomad have a boss
+		-- grade and no desk: the four boss commands are their door.
+		local legend = 306
+		local runner = 312
+		local runnerData = arrive(runner, 'journey-runner')
+		send(runner, jobs.Event.JOIN, 'jobs_signup', 'merc')
+		control.Pump(6)
+		command(legend, 'opx.jobs.promote', { 'merc', 'journey-runner' })
+		check('a desk-less boss: the Legend promotes a Street Merc by command', runnerData.job.grade.level == 1)
+		command(legend, 'opx.jobs.demote', { 'merc', 'journey-runner' })
+		check('and demotes them by command', runnerData.job.grade.level == 0)
+		command(runner, 'opx.jobs.promote', { 'merc', 'journey-runner' })
+		check('but a Street Merc cannot promote themselves', runnerData.job.grade.level == 0)
+		command(legend, 'opx.jobs.fire', { 'merc', 'journey-runner' })
+		check('and the Legend dismisses them by command', runnerData.jobs.merc == nil
+			and runnerData.job.name == 'unemployed')
+
+		-- ── and nothing was dropped on the way ───────────────────────────────
+		check('no verdict ever went over the client\'s window',
+			not table.concat(control.log.error, ' | '):find('over the platform', 1, true),
+			table.concat(control.log.error, ' | '))
+		check('no thread died on the walk', not table.concat(control.log.error, ' | '):find('thread died', 1, true),
+			table.concat(control.log.error, ' | '))
+
+		settings.REQUESTS_PER_WINDOW = shippedWindow
+		seniority.enabled = true
+		seniority.POINTS_PER_TICK = shippedTick
+		ncpd.Settings.ALERTS.COOLDOWN_MS = shippedCallout
+		local _ = cop
+	end
+end
+
+section('keys: no two key mappings ship on the same key')
+do
+	-- EVERY MAPPING ON A PRESSED KEY FIRES (the host's DispatchKeyMappings), so
+	-- two features declared on one key are two features that open together:
+	-- the skill tree shipped on F3, the animation picker's key, and every press
+	-- of it opened the picker over the tree. The contextual keys are the
+	-- exception by design -- each of those answers only where its own place
+	-- is, and the place is what tells them apart. (The chrome's power keys --
+	-- the Sandevistan's `x` among them -- are not key mappings: they are bound
+	-- through the ripperdoc's own `/opx.sandy.key`, and this section does not
+	-- see them.)
+	local env, control, why = boot('client')
+	check('the client boots with every key declared', why == nil, why)
+	if why == nil then
+		-- A SHARE THAT IS SOMEBODY'S DECISION is written down here, by the ids
+		-- that share it, so a third feature landing on the same key still
+		-- fails. `E` is the contextual key and any number of places answer it.
+		-- `Y` and `X` are the owner's own call (`config/calls.lua`): a ringing
+		-- call is answered and declined on the hotbar peek's key and the emote
+		-- stop's, and outside a ringing call the call's handlers do nothing.
+		-- `F` is the aircraft's "get in": the MaxTac crew door answers only
+		-- while an insertion holds its door open at the street and the row is
+		-- drawn, the AV door only while the server has named a parked aircraft
+		-- this body may board -- and a parked hull's door and a holding
+		-- insertion's are never the same aircraft (`modules/avdoor`).
+		local SHARED = {
+			E = true,
+			F = 'opx.avdoor.board, opx.ncpd.board',
+			X = 'opx.animations.stop, opx.calls.decline',
+			Y = 'opx.calls.answer, opx.inventory.peek',
+		}
+		local byKey = {}
+		for id, mapping in pairs(control.keyMappings.byId) do
+			local key = tostring(mapping.key):upper()
+			byKey[key] = byKey[key] or {}
+			table.insert(byKey[key], id)
+		end
+		local clashes = {}
+		for key, ids in pairs(byKey) do
+			table.sort(ids)
+			local listed = table.concat(ids, ', ')
+			if #ids > 1 and SHARED[key] ~= true and SHARED[key] ~= listed then
+				clashes[#clashes + 1] = ('%s: %s'):format(key, listed)
+			end
+		end
+		table.sort(clashes)
+		check('every key but the contextual one is one feature\'s', #clashes == 0, table.concat(clashes, ' | '))
+		check('the skill tree is on F4 and the animation picker keeps F3',
+			control.keyMappings.byId['opx.skills.tree'] ~= nil
+				and control.keyMappings.byId['opx.skills.tree'].key == 'F4'
+				and control.keyMappings.byId['opx.animations.picker'] ~= nil
+				and control.keyMappings.byId['opx.animations.picker'].key == 'F3')
+	end
+end
+
+section('jobs, end to end: the office as a character with two jobs reads it')
+do
+	-- THE CLIENT HALF OF THE WALK ABOVE: the rows the office draws are the only
+	-- way a player can reach any of it, and two of the three a held job needed
+	-- did not exist. What is pinned is what the player READS and what each press
+	-- SENDS -- the server's answer to either is the section above.
+	local env, control, why = boot('client')
+	check('the client boots for the office', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local jobs = OPX.Modules.Get('jobs')
+		local contract = OPX.Api.Get('jobs')
+		local menu = OPX.Api.Get('menu')
+
+		-- The strip's row, as the jobs module asks for it.
+		local strip = {}
+		local prompts = OPX.Api.Get('prompts')
+		local show = prompts.Show
+		prompts.Show = function(owner, group, spec)
+			if owner == 'jobs' and type(spec) == 'table' and type(spec.rows) == 'table' and spec.rows[1] then
+				strip[#strip + 1] = tostring(spec.rows[1].label)
+			end
+			return show(owner, group, spec)
+		end
+
+		local function grades(names)
+			local out = {}
+			for level = 0, #names do
+				out[#out + 1] = { level = level, name = names[level], isBoss = level == #names }
+			end
+			return out
+		end
+		local LADDERS = {
+			ncpd = grades({ [0] = 'Cadet', 'Officer', 'Detective', 'Captain' }),
+			maxtac = grades({ [0] = 'Operator', 'Squad Lead' }),
+		}
+
+		-- Away from the office first, so the strip is raised AFTER the verdict
+		-- has landed: the row is chosen when it is raised.
+		control.placement.x, control.placement.y, control.placement.z = 900.0, 900.0, 0.0
+		control.netEvents[jobs.Event.SYNC]({ boards = { { key = 'jobs_signup', label = 'EMPLOYMENT',
+			kind = 'signup', job = 'ncpd', x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 } } })
+
+		--- The rows the menu last drew, by id: `{ label, value }`.
+		local function drawn()
+			local latest = nil
+			for _, page in ipairs(control.pages) do
+				for index = 1, #page.sent do
+					local sent = page.sent[index]
+					if sent.channel == 'opx:menu:open' or sent.channel == 'opx:menu:frame' then
+						latest = sent.payload
+					end
+				end
+			end
+			local out = {}
+			for _, row in ipairs(latest ~= nil and latest.rows or {}) do
+				out[tostring(row.label)] = row.value ~= nil and tostring(row.value) or ''
+			end
+			return out, latest
+		end
+		local function menuPage()
+			for _, page in ipairs(control.pages) do
+				if page.handlers['opx:menu:key'] ~= nil then
+					for index = 1, #page.sent do
+						if page.sent[index].channel == 'opx:menu:open' then return page end
+					end
+				end
+			end
+			return nil
+		end
+		--- Walks the cursor to one row and presses it; answers what the press
+		--- sent to the server.
+		local function press(itemId)
+			local surface = menuPage()
+			if surface == nil then return nil end
+			for _ = 1, 20 do
+				local state = menu.State()
+				if not state.ok then return nil end
+				if state.value.itemId == itemId then break end
+				control.PageEmit(surface, 'opx:menu:key', { handle = state.value.handle, key = 'down' })
+			end
+			local state = menu.State()
+			if not state.ok or state.value.itemId ~= itemId then return nil end
+			local from = #control.serverEvents
+			control.PageEmit(surface, 'opx:menu:key', { handle = state.value.handle, key = 'enter' })
+			control.Pump(2)
+			for index = #control.serverEvents, from + 1, -1 do
+				local event = control.serverEvents[index]
+				if event.name == jobs.Event.JOIN or event.name == jobs.Event.WORK
+					or event.name == jobs.Event.LEAVE then
+					return event
+				end
+			end
+			return false
+		end
+
+		-- ── a Cadet reads MaxTac ─────────────────────────────────────────────
+		control.netEvents[jobs.Event.STATE]('jobs_signup', { kind = 'signup', job = 'ncpd', offers = {
+			{ job = 'maxtac', label = 'MaxTac', open = true, approval = true, top = 1, canJoin = false,
+				missing = 'jobs.needsGrade', needs = { job = 'NCPD', grade = 'Detective' },
+				grades = LADDERS.maxtac },
+			{ job = 'ncpd', label = 'NCPD', open = true, top = 3, held = 0, working = true,
+				grade = 'Cadet', next = 1, nextGrade = 'Officer', points = 12, required = 90,
+				grades = LADDERS.ncpd },
+		} })
+		control.placement.x, control.placement.y = 0.0, 0.0
+		settle(control, function() return contract.State().value.shown == true end, 60)
+		check('the strip reads as the office, not as a notice, for somebody who holds a job',
+			strip[#strip] == 'Read the work on offer', tostring(strip[#strip]))
+		check('the office opens', contract.Open('test').ok == true)
+		local rows = drawn()
+		check('the job they work reads its progress to the next rank',
+			rows.NCPD == 'Cadet  |  12 / 90 to Officer', tostring(rows.NCPD))
+		check('and MaxTac\'s row in the list names the rank it asks for, not "by invitation"',
+			rows.MaxTac == 'Needs NCPD Detective or above', tostring(rows.MaxTac))
+		press('maxtac')
+		rows = drawn()
+		check('and on its own screen, names the rank it asks for',
+			rows['Not on offer'] == 'Needs NCPD Detective or above', tostring(rows['Not on offer']))
+		contract.Close()
+
+		-- ── a Detective, hired into MaxTac, reads both ───────────────────────
+		control.netEvents[jobs.Event.STATE]('jobs_signup', { kind = 'signup', job = 'ncpd', offers = {
+			{ job = 'maxtac', label = 'MaxTac', open = true, approval = true, top = 1, held = 0,
+				grade = 'Operator', next = 1, nextGrade = 'Squad Lead', points = 0, required = 240,
+				grades = LADDERS.maxtac },
+			{ job = 'ncpd', label = 'NCPD', open = true, top = 3, held = 2, working = true,
+				grade = 'Detective', next = 3, nextGrade = 'Captain', points = 400, required = 1080,
+				grades = LADDERS.ncpd },
+		} })
+		control.Pump(2)
+		check('the office opens again', contract.Open('test').ok == true)
+		rows = drawn()
+		check('the job held beside the worked one reads "Held, not worked"',
+			rows.MaxTac == 'Operator  |  Held, not worked', tostring(rows.MaxTac))
+		press('maxtac')
+		local _, frame = drawn()
+		local order = {}
+		for index, row in ipairs(frame ~= nil and frame.rows or {}) do order[tostring(row.label)] = index end
+		check('its screen offers "Work this job" above the notice',
+			order['Work this job'] ~= nil and order['Hand in your notice'] ~= nil
+				and order['Work this job'] < order['Hand in your notice'])
+		local sent = press('work')
+		check('and "Work this job" sends the board AND the job',
+			sent ~= nil and sent ~= false and sent.name == jobs.Event.WORK and sent[1] == 'jobs_signup'
+				and sent[2] == 'maxtac',
+			sent and ('%s %s'):format(tostring(sent[1]), tostring(sent[2])) or tostring(sent))
+
+		-- The server's answer: MaxTac is the job worked now, time banked past the
+		-- rank -- which is the Squad Lead's to grant.
+		control.netEvents[jobs.Event.STATE]('jobs_signup', { kind = 'signup', job = 'ncpd', offers = {
+			{ job = 'maxtac', label = 'MaxTac', open = true, approval = true, top = 1, held = 0, working = true,
+				grade = 'Operator', next = 1, nextGrade = 'Squad Lead', points = 250, required = 240,
+				grades = LADDERS.maxtac },
+			{ job = 'ncpd', label = 'NCPD', open = true, top = 3, held = 2,
+				grade = 'Detective', next = 3, nextGrade = 'Captain', points = 400, required = 1080,
+				grades = LADDERS.ncpd },
+		} })
+		control.Pump(2)
+		rows = drawn()
+		check('once worked, the row is gone and the notice stays', rows['Work this job'] == nil
+			and rows['Hand in your notice'] ~= nil)
+		sent = press('leave')
+		check('and the notice sends the board AND the job -- MaxTac, not the office\'s NCPD',
+			sent ~= nil and sent ~= false and sent.name == jobs.Event.LEAVE and sent[1] == 'jobs_signup'
+				and sent[2] == 'maxtac',
+			sent and ('%s %s'):format(tostring(sent[1]), tostring(sent[2])) or tostring(sent))
+		contract.Close()
+		check('the office opens once more', contract.Open('test').ok == true)
+		rows = drawn()
+		check('an invitation job\'s banked time says the rank is granted at the desk',
+			rows.MaxTac == 'Operator  |  250 / 240, Squad Lead at the desk', tostring(rows.MaxTac))
+		check('and the badge held beside it reads "Held, not worked"',
+			rows.NCPD == 'Detective  |  Held, not worked', tostring(rows.NCPD))
+		contract.Close()
+
+		-- ── a Detective reads MaxTac ─────────────────────────────────────────
+		-- "By invitation" is a sentence of eighty characters and the value column
+		-- is cut at 48: the column says it short, and the hint says it whole.
+		control.netEvents[jobs.Event.STATE]('jobs_signup', { kind = 'signup', job = 'ncpd', offers = {
+			{ job = 'maxtac', label = 'MaxTac', open = true, approval = true, top = 1, canJoin = false,
+				missing = 'jobs.byInvitation', grades = LADDERS.maxtac },
+		} })
+		control.Pump(2)
+		contract.Open('test')
+		press('maxtac')
+		press('wait')
+		local _, latest = drawn()
+		rows = drawn()
+		check('a Detective reading MaxTac sees "By invitation only", and the whole sentence as the hint',
+			rows['Not on offer'] == 'By invitation only' and latest ~= nil
+				and latest.hint == OPX.Locale.Text('jobs.byInvitation'),
+			('%s / %s'):format(tostring(rows['Not on offer']), tostring(latest and latest.hint)))
+		contract.Close()
+
+		-- ── the longest rows the shipped ladders make, in both languages ─────
+		-- A row's value is cut at 48 characters and a cut row is a sentence with
+		-- its end missing, so the longest the shipped names can make are drawn
+		-- and read back whole.
+		-- The three rows are labelled by what they stand for: the grade names in
+		-- them are the longest the shipped catalogue has in each position.
+		local LONGEST = {
+			en = {
+				['Longest progress'] = 'Team Lead  |  1199 / 1200 to Regional Director',
+				['Longest held'] = 'Regional Director  |  Boss  |  Held, not worked',
+				['Longest desk'] = 'Operator  |  9999 / 240, Squad Lead at the desk',
+			},
+			fr = {
+				['Longest progress'] = 'Team Lead  |  1199 / 1200 pour Regional Director',
+				['Longest held'] = 'Regional Director  |  Chef  |  Non exercé',
+				['Longest desk'] = 'Operator  |  9999 / 240, Squad Lead au bureau',
+			},
+		}
+		for _, lang in ipairs({ 'en', 'fr' }) do
+			OPX.Locale.Set(lang)
+			control.netEvents[jobs.Event.STATE]('jobs_signup', { kind = 'signup', job = 'ncpd', offers = {
+				-- Trauma's Team Lead, a minute short of the top.
+				{ job = 'trauma', label = 'Longest progress', open = true, top = 3, held = 2, working = true,
+					grade = 'Team Lead', next = 3, nextGrade = 'Regional Director', points = 1199,
+					required = 1200, grades = LADDERS.ncpd },
+				-- Trauma's boss, holding the job beside the one they work.
+				{ job = 'merc', label = 'Longest held', open = true, top = 3, held = 3,
+					isBoss = true, grade = 'Regional Director', grades = LADDERS.ncpd },
+				-- An invitation job's bank keeps filling while the rank waits.
+				{ job = 'maxtac', label = 'Longest desk', open = true, approval = true, top = 1, held = 0,
+					working = true, grade = 'Operator', next = 1, nextGrade = 'Squad Lead',
+					points = 9999, required = 240, grades = LADDERS.maxtac },
+			} })
+			control.Pump(2)
+			contract.Open('test')
+			rows = drawn()
+			local wrong = {}
+			for label, want in pairs(LONGEST[lang]) do
+				if rows[label] ~= want or #want > 48 then
+					wrong[#wrong + 1] = ('%s: %s'):format(label, tostring(rows[label]))
+				end
+			end
+			check(('%s: the longest status the shipped ladders make is drawn whole'):format(lang),
+				#wrong == 0, table.concat(wrong, ' | '))
+			contract.Close()
+		end
+		OPX.Locale.Set('en')
+
+		check('no thread died', not table.concat(control.log.error, ' | '):find('thread died'),
+			table.concat(control.log.error, ' | '))
+	end
+end
+
 -- A BOOT RESUME MAY NOT OUTLIVE ONE HOOK INTERVAL.
 --
 -- This is the fault that put a live client on "Preparing character" for ever
@@ -24205,18 +27045,34 @@ do
 			aboard ~= nil and aboard.lines[#aboard.lines - 1] ~= nil
 				and aboard.lines[#aboard.lines - 1].key == 'ncpd.radio.maxtac.crew')
 
-		-- And the run ends: her downing closes the flight on the band.
+		-- Her crew is out (this ledger never seated them): she is parked for
+		-- them rather than taken away, and the band hears that first.
 		local steps = 0
 		for _ = 1, 600 do
 			if not tick() then break end
 			steps = steps + 1
 		end
+		local parkedLine = knock(42)
+		check('her crew stepping out parks her, on the air',
+			parkedLine ~= nil and parkedLine.open == true
+				and parkedLine.lines[#parkedLine.lines].key == 'ncpd.radio.maxtac.parked',
+			parkedLine ~= nil and ('%s after %d step(s)'):format(
+				tostring(parkedLine.lines[#parkedLine.lines] and parkedLine.lines[#parkedLine.lines].key),
+				steps) or 'no answer')
+
+		-- And the run ends with her park window: her downing closes the flight
+		-- on the band.
+		local boardingLaw = ncpd.Law.Maxtac.Boarding
+		local shippedPark = boardingLaw.ParkSeconds
+		boardingLaw.ParkSeconds = 1
+		control.Pump(12)
+		avJob.step()
+		boardingLaw.ParkSeconds = shippedPark
 		local down = knock(42)
 		check('and her downing closes the run on the air',
 			down ~= nil and down.open == true
 				and down.lines[#down.lines].key == 'ncpd.radio.maxtac.down',
-			down ~= nil and ('%s after %d step(s)'):format(
-				tostring(down.lines[#down.lines] and down.lines[#down.lines].key), steps) or 'no answer')
+			down ~= nil and tostring(down.lines[#down.lines] and down.lines[#down.lines].key) or 'no answer')
 
 		Scheduler.Every, Scheduler.Cancel = realEvery, realCancel
 	end
@@ -24524,7 +27380,7 @@ do
 
 		check('the tree declares its key, its trunks and its curve',
 			type(Skill) == 'table' and Skill.KEY.ID == 'opx.skills.tree'
-				and Skill.KEY.DEFAULT == 'F3' and #Skill.Branches() == 3,
+				and Skill.KEY.DEFAULT == 'F4' and #Skill.Branches() == 7,
 			('%d trunk(s)'):format(#Skill.Branches()))
 		check('and the refusals are codes a sentence stands behind',
 			type(Skill.Refusal) == 'table' and Skill.Refusal.noPoints == 'skills.noPoints'
@@ -24533,6 +27389,124 @@ do
 			Skill.Need(1) == 100 and Skill.Need(3) == 300 and Skill.Rank(0) == 1
 				and Skill.Rank(250) == 3 and Skill.Depth() == 5,
 			('%s/%s/%s'):format(Skill.Need(1), Skill.Rank(250), Skill.Depth()))
+
+		-- SEVEN TRUNKS, AND THE ORDER IS THE PICTURE. The page draws them left to
+		-- right in config order and the LAST one as the top of the tree, so the
+		-- order is asserted whole -- and the node at the very top by name.
+		local trunks = Skill.Branches()
+		local order, shapes, total = {}, {}, 0
+		for _, branch in ipairs(trunks) do
+			order[#order + 1] = tostring(branch.id)
+			local costs = {}
+			for _, node in ipairs(type(branch.NODES) == 'table' and branch.NODES or {}) do
+				costs[#costs + 1] = tostring(node.COST)
+				total = total + (tonumber(node.COST) or 0)
+			end
+			shapes[#shapes + 1] = table.concat(costs, ',')
+		end
+		check('the seven trunks stand in the order the page draws them, the fixer last',
+			table.concat(order, ',') == 'ncpd,maxtac,corp,nomad,street,ripperdoc,fixer',
+			table.concat(order, ','))
+		local ramped = #shapes == 7
+		for _, shape in ipairs(shapes) do ramped = ramped and shape == '1,1,2,2,3' end
+		check('and every trunk is five nodes costing 1, 1, 2, 2 and 3', ramped,
+			table.concat(shapes, ' | '))
+		local apex = trunks[#trunks]
+		local legend = apex ~= nil and type(apex.NODES) == 'table' and apex.NODES[#apex.NODES] or nil
+		check('and the top of the tree is Night City Legend, at the top of the fixer',
+			legend ~= nil and legend.id == 'fixer_5' and legend.PERK == 'fixer.legend'
+				and legend.NAME == 'skills.node.fixer5',
+			legend ~= nil and ('%s %s'):format(tostring(legend.id), tostring(legend.PERK)) or 'no fixer')
+		check('and the capstones a character may already hold keep their ids',
+			trunks[1].NODES[5].id == 'ncpd_5' and trunks[1].NODES[5].PERK == 'ncpd.response'
+				and trunks[5].NODES[5].id == 'street_5' and trunks[5].NODES[5].PERK == 'street.cred',
+			('%s %s'):format(tostring(trunks[1].NODES[5].id), tostring(trunks[5].NODES[5].id)))
+		-- The header of config/skills.lua states this arithmetic to an operator,
+		-- so it is held to it: the cap banks 19 points against 63 of nodes.
+		check('the cap banks 19 points against 63 points of nodes, as the config says',
+			total == 63 and Skill.Banked(Skill.Cap()) == 19,
+			('%d of nodes, %d banked at the cap'):format(total, Skill.Banked(Skill.Cap())))
+
+		-- WHICH WORK FEEDS WHICH TRUNK, by the character catalogue's own job
+		-- names: the owner's seven categories, and the street under all of them.
+		local feeds = {
+			ncpd = 'ncpd', maxtac = 'maxtac',
+			corp = 'corp', arasaka = 'corp', militech = 'corp',
+			nomad = 'nomad', cabbie = 'nomad',
+			ripperdoc = 'ripperdoc', trauma = 'ripperdoc',
+			fixer = 'fixer', merc = 'fixer',
+			netrunner = 'street', bartender = 'street', unemployed = 'street',
+		}
+		local misfed = {}
+		for job, trunk in pairs(feeds) do
+			if Skill.BranchOf(job) ~= trunk then
+				misfed[#misfed + 1] = ('%s -> %s'):format(job, tostring(Skill.BranchOf(job)))
+			end
+		end
+		table.sort(misfed)
+		check('every job feeds the trunk that names it, and the rest fall to the street',
+			#misfed == 0, table.concat(misfed, ', '))
+		local catalogue = type(OPX.Config.MODULES.character) == 'table'
+			and OPX.Config.MODULES.character.JOBS or {}
+		local terms = type(OPX.Config.MODULES.jobs) == 'table' and OPX.Config.MODULES.jobs.JOBS or {}
+		check('and the corporate and nomad trunks have jobs of their own to be fed by',
+			type(catalogue.corp) == 'table' and type(catalogue.nomad) == 'table'
+				and type(terms.corp) == 'table' and terms.corp.OPEN == true
+				and type(terms.nomad) == 'table' and terms.nomad.OPEN == true)
+
+		-- EVERY WORD THE TREE CAN PUT IN FRONT OF A PLAYER, IN BOTH LANGUAGES.
+		-- The catalogue-wide check reads `Register('xx', {` blocks and this file
+		-- registers named tables, so it is read here, as data, key for key.
+		local catalogs = {}
+		local sandbox = { OPX = { Locale = { Register = function(code, strings)
+			catalogs[code] = strings
+		end } } }
+		local chunk = loadfile('modules/skills/locales.lua', 't', sandbox)
+		if chunk ~= nil then pcall(chunk) end
+		local en, fr = catalogs.en or {}, catalogs.fr or {}
+		local unsaid = {}
+		local function both(key)
+			if type(en[key]) ~= 'string' or en[key] == '' then unsaid[#unsaid + 1] = 'en ' .. key end
+			if type(fr[key]) ~= 'string' or fr[key] == '' then unsaid[#unsaid + 1] = 'fr ' .. key end
+		end
+		for _, branch in ipairs(trunks) do
+			both(branch.NAME)
+			both(branch.FEED)
+			for _, node in ipairs(branch.NODES) do
+				both(node.NAME)
+				both(node.DESC)
+			end
+		end
+		for _, key in pairs(Skill.Refusal) do both(key) end
+		for _, key in ipairs({ 'skills.admin.max', 'skills.admin.set', 'skills.admin.reset',
+			'skills.develop.done', 'skills.develop.refused', 'skills.help.level',
+			'skills.help.levelValue', 'skills.help.levelPlayer', 'skills.apex',
+			'skills.gain.work', 'skills.gain.level', 'skills.gain.node', 'skills.menuOpen' }) do
+			both(key)
+		end
+		for key in pairs(en) do
+			if fr[key] == nil then unsaid[#unsaid + 1] = 'fr lacks ' .. key end
+		end
+		for key in pairs(fr) do
+			if en[key] == nil then unsaid[#unsaid + 1] = 'en lacks ' .. key end
+		end
+		table.sort(unsaid)
+		check('every trunk, node, feed, refusal and staff sentence is written in both languages',
+			next(en) ~= nil and #unsaid == 0, table.concat(unsaid, ', '))
+		local unvalued = {}
+		for _, branch in ipairs(trunks) do
+			for _, node in ipairs(branch.NODES) do
+				for code, strings in pairs({ en = en, fr = fr }) do
+					local text = strings[node.DESC]
+					if type(text) ~= 'string' or select(2, text:gsub('{value}', '')) ~= 1 then
+						unvalued[#unvalued + 1] = code .. ' ' .. tostring(node.DESC)
+					end
+				end
+			end
+		end
+		table.sort(unvalued)
+		check('and every description speaks its perk\u{2019}s value exactly once',
+			#unvalued == 0, table.concat(unvalued, ', '))
 
 		-- A holder of the tree, seeded the way the character contract reads it.
 		-- Takes its boot's own control and OPX: a second boot is a second runtime.
@@ -24606,8 +27580,17 @@ do
 
 		local asked = knock(src)
 		check('the knock answers with the whole tree',
-			asked ~= nil and asked.open == true and #asked.branches == 3,
+			asked ~= nil and asked.open == true and #asked.branches == 7,
 			asked and ('%d trunk(s)'):format(#(asked.branches or {})) or 'no answer')
+		check('and says whose column is whose: each trunk\u{2019}s emblem and the work that feeds it',
+			asked ~= nil and asked.branches[3] ~= nil and asked.branches[3].id == 'corp'
+				and asked.branches[3].icon == 'server' and asked.branches[3].feed == 'skills.feed.corp'
+				and asked.branches[7].icon == 'star' and asked.branches[7].feed == 'skills.feed.fixer',
+			asked and asked.branches[3] and ('%s %s %s'):format(tostring(asked.branches[3].id),
+				tostring(asked.branches[3].icon), tostring(asked.branches[3].feed)) or 'no answer')
+		check('and states the level against the cap the ledger stops at',
+			asked ~= nil and asked.level == 1 and asked.cap == 20,
+			asked and ('%s/%s'):format(tostring(asked.level), tostring(asked.cap)) or 'no answer')
 		check('and the frame is one host payload, panel and all',
 			asked ~= nil and Host.PayloadNodes({ kind = 'frame', frame = asked }) <= Host.MAX_PAYLOAD_NODES,
 			asked and ('%d nodes'):format(Host.PayloadNodes({ kind = 'frame', frame = asked })) or 'no answer')
@@ -24661,9 +27644,30 @@ do
 			('%s rank %s'):format(fed.branches[2].id, fed.branches[2].rank))
 		skillsApi.Award(citizen, 'bartender', 5)
 		local street = state()
+		--- One trunk of a frame, by id: the order is the config's to change.
+		-- @param frame table
+		-- @param id string
+		-- @return table
+		local function trunkOf(frame, id)
+			for _, branch in ipairs(frame.branches or {}) do
+				if branch.id == id then return branch end
+			end
+			return { nodes = {} }
+		end
 		check('and work no trunk names falls to the street\u{2019}s',
-			street.branches[3].id == 'street' and street.branches[3].rank == 1,
-			('%s rank %s'):format(street.branches[3].id, street.branches[3].rank))
+			trunkOf(street, 'street').rank == 1 and trunkOf(street, 'street').xp == 50,
+			('street rank %s xp %s'):format(tostring(trunkOf(street, 'street').rank),
+				tostring(trunkOf(street, 'street').xp)))
+		-- On the bystander, so the ledger the spends below count on is untouched.
+		skillsApi.Award('citizen-skill-bystander', 'nomad', 12)
+		skillsApi.Award('citizen-skill-bystander', 'merc', 11)
+		local read = skillsApi.State('citizen-skill-bystander')
+		local roads = read.ok == true and read.value or {}
+		check('the road feeds the nomads and a merc\u{2019}s contract feeds the fixer',
+			trunkOf(roads, 'nomad').rank == 2 and trunkOf(roads, 'fixer').rank == 2
+				and trunkOf(roads, 'street').xp == 0 and trunkOf(roads, 'corp').rank == 1,
+			('nomad %s fixer %s'):format(tostring(trunkOf(roads, 'nomad').rank),
+				tostring(trunkOf(roads, 'fixer').rank)))
 		check('the frame is one host payload, trunks and all',
 			Host.PayloadNodes({ kind = 'frame', frame = street }) <= Host.MAX_PAYLOAD_NODES,
 			('%d nodes'):format(Host.PayloadNodes({ kind = 'frame', frame = street })))
@@ -24801,6 +27805,611 @@ do
 	end
 end
 
+-- ── the skill tree: the staff lever ─────────────────────────────────────────
+-- `/opx.skills.level` is the one door into the ledger that is not work: a lever
+-- for testing and for fun. Every number it writes is held here to the rules the
+-- config header states, and so is every place it reports to -- the caller, the
+-- journal, the player's own screen and the player's own machine.
+section('the skill tree: the staff lever, the base game and the chrome band')
+do
+	local writes = {}
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		update = function(sql, params)
+			if sql:find('INSERT INTO opx77_skills', 1, true) then
+				writes[#writes + 1] = type(params) == 'table' and params or {}
+			end
+			return 0
+		end,
+		query = function() return {} end,
+		single = function() return nil end,
+	}))
+	check('the server boots with the lever', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local skills = OPX.Modules.Get('skills')
+		local Skill = skills.Skill
+		local skillsApi = OPX.Api.Get('skills', 1)
+		local chars = OPX.Modules.Get('character')
+
+		local function load(id, citizenId)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			chars.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id), jobs = {},
+				job = { name = 'unemployed', grade = { level = 0 }, onDuty = false },
+				money = { EDDIES = 0, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			chars.Registry.byCitizenId[citizenId] = id
+			chars.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+		local STAFF, TARGET, OTHER = 91, 92, 93
+		load(STAFF, 'citizen-staff')
+		load(TARGET, 'citizen-lever')
+		load(OTHER, 'citizen-other')
+
+		-- What the caller is answered, read where it is written.
+		local replies = {}
+		OPX.CommandResult = function(source, accepted, message)
+			replies[#replies + 1] = { source = source, ok = accepted, text = tostring(message) }
+		end
+
+		local lever = control.commands['opx.skills.level']
+		check('the lever is registered, and restricted to whoever the ACL names',
+			lever ~= nil and lever.restricted == true,
+			lever and ('restricted=%s'):format(tostring(lever.restricted)) or 'not registered')
+
+		--- Runs the lever as `caller`: what the caller was told, and where the
+		-- wire stood before it ran.
+		-- @return table reply
+		-- @return integer mark
+		local function pull(caller, args)
+			local mark, said = #control.clientEvents, #replies
+			if lever ~= nil then lever.run(caller, args) end
+			return replies[said + 1] or { text = 'no reply' }, mark
+		end
+
+		--- Every client event of one name sent after `mark`, to one player.
+		local function sent(mark, name, target)
+			local found = {}
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == name and (target == nil or event.source == target) then
+					found[#found + 1] = event
+				end
+			end
+			return found
+		end
+
+		local function frame(citizenId)
+			local answer = skillsApi.State(citizenId)
+			return answer.ok == true and answer.value or { branches = {} }
+		end
+
+		local function claimed(value)
+			local count = 0
+			for _, branch in ipairs(value.branches or {}) do
+				for _, node in ipairs(branch.nodes or {}) do
+					if node.state == 'unlocked' then count = count + 1 end
+				end
+			end
+			return count
+		end
+
+		local function ranks(value)
+			local out = {}
+			for _, branch in ipairs(value.branches or {}) do out[#out + 1] = tostring(branch.rank) end
+			return table.concat(out, ',')
+		end
+
+		--- Whether a line holding `needle` was journalled at `level` after `from`.
+		local function journal(level, from, needle)
+			local lines = control.log[level]
+			for index = from + 1, #lines do
+				if lines[index]:find(needle, 1, true) ~= nil then return true end
+			end
+			return false
+		end
+
+		--- The spend door, pressed as that player; the frame that answered.
+		local function spend(source, node)
+			local mark = #control.clientEvents
+			env.source = source
+			control.netEvents[skills.Event.SPEND](node)
+			env.source = nil
+			local answers = sent(mark, skills.Event.STATE, source)
+			return answers[#answers] ~= nil and answers[#answers][1] or {}
+		end
+
+		-- THE CONTRACT THE RIPPERDOC SCALES CHROME BY, before anybody worked.
+		local level, cap = skillsApi.Level('citizen-lever')
+		check('a character with no ledger reads as level 1 of the cap',
+			level == 1 and cap == 20, ('%s/%s'):format(tostring(level), tostring(cap)))
+		local noLevel, noCap = skillsApi.Level(nil)
+		check('and so does no character at all', noLevel == 1 and noCap == 20)
+
+		-- A history to move: 250 XP of NCPD work is level 2, one point banked
+		-- and the NCPD trunk at rank 3 -- and that point spent on its first node.
+		skillsApi.Award('citizen-lever', 'ncpd', 25)
+		local bought = spend(TARGET, 'ncpd_1')
+		check('a ledger with a history: level 2 and the first NCPD node bought',
+			bought.level == 2 and bought.points == 0 and bought.refused == nil and claimed(bought) == 1,
+			('level=%s points=%s refused=%s'):format(tostring(bought.level), tostring(bought.points),
+				tostring(bought.refused)))
+
+		-- ── a number: that level, and the points it banks ──────────────────
+		local infoMark = #control.log.info
+		local reply, mark = pull(STAFF, { '7', tostring(TARGET) })
+		local set = frame('citizen-lever')
+		check('a number sets that level with no XP into it, and leaves the trunks as they were',
+			set.level == 7 and set.xp == 0 and ranks(set) == '3,1,1,1,1,1,1' and claimed(set) == 1,
+			('level=%s xp=%s ranks=%s'):format(tostring(set.level), tostring(set.xp), ranks(set)))
+		check('and the points are what six levels bank, less the node already bought',
+			set.points == 5, tostring(set.points))
+		check('the caller is answered with what the character became',
+			reply.ok == true and reply.source == STAFF
+				and reply.text:find('level 7/20, 5 point(s) to spend', 1, true) ~= nil,
+			reply.text)
+		check('the journal names who pulled it, on whom, and the result',
+			journal('info', infoMark,
+				'[skills] player 91 set player 92 (citizen-lever) to 7: level 7/20, 5 point(s) to spend'),
+			control.log.info[#control.log.info])
+		local refreshed = sent(mark, skills.Event.REFRESH, TARGET)
+		local notice = refreshed[1] ~= nil and refreshed[1][1] or {}
+		check('and the player is told, in a sentence their own client translates',
+			#refreshed == 1 and notice.key == 'skills.admin.set' and type(notice.args) == 'table'
+				and notice.args.level == 7 and notice.args.cap == 20 and notice.args.points == 5,
+			('%d notice(s), %s'):format(#refreshed, tostring(notice.key)))
+		check('and nobody else is',
+			#sent(mark, skills.Event.REFRESH, OTHER) == 0 and #sent(mark, skills.Event.REFRESH, STAFF) == 0)
+		check('a number never reaches for the base game', #sent(mark, skills.Event.DEVELOP) == 0)
+		check('and the ripperdoc\u{2019}s contract reads the new level',
+			(function()
+				local now, top = skillsApi.Level('citizen-lever')
+				return now == 7 and top == 20
+			end)())
+
+		pull(STAFF, { '1', tostring(TARGET) })
+		local low = frame('citizen-lever')
+		check('a level below what was spent banks zero, never a debt, and keeps the nodes',
+			low.level == 1 and low.points == 0 and claimed(low) == 1,
+			('level=%s points=%s claimed=%d'):format(tostring(low.level), tostring(low.points), claimed(low)))
+
+		-- ── max: the cap, every trunk full, every node affordable ──────────
+		infoMark = #control.log.info
+		reply, mark = pull(STAFF, { 'MAX', tostring(TARGET) })
+		local maxed = frame('citizen-lever')
+		check('max is the cap with a full bar',
+			maxed.level == 20 and maxed.xp == Skill.Need(20),
+			('level=%s xp=%s'):format(tostring(maxed.level), tostring(maxed.xp)))
+		check('and every trunk fed to its full depth', ranks(maxed) == '5,5,5,5,5,5,5', ranks(maxed))
+		check('and the points to buy every node still locked: 63 of nodes, 1 already bought',
+			maxed.points == 62, tostring(maxed.points))
+		local develops = sent(mark, skills.Event.DEVELOP, TARGET)
+		check('and the player\u{2019}s own machine is asked to max the base game\u{2019}s levels',
+			#develops == 1 and type(develops[1][1]) == 'string' and develops[1][1] ~= '',
+			('%d request(s)'):format(#develops))
+		refreshed = sent(mark, skills.Event.REFRESH, TARGET)
+		notice = refreshed[1] ~= nil and refreshed[1][1] or {}
+		check('and the player is told the tree was maxed',
+			#refreshed == 1 and notice.key == 'skills.admin.max' and type(notice.args) == 'table'
+				and notice.args.level == 20 and notice.args.points == 62,
+			tostring(notice.key))
+		check('and the caller hears the base game was ASKED, which is all a server can know',
+			reply.ok == true and reply.text:find('max -> level 20/20, 62 point(s) to spend', 1, true) ~= nil
+				and reply.text:find('asked of their client', 1, true) ~= nil,
+			reply.text)
+		check('and the journal says so',
+			journal('info', infoMark, 'set player 92 (citizen-lever) to max: level 20/20, 62 point(s) to spend'))
+
+		-- AND EVERY ONE OF THOSE NODES IS ACTUALLY BUYABLE: the whole tree,
+		-- bought through the door a player presses, in order, to the last point.
+		local refusedAt = nil
+		for _, branch in ipairs(maxed.branches) do
+			for _, node in ipairs(branch.nodes) do
+				if node.state ~= 'unlocked' then
+					local answer = spend(TARGET, node.id)
+					if answer.refused ~= nil and refusedAt == nil then
+						refusedAt = ('%s: %s'):format(node.id, tostring(answer.refused))
+					end
+				end
+			end
+		end
+		local whole = frame('citizen-lever')
+		check('max buys the whole tree through the player\u{2019}s own door, to the last point',
+			refusedAt == nil and claimed(whole) == 35 and whole.points == 0,
+			refusedAt or ('claimed=%d points=%s'):format(claimed(whole), tostring(whole.points)))
+		check('and Night City Legend is among what it bought',
+			skillsApi.Perk('citizen-lever', 'fixer.legend') == 30,
+			tostring(skillsApi.Perk('citizen-lever', 'fixer.legend')))
+
+		control.Pump(3)
+		local last = nil
+		for index = #writes, 1, -1 do
+			if writes[index].citizen == 'citizen-lever' then
+				last = writes[index]
+				break
+			end
+		end
+		check('and the maxed tree is written back, all thirty-five nodes of it',
+			last ~= nil and last.level == 20 and last.points == 0
+				and select(2, tostring(last.nodes):gsub(',', '')) == 34
+				and tostring(last.nodes):find('fixer_5', 1, true) ~= nil,
+			last and ('level=%s nodes=%s'):format(tostring(last.level), tostring(last.nodes)) or 'no write')
+
+		-- ── what the machine did with the base game, journalled ────────────
+		local nonce = develops[1] ~= nil and develops[1][1] or nil
+		local function report(source, sentNonce, ok, why_)
+			env.source = source
+			control.netEvents[skills.Event.DEVELOPED](sentNonce, ok, why_)
+			env.source = nil
+		end
+		infoMark = #control.log.info
+		local warnMark = #control.log.warn
+		report(OTHER, nonce, true)
+		check('a report from a machine nobody asked is ignored, and named',
+			not journal('info', infoMark, 'development maxed')
+				and journal('warn', warnMark, '[skills] player 93: a base-game development report nobody asked for'))
+		report(TARGET, 'not-the-nonce', true)
+		check('and so is one carrying another request\u{2019}s nonce',
+			not journal('info', infoMark, 'development maxed'))
+		report(TARGET, nonce, true)
+		check('the machine that was asked is journalled when it maxed the base game',
+			journal('info', infoMark, '[skills] player 92: base-game development maxed on their client'))
+		infoMark = #control.log.info
+		report(TARGET, nonce, true)
+		check('and the same report twice is one line, not two',
+			not journal('info', infoMark, 'development maxed'))
+
+		mark = #control.clientEvents
+		pull(STAFF, { 'max', tostring(TARGET) })
+		local again = sent(mark, skills.Event.DEVELOP, TARGET)
+		warnMark = #control.log.warn
+		report(TARGET, again[1] ~= nil and again[1][1] or nil, false, 'boosting')
+		check('and a refusal is journalled with the export\u{2019}s own reason',
+			journal('warn', warnMark,
+				'[skills] player 92: base-game development refused on their client: boosting'),
+			control.log.warn[#control.log.warn])
+
+		-- ── the console, and words that are not a level ─────────────────────
+		reply = pull(0, { 'max' })
+		check('the console has no character, so it must name a player',
+			reply.ok == false and reply.text:find('must name a player', 1, true) ~= nil, reply.text)
+
+		local untouched = frame('citizen-lever')
+		mark = #control.clientEvents
+		local bad = {}
+		for _, args in ipairs({ {}, { '' }, { '0' }, { '21' }, { '2.5' }, { '-3' }, { 'lots' },
+			{ 'max', 'abc' }, { 'max', '0' }, { 'max', '-2' }, { '3', '1.5' } }) do
+			local said = pull(STAFF, args)
+			if said.ok ~= false
+				or said.text:find('usage: opx.skills.level <max|reset|1..20> [playerId]', 1, true) == nil then
+				bad[#bad + 1] = ('[%s] -> %s'):format(table.concat(args, ' '), said.text)
+			end
+		end
+		check('anything but max, reset or a whole level of the cap is answered with the usage',
+			#bad == 0, table.concat(bad, ' | '))
+		reply = pull(STAFF, { 'max', '999' })
+		check('and a player with no character is named as such',
+			reply.ok == false and reply.text:find('player 999 has no character to level', 1, true) ~= nil,
+			reply.text)
+		local after = frame('citizen-lever')
+		check('and none of them moved a ledger or told anybody anything',
+			#sent(mark, skills.Event.REFRESH) == 0 and #sent(mark, skills.Event.DEVELOP) == 0
+				and after.level == untouched.level and after.points == untouched.points
+				and claimed(after) == claimed(untouched))
+
+		-- ── reset: back to the start ─────────────────────────────────────────
+		infoMark = #control.log.info
+		reply, mark = pull(0, { 'reset', tostring(TARGET) })
+		local fresh = frame('citizen-lever')
+		check('reset is level 1 with nothing fed, claimed or banked',
+			fresh.level == 1 and fresh.xp == 0 and fresh.points == 0 and claimed(fresh) == 0
+				and ranks(fresh) == '1,1,1,1,1,1,1',
+			('level=%s points=%s claimed=%d ranks=%s'):format(tostring(fresh.level),
+				tostring(fresh.points), claimed(fresh), ranks(fresh)))
+		check('and the console may pull it by naming the player, and is named for it',
+			reply.ok == true and journal('info', infoMark,
+				'[skills] the console set player 92 (citizen-lever) to reset: level 1/20, 0 point(s) to spend'),
+			reply.text)
+		refreshed = sent(mark, skills.Event.REFRESH, TARGET)
+		check('and the player is told',
+			#refreshed == 1 and refreshed[1][1].key == 'skills.admin.reset')
+		check('and what the nodes declared is gone with them',
+			skillsApi.Perk('citizen-lever', 'fixer.legend') == 0)
+
+		reply, mark = pull(STAFF, { '3' })
+		check('with no player named, the lever moves the caller\u{2019}s own character',
+			frame('citizen-staff').level == 3 and #sent(mark, skills.Event.REFRESH, STAFF) == 1
+				and frame('citizen-lever').level == 1,
+			reply.text)
+
+		-- ── the chrome band: the ripperdoc's answer, kept only when whole ────
+		-- The ripperdoc is another module; its `ChromeLevel` is stubbed at the
+		-- contract, which is the only part of it this tree reads.
+		local ripper = nil
+		local realGet = OPX.Api.Get
+		OPX.Api.Get = function(name, ...)
+			if name == 'ripperdoc' and ripper ~= nil then return ripper end
+			return realGet(name, ...)
+		end
+		-- An older ripperdoc: its API is there and has no ChromeLevel.
+		ripper = {}
+		local plain = frame('citizen-staff')
+		check('a server whose ripperdoc answers no ChromeLevel draws no band, and still states the cap',
+			plain.chrome == nil and plain.cap == 20)
+
+		local function whole_(extra)
+			local out = {
+				lifeDays = 12.5, lifeBaseDays = 10, lifeMaxDays = 20, wearDays = 3,
+				activeSeconds = { 4, 8 }, activeBaseSeconds = { 3, 6 }, activeMaxSeconds = { 6, 12 },
+			}
+			for key, value in pairs(extra or {}) do out[key] = value end
+			return out
+		end
+		local asked = nil
+		local answer = function() return whole_({ extra = 'not in the contract' }) end
+		ripper = { ChromeLevel = function(at, top)
+			asked = { at, top }
+			return answer()
+		end }
+		local banded = frame('citizen-staff')
+		local band = type(banded.chrome) == 'table' and banded.chrome or {}
+		local fields = 0
+		for _ in pairs(band) do fields = fields + 1 end
+		check('a whole answer is the band, asked with the character\u{2019}s level and the cap',
+			asked ~= nil and asked[1] == 3 and asked[2] == 20 and band.lifeDays == 12.5
+				and type(band.activeMaxSeconds) == 'table' and band.activeMaxSeconds[2] == 12,
+			asked and ('asked %s/%s'):format(tostring(asked[1]), tostring(asked[2])) or 'never asked')
+		check('and only the contract reaches the wire: its seven fields and nothing else',
+			fields == 7 and band.extra == nil, ('%d field(s)'):format(fields))
+		local nodes = Host.PayloadNodes({ kind = 'frame', frame = banded, key = 'F4', fresh = true })
+		check('and the band with all thirty-five nodes is still one host payload',
+			nodes <= Host.MAX_PAYLOAD_NODES, ('%d of %d'):format(nodes, Host.MAX_PAYLOAD_NODES))
+
+		local warned = #control.log.warn
+		answer = function() return nil end
+		check('an answer of nothing is no band, and nothing to say about it',
+			frame('citizen-staff').chrome == nil and #control.log.warn == warned)
+
+		local drawn = {}
+		for label, make in pairs({
+			nan = function() return whole_({ lifeDays = 0 / 0 }) end,
+			infinite = function() return whole_({ wearDays = math.huge }) end,
+			text = function() return whole_({ lifeMaxDays = '20' }) end,
+			short = function() return whole_({ activeSeconds = { 4 } }) end,
+			long = function() return whole_({ activeBaseSeconds = { 3, 6, 9 } }) end,
+			pairOfText = function() return whole_({ activeMaxSeconds = { '6', 12 } }) end,
+			missing = function()
+				local out = whole_()
+				out.lifeBaseDays = nil
+				return out
+			end,
+			notTable = function() return 'lots' end,
+			raises = function() error('the ripperdoc fell over') end,
+		}) do
+			answer = make
+			if frame('citizen-staff').chrome ~= nil then drawn[#drawn + 1] = label end
+		end
+		table.sort(drawn)
+		check('an answer that is not exactly the contract draws no band',
+			#drawn == 0, table.concat(drawn, ', '))
+		local named = 0
+		for index = warned + 1, #control.log.warn do
+			if control.log.warn[index]:find('ChromeLevel', 1, true) ~= nil then named = named + 1 end
+		end
+		check('and is named in the journal once, not on every knock', named == 1,
+			('%d line(s)'):format(named))
+		OPX.Api.Get = realGet
+
+		-- THE REAL RIPPERDOC, not a stub: the band this server actually draws.
+		-- Level 3 of 20 is 2/19 of the way from the level-1 numbers (6 days, the
+		-- Apogee's own 9 s) to the cap's (9 days, the Apogee's tier-5 40 s).
+		local real = frame('citizen-staff')
+		local chrome = type(real.chrome) == 'table' and real.chrome or {}
+		-- The ripperdoc rounds what it states: days to the hundredth, seconds to
+		-- the tenth.
+		local function near(value, want, within)
+			return type(value) == 'number' and math.abs(value - want) <= (within or 0.01)
+		end
+		local lifeAt3 = 6 * (1 + 0.5 * 2 / 19)
+		local activeAt3 = 9 + (40 - 9) * 2 / 19
+		check('the ripperdoc this server runs answers ChromeLevel, and the band is drawn from it',
+			real.cap == 20 and near(chrome.lifeBaseDays, 6) and near(chrome.lifeMaxDays, 9)
+				and near(chrome.lifeDays, lifeAt3) and near(chrome.wearDays, lifeAt3 / 6)
+				and type(chrome.activeSeconds) == 'table' and near(chrome.activeSeconds[2], activeAt3, 0.05)
+				and type(chrome.activeMaxSeconds) == 'table' and near(chrome.activeMaxSeconds[2], 40),
+			('life %s/%s/%s wear %s active %s max %s'):format(tostring(chrome.lifeBaseDays),
+				tostring(chrome.lifeDays), tostring(chrome.lifeMaxDays), tostring(chrome.wearDays),
+				tostring(type(chrome.activeSeconds) == 'table' and chrome.activeSeconds[2]),
+				tostring(type(chrome.activeMaxSeconds) == 'table' and chrome.activeMaxSeconds[2])))
+	end
+end
+
+-- ── the skill tree, end to end ──────────────────────────────────────────────
+-- Both halves booted and the wire carried by hand: what the client sends up is
+-- delivered to the server's own handler as that player, and what the server
+-- sends that player is delivered to the client's own handler. The page's press
+-- goes in at one end and the page's next frame comes out of the other, with
+-- nothing between them but the code that ships.
+section('the skill tree: one press, from the page to the ledger and back')
+do
+	local senv, server, swhy = boot('server')
+	local cenv, client, cwhy = boot('client')
+	check('both halves boot', swhy == nil and cwhy == nil, swhy or cwhy)
+
+	if swhy == nil and cwhy == nil then
+		local SOPX, COPX = senv.OPX, cenv.OPX
+		local sskills = SOPX.Modules.Get('skills')
+		local cskills = COPX.Modules.Get('skills')
+		local api = SOPX.Api.Get('skills', 1)
+		local chars = SOPX.Modules.Get('character')
+		local SRC = 61
+		server.Admit(SRC, 'account-61')
+		SOPX.EnsureSession(SRC)
+		chars.Players[SRC] = { PlayerData = {
+			citizenId = 'citizen-wire', source = SRC, userId = 'account-61', name = 'Player 61',
+			jobs = {}, job = { name = 'unemployed', grade = { level = 0 }, onDuty = false },
+			money = { EDDIES = 0, BANK = 0 },
+		}, Functions = { UpdatePlayerData = function() end } }
+		chars.Registry.byCitizenId['citizen-wire'] = SRC
+		chars.Registry.byUserId['account-61'] = SRC
+
+		-- The console's answers are printed by the host; nothing here reads them.
+		SOPX.CommandResult = function() end
+
+		local page = client.pages[1]
+		local toasted = {}
+		local realToast = COPX.Toast.Locale
+		COPX.Toast.Locale = function(key, args, kind)
+			toasted[#toasted + 1] = { key = key, args = args, kind = kind }
+			return realToast(key, args, kind)
+		end
+		-- The preload's export, as the platform would answer it on this machine.
+		local calls = {}
+		cenv.Open77.exports.callSync = function(resource, export, code)
+			calls[#calls + 1] = { resource, export, code }
+			return true
+		end
+
+		local UP = { [sskills.Event.ASK] = true, [sskills.Event.SPEND] = true,
+			[sskills.Event.DEVELOPED] = true }
+		local DOWN = { [sskills.Event.STATE] = true, [sskills.Event.GAIN] = true,
+			[sskills.Event.REFRESH] = true, [sskills.Event.DEVELOP] = true }
+		local up, down = #client.serverEvents, #server.clientEvents
+		local asksUp = 0
+		local function relay()
+			for _ = 1, 10 do
+				local moved = false
+				while up < #client.serverEvents do
+					up = up + 1
+					local event = client.serverEvents[up]
+					if UP[event.name] and server.netEvents[event.name] ~= nil then
+						if event.name == sskills.Event.ASK then asksUp = asksUp + 1 end
+						senv.source = SRC
+						server.netEvents[event.name](event[1], event[2], event[3])
+						senv.source = nil
+						moved = true
+					end
+				end
+				while down < #server.clientEvents do
+					down = down + 1
+					local event = server.clientEvents[down]
+					if DOWN[event.name] and event.source == SRC and client.netEvents[event.name] ~= nil then
+						client.netEvents[event.name](event[1], event[2], event[3])
+						moved = true
+					end
+				end
+				if not moved then return end
+			end
+		end
+
+		local function frames()
+			local list = {}
+			for _, entry in ipairs(page.sent) do
+				if entry.channel == 'opx:skills:view' and type(entry.payload) == 'table'
+					and entry.payload.kind == 'frame' then
+					list[#list + 1] = entry.payload
+				end
+			end
+			return list
+		end
+		local function nodeIn(payload, id)
+			for _, branch in ipairs(payload.frame.branches or {}) do
+				for _, node in ipairs(branch.nodes or {}) do
+					if node.id == id then return node end
+				end
+			end
+			return {}
+		end
+
+		-- 300 XP of NCPD work: level 3, two points, the NCPD trunk at rank 4.
+		api.Award('citizen-wire', 'ncpd', 30)
+		relay()
+		local mapping = client.keyMappings.byId[cskills.Skill.KEY.ID]
+		mapping.pressed()
+		relay()
+		local seen = frames()
+		local opened = seen[#seen] or { frame = {} }
+		check('the key opens the tree on the server\u{2019}s own frame, all seven trunks of it',
+			#seen == 1 and opened.fresh == true and opened.frame.points == 2
+				and #(opened.frame.branches or {}) == 7
+				and nodeIn(opened, 'ncpd_1').state == 'available',
+			('%d frame(s), points %s'):format(#seen, tostring(opened.frame.points)))
+
+		-- SELECT, THEN BUY. The press is the intent; the tree comes back.
+		client.PageEmit(page, 'opx:skills:spend', { node = 'ncpd_1' })
+		relay()
+		seen = frames()
+		local bought = seen[#seen] or { frame = {} }
+		check('the buy is answered with a fresh frame: the node claimed and the point spent',
+			#seen == 2 and bought.fresh == false and nodeIn(bought, 'ncpd_1').state == 'unlocked'
+				and bought.frame.points == 1,
+			('%d frame(s), ncpd_1 %s, points %s'):format(#seen, tostring(nodeIn(bought, 'ncpd_1').state),
+				tostring(bought.frame.points)))
+		check('and the node above it is the next one available',
+			nodeIn(bought, 'ncpd_2').state == 'available', tostring(nodeIn(bought, 'ncpd_2').state))
+		check('and the claim is news worth a toast',
+			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.gain.node',
+			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
+
+		-- A REFUSED PRESS is the server's own sentence, over the same tree.
+		client.PageEmit(page, 'opx:skills:spend', { node = 'ncpd_3' })
+		relay()
+		seen = frames()
+		local refused = seen[#seen] or { frame = {} }
+		check('a press the ledger refuses is said in its own words, and the tree redraws unchanged',
+			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.prereq'
+				and #seen == 3 and refused.frame.points == 1 and nodeIn(refused, 'ncpd_3').state == 'locked',
+			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
+
+		-- THE STAFF LEVER ON AN OPEN TREE: said, re-asked, redrawn -- and the
+		-- base game asked of this very machine with the preload's own code.
+		server.commands['opx.skills.level'].run(0, { 'max', tostring(SRC) })
+		relay()
+		seen = frames()
+		local maxed = seen[#seen] or { frame = {} }
+		check('an admin\u{2019}s max redraws the open tree at the cap, in place',
+			#seen == 4 and maxed.fresh == false and maxed.frame.level == 20
+				and maxed.frame.points == 62 and nodeIn(maxed, 'fixer_5').state == 'locked'
+				and nodeIn(maxed, 'fixer_1').state == 'available',
+			('%d frame(s), level %s, points %s'):format(#seen, tostring(maxed.frame.level),
+				tostring(maxed.frame.points)))
+		check('and the player reads why it moved',
+			(function()
+				for _, entry in ipairs(toasted) do
+					if entry.key == 'skills.admin.max' then return true end
+				end
+				return false
+			end)())
+		check('and this machine ran the preload\u{2019}s develop export, once, with its own code',
+			#calls == 1 and calls[1][1] == 'opx_sandy_view' and calls[1][2] == 'develop' and calls[1][3] == 10,
+			('%d call(s)'):format(#calls))
+		check('and the server journals what the machine answered',
+			(function()
+				for _, line in ipairs(server.log.info) do
+					if line:find('[skills] player 61: base-game development maxed on their client', 1, true) then
+						return true
+					end
+				end
+				return false
+			end)())
+
+		-- CLOSE, and the staff lever on a CLOSED tree: said, and never opened.
+		client.PageEmit(page, 'opx:skills:close', {})
+		check('the page\u{2019}s close takes the tree down', cskills.Skill.IsOpen() == false)
+		local asksBefore = asksUp
+		server.commands['opx.skills.level'].run(0, { '5', tostring(SRC) })
+		relay()
+		check('an admin\u{2019}s change to a closed tree is said and never opens it',
+			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.admin.set'
+				and asksUp == asksBefore and #frames() == 4 and cskills.Skill.IsOpen() == false,
+			('%d ask(s), %d frame(s)'):format(asksUp - asksBefore, #frames()))
+	end
+end
+
 section('the skill tree: the key and the panel')
 do
 	local env, control, why = boot('client')
@@ -24849,10 +28458,10 @@ do
 		-- ── the key ──────────────────────────────────────────────────────────
 		local mapping = control.keyMappings.byId[Skill.KEY.ID]
 		check('the key is declared to the host, so the pause menu lists it', mapping ~= nil)
-		check('and defaults to F3', mapping ~= nil and mapping.key == 'F3', mapping and tostring(mapping.key))
+		check('and defaults to F4', mapping ~= nil and mapping.key == 'F4', mapping and tostring(mapping.key))
 		check('and the pause menu is given a name for it, not a key',
 			mapping ~= nil and type(mapping.name) == 'string' and mapping.name ~= ''
-				and mapping.name:find('F3', 1, true) == nil,
+				and mapping.name:find('F4', 1, true) == nil,
 			mapping and tostring(mapping.name))
 		check('and the press is wired to the toggle', mapping ~= nil and type(mapping.pressed) == 'function')
 
@@ -24889,7 +28498,7 @@ do
 			frame ~= nil and #(frame.frame.branches or {}) == 3,
 			frame and ('%d trunk(s)'):format(#(frame.frame.branches or {})) or 'no frame')
 		check('and carries the resolved stow cap, not a mapping id',
-			frame ~= nil and frame.key == 'F3', frame and tostring(frame.key) or 'no frame')
+			frame ~= nil and frame.key == 'F4', frame and tostring(frame.key) or 'no frame')
 		check('and names trunks and nodes by KEY -- the page holds no English',
 			frame ~= nil and frame.frame.branches[1].name == 'skills.branch.ncpd'
 				and frame.frame.branches[1].nodes[1].name == 'skills.node.ncpd1')
@@ -24933,16 +28542,18 @@ do
 			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.gain.node',
 			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
 
-		-- ── focus: the cursor, and NOT the keyboard ────────────────────────────
-		-- The keyboard staying with the game is what keeps the F3 stow working
-		-- while the panel is up.
+		-- ── focus: the cursor AND the keyboard ─────────────────────────────────
+		-- A MODAL: while the tree is up the character does not walk off
+		-- mid-choice, and Escape reaches the page. On this platform no key
+		-- mapping fires while a page holds the keyboard, so the F4 that stows it
+		-- is caught BY THE PAGE -- which is why the frame carries the binding.
 		control.PageEmit(page, 'opx:focus:set',
 			{ surface = 'opx', focus = true, owner = 'skills.tree' })
 		check('the tree takes the cursor for its owner',
 			page.focus.cursor == true, ('kb=%s cur=%s'):format(
 				tostring(page.focus.keyboard), tostring(page.focus.cursor)))
-		check('and never the keyboard, so F3 still stows it',
-			page.focus.keyboard == false, ('kb=%s cur=%s'):format(
+		check('and the keyboard, so the character stays put and Escape reaches the page',
+			page.focus.keyboard == true, ('kb=%s cur=%s'):format(
 				tostring(page.focus.keyboard), tostring(page.focus.cursor)))
 
 		-- A refusal frame is a refresh with words: the toast says it and the
@@ -24955,10 +28566,79 @@ do
 			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.noPoints',
 			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
 
-		-- ── stowing ───────────────────────────────────────────────────────────
+		-- ── F4 on an open tree: one press, one close ─────────────────────────
+		-- A build whose mapping fires while the page holds the keyboard reports
+		-- the SAME press twice: the key's own toggle and the page's close.
+		local _, closesBefore = views('close')
+		mapping.pressed()
+		local _, closesAfter = views('close')
+		check('the key on an open tree closes it',
+			closesAfter == closesBefore + 1 and Skill.IsOpen() == false,
+			('%d close(s)'):format(closesAfter - closesBefore))
+		check('and gives the focus back',
+			OPX.UI.FocusOwner() == nil or OPX.UI.FocusOwner() ~= 'skills.tree',
+			tostring(OPX.UI.FocusOwner()))
+		control.PageEmit(page, 'opx:skills:close', {})
+		local _, closesTwice = views('close')
+		check('and the page\u{2019}s own close for the same press is the same close, not a second',
+			closesTwice == closesAfter, ('%d close(s)'):format(closesTwice - closesBefore))
+		mapping.pressed()
+		check('and the press that closed the tree never opens it again', knocks() == 1,
+			('%d knock(s)'):format(knocks()))
+
+		-- ONLY A KNOCK OPENS THE TREE: a spend answered after the stow is for a
+		-- panel that is gone, and must not put it back up.
+		control.netEvents[skills.Event.STATE]({
+			open = true, level = 3, xp = 100, need = 300, points = 1, depth = 5,
+			branches = { { id = 'ncpd', name = 'skills.branch.ncpd', rank = 2, xp = 0, nodes = {} } },
+		})
+		local _, lateFrames = views('frame')
+		check('an answer that lands after the stow does not put the tree back up',
+			lateFrames == 2 and Skill.IsOpen() == false, ('%d frame(s)'):format(lateFrames))
+
+		-- AN ADMIN MOVED A CLOSED TREE: the player is told, and it stays down.
+		control.netEvents[skills.Event.REFRESH]({ key = 'skills.admin.set',
+			args = { level = 7, cap = 20, points = 5 } })
+		check('an admin\u{2019}s change to a closed tree is said in the player\u{2019}s language',
+			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.admin.set'
+				and toasted[#toasted].args.level == 7,
+			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
+		check('and never opens it: no knock goes out', knocks() == 1 and Skill.IsOpen() == false,
+			('%d knock(s)'):format(knocks()))
+
+		-- Once that press is over, the key opens it again -- on the answer.
+		control.Pump(5)
+		mapping.pressed()
+		check('once the press is over the key knocks again', knocks() == 2, tostring(knocks()))
+		control.netEvents[skills.Event.STATE]({
+			open = true, level = 7, xp = 0, need = 700, points = 5, depth = 5,
+			branches = { { id = 'ncpd', name = 'skills.branch.ncpd', rank = 2, xp = 0, nodes = {} } },
+		})
+		local reopened, reopenedCount = views('frame')
+		check('and the knock\u{2019}s answer is what opens it, fresh',
+			Skill.IsOpen() == true and reopenedCount == 3 and reopened.fresh == true,
+			('%d frame(s)'):format(reopenedCount))
+
+		-- AN ADMIN MOVED AN OPEN TREE: said, and re-asked, so it redraws.
+		control.netEvents[skills.Event.REFRESH]({ key = 'skills.admin.max',
+			args = { level = 20, cap = 20, points = 62 } })
+		check('an admin\u{2019}s change to an open tree is said, and re-asked',
+			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.admin.max' and knocks() == 3,
+			('%d knock(s)'):format(knocks()))
+		control.netEvents[skills.Event.STATE]({
+			open = true, level = 20, xp = 2000, need = 2000, points = 62, depth = 5,
+			branches = { { id = 'ncpd', name = 'skills.branch.ncpd', rank = 5, xp = 0, nodes = {} } },
+		})
+		local redrawn = views('frame')
+		check('and the answer redraws the open tree in place rather than opening it anew',
+			redrawn ~= nil and redrawn.fresh == false and redrawn.frame.level == 20,
+			redrawn and ('fresh=%s level=%s'):format(tostring(redrawn.fresh),
+				tostring(redrawn.frame.level)) or 'no frame')
+
+		-- ── stowing from the page ─────────────────────────────────────────────
 		control.PageEmit(page, 'opx:skills:close', {})
 		local closed = views('close')
-		check('a stow from the page takes the panel down', closed ~= nil)
+		check('a stow from the page takes the panel down', closed ~= nil and Skill.IsOpen() == false)
 		check('and gives the focus back',
 			OPX.UI.FocusOwner() == nil or OPX.UI.FocusOwner() ~= 'skills.tree',
 			tostring(OPX.UI.FocusOwner()))
@@ -24969,8 +28649,9 @@ do
 		check('a stowed tree drops what it misses -- the next knock reads the ledger again',
 			gainCount == 3, ('%d gain line(s) drawn'):format(gainCount))
 
+		control.Pump(5)
 		mapping.pressed()
-		check('and the key opens it again', knocks() == 2, tostring(knocks()))
+		check('and the key opens it again', knocks() == 4, tostring(knocks()))
 
 		-- A refusal names its reason in the same words the panel would use.
 		control.netEvents[skills.Event.STATE]({ open = false, reason = 'noCharacter' })
@@ -24978,9 +28659,76 @@ do
 			toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.noCharacter',
 			toasted[#toasted] and tostring(toasted[#toasted].key) or 'no toast')
 		local _, frames = views('frame')
-		-- Two frames: the first knock\u{2019}s and the refused spend\u{2019}s refresh. A
-		-- refusal that closes the panel draws none.
-		check('and the panel stays down for it', frames == 2, ('%d frame(s)'):format(frames))
+		-- Four frames: the first knock\u{2019}s, the refused spend\u{2019}s refresh, the
+		-- re-open and the admin\u{2019}s redraw. A refusal that closes draws none.
+		check('and the panel stays down for it', frames == 4, ('%d frame(s)'):format(frames))
+		-- The refusal WAS the knock's answer: nothing is left out to open it.
+		control.netEvents[skills.Event.STATE]({
+			open = true, level = 7, xp = 0, need = 700, points = 5, depth = 5,
+			branches = { { id = 'ncpd', name = 'skills.branch.ncpd', rank = 2, xp = 0, nodes = {} } },
+		})
+		local _, afterRefusal = views('frame')
+		check('and a frame after the refusal finds no knock left out to open it',
+			afterRefusal == 4 and Skill.IsOpen() == false, ('%d frame(s)'):format(afterRefusal))
+
+		-- ── the base game's own levels, maxed on this machine ────────────────
+		-- The preload's `develop` export, stubbed at `Open77.exports.callSync`:
+		-- what it answers is what the player reads and what goes back up.
+		local exportsOf = env.Open77.exports
+		local calls = {}
+		local answer = function() return true end
+		exportsOf.callSync = function(resource, export, code)
+			calls[#calls + 1] = { resource, export, code }
+			return answer()
+		end
+		--- The report one develop request sent back up.
+		local function develop(nonce)
+			local mark = #control.serverEvents
+			control.netEvents[skills.Event.DEVELOP](nonce)
+			for index = mark + 1, #control.serverEvents do
+				local event = control.serverEvents[index]
+				if event.name == skills.Event.DEVELOPED then return event end
+			end
+			return {}
+		end
+		local report = develop('n-1')
+		check('a develop request runs the preload\u{2019}s export with the config\u{2019}s own code',
+			#calls == 1 and calls[1][1] == 'opx_sandy_view' and calls[1][2] == 'develop'
+				and calls[1][3] == 10,
+			calls[1] and ('%s.%s(%s)'):format(tostring(calls[1][1]), tostring(calls[1][2]),
+				tostring(calls[1][3])) or 'never called')
+		check('and a machine that maxed its levels says so, and tells the player',
+			report[1] == 'n-1' and report[2] == true
+				and toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.develop.done',
+			('%s %s'):format(tostring(report[1]), tostring(report[2])))
+		answer = function() return false, 'boosting' end
+		report = develop('n-2')
+		check('a refusal goes back up with the export\u{2019}s own reason, and the player reads it',
+			report[1] == 'n-2' and report[2] == false and report[3] == 'boosting'
+				and toasted[#toasted] ~= nil and toasted[#toasted].key == 'skills.develop.refused'
+				and toasted[#toasted].args.why == 'boosting',
+			('%s %s'):format(tostring(report[2]), tostring(report[3])))
+		answer = function() error('opx_sandy_view is not running') end
+		report = develop('n-3')
+		check('an export that raises is a refusal, not a crash',
+			report[2] == false and tostring(report[3]):find('not running', 1, true) ~= nil,
+			tostring(report[3]))
+		exportsOf.callSync = nil
+		report = develop('n-4')
+		check('and a build with no synchronous exports says exactly that',
+			report[2] == false and report[3] == 'no_sync_exports', tostring(report[3]))
+		local developBlock = OPX.Config.MODULES.skills.DEVELOP
+		OPX.Config.MODULES.skills.DEVELOP = { RESOURCE = false }
+		exportsOf.callSync = function()
+			calls[#calls + 1] = { 'asked while off' }
+			return true
+		end
+		local asked = #calls
+		report = develop('n-5')
+		check('and a server that turned the request off asks nothing of the machine',
+			report[2] == false and report[3] == 'off' and #calls == asked, tostring(report[3]))
+		OPX.Config.MODULES.skills.DEVELOP = developBlock
+		exportsOf.callSync = nil
 
 		-- ── THE KEY IS CONFIG, and the shipped declaration is only its ──────
 		-- fallback. The block is read on every ask -- what the mapping
@@ -25004,6 +28752,8 @@ do
 		local mine = control.keyMappings.byId['opx.skills.custom']
 		check('and what the mapping registers under, so the pause menu names it',
 			mine ~= nil and mine.key == 'F6', mine and tostring(mine.key))
+		-- Only a knock opens the tree, so the custom key knocks first.
+		if mine ~= nil then mine.pressed() end
 		control.netEvents[skills.Event.STATE]({ open = true, level = 1, xp = 0,
 			need = 100, points = 0, depth = 1, branches = {} })
 		local custom = views('frame')
@@ -25627,10 +29377,10 @@ local sandyWire = {}
 -- the platform stores (`control.chrome`) and a real ledger table.
 section('the ripperdoc clinic: the whole base-game tray, its body rules and its effects')
 do
-	-- THE LEDGER'S TABLES, as rows: the chrome rows and the refund queue,
-	-- answered the way the bridge answers (rows for a read, affected rows for
-	-- a write). Everything else reads as empty.
-	local db = { chrome = {}, refunds = {}, nextRefund = 0, records = {} }
+	-- THE LEDGER'S TABLES, as rows: the chrome rows, their lives and the
+	-- refund queue, answered the way the bridge answers (rows for a read,
+	-- affected rows for a write). Everything else reads as empty.
+	local db = { chrome = {}, life = {}, refunds = {}, nextRefund = 0, records = {} }
 	local function bridge()
 		return Host.Database({
 			scalar = function() return 1 end,
@@ -25640,6 +29390,13 @@ do
 				if sql:find('FROM opx77_ripperdoc_chrome', 1, true) then
 					local rows = {}
 					for _, row in pairs(db.chrome) do
+						if row.citizen_id == params.citizen then rows[#rows + 1] = row end
+					end
+					return rows
+				end
+				if sql:find('FROM opx77_ripperdoc_life', 1, true) then
+					local rows = {}
+					for _, row in pairs(db.life) do
 						if row.citizen_id == params.citizen then rows[#rows + 1] = row end
 					end
 					return rows
@@ -25671,6 +29428,17 @@ do
 				end
 				if sql:find('DELETE FROM opx77_ripperdoc_chrome', 1, true) then
 					db.chrome[params.citizen .. '|' .. params.entry] = nil
+					return 1
+				end
+				if sql:find('INSERT INTO opx77_ripperdoc_life', 1, true) then
+					db.life[params.citizen .. '|' .. params.entry] = {
+						citizen_id = params.citizen, entry_id = params.entry, points = params.points,
+						use_wear = params.useWear, worn_at = params.wornAt, started_at = params.startedAt,
+					}
+					return 1
+				end
+				if sql:find('DELETE FROM opx77_ripperdoc_life', 1, true) then
+					db.life[params.citizen .. '|' .. params.entry] = nil
 					return 1
 				end
 				if sql:find('INSERT INTO opx77_ripperdoc_refund', 1, true) then
@@ -25708,9 +29476,15 @@ do
 	-- below runs on the timer's real SHAPE -- the harness's own advance plus
 	-- the remainder -- and a `%d` of a timestamp fails here the way it fails
 	-- on the server.
+	-- THE WALL CLOCK a life is stamped with, the platform's `GetUnixTime`:
+	-- it stands still unless a check moves it, so the calendar wears nothing
+	-- while the other wear is measured, and exactly what a check says when it
+	-- is the thing under test.
+	local wall = { now = 1790000000.25 }
 	local function prelude(e)
 		local real = e.GetGameTimer
 		e.GetGameTimer = function() return real() + 0.5 end
+		e.GetUnixTime = function() return wall.now end
 	end
 
 	local env, control, why = boot('server', bridge(), prelude)
@@ -25863,11 +29637,12 @@ do
 
 		-- ── one patient, serving themselves ──────────────────────────────────
 
-		-- The clock of play is stopped while the other wear is measured, and
-		-- run by hand where it is the thing under test.
-		local durability = ripperdoc.Settings.DURABILITY
-		local lifespan = durability.LIFESPAN_HOURS
-		durability.LIFESPAN_HOURS = 0
+		-- The wall clock stands still while the other wear is measured, and is
+		-- moved by hand where the calendar is the thing under test.
+		check('the platform\'s wall clock is the one a life is stamped with',
+			select(2, Ripper.UnixNow()) == 'platform' and Ripper.UnixNow() == wall.now
+				and table.concat(control.log.info, ' | '):find('chrome ages by the platform\'s wall clock', 1, true) ~= nil,
+			tostring(select(2, Ripper.UnixNow())))
 
 		local spot = { x = -1441.2, y = 129.6, z = 18.05 }
 		env.Open77.players.position = function() return { x = spot.x, y = spot.y, z = spot.z, bucket = 0 } end
@@ -26015,14 +29790,21 @@ do
 
 		-- ── the lifecycle ────────────────────────────────────────────────────
 
-		-- DAMAGE wears the plating that took it, and nothing else.
+		-- DAMAGE wears the plating that took it, and nothing else: minutes of
+		-- its life, per 100 damage.
 		local skinBefore = Chrome.Row('citizen-tray', skin[1].id).points
 		control.Fire('open77:playerDamaged', '61', '0', '200')
 		control.Pump(2)
 		local worn = Chrome.Row('citizen-tray', 'subdermal_armor').points
 		local life = Ripper.Lifecycle()
-		check('two hundred points of damage wear the plating by the policy\'s share',
-			math.abs(worn - (100 - life.DAMAGE_WEAR * 2)) < 0.001,
+		--- The condition `minutes` of one piece's life are worth, at level 1.
+		local function minutesOf(entry, minutes)
+			return 100 * minutes * 60 / Ripper.LifeSeconds(entry, 1, 1)
+		end
+		check('two hundred points of damage wear the plating by the policy\'s minutes of its life',
+			life.DAMAGE_MINUTES > 0 and math.abs(worn - (100 - minutesOf(plating, life.DAMAGE_MINUTES * 2))) < 1e-9
+				and math.abs(Chrome.Row('citizen-tray', 'subdermal_armor').use
+					- minutesOf(plating, life.DAMAGE_MINUTES * 2)) < 1e-9,
 			tostring(worn))
 		local armored = Ripper.Grade(skin[1], skin[1].GRADES[1].id).EFFECTS.armor
 		check('and a piece without plating is not worn by a hit',
@@ -26030,23 +29812,34 @@ do
 				or Chrome.Row('citizen-tray', skin[1].id).points == skinBefore,
 			tostring(Chrome.Row('citizen-tray', skin[1].id).points))
 
-		-- TIME wears everything, a little, every tick.
+		-- TIME wears everything, a little, every tick: the calendar's share of
+		-- the whole life since the piece was last worn.
 		local beforeTick = Chrome.Row('citizen-tray', skin[2].id).points
-		durability.LIFESPAN_HOURS = lifespan
+		local stampBefore = Chrome.Row('citizen-tray', skin[2].id).wornAt
+		wall.now = wall.now + life.TICK_SECONDS
 		Chrome.Tick()
-		durability.LIFESPAN_HOURS = 0
-		control.Pump(2)
-		local perTick = 100 * life.TICK_SECONDS / (lifespan * 3600)
-		check('a tick of play wears every fitted piece by its lifespan share',
-			math.abs((beforeTick - Chrome.Row('citizen-tray', skin[2].id).points) - perTick) < 0.0001,
+		-- A write of the same piece still out (the runtime's own tick) goes
+		-- again after this one: the newest lands last.
+		control.Pump(6)
+		local perTick = 100 * life.TICK_SECONDS / Ripper.LifeSeconds(skin[2], 1, 1)
+		check('a tick of the calendar wears every fitted piece by its share of a 6-day life',
+			life.LIFESPAN_DAYS == 6 and Ripper.LifeSeconds(skin[2], 1, 1) == 6 * 86400
+				and math.abs((beforeTick - Chrome.Row('citizen-tray', skin[2].id).points) - perTick) < 1e-9
+				and Chrome.Row('citizen-tray', skin[2].id).wornAt == wall.now and stampBefore ~= wall.now,
 			tostring(beforeTick - Chrome.Row('citizen-tray', skin[2].id).points))
+		check('and the tick writes each life: the precise points, when the calendar last wore it',
+			db.life['citizen-tray|' .. skin[2].id] ~= nil
+				and math.abs(db.life['citizen-tray|' .. skin[2].id].points - Chrome.Row('citizen-tray', skin[2].id).points) < 1e-9
+				and db.life['citizen-tray|' .. skin[2].id].worn_at == math.floor(wall.now),
+			tostring(db.life['citizen-tray|' .. skin[2].id] and db.life['citizen-tray|' .. skin[2].id].worn_at))
 
-		-- DEATH wears everything.
+		-- DEATH wears everything: an hour of every life.
 		local beforeDeath = Chrome.Row('citizen-tray', skin[2].id).points
 		control.Fire('onPlayerLifeStateChanged', '61', 'alive', 'dead')
 		control.Pump(2)
-		check('a death wears every fitted piece',
-			math.abs(beforeDeath - Chrome.Row('citizen-tray', skin[2].id).points - life.DEATH_WEAR) < 0.001,
+		check('a death wears every fitted piece by the policy\'s minutes of its life',
+			life.DEATH_MINUTES > 0 and math.abs(beforeDeath - Chrome.Row('citizen-tray', skin[2].id).points
+				- minutesOf(skin[2], life.DEATH_MINUTES)) < 1e-9,
 			tostring(Chrome.Row('citizen-tray', skin[2].id).points))
 
 		-- What every OTHER plate on the body is worth now.
@@ -26285,15 +30078,18 @@ do
 		-- THE WORLD AROUND: 62 stands ten metres off, 63 two hundred, 64 close
 		-- but in another bucket.
 		local realPosition, realAll = env.Open77.players.position, env.Open77.players.all
+		-- 65 is a pilot twelve metres off, seated in the aircraft they fly.
 		local spots = {
 			[61] = { x = 0.0, y = 0.0, z = 0.0, bucket = 0 }, [62] = { x = 10.0, y = 0.0, z = 0.0, bucket = 0 },
 			[63] = { x = 200.0, y = 0.0, z = 0.0, bucket = 0 }, [64] = { x = 5.0, y = 0.0, z = 0.0, bucket = 7 },
+			[65] = { x = 0.0, y = 12.0, z = 0.0, bucket = 0 },
 		}
 		env.Open77.players.position = function(id)
 			local at = spots[tonumber(id)]
 			return at and { x = at.x, y = at.y, z = at.z, bucket = at.bucket } or nil
 		end
-		env.Open77.players.all = function() return { 61, 62, 63, 64 } end
+		env.Open77.players.all = function() return { 61, 62, 63, 64, 65 } end
+		control.Seat(65, { vehicleId = 9001, seat = 'seat_front_left' })
 		local function lookEvents()
 			local out = {}
 			for index = 1, #control.clientEvents do
@@ -26375,6 +30171,23 @@ do
 			#walkedIn == 1 and walkedIn[1].phase == 'slow' and walkedIn[1].remainingMs <= 9250
 				and walkedIn[1].remainingMs > 8000 and #toldTo(62) == 1,
 			('%d event(s) to 63'):format(#walkedIn))
+		-- A BODY IN A VEHICLE IS NEVER SLOWED. Its client simulates the vehicle,
+		-- and a slowed clock is an aircraft every other player watches crawl and
+		-- lurch -- measured 2026-09-28 23:45:12, reported as the MaxTac AV
+		-- "moving around" and "disappearing on other player screen".
+		check('a pilot seated in their aircraft inside the radius is not slowed', #toldTo(65) == 0)
+		do
+			control.Seat(65, nil)
+			ripperdoc.Sandy.Sweep()
+			local pilotTold = toldTo(65)
+			check('on foot, the same player is slowed for what is left of the boost',
+				#pilotTold == 1 and pilotTold[1].phase == 'slow')
+			control.Seat(65, { vehicleId = 9001, seat = 'seat_front_left' })
+			ripperdoc.Sandy.Sweep()
+			pilotTold = toldTo(65)
+			check('and climbing back in hands their clock back at once',
+				#pilotTold == 2 and pilotTold[2].phase == 'release')
+		end
 		spots[62] = { x = 35.0, y = 0.0, z = 0.0, bucket = 0 }
 		ripperdoc.Sandy.Sweep()
 		check('one on the edge of the radius is not let go and slowed again on every step', #toldTo(62) == 1)
@@ -26483,6 +30296,8 @@ do
 				and journal:find('[ripperdoc] player 61: Sandevistan no longer slows player 62 (60.0 m away, past ' ..
 					'37.5 m)', 1, true) ~= nil
 				and journal:find('[ripperdoc] player 61: Sandevistan no longer slows player 63 (the boost completed)',
+					1, true) ~= nil
+				and journal:find('[ripperdoc] player 61: Sandevistan no longer slows player 65 (seated in a vehicle)',
 					1, true) ~= nil
 				and journal:find('0 player(s) slowed nearby (within 30 m; nearest: player 62 at 60.0 m)', 1,
 					true) ~= nil)
@@ -26758,6 +30573,120 @@ do
 		check('and every record the tray names is one the installed TweakDB really has',
 			#strays == 0 and #ripperdoc.Records.IDS > 1500, table.concat(strays, ' '))
 
+		-- ── the picture of each piece ──────────────────────────────────────
+		-- "a real cyberware icon image ... so users can see a preview of the
+		-- cyberware before installation" (2026-09-28): the base game's own icon,
+		-- cut out of its atlas, for EVERY piece the tray can show -- the base
+		-- game's rows and the operator's hand-tuned ones alike.
+		local Cyber = ripperdoc.Cyber
+		local unpictured, unshipped, picturedCount = {}, {}, 0
+		local function bytesOf(path)
+			local handle = io.open(path, 'rb')
+			if handle == nil then return nil end
+			local bytes = handle:read('a')
+			handle:close()
+			return bytes
+		end
+		-- A picture's own size, out of its WebP header (lossy, lossless or
+		-- extended): a cut-out of the game's 2048-pixel atlas is a hundred-odd
+		-- pixels on its long side, never a stand-in square.
+		local function webpSize(bytes)
+			if bytes:sub(1, 4) ~= 'RIFF' or bytes:sub(9, 12) ~= 'WEBP' then return nil end
+			local function at(index) return bytes:byte(index) or 0 end
+			local kind = bytes:sub(13, 16)
+			if kind == 'VP8X' then
+				return 1 + at(25) + at(26) * 256 + at(27) * 65536, 1 + at(28) + at(29) * 256 + at(30) * 65536
+			elseif kind == 'VP8L' and at(21) == 0x2F then
+				local bits = at(22) + at(23) * 256 + at(24) * 65536 + at(25) * 16777216
+				return 1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF)
+			elseif kind == 'VP8 ' then
+				return (at(27) + at(28) * 256) & 0x3FFF, (at(29) + at(30) * 256) & 0x3FFF
+			end
+			return nil
+		end
+		local looked, files, shared = {}, {}, {}
+		for _, entry in ipairs(Ripper.Catalog()) do
+			local icon = Cyber.IconFor(entry)
+			if icon == nil then
+				unpictured[#unpictured + 1] = entry.id
+			else
+				picturedCount = picturedCount + 1
+				if not looked[icon] then
+					looked[icon] = true
+					local stem = Cyber.PictureOf(icon)
+					if stem ~= nil and files[stem] ~= nil and files[stem] ~= icon then
+						shared[#shared + 1] = icon .. '=' .. files[stem]
+					end
+					if stem ~= nil then files[stem] = icon end
+					local source = stem and bytesOf('ui/public/images/cyberware/' .. stem .. '.webp')
+					local built = stem and bytesOf('web/images/cyberware/' .. stem .. '.webp')
+					local width, height = webpSize(source or '')
+					local long = math.max(width or 0, height or 0)
+					if (source == nil or built ~= source or long < 96 or long > 512) and #unshipped < 6 then
+						unshipped[#unshipped + 1] = ('%s as %s (%s x %s%s)'):format(icon, tostring(stem),
+							tostring(width), tostring(height), built ~= source and ', web/ differs' or '')
+					end
+				end
+			end
+		end
+		check('every piece on the tray has the base game\'s own picture',
+			#unpictured == 0 and picturedCount >= 120,
+			('%d pictured; none for: %s'):format(picturedCount, table.concat(unpictured, ', ')))
+		check('and every picture is a real WebP cut-out, shipped in ui/public and the same in the built web/',
+			#unshipped == 0, table.concat(unshipped, ' '))
+
+		-- THE FILE NAME IS SHORT, AND FIXED (2026-09-28): a client installs the
+		-- resource 200 characters deep on a Steam install in Program Files, and
+		-- Windows stops at 259 -- the base game's own names, up to 70 characters
+		-- as a path, made the client refuse the whole resource
+		-- (`invalid_web_file:web/images/cyberware/cw_circulatory_enhancedbloodvessels.webp`).
+		check('a picture ships as eight hex characters: the FNV-1a of its name',
+			Cyber.PictureOf('a') == 'e40c292c' and Cyber.PictureOf('cw_arms_strongarms') == '7866c4b0'
+				and Cyber.PictureFor(Ripper.Entry('arms')) == '7866c4b0'
+				and Cyber.PictureOf('../etc') == nil and Cyber.PictureOf(nil) == nil,
+			tostring(Cyber.PictureOf('cw_arms_strongarms')))
+		check('and no two pictures share a file', #shared == 0, table.concat(shared, ' '))
+
+		-- Nothing else in the two folders: a stale file there still ships
+		-- (`web_files { "web/**" }`), and one with a long name is the refusal above
+		-- all over again. The walk knows its platform (see "the stutter is declared
+		-- once"), and an empty walk is a failure, never a pass.
+		local function listed(root)
+			local out = {}
+			local command = package.config:sub(1, 1) == '\\'
+				and ('dir /b "%s" 2>nul'):format(root:gsub('/', '\\'))
+				or ('ls -1 "%s" 2>/dev/null'):format(root)
+			local handle = io.popen(command)
+			if handle == nil then return out end
+			for line in handle:lines() do
+				local name = line:match('([^/\\]+)$')
+				if name ~= nil and name ~= '' then out[#out + 1] = name end
+			end
+			handle:close()
+			return out
+		end
+		local strays, walked = {}, 0
+		for _, root in ipairs({ 'ui/public/images/cyberware', 'web/images/cyberware' }) do
+			for _, name in ipairs(listed(root)) do
+				walked = walked + 1
+				local stem = name:match('^(%x%x%x%x%x%x%x%x)%.webp$')
+				if (stem == nil or files[stem] == nil) and #strays < 6 then strays[#strays + 1] = root .. '/' .. name end
+			end
+		end
+		check('and the picture folders hold those files and nothing else', walked > 0 and #strays == 0,
+			walked == 0 and 'the folders could not be listed' or table.concat(strays, ' '))
+		check('a family shares its picture, as the game draws it (the four Gorilla Arms, the Mantis Blades)',
+			Cyber.IconFor(Ripper.Entry('arms')) == 'cw_arms_strongarms'
+				and Cyber.IconFor(Ripper.Entry('gorilla_arms_toxic')) == 'cw_arms_strongarms'
+				and Cyber.IconFor(Ripper.Entry('mantis_blades_maxtac')) == 'cw_arms_mantisblades'
+				and Cyber.IconFor(Ripper.Entry('apogee_sandevistan')) == 'cw_system_sandevistanedgerunner')
+		check('an icon name is a file name on the page: only a plain lower-case word gets through',
+			Cyber.IconFor({ id = 'x', ICON = '../../etc' }) == nil
+				and Cyber.IconFor({ id = 'x', ICON = 'Has Space' }) == nil
+				and Cyber.IconFor({ id = 'x', ICON = 'own_icon' }) == 'own_icon'
+				and Cyber.IconFor({ id = 'arms', ICON = 'own_icon' }) == 'own_icon'
+				and Cyber.IconFor(nil) == nil)
+
 		-- ── the record reader ───────────────────────────────────────────────
 
 		local Reader = ripperdoc.Reader
@@ -26801,7 +30730,6 @@ do
 			Reader.Status())
 
 		contract.RemoveMoney, contract.AddMoney = realRemove, realAdd
-		durability.LIFESPAN_HOURS = lifespan
 	end
 end
 
@@ -27125,6 +31053,39 @@ do
 		check('and lets go on the release', leases[#leases][1] == 'clear' and next(Sandy.SlowedBy()) == nil)
 		env.Open77.world.setTimeScale = scaleDoor
 
+		-- A SEATED OWNER KEEPS REAL TIME. This client simulates the vehicle it
+		-- sits in for every other screen, and a slowed clock here is a car or an
+		-- aircraft that crawls and lurches everywhere else: a MaxTac AV pilot
+		-- boarded mid-boost on 2026-09-28 at 23:44:07 and flew the first 25 s of
+		-- the flight slowed, and the owner reported the AV "moving around".
+		do
+			local seatedLeases, seatedScales = #leases, #scales
+			control.Seat(1, { vehicleId = 4242, seat = 'seat_front_left' })
+			Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy',
+				remainingMs = 6000, activation = 'own-seated', scale = 0.15, fallbackScale = 0.5, easeMs = 250 })
+			check('an owner who boosts from a seat keeps real time: no lease, no time scale, and the journal says why',
+				#leases == seatedLeases and #scales == seatedScales
+					and said('seated in a vehicle: the clock stays real time') ~= nil)
+			Sandy.OnPhase({ player = 5, phase = 'completed', activation = 'own-seated' })
+			control.Seat(1, nil)
+			Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy',
+				remainingMs = 6000, activation = 'own-sits', scale = 0.15, fallbackScale = 0.5, easeMs = 250 })
+			local slowedWith = leases[#leases]
+			check('on foot the same boost slows the world around an exempt body',
+				slowedWith ~= nil and slowedWith[1] == 'apply' and slowedWith[2].worldScale == 0.15)
+			local onFoot = #leases
+			check('and the loop\'s seat read leaves an owner on foot slowed: only a seat hands the clock back',
+				Sandy.OwnSeated() == false and #leases == onFoot)
+			control.Seat(1, { vehicleId = 4242, seat = 'seat_front_left' })
+			local handedBack = Sandy.OwnSeated()
+			check('and sitting down mid-boost gives the clock back at once, the boost going on',
+				handedBack == true and leases[#leases][1] == 'clear'
+					and said('seated in a vehicle -- this machine\'s clock is back to real time') ~= nil)
+			check('once: a second read has nothing left to give back', Sandy.OwnSeated() == false)
+			Sandy.OnPhase({ player = 5, phase = 'completed', activation = 'own-sits' })
+			control.Seat(1, nil)
+		end
+
 		-- THE BASE GAME'S OWN SCREEN. With the lease and the world's view
 		-- REDscript (opx_sandy_view, `view` on the wire), the camera's own
 		-- `Sandevistan` curve rides the `sandevistan` dilation: nothing is laid
@@ -27237,7 +31198,8 @@ do
 				and reds:find('native func Open77PlayerResetTrace', 1, true) == nil
 				and reds:find('if !asked {', 1, true) ~= nil
 				and reds:find('tenths', 1, true) == nil and reds:find('IsControlledByLocalPeer()', 1, true) ~= nil
-				and manifest:find('version "1.4.8"', 1, true) ~= nil)
+				and manifest:find('version "1.4.15"', 1, true) ~= nil
+				and reds:find('opx_sandy_view 1.4.15.', 1, true) ~= nil)
 		check('and exempts this body from the owner\'s own clock -- the view\'s claim, reason open77:opx_sandy_view ' ..
 			'-- the way SetTimeDilationGlobal does for `sandevistan`, and gives it back on a new body',
 			reds:find('IsTimeDilationActive(n"open77:opx_sandy_view")', 1, true) ~= nil
@@ -27245,6 +31207,353 @@ do
 				and reds:find('SetIgnoreTimeDilationOnLocalPlayerZero(false)', 1, true) ~= nil
 				and reds:find('@wrapMethod(PlayerPuppet)', 1, true) ~= nil
 				and manifest:find('permissions { "world.timescale" }', 1, true) ~= nil)
+		-- 1.4.10: THE MAXTAC AV, VISIBLE. Every TweakDB record of the MaxTac AV
+		-- names the base game's cloaked livery (`maxtac_cloak` on the body, doors,
+		-- engines and cabin), which only the base game's prevention AI lifts, and
+		-- the platform's client spawns a vehicle from its record alone -- so it
+		-- came out invisible but for its stickers, one door and its thrusters.
+		local avReds = slurp('extras/opx_sandy_view/src/r6/scripts/opx_infinity/OpxMaxTacAv.reds')
+		local avLivery = avReds:match('public static func OpxMaxTacAvLivery%((.-)\n}') or ''
+		local avStep = avReds:match('public static func OpxMaxTacAvStep%((.-)\n}') or ''
+		check('the view\'s second REDscript draws the MaxTac AV in its visible livery: every vehicle the game attaches ' ..
+			'whose record names the cloaked one gets the same template\'s visible MaxTac appearance, in a multiplayer ' ..
+			'session only, read back every half second, asked again at most twice if the cloak comes back, and ' ..
+			'said once in the client log',
+			avReds:find('@wrapMethod(VehicleObject)\nprotected cb func OnGameAttached() -> Bool {\n'
+					.. '  let result: Bool = wrappedMethod();\n  OpxMaxTacAvLivery(this);\n  return result;\n}', 1, true) ~= nil
+				and avReds:find('return n"zetatech_surveyor__basic_maxtac_camo_01";', 1, true) ~= nil
+				and avReds:find('return n"zetatech_surveyor__basic_ep1_maxtac_01";', 1, true) ~= nil
+				and avLivery:find('!Open77MultiplayerPolicyActive()', 1, true) ~= nil
+				and avLivery:find('NotEquals(record.AppearanceName(), OpxMaxTacAvCloaked())', 1, true) ~= nil
+				and avLivery:find('vehicle.ScheduleAppearanceChange(OpxMaxTacAvVisible());', 1, true) ~= nil
+				and avLivery:find('DelayCallback(tick, 0.5, false)', 1, true) ~= nil
+				and avStep:find('Equals(now, OpxMaxTacAvCloaked()) && tick.asked < 3', 1, true) ~= nil
+				and avStep:find('Open77PlayerResetTrace(who + " drawn in the visible livery "', 1, true) ~= nil
+				and avStep:find('"opx_sandy_view maxtac av: "', 1, true) ~= nil
+				and avStep:find('DelayCallback(next, 0.5, false)', 1, true) ~= nil
+				and avReds:find('native func', 1, true) == nil
+				and avReds:find('opx_sandy_view 1.4.10', 1, true) ~= nil
+				and manifest:find('OpxMaxTacAv.reds', 1, true) ~= nil,
+			('%d byte(s) of REDscript'):format(#avReds))
+		do
+			-- 1.4.11: THE USER IS REALLY FASTER. The boost kept V at real time in a
+			-- slowed world, and the platform's overdrive raises MaxSpeed by 1.25 or
+			-- 1.55 -- to everyone watching, barely faster ("people using the
+			-- sandevistan need a speed boost, one that is faster", 2026-09-28).
+			local ownerStepNow = reds:match('public static func OpxSandevistanOwnerStep%((.-)\n}') or ''
+			local speedFn = reds:match('public static func OpxSandevistanSpeed%((.-)\n}') or ''
+			check('the owner\'s watch puts one more MaxSpeed multiplier on V while the boost holds, through the base ' ..
+				'game\'s stats system, and takes it off the moment the boost ends (every step, so it never outlives it)',
+				reds:find('public static func OpxSandevistanSpeedBoost() -> Float {\n  return 1.5;\n}', 1, true) ~= nil
+					and reds:find('@addField(PlayerPuppet)\npublic let m_opxSandySpeed: ref<gameStatModifierData>;', 1, true) ~= nil
+					and speedFn:find('RPGManager.CreateStatModifier(gamedataStatType.MaxSpeed,\n      gameStatModifierType.Multiplier, OpxSandevistanSpeedBoost())', 1, true) ~= nil
+					and speedFn:find('stats.AddModifier(id, speed)', 1, true) ~= nil
+					and speedFn:find('stats.RemoveModifier(id, player.m_opxSandySpeed);', 1, true) ~= nil
+					and speedFn:find('player.m_opxSandySpeed = null;', 1, true) ~= nil
+					and ownerStepNow:find('if OpxSandevistanSpeed(player, boost) {', 1, true) ~= nil
+					and ownerStepNow:find('"opx_sandy_view owner: speed "', 1, true) ~= nil)
+
+			-- 1.4.11: THE BASE GAME'S MISSIONS. The platform's policy switches off,
+			-- all session, the pieces a side job waits on; `OpxQuests.reds` is the
+			-- outermost wrapper of the same base-game methods and runs the base
+			-- game's own body instead. Compiled and chain-checked off-line against the
+			-- platform's scripts (every wrapper outermost); here, the rules a build
+			-- depends on.
+			local quests = slurp('extras/opx_sandy_view/src/r6/scripts/opx_infinity/OpxQuests.reds')
+			local wrapped = {}
+			for class, method in quests:gmatch('@wrapMethod%((%w+)%)\n[%w ]-func (%w+)%(') do
+				wrapped[#wrapped + 1] = class .. '.' .. method
+			end
+			table.sort(wrapped)
+			-- EVERY ONE A BASE-GAME METHOD. A wrapper of a method the PLATFORM added
+			-- (`@addMethod`), or a `@replaceGlobal` of a platform global, fails the
+			-- whole script build -- every mod's -- if the platform's folder ever
+			-- compiles after this one; a base-game method only ever wraps inertly.
+			local BASE_GAME = {
+				['BaseSubtitlesGameController.ShowDialogLines'] = true,
+				['DoorControllerPS.OnQuestForceUnlock'] = true, ['DoorControllerPS.OnQuestForceUnseal'] = true,
+				['Inventory.IsChoiceAvailable'] = true, ['Inventory.OnInteractionUsed'] = true,
+				['JournalNotificationQueue.OnCustomQuestNotificationUpdate'] = true,
+				['JournalNotificationQueue.OnJournalUpdate'] = true, ['JournalNotificationQueue.OnTrackedMappinUpdated'] = true,
+				['LoadingScreenProgressBarController.SetProgress'] = true, ['LootPickupScriptedCondition.Test'] = true,
+				['MinimapContainerController.CreateMappinUIProfile'] = true, ['NPCPuppet.OnGameAttached'] = true,
+				['NewHudPhoneGameController.OnAction'] = true, ['NewHudPhoneGameController.OnContactsActive'] = true,
+				['NewHudPhoneGameController.OnInitialize'] = true, ['NewHudPhoneGameController.OnPlayerAttach'] = true,
+				['NewHudPhoneGameController.OnJournalUpdate'] = true, ['NewHudPhoneGameController.OnPhoneCall'] = true,
+				['NewHudPhoneGameController.PushSMSNotification'] = true,
+				['PhoneSystem.IsPhoneEnabled'] = true, ['PhoneSystem.OnTriggerCall'] = true, ['PhoneSystem.OnUsePhone'] = true,
+				['PlayerPuppet.OnGameAttached'] = true,
+				['PlayerVisionModeController.OnAction'] = true, ['PlayerVisionModeController.OnInvalidateActiveState'] = true,
+				['PlayerVisionModeController.VerifyActivation'] = true,
+				['QuestTrackerGameController.OnInitialize'] = true, ['QuestTrackerGameController.OnTrackedEntryChanges'] = true,
+				['ScriptedPuppet.IsContainer'] = true, ['ScriptedPuppet.IsQuickHackAble'] = true,
+				['VisionContextDecisions.EnterCondition'] = true,
+				['WorldMapMenuGameController.CreateMappinUIProfile'] = true,
+				-- 1.4.14, the map log: five more of the map's own methods, each only
+				-- bracketed by a line in the client log.
+				['WorldMapMenuGameController.GetTotalZoomLevels'] = true,
+				['WorldMapMenuGameController.HideAllTooltips'] = true,
+				['WorldMapMenuGameController.OnEntityAttached'] = true,
+				['WorldMapMenuGameController.OnInitialize'] = true,
+				['WorldMapMenuGameController.OnUninitialize'] = true,
+				['WorldMappinsContainerController.CreateMappinUIProfile'] = true,
+				['gameItemDropObject.IsContainer'] = true, ['gameItemDropObject.OnItemEntitySpawned'] = true,
+				['gameItemDropObject.OnItemRemoveddEvent'] = true, ['gameLootBag.IsContainer'] = true,
+				['gameLootContainerBase.IsContainer'] = true,
+			}
+			local strangers = {}
+			for _, name in ipairs(wrapped) do
+				if not BASE_GAME[name] then strangers[#strangers + 1] = name end
+			end
+			check('the missions REDscript wraps base-game methods only, every one of them named here',
+				#wrapped == 43 and #strangers == 0, ('%d wrapper(s); not base game: %s'):format(#wrapped,
+					table.concat(strangers, ', ')))
+			check('and it replaces nothing and declares no native (it only calls the platform\'s)',
+				quests:find('@replaceGlobal', 1, true) == nil and quests:find('@replaceMethod', 1, true) == nil
+					and quests:find('native func', 1, true) == nil and quests:find('continue;', 1, true) == nil)
+			-- NEVER A JOURNAL MUTATION FROM A JOURNAL CALLBACK: the tracker's
+			-- callback runs inside TrackEntry under its listener lock, and the
+			-- platform's own history is a 120 s watchdog kill ("Dogtown gate").
+			check('and it never tracks or untracks anything (the tracker callback runs under the journal\'s lock)',
+				quests:find('TrackEntry(', 1, true) == nil and quests:find('UntrackEntry(', 1, true) == nil
+					and quests:find('TrackQuest', 1, true) == nil)
+			local gate = quests:match('public static func OpxQuestsOn%((.-)\n}') or ''
+			check('and every piece is gated on a multiplayer session and the quest fact opx_quests_off',
+				gate:find('Open77MultiplayerPolicyActive() && GetFact(game, n"opx_quests_off") == 0', 1, true) ~= nil)
+			local phoneAction = quests:match('@wrapMethod%(NewHudPhoneGameController%)\nprotected cb func OnAction%((.-)\n}') or ''
+			local phoneAnswer = quests:match('public func OpxQuestsAnswer%(%)(.-)\n}') or ''
+			check('a ringing call is answered on the phone key\'s PRESS (the chat opens on the same key and takes ' ..
+				'the release), with the base game\'s own pickup request',
+				phoneAction:find('gameinputActionType.BUTTON_PRESSED', 1, true) ~= nil
+					and phoneAction:find('questPhoneCallPhase.IncomingCall', 1, true) ~= nil
+					and phoneAction:find('DelayCallback(tick, 0.5, false)', 1, true) ~= nil
+					and phoneAction:find('return wrappedMethod(action, consumer);', 1, true) ~= nil
+					and phoneAnswer:find('new PickupPhoneRequest()', 1, true) ~= nil
+					and phoneAnswer:find('this.m_PhoneSystem.QueueRequest(pickupRequest);', 1, true) ~= nil)
+			-- Hold-to-reject is the same key: a release (the base game answers) or
+			-- a completed reject hold disarms the answer, and a reject hold that
+			-- completes AFTER the answer is not let through to hang it up again.
+			check('and the release or a reject hold disarms it, and a hold completing after an answer never rejects',
+				phoneAction:find('gameinputActionType.BUTTON_RELEASED', 1, true) ~= nil
+					and phoneAction:find('gameinputActionType.BUTTON_HOLD_COMPLETE', 1, true) ~= nil
+					and phoneAction:find('if Equals(this.m_opxQuestsAnswered, contact) {\n          // Already answered here', 1, true) ~= nil
+					and phoneAnswer:find('NotEquals(this.m_CurrentCallInformation.callPhase, questPhoneCallPhase.IncomingCall)', 1, true) ~= nil
+					and phoneAnswer:find('NotEquals(contact, this.m_opxQuestsAnswerFor)', 1, true) ~= nil)
+			check('the contact list opens only when a mission asks for a call or a text, never on every chat key',
+				quests:find('MessengerUtils.HasQuestImportantCalls(journal) || MessengerUtils.HasQuestImportantMessages(journal)', 1, true) ~= nil
+					and quests:find('!OpxQuestsPhoneWanted(game, request)', 1, true) ~= nil)
+			local lootItem = quests:match('public static func OpxQuestsQuestItem%((.-)\n}') or ''
+			local lootChoice = quests:match('@wrapMethod%(Inventory%)\npublic func IsChoiceAvailable%((.-)\n}') or ''
+			check('loot comes back only for a quest\'s own items -- Quest-tagged, keycards, shards -- never ' ..
+				'consumables, and never on another player\'s body',
+				lootItem:find('itemData.HasTag(n"Quest")', 1, true) ~= nil
+					and lootItem:find('gamedataItemType.Gen_Keycard', 1, true) ~= nil
+					and lootItem:find('gamedataItemType.Gen_Readable', 1, true) ~= nil
+					and lootChoice:find('!OpxQuestsQuestItem(itemData) || IsDefined(TweakDBInterface.GetConsumableItemRecord(', 1, true) ~= nil
+					and quests:find('owner.IsQuest() && !OpxQuestsIsPlayerProxy(owner)', 1, true) ~= nil)
+			-- A container the SERVER's loot resource owns keeps the server's
+			-- economy: its contents are the resource's, whatever the quest flag says.
+			check('and a container the server\'s loot owns stays the server\'s, quest or not',
+				quests:find('!Open77LootIsManaged(owner.GetEntityID()) && OpxQuestsOn(owner.GetGame())', 1, true) ~= nil
+					and quests:find('if !quest || Open77LootIsManaged(this.GetEntityID()) || !OpxQuestsOn(this.GetGame()) {', 1, true) ~= nil)
+			local giveBack = quests:match('public class OpxQuestsGiveBack extends DelayCallback {(.-)\n}\n') or ''
+			check('a quest item the platform\'s sweep empties goes to the player, never twice (held already, taken ' ..
+				'in the last 3 s, or handed over once this session)',
+				giveBack:find('ArrayContains(state.givenIds, record)', 1, true) ~= nil
+					and giveBack:find('OpxQuestsNow(this.game) - player.m_opxQuestsTakenAt < 3.0', 1, true) ~= nil
+					and giveBack:find('transaction.HasItem(player, this.itemID)', 1, true) ~= nil
+					and giveBack:find('ArrayPush(state.givenIds, record);', 1, true) ~= nil
+					and giveBack:find('transaction.GiveItem(player, this.itemID, 1)', 1, true) ~= nil)
+			local lines = quests:match('@wrapMethod%(BaseSubtitlesGameController%)\npublic func ShowDialogLines%((.-)\n}') or ''
+			check('V\'s own lines keep their speaker (the base game draws a line with no speaker as nobody\'s)',
+				lines:find('this.SpawnDialogLine(line);', 1, true) ~= nil
+					and lines:find('speaker = null', 1, true) == nil
+					and lines:find('wrappedMethod(others);', 1, true) ~= nil)
+			check('a quest\'s unlock of a door the server owns goes through only while missions are on',
+				select(2, quests:gsub('Open77DoorNetworkManaged%(this%.GetMyEntityID%(%)%) && !this%.Open77NetworkApplying ' ..
+					'&& OpxQuestsOn%(this%.GetGameInstance%(%)%)', '')) == 2)
+			local mappinGate = quests:match('public static func OpxQuestsMappin%((.-)\n}') or ''
+			check('a quest marker is drawn only while missions are on; a server blip, a player and a ping keep ' ..
+				'the platform\'s path',
+				mappinGate:find('if !OpxQuestsOn(GetGameInstance()) {\n    return false;', 1, true) ~= nil
+					and mappinGate:find('data.IsA(n"Open77MappinScriptData")', 1, true) ~= nil
+					and mappinGate:find('gamemappinsRemotePlayerMappin', 1, true) ~= nil
+					and mappinGate:find('gamemappinsPingSystemMappin', 1, true) ~= nil)
+			-- 1.4.15, THE MAP CRASH. The game's native `IMappin.GetScriptData` reads the
+			-- marker's data pointer at once; the marker the fullscreen map makes for the
+			-- player's own arrow has none (a `gamemappinsRuntimeMappin`, drawn from
+			-- `gameuiWorldMapPlayerInitData`, never registered), so asking it took the
+			-- game down ~100 ms after the map opened (crash probe 2026-09-29:
+			-- Cyberpunk2077.exe+0xBF9A5D, read at 0x38). The gate asked FIRST, before the
+			-- arrow's init data was looked at and before the off switch: the order is
+			-- what is pinned here -- init data, then class tests, then the off switch,
+			-- and only then the first native read of the marker's data.
+			local firstNative = mappinGate:find('mappin.GetScriptData()', 1, true) or 0
+			local arrowGuard = mappinGate:find('customData.IsA(n"gameuiWorldMapPlayerInitData")', 1, true) or math.huge
+			local classTests = mappinGate:find('mappin.IsExactlyA(n"gamemappinsRemotePlayerMappin")', 1, true) or math.huge
+			local offSwitch = mappinGate:find('if !OpxQuestsOn(GetGameInstance()) {', 1, true) or math.huge
+			check('the marker gate looks at the map arrow\'s init data before it calls anything on the marker',
+				firstNative > 0 and arrowGuard < classTests and arrowGuard < offSwitch and arrowGuard < firstNative
+					and mappinGate:find('if IsDefined(customData) && customData.IsA(n"gameuiWorldMapPlayerInitData") {\n    return false;', 1, true) ~= nil,
+				mappinGate)
+			check('and reads the marker\'s data only after the class tests and the off switch (never with missions off)',
+				classTests < firstNative and offSwitch < firstNative)
+			local beforeData = mappinGate:sub(1, firstNative - 1)
+			check('and nothing before that read is a native that reads a marker\'s data',
+				beforeData:find('GetScriptData', 1, true) == nil and beforeData:find('IsQuestMappin', 1, true) == nil
+					and beforeData:find('GetVariant', 1, true) == nil and beforeData:find('GetPhase', 1, true) == nil
+					and beforeData:find('GetWorldPosition', 1, true) == nil and beforeData:find('GetNewMappinID', 1, true) == nil)
+			-- Every other read of a marker's script data in the quest REDscript sits in
+			-- a wrapper body that runs only after the gate said yes (a comment is not
+			-- code, so the lines starting with `//` are taken out first).
+			local code = quests:gsub('\n%s*//[^\n]*', '\n')
+			local reads = 0
+			for _ in code:gmatch('mappin%.GetScriptData%(%)') do reads = reads + 1 end
+			local function afterGate(header)
+				local from = code:find(header, 1, true)
+				if not from then return false end
+				local body = code:sub(from, (code:find('\n@wrapMethod', from + 1, true) or #code + 1) - 1)
+				local gate = body:find('OpxQuestsMappin(mappin, mappinVariant, customData)', 1, true)
+				local read = body:find('mappin.GetScriptData()', 1, true)
+				return gate ~= nil and read ~= nil and gate < read
+			end
+			check('every other read of a marker\'s script data is in a wrapper body that runs only after the gate said yes',
+				reads == 3 and afterGate('@wrapMethod(WorldMappinsContainerController)')
+					and afterGate('@wrapMethod(MinimapContainerController)'), ('%d read(s)'):format(reads))
+			check('other players\' bodies are never scanned or hacked',
+				quests:find('this.m_scanningComponent.SetBlocked(true);', 1, true) ~= nil
+					and (quests:match('public const func IsQuickHackAble%(%)(.-)\n}') or ''):find('OpxQuestsIsPlayerProxy(this)', 1, true) ~= nil)
+			local trackerStep = quests:match('public func OpxQuestsTrackerStep%(%)(.-)\n}') or ''
+			local phoneStep = quests:match('public func OpxQuestsPhoneStep%(%)(.-)\n}') or ''
+			check('the tracker and the phone are shown again only while config/hud.lua leaves them to the game',
+				trackerStep:find('!Open77HudComponentVisible(7)', 1, true) ~= nil
+					and phoneStep:find('OpxQuestsOn(this.m_player.GetGame()) && Open77HudComponentVisible(8)', 1, true) ~= nil
+					and quests:find('return OpxQuestsOnFor(owner) && Open77HudComponentVisible(9);', 1, true) ~= nil)
+			-- As the base game keeps them: the tracker down in a cinematic (the
+			-- player state machine's scene tiers), the phone down in a menu.
+			check('and neither is forced up where the base game keeps it down (a cinematic, a menu)',
+				trackerStep:find('PlayerStateMachine.HighLevel) >= 3', 1, true) ~= nil
+					and trackerStep:find('PlayerStateMachine.HighLevel) <= 5', 1, true) ~= nil
+					and phoneStep:find('this.m_bbUiSystem.GetBool(this.m_bbUiSystemDef.IsInMenu)', 1, true) ~= nil
+					and phoneStep:find('root.SetVisible(!inMenu);', 1, true) ~= nil)
+			check('and the phone is watched from its own start (a text banner waits while its screen is hidden)',
+				(quests:match('@wrapMethod%(NewHudPhoneGameController%)\nprotected cb func OnInitialize%(%)(.-)\n}') or '')
+					:find('this.OpxQuestsPhoneWatch();', 1, true) ~= nil
+				and (quests:match('@wrapMethod%(NewHudPhoneGameController%)\nprotected cb func OnPlayerAttach%((.-)\n}') or '')
+					:find('this.OpxQuestsPhoneWatch();', 1, true) ~= nil)
+			check('and each client says whether the missions really run (outermost) or not, once per attach',
+				quests:find('n"opx_quests_probe"', 1, true) ~= nil
+					and quests:find('"missions restored in this session', 1, true) ~= nil
+					and quests:find('"NOT restored: the platform\'s scripts were compiled after this module', 1, true) ~= nil
+					and quests:find('DelayCallback(check, 5.0, false)', 1, true) ~= nil)
+			-- 1.4.13: PHANTOM LIBERTY ON EVERY WORLD. A female V enters on
+			-- NCMP-Template-F, which never started the expansion (ep1_active and
+			-- ep1_side_content both 0); in the base game's graph Dogtown's
+			-- communities, vendors, gate, side content and story all wait on those
+			-- two facts, so for her Dogtown had its crowd and nothing else. The male
+			-- save carries both at 1. Each one that reads 0 is set to 1, and nothing
+			-- else: no other fact, no journal call, no quest phase touched.
+			local liberty = quests:match('public static func OpxQuestsPhantomLiberty%(game: GameInstance%) %-> Void {(.-)\n}') or ''
+			local setFacts = {}
+			for name, value in quests:gmatch('%.SetFact%(n"([%w_]+)", (%d+)%)') do
+				setFacts[#setFacts + 1] = name .. '=' .. value
+			end
+			table.sort(setFacts)
+			check('Phantom Liberty is opened on a world that never started it: ep1_active and ep1_side_content, ' ..
+				'each set to 1 only while it reads 0, on a game that has the expansion, in a session',
+				liberty:find('if !OpxQuestsOn(game) {\n    return;', 1, true) ~= nil
+					and liberty:find('if !IsEP1() {', 1, true) ~= nil
+					and liberty:find('let active: Int32 = quests.GetFact(n"ep1_active");', 1, true) ~= nil
+					and liberty:find('let side: Int32 = quests.GetFact(n"ep1_side_content");', 1, true) ~= nil
+					and liberty:find('if active >= 1 && side >= 1 {', 1, true) ~= nil
+					and liberty:find('if active < 1 {\n    quests.SetFact(n"ep1_active", 1);\n  };', 1, true) ~= nil
+					and liberty:find('if side < 1 {\n    quests.SetFact(n"ep1_side_content", 1);\n  };', 1, true) ~= nil,
+				liberty)
+			check('and the only facts the module ever writes are those two and its own probe',
+				table.concat(setFacts, ',') == 'ep1_active=1,ep1_side_content=1,opx_quests_probe=0,opx_quests_probe=1',
+				table.concat(setFacts, ','))
+			local attachQuests = quests:match('@wrapMethod%(PlayerPuppet%)\nprotected cb func OnGameAttached%(%)(.-)\n}') or ''
+			check('and it runs 5 s after the local body attaches, then says in the client log what it found and, ' ..
+				'a minute later, whether Songbird\'s call started the story (q301_started)',
+				attachQuests:find('let liberty: ref<OpxQuestsPhantomLibertyTick> = new OpxQuestsPhantomLibertyTick();', 1, true) ~= nil
+					and attachQuests:find('DelayCallback(liberty, 5.0, false)', 1, true) ~= nil
+					and attachQuests:find('this.IsControlledByLocalPeer() && Open77MultiplayerPolicyActive()', 1, true) ~= nil
+					and liberty:find('"Phantom Liberty opened on this world (ep1_active "', 1, true) ~= nil
+					and liberty:find('"Phantom Liberty: this world already has it (ep1_active "', 1, true) ~= nil
+					and liberty:find('DelayCallback(tick, 60.0, false)', 1, true) ~= nil
+					and quests:find('quests.GetFact(n"q301_started")', 1, true) ~= nil
+					and quests:find('"Phantom Liberty a minute on: ep1_active "', 1, true) ~= nil)
+			check('and the package ships it',
+				manifest:find('OpxQuests.reds', 1, true) ~= nil and quests:find('opx_sandy_view 1.4.15.', 1, true) ~= nil,
+				('%d byte(s) of REDscript'):format(#quests))
+
+			-- 1.4.14: THE MAP, STEP BY STEP IN THE CLIENT LOG. Opening the map
+			-- hard-crashed the game (2026-09-29); the crash probe put the fault ~80 ms
+			-- after the platform's map setup began, before the map asked for a
+			-- marker, and the log held nothing to say which step it died in. Each
+			-- step is now a line, written as it happens -- and NOTHING ELSE on the
+			-- map changes: every wrapper runs the wrapped method and returns what
+			-- it returned.
+			local mapTrace = quests:match('public static func OpxQuestsMapTrace%(line: String%) %-> Void {(.-)\n}') or ''
+			check('the map\'s steps are written to the client log only in a multiplayer session, with the map prefix',
+				mapTrace:find('if Open77MultiplayerPolicyActive() {', 1, true) ~= nil
+					and mapTrace:find('OpxQuestsTrace("map: " + line);', 1, true) ~= nil, mapTrace)
+			local opening = quests:match('@wrapMethod%(WorldMapMenuGameController%)\nprotected cb func OnInitialize%(%) %-> Bool {(.-)\n}') or ''
+			check('opening the map is written before the platform\'s setup and after it, and its result is returned as it was',
+				opening:find('OpxQuestsMapTrace("opening");\n  let result: Bool = wrappedMethod();\n' ..
+					'  OpxQuestsMapTrace("opened");\n  return result;', 1, true) ~= nil, opening)
+			local closing = quests:match('@wrapMethod%(WorldMapMenuGameController%)\nprotected cb func OnUninitialize%(%) %-> Bool {(.-)\n}') or ''
+			check('closing it, and attaching its scene, are written around the wrapped call too',
+				closing:find('let result: Bool = wrappedMethod();\n  OpxQuestsMapTrace("closed");\n  return result;', 1, true) ~= nil
+					and (quests:match('@wrapMethod%(WorldMapMenuGameController%)\nprotected cb func OnEntityAttached%(%) %-> Bool {(.-)\n}') or '')
+						:find('OpxQuestsMapTrace("scene attaching");\n  let result: Bool = wrappedMethod();\n' ..
+							'  OpxQuestsMapTrace("scene attached");\n  return result;', 1, true) ~= nil)
+			local tooltips = quests:match('@wrapMethod%(WorldMapMenuGameController%)\nprivate final func HideAllTooltips%(%) %-> Void {(.-)\n}') or ''
+			check('the setup\'s first two tooltip hides are numbered, and every one of them still runs the wrapped method',
+				tooltips:find('if this.m_opxMapTooltipCalls < 2 {', 1, true) ~= nil
+					and tooltips:find('OpxQuestsMapTrace("tooltips hidden " + ToString(this.m_opxMapTooltipCalls));', 1, true) ~= nil
+					and tooltips:find('  };\n  wrappedMethod();', 1, true) ~= nil, tooltips)
+			local zoom = quests:match('@wrapMethod%(WorldMapMenuGameController%)\nprivate final func GetTotalZoomLevels%(%) %-> Int32 {(.-)\n}') or ''
+			check('the per-frame zoom read is written on its first call only and returns what the wrapped read returned',
+				zoom:find('if this.m_opxMapZoomSeen {\n    return wrappedMethod();\n  };', 1, true) ~= nil
+					and zoom:find('let levels: Int32 = wrappedMethod();', 1, true) ~= nil
+					and zoom:find('return levels;', 1, true) ~= nil, zoom)
+			local worldMarkers = quests:match('@wrapMethod%(WorldMapMenuGameController%)\npublic func CreateMappinUIProfile%((.-)\n}') or ''
+			check('a quest marker the map is asked to draw is written, and the profile it gets is the one it always got',
+				worldMarkers:find('OpxQuestsMapTrace("marker " + NameToString(mappin.GetClassName()) + ":"', 1, true) ~= nil
+					and worldMarkers:find('return MappinUIProfile.Create(r"base\\\\gameplay\\\\gui\\\\fullscreen\\\\world_map\\\\mappins\\\\default_mappin.inkwidget", '
+						.. 't"MappinUISpawnProfile.Always", t"MapMappinUIProfile.Default");', 1, true) ~= nil
+					and worldMarkers:find('return wrappedMethod(mappin, mappinVariant, customData);', 1, true) ~= nil, worldMarkers)
+			-- 1.4.15: each marker the map asks about is written BEFORE it is judged, from
+			-- the init data's class and the variant only (both are read without touching
+			-- the marker), and a runtime marker -- the arrow, the waypoint, a server's
+			-- blip -- goes to the platform after a class test and nothing else.
+			local askedAt = worldMarkers:find('OpxQuestsMapTrace("marker asked "', 1, true) or math.huge
+			local runtimeAt = worldMarkers:find('mappin.IsExactlyA(n"gamemappinsRuntimeMappin")', 1, true) or math.huge
+			local gateAt = worldMarkers:find('!OpxQuestsMappin(mappin, mappinVariant, customData)', 1, true) or 0
+			check('the map writes each marker it asks about before judging it, from its init data class and variant',
+				worldMarkers:find('if this.m_opxMapMarkers < 8 {', 1, true) ~= nil
+					and worldMarkers:find('customData.GetClassName()', 1, true) ~= nil
+					and askedAt < runtimeAt and askedAt < gateAt
+					and worldMarkers:sub(1, gateAt):find('mappin.GetClassName()', 1, true) == nil
+					and quests:find('@addField(WorldMapMenuGameController)\npublic let m_opxMapMarkers: Int32;', 1, true) ~= nil,
+				worldMarkers)
+			check('and a runtime marker is passed to the platform after a class test, before the gate touches anything',
+				runtimeAt < gateAt and worldMarkers:find('if !IsDefined(mappin) || mappin.IsExactlyA(n"gamemappinsRuntimeMappin")', 1, true) ~= nil
+					and worldMarkers:find('return wrappedMethod(mappin, mappinVariant, customData);', 1, true) ~= nil, worldMarkers)
+			-- Only the map's own SCRIPT methods are wrapped (a native cannot be), and
+			-- the two fields they need are the controller's, added for the log alone.
+			check('and the map log declares no native and wraps only script methods of the map\'s controller',
+				quests:find('@addField(WorldMapMenuGameController)\npublic let m_opxMapZoomSeen: Bool;', 1, true) ~= nil
+					and quests:find('@addField(WorldMapMenuGameController)\npublic let m_opxMapTooltipCalls: Int32;', 1, true) ~= nil
+					and quests:find('native func', 1, true) == nil
+					and quests:find('SetQuickFilter', 1, true) == nil and quests:find('GetCurrentZoom', 1, true) == nil)
+		end
+
+		check('and the MaxTac garage and the insertion keep the one MaxTac record the platform flies as an AV ' ..
+			'(`Vehicle.av_*`, or exactly `Vehicle.max_tac_av`)',
+			slurp('config/garages.lua'):find("{ KEY = 'maxtac_av', RECORD = 'Vehicle.max_tac_av',", 1, true) ~= nil
+				and slurp('config/ncpd.lua'):find("\t\t\tRECORD = 'Vehicle.max_tac_av',\n", 1, true) ~= nil)
 		-- THE OWNER'S THIRD-PERSON MODEL: the platform's self-view body, an
 		-- NPCPuppet on V's own template the world's dilation would slow. Its
 		-- template (`player_proxy_{ma,wa}_mirror.ent`) authors Smasher's start
@@ -27254,8 +31563,8 @@ do
 			reds:find('@wrapMethod(NPCPuppet)', 1, true) ~= nil
 				and reds:find('t"Character.Open77ProxyMaleMirror"', 1, true) ~= nil
 				and reds:find('t"Character.Open77ProxyFemaleMirror"', 1, true) ~= nil
-				and reds:find('SetIndividualTimeDilation(n"opx_sandy_view", 1.0, 30.0, n"None", n"None", true, true)',
-					1, true) ~= nil
+				and reds:find('SetIndividualTimeDilation(n"opx_sandy_view", 1.0, OpxSandevistanBoostCeiling(), n"None", '
+					.. 'n"None", true, true)', 1, true) ~= nil
 				and reds:find('UnsetIndividualTimeDilation()', 1, true) ~= nil
 				-- 1.4.4: the eye glow only; the NPC Sandevistan's screen-space
 				-- echoes (left/right, the versus loop) smeared copies of the screen
@@ -27331,16 +31640,83 @@ do
 				and reds:find('GetFact(scriptInterface.GetGame(), n"opx_sandy_wear") != 0', 1, true) ~= nil
 				and ripperdoc.Settings.SANDEVISTAN.WEAR.apogee_sandevistan == 1)
 
+		do
+			-- THE BASE GAME'S DEVELOPMENT, MAXED (1.4.9): code 10 of the same clock
+			-- message, past the real item's 0-9, answered by the owner's watch with
+			-- the base game's own PlayerDevelopmentData and the game's own maxima.
+			local function reBody(name)
+				return reds:match('public static func ' .. name .. '%((.-)\n}') or ''
+			end
+			local function returnsIn(name, value)
+				return (reds:match('public static func ' .. name .. '%(%)(.-)\n}') or '')
+					:find('return ' .. value .. ';', 1, true) ~= nil
+			end
+			local claimCode = reBody('OpxSandevistanClaimCode')
+			local develop = reBody('OpxSandevistanDevelop')
+			local ownerWatch = reBody('OpxSandevistanOwnerWatch')
+			check('the REDscript takes code 10 of the clock message -- past the real item\'s codes, which still go to ' ..
+				'the real item alone -- as a request to max this machine\'s development: once per request, remembered for ' ..
+				'the session in a quest fact, and applied again a second after a new body attaches',
+				returnsIn('OpxSandevistanDevelopCode', '10')
+					and claimCode:find('if code < 0 || code > OpxSandevistanDevelopCode() {', 1, true) ~= nil
+					and (claimCode:find('if code == OpxSandevistanDevelopCode() {', 1, true) or math.huge)
+						< (claimCode:find('OpxSandevistanWearRecord(code)', 1, true) or -1)
+					and ownerStep:find('if tick.codeSeen == 2 && code == OpxSandevistanDevelopCode() {', 1, true) ~= nil
+					and ownerStep:find('SetFact(n"opx_sandy_develop", code);', 1, true) ~= nil
+					and ownerStep:find('code != OpxSandevistanDevelopCode() && GetFact(tick.game, n"opx_sandy_wear") != code',
+						1, true) ~= nil
+					and ownerStep:find('GetFact(tick.game, n"opx_sandy_develop") == OpxSandevistanDevelopCode()', 1, true) ~= nil
+					and ownerStep:find('if !OpxSandevistanDevelop(player, tick.developWhy) {', 1, true) ~= nil
+					and ownerStep:find('if tick.developTries < 5 {', 1, true) ~= nil
+					and ownerStep:find('next.developIn = tick.developIn;', 1, true) ~= nil
+					and ownerStep:find('next.developTries = tick.developTries;', 1, true) ~= nil
+					and ownerWatch:find('tick.developIn = 1.0;', 1, true) ~= nil)
+			check('and maxes it with the base game\'s own PlayerDevelopmentData and the game\'s own maxima: the five ' ..
+				'attributes to their record\'s cap first, level, street cred and the five skills to their max level ' ..
+				'without the level-ups\' own points, the relic points the way the relic terminals give them, perk points ' ..
+				'for every perk of the five trees -- and says what changed, before -> after',
+				develop:find('PlayerDevelopmentSystem.GetData(player)', 1, true) ~= nil
+					and develop:find('data.GetAttributeRecord(attributes[i])', 1, true) ~= nil
+					and develop:find('record.Max()', 1, true) ~= nil
+					and develop:find('data.SetAttribute(attributes[i], most);', 1, true) ~= nil
+					and develop:find('gamedataStatType.Strength, gamedataStatType.Reflexes', 1, true) ~= nil
+					and develop:find('gamedataStatType.TechnicalAbility, gamedataStatType.Intelligence, gamedataStatType.Cool',
+						1, true) ~= nil
+					and develop:find('data.GetProficiencyAbsoluteMaxLevel(levels[i])', 1, true) ~= nil
+					and develop:find('data.SetLevel(levels[i], top, telemetryLevelGainReason.IsDebug, true);', 1, true) ~= nil
+					and develop:find('gamedataProficiencyType.Level, gamedataProficiencyType.StreetCred', 1, true) ~= nil
+					and develop:find('gamedataProficiencyType.StrengthSkill, gamedataProficiencyType.ReflexesSkill', 1, true) ~= nil
+					and develop:find('gamedataProficiencyType.TechnicalAbilitySkill, gamedataProficiencyType.IntelligenceSkill',
+						1, true) ~= nil
+					and develop:find('gamedataProficiencyType.CoolSkill', 1, true) ~= nil
+					and develop:find('data.GetProficiencyAbsoluteMaxLevel(gamedataProficiencyType.Espionage)', 1, true) ~= nil
+					and develop:find('data.SetLevel(gamedataProficiencyType.Espionage, relicTop, telemetryLevelGainReason.IsDebug, '
+						.. 'false);', 1, true) ~= nil
+					and develop:find('RPGManager.GetAttributeDataRecord(trees[i])', 1, true) ~= nil
+					and develop:find('cost += perks[j].GetLevelsCount();', 1, true) ~= nil
+					and develop:find('bought += data.IsNewPerkBought(perks[j].Type());', 1, true) ~= nil
+					and develop:find('data.AddDevelopmentPoints(cost - bought - perkPoints, gamedataDevelopmentPointType.Primary);',
+						1, true) ~= nil
+					and (develop:find('data.SetAttribute(', 1, true) or math.huge)
+						< (develop:find('data.SetLevel(', 1, true) or -1)
+					and (develop:find('data.SetLevel(', 1, true) or math.huge)
+						< (develop:find('data.AddDevelopmentPoints(', 1, true) or -1)
+					and develop:find('"opx_sandy_view development: maxed on this machine ("', 1, true) ~= nil
+					and reds:find('" -> "', 1, true) ~= nil
+					and develop:find('ScaleNPCsToPlayerLevel', 1, true) == nil)
+		end
+
 		-- SMASHER'S GHOST TRAIL ON THE PLAYER'S OWN MODEL. 1.4.2-1.4.5 left
 		-- the copies to his shader (`customParameter0` from his effect): the
 		-- parts lit, the effect started, and no trail showed. 1.4.6 draws the
 		-- afterimages itself: four layers of the ghost's parts, each placed
-		-- every frame where the body was k x 0.08 s before.
+		-- every frame where the body was k x 0.08 s before. 1.4.9: twelve
+		-- layers, k x 0.045 s, shown from 0.2 m.
 		local ghostParts = {}
 		local layerBody = reds:match('public static func OpxSandyLayerParts%((.-)\n}') or ''
-		for name in layerBody:gmatch('n"(opx_sandy_ghost%d_[%w_]+)"') do ghostParts[#ghostParts + 1] = name end
+		for name in layerBody:gmatch('n"(opx_sandy_ghost%d+_[%w_]+)"') do ghostParts[#ghostParts + 1] = name end
 		local expectedParts = {}
-		for layer = 1, 4 do
+		for layer = 1, 12 do
 			for _, kind in ipairs({ 'body', 'arm_l', 'arm_r', 'head' }) do
 				expectedParts[#expectedParts + 1] = ('opx_sandy_ghost%d_%s'):format(layer, kind)
 			end
@@ -27369,11 +31745,14 @@ do
 			local body = reds:match('public static func ' .. name .. '%(%)(.-)\n}') or ''
 			return body:find('return ' .. value .. ';', 1, true) ~= nil
 		end
-		check('the REDscript knows four layers of the ghost\'s parts -- the player\'s own body, arms and head, ' ..
-			'opx_sandy_ghost1_* to opx_sandy_ghost4_* -- places them 0.08 s apart, shows a layer from 0.35 m ' ..
-			'behind the body and hides it again under 0.25 m',
-			partsInOrder and returns('OpxSandyTrailLayers', '4') and returns('OpxSandyTrailSpacing', '0.08')
-				and returns('OpxSandyTrailShowAt', '0.35') and returns('OpxSandyTrailHideAt', '0.25')
+		check('the REDscript knows twelve layers of the ghost\'s parts -- the player\'s own body, arms and head, ' ..
+			'opx_sandy_ghost1_* to opx_sandy_ghost12_*, 48 parts -- places them 0.045 s apart (the farthest 0.54 s ' ..
+			'back), shows a layer from 0.2 m behind the body and hides it again under 0.1 m',
+			partsInOrder and #ghostParts == 48 and returns('OpxSandyTrailLayers', '12')
+				and returns('OpxSandyTrailSpacing', '0.045')
+				and returns('OpxSandyTrailShowAt', '0.2') and returns('OpxSandyTrailHideAt', '0.1')
+				and reds:find('opx_sandy_ghost13', 1, true) == nil
+				and allParts:find('while layer <= OpxSandyTrailLayers() {', 1, true) ~= nil
 				and allParts:find('let some: array<CName> = OpxSandyLayerParts(layer);', 1, true) ~= nil
 				and ghostSet:find('return this.OpxSandyPartsSet(OpxSandyGhostParts(), on, false);', 1, true) ~= nil
 				and partsSet:find('if NotEquals(component.IsEnabled(), on) {', 1, true) ~= nil
@@ -27416,6 +31795,24 @@ do
 				and returns('OpxSandyTrailClearOfCamera', '0.9')
 				and trailFrame:find('cameras.GetActiveCameraWorldTransform(camera)', 1, true) ~= nil
 				and trailStep:find('if Vector4.Length(fromEye) < OpxSandyTrailClearOfCamera() {', 1, true) ~= nil)
+		-- 1.4.9: nothing counts four any more -- the history reaches the farthest
+		-- of the twelve (12 x 0.045 s = 0.54 s, and a quarter second more), and
+		-- every loop, array and line counts the layers and parts there are.
+		check('the history is kept as far back as the farthest of the twelve afterimages, and every loop, array and ' ..
+			'line counts the layers and parts there are (48), not four and sixteen',
+			trailStep:find('let keep: Float = now - (Cast<Float>(OpxSandyTrailLayers()) * OpxSandyTrailSpacing() + 0.25);',
+					1, true) ~= nil
+				and trailStep:find('while layer <= OpxSandyTrailLayers() {', 1, true) ~= nil
+				and trailStep:find('IntToString(OpxSandyTrailLayers()) + " showing"', 1, true) ~= nil
+				and trailStep:find('" of "\n      + IntToString(OpxSandyTrailLayers()) + " shown', 1, true) ~= nil
+				and trailOn:find('while layer < OpxSandyTrailLayers() {', 1, true) ~= nil
+				and trailOn:find('ArrayPush(trail.shown, false);', 1, true) ~= nil
+				and ghostLight:find('while layer <= OpxSandyTrailLayers() {', 1, true) ~= nil
+				and ghostLight:find('FloatToStringPrec(OpxSandyTrailSpacing(), 3)', 1, true) ~= nil
+				and ghostWhat:find('IntToString(ArraySize(parts))', 1, true) ~= nil
+				and reds:find('his ghost trail " + IntToString(tick.ghost) + " of " + IntToString(OpxSandyGhostCount())',
+					1, true) ~= nil
+				and reds:find('return 4;', 1, true) == nil and reds:find('return 0.08;', 1, true) == nil)
 		check('a layer that shows is moved by its own placement, switched on if something switched it off and ' ..
 			'UN-HIDDEN every frame (Open77 hides every skinned mesh of a body it dresses or parks); one that does ' ..
 			'not is moved back onto the body and hidden',
@@ -27459,17 +31856,35 @@ do
 				and ghostDrive:find('if parts != run.parts {', 1, true) ~= nil
 				and trailStep:find('"opx_sandy_view afterimages: " + trail.who + " -- placed "', 1, true) ~= nil
 				and trailStep:find('if showing != trail.saidShowing && now - trail.saidAt >= 0.5 {', 1, true) ~= nil)
-		-- The build script: four layers of the same four parts, and Smasher's
-		-- peak kept as one held effect (played by nothing).
+		-- The build script: twelve layers of the same four parts (four up to
+		-- 1.4.8), one number in build.py and merge.py, and Smasher's peak kept as
+		-- one held effect (played by nothing).
 		local ghostBuild = slurp('extras/opx_sandy_view/tools/ghost/build.py')
-		check('the build script gives every player body four layers of the ghost\'s parts and keeps Smasher\'s ' ..
-			'peak as one effect held from its first frame to its last',
-			ghostBuild:find('LAYERS = 4', 1, true) ~= nil
+		check('the build script gives every player body twelve layers of the ghost\'s parts -- the layer count one ' ..
+			'number in build.py and merge.py, which checks it against the build -- and keeps Smasher\'s peak as one ' ..
+			'effect held from its first frame to its last',
+			ghostBuild:find('\nLAYERS = 12\n', 1, true) ~= nil
+				and slurp('extras/opx_sandy_view/tools/ghost/merge.py'):find('\nLAYERS = 12\n', 1, true) ~= nil
+				and ghostBuild:find('len(parts) == LAYERS * len(PART_KINDS)', 1, true) ~= nil
+				and ghostBuild:find('len(parts) == 16', 1, true) == nil
+				and slurp('extras/opx_sandy_view/tools/ghost/merge.py')
+					:find("assert built.get('layers') == LAYERS and built['parts'] == PARTS", 1, true) ~= nil
 				and ghostBuild:find("PART_KINDS = ['body', 'arm_l', 'arm_r', 'head']", 1, true) ~= nil
 				and ghostBuild:find("STRENGTHS = [('x150', 1.50)]", 1, true) ~= nil
 				and ghostBuild:find("save(held_effect([(0, peak), (1, peak)], 16), 'opx_sandy_ghost_%s.effect.json' % tag)",
 					1, true) ~= nil
 				and ghostBuild:find('(0.995, peak)', 1, true) == nil)
+		-- 1.4.10: the afterimages had no arms or hands. V's arm meshes keep
+		-- their materials as `preloadLocalMaterialInstances`, and a mesh in that
+		-- mode reads an external material from `preloadExternalMaterials`; the
+		-- build listed the ghost's in `externalMaterials`, which only the body
+		-- and the head (plain local buffers) read.
+		check('the build script lists the ghost\'s material where each mesh reads it: preloadExternalMaterials for a ' ..
+			'mesh that keeps its own as preloadLocalMaterialInstances (V\'s arms), externalMaterials otherwise',
+			ghostBuild:find("    if rc['preloadLocalMaterialInstances']:\n"
+					.. "        rc['preloadExternalMaterials'] = [depot(MATERIAL)]\n"
+					.. "    else:\n"
+					.. "        rc['externalMaterials'] = [depot(MATERIAL)]\n", 1, true) ~= nil)
 		check('and every other player\'s copy of a boosted player answers the look\'s trigger with a watch of its ' ..
 			'own: the ghost lit as soon as the body has its parts (a body still dressing has none yet) and it is ' ..
 			'not seated in a vehicle, driven every tenth of a second, and off when the trigger stops, a newer ' ..
@@ -27499,8 +31914,8 @@ do
 		check('on every machine a boost slows, the boosted player\'s body keeps full speed for the boost -- the ' ..
 			'exemption the owner\'s own model gets -- and runs with the world again when the trigger stops or the ' ..
 			'body leaves; its line says whether this machine is slowed by it (opx_infinity\'s claim)',
-			pace:find('SetIndividualTimeDilation(n"opx_sandy_view", 1.0, 30.0, n"None", n"None", true, true);', 1,
-					true) ~= nil
+			pace:find('SetIndividualTimeDilation(n"opx_sandy_view", 1.0, OpxSandevistanBoostCeiling(), n"None", n"None", '
+					.. 'true, true);', 1, true) ~= nil
 				and pace:find('if !body.HasIndividualTimeDilation(n"opx_sandy_view") {', 1, true) ~= nil
 				and pace:find('IsTimeDilationActive(n"open77:opx_infinity")', 1, true) ~= nil
 				and unpace:find('body.UnsetIndividualTimeDilation();', 1, true) ~= nil
@@ -27508,10 +31923,34 @@ do
 				and (ghostStep:find('OpxSandyGhostUnpace(body);', 1, true) or math.huge)
 					< (ghostStep:find('tick.pace = OpxSandyGhostPace', 1, true) or -1)
 				and killCb:find('OpxSandyGhostUnpace(this);', 1, true) ~= nil)
-		check('the third-person model says once how many ghost parts this game gives player bodies -- or, with ' ..
-			'none after five seconds, that this game does not load the archive\'s copy of V\'s body -- and the ' ..
-			'afterimage lines read the farthest shown one back from the engine',
+		do
+			-- 1.4.9: the ripperdoc runs a boost for up to 40 s (45 s with its ease).
+			-- Up to 1.4.8 the REDscript's own windows were 30 s: every other
+			-- machine's ghost watch gave up ("outlived its ceiling": trail and full
+			-- speed off), and the full-speed exemption itself lapsed.
+			local ghostWatch = reds:match('public static func OpxSandyGhostWatch%((.-)\n}') or ''
+			local ceiling = tonumber(reds:match('public static func OpxSandevistanBoostCeiling%(%) %-> Float {\n  return ([%d%.]+);'))
+			local _, exemptions = reds:gsub('SetIndividualTimeDilation%(n"opx_sandy_view", 1%.0, OpxSandevistanBoostCeiling%(%), ', '')
+			check('a boost of up to 40 s (45 s with its ease) outlives none of the REDscript\'s own windows: the other ' ..
+				'machines\' ghost watch and the full-speed exemption of the owner\'s model and of a boosted body last 60 s, ' ..
+				'not 30 s',
+				ceiling == 60 and ceiling >= 45
+					and ghostWatch:find('tick.left = OpxSandevistanBoostCeiling();', 1, true) ~= nil
+					and exemptions == 2
+					and reds:find('SetIndividualTimeDilation(n"opx_sandy_view", 1.0, 30.0', 1, true) == nil
+					and reds:find('tick.left = 30.0;', 1, true) == nil,
+				('ceiling %s, %d exemption(s)'):format(tostring(ceiling), exemptions))
+		end
+		check('the third-person model says once how many ghost parts this game gives player bodies -- as soon as ' ..
+			'all 48 are there, or, without all of them after five seconds, that this game loads an older archive ' ..
+			'(16) or none of it -- and the afterimage lines read the farthest shown one back from the engine',
 			readyStep:find('body.OpxSandyGhostFound()', 1, true) ~= nil
+				and readyStep:find('let expected: Int32 = OpxSandyGhostCount();', 1, true) ~= nil
+				and readyStep:find('if found >= expected {', 1, true) ~= nil
+				and readyStep:find('if found > 0 {', 1, true) ~= nil
+				and (readyStep:find('if checks <= 1 {', 1, true) or math.huge)
+					< (readyStep:find('if found > 0 {', 1, true) or -1)
+				and readyStep:find("OLDER opx_sandy_ghost.archive's copy of V's body", 1, true) ~= nil
 				and readyStep:find("this game gives player bodies the ghost trail's parts", 1, true) ~= nil
 				and readyStep:find('does not load opx_sandy_ghost.archive', 1, true) ~= nil
 				and reds:find('tick.checks = OpxSandyGhostReadyStep(body, tick.checks);', 1, true) ~= nil
@@ -27606,10 +32045,11 @@ do
 				and archive:find('entGarmentSkinnedMeshComponent', 1, true) ~= nil
 				and archive:find('effectTrackItemMaterialParameter', 1, true) ~= nil
 				and archive:find('effectTrackItemLoopMarker', 1, true) == nil
-				-- 1.4.6: four layers of parts, one held effect, none of the test
+				-- 1.4.6: layers of parts, one held effect, none of the test
 				-- build's probes and none of the calibration strengths.
 				and archive:find('opx_sandy_ghost1_body', 1, true) ~= nil
 				and archive:find('opx_sandy_ghost4_head', 1, true) ~= nil
+				and archive:find('opx_sandy_ghost12_head', 1, true) ~= nil
 				and archive:find('opx_sandy_ghost_x150', 1, true) ~= nil
 				and archive:find('opx_sandy_ghost_x010', 1, true) == nil
 				and archive:find('opx_sandy_ghost_trail', 1, true) == nil
@@ -27617,6 +32057,117 @@ do
 				and xl == ''
 				and manifest:find('\ndependency', 1, true) == nil,
 			('%d of %d file(s), %d in the index, %d segment(s)'):format(present, #shipped, fileTotal, segmentCount))
+		do
+			-- 1.4.12: THE LEGS. A female V's own body component hides the body
+			-- mesh's chunks 5-7 -- knees, calves and feet, which the base game draws
+			-- from a part of their own (`l0_000_pwa_base__cs_flat`, by footwear) --
+			-- with the chunk mask 0xFFFFFFFFFFFFFF1F. Up to 1.4.11 every afterimage's
+			-- body part copied it and had no such part: on a female V the trail ended
+			-- at mid-thigh (2026-09-28). The mask is stored as those eight bytes
+			-- wherever it is written; in 1.4.12 it is written only for V's own body
+			-- component (48 times in each of the two body files), and a body part
+			-- that shows every chunk stores no mask at all (the default). Up to
+			-- 1.4.11 the archive held it 528 times.
+			local femaleMask = string.pack('<I8', 0xFFFFFFFFFFFFFF1F)
+			local held, from = 0, 1
+			while true do
+				local at = archive:find(femaleMask, from, true)
+				if at == nil then break end
+				held, from = held + 1, at + 1
+			end
+			check('every afterimage has its legs: only V\'s own female body hides her knees, calves and feet',
+				held == 96, ('the female mask %d time(s)'):format(held))
+		end
+		do
+			-- 1.4.10: THE ARMS. Each mesh's own CR2W, out of the archive (its first
+			-- segment, stored): the names it writes say which list holds the
+			-- ghost's material. V's arm meshes keep their materials as
+			-- `preloadLocalMaterialInstances` and read an external one from
+			-- `preloadExternalMaterials`; up to 1.4.9 they carried it in
+			-- `externalMaterials` -- the list only the body and head read -- and
+			-- every afterimage had no arms or hands (2026-09-28).
+			local mains = {}
+			if archive:sub(1, 4) == 'RDAR' then
+				local _, indexAt = string.unpack('<I4I8', archive, 5)
+				local base = indexAt + 1
+				local fileCount, segmentTotal = string.unpack('<I4I4', archive, base + 16)
+				local firsts, segments = {}, {}
+				local at = base + 28
+				for _ = 1, fileCount do
+					local hash, _, _, first = string.unpack('<i8i8I4I4', archive, at)
+					firsts[hash] = first
+					at = at + 56
+				end
+				for index = 0, segmentTotal - 1 do
+					local offset, zsize = string.unpack('<I8I4', archive, at)
+					segments[index] = { offset = offset, zsize = zsize }
+					at = at + 16
+				end
+				for hash, first in pairs(firsts) do
+					local segment = segments[first]
+					if segment ~= nil then
+						mains[hash] = archive:sub(segment.offset + 1, segment.offset + segment.zsize)
+					end
+				end
+			end
+			local function reads(path, list)
+				local main = mains[fnv64(path)] or ''
+				return main:sub(1, 4) == 'CR2W' and main:find('opx\\sandy\\ghost\\opx_sandy_ghost.mi', 1, true) ~= nil
+					and (list == 'preload') == (main:find('preloadLocalMaterialInstances', 1, true) ~= nil)
+					and (list == 'preload') == (main:find('preloadExternalMaterials', 1, true) ~= nil)
+					and (list == 'preload') == (main:find('externalMaterials', 1, true) == nil)
+			end
+			local armsRead, othersRead = 0, 0
+			for _, path in ipairs({ 'opx\\sandy\\ghost\\v_arm_l_ma.mesh', 'opx\\sandy\\ghost\\v_arm_r_ma.mesh',
+				'opx\\sandy\\ghost\\v_arm_l_wa.mesh', 'opx\\sandy\\ghost\\v_arm_r_wa.mesh' }) do
+				if reads(path, 'preload') then armsRead = armsRead + 1 end
+			end
+			for _, path in ipairs({ 'opx\\sandy\\ghost\\v_body_ma.mesh', 'opx\\sandy\\ghost\\v_body_wa.mesh',
+				'opx\\sandy\\ghost\\v_head_ma.mesh', 'opx\\sandy\\ghost\\v_head_wa.mesh' }) do
+				if reads(path, 'external') then othersRead = othersRead + 1 end
+			end
+			check('the ghost\'s arms and hands: the four arm meshes list its material in preloadExternalMaterials, ' ..
+				'where a mesh that keeps its own as preloadLocalMaterialInstances reads it, and the body and head ' ..
+				'meshes still in externalMaterials beside their local buffers',
+				armsRead == 4 and othersRead == 4,
+				('%d of 4 arm mesh(es), %d of 4 body/head mesh(es)'):format(armsRead, othersRead))
+		end
+		do
+			-- 1.4.9: twelve layers in every one of the 36 appearances of both body
+			-- files. Each part's name sits once in each appearance's compiled
+			-- package, and every segment is stored, so the names read as text:
+			-- 36 appearances x 2 files = 72 of each.
+			local function occurrences(text, needle)
+				local count, at = 0, 1
+				while true do
+					local found = text:find(needle, at, true)
+					if found == nil then return count end
+					count = count + 1
+					at = found + #needle
+				end
+			end
+			local everyPart, partsSeen, oddOnes = true, 0, {}
+			for layer = 1, 12 do
+				for _, kind in ipairs({ 'body', 'arm_l', 'arm_r', 'head' }) do
+					local name = ('opx_sandy_ghost%d_%s'):format(layer, kind)
+					local seen = occurrences(archive, name)
+					if seen == 72 then
+						partsSeen = partsSeen + 1
+					else
+						everyPart = false
+						oddOnes[#oddOnes + 1] = ('%s x%d'):format(name, seen)
+					end
+				end
+			end
+			local spawners = occurrences(archive, 'opx_sandy_ghost_fx')
+			check('and every one of the 36 appearances of both body files carries all twelve layers -- each of the 48 ' ..
+				'parts and the spawner once per appearance -- and nothing past the twelfth',
+				everyPart and partsSeen == 48 and spawners == 72
+					and archive:find('opx_sandy_ghost13', 1, true) == nil
+					and archive:find('opx_sandy_ghost0', 1, true) == nil,
+				('%d of 48 part(s) in all 72 appearances, spawner x%d%s'):format(partsSeen, spawners,
+					#oddOnes > 0 and (': ' .. table.concat(oddOnes, ', ')) or ''))
+		end
 		-- A client receives only the resources that carry client files, and a
 		-- client refuses a resource whose dependency it does not have (2026-09-27:
 		-- every join ended `opx_sandy_view:missing_dependency: archivexl`). From
@@ -27686,16 +32237,88 @@ do
 			('%d claim(s)'):format(#viewScales))
 		local wearSent = viewExports.wear ~= nil and viewExports.wear(1)
 		local wearBad = viewExports.wear ~= nil and viewExports.wear(12)
+		-- Code 10 is the development's (1.4.9), never the real item's.
+		local wearTen = viewExports.wear ~= nil and viewExports.wear(10)
 		check('the view\'s client carries the real item\'s request as a half-second message claim the ' ..
-			'REDscript decodes (0.999 - code / 10000), and refuses a code it cannot carry',
-			wearSent == true and wearBad == false and #viewScales == 3
+			'REDscript decodes (0.999 - code / 10000), and refuses a code it cannot carry -- the development\'s 10 ' ..
+			'included',
+			wearSent == true and wearBad == false and wearTen == false and #viewScales == 3
 				and math.abs(viewScales[3].scale - 0.9989) < 1e-9 and viewScales[3].options.durationMs == 600
 				and viewScales[3].options.easeMs == 0,
 			('%d claim(s)'):format(#viewScales))
 		viewExports.engage(0.15, 8000, 250)
 		local wearBoosting = viewExports.wear(1)
 		viewExports.release(0)
-		check('and never over the owner\'s boost', wearBoosting == false and viewExports.info().version == '1.4.8')
+		check('and never over the owner\'s boost', wearBoosting == false and viewExports.info().version == '1.4.15')
+		do
+			-- 1.4.9: the ripperdoc runs a boost for up to 40 s, 45 s with its ease;
+			-- the owner's claim was capped at 20 s, which would have handed the
+			-- world back halfway through.
+			local claimsBefore = #viewScales
+			viewExports.engage(0.15, 40000, 250)
+			local fortySeconds = viewScales[#viewScales]
+			viewExports.engage(0.15, 3600000, 250)
+			local anHour = viewScales[#viewScales]
+			viewExports.release(0)
+			check('the owner\'s claim holds a 40 s boost whole, and never more than 45 s (a 40 s boost and its ease)',
+				#viewScales == claimsBefore + 3 and fortySeconds.scale == 0.15 and fortySeconds.options.durationMs == 40000
+					and anHour.options.durationMs == 45000 and viewScales[#viewScales].scale == 1,
+				('%s ms, %s ms'):format(tostring(fortySeconds and fortySeconds.options.durationMs),
+					tostring(anHour and anHour.options.durationMs)))
+		end
+
+		do
+			-- THE BASE GAME'S DEVELOPMENT (1.4.9): an admin's "max all levels" also
+			-- maxes the base game's own development on the admin's machine, through
+			-- the same half-second message with a code the real item never uses: 10.
+			local developFrom = #viewScales
+			local developOk, developWhy = false, 'no develop export'
+			if viewExports.develop ~= nil then developOk, developWhy = viewExports.develop(10) end
+			local developClaim = viewScales[developFrom + 1]
+			local developCode = developClaim ~= nil and math.floor((0.999 - developClaim.scale) * 10000 + 0.5) or -1
+			check('the view\'s client carries "max everything" as code 10 of the same half-second message claim (0.998, ' ..
+				'no ease) -- not a slowdown the REDscript could read as a boost, and no real item\'s code',
+				developOk == true and #viewScales == developFrom + 1 and developClaim ~= nil
+					and math.abs(developClaim.scale - 0.998) < 1e-9 and developClaim.options.durationMs == 600
+					and developClaim.options.easeMs == 0
+					and developClaim.scale >= 0.99 and developCode == 10,
+				('%s, %s, %d claim(s)'):format(tostring(developOk), tostring(developWhy), #viewScales - developFrom))
+			local refusedAll, sentAny = true, false
+			local refusedFrom = #viewScales
+			for _, code in ipairs({ 0, 1, 9, 11, 12, 90, -10, 10.5, '10x', 'max', {} }) do
+				local ok, why = viewExports.develop(code)
+				if ok ~= false or why ~= 'invalid_code' then refusedAll = false end
+			end
+			local nilOk, nilWhy = viewExports.develop(nil)
+			if nilOk ~= false or nilWhy ~= 'invalid_code' then refusedAll = false end
+			sentAny = #viewScales ~= refusedFrom
+			check('and refuses every other code -- the real item\'s 0-9, anything past 10, fractions, words -- without ' ..
+				'holding the clock',
+				refusedAll and not sentAny, ('%d claim(s) sent for refused codes'):format(#viewScales - refusedFrom))
+			viewExports.engage(0.15, 8000, 250)
+			local boostingFrom = #viewScales
+			local developBoostingOk, developBoostingWhy = viewExports.develop(10)
+			local claimsWhileBoosting = #viewScales - boostingFrom
+			viewExports.release(0)
+			local developAfterOk = viewExports.develop(10)
+			check('and never over the owner\'s boost -- answered `boosting`, the boost\'s own claim untouched -- and ' ..
+				'carried again once the boost is over',
+				developBoostingOk == false and developBoostingWhy == 'boosting' and claimsWhileBoosting == 0
+					and developAfterOk == true and math.abs(viewScales[#viewScales].scale - 0.998) < 1e-9,
+				tostring(developBoostingWhy))
+			local noWorldExports = {}
+			local noWorldChunk = loadfile('extras/opx_sandy_view/client/main.lua', 't', setmetatable({
+				exports = function(name, fn) noWorldExports[name] = fn end,
+				GetCurrentResourceName = function() return 'opx_sandy_view' end,
+				Open77 = {},
+			}, { __index = _G }))
+			if noWorldChunk ~= nil then noWorldChunk() end
+			local noWorldOk, noWorldWhy = false, nil
+			if noWorldExports.develop ~= nil then noWorldOk, noWorldWhy = noWorldExports.develop(10) end
+			check('and on a build without the time-scale door it says so, like `wear`',
+				noWorldExports.develop ~= nil and noWorldOk == false and noWorldWhy == 'no_timescale_on_this_build',
+				tostring(noWorldWhy))
+		end
 
 		-- THE OWNER'S CLOCK ON EVERY CURRENT BUILD: no lease, the view shipped.
 		local viewCalls, viewRefuse = {}, false
@@ -27981,7 +32604,7 @@ end
 
 section('the ripperdoc clinic: slots, relogs, deaths and work in flight')
 do
-	local db = { chrome = {}, refunds = {}, nextRefund = 0 }
+	local db = { chrome = {}, life = {}, refunds = {}, nextRefund = 0 }
 	local bridge = Host.Database({
 		scalar = function() return 1 end,
 		single = function() return nil end,
@@ -27990,6 +32613,10 @@ do
 			local rows = {}
 			if sql:find('FROM opx77_ripperdoc_chrome', 1, true) then
 				for _, row in pairs(db.chrome) do
+					if row.citizen_id == params.citizen then rows[#rows + 1] = row end
+				end
+			elseif sql:find('FROM opx77_ripperdoc_life', 1, true) then
+				for _, row in pairs(db.life) do
 					if row.citizen_id == params.citizen then rows[#rows + 1] = row end
 				end
 			elseif sql:find('FROM opx77_ripperdoc_refund', 1, true) then
@@ -28007,6 +32634,13 @@ do
 				}
 			elseif sql:find('DELETE FROM opx77_ripperdoc_chrome', 1, true) then
 				db.chrome[params.citizen .. '|' .. params.entry] = nil
+			elseif sql:find('INSERT INTO opx77_ripperdoc_life', 1, true) then
+				db.life[params.citizen .. '|' .. params.entry] = {
+					citizen_id = params.citizen, entry_id = params.entry, points = params.points,
+					use_wear = params.useWear, worn_at = params.wornAt, started_at = params.startedAt,
+				}
+			elseif sql:find('DELETE FROM opx77_ripperdoc_life', 1, true) then
+				db.life[params.citizen .. '|' .. params.entry] = nil
 			elseif sql:find('INSERT INTO opx77_ripperdoc_refund', 1, true) then
 				db.nextRefund = db.nextRefund + 1
 				db.refunds[#db.refunds + 1] = { id = db.nextRefund, citizen_id = params.citizen,
@@ -28016,7 +32650,11 @@ do
 		end,
 	})
 
-	local env, control, why = boot('server', bridge)
+	-- The platform's wall clock, standing still: nothing here is the calendar.
+	local wall = { now = 1790000000 }
+	local env, control, why = boot('server', bridge, function(e)
+		e.GetUnixTime = function() return wall.now end
+	end)
 	check('the server boots', why == nil, why)
 	if control ~= nil then
 		-- The platform services the chrome reaches the body through.
@@ -28033,9 +32671,6 @@ do
 		local Event = ripperdoc.Event
 		local Refusal = ripperdoc.Ripper.Refusal
 		local Ripper, Chrome = ripperdoc.Ripper, ripperdoc.Chrome
-		local durability = ripperdoc.Settings.DURABILITY
-		local lifespan = durability.LIFESPAN_HOURS
-		durability.LIFESPAN_HOURS = 0
 
 		local function press(player, name, ...)
 			local args = table.pack(...)
@@ -28103,18 +32738,21 @@ do
 		env.Open77.players.all = function() return { 71 } end
 
 		-- ── the ledger is read before it is trusted ────────────────────────
-		-- The database says these arms are at 20; the platform record holds
-		-- them. A patient who sits before the ledger arrives must not have
-		-- them made fresh by the chair.
+		-- The database says these arms are at 20 -- a life that is a real-day
+		-- one already, so no reset applies; the platform record holds them. A
+		-- patient who sits before the ledger arrives must not have them made
+		-- fresh by the chair.
 		db.chrome['citizen-edge|arms'] = { citizen_id = 'citizen-edge', entry_id = 'arms',
 			grade_key = 'street', condition_points = 20, broken = 0 }
+		db.life['citizen-edge|arms'] = { citizen_id = 'citizen-edge', entry_id = 'arms', points = 20.5,
+			use_wear = 3, worn_at = wall.now, started_at = wall.now - 86400 }
 		control.cyberware.records[71] = { revision = 1,
 			arms = { definition = 'opx.ripperdoc.arms', grade = { id = 'street' } } }
 		load(71, 'citizen-edge')
 		press(71, Event.USE, 'clinic_watson')
 		control.Pump(4)
 		check('sitting before the ledger is read does not make worn chrome fresh',
-			Chrome.Row('citizen-edge', 'arms').points == 20
+			Chrome.Row('citizen-edge', 'arms').points == 20.5 and Chrome.Row('citizen-edge', 'arms').use == 3
 				and db.chrome['citizen-edge|arms'].condition_points == 20,
 			tostring(Chrome.Row('citizen-edge', 'arms').points))
 
@@ -28177,7 +32815,8 @@ do
 		control.Pump(2)
 		check('a real death wears, once, and a late copy of an older one does not',
 			math.abs(Chrome.Row('citizen-edge', 'gorilla_arms_electric').points
-				- (before - Ripper.Lifecycle().DEATH_WEAR)) < 1e-9,
+				- (before - 100 * Ripper.Lifecycle().DEATH_MINUTES * 60
+					/ Ripper.LifeSeconds(Ripper.Entry('gorilla_arms_electric'), 1, 1))) < 1e-9,
 			tostring(Chrome.Row('citizen-edge', 'gorilla_arms_electric').points))
 		env.Open77.players.respawn(71)
 
@@ -28279,7 +32918,6 @@ do
 				and table.concat(control.log.warn, ' | '):find('in flight', 1, true) ~= nil,
 			('%d refund(s)'):format(#refunds))
 		contract.AddMoney = realAdd
-		durability.LIFESPAN_HOURS = lifespan
 	end
 end
 
@@ -28369,6 +33007,103 @@ do
 					and shown.detail.grades[1].stats[1].key == 'normalDamage'
 					and shown.detail.fitted.repair == 30,
 				shown and shown.detail and tostring(shown.detail.id) or 'no detail')
+			check('and each piece carries its picture, the list row and the opened piece alike',
+				armsRow ~= nil and armsRow.icon == '7866c4b0'
+					and shown.detail ~= nil and shown.detail.icon == '7866c4b0',
+				armsRow and tostring(armsRow.icon) or 'no row')
+
+			-- THE PAPERDOLL (the base game's 2.0 screen): every system names what
+			-- fills its slots the way the game's slot draws it -- the picture, the
+			-- tier's colour, the condition -- and the armor meter reads the
+			-- plating the chrome adds, up to its cap.
+			local wornIn, wornElsewhere = nil, 0
+			for _, row in ipairs(shown and shown.systems or {}) do
+				if row.id == 'arms' then wornIn = row.worn else wornElsewhere = wornElsewhere + #(row.worn or {}) end
+			end
+			local street = ripperdoc.Ripper.Grade(ripperdoc.Ripper.Entry('arms'), 'street')
+			local slot = wornIn ~= nil and wornIn[1] or nil
+			check('every system lists what fills its slots: picture, tier, condition',
+				slot ~= nil and #wornIn == 1 and wornElsewhere == 0 and slot.id == 'arms'
+					and slot.name == ripperdoc.Ripper.Entry('arms').NAME and slot.icon == '7866c4b0'
+					and slot.tier == street.TIER and slot.state == 'worn' and slot.points == 42
+					and slot.iconic == nil,
+				slot and ('%s tier %s'):format(tostring(slot.id), tostring(slot.tier)) or 'no worn slot')
+			local cap = tonumber((ripperdoc.Settings.EFFECTS or {}).ARMOR_CAP) or 80
+			check('and the armor meter reads nothing for chrome that plates nothing, under its cap',
+				shown ~= nil and type(shown.armor) == 'table' and shown.armor.now == 0
+					and shown.armor.max == math.floor(cap),
+				shown and shown.armor and ('%s/%s'):format(tostring(shown.armor.now), tostring(shown.armor.max)) or 'no meter')
+			check('the page names no body family the client could not read',
+				shown ~= nil and shown.family == nil, shown and tostring(shown.family) or 'nothing')
+
+			-- Plating counts at its condition's factor.
+			local skin = ripperdoc.Ripper.Entry('subdermal_armor')
+			local plate = skin.GRADES[#skin.GRADES]
+			local plated = {}
+			for key, value in pairs(frame) do plated[key] = value end
+			plated.chrome = { ready = true, capacity = frame.chrome.capacity,
+				systems = { { id = 'arms', used = 1, slots = 1 }, { id = 'integumentary', used = 1, slots = 3 } },
+				fitted = { frame.chrome.fitted[1], { id = 'subdermal_armor', grade = plate.id, points = 60,
+					state = 'worn', broken = false, inBody = true, repair = 30 } } }
+			mark = #page.sent
+			control.netEvents[Event.FRAME](plated)
+			local platedPage = views('opx:ripperdoc:view', mark)[1]
+			local expected = math.floor(math.min(plate.EFFECTS.armor * ripperdoc.Ripper.EffectFactor(60, false), cap))
+			check('a plated body fills the armor meter at the condition\'s factor',
+				platedPage ~= nil and platedPage.armor.now == expected and expected > 0,
+				platedPage and ('%s, wanted %d'):format(tostring(platedPage.armor.now), expected) or 'no redraw')
+
+			-- The body family comes from the appearance contract, read once per
+			-- opening, and only for the patient's own page.
+			local appearance = OPX.Api.Get('appearance')
+			local realFamily = appearance ~= nil and appearance.GetFamily or nil
+			if appearance ~= nil then
+				appearance.GetFamily = function() return { ok = true, value = { family = 'male' } } end
+			end
+			control.netEvents[Event.FRAME]({ mode = 'closed', why = 'stood' })
+			mark = #page.sent
+			control.netEvents[Event.FRAME](frame)
+			local male = views('opx:ripperdoc:view', mark)[1]
+			local desk = {}
+			for key, value in pairs(frame) do desk[key] = value end
+			desk.mode, desk.seated, desk.patientName = 'desk', true, 'Player 31'
+			mark = #page.sent
+			control.netEvents[Event.FRAME](desk)
+			local deskPage = views('opx:ripperdoc:view', mark)[1]
+			check('the patient\'s own page draws the patient\'s body family; the desk\'s draws the default',
+				appearance ~= nil and male ~= nil and male.family == 'male' and deskPage ~= nil and deskPage.family == nil,
+				male and tostring(male.family) or 'no redraw')
+			if appearance ~= nil then appearance.GetFamily = realFamily end
+			control.netEvents[Event.FRAME]({ mode = 'closed', why = 'stood' })
+
+			-- The one offer, as the confirmation draws it: the piece's picture,
+			-- the tier offered and whether it is iconic, next to what the server
+			-- said.
+			local offered = {}
+			for key, value in pairs(frame) do offered[key] = value end
+			local sandy = ripperdoc.Ripper.Entry('apogee_sandevistan')
+			offered.offer = { id = 12, mode = 'install', entry = 'apogee_sandevistan',
+				grade = sandy.GRADES[1].id, name = sandy.NAME, gradeName = sandy.GRADES[1].NAME, price = 4800, by = '' }
+			mark = #page.sent
+			control.netEvents[Event.FRAME](offered)
+			local asking = views('opx:ripperdoc:view', mark)[1]
+			local drawnOffer = asking ~= nil and asking.offer or nil
+			check('an offer carries its piece\'s picture, the tier offered and its iconic mark',
+				drawnOffer ~= nil and drawnOffer.id == 12 and drawnOffer.price == 4800
+					and drawnOffer.icon == ripperdoc.Cyber.PictureFor(sandy)
+					and drawnOffer.tier == sandy.GRADES[1].TIER and drawnOffer.iconic == true,
+				drawnOffer and ('%s tier %s'):format(tostring(drawnOffer.icon), tostring(drawnOffer.tier)) or 'no offer')
+			check('and the server\'s own offer is left as it was sent',
+				offered.offer.icon == nil and offered.offer.tier == nil, 'the frame was written to')
+			offered.offer = { id = 13, mode = 'install', entry = 'no_such_piece', grade = 't1', name = 'x',
+				gradeName = '', price = 1, by = '' }
+			mark = #page.sent
+			control.netEvents[Event.FRAME](offered)
+			local unknown = views('opx:ripperdoc:view', mark)[1]
+			check('an offer for a piece the tray does not carry passes through untouched',
+				unknown ~= nil and unknown.offer ~= nil and unknown.offer.id == 13 and unknown.offer.icon == nil,
+				unknown and unknown.offer and tostring(unknown.offer.icon) or 'no offer')
+			control.netEvents[Event.FRAME](frame)
 			check('a laid-out page fits the host payload ceiling',
 				shown ~= nil and Host.PayloadNodes(shown) <= Host.MAX_PAYLOAD_NODES,
 				shown and tostring(Host.PayloadNodes(shown)) or 'nothing')
@@ -28477,6 +33212,17 @@ do
 			check('and the operator door closes the same way',
 				asked(Event.CLOSE, mark) ~= nil, 'no event')
 
+			-- ESCAPE, THE PLATFORM'S WAY: the plugin raises `open77:pauseKey` and
+			-- the page, which only holds the cursor, never sees the key. The
+			-- clinic hands it to the page while a screen is up, and leaves it to
+			-- the pause menu once nothing is.
+			mark = #page.sent
+			control.Fire('open77:pauseKey')
+			local escaped = views('opx:ripperdoc:view', mark)
+			check('Escape at the chair reaches the page, which steps back',
+				#escaped == 1 and escaped[1].mode == 'escape',
+				('%d message(s)'):format(#escaped))
+
 			-- A CLOSED frame forgets what was being browsed.
 			mark = #page.sent
 			control.netEvents[Event.FRAME]({ mode = 'closed', why = 'stood' })
@@ -28485,6 +33231,21 @@ do
 			check('a closed menu reopens at the patient\'s own chrome, not where it was left',
 				#reopened == 2 and reopened[1].mode == 'closed' and reopened[2].system == 'arms',
 				('%d frame(s)'):format(#reopened))
+
+			control.netEvents[Event.FRAME]({ mode = 'closed', why = 'stood' })
+			mark = #page.sent
+			control.Fire('open77:pauseKey')
+			check('with the clinic closed, Escape is left to the pause menu',
+				#views('opx:ripperdoc:view', mark) == 0, 'the page was sent something')
+			mark = #page.sent
+			control.netEvents[Event.FRAME]({ mode = 'invite', chair = 'clinic_watson',
+				name = 'Watson Clinic', from = 'Player 31' })
+			control.Fire('open77:pauseKey')
+			local declined = views('opx:ripperdoc:view', mark)
+			check('and an invitation on the screen takes Escape too',
+				#declined == 2 and declined[2].mode == 'escape', ('%d message(s)'):format(#declined))
+			control.netEvents[Event.FRAME]({ mode = 'closed', why = 'declined' })
+			control.netEvents[Event.FRAME](frame)
 
 			-- FOCUS: the cursor is taken and the keyboard never (the game keeps
 			-- the movement keys and the E that works the chair).
@@ -30246,7 +35007,10 @@ do
 		})
 	end
 
+	-- The platform's wall clock: it stands still unless a check moves it.
+	local wall = { now = 1790000000 }
 	local env, control, why = boot('server', bridge(), function(e)
+		e.GetUnixTime = function() return wall.now end
 		-- THE PLATFORM'S OWN ANSWERS, exactly: `wiki/props.md` gives
 		-- `create`'s contract as "Prop ID as a decimal string, or nil,
 		-- reason" and `remove` as `boolean, reason?`, and the movement
@@ -30309,11 +35073,15 @@ do
 			characters.Registry.byUserId['account-' .. tostring(id)] = id
 		end
 
-		-- The clock of play is stopped: every number below is one use's wear.
-		local durability = ripperdoc.Settings.DURABILITY
-		local lifespan = durability.LIFESPAN_HOURS
-		durability.LIFESPAN_HOURS = 0
+		-- The wall clock stands still: every number below is one use's wear,
+		-- until the calendar is moved on purpose.
 		local Ripper = ripperdoc.Ripper
+		local lifecycle = Ripper.Lifecycle()
+		--- The condition `minutes` of one piece's life are worth, at level 1.
+		local function minutesOf(entry, minutes)
+			return 100 * minutes * 60 / Ripper.LifeSeconds(entry, 1, 1)
+		end
+		local cap = Ripper.WearCapPoints()
 
 		local spot = { x = -1441.2, y = 129.6, z = 18.05 }
 		env.Open77.players.position = function()
@@ -30445,8 +35213,12 @@ do
 		control.Fire('onDashChanged', 42, Host.json.encode({ phase = 'accepted' }))
 		control.Fire('onDashChanged', 42, Host.json.encode({ phase = 'refused' }))
 		control.Pump(4)
-		check('an accepted dash wears the legs one point and a refused one wears nothing',
-			Chrome.Row('citizen-chrome-patient', 'dash').points == 99,
+		local oneDash = minutesOf(Ripper.Entry('dash'), lifecycle.USE_MINUTES * Ripper.WearWeight(Ripper.Entry('dash')))
+		check('an accepted dash wears the dash USE_MINUTES of its life (times its weight) and a refused one ' ..
+			'wears nothing',
+			lifecycle.USE_MINUTES > 0 and oneDash > 0
+				and math.abs(Chrome.Row('citizen-chrome-patient', 'dash').points - (100 - oneDash)) < 1e-9
+				and math.abs(Chrome.Row('citizen-chrome-patient', 'dash').use - oneDash) < 1e-9,
 			tostring(Chrome.Row('citizen-chrome-patient', 'dash').points))
 		check('and nothing else is worn by it',
 			Chrome.Row('citizen-chrome-patient', 'arms').points == 100
@@ -30462,15 +35234,38 @@ do
 
 		-- ── the break: zero is terminal until a ripperdoc says otherwise ──────
 
-		for _ = 1, 99 do
+		-- USE ALONE NEVER BREAKS IT: the extra wear stops at WEAR_DAYS of its
+		-- life, however hard it is worked.
+		local dashes = math.ceil(cap / oneDash) + 20
+		for _ = 1, dashes do
 			control.Fire('onDashChanged', 42, Host.json.encode({ phase = 'accepted' }))
 		end
 		control.Pump(12)
-		check('at zero the dash breaks',
+		check('dash after dash, use stops at the extra-wear cap (WEAR_DAYS of its life): use alone never breaks it',
+			cap > 0 and math.abs(cap - 100 / 6) < 1e-9
+				and Chrome.Row('citizen-chrome-patient', 'dash').broken == false
+				and math.abs(Chrome.Row('citizen-chrome-patient', 'dash').use - cap) < 1e-9
+				and math.abs(Chrome.Row('citizen-chrome-patient', 'dash').points - (100 - cap)) < 1e-9,
+			('%s after %d dashes'):format(tostring(Chrome.Row('citizen-chrome-patient', 'dash').points), dashes))
+		-- THE CALENDAR BREAKS IT: a hard-used piece lasts five days, never less.
+		wall.now = wall.now + 5 * 86400 - 60
+		Chrome.Tick()
+		control.Pump(2)
+		check('the hardest-used piece still stands a minute before five days',
+			Chrome.Row('citizen-chrome-patient', 'dash').broken == false
+				and Chrome.Row('citizen-chrome-patient', 'dash').points > 0,
+			tostring(Chrome.Row('citizen-chrome-patient', 'dash').points))
+		wall.now = wall.now + 120
+		Chrome.Tick()
+		control.Pump(4)
+		check('at zero the dash breaks: five days of the calendar on top of a spent allowance',
 			Chrome.Row('citizen-chrome-patient', 'dash').broken == true
 				and Chrome.Row('citizen-chrome-patient', 'dash').points == 0,
 			('%s at %s'):format(tostring(Chrome.Row('citizen-chrome-patient', 'dash').broken),
 				tostring(Chrome.Row('citizen-chrome-patient', 'dash').points)))
+		check('and the break is journalled',
+			table.concat(control.log.info, ' | '):find('citizen-chrome-patient on player 42: dash (street) broke -- its ' ..
+				'life ran out', 1, true) ~= nil)
 		check('and a broken grant piece is disarmed on the spot',
 			#revocations == 1 and revocations[1][2] == dashStreetId
 				and Chrome.Armed(42, 'dash') == false,
@@ -30519,11 +35314,20 @@ do
 			('%s at %s'):format(tostring(Chrome.Row('citizen-chrome-patient', 'arms').grade),
 				tostring(Chrome.Row('citizen-chrome-patient', 'arms').points)))
 
-		for _ = 1, 100 do
+		local oneHit = minutesOf(Ripper.Entry('arms'), lifecycle.USE_MINUTES * Ripper.WearWeight(Ripper.Entry('arms')))
+		local hits = math.ceil(cap / oneHit) + 20
+		for _ = 1, hits do
 			control.Fire('onCyberwareMeleeHit', 41, 42, Host.json.encode({ ok = true }))
 		end
 		control.Pump(12)
-		check('a hundred hits and the arms are broken',
+		check('hit after hit, the arms stop at the extra-wear cap and stand',
+			Chrome.Row('citizen-chrome-patient', 'arms').broken == false
+				and math.abs(Chrome.Row('citizen-chrome-patient', 'arms').points - (100 - cap)) < 1e-9,
+			tostring(Chrome.Row('citizen-chrome-patient', 'arms').points))
+		wall.now = wall.now + 5 * 86400 + 60
+		Chrome.Tick()
+		control.Pump(12)
+		check('and five days on the arms are broken',
 			Chrome.Row('citizen-chrome-patient', 'arms').broken == true,
 			tostring(Chrome.Row('citizen-chrome-patient', 'arms').broken))
 		local ripout = ticketFor(42)
@@ -30563,8 +35367,1032 @@ do
 				and control.cyberware.records[42].arms ~= nil,
 			('%s at %s'):format(tostring(Chrome.Row('citizen-chrome-patient', 'arms').broken),
 				tostring(Chrome.Row('citizen-chrome-patient', 'arms').points)))
+	end
+end
 
-		durability.LIFESPAN_HOURS = lifespan
+-- ── chrome that lasts real days ───────────────────────────────────────────────
+-- The owner's words: "the durability is winding down too fast on all cyberware,
+-- let's make it more realistic, give it real days irl like 5-6 days until
+-- replacement", "make the cyberware get better durability time when you rank up
+-- in skills", and "give admin ability to override all equipped cyberware on the
+-- admin player". Every piece lives LIFESPAN_DAYS of calendar time, online or
+-- not; use, damage and deaths take at most WEAR_DAYS of it; the character's
+-- level stretches it; a piece that predates this is reset once, broken ones
+-- working again; and `/opx.clinic.chrome` sets everything on the caller.
+section('the ripperdoc clinic: chrome that lasts real days, the one-time reset and the admin override')
+do
+	local db = { chrome = {}, life = {}, refunds = {}, nextRefund = 0 }
+	local bridge = Host.Database({
+		scalar = function() return 1 end,
+		single = function() return nil end,
+		insert = function() return 1 end,
+		query = function(sql, params)
+			local rows = {}
+			if sql:find('FROM opx77_ripperdoc_chrome', 1, true) then
+				for _, row in pairs(db.chrome) do
+					if row.citizen_id == params.citizen then rows[#rows + 1] = row end
+				end
+			elseif sql:find('FROM opx77_ripperdoc_life', 1, true) then
+				if db.lifeDown then error('the life table is down', 0) end
+				for _, row in pairs(db.life) do
+					if row.citizen_id == params.citizen then rows[#rows + 1] = row end
+				end
+			end
+			return rows
+		end,
+		update = function(sql, params)
+			if sql:find('INSERT INTO opx77_ripperdoc_chrome', 1, true) then
+				db.chrome[params.citizen .. '|' .. params.entry] = {
+					citizen_id = params.citizen, entry_id = params.entry, grade_key = params.grade,
+					condition_points = params.points, broken = params.broken,
+				}
+			elseif sql:find('DELETE FROM opx77_ripperdoc_chrome', 1, true) then
+				db.chrome[params.citizen .. '|' .. params.entry] = nil
+			elseif sql:find('INSERT INTO opx77_ripperdoc_life', 1, true) then
+				db.life[params.citizen .. '|' .. params.entry] = {
+					citizen_id = params.citizen, entry_id = params.entry, points = params.points,
+					use_wear = params.useWear, worn_at = params.wornAt, started_at = params.startedAt,
+				}
+			elseif sql:find('DELETE FROM opx77_ripperdoc_life', 1, true) then
+				db.life[params.citizen .. '|' .. params.entry] = nil
+			end
+			return 1
+		end,
+	})
+
+	-- THE WALL CLOCK: the platform's `GetUnixTime`, moved only by the checks.
+	local wall = { now = 1790000000 }
+	local env, control, why = boot('server', bridge, function(e)
+		e.GetUnixTime = function() return wall.now end
+	end)
+	check('the server boots with chrome that lasts real days', why == nil, why)
+	if control ~= nil then
+		for _, service in ipairs({ 'open77_cyberware', 'open77_dash', 'open77_reflex', 'open77_hacking' }) do
+			control.resourceStates[service] = 'running'
+		end
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local characters = OPX.Modules.Get('character')
+		local Event = ripperdoc.Event
+		local Ripper, Chrome = ripperdoc.Ripper, ripperdoc.Chrome
+		local durability = ripperdoc.Settings.DURABILITY
+		local DAY = 86400
+		local RESULT = OPX.Event(OPX.Channel.NET, 'runtime', 'commandResult')
+
+		local function press(player, name, ...)
+			local args = table.pack(...)
+			OPX.ForgetCooldowns(player)
+			env.source = player
+			control.netEvents[name](table.unpack(args, 1, args.n))
+			env.source = nil
+		end
+		local function frameOf(playerId)
+			local found = nil
+			for index = 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.FRAME and event.source == playerId then found = event[1] end
+			end
+			return found
+		end
+		local function answers(playerId, from)
+			local out = {}
+			for index = from or 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == RESULT and event.source == playerId and type(event[1]) == 'table' then
+					out[#out + 1] = tostring(event[1].text or '')
+				end
+			end
+			return table.concat(out, '\n')
+		end
+		local function journal(part, from, lines)
+			local count = 0
+			for index = from or 1, #(lines or control.log.info) do
+				if tostring((lines or control.log.info)[index]):find(part, 1, true) ~= nil then count = count + 1 end
+			end
+			return count
+		end
+		local function load(id, citizenId)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			characters.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id), jobs = {},
+				job = { name = 'unemployed', grade = { level = 0 }, onDuty = false },
+				money = { EDDIES = 50000, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+		local function arrive(id, citizenId)
+			load(id, citizenId)
+			env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded'), id, { citizenId = citizenId })
+			control.Pump(12)
+		end
+		local function unload(id, citizenId)
+			characters.Players[id] = nil
+			characters.Registry.byCitizenId[citizenId] = nil
+			env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'unloaded'), id,
+				{ citizenId = citizenId })
+			control.Pump(6)
+		end
+		local function ticketFor(player, mode)
+			for id, staged in pairs(control.cyberware.pending) do
+				if staged.player == player and (mode == nil or staged.mode == mode) then return id end
+			end
+			return nil
+		end
+		local function complete(player, ok, mode)
+			local ticket = ticketFor(player, mode)
+			if ticket == nil then return nil end
+			control.cyberware.complete(ticket, ok ~= false)
+			env.onCyberwareOperationCompleted(tostring(player), ticket, Host.json.encode({ ok = ok ~= false }))
+			control.Pump(4)
+			return ticket
+		end
+		local function wallet(player) return characters.Players[player].PlayerData.money.EDDIES end
+
+		-- THE SKILL TREE'S LEVEL, through the contract's `Level` (another change
+		-- adds it): level 1 unless a check says otherwise, of a cap of 20.
+		local skills = OPX.Api.Get('skills')
+		check('the skill tree publishes its contract, where the chrome reads the level', skills ~= nil)
+		skills = skills or {}
+		local realLevel = skills.Level
+		local levels = {}
+		skills.Level = function(citizenId) return levels[citizenId] or 1, 20 end
+
+		local spot = { x = -1441.2, y = 129.6, z = 18.05 }
+		env.Open77.players.position = function() return { x = spot.x, y = spot.y, z = spot.z, bucket = 0 } end
+		env.Open77.players.all = function() return { 81, 82 } end
+
+		local armor, dash, arms = Ripper.Entry('subdermal_armor'), Ripper.Entry('dash'), Ripper.Entry('arms')
+		local life = Ripper.Lifecycle()
+		check('the shipped lifecycle: 6 real days, 1 day of hard use at most, 0.5 / 4 / 60 minutes, 1.5x at the ' ..
+			'level cap, iconic pieces no different, and the old hour-based keys gone',
+			life.LIFESPAN_DAYS == 6 and life.WEAR_DAYS == 1 and life.USE_MINUTES == 0.5
+				and life.DAMAGE_MINUTES == 4 and life.DEATH_MINUTES == 60 and life.LEVEL_LIFESPAN == 1.5
+				and life.ICONIC_LIFESPAN == 1 and life.LIFESPAN_HOURS == nil and life.DEATH_WEAR == nil
+				and life.DAMAGE_WEAR == nil and durability.LIFESPAN_HOURS == nil
+				and durability.DEATH_WEAR == nil and durability.DAMAGE_WEAR == nil
+				and Ripper.LifeSeconds(armor, 1, 20) == 6 * DAY and math.abs(Ripper.WearCapPoints() - 100 / 6) < 1e-12)
+
+		-- ── the one-time reset ───────────────────────────────────────────────
+		-- The database as this change finds it: condition rows and no lives. The
+		-- plating was at 40, the dash broken, and the Gorilla Arms broken -- and
+		-- pulled by the platform when they broke, so their slot is empty.
+		db.chrome['citizen-days|subdermal_armor'] = { citizen_id = 'citizen-days', entry_id = 'subdermal_armor',
+			grade_key = 't1', condition_points = 40, broken = 0 }
+		db.chrome['citizen-days|dash'] = { citizen_id = 'citizen-days', entry_id = 'dash',
+			grade_key = 'street', condition_points = 0, broken = 1 }
+		db.chrome['citizen-days|arms'] = { citizen_id = 'citizen-days', entry_id = 'arms',
+			grade_key = 'street', condition_points = 0, broken = 1 }
+		control.cyberware.records[81] = { revision = 3 }
+
+		-- A LIFE TABLE THAT CANNOT BE READ IS NOT A LEDGER WITH NO LIVES.
+		db.lifeDown = true
+		load(81, 'citizen-days')
+		local loadedOnce = false
+		env.CreateThread(function() Chrome.Load('citizen-days') loadedOnce = true end)
+		control.Pump(4)
+		check('a life table that cannot be read resets nothing: the load is asked for again',
+			loadedOnce and Chrome.Loaded('citizen-days') == false and next(db.life) == nil
+				and db.chrome['citizen-days|subdermal_armor'].condition_points == 40
+				and journal('one-time chrome reset') == 0)
+		db.lifeDown = false
+
+		local infoFrom = #control.log.info
+		local grantsFrom, installsFrom = #control.chrome.grants, #control.cyberware.installs
+		arrive(81, 'citizen-days')
+		local plated = Chrome.Row('citizen-days', 'subdermal_armor')
+		check('a condition row with no life predates real days: the one-time reset puts it back to fresh, ' ..
+			'a new life from now, written at once',
+			plated.points == 100 and plated.broken == false and plated.use == 0 and plated.startedAt == wall.now
+				and db.life['citizen-days|subdermal_armor'] ~= nil
+				and db.life['citizen-days|subdermal_armor'].points == 100
+				and db.life['citizen-days|subdermal_armor'].started_at == wall.now
+				and db.chrome['citizen-days|subdermal_armor'].condition_points == 100,
+			tostring(plated.points))
+		check('and it is journalled, once per piece',
+			journal('the one-time chrome reset (real-day durability): subdermal_armor (t1) was 40% -- back to ' ..
+				'100%, a new 6.00-day life from now', infoFrom + 1) == 1
+				and journal('the one-time chrome reset (real-day durability): dash (street) was broken', infoFrom + 1) == 1,
+			table.concat(control.log.info, ' | ', infoFrom + 1):sub(1, 400))
+		check('a broken grant comes back WORKING: whole, and armed again on the arrival',
+			Chrome.Row('citizen-days', 'dash').broken == false and Chrome.Row('citizen-days', 'dash').points == 100
+				and Chrome.Armed(81, 'dash') == true and #control.chrome.grants == grantsFrom + 1,
+			('%d grant(s)'):format(#control.chrome.grants - grantsFrom))
+		local refit = control.cyberware.installs[installsFrom + 1]
+		check('a broken implant the break pulled out of the body is fitted back into it, for free',
+			refit ~= nil and refit[1] == 81 and refit[2] == Ripper.DefinitionFor(arms, nil) and refit[3] == 'street'
+				and wallet(81) == 50000 and ticketFor(81, 'install') ~= nil,
+			refit and tostring(refit[2]) or 'no install staged')
+		check('and until it is in, it is broken in the ledger and nothing is written: a restart resets it again',
+			Chrome.Row('citizen-days', 'arms').broken == true and db.life['citizen-days|arms'] == nil
+				and db.chrome['citizen-days|arms'].broken == 1)
+		complete(81, true, 'install')
+		local armsRow = Chrome.Row('citizen-days', 'arms')
+		check('once the platform says it is in: whole, a fresh life written, and in the body',
+			armsRow.broken == false and armsRow.points == 100 and armsRow.startedAt == wall.now
+				and db.life['citizen-days|arms'] ~= nil and db.chrome['citizen-days|arms'].broken == 0
+				and control.cyberware.records[81].arms ~= nil
+				and control.cyberware.records[81].arms.definition == Ripper.DefinitionFor(arms, nil)
+				and wallet(81) == 50000
+				and journal('fitted back for free (reset), at 100%', infoFrom + 1) == 1,
+			('%s at %s'):format(tostring(armsRow.broken), tostring(armsRow.points)))
+
+		-- ONCE: the next load reads the lives, and resets nothing.
+		Chrome.WearPiece(81, 'citizen-days', armor, 30)
+		unload(81, 'citizen-days')
+		check('the rows are written as the character is put down', db.life['citizen-days|subdermal_armor'].points == 70)
+		local resetsBefore = journal('one-time chrome reset')
+		arrive(81, 'citizen-days')
+		check('the reset happens once: the next load reads the lives and resets nothing',
+			Chrome.Row('citizen-days', 'subdermal_armor').points == 70
+				and journal('one-time chrome reset') == resetsBefore,
+			tostring(Chrome.Row('citizen-days', 'subdermal_armor').points))
+
+		-- A BROKEN IMPLANT WHOSE SLOT HOLDS ANOTHER NOW cannot go back in: it
+		-- stays broken (repairable once the slot is free), and that settles its
+		-- reset.
+		local electric = Ripper.Entry('gorilla_arms_electric')
+		db.chrome['citizen-days-b|arms'] = { citizen_id = 'citizen-days-b', entry_id = 'arms',
+			grade_key = 'street', condition_points = 0, broken = 1 }
+		control.cyberware.records[82] = { revision = 1, arms = { definition = Ripper.DefinitionFor(electric, nil),
+			grade = { id = electric.GRADES[1].id } } }
+		installsFrom = #control.cyberware.installs
+		arrive(82, 'citizen-days-b')
+		check('a broken implant whose slot holds another piece now stays broken, and that settles its reset',
+			Chrome.Row('citizen-days-b', 'arms').broken == true and #control.cyberware.installs == installsFrom
+				and db.life['citizen-days-b|arms'] ~= nil and db.life['citizen-days-b|arms'].points == 0
+				and journal('arms stays broken and out of the body -- its slot holds ' ..
+					Ripper.DefinitionFor(electric, nil)) == 1)
+		unload(82, 'citizen-days-b')
+		arrive(82, 'citizen-days-b')
+		check('and it is not tried again at the next load',
+			#control.cyberware.installs == installsFrom and journal('arms stays broken and out of the body') == 1)
+		unload(82, 'citizen-days-b')
+
+		-- ── the calendar ─────────────────────────────────────────────────────
+		-- TIME AWAY is caught up when the patient comes back: 36 hours of a
+		-- 6-day life is a quarter of it.
+		local armorBefore = Chrome.Row('citizen-days', 'subdermal_armor').points
+		local dashBefore = Chrome.Row('citizen-days', 'dash').points
+		unload(81, 'citizen-days')
+		wall.now = wall.now + 36 * 3600
+		infoFrom = #control.log.info
+		arrive(81, 'citizen-days')
+		check('the time a patient spent away is worn when they come back: 36 hours of a 6-day life, a quarter',
+			math.abs(Chrome.Row('citizen-days', 'subdermal_armor').points - (armorBefore - 25)) < 1e-9
+				and math.abs(Chrome.Row('citizen-days', 'dash').points - (dashBefore - 25)) < 1e-9
+				and Chrome.Row('citizen-days', 'dash').wornAt == wall.now,
+			tostring(Chrome.Row('citizen-days', 'subdermal_armor').points))
+		check('and the catch-up is journalled with how long it covered',
+			journal('citizen-days: chrome caught up over 36.0 h since it was last worn (level 1 of 20)', infoFrom + 1) == 1,
+			table.concat(control.log.info, ' | ', infoFrom + 1):sub(1, 300))
+
+		-- THE TICK wears every loaded patient -- dead or alive, the calendar
+		-- does not care -- by the time since each piece was last worn.
+		env.Open77.players.kill(81, { cause = 'bullet', weapon = 'pistol' })
+		armorBefore = Chrome.Row('citizen-days', 'subdermal_armor').points
+		wall.now = wall.now + 3600
+		Chrome.Tick()
+		control.Pump(2)
+		check('a tick wears a dead patient\'s chrome too: an hour is 1/144 of a 6-day life',
+			env.Open77.players.isDead(81) == true
+				and math.abs(armorBefore - Chrome.Row('citizen-days', 'subdermal_armor').points - 100 / 144) < 1e-9,
+			tostring(armorBefore - Chrome.Row('citizen-days', 'subdermal_armor').points))
+		env.Open77.players.respawn(81)
+
+		-- ── the extra wear, and its cap ──────────────────────────────────────
+		Chrome.Repair('citizen-days', 'subdermal_armor')
+		Chrome.Repair('citizen-days', 'dash')
+		control.Pump(4)
+		local fresh = Chrome.Row('citizen-days', 'dash')
+		check('a repair is a new life: fresh, no extra wear, the calendar starting now',
+			fresh.points == 100 and fresh.use == 0 and fresh.startedAt == wall.now and fresh.wornAt == wall.now
+				and db.life['citizen-days|dash'].points == 100 and db.life['citizen-days|dash'].use_wear == 0
+				and db.life['citizen-days|dash'].started_at == wall.now)
+		local cap = Ripper.WearCapPoints()
+		for _ = 1, 30 do Chrome.WearDeath(81) end
+		check('thirty deaths are thirty hours of hard use, and hard use stops at one day of the life',
+			math.abs(Chrome.Row('citizen-days', 'dash').use - cap) < 1e-9
+				and math.abs(Chrome.Row('citizen-days', 'dash').points - (100 - cap)) < 1e-9
+				and math.abs(Chrome.Row('citizen-days', 'subdermal_armor').points - (100 - cap)) < 1e-9,
+			tostring(Chrome.Row('citizen-days', 'dash').points))
+		local spent = Chrome.Row('citizen-days', 'subdermal_armor').points
+		Chrome.WearDamage(81, 5000)
+		Chrome.Wear(81, 'dash')
+		control.Pump(2)
+		check('and once it is spent, neither damage nor use takes any more: only the calendar decides',
+			Chrome.Row('citizen-days', 'subdermal_armor').points == spent
+				and math.abs(Chrome.Row('citizen-days', 'dash').points - (100 - cap)) < 1e-9)
+		check('which leaves the hardest-used piece five days: 100 - 1/6 of the life, at a sixth a day',
+			math.abs(Chrome.Life('citizen-days', 'dash').left - 5 * DAY) <= 1,
+			tostring(Chrome.Life('citizen-days', 'dash').left))
+
+		-- ── the level ────────────────────────────────────────────────────────
+		levels['citizen-days'] = 20
+		local atCap = Chrome.Life('citizen-days', 'dash')
+		check('at the level cap the life is 1.5 times as long: 9 days, and the hard-use cap 1.5 days of it',
+			Ripper.LifeSeconds(dash, 20, 20) == 9 * DAY and atCap.life == 9 * DAY
+				and math.abs(atCap.wearCap - 1.5 * DAY) <= 1 and Ripper.LevelOf('citizen-days') == 20,
+			('%s / %s'):format(tostring(atCap.life), tostring(atCap.wearCap)))
+		local dashAt = Chrome.Row('citizen-days', 'dash').points
+		wall.now = wall.now + DAY
+		Chrome.Tick()
+		control.Pump(2)
+		check('and a day of the calendar at the cap takes a ninth of the life, not a sixth',
+			math.abs(dashAt - Chrome.Row('citizen-days', 'dash').points - 100 / 9) < 1e-9,
+			tostring(dashAt - Chrome.Row('citizen-days', 'dash').points))
+		levels['citizen-days'] = 10
+		check('linear in the level: level 10 of 20 stretches it by 1 + 0.5 x 9/19',
+			math.abs(Ripper.LifeSeconds(dash, 10, 20) - 6 * DAY * (1 + 0.5 * 9 / 19)) < 1e-6
+				and math.abs(Ripper.LevelFactor(10, 20) - (1 + 0.5 * 9 / 19)) < 1e-12)
+		skills.Level = nil
+		check('and a skill tree that cannot say is level 1: no bonus',
+			select(1, Ripper.LevelOf('citizen-days')) == 1 and Chrome.Life('citizen-days', 'dash').life == 6 * DAY)
+		skills.Level = function() error('the tree is down', 0) end
+		check('nor is a tree that raises', select(1, Ripper.LevelOf('citizen-days')) == 1)
+		skills.Level = function(citizenId) return levels[citizenId] or 1, 20 end
+		levels['citizen-days'] = nil
+
+		-- THE ICONIC KNOB: 1 (the owner's "5-6 days for all cyberware"), and it
+		-- still stretches an iconic piece's whole life when it is set.
+		local apogee = Ripper.Entry('apogee_sandevistan')
+		local iconic = durability.ICONIC_LIFESPAN
+		check('an iconic piece lasts the same 6 days as any other out of the box',
+			apogee.ICONIC == true and Ripper.LifeSeconds(apogee, 1, 20) == 6 * DAY)
+		durability.ICONIC_LIFESPAN = 2
+		check('and ICONIC_LIFESPAN still stretches its whole life, the hard-use cap with it',
+			Ripper.LifeSeconds(apogee, 1, 20) == 12 * DAY and Ripper.LifeSeconds(dash, 1, 20) == 6 * DAY
+				and math.abs(Ripper.WearCapPoints() - 100 / 6) < 1e-12)
+		durability.ICONIC_LIFESPAN = iconic
+
+		-- FIT AND ADOPT are new lives too.
+		Chrome.Fit('citizen-days', 'fortified_ankles', Ripper.Entry('fortified_ankles').GRADES[1].id)
+		control.Pump(4)
+		local ankles = Chrome.Row('citizen-days', 'fortified_ankles')
+		check('a fitting is a new life, written at once',
+			ankles.points == 100 and ankles.use == 0 and ankles.startedAt == wall.now
+				and db.life['citizen-days|fortified_ankles'] ~= nil
+				and db.life['citizen-days|fortified_ankles'].started_at == wall.now)
+		Chrome.Pull('citizen-days', 'fortified_ankles')
+		control.Pump(4)
+		check('and a pull forgets the life with the condition',
+			db.life['citizen-days|fortified_ankles'] == nil and db.chrome['citizen-days|fortified_ankles'] == nil)
+
+		-- ── the tray ─────────────────────────────────────────────────────────
+		press(81, Event.USE, 'clinic_watson')
+		control.Pump(4)
+		local shown = nil
+		for _, row in ipairs(frameOf(81).chrome.fitted) do
+			if row.id == 'subdermal_armor' then shown = row end
+		end
+		local armorLife = Chrome.Life('citizen-days', 'subdermal_armor')
+		check('the tray carries how long each piece has left, and its hard use spent and whole',
+			shown ~= nil and shown.left == armorLife.left
+				and shown.left == math.floor(Chrome.Row('citizen-days', 'subdermal_armor').points * 6 * DAY / 100)
+				and shown.wear == armorLife.wear and math.abs(shown.wearCap - DAY) <= 1,
+			shown and ('%s left, %s of %s'):format(tostring(shown.left), tostring(shown.wear), tostring(shown.wearCap)))
+		press(81, Event.STAND)
+		control.Pump(2)
+
+		-- ── the admin's override ─────────────────────────────────────────────
+		local command = control.commands['opx.clinic.chrome']
+		check('/opx.clinic.chrome is registered, for the staff only',
+			command ~= nil and command.restricted == true
+				and ripperdoc.Settings.COMMANDS.chrome == 'opx.clinic.chrome')
+		if command ~= nil then
+			local printed = {}
+			local realPrint = env.print
+			env.print = function(line) printed[#printed + 1] = tostring(line) end
+			command.run(0, { 'full' })
+			env.print = realPrint
+			check('the console is refused: it is the caller\'s own body',
+				#printed == 1 and printed[1]:find('in game only', 1, true) ~= nil, printed[1])
+			local from = #control.clientEvents
+			for _, bad in ipairs({ { 'abc' }, { '150' }, { '-1' }, {} }) do command.run(81, bad) end
+			local _, usages = answers(81, from + 1):gsub('usage: chrome <full|0%-100>', '')
+			check('a condition that is not full or 0 to 100 is refused with the usage', usages == 4, tostring(usages))
+
+			-- A NUMBER: every piece at that condition, the time left matching it.
+			from = #control.clientEvents
+			infoFrom = #control.log.info
+			command.run(81, { '40' })
+			control.Pump(6)
+			local all40 = true
+			for entryId, row in pairs(Chrome.Rows('citizen-days')) do
+				if row.grade ~= '' and (row.points ~= 40 or row.use ~= 0 or row.broken or row.wornAt ~= wall.now) then
+					all40 = false
+				end
+			end
+			check('/opx.clinic.chrome 40 sets every piece fitted on the caller to 40%, no hard use, the calendar from now',
+				all40 and Chrome.Life('citizen-days', 'dash').left == math.floor(0.4 * 6 * DAY)
+					and Chrome.Armed(81, 'dash') == true,
+				tostring(Chrome.Row('citizen-days', 'dash').points))
+			local said = answers(81, from + 1)
+			check('and answers with every piece, its new condition and its time left',
+				said:find('3 piece(s) set to 40%', 1, true) ~= nil
+					and said:find('Kerenzikov (street): ', 1, true) ~= nil
+					and said:find('-> 40%, 2d 09h left', 1, true) ~= nil,
+				said)
+			check('and journals it', journal('player 81 (citizen-days) set their own chrome to 40%:', infoFrom + 1) == 1)
+
+			-- ZERO: everything broken, with a natural break's consequences.
+			local revokesFrom, removesFrom = #control.chrome.revokes, #control.cyberware.removes
+			command.run(81, { '0' })
+			control.Pump(6)
+			check('/opx.clinic.chrome 0 breaks everything exactly as wear does: the grant dropped, the implant pulled',
+				Chrome.Row('citizen-days', 'dash').broken and Chrome.Row('citizen-days', 'arms').broken
+					and Chrome.Row('citizen-days', 'subdermal_armor').broken
+					and Chrome.Armed(81, 'dash') == false and #control.chrome.revokes == revokesFrom + 1
+					and #control.cyberware.removes == removesFrom + 1 and ticketFor(81, 'remove') ~= nil
+					and journal('citizen-days on player 81: arms (street) broke -- set to 0 by an admin') == 1,
+				('%d revoke(s), %d remove(s)'):format(#control.chrome.revokes - revokesFrom,
+					#control.cyberware.removes - removesFrom))
+			complete(81, true, 'remove')
+			check('and the broken implant leaves the body', control.cyberware.records[81].arms == nil)
+
+			-- FULL: a fresh life on everything -- repaired, re-armed, the pulled
+			-- implant fitted back.
+			local grants, installs = #control.chrome.grants, #control.cyberware.installs
+			from = #control.clientEvents
+			command.run(81, { 'full' })
+			control.Pump(6)
+			check('/opx.clinic.chrome full repairs everything: fresh lives, the grant armed again',
+				Chrome.Row('citizen-days', 'dash').points == 100 and not Chrome.Row('citizen-days', 'dash').broken
+					and Chrome.Row('citizen-days', 'subdermal_armor').points == 100
+					and Chrome.Armed(81, 'dash') == true and #control.chrome.grants == grants + 1)
+			check('and the implant the break pulled is fitted back for free, the answer saying so',
+				#control.cyberware.installs == installs + 1 and ticketFor(81, 'install') ~= nil and wallet(81) == 50000
+					and answers(81, from + 1):find('out of the body: being fitted back for free', 1, true) ~= nil,
+				answers(81, from + 1))
+			complete(81, true, 'install')
+			check('and once in, it is whole at 100%',
+				Chrome.Row('citizen-days', 'arms').points == 100 and not Chrome.Row('citizen-days', 'arms').broken
+					and control.cyberware.records[81].arms ~= nil)
+
+			-- A NUMBER ON A PULLED IMPLANT fits it back AT that number.
+			command.run(81, { '0' })
+			control.Pump(4)
+			complete(81, true, 'remove')
+			command.run(81, { '55' })
+			control.Pump(4)
+			complete(81, true, 'install')
+			check('a pulled implant set to a number goes back in at that number',
+				Chrome.Row('citizen-days', 'arms').points == 55 and not Chrome.Row('citizen-days', 'arms').broken
+					and Chrome.Row('citizen-days', 'dash').points == 55)
+		end
+
+		-- A LIFE THAT RUNS OUT WHILE ITS OWNER IS AWAY breaks when they come
+		-- back -- before their record reads, as an arrival usually is: the grant
+		-- stays off, and the implant is pulled once the record reads.
+		unload(81, 'citizen-days')
+		wall.now = wall.now + 10 * DAY
+		local record = control.cyberware.records[81]
+		control.cyberware.records[81] = nil
+		local removesAway, infoAway = #control.cyberware.removes, #control.log.info
+		arrive(81, 'citizen-days')
+		check('ten days away and every piece broke while its owner was gone: caught up, broken, the grant off',
+			Chrome.Row('citizen-days', 'dash').broken and Chrome.Row('citizen-days', 'arms').broken
+				and Chrome.Row('citizen-days', 'subdermal_armor').broken and Chrome.Armed(81, 'dash') == false
+				and journal('chrome caught up over 240.0 h', infoAway + 1) == 1
+				and journal('dash 55.0 -> 0.0 (BROKE)', infoAway + 1) == 1,
+			table.concat(control.log.info, ' | ', infoAway + 1):sub(1, 400))
+		check('and while the record does not read, nothing can be pulled yet', #control.cyberware.removes == removesAway)
+		control.cyberware.records[81] = record
+		Chrome.Tick()
+		control.Pump(2)
+		check('the next tick finds the broken implant still in the body and pulls it',
+			#control.cyberware.removes == removesAway + 1 and ticketFor(81, 'remove') ~= nil
+				and journal('arms broke on player 81 and was pulled (it broke before the record read)') == 1,
+			('%d remove(s)'):format(#control.cyberware.removes - removesAway))
+		Chrome.Tick()
+		control.Pump(2)
+		check('and a pull in flight is not asked for twice', #control.cyberware.removes == removesAway + 1)
+		complete(81, true, 'remove')
+		Chrome.Tick()
+		control.Pump(2)
+		check('and once it is out, nothing more is pulled',
+			control.cyberware.records[81].arms == nil and #control.cyberware.removes == removesAway + 1)
+
+		-- ── what the level is worth, for the skill tree ─────────────────────
+		local api = OPX.Api.Get('ripperdoc')
+		local function same(pair, lo, hi) return type(pair) == 'table' and pair[1] == lo and pair[2] == hi end
+		local base = api ~= nil and api.ChromeLevel(1, 20) or {}
+		local top = api ~= nil and api.ChromeLevel(20, 20) or {}
+		local mid = api ~= nil and api.ChromeLevel(10, 20) or {}
+		local keys = {}
+		for key in pairs(base) do keys[#keys + 1] = key end
+		table.sort(keys)
+		check('ChromeLevel answers exactly the seven numbers the skill tree reads',
+			table.concat(keys, ',') == 'activeBaseSeconds,activeMaxSeconds,activeSeconds,lifeBaseDays,lifeDays,' ..
+				'lifeMaxDays,wearDays', table.concat(keys, ','))
+		check('at level 1: 6 days of life, 1 of hard use, and the Apogee\'s own 9 s boost',
+			base.lifeDays == 6 and base.lifeBaseDays == 6 and base.lifeMaxDays == 9 and base.wearDays == 1
+				and same(base.activeSeconds, 9, 9) and same(base.activeBaseSeconds, 9, 9)
+				and same(base.activeMaxSeconds, 40, 40))
+		check('at the cap: 9 days, 1.5 of hard use, a 40 s boost',
+			top.lifeDays == 9 and top.wearDays == 1.5 and same(top.activeSeconds, 40, 40)
+				and top.lifeBaseDays == 6 and top.lifeMaxDays == 9)
+		check('and linear between: level 10 of 20',
+			math.abs(mid.lifeDays - 7.42) < 1e-9 and math.abs(mid.wearDays - 1.24) < 1e-9
+				and math.abs(mid.activeSeconds[1] - 23.7) < 1e-9 and math.abs(mid.activeSeconds[2] - 23.7) < 1e-9,
+			('%s days, %s s'):format(tostring(mid.lifeDays), tostring(mid.activeSeconds and mid.activeSeconds[1])))
+		-- A tray that draws more Sandevistans spans their tiers: 30 s for tier
+		-- 1 up to 40 s for tier 5 at the cap, the Zetatech's tier 2 at 32.5 s.
+		local looks = ripperdoc.Settings.SANDEVISTAN.LOOK
+		looks.zetatech_sandevistan = 'smasher'
+		Ripper.ResetCatalog()
+		local spread = api.ChromeLevel(20, 20)
+		looks.zetatech_sandevistan = nil
+		Ripper.ResetCatalog()
+		check('a tray that draws more Sandevistans spans their tiers: 32.5 s (tier 2) to 40 s (tier 5) at the cap, ' ..
+			'6 to 9 s at level 1',
+			same(spread.activeMaxSeconds, 32.5, 40) and same(spread.activeBaseSeconds, 6, 9),
+			('%s-%s / %s-%s'):format(tostring(spread.activeMaxSeconds[1]), tostring(spread.activeMaxSeconds[2]),
+				tostring(spread.activeBaseSeconds[1]), tostring(spread.activeBaseSeconds[2])))
+		check('the tiers map 30 + 10 x (tier - 1) / 4 at the cap, and the grade\'s own at level 1',
+			Ripper.SandyBoostMs(1, 6000, 20, 20) == 30000 and Ripper.SandyBoostMs(2, 6000, 20, 20) == 32500
+				and Ripper.SandyBoostMs(3, 7000, 20, 20) == 35000 and Ripper.SandyBoostMs(4, 8000, 20, 20) == 37500
+				and Ripper.SandyBoostMs(5, 9000, 20, 20) == 40000 and Ripper.SandyBoostMs(5, 9000, 1, 20) == 9000)
+
+		-- ── one write per piece at a time ────────────────────────────────────
+		-- A write still out when a newer one is asked for goes again with the
+		-- newer row: whatever order the database answers in, the newest lands
+		-- last (a repaired piece must never read back worn), and at once -- not
+		-- a tick later. The clock's own tick is held still meanwhile: its flush
+		-- would write any dirty row too, and hide a write that never went again.
+		local ankleGrade = Ripper.Entry('fortified_ankles').GRADES[1].id
+		local realTick = Chrome.Tick
+		Chrome.Tick = function() end
+		-- Holds the next life write of the ankles until `Resume`.
+		local parkNext = false
+		local function parkAnkles()
+			parkNext = true
+			control.database.park = function(_, sql, params)
+				if parkNext and sql:find('INSERT INTO opx77_ripperdoc_life', 1, true)
+					and type(params) == 'table' and params.entry == 'fortified_ankles' then
+					parkNext = false
+					return true
+				end
+				return false
+			end
+		end
+		parkAnkles()
+		Chrome.Fit('citizen-days', 'fortified_ankles', ankleGrade, 30)
+		control.Pump(4)
+		local parked = not parkNext
+		Chrome.Fit('citizen-days', 'fortified_ankles', ankleGrade, 90)
+		-- Long enough for a second write that did not wait its turn to land.
+		control.Pump(6)
+		local heldBack = db.life['citizen-days|fortified_ankles']
+		control.database.park = nil
+		control.database.Resume()
+		control.Pump(8)
+		check('two writes of one piece never land out of order: the one out goes again with the newest row, at once',
+			parked and heldBack == nil and db.life['citizen-days|fortified_ankles'] ~= nil
+				and db.life['citizen-days|fortified_ankles'].points == 90
+				and db.chrome['citizen-days|fortified_ankles'].condition_points == 90,
+			('%s before, %s after'):format(tostring(heldBack and heldBack.points),
+				tostring(db.life['citizen-days|fortified_ankles'] and db.life['citizen-days|fortified_ankles'].points)))
+		Chrome.Pull('citizen-days', 'fortified_ankles')
+		control.Pump(6)
+		check('and a pull deletes after it, both rows gone',
+			db.life['citizen-days|fortified_ankles'] == nil and db.chrome['citizen-days|fortified_ankles'] == nil)
+		-- A pull while a write of the piece is still out deletes after that
+		-- write lands: the other way round, the late write brings the pulled
+		-- piece back.
+		parkAnkles()
+		Chrome.Fit('citizen-days', 'fortified_ankles', ankleGrade, 50)
+		control.Pump(4)
+		local parkedAgain = not parkNext
+		Chrome.Pull('citizen-days', 'fortified_ankles')
+		control.Pump(6)
+		local deletedEarly = db.chrome['citizen-days|fortified_ankles'] == nil
+		control.database.park = nil
+		control.database.Resume()
+		control.Pump(10)
+		check('a pull while a write is out waits for it, then deletes: both rows gone, none brought back',
+			parkedAgain and not deletedEarly and db.life['citizen-days|fortified_ankles'] == nil
+				and db.chrome['citizen-days|fortified_ankles'] == nil,
+			('parked %s, deleted early %s, life %s'):format(tostring(parkedAgain), tostring(deletedEarly),
+				tostring(db.life['citizen-days|fortified_ankles'] ~= nil)))
+		-- And a write that raises lets the piece go: the next write goes out.
+		local realUpsert = ripperdoc.Storage.UpsertLife
+		ripperdoc.Storage.UpsertLife = function() error('the bridge fell over', 0) end
+		Chrome.Fit('citizen-days', 'fortified_ankles', ankleGrade, 40)
+		control.Pump(4)
+		ripperdoc.Storage.UpsertLife = realUpsert
+		Chrome.Fit('citizen-days', 'fortified_ankles', ankleGrade, 70)
+		control.Pump(6)
+		check('a write that raises does not hold the piece: the next one lands',
+			db.life['citizen-days|fortified_ankles'] ~= nil and db.life['citizen-days|fortified_ankles'].points == 70,
+			tostring(db.life['citizen-days|fortified_ankles'] and db.life['citizen-days|fortified_ankles'].points))
+		Chrome.Pull('citizen-days', 'fortified_ankles')
+		control.Pump(6)
+		Chrome.Tick = realTick
+
+		-- ── the clock ────────────────────────────────────────────────────────
+		local realUnix = env.GetUnixTime
+		env.GetUnixTime = nil
+		env.Open77.time.unix = function() return 1790001234.5 end
+		check('the platform\'s `Open77.time.unix` is the wall clock where there is no `GetUnixTime`',
+			Ripper.UnixNow() == 1790001234.5 and select(2, Ripper.UnixNow()) == 'platform')
+		env.Open77.time.unix = nil
+		Ripper.AnchorUnix(1790005000, OPX.Now())
+		control.Pump(10)
+		local fromDb, kind = Ripper.UnixNow()
+		check('else the database\'s clock from Start, advanced by the server\'s own timer',
+			kind == 'database' and math.abs(fromDb - 1790005001) < 0.01, ('%s %s'):format(tostring(fromDb), kind))
+		Ripper.AnchorUnix(nil)
+		check('and with neither, the server\'s timer alone, which is never read as a date',
+			select(2, Ripper.UnixNow()) == 'monotonic' and not Ripper.WallClock(Ripper.UnixNow())
+				and Ripper.WallClock(wall.now))
+		-- WITHOUT A WALL CLOCK nothing is caught up at a load: a stamp from the
+		-- timer of an earlier boot is not a date to count from.
+		Chrome.Repair('citizen-days', 'subdermal_armor')
+		control.Pump(4)
+		unload(81, 'citizen-days')
+		local plating = db.life['citizen-days|subdermal_armor']
+		plating.worn_at, plating.points = 1, 80
+		arrive(81, 'citizen-days')
+		-- (The server's own timer still ages it while this boot runs -- a second
+		-- is 1/5184 of a point -- where a gap read against the earlier boot's
+		-- stamp would be this boot's whole uptime.)
+		check('a load with no wall clock catches nothing up against another boot\'s timer',
+			math.abs(Chrome.Row('citizen-days', 'subdermal_armor').points - 80) < 0.001
+				and 100 * (OPX.Now() / 1000 - 1) / (6 * DAY) > 0.005
+				and not Ripper.WallClock(Chrome.Row('citizen-days', 'subdermal_armor').wornAt),
+			('%s at %s, uptime %s'):format(tostring(Chrome.Row('citizen-days', 'subdermal_armor').points),
+				tostring(Chrome.Row('citizen-days', 'subdermal_armor').wornAt), tostring(OPX.Now())))
+		env.GetUnixTime = realUnix
+
+		local died = 0
+		for _, line in ipairs(control.log.error) do
+			if line:find('thread died', 1, true) then died = died + 1 end
+		end
+		check('no thread died on the way', died == 0, table.concat(control.log.error, ' | '))
+		skills.Level = realLevel
+	end
+
+	-- A HOST WITH NO WALL CLOCK OF ITS OWN reads the database's at Start, once.
+	local asked = 0
+	local denv, dcontrol, dwhy = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		single = function() return nil end,
+		insert = function() return 1 end,
+		update = function() return 1 end,
+		query = function(sql)
+			if sql:find('UNIX_TIMESTAMP()', 1, true) then
+				asked = asked + 1
+				return { { now = 1790009000 } }
+			end
+			return {}
+		end,
+	}))
+	check('a server with no wall clock boots', dwhy == nil, dwhy)
+	if dwhy == nil then
+		local Ripper = denv.OPX.Modules.Get('ripperdoc').Ripper
+		local now, kind = Ripper.UnixNow()
+		check('and ages chrome by the database\'s clock, read once at Start and advanced by its own timer',
+			asked == 1 and kind == 'database' and now >= 1790009000 and now < 1790009000 + 120
+				and table.concat(dcontrol.log.info, ' | '):find('chrome ages by the database\'s clock', 1, true) ~= nil,
+			('%d read(s), %s %s'):format(asked, tostring(now), tostring(kind)))
+	end
+	local _, ncontrol, nwhy = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		single = function() return nil end,
+		insert = function() return 1 end,
+		update = function() return 1 end,
+		query = function() return {} end,
+	}))
+	check('and one with neither says so: chrome then ages only while it runs',
+		nwhy == nil and table.concat(ncontrol.log.warn, ' | '):find('no wall clock on this host and none from ' ..
+			'the database', 1, true) ~= nil)
+end
+
+-- ── the Sandevistan grows with its owner ─────────────────────────────────────
+-- "Longer usage time like sandy for reference -- let's make the duration of the
+-- active effects, at max level, 30-40 seconds." The platform's overdrive stops
+-- at its own 15 s ceiling; the boost the ripperdoc draws goes on to the
+-- level-scaled end, and the grant is held back until that end and its
+-- cooldown have passed.
+section('the ripperdoc clinic: a Sandevistan that grows with its owner, and the grant held through its cooldown')
+do
+	local wall = { now = 1790000000 }
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		single = function() return nil end,
+		insert = function() return 1 end,
+		query = function() return {} end,
+		update = function() return 1 end,
+	}), function(e)
+		e.GetUnixTime = function() return wall.now end
+	end)
+	check('the server boots with the Sandevistan', why == nil, why)
+	if control ~= nil then
+		for _, service in ipairs({ 'open77_cyberware', 'open77_dash', 'open77_reflex', 'open77_hacking' }) do
+			control.resourceStates[service] = 'running'
+		end
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local characters = OPX.Modules.Get('character')
+		local Event = ripperdoc.Event
+		local Ripper, Chrome, Sandy = ripperdoc.Ripper, ripperdoc.Chrome, ripperdoc.Sandy
+		local chrome = control.chrome
+		local apogee = Ripper.Entry('apogee_sandevistan')
+
+		local function load(id, citizenId)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			characters.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. tostring(id),
+				name = 'Player ' .. tostring(id), jobs = {},
+				job = { name = 'unemployed', grade = { level = 0 }, onDuty = false },
+				money = { EDDIES = 50000, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			characters.Registry.byCitizenId[citizenId] = id
+			characters.Registry.byUserId['account-' .. tostring(id)] = id
+		end
+		local function lookEvents(from)
+			local out = {}
+			for index = from or 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == Event.SANDY and event.source == -1 then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+		local function lastKit()
+			for index = #control.clientEvents, 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == Event.KIT and event.source == 91 then return event[1] end
+			end
+			return nil
+		end
+		local function said(part, from, lines)
+			lines = lines or control.log.info
+			for index = from or 1, #lines do
+				if tostring(lines[index]):find(part, 1, true) ~= nil then return true end
+			end
+			return false
+		end
+		local function reflex(activation, phase, extra)
+			local payload = { activation = activation, player = 91, phase = phase, tier = 'reflex_heavy' }
+			for key, value in pairs(extra or {}) do payload[key] = value end
+			env.TriggerEvent('onReflexChanged', '91', env.json.encode(payload))
+		end
+		local function revokedFor(from)
+			local count = 0
+			for index = from + 1, #chrome.revokes do
+				if chrome.revokes[index][1] == 'reflex' and chrome.revokes[index][2] == 91 then count = count + 1 end
+			end
+			return count
+		end
+
+		local skills = OPX.Api.Get('skills') or {}
+		local realLevel = skills.Level
+		local level = 1
+		skills.Level = function() return level, 20 end
+
+		env.Open77.players.position = function() return { x = 0.0, y = 0.0, z = 0.0, bucket = 0 } end
+		env.Open77.players.all = function() return { 91 } end
+		load(91, 'citizen-sandy')
+		local armed = false
+		env.CreateThread(function()
+			Chrome.Load('citizen-sandy')
+			armed = Chrome.FitGrant(91, apogee, apogee.GRADES[1])
+		end)
+		control.Pump(4)
+		check('the Apogee is fitted and armed on its owner', armed == true and Chrome.Armed(91, 'apogee_sandevistan'))
+
+		-- ── how long ─────────────────────────────────────────────────────────
+		check('at level 1 the boost is the grade\'s own: 9 s',
+			select(1, Sandy.BoostMs(91, apogee)) == 9000)
+		level = 10
+		check('at level 10 of 20 it is 9 + 31 x 9/19 s',
+			select(1, Sandy.BoostMs(91, apogee)) == math.floor(9000 + 31000 * 9 / 19 + 0.5))
+		level = 20
+		check('at the level cap the top tier runs 40 s', select(1, Sandy.BoostMs(91, apogee)) == 40000)
+		check('and the clients\' ceiling is 45 s, a 44 s boost and its margin at most',
+			Sandy.CAP_MS == 45000 and Ripper.SANDY_MAX_SECONDS == 44)
+
+		-- ── a boost that outlasts the platform's ────────────────────────────
+		local from = #control.clientEvents
+		local revokesFrom, grantsFrom = #chrome.revokes, #chrome.grants
+		reflex(('a1'):rep(16), 'accepted')
+		reflex(('a1'):rep(16), 'active', { expiresAtMs = 109000, serverTimeMs = 100000 })
+		local seen = lookEvents(from + 1)
+		check('at the cap the active phase runs the boost for 40 s: the platform\'s 9 s and the 31 s the level adds',
+			seen[2] ~= nil and seen[2].phase == 'active' and seen[2].remainingMs == 40250 and Sandy.Active(91)
+				and said('level 20 of 20 adds 31000 ms to the platform\'s own'),
+			seen[2] and tostring(seen[2].remainingMs))
+		reflex(('a1'):rep(16), 'completed')
+		check('the platform\'s completed does not end it: the look and the time run on',
+			Sandy.Active(91) and #lookEvents(from + 1) == 2)
+		check('and from that moment the grant is HELD: revoked, and the kit says held, not gone',
+			revokedFor(revokesFrom) == 1 and Chrome.Armed(91, 'apogee_sandevistan') == false
+				and Chrome.HeldBack(91, 'apogee_sandevistan') and Sandy.Held(91)
+				and lastKit() ~= nil and lastKit().grants.reflex ~= nil
+				and lastKit().grants.reflex.entry == 'apogee_sandevistan' and lastKit().grants.reflex.held == true
+				and said('the platform\'s overdrive completed and the Sandevistan runs on for'),
+			('%d revoke(s)'):format(revokedFor(revokesFrom)))
+		reflex(('a1'):rep(16), 'completed')
+		check('a second copy of the platform\'s end changes nothing', Sandy.Active(91) and revokedFor(revokesFrom) == 1)
+
+		-- NOTHING RE-ARMS IT EARLY.
+		Chrome.Ensure(91)
+		local reprojected = Chrome.Reproject(91, 'reflex')
+		local recovered, recoverWhy = Sandy.Recover(91)
+		local arrived = false
+		env.CreateThread(function() Chrome.Arrive(91) arrived = true end)
+		control.Pump(2)
+		Chrome.Tick()
+		check('while it is held nothing re-arms it: not Ensure, not a re-projection, not Recover, not an arrival, ' ..
+			'not the tick',
+			Chrome.Armed(91, 'apogee_sandevistan') == false and reprojected == 0 and recovered == false
+				and recoverWhy == 'held' and arrived and #chrome.grants == grantsFrom,
+			('%d grant(s), recover %s'):format(#chrome.grants - grantsFrom, tostring(recoverWhy)))
+
+		-- A RACE: an activation that still lands inside the boost is not drawn.
+		local racedFrom, warnFrom = #control.clientEvents, #control.log.warn
+		reflex(('b2'):rep(16), 'accepted')
+		reflex(('b2'):rep(16), 'active', { expiresAtMs = 109000, serverTimeMs = 100000 })
+		check('an activation that lands inside the running boost is journalled, never drawn',
+			#lookEvents(racedFrom + 1) == 0 and Sandy.Active(91)
+				and said('overdrive ' .. ('b2'):rep(16) .. ' arrived inside the running Sandevistan -- not drawn', warnFrom + 1,
+					control.log.warn))
+
+		-- THE BOOST ENDS AT ITS OWN DEADLINE, and the cooldown runs from there.
+		local endedAt = nil
+		for _ = 1, 460 do
+			control.Pump(1)
+			if not Sandy.Active(91) then endedAt = OPX.Now() break end
+		end
+		local ends = lookEvents(from + 1)
+		check('the boost ends at its own deadline, 40 s on, and every client takes it down',
+			endedAt ~= nil and ends[#ends].phase == 'completed' and ends[#ends].activation == ('a1'):rep(16),
+			tostring(endedAt))
+		check('and the grant stays held through the cooldown that starts there',
+			Chrome.HeldBack(91, 'apogee_sandevistan') and Chrome.Armed(91, 'apogee_sandevistan') == false
+				and select(2, Sandy.Recover(91)) == 'held'
+				and said('the Sandevistan is over (completed); its apogee_sandevistan grant comes back after the ' ..
+					'20000 ms cooldown'))
+		racedFrom, warnFrom = #control.clientEvents, #control.log.warn
+		reflex(('c3'):rep(16), 'active', { expiresAtMs = 109000, serverTimeMs = 100000 })
+		check('and an activation that lands inside the cooldown is journalled, never drawn',
+			#lookEvents(racedFrom + 1) == 0 and not Sandy.Active(91)
+				and said('arrived inside the Sandevistan\'s cooldown (its grant is held)', warnFrom + 1, control.log.warn))
+		control.Pump(185)
+		check('eighteen seconds into the cooldown it is still held',
+			Chrome.HeldBack(91, 'apogee_sandevistan') and Chrome.Armed(91, 'apogee_sandevistan') == false)
+		local backAt = nil
+		for _ = 1, 40 do
+			control.Pump(1)
+			if Chrome.Armed(91, 'apogee_sandevistan') then backAt = OPX.Now() break end
+		end
+		check('the cooldown over, the grant comes back: armed again, the kit whole, journalled',
+			backAt ~= nil and backAt - endedAt >= 20000 and backAt - endedAt <= 20600
+				and not Chrome.HeldBack(91) and not Sandy.Held(91) and #chrome.grants == grantsFrom + 1
+				and lastKit().grants.reflex ~= nil and lastKit().grants.reflex.held == nil
+				and said('the Sandevistan\'s cooldown is over -- its apogee_sandevistan grant is back'),
+			backAt and tostring(backAt - endedAt))
+		local _, afterWhy = Sandy.Recover(91)
+		check('and Recover measures the cooldown from the boost\'s end, as the hold did: nothing left to wait for',
+			afterWhy ~= 'held' and afterWhy ~= 'cooling_down', tostring(afterWhy))
+
+		-- A PLATFORM CANCEL STILL ENDS IT, and holds nothing.
+		control.Pump(200)
+		revokesFrom = #chrome.revokes
+		reflex(('d4'):rep(16), 'accepted')
+		reflex(('d4'):rep(16), 'active', { expiresAtMs = 109000, serverTimeMs = 100000 })
+		reflex(('d4'):rep(16), 'cancelled', { reason = 'vehicle' })
+		check('a platform cancel ends a lengthened boost at once, and holds nothing (the platform\'s own cooldown ' ..
+			'starts there too)',
+			not Sandy.Active(91) and not Sandy.Held(91) and revokedFor(revokesFrom) == 0
+				and Chrome.Armed(91, 'apogee_sandevistan'))
+
+		-- A DEATH ENDS IT once the platform's part is over.
+		control.Pump(250)
+		reflex(('e5'):rep(16), 'accepted')
+		reflex(('e5'):rep(16), 'active', { expiresAtMs = 109000, serverTimeMs = 100000 })
+		reflex(('e5'):rep(16), 'completed')
+		control.Fire('onPlayerLifeStateChanged', '91', '40', 'dead', 'pvp_damage')
+		control.Pump(2)
+		check('the owner\'s death ends a boost the platform already finished its part of, and the cooldown starts',
+			not Sandy.Active(91) and Sandy.Held(91) and said('player 91: the Sandevistan ends -- the owner is down'))
+		env.TriggerEvent(OPX.Host.PLAYER_DISCONNECTED, 91)
+		control.Pump(4)
+		check('a disconnect clears the hold', not Sandy.Held(91) and not Chrome.HeldBack(91))
+
+		-- AT LEVEL 1 NOTHING CHANGES: the platform's end is the boost's.
+		level = 1
+		load(91, 'citizen-sandy')
+		env.CreateThread(function()
+			Chrome.Load('citizen-sandy')
+			Chrome.FitGrant(91, apogee, apogee.GRADES[1])
+		end)
+		control.Pump(4)
+		revokesFrom = #chrome.revokes
+		from = #control.clientEvents
+		reflex(('f6'):rep(16), 'accepted')
+		reflex(('f6'):rep(16), 'active', { expiresAtMs = 109000, serverTimeMs = 100000 })
+		reflex(('f6'):rep(16), 'completed')
+		seen = lookEvents(from + 1)
+		check('at level 1 the boost is the platform\'s own 9 s and ends with it: nothing held',
+			Chrome.Armed(91, 'apogee_sandevistan') and seen[2] ~= nil and seen[2].remainingMs == 9250
+				and seen[#seen].phase == 'completed' and not Sandy.Active(91) and not Sandy.Held(91)
+				and revokedFor(revokesFrom) == 0,
+			seen[2] and tostring(seen[2].remainingMs))
+
+		-- THE CEILING: a payload past it is held to 45 s.
+		level = 20
+		control.Pump(250)
+		from = #control.clientEvents
+		reflex(('g7'):rep(16), 'active', { expiresAtMs = 160000, serverTimeMs = 100000 })
+		seen = lookEvents(from + 1)
+		check('a boost never runs past the 45 s the clients hold one for',
+			seen[1] ~= nil and seen[1].remainingMs == 45000, seen[1] and tostring(seen[1].remainingMs))
+		reflex(('g7'):rep(16), 'cancelled')
+
+		local died = 0
+		for _, line in ipairs(control.log.error) do
+			if line:find('thread died', 1, true) then died = died + 1 end
+		end
+		check('no thread died on the way', died == 0, table.concat(control.log.error, ' | '))
+		skills.Level = realLevel
+	end
+
+	-- THE PLAYER'S OWN MACHINE holds a boost as long as the server says, up to
+	-- the same ceiling, and a power held back is not a lost one.
+	local cenv, ccontrol, cwhy = boot('client')
+	check('the client boots with the Sandevistan half', cwhy == nil, cwhy)
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local ripperdoc = OPX.Modules.Get('ripperdoc')
+		local Sandy, Event = ripperdoc.Sandy, ripperdoc.Event
+		cenv.Open77.players.localId = function() return 5 end
+		cenv.Open77.vfx.resolveTarget = function(target) return target.id == '61' and '4242' or nil end
+		local leases = {}
+		cenv.Open77.dilation = {
+			authorise = function(reason, ms) leases[#leases + 1] = { reason, ms } return true end,
+			apply = function() return true end,
+			release = function() return true end,
+			clear = function() return true end,
+		}
+		check('the client\'s ceiling is the server\'s: 45 s', Sandy.CAP_MS == 45000)
+		local now = OPX.Now()
+		Sandy.OnPhase({ player = 61, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 40250,
+			activation = 'long-1' })
+		local row = Sandy.Shown()[61]
+		check('a 40 s boost on another player\'s body is drawn for all of it',
+			row ~= nil and row.expires - now == 40250, row and tostring(row.expires - now))
+		Sandy.OnPhase({ player = 61, phase = 'slow', scale = 0.15, remainingMs = 40000, activation = 'long-1' })
+		local slowed = Sandy.SlowedBy()[61]
+		check('and a player near it is slowed for all of it', slowed ~= nil and slowed.expires - now == 40000,
+			slowed and tostring(slowed.expires - now))
+		Sandy.OnPhase({ player = 61, phase = 'release', activation = 'long-1' })
+		Sandy.OnPhase({ player = 61, phase = 'completed', activation = 'long-1' })
+		local leaseFrom = #leases
+		Sandy.OnPhase({ player = 5, phase = 'active', look = 'smasher', tier = 'reflex_heavy', remainingMs = 40250,
+			activation = 'own-long', scale = 0.15, fallbackScale = 0.5, easeMs = 250 })
+		local owned = leases[leaseFrom + 1]
+		check('and the owner\'s own clock is leased for all of it, not the 30 s it was',
+			owned ~= nil and owned[1] == 'sandevistan' and owned[2] == 40250, owned and tostring(owned[2]))
+		Sandy.OnPhase({ player = 5, phase = 'completed', activation = 'own-long' })
+		cenv.Open77.dilation = nil
+
+		-- HELD BACK IS NOT LOST: nothing is asked for it, and its real item stays.
+		cenv.Open77.character.state = function()
+			return { attached = true, alive = true, inWorkspot = false, vehicle = { mounted = false } }
+		end
+		cenv.Open77.exports.call = function(resource, name)
+			if resource == 'open77_reflex' and name == 'capabilities' then
+				return { await = function() return { projection = 'absent' } end }
+			end
+			return nil, 'no_host'
+		end
+		Sandy.OnKit({ grants = { reflex = { entry = 'apogee_sandevistan', key = 'x', look = 'smasher', held = true } } })
+		local asked = #ccontrol.serverEvents
+		ccontrol.Pump(90)
+		local lostAsks = 0
+		for index = asked + 1, #ccontrol.serverEvents do
+			if ccontrol.serverEvents[index].name == Event.REPROJECT then lostAsks = lostAsks + 1 end
+		end
+		local lines = table.concat(ccontrol.log.info, '\n')
+		check('a power the server holds back is not a lost one: nothing is asked for it, and the journal says why',
+			lostAsks == 0 and Sandy.Wear().code == 1
+				and lines:find('apogee_sandevistan is held back until the boost is over and its cooldown has passed', 1,
+					true) ~= nil,
+			('%d ask(s)'):format(lostAsks))
+		Sandy.OnKit({ grants = { reflex = { entry = 'apogee_sandevistan', key = 'x', look = 'smasher' } } })
+		check('and its return is said once',
+			table.concat(ccontrol.log.info, '\n'):find('apogee_sandevistan is back -- its cooldown is over', 1, true) ~= nil)
 	end
 end
 
@@ -31378,6 +37206,338 @@ do
 			check('a host that cannot be asked the time is written to anyway',
 				#control.environment.writes > mark,
 				#control.environment.writes - mark)
+		end
+	end
+end
+
+-- ── a mission's own hour ─────────────────────────────────────────────────────
+-- The base game's missions set the clock themselves ("later that night", a fade
+-- to the morning) and then wait for the hour they set. The half-second
+-- correction put the server's hour back at once, so a quest waiting on its
+-- night never saw it: the black screen after the conversation never ended.
+-- Reported 2026-09-28 ("stuck ... in load screen", after a talk). A move of the
+-- engine clock its own running cannot explain now holds the correction off.
+section('weather: a mission moves the clock, and the server\'s hour stands back')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the weather module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local weather = OPX.Modules.Get('weather')
+		local Projection = weather and weather.Projection
+		local SYNC = OPX.Event(OPX.Channel.NET, 'weather', 'sync')
+		local api = OPX.Api.Get('weather')
+		check('the hold is readable', Projection ~= nil and type(Projection.QuestHeld) == 'function')
+
+		if Projection ~= nil and type(Projection.QuestHeld) == 'function'
+			and type(control.netEvents[SYNC]) == 'function' and api ~= nil then
+			local HOUR = 3600
+			local NOON = 12 * HOUR
+			local ROUND_MS = 100
+
+			--- The engine's clock, as the harness holds it.
+			local function engine() return env.Open77.environment.getTime().totalSeconds end
+			--- The server's hour, as the client projects it.
+			local function server() return math.floor(api.State().secondsOfDay) end
+			--- Pumps a number of real milliseconds.
+			local function run(ms) control.Pump(math.floor(ms / ROUND_MS)) end
+
+			-- A RUNNING server clock at the game's own rate, 8 game seconds a
+			-- real second: the harness engine clock does not run by itself, so
+			-- the correction fires every 15 real seconds -- this module's own
+			-- moves, which must never be taken for a mission's.
+			control.Pump(5)
+			control.netEvents[SYNC]({
+				protocol = 1, authorityEpoch = 1, revision = 1, weatherRevision = 1,
+				secondsOfDay = NOON, rate = 8.0, timeFrozen = false, weatherFrozen = false,
+				weather = '', weatherPreset = '', weatherPriority = 0,
+				transitionSeconds = 0, weatherTransitionRemainingMs = 0, reason = 'test',
+			})
+			run(40000)
+			check('the server\'s hour is kept by the ordinary correction',
+				math.abs(server() - engine()) <= 130, ('server %d engine %d'):format(server(), engine()))
+			check('and this module\'s own corrections are not a mission', Projection.QuestHeld() == false)
+
+			-- THE MISSION: the game sets 22:00 itself -- straight into the
+			-- engine's clock, never through this resource's `setTime`.
+			local NIGHT = 22 * HOUR
+			local mark = #control.environment.writes
+			control.environment.seconds = NIGHT
+			run(2000)
+			check('a move of the engine clock its running cannot explain holds the correction',
+				Projection.QuestHeld() == true)
+			check('and the mission\'s hour stands', engine() == NIGHT, engine())
+			check('nothing is written over it', #control.environment.writes == mark,
+				#control.environment.writes - mark)
+			local logged = false
+			for _, line in ipairs(control.log.info) do
+				if line:find('moved its own clock', 1, true) and line:find('22:00', 1, true) then logged = true end
+			end
+			check('and the client log says what happened, once', logged)
+
+			run(5 * 60 * 1000)
+			check('five minutes on, the mission still has its night', engine() == NIGHT
+				and #control.environment.writes == mark, engine())
+
+			-- A SECOND MOVE re-arms the hold from its own moment.
+			control.environment.seconds = 23 * HOUR + 30 * 60
+			run(19 * 60 * 1000)
+			check('a second move re-arms the hold: nineteen minutes after it, still held',
+				Projection.QuestHeld() == true and engine() == 23 * HOUR + 30 * 60
+					and #control.environment.writes == mark,
+				('%s %d'):format(tostring(Projection.QuestHeld()), engine()))
+
+			run(2 * 60 * 1000)
+			check('past twenty minutes the hold ends', Projection.QuestHeld() == false)
+			check('and the server\'s hour is back on the engine',
+				#control.environment.writes > mark and math.abs(server() - engine()) <= 130,
+				('server %d engine %d'):format(server(), engine()))
+
+			-- A WORLD ENTRY reads the save's own hour: the same kind of jump, and
+			-- never a mission.
+			control.Fire(OPX.Host.WORLD_READY)
+			mark = #control.environment.writes
+			control.environment.seconds = 6 * HOUR
+			run(2000)
+			check('the save\'s hour at a world entry is not a mission', Projection.QuestHeld() == false)
+			check('and it is corrected as before', #control.environment.writes > mark
+				and math.abs(server() - engine()) <= 130,
+				('server %d engine %d'):format(server(), engine()))
+
+			-- The save's hour can land a few passes AFTER the world says it is up:
+			-- inside the entry's first half minute a move is still the save's.
+			control.Fire(OPX.Host.WORLD_READY)
+			run(3000)
+			control.environment.seconds = 3 * HOUR
+			run(2000)
+			check('a move a few seconds into a world entry is still the save\'s, not a mission',
+				Projection.QuestHeld() == false and math.abs(server() - engine()) <= 130,
+				('%s server %d engine %d'):format(tostring(Projection.QuestHeld()), server(), engine()))
+
+			-- SLOWER IS NEVER A MOVE: a world slowed by a nearby Sandevistan
+			-- runs its clock slower, which the harness's static engine clock is.
+			run(40000)
+			check('an engine clock that runs slow is corrected, never held',
+				Projection.QuestHeld() == false)
+		end
+	end
+end
+
+section('weather: the hold survives the engine\'s timing, a held server clock and a world entry')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the weather module', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local weather = OPX.Modules.Get('weather')
+		local Projection = weather and weather.Projection
+		local SYNC = OPX.Event(OPX.Channel.NET, 'weather', 'sync')
+		local api = OPX.Api.Get('weather')
+
+		if Projection ~= nil and type(Projection.QuestHeld) == 'function'
+			and type(control.netEvents[SYNC]) == 'function' and api ~= nil then
+			local HOUR = 3600
+			local ROUND_MS = 100
+			local environment = env.Open77.environment
+			local function engine() return environment.getTime().totalSeconds end
+			local function server() return math.floor(api.State().secondsOfDay) end
+			local function run(ms) control.Pump(math.floor(ms / ROUND_MS)) end
+			local revision = 0
+			local function snapshot(seconds, frozen)
+				revision = revision + 1
+				control.netEvents[SYNC]({
+					protocol = 1, authorityEpoch = 1, revision = revision, weatherRevision = 1,
+					secondsOfDay = seconds, rate = 8.0, timeFrozen = frozen, weatherFrozen = false,
+					weather = '', weatherPreset = '', weatherPriority = 0,
+					transitionSeconds = 0, weatherTransitionRemainingMs = 0, reason = 'test',
+				})
+			end
+
+			-- A WRITE THE ENGINE TAKES LATE. This module's `setTime` shows in the
+			-- engine's reading only two readings later. Read against the write,
+			-- the reading in between looks exactly like the game putting its own
+			-- hour back -- and a hold armed by that would stop the shared hour for
+			-- twenty minutes after every correction.
+			local realSet, realGet = environment.setTime, environment.getTime
+			-- Each write lands on its own, in order, after its second reading.
+			local queue = {}
+			local function lateWrites(readsToLand, lands)
+				environment.setTime = function(hour, minute, second)
+					queue[#queue + 1] = { hour, minute, second, reads = 0 }
+					return true
+				end
+				environment.getTime = function()
+					local reading = realGet()
+					local waiting = {}
+					for _, write in ipairs(queue) do
+						write.reads = write.reads + 1
+						if write.reads < readsToLand then
+							waiting[#waiting + 1] = write
+						elseif lands then
+							realSet(write[1], write[2], write[3])
+						end
+					end
+					queue = waiting
+					return reading
+				end
+			end
+			local function onTime()
+				queue = {}
+				environment.setTime, environment.getTime = realSet, realGet
+			end
+
+			lateWrites(2, true)
+			control.Pump(5)
+			snapshot(12 * HOUR, false)
+			-- Past the world entry's first half minute, where no move is a
+			-- mission's anyway: the corrections after it are the ones that count.
+			run(90000)
+			check('a write the engine shows late is never taken for a mission',
+				Projection.QuestHeld() == false, tostring(Projection.QuestHeld()))
+			check('and the server\'s hour is still kept', math.abs(server() - engine()) <= 130,
+				('server %d engine %d'):format(server(), engine()))
+
+			-- While a write is still landing, the game's own move is still seen:
+			-- a reading that follows neither the write nor the hour before it.
+			-- Here the writes never land at all, so one is always in flight.
+			onTime()
+			run(20000)
+			lateWrites(6, false)
+			run(20000)
+			local writing = #queue > 0
+			control.environment.seconds = 2 * HOUR
+			run(1500)
+			check('and a mission\'s move while a write is in flight still holds the correction',
+				writing and Projection.QuestHeld() == true,
+				('in flight %s held %s'):format(tostring(writing), tostring(Projection.QuestHeld())))
+			onTime()
+
+			-- A WORLD ENTRY ENDS THE HOLD: the save is loaded again and the
+			-- mission's world with it, so the server's hour comes back at once.
+			local mark = #control.environment.writes
+			control.Fire(OPX.Host.WORLD_READY)
+			run(1500)
+			check('a world entry ends a mission\'s hold', Projection.QuestHeld() == false)
+			check('and the server\'s hour is written at once', #control.environment.writes > mark
+				and math.abs(server() - engine()) <= 130,
+				('server %d engine %d'):format(server(), engine()))
+			local ended = false
+			for _, line in ipairs(control.log.info) do
+				if line:find('a world entry ends the mission', 1, true) then ended = true end
+			end
+			check('and the client log says so', ended)
+
+			-- A HELD SERVER CLOCK projects the same second forever. The hold's end
+			-- must still write it back, where "that second was already decided"
+			-- used to leave the mission's hour standing for good.
+			run(35000)
+			snapshot(9 * HOUR, true)
+			run(3000)
+			check('a held server clock is on the engine', engine() == 9 * HOUR, engine())
+			control.environment.seconds = 21 * HOUR
+			run(1500)
+			check('a mission\'s move under a held server clock holds the correction too',
+				Projection.QuestHeld() == true and engine() == 21 * HOUR, engine())
+			run(21 * 60 * 1000)
+			check('and when the hold ends, the held server hour is written back',
+				Projection.QuestHeld() == false and engine() == 9 * HOUR,
+				('%s engine %d'):format(tostring(Projection.QuestHeld()), engine()))
+		end
+	end
+end
+
+-- ── a player's own wait ─────────────────────────────────────────────────────
+-- A mission's "wait until" or "come back tomorrow" step. The base game's time
+-- skip is refused in a session, and a game day is three real hours.
+-- `/opx.wait <hours>` moves the asking player's own clock and nobody else's.
+section('weather: a player moves their own clock for a mission\'s wait')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the weather module', why == nil, why)
+	local SKIP = env.OPX and env.OPX.Event(env.OPX.Channel.NET, 'weather', 'skip') or nil
+	local wait = why == nil and control.commands['opx.wait'] or nil
+	check('the wait command is there, and open to every player', wait ~= nil and wait.restricted == false)
+
+	if wait ~= nil then
+		local function skips(from)
+			local out = {}
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == SKIP then out[#out + 1] = event end
+			end
+			return out
+		end
+		control.Admit(12, 'account-wait')
+		local mark = #control.clientEvents
+		wait.run(12, { '5', n = 1 }, 'opx.wait 5')
+		local sent = skips(mark)
+		check('a player\'s wait goes to that player\'s own game, and only there',
+			#sent == 1 and sent[1].source == 12 and sent[1][1] == 5,
+			('%d skip(s)'):format(#sent))
+		local refusedAll = true
+		for _, bad in ipairs({ '0', '24', 'x', '2.5', '-3' }) do
+			control.Pump(25)
+			mark = #control.clientEvents
+			wait.run(12, { bad, n = 1 }, 'opx.wait ' .. bad)
+			if #skips(mark) ~= 0 then refusedAll = false end
+		end
+		check('and anything but 1 to 23 whole hours moves nothing', refusedAll)
+		control.Pump(25)
+		mark = #control.clientEvents
+		wait.run(0, { '5', n = 1 }, 'opx.wait 5')
+		check('the console has no clock of its own to move', #skips(mark) == 0)
+	end
+end
+
+do
+	local env, control, why = boot('client')
+	check('the client boots with the weather module', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local Projection = OPX.Modules.Get('weather').Projection
+		local SYNC = OPX.Event(OPX.Channel.NET, 'weather', 'sync')
+		local SKIP = OPX.Event(OPX.Channel.NET, 'weather', 'skip')
+		local api = OPX.Api.Get('weather')
+		local function engine() return env.Open77.environment.getTime().totalSeconds end
+		local function server() return math.floor(api.State().secondsOfDay) end
+		local function run(ms) control.Pump(math.floor(ms / 100)) end
+		check('the client listens for a wait', type(control.netEvents[SKIP]) == 'function')
+		if type(control.netEvents[SKIP]) == 'function' then
+			control.Pump(5)
+			control.netEvents[SYNC]({
+				protocol = 1, authorityEpoch = 1, revision = 1, weatherRevision = 1,
+				secondsOfDay = 10 * 3600, rate = 8.0, timeFrozen = false, weatherFrozen = false,
+				weather = '', weatherPreset = '', weatherPriority = 0,
+				transitionSeconds = 0, weatherTransitionRemainingMs = 0, reason = 'test',
+			})
+			run(40000)
+			local before = engine()
+			control.netEvents[SKIP](5)
+			local moved = (engine() - before) % 86400
+			check('five hours ahead, at once', math.abs(moved - 5 * 3600) <= 1,
+				('%d s'):format(moved))
+			check('and the shared hour stands back on this game', Projection.QuestHeld() == true)
+			local held = engine()
+			run(10 * 60 * 1000)
+			check('ten minutes on, the waited hour still stands (nothing wrote over it)',
+				Projection.QuestHeld() == true and engine() == held, engine())
+			local said = false
+			for _, line in ipairs(control.log.info) do
+				if line:find('moved their own clock 5 h ahead', 1, true) then said = true end
+			end
+			check('and the client log says so', said)
+			run(11 * 60 * 1000)
+			check('twenty minutes on, the shared hour is back on this game',
+				Projection.QuestHeld() == false and math.abs(server() - engine()) <= 130,
+				('server %d engine %d'):format(server(), engine()))
+			local after = engine()
+			control.netEvents[SKIP](0)
+			control.netEvents[SKIP](24)
+			control.netEvents[SKIP]('x')
+			check('and a wait the server never sends moves nothing', engine() == after
+				and Projection.QuestHeld() == false)
 		end
 	end
 end
@@ -33257,6 +39417,95 @@ do
 		if creates - previous > longest then longest = creates - previous end
 		check('and no more than BATCH of them were created between two yields',
 			longest <= BATCH, ('longest un-yielded run was %d, BATCH is %d'):format(longest, BATCH))
+	end
+end
+
+-- ── the derivation, in slices ───────────────────────────────────────────────
+-- THE CLIENT LOG (2026-09-27 and -28): `[blips] reconcile: ... Open77 script
+-- execution budget exceeded`, 70-80 times a session -- every pass the frame was
+-- busy for, thrown away. The platform checks the clock every 10,000 VM
+-- instructions of a resume (`kInstructionHookStep`), so a resume under that can
+-- never be cut. The derivation ran whole in one resume: ~32,000 instructions for
+-- a server with 240 points. It is counted here, instruction by instruction, on
+-- a coroutine of the test's own.
+section('blips: no resume of the reconcile runs past the platform\'s first budget check')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the sliced derivation', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		local garages, teleports = {}, {}
+		for index = 1, 120 do
+			garages['g' .. index] = { label = 'Garage ' .. index, x = index * 10.0, y = 5.0, z = 1.0 }
+			teleports['t' .. index] = { label = 'Door ' .. index, x = index * 7.0, y = 9.0, z = 1.0 }
+		end
+		OPX.Modules.Get('garages').Runtime.Spots = function() return garages end
+		OPX.Modules.Get('teleports').Runtime.Entrances = function() return teleports end
+
+		local function measure(sliced)
+			local counts, spent, wanted = {}, 0, nil
+			local thread = coroutine.create(function()
+				debug.sethook(function() spent = spent + 1 end, '', 1)
+				wanted = blips.Runtime.Wanted(sliced and function()
+					counts[#counts + 1] = spent
+					spent = 0
+					coroutine.yield()
+				end or nil)
+				counts[#counts + 1] = spent
+				debug.sethook()
+			end)
+			while coroutine.status(thread) == 'suspended' do
+				local ok, failure = coroutine.resume(thread)
+				if not ok then error(failure) end
+			end
+			local most = 0
+			for _, value in ipairs(counts) do if value > most then most = value end end
+			local pins = 0
+			for _ in pairs(wanted or {}) do pins = pins + 1 end
+			return most, #counts, pins
+		end
+
+		local whole, _, wholePins = measure(false)
+		local most, resumes, pins = measure(true)
+		check('the derivation a test calls directly still runs whole, and is past the budget check on its own',
+			whole > 10000 and wholePins == 128, ('%d instructions, %d pins'):format(whole, wholePins))
+		check('on its thread it gives the frame back often enough that no resume reaches 10,000 instructions ' ..
+			'-- the same 128 pins, the quota\'s cut made the same way',
+			most < 8000 and resumes > 3 and pins == 128,
+			('%d at most across %d resumes, %d pins'):format(most, resumes, pins))
+
+		-- The whole pass, `apply` included, on the module's own thread.
+		local per, counts, target = 0, {}, nil
+		local realCreate, realWait = env.CreateThread, env.Wait
+		env.Wait = function(...)
+			if coroutine.running() == target then
+				counts[#counts + 1] = per
+				per = 0
+			end
+			return realWait(...)
+		end
+		env.CreateThread = function(fn)
+			realCreate(function()
+				target = coroutine.running()
+				debug.sethook(function() per = per + 1 end, '', 1)
+				fn()
+				counts[#counts + 1] = per
+				debug.sethook()
+			end)
+		end
+		blips.Runtime.Shutdown()
+		blips.Runtime.Init()
+		blips.Runtime.Sync()
+		control.Pump(80)
+		env.CreateThread, env.Wait = realCreate, realWait
+		local passMost = 0
+		for _, value in ipairs(counts) do if value > passMost then passMost = value end end
+		check('and the whole pass on its own thread -- the derivation and the 128 creates -- keeps every resume ' ..
+			'under the check too',
+			#counts > 3 and passMost < 8000 and blips.Runtime.Report().live == 128,
+			('%d at most across %d resumes, %d live'):format(passMost, #counts, blips.Runtime.Report().live))
 	end
 end
 
@@ -35280,6 +41529,3009 @@ do
 		check('and the status still answers, so the rig is observable when off',
 			ncpd.Bots.Status().live ~= nil)
 	end
+end
+
+-- ── a kill is called in the moment it happens ──────────────────────────────
+-- 2026-09-29, the owner: "im not seeing the alert when somebody kills somebody
+-- or a npc ... maxtac ncpd should get alerted". Measured before the fix: one
+-- murder (40) never crossed `Heat_0` (50), so the rise-only call-out told
+-- nobody; and `open77:playerKilled` had no handler anywhere in the resource, so
+-- a player killed by a player charged nobody at all.
+section('ncpd kills: a body is called in, and a player killed by a player is charged')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the ncpd module in it', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local ncpd = OPX.Modules.Get('ncpd')
+		local character = OPX.Modules.Get('character')
+		local Ledger = ncpd.Ledger
+
+		--- A loaded character on a slot, with a job and a name: the call-out
+		-- reads the job's duty to pick its audience and the name to say who.
+		local function load(id, citizenId, name, job, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					name = name, money = { EDDIES = 0 },
+					job = { name = job, label = job, onDuty = onDuty == true,
+						grade = { level = 0 } } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+		end
+
+		load(1, 'citizen-killer', 'Jackie', 'unemployed', false)
+		load(2, 'citizen-cop', 'Officer Ruiz', 'ncpd', true)
+		load(3, 'citizen-trooper', 'Trooper Kaz', 'maxtac', true)
+		load(4, 'citizen-offduty', 'Officer Lee', 'ncpd', false)
+		load(5, 'citizen-victim', 'Dex', 'unemployed', false)
+		for id = 1, 5 do control.Stand(id, 10.0 * id, 0.0, 0.0) end
+
+		--- Every KILL call-out on the board since `mark`, by recipient. A stage
+		-- that rises on the same body sends its own call-out, which is the
+		-- manhunt and not the body -- those are left out here and asserted where
+		-- they are the point.
+		local function boards(mark)
+			local by = {}
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				local frame = event[1]
+				if event.name == ncpd.Event.DISPATCH and type(frame) == 'table'
+					and type(frame.key) == 'string'
+					and (frame.key:find('ncpd.dispatch.homicide', 1, true) == 1
+						or frame.key:find('ncpd.dispatch.officerDown', 1, true) == 1) then
+					by[event.source] = frame
+				end
+			end
+			return by
+		end
+
+		-- ── a player killed by a player ───────────────────────────────────
+		local mark = #control.clientEvents
+		local noticed = #control.notices
+		env.TriggerEvent('open77:playerKilled', '5', '1',
+			'{"phase":"dead","killer":1,"cause":"firearm","position":{"x":123.4,"y":-456.2,"z":9.0}}')
+		local status = Ledger.Status('citizen-killer')
+		check('the killer is charged with murder: the book moves on one body',
+			status.score == 40 and status.stage == 0,
+			('stage %d score %s'):format(status.stage, tostring(status.score)))
+		local sent = boards(mark)
+		check('the kill is called in to NCPD on duty, though no stage rose',
+			sent[2] ~= nil and sent[2].key == 'ncpd.dispatch.homicideNamed',
+			sent[2] and tostring(sent[2].key) or 'nothing')
+		check('and to MaxTac on duty', sent[3] ~= nil)
+		check('but not to an officer off the clock, the suspect or the dead',
+			sent[4] == nil and sent[1] == nil and sent[5] == nil)
+		check('the board names the suspect and the scene, rounded to a place',
+			sent[2] ~= nil and sent[2].args.name == 'Jackie'
+				and sent[2].args.x == 120 and sent[2].args.y == -460,
+			sent[2] and ('%s %s,%s'):format(tostring(sent[2].args.name),
+				tostring(sent[2].args.x), tostring(sent[2].args.y)) or 'nothing')
+		check('and carries the scene for the map pin',
+			sent[2] ~= nil and type(sent[2].scene) == 'table' and sent[2].scene.seconds == 120
+				and sent[2].scene.label == 'ncpd.dispatch.homicide.pin',
+			sent[2] and sent[2].scene and tostring(sent[2].scene.seconds) or 'no scene')
+		local toasted = {}
+		for index = noticed + 1, #control.notices do
+			toasted[control.notices[index].playerId] = control.notices[index].message
+		end
+		check('the on-duty officers get the toast too, in words',
+			type(toasted[2]) == 'string' and toasted[2]:find('Homicide', 1, true) ~= nil
+				and toasted[2]:find('Jackie', 1, true) ~= nil,
+			tostring(toasted[2]))
+
+		-- ── a spree is one call-out every few seconds ──────────────────────
+		mark = #control.clientEvents
+		env.TriggerEvent('open77:playerKilled', '4', '1', '{"position":{"x":0,"y":0,"z":0}}')
+		check('a second kill inside the floor is booked but not called in again',
+			boards(mark)[2] == nil and Ledger.Status('citizen-killer').stage == 1,
+			('stage %d'):format(Ledger.Status('citizen-killer').stage))
+		local rose = nil
+		for index = mark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == ncpd.Event.DISPATCH and event.source == 2 then rose = event[1] end
+		end
+		check('while the stage it crossed is still called out as a manhunt',
+			rose ~= nil and rose.key == 'ncpd.dispatch.suspect', rose and tostring(rose.key) or 'none')
+		control.Pump(85)
+		mark = #control.clientEvents
+		env.TriggerEvent('open77:playerKilled', '5', '1', '{"position":{"x":5,"y":5,"z":0}}')
+		check('once the floor has passed, the next body is called in',
+			boards(mark)[2] ~= nil)
+
+		-- ── officer down ─────────────────────────────────────────────────
+		control.Pump(85)
+		mark = #control.clientEvents
+		local cop = Ledger.Status('citizen-killer').score
+		env.TriggerEvent('open77:playerKilled', '2', '1', '{"position":{"x":40,"y":40,"z":0}}')
+		sent = boards(mark)
+		check('a kill of an officer on duty is called in as officer down',
+			sent[3] ~= nil and sent[3].key == 'ncpd.dispatch.officerDownNamed'
+				and sent[3].scene.label == 'ncpd.dispatch.officerDown.pin',
+			sent[3] and tostring(sent[3].key) or 'nothing')
+		check('and the fallen officer is not told about their own death', sent[2] == nil)
+		check('and the book charges it as the murder of an officer',
+			Ledger.Status('citizen-killer').score ~= cop
+				or Ledger.Status('citizen-killer').stage >= 1)
+
+		-- ── use of force ─────────────────────────────────────────────────
+		mark = #control.clientEvents
+		env.TriggerEvent('open77:playerKilled', '5', '2', '{"position":{"x":1,"y":1,"z":0}}')
+		check('an officer on duty who kills is not charged',
+			Ledger.Status('citizen-cop').score == 0 and Ledger.Status('citizen-cop').stage == 0)
+		check('and nothing is called in about it', next(boards(mark)) == nil)
+
+		-- A death the host could not attribute names no killer, and a death by
+		-- one's own hand is not a crime this book knows.
+		mark = #control.clientEvents
+		env.TriggerEvent('open77:playerKilled', '5', '5', '{}')
+		env.TriggerEvent('open77:playerKilled', '5', '0', '{}')
+		check('a suicide and an unattributed death charge nobody', next(boards(mark)) == nil
+			and Ledger.Status('citizen-victim').score == 0)
+
+		-- ── a server NPC killed by a player ──────────────────────────────
+		control.Pump(85)
+		mark = #control.clientEvents
+		local before = Ledger.Status('citizen-trooper').score
+		load(6, 'citizen-npc-killer', 'Rook', 'unemployed', false)
+		control.Stand(6, 300.0, 300.0, 5.0)
+		env.TriggerEvent('onNpcDied', 'npc-stranger', 'player:6', 'firearm')
+		status = Ledger.Status('citizen-npc-killer')
+		check('a server NPC killed by a player charges the player with murder',
+			status.score == 40, tostring(status.score))
+		sent = boards(mark)
+		check('and is called in, at the killer\u{2019}s place when the body has none',
+			sent[2] ~= nil and sent[2].key == 'ncpd.dispatch.homicideNamed'
+				and sent[2].args.x == 300 and sent[2].args.y == 300,
+			sent[2] and ('%s %s,%s'):format(tostring(sent[2].key), tostring(sent[2].args.x),
+				tostring(sent[2].args.y)) or 'nothing')
+		check('the bystander officer\u{2019}s own ledger is untouched',
+			Ledger.Status('citizen-trooper').score == before)
+
+		-- A unit the city put on the street is the city's own.
+		control.Pump(85)
+		local api = OPX.Api.Get('ncpd')
+		api.Set('citizen-victim', 2)
+		local unit = nil
+		for index = #control.npcCreates, 1, -1 do
+			if ncpd.Response.OwnsNpc(('npc-%d'):format(index)) then
+				unit = ('npc-%d'):format(index)
+				break
+			end
+		end
+		check('the response put a unit on the street for the wanted player', unit ~= nil)
+		mark = #control.clientEvents
+		env.TriggerEvent('onNpcDied', unit or 'none', '6', 'firearm')
+		sent = boards(mark)
+		check('a unit of the response killed is officer down',
+			sent[2] ~= nil and sent[2].key == 'ncpd.dispatch.officerDownNamed',
+			sent[2] and tostring(sent[2].key) or 'nothing')
+
+		-- ── the test crowd is charged once, and called in ─────────────────
+		OPX.Config.MODULES.ncpd.BOTS = {
+			LAW = 'murder', CHARGE = true, FLEE = false, RESPAWN = false,
+			COUNT = 1, MAX = 2, SPREAD = 5.0, WANDER = 0,
+			RECORDS = { 'Character.DefaultNCResidentMale' },
+		}
+		load(7, 'citizen-crowd-killer', 'Vik', 'unemployed', false)
+		control.Stand(7, -50.0, -50.0, 0.0)
+		control.acl.granted['7'] = { ['command.opx.ncpd.bots'] = true }
+		local placed = #control.npcCreates
+		control.commands['opx.ncpd.bots'].run(7, { 'spawn', '1' })
+		local body = ('npc-%d'):format(placed + 1)
+		check('the crowd places its body', #control.npcCreates == placed + 1)
+		mark = #control.clientEvents
+		env.TriggerEvent('onNpcDied', body, '7', 'firearm')
+		check('a crowd kill is booked exactly once, whichever handler ran first',
+			Ledger.Status('citizen-crowd-killer').score == 40,
+			tostring(Ledger.Status('citizen-crowd-killer').score))
+		sent = boards(mark)
+		check('and the crowd\u{2019}s one murder is called in too', sent[2] ~= nil)
+		check('the crowd still knows the body it lost', ncpd.Bots.Owns(body) == true)
+
+		-- ── the console is a door like any other ─────────────────────────
+		control.Pump(85)
+		control.acl.granted['2'] = { ['command.opx.ncpd.report'] = true }
+		mark = #control.clientEvents
+		control.commands['opx.ncpd.report'].run(2, { 'murder', '5' })
+		control.Pump(2)
+		sent = boards(mark)
+		check('/opx.ncpd.report murder calls the body in, for a test without a gun',
+			sent[3] ~= nil and sent[3].key == 'ncpd.dispatch.homicideNamed',
+			sent[3] and tostring(sent[3].key) or 'nothing')
+
+		-- ── the switch ──────────────────────────────────────────────────
+		control.Pump(85)
+		OPX.Config.MODULES.ncpd.HOMICIDE.enabled = false
+		mark = #control.clientEvents
+		local quiet = Ledger.Status('citizen-npc-killer').score
+		env.TriggerEvent('onNpcDied', 'npc-another', '6', 'firearm')
+		check('HOMICIDE.enabled = false charges no kill and calls nothing in',
+			next(boards(mark)) == nil and Ledger.Status('citizen-npc-killer').score == quiet)
+		OPX.Config.MODULES.ncpd.HOMICIDE.enabled = true
+	end
+end
+
+section('ncpd kills: the scene is pinned on the officer\u{2019}s map, and taken down again')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local ncpd = env.OPX.Modules.Get('ncpd')
+		local made = #control.blips.created
+		control.netEvents[ncpd.Event.DISPATCH]({
+			key = 'ncpd.dispatch.homicideNamed',
+			args = { x = 120, y = -460, name = 'Jackie' },
+			scene = { x = 120, y = -460, z = 9, seconds = 3, sprite = 'objective',
+				label = 'ncpd.dispatch.homicide.pin' },
+		})
+		control.Pump(2)
+		-- FOUND BY WHAT IT SAYS, not by its place in the log: the blips module
+		-- reconciles its own category pins on a thread of its own, and one of
+		-- those can land between the frame and this read.
+		local pinId, pin = nil, nil
+		for index = made + 1, #control.blips.created do
+			local id = control.blips.created[index]
+			local options = control.blips.byId[id]
+			if type(options) == 'table' and options.title == 'Homicide' then
+				pinId, pin = id, options
+			end
+		end
+		check('the scene is pinned where the call-out says',
+			pin ~= nil and pin.position ~= nil and pin.position.x == 120 and pin.position.y == -460,
+			pin and tostring(pin.position and pin.position.x) or 'no pin')
+		check('titled with what happened there',
+			pin ~= nil and pin.title == 'Homicide', pin and tostring(pin.title) or 'no pin')
+		local function gone()
+			for _, id in ipairs(control.blips.removed) do
+				if id == pinId then return true end
+			end
+			return false
+		end
+		check('it is still up before its time', pinId ~= nil and not gone())
+		control.Pump(40)
+		check('and the pin comes down on its own when its time is up', pinId ~= nil and gone())
+	end
+end
+
+-- ── the platform does not carry a player's shot at an NPC to the server ──────
+-- 2026-09-29, the owner, a second time: "when other player kills ncpd or other
+-- player there still isnt no toast screen showing illegal activities/murder
+-- happening for ncpd/maxtac". The kill rules above were all driven by handing
+-- `onNpcDied` to the module directly, which is a thing the platform only does
+-- for damage a resource applied itself: a player's hit on a server-owned NPC is
+-- raised on the SHOOTER's client alone (`open77:npcHit`) and nothing carries it
+-- to the server, so no officer or crowd body ever lost a point of health there.
+-- These sections drive the whole road instead -- the client's report, the
+-- server's admission, the platform's own damage, the death it announces -- and
+-- prove the two doors under it for a player killed by a player.
+section('ncpd hit relay: a shot at one of the city\u{2019}s bodies is priced, applied, and called in when it kills')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the ncpd module in it', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local ncpd = OPX.Modules.Get('ncpd')
+		local character = OPX.Modules.Get('character')
+		local Ledger = ncpd.Ledger
+		local Hits = ncpd.Hits
+		local wire = ncpd.Event.NPC_HIT
+
+		local function load(id, citizenId, name, job, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					name = name, money = { EDDIES = 0 },
+					job = { name = job, label = job, onDuty = onDuty == true,
+						grade = { level = 0 } } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+		end
+
+		load(1, 'citizen-shooter', 'Jackie', 'unemployed', false)
+		load(2, 'citizen-cop', 'Officer Ruiz', 'ncpd', true)
+		load(3, 'citizen-trooper', 'Trooper Kaz', 'maxtac', true)
+		load(4, 'citizen-offduty', 'Officer Lee', 'ncpd', false)
+		for id = 1, 4 do control.Stand(id, 10.0 * id, 0.0, 0.0) end
+
+		--- The kill call-outs on the board since `mark`, by recipient.
+		local function boards(mark)
+			local by = {}
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				local frame = event[1]
+				if event.name == ncpd.Event.DISPATCH and type(frame) == 'table'
+					and type(frame.key) == 'string'
+					and (frame.key:find('ncpd.dispatch.homicide', 1, true) == 1
+						or frame.key:find('ncpd.dispatch.officerDown', 1, true) == 1) then
+					by[event.source] = frame
+				end
+			end
+			return by
+		end
+
+		--- One report, sent the way the wire sends it: from a connection, one
+		--- small table, and then a tenth of a second so the next one is a new hit.
+		-- @return boolean applied
+		-- @return string|table|nil the refusal, or the applied hit
+		local function shoot(from, npcId, damage, hitZ, settle)
+			env.source = from
+			local before = #control.npcDamage
+			control.netEvents[wire]({ npcId = npcId, damage = damage, hitZ = hitZ })
+			if settle ~= false then control.Pump(1) end
+			return #control.npcDamage > before, control.npcDamage[#control.npcDamage]
+		end
+
+		--- The units the response put on the street for a wanted player.
+		local function units()
+			local list = {}
+			for index = 1, #control.npcCreates do
+				local id = ('npc-%d'):format(index)
+				if ncpd.Response.OwnsNpc(id) then list[#list + 1] = id end
+			end
+			return list
+		end
+
+		local api = OPX.Api.Get('ncpd')
+		api.Set('citizen-shooter', 2)
+		local street = units()
+		check('the response stood units on the street to shoot at', #street >= 2,
+			('%d unit(s)'):format(#street))
+		local unit, other = street[1], street[2]
+		check('and every one is made on the 100-point scale the relay prices on',
+			control.npcState[unit] ~= nil and control.npcState[unit].health == 100
+				and control.npcState[unit].maxHealth == 100,
+			control.npcState[unit] and tostring(control.npcState[unit].health) or 'no body')
+
+		-- ── the wire is a local server event, and the hit is applied ─────────────
+		check('the report has a handler on the wire', type(control.netEvents[wire]) == 'function')
+		local applied, row = shoot(1, unit, 25, 0.9)
+		check('a shot at a unit is applied to the body the platform holds', applied == true
+			and row ~= nil and row.id == unit and row.amount == 25,
+			row and ('%s x %s'):format(tostring(row.id), tostring(row.amount)) or 'not applied')
+		check('attributed to the shooter\u{2019}s connection, in the shape the platform reads',
+			row ~= nil and row.source == 'player:1' and row.cause == 'firearm',
+			row and ('%s / %s'):format(tostring(row.source), tostring(row.cause)) or 'not applied')
+		check('and the body\u{2019}s health went down by it', control.npcState[unit].health == 75,
+			tostring(control.npcState[unit].health))
+
+		-- ── the server prices the hit, whatever the client says ─────────────────
+		local function priced(damage, hitZ)
+			-- A FULL BODY EVERY TIME: a pricing check must never be the hit that
+			-- kills, or it would charge the shooter and change every later count.
+			control.npcState[other].health = 100
+			local ok, hit = shoot(1, other, damage, hitZ)
+			control.npcState[other].health = 100
+			return ok and hit.amount or nil
+		end
+		check('a graze is worth the floor, not the engine\u{2019}s nothing', priced(3, 0.9) == 12,
+			tostring(priced(3, 0.9)))
+		check('a cannon is worth the ceiling, not a one-shot', priced(900, 0.9) == 60,
+			tostring(priced(900, 0.9)))
+		check('a report with no number is worth the fallback', priced(nil, 0.9) == 34
+			and priced('lots', 0.9) == 34 and priced(-5, 0.9) == 34, tostring(priced(nil, 0.9)))
+		check('a hit at head height is a headshot: twice the price', priced(30, 1.7) == 60,
+			tostring(priced(30, 1.7)))
+		check('and one at the chest is not', priced(30, 1.2) == 30, tostring(priced(30, 1.2)))
+		check('the height is read against the body\u{2019}s own feet, not the world\u{2019}s',
+			(function()
+				local body = control.npcState[other]
+				local saved = body.z
+				body.z = 50.0
+				body.health = 100
+				local ok, hit = shoot(1, other, 30, 51.7)
+				body.health = 100
+				local low, lower = shoot(1, other, 30, 1.7)
+				body.z = saved
+				body.health = 100
+				return ok and hit.amount == 60 and low and lower.amount == 30
+			end)())
+
+		-- ── whose body it is ───────────────────────────────────────────────────
+		local mark = #control.npcDamage
+		local infos = #control.log.info
+		check('a body some other resource owns is refused and costs nothing',
+			select(1, shoot(1, 'npc-not-ours', 25, 0.9)) == false and #control.npcDamage == mark)
+		check('the ordinary "not ours" is counted and never journalled',
+			Hits.Status().refused.not_ours == 1 and #control.log.info == infos,
+			('%d line(s)'):format(#control.log.info - infos))
+		env.source = 1
+		control.netEvents[wire]({ npcId = '../x', damage = 25 })
+		check('a spelling that cannot be an id is refused by name',
+			Hits.Status().refused.bad_id == 1, tostring(Hits.Status().refused.bad_id))
+		control.netEvents[wire]({ damage = 25 })
+		control.netEvents[wire]('nonsense')
+		check('a report with no body, or that is not a table, is refused',
+			Hits.Status().refused.bad_id == 2 and Hits.Status().refused.malformed == 1)
+
+		-- ── who may shoot, from where, how fast ────────────────────────────────
+		control.Pump(15)
+		mark = #control.npcDamage
+		infos = #control.log.info
+		control.Admit(9, 'account-9')
+		OPX.EnsureSession(9)
+		check('a connection with no character is refused', shoot(9, unit, 25, 0.9) == false
+			and Hits.Status().refused.no_character == 1)
+
+		control.Life(1, 'dead')
+		check('a dead shooter is refused', shoot(1, unit, 25, 0.9) == false
+			and Hits.Status().refused.shooter_dead == 1)
+		control.Life(1, 'alive')
+
+		control.Stand(1, 1000.0, 0.0, 0.0)
+		check('a shooter far out of range is refused, and it is said', shoot(1, unit, 25, 0.9) == false
+			and Hits.Status().refused.range == 1
+			and #(function()
+				local found = {}
+				for index = infos + 1, #control.log.info do
+					if control.log.info[index]:find('npc hit refused (range)', 1, true) then
+						found[#found + 1] = index
+					end
+				end
+				return found
+			end)() == 1)
+		control.Stand(1, 10.0, 0.0, 0.0)
+
+		control.Bucket(1, 5)
+		check('a shooter in another bucket is refused', shoot(1, unit, 25, 0.9) == false
+			and Hits.Status().refused.bucket_mismatch == 1)
+		control.Bucket(1, 0)
+
+		check('an on-duty officer does not shoot the city\u{2019}s own units',
+			shoot(2, unit, 25, 0.9) == false and Hits.Status().refused.friendly == 1)
+
+		check('and a shot the platform could not apply is refused by name, not lost silently', (function()
+			local health = control.npcState[unit].health
+			control.npcs.refuseDamage = 'npc_not_found'
+			shoot(1, unit, 25, 0.9)
+			control.npcs.refuseDamage = nil
+			return Hits.Status().refused.apply_refused == 1
+				and control.npcState[unit].health == health
+		end)())
+
+		-- CADENCE: two hits in the same instant are one shooter faster than any gun.
+		control.Pump(15)
+		local first = shoot(1, unit, 25, 0.9, false)
+		local second = shoot(1, unit, 25, 0.9, false)
+		check('two hits in the same instant are refused as one shooter faster than any gun',
+			first == true and second == false and Hits.Status().refused.cadence == 1,
+			tostring(Hits.Status().refused.cadence))
+		control.Pump(15)
+
+		-- THE PER-SECOND CEILING.
+		local shipped = OPX.Config.MODULES.ncpd.HITS
+		OPX.Config.MODULES.ncpd.HITS = { MAX_DPS = 100, MIN_INTERVAL_MS = 0 }
+		control.npcState[other].health = 100
+		local a = shoot(1, other, 60, 0.9, false)
+		local b = shoot(1, other, 60, 0.9, false)
+		check('a shooter cannot land more than the per-second ceiling', a == true and b == false
+			and Hits.Status().refused.dps_cap == 1, tostring(Hits.Status().refused.dps_cap))
+		control.Pump(12)
+		control.npcState[other].health = 100
+		check('and the ceiling is a window, not a ban', shoot(1, other, 60, 0.9, false) == true)
+		control.npcState[other].health = 100
+		control.Pump(12)
+
+		-- THE SWITCH.
+		OPX.Config.MODULES.ncpd.HITS = false
+		check('HITS = false takes the relay down: nothing is applied',
+			shoot(1, other, 25, 0.9) == false and Hits.Status().refused.off == 1)
+		OPX.Config.MODULES.ncpd.HITS = { enabled = false }
+		check('and so does enabled = false', shoot(1, other, 25, 0.9) == false
+			and Hits.Status().refused.off == 2)
+		OPX.Config.MODULES.ncpd.HITS = shipped
+		control.Pump(2)
+
+		-- ── the knobs are read live and clamped to what they mean ─────────────
+		local knobs = Hits.Knobs()
+		check('the shipped knobs are the documented ones', knobs ~= nil and knobs.MIN_DAMAGE == 12
+			and knobs.MAX_DAMAGE == 60 and knobs.FALLBACK_DAMAGE == 34 and knobs.HEAD_METRES == 1.55
+			and knobs.HEADSHOT == 2 and knobs.MAX_RANGE_METRES == 120 and knobs.MIN_INTERVAL_MS == 45
+			and knobs.MAX_DPS == 480 and knobs.DEATH_CHECK_MS == 900)
+		OPX.Config.MODULES.ncpd.HITS = { MIN_DAMAGE = -5, MAX_DAMAGE = 'many', HEADSHOT = 900,
+			MAX_RANGE_METRES = 0, MIN_INTERVAL_MS = -1, FALLBACK_DAMAGE = 5000 }
+		knobs = Hits.Knobs()
+		check('a value outside what its knob means falls back to the shipped one', knobs ~= nil
+			and knobs.MIN_DAMAGE == 12 and knobs.MAX_DAMAGE == 60 and knobs.HEADSHOT == 2
+			and knobs.MAX_RANGE_METRES == 120 and knobs.MIN_INTERVAL_MS == 45
+			and knobs.FALLBACK_DAMAGE == 34)
+		OPX.Config.MODULES.ncpd.HITS = { MIN_DAMAGE = 80, MAX_DAMAGE = 30 }
+		knobs = Hits.Knobs()
+		check('a floor above the ceiling is pulled down to it, and the fallback kept between them',
+			knobs.MIN_DAMAGE == 30 and knobs.MAX_DAMAGE == 30 and knobs.FALLBACK_DAMAGE == 30)
+		OPX.Config.MODULES.ncpd.HITS = shipped
+
+		-- ── the kill: four hits, one body, one call-out ─────────────────────────
+		-- A FRESH ROSTER AT HEAT_4, so no kill below crosses a stage: the score is
+		-- then simply the sum of the bodies, and the units are new ids every time.
+		local function roster()
+			api.Clear('citizen-shooter')
+			api.Set('citizen-shooter', 4)
+			return units()
+		end
+		control.Pump(90)
+		street = roster()
+		check('a stage four response stands five units on the street', #street >= 4,
+			('%d unit(s)'):format(#street))
+		unit, other = street[1], street[2]
+		mark = #control.clientEvents
+		local noticed = #control.notices
+		local score = Ledger.Status('citizen-shooter').score
+		infos = #control.log.info
+		for _ = 1, 3 do shoot(1, unit, 25, 0.9) end
+		check('three hits do not kill a body of a hundred', control.npcState[unit].health == 25
+			and next(boards(mark)) == nil)
+		shoot(1, unit, 25, 0.9)
+		check('the fourth does, on the platform\u{2019}s own ledger', control.npcState[unit].health == 0)
+		local told = boards(mark)
+		check('and the kill of a unit of the city is called in as an officer down, to NCPD on duty',
+			told[2] ~= nil and told[2].key == 'ncpd.dispatch.officerDownNamed',
+			told[2] and tostring(told[2].key) or 'nothing')
+		check('to MaxTac on duty', told[3] ~= nil)
+		check('but not to an officer off the clock, and not to the shooter',
+			told[4] == nil and told[1] == nil)
+		check('the board names the suspect', told[2] ~= nil and told[2].args.name == 'Jackie')
+		local toasted = {}
+		for index = noticed + 1, #control.notices do
+			toasted[control.notices[index].playerId] = control.notices[index].message
+		end
+		check('and the on-duty officers get the toast in words', type(toasted[2]) == 'string'
+			and toasted[2]:find('Jackie', 1, true) ~= nil, tostring(toasted[2]))
+		check('the shooter is charged with the murder of an officer: seventy on the book',
+			Ledger.Status('citizen-shooter').score - score == 70,
+			('%s -> %s'):format(tostring(score), tostring(Ledger.Status('citizen-shooter').score)))
+		local said = 0
+		for index = infos + 1, #control.log.info do
+			if control.log.info[index]:find('charged with murderPolice for killing npc ' .. unit, 1, true) then
+				said = said + 1
+			end
+		end
+		check('and the journal says whom it charged with what, once', said == 1, ('%d line(s)'):format(said))
+		check('a body the platform says is dead takes no further hit', (function()
+			local ok = shoot(1, unit, 25, 0.9)
+			return ok == false and Hits.Status().refused.dead_npc == 1
+		end)())
+		check('a body the platform no longer knows is refused, not guessed at', (function()
+			control.npcState[other].removed = true
+			local ok = shoot(1, other, 25, 0.9)
+			control.npcState[other].removed = nil
+			return ok == false and Hits.Status().refused.unknown_npc == 1
+		end)())
+
+		-- ── a platform that raises no death event is not a murder nobody heard of ─
+		control.Pump(90)
+		street = roster()
+		control.npcs.silentDeath = true
+		local third = street[3]
+		check('the response has a body for the missing-event check', third ~= nil)
+		if third ~= nil then
+			local booked = Hits.Status().booked
+			score = Ledger.Status('citizen-shooter').score
+			mark = #control.clientEvents
+			for _ = 1, 4 do shoot(1, third, 25, 0.9) end
+			check('the body is dead on the platform\u{2019}s ledger and nothing was called in yet',
+				control.npcState[third].health == 0 and next(boards(mark)) == nil)
+			control.Pump(12)
+			check('once the platform has stayed silent, the relay books the death from the body\u{2019}s health',
+				Hits.Status().booked == booked + 1 and boards(mark)[2] ~= nil
+					and Ledger.Status('citizen-shooter').score - score == 70,
+				('%d booked, %s on the book'):format(Hits.Status().booked - booked,
+					tostring(Ledger.Status('citizen-shooter').score - score)))
+			score = Ledger.Status('citizen-shooter').score
+			mark = #control.clientEvents
+			env.TriggerEvent('onNpcDied', third, 'player:1', 'firearm')
+			check('and a late announcement of the same death charges nobody twice',
+				Ledger.Status('citizen-shooter').score == score and next(boards(mark)) == nil)
+		end
+		control.npcs.silentDeath = nil
+
+		-- an announced death is booked by the announcement, not by the check
+		control.Pump(90)
+		street = roster()
+		local heardDeath = Hits.Status().booked
+		local announced = street[1]
+		score = Ledger.Status('citizen-shooter').score
+		mark = #control.clientEvents
+		control.npcState[announced].health = 30
+		shoot(1, announced, 25, 0.9)
+		shoot(1, announced, 25, 0.9)
+		control.Pump(12)
+		check('a death the platform DID announce is booked once, and never again by the check',
+			Hits.Status().booked == heardDeath and boards(mark)[2] ~= nil
+				and Ledger.Status('citizen-shooter').score - score == 70,
+			('%d booked by the check'):format(Hits.Status().booked - heardDeath))
+
+		-- ── a delayed announcement is the same death ─────────────────────────────
+		control.Pump(90)
+		street = roster()
+		control.npcs.defer = true
+		local fifth = street[1]
+		control.npcState[fifth].health = 20
+		mark = #control.clientEvents
+		shoot(1, fifth, 25, 0.9)
+		check('an announcement the platform holds back charges nothing until it arrives',
+			next(boards(mark)) == nil)
+		control.ReleaseNpcEvents()
+		check('and when it comes, it is called in', boards(mark)[2] ~= nil)
+		control.npcs.defer = nil
+
+		-- ── the test crowd is a body the relay serves too, and is booked once ────
+		control.Pump(90)
+		OPX.Config.MODULES.ncpd.BOTS = {
+			LAW = 'murder', CHARGE = true, FLEE = false, RESPAWN = false,
+			COUNT = 1, MAX = 3, SPREAD = 5.0, WANDER = 0,
+			RECORDS = { 'Character.DefaultNCResidentMale' },
+		}
+		load(7, 'citizen-crowd-shooter', 'Vik', 'unemployed', false)
+		control.Stand(7, -50.0, -50.0, 0.0)
+		control.acl.granted['7'] = { ['command.opx.ncpd.bots'] = true }
+		local placed = #control.npcCreates
+		control.commands['opx.ncpd.bots'].run(7, { 'spawn', '1' })
+		local body = ('npc-%d'):format(placed + 1)
+		check('the crowd places a body on the 100-point scale', #control.npcCreates == placed + 1
+			and control.npcState[body].health == 100)
+		mark = #control.clientEvents
+		for _ = 1, 4 do shoot(7, body, 25, 0.9) end
+		check('four relayed hits kill a civilian of the crowd', control.npcState[body].health == 0)
+		check('and the crowd books it exactly once, whichever handler ran first',
+			Ledger.Status('citizen-crowd-shooter').score == 40,
+			tostring(Ledger.Status('citizen-crowd-shooter').score))
+		told = boards(mark)
+		check('and it is called in as a homicide to the officers on duty',
+			told[2] ~= nil and told[2].key == 'ncpd.dispatch.homicideNamed'
+				and told[3] ~= nil and told[4] == nil,
+			told[2] and tostring(told[2].key) or 'nothing')
+
+		-- the crowd, with a silent platform, is booked from health by the same door
+		control.Pump(90)
+		control.npcs.silentDeath = true
+		placed = #control.npcCreates
+		control.commands['opx.ncpd.bots'].run(7, { 'spawn', '1' })
+		local quiet = ('npc-%d'):format(placed + 1)
+		local score7 = Ledger.Status('citizen-crowd-shooter').score
+		mark = #control.clientEvents
+		for _ = 1, 4 do shoot(7, quiet, 25, 0.9) end
+		control.Pump(12)
+		-- ONCE, and how that shows: the second murder carries the score across
+		-- Heat_0 (40 + 40 >= 50), which zeroes it as it crosses. Booked twice it would
+		-- cross and then hold 40 again.
+		check('a crowd body killed under a silent platform is booked from its health, once',
+			Ledger.Status('citizen-crowd-shooter').stage == 1
+				and Ledger.Status('citizen-crowd-shooter').score == 0
+				and boards(mark)[2] ~= nil,
+			('%s -> stage %d, %s'):format(tostring(score7),
+				Ledger.Status('citizen-crowd-shooter').stage,
+				tostring(Ledger.Status('citizen-crowd-shooter').score)))
+		control.npcs.silentDeath = nil
+		OPX.Config.MODULES.ncpd.BOTS = false
+
+		-- ── the status command says what the relay did and who would be told ────
+		control.acl.granted['1'] = { ['command.opx.ncpd.status'] = true }
+		local resultName = OPX.Event(OPX.Channel.NET, 'runtime', 'commandResult')
+		mark = #control.clientEvents
+		control.commands['opx.ncpd.status'].run(1, {})
+		control.Pump(2)
+		local text = ''
+		for index = mark + 1, #control.clientEvents do
+			local event = control.clientEvents[index]
+			if event.name == resultName and event.source == 1 and type(event[1]) == 'table' then
+				text = text .. tostring(event[1].text or '')
+			end
+		end
+		check('the status command reports the relay, with what it refused and why',
+			text:find('hit relay : ', 1, true) ~= nil and text:find('applied', 1, true) ~= nil
+				and text:find('refused: ', 1, true) ~= nil,
+			text ~= '' and text or 'no result captured')
+		check('and who a call-out would reach right now',
+			text:find('on the air: 2 on duty in ncpd/maxtac', 1, true) ~= nil,
+			text ~= '' and text or 'no result captured')
+
+		-- ── a stopped module admits nothing ─────────────────────────────────────
+		Hits.Stop()
+		control.Pump(12)
+		control.npcState[other].health = 100
+		check('after the module stops a report is refused, not applied',
+			shoot(1, other, 25, 0.9) == false and Hits.Status().refused.not_started == 1)
+	end
+end
+
+-- ── a death the host did not attribute is still put down to whoever shot ─────
+-- The same report, one step earlier in the chain. `open77:playerKilled` is raised
+-- only for a death the host's damage authority could attribute
+-- (`docs/player-life.md`), and the owner's "there still isnt no toast" for a
+-- player killed by a player was a death it had not. The two doors under it are
+-- the lethal hit (`open77:playerDamaged`, `lethal == "1"`) and the bare death
+-- (`open77:playerDied`); the module also remembers the last player to hurt each
+-- victim, so a death that names nobody is still put down to the hand that had
+-- just shot them -- and never to a fall, the environment or a script.
+section('ncpd kills: a death the host did not attribute is still charged to whoever shot the victim')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the ncpd module in it', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local ncpd = OPX.Modules.Get('ncpd')
+		local character = OPX.Modules.Get('character')
+		local Ledger = ncpd.Ledger
+
+		local function load(id, citizenId, name, job, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					name = name, money = { EDDIES = 0 },
+					job = { name = job, label = job, onDuty = onDuty == true,
+						grade = { level = 0 } } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+		end
+
+		load(2, 'citizen-cop', 'Officer Ruiz', 'ncpd', true)
+		load(3, 'citizen-trooper', 'Trooper Kaz', 'maxtac', true)
+		load(4, 'citizen-offduty', 'Officer Lee', 'ncpd', false)
+		for id = 2, 4 do control.Stand(id, 10.0 * id, 0.0, 0.0) end
+
+		--- A fresh player on a fresh slot, so no scenario below can read another's
+		--- ledger, victim memory or call-out floor.
+		local nextSlot = 10
+		local function fresh(job, onDuty)
+			local id = nextSlot
+			nextSlot = nextSlot + 1
+			load(id, 'citizen-p' .. id, 'Player' .. id, job or 'unemployed', onDuty)
+			control.Stand(id, 10.0 * id, 5.0, 0.0)
+			return id, 'citizen-p' .. id
+		end
+
+		--- The kill call-outs on the board since `mark`, by recipient.
+		local function boards(mark)
+			local by = {}
+			for index = mark + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				local frame = event[1]
+				if event.name == ncpd.Event.DISPATCH and type(frame) == 'table'
+					and type(frame.key) == 'string'
+					and (frame.key:find('ncpd.dispatch.homicide', 1, true) == 1
+						or frame.key:find('ncpd.dispatch.officerDown', 1, true) == 1) then
+					by[event.source] = frame
+				end
+			end
+			return by
+		end
+
+		--- How many journal lines since `mark` say `needle`.
+		local function said(mark, needle)
+			local count = 0
+			for index = mark + 1, #control.log.info do
+				if control.log.info[index]:find(needle, 1, true) then count = count + 1 end
+			end
+			return count
+		end
+
+		local function died(victim, killer, cause, extra)
+			env.TriggerEvent('open77:playerDied', tostring(victim), ('{"phase":"dead"%s,"cause":"%s"%s}')
+				:format(killer ~= nil and (',"killer":' .. tostring(killer)) or '', cause or 'firearm',
+					extra or ''))
+		end
+
+		--- `open77:playerDamaged` as the host raises it: ten arguments, all text.
+		local function hurt(victim, attacker, lethal, part)
+			env.TriggerEvent('open77:playerDamaged', tostring(victim), tostring(attacker), '30', 'ranged',
+				'Items.Preset_Yukimura_Default', part or 'torso', lethal == '1' and '0' or '40', '100',
+				lethal or '0', '0')
+		end
+
+		--- The charges booked for a kill of a player since `mark`. Counted by the line the
+		-- kill rule writes ("... for killing player N"), not by "charged with", which the
+		-- call-out's own line says as well.
+		local function charged(mark) return said(mark, ' for killing player ') end
+
+		-- ── playerDied names the killer, and playerKilled never comes ─────────────
+		local killer, killerCid = fresh()
+		local victim = fresh()
+		local mark, logMark, noticed = #control.clientEvents, #control.log.info, #control.notices
+		died(victim, killer, 'firearm', ',"position":{"x":123.4,"y":-456.2,"z":9.0}')
+		check('a death that names its killer is charged though playerKilled never came',
+			Ledger.Status(killerCid).score == 40 and charged(logMark) == 1,
+			('score %s, %d charge line(s)'):format(tostring(Ledger.Status(killerCid).score), charged(logMark)))
+		local sent = boards(mark)
+		check('and called in to NCPD and MaxTac on duty, at the place the context names',
+			sent[2] ~= nil and sent[2].key == 'ncpd.dispatch.homicideNamed' and sent[3] ~= nil
+				and sent[2].args.x == 120 and sent[2].args.y == -460 and sent[2].args.name == 'Player' .. killer,
+			sent[2] and ('%s %s,%s'):format(tostring(sent[2].key), tostring(sent[2].args.x),
+				tostring(sent[2].args.y)) or 'nothing')
+		check('but not to an officer off the clock, the suspect or the dead',
+			sent[4] == nil and sent[killer] == nil and sent[victim] == nil)
+		local toasted = {}
+		for index = noticed + 1, #control.notices do
+			toasted[control.notices[index].playerId] = control.notices[index].message
+		end
+		check('the on-duty officers get the toast in words, naming the suspect',
+			type(toasted[2]) == 'string' and toasted[2]:find('Homicide', 1, true) ~= nil
+				and toasted[2]:find('Player' .. killer, 1, true) ~= nil, tostring(toasted[2]))
+		check('and the journal says the death was seen, by which door, and whom it charged',
+			said(logMark, 'player kill seen (playerDied): victim ' .. victim .. ', killer ' .. killer) == 1
+				and said(logMark, killerCid .. ' charged with murder for killing player ' .. victim) == 1)
+
+		-- the same death, arriving again by the other two doors
+		mark = #control.clientEvents
+		env.TriggerEvent('open77:playerKilled', tostring(victim), tostring(killer), '{"position":{"x":1,"y":1,"z":0}}')
+		hurt(victim, killer, '1', 'head')
+		check('the same death reported by the other two doors is not charged again',
+			Ledger.Status(killerCid).score == 40 and charged(logMark) == 1 and next(boards(mark)) == nil,
+			('score %s, %d charge line(s)'):format(tostring(Ledger.Status(killerCid).score), charged(logMark)))
+
+		-- ── a lethal hit is a kill at once ────────────────────────────────────────
+		killer, killerCid = fresh()
+		victim = fresh()
+		control.Stand(victim, 77.0, 88.0, 1.0)
+		mark, logMark = #control.clientEvents, #control.log.info
+		hurt(victim, killer, '1', 'head')
+		check('a lethal hit is a kill at once, before any death event is raised',
+			Ledger.Status(killerCid).score == 40 and charged(logMark) == 1
+				and said(logMark, 'player kill seen (lethal hit)') == 1,
+			('score %s'):format(tostring(Ledger.Status(killerCid).score)))
+		sent = boards(mark)
+		check('called in from the victim\u{2019}s own position when the hit carries none',
+			sent[2] ~= nil and sent[2].args.x == 80 and sent[2].args.y == 90 and sent[3] ~= nil,
+			sent[2] and ('%s,%s'):format(tostring(sent[2].args.x), tostring(sent[2].args.y)) or 'nothing')
+		mark = #control.clientEvents
+		died(victim, killer)
+		env.TriggerEvent('open77:playerKilled', tostring(victim), tostring(killer), '{}')
+		check('and the death and the attributed kill that follow it are the same death',
+			Ledger.Status(killerCid).score == 40 and charged(logMark) == 1 and next(boards(mark)) == nil)
+
+		-- ── a hit that does not kill is remembered, and a bare death is put down to it
+		killer, killerCid = fresh()
+		victim = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		hurt(victim, killer, '0', 'torso')
+		check('a hit that does not kill charges nobody and calls nothing in',
+			Ledger.Status(killerCid).score == 0 and charged(logMark) == 0 and next(boards(mark)) == nil)
+		control.Pump(10)
+		died(victim, nil, 'firearm', ',"position":{"x":5.0,"y":5.0,"z":0.0}')
+		check('a death that names nobody is put down to the last player who hurt the victim',
+			Ledger.Status(killerCid).score == 40 and said(logMark, 'player kill seen (recent hit)') == 1,
+			('score %s'):format(tostring(Ledger.Status(killerCid).score)))
+		check('and is called in', boards(mark)[2] ~= nil and boards(mark)[3] ~= nil)
+
+		-- the hit is spent by the death it caused: past the five seconds one death is
+		-- remembered for and still inside the eight the hit could be blamed for
+		control.Pump(52)
+		mark, logMark = #control.clientEvents, #control.log.info
+		died(victim, nil, 'firearm')
+		check('a hit is spent by the death it caused: the next death is not put down to it too',
+			charged(logMark) == 0 and said(logMark, 'died with nobody to charge') == 1
+				and next(boards(mark)) == nil)
+
+		-- ── what is nobody's murder ───────────────────────────────────────────────
+		for _, cause in ipairs({ 'fall', 'script', 'environment' }) do
+			killer, killerCid = fresh()
+			victim = fresh()
+			mark, logMark = #control.clientEvents, #control.log.info
+			hurt(victim, killer, '0', 'legs')
+			died(victim, nil, cause)
+			check(('a death by %s is nobody\u{2019}s murder, whoever had just hit the victim'):format(cause),
+				Ledger.Status(killerCid).score == 0 and charged(logMark) == 0
+					and next(boards(mark)) == nil
+					and said(logMark, 'died with nobody to charge (cause ' .. cause .. ')') == 1)
+		end
+
+		killer, killerCid = fresh()
+		victim = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		hurt(victim, killer, '0', 'torso')
+		control.Pump(90)
+		died(victim, nil, 'firearm')
+		check('a hit older than the attribution window is not the death\u{2019}s killer',
+			Ledger.Status(killerCid).score == 0 and charged(logMark) == 0 and next(boards(mark)) == nil)
+
+		-- an NPC that shot a player is not a player who killed one
+		killer, killerCid = fresh()
+		victim = fresh()
+		local npc = tostring(4294967296 + killer)
+		mark, logMark = #control.clientEvents, #control.log.info
+		hurt(victim, npc, '1', 'head')
+		died(victim, '"' .. npc .. '"', 'firearm')
+		env.TriggerEvent('open77:playerKilled', tostring(victim), npc, '{}')
+		check('a player shot dead by an npc charges nobody, not the player whose slot its id ends in',
+			Ledger.Status(killerCid).score == 0 and charged(logMark) == 0 and next(boards(mark)) == nil)
+		check('and its id is not read as a connection at all: no kill seen, no character looked for',
+			said(logMark, 'player kill seen') == 0 and said(logMark, 'no character loaded') == 0,
+			('%d seen, %d with no character'):format(said(logMark, 'player kill seen'),
+				said(logMark, 'no character loaded')))
+
+		-- one's own hand
+		killer, killerCid = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		hurt(killer, killer, '1', 'head')
+		died(killer, killer, 'firearm')
+		check('a player who kills themselves is not a murder',
+			Ledger.Status(killerCid).score == 0 and charged(logMark) == 0 and next(boards(mark)) == nil)
+
+		-- a killer with no character loaded
+		victim = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		died(victim, 99, 'firearm')
+		check('a killer with no character loaded charges nobody, and the journal says so',
+			charged(logMark) == 0 and said(logMark, 'killed player ' .. victim .. ' with no character loaded') == 1)
+
+		-- ── the other spellings the host gives ─────────────────────────────────────
+		killer, killerCid = fresh()
+		victim = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		env.TriggerEvent('open77:playerDied', tostring(victim),
+			{ killer = killer, cause = 'firearm', position = { x = 1.0, y = 2.0, z = 3.0 } })
+		check('a death whose context arrives already decoded is read the same',
+			Ledger.Status(killerCid).score == 40 and charged(logMark) == 1)
+
+		killer, killerCid = fresh()
+		victim = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		died(victim, '"player:' .. killer .. '"', 'firearm')
+		check('and a killer named as player:<id> is the same player',
+			Ledger.Status(killerCid).score == 40 and charged(logMark) == 1)
+
+		victim = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		local errors = #control.log.error
+		env.TriggerEvent('open77:playerDied', tostring(victim), 'not json at all')
+		env.TriggerEvent('open77:playerDied', tostring(victim), nil)
+		env.TriggerEvent('open77:playerDied', 'nobody', '{}')
+		check('a context that is not JSON, or none, is a death with nobody to charge and raises nothing',
+			charged(logMark) == 0 and #control.log.error == errors
+				and said(logMark, 'died with nobody to charge') == 2,
+			('%d new error(s), %d nobody line(s)'):format(#control.log.error - errors,
+				said(logMark, 'died with nobody to charge')))
+
+		-- ── whom the first report names is who is charged ─────────────────────────
+		local first, firstCid = fresh()
+		local second, secondCid = fresh()
+		victim = fresh()
+		env.TriggerEvent('open77:playerKilled', tostring(victim), tostring(first), '{}')
+		died(victim, second, 'firearm')
+		check('a death is booked to the first name it arrives with, and never moved to anyone else',
+			Ledger.Status(firstCid).score == 40 and Ledger.Status(secondCid).score == 0)
+
+		-- ── use of force, and officer down, by the door under playerKilled ────────
+		victim = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		died(victim, 2, 'firearm')
+		check('an officer on duty who kills is not charged, and nothing is called in',
+			Ledger.Status('citizen-cop').score == 0 and next(boards(mark)) == nil
+				and said(logMark, 'killed player ' .. victim .. ' on duty: use of force') == 1)
+
+		killer, killerCid = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		died(2, killer, 'firearm')
+		sent = boards(mark)
+		check('an officer on duty killed by a player is called in as officer down',
+			sent[3] ~= nil and sent[3].key == 'ncpd.dispatch.officerDownNamed' and sent[4] == nil,
+			sent[3] and tostring(sent[3].key) or 'nothing')
+		check('and the fallen officer is not told of their own death', sent[2] == nil)
+		check('and the killer is charged with the murder of an officer, which is enough for a stage',
+			charged(logMark) == 1 and Ledger.Status(killerCid).stage == 1
+				and said(logMark, 'charged with murderPolice for killing player 2') == 1,
+			('%d charge(s), stage %d'):format(charged(logMark), Ledger.Status(killerCid).stage))
+
+		-- ── a second death of the same player, after the respawn, is a new charge ──
+		control.Pump(90)
+		killer, killerCid = fresh()
+		victim = fresh()
+		logMark = #control.log.info
+		died(victim, killer, 'firearm')
+		control.Pump(90)
+		died(victim, killer, 'firearm')
+		check('the same player killed again once the first death is over is charged again',
+			charged(logMark) == 2 and Ledger.Status(killerCid).stage == 1,
+			('%d charge(s), stage %d'):format(charged(logMark), Ledger.Status(killerCid).stage))
+
+		-- ── the switches ───────────────────────────────────────────────────────────
+		control.Pump(90)
+		local block = OPX.Config.MODULES.ncpd.HOMICIDE
+
+		block.PLAYERS = false
+		killer, killerCid = fresh()
+		victim = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		env.TriggerEvent('open77:playerKilled', tostring(victim), tostring(killer), '{}')
+		hurt(victim, killer, '1', 'head')
+		died(victim, killer, 'firearm')
+		check('HOMICIDE.PLAYERS = false charges no player kill by any of the three doors',
+			Ledger.Status(killerCid).score == 0 and charged(logMark) == 0 and next(boards(mark)) == nil)
+		block.PLAYERS = true
+
+		block.enabled = false
+		killer, killerCid = fresh()
+		victim = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		died(victim, killer, 'firearm')
+		hurt(victim, killer, '1', 'head')
+		check('and HOMICIDE.enabled = false takes the whole rule down',
+			Ledger.Status(killerCid).score == 0 and charged(logMark) == 0 and next(boards(mark)) == nil)
+		block.enabled = true
+
+		block.ATTRIBUTION_MS = 0
+		killer, killerCid = fresh()
+		victim = fresh()
+		mark, logMark = #control.clientEvents, #control.log.info
+		hurt(victim, killer, '0', 'torso')
+		died(victim, nil, 'firearm')
+		check('ATTRIBUTION_MS = 0 turns the fallback off: a bare death charges nobody',
+			Ledger.Status(killerCid).score == 0 and charged(logMark) == 0)
+		hurt(victim, killer, '1', 'head')
+		control.Pump(60)
+		check('while a lethal hit, which names its killer itself, still does',
+			Ledger.Status(killerCid).score == 40 and charged(logMark) == 1)
+		block.ATTRIBUTION_MS = 8000
+	end
+end
+
+-- ── the client half of the hit relay ─────────────────────────────────────────
+-- `open77:npcHit` is a LOCAL event: the host raises it on the client that fired
+-- the shot and carries it no further. Everything below is the client half of
+-- the road the server section above proves the far end of.
+section('ncpd hit relay: the client forwards the host\u{2019}s npcHit, coalesced, to the server')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the ncpd module in it', why == nil, why)
+
+	if why == nil then
+		local ncpd = env.OPX.Modules.Get('ncpd')
+		local Hits = ncpd.Hits
+		local wire = ncpd.Event.NPC_HIT
+		check('the client half is loaded and running after the boot', type(Hits) == 'table'
+			and Hits.running == true)
+
+		--- The reports the client has sent since `mark`.
+		local function reports(mark)
+			local list = {}
+			for index = mark + 1, #control.serverEvents do
+				local sent = control.serverEvents[index]
+				if sent.name == wire then list[#list + 1] = sent[1] end
+			end
+			return list
+		end
+
+		local function handlerCount() return #(control.handlers['open77:npcHit'] or {}) end
+		check('the host event is subscribed as a LOCAL handler, not on the network channel',
+			control.netEvents['open77:npcHit'] == nil and handlerCount() == 1,
+			('%s net, %d local'):format(tostring(control.netEvents['open77:npcHit']), handlerCount()))
+
+		-- ── one hit, one report ───────────────────────────────────────────────────
+		local mark = #control.serverEvents
+		control.Fire('open77:npcHit', '12884901889', '25.5', '1.2', 'Items.Preset_Yukimura_Default', 'ranged')
+		check('a hit is held for the next send, not sent from inside the host event',
+			#reports(mark) == 0 and Hits.Status().waiting == 1)
+		control.Pump(2)
+		local sent = reports(mark)
+		check('and goes to the server on the next send: one small table', #sent == 1
+			and type(sent[1]) == 'table')
+		check('with the body\u{2019}s id as the exact text it arrived as, and the number the engine gave',
+			sent[1] ~= nil and sent[1].npcId == '12884901889' and sent[1].damage == 25.5
+				and sent[1].hitZ == 1.2 and sent[1].weapon == 'Items.Preset_Yukimura_Default'
+				and sent[1].seq == 1,
+			sent[1] and ('%s %s %s'):format(tostring(sent[1].npcId), tostring(sent[1].damage),
+				tostring(sent[1].hitZ)) or 'nothing sent')
+		check('and nothing is left waiting', Hits.Status().waiting == 0 and Hits.Status().sent == 1)
+
+		-- ── the reports for one body inside a send are one ────────────────────────
+		mark = #control.serverEvents
+		control.Fire('open77:npcHit', '77', '10', '1.0', 'w', 'ranged')
+		control.Fire('open77:npcHit', '77', '20', '1.2', 'w', 'ranged')
+		control.Fire('open77:npcHit', '77', '30', '1.4', 'w', 'ranged')
+		control.Pump(2)
+		sent = reports(mark)
+		check('the pellets of one shot at one body are summed into one report', #sent == 1
+			and sent[1].damage == 60, sent[1] and tostring(sent[1].damage) or 'nothing sent')
+		check('and the height is the mean of them',
+			sent[1] ~= nil and math.abs(sent[1].hitZ - 1.2) < 1e-9,
+			sent[1] and tostring(sent[1].hitZ) or 'nothing sent')
+		check('and the sequence moves on by one per report', sent[1] ~= nil and sent[1].seq == 2)
+
+		-- ── two bodies are two reports ───────────────────────────────────────────
+		mark = #control.serverEvents
+		control.Fire('open77:npcHit', '101', '15', '1.0', 'w', 'ranged')
+		control.Fire('open77:npcHit', '102', '15', '1.0', 'w', 'ranged')
+		control.Pump(2)
+		sent = reports(mark)
+		check('two bodies hit inside one send are two reports, in the order they were hit',
+			#sent == 2 and sent[1].npcId == '101' and sent[2].npcId == '102')
+
+		-- ── a 64-bit id is never a number ──────────────────────────────────────────
+		mark = #control.serverEvents
+		control.Fire('open77:npcHit', '9007199254740993', '20', '1.0', 'w', 'ranged')
+		control.Pump(2)
+		sent = reports(mark)
+		check('an id past 2^53 is forwarded exactly, as text, and not rounded through a double',
+			#sent == 1 and sent[1].npcId == '9007199254740993' and type(sent[1].npcId) == 'string',
+			sent[1] and tostring(sent[1].npcId) or 'nothing sent')
+
+		-- ── what is not a hit is not sent ───────────────────────────────────────────
+		mark = #control.serverEvents
+		control.Fire('open77:npcHit', nil, '25', '1.0', 'w', 'ranged')
+		control.Fire('open77:npcHit', '', '25', '1.0', 'w', 'ranged')
+		control.Fire('open77:npcHit', string.rep('9', 33), '25', '1.0', 'w', 'ranged')
+		control.Pump(2)
+		check('a hit with no body, an empty id or an id too long to be one is dropped', #reports(mark) == 0)
+
+		mark = #control.serverEvents
+		control.Fire('open77:npcHit', '55', 'lots', '1.0', 'w', 'ranged')
+		control.Pump(2)
+		sent = reports(mark)
+		check('a damage that is not a number is sent as none, for the server to price',
+			#sent == 1 and sent[1].damage == nil and sent[1].hitZ == 1.0)
+
+		mark = #control.serverEvents
+		control.Fire('open77:npcHit', '56', -5, 0 / 0, 'w', 'ranged')
+		control.Fire('open77:npcHit', '57', math.huge, -math.huge, 'w', 'ranged')
+		control.Pump(2)
+		sent = reports(mark)
+		check('a negative, NaN or infinite reading is never forwarded as a number',
+			#sent == 2 and sent[1].damage == nil and sent[1].hitZ == nil
+				and sent[2].damage == nil and sent[2].hitZ == nil)
+
+		-- ── a crowd of bodies is sent in bounded batches ───────────────────────────
+		mark = #control.serverEvents
+		for index = 1, 12 do control.Fire('open77:npcHit', tostring(200 + index), '10', '1.0', 'w', 'ranged') end
+		check('twelve bodies hit at once are all held', Hits.Status().waiting == 12,
+			tostring(Hits.Status().waiting))
+		check('one send carries at most eight of them', Hits.Flush() == 8 and Hits.Status().waiting == 4
+			and #reports(mark) == 8)
+		check('and the rest go with the next', Hits.Flush() == 4 and Hits.Status().waiting == 0
+			and #reports(mark) == 12)
+		local order = {}
+		for _, one in ipairs(reports(mark)) do order[#order + 1] = one.npcId end
+		check('in the order they were first hit', table.concat(order, ',')
+			== '201,202,203,204,205,206,207,208,209,210,211,212', table.concat(order, ','))
+
+		-- the table never grows without bound
+		for index = 1, 40 do control.Fire('open77:npcHit', tostring(400 + index), '10', '1.0', 'w', 'ranged') end
+		check('a table of waiting bodies is bounded, and a full one drops the new, never the old',
+			Hits.Status().waiting == 32)
+		Hits.Flush()
+		Hits.Flush()
+		Hits.Flush()
+		Hits.Flush()
+		check('and drains completely', Hits.Status().waiting == 0)
+
+		-- ── the journal: one line every few seconds, not one per bullet ────────────
+		control.Pump(60)
+		local logMark = #control.log.info
+		for index = 1, 5 do
+			control.Fire('open77:npcHit', tostring(600 + index), '10', '1.0', 'w', 'ranged')
+			control.Pump(2)
+		end
+		local function relayLines()
+			local count = 0
+			for index = logMark + 1, #control.log.info do
+				if control.log.info[index]:find('[ncpd] hit relay: ', 1, true) then count = count + 1 end
+			end
+			return count
+		end
+		check('five reports inside a second write one line to the client log, not five',
+			relayLines() == 1, ('%d line(s)'):format(relayLines()))
+		control.Pump(60)
+		control.Fire('open77:npcHit', '700', '10', '1.0', 'w', 'ranged')
+		control.Pump(2)
+		check('and the next one waits until the few seconds have passed', relayLines() == 2,
+			('%d line(s)'):format(relayLines()))
+
+		-- ── a stop forgets what was never sent, and a restart does not double ─────
+		mark = #control.serverEvents
+		control.Fire('open77:npcHit', '800', '10', '1.0', 'w', 'ranged')
+		Hits.Stop()
+		control.Pump(3)
+		check('a hit that was waiting when the module stopped is never sent',
+			#reports(mark) == 0 and Hits.Status().waiting == 0 and Hits.running == false)
+		control.Fire('open77:npcHit', '803', '10', '1.0', 'w', 'ranged')
+		check('and a hit the host raises while it is stopped is not held for the next start',
+			Hits.Status().waiting == 0)
+
+		Hits.Start()
+		Hits.Start()
+		check('a restart does not subscribe the host event twice',
+			handlerCount() == 1, tostring(handlerCount()))
+		mark = #control.serverEvents
+		control.Fire('open77:npcHit', '801', '10', '1.0', 'w', 'ranged')
+		control.Pump(3)
+		check('and one hit is one report after it, whatever the number of starts',
+			#reports(mark) == 1 and Hits.running == true, ('%d report(s)'):format(#reports(mark)))
+		Hits.Stop()
+	end
+end
+
+section('avdoor: the server finds the aircraft door, judges it, and seats through the mount')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the avdoor module in it', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local avdoor = OPX.Modules.Get('avdoor')
+		local character = OPX.Modules.Get('character')
+		local vehicles = OPX.Api.Get('vehicles')
+		check('the avdoor module is running, not only loaded', OPX.Modules.IsRunning('avdoor'),
+			OPX.Modules.Record('avdoor').Reason)
+
+		local function load(id, citizenId, job, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					money = { EDDIES = 0 },
+					job = { name = job, label = job, onDuty = onDuty == true, grade = { level = 0 } } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+		end
+
+		--- The DOOR notices one connection was sent since a mark, in order.
+		local function doors(playerId, from)
+			local out = {}
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == avdoor.Event.DOOR and event.source == playerId then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+
+		-- THE SHIPPED DOOR LETS OTHER PLAYERS RIDE ALONG (the section after this
+		-- one walks it). The refusals below are the crew-only door -- a hull whose
+		-- passenger seats are switched off -- so that every refusal by name is still
+		-- provable, and the switch is put back before the section ends.
+		local shippedPassengers = avdoor.Settings.PASSENGERS
+		check('the shipped config lets other players ride along in a free passenger seat',
+			shippedPassengers == true)
+		avdoor.Settings.PASSENGERS = false
+
+		local pilot, wingman, offShift, stranger, far, elsewhere = 61, 62, 63, 64, 65, 66
+		load(pilot, 'citizen-av-pilot', 'maxtac', true)
+		load(wingman, 'citizen-av-wing', 'maxtac', true)
+		load(offShift, 'citizen-av-off', 'maxtac', false)
+		load(stranger, 'citizen-av-stranger', 'unemployed', false)
+		load(far, 'citizen-av-far', 'maxtac', true)
+		load(elsewhere, 'citizen-av-else', 'maxtac', true)
+
+		-- THE PAD'S OWN AIRCRAFT: a job AV signed out through the vehicles
+		-- module, exactly the way the garage pad does it.
+		local out = vehicles.SpawnJob(pilot, 'maxtac_av', 'Vehicle.max_tac_av',
+			{ x = 100.0, y = 200.0, z = 30.0, yaw = 0.0, bucket = 0 }, { job = 'maxtac' })
+		check('a job AV is signed out to the pilot through the vehicles module', out.ok == true,
+			out.ok ~= true and tostring(out.error) or nil)
+		local hullId = out.ok and out.value.id or nil
+		local car = vehicles.SpawnJob(stranger, 'cruiser', 'Vehicle.v_standard3_chevalier_emperor_police',
+			{ x = 300.0, y = 200.0, z = 30.0, bucket = 0 }, { job = 'ncpd' })
+
+		control.Stand(pilot, 104.0, 200.0, 30.0)
+		control.Stand(wingman, 100.0, 206.0, 30.0)
+		control.Stand(offShift, 96.0, 200.0, 30.0)
+		control.Stand(stranger, 100.0, 194.0, 30.0)
+		control.Stand(far, 100.0, 260.0, 30.0)
+		control.Stand(elsewhere, 101.0, 200.0, 30.0)
+		control.Bucket(elsewhere, 7)
+
+		-- ── the scan ────────────────────────────────────────────────────────
+		local mark = #control.clientEvents
+		local open = avdoor.Scan()
+		local told = doors(pilot, mark)
+		check('the pilot standing at her door is told it is open to them',
+			#told == 1 and told[1].open == true and told[1].id == tostring(hullId) and told[1].role == 'pilot',
+			#told == 1 and ('%s %s %s'):format(tostring(told[1].open), tostring(told[1].id), tostring(told[1].role))
+				or (#told .. ' notice(s)'))
+		check('and so is a trooper of the same division on duty',
+			#doors(wingman, mark) == 1 and doors(wingman, mark)[1].open == true)
+		check('but not one who is clocked off, nor a stranger, nor anybody out of reach or in another bucket',
+			#doors(offShift, mark) == 0 and #doors(stranger, mark) == 0 and #doors(far, mark) == 0
+				and #doors(elsewhere, mark) == 0)
+		check('the scan counts the doors it opened', open == 2, tostring(open))
+		local again = #control.clientEvents
+		avdoor.Scan()
+		check('and says nothing on the next pass, because nothing changed', #doors(pilot, again) == 0
+			and #doors(wingman, again) == 0)
+
+		-- ── the verdicts, by name ───────────────────────────────────────────
+		local _, offWhy = avdoor.Verdict(offShift, hullId)
+		check('a trooper off the clock is refused as not crew', offWhy == 'not_crew', tostring(offWhy))
+		local _, strangerWhy = avdoor.Verdict(stranger, hullId)
+		check('and a stranger too: a job aircraft is its division\'s, and only its crew on duty get in',
+			strangerWhy == 'not_crew', tostring(strangerWhy))
+		local _, farWhy = avdoor.Verdict(far, hullId)
+		check('and a body out of reach as too far', farWhy == 'too_far', tostring(farWhy))
+		local _, elseWhy = avdoor.Verdict(elsewhere, hullId)
+		check('and a body in another bucket as having no aircraft there', elseWhy == 'no_aircraft',
+			tostring(elseWhy))
+		local _, carWhy = avdoor.Verdict(stranger, car.ok and car.value.id or nil)
+		check('a car is not an aircraft, whoever signed it out', carWhy == 'not_aircraft', tostring(carWhy))
+		local _, nobodyWhy = avdoor.Verdict(99, hullId)
+		check('and a connection with no character is refused as one', nobodyWhy == 'no_character',
+			tostring(nobodyWhy))
+		control.vehicles.seatsTaken = { seat_front_left = true, seat_front_right = true,
+			seat_back_left = true, seat_back_right = true }
+		local _, fullWhy = avdoor.Verdict(pilot, hullId)
+		check('a hull with every seat taken is refused as full', fullWhy == 'no_seat', tostring(fullWhy))
+		control.vehicles.seatsTaken = { seat_front_left = true }
+		local second = avdoor.Verdict(wingman, hullId)
+		check('and with the pilot\'s seat taken, the next free one is offered',
+			second ~= nil and second.seat == 'seat_front_right', second and second.seat or 'refused')
+		control.vehicles.seatsTaken = nil
+		local moving = control.vehicles.world[1]
+		for _, entry in ipairs(control.vehicles.world) do
+			if entry.id == hullId then moving = entry end
+		end
+		moving.speed = 12.0
+		local _, movingWhy = avdoor.Verdict(pilot, hullId)
+		check('a hull still moving has no door', movingWhy == 'moving', tostring(movingWhy))
+		moving.speed = nil
+
+		-- ── walking away takes the row down ────────────────────────────────
+		local walked = #control.clientEvents
+		control.Stand(wingman, 100.0, 240.0, 30.0)
+		avdoor.Scan()
+		local shut = doors(wingman, walked)
+		check('walking away from her shuts the door on that client, once',
+			#shut == 1 and shut[1].open == false, #shut .. ' notice(s)')
+
+		-- ── the key, through the wire ───────────────────────────────────────
+		--- Presses the key as one connection and waits for the answer: the seat's
+		--- door swings first and the body is seated a moment later.
+		local function press(playerId, id)
+			local from = #control.clientEvents
+			env.source = playerId
+			control.netEvents[avdoor.Event.BOARD]({ id = tostring(id) })
+			env.source = nil
+			local function answered()
+				for index = from + 1, #control.clientEvents do
+					local event = control.clientEvents[index]
+					if event.name == avdoor.Event.BOARDED and event.source == playerId then
+						return event[1]
+					end
+				end
+				return nil
+			end
+			for _ = 1, 20 do
+				if answered() ~= nil then break end
+				control.Pump(1)
+			end
+			return answered()
+		end
+		local warpsFrom = #control.vehicleWarps
+		local answer = press(pilot, hullId)
+		check('the key seats the pilot at the controls',
+			answer ~= nil and answer.ok == true and answer.seat == 'seat_front_left' and answer.role == 'pilot',
+			answer and tostring(answer.seat or answer.reason) or 'no answer')
+		local warp = control.vehicleWarps[#control.vehicleWarps]
+		check('through the platform\'s own mount, by the id the host knows, with no bucket change',
+			#control.vehicleWarps == warpsFrom + 1 and warp.playerId == pilot and warp.id == hullId
+				and warp.options.moveBucket == false and warp.options.exitLocked ~= true)
+		local seatedFrom = #control.clientEvents
+		avdoor.Scan()
+		local after = doors(pilot, seatedFrom)
+		check('and a seated body has no door: the row comes down',
+			#after == 0 or (#after == 1 and after[1].open == false))
+		local _, seatedWhy = avdoor.Verdict(pilot, hullId)
+		check('a second press from the seat is refused as seated', seatedWhy == 'seated', tostring(seatedWhy))
+
+		OPX.ForgetCooldowns(stranger)
+		local refusal = press(stranger, hullId)
+		check('a stranger\'s key is answered with the refusal, and nothing is mounted',
+			refusal ~= nil and refusal.ok == false and refusal.reason == 'not_crew'
+				and #control.vehicleWarps == warpsFrom + 1,
+			refusal and tostring(refusal.reason) or 'no answer')
+
+		-- ── a registered door: another module's rule decides ─────────────────
+		local contract = OPX.Api.Get('avdoor')
+		local boardedBy = nil
+		local parked = env.Open77.vehicles.create({ record = 'Vehicle.av_zetatech_bombus',
+			position = { x = 500.0, y = 500.0, z = 20.0 }, bucket = 0 })
+		contract.Allow(parked, {
+			mayBoard = function(playerId) return playerId == stranger, 'not_crew' end,
+			onBoard = function(playerId, seat) boardedBy = { playerId, seat } end,
+		})
+		control.Stand(stranger, 503.0, 500.0, 20.0)
+		control.Stand(offShift, 497.0, 500.0, 20.0)
+		local registeredMark = #control.clientEvents
+		avdoor.Scan()
+		check('a hull another module registered opens to whoever its rule admits',
+			#doors(stranger, registeredMark) == 1 and doors(stranger, registeredMark)[1].open == true
+				and #doors(offShift, registeredMark) == 0)
+		local seatedOk = contract.Board(stranger, parked)
+		check('and its owner is told who climbed in, and where',
+			seatedOk.ok == true and boardedBy ~= nil and boardedBy[1] == stranger
+				and boardedBy[2] == 'seat_front_left')
+		check('forgetting it takes the door away', contract.Forget(parked) == true
+			and select(2, contract.Verdict(offShift, parked)) == 'not_yours')
+
+		-- ── /opx.avdoor.why ─────────────────────────────────────────────────
+		control.Seat(pilot, nil)
+		local explained = avdoor.Explain(pilot)
+		check('the console explains an open door, the hull, the distance and the key',
+			explained:find('OPEN', 1, true) ~= nil and explained:find(tostring(hullId), 1, true) ~= nil
+				and explained:find('press F', 1, true) ~= nil, explained)
+		local shutExplained = avdoor.Explain(offShift)
+		check('and a shut one with the reason',
+			shutExplained:find('SHUT', 1, true) ~= nil and shutExplained:find('not_yours', 1, true) ~= nil,
+			shutExplained)
+		check('the command is registered for every player, not only staff',
+			control.commands['opx.avdoor.why'] ~= nil and control.commands['opx.avdoor.why'].restricted ~= true)
+
+		-- ── the MaxTac AV's voice ───────────────────────────────────────────
+		control.Seat(pilot, { vehicleId = hullId, seat = 'seat_front_left' })
+		control.Stand(pilot, 100.0, 200.0, 30.0)
+		control.Stand(wingman, 150.0, 200.0, 30.0)
+		control.Stand(far, 100.0, 600.0, 30.0)
+		local function plays(from)
+			local by = {}
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == avdoor.Event.PLAY then by[event.source] = event[1] end
+			end
+			return by
+		end
+		local spokeFrom = #control.clientEvents
+		local heardBy = avdoor.Speak(pilot, { id = tostring(hullId), which = 'touchdown' })
+		local heard = plays(spokeFrom)
+		check('a touchdown the pilot reports is played for everybody near her, the pilot included',
+			heard[pilot] ~= nil and heard[wingman] ~= nil and heard[pilot].event == 'av_maxtac_descent_horn'
+				and heard[pilot].id == tostring(hullId), tostring(heardBy) .. ' listener(s)')
+		check('but not for a body out of range or in another bucket', heard[far] == nil and heard[elsewhere] == nil)
+		check('and the same call inside its floor is one horn, not two',
+			avdoor.Speak(pilot, { id = tostring(hullId), which = 'touchdown' }) == 0)
+		check('a different moment is its own sound',
+			avdoor.Speak(pilot, { id = tostring(hullId), which = 'takeoff' }) >= 2)
+		check('a body not seated in that hull cannot make her speak',
+			avdoor.Speak(wingman, { id = tostring(hullId), which = 'descent' }) == 0)
+		check('and a pilot cannot speak for a hull they are not sitting in',
+			avdoor.Speak(pilot, { id = tostring(parked), which = 'descent' }) == 0)
+		check('and a name the voice does not have is nothing',
+			avdoor.Speak(pilot, { id = tostring(hullId), which = 'explode' }) == 0)
+		control.Seat(stranger, { vehicleId = parked, seat = 'seat_front_left' })
+		check('an aircraft that is not a MaxTac AV has no MaxTac voice',
+			avdoor.Speak(stranger, { id = tostring(parked), which = 'descent' }) == 0)
+
+		-- ── stopping takes every row down ───────────────────────────────────
+		avdoor.Settings.PASSENGERS = shippedPassengers
+		control.Seat(pilot, nil)
+		control.Seat(stranger, nil)
+		control.Stand(wingman, 100.0, 206.0, 30.0)
+		avdoor.Scan()
+		local stopMark = #control.clientEvents
+		avdoor.Stop()
+		local closing = doors(wingman, stopMark)
+		check('a stop takes the rows it drew down with it',
+			#closing == 1 and closing[1].open == false, #closing .. ' notice(s)')
+	end
+end
+
+section('avdoor: other players ride along, the seat\'s door swings, and the exit opens it for everybody')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the avdoor module in it', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local avdoor = OPX.Modules.Get('avdoor')
+		local character = OPX.Modules.Get('character')
+		local vehicles = OPX.Api.Get('vehicles')
+
+		local function load(id, citizenId, job, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					money = { EDDIES = 0 },
+					job = { name = job, label = job, onDuty = onDuty == true, grade = { level = 0 } } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+		end
+
+		--- The DOOR notices one connection was sent since a mark, in order.
+		local function doors(playerId, from)
+			local out = {}
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == avdoor.Event.DOOR and event.source == playerId then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+
+		--- What one connection was answered since a mark, or nil.
+		local function answeredSince(playerId, from)
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == avdoor.Event.BOARDED and event.source == playerId then return event[1] end
+			end
+			return nil
+		end
+
+		--- Presses the key as one connection and, when asked to, waits for the
+		--- answer: the seat's door swings first and the body is seated a moment later.
+		local function press(playerId, id, wait)
+			local from = #control.clientEvents
+			env.source = playerId
+			control.netEvents[avdoor.Event.BOARD]({ id = tostring(id) })
+			env.source = nil
+			if wait ~= false then
+				for _ = 1, 20 do
+					if answeredSince(playerId, from) ~= nil then break end
+					control.Pump(1)
+				end
+			end
+			return answeredSince(playerId, from), from
+		end
+
+		--- The door calls made since a mark, as `op:door` text, in order.
+		local function callsSince(from, id)
+			local out = {}
+			for index = from + 1, #control.vehicleDoors do
+				local call = control.vehicleDoors[index]
+				if id == nil or tostring(call.id) == tostring(id) then
+					out[#out + 1] = call.op .. ':' .. tostring(call.door)
+				end
+			end
+			return table.concat(out, ',')
+		end
+
+		--- The lines of one log level since a mark that carry a text.
+		local function saidSince(level, from, needle)
+			local lines = {}
+			for index = from + 1, #control.log[level] do
+				local line = control.log[level][index]
+				if line:find(needle, 1, true) ~= nil then lines[#lines + 1] = line end
+			end
+			return lines
+		end
+
+		local pilot, riderA, riderB, offShift, far, elsewhere = 71, 72, 73, 74, 75, 76
+		load(pilot, 'citizen-ride-pilot', 'maxtac', true)
+		load(riderA, 'citizen-ride-a', 'unemployed', false)
+		load(riderB, 'citizen-ride-b', 'unemployed', false)
+		load(offShift, 'citizen-ride-off', 'maxtac', false)
+		load(far, 'citizen-ride-far', 'unemployed', false)
+		load(elsewhere, 'citizen-ride-else', 'unemployed', false)
+
+		local out = vehicles.SpawnJob(pilot, 'maxtac_av', 'Vehicle.max_tac_av',
+			{ x = 100.0, y = 200.0, z = 30.0, yaw = 0.0, bucket = 0 }, { job = 'maxtac' })
+		check('a job AV is signed out to the pilot through the vehicles module', out.ok == true,
+			out.ok ~= true and tostring(out.error) or nil)
+		local hullId = out.ok and out.value.id or nil
+
+		control.Stand(pilot, 104.0, 200.0, 30.0)
+		control.Stand(riderA, 100.0, 206.0, 30.0)
+		control.Stand(riderB, 100.0, 194.0, 30.0)
+		control.Stand(offShift, 96.0, 200.0, 30.0)
+		control.Stand(far, 100.0, 260.0, 30.0)
+		control.Stand(elsewhere, 101.0, 200.0, 30.0)
+		control.Bucket(elsewhere, 7)
+
+		-- ── who is offered what ─────────────────────────────────────────────
+		check('the shipped config lets other players ride along', avdoor.Settings.PASSENGERS == true)
+		local mark = #control.clientEvents
+		local open = avdoor.Scan()
+		local function toldLast(playerId)
+			local notices = doors(playerId, mark)
+			return notices[#notices]
+		end
+		check('the pilot at her door is offered the controls',
+			toldLast(pilot) ~= nil and toldLast(pilot).open == true and toldLast(pilot).role == 'pilot')
+		check('and a body that could not fly her is offered a seat beside them: strangers and an off-duty trooper',
+			toldLast(riderA) ~= nil and toldLast(riderA).role == 'passenger'
+				and toldLast(riderB) ~= nil and toldLast(riderB).role == 'passenger'
+				and toldLast(offShift) ~= nil and toldLast(offShift).role == 'passenger')
+		check('but nobody out of reach or in another bucket',
+			toldLast(far) == nil and toldLast(elsewhere) == nil)
+		check('the scan counts the doors it opened', open == 4, tostring(open))
+
+		-- ── the seats, in order ─────────────────────────────────────────────
+		local first = avdoor.Verdict(riderA, hullId)
+		check('a passenger is seated beside the pilot first',
+			first ~= nil and first.role == 'passenger' and first.seat == 'seat_front_right',
+			first and first.seat or 'refused')
+		control.vehicles.seatsTaken = { seat_front_right = true }
+		local second = avdoor.Verdict(riderA, hullId)
+		check('then behind them', second ~= nil and second.seat == 'seat_back_left',
+			second and second.seat or 'refused')
+		control.vehicles.seatsTaken = { seat_front_right = true, seat_back_left = true, seat_back_right = true }
+		local none, noneWhy = avdoor.Verdict(riderA, hullId)
+		check('the pilot\'s seat is never a passenger\'s, however free it is',
+			none == nil and noneWhy == 'no_seat', none and none.seat or tostring(noneWhy))
+		local crewSeat = avdoor.Verdict(pilot, hullId)
+		check('while the pilot is still offered it', crewSeat ~= nil and crewSeat.seat == 'seat_front_left'
+			and crewSeat.role == 'pilot')
+		control.vehicles.seatsTaken = nil
+
+		control.vehicles.locked[tostring(hullId)] = true
+		local _, lockedWhy = avdoor.Verdict(riderA, hullId)
+		check('a locked hull has no seat for a body that is not its crew', lockedWhy == 'not_crew',
+			tostring(lockedWhy))
+		check('and the crew still fly it', avdoor.Verdict(pilot, hullId) ~= nil)
+		control.vehicles.locked[tostring(hullId)] = nil
+
+		-- ── another module's rule decides who FLIES, not who rides ───────────
+		local contract = OPX.Api.Get('avdoor')
+		local boardedBy = {}
+		local parked = env.Open77.vehicles.create({ record = 'Vehicle.av_zetatech_bombus',
+			position = { x = 500.0, y = 500.0, z = 20.0 }, bucket = 0 })
+		contract.Allow(parked, {
+			mayBoard = function(playerId) return playerId == pilot, 'not_crew' end,
+			onBoard = function(playerId, seat, role) boardedBy[#boardedBy + 1] = { playerId, seat, role } end,
+		})
+		control.Stand(riderA, 503.0, 500.0, 20.0)
+		control.Stand(pilot, 497.0, 500.0, 20.0)
+		local ruled, ruledWhy = avdoor.Verdict(riderA, parked)
+		check('a body the rule refuses the controls is still offered a seat beside them',
+			ruled ~= nil and ruled.role == 'passenger' and ruled.seat ~= 'seat_front_left',
+			ruled and ruled.seat or tostring(ruledWhy))
+		check('and the one the rule admits flies', (avdoor.Verdict(pilot, parked) or {}).role == 'pilot')
+		contract.Allow(parked, {
+			mayBoard = function(playerId) return playerId == pilot, 'not_crew' end,
+			passengers = false,
+		})
+		local _, closedWhy = avdoor.Verdict(riderA, parked)
+		check('a rule that says `passengers = false` closes the seats too, with its own reason',
+			closedWhy == 'not_crew', tostring(closedWhy))
+		contract.Allow(parked, { mayBoard = function() error('a rule that raises') end })
+		local _, raisedWhy = avdoor.Verdict(riderA, parked)
+		check('and a rule that RAISES seats nobody: a bug is not a reason to let a stranger in',
+			raisedWhy == 'not_crew', tostring(raisedWhy))
+		contract.Allow(parked, {
+			mayBoard = function(playerId) return playerId == pilot, 'not_crew' end,
+			onBoard = function(playerId, seat, role) boardedBy[#boardedBy + 1] = { playerId, seat, role } end,
+		})
+		local rode = contract.Board(riderA, parked)
+		check('the rule\'s owner is told a passenger climbed in, as one',
+			rode.ok == true and #boardedBy == 1 and boardedBy[1][1] == riderA
+				and boardedBy[1][3] == 'passenger' and boardedBy[1][2] ~= 'seat_front_left',
+			#boardedBy .. ' call(s)')
+		contract.Forget(parked)
+		control.Seat(riderA, nil)
+
+		-- ── the key: the door swings, then the body is seated ────────────────
+		control.Stand(riderA, 100.0, 206.0, 30.0)
+		control.Stand(pilot, 104.0, 200.0, 30.0)
+		OPX.ForgetCooldowns(riderA)
+		local doorsFrom, warpsFrom = #control.vehicleDoors, #control.vehicleWarps
+		local seatedAnswer, sentFrom = press(riderA, hullId, false)
+		check('the press swings the seat\'s own door at once',
+			callsSince(doorsFrom, hullId) == 'open:frontRight', callsSince(doorsFrom, hullId))
+		check('and does not seat the body until it has swung',
+			#control.vehicleWarps == warpsFrom and seatedAnswer == nil)
+		env.source = riderA
+		OPX.ForgetCooldowns(riderA)
+		control.netEvents[avdoor.Event.BOARD]({ id = tostring(hullId) })
+		env.source = nil
+		local busy = answeredSince(riderA, sentFrom)
+		check('a second press while the door swings is answered busy and asks for nothing more',
+			busy ~= nil and busy.ok == false and busy.reason == 'busy'
+				and callsSince(doorsFrom, hullId) == 'open:frontRight' and #control.vehicleWarps == warpsFrom)
+		local afterBusy = #control.clientEvents
+		control.Pump(6)
+		local landed = answeredSince(riderA, afterBusy)
+		check('then the body is seated through the platform\'s mount and told so',
+			landed ~= nil and landed.ok == true and landed.role == 'passenger'
+				and landed.seat == 'seat_front_right' and #control.vehicleWarps == warpsFrom + 1
+				and control.vehicleWarps[#control.vehicleWarps].playerId == riderA
+				and control.vehicleWarps[#control.vehicleWarps].seat == 'seat_front_right',
+			landed and tostring(landed.seat or landed.reason) or 'no answer')
+		check('the door is still open a moment after the body is in, for the next one through it',
+			control.vehicles.doorState[tostring(hullId) .. '|frontRight'] == true
+				and avdoor.DoorState(hullId, 'frontRight') ~= nil)
+		control.Pump(30)
+		check('and closes after its hold, and is gone from the ledger',
+			control.vehicles.doorState[tostring(hullId) .. '|frontRight'] == false
+				and avdoor.DoorState(hullId, 'frontRight') == nil
+				and callsSince(doorsFrom, hullId):find('close:frontRight', 1, true) ~= nil,
+			callsSince(doorsFrom, hullId))
+
+		-- The seat is judged AGAIN when the body is put in: somebody may have
+		-- taken it, or the player may have walked off.
+		control.Seat(riderA, nil)
+		OPX.ForgetCooldowns(riderB)
+		local _, swing = press(riderB, hullId, false)
+		control.vehicles.seatsTaken = { seat_front_right = true }
+		control.Pump(6)
+		local shifted = answeredSince(riderB, swing)
+		check('a seat taken during the swing is not the seat given: the next free one is',
+			shifted ~= nil and shifted.ok == true and shifted.seat == 'seat_back_left',
+			shifted and tostring(shifted.seat or shifted.reason) or 'no answer')
+		control.vehicles.seatsTaken = nil
+		control.Seat(riderB, nil)
+		control.Pump(30)
+		OPX.ForgetCooldowns(riderB)
+		local warpsMid = #control.vehicleWarps
+		local _, walking = press(riderB, hullId, false)
+		control.Stand(riderB, 100.0, 260.0, 30.0)
+		control.Pump(6)
+		local walked = answeredSince(riderB, walking)
+		check('and a body that walked off during it is refused where it stands, and not seated',
+			walked ~= nil and walked.ok == false and walked.reason == 'too_far'
+				and #control.vehicleWarps == warpsMid, walked and tostring(walked.reason) or 'no answer')
+		control.Stand(riderB, 100.0, 194.0, 30.0)
+		control.Pump(30)
+		check('the door it opened still closes', avdoor.DoorState(hullId, 'frontRight') == nil
+			and avdoor.DoorState(hullId, 'backLeft') == nil)
+
+		-- A door the host will not swing is no reason to keep a player out.
+		control.vehicles.doorRefuse = 'not_animated'
+		OPX.ForgetCooldowns(riderB)
+		local warnedFrom = #control.log.warn
+		local refusedDoor = press(riderB, hullId)
+		check('a door the host turns down still lets the body in, at once',
+			refusedDoor ~= nil and refusedDoor.ok == true and refusedDoor.role == 'passenger',
+			refusedDoor and tostring(refusedDoor.seat or refusedDoor.reason) or 'no answer')
+		check('and the refusal is in the log, by door and by reason',
+			#saidSince('warn', warnedFrom, 'frontRight') >= 1
+				and #saidSince('warn', warnedFrom, 'not_animated') >= 1,
+			table.concat(control.log.warn, ' | '):sub(-240))
+		control.vehicles.doorRefuse = nil
+		control.Seat(riderB, nil)
+		control.Pump(30)
+
+		-- ── the exit: the seat that empties opens its door for everybody ─────
+		local function seatsNow(list)
+			control.vehicles.byId[hullId] = { id = hullId, record = 'Vehicle.max_tac_av',
+				x = 100.0, y = 200.0, z = 30.0, bucket = 0, speed = 0.0, occupants = list }
+		end
+		local function occupancyChanged(id)
+			env.TriggerEvent('onVehicleOccupancyChanged', tostring(id or hullId), '1')
+		end
+		local exitFrom, exitLog = #control.vehicleDoors, #control.log.info
+		seatsNow({ { seat = 'seat_front_left', playerId = pilot },
+			{ seat = 'seat_back_left', playerId = riderB } })
+		occupancyChanged()
+		check('the first read of who sits where opens nothing: nobody has left',
+			callsSince(exitFrom, hullId) == '', callsSince(exitFrom, hullId))
+		seatsNow({ { seat = 'seat_front_left', playerId = pilot, exiting = true },
+			{ seat = 'seat_back_left', playerId = riderB } })
+		occupancyChanged()
+		check('a seat that begins to empty opens ITS door, on the server, for every viewer',
+			callsSince(exitFrom, hullId) == 'open:frontLeft', callsSince(exitFrom, hullId))
+		local ledger = avdoor.DoorState(hullId, 'frontLeft')
+		check('and it is on the ledger with a closing time', ledger ~= nil and ledger.why == 'exit'
+			and ledger.closeAt ~= nil)
+		seatsNow({ { seat = 'seat_back_left', playerId = riderB } })
+		occupancyChanged()
+		check('the seat emptying afterwards is the same exit, not a second one',
+			callsSince(exitFrom, hullId) == 'open:frontLeft', callsSince(exitFrom, hullId))
+
+		-- The platform's own engine shuts a pilot door a moment after an unmount.
+		control.vehicles.doorState[tostring(hullId) .. '|frontLeft'] = false
+		control.Pump(6)
+		local reopened = avdoor.DoorState(hullId, 'frontLeft')
+		check('a door shut again inside the window is opened again, and counted',
+			control.vehicles.doorState[tostring(hullId) .. '|frontLeft'] == true
+				and reopened ~= nil and reopened.asserts >= 1,
+			reopened and tostring(reopened.asserts) or 'no ledger')
+		check('the re-opening is in the journal',
+			#saidSince('info', exitLog, 'had been shut again') >= 1)
+		control.Pump(30)
+		control.vehicles.doorState[tostring(hullId) .. '|frontLeft'] = false
+		local before = callsSince(exitFrom, hullId)
+		control.Pump(10)
+		check('and left alone once the window is over',
+			callsSince(exitFrom, hullId) == before
+				and control.vehicles.doorState[tostring(hullId) .. '|frontLeft'] == false, callsSince(exitFrom, hullId))
+		control.Pump(30)
+		check('the ledger closes it after its hold and forgets it',
+			avdoor.DoorState(hullId, 'frontLeft') == nil
+				and callsSince(exitFrom, hullId):find('close:frontLeft', 1, true) ~= nil,
+			callsSince(exitFrom, hullId))
+
+		-- A passenger's seat has a door of its own; a seat that changes hands is an exit.
+		local passFrom = #control.vehicleDoors
+		seatsNow({})
+		occupancyChanged()
+		check('a passenger stepping out of the back opens the back door on that side',
+			callsSince(passFrom, hullId) == 'open:backLeft', callsSince(passFrom, hullId))
+		control.Pump(70)
+		local swapFrom = #control.vehicleDoors
+		seatsNow({ { seat = 'seat_back_right', playerId = riderB } })
+		occupancyChanged()
+		seatsNow({ { seat = 'seat_back_right', playerId = riderA } })
+		occupancyChanged()
+		check('a seat that changed hands is an exit from it',
+			callsSince(swapFrom, hullId) == 'open:backRight', callsSince(swapFrom, hullId))
+		control.Pump(70)
+
+		-- Only aircraft, and only hulls the host knows.
+		local car = env.Open77.vehicles.create({ record = 'Vehicle.v_sport1_quadra_turbo',
+			position = { x = 300.0, y = 300.0, z = 20.0 }, bucket = 0 })
+		local carFrom = #control.vehicleDoors
+		control.vehicles.byId[car] = { id = car, record = 'Vehicle.v_sport1_quadra_turbo',
+			x = 300.0, y = 300.0, z = 20.0, bucket = 0,
+			occupants = { { seat = 'seat_front_left', playerId = pilot } } }
+		occupancyChanged(car)
+		control.vehicles.byId[car].occupants = {}
+		occupancyChanged(car)
+		occupancyChanged('0xdeadbeef00000000')
+		check('a car\'s door is the car\'s: nothing is opened for it, and an unknown hull is nothing',
+			#control.vehicleDoors == carFrom, #control.vehicleDoors - carFrom .. ' call(s)')
+
+		-- Off by configuration.
+		local savedExit = avdoor.Settings.EXIT
+		avdoor.Settings.EXIT = false
+		local offFrom = #control.vehicleDoors
+		seatsNow({ { seat = 'seat_front_left', playerId = pilot } })
+		occupancyChanged()
+		seatsNow({})
+		occupancyChanged()
+		check('with `EXIT = false` no door is opened for an exit', #control.vehicleDoors == offFrom,
+			callsSince(offFrom, hullId))
+		avdoor.Settings.EXIT = savedExit
+
+		-- A hull that is gone takes its ledger with it, quietly.
+		seatsNow({ { seat = 'seat_front_left', playerId = pilot } })
+		occupancyChanged()
+		seatsNow({})
+		occupancyChanged()
+		check('an exit puts a door on the ledger again', avdoor.DoorState(hullId, 'frontLeft') ~= nil)
+		control.vehicles.byId[hullId] = nil
+		env.Open77.vehicles.remove(hullId)
+		local goneFrom = #control.log.error
+		control.Pump(70)
+		check('and a hull that is removed under it drops the ledger without an error',
+			avdoor.DoorState(hullId, 'frontLeft') == nil and #control.log.error == goneFrom,
+			table.concat(control.log.error, ' | '):sub(-200))
+	end
+end
+
+section('avdoor: every listener is sent the MaxTac AV\'s sounds, says what it did, and is rescued when the host refused')
+do
+	local env, control, why = boot('server')
+	check('the server boots with the avdoor module in it', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local avdoor = OPX.Modules.Get('avdoor')
+		local character = OPX.Modules.Get('character')
+		local vehicles = OPX.Api.Get('vehicles')
+
+		local function load(id, citizenId, job, onDuty)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					money = { EDDIES = 0 },
+					job = { name = job, label = job, onDuty = onDuty == true, grade = { level = 0 } } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+		end
+
+		local pilot, near, farther, out, elsewhere = 81, 82, 83, 84, 85
+		load(pilot, 'citizen-snd-pilot', 'maxtac', true)
+		load(near, 'citizen-snd-near', 'unemployed', false)
+		load(farther, 'citizen-snd-farther', 'unemployed', false)
+		load(out, 'citizen-snd-out', 'unemployed', false)
+		load(elsewhere, 'citizen-snd-else', 'unemployed', false)
+		local spawn = vehicles.SpawnJob(pilot, 'maxtac_av', 'Vehicle.max_tac_av',
+			{ x = 100.0, y = 200.0, z = 30.0, yaw = 0.0, bucket = 0 }, { job = 'maxtac' })
+		local hullId = spawn.ok and spawn.value.id or nil
+		control.Seat(pilot, { vehicleId = hullId, seat = 'seat_front_left' })
+		control.Stand(pilot, 100.0, 200.0, 30.0)
+		control.Stand(near, 130.0, 200.0, 30.0)
+		control.Stand(farther, 100.0, 380.0, 30.0)
+		control.Stand(out, 100.0, 600.0, 30.0)
+		control.Stand(elsewhere, 101.0, 200.0, 30.0)
+		control.Bucket(elsewhere, 7)
+
+		local function plays(from)
+			local by = {}
+			for index = from + 1, #control.clientEvents do
+				local event = control.clientEvents[index]
+				if event.name == avdoor.Event.PLAY then by[event.source] = event[1] end
+			end
+			return by
+		end
+		local function saidSince(level, from, needle)
+			local lines = {}
+			for index = from + 1, #control.log[level] do
+				local line = control.log[level][index]
+				if line:find(needle, 1, true) ~= nil then lines[#lines + 1] = line end
+			end
+			return lines
+		end
+
+		local from = #control.clientEvents
+		local infoFrom = #control.log.info
+		local sentTo = avdoor.Speak(pilot, { id = tostring(hullId), which = 'takeoff' })
+		local sent = plays(from)
+		check('every listener in range is sent the sound -- the pilot, and the ones standing near her',
+			sent[pilot] ~= nil and sent[near] ~= nil and sent[farther] ~= nil and sentTo == 3,
+			tostring(sentTo) .. ' sent')
+		check('but not one out of range or in another bucket', sent[out] == nil and sent[elsewhere] == nil)
+		check('each is sent the event, the airframe and one token to answer by',
+			sent[near].event == 'av_maxtac_start_ascent' and sent[near].id == tostring(hullId)
+				and type(sent[near].token) == 'number' and sent[near].token == sent[pilot].token
+				and sent[near].which == 'takeoff' and sent[near].duration == 8.0)
+		check('and the journal names who it was sent to, and how far away they stood',
+			#saidSince('info', infoFrom, '3 listener(s)') == 1
+				and #saidSince('info', infoFrom, ('%d ('):format(near)) == 1,
+			table.concat(control.log.info, ' | '):sub(-260))
+
+		-- ── the answers ─────────────────────────────────────────────────────
+		local token = sent[pilot].token
+		local heardFrom = #control.log.info
+		check('a body that was not sent the sound cannot answer for it',
+			avdoor.Heard(out, { token = token, ok = true, how = 'on the airframe' }) == false)
+		check('a token nobody was sent is nothing', avdoor.Heard(pilot, { token = 999999, ok = true }) == false)
+		check('a listener\'s own word is journalled',
+			avdoor.Heard(pilot, { token = token, ok = true, how = 'on the airframe' }) == true
+				and #saidSince('info', heardFrom, ('player %d heard'):format(pilot)) == 1)
+		check('and is taken once: the same answer again is nothing',
+			avdoor.Heard(pilot, { token = token, ok = true }) == false)
+
+		local rescued = {}
+		env.Open77.effects = { sound = function(target, event, options)
+			rescued[#rescued + 1] = { target = target, event = event, options = options }
+			return true
+		end }
+		local warnFrom = #control.log.warn
+		check('a listener the host refused is answered for through the platform\'s own fan-out',
+			avdoor.Heard(near, { token = token, ok = false, streamed = true, reason = 'refused_by_host' }) == true
+				and #rescued == 1, tostring(#rescued))
+		local call = rescued[1] or {}
+		check('a vehicle target, the same event, the same length',
+			type(call.target) == 'table' and call.target.kind == 'vehicle'
+				and call.target.id == avdoor.DecimalId(hullId) and call.event == 'av_maxtac_start_ascent'
+				and call.options.duration == 8.0)
+		local excluded = {}
+		for _, id in ipairs(call.options and call.options.excludePlayers or {}) do excluded[id] = true end
+		check('addressed to that listener alone: everybody else in the bucket is excluded, and nobody outside it',
+			excluded[near] ~= true and excluded[pilot] == true and excluded[farther] == true
+				and excluded[out] == true and excluded[elsewhere] ~= true,
+			table.concat(call.options and call.options.excludePlayers or {}, ','))
+		check('the rescue is in the journal, with the reason the host gave',
+			#saidSince('warn', warnFrom, 'refused_by_host') == 1
+				and #saidSince('warn', warnFrom, 'rescued') == 1, table.concat(control.log.warn, ' | '):sub(-240))
+
+		control.Pump(70)
+		local secondFrom = #control.clientEvents
+		local again = avdoor.Speak(pilot, { id = tostring(hullId), which = 'descent' })
+		local second = plays(secondFrom)
+		local secondToken = second[near] and second[near].token
+		check('a hull that is not streamed on that machine is not rescued: the platform would drop it too',
+			again == 3 and avdoor.Heard(near, { token = secondToken, ok = false, streamed = false,
+				reason = 'not streamed here' }) == true and #rescued == 1, tostring(#rescued))
+		local offFrom = #control.log.warn
+		local block = avdoor.Settings.SOUNDS
+		block.RESCUE = false
+		control.Pump(70)
+		local thirdFrom = #control.clientEvents
+		avdoor.Speak(pilot, { id = tostring(hullId), which = 'touchdown' })
+		local third = plays(thirdFrom)
+		avdoor.Heard(near, { token = third[near].token, ok = false, streamed = true, reason = 'refused_by_host' })
+		check('with `RESCUE = false` a refusal stays a refusal, said aloud',
+			#rescued == 1 and #saidSince('warn', offFrom, 'not rescued') == 1)
+		block.RESCUE = true
+
+		-- Through the wire, and the cool-down on the answers.
+		control.Pump(70)
+		local wireFrom = #control.clientEvents
+		avdoor.Speak(pilot, { id = tostring(hullId), which = 'takeoff' })
+		local wired = plays(wireFrom)
+		env.source = near
+		OPX.ForgetCooldowns(near)
+		control.netEvents[avdoor.Event.PLAYED]({ token = wired[near].token, ok = false, streamed = true,
+			reason = 'refused_by_host' })
+		env.source = nil
+		check('an answer over the wire is taken from the connection it came from',
+			#rescued == 2, tostring(#rescued))
+		env.source = nil
+		control.netEvents[avdoor.Event.PLAYED]({ token = wired[farther].token, ok = false })
+		check('and one with no connection behind it is nothing', #rescued == 2)
+
+		-- The platform takes at most 32 exclusions: past that a sound cannot be
+		-- addressed to one body, and it is better silent for one than doubled for many.
+		for extra = 1, 34 do
+			local id = 200 + extra
+			load(id, 'citizen-snd-crowd-' .. extra, 'unemployed', false)
+			control.Stand(id, 100.0, 210.0, 30.0)
+		end
+		control.Pump(70)
+		local crowdFrom = #control.clientEvents
+		avdoor.Speak(pilot, { id = tostring(hullId), which = 'takeoff' })
+		local crowd = plays(crowdFrom)
+		local crowdWarn = #control.log.warn
+		local before = #rescued
+		avdoor.Heard(near, { token = crowd[near].token, ok = false, streamed = true, reason = 'refused_by_host' })
+		check('past thirty-two other listeners in the bucket a sound is not rescued, and says why',
+			#rescued == before and #saidSince('warn', crowdWarn, 'too_many_listeners') == 1,
+			table.concat(control.log.warn, ' | '):sub(-200))
+
+		-- A host with no fan-out at all.
+		env.Open77.effects = nil
+		control.Pump(70)
+		local bareFrom = #control.clientEvents
+		avdoor.Speak(pilot, { id = tostring(hullId), which = 'descent' })
+		local bare = plays(bareFrom)
+		local bareWarn = #control.log.warn
+		local ran = pcall(avdoor.Heard, near, { token = bare[near].token, ok = false, streamed = true,
+			reason = 'refused_by_host' })
+		check('and with no platform fan-out on the host a refusal is said once and raises nothing',
+			ran and #saidSince('warn', bareWarn, 'Open77.effects.sound') == 1,
+			table.concat(control.log.warn, ' | '):sub(-200))
+	end
+end
+
+section('avdoor: the row, the key, the exit fade and the MaxTac AV voice on the client')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the avdoor module', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local avdoor = OPX.Modules.Get('avdoor')
+		local prompts = OPX.Api.Get('prompts')
+		local mapping = control.keyMappings.byId['opx.avdoor.board']
+		check('the key is declared to the host on F, so a player can rebind it',
+			mapping ~= nil and mapping.key == 'F', mapping and tostring(mapping.key))
+
+		local function rowUp()
+			local listed = prompts ~= nil and prompts.List('avdoor') or nil
+			return listed ~= nil and listed.ok and listed.value.count == 1
+		end
+		--- Pumps the client's one loop until a condition holds, or the bound.
+		-- The harness resumes a few due jobs per round, so a job's own cadence is
+		-- a floor here, not a promise: waiting on the effect is what is honest.
+		local function pumpUntil(condition, bound)
+			for _ = 1, bound or 40 do
+				if condition() then return true end
+				control.Pump(1)
+			end
+			return condition()
+		end
+		check('no row before the server names a door', not rowUp())
+
+		control.netEvents[avdoor.Event.DOOR]({ open = true, id = '4242', role = 'pilot' })
+		check('the server\'s word puts the row up', rowUp() and avdoor.Status().label == 'avdoor.prompt.pilot')
+		local sentFrom = #control.serverEvents
+		mapping.pressed()
+		local asked = control.serverEvents[#control.serverEvents]
+		check('the key sends the hull\'s id and nothing more',
+			#control.serverEvents == sentFrom + 1 and asked.name == avdoor.Event.BOARD
+				and type(asked[1]) == 'table' and asked[1].id == '4242')
+
+		control.input.captured = true
+		check('a menu holding the keyboard takes the row down', pumpUntil(function() return not rowUp() end))
+		local capturedFrom = #control.serverEvents
+		mapping.pressed()
+		check('and a key pressed into it asks nothing', #control.serverEvents == capturedFrom)
+		control.input.captured = false
+		check('and gives it back when the menu closes', pumpUntil(rowUp))
+
+		control.netEvents[avdoor.Event.DOOR]({ open = false })
+		check('the server shutting the door takes the row down', not rowUp())
+		local shutFrom = #control.serverEvents
+		mapping.pressed()
+		check('and a key pressed then asks nothing', #control.serverEvents == shutFrom)
+
+		-- ── the exit fade ───────────────────────────────────────────────────
+		local fades = {}
+		env.Open77.screen = {
+			fadeOut = function(options) fades[#fades + 1] = { 'out', options } return 'fade-1' end,
+			fadeIn = function(id, options) fades[#fades + 1] = { 'in', id, options } return true end,
+		}
+		control.vehicles.byId[4242] = { id = 4242, record = 'Vehicle.max_tac_av', entity = 77,
+			locallyOwned = true }
+		control.Seat(1, { vehicleId = 4242, seat = 'seat_front_left' })
+		control.Pump(20)
+		check('boarding an aircraft is not an exit: no fade', #fades == 0)
+		control.Seat(1, { vehicleId = 4242, seat = 'seat_front_left', exiting = true })
+		check('the first frame of an exit covers the screen with the native fade',
+			pumpUntil(function() return #fades >= 1 end)
+				and #fades == 1 and fades[1][1] == 'out'
+				and fades[1][2].durationMs == avdoor.Settings.EXIT_FADE.OUT_MS)
+		control.Seat(1, nil)
+		control.Pump(2)
+		check('and it is held while the platform carries the body out', #fades == 1)
+		check('then the image comes back once the body is standing outside',
+			pumpUntil(function() return #fades >= 2 end, 60)
+				and #fades == 2 and fades[2][1] == 'in' and fades[2][2] == 'fade-1'
+				and fades[2][3].durationMs == avdoor.Settings.EXIT_FADE.IN_MS)
+		control.vehicles.byId[5151] = { id = 5151, record = 'Vehicle.v_sport1_quadra_turbo', entity = 78 }
+		control.Seat(1, { vehicleId = 5151, seat = 'seat_front_left' })
+		control.Pump(20)
+		control.Seat(1, nil)
+		control.Pump(40)
+		check('a car door is not covered: the fade is the aircraft\'s alone', #fades == 2)
+
+		-- ── the voice ───────────────────────────────────────────────────────
+		local groundAt = 10.0
+		env.Open77.world.groundZ = function() return groundAt end
+		local function sounds(from)
+			local out = {}
+			for index = from + 1, #control.serverEvents do
+				local event = control.serverEvents[index]
+				if event.name == avdoor.Event.SOUND then out[#out + 1] = event[1].which end
+			end
+			return table.concat(out, ',')
+		end
+		control.placement.x, control.placement.y, control.placement.z = 0.0, 0.0, 13.0
+		control.Seat(1, { vehicleId = 4242, seat = 'seat_front_left' })
+		local voiceFrom = #control.serverEvents
+		control.Pump(5)
+		check('seated in a MaxTac AV standing on the ground, nothing is said', sounds(voiceFrom) == '')
+		for _ = 1, 12 do
+			control.placement.z = control.placement.z + 1.0
+			control.Pump(3)
+		end
+		check('lifting off is the take-off call', sounds(voiceFrom) == 'takeoff', sounds(voiceFrom))
+		control.placement.z = 80.0
+		control.Pump(6)
+		for _ = 1, 30 do
+			control.placement.z = control.placement.z - 2.0
+			control.Pump(3)
+		end
+		check('coming down under the approach height is the descent call, once',
+			sounds(voiceFrom) == 'takeoff,descent', sounds(voiceFrom))
+		control.placement.z = 13.0
+		check('and holding still on the ground is the touchdown horn',
+			pumpUntil(function() return sounds(voiceFrom) ~= 'takeoff,descent' end, 60)
+				and sounds(voiceFrom) == 'takeoff,descent,touchdown', sounds(voiceFrom))
+		control.vehicles.byId[4242].locallyOwned = false
+		local passengerFrom = #control.serverEvents
+		for _ = 1, 12 do
+			control.placement.z = control.placement.z + 1.0
+			control.Pump(3)
+		end
+		check('a seat whose client does not simulate the hull says nothing', sounds(passengerFrom) == '')
+		control.vehicles.byId[4242].locallyOwned = true
+		control.Seat(1, nil)
+		control.Pump(15)
+
+		-- ── the sound, played on the airframe ───────────────────────────────
+		local played = #control.effects.sfx
+		control.netEvents[avdoor.Event.PLAY]({ id = '4242', event = 'av_maxtac_descent_horn', duration = 8 })
+		local call = control.effects.sfx[#control.effects.sfx]
+		check('a relayed sound is played on the airframe\'s own entity, on the emitter the base game uses',
+			#control.effects.sfx == played + 1 and call.event == 'av_maxtac_descent_horn'
+				and call.options.entity == 77 and call.options.emitter == 'vehicle_general_emitter'
+				and call.options.duration == 8)
+		local unknownFrom = #control.effects.sfx
+		control.netEvents[avdoor.Event.PLAY]({ id = '9999', event = 'av_maxtac_descent_horn', duration = 8 })
+		check('a hull this client does not stream is not given a sound at the listener\'s feet',
+			#control.effects.sfx == unknownFrom)
+
+		-- ── the sound, when the host turns part of it down ─────────────────
+		do
+			local realPlay = env.Open77.sfx.play
+			-- Every call is still recorded; the refusal is only in the answer.
+			local function refusing(refuse)
+				return function(event, options)
+					local handle = realPlay(event, options)
+					if refuse(options or {}) then return nil, 'refused_by_host' end
+					return handle
+				end
+			end
+
+			env.Open77.sfx.play = refusing(function(options) return options.emitter ~= nil end)
+			local from = #control.effects.sfx
+			control.netEvents[avdoor.Event.PLAY]({ id = '4242', event = 'av_maxtac_start_ascent', duration = 8 })
+			local first, second = control.effects.sfx[from + 1], control.effects.sfx[from + 2]
+			check('an emitter the host turns down falls back to the airframe\'s default one, still on the airframe',
+				#control.effects.sfx == from + 2 and first.options.emitter == 'vehicle_general_emitter'
+					and second.options.entity == 77 and second.options.emitter == nil
+					and second.options.duration == 8)
+
+			env.Open77.sfx.play = refusing(function(options) return options.entity ~= nil end)
+			control.Seat(1, { vehicleId = 4242, seat = 'seat_front_left' })
+			control.Pump(3)
+			from = #control.effects.sfx
+			control.netEvents[avdoor.Event.PLAY]({ id = '4242', event = 'av_maxtac_start_descent', duration = 8 })
+			local last = control.effects.sfx[#control.effects.sfx]
+			check('aboard a hull the host will not play on at all, the sound is played on the crew',
+				#control.effects.sfx == from + 3 and last.event == 'av_maxtac_start_descent'
+					and last.options.entity == nil and last.options.duration == 8)
+			control.Seat(1, nil)
+			control.Pump(15)
+			from = #control.effects.sfx
+			control.netEvents[avdoor.Event.PLAY]({ id = '4242', event = 'av_maxtac_start_descent', duration = 8 })
+			check('but a listener outside that hull is not given it at their own feet',
+				#control.effects.sfx == from + 2
+					and control.effects.sfx[#control.effects.sfx].options.entity == 77)
+			env.Open77.sfx.play = realPlay
+		end
+	end
+end
+
+section('avdoor: the exit puts the body beside the open door, and every sound is answered')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the avdoor module', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local avdoor = OPX.Modules.Get('avdoor')
+		local scene = control.chrome.scene
+		local mapping = control.keyMappings.byId['opx.avdoor.board']
+
+		-- The hull stands at HULL facing north (+y), so the pilot's door -- the
+		-- left one -- is to its west, and the passenger's back-right door to its east.
+		local HULL = { x = 1000.0, y = 2000.0, z = 32.0 }
+		local fades, teles = {}, {}
+		local groundAt = function() return 30.0 end
+		local landing, alive, yaw = true, true, 90.0
+
+		env.Open77.screen = {
+			fadeOut = function(options)
+				fades[#fades + 1] = { 'out', options, at = OPX.Now() }
+				return 'fade-' .. #fades
+			end,
+			fadeIn = function(id, options)
+				fades[#fades + 1] = { 'in', id, options, at = OPX.Now() }
+				return true
+			end,
+		}
+		env.Open77.world.groundZ = function(x, y, fromZ) return groundAt(x, y, fromZ) end
+		env.Open77.character.isAlive = function() return alive end
+		env.Open77.character.yaw = function() return yaw end
+		local function teleport(x, y, z, heading)
+			teles[#teles + 1] = { x = x, y = y, z = z, heading = heading, at = OPX.Now() }
+			-- A move that lands puts the body there at once; one that does not is a
+			-- queued request the engine never carried out.
+			if landing then control.placement.x, control.placement.y, control.placement.z = x, y, z end
+			return true
+		end
+		env.Open77.travel.teleport = teleport
+
+		control.vehicles.byId[4242] = { id = 4242, record = 'Vehicle.max_tac_av', entity = 77,
+			locallyOwned = true }
+		control.vehicles.byId[5151] = { id = 5151, record = 'Vehicle.v_sport1_quadra_turbo', entity = 78 }
+		for _, key in ipairs({ 'vehicle:4242', 'vehicle:5151' }) do
+			scene.geometry[key] = { attached = true, entity = 77,
+				position = { x = HULL.x, y = HULL.y, z = HULL.z },
+				forward = { x = 0.0, y = 1.0, z = 0.0 },
+				orientation = { x = 0.0, y = 0.0, z = 0.0, w = 1.0 } }
+		end
+
+		local function near(actual, expected)
+			return type(actual) == 'number' and math.abs(actual - expected) < 1e-6
+		end
+		local function pumpUntil(condition, bound)
+			for _ = 1, bound or 60 do
+				if condition() then return true end
+				control.Pump(1)
+			end
+			return condition()
+		end
+		local function forget()
+			fades, teles = {}, {}
+		end
+		--- Sits the body in a hull at a seat and waits until the seat watch has seen
+		--- it there (the client loop runs a few jobs a pass, so "a moment later" is
+		--- not a number of rounds).
+		local function sit(id, seat)
+			control.placement.x, control.placement.y, control.placement.z = HULL.x - 0.8, HULL.y + 0.4, HULL.z + 0.4
+			control.Seat(1, { vehicleId = id, seat = seat })
+			pumpUntil(function() return avdoor.Status().seated end, 60)
+			control.Pump(2)
+		end
+		local function stepOut() control.Seat(1, nil) end
+		local function outs()
+			local count = 0
+			for _, fade in ipairs(fades) do if fade[1] == 'out' then count = count + 1 end end
+			return count
+		end
+		local function logged(level, from, needle)
+			local count = 0
+			for index = from + 1, #control.log[level] do
+				if control.log[level][index]:find(needle, 1, true) ~= nil then count = count + 1 end
+			end
+			return count
+		end
+		--- Waits for the guard and the fade to be over, so the next case starts clean.
+		local function settle()
+			pumpUntil(function() return not avdoor.Status().guarding and not avdoor.Status().fading end, 80)
+			control.Pump(3)
+		end
+
+		-- ── a pilot steps out ───────────────────────────────────────────────
+		local startedAt = nil
+		forget()
+		sit(4242, 'seat_front_left')
+		check('sitting in an aircraft is not an exit: no fade, nobody is moved', #fades == 0 and #teles == 0)
+		stepOut()
+		check('the first look at an emptied pilot seat covers the screen and moves the body',
+			pumpUntil(function() return outs() >= 1 and #teles >= 1 end),
+			('%d fade(s), %d move(s)'):format(#fades, #teles))
+		startedAt = fades[1] and fades[1].at or 0
+		check('with the fade the config names',
+			fades[1] ~= nil and fades[1][2].durationMs == 160
+				and fades[1][2].durationMs == avdoor.Settings.EXIT_FADE.OUT_MS)
+		check('to the ground beside the pilot\'s door: out to the hull\'s left, level with its nose, on the ground the ray found',
+			#teles == 1 and near(teles[1].x, HULL.x - 6.0) and near(teles[1].y, HULL.y + 1.5)
+				and near(teles[1].z, 30.25),
+			teles[1] and ('%.2f %.2f %.2f'):format(teles[1].x, teles[1].y, teles[1].z) or 'not moved')
+		check('facing the way the body faced, not north', teles[1] ~= nil and teles[1].heading == 90.0)
+		check('and the guard is watching it', avdoor.Status().guarding == true and avdoor.Status().placements == 1)
+		check('the screen is not given back at once',
+			pumpUntil(function() return OPX.Now() - startedAt >= 1500 end, 40) and outs() == 1 and #fades == 1,
+			#fades .. ' fade(s)')
+		check('but once the body is standing there, after the pilot\'s hold and no sooner',
+			pumpUntil(function() return #fades >= 2 end, 60) and fades[2][1] == 'in' and fades[2][2] == 'fade-1'
+				and fades[2][3].durationMs == 550 and fades[2].at - startedAt >= 160 + 1900,
+			fades[2] and ('%d ms'):format(fades[2].at - startedAt) or 'never')
+		check('and nothing moved the body again: the guard ends with one placement',
+			pumpUntil(function() return not avdoor.Status().guarding end, 60) and #teles == 1)
+
+		-- ── the platform's own eject ────────────────────────────────────────
+		-- The log of 2026-09-29: at about +1.7 s the platform moves the body 3.5 m
+		-- behind the hull's centre and 2 m under it. It is put back -- and here it
+		-- comes at +1.9 s, a moment before the pilot's hold is over, so that the
+		-- wait for the body to be still is what decides when the screen returns.
+		settle()
+		forget()
+		sit(4242, 'seat_front_left')
+		stepOut()
+		pumpUntil(function() return #teles >= 1 end)
+		startedAt = fades[1] and fades[1].at or OPX.Now()
+		pumpUntil(function() return OPX.Now() - startedAt >= 1900 end, 40)
+		control.placement.x, control.placement.y, control.placement.z = HULL.x, HULL.y - 3.5, HULL.z - 2.0
+		local ejectedAt = OPX.Now()
+		check('the platform\'s own eject, moving the body back under the hull, is put back beside the door',
+			pumpUntil(function() return #teles >= 2 end, 20) and near(teles[2].x, HULL.x - 6.0)
+				and near(teles[2].y, HULL.y + 1.5), #teles .. ' move(s)')
+		check('and counted, with the journal saying so',
+			avdoor.Status().placements == 2
+				and logged('info', 0, 'something moved the body') >= 1)
+		pumpUntil(function() return #fades >= 2 end, 60)
+		check('the screen waited for the body to be still after the last move',
+			fades[2] ~= nil and fades[2][1] == 'in' and fades[2].at >= ejectedAt + 350,
+			fades[2] and ('%d ms after the eject'):format(fades[2].at - ejectedAt) or 'never')
+		settle()
+
+		-- ── a body that will not move is not fought for ever ─────────────────
+		forget()
+		landing = false
+		sit(4242, 'seat_front_left')
+		stepOut()
+		check('a body the engine will not move is tried a bounded number of times, then left',
+			pumpUntil(function() return not avdoor.Status().guarding and #fades >= 2 end, 80)
+				and #teles == 8, #teles .. ' move(s)')
+		check('and the screen still comes back, inside its ceiling',
+			fades[2] ~= nil and fades[2].at - fades[1].at <= avdoor.Settings.EXIT_FADE.MAX_HOLD_MS + 300,
+			fades[2] and ('%d ms'):format(fades[2].at - fades[1].at) or 'never')
+		landing = true
+		settle()
+
+		-- ── left far from the hull: a move, not an exit ──────────────────────
+		forget()
+		sit(4242, 'seat_front_left')
+		local farFrom = #control.log.info
+		control.placement.x = HULL.x + 500.0
+		stepOut()
+		control.Pump(30)
+		check('a seat lost far from its hull (a respawn, a server teleport) fades nothing and moves nothing',
+			#fades == 0 and #teles == 0, ('%d fade(s), %d move(s)'):format(#fades, #teles))
+		check('and the journal says it was left alone', logged('info', farFrom, 'a move made elsewhere') == 1)
+
+		-- ── a passenger's seat: its own side, a shorter hold ─────────────────
+		forget()
+		sit(4242, 'seat_back_right')
+		stepOut()
+		pumpUntil(function() return #teles >= 1 and #fades >= 1 end)
+		startedAt = fades[1] and fades[1].at or 0
+		check('a passenger is put beside the back-right door, on the hull\'s other side',
+			#teles == 1 and near(teles[1].x, HULL.x + 6.0) and near(teles[1].y, HULL.y + 1.5),
+			teles[1] and ('%.2f %.2f'):format(teles[1].x, teles[1].y) or 'not moved')
+		check('and the screen comes back after the passenger\'s shorter hold, well before a pilot\'s',
+			pumpUntil(function() return #fades >= 2 end, 60) and fades[2].at - startedAt >= 160 + 800
+				and fades[2].at - startedAt < 160 + 1900, fades[2] and ('%d ms'):format(fades[2].at - startedAt) or 'never')
+		settle()
+
+		-- ── no ground on the door's side ─────────────────────────────────────
+		forget()
+		groundAt = function(x) if x < HULL.x then return -100.0 end return 30.0 end
+		sit(4242, 'seat_front_left')
+		local edgeFrom = #control.log.info
+		stepOut()
+		pumpUntil(function() return #teles >= 1 end)
+		check('a hull at the edge of a roof puts the body out on the side that has ground',
+			#teles == 1 and near(teles[1].x, HULL.x + 6.0) and near(teles[1].z, 30.25),
+			teles[1] and ('%.2f %.2f'):format(teles[1].x, teles[1].z) or 'not moved')
+		check('and the journal says which side it took', logged('info', edgeFrom, 'side 2 of 4') == 1)
+		settle()
+		forget()
+		groundAt = function() return -100.0 end
+		sit(4242, 'seat_front_left')
+		stepOut()
+		pumpUntil(function() return #teles >= 1 end)
+		check('with no ground within reach on any side the body is put at the door\'s height, to fall from there',
+			#teles == 1 and near(teles[1].x, HULL.x - 6.0) and near(teles[1].z, HULL.z - 0.8),
+			teles[1] and ('%.2f %.2f'):format(teles[1].x, teles[1].z) or 'not moved')
+		settle()
+		forget()
+		groundAt = function() return nil end
+		sit(4242, 'seat_front_left')
+		stepOut()
+		pumpUntil(function() return #teles >= 1 end)
+		check('and with no ray answer at all, a little under the hull\'s centre, for the mover to settle',
+			#teles == 1 and near(teles[1].x, HULL.x - 6.0) and near(teles[1].z, HULL.z - 1.6 + 0.25),
+			teles[1] and ('%.2f'):format(teles[1].z) or 'not moved')
+		groundAt = function() return 30.0 end
+		settle()
+
+		-- ── only aircraft ───────────────────────────────────────────────────
+		forget()
+		sit(5151, 'seat_front_left')
+		stepOut()
+		control.Pump(40)
+		check('a car door is not an aircraft\'s: no fade, nobody moved', #fades == 0 and #teles == 0)
+
+		-- ── switched off by configuration ────────────────────────────────────
+		local savedExit = avdoor.Settings.EXIT
+		avdoor.Settings.EXIT = false
+		forget()
+		sit(4242, 'seat_front_left')
+		stepOut()
+		check('with `EXIT = false` the exit is the fade alone',
+			pumpUntil(function() return #fades >= 2 end, 60) and #teles == 0)
+		settle()
+		avdoor.Settings.EXIT = { PLACE = false }
+		forget()
+		sit(4242, 'seat_front_left')
+		stepOut()
+		check('and so is `PLACE = false`, whatever else the block says',
+			pumpUntil(function() return #fades >= 2 end, 60) and #teles == 0)
+		settle()
+		avdoor.Settings.EXIT = savedExit
+
+		-- ── it does not fight a body that boards again, or one that is down ───
+		local savedGuard = savedExit.GUARD_MS
+		savedExit.GUARD_MS = 9000
+		forget()
+		sit(4242, 'seat_front_left')
+		stepOut()
+		pumpUntil(function() return #fades >= 2 end, 60)
+		check('the guard outlasts the fade when it is told to', avdoor.Status().guarding == true)
+		control.Seat(1, { vehicleId = 4242, seat = 'seat_front_left' })
+		check('a body that climbs back in through the door it left is not guarded any more',
+			pumpUntil(function() return not avdoor.Status().guarding end, 20) and #teles == 1)
+		control.Seat(1, nil)
+		settle()
+		forget()
+		sit(4242, 'seat_front_left')
+		stepOut()
+		pumpUntil(function() return #teles >= 1 end)
+		alive = false
+		check('and one that goes down stops it',
+			pumpUntil(function() return not avdoor.Status().guarding end, 20))
+		alive = true
+		savedExit.GUARD_MS = savedGuard
+		settle()
+
+		-- ── a seat the platform keeps calling leaving is one exit ────────────
+		forget()
+		sit(4242, 'seat_front_left')
+		control.Seat(1, { vehicleId = 4242, seat = 'seat_front_left', exiting = true })
+		control.Pump(45)
+		check('one exit, however long the platform keeps the seat flagged: one fade, one placement',
+			outs() == 1 and #teles == 1, ('%d fade(s), %d move(s)'):format(outs(), #teles))
+		stepOut()
+		control.Pump(5)
+		check('and the seat then emptying is still the same exit', outs() == 1 and #teles == 1)
+		settle()
+		sit(4242, 'seat_front_left')
+		stepOut()
+		check('but a new boarding and a new exit is a new one',
+			pumpUntil(function() return outs() == 2 end, 20), outs() .. ' fade(s)')
+		settle()
+
+		-- ── a client with no way to move the body ────────────────────────────
+		env.Open77.travel.teleport = nil
+		forget()
+		local bareFrom = #control.log.warn
+		sit(4242, 'seat_front_left')
+		stepOut()
+		check('with no teleport native the exit is the fade alone, and says so once',
+			pumpUntil(function() return #fades >= 2 end, 60) and #teles == 0
+				and logged('warn', bareFrom, 'no Open77.travel.teleport') == 1)
+		settle()
+		env.Open77.travel.teleport = teleport
+
+		-- ── the press, and the answer ────────────────────────────────────────
+		control.Seat(1, nil)
+		control.netEvents[avdoor.Event.DOOR]({ open = true, id = '4242', role = 'passenger' })
+		local sentFrom = #control.serverEvents
+		mapping.pressed()
+		mapping.pressed()
+		check('two presses while the door swings are one boarding', #control.serverEvents == sentFrom + 1)
+		control.netEvents[avdoor.Event.BOARDED]({ ok = false, reason = 'too_far' })
+		mapping.pressed()
+		check('and the press after an answer is a new one', #control.serverEvents == sentFrom + 2)
+		control.netEvents[avdoor.Event.DOOR]({ open = false })
+
+		-- ── every sound is answered ──────────────────────────────────────────
+		local function acks(from)
+			local out = {}
+			for index = from + 1, #control.serverEvents do
+				local event = control.serverEvents[index]
+				if event.name == avdoor.Event.PLAYED then out[#out + 1] = event[1] end
+			end
+			return out
+		end
+		local realPlay = env.Open77.sfx.play
+		local ackFrom = #control.serverEvents
+		control.netEvents[avdoor.Event.PLAY]({ id = '4242', event = 'av_maxtac_descent_horn', duration = 8, token = 5 })
+		local first = acks(ackFrom)
+		check('a sound played here is answered to the server that sent it, with its token',
+			#first == 1 and first[1].token == 5 and first[1].ok == true and first[1].how == 'on the airframe'
+				and first[1].streamed == true, #first .. ' answer(s)')
+		ackFrom = #control.serverEvents
+		control.netEvents[avdoor.Event.PLAY]({ id = '9999', event = 'av_maxtac_descent_horn', duration = 8, token = 6 })
+		local unstreamed = acks(ackFrom)
+		check('a hull this client does not stream is answered as not streamed, so the server does not rescue it',
+			#unstreamed == 1 and unstreamed[1].ok == false and unstreamed[1].streamed == false
+				and unstreamed[1].token == 6, #unstreamed .. ' answer(s)')
+		env.Open77.sfx.play = function() return nil, 'refused_by_host' end
+		ackFrom = #control.serverEvents
+		control.netEvents[avdoor.Event.PLAY]({ id = '4242', event = 'av_maxtac_start_ascent', duration = 8, token = 7 })
+		local refused = acks(ackFrom)
+		check('a refusal by the host is answered as one, with its reason, on a hull that IS streamed here',
+			#refused == 1 and refused[1].ok == false and refused[1].streamed == true and refused[1].token == 7
+				and tostring(refused[1].reason):find('refused_by_host', 1, true) ~= nil,
+			refused[1] and tostring(refused[1].reason) or 'no answer')
+		env.Open77.sfx.play = function(event, options)
+			if options ~= nil and options.entity ~= nil then return nil, 'refused_by_host' end
+			return 1
+		end
+		sit(4242, 'seat_front_left')
+		ackFrom = #control.serverEvents
+		control.netEvents[avdoor.Event.PLAY]({ id = '4242', event = 'av_maxtac_start_descent', duration = 8, token = 8 })
+		local crew = acks(ackFrom)
+		check('aboard a hull the host will not play on, the answer says the sound was played on the crew',
+			#crew == 1 and crew[1].ok == true and crew[1].how == 'on the crew' and crew[1].token == 8,
+			crew[1] and tostring(crew[1].how or crew[1].reason) or 'no answer')
+		control.Seat(1, nil)
+		settle()
+		env.Open77.sfx.play = realPlay
+		ackFrom = #control.serverEvents
+		control.netEvents[avdoor.Event.PLAY]({ id = '4242', event = 'av_maxtac_start_ascent', duration = 8 })
+		check('a sound with no token asks for no answer', #acks(ackFrom) == 0)
+		local savedSfx = env.Open77.sfx
+		env.Open77.sfx = nil
+		ackFrom = #control.serverEvents
+		control.netEvents[avdoor.Event.PLAY]({ id = '4242', event = 'av_maxtac_start_ascent', duration = 8, token = 9 })
+		local silent = acks(ackFrom)
+		check('a client with no sound native answers that, and the server may rescue it',
+			#silent == 1 and silent[1].ok == false and silent[1].streamed == true
+				and tostring(silent[1].reason):find('sfx', 1, true) ~= nil,
+			silent[1] and tostring(silent[1].reason) or 'no answer')
+		env.Open77.sfx = savedSfx
+	end
+end
+
+section('bank: branches, and every eddie that moves at one')
+do
+	local function bridge(rows, wrote)
+		return Host.Database({
+			scalar = function() return 1 end,
+			update = function(sql)
+				if wrote ~= nil and sql:find('opx77_bank', 1, true)
+					and (sql:find('INSERT INTO', 1, true) or sql:find('DELETE FROM', 1, true)) then
+					wrote[#wrote + 1] = sql
+				end
+				return 0
+			end,
+			query = function(sql)
+				if sql:find('opx77_bank', 1, true) then return rows end
+				return {}
+			end,
+			single = function() return nil end,
+		})
+	end
+
+	local wrote = {}
+	local env, control, why = boot('server', bridge({
+		{ spot_key = 'arasaka', label = 'ARASAKA BANK', x = 50.0, y = 60.0, z = 1.0, bucket = 0 },
+	}, wrote))
+	check('the server boots with the bank module', why == nil, why)
+
+	local function lastTo(name, playerId, from)
+		for index = #control.clientEvents, (from or 0) + 1, -1 do
+			local event = control.clientEvents[index]
+			if event.name == name and event.source == playerId then return event end
+		end
+		return nil
+	end
+
+	if why == nil then
+		local OPX = env.OPX
+		local bank = OPX.Modules.Get('bank')
+		local Access = bank.Access
+		local contract = OPX.Api.Get('bank')
+		local character = OPX.Modules.Get('character')
+		check('the bank module is running', OPX.Modules.IsRunning('bank'), OPX.Modules.Record('bank').Reason)
+		check('and publishes its contract',
+			contract ~= nil and type(contract.Spots) == 'function' and type(contract.Move) == 'function'
+				and type(contract.State) == 'function')
+		check('the shipped config reports no problems', #Access.Problems() == 0,
+			table.concat(Access.Problems(), ' | '))
+		check('a transaction moves between the account a paycheck lands in and the cash in hand',
+			Access.ACCOUNT == 'BANK' and Access.CASH == 'EDDIES'
+				and character.Settings.MONEY.PAYCHECK_TYPE == Access.ACCOUNT)
+		check('the branch read back from the database is one of ours',
+			contract.Spots()['arasaka'] ~= nil and contract.Spots()['arasaka'].label == 'ARASAKA BANK')
+
+		local function load(id, citizenId, cash, account)
+			control.Admit(id, 'account-' .. tostring(id))
+			OPX.EnsureSession(id)
+			local userId = 'account-' .. tostring(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					money = { EDDIES = cash, BANK = account },
+					job = { name = 'unemployed', label = 'Unemployed', onDuty = false, grade = { level = 0 } } },
+				Functions = { UpdatePlayerData = function() end },
+			}
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId[userId] = id
+			return character.Players[id].PlayerData.money
+		end
+		local customer = 51
+		local purse = load(customer, 'citizen-bank-customer', 200, 5000)
+		control.Stand(customer, 50.5, 60.0, 1.0)
+
+		-- ── the list and the state ──────────────────────────────────────────
+		env.source = customer
+		local mark = #control.clientEvents
+		control.netEvents[bank.Event.ASK]()
+		local synced = lastTo(bank.Event.SYNC, customer, mark)
+		check('a client that asks is sent its bucket\'s branches',
+			synced ~= nil and #synced[1].spots == 1 and synced[1].spots[1].key == 'arasaka')
+		mark = #control.clientEvents
+		control.netEvents[bank.Event.OPEN]()
+		env.source = nil
+		local opened = lastTo(bank.Event.STATE, customer, mark)
+		check('the key at the counter answers the branch and both balances',
+			opened ~= nil and opened[1].ok == true and opened[1].branch.key == 'arasaka'
+				and opened[1].account == 5000 and opened[1].cash == 200 and #opened[1].amounts > 0,
+			opened and tostring(opened[1].reason) or 'no answer')
+
+		-- ── withdraw, deposit ───────────────────────────────────────────────
+		local out = contract.Move(customer, 'withdraw', 1000)
+		check('a withdrawal takes it out of the account and puts it in the hand',
+			out.ok == true and out.value.amount == 1000 and purse.BANK == 4000 and purse.EDDIES == 1200
+				and out.value.account == 4000 and out.value.cash == 1200,
+			('%s %s/%s'):format(tostring(out.error), tostring(purse.BANK), tostring(purse.EDDIES)))
+		local told = lastTo(character.Event.MONEY, customer)
+		check('and the character module tells the client, so the HUD moves',
+			told ~= nil and told[1] == 'EDDIES' and told[4] == 1200)
+		local all = contract.Move(customer, 'deposit', nil, true)
+		check('depositing everything empties the hand into the account',
+			all.ok == true and all.value.amount == 1200 and purse.EDDIES == 0 and purse.BANK == 5200)
+		local nothing = contract.Move(customer, 'deposit', nil, true)
+		check('and a second one has nothing to move', nothing.ok == false and nothing.error == 'nothing'
+			and purse.BANK == 5200)
+		local tooMuch = contract.Move(customer, 'withdraw', 6000)
+		check('more than the account holds is refused, and nothing moves',
+			tooMuch.ok == false and tooMuch.error == 'insufficient' and purse.BANK == 5200 and purse.EDDIES == 0)
+		local bad = {}
+		for _, amount in ipairs({ 0, -5, 1.5, 'abc', 0 / 0, math.huge }) do
+			local answer = contract.Move(customer, 'withdraw', amount)
+			if answer.ok or answer.error ~= 'bad_amount' then bad[#bad + 1] = tostring(amount) end
+		end
+		check('an amount that is not a whole number of eddies above zero is refused as one',
+			#bad == 0 and purse.BANK == 5200, table.concat(bad, ','))
+		local over = contract.Move(customer, 'withdraw', Access.MAX_TRANSFER + 1)
+		check('and one past the ceiling is refused as too much', over.ok == false and over.error == 'too_much')
+		local sideways = contract.Move(customer, 'launder', 10)
+		check('a direction that is not one of the two is refused', sideways.ok == false and sideways.error == 'bad_kind')
+
+		-- ── the counter is a place ──────────────────────────────────────────
+		control.Stand(customer, 58.0, 60.0, 1.0)
+		local away = contract.Move(customer, 'withdraw', 100)
+		check('a body a few metres from the counter cannot move a single eddie',
+			away.ok == false and away.error == 'not_at_branch' and purse.BANK == 5200)
+		control.Stand(customer, 50.5, 60.0, 1.0)
+		control.Bucket(customer, 4)
+		local elsewhere = contract.Move(customer, 'withdraw', 100)
+		check('nor one standing on the same spot in another bucket',
+			elsewhere.ok == false and elsewhere.error == 'not_at_branch')
+		control.Bucket(customer, 0)
+		control.Admit(52, 'account-52')
+		control.Stand(52, 50.5, 60.0, 1.0)
+		local stranger = contract.Move(52, 'withdraw', 100)
+		check('and a connection with no character is refused as one',
+			stranger.ok == false and stranger.error == 'no_character')
+
+		-- ── the second step refused puts the first one back ────────────────
+		local characterContract = OPX.Api.Get('character')
+		local realAdd = characterContract.AddMoney
+		characterContract.AddMoney = function(identifier, moneyType, amount, reason)
+			if moneyType == 'EDDIES' then return false, 'money.vetoed' end
+			return realAdd(identifier, moneyType, amount, reason)
+		end
+		local vetoed = contract.Move(customer, 'withdraw', 700)
+		characterContract.AddMoney = realAdd
+		check('a withdrawal the cash side refuses is refused whole: the money goes back into the account',
+			vetoed.ok == false and vetoed.error == 'failed' and purse.BANK == 5200 and purse.EDDIES == 0,
+			('%s %s/%s'):format(tostring(vetoed.error), tostring(purse.BANK), tostring(purse.EDDIES)))
+
+		-- ── through the wire ────────────────────────────────────────────────
+		OPX.ForgetCooldowns(customer)
+		env.source = customer
+		mark = #control.clientEvents
+		control.netEvents[bank.Event.MOVE]({ kind = 'withdraw', amount = 250 })
+		local result = lastTo(bank.Event.RESULT, customer, mark)
+		check('a press over the wire moves the money and answers both balances',
+			result ~= nil and result[1].ok == true and result[1].amount == 250
+				and result[1].account == 4950 and result[1].cash == 250 and purse.EDDIES == 250)
+		mark = #control.clientEvents
+		control.netEvents[bank.Event.MOVE]({ kind = 'withdraw', amount = 250 })
+		result = lastTo(bank.Event.RESULT, customer, mark)
+		check('and a second inside the floor is answered busy, moving nothing',
+			result ~= nil and result[1].ok == false and result[1].reason == 'busy' and purse.EDDIES == 250)
+		OPX.ForgetCooldowns(customer)
+		mark = #control.clientEvents
+		control.netEvents[bank.Event.MOVE]({ kind = 'deposit', amount = 9999 })
+		result = lastTo(bank.Event.RESULT, customer, mark)
+		check('a refusal names its reason on the wire', result ~= nil and result[1].ok == false
+			and result[1].reason == 'insufficient')
+		env.source = nil
+
+		-- ── placing branches ────────────────────────────────────────────────
+		local operator = 53
+		control.Admit(operator, 'account-53')
+		control.Stand(operator, 300.0, -20.0, 7.5)
+		check('add, remove and list are registered and ACL-gated',
+			control.commands['opx.bank.add'] ~= nil and control.commands['opx.bank.add'].restricted == true
+				and control.commands['opx.bank.remove'] ~= nil and control.commands['opx.bank.remove'].restricted == true
+				and control.commands['opx.bank.list'] ~= nil and control.commands['opx.bank.list'].restricted == true)
+		control.commands['opx.bank.add'].run(operator, { 'pacifica', 'PACIFICA', 'ATM' })
+		control.Pump(8)
+		local placed = contract.Spots()['pacifica']
+		check('an operator places a branch where they stand, under the key and label they name',
+			placed ~= nil and placed.x == 300.0 and placed.y == -20.0 and placed.z == 7.5
+				and placed.label == 'PACIFICA ATM', placed and tostring(placed.label))
+		check('and it is written through the bridge by name', #wrote == 1 and wrote[1]:find('@key', 1, true) ~= nil)
+		control.commands['opx.bank.remove'].run(operator, { 'pacifica' })
+		control.Pump(8)
+		check('and removed again by its key', contract.Spots()['pacifica'] == nil and #wrote == 2)
+	end
+end
+
+section('bank: the marker, the row and the branch menu on the client')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the bank module', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local bank = OPX.Modules.Get('bank')
+		local prompts = OPX.Api.Get('prompts')
+		local menu = OPX.Api.Get('menu')
+		local form = OPX.Api.Get('form')
+		local mapping = control.keyMappings.byId['opx.bank.use']
+		check('the key is declared to the host on E', mapping ~= nil and mapping.key == 'E')
+		local asked = false
+		for _, event in ipairs(control.serverEvents) do
+			if event.name == bank.Event.ASK then asked = true end
+		end
+		check('the client asks for its branches on start', asked)
+
+		local function rowUp()
+			local listed = prompts ~= nil and prompts.List('bank') or nil
+			return listed ~= nil and listed.ok and listed.value.count == 1
+		end
+		local function pumpUntil(condition, bound)
+			for _ = 1, bound or 40 do
+				if condition() then return true end
+				control.Pump(1)
+			end
+			return condition()
+		end
+
+		control.placement.x, control.placement.y, control.placement.z = 0.0, 0.0, 0.0
+		control.netEvents[bank.Event.SYNC]({ spots = {
+			{ key = 'arasaka', label = 'ARASAKA BANK', x = 0.5, y = 0.0, z = 0.0, bucket = 0 },
+			{ key = 'far', label = 'FAR', x = 5000.0, y = 0.0, z = 0.0, bucket = 0 },
+		} })
+		check('standing on a branch puts its row up', pumpUntil(rowUp))
+		check('and its marker is drawn, the far one is not', bank.Runtime.Report().markers == 1
+			and bank.Runtime.Report().nearest == 'arasaka')
+		-- AND IT IS ON THE MAP, so a player with a paycheck can find one.
+		local blips = OPX.Modules.Get('blips')
+		blips.Runtime.Sync()
+		control.Pump(20)
+		local pin = nil
+		for id, handle in pairs(blips.Runtime.Created()) do
+			if id == 'bank\1arasaka' then pin = control.blips.byId[handle] end
+		end
+		check('every branch is pinned on the map, named by the operator and described as a bank',
+			pin ~= nil and pin.sprite == 'drop_point' and pin.title == 'ARASAKA BANK' and pin.description == 'Bank',
+			pin and ('%s %s %s'):format(tostring(pin.sprite), tostring(pin.title), tostring(pin.description))
+				or 'no pin')
+
+		local specs = {}
+		local realOpen, realUpdate = menu.Open, menu.Update
+		menu.Open = function(spec) specs[#specs + 1] = spec return realOpen(spec) end
+		menu.Update = function(handle, spec) specs[#specs + 1] = spec return realUpdate(handle, spec) end
+		local function rowOf(id)
+			for index = #specs, 1, -1 do
+				for _, item in ipairs(specs[index].items or {}) do
+					if item.id == id then return item, specs[index] end
+				end
+			end
+			return nil
+		end
+		local function pick(id)
+			local item = rowOf(id)
+			local on
+			for index = #specs, 1, -1 do if specs[index].on then on = specs[index].on break end end
+			if item == nil or on == nil then return false end
+			on({ owner = 'bank', menu = 'bank_branch', action = 'select', itemId = id, handle = 1,
+				data = item.data })
+			return true
+		end
+		local function sentOf(name, from)
+			local out = {}
+			for index = from + 1, #control.serverEvents do
+				if control.serverEvents[index].name == name then out[#out + 1] = control.serverEvents[index] end
+			end
+			return out
+		end
+
+		local pressedFrom = #control.serverEvents
+		mapping.pressed()
+		check('the key asks the server for the branch, carrying nothing', #sentOf(bank.Event.OPEN, pressedFrom) == 1)
+		control.netEvents[bank.Event.STATE]({ ok = true, branch = { key = 'arasaka', label = 'ARASAKA BANK' },
+			account = 5000, cash = 200, amounts = { 100, 500, 1000, 5000, 10000 }, max = 10000000 })
+		local held = menu.State()
+		check('the answer opens the branch menu, titled with the branch',
+			held.ok and held.value.open == true and held.value.owner == 'bank'
+				and tostring(held.value.title):find('ARASAKA BANK', 1, true) ~= nil,
+			held.ok and tostring(held.value.title) or 'no menu')
+		local accountRow = rowOf('account')
+		local cashRow = rowOf('cash')
+		check('with both balances on it, in eddies', accountRow ~= nil and accountRow.value == '5 000 \u{20AC}$'
+			and cashRow ~= nil and cashRow.value == '200 \u{20AC}$' and accountRow.disabled == true,
+			accountRow and ('%s / %s'):format(tostring(accountRow.value), tostring(cashRow and cashRow.value))
+				or 'no row')
+		check('a quick amount the account cannot cover is dimmed, one it can is not',
+			rowOf('withdraw_10000').disabled == true and rowOf('withdraw_1000').disabled == false
+				and rowOf('deposit_500').disabled == true and rowOf('deposit_100').disabled == false)
+		check('the row comes down while the menu is up', pumpUntil(function() return not rowUp() end))
+
+		local moveFrom = #control.serverEvents
+		pick('withdraw_1000')
+		local moved = sentOf(bank.Event.MOVE, moveFrom)
+		check('a quick amount sends a direction and an amount, nothing more',
+			#moved == 1 and moved[1][1].kind == 'withdraw' and moved[1][1].amount == 1000 and moved[1][1].all == nil)
+		moveFrom = #control.serverEvents
+		pick('deposit_all')
+		moved = sentOf(bank.Event.MOVE, moveFrom)
+		check('"all of it" sends the direction and the word, and the server reads the balance',
+			#moved == 1 and moved[1][1].kind == 'deposit' and moved[1][1].all == true and moved[1][1].amount == nil)
+
+		local toasts = {}
+		local realToast = OPX.Toast.Show
+		OPX.Toast.Show = function(payload) toasts[#toasts + 1] = payload return realToast(payload) end
+		control.netEvents[bank.Event.RESULT]({ ok = true, kind = 'withdraw', amount = 1000, account = 4000,
+			cash = 1200, branch = { key = 'arasaka', label = 'ARASAKA BANK' } })
+		check('the answer is said in the player\'s words',
+			toasts[#toasts] ~= nil and toasts[#toasts].kind == 'success'
+				and toasts[#toasts].message == 'Withdrew 1 000 \u{20AC}$. Account 4 000 \u{20AC}$, cash 1 200 \u{20AC}$.',
+			toasts[#toasts] and tostring(toasts[#toasts].message) or 'no toast')
+		check('and redraws the menu from the server\'s balances',
+			rowOf('account').value == '4 000 \u{20AC}$' and rowOf('cash').value == '1 200 \u{20AC}$'
+				and rowOf('deposit_1000').disabled == false and rowOf('deposit_5000').disabled == true)
+
+		-- ── another amount ─────────────────────────────────────────────────
+		local forms = {}
+		local realForm = form.Open
+		form.Open = function(spec) forms[#forms + 1] = spec return realForm(spec) end
+		pick('withdraw_other')
+		local asking = forms[#forms]
+		check('"another amount" asks for digits only, no longer than the ceiling allows',
+			asking ~= nil and asking.fields[1].charset == 'digits' and asking.fields[1].maxLength == 8
+				and asking.fields[1].required == true)
+		moveFrom = #control.serverEvents
+		asking.on({ action = 'submit', values = { amount = '2500' } })
+		moved = sentOf(bank.Event.MOVE, moveFrom)
+		check('and what is typed is sent as that amount',
+			#moved == 1 and moved[1][1].kind == 'withdraw' and moved[1][1].amount == 2500)
+		pick('withdraw_other')
+		moveFrom = #control.serverEvents
+		forms[#forms].on({ action = 'submit', values = { amount = '0' } })
+		check('a zero typed is refused here and nothing is sent', #sentOf(bank.Event.MOVE, moveFrom) == 0
+			and #sentOf(bank.Event.OPEN, moveFrom) == 1)
+		form.Open = realForm
+
+		-- ── refusals, and walking away ─────────────────────────────────────
+		control.netEvents[bank.Event.STATE]({ ok = false, reason = 'not_at_branch' })
+		check('a refused open is said in the player\'s words, not swallowed',
+			toasts[#toasts] ~= nil and toasts[#toasts].kind == 'error'
+				and toasts[#toasts].message == 'Stand at a bank branch to do that.',
+			toasts[#toasts] and tostring(toasts[#toasts].message) or 'no toast')
+		control.netEvents[bank.Event.RESULT]({ ok = false, kind = 'withdraw', reason = 'insufficient' })
+		check('and so is a refused move', toasts[#toasts].message == 'Not enough money for that.',
+			tostring(toasts[#toasts].message))
+		OPX.Toast.Show = realToast
+		control.netEvents[bank.Event.STATE]({ ok = true, branch = { key = 'arasaka', label = 'ARASAKA BANK' },
+			account = 4000, cash = 1200, amounts = { 100, 500 }, max = 10000000 })
+		check('the menu is up again at the counter', menu.State().value.open == true)
+		control.placement.x = 30.0
+		check('walking away from the counter takes the menu down',
+			pumpUntil(function() return menu.State().value.open ~= true end))
+		menu.Open, menu.Update = realOpen, realUpdate
+	end
+end
+
+-- ── every file this resource ships fits a Windows client's path ─────────────
+-- 2026-09-28: the server was deployed with 94 new pictures, and no client could
+-- join: `invalid_web_file:web/images/cyberware/cw_circulatory_enhancedbloodvessels.webp`,
+-- then `server resource activation failed` and back to the server browser. A
+-- client installs a server's resources at `<game>\red4ext\plugins\Open77\cache\
+-- server-resources\sets\<64-hex digest>\resources\<resource>\` (Open77's
+-- `networking/src/ResourceInstaller.cpp`), which on a Steam install in Program
+-- Files is 200 characters before the file's own path, and Windows stops at 259
+-- (MAX_PATH less its terminator): a path of more than 59 characters is a file the
+-- client cannot see, and one such file fails the WHOLE resource. Everything the
+-- resource ships is held here to that room, less a margin for a game installed
+-- deeper than the Steam default. Up to 1.4.11 the longest was 46 (the fonts).
+section('every file the resource ships fits a Windows client\'s path')
+do
+	local GAME = 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Cyberpunk 2077'
+	local INSTALLED = GAME .. '\\red4ext\\plugins\\Open77\\cache\\server-resources\\sets\\'
+		.. ('0'):rep(64) .. '\\resources\\opx_infinity\\'
+	local ROOM = 259 - #INSTALLED
+	local MARGIN = 12
+	check('the room a Steam install leaves a file is 59 characters', ROOM == 59, ROOM)
+
+	-- What the node ships: `web/`, `core/`, `modules/`, `lib/`, `config/`,
+	-- `locales/` and `open77.lua` (deploy's own list). The walk knows which
+	-- platform it is on, and an empty walk is a failure (see "the stutter is
+	-- declared once").
+	local windows = package.config:sub(1, 1) == '\\'
+	local here = ''
+	if windows then
+		local handle = io.popen('cd')
+		here = handle and (handle:read('l') or '') or ''
+		if handle then handle:close() end
+		here = here:gsub('\\', '/'):gsub('/$', '') .. '/'
+	end
+	local shipped = { 'open77.lua' }
+	for _, root in ipairs({ 'web', 'core', 'modules', 'lib', 'config', 'locales' }) do
+		local command = windows
+			and ('dir /b /s /a-d "%s" 2>nul'):format(root)
+			or ('find "%s" -type f 2>/dev/null'):format(root)
+		local handle = io.popen(command)
+		if handle ~= nil then
+			for line in handle:lines() do
+				local path = line:gsub('\\', '/')
+				if windows and path:sub(1, #here):lower() == here:lower() then path = path:sub(#here + 1) end
+				path = path:gsub('^%./', '')
+				if path ~= '' then shipped[#shipped + 1] = path end
+			end
+			handle:close()
+		end
+	end
+	local longest, over = '', {}
+	for _, path in ipairs(shipped) do
+		if #path > #longest then longest = path end
+		if #path > ROOM - MARGIN and #over < 6 then over[#over + 1] = ('%s (%d)'):format(path, #path) end
+	end
+	check('the resource\'s files are listed', #shipped > 500, #shipped)
+	check(('and none is longer than %d characters, %d short of what a client can see'):format(ROOM - MARGIN, MARGIN),
+		#over == 0, #over > 0 and table.concat(over, ' ') or ('the longest: %s (%d)'):format(longest, #longest))
 end
 
 print(('\n%d checks, %d failed'):format(checks, failures))

@@ -214,6 +214,18 @@ OPX.Config.MODULES.jobs = {
 			OPEN = true,
 			LADDER = { [1] = 60.0, [2] = 300.0 },
 		},
+
+		-- A desk career: clocked in, and the ranks take the time a ripperdoc's do.
+		corp = {
+			OPEN = true,
+			LADDER = { [1] = 120.0, [2] = 480.0 },
+		},
+
+		-- Always on duty, like a merc: a nomad banks seniority while they play.
+		nomad = {
+			OPEN = true,
+			LADDER = { [1] = 60.0, [2] = 300.0 },
+		},
 	},
 
 	-- ── the boards ──────────────────────────────────────────────────────────

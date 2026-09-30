@@ -44,5 +44,9 @@ OPX.Host = {
 	WORLD_READY = 'open77:worldReady',
 	GAMEPLAY_READY = 'open77:session:gameplayReady',
 	VEHICLE_REMOVED = 'onVehicleRemoved',
+	-- Raised on the server with the vehicle's id and a revision, both as text,
+	-- whenever who sits where in it changes; the snapshot's `occupants` is the
+	-- new ledger.
+	VEHICLE_OCCUPANCY_CHANGED = 'onVehicleOccupancyChanged',
 	TUNABLE_CHANGED = 'onTunableChanged',
 }

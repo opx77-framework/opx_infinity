@@ -507,6 +507,12 @@ end
 -- refused here by name -- `jobs.byInvitation` -- rather than as a bare no, which
 -- is what the board then shows: MaxTac does not take walk-ins, and the menu says
 -- so instead of leaving a dead row.
+--
+-- THE REQUIREMENTS ARE ASKED BEFORE THE INVITATION. The invitation used to be
+-- asked first, so every row read "by invitation" -- a Cadet was sent looking for
+-- a Squad Lead who is not allowed to hire them, when what stands between them
+-- and MaxTac is the Detective rank. What is missing is said first; "by
+-- invitation" is what somebody who meets every requirement is told.
 -- @param terms table from Access.Terms
 -- @param character table|nil `{ grade(citizenJob), allowed(right) }`
 -- @return boolean
@@ -514,8 +520,10 @@ end
 function Access.MeetsTerms(terms, character)
 	if type(terms) ~= 'table' then return false, 'jobs.noSuchJob' end
 	if terms.open ~= true then return false, 'jobs.notOpen' end
+	local met, missing = Access.MeetsRequirements(terms, character)
+	if not met then return false, missing end
 	if terms.approval == true then return false, 'jobs.byInvitation' end
-	return Access.MeetsRequirements(terms, character)
+	return true, nil
 end
 
 -- ── the cross-module check ──────────────────────────────────────────────────

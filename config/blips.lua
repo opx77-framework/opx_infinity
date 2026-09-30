@@ -279,5 +279,17 @@ OPX.Config.MODULES.blips = {
 			RANGE = 0,
 			WALLS = false,
 		},
+
+		-- Bank branches (`/opx.bank.add`), where a paycheck is drawn as cash.
+		-- `drop_point` is the `ServicePointDropPointVariant`: the base game's
+		-- service point for handing things over, and map-capable, which the
+		-- base game has no bank icon for.
+		bank = {
+			SHOW = true,
+			SPRITE = 'drop_point',
+			LABEL = 'Bank',
+			RANGE = 0,
+			WALLS = false,
+		},
 	},
 }

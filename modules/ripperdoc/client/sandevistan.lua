@@ -91,8 +91,14 @@ local lostSaid = false
 -- How long the watch lets `absent` stand before it asks, and how often it asks.
 local ABSENT_GRACE_MS = 4000
 local ASK_EVERY_MS = 5000
--- A boost is never longer than the client ceiling plus margin.
-local CAP_MS = 15500
+-- A BOOST IS NEVER LONGER THAN THIS: the longest the character's level makes
+-- one (44 s, `M.Ripper.SANDY_MAX_SECONDS`) and its 250 ms margin, inside the
+-- 45 s opx_sandy_view 1.4.9 holds the owner's clock for. The server holds the
+-- same number (`server/sandevistan.lua`). Everything this file times a boost
+-- by -- the owner's clock, a slowed player's claim, the layers, the plate, the
+-- screen, the owner's end -- follows the boost's own `remainingMs` under it.
+local CAP_MS = 45000
+Sandy.CAP_MS = CAP_MS
 
 --- The look a name stands for, from the shared config. Nil for anything the
 --- config does not carry: the wire names a look, it never defines one.
@@ -559,7 +565,7 @@ end
 local function dilate(scale, ms, exemptSelf)
 	local api = dilation()
 	if api == nil then return false end
-	local ran, leased = pcall(api.authorise, REASON, math.max(250, math.min(30000, ms)))
+	local ran, leased = pcall(api.authorise, REASON, math.max(250, math.min(CAP_MS, ms)))
 	if not ran or leased == false or leased == nil then return false end
 	local request = { reason = REASON, worldScale = scale, durationMs = ms, easeOut = EASE_OUT,
 		exemptSelf = exemptSelf == true }
@@ -765,6 +771,18 @@ local function ownStart(payload, look, remaining)
 	local easeMs = math.max(0, math.min(2000, math.floor(tonumber(payload.easeMs) or 250)))
 	local scale, fallback = tonumber(payload.scale), tonumber(payload.fallbackScale)
 	local clock, clockWhy = 'real time', nil
+	-- A SEATED OWNER KEEPS REAL TIME. This client simulates the vehicle it sits
+	-- in for everybody else (the platform's physics owner), and a slowed world
+	-- here is a slowed car or aircraft on every other screen -- the desync the
+	-- server's own sweep now spares seated bystanders from. The boost, its look
+	-- and its speed still land; only the clock is left alone.
+	local vehicles = Open77.vehicles
+	if type(vehicles) == 'table' and type(vehicles.getPlayerSeat) == 'function' then
+		local asked, seat = pcall(vehicles.getPlayerSeat)
+		if asked and type(seat) == 'table' and seat.vehicleId ~= nil then
+			scale, fallback, clockWhy = nil, nil, 'seated in a vehicle: the clock stays real time'
+		end
+	end
 	-- THE BASE GAME'S ASYMMETRY where the build has the lease: the world
 	-- slows, this body does not.
 	if scale ~= nil and scale > 0 and scale < 1 then
@@ -861,6 +879,32 @@ ownStop = function()
 		or 'nothing held the clock'))
 	-- Somebody else's Sandevistan may still be slowing this client.
 	reslow(250)
+end
+
+--- The owner sat down in a vehicle mid-boost: this machine's clock goes back
+--- to real time and the boost itself goes on. See `ownStart`: a seated client
+--- simulates its vehicle for every other screen, and a slowed world here is a
+--- vehicle that crawls and lurches everywhere else (a MaxTac AV pilot boarded
+--- mid-boost on 2026-09-28 at 23:44:07 and flew the first 25 s of the flight on
+--- a slowed clock).
+-- @return boolean whether the clock was handed back
+function Sandy.OwnSeated()
+	if own == nil or not (own.dilated or own.viewed or own.scaled) then return false end
+	local vehicles = Open77.vehicles
+	if type(vehicles) ~= 'table' or type(vehicles.getPlayerSeat) ~= 'function' then return false end
+	local asked, seat = pcall(vehicles.getPlayerSeat)
+	if not asked or type(seat) ~= 'table' or seat.vehicleId == nil then return false end
+	if own.dilated then
+		undilate()
+	elseif own.viewed then
+		viewCall('release', 250)
+	elseif own.scaled then
+		timeScale(1, nil, 250)
+	end
+	own.dilated, own.viewed, own.scaled = false, false, false
+	slowMode = nil
+	say('Sandevistan: seated in a vehicle -- this machine\'s clock is back to real time, the boost goes on')
+	return true
 end
 
 --- A slowdown for somebody else's boost, in this machine's journal: what
@@ -1044,7 +1088,13 @@ function Sandy.WatchOverdrive(now)
 		if own ~= nil then watch.phaseSeen = true end
 	elseif not engaged and watch.active then
 		watch.active = false
-		say('the overdrive on this body ended')
+		-- A boost the level lengthened goes on after the platform's overdrive
+		-- (its speed) is over: the look, the slowed world and the screen are
+		-- the ripperdoc's, to their own end.
+		say(own ~= nil and own.expires ~= nil and own.expires > now
+			and ('the overdrive on this body ended; the Sandevistan runs on for %d ms (the character\'s level)')
+				:format(math.floor(own.expires - now))
+			or 'the overdrive on this body ended')
 	end
 	if watch.active and not watch.phaseSeen and not watch.warned and now - watch.since >= 3000
 		and type(kit.reflex) == 'table' and kit.reflex.look ~= nil then
@@ -1074,7 +1124,9 @@ end
 
 --- One pass of the lost-power watch. Yields.
 function Sandy.Watch()
-	if kit.reflex == nil or waiting ~= nil or not Sandy.BodyFree() then
+	-- A power the server HOLDS BACK until its cooldown ends (the boost ran
+	-- longer than the platform's) is not lost: nothing is asked for it.
+	if kit.reflex == nil or kit.reflex.held == true or waiting ~= nil or not Sandy.BodyFree() then
 		absentSince = nil
 		return
 	end
@@ -1193,8 +1245,9 @@ end
 
 -- ── the doors ───────────────────────────────────────────────────────────
 
--- What the journal last said of the kit.
+-- What the journal last said of the kit, and of a power held back.
 local kitSaid = nil
+local heldSaid = false
 
 --- What the server holds on this player, and what it asks this machine to do.
 -- @param payload table
@@ -1215,6 +1268,20 @@ function Sandy.OnKit(payload)
 		else
 			say('Sandevistan: the server says this player holds no overdrive')
 			projectionSaid = nil
+		end
+	end
+	-- HELD BACK: the power is still this player's (its real item stays on) but
+	-- nothing engages it until the boost it gave is over and its cooldown has
+	-- passed. Said once each way.
+	local heldNow = held ~= nil and held.held == true
+	if heldNow ~= heldSaid then
+		heldSaid = heldNow
+		if heldNow then
+			absentSince, askedAt = nil, nil
+			say(('Sandevistan: %s is held back until the boost is over and its cooldown has passed')
+				:format(tostring(held.entry)))
+		elseif held ~= nil then
+			say(('Sandevistan: %s is back -- its cooldown is over'):format(tostring(held.entry)))
 		end
 	end
 	if type(payload.announce) == 'string' then
@@ -1303,6 +1370,8 @@ function Sandy.Start()
 			end
 			-- The owner's own boost ends at its own deadline, whatever else is read.
 			if own ~= nil and own.expires ~= nil and now >= own.expires + 500 then pcall(ownStop) end
+			-- And gives the clock back the moment the owner sits in a vehicle.
+			if own ~= nil then pcall(Sandy.OwnSeated) end
 			local ran, failure = pcall(Sandy.WatchOverdrive, now)
 			if not ran then Open77.log.warn('[ripperdoc] the overdrive watch raised: ' .. tostring(failure)) end
 			ran, failure = pcall(Sandy.WearTick, now)

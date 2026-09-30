@@ -20,6 +20,12 @@
 -- between two opens is a roster that has missed a purchase, a sale, or the same
 -- garage's other door being used by the same player a minute ago.
 --
+-- A JOB'S OWN VEHICLES OPEN THE LIST, under the job's name, when the server
+-- sends any (`config/garages.lua` JOB_VEHICLES): each row's name is a catalogue
+-- key read here in the player's language, and picking one asks for that fleet
+-- row and never for a plate. Only a list that has them grows captions; every
+-- other list is drawn exactly as it was.
+--
 -- Markers are engine primitives, so nothing is redrawn per frame: one is created
 -- when a point comes into range and removed when it leaves. `reconcile` owns
 -- that set for as long as the module is running, and `clearMarkers` empties it
@@ -64,8 +70,32 @@ local reportedMarkers, reportedStrip, reportedMenu = false, false, false
 -- Scheduler handles, so Stop can cancel them.
 local scanJob, askJob = nil, nil
 
+-- THE LIST IS TAKEN IN ON A THREAD OF ITS OWN, A FEW POINTS PER RESUME. A
+-- client resume has a TIME budget -- the frame's two milliseconds shared by
+-- every running resource, some sixty microseconds each on a live server -- and
+-- a SYNC read whole in its own event handler (every point through
+-- `Access.FromWire`, about 380 VM instructions each, then the scan) ran past it
+-- on a busy frame: `garages/client/main.lua:582: Open77 script execution
+-- budget exceeded`, from the SYNC handler, every fifteen seconds while the
+-- world was loading (2026-09-27 and -28). Two things end it:
+--   * a list whose revision (`rev`, see the server's `sync`) is the newest one
+--     this client has already taken, or is taking, is not read again -- which
+--     is nearly every SYNC, since every client asks every POLL_MS;
+--   * a new list is read TAKE_BATCH points per resume, and the scan that draws
+--     it runs in a resume of its own.
+-- A list that arrives while another is being read replaces it: only the
+-- newest is ever adopted, and the one being read is dropped half-way. A read
+-- that fails (the budget, whatever else) is said, and the next SYNC of that
+-- list is read again rather than skipped.
+local TAKE_BATCH = 4
+local incoming, taking, wantedRev = nil, false, nil
+
+-- Bumped by `Init`, so a reading thread that outlives a stop never writes the
+-- next session's list.
+local generation = 0
+
 -- Declared ahead of the functions that reference each other.
-local syncPrompt, onRow
+local syncPrompt, onRow, takeIn
 
 -- Reads the key declaration, with the shipped value as the fallback so a config
 -- that lost its KEY block still names a key.
@@ -155,6 +185,9 @@ local function createMarker(spot)
 	return id, nil
 end
 
+-- New markers one reconcile may create; see `reconcile`.
+local CREATES_PER_PASS = 6
+
 -- Removes one marker without raising.
 local function removeMarker(id)
 	local api = Open77.markers
@@ -174,12 +207,23 @@ end
 local function reconcile(x, y)
 	local limit = Access.MaxDistance()
 	local reach = limit * limit
+	local made = 0
 
 	for key, spot in pairs(spots) do
-		local flat = nil
-		if x ~= nil then flat = Access.FlatDistanceSquared(spot, x, y) end
-		local wanted = flat ~= nil and flat <= reach
-		if wanted and markers[key] == nil then
+		-- Inline, on a position `scan` already coerced: the per-spot cost of this
+		-- loop is what every scan pays for every point on the server.
+		local wanted = false
+		if x ~= nil then
+			local dx, dy = x - spot.x, y - spot.y
+			wanted = dx * dx + dy * dy <= reach
+		end
+		-- AT MOST CREATES_PER_PASS NEW MARKERS A PASS. A player who arrives among
+		-- thirty points would otherwise have thirty created in one resume, which
+		-- is how this function ran past the platform's budget right after a world
+		-- load (2026-09-28, the first scan after the SYNC); the rest follow on the
+		-- next scans, SCAN_MS apart.
+		if wanted and markers[key] == nil and made < CREATES_PER_PASS then
+			made = made + 1
 			local id, failure = createMarker(spot)
 			if id == nil then
 				if not reportedMarkers then
@@ -331,27 +375,71 @@ local function openList(payload)
 	local api = menuApi()
 	if api == nil then return end
 
-	local items = {}
+	-- THE JOB'S OWN VEHICLES ARE A SECTION OF THEIR OWN, and only then does the
+	-- list grow captions. A job row is a different promise from every other row
+	-- on the list -- signed out, not owned -- so it sits under its job's name,
+	-- and what follows it is captioned too, or the player's own cars would read
+	-- as the job's. A list with no job rows is drawn exactly as it always was.
+	local jobRows, stockRows, ownRows = {}, {}, {}
 	for index = 1, #rows do
 		local row = rows[index]
-		if row.fleet then
-			-- A fleet row is the division's own offering: its LABEL where an
-			-- owned row shows a plate, and the record it is issued under. The
-			-- label is the operator's words and is shown untranslated.
+		if type(row) == 'table' and type(row.job) == 'string' then
+			jobRows[#jobRows + 1] = row
+		elseif type(row) == 'table' and row.fleet then
+			stockRows[#stockRows + 1] = row
+		elseif type(row) == 'table' then
+			ownRows[#ownRows + 1] = row
+		end
+	end
+	local sectioned = #jobRows > 0
+
+	local items = {}
+	if sectioned then
+		-- The job's catalogue name is a name and is not translated; the words
+		-- around it are the catalogue's.
+		items[#items + 1] = { separator = true,
+			label = locale('garages.list.jobSection',
+				{ job = tostring(payload.jobLabel or payload.jobName or '') }) }
+		for index = 1, #jobRows do
+			local row = jobRows[index]
+			-- The label is a catalogue key the server named, read here in the
+			-- player's own language; the id and the request carry the fleet KEY.
 			items[#items + 1] = {
-				id = tostring(row.record),
-				label = tostring(row.label or row.record),
-				value = locale('garages.list.fleet'),
-				data = { record = row.record },
-			}
-		else
-			items[#items + 1] = {
-				id = tostring(row.plate),
-				label = tostring(row.plate),
-				value = locale(row.here and 'garages.list.here' or 'garages.list.away'),
-				data = { plate = row.plate },
+				id = 'job:' .. row.job,
+				icon = 'vehicle',
+				label = locale(tostring(row.label or row.job)),
+				value = locale(row.out and 'garages.list.jobOut' or 'garages.list.jobReady'),
+				description = locale('garages.list.jobHint'),
+				data = { job = row.job },
 			}
 		end
+		if #stockRows > 0 then
+			items[#items + 1] = { separator = true, label = locale('garages.list.fleetSection') }
+		end
+	end
+	for index = 1, #stockRows do
+		local row = stockRows[index]
+		-- A fleet row is the division's own offering: its LABEL where an
+		-- owned row shows a plate, and the record it is issued under. The
+		-- label is the operator's words and is shown untranslated.
+		items[#items + 1] = {
+			id = tostring(row.record),
+			label = tostring(row.label or row.record),
+			value = locale('garages.list.fleet'),
+			data = { record = row.record },
+		}
+	end
+	if sectioned and #ownRows > 0 then
+		items[#items + 1] = { separator = true, label = locale('garages.list.ownSection') }
+	end
+	for index = 1, #ownRows do
+		local row = ownRows[index]
+		items[#items + 1] = {
+			id = tostring(row.plate),
+			label = tostring(row.plate),
+			value = locale(row.here and 'garages.list.here' or 'garages.list.away'),
+			data = { plate = row.plate },
+		}
 	end
 	items[#items + 1] = { separator = true, label = '' }
 	items[#items + 1] = { id = 'close', label = locale('garages.close'), close = true }
@@ -382,23 +470,26 @@ local function openList(payload)
 	syncPrompt()
 end
 
--- Sends the bring-out -- or the fleet issue -- this file has already decided
--- to offer. A row carries a plate (a vehicle the character owns) or a record
--- (a hull of the division's stock to issue), never both.
+-- Sends the bring-out -- the fleet issue, or the job vehicle -- this file has
+-- already decided to offer. A row carries a plate (a vehicle the character
+-- owns), a record (a hull of the division's stock to issue) or a job (a row of
+-- the job's own fleet to sign out), and only ever one of them.
 local function bring(data)
 	local key = listing
 	takeDown()
 	if type(key) ~= 'string' then return end
 	local plate = type(data.plate) == 'string' and data.plate or nil
 	local record = type(data.record) == 'string' and data.record or nil
-	if plate == nil and record == nil then return end
-	local sent, reason = TriggerServerEvent(M.Event.REQUEST, key, plate, record)
+	local job = type(data.job) == 'string' and data.job or nil
+	if plate == nil and record == nil and job == nil then return end
+	local sent, reason = TriggerServerEvent(M.Event.REQUEST, key, plate, record, job)
 	if not sent then
 		local verdict = { ok = false, error = tostring(reason or 'not_sent'), source = 'client' }
 		publish(verdict)
 		return say('error', locale('garages.refused'))
 	end
-	publish({ ok = true, queued = true, spot = key, plate = plate, record = record, source = 'menu' })
+	publish({ ok = true, queued = true, spot = key, plate = plate, record = record, job = job,
+		source = 'menu' })
 end
 
 -- Acts on a row the list raised. The shape is checked because the menu also
@@ -414,7 +505,8 @@ onRow = function(payload)
 	end
 	if payload.action ~= 'select' or captured() then return end
 	local data = payload.data
-	if type(data) ~= 'table' or (type(data.plate) ~= 'string' and type(data.record) ~= 'string') then
+	if type(data) ~= 'table' or (type(data.plate) ~= 'string' and type(data.record) ~= 'string'
+		and type(data.job) ~= 'string') then
 		return
 	end
 	bring(data)
@@ -528,11 +620,67 @@ local function scan()
 	reconcile(x, y)
 end
 
+--- Reads one list in, TAKE_BATCH points per resume, and adopts it unless a
+--- newer one landed meanwhile (or the module stopped); then draws it, in a
+--- resume of its own. Yields.
+local function readList(batch, mine)
+	local count = #batch.spots
+	local accepted = {}
+	for index = 1, count do
+		local spot, why = Access.FromWire(batch.spots[index])
+		if spot == nil then
+			Open77.log.warn('[garages] a point was refused: ' .. tostring(why))
+		else
+			accepted[spot.key] = spot
+		end
+		if index % TAKE_BATCH == 0 and index < count then
+			Wait(0)
+			if generation ~= mine or incoming ~= nil then return end
+		end
+	end
+	if generation ~= mine then return end
+	spots = accepted
+	-- A full pass, not just the markers: a list that arrives while the player
+	-- is standing on a point must put its row up now rather than wait for the
+	-- next scan.
+	Wait(0)
+	if generation == mine then scan() end
+end
+
+--- Takes the newest SYNC in, on one thread at a time: a SYNC that lands while
+--- it runs is picked up by the same thread, and the list being read is dropped.
+function takeIn()
+	taking = true
+	local mine = generation
+	local task, refused = CreateThread(function()
+		while incoming ~= nil and generation == mine do
+			local batch = incoming
+			incoming = nil
+			local ok, failure = pcall(readList, batch, mine)
+			if not ok and generation == mine then
+				if wantedRev == batch.rev then wantedRev = nil end
+				Open77.log.warn('[garages] the point list was not taken in: ' .. tostring(failure))
+				Wait(0)
+			end
+		end
+		if generation == mine then taking = false end
+	end)
+	-- The host answers a task id, or nil and why (`task_limit_or_stopping`). A
+	-- thread that never started must not leave the door shut: nothing would
+	-- ever read a list again this session.
+	if task == nil and refused ~= nil then
+		taking, incoming, wantedRev = false, nil, nil
+		Open77.log.warn('[garages] the point list could not be read: ' .. tostring(refused))
+	end
+end
+
 -- ── the phases ──────────────────────────────────────────────────────────────
 
 --- Clears everything this half holds. Never yields.
 -- @author XEROX710
 function Runtime.Init()
+	generation = generation + 1
+	incoming, taking, wantedRev = nil, false, nil
 	spots, markers = {}, {}
 	nearest, shown, shownLabel, keyRegistered = nil, false, nil, false
 	handle, listing = nil, nil
@@ -584,20 +732,14 @@ function Runtime.Start()
 	RegisterNetEvent(M.Event.SYNC, function(payload)
 		local listed = type(payload) == 'table' and payload.spots or nil
 		if type(listed) ~= 'table' then return end
-		local accepted = {}
-		for index = 1, #listed do
-			local spot, why = Access.FromWire(listed[index])
-			if spot == nil then
-				Open77.log.warn('[garages] a point was refused: ' .. tostring(why))
-			else
-				accepted[spot.key] = spot
-			end
-		end
-		spots = accepted
-		-- A full pass, not just the markers: a list that arrives while the player
-		-- is standing on a point must put its row up now rather than wait for the
-		-- next scan.
-		scan()
+		local rev = type(payload.rev) == 'string' and payload.rev ~= '' and payload.rev or nil
+		-- The newest list this client has taken, or is taking: nothing to do.
+		-- Anything else is the server's newest answer and replaces whatever is
+		-- being read -- even the list that was held before it.
+		if rev ~= nil and rev == wantedRev then return end
+		wantedRev = rev
+		incoming = { spots = listed, rev = rev }
+		if not taking then takeIn() end
 	end)
 
 	RegisterNetEvent(M.Event.VEHICLES, function(payload)
@@ -609,17 +751,19 @@ function Runtime.Start()
 		openList(payload)
 	end)
 
-	RegisterNetEvent(M.Event.ANSWER, function(key, ok, failure, plate, action)
+	RegisterNetEvent(M.Event.ANSWER, function(key, ok, failure, plate, action, job)
 		local verdict = {
 			spot = type(key) == 'string' and key or nil,
 			ok = ok == true,
 			error = ok ~= true and tostring(failure or 'garages.refused') or nil,
 			plate = plate,
-			-- 'brought', 'recalled' or 'stored': which of the key's jobs the server
-			-- actually did. Carried rather than guessed at from the toast, because
-			-- "a car came out" and "the car was already out and had to be moved"
-			-- are different facts about the same marker.
+			-- 'brought', 'recalled', 'stored', 'issued' or 'returned': which of the
+			-- key's jobs the server actually did. Carried rather than guessed at
+			-- from the toast, because "a car came out" and "the car was already
+			-- out and had to be moved" are different facts about the same marker.
 			action = type(action) == 'string' and action or nil,
+			-- The fleet KEY of a job vehicle, which has no plate to name.
+			job = type(job) == 'string' and job or nil,
 			source = 'server',
 		}
 		publish(verdict)

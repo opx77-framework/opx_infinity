@@ -10,12 +10,36 @@
 -- (the two moments a player should look up for), fed to the panel's strip when
 -- the panel is up, and dropped when it is not -- the tree is always the
 -- server's to answer for, so nothing here needs a backlog.
+--
+-- ONLY A KNOCK OPENS THE TREE. The server answers three things with a frame --
+-- the knock, a spend, and a re-ask after an admin moved the ledger -- and only
+-- the first may put a closed panel up. A spend answered after the player
+-- stowed, or an admin's refresh racing a stow, lands on a panel that is down
+-- and is dropped: a tree that re-opened itself would be a tree the player
+-- cannot get rid of.
+--
+-- ONE PRESS, ONE CLOSE. The tree is modal and holds the keyboard, so on this
+-- platform the key mapping is inert while it is up and the PAGE catches its own
+-- stow key and asks to close; a build whose mapping fires anyway sends a
+-- second close for the same press. Close is idempotent, and for a moment after
+-- a close the key cannot open again -- the press that closed the tree never
+-- re-opens it.
 
 local M = OPX.Modules.Get('skills')
 
 --- Whether the tree is up, and the frame it is up on.
 local open = false
 local frame = nil
+
+--- Whether a knock is out: the one answer allowed to open a closed panel.
+local knocking = false
+
+--- When the tree last closed, so the same press cannot open it again.
+local closedAtMs = nil
+
+--- How long after a close the key cannot re-open the tree: one press, in any
+--- order the page and the mapping report it.
+local REOPEN_GUARD_MS = 400
 
 --- The player's own binding, as `RegisterKeyMapping` answered it. The page has
 -- no keyboard layout to resolve a mapping id with.
@@ -46,12 +70,16 @@ local function toastWhy(code)
 	OPX.Toast.Locale(M.Skill.Refusal[text] or 'skills.failed', { reason = text }, 'error')
 end
 
---- Closes the tree. Idempotent: a stow pressed twice is one close.
+--- Closes the tree. Idempotent: a stow asked by the page's button, by Escape,
+-- by the stow key the page caught and by a mapping that fired anyway is ONE
+-- close, whichever lands first.
 -- @param why string|nil for the log only
 function M.Skill.Close(why)
+	knocking = false
 	if not open then return end
 	open = false
 	frame = nil
+	closedAtMs = OPX.Now()
 	M.SkillView.Release()
 	show({ kind = 'close', why = tostring(why or 'stowed') })
 	Open77.log.info('[skills] tree closed (' .. tostring(why or 'stowed') .. ')')
@@ -64,11 +92,21 @@ function M.Skill.Toggle()
 		M.Skill.Close('key')
 		return
 	end
+	-- THE PRESS THAT CLOSED IT: the page caught the key and closed the tree a
+	-- moment ago, and this is the mapping reporting the same press.
+	if closedAtMs ~= nil and OPX.Now() - closedAtMs < REOPEN_GUARD_MS then return end
 	if captured() then
 		OPX.Toast.Locale('skills.menuOpen', nil, 'error')
 		return
 	end
+	knocking = true
 	TriggerServerEvent(M.Event.ASK)
+end
+
+--- Whether the tree is up. For a test, and for whatever asks next.
+-- @return boolean
+function M.Skill.IsOpen()
+	return open
 end
 
 --- Takes the page's intents: the one spend, and the stow. The spend names a
@@ -78,12 +116,35 @@ end
 -- @param payload table|nil
 function M.Skill.FromView(action, payload)
 	if action == 'spend' then
+		if not open then return end
 		local node = type(payload) == 'table' and tostring(payload.node or '') or ''
 		if node == '' then return end
 		TriggerServerEvent(M.Event.SPEND, node)
 	elseif action == 'close' then
 		M.Skill.Close('view')
 	end
+end
+
+--- Runs the preload's `develop` export on THIS machine -- the base game's own
+--- Level, Street Cred, attributes, skills, perk and relic points, set to their
+--- tops. Nothing else can reach those numbers: they are the engine's, and the
+--- preload is what speaks to it. Answers ok and, when not, why -- the export's
+--- own refusal (`invalid_code`, `boosting`, `no_timescale_on_this_build`) or
+--- the reason it could not be asked at all (the resource not running, a build
+--- with no synchronous exports).
+-- @return boolean
+-- @return string|nil
+function M.Skill.Develop()
+	local settings = M.Skill.DevelopSettings()
+	if settings == nil then return false, 'off' end
+	local exports = Open77 and Open77.exports
+	if type(exports) ~= 'table' or type(exports.callSync) ~= 'function' then
+		return false, 'no_sync_exports'
+	end
+	local ran, ok, why = pcall(exports.callSync, settings.RESOURCE, settings.EXPORT, settings.CODE)
+	if not ran then return false, tostring(ok) end
+	if ok == true then return true end
+	return false, why ~= nil and tostring(why) or (ok == nil and 'no_answer' or 'refused')
 end
 
 --- Declares the tree's key and wires the two upstream handlers' seam.
@@ -126,6 +187,10 @@ function M.Start()
 			return
 		end
 		if payload.refused ~= nil then toastWhy(payload.refused) end
+		-- ONLY A KNOCK OPENS THE TREE (the header): an answer to a spend or a
+		-- refresh that lands after the stow is for a panel that is gone.
+		if not open and not knocking then return end
+		knocking = false
 		frame = payload
 		local was = open
 		open = true
@@ -152,6 +217,27 @@ function M.Start()
 		end
 	end)
 
+	-- Somebody else moved the ledger: the sentence, in this player's language,
+	-- and a re-ask ONLY when the tree is up -- a closed tree stays closed.
+	RegisterNetEvent(M.Event.REFRESH, function(notice)
+		if type(notice) == 'table' and type(notice.key) == 'string' and notice.key ~= '' then
+			OPX.Toast.Locale(notice.key, type(notice.args) == 'table' and notice.args or nil, 'success')
+		end
+		if open then TriggerServerEvent(M.Event.ASK) end
+	end)
+
+	-- The base game's own levels, asked of this machine by an admin's `max`.
+	-- The player is told either way, and the server is told what happened.
+	RegisterNetEvent(M.Event.DEVELOP, function(nonce)
+		local ok, why = M.Skill.Develop()
+		if ok then
+			OPX.Toast.Locale('skills.develop.done', nil, 'success')
+		else
+			OPX.Toast.Locale('skills.develop.refused', { why = tostring(why or 'refused') }, 'error')
+		end
+		TriggerServerEvent(M.Event.DEVELOPED, nonce, ok == true, why)
+	end)
+
 	M.SkillView.Start()
 end
 
@@ -160,4 +246,6 @@ function M.Stop()
 	M.Skill.Close('stop')
 	M.SkillView.Stop()
 	bound = nil
+	knocking = false
+	closedAtMs = nil
 end

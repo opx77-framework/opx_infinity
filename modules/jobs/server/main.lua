@@ -286,6 +286,22 @@ local function gradesOf(name)
 	return out
 end
 
+--- A job's own name as the catalogue writes it -- "NCPD", "Trauma Team" --
+--- for a sentence a player reads. Its config key when the catalogue has none.
+-- @param name string|nil
+-- @return string|nil nil for no name at all, so a refusal with no job says none
+local function labelOf(name)
+	if type(name) ~= 'string' or name == '' then return nil end
+	if character ~= nil and type(character.GetJob) == 'function' then
+		local read, definition = pcall(character.GetJob, name)
+		if read and type(definition) == 'table' and type(definition.label) == 'string'
+			and definition.label ~= '' then
+			return definition.label
+		end
+	end
+	return tostring(name)
+end
+
 --- One job's grade definition, or nil.
 -- @param name string
 -- @param grade number
@@ -296,6 +312,17 @@ local function rankOf(name, grade)
 	if not read or type(definition) ~= 'table' or type(definition.grades) ~= 'table' then return nil end
 	local rank = definition.grades[grade]
 	return type(rank) == 'table' and rank or nil
+end
+
+--- A grade's own name -- "Officer", "Squad Lead" -- or its number when the
+--- catalogue gives it none. What a promotion notice names.
+-- @param name string
+-- @param level integer
+-- @return string
+local function gradeLabel(name, level)
+	local rank = rankOf(name, level)
+	return rank ~= nil and type(rank.name) == 'string' and rank.name ~= '' and rank.name
+		or tostring(level)
 end
 
 --- A character's default job, read from the character module's own config.
@@ -310,6 +337,23 @@ local function defaultJob()
 	local player = type(config) == 'table' and config.PLAYER or nil
 	local name = type(player) == 'table' and player.DEFAULT_JOB or nil
 	return type(name) == 'string' and name ~= '' and name or nil
+end
+
+--- The job a character works NOW, when it is not the default one: what a
+--- sentence names after a job was taken away. The character contract falls
+--- back to another job still held before it falls back to the default, so a
+--- MaxTac operator dismissed from the division is back at NCPD -- and is told
+--- so, rather than left to find out at the next locked door. Memory only.
+-- @param citizenId string
+-- @return string|nil
+local function workingNow(citizenId)
+	if character == nil or type(character.ResolvePlayer) ~= 'function' then return nil end
+	local live = character.ResolvePlayer(citizenId)
+	local data = type(live) == 'table' and live.PlayerData or nil
+	local job = type(data) == 'table' and data.job or nil
+	local name = type(job) == 'table' and job.name or nil
+	if type(name) ~= 'string' or name == defaultJob() then return nil end
+	return name
 end
 
 --- One job's seniority bank, or zero.
@@ -481,6 +525,10 @@ local function jobState(name, who)
 		isBoss = isBossOf(who.citizenId, name),
 		top = terms ~= nil and terms.top or 0,
 	}
+	-- The job they WORK, of the ones they hold: the one every gate, the duty
+	-- key, the pay and the clock read. Only said when true, like every other
+	-- "yes" on this payload, so a board of nine jobs pays for one flag.
+	if held ~= nil and who.jobName == name then state.working = true end
 
 	-- The job's own name, so a row reads as what the catalogue calls the work
 	-- rather than as its config key.
@@ -523,7 +571,7 @@ local function jobState(name, who)
 			state.progress = progress.fraction
 			state.points = progress.points
 			state.required = progress.to
-			state.shortfall = progress.to - progress.points
+			state.shortfall = math.max(0, progress.to - progress.points)
 		end
 	elseif terms ~= nil then
 		-- Not a member: whether they could become one, and what is missing. The
@@ -535,6 +583,21 @@ local function jobState(name, who)
 		})
 		state.canJoin = met
 		state.missing = missing
+
+		-- THE REQUIREMENT BY NAME, when a job or a rank is what is missing: "your
+		-- rank is not high enough" leaves a Cadet guessing which rank, in which
+		-- job, and MaxTac's answer is one they can go and earn -- NCPD Detective.
+		-- The catalogue's own words for both, so the row says what the ladder
+		-- that grants it calls it.
+		local requires = terms.requires
+		if (missing == 'jobs.needsJob' or missing == 'jobs.needsGrade')
+			and type(requires) == 'table' and type(requires.job) == 'string' then
+			local rank = requires.grade ~= nil and rankOf(requires.job, requires.grade) or nil
+			state.needs = {
+				job = labelOf(requires.job),
+				grade = rank ~= nil and type(rank.name) == 'string' and rank.name or nil,
+			}
+		end
 	end
 
 	return state
@@ -772,7 +835,7 @@ function M.Roster(name, listed)
 			points = bank,
 			next = progress ~= nil and progress.level or nil,
 			progress = progress ~= nil and progress.fraction or nil,
-			shortfall = progress ~= nil and (progress.to - progress.points) or nil,
+			shortfall = progress ~= nil and math.max(0, progress.to - progress.points) or nil,
 		}
 		-- ROWS ARE ADDED WHILE THE PAYLOAD STILL FITS THE CLIENT'S WINDOW, and
 		-- the first one that would not ends the list. A configured limit is a
@@ -876,8 +939,9 @@ local function joinCore(source, who, name)
 	setBank(who.citizenId, name, 0)
 	flushSoon(who.citizenId)
 	OPX.Audit.Player(who.player, 'jobs.join', name)
-	Open77.log.info(('[jobs] %s joined %s'):format(safe(who.citizenId), safe(name)))
-	return Result.Ok({ job = name, grade = 0 })
+	Open77.log.info(('[jobs] %s joined %s%s'):format(safe(who.citizenId), safe(name),
+		unemployed and '' or ' (held beside their worked job)'))
+	return Result.Ok({ job = name, grade = 0, working = unemployed })
 end
 
 --- Joins the player at a sign-up board.
@@ -949,7 +1013,15 @@ function M.LastBoss(citizenId, name, map)
 	return bosses <= 1
 end
 
---- Takes the player out of the job a board stands for.
+--- Takes the player out of a job, at a sign-up board.
+--
+-- THE JOB IS THE ONE NAMED, exactly as a join's is. A sign-up board is one
+-- office for every job the config offers, and its own `JOB` is only its
+-- headline: reading the notice off the board took the player out of the
+-- headline job (NCPD at the shipped office) whichever job's row they pressed --
+-- a Trauma paramedic's notice was refused as "not a member", and an NCPD
+-- officer who also worked another job lost the badge instead. The board's own
+-- job stands in only when a caller names none.
 --
 -- THE LAST BOSS MAY NOT WALK OUT, and neither may they be fired or demoted: a
 -- desk with nobody able to sit behind it is a roster nobody can ever change
@@ -957,21 +1029,61 @@ end
 -- @author XEROX710
 -- @param source number
 -- @param key string
+-- @param name string|nil the job; the board's own job when omitted
 -- @return Result
-function M.Leave(source, key)
+function M.Leave(source, key, name)
 	local board, refusal, who = boardAt(source, key, M.KIND.SIGNUP)
 	if board == nil then return Result.Err(refusal) end
-	if Access.Terms(board.job) == nil then return Result.Err('jobs.noSuchJob', board.job) end
-	if who.jobs[board.job] == nil then return Result.Err('jobs.notMember', board.job) end
-	if M.LastBoss(who.citizenId, board.job) then return Result.Err('jobs.lastBoss', board.job) end
+	local job = board.job
+	if type(name) == 'string' and name ~= '' then job = name:lower() end
+	if Access.Terms(job) == nil then return Result.Err('jobs.noSuchJob', job) end
+	if who.jobs[job] == nil then return Result.Err('jobs.notYours', job) end
+	if M.LastBoss(who.citizenId, job) then return Result.Err('jobs.lastBoss', job) end
 
-	local left = character.RemovePlayerFromJob(who.citizenId, board.job)
+	local worked = who.jobName == job
+	local left = character.RemovePlayerFromJob(who.citizenId, job)
 	if not left.ok then return left end
-	dropBank(who.citizenId, board.job)
+	dropBank(who.citizenId, job)
 
-	OPX.Audit.Player(who.player, 'jobs.leave', board.job)
-	Open77.log.info(('[jobs] %s left %s'):format(safe(who.citizenId), safe(board.job)))
-	return Result.Ok({ job = board.job })
+	OPX.Audit.Player(who.player, 'jobs.leave', job)
+	Open77.log.info(('[jobs] %s left %s'):format(safe(who.citizenId), safe(job)))
+	-- `working` is the job worked NOW, said only when leaving took the worked
+	-- one away and another job still held took its place.
+	return Result.Ok({ job = job, working = worked and workingNow(who.citizenId) or nil })
+end
+
+--- Makes a job the player already holds the one they WORK, at a sign-up board.
+--
+-- A CHARACTER MAY HOLD SEVERAL JOBS AND WORKS ONE. A join makes the new job the
+-- worked one only for somebody unemployed; anybody with a career holds it
+-- beside the one they work -- and every gate, the duty key, the paycheck and
+-- the seniority clock read the worked job alone. So without this a second job
+-- was a membership nobody could ever work: no player-facing way moved the
+-- primary, and an NCPD detective hired into MaxTac stayed NCPD for good. The
+-- character contract's own switch does the work, which puts duty back to the
+-- new job's default the way any change of job does. Yields.
+-- @author XEROX710
+-- @param source number
+-- @param key string
+-- @param name string the job
+-- @return Result carrying `{ job, grade }`
+function M.Work(source, key, name)
+	local board, refusal, who = boardAt(source, key, M.KIND.SIGNUP)
+	if board == nil then return Result.Err(refusal) end
+	if type(name) ~= 'string' or name == '' then return Result.Err('error.badRequest') end
+	local job = name:lower()
+	if Access.Terms(job) == nil then return Result.Err('jobs.noSuchJob', job) end
+	if who.jobs[job] == nil then return Result.Err('jobs.notYours', job) end
+	if who.jobName == job then return Result.Err('jobs.alreadyWorking', job) end
+	if type(character.SetPlayerPrimaryJob) ~= 'function' then return Result.Err('jobs.refused', job) end
+
+	local switched = character.SetPlayerPrimaryJob(who.citizenId, job)
+	if not switched.ok then return switched end
+
+	OPX.Audit.Player(who.player, 'jobs.work', job)
+	Open77.log.info(('[jobs] %s now works %s (was %s)'):format(safe(who.citizenId), safe(job),
+		safe(who.jobName or 'nothing')))
+	return Result.Ok({ job = job, grade = tonumber(who.jobs[job]) or 0 })
 end
 
 -- ── the desk ────────────────────────────────────────────────────────────────
@@ -1034,7 +1146,12 @@ local function bossAct(source, board, action, target, who, requireDesk)
 
 		setBank(their.citizenId, name, 0)
 		flushSoon(their.citizenId)
-		OPX.NotifyLocale(candidate, 'jobs.hired', { job = name })
+		-- A hire of somebody with a career of their own is a job held BESIDE the
+		-- one they work, exactly as a join is, and the notice says so and says
+		-- where it is worked: MaxTac hires nobody but NCPD Detectives, so every
+		-- one of its hires lands here.
+		OPX.NotifyLocale(candidate, joined and 'jobs.hired' or 'jobs.hiredBeside',
+			{ job = labelOf(name) })
 		OPX.Audit.Player(who.player, 'jobs.hire',
 			('%s as %s grade %d'):format(safe(their.citizenId), safe(name), bottom))
 		Open77.log.info(('[jobs] %s hired %s into %s at grade %d')
@@ -1054,13 +1171,22 @@ local function bossAct(source, board, action, target, who, requireDesk)
 
 	if action == M.ACTION.FIRE then
 		if M.LastBoss(citizenId, name, map) then return Result.Err('jobs.lastBoss', name) end
+		local before = character.ResolvePlayer ~= nil and character.ResolvePlayer(citizenId) or nil
+		local worked = type(before) == 'table' and type(before.PlayerData) == 'table'
+			and type(before.PlayerData.job) == 'table' and before.PlayerData.job.name == name
 		local left = character.RemovePlayerFromJob(citizenId, name)
 		if not left.ok then return left end
 
 		dropBank(citizenId, name)
 		local live = character.ResolvePlayer ~= nil and character.ResolvePlayer(citizenId) or nil
 		local targetSource = type(live) == 'table' and tonumber(live.PlayerData.source) or nil
-		if targetSource ~= nil then OPX.NotifyLocale(targetSource, 'jobs.fired', { job = name }) end
+		if targetSource ~= nil then
+			OPX.NotifyLocale(targetSource, 'jobs.fired', { job = labelOf(name) })
+			local now = worked and workingNow(citizenId) or nil
+			if now ~= nil then
+				OPX.NotifyLocale(targetSource, 'jobs.working', { job = labelOf(now) })
+			end
+		end
 
 		OPX.Audit.Player(who.player, 'jobs.fire',
 			('%s from %s'):format(safe(citizenId), safe(name)))
@@ -1102,7 +1228,7 @@ local function bossAct(source, board, action, target, who, requireDesk)
 	local targetSource = type(live) == 'table' and tonumber(live.PlayerData.source) or nil
 	if targetSource ~= nil then
 		OPX.NotifyLocale(targetSource, step > 0 and 'jobs.promoted' or 'jobs.demoted',
-			{ job = name, grade = tostring(wanted) })
+			{ job = labelOf(name), grade = gradeLabel(name, wanted) })
 	end
 	OPX.Audit.Player(who.player, step > 0 and 'jobs.promote' or 'jobs.demote',
 		('%s in %s to grade %d'):format(safe(citizenId), safe(name), wanted))
@@ -1192,13 +1318,15 @@ local function tick()
 		if type(name) ~= 'string' then return end
 
 		local terms = Access.Terms(name)
-		if terms == nil or terms.top <= 0 or terms.approval == true then return end
+		if terms == nil or terms.top <= 0 then return end
 
 		-- The bank is paid BEFORE the rank is considered, and every holder of the
 		-- job is paid whether or not their rank can move: a job whose ranks are
-		-- granted at a desk still banks the time that buys them.
+		-- granted at a desk still banks the time that buys them. (An APPROVAL job
+		-- used to be skipped here, before the bank: MaxTac's board read "0 / 240"
+		-- for ever and its skill trunk was never fed.)
 		local points = pay(who.citizenId, name, perTick)
-		if not auto then return end
+		if not auto or terms.approval == true then return end
 
 		local earned = Seniority.GradeFor(terms.ladder, points)
 		local held = tonumber(job.grade and job.grade.level) or 0
@@ -1215,7 +1343,8 @@ local function tick()
 		if not moved.ok then return end
 		promotedAt[who.citizenId] = now
 
-		OPX.NotifyLocale(source, 'jobs.promotedAuto', { job = name, grade = tostring(wanted) })
+		OPX.NotifyLocale(source, 'jobs.promotedAuto',
+			{ job = labelOf(name), grade = gradeLabel(name, wanted) })
 		OPX.Audit.Player(who.player, 'jobs.promote',
 			('%s to grade %d by seniority'):format(safe(name), wanted))
 		Open77.log.info(('[jobs] %s promoted to %s grade %d on seniority (%.1f point(s))')
@@ -1432,8 +1561,15 @@ local function reportRank(source, name, who)
 		else
 			local points = bankOf(citizenId, name)
 			local progress = Seniority.Progress(terms.ladder, held, points)
+			-- An invitation job banks past its next rank and waits for the desk:
+			-- "-60 to go" is a sentence nobody can read.
+			local remainder = ''
+			if progress ~= nil then
+				remainder = progress.to - points > 0 and (', %.0f to go'):format(progress.to - points)
+					or ', the next rank is served and waits for the desk'
+			end
 			lines[#lines + 1] = ('  %s holds grade %d with %.1f point(s)%s'):format(citizenId, held,
-				points, progress ~= nil and (', %.0f to go'):format(progress.to - points) or '')
+				points, remainder)
 		end
 	end
 	OPX.CommandResult(source, true, ('%s\n%s'):format(name, table.concat(lines, '\n')))
@@ -1463,8 +1599,19 @@ local function registerCommands()
 			first = 2
 		end
 
-		local key = type(args[first]) == 'string' and args[first] or ''
-		local job = type(args[first + 1]) == 'string' and args[first + 1]:lower() or ''
+		-- ONE WORD LEFT IS THE JOB. The key is the optional one -- the usage
+		-- says `[key] <job>` and a key is minted below when it is omitted -- but
+		-- the last word was always read as the job's slot and the one before it
+		-- as the key's, so `/opx.jobs.add boss ncpd` put `ncpd` in the key and
+		-- was refused for naming no job: the minting below could never run.
+		local key, job
+		if args[first + 1] == nil then
+			key = ''
+			job = type(args[first]) == 'string' and args[first]:lower() or ''
+		else
+			key = type(args[first]) == 'string' and args[first] or ''
+			job = type(args[first + 1]) == 'string' and args[first + 1]:lower() or ''
+		end
 
 		if #job == 0 then
 			return OPX.CommandResult(source, false,
@@ -1579,7 +1726,10 @@ local function registerCommands()
 				return OPX.CommandResult(source, false, tostring(joined.error))
 			end
 			sync(source)
-			OPX.CommandResult(source, true, ('joined %s at grade 0'):format(name))
+			OPX.CommandResult(source, true, joined.value.working == false
+				and ('joined %s at grade 0, beside the job you work (work it at a sign-up board)')
+					:format(name)
+				or ('joined %s at grade 0'):format(name))
 		end)
 	end)
 
@@ -1602,13 +1752,17 @@ local function registerCommands()
 				return OPX.CommandResult(source, false,
 					('you are the last boss of %s; hand the desk over before leaving'):format(name))
 			end
+			local worked = who.jobName == name
 			local left = character.RemovePlayerFromJob(who.citizenId, name)
 			if not left.ok then
 				return OPX.CommandResult(source, false, tostring(left.error))
 			end
 			dropBank(who.citizenId, name)
 			sync(source)
-			OPX.CommandResult(source, true, ('left %s'):format(name))
+			local now = worked and workingNow(who.citizenId) or nil
+			OPX.CommandResult(source, true, now ~= nil
+				and ('left %s; you now work %s'):format(name, now)
+				or ('left %s'):format(name))
 		end)
 	end)
 
@@ -1825,31 +1979,56 @@ function M.Start()
 				type(job) == 'string' and job or nil)
 			if not joined.ok then
 				OPX.Refuse(player, joined.error, M.Operation.JOIN)
-				OPX.NotifyLocale(player, joined.error, { job = joined.detail }, 'error')
+				OPX.NotifyLocale(player, joined.error, { job = labelOf(joined.detail) }, 'error')
 				return TriggerClientEvent(M.Event.ANSWER, player, false, joined.error, key)
 			end
 			sync(player)
-			OPX.NotifyLocale(player, 'jobs.joined', { job = joined.value.job }, 'success')
+			OPX.NotifyLocale(player, joined.value.working == false and 'jobs.joinedBeside' or 'jobs.joined',
+				{ job = labelOf(joined.value.job) }, 'success')
 			TriggerClientEvent(M.Event.ANSWER, player, true, nil, key, joined.value.job)
 		end)
 	end)
 
-	RegisterNetEvent(M.Event.LEAVE, function(key)
+	RegisterNetEvent(M.Event.LEAVE, function(key, job)
 		local player = tonumber(source)
 		if player == nil then return end
 		if not within(player) then
 			return OPX.Refuse(player, 'error.tooFast', M.Operation.LEAVE)
 		end
 		CreateThread(function()
-			local left = M.Leave(player, type(key) == 'string' and key or '')
+			local left = M.Leave(player, type(key) == 'string' and key or '',
+				type(job) == 'string' and job or nil)
 			if not left.ok then
 				OPX.Refuse(player, left.error, M.Operation.LEAVE)
-				OPX.NotifyLocale(player, left.error, { job = left.detail }, 'error')
+				OPX.NotifyLocale(player, left.error, { job = labelOf(left.detail) }, 'error')
 				return TriggerClientEvent(M.Event.ANSWER, player, false, left.error, key)
 			end
 			sync(player)
-			OPX.NotifyLocale(player, 'jobs.left', { job = left.value.job }, 'success')
+			OPX.NotifyLocale(player, 'jobs.left', { job = labelOf(left.value.job) }, 'success')
+			if left.value.working ~= nil then
+				OPX.NotifyLocale(player, 'jobs.working', { job = labelOf(left.value.working) }, 'success')
+			end
 			TriggerClientEvent(M.Event.ANSWER, player, true, nil, key, left.value.job)
+		end)
+	end)
+
+	RegisterNetEvent(M.Event.WORK, function(key, job)
+		local player = tonumber(source)
+		if player == nil then return end
+		if not within(player) then
+			return OPX.Refuse(player, 'error.tooFast', M.Operation.WORK)
+		end
+		CreateThread(function()
+			local worked = M.Work(player, type(key) == 'string' and key or '',
+				type(job) == 'string' and job or nil)
+			if not worked.ok then
+				OPX.Refuse(player, worked.error, M.Operation.WORK)
+				OPX.NotifyLocale(player, worked.error, { job = labelOf(worked.detail) }, 'error')
+				return TriggerClientEvent(M.Event.ANSWER, player, false, worked.error, key)
+			end
+			sync(player)
+			OPX.NotifyLocale(player, 'jobs.working', { job = labelOf(worked.value.job) }, 'success')
+			TriggerClientEvent(M.Event.ANSWER, player, true, nil, key, worked.value.job)
 		end)
 	end)
 
@@ -1864,12 +2043,12 @@ function M.Start()
 				type(action) == 'string' and action:lower() or '', target)
 			if not done.ok then
 				OPX.Refuse(player, done.error, M.Operation.BOSS)
-				OPX.NotifyLocale(player, done.error, { job = done.detail }, 'error')
+				OPX.NotifyLocale(player, done.error, { job = labelOf(done.detail) }, 'error')
 				return TriggerClientEvent(M.Event.ANSWER, player, false, done.error, origin)
 			end
 			syncAll()
 			OPX.NotifyLocale(player, 'jobs.deskDone',
-				{ action = tostring(action), job = tostring(done.value.job) }, 'success')
+				{ action = tostring(action), job = labelOf(done.value.job) }, 'success')
 			TriggerClientEvent(M.Event.ANSWER, player, true, nil, origin, done.value.job)
 		end)
 	end)

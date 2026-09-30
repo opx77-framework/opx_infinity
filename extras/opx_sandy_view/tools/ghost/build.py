@@ -1,5 +1,34 @@
-"""Builds opx_sandy_view's ghost-trail package (1.4.6): the AFTERIMAGES OF THE
+"""Builds opx_sandy_view's ghost-trail package (1.4.12): the AFTERIMAGES OF THE
 PLAYER'S OWN MODEL, in Adam Smasher's Sandevistan look.
+
+1.4.12: THE LEGS. A female V's afterimages ended at mid-thigh (reported
+2026-09-28). Her body component in `t0_000_base__full.app` hides chunks 5-7
+of `t0_000_pwa_base__full.mesh` (chunk mask 0xFFFFFFFFFFFFFF1F): the knees, the
+calves and the feet, which the base game draws from a part of their own,
+`l0_000_pwa_base__cs_flat` (`l0_000_base__cs_flat.app`, chosen by the
+footwear). Up to 1.4.10 every afterimage copied that mask and had no such part,
+so it had no legs. The body's own chunks 5-7 are those same legs -- 260, 396
+and 848 vertices, as the flat part's three chunks, and within 2.6 cm of them --
+so every body part now shows every chunk, as a male V's always did. The two body
+files are the only files that change, and in them only the female appearances'
+body parts' `chunkMask`.
+
+1.4.10: THE ARMS AND HANDS. V's arm meshes keep their own materials as
+`preloadLocalMaterialInstances`, and a mesh in that mode reads an external
+material from `preloadExternalMaterials`; up to 1.4.9 the ghost's material was
+written to `externalMaterials` on every mesh, which only the body and the head
+(plain local buffers) read -- so every afterimage had a body and a head and no
+arms or hands. `ghost_mesh` now lists it where the mesh looks for it; the four
+arm meshes are the only files that change.
+
+1.4.9: TWELVE LAYERS (`LAYERS` below) -- `opx_sandy_ghost1_*` up to
+`opx_sandy_ghost12_*`, forty-eight parts -- which the REDscript places 0.045 s
+apart, the farthest where the body was 0.54 s before: a denser, longer trail.
+Every new layer is an exact copy of the first four's components (the same
+meshes, material, flags, bindings, chunk masks and appearance) with its own
+names and fresh ids; layers 1-4, the spawner and its descriptors keep the ids
+1.4.6-1.4.8 drew (the same draws, in the same order -- layers 5-12 draw theirs
+after them). The meshes, the material and the effect are unchanged.
 
 1.4.6: FOUR LAYERS of the ghost's parts -- `opx_sandy_ghost1_body` / `_arm_l`
 / `_arm_r` / `_head` up to `opx_sandy_ghost4_*`, sixteen parts on V's own
@@ -69,9 +98,10 @@ silhouette -- not Smasher's armour.
   * `opx_sandy_ghost_x150.effect`: Smasher's peak (1.5, 1), held (kept, not
     played in 1.4.6);
   * `opx_sandy_ghost_patch.app`: ArchiveXL patch of V's `t0_000_base__full.app`
-    and its censored cut -- in every appearance (36) the sixteen parts
-    `opx_sandy_ghost1_body`, `_arm_l`, `_arm_r`, `_head` ... `opx_sandy_ghost4_*`
-    (four layers of V's body, arms and head) on that appearance's gender
+    and its censored cut (from 1.4.8 not shipped: merge.py appends its parts to
+    V's own two files) -- in every appearance (36) the forty-eight parts
+    `opx_sandy_ghost1_body`, `_arm_l`, `_arm_r`, `_head` ... `opx_sandy_ghost12_*`
+    (twelve layers of V's body, arms and head) on that appearance's gender
     (switched OFF, no shadows), and the effect spawner `opx_sandy_ghost_fx` (a
     spawner inside a customization part, as CDPR's own `fx_mantis` is inside
     the player's Mantis Blades arms): `opx_sandy_ghost_x150` on this package's
@@ -246,7 +276,19 @@ def ghost_mesh(src_name, dst_name, rerig_head):
     assert count == len(rc['renderResourceBlob']['Data']['header']['renderChunkInfos'])
     assert rc['externalMaterials'] == [] and rc['preloadExternalMaterials'] == []
     assert LOOK not in [e['name']['$value'] for e in rc['materialEntries']]
-    rc['externalMaterials'] = [depot(MATERIAL)]
+    # WHERE THE MATERIAL IS LISTED DEPENDS ON HOW THE MESH KEEPS ITS OWN. V's
+    # body and head keep theirs in `localMaterialBuffer`, and an external entry
+    # reads `externalMaterials`. V's ARMS keep theirs as
+    # `preloadLocalMaterialInstances` (and `forceLoadAllAppearances`): a mesh in
+    # that mode reads an external entry from `preloadExternalMaterials`, so up to
+    # 1.4.9 the arms' ghost appearance pointed at an empty list -- a chunk with
+    # no material, drawn by nobody: every afterimage had its body and head and
+    # no arms or hands (reported 2026-09-28). The material goes where the mesh
+    # looks for it.
+    if rc['preloadLocalMaterialInstances']:
+        rc['preloadExternalMaterials'] = [depot(MATERIAL)]
+    else:
+        rc['externalMaterials'] = [depot(MATERIAL)]
     rc['materialEntries'].append({'$type': 'CMeshMaterialEntry', 'index': 0, 'isLocalInstance': 0, 'name': cname(LOOK)})
     # FIRST: the mesh's default appearance is the ghost's.
     rc['appearances'].insert(0, {'HandleId': str(max_handle(mesh) + 1), 'Data': {
@@ -270,8 +312,12 @@ MESHES = {
 
 # ── the patch ────────────────────────────────────────────────────────────────
 
-# V's own body component carries the chunk mask of its gender (the female body
-# keeps chunks 5-7 off in both cuts); the ghost keeps the same silhouette.
+# V's own body component carries the chunk mask of its gender: the female body
+# keeps chunks 5-7 off in both cuts, because a part of its own draws her knees,
+# calves and feet (`l0_000_pwa_base__cs_flat`, by footwear). The ghost has no
+# such part, so it does NOT take that mask (1.4.2-1.4.10 did, and a female V's
+# afterimages had no legs): every chunk of the body shows, for both genders.
+# V_MASK is still read, to check that is the only difference.
 body_app = load(SRC, 't0_000_base__full.app.json')
 V_MASK = {}
 for a in body_app['Data']['RootChunk']['appearances']:
@@ -282,29 +328,34 @@ for a in body_app['Data']['RootChunk']['appearances']:
             V_MASK.setdefault('wa', c['chunkMask'])
 assert set(V_MASK) == {'ma', 'wa'}, V_MASK
 ALL_CHUNKS = str((1 << 63) - 1)
+assert V_MASK == {'ma': ALL_CHUNKS, 'wa': str(0xFFFFFFFFFFFFFF1F)}, V_MASK
 
-# Four layers of the same four parts: layer k is `opx_sandy_ghost<k>_body`,
-# `_arm_l`, `_arm_r`, `_head` (k = 1..4), every layer on the same meshes.
-LAYERS = 4
+# LAYERS layers of the same four parts: layer k is `opx_sandy_ghost<k>_body`,
+# `_arm_l`, `_arm_r`, `_head` (k = 1..LAYERS), every layer on the same meshes.
+# 1.4.6-1.4.8 had 4; 1.4.9 has 12. The REDscript's `OpxSandyTrailLayers()`
+# and merge.py's LAYERS say the same number.
+LAYERS = 12
 PART_KINDS = ['body', 'arm_l', 'arm_r', 'head']
 PARTS = ['opx_sandy_ghost%d_%s' % (layer, kind) for layer in range(1, LAYERS + 1) for kind in PART_KINDS]
+# The effect's component index mask has one bit per part, in 64 bits.
+assert len(PARTS) <= 64, len(PARTS)
 ALL = str((1 << len(PARTS)) - 1)
 
 
 def parts_of(gender):
     meshes = {
-        'body': (GHOST_DIR + '\\v_body_%s.mesh' % gender, V_MASK[gender]),
+        'body': (GHOST_DIR + '\\v_body_%s.mesh' % gender, ALL_CHUNKS),
         'arm_l': (GHOST_DIR + '\\v_arm_l_%s.mesh' % gender, ALL_CHUNKS),
         'arm_r': (GHOST_DIR + '\\v_arm_r_%s.mesh' % gender, ALL_CHUNKS),
         'head': (GHOST_DIR + '\\v_head_%s.mesh' % gender, ALL_CHUNKS),
     }
     parts = [(name, meshes[name.split('_', 3)[3]][0], meshes[name.split('_', 3)[3]][1]) for name in PARTS]
-    assert [p[0] for p in parts] == PARTS and len(parts) == 16
+    assert [p[0] for p in parts] == PARTS and len(parts) == LAYERS * len(PART_KINDS)
     return parts
 
 
-# Smasher's peak held (his two material tracks, same RUIDs) on all sixteen
-# parts -- kept in the package, played by nothing in 1.4.6 -- and a trigger
+# Smasher's peak held (his two material tracks, same RUIDs) on every part --
+# kept in the package, played by nothing since 1.4.6 -- and a trigger
 # that drives nothing: another client plays the trigger on a boosted body and
 # this package's REDscript answers it by lighting the afterimages.
 EFFECTS = [('opx_sandy_ghost_' + tag, GHOST_DIR + '\\opx_sandy_ghost_%s.effect' % tag,
@@ -381,10 +432,16 @@ def effect_desc(name, path, ruids, component_mask, desc_id):
     return d
 
 
-# One id per part and per descriptor, shared by every appearance.
-PART_IDS = [cruid() for _ in PARTS]
+# One id per part and per descriptor, shared by every appearance. The first
+# four layers, the spawner and its descriptors keep the ids 1.4.6-1.4.8 drew
+# (the same draws in the same order); the layers after them draw fresh ones.
+KEPT = 4 * len(PART_KINDS)
+PART_IDS = [cruid() for _ in PARTS[:KEPT]]
 FX_ID = cruid()
 DESC_IDS = [cruid() for _ in EFFECTS]
+PART_IDS += [cruid() for _ in PARTS[KEPT:]]
+assert len(PART_IDS) == len(PARTS)
+assert len(set(PART_IDS + [FX_ID] + DESC_IDS)) == len(PARTS) + 1 + len(EFFECTS)
 
 
 def reference(value):
@@ -498,9 +555,10 @@ patch['Data']['RootChunk'] = root
 patch['Data']['EmbeddedFiles'] = []
 save(patch, PATCH_NAME + '.json')
 
-manifest = {'parts': PARTS, 'strengths': STRENGTHS, 'effects': [e[0] for e in EFFECTS], 'appearances': names,
+manifest = {'layers': LAYERS, 'parts': PARTS, 'partIds': PART_IDS, 'spawnerId': FX_ID,
+            'strengths': STRENGTHS, 'effects': [e[0] for e in EFFECTS], 'appearances': names,
             'genders': {n: gender_of(n) for n in names}, 'meshes': MESHES, 'material': MATERIAL,
-            'masks': V_MASK}
+            'masks': {'ma': ALL_CHUNKS, 'wa': ALL_CHUNKS}, 'vMasks': V_MASK}
 os.makedirs(os.path.join(HERE, 'build_v146'), exist_ok=True)
 with open(os.path.join(HERE, 'build_v146', 'manifest.json'), 'w') as f:
     json.dump(manifest, f, indent=1)

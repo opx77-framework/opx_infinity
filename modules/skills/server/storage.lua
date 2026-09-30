@@ -12,9 +12,10 @@
 -- and per character and measures employment; this is the CHARACTER's own
 -- ledger -- how far they have come and what they bought with it -- and it is
 -- per character alone. The unlocked set is the row's own bounded column (the
--- node ids, comma separated) rather than a second table: fifteen nodes across
--- three trunks is a value this row can hold whole, and one row per character
--- is one read per knock.
+-- node ids, comma separated) rather than a second table: thirty-five nodes
+-- across seven trunks, every one claimed, is about 300 of the column's 512
+-- characters and seven trunks' work about 160 of its 255, so the row holds the
+-- tree whole, and one row per character is one read per knock.
 --
 -- No foreign key, for the same reason the jobs banks have none: a citizen id
 -- here that no character row matches is a character who was deleted, and it is

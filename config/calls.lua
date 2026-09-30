@@ -142,8 +142,9 @@ OPX.Config.MODULES.calls = {
 	--
 	-- `H` for holo. Free on this build -- `E` is contextual, `I` the bag, `T`
 	-- chat, `Y` the hotbar peek, `X` stops an emote, `F1` the menu, `F3` the
-	-- animation picker, `F9` and `F10` staff -- and `false` switches the key off
-	-- entirely for a server that would rather bind it elsewhere.
+	-- animation picker, `F4` the skill tree, `F9` and `F10` staff -- and `false`
+	-- switches the key off entirely for a server that would rather bind it
+	-- elsewhere.
 	KEY = { ID = 'opx.calls.holo', NAME = 'calls.key.holo', DEFAULT = 'H' },
 
 	-- ── ANSWERING WITHOUT OPENING ANYTHING ───────────────────────────────────

@@ -39,6 +39,7 @@ OPX.Locale.Register('en', {
 	['money.vetoed'] = 'That transaction was blocked.',
 	['money.offline'] = 'That character is not in the world.',
 	['money.paycheck'] = 'You received {amount} {type} for {job}.',
+	['money.paycheckBank'] = 'Paycheck from {job}: {amount} paid into your bank account. Draw it as cash at any bank branch.',
 
 	['job.notFound'] = 'No such job.',
 	['job.gradeNotFound'] = 'That job has no such grade.',
@@ -127,6 +128,7 @@ OPX.Locale.Register('fr', {
 	['money.vetoed'] = 'Cette transaction a ete bloquee.',
 	['money.offline'] = "Ce personnage n'est pas en jeu.",
 	['money.paycheck'] = 'Vous avez recu {amount} {type} pour {job}.',
+	['money.paycheckBank'] = 'Paie de {job} : {amount} vers\u{E9}s sur votre compte. Retirez-les en liquide dans une agence bancaire.',
 
 	['job.notFound'] = "Ce metier n'existe pas.",
 	['job.gradeNotFound'] = "Ce metier n'a pas ce grade.",

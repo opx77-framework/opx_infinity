@@ -660,6 +660,17 @@ do
 			if restSeconds == nil or restSeconds < 0 then
 				warn('ncpd: MAXTAC.BOARDING.REST_SECONDS is not a duration')
 			end
+			-- How long a hull the crew stepped out of stays parked for them to
+			-- climb back in. Optional: absent is 0, which is the old shape -- the
+			-- aircraft leaves the moment the last body is out.
+			local park = 0
+			if door.PARK_SECONDS ~= nil then
+				park = finiteNumber(door.PARK_SECONDS)
+				if park == nil or park < 0 or park > 86400 then
+					warn('ncpd: MAXTAC.BOARDING.PARK_SECONDS is not a duration of 0 to 86400 s')
+					park = 0
+				end
+			end
 			local custody = finiteNumber(door.CUSTODY_MS)
 			if custody == nil or custody ~= math.floor(custody) or custody < 100 or custody > 60000 then
 				warn('ncpd: MAXTAC.BOARDING.CUSTODY_MS is not a cadence between 100 and 60000 ms')
@@ -677,6 +688,7 @@ do
 					RestHeight = restHeight,
 					RestSeconds = restSeconds,
 					CustodyMs = custody,
+					ParkSeconds = park,
 				}
 			end
 		end
@@ -689,12 +701,20 @@ do
 			Jobs = type(optIn) == 'table' and type(optIn.JOBS) == 'table' and optIn.JOBS or {},
 			ResponseSeconds = finiteNumber(maxtac.RESPONSE_SECONDS),
 			AvRecord = av ~= nil and name(av.RECORD) or nil,
+			AvAppearance = av ~= nil and name(av.APPEARANCE) or nil,
 			AvVariants = av ~= nil and records(av.VARIANTS, 'AV.VARIANTS') or {},
 			AvSecondWave = av ~= nil and records(av.SECOND_WAVE, 'AV.SECOND_WAVE') or {},
 			AvOneAtATime = av ~= nil and av.ONE_AT_A_TIME == true,
 			AvCooldown = av ~= nil and finiteNumber(av.COOLDOWN_SECONDS) or nil,
 			AvLift = av ~= nil and finiteNumber(av.LIFT) or nil,
 			AvInsertion = insertion,
+			-- The aircraft's four sounds, each a Wwise event name or nil (silent).
+			AvSounds = {
+				Descend = av ~= nil and type(av.SOUNDS) == 'table' and name(av.SOUNDS.DESCEND) or nil,
+				Deploy = av ~= nil and type(av.SOUNDS) == 'table' and name(av.SOUNDS.DEPLOY) or nil,
+				Hold = av ~= nil and type(av.SOUNDS) == 'table' and name(av.SOUNDS.HOLD) or nil,
+				Climb = av ~= nil and type(av.SOUNDS) == 'table' and name(av.SOUNDS.CLIMB) or nil,
+			},
 			Vehicle = name(maxtac.VEHICLE),
 			Ground = records(maxtac.GROUND, 'GROUND'),
 			Troopers = troopers,
