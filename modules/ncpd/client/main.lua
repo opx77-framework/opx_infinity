@@ -300,12 +300,6 @@ end)
 local OWNER = 'ncpd'
 local GROUP = 'crew'
 
---- The host's own rebind signal. "onKeybindsChanged" is not a name the platform
---- raises (nothing in the engine or the shell emits it) -- the resolved caps are
---- announced by `open77:keybinds:changed`, which is what the strip itself
---- listens to.
-local HOST_KEYBINDS_CHANGED = 'open77:keybinds:changed'
-
 --- How often the row is re-read against the player's own position. Half a second:
 --- fast enough that walking up to a hull has the row on screen before the hold is
 --- half over, and small enough that the read costs nothing.
@@ -673,7 +667,7 @@ function M.Start()
 
 	-- A rebind changes the caps the row is drawn with; the strip itself re-reads
 	-- them, so this only re-reads whether the row should be up at all.
-	AddEventHandler(HOST_KEYBINDS_CHANGED, function() syncRow() end)
+	AddEventHandler(OPX.Host.KEYBINDS_CHANGED, function() syncRow() end)
 
 	-- The row follows the body. Walking into reach has to light it up without a
 	-- keystroke, and the aircraft leaving has to take it down without one too.

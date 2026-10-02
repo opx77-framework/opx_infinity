@@ -58,4 +58,8 @@ OPX.Host = {
 	-- or `none`.
 	VEHICLE_AUTHORITY_CHANGED = 'onVehicleAuthorityChanged',
 	TUNABLE_CHANGED = 'onTunableChanged',
+	-- Client only, no payload: raised after any mapping is registered, rebound,
+	-- reset or removed. It is NOT `onKeybindsChanged` -- nothing raises that, and
+	-- four modules once listened on it and never heard a rebind.
+	KEYBINDS_CHANGED = 'open77:keybinds:changed',
 }

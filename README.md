@@ -37,6 +37,31 @@ the resource it belongs to or CI fails: a file nobody listed never loads, and no
 else tells you. That is the root `open77.lua`, or, for a file inside a folder with an
 `open77.lua` of its own (`extras/opx_sandy_view`), that folder's.
 
+#### `open77_validate`: what it gets wrong here
+
+The devkit validator (checked against 2.31.13+op77.78) reports errors on `main` that
+are not runtime problems. Read past these; treat anything else it says as real.
+
+- **`loadscreen`, `web_ui_page`, `web_ui_auto_create` "unknown directive".** Its
+  manifest schema is incomplete. `web_ui_page` is in the server-resources guide's own
+  example and the `Open77.webui.default` card; `loadscreen` is what
+  `Open77.session.loadScreen` (since op77.11) reports; `web_ui_auto_create false` is
+  the convention every opx77 resource uses to create its surface itself. All three
+  run in production.
+- **`require` in `lib/client/lib.lua` "is nil in the sandbox".** That rule is the
+  *server* sandbox. The file is a `client_script`, and the client has `require`
+  (the `require` card and the lua-modules guide; `@dependency` since client
+  op77.67). See the table below.
+- **`players.damage.apply` / `players.damage.read` "required but not declared".**
+  The cards for `setArmor`, `setHealth`, `setMaxHealth`, `setGodMode` and
+  `getHealth` list the damage.* names only as an older spelling the runtime still
+  accepts; the catalogued names, `players.stats.apply` and `players.stats.read`, are
+  declared. Do not add the old spellings. The suite's "permissions the code needs"
+  section checks every gated call against the manifest, with either spelling.
+- **`Open77.players.setModel` "is in no published server build"**: true, and
+  handled. `modules/admin/server/models.lua` looks the natives up before every call,
+  the two model commands answer `models_unavailable`, and the server logs one line.
+
 `npm run build` writes `web/index.html`, which **is** the shipped bundle. The sources
 under `ui/` never leave the repository.
 
@@ -708,6 +733,9 @@ local data = exports.opx_infinity:GetPlayerData(playerId)
 | `AddItem` / `RemoveItem(target, item, count?, meta?)`, `AddToStash` / `RemoveFromStash(stash, item, count?, meta?)` | write |
 | `SendChat(src, msg)`, `BroadcastChat(msg, { bucket?, radius?, origin? })` | write |
 | `RevokeKeys(target, plate)`, `RevokeAllKeys(plate)`, `SetVehicleState(plate, 'stored'\|'impounded', garage?)` | write |
+| `SetJob` / `SetGang(target, name, grade?)`, `RemoveJob` / `RemoveGang(target, name)`, `SetDuty(src, onDuty)` | write |
+| `GetMetadata(src, key?)`, `IsDown(src)` | read |
+| `SetMetadata(src, key, value)`, `Revive(src, reason?)` | write |
 
 `target` is a connected player id or a citizen id (an offline bag). **Who may call
 is the operator's**: `SERVER.EXPORTS.READ` (`'*'` out of the box) and
@@ -715,6 +743,31 @@ is the operator's**: `SERVER.EXPORTS.READ` (`'*'` out of the box) and
 writer is answered `export.callerDenied`, audited, and the journal prints the exact
 line that admits it. Every write leaves `event=export.<Name>` naming the caller, and
 money reasons are written `ext:<resource>:<reason>` in the money ledger too.
+
+**Jobs and gangs** go through the same functions the staff commands use: the
+`job:beforeSet` / `gang:beforeSet` hooks can veto (`job.vetoed`), and a change that
+lands raises `opx:on:character:job` / `gang`. Unknown names answer `job.notFound` /
+`job.gradeNotFound`, a removal of something not held `job.notMember` /
+`gang.notMember`. A citizen id changes a character nobody is playing, holding the
+offline ledger so a login racing it cannot save the old job back over it. `SetJob`,
+`SetGang`, `RemoveJob` and `RemoveGang` always write a row: **await them** (a sync
+call answers `export.mustAwait`). `SetDuty` is for a loaded character only and
+answers `job.noDuty` for a job that is on duty by definition.
+
+**Metadata** is the caller's own corner: `SetMetadata(src, 'rep', 3)` from `my_shop`
+is stored as `ext.my_shop.rep` and can never reach opx's keys or another
+resource's. A key is one segment (`[A-Za-z0-9_-]`, ≤ 48); a value is plain data
+(booleans, finite numbers, text, tables of those; `nil` deletes) or
+`export.badValue`, and `SERVER.EXPORTS.METADATA` bounds it (4 KB a value, 32 keys,
+16 KB a resource per character, else `export.tooLarge`). Loaded characters only;
+persisted with the character, and visible to that player's own client like the rest
+of PlayerData, so it is not a place for secrets. `GetMetadata(src)` with no key
+answers all of the caller's keys.
+
+**Downed**: `IsDown(src)` answers `{ down, waiting, downForMs? }`; `Revive(src,
+reason?)` goes through the module's own revive (its `REVIVERS` switch, its gate,
+its audit line naming caller and reason) and answers its codes: `not_down`,
+`not_incarnated`, `gate_closed`, `caller_denied`.
 
 **Server events** are `(source, payload)` on the host-wide bus (`AddEventHandler`;
 `source` is nil for a character who is not online): `opx:on:character:loaded`,
@@ -741,6 +794,27 @@ The events are `opx:on:menu:action`, `opx:on:form:answer`, `opx:on:progress:done
 closes what it opened, never takes over another owner's screen, and its screens go
 down when it stops. `CLIENT.EXPORTS.CALLERS` in `config/client.lua` narrows who may
 draw (`'*'` by default).
+
+**Hearing opx on the client**: `Subscribe(event, reply?)` / `Unsubscribe(event)`
+deliver the public client events through the same reply export, as
+`OnOpxEvent(event, payload)`: `opx:on:character:loaded`, `unloaded`, `changed`,
+`money` (`{ moneyType, amount, action, balance }`), `job`, `gang`;
+`opx:on:downed:changed`; `opx:on:inventory:changed`, `used`, `opened`, `closed`;
+`opx:on:needs:changed`; `opx:on:progress:state`. Anything else is
+`export.notSubscribable`. A character is handed without its `metadata`, and a
+caller that stops is unsubscribed.
+
+```lua
+exports('OnOpxEvent', function(event, payload) TriggerEvent(event, payload) end)
+exports.opx_infinity:Subscribe('opx:on:character:money')
+AddEventHandler('opx:on:character:money', function(p) print(p.balance) end)
+```
+
+**Not on the surface yet**: a server-started progress bar with an outcome (the
+module can start one on a client through `opx:net:progress:start`, but the result
+never comes back to the server, and a client-reported result would be the
+client's word); metadata of a character nobody is playing (it would need its own
+offline row write under the ledger).
 
 Inside the resource the same work gained hooks a module can veto through:
 `job:beforeSet` and `gang:beforeSet` (answer `job.vetoed` / `gang.vetoed`) and

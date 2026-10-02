@@ -103,9 +103,6 @@ M.Operation = {
 	CAPTURE = 'jobsCapture',
 }
 
---- The host raises this when a player rebinds or resets a mapping.
-M.KEYBINDS_CHANGED = 'onKeybindsChanged'
-
 --- The two kinds of board. A sign-up board offers work, a desk manages it.
 M.KIND = { SIGNUP = 'signup', BOSS = 'boss' }
 

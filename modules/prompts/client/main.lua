@@ -34,10 +34,6 @@ local CHANNEL_READY = 'prompts:ready'
 -- The downed module's public bus.
 local EVENT_DOWNED_CHANGED = OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed')
 
--- Raised by the engine after any mapping is registered, rebound, reset or
--- removed. A host name, so it is not built from `OPX.Event`.
-local HOST_KEYBINDS_CHANGED = 'open77:keybinds:changed'
-
 -- Byte ceilings on everything drawn. Short on purpose: a label is a few words
 -- beside a key, not a sentence, and the strip never wraps.
 local MAX_TITLE = 32
@@ -810,7 +806,7 @@ function M.Start()
 	-- The resolved caps go FIRST: a redraw that read the cache would put the old
 	-- key back on the strip and then gate the next pass on its signature, so the
 	-- rebind would never appear.
-	AddEventHandler(HOST_KEYBINDS_CHANGED, function()
+	AddEventHandler(OPX.Host.KEYBINDS_CHANGED, function()
 		forgetCaps()
 		draw()
 	end)

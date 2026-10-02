@@ -119,7 +119,6 @@ M.Event = {
 M.Host = {
 	COMMAND_EXECUTE = 'open77:command:execute',
 	COMMAND_RESULT = 'open77:command:result',
-	KEYBINDS_CHANGED = 'open77:keybinds:changed',
 }
 
 --- The name this module gives when a contract asks a caller to name itself.

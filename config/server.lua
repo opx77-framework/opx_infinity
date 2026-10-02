@@ -18,7 +18,8 @@ OPX.Config.SERVER = {
 	--            answers are what the player state bag already publishes, plus a
 	--            balance and a bag count -- or a set: { my_hud = true }.
 	--   WRITERS  who may CHANGE something: money, items, stashes, chat lines,
-	--            keys, a vehicle's state. EMPTY OUT OF THE BOX, on purpose: a
+	--            keys, a vehicle's state, a job, a gang, duty, a revive, and
+	--            the caller's own character metadata. EMPTY OUT OF THE BOX, on purpose: a
 	--            write export is a money printer for whichever resource holds
 	--            it, and the operator is the one who decides which of the
 	--            resources they installed is trusted with that. The first refused
@@ -44,6 +45,11 @@ OPX.Config.SERVER = {
 		--   * A stash loaded this way and not opened by a player is written and
 		--     put away IDLE_MS after its last touch, and loads again on demand.
 		STASHES = { CREATE_CAP = 25, IDLE_MS = 60000 },
+		-- WHAT `SetMetadata` LETS ONE RESOURCE KEEP ON ONE CHARACTER. A caller
+		-- writes only under its own name (`ext.<resource>.<key>`), never one of
+		-- opx's own keys; these bound how much: the encoded size of one value,
+		-- how many keys, and the encoded size of all of them together.
+		METADATA = { MAX_BYTES = 4096, MAX_KEYS = 32, MAX_TOTAL_BYTES = 16384 },
 	},
 
 	-- Numbers an operator may change while people are playing are re-declared as

@@ -1,5 +1,6 @@
 --- The creator surface, client half: menus, forms, toasts, bars and gestures
---- another resource may put on THIS player's screen.
+--- another resource may put on THIS player's screen, and the public client
+--- events it may subscribe to.
 -- @author dop42
 --
 -- LAST IN THE CLIENT MANIFEST, for the reason its server twin gives: it wraps
@@ -295,6 +296,96 @@ publish('StopAnimation', function(caller)
 	return answered(animations.Stop(ownerOf(caller)))
 end)
 
+-- ── hearing opx from another client resource ─────────────────────────────────
+-- The client `TriggerEvent` stays in its own VM, so `opx:on:character:money`
+-- raised here never reaches another resource's `AddEventHandler`. `Subscribe`
+-- is the bridge: the caller names an event, and every raise of it is delivered
+-- through the caller's reply export -- the same `OnOpxEvent(event, payload)`
+-- line the menus answer on -- until it unsubscribes or stops.
+--
+-- ONLY THE EVENTS BELOW, each with the ONE TABLE it is handed as: an event
+-- with several arguments is folded into named fields, and a character's
+-- PlayerData is handed without its free-form `metadata`, the same rule the
+-- server bus keeps. Anything else is `export.notSubscribable`; this module's
+-- `opx:in:*` wiring and its view events are never on offer.
+
+--- A copy of a client PlayerData with the free-form metadata left out.
+local function closedPlayer(data)
+	if type(data) ~= 'table' then return {} end
+	local copy = OPX.Table.DeepCopy(data)
+	copy.metadata = nil
+	return copy
+end
+
+--- The first argument copied, or an empty table.
+local function firstTable(value)
+	return type(value) == 'table' and OPX.Table.DeepCopy(value) or {}
+end
+
+local SUBSCRIBABLE = {
+	['opx:on:character:loaded'] = closedPlayer,
+	['opx:on:character:unloaded'] = function() return {} end,
+	['opx:on:character:changed'] = closedPlayer,
+	['opx:on:character:money'] = function(moneyType, amount, action, balance)
+		return { moneyType = moneyType, amount = amount, action = action, balance = balance }
+	end,
+	['opx:on:character:job'] = firstTable,
+	['opx:on:character:gang'] = firstTable,
+	['opx:on:downed:changed'] = firstTable,
+	['opx:on:inventory:changed'] = firstTable,
+	['opx:on:inventory:used'] = firstTable,
+	['opx:on:inventory:opened'] = function() return {} end,
+	['opx:on:inventory:closed'] = function() return {} end,
+	['opx:on:needs:changed'] = firstTable,
+	['opx:on:progress:state'] = firstTable,
+}
+
+-- Who hears what: subscribers[event][caller] = the export it is delivered to.
+local subscribers = {}
+
+publish('Subscribe', function(caller, event, replyTo)
+	if type(event) ~= 'string' or #event > 64 then return refuse('export.badArgument') end
+	if SUBSCRIBABLE[event] == nil then return refuse('export.notSubscribable') end
+	if replyTo ~= nil and (type(replyTo) ~= 'string' or not replyTo:match(REPLY_PATTERN)
+		or #replyTo > 64) then
+		return refuse('export.badArgument')
+	end
+	subscribers[event] = subscribers[event] or {}
+	subscribers[event][caller] = replyOf(replyTo)
+	return ok(true)
+end)
+
+publish('Unsubscribe', function(caller, event)
+	if type(event) ~= 'string' or #event > 64 then return refuse('export.badArgument') end
+	if SUBSCRIBABLE[event] == nil then return refuse('export.notSubscribable') end
+	local heard = subscribers[event]
+	local was = heard ~= nil and heard[caller] ~= nil
+	if heard ~= nil then heard[caller] = nil end
+	return ok(was)
+end)
+
+-- One handler per subscribable event, registered once; a raise nobody
+-- subscribed to costs a table lookup.
+for event, shape in pairs(SUBSCRIBABLE) do
+	AddEventHandler(event, function(...)
+		local heard = subscribers[event]
+		if heard == nil or next(heard) == nil then return end
+		local shaped, payload = pcall(shape, ...)
+		if not shaped or type(payload) ~= 'table' then return end
+		for caller, export in pairs(heard) do
+			-- Each caller its own copy: one may not edit what the next reads.
+			local copy = OPX.Table.DeepCopy(payload)
+			-- A bar another resource drew is not this caller's to name: the
+			-- owner is the caller's own name on its own bar, and left out on
+			-- anybody else's, the rule `forCaller` keeps for the answers.
+			if type(copy.owner) == 'string' and callerOf(copy.owner) ~= nil then
+				copy.owner = callerOf(copy.owner) == caller and caller or nil
+			end
+			reply(caller, export, event, copy)
+		end
+	end)
+end
+
 -- ── the answers that arrive later ────────────────────────────────────────────
 
 -- A bar is answered on its module's own bus, under the owner it was started
@@ -344,6 +435,9 @@ AddEventHandler(OPX.Host.CLIENT_RESOURCE_STOP, function(name)
 	for id, pending in pairs(gestures) do
 		if pending.caller == name then gestures[id] = nil end
 	end
+	-- Nobody left to deliver to: an export call into a stopped resource is a
+	-- refusal per raise, and a later resource of that name never asked.
+	for _, heard in pairs(subscribers) do heard[name] = nil end
 end)
 
 if type(exports) ~= 'function' then

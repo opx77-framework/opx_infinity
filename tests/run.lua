@@ -3245,7 +3245,7 @@ do
 				male.labels[1] == 'Balaclava with shock-absorbent composite layering'
 					and male.labels[2] == 'BRAINDANCE cap', tostring(male.labels[2]))
 			check('and the picture is the one on the body the room is dressing',
-				male.images[1] == 'balaclava-01-old-01-m.webp', tostring(male.images[1]))
+				male.images[1] == '74a637c7fc.webp', tostring(male.images[1]))
 			check('a record the data does not know has no picture and a readable name',
 				male.images[3] == '' and male.labels[3] == 'Nope Jacket 01',
 				('%q %q'):format(tostring(male.images[3]), tostring(male.labels[3])))
@@ -3255,7 +3255,7 @@ do
 		local female = firstWindow('female')
 		check('the other body gets its own picture of the same garment',
 			type(female) == 'table' and female.images ~= nil
-				and female.images[1] == 'balaclava-01-old-01-f.webp',
+				and female.images[1] == '974b9ebbd0.webp',
 			type(female) == 'table' and tostring(female.images and female.images[1]) or 'no window')
 
 		-- The lookup itself: a family it does not know falls back to a picture
@@ -3263,7 +3263,7 @@ do
 		local Garments = appearance.Garments
 		local _, unknownBody = Garments.Describe('Items.Cap_01_old_02', nil)
 		check('a body the data has no word for still gets a picture',
-			unknownBody == 'cap-01-old-02-f.webp', tostring(unknownBody))
+			unknownBody == 'b472a175a1.webp', tostring(unknownBody))
 		appearance.Data.GARMENTS[#appearance.Data.GARMENTS + 1] = {
 			['Items.Test_Path_01'] = { NAME = 'Escape', FEMALE = '../index.html', MALE = 'ok.webp' },
 		}
@@ -11178,6 +11178,28 @@ do
 		{ 'Open77.players.setVisible', 'players.life.visibility', 'hiding a body' },
 		{ 'Open77.players.setFrozen', 'players.life.freeze', 'holding a player still' },
 		{ 'Open77.doors', 'world.doors', 'the staff door switch' },
+		-- The health and armour natives check `players.stats.*`. Each card also
+		-- lists the older `players.damage.*` spelling, which the runtime still
+		-- accepts and which the devkit validator demands by mistake -- so an entry
+		-- may name several accepted spellings, and any one declared is enough.
+		-- `getHealth` is also satisfied by `players.life.read`.
+		{ 'Open77.players.setArmor', { 'players.stats.apply', 'players.damage.apply' },
+			'armour on spawn and from the staff panel' },
+		{ 'Open77.players.setHealth', { 'players.stats.apply', 'players.damage.apply' },
+			'staff heal and set-health' },
+		{ 'Open77.players.setMaxHealth', { 'players.stats.apply', 'players.damage.apply' },
+			'the character\'s maximum health' },
+		{ 'Open77.players.setGodMode', { 'players.stats.apply', 'players.damage.apply' },
+			'staff god mode' },
+		{ 'Open77.players.getHealth', { 'players.stats.read', 'players.damage.read',
+			'players.life.read' }, 'the staff panel\'s health column' },
+		{ 'players.getHealthState', 'players.life.read', 'the staff overlay\'s health read' },
+		-- Reached through a local (`players.setModel`), so the search is for the
+		-- method rather than the namespace. In no published build yet; see
+		-- `modules/admin/server/models.lua`.
+		{ 'players.setModel', 'players.model.control', 'wearing an NPC body' },
+		{ 'players.resetModel', 'players.model.control', 'giving the body back' },
+		{ 'players.getModel', 'players.model.read', 'reading the worn body' },
 	}
 
 	local handle = io.open('open77.lua', 'r')
@@ -11215,14 +11237,51 @@ do
 				end
 			end
 		end
+		-- One accepted spelling or several: any one of them declared is enough.
+		local accepted = type(permission) == 'table' and permission or { permission }
+		local granted = false
+		for spelling = 1, #accepted do
+			if declared[accepted[spelling]] then granted = true end
+		end
+		local named = table.concat(accepted, ' or ')
 		if used == nil then
 			-- Nothing calls it, so nothing needs the grant: an unread permission
 			-- is not a failure, and this line says which ones are unread.
-			check(('%s is not needed yet (%s)'):format(permission, what), true)
+			check(('%s is not needed yet (%s)'):format(named, what), true)
 		else
-			check(('%s is declared, because %s calls it (%s)'):format(permission, used, what),
-				declared[permission] == true, 'not declared in open77.lua')
+			check(('%s is declared, because %s calls %s (%s)'):format(named, used, call, what),
+				granted, 'not declared in open77.lua')
 		end
+	end
+end
+
+-- `Open77.players.setModel` is in no published server build (op77.78 included):
+-- the devkit validator says so, and it is right. The module was written for
+-- that, and this pins it: on a host without the natives the server still boots,
+-- the two model commands report themselves unavailable, and the operator gets
+-- exactly ONE log line about it -- not one per call, and not an error.
+section('a build without player models degrades to one line')
+do
+	local env, control, why = boot('server')
+	check('the server boots with no setModel', why == nil, why)
+
+	if why == nil then
+		check('the stub host has no setModel, as op77.78 has none',
+			type(env.Open77.players) ~= 'table' or env.Open77.players.setModel == nil)
+		local admin = env.OPX.Modules.Get('admin')
+		local Models = admin ~= nil and admin.Models or nil
+		check('the model module is up', Models ~= nil)
+		if Models ~= nil then
+			check('and says it is unavailable', Models.Available() == false)
+		end
+		local lines = 0
+		for _, line in ipairs(control.log.warn) do
+			if line:find('players.setModel', 1, true) then lines = lines + 1 end
+		end
+		check('one warn line names the missing native', lines == 1, lines)
+		check('and nothing is logged as an error for it',
+			not table.concat(control.log.error, '\n'):find('setModel', 1, true),
+			table.concat(control.log.error, ' | '))
 	end
 end
 
@@ -23441,6 +23500,102 @@ do
 	end
 end
 
+-- ── the rebind four modules listened for under a name nothing raises ─────────
+section('a rebind reaches the clothing, dealership, garage and teleport rows')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the rebind', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local prompts = OPX.Api.Get('prompts')
+		local page = control.pages[1]
+		-- Owner, prompt group and key action of each row under test.
+		local rows = {
+			{ owner = 'clothing', group = 'store', action = 'opx.clothing.use' },
+			{ owner = 'dealership', group = 'dealer', action = 'opx.dealership.use' },
+			{ owner = 'garages', group = 'spot', action = 'opx.garages.use' },
+			{ owner = 'teleports', group = 'teleport', action = 'opx.teleports.use' },
+		}
+		local function counts()
+			local seen = {}
+			for index = 1, #rows do
+				local listed = prompts.List(rows[index].owner)
+				seen[index] = listed ~= nil and listed.ok == true and listed.value.count or -1
+			end
+			return seen
+		end
+		local function all(value)
+			local seen = counts()
+			for index = 1, #seen do
+				if seen[index] ~= value then return false end
+			end
+			return true
+		end
+
+		check('the host name is the one the devkit documents',
+			OPX.Host.KEYBINDS_CHANGED == 'open77:keybinds:changed', OPX.Host.KEYBINDS_CHANGED)
+		check('and nothing listens on the name nothing raises',
+			control.handlers['onKeybindsChanged'] == nil)
+
+		if prompts == nil or page == nil then
+			check('the prompts contract and its page are up', false)
+		else
+			control.PageEmit(page, 'opx:prompts:ready', {})
+
+			-- One spot of each kind underfoot: the client stands at the origin.
+			control.netEvents[OPX.Modules.Get('clothing').Event.SYNC]({ spots = {
+				{ key = 'jinguji', label = 'JINGUJI', x = 0.0, y = 0.0, z = 0.0, bucket = 0 },
+			} })
+			control.netEvents[OPX.Modules.Get('dealership').Event.SYNC]({ spots = {
+				{ key = 'yard', label = 'UPTOWN YARD', kind = 'garage',
+					x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+			} })
+			control.netEvents[OPX.Modules.Get('garages').Event.SYNC]({ spots = {
+				{ key = 'garage_dock#1', label = 'THE DOCK', kind = 'garage',
+					garage = 'garage_dock', role = 'menu', location = 1,
+					x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+			} })
+			control.netEvents[OPX.Modules.Get('teleports').Event.SYNC]({ entrances = {
+				{ key = 'roof', leg = 'out', label = 'Rooftop', x = 0.0, y = 0.0, z = 0.0,
+					allowed = true },
+			} })
+			settle(control, function() return all(1) end)
+			check('each module posts its row while the player stands on its spot', all(1),
+				table.concat(counts(), ','))
+
+			-- THE KEY ON THE STRIP. The player moves every row's key to H in the
+			-- pause menu and the host raises its one event, with no payload.
+			for index = 1, #rows do control.input.keys[rows[index].action] = 'H' end
+			env.TriggerEvent('open77:keybinds:changed')
+			local drew = nil
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == 'opx:prompts:frame' then
+					drew = page.sent[index]
+					break
+				end
+			end
+			for index = 1, #rows do
+				local row = rows[index]
+				local cap = nil
+				for _, group in ipairs(drew and drew.payload.groups or {}) do
+					if group.key == row.owner .. '/' .. row.group then cap = group.rows[1].caps[1] end
+				end
+				check(('the %s row draws the rebound key'):format(row.owner), cap == 'H', tostring(cap))
+			end
+
+			-- THE MODULES HEAR IT TOO, and not only the strip: each re-reads whether
+			-- its row should be up at all ON the event, without waiting for a pass.
+			-- No Pump here, so a module still on `onKeybindsChanged` keeps its row.
+			control.input.captured = true
+			env.TriggerEvent('open77:keybinds:changed')
+			check('and every module re-reads its row on the event itself', all(0),
+				table.concat(counts(), ','))
+			control.input.captured = false
+		end
+	end
+end
+
 -- ── the second host read three modules made for an answer they already had ──
 section('a spot scan reads the player\'s position once per pass')
 do
@@ -27524,7 +27679,9 @@ do
 		-- -- which nobody is loaded to move -- does not. Logging in, the roster
 		-- is the rank they work: the record used to pay and gate the old one
 		-- until their next change of job.
-		local away = 'journey-away'
+		-- A REAL CITIZEN ID: an offline change parses the id it is handed (#55),
+		-- and a made-up name is a character that does not exist.
+		local away = OPX.CitizenId.Generate(function() return 7 end)
 		db.characters[away] = { citizen_id = away, user_id = 'account-' .. away, cid = 1,
 			name = 'Journey Away', char_info = '{"firstName":"Journey","lastName":"Away"}',
 			money = '{"EDDIES":500,"BANK":5000}', job = '{"name":"ncpd","grade":{"level":0}}',
@@ -47034,76 +47191,6 @@ do
 	end
 end
 
--- ── every file this resource ships fits a Windows client's path ─────────────
--- 2026-09-28: the server was deployed with 94 new pictures, and no client could
--- join: `invalid_web_file:web/images/cyberware/cw_circulatory_enhancedbloodvessels.webp`,
--- then `server resource activation failed` and back to the server browser. A
--- client installs a server's resources at `<game>\red4ext\plugins\Open77\cache\
--- server-resources\sets\<64-hex digest>\resources\<resource>\` (Open77's
--- `networking/src/ResourceInstaller.cpp`), which on a Steam install in Program
--- Files is 200 characters before the file's own path, and Windows stops at 259
--- (MAX_PATH less its terminator): a path of more than 59 characters is a file the
--- client cannot see, and one such file fails the WHOLE resource. Everything the
--- resource ships is held here to that room, less a margin for a game installed
--- deeper than the Steam default. Up to 1.4.11 the longest was 46 (the fonts).
-section('every file the resource ships fits a Windows client\'s path')
-do
-	local GAME = 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Cyberpunk 2077'
-	local INSTALLED = GAME .. '\\red4ext\\plugins\\Open77\\cache\\server-resources\\sets\\'
-		.. ('0'):rep(64) .. '\\resources\\opx_infinity\\'
-	local ROOM = 259 - #INSTALLED
-	local MARGIN = 12
-	check('the room a Steam install leaves a file is 59 characters', ROOM == 59, ROOM)
-
-	-- What the node ships: `web/`, `core/`, `modules/`, `lib/`, `config/`,
-	-- `locales/` and `open77.lua` (deploy's own list). The walk knows which
-	-- platform it is on, and an empty walk is a failure (see "the stutter is
-	-- declared once").
-	local windows = package.config:sub(1, 1) == '\\'
-	local here = ''
-	if windows then
-		local handle = io.popen('cd')
-		here = handle and (handle:read('l') or '') or ''
-		if handle then handle:close() end
-		here = here:gsub('\\', '/'):gsub('/$', '') .. '/'
-	end
-	local shipped = { 'open77.lua' }
-	for _, root in ipairs({ 'web', 'core', 'modules', 'lib', 'config', 'locales' }) do
-		local command = windows
-			and ('dir /b /s /a-d "%s" 2>nul'):format(root)
-			or ('find "%s" -type f 2>/dev/null'):format(root)
-		local handle = io.popen(command)
-		if handle ~= nil then
-			for line in handle:lines() do
-				local path = line:gsub('\\', '/')
-				if windows and path:sub(1, #here):lower() == here:lower() then path = path:sub(#here + 1) end
-				path = path:gsub('^%./', '')
-				if path ~= '' then shipped[#shipped + 1] = path end
-			end
-			handle:close()
-		end
-	end
-	-- MAIN'S WARDROBE PICTURES (#51) SIT INSIDE THE MARGIN: `web/images/clothing/`
-	-- names run to 59 characters, the whole room and none to spare. They are
-	-- main's files, generated by main's tooling, so they are renamed there, not
-	-- here; until then that one tree is held to the hard room only, and
-	-- everything else to the margin.
-	local CLOTHING = 'web/images/clothing/'
-	local longest, over, past = '', {}, {}
-	for _, path in ipairs(shipped) do
-		if #path > #longest then longest = path end
-		if #path > ROOM and #past < 6 then past[#past + 1] = ('%s (%d)'):format(path, #path) end
-		if #path > ROOM - MARGIN and path:sub(1, #CLOTHING) ~= CLOTHING and #over < 6 then
-			over[#over + 1] = ('%s (%d)'):format(path, #path)
-		end
-	end
-	check('the resource\'s files are listed', #shipped > 500, #shipped)
-	check(('none is longer than the %d characters a client can see'):format(ROOM),
-		#past == 0, table.concat(past, ' '))
-	check(('and none outside %s is longer than %d, %d short of it'):format(CLOTHING, ROOM - MARGIN, MARGIN),
-		#over == 0, #over > 0 and table.concat(over, ' ') or ('the longest: %s (%d)'):format(longest, #longest))
-end
-
 -- ── the creator surface ──────────────────────────────────────────────────────
 -- A separate Open77 resource had NO way in: `opx_infinity` published no export,
 -- its contracts live in its own VM, and every server raise was `opx:in:*`. These
@@ -48265,6 +48352,692 @@ do
 		check('and the dropped load, if it ever finishes, adopts the same container',
 			Containers.Find('stash', 'stuck_one') == second)
 	end
+end
+
+-- ── the creator surface, round two ───────────────────────────────────────────
+-- Jobs, gangs and duty; a caller's own corner of the character's metadata; the
+-- downed read and revive; and the client events another resource may hear.
+
+--- A bridge with stored character rows a citizen id can reach while nobody is
+--- playing them, and a record of every statement.
+local function groupsBridge(state)
+	state.stored = state.stored or {}
+	state.writes = state.writes or {}
+	return Host.Database({
+		scalar = function() return 1 end,
+		update = function(sql, params)
+			state.writes[#state.writes + 1] = { sql = sql, params = params }
+			return 1
+		end,
+		single = function(sql, params)
+			if sql:find('FROM opx77_characters', 1, true) and params and params.citizen then
+				local row = state.stored[params.citizen]
+				if row == nil then return nil end
+				return {
+					citizen_id = params.citizen, user_id = 'account-away', cid = 1, name = 'Jackie W',
+					char_info = '{"firstName":"Jackie","lastName":"W"}',
+					money = '{"EDDIES":0,"BANK":0}',
+					job = row.job or '{"name":"unemployed","grade":{"level":0}}',
+					gang = '{"name":"none","grade":{"level":0}}',
+					metadata = '{}',
+				}
+			end
+			return nil
+		end,
+		query = function() return {} end,
+		insert = function() return 1 end,
+		transaction = function() return true end,
+	})
+end
+
+--- The statements whose SQL holds a needle, for one citizen id.
+local function writesFor(state, needle, citizenId)
+	local out = {}
+	for _, write in ipairs(state.writes) do
+		if write.sql:find(needle, 1, true)
+			and (citizenId == nil or (write.params and write.params.citizen == citizenId)) then
+			out[#out + 1] = write
+		end
+	end
+	return out
+end
+
+section('creator exports: jobs, gangs and duty through the groups functions')
+do
+	local state = {}
+	local env, control, why = boot('server', groupsBridge(state))
+	check('the server boots for the group exports', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local call = control.CallExport
+		local SERVER_EXPORTS = { 'SetJob', 'SetGang', 'SetDuty', 'RemoveJob', 'RemoveGang',
+			'GetMetadata', 'SetMetadata', 'IsDown', 'Revive' }
+		local missing = {}
+		for _, name in ipairs(SERVER_EXPORTS) do
+			if type(control.exports[name]) ~= 'function' then missing[#missing + 1] = name end
+		end
+		check('every new server export is published', #missing == 0, table.concat(missing, ', '))
+
+		local PLAYER = 701
+		local player = standCharacter(env, control, PLAYER, OPX.CitizenId.Generate())
+		player.Offline = false
+		player.PlayerData.job = { name = 'unemployed', onDuty = true, grade = { level = 0 } }
+		player.PlayerData.jobs = { unemployed = 0 }
+
+		local internal, public = {}, {}
+		env.AddEventHandler('opx:in:character:job', function(who, job)
+			internal[#internal + 1] = { source = who, job = job }
+		end)
+		env.AddEventHandler('opx:on:character:job', function(who, payload)
+			public[#public + 1] = { source = who, payload = payload }
+		end)
+
+		check('a job change is a write: a resource nobody admitted is refused',
+			call('hr', 'SetJob', PLAYER, 'ripperdoc', 1).error == 'export.callerDenied'
+				and player.PlayerData.job.name == 'unemployed')
+		OPX.Config.SERVER.EXPORTS.WRITERS = { hr = true }
+
+		local sync, syncWhy = control.AbandonExport('hr', 1, 'SetJob', PLAYER, 'ripperdoc', 1)
+		control.Pump(5)
+		check('a synchronous SetJob fails at its first yield, with nothing begun',
+			sync == nil and syncWhy == 'export_yielded' and player.PlayerData.job.name == 'unemployed'
+				and #internal == 0, tostring(syncWhy))
+
+		local before = #control.log.info
+		local hired = call('hr', 'SetJob', PLAYER, 'ripperdoc', 1)
+		check('an awaited SetJob sets the primary job, and answers what it became',
+			hired ~= nil and hired.ok == true and hired.value.name == 'ripperdoc'
+				and hired.value.grade.level == 1 and player.PlayerData.job.name == 'ripperdoc'
+				and player.PlayerData.jobs.ripperdoc == 1, hired and tostring(hired.error))
+		check('a copy, not the live job',
+			hired.ok and hired.value ~= player.PlayerData.job)
+		check('raised inside the resource and on the public bus',
+			#internal == 1 and #public == 1 and public[1].source == PLAYER
+				and public[1].payload.job.name == 'ripperdoc', #public)
+		local journal = table.concat(control.log.info, '\n', before + 1)
+		check('and audited under the export with its caller',
+			journal:find('event=export.SetJob', 1, true) ~= nil
+				and journal:find('"caller":"hr"', 1, true) ~= nil, journal)
+
+		check('a job name that is not one is a bad argument',
+			call('hr', 'SetJob', PLAYER, 'rip per', 0).error == 'export.badArgument')
+		check('and so is a negative grade',
+			call('hr', 'SetJob', PLAYER, 'ripperdoc', -1).error == 'export.badArgument')
+		check('and a fractional one',
+			call('hr', 'SetJob', PLAYER, 'ripperdoc', 0.5).error == 'export.badArgument')
+		check('a job nobody defined answers the module\'s own code',
+			call('hr', 'SetJob', PLAYER, 'nope', 0).error == 'job.notFound')
+		check('and a grade the job does not have',
+			call('hr', 'SetJob', PLAYER, 'ripperdoc', 99).error == 'job.gradeNotFound')
+
+		local veto = OPX.Hooks.Register('job:beforeSet', function(payload)
+			if payload.name == 'netrunner' then return false end
+		end)
+		check('a job:beforeSet hook vetoes an export change too',
+			call('hr', 'SetJob', PLAYER, 'netrunner', 0).error == 'job.vetoed'
+				and player.PlayerData.job.name == 'ripperdoc')
+		OPX.Hooks.Remove(veto)
+
+		-- ── duty ──────────────────────────────────────────────────────────────
+		local sentBefore = #internal
+		local duty = call('hr', 'SetDuty', PLAYER, true)
+		check('SetDuty clocks a loaded character in', duty.ok == true and duty.value == true
+			and player.PlayerData.job.onDuty == true, tostring(duty.error))
+		check('and it is announced like any other job change', #internal == sentBefore + 1)
+		check('SetDuty answers inline: it never yields',
+			control.AbandonExport('hr', 1, 'SetDuty', PLAYER, false) ~= nil
+				and player.PlayerData.job.onDuty == false)
+		check('a duty flag that is not a boolean is refused',
+			call('hr', 'SetDuty', PLAYER, 'yes').error == 'export.badArgument')
+		control.Admit(702, 'account-702')
+		check('and a connection with no character is not logged in',
+			call('hr', 'SetDuty', 702, true).error == 'error.notLoggedIn')
+
+		-- ── removal ───────────────────────────────────────────────────────────
+		local announced = #public
+		check('removing a job the character does not hold is refused, and announced to nobody',
+			call('hr', 'RemoveJob', PLAYER, 'netrunner').error == 'job.notMember'
+				and #public == announced)
+		local fired = call('hr', 'RemoveJob', PLAYER, 'ripperdoc')
+		check('RemoveJob drops the job and falls back to the default one',
+			fired.ok == true and player.PlayerData.job.name == 'unemployed'
+				and player.PlayerData.jobs.ripperdoc == nil, tostring(fired.error))
+		check('and the public bus names the job that was dropped',
+			public[#public].payload.removed == 'ripperdoc')
+
+		-- ── gangs ─────────────────────────────────────────────────────────────
+		local gangs = {}
+		env.AddEventHandler('opx:on:character:gang', function(_, payload)
+			gangs[#gangs + 1] = payload
+		end)
+		local joined = call('hr', 'SetGang', PLAYER, 'maelstrom', 0)
+		check('SetGang sets the primary gang', joined.ok == true
+			and player.PlayerData.gang.name == 'maelstrom' and #gangs == 1, tostring(joined.error))
+		local gangHook = OPX.Hooks.Register('gang:beforeSet', function() return false end)
+		check('gang:beforeSet vetoes it the same way',
+			call('hr', 'SetGang', PLAYER, 'maelstrom', 0).error == 'gang.vetoed')
+		OPX.Hooks.Remove(gangHook)
+		local left = call('hr', 'RemoveGang', PLAYER, 'maelstrom')
+		check('RemoveGang drops it', left.ok == true and player.PlayerData.gang.name == 'none'
+			and gangs[#gangs].removed == 'maelstrom', tostring(left.error))
+		check('and leaving a gang one is not in is refused',
+			call('hr', 'RemoveGang', PLAYER, 'maelstrom').error == 'gang.notMember')
+
+		-- ── a character nobody is playing ─────────────────────────────────────
+		local AWAY = OPX.CitizenId.Generate()
+		state.stored[AWAY] = {}
+		local offline = call('hr', 'SetJob', AWAY, 'fixer', 1)
+		check('a citizen id reaches a character nobody is playing',
+			offline ~= nil and offline.ok == true and offline.value.name == 'fixer',
+			offline and tostring(offline.error))
+		check('by a membership row and the job column, both for that citizen',
+			#writesFor(state, 'opx77_character_groups', AWAY) == 1
+				and #writesFor(state, 'SET job = @value', AWAY) == 1)
+		check('announced as offline, with no player id',
+			public[#public].source == nil and public[#public].payload.offline == true
+				and public[#public].payload.citizenId == AWAY)
+		check('and the row is given back', not character.Ledger.Busy(AWAY))
+
+		local db = control.database
+		db.park = function(method, sql)
+			return method == 'update' and sql:find('SET job = @value', 1, true) ~= nil
+		end
+		local seen = character.Ledger.Seen(AWAY)
+		local pending
+		env.CreateThread(function()
+			pending = OPX.Api.Get('character').SetJob(AWAY, 'fixer', 2)
+		end)
+		control.Pump(10)
+		check('an offline change HOLDS THE OFFLINE LEDGER while it writes, so a racing login waits',
+			pending == nil and character.Ledger.Busy(AWAY))
+		db.park = nil
+		db.Resume()
+		settle(control, function() return pending ~= nil end)
+		check('and gives it back when the write has landed, moving the sequence a login reads',
+			pending ~= nil and pending.ok == true and not character.Ledger.Busy(AWAY)
+				and character.Ledger.Seen(AWAY) ~= seen, pending and tostring(pending.error))
+
+		local HELD = OPX.CitizenId.Generate()
+		state.stored[HELD] = {}
+		character.Ledger.Enter(HELD)
+		local waited = call('hr', 'SetJob', HELD, 'fixer', 0)
+		check('an offline change waits for another writer on the row, and gives up bounded',
+			waited ~= nil and waited.error == 'error.unavailable'
+				and #writesFor(state, 'opx77_character_groups', HELD) == 0,
+			waited and tostring(waited.error))
+		character.Ledger.Leave(HELD)
+
+		check('a citizen id with no character behind it is not found',
+			call('hr', 'SetJob', OPX.CitizenId.Generate(), 'fixer', 0).error == 'character.notFound')
+		check('a citizen id that does not parse is a bad argument',
+			call('hr', 'RemoveJob', 'H7K', 'fixer').error == 'export.badArgument')
+
+		local source = io.open('modules/character/server/player.lua'):read('a')
+		check('a login that sees the ledger moved reads the memberships again too',
+			source:find('local regrouped = M.Storage.FetchGroups(citizenId)', 1, true) ~= nil)
+	end
+end
+
+section('creator exports: a caller\'s own metadata, and nobody else\'s')
+do
+	local env, control, why = boot('server', groupsBridge({}))
+	check('the server boots for creator metadata', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local call = control.CallExport
+		OPX.Config.SERVER.EXPORTS.WRITERS = { my_shop = true, rival = true }
+
+		local PLAYER, CITIZEN = 721, OPX.CitizenId.Generate()
+		control.Admit(PLAYER, 'account-721')
+		local player = character.CreatePlayer({
+			citizenId = CITIZEN, userId = 'account-721', source = PLAYER,
+			charInfo = { firstName = 'Vik', lastName = 'Vektor' },
+			metadata = { health = 100 },
+		}, true)
+		character.Players[PLAYER] = player
+		character.Registry.byCitizenId[CITIZEN] = PLAYER
+		local metadata = player.PlayerData.metadata
+
+		local revision = player.Revision
+		local set = call('my_shop', 'SetMetadata', PLAYER, 'reputation', { level = 3, tags = { 'vip' } })
+		check('a writer stores a value on a loaded character', set ~= nil and set.ok == true,
+			set and tostring(set.error))
+		check('under its own name: ext.<resource>.<key>',
+			type(metadata['ext.my_shop.reputation']) == 'table'
+				and metadata['ext.my_shop.reputation'].level == 3 and metadata.reputation == nil)
+		check('marked dirty, so the autosave persists it with the rest of the metadata',
+			player.Revision > revision)
+		local read = call('my_shop', 'GetMetadata', PLAYER, 'reputation')
+		check('and reads it back', read.ok and read.value.level == 3)
+		read.value.level = 99
+		check('as a copy', metadata['ext.my_shop.reputation'].level == 3)
+		check('another resource asking the same key reads its own, empty, corner',
+			call('rival', 'GetMetadata', PLAYER, 'reputation').value == nil)
+		local all = call('my_shop', 'GetMetadata', PLAYER)
+		check('no key answers every key the caller holds, and only those',
+			all.ok and all.value.reputation ~= nil and all.value.health == nil
+				and OPX.Table.Count(all.value) == 1)
+
+		call('my_shop', 'SetMetadata', PLAYER, 'health', 0)
+		check('a key named like one of opx\'s own lands in the caller\'s corner, not on it',
+			metadata.health == 100 and metadata['ext.my_shop.health'] == 0)
+		check('a key with a dot is refused: one segment, so a namespace cannot be climbed',
+			call('my_shop', 'SetMetadata', PLAYER, 'a.b', 1).error == 'export.badArgument')
+		check('and so is one that is not a name',
+			call('my_shop', 'SetMetadata', PLAYER, '../health', 1).error == 'export.badArgument'
+				and call('my_shop', 'SetMetadata', PLAYER, 7, 1).error == 'export.badArgument')
+
+		check('a function is not plain data',
+			call('my_shop', 'SetMetadata', PLAYER, 'x', function() end).error == 'export.badValue')
+		check('nor a table with a metatable',
+			call('my_shop', 'SetMetadata', PLAYER, 'x', setmetatable({}, {})).error == 'export.badValue')
+		local cyclic = {}
+		cyclic.self = cyclic
+		check('nor a cycle',
+			call('my_shop', 'SetMetadata', PLAYER, 'x', cyclic).error == 'export.badValue')
+		check('nor NaN',
+			call('my_shop', 'SetMetadata', PLAYER, 'x', 0 / 0).error == 'export.badValue')
+		check('a value over the size cap is refused',
+			call('my_shop', 'SetMetadata', PLAYER, 'x', string.rep('a', 5000)).error
+				== 'export.tooLarge' and metadata['ext.my_shop.x'] == nil)
+
+		OPX.Config.SERVER.EXPORTS.METADATA = { MAX_BYTES = 4096, MAX_KEYS = 3, MAX_TOTAL_BYTES = 16384 }
+		call('my_shop', 'SetMetadata', PLAYER, 'third', true)
+		check('and so is a key past the per-resource count',
+			call('my_shop', 'SetMetadata', PLAYER, 'fourth', true).error == 'export.tooLarge')
+		check('which another resource does not share',
+			call('rival', 'SetMetadata', PLAYER, 'fourth', true).ok == true)
+		check('an existing key may still be rewritten at the cap',
+			call('my_shop', 'SetMetadata', PLAYER, 'third', false).ok == true
+				and metadata['ext.my_shop.third'] == false)
+		check('nil deletes', call('my_shop', 'SetMetadata', PLAYER, 'third', nil).ok == true
+			and metadata['ext.my_shop.third'] == nil)
+		OPX.Config.SERVER.EXPORTS.METADATA = nil
+
+		local handed = { n = 1 }
+		call('my_shop', 'SetMetadata', PLAYER, 'held', handed)
+		handed.n = 2
+		check('what is stored is a copy of what was handed in', metadata['ext.my_shop.held'].n == 1)
+
+		local journal = table.concat(control.log.info, '\n')
+		check('a write is audited with its caller',
+			journal:find('event=export.SetMetadata', 1, true) ~= nil)
+		check('a reader may not write',
+			call('my_hud', 'SetMetadata', PLAYER, 'x', 1).error == 'export.callerDenied')
+		control.Admit(722, 'account-722')
+		check('and a connection with no character is not logged in',
+			call('my_shop', 'SetMetadata', 722, 'x', 1).error == 'error.notLoggedIn'
+				and call('my_shop', 'GetMetadata', 722, 'x').error == 'error.notLoggedIn')
+		check('PlayerData\'s public copy still carries no metadata',
+			call('my_hud', 'GetPlayerData', PLAYER).value.metadata == nil)
+	end
+end
+
+section('creator exports: downed, read and revived through the module')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the downed exports', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local call = control.CallExport
+		local BODY = 731
+		standCharacter(env, control, BODY, OPX.CitizenId.Generate())
+
+		check('IsDown answers a standing player', call('my_hud', 'IsDown', BODY).value.down == false)
+		check('and refuses a player id nobody is connected under',
+			call('my_hud', 'IsDown', 99999).error == 'export.badArgument')
+		control.Life(BODY, 'dead')
+		control.Pump(20)
+		local down = call('my_hud', 'IsDown', BODY)
+		check('IsDown answers a downed player', down.ok and down.value.down == true,
+			down and tostring(down.error))
+
+		check('Revive is a write',
+			call('medic', 'Revive', BODY).error == 'export.callerDenied')
+		OPX.Config.SERVER.EXPORTS.WRITERS = { medic = true }
+		check('a reason that is not text is refused',
+			call('medic', 'Revive', BODY, {}).error == 'export.badArgument')
+
+		local settings = OPX.Modules.Get('downed').Settings
+		local revivers = settings.REVIVERS
+		settings.REVIVERS = { admin = true }
+		check('the module\'s own REVIVERS switch still applies to the caller\'s name',
+			call('medic', 'Revive', BODY, 'x').error == 'caller_denied')
+		settings.REVIVERS = revivers
+
+		local changed = {}
+		env.AddEventHandler('opx:on:downed:changed', function(_, payload)
+			changed[#changed + 1] = payload
+		end)
+		local logged = #control.log.info
+		local revived = call('medic', 'Revive', BODY, 'stabilised on scene')
+		check('an admitted writer revives a downed player', revived.ok == true,
+			tostring(revived.error))
+		check('who is up, and every resource hears it',
+			call('my_hud', 'IsDown', BODY).value.down == false
+				and changed[#changed] ~= nil and changed[#changed].down == false)
+		local journal = table.concat(control.log.info, '\n', logged + 1)
+		check('the module audits the caller and the reason',
+			journal:find('medic: stabilised on scene', 1, true) ~= nil, journal)
+		check('and a player who is not down answers the module\'s own code',
+			call('medic', 'Revive', BODY).error == 'not_down')
+	end
+end
+
+section('creator exports: another client resource hears the public opx events')
+do
+	local env, control, why = boot('client')
+	check('the client boots for subscriptions', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local call = control.CallExport
+
+		--- The deliveries of one event to one resource, oldest first.
+		local function delivered(resource, event)
+			local out = {}
+			for _, entry in ipairs(control.exportCalls) do
+				if entry.resource == resource and entry.args[1] == event then out[#out + 1] = entry end
+			end
+			return out
+		end
+
+		check('the subscription exports are published',
+			type(control.exports.Subscribe) == 'function'
+				and type(control.exports.Unsubscribe) == 'function')
+		check('a public event may be subscribed to',
+			call('my_hud', 'Subscribe', 'opx:on:character:money').ok == true)
+		check('this resource\'s own wiring may not',
+			call('my_hud', 'Subscribe', 'opx:in:character:job').error == 'export.notSubscribable')
+		check('nor an event that is not on the list',
+			call('my_hud', 'Subscribe', 'opx:on:menu:action').error == 'export.notSubscribable')
+		check('nor anything that is not a name',
+			call('my_hud', 'Subscribe', 42).error == 'export.badArgument')
+		check('and a reply export that is not a name is refused',
+			call('my_hud', 'Subscribe', 'opx:on:character:loaded', 'a b').error
+				== 'export.badArgument')
+
+		control.Fire('opx:on:character:money', 'EDDIES', 50, 'add', 150)
+		control.Pump(4)
+		local money = delivered('my_hud', 'opx:on:character:money')
+		check('a raise is delivered through the caller\'s reply export, as one table',
+			#money == 1 and money[1].name == 'OnOpxEvent' and money[1].args[2].balance == 150
+				and money[1].args[2].moneyType == 'EDDIES' and money[1].args[2].action == 'add',
+			#money)
+		check('and nobody who did not subscribe hears it',
+			#delivered('other_res', 'opx:on:character:money') == 0)
+
+		call('my_hud', 'Subscribe', 'opx:on:character:loaded', 'Heard')
+		control.Fire('opx:on:character:loaded', { citizenId = 'X1', metadata = { secret = 1 } })
+		control.Pump(4)
+		local loaded = delivered('my_hud', 'opx:on:character:loaded')
+		check('a subscription may name its own reply export',
+			#loaded == 1 and loaded[1].name == 'Heard', #loaded)
+		check('and a character is handed without its free-form metadata',
+			#loaded == 1 and loaded[1].args[2].citizenId == 'X1' and loaded[1].args[2].metadata == nil)
+
+		check('Unsubscribe stops the deliveries',
+			call('my_hud', 'Unsubscribe', 'opx:on:character:money').value == true)
+		control.Fire('opx:on:character:money', 'EDDIES', 1, 'add', 151)
+		control.Pump(4)
+		check('and none arrive after it', #delivered('my_hud', 'opx:on:character:money') == 1)
+
+		control.Fire('onClientResourceStop', 'my_hud')
+		control.Fire('opx:on:character:loaded', { citizenId = 'X2' })
+		control.Pump(4)
+		check('a caller that stops is unsubscribed from everything',
+			#delivered('my_hud', 'opx:on:character:loaded') == 1)
+
+		OPX.Config.CLIENT.EXPORTS.CALLERS = { trusted = true }
+		check('CLIENT.EXPORTS.CALLERS narrows who may subscribe',
+			call('my_hud', 'Subscribe', 'opx:on:downed:changed').error == 'export.callerDenied'
+				and call('trusted', 'Subscribe', 'opx:on:downed:changed').ok == true)
+		OPX.Config.CLIENT.EXPORTS.CALLERS = '*'
+
+		local codes = { 'export.badValue', 'export.tooLarge', 'export.notSubscribable',
+			'job.notMember', 'gang.notMember' }
+		local untranslated = {}
+		for _, code in ipairs(codes) do
+			for _, language in ipairs({ 'en', 'fr' }) do
+				OPX.Locale.Set(language)
+				if not OPX.Locale.Exists(code) then
+					untranslated[#untranslated + 1] = language .. ':' .. code
+				end
+			end
+		end
+		OPX.Locale.Set('en')
+		check('every new refusal code reads as words in English and French',
+			#untranslated == 0, table.concat(untranslated, ', '))
+	end
+end
+
+section('groups: a live job change that a logout overtakes is still kept')
+do
+	local state = {}
+	local env, control, why = boot('server', groupsBridge(state))
+	check('the server boots for the logout race', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+
+		--- A real Player in the roster, so a Logout runs its own save.
+		local function stand(source)
+			local citizenId = OPX.CitizenId.Generate()
+			control.Admit(source, 'account-' .. source)
+			local player = character.CreatePlayer({
+				citizenId = citizenId, userId = 'account-' .. source, source = source,
+				charInfo = { firstName = 'Vik', lastName = 'Vektor' },
+				job = { name = 'ripperdoc', onDuty = true, grade = { level = 1 } },
+			}, false)
+			player.PlayerData.jobs = { ripperdoc = 1 }
+			player.PlayerData.gangs = {}
+			character.RegisterPlayer(player)
+			return player, citizenId
+		end
+
+		--- The job column the LAST statement that wrote it left, for one citizen.
+		local function lastJob(citizenId)
+			local job
+			for _, write in ipairs(state.writes) do
+				local params = write.params or {}
+				if params.citizen == citizenId then
+					if write.sql:find('SET job = @value', 1, true) then job = params.value
+					elseif write.sql:find('job = @job', 1, true) then job = params.job end
+				end
+			end
+			return job
+		end
+
+		local db = control.database
+		local function raceLogout(source, verb, ...)
+			db.park = function(method, sql)
+				return sql:find('opx77_character_groups', 1, true) ~= nil
+			end
+			local answer
+			local args = table.pack(...)
+			env.CreateThread(function()
+				answer = OPX.Api.Get('character')[verb](source, table.unpack(args, 1, args.n))
+			end)
+			control.Pump(10)
+			-- The membership statement is in flight: the player quits now, and
+			-- the logout saves the Player as it stands, before the change lands.
+			character.Logout(source)
+			control.Pump(10)
+			db.park = nil
+			db.Resume()
+			settle(control, function() return answer ~= nil end)
+			return answer
+		end
+
+		local FIRED, firedId = stand(741)
+		local fired = raceLogout(741, 'RemovePlayerFromJob', 'ripperdoc')
+		local stored = lastJob(firedId)
+		check('a firing overtaken by a logout answers ok',
+			fired ~= nil and fired.ok == true, fired and tostring(fired.error))
+		check('and the row is left on the fallback job, not the job that was removed',
+			stored ~= nil and stored:find('"ripperdoc"', 1, true) == nil
+				and stored:find('"unemployed"', 1, true) ~= nil, tostring(stored))
+		check('and the row is given back', not character.Ledger.Busy(firedId))
+		check('the departed Player is the one that moved', FIRED.PlayerData.job.name == 'unemployed')
+
+		local _, hiredId = stand(742)
+		local hired = raceLogout(742, 'SetJob', 'fixer', 1)
+		local hiredRow = lastJob(hiredId)
+		check('a hire overtaken by a logout is written to the row too',
+			hired ~= nil and hired.ok == true and hiredRow ~= nil
+				and hiredRow:find('"fixer"', 1, true) ~= nil, tostring(hiredRow))
+	end
+end
+
+section('creator exports: a subscriber is not told which other resource drew a bar')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the bar owner', why == nil, why)
+
+	if why == nil then
+		local call = control.CallExport
+		local function delivered(resource, event)
+			local out = {}
+			for _, entry in ipairs(control.exportCalls) do
+				if entry.resource == resource and entry.args[1] == event then out[#out + 1] = entry end
+			end
+			return out
+		end
+
+		call('my_hud', 'Subscribe', 'opx:on:progress:state')
+		call('rival', 'Subscribe', 'opx:on:progress:state')
+		control.Fire('opx:on:progress:state', { open = true, owner = 'ext:rival', label = 'Hacking' })
+		control.Pump(4)
+		local heard = delivered('my_hud', 'opx:on:progress:state')
+		check('another resource\'s bar reaches a subscriber without that resource\'s name',
+			#heard == 1 and heard[1].args[2].open == true and heard[1].args[2].owner == nil,
+			heard[1] and tostring(heard[1].args[2].owner))
+		local own = delivered('rival', 'opx:on:progress:state')
+		check('and the resource that drew it reads its own name, not this file\'s prefix',
+			#own == 1 and own[1].args[2].owner == 'rival', own[1] and tostring(own[1].args[2].owner))
+		control.Fire('opx:on:progress:state', { open = true, owner = 'inventory', label = 'Eating' })
+		control.Pump(4)
+		heard = delivered('my_hud', 'opx:on:progress:state')
+		check('a bar of opx\'s own keeps its owner', #heard == 2 and heard[2].args[2].owner == 'inventory')
+	end
+end
+
+-- ── a page that mounted before the calls module started ─────────────────────
+-- A page whose assets are warm in the CEF cache (every reconnection) reports
+-- `calls:ready` BEFORE the module has registered its page handlers; the surface
+-- holds that ready and replays it, synchronously, to the FIRST handler registered
+-- on it. `modules/calls/client/view.lua` registered its state-to-page handler
+-- AFTER that wiring loop, so the replayed ready drew its state into nothing and
+-- the hologram stayed empty until the next change.
+section('a page that mounted before the calls module started still gets its state')
+do
+	local env, control = Host.Environment('client')
+	local failure = nil
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk, why = loadfile(file, 't', env)
+		if not chunk then failure = why break end
+		local ok, raised = pcall(chunk)
+		if not ok then failure = raised break end
+	end
+	check('the client loads', failure == nil, failure)
+	if failure == nil then
+		control.Fire('onClientResourceStart', 'opx_infinity')
+		local frames = 0
+		while #control.pages == 0 and frames < 500 do
+			control.Pump(1)
+			frames = frames + 1
+		end
+		local page = control.pages[1]
+		check('the page exists before the calls module has started', page ~= nil
+			and not env.OPX.Modules.IsRunning('calls'), tostring(page))
+		if page ~= nil then
+			-- The warm cache: the page is up and the hologram reports ready now.
+			control.PageEmit(page, 'opx:ready', {})
+			control.PageEmit(page, 'opx:calls:ready', {})
+			control.Pump(240)
+			check('and it has started since', env.OPX.Modules.IsRunning('calls'))
+			local holo = nil
+			for _, one in ipairs(page.sent) do
+				if one.channel == 'opx:calls:holo' and type(one.payload) == 'table'
+					and one.payload.kind == 'holo' then
+					holo = one.payload
+					break
+				end
+			end
+			check('and the call hologram got its state from the replayed ready', holo ~= nil)
+		end
+	end
+end
+
+-- ── every file this resource ships fits a Windows client's path ─────────────
+-- A client installs a server's resources at `<game>\red4ext\plugins\Open77\cache\
+-- server-resources\sets\<64-hex digest>\resources\<resource>\` (Open77's
+-- `networking/src/ResourceInstaller.cpp`), which on a Steam install in Program
+-- Files is 200 characters before the file's own path, and Windows stops at 259
+-- (MAX_PATH less its terminator): a path of more than 59 characters, measured
+-- from the resource root (`web/images/clothing/<name>.webp`), is a file the
+-- client cannot see, and one such file fails the WHOLE resource. The wardrobe
+-- pictures under `web/images/clothing/` were named after their wiki slugs and ran
+-- to 59, the whole room and none to spare, so a game installed one folder deeper
+-- than the Steam default could not join. Everything the resource ships -- every
+-- file under `web/` above all, since that tree is generated -- is held here to
+-- that room less a 12-character margin.
+section('every file the resource ships fits a Windows client\'s path, with a margin')
+do
+	local GAME = 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Cyberpunk 2077'
+	local INSTALLED = GAME .. '\\red4ext\\plugins\\Open77\\cache\\server-resources\\sets\\'
+		.. ('0'):rep(64) .. '\\resources\\opx_infinity\\'
+	local ROOM = 259 - #INSTALLED
+	local MARGIN = 12
+	check('the room a Steam install leaves a file is 59 characters', ROOM == 59, ROOM)
+
+	-- What the node ships: `web/`, `core/`, `modules/`, `lib/`, `config/`,
+	-- `locales/` and `open77.lua`. The walk knows which platform it is on, and an
+	-- empty walk is a failure.
+	local windows = package.config:sub(1, 1) == '\\'
+	local here = ''
+	if windows then
+		local handle = io.popen('cd')
+		here = handle and (handle:read('l') or '') or ''
+		if handle then handle:close() end
+		here = here:gsub('\\', '/'):gsub('/$', '') .. '/'
+	end
+	local shipped, underWeb, pictures = { 'open77.lua' }, 0, 0
+	for _, root in ipairs({ 'web', 'core', 'modules', 'lib', 'config', 'locales' }) do
+		local command = windows
+			and ('dir /b /s /a-d "%s" 2>nul'):format(root)
+			or ('find "%s" -type f 2>/dev/null'):format(root)
+		local handle = io.popen(command)
+		if handle ~= nil then
+			for line in handle:lines() do
+				local path = line:gsub('\\', '/')
+				if windows and path:sub(1, #here):lower() == here:lower() then path = path:sub(#here + 1) end
+				path = path:gsub('^%./', '')
+				if path ~= '' then
+					shipped[#shipped + 1] = path
+					if path:sub(1, 4) == 'web/' then underWeb = underWeb + 1 end
+					if path:sub(1, 20) == 'web/images/clothing/' then pictures = pictures + 1 end
+				end
+			end
+			handle:close()
+		end
+	end
+	local longest, over = '', {}
+	for _, path in ipairs(shipped) do
+		if #path > #longest then longest = path end
+		if #path > ROOM - MARGIN and #over < 6 then over[#over + 1] = ('%s (%d)'):format(path, #path) end
+	end
+	check('the resource\'s files are listed', #shipped > 500, #shipped)
+	check('and the walk reached web/, the wardrobe pictures included',
+		underWeb > 1000 and pictures > 1000, ('%d under web/, %d pictures'):format(underWeb, pictures))
+	check(('none is longer than %d, %d short of the %d a client can see'):format(ROOM - MARGIN, MARGIN, ROOM),
+		#over == 0, #over > 0 and table.concat(over, ' ') or ('the longest: %s (%d)'):format(longest, #longest))
 end
 
 print(('\n%d checks, %d failed'):format(checks, failures))
