@@ -16470,6 +16470,27 @@ do
 		check('this buyer only takes this site\'s crates',
 			lastAnswer()[2] == 'no_crates', tostring(lastAnswer()[2]))
 
+		-- ── a sale does not outlive its bar ──────────────────────────────────
+		-- Only an ABORT or a FINISH ended one, so a FINISH the rate limit swallowed
+		-- left it standing for the next FINISH -- the bar skipped by coming back
+		-- later, or a pickup's FINISH spent on a sale.
+		bags[2] = { docks = 1 }
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		at = at + Access.DELIVER_MS + Access.CLAIM_GRACE_MS + 1
+		fire(2, M.Event.FINISH)
+		check('a sale finished long after its bar sells nothing',
+			lastAnswer()[2] == 'nothing_running' and bags[2].docks == 1 and #paid == 2,
+			tostring(lastAnswer()[2]))
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		fire(2, M.Event.BEGIN, Step.PICKUP, 'no-such-crate')
+		at = at + Access.DELIVER_MS + 1
+		fire(2, M.Event.FINISH)
+		check('and a step asked for after a sale has begun ends that sale',
+			lastAnswer()[2] == 'nothing_running' and bags[2].docks == 1 and #paid == 2,
+			tostring(lastAnswer()[2]))
+
 		-- ── leaving mid-sale takes nothing ───────────────────────────────────
 		bags[2] = { docks = 1 }
 		at = at + 10000

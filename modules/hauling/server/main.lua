@@ -1027,6 +1027,14 @@ end
 --- Completes whatever the player had begun.
 local function complete(player)
 	local sale = sales[player]
+	-- A SALE EXPIRES LIKE A CLAIM. Nothing else ends one but an ABORT or a FINISH,
+	-- and a FINISH the rate limit swallowed left it standing: the bar could be
+	-- skipped by coming back later, and the next pickup's FINISH was spent on it.
+	if sale ~= nil and OPX.Now() - sale.startedAtMs
+		> Access.StepMs(Step.DELIVER) + Access.CLAIM_GRACE_MS then
+		sales[player] = nil
+		sale = nil
+	end
 	if sale ~= nil then return completeSale(player, sale) end
 
 	local crate = Claim.HeldBy(crates, player)
@@ -1301,6 +1309,11 @@ function M.Start()
 		if type(subject) ~= 'string' and type(subject) ~= 'number' then
 			return answer(player, false, 'invalid_subject')
 		end
+
+		-- A NEW STEP ENDS A SALE. The client runs one bar at a time, so a pickup or
+		-- a load asked for means the sale bar is no longer up; left standing, the
+		-- sale would take the FINISH that bar sends and the pickup would never end.
+		if step ~= Step.DELIVER then sales[player] = nil end
 
 		local ok, reason
 		if step == Step.PICKUP then
