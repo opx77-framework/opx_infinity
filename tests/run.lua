@@ -13726,6 +13726,20 @@ do
 		local away = M.Door.Open('test')
 		check('and the key then answers that no lift is near',
 			away.ok == false and away.error == 'no_elevator_nearby', tostring(away.error))
+
+		-- THE OWNER: pressing E away from any lift raised "you are not standing at
+		-- an elevator". E is shared with four other modules that stay silent away
+		-- from their spots, so a press with no lift near says nothing at all.
+		local toasts = {}
+		local realShow = OPX.Toast.Show
+		OPX.Toast.Show = function(spec) toasts[#toasts + 1] = spec; return realShow(spec) end
+		mapping.pressed()
+		OPX.Toast.Show = realShow
+		local spoke = 0
+		for _, spec in ipairs(toasts) do
+			if type(spec) == 'table' and spec.id == 'opx.elevators.answer' then spoke = spoke + 1 end
+		end
+		check('and the key pressed away from any lift raises no toast', spoke == 0, spoke)
 	end
 end
 
