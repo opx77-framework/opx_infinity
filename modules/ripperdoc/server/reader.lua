@@ -179,8 +179,14 @@ end
 function M.Reader.Answer(player, nonce, batch, rows)
 	if read == nil or player ~= read.player or tostring(nonce) ~= read.nonce
 		or tonumber(batch) ~= read.batch then return end
+	-- ONE ANSWER PER BATCH. The writes below yield, and `read.batch` only
+	-- moves in `sendNext`: a second answer to the same batch arriving in
+	-- between used to find an emptied list, write nothing and send the next
+	-- batch itself -- and the first answer then sent one more, so a batch was
+	-- skipped. Spending the list here makes the replay a no-op.
 	local asked = read.asked
-	read.asked = {}
+	if asked == nil then return end
+	read.asked = nil
 	local build = M.Records.BUILD
 	for _, row in ipairs(type(rows) == 'table' and rows or {}) do
 		local id = type(row) == 'table' and text(row.record, 128) or ''

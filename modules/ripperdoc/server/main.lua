@@ -392,8 +392,13 @@ local function flat(value, depth)
 	depth = depth or 0
 	if type(value) ~= 'table' then return tostring(value) end
 	if depth > 3 then return '{...}' end
+	-- BOUNDED IN BREADTH as well as depth: the probe's answer is a table off
+	-- the wire, and the journal line is cut at 1500 characters anyway.
 	local keys = {}
-	for key in pairs(value) do keys[#keys + 1] = tostring(key) end
+	for key in pairs(value) do
+		if #keys >= 64 then break end
+		keys[#keys + 1] = tostring(key)
+	end
 	table.sort(keys)
 	local parts = {}
 	for _, key in ipairs(keys) do
