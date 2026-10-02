@@ -340,6 +340,54 @@ UPDATE opx77_characters
 	})
 end
 
+--- Adds to one balance of a character that is not loaded, in one statement.
+-- @author dop42
+--
+-- AN INCREMENT, NEVER A READ-MODIFY-WRITE. The balance is read and written by the
+-- same `UPDATE`, so two offline payments landing together each add to what the
+-- other left, where a fetch-then-save pair would both read the old balance and
+-- the second would erase the first. An absent currency key counts as zero, which
+-- is what `NormaliseEntity` answers for one on the next login anyway.
+--
+-- The JSON path is a bound parameter, built from a money type the caller has
+-- already checked against `MONEY.TYPES`; no text from anywhere else reaches it.
+-- @param citizenId CitizenId
+-- @param moneyType MoneyType
+-- @param amount integer positive
+-- @return Result
+function M.Storage.AddMoney(citizenId, moneyType, amount)
+	local written = Storage.Execute([[
+UPDATE opx77_characters
+   SET money = JSON_SET(money, @path,
+       COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(money, @path)) AS SIGNED), 0) + @amount)
+ WHERE citizen_id = @citizen AND deleted_at IS NULL
+  ]], { citizen = citizenId, path = '$.' .. moneyType, amount = amount })
+	if not written.ok then return written end
+	-- The bridge answers the affected rows as a number or under `affectedRows`;
+	-- zero is a character that is not there, and anything unreadable is left to
+	-- the read that follows to decide.
+	local affected = written.value
+	if type(affected) == 'table' then affected = affected.affectedRows end
+	if tonumber(affected) == 0 then return Result.Err('character.notFound', citizenId) end
+	return Result.Ok(true)
+end
+
+--- Reads one stored balance of a character, loaded or not.
+-- @author dop42
+-- @param citizenId CitizenId
+-- @param moneyType MoneyType
+-- @return Result integer
+function M.Storage.Balance(citizenId, moneyType)
+	local read = Storage.Scalar([[
+SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(money, @path)) AS SIGNED)
+  FROM opx77_characters
+ WHERE citizen_id = @citizen AND deleted_at IS NULL
+ LIMIT 1
+  ]], { citizen = citizenId, path = '$.' .. moneyType })
+	if not read.ok then return read end
+	return Result.Ok(math.tointeger(tonumber(read.value)) or 0)
+end
+
 -- The one-column statement an offline group change writes, per column. Two whole
 -- statements rather than one with the column name interpolated into it.
 local SAVE_PRIMARY = {

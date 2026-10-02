@@ -390,6 +390,28 @@ function Containers.Viewers()
 	return list
 end
 
+--- Tells every other resource on the host that a container's contents moved.
+--
+-- WHICH CONTAINER, NOT WHAT IS IN IT. A bag a player is sorting changes forty
+-- times a drag, and the whole of it on the bus each time would be forty copies
+-- of a table only the listener that cares about it should pay for. A listener
+-- that wants the contents asks the `GetInventory` / `CountItem` exports.
+-- @param container table
+local function announce(container)
+	if container.transient and container.kind ~= KIND.CHARACTER then
+		-- A pile and the boot of a car nobody owns: memory-only, numbered by a
+		-- counter, and gone with their vehicle. Nothing outside can name one.
+		return
+	end
+	local isBag = container.kind == KIND.CHARACTER
+	OPX.Publish(M.Event.ON_CHANGED, isBag and M.Players.SourceOf(container.owner) or nil, {
+		kind = container.kind,
+		owner = container.owner,
+		container = container.id,
+		citizenId = isBag and container.owner or nil,
+	})
+end
+
 --- The one way out of an operation: mark, push, check the held weapon, clear an
 --- emptied pile.
 -- A direct call and not a hook registry: the weapons half is the only thing that
@@ -397,6 +419,8 @@ end
 local function commit(first, second)
 	local distinct = second ~= nil and second.id ~= first.id
 	local now = OPX.Now()
+	announce(first)
+	if distinct then announce(second) end
 
 	first.touchedAt = now
 	if not first.transient then M.Storage.MarkDirty(first.id) end

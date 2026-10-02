@@ -259,6 +259,63 @@ function M.Ensure(target, plate, model)
 	return given
 end
 
+--- Takes every key to one plate out of one bag.
+-- @author dop42
+--
+-- EVERY KEY, by plate and whatever its label says: a label is written in the
+-- language and with the model name of the day it was cut, and a key that
+-- survived a revoke because its label was spelled differently is a key that
+-- still opens the car. Only the bag: a key left in a stash or a boot is a key
+-- nobody is carrying, and `RevokeAll` says so in its answer.
+-- @param target Source|CitizenId
+-- @param plate string
+-- @return Result { plate, removed }
+function M.Revoke(target, plate)
+	if inventory == nil then return Result.Err('vehiclekeys.unavailable', 'no inventory') end
+	if type(inventory.RemoveWhere) ~= 'function' then
+		return Result.Err('vehiclekeys.unavailable', 'the inventory cannot remove by metadata')
+	end
+	plate = plateOf(plate)
+	if plate == nil then return Result.Err('error.badRequest', 'plate') end
+	local removed = inventory.RemoveWhere(target, M.ITEM, { plate = plate })
+	if type(removed) ~= 'table' or not removed.ok then
+		return Result.Err('vehiclekeys.unavailable',
+			type(removed) == 'table' and tostring(removed.error) or 'failed')
+	end
+	return Result.Ok({ plate = plate, removed = removed.value })
+end
+
+--- Takes every key to one plate out of every bag in the world.
+-- @author dop42
+--
+-- Every LOADED character, which is every bag that can turn a lock right now: a
+-- key only works in the hand of somebody standing beside the car. An offline
+-- character's bag is not walked -- that is a query over every row ever written,
+-- not a revoke -- so a caller re-keying a car for good also changes its plate,
+-- which is the identity every key names.
+-- @param plate string
+-- @return Result { plate, removed, holders }
+function M.RevokeAll(plate)
+	plate = plateOf(plate)
+	if plate == nil then return Result.Err('error.badRequest', 'plate') end
+	local character = OPX.Api.Get('character')
+	if character == nil then return Result.Err('vehiclekeys.unavailable', 'no character') end
+	local players = character.GetPlayers()
+	local removed, holders = 0, 0
+	for index = 1, #players do
+		local source = players[index].PlayerData.source
+		local answer = M.Revoke(source, plate)
+		if not answer.ok then return answer end
+		if answer.value.removed > 0 then
+			removed = removed + answer.value.removed
+			holders = holders + 1
+		end
+	end
+	OPX.Audit.Log({ event = 'vehiclekeys.revokeAll', message = plate,
+		data = { plate = plate, removed = removed, holders = holders } })
+	return Result.Ok({ plate = plate, removed = removed, holders = holders })
+end
+
 --- Whether a connection stands within reach of a vehicle, or sits in it.
 -- Both positions are the host's. A seat counts wherever the car is: a driver
 -- locking the doors from inside is the commonest use of a key there is.
@@ -406,6 +463,8 @@ function M.Api()
 		GiveFor = M.GiveFor,
 		Ensure = M.Ensure,
 		Toggle = M.Toggle,
+		Revoke = M.Revoke,
+		RevokeAll = M.RevokeAll,
 	})
 end
 

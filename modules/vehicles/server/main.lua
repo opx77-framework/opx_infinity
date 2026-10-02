@@ -197,6 +197,13 @@ function M.Spawn(source, plateId, at)
 			{ owner = vehicle.citizenId }, source)
 		return Result.Err('vehicle.notFound', plateId)
 	end
+	-- AN IMPOUNDED VEHICLE STAYS WHERE IT IS until something releases it with
+	-- `SetState`. The state existed in the schema and nothing ever wrote it, so
+	-- nothing ever had to refuse it; a pound that the owner's own garage key
+	-- empties is not a pound.
+	if vehicle.state == STATE.IMPOUNDED then
+		return Result.Err('vehicle.impounded', plateId)
+	end
 
 	-- ── the plate is claimed HERE, before anything else can be ───────────────
 	-- THE DUPLICATION RACE, AND WHY THE GUARD BELOW IS NOT ONE ON ITS OWN.
@@ -353,6 +360,16 @@ function M.Spawn(source, plateId, at)
 	Store.SetState(plateId, STATE.OUT)
 	OPX.Audit.Player(character.GetPlayer(source), 'vehicle.spawn', plateId,
 		{ id = tostring(id) })
+	-- The engine id goes out as TEXT as well as itself: it carries a generation
+	-- and can pass 2^53, where a listener that turns it into JSON stops being exact.
+	OPX.Publish(M.Event.ON_SPAWNED, source, {
+		citizenId = data.citizenId,
+		plate = plateId,
+		record = vehicle.record,
+		vehicleId = id,
+		vehicleKey = tostring(id),
+		recalled = recalled or nil,
+	})
 	-- The claim is given back only now, with `live` already written: a gap
 	-- between the two would be the same window in miniature.
 	return done(Result.Ok({ plate = plateId, id = id, recalled = recalled or nil }))
@@ -457,6 +474,14 @@ function M.Store(plateId, garage)
 	end
 
 	live[plateId] = nil
+	-- The owner's connection, when they are still here: the plate's owner is a
+	-- citizen id, and a store from a sweep after they left has nobody to name.
+	local owner = character ~= nil and character.GetPlayerByCitizenId(record.citizenId) or nil
+	OPX.Publish(M.Event.ON_STORED, owner and owner.PlayerData.source or nil, {
+		citizenId = record.citizenId,
+		plate = plateId,
+		garage = garage,
+	})
 	return Result.Ok({ plate = plateId })
 end
 
@@ -481,6 +506,61 @@ function M.StoreAll(citizenId)
 		if live[plateId] ~= nil and M.Store(plateId).ok then stored = stored + 1 end
 	end
 	return stored
+end
+
+--- The states a caller may move a row to, by name. `out` is not one of them:
+--- only `Spawn` puts a vehicle in the world, because only `Spawn` creates it.
+local SETTABLE = { stored = STATE.STORED, impounded = STATE.IMPOUNDED }
+
+--- Moves an owned vehicle to stored or impounded, optionally under a garage.
+-- @author dop42
+--
+-- THE IMPOUND DOOR. A vehicle that is out is put away first -- which writes its
+-- condition back and takes it off the street -- and refused with
+-- `vehicle.occupied` while anybody sits in it, for the reason `Spawn` refuses a
+-- recall: the occupant is not necessarily the owner, and a car does not vanish
+-- from under a driver because a tow job said so. `impounded` is then refused by
+-- `Spawn` until a caller sets it back to `stored`.
+-- @param plateId string
+-- @param state string `stored` or `impounded`
+-- @param garage string|nil the garage key it is filed under; omitted keeps it
+-- @return Result { plate, state, garage }
+function M.SetState(plateId, state, garage)
+	if type(plateId) ~= 'string' or #plateId < 1 or #plateId > 12
+		or not plateId:match('^[%w%-]+$') then
+		return Result.Err('error.badRequest', 'plate')
+	end
+	local wanted = type(state) == 'string' and SETTABLE[state:lower()] or nil
+	if wanted == nil then return Result.Err('vehicle.badState', tostring(state)) end
+	if garage ~= nil and (type(garage) ~= 'string' or #garage < 1 or #garage > 48
+		or not garage:match('^[%w_%-%.:]+$')) then
+		return Result.Err('error.badRequest', 'garage')
+	end
+
+	local fetched = Store.FetchOne(plateId)
+	if not fetched.ok then return fetched end
+
+	local record = live[plateId]
+	if record ~= nil then
+		local snapshot = Open77.vehicles.get(record.id)
+		local occupants = type(snapshot) == 'table' and snapshot.occupants or nil
+		if type(occupants) == 'table' and #occupants > 0 then
+			return Result.Err('vehicle.occupied', plateId)
+		end
+		local put = M.Store(plateId, garage)
+		if not put.ok then return put end
+	end
+
+	local written = Store.SetState(plateId, wanted, garage)
+	if not written.ok then return written end
+	OPX.Audit.Log({
+		event = 'vehicle.state',
+		message = ('%s -> %s'):format(plateId, state:lower()),
+		citizenId = fetched.value.citizenId,
+		data = { plate = plateId, state = state:lower(), garage = garage },
+	})
+	return Result.Ok({ plate = plateId, state = state:lower(),
+		garage = garage or fetched.value.garage })
 end
 
 --- Saves, or puts away, one vehicle that is out.
@@ -555,6 +635,15 @@ local function removed(id, reason)
 			live[plateId] = nil
 			CreateThread(function() Store.SetState(plateId, STATE.STORED) end)
 			Open77.log.info(('[vehicles] %s removed: %s'):format(plateId, tostring(reason)))
+			-- Stored as far as the row is concerned, so said as a store, with
+			-- the host's reason: a listener tracking what is out must not keep
+			-- a car the world took away.
+			local owner = character ~= nil and character.GetPlayerByCitizenId(record.citizenId) or nil
+			OPX.Publish(M.Event.ON_STORED, owner and owner.PlayerData.source or nil, {
+				citizenId = record.citizenId,
+				plate = plateId,
+				removed = OPX.Audit.Safe(reason, 64),
+			})
 			return
 		end
 	end
@@ -645,6 +734,8 @@ function M.Api()
 		Spawn = M.Spawn,
 		Store = M.Store,
 		StoreAll = M.StoreAll,
+		-- Stored or impounded, by name; the impound door. See `M.SetState`.
+		SetState = M.SetState,
 	})
 end
 

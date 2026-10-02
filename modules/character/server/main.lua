@@ -837,11 +837,19 @@ function M.Api()
 		PlaceCharacter = M.PlaceCharacter,
 
 		AddMoney = M.AddMoney,
+		-- The one money door that reaches a character nobody is playing. Answers
+		-- a Result, unlike the three above, because it yields and reaches the
+		-- database: `ok, code` cannot carry the balance it left behind.
+		AddMoneyOffline = M.AddMoneyOffline,
 		RemoveMoney = M.RemoveMoney,
 		SetMoney = M.SetMoney,
 		GetMoney = M.GetMoney,
 		FormatMoney = M.FormatMoney,
 		IsMoneyType = M.IsMoneyType,
+
+		-- The closed public copy of a loaded character, the shape the creator
+		-- exports and the public bus hand out. See `player.lua`.
+		PublicView = M.PublicView,
 
 		GetMetadata = M.GetMetadata,
 		SetMetadata = M.SetMetadata,

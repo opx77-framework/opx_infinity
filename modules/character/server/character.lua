@@ -683,12 +683,23 @@ function M.RenameCharacter(citizenId, firstName, lastName, source)
 		local saved = M.Save(online, false)
 		if not saved.ok then return saved end
 	else
+		-- A READ-MODIFY-WRITE OF THE WHOLE ROW, so it holds the offline ledger:
+		-- an offline payment landing between the read and the save would be
+		-- written back over with the balance read here. See `M.Ledger`.
+		if not M.Ledger.Settle(citizenId) then
+			return Result.Err('error.unavailable', 'the character row is being written')
+		end
+		M.Ledger.Enter(citizenId)
 		local fetched = M.Storage.FetchOne(citizenId)
-		if not fetched.ok then return fetched end
+		if not fetched.ok then
+			M.Ledger.Leave(citizenId)
+			return fetched
+		end
 		local entity = fetched.value
 		entity.charInfo.firstName, entity.charInfo.lastName = first.value, last.value
 		entity.name = full
 		local written = M.Storage.Save(entity, false)
+		M.Ledger.Leave(citizenId)
 		if not written.ok then return written end
 	end
 

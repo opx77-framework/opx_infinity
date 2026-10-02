@@ -8,6 +8,31 @@ OPX.Config.SERVER = {
 	-- the only way to find out that two things will fight over the same body.
 	CONFLICTING_PLACERS = { 'open77_playerstate', 'freeroam', 'pursuit', 'race' },
 
+	-- WHO MAY CALL THE CREATOR EXPORTS, `core/server/exports.lua`. The caller is
+	-- the resource name the HOST reports (`GetInvokingResource`), never one an
+	-- argument claims, and a refused call answers `export.callerDenied` and is
+	-- written to the audit log with the name it came from.
+	--
+	--   READ     who may ASK: GetPlayerData, GetMoney, HasJob, HasItem, IsStaff
+	--            and the other reads. '*' is every resource on the host -- the
+	--            answers are what the player state bag already publishes, plus a
+	--            balance and a bag count -- or a set: { my_hud = true }.
+	--   WRITERS  who may CHANGE something: money, items, stashes, chat lines,
+	--            keys, a vehicle's state. EMPTY OUT OF THE BOX, on purpose: a
+	--            write export is a money printer for whichever resource holds
+	--            it, and the operator is the one who decides which of the
+	--            resources they installed is trusted with that. The first refused
+	--            call from a resource prints the exact line to add here.
+	--            `'*'` admits every resource and is for a development server.
+	--   STAFF_PERMISSION
+	--            the ACL right `IsStaff` asks about. The right that opens the
+	--            staff menu, so "staff" means the same thing everywhere.
+	EXPORTS = {
+		READ = '*',
+		WRITERS = {},
+		STAFF_PERMISSION = 'command.opx.admin',
+	},
+
 	-- Numbers an operator may change while people are playing are re-declared as
 	-- tunables and read through those, not from here. These are the defaults.
 	AUTOSAVE_MS = 300000,

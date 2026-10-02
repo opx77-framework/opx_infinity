@@ -143,12 +143,144 @@ local function warnAboutDuplicates()
 	end
 end
 
+-- ── the server's own voice ───────────────────────────────────────────────────
+
+-- The line kinds the log draws a style for, from `ChatLog.vue`. Anything else
+-- would arrive as a class the stylesheet has no rule for and read like a player.
+local LINE_KINDS = { chat = true, system = true, info = true, warning = true, error = true }
+
+-- Longest author a server line may carry; a player's own name is bounded the
+-- same way by the character module.
+local MAX_AUTHOR = 64
+
+-- Largest radius a broadcast may name, in metres. A bigger one is "everybody",
+-- which is what leaving `radius` out already says.
+local MAX_RADIUS = 10000
+
+--- A caller's message as the line the box draws, or nil and the reason.
+local function lineOf(message)
+	if type(message) == 'string' then message = { text = message } end
+	if type(message) ~= 'table' then return nil, 'chat.invalidMessage' end
+	if type(message.text) ~= 'string' then return nil, 'chat.invalidMessage' end
+	local text = clean(message.text)
+	if text:match('^%s*$') then return nil, 'chat.invalidMessage' end
+	local kind = message.kind == nil and 'system' or message.kind
+	if type(kind) ~= 'string' or not LINE_KINDS[kind] then return nil, 'chat.invalidKind' end
+	local author = nil
+	if message.author ~= nil then
+		if type(message.author) ~= 'string' then return nil, 'chat.invalidMessage' end
+		author = OPX.Text.Clean(message.author, MAX_AUTHOR, '...')
+	end
+	return { kind = kind, author = author, text = text }
+end
+
+--- A player id that names an authenticated connection, or nil.
+-- Checked BEFORE the position reader is reached: the devkit card for
+-- `Open77.players.position` says a 0 or a negative id throws past any pcall and
+-- stops the resource, so a caller's bad number must never get that far.
+local function connected(value)
+	local id = math.tointeger(tonumber(value))
+	if id == nil or id < 1 or id > 2147483647 then return nil end
+	if OPX.UserIdOf(id) == nil then return nil end
+	return id
+end
+
+--- Puts one line in one player's chat box.
+-- @author dop42
+--
+-- THE SERVER SPEAKING, not a player: the line is attributed to whatever
+-- `author` the caller names, or to nobody, and it bypasses the per-player
+-- floor because no player sent it. Text is cleaned and bounded exactly as a
+-- player's own is.
+-- @param target integer a connected player id
+-- @param message string|table text, or `{ text, author?, kind? }`
+-- @return Result
+function M.Send(target, message)
+	local id = connected(target)
+	if id == nil then return OPX.Result.Err('chat.noPlayer', tostring(target)) end
+	local line, why = lineOf(message)
+	if line == nil then return OPX.Result.Err(why) end
+	TriggerClientEvent(M.Event.MESSAGE, id, line)
+	return OPX.Result.Ok(true)
+end
+
+--- Puts one line in the chat box of everybody, or of everybody near something.
+-- @author dop42
+--
+-- `bucket` limits it to one routing bucket; `radius` (metres) with `origin` --
+-- a player id or `{ x, y, z }` -- to everybody that close to it, and in the
+-- origin's bucket when it is a player. Distance is measured on the server's own
+-- positions, never on anything a client said.
+-- @param message string|table
+-- @param options table|nil bucket, radius, origin
+-- @return Result integer how many players were sent the line
+function M.Broadcast(message, options)
+	local line, why = lineOf(message)
+	if line == nil then return OPX.Result.Err(why) end
+	options = type(options) == 'table' and options or {}
+
+	local bucket = nil
+	if options.bucket ~= nil then
+		bucket = math.tointeger(tonumber(options.bucket))
+		if bucket == nil or bucket < 0 then return OPX.Result.Err('chat.invalidScope', 'bucket') end
+	end
+
+	local radius, origin = nil, nil
+	if options.radius ~= nil then
+		radius = tonumber(options.radius)
+		if not OPX.Math.IsFinite(radius) or radius <= 0 or radius > MAX_RADIUS then
+			return OPX.Result.Err('chat.invalidScope', 'radius')
+		end
+		if type(options.origin) == 'table' then
+			local x, y, z = tonumber(options.origin.x), tonumber(options.origin.y),
+				tonumber(options.origin.z)
+			if not (OPX.Math.IsFinite(x) and OPX.Math.IsFinite(y) and OPX.Math.IsFinite(z)) then
+				return OPX.Result.Err('chat.invalidScope', 'origin')
+			end
+			origin = { x = x, y = y, z = z }
+		else
+			local id = connected(options.origin)
+			local at = id and Open77.players.position(id) or nil
+			if type(at) ~= 'table' then return OPX.Result.Err('chat.invalidScope', 'origin') end
+			origin = { x = at.x, y = at.y, z = at.z }
+			if bucket == nil then bucket = math.tointeger(tonumber(at.bucket)) end
+		end
+	end
+
+	if bucket == nil and radius == nil then
+		TriggerClientEvent(M.Event.MESSAGE, -1, line)
+		return OPX.Result.Ok(#(Open77.players.all() or {}))
+	end
+
+	local sent = 0
+	for _, id in ipairs(Open77.players.all() or {}) do
+		local at = (math.tointeger(id) or 0) >= 1 and Open77.players.position(id) or nil
+		local inBucket = bucket == nil or (at ~= nil and math.tointeger(tonumber(at.bucket)) == bucket)
+		local inRange = radius == nil or (at ~= nil and OPX.Math.IsFinite(tonumber(at.x))
+			and ((at.x - origin.x) ^ 2 + (at.y - origin.y) ^ 2 + (at.z - origin.z) ^ 2) <= radius * radius)
+		if at ~= nil and inBucket and inRange then
+			TriggerClientEvent(M.Event.MESSAGE, id, line)
+			sent = sent + 1
+		end
+	end
+	return OPX.Result.Ok(sent)
+end
+
 -- ── the phases ───────────────────────────────────────────────────────────────
 
 --- Builds the state. Never yields.
 -- @author dop42
 function M.Init()
 	lastSaidMs = {}
+end
+
+--- Publishes the server's voice: one line to one player, or to many.
+-- @author dop42
+function M.Api()
+	OPX.Api.Provide('chat', 1, {
+		Send = M.Send,
+		Broadcast = M.Broadcast,
+	})
 end
 
 --- Wires the two doors.

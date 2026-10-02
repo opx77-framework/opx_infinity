@@ -171,6 +171,9 @@ server_script "core/server/commands.lua"
 server_script "core/server/gate.lua"
 server_script "core/server/buckets.lua"
 server_script "core/server/tunables.lua"
+-- The public server bus: `opx:on:*` raised for OTHER resources to hear. Before
+-- every module, because every module that announces something calls it.
+server_script "core/server/publish.lua"
 
 client_script "lib/client/lib.lua"
 client_script "lib/client/surface.lua"
@@ -563,6 +566,16 @@ client_script "modules/admin/client/target.lua"
 
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
+
+-- THE CREATOR SURFACE, LAST ON EACH SIDE: the curated exports another resource
+-- calls (`exports.opx_infinity:GetPlayerData(id)`, `Open77.exports.call(...)`).
+-- Each wraps contracts the modules above publish, reads them at the moment of
+-- the call, and registers at file scope, which the platform supports -- so
+-- being last is the whole of its scheduling. Needs no permission: publishing
+-- an export and naming its caller are both unrestricted, and every native it
+-- reaches is reached through a module that already declares its own below.
+server_script "core/server/exports.lua"
+client_script "core/client/exports.lua"
 
 -- Server-provided loading screen (FiveM-style). The client renders this page from
 -- this resource's verified pack files, in a sandboxed surface over the built-in
