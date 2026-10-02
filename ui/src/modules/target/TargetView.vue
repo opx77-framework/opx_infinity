@@ -1044,12 +1044,16 @@ onUnmounted(() => {
                  between two states is CANCELLED AND RESTARTED by the change, so a
                  folder the pointer left replayed its whole stutter from invisible.
                  The slot is what the keyed v-for creates and its classes never
-                 change, so it plays `.op-enter` exactly once, like a menu row. -->
+                 change, so it plays `.op-enter` exactly once, like a menu row.
+                 NO STAGGER: every row of a column lands together. A column opens
+                 on every folder the pointer crosses, so a per-row walk replayed
+                 on each one and read as the rows trickling in, where the menu's
+                 buttons just appear. -->
             <div
-              v-for="(entry, at) in col.entries"
+              v-for="entry in col.entries"
               :key="entry.kind === 'folder' ? `d:${entry.name}` : `r:${entry.row.token}`"
               class="slot op-enter"
-              :style="`--op-slot: ${at}`"
+              style="--op-slot: 0"
             >
               <!-- A FOLDER: the same frame, the count where a value goes and `>` in
                    the affordance column. Pointing at it opens its column beside
