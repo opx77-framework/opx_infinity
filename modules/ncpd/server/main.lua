@@ -743,6 +743,10 @@ local DEATH_MEMORY_MS = 5000
 local npcBooked = {}
 local NPC_MEMORY_MS = 60000
 
+-- The shortest gap between two engine reports from one player. The client polls
+-- once a second, so a legitimate report is never closer than that.
+local REPORT_EVERY_MS = 500
+
 -- The last player to hurt each player, so a death that arrives with no killer
 -- can still be put down to whoever had just shot them. `{ by, at }` per victim.
 local lastHurt = {}
@@ -1276,6 +1280,10 @@ local function onEngineStage(stage)
 	-- call, so a parameter named `source` here swallowed the stage.
 	local playerId = tonumber(source)
 	if playerId == nil or playerId <= 0 then return end
+	-- ONE REPORT PER REPORT_EVERY_MS. The client polls once a second and sends
+	-- only a change or a heartbeat; anything faster is a client flooding the
+	-- ledger (a database write and a street rebuild per crossing), not heat.
+	if OPX.Cooling(playerId, 'ncpd.report', REPORT_EVERY_MS) then return end
 	local data = characterOf(playerId)
 	if data == nil then
 		Open77.log.warn(('[ncpd] engine report from player %d refused: no character loaded')

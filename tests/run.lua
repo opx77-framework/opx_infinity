@@ -24871,6 +24871,8 @@ do
 		local wire = control.netEvents[ncpd.Event.REPORT]
 		check('the engine report has a handler on the wire', type(wire) == 'function')
 		local function report(player, stage)
+			-- At a human pace: each press clears the per-player cooldown it would wait out.
+			env.OPX.ForgetCooldowns(player)
 			env.source = player
 			wire(stage)
 			env.source = nil
@@ -24928,6 +24930,39 @@ do
 		check('and the ledger follows the engine down to nothing',
 			Ledger.Status('citizen-ncpd-engine').stage == 0
 				and Response.Status('citizen-ncpd-engine').npcs == 0)
+
+		-- ── the floor: what the SERVER charged, no report takes away ─────
+		-- A modified client sending `0` used to erase a murder the server had
+		-- just charged (`Ledger.Set` from the wire). `Ledger.Mirror` floors the
+		-- report at the stage `Report`/`Set` put there. (No new locals: this
+		-- section's chunk sits at Lua's 200-local ceiling.)
+		Ledger.Report('citizen-ncpd-engine', 'murder', { multiplier = 5 })
+		from = Ledger.Status('citizen-ncpd-engine').stage
+		report(watcher, 0)
+		check('an engine report of 0 never drops below the stage the server charged',
+			from > 0 and Ledger.Status('citizen-ncpd-engine').stage == from,
+			('%s charged, %s after'):format(tostring(from),
+				tostring(Ledger.Status('citizen-ncpd-engine').stage)))
+		check('and the mirror says it was pinned there',
+			Ledger.Mirror('citizen-ncpd-engine', 0).value.pinned == true
+				and Ledger.Status('citizen-ncpd-engine').stage == from)
+		Ledger.Set('citizen-ncpd-engine', 2)
+		check('a stage the server SET is a floor too',
+			Ledger.Mirror('citizen-ncpd-engine', 1).value.stage == 2
+				and Ledger.Mirror('citizen-ncpd-engine', 4).value.stage == 4
+				and Ledger.Mirror('citizen-ncpd-engine', 0).value.stage == 2)
+
+		-- ── and the wire is paced: a flood is not heat ──────────────────────
+		report(watcher, 2)
+		env.source = watcher
+		wire(0)
+		wire(5)
+		env.source = nil
+		check('a report faster than the client\'s own poll is dropped',
+			Ledger.Status('citizen-ncpd-engine').stage == 2,
+			tostring(Ledger.Status('citizen-ncpd-engine').stage))
+		Ledger.Set('citizen-ncpd-engine', 0)
+		env.OPX.ForgetCooldowns(watcher)
 
 		-- ── the call-out ──────────────────────────────────────────────────
 		-- WHO IS TOLD THAT THE CITY HAS A PROBLEM. A stage that RISES is
@@ -28291,6 +28326,8 @@ do
 			local rawReport = control.netEvents[ncpd.Event.REPORT]
 			check('the engine report has a handler on the wire', type(rawReport) == 'function')
 			local function report(player, stage)
+				-- At a human pace: each press clears the per-player cooldown it would wait out.
+				env.OPX.ForgetCooldowns(player)
 				env.source = player
 				rawReport(stage)
 				env.source = nil
@@ -28893,6 +28930,7 @@ do
 		-- @return table|nil
 		local function knock(id)
 			local mark = #control.clientEvents
+			env.OPX.ForgetCooldowns(id)
 			env.source = id
 			control.netEvents[skills.Event.ASK]()
 			env.source = nil
@@ -29006,8 +29044,9 @@ do
 		-- @return table the frame that answered
 		local function spend(node)
 			local mark = #control.clientEvents
-				env.source = src
-				control.netEvents[skills.Event.SPEND](node)
+			env.OPX.ForgetCooldowns(src)
+			env.source = src
+			control.netEvents[skills.Event.SPEND](node)
 				env.source = nil
 			for index = mark + 1, #control.clientEvents do
 				local event = control.clientEvents[index]
@@ -29243,6 +29282,7 @@ do
 		--- The spend door, pressed as that player; the frame that answered.
 		local function spend(source, node)
 			local mark = #control.clientEvents
+			env.OPX.ForgetCooldowns(source)
 			env.source = source
 			control.netEvents[skills.Event.SPEND](node)
 			env.source = nil
@@ -29615,6 +29655,7 @@ do
 					local event = client.serverEvents[up]
 					if UP[event.name] and server.netEvents[event.name] ~= nil then
 						if event.name == sskills.Event.ASK then asksUp = asksUp + 1 end
+						senv.OPX.ForgetCooldowns(SRC)
 						senv.source = SRC
 						server.netEvents[event.name](event[1], event[2], event[3])
 						senv.source = nil

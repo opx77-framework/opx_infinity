@@ -48,6 +48,10 @@ local developCount = 0
 --- How long a develop request waits for its report before it is stale.
 local DEVELOP_TTL_MS = 60000
 
+-- The shortest gaps between two tree asks, and two spends, from one player.
+local ASK_EVERY_MS = 500
+local SPEND_EVERY_MS = 250
+
 --- Whether a malformed `ripperdoc.ChromeLevel` answer has been named already:
 -- the frame is drawn on every knock, and one line says it.
 local chromeNamed = false
@@ -762,6 +766,9 @@ function M.Start()
 		-- here shadowed it with the empty payload (the scanner's own bug).
 		source = tonumber(source)
 		if source == nil or source <= 0 then return end
+		-- A whole-tree frame per knock: a client knocking faster than this has
+		-- the frame it was last sent.
+		if OPX.Cooling(source, 'skills.ask', ASK_EVERY_MS) then return end
 		local data, citizenId, why = dataOf(source)
 		if data == nil then
 			Open77.log.warn(('[skills] %s knocked and could not be read: %s')
@@ -779,6 +786,8 @@ function M.Start()
 		-- payload, not the second parameter behind a phantom source.
 		source = tonumber(source)
 		if source == nil or source <= 0 then return end
+		-- One spend per SPEND_EVERY_MS: each is a write and a whole-tree frame.
+		if OPX.Cooling(source, 'skills.spend', SPEND_EVERY_MS) then return end
 		local data, citizenId, why = dataOf(source)
 		if data == nil then
 			Open77.log.warn(('[skills] %s spent and could not be read: %s')

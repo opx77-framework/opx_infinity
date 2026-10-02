@@ -90,6 +90,9 @@ local running = false
 --- would otherwise forge a whole log line.
 local MAX_LOGGED = 64
 
+-- The shortest gap between two board-list asks from one player.
+local ASK_EVERY_MS = 1000
+
 -- ── small helpers ───────────────────────────────────────────────────────────
 
 --- Cleans and caps a value for a log line.
@@ -1935,9 +1938,12 @@ function M.Start()
 
 	registerCommands()
 
+	-- A sync is a database read and a frame for the whole list, so a client
+	-- asking faster than ASK_EVERY_MS is answered by the last one it got.
 	RegisterNetEvent(M.Event.ASK, function()
 		local player = tonumber(source)
-		if player ~= nil then sync(player) end
+		if player == nil or OPX.Cooling(player, 'jobs.ask', ASK_EVERY_MS) then return end
+		sync(player)
 	end)
 
 	-- THE VERDICT FOR ONE BOARD, asked for by key.
