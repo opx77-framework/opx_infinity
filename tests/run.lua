@@ -24915,6 +24915,301 @@ do
 	end
 end
 
+-- ── the refuse key, a refused answer, and the screen that went ───────────────
+-- Three follow-ups to the holocall becoming the only call screen, each the
+-- client half of something the server was already right about -- or, for the
+-- first, the two halves disagreeing about what one key meant.
+section('calls: X takes back what rings out before it ends the call')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the refuse key', why == nil, why)
+	if why == nil then
+		local module = env.OPX.Modules.Get('calls')
+		local deliver = control.netEvents[module.Event.STATE]
+		local function asked(name)
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == name then n = n + 1 end
+			end
+			return n
+		end
+		check('the state handler is wired, and the withdrawal has a verb of its own',
+			type(deliver) == 'function' and type(module.Event.WITHDRAW) == 'string')
+		if type(deliver) == 'function' then
+			-- ON A CALL, ASKING A THIRD. The key used to send `HANG_UP`, which the
+			-- server read as "leave the call" because the player was on one.
+			deliver({})
+			deliver({ call = { id = 'k1', participants = {} },
+				outgoing = { id = 'j1', kind = 'join', to = 3, toName = 'Kerry' } })
+			local hangUps, withdrawals = asked(module.Event.HANG_UP), asked(module.Event.WITHDRAW)
+			check('X with a third person ringing withdraws the invite',
+				module.DeclineOrHangUp() == true
+					and asked(module.Event.WITHDRAW) == withdrawals + 1)
+			check('and does not ask to leave the call', asked(module.Event.HANG_UP) == hangUps)
+			check('a second X before the reply asks nothing more',
+				module.DeclineOrHangUp() == false
+					and asked(module.Event.WITHDRAW) == withdrawals + 1)
+			deliver({ call = { id = 'k1', participants = {} } })
+			check('with nothing ringing out, X leaves the call',
+				module.DeclineOrHangUp() == true and asked(module.Event.HANG_UP) == hangUps + 1)
+
+			-- THE PANEL'S HANG-UP BUTTON IS STILL A HANG-UP, on a call, whatever
+			-- rings out: it is the panel's withdraw button that takes the invite.
+			deliver({ call = { id = 'k1', participants = {} },
+				outgoing = { id = 'j2', kind = 'join', to = 3, toName = 'Kerry' } })
+			check('HangUp on a call leaves it, rather than withdrawing',
+				module.HangUp() == true and asked(module.Event.HANG_UP) == hangUps + 2)
+			-- The server withdraws the join invite with the hang-up, and the push
+			-- taking it away is what stops the dial tone on this screen.
+			local stops = 0
+			for _, event in ipairs(control.effects.sfx2d) do
+				if event == 'ui_phone_initiation_call_stop' then stops = stops + 1 end
+			end
+			deliver({})
+			local after = 0
+			for _, event in ipairs(control.effects.sfx2d) do
+				if event == 'ui_phone_initiation_call_stop' then after = after + 1 end
+			end
+			check('the invite withdrawn with the hang-up stops the dial tone',
+				after == stops + 1, after - stops)
+		end
+	end
+end
+
+section('calls: an answer the server refused rings again')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the refused answer', why == nil, why)
+	if why == nil then
+		local module = env.OPX.Modules.Get('calls')
+		local deliver = control.netEvents[module.Event.STATE]
+		local heard = control.effects.sfx2d
+		local function count(event)
+			local n = 0
+			for index = 1, #heard do if heard[index] == event then n = n + 1 end end
+			return n
+		end
+		local function asked(name)
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == name then n = n + 1 end
+			end
+			return n
+		end
+		check('the state handler is wired for the refused answer', type(deliver) == 'function')
+		if type(deliver) == 'function' then
+			deliver({})
+			local ringing = { invite = { id = 'r1', kind = 'call', from = 2, fromName = 'Judy' } }
+			deliver(ringing)
+			local accepts = asked(module.Event.ACCEPT)
+			check('Y answers', module.Accept() == true and asked(module.Event.ACCEPT) == accepts + 1)
+			-- ONE ANSWER IN FLIGHT: a second press used to be a second request
+			-- inside the cooldown, refused as `tooFast` over a call that connected.
+			check('and a second Y before the reply asks nothing more',
+				module.Accept() == false and asked(module.Event.ACCEPT) == accepts + 1)
+			control.Pump(10)
+			local rings = count('ui_phone_incoming_call')
+			control.Pump(50)
+			check('the answered invite is silent while the reply is on its way',
+				count('ui_phone_incoming_call') == rings)
+
+			-- The server refused it (`tooFast`) and pushed the state back with the
+			-- same invite in it. It used to stay silent until it expired.
+			deliver(ringing)
+			control.Pump(10)
+			check('the same invite pushed back rings again',
+				count('ui_phone_incoming_call') > rings,
+				count('ui_phone_incoming_call') - rings)
+			check('and Y works again', module.Accept() == true
+				and asked(module.Event.ACCEPT) == accepts + 2)
+
+			-- The same for X: a refused refusal gives the key back too.
+			deliver({ invite = { id = 'r2', kind = 'call', from = 2, fromName = 'Judy' } })
+			check('X refuses', module.Decline() == true)
+			deliver({ invite = { id = 'r2', kind = 'call', from = 2, fromName = 'Judy' } })
+			check('and a refused refusal leaves X working', module.Decline() == true)
+
+			-- And a refused withdrawal.
+			deliver({})
+			local placed = { outgoing = { id = 'o1', kind = 'call', to = 2, toName = 'Panam' } }
+			deliver(placed)
+			check('X withdraws', module.Withdraw() == true)
+			local tones = count('ui_phone_initiation_call')
+			deliver(placed)
+			check('a refused withdrawal brings the dial tone back',
+				count('ui_phone_initiation_call') == tones + 1)
+			check('and X works again', module.Withdraw() == true)
+			deliver({})
+		end
+	end
+end
+
+section('calls: the state half draws one screen, the hologram')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the one screen', why == nil, why)
+	if why == nil then
+		local module = env.OPX.Modules.Get('calls')
+		local deliver = control.netEvents[module.Event.STATE]
+		local kinds = {}
+		env.AddEventHandler(module.Event.VIEW, function(payload)
+			kinds[#kinds + 1] = type(payload) == 'table' and tostring(payload.kind) or '?'
+		end)
+		if type(deliver) == 'function' then
+			deliver({ invite = { id = 'v1', kind = 'call', from = 2, fromName = 'Judy' } })
+			-- Long past the old eight-second dwell, which republished the card.
+			control.Pump(120)
+			deliver({ call = { id = 'k1', participants = {} } })
+			module.FromView('ready', {})
+			deliver({})
+		end
+		local other = {}
+		for index = 1, #kinds do
+			if kinds[index] ~= 'holo' then other[#other + 1] = kinds[index] end
+		end
+		check("every payload is the hologram's; the overlay card's is gone",
+			#kinds > 0 and #other == 0, table.concat(other, ', '))
+		check("and the card's dwell knob is gone with it",
+			env.OPX.Modules.Settings('calls').CARD_DWELL_S == nil)
+	end
+end
+
+-- The server half of the refuse key: `WITHDRAW` touches no call, and every
+-- refused answer -- the cooldown included -- goes back with the state.
+section('calls: the server withdraws without hanging up, and answers a refusal with the state')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the withdrawal verb', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local calls = OPX.Api.Get('calls')
+		local module = OPX.Modules.Get('calls')
+		local character = OPX.Modules.Get('character')
+		local A, B, C = 611, 612, 613
+		for id, tag in pairs({ [A] = 'wa', [B] = 'wb', [C] = 'wc' }) do
+			control.Admit(id, 'account-' .. tag)
+			OPX.EnsureSession(id)
+			character.Players[id] = {
+				PlayerData = { citizenId = 'citizen-' .. tag, source = id,
+					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
+					charInfo = { firstName = 'Caller', lastName = tag } },
+				Functions = { UpdatePlayerData = function() end,
+					GetMetaData = function() return nil end,
+					SetMetaData = function() end },
+			}
+			character.Registry.byCitizenId['citizen-' .. tag] = id
+			character.Registry.byUserId['account-' .. tag] = id
+			control.Life(id, 'alive')
+		end
+		control.Pump(5)
+
+		local function ask(playerId, name, ...)
+			control.Pump(20)
+			env.source = playerId
+			local mark = #control.clientEvents
+			control.netEvents[name](...)
+			env.source = nil
+			return mark
+		end
+		local function lastState(playerId, mark)
+			local found
+			for index = (mark or 0) + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == module.Event.STATE and sent.source == playerId
+					and type(sent[1]) == 'table' then
+					found = sent[1]
+				end
+			end
+			return found
+		end
+		local function onCall(id) return calls.IsOnCall(id).value.onCall == true end
+
+		check('the withdrawal verb is registered',
+			type(control.netEvents[module.Event.WITHDRAW]) == 'function')
+
+		ask(A, module.Event.INVITE, B)
+		local ringing = lastState(B)
+		ask(B, module.Event.ACCEPT, ringing and ringing.invite and ringing.invite.id)
+		check('A and B are talking', onCall(A) and onCall(B))
+		ask(A, module.Event.INVITE, C)
+		local joining = lastState(C)
+		check('C is being asked to join', joining ~= nil and joining.invite ~= nil
+			and joining.invite.kind == 'join')
+
+		local mark = ask(A, module.Event.WITHDRAW)
+		check('withdrawing on a call takes the join invite back',
+			lastState(C, mark) ~= nil and lastState(C, mark).invite == nil)
+		check('and leaves the call standing', onCall(A) and onCall(B))
+		check('with nothing out any more',
+			lastState(A, mark) ~= nil and lastState(A, mark).outgoing == nil)
+
+		-- Hanging up is still hanging up.
+		ask(A, module.Event.HANG_UP)
+		check('HANG_UP on a call still ends it', not onCall(A) and not onCall(B))
+
+		-- THE COOLDOWN REFUSAL GOES BACK WITH THE STATE. Two answers inside
+		-- REQUEST_MS: the second is `tooFast`, and the invite it left standing
+		-- has to reach the screen so the client rings it again.
+		ask(A, module.Event.INVITE, C)
+		local invite = lastState(C) and lastState(C).invite or {}
+		ask(C, module.Event.DECLINE, 'not-the-invite')
+		env.source = C
+		mark = #control.clientEvents
+		control.netEvents[module.Event.ACCEPT](invite.id)
+		env.source = nil
+		local refused
+		for index = mark + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if type(sent[1]) == 'table' and sent[1].kind == 'error' then refused = sent[1] end
+		end
+		check('an answer inside the cooldown is refused as too fast',
+			refused ~= nil and refused.code == 'calls.error.tooFast',
+			refused and refused.code)
+		local pushed = lastState(C, mark)
+		check('and the state goes back with it, invite and all',
+			pushed ~= nil and pushed.invite ~= nil and pushed.invite.id == invite.id)
+		ask(C, module.Event.ACCEPT, invite.id)
+		check('the answer after the cooldown connects', onCall(A) and onCall(C))
+		ask(A, module.Event.HANG_UP)
+
+		-- LEAVING A CALL WITHDRAWS THE INVITE YOU SENT FROM IT. It used to go on
+		-- ringing at the third person for a call its sender was no longer on.
+		ask(A, module.Event.INVITE, B)
+		local again = lastState(B)
+		ask(B, module.Event.ACCEPT, again and again.invite and again.invite.id)
+		ask(A, module.Event.INVITE, C)
+		local third = lastState(C)
+		check('a third person is ringing from inside the call',
+			onCall(A) and third ~= nil and third.invite ~= nil and third.invite.kind == 'join')
+		local audited = {}
+		local realLog = OPX.Audit.Log
+		OPX.Audit.Log = function(entry)
+			audited[#audited + 1] = entry
+			return realLog(entry)
+		end
+		mark = ask(A, module.Event.HANG_UP)
+		OPX.Audit.Log = realLog
+		check('the sender leaving ends the call', not onCall(A) and not onCall(B))
+		check('and the third person stops ringing',
+			lastState(C, mark) ~= nil and lastState(C, mark).invite == nil)
+		check('and the sender has nothing ringing out',
+			lastState(A, mark) ~= nil and lastState(A, mark).outgoing == nil)
+		local cancelled = 0
+		for index = 1, #audited do
+			if audited[index].event == 'calls.cancel' and audited[index].source == A then
+				cancelled = cancelled + 1
+			end
+		end
+		check('and the withdrawal is audited', cancelled == 1, cancelled)
+		-- The incoming slot was given back, so the next call is not refused as
+		-- `targetPending`.
+		mark = ask(B, module.Event.INVITE, C)
+		check('so the third person can take a new call at once',
+			lastState(C, mark) ~= nil and lastState(C, mark).invite ~= nil)
+		ask(B, module.Event.HANG_UP)
+	end
+end
+
 -- ── the eye is not where a phone lives ───────────────────────────────────────
 -- THE OWNER, having used it: "fait en sorte que cela passe pas par alt ce
 -- serais en gros fait une touche qui ouvre un menu style halogram tous se passe

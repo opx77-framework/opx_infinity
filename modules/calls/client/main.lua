@@ -8,10 +8,17 @@
 -- same reason -- the state half stays testable without a browser.
 --
 -- NOTHING IN THIS FILE IS A FACT. The server pushes one payload describing this
--- player's whole call world and everything below is a projection of it. A row
--- on the eye does not end a call, it asks the server to; `dismissed` is the one
--- piece of genuinely local state in the module, and it is local precisely
--- because it is about this screen rather than about the call.
+-- player's whole call world and everything below is a projection of it. A key
+-- does not end a call, it asks the server to. The only local state is about
+-- this machine's speakers and this screen -- which ring was silenced, which
+-- dial tone was stopped, whether the hologram is open -- and the server
+-- neither knows nor should.
+--
+-- ONE SCREEN. The incoming card and the live chip that used to sit at the edge
+-- of the view are gone, and with them the card's dwell clock and its
+-- dismiss/re-pop pair: the sphere in `HoloRoot.vue` pops on a call arriving,
+-- says who it is and which key answers, and takes nothing. So the only payload
+-- this file publishes is the hologram's (`kind = 'holo'`).
 --
 -- ── the rows, and the budget ─────────────────────────────────────────────────
 --
@@ -48,12 +55,6 @@ local Model = M.Model
 -- The last state the server pushed. Never written from this side.
 local state = { call = nil, invite = nil, outgoing = nil }
 
--- Whether the player waved the incoming card away. LOCAL, and the only local
--- state in this module: it is a fact about this screen and not about the call,
--- so the server neither knows nor should. Cleared whenever the invite it was
--- about goes away, so the next call rings on a clean screen.
-local dismissed = nil
-
 -- When the ring was last re-armed, and how often it may be.
 local lastRingMs = -math.huge
 local ringEveryMs = 3500
@@ -61,24 +62,18 @@ local ringEveryMs = 3500
 -- The invite this player already answered or refused. The ring stops on the
 -- key press rather than on the server's reply: the round trip is long enough
 -- for the re-arm clock to ring once more over the "allô".
+--
+-- AND IT IS UNDONE WHEN THE SERVER KEEPS THE INVITE. Every answer the server
+-- refuses -- `tooFast` included -- goes back with this player's state, so a
+-- push that still carries the very invite that was silenced means the answer
+-- did not take: the phone rings again and the key works again. Without that the
+-- invite sat there silent until it expired, with nothing to say it was still
+-- waiting.
 local silenced = nil
 
 -- The outgoing call this player already withdrew. Same reason: the dial tone
 -- stops on the key, and the server's reply must not play the stop a second time.
 local withdrawn = nil
-
--- When the card went up, and how long it may stay. THE OWNER'S REQUIREMENT AS A
--- CLOCK: the card says its piece and takes itself off the screen, and the eye's
--- re-pop row brings it back. The call goes on ringing throughout -- this is the
--- card leaving, not the call being refused.
---
--- THE CLOCK IS THE CLIENT'S AND THE SERVER IS NEVER TOLD. Where a card is on
--- somebody's screen is a fact about that screen, so a dismissal that crossed
--- the wire would be this module asking the authority to remember something the
--- authority has no business knowing -- and would then have to be un-remembered
--- on every reconnect, every reload and every character change.
-local cardUpMs = nil
-local cardDwellMs = 8000
 
 -- Sound event names, settled in `Start` from the config.
 local sounds = {}
@@ -138,9 +133,9 @@ local function silence()
 	if ringsFor(state.invite) then play(sounds.INCOMING_STOP) end
 end
 
--- Forward-declared: `onState` below pushes the projection's payload as well as
--- the card's, and it is defined with the rest of the hologram two hundred lines
--- further down. Without this the call would resolve to a global and be nil.
+-- Forward-declared: `onState` below pushes the projection's payload, and it is
+-- defined with the rest of the hologram two hundred lines further down.
+-- Without this the call would resolve to a global and be nil.
 local drawHolo
 -- Same reason: `onState` routes the voice the moment a call connects, and the
 -- function is defined below it. As a bare global it was nil, and the error cut
@@ -152,31 +147,8 @@ local function publish(payload)
 	TriggerEvent(EVENT_VIEW, payload)
 end
 
--- Whether the incoming card should be on screen: there is an invite, and the
--- player has not waved this one away.
-local function carded()
-	return state.invite ~= nil and dismissed ~= state.invite.id
-end
-
--- Pushes the whole of what the screen draws. ONE payload rather than a diff:
--- the object is three optional tables and the page redraws from it whole, so a
--- diff would be more code than the thing it describes.
-local function draw()
-	publish({
-		kind = 'state',
-		call = state.call,
-		invite = carded() and state.invite or nil,
-		-- The card being dismissed is drawn too, because that is exactly when
-		-- the re-pop row has to be offered and the live chip has to say there
-		-- is something waiting.
-		invitePending = state.invite ~= nil,
-		outgoing = state.outgoing,
-		dismissed = state.invite ~= nil and dismissed == state.invite.id,
-	})
-end
-
 -- Takes a fresh state from the server and works out what changed, which is the
--- only thing the sounds and the dismissal are keyed off.
+-- only thing the sounds are keyed off.
 local function onState(payload)
 	if type(payload) ~= 'table' then return end
 
@@ -198,17 +170,28 @@ local function onState(payload)
 	local nowInvite = state.invite ~= nil and state.invite.id or nil
 	local nowCall = state.call ~= nil and state.call.id or nil
 
-	-- A NEW INVITE CLEARS THE DISMISSAL. Without this, waving one call away
-	-- would silence the next one too: `dismissed` holds an id, so the first
-	-- card the player never sees is the one that happens to reuse it. Holding
-	-- the id rather than a boolean is what makes this a one-line rule.
-	if nowInvite ~= hadInvite then
-		dismissed = nil
+	if nowInvite ~= hadInvite then lastRingMs = -math.huge end
+
+	-- THE SERVER KEPT AN INVITE THIS PLAYER ALREADY ANSWERED: the answer was
+	-- refused (`tooFast`, or any other reason that leaves it standing) and the
+	-- refusal came back with this push. Un-silenced, and the clock re-armed so
+	-- the very next tick rings -- the same invite ringing again rather than
+	-- sitting there mute until it expires. The ring that resumes is what tells
+	-- the player to press again.
+	if nowInvite ~= nil and nowInvite == hadInvite and silenced == nowInvite then
+		silenced = nil
 		lastRingMs = -math.huge
-		cardUpMs = nowInvite ~= nil and OPX.Now() or nil
+	end
+	-- THE SAME FOR A WITHDRAWAL THE SERVER REFUSED: the dial tone stopped on the
+	-- key, the invite is still out, so the tone comes back and the key works
+	-- again rather than leaving a call ringing out in silence.
+	local nowOutgoing = state.outgoing ~= nil and state.outgoing.id or nil
+	if nowOutgoing ~= nil and nowOutgoing == hadOutgoing and withdrawn == nowOutgoing then
+		withdrawn = nil
+		if ringsFor(state.outgoing) then play(sounds.OUTGOING) end
 	end
 
-	-- The ring starts on a card arriving and stops on it going, whichever way
+	-- The ring starts on an invite arriving and stops on it going, whichever way
 	-- it went -- answered, refused, expired or the caller hanging up. The stop
 	-- event exists because `ui_phone_incoming_call` is a one-shot with no
 	-- handle: there is nothing to stop, so the bank carries a separate event
@@ -255,18 +238,8 @@ local function onState(payload)
 	-- menu". So the holo payload goes out on every state change as well as on
 	-- every open.
 	drawHolo()
-
-	draw()
 end
 
--- Re-arms the ring while a card is up, and takes the card down once it has had
--- its say.
---
--- THE RING OUTLIVES THE CARD, deliberately. `ui_phone_incoming_call` is a
--- one-shot, so "it rings until you answer" is a clock rather than a loop -- and
--- it keeps ticking after the card has gone, because the card leaving is about
--- the SCREEN and the call is still ringing. A player who looked away still
--- hears it, and ALT still answers it.
 -- ── the route this machine's own voice takes ─────────────────────────────────
 --
 -- THE OWNER: "petit bug quand il repond a l'appel on s'entend pas". The server
@@ -307,6 +280,9 @@ function routeVoice()
 	pcall(api.setTransmitting, talking, 'all')
 end
 
+-- Re-arms the ring while an invite is waiting, and re-asserts the voice route
+-- while a call is live. `ui_phone_incoming_call` is a one-shot, so "it rings
+-- until you answer" is a clock rather than a loop.
 local function rearm()
 	-- BEFORE THE INVITE GUARD, because a call is live long after the invite is
 	-- gone and this is the only clock the module runs.
@@ -318,12 +294,6 @@ local function rearm()
 		and atMs - lastRingMs >= ringEveryMs then
 		lastRingMs = atMs
 		play(sounds.INCOMING)
-	end
-
-	if cardUpMs ~= nil and dismissed ~= state.invite.id
-		and atMs - cardUpMs >= cardDwellMs then
-		dismissed = state.invite.id
-		draw()
 	end
 end
 
@@ -337,35 +307,15 @@ end
 function M.FromView(action, payload)
 	if action == 'ready' then
 		-- The page mounted, or this module started. Ask the server for the
-		-- state again -- which is also, exactly, the re-pop button.
+		-- state again: a reloaded page has to be told the call it is on.
 		TriggerServerEvent(M.Event.READY)
-		draw()
-		return
-	end
-	if action == 'dismiss' then
-		-- WAVED AWAY, NOT DECLINED, and the difference is the owner's whole
-		-- point about not ruining the player's vision: the card goes, the call
-		-- keeps ringing, and the eye still offers the answer. Declining is a
-		-- separate row that tells the server.
-		if state.invite ~= nil then dismissed = state.invite.id end
-		draw()
-		return
-	end
-	if action == 'repop' then
-		dismissed = nil
-		-- THE DWELL CLOCK RESTARTS, which is what makes the re-pop row worth
-		-- pressing twice. Without this the card would come back and be taken
-		-- down again on the next sweep, because `cardUpMs` would still be the
-		-- moment the call first arrived -- a button that appears to do nothing,
-		-- which is the worst kind.
-		cardUpMs = OPX.Now()
-		TriggerServerEvent(M.Event.READY)
-		draw()
+		drawHolo()
 		return
 	end
 	if action == 'accept' then return M.Accept() end
 	if action == 'decline' then return M.Decline() end
 	if action == 'hangUp' then return M.HangUp() end
+	if action == 'withdraw' then return M.Withdraw() end
 
 	-- ── THE HOLOGRAM'S OWN VERBS ─────────────────────────────────────────────
 	-- Every one of them names a player id the SERVER then judges again. A page
@@ -400,6 +350,13 @@ end
 -- @return boolean whether anything was asked for
 function M.Accept()
 	if state.invite == nil then return false end
+	-- ONE ANSWER IN FLIGHT. A second press before the reply was a second
+	-- request inside the server's cooldown, refused as `tooFast` on the
+	-- player's screen over a call that had in fact connected. The reply always
+	-- comes -- every path in `onAccept` pushes this player's state -- and a
+	-- refused answer un-silences the invite in `onState`, so the key works
+	-- again exactly when it can.
+	if silenced == state.invite.id then return false end
 	silence()
 	TriggerServerEvent(M.Event.ACCEPT, state.invite.id)
 	return true
@@ -410,32 +367,54 @@ end
 -- @return boolean
 function M.Decline()
 	if state.invite == nil then return false end
+	-- Same rule as `Accept`: one answer in flight per invite.
+	if silenced == state.invite.id then return false end
 	silence()
 	play(sounds.DECLINED)
 	TriggerServerEvent(M.Event.DECLINE, state.invite.id)
 	return true
 end
 
---- Leaves the call this player is on, or withdraws the one they are ringing.
+--- Withdraws the invite this player sent and nobody has answered yet -- a call
+--- ringing out, or a third person being asked to join -- and touches no call.
+-- @author dop42
+-- @return boolean whether anything was asked for
+function M.Withdraw()
+	if state.outgoing == nil then return false end
+	-- One withdrawal in flight, for the reason `Accept` gives.
+	if withdrawn == state.outgoing.id then return false end
+	withdrawn = state.outgoing.id
+	if ringsFor(state.outgoing) then play(sounds.OUTGOING_STOP) end
+	TriggerServerEvent(M.Event.WITHDRAW)
+	return true
+end
+
+--- Leaves the call this player is on. With no call, withdraws the one they are
+--- ringing -- the server reads `HANG_UP` the same way.
 -- @author dop42
 -- @return boolean
 function M.HangUp()
-	if state.call == nil and state.outgoing == nil then return false end
-	if state.call == nil and state.outgoing ~= nil and withdrawn ~= state.outgoing.id then
-		withdrawn = state.outgoing.id
-		if ringsFor(state.outgoing) then play(sounds.OUTGOING_STOP) end
-	end
+	if state.call == nil then return M.Withdraw() end
 	TriggerServerEvent(M.Event.HANG_UP)
 	return true
 end
 
---- The refuse key's verb: refuses a ringing invite first, and otherwise hangs
---- up or withdraws. THE OWNER: hanging up works "la même façon" as answering --
---- a key named in the sphere, nothing to open.
+--- The refuse key's verb. THE OWNER: hanging up works "la même façon" as
+--- answering -- a key named in the sphere, nothing to open.
+---
+--- THE MOST RECENT THING YOU STARTED IS THE FIRST THING IT STOPS:
+---   1. an invite ringing at you      refused
+---   2. an invite you sent, ringing   withdrawn
+---   3. the call you are on           left
+--- The second used to lose to the third. On a live call, asking a third person
+--- to join and then thinking better of it ended your own call -- and left the
+--- invite ringing on their screen for a call that no longer had you in it. A
+--- second press still hangs up.
 -- @author dop42
 -- @return boolean
 function M.DeclineOrHangUp()
 	if state.invite ~= nil then return M.Decline() end
+	if state.outgoing ~= nil then return M.Withdraw() end
 	return M.HangUp()
 end
 
@@ -465,9 +444,9 @@ function M.State()
 		call = state.call,
 		invite = state.invite,
 		outgoing = state.outgoing,
-		carded = carded(),
 	}
 end
+
 -- ── the one thing the eye is still right for ─────────────────────────────────
 --
 -- THE OWNER: "pour demander le contact a quelqun c'est toujours avec alt ? ce
@@ -556,13 +535,13 @@ end
 -- first, which is the tell that the mechanism was the one at hand rather than
 -- the one the feature wanted.
 --
--- TWO SURFACES, AND THE SPLIT IS THE WHOLE DESIGN. The incoming card and the
--- live chip stay on `overlay`: `pointer-events: none` for their whole height,
--- never focused, so a call arriving can never take the mouse or stand between
--- the player and what they are aiming at. The hologram is the opposite on
--- purpose -- centred, in front, focused, pressable -- because it is the thing
--- the player deliberately opened. A passive notice that could steal input and a
--- deliberate screen that could not would both be the wrong way round.
+-- ONE SURFACE, TWO MODES. A call arriving, running or ringing out pops the
+-- sphere with `open = false`: a name, a key letter, nothing pressable and no
+-- focus, so it can never take the mouse or stand between the player and what
+-- they are aiming at. The player's own key opens the panel -- focused,
+-- pressable, every verb on it -- because that is the thing they deliberately
+-- asked for. The incoming card and live chip that used to do the first job on
+-- `overlay` are gone.
 --
 -- THE LIST IS ASKED FOR WHEN THE SCREEN OPENS AND NEVER CACHED. A contact list a
 -- minute old is a list of rows that refuse: who is connected, who is already on
@@ -582,9 +561,9 @@ end
 local holoOpen = false
 local roster = { rows = {}, recent = {}, onCall = false }
 
--- Pushes the hologram's own payload. Separate from `draw` because they are two
--- surfaces with two lifetimes: the card comes and goes with the call, this
--- comes and goes with the player's attention.
+-- Pushes the whole of what the sphere draws. ONE payload rather than a diff:
+-- the page redraws from it whole, so a diff would be more code than the thing
+-- it describes.
 function drawHolo()
 	publish({
 		kind = 'holo',
@@ -663,8 +642,6 @@ end
 -- @author dop42
 function M.Init()
 	state = { call = nil, invite = nil, outgoing = nil }
-	dismissed = nil
-	cardUpMs = nil
 	lastRingMs = -math.huge
 	silenced = nil
 	withdrawn = nil
@@ -677,11 +654,6 @@ function M.Init()
 	sounds = type(settings.SOUND) == 'table' and settings.SOUND or {}
 	ringEveryMs = math.floor(OPX.Math.Clamp(
 		OPX.Math.Finite(settings.RING_EVERY_MS) or 3500, 1000, 60000))
-	-- Bounded to something a player can read and something short of the whole
-	-- invite lifetime: a dwell longer than INVITE_TTL_S would mean the card
-	-- never left on its own and the configuration said it did.
-	cardDwellMs = math.floor(OPX.Math.Clamp(
-		OPX.Math.Finite(settings.CARD_DWELL_S) or 8, 2, 60) * 1000)
 end
 
 --- Wires the state push, the rows and the ring.
@@ -746,8 +718,9 @@ function M.Start()
 	-- second copy of the same question.
 	bind(M.Settings.ANSWER_KEY, 'opx.calls.answer', 'calls.key.answer',
 		function() M.Accept() end)
-	-- THE SAME KEY HANGS UP. Refusing wins while something is ringing; on a
-	-- live call, or while ringing somebody, it ends or withdraws it.
+	-- THE SAME KEY HANGS UP. Refusing wins while something rings at you, then
+	-- withdrawing what you are ringing out, then leaving the call -- see
+	-- `M.DeclineOrHangUp` for why the middle one comes before the last.
 	bind(M.Settings.DECLINE_KEY, 'opx.calls.decline', 'calls.key.decline',
 		function() M.DeclineOrHangUp() end)
 
@@ -775,7 +748,7 @@ function M.Start()
 	end
 
 	-- Ask for the state once we are up. A player who reloads into a live call
-	-- has to get their chip back, and the server has no way of knowing this VM
+	-- has to get their sphere back, and the server has no way of knowing this VM
 	-- restarted.
 	TriggerServerEvent(M.Event.READY)
 end
@@ -791,7 +764,12 @@ function M.Stop()
 	-- owner is a set of buttons whose handler belongs to a VM that is no longer
 	-- answering -- and this one holds focus, so it would also be a screen the
 	-- player cannot close.
+	--
+	-- THE SPHERE GOES TOO. It pops for a live or ringing call with the panel
+	-- closed, so closing the panel alone would leave a projection of a call this
+	-- VM no longer answers for. Emptied here; the server's next push after a
+	-- restart draws it back.
 	holoOpen = false
+	state = { call = nil, invite = nil, outgoing = nil }
 	drawHolo()
-	publish({ kind = 'state' })
 end
