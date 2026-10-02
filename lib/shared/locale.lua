@@ -54,6 +54,29 @@ function OPX.Locale.Catalogue()
 	return flat
 end
 
+--- The same flat catalogue as `Catalogue`, built a slice at a time.
+-- Yields every `every` entries when the host has `Wait`, so a client building
+-- it for the page does not spend a whole resume's budget on one copy loop:
+-- several thousand keys, copied twice when the active language is not the
+-- fallback, is past that budget. Call it from a thread.
+-- @author dop42
+-- @param every integer entries between two yields
+-- @return table<string, string>
+function OPX.Locale.CatalogueSliced(every)
+	local flat, copied = {}, 0
+	local canWait = type(Wait) == 'function'
+	local function copy(from)
+		for key, text in pairs(from or {}) do
+			flat[key] = text
+			copied = copied + 1
+			if canWait and copied % every == 0 then Wait(0) end
+		end
+	end
+	copy(catalogs[FALLBACK])
+	if active ~= FALLBACK then copy(catalogs[active]) end
+	return flat
+end
+
 --- Whether the active or fallback catalogue carries a key.
 -- @author dop42
 -- @param key string

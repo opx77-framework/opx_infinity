@@ -11653,6 +11653,9 @@ do
 
 		-- ── descending, played the way the panel descends ────────────────
 		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = false })
+		-- A redraw runs on its own thread, a frame later (see `draw` in
+		-- modules/admin/client/menu.lua).
+		control.Pump(5)
 
 		-- The page the staff menu opened on, found by what was sent to it rather
 		-- than by assuming which surface sits first in the list.
@@ -11698,6 +11701,7 @@ do
 			-- Air class lives on.
 			check('the panel can put a screen up over the root',
 				admin.Menu.OpenAt('vehicleClasses', 'me') == true)
+			control.Pump(5)
 			check('a descend does NOT reopen the menu', times(OPEN_CHANNEL) == opens,
 				('%d opens'):format(times(OPEN_CHANNEL)))
 			check('and is drawn as one frame, on the same handle',
@@ -11721,6 +11725,7 @@ do
 			check('down moves the cursor', moved.ok and moved.value.itemId ~= 'class_air',
 				moved.ok and tostring(moved.value.itemId))
 			admin.Menu.Refresh()
+			control.Pump(5)
 			local kept = OPX.Api.Get('menu').State()
 			check('and a redraw leaves the player on the row they were on',
 				kept.ok and kept.value.itemId == moved.value.itemId,
@@ -28581,6 +28586,73 @@ do
 		settle(control, function() return chose() >= 1 end)
 		check('a fresh press after the release does', chose() == 1, table.concat(actions, ' '))
 		menu.Close(opened.value.handle)
+	end
+end
+
+-- ── the staff search answers inside a small budget ───────────────────────────
+-- THE OWNER: "quand je cherche l'arme je fait entre le input se ferme mais le
+-- menu pop pas ... j'appuye une fois f9 ... il s'ouvre pas, une deuxieme fois
+-- il s'ouvre". The client log: "admin callback raised on submit ...
+-- script execution budget exceeded". The search's Enter filtered the catalogue
+-- and rebuilt the menu inside the form's own callback, past the per-resume
+-- budget, and the coroutine died between closing the old menu and opening the
+-- new one. The redraw is queued on its own thread now, so the callback itself
+-- must stay cheap -- that is the property checked here, by counting the VM
+-- instructions the Enter costs before it returns.
+section('the staff search answers inside a small budget')
+do
+	local env, control, why = boot('client')
+	check('client boots for the search budget', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(h, spec) specs[#specs + 1] = spec; return realMenu.Update(h, spec) end,
+		}, { __index = realMenu })
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		local rows = {}
+		for index = 1, 250 do
+			rows[index] = { name = 'w' .. index, category = 'weapon', weapon = true,
+				label = (index % 2 == 0 and 'Katana ' or 'Pistol ') .. index }
+		end
+		control.netEvents[admin.Event.ITEMS]({ rows = rows, offset = 0, total = 250, done = true })
+		admin.Menu.OpenAt('weaponList', { t = 'me' })
+		control.Pump(10)
+		check('the search form opens over the weapon list', admin.Forms.Open('search', nil) == true)
+		control.Pump(5)
+		local page, handle
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:form:edit'] then page = candidate end
+		end
+		for index = #(page and page.sent or {}), 1, -1 do
+			if page.sent[index].channel == 'opx:form:open' then
+				handle = page.sent[index].payload.handle
+				break
+			end
+		end
+		check('and its page is found', page ~= nil and handle ~= nil)
+		if page ~= nil and handle ~= nil then
+			control.PageEmit(page, 'opx:form:edit', { handle = handle, id = 'query', seq = 1, text = 'katana' })
+			control.Pump(2)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			control.PageEmit(page, 'opx:form:key', { handle = handle, key = 'enter' })
+			debug.sethook()
+			check('the Enter returns inside a small budget, the redraw left for its own thread',
+				spent < 5000, ('%d instructions'):format(spent))
+			control.Pump(10)
+			local filtered = 0
+			for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+				if tostring(item.id):match('^entry_') then filtered = filtered + 1 end
+			end
+			check('and the menu comes back, filtered', admin.Menu.IsOpen() and filtered > 0,
+				('%d rows'):format(filtered))
+		end
 	end
 end
 

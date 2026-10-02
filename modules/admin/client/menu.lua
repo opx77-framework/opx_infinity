@@ -1491,7 +1491,7 @@ end
 local VISIBLE_ROWS = 12
 local MAX_HEIGHT_VH = 72
 
-local function draw(inPlace)
+local function drawNow(inPlace)
 	local current = top()
 	if current == nil or suspended then return end
 	local builder = SCREENS[current.screen]
@@ -1577,6 +1577,34 @@ local function draw(inPlace)
 		return
 	end
 	handle = opened.value.handle
+end
+
+-- A redraw is QUEUED, NOT RUN, and every caller goes through here.
+--
+-- THE OWNER'S REPORT: the weapon search closed its box and no menu came back,
+-- and F9 then needed two presses. The client log said why: "admin callback
+-- raised on submit ... script execution budget exceeded". The client gives each
+-- resume a fixed instruction budget, and a redraw -- filter a catalogue, build
+-- every row, hand the spec to the menu contract, which validates it and closes
+-- and reopens the surface -- was run inside whichever callback asked for it.
+-- Inside the form's submit, after the form had already spent its share, that
+-- was over budget: the coroutine died between closing the old menu and opening
+-- the new one, and `handle` was left naming a menu that no longer existed.
+--
+-- On its own thread the redraw has a whole budget to itself, and several asks in
+-- one frame -- a status line, a refresh, a filter -- become one redraw. It is
+-- in place only if every ask was.
+local drawQueued, drawQueuedInPlace = false, true
+local function draw(inPlace)
+	if type(CreateThread) ~= 'function' then return drawNow(inPlace) end
+	drawQueuedInPlace = drawQueuedInPlace and inPlace == true
+	if drawQueued then return end
+	drawQueued = true
+	CreateThread(function()
+		local place = drawQueuedInPlace
+		drawQueued, drawQueuedInPlace = false, true
+		drawNow(place)
+	end)
 end
 
 -- THE SERVER'S REFRESH FLOOR, mirrored. `ADMIN_RATE_REFRESH_MS` is 750 out of
