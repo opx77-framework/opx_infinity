@@ -476,6 +476,17 @@ function M.Buy(source, dealerKey, entryKey, destKey)
 	Open77.log.info(('[dealership] %s bought %s (%s) at %s for %d %s%s'):format(
 		tostring(data.citizenId), safe(entry.key), safe(entry.record), safe(dealer.key),
 		entry.price, currency, dest ~= nil and (' -> ' .. safe(dest.key)) or ''))
+	OPX.Publish(M.Event.ON_SOLD, source, {
+		kind = 'counter',
+		citizenId = data.citizenId,
+		plate = bought.value.plate,
+		entry = entry.key,
+		record = entry.record,
+		dealer = dealer.key,
+		garage = dest ~= nil and dest.key or nil,
+		price = entry.price,
+		currency = currency,
+	})
 
 	return bought
 end
@@ -819,6 +830,25 @@ function M.Accept(buyer, token, yes, destKey)
 		'%s, %d commission'):format(tostring(offer.sellerCitizen), safe(entry.key),
 		safe(bought.value.plate), tostring(offer.buyerCitizen), entry.price, currency,
 		company, offer.kind, safe(offer.group), cut))
+	OPX.Publish(M.Event.ON_SOLD, buyer, {
+		kind = 'offer',
+		citizenId = offer.buyerCitizen,
+		plate = bought.value.plate,
+		entry = entry.key,
+		record = entry.record,
+		dealer = dealer.key,
+		garage = dest ~= nil and dest.key or nil,
+		price = entry.price,
+		currency = currency,
+		seller = offer.seller,
+		sellerCitizenId = offer.sellerCitizen,
+		company = offer.kind .. ':' .. offer.group,
+		commission = cut,
+		banked = company,
+		-- The company's share did not land and is in `opx77_company_pending`;
+		-- the sweep pays it in later. The sale itself is done either way.
+		pending = not banked,
+	})
 
 	TriggerClientEvent(M.Event.SETTLED, offer.seller, {
 		ok = true, entry = offer.entry, model = entry.label,

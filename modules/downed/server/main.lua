@@ -14,6 +14,11 @@ local EVENT_READY = OPX.Event(OPX.Channel.NET, 'downed', 'ready')
 local EVENT_WAIT = OPX.Event(OPX.Channel.NET, 'downed', 'wait')
 local EVENT_GIVE_UP = OPX.Event(OPX.Channel.NET, 'downed', 'giveup')
 
+-- The public server bus: every other resource hears a player go down and get
+-- up, `(playerId, { citizenId, down, waiting|reason })`. The client half raises
+-- the same name on its own VM for its own listeners; the two never meet.
+local EVENT_CHANGED = OPX.Event(OPX.Channel.LOCAL, 'downed', 'changed')
+
 -- Life state rescan period; catches deaths that happened while this module was
 -- stopped, and revives done by anything at all.
 local SCAN_MS = 1000
@@ -166,6 +171,12 @@ local function goDown(playerId, life, citizenId)
 	audit('downed.down', playerId, true,
 		(nameOf(playerId) or '?') .. (resumed and ' (restored)' or ''))
 	pushState(playerId)
+	OPX.Publish(EVENT_CHANGED, playerId, {
+		citizenId = citizenId,
+		down = true,
+		waiting = record.waiting,
+		restored = resumed ~= nil,
+	})
 	M.Storage.Write(citizenId, OPX.Now() - record.sinceMs, record.waiting)
 end
 
@@ -177,6 +188,14 @@ local function getUp(playerId, why, keep)
 	down[playerId] = nil
 	audit('downed.up', playerId, true, why)
 	pushState(playerId)
+	OPX.Publish(EVENT_CHANGED, playerId, {
+		citizenId = record.citizenId,
+		down = false,
+		reason = why ~= nil and OPX.Audit.Safe(why, 64) or nil,
+		-- A character leaving the world still down is not a player getting up;
+		-- `kept` says the row was kept and the state comes back with them.
+		kept = keep == true,
+	})
 	if keep then
 		M.Storage.Write(record.citizenId, OPX.Now() - record.sinceMs, record.waiting)
 	else
@@ -415,8 +434,9 @@ end
 -- @author dop42
 -- @param playerId integer
 -- @param caller string the name the caller is audited under
+-- @param why string|nil a short reason, audited after the caller's name
 -- @return Result
-local function revive(playerId, caller)
+local function revive(playerId, caller, why)
 	local by = callerOf(caller)
 	if by == nil then return Result.Err('invalid_caller') end
 	if not mayRevive(by) then
@@ -425,7 +445,11 @@ local function revive(playerId, caller)
 	end
 	local target = playerOf(playerId)
 	if target == nil then return Result.Err('bad_player') end
-	local ok, reason = reviveNow(target, by)
+	local said = by
+	if type(why) == 'string' and why ~= '' then
+		said = by .. ': ' .. (OPX.Text.Clean(why, 64, '...') or '-')
+	end
+	local ok, reason = reviveNow(target, said)
 	if not ok then return Result.Err(reason) end
 	return Result.Ok(true)
 end

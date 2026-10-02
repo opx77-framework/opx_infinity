@@ -97,8 +97,8 @@ interface Tab {
  * AND THE TRACK STAYS, for the open category only. It is not leftover: sixty boxes at
  * a time means position 412 is seven windows of scrolling, while the track and the
  * number box beside it get there in one gesture -- and it is the control for a
- * category whose boxes are all monograms, which, until the garment pictures are
- * shipped, is every category.
+ * category whose boxes are monograms, which is any record the garment data has no
+ * picture for.
  *
  * THE THUMB IS THE PAGE'S, THE INDEX IS THE CALLER'S. `@input` previews through a
  * debounce and `@change` commits, exactly as the dial does -- but a drag outruns the
@@ -160,10 +160,22 @@ interface Slider {
  * player has moved on is filed against the category it names and dropped. `entries`
  * is record names in index order starting at 1: the box at offset `n` is position
  * `n + 1` on that slider's track, which is what a press reports.
+ *
+ * `labels` and `images` ride beside `entries`, one per box, both optional: the
+ * caption (the item's own name) and the picture's file name under
+ * `images/clothing/`. Lua decides both -- it knows the body family and holds the
+ * generated garment data -- so the page never guesses a file name, and a box with
+ * no picture never asks for one: it draws the monogram straight away.
  */
+interface Tile {
+  name: string
+  label: string
+  image: string
+}
+
 interface Tiles {
   slot: string
-  entries: string[]
+  entries: Tile[]
 }
 
 /** The confirm step. Parsed on arrival rather than kept as a raw payload, so the
@@ -431,7 +443,12 @@ function applyTiles(value: unknown): void {
     tiles.entries = []
     return
   }
-  const entries = list<unknown>(source.entries).map((entry) => text(entry))
+  const labels = list<unknown>(source.labels)
+  const images = list<unknown>(source.images)
+  const entries = list<unknown>(source.entries).map((entry, at): Tile => {
+    const name = text(entry)
+    return { name, label: text(labels[at]) || name, image: text(images[at]) }
+  })
   const from = num(source.from)
   if (slot !== tiles.slot || from === 1) {
     tiles.slot = slot
@@ -768,7 +785,7 @@ const openSlider = computed<Slider | null>(
 /** The boxes to draw, each carrying the track position a press reports. */
 const boxes = computed(() => {
   if (tiles.slot !== currentTab.value) return []
-  return tiles.entries.map((name, offset) => ({ index: offset + 1, name }))
+  return tiles.entries.map((tile, offset) => ({ index: offset + 1, ...tile }))
 })
 
 /** Whether the category holds more than the page has been sent. */
@@ -781,16 +798,16 @@ const moreToLoad = computed(() => {
 /** The garment's picture. `imageFromFile` is the one place the `images/` base lives --
     `ui/public/images` is the source and `web/images` the build's copy of it -- so this
     borrows it rather than writing a second copy of the path. The garments have a
-    folder of their own under it: a record name is not an item name and the two sets
-    must not be able to collide. */
-function art(name: string): string {
-  return imageFromFile(name, `clothing/${name}.png`)
+    folder of their own under it, so a garment file can never collide with an item's.
+    The file name is the one Lua sent; see `Tiles`. */
+function art(name: string, file: string): string {
+  return imageFromFile(name, `clothing/${file}`)
 }
 
 /** A picture that will not load, recorded once so every box holding that record draws
-    the monogram from then on instead of asking for the file again. Most records have
-    no picture today, which is exactly why this is the ordinary path and not the sad
-    one: the grid works with zero images and improves on its own as images land. */
+    the monogram from then on instead of asking for the file again. With the garment
+    pictures shipped this is the rare path -- a file named in the data but missing
+    from `web/images/clothing` -- and the grid still works when it is taken. */
 function artBroken(name: string): void {
   broken[name] = true
 }
@@ -1246,11 +1263,11 @@ function filter(value: string): void {
                descendre et voir plus."
 
                A BOX IS A PICTURE AND A NAME UNDER IT, and the name is not
-               decoration: almost no garment has a picture shipped today, so the
-               ordinary box is a monogram over the record's own name. That is the
-               same fallback `InventorySlot` takes for an item whose file is
-               missing, and it is what lets this ship before a single image
-               exists and improve on its own as they land.
+               decoration: a dozen colourways of one jacket are a dozen nearly
+               identical pictures, and the item's own name is what tells them
+               apart. A record the garment data has no picture for draws a
+               monogram over a name made from the record -- the same fallback
+               `InventorySlot` takes for an item whose file is missing.
 
                IT IS NOT THE WHOLE CATEGORY. The page holds the window it has
                been sent and asks for the next one on the way down; see `Tiles`.
@@ -1293,21 +1310,21 @@ function filter(value: string): void {
               }"
               :disabled="openSlider.disabled || view.busy"
               data-augmented-ui="tr-clip border"
-              :title="box.name"
+              :title="box.label"
               @click="pickTile(box.index)"
             >
               <span class="tile-art">
                 <img
-                  v-if="!broken[box.name]"
-                  :src="art(box.name)"
+                  v-if="box.image && !broken[box.name]"
+                  :src="art(box.name, box.image)"
                   alt=""
                   draggable="false"
                   loading="lazy"
                   @error="artBroken(box.name)"
                 >
-                <span v-else class="tile-mono">{{ monogram(box.name) }}</span>
+                <span v-else class="tile-mono">{{ monogram(box.label) }}</span>
               </span>
-              <span class="tile-name op-eyebrow">{{ box.name }}</span>
+              <span class="tile-name op-eyebrow">{{ box.label }}</span>
             </button>
 
             <p v-if="moreToLoad" class="tile-more op-copy">
@@ -1319,8 +1336,8 @@ function filter(value: string): void {
                to 677 records and the grid reaches them sixty at a time, so
                "position 412" is a scroll of seven windows -- while the track and
                the number box beside it get there in one gesture. It is also the
-               control for a category whose boxes are all monograms, which today
-               is all of them. One track, for the open category only: seven of
+               control for a category whose boxes are monograms, which is any
+               record without a picture. One track, for the open category only: seven of
                them down a column is the bar this screen replaced. -->
           <div
             v-if="openSlider && openSlider.count > 0"
@@ -1843,10 +1860,9 @@ function filter(value: string): void {
   cursor: default;
 }
 
-/* A FIXED SQUARE AND NOT THE PICTURE'S OWN SIZE. Almost no garment has an image
-   today, so most boxes are a monogram -- and a grid whose cells were sized by
-   their contents would have every row a different height as the images land one
-   at a time. The square is the box; what goes in it is centred and contained. */
+/* A FIXED SQUARE AND NOT THE PICTURE'S OWN SIZE. A record with no picture is a
+   monogram, and a grid whose cells were sized by their contents would have every
+   row a different height wherever the two mix, and jump as lazy pictures load. The square is the box; what goes in it is centred and contained. */
 .tile-art {
   display: flex;
   align-items: center;
@@ -1864,7 +1880,7 @@ function filter(value: string): void {
   object-fit: contain;
 }
 
-/* The fallback, and today it is the ordinary case rather than the sad one. */
+/* The fallback for a record with no picture, or one that would not load. */
 .tile-mono {
   font: 700 var(--op-fs-title) / 1 var(--op-font-display);
   letter-spacing: var(--op-track-head);
@@ -1873,17 +1889,17 @@ function filter(value: string): void {
 }
 
 /* THE NAME IS DRAWN, AND THE OWNER ASKED FOR "l'image du vetement uniquement".
-   It is here because the images are not: a wall of identical monograms is not a
-   choice, and the record name is the only thing that tells two of them apart.
+   It is here because pictures are not enough: colourways of one garment are near
+   identical boxes, and the item's own name is what tells two of them apart.
    TWO LINES AND THEN ELLIPSIS, WHICH IS WHY IT IS NOT `.op-truncate`. That rule
    cuts at one line and is right everywhere it is used -- a label that wrapped
    would move every row under it while the pointer was still on the one above.
    Nothing here is aimed at while it moves: a grid row is laid out once and the
    clamp is what stops it growing, so two lines is a bound and not a wrap. One
-   line would not do: a record name is `Items.OuterChest_Jacket_02` and the box
-   is six and a half rem, which leaves about four characters before the ellipsis
-   and no way to tell two of them apart. `overflow-wrap: anywhere` because a
-   record name has no spaces to break at. */
+   line would not do: a name is "Kitsch bomber jacket with reinforced lining" and
+   the box is six and a half rem, which leaves a word before the ellipsis.
+   `overflow-wrap: anywhere` because the fallback, a record name, has no spaces
+   to break at. */
 .tile-name {
   display: -webkit-box;
   -webkit-box-orient: vertical;

@@ -293,6 +293,24 @@ function Store.Resize(id, slots, maxWeight)
 		{ id = id, slots = slots, maxWeight = maxWeight })
 end
 
+--- How many containers of a kind have an owner starting with `prefix`.
+-- @author dop42
+--
+-- The prefix is matched with LIKE, so its own `%`, `_` and `\` are escaped and
+-- match only themselves: a resource name may hold `_`, and unescaped it would
+-- count every other resource whose name differs in that one character.
+-- @param kind string
+-- @param prefix string
+-- @return Result integer
+function Store.CountPrefixed(kind, prefix)
+	local escaped = prefix:gsub('[\\%%_]', function(c) return '\\' .. c end)
+	local counted = Storage.Scalar([[
+SELECT COUNT(*) FROM opx77_inventories WHERE kind = @kind AND owner LIKE @pattern
+  ]], { kind = kind, pattern = escaped .. '%' })
+	if not counted.ok then return counted end
+	return Result.Ok(math.tointeger(tonumber(counted.value)) or 0)
+end
+
 --- Deletes a container; its stacks go by cascade.
 -- @author dop42
 -- @param id integer

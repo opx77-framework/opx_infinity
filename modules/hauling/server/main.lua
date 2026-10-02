@@ -1155,6 +1155,15 @@ local function completeSale(player, sale)
 	end
 	Open77.log.info(('[hauling] player %d sold %d crate(s) of %s at %s for %d')
 		:format(player, sold, safe(sale.site), safe(dropoff.key), pay))
+	OPX.Publish(M.Event.ON_SOLD, player, {
+		citizenId = citizenOf(player),
+		site = sale.site,
+		dropoff = dropoff.key,
+		count = sold,
+		pay = pay,
+		each = each,
+		currency = Access.CURRENCY,
+	})
 	OPX.NotifyLocale(player, 'hauling.paid',
 		{ amount = pay, count = sold, dropoff = dropoff.label }, 'success')
 	return true

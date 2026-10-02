@@ -343,6 +343,230 @@ function M.CountInTrunk(vehicleId, name, metadata, source)
 	end)
 end
 
+-- ── a named stash ────────────────────────────────────────────────────────────
+
+-- How long a stash loaded by name, and not opened by anybody, stays in memory
+-- after its last touch, when `SERVER.EXPORTS.STASHES.IDLE_MS` says nothing.
+local STASH_IDLE_MS = 60000
+
+-- How many stashes one resource may create, when the call names no cap.
+local STASH_CREATE_CAP = 25
+
+--- The configured stash of a name, or nil.
+local function configuredStash(name)
+	local configured = Options.STASHES[name]
+	if configured ~= nil then return configured end
+	for _, stash in ipairs(Options.STASH_LIST) do
+		if stash.name == name then return stash end
+	end
+	return nil
+end
+
+--- Whether a stash that does not exist yet may be created, and why not.
+--
+-- THE CREATION RULE FOR ANOTHER RESOURCE (`creator` set; this resource's own
+-- modules pass none and keep creating as they always have). A stash in
+-- `config/inventory` may always be created: the operator listed it. Anything
+-- else must be named in the caller's own namespace, `<resource>.<name>`, and a
+-- resource may hold at most `cap` of those, counted in the database so a
+-- restart does not reset it. Without the rule a caller walking names would
+-- create a row, and hold a container, for every one.
+-- @return boolean
+-- @return string|nil the refusal code
+local function mayCreate(name, options)
+	local creator = options and options.creator
+	if creator == nil then return true, nil end
+	if configuredStash(name) ~= nil then return true, nil end
+	local prefix = tostring(creator) .. '.'
+	if #name <= #prefix or name:sub(1, #prefix) ~= prefix then
+		return false, 'stash_namespace'
+	end
+	local cap = math.tointeger(tonumber(options.cap)) or STASH_CREATE_CAP
+	local held = M.Storage.CountPrefixed(M.KIND.STASH, prefix)
+	if not held.ok then return false, 'storage' end
+	if held.value >= cap then return false, 'stash_cap' end
+	return true, nil
+end
+
+--- Runs `body` against a stash by its storage name. Yields: a stash loads by name.
+--
+-- THE STASH IS LOADED, NEVER OPENED. `OpenStash` and the configured markers put
+-- a stash in front of a player and give it its anchor; this path only reads and
+-- writes what is in it, so it goes to `Containers.Load` itself rather than
+-- through `World.Stash`, which would mark an anchorless load as reachable from
+-- anywhere and say so in the journal. A configured stash is created at its own
+-- size, anything else at `OpenStash`'s defaults -- and only on the first touch:
+-- an existing stash keeps the size it was made with.
+--
+-- A STASH THAT DOES NOT EXIST is answered by `absent` when only `create` may
+-- make one: a count is 0 and a removal finds nothing, without a row or a
+-- container for either. A stash this path loaded is marked `external` and put
+-- away by `Containers.SweepExternal` once idle, unless a player opens it.
+-- @param name string
+-- @param body fun(container: table, name: string): Result
+-- @param create boolean whether a missing stash may be created (see `mayCreate`)
+-- @param absent fun(name: string): Result what a missing stash answers
+-- @param options table|nil creator, cap
+local function withStash(name, body, create, absent, options)
+	name = Common.Word(name, 48, '^[%w_%-%.]+$')
+	if not name then return Result.Err('bad_argument', 'stash') end
+
+	local container = Containers.Find(M.KIND.STASH, name)
+	if container == nil then
+		local found = M.Storage.Find(M.KIND.STASH, name)
+		if not found.ok then return Result.Err('unavailable', name) end
+		if found.value == nil then
+			if not create then return absent(name) end
+			local allowed, why = mayCreate(name, options)
+			if not allowed then return Result.Err(why, name) end
+		end
+		local configured = configuredStash(name)
+		local reason
+		container, reason = Containers.Load(M.KIND.STASH, name,
+			configured and configured.slots or 50, configured and configured.maxWeight or 100000)
+		if not container then return Result.Err(reason or 'unavailable', name) end
+		-- Only one this path brought in: a stash a player opened keeps its own life.
+		if not Containers.IsViewed(container.id) and container.anchor == nil
+			and container.anywhere == nil then
+			container.external = true
+		end
+	end
+	if container.external then container.externalAt = OPX.Now() end
+	return body(container, name)
+end
+
+--- Puts away the stashes loaded by name and idle since. Yields.
+-- @author dop42
+-- @return integer
+function M.SweepStashes()
+	local exports = OPX.Config.SERVER and OPX.Config.SERVER.EXPORTS
+	local stashes = type(exports) == 'table' and exports.STASHES or nil
+	local idle = type(stashes) == 'table' and math.tointeger(tonumber(stashes.IDLE_MS)) or nil
+	return Containers.SweepExternal(idle or STASH_IDLE_MS)
+end
+
+--- Adds catalogue items to a named stash.
+-- @author dop42
+-- @param name string the stash's storage key
+-- @param item string
+-- @param count integer|nil
+-- @param metadata table|nil
+-- @param options table|nil `{ creator = <resource>, cap = <n> }` for a call
+--   from another resource: a missing stash is then created only under the rule
+--   of `mayCreate`. Omitted, a missing stash is created as before.
+-- @return Result
+function M.AddToStash(name, item, count, metadata, options)
+	item = itemName(item)
+	if not item then return Result.Err('bad_argument', 'name') end
+	local kept, allowed = Common.Metadata(metadata, Options.MAX_METADATA_BYTES)
+	if not allowed then return Result.Err('bad_argument', 'metadata') end
+	count = count == nil and 1 or Common.Integer(count, 1, Options.MAX_STACK)
+	if not count then return Result.Err('bad_argument', 'count') end
+
+	return withStash(name, function(stash, key)
+		local ok, code = Containers.Add(stash, item, count, kept)
+		OPX.Audit.Log({ event = 'inventory.stashAdd', severity = ok and 'info' or 'warn',
+			message = ('%dx %s'):format(count, item),
+			data = { stash = key, item = item, count = count, error = code,
+				creator = options and options.creator or nil } })
+		return outcome(ok, code)
+	end, true, nil, options)
+end
+
+--- Takes items out of a named stash; nil metadata matches any stack. Never
+--- creates one: a stash that does not exist holds nothing to take.
+-- @author dop42
+-- @param name string
+-- @param item string
+-- @param count integer|nil
+-- @param metadata table|nil
+-- @return Result
+function M.RemoveFromStash(name, item, count, metadata)
+	item = itemName(item)
+	if not item then return Result.Err('bad_argument', 'name') end
+	local kept, allowed = Common.Metadata(metadata, Options.MAX_METADATA_BYTES)
+	if not allowed then return Result.Err('bad_argument', 'metadata') end
+	count = count == nil and 1 or Common.Integer(count, 1, Options.MAX_STACK)
+	if not count then return Result.Err('bad_argument', 'count') end
+
+	return withStash(name, function(stash, key)
+		local ok, code = Containers.Remove(stash, item, count, kept)
+		OPX.Audit.Log({ event = 'inventory.stashRemove', severity = ok and 'info' or 'warn',
+			message = ('%dx %s'):format(count, item),
+			data = { stash = key, item = item, count = count, error = code } })
+		return outcome(ok, code)
+	end, false, function() return Result.Err('not_enough') end)
+end
+
+--- How many units of an item a named stash holds. Never creates one: a stash
+--- that does not exist holds 0.
+-- @author dop42
+-- @param name string
+-- @param item string
+-- @param metadata table|nil nil counts every stack of that item
+-- @return Result integer
+function M.CountInStash(name, item, metadata)
+	item = itemName(item)
+	if not item then return Result.Err('bad_argument', 'name') end
+	local kept, allowed = Common.Metadata(metadata, Options.MAX_METADATA_BYTES)
+	if not allowed then return Result.Err('bad_argument', 'metadata') end
+	return withStash(name, function(stash)
+		return Result.Ok(Containers.CountIn(stash, item, kept))
+	end, false, function() return Result.Ok(0) end)
+end
+
+--- Takes EVERY unit of an item whose metadata carries the fields of `match`
+--- out of a bag. The removing half of `CountWhere`.
+-- @author dop42
+--
+-- What a key asks: "every key to plate 12ABC345", whatever its label says.
+-- `RemoveItem` compares whole metadata tables and would leave a key whose label
+-- was written in another language; this compares only the fields named. Slot by
+-- slot, from the last, so it never takes a look-alike that does not match.
+-- @param target Source|CitizenId
+-- @param name string
+-- @param match table field -> string|number|boolean
+-- @return Result integer how many units were taken
+function M.RemoveWhere(target, name, match)
+	name = itemName(name)
+	if not name then return Result.Err('bad_argument', 'name') end
+	local kept, allowed = Common.Metadata(match, Options.MAX_METADATA_BYTES)
+	if not allowed or kept == nil or next(kept) == nil then
+		return Result.Err('bad_argument', 'match')
+	end
+	for _, value in pairs(kept) do
+		if type(value) == 'table' then return Result.Err('bad_argument', 'match') end
+	end
+
+	return withBag(target, function(bag)
+		local slots = {}
+		for slot, entry in pairs(bag.items) do
+			local metadata = entry.metadata
+			if entry.name == name and type(metadata) == 'table' then
+				local carries = true
+				for key, value in pairs(kept) do
+					if metadata[key] ~= value then carries = false break end
+				end
+				if carries then slots[#slots + 1] = slot end
+			end
+		end
+		table.sort(slots, function(a, b) return a > b end)
+		local taken = 0
+		for index = 1, #slots do
+			local entry = bag.items[slots[index]]
+			if entry ~= nil then
+				local count = entry.count
+				if Containers.TakeFromSlot(bag, slots[index], count) then taken = taken + count end
+			end
+		end
+		if taken > 0 then
+			OPX.Audit.Log({ event = 'inventory.removeWhere', message = ('%dx %s'):format(taken, name),
+				citizenId = bag.owner, data = { item = name, count = taken, match = kept } })
+		end
+		return Result.Ok(taken)
+	end)
+end
+
 --- A bag as a screen would draw it: the slots, the stacks and the weight.
 -- Answered whole. It used to be paged by 64 stacks under a 32 KiB ceiling because
 -- it crossed a network argument; it does not cross anything now.
@@ -621,6 +845,15 @@ function M.Api()
 		RemoveFromTrunk = M.RemoveFromTrunk,
 		CountInTrunk = M.CountInTrunk,
 
+		-- A named stash, by its storage key, loaded and never opened: what a job
+		-- filling an evidence locker or a shop restocking its back room needs.
+		AddToStash = M.AddToStash,
+		RemoveFromStash = M.RemoveFromStash,
+		CountInStash = M.CountInStash,
+
+		-- `CountWhere`'s removing half; what revoking a key needs.
+		RemoveWhere = M.RemoveWhere,
+
 		GetItem = M.GetItem,
 		GetItems = M.GetItems,
 		Holders = M.Holders,
@@ -707,6 +940,7 @@ function M.Start()
 	every(function() return 1000 end, 'reach', false, World.SweepReach)
 	every(function() return 5000 end, 'vehicles', false, World.SweepVehicles)
 	every(function() return 30000 end, 'prune', false, Players.PruneVanished)
+	every(function() return 15000 end, 'stash idle', false, M.SweepStashes)
 
 	-- These four only touch host calls and tables of this module, and are guarded:
 	-- a raise from a host read must end the pass, not the loop.

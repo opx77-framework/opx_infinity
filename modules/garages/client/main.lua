@@ -555,7 +555,7 @@ function Runtime.Start()
 
 	-- The strip redraws a rebound key itself; this only re-reads whether the row
 	-- should be up at all.
-	AddEventHandler(M.KEYBINDS_CHANGED, function()
+	AddEventHandler(OPX.Host.KEYBINDS_CHANGED, function()
 		if shown and keyLabel() == nil then
 			shown = false
 		end

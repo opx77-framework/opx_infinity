@@ -11,6 +11,18 @@ OPX.Locale.Register('fr', {
 	['error.noPermission'] = 'Vous ne pouvez pas faire cela.',
 })
 
+-- The creator surface: what an export answers another resource when it refuses.
+-- See core/server/exports.lua and core/client/exports.lua.
+OPX.Locale.Register('fr', {
+	['export.callerDenied'] = "Cette ressource n'est pas autorisée à faire cet appel.",
+	['export.badArgument'] = "Un argument de cet appel n'a pas pu être lu.",
+	['export.booting'] = 'Le serveur démarre encore. Réessayez dans un instant.',
+	['export.mustAwait'] = "Cet appel atteint la base de données : faites-le avec Open77.exports.call et attendez-le.",
+	['export.badValue'] = "Cette valeur n'est pas une donnée simple : booléens, nombres, texte et tables de ceux-ci.",
+	['export.tooLarge'] = "Cette valeur dépasse la taille que ce serveur accorde à une ressource.",
+	['export.notSubscribable'] = "Cet événement n'est pas de ceux auxquels une autre ressource peut s'abonner.",
+})
+
 -- Weather: the status line a player reads, the command usage lines and every
 -- refusal code the authority can answer.
 OPX.Locale.Register('fr', {

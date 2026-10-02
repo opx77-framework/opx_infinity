@@ -8,6 +8,50 @@ OPX.Config.SERVER = {
 	-- the only way to find out that two things will fight over the same body.
 	CONFLICTING_PLACERS = { 'open77_playerstate', 'freeroam', 'pursuit', 'race' },
 
+	-- WHO MAY CALL THE CREATOR EXPORTS, `core/server/exports.lua`. The caller is
+	-- the resource name the HOST reports (`GetInvokingResource`), never one an
+	-- argument claims, and a refused call answers `export.callerDenied` and is
+	-- written to the audit log with the name it came from.
+	--
+	--   READ     who may ASK: GetPlayerData, GetMoney, HasJob, HasItem, IsStaff
+	--            and the other reads. '*' is every resource on the host -- the
+	--            answers are what the player state bag already publishes, plus a
+	--            balance and a bag count -- or a set: { my_hud = true }.
+	--   WRITERS  who may CHANGE something: money, items, stashes, chat lines,
+	--            keys, a vehicle's state, a job, a gang, duty, a revive, and
+	--            the caller's own character metadata. EMPTY OUT OF THE BOX, on purpose: a
+	--            write export is a money printer for whichever resource holds
+	--            it, and the operator is the one who decides which of the
+	--            resources they installed is trusted with that. The first refused
+	--            call from a resource prints the exact line to add here.
+	--            `'*'` admits every resource and is for a development server.
+	--   STAFF_PERMISSION
+	--            the ACL right `IsStaff` asks about. The right that opens the
+	--            staff menu, so "staff" means the same thing everywhere.
+	EXPORTS = {
+		READ = '*',
+		WRITERS = {},
+		STAFF_PERMISSION = 'command.opx.admin',
+		-- STASHES BY NAME: what `CountInStash`, `AddToStash` and
+		-- `RemoveFromStash` may do to a stash that does not exist yet.
+		--   * CountInStash answers 0 and RemoveFromStash `not_enough`; neither
+		--     ever creates one.
+		--   * AddToStash creates one only if it is listed in config/inventory, or
+		--     is named in the CALLER's own namespace -- `<resource>.<name>`, e.g.
+		--     `my_shop.backroom` -- and that resource holds fewer than CREATE_CAP
+		--     of those (counted in the database, so a restart does not reset it).
+		--     Anything else is refused `stash_namespace` or `stash_cap`. A stash
+		--     that already exists, whatever its name, is used as it is.
+		--   * A stash loaded this way and not opened by a player is written and
+		--     put away IDLE_MS after its last touch, and loads again on demand.
+		STASHES = { CREATE_CAP = 25, IDLE_MS = 60000 },
+		-- WHAT `SetMetadata` LETS ONE RESOURCE KEEP ON ONE CHARACTER. A caller
+		-- writes only under its own name (`ext.<resource>.<key>`), never one of
+		-- opx's own keys; these bound how much: the encoded size of one value,
+		-- how many keys, and the encoded size of all of them together.
+		METADATA = { MAX_BYTES = 4096, MAX_KEYS = 32, MAX_TOTAL_BYTES = 16384 },
+	},
+
 	-- Short spellings, so `opx.admin.self.noclip` can also be typed `noclip`.
 	--
 	-- THE LONG NAME IS THE COMMAND AND NOTHING HERE RENAMES IT. Every key below

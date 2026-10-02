@@ -100,9 +100,6 @@ M.Event = {
 -- next reader wires a refusal up to.
 M.Operation = { BRING = 'garageBring', LIST = 'garageList' }
 
---- The host raises this when a player rebinds or resets a mapping.
-M.KEYBINDS_CHANGED = 'onKeybindsChanged'
-
 --- The two kinds a GARAGE may declare. A garage holds ground vehicles, a pad
 --- holds AV records. It is a fact about the GARAGE and never about one of its
 --- points: a garage that took cars in at one location and AVs at another would

@@ -7,8 +7,11 @@
 -- structurally impossible instead of relying on everyone remembering:
 --
 --   opx:net:<module>:<verb>   crosses the wire, either direction
---   opx:on:<module>:<verb>    client local bus -- public, what UI and third
---                             parties listen to with a bare AddEventHandler
+--   opx:on:<module>:<verb>    public, what UI and third parties listen to with a
+--                             bare AddEventHandler. On the client it is this VM's
+--                             bus; on the SERVER `TriggerEvent` is host-wide, so
+--                             a server raise (through `OPX.Publish`) reaches
+--                             every resource -- see core/server/publish.lua
 --   opx:in:<module>:<verb>    inside one VM, between modules -- never public
 --
 -- `Event` builds them so a typo is a nil index rather than a name nobody raises.
@@ -45,4 +48,8 @@ OPX.Host = {
 	GAMEPLAY_READY = 'open77:session:gameplayReady',
 	VEHICLE_REMOVED = 'onVehicleRemoved',
 	TUNABLE_CHANGED = 'onTunableChanged',
+	-- Client only, no payload: raised after any mapping is registered, rebound,
+	-- reset or removed. It is NOT `onKeybindsChanged` -- nothing raises that, and
+	-- four modules once listened on it and never heard a rebind.
+	KEYBINDS_CHANGED = 'open77:keybinds:changed',
 }

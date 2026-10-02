@@ -16,9 +16,13 @@
 --
 -- Every permission below was checked against build 2.31.13+op77.75 through the
 -- Open77 devkit. The ones that are not self-evident:
---   players.stats.apply   `Open77.players.setArmor`, re-applied after a respawn.
---                         NOT `players.damage.apply`, which does not exist at
---                         all -- armour was silently refused under that name
+--   players.stats.apply   `Open77.players.setArmor`, re-applied after a respawn,
+--                         and setHealth / setMaxHealth / setGodMode. The cards
+--                         (op77.78) list `players.damage.apply` as an older
+--                         spelling the runtime still accepts; the catalogued name
+--                         is this one, and `players.stats.read` likewise covers
+--                         getHealth. `open77_validate` asks for the damage.*
+--                         spellings anyway -- a false positive, see README
 --   player.cyberware.read `Open77.appearance.captureBody` needs it ALONGSIDE
 --                         player.appearance.read. Without it every other
 --                         player's body goes undrawn, and the static validator
@@ -171,6 +175,9 @@ server_script "core/server/commands.lua"
 server_script "core/server/gate.lua"
 server_script "core/server/buckets.lua"
 server_script "core/server/tunables.lua"
+-- The public server bus: `opx:on:*` raised for OTHER resources to hear. Before
+-- every module, because every module that announces something calls it.
+server_script "core/server/publish.lua"
 
 client_script "lib/client/lib.lua"
 client_script "lib/client/surface.lua"
@@ -216,6 +223,16 @@ client_script "modules/appearance/client/main.lua"
 client_script "modules/appearance/client/editor.lua"
 client_script "modules/appearance/client/clothing.lua"
 client_script "modules/appearance/client/presence.lua"
+-- The fitting room's garment names and pictures. `garments.lua` first: it makes the
+-- table the generated parts append to. The parts are tools/generate-garments.mjs
+-- output, split so no file nears the host's 10,000-instruction load check; a
+-- rerun that writes a different number of parts says which lines to change here.
+client_script "modules/appearance/client/garments.lua"
+client_script "modules/appearance/data/garments-1.lua"
+client_script "modules/appearance/data/garments-2.lua"
+client_script "modules/appearance/data/garments-3.lua"
+client_script "modules/appearance/data/garments-4.lua"
+client_script "modules/appearance/data/garments-5.lua"
 client_script "modules/appearance/client/wardrobe.lua"
 -- The seam's other end. `wardrobe.lua` holds both state machines and draws
 -- nothing; this is the only file that knows the appearance panel is a `menu` and
@@ -564,6 +581,16 @@ client_script "modules/admin/client/target.lua"
 
 server_script "core/server/boot.lua"
 client_script "core/client/boot.lua"
+
+-- THE CREATOR SURFACE, LAST ON EACH SIDE: the curated exports another resource
+-- calls (`exports.opx_infinity:GetPlayerData(id)`, `Open77.exports.call(...)`).
+-- Each wraps contracts the modules above publish, reads them at the moment of
+-- the call, and registers at file scope, which the platform supports -- so
+-- being last is the whole of its scheduling. Needs no permission: publishing
+-- an export and naming its caller are both unrestricted, and every native it
+-- reaches is reached through a module that already declares its own below.
+server_script "core/server/exports.lua"
+client_script "core/client/exports.lua"
 
 -- Server-provided loading screen (FiveM-style). The client renders this page from
 -- this resource's verified pack files, in a sandboxed surface over the built-in

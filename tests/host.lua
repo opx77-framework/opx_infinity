@@ -2078,6 +2078,34 @@ function Host.Environment(side, database)
 	-- catch.
 	if side == 'client' then env.require = Host.RequireFor(env) end
 
+	-- CROSS-RESOURCE EXPORTS, on both runtimes, in the shape the devkit cards
+	-- give for op77.45 (server) and op77.3 (client): `exports(name, fn)`
+	-- publishes, `GetInvokingResource()` names the caller inside an export and
+	-- nil outside one, and `Open77.exports.call` dispatches to another resource.
+	--
+	-- A REAL REGISTRY AND A REAL CALLER. `control.CallExport(caller, name, ...)`
+	-- runs a published export AS that resource, on a coroutine like the host's
+	-- scheduler does, and answers what the export answered -- so a test asserts
+	-- on the allowlist and the identity, not on a function it reached around
+	-- them. Every outgoing `Open77.exports.call` is recorded, and answers a
+	-- promise whose `await` returns true: the reply a creator's own export would
+	-- give back is not this resource's business.
+	local published, exportCalls = {}, {}
+	local invoking = nil
+	env.exports = function(name, fn)
+		if type(name) ~= 'string' or #name < 1 or #name > 64 then
+			error('invalid_export_name', 2)
+		end
+		if type(fn) ~= 'function' then error('export_function_required', 2) end
+		published[name] = fn
+		return true
+	end
+	env.GetInvokingResource = function() return invoking end
+	Open77.exports.call = function(resource, name, ...)
+		exportCalls[#exportCalls + 1] = { resource = resource, name = name, args = { ... } }
+		return { await = function() return true end, status = function() return 'resolved' end }
+	end
+
 	env._G = env
 	setmetatable(env, { __index = _G })
 
@@ -2088,6 +2116,66 @@ function Host.Environment(side, database)
 		netEvents = netEvents,
 		clientEvents = clientEvents,
 		serverEvents = serverEvents,
+
+		-- What this resource published with `exports`, by name, and every
+		-- `Open77.exports.call` it made, oldest first.
+		exports = published,
+		exportCalls = exportCalls,
+
+		--- Calls one published export as another resource would, and answers
+		--- what it answered. Run on a coroutine and pumped, because an export
+		--- body may yield exactly as the host lets it; `GetInvokingResource`
+		--- names `caller` for the whole of that coroutine and nil after it.
+		CallExport = function(caller, name, ...)
+			local fn = published[name]
+			if fn == nil then return nil, 'export_not_found' end
+			local args = table.pack(...)
+			local done, answer, failure = false, nil, nil
+			local thread = coroutine.create(function()
+				invoking = caller
+				local ran, value = pcall(fn, table.unpack(args, 1, args.n))
+				invoking = nil
+				if ran then answer = value else failure = value end
+				done = true
+			end)
+			for _ = 1, 400 do
+				invoking = caller
+				local ok, why = coroutine.resume(thread)
+				invoking = nil
+				if not ok then return nil, tostring(why) end
+				if done then break end
+				control.Pump(1)
+			end
+			if not done then return nil, 'export_timeout' end
+			if failure ~= nil then return nil, 'export_raised: ' .. tostring(failure) end
+			return answer
+		end,
+
+		--- Calls one published export and gives up on it after `rounds` resumes,
+		--- the way the host does: a SYNCHRONOUS caller (`rounds` 1) fails the
+		--- call with `export_yielded` at the callee's first yield and never
+		--- resumes it, and an asynchronous caller that times out, stops or
+		--- reloads cancels the callee's task, which "stops future continuation"
+		--- (devkit, server-exports). The coroutine is dropped where it stood.
+		AbandonExport = function(caller, rounds, name, ...)
+			local fn = published[name]
+			if fn == nil then return nil, 'export_not_found' end
+			local args = table.pack(...)
+			local done, answer = false, nil
+			local thread = coroutine.create(function()
+				answer = fn(table.unpack(args, 1, args.n))
+				done = true
+			end)
+			for round = 1, rounds do
+				invoking = caller
+				local ok, why = coroutine.resume(thread)
+				invoking = nil
+				if not ok then return nil, 'export_raised: ' .. tostring(why) end
+				if done then return answer end
+				if round < rounds then control.Pump(1) end
+			end
+			return nil, rounds == 1 and 'export_yielded' or 'export_cancelled'
+		end,
 		-- The live tunables, so a test can move one the way the Warden panel does.
 		tunables = tunables,
 		handlers = handlers,

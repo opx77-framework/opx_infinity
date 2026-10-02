@@ -368,6 +368,8 @@ OPX.Locale.Register('en', {
 	['inventory.error.too_fast'] = 'Slow down a little.',
 	['inventory.error.hands_full'] = 'Your hands are full. Put the crate down first.',
 	['inventory.error.load_timeout'] = 'That container did not load in time. Try again.',
+	['inventory.error.stash_namespace'] = 'A resource may only create a stash named after itself: <resource>.<name>.',
+	['inventory.error.stash_cap'] = 'That resource already holds as many stashes as it may create.',
 	['inventory.error.no_character'] = 'No living character carries that citizen id.',
 	['inventory.command.error.not_found'] = 'That is no longer there.',
 })
@@ -723,6 +725,8 @@ OPX.Locale.Register('fr', {
 	['inventory.error.too_fast'] = 'Doucement.',
 	['inventory.error.hands_full'] = "Vous avez les mains prises. Posez d'abord la caisse.",
 	['inventory.error.load_timeout'] = "Ce conteneur n'a pas chargé à temps. Réessayez.",
+	['inventory.error.stash_namespace'] = "Une ressource ne peut créer qu'un coffre à son nom : <ressource>.<nom>.",
+	['inventory.error.stash_cap'] = "Cette ressource a déjà créé autant de coffres qu'elle le peut.",
 	['inventory.error.no_character'] = 'Aucun personnage vivant ne porte cet identifiant citoyen.',
 	['inventory.command.error.not_found'] = "Ce n'est plus là.",
 })

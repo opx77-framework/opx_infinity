@@ -26,4 +26,18 @@ OPX.Config.CLIENT = {
 	-- bottom_left, bottom_center, bottom_right. An unknown name is refused by
 	-- the page and the default stands.
 	TOASTS = { position = 'top_right', width = 340 },
+
+	-- WHO MAY CALL THE CLIENT CREATOR EXPORTS, `core/client/exports.lua`: open a
+	-- menu, a form, a toast or a progress bar, or play an animation, on THIS
+	-- player's own screen, or subscribe to the public client events
+	-- (`Subscribe`). '*' is every client resource the server sends, or a set:
+	-- { my_shop = true }. Open by default because everything behind it acts
+	-- on the local player alone and the server re-derives anything that matters;
+	-- a client config is advice in any case, not a lock.
+	EXPORTS = {
+		CALLERS = '*',
+		-- The export a caller publishes to hear back -- a menu row chosen, a form
+		-- answered, a bar ended -- when its call names no `reply` of its own.
+		REPLY = 'OnOpxEvent',
+	},
 }

@@ -82,7 +82,7 @@ end
 --- Wires the host's rebind event, each listener under its own pcall.
 -- @author dop42
 function Keys.Start()
-	AddEventHandler(M.KEYBINDS_CHANGED, function()
+	AddEventHandler(OPX.Host.KEYBINDS_CHANGED, function()
 		for index = 1, #listeners do
 			local ran, failure = pcall(listeners[index])
 			if not ran then

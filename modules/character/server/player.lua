@@ -25,6 +25,140 @@ M.Registry = {
 	byUserId = {},
 }
 
+--- The public half of a character, as another resource is handed it.
+-- @author dop42
+--
+-- BUILT, NEVER LENT. The export surface and the public bus both cross into
+-- another resource's VM by copy, and a copy of the whole PlayerData would
+-- publish everything any module ever hung off it -- metadata included, which is
+-- free-form and is where a module keeps what it did not want on the wire. So the
+-- creator surface is this closed list, and adding a field to it is a decision
+-- somebody makes here.
+-- @param player Player
+-- @return table
+function M.PublicView(player)
+	local data = player.PlayerData
+	local charInfo = type(data.charInfo) == 'table' and data.charInfo or {}
+	return {
+		source = data.source,
+		citizenId = data.citizenId,
+		userId = data.userId,
+		firstName = charInfo.firstName,
+		lastName = charInfo.lastName,
+		money = OPX.Table.DeepCopy(data.money or {}),
+		job = OPX.Table.DeepCopy(data.job),
+		gang = OPX.Table.DeepCopy(data.gang),
+		jobs = OPX.Table.DeepCopy(data.jobs or {}),
+		gangs = OPX.Table.DeepCopy(data.gangs or {}),
+	}
+end
+
+-- ── the offline ledger ───────────────────────────────────────────────────────
+-- WHO IS WRITING A CHARACTER'S ROW WHILE NOBODY IS PLAYING IT.
+--
+-- A loaded character is written from memory, whole: `Storage.Save` puts the
+-- money column back as PlayerData holds it. So any write to the row that does
+-- not go through PlayerData is lost the moment a login that read the row BEFORE
+-- it saves AFTER it -- and a login yields three times between its read and the
+-- roster. `AddMoneyOffline` is such a write, and so is a staff rename of a
+-- character nobody is playing, and so is a job or gang change (groups.lua).
+--
+-- `busy` counts writers on the row right now and `seq` moves every time one
+-- finishes. A login notes `seq` before it reads, waits for `busy` to reach zero
+-- before it registers, and reads the row again when `seq` moved: what it then
+-- puts in the roster is what is in the database. A logout counts as a writer
+-- from the moment the character leaves the roster until its last save lands, so
+-- an offline write that arrives during that save waits for it instead of being
+-- written underneath it.
+local ledger = {}
+
+-- How long an offline writer or a login waits for the row to be free.
+local LEDGER_WAIT_MS = 10000
+local LEDGER_POLL_MS = 50
+-- How long a hold may last before it can only be a writer that died holding it.
+local LEDGER_STALE_MS = 60000
+
+M.Ledger = {}
+
+--- The ledger entry of one citizen id, created on first use.
+local function ledgerOf(citizenId)
+	local entry = ledger[citizenId]
+	if entry == nil then
+		entry = { busy = 0, seq = 0 }
+		ledger[citizenId] = entry
+	end
+	return entry
+end
+
+--- How many writes on a row have finished.
+-- @author dop42
+-- @param citizenId CitizenId
+-- @return integer
+function M.Ledger.Seen(citizenId)
+	local entry = ledger[citizenId]
+	return entry and entry.seq or 0
+end
+
+--- Whether a write on a row is under way.
+-- @author dop42
+--
+-- A WRITER THAT NEVER LEFT IS FORGOTTEN, loudly. Every `Enter` in this module
+-- is paired with a `Leave` on the same path, and the database calls between
+-- them cannot raise; but a hold that outlived `LEDGER_STALE_MS` can only be a
+-- path that died between the two, and honouring it for ever would refuse that
+-- character's every login. The row is released and the journal says which.
+-- @param citizenId CitizenId
+-- @return boolean
+function M.Ledger.Busy(citizenId)
+	local entry = ledger[citizenId]
+	if entry == nil or entry.busy <= 0 then return false end
+	if OPX.Now() - (entry.since or 0) > LEDGER_STALE_MS then
+		Open77.log.error(('[character] the offline ledger held %s for over %d ms; releasing it')
+			:format(tostring(citizenId), LEDGER_STALE_MS))
+		entry.busy = 0
+		entry.seq = entry.seq + 1
+		return false
+	end
+	return true
+end
+
+--- Counts a writer in, unconditionally. For a logout, which already owns the row.
+-- @author dop42
+-- @param citizenId CitizenId
+function M.Ledger.Enter(citizenId)
+	local entry = ledgerOf(citizenId)
+	if entry.busy <= 0 then entry.since = OPX.Now() end
+	entry.busy = entry.busy + 1
+	entry.seq = entry.seq + 1
+end
+
+--- Counts a writer out, and says the row moved.
+-- @author dop42
+-- @param citizenId CitizenId
+function M.Ledger.Leave(citizenId)
+	local entry = ledger[citizenId]
+	if entry == nil then return end
+	entry.busy = math.max(0, entry.busy - 1)
+	-- KEPT WHEN IDLE, not forgotten: a login that noted `seq` before a write
+	-- began must still see it moved after the write ended, and a forgotten entry
+	-- would answer 0 again -- the very number it noted. One small table per
+	-- character ever written offline in this session is the price.
+	entry.seq = entry.seq + 1
+end
+
+--- Waits until nobody is writing a row. Coroutine only.
+-- @author dop42
+-- @param citizenId CitizenId
+-- @return boolean false when the wait ran out
+function M.Ledger.Settle(citizenId)
+	local deadline = OPX.Now() + LEDGER_WAIT_MS
+	while M.Ledger.Busy(citizenId) do
+		if OPX.Now() >= deadline then return false end
+		Wait(LEDGER_POLL_MS)
+	end
+	return true
+end
+
 --- Whether a money type exists on this server.
 -- @author dop42
 -- @param moneyType any
@@ -369,6 +503,19 @@ local function announceMoney(player, moneyType, amount, action, reason)
 		amount = amount,
 		balance = data.money[moneyType],
 	})
+
+	-- The fifth audience: every other resource on the host. A reason is a
+	-- caller's free text, so it is bounded on the way out like the audit bounds
+	-- it on the way in.
+	OPX.Publish(M.Event.ON_MONEY, data.source, {
+		citizenId = data.citizenId,
+		moneyType = moneyType,
+		amount = amount,
+		action = action,
+		reason = reason ~= nil and OPX.Audit.Safe(reason, 128) or nil,
+		balance = data.money[moneyType],
+		offline = false,
+	})
 end
 
 --- Adds money to a loaded character, hooked and audited.
@@ -496,6 +643,100 @@ function M.GetMoney(identifier, moneyType)
 	if not player then return nil end
 	if moneyType == nil then return player.PlayerData.money end
 	return player.PlayerData.money[moneyType]
+end
+
+--- Adds money to a character whether or not anybody is playing it. Coroutine only.
+-- @author dop42
+--
+-- THE ONLINE CHARACTER IS PAID THROUGH `AddMoney`, not through the row: an
+-- autosave a minute later would write the loaded balance straight back over a
+-- row edited underneath it, and the payment would simply undo itself. So this
+-- is `AddMoney` for somebody who is here, and an atomic increment in SQL for
+-- somebody who is not -- one statement, `JSON_SET` over the balance it read in
+-- the same breath, so two offline payments never read the same old balance.
+--
+-- The row is held in the ledger above for the length of the write. A login
+-- that read it first reads it again before it registers; a logout still saving
+-- is waited for. A deleted character answers `character.notFound`, the same as
+-- one that never existed. The `money:beforeAddOffline` hook may veto it: the
+-- three online hooks are handed a live Player, which there is none of here, so
+-- a hook written against them would index nil on this path.
+-- @param citizenId CitizenId
+-- @param moneyType MoneyType
+-- @param amount number positive; rounded
+-- @param reason string|nil
+-- @return Result { balance, offline }
+function M.AddMoneyOffline(citizenId, moneyType, amount, reason)
+	local parsed = OPX.CitizenId.Parse(citizenId)
+	if not parsed.ok then return Result.Err('character.notFound', tostring(citizenId)) end
+	citizenId = parsed.value
+	if not M.IsMoneyType(moneyType) then return Result.Err('money.badType', tostring(moneyType)) end
+	local value = amountOf(amount)
+	if not value then return Result.Err('money.badAmount', tostring(amount)) end
+	if OPX.BootError then return Result.Err('error.unavailable', OPX.BootError) end
+
+	-- Whoever else is on the row goes first; a login is not one of them, and
+	-- sees this write through `seq` instead.
+	if not M.Ledger.Settle(citizenId) then
+		return Result.Err('error.unavailable', 'the row is being written')
+	end
+
+	-- Asked AFTER the wait and with nothing between it and `Enter` that yields:
+	-- a character that came online meanwhile is paid in memory, and one that did
+	-- not cannot start writing from memory before this has finished.
+	local online = M.GetPlayerByCitizenId(citizenId)
+	if online ~= nil then
+		local ok, code = M.AddMoney(online, moneyType, value, reason)
+		if not ok then return Result.Err(code) end
+		return Result.Ok({ balance = online.PlayerData.money[moneyType], offline = false })
+	end
+
+	if not OPX.Hooks.Trigger('money:beforeAddOffline', {
+		citizenId = citizenId, moneyType = moneyType, amount = value, reason = reason,
+	}) then
+		return Result.Err('money.vetoed')
+	end
+
+	-- AND ASKED AGAIN AFTER THE HOOKS, WHICH MAY YIELD (`Hooks.Trigger` says so):
+	-- a login that finished meanwhile has a character in the roster that will
+	-- save the balance it loaded, and the increment below would land under it
+	-- and be written over. Nothing between this and `Enter` yields.
+	if not M.Ledger.Settle(citizenId) then
+		return Result.Err('error.unavailable', 'the row is being written')
+	end
+	online = M.GetPlayerByCitizenId(citizenId)
+	if online ~= nil then
+		local ok, code = M.AddMoney(online, moneyType, value, reason)
+		if not ok then return Result.Err(code) end
+		return Result.Ok({ balance = online.PlayerData.money[moneyType], offline = false })
+	end
+
+	M.Ledger.Enter(citizenId)
+	local written = M.Storage.AddMoney(citizenId, moneyType, value)
+	local balance = written.ok and M.Storage.Balance(citizenId, moneyType) or nil
+	M.Ledger.Leave(citizenId)
+	if not written.ok then return written end
+
+	OPX.Audit.Log({
+		event = 'money.addOffline',
+		message = reason,
+		citizenId = citizenId,
+		data = { moneyType = moneyType, amount = value,
+			balance = balance and balance.ok and balance.value or nil },
+	})
+	OPX.Publish(M.Event.ON_MONEY, nil, {
+		citizenId = citizenId,
+		moneyType = moneyType,
+		amount = value,
+		action = 'add',
+		reason = reason ~= nil and OPX.Audit.Safe(reason, 128) or nil,
+		balance = balance and balance.ok and balance.value or nil,
+		offline = true,
+	})
+	return Result.Ok({
+		balance = balance and balance.ok and balance.value or nil,
+		offline = true,
+	})
 end
 
 --- Sets one key of a loaded character's free-form metadata.
@@ -646,6 +887,10 @@ function M.Login(source, citizenId)
 		return Result.Err('error.unavailable', OPX.BootError)
 	end
 
+	-- Noted BEFORE the read: an offline write that finishes after this point is
+	-- one the read below may not have seen. See the ledger above.
+	local seen = M.Ledger.Seen(citizenId)
+
 	local fetched = M.Storage.FetchOne(citizenId)
 	if not fetched.ok then return fetched end
 
@@ -676,6 +921,32 @@ function M.Login(source, citizenId)
 	local extras = { citizenId = citizenId, entity = entity, data = {} }
 	OPX.Hooks.Trigger('character:loading', extras)
 
+	-- AN OFFLINE WRITE THAT RACED THIS LOGIN IS READ BACK, NOT SAVED OVER. A
+	-- payment that landed on the row after the read above would otherwise be
+	-- erased by this character's first save, which writes the balance it was
+	-- loaded with. Bounded: a row that never settles refuses the login rather
+	-- than loading a balance known to be stale. Re-read whole, because a staff
+	-- rename is the other writer and it moves `charInfo`, not money.
+	for _ = 1, 4 do
+		if not M.Ledger.Settle(citizenId) then
+			return Result.Err('error.unavailable', 'the character row is being written')
+		end
+		if M.Ledger.Seen(citizenId) == seen then break end
+		seen = M.Ledger.Seen(citizenId)
+		local again = M.Storage.FetchOne(citizenId)
+		if not again.ok then return again end
+		entity = again.value
+		extras.entity = entity
+		-- The memberships too: an offline job or gang change (groups.lua) is
+		-- the third writer, and it moves the membership rows beside the column.
+		local regrouped = M.Storage.FetchGroups(citizenId)
+		if not regrouped.ok then return regrouped end
+		groups = regrouped
+	end
+	if M.Ledger.Busy(citizenId) or M.Ledger.Seen(citizenId) ~= seen then
+		return Result.Err('error.unavailable', 'the character row would not settle')
+	end
+
 	-- The session is re-read after those reads: if the player left while we waited
 	-- (departing, or another session on the slot), the login is refused before
 	-- anything is registered. The departure's own Logout has already run and would
@@ -697,6 +968,7 @@ function M.Login(source, citizenId)
 
 	TriggerClientEvent(M.Event.LOADED, source, player.PlayerData)
 	TriggerEvent(M.Event.IN_LOADED, source, player.PlayerData)
+	OPX.Publish(M.Event.ON_LOADED, source, M.PublicView(player))
 
 	OPX.Audit.Player(player, 'character.login', 'logged in')
 	Open77.log.info(('[character] %s (%s) logged in as %s %s'):format(
@@ -716,6 +988,17 @@ function M.Save(identifier, loggedOut)
 	local player = resolve(identifier)
 	if not player then return Result.Err('error.notLoggedIn') end
 
+	-- A CHARACTER THAT HAS LEFT THE ROSTER IS WRITTEN BY ITS LOGOUT AND NOBODY
+	-- ELSE. The autosave, `opx.save` and the stop sweep walk a snapshot of the
+	-- roster and yield between saves, so they can reach a Player whose logout
+	-- has already saved it and handed the row back to the ledger -- and an
+	-- offline payment that landed since would be written over with the balance
+	-- that Player was holding. Only the logout's own save (`loggedOut`) may
+	-- write a Player that is no longer registered under its connection.
+	if not player.Offline and not loggedOut and M.Players[player.PlayerData.source] ~= player then
+		return Result.Err('error.notLoggedIn', 'no longer in the roster')
+	end
+
 	if not player.Offline then M.SamplePosition(player) end
 
 	local saved = M.Storage.Save(player.PlayerData, loggedOut)
@@ -732,12 +1015,20 @@ local function unload(source)
 	if not player then return nil end
 
 	M.UnregisterPlayer(player)
+	-- The row is this departure's until its last save lands: an offline write
+	-- arriving in between would be written underneath that save and erased by
+	-- it. Both callers below leave the ledger once they have saved.
+	M.Ledger.Enter(player.PlayerData.citizenId)
 
 	local session = OPX.Sessions[source]
 	if session then session.citizenId = nil end
 
 	TriggerClientEvent(M.Event.UNLOADED, source)
 	TriggerEvent(M.Event.IN_UNLOADED, source, player.PlayerData)
+	OPX.Publish(M.Event.ON_UNLOADED, source, {
+		citizenId = player.PlayerData.citizenId,
+		userId = player.PlayerData.userId,
+	})
 	return player
 end
 
@@ -754,12 +1045,21 @@ function M.Logout(source)
 	local player = unload(source)
 	if not player then return end
 
-	M.SamplePosition(player)
-	player.MaySample = false
-	OPX.Buckets.Isolate(source, 'unloaded')
+	-- Under pcall, because `unload` entered the ledger and only the save below
+	-- leaves it: a raise here would otherwise hold the row until the stale guard.
+	local settled, failure = pcall(function()
+		M.SamplePosition(player)
+		player.MaySample = false
+		OPX.Buckets.Isolate(source, 'unloaded')
+	end)
+	if not settled then
+		Open77.log.error(('[character] logout of %s raised before its save: %s')
+			:format(player.PlayerData.citizenId, tostring(failure)))
+	end
 
 	CreateThread(function()
 		M.Save(player, true)
+		M.Ledger.Leave(player.PlayerData.citizenId)
 		OPX.Audit.Player(player, 'character.logout', 'logged out')
 	end)
 end
@@ -776,6 +1076,7 @@ function M.LogoutAndWait(source)
 	if not player then return Result.Ok(false) end
 
 	local saved = M.Save(player, true)
+	M.Ledger.Leave(player.PlayerData.citizenId)
 	OPX.Audit.Player(player, 'character.logout', 'logged out')
 	return saved
 end

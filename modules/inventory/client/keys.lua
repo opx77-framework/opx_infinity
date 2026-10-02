@@ -119,6 +119,6 @@ function Keys.Register()
 
 	-- Nothing in the catalogue depends on a key, so a rebind only resends the
 	-- configuration.
-	AddEventHandler('open77:keybinds:changed', function() M.Screen.SendConfig() end)
+	AddEventHandler(OPX.Host.KEYBINDS_CHANGED, function() M.Screen.SendConfig() end)
 	M.Screen.SendConfig()
 end
