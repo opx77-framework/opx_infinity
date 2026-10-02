@@ -114,6 +114,7 @@ M.Skill.Refusal = {
 	rank = 'skills.rank',
 	unlocked = 'skills.unlocked',
 	failed = 'skills.failed',
+	loading = 'skills.loading',
 }
 
 --- The tree as the config declares it.

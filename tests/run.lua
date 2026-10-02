@@ -29778,6 +29778,64 @@ do
 	end
 end
 
+section('the skill tree: work earned before the stored trees are read')
+do
+	-- THE BOOT RACE. The stored trees are read on a thread after `Start`; work
+	-- credited before that read lands used to build an empty record the load
+	-- then replaced (the work lost), or be flushed first and write a level-1
+	-- tree over the stored one. It is queued now, and replayed onto the record
+	-- the database held.
+	local writes = {}
+	local function note(sql, params)
+		if type(sql) == 'string' and sql:find('INSERT INTO opx77_skills', 1, true) then
+			writes[#writes + 1] = params
+		end
+	end
+	local bridge = Host.Database({
+		scalar = function() return 1 end,
+		single = function() return nil end,
+		insert = function(sql, params) note(sql, params); return 1 end,
+		update = function(sql, params) note(sql, params); return 1 end,
+		transaction = function() return true end,
+		query = function(sql, params)
+			note(sql, params)
+			if type(sql) == 'string' and sql:find('FROM opx77_skills', 1, true) then
+				return { { citizen_id = 'citizen-race', xp = 0, level = 5, points = 2,
+					nodes = '', branches = 'street:400' } }
+			end
+			return {}
+		end,
+	})
+	local steering = Host.Steering(bridge)
+	steering.park = function(_, sql)
+		return type(sql) == 'string' and sql:find('FROM opx77_skills', 1, true) ~= nil
+	end
+	local env, control, why = boot('server', bridge)
+	check('the server boots with the stored trees still being read', why == nil, why)
+	if why == nil then
+		local skills = env.OPX.Api.Get('skills')
+		local early = skills.Award('citizen-race', 'unemployed', 10)
+		control.Pump(4)
+		check('work earned during the read is queued, not applied to an empty record',
+			early.ok == true and early.value.queued == true, tostring(early.value and early.value.level))
+		check('and nothing is written over the stored tree while it is read', #writes == 0,
+			tostring(#writes))
+		steering.park = nil
+		steering.Resume()
+		control.Pump(8)
+		local level = skills.Level('citizen-race')
+		local frame = skills.State('citizen-race').value
+		check('once read, the stored level stands and the queued work lands on it',
+			level >= 5 and #writes >= 1 and tonumber(writes[#writes].level) >= 5
+				and tostring(writes[#writes].branches):find('street:', 1, true) ~= nil
+				and not tostring(writes[#writes].branches):find('street:400;', 1, true)
+				and tostring(writes[#writes].branches) ~= 'street:400',
+			('level %s, %d write(s), branches %s'):format(tostring(level), #writes,
+				tostring(writes[#writes] and writes[#writes].branches)))
+		check('and the tree answers from the merged record', type(frame) == 'table')
+	end
+end
+
 section('the skill tree: the key and the panel')
 do
 	local env, control, why = boot('client')

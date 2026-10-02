@@ -37,6 +37,15 @@ local records = {}
 --- Which records changed since the last write-back.
 local dirty = {}
 
+-- WHETHER THE STORED TREES HAVE BEEN READ. The read runs on a thread after
+-- `Start`, and until it lands `records` is not the truth: work credited in that
+-- window built an empty record that the load then replaced (the work was lost),
+-- or was flushed first and wrote an empty tree over the stored one. So until
+-- `loaded`, credits are QUEUED and replayed onto the stored records, nothing is
+-- written back, and a spend or the staff lever is refused as `loading`.
+local loaded = false
+local queued = {}
+
 --- node id -> { branch = id, rank = integer, node = node }, rebuilt at Init.
 local index = {}
 
@@ -195,7 +204,8 @@ end
 -- progress survives a restart without the caller waiting on the disk.
 -- @param citizenId string
 local function flushSoon(citizenId)
-	if not dirty[citizenId] then return end
+	-- Before the load nothing is written: the row on disk is still the truth.
+	if not loaded or not dirty[citizenId] then return end
 	CreateThread(function()
 		if not dirty[citizenId] then return end
 		dirty[citizenId] = nil
@@ -361,6 +371,10 @@ end
 local function earn(citizenId, jobName, credited)
 	local points = finite(credited) or 0.0
 	if points <= 0 then return end
+	if not loaded then
+		queued[#queued + 1] = { citizenId, jobName, points }
+		return
+	end
 	local branchId = M.Skill.BranchOf(jobName)
 	local xp = points * (finite(M.Settings.XP_PER_POINT) or 10)
 	if branchId == nil or xp <= 0 then return end
@@ -408,6 +422,7 @@ local function unlock(citizenId, nodeId)
 	if type(nodeId) ~= 'string' or nodeId == '' then return false, 'noNode' end
 	local entry = index[nodeId]
 	if entry == nil then return false, 'noNode' end
+	if not loaded then return false, 'loading' end
 
 	local record = recordOf(citizenId)
 	if record.nodes[nodeId] == true then return false, 'unlocked' end
@@ -547,6 +562,10 @@ local function levelCommand(source, args)
 			('player %d has no character to level: %s'):format(target, tostring(why)))
 	end
 
+	if not loaded then
+		return OPX.CommandResult(source, false, 'the stored trees are still being read; try again in a moment')
+	end
+
 	local record = recordOf(citizenId)
 	M.Skill.ApplyLevel(record, mode, level)
 	dirty[citizenId] = true
@@ -629,6 +648,7 @@ end
 -- @author XEROX710
 function M.Init()
 	records, dirty = {}, {}
+	loaded, queued = false, {}
 	index = {}
 	developing, developCount = {}, 0
 	chromeNamed = false
@@ -691,6 +711,8 @@ function M.Api()
 			local credited = finite(points) or 0.0
 			if credited <= 0 then return Result.Err('skills.failed', tostring(points)) end
 			earn(citizenId, jobName, credited)
+			-- Queued until the stored trees are read: no record to quote yet.
+			if not loaded then return Result.Ok({ queued = true }) end
 			local record = recordOf(citizenId)
 			return Result.Ok({ level = record.level, xp = record.xp, points = record.points })
 		end,
@@ -826,11 +848,15 @@ function M.Start()
 	-- this load may land late without a player ever noticing.
 	CreateThread(function()
 		local read, result = pcall(Store.FetchAll)
+		local rows = {}
 		if not read or type(result) ~= 'table' or result.ok ~= true or type(result.value) ~= 'table' then
+			-- Degraded, as before: the tree runs on fresh records rather than
+			-- holding every credit for ever. What was queued is still replayed.
 			Open77.log.warn('[skills] the stored trees could not be read')
-			return
+		else
+			rows = result.value
 		end
-		for _, row in ipairs(result.value) do
+		for _, row in ipairs(rows) do
 			local citizenId = row.citizen_id
 			if type(citizenId) == 'string' and citizenId ~= '' then
 				local nodes = {}
@@ -851,6 +877,18 @@ function M.Start()
 					branches = fed,
 				}
 			end
+		end
+		-- Loaded, THEN the queue: each credit lands on the stored record and
+		-- schedules its own write-back, in the order it was earned.
+		loaded = true
+		local backlog = queued
+		queued = {}
+		for _, credit in ipairs(backlog) do
+			local ran, failure = pcall(earn, credit[1], credit[2], credit[3])
+			if not ran then Open77.log.error('[skills] a queued credit broke: ' .. tostring(failure)) end
+		end
+		if #backlog > 0 then
+			Open77.log.info(('[skills] %d credit(s) earned during the load were applied'):format(#backlog))
 		end
 	end)
 end

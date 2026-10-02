@@ -139,6 +139,7 @@ local EN = {
 	['skills.rank'] = 'This trunk has not earned that node yet.',
 	['skills.unlocked'] = 'That node is already yours.',
 	['skills.failed'] = 'That could not be done.',
+	['skills.loading'] = 'Your record is still being read; try again in a moment.',
 	['skills.menuOpen'] = 'Close the menu first.',
 
 	-- THE STAFF LEVER (`/opx.skills.level`): what the player it moved is told,
@@ -321,6 +322,7 @@ local FR = {
 	['skills.rank'] = 'Cette branche n\u{2019}a pas encore mérité ce nœud.',
 	['skills.unlocked'] = 'Ce nœud est déjà à vous.',
 	['skills.failed'] = 'Cela n\u{2019}a pas pu être fait.',
+	['skills.loading'] = 'Votre dossier est encore en cours de lecture, réessayez dans un instant.',
 	['skills.menuOpen'] = 'Fermez d\u{2019}abord le menu.',
 
 	['skills.admin.max'] = 'Un admin a maximisé votre arbre de compétences : niveau {level}/{cap}, {points} point(s) à dépenser.',
