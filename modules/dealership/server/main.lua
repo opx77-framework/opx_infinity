@@ -108,6 +108,25 @@ local stockFor = { [M.KIND.GARAGE] = {}, [M.KIND.AVPAD] = {} }
 -- Whether the loop that sweeps rate-limit windows is running.
 local running = false
 
+-- Deposits that failed AND whose ledger row could not be written either, by
+-- token: the database was down for both. The sweep writes them to the ledger
+-- when it can. Memory only, so a restart in that window loses them -- which is
+-- why each is still logged with everything needed to settle it by hand.
+local unsaved = {}
+
+-- A counter for the ledger tokens, beside the clock, for the reason `nextOffer`
+-- is a counter: two sales settling in the same millisecond carry the same clock.
+local nextPending = 0
+
+-- How often the ledger of owed deposits is retried, and how many rows a pass
+-- settles. A pass is a handful of statements; a minute is soon enough for money
+-- nobody is waiting at a counter for.
+local PENDING_SWEEP_MS = 60000
+local PENDING_PAGE = 32
+
+-- Whether a ledger sweep is in flight, so two never settle the same row.
+local sweeping = false
+
 -- Longest wire value a log line carries, in characters.
 local MAX_LOGGED = 64
 
@@ -493,9 +512,15 @@ end
 -- THE DEPOSIT IS ONE STATEMENT AND THE ARITHMETIC IS THE DATABASE'S -- see
 -- `Store.Deposit`. A deposit that fails is NOT a failed sale: the buyer owns the
 -- vehicle and the seller has been paid, and undoing either from here would be
--- two more writes that can fail in turn. It is said in the log with everything
--- needed to settle it by hand, which is the same treatment a refund that fails
--- gets in `purchase`.
+-- two more writes that can fail in turn.
+--
+-- IT IS OWED, NOT FORGOTTEN. This used to log "settle this by hand" and stop
+-- there, so the company's money depended on somebody reading the journal. It
+-- is now written to `opx77_company_pending` and the sweep pays it in when the
+-- database answers -- one transaction per row, deposit and strike-off together,
+-- so a retry can never pay it twice. When even the ledger cannot be written it
+-- is held in memory and the sweep writes it later; the log line stays, because a
+-- restart inside that window is the one case only a person can settle.
 -- @param kind string
 -- @param group string
 -- @param amount integer
@@ -505,12 +530,68 @@ local function bank(kind, group, amount, plate)
 	if amount <= 0 then return true end
 	local put = Store.Deposit(kind, group, amount)
 	if put == nil or not put.ok then
-		Open77.log.error(('[dealership] %d %s from the sale of %s did NOT reach the %s account ' ..
-			'of %s (%s) -- settle this by hand'):format(amount, tostring(currency), safe(plate),
-			kind, safe(group), tostring(put and put.detail or 'no answer')))
+		nextPending = nextPending + 1
+		local token = ('%s:%s:%d:%d'):format(kind, tostring(group), OPX.Now(), nextPending)
+		local owed = { token = token, kind = kind, group = group, amount = amount,
+			plate = plate ~= nil and tostring(plate) or nil }
+		local pended = Store.Pend(token, kind, group, amount, owed.plate)
+		if pended == nil or not pended.ok then
+			unsaved[token] = owed
+			Open77.log.error(('[dealership] %d %s from the sale of %s did NOT reach the %s account ' ..
+				'of %s (%s), and the pending ledger could not be written either; it is held ' ..
+				'in memory and retried, and a restart before then means settling it by hand')
+				:format(amount, tostring(currency), safe(plate), kind, safe(group),
+					tostring(put and put.detail or 'no answer')))
+		else
+			Open77.log.warn(('[dealership] %d %s from the sale of %s did not reach the %s account ' ..
+				'of %s (%s); it is in the pending ledger and will be paid in when the ' ..
+				'database answers'):format(amount, tostring(currency), safe(plate), kind,
+					safe(group), tostring(put and put.detail or 'no answer')))
+		end
 		return false
 	end
 	return true
+end
+
+--- Pays in what the ledger says is owed. One pass, never two at once.
+-- @author dop42
+-- @return integer how many rows were settled
+function M.SettlePending()
+	if sweeping then return 0 end
+	sweeping = true
+	local settled = 0
+	local ran, failure = pcall(function()
+		-- What could not even be written to the ledger goes there first.
+		for token, owed in pairs(unsaved) do
+			local pended = Store.Pend(token, owed.kind, owed.group, owed.amount, owed.plate)
+			if pended ~= nil and pended.ok then unsaved[token] = nil end
+		end
+
+		local rows = Store.FetchPending(PENDING_PAGE)
+		if rows == nil or not rows.ok or type(rows.value) ~= 'table' then return end
+		for index = 1, #rows.value do
+			local row = rows.value[index]
+			local amount = math.tointeger(tonumber(row.amount))
+			if amount ~= nil and amount > 0 then
+				local paid = Store.SettlePending(row.id, row.kind, row.group_key, amount)
+				if paid ~= nil and paid.ok then
+					settled = settled + 1
+					Open77.log.info(('[dealership] paid %d owed from the sale of %s into the %s ' ..
+						'account of %s'):format(amount, safe(row.plate), tostring(row.kind),
+							safe(row.group_key)))
+				else
+					-- The database is still not answering: the rest can wait for
+					-- the next pass rather than each failing in turn.
+					break
+				end
+			end
+		end
+	end)
+	sweeping = false
+	if not ran then
+		Open77.log.error('[dealership] the pending ledger sweep raised: ' .. tostring(failure))
+	end
+	return settled
 end
 
 -- ── selling to another player ───────────────────────────────────────────────
@@ -596,6 +677,9 @@ function M.Offer(seller, buyer, entryKey)
 		seller = OPX.DisplayNameOf(seller) or tostring(seller),
 		dealer = dealer.key,
 		label = dealer.label,
+		-- The dealer's kind, so the buyer's own screen lists only the garages a
+		-- vehicle of this kind may be filed under.
+		kind = dealer.kind,
 		timeoutMs = Access.OFFER_TIMEOUT_MS,
 	})
 
@@ -635,8 +719,10 @@ end
 -- @param buyer Source
 -- @param token any the offer's own name, so a stale answer cannot settle a new one
 -- @param yes boolean
+-- @param destKey string|nil the garage the BUYER chose to file it under; the
+--   vehicles module's default when omitted, exactly as `Buy` treats it
 -- @return Result
-function M.Accept(buyer, token, yes)
+function M.Accept(buyer, token, yes, destKey)
 	local offer = offers[buyer]
 	if offer == nil then return Result.Err('dealership.noOffer') end
 	-- IDENTIFIED BY ITS OWN NAME. A second offer replaces the first -- the table
@@ -685,7 +771,23 @@ function M.Accept(buyer, token, yes)
 		return Result.Err('dealership.noSuchEntry')
 	end
 
-	local bought = purchase(buyer, buyerData, dealer, entry, nil)
+	-- THE BUYER'S GARAGE, and it was ignored. A sale at the counter has always
+	-- asked which garage to file the car under; a sale from a salesperson
+	-- passed nil here, so the car went to the vehicles module's default garage
+	-- whatever the buyer would have chosen -- and came out somewhere they never
+	-- picked. Resolved in the buyer's own bucket, as `Buy` resolves it, and a
+	-- name that does not resolve is refused rather than quietly defaulted.
+	local dest = nil
+	if type(destKey) == 'string' and destKey ~= '' then
+		dest = destination(destKey, dealer.kind, buyerAt.bucket)
+		if dest == nil then
+			TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
+				error = 'dealership.noSuchGarage', entry = offer.entry })
+			return Result.Err('dealership.noSuchGarage', destKey)
+		end
+	end
+
+	local bought = purchase(buyer, buyerData, dealer, entry, dest)
 	if not bought.ok then
 		TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
 			error = bought.error, entry = offer.entry })
@@ -735,6 +837,7 @@ function M.Accept(buyer, token, yes)
 		entry = entry.key,
 		record = entry.record,
 		dealer = dealer.key,
+		garage = dest ~= nil and dest.key or nil,
 		price = entry.price,
 		currency = currency,
 		seller = offer.seller,
@@ -742,6 +845,9 @@ function M.Accept(buyer, token, yes)
 		company = offer.kind .. ':' .. offer.group,
 		commission = cut,
 		banked = company,
+		-- The company's share did not land and is in `opx77_company_pending`;
+		-- the sweep pays it in later. The sale itself is done either way.
+		pending = not banked,
 	})
 
 	TriggerClientEvent(M.Event.SETTLED, offer.seller, {
@@ -1001,7 +1107,7 @@ local function onOffered(buyer, entryKey)
 end
 
 --- One buyer's answer off the wire.
-local function onDecided(token, yes)
+local function onDecided(token, yes, destKey)
 	local src = tonumber(source)
 	if src == nil then return end
 	if not within(src, Access.REQUESTS_PER_WINDOW, Access.REQUEST_WINDOW_MS) then
@@ -1009,7 +1115,8 @@ local function onDecided(token, yes)
 	end
 
 	CreateThread(function()
-		local settled = M.Accept(src, token, yes == true)
+		local settled = M.Accept(src, token, yes == true,
+			type(destKey) == 'string' and destKey or nil)
 		if not settled.ok then
 			OPX.Refuse(src, settled.error, M.Operation.DECIDE)
 			OPX.NotifyLocale(src, settled.error, nil, 'error')
@@ -1139,6 +1246,7 @@ function M.Init()
 	windows = {}
 	offers = {}
 	nextOffer = 0
+	unsaved, nextPending, sweeping = {}, 0, false
 	running = false
 	currency = nil
 	stockFor = { [M.KIND.GARAGE] = {}, [M.KIND.AVPAD] = {} }
@@ -1426,6 +1534,16 @@ function M.Start()
 		-- A player who connected while the database was being read asked too
 		-- early and was told nothing; they ask again on their own cadence.
 		syncAll()
+	end)
+
+	-- The ledger of deposits that did not land, paid in once at boot -- a
+	-- previous run may have left some -- and then every PENDING_SWEEP_MS.
+	CreateThread(function()
+		M.SettlePending()
+		while running do
+			Wait(PENDING_SWEEP_MS)
+			if running then M.SettlePending() end
+		end
 	end)
 
 	-- A sweep for the rate-limit windows, so a long session does not accumulate

@@ -53,6 +53,7 @@ local maximum = Model.MAX_PARTICIPANTS
 local contactRange = 6.0
 local maxContacts = 64
 local leaseMs = 30000
+local renewMs = 10000
 local scanMs = 2000
 
 -- The call registry, built in `Init`.
@@ -65,6 +66,10 @@ local character
 -- not a read of the platform's, because `getHoloCallEyes` answers for every
 -- resource at once and so can never say whose lease is whose.
 local eyesHeld = {}
+
+-- When each held lease was last taken, so the sweep renews it every RENEW_MS
+-- rather than on every pass.
+local eyesRenewedAt = {}
 
 -- The metadata key a character's contact list is filed under.
 local CONTACTS_KEY = 'callContacts'
@@ -211,7 +216,15 @@ local function lightEyes(playerId)
 		return false
 	end
 	eyesHeld[playerId] = true
+	eyesRenewedAt[playerId] = OPX.Now()
 	return true
+end
+
+-- Whether a lease is due: not held, or held for RENEW_MS since it was taken.
+local function eyesDue(playerId)
+	if not eyesHeld[playerId] then return true end
+	local at = eyesRenewedAt[playerId]
+	return at == nil or OPX.Now() - at >= renewMs
 end
 
 -- Gives one player's lease back. Safe to call when it is not held, and
@@ -219,6 +232,7 @@ end
 local function darkenEyes(playerId)
 	if eyesHeld[playerId] == nil then return end
 	eyesHeld[playerId] = nil
+	eyesRenewedAt[playerId] = nil
 	local players = holocall()
 	if players == nil then return end
 	local ok, reason = pcall(players.setHoloCallEyes, playerId, false)
@@ -886,7 +900,11 @@ local function scan()
 					eyesHeld[id] = nil
 				end
 			end
-			lightEyes(id)
+			-- RENEWED EVERY RENEW_MS, NOT EVERY PASS. `EYES.RENEW_MS` was in the
+			-- config and read by nothing, so the lease was re-taken every SCAN_MS
+			-- -- a native call per participant every two seconds for a lease
+			-- that lasts thirty.
+			if eyesDue(id) then lightEyes(id) end
 		end
 	end
 
@@ -1028,8 +1046,11 @@ function M.Init()
 	-- config that wandered past would refuse every renewal for the life of the
 	-- server while logging nothing a player could see.
 	leaseMs = math.floor(clamp(finiteNumber(eyesConfig.LEASE_MS) or 30000, 1000, 600000))
+	-- At most half the lease, so one missed sweep still renews before it lapses.
+	renewMs = math.floor(clamp(finiteNumber(eyesConfig.RENEW_MS) or 10000, 250,
+		math.floor(leaseMs / 2)))
 
-	eyesHeld = {}
+	eyesHeld, eyesRenewedAt = {}, {}
 	registry = Model.New{
 		now = OPX.Now,
 		judge = judge,

@@ -1,4 +1,4 @@
---- The projection: command answers, snapshot validation and applying the sky.
+--- The projection: snapshot validation and applying the sky.
 -- @author dop42
 --
 -- The client decides nothing. It accepts a snapshot, anchors it on its own
@@ -18,9 +18,6 @@ local EVENT_REQUEST = OPX.Event(OPX.Channel.NET, 'weather', 'request')
 -- Server to client event carrying a snapshot.
 local EVENT_SYNC = OPX.Event(OPX.Channel.NET, 'weather', 'sync')
 
--- Server to client answer to a staff command.
-local EVENT_NOTICE = OPX.Event(OPX.Channel.NET, 'weather', 'notice')
-
 -- Local event raised after a snapshot is accepted, and the integration point
 -- other resources listen on: a client's local events cross resources, a
 -- server's do not. It must stay on the LOCAL channel -- the host dispatcher
@@ -30,13 +27,6 @@ local EVENT_UPDATED = OPX.Event(OPX.Channel.LOCAL, 'weather', 'updated')
 
 -- Game seconds of drift tolerated before the clock is corrected.
 local DRIFT_TOLERANCE = SYNC.DRIFT_TOLERANCE_SECONDS
-
--- Resource that raises toasts for command answers. Not a dependency: without it
--- the answers become chat lines and the weather is unaffected.
-local NOTIFY = 'opx77_notify'
-
--- Whether a failed toast has already been logged once.
-local notifyReported = false
 
 -- Environment natives the client half requires before doing anything else.
 local NATIVES = { 'setWeather', 'setTime', 'getTime', 'setWeatherFrozen', 'isWeatherFrozen',
@@ -66,50 +56,6 @@ local stopped = false
 
 -- Configured command names, lowercased, to recognise our own answers.
 local COMMAND_NAMES = {}
-
--- Prints a command answer as a chat line. It carries its type and no colour:
--- opx77_chat's `.line.info` and `.line.error` tokens colour it.
-local function chatLine(kind, message)
-	local accepted = kind == 'success' or kind == 'report'
-	TriggerEvent('chat:addMessage', {
-		type = accepted and 'info' or 'error',
-		author = locale('weather.title'),
-		text = message,
-	})
-end
-
--- Shows the server's command answer as a toast or a chat line. A report someone
--- asked to read stays in the chat box, where it can be re-read and compared; an
--- action answers with a toast in one replaced slot, so staff walking the clock
--- forward sees the last answer rather than a stack.
-local function onNotice(raw, kind, message)
-	if type(raw) ~= 'string' or type(message) ~= 'string' or message == '' then return end
-	if kind ~= 'report' and kind ~= 'success' and kind ~= 'warning' and kind ~= 'error' then
-		kind = 'error'
-	end
-	local accepted = kind == 'success' or kind == 'report'
-	local line = ('command answered: %s (%s)'):format(raw, accepted and 'accepted' or 'refused')
-	if accepted then Open77.log.info(line) else Open77.log.warn(line) end
-
-	if kind == 'report' then return chatLine(kind, message) end
-	CreateThread(function()
-		-- Its own thread: the call yields on the remote's promise.
-		local shown = OPX.Lib.Rpc.Call(NOTIFY, 'show', {
-			id = 'opx.weather.answer',
-			replace = true,
-			type = kind,
-			title = locale('weather.title'),
-			message = message,
-			durationMs = 6000,
-		})
-		if shown.ok then return end
-		if not notifyReported then
-			notifyReported = true
-			Open77.log.warn(('no toast (%s): answers go to the chat box instead'):format(shown.error))
-		end
-		chatLine(kind, message)
-	end)
-end
 
 -- Asks the authority for an addressed snapshot.
 local function requestSync()
@@ -469,12 +415,12 @@ function M.Api()
 	OPX.Api.Provide('weather', 1, { State = projectedState })
 end
 
---- Wires the command answers, then the projection when the natives are there.
+--- Wires the dispatch log, then the projection when the natives are there.
 -- @author dop42
 function M.Start()
-	-- Registered whether or not the natives are installed: staff on such a
-	-- client must still read the answers to their own commands.
-	RegisterNetEvent(EVENT_NOTICE, onNotice)
+	-- Registered whether or not the natives are installed. Answers to the
+	-- commands themselves are core's (`OPX.CommandResult`, `OPX.CommandNotice`);
+	-- this only mirrors the dispatcher's word into the log.
 	RegisterNetEvent('open77:command:result', onDispatched)
 
 	-- Everything below calls an environment native, which would be a call on nil.

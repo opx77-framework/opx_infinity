@@ -9,6 +9,10 @@ local EN = {
 	['elevators.title'] = 'ELEVATORS',
 	['elevators.locked'] = 'Locked',
 	['elevators.refused'] = 'That floor is not available.',
+	['elevators.key.use'] = 'Call the elevator',
+	['elevators.prompt'] = 'Elevator: {place}',
+	['elevators.noFloors'] = 'No floor of this elevator is listed.',
+	['elevators.noPanel'] = 'The floor list cannot be shown right now.',
 
 	['elevators.noElevatorNearby'] = 'You are not standing at an elevator.',
 	['elevators.noSuchElevator'] = 'No such elevator.',
@@ -37,6 +41,10 @@ local FR = {
 	['elevators.title'] = 'ASCENSEURS',
 	['elevators.locked'] = 'Verrouillé',
 	['elevators.refused'] = "Cet étage n'est pas accessible.",
+	['elevators.key.use'] = "Appeler l'ascenseur",
+	['elevators.prompt'] = 'Ascenseur : {place}',
+	['elevators.noFloors'] = "Aucun étage de cet ascenseur n'est listé.",
+	['elevators.noPanel'] = "La liste des étages ne peut pas s'afficher pour l'instant.",
 
 	['elevators.noElevatorNearby'] = "Vous n'êtes pas devant un ascenseur.",
 	['elevators.noSuchElevator'] = "Cet ascenseur n'existe pas.",

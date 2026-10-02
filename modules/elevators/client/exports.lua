@@ -13,6 +13,7 @@
 local M = OPX.Modules.Get('elevators')
 local Runtime = M.Runtime
 local Panel = M.Panel
+local Door = M.Door
 
 local Result = OPX.Result
 
@@ -97,6 +98,7 @@ end
 function M.Init()
 	Runtime.Init()
 	Panel.Init()
+	Door.Init()
 end
 
 --- Publishes the client half of the elevators contract.
@@ -112,16 +114,18 @@ function M.Api()
 	})
 end
 
---- Starts the scan, the character poll and the panel channels.
+--- Starts the scan, the character poll, the panel channels and the key.
 -- @author dop42
 function M.Start()
 	Runtime.Start()
 	Panel.Start()
+	Door.Start()
 end
 
 --- Takes the scan and the panel down.
 -- @author dop42
 function M.Stop()
+	Door.Shutdown()
 	Panel.Shutdown()
 	Runtime.Shutdown()
 end

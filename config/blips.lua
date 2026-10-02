@@ -127,19 +127,23 @@
 -- garage. `lib/shared/spots.lua` makes that argument at length for the five
 -- modules that place things; this is the same argument one level up.
 --
---   garages, dealership  DATABASE, not config. `config/garages.lua`'s SPOTS is
---                        two examples; the live list is captured in game with
---                        `/opx.garages.add` and lives in `opx77_garages`. The
---                        client is told its own bucket's list over the module's
---                        SYNC event, so the blips are read from the garages and
---                        dealership clients' own `Runtime.Spots()`.
+--   garages, dealership  config (`GARAGES` in `config/garages.lua`, `SPOTS` in
+--                        `config/dealership.lua`) plus any legacy database row
+--                        the server adopts at boot. The client is told its own
+--                        bucket's list over the module's SYNC event, so the
+--                        blips are read from the garages and dealership
+--                        clients' own `Runtime.Spots()`. A garage location
+--                        is ONE pin, at its menu point: its entry door is a
+--                        second point a few metres away and is not pinned.
 --   teleports            config, but STILL served over the wire, because the
 --                        server marks each entrance allowed or refused for this
 --                        player. Read from `Runtime.Entrances()`.
 --   shops                static `OPX.Config.MODULES.shops.SHOPS`, a
 --                        `shared_script`, read directly -- no event carries it.
 --   jobs                 static, and TWO sources: every gunsmith armoury's
---                        BENCH, and every hauling site's DROPOFFS.
+--                        BENCH, and every hauling site -- one pin for the yard
+--                        (its BLIP, else its first surveyed POINT) and one per
+--                        DROPOFF.
 --
 -- A POINT WHOSE X, Y AND Z ARE ALL EXACTLY ZERO IS SKIPPED AND COUNTED. Most of
 -- `config/gunsmith.lua` and all of `config/hauling.lua` ship as unsurveyed
@@ -245,9 +249,9 @@ OPX.Config.MODULES.blips = {
 			WALLS = false,
 		},
 
-		-- Job sites: every gunsmith BENCH and every hauling DROPOFF. One category
-		-- and not three, because a player looking at a map is asking "where is
-		-- there work", not "which module owns this".
+		-- Job sites: every gunsmith BENCH, every hauling yard and every hauling
+		-- DROPOFF. One category and not three, because a player looking at a map is
+		-- asking "where is there work", not "which module owns this".
 		jobs = {
 			SHOW = true,
 			SPRITE = 'guns',

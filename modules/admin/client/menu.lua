@@ -434,15 +434,9 @@ local function weaponRows(target, giveKey)
 			'admin.confirm.disarm'), 'trash'),
 		icon(command('loadout', 'admin.menu.loadout', { Command.WEAPON_READ, target }), 'list'),
 	}
-	for _, item in ipairs(items) do
-		if item.id == 'holster' then
-			-- The inventory contract publishes no way to put a weapon away; the row
-			-- stays so the command's ACL name keeps a place in the menu.
-			unavailable(item)
-		else
-			offline(item)
-		end
-	end
+	-- Holster included: it used to be greyed as unavailable here, because the
+	-- inventory contract had no way to put a weapon away. It has one now.
+	for _, item in ipairs(items) do offline(item) end
 	return items
 end
 

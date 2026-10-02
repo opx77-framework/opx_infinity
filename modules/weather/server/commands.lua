@@ -3,16 +3,23 @@
 --
 -- Every mutation is a restricted command resolved by the host before the handler
 -- runs; no handler checks a permission itself, and no network event mutates the
--- state. Answers travel to this module's client half rather than through
--- `open77:command:result`, which does not print an accepted answer.
+-- state.
+--
+-- REGISTERED AND ANSWERED THE WAY EVERY OTHER MODULE IS. These used to be raw
+-- `RegisterCommand` calls answered on a private `weather:notice` event, whose
+-- client half raised a toast through the `opx77_notify` resource and fell back
+-- to a `chat:addMessage` event -- both names from before the twenty-one
+-- resources became this one, and neither of which anything listens to any more.
+-- So a staff member who typed `/opx.weather.set rain` got no answer at all, and
+-- because the commands never reached `OPX.Command` the chat box never suggested
+-- them either. They now go through `OPX.Command.Register` (suggested by the chat
+-- box, aliasable, ACL-filtered), reports through `OPX.CommandResult` (a chat
+-- read-back) and actions through `OPX.CommandNotice` (a toast).
 
 local M = OPX.Modules.Get('weather')
 local Clock = M.Clock
 
 M.Commands = {}
-
--- Server to client answer to a staff command.
-local EVENT_NOTICE = OPX.Event(OPX.Channel.NET, 'weather', 'notice')
 
 -- Chat suggestion text and parameter help keys per command entry. The
 -- `weather.help.*` keys are read through a variable, never as a literal.
@@ -52,23 +59,14 @@ local ERROR_KEYS = {
 -- Commands actually registered, for suggestions and the boot line.
 local registered = {}
 
--- Answers a player through the client half, the console through the log.
+-- Answers what a command DID, as a toast; the console reads a print.
 local function notice(source, raw, kind, message)
-	local player = tonumber(source) or 0
-	if player > 0 then
-		TriggerClientEvent(EVENT_NOTICE, player, raw or '', kind, message)
-		return
-	end
-	if kind == 'success' or kind == 'report' then
-		Open77.log.info(message)
-	else
-		Open77.log.warn(message)
-	end
+	OPX.CommandNotice(source, raw, kind, message)
 end
 
--- Answers a report someone asked to read, as a chat line.
-local function answer(source, raw, message)
-	notice(source, raw, 'report', message)
+-- Answers a report someone asked to read, as a chat read-back they can scroll.
+local function answer(source, _, message)
+	OPX.CommandResult(source, true, message)
 end
 
 -- Whether the answer goes to a player rather than the log.
@@ -134,27 +132,31 @@ local function onOff(value)
 	return nil
 end
 
--- Last run per player and command, for the two-second cooldown. A nested table
--- rather than a built "<player>:<command>" key: Lua 5.4 separates 12 from 12.0,
--- so a float id left a string key that no cleanup pattern ever matched, while
--- in a nested table both reach the same slot and forgetting a player is one
--- assignment. The console is never limited.
-local lastCommandMs = {}
-
--- Whether a player's command falls inside the two-second cooldown.
+-- Whether a player's report falls inside the two-second cooldown. The runtime's
+-- shared window, so a departing player's slots are forgotten by core and the
+-- console is never limited.
 local function cooled(source, key)
-	local player = math.floor(tonumber(source) or 0)
-	if player <= 0 then return false end
-	local slots = lastCommandMs[player]
-	if slots == nil then
-		slots = {}
-		lastCommandMs[player] = slots
+	return OPX.Cooling(source, 'weather.' .. key, 2000)
+end
+
+-- The parameter help a suggestion shows, resolved once at registration: the
+-- preset parameter names the configured presets, which do not change at run
+-- time.
+local function suggestedParams(help)
+	local presets = M.Authority.Presets()
+	local presetNames = {}
+	for position = 1, #presets do presetNames[position] = presets[position].NAME end
+	local values = { names = #presetNames > 0 and table.concat(presetNames, ', ') or '-' }
+	local params = {}
+	for slot = 1, help and #help.params or 0 do
+		local parameter = help.params[slot]
+		params[slot] = {
+			name = parameter.name,
+			help = parameter.help and locale(parameter.help, values) or nil,
+			optional = parameter.optional == true or nil,
+		}
 	end
-	local atMs = OPX.Now()
-	local previous = slots[key]
-	if previous ~= nil and atMs - previous < 2000 then return true end
-	slots[key] = atMs
-	return false
+	return params
 end
 
 -- Registers one configured command, or logs why it does not exist.
@@ -190,7 +192,12 @@ local function register(key, handler, floor)
 		end
 	end
 
-	RegisterCommand(name, handler, restricted)
+	local help = HELP[key]
+	OPX.Command.Register(name, {
+		restricted = restricted,
+		help = help and help.text or nil,
+		params = suggestedParams(help),
+	}, handler)
 	registered[#registered + 1] = { key = key, name = name, restricted = restricted }
 end
 
@@ -296,42 +303,7 @@ local function onDayLength(source, args, raw)
 	accept(source, raw)
 end
 
--- Sends the registered commands to the player as chat suggestions. The preset
--- names come from configuration rather than from a catalogue that would have to
--- repeat them.
-local function onChatReady()
-	local player = tonumber(source) or 0
-	if player <= 0 then return end
-	if cooled(player, 'chat_suggestions') then return end
-
-	local presets = M.Authority.Presets()
-	local presetNames = {}
-	for position = 1, #presets do presetNames[position] = presets[position].NAME end
-	local values = { names = #presetNames > 0 and table.concat(presetNames, ', ') or '-' }
-
-	local suggestions = {}
-	for position = 1, #registered do
-		local command = registered[position]
-		local help = HELP[command.key]
-		local parameters = {}
-		for slot = 1, help and #help.params or 0 do
-			local parameter = help.params[slot]
-			parameters[slot] = {
-				name = parameter.name,
-				help = parameter.help and locale(parameter.help, values) or nil,
-				optional = parameter.optional == true or nil,
-			}
-		end
-		suggestions[position] = {
-			command = '/' .. command.name,
-			help = help and locale(help.text) or '',
-			parameters = parameters,
-		}
-	end
-	TriggerClientEvent('chat:addSuggestions', player, suggestions)
-end
-
---- Registers every configured command and the chat suggestion handler.
+--- Registers every configured command.
 -- Called from the module's `Start` phase, after the authority has adopted its
 -- carried state: a command may run the moment it is registered.
 -- @author dop42
@@ -344,15 +316,6 @@ function M.Commands.Register()
 	register('TIME', onTime, true)
 	register('TIME_FREEZE', onTimeFreeze, true)
 	register('DAY_LENGTH', onDayLength, true)
-
-	RegisterNetEvent('chat:ready', onChatReady)
-
-	-- A departing player's cooldowns. `onPlayerDisconnected` is an admitted
-	-- player leaving; a connection refused at the door raises
-	-- `onPlayerRejected`, which this module has no reason to hear.
-	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, function(playerId)
-		lastCommandMs[math.floor(tonumber(playerId) or 0)] = nil
-	end)
 
 	local names = {}
 	for position = 1, #registered do

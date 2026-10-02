@@ -25,9 +25,6 @@ OPX.Config.MODULES.menu = {
 
 	VISIBLE_ROWS = 9,
 
-	-- Milliseconds the status line stays up before it clears itself.
-	STATUS_MS = 6000,
-
 	-- Owners whose menu opens, and stays open, while the player is down.
 	WHILE_DOWN = { admin = true },
 }
