@@ -1,4 +1,4 @@
---- Every SQL statement this module runs, and the three tables it owns.
+--- Every SQL statement this module runs, and the four tables it owns.
 -- @author XEROX710
 --
 -- This is the only file in the module allowed to carry SQL, and a CI check
@@ -50,6 +50,15 @@ M.Storage = {}
 -- the same pair would be money in an account nobody reads. `balance` is a signed
 -- BIGINT so that a bug that overdraws one is visible as a negative number rather
 -- than as a wrap to something astronomical.
+--
+-- `opx77_company_pending` is the ledger of deposits that did not land. A sale
+-- whose deposit failed used to be a log line asking somebody to settle it by
+-- hand, and nobody reads a log line at three in the morning. Each row is one
+-- deposit still owed, named by a TOKEN the sale minted, so writing it twice --
+-- a retry of an insert whose answer was lost -- is one row and not two. It is
+-- settled in ONE transaction with the deposit (`SettlePending`), so a settle
+-- whose answer is lost has either both or neither, and the next sweep reads the
+-- ledger afresh: a deposit cannot be paid twice by being retried.
 M.Storage.SCHEMA = {
 	[[
 CREATE TABLE IF NOT EXISTS opx77_dealerships (
@@ -88,6 +97,18 @@ CREATE TABLE IF NOT EXISTS opx77_company_accounts (
     balance BIGINT NOT NULL DEFAULT 0,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (kind, group_key)
+) ENGINE=InnoDB
+]],
+	[[
+CREATE TABLE IF NOT EXISTS opx77_company_pending (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    token VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    kind VARCHAR(8) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    group_key VARCHAR(48) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    amount BIGINT NOT NULL,
+    plate VARCHAR(32) NULL DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_opx77_company_pending_token (token)
 ) ENGINE=InnoDB
 ]],
 }
@@ -153,6 +174,52 @@ INSERT INTO opx77_company_accounts (kind, group_key, balance)
 VALUES (@kind, @group, @amount)
 ON DUPLICATE KEY UPDATE balance = balance + @amount
   ]], { kind = kind, group = group, amount = amount })
+end
+
+--- Records one deposit still owed. Idempotent on the token: the same pending
+--- deposit written twice is one row.
+-- @author dop42
+-- @param token string
+-- @param kind string
+-- @param group string
+-- @param amount integer
+-- @param plate string|nil
+-- @return Result
+function M.Storage.Pend(token, kind, group, amount, plate)
+	return Storage.Execute([[
+INSERT IGNORE INTO opx77_company_pending (token, kind, group_key, amount, plate)
+VALUES (@token, @kind, @group, @amount, NULLIF(@plate, ''))
+  ]], { token = token, kind = kind, group = group, amount = amount, plate = plate or '' })
+end
+
+--- The oldest deposits still owed, a bounded page of them.
+-- @author dop42
+-- @param limit integer
+-- @return Result carrying an array of rows
+function M.Storage.FetchPending(limit)
+	return Storage.Query([[
+SELECT id, token, kind, group_key, amount, plate
+  FROM opx77_company_pending
+ ORDER BY id
+ LIMIT @limit
+  ]], { limit = limit })
+end
+
+--- Pays one owed deposit and strikes it off the ledger, together or not at all.
+--- The delete is what makes it safe to retry: a row that is gone is a row the
+--- next sweep does not read.
+-- @author dop42
+-- @param id integer the ledger row
+-- @param kind string
+-- @param group string
+-- @param amount integer
+-- @return Result
+function M.Storage.SettlePending(id, kind, group, amount)
+	return Storage.Transaction({
+		{ query = 'INSERT INTO opx77_company_accounts (kind, group_key, balance) VALUES (?, ?, ?) ' ..
+			'ON DUPLICATE KEY UPDATE balance = balance + ?', values = { kind, group, amount, amount } },
+		{ query = 'DELETE FROM opx77_company_pending WHERE id = ?', values = { id } },
+	})
 end
 
 --- One company's balance, or nil when the account has never been paid into.

@@ -392,11 +392,46 @@ local function screenFor(current)
 	if current.screen == 'offer' then
 		if type(offer) ~= 'table' then return nil end
 		return locale('dealership.menu.offer', { model = tostring(offer.model) }), {
+			-- YES LEADS TO THE GARAGE CHOICE, the same second screen a counter
+			-- sale has: which garage the car is filed under is the buyer's to say.
 			{ id = 'yes', label = locale('dealership.offerAccept'), value = tostring(offer.text),
-				data = { decide = true } },
+				submenu = true, data = { decide = true } },
 			{ id = 'no', label = locale('dealership.offerDecline'), data = { decide = false } },
 		}, { status = locale('dealership.menu.offerHint', {
 			seller = tostring(offer.seller), price = tostring(offer.text) }) }
+	end
+
+	-- THE BUYER'S GARAGE, under a salesperson's offer. The counter's own
+	-- destination screen in every way that matters -- one row per garage of the
+	-- dealer's kind, or the server's default when there is none -- and each row
+	-- is the YES, carrying where it goes.
+	if current.screen == 'offerDeliver' then
+		if type(offer) ~= 'table' then return nil end
+		local arg = type(current.arg) == 'table' and current.arg or {}
+		local items = {}
+		local places = type(arg.places) == 'table' and arg.places or {}
+		for index = 1, #places do
+			local place = places[index]
+			items[#items + 1] = {
+				id = place.key,
+				label = place.label,
+				value = locale('dealership.deliverHere'),
+				data = { decide = true, dest = place.key },
+			}
+		end
+		if #items == 0 then
+			items[1] = {
+				id = 'default',
+				label = locale('dealership.dest.none'),
+				value = locale('dealership.deliverHere'),
+				data = { decide = true, dest = '' },
+			}
+		end
+		items[#items + 1] = { separator = true, label = '' }
+		items[#items + 1] = { id = 'back', label = locale('dealership.back'), back = true }
+		return locale('dealership.menu.deliver', { model = tostring(offer.model) }), items, {
+			status = locale('dealership.menu.pay', { price = tostring(offer.text) }),
+		}
 	end
 
 	if current.screen == 'deliver' then
@@ -636,7 +671,14 @@ onRow = function(payload)
 
 	if current.screen == 'offer' then
 		if type(data.decide) ~= 'boolean' then return end
-		return Runtime.Decide(data.decide)
+		if data.decide == false or type(offer) ~= 'table' then return Runtime.Decide(false) end
+		local kind = offer.kind or (type(zone) == 'table' and zone.kind) or ''
+		return push('offerDeliver', { places = placesFor(kind) })
+	end
+
+	if current.screen == 'offerDeliver' then
+		if data.decide ~= true then return end
+		return Runtime.Decide(true, type(data.dest) == 'string' and data.dest or nil)
 	end
 
 	if current.screen == 'deliver' then
@@ -742,8 +784,10 @@ end
 --- Answers the offer this player was made: yes or no.
 -- @author XEROX710
 -- @param yes boolean
+-- @param destKey string|nil the garage to file it under; the server's default
+--   when omitted
 -- @return table
-function Runtime.Decide(yes)
+function Runtime.Decide(yes, destKey)
 	local live = offer
 	offer = nil
 	takeDown()
@@ -752,7 +796,8 @@ function Runtime.Decide(yes)
 	-- the first, and a confirm already in flight for the first would otherwise
 	-- buy the second -- a different car, at a different price, that this player
 	-- never saw.
-	local sent, reason = TriggerServerEvent(M.Event.DECIDE, live.token, yes == true)
+	if type(destKey) ~= 'string' or destKey == '' or yes ~= true then destKey = nil end
+	local sent, reason = TriggerServerEvent(M.Event.DECIDE, live.token, yes == true, destKey)
 	if not sent then
 		publish({ ok = false, error = tostring(reason or 'not_sent'), source = 'client' })
 		return { ok = false, error = 'not_sent' }

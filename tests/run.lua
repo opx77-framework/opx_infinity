@@ -6275,10 +6275,38 @@ do
 	-- already exist, every dealership row written, and every vehicle row a
 	-- purchase creates. The SQL is the shipped storage's -- only the answers are
 	-- a fixture's.
-	local function bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts)
+	local function bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts, ledger)
+		ledger = ledger or { rows = {}, nextId = 0 }
 		return Host.Database({
 			scalar = function() return 1 end,
+			-- THE LEDGER OF OWED DEPOSITS, settled the way the real one is: the
+			-- deposit and the strike-off commit together or not at all.
+			-- `ledger.down` is a database that refuses the company account.
+			transaction = function(statements)
+				if ledger.down then return false, 'down' end
+				local deposit, strike = statements[1], statements[2]
+				local key = tostring(deposit.values[1]) .. ':' .. tostring(deposit.values[2])
+				accounts[key] = (accounts[key] or 0) + (tonumber(deposit.values[3]) or 0)
+				for index = #ledger.rows, 1, -1 do
+					if ledger.rows[index].id == strike.values[1] then table.remove(ledger.rows, index) end
+				end
+				return true
+			end,
 			update = function(sql, params)
+				if sql:find('opx77_company_pending', 1, true) then
+					if ledger.pendDown then error('the ledger is down too', 0) end
+					for index = 1, #ledger.rows do
+						if ledger.rows[index].token == params.token then return 0 end
+					end
+					ledger.nextId = ledger.nextId + 1
+					ledger.rows[#ledger.rows + 1] = { id = ledger.nextId, token = params.token,
+						kind = params.kind, group_key = params.group, amount = params.amount,
+						plate = params.plate }
+					return 1
+				end
+				if sql:find('opx77_company_accounts', 1, true) and ledger.down then
+					error('the company account is down', 0)
+				end
 				-- THE COMPANY ACCOUNT IS A REAL BALANCE HERE and not a write log,
 				-- because the statement under test does its arithmetic in SQL --
 				-- `balance = balance + @amount`, so that two sales settling in
@@ -6311,6 +6339,11 @@ do
 				return 0
 			end,
 			query = function(sql, params)
+				if sql:find('opx77_company_pending', 1, true) then
+					local copy = {}
+					for index = 1, #ledger.rows do copy[index] = ledger.rows[index] end
+					return copy
+				end
 				if sql:find('opx77_vehicles', 1, true) then
 					local citizen = type(params) == 'table' and params.citizen or nil
 					local mine = {}
@@ -6348,8 +6381,9 @@ do
 
 	local rows, vehiclesWritten, dealersWritten = {}, {}, {}
 	local previewsWritten, accounts = {}, {}
+	local ledger = { rows = {}, nextId = 0 }
 	local env, control, why = boot('server',
-		bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts))
+		bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts, ledger))
 	check('the server boots with the dealership module', why == nil, why)
 
 	-- The last client event with one name, or nil. Every verdict below is read
@@ -7007,6 +7041,99 @@ do
 			settle(control, function() return gangSettled ~= nil end, 60))
 		check('and the money lands in the GANG\'s account',
 			accounts['gang:valentinos'] == banked, tostring(accounts['gang:valentinos']))
+
+		-- THE BUYER'S GARAGE. A counter sale has always asked where to file the
+		-- car; a sale from a salesperson filed it under the default garage
+		-- whatever the buyer would have said.
+		-- Room for the cars the checks below buy; the ceiling is tested elsewhere.
+		local heldCeiling = vehicleConfig.PER_CHARACTER
+		vehicleConfig.PER_CHARACTER = 1000
+		local filedOffer = contract.Offer(seller, buyer, 'hella')
+		local filedAsked = lastEvent(dealership.Event.OFFERED)
+		check('the offer tells the buyer what kind of dealer it is, to list garages by',
+			filedOffer.ok and filedAsked[1].kind == 'garage', filedAsked and tostring(filedAsked[1].kind))
+		local filed
+		env.CreateThread(function()
+			filed = contract.Accept(buyer, filedAsked[1].token, true, 'garage_dock')
+		end)
+		settle(control, function() return filed ~= nil end, 60)
+		check('a buyer who answers yes may name the garage it is filed under',
+			filed ~= nil and filed.ok == true and filed.value.garage == 'garage_dock',
+			filed and tostring(filed.error))
+		check('and the row is filed under that garage, not the default',
+			vehiclesWritten[#vehiclesWritten].garage == 'garage_dock',
+			vehiclesWritten[#vehiclesWritten].garage)
+		contract.Offer(seller, buyer, 'hella')
+		local wrongKind = lastEvent(dealership.Event.OFFERED)
+		local wrongAnswer
+		env.CreateThread(function()
+			wrongAnswer = contract.Accept(buyer, wrongKind[1].token, true, 'pad_dock')
+		end)
+		settle(control, function() return wrongAnswer ~= nil end, 60)
+		check('and a garage of the wrong kind is refused, not quietly defaulted',
+			wrongAnswer ~= nil and wrongAnswer.error == 'dealership.noSuchGarage',
+			wrongAnswer and tostring(wrongAnswer.error))
+
+		-- A DEPOSIT THAT DID NOT LAND IS OWED, NOT FORGOTTEN. It used to be one
+		-- log line asking somebody to settle it by hand.
+		local fixerBefore = accounts['job:fixer'] or 0
+		ledger.down = true
+		contract.Offer(seller, buyer, 'hella')
+		local downAsked = lastEvent(dealership.Event.OFFERED)
+		local downSettled
+		env.CreateThread(function()
+			downSettled = contract.Accept(buyer, downAsked[1].token, true)
+		end)
+		settle(control, function() return downSettled ~= nil end, 60)
+		check('a sale whose deposit failed still completes for the buyer',
+			downSettled ~= nil and downSettled.ok == true, downSettled and tostring(downSettled.error))
+		check('and the money is in the pending ledger, not in the account',
+			#ledger.rows == 1 and ledger.rows[1].amount == banked
+				and (accounts['job:fixer'] or 0) == fixerBefore, #ledger.rows)
+		local swept
+		env.CreateThread(function() swept = dealership.SettlePending() end)
+		settle(control, function() return swept ~= nil end, 60)
+		check('a sweep while the database is still down pays nothing twice',
+			swept == 0 and #ledger.rows == 1 and (accounts['job:fixer'] or 0) == fixerBefore)
+		ledger.down = false
+		swept = nil
+		env.CreateThread(function() swept = dealership.SettlePending() end)
+		settle(control, function() return swept ~= nil end, 60)
+		-- Whichever sweep reaches it first -- this one or the module's own timer,
+		-- which the pumping above has been driving -- it is paid in exactly once.
+		check('and once it answers the sweep pays it in and strikes it off',
+			swept ~= nil and #ledger.rows == 0 and accounts['job:fixer'] == fixerBefore + banked,
+			('%s swept, %d left, %s now, %s before, %s banked'):format(tostring(swept), #ledger.rows,
+				tostring(accounts['job:fixer']), tostring(fixerBefore), tostring(banked)))
+		swept = nil
+		env.CreateThread(function() swept = dealership.SettlePending() end)
+		settle(control, function() return swept ~= nil end, 60)
+		check('and a second sweep finds nothing to pay again',
+			swept == 0 and accounts['job:fixer'] == fixerBefore + banked)
+
+		-- AND WHEN THE LEDGER CANNOT BE WRITTEN EITHER, it is held in memory and
+		-- written by the sweep once it can be: owed, still, and paid once.
+		fixerBefore = accounts['job:fixer']
+		ledger.down, ledger.pendDown = true, true
+		contract.Offer(seller, buyer, 'hella')
+		local bothAsked = lastEvent(dealership.Event.OFFERED)
+		local bothSettled
+		env.CreateThread(function()
+			bothSettled = contract.Accept(buyer, bothAsked[1].token, true)
+		end)
+		settle(control, function() return bothSettled ~= nil end, 60)
+		check('a deposit whose ledger row also failed is not lost',
+			bothSettled ~= nil and bothSettled.ok == true and #ledger.rows == 0
+				and accounts['job:fixer'] == fixerBefore,
+			('%s / %s rows / %s'):format(bothSettled and tostring(bothSettled.error), #ledger.rows,
+				tostring(accounts['job:fixer'])))
+		ledger.down, ledger.pendDown = false, false
+		env.CreateThread(function() dealership.SettlePending() end)
+		settle(control, function() return accounts['job:fixer'] == fixerBefore + banked end, 60)
+		check('and the sweep writes it to the ledger and pays it in, once',
+			accounts['job:fixer'] == fixerBefore + banked and #ledger.rows == 0,
+			tostring(accounts['job:fixer']))
+		vehicleConfig.PER_CHARACTER = heldCeiling
 
 		-- OUT OF THE ROOM IS OUT OF THE SALE. Both ends are proved, and proved
 		-- again when the buyer answers -- everything provable at the offer can
@@ -7856,6 +7983,61 @@ do
 			Runtime.Report().open == false and Runtime.Report().offered == nil)
 		check('and there is nothing left to answer',
 			Runtime.Decide(true).ok == false)
+
+		-- ── yes, and where to file it ─────────────────────────────────────
+		-- A salesperson's sale filed the car under the default garage whatever
+		-- the buyer would have chosen. Yes now leads to the same garage screen a
+		-- counter sale has, and the row picked there is the answer.
+		cctl.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'garage_dock', label = 'THE DOCK', kind = 'garage',
+				x = 1.0, y = 1.0, z = 5.0, heading = 0.0, bucket = 0 },
+			{ key = 'pad_dock', label = 'THE PAD', kind = 'avpad',
+				x = 1.0, y = 1.0, z = 5.0, heading = 0.0, bucket = 0 },
+		} })
+		cctl.Pump(6)
+		cctl.netEvents[dealership.Event.OFFERED]({
+			token = 777, entry = 'hella', model = 'Archer Hella', price = 29000, kind = 'garage',
+			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+		})
+		cctl.Pump(4)
+		local function rowNamed(drawn, label)
+			for position = 1, drawn ~= nil and #drawn.payload.rows or 0 do
+				if drawn.payload.rows[position].label == label then
+					return drawn.payload.first + position - 1
+				end
+			end
+			return nil
+		end
+		local offerScreen = lastDrawn('opx:menu:open')
+		local yesAt = rowNamed(offerScreen, OPX.Locale.Text('dealership.offerAccept'))
+		check('the offer screen has a yes row', yesAt ~= nil)
+		cctl.PageEmit(page, 'opx:menu:choose',
+			{ handle = offerScreen ~= nil and offerScreen.payload.handle or 0, index = yesAt or 0 })
+		cctl.Pump(4)
+		check("yes leads to the buyer's own garage choice, not straight to a purchase",
+			Runtime.Report().screen == 'offerDeliver', tostring(Runtime.Report().screen))
+		local garageScreen = lastDrawn('opx:menu:open')
+		local dockAt = rowNamed(garageScreen, 'THE DOCK')
+		check("listing the garages of the dealer's kind, and only those",
+			dockAt ~= nil and rowNamed(garageScreen, 'THE PAD') == nil)
+		before = #cctl.serverEvents
+		cctl.PageEmit(page, 'opx:menu:choose',
+			{ handle = garageScreen ~= nil and garageScreen.payload.handle or 0, index = dockAt or 0 })
+		cctl.Pump(2)
+		local filedAnswer = nil
+		for position = #cctl.serverEvents, before + 1, -1 do
+			if cctl.serverEvents[position].name == dealership.Event.DECIDE then
+				filedAnswer = cctl.serverEvents[position]
+				break
+			end
+		end
+		check('and the garage picked there goes with the yes',
+			filedAnswer ~= nil and filedAnswer[1] == 777 and filedAnswer[2] == true
+				and filedAnswer[3] == 'garage_dock',
+			filedAnswer and tostring(filedAnswer[3]))
+		-- The garages' markers share the engine list the counts below read.
+		cctl.netEvents[garages.Event.SYNC]({ spots = {} })
+		cctl.Pump(6)
 
 		-- ── a dealer the client cannot read ────────────────────────────────
 		local warned = #cctl.log.warn
