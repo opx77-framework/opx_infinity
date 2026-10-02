@@ -16,9 +16,13 @@
 --
 -- Every permission below was checked against build 2.31.13+op77.75 through the
 -- Open77 devkit. The ones that are not self-evident:
---   players.stats.apply   `Open77.players.setArmor`, re-applied after a respawn.
---                         NOT `players.damage.apply`, which does not exist at
---                         all -- armour was silently refused under that name
+--   players.stats.apply   `Open77.players.setArmor`, re-applied after a respawn,
+--                         and setHealth / setMaxHealth / setGodMode. The cards
+--                         (op77.78) list `players.damage.apply` as an older
+--                         spelling the runtime still accepts; the catalogued name
+--                         is this one, and `players.stats.read` likewise covers
+--                         getHealth. `open77_validate` asks for the damage.*
+--                         spellings anyway -- a false positive, see README
 --   player.cyberware.read `Open77.appearance.captureBody` needs it ALONGSIDE
 --                         player.appearance.read. Without it every other
 --                         player's body goes undrawn, and the static validator
