@@ -312,9 +312,13 @@ function T.Done(medicId)
 			why = 'not_down'
 		else
 			local here = internal().Position(medicId)
-			local body = bodyOf(patientId, record)
+			local body, bucket = bodyOf(patientId, record)
 			if here == nil or body == nil then
 				why = 'no_position'
+			elseif bucket ~= nil and tonumber(here.bucket) ~= nil and tonumber(here.bucket) ~= bucket then
+				-- The same bucket check `Treat` makes: a medic who changed
+				-- instance mid-bar is not standing over this body any more.
+				why = 'too_far'
 			elseif apart(here, body) > cfg.reach * 1.5 then
 				why = 'too_far'
 			end
@@ -338,8 +342,10 @@ function T.Done(medicId)
 	end
 
 	local reward = 0
-	if cfg.amount > 0 then
-		local last = type(job.citizenId) == 'string' and rewarded[job.citizenId] or nil
+	-- NO CHARACTER, NO PAY: the per-patient bound is keyed by the citizen id, so
+	-- a record without one would have no bound at all and pay on every revive.
+	if cfg.amount > 0 and type(job.citizenId) == 'string' and job.citizenId ~= '' then
+		local last = rewarded[job.citizenId]
 		if last == nil or now - last >= cfg.perPatientMs then
 			local character = internal().Character()
 			local paid, refusal = false, 'no_character_contract'
