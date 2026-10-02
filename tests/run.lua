@@ -28806,5 +28806,43 @@ do
 	end
 end
 
+-- ── a staff screen built over a big catalogue yields as it walks ────────────
+-- The owner's second log, after the redraw moved onto its own thread: still
+-- `admin/client/menu.lua: ... budget exceeded` in `drawNow`, at the builder.
+-- One resume could not walk a whole catalogue through `matches`, so the walk
+-- now yields every few rows on the redraw's thread. Checked by catching the
+-- yields the builder makes, not by trusting that it can.
+section('a staff screen over a big catalogue yields while it is built')
+do
+	local env, control, why = boot('client')
+	check('client boots for the builder yields', why == nil, why)
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		local rows = {}
+		for index = 1, 600 do
+			rows[index] = { name = 'w' .. index, label = 'Weapon ' .. index, category = 'weapon', weapon = true }
+		end
+		control.netEvents[admin.Event.ITEMS]({ rows = rows, offset = 0, total = 600, done = true })
+		local realWait, fromBuilder = env.Wait, 0
+		env.Wait = function(ms)
+			local caller = debug.getinfo(2, 'S')
+			if caller and tostring(caller.source):find('admin/client/menu.lua', 1, true) then
+				fromBuilder = fromBuilder + 1
+			end
+			return realWait(ms)
+		end
+		admin.Menu.OpenAt('weaponList', { t = 'me' })
+		settle(control, function() return admin.Menu.Screen() == 'weaponList' and fromBuilder > 0 end, 80)
+		control.Pump(40)
+		env.Wait = realWait
+		check('the walk over 600 rows yields on its way', fromBuilder >= 10, fromBuilder)
+		check('and the screen still lands', admin.Menu.IsOpen() and admin.Menu.Screen() == 'weaponList',
+			admin.Menu.Screen())
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
