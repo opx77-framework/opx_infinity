@@ -522,9 +522,27 @@ function M.Runtime.Announce()
 	-- reporting it as `appearance_unsettled` is reporting a player standing in
 	-- front of the game's own creator as a fault in this module.
 	if State.creating or State.creatorUp then return held('creation_in_progress') end
-	if not State.AppearanceSettled() then return held('appearance_unsettled') end
+	-- A restore waiting on the platform's armed reset is the one unsettled face
+	-- that must NOT hold the gate: the platform runs that reset, and brings the
+	-- body alive, only once this has gone out. See `State.AwaitingPlatform`.
+	-- `playerResetDone` is this world entry's `open77:playerReset:complete`; an
+	-- attached body without it is a body the platform has not reset yet.
+	local resetPending = not State.playerResetDone and Runtime.Attached()
+	if not State.AppearanceSettled() and not (resetPending and State.AwaitingPlatform()) then
+		return held('appearance_unsettled')
+	end
 
-	if not inGameplay() then
+	if resetPending and not inGameplay() then
+		-- No DEAD_ANNOUNCE_MS wait: the body is not alive BECAUSE nothing has
+		-- been announced, and every millisecond spent here is one more the
+		-- player stands behind the cover on a puppet nobody can reset.
+		if not announceSaid.platform_first then
+			announceSaid.platform_first = true
+			Runtime.Note(('gameplay-ready goes out on a body the platform has not reset ' ..
+				'yet: the reset and the body coming alive wait for it%s'):format(
+					State.AppearanceSettled() and '' or ', and the face goes on after them'))
+		end
+	elseif not inGameplay() then
 		-- A BODY THAT IS ATTACHED AND NOT ALIVE IS STILL A BODY IN THE WORLD, and
 		-- this announcement is what lets anybody reach it: nothing places, revives
 		-- or teleports a player whose platform hold has never cleared. A client
@@ -605,6 +623,23 @@ local function awaitWorld(token, label)
 	while not faceable() do
 		if not State.Current(token) then return false end
 
+		-- THE PLATFORM'S RESET HAS NOT RUN YET, AND IT WILL NOT UNTIL THE GATE IS
+		-- ANNOUNCED. On op77.121 the puppet attaches with its pristine reset armed
+		-- and the host only runs it -- then places and revives the body -- after
+		-- `gameplayReady`. Waiting here for a live body before announcing was a
+		-- deadlock the timers below broke after 5 s by giving the face up, so
+		-- every join entered on the default face. Instead this restore says it is
+		-- waiting on the platform, which lets `Announce` go out now, and keeps
+		-- its token: the face goes on as soon as the reset has brought the body
+		-- alive. The dead-body clock does not run while the platform holds the
+		-- body, because nothing this module does can end that hold but announcing.
+		local platformHolds = not State.playerResetDone and not State.gameplayAnnounced and
+			State.worldEligible and not State.bodyReloading and Runtime.Attached()
+		if platformHolds then
+			State.platformWaitToken = token
+			Runtime.Announce()
+		end
+
 		-- A BODY THAT IS ATTACHED AND NOT ALIVE ENDS NOTHING BY ITSELF. A face
 		-- cannot go on it, this wait is what the readiness announcement sits
 		-- behind, and nothing can revive a player whose platform hold has never
@@ -613,7 +648,9 @@ local function awaitWorld(token, label)
 		-- up on for this world entry: the entry is marked settled so the
 		-- announcement can go out, and the face goes on at the next one, on a body
 		-- that is alive.
-		if Runtime.Attached() then
+		if platformHolds then
+			notAliveFrom = 0
+		elseif Runtime.Attached() then
 			if notAliveFrom == 0 then
 				notAliveFrom = nowMs()
 			elseif nowMs() - notAliveFrom >= DEAD_WAIT_MS then

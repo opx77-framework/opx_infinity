@@ -2465,6 +2465,126 @@ do
 			notesOf(env, control))
 	end
 
+	-- ── the platform resets the body only AFTER gameplay-ready ───────────────
+	-- THE OWNER'S LOG OF 2026-10-02, op77.121, EVERY JOIN OF THREE. The puppet
+	-- attaches with its pristine reset ARMED and not alive; the host runs that
+	-- reset, places the body and brings it alive only once gameplay-ready has
+	-- gone out. The module waited for a live body before announcing, so the
+	-- restore gave the face up after 5 s ("settles with no face"), the announce
+	-- went out 3 s later ("announcing anyway"), and every join entered on the
+	-- default face. Replayed here in the order the log has it.
+	--- A client in that platform, and the levers the log's lines pull.
+	local function armedJoin()
+		local env, control = joinClient('first', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		local platform = { phase = 'waiting', alive = false, applied = {}, finished = 0 }
+		env.Open77.session.characterBootstrap = function()
+			return { phase = platform.phase, bodyFamily = 'female' }
+		end
+		env.Open77.character.state = function()
+			return { attached = true, alive = platform.alive, health = platform.alive and 250 or 0 }
+		end
+		env.Open77.players.getLifeState = function()
+			return { phase = platform.alive and 'alive' or 'dead' }
+		end
+		env.Open77.appearance.apply = function(snapshot)
+			platform.applied[#platform.applied + 1] = snapshot
+			return true
+		end
+		env.Open77.appearance.finishCommit = function()
+			platform.finished = platform.finished + 1
+			return true
+		end
+		platform.announced = function()
+			local count = 0
+			for _, sent in ipairs(control.serverEvents) do
+				if sent.name == env.OPX.Host.GAMEPLAY_READY then count = count + 1 end
+			end
+			return count
+		end
+		platform.warned = function(needle)
+			for _, line in ipairs(control.log.warn) do
+				if tostring(line):find(needle, 1, true) then return true end
+			end
+			return false
+		end
+		local face = { gameBuild = '2.31', gender = 'female', options = { eyes = 3 } }
+
+		-- 15:17:22.247 world entry (start): bootstrap phase=waiting -> menu
+		control.Fire(env.OPX.Host.WORLD_READY)
+		-- 15:17:22.272 [character] loaded CJX-DP9J; restore token=2 origin=characterLoaded
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-DP9J', charInfo = { gender = 'female' }, appearance = face })
+		control.Pump(1)
+		-- 15:17:22.466 world entry (worldReady): bootstrap phase=ready -> gameplay world
+		-- 15:17:24.056 local player attached: reset=armed -- attached, not alive
+		platform.phase = 'ready'
+		control.Fire(env.OPX.Host.WORLD_READY)
+		return env, control, appearance, platform, face
+	end
+
+	do
+		local env, control, appearance, platform, face = armedJoin()
+		control.Pump(5)
+		check('THE ARMED BODY DOES NOT HOLD THE ANNOUNCEMENT: gameplay-ready goes out at once',
+			platform.announced() == 1, ('%d sent; notes: %s'):format(platform.announced(),
+				notesOf(env, control)))
+		check('without waiting out the dead-body nets',
+			not platform.warned('not alive'), table.concat(control.log.warn, ' | '))
+		check('and without putting a face on a body the platform has not reset',
+			#platform.applied == 0, ('%d apply call(s)'):format(#platform.applied))
+		check('the journal says why it went out ahead of the face',
+			notesOf(env, control):find('platform has not reset yet', 1, true) ~= nil,
+			notesOf(env, control))
+		local settled = appearance.Contract.IsSettled()
+		check('the restore is still waiting, owning its token',
+			settled.ok and settled.value.waiting == 'restore', tostring(settled.ok and settled.value.waiting))
+
+		-- 15:17:32.950 reset_complete; 15:17:33.261 life placement settled. The
+		-- host does this ONLY once gameplay-ready is in, which is the deadlock.
+		if platform.announced() > 0 then
+			platform.alive = true
+			control.Fire(appearance.HostEvent.RESET_COMPLETE)
+		end
+		control.Pump(5)
+		check('THE SAVED FACE GOES ON ONCE THE PLATFORM HAS BROUGHT THE BODY ALIVE',
+			#platform.applied == 1 and platform.applied[1].options.eyes == face.options.eyes,
+			('%d apply call(s)'):format(#platform.applied))
+		check('gameplay-ready went out exactly once', platform.announced() == 1,
+			tostring(platform.announced()))
+		check('no entry was settled with no face',
+			not platform.warned('settles with no face'), table.concat(control.log.warn, ' | '))
+
+		-- The mirror confirms the face. The announcement already went out, so it
+		-- is this confirmation that has to release the mutation transaction.
+		local before = platform.finished
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		check('the confirmation releases the mutation the early announcement could not',
+			platform.finished > before, ('%d -> %d'):format(before, platform.finished))
+		settled = appearance.Contract.IsSettled()
+		check('and the entry is settled on the stored face',
+			settled.ok and settled.value.settled == true and settled.value.announced == true,
+			tostring(settled.ok and settled.value.waiting))
+	end
+
+	-- THE SAFETY NET STAYS: a body the platform reset and still did not revive --
+	-- the 2026-09-17 character stored in the ground -- settles with no face
+	-- DEAD_WAIT_MS later instead of holding the clothing gate for ever.
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		check('the dead-on-arrival body is announced at once all the same',
+			platform.announced() == 1, tostring(platform.announced()))
+		if platform.announced() > 0 then control.Fire(appearance.HostEvent.RESET_COMPLETE) end
+		control.Pump(70)
+		check('a reset body that never comes alive still settles with no face',
+			platform.warned('settles with no face') and #platform.applied == 0,
+			table.concat(control.log.warn, ' | '))
+		local settled = appearance.Contract.IsSettled()
+		check('and the entry is settled, so nothing downstream waits for ever',
+			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
+	end
+
 	-- ── the catalogue, read per slot, standing behind seven sliders ──────────
 	-- A REAL ROOM, OPENED. The blocks above drive the seam by hand, which proves
 	-- the bridge and proves nothing about the read: the defect that cost this room
