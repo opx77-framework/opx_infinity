@@ -95,10 +95,21 @@ end
 -- The Player is RE-RESOLVED after every wait: a login can arrive in the middle of
 -- a change, and the change is then re-applied against the live player instead of
 -- being written over the top of it.
+--
+-- AN OFFLINE CHANGE HOLDS THE OFFLINE LEDGER (`M.Ledger`, player.lua) for the
+-- whole of its read, its hooks and its writes. It is a read-modify-write of the
+-- job or gang column and of the membership rows, and a login that read the row
+-- before the write landed would otherwise put the old job back with its first
+-- save -- the window `AddMoneyOffline` and a staff rename already close the
+-- same way. The row is settled and the roster asked again with nothing
+-- yielding in between, exactly as there: a character who came online
+-- meanwhile is changed in memory instead.
 -- @param identifier Player|Source|CitizenId
 -- @param column string|nil job or gang; nil touches memberships only.
 -- @param apply fun(player: Player, offline: boolean): Result
 -- @return Result
+local offlineChange
+
 local function withCharacter(identifier, column, apply)
 	local player = M.ResolvePlayer(identifier)
 	if player then return apply(player, false) end
@@ -106,14 +117,34 @@ local function withCharacter(identifier, column, apply)
 	if type(identifier) ~= 'string' then
 		return Result.Err('error.notLoggedIn', tostring(identifier))
 	end
+	local parsed = OPX.CitizenId.Parse(identifier)
+	if not parsed.ok then return Result.Err('character.notFound', identifier) end
+	identifier = parsed.value
 
+	if not M.Ledger.Settle(identifier) then
+		return Result.Err('error.unavailable', 'the character row is being written')
+	end
+	player = M.ResolvePlayer(identifier)
+	if player then return apply(player, false) end
+
+	-- Left on every path, a raise included: a hold nobody gives back refuses
+	-- that character's logins until the stale guard notices.
+	M.Ledger.Enter(identifier)
+	local ran, outcome = pcall(offlineChange, identifier, column, apply)
+	M.Ledger.Leave(identifier)
+	if not ran then error(outcome, 0) end
+	return outcome
+end
+
+--- The offline half of `withCharacter`, run while the ledger holds the row.
+offlineChange = function(identifier, column, apply)
 	local fetched = M.Storage.FetchOne(identifier)
 	if not fetched.ok then return fetched end
 
 	local groups = M.Storage.FetchGroups(identifier)
 	if not groups.ok then return groups end
 
-	player = M.ResolvePlayer(identifier)
+	local player = M.ResolvePlayer(identifier)
 	if player then return apply(player, false) end
 
 	local offline = M.CreatePlayer(fetched.value, true)
@@ -295,6 +326,10 @@ end
 -- @return Result
 function M.Groups.RemovePlayerFromJob(identifier, name)
 	return withCharacter(identifier, 'job', function(player)
+		-- Nothing to leave is answered, not announced as a removal nobody made.
+		if player.PlayerData.jobs[name] == nil and player.PlayerData.job.name ~= name then
+			return Result.Err('job.notMember', tostring(name))
+		end
 		local left = leaveGroup(player, 'job', name)
 		if not left.ok then return left end
 
@@ -388,6 +423,10 @@ end
 -- @return Result
 function M.Groups.RemovePlayerFromGang(identifier, name)
 	return withCharacter(identifier, 'gang', function(player)
+		-- Nothing to leave is answered, not announced as a removal nobody made.
+		if player.PlayerData.gangs[name] == nil and player.PlayerData.gang.name ~= name then
+			return Result.Err('gang.notMember', tostring(name))
+		end
 		local left = leaveGroup(player, 'gang', name)
 		if not left.ok then return left end
 

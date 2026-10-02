@@ -27003,5 +27003,467 @@ do
 	end
 end
 
+-- ── the creator surface, round two ───────────────────────────────────────────
+-- Jobs, gangs and duty; a caller's own corner of the character's metadata; the
+-- downed read and revive; and the client events another resource may hear.
+
+--- A bridge with stored character rows a citizen id can reach while nobody is
+--- playing them, and a record of every statement.
+local function groupsBridge(state)
+	state.stored = state.stored or {}
+	state.writes = state.writes or {}
+	return Host.Database({
+		scalar = function() return 1 end,
+		update = function(sql, params)
+			state.writes[#state.writes + 1] = { sql = sql, params = params }
+			return 1
+		end,
+		single = function(sql, params)
+			if sql:find('FROM opx77_characters', 1, true) and params and params.citizen then
+				local row = state.stored[params.citizen]
+				if row == nil then return nil end
+				return {
+					citizen_id = params.citizen, user_id = 'account-away', cid = 1, name = 'Jackie W',
+					char_info = '{"firstName":"Jackie","lastName":"W"}',
+					money = '{"EDDIES":0,"BANK":0}',
+					job = row.job or '{"name":"unemployed","grade":{"level":0}}',
+					gang = '{"name":"none","grade":{"level":0}}',
+					metadata = '{}',
+				}
+			end
+			return nil
+		end,
+		query = function() return {} end,
+		insert = function() return 1 end,
+		transaction = function() return true end,
+	})
+end
+
+--- The statements whose SQL holds a needle, for one citizen id.
+local function writesFor(state, needle, citizenId)
+	local out = {}
+	for _, write in ipairs(state.writes) do
+		if write.sql:find(needle, 1, true)
+			and (citizenId == nil or (write.params and write.params.citizen == citizenId)) then
+			out[#out + 1] = write
+		end
+	end
+	return out
+end
+
+section('creator exports: jobs, gangs and duty through the groups functions')
+do
+	local state = {}
+	local env, control, why = boot('server', groupsBridge(state))
+	check('the server boots for the group exports', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local call = control.CallExport
+		local SERVER_EXPORTS = { 'SetJob', 'SetGang', 'SetDuty', 'RemoveJob', 'RemoveGang',
+			'GetMetadata', 'SetMetadata', 'IsDown', 'Revive' }
+		local missing = {}
+		for _, name in ipairs(SERVER_EXPORTS) do
+			if type(control.exports[name]) ~= 'function' then missing[#missing + 1] = name end
+		end
+		check('every new server export is published', #missing == 0, table.concat(missing, ', '))
+
+		local PLAYER = 701
+		local player = standCharacter(env, control, PLAYER, OPX.CitizenId.Generate())
+		player.Offline = false
+		player.PlayerData.job = { name = 'unemployed', onDuty = true, grade = { level = 0 } }
+		player.PlayerData.jobs = { unemployed = 0 }
+
+		local internal, public = {}, {}
+		env.AddEventHandler('opx:in:character:job', function(who, job)
+			internal[#internal + 1] = { source = who, job = job }
+		end)
+		env.AddEventHandler('opx:on:character:job', function(who, payload)
+			public[#public + 1] = { source = who, payload = payload }
+		end)
+
+		check('a job change is a write: a resource nobody admitted is refused',
+			call('hr', 'SetJob', PLAYER, 'ripperdoc', 1).error == 'export.callerDenied'
+				and player.PlayerData.job.name == 'unemployed')
+		OPX.Config.SERVER.EXPORTS.WRITERS = { hr = true }
+
+		local sync, syncWhy = control.AbandonExport('hr', 1, 'SetJob', PLAYER, 'ripperdoc', 1)
+		control.Pump(5)
+		check('a synchronous SetJob fails at its first yield, with nothing begun',
+			sync == nil and syncWhy == 'export_yielded' and player.PlayerData.job.name == 'unemployed'
+				and #internal == 0, tostring(syncWhy))
+
+		local before = #control.log.info
+		local hired = call('hr', 'SetJob', PLAYER, 'ripperdoc', 1)
+		check('an awaited SetJob sets the primary job, and answers what it became',
+			hired ~= nil and hired.ok == true and hired.value.name == 'ripperdoc'
+				and hired.value.grade.level == 1 and player.PlayerData.job.name == 'ripperdoc'
+				and player.PlayerData.jobs.ripperdoc == 1, hired and tostring(hired.error))
+		check('a copy, not the live job',
+			hired.ok and hired.value ~= player.PlayerData.job)
+		check('raised inside the resource and on the public bus',
+			#internal == 1 and #public == 1 and public[1].source == PLAYER
+				and public[1].payload.job.name == 'ripperdoc', #public)
+		local journal = table.concat(control.log.info, '\n', before + 1)
+		check('and audited under the export with its caller',
+			journal:find('event=export.SetJob', 1, true) ~= nil
+				and journal:find('"caller":"hr"', 1, true) ~= nil, journal)
+
+		check('a job name that is not one is a bad argument',
+			call('hr', 'SetJob', PLAYER, 'rip per', 0).error == 'export.badArgument')
+		check('and so is a negative grade',
+			call('hr', 'SetJob', PLAYER, 'ripperdoc', -1).error == 'export.badArgument')
+		check('and a fractional one',
+			call('hr', 'SetJob', PLAYER, 'ripperdoc', 0.5).error == 'export.badArgument')
+		check('a job nobody defined answers the module\'s own code',
+			call('hr', 'SetJob', PLAYER, 'nope', 0).error == 'job.notFound')
+		check('and a grade the job does not have',
+			call('hr', 'SetJob', PLAYER, 'ripperdoc', 99).error == 'job.gradeNotFound')
+
+		local veto = OPX.Hooks.Register('job:beforeSet', function(payload)
+			if payload.name == 'netrunner' then return false end
+		end)
+		check('a job:beforeSet hook vetoes an export change too',
+			call('hr', 'SetJob', PLAYER, 'netrunner', 0).error == 'job.vetoed'
+				and player.PlayerData.job.name == 'ripperdoc')
+		OPX.Hooks.Remove(veto)
+
+		-- ── duty ──────────────────────────────────────────────────────────────
+		local sentBefore = #internal
+		local duty = call('hr', 'SetDuty', PLAYER, true)
+		check('SetDuty clocks a loaded character in', duty.ok == true and duty.value == true
+			and player.PlayerData.job.onDuty == true, tostring(duty.error))
+		check('and it is announced like any other job change', #internal == sentBefore + 1)
+		check('SetDuty answers inline: it never yields',
+			control.AbandonExport('hr', 1, 'SetDuty', PLAYER, false) ~= nil
+				and player.PlayerData.job.onDuty == false)
+		check('a duty flag that is not a boolean is refused',
+			call('hr', 'SetDuty', PLAYER, 'yes').error == 'export.badArgument')
+		control.Admit(702, 'account-702')
+		check('and a connection with no character is not logged in',
+			call('hr', 'SetDuty', 702, true).error == 'error.notLoggedIn')
+
+		-- ── removal ───────────────────────────────────────────────────────────
+		local announced = #public
+		check('removing a job the character does not hold is refused, and announced to nobody',
+			call('hr', 'RemoveJob', PLAYER, 'netrunner').error == 'job.notMember'
+				and #public == announced)
+		local fired = call('hr', 'RemoveJob', PLAYER, 'ripperdoc')
+		check('RemoveJob drops the job and falls back to the default one',
+			fired.ok == true and player.PlayerData.job.name == 'unemployed'
+				and player.PlayerData.jobs.ripperdoc == nil, tostring(fired.error))
+		check('and the public bus names the job that was dropped',
+			public[#public].payload.removed == 'ripperdoc')
+
+		-- ── gangs ─────────────────────────────────────────────────────────────
+		local gangs = {}
+		env.AddEventHandler('opx:on:character:gang', function(_, payload)
+			gangs[#gangs + 1] = payload
+		end)
+		local joined = call('hr', 'SetGang', PLAYER, 'maelstrom', 0)
+		check('SetGang sets the primary gang', joined.ok == true
+			and player.PlayerData.gang.name == 'maelstrom' and #gangs == 1, tostring(joined.error))
+		local gangHook = OPX.Hooks.Register('gang:beforeSet', function() return false end)
+		check('gang:beforeSet vetoes it the same way',
+			call('hr', 'SetGang', PLAYER, 'maelstrom', 0).error == 'gang.vetoed')
+		OPX.Hooks.Remove(gangHook)
+		local left = call('hr', 'RemoveGang', PLAYER, 'maelstrom')
+		check('RemoveGang drops it', left.ok == true and player.PlayerData.gang.name == 'none'
+			and gangs[#gangs].removed == 'maelstrom', tostring(left.error))
+		check('and leaving a gang one is not in is refused',
+			call('hr', 'RemoveGang', PLAYER, 'maelstrom').error == 'gang.notMember')
+
+		-- ── a character nobody is playing ─────────────────────────────────────
+		local AWAY = OPX.CitizenId.Generate()
+		state.stored[AWAY] = {}
+		local offline = call('hr', 'SetJob', AWAY, 'fixer', 1)
+		check('a citizen id reaches a character nobody is playing',
+			offline ~= nil and offline.ok == true and offline.value.name == 'fixer',
+			offline and tostring(offline.error))
+		check('by a membership row and the job column, both for that citizen',
+			#writesFor(state, 'opx77_character_groups', AWAY) == 1
+				and #writesFor(state, 'SET job = @value', AWAY) == 1)
+		check('announced as offline, with no player id',
+			public[#public].source == nil and public[#public].payload.offline == true
+				and public[#public].payload.citizenId == AWAY)
+		check('and the row is given back', not character.Ledger.Busy(AWAY))
+
+		local db = control.database
+		db.park = function(method, sql)
+			return method == 'update' and sql:find('SET job = @value', 1, true) ~= nil
+		end
+		local seen = character.Ledger.Seen(AWAY)
+		local pending
+		env.CreateThread(function()
+			pending = OPX.Api.Get('character').SetJob(AWAY, 'fixer', 2)
+		end)
+		control.Pump(10)
+		check('an offline change HOLDS THE OFFLINE LEDGER while it writes, so a racing login waits',
+			pending == nil and character.Ledger.Busy(AWAY))
+		db.park = nil
+		db.Resume()
+		settle(control, function() return pending ~= nil end)
+		check('and gives it back when the write has landed, moving the sequence a login reads',
+			pending ~= nil and pending.ok == true and not character.Ledger.Busy(AWAY)
+				and character.Ledger.Seen(AWAY) ~= seen, pending and tostring(pending.error))
+
+		local HELD = OPX.CitizenId.Generate()
+		state.stored[HELD] = {}
+		character.Ledger.Enter(HELD)
+		local waited = call('hr', 'SetJob', HELD, 'fixer', 0)
+		check('an offline change waits for another writer on the row, and gives up bounded',
+			waited ~= nil and waited.error == 'error.unavailable'
+				and #writesFor(state, 'opx77_character_groups', HELD) == 0,
+			waited and tostring(waited.error))
+		character.Ledger.Leave(HELD)
+
+		check('a citizen id with no character behind it is not found',
+			call('hr', 'SetJob', OPX.CitizenId.Generate(), 'fixer', 0).error == 'character.notFound')
+		check('a citizen id that does not parse is a bad argument',
+			call('hr', 'RemoveJob', 'H7K', 'fixer').error == 'export.badArgument')
+
+		local source = io.open('modules/character/server/player.lua'):read('a')
+		check('a login that sees the ledger moved reads the memberships again too',
+			source:find('local regrouped = M.Storage.FetchGroups(citizenId)', 1, true) ~= nil)
+	end
+end
+
+section('creator exports: a caller\'s own metadata, and nobody else\'s')
+do
+	local env, control, why = boot('server', groupsBridge({}))
+	check('the server boots for creator metadata', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local call = control.CallExport
+		OPX.Config.SERVER.EXPORTS.WRITERS = { my_shop = true, rival = true }
+
+		local PLAYER, CITIZEN = 721, OPX.CitizenId.Generate()
+		control.Admit(PLAYER, 'account-721')
+		local player = character.CreatePlayer({
+			citizenId = CITIZEN, userId = 'account-721', source = PLAYER,
+			charInfo = { firstName = 'Vik', lastName = 'Vektor' },
+			metadata = { health = 100 },
+		}, true)
+		character.Players[PLAYER] = player
+		character.Registry.byCitizenId[CITIZEN] = PLAYER
+		local metadata = player.PlayerData.metadata
+
+		local revision = player.Revision
+		local set = call('my_shop', 'SetMetadata', PLAYER, 'reputation', { level = 3, tags = { 'vip' } })
+		check('a writer stores a value on a loaded character', set ~= nil and set.ok == true,
+			set and tostring(set.error))
+		check('under its own name: ext.<resource>.<key>',
+			type(metadata['ext.my_shop.reputation']) == 'table'
+				and metadata['ext.my_shop.reputation'].level == 3 and metadata.reputation == nil)
+		check('marked dirty, so the autosave persists it with the rest of the metadata',
+			player.Revision > revision)
+		local read = call('my_shop', 'GetMetadata', PLAYER, 'reputation')
+		check('and reads it back', read.ok and read.value.level == 3)
+		read.value.level = 99
+		check('as a copy', metadata['ext.my_shop.reputation'].level == 3)
+		check('another resource asking the same key reads its own, empty, corner',
+			call('rival', 'GetMetadata', PLAYER, 'reputation').value == nil)
+		local all = call('my_shop', 'GetMetadata', PLAYER)
+		check('no key answers every key the caller holds, and only those',
+			all.ok and all.value.reputation ~= nil and all.value.health == nil
+				and OPX.Table.Count(all.value) == 1)
+
+		call('my_shop', 'SetMetadata', PLAYER, 'health', 0)
+		check('a key named like one of opx\'s own lands in the caller\'s corner, not on it',
+			metadata.health == 100 and metadata['ext.my_shop.health'] == 0)
+		check('a key with a dot is refused: one segment, so a namespace cannot be climbed',
+			call('my_shop', 'SetMetadata', PLAYER, 'a.b', 1).error == 'export.badArgument')
+		check('and so is one that is not a name',
+			call('my_shop', 'SetMetadata', PLAYER, '../health', 1).error == 'export.badArgument'
+				and call('my_shop', 'SetMetadata', PLAYER, 7, 1).error == 'export.badArgument')
+
+		check('a function is not plain data',
+			call('my_shop', 'SetMetadata', PLAYER, 'x', function() end).error == 'export.badValue')
+		check('nor a table with a metatable',
+			call('my_shop', 'SetMetadata', PLAYER, 'x', setmetatable({}, {})).error == 'export.badValue')
+		local cyclic = {}
+		cyclic.self = cyclic
+		check('nor a cycle',
+			call('my_shop', 'SetMetadata', PLAYER, 'x', cyclic).error == 'export.badValue')
+		check('nor NaN',
+			call('my_shop', 'SetMetadata', PLAYER, 'x', 0 / 0).error == 'export.badValue')
+		check('a value over the size cap is refused',
+			call('my_shop', 'SetMetadata', PLAYER, 'x', string.rep('a', 5000)).error
+				== 'export.tooLarge' and metadata['ext.my_shop.x'] == nil)
+
+		OPX.Config.SERVER.EXPORTS.METADATA = { MAX_BYTES = 4096, MAX_KEYS = 3, MAX_TOTAL_BYTES = 16384 }
+		call('my_shop', 'SetMetadata', PLAYER, 'third', true)
+		check('and so is a key past the per-resource count',
+			call('my_shop', 'SetMetadata', PLAYER, 'fourth', true).error == 'export.tooLarge')
+		check('which another resource does not share',
+			call('rival', 'SetMetadata', PLAYER, 'fourth', true).ok == true)
+		check('an existing key may still be rewritten at the cap',
+			call('my_shop', 'SetMetadata', PLAYER, 'third', false).ok == true
+				and metadata['ext.my_shop.third'] == false)
+		check('nil deletes', call('my_shop', 'SetMetadata', PLAYER, 'third', nil).ok == true
+			and metadata['ext.my_shop.third'] == nil)
+		OPX.Config.SERVER.EXPORTS.METADATA = nil
+
+		local handed = { n = 1 }
+		call('my_shop', 'SetMetadata', PLAYER, 'held', handed)
+		handed.n = 2
+		check('what is stored is a copy of what was handed in', metadata['ext.my_shop.held'].n == 1)
+
+		local journal = table.concat(control.log.info, '\n')
+		check('a write is audited with its caller',
+			journal:find('event=export.SetMetadata', 1, true) ~= nil)
+		check('a reader may not write',
+			call('my_hud', 'SetMetadata', PLAYER, 'x', 1).error == 'export.callerDenied')
+		control.Admit(722, 'account-722')
+		check('and a connection with no character is not logged in',
+			call('my_shop', 'SetMetadata', 722, 'x', 1).error == 'error.notLoggedIn'
+				and call('my_shop', 'GetMetadata', 722, 'x').error == 'error.notLoggedIn')
+		check('PlayerData\'s public copy still carries no metadata',
+			call('my_hud', 'GetPlayerData', PLAYER).value.metadata == nil)
+	end
+end
+
+section('creator exports: downed, read and revived through the module')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the downed exports', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local call = control.CallExport
+		local BODY = 731
+		standCharacter(env, control, BODY, OPX.CitizenId.Generate())
+
+		check('IsDown answers a standing player', call('my_hud', 'IsDown', BODY).value.down == false)
+		check('and refuses a player id nobody is connected under',
+			call('my_hud', 'IsDown', 99999).error == 'export.badArgument')
+		control.Life(BODY, 'dead')
+		control.Pump(20)
+		local down = call('my_hud', 'IsDown', BODY)
+		check('IsDown answers a downed player', down.ok and down.value.down == true,
+			down and tostring(down.error))
+
+		check('Revive is a write',
+			call('medic', 'Revive', BODY).error == 'export.callerDenied')
+		OPX.Config.SERVER.EXPORTS.WRITERS = { medic = true }
+		check('a reason that is not text is refused',
+			call('medic', 'Revive', BODY, {}).error == 'export.badArgument')
+
+		local settings = OPX.Modules.Get('downed').Settings
+		local revivers = settings.REVIVERS
+		settings.REVIVERS = { admin = true }
+		check('the module\'s own REVIVERS switch still applies to the caller\'s name',
+			call('medic', 'Revive', BODY, 'x').error == 'caller_denied')
+		settings.REVIVERS = revivers
+
+		local changed = {}
+		env.AddEventHandler('opx:on:downed:changed', function(_, payload)
+			changed[#changed + 1] = payload
+		end)
+		local logged = #control.log.info
+		local revived = call('medic', 'Revive', BODY, 'stabilised on scene')
+		check('an admitted writer revives a downed player', revived.ok == true,
+			tostring(revived.error))
+		check('who is up, and every resource hears it',
+			call('my_hud', 'IsDown', BODY).value.down == false
+				and changed[#changed] ~= nil and changed[#changed].down == false)
+		local journal = table.concat(control.log.info, '\n', logged + 1)
+		check('the module audits the caller and the reason',
+			journal:find('medic: stabilised on scene', 1, true) ~= nil, journal)
+		check('and a player who is not down answers the module\'s own code',
+			call('medic', 'Revive', BODY).error == 'not_down')
+	end
+end
+
+section('creator exports: another client resource hears the public opx events')
+do
+	local env, control, why = boot('client')
+	check('the client boots for subscriptions', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local call = control.CallExport
+
+		--- The deliveries of one event to one resource, oldest first.
+		local function delivered(resource, event)
+			local out = {}
+			for _, entry in ipairs(control.exportCalls) do
+				if entry.resource == resource and entry.args[1] == event then out[#out + 1] = entry end
+			end
+			return out
+		end
+
+		check('the subscription exports are published',
+			type(control.exports.Subscribe) == 'function'
+				and type(control.exports.Unsubscribe) == 'function')
+		check('a public event may be subscribed to',
+			call('my_hud', 'Subscribe', 'opx:on:character:money').ok == true)
+		check('this resource\'s own wiring may not',
+			call('my_hud', 'Subscribe', 'opx:in:character:job').error == 'export.notSubscribable')
+		check('nor an event that is not on the list',
+			call('my_hud', 'Subscribe', 'opx:on:menu:action').error == 'export.notSubscribable')
+		check('nor anything that is not a name',
+			call('my_hud', 'Subscribe', 42).error == 'export.badArgument')
+		check('and a reply export that is not a name is refused',
+			call('my_hud', 'Subscribe', 'opx:on:character:loaded', 'a b').error
+				== 'export.badArgument')
+
+		control.Fire('opx:on:character:money', 'EDDIES', 50, 'add', 150)
+		control.Pump(4)
+		local money = delivered('my_hud', 'opx:on:character:money')
+		check('a raise is delivered through the caller\'s reply export, as one table',
+			#money == 1 and money[1].name == 'OnOpxEvent' and money[1].args[2].balance == 150
+				and money[1].args[2].moneyType == 'EDDIES' and money[1].args[2].action == 'add',
+			#money)
+		check('and nobody who did not subscribe hears it',
+			#delivered('other_res', 'opx:on:character:money') == 0)
+
+		call('my_hud', 'Subscribe', 'opx:on:character:loaded', 'Heard')
+		control.Fire('opx:on:character:loaded', { citizenId = 'X1', metadata = { secret = 1 } })
+		control.Pump(4)
+		local loaded = delivered('my_hud', 'opx:on:character:loaded')
+		check('a subscription may name its own reply export',
+			#loaded == 1 and loaded[1].name == 'Heard', #loaded)
+		check('and a character is handed without its free-form metadata',
+			#loaded == 1 and loaded[1].args[2].citizenId == 'X1' and loaded[1].args[2].metadata == nil)
+
+		check('Unsubscribe stops the deliveries',
+			call('my_hud', 'Unsubscribe', 'opx:on:character:money').value == true)
+		control.Fire('opx:on:character:money', 'EDDIES', 1, 'add', 151)
+		control.Pump(4)
+		check('and none arrive after it', #delivered('my_hud', 'opx:on:character:money') == 1)
+
+		control.Fire('onClientResourceStop', 'my_hud')
+		control.Fire('opx:on:character:loaded', { citizenId = 'X2' })
+		control.Pump(4)
+		check('a caller that stops is unsubscribed from everything',
+			#delivered('my_hud', 'opx:on:character:loaded') == 1)
+
+		OPX.Config.CLIENT.EXPORTS.CALLERS = { trusted = true }
+		check('CLIENT.EXPORTS.CALLERS narrows who may subscribe',
+			call('my_hud', 'Subscribe', 'opx:on:downed:changed').error == 'export.callerDenied'
+				and call('trusted', 'Subscribe', 'opx:on:downed:changed').ok == true)
+		OPX.Config.CLIENT.EXPORTS.CALLERS = '*'
+
+		local codes = { 'export.badValue', 'export.tooLarge', 'export.notSubscribable',
+			'job.notMember', 'gang.notMember' }
+		local untranslated = {}
+		for _, code in ipairs(codes) do
+			for _, language in ipairs({ 'en', 'fr' }) do
+				OPX.Locale.Set(language)
+				if not OPX.Locale.Exists(code) then
+					untranslated[#untranslated + 1] = language .. ':' .. code
+				end
+			end
+		end
+		OPX.Locale.Set('en')
+		check('every new refusal code reads as words in English and French',
+			#untranslated == 0, table.concat(untranslated, ', '))
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

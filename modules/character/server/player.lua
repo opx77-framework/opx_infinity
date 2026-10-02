@@ -61,7 +61,7 @@ end
 -- not go through PlayerData is lost the moment a login that read the row BEFORE
 -- it saves AFTER it -- and a login yields three times between its read and the
 -- roster. `AddMoneyOffline` is such a write, and so is a staff rename of a
--- character nobody is playing.
+-- character nobody is playing, and so is a job or gang change (groups.lua).
 --
 -- `busy` counts writers on the row right now and `seq` moves every time one
 -- finishes. A login notes `seq` before it reads, waits for `busy` to reach zero
@@ -937,6 +937,11 @@ function M.Login(source, citizenId)
 		if not again.ok then return again end
 		entity = again.value
 		extras.entity = entity
+		-- The memberships too: an offline job or gang change (groups.lua) is
+		-- the third writer, and it moves the membership rows beside the column.
+		local regrouped = M.Storage.FetchGroups(citizenId)
+		if not regrouped.ok then return regrouped end
+		groups = regrouped
 	end
 	if M.Ledger.Busy(citizenId) or M.Ledger.Seen(citizenId) ~= seen then
 		return Result.Err('error.unavailable', 'the character row would not settle')

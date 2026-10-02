@@ -434,8 +434,9 @@ end
 -- @author dop42
 -- @param playerId integer
 -- @param caller string the name the caller is audited under
+-- @param why string|nil a short reason, audited after the caller's name
 -- @return Result
-local function revive(playerId, caller)
+local function revive(playerId, caller, why)
 	local by = callerOf(caller)
 	if by == nil then return Result.Err('invalid_caller') end
 	if not mayRevive(by) then
@@ -444,7 +445,11 @@ local function revive(playerId, caller)
 	end
 	local target = playerOf(playerId)
 	if target == nil then return Result.Err('bad_player') end
-	local ok, reason = reviveNow(target, by)
+	local said = by
+	if type(why) == 'string' and why ~= '' then
+		said = by .. ': ' .. (OPX.Text.Clean(why, 64, '...') or '-')
+	end
+	local ok, reason = reviveNow(target, said)
 	if not ok then return Result.Err(reason) end
 	return Result.Ok(true)
 end
