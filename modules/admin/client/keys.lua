@@ -127,7 +127,7 @@ end
 -- where the thing the key does lives.
 -- @author dop42
 function Keys.Start()
-	AddEventHandler(M.Host.KEYBINDS_CHANGED, function()
+	AddEventHandler(OPX.Host.KEYBINDS_CHANGED, function()
 		for index = 1, #listeners do
 			local ran, failure = pcall(listeners[index])
 			if not ran then Open77.log.error('[admin] keybinds changed: ' .. tostring(failure)) end
