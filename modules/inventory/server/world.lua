@@ -115,6 +115,35 @@ function World.Vehicle(vehicleId)
 	return snapshot
 end
 
+--- Whether a vehicle is locked, which shuts its trunk to everybody.
+-- THE SERVER'S OWN RECORD, and nothing a client says: `Open77.vehicles.isLocked`
+-- reads the canonical entry-lock bit the host keeps and replicates (devkit card
+-- `server:Open77.vehicles.isLocked`, since op77.45, no permission checked in the
+-- handler). The keys module moves that bit with `setLocked`; staff move it with
+-- `opx.admin.vehicle.flag <id> locked`. Either way this is the one read.
+--
+-- A lock is a lock on the whole car. A player who could not open the door but
+-- could still reach into the boot has been handed the car's contents by a
+-- different route, so a locked vehicle refuses its trunk, and a trunk already
+-- open when the lock goes on falls out of reach and is closed by the next reach
+-- sweep. The GLOVEBOX is not asked: it opens only from a seat, and somebody
+-- sitting inside was let in.
+--
+-- OPEN when the host cannot answer -- a build without the native, or an unknown
+-- vehicle, which answers nil -- because refusing every trunk on the server over
+-- a read that is not there would be the same outage as a lock nobody can undo.
+-- @author dop42
+-- @param vehicleId any the host's id for the vehicle
+-- @return boolean
+function World.TrunkLocked(vehicleId)
+	local vehicles = Open77.vehicles
+	if vehicleId == nil or type(vehicles) ~= 'table' or type(vehicles.isLocked) ~= 'function' then
+		return false
+	end
+	local read, locked = pcall(vehicles.isLocked, vehicleId)
+	return read and locked == true
+end
+
 --- Whether a player may act on a container right now.
 -- A bag belongs to its owner and has no distance. A glovebox is the one of the
 -- seat the player is in, whatever they name. A trunk is measured from the centre
@@ -141,6 +170,9 @@ function World.WithinReach(source, container)
 		local snapshot = container.vehicleId and World.Vehicle(container.vehicleId)
 		if not snapshot then return false end
 		if World.Seat(source) == container.vehicleId then return false end
+		-- Locked is out of reach, so a boot open when the lock went on is closed
+		-- by the reach sweep and every move against it is refused meanwhile.
+		if World.TrunkLocked(container.vehicleId) then return false end
 		local centre = { x = tonumber(snapshot.x) or 0, y = tonumber(snapshot.y) or 0,
 			z = tonumber(snapshot.z) or 0 }
 		return (Common.Integer(snapshot.bucket, 0, 2147483647) or 0) == position.bucket and

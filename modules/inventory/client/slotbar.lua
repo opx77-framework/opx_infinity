@@ -76,7 +76,11 @@ local function rowFor(bag, slot)
 	-- data file is edited, and a row with a name and no picture is still a row
 	-- that says what is in the slot.
 	local view = Catalog.ViewOf(stack.name)
-	row.label = view and view.label or Catalog.Label(stack.name)
+	-- The stack's OWN label first, the rule `labelOf` in the page follows: a key
+	-- in slot 2 reads as the car it opens, not as "Vehicle key".
+	local own = type(stack.metadata) == 'table' and stack.metadata.label or nil
+	row.label = (type(own) == 'string' and own ~= '' and own)
+		or (view and view.label) or Catalog.Label(stack.name)
 	row.image = view and view.image or nil
 	return row
 end
