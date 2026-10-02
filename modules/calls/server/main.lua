@@ -643,6 +643,21 @@ local function onHangUp()
 		return refuse(playerId, 'tooFast', M.Operation.HANG_UP)
 	end
 
+	-- NOT ON A CALL BUT RINGING SOMEBODY: the same key withdraws it. The
+	-- owner: "si on stop l'appel" -- both screens stop ringing at once rather
+	-- than at the end of INVITE_TTL_S.
+	if registry.CallOf(playerId) == nil and registry.OutgoingOf(playerId) ~= nil then
+		local withdrawn, why = registry.Cancel(playerId)
+		push(playerId)
+		if withdrawn == nil then return refuse(playerId, why, M.Operation.HANG_UP) end
+		push(withdrawn.to)
+		audit('calls.cancel', playerId, true, tostring(withdrawn.kind))
+		if withdrawn.kind ~= 'contact' then
+			fileRecent(withdrawn.to, 'missed', nameOf(playerId), citizenOf(playerId))
+		end
+		return
+	end
+
 	local outcome, reason = registry.HangUp(playerId)
 	if outcome == nil then
 		push(playerId)
