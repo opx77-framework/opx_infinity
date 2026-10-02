@@ -134,17 +134,20 @@ OPX.Config.MODULES.inventory = {
 	-- Weapons drawn from the bag. SLOT is the game weapon slot an inventory
 	-- weapon occupies; REMOVE_UNBACKED takes off any weapon no bag item backs.
 	--
-	-- REMOVE_UNBACKED IS OFF SINCE THE BASE GAME'S MISSIONS ARE PLAYABLE
-	-- (opx_sandy_view 1.4.11). A mission hands V a weapon the bag never saw --
-	-- a gun a fixer gives, one a quest equips for a fight -- and the 5 s scan
-	-- took it straight back off, so a "shoot / use / bring X" step stalled. A bag
-	-- weapon that leaves the bag is still put away (`Weapons.CheckHeld`); only
-	-- the sweep of every OTHER weapon is off. `true` brings it back, and takes the
-	-- missions' weapons with it.
+	-- REMOVE_UNBACKED IS ON: the anti-cheat sweep. Every SCAN_MS the server asks
+	-- each client what it holds and takes off any weapon no bag item backs, so a
+	-- gun spawned by a cheat menu, a console or a mod is gone within seconds.
+	-- The owner decided the sweep stays on, as main ships it: every weapon this
+	-- resource hands out -- a gunsmith order, a shop, an admin give, a job's kit
+	-- -- goes INTO THE BAG and is drawn from it, so it is backed and the sweep
+	-- never touches it. The price is the base game's missions: a weapon a quest
+	-- hands V outside the bag is taken off too, so a "shoot / use / bring X" step
+	-- that depends on one stalls (`docs/missions.md`). `false` turns the sweep
+	-- off, and with it the protection.
 	WEAPONS = {
 		ENABLED = true,
 		SLOT = 1,
-		REMOVE_UNBACKED = false,
+		REMOVE_UNBACKED = true,
 		SCAN_MS = 5000,
 		AMMO_SYNC_MS = 2000,
 	},

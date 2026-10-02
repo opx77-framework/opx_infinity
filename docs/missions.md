@@ -27,7 +27,7 @@ whole session) switches off the following:
 |---|---|---|
 | The server clock put the server's hour back within 0.5 s of any drift | `modules/weather/client/main.lua` | A conversation ending "later that night" set 22:00 and then waited for it. The correction put the server's hour back, so the fade or loading screen after the talk never ended. |
 | The vanilla tracker and notification stack hidden by our own HUD config | `config/hud.lua` | The same as the tracker row above, even without the platform. |
-| Every weapon that nothing in the bag backs was taken off every 5 s | `config/inventory.lua` `REMOVE_UNBACKED` | A weapon a mission handed over was removed within seconds, so "use / shoot / bring X" steps stalled. |
+| Every weapon that nothing in the bag backs is taken off every 5 s (STILL TRUE: the anti-cheat sweep stays on, see below) | `config/inventory.lua` `REMOVE_UNBACKED` | A weapon a mission handed over is removed within seconds, so "use / shoot / bring X" steps stall. |
 
 ## What runs now
 
@@ -202,8 +202,11 @@ line is the step it died in.
 - **`config/hud.lua`.** `questTracker = true` and `vanillaNotifications = true`.
   `phone` and `scanner` were already `true`. Each flag is also the switch for
   the matching piece of the preload.
-- **`config/inventory.lua`.** `REMOVE_UNBACKED = false`. A bag weapon that
-  leaves the bag is still put away.
+- **`config/inventory.lua`.** `REMOVE_UNBACKED = true`, as main ships it: the
+  owner decided the anti-cheat sweep stays on. A weapon a mission hands over
+  outside the bag is taken off, so a mission step that needs one does not
+  complete. Every weapon this resource hands out goes through the bag and is
+  never touched.
 
 ## Reading it in game
 
@@ -228,7 +231,7 @@ bootstrap trace: opx_sandy_view quests: ...`):
 | Switch | Effect |
 |---|---|
 | `config/hud.lua` `VANILLA.questTracker`, `vanillaNotifications`, `phone`, `scanner` | `false` hides that piece again. For the tracker, phone and scanner, the preload obeys the flag. |
-| `config/inventory.lua` `WEAPONS.REMOVE_UNBACKED = true` | Takes missions' weapons off again. |
+| `config/inventory.lua` `WEAPONS.REMOVE_UNBACKED = false` | Leaves missions' weapons in V's hands, and turns the anti-cheat sweep off with it. |
 | `config/server.lua` `ENTRY.BUCKET.WORLD_POPULATION = false` | Empty streets, and the platform removes every quest NPC within a second (see below). |
 | Quest fact `opx_quests_off = 1` | The preload hands every piece back to the platform on the next call. |
 | Dropping `opx_sandy_view` from `resources.load` | No preload at all (the Sandevistan view goes with it). Every player must relaunch. |

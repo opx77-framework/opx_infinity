@@ -530,8 +530,9 @@ with a press of T), a quest's own items can be taken, the scanner works, and the
 tracker, the markers and the quest toasts show. The preload's `OpxQuests.reds`
 (opx_sandy_view 1.4.11) gives those back from the platform's multiplayer policy. On this
 side, the weather clock stands back for 20 minutes when a mission moves the hour itself,
-`config/hud.lua` leaves the tracker and the toasts to the game, and a weapon a mission
-hands over is no longer taken off (`REMOVE_UNBACKED = false`). What each piece does, how
+`config/hud.lua` leaves the tracker and the toasts to the game. A weapon a mission hands
+over outside the bag IS taken off: the anti-cheat sweep (`REMOVE_UNBACKED = true`) stays on
+by the owner's decision, so a step that needs such a weapon stalls. What each piece does, how
 to read it in the client log, the switches and what stays the platform's are in
 `docs/missions.md`.
 

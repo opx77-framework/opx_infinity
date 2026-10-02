@@ -14865,11 +14865,13 @@ do
 	end
 end
 
--- ── a mission's weapon ───────────────────────────────────────────────────────
--- With the base game's missions playable, a quest hands V weapons the bag never
--- saw. The 5 s scan took every one of them back off (REMOVE_UNBACKED), so a
--- "shoot / use / bring X" step stalled. Off as shipped; the switch still works.
-section('weapons: a weapon a mission gave is not taken off')
+-- ── the anti-cheat sweep ─────────────────────────────────────────────────────
+-- THE OWNER'S CALL: REMOVE_UNBACKED stays on, as main ships it. Every SCAN_MS
+-- the server asks each client what it holds and takes off any weapon no bag item
+-- backs -- a spawned gun, and (the accepted price) a weapon a base-game mission
+-- hands over outside the bag. So nothing this resource ships may hand a weapon
+-- out except through the bag, and the last check below holds every module to it.
+section('weapons: the sweep takes off a weapon nothing in the bag backs')
 do
 	local env, control, why = boot('server')
 	check('the server boots', why == nil, why)
@@ -14877,8 +14879,10 @@ do
 	local inventory = why == nil and env.OPX.Modules.Get('inventory') or nil
 	if type(inventory) == 'table' and type(inventory.Weapons) == 'table' then
 		local Options = inventory.Options
-		check('the shipped config reads REMOVE_UNBACKED as off', Options.REMOVE_UNBACKED == false,
+		check('the shipped config reads REMOVE_UNBACKED as on', Options.REMOVE_UNBACKED == true,
 			tostring(Options.REMOVE_UNBACKED))
+		check('and config/inventory.lua says so in so many words',
+			env.OPX.Config.MODULES.inventory.WEAPONS.REMOVE_UNBACKED == true)
 
 		local removed, asked = {}, 0
 		local realWeapons = env.Open77.weapons
@@ -14899,28 +14903,59 @@ do
 		Players.List = function() return { { source = 7 } } end
 		Players.GateOpen = function(source) return source == 7 end
 
-		-- The weapon a mission handed over: equipped in slot 2, nothing in the
-		-- bag behind it, not locked.
-		local QUEST_ROW = { { slot = 2, equipped = true, locked = false, tweakDbId = '0x2A11F00D' } }
+		-- A weapon nothing handed out through the bag: equipped in slot 2,
+		-- nothing behind it, not locked.
+		local SPAWNED = { { slot = 2, equipped = true, locked = false, tweakDbId = '0x2A11F00D' } }
 
 		inventory.Weapons.Scan()
 		check('the scan asks the player\'s client what it holds', asked == 1, asked)
-		control.Fire('open77:weapons:completed', 7, 'snap-1', 'snapshot', true, nil, QUEST_ROW)
-		check('and a weapon nothing in the bag backs is left in the player\'s hands',
-			#removed == 0, table.concat(removed, ','))
-
-		Options.REMOVE_UNBACKED = true
-		inventory.Weapons.Scan()
-		control.Fire('open77:weapons:completed', 7, 'snap-2', 'snapshot', true, nil, QUEST_ROW)
-		check('while REMOVE_UNBACKED = true still takes it off, slot and all',
+		control.Fire('open77:weapons:completed', 7, 'snap-1', 'snapshot', true, nil, SPAWNED)
+		check('and a weapon nothing in the bag backs is taken off, slot and all',
 			#removed == 1 and removed[1] == '7:2', table.concat(removed, ','))
 
+		-- A LOCKED slot is the game's own (a scripted sequence) and is left.
+		inventory.Weapons.Scan()
+		control.Fire('open77:weapons:completed', 7, 'snap-2', 'snapshot', true, nil,
+			{ { slot = 3, equipped = true, locked = true, tweakDbId = '0x2A11F00E' } })
+		check('a locked slot is left alone', #removed == 1, table.concat(removed, ','))
+
 		Options.REMOVE_UNBACKED = false
+		inventory.Weapons.Scan()
+		control.Fire('open77:weapons:completed', 7, 'snap-3', 'snapshot', true, nil, SPAWNED)
+		check('and REMOVE_UNBACKED = false still turns the sweep off', #removed == 1,
+			table.concat(removed, ','))
+
+		Options.REMOVE_UNBACKED = true
 		Players.List, Players.GateOpen = realList, realGate
 		env.Open77.weapons = realWeapons
 	else
 		check('the inventory weapons are there', false)
 	end
+
+	-- NOTHING ELSE PUTS A WEAPON IN A HAND. With the sweep on, a weapon handed
+	-- out past the bag -- a job's loadout, an NCPD bot's gun handed to a player,
+	-- a MaxTac kit -- is a weapon the next scan takes off again. So the only
+	-- module that may write a weapon slot is the inventory, which writes the
+	-- weapon the bag backs; every other module gives a weapon as a bag item.
+	local writers = {}
+	for _, side in ipairs({ 'server', 'client', 'shared' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			if not file:find('^modules/inventory/') then
+				local handle = io.open(file, 'r')
+				if handle ~= nil then
+					local text = handle:read('a')
+					handle:close()
+					for _, verb in ipairs({ 'assign', 'give', 'equip', 'setAmmo' }) do
+						if text:find('Open77%.weapons%.' .. verb .. '%f[^%w_]') then
+							writers[#writers + 1] = file .. ' ' .. verb
+						end
+					end
+				end
+			end
+		end
+	end
+	check('no module but the inventory writes a weapon slot, so every weapon handed out is backed',
+		#writers == 0, table.concat(writers, ' | '))
 end
 
 section('weapons: the magazine and the hand')
