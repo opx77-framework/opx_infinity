@@ -33,6 +33,15 @@
 --   * THE SHOOTER MUST BE ABLE TO HAVE FIRED. A character loaded, alive, in the
 --     body's own bucket and inside `MAX_RANGE_METRES`; no faster than
 --     `MIN_INTERVAL_MS`; no more than `MAX_DPS` in a second.
+--   * NO LINE-OF-SIGHT CHECK, AND THAT IS THE BUILD'S LIMIT, NOT A CHOICE. A
+--     server-side ray from the shooter to the body is what would refuse a shot
+--     through a wall, and build 2.31.13+op77.78 has none: `Open77.world.raycast`
+--     is CLIENT-only (`world.query`), and the server API has no trace, no
+--     occlusion read and no visibility-between-two-points query. A check on the
+--     shooter's own client would defend against nothing, because a modified
+--     client is the very thing it would have to catch. Range, bucket, interval
+--     and DPS above are what bounds a lying client until the platform ships a
+--     server trace -- add it here when it does (checked 2026-10-02).
 --   * AN OFFICER DOES NOT SHOOT THE CITY'S OWN. An on-duty holder of the call-out's
 --     jobs who hits a police unit is refused `friendly`; the same officer can still
 --     shoot a suspect's crowd, and the kill is not charged (`EXEMPT_ON_DUTY`).
