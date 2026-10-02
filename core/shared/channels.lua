@@ -48,4 +48,8 @@ OPX.Host = {
 	GAMEPLAY_READY = 'open77:session:gameplayReady',
 	VEHICLE_REMOVED = 'onVehicleRemoved',
 	TUNABLE_CHANGED = 'onTunableChanged',
+	-- Client only, no payload: raised after any mapping is registered, rebound,
+	-- reset or removed. It is NOT `onKeybindsChanged` -- nothing raises that, and
+	-- four modules once listened on it and never heard a rebind.
+	KEYBINDS_CHANGED = 'open77:keybinds:changed',
 }

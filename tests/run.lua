@@ -19643,6 +19643,102 @@ do
 	end
 end
 
+-- ── the rebind four modules listened for under a name nothing raises ─────────
+section('a rebind reaches the clothing, dealership, garage and teleport rows')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the rebind', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local prompts = OPX.Api.Get('prompts')
+		local page = control.pages[1]
+		-- Owner, prompt group and key action of each row under test.
+		local rows = {
+			{ owner = 'clothing', group = 'store', action = 'opx.clothing.use' },
+			{ owner = 'dealership', group = 'dealer', action = 'opx.dealership.use' },
+			{ owner = 'garages', group = 'spot', action = 'opx.garages.use' },
+			{ owner = 'teleports', group = 'teleport', action = 'opx.teleports.use' },
+		}
+		local function counts()
+			local seen = {}
+			for index = 1, #rows do
+				local listed = prompts.List(rows[index].owner)
+				seen[index] = listed ~= nil and listed.ok == true and listed.value.count or -1
+			end
+			return seen
+		end
+		local function all(value)
+			local seen = counts()
+			for index = 1, #seen do
+				if seen[index] ~= value then return false end
+			end
+			return true
+		end
+
+		check('the host name is the one the devkit documents',
+			OPX.Host.KEYBINDS_CHANGED == 'open77:keybinds:changed', OPX.Host.KEYBINDS_CHANGED)
+		check('and nothing listens on the name nothing raises',
+			control.handlers['onKeybindsChanged'] == nil)
+
+		if prompts == nil or page == nil then
+			check('the prompts contract and its page are up', false)
+		else
+			control.PageEmit(page, 'opx:prompts:ready', {})
+
+			-- One spot of each kind underfoot: the client stands at the origin.
+			control.netEvents[OPX.Modules.Get('clothing').Event.SYNC]({ spots = {
+				{ key = 'jinguji', label = 'JINGUJI', x = 0.0, y = 0.0, z = 0.0, bucket = 0 },
+			} })
+			control.netEvents[OPX.Modules.Get('dealership').Event.SYNC]({ spots = {
+				{ key = 'yard', label = 'UPTOWN YARD', kind = 'garage',
+					x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+			} })
+			control.netEvents[OPX.Modules.Get('garages').Event.SYNC]({ spots = {
+				{ key = 'garage_dock#1', label = 'THE DOCK', kind = 'garage',
+					garage = 'garage_dock', role = 'menu', location = 1,
+					x = 0.0, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 },
+			} })
+			control.netEvents[OPX.Modules.Get('teleports').Event.SYNC]({ entrances = {
+				{ key = 'roof', leg = 'out', label = 'Rooftop', x = 0.0, y = 0.0, z = 0.0,
+					allowed = true },
+			} })
+			settle(control, function() return all(1) end)
+			check('each module posts its row while the player stands on its spot', all(1),
+				table.concat(counts(), ','))
+
+			-- THE KEY ON THE STRIP. The player moves every row's key to H in the
+			-- pause menu and the host raises its one event, with no payload.
+			for index = 1, #rows do control.input.keys[rows[index].action] = 'H' end
+			env.TriggerEvent('open77:keybinds:changed')
+			local drew = nil
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == 'opx:prompts:frame' then
+					drew = page.sent[index]
+					break
+				end
+			end
+			for index = 1, #rows do
+				local row = rows[index]
+				local cap = nil
+				for _, group in ipairs(drew and drew.payload.groups or {}) do
+					if group.key == row.owner .. '/' .. row.group then cap = group.rows[1].caps[1] end
+				end
+				check(('the %s row draws the rebound key'):format(row.owner), cap == 'H', tostring(cap))
+			end
+
+			-- THE MODULES HEAR IT TOO, and not only the strip: each re-reads whether
+			-- its row should be up at all ON the event, without waiting for a pass.
+			-- No Pump here, so a module still on `onKeybindsChanged` keeps its row.
+			control.input.captured = true
+			env.TriggerEvent('open77:keybinds:changed')
+			check('and every module re-reads its row on the event itself', all(0),
+				table.concat(counts(), ','))
+			control.input.captured = false
+		end
+	end
+end
+
 -- ── the second host read three modules made for an answer they already had ──
 section('a spot scan reads the player\'s position once per pass')
 do

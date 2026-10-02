@@ -97,9 +97,6 @@ M.Operation = {
 	DECIDE = 'dealershipDecide',
 }
 
---- The host raises this when a player rebinds or resets a mapping.
-M.KEYBINDS_CHANGED = 'onKeybindsChanged'
-
 --- The two kinds a dealer may declare.
 -- THE SAME TWO THE GARAGES USE, and deliberately not a third vocabulary: a
 -- dealer is a category of place, and the category decides which of the two

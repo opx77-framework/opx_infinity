@@ -72,9 +72,6 @@ M.Event = {
 	ON_DECISION = OPX.Event(LOCAL, 'teleports', 'decision'),
 }
 
---- The host raises this when a player rebinds or resets a mapping.
-M.KEYBINDS_CHANGED = 'onKeybindsChanged'
-
 --- The two directions a teleport can be taken in.
 -- `OUT` is ENTRY -> EXIT and is the leg the job gate guards. `BACK` is
 -- EXIT -> ENTRY, exists only when the operator wrote `RETURN = true`, and is

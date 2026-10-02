@@ -67,9 +67,6 @@ M.Wire = {
 	STOP = 'open77:animations:stopRequest',
 }
 
---- The host raises this when a player rebinds or resets a key mapping.
-M.KEYBINDS_CHANGED = 'open77:keybinds:changed'
-
 --- The platform package whose client poses bodies instead, while it runs.
 M.OFFICIAL = 'open77_animations'
 

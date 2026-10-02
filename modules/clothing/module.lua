@@ -70,9 +70,6 @@ M.Event = {
 	ON_DECISION = OPX.Event(LOCAL, 'clothing', 'decision'),
 }
 
---- The host raises this when a player rebinds or resets a mapping.
-M.KEYBINDS_CHANGED = 'onKeybindsChanged'
-
 --- The name this module calls itself when it borrows the fitting room.
 -- The appearance module lends the room to a NAMED caller and refuses to take it
 -- back from anyone else, so the name is the whole of the ownership handshake --
