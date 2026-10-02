@@ -138,16 +138,22 @@ whole fitting room is drawn by `panel` through such a bridge.
 
 ### How a player opens one
 
-A bridge that nothing calls draws nothing, so the appearance module declares its own
-doors: `KEYS.PANEL` in `config/appearance.lua` — F7 out of the box — toggles the
-appearance panel, `/opx.appearance` does the same from chat, and
-`/opx.appearance.wardrobe` opens the fitting room directly. The commands are
-unrestricted because both act on the caller alone.
+A bridge that nothing calls draws nothing, so every surface needs a door a player can
+actually reach. The appearance module's is `/opx.appearance`, which toggles the
+appearance panel; it is unrestricted because it acts on the caller alone. There is no
+key for it and no command for the fitting room: `WARDROBE.OFFER_POLICY` ships `first`,
+which hands the room to a character the game's own creator has just built, and after
+that the room is reached at a **clothing store** (see *Getting dressed*) or opened for
+a player by staff with `opx.admin.player.wardrobe`. A free command onto a room whose
+changes `modules/shops` prices would make the price optional, which is why
+`opx.appearance.wardrobe` was removed.
 
-The fitting-room command is not a convenience: `WARDROBE.OFFER_POLICY` ships `first`,
-which hands the room to a character the game's own creator has just built and to
-nobody else — so for a **returning** player the key, the panel's own `outfits →
-wardrobe` row and that command are the whole of the way in.
+The places — garages, dealers, stores, teleports and **lifts** — all use the same
+door: a rebindable key (**E** out of the box, one mapping per module) and a row on the
+key strip while the player stands at one. A configured elevator is adopted LOCKED,
+which refuses the game's own in-cabin button on purpose; its key (`KEY` in
+`config/elevators.lua`) opens the job-gated floor list instead, and the server
+re-checks the floor before the cabin moves.
 
 ### The garage key: out, and away
 
@@ -227,10 +233,15 @@ other player, so a salesperson sells face to face. Pressing it charges nobody: a
 money that leaves an account because somebody else clicked something is a support ticket
 whatever the salesperson meant by it. An offer carries its own name, so an answer to one
 that has been replaced buys nothing, and it expires on the server's clock with both
-sides told. On a yes the price is charged to the buyer, paid into the **company bank**
-of the seller's job (or gang, when they have no job) in `opx77_company_accounts`, and
-`SELLER_CUT_PERCENT` of it is paid to the seller as commission — rounded down, with the
-remainder to the company, because the other way round mints currency on every odd price.
+sides told. The buyer's yes leads to the same garage screen a counter sale has, so the
+car is filed under the garage the BUYER picks (or the vehicles module's default when
+they have none). On a yes the price is charged to the buyer, paid into the **company
+bank** of the seller's job (or gang, when they have no job) in `opx77_company_accounts`,
+and `SELLER_CUT_PERCENT` of it is paid to the seller as commission — rounded down, with
+the remainder to the company, because the other way round mints currency on every odd
+price. A company deposit that fails is not a failed sale and is not forgotten either:
+it is written to `opx77_company_pending` and a sweep, at boot and every minute, pays it
+in and strikes it off in one transaction, so a retry can never pay it twice.
 
 Dealers are written in `config/dealership.lua` under `SPOTS`. `/opx.dealership.add` and
 `/opx.dealership.remove` **are gone**, for the reason and with the same migration the
@@ -321,9 +332,9 @@ could read.
 **Opening the panel and using it are two different permissions, and the difference is
 one dot.** The host decides a line's permission from the word actually typed —
 `command.<word>` — so the opener is `command.opx.admin` and every action behind it is
-`command.opx.admin.<action>`. The module registers 57 restricted commands: the opener,
-and 56 actions under it (`opx.admin.self.noclip`, `opx.admin.player.goto`,
-`opx.admin.vehicle.spawn`, `opx.admin.recovery.money`, …). The matcher keeps the dot
+`command.opx.admin.<action>`. The module registers 56 restricted commands: the opener,
+and 55 actions under it (`opx.admin.self.noclip`, `opx.admin.player.goto`,
+`opx.admin.vehicle.spawn`, `opx.admin.weapon.holster`, …). The matcher keeps the dot
 and only a rule ENDING in `.*` is a prefix, so a role holding `command.opx.admin`
 alone opens the menu and is then refused by every row inside it — the operator watches
 a panel they cannot use, and no log line says why, because a refused command is not an
@@ -336,23 +347,9 @@ to open the panel and use it, `command.opx.garages.*`, `command.opx.dealership.*
 `command.opx.weather.*`,
 `command.opx.time` and `command.opx.time.*` for the world controls.
 
-**One right in this resource is NOT a `command.` at all**: `opx.dealership.place`,
-which gates the runtime path that places and removes a showroom car. It is written
-exactly like that, with no prefix, because it gates no command — the commands that used
-to place things were deleted, and a right named after one of them would gate nothing.
-`command.*` does not cover it and neither does `command.opx.dealership.*`; only `*`, or
-the right itself, does.
-
-**It currently opens nothing a player can reach.** The staff menu's Dev screen was its
-only caller and it was deleted on 2026-09-21 — a showroom car is config now — so the
-routeway is still wired and still refuses, but no surface in this resource sends
-anything down it. The grant is safe to revoke unless another resource is written
-against the dealership contract's `Place`/`Unplace`.
-
-Only the `admin`
-and `owner` roles the server supplies avoid the question — they are `command.*` and
-`*` — which is also why granting a human `admin` on a server that loads a diagnostic
-resource hands them `command.client.exec` with it. The file is the server's
+Only the `admin` and `owner` roles the server supplies avoid the question — they are
+`command.*` and `*` — which is also why granting a human `admin` on a server that
+loads a diagnostic resource hands them `command.client.exec` with it. The file is the server's
 `acl.jsonc`, named by `accessControl.file`; `acl.jsonc` is not in this repository, so
 the list above is the thing to copy into it.
 
@@ -399,33 +396,11 @@ whenever its own menu is up, and passes a cursor only when the SCREEN changed: a
 redraw keeps the player's position, a screen that replaced another gets the landing an
 open would have given it.
 
-### Recovery: money to a character
-
-The staff panel has a **Recovery** category, and it is two rows: give yourself eddies,
-or give them to a player you pick out of the roster. Both end in one command,
-`opx.admin.recovery.money <playerId|me> <TYPE> <amount>`, which is ACL-gated under its
-own name — `command.opx.admin.recovery.money` — because an operator trusted to unfreeze
-somebody is not automatically an operator trusted to write a balance.
-
-The command **owns no money**. Every call is one call into the `character` contract's
-`AddMoney`/`RemoveMoney`, so the balance, the `money:beforeAdd` hook that can veto the
-transaction and the audit row all stay in the module that owns them, and the answer
-names the balance the character holds *after* the mutation rather than one this file
-worked out. `me` is resolved from the connection, never from the line, so the row that
-says "give myself" cannot be aimed at anybody else; a lower-case account is upper-cased
-rather than refused; an amount is a whole number, may be negative — which takes money
-back through the same door — and is capped at ten digits, which is what the amount
-field beside it accepts. A refused transaction answers with the contract's own reason
-(`not_enough`, `bad_type`, `vetoed`, …) and moves nothing.
-
-The typed line works wherever a chat line does: `/opx.admin.recovery.money me EDDIES
-5000` pays the caller, and `/opx.admin.recovery.money 4 BANK 2500` pays player 4.
-
-**The panel asks for a taller window than the menu module's default.** Its root screen
-now has ten rows (the Recovery category is its own block) and the module's own window
-is nine, which drew the last row only after the operator scrolled — a category nobody
-finds. The staff panel therefore names `rows = 12` and `maxHeight = 72` at open, in
-`modules/admin/client/menu.lua`'s `draw`, and nothing else in the pack is affected.
+**The staff panel asks for a taller window than the menu module's default.** The staff
+tree is full of ten- and twenty-row screens and the module's own window is nine rows,
+which drew a tenth row only after the operator scrolled. The panel therefore names
+`rows = 12` and `maxHeight = 72` at open, in `modules/admin/client/menu.lua`'s `draw`,
+and nothing else in the pack is affected.
 
 ### A broadcast announcement, and the two clips around it
 
