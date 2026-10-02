@@ -8,11 +8,6 @@ OPX.Config.SERVER = {
 	-- the only way to find out that two things will fight over the same body.
 	CONFLICTING_PLACERS = { 'open77_playerstate', 'freeroam', 'pursuit', 'race' },
 
-	-- Numbers an operator may change while people are playing are re-declared as
-	-- tunables and read through those, not from here. These are the defaults.
-	AUTOSAVE_MS = 300000,
-	SAMPLE_MS = 1000,
-
 	-- Short spellings, so `opx.admin.self.noclip` can also be typed `noclip`.
 	--
 	-- THE LONG NAME IS THE COMMAND AND NOTHING HERE RENAMES IT. Every key below

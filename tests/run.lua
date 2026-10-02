@@ -11684,6 +11684,15 @@ do
 			pistol ~= nil and pistol.weapon.magazine > 0 and pistol.weapon.magazine <= 50,
 			pistol and tostring(pistol.weapon.magazine))
 
+		-- THE BOX IS WHAT A SLOT OF ROUNDS HOLDS. `AMMO.MAX` was read into the
+		-- catalogue and then by nothing, so a slot of rounds held MAX_STACK.
+		check('a slot of ammunition holds one box of it',
+			box ~= nil and inventory.Containers.StackLimit('ammo_handgun') == box.ammo.max,
+			tostring(inventory.Containers.StackLimit('ammo_handgun')))
+		check('while any other stackable item still stacks to MAX_STACK',
+			inventory.Containers.StackLimit('eddies') == inventory.Options.MAX_STACK
+				or inventory.Catalog.Get('eddies') == nil)
+
 		-- Every class that loads ammunition states one, checked across the whole
 		-- catalogue: one missing is one weapon that silently loads nothing.
 		local missing = {}

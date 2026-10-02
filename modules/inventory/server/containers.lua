@@ -147,12 +147,22 @@ function Containers.Weight(container)
 end
 
 --- How many units of an item one slot holds.
+--
+-- AMMUNITION STACKS TO ITS BOX. `AMMO.MAX` in `data/weapons.lua` is how many
+-- rounds fit in one box -- five hundred for a handgun -- and the catalogue read
+-- it into `entry.ammo.max`, where nothing read it: a slot of rounds held up to
+-- MAX_STACK like any other stack. It is that slot's ceiling now, never above
+-- MAX_STACK.
 -- @author dop42
 -- @param name string
 -- @return integer
 function Containers.StackLimit(name)
 	local entry = Catalog.Get(name)
-	if entry and entry.stackable then return Options.MAX_STACK end
+	if entry and entry.stackable then
+		local box = type(entry.ammo) == 'table' and entry.ammo.max or nil
+		if type(box) == 'number' and box >= 1 and box < Options.MAX_STACK then return box end
+		return Options.MAX_STACK
+	end
 	return 1
 end
 
