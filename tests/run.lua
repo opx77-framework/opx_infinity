@@ -27003,5 +27003,52 @@ do
 	end
 end
 
+-- ── a page that mounted before the calls module started ─────────────────────
+-- A page whose assets are warm in the CEF cache (every reconnection) reports
+-- `calls:ready` BEFORE the module has registered its page handlers; the surface
+-- holds that ready and replays it, synchronously, to the FIRST handler registered
+-- on it. `modules/calls/client/view.lua` registered its state-to-page handler
+-- AFTER that wiring loop, so the replayed ready drew its state into nothing and
+-- the hologram stayed empty until the next change.
+section('a page that mounted before the calls module started still gets its state')
+do
+	local env, control = Host.Environment('client')
+	local failure = nil
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk, why = loadfile(file, 't', env)
+		if not chunk then failure = why break end
+		local ok, raised = pcall(chunk)
+		if not ok then failure = raised break end
+	end
+	check('the client loads', failure == nil, failure)
+	if failure == nil then
+		control.Fire('onClientResourceStart', 'opx_infinity')
+		local frames = 0
+		while #control.pages == 0 and frames < 500 do
+			control.Pump(1)
+			frames = frames + 1
+		end
+		local page = control.pages[1]
+		check('the page exists before the calls module has started', page ~= nil
+			and not env.OPX.Modules.IsRunning('calls'), tostring(page))
+		if page ~= nil then
+			-- The warm cache: the page is up and the hologram reports ready now.
+			control.PageEmit(page, 'opx:ready', {})
+			control.PageEmit(page, 'opx:calls:ready', {})
+			control.Pump(240)
+			check('and it has started since', env.OPX.Modules.IsRunning('calls'))
+			local holo = nil
+			for _, one in ipairs(page.sent) do
+				if one.channel == 'opx:calls:holo' and type(one.payload) == 'table'
+					and one.payload.kind == 'holo' then
+					holo = one.payload
+					break
+				end
+			end
+			check('and the call hologram got its state from the replayed ready', holo ~= nil)
+		end
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
