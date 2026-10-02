@@ -12904,6 +12904,61 @@ do
 	end
 end
 
+section('elevators: a player can reach the floor list')
+do
+	-- THE PANEL HAD NO DOOR. Every adopted cabin is locked, which refuses the
+	-- vanilla in-cabin button by design, and the floor list that replaces that
+	-- button was only ever reachable through `OpenPanel` on the contract -- which
+	-- nothing called. A configured shaft was a lift nobody could ride.
+	local WHERE = { x = -1521.40, y = 892.75, z = 42.10 }
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots for the elevator door', cwhy == nil, cwhy)
+
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local M = OPX.Modules.Get('elevators')
+		local mapping = cctl.keyMappings.byId['opx.elevators.use']
+		check('the elevator key is declared to the host, so a player can rebind it',
+			mapping ~= nil and mapping.key == 'E', mapping and tostring(mapping.key))
+
+		cctl.placement.x, cctl.placement.y, cctl.placement.z = WHERE.x, WHERE.y, WHERE.z
+		cctl.lifts.nearby = { { id = 9, engineEntity = '0x00000000000000ab', managed = true,
+			position = { x = WHERE.x, y = WHERE.y, z = WHERE.z }, distance = 1.0,
+			floorCount = 12, activeFloor = 0 } }
+		local prompts = OPX.Api.Get('prompts')
+		local function rowUp()
+			local listed = prompts.List('elevators')
+			return listed.ok == true and listed.value.count == 1
+		end
+		check('standing at a configured lift posts the row naming the key',
+			settle(cctl, rowUp, 80))
+
+		local menu = OPX.Api.Get('menu')
+		local realOpen = menu.Open
+		local opened = {}
+		menu.Open = function(spec)
+			opened[#opened + 1] = spec
+			return realOpen(spec)
+		end
+		mapping.pressed()
+		menu.Open = realOpen
+		check('the key opens the floor list for that lift',
+			#opened == 1 and opened[1].id == 'elevators.arasaka_tower',
+			opened[1] and tostring(opened[1].id))
+		check('with one row per listed floor', opened[1] ~= nil and #opened[1].items == 5,
+			opened[1] and #opened[1].items)
+
+		-- Walking away takes the row down, so a key press elsewhere says why
+		-- instead of opening a list for a lift the player has left.
+		cctl.lifts.nearby = {}
+		cctl.placement.x = WHERE.x + 500
+		check('walking away takes the row down', settle(cctl, function() return not rowUp() end, 80))
+		local away = M.Door.Open('test')
+		check('and the key then answers that no lift is near',
+			away.ok == false and away.error == 'no_elevator_nearby', tostring(away.error))
+	end
+end
+
 -- ── eddies as an item ───────────────────────────────────────────────────────
 -- ONE PROPERTY, ASSERTED OVER EVERY PATH: total money before == total money
 -- after. A player's total is their EDDIES balance plus every note they are

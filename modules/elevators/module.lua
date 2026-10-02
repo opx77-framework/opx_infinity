@@ -10,6 +10,8 @@
 -- safely deleted. `character` is required, because the whole point is the job a
 -- character holds. `menu` and `downed` are optional: without the first there is
 -- no panel and everything else works, and the second only keeps the panel shut.
+-- `prompts` is optional too: it draws the row naming the key that opens the
+-- panel (`client/door.lua`), and without it the key still works.
 --
 -- LIVE CONFLICT: the official `open77_doors` depends on `open77_elevators`, which
 -- refuses a lift adopted by anything else. The platform rejects a different
@@ -21,7 +23,7 @@ local M = OPX.Modules.Declare{
 	side = 'both',
 	fatal = false,
 	requires = { 'character' },
-	optional = { 'menu', 'downed' },
+	optional = { 'menu', 'downed', 'prompts' },
 }
 
 local NET = OPX.Channel.NET

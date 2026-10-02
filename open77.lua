@@ -397,6 +397,7 @@ server_script "modules/elevators/server/main.lua"
 client_script "modules/elevators/client/state.lua"
 client_script "modules/elevators/client/main.lua"
 client_script "modules/elevators/client/panel.lua"
+client_script "modules/elevators/client/door.lua"
 client_script "modules/elevators/client/exports.lua"
 
 -- Teleports: operator-placed shortcuts to the parts of the map nobody can walk
