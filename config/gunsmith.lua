@@ -133,25 +133,34 @@ OPX.Config.MODULES.gunsmith = {
 
 			QUEUE = 4,
 
-			-- A RECIPE'S GRADE IS RAISED UNDER EVERY JOB THE DOOR NAMES, MaxTac's
-			-- included (`Access.Requirement`), so the two issue rounds ask for
-			-- nothing past the door itself. At GRADE 1 they asked the same Officer
-			-- rank the door already asks of NCPD -- and asked it of MaxTac too,
-			-- whose ladder is Operator (0) and Squad Lead (1): an Operator was let
-			-- in and could make nothing. The marksman rounds stay a Detective's,
-			-- which no MaxTac grade reaches: a rank the division does not have.
+			-- GRADE IS THE REQUIRED GRADE OF ONE RECIPE, and it is the operator's
+			-- knob, one per row: the minimum grade a character must hold, in the
+			-- job that opened the door, to order that recipe here. A whole number
+			-- from 0 to 255; an absent GRADE is 0, which asks for nothing past the
+			-- door itself. It is raised under EVERY job the door names, MaxTac's
+			-- included (`Access.Requirement`), and the SERVER asks it again on every
+			-- order -- the crafting module calls `canUse(player, recipeKey)` and
+			-- this module answers from here -- so a menu a client drew can never
+			-- make a round the configured grade does not allow.
+			--
+			-- THE ISSUE ROUNDS ASK FOR GRADE 1, the value they had before the RP
+			-- branch dropped them to 0: the owner decided the issue ammunition is
+			-- an Officer's to make, not a Cadet's. On MaxTac's ladder -- Operator
+			-- (0), Squad Lead (1) -- that is the Squad Lead; write GRADE = 0 on a
+			-- row to open it to every rank the door lets in. The marksman rounds
+			-- stay a Detective's, which no MaxTac grade reaches.
 			RECIPES = {
 				{ KEY = 'handgun_rounds', ICON = 'ammo',
 					LABEL = 'Service rounds',
 					INPUTS = { scrap_metal = 2 },
 					OUTPUT = 'ammo_handgun', COUNT = 60,
-					SECONDS = 120, PRICE = 0, GRADE = 0 },
+					SECONDS = 120, PRICE = 0, GRADE = 1 },
 
 				{ KEY = 'rifle_rounds', ICON = 'ammo',
 					LABEL = 'Patrol rifle rounds',
 					INPUTS = { scrap_metal = 3 },
 					OUTPUT = 'ammo_rifle', COUNT = 60,
-					SECONDS = 180, PRICE = 0, GRADE = 0 },
+					SECONDS = 180, PRICE = 0, GRADE = 1 },
 
 				{ KEY = 'sniper_rounds', ICON = 'ammo',
 					LABEL = 'Marksman rounds',

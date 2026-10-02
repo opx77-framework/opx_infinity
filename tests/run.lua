@@ -19266,6 +19266,79 @@ do
 	end
 end
 
+-- ── the recipe grade is the config's, and the server enforces it ────────────
+-- THE OWNER'S CALL: a recipe's required grade is a per-recipe config key
+-- (GRADE), the NCPD issue rounds ship at main's 1, and the order the SERVER
+-- takes is refused below it. Driven through the crafting contract's own
+-- `Order`, which is what a client's press reaches -- not through the access
+-- table -- and with the config rewritten before the module reads it, so the
+-- number under test is the config's and not a constant the check shares.
+section('gunsmith: a recipe\'s GRADE comes from config and the server enforces it')
+do
+	local shipped = {}
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		update = function() return 0 end,
+		query = function() return {} end,
+		single = function() return nil end,
+		insert = function() return 1 end,
+	}), nil, function(bootEnv, file)
+		if not file:find('config/gunsmith.lua', 1, true) then return end
+		local rows = bootEnv.OPX.Config.MODULES.gunsmith.ARMOURIES.ncpd_watson_armoury.RECIPES
+		for _, row in ipairs(rows) do
+			shipped[row.KEY] = row.GRADE
+			if row.KEY == 'handgun_rounds' then row.GRADE = 3 end
+		end
+	end)
+	check('the server boots with a rewritten recipe grade', why == nil, why)
+	check('the shipped NCPD issue rounds ask for grade 1, the value main had',
+		shipped.handgun_rounds == 1 and shipped.rifle_rounds == 1 and shipped.sniper_rounds == 2,
+		('%s %s %s'):format(tostring(shipped.handgun_rounds), tostring(shipped.rifle_rounds),
+			tostring(shipped.sniper_rounds)))
+
+	if why == nil then
+		local OPX = env.OPX
+		local M = OPX.Modules.Get('gunsmith')
+		local character = OPX.Modules.Get('character')
+		local crafting = OPX.Api.Get('crafting')
+		local bench = M.Access.Bench('ncpd_watson_armoury')
+
+		check('the access table reads the config\'s number, not a constant',
+			M.Access.Grade('ncpd_watson_armoury', 'handgun_rounds') == 3
+				and M.Access.Grade('ncpd_watson_armoury', 'rifle_rounds') == 1,
+			tostring(M.Access.Grade('ncpd_watson_armoury', 'handgun_rounds')))
+
+		local function seat(id, citizenId, grade)
+			control.Admit(id, 'account-' .. citizenId)
+			OPX.EnsureSession(id)
+			character.Players[id] = { PlayerData = {
+				citizenId = citizenId, source = id, userId = 'account-' .. citizenId,
+				jobs = { ncpd = grade },
+				job = { name = 'ncpd', grade = { level = grade }, onDuty = true },
+				money = { EDDIES = 0, BANK = 0 },
+			}, Functions = { UpdatePlayerData = function() end } }
+			character.Registry.byCitizenId[citizenId] = id
+			character.Registry.byUserId['account-' .. citizenId] = id
+			control.Stand(id, bench.x, bench.y, bench.z)
+		end
+		local benchKey = M.BENCH_PREFIX .. 'ncpd_watson_armoury'
+		seat(91, 'citizen-gs-detective', 2)
+		seat(92, 'citizen-gs-captain', 3)
+
+		local refused = crafting.Order(91, benchKey, 'handgun_rounds')
+		check('a Detective is refused the order the config put at grade 3, by the server',
+			refused ~= nil and refused.ok == false and refused.error == 'grade_too_low',
+			refused and tostring(refused.error))
+		local passed = crafting.Order(92, benchKey, 'handgun_rounds')
+		check('and a Captain passes the grade (and is stopped only by the empty bag)',
+			passed ~= nil and passed.error ~= 'grade_too_low' and passed.error ~= 'job_required',
+			passed and tostring(passed.error))
+		local rifle = crafting.Order(91, benchKey, 'rifle_rounds')
+		check('a recipe the config left at 1 is not held to the other row\'s grade',
+			rifle ~= nil and rifle.error ~= 'grade_too_low', rifle and tostring(rifle.error))
+	end
+end
+
 
 -- THE HAULING SECTIONS BELOW TEST THE MODULE, NOT THE SHIPPED MAP. They were
 -- written when every site was a placeholder and they survey `docks` themselves;
@@ -27811,9 +27884,12 @@ do
 		check('MaxTac Operator: the Watson lift opens the Bullpen and Holding, not Evidence',
 			floorsOpen('ncpd_watson', trooperId) == 'Street, Front Desk, Bullpen, Holding',
 			floorsOpen('ncpd_watson', trooperId))
-		check('MaxTac Operator: the armoury makes the issue rounds for them, and not the marksman rounds',
-			armouryDoor(trooperId) and mayMake(trooperId, 'handgun_rounds') and mayMake(trooperId, 'rifle_rounds')
-				and not mayMake(trooperId, 'sniper_rounds'))
+		-- THE ISSUE ROUNDS ASK FOR GRADE 1 (the owner's call, config/gunsmith.lua),
+		-- raised under MaxTac's ladder too: the door is open to an Operator and
+		-- the rounds are a Squad Lead's.
+		check('MaxTac Operator: the armoury door opens, and no recipe past their grade does',
+			armouryDoor(trooperId) and not mayMake(trooperId, 'handgun_rounds')
+				and not mayMake(trooperId, 'rifle_rounds') and not mayMake(trooperId, 'sniper_rounds'))
 		check('MaxTac Operator: the tailor hands out the field kit', looks(trooperId) == 'maxtac_field_kit',
 			looks(trooperId))
 		check('MaxTac Operator: the scanner hears every band', scanner(trooperId) == 'ncpd tactical maxtac air',
