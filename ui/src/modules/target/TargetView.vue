@@ -1050,7 +1050,7 @@ onUnmounted(() => {
                  on each one and read as the rows trickling in, where the menu's
                  buttons just appear. -->
             <div
-              v-for="(entry, at) in col.entries"
+              v-for="entry in col.entries"
               :key="entry.kind === 'folder' ? `d:${entry.name}` : `r:${entry.row.token}`"
               class="slot op-enter"
               style="--op-slot: 0"
