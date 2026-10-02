@@ -162,6 +162,54 @@ local function leaveGroup(player, groupType, name)
 	return Result.Ok(true)
 end
 
+--- Tells the other modules, and every other resource, where a character's
+--- primary job or gang now stands.
+--
+-- ONE FUNCTION PER GROUP TYPE, and every change goes through it -- a set, a
+-- duty change and a removal alike. A removal used to say nothing at all on the
+-- internal bus: a module keeping a roster of who is on duty in a job learned
+-- about a hire and a promotion and never about a firing, so the fired employee
+-- stayed on its list until they logged out.
+-- @param player Player
+-- @param groupType string job or gang
+-- @param removed string|nil the membership that was just dropped
+local function announceGroup(player, groupType, removed)
+	local data = player.PlayerData
+	local current = groupType == 'job' and data.job or data.gang
+	TriggerEvent(groupType == 'job' and M.Event.IN_JOB or M.Event.IN_GANG, data.source, current)
+	OPX.Publish(groupType == 'job' and M.Event.ON_JOB or M.Event.ON_GANG, data.source, {
+		citizenId = data.citizenId,
+		[groupType] = OPX.Table.DeepCopy(current),
+		removed = removed,
+		offline = player.Offline == true,
+	})
+end
+
+--- Asks the hooks whether a primary job or gang may change, before anything is
+--- written.
+--
+-- `job:beforeSet` and `gang:beforeSet`, beside the three money hooks and with
+-- their shape: an explicit `false` from any hook refuses the change with
+-- `job.vetoed` / `gang.vetoed`, and nothing at all is written. The payload names
+-- the character -- `player`, which is an offline Player for a character nobody
+-- is playing, so `offline` says which -- and what it would become. A whitelist
+-- of who may hold a job, or a cooldown between promotions, is a hook rather
+-- than a fork of this file.
+-- @param player Player
+-- @param groupType string job or gang
+-- @param resolved table the ResolveJob/ResolveGang shape it would become
+-- @return boolean
+local function allowedToSet(player, groupType, resolved)
+	return OPX.Hooks.Trigger(groupType .. ':beforeSet', {
+		player = player,
+		citizenId = player.PlayerData.citizenId,
+		offline = player.Offline == true,
+		name = resolved.name,
+		grade = resolved.grade.level,
+		previous = groupType == 'job' and player.PlayerData.job or player.PlayerData.gang,
+	})
+end
+
 --- Makes a job at a grade the primary one, joining it if need be.
 -- Duty comes from the job's own `defaultDuty` rather than being carried over --
 -- when the JOB changes. A new grade in the job already being worked keeps the
@@ -175,6 +223,9 @@ function M.Groups.SetJob(identifier, name, grade)
 	return withCharacter(identifier, 'job', function(player)
 		local resolved = M.Groups.ResolveJob(name, grade)
 		if not resolved.ok then return resolved end
+		if not allowedToSet(player, 'job', resolved.value) then
+			return Result.Err('job.vetoed', name)
+		end
 
 		local joined = joinGroup(player, 'job', name, resolved.value.grade.level)
 		if not joined.ok then return joined end
@@ -199,7 +250,7 @@ function M.Groups.SetJob(identifier, name, grade)
 		if not player.Offline then
 			TriggerClientEvent(M.Event.JOB, player.PlayerData.source, resolved.value)
 		end
-		TriggerEvent(M.Event.IN_JOB, player.PlayerData.source, resolved.value)
+		announceGroup(player, 'job')
 
 		OPX.Audit.Player(player, 'job.set', ('%s grade %d'):format(name, resolved.value.grade.level))
 		return Result.Ok(resolved.value)
@@ -228,7 +279,7 @@ function M.Groups.SetJobDuty(identifier, onDuty)
 			TriggerClientEvent(M.Event.JOB, player.PlayerData.source, job)
 			OPX.NotifyLocale(player.PlayerData.source, job.onDuty and 'job.onDuty' or 'job.offDuty')
 		end
-		TriggerEvent(M.Event.IN_JOB, player.PlayerData.source, job)
+		announceGroup(player, 'job')
 		return Result.Ok(job.onDuty)
 	end)
 end
@@ -309,6 +360,7 @@ function M.Groups.RemovePlayerFromJob(identifier, name)
 		end
 
 		if not announced then player.Functions.UpdatePlayerData() end
+		announceGroup(player, 'job', name)
 
 		OPX.Audit.Player(player, 'job.removed', name)
 		return Result.Ok(true)
@@ -339,6 +391,9 @@ function M.Groups.SetGang(identifier, name, grade)
 	return withCharacter(identifier, 'gang', function(player)
 		local resolved = M.Groups.ResolveGang(name, grade)
 		if not resolved.ok then return resolved end
+		if not allowedToSet(player, 'gang', resolved.value) then
+			return Result.Err('gang.vetoed', name)
+		end
 
 		local joined = joinGroup(player, 'gang', name, resolved.value.grade.level)
 		if not joined.ok then return joined end
@@ -349,7 +404,7 @@ function M.Groups.SetGang(identifier, name, grade)
 		if not player.Offline then
 			TriggerClientEvent(M.Event.GANG, player.PlayerData.source, resolved.value)
 		end
-		TriggerEvent(M.Event.IN_GANG, player.PlayerData.source, resolved.value)
+		announceGroup(player, 'gang')
 
 		OPX.Audit.Player(player, 'gang.set',
 			('%s grade %d'):format(name, resolved.value.grade.level))
@@ -398,6 +453,7 @@ function M.Groups.RemovePlayerFromGang(identifier, name)
 		end
 
 		if not announced then player.Functions.UpdatePlayerData() end
+		announceGroup(player, 'gang', name)
 
 		OPX.Audit.Player(player, 'gang.removed', name)
 		return Result.Ok(true)

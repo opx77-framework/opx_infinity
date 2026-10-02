@@ -59,10 +59,24 @@ local function resolveId(token)
 	return nil
 end
 
---- A plate a caller handed in, when it is one this module could have written.
+--- A plate a caller handed in, byte for byte, when it is one a key can carry.
+--
+-- PRINTABLE ASCII, KEPT EXACTLY AS IT CAME. This used to be `^[%w%-]+$`, which
+-- is what this module and `vehicles` draw today -- and a legacy row whose plate
+-- has a space or a dot in it (`ABC 123`, `NC.2077`) was refused, so the garage's
+-- `Ensure` answered `error.badRequest` and the OWNER of that car never got a
+-- key. The column is `VARCHAR(12) ascii_bin`, so printable ASCII is the whole
+-- set a real plate can hold.
+--
+-- NOT NORMALISED. Uppercasing or stripping the space would make a key that
+-- names a plate no row and no live vehicle has: `vehicles.LiveId` and the bag's
+-- `CountWhere` both match the string exactly, so a "cleaned" plate is a key
+-- that opens nothing. Refused are only what cannot be a plate at all: control
+-- characters (a newline in a log line forges one), non-ASCII, nothing but
+-- blanks, and anything longer than a minted plate could be.
 local function plateOf(value)
 	if type(value) ~= 'string' or #value < 1 or #value > 16 then return nil end
-	if not value:match('^[%w%-]+$') then return nil end
+	if not value:match('^[\32-\126]+$') or not value:find('%S') then return nil end
 	return value
 end
 
@@ -245,6 +259,63 @@ function M.Ensure(target, plate, model)
 	return given
 end
 
+--- Takes every key to one plate out of one bag.
+-- @author dop42
+--
+-- EVERY KEY, by plate and whatever its label says: a label is written in the
+-- language and with the model name of the day it was cut, and a key that
+-- survived a revoke because its label was spelled differently is a key that
+-- still opens the car. Only the bag: a key left in a stash or a boot is a key
+-- nobody is carrying, and `RevokeAll` says so in its answer.
+-- @param target Source|CitizenId
+-- @param plate string
+-- @return Result { plate, removed }
+function M.Revoke(target, plate)
+	if inventory == nil then return Result.Err('vehiclekeys.unavailable', 'no inventory') end
+	if type(inventory.RemoveWhere) ~= 'function' then
+		return Result.Err('vehiclekeys.unavailable', 'the inventory cannot remove by metadata')
+	end
+	plate = plateOf(plate)
+	if plate == nil then return Result.Err('error.badRequest', 'plate') end
+	local removed = inventory.RemoveWhere(target, M.ITEM, { plate = plate })
+	if type(removed) ~= 'table' or not removed.ok then
+		return Result.Err('vehiclekeys.unavailable',
+			type(removed) == 'table' and tostring(removed.error) or 'failed')
+	end
+	return Result.Ok({ plate = plate, removed = removed.value })
+end
+
+--- Takes every key to one plate out of every bag in the world.
+-- @author dop42
+--
+-- Every LOADED character, which is every bag that can turn a lock right now: a
+-- key only works in the hand of somebody standing beside the car. An offline
+-- character's bag is not walked -- that is a query over every row ever written,
+-- not a revoke -- so a caller re-keying a car for good also changes its plate,
+-- which is the identity every key names.
+-- @param plate string
+-- @return Result { plate, removed, holders }
+function M.RevokeAll(plate)
+	plate = plateOf(plate)
+	if plate == nil then return Result.Err('error.badRequest', 'plate') end
+	local character = OPX.Api.Get('character')
+	if character == nil then return Result.Err('vehiclekeys.unavailable', 'no character') end
+	local players = character.GetPlayers()
+	local removed, holders = 0, 0
+	for index = 1, #players do
+		local source = players[index].PlayerData.source
+		local answer = M.Revoke(source, plate)
+		if not answer.ok then return answer end
+		if answer.value.removed > 0 then
+			removed = removed + answer.value.removed
+			holders = holders + 1
+		end
+	end
+	OPX.Audit.Log({ event = 'vehiclekeys.revokeAll', message = plate,
+		data = { plate = plate, removed = removed, holders = holders } })
+	return Result.Ok({ plate = plate, removed = removed, holders = holders })
+end
+
 --- Whether a connection stands within reach of a vehicle, or sits in it.
 -- Both positions are the host's. A seat counts wherever the car is: a driver
 -- locking the doors from inside is the commonest use of a key there is.
@@ -299,7 +370,8 @@ function M.Toggle(source, vehicleId)
 	end
 
 	local host = Open77.vehicles
-	if type(host.isLocked) ~= 'function' or type(host.setLocked) ~= 'function' then
+	if type(host) ~= 'table' or type(host.isLocked) ~= 'function'
+		or type(host.setLocked) ~= 'function' then
 		return Result.Err('vehiclekeys.lockRefused', 'no lock native on this build')
 	end
 	local read, current = pcall(host.isLocked, vehicleId)
@@ -310,11 +382,18 @@ function M.Toggle(source, vehicleId)
 	-- `setLocked` and NOT `setLockedForAll`: it moves the canonical bit and
 	-- nothing else, so a per-player exception another resource granted survives a
 	-- key turned by somebody else. This module grants none of its own.
-	local ok, reason = host.setLocked(vehicleId, not locked)
-	if ok ~= true then
+	--
+	-- UNDER PCALL, like `isLocked` above it. Called bare, a raise -- a vehicle
+	-- removed between the read and the write, an argument a build rejects --
+	-- unwound the thread `onToggleRequested` started for it: no toast, no log
+	-- line, a key that did nothing and said nothing. A raise is now one more
+	-- refusal, read as the `false, reason` the card documents.
+	local called, ok, reason = pcall(host.setLocked, vehicleId, not locked)
+	if not called or ok ~= true then
+		local why = called and tostring(reason) or ('raised: ' .. tostring(ok))
 		Open77.log.warn(('[vehiclekeys] setLocked(%s, %s) refused: %s')
-			:format(tostring(vehicleId), tostring(not locked), tostring(reason)))
-		return Result.Err('vehiclekeys.lockRefused', tostring(reason))
+			:format(tostring(vehicleId), tostring(not locked), OPX.Text.Clean(why, 120, '...') or ''))
+		return Result.Err('vehiclekeys.lockRefused', why)
 	end
 	-- The chirp is the answer everybody standing there hears, and it is only ever
 	-- a nicety: a build that refuses it has still locked the car.
@@ -384,6 +463,8 @@ function M.Api()
 		GiveFor = M.GiveFor,
 		Ensure = M.Ensure,
 		Toggle = M.Toggle,
+		Revoke = M.Revoke,
+		RevokeAll = M.RevokeAll,
 	})
 end
 

@@ -53,8 +53,8 @@ local cooling = {}
 -- `crates` and `Claim` knows nothing of it.
 local sales = {}
 
--- The seller NPCs, by id as a decimal string -> `{ id, site, dropoff }`. One per
--- drop-off that declares an NPC.
+-- The seller NPCs, by id as a decimal string -> `{ id, site, dropoff, bucket }`.
+-- One per drop-off that declares an NPC.
 local sellers = {}
 
 -- Players handed the snapshot, so a delta reaches all of them and a release tells
@@ -555,7 +555,8 @@ local function spawnSellers()
 					-- A DECIMAL STRING, never a number on the wire: the id is 64-bit
 					-- and a double would hand the client a different NPC.
 					local key = math.type(id) == 'integer' and ('%d'):format(id) or tostring(id)
-					sellers[key] = { id = id, site = siteKey, dropoff = dropoff.key }
+					sellers[key] = { id = id, site = siteKey, dropoff = dropoff.key,
+						bucket = Access.Bucket(siteKey) }
 					placed[slot] = true
 					added = true
 				else
@@ -688,7 +689,31 @@ local function vehicleAt(vehicleId)
 	local at = type(snapshot.position) == 'table' and snapshot.position or snapshot
 	local x, y, z = coordinate(at.x), coordinate(at.y), coordinate(at.z)
 	if x == nil or y == nil or z == nil then return nil end
-	return { id = snapshot.id or vehicleId, record = snapshot.record, x = x, y = y, z = z }
+	-- THE BUCKET RIDES ALONG. Every reach test against a vehicle compared distance
+	-- only, so a truck parked on the same spot in another routing bucket -- an
+	-- instance, a character-select bucket -- was a truck the player could load
+	-- into without ever seeing it. `vehiclekeys` refuses the same case for a lock
+	-- (snapshot `bucket` against `players.position().bucket`); this is that rule.
+	return { id = snapshot.id or vehicleId, record = snapshot.record, x = x, y = y, z = z,
+		bucket = integer(snapshot.bucket) or 0 }
+end
+
+--- A vehicle subject off the wire, in the shape the host answers to.
+-- A DECIMAL STRING is how the client sends it, because a vehicle id carries a
+-- generation and can pass 2^53, where a JSON number stops being exact -- the
+-- reason `modules/vehiclekeys` and the trunk screen send one. A string of digits
+-- is read back as the integer the host keys by; anything else is handed on as it
+-- came, and the host's own `get` decides whether it names a vehicle.
+local function vehicleSubject(subject)
+	if type(subject) == 'string' and #subject <= 19 and subject:match('^%d+$') then
+		local number = math.tointeger(tonumber(subject))
+		if number ~= nil and number > 0 then return number end
+	end
+	if math.type(subject) == 'float' then
+		local number = math.tointeger(subject)
+		if number ~= nil then return number end
+	end
+	return subject
 end
 
 --- The job fields of a loaded character, stamped at `atMs`, or nil.
@@ -779,10 +804,12 @@ local function beginLoad(player, vehicleId)
 	if crate == nil then return false, 'not_carrying' end
 	if crate.where ~= Where.CARRIED then return false, 'not_carrying' end
 
+	vehicleId = vehicleSubject(vehicleId)
 	local vehicle = vehicleAt(vehicleId)
 	if vehicle == nil then return false, 'no_such_vehicle' end
 	local here = standing(player)
 	if here == nil then return false, 'no_position' end
+	if here.bucket ~= vehicle.bucket then return false, 'wrong_bucket' end
 	local gap = Access.GapSquared(here, vehicle)
 	if gap == nil or gap > Access.VEHICLE_REACH_SQ then return false, 'too_far' end
 
@@ -931,6 +958,113 @@ local function stockFor(player, site, dropoff, bucket)
 	return out, total
 end
 
+--- Calls one inventory contract function and answers whether it took, and the
+--- inventory's word when it did not. A raise is a refusal, never a lost thread.
+-- @return boolean
+-- @return string|nil
+local function stored(fn, ...)
+	if type(fn) ~= 'function' then return false, 'no_function' end
+	local called, result = pcall(fn, ...)
+	if not called then return false, 'raised: ' .. tostring(result) end
+	if type(result) == 'table' and result.ok then return true, nil end
+	return false, type(result) == 'table' and tostring(result.error) or 'refused'
+end
+
+--- The citizen id behind a connection, for an audit line, or nil.
+local function citizenOf(player)
+	local api = OPX.Api.Get('character')
+	if api == nil or type(api.GetPlayer) ~= 'function' then return nil end
+	local read, loaded = pcall(api.GetPlayer, player)
+	if not read or type(loaded) ~= 'table' or type(loaded.PlayerData) ~= 'table' then return nil end
+	return loaded.PlayerData.citizenId
+end
+
+--- Puts back what a sale took when the pay refused, and answers how many crates
+--- could not be put back anywhere.
+--
+-- THE PUT-BACK USED TO BE TRUSTED. Every inventory call it made yields, and the
+-- world moves meanwhile: the owner locks the truck from the seat (`locked`), the
+-- bag fills from a trade (`no_room`). Each refusal was dropped on the floor, so a
+-- sale the wallet refused could leave the player with no crates AND no money and
+-- not one line anywhere saying so.
+--
+-- Now a crate that will not go back where it came from tries the bag, then every
+-- other trunk the sale took from, ONE AT A TIME so a bag with room for two of
+-- five still keeps two. What fits nowhere is written to the journal at error and
+-- to the audit, with the site, the count and what it would have paid, so staff
+-- can refund it from one line.
+-- @return integer crates lost
+local function restore(inventory, player, taken, tag, sale, dropoff, each)
+	--- One destination as a function of a count: the bag, or a trunk by id.
+	local function into(vehicle)
+		if vehicle == nil then
+			return function(count) return stored(inventory.AddItem, player, Access.ITEM, count, tag) end
+		end
+		-- No `player`: this is a put-back into the trunk the item came out of a
+		-- second ago, and not the player reaching into somebody's boot.
+		return function(count)
+			return stored(inventory.AddToTrunk, vehicle, Access.ITEM, count, tag)
+		end
+	end
+	local function name(vehicle)
+		return vehicle == nil and 'the bag' or ('the trunk of ' .. safe(vehicle))
+	end
+
+	local lost = 0
+	for _, source in ipairs(taken) do
+		local home = into(source.vehicle)
+		local back, why = home(source.count)
+		if not back then
+			-- Every other place this player's crates were, in the order the sale
+			-- found them, the bag first because nothing locks it.
+			local fallbacks = {}
+			if source.vehicle ~= nil then fallbacks[#fallbacks + 1] = { vehicle = nil } end
+			for _, other in ipairs(taken) do
+				if other.vehicle ~= nil and other.vehicle ~= source.vehicle then
+					fallbacks[#fallbacks + 1] = { vehicle = other.vehicle }
+				end
+			end
+			local missing = 0
+			for _ = 1, source.count do
+				local placed = home(1)
+				local where = source.vehicle
+				local index = 1
+				while not placed and index <= #fallbacks do
+					where = fallbacks[index].vehicle
+					placed = into(where)(1)
+					index = index + 1
+				end
+				if placed and where ~= source.vehicle then
+					Open77.log.warn(('[hauling] player %d: a crate of %s from %s went back into ' ..
+						'%s instead (%s)'):format(player, safe(sale.site), name(source.vehicle),
+						name(where), safe(why)))
+				elseif not placed then
+					missing = missing + 1
+				end
+			end
+			if missing > 0 then
+				lost = lost + missing
+				Open77.log.error(('[hauling] CRATES LOST: player %d sold %d crate(s) of %s at %s, ' ..
+					'was not paid, and they could not be put back in %s or anywhere else (%s). ' ..
+					'Refund %d %s'):format(player, missing, safe(sale.site), safe(dropoff.key),
+					name(source.vehicle), safe(why), each * missing, safe(Access.CURRENCY)))
+				OPX.Audit.Log({
+					event = 'hauling.crateLost',
+					severity = 'error',
+					message = ('%d crate(s) of %s lost after an unpaid sale'):format(missing,
+						tostring(sale.site)),
+					data = { site = sale.site, dropoff = dropoff.key, count = missing,
+						from = source.vehicle ~= nil and tostring(source.vehicle) or 'bag',
+						refund = each * missing, currency = Access.CURRENCY, error = why },
+					source = player,
+					citizenId = citizenOf(player),
+				})
+			end
+		end
+	end
+	return lost
+end
+
 --- Begins the sale bar at a seller NPC.
 local function beginSale(player, npcId)
 	local whole = math.type(npcId) == 'integer' and npcId or nil
@@ -946,13 +1080,17 @@ local function beginSale(player, npcId)
 	if dropoff == nil then return false, 'no_such_seller' end
 	local here = standing(player)
 	if here == nil then return false, 'no_position' end
+	-- THE SELLER'S BUCKET, which is the site's: the NPC was created there, and a
+	-- player on the same spot in another bucket has no seller in front of them.
+	if here.bucket ~= seller.bucket then return false, 'wrong_bucket' end
 	local gap = Access.GapSquared(here, dropoff)
 	if gap == nil or gap > Access.VEHICLE_REACH_SQ then return false, 'too_far' end
 
 	local _, total = stockFor(player, seller.site, dropoff, here.bucket)
 	if total <= 0 then return false, 'no_crates' end
 
-	sales[player] = { site = seller.site, dropoff = seller.dropoff, startedAtMs = OPX.Now() }
+	sales[player] = { site = seller.site, dropoff = seller.dropoff, bucket = seller.bucket,
+		startedAtMs = OPX.Now() }
 	runBar(player, Step.DELIVER, tostring(npcId), seller.site)
 	return true
 end
@@ -973,6 +1111,7 @@ local function completeSale(player, sale)
 	if dropoff == nil then return false, 'no_such_seller' end
 	local here = standing(player)
 	if here == nil then return false, 'no_position' end
+	if here.bucket ~= sale.bucket then return false, 'wrong_bucket' end
 	local gap = Access.GapSquared(here, dropoff)
 	if gap == nil or gap > Access.VEHICLE_REACH_SQ then return false, 'too_far' end
 
@@ -987,42 +1126,44 @@ local function completeSale(player, sale)
 	local stock = stockFor(player, sale.site, dropoff, here.bucket)
 	local taken, sold = {}, 0
 	for _, source in ipairs(stock) do
+		-- Through `stored`: a raise here, after an earlier source was already
+		-- taken, would end the handler with those crates gone and nothing paid.
 		local removed = source.vehicle == nil
-			and inventory.RemoveItem(player, Access.ITEM, source.count, tag)
-			or inventory.RemoveFromTrunk(source.vehicle, Access.ITEM, source.count, tag, player)
-		if type(removed) == 'table' and removed.ok then
+			and stored(inventory.RemoveItem, player, Access.ITEM, source.count, tag)
+			or stored(inventory.RemoveFromTrunk, source.vehicle, Access.ITEM, source.count, tag,
+				player)
+		if removed then
 			taken[#taken + 1] = source
 			sold = sold + source.count
 		end
 	end
 	if sold <= 0 then return false, 'no_crates' end
 
-	--- Puts back what was taken, when the pay refused.
-	local function restore()
-		for _, source in ipairs(taken) do
-			if source.vehicle == nil then
-				inventory.AddItem(player, Access.ITEM, source.count, tag)
-			else
-				inventory.AddToTrunk(source.vehicle, Access.ITEM, source.count, tag)
-			end
-		end
-	end
-
 	-- THE TUNABLE IS READ HERE, at the sale. It was declared `apply = 'live'` and
 	-- read by nobody, so the panel moved a number that paid nothing different.
 	local tuned = OPX.Tune.Get('HAUL_PAY_PER_CRATE')
 	tuned = type(tuned) == 'number' and math.tointeger(tuned) or nil
-	local pay = Access.Pay(sale.site, tuned) * sold
+	local each = Access.Pay(sale.site, tuned)
+	local pay = each * sold
 	local called, paid, why = pcall(character.AddMoney, player, Access.CURRENCY, pay,
 		('hauling:%s:%s'):format(tostring(sale.site), tostring(dropoff.key)))
 	if not called or paid ~= true then
 		Open77.log.warn(('[hauling] player %d sold %d crate(s) at %s and was not paid: %s')
 			:format(player, sold, safe(dropoff.key), safe(called and why or paid)))
-		restore()
-		return false, 'not_paid'
+		local lost = restore(inventory, player, taken, tag, sale, dropoff, each)
+		return false, lost > 0 and 'not_paid_lost' or 'not_paid'
 	end
 	Open77.log.info(('[hauling] player %d sold %d crate(s) of %s at %s for %d')
 		:format(player, sold, safe(sale.site), safe(dropoff.key), pay))
+	OPX.Publish(M.Event.ON_SOLD, player, {
+		citizenId = citizenOf(player),
+		site = sale.site,
+		dropoff = dropoff.key,
+		count = sold,
+		pay = pay,
+		each = each,
+		currency = Access.CURRENCY,
+	})
 	OPX.NotifyLocale(player, 'hauling.paid',
 		{ amount = pay, count = sold, dropoff = dropoff.label }, 'success')
 	return true
@@ -1114,6 +1255,7 @@ local function complete(player)
 		if vehicle == nil then return false, 'no_such_vehicle' end
 		local here = standing(player)
 		if here == nil then return false, 'no_position' end
+		if here.bucket ~= vehicle.bucket then return false, 'wrong_bucket' end
 		local gap = Access.GapSquared(here, vehicle)
 		if gap == nil or gap > Access.VEHICLE_REACH_SQ then return false, 'too_far' end
 		local inventory = inventoryApi()

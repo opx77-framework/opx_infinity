@@ -29,6 +29,9 @@ OPX.Locale.Register('en', {
 
 	['chat.invalidMessage'] = 'That message could not be read.',
 	['chat.noView'] = 'The chat box is not drawn yet.',
+	['chat.invalidKind'] = 'That is not a kind of chat line.',
+	['chat.noPlayer'] = 'Nobody is connected under that id.',
+	['chat.invalidScope'] = 'That broadcast names no place it could reach.',
 	['chat.invalidCommand'] = 'That command name could not be read.',
 })
 
@@ -56,5 +59,8 @@ OPX.Locale.Register('fr', {
 
 	['chat.invalidMessage'] = "Ce message n'a pas pu être lu.",
 	['chat.noView'] = "La boîte de chat n'est pas encore dessinée.",
+	['chat.invalidKind'] = "Ce n'est pas un type de ligne de chat.",
+	['chat.noPlayer'] = "Personne n'est connecté sous cet identifiant.",
+	['chat.invalidScope'] = "Cette diffusion ne désigne aucun endroit qu'elle puisse atteindre.",
 	['chat.invalidCommand'] = "Ce nom de commande n'a pas pu être lu.",
 })

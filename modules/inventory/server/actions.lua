@@ -169,6 +169,16 @@ function Actions.Use(source, slot)
 		status = use.status,
 		animation = use.animation,
 	})
+	-- AFTER THE FACT, and that is the whole contract: an item used is an item
+	-- that was already consumed. A resource that wants to DECIDE a use is a
+	-- `RegisterUsable` handler inside this resource; the bus cannot answer back.
+	OPX.Publish(M.Event.ON_USED, source, {
+		citizenId = Players.Citizen(source),
+		name = entry.name,
+		slot = slot,
+		consumed = consume,
+		metadata = Common.Copy(entry.metadata),
+	})
 	return true, nil
 end
 

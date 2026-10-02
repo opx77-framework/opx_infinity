@@ -47,10 +47,12 @@ OPX.Locale.Register('en', {
 	['job.offDuty'] = 'You are off duty.',
 	['job.noDuty'] = 'That job has no shifts to clock into.',
 	['job.notMember'] = 'You do not work that job.',
+	['job.vetoed'] = 'That job change was blocked.',
 
 	['gang.notFound'] = 'No such gang.',
 	['gang.gradeNotFound'] = 'That gang has no such grade.',
 	['gang.notMember'] = 'You are not in that gang.',
+	['gang.vetoed'] = 'That gang change was blocked.',
 
 	['error.notLoggedIn'] = 'You are not in the world yet.',
 
@@ -136,10 +138,12 @@ OPX.Locale.Register('fr', {
 	['job.offDuty'] = "Vous n'etes plus en service.",
 	['job.noDuty'] = "Ce metier n'a pas de service a prendre.",
 	['job.notMember'] = "Vous n'exercez pas ce metier.",
+	['job.vetoed'] = 'Ce changement de metier a ete bloque.',
 
 	['gang.notFound'] = "Ce gang n'existe pas.",
 	['gang.gradeNotFound'] = "Ce gang n'a pas ce grade.",
 	['gang.notMember'] = "Vous n'etes pas dans ce gang.",
+	['gang.vetoed'] = 'Ce changement de gang a ete bloque.',
 
 	['error.notLoggedIn'] = "Vous n'etes pas encore en jeu.",
 

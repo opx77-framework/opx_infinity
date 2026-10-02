@@ -3,10 +3,10 @@
 --
 -- The owner calls it "appel vision". It is Cyberpunk's own holocall, wired
 -- between two -- or three -- connected players instead of between V and a quest
--- NPC: somebody places a call, the other party's screen shows a small curved
--- card at the EDGE of the view, and they answer or refuse it on the target eye
--- rather than on a key of its own. While the call runs both parties' eyes carry
--- the game's authored blue glow.
+-- NPC: somebody places a call, the other party's hologram sphere pops at the
+-- bottom of the view with the caller's name in it, and they answer or refuse it
+-- on a key without opening anything. While the call runs both parties' eyes
+-- carry the game's authored blue glow.
 --
 -- THE CALL IS A SERVER OBJECT AND THE CLIENT DECIDES NOTHING. That is not a
 -- style rule here, it is what makes the feature possible at all: two machines
@@ -29,7 +29,7 @@
 -- ONE CALL AT A TIME, ONE INVITE OUT, ONE INVITE IN. A player is in at most one
 -- call, has at most one invite outstanding and at most one waiting for an
 -- answer. The last of the three is the one that is really a UI decision made
--- honest: the incoming card shows ONE call, so a second would have to be
+-- honest: the sphere shows ONE incoming call, so a second would have to be
 -- queued, stacked or dropped -- and a queue of calls somebody never sees is
 -- worse than a refusal the caller reads immediately.
 --
@@ -65,15 +65,21 @@ M.Event = {
 	STATE = OPX.Event(NET, 'calls', 'state'),
 
 	-- Ask for the state again. Sent on start, on a world entry, and by the
-	-- re-pop button when a player dismissed the card and wants it back.
+	-- page's mount handshake, so a reloaded page is told the call it is on.
 	READY = OPX.Event(NET, 'calls', 'ready'),
 
-	-- The four verbs a client may ask for. Each carries the least it can: an
+	-- The five verbs a client may ask for. Each carries the least it can: an
 	-- invite names a target, an answer names the invite it answers.
 	INVITE = OPX.Event(NET, 'calls', 'invite'),
 	ACCEPT = OPX.Event(NET, 'calls', 'accept'),
 	DECLINE = OPX.Event(NET, 'calls', 'decline'),
+	-- Leaves the call; with no call, withdraws the invite still ringing out.
 	HANG_UP = OPX.Event(NET, 'calls', 'hangup'),
+	-- Withdraws the invite still ringing out and touches no call. ITS OWN VERB
+	-- because the two used to share `HANG_UP`, and the server read "on a call"
+	-- first: a player on a live call who had just asked a third person to join
+	-- pressed X to take the invite back and ended their own call instead.
+	WITHDRAW = OPX.Event(NET, 'calls', 'withdraw'),
 
 	-- The menu's list, asked for and answered. The owner wanted a third
 	-- participant addable "par le menu ou par le ALT", and the ALT path needs
@@ -88,8 +94,9 @@ M.Event = {
 	ASK_ROSTER = OPX.Event(NET, 'calls', 'roster'),
 	ROSTER = OPX.Event(NET, 'calls', 'contacts'),
 
-	-- Client-local: the state half to whatever draws it. One channel carrying a
-	-- `kind`, the way `modules/downed/client/view.lua` explains at length.
+	-- Client-local: the state half to the hologram. One channel carrying a
+	-- `kind`, the way `modules/downed/client/view.lua` explains at length; the
+	-- only kind left is `holo`, since the overlay card that took `state` went.
 	VIEW = OPX.Event(LOCAL, 'calls', 'view'),
 }
 
@@ -100,4 +107,5 @@ M.Operation = {
 	INVITE = 'calls.invite',
 	ANSWER = 'calls.answer',
 	HANG_UP = 'calls.hangup',
+	WITHDRAW = 'calls.withdraw',
 }

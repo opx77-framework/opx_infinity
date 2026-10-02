@@ -1,0 +1,351 @@
+--- The creator surface, client half: menus, forms, toasts, bars and gestures
+--- another resource may put on THIS player's screen.
+-- @author dop42
+--
+-- LAST IN THE CLIENT MANIFEST, for the reason its server twin gives: it wraps
+-- contracts the modules publish, reads them at the moment of the call, and an
+-- export registered at file scope is supported.
+--
+-- THE ANSWER IS THE SERVER HALF'S: one plain table, `{ ok = true, value }` or
+-- `{ ok = false, error = <code> }`, and nothing raises.
+--
+-- THERE IS NO CALLBACK, AND THE ANSWER COMES BACK AS AN EVENT. A function
+-- cannot cross into another resource -- the export marshaller refuses one -- so
+-- a menu row chosen, a form answered or a bar that ran out cannot be handed
+-- back the way an in-resource `on` is. And the client `TriggerEvent` reaches
+-- this VM only (devkit card, `client TriggerEvent`: "every handler in this
+-- resource's VM"), so it cannot be raised on the caller's bus from here either.
+-- What CAN cross is a call into the caller's own export, so that is the reply:
+--
+--   exports('OnOpxEvent', function(event, payload) TriggerEvent(event, payload) end)
+--
+-- one line in the caller, after which every answer arrives on the caller's OWN
+-- bus as an ordinary event -- `opx:on:menu:action`, `opx:on:form:answer`,
+-- `opx:on:progress:done`, `opx:on:animations:result` -- with the payload the
+-- module raises for its own callers. `CLIENT.EXPORTS.REPLY` names the default
+-- export and a call may name its own with `reply`.
+--
+-- OWNERSHIP IS THE CALLER'S NAME, read from the host. Each module keys a menu,
+-- a form, a bar and a gesture on an owner string; this file writes it as
+-- `ext:<resource>`, so a creator can only close, update or stop what it opened
+-- itself, and never takes over a screen another owner holds. When a caller
+-- resource stops, whatever it left open here is taken down with it.
+
+local CALLER_PATTERN = '^[%w_%-%.]+$'
+
+-- An export name a caller may ask its answers to be delivered to.
+local REPLY_PATTERN = '^[%w_]+$'
+
+-- What each caller has open, by handle, so a close names only its own.
+local menus, forms = {}, {}
+
+-- Pending gesture requests by request id, so a verdict reaches its caller.
+local gestures = {}
+
+-- Reply failures already said, by `caller \1 reason`.
+local said = {}
+
+local function refuse(code) return { ok = false, error = code } end
+local function ok(value) return { ok = true, value = value } end
+
+local function answered(result)
+	if type(result) ~= 'table' then return refuse('error.unavailable') end
+	if result.ok == true then return ok(result.value) end
+	return refuse(type(result.error) == 'string' and result.error or 'error.unavailable')
+end
+
+local function settings()
+	local client = OPX.Config.CLIENT or {}
+	return type(client.EXPORTS) == 'table' and client.EXPORTS or {}
+end
+
+local function admits(list, caller)
+	if list == '*' then return true end
+	if type(list) ~= 'table' then return false end
+	if list[caller] == true then return true end
+	for _, name in ipairs(list) do
+		if name == caller then return true end
+	end
+	return false
+end
+
+--- The owner string a caller's screens are kept under.
+local function ownerOf(caller)
+	return 'ext:' .. caller
+end
+
+--- The resource behind an owner string, or nil when it is not a caller's.
+local function callerOf(owner)
+	return type(owner) == 'string' and owner:match('^ext:([%w_%-%.]+)$') or nil
+end
+
+--- The export a call's answers go to.
+local function replyOf(value)
+	if type(value) == 'string' and #value >= 1 and #value <= 64 and value:match(REPLY_PATTERN) then
+		return value
+	end
+	local default = settings().REPLY
+	return type(default) == 'string' and default ~= '' and default or 'OnOpxEvent'
+end
+
+--- Delivers one answer to the caller's own export, on its own thread.
+--
+-- The promise is KEPT UNTIL IT IS AWAITED: the devkit says a collected promise
+-- releases its request and cancels a target task that has not run yet, so a
+-- fire-and-forget call could lose the very answer it was carrying.
+local function reply(caller, export, event, payload)
+	CreateThread(function()
+		local api = Open77.exports
+		if type(api) ~= 'table' or type(api.call) ~= 'function' then return end
+		local promise, reason = api.call(caller, export, event, payload)
+		local failure = reason
+		if promise then
+			local _, awaited = promise:await()
+			failure = awaited
+		end
+		if failure ~= nil then
+			local key = caller .. '\1' .. tostring(failure)
+			if not said[key] then
+				said[key] = true
+				Open77.log.warn(('[exports] %s did not take %s through its %s export: %s'):format(
+					caller, event, export, tostring(failure)))
+			end
+		end
+	end)
+end
+
+--- A copy of an answer with the owner's prefix taken back off, so the caller
+--- reads its own name rather than this file's bookkeeping.
+local function forCaller(payload, caller)
+	local copy = OPX.Table.DeepCopy(payload)
+	if type(copy) == 'table' and copy.owner ~= nil then copy.owner = caller end
+	return copy
+end
+
+--- Publishes one export behind the caller gate.
+local function publish(name, body)
+	if type(exports) ~= 'function' then return end
+	exports(name, function(...)
+		local caller = GetInvokingResource ~= nil and GetInvokingResource() or nil
+		if type(caller) ~= 'string' or #caller < 1 or #caller > 64
+			or not caller:match(CALLER_PATTERN) then
+			return refuse('export.callerDenied')
+		end
+		if not admits(settings().CALLERS, caller) then return refuse('export.callerDenied') end
+
+		local args = table.pack(...)
+		local ran, answer = pcall(body, caller, table.unpack(args, 1, args.n))
+		if not ran then
+			Open77.log.error(('[exports] %s raised for %s: %s'):format(name, caller, tostring(answer)))
+			return refuse('error.unavailable')
+		end
+		if type(answer) ~= 'table' then return refuse('error.unavailable') end
+		return answer
+	end)
+end
+
+--- A caller's spec, copied, with the fields only this file may set taken out.
+local function specOf(spec)
+	if type(spec) ~= 'table' then return nil end
+	local copy = OPX.Table.DeepCopy(spec)
+	copy.owner, copy.on, copy.steal, copy.reply = nil, nil, nil, nil
+	return copy
+end
+
+-- ── menus ────────────────────────────────────────────────────────────────────
+
+publish('OpenMenu', function(caller, spec)
+	local menu = OPX.Api.Get('menu')
+	if menu == nil then return refuse('error.unavailable') end
+	local built = specOf(spec)
+	if built == nil then return refuse('export.badArgument') end
+	local export = replyOf(spec.reply)
+	built.owner = ownerOf(caller)
+	built.on = function(payload)
+		if payload.action == 'close' and menus[payload.handle] == caller then
+			menus[payload.handle] = nil
+		end
+		reply(caller, export, 'opx:on:menu:action', forCaller(payload, caller))
+	end
+	local opened = menu.Open(built)
+	if opened.ok then menus[opened.value.handle] = caller end
+	return answered(opened)
+end)
+
+publish('UpdateMenu', function(caller, handle, spec)
+	local menu = OPX.Api.Get('menu')
+	if menu == nil then return refuse('error.unavailable') end
+	if menus[handle] ~= caller then return refuse('stale_handle') end
+	local built = specOf(spec)
+	if built == nil then return refuse('export.badArgument') end
+	return answered(menu.Update(handle, built))
+end)
+
+publish('CloseMenu', function(caller, handle)
+	local menu = OPX.Api.Get('menu')
+	if menu == nil then return refuse('error.unavailable') end
+	if menus[handle] ~= caller then return refuse('stale_handle') end
+	return answered(menu.Close(handle, 'caller'))
+end)
+
+-- ── forms ────────────────────────────────────────────────────────────────────
+
+publish('OpenForm', function(caller, spec)
+	local form = OPX.Api.Get('form')
+	if form == nil then return refuse('error.unavailable') end
+	local built = specOf(spec)
+	if built == nil then return refuse('export.badArgument') end
+	local export = replyOf(spec.reply)
+	built.owner = ownerOf(caller)
+	built.on = function(payload)
+		forms[payload.handle] = nil
+		reply(caller, export, 'opx:on:form:answer', forCaller(payload, caller))
+	end
+	local opened = form.Open(built)
+	if opened.ok then forms[opened.value.handle] = caller end
+	return answered(opened)
+end)
+
+publish('CloseForm', function(caller, handle)
+	local form = OPX.Api.Get('form')
+	if form == nil then return refuse('error.unavailable') end
+	if forms[handle] ~= caller then return refuse('stale_handle') end
+	return answered(form.Close(handle))
+end)
+
+-- ── toasts ───────────────────────────────────────────────────────────────────
+
+--- A toast id a caller may name, kept inside its own prefix.
+local function toastId(caller, id)
+	if id == nil then return nil end
+	if type(id) ~= 'string' or #id < 1 or #id > 48 or not id:match(CALLER_PATTERN) then
+		return false
+	end
+	return ownerOf(caller) .. ':' .. id
+end
+
+publish('ShowToast', function(caller, definition)
+	if type(definition) ~= 'table' then return refuse('export.badArgument') end
+	local id = toastId(caller, definition.id)
+	if id == false then return refuse('export.badArgument') end
+	local shown, why = OPX.Toast.Show({
+		id = id,
+		kind = definition.kind,
+		title = definition.title ~= nil and OPX.Text.Clean(definition.title, 64, '...') or nil,
+		message = type(definition.message) == 'string'
+			and OPX.Text.Clean(definition.message, 240, '...') or nil,
+		icon = definition.icon,
+		durationMs = math.tointeger(tonumber(definition.durationMs)),
+	})
+	if shown == nil then return refuse(why or 'error.unavailable') end
+	return ok(shown)
+end)
+
+publish('DismissToast', function(caller, id)
+	local named = toastId(caller, id)
+	if not named then return refuse('export.badArgument') end
+	OPX.Toast.Dismiss(named)
+	return ok(true)
+end)
+
+-- ── the progress bar ─────────────────────────────────────────────────────────
+
+-- Which export each caller's bar answers on.
+local barReply = {}
+
+publish('StartProgress', function(caller, spec)
+	local progress = OPX.Api.Get('progress')
+	if progress == nil then return refuse('error.unavailable') end
+	if type(spec) ~= 'table' then return refuse('export.badArgument') end
+	local started = progress.Start(ownerOf(caller), {
+		label = spec.label,
+		durationMs = spec.durationMs,
+		cancelable = spec.cancelable == true,
+		animation = type(spec.animation) == 'table' and {
+			name = spec.animation.name, variant = spec.animation.variant,
+		} or nil,
+	})
+	if started.ok then barReply[caller] = replyOf(spec.reply) end
+	return answered(started)
+end)
+
+publish('StopProgress', function(caller)
+	local progress = OPX.Api.Get('progress')
+	if progress == nil then return refuse('error.unavailable') end
+	return answered(progress.Stop(ownerOf(caller)))
+end)
+
+-- ── gestures ─────────────────────────────────────────────────────────────────
+
+publish('PlayAnimation', function(caller, name, options, replyTo)
+	local animations = OPX.Api.Get('animations')
+	if animations == nil then return refuse('error.unavailable') end
+	if type(name) ~= 'string' or #name < 1 or #name > 64 then return refuse('export.badArgument') end
+	if options ~= nil and type(options) ~= 'table' then return refuse('export.badArgument') end
+	local played = animations.Play(name, options, ownerOf(caller))
+	if played.ok and type(played.value) == 'table' and played.value.requestId ~= nil then
+		gestures[played.value.requestId] = { caller = caller, reply = replyOf(replyTo) }
+	end
+	return answered(played)
+end)
+
+publish('StopAnimation', function(caller)
+	local animations = OPX.Api.Get('animations')
+	if animations == nil then return refuse('error.unavailable') end
+	return answered(animations.Stop(ownerOf(caller)))
+end)
+
+-- ── the answers that arrive later ────────────────────────────────────────────
+
+-- A bar is answered on its module's own bus, under the owner it was started
+-- with, which is how a caller's bar is told from everybody else's.
+AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'progress', 'done'), function(payload)
+	if type(payload) ~= 'table' then return end
+	local caller = callerOf(payload.owner)
+	if caller == nil then return end
+	local export = barReply[caller] or replyOf(nil)
+	barReply[caller] = nil
+	reply(caller, export, 'opx:on:progress:done', forCaller(payload, caller))
+end)
+
+-- A gesture's verdict follows its request by id.
+AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'animations', 'result'), function(payload)
+	if type(payload) ~= 'table' then return end
+	local pending = payload.requestId ~= nil and gestures[payload.requestId] or nil
+	if pending == nil then return end
+	gestures[payload.requestId] = nil
+	reply(pending.caller, pending.reply, 'opx:on:animations:result',
+		forCaller(payload, pending.caller))
+end)
+
+-- A CALLER THAT STOPS TAKES ITS SCREENS WITH IT. Nobody is left to answer a
+-- menu whose owner has gone, and a bar holding the player's movement for a
+-- resource that no longer exists is a player who cannot walk.
+AddEventHandler(OPX.Host.CLIENT_RESOURCE_STOP, function(name)
+	if type(name) ~= 'string' or name == GetCurrentResourceName() then return end
+	local menu, form = OPX.Api.Get('menu'), OPX.Api.Get('form')
+	for handle, caller in pairs(menus) do
+		if caller == name then
+			menus[handle] = nil
+			if menu ~= nil then menu.Close(handle, 'owner_stopped') end
+		end
+	end
+	for handle, caller in pairs(forms) do
+		if caller == name then
+			forms[handle] = nil
+			if form ~= nil then form.Close(handle) end
+		end
+	end
+	local progress = OPX.Api.Get('progress')
+	if progress ~= nil then progress.Stop(ownerOf(name)) end
+	barReply[name] = nil
+	local animations = OPX.Api.Get('animations')
+	if animations ~= nil then animations.Stop(ownerOf(name)) end
+	for id, pending in pairs(gestures) do
+		if pending.caller == name then gestures[id] = nil end
+	end
+end)
+
+if type(exports) ~= 'function' then
+	Open77.log.warn('[exports] this host has no `exports`: the creator surface is not published')
+end

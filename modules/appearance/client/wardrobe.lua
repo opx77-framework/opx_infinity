@@ -21,6 +21,7 @@ local Snapshot = M.Snapshot
 local State = M.Face
 local Runtime = M.Runtime
 local Clothing = M.Clothing
+local Garments = M.Garments
 
 M.Panel = {}
 M.Wardrobe = {}
@@ -587,10 +588,28 @@ function M.Wardrobe.Owner()
 	return roomOwner
 end
 
---- The display name of a record: `Items.Jacket_01_basic` reads 'Jacket 01 basic'.
+--- The display name of a record: its own item name when the garment data has one
+--- (`client/garments.lua`), and otherwise the record made readable --
+--- `Items.Jacket_01_basic` reads 'Jacket 01 basic'. A player choosing a jacket is
+--- looking for "Kitsch bomber", not for a TweakDB id, and the id is all the
+--- engine's catalogue answers.
+--
+-- KEPT ONCE MADE. A caption is asked for on the scroll path, sixty to a window,
+-- and the readable fallback is three `gsub`s; the cache is bounded by the
+-- catalogue (about two thousand records) and never wrong, because neither the
+-- data nor a record name changes while the resource runs.
+local captions = {}
+
 local function title(record)
-	local text = tostring(record):gsub('^Items%.', ''):gsub('_', ' '):gsub('(%l)(%u)', '%1 %2')
-	return OPX.String.Trim((text:gsub('%s+', ' ')))
+	local known = captions[record]
+	if known ~= nil then return known end
+	local named = Garments.Describe(record, family)
+	if named == nil then
+		local text = tostring(record):gsub('^Items%.', ''):gsub('_', ' '):gsub('(%l)(%u)', '%1 %2')
+		named = OPX.String.Trim((text:gsub('%s+', ' ')))
+	end
+	captions[record] = named
+	return named
 end
 
 --- Whether the puppet is alive on foot in the world and the player is not down.
@@ -1033,18 +1052,57 @@ end
 -- against the panel's the same way.
 local TILE_CHUNK = 60
 
+-- Cold garment lookups one frame may make. See `warmTiles`.
+local TILE_LOOKUPS = 20
+
+--- Works out the caption and picture of one window's boxes, TILE_LOOKUPS a frame,
+--- so `tileWindow` finds them all warm. Answers false when `breathe` says the
+--- window is no longer wanted.
+-- @param names table the category's sorted records
+-- @param from integer
+-- @param breathe function yields a frame; false when the work is no longer wanted
+local function warmTiles(names, from, breathe)
+	local last = math.min(from + TILE_CHUNK - 1, #names)
+	for index = from, last do
+		if index > from and (index - from) % TILE_LOOKUPS == 0 and not breathe() then
+			return false
+		end
+		title(names[index])
+		Garments.Describe(names[index], family)
+	end
+	return true
+end
+
+-- Bumped by every window started. See `sendTiles`.
+local tilesBuild = 0
+
 --- One window of the open category's records, or false when there is no grid.
 --
--- THE NAMES AND NOTHING ELSE. A box shows a picture and, when there is no
--- picture, the record's own name -- so the record name is the whole payload, and
--- the page derives both the image path and the caption from it. `from` is what
--- ties a box back to a position on the track, which is what a press is reported
--- as.
+-- THREE PARALLEL LISTS: the record names, the caption under each box and the
+-- picture in it. The record name is still what keys a box, and `from` is still
+-- what ties a box back to a position on the track, which is what a press is
+-- reported as. The caption is the item's own name (`title`) and the picture is
+-- a file under `images/clothing/` for THIS body family, or '' for none -- in
+-- which case the page draws a monogram without asking for a file that is not
+-- there. Both come out of `client/garments.lua`, which is the only reader of the
+-- generated data; the page decides nothing about which picture a record has.
+--
+-- PARALLEL LISTS AND NOT A TABLE PER BOX, for the wire: a box as `{ name, label,
+-- image }` costs seven value nodes where three strings under three indices cost
+-- six, and the host counts every one against a 1024 ceiling.
 --
 -- FROM A SLICE AND NOT A FILTER, so the cost of answering a scroll is the sixty
--- entries copied and nothing else: no `title`, no sort, no walk of the 677 this
--- category may hold. `readCatalogue` already sorted the list once, at open time,
--- on its own frames.
+-- entries looked up and nothing else: no sort, no walk of the 677 this category
+-- may hold. `readCatalogue` already sorted the list once, at open time, on its
+-- own frames.
+--
+-- WARM, OR IT IS NOT CALLED. A garment row and a caption are worked out the
+-- first time they are asked for -- about two hundred instructions a box cold, a
+-- dozen warm -- and sixty cold boxes in the resume that also publishes the
+-- window is a cost nobody can measure off-platform against a budget that kills
+-- the coroutine without a word. So every caller warms the window first, on
+-- frames of its own: `readCatalogue` warms each category's first window while
+-- the room is opening, and `sendTiles` warms the next one before it sends it.
 -- @param from integer the 1-based index the window starts at
 local function tileWindow(from)
 	if category == nil then return false end
@@ -1053,11 +1111,18 @@ local function tileWindow(from)
 	if from < 1 then from = 1 end
 	if from > #names then return false end
 
-	local entries = {}
+	local entries, labels, images = {}, {}, {}
 	local last = math.min(from + TILE_CHUNK - 1, #names)
-	for index = from, last do entries[#entries + 1] = names[index] end
+	for index = from, last do
+		local record = names[index]
+		local at = #entries + 1
+		local _, image = Garments.Describe(record, family)
+		entries[at] = record
+		labels[at] = title(record)
+		images[at] = image or ''
+	end
 	if last > tileTo then tileTo = last end
-	return { slot = category, from = from, entries = entries }
+	return { slot = category, from = from, entries = entries, labels = labels, images = images }
 end
 
 --- The part of the room that follows the draft: seven sliders and the status.
@@ -1124,11 +1189,26 @@ end
 -- on the next preview. A window travels only when the category changes or the
 -- page asks for the next one, and the page appends what it is sent; nothing else
 -- touches the grid.
+--
+-- ON A THREAD OF ITS OWN, because `warmTiles` yields between lookups. Every
+-- window started bumps `tilesBuild`, so one still being built for a category
+-- the player has already left -- or a room that has closed -- stops instead of
+-- arriving late and being filed under the wrong tab.
 local function sendTiles(from)
 	if phase ~= 'open' or category == nil then return end
-	local window = tileWindow(from)
-	if window == false then return end
-	publish('roomTiles', { tiles = window })
+	tilesBuild = tilesBuild + 1
+	local mine, slot, room = tilesBuild, category, generation
+	local function breathe()
+		Wait(0)
+		return mine == tilesBuild and phase == 'open' and category == slot and generation == room
+	end
+	CreateThread(function()
+		local names = pieces[slot]
+		if type(names) ~= 'table' or not warmTiles(names, from, breathe) then return end
+		local window = tileWindow(from)
+		if window == false then return end
+		publish('roomTiles', { tiles = window })
+	end)
 end
 
 --- Opens one category, resetting its grid to the top.
@@ -1222,6 +1302,11 @@ local function readCatalogue(mine)
 		end
 		pieces[slot] = names
 		total = total + #records
+
+		-- The first window of every category, warmed now while the room is opening
+		-- and a frame costs nothing, so the first frame and every first tab carry
+		-- names and pictures without a cold lookup in a resume that publishes.
+		if not warmTiles(names, 1, breathe) then return nil, 'superseded' end
 
 		-- A SILENT TRUNCATION IS THIS WHOLE EPISODE'S SHAPE, so the one bound
 		-- still in play is watched. The catalogue was at 98.4% of a 2000 ceiling

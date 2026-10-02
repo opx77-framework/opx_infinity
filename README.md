@@ -676,6 +676,78 @@ closing clip start, with a refused playback still drawing the message.
 
 ---
 
+## For creators
+
+A **separate** Open77 resource reaches `opx_infinity` through two doors: exports
+(`core/server/exports.lua`, `core/client/exports.lua`, last on each side) and the
+public server bus (`opx:on:*`, raised through `OPX.Publish` in
+`core/server/publish.lua`). Nothing else is public; `OPX.Api` stays inside this VM.
+
+**Every export answers one table**, `{ ok = true, value = ... }` or
+`{ ok = false, error = <code> }`, and never raises. The caller is the name the host
+reports (`GetInvokingResource`), never an argument.
+
+```lua
+-- server, from another resource: a write goes through the promise form, because
+-- a write (and any offline read) may reach the database and the sync proxy fails
+-- a callee that yields with `export_yielded`
+local pending = Open77.exports.call('opx_infinity', 'AddMoney', playerId, 'EDDIES', 250, 'tip')
+local answer = pending and pending:await()
+if answer and answer.ok then print('balance', answer.value) end
+
+-- a read of a loaded player answers from memory, so the sync form is fine
+local data = exports.opx_infinity:GetPlayerData(playerId)
+```
+
+| Server export | Scope |
+|---|---|
+| `GetVersion()`, `GetPlayerData(src)`, `GetPlayerByCitizenId(cid)`, `IsStaff(src)` | read |
+| `GetMoney(src, type?)`, `HasJob(src, name, onDuty?, minGrade?)`, `HasGang(src, name, minGrade?)`, `GetJob(src)`, `GetGang(src)` | read |
+| `HasItem(target, item, count?, meta?)`, `CountItem(target, item, meta?)`, `CountInStash(stash, item, meta?)` | read |
+| `AddMoney` / `RemoveMoney(src, type, amount, reason?)`, `AddMoneyOffline(cid, type, amount, reason?)` | write |
+| `AddItem` / `RemoveItem(target, item, count?, meta?)`, `AddToStash` / `RemoveFromStash(stash, item, count?, meta?)` | write |
+| `SendChat(src, msg)`, `BroadcastChat(msg, { bucket?, radius?, origin? })` | write |
+| `RevokeKeys(target, plate)`, `RevokeAllKeys(plate)`, `SetVehicleState(plate, 'stored'\|'impounded', garage?)` | write |
+
+`target` is a connected player id or a citizen id (an offline bag). **Who may call
+is the operator's**: `SERVER.EXPORTS.READ` (`'*'` out of the box) and
+`SERVER.EXPORTS.WRITERS` (**empty** out of the box) in `config/server.lua`. A refused
+writer is answered `export.callerDenied`, audited, and the journal prints the exact
+line that admits it. Every write leaves `event=export.<Name>` naming the caller, and
+money reasons are written `ext:<resource>:<reason>` in the money ledger too.
+
+**Server events** are `(source, payload)` on the host-wide bus (`AddEventHandler`;
+`source` is nil for a character who is not online): `opx:on:character:loaded`,
+`unloaded`, `money`, `job`, `gang`; `opx:on:inventory:changed`, `used`;
+`opx:on:downed:changed`; `opx:on:vehicles:spawned`, `stored`;
+`opx:on:dealership:sold`; `opx:on:hauling:sold`. Payloads are closed copies built
+for the bus, never live records — PlayerData's free-form `metadata` is not on it.
+
+**Client exports** draw on the local player's screen: `OpenMenu(spec)`,
+`UpdateMenu(handle, spec)`, `CloseMenu(handle)`, `OpenForm(spec)`, `CloseForm(handle)`,
+`ShowToast(def)`, `DismissToast(id)`, `StartProgress(spec)`, `StopProgress()`,
+`PlayAnimation(name, options?, reply?)`, `StopAnimation()`. A function cannot cross a
+resource and the client `TriggerEvent` stays in its own VM, so **answers come back
+through an export the caller publishes** — one line turns them into events on its
+own bus:
+
+```lua
+exports('OnOpxEvent', function(event, payload) TriggerEvent(event, payload) end)
+AddEventHandler('opx:on:menu:action', function(p) if p.itemId == 'buy' then ... end end)
+```
+
+The events are `opx:on:menu:action`, `opx:on:form:answer`, `opx:on:progress:done` and
+`opx:on:animations:result`; a call names another export with `reply`. A caller only
+closes what it opened, never takes over another owner's screen, and its screens go
+down when it stops. `CLIENT.EXPORTS.CALLERS` in `config/client.lua` narrows who may
+draw (`'*'` by default).
+
+Inside the resource the same work gained hooks a module can veto through:
+`job:beforeSet` and `gang:beforeSet` (answer `job.vetoed` / `gang.vetoed`) and
+`money:beforeAddOffline`.
+
+---
+
 ## The library
 
 **`opx_lib` is a separate resource**, declared as a dependency, and reached as

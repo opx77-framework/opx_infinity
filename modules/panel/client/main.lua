@@ -239,8 +239,9 @@ local function sliders(value)
 end
 
 -- How many tiles one window may carry, and it IS derived from the wire rather
--- than chosen. A tile is one string under an array index, so it costs two nodes:
--- sixty of them is 120 against the host's 1024, which leaves the rest of a spec
+-- than chosen. A tile is one string under an array index, so it costs two nodes,
+-- and up to six with its optional label and picture: sixty is at most 360
+-- against the host's 1024, which leaves the rest of a spec
 -- -- twelve tabs, twelve sliders, three rows of buttons, every string -- the
 -- room `Open` says it has. It is also the page's bound: a grid the player
 -- scrolls is drawn whole, so a caller that answered one scroll with eight
@@ -268,6 +269,39 @@ local MAX_TILES = 60
 -- `from` IS 1-BASED AND 0 IS NOT A TILE. Index 0 on a slider means "nothing on
 -- this slot", and the page draws that as a box of its own that is always there
 -- rather than as the first entry of a window that may have scrolled away.
+--
+-- `labels` AND `images` ARE OPTIONAL AND PARALLEL TO `entries`: the caption
+-- under each box and the picture in it, '' for "none". A picture is a plain file
+-- name under the page's `images/clothing/` -- the bounds an inventory item's
+-- IMAGE has -- and never a path, so no caller can point a box anywhere else. A
+-- list of the wrong length is refused whole: a caption one box out of step is a
+-- player choosing the jacket written under the trousers.
+local IMAGE_PATTERN, IMAGE_MAX = '^[%w_%-%.]+$', 64
+
+local function parallel(list, count, each)
+	if list == nil then return {} end
+	if not isList(list, MAX_TILES) or #list ~= count then return nil end
+	local out = {}
+	for index = 1, count do
+		local value = each(list[index])
+		if value == nil then return nil end
+		out[index] = value
+	end
+	return out
+end
+
+local function tileLabel(value)
+	return clean(value, 120)
+end
+
+local function tileImage(value)
+	if value == '' then return '' end
+	if type(value) ~= 'string' or #value > IMAGE_MAX or not value:find(IMAGE_PATTERN) then
+		return nil
+	end
+	return value
+end
+
 local function tiles(value)
 	if value == nil or value == false then return false end
 	if type(value) ~= 'table' then return nil, 'invalid_tiles' end
@@ -280,14 +314,17 @@ local function tiles(value)
 	if not isList(entries, MAX_TILES) then return nil, 'invalid_tiles' end
 	local out = {}
 	for index = 1, #entries do
-		-- A RECORD NAME AND NOT A LABEL, and the page needs it whole: it is both
-		-- what is written under the box and what the picture is looked up by, so
-		-- trimming it to a display length would break the second use silently.
+		-- A RECORD NAME AND NOT A LABEL, and the page needs it whole: it is what
+		-- a box is keyed by, and the caption when `labels` gives none, so
+		-- trimming it to a display length would break the first use silently.
 		local name = clean(entries[index], 120)
 		if name == nil then return nil, 'invalid_tiles' end
 		out[index] = name
 	end
-	return { slot = value.slot, from = from, entries = out }
+	local labels = parallel(value.labels, #out, tileLabel)
+	local images = parallel(value.images, #out, tileImage)
+	if labels == nil or images == nil then return nil, 'invalid_tiles' end
+	return { slot = value.slot, from = from, entries = out, labels = labels, images = images }
 end
 
 --- The summary plate: a label, a value and one optional button.
@@ -659,8 +696,8 @@ local function Open(spec)
 	-- cut to a character count -- which puts the largest spec this module will
 	-- build at something under five hundred value nodes. A slider is six fields
 	-- and costs thirteen nodes, so the seven a fitting room sends come to under a
-	-- hundred, and a `tiles` window is sixty strings under sixty indices, which is
-	-- the largest single field a spec can carry and still only 120. A check here
+	-- hundred, and a `tiles` window is at most three lists of sixty strings, which
+	-- is the largest single field a spec can carry and still only 360. A check here
 	-- could not fire, and
 	-- a refusal nothing can reach is a branch a reader has to disprove. Only
 	-- `panel:items` is unbounded by its parser, and that is where the counting
