@@ -502,7 +502,7 @@ local FR = {
 	['ripperdoc.stat.cooldownMs'] = 'RECHARGE',
 	['ripperdoc.stat.chargeMs'] = 'CHARGE',
 	['ripperdoc.stat.jumpStaminaCost'] = 'COÛT SAUT',
-	['ripperdoc.stat.maxAirborneMs'] = 'AIRIEN',
+	['ripperdoc.stat.maxAirborneMs'] = 'AÉRIEN',
 	['ripperdoc.stat.maxFallSpeed'] = 'LIMITE CHUTE',
 	['ripperdoc.stat.staminaCost'] = 'ENDURANCE',
 	['ripperdoc.stat.minStamina'] = 'RÉSERVE',
@@ -902,22 +902,22 @@ local FR = {
 for key, pair in pairs({
 	['ripperdoc.serviceDown'] = {
 		'This chrome needs {name}, which this server is not running. Staff: add it to resources.load.',
-		'Ce chrome a besoin de {name}, que ce serveur ne lance pas. Staff : ajoutez-le a resources.load.' },
+		'Ce chrome a besoin de {name}, que ce serveur ne lance pas. Staff : ajoutez-le à resources.load.' },
 	['ripperdoc.why.grant_pending'] = {
 		'the power never finished reaching your body -- stand up, stay alive and out of vehicles, and try again',
-		'le pouvoir n\'a jamais fini d\'arriver sur votre corps -- levez-vous, restez en vie et hors des vehicules, puis reessayez' },
+		'le pouvoir n\'a jamais fini d\'arriver sur votre corps -- levez-vous, restez en vie et hors des véhicules, puis réessayez' },
 	['ripperdoc.why.grant_failed'] = {
 		'your client could not fit the power', 'votre client n\'a pas pu installer le pouvoir' },
 	['ripperdoc.why.grant_removed'] = {
-		'the platform took the power back', 'la plateforme a retire le pouvoir' },
+		'the platform took the power back', 'la plateforme a retiré le pouvoir' },
 	['ripperdoc.why.grant_absent'] = {
-		'the platform lost the power before it was ready', 'la plateforme a perdu le pouvoir avant qu\'il soit pret' },
+		'the platform lost the power before it was ready', 'la plateforme a perdu le pouvoir avant qu\'il soit prêt' },
 	['ripperdoc.howto.arms'] = {
 		'{name} installed: put your weapon away and punch -- hold to charge.',
-		'{name} installe : rangez votre arme et frappez -- maintenez pour charger.' },
+		'{name} installé : rangez votre arme et frappez -- maintenez pour charger.' },
 	['ripperdoc.howto.legs'] = {
 		'{name} installed: jump, then jump again in mid-air.',
-		'{name} installe : sautez, puis sautez encore en l\'air.' },
+		'{name} installé : sautez, puis sautez encore en l\'air.' },
 	['ripperdoc.howto.dash'] = {
 		'{name} is live: press {key} to dash.', '{name} est actif : appuyez sur {key} pour foncer.' },
 	['ripperdoc.howto.reflex'] = {
@@ -943,9 +943,9 @@ for key, pair in pairs({
 		'A key (X, V, F5, space...), or reset.', 'Une touche (X, V, F5, espace...), ou reset.' },
 	['ripperdoc.help.test'] = {
 		'Run a whole Sandevistan on yourself without the overdrive: the slowed world, the screen and the look.',
-		'Lance un Sandevistan complet sur vous sans la surcharge : le monde ralenti, l\'ecran et l\'apparence.' },
+		'Lance un Sandevistan complet sur vous sans la surcharge : le monde ralenti, l\'écran et l\'apparence.' },
 	['ripperdoc.help.testArg'] = {
-		'Seconds, 1 to 44 (9 by default).', 'Secondes, de 1 a 44 (9 par defaut).' },
+		'Seconds, 1 to 44 (9 by default).', 'Secondes, de 1 à 44 (9 par défaut).' },
 	['ripperdoc.help.chrome'] = {
 		'Set the condition of every piece of chrome fitted on you.',
 		'Règle l\'état de chaque pièce de chrome posée sur vous.' },
@@ -964,18 +964,18 @@ for key, pair in pairs({
 		'{name} is live: with a blunt weapon out, press {key} to slam.',
 		'{name} est actif : arme contondante en main, appuyez sur {key} pour frapper le sol.' },
 	['ripperdoc.howto.hacking'] = {
-		'{name} installed: your quickhacks are ready.', '{name} installe : vos quickhacks sont prets.' },
+		'{name} installed: your quickhacks are ready.', '{name} installé : vos quickhacks sont prêts.' },
 	['ripperdoc.howto.ice'] = {
 		'{name} installed: it answers the next hack against you.',
-		'{name} installe : il repond au prochain piratage contre vous.' },
+		'{name} installé : il répond au prochain piratage contre vous.' },
 	['ripperdoc.howto.implant'] = {
-		'{name} installed.', '{name} installe.' },
+		'{name} installed.', '{name} installé.' },
 	['ripperdoc.howto.stat'] = {
 		'{name} fitted: its effects are on your body now.',
-		'{name} pose : ses effets sont sur votre corps.' },
+		'{name} posé : ses effets sont sur votre corps.' },
 	['ripperdoc.howto.rp'] = {
 		'{name} fitted. It has no combat effect on this server.',
-		'{name} pose. Il n\'a pas d\'effet de combat sur ce serveur.' },
+		'{name} posé. Il n\'a pas d\'effet de combat sur ce serveur.' },
 
 	-- Off the shelf: chrome nothing on this server can put on the body.
 	['ripperdoc.notSold'] = {

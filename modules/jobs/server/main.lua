@@ -2097,10 +2097,10 @@ function M.Start()
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, function(playerId)
 		local player = tonumber(playerId)
 		if player ~= nil then
-		windows[player] = nil
-		pending[player] = nil
-		sent[player] = nil
-	end
+			windows[player] = nil
+			pending[player] = nil
+			sent[player] = nil
+		end
 	end)
 
 	running = true

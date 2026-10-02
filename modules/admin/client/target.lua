@@ -761,26 +761,26 @@ local function sync()
 	-- yield, so every kind gets a resume, and the `syncing`/`dirty` pair that was
 	-- already here for re-entrancy is exactly the guard an asynchronous sync wants.
 	CreateThread(function()
-	repeat
-		dirty = false
-		local built, byKind, signature = pcall(wanted)
-		if built then
-			-- Protected for the reason the loop above yields: `register` raising is how
-			-- this module lost two fifths of its rows in silence. A raise is now a line
-			-- in the server log instead of an absence in it.
-			local done, failure = pcall(register, contract, byKind, signature)
-			if not done then
+		repeat
+			dirty = false
+			local built, byKind, signature = pcall(wanted)
+			if built then
+				-- Protected for the reason the loop above yields: `register` raising is how
+				-- this module lost two fifths of its rows in silence. A raise is now a line
+				-- in the server log instead of an absence in it.
+				local done, failure = pcall(register, contract, byKind, signature)
+				if not done then
+					registered = nil
+					Open77.log.warn('[admin] staff rows: ' .. tostring(failure))
+					report('staff rows not registered: ' .. tostring(failure))
+				end
+			else
 				registered = nil
-				Open77.log.warn('[admin] staff rows: ' .. tostring(failure))
-				report('staff rows not registered: ' .. tostring(failure))
+				Open77.log.warn('[admin] staff rows: ' .. tostring(byKind))
+				report('staff rows not built: ' .. tostring(byKind))
 			end
-		else
-			registered = nil
-			Open77.log.warn('[admin] staff rows: ' .. tostring(byKind))
-			report('staff rows not built: ' .. tostring(byKind))
-		end
-	until not dirty
-	syncing = false
+		until not dirty
+		syncing = false
 	end)
 end
 
