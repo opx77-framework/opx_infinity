@@ -174,7 +174,10 @@ OPX.Config.MODULES.hud = {
 		-- one shows the engine's equipment, ours shows the bag, and they disagree.
 		hubMenu = false,
 
-		-- LEFT TO THE GAME, DELIBERATELY, and each for its own reason.
+		-- THE OWNER'S WORD ON MAIN, 2026-09-24, was to hide these three too ("regarde
+		-- si ont hide bien tous ... sauf la minimap"), and main ships them `false`.
+		-- THIS BRANCH KEEPS THEM ON because its missions need them -- an owner's
+		-- call, not settled by the merge. `false` is main's choice.
 		--
 		-- `crosshair` is how a player aims. Hiding it is not a style choice, it
 		-- is taking away the weapon's usability.
@@ -187,5 +190,9 @@ OPX.Config.MODULES.hud = {
 		-- "call X" steps. The platform hides it; the preload shows it again while
 		-- this says `true`. `false` keeps it hidden (calls still connect).
 		phone = true,
+
+		-- ANY COMPONENT NOT NAMED HERE IS HIDDEN. `modules/hud` walks the build's
+		-- own `Open77.hud.components()`, so one the platform adds later is covered
+		-- without an edit here. Name it `true` to leave it to the game.
 	},
 }

@@ -189,6 +189,37 @@ function Containers.CountIn(container, name, metadata)
 	return total
 end
 
+--- Counts the units of an item whose metadata CARRIES every field of `match`.
+-- `CountIn` asks "the same stack", which is whole-table equality and the right
+-- question for a merge. A key asks a narrower one -- "any key whose plate is
+-- this" -- and a key whose label was written differently (another language, a
+-- model renamed in the catalogue) is still the key to that car. Only scalar
+-- fields are compared: a table in `match` never matches, rather than matching
+-- by reference and answering nothing for a reason nobody could read.
+-- @author dop42
+-- @param container table|nil
+-- @param name string
+-- @param match table field -> string|number|boolean
+-- @return integer
+function Containers.CountWhere(container, name, match)
+	if not container or type(match) ~= 'table' or next(match) == nil then return 0 end
+	for _, value in pairs(match) do
+		if type(value) == 'table' then return 0 end
+	end
+	local total = 0
+	for _, entry in pairs(container.items) do
+		local metadata = entry.metadata
+		if entry.name == name and type(metadata) == 'table' then
+			local carries = true
+			for key, value in pairs(match) do
+				if metadata[key] ~= value then carries = false break end
+			end
+			if carries then total = total + entry.count end
+		end
+	end
+	return total
+end
+
 --- Whether free and stackable slots take the units, weight aside.
 local function hasRoom(container, name, count, metadata)
 	local limit = stackLimit(name)

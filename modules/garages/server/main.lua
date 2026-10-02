@@ -75,8 +75,9 @@ local listMark, listRevision = nil, 0
 local windows = {}
 
 -- The contracts, resolved in `Start`. Nil means nothing can be proved and every
--- request is refused.
-local vehicles, character
+-- request is refused -- except `keys`, the vehicle keys contract, whose absence
+-- only means a car comes out without a key being cut.
+local vehicles, character, keys
 
 -- Whether the sweep is running. Set in `Start`.
 local running = false
@@ -704,6 +705,33 @@ function M.Bring(source, key, wanted)
 	if built.kind == M.KIND.AVPAD and Access.IsAv(pick.record)
 		and type(spawned.value) == 'table' and spawned.value.id ~= nil then
 		seated = seatPilot(source, spawned.value.id)
+	end
+
+	-- THE OWNER LEAVES WITH A KEY, and with ONE. `Ensure` cuts a key only when
+	-- the bag holds none to this plate, so ten take-outs are one key and not a
+	-- key press; a key that was handed on is replaced the next time the car
+	-- comes out, which is what a lost key costs. A bag with no room is said and
+	-- is not a reason to put the car back: the car is out, and the owner can
+	-- make room and take it out again.
+	--
+	-- ON A THREAD OF ITS OWN, AFTER THE CAR. Reading the bag can reach the
+	-- database and yield, and the marker's answer -- "brought out", "moved here"
+	-- -- is what the player is waiting on; a key is a side effect of that and not
+	-- a condition of it, so it does not get to hold the answer up. Only a full
+	-- bag is said: every other refusal is the server's, and a toast about it
+	-- would be noise the player can do nothing with.
+	if keys ~= nil then
+		local plate, record = pick.plate, pick.record
+		CreateThread(function()
+			local cut = keys.Ensure(source, plate, record)
+			if type(cut) == 'table' and cut.ok ~= true then
+				if cut.error == 'vehiclekeys.noRoom' then
+					OPX.NotifyLocale(source, cut.error, { label = tostring(cut.detail or plate) }, 'error')
+				end
+				Open77.log.warn(('[garages] %s came out for %s with no key cut: %s')
+					:format(safe(plate), tostring(data.citizenId), tostring(cut.error)))
+			end
+		end)
 	end
 
 	return Result.Ok({
@@ -1481,6 +1509,7 @@ end
 function M.Start()
 	character = OPX.Api.Get('character')
 	vehicles = OPX.Api.Get('vehicles')
+	keys = OPX.Api.Get('vehiclekeys')
 	if character == nil then
 		Open77.log.warn('[garages] no character contract: nothing can be proved owned, so ' ..
 			'every request is refused')

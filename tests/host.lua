@@ -766,6 +766,44 @@ function Host.Environment(side, database)
 			end,
 			setEngine = function() return true end,
 			setLights = function() return true end,
+			-- THE ENTRY LOCK, kept in the vehicle's own `flags` bit (2) and not in a
+			-- private table beside it: the card says `setLocked` moves only
+			-- `VehicleStateFlags.Locked`, and a snapshot reports that bit, so a lock
+			-- set here is a lock `get(id).flags` shows and one the admin flag
+			-- command's write is read back through. An unknown vehicle answers nil
+			-- from `isLocked` and `false, vehicle_not_found` from `setLocked`, which
+			-- are the card's answers.
+			-- `vehicles.locked` (id as text) is a test's direct pin on a hull the
+			-- flags table does not model; either one locks.
+			isLocked = function(id)
+				if id ~= nil and vehicles.locked[tostring(id)] == true then return true end
+				local car = id ~= nil and (vehicles.byId[id] or nil)
+				if car == nil then
+					for index = 1, #vehicles.world do
+						if vehicles.world[index].id == id then car = vehicles.world[index] end
+					end
+				end
+				if car == nil then
+					if hullKnown(id) then return false end
+					return nil
+				end
+				return ((tonumber(car.flags) or 0) & 2) ~= 0
+			end,
+			setLocked = function(id, locked)
+				local car = id ~= nil and (vehicles.byId[id] or nil)
+				if car == nil then
+					for index = 1, #vehicles.world do
+						if vehicles.world[index].id == id then car = vehicles.world[index] end
+					end
+				end
+				if car == nil then return false, 'vehicle_not_found' end
+				if type(locked) ~= 'boolean' then return false, 'invalid_argument' end
+				local bits = tonumber(car.flags) or 0
+				car.flags = locked and (bits | 2) or (bits & ~2)
+				vehicles.locks[#vehicles.locks + 1] = { id = id, locked = locked }
+				return true
+			end,
+			triggerHorn = function() return true end,
 			getDamage = function() return {} end,
 			setDamage = function() return true end,
 			-- The seat THIS client is in, which is what tells the strip whether the
@@ -849,9 +887,6 @@ function Host.Environment(side, database)
 			isDoorOpen = function(id, door)
 				if not hullKnown(id) then return nil, 'vehicle_not_found' end
 				return vehicles.doorState[tostring(id) .. '|' .. tostring(door)] == true
-			end,
-			isLocked = function(id)
-				return vehicles.locked[tostring(id)] == true
 			end,
 		},
 
@@ -1163,7 +1198,9 @@ function Host.Environment(side, database)
 					return nil, 'invalid_argument'
 				end
 				local styles = { interaction = true, objective = true, spawn = true, danger = true }
-				local shapes = { ring = true, cylinder = true }
+				-- The op77.83 catalogue: eight shapes, from the `markers` guide.
+				local shapes = { ring = true, cylinder = true, checkpoint = true, arrow = true,
+					chevron = true, cone = true, diamond = true, sphere = true }
 				if not styles[tostring(options.style)] then return nil, 'unsupported_style' end
 				if not shapes[tostring(options.shape)] then return nil, 'unsupported_shape' end
 				local radius = tonumber(options.radius)
@@ -2533,7 +2570,8 @@ function Host.Environment(side, database)
 		refuseUpdate = nil, world = {},
 		-- The doors, `id|door` -> open, and the entry locks, id as text -> true.
 		-- `doorRefuse` is a reason: every door call is answered `false, <reason>`.
-		doorState = {}, locked = {}, doorRefuse = nil }
+		-- `locks` is every `setLocked` the runtime made, in order.
+		doorState = {}, locked = {}, doorRefuse = nil, locks = {} }
 	vehicleCreates = {}
 	vehicleRemoves = {}
 	-- The crew door's own ledgers: the mounts, the exit locks and the forced

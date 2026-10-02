@@ -50,7 +50,8 @@ local EVENT_VIEW = M.Event.VIEW
 -- Every action the seam accepts. An unknown one reaching `FromView` is ignored
 -- there, so nothing here filters a second time.
 --
--- TODAY THE PAGE EMITS ONE OF THEM -- `ready`, from the card's `onMounted`.
+-- THE CARD THAT EMITTED `ready` IS GONE; the hologram sends it now, on the
+-- same channel, which is why the two lists below are wired as ONE set.
 -- That is not an oversight and the other six are not dead: a view on this layer
 -- has no way to be pressed, so every DECISION arrives through the eye and calls
 -- `M.FromView` in process. The list is the seam's vocabulary rather than a
@@ -83,7 +84,7 @@ local HOLO_CHANNEL = 'calls:holo'
 
 -- What the hologram may say. `close` and `toggle` are about the screen; the
 -- rest name a player the server judges again.
-local HOLO_ACTIONS = { 'close', 'toggle', 'call', 'share',
+local HOLO_ACTIONS = { 'ready', 'close', 'toggle', 'call', 'share',
 	'accept', 'decline', 'hangUp', 'diag' }
 
 --- Wires the page to the seam.
@@ -93,7 +94,7 @@ function View.Start()
 	-- causes is the one `FromView('ready')` draws straight back, and a page that
 	-- mounted before this module started had its `calls:ready` held by the
 	-- surface and REPLAYED, synchronously, to the first handler registered on it
-	-- below -- so with this handler registered after those loops the replayed
+	-- below -- so with this handler registered after the wiring the replayed
 	-- ready drew into nothing (the same fault `modules/downed` shipped).
 	AddEventHandler(EVENT_VIEW, function(payload)
 		if type(payload) ~= 'table' then return end
@@ -121,17 +122,19 @@ function View.Start()
 		OPX.UI.Send(SURFACE, CHANNEL, payload)
 	end)
 
-	-- The page to the state half.
-	for _, action in ipairs(ACTIONS) do
-		OPX.UI.On(SURFACE, 'calls:' .. action, function(payload)
+	-- The page to the state half. EACH ACTION ONCE: `overlay` and `interactive`
+	-- are two names for one page (`core/client/ui.lua`), and every handler on a
+	-- channel runs. Wired from both lists, one hologram button asked the server
+	-- twice and the second answer was a `tooFast` refusal on the player's screen.
+	local wired = {}
+	local function wire(target, action)
+		if wired[action] then return end
+		wired[action] = true
+		OPX.UI.On(target, 'calls:' .. action, function(payload)
 			M.FromView(action, payload)
 		end)
 	end
-
+	for _, action in ipairs(ACTIONS) do wire(SURFACE, action) end
 	-- The hologram's own end of the seam.
-	for _, action in ipairs(HOLO_ACTIONS) do
-		OPX.UI.On(HOLO_SURFACE, 'calls:' .. action, function(payload)
-			M.FromView(action, payload)
-		end)
-	end
+	for _, action in ipairs(HOLO_ACTIONS) do wire(HOLO_SURFACE, action) end
 end

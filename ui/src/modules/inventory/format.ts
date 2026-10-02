@@ -37,11 +37,22 @@ export function monogram(label: string): string {
   return (words[0][0] + words[1][0]).toUpperCase()
 }
 
+/**
+ * A stack's name: its OWN label first, then the catalogue's.
+ *
+ * The order was the other way round, which made `metadata.label` dead for every
+ * item the catalogue names -- and the catalogue names all of them. A per-unit
+ * label is the more specific of the two by construction: the server writes one
+ * only when two units of the same item are different things, and the first to
+ * need it is the vehicle key, where "Vehicle key" twice in a bag says nothing and
+ * "Villefort Cortes · 12ABC345" says which car. `metadata.label` is on the list
+ * the server sends (`SHOWN` in modules/inventory/server/containers.lua).
+ */
 export function labelOf(stack: Stack, entry: CatalogEntry | undefined, unknown: string): string {
-  const named = entry ? entry.label : ''
-  if (named) return named
   const fromMetadata = stack.metadata.label
   if (typeof fromMetadata === 'string' && fromMetadata) return fromMetadata
+  const named = entry ? entry.label : ''
+  if (named) return named
   return stack.name || unknown
 }
 

@@ -75,6 +75,10 @@ local incoming = nil
 -- corrects a client that had drifted.
 local carrying = nil
 
+-- The seller NPCs, by id as a decimal string. Pushed by the server whole.
+local sellers = {}
+
+
 -- The tokens the target rows were registered under, so `Stop` can take them back.
 local tokens = {}
 
@@ -143,13 +147,23 @@ local function canPickUp(context)
 	return picked(context, Where.GROUND) ~= nil
 end
 
---- Whether this client may be offered a delivery on what the ray hit.
--- A LOADED crate is one in a vehicle's bed. The server checks that the vehicle is
--- actually standing at one of the site's drop-offs, which this cannot know and
--- must not guess: the drop-off list is the server's and a client that drew the
--- row anyway would simply be refused, which is the right failure.
-local function canDeliver(context)
-	return picked(context, Where.LOADED) ~= nil
+--- The seller NPC the ray hit, as the decimal string the server keyed it by.
+local function seller(context)
+	if type(context) ~= 'table' or type(context.target) ~= 'table' then return nil end
+	local id = math.tointeger(context.target.npcId)
+	if id == nil then return nil end
+	local key = ('%d'):format(id)
+	if sellers[key] == nil then return nil end
+	return key
+end
+
+--- Whether this client may be offered a sale on what the ray hit.
+-- What there is to sell is the server's to count -- the bag and every trunk
+-- parked at the drop-off -- so an empty-handed player is offered the row and
+-- told `no_crates`, which is the right failure.
+local function canSell(context)
+	if carrying ~= nil then return false end
+	return seller(context) ~= nil
 end
 
 --- Whether this client may be offered a load on the vehicle it is looking at.
@@ -165,10 +179,10 @@ local function onPickUp(context)
 	ask(Step.PICKUP, crate.id)
 end
 
-local function onDeliver(context)
-	local crate = picked(context, Where.LOADED)
-	if crate == nil then return end
-	ask(Step.DELIVER, crate.id)
+local function onSell(context)
+	local key = seller(context)
+	if key == nil then return end
+	ask(Step.DELIVER, key)
 end
 
 local function onLoad(context)
@@ -200,15 +214,6 @@ local function registerRows()
 			-- The thing itself: a crate on the floor is what the player walked up to.
 			order = 5,
 		},
-		{
-			id = 'hauling.deliver',
-			label = locale('hauling.row.deliver'),
-			icon = 'money',
-			distance = Access.VEHICLE_REACH,
-			canInteract = canDeliver,
-			onSelect = onDeliver,
-			order = 4,
-		},
 	}
 
 	local rows = Access.TARGET_KIND == 'world'
@@ -235,6 +240,72 @@ local function registerRows()
 	else
 		OPX.Note('hauling', ('the load row was refused: %s'):format(tostring(load.error)))
 	end
+
+	local sell = target.RegisterNpcs(OWNER, {
+		id = 'hauling.sell',
+		label = locale('hauling.row.sell'),
+		icon = 'money',
+		distance = Access.VEHICLE_REACH,
+		canInteract = canSell,
+		onSelect = onSell,
+		order = 4,
+	})
+	if sell.ok then
+		tokens[#tokens + 1] = sell.value.token
+	else
+		OPX.Note('hauling', ('the sell row was refused: %s'):format(tostring(sell.error)))
+	end
+end
+
+-- ── hands full ──────────────────────────────────────────────────────────────
+--
+-- The owner: "si ont porte le truc on puisse pas frapper n'y utiliser un item
+-- inv". The server holsters the weapon at pickup and the inventory refuses item
+-- use; this stops the weapon coming back out. `Attack` (firing) is marked
+-- INFERRED by the platform and `Melee` is not blockable at all on 2.31, so a
+-- bare-handed swing is the one thing left and nothing here can refuse it.
+local HANDS_FULL = { 'Attack', 'WeaponWheel' }
+local handsBlocked = false
+
+-- THE PLAYER CONTROLS, which reach what `Open77.input` cannot. The owner: "tu
+-- peux pas bloquer le fait qu'on puisse taper pendant qu'on porte une caisse ?"
+-- `Melee` is not blockable as an input on 2.31, but `allowWeapons(false)` is the
+-- game's own no-weapons restriction, and aim and shoot go with it. Released one
+-- by one with `true` and NEVER with `resetControls`, which would hand back every
+-- control block this resource holds -- the eye's, the downed screen's.
+local CONTROLS = { 'allowWeapons', 'allowShoot', 'allowAim' }
+
+--- Applies or releases the player controls, logging a refusal once.
+local controlsNoted = false
+local function holdControls(on)
+	local players = Open77.players
+	if type(players) ~= 'table' then return end
+	for _, name in ipairs(CONTROLS) do
+		if type(players[name]) == 'function' then
+			local called, ok, why = pcall(players[name], not on)
+			if on and (not called or ok ~= true) and not controlsNoted then
+				controlsNoted = true
+				OPX.Note('hauling', ('%s(false) was refused while carrying: %s')
+					:format(name, tostring(called and why or ok)))
+			end
+		end
+	end
+end
+
+--- Claims or releases the two actions and the controls, only on a change.
+local function blockHands(on)
+	if handsBlocked == on then return end
+	handsBlocked = on
+	holdControls(on)
+	local input = Open77.input
+	if type(input) ~= 'table' or type(input.setActionBlocked) ~= 'function' then return end
+	for _, action in ipairs(HANDS_FULL) do
+		local called, ok, why = pcall(input.setActionBlocked, action, on)
+		if on and (not called or ok ~= true) then
+			OPX.Note('hauling', ('%s could not be blocked while carrying: %s')
+				:format(action, tostring(called and why or ok)))
+		end
+	end
 end
 
 --- Puts one crate into the local list, or takes it out.
@@ -254,6 +325,63 @@ local function dropBar()
 	pcall(progress.Stop, OWNER, nil)
 end
 
+--- The key actually bound to the drop, as the host answered it.
+local dropKey = nil
+
+-- Whether X may put the crate down now: only once the lift has played out, and
+-- never while a bar (the load into a vehicle) is running.
+local dropReady = false
+
+--- Puts the carried crate down. The server decides; this only asks.
+-- The owner: "pendant qu'on carry ont peux faire x pour la drop".
+local function onDropKey()
+	-- The owner: "pendant qu'on load dans la voiture le joueur peux plus faire x".
+	if carrying == nil or not dropReady or bar ~= nil then return end
+	-- A key typed into a text field is not a key pressed in the world.
+	local input = Open77.input
+	if type(input) == 'table' and type(input.isCaptured) == 'function' then
+		local read, taken = pcall(input.isCaptured)
+		if read and taken == true then return end
+	end
+	local yaw, groundZ = nil, nil
+	local character = Open77.character
+	if type(character) == 'table' and type(character.yaw) == 'function' then
+		local read, value = pcall(character.yaw)
+		if read and type(value) == 'number' then yaw = value end
+	end
+	-- THE FLOOR WHERE IT WILL LAND. The server has no physics and put the crate at
+	-- the player's own height, which is not the floor. Cast from just above the
+	-- player's head, not from the sky, so a roof or a balcony over them is not the
+	-- ground. `Open77.character.position()` answers three numbers.
+	if yaw ~= nil and type(character) == 'table' and type(character.position) == 'function'
+		and type(Open77.world) == 'table' and type(Open77.world.groundZ) == 'function' then
+		local read, x, y, z = pcall(character.position)
+		if read and type(x) == 'number' and type(y) == 'number' and type(z) == 'number' then
+			local radians = math.rad(yaw)
+			local dx = x - math.sin(radians) * Access.DROP_DISTANCE
+			local dy = y + math.cos(radians) * Access.DROP_DISTANCE
+			local cast, ground = pcall(Open77.world.groundZ, dx, dy, z + 1.0)
+			if cast and type(ground) == 'number' then groundZ = ground end
+		end
+	end
+	TriggerServerEvent(M.Event.DROP, { yaw = yaw, z = groundZ })
+end
+
+--- Binds the drop key, once. A refusal costs the key and nothing else.
+local function registerDropKey()
+	if type(RegisterKeyMapping) ~= 'function' then
+		return OPX.Note('hauling', 'this host has no RegisterKeyMapping: a crate cannot be put down')
+	end
+	local called, ok, answer = pcall(RegisterKeyMapping, 'hauling_drop',
+		locale('hauling.key.drop'), Access.DROP_KEY, onDropKey)
+	if not called or (ok ~= true and type(ok) ~= 'string') then
+		return OPX.Note('hauling', ('the drop key was refused: %s')
+			:format(tostring(called and answer or ok)))
+	end
+	dropKey = type(ok) == 'string' and ok ~= '' and ok
+		or (type(answer) == 'string' and answer ~= '' and answer) or Access.DROP_KEY
+end
+
 --- Wires the rows, the wire and the bar. No job is registered here on purpose.
 -- @author dop42
 function M.Start()
@@ -269,6 +397,15 @@ function M.Start()
 	end
 
 	registerRows()
+	registerDropKey()
+
+	-- THE EYE HANDS BACK EVERY CONTROL THIS RESOURCE HOLDS when it closes -- its
+	-- `controls(false)` is `Open77.players.resetControls()` -- and a player can open
+	-- it with a crate in their arms. So the controls are put back after it.
+	AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'target', 'closed'), function()
+		if handsBlocked then holdControls(true) end
+	end)
+
 
 	RegisterNetEvent(M.Event.SNAPSHOT, function(part)
 		if type(part) ~= 'table' then return end
@@ -290,13 +427,44 @@ function M.Start()
 		keep(row)
 	end)
 
+	RegisterNetEvent(M.Event.SELLERS, function(list)
+		if type(list) ~= 'table' then return end
+		local fresh = {}
+		for _, row in ipairs(list) do
+			if type(row) == 'table' and type(row.npc) == 'string' and row.npc:match('^%d+$') then
+				fresh[row.npc] = { site = tostring(row.site or ''), dropoff = tostring(row.dropoff or '') }
+			end
+		end
+		sellers = fresh
+	end)
+
 	RegisterNetEvent(M.Event.GONE, function(id)
 		local key = propId(id)
 		if key ~= nil then crates[key] = nil end
 	end)
 
 	RegisterNetEvent(M.Event.ANSWER, function(ok, reason, held)
+		local was = carrying
 		carrying = propId(held) or nil
+		blockHands(carrying ~= nil)
+		-- AFTER THE LIFT, NOT AT THE PICKUP. The owner: "la notification qui dit X
+		-- pour drop faut qu'elle soit apres le load du carry de l'objet". The key
+		-- goes live at the same moment, so the hint never offers a press that the
+		-- lift would swallow.
+		if carrying == nil then
+			dropReady = false
+		elseif was == nil then
+			dropReady = false
+			local held = carrying
+			CreateThread(function()
+				Wait(M.LIFT_MS)
+				if carrying ~= held then return end
+				dropReady = true
+				if dropKey ~= nil then
+					OPX.Toast.Locale('hauling.hint.drop', { key = dropKey }, 'info', 'box')
+				end
+			end)
+		end
 		if not ok then
 			dropBar()
 			-- Every verdict goes on the public bus, refusals included: a HUD or a
@@ -372,6 +540,9 @@ function M.Stop()
 		for _, token in ipairs(tokens) do pcall(target.Unregister, OWNER, token) end
 	end
 	tokens = {}
+	blockHands(false)
+	dropReady = false
 	crates = {}
+	sellers = {}
 	carrying = nil
 end
