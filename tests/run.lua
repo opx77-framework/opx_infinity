@@ -21621,6 +21621,60 @@ end
 -- in any test ever run: the client re-applied the clock on every accepted
 -- snapshot, and both mutants over the tolerance survived. With a real engine
 -- clock the correction is a comparison between two numbers again.
+section('weather: the commands answer the player and are suggested by the chat box')
+do
+	-- These were raw `RegisterCommand` calls answered on a private event whose
+	-- client half asked `opx77_notify` for a toast and fell back to
+	-- `chat:addMessage` -- two names nothing listens to any more. From the game,
+	-- `/opx.weather.set rain` changed the sky and said nothing, and the chat box
+	-- never offered any of the eight.
+	local env, control, why = boot('server')
+	check('the server boots for the weather commands', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local known, restricted = OPX.Command.Known('opx.weather.set')
+		check('a weather command is registered through OPX.Command', known and restricted)
+		local open = OPX.Command.Known('opx.weather')
+		check('and the status report too', open)
+
+		local listed = false
+		for _, row in ipairs(OPX.Command.Suggestions(3)) do
+			if row.name == 'opx.weather' then listed = true end
+		end
+		check('so the chat box suggests it', listed)
+
+		local RESULT = OPX.Event(OPX.Channel.NET, 'runtime', 'commandResult')
+		local ANSWER = OPX.Event(OPX.Channel.NET, 'runtime', 'commandAnswer')
+		local function sent(name)
+			local out = {}
+			for index = 1, #control.clientEvents do
+				if control.clientEvents[index].name == name then
+					out[#out + 1] = control.clientEvents[index]
+				end
+			end
+			return out
+		end
+
+		local before = #sent(RESULT)
+		control.commands['opx.weather'].run(3, {}, '/opx.weather')
+		check('a status report is a chat read-back through OPX.CommandResult',
+			#sent(RESULT) == before + 1, #sent(RESULT) - before)
+
+		local answered = #sent(ANSWER)
+		control.commands['opx.weather.set'].run(3, { 'no_such_sky', n = 1 },
+			'/opx.weather.set no_such_sky')
+		check('a refused action is a toast through OPX.CommandNotice',
+			#sent(ANSWER) == answered + 1, #sent(ANSWER) - answered)
+		local private = 0
+		for index = 1, #control.clientEvents do
+			if control.clientEvents[index].name == OPX.Event(OPX.Channel.NET, 'weather', 'notice') then
+				private = private + 1
+			end
+		end
+		check('and nothing goes out on the old private notice event', private == 0, private)
+	end
+end
+
 section('weather: the clock is corrected when it has drifted, and left alone when it has not')
 do
 	local env, control, why = boot('client')
