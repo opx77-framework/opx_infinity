@@ -24832,7 +24832,19 @@ do
 				outgoing = { id = 'j2', kind = 'join', to = 3, toName = 'Kerry' } })
 			check('HangUp on a call leaves it, rather than withdrawing',
 				module.HangUp() == true and asked(module.Event.HANG_UP) == hangUps + 2)
+			-- The server withdraws the join invite with the hang-up, and the push
+			-- taking it away is what stops the dial tone on this screen.
+			local stops = 0
+			for _, event in ipairs(control.effects.sfx2d) do
+				if event == 'ui_phone_initiation_call_stop' then stops = stops + 1 end
+			end
 			deliver({})
+			local after = 0
+			for _, event in ipairs(control.effects.sfx2d) do
+				if event == 'ui_phone_initiation_call_stop' then after = after + 1 end
+			end
+			check('the invite withdrawn with the hang-up stops the dial tone',
+				after == stops + 1, after - stops)
 		end
 	end
 end
@@ -25032,6 +25044,42 @@ do
 		ask(C, module.Event.ACCEPT, invite.id)
 		check('the answer after the cooldown connects', onCall(A) and onCall(C))
 		ask(A, module.Event.HANG_UP)
+
+		-- LEAVING A CALL WITHDRAWS THE INVITE YOU SENT FROM IT. It used to go on
+		-- ringing at the third person for a call its sender was no longer on.
+		ask(A, module.Event.INVITE, B)
+		local again = lastState(B)
+		ask(B, module.Event.ACCEPT, again and again.invite and again.invite.id)
+		ask(A, module.Event.INVITE, C)
+		local third = lastState(C)
+		check('a third person is ringing from inside the call',
+			onCall(A) and third ~= nil and third.invite ~= nil and third.invite.kind == 'join')
+		local audited = {}
+		local realLog = OPX.Audit.Log
+		OPX.Audit.Log = function(entry)
+			audited[#audited + 1] = entry
+			return realLog(entry)
+		end
+		mark = ask(A, module.Event.HANG_UP)
+		OPX.Audit.Log = realLog
+		check('the sender leaving ends the call', not onCall(A) and not onCall(B))
+		check('and the third person stops ringing',
+			lastState(C, mark) ~= nil and lastState(C, mark).invite == nil)
+		check('and the sender has nothing ringing out',
+			lastState(A, mark) ~= nil and lastState(A, mark).outgoing == nil)
+		local cancelled = 0
+		for index = 1, #audited do
+			if audited[index].event == 'calls.cancel' and audited[index].source == A then
+				cancelled = cancelled + 1
+			end
+		end
+		check('and the withdrawal is audited', cancelled == 1, cancelled)
+		-- The incoming slot was given back, so the next call is not refused as
+		-- `targetPending`.
+		mark = ask(B, module.Event.INVITE, C)
+		check('so the third person can take a new call at once',
+			lastState(C, mark) ~= nil and lastState(C, mark).invite ~= nil)
+		ask(B, module.Event.HANG_UP)
 	end
 end
 

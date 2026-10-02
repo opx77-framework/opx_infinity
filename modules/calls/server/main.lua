@@ -525,6 +525,22 @@ local function callEnded(outcome)
 		if registry.CallOf(id) == nil then
 			darkenEyes(id)
 			if callId ~= nil then leaveVoice(callId, id) end
+			-- AN INVITE TO JOIN A CALL YOU ARE NO LONGER ON IS WITHDRAWN WITH YOU.
+			-- It used to ring on the third person's screen until it expired, or
+			-- until they answered and were refused `notInCall`, for a call that
+			-- no longer had its sender in it. Withdrawn the way `onWithdraw` does
+			-- it: audited, filed as missed, and pushed to the target. The sender
+			-- is pushed below with everyone else, and on both screens the invite
+			-- going is what plays the stop sound.
+			local pending = registry.OutgoingOf(id)
+			if pending ~= nil and pending.kind == 'join' then
+				local withdrawn = registry.Cancel(id)
+				if withdrawn ~= nil then
+					audit('calls.cancel', id, true, 'join: the sender left the call')
+					fileRecent(withdrawn.to, 'missed', nameOf(id), citizenOf(id))
+					push(withdrawn.to)
+				end
+			end
 		end
 	end
 	-- THE CHANNEL GOES WITH THE LAST PARTICIPANT AND NOT BEFORE. `callEnded` also
