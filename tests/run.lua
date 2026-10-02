@@ -23923,6 +23923,46 @@ do
 	end
 end
 
+-- ONE PRESS, ONE REQUEST. The card and the hologram used to wire the same verbs
+-- from two lists, and both lists land on the one page: every handler on a
+-- channel runs, so a hologram button asked the server twice and the second was
+-- refused as `tooFast` on the player's screen.
+section('calls: a hologram button asks the server once')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the buttons', why == nil, why)
+	if why == nil then
+		local module = env.OPX.Modules.Get('calls')
+		local deliver = control.netEvents[module.Event.STATE]
+		local page = control.pages[1]
+		local function asked(name)
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == name then n = n + 1 end
+			end
+			return n
+		end
+		check('the state handler and the page are there',
+			type(deliver) == 'function' and page ~= nil)
+		if type(deliver) == 'function' and page ~= nil then
+			for _, verb in ipairs({
+				{ 'accept', module.Event.ACCEPT, { invite = { id = 'i9', kind = 'call', name = 'Judy' } } },
+				{ 'decline', module.Event.DECLINE, { invite = { id = 'i8', kind = 'call', name = 'Judy' } } },
+				{ 'hangUp', module.Event.HANG_UP, { call = { id = 'k9', participants = {} } } },
+				{ 'ready', module.Event.READY, {} },
+			}) do
+				deliver({})
+				deliver(verb[3])
+				local before = asked(verb[2])
+				control.PageEmit(page, 'opx:calls:' .. verb[1], {})
+				check(('%s from the page is one request'):format(verb[1]),
+					asked(verb[2]) == before + 1, asked(verb[2]) - before)
+			end
+			deliver({})
+		end
+	end
+end
+
 -- The caller's withdrawal, on the model: the invite goes from both indexes.
 section('calls: a caller can withdraw a call nobody answered')
 do
