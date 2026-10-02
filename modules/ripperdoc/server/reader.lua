@@ -17,6 +17,18 @@
 -- answered in time ends the read (the reader's client may have left or be
 -- loading), and every answer is checked against the batch it answers -- a
 -- client cannot write a record it was not asked about.
+--
+-- A CLIENT IS NOT BELIEVED ON ITS WORD. The table is shared and outlives the
+-- read, so one modified client could have filled every row with whatever it
+-- liked. Two rules close that:
+--
+--   * WHO READS. An automatic read runs only through a player the ACL lets run
+--     the records command -- staff. Anyone else is never asked. A read an
+--     operator starts by hand names its client, which is that operator's call.
+--   * WHAT IS KEPT. Every field is checked against the shape the engine
+--     answers in (dotted TweakDB names, a LocKey, a reason word, a name with no
+--     markup); a row out of shape is dropped, and a client that sends
+--     MAX_REJECTED of them has its read ended -- a real client sends none.
 
 local M = OPX.Modules.Get('ripperdoc')
 
@@ -34,6 +46,8 @@ local kept = { build = nil, count = nil }
 
 local BATCH_TIMEOUT_MS = 30000
 local MAX_TEXT = 160
+-- Rows out of shape a read may send before it is ended.
+local MAX_REJECTED = 5
 
 --- The reader's policy. Never nil.
 -- @return table
@@ -53,6 +67,67 @@ local function text(value, limit)
 	limit = limit or MAX_TEXT
 	if #value > limit then value = value:sub(1, limit) end
 	return value
+end
+
+--- A TweakDB-style name: letters, digits, `_`, `.`, `:`, `-`, `#`, at most
+--- `limit` bytes. '' is a field the engine did not expose and is kept as ''.
+-- @param value any
+-- @param limit integer
+-- @return string|nil the value, or nil when it is out of shape
+local function token(value, limit)
+	if value == nil then return '' end
+	if type(value) ~= 'string' or #value > limit then return nil end
+	if value:find('[^%w_%.:%-#]') then return nil end
+	return value
+end
+
+--- A display name: valid UTF-8, no control bytes, no markup, at most MAX_TEXT
+--- bytes. Nil when it is out of shape.
+-- @param value any
+-- @return string|nil
+local function displayName(value)
+	if value == nil then return '' end
+	if type(value) ~= 'string' or #value > MAX_TEXT then return nil end
+	if utf8.len(value) == nil or value:find('[%c<>]') then return nil end
+	return value
+end
+
+--- One answered row checked field by field. Nil when any field is out of
+--- shape. A row that is not `ok` carries no data at all: the client said it
+--- knows nothing about the record, so nothing it sent beside that is kept.
+-- @param row table
+-- @return table|nil
+local function shaped(row)
+	local answer = row.answer == nil and 'ok' or row.answer
+	if type(answer) ~= 'string' or #answer > 48 or not answer:find('^[%l_:%.]+$') then return nil end
+	if answer ~= 'ok' then
+		return { name = '', quality = '', area = '', itemType = '', localeKey = '', class = '',
+			answer = answer }
+	end
+	local out = {
+		name = displayName(row.name), quality = token(row.quality, 48),
+		area = token(row.area, 64), itemType = token(row.itemType, 64),
+		localeKey = token(row.localeKey, 48), class = token(row.class, 64), answer = 'ok',
+	}
+	for _, key in ipairs({ 'name', 'quality', 'area', 'itemType', 'localeKey', 'class' }) do
+		if out[key] == nil then return nil end
+	end
+	return out
+end
+
+--- Whether the ACL lets this player run the records command: staff, the only
+--- clients an automatic read is trusted through. A read that raises -- a host
+--- with no `Open77.acl` -- is a no.
+-- @param player number
+-- @return boolean
+local function staff(player)
+	local names = type(M.Settings.COMMANDS) == 'table' and M.Settings.COMMANDS or {}
+	local name = type(names.records) == 'string' and names.records or nil
+	if name == nil then return false end
+	local read, allowed = pcall(function()
+		return Open77.acl.isAllowed(player, 'command.' .. name:lower())
+	end)
+	return read and allowed == true
 end
 
 --- The full record id of one list slot.
@@ -87,12 +162,12 @@ local function finish(why)
 	if read == nil then return end
 	last = {
 		player = read.player, why = why, answered = read.answered, kept = read.kept,
-		failed = read.failed, missing = read.missing, total = M.Reader.Total(),
+		failed = read.failed, missing = read.missing, rejected = read.rejected, total = M.Reader.Total(),
 		seconds = math.floor((OPX.Now() - read.started) / 1000),
 	}
 	Open77.log.info(('[ripperdoc] record reader through player %d %s: %d answered, %d kept, ' ..
-		'%d unknown to the client, %d not written, %ds'):format(read.player, why, read.answered,
-		read.kept, read.missing, read.failed, last.seconds))
+		'%d unknown to the client, %d not written, %d out of shape, %ds'):format(read.player, why,
+		read.answered, read.kept, read.missing, read.failed, read.rejected, last.seconds))
 	read = nil
 end
 
@@ -142,7 +217,7 @@ function M.Reader.Start(player)
 	end
 	read = {
 		player = player, nonce = ('%d:%d'):format(OPX.Now(), player), started = OPX.Now(),
-		next = 1, batch = 0, answered = 0, kept = 0, failed = 0, missing = 0,
+		next = 1, batch = 0, answered = 0, kept = 0, failed = 0, missing = 0, rejected = 0,
 	}
 	Open77.log.info(('[ripperdoc] record reader: reading %d base-game cyberware records through ' ..
 		'player %d'):format(M.Reader.Total(), player))
@@ -193,18 +268,24 @@ function M.Reader.Answer(player, nonce, batch, rows)
 		if asked[id] then
 			asked[id] = nil
 			read.answered = read.answered + 1
-			local answer = text(row.answer, 48)
-			if answer ~= 'ok' then read.missing = read.missing + 1 end
-			local saved = M.Storage.UpsertRecord({
-				record = id, name = text(row.name), quality = text(row.quality, 48),
-				area = text(row.area, 64), itemType = text(row.itemType, 64),
-				localeKey = text(row.localeKey, 48), class = text(row.class, 64),
-				answer = answer ~= '' and answer or 'ok', build = build,
-			})
-			if type(saved) == 'table' and saved.ok == true then
-				read.kept = read.kept + 1
+			local clean = shaped(row)
+			if clean == nil then
+				read.rejected = read.rejected + 1
+				if read.rejected >= MAX_REJECTED then
+					return finish(('stopped: player %d answered %d record(s) out of shape')
+						:format(read.player, read.rejected))
+				end
 			else
-				read.failed = read.failed + 1
+				if clean.answer ~= 'ok' then read.missing = read.missing + 1 end
+				clean.record, clean.build = id, build
+				local saved = M.Storage.UpsertRecord(clean)
+				-- A read may have been ended while the write yielded.
+				if read == nil or tostring(nonce) ~= read.nonce then return end
+				if type(saved) == 'table' and saved.ok == true then
+					read.kept = read.kept + 1
+				else
+					read.failed = read.failed + 1
+				end
 			end
 		end
 	end
@@ -226,6 +307,8 @@ function M.Reader.Arrived(player)
 	CreateThread(function()
 		while present[player] and OPX.Now() - arrived < after do Wait(1000) end
 		if read ~= nil or not present[player] then return end
+		-- STAFF ONLY: an automatic read trusts the client it runs through.
+		if not staff(player) then return end
 		local count = M.Reader.Kept()
 		if count == nil or count >= M.Reader.Total() then return end
 		M.Reader.Start(player)

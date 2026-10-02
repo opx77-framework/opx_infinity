@@ -190,8 +190,10 @@ OPX.Config.MODULES.ripperdoc = {
 	-- client: the server hands it the TweakDB record ids in batches, its live
 	-- TweakDB answers what each one is, and the answers are kept in the
 	-- `opx77_ripperdoc_records` table. AUTO reads them once through the first
-	-- player who stays AUTO_AFTER_MS in the city, and never again while the
-	-- table holds every record. BATCH ids per round trip.
+	-- STAFF player (one the ACL lets run the records command) who stays
+	-- AUTO_AFTER_MS in the city, and never again while the table holds every
+	-- record -- an ordinary client is never trusted to fill a shared table.
+	-- Every answer is checked for shape server-side. BATCH ids per round trip.
 	RECORDS = { AUTO = true, AUTO_AFTER_MS = 90000, BATCH = 40 },
 
 	-- THE BODY'S LIMIT, the base game's: every fitted piece costs capacity,

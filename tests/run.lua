@@ -32052,6 +32052,29 @@ do
 		press(61, Event.RESOLVED, batch[1], batch[2], answer)
 		control.Pump(60)
 		check('an old batch answered again writes nothing', #resolves(61) == #next)
+
+		-- A CLIENT IS NOT BELIEVED ON ITS WORD: a row out of the engine's shape
+		-- is dropped, and a client sending a handful of them loses the read.
+		-- (No new locals: this section's chunk sits at Lua's 200-local ceiling.)
+		batch = next[#next]
+		answer = {
+			{ record = batch[3][1], answer = 'ok', name = '<img src=x onerror=alert(1)>' },
+			{ record = batch[3][2], answer = 'ok', name = 'Fine', quality = 'Rare; DROP TABLE' },
+			{ record = batch[3][3], answer = 'ok', name = ('x'):rep(400) },
+			{ record = batch[3][4], answer = 'Totally OK!', name = 'Fine' },
+			{ record = batch[3][5], answer = 'ok', name = 'Fine', area = { nested = true } },
+			{ record = batch[3][6], answer = 'ok', name = 'Kept', quality = 'Quality.Epic' },
+		}
+		press(61, Event.RESOLVED, batch[1], batch[2], answer)
+		control.Pump(60)
+		check('a row out of the engine\'s shape is never written',
+			db.records[batch[3][1]] == nil and db.records[batch[3][2]] == nil
+				and db.records[batch[3][3]] == nil and db.records[batch[3][4]] == nil
+				and db.records[batch[3][5]] == nil)
+		check('and a client that sends five of them has its read ended',
+			Reader.Status():find('out of shape', 1, true) ~= nil and #resolves(61) == #next,
+			Reader.Status())
+		Reader.Start(61)
 		env.TriggerEvent(OPX.Host.PLAYER_DISCONNECTED, 61)
 		check('and the read ends when its client leaves', Reader.Status():find('the reader left', 1, true) ~= nil,
 			Reader.Status())
