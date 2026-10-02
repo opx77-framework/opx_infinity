@@ -79,9 +79,11 @@ end
 --- Answers the offer this player is deciding about, or a refusal.
 -- @author XEROX710
 -- @param yes boolean
+-- @param garage string|nil the garage to file it under; the server's default
+--   when omitted
 -- @return Result
-local function decide(yes)
-	local verdict = Runtime.Decide(yes == true)
+local function decide(yes, garage)
+	local verdict = Runtime.Decide(yes == true, garage)
 	if verdict.ok ~= true then return Result.Err(verdict.error or 'dealership.noOffer') end
 	return Result.Ok(verdict)
 end

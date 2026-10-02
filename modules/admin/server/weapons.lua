@@ -15,9 +15,10 @@
 -- Adding `class`, `ammoName` and `ammoMax` to `Catalog.ViewOf` in the inventory
 -- module would restore the original three shapes unchanged.
 --
--- `weapon.holster` is registered and refuses: the contract publishes
--- `GetHeldWeapon` and no way to put a weapon away. The name is kept so that an
--- operator's `acl.jsonc` entry does not have to change when it comes back.
+-- `weapon.holster` puts the target's drawn weapon away through the contract's
+-- `HolsterWeapon`. It used to refuse every time, because the contract published
+-- `GetHeldWeapon` and no way to put one away -- so the staff menu's Holster row
+-- and the command answered "not available" to every operator, always.
 
 local M = OPX.Modules.Get('admin')
 
@@ -361,11 +362,24 @@ function Weapons.Register()
 		handler = function(source, args, raw)
 			local playerId = Server.Target(source, raw, args[1])
 			if playerId == nil then return end
-			-- The inventory contract publishes `GetHeldWeapon` and no way to put a
-			-- weapon away. Taking the engine slot behind the inventory's back would
-			-- leave it believing the player is still armed, so nothing is done.
-			audit(source, 'admin.weapon.holster', false, playerId, 'no holster on the contract')
-			refuse(source, raw, 'holster_unavailable', { id = playerId })
+			-- THROUGH THE CONTRACT, never the engine slot directly: taking the slot
+			-- behind the inventory's back would leave it believing the player is
+			-- still armed, and its rounds would never be read back into the bag.
+			local contract = Server.Contract('inventory')
+			if contract == nil or type(contract.HolsterWeapon) ~= 'function' then
+				audit(source, 'admin.weapon.holster', false, playerId, 'no holster on the contract')
+				return refuse(source, raw, 'holster_unavailable', { id = playerId })
+			end
+			local ran, put = pcall(contract.HolsterWeapon, playerId)
+			if not ran or type(put) ~= 'table' or put.ok ~= true then
+				local code = ran and type(put) == 'table' and put.error or nil
+				audit(source, 'admin.weapon.holster', false, playerId,
+					tostring(ran and code or put))
+				return refuse(source, raw, code == 'not_armed' and 'not_armed'
+					or 'holster_unavailable', { id = playerId })
+			end
+			audit(source, 'admin.weapon.holster', true, playerId, tostring(put.value.name))
+			answer(source, raw, true, 'admin.done.holstered', { id = playerId })
 		end,
 	})
 

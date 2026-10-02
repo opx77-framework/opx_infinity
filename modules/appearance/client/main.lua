@@ -62,6 +62,11 @@ local notAliveSinceMs = 0
 -- this world entry with no face on it.
 local DEAD_WAIT_MS = 5000
 
+-- How long a restore in the gameplay world waits, once gameplay-ready is out, for
+-- the platform's pristine reset of an attached body before it settles this entry
+-- with no face. DEAD_WAIT_MS only starts counting once that reset has run.
+local RESET_WAIT_MS = 60000
+
 -- Apply refusals that mean 'not yet', retried after a short wait.
 local RETRYABLE = {
 	options_unavailable = true,
@@ -522,9 +527,27 @@ function M.Runtime.Announce()
 	-- reporting it as `appearance_unsettled` is reporting a player standing in
 	-- front of the game's own creator as a fault in this module.
 	if State.creating or State.creatorUp then return held('creation_in_progress') end
-	if not State.AppearanceSettled() then return held('appearance_unsettled') end
+	-- A restore waiting on the platform's armed reset is the one unsettled face
+	-- that must NOT hold the gate: the platform runs that reset, and brings the
+	-- body alive, only once this has gone out. See `State.AwaitingPlatform`.
+	-- `playerResetDone` is this world entry's `open77:playerReset:complete`; an
+	-- attached body without it is a body the platform has not reset yet.
+	local resetPending = not State.playerResetDone and Runtime.Attached()
+	if not State.AppearanceSettled() and not (resetPending and State.AwaitingPlatform()) then
+		return held('appearance_unsettled')
+	end
 
-	if not inGameplay() then
+	if resetPending and not inGameplay() then
+		-- No DEAD_ANNOUNCE_MS wait: the body is not alive BECAUSE nothing has
+		-- been announced, and every millisecond spent here is one more the
+		-- player stands behind the cover on a puppet nobody can reset.
+		if not announceSaid.platform_first then
+			announceSaid.platform_first = true
+			Runtime.Note(('gameplay-ready goes out on a body the platform has not reset ' ..
+				'yet: the reset and the body coming alive wait for it%s'):format(
+					State.AppearanceSettled() and '' or ', and the face goes on after them'))
+		end
+	elseif not inGameplay() then
 		-- A BODY THAT IS ATTACHED AND NOT ALIVE IS STILL A BODY IN THE WORLD, and
 		-- this announcement is what lets anybody reach it: nothing places, revives
 		-- or teleports a player whose platform hold has never cleared. A client
@@ -602,8 +625,26 @@ local function awaitWorld(token, label)
 	Runtime.ResolveBootstrap(State.family or Runtime.BodyFamily() or Runtime.DefaultFamily())
 	local waitedFrom, said = nowMs(), false
 	local notAliveFrom = 0
+	local resetWaitFrom = 0
 	while not faceable() do
 		if not State.Current(token) then return false end
+
+		-- THE PLATFORM'S RESET HAS NOT RUN YET, AND IT WILL NOT UNTIL THE GATE IS
+		-- ANNOUNCED. On op77.121 the puppet attaches with its pristine reset armed
+		-- and the host only runs it -- then places and revives the body -- after
+		-- `gameplayReady`. Waiting here for a live body before announcing was a
+		-- deadlock the timers below broke after 5 s by giving the face up, so
+		-- every join entered on the default face. Instead this restore says it is
+		-- waiting on the platform, which lets `Announce` go out now, and keeps
+		-- its token: the face goes on as soon as the reset has brought the body
+		-- alive. The dead-body clock does not run while the platform holds the
+		-- body, because nothing this module does can end that hold but announcing.
+		local platformHolds = not State.playerResetDone and not State.gameplayAnnounced and
+			State.worldEligible and not State.bodyReloading and Runtime.Attached()
+		if platformHolds then
+			State.platformWaitToken = token
+			Runtime.Announce()
+		end
 
 		-- A BODY THAT IS ATTACHED AND NOT ALIVE ENDS NOTHING BY ITSELF. A face
 		-- cannot go on it, this wait is what the readiness announcement sits
@@ -613,7 +654,35 @@ local function awaitWorld(token, label)
 		-- up on for this world entry: the entry is marked settled so the
 		-- announcement can go out, and the face goes on at the next one, on a body
 		-- that is alive.
-		if Runtime.Attached() then
+		--
+		-- THE ANNOUNCEMENT IS NOT THE RESET. Once gameplay-ready is out the host
+		-- still finishes its own loading screen before it resets the body: on
+		-- 2026-10-02 16:02 the announcement went out at 34.354, the handoff
+		-- (`loading_bar_full`) came at 42.805 and `reset_complete` at 43.201 --
+		-- nine seconds in which this clock, started at the announcement, gave the
+		-- face up at 39.697. So in the gameplay world the not-alive clock does not
+		-- run at all until this entry's `open77:playerReset:complete` has arrived;
+		-- before that only RESET_WAIT_MS bounds the wait, for a reset that never
+		-- comes.
+		if platformHolds then
+			notAliveFrom = 0
+			resetWaitFrom = 0
+		elseif Runtime.Attached() and State.worldEligible and not State.playerResetDone then
+			notAliveFrom = 0
+			if resetWaitFrom == 0 then
+				resetWaitFrom = nowMs()
+			elseif nowMs() - resetWaitFrom >= RESET_WAIT_MS then
+				Open77.log.warn(('[appearance] %s token=%d: the platform has not reset the body ' ..
+					'%d ms after gameplay-ready, so this entry settles with no face')
+					:format(label, token, nowMs() - resetWaitFrom))
+				Runtime.Note(('the platform reset never came %d ms after gameplay-ready; this ' ..
+					'entry settles with no face'):format(nowMs() - resetWaitFrom))
+				State.restoreSettledToken = token
+				Runtime.Announce()
+				return false
+			end
+		elseif Runtime.Attached() then
+			resetWaitFrom = 0
 			if notAliveFrom == 0 then
 				notAliveFrom = nowMs()
 			elseif nowMs() - notAliveFrom >= DEAD_WAIT_MS then
@@ -1293,6 +1362,10 @@ local function registerEvents()
 	RegisterNetEvent(M.Event.SHOW, onShow)
 
 	AddEventHandler(HostEvent.RESET_COMPLETE, function()
+		-- Logged: whether this event reached Lua, and when, is exactly what a
+		-- face dropped at join has to be diagnosed from.
+		Open77.log.info(('[appearance] the platform reset the body (restore token=%d, ' ..
+			'announced=%s)'):format(State.restoreToken, tostring(State.gameplayAnnounced)))
 		Runtime.FinishReload('playerReset')
 		State.playerResetDone = true
 		Runtime.Announce()

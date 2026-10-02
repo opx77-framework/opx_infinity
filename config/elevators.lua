@@ -66,6 +66,12 @@ OPX.Config.MODULES.elevators = {
 	REQUEST_WINDOW_MS = 10000,
 	REQUESTS_PER_WINDOW = 6,
 
+	-- The key that opens the floor list at a lift the player stands at. ID is
+	-- what a rebind is stored under and never changes. DEFAULT = false declares
+	-- no key, which leaves the contract's `OpenPanel` as the only way in -- and an
+	-- adopted cabin is locked, so a shaft with no way in cannot be ridden at all.
+	KEY = { ID = 'opx.elevators.use', NAME = 'elevators.key.use', DEFAULT = 'E' },
+
 	-- ACL-gated diagnostic; false registers none.
 	COMMAND = 'opx.elevators.where',
 

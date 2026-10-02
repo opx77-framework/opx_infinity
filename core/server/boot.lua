@@ -7,6 +7,7 @@
 OPX.Schema = OPX.Schema or {}
 
 local statements = {}
+local indexes = {}
 
 --- Adds `CREATE TABLE IF NOT EXISTS` statements, in foreign-key order. Modules
 --- call this from `Init`; the schema is applied once, before any module starts.
@@ -14,6 +15,14 @@ local statements = {}
 -- @param list string[]
 function OPX.Schema.Add(list)
 	for index = 1, #list do statements[#statements + 1] = list[index] end
+end
+
+--- Adds indexes a table that already exists may be missing, applied after every
+--- table. Each is `{ TABLE = name, NAME = index, COLUMNS = { column, ... } }`.
+-- @author dop42
+-- @param list table[]
+function OPX.Schema.AddIndexes(list)
+	for index = 1, #list do indexes[#indexes + 1] = list[index] end
 end
 
 --- False until boot has settled the schema question, either way.
@@ -30,10 +39,22 @@ OPX.BootError = nil
 -- @return boolean ok
 -- @return string|nil the table that failed
 function OPX.Schema.Apply()
-	if #statements == 0 then return true end
-	local applied = OPX.Storage.ApplySchema(statements)
-	if applied.ok then return true end
-	return false, applied.detail or applied.error
+	if #statements > 0 then
+		local applied = OPX.Storage.ApplySchema(statements)
+		if not applied.ok then return false, applied.detail or applied.error end
+	end
+	-- AN INDEX THAT WILL NOT GO ON IS A WARNING, NOT A BOOT FAILURE: every read
+	-- it speeds up still answers without it, by walking the table.
+	for index = 1, #indexes do
+		local spec = indexes[index]
+		local ensured = OPX.Storage.EnsureIndex(spec.TABLE, spec.NAME, spec.COLUMNS)
+		if not ensured.ok then
+			Open77.log.warn(('[storage] index %s on %s could not be ensured: %s')
+				:format(tostring(spec.NAME), tostring(spec.TABLE),
+					tostring(ensured.detail or ensured.error)))
+		end
+	end
+	return true
 end
 
 --- Warns for each running resource that also places players. Asking the host is

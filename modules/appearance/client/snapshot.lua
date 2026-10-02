@@ -110,6 +110,9 @@ function M.Face.Reset()
 	State.bootstrapToken = nil
 	State.bootstrapQueued = false
 	State.appearanceConfirmed = false
+	-- The restore generation that is waiting on nothing but the platform's own
+	-- pristine reset of the body, nil when none is. See `AwaitingPlatform`.
+	State.platformWaitToken = nil
 
 	-- This world entry's pristine player reset has run, and the re-dispatches
 	-- spent on the current bootstrap restore.
@@ -215,6 +218,37 @@ function M.Face.AppearanceSettled()
 	return true
 end
 
+--- Whether the face is settled in everything but a restore the platform holds.
+-- @author dop42
+--
+-- THE PLATFORM GOES FIRST, AND THAT IS ITS ORDER, NOT OURS. On op77.121 a joining
+-- player's puppet attaches with its pristine reset ARMED (`local player attached
+-- ... reset=armed`) and the host runs that reset -- and only then places the body
+-- and brings it alive -- AFTER `open77:session:gameplayReady`. Every join in the
+-- owner's log of 2026-10-02 shows it: the announcement at 15:17:32.146, the reset
+-- `clearing` 0.6 s later, `reset_complete` at .950, `life placement settled` at
+-- 33.261. A restore that waits for a live body before letting the announcement
+-- out is waiting for something only the announcement can start; the 5 s / 3 s
+-- safety nets were all that broke it, and they gave the face up for the entry,
+-- so every join landed on the default face.
+--
+-- So a restore waiting on the platform alone does not hold the gate: the
+-- announcement goes out, the platform resets and revives the body, and the
+-- restore -- still owning its token -- puts the face on that live body.
+-- Everything else `AppearanceSettled` refuses still refuses here, and a reset
+-- that has already run this entry means the platform is no longer the one
+-- holding anything.
+-- @return boolean
+function M.Face.AwaitingPlatform()
+	if State.citizenId == nil then return false end
+	if not State.settled or State.creating or State.bodyReloading then return false end
+	if State.creationAskedAtMs ~= 0 then return false end
+	if State.commit ~= nil and State.commit.kind == 'create' then return false end
+	if State.playerResetDone then return false end
+	return State.platformWaitToken ~= nil and State.platformWaitToken == State.restoreToken and
+		State.restoreToken ~= State.restoreSettledToken
+end
+
 --- Clears what a new world entry invalidates, keeping the character.
 -- @author dop42
 function M.Face.EnterWorld()
@@ -225,6 +259,7 @@ function M.Face.EnterWorld()
 	State.bootstrapQueued = false
 	State.appearanceConfirmed = false
 	State.playerResetDone = false
+	State.platformWaitToken = nil
 	State.restoreAttempts = 0
 end
 

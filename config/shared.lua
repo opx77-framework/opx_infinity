@@ -62,9 +62,8 @@ OPX.Config.SHARED = {
 }
 
 --- Per-module settings. A module reads its own table as `module.Settings`, and
---- the two keys the runtime itself reads are `enabled` and `provider`:
+--- the one key the runtime itself reads is `enabled`:
 ---   enabled  = false   the module declares and stops there
----   provider = '<id>'  another module answers this one's contract instead
 OPX.Config.MODULES = {
 	-- example = { enabled = true },
 }

@@ -315,6 +315,31 @@ do
 		check('every pile model is a props alias, never a depot path',
 			#paths == 0, table.concat(paths, ', '))
 
+		-- AND AN ALIAS THE PLATFORM HOSTS. A typo is an `unknown_alias` on the
+		-- server and a crate on the ground, logged once and then never again, so
+		-- it is caught here against the deployed build's own list
+		-- (`tools/generate-prop-aliases.mjs`). Every droppable item names one:
+		-- an item with no MODEL is a crate by omission, which is the thing the
+		-- owner asked to be rid of.
+		local known = {}
+		for _, alias in ipairs(dofile('tests/prop-aliases.lua')) do known[alias] = true end
+		local unknown, bare = {}, {}
+		if inventory and inventory.Catalog then
+			for _, name in ipairs(inventory.Catalog.Names()) do
+				local entry = inventory.Catalog.Get(name)
+				if entry.model ~= nil and not known[entry.model] then
+					unknown[#unknown + 1] = ('%s -> %s'):format(name, entry.model)
+				elseif entry.model == nil and entry.droppable then
+					bare[#bare + 1] = name
+				end
+			end
+		end
+		check('every pile model is an alias the platform hosts',
+			#unknown == 0, table.concat(unknown, ', '))
+		check('every droppable item names a pile model', #bare == 0, table.concat(bare, ', '))
+		check('the fallback pile model is an alias the platform hosts',
+			known[env.OPX.Config.MODULES.inventory.DROPS.MODEL] == true)
+
 		-- A tunable read at registration is frozen for the life of the resource.
 		-- The tag sweep passes the read itself, so its line reports what the
 		-- tunable says now.
@@ -2497,6 +2522,157 @@ do
 		check('the offer that is still running is the one that stands',
 			select(2, notesOf(env, control):gsub('a fitting room is owed', '')) == 1,
 			notesOf(env, control))
+	end
+
+	-- ── the platform resets the body only AFTER gameplay-ready ───────────────
+	-- THE OWNER'S LOG OF 2026-10-02, op77.121, EVERY JOIN OF THREE. The puppet
+	-- attaches with its pristine reset ARMED and not alive; the host runs that
+	-- reset, places the body and brings it alive only once gameplay-ready has
+	-- gone out. The module waited for a live body before announcing, so the
+	-- restore gave the face up after 5 s ("settles with no face"), the announce
+	-- went out 3 s later ("announcing anyway"), and every join entered on the
+	-- default face. Replayed here in the order the log has it.
+	--- A client in that platform, and the levers the log's lines pull.
+	local function armedJoin()
+		local env, control = joinClient('first', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		local platform = { phase = 'waiting', alive = false, applied = {}, finished = 0 }
+		env.Open77.session.characterBootstrap = function()
+			return { phase = platform.phase, bodyFamily = 'female' }
+		end
+		env.Open77.character.state = function()
+			return { attached = true, alive = platform.alive, health = platform.alive and 250 or 0 }
+		end
+		env.Open77.players.getLifeState = function()
+			return { phase = platform.alive and 'alive' or 'dead' }
+		end
+		env.Open77.appearance.apply = function(snapshot)
+			platform.applied[#platform.applied + 1] = snapshot
+			return true
+		end
+		env.Open77.appearance.finishCommit = function()
+			platform.finished = platform.finished + 1
+			return true
+		end
+		platform.announced = function()
+			local count = 0
+			for _, sent in ipairs(control.serverEvents) do
+				if sent.name == env.OPX.Host.GAMEPLAY_READY then count = count + 1 end
+			end
+			return count
+		end
+		platform.warned = function(needle)
+			for _, line in ipairs(control.log.warn) do
+				if tostring(line):find(needle, 1, true) then return true end
+			end
+			return false
+		end
+		local face = { gameBuild = '2.31', gender = 'female', options = { eyes = 3 } }
+
+		-- 15:17:22.247 world entry (start): bootstrap phase=waiting -> menu
+		control.Fire(env.OPX.Host.WORLD_READY)
+		-- 15:17:22.272 [character] loaded CJX-DP9J; restore token=2 origin=characterLoaded
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-DP9J', charInfo = { gender = 'female' }, appearance = face })
+		control.Pump(1)
+		-- 15:17:22.466 world entry (worldReady): bootstrap phase=ready -> gameplay world
+		-- 15:17:24.056 local player attached: reset=armed -- attached, not alive
+		platform.phase = 'ready'
+		control.Fire(env.OPX.Host.WORLD_READY)
+		return env, control, appearance, platform, face
+	end
+
+	do
+		local env, control, appearance, platform, face = armedJoin()
+		control.Pump(5)
+		check('THE ARMED BODY DOES NOT HOLD THE ANNOUNCEMENT: gameplay-ready goes out at once',
+			platform.announced() == 1, ('%d sent; notes: %s'):format(platform.announced(),
+				notesOf(env, control)))
+		check('without waiting out the dead-body nets',
+			not platform.warned('not alive'), table.concat(control.log.warn, ' | '))
+		check('and without putting a face on a body the platform has not reset',
+			#platform.applied == 0, ('%d apply call(s)'):format(#platform.applied))
+		check('the journal says why it went out ahead of the face',
+			notesOf(env, control):find('platform has not reset yet', 1, true) ~= nil,
+			notesOf(env, control))
+		local settled = appearance.Contract.IsSettled()
+		check('the restore is still waiting, owning its token',
+			settled.ok and settled.value.waiting == 'restore', tostring(settled.ok and settled.value.waiting))
+
+		-- THE NINE SECONDS OF 2026-10-02 16:02. Gameplay-ready went out at 34.354,
+		-- the host finished its loading bar at 42.805 and reset the body at 43.201;
+		-- the not-alive clock, started at the announcement, gave the face up at
+		-- 39.697 in between. Nothing may count the body as dead before its reset.
+		control.Pump(90)
+		check('NINE SECONDS BETWEEN THE ANNOUNCEMENT AND THE RESET DO NOT DROP THE FACE',
+			not platform.warned('settles with no face') and not platform.warned('not alive'),
+			table.concat(control.log.warn, ' | '))
+		settled = appearance.Contract.IsSettled()
+		check('the restore is still waiting for the reset, nine seconds on',
+			settled.ok and settled.value.waiting == 'restore', tostring(settled.ok and settled.value.waiting))
+
+		-- 15:17:32.950 / 16:02:43.201 reset_complete, then life placement. The
+		-- host does this ONLY once gameplay-ready is in, which is the deadlock.
+		if platform.announced() > 0 then
+			platform.alive = true
+			control.Fire(appearance.HostEvent.RESET_COMPLETE)
+		end
+		control.Pump(5)
+		check('THE SAVED FACE GOES ON ONCE THE PLATFORM HAS BROUGHT THE BODY ALIVE',
+			#platform.applied == 1 and platform.applied[1].options.eyes == face.options.eyes,
+			('%d apply call(s)'):format(#platform.applied))
+		check('gameplay-ready went out exactly once', platform.announced() == 1,
+			tostring(platform.announced()))
+		check('no entry was settled with no face',
+			not platform.warned('settles with no face'), table.concat(control.log.warn, ' | '))
+
+		-- The mirror confirms the face. The announcement already went out, so it
+		-- is this confirmation that has to release the mutation transaction.
+		local before = platform.finished
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		check('the confirmation releases the mutation the early announcement could not',
+			platform.finished > before, ('%d -> %d'):format(before, platform.finished))
+		settled = appearance.Contract.IsSettled()
+		check('and the entry is settled on the stored face',
+			settled.ok and settled.value.settled == true and settled.value.announced == true,
+			tostring(settled.ok and settled.value.waiting))
+	end
+
+	-- THE SAFETY NET STAYS: a body the platform reset and still did not revive --
+	-- the 2026-09-17 character stored in the ground -- settles with no face
+	-- DEAD_WAIT_MS later instead of holding the clothing gate for ever.
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		check('the dead-on-arrival body is announced at once all the same',
+			platform.announced() == 1, tostring(platform.announced()))
+		if platform.announced() > 0 then control.Fire(appearance.HostEvent.RESET_COMPLETE) end
+		control.Pump(70)
+		check('a reset body that never comes alive still settles with no face',
+			platform.warned('settles with no face') and #platform.applied == 0,
+			table.concat(control.log.warn, ' | '))
+		local settled = appearance.Contract.IsSettled()
+		check('and the entry is settled, so nothing downstream waits for ever',
+			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
+	end
+
+	-- AND A RESET THAT NEVER COMES IS STILL BOUNDED, by RESET_WAIT_MS rather than
+	-- by a not-alive clock that cannot tell a dead body from an unreset one.
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		check('announced on the armed body', platform.announced() == 1,
+			tostring(platform.announced()))
+		control.Pump(400)
+		check('forty seconds without a reset are still waited out',
+			not platform.warned('settles with no face'), table.concat(control.log.warn, ' | '))
+		control.Pump(250)
+		check('sixty seconds without a reset settle the entry with no face',
+			platform.warned('has not reset the body') and #platform.applied == 0,
+			table.concat(control.log.warn, ' | '))
+		local settled = appearance.Contract.IsSettled()
+		check('so the clothing gate and the published look are not held for ever',
+			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
 	end
 
 	-- ── the catalogue, read per slot, standing behind seven sliders ──────────
@@ -9131,10 +9307,38 @@ do
 	-- already exist, every dealership row written, and every vehicle row a
 	-- purchase creates. The SQL is the shipped storage's -- only the answers are
 	-- a fixture's.
-	local function bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts)
+	local function bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts, ledger)
+		ledger = ledger or { rows = {}, nextId = 0 }
 		return Host.Database({
 			scalar = function() return 1 end,
+			-- THE LEDGER OF OWED DEPOSITS, settled the way the real one is: the
+			-- deposit and the strike-off commit together or not at all.
+			-- `ledger.down` is a database that refuses the company account.
+			transaction = function(statements)
+				if ledger.down then return false, 'down' end
+				local deposit, strike = statements[1], statements[2]
+				local key = tostring(deposit.values[1]) .. ':' .. tostring(deposit.values[2])
+				accounts[key] = (accounts[key] or 0) + (tonumber(deposit.values[3]) or 0)
+				for index = #ledger.rows, 1, -1 do
+					if ledger.rows[index].id == strike.values[1] then table.remove(ledger.rows, index) end
+				end
+				return true
+			end,
 			update = function(sql, params)
+				if sql:find('opx77_company_pending', 1, true) then
+					if ledger.pendDown then error('the ledger is down too', 0) end
+					for index = 1, #ledger.rows do
+						if ledger.rows[index].token == params.token then return 0 end
+					end
+					ledger.nextId = ledger.nextId + 1
+					ledger.rows[#ledger.rows + 1] = { id = ledger.nextId, token = params.token,
+						kind = params.kind, group_key = params.group, amount = params.amount,
+						plate = params.plate }
+					return 1
+				end
+				if sql:find('opx77_company_accounts', 1, true) and ledger.down then
+					error('the company account is down', 0)
+				end
 				-- THE COMPANY ACCOUNT IS A REAL BALANCE HERE and not a write log,
 				-- because the statement under test does its arithmetic in SQL --
 				-- `balance = balance + @amount`, so that two sales settling in
@@ -9167,6 +9371,11 @@ do
 				return 0
 			end,
 			query = function(sql, params)
+				if sql:find('opx77_company_pending', 1, true) then
+					local copy = {}
+					for index = 1, #ledger.rows do copy[index] = ledger.rows[index] end
+					return copy
+				end
 				if sql:find('opx77_vehicles', 1, true) then
 					local citizen = type(params) == 'table' and params.citizen or nil
 					local mine = {}
@@ -9204,8 +9413,9 @@ do
 
 	local rows, vehiclesWritten, dealersWritten = {}, {}, {}
 	local previewsWritten, accounts = {}, {}
+	local ledger = { rows = {}, nextId = 0 }
 	local env, control, why = boot('server',
-		bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts))
+		bridge(rows, vehiclesWritten, dealersWritten, previewsWritten, accounts, ledger))
 	check('the server boots with the dealership module', why == nil, why)
 
 	-- The last client event with one name, or nil. Every verdict below is read
@@ -9880,6 +10090,116 @@ do
 			settle(control, function() return gangSettled ~= nil end, 60))
 		check('and the money lands in the GANG\'s account',
 			accounts['gang:valentinos'] == banked, tostring(accounts['gang:valentinos']))
+
+		-- THE BUYER'S GARAGE. A counter sale has always asked where to file the
+		-- car; a sale from a salesperson filed it under the default garage
+		-- whatever the buyer would have said.
+		-- Room for the cars the checks below buy; the ceiling is tested elsewhere.
+		local heldCeiling = vehicleConfig.PER_CHARACTER
+		vehicleConfig.PER_CHARACTER = 1000
+		local filedOffer = contract.Offer(seller, buyer, 'hella')
+		local filedAsked = lastEvent(dealership.Event.OFFERED)
+		check('the offer tells the buyer what kind of dealer it is, to list garages by',
+			filedOffer.ok and filedAsked[1].kind == 'garage', filedAsked and tostring(filedAsked[1].kind))
+		local filed
+		local offerSold = {}
+		env.AddEventHandler('opx:on:dealership:sold', function(who, payload)
+			offerSold[#offerSold + 1] = { source = who, payload = payload }
+		end)
+		env.CreateThread(function()
+			filed = contract.Accept(buyer, filedAsked[1].token, true, 'garage_dock')
+		end)
+		settle(control, function() return filed ~= nil end, 60)
+		check('a buyer who answers yes may name the garage it is filed under',
+			filed ~= nil and filed.ok == true and filed.value.garage == 'garage_dock',
+			filed and tostring(filed.error))
+		check('and a sale face to face is raised to every other resource, with that garage',
+			#offerSold == 1 and offerSold[1].source == buyer and offerSold[1].payload.kind == 'offer'
+				and offerSold[1].payload.garage == 'garage_dock'
+				and offerSold[1].payload.pending == false,
+			#offerSold == 1 and tostring(offerSold[1].payload.garage) or #offerSold)
+		check('and the row is filed under that garage, not the default',
+			vehiclesWritten[#vehiclesWritten].garage == 'garage_dock',
+			vehiclesWritten[#vehiclesWritten].garage)
+		contract.Offer(seller, buyer, 'hella')
+		local wrongKind = lastEvent(dealership.Event.OFFERED)
+		local wrongAnswer
+		env.CreateThread(function()
+			wrongAnswer = contract.Accept(buyer, wrongKind[1].token, true, 'pad_dock')
+		end)
+		settle(control, function() return wrongAnswer ~= nil end, 60)
+		check('and a garage of the wrong kind is refused, not quietly defaulted',
+			wrongAnswer ~= nil and wrongAnswer.error == 'dealership.noSuchGarage',
+			wrongAnswer and tostring(wrongAnswer.error))
+
+		-- A DEPOSIT THAT DID NOT LAND IS OWED, NOT FORGOTTEN. It used to be one
+		-- log line asking somebody to settle it by hand.
+		local fixerBefore = accounts['job:fixer'] or 0
+		ledger.down = true
+		contract.Offer(seller, buyer, 'hella')
+		local downAsked = lastEvent(dealership.Event.OFFERED)
+		local downSettled
+		env.CreateThread(function()
+			downSettled = contract.Accept(buyer, downAsked[1].token, true)
+		end)
+		settle(control, function() return downSettled ~= nil end, 60)
+		check('a sale whose deposit failed still completes for the buyer',
+			downSettled ~= nil and downSettled.ok == true, downSettled and tostring(downSettled.error))
+		check('and it is still raised as sold, marked pending for the company share',
+			#offerSold >= 2 and offerSold[#offerSold].payload.kind == 'offer'
+				and offerSold[#offerSold].payload.pending == true
+				and offerSold[#offerSold].payload.plate == downSettled.value.plate,
+			#offerSold)
+		check('and the money is in the pending ledger, not in the account',
+			#ledger.rows == 1 and ledger.rows[1].amount == banked
+				and (accounts['job:fixer'] or 0) == fixerBefore, #ledger.rows)
+		local swept
+		env.CreateThread(function() swept = dealership.SettlePending() end)
+		settle(control, function() return swept ~= nil end, 60)
+		check('a sweep while the database is still down pays nothing twice',
+			swept == 0 and #ledger.rows == 1 and (accounts['job:fixer'] or 0) == fixerBefore)
+		ledger.down = false
+		swept = nil
+		env.CreateThread(function() swept = dealership.SettlePending() end)
+		-- Whichever sweep reaches it first -- this one or the module's own timer,
+		-- which the pumping above has been driving -- it is paid in exactly once.
+		-- The timer's pass may be mid-flight, in which case this one answers 0 at
+		-- once (one pass, never two) and the row is paid when that pass resumes:
+		-- so wait for the row, not for this call.
+		settle(control, function() return swept ~= nil and #ledger.rows == 0 end, 60)
+		check('and once it answers the sweep pays it in and strikes it off',
+			swept ~= nil and #ledger.rows == 0 and accounts['job:fixer'] == fixerBefore + banked,
+			('%s swept, %d left, %s now, %s before, %s banked'):format(tostring(swept), #ledger.rows,
+				tostring(accounts['job:fixer']), tostring(fixerBefore), tostring(banked)))
+		swept = nil
+		env.CreateThread(function() swept = dealership.SettlePending() end)
+		settle(control, function() return swept ~= nil end, 60)
+		check('and a second sweep finds nothing to pay again',
+			swept == 0 and accounts['job:fixer'] == fixerBefore + banked)
+
+		-- AND WHEN THE LEDGER CANNOT BE WRITTEN EITHER, it is held in memory and
+		-- written by the sweep once it can be: owed, still, and paid once.
+		fixerBefore = accounts['job:fixer']
+		ledger.down, ledger.pendDown = true, true
+		contract.Offer(seller, buyer, 'hella')
+		local bothAsked = lastEvent(dealership.Event.OFFERED)
+		local bothSettled
+		env.CreateThread(function()
+			bothSettled = contract.Accept(buyer, bothAsked[1].token, true)
+		end)
+		settle(control, function() return bothSettled ~= nil end, 60)
+		check('a deposit whose ledger row also failed is not lost',
+			bothSettled ~= nil and bothSettled.ok == true and #ledger.rows == 0
+				and accounts['job:fixer'] == fixerBefore,
+			('%s / %s rows / %s'):format(bothSettled and tostring(bothSettled.error), #ledger.rows,
+				tostring(accounts['job:fixer'])))
+		ledger.down, ledger.pendDown = false, false
+		env.CreateThread(function() dealership.SettlePending() end)
+		settle(control, function() return accounts['job:fixer'] == fixerBefore + banked end, 60)
+		check('and the sweep writes it to the ledger and pays it in, once',
+			accounts['job:fixer'] == fixerBefore + banked and #ledger.rows == 0,
+			tostring(accounts['job:fixer']))
+		vehicleConfig.PER_CHARACTER = heldCeiling
 
 		-- OUT OF THE ROOM IS OUT OF THE SALE. Both ends are proved, and proved
 		-- again when the buyer answers -- everything provable at the offer can
@@ -10795,6 +11115,61 @@ do
 		check('and there is nothing left to answer',
 			Runtime.Decide(true).ok == false)
 
+		-- ── yes, and where to file it ─────────────────────────────────────
+		-- A salesperson's sale filed the car under the default garage whatever
+		-- the buyer would have chosen. Yes now leads to the same garage screen a
+		-- counter sale has, and the row picked there is the answer.
+		cctl.netEvents[garages.Event.SYNC]({ spots = {
+			{ key = 'garage_dock', label = 'THE DOCK', kind = 'garage',
+				x = 1.0, y = 1.0, z = 5.0, heading = 0.0, bucket = 0 },
+			{ key = 'pad_dock', label = 'THE PAD', kind = 'avpad',
+				x = 1.0, y = 1.0, z = 5.0, heading = 0.0, bucket = 0 },
+		} })
+		cctl.Pump(6)
+		cctl.netEvents[dealership.Event.OFFERED]({
+			token = 777, entry = 'hella', model = 'Archer Hella', price = 29000, kind = 'garage',
+			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+		})
+		cctl.Pump(4)
+		local function rowNamed(drawn, label)
+			for position = 1, drawn ~= nil and #drawn.payload.rows or 0 do
+				if drawn.payload.rows[position].label == label then
+					return drawn.payload.first + position - 1
+				end
+			end
+			return nil
+		end
+		local offerScreen = lastDrawn('opx:menu:open')
+		local yesAt = rowNamed(offerScreen, OPX.Locale.Text('dealership.offerAccept'))
+		check('the offer screen has a yes row', yesAt ~= nil)
+		cctl.PageEmit(page, 'opx:menu:choose',
+			{ handle = offerScreen ~= nil and offerScreen.payload.handle or 0, index = yesAt or 0 })
+		cctl.Pump(4)
+		check("yes leads to the buyer's own garage choice, not straight to a purchase",
+			Runtime.Report().screen == 'offerDeliver', tostring(Runtime.Report().screen))
+		local garageScreen = lastDrawn('opx:menu:open')
+		local dockAt = rowNamed(garageScreen, 'THE DOCK')
+		check("listing the garages of the dealer's kind, and only those",
+			dockAt ~= nil and rowNamed(garageScreen, 'THE PAD') == nil)
+		before = #cctl.serverEvents
+		cctl.PageEmit(page, 'opx:menu:choose',
+			{ handle = garageScreen ~= nil and garageScreen.payload.handle or 0, index = dockAt or 0 })
+		cctl.Pump(2)
+		local filedAnswer = nil
+		for position = #cctl.serverEvents, before + 1, -1 do
+			if cctl.serverEvents[position].name == dealership.Event.DECIDE then
+				filedAnswer = cctl.serverEvents[position]
+				break
+			end
+		end
+		check('and the garage picked there goes with the yes',
+			filedAnswer ~= nil and filedAnswer[1] == 777 and filedAnswer[2] == true
+				and filedAnswer[3] == 'garage_dock',
+			filedAnswer and tostring(filedAnswer[3]))
+		-- The garages' markers share the engine list the counts below read.
+		cctl.netEvents[garages.Event.SYNC]({ spots = {} })
+		cctl.Pump(6)
+
 		-- ── a dealer the client cannot read ────────────────────────────────
 		local warned = #cctl.log.warn
 		cctl.netEvents[dealership.Event.SYNC]({ spots = {
@@ -11343,6 +11718,10 @@ do
 		{ 'players.setModel', 'players.model.control', 'wearing an NPC body' },
 		{ 'players.resetModel', 'players.model.control', 'giving the body back' },
 		{ 'players.getModel', 'players.model.read', 'reading the worn body' },
+		-- Reached through a local (`screen.loadingState`) for the same reason.
+		-- Newer than op77.78; see `modules/loading/client/main.lua`.
+		{ 'screen.loadingState', 'screen.read', 'the native loading lifecycle' },
+		{ 'screen.isLoading', 'screen.read', 'the native loading flag' },
 	}
 
 	local handle = io.open('open77.lua', 'r')
@@ -12346,18 +12725,54 @@ do
 			character.FindCharacters('recent').ok == false)
 		check('and none of those reached the database', #asked == 0)
 
-		-- THE INDEX. It is in the CREATE TABLE and therefore reaches a fresh install
-		-- and nothing else; the comment above the schema says so, and this holds
-		-- both halves of that together so neither can be edited away alone.
+		-- THE INDEX. In the CREATE TABLE it reaches a fresh install and nothing
+		-- else, so it is ALSO an ensured index: added on boot to a table that
+		-- predates it, and left alone where it is already there.
 		local schema = table.concat(storage.SCHEMA, '\n')
 		check('the find order is indexed in the schema',
 			schema:find('idx_opx77_characters_seen (deleted_at, last_logged_out, citizen_id)',
 				1, true) ~= nil)
-		local handle = io.open('modules/character/server/storage.lua', 'r')
-		local source = handle:read('a')
-		handle:close()
-		check('and the schema says plainly that it will not reach a live database',
-			source:find('ALTER TABLE opx77_characters', 1, true) ~= nil)
+		local ensured = nil
+		for _, spec in ipairs(storage.INDEXES or {}) do
+			if spec.NAME == 'idx_opx77_characters_seen' then ensured = spec end
+		end
+		check('and it is ensured on an existing table too, with the same columns',
+			ensured ~= nil and ensured.TABLE == 'opx77_characters'
+				and table.concat(ensured.COLUMNS, ',') == 'deleted_at,last_logged_out,citizen_id')
+
+		local function ensureWith(present)
+			local altered = {}
+			local probe = Host.Database({
+				scalar = function(sql)
+					if sql:find('information_schema', 1, true) then return present end
+					return 1
+				end,
+				update = function(sql)
+					if sql:find('ALTER TABLE', 1, true) then altered[#altered + 1] = sql end
+					return 0
+				end,
+			})
+			local saved = env.MySQL
+			env.MySQL = probe
+			local answer
+			env.CreateThread(function()
+				answer = env.OPX.Storage.EnsureIndex('opx77_characters', 'idx_opx77_characters_seen',
+					{ 'deleted_at', 'last_logged_out', 'citizen_id' })
+			end)
+			settle(control, function() return answer ~= nil end, 20)
+			env.MySQL = saved
+			return answer, altered
+		end
+		local added, alters = ensureWith(0)
+		check('a database without the index is given it',
+			added ~= nil and added.ok == true and added.value == true and #alters == 1
+				and alters[1]:find('ADD KEY idx_opx77_characters_seen (deleted_at, last_logged_out, ' ..
+					'citizen_id)', 1, true) ~= nil, alters[1])
+		local kept, none = ensureWith(1)
+		check('and one that has it is left alone, so it is safe on every boot',
+			kept ~= nil and kept.ok == true and kept.value == false and #none == 0)
+		check('a name that is not a bare identifier is refused before any SQL',
+			env.OPX.Storage.EnsureIndex('t; DROP TABLE x', 'i', { 'c' }).ok == false)
 
 		-- ── the staff half ───────────────────────────────────────────────────
 		-- WHAT THE ADMIN MODULE ADDS: who is connected, and who may ask. It adds no
@@ -13796,8 +14211,23 @@ do
 			local language
 			for line in handle:lines() do
 				language = line:match("OPX%.Locale%.Register%('(%a%a)'") or language
+				-- A module's catalogue declares its tables first and registers them
+				-- at the foot of the file, so the table's own name is what says
+				-- which language a key belongs to. Read only the Register line,
+				-- every key above it was filed under no language and compared
+				-- against nothing.
+				local declared = line:match('^local (%u%u) = {')
+				if declared then language = declared:lower() end
+				-- A table of `{ en, fr }` PAIRS walked into both catalogues at once
+				-- (`for key, pair in pairs({ ... }) do EN[key], FR[key] = ...`, the
+				-- ripperdoc's way) files every key under both languages.
+				if line:match('^for .- in pairs%(%{') then language = 'both' end
 				local key = line:match("^%s*%['([%w%.%-_]+)'%]%s*=")
-				if key and keys[language] then keys[language][key] = file end
+				if key and language == 'both' then
+					keys.en[key], keys.fr[key] = file, file
+				elseif key and keys[language] then
+					keys[language][key] = file
+				end
 			end
 			handle:close()
 		end
@@ -13818,6 +14248,28 @@ do
 	check('and every one of them is written in both languages',
 		#gaps == 0, table.concat(gaps, '; '))
 
+	-- EVERY KEY THE CODE NAMES AS A LITERAL EXISTS. The calls module asked for
+	-- `calls.key.answer`, `calls.key.decline`, `calls.row.share` and
+	-- `calls.group`, none of which was written, so the pause menu's bindings and
+	-- the eye row showed the raw key. A missing string renders as its own key and
+	-- raises nothing, so only a sweep like this one sees it.
+	local missing = {}
+	for _, side in ipairs({ 'client', 'server' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			local handle = io.open(file, 'r')
+			local source = handle and handle:read('a') or ''
+			if handle then handle:close() end
+			for key in source:gmatch("[^%w_%.]locale%('([%w_]+%.[%w_%.]*[%w_])'") do
+				if keys.en[key] == nil then missing[#missing + 1] = ('%s (%s)'):format(key, file) end
+			end
+			for key in source:gmatch("NAME = '([%w_]+%.key%.[%w_]+)'") do
+				if keys.en[key] == nil then missing[#missing + 1] = ('%s (%s)'):format(key, file) end
+			end
+		end
+	end
+	table.sort(missing)
+	check('every literal key the code asks locale() for is written', #missing == 0,
+		table.concat(missing, '; '))
 	-- THE ESCAPE THAT RENDERS AS ITSELF. A doubled backslash before `u{` is not
 	-- an escape at all -- it is a literal backslash plus the TEXT `u{2019}`, so
 	-- the player reads `Scavenger\u{2019}s Eye` where the sentence promised an
@@ -14577,6 +15029,9 @@ do
 
 		-- ── descending, played the way the panel descends ────────────────
 		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = false })
+		-- A redraw runs on its own thread, a frame later (see `draw` in
+		-- modules/admin/client/menu.lua).
+		control.Pump(5)
 
 		-- The page the staff menu opened on, found by what was sent to it rather
 		-- than by assuming which surface sits first in the list.
@@ -14622,6 +15077,7 @@ do
 			-- Air class lives on.
 			check('the panel can put a screen up over the root',
 				admin.Menu.OpenAt('vehicleClasses', 'me') == true)
+			control.Pump(5)
 			check('a descend does NOT reopen the menu', times(OPEN_CHANNEL) == opens,
 				('%d opens'):format(times(OPEN_CHANNEL)))
 			check('and is drawn as one frame, on the same handle',
@@ -14645,6 +15101,7 @@ do
 			check('down moves the cursor', moved.ok and moved.value.itemId ~= 'class_air',
 				moved.ok and tostring(moved.value.itemId))
 			admin.Menu.Refresh()
+			control.Pump(5)
 			local kept = OPX.Api.Get('menu').State()
 			check('and a redraw leaves the player on the row they were on',
 				kept.ok and kept.value.itemId == moved.value.itemId,
@@ -15132,6 +15589,15 @@ do
 			pistol ~= nil and pistol.weapon.magazine > 0 and pistol.weapon.magazine <= 50,
 			pistol and tostring(pistol.weapon.magazine))
 
+		-- THE BOX IS WHAT A SLOT OF ROUNDS HOLDS. `AMMO.MAX` was read into the
+		-- catalogue and then by nothing, so a slot of rounds held MAX_STACK.
+		check('a slot of ammunition holds one box of it',
+			box ~= nil and inventory.Containers.StackLimit('ammo_handgun') == box.ammo.max,
+			tostring(inventory.Containers.StackLimit('ammo_handgun')))
+		check('while any other stackable item still stacks to MAX_STACK',
+			inventory.Containers.StackLimit('eddies') == inventory.Options.MAX_STACK
+				or inventory.Catalog.Get('eddies') == nil)
+
 		-- Every class that loads ammunition states one, checked across the whole
 		-- catalogue: one missing is one weapon that silently loads nothing.
 		local missing = {}
@@ -15187,6 +15653,30 @@ do
 			check('and a reader that raises does not take the caller with it',
 				Weapons.InHand(1) == true)
 			env.Open77.weapons.get = nil
+		end
+
+		-- ── putting it away from outside ──
+		-- `opx.admin.weapon.holster` refused every time: the contract had
+		-- `GetHeldWeapon` and no way to put a weapon away.
+		local contract = env.OPX.Api.Get('inventory')
+		check('the contract can put a weapon away',
+			contract ~= nil and type(contract.HolsterWeapon) == 'function')
+		if contract ~= nil and type(contract.HolsterWeapon) == 'function' then
+			local unarmed = contract.HolsterWeapon(41)
+			check('a player with nothing drawn is answered not_armed',
+				unarmed.ok == false and unarmed.error == 'not_armed', tostring(unarmed.error))
+			local realHeld, realHolster = Weapons.Held, Weapons.Holster
+			local put = {}
+			Weapons.Held = function(id)
+				if id == 41 then return { name = 'weapon_chao', serial = 'S-1' } end
+				return nil
+			end
+			Weapons.Holster = function(id, sync) put[#put + 1] = { id = id, sync = sync } end
+			local done = contract.HolsterWeapon(41)
+			Weapons.Held, Weapons.Holster = realHeld, realHolster
+			check('and an armed one is holstered, with its rounds read back first',
+				done.ok == true and done.value.serial == 'S-1' and #put == 1
+					and put[1].id == 41 and put[1].sync == true, tostring(done.error))
 		end
 	end
 end
@@ -15823,6 +16313,30 @@ do
 		local blind = contract.Start('eat', { label = 'Eating', durationMs = 1000 })
 		check('a build that cannot block still shows the bar', blind.ok == true, blind.error)
 		check('and taking it down does not raise', pcall(contract.Stop, 'eat'))
+
+		-- ── the player's cancel ──
+		-- A key and not a page intent: the bar is on the overlay, which never
+		-- holds the keyboard, and the page never sent the `progress:cancel` this
+		-- used to wait for -- so "Hold to cancel" cancelled nothing.
+		local mapping = control.keyMappings.byId['opx.progress.cancel']
+		check('the cancel key is declared to the host', mapping ~= nil
+			and type(mapping.pressed) == 'function')
+		if mapping ~= nil then
+			done = nil
+			contract.Start('eat', { label = 'Eating', durationMs = 30000 })
+			mapping.pressed()
+			check('it does nothing to a bar that was not marked cancelable',
+				contract.State().value.open == true and done == nil)
+			contract.Stop('eat')
+
+			done = nil
+			contract.Start('haul', { label = 'Lifting', durationMs = 30000, cancelable = true })
+			mapping.pressed()
+			check('and takes down one that was, as cancelled',
+				contract.State().value.open == false and done ~= nil
+					and done.ending == progress.Ending.CANCELLED and done.finished == false,
+				done and tostring(done.ending))
+		end
 	end
 end
 -- ── the down screen, and the seam it hangs on ───────────────────────────────
@@ -17068,6 +17582,61 @@ do
 		ok = Access.Evaluate(gated, snap('militech', 9, false, { arasaka = 5 }), now)
 		check('a membership is not the worked job under MEMBERSHIP = primary',
 			ok == false)
+	end
+end
+
+section('elevators: a player can reach the floor list')
+do
+	-- THE PANEL HAD NO DOOR. Every adopted cabin is locked, which refuses the
+	-- vanilla in-cabin button by design, and the floor list that replaces that
+	-- button was only ever reachable through `OpenPanel` on the contract -- which
+	-- nothing called. A configured shaft was a lift nobody could ride.
+	local WHERE = { x = -1521.40, y = 892.75, z = 42.10 }
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots for the elevator door', cwhy == nil, cwhy)
+
+	if cwhy == nil then
+		local OPX = cenv.OPX
+		local M = OPX.Modules.Get('elevators')
+		local mapping = cctl.keyMappings.byId['opx.elevators.use']
+		check('the elevator key is declared to the host, so a player can rebind it',
+			mapping ~= nil and mapping.key == 'E', mapping and tostring(mapping.key))
+
+		cctl.placement.x, cctl.placement.y, cctl.placement.z = WHERE.x, WHERE.y, WHERE.z
+		cctl.lifts.nearby = { { id = 9, engineEntity = '0x00000000000000ab', managed = true,
+			position = { x = WHERE.x, y = WHERE.y, z = WHERE.z }, distance = 1.0,
+			floorCount = 12, activeFloor = 0 } }
+		local prompts = OPX.Api.Get('prompts')
+		local function rowUp()
+			local listed = prompts.List('elevators')
+			return listed.ok == true and listed.value.count == 1
+		end
+		check('standing at a configured lift posts the row naming the key',
+			settle(cctl, rowUp, 80))
+
+		local menu = OPX.Api.Get('menu')
+		local realOpen = menu.Open
+		local opened = {}
+		menu.Open = function(spec)
+			opened[#opened + 1] = spec
+			return realOpen(spec)
+		end
+		mapping.pressed()
+		menu.Open = realOpen
+		check('the key opens the floor list for that lift',
+			#opened == 1 and opened[1].id == 'elevators.arasaka_tower',
+			opened[1] and tostring(opened[1].id))
+		check('with one row per listed floor', opened[1] ~= nil and #opened[1].items == 5,
+			opened[1] and #opened[1].items)
+
+		-- Walking away takes the row down, so a key press elsewhere says why
+		-- instead of opening a list for a lift the player has left.
+		cctl.lifts.nearby = {}
+		cctl.placement.x = WHERE.x + 500
+		check('walking away takes the row down', settle(cctl, function() return not rowUp() end, 80))
+		local away = M.Door.Open('test')
+		check('and the key then answers that no lift is near',
+			away.ok == false and away.error == 'no_elevator_nearby', tostring(away.error))
 	end
 end
 
@@ -23954,6 +24523,299 @@ do
 	end
 end
 
+-- ── the game's own loading screen ───────────────────────────────────────────
+-- `modules/loading` reads `Open77.screen.loadingState`, a reader newer than the
+-- devkit's op77.78, and does two things with it: the page takes its HUD-like
+-- views off screen for as long as a load is up, and a load in play -- never the
+-- join -- gets the OPX cover. The page half is a `v-show` over each registered
+-- view, so what is held to account here is what Lua TELLS the page, what it
+-- tells `hud`, and that a client without the reader is left exactly as it was.
+
+-- NO top-level name at all: the main chunk sits at its 200-local ceiling, so
+-- the helpers live in a block that closes over the four sections using them.
+do
+local LOADING = {}
+
+--- Every `loading:state` payload any page was sent, oldest first.
+function LOADING.sent(control)
+	local out = {}
+	for _, page in ipairs(control.pages) do
+		for index = 1, #page.sent do
+			if page.sent[index].channel == 'opx:loading:state' then out[#out + 1] = page.sent[index].payload end
+		end
+	end
+	return out
+end
+
+--- The last of them, or an empty table.
+function LOADING.last(control)
+	local sent = LOADING.sent(control)
+	return sent[#sent] or {}
+end
+
+--- A copy of a reader's answer, so the module cannot hold the test's table.
+function LOADING.copyOf(source)
+	local out = {}
+	for key, value in pairs(source) do out[key] = value end
+	return out
+end
+
+section('the native loading screen: the views step aside and come back')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the loading module', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local contract = OPX and OPX.Api.Get('loading') or nil
+	check('and it published its contract', type(contract) == 'table'
+		and type(contract.State) == 'function')
+
+	if type(contract) == 'table' then
+		local function state() return contract.State().value end
+		local hud = OPX.Api.Get('hud')
+		check('hud is running to be covered', hud ~= nil)
+
+		-- Every `opx:on:loading:state` raised, in order.
+		local raised = {}
+		env.AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'loading', 'state'), function(payload)
+			raised[#raised + 1] = payload
+		end)
+
+		check('it reads through loadingState on a client that has it',
+			state().available == true and state().mode == 'state', tostring(state().mode))
+		check('and with no load up, nothing is hidden and nothing is covered',
+			state().hide == false and state().cover == false)
+
+		-- THE PLAYER'S OWN CHOICE, made before the load. A hide that restored by
+		-- writing `true` back would turn this into a HUD that reopened itself.
+		if hud ~= nil then hud.SetVisible(false) end
+
+		control.Load({ active = true, kind = 'fastTravel' })
+		check('a load that starts hides the views',
+			settle(control, function() return state().hide end), state().hide)
+		check('and the page is told to hide them', LOADING.last(control).hide == true)
+		check('the public bus says a load is up',
+			#raised > 0 and raised[#raised].active == true)
+		if hud ~= nil then
+			check('and hud counts it as one more screen in front of it',
+				hud.IsVisible().value.covered == true)
+		end
+
+		-- THE DELAY. The cover waits on the clock, not on the next revision, so
+		-- the cheap exit must not skip a pass that is still counting.
+		check('the cover goes up once the load has run a moment',
+			settle(control, function() return state().cover end), state().cover)
+		local sent = LOADING.last(control)
+		check('with no progress to show yet',
+			sent.cover == true and sent.progressKnown == false,
+			('%s/%s'):format(tostring(sent.cover), tostring(sent.progressKnown)))
+		check('and the kind the platform named', sent.kind == 'fastTravel', tostring(sent.kind))
+
+		control.Load({ progressKnown = true, progress = 0.5 })
+		check('a known fraction reaches the cover',
+			settle(control, function()
+				local last = LOADING.last(control)
+				return last.progressKnown == true and last.progress == 0.5
+			end), tostring(LOADING.last(control).progress))
+
+		-- IT MAY GO BACKWARDS, and is passed on as said.
+		control.Load({ progress = 0.25 })
+		check('and one that moves backwards is passed on as it is',
+			settle(control, function() return LOADING.last(control).progress == 0.25 end),
+			tostring(LOADING.last(control).progress))
+
+		-- NEVER DONE AT 100: the fraction can sit at the end while the screen is
+		-- still closing, and only `active` going false ends the cover.
+		control.Load({ progress = 1 })
+		control.Pump(10)
+		check('a fraction at the end does not take the cover down',
+			state().cover == true and LOADING.last(control).cover == true)
+
+		-- THE CHEAP EXIT. Nothing moves, so nothing is sent -- and the reader is
+		-- asked on a cadence, never every frame.
+		local before, reads = #LOADING.sent(control), control.loadscreen.reads
+		control.Pump(50)
+		local asked = control.loadscreen.reads - reads
+		check('a load that does not move puts nothing on the wire',
+			#LOADING.sent(control) == before, #LOADING.sent(control) - before)
+		check('and the reader is polled on a cadence, not a busy loop (5 s: 1..26 reads)',
+			asked > 0 and asked <= 26, asked)
+
+		control.Load({ active = false })
+		check('the end of the load gives the views back',
+			settle(control, function() return state().hide == false end), state().hide)
+		sent = LOADING.last(control)
+		check('the page is told so, and the cover comes down with it',
+			sent.hide == false and sent.cover == false)
+		check('the bus says the load is over',
+			raised[#raised].active == false and raised[#raised].cover == false)
+		if hud ~= nil then
+			local after = hud.IsVisible().value
+			check('hud is no longer covered', after.covered == false)
+			check('and a HUD the player had switched off STAYS off',
+				after.visible == false, tostring(after.visible))
+			hud.SetVisible(true)
+		end
+
+		-- THE JOIN'S KIND, mid-session. The views step aside; the platform's own
+		-- screen is left to the platform.
+		control.Load({ active = true, kind = 'initial' })
+		control.Pump(10)
+		check('a load the platform calls initial still hides the views', state().hide == true)
+		check('but never gets the cover', state().cover == false)
+		control.Load({ active = false })
+		check('and ends like any other',
+			settle(control, function() return state().hide == false end))
+
+		-- A BLINK: up and down before the delay has run.
+		local count = #LOADING.sent(control)
+		control.Load({ active = true, elapsedMs = 0 })
+		settle(control, function() return state().hide end)
+		control.Load({ active = false })
+		settle(control, function() return state().hide == false end)
+		local covered = false
+		local all = LOADING.sent(control)
+		for index = count + 1, #all do
+			if all[index].cover == true then covered = true end
+		end
+		check('a load gone before the delay ran gets no cover', covered == false)
+
+		-- A REFUSED READ is a load that is not up: the views come back, and a
+		-- permission refusal stops the job for good.
+		control.Load({ active = true })
+		settle(control, function() return state().hide end)
+		control.loadscreen.refuse = 'permission_denied:screen.read'
+		check('a refusal mid-load gives the views back rather than stranding them',
+			settle(control, function() return state().hide == false end), state().hide)
+		check('and a permission refusal stops asking', state().available == false)
+		local still = control.loadscreen.reads
+		control.Pump(30)
+		check('for good', control.loadscreen.reads == still, control.loadscreen.reads - still)
+		local logged = false
+		for _, line in ipairs(control.log.error) do
+			if line:find('loading state was refused', 1, true) then logged = true end
+		end
+		check('and says so in the log', logged)
+		control.loadscreen.refuse = nil
+
+		-- `screen.read` is the name the reader is gated on, and the manifest
+		-- declares it: the suite's permission sweep finds the call site.
+		local handle = io.open('open77.lua', 'r')
+		local manifest = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		check('the manifest declares screen.read', manifest:find('"screen.read"', 1, true) ~= nil)
+	end
+end
+
+section('the native loading screen: the join is the platform\'s')
+do
+	-- A load already up when the module first looks is the connection, whatever
+	-- the platform called it at the time: the views step aside, and no cover.
+	local answer = { active = true, id = '1', revision = 1, kind = 'unknown',
+		progressKnown = false, elapsedMs = 4000 }
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.screen = { loadingState = function() return LOADING.copyOf(answer) end }
+	end)
+	check('the client boots in the middle of the join', why == nil, why)
+
+	local contract = why == nil and env.OPX.Api.Get('loading') or nil
+	if type(contract) == 'table' then
+		local function state() return contract.State().value end
+		check('the join hides the views', state().hide == true)
+		check('and is never covered, however long it has run', state().cover == false)
+
+		answer = { active = false, id = '1', revision = 2, kind = 'unknown', elapsedMs = 0 }
+		check('the join ending gives them back',
+			settle(control, function() return state().hide == false end))
+
+		-- The next one is a load in play.
+		answer = { active = true, id = '2', revision = 3, kind = 'unknown', elapsedMs = 900 }
+		check('and the next load is covered',
+			settle(control, function() return state().cover end), state().cover)
+		answer = { active = false, id = '2', revision = 4, kind = 'unknown', elapsedMs = 0 }
+		settle(control, function() return state().hide == false end)
+	end
+end
+
+section('the native loading screen: an older client is left as it was')
+do
+	-- The fade natives are older than the reader, so an older client HAS a
+	-- screen table -- with neither name in it.
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.screen = {}
+	end)
+	check('a client without the reader boots', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local contract = OPX and OPX.Api.Get('loading') or nil
+	if type(contract) == 'table' then
+		local value = contract.State().value
+		check('the module is running and says it cannot read',
+			value.available == false and value.hide == false and value.cover == false)
+		local hiding = false
+		for _, payload in ipairs(LOADING.sent(control)) do
+			if payload.hide or payload.cover then hiding = true end
+		end
+		check('it never asked the page to hide anything', hiding == false)
+		local hud = OPX.Api.Get('hud')
+		if hud ~= nil then
+			check('and the HUD is exactly as it was', hud.IsVisible().value.covered == false
+				and hud.IsVisible().value.visible == true)
+		end
+		local died = false
+		for _, line in ipairs(control.log.error) do
+			if line:find('[loading]', 1, true) then died = true end
+		end
+		check('with nothing in the error log about it', died == false)
+	end
+
+	-- NO SCREEN TABLE AT ALL is the same answer.
+	local env2, _, why2 = boot('client', nil, function(env) env.Open77.screen = nil end)
+	check('nor does a client with no screen table at all break',
+		why2 == nil and env2.OPX.Api.Get('loading').State().value.available == false, why2)
+
+	-- `isLoading` ALONE: it can hide and cover, and draws no progress.
+	local loadingNow = false
+	local env3, control3, why3 = boot('client', nil, function(env)
+		env.Open77.screen = { isLoading = function() return loadingNow end }
+	end)
+	check('a client with isLoading alone boots', why3 == nil, why3)
+	local flag = why3 == nil and env3.OPX.Api.Get('loading') or nil
+	if type(flag) == 'table' then
+		local function state() return flag.State().value end
+		check('and reads through it', state().available == true and state().mode == 'flag',
+			tostring(state().mode))
+		loadingNow = true
+		check('a load still hides the views',
+			settle(control3, function() return state().hide end))
+		check('and is covered once it has run a moment',
+			settle(control3, function() return state().cover end))
+		check('with no progress claimed', LOADING.last(control3).progressKnown == false)
+		loadingNow = false
+		check('and gives them back when it ends',
+			settle(control3, function() return state().hide == false and state().cover == false end))
+	end
+end
+end
+
+section('the native loading screen: the page half is in the bundle')
+do
+	local built = io.open('web/index.html', 'r')
+	local page = built and built:read('a') or ''
+	if built then built:close() end
+	check('the page takes the state on the channel Lua sends it on',
+		page:find('"opx:loading:state"', 1, true) ~= nil)
+	check('and asks for it on the one the surface wires',
+		page:find('"opx:loading:ready"', 1, true) ~= nil)
+	check('the HUD-like views are flagged to step aside',
+		page:find('hideWhileLoading', 1, true) ~= nil)
+	-- Named at runtime, never inlined: a 15 MB film in the bundle is a page
+	-- past the host's 16 MiB web-file limit.
+	check('the cover names the join screen\'s own film and poster',
+		page:find('loading.webm', 1, true) ~= nil and page:find('loading-poster.jpg', 1, true) ~= nil)
+	check('and inlines neither', page:find('data:video', 1, true) == nil)
+end
+
 -- ── the one unguarded character read left on the client ─────────────────────
 section('the heading job checks yaw by name, like every other read')
 do
@@ -28494,11 +29356,13 @@ do
 		-- this body may board -- and a parked hull's door and a holding
 		-- insertion's are never the same aircraft (`modules/avdoor`). `X` is also
 		-- main's hauling drop (`config/hauling.lua` DROP_KEY), which answers only
-		-- while a crate is in the hands -- shipped on main beside the other two.
+		-- while a crate is in the hands -- shipped on main beside the other two --
+		-- and main's progress cancel, which answers only while a progress bar
+		-- that may be cancelled is up.
 		local SHARED = {
 			E = true,
 			F = 'opx.avdoor.board, opx.ncpd.board',
-			X = 'hauling_drop, opx.animations.stop, opx.calls.decline',
+			X = 'hauling_drop, opx.animations.stop, opx.calls.decline, opx.progress.cancel',
 			Y = 'opx.calls.answer, opx.inventory.peek',
 		}
 		local byKey = {}
@@ -39545,6 +40409,90 @@ end
 -- in any test ever run: the client re-applied the clock on every accepted
 -- snapshot, and both mutants over the tolerance survived. With a real engine
 -- clock the correction is a comparison between two numbers again.
+section('a command read-back carries the field the chat log styles by')
+do
+	-- `OPX.CommandResult` sent `type` and `ChatLog.vue` reads `kind`, so a
+	-- refused read-back defaulted to `say` and lost its error colour.
+	local env, control, why = boot('server')
+	check('the server boots for the read-back', why == nil, why)
+	if why == nil then
+		local RESULT = env.OPX.Event(env.OPX.Channel.NET, 'runtime', 'commandResult')
+		env.OPX.CommandResult(3, false, 'refused read-back')
+		local last = nil
+		for index = 1, #control.clientEvents do
+			if control.clientEvents[index].name == RESULT then last = control.clientEvents[index] end
+		end
+		local payload = last and last[1] or nil
+		check('a refused read-back is kind error',
+			type(payload) == 'table' and payload.kind == 'error', payload and tostring(payload.kind))
+		env.OPX.CommandResult(3, true, 'a list')
+		for index = 1, #control.clientEvents do
+			if control.clientEvents[index].name == RESULT then last = control.clientEvents[index] end
+		end
+		check('and an accepted one kind info', last ~= nil and last[1].kind == 'info')
+		local view = io.open('ui/src/modules/chat/ChatLog.vue', 'r')
+		local source = view and view:read('a') or ''
+		if view then view:close() end
+		check('and kind is the field the chat log reads',
+			source:find('kind: text(line.kind', 1, true) ~= nil
+				and source:find('.is-error', 1, true) ~= nil)
+	end
+end
+
+section('weather: the commands answer the player and are suggested by the chat box')
+do
+	-- These were raw `RegisterCommand` calls answered on a private event whose
+	-- client half asked `opx77_notify` for a toast and fell back to
+	-- `chat:addMessage` -- two names nothing listens to any more. From the game,
+	-- `/opx.weather.set rain` changed the sky and said nothing, and the chat box
+	-- never offered any of the eight.
+	local env, control, why = boot('server')
+	check('the server boots for the weather commands', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local known, restricted = OPX.Command.Known('opx.weather.set')
+		check('a weather command is registered through OPX.Command', known and restricted)
+		local open = OPX.Command.Known('opx.weather')
+		check('and the status report too', open)
+
+		local listed = false
+		for _, row in ipairs(OPX.Command.Suggestions(3)) do
+			if row.name == 'opx.weather' then listed = true end
+		end
+		check('so the chat box suggests it', listed)
+
+		local RESULT = OPX.Event(OPX.Channel.NET, 'runtime', 'commandResult')
+		local ANSWER = OPX.Event(OPX.Channel.NET, 'runtime', 'commandAnswer')
+		local function sent(name)
+			local out = {}
+			for index = 1, #control.clientEvents do
+				if control.clientEvents[index].name == name then
+					out[#out + 1] = control.clientEvents[index]
+				end
+			end
+			return out
+		end
+
+		local before = #sent(RESULT)
+		control.commands['opx.weather'].run(3, {}, '/opx.weather')
+		check('a status report is a chat read-back through OPX.CommandResult',
+			#sent(RESULT) == before + 1, #sent(RESULT) - before)
+
+		local answered = #sent(ANSWER)
+		control.commands['opx.weather.set'].run(3, { 'no_such_sky', n = 1 },
+			'/opx.weather.set no_such_sky')
+		check('a refused action is a toast through OPX.CommandNotice',
+			#sent(ANSWER) == answered + 1, #sent(ANSWER) - answered)
+		local private = 0
+		for index = 1, #control.clientEvents do
+			if control.clientEvents[index].name == OPX.Event(OPX.Channel.NET, 'weather', 'notice') then
+				private = private + 1
+			end
+		end
+		check('and nothing goes out on the old private notice event', private == 0, private)
+	end
+end
+
 section('weather: the clock is corrected when it has drifted, and left alone when it has not')
 do
 	local env, control, why = boot('client')
@@ -41635,6 +42583,28 @@ do
 		check('every handle is kept as the string the engine gave', stringly)
 		check('and every one of them still names a live blip', exact)
 
+		-- ONE PIN PER GARAGE LOCATION. A location sends its menu point AND its
+		-- entry door, and both used to be pinned: two "Garage" pins stacked on
+		-- every location.
+		local garagesModule = OPX.Modules.Get('garages')
+		control.netEvents[garagesModule.Event.SYNC]({ spots = {
+			{ key = 'blip_dock#1', label = 'BLIP DOCK', kind = 'garage', garage = 'blip_dock',
+				role = 'menu', location = 1, x = 40.0, y = 40.0, z = 1.0, heading = 0.0, bucket = 0 },
+			{ key = 'blip_dock#1.in', label = 'BLIP DOCK', kind = 'garage', garage = 'blip_dock',
+				role = 'entry', location = 1, x = 46.0, y = 40.0, z = 1.0, heading = 0.0, bucket = 0 },
+		} })
+		blips.Runtime.Sync()
+		control.Pump(20)
+		local garagePins = {}
+		for id in pairs(blips.Runtime.Created()) do
+			if tostring(id):find('blip_dock', 1, true) then garagePins[#garagePins + 1] = id end
+		end
+		check('a garage location is one pin, not one for the menu and one for the door',
+			#garagePins == 1, table.concat(garagePins, ', '))
+		control.netEvents[garagesModule.Event.SYNC]({ spots = {} })
+		blips.Runtime.Sync()
+		control.Pump(20)
+
 
 		-- ── THE JOB PINS BELONG TO THE JOB ────────────────────────────────────
 		-- THE OWNER: "fait en sorte que les blips job on les voit uniquement si on
@@ -43229,9 +44199,22 @@ do
 		-- THE RENEWAL. The lease outlives its own deadline only because the
 		-- sweep re-takes it; the host expires it honestly, so a module that
 		-- took one lease and stopped would go dark here.
+		local function takenFor(id)
+			local taken = 0
+			for _, write in ipairs(control.holocall.writes) do
+				if write.enabled == true and write.playerId == id then taken = taken + 1 end
+			end
+			return taken
+		end
+		local takenBefore = takenFor(A)
 		control.Pump(400)
 		check('the glow survives longer than one lease, because the sweep renews it',
 			control.Eyes(A) == true and control.Eyes(B) == true)
+		-- EVERY RENEW_MS AND NOT EVERY SWEEP. `EYES.RENEW_MS` was read by nothing,
+		-- so forty seconds of call re-took the lease twenty times at SCAN_MS.
+		local renewals = takenFor(A) - takenBefore
+		check('and renews it every RENEW_MS rather than on every sweep',
+			renewals >= 3 and renewals <= 5, renewals)
 
 		-- THE WATCHDOG. The platform drops a lease on its own -- a death, a
 		-- reload, an expiry mis-timed -- and `getHoloCallEyes` is how this
@@ -46718,8 +47701,12 @@ do
 		check('a body the engine will not move is tried a bounded number of times, then left',
 			pumpUntil(function() return not avdoor.Status().guarding and #fades >= 2 end, 80)
 				and #teles == 8, #teles .. ' move(s)')
+		-- The slack is the harness's, not the module's: a pump is 100 ms and the
+		-- client scheduler runs four jobs a pass in rotation, so one more job on
+		-- the client (main's `loading`) is one more 100 ms round before the
+		-- avdoor job sees its ceiling. In game a pass is a frame.
 		check('and the screen still comes back, inside its ceiling',
-			fades[2] ~= nil and fades[2].at - fades[1].at <= avdoor.Settings.EXIT_FADE.MAX_HOLD_MS + 300,
+			fades[2] ~= nil and fades[2].at - fades[1].at <= avdoor.Settings.EXIT_FADE.MAX_HOLD_MS + 500,
 			fades[2] and ('%d ms'):format(fades[2].at - fades[1].at) or 'never')
 		landing = true
 		settle()
@@ -49508,6 +50495,190 @@ do
 		underWeb > 1000 and pictures > 1000, ('%d under web/, %d pictures'):format(underWeb, pictures))
 	check(('none is longer than %d, %d short of the %d a client can see'):format(ROOM - MARGIN, MARGIN, ROOM),
 		#over == 0, #over > 0 and table.concat(over, ' ') or ('the longest: %s (%d)'):format(longest, #longest))
+end
+
+-- ── a menu reopened by a form's Enter does not fire that Enter ──────────────
+-- THE OWNER: "le filter des armes de que je ecrit un truc aucun menu ne pop".
+-- The staff search is a form, and its Enter reopens the menu in the very tick
+-- the form gives the keyboard back. The game does not see a key the page was
+-- holding until a pass later, so `primeHeld` read it as up, and the next poll
+-- read the same unbroken press as a fresh edge and fired the row under the
+-- reopened cursor.
+section('a reopened menu waits for the Enter that reopened it to be released')
+do
+	local env, control, why = boot('client')
+	check('client boots for the reopen grace', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local menu = OPX.Api.Get('menu')
+		local down = {}
+		OPX.Lib.Input.IsDown = function(name) return down[name] == true end
+		local actions = {}
+		local opened = menu.Open({
+			owner = 'grace-test',
+			title = 'Grace',
+			items = { { id = 'first', label = 'First' }, { id = 'second', label = 'Second' } },
+			on = function(payload) actions[#actions + 1] = payload.action end,
+		})
+		check('the menu opens', opened.ok, opened.error)
+		local function chose()
+			local n = 0
+			for _, action in ipairs(actions) do
+				if action ~= 'close' and action ~= 'focus' and action ~= 'move' then n = n + 1 end
+			end
+			return n
+		end
+		-- The press the form consumed, seen by the game only now.
+		down.ENTER = true
+		control.Pump(1)
+		check('an Enter first seen inside the grace does not choose', chose() == 0,
+			table.concat(actions, ' '))
+		control.Pump(20)
+		check('and holding it does not choose either', chose() == 0, table.concat(actions, ' '))
+		-- The scheduler rotates its jobs, so the poll is not one pass per pump:
+		-- wait for the release to be read, then for the press.
+		down.ENTER = nil
+		control.Pump(40)
+		down.ENTER = true
+		settle(control, function() return chose() >= 1 end)
+		check('a fresh press after the release does', chose() == 1, table.concat(actions, ' '))
+		menu.Close(opened.value.handle)
+	end
+end
+
+-- ── the staff search answers inside a small budget ───────────────────────────
+-- THE OWNER: "quand je cherche l'arme je fait entre le input se ferme mais le
+-- menu pop pas ... j'appuye une fois f9 ... il s'ouvre pas, une deuxieme fois
+-- il s'ouvre". The client log: "admin callback raised on submit ...
+-- script execution budget exceeded". The search's Enter filtered the catalogue
+-- and rebuilt the menu inside the form's own callback, past the per-resume
+-- budget, and the coroutine died between closing the old menu and opening the
+-- new one. The redraw is queued on its own thread now, so the callback itself
+-- must stay cheap -- that is the property checked here, by counting the VM
+-- instructions the Enter costs before it returns.
+section('the staff search answers inside a small budget')
+do
+	local env, control, why = boot('client')
+	check('client boots for the search budget', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(h, spec) specs[#specs + 1] = spec; return realMenu.Update(h, spec) end,
+		}, { __index = realMenu })
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		local rows = {}
+		for index = 1, 250 do
+			rows[index] = { name = 'w' .. index, category = 'weapon', weapon = true,
+				label = (index % 2 == 0 and 'Katana ' or 'Pistol ') .. index }
+		end
+		control.netEvents[admin.Event.ITEMS]({ rows = rows, offset = 0, total = 250, done = true })
+		admin.Menu.OpenAt('weaponList', { t = 'me' })
+		control.Pump(10)
+		check('the search form opens over the weapon list', admin.Forms.Open('search', nil) == true)
+		control.Pump(5)
+		local page, handle
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:form:edit'] then page = candidate end
+		end
+		for index = #(page and page.sent or {}), 1, -1 do
+			if page.sent[index].channel == 'opx:form:open' then
+				handle = page.sent[index].payload.handle
+				break
+			end
+		end
+		check('and its page is found', page ~= nil and handle ~= nil)
+		if page ~= nil and handle ~= nil then
+			control.PageEmit(page, 'opx:form:edit', { handle = handle, id = 'query', seq = 1, text = 'katana' })
+			control.Pump(2)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			control.PageEmit(page, 'opx:form:key', { handle = handle, key = 'enter' })
+			debug.sethook()
+			check('the Enter returns inside a small budget, the redraw left for its own thread',
+				spent < 5000, ('%d instructions'):format(spent))
+			control.Pump(10)
+			local filtered = 0
+			for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+				if tostring(item.id):match('^entry_') then filtered = filtered + 1 end
+			end
+			check('and the menu comes back, filtered', admin.Menu.IsOpen() and filtered > 0,
+				('%d rows'):format(filtered))
+		end
+	end
+end
+
+-- ── the inventory key opens the bag, and never takes a pile ─────────────────
+-- THE OWNER: "quand je drop l'item puis je suis a coter je ouvre le inventaire
+-- une autre fois cela prend le drop a cote automatiquement retire cela". The
+-- open key used to TAKE the nearest pile, screen closed, whenever one was in
+-- reach -- so looking in the bag beside something just dropped put it back.
+section('the inventory key opens the bag and never takes a pile')
+do
+	local env, control, why = boot('client')
+	check('client boots for the inventory key', why == nil, why)
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local mapping = control.keyMappings.byId['opx.inventory.open']
+		check('the open key is declared', mapping ~= nil and type(mapping.pressed) == 'function')
+		-- A pile right here, as the server announces one.
+		control.netEvents[inventory.Event.DROP]('add',
+			{ id = -7, x = 0, y = 0, z = 0, count = 1, model = 'food.snack' })
+		local asked = {}
+		local Screen = inventory.Screen
+		local realOpen, realIsOpen, realIsDown = Screen.Open, Screen.IsOpen, Screen.IsDown
+		Screen.Open = function(first, payload) asked[#asked + 1] = { first = first, payload = payload } end
+		Screen.IsOpen = function() return false end
+		Screen.IsDown = function() return false end
+		if mapping ~= nil then mapping.pressed() end
+		Screen.Open, Screen.IsOpen, Screen.IsDown = realOpen, realIsOpen, realIsDown
+		check('pressing it opens the screen', #asked == 1, #asked)
+		check('on the bag, not on the pile beside the player',
+			asked[1] ~= nil and asked[1].first ~= 'takeDrop', asked[1] and tostring(asked[1].first))
+	end
+end
+
+-- ── a staff screen built over a big catalogue yields as it walks ────────────
+-- The owner's second log, after the redraw moved onto its own thread: still
+-- `admin/client/menu.lua: ... budget exceeded` in `drawNow`, at the builder.
+-- One resume could not walk a whole catalogue through `matches`, so the walk
+-- now yields every few rows on the redraw's thread. Checked by catching the
+-- yields the builder makes, not by trusting that it can.
+section('a staff screen over a big catalogue yields while it is built')
+do
+	local env, control, why = boot('client')
+	check('client boots for the builder yields', why == nil, why)
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		local rows = {}
+		for index = 1, 600 do
+			rows[index] = { name = 'w' .. index, label = 'Weapon ' .. index, category = 'weapon', weapon = true }
+		end
+		control.netEvents[admin.Event.ITEMS]({ rows = rows, offset = 0, total = 600, done = true })
+		local realWait, fromBuilder = env.Wait, 0
+		env.Wait = function(ms)
+			local caller = debug.getinfo(2, 'S')
+			if caller and tostring(caller.source):find('admin/client/menu.lua', 1, true) then
+				fromBuilder = fromBuilder + 1
+			end
+			return realWait(ms)
+		end
+		admin.Menu.OpenAt('weaponList', { t = 'me' })
+		settle(control, function() return admin.Menu.Screen() == 'weaponList' and fromBuilder > 0 end, 80)
+		control.Pump(40)
+		env.Wait = realWait
+		check('the walk over 600 rows yields on its way', fromBuilder >= 10, fromBuilder)
+		check('and the screen still lands', admin.Menu.IsOpen() and admin.Menu.Screen() == 'weaponList',
+			admin.Menu.Screen())
+	end
 end
 
 print(('\n%d checks, %d failed'):format(checks, failures))

@@ -123,9 +123,19 @@ local function forCaller(payload, caller)
 	return copy
 end
 
+--- Whether this host offers `exports`.
+-- On op77 `exports` is a CALLABLE TABLE, not a function: it is called to
+-- publish and indexed for `exports.other:name()`, so `type` answers 'table'.
+-- Testing for 'function' alone read every real host as having none, and the
+-- whole creator surface went unpublished without an error.
+local function hasExports()
+	local kind = type(exports)
+	return kind == 'function' or kind == 'table' or kind == 'userdata'
+end
+
 --- Publishes one export behind the caller gate.
 local function publish(name, body)
-	if type(exports) ~= 'function' then return end
+	if not hasExports() then return end
 	exports(name, function(...)
 		local caller = GetInvokingResource ~= nil and GetInvokingResource() or nil
 		if type(caller) ~= 'string' or #caller < 1 or #caller > 64
@@ -440,6 +450,6 @@ AddEventHandler(OPX.Host.CLIENT_RESOURCE_STOP, function(name)
 	for _, heard in pairs(subscribers) do heard[name] = nil end
 end)
 
-if type(exports) ~= 'function' then
+if not hasExports() then
 	Open77.log.warn('[exports] this host has no `exports`: the creator surface is not published')
 end

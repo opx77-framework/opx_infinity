@@ -1044,12 +1044,16 @@ onUnmounted(() => {
                  between two states is CANCELLED AND RESTARTED by the change, so a
                  folder the pointer left replayed its whole stutter from invisible.
                  The slot is what the keyed v-for creates and its classes never
-                 change, so it plays `.op-enter` exactly once, like a menu row. -->
+                 change, so it plays `.op-enter` exactly once, like a menu row.
+                 NO STAGGER: every row of a column lands together. A column opens
+                 on every folder the pointer crosses, so a per-row walk replayed
+                 on each one and read as the rows trickling in, where the menu's
+                 buttons just appear. -->
             <div
-              v-for="(entry, at) in col.entries"
+              v-for="entry in col.entries"
               :key="entry.kind === 'folder' ? `d:${entry.name}` : `r:${entry.row.token}`"
               class="slot op-enter"
-              :style="`--op-slot: ${at}`"
+              style="--op-slot: 0"
             >
               <!-- A FOLDER: the same frame, the count where a value goes and `>` in
                    the affordance column. Pointing at it opens its column beside
@@ -1459,16 +1463,30 @@ onUnmounted(() => {
    the column it opened had closed. */
 .row:hover:not(.off):not(.pending):not(.open),
 .plane.keyboard .row:focus:not(.off):not(.pending):not(.open) {
-  color: var(--op-red-deep);
-  --aug-border-bg: var(--op-red-deep);
-  --aug-border-all: 1.5px;
+  color: var(--op-red);
+  --aug-border-bg: var(--op-red);
+  --aug-border-all: 2px;
+  background: var(--op-plate-lit);
+  /* THE MENU'S CHOSEN ROW, on the row under the pointer: the same step out of
+     the column and toward the player, on the same 80ms the `.row` transition
+     already carries, so pointing down a column reads exactly like arrowing
+     down the menu. It used to only recolour, and the eye felt like a second,
+     flatter surface beside the menu it is supposed to be. */
+  transform: translate3d(var(--pop), 0, 14px);
+  filter: drop-shadow(0 0 6px var(--op-red-glow));
+}
+
+.row:hover:not(.off):not(.pending):not(.open) .label,
+.plane.keyboard .row:focus:not(.off):not(.pending):not(.open) .label {
+  letter-spacing: 0.055em;
+  text-shadow: var(--op-ink), 0 0 10px var(--op-red-glow);
 }
 
 /* --- OPEN: the folder whose column is up beside this one. Lit and blooming, and
        it stays that way while the pointer works over there -- it is the only thing
-       joining a column to the row that produced it. No fill, no pop: the pop is the
-       committing row's, and a folder that stepped out of the plane would break the
-       line its own column is aligned to.
+       joining a column to the row that produced it. No pop: the pop belongs to
+       the row under the pointer and to the committing one, and a folder that
+       stepped out of the plane would break the line its own column is aligned to.
 
    THE BLOOM IS A `drop-shadow`, AND IT HAD TO CHANGE. It was an outset
    `box-shadow`, defended here on the grounds that a soft glow has no edge for the
@@ -1511,11 +1529,12 @@ onUnmounted(() => {
   color: var(--op-alarm);
   --aug-border-bg: var(--op-alarm);
   --aug-border-all: 2px;
+  transform: translate3d(var(--pop), 0, 14px);
   filter: drop-shadow(0 0 5px var(--op-alarm-glow));
 }
 
 /* --- PENDING: the row Lua is working on. Lit, blooming, and the one thing that
-       leaves the plane -- by `--pop` and 12px toward the player. No fill. The bloom
+       leaves the plane -- by `--pop` and 14px toward the player, like the menu. The bloom
        is a box-shadow and not a filter: a filter here would give one row its own
        backing store inside a surface that repaints over live gameplay. ---------- */
 .row.pending {
@@ -1523,7 +1542,7 @@ onUnmounted(() => {
   --aug-border-bg: var(--op-red);
   --aug-border-all: 2.4px;
   background: var(--op-plate-lit);
-  transform: translate3d(var(--pop), 0, 12px);
+  transform: translate3d(var(--pop), 0, 14px);
   filter: drop-shadow(0 0 6px var(--op-red-glow));
   cursor: default;
 }

@@ -27,4 +27,11 @@ OPX.Config.MODULES.progress = {
 	-- mistake that ends a session rather than a request.
 	MIN_MS = 250,
 	MAX_MS = 60000,
+
+	-- The key that cancels a bar its caller marked `cancelable`. A bar that was
+	-- not marked ignores it. The bar is drawn on the overlay, which never takes
+	-- the keyboard, so this mapping -- not the page -- is the way out of one.
+	-- ID is what a rebind is stored under; DEFAULT = false declares no key, and
+	-- then no bar can be cancelled by the player at all.
+	CANCEL_KEY = { ID = 'opx.progress.cancel', NAME = 'progress.key.cancel', DEFAULT = 'X' },
 }

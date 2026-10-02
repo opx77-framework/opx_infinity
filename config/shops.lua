@@ -25,8 +25,10 @@ OPX.Config.MODULES.shops = {
 
 	-- What one changed slot costs, in EDDIES, at a shop that does not say
 	-- otherwise. A slot absent from this table is FREE -- which is how underwear
-	-- is free everywhere below, and how a shop is made free by giving it an
-	-- empty override rather than by a flag nobody would find.
+	-- is free everywhere below. A shop's own PRICES can only add to or change
+	-- this table, never take a slot out of it, so a free slot at one shop is a 0
+	-- in that shop's override, and a free shop is a 0 for every slot (or
+	-- CHARGE = false, which frees every shop).
 	--
 	-- The nine slot names are the platform's own and are not ours to rename:
 	-- Head, Face, InnerChest, OuterChest, Legs, Feet, Outfit, UnderwearTop,
@@ -69,10 +71,11 @@ OPX.Config.MODULES.shops = {
 	-- Each entry:
 	--   LABEL     what the target row says
 	--   X, Y, Z   where it stands
-	--   BUCKET    routing bucket, or nil for every bucket
+	--   BUCKET    routing bucket; 0 when omitted. A shop serves its own bucket
+	--             only -- there is no "every bucket".
 	--   PRICES    an override table; merged OVER the defaults above, so a shop
-	--             states only what it charges differently. An empty table makes
-	--             a shop free without touching CHARGE.
+	--             states only what it charges differently. An empty table
+	--             changes nothing; a slot set to 0 is free at that shop.
 	--   JOBS      { job = minimumGrade }, or nil for anybody. A shop nobody but
 	--             a ripperdoc may use is a shop for uniforms.
 	--   ON_DUTY   true to require the job above to be on duty as well
@@ -80,7 +83,7 @@ OPX.Config.MODULES.shops = {
 		jinguji = {
 			LABEL = 'Jinguji',
 			X = -1631.0, Y = -1012.0, Z = 8.0,
-			BUCKET = nil,
+			BUCKET = 0,
 		},
 
 		-- Cheaper, and the underwear is free everywhere so it is not repeated.

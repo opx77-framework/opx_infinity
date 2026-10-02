@@ -39,6 +39,12 @@ AddEventHandler(OPX.Host.CLIENT_RESOURCE_START, function(name)
 			OPX.Note('boot', ('the client surface raised during boot: %s'):format(tostring(why)))
 		end
 
+		-- A RESUME OF ITS OWN FOR THE SURFACE. Building the page and then
+		-- resolving every module's graph in the same resume came to the whole
+		-- 10 000-instruction hook interval once main's `loading` module joined
+		-- this branch's: the boot's first resume is the one that dies first.
+		if type(Wait) == 'function' then Wait(0) end
+
 		local started, fatal = OPX.Modules.Run()
 		if not started then
 			Open77.log.error(('client module failed: %s'):format(tostring(fatal)))

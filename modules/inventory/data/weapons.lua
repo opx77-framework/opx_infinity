@@ -5,6 +5,29 @@
 -- wins over it. RECORD is the engine's TweakDB item record and is what the
 -- weapon relay is handed; a weapon whose CLASS is not in CLASSES is left out of
 -- the catalogue with a boot warning rather than drawn with no ammunition.
+--
+-- WHAT A DROPPED WEAPON LOOKS LIKE. No curated alias is a gun, a blade or a bat,
+-- so a firearm draws its case -- `military.case` for a sidearm or an SMG,
+-- `military.case.large` for a long gun -- a box of rounds draws `crate.ammo_box`,
+-- and a melee weapon draws a case unless the platform hosts something with its
+-- silhouette: the axes and hammers draw `tool.fire_axe` (a metre of handle, the
+-- nearest thing to a sledge as well) and the Caretaker's Spade `tool.shovel`.
+--
+-- INTEGRATING A DECORATIVE WEAPON -- that is, a pile that IS the weapon -- is not
+-- something this resource can do on its own, and the three ways that look like it
+-- all fail quietly:
+--
+--   * a raw depot `.mesh` of the weapon is accepted by `Open77.props.create` and
+--     draws a marker, because the renderer matches a prebuilt host per alias;
+--   * a raw `.ent` is refused with `template_backend_disabled`;
+--   * the alias table is compiled into the client plugin (`kModelAliases` in the
+--     platform's `Props.cpp`), so no manifest field, `preload_mod` package or
+--     native registers a new name. A `preload_mod` can ship inert `.mesh`/`.ent`
+--     files, but nothing would point an alias at them.
+--
+-- So the day this changes, it changes in the platform: an alias per weapon family
+-- added to the client's table and its generated host, then its name written here
+-- as the weapon's own MODEL and regenerated into `tests/prop-aliases.lua`.
 
 local M = OPX.Modules.Get('inventory')
 
@@ -236,7 +259,8 @@ M.Data.WEAPONS = {
 		weapon_ma70 = { RECORD = 'Items.Preset_MA70_Default', CLASS = 'lmg', WEIGHT = 8500 },
 		weapon_ma70_xmod2 = { RECORD = 'Items.Preset_MA70_Collectible', CLASS = 'lmg', WEIGHT = 8500 },
 
-		weapon_agaou = { RECORD = 'Items.Preset_VB_Axe', CLASS = 'melee', WEIGHT = 1600 },
+		weapon_agaou = { RECORD = 'Items.Preset_VB_Axe', CLASS = 'melee', WEIGHT = 1600,
+			MODEL = 'tool.fire_axe' },
 		weapon_baby_boomer = { RECORD = 'Items.Preset_Baseball_Bat_Malina', CLASS = 'melee',
 			WEIGHT = 1000 },
 		weapon_baseball_bat = { RECORD = 'Items.Preset_Baseball_Bat_Default', CLASS = 'melee',
@@ -252,7 +276,7 @@ M.Data.WEAPONS = {
 			WEIGHT = 350 },
 		weapon_byakko = { RECORD = 'Items.Preset_Katana_Wakako', CLASS = 'melee', WEIGHT = 1400 },
 		weapon_caretakers_spade = { RECORD = 'Items.Preset_Shovel_Caretaker', CLASS = 'melee',
-			WEIGHT = 2000 },
+			WEIGHT = 2000, MODEL = 'tool.shovel' },
 		weapon_chainsword = { RECORD = 'Items.Preset_Chainsword_Default', CLASS = 'melee',
 			WEIGHT = 4500 },
 		weapon_chainsword_xmod2 = { RECORD = 'Items.Preset_Chainsword_Legendary', CLASS = 'melee',
@@ -268,15 +292,16 @@ M.Data.WEAPONS = {
 		weapon_errata = { RECORD = 'Items.Preset_Katana_E3', CLASS = 'melee', WEIGHT = 1400 },
 		weapon_fang = { RECORD = 'Items.Preset_Knife_Kurtz_1', CLASS = 'melee', WEIGHT = 300 },
 		weapon_fanged_axe = { RECORD = 'Items.Preset_Fanged_Axe_Default', CLASS = 'melee',
-			WEIGHT = 1800 },
+			WEIGHT = 1800, MODEL = 'tool.fire_axe' },
 		weapon_fanged_axe_xmod2 = { RECORD = 'Items.Preset_Fanged_Axe_Collectible', CLASS = 'melee',
-			WEIGHT = 1800 },
+			WEIGHT = 1800, MODEL = 'tool.fire_axe' },
 		weapon_gold_plated_bat = { RECORD = 'Items.Preset_Baseball_Bat_Denny', CLASS = 'melee',
 			WEIGHT = 1000 },
 		weapon_golden_knuckles = { RECORD = 'Items.Preset_Knuckles_Golden', CLASS = 'melee',
 			WEIGHT = 400 },
 		weapon_gwynbleidd = { RECORD = 'Items.Preset_Sword_Witcher', CLASS = 'melee', WEIGHT = 1600 },
-		weapon_hammer = { RECORD = 'Items.Preset_Hammer_Default', CLASS = 'melee', WEIGHT = 2200 },
+		weapon_hammer = { RECORD = 'Items.Preset_Hammer_Default', CLASS = 'melee', WEIGHT = 2200,
+			MODEL = 'tool.fire_axe' },
 		weapon_headhunter = { RECORD = 'Items.Preset_Punk_Knife_Iconic', CLASS = 'melee',
 			WEIGHT = 300 },
 		weapon_jinchu_maru = { RECORD = 'Items.Preset_Katana_Takemura', CLASS = 'melee',
@@ -302,7 +327,7 @@ M.Data.WEAPONS = {
 		weapon_punk_knife = { RECORD = 'Items.Preset_Punk_Knife_Default', CLASS = 'melee',
 			WEIGHT = 300 },
 		weapon_sasquatch_hammer = { RECORD = 'Items.Preset_Hammer_Sasquatch', CLASS = 'melee',
-			WEIGHT = 2200 },
+			WEIGHT = 2200, MODEL = 'tool.fire_axe' },
 		weapon_satori = { RECORD = 'Items.Preset_Katana_Saburo', CLASS = 'melee', WEIGHT = 1400 },
 		weapon_scalpel = { RECORD = 'Items.Preset_Katana_Surgeon', CLASS = 'melee', WEIGHT = 1400 },
 		weapon_stinger = { RECORD = 'Items.Preset_Knife_Stinger', CLASS = 'melee', WEIGHT = 300 },
@@ -311,7 +336,8 @@ M.Data.WEAPONS = {
 			WEIGHT = 800 },
 		weapon_tire_iron = { RECORD = 'Items.Preset_Tire_Iron_Default', CLASS = 'melee',
 			WEIGHT = 1200 },
-		weapon_tomahawk = { RECORD = 'Items.Preset_Tomahawk_Default', CLASS = 'melee', WEIGHT = 900 },
+		weapon_tomahawk = { RECORD = 'Items.Preset_Tomahawk_Default', CLASS = 'melee', WEIGHT = 900,
+			MODEL = 'tool.fire_axe' },
 		weapon_tsumetogi = { RECORD = 'Items.Preset_Katana_Hiromi', CLASS = 'melee', WEIGHT = 1400 },
 		weapon_volkodav = { RECORD = 'Items.Preset_Machete_Borg_AirDrop', CLASS = 'melee',
 			WEIGHT = 1300 },

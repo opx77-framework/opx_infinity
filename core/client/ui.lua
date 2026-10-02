@@ -90,6 +90,11 @@ end
 -- exactly as the unchunked send had.
 local CATALOGUE_PART = 40
 
+-- The grain of the two cheap walks before the drain -- the merge and the key
+-- list -- which copy a reference per entry rather than shaping one: main's 250,
+-- ~2 500 instructions a unit, well inside the same ceiling.
+local COPY_GRAIN = 250
+
 --- Writes the locale catalogue to the page, in parts, reading every answer.
 ---
 --- The page's boot subscribes to `locale:set` and cannot call back for a string
@@ -106,16 +111,26 @@ local function sendCatalogue(surface)
 		-- ONE BOUNDED UNIT PER RESUME, each behind its own `Wait(0)`. The host
 		-- stops a client handler at ~10 000 instructions -- inventory's and
 		-- lifecycle's shared, live-proven figure -- and the units are sized
-		-- against it: the flat merge, the key list, and one drained part each
-		-- take a resume of their own. The first fix left the merge and the key
-		-- list sharing the first part's resume, and that resume still died bare
+		-- against it: the merge, the key list, and one drained part each take
+		-- a resume of their own. The first fix left the merge and the key list
+		-- sharing the first part's resume, and that resume still died bare
 		-- ("Open77 script execution budget exceeded", no frame) with the
 		-- catalogue lost and every label rendering as its raw key.
+		--
+		-- THE KEY LIST IS BUILT HERE, ON THE THREAD, and yields as it goes
+		-- (main's fix): it was built in the page's `ready` callback before the
+		-- thread started, and a catalogue of a few thousand keys spent that
+		-- callback's whole client budget. The merge itself yields as it goes too
+		-- (`OPX.Locale.CatalogueSliced`).
 		if type(Wait) == 'function' then Wait(0) end
-		local strings = OPX.Locale.Catalogue()
+		local strings = OPX.Locale.CatalogueSliced(COPY_GRAIN)
 		if type(Wait) == 'function' then Wait(0) end
-		local keys = {}
-		for key in pairs(strings) do keys[#keys + 1] = key end
+		local keys, counted = {}, 0
+		for key in pairs(strings) do
+			keys[#keys + 1] = key
+			counted = counted + 1
+			if counted % COPY_GRAIN == 0 and type(Wait) == 'function' then Wait(0) end
+		end
 
 		local at = 1
 		local total = #keys
