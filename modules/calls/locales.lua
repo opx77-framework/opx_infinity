@@ -44,12 +44,16 @@ local EN = {
 	['calls.live.others'] = '+{count}',
 
 	-- ── the rows on the eye ──────────────────────────────────────────────────
-
+	-- One row is left: handing your contact to the player you are pointing at.
+	['calls.row.share'] = 'Give my contact',
+	['calls.group'] = 'Holocall',
 
 	-- ── the hologram ─────────────────────────────────────────────────────────
 	-- The whole feature's vocabulary now: the eye rows above are gone and these
 	-- replaced them. See `config/calls.lua`'s KEY block for why.
 	['calls.key.holo'] = 'Holocall',
+	['calls.key.answer'] = 'Answer a holocall',
+	['calls.key.decline'] = 'Decline a holocall',
 	['calls.holo.incoming'] = 'Incoming call',
 	['calls.holo.inCall'] = 'Call in progress',
 	['calls.holo.eyebrow'] = 'NETWORK',
@@ -139,10 +143,15 @@ local FR = {
 	['calls.live.others'] = '+{count}',
 	['calls.live.waiting'] = 'Un appel attend.',
 
+	-- ── la ligne de l'oeil ───────────────────────────────────────────────────
+	['calls.row.share'] = 'Donner mon contact',
+	['calls.group'] = 'Holo-appel',
 
 
 	-- ── l'hologramme ─────────────────────────────────────────────────────────
 	['calls.key.holo'] = 'Holo-appel',
+	['calls.key.answer'] = 'Répondre à un holo-appel',
+	['calls.key.decline'] = 'Refuser un holo-appel',
 	['calls.holo.incoming'] = 'Appel entrant',
 	['calls.holo.inCall'] = 'Appel en cours',
 	['calls.holo.eyebrow'] = 'RESEAU',

@@ -10634,6 +10634,13 @@ do
 			local language
 			for line in handle:lines() do
 				language = line:match("OPX%.Locale%.Register%('(%a%a)'") or language
+				-- A module's catalogue declares its tables first and registers them
+				-- at the foot of the file, so the table's own name is what says
+				-- which language a key belongs to. Read only the Register line,
+				-- every key above it was filed under no language and compared
+				-- against nothing.
+				local declared = line:match('^local (%u%u) = {')
+				if declared then language = declared:lower() end
 				local key = line:match("^%s*%['([%w%.%-_]+)'%]%s*=")
 				if key and keys[language] then keys[language][key] = file end
 			end
@@ -10655,6 +10662,29 @@ do
 	check('there are keys to compare', counted > 400, ('%d English keys'):format(counted))
 	check('and every one of them is written in both languages',
 		#gaps == 0, table.concat(gaps, '; '))
+
+	-- EVERY KEY THE CODE NAMES AS A LITERAL EXISTS. The calls module asked for
+	-- `calls.key.answer`, `calls.key.decline`, `calls.row.share` and
+	-- `calls.group`, none of which was written, so the pause menu's bindings and
+	-- the eye row showed the raw key. A missing string renders as its own key and
+	-- raises nothing, so only a sweep like this one sees it.
+	local missing = {}
+	for _, side in ipairs({ 'client', 'server' }) do
+		for _, file in ipairs(Host.LoadOrder('open77.lua', side)) do
+			local handle = io.open(file, 'r')
+			local source = handle and handle:read('a') or ''
+			if handle then handle:close() end
+			for key in source:gmatch("[^%w_%.]locale%('([%w_]+%.[%w_%.]*[%w_])'") do
+				if keys.en[key] == nil then missing[#missing + 1] = ('%s (%s)'):format(key, file) end
+			end
+			for key in source:gmatch("NAME = '([%w_]+%.key%.[%w_]+)'") do
+				if keys.en[key] == nil then missing[#missing + 1] = ('%s (%s)'):format(key, file) end
+			end
+		end
+	end
+	table.sort(missing)
+	check('every literal key the code asks locale() for is written', #missing == 0,
+		table.concat(missing, '; '))
 end
 
 
@@ -24829,9 +24859,22 @@ do
 		-- THE RENEWAL. The lease outlives its own deadline only because the
 		-- sweep re-takes it; the host expires it honestly, so a module that
 		-- took one lease and stopped would go dark here.
+		local function takenFor(id)
+			local taken = 0
+			for _, write in ipairs(control.holocall.writes) do
+				if write.enabled == true and write.playerId == id then taken = taken + 1 end
+			end
+			return taken
+		end
+		local takenBefore = takenFor(A)
 		control.Pump(400)
 		check('the glow survives longer than one lease, because the sweep renews it',
 			control.Eyes(A) == true and control.Eyes(B) == true)
+		-- EVERY RENEW_MS AND NOT EVERY SWEEP. `EYES.RENEW_MS` was read by nothing,
+		-- so forty seconds of call re-took the lease twenty times at SCAN_MS.
+		local renewals = takenFor(A) - takenBefore
+		check('and renews it every RENEW_MS rather than on every sweep',
+			renewals >= 3 and renewals <= 5, renewals)
 
 		-- THE WATCHDOG. The platform drops a lease on its own -- a death, a
 		-- reload, an expiry mis-timed -- and `getHoloCallEyes` is how this
