@@ -170,7 +170,7 @@ end
 local function canLoad(context)
 	if carrying == nil then return false end
 	if type(context) ~= 'table' or type(context.target) ~= 'table' then return false end
-	return context.target.vehicleId ~= nil
+	return math.tointeger(context.target.vehicleId) ~= nil
 end
 
 local function onPickUp(context)
@@ -187,9 +187,14 @@ end
 
 local function onLoad(context)
 	if type(context) ~= 'table' or type(context.target) ~= 'table' then return end
-	local vehicleId = context.target.vehicleId
-	if vehicleId == nil then return end
-	ask(Step.LOAD, vehicleId)
+	-- A DECIMAL STRING ON THE WIRE. The id was sent as the number the eye
+	-- answered, and a vehicle id carries a generation that can pass 2^53, where a
+	-- JSON number stops being exact: the server would be asked to load into a
+	-- different vehicle id than the one the player was looking at. Sent the way
+	-- `modules/vehiclekeys` and the trunk screen send theirs.
+	local vehicleId = math.tointeger(context.target.vehicleId)
+	if vehicleId == nil or vehicleId < 1 then return end
+	ask(Step.LOAD, ('%d'):format(vehicleId))
 end
 
 --- Registers the rows, once.
