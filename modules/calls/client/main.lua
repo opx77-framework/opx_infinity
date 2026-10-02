@@ -63,6 +63,10 @@ local ringEveryMs = 3500
 -- for the re-arm clock to ring once more over the "allô".
 local silenced = nil
 
+-- The outgoing call this player already withdrew. Same reason: the dial tone
+-- stops on the key, and the server's reply must not play the stop a second time.
+local withdrawn = nil
+
 -- When the card went up, and how long it may stay. THE OWNER'S REQUIREMENT AS A
 -- CLOCK: the card says its piece and takes itself off the screen, and the eye's
 -- re-pop row brings it back. The call goes on ringing throughout -- this is the
@@ -180,6 +184,10 @@ local function onState(payload)
 	local hadCall = state.call ~= nil and state.call.id or nil
 	local hadOutgoing = state.outgoing ~= nil and state.outgoing.id or nil
 	local previous = state
+	-- READ BEFORE A NEW INVITE CLEARS IT: the key press already played the stop
+	-- for this one, and the reply taking it away must not play it again.
+	local stoppedInvite = hadInvite ~= nil and silenced == hadInvite
+	local stoppedOutgoing = hadOutgoing ~= nil and withdrawn == hadOutgoing
 
 	state = {
 		call = type(payload.call) == 'table' and payload.call or nil,
@@ -217,7 +225,8 @@ local function onState(payload)
 	end
 	-- STOPPED WHENEVER THE INVITE WENT, including when a second one replaced it:
 	-- answered, refused, expired or withdrawn by the caller.
-	if hadInvite ~= nil and nowInvite ~= hadInvite and ringsFor(previous.invite) then
+	if hadInvite ~= nil and nowInvite ~= hadInvite and ringsFor(previous.invite)
+		and not stoppedInvite then
 		play(sounds.INCOMING_STOP)
 	end
 
@@ -226,7 +235,8 @@ local function onState(payload)
 	-- the other person's voice.
 	if hadOutgoing == nil and state.outgoing ~= nil and ringsFor(state.outgoing) then
 		play(sounds.OUTGOING)
-	elseif hadOutgoing ~= nil and state.outgoing == nil and ringsFor(previous.outgoing) then
+	elseif hadOutgoing ~= nil and state.outgoing == nil and ringsFor(previous.outgoing)
+		and not stoppedOutgoing then
 		play(sounds.OUTGOING_STOP)
 	end
 
@@ -411,7 +421,10 @@ end
 -- @return boolean
 function M.HangUp()
 	if state.call == nil and state.outgoing == nil then return false end
-	if state.call == nil and ringsFor(state.outgoing) then play(sounds.OUTGOING_STOP) end
+	if state.call == nil and state.outgoing ~= nil and withdrawn ~= state.outgoing.id then
+		withdrawn = state.outgoing.id
+		if ringsFor(state.outgoing) then play(sounds.OUTGOING_STOP) end
+	end
 	TriggerServerEvent(M.Event.HANG_UP)
 	return true
 end
@@ -654,6 +667,7 @@ function M.Init()
 	cardUpMs = nil
 	lastRingMs = -math.huge
 	silenced = nil
+	withdrawn = nil
 	mutedEvents = {}
 	holoOpen = false
 	roster = { rows = {}, recent = {}, onCall = false }

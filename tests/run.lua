@@ -24687,6 +24687,8 @@ do
 			check('and stops the ring on the key press, before the reply',
 				count('ui_phone_incoming_call_stop') == stops + 1)
 			deliver({ call = { id = 'k1', participants = {} } })
+			check('and the reply taking the invite away does not stop it a second time',
+				count('ui_phone_incoming_call_stop') == stops + 1)
 
 			deliver({})
 			deliver({ outgoing = { id = 'o1', kind = 'call', to = 2, toName = 'Panam' } })
@@ -24701,9 +24703,52 @@ do
 				module.DeclineOrHangUp() == true)
 			check('and stops the dial tone at once',
 				count('ui_phone_initiation_call_stop') == 2)
+			deliver({})
+			check('and the reply taking it away does not stop it a second time',
+				count('ui_phone_initiation_call_stop') == 2)
 
 			deliver({ call = { id = 'k3', participants = {} } })
 			check('the same key hangs up a live call', module.DeclineOrHangUp() == true)
+			deliver({})
+		end
+	end
+end
+
+-- ONE PRESS, ONE REQUEST. The card and the hologram used to wire the same verbs
+-- from two lists, and both lists land on the one page: every handler on a
+-- channel runs, so a hologram button asked the server twice and the second was
+-- refused as `tooFast` on the player's screen.
+section('calls: a hologram button asks the server once')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the buttons', why == nil, why)
+	if why == nil then
+		local module = env.OPX.Modules.Get('calls')
+		local deliver = control.netEvents[module.Event.STATE]
+		local page = control.pages[1]
+		local function asked(name)
+			local n = 0
+			for index = 1, #control.serverEvents do
+				if control.serverEvents[index].name == name then n = n + 1 end
+			end
+			return n
+		end
+		check('the state handler and the page are there',
+			type(deliver) == 'function' and page ~= nil)
+		if type(deliver) == 'function' and page ~= nil then
+			for _, verb in ipairs({
+				{ 'accept', module.Event.ACCEPT, { invite = { id = 'i9', kind = 'call', name = 'Judy' } } },
+				{ 'decline', module.Event.DECLINE, { invite = { id = 'i8', kind = 'call', name = 'Judy' } } },
+				{ 'hangUp', module.Event.HANG_UP, { call = { id = 'k9', participants = {} } } },
+				{ 'ready', module.Event.READY, {} },
+			}) do
+				deliver({})
+				deliver(verb[3])
+				local before = asked(verb[2])
+				control.PageEmit(page, 'opx:calls:' .. verb[1], {})
+				check(('%s from the page is one request'):format(verb[1]),
+					asked(verb[2]) == before + 1, asked(verb[2]) - before)
+			end
 			deliver({})
 		end
 	end
