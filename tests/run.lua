@@ -12163,6 +12163,30 @@ do
 		local blind = contract.Start('eat', { label = 'Eating', durationMs = 1000 })
 		check('a build that cannot block still shows the bar', blind.ok == true, blind.error)
 		check('and taking it down does not raise', pcall(contract.Stop, 'eat'))
+
+		-- ── the player's cancel ──
+		-- A key and not a page intent: the bar is on the overlay, which never
+		-- holds the keyboard, and the page never sent the `progress:cancel` this
+		-- used to wait for -- so "Hold to cancel" cancelled nothing.
+		local mapping = control.keyMappings.byId['opx.progress.cancel']
+		check('the cancel key is declared to the host', mapping ~= nil
+			and type(mapping.pressed) == 'function')
+		if mapping ~= nil then
+			done = nil
+			contract.Start('eat', { label = 'Eating', durationMs = 30000 })
+			mapping.pressed()
+			check('it does nothing to a bar that was not marked cancelable',
+				contract.State().value.open == true and done == nil)
+			contract.Stop('eat')
+
+			done = nil
+			contract.Start('haul', { label = 'Lifting', durationMs = 30000, cancelable = true })
+			mapping.pressed()
+			check('and takes down one that was, as cancelled',
+				contract.State().value.open == false and done ~= nil
+					and done.ending == progress.Ending.CANCELLED and done.finished == false,
+				done and tostring(done.ending))
+		end
 	end
 end
 -- ── the down screen, and the seam it hangs on ───────────────────────────────

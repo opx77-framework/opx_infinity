@@ -45,6 +45,24 @@ local locked = nil
 
 local job = nil
 
+-- Whether the cancel key was declared to the host.
+local cancelKeyRegistered = false
+
+-- The cancel key declaration, with the shipped value as the fallback.
+local function cancelKey()
+	local settings = type(M.Settings) == 'table' and M.Settings or {}
+	return type(settings.CANCEL_KEY) == 'table' and settings.CANCEL_KEY
+		or { ID = 'opx.progress.cancel', NAME = 'progress.key.cancel', DEFAULT = 'X' }
+end
+
+-- The key the player has bound to cancel, or nil when there is none -- in which
+-- case the bar draws no hint, because a hint naming no key is a promise.
+local function cancelKeyLabel()
+	if not cancelKeyRegistered then return nil end
+	local declared = cancelKey()
+	return OPX.Lib.Input.KeyFor(declared.ID) or declared.DEFAULT
+end
+
 --- Reads the settings once, with the shipped values for anything unusable.
 local function tuning()
 	local settings = type(M.Settings) == 'table' and M.Settings or {}
@@ -213,10 +231,12 @@ function Runtime.Start(owner, spec)
 	-- The page is given the DEADLINE and not a percentage: it animates between
 	-- our passes off its own clock, so the bar is smooth at any tick rate and a
 	-- dropped frame costs nothing.
+	local key = live.canCancel and cancelKeyLabel() or nil
 	OPX.UI.Send(SURFACE, CHANNEL_SHOW, {
 		label = label,
 		durationMs = duration,
-		cancelable = live.canCancel,
+		cancelable = key ~= nil,
+		cancelKey = key,
 	})
 	TriggerEvent(M.Event.ON_STATE, { open = true, owner = owner, label = label })
 
@@ -253,7 +273,7 @@ end
 --- Resets the state. Never yields.
 -- @author dop42
 function M.Init()
-	live, locked, job = nil, nil, nil
+	live, locked, job, cancelKeyRegistered = nil, nil, nil, false
 end
 
 --- Publishes the contract.
@@ -269,12 +289,29 @@ end
 --- Wires the doors and starts the pass.
 -- @author dop42
 function M.Start()
-	-- The page's own cancel. Believed only when the bar allowed one, and named
-	-- `cancelled` rather than `stopped` so a listener can tell a player giving up
-	-- from a caller changing its mind.
-	OPX.UI.On(SURFACE, 'progress:cancel', function()
-		if live ~= nil and live.canCancel then finish(Ending.CANCELLED) end
-	end)
+	-- THE PLAYER'S CANCEL IS A KEY, NOT A PAGE INTENT. This used to listen for
+	-- `progress:cancel` from the page, which never sent it -- and could not
+	-- usefully have, because the bar is on the overlay, which takes neither the
+	-- pointer nor the keyboard. So a bar marked `cancelable` drew "Hold to
+	-- cancel" and nothing cancelled it. Believed only when the bar allowed one,
+	-- and named `cancelled` rather than `stopped` so a listener can tell a
+	-- player giving up from a caller changing its mind.
+	local declared = cancelKey()
+	if declared.DEFAULT ~= false then
+		local called, ok, answer = pcall(RegisterKeyMapping, declared.ID, locale(declared.NAME),
+			declared.DEFAULT, function()
+				if live ~= nil and live.canCancel then finish(Ending.CANCELLED) end
+			end)
+		local effective = called and (
+			(type(ok) == 'string' and ok ~= '' and ok) or
+			(ok == true and type(answer) == 'string' and answer ~= '' and answer)) or nil
+		if not called or (ok ~= true and not effective) then
+			Open77.log.warn(('[progress] cancel key %s (%s) not registered: %s')
+				:format(declared.ID, tostring(declared.DEFAULT), tostring(called and answer or ok)))
+		else
+			cancelKeyRegistered = true
+		end
+	end
 
 	RegisterNetEvent(M.Event.START, function(spec)
 		if type(spec) ~= 'table' then return end

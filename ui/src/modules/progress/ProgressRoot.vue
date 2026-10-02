@@ -17,9 +17,9 @@ import { useLocale } from '@/composables/useLocale'
  * every one of them.
  *
  * NOTHING HERE DECIDES ANYTHING. It does not know what the action is, whether it
- * finished, or what happens next; it draws what it is told and emits the one
- * thing a player can do, which is ask to cancel a bar that said it may be
- * cancelled. Lua decides whether to believe that.
+ * finished, or what happens next; it draws what it is told, including the key
+ * that cancels a bar that said it may be cancelled. It emits nothing: the cancel
+ * is a key mapping in Lua, because this layer never holds the keyboard.
  *
  * IT TAKES NO POINTER AND NO KEYBOARD. It is on the overlay layer, which is
  * `pointer-events: none` for the whole layer, and this file does not re-enable
@@ -45,6 +45,8 @@ const { t } = useLocale()
 const open = ref(false)
 const label = ref('')
 const cancelable = ref(false)
+/** The key the player has bound to cancel, as Lua named it. */
+const cancelKey = ref('')
 
 /** 0 while empty, 1 once the transition has been started. Held in a ref rather
     than written straight onto the element so the browser gets one frame at zero
@@ -64,7 +66,8 @@ function clearRaise(): void {
 useBridge('opx:progress:show', (payload: Payload) => {
   clearRaise()
   label.value = t(text(payload.label))
-  cancelable.value = bool(payload.cancelable)
+  cancelKey.value = text(payload.cancelKey)
+  cancelable.value = bool(payload.cancelable) && cancelKey.value !== ''
   span.value = Math.max(0, num(payload.durationMs))
   filled.value = false
   open.value = true
@@ -98,7 +101,7 @@ onUnmounted(clearRaise)
         />
       </span>
 
-      <p v-if="cancelable" class="hint op-eyebrow">{{ t('progress.cancel') }}</p>
+      <p v-if="cancelable" class="hint op-eyebrow">{{ t('progress.cancel', { key: cancelKey }) }}</p>
     </section>
   </div>
 </template>
