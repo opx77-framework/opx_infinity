@@ -272,6 +272,8 @@ OPX.Config.MODULES.admin = {
 		WEATHER_FREEZE = 'opx.weather.freeze',
 		TIME = 'opx.time',
 		TIME_FREEZE = 'opx.time.freeze',
+		-- The door panel: `modules/doorlock`, opened by its own restricted command.
+		DOORLOCK = 'opx.doorlock',
 	},
 
 	-- Weather names the sky screen offers. They are the NAME column of
