@@ -335,7 +335,7 @@ function Host.Environment(side, database)
 	local holocall, voice
 	local plates, watchers
 	local world, lives, gate, generations, carried, environment
-	local blips, hud
+	local blips, hud, loadscreen
 
 	-- The thirteen canonical stock-HUD components, in the platform's own order,
 	-- and every alias `setVisible`/`isVisible` accept for them. Both are the
@@ -1675,6 +1675,37 @@ function Host.Environment(side, database)
 			end,
 		},
 
+		-- THE NATIVE LOADING LIFECYCLE, and the three clients it has to be read on.
+		-- `loadscreen.api` is which of them this is: 'state' answers both readers,
+		-- 'flag' has `isLoading` alone, and 'absent' is the client that predates
+		-- both -- whose `Open77.screen` still exists (the fade natives are older)
+		-- and simply has neither name in it. A reader that is not there is NIL, not
+		-- a function that refuses, because "is it a function" is exactly the
+		-- question a feature detection asks.
+		--
+		-- `refuse` makes every read answer `nil, <reason>`, the way a client
+		-- without `screen.read` answers. `reads` counts every call, which is how
+		-- a test tells a cheap cadence from a busy loop.
+		screen = setmetatable({}, { __index = function(_, key)
+			if key == 'loadingState' and loadscreen.api == 'state' then
+				return function()
+					loadscreen.reads = loadscreen.reads + 1
+					if loadscreen.refuse ~= nil then return nil, tostring(loadscreen.refuse) end
+					local out = {}
+					for field, value in pairs(loadscreen.state) do out[field] = value end
+					return out
+				end
+			end
+			if key == 'isLoading' and (loadscreen.api == 'state' or loadscreen.api == 'flag') then
+				return function()
+					loadscreen.reads = loadscreen.reads + 1
+					if loadscreen.refuse ~= nil then return nil, tostring(loadscreen.refuse) end
+					return loadscreen.state.active == true
+				end
+			end
+			return nil
+		end }),
+
 		-- A GENERATION THAT CAN CHANGE. This answered a constant 1 for every
 		-- resource forever, so every abort-on-reload guard in the runtime --
 		-- `modules/target`'s row sweep, `modules/needs`, the deferred callbacks
@@ -1708,6 +1739,12 @@ function Host.Environment(side, database)
 	-- resource the calls are attributed to, so a test can make a SECOND resource
 	-- hold a claim and check that releasing ours does not reveal the component.
 	hud = { claims = {}, owner = 'opx_infinity', refuse = nil }
+	-- The native loading lifecycle, idle: no load has ever run, which is what a
+	-- client that has finished joining answers. `control.Load` moves it.
+	loadscreen = { api = 'state', refuse = nil, reads = 0, state = {
+		active = false, id = '0', revision = 0, kind = 'unknown',
+		progressKnown = false, progress = nil, elapsedMs = 0,
+	} }
 	-- Recorded by the nameplate stub: which players carry an override, and every
 	-- set and remove in order.  makes the host turn an override away.
 	plates = { byId = {}, set = {}, removed = {}, refuse = nil }
@@ -2230,6 +2267,28 @@ function Host.Environment(side, database)
 		-- the state `config/hud.lua`'s `VANILLA.minimap = false` produces, and it
 		-- is what decides whether a mappin can reach the minimap at all.
 		hud = hud,
+
+		-- The native loading lifecycle: which readers this client has (`api`),
+		-- the refusal switch, the read count and the state itself. Move the
+		-- state with `control.Load`, which bumps the revision the way the
+		-- platform does on every change.
+		loadscreen = loadscreen,
+
+		--- Moves the native loading lifecycle. Fields not named are kept;
+		--- `active = true` on a load that was not up opens a NEW cycle with a
+		--- new id, and the revision goes up on every call, as it does on the
+		--- platform for any change at all.
+		Load = function(fields)
+			local state = loadscreen.state
+			if fields.active == true and state.active ~= true then
+				state.id = tostring((tonumber(state.id) or 0) + 1)
+				state.elapsedMs = 0
+				state.kind, state.progressKnown, state.progress = 'unknown', false, nil
+			end
+			for field, value in pairs(fields) do state[field] = value end
+			if fields.progress == false then state.progress = nil end
+			state.revision = (tonumber(state.revision) or 0) + 1
+		end,
 
 		-- The keyboard: `input.captured` is another surface holding it, `input.keys`
 		-- is what each mapping answers to after a rebind.

@@ -8808,6 +8808,10 @@ do
 		{ 'players.setModel', 'players.model.control', 'wearing an NPC body' },
 		{ 'players.resetModel', 'players.model.control', 'giving the body back' },
 		{ 'players.getModel', 'players.model.read', 'reading the worn body' },
+		-- Reached through a local (`screen.loadingState`) for the same reason.
+		-- Newer than op77.78; see `modules/loading/client/main.lua`.
+		{ 'screen.loadingState', 'screen.read', 'the native loading lifecycle' },
+		{ 'screen.isLoading', 'screen.read', 'the native loading flag' },
 	}
 
 	local handle = io.open('open77.lua', 'r')
@@ -20280,6 +20284,293 @@ do
 				reads > 0, reads)
 		end
 	end
+end
+
+-- ── the game's own loading screen ───────────────────────────────────────────
+-- `modules/loading` reads `Open77.screen.loadingState`, a reader newer than the
+-- devkit's op77.78, and does two things with it: the page takes its HUD-like
+-- views off screen for as long as a load is up, and a load in play -- never the
+-- join -- gets the OPX cover. The page half is a `v-show` over each registered
+-- view, so what is held to account here is what Lua TELLS the page, what it
+-- tells `hud`, and that a client without the reader is left exactly as it was.
+
+--- Every `loading:state` payload any page was sent, oldest first.
+local function loadingSent(control)
+	local out = {}
+	for _, page in ipairs(control.pages) do
+		for index = 1, #page.sent do
+			if page.sent[index].channel == 'opx:loading:state' then out[#out + 1] = page.sent[index].payload end
+		end
+	end
+	return out
+end
+
+--- The last of them, or an empty table.
+local function loadingLast(control)
+	local sent = loadingSent(control)
+	return sent[#sent] or {}
+end
+
+--- A copy of a reader's answer, so the module cannot hold the test's table.
+local function copyOf(source)
+	local out = {}
+	for key, value in pairs(source) do out[key] = value end
+	return out
+end
+
+section('the native loading screen: the views step aside and come back')
+do
+	local env, control, why = boot('client')
+	check('the client boots with the loading module', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local contract = OPX and OPX.Api.Get('loading') or nil
+	check('and it published its contract', type(contract) == 'table'
+		and type(contract.State) == 'function')
+
+	if type(contract) == 'table' then
+		local function state() return contract.State().value end
+		local hud = OPX.Api.Get('hud')
+		check('hud is running to be covered', hud ~= nil)
+
+		-- Every `opx:on:loading:state` raised, in order.
+		local raised = {}
+		env.AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'loading', 'state'), function(payload)
+			raised[#raised + 1] = payload
+		end)
+
+		check('it reads through loadingState on a client that has it',
+			state().available == true and state().mode == 'state', tostring(state().mode))
+		check('and with no load up, nothing is hidden and nothing is covered',
+			state().hide == false and state().cover == false)
+
+		-- THE PLAYER'S OWN CHOICE, made before the load. A hide that restored by
+		-- writing `true` back would turn this into a HUD that reopened itself.
+		if hud ~= nil then hud.SetVisible(false) end
+
+		control.Load({ active = true, kind = 'fastTravel' })
+		check('a load that starts hides the views',
+			settle(control, function() return state().hide end), state().hide)
+		check('and the page is told to hide them', loadingLast(control).hide == true)
+		check('the public bus says a load is up',
+			#raised > 0 and raised[#raised].active == true)
+		if hud ~= nil then
+			check('and hud counts it as one more screen in front of it',
+				hud.IsVisible().value.covered == true)
+		end
+
+		-- THE DELAY. The cover waits on the clock, not on the next revision, so
+		-- the cheap exit must not skip a pass that is still counting.
+		check('the cover goes up once the load has run a moment',
+			settle(control, function() return state().cover end), state().cover)
+		local sent = loadingLast(control)
+		check('with no progress to show yet',
+			sent.cover == true and sent.progressKnown == false,
+			('%s/%s'):format(tostring(sent.cover), tostring(sent.progressKnown)))
+		check('and the kind the platform named', sent.kind == 'fastTravel', tostring(sent.kind))
+
+		control.Load({ progressKnown = true, progress = 0.5 })
+		check('a known fraction reaches the cover',
+			settle(control, function()
+				local last = loadingLast(control)
+				return last.progressKnown == true and last.progress == 0.5
+			end), tostring(loadingLast(control).progress))
+
+		-- IT MAY GO BACKWARDS, and is passed on as said.
+		control.Load({ progress = 0.25 })
+		check('and one that moves backwards is passed on as it is',
+			settle(control, function() return loadingLast(control).progress == 0.25 end),
+			tostring(loadingLast(control).progress))
+
+		-- NEVER DONE AT 100: the fraction can sit at the end while the screen is
+		-- still closing, and only `active` going false ends the cover.
+		control.Load({ progress = 1 })
+		control.Pump(10)
+		check('a fraction at the end does not take the cover down',
+			state().cover == true and loadingLast(control).cover == true)
+
+		-- THE CHEAP EXIT. Nothing moves, so nothing is sent -- and the reader is
+		-- asked on a cadence, never every frame.
+		local before, reads = #loadingSent(control), control.loadscreen.reads
+		control.Pump(50)
+		local asked = control.loadscreen.reads - reads
+		check('a load that does not move puts nothing on the wire',
+			#loadingSent(control) == before, #loadingSent(control) - before)
+		check('and the reader is polled on a cadence, not a busy loop (5 s: 1..26 reads)',
+			asked > 0 and asked <= 26, asked)
+
+		control.Load({ active = false })
+		check('the end of the load gives the views back',
+			settle(control, function() return state().hide == false end), state().hide)
+		sent = loadingLast(control)
+		check('the page is told so, and the cover comes down with it',
+			sent.hide == false and sent.cover == false)
+		check('the bus says the load is over',
+			raised[#raised].active == false and raised[#raised].cover == false)
+		if hud ~= nil then
+			local after = hud.IsVisible().value
+			check('hud is no longer covered', after.covered == false)
+			check('and a HUD the player had switched off STAYS off',
+				after.visible == false, tostring(after.visible))
+			hud.SetVisible(true)
+		end
+
+		-- THE JOIN'S KIND, mid-session. The views step aside; the platform's own
+		-- screen is left to the platform.
+		control.Load({ active = true, kind = 'initial' })
+		control.Pump(10)
+		check('a load the platform calls initial still hides the views', state().hide == true)
+		check('but never gets the cover', state().cover == false)
+		control.Load({ active = false })
+		check('and ends like any other',
+			settle(control, function() return state().hide == false end))
+
+		-- A BLINK: up and down before the delay has run.
+		local count = #loadingSent(control)
+		control.Load({ active = true, elapsedMs = 0 })
+		settle(control, function() return state().hide end)
+		control.Load({ active = false })
+		settle(control, function() return state().hide == false end)
+		local covered = false
+		local all = loadingSent(control)
+		for index = count + 1, #all do
+			if all[index].cover == true then covered = true end
+		end
+		check('a load gone before the delay ran gets no cover', covered == false)
+
+		-- A REFUSED READ is a load that is not up: the views come back, and a
+		-- permission refusal stops the job for good.
+		control.Load({ active = true })
+		settle(control, function() return state().hide end)
+		control.loadscreen.refuse = 'permission_denied:screen.read'
+		check('a refusal mid-load gives the views back rather than stranding them',
+			settle(control, function() return state().hide == false end), state().hide)
+		check('and a permission refusal stops asking', state().available == false)
+		local still = control.loadscreen.reads
+		control.Pump(30)
+		check('for good', control.loadscreen.reads == still, control.loadscreen.reads - still)
+		local logged = false
+		for _, line in ipairs(control.log.error) do
+			if line:find('loading state was refused', 1, true) then logged = true end
+		end
+		check('and says so in the log', logged)
+		control.loadscreen.refuse = nil
+
+		-- `screen.read` is the name the reader is gated on, and the manifest
+		-- declares it: the suite's permission sweep finds the call site.
+		local handle = io.open('open77.lua', 'r')
+		local manifest = handle and handle:read('a') or ''
+		if handle then handle:close() end
+		check('the manifest declares screen.read', manifest:find('"screen.read"', 1, true) ~= nil)
+	end
+end
+
+section('the native loading screen: the join is the platform\'s')
+do
+	-- A load already up when the module first looks is the connection, whatever
+	-- the platform called it at the time: the views step aside, and no cover.
+	local answer = { active = true, id = '1', revision = 1, kind = 'unknown',
+		progressKnown = false, elapsedMs = 4000 }
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.screen = { loadingState = function() return copyOf(answer) end }
+	end)
+	check('the client boots in the middle of the join', why == nil, why)
+
+	local contract = why == nil and env.OPX.Api.Get('loading') or nil
+	if type(contract) == 'table' then
+		local function state() return contract.State().value end
+		check('the join hides the views', state().hide == true)
+		check('and is never covered, however long it has run', state().cover == false)
+
+		answer = { active = false, id = '1', revision = 2, kind = 'unknown', elapsedMs = 0 }
+		check('the join ending gives them back',
+			settle(control, function() return state().hide == false end))
+
+		-- The next one is a load in play.
+		answer = { active = true, id = '2', revision = 3, kind = 'unknown', elapsedMs = 900 }
+		check('and the next load is covered',
+			settle(control, function() return state().cover end), state().cover)
+		answer = { active = false, id = '2', revision = 4, kind = 'unknown', elapsedMs = 0 }
+		settle(control, function() return state().hide == false end)
+	end
+end
+
+section('the native loading screen: an older client is left as it was')
+do
+	-- The fade natives are older than the reader, so an older client HAS a
+	-- screen table -- with neither name in it.
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.screen = {}
+	end)
+	check('a client without the reader boots', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local contract = OPX and OPX.Api.Get('loading') or nil
+	if type(contract) == 'table' then
+		local value = contract.State().value
+		check('the module is running and says it cannot read',
+			value.available == false and value.hide == false and value.cover == false)
+		local hiding = false
+		for _, payload in ipairs(loadingSent(control)) do
+			if payload.hide or payload.cover then hiding = true end
+		end
+		check('it never asked the page to hide anything', hiding == false)
+		local hud = OPX.Api.Get('hud')
+		if hud ~= nil then
+			check('and the HUD is exactly as it was', hud.IsVisible().value.covered == false
+				and hud.IsVisible().value.visible == true)
+		end
+		local died = false
+		for _, line in ipairs(control.log.error) do
+			if line:find('[loading]', 1, true) then died = true end
+		end
+		check('with nothing in the error log about it', died == false)
+	end
+
+	-- NO SCREEN TABLE AT ALL is the same answer.
+	local env2, _, why2 = boot('client', nil, function(env) env.Open77.screen = nil end)
+	check('nor does a client with no screen table at all break',
+		why2 == nil and env2.OPX.Api.Get('loading').State().value.available == false, why2)
+
+	-- `isLoading` ALONE: it can hide and cover, and draws no progress.
+	local loadingNow = false
+	local env3, control3, why3 = boot('client', nil, function(env)
+		env.Open77.screen = { isLoading = function() return loadingNow end }
+	end)
+	check('a client with isLoading alone boots', why3 == nil, why3)
+	local flag = why3 == nil and env3.OPX.Api.Get('loading') or nil
+	if type(flag) == 'table' then
+		local function state() return flag.State().value end
+		check('and reads through it', state().available == true and state().mode == 'flag',
+			tostring(state().mode))
+		loadingNow = true
+		check('a load still hides the views',
+			settle(control3, function() return state().hide end))
+		check('and is covered once it has run a moment',
+			settle(control3, function() return state().cover end))
+		check('with no progress claimed', loadingLast(control3).progressKnown == false)
+		loadingNow = false
+		check('and gives them back when it ends',
+			settle(control3, function() return state().hide == false and state().cover == false end))
+	end
+end
+
+section('the native loading screen: the page half is in the bundle')
+do
+	local built = io.open('web/index.html', 'r')
+	local page = built and built:read('a') or ''
+	if built then built:close() end
+	check('the page takes the state on the channel Lua sends it on',
+		page:find('"opx:loading:state"', 1, true) ~= nil)
+	check('and asks for it on the one the surface wires',
+		page:find('"opx:loading:ready"', 1, true) ~= nil)
+	check('the HUD-like views are flagged to step aside',
+		page:find('hideWhileLoading', 1, true) ~= nil)
+	-- Named at runtime, never inlined: a 15 MB film in the bundle is a page
+	-- past the host's 16 MiB web-file limit.
+	check('the cover names the join screen\'s own film and poster',
+		page:find('loading.webm', 1, true) ~= nil and page:find('loading-poster.jpg', 1, true) ~= nil)
+	check('and inlines neither', page:find('data:video', 1, true) == nil)
 end
 
 -- ── the one unguarded character read left on the client ─────────────────────

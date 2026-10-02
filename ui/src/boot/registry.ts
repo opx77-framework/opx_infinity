@@ -24,6 +24,18 @@ export interface ModuleDefinition {
   id: string
   surface: LayerName
   component: Component
+  /**
+   * HUD-like: something drawn over live play that means nothing over a loading screen.
+   * While `modules/loading` says the game's own loading screen is up, SurfaceRoot takes
+   * the module off screen with `v-show` -- it stays mounted, keeps every ref it holds and
+   * its own idea of whether it is open, and is back exactly as it was when the load ends.
+   *
+   * On the modal layer it is set only where what the view shows is ABOUT THE PLACE the
+   * player was standing in -- the eye's rows on a body or a door, the holo sphere over the
+   * street. A bag, a form or a menu the player is in the middle of is still theirs after
+   * the load, and hiding one that holds focus would leave a cursor over nothing.
+   */
+  hideWhileLoading?: boolean
 }
 
 const modules: ModuleDefinition[] = []

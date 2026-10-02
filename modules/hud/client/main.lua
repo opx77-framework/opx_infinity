@@ -82,6 +82,14 @@ local EVENT_SPAWN_STATE = OPX.Event(OPX.Channel.LOCAL, 'spawn', 'state')
 local EVENT_MENU_STATE = OPX.Event(OPX.Channel.LOCAL, 'menu', 'state')
 local EVENT_APPEARANCE_DECISION = OPX.Event(OPX.Channel.LOCAL, 'appearance', 'decision')
 
+-- THE GAME'S OWN LOADING SCREEN, a fifth screen in front of this one and the
+-- only one that is not ours: `modules/loading` reads the platform's native
+-- lifecycle and says `active` for as long as it is up. The page already takes
+-- this HUD off screen for it; counting it here as well is what stops the two
+-- sampling jobs below reading vitals and voice for a HUD nobody can see, and
+-- keeps `hud:visibility` honest about why it is hidden.
+local EVENT_LOADING_STATE = OPX.Event(OPX.Channel.LOCAL, 'loading', 'state')
+
 -- This module's own public bus, raised after the surface was told, so a handler
 -- reading the contract sees the visibility it was just told about. It must stay
 -- on the LOCAL channel: the host dispatcher matches on the name alone.
@@ -1087,6 +1095,14 @@ function M.Start()
 	AddEventHandler(EVENT_MENU_STATE, function(payload)
 		if type(payload) ~= 'table' then return end
 		setCovered('menu', payload.open == true)
+	end)
+
+	-- A load is a screen in front of the HUD for exactly as long as the platform
+	-- says it is up. The player's own choice is untouched, as for every other
+	-- name in the set, so whatever they had comes back when it ends.
+	AddEventHandler(EVENT_LOADING_STATE, function(payload)
+		if type(payload) ~= 'table' then return end
+		setCovered('loading', payload.active == true)
 	end)
 
 	-- A room that is DRAWN. `entry` already covers one that is merely owed, and

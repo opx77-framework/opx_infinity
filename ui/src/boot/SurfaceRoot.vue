@@ -2,6 +2,7 @@
 import ModuleHost from './ModuleHost.vue'
 import { modulesFor } from './registry'
 import { isFocused } from '@/stores/ui'
+import { isLoadingHidden } from '@/stores/loading'
 
 /**
  * The root of the one surface. It renders the registry and nothing else.
@@ -23,21 +24,44 @@ import { isFocused } from '@/stores/ui'
  * reach each other, so one failing is contained by construction rather than by
  * discipline. Nesting a module inside another puts the inner one's failures inside the
  * outer one's blast radius.
+ *
+ * THE LOADING HIDE IS A `v-show` ON THE HOST, NOT A SWITCH IN ANY MODULE. A module
+ * registered `hideWhileLoading` is taken off screen while the game's own loading screen
+ * is up and put back when it ends -- without being told, so whatever made it open or
+ * closed before the load is exactly what decides it after. `display: none` on the host
+ * also wins over its `display: contents`, so nothing inside paints at all.
  */
 const overlay = modulesFor('overlay')
 const interactive = modulesFor('modal')
+const cover = modulesFor('cover')
 </script>
 
 <template>
   <div class="surface">
     <div class="layer layer-overlay">
-      <ModuleHost v-for="module in overlay" :id="module.id" :key="module.id">
+      <ModuleHost
+        v-for="module in overlay"
+        v-show="!(module.hideWhileLoading && isLoadingHidden)"
+        :id="module.id"
+        :key="module.id"
+      >
         <component :is="module.component" />
       </ModuleHost>
     </div>
 
     <div class="layer layer-modal" :class="{ 'is-live': isFocused }">
-      <ModuleHost v-for="module in interactive" :id="module.id" :key="module.id">
+      <ModuleHost
+        v-for="module in interactive"
+        v-show="!(module.hideWhileLoading && isLoadingHidden)"
+        :id="module.id"
+        :key="module.id"
+      >
+        <component :is="module.component" />
+      </ModuleHost>
+    </div>
+
+    <div class="layer layer-cover">
+      <ModuleHost v-for="module in cover" :id="module.id" :key="module.id">
         <component :is="module.component" />
       </ModuleHost>
     </div>
@@ -74,5 +98,14 @@ const interactive = modulesFor('modal')
 
 .layer-modal.is-live {
   pointer-events: auto;
+}
+
+/* Over everything, and never a pointer: the cover is drawn while the game is loading,
+   and a load is nothing the player can click on. Empty -- and so free -- the rest of
+   the time, because the cover renders nothing while it is down. */
+.layer-cover {
+  pointer-events: none;
+  user-select: none;
+  z-index: 2;
 }
 </style>

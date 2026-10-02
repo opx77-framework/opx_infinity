@@ -87,6 +87,7 @@ shared_script "config/inventory.lua"
 shared_script "config/hud.lua"
 shared_script "config/prompts.lua"
 shared_script "config/progress.lua"
+shared_script "config/loading.lua"
 shared_script "config/target.lua"
 shared_script "config/shops.lua"
 shared_script "config/animations.lua"
@@ -372,6 +373,16 @@ client_script "modules/inventory/client/slotbar.lua"
 shared_script "modules/hud/module.lua"
 shared_script "modules/hud/locales.lua"
 client_script "modules/hud/client/main.lua"
+
+-- The game's own loading screen, read. Client only, no server half and no
+-- dependency: it tells the page when to take the HUD-like views off screen and
+-- whether to draw the cover, and raises one public event `hud` counts as a
+-- screen in front of it. After `hud` only so the file reads in that order --
+-- the event is matched by name, and a load seen before `hud` started is read
+-- back by nobody it matters to.
+shared_script "modules/loading/module.lua"
+shared_script "modules/loading/locales.lua"
+client_script "modules/loading/client/main.lua"
 
 shared_script "modules/prompts/module.lua"
 shared_script "modules/prompts/locales.lua"
@@ -805,6 +816,22 @@ permissions {
   "voice.client",
 
   "ui.vanilla.hud",
+
+  -- THE NATIVE LOADING LIFECYCLE, read-only: `Open77.screen.isLoading` and
+  -- `Open77.screen.loadingState`, both called from `modules/loading/client/
+  -- main.lua` and nowhere else. They tell the page when the game's own loading
+  -- screen is up, so the HUD-like views step aside and the cover can go up.
+  --
+  -- NOT IN THE op77.78 CATALOGUE, like the two model names at the bottom of this
+  -- block: the reader is newer than the devkit's build and the name is the one
+  -- the platform's own page declares. An undeclared permission is answered
+  -- `permission_denied:screen.read`, never a refused manifest, so an older host
+  -- that does not know the name loses nothing -- and the module looks the
+  -- reader up before every pass, so a client without it is simply quiet.
+  --
+  -- CLIENT permission: a refusal lands in the player's own log, which is why
+  -- the module also puts one `[note]` in the server journal when it sees one.
+  "screen.read",
 
   -- THE MAP PINS. `open77_permissions ui.vanilla.map` answers with a card
   -- naming this exact manifest line and the 22 natives in `Open77.blips` it

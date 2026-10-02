@@ -6,6 +6,7 @@ import { installDiagnostics, report } from '@/bridge/diag'
 import { configureFocus } from '@/bridge/focus'
 import { configureRpc } from '@/bridge/rpc'
 import { setStrings } from '@/stores/ui'
+import { applyLoading } from '@/stores/loading'
 import { applyTheme } from '@/design-system/theme'
 import '@/design-system/fonts.css'
 import '@/design-system/tokens.css'
@@ -72,6 +73,14 @@ export function createSurface(options: SurfaceOptions): void {
   // queues, so the theme cannot simply be pushed at the page and hoped for: the
   // page has to say it exists, exactly as the HUD, the chat and the inventory do.
   emit('opx:theme:ready', {})
+
+  // THE GAME'S OWN LOADING SCREEN, bound here for the reason the theme is: what it
+  // decides -- whether the HUD-like views are on screen at all -- is above every module,
+  // and a binding inside the cover would let a throw in the cover strand them hidden for
+  // the session. `modules/loading` answers the ready with whatever it last decided, so a
+  // page that mounts in the middle of a load comes up already knowing.
+  subscribe('opx:loading:state', applyLoading)
+  emit('opx:loading:ready', {})
 
   const app = createApp(root, rootProps)
 
