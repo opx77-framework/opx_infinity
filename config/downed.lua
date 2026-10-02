@@ -32,9 +32,12 @@ OPX.Config.MODULES.downed = {
 	-- while their own surface is up. A caller now gives its own name, so both are
 	-- switches rather than boundaries.
 	REVIVERS = '*',
-	-- `admin` is this runtime's staff module; `opx77_admin` is the resource it
-	-- replaces, kept so a server still running that one is not broken by the move.
-	SUSPENDERS = { admin = true, opx77_admin = true },
+	-- Keys are MODULE ids, the name a caller passes to the downed contract's
+	-- `Suspend`. `admin` is the only caller: the staff menu sets the screen aside
+	-- so a downed staff member can still use it. (`opx77_admin`, the resource
+	-- `admin` replaced, was listed here too; another resource cannot reach this
+	-- runtime's contracts at all, so that entry could never match a caller.)
+	SUSPENDERS = { admin = true },
 
 	-- Stock HUD components hidden while down.
 	--

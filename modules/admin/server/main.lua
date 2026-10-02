@@ -62,6 +62,7 @@ local ERRORS = {
 	keys_unavailable = 'admin.error.keysUnavailable',
 	unknown_weapon = 'admin.error.unknownWeapon',
 	holster_unavailable = 'admin.error.holsterUnavailable',
+	not_armed = 'admin.error.notArmed',
 	unknown_ammo = 'admin.error.unknownAmmo',
 	give_partial = 'admin.error.givePartial',
 	inventory_unavailable = 'admin.error.inventoryUnavailable',

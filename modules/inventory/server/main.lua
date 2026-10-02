@@ -459,6 +459,22 @@ function M.GetHeldWeapon(playerId)
 	return { name = held.name, serial = held.serial, slot = Options.WEAPON_SLOT }
 end
 
+--- Puts away the weapon this module put in a player's hands, reading its rounds
+--- back into the bag first. The one way another module may holster somebody:
+--- taking the engine slot behind this module's back would leave it believing
+--- the player is still armed.
+-- @author dop42
+-- @param playerId Source
+-- @return Result carrying { name, serial } of what was put away
+function M.HolsterWeapon(playerId)
+	playerId = Common.Integer(playerId, 1, 2147483647)
+	if not playerId then return Result.Err('bad_argument', 'playerId') end
+	local held = Weapons.Held(playerId)
+	if not held then return Result.Err('not_armed') end
+	Weapons.Holster(playerId, true)
+	return Result.Ok({ name = held.name, serial = held.serial })
+end
+
 --- Changes a stored container's slot count and weight limit.
 -- `Ensure` only writes a size for the row that creates it, so a container keeps
 -- the size it was made with for ever; this is the one way that changes. The copy
@@ -628,6 +644,7 @@ function M.Api()
 		CurrencyWired = Currency.Wired,
 
 		GetHeldWeapon = M.GetHeldWeapon,
+		HolsterWeapon = M.HolsterWeapon,
 
 		-- Whether a vehicle's trunk is shut to everybody right now. Published so
 		-- that every path that puts something in a trunk or takes it out -- the

@@ -11785,6 +11785,30 @@ do
 				Weapons.InHand(1) == true)
 			env.Open77.weapons.get = nil
 		end
+
+		-- ── putting it away from outside ──
+		-- `opx.admin.weapon.holster` refused every time: the contract had
+		-- `GetHeldWeapon` and no way to put a weapon away.
+		local contract = env.OPX.Api.Get('inventory')
+		check('the contract can put a weapon away',
+			contract ~= nil and type(contract.HolsterWeapon) == 'function')
+		if contract ~= nil and type(contract.HolsterWeapon) == 'function' then
+			local unarmed = contract.HolsterWeapon(41)
+			check('a player with nothing drawn is answered not_armed',
+				unarmed.ok == false and unarmed.error == 'not_armed', tostring(unarmed.error))
+			local realHeld, realHolster = Weapons.Held, Weapons.Holster
+			local put = {}
+			Weapons.Held = function(id)
+				if id == 41 then return { name = 'weapon_chao', serial = 'S-1' } end
+				return nil
+			end
+			Weapons.Holster = function(id, sync) put[#put + 1] = { id = id, sync = sync } end
+			local done = contract.HolsterWeapon(41)
+			Weapons.Held, Weapons.Holster = realHeld, realHolster
+			check('and an armed one is holstered, with its rounds read back first',
+				done.ok == true and done.value.serial == 'S-1' and #put == 1
+					and put[1].id == 41 and put[1].sync == true, tostring(done.error))
+		end
 	end
 end
 
