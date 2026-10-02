@@ -797,15 +797,18 @@ permissions {
   --   world.timescale  `Open77.world.setTimeScale` on the players AROUND a
   --                    boosted one, for the boost and not a millisecond more --
   --                    and on the owner's own view where the build has no lease
-  --   world.dilation   `Open77.dilation.authorise/apply/release`, the lease
-  --                    that lets the owner's world slow while their body does
-  --                    not; a build without it has no table, and the owner's
-  --                    whole view then slows at the look's SELF_FALLBACK_SCALE
   --   vfx.screen       the owner's own full-screen overlay for the boost
-  -- All three are CLIENT permissions, and a refusal only ever costs the one
-  -- layer it gates.
+  -- Both are CLIENT permissions, and a refusal only ever costs the one layer it
+  -- gates.
+  --
+  -- NOT `world.dilation`. The client probes for an `Open77.dilation` lease
+  -- table, but no published build has one (2.31.13+op77.78 neither lists the
+  -- namespace nor enforces the permission, and `open77_validate` refuses the
+  -- name as one the runtime does not know). The probe finds nothing and the
+  -- owner's whole view slows at SELF_FALLBACK_SCALE through `world.timescale`,
+  -- which is what every build does today. Declare it again in the same change
+  -- that sees the namespace in the catalogue.
   "world.timescale",
-  "world.dilation",
   "vfx.screen",
   -- THE AIRCRAFT DOOR'S EXIT FADE (`modules/avdoor/client/main.lua`):
   -- `Open77.screen.fadeOut`/`fadeIn`, the native quest fade that covers the

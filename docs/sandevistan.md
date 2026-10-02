@@ -88,7 +88,7 @@ Three layers, each doing only what it has to.
 | `modules/ripperdoc/server/chrome.lua`, `server/main.lua`, `client/main.lua` | the Apogee on its own power definition (heavy tier, reflex key, `presentation = 'none'` so the platform's blue glow is off), the kit sent to the patient's machine, the powers projected again after the chair, the two commands |
 | `modules/ripperdoc/locales.lua` | the key and test strings (EN/FR) |
 | `core/shared/main.lua` | `OPX.Now()` always returns whole milliseconds: the host's `GetGameTimer` returns a fraction, and a `%d` format of it killed the record reader and the stand-up reprojection token, which left a fitted Sandevistan dead until the next session |
-| `open77.lua` | loads the two new scripts; client permissions `world.timescale`, `world.dilation`, `vfx.screen` |
+| `open77.lua` | loads the two new scripts; client permissions `world.timescale`, `vfx.screen` (`world.dilation` is not declared: no published build has the `Open77.dilation` lease) |
 
 ### 2.3 opx_sandy_view: a resource of its own (`extras/opx_sandy_view`, version 1.4.14)
 
