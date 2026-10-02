@@ -40,12 +40,14 @@
 -- CALL A WRITE WITH `Open77.exports.call(...)` AND AWAIT IT. A write, and any
 -- read of a character who is not online, can reach the database, and the
 -- synchronous form fails a callee that yields with `export_yielded`. Those
--- exports (AddMoneyOffline, the stash and key exports, SetVehicleState, and an
--- item export naming a citizen id) take one tick before touching anything, so
--- a synchronous call fails there with nothing begun, and then run on a thread
--- of this resource that a cancelled caller cannot leave half-done. The reads
+-- exports (AddMoneyOffline, SetJob, SetGang, RemoveJob, RemoveGang, the stash
+-- and key exports, SetVehicleState, and an item export naming a citizen id)
+-- take one tick before touching anything, so a synchronous call fails there
+-- with nothing begun, and then run on a thread of this resource that a
+-- cancelled caller cannot leave half-done. The reads
 -- of a loaded player (GetPlayerData, GetMoney, HasJob, GetJob, GetGang,
--- IsStaff) answer from memory and are safe either way.
+-- IsStaff, GetMetadata, IsDown) and the memory-only writes (SetDuty,
+-- SetMetadata, Revive) answer at once and are safe either way.
 
 local Result = OPX.Result
 
@@ -380,6 +382,201 @@ publish('GetGang', 'read', function(_, source)
 	local player, refused = loaded(source)
 	if player == nil then return refused end
 	return ok(OPX.Table.DeepCopy(player.PlayerData.gang))
+end)
+
+-- THE CHANGES GO THROUGH THE GROUPS FUNCTIONS THEMSELVES, the ones the staff
+-- commands use, so `job:beforeSet` / `gang:beforeSet` may veto them
+-- (`job.vetoed`), and a change that lands raises `opx:in:character:job|gang`
+-- inside the resource and `opx:on:character:job|gang` for every other one.
+-- A citizen id reaches a character nobody is playing; that change holds the
+-- offline ledger, so a login racing it reads it back rather than saving the old
+-- job over it. Every one of them writes a membership row, so every one yields:
+-- await it.
+
+--- A Groups Result as the plain answer, its value copied off the live record.
+local function grouped(result)
+	if type(result) == 'table' and result.ok == true then
+		return ok(OPX.Table.DeepCopy(result.value))
+	end
+	return answered(result)
+end
+
+--- The two primary-group setters share everything but the verb.
+local function groupSetter(verb)
+	return function(_, target, name, grade)
+		local character = OPX.Api.Get('character')
+		if character == nil or character[verb] == nil then return refuse('error.unavailable') end
+		local who = targetOf(target)
+		if who == nil or nameOf(name) == nil then return refuse('export.badArgument') end
+		local level = countOf(grade, 0, 255, 0)
+		if level == nil then return refuse('export.badArgument') end
+		return grouped(character[verb](who, name, level))
+	end
+end
+
+--- And the two removals.
+local function groupRemover(verb)
+	return function(_, target, name)
+		local character = OPX.Api.Get('character')
+		if character == nil or character[verb] == nil then return refuse('error.unavailable') end
+		local who = targetOf(target)
+		if who == nil or nameOf(name) == nil then return refuse('export.badArgument') end
+		return grouped(character[verb](who, name))
+	end
+end
+
+publish('SetJob', 'write', groupSetter('SetJob'), true)
+publish('SetGang', 'write', groupSetter('SetGang'), true)
+publish('RemoveJob', 'write', groupRemover('RemovePlayerFromJob'), true)
+publish('RemoveGang', 'write', groupRemover('RemovePlayerFromGang'), true)
+
+-- Duty is a loaded character's alone: an offline one has no shift to be on.
+-- Memory only, so it never yields.
+publish('SetDuty', 'write', function(_, source, onDuty)
+	local player, refused, character = loaded(source)
+	if player == nil then return refused end
+	if type(onDuty) ~= 'boolean' then return refuse('export.badArgument') end
+	if character.SetJobDuty == nil then return refuse('error.unavailable') end
+	return answered(character.SetJobDuty(player, onDuty))
+end)
+
+-- ── a caller's own metadata ──────────────────────────────────────────────────
+-- A CALLER WRITES ONLY UNDER ITS OWN NAME. The key a creator names is stored
+-- as `ext.<resource>.<key>` in the character's metadata, the resource being the
+-- name the host reports: no argument can reach `health`, `armor` or any other
+-- key opx keeps there, nor another resource's keys. A key is one segment
+-- (no dot), so `ext.a.b.c` belongs to `a.b` alone and never to `a`.
+--
+-- WHAT IS STORED IS PLAIN DATA, BOUNDED: a boolean, a finite number, a string,
+-- or a table of those keyed by text or position, with no metatable, no cycle,
+-- and an encoded size under `SERVER.EXPORTS.METADATA`. It is persisted with the
+-- character like the rest of the metadata, and it travels with the rest of
+-- PlayerData to the player's OWN client -- so it is no place for a secret the
+-- player must not read. Online characters only.
+
+local META_KEY = '^[%w_%-]+$'
+
+local function metaLimits()
+	local configured = type(settings().METADATA) == 'table' and settings().METADATA or {}
+	local function bound(value, fallback)
+		local n = math.tointeger(tonumber(value))
+		return (n ~= nil and n > 0) and n or fallback
+	end
+	return {
+		bytes = bound(configured.MAX_BYTES, 4096),
+		keys = bound(configured.MAX_KEYS, 32),
+		total = bound(configured.MAX_TOTAL_BYTES, 16384),
+	}
+end
+
+--- The stored key of a caller's key, or nil.
+local function metaKeyOf(caller, key)
+	if type(key) ~= 'string' or #key < 1 or #key > 48 or not key:match(META_KEY) then
+		return nil
+	end
+	return ('ext.%s.%s'):format(caller, key)
+end
+
+--- Every stored key of one caller, by its own key.
+local function metaOwned(metadata, caller)
+	local prefix = ('ext.%s.'):format(caller)
+	local owned = {}
+	for stored, value in pairs(type(metadata) == 'table' and metadata or {}) do
+		if type(stored) == 'string' and stored:sub(1, #prefix) == prefix then
+			local own = stored:sub(#prefix + 1)
+			if own:match(META_KEY) then owned[own] = value end
+		end
+	end
+	return owned
+end
+
+--- Whether a value is plain data: no function, no userdata, no metatable, no
+--- cycle, no NaN or infinity, bounded depth and breadth.
+local function plainData(value, depth, budget)
+	local kind = type(value)
+	if kind == 'boolean' or kind == 'string' then return true end
+	if kind == 'number' then return value == value and value ~= math.huge and value ~= -math.huge end
+	if kind ~= 'table' or depth > 8 or getmetatable(value) ~= nil then return false end
+	for key, inner in pairs(value) do
+		budget.left = budget.left - 1
+		if budget.left < 0 then return false end
+		local keyed = type(key) == 'string' and #key <= 64
+			or (math.type(key) == 'integer' and key >= 1)
+		if not keyed or not plainData(inner, depth + 1, budget) then return false end
+	end
+	return true
+end
+
+--- The encoded size of a plain value, or nil.
+local function encodedSize(value)
+	local encoded, text = pcall(json.encode, value)
+	if not encoded or type(text) ~= 'string' then return nil end
+	return #text
+end
+
+publish('GetMetadata', 'read', function(caller, source, key)
+	local player, refused = loaded(source)
+	if player == nil then return refused end
+	local metadata = player.PlayerData.metadata
+	if key == nil then return ok(OPX.Table.DeepCopy(metaOwned(metadata, caller))) end
+	local stored = metaKeyOf(caller, key)
+	if stored == nil then return refuse('export.badArgument') end
+	return ok(OPX.Table.DeepCopy(type(metadata) == 'table' and metadata[stored] or nil))
+end)
+
+publish('SetMetadata', 'write', function(caller, source, key, value)
+	local player, refused, character = loaded(source)
+	if player == nil then return refused end
+	local stored = metaKeyOf(caller, key)
+	if stored == nil then return refuse('export.badArgument') end
+	if value ~= nil and not plainData(value, 1, { left = 512 }) then
+		return refuse('export.badValue')
+	end
+
+	local limits = metaLimits()
+	local owned = metaOwned(player.PlayerData.metadata, caller)
+	if value ~= nil then
+		local size = encodedSize(value)
+		if size == nil then return refuse('export.badValue') end
+		if size > limits.bytes then return refuse('export.tooLarge') end
+		local keys, total = 1, size
+		for own, held in pairs(owned) do
+			if own ~= key then
+				keys = keys + 1
+				total = total + (encodedSize(held) or 0)
+			end
+		end
+		if keys > limits.keys or total > limits.total then return refuse('export.tooLarge') end
+	end
+
+	if character.SetMetadata(player, stored, OPX.Table.DeepCopy(value)) ~= true then
+		return refuse('error.notLoggedIn')
+	end
+	return ok(true)
+end)
+
+-- ── downed ───────────────────────────────────────────────────────────────────
+
+publish('IsDown', 'read', function(_, source)
+	local downed = OPX.Api.Get('downed')
+	if downed == nil or downed.IsDown == nil then return refuse('error.unavailable') end
+	local id = playerOf(source)
+	if id == nil then return refuse('export.badArgument') end
+	return answered(downed.IsDown(id))
+end)
+
+-- Through the module's own Revive, the one path a staff revive takes: its
+-- `REVIVERS` switch, its gate check, its audit line -- which names the caller
+-- and the reason -- and `opx:on:downed:changed` when the player gets up.
+publish('Revive', 'write', function(caller, source, reason)
+	local downed = OPX.Api.Get('downed')
+	if downed == nil or downed.Revive == nil then return refuse('error.unavailable') end
+	local id = playerOf(source)
+	if id == nil then return refuse('export.badArgument') end
+	if reason ~= nil and (type(reason) ~= 'string' or #reason > 256) then
+		return refuse('export.badArgument')
+	end
+	return answered(downed.Revive(id, caller, reason))
 end)
 
 -- ── items ────────────────────────────────────────────────────────────────────
