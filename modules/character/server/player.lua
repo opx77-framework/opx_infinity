@@ -697,6 +697,20 @@ function M.AddMoneyOffline(citizenId, moneyType, amount, reason)
 		return Result.Err('money.vetoed')
 	end
 
+	-- AND ASKED AGAIN AFTER THE HOOKS, WHICH MAY YIELD (`Hooks.Trigger` says so):
+	-- a login that finished meanwhile has a character in the roster that will
+	-- save the balance it loaded, and the increment below would land under it
+	-- and be written over. Nothing between this and `Enter` yields.
+	if not M.Ledger.Settle(citizenId) then
+		return Result.Err('error.unavailable', 'the row is being written')
+	end
+	online = M.GetPlayerByCitizenId(citizenId)
+	if online ~= nil then
+		local ok, code = M.AddMoney(online, moneyType, value, reason)
+		if not ok then return Result.Err(code) end
+		return Result.Ok({ balance = online.PlayerData.money[moneyType], offline = false })
+	end
+
 	M.Ledger.Enter(citizenId)
 	local written = M.Storage.AddMoney(citizenId, moneyType, value)
 	local balance = written.ok and M.Storage.Balance(citizenId, moneyType) or nil
@@ -968,6 +982,17 @@ end
 function M.Save(identifier, loggedOut)
 	local player = resolve(identifier)
 	if not player then return Result.Err('error.notLoggedIn') end
+
+	-- A CHARACTER THAT HAS LEFT THE ROSTER IS WRITTEN BY ITS LOGOUT AND NOBODY
+	-- ELSE. The autosave, `opx.save` and the stop sweep walk a snapshot of the
+	-- roster and yield between saves, so they can reach a Player whose logout
+	-- has already saved it and handed the row back to the ledger -- and an
+	-- offline payment that landed since would be written over with the balance
+	-- that Player was holding. Only the logout's own save (`loggedOut`) may
+	-- write a Player that is no longer registered under its connection.
+	if not player.Offline and not loggedOut and M.Players[player.PlayerData.source] ~= player then
+		return Result.Err('error.notLoggedIn', 'no longer in the roster')
+	end
 
 	if not player.Offline then M.SamplePosition(player) end
 

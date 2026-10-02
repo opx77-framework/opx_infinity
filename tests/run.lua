@@ -26453,5 +26453,69 @@ do
 	end
 end
 
+section('creator review: offline writes and the roster')
+do
+	local state = { balance = 40 }
+	local env, control, why = boot('server', creatorBridge(state))
+	check('the server boots for the roster races', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local db = control.database
+
+		-- THE AUTOSAVE WALKS A SNAPSHOT AND YIELDS between saves, so it can reach
+		-- a Player whose logout already saved it and gave the row back -- and an
+		-- offline payment that landed since would be written over.
+		local LEFT = OPX.CitizenId.Generate()
+		local gone = standCharacter(env, control, 631, LEFT)
+		character.UnregisterPlayer(gone)
+		local before = #db.calls
+		local saved
+		env.CreateThread(function() saved = character.Save(gone, false) end)
+		settle(control, function() return saved ~= nil end)
+		local rowWrites = 0
+		for index = before + 1, #db.calls do
+			if db.calls[index].sql:find('char_info = @charInfo', 1, true) then
+				rowWrites = rowWrites + 1
+			end
+		end
+		check('a save of a Player no longer in the roster is refused, and writes nothing',
+			saved ~= nil and saved.ok == false and rowWrites == 0, rowWrites)
+
+		-- THE OFFLINE HOOK MAY YIELD, and a login can finish while it does.
+		local LATE = OPX.CitizenId.Generate()
+		OPX.Hooks.Register('money:beforeAddOffline', function(payload)
+			if payload.citizenId ~= LATE then return true end
+			env.Wait(0)
+			standCharacter(env, control, 632, LATE, { EDDIES = 0, BANK = 10 })
+			return true
+		end)
+		local paid
+		env.CreateThread(function() paid = character.AddMoneyOffline(LATE, 'BANK', 7, 'late') end)
+		settle(control, function() return paid ~= nil end)
+		check('a character who logged in while the offline hook ran is paid in memory',
+			paid ~= nil and paid.ok == true and paid.value.offline == false
+				and paid.value.balance == 17 and #state.offline == 0,
+			paid and (paid.ok and tostring(paid.value.offline) or tostring(paid.error)))
+
+		-- A RENAME THAT WAITED OUT A LOGOUT: the owner came back meanwhile.
+		local RENAMED = OPX.CitizenId.Generate()
+		character.Ledger.Enter(RENAMED)
+		local renamed
+		env.CreateThread(function()
+			renamed = character.RenameCharacter(RENAMED, 'Jackie', 'Welles')
+		end)
+		control.Pump(2)
+		local back = standCharacter(env, control, 633, RENAMED)
+		character.Ledger.Leave(RENAMED)
+		settle(control, function() return renamed ~= nil end, 80)
+		check('a rename that waited for the row renames the character who came back',
+			renamed ~= nil and renamed.ok == true
+				and back.PlayerData.charInfo.firstName == 'Jackie',
+			renamed and tostring(renamed.error))
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

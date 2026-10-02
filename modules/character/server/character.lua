@@ -670,6 +670,14 @@ function M.RenameCharacter(citizenId, firstName, lastName, source)
 	if not last.ok then return Result.Err('character.badName', 'lastName') end
 
 	local full = ('%s %s'):format(first.value, last.value)
+
+	-- THE ROW IS SETTLED BEFORE IT IS ASKED WHO HOLDS IT, not after: the wait
+	-- yields, and a login that finished during it would leave `online` saying
+	-- nobody while a loaded character is about to save over the row edited
+	-- below. From the lookup to `Enter` nothing yields.
+	if not M.Ledger.Settle(citizenId) then
+		return Result.Err('error.unavailable', 'the character row is being written')
+	end
 	local online = M.GetPlayerByCitizenId(citizenId)
 
 	if online ~= nil then
@@ -686,9 +694,6 @@ function M.RenameCharacter(citizenId, firstName, lastName, source)
 		-- A READ-MODIFY-WRITE OF THE WHOLE ROW, so it holds the offline ledger:
 		-- an offline payment landing between the read and the save would be
 		-- written back over with the balance read here. See `M.Ledger`.
-		if not M.Ledger.Settle(citizenId) then
-			return Result.Err('error.unavailable', 'the character row is being written')
-		end
 		M.Ledger.Enter(citizenId)
 		local fetched = M.Storage.FetchOne(citizenId)
 		if not fetched.ok then
