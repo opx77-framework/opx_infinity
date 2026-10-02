@@ -415,9 +415,12 @@ function Vehicles.Register()
 				audit(source, 'admin.vehicle.key', ok, nil, ('%s %s'):format(tostring(vehicleId),
 					ok and cut.value.plate or tostring(type(cut) == 'table' and cut.error or cut)))
 				if not ok then
+					-- `noRoom` carries the key's label as its detail; the bare id is
+					-- only the fallback for a refusal that names none.
+					local refused = type(cut) == 'table' and cut or {}
 					refuse(source, raw, 'refused',
-						{ reason = locale(type(cut) == 'table' and cut.error or 'vehiclekeys.unavailable',
-							{ label = tostring(vehicleId) }) })
+						{ reason = locale(refused.error or 'vehiclekeys.unavailable',
+							{ label = tostring(refused.detail or vehicleId) }) })
 					return
 				end
 				answer(source, raw, true, 'admin.done.key',
