@@ -374,7 +374,14 @@ for event, shape in pairs(SUBSCRIBABLE) do
 		if not shaped or type(payload) ~= 'table' then return end
 		for caller, export in pairs(heard) do
 			-- Each caller its own copy: one may not edit what the next reads.
-			reply(caller, export, event, OPX.Table.DeepCopy(payload))
+			local copy = OPX.Table.DeepCopy(payload)
+			-- A bar another resource drew is not this caller's to name: the
+			-- owner is the caller's own name on its own bar, and left out on
+			-- anybody else's, the rule `forCaller` keeps for the answers.
+			if type(copy.owner) == 'string' and callerOf(copy.owner) ~= nil then
+				copy.owner = callerOf(copy.owner) == caller and caller or nil
+			end
+			reply(caller, export, event, copy)
 		end
 	end)
 end

@@ -27544,5 +27544,38 @@ do
 	end
 end
 
+section('creator exports: a subscriber is not told which other resource drew a bar')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the bar owner', why == nil, why)
+
+	if why == nil then
+		local call = control.CallExport
+		local function delivered(resource, event)
+			local out = {}
+			for _, entry in ipairs(control.exportCalls) do
+				if entry.resource == resource and entry.args[1] == event then out[#out + 1] = entry end
+			end
+			return out
+		end
+
+		call('my_hud', 'Subscribe', 'opx:on:progress:state')
+		call('rival', 'Subscribe', 'opx:on:progress:state')
+		control.Fire('opx:on:progress:state', { open = true, owner = 'ext:rival', label = 'Hacking' })
+		control.Pump(4)
+		local heard = delivered('my_hud', 'opx:on:progress:state')
+		check('another resource\'s bar reaches a subscriber without that resource\'s name',
+			#heard == 1 and heard[1].args[2].open == true and heard[1].args[2].owner == nil,
+			heard[1] and tostring(heard[1].args[2].owner))
+		local own = delivered('rival', 'opx:on:progress:state')
+		check('and the resource that drew it reads its own name, not this file\'s prefix',
+			#own == 1 and own[1].args[2].owner == 'rival', own[1] and tostring(own[1].args[2].owner))
+		control.Fire('opx:on:progress:state', { open = true, owner = 'inventory', label = 'Eating' })
+		control.Pump(4)
+		heard = delivered('my_hud', 'opx:on:progress:state')
+		check('a bar of opx\'s own keeps its owner', #heard == 2 and heard[2].args[2].owner == 'inventory')
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
