@@ -87,6 +87,7 @@ function Ledger.Decay(citizenId, nowMs)
 	if Law.DecayReset > 0 and seconds >= Law.DecayReset and entry.stage > 0 then
 		entry.stage = 0
 		entry.score = 0.0
+		entry.floor = 0
 		return entry, true
 	end
 
@@ -122,6 +123,9 @@ function Ledger.Report(citizenId, lawId, options)
 	local previous = dropped and 0 or entry.stage
 	entry.stage = verdict.stage
 	entry.score = verdict.score
+	-- What the SERVER charged is a floor the engine mirror cannot report away
+	-- (see `Ledger.Mirror`).
+	entry.floor = math.max(entry.floor or 0, entry.stage)
 	entry.lastCrimeMs = now
 
 	return OPX.Result.Ok({
@@ -180,6 +184,7 @@ function Ledger.Set(citizenId, stage, nowMs)
 	local entry = entryFor(citizenId, now)
 	local previous = entry.stage
 	entry.stage = wanted
+	entry.floor = wanted
 	entry.lastCrimeMs = now
 	if wanted == 0 then entry.score = 0.0 end
 
@@ -190,6 +195,62 @@ function Ledger.Set(citizenId, stage, nowMs)
 		crossed = wanted ~= previous,
 		division = Law.Division(wanted),
 		heat = Law.Heat(wanted),
+		score = entry.score,
+		delta = 0.0,
+		capped = false,
+		sinceSeconds = 0.0,
+	})
+end
+
+--- Copies the stage a client says its own engine holds, never below the floor
+--- the server itself charged or set.
+--
+-- THE REPORT IS A CLAIM FROM A MACHINE THE PLAYER OWNS. Copied straight through
+-- `Set`, a modified client that sent `0` erased a murder the server had just
+-- charged it, and took the response down with it. The engine may still RAISE a
+-- stage (that is the crime only the engine saw) and bring an engine-raised stage
+-- back down, but what `Report`/`Set` put there is the server's, and only the
+-- server's own decay or a `Clear` lowers it. A report pinned to the floor does
+-- not refresh the quiet window either, or a client reporting `0` every heartbeat
+-- would hold the floor up for ever instead of letting it decay.
+-- @param citizenId string
+-- @param stage number 0..StageCount
+-- @param nowMs integer|nil
+-- @return table a `Result`, the same shape `Set` answers
+function Ledger.Mirror(citizenId, stage, nowMs)
+	if type(citizenId) ~= 'string' or citizenId == '' then
+		return OPX.Result.Err('ncpd.noCitizen')
+	end
+	local wanted = tonumber(stage)
+	if wanted == nil or wanted ~= math.floor(wanted)
+		or wanted < 0 or wanted > Law.StageCount then
+		return OPX.Result.Err('ncpd.unknownStage', tostring(stage))
+	end
+
+	local now = tonumber(nowMs) or OPX.Now()
+	-- NOT `Decay` here: a drop is the decay pass's to find, publish and announce.
+	local entry = peek(citizenId)
+	if entry == nil then
+		if wanted == 0 then
+			return OPX.Result.Ok({ citizenId = citizenId, stage = 0, previous = 0, crossed = false })
+		end
+		entry = entryFor(citizenId, now)
+	end
+	local previous = entry.stage
+	local floor = entry.floor or 0
+	local effective = math.max(wanted, floor)
+	entry.stage = effective
+	if wanted >= floor and wanted > 0 then entry.lastCrimeMs = now end
+	if effective == 0 then entry.score = 0.0 end
+
+	return OPX.Result.Ok({
+		citizenId = citizenId,
+		stage = effective,
+		previous = previous,
+		crossed = effective ~= previous,
+		pinned = wanted < floor,
+		division = Law.Division(effective),
+		heat = Law.Heat(effective),
 		score = entry.score,
 		delta = 0.0,
 		capped = false,

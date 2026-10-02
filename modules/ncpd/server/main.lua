@@ -30,6 +30,8 @@ local character, hud
 
 -- Whether the two kill handlers are subscribed; see `M.Start`.
 local killHandlers = false
+-- Whether the engine report and the crew door are on the wire (see `M.Start`).
+local netHandlers = false
 
 --- The ladder as one phrase: `ncpd 1-4, maxtac 5`.
 -- @return string
@@ -1272,12 +1274,12 @@ local function onEngineStage(stage)
 	-- THE CONNECTION IS THE `source` GLOBAL, never a parameter: the host
 	-- delivers payload only and names the sender in `source` around the
 	-- call, so a parameter named `source` here swallowed the stage.
-	source = tonumber(source)
-	if source == nil or source <= 0 then return end
-	local data = characterOf(source)
+	local playerId = tonumber(source)
+	if playerId == nil or playerId <= 0 then return end
+	local data = characterOf(playerId)
 	if data == nil then
 		Open77.log.warn(('[ncpd] engine report from player %d refused: no character loaded')
-			:format(tonumber(source) or 0))
+			:format(playerId))
 		return
 	end
 
@@ -1289,7 +1291,9 @@ local function onEngineStage(stage)
 		return
 	end
 
-	local set = Ledger.Set(data.citizenId, wanted)
+	-- `Mirror`, not `Set`: the report may raise a stage, never take one the
+	-- server charged below its floor (see `Ledger.Mirror`).
+	local set = Ledger.Mirror(data.citizenId, wanted)
 	if set.ok ~= true then
 		Open77.log.warn(('[ncpd] engine report for %s refused: %s')
 			:format(data.citizenId, tostring(set.error)))
@@ -1302,7 +1306,7 @@ local function onEngineStage(stage)
 
 	publish(data.citizenId, set.value, { reason = 'engine' })
 	Open77.log.info(('[ncpd] %s crossed to stage %d on the engine\'s own heat')
-		:format(data.citizenId, wanted))
+		:format(data.citizenId, set.value.stage))
 end
 
 -- ── the phases ───────────────────────────────────────────────────────────────
@@ -1422,7 +1426,8 @@ function M.Start()
 	end
 
 	registerCommands()
-	RegisterNetEvent(M.Event.REPORT, onEngineStage)
+	-- The two wire handlers are registered once, below with the crew door: `M.Start`
+	-- runs again on a module restart, and a second registration answers twice.
 
 	-- THE KILLS (`HOMICIDE` in config). Subscribed ONCE, the rule the crowd's
 	-- own handlers keep: `M.Start` runs again on a module restart, and a second
@@ -1502,28 +1507,32 @@ function M.Start()
 	-- from the connection, the permission from the module's own duty rule, the
 	-- hull and the distance from the controller's own reads -- so a modified
 	-- client can knock, and that is the whole of what it can do.
-	RegisterNetEvent(M.Event.BOARD, function()
-		-- No `source` parameter: the sender is the host's `source` global,
-		-- and a parameter of that name shadows it with the empty payload.
-		local playerId = tonumber(source)
-		if playerId == nil or playerId <= 0 then return end
-		local data = characterOf(playerId)
-		local permit = data ~= nil and mayBoard(data) or 'noCitizen'
-		local av = M.Av
-		local seat, why = nil, 'the aircraft controller is unavailable'
-		if av ~= nil and type(av.Board) == 'function' then
-			seat, why = av.Board(playerId, permit)
-		end
-		if seat == nil then
-			Open77.log.info(('[ncpd] player %d could not board the MaxTac AV: %s')
-				:format(playerId, tostring(why)))
-		end
-		TriggerClientEvent(M.Event.BOARDED, playerId, {
-			ok = seat ~= nil,
-			seat = seat,
-			reason = seat == nil and tostring(why) or nil,
-		})
-	end)
+	if not netHandlers then
+		netHandlers = true
+		RegisterNetEvent(M.Event.REPORT, onEngineStage)
+		RegisterNetEvent(M.Event.BOARD, function()
+			-- No `source` parameter: the sender is the host's `source` global,
+			-- and a parameter of that name shadows it with the empty payload.
+			local playerId = tonumber(source)
+			if playerId == nil or playerId <= 0 then return end
+			local data = characterOf(playerId)
+			local permit = data ~= nil and mayBoard(data) or 'noCitizen'
+			local av = M.Av
+			local seat, why = nil, 'the aircraft controller is unavailable'
+			if av ~= nil and type(av.Board) == 'function' then
+				seat, why = av.Board(playerId, permit)
+			end
+			if seat == nil then
+				Open77.log.info(('[ncpd] player %d could not board the MaxTac AV: %s')
+					:format(playerId, tostring(why)))
+			end
+			TriggerClientEvent(M.Event.BOARDED, playerId, {
+				ok = seat ~= nil,
+				seat = seat,
+				reason = seat == nil and tostring(why) or nil,
+			})
+		end)
+	end
 
 	M.running = true
 	CreateThread(function()
