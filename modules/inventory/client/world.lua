@@ -70,23 +70,6 @@ function World.Seated()
 	return read and inside == true
 end
 
---- The nearest known pile within reach, or nil.
--- A HINT for the open key only: the server finds the pile again from its own
--- position. It looks within reach and not within the join distance, because the
--- join distance only says which pile a drop lands in.
--- @author dop42
--- @return table|nil
-function World.NearestDrop()
-	local here = position()
-	if here == nil then return nil end
-	local best, bestGap = nil, Options.REACH
-	for _, drop in pairs(drops) do
-		local away = gap(here, drop)
-		if away <= bestGap then best, bestGap = drop, away end
-	end
-	return best
-end
-
 --- The nearest known piles within the prompt radius, nearest first.
 local function nearbyDrops(here, limit)
 	local near = {}

@@ -28776,5 +28776,35 @@ do
 	end
 end
 
+-- ── the inventory key opens the bag, and never takes a pile ─────────────────
+-- THE OWNER: "quand je drop l'item puis je suis a coter je ouvre le inventaire
+-- une autre fois cela prend le drop a cote automatiquement retire cela". The
+-- open key used to TAKE the nearest pile, screen closed, whenever one was in
+-- reach -- so looking in the bag beside something just dropped put it back.
+section('the inventory key opens the bag and never takes a pile')
+do
+	local env, control, why = boot('client')
+	check('client boots for the inventory key', why == nil, why)
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local mapping = control.keyMappings.byId['opx.inventory.open']
+		check('the open key is declared', mapping ~= nil and type(mapping.pressed) == 'function')
+		-- A pile right here, as the server announces one.
+		control.netEvents[inventory.Event.DROP]('add',
+			{ id = -7, x = 0, y = 0, z = 0, count = 1, model = 'food.snack' })
+		local asked = {}
+		local Screen = inventory.Screen
+		local realOpen, realIsOpen, realIsDown = Screen.Open, Screen.IsOpen, Screen.IsDown
+		Screen.Open = function(first, payload) asked[#asked + 1] = { first = first, payload = payload } end
+		Screen.IsOpen = function() return false end
+		Screen.IsDown = function() return false end
+		if mapping ~= nil then mapping.pressed() end
+		Screen.Open, Screen.IsOpen, Screen.IsDown = realOpen, realIsOpen, realIsDown
+		check('pressing it opens the screen', #asked == 1, #asked)
+		check('on the bag, not on the pile beside the player',
+			asked[1] ~= nil and asked[1].first ~= 'takeDrop', asked[1] and tostring(asked[1].first))
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
