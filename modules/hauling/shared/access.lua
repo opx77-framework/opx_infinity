@@ -213,15 +213,19 @@ function Access.Model(key)
 end
 
 --- What one delivered crate pays at a site.
+-- The rate for a site with no PAY of its own is handed in by the server, which
+-- reads it from the HAUL_PAY_PER_CRATE tunable: this file makes no host call.
 -- @author dop42
 -- @param key any
+-- @param fallback integer|nil the rate for a site with no PAY; PAY_PER_CRATE when nil
 -- @return integer
-function Access.Pay(key)
+function Access.Pay(key, fallback)
 	local site = Access.Site(key)
 	if site ~= nil then
 		local own = integer(site.PAY)
 		if own ~= nil and own >= 0 then return own end
 	end
+	if math.type(fallback) == 'integer' and fallback >= 0 then return fallback end
 	return Access.PAY_PER_CRATE
 end
 

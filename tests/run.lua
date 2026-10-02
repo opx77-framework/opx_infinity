@@ -16449,14 +16449,20 @@ do
 		check('and the trunk is empty after', trunks['veh-1'].docks == 0, trunks['veh-1'].docks)
 
 		-- ── crates carried in a bag sell too ─────────────────────────────────
+		-- At a rate an operator moved on the panel: HAUL_PAY_PER_CRATE is
+		-- `apply = 'live'`, and a site with no PAY of its own is paid by it.
+		check('the docks site names no PAY of its own, so the tunable prices it',
+			Access.Site('docks').PAY == nil)
+		control.tunables.HAUL_PAY_PER_CRATE = 37
 		bags[2] = { docks = 1 }
 		at = at + 10000
 		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
 		at = at + Access.DELIVER_MS + 1
 		fire(2, M.Event.FINISH)
-		check('a crate in the bag is sold as well',
-			#paid == 2 and paid[2].amount == Access.Pay('docks') and bags[2].docks == 0,
+		check('a crate in the bag is sold as well, at the live pay per crate',
+			#paid == 2 and paid[2].amount == 37 and bags[2].docks == 0,
 			#paid == 2 and tostring(paid[2].amount))
+		control.tunables.HAUL_PAY_PER_CRATE = nil
 
 		at = at + 10000
 		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)

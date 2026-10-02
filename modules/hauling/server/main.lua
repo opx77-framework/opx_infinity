@@ -1008,7 +1008,11 @@ local function completeSale(player, sale)
 		end
 	end
 
-	local pay = Access.Pay(sale.site) * sold
+	-- THE TUNABLE IS READ HERE, at the sale. It was declared `apply = 'live'` and
+	-- read by nobody, so the panel moved a number that paid nothing different.
+	local tuned = OPX.Tune.Get('HAUL_PAY_PER_CRATE')
+	tuned = type(tuned) == 'number' and math.tointeger(tuned) or nil
+	local pay = Access.Pay(sale.site, tuned) * sold
 	local called, paid, why = pcall(character.AddMoney, player, Access.CURRENCY, pay,
 		('hauling:%s:%s'):format(tostring(sale.site), tostring(dropoff.key)))
 	if not called or paid ~= true then
