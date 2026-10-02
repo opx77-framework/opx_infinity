@@ -9382,8 +9382,15 @@ do
 		check('and it is NOT sent to the entity-bound call, which would resolve it as a CName',
 			#cctl.effects.entityPlays == 0, #cctl.effects.entityPlays)
 		check('and the noclip native was really switched on', cctl.travels.noclip == true)
+		-- Counted by NAME, not by length: every module's own periodic ask (the
+		-- teleports list, the door list) rides the same recorder, and which of
+		-- them lands inside these four pumps is a scheduler rotation, not noclip.
+		local reported = 0
+		for index = mark + 1, #cctl.serverEvents do
+			if cctl.serverEvents[index].name == admin.Event.NOCLIP_BODY then reported = reported + 1 end
+		end
 		check('and the body is NOT reported on the way up -- the server already knew',
-			#cctl.serverEvents == mark)
+			reported == 0, reported)
 
 		-- ── and it RIDES the operator ─────────────────────────────────────
 		-- A world effect is placed once and then stays where it was put. An
@@ -18819,7 +18826,17 @@ do
 	check('the client boots', why == nil, why)
 
 	if why == nil then
-		control.Pump(20)
+		-- SETTLED, NOT COUNTED. One part goes out per frame and the key list is
+		-- built a slice per frame before that, so how many frames the catalogue
+		-- takes grows with every module's locale file; twenty stopped being
+		-- enough the day a module added a panel's worth of strings.
+		settle(control, function()
+			local page = control.pages[1]
+			for _, sent in ipairs(page and page.sent or {}) do
+				if sent.channel == 'opx:locale:set' and sent.payload.done == true then return true end
+			end
+			return false
+		end, 200)
 		local page = control.pages[1]
 		check('a page was created', page ~= nil)
 
