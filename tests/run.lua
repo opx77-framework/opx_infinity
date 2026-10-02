@@ -8587,6 +8587,28 @@ do
 		{ 'Open77.players.setVisible', 'players.life.visibility', 'hiding a body' },
 		{ 'Open77.players.setFrozen', 'players.life.freeze', 'holding a player still' },
 		{ 'Open77.doors', 'world.doors', 'the staff door switch' },
+		-- The health and armour natives check `players.stats.*`. Each card also
+		-- lists the older `players.damage.*` spelling, which the runtime still
+		-- accepts and which the devkit validator demands by mistake -- so an entry
+		-- may name several accepted spellings, and any one declared is enough.
+		-- `getHealth` is also satisfied by `players.life.read`.
+		{ 'Open77.players.setArmor', { 'players.stats.apply', 'players.damage.apply' },
+			'armour on spawn and from the staff panel' },
+		{ 'Open77.players.setHealth', { 'players.stats.apply', 'players.damage.apply' },
+			'staff heal and set-health' },
+		{ 'Open77.players.setMaxHealth', { 'players.stats.apply', 'players.damage.apply' },
+			'the character\'s maximum health' },
+		{ 'Open77.players.setGodMode', { 'players.stats.apply', 'players.damage.apply' },
+			'staff god mode' },
+		{ 'Open77.players.getHealth', { 'players.stats.read', 'players.damage.read',
+			'players.life.read' }, 'the staff panel\'s health column' },
+		{ 'players.getHealthState', 'players.life.read', 'the staff overlay\'s health read' },
+		-- Reached through a local (`players.setModel`), so the search is for the
+		-- method rather than the namespace. In no published build yet; see
+		-- `modules/admin/server/models.lua`.
+		{ 'players.setModel', 'players.model.control', 'wearing an NPC body' },
+		{ 'players.resetModel', 'players.model.control', 'giving the body back' },
+		{ 'players.getModel', 'players.model.read', 'reading the worn body' },
 	}
 
 	local handle = io.open('open77.lua', 'r')
@@ -8624,14 +8646,51 @@ do
 				end
 			end
 		end
+		-- One accepted spelling or several: any one of them declared is enough.
+		local accepted = type(permission) == 'table' and permission or { permission }
+		local granted = false
+		for spelling = 1, #accepted do
+			if declared[accepted[spelling]] then granted = true end
+		end
+		local named = table.concat(accepted, ' or ')
 		if used == nil then
 			-- Nothing calls it, so nothing needs the grant: an unread permission
 			-- is not a failure, and this line says which ones are unread.
-			check(('%s is not needed yet (%s)'):format(permission, what), true)
+			check(('%s is not needed yet (%s)'):format(named, what), true)
 		else
-			check(('%s is declared, because %s calls it (%s)'):format(permission, used, what),
-				declared[permission] == true, 'not declared in open77.lua')
+			check(('%s is declared, because %s calls %s (%s)'):format(named, used, call, what),
+				granted, 'not declared in open77.lua')
 		end
+	end
+end
+
+-- `Open77.players.setModel` is in no published server build (op77.78 included):
+-- the devkit validator says so, and it is right. The module was written for
+-- that, and this pins it: on a host without the natives the server still boots,
+-- the two model commands report themselves unavailable, and the operator gets
+-- exactly ONE log line about it -- not one per call, and not an error.
+section('a build without player models degrades to one line')
+do
+	local env, control, why = boot('server')
+	check('the server boots with no setModel', why == nil, why)
+
+	if why == nil then
+		check('the stub host has no setModel, as op77.78 has none',
+			type(env.Open77.players) ~= 'table' or env.Open77.players.setModel == nil)
+		local admin = env.OPX.Modules.Get('admin')
+		local Models = admin ~= nil and admin.Models or nil
+		check('the model module is up', Models ~= nil)
+		if Models ~= nil then
+			check('and says it is unavailable', Models.Available() == false)
+		end
+		local lines = 0
+		for _, line in ipairs(control.log.warn) do
+			if line:find('players.setModel', 1, true) then lines = lines + 1 end
+		end
+		check('one warn line names the missing native', lines == 1, lines)
+		check('and nothing is logged as an error for it',
+			not table.concat(control.log.error, '\n'):find('setModel', 1, true),
+			table.concat(control.log.error, ' | '))
 	end
 end
 
