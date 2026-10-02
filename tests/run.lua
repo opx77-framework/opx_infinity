@@ -26972,7 +26972,7 @@ do
 			'AddMoney', 'RemoveMoney', 'AddMoneyOffline', 'HasJob', 'HasGang', 'GetJob',
 			'GetGang', 'HasItem', 'CountItem', 'AddItem', 'RemoveItem', 'CountInStash',
 			'AddToStash', 'RemoveFromStash', 'SendChat', 'BroadcastChat', 'RevokeKeys',
-			'RevokeAllKeys', 'SetVehicleState',
+			'RevokeAllKeys', 'SetVehicleState', 'GetDoor', 'SetDoorLocked',
 		}
 		local missing = {}
 		for _, name in ipairs(SERVER_EXPORTS) do
