@@ -167,6 +167,22 @@ function Access.HireRadius()
 	return math.max(0.5, declared)
 end
 
+--- How long a job offer stands before it lapses, in milliseconds.
+-- @return integer
+function Access.HireOfferTimeoutMs()
+	local declared = finiteNumber(Config.HIRE_OFFER_TIMEOUT_MS)
+	if declared == nil then return 60000 end
+	return math.floor(math.min(300000, math.max(1000, declared)))
+end
+
+--- Metres from the boss a candidate has to be standing for a COMMAND hire.
+-- @return number
+function Access.HireCommandRadius()
+	local declared = finiteNumber(Config.HIRE_COMMAND_RADIUS)
+	if declared == nil then return 15.0 end
+	return math.max(0.5, declared)
+end
+
 --- The most members one roster payload carries.
 -- @return number
 function Access.RosterLimit()

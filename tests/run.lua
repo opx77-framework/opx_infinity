@@ -26362,8 +26362,11 @@ do
 		local OFFICE = { x = officeBoard.X, y = officeBoard.Y, z = officeBoard.Z }
 		local DESK = { x = cityBoard.X, y = cityBoard.Y, z = cityBoard.Z }
 		local at = nil
-		env.Open77.players.position = function()
-			local where = at or { x = 0.0, y = 0.0, z = 0.0, bucket = 0 }
+		-- One player placed apart from the rest, by connection; everybody else
+		-- stands at `at`.
+		local placed = {}
+		env.Open77.players.position = function(id)
+			local where = placed[tonumber(id)] or at or { x = 0.0, y = 0.0, z = 0.0, bucket = 0 }
 			return { x = where.x, y = where.y, z = where.z, bucket = where.bucket or 0 }
 		end
 
@@ -26593,24 +26596,135 @@ do
 		check('and the membership is gone from the character too',
 			characters.Players[cadet].PlayerData.jobs.ncpd == nil)
 
-		-- ── hiring at the desk ─────────────────────────────────────────
+		-- ── hiring at the desk: an OFFER, and only the candidate's yes ──────
+		-- THE OWNER'S CALL: nobody is hired without consent. A hire puts an offer
+		-- to the candidate under a server token; their accept writes the row,
+		-- their refusal, a lapse or a stale or forged token writes nothing.
+		local function offerTo(id, from)
+			for index = #control.clientEvents, (from or 0) + 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == jobs.Event.OFFER and event.source == id then return event[1] end
+			end
+			return nil
+		end
+		local function answer(id, token, yes)
+			local was = env.source
+			env.source = id
+			control.netEvents[jobs.Event.DECIDE](token, yes)
+			env.source = was
+			control.Pump(6)
+		end
+		local function toldSince(id, mark, fragment)
+			for index = mark + 1, #control.notices do
+				local notice = control.notices[index]
+				if notice.playerId == id and tostring(notice.message):find(fragment, 1, true) then
+					return true
+				end
+			end
+			return false
+		end
+
 		local rookie = 55
 		local rookieCitizen = 'citizen-jobs-e'
 		load(rookie, rookieCitizen, nil, nil, false)
 		at = { x = OFFICE.x, y = OFFICE.y, z = OFFICE.z, bucket = 0 }
+		local from = #control.clientEvents
 		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'hire', rookie, 'test')
 		control.Pump(6)
-		check('a candidate across the map is refused rather than hired',
-			characters.Players[rookie].PlayerData.jobs.ncpd == nil)
+		check('a candidate across the map is refused rather than offered anything',
+			characters.Players[rookie].PlayerData.jobs.ncpd == nil and offerTo(rookie, from) == nil)
 
 		at = { x = DESK.x, y = DESK.y, z = DESK.z, bucket = 0 }
 		writes = state.membershipWrites
+		from = #control.clientEvents
+		local mark = #control.notices
 		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'hire', rookie, 'test')
 		control.Pump(6)
-		check('a candidate standing at the desk is taken on at the entry rank',
+		local offered = offerTo(rookie, from)
+		check('a candidate standing at the desk is OFFERED the place, and not yet hired',
+			offered ~= nil and offered.job == 'ncpd' and type(offered.token) == 'string'
+				and offered.timeoutMs == 60000 and characters.Players[rookie].PlayerData.jobs.ncpd == nil
+				and state.membershipWrites == writes,
+			offered and tostring(offered.token))
+		check('the offer names the boss and the rank, and both sides are told',
+			offered ~= nil and offered.grade == 'Cadet' and type(offered.boss) == 'string'
+				and toldSince(rookie, mark, 'offers you a place in NCPD')
+				and toldSince(src, mark, 'Offer sent to'))
+		check('the server holds the offer under the candidate',
+			jobs.OfferOf(rookie) ~= nil and jobs.OfferOf(rookie).candidate == rookieCitizen)
+
+		-- A FORGED TOKEN settles nothing, and leaves the real offer standing.
+		mark = #control.notices
+		answer(rookie, offered.token .. 'x', true)
+		check('an accept with a forged token is refused, and hires nobody',
+			characters.Players[rookie].PlayerData.jobs.ncpd == nil and jobs.OfferOf(rookie) ~= nil
+				and toldSince(rookie, mark, 'no longer open'))
+		answer(rookie, nil, true)
+		check('and so is an accept with no token at all',
+			characters.Players[rookie].PlayerData.jobs.ncpd == nil and jobs.OfferOf(rookie) ~= nil)
+		-- ANOTHER CONNECTION cannot answer somebody else's offer with its token.
+		answer(src, offered.token, true)
+		check('and the right token from the wrong connection settles nothing',
+			characters.Players[rookie].PlayerData.jobs.ncpd == nil and jobs.OfferOf(rookie) ~= nil)
+
+		-- A REFUSAL writes nothing, tells the boss, and spends the token.
+		mark = #control.notices
+		answer(rookie, offered.token, false)
+		check('a refusal hires nobody and writes no row',
+			characters.Players[rookie].PlayerData.jobs.ncpd == nil and state.membershipWrites == writes
+				and jobs.OfferOf(rookie) == nil)
+		check('and both sides are told it was turned down',
+			toldSince(src, mark, 'turned down the place in NCPD')
+				and toldSince(rookie, mark, 'You turned down the place in NCPD'))
+		answer(rookie, offered.token, true)
+		check('a STALE token -- the refused offer\'s -- cannot be accepted afterwards',
+			characters.Players[rookie].PlayerData.jobs.ncpd == nil)
+
+		-- AN ACCEPT is the hire, at the entry rank, with the row written.
+		from = #control.clientEvents
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'hire', rookie, 'test')
+		control.Pump(6)
+		local second = offerTo(rookie, from)
+		check('a new offer draws a new token', second ~= nil and second.token ~= offered.token)
+		mark = #control.notices
+		answer(rookie, second.token, true)
+		check('an accept takes the candidate on at the entry rank',
 			characters.Players[rookie].PlayerData.jobs.ncpd == 0,
 			tostring(characters.Players[rookie].PlayerData.jobs.ncpd))
 		check('and their membership row was written', state.membershipWrites == writes + 1)
+		check('and both sides are told',
+			toldSince(rookie, mark, 'taken on by NCPD') and toldSince(src, mark, 'accepted'))
+
+		-- AN OFFER NOBODY ANSWERS LAPSES, and its token with it.
+		local idle = 64
+		load(idle, 'citizen-jobs-m', nil, nil, false)
+		local shippedTimeout = settings.HIRE_OFFER_TIMEOUT_MS
+		settings.HIRE_OFFER_TIMEOUT_MS = 1000
+		from = #control.clientEvents
+		control.netEvents[jobs.Event.BOSS]('jobs_desk_city', 'hire', idle, 'test')
+		control.Pump(2)
+		local lapsing = offerTo(idle, from)
+		mark = #control.notices
+		settle(control, function() return jobs.OfferOf(idle) == nil end, 60)
+		check('an unanswered offer lapses after HIRE_OFFER_TIMEOUT_MS',
+			lapsing ~= nil and jobs.OfferOf(idle) == nil)
+		check('and the candidate\'s screen is told to come down, by token',
+			(function()
+				for index = from + 1, #control.clientEvents do
+					local event = control.clientEvents[index]
+					if event.name == jobs.Event.OFFER_CLOSED and event.source == idle
+						and event[1] == (lapsing and lapsing.token) then
+						return true
+					end
+				end
+				return false
+			end)())
+		check('and both sides are told it lapsed',
+			toldSince(src, mark, 'did not answer in time') and toldSince(idle, mark, 'lapsed'))
+		answer(idle, lapsing and lapsing.token, true)
+		check('and an accept after the lapse hires nobody',
+			characters.Players[idle].PlayerData.jobs.ncpd == nil)
+		settings.HIRE_OFFER_TIMEOUT_MS = shippedTimeout
 
 		-- MAXTAC'S OWN TERMS ARE THE HIRE'S TERMS: the invitation job cannot be
 		-- hired into by somebody who is not an NCPD detective, which is the rule
@@ -26624,34 +26738,42 @@ do
 		local rookies = 56
 		load(rookies, 'citizen-jobs-f', nil, nil, false)
 		at = { x = maxtacBoard.X, y = maxtacBoard.Y, z = maxtacBoard.Z, bucket = 0 }
+		from = #control.clientEvents
 		control.netEvents[jobs.Event.BOSS]('jobs_desk_maxtac', 'hire', rookies, 'test')
 		control.Pump(6)
-		check('a hire into an invitation job needs the terms it names',
-			characters.Players[rookies].PlayerData.jobs.maxtac == nil)
+		check('a hire into an invitation job needs the terms it names, before any offer',
+			characters.Players[rookies].PlayerData.jobs.maxtac == nil and offerTo(rookies, from) == nil)
 
 		-- THE TERMS ARE THE CANDIDATE'S, not the desk's: the one variable that
 		-- changes between the refusal above and the hire below is the RANK THE
 		-- CANDIDATE HOLDS, which is the whole of what `REQUIRES` claims to gate.
 		character.SetJob('citizen-jobs-f', 'ncpd', 2)
+		from = #control.clientEvents
 		control.netEvents[jobs.Event.BOSS]('jobs_desk_maxtac', 'hire', rookies, 'test')
 		control.Pump(6)
-		check('and goes through for somebody who meets them',
+		local invitation = offerTo(rookies, from)
+		answer(rookies, invitation and invitation.token, true)
+		check('and goes through, on their yes, for somebody who meets them',
 			characters.Players[rookies].PlayerData.jobs.maxtac == 0,
 			tostring(characters.Players[rookies].PlayerData.jobs.maxtac))
 
 		-- AND THE COMMAND FORM OF A HIRE TAKES A CONNECTION, which is the one
 		-- thing that separates it from the three actions above it: a hire acts on
 		-- somebody who must be in the session, and `bossAct` reads its target as
-		-- a connection. Driving it here is what proves the reader and the guard
-		-- agree -- a command registered against a shape nobody can type is the
-		-- same class of fault as one that was never registered at all.
+		-- a connection. It is an offer too, and it asks the candidate to stand
+		-- near the boss who types it.
 		local recruited = 63
 		load(recruited, 'citizen-jobs-l', nil, nil, false)
 		character.SetJob('citizen-jobs-l', 'ncpd', 2)
 		at = { x = maxtacBoard.X, y = maxtacBoard.Y, z = maxtacBoard.Z, bucket = 0 }
+		from = #control.clientEvents
 		control.commands[settings.COMMANDS.hire].run(src, { 'maxtac', tostring(recruited) })
 		control.Pump(6)
-		check('the hire command takes a connection and puts them on the job',
+		local typed = offerTo(recruited, from)
+		check('the hire command takes a connection and puts an OFFER to them, nothing more',
+			typed ~= nil and characters.Players[recruited].PlayerData.jobs.maxtac == nil)
+		answer(recruited, typed and typed.token, true)
+		check('and their yes puts them on the job',
 			characters.Players[recruited].PlayerData.jobs.maxtac == 0,
 			tostring(characters.Players[recruited].PlayerData.jobs.maxtac))
 
@@ -26662,6 +26784,39 @@ do
 		control.Pump(4)
 		check('and a citizen id is refused as a target, because it names no session',
 			characters.Players[recruited].PlayerData.jobs.maxtac == 0)
+
+		-- NOR IS SOMEBODY ACROSS THE MAP a candidate for the command: no hiring
+		-- anyone anywhere without consent, and no offer either.
+		local faraway = 65
+		load(faraway, 'citizen-jobs-n', nil, nil, false)
+		character.SetJob('citizen-jobs-n', 'ncpd', 2)
+		placed[faraway] = { x = maxtacBoard.X + 500.0, y = maxtacBoard.Y, z = maxtacBoard.Z, bucket = 0 }
+		from = #control.clientEvents
+		local answerFrom = #control.clientEvents
+		OPX.ForgetCooldowns(src)
+		control.commands[settings.COMMANDS.hire].run(src, { 'maxtac', tostring(faraway) })
+		control.Pump(6)
+		check('the hire command refuses a candidate who is not near the boss, and offers nothing',
+			offerTo(faraway, from) == nil and jobs.OfferOf(faraway) == nil
+				and characters.Players[faraway].PlayerData.jobs.maxtac == nil
+				and (function()
+					for index = answerFrom + 1, #control.clientEvents do
+						local event = control.clientEvents[index]
+						if event.source == src and type(event[1]) == 'table'
+							and tostring(event[1].text):find('candidateNotNear', 1, true) then
+							return true
+						end
+					end
+					return false
+				end)(), (function()
+					local out = { tostring(offerTo(faraway, from) ~= nil), tostring(jobs.OfferOf(faraway) ~= nil) }
+					for index = answerFrom + 1, #control.clientEvents do
+						local event = control.clientEvents[index]
+						if event.source == src then out[#out + 1] = event.name .. "=" .. tostring(type(event[1]) == "table" and event[1].text or event[1]) end
+					end
+					return table.concat(out, " | ")
+				end)())
+		placed[faraway] = nil
 
 		-- ── the ladder, by worked time ─────────────────────────────────
 		-- The shipped tick pays a point a minute; the harness's `Wait` returns at
@@ -27772,7 +27927,13 @@ do
 		local mark = #control.notices
 		send(301, jobs.Event.BOSS, 'jobs_desk_city', 'hire', recruit, 'test')
 		control.Pump(6)
-		check('NCPD Captain: hires a newcomer standing at the desk, as a Cadet they work',
+		check('NCPD Captain: the hire is an offer, and the newcomer is asked first',
+			recruitData.job.name ~= 'ncpd' and said(recruit, mark, 'offers you a place in NCPD'),
+			table.concat(heard(recruit, mark), ' | '))
+		local recruitOffer = lastTo(recruit, jobs.Event.OFFER)
+		send(recruit, jobs.Event.DECIDE, recruitOffer and recruitOffer[1].token, true)
+		control.Pump(6)
+		check('NCPD Captain: hires a newcomer standing at the desk, on their yes, as a Cadet they work',
 			recruitData.job.name == 'ncpd' and recruitData.job.grade.level == 0
 				and said(recruit, mark, 'taken on by NCPD'), table.concat(heard(recruit, mark), ' | '))
 		mark = #control.notices
@@ -27883,6 +28044,9 @@ do
 			table.concat(candidates, ' '):find(tostring(trooperId), 1, true) ~= nil, table.concat(candidates, ' '))
 		mark = #control.notices
 		send(leadId, jobs.Event.BOSS, 'jobs_desk_maxtac', 'hire', trooperId, 'test')
+		control.Pump(6)
+		local trooperOffer = lastTo(trooperId, jobs.Event.OFFER)
+		send(trooperId, jobs.Event.DECIDE, trooperOffer and trooperOffer[1].token, true)
 		control.Pump(6)
 		check('MaxTac: hired at the desk, BESIDE the badge they work, and told how to work it',
 			trooper.jobs.maxtac == 0 and trooper.job.name == 'ncpd'
@@ -28308,7 +28472,7 @@ do
 			for index = #control.serverEvents, from + 1, -1 do
 				local event = control.serverEvents[index]
 				if event.name == jobs.Event.JOIN or event.name == jobs.Event.WORK
-					or event.name == jobs.Event.LEAVE then
+					or event.name == jobs.Event.LEAVE or event.name == jobs.Event.DECIDE then
 					return event
 				end
 			end
@@ -28461,6 +28625,44 @@ do
 			contract.Close()
 		end
 		OPX.Locale.Set('en')
+
+		-- ── a job offer, on the candidate's own screen ──────────────────────
+		-- The owner's call: a hire is an offer the candidate answers. What the
+		-- client owes is the question, the two answers, and the server's token
+		-- sent back -- nothing about which job or which boss is the client's.
+		local Runtime = jobs.Runtime
+		control.netEvents[jobs.Event.OFFER]({ token = 'tok-1', job = 'ncpd', label = 'NCPD',
+			grade = 'Cadet', boss = 'Captain Rhee', timeoutMs = 60000 })
+		control.Pump(2)
+		local offerRows = drawn()
+		check('a job offer opens its own screen: who offers what, then accept and refuse',
+			Runtime.Report().offer == 'ncpd' and Runtime.Report().screen == 'offer'
+				and offerRows['Captain Rhee offers you a place in NCPD as Cadet.'] ~= nil
+				and offerRows.Accept ~= nil and offerRows.Refuse ~= nil,
+			tostring(Runtime.Report().screen))
+		local answered = press('accept')
+		check('accept sends the offer\'s token back with a yes',
+			type(answered) == 'table' and answered.name == jobs.Event.DECIDE and answered[1] == 'tok-1'
+				and answered[2] == true,
+			type(answered) == 'table' and tostring(answered[1]) or tostring(answered))
+		check('and the screen comes down', Runtime.Report().offer == nil and Runtime.IsOpen() == false)
+
+		control.netEvents[jobs.Event.OFFER]({ token = 'tok-2', job = 'maxtac', label = 'MaxTac',
+			grade = 'Operator', boss = 'Lead Kade', timeoutMs = 60000 })
+		control.Pump(2)
+		answered = press('refuse')
+		check('refuse sends the offer\'s token back with a no',
+			type(answered) == 'table' and answered.name == jobs.Event.DECIDE and answered[1] == 'tok-2'
+				and answered[2] == false)
+
+		control.netEvents[jobs.Event.OFFER]({ token = 'tok-3', job = 'ncpd', label = 'NCPD',
+			grade = 'Cadet', boss = 'Captain Rhee', timeoutMs = 60000 })
+		control.Pump(2)
+		control.netEvents[jobs.Event.OFFER_CLOSED]('tok-2')
+		check('a close for another token leaves the offer up', Runtime.Report().offer == 'ncpd')
+		control.netEvents[jobs.Event.OFFER_CLOSED]('tok-3')
+		check('and the close for its own token takes it down',
+			Runtime.Report().offer == nil and Runtime.IsOpen() == false)
 
 		check('no thread died', not table.concat(control.log.error, ' | '):find('thread died'),
 			table.concat(control.log.error, ' | '))

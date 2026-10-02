@@ -65,6 +65,10 @@ M.Event = {
 	WORK = OPX.Event(NET, 'jobs', 'work'),
 	BOSS = OPX.Event(NET, 'jobs', 'boss'),
 	CAPTURED = OPX.Event(NET, 'jobs', 'captured'),
+	-- The candidate's answer to a job offer: the offer's own token and yes or
+	-- no. A token the server did not hand THIS connection, or one that lapsed,
+	-- is refused -- the answer settles exactly the offer it names.
+	DECIDE = OPX.Event(NET, 'jobs', 'decide'),
 
 	-- Server to client: the boards this player may see, the verdict for ONE board
 	-- they are standing on, the roster of a desk (its own event, because the
@@ -79,6 +83,11 @@ M.Event = {
 	ANSWER = OPX.Event(NET, 'jobs', 'answer'),
 	ROSTER = OPX.Event(NET, 'jobs', 'roster'),
 	CAPTURE = OPX.Event(NET, 'jobs', 'capture'),
+	-- A job offer put to a candidate (`{ token, job, label, grade, boss,
+	-- timeoutMs }`), and the word that it is over (the token), so the screen
+	-- that asks comes down when the offer lapses or is replaced.
+	OFFER = OPX.Event(NET, 'jobs', 'offer'),
+	OFFER_CLOSED = OPX.Event(NET, 'jobs', 'offerClosed'),
 
 	-- Server-local, and the module's one door outward: every point `pay`
 	-- ACTUALLY credits -- tick wages and `Award` arrests alike -- leaves on it,
@@ -101,6 +110,7 @@ M.Operation = {
 	WORK = 'jobsWork',
 	BOSS = 'jobsBoss',
 	CAPTURE = 'jobsCapture',
+	DECIDE = 'jobsDecide',
 }
 
 --- The two kinds of board. A sign-up board offers work, a desk manages it.

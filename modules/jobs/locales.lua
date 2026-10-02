@@ -69,6 +69,25 @@ local EN = {
 	['jobs.promoted'] = 'You have been promoted to {grade} in {job}.',
 	['jobs.demoted'] = 'You have been demoted to {grade} in {job}.',
 	['jobs.deskDone'] = '{action} done.',
+
+	-- ── a job offer: nobody is hired without saying yes ─────────────────────
+	-- {boss} is the boss's character name, {name} the candidate's, {seconds}
+	-- how long the offer stands.
+	['jobs.menu.offer'] = 'JOB OFFER: {job}',
+	['jobs.offer.text'] = '{boss} offers you a place in {job} as {grade}.',
+	['jobs.offer.wait'] = 'Answer within {seconds} s',
+	['jobs.row.accept'] = 'Accept',
+	['jobs.row.refuse'] = 'Refuse',
+	['jobs.offer.received'] = '{boss} offers you a place in {job}. Accept or refuse within {seconds} s.',
+	['jobs.offer.sent'] = 'Offer sent to {name}. Waiting for their answer ({seconds} s).',
+	['jobs.offer.accepted'] = '{name} accepted: they are on the books for {job}.',
+	['jobs.offer.refused'] = '{name} turned down the place in {job}.',
+	['jobs.offer.youRefused'] = 'You turned down the place in {job}.',
+	['jobs.offer.expired'] = '{name} did not answer in time: the offer of {job} lapsed.',
+	['jobs.offer.expiredYou'] = 'The offer of a place in {job} lapsed.',
+	['jobs.offer.none'] = 'That offer is no longer open.',
+	['jobs.offer.pending'] = 'That person is already answering another offer.',
+	['jobs.candidateNotNear'] = 'That person has to be standing near you to be offered the job.',
 	['jobs.refused'] = 'That could not be done.',
 
 	['jobs.noCharacter'] = 'Your record could not be read.',
@@ -120,8 +139,8 @@ local EN = {
 	['jobs.help.promote'] = 'Move somebody one rank up. Needs the boss rank of that job.',
 	['jobs.help.demote'] = 'Move somebody one rank down. Needs the boss rank of that job.',
 	['jobs.help.fire'] = 'Dismiss somebody. Needs the boss rank of that job.',
-	['jobs.help.hire'] = 'Take somebody on at the desk you hold. Needs the boss rank of that job.',
-	['jobs.help.hirePlayerId'] = 'the connection number of somebody standing at the desk',
+	['jobs.help.hire'] = 'Offer somebody near you a place; they accept or refuse. Needs the boss rank of that job.',
+	['jobs.help.hirePlayerId'] = 'the connection number of somebody standing near you',
 }
 
 local FR = {
@@ -176,6 +195,22 @@ local FR = {
 	['jobs.promoted'] = 'Vous avez été promu au grade {grade} dans {job}.',
 	['jobs.demoted'] = 'Vous avez été rétrogradé au grade {grade} dans {job}.',
 	['jobs.deskDone'] = '{action} effectué.',
+
+	['jobs.menu.offer'] = 'OFFRE D’EMPLOI : {job}',
+	['jobs.offer.text'] = '{boss} vous propose une place dans {job} au grade {grade}.',
+	['jobs.offer.wait'] = 'Répondez sous {seconds} s',
+	['jobs.row.accept'] = 'Accepter',
+	['jobs.row.refuse'] = 'Refuser',
+	['jobs.offer.received'] = '{boss} vous propose une place dans {job}. Acceptez ou refusez sous {seconds} s.',
+	['jobs.offer.sent'] = 'Offre envoyée à {name}. En attente de sa réponse ({seconds} s).',
+	['jobs.offer.accepted'] = '{name} a accepté : la personne est inscrite pour {job}.',
+	['jobs.offer.refused'] = '{name} a refusé la place dans {job}.',
+	['jobs.offer.youRefused'] = 'Vous avez refusé la place dans {job}.',
+	['jobs.offer.expired'] = '{name} n’a pas répondu à temps : l’offre pour {job} a expiré.',
+	['jobs.offer.expiredYou'] = 'L’offre d’une place dans {job} a expiré.',
+	['jobs.offer.none'] = 'Cette offre n’est plus valable.',
+	['jobs.offer.pending'] = 'Cette personne répond déjà à une autre offre.',
+	['jobs.candidateNotNear'] = 'La personne doit se tenir près de vous pour recevoir l’offre.',
 	['jobs.refused'] = 'Cela n’a pas pu être fait.',
 
 	['jobs.noCharacter'] = 'Votre fiche n’a pas pu être lue.',
@@ -224,8 +259,8 @@ local FR = {
 	['jobs.help.promote'] = 'Monte quelqu’un d’un grade. Exige le grade de chef de cet emploi.',
 	['jobs.help.demote'] = 'Descend quelqu’un d’un grade. Exige le grade de chef de cet emploi.',
 	['jobs.help.fire'] = 'Licencie quelqu’un. Exige le grade de chef de cet emploi.',
-	['jobs.help.hire'] = 'Embauche quelqu’un à votre bureau. Exige le grade de chef de cet emploi.',
-	['jobs.help.hirePlayerId'] = 'le numéro de connexion de quelqu’un debout à votre bureau',
+	['jobs.help.hire'] = 'Propose une place à quelqu’un près de vous ; la personne accepte ou refuse. Exige le grade de chef de cet emploi.',
+	['jobs.help.hirePlayerId'] = 'le numéro de connexion de quelqu’un debout près de vous',
 }
 
 OPX.Locale.Register('en', EN)

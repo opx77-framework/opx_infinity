@@ -243,7 +243,10 @@ A board is a **place**. Stand within **4 m** (`USE_RADIUS`) and press **E**
 - **boss desk** — one per division. Drawn ONLY for the holder of that job's boss grade
   (and whoever captured it). The desk manages the roster: **hire / promote / demote /
   fire**, pressed in the menu. A hire needs the candidate standing within **8 m** of the
-  desk (`HIRE_RADIUS`) — hiring across the map is not a scene anybody can see.
+  desk (`HIRE_RADIUS`) — hiring across the map is not a scene anybody can see — and it is
+  an **offer**: the candidate gets an Accept / Refuse screen and has 60 s
+  (`HIRE_OFFER_TIMEOUT_MS`) to answer; nobody is hired without saying yes, and the boss
+  is told the answer (or that it lapsed). Closing the offer refuses it.
 
 ---
 
@@ -265,15 +268,16 @@ A board is a **place**. Stand within **4 m** (`USE_RADIUS`) and press **E**
 
 The server checks the grade itself, for every action. 2 s cooldown between two roster
 moves (`COOLDOWN_MS`). The desk's own hire press needs the candidate within 8 m of the
-desk; the typed `/opx.jobs.hire` names a connection id and does not measure the distance
-(a command is a deliberate act by an identified boss). These commands are the only door
+desk; the typed `/opx.jobs.hire` names a connection id of somebody online and within
+15 m of the boss (`HIRE_COMMAND_RADIUS`). Either way the hire is an offer the candidate
+accepts or refuses on their own screen. These commands are the only door
 for the bosses of jobs with no desk: Ripperdoc, Mercenary, Fixer, Netrunner, Corporate
 and Nomad. A member who is offline can be promoted, demoted or dismissed too: the rank
 on the roster is the rank they log in with.
 
 | Command | What it does | Example |
 |---|---|---|
-| `/opx.jobs.hire <job> <playerId>` | Take on the player (connection id) standing at your desk, at grade 0. | `/opx.jobs.hire ncpd 3` |
+| `/opx.jobs.hire <job> <playerId>` | Offer a place at grade 0 to the player (connection id) standing near you; they accept or refuse within 60 s. | `/opx.jobs.hire ncpd 3` |
 | `/opx.jobs.promote <job> <citizenId>` | Move up one grade. | `/opx.jobs.promote ncpd RZ4K-8821` |
 | `/opx.jobs.demote <job> <citizenId>` | Move down one grade. | `/opx.jobs.demote ncpd RZ4K-8821` |
 | `/opx.jobs.fire <job> <citizenId>` | Dismiss from the job entirely. | `/opx.jobs.fire ncpd RZ4K-8821` |

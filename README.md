@@ -438,8 +438,12 @@ by an operator's ACL file, and the server checks that grade itself every time.
 Hiring is a **scene**: the candidate must be standing within `HIRE_RADIUS` of the desk,
 re-derived on the server from the connection it is acting on rather than trusted from the
 boss's client, because hiring somebody across the map is not something anybody can see.
-(The typed `/opx.jobs.hire` is the one door that does not measure it: it names a
-connection, and is how the boss of a job with no desk hires at all.)
+(The typed `/opx.jobs.hire` measures from the boss instead: it names a connection that
+must be online and within `HIRE_COMMAND_RADIUS` of the boss, and is how the boss of a job
+with no desk hires at all.) Either way a hire is an **offer**: the owner decided nobody is
+hired without consent, so the candidate answers Accept or Refuse on their own screen within
+`HIRE_OFFER_TIMEOUT_MS` (60 s), the server holds the offer under a token of its own and
+refuses any answer that names another, and both sides are told the outcome.
 The bank is this module's own and is the one thing it stores: it starts at nothing when
 somebody joins, is deleted when they are dismissed so a rehire starts at the bottom
 rather than walking back in at the rank they left, and is written back on a cadence and

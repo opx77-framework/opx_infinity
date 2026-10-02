@@ -64,6 +64,11 @@ local keyRegistered = false
 -- The open menu's handle, and the screen stack this file owns.
 local handle, stack = nil, {}
 
+-- THE JOB OFFER this player has been made, as the server sent it, or nil. Its
+-- screen is the only one on the stack while it is up, and the token in it is
+-- the only thing the answer carries back: the server holds the offer itself.
+local offer = nil
+
 -- Whether each failure was already logged: a marker that cannot be drawn, a row
 -- that cannot be posted and a list that cannot open are three different problems
 -- and a player reading the log wants to know which one they have.
@@ -565,6 +570,20 @@ end
 -- @return table|nil items
 -- @return table|nil extra
 local function screenFor(current)
+	-- The offer stands on no board: it was put to this player wherever they are.
+	if current.screen == 'offer' then
+		if offer == nil then return nil end
+		local label = tostring(offer.label or offer.job)
+		local seconds = math.max(0, math.floor((tonumber(offer.timeoutMs) or 0) / 1000))
+		return locale('jobs.menu.offer', { job = label }), {
+			{ id = 'text', label = locale('jobs.offer.text', { boss = tostring(offer.boss or '?'),
+				job = label, grade = tostring(offer.grade or '?') }) },
+			{ separator = true, label = '' },
+			{ id = 'accept', label = locale('jobs.row.accept'), data = { decide = true } },
+			{ id = 'refuse', label = locale('jobs.row.refuse'), data = { decide = false } },
+		}, { status = locale('jobs.offer.wait', { seconds = tostring(seconds) }) }
+	end
+
 	local board = boards[current.board]
 	if board == nil then return nil end
 	local state = states[current.board] or {}
@@ -792,6 +811,27 @@ local function work(key, job)
 	return verdict
 end
 
+-- Answers the offer on screen: the token goes back with the yes or the no, and
+-- nothing else -- which job and which boss are the server's own record.
+-- @param yes boolean
+-- @return table
+local function decide(yes)
+	local held = offer
+	offer = nil
+	takeDown()
+	if held == nil then return { ok = false, error = 'jobs.offer.none', source = 'key' } end
+	local sent, reason = TriggerServerEvent(M.Event.DECIDE, held.token, yes == true)
+	if not sent then
+		local verdict = { ok = false, error = tostring(reason or 'not_sent'), source = 'client' }
+		publish(verdict)
+		say('error', locale('jobs.refused'))
+		return verdict
+	end
+	local verdict = { ok = true, queued = true, job = held.job, accepted = yes == true, source = 'key' }
+	publish(verdict)
+	return verdict
+end
+
 -- Navigates, acts, or finishes for a row the menu raised. The shape is checked
 -- because the menu also raises every action on its own public bus.
 onRow = function(payload)
@@ -802,6 +842,13 @@ onRow = function(payload)
 		-- new handle; it is not ours to act on.
 		if payload.reason == 'reopened' or payload.handle ~= handle then return end
 		handle = nil
+		-- CLOSING AN OFFER REFUSES IT, said both ways: an offer put away
+		-- unanswered would otherwise hang until it lapsed, with the boss waiting.
+		local top = stack[#stack]
+		if top ~= nil and top.screen == 'offer' and offer ~= nil then
+			stack = {}
+			return decide(false)
+		end
 		-- Back on a one-level screen would close it; step up instead.
 		if payload.reason == 'back' and #stack > 1 then return pop() end
 		stack = {}
@@ -846,6 +893,11 @@ onRow = function(payload)
 		if type(data.action) ~= 'string' or type(data.citizenId) ~= 'string' then return end
 		return act(current.board, data.action, data.citizenId)
 	end
+
+	if current.screen == 'offer' then
+		if type(data.decide) ~= 'boolean' then return end
+		return decide(data.decide)
+	end
 end
 
 -- ── the doors ───────────────────────────────────────────────────────────────
@@ -865,6 +917,13 @@ function Runtime.Open(origin)
 	-- The same key closes what it opened. Asked of this file's own handle rather
 	-- than of the menu's state, because the menu is shared: another module's menu
 	-- is not this one's to close.
+	-- An offer on screen is answered, not put away by the board key.
+	local top = stack[#stack]
+	if handle ~= nil and offer ~= nil and top ~= nil and top.screen == 'offer' then
+		result.ok, result.error = false, 'jobs.offer.pending'
+		publish(result)
+		return result
+	end
 	if handle ~= nil then
 		takeDown()
 		result.ok, result.closed = true, true
@@ -979,6 +1038,7 @@ function Runtime.Report()
 		offers = offers,
 		desks = desks,
 		held = heldOffer() ~= nil,
+		offer = offer ~= nil and offer.job or nil,
 	}
 end
 
@@ -1049,7 +1109,7 @@ function Runtime.Init()
 	boards, states, markers, rosters = {}, {}, {}, {}
 	nearest, shown, keyRegistered = nil, false, false
 	askedKey, pendingOpen = nil, nil
-	handle, stack = nil, {}
+	handle, stack, offer = nil, {}, nil
 	reportedMarkers, reportedStrip, reportedMenu = false, false, false
 	reportedDraw = nil
 	reportedReceived = nil
@@ -1188,6 +1248,32 @@ function Runtime.Start()
 		-- answer. What this adds is the verdict on the local bus, which the menu
 		-- and any job resource can hear without asking.
 		publish({ ok = true, entry = entry, value = value, source = 'server' })
+	end)
+
+	-- A JOB OFFER: a boss wants to take this player on, and only their own yes
+	-- does it. The screen replaces whatever list was up -- it is the one
+	-- question that is not the player's own to open -- and the token rides
+	-- back with the answer.
+	RegisterNetEvent(M.Event.OFFER, function(payload)
+		if type(payload) ~= 'table' or type(payload.token) ~= 'string' then return end
+		offer = payload
+		takeDown()
+		stack = { { screen = 'offer' } }
+		if not draw() then
+			-- No list to draw it on: the toast the server sent with it still
+			-- reads, and the offer lapses on the server's own clock.
+			Open77.log.warn('[jobs] a job offer arrived and no list could be opened for it')
+		end
+		syncPrompt()
+	end)
+
+	-- The offer is over -- lapsed, or replaced by the same boss's next one. Only
+	-- the screen for THAT token comes down.
+	RegisterNetEvent(M.Event.OFFER_CLOSED, function(token)
+		if offer == nil or offer.token ~= token then return end
+		offer = nil
+		local top = stack[#stack]
+		if top ~= nil and top.screen == 'offer' then takeDown() end
 	end)
 
 	RegisterNetEvent(M.Event.CAPTURE, function(kind, job, key, label)

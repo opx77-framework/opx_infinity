@@ -115,6 +115,19 @@ OPX.Config.MODULES.jobs = {
 	-- on the spot. Hiring somebody across the map is not a scene anybody can see.
 	HIRE_RADIUS = 8.0,
 
+	-- NOBODY IS HIRED WITHOUT SAYING YES. The owner decided a hire -- at the
+	-- desk or by `/opx.jobs.hire` -- is an OFFER the candidate accepts or
+	-- refuses on their own screen; the server holds it under a token of its own
+	-- and an answer that names any other token (a lapsed offer, a replaced one,
+	-- a forged one) is refused. HIRE_OFFER_TIMEOUT_MS is how long an offer
+	-- stands before it lapses and both sides are told (1 to 300 seconds).
+	HIRE_OFFER_TIMEOUT_MS = 60000,
+
+	-- The COMMAND hire's own reach: the candidate has to be online and standing
+	-- within this many metres of the boss who types it, in the same routing
+	-- bucket. A command is not a door around the scene a desk asks for.
+	HIRE_COMMAND_RADIUS = 15.0,
+
 	-- How many members one roster payload carries, oldest-first by grade.
 	ROSTER_LIMIT = 200,
 

@@ -1085,6 +1085,260 @@ function M.Work(source, key, name)
 	return Result.Ok({ job = job, grade = tonumber(who.jobs[job]) or 0 })
 end
 
+-- ── the job offer ───────────────────────────────────────────────────────────
+--
+-- NOBODY IS HIRED WITHOUT SAYING YES. The owner decided a boss's hire -- at the
+-- desk or by command -- is an OFFER: the candidate is asked on their own screen
+-- and accepts or refuses, and an unanswered offer lapses after
+-- `HIRE_OFFER_TIMEOUT_MS`. Both sides are told every outcome.
+--
+-- THE OFFER IS THE SERVER'S. It is held here, under the candidate's connection,
+-- with a token this half drew; the client is handed the token to send back and
+-- nothing else it says is read. An answer naming any other token -- the offer
+-- before a replacement, one that lapsed, one somebody made up -- settles
+-- nothing. And acceptance is not a rubber stamp: everything the offer proved
+-- (the boss is still the boss, the candidate still not a member, still standing
+-- where the hire asked, still meeting the terms) is proved again at the moment
+-- of the yes, because all of it can have stopped being true in a minute.
+
+--- Open offers by candidate connection: one per candidate, a new one from the
+--- same boss replacing the old.
+local hireOffers = {}
+
+--- Offers drawn since boot, the first half of every token.
+local offerCount = 0
+
+--- A token nobody can guess: a counter, so two offers in one millisecond never
+--- share one, and sixteen random characters, so a token cannot be counted to.
+-- @return string
+local function offerToken()
+	offerCount = offerCount + 1
+	return ('%d.%s'):format(offerCount, OPX.String.Random('................'))
+end
+
+--- Whether a candidate may be hired into a board's job by the boss at `source`,
+--- right now: the checks an offer makes and an acceptance makes again. Memory
+--- and host reads only; never yields.
+-- @param source number the boss
+-- @param board table the desk, or the stand-in a command builds
+-- @param candidate number the candidate's connection
+-- @param their table the candidate, from `characterOf`
+-- @param requireDesk boolean the desk's rule (true) or the command's (false)
+-- @param terms table the job's terms
+-- @return table|nil a refusal Result, nil when the hire may go ahead
+local function hireRefusal(source, board, candidate, their, requireDesk, terms)
+	local name = board.job
+	if their.jobs[name] ~= nil then return Result.Err('jobs.alreadyMember', name) end
+
+	if requireDesk == true then
+		-- Standing at the desk, re-derived here rather than trusted from the
+		-- boss's client: hiring somebody across the map is not a scene.
+		local at = positionOf(candidate)
+		local radius = Access.HireRadius()
+		local flat = at ~= nil and at.bucket == board.bucket
+			and Access.FlatDistanceSquared(board, at.x, at.y) or nil
+		if flat == nil or flat > radius * radius then
+			return Result.Err('jobs.candidateAway', name)
+		end
+	else
+		-- THE COMMAND'S RULE: online (a connection), in the boss's bucket and
+		-- within HIRE_COMMAND_RADIUS of the boss. A command is not a door
+		-- around the scene a desk asks for.
+		local mine, at = positionOf(source), positionOf(candidate)
+		local radius = Access.HireCommandRadius()
+		if mine == nil or at == nil or at.bucket ~= mine.bucket then
+			return Result.Err('jobs.candidateNotNear', name)
+		end
+		local dx, dy = at.x - mine.x, at.y - mine.y
+		if dx * dx + dy * dy > radius * radius then
+			return Result.Err('jobs.candidateNotNear', name)
+		end
+	end
+
+	local met, missing = Access.MeetsRequirements(terms, {
+		grade = function(held) return their.jobs[held] end,
+		allowed = function(right) return allowed(candidate, right) end,
+	})
+	if not met then return Result.Err(missing or 'jobs.notOpen', name) end
+	return nil
+end
+
+--- Takes one offer down, on the server and on the candidate's screen.
+-- @param offer table
+local function closeOffer(offer)
+	if hireOffers[offer.candidate] == offer then hireOffers[offer.candidate] = nil end
+	TriggerClientEvent(M.Event.OFFER_CLOSED, offer.candidate, offer.token)
+end
+
+--- Lets one offer lapse when nobody answered it in time. A thread of its own;
+--- an offer answered, replaced or dropped before the deadline ends it quietly.
+-- @param offer table
+local function watchOffer(offer)
+	CreateThread(function()
+		while OPX.Now() < offer.deadline do
+			if hireOffers[offer.candidate] ~= offer then return end
+			Wait(250)
+		end
+		if hireOffers[offer.candidate] ~= offer then return end
+		closeOffer(offer)
+		local job = labelOf(offer.job)
+		OPX.NotifyLocale(offer.boss, 'jobs.offer.expired', { name = offer.candidateName, job = job }, 'error')
+		OPX.NotifyLocale(offer.candidate, 'jobs.offer.expiredYou', { job = job }, 'info')
+		Open77.log.info(('[jobs] the offer of %s to %s lapsed unanswered')
+			:format(safe(offer.job), safe(offer.candidateCitizen)))
+	end)
+end
+
+--- Puts a hire to the candidate as an offer. Never writes a membership.
+-- @param source number the boss
+-- @param board table
+-- @param target any the candidate's connection
+-- @param who table the boss, from `characterOf`
+-- @param requireDesk boolean
+-- @param terms table
+-- @param bottom integer the grade a hire starts at
+-- @return Result carrying `{ job, citizenId, grade, offered = true }`
+local function offerHire(source, board, target, who, requireDesk, terms, bottom)
+	local name = board.job
+	local candidate = tonumber(target)
+	if candidate == nil then return Result.Err('error.badRequest') end
+	local their = characterOf(candidate)
+	if their == nil then return Result.Err('jobs.noCharacter') end
+
+	local refused = hireRefusal(source, board, candidate, their, requireDesk, terms)
+	if refused ~= nil then return refused end
+
+	-- One offer per candidate: a boss may replace their own, never somebody
+	-- else's while it is still open.
+	local live = hireOffers[candidate]
+	if live ~= nil and live.bossCitizen ~= who.citizenId and OPX.Now() < live.deadline then
+		return Result.Err('jobs.offer.pending', name)
+	end
+	if live ~= nil then closeOffer(live) end
+
+	local timeout = Access.HireOfferTimeoutMs()
+	local now = OPX.Now()
+	local offer = {
+		token = offerToken(),
+		deadline = now + timeout,
+		boss = source,
+		bossCitizen = who.citizenId,
+		bossName = who.name or who.citizenId,
+		candidate = candidate,
+		candidateCitizen = their.citizenId,
+		candidateName = their.name or their.citizenId,
+		board = board,
+		requireDesk = requireDesk == true,
+		job = name,
+	}
+	hireOffers[candidate] = offer
+
+	local seconds = math.floor(timeout / 1000)
+	TriggerClientEvent(M.Event.OFFER, candidate, {
+		token = offer.token,
+		job = name,
+		label = labelOf(name),
+		grade = gradeLabel(name, bottom),
+		boss = offer.bossName,
+		timeoutMs = timeout,
+	})
+	OPX.NotifyLocale(candidate, 'jobs.offer.received',
+		{ boss = offer.bossName, job = labelOf(name), seconds = seconds }, 'info')
+	OPX.NotifyLocale(source, 'jobs.offer.sent', { name = offer.candidateName, seconds = seconds }, 'info')
+	OPX.Audit.Player(who.player, 'jobs.offer',
+		('%s into %s'):format(safe(their.citizenId), safe(name)))
+	Open77.log.info(('[jobs] %s offered %s a place in %s (%d s to answer)')
+		:format(safe(who.citizenId), safe(their.citizenId), safe(name), seconds))
+	watchOffer(offer)
+	return Result.Ok({ job = name, citizenId = their.citizenId, grade = bottom, offered = true })
+end
+
+--- The candidate's own answer to an offer. This is where a hire is written.
+--
+-- Yields: the membership is a row.
+-- @author XEROX710
+-- @param candidate number the answering connection; never a value off the wire
+-- @param token any the token the offer was sent with
+-- @param yes boolean
+-- @return Result carrying `{ job, citizenId, grade }` or `{ job, refused = true }`
+function M.Decide(candidate, token, yes)
+	local offer = hireOffers[candidate]
+	-- THE TOKEN IS THE OFFER'S NAME. A stale one (the offer before a
+	-- replacement, a lapsed one) and a forged one are the same answer.
+	if offer == nil or type(token) ~= 'string' or token ~= offer.token then
+		return Result.Err('jobs.offer.none')
+	end
+	hireOffers[candidate] = nil
+	local name = offer.job
+	local job = labelOf(name)
+
+	if OPX.Now() >= offer.deadline then
+		OPX.NotifyLocale(offer.boss, 'jobs.offer.expired', { name = offer.candidateName, job = job }, 'error')
+		return Result.Err('jobs.offer.none')
+	end
+
+	if yes ~= true then
+		OPX.NotifyLocale(offer.boss, 'jobs.offer.refused', { name = offer.candidateName, job = job }, 'error')
+		Open77.log.info(('[jobs] %s turned down %s'):format(safe(offer.candidateCitizen), safe(name)))
+		return Result.Ok({ job = name, refused = true })
+	end
+
+	-- EVERYTHING IS PROVED AGAIN, at the moment of the yes.
+	local their = characterOf(candidate)
+	if their == nil or their.citizenId ~= offer.candidateCitizen then return Result.Err('jobs.noCharacter') end
+	local boss = characterOf(offer.boss)
+	if boss == nil or boss.citizenId ~= offer.bossCitizen or not isBossOf(offer.bossCitizen, name) then
+		return Result.Err('jobs.notBoss', name)
+	end
+	local terms = Access.Terms(name)
+	local grades = gradesOf(name)
+	if terms == nil or #grades == 0 then return Result.Err('jobs.noSuchJob', name) end
+	local bottom = grades[1]
+	local refused = hireRefusal(offer.boss, offer.board, candidate, their, offer.requireDesk, terms)
+	if refused ~= nil then
+		OPX.NotifyLocale(offer.boss, refused.error, { job = job }, 'error')
+		return refused
+	end
+
+	local joined = their.jobName == nil or their.jobName == defaultJob()
+	local written = joined and character.SetJob(their.citizenId, name, bottom)
+		or character.AddPlayerToJob(their.citizenId, name, bottom)
+	if not written.ok then return written end
+
+	setBank(their.citizenId, name, 0)
+	flushSoon(their.citizenId)
+	-- A hire of somebody with a career of their own is a job held BESIDE the
+	-- one they work, exactly as a join is, and the notice says so and says
+	-- where it is worked: MaxTac hires nobody but NCPD Detectives, so every
+	-- one of its hires lands here.
+	OPX.NotifyLocale(candidate, joined and 'jobs.hired' or 'jobs.hiredBeside', { job = job })
+	OPX.NotifyLocale(offer.boss, 'jobs.offer.accepted', { name = offer.candidateName, job = job }, 'success')
+	OPX.Audit.Player(boss.player, 'jobs.hire',
+		('%s as %s grade %d'):format(safe(their.citizenId), safe(name), bottom))
+	Open77.log.info(('[jobs] %s hired %s into %s at grade %d, on their yes')
+		:format(safe(offer.bossCitizen), safe(their.citizenId), safe(name), bottom))
+	return Result.Ok({ job = name, citizenId = their.citizenId, grade = bottom })
+end
+
+--- The open offer a candidate holds, for a diagnostic or a test: a copy, with
+--- the token left out.
+-- @param candidate number
+-- @return table|nil
+function M.OfferOf(candidate)
+	local offer = hireOffers[tonumber(candidate)]
+	if offer == nil then return nil end
+	return { job = offer.job, boss = offer.bossCitizen, candidate = offer.candidateCitizen,
+		deadline = offer.deadline }
+end
+
+--- Drops every offer to or from one connection that left.
+-- @param player number
+local function dropOffers(player)
+	for candidate, offer in pairs(hireOffers) do
+		if candidate == player or offer.boss == player then hireOffers[candidate] = nil end
+	end
+end
+
 -- ── the desk ────────────────────────────────────────────────────────────────
 
 --- One action a boss takes at their desk, on a board already resolved.
@@ -1099,9 +1353,9 @@ end
 -- @param target any a citizen id, or a connection for a hire
 -- @param who table from `characterOf`
 -- @param requireDesk boolean whether a HIRE must name somebody standing at the
---   board. True for the marker, false for the command: a command is already a
---   deliberate act by somebody the host has identified, and a desk with nobody
---   standing at it is the case a command exists for.
+--   board. True for the marker; false for the command, which asks instead that
+--   the candidate stand near the boss (HIRE_COMMAND_RADIUS). Either way a hire
+--   is only ever an OFFER here, written when the candidate says yes.
 -- @return Result carrying what changed
 local function bossAct(source, board, action, target, who, requireDesk)
 	local name = board.job
@@ -1114,48 +1368,8 @@ local function bossAct(source, board, action, target, who, requireDesk)
 	local bottom, top = grades[1], grades[#grades]
 
 	if action == M.ACTION.HIRE then
-		local candidate = tonumber(target)
-		if candidate == nil then return Result.Err('error.badRequest') end
-		local their = characterOf(candidate)
-		if their == nil then return Result.Err('jobs.noCharacter') end
-		if their.jobs[name] ~= nil then return Result.Err('jobs.alreadyMember', name) end
-
-		-- Standing at the desk, re-derived here rather than trusted from the
-		-- boss's client: hiring somebody across the map is not a scene.
-		if requireDesk == true then
-			local at = positionOf(candidate)
-			local radius = Access.HireRadius()
-			local flat = at ~= nil and at.bucket == board.bucket
-				and Access.FlatDistanceSquared(board, at.x, at.y) or nil
-			if flat == nil or flat > radius * radius then
-				return Result.Err('jobs.candidateAway', name)
-			end
-		end
-
-		local met, missing = Access.MeetsRequirements(terms, {
-			grade = function(held) return their.jobs[held] end,
-			allowed = function(right) return allowed(candidate, right) end,
-		})
-		if not met then return Result.Err(missing or 'jobs.notOpen', name) end
-
-		local joined = their.jobName == nil or their.jobName == defaultJob()
-		local written = joined and character.SetJob(their.citizenId, name, bottom)
-			or character.AddPlayerToJob(their.citizenId, name, bottom)
-		if not written.ok then return written end
-
-		setBank(their.citizenId, name, 0)
-		flushSoon(their.citizenId)
-		-- A hire of somebody with a career of their own is a job held BESIDE the
-		-- one they work, exactly as a join is, and the notice says so and says
-		-- where it is worked: MaxTac hires nobody but NCPD Detectives, so every
-		-- one of its hires lands here.
-		OPX.NotifyLocale(candidate, joined and 'jobs.hired' or 'jobs.hiredBeside',
-			{ job = labelOf(name) })
-		OPX.Audit.Player(who.player, 'jobs.hire',
-			('%s as %s grade %d'):format(safe(their.citizenId), safe(name), bottom))
-		Open77.log.info(('[jobs] %s hired %s into %s at grade %d')
-			:format(safe(who.citizenId), safe(their.citizenId), safe(name), bottom))
-		return Result.Ok({ job = name, citizenId = their.citizenId, grade = bottom })
+		-- NOT WRITTEN HERE: a hire is an offer the candidate answers (`M.Decide`).
+		return offerHire(source, board, target, who, requireDesk, terms, bottom)
 	end
 
 	-- The other three act on somebody who already holds the job, and the roster
@@ -1750,8 +1964,8 @@ local function registerCommands()
 
 	-- HIRE IS THE ONE DESK ACTION WHOSE TARGET IS A CONNECTION AND NOT A CITIZEN
 	-- ID, which is why it is not in the loop above: `bossAct` reads a hire's
-	-- target as a connection -- the candidate has to be standing at the desk, and
-	-- somebody who is not in the session cannot be -- so the shared reader, which
+	-- target as a connection -- the candidate has to be online, near the boss, and
+	-- has to say yes on their own screen -- so the shared reader, which
 	-- hands over a string, would give it a value it can only refuse. Registered
 	-- separately with the connection named as one.
 	register(names.hire, {
@@ -1774,9 +1988,9 @@ local function registerCommands()
 			if not done.ok then
 				return OPX.CommandResult(source, false, tostring(done.error))
 			end
-			syncAll()
-			OPX.CommandResult(source, true, ('hired into %s at grade %s'):format(name,
-				tostring(done.value.grade)))
+			-- AN OFFER, NOT A HIRE: the candidate answers on their own screen.
+			OPX.CommandResult(source, true, ('offered a place in %s to player %s; waiting for their ' ..
+				'answer (%d s)'):format(name, tostring(candidate), math.floor(Access.HireOfferTimeoutMs() / 1000)))
 		end)
 	end)
 end
@@ -1838,7 +2052,7 @@ function M.Init()
 	captured = {}
 	rebuild()
 	banks, dirty = {}, {}
-	pending, windows = {}, {}
+	pending, windows, hireOffers = {}, {}, {}
 	running = false
 
 	OPX.Schema.Add(M.Storage.SCHEMA)
@@ -2013,10 +2227,38 @@ function M.Start()
 				OPX.NotifyLocale(player, done.error, { job = labelOf(done.detail) }, 'error')
 				return TriggerClientEvent(M.Event.ANSWER, player, false, done.error, origin)
 			end
-			syncAll()
-			OPX.NotifyLocale(player, 'jobs.deskDone',
-				{ action = tostring(action), job = labelOf(done.value.job) }, 'success')
+			-- A hire is an offer: the boss was told it went out, and the roster
+			-- does not change until the candidate's yes.
+			if done.value.offered ~= true then
+				syncAll()
+				OPX.NotifyLocale(player, 'jobs.deskDone',
+					{ action = tostring(action), job = labelOf(done.value.job) }, 'success')
+			end
 			TriggerClientEvent(M.Event.ANSWER, player, true, nil, origin, done.value.job)
+		end)
+	end)
+
+	-- THE CANDIDATE'S ANSWER. `source` is the answering connection and the only
+	-- thing taken off the wire besides the token and the yes: which offer, for
+	-- which job, from which boss, is the server's own record.
+	RegisterNetEvent(M.Event.DECIDE, function(token, yes)
+		local player = tonumber(source)
+		if player == nil then return end
+		if not within(player) then
+			return OPX.Refuse(player, 'error.tooFast', M.Operation.DECIDE)
+		end
+		CreateThread(function()
+			local settled = M.Decide(player, token, yes == true)
+			if not settled.ok then
+				OPX.Refuse(player, settled.error, M.Operation.DECIDE)
+				OPX.NotifyLocale(player, settled.error, { job = labelOf(settled.detail) }, 'error')
+				return
+			end
+			if settled.value.refused then
+				OPX.NotifyLocale(player, 'jobs.offer.youRefused', { job = labelOf(settled.value.job) }, 'info')
+				return
+			end
+			syncAll()
 		end)
 	end)
 
@@ -2061,6 +2303,7 @@ function M.Start()
 			windows[player] = nil
 			pending[player] = nil
 			sent[player] = nil
+			dropOffers(player)
 		end
 	end)
 
