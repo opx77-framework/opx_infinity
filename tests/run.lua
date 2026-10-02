@@ -16274,9 +16274,12 @@ do
 			store[key][tagOf(meta)] = (store[key][tagOf(meta)] or 0) + count
 			return { ok = true, value = true }
 		end
+		-- A trunk locked and a bag filled DURING a sale's yields, for the put-back.
+		local lockedTrunks, fullBags = {}, {}
 		local inventory = {
 			AddToTrunk = function(vehicle, name, count, meta)
 				if vehicle == 'veh-full' then return { ok = false, error = 'too_heavy' } end
+				if lockedTrunks[vehicle] then return { ok = false, error = 'locked' } end
 				return put(trunks, vehicle, meta, count)
 			end,
 			RemoveFromTrunk = function(vehicle, name, count, meta) return take(trunks, vehicle, meta, count) end,
@@ -16287,7 +16290,14 @@ do
 				return { ok = true, value = (bags[player] or {})[tagOf(meta)] or 0 }
 			end,
 			RemoveItem = function(player, name, count, meta) return take(bags, player, meta, count) end,
-			AddItem = function(player, name, count, meta) return put(bags, player, meta, count) end,
+			AddItem = function(player, name, count, meta)
+				local room = fullBags[player]
+				if room ~= nil then
+					if room < count then return { ok = false, error = 'no_room' } end
+					fullBags[player] = room - count
+				end
+				return put(bags, player, meta, count)
+			end,
 		}
 		local wallet = nil
 		local realGet = OPX.Api.Get
@@ -16355,6 +16365,28 @@ do
 		check('and the inventory can ask whether they are carrying',
 			OPX.Api.Get('hauling').IsCarrying(2) == true
 				and OPX.Api.Get('hauling').IsCarrying(3) == false)
+
+		-- ── a truck in another bucket is not a truck in front of you ─────────
+		-- Distance alone was measured: a vehicle on the same spot in another
+		-- routing bucket -- one the player cannot see -- took the crate.
+		vehicles['veh-ghost'] = { id = 'veh-ghost', record = 'Vehicle.nothing', bucket = 7,
+			position = { x = home.x - 1.0, y = home.y, z = home.z } }
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.LOAD, 'veh-ghost')
+		check('a vehicle in another routing bucket cannot be loaded',
+			lastAnswer()[2] == 'wrong_bucket', tostring(lastAnswer()[2]))
+		vehicles['veh-ghost'] = nil
+
+		-- And the id comes as a decimal string, which the server reads back as the
+		-- integer the host keys by: a JSON number past 2^53 would name another car.
+		vehicles[77] = { id = 77, record = 'Vehicle.nothing', bucket = 0,
+			position = { x = home.x - 1.0, y = home.y, z = home.z } }
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.LOAD, '77')
+		check('a vehicle id sent as a decimal string finds the vehicle',
+			lastAnswer()[1] == true, tostring(lastAnswer()[2]))
+		fire(2, M.Event.ABORT, 'cancelled')
+		vehicles[77] = nil
 
 		-- ── a full trunk leaves the crate in the carrier's hands ─────────────
 		vehicles['veh-full'] = { id = 'veh-full', record = 'Vehicle.nothing',
@@ -16429,6 +16461,59 @@ do
 			lastAnswer()[2] == 'not_paid', tostring(lastAnswer()[2]))
 		check('and the crates are put back in the trunk, so nothing was lost for nothing',
 			trunks['veh-1'].docks == 2, trunks['veh-1'].docks)
+
+		-- ── a put-back the trunk refuses falls back to the bag ───────────────
+		-- The put-back's own answers were dropped: a trunk the owner locked during
+		-- the yields left the player with no crates, no money and no line saying so.
+		wallet = { AddMoney = function()
+			lockedTrunks['veh-1'] = true
+			return false, 'money.vetoed'
+		end }
+		bags[2] = nil
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		at = at + Access.DELIVER_MS + 1
+		fire(2, M.Event.FINISH)
+		check('a trunk locked during the sale sends its crates to the bag instead',
+			lastAnswer()[2] == 'not_paid' and trunks['veh-1'].docks == 0
+				and (bags[2] or {}).docks == 2,
+			tostring(lastAnswer()[2]) .. ' ' .. tostring((bags[2] or {}).docks))
+
+		-- ── and with nowhere at all, the loss is written down to be refunded ─
+		lockedTrunks['veh-1'] = nil
+		trunks['veh-1'].docks, bags[2] = 2, nil
+		wallet = { AddMoney = function()
+			lockedTrunks['veh-1'] = true
+			fullBags[2] = 1
+			return false, 'money.vetoed'
+		end }
+		local errorsBefore = #control.log.error
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		at = at + Access.DELIVER_MS + 1
+		fire(2, M.Event.FINISH)
+		check('a bag with room for one keeps one, one at a time',
+			(bags[2] or {}).docks == 1, (bags[2] or {}).docks)
+		check('and the player is told some crates were lost, in words they have',
+			lastAnswer()[2] == 'not_paid_lost'
+				and OPX.Locale.Exists('hauling.refused.not_paid_lost'),
+			tostring(lastAnswer()[2]))
+		local loud = table.concat(control.log.error, '\n', errorsBefore + 1)
+		check('the loss is on the journal at error, with the refund owed',
+			loud:find('CRATES LOST', 1, true) ~= nil
+				and loud:find(('Refund %d'):format(Access.Pay('docks')), 1, true) ~= nil, loud)
+		check('and in the audit, under its own event', loud:find('hauling.crateLost', 1, true) ~= nil,
+			loud)
+		lockedTrunks['veh-1'], fullBags[2], bags[2] = nil, nil, nil
+		trunks['veh-1'].docks = 2
+
+		-- ── a seller in another bucket is not in front of you ────────────────
+		positions[2].bucket = 4
+		at = at + 10000
+		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
+		check('a seller cannot be dealt with from another routing bucket',
+			lastAnswer()[2] == 'wrong_bucket', tostring(lastAnswer()[2]))
+		positions[2].bucket = 0
 
 		wallet = { AddMoney = function(player, kind, amount, reason)
 			paid[#paid + 1] = { player = player, kind = kind, amount = amount, reason = reason }
@@ -18346,6 +18431,25 @@ do
 				return again ~= nil and again.ok and again.value.given == true
 			end)())
 
+		-- ── a legacy plate with a space still gets its owner a key ──────────
+		-- `^[%w%-]+$` refused `AB 1234`, so the garage's Ensure answered
+		-- badRequest and the owner of that row never got a key at all. The plate
+		-- is kept byte for byte: a "cleaned" one would match no row and no car.
+		local LEGACY = 'AB 12.34'
+		local legacy = run(function() return keys.Ensure(STRANGER, LEGACY, 'Archer Hella') end)
+		check('a legacy plate with a space and a dot is keyed',
+			legacy ~= nil and legacy.ok == true and legacy.value.given == true
+				and legacy.value.plate == LEGACY, legacy and tostring(legacy.error))
+		check('exactly as written, so the key matches the row',
+			run(function() return keys.Count(STRANGER, LEGACY) end) == 1
+				and run(function() return keys.Count(STRANGER, 'AB1234') end) == 0)
+		for index, bad in ipairs({ 'AB\n1234', '   ', '\195\128B1234', ('A'):rep(17) }) do
+			local refused = run(function() return keys.Ensure(STRANGER, bad) end)
+			check(('a plate that cannot be one is still refused (case %d)'):format(index),
+				refused ~= nil and refused.ok == false and refused.error == 'error.badRequest',
+				refused and tostring(refused.error))
+		end
+
 		-- ── turning it: the door, and what it believes ───────────────────────
 		local TOGGLE = keysModule.Event.TOGGLE
 		check('the lock door is wired', type(control.netEvents[TOGGLE]) == 'function')
@@ -18403,6 +18507,29 @@ do
 		trunk, code = inventory.Actions.OpenVehicle(HOLDER, KIND.TRUNK, tostring(CAR))
 		check('and the trunk opens again', trunk ~= nil and code == nil, tostring(code))
 		Containers.CloseSecondary(HOLDER)
+
+		-- ── a lock native that raises is a refusal, not a dead thread ───────
+		-- `setLocked` was called bare: a raise unwound the toggle's thread, and
+		-- the player pressed the key and got nothing at all -- no toast, no line.
+		control.Pump(11)
+		local realSetLocked = env.Open77.vehicles.setLocked
+		env.Open77.vehicles.setLocked = function() error('vehicle_not_found') end
+		told = toggle(HOLDER, { vehicleId = tostring(CAR) })
+		env.Open77.vehicles.setLocked = realSetLocked
+		check('a lock native that raises answers lockRefused instead of dying silently',
+			told ~= nil and told.playerId == HOLDER
+				and told.message == OPX.Locale.Text('vehiclekeys.lockRefused'),
+			told and told.message)
+		check('and the lock is left as it was', env.Open77.vehicles.isLocked(CAR) == false)
+		local direct = run(function()
+			env.Open77.vehicles.setLocked = function() error('boom') end
+			local answer = keys.Toggle(HOLDER, CAR)
+			env.Open77.vehicles.setLocked = realSetLocked
+			return answer
+		end)
+		check('the contract says the same to another module',
+			direct ~= nil and direct.ok == false and direct.error == 'vehiclekeys.lockRefused',
+			direct and tostring(direct.error))
 
 		-- ── reach is the server's measurement ───────────────────────────────
 		control.Pump(11)
