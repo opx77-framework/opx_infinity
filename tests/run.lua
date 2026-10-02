@@ -3211,7 +3211,7 @@ do
 				male.labels[1] == 'Balaclava with shock-absorbent composite layering'
 					and male.labels[2] == 'BRAINDANCE cap', tostring(male.labels[2]))
 			check('and the picture is the one on the body the room is dressing',
-				male.images[1] == 'balaclava-01-old-01-m.webp', tostring(male.images[1]))
+				male.images[1] == '74a637c7fc.webp', tostring(male.images[1]))
 			check('a record the data does not know has no picture and a readable name',
 				male.images[3] == '' and male.labels[3] == 'Nope Jacket 01',
 				('%q %q'):format(tostring(male.images[3]), tostring(male.labels[3])))
@@ -3221,7 +3221,7 @@ do
 		local female = firstWindow('female')
 		check('the other body gets its own picture of the same garment',
 			type(female) == 'table' and female.images ~= nil
-				and female.images[1] == 'balaclava-01-old-01-f.webp',
+				and female.images[1] == '974b9ebbd0.webp',
 			type(female) == 'table' and tostring(female.images and female.images[1]) or 'no window')
 
 		-- The lookup itself: a family it does not know falls back to a picture
@@ -3229,7 +3229,7 @@ do
 		local Garments = appearance.Garments
 		local _, unknownBody = Garments.Describe('Items.Cap_01_old_02', nil)
 		check('a body the data has no word for still gets a picture',
-			unknownBody == 'cap-01-old-02-f.webp', tostring(unknownBody))
+			unknownBody == 'b472a175a1.webp', tostring(unknownBody))
 		appearance.Data.GARMENTS[#appearance.Data.GARMENTS + 1] = {
 			['Items.Test_Path_01'] = { NAME = 'Escape', FEMALE = '../index.html', MALE = 'ok.webp' },
 		}
@@ -8587,6 +8587,28 @@ do
 		{ 'Open77.players.setVisible', 'players.life.visibility', 'hiding a body' },
 		{ 'Open77.players.setFrozen', 'players.life.freeze', 'holding a player still' },
 		{ 'Open77.doors', 'world.doors', 'the staff door switch' },
+		-- The health and armour natives check `players.stats.*`. Each card also
+		-- lists the older `players.damage.*` spelling, which the runtime still
+		-- accepts and which the devkit validator demands by mistake -- so an entry
+		-- may name several accepted spellings, and any one declared is enough.
+		-- `getHealth` is also satisfied by `players.life.read`.
+		{ 'Open77.players.setArmor', { 'players.stats.apply', 'players.damage.apply' },
+			'armour on spawn and from the staff panel' },
+		{ 'Open77.players.setHealth', { 'players.stats.apply', 'players.damage.apply' },
+			'staff heal and set-health' },
+		{ 'Open77.players.setMaxHealth', { 'players.stats.apply', 'players.damage.apply' },
+			'the character\'s maximum health' },
+		{ 'Open77.players.setGodMode', { 'players.stats.apply', 'players.damage.apply' },
+			'staff god mode' },
+		{ 'Open77.players.getHealth', { 'players.stats.read', 'players.damage.read',
+			'players.life.read' }, 'the staff panel\'s health column' },
+		{ 'players.getHealthState', 'players.life.read', 'the staff overlay\'s health read' },
+		-- Reached through a local (`players.setModel`), so the search is for the
+		-- method rather than the namespace. In no published build yet; see
+		-- `modules/admin/server/models.lua`.
+		{ 'players.setModel', 'players.model.control', 'wearing an NPC body' },
+		{ 'players.resetModel', 'players.model.control', 'giving the body back' },
+		{ 'players.getModel', 'players.model.read', 'reading the worn body' },
 	}
 
 	local handle = io.open('open77.lua', 'r')
@@ -8624,14 +8646,51 @@ do
 				end
 			end
 		end
+		-- One accepted spelling or several: any one of them declared is enough.
+		local accepted = type(permission) == 'table' and permission or { permission }
+		local granted = false
+		for spelling = 1, #accepted do
+			if declared[accepted[spelling]] then granted = true end
+		end
+		local named = table.concat(accepted, ' or ')
 		if used == nil then
 			-- Nothing calls it, so nothing needs the grant: an unread permission
 			-- is not a failure, and this line says which ones are unread.
-			check(('%s is not needed yet (%s)'):format(permission, what), true)
+			check(('%s is not needed yet (%s)'):format(named, what), true)
 		else
-			check(('%s is declared, because %s calls it (%s)'):format(permission, used, what),
-				declared[permission] == true, 'not declared in open77.lua')
+			check(('%s is declared, because %s calls %s (%s)'):format(named, used, call, what),
+				granted, 'not declared in open77.lua')
 		end
+	end
+end
+
+-- `Open77.players.setModel` is in no published server build (op77.78 included):
+-- the devkit validator says so, and it is right. The module was written for
+-- that, and this pins it: on a host without the natives the server still boots,
+-- the two model commands report themselves unavailable, and the operator gets
+-- exactly ONE log line about it -- not one per call, and not an error.
+section('a build without player models degrades to one line')
+do
+	local env, control, why = boot('server')
+	check('the server boots with no setModel', why == nil, why)
+
+	if why == nil then
+		check('the stub host has no setModel, as op77.78 has none',
+			type(env.Open77.players) ~= 'table' or env.Open77.players.setModel == nil)
+		local admin = env.OPX.Modules.Get('admin')
+		local Models = admin ~= nil and admin.Models or nil
+		check('the model module is up', Models ~= nil)
+		if Models ~= nil then
+			check('and says it is unavailable', Models.Available() == false)
+		end
+		local lines = 0
+		for _, line in ipairs(control.log.warn) do
+			if line:find('players.setModel', 1, true) then lines = lines + 1 end
+		end
+		check('one warn line names the missing native', lines == 1, lines)
+		check('and nothing is logged as an error for it',
+			not table.concat(control.log.error, '\n'):find('setModel', 1, true),
+			table.concat(control.log.error, ' | '))
 	end
 end
 
@@ -27575,6 +27634,118 @@ do
 		heard = delivered('my_hud', 'opx:on:progress:state')
 		check('a bar of opx\'s own keeps its owner', #heard == 2 and heard[2].args[2].owner == 'inventory')
 	end
+end
+
+-- ── a page that mounted before the calls module started ─────────────────────
+-- A page whose assets are warm in the CEF cache (every reconnection) reports
+-- `calls:ready` BEFORE the module has registered its page handlers; the surface
+-- holds that ready and replays it, synchronously, to the FIRST handler registered
+-- on it. `modules/calls/client/view.lua` registered its state-to-page handler
+-- AFTER that wiring loop, so the replayed ready drew its state into nothing and
+-- the hologram stayed empty until the next change.
+section('a page that mounted before the calls module started still gets its state')
+do
+	local env, control = Host.Environment('client')
+	local failure = nil
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk, why = loadfile(file, 't', env)
+		if not chunk then failure = why break end
+		local ok, raised = pcall(chunk)
+		if not ok then failure = raised break end
+	end
+	check('the client loads', failure == nil, failure)
+	if failure == nil then
+		control.Fire('onClientResourceStart', 'opx_infinity')
+		local frames = 0
+		while #control.pages == 0 and frames < 500 do
+			control.Pump(1)
+			frames = frames + 1
+		end
+		local page = control.pages[1]
+		check('the page exists before the calls module has started', page ~= nil
+			and not env.OPX.Modules.IsRunning('calls'), tostring(page))
+		if page ~= nil then
+			-- The warm cache: the page is up and the hologram reports ready now.
+			control.PageEmit(page, 'opx:ready', {})
+			control.PageEmit(page, 'opx:calls:ready', {})
+			control.Pump(240)
+			check('and it has started since', env.OPX.Modules.IsRunning('calls'))
+			local holo = nil
+			for _, one in ipairs(page.sent) do
+				if one.channel == 'opx:calls:holo' and type(one.payload) == 'table'
+					and one.payload.kind == 'holo' then
+					holo = one.payload
+					break
+				end
+			end
+			check('and the call hologram got its state from the replayed ready', holo ~= nil)
+		end
+	end
+end
+
+-- ── every file this resource ships fits a Windows client's path ─────────────
+-- A client installs a server's resources at `<game>\red4ext\plugins\Open77\cache\
+-- server-resources\sets\<64-hex digest>\resources\<resource>\` (Open77's
+-- `networking/src/ResourceInstaller.cpp`), which on a Steam install in Program
+-- Files is 200 characters before the file's own path, and Windows stops at 259
+-- (MAX_PATH less its terminator): a path of more than 59 characters, measured
+-- from the resource root (`web/images/clothing/<name>.webp`), is a file the
+-- client cannot see, and one such file fails the WHOLE resource. The wardrobe
+-- pictures under `web/images/clothing/` were named after their wiki slugs and ran
+-- to 59, the whole room and none to spare, so a game installed one folder deeper
+-- than the Steam default could not join. Everything the resource ships -- every
+-- file under `web/` above all, since that tree is generated -- is held here to
+-- that room less a 12-character margin.
+section('every file the resource ships fits a Windows client\'s path, with a margin')
+do
+	local GAME = 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Cyberpunk 2077'
+	local INSTALLED = GAME .. '\\red4ext\\plugins\\Open77\\cache\\server-resources\\sets\\'
+		.. ('0'):rep(64) .. '\\resources\\opx_infinity\\'
+	local ROOM = 259 - #INSTALLED
+	local MARGIN = 12
+	check('the room a Steam install leaves a file is 59 characters', ROOM == 59, ROOM)
+
+	-- What the node ships: `web/`, `core/`, `modules/`, `lib/`, `config/`,
+	-- `locales/` and `open77.lua`. The walk knows which platform it is on, and an
+	-- empty walk is a failure.
+	local windows = package.config:sub(1, 1) == '\\'
+	local here = ''
+	if windows then
+		local handle = io.popen('cd')
+		here = handle and (handle:read('l') or '') or ''
+		if handle then handle:close() end
+		here = here:gsub('\\', '/'):gsub('/$', '') .. '/'
+	end
+	local shipped, underWeb, pictures = { 'open77.lua' }, 0, 0
+	for _, root in ipairs({ 'web', 'core', 'modules', 'lib', 'config', 'locales' }) do
+		local command = windows
+			and ('dir /b /s /a-d "%s" 2>nul'):format(root)
+			or ('find "%s" -type f 2>/dev/null'):format(root)
+		local handle = io.popen(command)
+		if handle ~= nil then
+			for line in handle:lines() do
+				local path = line:gsub('\\', '/')
+				if windows and path:sub(1, #here):lower() == here:lower() then path = path:sub(#here + 1) end
+				path = path:gsub('^%./', '')
+				if path ~= '' then
+					shipped[#shipped + 1] = path
+					if path:sub(1, 4) == 'web/' then underWeb = underWeb + 1 end
+					if path:sub(1, 20) == 'web/images/clothing/' then pictures = pictures + 1 end
+				end
+			end
+			handle:close()
+		end
+	end
+	local longest, over = '', {}
+	for _, path in ipairs(shipped) do
+		if #path > #longest then longest = path end
+		if #path > ROOM - MARGIN and #over < 6 then over[#over + 1] = ('%s (%d)'):format(path, #path) end
+	end
+	check('the resource\'s files are listed', #shipped > 500, #shipped)
+	check('and the walk reached web/, the wardrobe pictures included',
+		underWeb > 1000 and pictures > 1000, ('%d under web/, %d pictures'):format(underWeb, pictures))
+	check(('none is longer than %d, %d short of the %d a client can see'):format(ROOM - MARGIN, MARGIN, ROOM),
+		#over == 0, #over > 0 and table.concat(over, ' ') or ('the longest: %s (%d)'):format(longest, #longest))
 end
 
 print(('\n%d checks, %d failed'):format(checks, failures))

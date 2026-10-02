@@ -35,6 +35,31 @@ npm run typecheck && npm run build                  # only if ui/ changed
 is excluded from the syntax check. Every Lua file must be listed in the manifest or
 CI fails: a file nobody listed never loads, and nothing else tells you.
 
+#### `open77_validate`: what it gets wrong here
+
+The devkit validator (checked against 2.31.13+op77.78) reports errors on `main` that
+are not runtime problems. Read past these; treat anything else it says as real.
+
+- **`loadscreen`, `web_ui_page`, `web_ui_auto_create` "unknown directive".** Its
+  manifest schema is incomplete. `web_ui_page` is in the server-resources guide's own
+  example and the `Open77.webui.default` card; `loadscreen` is what
+  `Open77.session.loadScreen` (since op77.11) reports; `web_ui_auto_create false` is
+  the convention every opx77 resource uses to create its surface itself. All three
+  run in production.
+- **`require` in `lib/client/lib.lua` "is nil in the sandbox".** That rule is the
+  *server* sandbox. The file is a `client_script`, and the client has `require`
+  (the `require` card and the lua-modules guide; `@dependency` since client
+  op77.67). See the table below.
+- **`players.damage.apply` / `players.damage.read` "required but not declared".**
+  The cards for `setArmor`, `setHealth`, `setMaxHealth`, `setGodMode` and
+  `getHealth` list the damage.* names only as an older spelling the runtime still
+  accepts; the catalogued names, `players.stats.apply` and `players.stats.read`, are
+  declared. Do not add the old spellings. The suite's "permissions the code needs"
+  section checks every gated call against the manifest, with either spelling.
+- **`Open77.players.setModel` "is in no published server build"**: true, and
+  handled. `modules/admin/server/models.lua` looks the natives up before every call,
+  the two model commands answer `models_unavailable`, and the server logs one line.
+
 `npm run build` writes `web/index.html`, which **is** the shipped bundle. The sources
 under `ui/` never leave the repository.
 

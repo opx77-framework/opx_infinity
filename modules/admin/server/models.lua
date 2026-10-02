@@ -9,8 +9,9 @@
 -- player.
 --
 -- THE BUILD MAY NOT HAVE THIS AT ALL. `Open77.players.setModel` and its aliases
--- arrived after 2.31.13+op77.76, which is the newest build the devkit catalogue
--- knows; the server this was written against runs op77.75. So every call goes
+-- are on the platform's main branch and, as of 2.31.13+op77.78, in NO published
+-- server build (the devkit card says "since: not in any published build"). So
+-- every call goes
 -- through `api()`, which answers nil when the native is absent, and the command
 -- then refuses with `models_unavailable` instead of raising. The menu rows stay
 -- drawn: the ACL grants them, the catalogue is real, and the day the server is
@@ -210,7 +211,7 @@ function Models.Register()
 	end)
 
 	if not Models.Available() then
-		Open77.log.warn(('[admin] this build has no Open77.players.setModel: %s and %s refuse ' ..
+		Open77.log.warn(('[admin] this build has no players.setModel native: %s and %s refuse ' ..
 			'with models_unavailable and the menu greys their rows. Every other command is ' ..
 			'unaffected.'):format(Command.SELF_MODEL, Command.PLAYER_MODEL))
 	end
