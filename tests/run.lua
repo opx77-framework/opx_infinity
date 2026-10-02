@@ -26517,5 +26517,63 @@ do
 	end
 end
 
+section('creator review: an impound and a spawn of one plate')
+do
+	local env, control, why = boot('server', creatorBridge({}))
+	check('the server boots for the impound race', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		OPX.Config.SERVER.EXPORTS.WRITERS = { evidence = true }
+		local vehicles = OPX.Modules.Get('vehicles')
+		local character = OPX.Modules.Get('character')
+		local STATE = vehicles.Storage.STATE
+		local rowState = STATE.STORED
+		local realFetch, realSet = vehicles.Storage.FetchOne, vehicles.Storage.SetState
+		-- A READ THAT YIELDS, as the real one does, and is held open while `gate`.
+		local gate = false
+		vehicles.Storage.FetchOne = function(plate)
+			local seen = rowState
+			env.Wait(0)
+			while gate do env.Wait(0) end
+			return OPX.Result.Ok({ plate = plate, citizenId = 'citizen-race', garage = 'dock',
+				record = 'Vehicle.v_standard2_villefort_cortes_player', state = seen,
+				health = 1.0, metadata = {} })
+		end
+		vehicles.Storage.SetState = function(_, value)
+			rowState = value
+			return OPX.Result.Ok(true)
+		end
+
+		local OWNER = 643
+		control.Admit(OWNER, 'account-643')
+		character.Players[OWNER] = { PlayerData = { citizenId = 'citizen-race', source = OWNER,
+			userId = 'account-643' } }
+		character.Registry.byCitizenId['citizen-race'] = OWNER
+		env.Open77.players.position = function() return { x = 1.0, y = 2.0, z = 3.0, bucket = 0 } end
+
+		-- The spawn has read STORED and is still inside its read when the
+		-- impound arrives; the read is let go a few ticks later.
+		local spawn
+		gate = true
+		env.CreateThread(function() spawn = vehicles.Spawn(OWNER, 'RACE01') end)
+		control.Pump(2)
+		env.CreateThread(function()
+			for _ = 1, 6 do env.Wait(0) end
+			gate = false
+		end)
+		local impound = control.CallExport('evidence', 'SetVehicleState', 'RACE01', 'impounded')
+		settle(control, function() return spawn ~= nil end, 40)
+		check('an impound landing while a spawn of the plate is reading the row is told busy',
+			impound ~= nil and impound.ok == false and impound.error == 'vehicle.busy',
+			impound and tostring(impound.error))
+		check('so the car that came out is not one the row calls impounded',
+			spawn ~= nil and spawn.ok == true and rowState == STATE.OUT,
+			spawn and tostring(spawn.error))
+
+		vehicles.Storage.FetchOne, vehicles.Storage.SetState = realFetch, realSet
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
