@@ -28244,5 +28244,54 @@ do
 		#over == 0, #over > 0 and table.concat(over, ' ') or ('the longest: %s (%d)'):format(longest, #longest))
 end
 
+-- ── a menu reopened by a form's Enter does not fire that Enter ──────────────
+-- THE OWNER: "le filter des armes de que je ecrit un truc aucun menu ne pop".
+-- The staff search is a form, and its Enter reopens the menu in the very tick
+-- the form gives the keyboard back. The game does not see a key the page was
+-- holding until a pass later, so `primeHeld` read it as up, and the next poll
+-- read the same unbroken press as a fresh edge and fired the row under the
+-- reopened cursor.
+section('a reopened menu waits for the Enter that reopened it to be released')
+do
+	local env, control, why = boot('client')
+	check('client boots for the reopen grace', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local menu = OPX.Api.Get('menu')
+		local down = {}
+		OPX.Lib.Input.IsDown = function(name) return down[name] == true end
+		local actions = {}
+		local opened = menu.Open({
+			owner = 'grace-test',
+			title = 'Grace',
+			items = { { id = 'first', label = 'First' }, { id = 'second', label = 'Second' } },
+			on = function(payload) actions[#actions + 1] = payload.action end,
+		})
+		check('the menu opens', opened.ok, opened.error)
+		local function chose()
+			local n = 0
+			for _, action in ipairs(actions) do
+				if action ~= 'close' and action ~= 'focus' and action ~= 'move' then n = n + 1 end
+			end
+			return n
+		end
+		-- The press the form consumed, seen by the game only now.
+		down.ENTER = true
+		control.Pump(1)
+		check('an Enter first seen inside the grace does not choose', chose() == 0,
+			table.concat(actions, ' '))
+		control.Pump(20)
+		check('and holding it does not choose either', chose() == 0, table.concat(actions, ' '))
+		-- The scheduler rotates its jobs, so the poll is not one pass per pump:
+		-- wait for the release to be read, then for the press.
+		down.ENTER = nil
+		control.Pump(40)
+		down.ENTER = true
+		settle(control, function() return chose() >= 1 end)
+		check('a fresh press after the release does', chose() == 1, table.concat(actions, ' '))
+		menu.Close(opened.value.handle)
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

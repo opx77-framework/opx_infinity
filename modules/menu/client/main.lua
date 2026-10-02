@@ -52,6 +52,15 @@ local POLLED = {
 -- finer than the repeat interval is what keeps a held arrow even.
 local POLL_MS = 25
 local REPEAT_FIRST_MS = 260
+
+-- How many passes after the poll starts a press must be RELEASED before it
+-- counts. `primeHeld` reads what is down at the start, but a menu reopened by a
+-- form's Enter starts in the very tick the form gave the keyboard back, and the
+-- game does not see a key the page was holding until a pass later. Read then,
+-- that same press was a fresh edge and fired on the row the reopened menu put
+-- the cursor on. Counted in passes and not milliseconds because the hand-off is
+-- a pass late however long a pass takes; four is about 100ms at 25ms a pass.
+local REOPEN_GRACE_PASSES = 4
 local REPEAT_NEXT_MS = 55
 
 -- What this module's focus owners are given. The page names an owner and never
@@ -1244,6 +1253,9 @@ local heldUntil = {}
 -- The scheduler handle of the poll, nil when nothing is polling.
 local pollJob
 
+-- Passes since the poll last started, for `REOPEN_GRACE_PASSES`.
+local passes = 0
+
 --- Whether this open menu leaves the keyboard to the game.
 local function pagePolls()
 	return record ~= nil and record.focus == 'full'
@@ -1254,6 +1266,7 @@ local function pollKeys()
 	if record == nil or pagePolls() then return end
 
 	local atMs = OPX.Now()
+	passes = passes + 1
 	for index = 1, #POLLED do
 		local name, key = POLLED[index][1], POLLED[index][2]
 		-- A plain boolean, on purpose: a Result per key per 25 ms pass is garbage
@@ -1267,7 +1280,13 @@ local function pollKeys()
 			heldUntil[name] = nil
 		else
 			local due = heldUntil[name]
-			if due == nil then
+			if due == nil and passes <= REOPEN_GRACE_PASSES then
+				-- A press that was already down when the menu came back, seen late.
+				-- An arrow is armed as held and repeats on schedule; Enter and
+				-- Backspace act rather than move, so they wait for the release.
+				heldUntil[name] = (key == 'enter' or key == 'back') and math.huge
+					or atMs + REPEAT_FIRST_MS
+			elseif due == nil then
 				-- The rising edge. Fires at once and arms the long first repeat.
 				heldUntil[name] = atMs + REPEAT_FIRST_MS
 				onKey({ handle = record.handle, key = key })
@@ -1312,6 +1331,7 @@ end
 setPolling = function(wanted)
 	if wanted and pollJob == nil then
 		primeHeld()
+		passes = 0
 		pollJob = OPX.Scheduler.Every('menu:keys', POLL_MS, pollKeys)
 	elseif not wanted and pollJob ~= nil then
 		OPX.Scheduler.Cancel(pollJob)
