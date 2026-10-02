@@ -935,6 +935,42 @@ local function rounded(point)
 	return { x = tenth(point.x), y = tenth(point.y), z = tenth(point.z) }
 end
 
+-- THE FALLBACK WALK, SLICED. Without `vehicles.nearby` the only read is
+-- `vehicles.all`, every vehicle in the world, and a kind lookup and a snapshot
+-- per entry. Done inside the watch job that is one resume per pass over a list
+-- with no bound -- the per-resume instruction budget's failure mode, which
+-- retires the scheduler loop for the session with no log line. So the walk runs
+-- on a thread of its own, yielding every WALK_SLICE entries, and leaves the ids
+-- of the aircraft it found; `aircraftNear` re-reads only those, fresh, each
+-- pass. `walkIds` is the last finished walk's answer, `walking` whether one is
+-- under way.
+local WALK_SLICE = 16
+local walkIds, walking = {}, false
+
+--- Starts one sliced walk over `vehicles.all`, unless one is running.
+-- @param api table `Open77.vehicles`
+-- @param cap integer the most aircraft worth keeping
+local function walkAll(api, cap)
+	if walking then return end
+	walking = true
+	CreateThread(function()
+		local ids = {}
+		local read, entries = pcall(api.all)
+		if read and type(entries) == 'table' then
+			for index, entry in ipairs(entries) do
+				if #ids >= cap then break end
+				local id = type(entry) == 'table' and (entry.id or entry.vehicleId) or nil
+				if id ~= nil then
+					local kind = kindOf(id)
+					if kind ~= nil and kind.aircraft == true then ids[#ids + 1] = id end
+				end
+				if index % WALK_SLICE == 0 then Wait(0) end
+			end
+		end
+		walkIds, walking = ids, false
+	end)
+end
+
 --- The aircraft near this body, nearest first: `{ id, snapshot }`.
 -- @param watchCfg table `M.WatchSettings()`
 -- @return table[]
@@ -951,11 +987,13 @@ local function aircraftNear(watchCfg)
 	local me = nil
 	if entries == nil then
 		if type(api.all) ~= 'function' then return {} end
-		local read, answer = pcall(api.all)
-		if not read or type(answer) ~= 'table' then return {} end
-		entries = answer
 		me = myself()
 		if me == nil then return {} end
+		-- The last sliced walk's aircraft, re-read below; the next walk starts
+		-- now and is ready for a later pass.
+		entries = {}
+		for index, id in ipairs(walkIds) do entries[index] = { id = id } end
+		walkAll(api, math.max(64, watchCfg.hulls * 16))
 	end
 	local found = {}
 	for _, entry in ipairs(entries) do
@@ -1134,6 +1172,7 @@ function M.Init()
 	guard, guardJob, lastExit, askedAt = nil, nil, nil, nil
 	watchJob = nil
 	sights, sightQueue, sightAt, sightBlind = {}, {}, 0, false
+	walkIds, walking = {}, false
 end
 
 function M.Start()

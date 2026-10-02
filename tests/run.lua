@@ -40943,22 +40943,28 @@ do
 			most < 8000 and resumes > 3 and pins == 128,
 			('%d at most across %d resumes, %d pins'):format(most, resumes, pins))
 
-		-- The whole pass, `apply` included, on the module's own thread.
-		local per, counts, target = 0, {}, nil
+		-- The whole pass, `apply` included, on the module's own thread. Counted
+		-- PER THREAD: other modules' threads (the AV watch's sliced walk among
+		-- them) run in the same pumps, and one shared counter added their
+		-- instructions to the blips resume they happened to interleave with.
+		local per, counts = {}, {}
 		local realCreate, realWait = env.CreateThread, env.Wait
 		env.Wait = function(...)
-			if coroutine.running() == target then
-				counts[#counts + 1] = per
-				per = 0
+			local me = coroutine.running()
+			if per[me] ~= nil then
+				counts[#counts + 1] = per[me]
+				per[me] = 0
 			end
 			return realWait(...)
 		end
 		env.CreateThread = function(fn)
 			realCreate(function()
-				target = coroutine.running()
-				debug.sethook(function() per = per + 1 end, '', 1)
+				local me = coroutine.running()
+				per[me] = 0
+				debug.sethook(function() per[me] = per[me] + 1 end, '', 1)
 				fn()
-				counts[#counts + 1] = per
+				counts[#counts + 1] = per[me]
+				per[me] = nil
 				debug.sethook()
 			end)
 		end
@@ -45992,6 +45998,31 @@ do
 		near = {}
 		avdoor.Sight(30000, nil)
 		check('episodes whose hulls are gone end quietly', #sights(burst) == 3)
+
+		-- WITHOUT `vehicles.nearby` THE FALLBACK WALKS EVERY VEHICLE, and that
+		-- walk is sliced on a thread of its own: a world of 300 cars is never
+		-- one resume of the watch job (the client instruction budget).
+		env.Open77.vehicles.nearby = nil
+		local realAll, realPosition, realWait = env.Open77.vehicles.all, env.Open77.character.position, env.Wait
+		local world = {}
+		for index = 1, 300 do
+			local id = 6000 + index
+			control.vehicles.byId[id] = { id = id, record = 'Vehicle.v_sport1_quadra_turbo',
+				position = { x = 5000.0, y = 0.0, z = 0.0 }, locallyOwned = false, streamed = true }
+			world[#world + 1] = { id = id }
+		end
+		world[#world + 1] = { id = 4343 }
+		env.Open77.vehicles.all = function() return world end
+		env.Open77.character.position = function() return 100.0, 200.0, 30.0 end
+		local yields = 0
+		env.Wait = function(...) yields = yields + 1; return realWait(...) end
+		check('the first look starts the walk and measures nothing it has not walked yet',
+			avdoor.Sight(40000, nil) == 0)
+		control.Pump(40)
+		check('the walk over 301 vehicles gave the frame back every few entries',
+			yields >= 301 // 16, tostring(yields) .. ' yield(s)')
+		check('and the next look measures the aircraft it found', avdoor.Sight(40500, nil) == 1)
+		env.Open77.vehicles.all, env.Open77.character.position, env.Wait = realAll, realPosition, realWait
 
 		local shippedWatch = avdoor.Settings.WATCH
 		avdoor.Settings.WATCH = false
