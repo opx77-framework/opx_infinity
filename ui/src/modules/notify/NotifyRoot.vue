@@ -494,7 +494,7 @@ onUnmounted(stop)
    know about each other. The read-out is a handful of short lines, so the number is
    stable; it is a token so that moving it is moving one value. */
 .top_right {
-  top: calc(var(--op-inset-y) + var(--op-notify-clear-top, 132px));
+  top: calc(var(--op-inset-y) + var(--op-notify-clear-top, 31vh));
 }
 
 /* Bottom stacks grow upward, so the newest toast is nearest the edge. DOM order is the

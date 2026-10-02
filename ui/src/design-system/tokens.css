@@ -198,9 +198,10 @@
      the player is expected to keep watching the street. Zero is a decision. */
   --op-menu-veil: 0;
 
-  /* Pixels the notification column keeps clear at the top, under whatever the
-     surface above it occupies. */
-  --op-notify-clear-top: 132px;
+  /* How far down the notification column starts, under the minimap: "les
+     notifications ... sont sur la minimap". The game scales its minimap with the
+     screen height, so the clearance does too; 31vh is the minimap plus a gap. */
+  --op-notify-clear-top: 31vh;
 
   /* A row's position in its list, set inline by the component so `.op-enter`
      can stagger. NOT prefixed by the view: it is written by six components and
