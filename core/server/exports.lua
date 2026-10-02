@@ -204,6 +204,16 @@ local function detached(body, caller, args)
 	return box.ran, box.answer
 end
 
+--- Whether this host offers `exports`.
+-- On op77 `exports` is a CALLABLE TABLE, not a function: it is called to
+-- publish and indexed for `exports.other:name()`, so `type` answers 'table'.
+-- Testing for 'function' alone read every real host as having none, and the
+-- whole creator surface went unpublished without an error.
+local function hasExports()
+	local kind = type(exports)
+	return kind == 'function' or kind == 'table' or kind == 'userdata'
+end
+
 --- Publishes one export behind the three gates.
 -- @param name string the export name
 -- @param scope string `read` or `write`
@@ -212,7 +222,7 @@ end
 --   the database or wait -- given its raw arguments. Such a call is run
 --   `detached`, above.
 local function publish(name, scope, body, yields)
-	if type(exports) ~= 'function' then return end
+	if not hasExports() then return end
 	exports(name, function(...)
 		local caller = GetInvokingResource ~= nil and GetInvokingResource() or nil
 		if type(caller) ~= 'string' or #caller < 1 or #caller > 64
@@ -727,6 +737,6 @@ publish('SetVehicleState', 'write', function(_, plate, state, garage)
 	return answered(vehicles.SetState(plate, state, garage))
 end, true)
 
-if type(exports) ~= 'function' then
+if not hasExports() then
 	Open77.log.warn('[exports] this host has no `exports`: the creator surface is not published')
 end

@@ -2092,14 +2092,20 @@ function Host.Environment(side, database)
 	-- give back is not this resource's business.
 	local published, exportCalls = {}, {}
 	local invoking = nil
-	env.exports = function(name, fn)
-		if type(name) ~= 'string' or #name < 1 or #name > 64 then
-			error('invalid_export_name', 2)
-		end
-		if type(fn) ~= 'function' then error('export_function_required', 2) end
-		published[name] = fn
-		return true
-	end
+	-- A CALLABLE TABLE, as the host gives it: called to publish, indexed for
+	-- `exports.other:name()`. A plain function here once let a `type(exports)
+	-- == 'function'` test pass in the suite and fail on every real server.
+	env.exports = setmetatable({}, {
+		__call = function(_, name, fn)
+			if type(name) ~= 'string' or #name < 1 or #name > 64 then
+				error('invalid_export_name', 2)
+			end
+			if type(fn) ~= 'function' then error('export_function_required', 2) end
+			published[name] = fn
+			return true
+		end,
+		__newindex = function() error('Open77: exports is not assignable', 2) end,
+	})
 	env.GetInvokingResource = function() return invoking end
 	Open77.exports.call = function(resource, name, ...)
 		exportCalls[#exportCalls + 1] = { resource = resource, name = name, args = { ... } }
