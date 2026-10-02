@@ -3211,7 +3211,7 @@ do
 				male.labels[1] == 'Balaclava with shock-absorbent composite layering'
 					and male.labels[2] == 'BRAINDANCE cap', tostring(male.labels[2]))
 			check('and the picture is the one on the body the room is dressing',
-				male.images[1] == 'balaclava-01-old-01-m.webp', tostring(male.images[1]))
+				male.images[1] == '74a637c7fc.webp', tostring(male.images[1]))
 			check('a record the data does not know has no picture and a readable name',
 				male.images[3] == '' and male.labels[3] == 'Nope Jacket 01',
 				('%q %q'):format(tostring(male.images[3]), tostring(male.labels[3])))
@@ -3221,7 +3221,7 @@ do
 		local female = firstWindow('female')
 		check('the other body gets its own picture of the same garment',
 			type(female) == 'table' and female.images ~= nil
-				and female.images[1] == 'balaclava-01-old-01-f.webp',
+				and female.images[1] == '974b9ebbd0.webp',
 			type(female) == 'table' and tostring(female.images and female.images[1]) or 'no window')
 
 		-- The lookup itself: a family it does not know falls back to a picture
@@ -3229,7 +3229,7 @@ do
 		local Garments = appearance.Garments
 		local _, unknownBody = Garments.Describe('Items.Cap_01_old_02', nil)
 		check('a body the data has no word for still gets a picture',
-			unknownBody == 'cap-01-old-02-f.webp', tostring(unknownBody))
+			unknownBody == 'b472a175a1.webp', tostring(unknownBody))
 		appearance.Data.GARMENTS[#appearance.Data.GARMENTS + 1] = {
 			['Items.Test_Path_01'] = { NAME = 'Escape', FEMALE = '../index.html', MALE = 'ok.webp' },
 		}
@@ -27048,6 +27048,71 @@ do
 			check('and the call hologram got its state from the replayed ready', holo ~= nil)
 		end
 	end
+end
+
+-- ── every file this resource ships fits a Windows client's path ─────────────
+-- A client installs a server's resources at `<game>\red4ext\plugins\Open77\cache\
+-- server-resources\sets\<64-hex digest>\resources\<resource>\` (Open77's
+-- `networking/src/ResourceInstaller.cpp`), which on a Steam install in Program
+-- Files is 200 characters before the file's own path, and Windows stops at 259
+-- (MAX_PATH less its terminator): a path of more than 59 characters, measured
+-- from the resource root (`web/images/clothing/<name>.webp`), is a file the
+-- client cannot see, and one such file fails the WHOLE resource. The wardrobe
+-- pictures under `web/images/clothing/` were named after their wiki slugs and ran
+-- to 59, the whole room and none to spare, so a game installed one folder deeper
+-- than the Steam default could not join. Everything the resource ships -- every
+-- file under `web/` above all, since that tree is generated -- is held here to
+-- that room less a 12-character margin.
+section('every file the resource ships fits a Windows client\'s path, with a margin')
+do
+	local GAME = 'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Cyberpunk 2077'
+	local INSTALLED = GAME .. '\\red4ext\\plugins\\Open77\\cache\\server-resources\\sets\\'
+		.. ('0'):rep(64) .. '\\resources\\opx_infinity\\'
+	local ROOM = 259 - #INSTALLED
+	local MARGIN = 12
+	check('the room a Steam install leaves a file is 59 characters', ROOM == 59, ROOM)
+
+	-- What the node ships: `web/`, `core/`, `modules/`, `lib/`, `config/`,
+	-- `locales/` and `open77.lua`. The walk knows which platform it is on, and an
+	-- empty walk is a failure.
+	local windows = package.config:sub(1, 1) == '\\'
+	local here = ''
+	if windows then
+		local handle = io.popen('cd')
+		here = handle and (handle:read('l') or '') or ''
+		if handle then handle:close() end
+		here = here:gsub('\\', '/'):gsub('/$', '') .. '/'
+	end
+	local shipped, underWeb, pictures = { 'open77.lua' }, 0, 0
+	for _, root in ipairs({ 'web', 'core', 'modules', 'lib', 'config', 'locales' }) do
+		local command = windows
+			and ('dir /b /s /a-d "%s" 2>nul'):format(root)
+			or ('find "%s" -type f 2>/dev/null'):format(root)
+		local handle = io.popen(command)
+		if handle ~= nil then
+			for line in handle:lines() do
+				local path = line:gsub('\\', '/')
+				if windows and path:sub(1, #here):lower() == here:lower() then path = path:sub(#here + 1) end
+				path = path:gsub('^%./', '')
+				if path ~= '' then
+					shipped[#shipped + 1] = path
+					if path:sub(1, 4) == 'web/' then underWeb = underWeb + 1 end
+					if path:sub(1, 20) == 'web/images/clothing/' then pictures = pictures + 1 end
+				end
+			end
+			handle:close()
+		end
+	end
+	local longest, over = '', {}
+	for _, path in ipairs(shipped) do
+		if #path > #longest then longest = path end
+		if #path > ROOM - MARGIN and #over < 6 then over[#over + 1] = ('%s (%d)'):format(path, #path) end
+	end
+	check('the resource\'s files are listed', #shipped > 500, #shipped)
+	check('and the walk reached web/, the wardrobe pictures included',
+		underWeb > 1000 and pictures > 1000, ('%d under web/, %d pictures'):format(underWeb, pictures))
+	check(('none is longer than %d, %d short of the %d a client can see'):format(ROOM - MARGIN, MARGIN, ROOM),
+		#over == 0, #over > 0 and table.concat(over, ' ') or ('the longest: %s (%d)'):format(longest, #longest))
 end
 
 print(('\n%d checks, %d failed'):format(checks, failures))
