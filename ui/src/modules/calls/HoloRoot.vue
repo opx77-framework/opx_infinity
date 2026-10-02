@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { list, num, table, text } from '@/bridge/types'
@@ -70,6 +70,27 @@ const tab = ref<'contacts' | 'recent'>('contacts')
 const onCall = computed(() => call.value !== null)
 const ringing = computed(() => invite.value !== null)
 
+/** A call this player placed that is still ringing on the other side. A
+ *  contact request is not dialling, so it pops nothing. */
+const dialing = computed(
+  () => outgoing.value !== null && text(outgoing.value.kind) !== 'contact'
+)
+
+/**
+ * WHO IS RINGING, AS THE SERVER NAMES THEM. The push carries `fromName`; the
+ * page read `name`, which the server never sends, so every incoming call popped
+ * the sphere with a `?` in it. `name` is still read second, for a payload built
+ * by hand.
+ */
+const callerName = computed(() =>
+  invite.value === null ? '?' : text(invite.value.fromName, text(invite.value.name, '?'))
+)
+
+/** Who this player is ringing out to. */
+const calleeName = computed(() =>
+  outgoing.value === null ? '?' : text(outgoing.value.toName, '?')
+)
+
 /** Who is on the call, as names, for the header. */
 const participants = computed(() => {
   const held = call.value === null ? [] : list<Payload>(call.value.participants)
@@ -96,6 +117,12 @@ function rowsOf(value: unknown): Row[] {
     }))
     .filter((row) => row.id > 0)
 }
+
+// THE HANDSHAKE. It lived on the incoming card on the left, which is gone; Lua
+// answers with this player's whole call state.
+onMounted(() => {
+  emit('opx:calls:ready', {})
+})
 
 useBridge('opx:calls:holo', (payload: Payload) => {
   guard('calls:holo', () => {
@@ -147,6 +174,10 @@ function hangUp(): void {
   emit('opx:calls:hangUp', {})
 }
 
+function withdraw(): void {
+  emit('opx:calls:withdraw', {})
+}
+
 /**
  * LITERAL KEYS, NOT BUILT ONES, and the suite is why. A catalogue check walks
  * this file for `t('calls...')` and asserts every one exists in both languages;
@@ -183,7 +214,9 @@ function reasonKey(reason: string): string {
  * le menu" -- so the sphere pops with the caller in it, says which keys answer
  * it, and takes nothing at all.
  */
-const present = computed(() => open.value || ringing.value || onCall.value)
+const present = computed(
+  () => open.value || ringing.value || onCall.value || dialing.value
+)
 
 /**
  * The two letters the sphere prints. They come off the payload rather than
@@ -250,16 +283,25 @@ const shown = computed<Row[]>(() => contacts.value)
       -->
       <div v-if="!open" class="passive">
         <p v-if="ringing" class="passive-who op-label">
-          {{ text(invite?.name, '?') }}
+          {{ callerName }}
         </p>
-        <p v-else class="passive-who op-label">
+        <p v-else-if="onCall" class="passive-who op-label">
           {{ participants.join(', ') }}
         </p>
+        <p v-else class="passive-who op-label">
+          {{ calleeName }}
+        </p>
+        <!-- THE NAME ONCE. Dialling out with no call, the line above already
+             says who: "Calling {name}..." under it printed it twice. The
+             named line is for the one case it adds something -- on a call,
+             asking a third, where the line above lists the people on it. -->
         <p class="passive-what op-eyebrow">
           {{ ringing
-            ? (inviteIsContact ? t('calls.holo.sharing', { name: text(invite?.name, '?') })
+            ? (inviteIsContact ? t('calls.holo.sharing', { name: callerName })
               : t('calls.holo.incoming'))
-            : t('calls.holo.inCall') }}
+            : onCall
+              ? (dialing ? t('calls.holo.calling', { name: calleeName }) : t('calls.holo.inCall'))
+              : t('calls.holo.dialing') }}
         </p>
         <!-- THE KEYS, AS LETTERS. Read off the config the same way the rest of
              this surface reads its words, so a server that rebinds them is not
@@ -272,6 +314,16 @@ const shown = computed<Row[]>(() => contacts.value)
           <span class="prompt">
             <b class="cap">{{ declineKey }}</b>
             {{ inviteIsContact ? t('calls.holo.no') : t('calls.holo.refuse') }}
+          </span>
+        </div>
+        <!-- HANGING UP IS ANSWERED THE SAME WAY: one letter in the sphere, the
+             refuse key, nothing to open. While something rings out it
+             withdraws that first -- on a call too -- and the word says so,
+             because the key does exactly what is printed beside it. -->
+        <div v-else class="prompts">
+          <span class="prompt">
+            <b class="cap">{{ declineKey }}</b>
+            {{ outgoing !== null ? t('calls.holo.withdraw') : t('calls.holo.hangUp') }}
           </span>
         </div>
       </div>
@@ -295,8 +347,8 @@ const shown = computed<Row[]>(() => contacts.value)
         <div v-if="ringing" class="ring-row">
           <p class="ring-who op-copy">
             {{ inviteIsContact
-              ? t('calls.holo.sharing', { name: text(invite?.name, '?') })
-              : t('calls.holo.ringing', { name: text(invite?.name, '?') }) }}
+              ? t('calls.holo.sharing', { name: callerName })
+              : t('calls.holo.ringing', { name: callerName }) }}
           </p>
           <div class="acts">
             <button class="act yes op-eyebrow" type="button" @click="accept">
@@ -317,9 +369,17 @@ const shown = computed<Row[]>(() => contacts.value)
           </button>
         </div>
 
-        <p v-else-if="outgoing !== null" class="waiting op-eyebrow">
-          {{ t('calls.holo.calling', { name: text(outgoing?.name, '?') }) }}
-        </p>
+        <!-- WHAT IS RINGING OUT, and its own way back. Shown on a call too: a
+             third person being asked to join is withdrawn here, while the live
+             row's button above still ends the call itself. -->
+        <div v-if="outgoing !== null" class="live-row">
+          <p class="waiting op-eyebrow">
+            {{ t('calls.holo.calling', { name: calleeName }) }}
+          </p>
+          <button class="act no op-eyebrow" type="button" @click="withdraw">
+            {{ t('calls.holo.withdraw') }}
+          </button>
+        </div>
 
         <nav class="tabs">
           <button
@@ -347,8 +407,6 @@ const shown = computed<Row[]>(() => contacts.value)
             <template v-else>
               <button class="pill op-eyebrow" type="button" @click="callRow(row)">
                 {{ onCall ? t('calls.holo.add') : t('calls.holo.call') }}
-              </button>
-              <button
               </button>
             </template>
           </li>

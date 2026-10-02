@@ -525,6 +525,22 @@ local function callEnded(outcome)
 		if registry.CallOf(id) == nil then
 			darkenEyes(id)
 			if callId ~= nil then leaveVoice(callId, id) end
+			-- AN INVITE TO JOIN A CALL YOU ARE NO LONGER ON IS WITHDRAWN WITH YOU.
+			-- It used to ring on the third person's screen until it expired, or
+			-- until they answered and were refused `notInCall`, for a call that
+			-- no longer had its sender in it. Withdrawn the way `onWithdraw` does
+			-- it: audited, filed as missed, and pushed to the target. The sender
+			-- is pushed below with everyone else, and on both screens the invite
+			-- going is what plays the stop sound.
+			local pending = registry.OutgoingOf(id)
+			if pending ~= nil and pending.kind == 'join' then
+				local withdrawn = registry.Cancel(id)
+				if withdrawn ~= nil then
+					audit('calls.cancel', id, true, 'join: the sender left the call')
+					fileRecent(withdrawn.to, 'missed', nameOf(id), citizenOf(id))
+					push(withdrawn.to)
+				end
+			end
 		end
 	end
 	-- THE CHANNEL GOES WITH THE LAST PARTICIPANT AND NOT BEFORE. `callEnded` also
@@ -568,6 +584,11 @@ local function onAccept(rawInvite)
 	local playerId = tonumber(source) or 0
 	if playerId <= 0 then return end
 	if OPX.Cooling(playerId, 'calls:answer', requestMs) then
+		-- THE STATE GOES BACK WITH THIS REFUSAL TOO. The client stopped the
+		-- ring on the key press; an invite that is still standing after a
+		-- refused answer has to ring again, and the push carrying it unchanged
+		-- is how the client learns the answer did not take.
+		push(playerId)
 		return refuse(playerId, 'tooFast', M.Operation.ANSWER)
 	end
 
@@ -614,6 +635,11 @@ local function onDecline(rawInvite)
 	local playerId = tonumber(source) or 0
 	if playerId <= 0 then return end
 	if OPX.Cooling(playerId, 'calls:answer', requestMs) then
+		-- THE STATE GOES BACK WITH THIS REFUSAL TOO. The client stopped the
+		-- ring on the key press; an invite that is still standing after a
+		-- refused answer has to ring again, and the push carrying it unchanged
+		-- is how the client learns the answer did not take.
+		push(playerId)
 		return refuse(playerId, 'tooFast', M.Operation.ANSWER)
 	end
 
@@ -636,11 +662,49 @@ local function onDecline(rawInvite)
 	end
 end
 
+-- Withdraws the invite this player sent and nobody answered, and nothing else.
+-- A call they are on is left alone: that is `onHangUp`'s, and the client's
+-- refuse key asks for this one first.
+local function withdraw(playerId)
+	local withdrawn, why = registry.Cancel(playerId)
+	push(playerId)
+	if withdrawn == nil then return refuse(playerId, why, M.Operation.WITHDRAW) end
+	push(withdrawn.to)
+	audit('calls.cancel', playerId, true, tostring(withdrawn.kind))
+	if withdrawn.kind ~= 'contact' then
+		fileRecent(withdrawn.to, 'missed', nameOf(playerId), citizenOf(playerId))
+	end
+end
+
+local function onWithdraw()
+	local playerId = tonumber(source) or 0
+	if playerId <= 0 then return end
+	if OPX.Cooling(playerId, 'calls:withdraw', requestMs) then
+		-- Pushed for the reason `onAccept` gives: the dial tone stopped on the
+		-- key, and an invite still out has to say so.
+		push(playerId)
+		return refuse(playerId, 'tooFast', M.Operation.WITHDRAW)
+	end
+	withdraw(playerId)
+end
+
 local function onHangUp()
 	local playerId = tonumber(source) or 0
 	if playerId <= 0 then return end
 	if OPX.Cooling(playerId, 'calls:hangup', requestMs) then
 		return refuse(playerId, 'tooFast', M.Operation.HANG_UP)
+	end
+
+	-- NOT ON A CALL BUT RINGING SOMEBODY: hanging up withdraws it. The owner:
+	-- "si on stop l'appel" -- both screens stop ringing at once rather than at
+	-- the end of INVITE_TTL_S.
+	--
+	-- ON A CALL, HANGING UP LEAVES IT, whatever is ringing out. Taking back an
+	-- invite sent from inside a call is `WITHDRAW`'s job, and the client's
+	-- refuse key asks for that first (`M.DeclineOrHangUp`): the two verbs used
+	-- to be one, and X on a live call with a third person ringing ended the call.
+	if registry.CallOf(playerId) == nil and registry.OutgoingOf(playerId) ~= nil then
+		return withdraw(playerId)
 	end
 
 	local outcome, reason = registry.HangUp(playerId)
@@ -728,8 +792,8 @@ local function onRoster()
 	})
 end
 
--- Pushes the caller their state again. The re-pop button, and the start-up
--- handshake, are the same request: "tell me what is happening to me".
+-- Pushes the caller their state again. The module starting and the page
+-- mounting are the same request: "tell me what is happening to me".
 local function onReady()
 	local playerId = tonumber(source) or 0
 	if playerId <= 0 then return end
@@ -987,7 +1051,7 @@ function M.Api()
 	})
 end
 
---- Wires the four verbs and starts the sweep.
+--- Wires the five verbs and starts the sweep.
 -- @author dop42
 function M.Start()
 	character = OPX.Api.Get('character')
@@ -1001,6 +1065,7 @@ function M.Start()
 	RegisterNetEvent(M.Event.ACCEPT, onAccept)
 	RegisterNetEvent(M.Event.DECLINE, onDecline)
 	RegisterNetEvent(M.Event.HANG_UP, onHangUp)
+	RegisterNetEvent(M.Event.WITHDRAW, onWithdraw)
 	AddEventHandler(OPX.Host.PLAYER_DISCONNECTED, departed)
 
 	-- The fast path off a death, so a flatlined participant is off the call in

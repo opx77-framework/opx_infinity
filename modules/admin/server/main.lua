@@ -59,6 +59,7 @@ local ERRORS = {
 	unknown_flag = 'admin.error.unknownFlag',
 	not_ours = 'admin.error.notOurs',
 	vehicles_unavailable = 'admin.error.vehiclesUnavailable',
+	keys_unavailable = 'admin.error.keysUnavailable',
 	unknown_weapon = 'admin.error.unknownWeapon',
 	holster_unavailable = 'admin.error.holsterUnavailable',
 	unknown_ammo = 'admin.error.unknownAmmo',
@@ -778,6 +779,10 @@ function M.Start()
 	-- new fitting-room row refused every player with `appearance_unavailable` on
 	-- a server where appearance was up and serving everybody else.
 	M.Contracts.appearance = OPX.Api.Get('appearance')
+	-- The vehicle keys contract: the key cut for every vehicle staff spawn, and
+	-- the one `opx.admin.vehicle.key` hands the operator. Nil costs those two and
+	-- nothing else.
+	M.Contracts.vehiclekeys = OPX.Api.Get('vehiclekeys')
 
 	if M.Contracts.inventory == nil then
 		Open77.log.warn('[admin] no inventory contract: every weapon and bag command refuses, ' ..

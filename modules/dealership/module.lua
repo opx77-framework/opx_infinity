@@ -37,7 +37,8 @@ local M = OPX.Modules.Declare{
 	-- `target` is optional on the same terms as the rest: without it the eye
 	-- grows no "sell a vehicle" row and the showroom is a shop you buy from
 	-- yourself, which is what it was before.
-	optional = { 'vehicles', 'garages', 'prompts', 'menu', 'target' },
+	-- `vehiclekeys` cuts the buyer a key; without it a car is sold with none.
+	optional = { 'vehicles', 'garages', 'prompts', 'menu', 'target', 'vehiclekeys' },
 }
 
 -- The three prefixes are disjoint by construction (core/shared/channels.lua):

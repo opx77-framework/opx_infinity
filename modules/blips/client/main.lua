@@ -390,7 +390,15 @@ local function pointsOf(name)
 				-- platform's per-resource quota to say "there are boxes in this
 				-- yard" over and over. The first point that is not a placeholder
 				-- is a real place inside the yard, which is all a driver needs.
-				if type(site) == 'table' and allowed and type(site.POINTS) == 'table' then
+				--
+				-- A SITE MAY NAME ITS OWN `BLIP`, surveyed apart from the crates --
+				-- the shop door rather than a pallet round the back. When it is
+				-- there and real, it wins and the points are not consulted.
+				local blip = type(site) == 'table' and site.BLIP or nil
+				local pinned = allowed and type(blip) == 'table'
+					and point(out, 'site\1' .. tostring(siteKey), site.LABEL, blip.X, blip.Y, blip.Z)
+				if not pinned and type(site) == 'table' and allowed
+					and type(site.POINTS) == 'table' then
 					-- `point` is the helper; `spot` is the row. The first draft named
 					-- the loop variable `point` and shadowed the function it was
 					-- about to call.

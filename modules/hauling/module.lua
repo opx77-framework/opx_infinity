@@ -4,8 +4,8 @@
 -- Crates stand at surveyed points. Every player in the site's bucket sees THE
 -- SAME crates, because the server owns them: it creates them, it decides who got
 -- one, and it puts them back when a carry ends badly. A player claims a crate,
--- carries it, loads it into a vehicle, drives it to one of the site's drop-offs
--- and is paid. A scheduler refills the points. There is no `/start`: the ALT
+-- carries it, loads it into a vehicle (where it becomes a trunk item), drives it
+-- to a drop-off and sells it to the NPC there. A scheduler refills the points. The ALT
 -- target eye on a crate is the entire entry to the job.
 --
 -- A PROP AND NOT A LOOT DROP, and the reason is one sentence: a loot drop cannot
@@ -13,8 +13,8 @@
 -- and a pickup that is atomic by contract -- both real advantages, and both worth
 -- less than "load it into the car", which is the brief. So `world.props`, which
 -- this resource already declares at `open77.lua:479`, and
--- `players.animations.control`, also already declared. THIS MODULE NEEDS NO NEW
--- PERMISSION AND DECLARES NONE.
+-- `players.animations.control` for the carry pose, and `world.npcs` for the
+-- sellers standing on the drop-offs.
 --
 -- WHERE THE RACE IS WON AND LOST. Two players ALT the same crate in the same
 -- tick. The server Lua runtime is single-threaded and coroutines interleave only
@@ -77,6 +77,8 @@ M.Event = {
 	BEGIN = OPX.Event(NET, 'hauling', 'begin'),
 	FINISH = OPX.Event(NET, 'hauling', 'finish'),
 	ABORT = OPX.Event(NET, 'hauling', 'abort'),
+	-- The carrier puts the crate down where they stand. Payload: their yaw.
+	DROP = OPX.Event(NET, 'hauling', 'drop'),
 
 	-- Server to client.
 	SNAPSHOT = OPX.Event(NET, 'hauling', 'snapshot'),
@@ -84,6 +86,8 @@ M.Event = {
 	GONE = OPX.Event(NET, 'hauling', 'gone'),
 	RUN = OPX.Event(NET, 'hauling', 'run'),
 	ANSWER = OPX.Event(NET, 'hauling', 'answer'),
+	-- The seller NPCs: a list of `{ npc, site, dropoff }`, npc a decimal string.
+	SELLERS = OPX.Event(NET, 'hauling', 'sellers'),
 
 	-- The client's own bus. `decision` carries every verdict, local refusals
 	-- included. Public: a bare AddEventHandler reaches it.
@@ -93,6 +97,12 @@ M.Event = {
 --- The three things a player can be part-way through, and the one thing they can
 --- be holding. Named here rather than spelled at each site, because the server
 --- indexes the clock by the step and a typo would read as "no bar is running".
+--- How long the platform's `carry_pickup` clip runs: its one clip,
+--- `enter_bodycarry_sync_upperbody`, is 1333 ms in `open77_animations`' catalogue.
+--- The server starts the carry loop after it; the client offers X only after it,
+--- so the lift is never cut off half way.
+M.LIFT_MS = 1333
+
 M.Step = {
 	PICKUP = 'pickup',
 	LOAD = 'load',
@@ -109,8 +119,8 @@ M.Where = {
 	CLAIMED = 'claimed',
 	-- Attached to a player.
 	CARRIED = 'carried',
-	-- Attached to a vehicle.
-	LOADED = 'loaded',
+	-- There is no fourth: a loaded crate is no longer a crate. It leaves the world
+	-- and becomes an item in the vehicle's trunk (`config/hauling.lua` ITEM).
 }
 
 --- The host raises this when a prop this module owns loses or changes a binding.

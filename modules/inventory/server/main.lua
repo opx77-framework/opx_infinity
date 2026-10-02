@@ -197,6 +197,26 @@ function M.GetItemCount(target, name, metadata)
 	end)
 end
 
+--- How many units of an item carry every metadata field of `match`.
+-- The metadata question `GetItemCount` cannot ask: it compares whole tables, so
+-- "a key to plate 12ABC345" is answered only by a caller that can rebuild the
+-- key's metadata byte for byte. This compares the fields named and ignores the
+-- rest.
+-- @author dop42
+-- @param target Source|CitizenId
+-- @param name string
+-- @param match table
+-- @return Result integer
+function M.CountWhere(target, name, match)
+	name = itemName(name)
+	if not name then return Result.Err('bad_argument', 'name') end
+	local kept, allowed = Common.Metadata(match, Options.MAX_METADATA_BYTES)
+	if not allowed or kept == nil then return Result.Err('bad_argument', 'match') end
+	return withBag(target, function(bag)
+		return Result.Ok(Containers.CountWhere(bag, name, kept))
+	end)
+end
+
 --- Whether a bag holds at least `count` of an item.
 -- @author dop42
 -- @param target Source|CitizenId
@@ -227,6 +247,99 @@ function M.CanCarry(target, name, count, metadata)
 	return withBag(target, function(bag)
 		local ok = Containers.CanCarry(bag, name, count, kept)
 		return Result.Ok(ok)
+	end)
+end
+
+-- ── a vehicle's trunk ────────────────────────────────────────────────────────
+
+--- Runs `body` against a vehicle's trunk. Yields: an owned trunk loads by plate.
+--
+-- `source`, when given, is held to the rule `Actions.OpenVehicle` applies to a
+-- player opening the boot by hand: an owned trunk answers to its owner only while
+-- TRUNK_OWNER_ONLY is on. A job putting things into a stranger's car, or selling
+-- them out of it, is the same theft as the screen, done by another door.
+local function withTrunk(vehicleId, source, body)
+	if type(vehicleId) == 'string' and vehicleId:match('^%d+$') and #vehicleId <= 19 then
+		vehicleId = math.tointeger(tonumber(vehicleId))
+	end
+	vehicleId = Common.Integer(vehicleId, 1, math.maxinteger)
+	if not vehicleId then return Result.Err('bad_argument', 'vehicleId') end
+	-- A LOCKED VEHICLE'S BOOT IS SHUT TO A JOB TOO. The owner: "si veh fermé
+	-- coffre de veh inaccessible". The screen refuses it in `Actions.OpenVehicle`;
+	-- this is the same rule for a module putting things in or taking them out.
+	if World.TrunkLocked(vehicleId) then return Result.Err('locked', tostring(vehicleId)) end
+	local trunk, reason = World.VehicleContainer(vehicleId, M.KIND.TRUNK)
+	if not trunk then return Result.Err(reason or 'not_found', tostring(vehicleId)) end
+	if source ~= nil and Options.TRUNK_OWNER_ONLY and trunk.ownerCitizenId
+		and trunk.ownerCitizenId ~= Players.Citizen(source) then
+		return Result.Err('not_yours', tostring(vehicleId))
+	end
+	return body(trunk)
+end
+
+--- Adds catalogue items to a vehicle's trunk.
+-- @author dop42
+-- @param vehicleId integer|string
+-- @param name string
+-- @param count integer|nil
+-- @param metadata table|nil
+-- @param source Source|nil held to the trunk owner rule when given
+-- @return Result
+function M.AddToTrunk(vehicleId, name, count, metadata, source)
+	name = itemName(name)
+	if not name then return Result.Err('bad_argument', 'name') end
+	local kept, allowed = Common.Metadata(metadata, Options.MAX_METADATA_BYTES)
+	if not allowed then return Result.Err('bad_argument', 'metadata') end
+	count = count == nil and 1 or Common.Integer(count, 1, Options.MAX_STACK)
+	if not count then return Result.Err('bad_argument', 'count') end
+
+	return withTrunk(vehicleId, source, function(trunk)
+		local ok, code = Containers.Add(trunk, name, count, kept)
+		OPX.Audit.Log({ event = 'inventory.trunkAdd', severity = ok and 'info' or 'warn',
+			message = ('%dx %s'):format(count, name),
+			data = { vehicle = tostring(vehicleId), item = name, count = count, error = code } })
+		return outcome(ok, code)
+	end)
+end
+
+--- Takes items out of a vehicle's trunk; nil metadata matches any stack.
+-- @author dop42
+-- @param vehicleId integer|string
+-- @param name string
+-- @param count integer|nil
+-- @param metadata table|nil
+-- @param source Source|nil held to the trunk owner rule when given
+-- @return Result
+function M.RemoveFromTrunk(vehicleId, name, count, metadata, source)
+	name = itemName(name)
+	if not name then return Result.Err('bad_argument', 'name') end
+	local kept, allowed = Common.Metadata(metadata, Options.MAX_METADATA_BYTES)
+	if not allowed then return Result.Err('bad_argument', 'metadata') end
+	count = count == nil and 1 or Common.Integer(count, 1, Options.MAX_STACK)
+	if not count then return Result.Err('bad_argument', 'count') end
+
+	return withTrunk(vehicleId, source, function(trunk)
+		local ok, code = Containers.Remove(trunk, name, count, kept)
+		OPX.Audit.Log({ event = 'inventory.trunkRemove', severity = ok and 'info' or 'warn',
+			message = ('%dx %s'):format(count, name),
+			data = { vehicle = tostring(vehicleId), item = name, count = count, error = code } })
+		return outcome(ok, code)
+	end)
+end
+
+--- How many units of an item a vehicle's trunk holds.
+-- @author dop42
+-- @param vehicleId integer|string
+-- @param name string
+-- @param metadata table|nil nil counts every stack of that item
+-- @param source Source|nil held to the trunk owner rule when given
+-- @return Result integer
+function M.CountInTrunk(vehicleId, name, metadata, source)
+	name = itemName(name)
+	if not name then return Result.Err('bad_argument', 'name') end
+	local kept = Common.Metadata(metadata, Options.MAX_METADATA_BYTES)
+	return withTrunk(vehicleId, source, function(trunk)
+		return Result.Ok(Containers.CountIn(trunk, name, kept))
 	end)
 end
 
@@ -482,10 +595,15 @@ function M.Api()
 		ClearInventory = M.ClearInventory,
 
 		GetItemCount = M.GetItemCount,
+		CountWhere = M.CountWhere,
 		HasItem = M.HasItem,
 		CanCarry = M.CanCarry,
 		GetInventory = M.GetInventory,
 		GetSlot = M.GetSlot,
+
+		AddToTrunk = M.AddToTrunk,
+		RemoveFromTrunk = M.RemoveFromTrunk,
+		CountInTrunk = M.CountInTrunk,
 
 		GetItem = M.GetItem,
 		GetItems = M.GetItems,
@@ -510,6 +628,12 @@ function M.Api()
 		CurrencyWired = Currency.Wired,
 
 		GetHeldWeapon = M.GetHeldWeapon,
+
+		-- Whether a vehicle's trunk is shut to everybody right now. Published so
+		-- that every path that puts something in a trunk or takes it out -- the
+		-- screen here, and a job loading crates through this contract -- asks the
+		-- one question the same way. See `World.TrunkLocked`.
+		TrunkLocked = World.TrunkLocked,
 	})
 end
 
