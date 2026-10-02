@@ -533,7 +533,10 @@ local function spawnSellers()
 	end
 	local added = false
 	local ai = type(npcs.ai) == 'table' and npcs.ai.tasks or nil
-	local immortal = type(npcs.damage) == 'table' and npcs.damage.immortal or 'invulnerable'
+	-- AN INTEGER OR NOTHING. `damagePolicy` is a number from `Open77.npcs.damage`
+	-- and a string raises inside `CreateNpc`; with the table missing, nil asks for
+	-- the host's default, which is `immortal` too.
+	local immortal = type(npcs.damage) == 'table' and npcs.damage.immortal or nil
 	for _, siteKey in ipairs(Access.UsableKeys()) do
 		for _, dropoff in ipairs(Access.Dropoffs(siteKey)) do
 			local slot = siteKey .. '\1' .. tostring(dropoff.key)
