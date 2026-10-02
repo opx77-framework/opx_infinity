@@ -298,13 +298,22 @@ local function pointsOf(name)
 		-- live in the database, and the server filters what it sends to this
 		-- player's own routing bucket. Reading the config here would show a
 		-- player pins for spots in a bucket they are not in, and would miss every
-		-- spot an operator ever placed with `/opx.garages.add`.
+		-- legacy row the server adopted from the database at boot.
+		--
+		-- ONE PIN PER GARAGE LOCATION, AT ITS MENU POINT. A garage location
+		-- draws two points -- the menu where the list opens and the entry door a
+		-- vehicle is taken in at, usually a few metres apart -- and both arrive
+		-- in `Spots()`. Pinning every point put two identical "Garage" pins on
+		-- each location, stacked on the map. The door is skipped; a dealer has no
+		-- roles and every one of its spots is pinned.
 		local spots = accessor(name, 'Spots')
 		if spots == nil then return out, skipped end
 		local read, list = pcall(spots)
 		if not read or type(list) ~= 'table' then return out, skipped end
 		for key, spot in pairs(list) do
-			if type(spot) == 'table' then add(tostring(key), spot.label, spot.x, spot.y, spot.z) end
+			if type(spot) == 'table' and spot.role ~= 'entry' then
+				add(tostring(key), spot.label, spot.x, spot.y, spot.z)
+			end
 		end
 
 	elseif name == 'teleports' then

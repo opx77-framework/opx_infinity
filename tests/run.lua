@@ -23505,6 +23505,28 @@ do
 		check('every handle is kept as the string the engine gave', stringly)
 		check('and every one of them still names a live blip', exact)
 
+		-- ONE PIN PER GARAGE LOCATION. A location sends its menu point AND its
+		-- entry door, and both used to be pinned: two "Garage" pins stacked on
+		-- every location.
+		local garagesModule = OPX.Modules.Get('garages')
+		control.netEvents[garagesModule.Event.SYNC]({ spots = {
+			{ key = 'blip_dock#1', label = 'BLIP DOCK', kind = 'garage', garage = 'blip_dock',
+				role = 'menu', location = 1, x = 40.0, y = 40.0, z = 1.0, heading = 0.0, bucket = 0 },
+			{ key = 'blip_dock#1.in', label = 'BLIP DOCK', kind = 'garage', garage = 'blip_dock',
+				role = 'entry', location = 1, x = 46.0, y = 40.0, z = 1.0, heading = 0.0, bucket = 0 },
+		} })
+		blips.Runtime.Sync()
+		control.Pump(20)
+		local garagePins = {}
+		for id in pairs(blips.Runtime.Created()) do
+			if tostring(id):find('blip_dock', 1, true) then garagePins[#garagePins + 1] = id end
+		end
+		check('a garage location is one pin, not one for the menu and one for the door',
+			#garagePins == 1, table.concat(garagePins, ', '))
+		control.netEvents[garagesModule.Event.SYNC]({ spots = {} })
+		blips.Runtime.Sync()
+		control.Pump(20)
+
 
 		-- ── THE JOB PINS BELONG TO THE JOB ────────────────────────────────────
 		-- THE OWNER: "fait en sorte que les blips job on les voit uniquement si on
