@@ -250,6 +250,11 @@ local function announceGroup(player, groupType, removed)
 	OPX.Publish(groupType == 'job' and M.Event.ON_JOB or M.Event.ON_GANG, data.source, {
 		citizenId = data.citizenId,
 		[groupType] = OPX.Table.DeepCopy(current),
+		-- EVERY MEMBERSHIP AS IT STANDS NOW, so a listener deciding what a
+		-- character may keep (an AV a job issued them) reads it here, offline
+		-- changes included, instead of re-reading a row it cannot reach.
+		[groupType == 'job' and 'jobs' or 'gangs'] = OPX.Table.DeepCopy(
+			groupType == 'job' and data.jobs or data.gangs),
 		removed = removed,
 		offline = player.Offline == true,
 	})
@@ -367,6 +372,10 @@ function M.Groups.AddPlayerToJob(identifier, name, grade)
 		local joined = joinGroup(player, 'job', name, resolved.value.grade.level)
 		if not joined.ok then return joined end
 		player.Functions.UpdatePlayerData()
+		-- ANNOUNCED LIKE EVERY OTHER CHANGE: a membership moved here (a desk
+		-- demotion in a job held beside the worked one, offline or not) is a
+		-- change a listener has to hear -- what the job let them keep follows it.
+		announceGroup(player, 'job')
 		return joined
 	end)
 end

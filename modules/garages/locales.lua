@@ -58,6 +58,8 @@ local EN = {
 	['garages.jobRequired'] = 'That pad is for another crew. You do not hold the job.',
 	['garages.gradeTooLow'] = 'That pad needs more rank than you hold.',
 	['garages.offDuty'] = 'That pad is for the crew on duty. Clock on and try again.',
+	-- A pad whose JOBS names no job: closed, never public.
+	['garages.padClosed'] = 'That pad is closed: it is not assigned to any crew.',
 
 	-- THE JOB FLEET (config/garages.lua JOB_VEHICLES): the section a job's own
 	-- vehicles are listed under, what each row says, the toasts, the four
@@ -73,6 +75,8 @@ local EN = {
 	['garages.jobOut'] = 'Signed out: {vehicle}.',
 	['garages.jobReturned'] = 'Back to the motor pool: {vehicle}.',
 	['garages.jobRecalled'] = '{vehicle} went back to the motor pool: it stays with the job.',
+	-- An AV a job's pad issued, taken back when its holder leaves the job.
+	['garages.issuedRevoked'] = '{vehicle} ({plate}) went back to the {job} fleet: it stays with the job, and its keys with it.',
 	['garages.job.notHere'] = 'That service vehicle does not come out here.',
 	['garages.job.required'] = 'That service vehicle belongs to another job.',
 	['garages.job.gradeTooLow'] = 'That service vehicle needs a higher rank.',
@@ -138,6 +142,7 @@ local FR = {
 	['garages.jobRequired'] = 'Ce pad est pour une autre équipe. Vous n’avez pas ce métier.',
 	['garages.gradeTooLow'] = 'Ce pad exige un grade supérieur au vôtre.',
 	['garages.offDuty'] = 'Ce pad est pour l’équipe en service. Prenez votre service et réessayez.',
+	['garages.padClosed'] = 'Ce pad est fermé : il n’est attribué à aucune équipe.',
 
 	['garages.list.jobSection'] = 'Véhicules de service {job}',
 	['garages.list.fleetSection'] = 'Stock de la division',
@@ -149,6 +154,7 @@ local FR = {
 	['garages.jobOut'] = 'Sorti du parc : {vehicle}.',
 	['garages.jobReturned'] = 'Rendu au parc : {vehicle}.',
 	['garages.jobRecalled'] = 'Retour au parc : {vehicle}. Il reste au service.',
+	['garages.issuedRevoked'] = 'Retour à la flotte {job} : {vehicle} ({plate}). Il reste au service, ses clés aussi.',
 	['garages.job.notHere'] = 'Ce véhicule de service ne sort pas ici.',
 	['garages.job.required'] = 'Ce véhicule de service appartient à un autre métier.',
 	['garages.job.gradeTooLow'] = 'Ce véhicule de service exige un grade supérieur.',

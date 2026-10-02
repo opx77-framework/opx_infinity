@@ -1256,7 +1256,7 @@ end
 --- The candidate's own answer to an offer. This is where a hire is written.
 --
 -- Yields: the membership is a row.
--- @author XEROX710
+-- @author sh104
 -- @param candidate number the answering connection; never a value off the wire
 -- @param token any the token the offer was sent with
 -- @param yes boolean

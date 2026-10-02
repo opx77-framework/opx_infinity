@@ -580,7 +580,7 @@ function Access.CoerceAll(definitions, annex, problems)
 		if jobs ~= nil and type(jobs) ~= 'table' then jobs = nil end
 		OPX.JobGate.Problems(jobs, 'avgarages', problems)
 		if avGarages ~= nil and next(avGarages) ~= nil and (jobs == nil or next(jobs) == nil) then
-			refuse('avgarages: JOBS names no job, so every pad below is PUBLIC')
+			refuse('avgarages: JOBS names no job, so every pad below is CLOSED to everybody')
 		end
 		-- THE KNOB IS VALIDATED WITH THE REST OF THE FILE. A `PILOT_SEAT` the
 		-- platform cannot spell is refused to no seat at all -- the recall then
@@ -637,6 +637,7 @@ Access.GATE_REFUSAL = {
 	job_required = 'garages.jobRequired',
 	grade_too_low = 'garages.gradeTooLow',
 	off_duty = 'garages.offDuty',
+	closed = 'garages.padClosed',
 }
 
 --- Whether a character snapshot may use one garage, through the one adapter
@@ -667,7 +668,63 @@ function Access.Evaluate(built, snapshot, nowMs)
 	if type(built) ~= 'table' then return false, 'no_such_spot' end
 	local requirement = built.requirement
 	if type(requirement) ~= 'table' then return true end
+	-- A PAD WHOSE GATE NAMES NO JOB IS CLOSED, NOT PUBLIC. The owner decided
+	-- that an emptied `JOBS` in config/avgarages.lua must never hand the
+	-- division's hangar to everybody: `OPX.JobGate.Evaluate` reads no jobs as
+	-- open, which is right for a public floor and wrong for a requirement that
+	-- was meant to name a crew and names none.
+	if type(requirement.jobs) ~= 'table' or next(requirement.jobs) == nil then
+		return false, 'closed'
+	end
 	return OPX.JobGate.Evaluate(requirement, snapshot, nowMs, { maxAgeMs = 0 })
+end
+
+--- The job an issued hull is held under: what `M.Issue` writes into the row.
+-- @author sh104
+--
+-- THE JOB THE GATE LET THEM THROUGH ON. The worked job when the pad names it
+-- -- the gate reads the worked job -- and otherwise the first job by name the
+-- pad names that the character holds at its floor. Nil for a pad that names no
+-- job at all, which the gate already refuses.
+-- @param requirement table|nil the pad's `{ jobs, onDuty }`
+-- @param data table the character's PlayerData
+-- @param garage string the pad's key
+-- @return table|nil `{ job, grade, garage }`
+function Access.IssuedBy(requirement, data, garage)
+	local required = type(requirement) == 'table' and requirement.jobs or nil
+	if type(required) ~= 'table' or type(data) ~= 'table' then return nil end
+	local worked = type(data.job) == 'table' and data.job.name or nil
+	if type(worked) == 'string' and required[worked] ~= nil then
+		return { job = worked, grade = OPX.Math.Finite(required[worked]) or 0, garage = garage }
+	end
+	local held = type(data.jobs) == 'table' and data.jobs or {}
+	local best = nil
+	for name, minimum in pairs(required) do
+		local grade = OPX.Math.Finite(held[name])
+		local floor = OPX.Math.Finite(minimum) or 0
+		if type(name) == 'string' and grade ~= nil and grade >= floor
+			and (best == nil or name < best.job) then
+			best = { job = name, grade = floor, garage = garage }
+		end
+	end
+	return best
+end
+
+--- Whether a character may still keep a hull a job issued them.
+-- @author sh104
+--
+-- THE MEMBERSHIP, NOT THE SHIFT: a member who clocks off keeps the aircraft
+-- the division issued them; one who is fired, quits, or is demoted below the
+-- pad's floor for that job does not. A row with no `issued` mark was never a
+-- job's to take back.
+-- @param metadata table|nil the vehicle row's metadata
+-- @param jobs table|nil the character's memberships, job -> grade
+-- @return boolean
+function Access.MayKeepIssued(metadata, jobs)
+	local issued = type(metadata) == 'table' and metadata.issued or nil
+	if type(issued) ~= 'table' or type(issued.job) ~= 'string' then return true end
+	local held = type(jobs) == 'table' and OPX.Math.Finite(jobs[issued.job]) or nil
+	return held ~= nil and held >= (OPX.Math.Finite(issued.grade) or 0)
 end
 
 --- The configured garages of BOTH files and their points, already validated.

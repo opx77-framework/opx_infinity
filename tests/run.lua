@@ -7484,6 +7484,12 @@ do
 				-- shape the storage reads back, so an issued hull can be fetched
 				-- by the plate it was just handed and listed beside the rows that
 				-- were there from the start.
+				-- A REVOKED ROW IS GONE, so a hull taken back is not listed again.
+				if sql:find('DELETE FROM opx77_vehicles', 1, true) and type(params) == 'table' then
+					for index = #rows, 1, -1 do
+						if rows[index].plate == params.plate then table.remove(rows, index) end
+					end
+				end
 				if sql:find('INSERT INTO opx77_vehicles', 1, true)
 					and type(params) == 'table' then
 					rows[#rows + 1] = {
@@ -7530,10 +7536,11 @@ do
 		}
 	end
 
-	local env, control, why = boot('server', bridge({
+	local padRows = {
 		row('AA111AA', 'Vehicle.v_standard2_archer_hella_player'),
 		row('MAX0001', 'Vehicle.max_tac_av'),
-	}))
+	}
+	local env, control, why = boot('server', bridge(padRows))
 	check('the server boots with the garages machinery and its AV annex', why == nil, why)
 
 	if why == nil then
@@ -7918,6 +7925,142 @@ do
 				return quiet ~= nil
 			end)(),
 			('%d row(s)'):format(#parked))
+
+		-- ── an issued hull stays with the job, not the member ──────────────
+		-- THE OWNER'S CALL: an AV a job's pad issued does not stay with a
+		-- member who leaves the job -- fired, a notice, demoted below the
+		-- floor, removed by an operator, online or offline. The row says which
+		-- job issued it; leaving takes the keys, the hull out of the world and
+		-- the row.
+		local function rowOf(plate)
+			for index = 1, #padRows do
+				if padRows[index].plate == plate then return padRows[index] end
+			end
+			return nil
+		end
+		local issuedRow = rowOf(issued)
+		local mark = issuedRow ~= nil and env.json.decode(issuedRow.metadata) or nil
+		check('the issued hull\'s row remembers the job and the pad\'s floor that issued it',
+			type(mark) == 'table' and type(mark.issued) == 'table' and mark.issued.job == 'maxtac'
+				and mark.issued.grade == 0 and mark.issued.garage == stock.key,
+			issuedRow and tostring(issuedRow.metadata))
+		check('and a row with no mark (a car they bought) is never a job\'s to take',
+			Access.MayKeepIssued({}, {}) == true and Access.MayKeepIssued(nil, nil) == true)
+		check('demoted below the pad\'s floor is losing it; the same grade is keeping it',
+			Access.MayKeepIssued({ issued = { job = 'maxtac', grade = 1 } }, { maxtac = 0 }) == false
+				and Access.MayKeepIssued({ issued = { job = 'maxtac', grade = 1 } }, { maxtac = 1 }) == true)
+
+		-- The keys contract, as the take-back reaches it.
+		local keysApi = OPX.Api.Get('vehiclekeys')
+		local revokedAll, revokedFrom = {}, {}
+		local realRevokeAll, realRevoke = keysApi.RevokeAll, keysApi.Revoke
+		keysApi.RevokeAll = function(plate)
+			revokedAll[#revokedAll + 1] = plate
+			return realRevokeAll(plate)
+		end
+		keysApi.Revoke = function(target, plate)
+			revokedFrom[#revokedFrom + 1] = ('%s:%s'):format(tostring(target), tostring(plate))
+			return realRevoke(target, plate)
+		end
+		local function hasText(list, text)
+			for index = 1, #list do
+				if list[index] == text then return true end
+			end
+			return false
+		end
+
+		-- CLOCKING OFF IS NOT LEAVING: the change is announced, and the hull stays.
+		local removesBefore = #control.vehicleRemoves
+		character.Players[trooper].PlayerData.job.onDuty = false
+		OPX.Publish(OPX.Event(OPX.Channel.LOCAL, 'character', 'job'), trooper, {
+			citizenId = 'citizen-pad', jobs = { maxtac = 0 }, offline = false })
+		control.Pump(8)
+		check('a member who only clocks off keeps the hull the job issued',
+			rowOf(issued) ~= nil and #control.vehicleRemoves == removesBefore)
+		character.Players[trooper].PlayerData.job.onDuty = true
+
+		-- REMOVED FROM THE JOB, ONLINE, through the character contract's own
+		-- `RemovePlayerFromJob`: the announcement it raises is what the
+		-- take-back hears, carrying the memberships as they now stand.
+		local announced = nil
+		env.AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'character', 'job'), function(_, payload)
+			announced = payload
+		end)
+		local removed = OPX.Api.Get('character').RemovePlayerFromJob('citizen-pad', 'maxtac')
+		control.Pump(10)
+		check('RemovePlayerFromJob goes through, and announces the memberships left',
+			type(removed) == 'table' and removed.ok == true and type(announced) == 'table'
+				and announced.citizenId == 'citizen-pad' and type(announced.jobs) == 'table'
+				and announced.jobs.maxtac == nil and announced.removed == 'maxtac',
+			type(removed) == 'table' and tostring(removed.error) or tostring(removed))
+		check('the issued hull is taken out of the world', #control.vehicleRemoves > removesBefore,
+			('%d removal(s)'):format(#control.vehicleRemoves - removesBefore))
+		check('and its row is deleted: it is no longer theirs', rowOf(issued) == nil)
+		check('and every key to it is revoked, from every bag and from the owner\'s own',
+			hasText(revokedAll, issued) and hasText(revokedFrom, 'citizen-pad:' .. tostring(issued)),
+			table.concat(revokedAll, ',') .. ' / ' .. table.concat(revokedFrom, ','))
+		check('and the car they bought themselves is untouched', rowOf('MAX0001') ~= nil)
+
+		-- OFFLINE: a member fired while they are not playing. The character
+		-- module announces the change for the offline character, with the
+		-- memberships the row now holds, and the take-back acts on that.
+		padRows[#padRows + 1] = {
+			plate = 'ISS0002', citizen_id = 'citizen-gone', record = 'Vehicle.av_luxury',
+			appearance = nil, garage = stock.key, state = 1, health = 1.0, body = nil, paint = nil,
+			metadata = env.json.encode({ issued = { job = 'maxtac', grade = 0, garage = stock.key } }),
+		}
+		padRows[#padRows + 1] = {
+			plate = 'OWN0002', citizen_id = 'citizen-gone', record = 'Vehicle.av_luxury',
+			appearance = nil, garage = stock.key, state = 1, health = 1.0, body = nil, paint = nil,
+			metadata = '{}',
+		}
+		revokedFrom = {}
+		OPX.Publish(OPX.Event(OPX.Channel.LOCAL, 'character', 'job'), nil, {
+			citizenId = 'citizen-gone', jobs = { ncpd = 2 }, removed = 'maxtac', offline = true })
+		control.Pump(10)
+		check('an OFFLINE member removed from the job loses the issued hull too',
+			rowOf('ISS0002') == nil and hasText(revokedFrom, 'citizen-gone:ISS0002'),
+			table.concat(revokedFrom, ','))
+		check('and keeps what was never the job\'s', rowOf('OWN0002') ~= nil)
+
+		-- AND AT LOGIN, for a change made while nothing was listening.
+		padRows[#padRows + 1] = {
+			plate = 'ISS0003', citizen_id = 'citizen-pad', record = 'Vehicle.av_luxury',
+			appearance = nil, garage = stock.key, state = 1, health = 1.0, body = nil, paint = nil,
+			metadata = env.json.encode({ issued = { job = 'maxtac', grade = 0, garage = stock.key } }),
+		}
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded'), trooper,
+			character.Players[trooper].PlayerData)
+		control.Pump(10)
+		check('a login with the job gone takes back what was issued under it',
+			rowOf('ISS0003') == nil)
+		keysApi.RevokeAll, keysApi.Revoke = realRevokeAll, realRevoke
+
+		-- ── an emptied JOBS closes the pads, never opens them ──────────────
+		local closedProblems = {}
+		local closedMap = Access.CoerceAll({}, { JOBS = {}, ON_DUTY = true,
+			GARAGES = { pad_nobody = padBlock(0.0) } }, closedProblems)
+		local closedPad = closedMap.pad_nobody
+		local open, code = Access.Evaluate(closedPad, snap('maxtac', 3, true), OPX.Now())
+		check('a pad whose JOBS is emptied is CLOSED to everybody, the crew included',
+			closedPad ~= nil and open == false and code == 'closed', tostring(code))
+		check('and is refused by name, and said at boot',
+			Access.GATE_REFUSAL.closed == 'garages.padClosed'
+				and table.concat(closedProblems, ' | '):find('CLOSED', 1, true) ~= nil,
+			table.concat(closedProblems, ' | '))
+		local absentMap = Access.CoerceAll({}, { ON_DUTY = true,
+			GARAGES = { pad_absent = padBlock(9100.0) } }, {})
+		check('and so is one whose JOBS is absent',
+			(Access.Evaluate(absentMap.pad_absent, snap('maxtac', 3, true), OPX.Now())) == false)
+		heldGarages[closedPad.key] = closedPad
+		for _, point in ipairs(Access.PointsOf(closedPad)) do held[point.key] = point end
+		env.source = trooper
+		control.netEvents[garages.Event.LIST](closedPad.locations[1].menu.key)
+		control.Pump(8)
+		local closedList = lastEvent(garages.Event.VEHICLES)
+		check('over the wire, the list at a closed pad is refused with garages.padClosed',
+			closedList ~= nil and type(closedList[1]) == 'table' and closedList[1].error == 'garages.padClosed',
+			closedList and type(closedList[1]) == 'table' and tostring(closedList[1].error))
 		Access.REQUESTS_PER_WINDOW = windowLimit
 	end
 end

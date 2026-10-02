@@ -214,6 +214,15 @@ hangar and the MaxTac Merrimac at a garage.
   off or switches character — at once on a job/duty change, within `JOB_SWEEP_MS`
   (5 s) otherwise, and never while somebody is sitting in it — and at once, aboard or
   not, when the holder leaves the server.
+- **Hulls a MaxTac pad ISSUED stay with the job** (`config/avgarages.lua` `FLEET`): such
+  a hull is registered to the member, but its row remembers the job and the pad's floor
+  that issued it. When the member no longer holds that job at that grade — fired, a
+  notice handed in, demoted below the floor, removed by an operator (`RemovePlayerFromJob`),
+  online or offline, or found so at their next login — it goes back to the fleet: every
+  key to it is revoked (`vehiclekeys` `RevokeAll` and the owner's own bag), it is taken out
+  of the world if it is out, and the row is deleted. Clocking off keeps it.
+- **A pad whose `JOBS` is emptied is closed, not public**: `config/avgarages.lua` with no
+  job in `JOBS` refuses every pad to everybody (`garages.padClosed`) and says so at boot.
 - **Operators**: `/opx.garages.list` ends with one `job fleet <job>` line per job
   (`key@grade`, `(av)` for aircraft). Add a job by adding a block; a job or grade
   `config/character.lua` does not define is refused at boot.

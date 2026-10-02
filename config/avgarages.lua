@@ -58,9 +58,11 @@ OPX.Config.MODULES.avgarages = {
 	-- state named, passes; everybody else is refused BY NAME -- job, grade or
 	-- duty, whichever they were closest to.
 	--
-	-- An absent or emptied JOBS makes every pad below PUBLIC, which is a
-	-- choice a server may make and never an accident: the boot journal and
-	-- `/opx.garages.list` both say so.
+	-- AN ABSENT OR EMPTIED JOBS CLOSES EVERY PAD BELOW TO EVERYBODY. The owner
+	-- decided a hangar is never public by accident: a pad the gate names no
+	-- crew for refuses the list, the bring-out and the put-away alike
+	-- (`garages.padClosed`), and the boot journal says so. A public pad belongs
+	-- in config/garages.lua, which has no gate.
 	--
 	-- `ncpd_maxtac` USED TO SIT BESIDE `maxtac` HERE AND IS GONE (2026-09-26).
 	-- It was a draft division name: the character catalogue never defined it,
@@ -104,6 +106,13 @@ OPX.Config.MODULES.avgarages = {
 	-- never duplicated. WHO may draw is the gate above; WHAT may be drawn is
 	-- this list, and a record not on it is refused by name even when a client
 	-- asks for it directly.
+	--
+	-- AN ISSUED HULL STAYS WITH THE JOB, NOT THE MEMBER. The row remembers which
+	-- job issued it and at what floor; the moment its holder no longer holds
+	-- that job at that grade -- fired, a notice handed in, demoted below the
+	-- floor, or taken off the job by an operator, online or offline -- the hull
+	-- goes back to the fleet: every key to it is revoked, it is taken out of the
+	-- world if it is out, and the row is deleted. Clocking off does not count.
 	--
 	-- RECORD is the TweakDB vehicle record. LABEL is the operator's own words
 	-- and is never translated -- a row shows it exactly as a station shows its

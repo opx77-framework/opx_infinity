@@ -252,6 +252,77 @@ local function sweepJobFleet(onlyCitizen)
 	return returned
 end
 
+--- Takes back every hull a job's pad issued to one character who no longer
+--- holds that job at the pad's floor.
+-- @author sh104
+--
+-- LEAVING THE JOB TAKES ITS AIRCRAFT TOO, and this is the half for the hulls
+-- that were ISSUED -- registered to the character by `M.Issue`, which the
+-- sweep above never sees because they have a plate and a row. The owner
+-- decided they do not stay with a member who is fired, quits, is demoted below
+-- the pad's floor or loses the job any other way, online or not. The pad's
+-- FLEET is a list and not a stock, so returning a hull to the fleet IS taking
+-- it out of the character's name: every key to it is revoked from every bag
+-- that can turn a lock (and the owner's own, offline or not), it is taken out
+-- of the world if it is out, and its row is deleted.
+--
+-- Reached from every change the character module announces (`ON_JOB`, with the
+-- memberships as they now stand, offline changes included) and from every
+-- login, which catches a change made while this resource was down. Yields.
+-- @param citizenId string
+-- @param jobs table|nil memberships now; the loaded character's when nil
+-- @return integer how many were taken back
+local function revokeIssued(citizenId, jobs)
+	if vehicles == nil or type(vehicles.Revoke) ~= 'function' or type(vehicles.List) ~= 'function'
+		or type(citizenId) ~= 'string' then
+		return 0
+	end
+	local player = character ~= nil and character.GetPlayerByCitizenId(citizenId) or nil
+	local data = type(player) == 'table' and player.PlayerData or nil
+	if type(jobs) ~= 'table' then
+		-- Nothing to read the memberships from is not a reason to take a car:
+		-- the next change or the next login decides.
+		jobs = type(data) == 'table' and data.jobs or nil
+		if type(jobs) ~= 'table' then return 0 end
+	end
+
+	local owned = vehicles.List(citizenId)
+	if type(owned) ~= 'table' or owned.ok ~= true or type(owned.value) ~= 'table' then return 0 end
+	local taken = 0
+	for index = 1, #owned.value do
+		local row = owned.value[index]
+		if type(row) == 'table' and type(row.plate) == 'string'
+			and not Access.MayKeepIssued(row.metadata, jobs) then
+			local issued = row.metadata.issued
+			if keys ~= nil then
+				if type(keys.RevokeAll) == 'function' then pcall(keys.RevokeAll, row.plate) end
+				if type(keys.Revoke) == 'function' then pcall(keys.Revoke, citizenId, row.plate) end
+			end
+			local gone = vehicles.Revoke(row.plate)
+			if type(gone) == 'table' and gone.ok then
+				taken = taken + 1
+				OPX.Audit.Log({ event = 'garages.issuedRevoked', message = row.plate,
+					data = { citizenId = citizenId, plate = row.plate, job = issued.job, record = row.record } })
+				Open77.log.info(('[garages] issued %s (%s) taken back from %s: they no longer hold %s ' ..
+					'at grade %s'):format(safe(row.plate), safe(row.record), safe(citizenId), safe(issued.job),
+					tostring(issued.grade or 0)))
+				local holder = type(data) == 'table' and tonumber(data.source) or nil
+				if holder ~= nil then
+					local definition = character ~= nil and character.GetJob(issued.job) or nil
+					OPX.NotifyLocale(holder, 'garages.issuedRevoked', {
+						vehicle = tostring(row.record), plate = row.plate,
+						job = type(definition) == 'table' and definition.label or issued.job,
+					}, 'info')
+				end
+			else
+				Open77.log.warn(('[garages] issued %s of %s could not be taken back yet: %s')
+					:format(safe(row.plate), safe(citizenId), tostring(type(gone) == 'table' and gone.error)))
+			end
+		end
+	end
+	return taken
+end
+
 --- Reads a connection's ground position and bucket, or nil.
 local function pointOf(source)
 	local position = Open77.players.position(source)
@@ -809,7 +880,15 @@ function M.Issue(source, key, record)
 	local z = exit.z
 	if Access.IsAv(record) then z = z + Access.AvLift() end
 
-	local registered = vehicles.Register(data.citizenId, record, { garage = built.key })
+	-- THE HULL REMEMBERS WHICH JOB ISSUED IT, in its own metadata: the owner
+	-- decided an AV drawn from a job's pad does not stay with a member who
+	-- leaves the job, and the row is the only thing that outlives the session
+	-- to say so. The job is the one the gate let them through on -- the worked
+	-- one when the pad names it -- and the grade is the pad's own floor for it.
+	local registered = vehicles.Register(data.citizenId, record, {
+		garage = built.key,
+		metadata = { issued = Access.IssuedBy(built.requirement, data, built.key) },
+	})
 	if not registered.ok then return registered end
 
 	local spawned = vehicles.Spawn(source, registered.value.plate, {
@@ -1556,6 +1635,36 @@ function M.Start()
 				tostring(failure))
 		end
 	end)
+	-- THE ISSUED HULLS FOLLOW THE JOB TOO. `ON_JOB` is raised for every change
+	-- of membership the character module makes -- a firing, a notice, a desk
+	-- demotion, `RemovePlayerFromJob` -- and for an OFFLINE character as well,
+	-- with the memberships as they now stand; a loaded character's are read live
+	-- instead, which is never older. On a thread: the take-back reads and
+	-- deletes rows.
+	AddEventHandler(OPX.Event(OPX.Channel.LOCAL, 'character', 'job'), function(_, payload)
+		if type(payload) ~= 'table' or type(payload.citizenId) ~= 'string' then return end
+		local citizenId = payload.citizenId
+		local jobs = payload.offline == true and payload.jobs or nil
+		CreateThread(function()
+			local ran, failure = pcall(revokeIssued, citizenId, jobs)
+			if not ran then
+				Open77.log.warn('[garages] the issued hulls could not follow a job change: ' ..
+					tostring(failure))
+			end
+		end)
+	end)
+	-- And at every login, for a change made while this resource was not running.
+	AddEventHandler(OPX.Event(OPX.Channel.INTERNAL, 'character', 'loaded'), function(_, data)
+		if type(data) ~= 'table' or type(data.citizenId) ~= 'string' then return end
+		local citizenId = data.citizenId
+		CreateThread(function()
+			local ran, failure = pcall(revokeIssued, citizenId, nil)
+			if not ran then
+				Open77.log.warn('[garages] the issued hulls could not be checked at login: ' ..
+					tostring(failure))
+			end
+		end)
+	end)
 	sweepJob = OPX.Scheduler.Every('garages:jobfleet', function() return Access.JOB_SWEEP_MS end,
 		function() sweepJobFleet(nil) end)
 
@@ -1692,4 +1801,13 @@ end
 -- @return integer how many went back to the pool
 function M.SweepJobFleet(citizenId)
 	return sweepJobFleet(citizenId)
+end
+
+--- One pass of the issued-hull take-back for one character, the function the
+--- job and login events run, published on the module for a diagnostic. Yields.
+-- @param citizenId string
+-- @param jobs table|nil memberships now; the loaded character's when nil
+-- @return integer how many were taken back
+function M.RevokeIssued(citizenId, jobs)
+	return revokeIssued(citizenId, jobs)
 end

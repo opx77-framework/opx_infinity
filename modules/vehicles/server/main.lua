@@ -533,6 +533,40 @@ function M.StoreAll(citizenId)
 	return stored
 end
 
+--- Takes a vehicle away from its owner for good: out of the world if it is out,
+--- and its row deleted.
+-- @author sh104
+--
+-- THE ONE DOOR THAT ENDS AN OWNERSHIP, and it exists for the AVs a job pad
+-- issues (`garages` M.Issue): the owner decided such a hull does not stay with a
+-- member who leaves the job, and since the pad's FLEET is a list and not a
+-- stock, returning one to the fleet IS deleting it. A vehicle that is out is
+-- removed first and the row only goes once the world has given it up -- a row
+-- deleted under a car still standing would be a car nobody owns and nothing
+-- can ever put away. Whoever is aboard is set down with it. Yields: the delete
+-- is a query.
+-- @param plateId string
+-- @return Result Ok({ plate, despawned })
+function M.Revoke(plateId)
+	if type(plateId) ~= 'string' or plateId == '' then return Result.Err('error.badRequest', 'plate') end
+	local record = live[plateId]
+	local despawned = false
+	if record ~= nil then
+		if Open77.vehicles.remove(record.id) ~= true then
+			Open77.log.error(('[vehicles] %s could not be removed from the world; its row is ' ..
+				'kept until it can be'):format(plateId))
+			return Result.Err('vehicle.storeRefused', plateId)
+		end
+		live[plateId] = nil
+		despawned = true
+	end
+	local gone = Store.Delete(plateId)
+	if not gone.ok then return gone end
+	Open77.log.info(('[vehicles] %s revoked from %s%s'):format(plateId,
+		tostring(record and record.citizenId or 'its owner'), despawned and ' (taken out of the world)' or ''))
+	return Result.Ok({ plate = plateId, despawned = despawned })
+end
+
 -- ── job vehicles: out, but never owned ──────────────────────────────────────
 --
 -- A JOB VEHICLE IS SIGNED OUT, NOT GIVEN. The garages module decides WHO may
@@ -1022,6 +1056,8 @@ function M.Api()
 		Spawn = M.Spawn,
 		Store = M.Store,
 		StoreAll = M.StoreAll,
+		-- Ends an ownership: out of the world and out of the table. See `M.Revoke`.
+		Revoke = M.Revoke,
 		-- JOB VEHICLES: signed out, never owned. See the section above
 		-- `savePlate` -- no row, no plate, so nothing that speaks in plates can
 		-- ever reach one.
