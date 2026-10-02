@@ -8,6 +8,18 @@
 -- `.mesh`, but the renderer matches a prebuilt host per alias, so the mesh draws
 -- as a marker AND suppresses the crate fallback -- an id came back, so nothing
 -- looks wrong anywhere. `shared/catalog.lua` refuses one at load.
+--
+-- EVERY DROPPABLE ITEM NAMES ONE, and it is the NEAREST thing the platform hosts,
+-- not the item's own geometry: the alias table is compiled into the client and a
+-- resource cannot add to it (see the note in data/weapons.lua). The food, drink and
+-- medical aliases are named after the game's own decoration families -- packaged
+-- drinks, soda cans, synthetic snacks, medical containers, all hand-sized when
+-- measured with WolvenKit in the 2.31 archives -- so those read as what they are.
+-- The rest are stand-ins and say so: no alias is a phone, a card, a shard or a key
+-- fob, so the phone and the electronics draw the small screen terminal, scrap the
+-- scrap heap, and the three tiny valuables the loot crate. `eddies` cannot be
+-- dropped and names none. `tests/run.lua` checks every MODEL against the generated
+-- `tests/prop-aliases.lua`.
 
 local M = OPX.Modules.Get('inventory')
 
@@ -44,17 +56,17 @@ M.Data.ITEMS = {
 	bounce_back = { WEIGHT = 120, CATEGORY = 'medical', MODEL = 'medical.container', USE = { CONSUME = 1 } },
 	maxdoc = { WEIGHT = 200, CATEGORY = 'medical', MODEL = 'medical.container', USE = { CONSUME = 1 } },
 
-	scrap_metal = { WEIGHT = 400, CATEGORY = 'material' },
-	electronics = { WEIGHT = 150, CATEGORY = 'material' },
+	scrap_metal = { WEIGHT = 400, CATEGORY = 'material', MODEL = 'garbage.industrial_trash' },
+	electronics = { WEIGHT = 150, CATEGORY = 'material', MODEL = 'electronics.monitor.device' },
 	lockpick = { WEIGHT = 50, CATEGORY = 'tool', MODEL = 'container.toolbox' },
 
 	-- A loaded hauling crate: `config/hauling.lua` ITEM. Ten kilos, so a trunk
 	-- (80 kg) takes eight and a bike's a third of that.
 	hauling_crate = { WEIGHT = 10000, CATEGORY = 'material', MODEL = 'crate.small' },
 
-	phone = { WEIGHT = 180, STACK = false },
-	id_card = { WEIGHT = 10, STACK = false },
-	shard = { WEIGHT = 20 },
+	phone = { WEIGHT = 180, STACK = false, MODEL = 'electronics.monitor.device' },
+	id_card = { WEIGHT = 10, STACK = false, MODEL = 'crate.valuable' },
+	shard = { WEIGHT = 20, MODEL = 'crate.valuable' },
 
 	-- THE KEY TO ONE PRECISE VEHICLE. What it opens is in its metadata, never in
 	-- its name: `{ plate = '<PLATE>', label = '<model> · <PLATE>' }`, written by
@@ -67,7 +79,7 @@ M.Data.ITEMS = {
 	-- keys module registers locks or unlocks the vehicle and gives the key back.
 	-- CLOSE = false so the toast that says what happened is read over the bag.
 	vehicle_key = {
-		WEIGHT = 20, CATEGORY = 'tool', STACK = false,
+		WEIGHT = 20, CATEGORY = 'tool', STACK = false, MODEL = 'crate.valuable',
 		USE = { CONSUME = 0, CLOSE = false },
 	},
 
