@@ -93,11 +93,20 @@ local CATALOGUE_PART = 250
 --- same argument `core/shared/lifecycle.lua` makes for yielding between module
 --- `Start`s: eight parts shaped and sent in one resume is one budget between them.
 local function sendCatalogue(surface)
-	local strings = OPX.Locale.Catalogue()
-	local keys = {}
-	for key in pairs(strings) do keys[#keys + 1] = key end
-
 	local function write()
+		-- THE KEY LIST IS BUILT HERE, ON THE THREAD, and yields as it goes. It
+		-- was built in the page's `ready` callback before the thread started, and
+		-- a catalogue of a few thousand keys spent that callback's whole client
+		-- budget: the log said `opx:ready raised ... script execution budget
+		-- exceeded` on every join, and no label reached the page at all.
+		local strings = OPX.Locale.CatalogueSliced(CATALOGUE_PART)
+		local keys, counted = {}, 0
+		for key in pairs(strings) do
+			keys[#keys + 1] = key
+			counted = counted + 1
+			if counted % CATALOGUE_PART == 0 and type(Wait) == 'function' then Wait(0) end
+		end
+
 		local at = 1
 		local total = #keys
 		repeat
