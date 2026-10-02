@@ -17,6 +17,7 @@ OPX.Locale.Register('fr', {
 	['export.callerDenied'] = "Cette ressource n'est pas autorisée à faire cet appel.",
 	['export.badArgument'] = "Un argument de cet appel n'a pas pu être lu.",
 	['export.booting'] = 'Le serveur démarre encore. Réessayez dans un instant.',
+	['export.mustAwait'] = "Cet appel atteint la base de données : faites-le avec Open77.exports.call et attendez-le.",
 })
 
 -- Weather: the status line a player reads, the command usage lines and every

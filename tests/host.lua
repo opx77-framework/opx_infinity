@@ -2150,6 +2150,32 @@ function Host.Environment(side, database)
 			if failure ~= nil then return nil, 'export_raised: ' .. tostring(failure) end
 			return answer
 		end,
+
+		--- Calls one published export and gives up on it after `rounds` resumes,
+		--- the way the host does: a SYNCHRONOUS caller (`rounds` 1) fails the
+		--- call with `export_yielded` at the callee's first yield and never
+		--- resumes it, and an asynchronous caller that times out, stops or
+		--- reloads cancels the callee's task, which "stops future continuation"
+		--- (devkit, server-exports). The coroutine is dropped where it stood.
+		AbandonExport = function(caller, rounds, name, ...)
+			local fn = published[name]
+			if fn == nil then return nil, 'export_not_found' end
+			local args = table.pack(...)
+			local done, answer = false, nil
+			local thread = coroutine.create(function()
+				answer = fn(table.unpack(args, 1, args.n))
+				done = true
+			end)
+			for round = 1, rounds do
+				invoking = caller
+				local ok, why = coroutine.resume(thread)
+				invoking = nil
+				if not ok then return nil, 'export_raised: ' .. tostring(why) end
+				if done then return answer end
+				if round < rounds then control.Pump(1) end
+			end
+			return nil, rounds == 1 and 'export_yielded' or 'export_cancelled'
+		end,
 		-- The live tunables, so a test can move one the way the Warden panel does.
 		tunables = tunables,
 		handlers = handlers,

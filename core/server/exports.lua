@@ -39,7 +39,11 @@
 --
 -- CALL A WRITE WITH `Open77.exports.call(...)` AND AWAIT IT. A write, and any
 -- read of a character who is not online, can reach the database, and the
--- synchronous form fails a callee that yields with `export_yielded`. The reads
+-- synchronous form fails a callee that yields with `export_yielded`. Those
+-- exports (AddMoneyOffline, the stash and key exports, SetVehicleState, and an
+-- item export naming a citizen id) take one tick before touching anything, so
+-- a synchronous call fails there with nothing begun, and then run on a thread
+-- of this resource that a cancelled caller cannot leave half-done. The reads
 -- of a loaded player (GetPlayerData, GetMoney, HasJob, GetJob, GetGang,
 -- IsStaff) answer from memory and are safe either way.
 
@@ -159,11 +163,53 @@ end
 
 -- ── the gate ─────────────────────────────────────────────────────────────────
 
+--- Whether a call of an export may yield, from its raw arguments.
+local function mayYield(yields, args)
+	if yields == true then return true end
+	if type(yields) == 'function' then return yields(table.unpack(args, 1, args.n)) == true end
+	return false
+end
+
+--- Runs a body that may yield on a thread of THIS resource, and waits for it.
+--
+-- A BODY THAT YIELDS MUST NOT BE ABANDONED HALF-WAY, and the host abandons an
+-- export coroutine in two documented cases (devkit, server-exports): a
+-- synchronous caller -- the callee "must not yield", the call fails with
+-- `export_yielded` and nothing resumes it -- and an asynchronous caller that
+-- times out, stops or reloads, which "cancels the target's scheduled task. This
+-- stops future continuation; it cannot undo writes already performed". A body
+-- abandoned there keeps whatever it held: the offline money ledger busy (every
+-- login of that character refused until the stale guard, a minute later), an
+-- inventory `loading` marker every later load of that stash or bag waits 35 s
+-- on and then fails, and a statement already submitted whose caller was told
+-- the call failed -- and retries it.
+--
+-- So two things, in this order. A PROBE: one `Wait(0)` before anything is
+-- touched. A synchronous caller fails right there with nothing begun; an
+-- asynchronous one loses a tick. Then the body runs on a thread THIS resource
+-- owns, which no caller's lifetime can cancel, and the export coroutine only
+-- waits on it: if that coroutine is abandoned, the body still finishes and
+-- lets go of what it held.
+-- @return boolean ran, any answer -- `pcall`'s shape
+local function detached(body, caller, args)
+	if not pcall(Wait, 0) then return true, refuse('export.mustAwait') end
+	local box = { done = false }
+	CreateThread(function()
+		box.ran, box.answer = pcall(body, caller, table.unpack(args, 1, args.n))
+		box.done = true
+	end)
+	while not box.done do Wait(0) end
+	return box.ran, box.answer
+end
+
 --- Publishes one export behind the three gates.
 -- @param name string the export name
 -- @param scope string `read` or `write`
 -- @param body fun(caller: string, ...): table the plain answer
-local function publish(name, scope, body)
+-- @param yields boolean|fun(...): boolean|nil whether a call can yield -- reach
+--   the database or wait -- given its raw arguments. Such a call is run
+--   `detached`, above.
+local function publish(name, scope, body, yields)
 	if type(exports) ~= 'function' then return end
 	exports(name, function(...)
 		local caller = GetInvokingResource ~= nil and GetInvokingResource() or nil
@@ -190,7 +236,12 @@ local function publish(name, scope, body)
 		if not OPX.Booted then return refuse('export.booting') end
 
 		local args = table.pack(...)
-		local ran, answer = pcall(body, caller, table.unpack(args, 1, args.n))
+		local ran, answer
+		if mayYield(yields, args) then
+			ran, answer = detached(body, caller, args)
+		else
+			ran, answer = pcall(body, caller, table.unpack(args, 1, args.n))
+		end
 		if not ran then
 			Open77.log.error(('[exports] %s raised for %s: %s')
 				:format(name, caller, tostring(answer)))
@@ -296,7 +347,7 @@ publish('AddMoneyOffline', 'write', function(caller, citizenId, moneyType, amoun
 	local why = reasonOf(caller, reason)
 	if why == nil then return refuse('export.badArgument') end
 	return answered(character.AddMoneyOffline(id, moneyType, value, why))
-end)
+end, true)
 
 -- ── jobs and gangs ───────────────────────────────────────────────────────────
 
@@ -338,6 +389,12 @@ local function inventory()
 	return OPX.Api.Get('inventory')
 end
 
+--- Whether an item call names a citizen id, which loads an offline bag and
+--- yields; a player id answers from the bag already loaded.
+local function byCitizen(target)
+	return type(target) == 'string'
+end
+
 --- The checked arguments every item export takes, or the refusal.
 local function itemArgs(target, name, count, metadata, countRequired)
 	local who = targetOf(target)
@@ -360,7 +417,7 @@ publish('HasItem', 'read', function(_, target, name, count, metadata)
 	local counted = api.GetItemCount(args.target, args.name, args.metadata)
 	if not counted.ok then return answered(counted) end
 	return ok(counted.value >= args.count)
-end)
+end, byCitizen)
 
 publish('CountItem', 'read', function(_, target, name, metadata)
 	local api = inventory()
@@ -368,7 +425,7 @@ publish('CountItem', 'read', function(_, target, name, metadata)
 	local args, refused = itemArgs(target, name, nil, metadata, false)
 	if args == nil then return refused end
 	return answered(api.GetItemCount(args.target, args.name, args.metadata))
-end)
+end, byCitizen)
 
 publish('AddItem', 'write', function(_, target, name, count, metadata)
 	local api = inventory()
@@ -376,7 +433,7 @@ publish('AddItem', 'write', function(_, target, name, count, metadata)
 	local args, refused = itemArgs(target, name, count, metadata, false)
 	if args == nil then return refused end
 	return answered(api.AddItem(args.target, args.name, args.count, args.metadata))
-end)
+end, byCitizen)
 
 publish('RemoveItem', 'write', function(_, target, name, count, metadata)
 	local api = inventory()
@@ -384,7 +441,7 @@ publish('RemoveItem', 'write', function(_, target, name, count, metadata)
 	local args, refused = itemArgs(target, name, count, metadata, false)
 	if args == nil then return refused end
 	return answered(api.RemoveItem(args.target, args.name, args.count, args.metadata))
-end)
+end, byCitizen)
 
 -- ── stashes ──────────────────────────────────────────────────────────────────
 
@@ -407,7 +464,7 @@ publish('CountInStash', 'read', function(_, stash, item, metadata)
 	local args, refused = stashArgs(stash, item, nil, metadata)
 	if args == nil then return refused end
 	return answered(api.CountInStash(args.stash, args.item, args.metadata))
-end)
+end, true)
 
 publish('AddToStash', 'write', function(_, stash, item, count, metadata)
 	local api = inventory()
@@ -415,7 +472,7 @@ publish('AddToStash', 'write', function(_, stash, item, count, metadata)
 	local args, refused = stashArgs(stash, item, count, metadata)
 	if args == nil then return refused end
 	return answered(api.AddToStash(args.stash, args.item, args.count, args.metadata))
-end)
+end, true)
 
 publish('RemoveFromStash', 'write', function(_, stash, item, count, metadata)
 	local api = inventory()
@@ -423,7 +480,7 @@ publish('RemoveFromStash', 'write', function(_, stash, item, count, metadata)
 	local args, refused = stashArgs(stash, item, count, metadata)
 	if args == nil then return refused end
 	return answered(api.RemoveFromStash(args.stash, args.item, args.count, args.metadata))
-end)
+end, true)
 
 -- ── chat ─────────────────────────────────────────────────────────────────────
 
@@ -448,14 +505,14 @@ publish('RevokeKeys', 'write', function(_, target, plate)
 	local who = targetOf(target)
 	if who == nil or type(plate) ~= 'string' then return refuse('export.badArgument') end
 	return answered(keys.Revoke(who, plate))
-end)
+end, true)
 
 publish('RevokeAllKeys', 'write', function(_, plate)
 	local keys = OPX.Api.Get('vehiclekeys')
 	if keys == nil or keys.RevokeAll == nil then return refuse('error.unavailable') end
 	if type(plate) ~= 'string' then return refuse('export.badArgument') end
 	return answered(keys.RevokeAll(plate))
-end)
+end, true)
 
 publish('SetVehicleState', 'write', function(_, plate, state, garage)
 	local vehicles = OPX.Api.Get('vehicles')
@@ -465,7 +522,7 @@ publish('SetVehicleState', 'write', function(_, plate, state, garage)
 	end
 	if garage ~= nil and nameOf(garage) == nil then return refuse('export.badArgument') end
 	return answered(vehicles.SetState(plate, state, garage))
-end)
+end, true)
 
 if type(exports) ~= 'function' then
 	Open77.log.warn('[exports] this host has no `exports`: the creator surface is not published')

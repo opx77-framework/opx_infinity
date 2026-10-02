@@ -26386,5 +26386,72 @@ do
 	end
 end
 
+section('creator review: a call the host abandons leaves nothing held')
+do
+	-- THE HOST DROPS AN EXPORT COROUTINE IN TWO DOCUMENTED CASES: a synchronous
+	-- caller fails at the callee's first yield (`export_yielded`) and never
+	-- resumes it, and an asynchronous caller that times out, stops or reloads
+	-- cancels the callee's task. A body dropped half-way kept the offline money
+	-- ledger busy -- the character could not log in for a minute -- and kept an
+	-- inventory `loading` marker that every later load of that stash waited on
+	-- and failed.
+	local state = { balance = 40 }
+	local env, control, why = boot('server', creatorBridge(state))
+	check('the server boots for abandoned calls', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local db = control.database
+		OPX.Config.SERVER.EXPORTS.WRITERS = { payroll = true }
+
+		-- ── a synchronous caller ──────────────────────────────────────────────
+		local AWAY = OPX.CitizenId.Generate()
+		local answer, reason = control.AbandonExport('payroll', 1, 'AddMoneyOffline',
+			AWAY, 'BANK', 100, 'salary')
+		check('a synchronous AddMoneyOffline fails at its first yield',
+			answer == nil and reason == 'export_yielded', tostring(reason))
+		control.Pump(5)
+		check('and nothing was begun: no statement, the row not held',
+			#state.offline == 0 and not character.Ledger.Busy(AWAY), #state.offline)
+		local retried = control.CallExport('payroll', 'AddMoneyOffline', AWAY, 'BANK', 100, 'salary')
+		check('so the awaited retry pays once, at once',
+			retried ~= nil and retried.ok == true and #state.offline == 1 and state.balance == 140,
+			retried and tostring(retried.error))
+
+		local stashAnswer, stashWhy = control.AbandonExport('my_hud', 1, 'CountInStash',
+			'evidence_locker', 'water')
+		check('a synchronous CountInStash fails at its first yield too',
+			stashAnswer == nil and stashWhy == 'export_yielded', tostring(stashWhy))
+		control.Pump(5)
+		local counted = control.CallExport('my_hud', 'CountInStash', 'evidence_locker', 'water')
+		check('and the stash it never reached still loads for the next caller',
+			counted ~= nil and counted.ok == true and counted.value == 0,
+			counted and tostring(counted.error))
+
+		standCharacter(env, control, 630, OPX.CitizenId.Generate())
+		local inline = control.AbandonExport('my_hud', 1, 'GetMoney', 630, 'EDDIES')
+		check('a synchronous read of a LOADED player still answers inline',
+			inline ~= nil and inline.ok == true and inline.value == 500)
+
+		-- ── an asynchronous caller that goes away mid-write ───────────────────
+		local HELD = OPX.CitizenId.Generate()
+		local writes = #state.offline
+		db.park = function(method, sql)
+			return method == 'update' and sql:find('JSON_SET', 1, true) ~= nil
+		end
+		local cancelled, cwhy = control.AbandonExport('payroll', 6, 'AddMoneyOffline',
+			HELD, 'BANK', 5, 'bonus')
+		check('a caller cancelled while the increment is in flight gets no answer',
+			cancelled == nil and cwhy == 'export_cancelled', tostring(cwhy))
+		db.park = nil
+		db.Resume()
+		control.Pump(5)
+		check('but the write it started finishes, and gives the row back',
+			#state.offline == writes + 1 and not character.Ledger.Busy(HELD),
+			#state.offline)
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
