@@ -21621,6 +21621,36 @@ end
 -- in any test ever run: the client re-applied the clock on every accepted
 -- snapshot, and both mutants over the tolerance survived. With a real engine
 -- clock the correction is a comparison between two numbers again.
+section('a command read-back carries the field the chat log styles by')
+do
+	-- `OPX.CommandResult` sent `type` and `ChatLog.vue` reads `kind`, so a
+	-- refused read-back defaulted to `say` and lost its error colour.
+	local env, control, why = boot('server')
+	check('the server boots for the read-back', why == nil, why)
+	if why == nil then
+		local RESULT = env.OPX.Event(env.OPX.Channel.NET, 'runtime', 'commandResult')
+		env.OPX.CommandResult(3, false, 'refused read-back')
+		local last = nil
+		for index = 1, #control.clientEvents do
+			if control.clientEvents[index].name == RESULT then last = control.clientEvents[index] end
+		end
+		local payload = last and last[1] or nil
+		check('a refused read-back is kind error',
+			type(payload) == 'table' and payload.kind == 'error', payload and tostring(payload.kind))
+		env.OPX.CommandResult(3, true, 'a list')
+		for index = 1, #control.clientEvents do
+			if control.clientEvents[index].name == RESULT then last = control.clientEvents[index] end
+		end
+		check('and an accepted one kind info', last ~= nil and last[1].kind == 'info')
+		local view = io.open('ui/src/modules/chat/ChatLog.vue', 'r')
+		local source = view and view:read('a') or ''
+		if view then view:close() end
+		check('and kind is the field the chat log reads',
+			source:find('kind: text(line.kind', 1, true) ~= nil
+				and source:find('.is-error', 1, true) ~= nil)
+	end
+end
+
 section('weather: the commands answer the player and are suggested by the chat box')
 do
 	-- These were raw `RegisterCommand` calls answered on a private event whose

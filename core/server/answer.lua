@@ -213,8 +213,12 @@ function OPX.CommandResult(source, accepted, message)
 	-- compare string with number` instead of printing to the console.
 	source = tonumber(source)
 	if source and source > 0 then
+		-- `kind`, the field every chat line carries and the one `ChatLog.vue`
+		-- styles a line by. This sent `type`, which the page never read, so a
+		-- refused read-back defaulted to `say` and drew like something a player
+		-- had said instead of in the error colour.
 		TriggerClientEvent(RESULT, source, {
-			type = accepted and 'info' or 'error',
+			kind = accepted and 'info' or 'error',
 			author = OPX.Config.SHARED.SERVER_NAME,
 			text = dumpText(message),
 		})
