@@ -815,6 +815,7 @@ function M.Init()
 	end
 
 	OPX.Schema.Add(M.Storage.SCHEMA)
+	OPX.Schema.AddIndexes(M.Storage.INDEXES)
 end
 
 --- Publishes the contract. Nothing may read one before this phase ends.

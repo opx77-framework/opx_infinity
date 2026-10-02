@@ -293,3 +293,48 @@ function OPX.Storage.ApplySchema(statements)
 	Open77.log.info(('[storage] schema ready: %d table(s)'):format(#statements))
 	return Result.Ok(#statements)
 end
+
+-- A bare SQL identifier: what a table, an index or a column may be named when
+-- it is spliced into DDL, which cannot bind one as a parameter.
+local IDENTIFIER = '^[%a_][%w_]*$'
+
+--- Adds an index to a table that may predate it, and does nothing when it is
+--- already there.
+-- @author dop42
+--
+-- THE MIGRATION `CREATE TABLE IF NOT EXISTS` CANNOT BE. A key written into a
+-- CREATE TABLE reaches a fresh install and nothing else: IF NOT EXISTS sees an
+-- existing table and touches nothing, key list included. MySQL has no
+-- `CREATE INDEX IF NOT EXISTS` either, so the question is asked of
+-- `information_schema` first and the ALTER runs only when the answer is no --
+-- which makes it safe to run on every boot, fresh or not.
+-- @param tableName string
+-- @param indexName string
+-- @param columns string[]
+-- @return Result true when it was added, false when it was already there
+function OPX.Storage.EnsureIndex(tableName, indexName, columns)
+	if type(tableName) ~= 'string' or not tableName:match(IDENTIFIER)
+		or type(indexName) ~= 'string' or not indexName:match(IDENTIFIER)
+		or type(columns) ~= 'table' or #columns == 0 then
+		return Result.Err('bad-index', tostring(indexName))
+	end
+	for index = 1, #columns do
+		if type(columns[index]) ~= 'string' or not columns[index]:match(IDENTIFIER) then
+			return Result.Err('bad-index', tostring(indexName))
+		end
+	end
+
+	local present = Storage.Scalar([[
+SELECT COUNT(*)
+  FROM information_schema.STATISTICS
+ WHERE table_schema = DATABASE() AND table_name = @tableName AND index_name = @indexName
+  ]], { tableName = tableName, indexName = indexName })
+	if not present.ok then return present end
+	if (tonumber(present.value) or 0) > 0 then return Result.Ok(false) end
+
+	local added = Storage.Execute(('ALTER TABLE %s ADD KEY %s (%s)')
+		:format(tableName, indexName, table.concat(columns, ', ')))
+	if not added.ok then return added end
+	Open77.log.info(('[storage] added index %s to %s'):format(indexName, tableName))
+	return Result.Ok(true)
+end

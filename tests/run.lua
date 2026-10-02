@@ -9516,18 +9516,54 @@ do
 			character.FindCharacters('recent').ok == false)
 		check('and none of those reached the database', #asked == 0)
 
-		-- THE INDEX. It is in the CREATE TABLE and therefore reaches a fresh install
-		-- and nothing else; the comment above the schema says so, and this holds
-		-- both halves of that together so neither can be edited away alone.
+		-- THE INDEX. In the CREATE TABLE it reaches a fresh install and nothing
+		-- else, so it is ALSO an ensured index: added on boot to a table that
+		-- predates it, and left alone where it is already there.
 		local schema = table.concat(storage.SCHEMA, '\n')
 		check('the find order is indexed in the schema',
 			schema:find('idx_opx77_characters_seen (deleted_at, last_logged_out, citizen_id)',
 				1, true) ~= nil)
-		local handle = io.open('modules/character/server/storage.lua', 'r')
-		local source = handle:read('a')
-		handle:close()
-		check('and the schema says plainly that it will not reach a live database',
-			source:find('ALTER TABLE opx77_characters', 1, true) ~= nil)
+		local ensured = nil
+		for _, spec in ipairs(storage.INDEXES or {}) do
+			if spec.NAME == 'idx_opx77_characters_seen' then ensured = spec end
+		end
+		check('and it is ensured on an existing table too, with the same columns',
+			ensured ~= nil and ensured.TABLE == 'opx77_characters'
+				and table.concat(ensured.COLUMNS, ',') == 'deleted_at,last_logged_out,citizen_id')
+
+		local function ensureWith(present)
+			local altered = {}
+			local probe = Host.Database({
+				scalar = function(sql)
+					if sql:find('information_schema', 1, true) then return present end
+					return 1
+				end,
+				update = function(sql)
+					if sql:find('ALTER TABLE', 1, true) then altered[#altered + 1] = sql end
+					return 0
+				end,
+			})
+			local saved = env.MySQL
+			env.MySQL = probe
+			local answer
+			env.CreateThread(function()
+				answer = env.OPX.Storage.EnsureIndex('opx77_characters', 'idx_opx77_characters_seen',
+					{ 'deleted_at', 'last_logged_out', 'citizen_id' })
+			end)
+			settle(control, function() return answer ~= nil end, 20)
+			env.MySQL = saved
+			return answer, altered
+		end
+		local added, alters = ensureWith(0)
+		check('a database without the index is given it',
+			added ~= nil and added.ok == true and added.value == true and #alters == 1
+				and alters[1]:find('ADD KEY idx_opx77_characters_seen (deleted_at, last_logged_out, ' ..
+					'citizen_id)', 1, true) ~= nil, alters[1])
+		local kept, none = ensureWith(1)
+		check('and one that has it is left alone, so it is safe on every boot',
+			kept ~= nil and kept.ok == true and kept.value == false and #none == 0)
+		check('a name that is not a bare identifier is refused before any SQL',
+			env.OPX.Storage.EnsureIndex('t; DROP TABLE x', 'i', { 'c' }).ok == false)
 
 		-- ── the staff half ───────────────────────────────────────────────────
 		-- WHAT THE ADMIN MODULE ADDS: who is connected, and who may ask. It adds no

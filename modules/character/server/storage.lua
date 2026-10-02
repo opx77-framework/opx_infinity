@@ -36,22 +36,22 @@ end
 -- development: a table that exists is never touched by IF NOT EXISTS, so a
 -- changed table is dropped and recreated rather than migrated.
 --
--- WHICH IS WHY `idx_opx77_characters_seen` REACHES A FRESH INSTALL AND NOTHING
--- ELSE, and saying so is the only honest thing to do about it. The staff find
--- screen reads the whole table by last-played, and that index is what makes the
--- read a backward range scan over 26 entries instead of a filesort over every
--- living character. A database where `opx77_characters` already exists will not
--- grow it from here -- IF NOT EXISTS sees a table and does nothing at all, key
--- list included -- so on an existing server it is one line run by hand:
---
---   ALTER TABLE opx77_characters
---     ADD KEY idx_opx77_characters_seen (deleted_at, last_logged_out, citizen_id);
---
--- A bare `CREATE INDEX` in the list below would not do it either: MySQL has no
--- `CREATE INDEX IF NOT EXISTS`, so it would raise on every fresh install -- where
--- the key is already in the CREATE TABLE -- and `ApplySchema` stops at the first
--- failure, which would cost the whole boot. Without the index the find screen
--- still ANSWERS; it answers by walking the table.
+-- WHICH IS WHY `idx_opx77_characters_seen` IS ALSO IN `INDEXES` BELOW. The
+-- staff find screen reads the whole table by last-played, and that index is what
+-- makes the read a backward range scan over 26 entries instead of a filesort
+-- over every living character. In the CREATE TABLE it reached a fresh install
+-- and nothing else -- IF NOT EXISTS sees an existing table and does nothing at
+-- all, key list included -- so every server that predated it went without, and
+-- the fix was a line an operator had to run by hand. `OPX.Storage.EnsureIndex`
+-- asks `information_schema` first and adds it only when it is missing, so it is
+-- safe on every boot; a failure there is a warning, because without the index
+-- the find screen still ANSWERS, by walking the table.
+--- Indexes a table that already exists may be missing; see the note above.
+M.Storage.INDEXES = {
+	{ TABLE = 'opx77_characters', NAME = 'idx_opx77_characters_seen',
+		COLUMNS = { 'deleted_at', 'last_logged_out', 'citizen_id' } },
+}
+
 M.Storage.SCHEMA = {
 	[[
 CREATE TABLE IF NOT EXISTS opx77_users (
