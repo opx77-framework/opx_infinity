@@ -2036,6 +2036,25 @@ do
 		check('and `false` takes the grid down, the way every other field clears',
 			Panel.Update(handle, { tiles = false }).ok)
 
+		-- CAPTIONS AND PICTURES RIDE BESIDE THE NAMES, one per box, '' for none. A
+		-- list out of step with `entries` is refused whole: a caption one box off is
+		-- a player choosing the jacket written under the trousers. A picture is a
+		-- file name under `images/clothing/` and never a path.
+		check('a window may carry a caption and a picture per box',
+			Panel.Update(handle, { tiles = { slot = 'OuterChest', from = 1,
+				entries = { 'Items.Coat_001', 'Items.Coat_002' },
+				labels = { 'Kitsch coat', 'Coat 002' },
+				images = { 'coat-001-f.webp', '' } } }).ok)
+		local shortLabels = Panel.Update(handle, { tiles = { slot = 'OuterChest', from = 1,
+			entries = { 'Items.Coat_001', 'Items.Coat_002' }, labels = { 'Kitsch coat' } } })
+		check('and captions out of step with the boxes are refused whole',
+			not shortLabels.ok and shortLabels.error == 'invalid_tiles', tostring(shortLabels.error))
+		local pathImage = Panel.Update(handle, { tiles = { slot = 'OuterChest', from = 1,
+			entries = { 'Items.Coat_001' }, images = { '../index.html' } } })
+		check('and a picture that is a path is refused',
+			not pathImage.ok and pathImage.error == 'invalid_tiles', tostring(pathImage.error))
+		Panel.Update(handle, { tiles = false })
+
 		-- The rows above were replaced whole by the checks that accepted, so the
 		-- spec's own are put back before the block goes on to press one of them:
 		-- a patch states a field entirely, which is the contract these very checks
@@ -2821,6 +2840,9 @@ do
 
 		-- ── switching category ───────────────────────────────────────────────
 		control.PageEmit(page, 'opx:panel:tab', { handle = handle, tab = 'OuterChest' })
+		-- A window is built on frames of its own (its garment lookups are warmed
+		-- TILE_LOOKUPS a frame), so it arrives a few frames after the press.
+		control.Pump(10)
 		window = lastOf('tiles')
 		check('opening another category sends that category grid',
 			type(window) == 'table' and window.slot == 'OuterChest' and window.from == 1
@@ -3087,6 +3109,8 @@ do
 			local before = #page.sent
 			control.PageEmit(page, 'opx:panel:tiles',
 				{ handle = handle, slot = 'OuterChest', from = from })
+			-- Built on frames of its own; see `warmTiles`.
+			control.Pump(10)
 			for index = before + 1, #page.sent do
 				local given = page.sent[index].payload.tiles
 				if type(given) == 'table' then return given end
@@ -3135,6 +3159,164 @@ do
 
 		appearance.Wardrobe.Close('caller')
 	end
+
+	-- ── the garment pictures ───────────────────────────────────────────────
+	-- A BOX CARRIES THE ITEM'S NAME AND ITS PICTURE ON THIS BODY, decided in Lua
+	-- from the generated garment data. The page used to guess
+	-- `images/clothing/<record>.png` for every box and fall back on the 404, which
+	-- is a failed file read per box and a record id under every one of them.
+	do
+		local env, control = joinClient('never', 400)
+		local appearance = env.OPX.Modules.Get('appearance')
+		local page = control.pages[1]
+		local RECORDS = { 'Items.Balaclava_01_old_01', 'Items.Cap_01_old_02', 'Items.Nope_Jacket_01' }
+
+		env.Open77.equipment.records = function(options)
+			local out = {}
+			if options.slot == 'Head' then
+				for index = 1, #RECORDS do out[index] = { record = RECORDS[index] } end
+			end
+			return out
+		end
+		env.Open77.equipment.apply = function() return true end
+		env.Open77.character.state = function()
+			return { health = 100, alive = true, attached = true }
+		end
+		appearance.Clothing.BeginPreview = function() return { equipment = {} } end
+		appearance.Clothing.EndPreview = function() return true end
+
+		--- The first grid window of a room opened on one body family.
+		local function firstWindow(bodyFamily)
+			appearance.Runtime.BodyFamily = function() return bodyFamily end
+			local before = #page.sent
+			appearance.Wardrobe.Open('appearance')
+			control.Pump(60)
+			local found = nil
+			for index = before + 1, #page.sent do
+				local given = page.sent[index].payload.tiles
+				if type(given) == 'table' then found = given end
+			end
+			appearance.Wardrobe.Close('caller')
+			control.Pump(5)
+			return found
+		end
+
+		local male = firstWindow('male')
+		check('a window carries a caption and a picture per box',
+			type(male) == 'table' and #(male.labels or {}) == 3 and #(male.images or {}) == 3,
+			type(male) == 'table' and ('%d/%d'):format(#(male.labels or {}), #(male.images or {}))
+				or 'no window')
+		if type(male) == 'table' and male.labels and male.images then
+			check("the caption is the item's own name, not its record",
+				male.labels[1] == 'Balaclava with shock-absorbent composite layering'
+					and male.labels[2] == 'BRAINDANCE cap', tostring(male.labels[2]))
+			check('and the picture is the one on the body the room is dressing',
+				male.images[1] == 'balaclava-01-old-01-m.webp', tostring(male.images[1]))
+			check('a record the data does not know has no picture and a readable name',
+				male.images[3] == '' and male.labels[3] == 'Nope Jacket 01',
+				('%q %q'):format(tostring(male.images[3]), tostring(male.labels[3])))
+			check('and the record name is still what keys the box',
+				male.entries[1] == 'Items.Balaclava_01_old_01', tostring(male.entries[1]))
+		end
+		local female = firstWindow('female')
+		check('the other body gets its own picture of the same garment',
+			type(female) == 'table' and female.images ~= nil
+				and female.images[1] == 'balaclava-01-old-01-f.webp',
+			type(female) == 'table' and tostring(female.images and female.images[1]) or 'no window')
+
+		-- The lookup itself: a family it does not know falls back to a picture
+		-- rather than to none, and a row that names a path is refused.
+		local Garments = appearance.Garments
+		local _, unknownBody = Garments.Describe('Items.Cap_01_old_02', nil)
+		check('a body the data has no word for still gets a picture',
+			unknownBody == 'cap-01-old-02-f.webp', tostring(unknownBody))
+		appearance.Data.GARMENTS[#appearance.Data.GARMENTS + 1] = {
+			['Items.Test_Path_01'] = { NAME = 'Escape', FEMALE = '../index.html', MALE = 'ok.webp' },
+		}
+		local named, picture = Garments.Describe('Items.Test_Path_01', 'female')
+		check('a picture that is a path is never handed to the page',
+			named == 'Escape' and picture == 'ok.webp', tostring(picture))
+	end
+end
+
+-- ── the garment data ───────────────────────────────────────────────────────
+-- GENERATED by tools/generate-garments.mjs and held to what the platform and the
+-- page need: each part loads well under the host's 10,000-instruction load check,
+-- every picture a row names is shipped, and every picture shipped is named.
+section('garment data')
+do
+	local handle = io.open('open77.lua', 'r')
+	local manifest = handle:read('a')
+	handle:close()
+	local parts, rows, named, bad = {}, 0, {}, {}
+	for file in manifest:gmatch('client_script "(modules/appearance/data/garments%-%d+%.lua)"') do
+		parts[#parts + 1] = file
+	end
+	check('the garment data is listed in the manifest', #parts > 0, tostring(#parts))
+
+	local worst = 0
+	for _, file in ipairs(parts) do
+		local holder = { Data = { GARMENTS = {} } }
+		local env = { OPX = { Modules = { Get = function() return holder end } } }
+		local chunk = assert(loadfile(file, 't', env))
+		local count = 0
+		debug.sethook(function() count = count + 1 end, '', 1)
+		chunk()
+		debug.sethook()
+		if count > worst then worst = count end
+		for record, row in pairs(holder.Data.GARMENTS[1] or {}) do
+			rows = rows + 1
+			if not record:find('^Items%.[%w_%-%.]+$') or type(row.NAME) ~= 'string' then
+				bad[#bad + 1] = record
+			end
+			for _, picture in ipairs({ row.FEMALE or '', row.MALE or '' }) do
+				if not (picture:find('^[%w_%-%.]+%.webp$') and #picture <= 64) then
+					bad[#bad + 1] = record
+				end
+				named[picture] = true
+			end
+		end
+	end
+	-- The ceiling is 10,000 and a check that lands past its deadline cancels the
+	-- whole resource set; 6,000 keeps a rerun with a bigger collection honest.
+	check('every part loads in well under 10,000 instructions', worst > 0 and worst < 6000,
+		tostring(worst))
+	check('every row is a record, a name and two plain picture names', #bad == 0,
+		table.concat(bad, ', ', 1, math.min(#bad, 5)))
+	check('the data names over fifteen hundred garments', rows > 1500, tostring(rows))
+
+	--- The .webp files in one folder, from a directory listing.
+	local function listed(folder)
+		local found = {}
+		local windows = package.config:sub(1, 1) == '\\'
+		local command = windows and ('dir /b "%s" 2>nul'):format((folder:gsub('/', '\\')))
+			or ('ls -1 "%s" 2>/dev/null'):format(folder)
+		local pipe = io.popen(command)
+		if pipe == nil then return found end
+		for line in pipe:lines() do
+			line = line:gsub('%s+$', '')
+			if line:find('%.webp$') then found[line] = true end
+		end
+		pipe:close()
+		return found
+	end
+	for _, folder in ipairs({ 'ui/public/images/clothing', 'web/images/clothing' }) do
+		local present = listed(folder)
+		local missing, orphan = {}, {}
+		for picture in pairs(named) do
+			if not present[picture] then missing[#missing + 1] = picture end
+		end
+		for picture in pairs(present) do
+			if not named[picture] then orphan[#orphan + 1] = picture end
+		end
+		check(('every picture a row names is in %s'):format(folder), #missing == 0,
+			('%d missing, e.g. %s'):format(#missing, tostring(missing[1])))
+		check(('and %s ships nothing no row names'):format(folder), #orphan == 0,
+			('%d orphan(s), e.g. %s'):format(#orphan, tostring(orphan[1])))
+	end
+	local attribution = io.open('web/images/clothing/ATTRIBUTION.md', 'r')
+	check('the pictures ship with their attribution', attribution ~= nil)
+	if attribution then attribution:close() end
 end
 
 -- ── client boot ──────────────────────────────────────────────────────────────

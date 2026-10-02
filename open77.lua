@@ -219,6 +219,16 @@ client_script "modules/appearance/client/main.lua"
 client_script "modules/appearance/client/editor.lua"
 client_script "modules/appearance/client/clothing.lua"
 client_script "modules/appearance/client/presence.lua"
+-- The fitting room's garment names and pictures. `garments.lua` first: it makes the
+-- table the generated parts append to. The parts are tools/generate-garments.mjs
+-- output, split so no file nears the host's 10,000-instruction load check; a
+-- rerun that writes a different number of parts says which lines to change here.
+client_script "modules/appearance/client/garments.lua"
+client_script "modules/appearance/data/garments-1.lua"
+client_script "modules/appearance/data/garments-2.lua"
+client_script "modules/appearance/data/garments-3.lua"
+client_script "modules/appearance/data/garments-4.lua"
+client_script "modules/appearance/data/garments-5.lua"
 client_script "modules/appearance/client/wardrobe.lua"
 -- The seam's other end. `wardrobe.lua` holds both state machines and draws
 -- nothing; this is the only file that knows the appearance panel is a `menu` and
