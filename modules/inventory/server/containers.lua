@@ -26,6 +26,12 @@ local byIdentity = {}
 -- Loads in flight by identity, shared between concurrent callers.
 local loading = {}
 
+-- How long a caller waits on another's load in flight, and how old that load
+-- may be before it can only be one whose thread was dropped and is taken over.
+-- A real load is a handful of statements; ten seconds is a database in trouble.
+local LOAD_WAIT_MS = 35000
+local LOAD_STALE_MS = 10000
+
 -- What each player has open beside their bag, and whether it is a staff search.
 local viewing = {}
 
@@ -63,15 +69,34 @@ function Containers.Load(kind, owner, slots, maxWeight)
 	local id = byIdentity[identity]
 	if id and loaded[id] then return loaded[id], nil end
 
-	local pending = loading[identity]
-	if pending then
-		local deadline = OPX.Now() + 35000
-		while not pending.done and OPX.Now() < deadline do Wait(50) end
-		if pending.container then return pending.container, nil end
-		return nil, pending.error or 'load_timeout'
+	-- A LOAD IN FLIGHT IS WAITED ON, BUT NOT FOR EVER. The thread that set the
+	-- marker can be dropped mid-read and never come back -- the host abandons an
+	-- export coroutine whose synchronous caller it yielded under, or whose
+	-- asynchronous caller stopped -- and a marker nobody will ever clear made
+	-- every later load of that stash or bag wait 35 s and fail, for the life of
+	-- the resource. A marker older than `LOAD_STALE_MS` is taken over: this
+	-- caller loads the container itself, and the abandoned load, should it ever
+	-- finish after all, finds the container already registered and adopts it.
+	local deadline = OPX.Now() + LOAD_WAIT_MS
+	while loading[identity] ~= nil do
+		local pending = loading[identity]
+		if OPX.Now() - pending.since >= LOAD_STALE_MS then
+			Open77.log.warn(('[inventory] the load of %s %s has been in flight for %d ms; ' ..
+				'taking it over'):format(kind, owner, OPX.Now() - pending.since))
+			loading[identity] = nil
+			break
+		end
+		if OPX.Now() >= deadline then return nil, 'load_timeout' end
+		Wait(50)
+		if pending.done then
+			if pending.container then return pending.container, nil end
+			return nil, pending.error or 'load_timeout'
+		end
 	end
+	id = byIdentity[identity]
+	if id and loaded[id] then return loaded[id], nil end
 
-	pending = { done = false }
+	local pending = { done = false, since = OPX.Now() }
 	loading[identity] = pending
 	local container, reason = M.Storage.Read(kind, owner, slots, maxWeight)
 	if container then
@@ -81,7 +106,8 @@ function Containers.Load(kind, owner, slots, maxWeight)
 		if already then container = already else register(container) end
 	end
 	pending.done, pending.container, pending.error = true, container, reason
-	loading[identity] = nil
+	-- Only this load's own marker: a load that took a stale one over owns it now.
+	if loading[identity] == pending then loading[identity] = nil end
 	return container, reason
 end
 
@@ -859,4 +885,51 @@ function Containers.Unload(id)
 	-- line must not say it is. A transient reaches here having written nothing,
 	-- which is what `transient` means, and keeps the loud line.
 	Containers.Discard(id, not container.transient)
+end
+
+--- Puts away the stashes another resource loaded by name and then left alone.
+-- @author dop42
+--
+-- A stash the creator exports reach is LOADED, NEVER OPENED (see
+-- `main.lua`, `withStash`), so nothing else would ever unload it, and a caller
+-- walking a thousand names would hold a thousand containers for the life of the
+-- resource. One marked `external` and untouched for `idleMs` is written and
+-- unloaded, unless somebody has it open; it loads again on the next call.
+-- Yields: an unload writes first.
+-- @param idleMs integer
+-- @return integer how many were unloaded
+function Containers.SweepExternal(idleMs)
+	local now = OPX.Now()
+	local open = {}
+	for _, view in pairs(viewing) do open[view.id] = true end
+	local due = {}
+	for id, container in pairs(loaded) do
+		if container.external and not open[id]
+			and now - (container.externalAt or 0) >= idleMs then
+			due[#due + 1] = id
+		end
+	end
+	local unloaded = 0
+	for index = 1, #due do
+		local container = loaded[due[index]]
+		-- Re-read after every unload, which yields: a stash touched or opened
+		-- meanwhile stays.
+		if container and container.external and not Containers.IsViewed(due[index])
+			and OPX.Now() - (container.externalAt or 0) >= idleMs then
+			Containers.Unload(due[index])
+			if loaded[due[index]] == nil then unloaded = unloaded + 1 end
+		end
+	end
+	return unloaded
+end
+
+--- Whether any player has a container open.
+-- @author dop42
+-- @param id integer
+-- @return boolean
+function Containers.IsViewed(id)
+	for _, view in pairs(viewing) do
+		if view.id == id then return true end
+	end
+	return false
 end

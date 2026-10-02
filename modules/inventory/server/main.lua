@@ -345,6 +345,49 @@ end
 
 -- ── a named stash ────────────────────────────────────────────────────────────
 
+-- How long a stash loaded by name, and not opened by anybody, stays in memory
+-- after its last touch, when `SERVER.EXPORTS.STASHES.IDLE_MS` says nothing.
+local STASH_IDLE_MS = 60000
+
+-- How many stashes one resource may create, when the call names no cap.
+local STASH_CREATE_CAP = 25
+
+--- The configured stash of a name, or nil.
+local function configuredStash(name)
+	local configured = Options.STASHES[name]
+	if configured ~= nil then return configured end
+	for _, stash in ipairs(Options.STASH_LIST) do
+		if stash.name == name then return stash end
+	end
+	return nil
+end
+
+--- Whether a stash that does not exist yet may be created, and why not.
+--
+-- THE CREATION RULE FOR ANOTHER RESOURCE (`creator` set; this resource's own
+-- modules pass none and keep creating as they always have). A stash in
+-- `config/inventory` may always be created: the operator listed it. Anything
+-- else must be named in the caller's own namespace, `<resource>.<name>`, and a
+-- resource may hold at most `cap` of those, counted in the database so a
+-- restart does not reset it. Without the rule a caller walking names would
+-- create a row, and hold a container, for every one.
+-- @return boolean
+-- @return string|nil the refusal code
+local function mayCreate(name, options)
+	local creator = options and options.creator
+	if creator == nil then return true, nil end
+	if configuredStash(name) ~= nil then return true, nil end
+	local prefix = tostring(creator) .. '.'
+	if #name <= #prefix or name:sub(1, #prefix) ~= prefix then
+		return false, 'stash_namespace'
+	end
+	local cap = math.tointeger(tonumber(options.cap)) or STASH_CREATE_CAP
+	local held = M.Storage.CountPrefixed(M.KIND.STASH, prefix)
+	if not held.ok then return false, 'storage' end
+	if held.value >= cap then return false, 'stash_cap' end
+	return true, nil
+end
+
 --- Runs `body` against a stash by its storage name. Yields: a stash loads by name.
 --
 -- THE STASH IS LOADED, NEVER OPENED. `OpenStash` and the configured markers put
@@ -354,19 +397,52 @@ end
 -- anywhere and say so in the journal. A configured stash is created at its own
 -- size, anything else at `OpenStash`'s defaults -- and only on the first touch:
 -- an existing stash keeps the size it was made with.
-local function withStash(name, body)
+--
+-- A STASH THAT DOES NOT EXIST is answered by `absent` when only `create` may
+-- make one: a count is 0 and a removal finds nothing, without a row or a
+-- container for either. A stash this path loaded is marked `external` and put
+-- away by `Containers.SweepExternal` once idle, unless a player opens it.
+-- @param name string
+-- @param body fun(container: table, name: string): Result
+-- @param create boolean whether a missing stash may be created (see `mayCreate`)
+-- @param absent fun(name: string): Result what a missing stash answers
+-- @param options table|nil creator, cap
+local function withStash(name, body, create, absent, options)
 	name = Common.Word(name, 48, '^[%w_%-%.]+$')
 	if not name then return Result.Err('bad_argument', 'stash') end
-	local configured = Options.STASHES[name]
-	if configured == nil then
-		for _, stash in ipairs(Options.STASH_LIST) do
-			if stash.name == name then configured = stash break end
+
+	local container = Containers.Find(M.KIND.STASH, name)
+	if container == nil then
+		local found = M.Storage.Find(M.KIND.STASH, name)
+		if not found.ok then return Result.Err('unavailable', name) end
+		if found.value == nil then
+			if not create then return absent(name) end
+			local allowed, why = mayCreate(name, options)
+			if not allowed then return Result.Err(why, name) end
+		end
+		local configured = configuredStash(name)
+		local reason
+		container, reason = Containers.Load(M.KIND.STASH, name,
+			configured and configured.slots or 50, configured and configured.maxWeight or 100000)
+		if not container then return Result.Err(reason or 'unavailable', name) end
+		-- Only one this path brought in: a stash a player opened keeps its own life.
+		if not Containers.IsViewed(container.id) and container.anchor == nil
+			and container.anywhere == nil then
+			container.external = true
 		end
 	end
-	local container, reason = Containers.Load(M.KIND.STASH, name,
-		configured and configured.slots or 50, configured and configured.maxWeight or 100000)
-	if not container then return Result.Err(reason or 'unavailable', name) end
+	if container.external then container.externalAt = OPX.Now() end
 	return body(container, name)
+end
+
+--- Puts away the stashes loaded by name and idle since. Yields.
+-- @author dop42
+-- @return integer
+function M.SweepStashes()
+	local exports = OPX.Config.SERVER and OPX.Config.SERVER.EXPORTS
+	local stashes = type(exports) == 'table' and exports.STASHES or nil
+	local idle = type(stashes) == 'table' and math.tointeger(tonumber(stashes.IDLE_MS)) or nil
+	return Containers.SweepExternal(idle or STASH_IDLE_MS)
 end
 
 --- Adds catalogue items to a named stash.
@@ -375,8 +451,11 @@ end
 -- @param item string
 -- @param count integer|nil
 -- @param metadata table|nil
+-- @param options table|nil `{ creator = <resource>, cap = <n> }` for a call
+--   from another resource: a missing stash is then created only under the rule
+--   of `mayCreate`. Omitted, a missing stash is created as before.
 -- @return Result
-function M.AddToStash(name, item, count, metadata)
+function M.AddToStash(name, item, count, metadata, options)
 	item = itemName(item)
 	if not item then return Result.Err('bad_argument', 'name') end
 	local kept, allowed = Common.Metadata(metadata, Options.MAX_METADATA_BYTES)
@@ -388,12 +467,14 @@ function M.AddToStash(name, item, count, metadata)
 		local ok, code = Containers.Add(stash, item, count, kept)
 		OPX.Audit.Log({ event = 'inventory.stashAdd', severity = ok and 'info' or 'warn',
 			message = ('%dx %s'):format(count, item),
-			data = { stash = key, item = item, count = count, error = code } })
+			data = { stash = key, item = item, count = count, error = code,
+				creator = options and options.creator or nil } })
 		return outcome(ok, code)
-	end)
+	end, true, nil, options)
 end
 
---- Takes items out of a named stash; nil metadata matches any stack.
+--- Takes items out of a named stash; nil metadata matches any stack. Never
+--- creates one: a stash that does not exist holds nothing to take.
 -- @author dop42
 -- @param name string
 -- @param item string
@@ -414,10 +495,11 @@ function M.RemoveFromStash(name, item, count, metadata)
 			message = ('%dx %s'):format(count, item),
 			data = { stash = key, item = item, count = count, error = code } })
 		return outcome(ok, code)
-	end)
+	end, false, function() return Result.Err('not_enough') end)
 end
 
---- How many units of an item a named stash holds.
+--- How many units of an item a named stash holds. Never creates one: a stash
+--- that does not exist holds 0.
 -- @author dop42
 -- @param name string
 -- @param item string
@@ -430,7 +512,7 @@ function M.CountInStash(name, item, metadata)
 	if not allowed then return Result.Err('bad_argument', 'metadata') end
 	return withStash(name, function(stash)
 		return Result.Ok(Containers.CountIn(stash, item, kept))
-	end)
+	end, false, function() return Result.Ok(0) end)
 end
 
 --- Takes EVERY unit of an item whose metadata carries the fields of `match`
@@ -841,6 +923,7 @@ function M.Start()
 	every(function() return 1000 end, 'reach', false, World.SweepReach)
 	every(function() return 5000 end, 'vehicles', false, World.SweepVehicles)
 	every(function() return 30000 end, 'prune', false, Players.PruneVanished)
+	every(function() return 15000 end, 'stash idle', false, M.SweepStashes)
 
 	-- These four only touch host calls and tables of this module, and are guarded:
 	-- a raise from a host read must end the pass, not the loop.

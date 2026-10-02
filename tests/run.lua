@@ -26575,5 +26575,155 @@ do
 	end
 end
 
+section('creator review: stashes by name are bounded, and a dropped load expires')
+do
+	-- A STASH TABLE THAT CAN BE EMPTY. `creatorBridge` answers a row for every
+	-- name, which is exactly what hid both bugs: here a stash exists only once
+	-- something created it.
+	local rows, nextId, inserts, counted = {}, 1000, {}, {}
+	local bridge = Host.Database({
+		single = function(sql, params)
+			if sql:find('FROM opx77_inventories', 1, true) and params.kind == 'stash' then
+				local id = rows[params.owner]
+				if id == nil then return nil end
+				return { id = id, kind = 'stash', owner = params.owner, slots = 50,
+					max_weight = 100000 }
+			end
+			return nil
+		end,
+		update = function(sql, params)
+			if sql:find('INSERT IGNORE INTO opx77_inventories', 1, true) then
+				inserts[#inserts + 1] = params.owner
+				if rows[params.owner] == nil then
+					nextId = nextId + 1
+					rows[params.owner] = nextId
+					return 1
+				end
+				return 0
+			end
+			return 1
+		end,
+		scalar = function(sql, params)
+			if sql:find('COUNT(*) FROM opx77_inventories', 1, true) then
+				counted[#counted + 1] = params.pattern
+				-- The LIKE prefix, unescaped, as the database would read it.
+				local prefix = params.pattern:gsub('%%$', ''):gsub('\\(.)', '%1')
+				local n = 0
+				for owner in pairs(rows) do
+					if owner:sub(1, #prefix) == prefix then n = n + 1 end
+				end
+				return n
+			end
+			return 1
+		end,
+		query = function() return {} end,
+		insert = function() return 1 end,
+		transaction = function() return true end,
+	})
+	local env, control, why = boot('server', bridge)
+	check('the server boots for bounded stashes', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local inventory = OPX.Modules.Get('inventory')
+		local Containers = inventory.Containers
+		local db = control.database
+		local call = control.CallExport
+		OPX.Config.SERVER.EXPORTS.WRITERS = { my_shop = true }
+		rows['evidence_locker'] = 900
+
+		-- ── CountInStash never creates ────────────────────────────────────────
+		local none = call('my_hud', 'CountInStash', 'nobody_made_this', 'water')
+		check('CountInStash on a stash that does not exist answers 0',
+			none ~= nil and none.ok == true and none.value == 0, none and tostring(none.error))
+		check('without creating its row or loading a container',
+			#inserts == 0 and rows['nobody_made_this'] == nil
+				and Containers.Find('stash', 'nobody_made_this') == nil, #inserts)
+		local gone = call('my_shop', 'RemoveFromStash', 'nobody_made_this', 'water')
+		check('and RemoveFromStash finds nothing there, creating nothing either',
+			gone.error == 'not_enough' and #inserts == 0, tostring(gone.error))
+
+		-- ── AddToStash creates only under the rule ────────────────────────────
+		local stray = call('my_shop', 'AddToStash', 'random_name', 'water')
+		check('a caller may not create a stash outside its own namespace',
+			stray.ok == false and stray.error == 'stash_namespace' and rows['random_name'] == nil,
+			tostring(stray.error))
+		local squat = call('my_shop', 'AddToStash', 'other_res.backroom', 'water')
+		check('nor in another resource\'s',
+			squat.error == 'stash_namespace' and rows['other_res.backroom'] == nil)
+		local own = call('my_shop', 'AddToStash', 'my_shop.backroom', 'water', 2)
+		check('it may create one named after itself',
+			own.ok == true and rows['my_shop.backroom'] ~= nil, tostring(own.error))
+		check('an existing stash of any name is used as it is',
+			call('my_shop', 'AddToStash', 'evidence_locker', 'water').ok == true)
+
+		OPX.Config.SERVER.EXPORTS.STASHES.CREATE_CAP = 2
+		check('the cap counts what the caller already holds',
+			call('my_shop', 'AddToStash', 'my_shop.second', 'water').ok == true)
+		local over = call('my_shop', 'AddToStash', 'my_shop.third', 'water')
+		check('and refuses one past it',
+			over.error == 'stash_cap' and rows['my_shop.third'] == nil, tostring(over.error))
+		check('counted with the LIKE wildcard in a resource name escaped',
+			counted[#counted] == 'my\\_shop.%', tostring(counted[#counted]))
+		check('a stash it already made still takes items at the cap',
+			call('my_shop', 'AddToStash', 'my_shop.backroom', 'water').ok == true)
+		check('this resource\'s own modules keep creating as before',
+			(function()
+				local made
+				env.CreateThread(function() made = inventory.AddToStash('internal_store', 'water') end)
+				settle(control, function() return made ~= nil end)
+				return made ~= nil and made.ok == true and rows['internal_store'] ~= nil
+			end)())
+
+		-- ── an idle stash is put away, an open one is not ─────────────────────
+		local backroom = Containers.Find('stash', 'my_shop.backroom')
+		local locker = Containers.Find('stash', 'evidence_locker')
+		check('a stash an export loaded is in memory, marked as such',
+			backroom ~= nil and backroom.external == true and locker ~= nil)
+		control.Admit(661, 'account-661')
+		OPX.Config.SERVER.EXPORTS.STASHES.IDLE_MS = 1000
+		control.Pump(20)
+		-- Touched again and opened just before the sweep, so neither the
+		-- background sweep nor the reach sweep has a tick to act first.
+		call('my_shop', 'CountInStash', 'evidence_locker', 'water')
+		locker = Containers.Find('stash', 'evidence_locker')
+		locker.externalAt = 0
+		-- In reach from anywhere, so the reach sweep leaves the view standing.
+		locker.anywhere = true
+		Containers.View(661, locker, false)
+		local swept
+		env.CreateThread(function() swept = inventory.SweepStashes() end)
+		settle(control, function() return swept ~= nil end)
+		check('idle past IDLE_MS, it is written and unloaded',
+			Containers.Find('stash', 'my_shop.backroom') == nil, swept)
+		check('unless a player has it open',
+			Containers.Viewing(661) ~= nil and Containers.Find('stash', 'evidence_locker') ~= nil)
+		local again = call('my_shop', 'CountInStash', 'my_shop.backroom', 'water')
+		check('and it loads again on the next call', again.ok == true, tostring(again.error))
+
+		-- ── a load whose thread was dropped does not hang the next one ────────
+		db.park = function(method, sql)
+			return method == 'single' and sql:find('FROM opx77_inventories', 1, true) ~= nil
+		end
+		rows['stuck_one'] = 950
+		env.CreateThread(function() Containers.Load('stash', 'stuck_one', 50, 100000) end)
+		control.Pump(2)
+		db.park = nil
+		local second, secondWhy, waited = nil, nil, 0
+		env.CreateThread(function()
+			second, secondWhy = Containers.Load('stash', 'stuck_one', 50, 100000)
+			secondWhy = secondWhy or 'loaded'
+		end)
+		while secondWhy == nil and waited < 400 do control.Pump(1); waited = waited + 1 end
+		check('a load waiting on one that never finishes takes it over',
+			second ~= nil and second.owner == 'stuck_one', tostring(secondWhy))
+		check('after the stale age, not the 35 s wait', waited <= 150, waited)
+		db.Resume()
+		control.Pump(5)
+		check('and the dropped load, if it ever finishes, adopts the same container',
+			Containers.Find('stash', 'stuck_one') == second)
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)

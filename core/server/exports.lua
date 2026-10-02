@@ -466,12 +466,18 @@ publish('CountInStash', 'read', function(_, stash, item, metadata)
 	return answered(api.CountInStash(args.stash, args.item, args.metadata))
 end, true)
 
-publish('AddToStash', 'write', function(_, stash, item, count, metadata)
+publish('AddToStash', 'write', function(caller, stash, item, count, metadata)
 	local api = inventory()
 	if api == nil or api.AddToStash == nil then return refuse('error.unavailable') end
 	local args, refused = stashArgs(stash, item, count, metadata)
 	if args == nil then return refused end
-	return answered(api.AddToStash(args.stash, args.item, args.count, args.metadata))
+	-- A stash that does not exist yet is created only under the rule of
+	-- `SERVER.EXPORTS.STASHES`: configured, or `<caller>.<name>` within the cap.
+	local stashes = type(settings().STASHES) == 'table' and settings().STASHES or {}
+	return answered(api.AddToStash(args.stash, args.item, args.count, args.metadata, {
+		creator = caller,
+		cap = math.tointeger(tonumber(stashes.CREATE_CAP)),
+	}))
 end, true)
 
 publish('RemoveFromStash', 'write', function(_, stash, item, count, metadata)

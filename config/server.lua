@@ -31,6 +31,19 @@ OPX.Config.SERVER = {
 		READ = '*',
 		WRITERS = {},
 		STAFF_PERMISSION = 'command.opx.admin',
+		-- STASHES BY NAME: what `CountInStash`, `AddToStash` and
+		-- `RemoveFromStash` may do to a stash that does not exist yet.
+		--   * CountInStash answers 0 and RemoveFromStash `not_enough`; neither
+		--     ever creates one.
+		--   * AddToStash creates one only if it is listed in config/inventory, or
+		--     is named in the CALLER's own namespace -- `<resource>.<name>`, e.g.
+		--     `my_shop.backroom` -- and that resource holds fewer than CREATE_CAP
+		--     of those (counted in the database, so a restart does not reset it).
+		--     Anything else is refused `stash_namespace` or `stash_cap`. A stash
+		--     that already exists, whatever its name, is used as it is.
+		--   * A stash loaded this way and not opened by a player is written and
+		--     put away IDLE_MS after its last touch, and loads again on demand.
+		STASHES = { CREATE_CAP = 25, IDLE_MS = 60000 },
 	},
 
 	-- Numbers an operator may change while people are playing are re-declared as
