@@ -53,23 +53,12 @@ local ACTIONS = { 'ready', 'close', 'toggle', 'call', 'share',
 --- Wires the page to the seam.
 -- @author dop42
 function View.Start()
-	-- The page to the state half. EACH ACTION ONCE: `overlay` and `interactive`
-	-- are two names for one page (`core/client/ui.lua`), and every handler on a
-	-- channel runs. Wired twice, one hologram button asked the server twice and
-	-- the second answer was a `tooFast` refusal on the player's screen.
-	local wired = {}
-	for _, action in ipairs(ACTIONS) do
-		if not wired[action] then
-			wired[action] = true
-			OPX.UI.On(SURFACE, 'calls:' .. action, function(payload)
-				M.FromView(action, payload)
-			end)
-		end
-	end
-
-	-- The state half to the page. Registered BEFORE anything can publish: the
-	-- first payload this module ever causes is the one `FromView('ready')`
-	-- draws straight back, and a handler added after that would miss it.
+	-- The state half to the page, FIRST. The first payload this module ever
+	-- causes is the one `FromView('ready')` draws straight back, and a page that
+	-- mounted before this module started had its `calls:ready` held by the
+	-- surface and REPLAYED, synchronously, to the first handler registered on it
+	-- below -- so with this handler registered after the wiring the replayed
+	-- ready drew into nothing (the same fault `modules/downed` shipped).
 	AddEventHandler(EVENT_VIEW, function(payload)
 		if type(payload) ~= 'table' or payload.kind ~= 'holo' then return end
 		OPX.UI.Send(SURFACE, CHANNEL, payload)
@@ -86,4 +75,18 @@ function View.Start()
 			OPX.UI.ReleaseFocus('calls')
 		end
 	end)
+
+	-- The page to the state half. EACH ACTION ONCE: `overlay` and `interactive`
+	-- are two names for one page (`core/client/ui.lua`), and every handler on a
+	-- channel runs. Wired twice, one hologram button asked the server twice and
+	-- the second answer was a `tooFast` refusal on the player's screen.
+	local wired = {}
+	for _, action in ipairs(ACTIONS) do
+		if not wired[action] then
+			wired[action] = true
+			OPX.UI.On(SURFACE, 'calls:' .. action, function(payload)
+				M.FromView(action, payload)
+			end)
+		end
+	end
 end

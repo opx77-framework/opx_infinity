@@ -31,6 +31,17 @@
  * ROWS_PER_PART -- about 3,400 -- and stays well clear.
  * `tests/run.lua` measures every part against that ceiling.
  *
+ * SHORT FILE NAMES. A client installs a server's resources under
+ * `<game>/red4ext/plugins/Open77/cache/server-resources/sets/<64-hex>/resources/<resource>/`,
+ * which on a Steam install in Program Files leaves 59 characters of MAX_PATH for a
+ * file's path inside the resource, and one file past that fails the WHOLE resource on
+ * that client. Every shipped path is held to 47 (59 less a 12-character margin for a
+ * game installed deeper), and the wiki slugs ran to 59 here. A picture is therefore
+ * named by the first HASH_LENGTH hex digits of the SHA-256 of its slug: deterministic
+ * for a given collection, 35 characters as `web/images/clothing/<hash>.webp`, and
+ * checked for collisions below. `tests/run.lua` holds every file under `web/` to the
+ * same 47.
+ *
  * sharp is NOT a dependency of this repository on purpose: it is a native binary every
  * `npm ci` would download for a step that runs when the owner restages the pictures.
  */
@@ -47,6 +58,10 @@ const SIZE = 160
 const QUALITY = 75
 const ALPHA_QUALITY = 80
 const ROWS_PER_PART = 400
+const HASH_LENGTH = 10
+// The room a client leaves a shipped path (see above), less the margin.
+const SHIPPED_PATH_MAX = 59 - 12
+const SHIPPED_PREFIX = 'web/images/clothing/'
 
 // The catalogue's slot names, mapped to the fitting room's. A record in a slot not
 // listed here is not something the room dresses.
@@ -78,6 +93,11 @@ async function loadSharp() {
 function lua(text) {
   return `"${String(text).replace(/[\\"]/g, (c) => `\\${c}`).replace(/[\x00-\x1f\x7f]/g,
     (c) => `\\${c.charCodeAt(0)}`)}"`
+}
+
+/** The shipped file name of a picture: a short, deterministic hash of its slug. */
+function fileName(slug) {
+  return `${createHash('sha256').update(slug).digest('hex').slice(0, HASH_LENGTH)}.webp`
 }
 
 /** Which of several pictures of one record and one body to keep. The most specific wiki
@@ -123,6 +143,7 @@ async function main() {
   rmSync(IMAGES_OUT, { recursive: true, force: true })
   mkdirSync(IMAGES_OUT, { recursive: true })
   const fileOfSlug = new Map()
+  const slugOfFile = new Map()
   const fileOfPixels = new Map()
   const slugs = new Set()
   for (const held of chosen.values()) for (const entry of Object.values(held)) slugs.add(entry.slug)
@@ -139,8 +160,11 @@ async function main() {
       folded++
       continue
     }
-    const file = `${slug}.webp`
+    const file = fileName(slug)
     if (!FILE_PATTERN.test(file) || file.length > FILE_MAX) throw new Error(`unusable file name ${file}`)
+    if ((SHIPPED_PREFIX + file).length > SHIPPED_PATH_MAX) throw new Error(`file name too long: ${file}`)
+    if (slugOfFile.has(file)) throw new Error(`file name ${file} names both ${slugOfFile.get(file)} and ${slug}`)
+    slugOfFile.set(file, slug)
     const out = await sharp(input)
       .resize(SIZE, SIZE, { fit: 'inside', withoutEnlargement: true })
       .webp({ quality: QUALITY, alphaQuality: ALPHA_QUALITY, effort: 6 })
