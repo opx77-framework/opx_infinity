@@ -6,7 +6,8 @@
 -- `config/character.lua`'s `JOBS` -- the character module stores it, replicates
 -- it and gates elevators, armouries and teleports with it. What is decided here
 -- is the part that catalogue has no field for: WHERE a job is joined, WHO may
--- join it, and HOW LONG somebody has to work before the next rank is theirs.
+-- join it, and HOW LONG somebody has worked towards the next rank (which only
+-- the job's boss, or an operator, grants).
 --
 -- The two tables therefore have to agree and are not allowed to drift: every
 -- `JOBS` key below must be a job the character catalogue defines, and every
@@ -81,35 +82,31 @@ OPX.Config.MODULES.jobs = {
 
 	-- ── seniority ───────────────────────────────────────────────────────────
 	--
-	-- SENIORITY IS WORKED TIME, AND IT IS THE ONLY THING A RANK COSTS. A holder
-	-- on duty in a job that has a ladder banks POINTS_PER_TICK every TICK_MS,
-	-- and a `LADDER` level's number is the bank that rank wants: `LADDER = { [1] =
-	-- 90 }` on a job whose grade 1 is named in the character catalogue means
-	-- ninety minutes of work at the shipped rate.
+	-- SENIORITY IS WORKED TIME, BANKED AND SHOWN. A holder on duty in a job that
+	-- has a ladder banks POINTS_PER_TICK every TICK_MS, and a `LADDER` level's
+	-- number is the time that rank is expected to take: `LADDER = { [1] = 90 }`
+	-- on a job whose grade 1 is named in the character catalogue means ninety
+	-- minutes of work at the shipped rate. The board and the desk roster show
+	-- every member how far they are.
 	--
 	-- WHO TICKS. Only a character who is ON DUTY -- which a job with
 	-- `defaultDuty = true` always is, so a freelancer banks while they play and a
 	-- police officer banks while they are clocked in. Duty is the character
 	-- module's own field; nothing here invents a second one.
 	--
-	-- WHAT AUTO_PROMOTE DOES. With it on, a bank that reaches the next level
-	-- promotes its holder without anybody's approval, and the promotion is
-	-- announced the way `/opx.job` announces one. With it off the bank keeps
-	-- filling and the rank only moves when a boss or an operator moves it --
-	-- which is the setting a server that wants its ranks *earned in front of
-	-- somebody* will pick. `APPROVAL = true` on a job overrides both: that job's
-	-- ranks are never granted by a clock.
+	-- A CLOCK NEVER MOVES A RANK. The owner decided promotions are made only by
+	-- the job's boss (the desk, or `/opx.jobs.promote`) or by an operator
+	-- (`/opx.job`): a full bank is a case to put to the boss, not a promotion.
+	-- There is no switch to turn that back on.
 	SENIORITY = {
 		enabled = true,
 		TICK_MS = 60000,
 		POINTS_PER_TICK = 1.0,
 		-- A ceiling on the bank, so a job whose ladder has a level nobody defined
-		-- cannot run away with the number. Reached, the highest defined rank
-		-- simply holds.
+		-- cannot run away with the number.
 		MAX_POINTS = 1000000.0,
-		AUTO_PROMOTE = true,
 		-- How often the bank is written back to the database, and the floor
-		-- between two promotions of one character.
+		-- between two rank commands (`/opx.jobs.promote` and its siblings).
 		SAVE_MS = 60000,
 		PROMOTION_COOLDOWN_MS = 5000,
 	},
@@ -158,14 +155,14 @@ OPX.Config.MODULES.jobs = {
 	--
 	--   OPEN       shown on a sign-up board and joinable by whoever meets the
 	--              terms. `false` keeps the job off the board entirely.
-	--   APPROVAL   shown, but not joinable: the rank is granted at a desk by
+	--   APPROVAL   shown, but not joinable: a member is taken on at a desk by
 	--              somebody who holds the boss grade. What a division like MaxTac
-	--              wants and what a rank served in front of a desk is.
+	--              wants. (Every rank, in every job, is granted at a desk.)
 	--   REQUIRES   the terms a joiner has to already meet. Every clause is
 	--              checked on the server at the moment of joining:
 	--                JOB, GRADE   must hold that job at that grade or better
 	--                ACL          must hold that right (`acl.isAllowed`)
-	--   LADDER     points needed to HOLD each level, keyed by the character
+	--   LADDER     points each level is expected to take, keyed by the character
 	--              catalogue's grade number. Level 0 is free by definition and is
 	--              not written here; a level named that the job has no grade for
 	--              is refused at boot rather than promoting somebody into it.

@@ -398,16 +398,14 @@ that job really has. A ladder naming a grade nobody defined would promote somebo
 rank with no name; both faults are named at boot by `Access.Problems` rather than
 discovered by a player.
 
-**A rank costs worked time and nothing else.** A holder who is *on duty* in a job with a
-ladder banks `POINTS_PER_TICK` every `TICK_MS` — the shipped rate is a point a minute —
-and a level's number is the bank that rank wants, so `[1] = 90` is ninety minutes. Duty
-is the character module's own field and not a second one, so a job with
-`defaultDuty = true` banks while a player plays and a police officer banks while clocked
-in. With `AUTO_PROMOTE` on, a bank that reaches the next level promotes its holder and
-the promotion is announced the way `/opx.job` announces one; with it off the bank keeps
-filling and only a boss or an operator moves a rank, which is the setting a server that
-wants ranks earned *in front of somebody* will pick. A job declared `APPROVAL = true`
-never moves on a clock at all.
+**A rank is granted by a person, and worked time is what they read.** A holder who is
+*on duty* in a job with a ladder banks `POINTS_PER_TICK` every `TICK_MS` — the shipped
+rate is a point a minute — and a level's number is the time that rank is expected to take,
+so `[1] = 90` is ninety minutes. Duty is the character module's own field and not a second
+one, so a job with `defaultDuty = true` banks while a player plays and a police officer
+banks while clocked in. The bank never moves a rank by itself: the owner removed the
+automatic promotion, so only the job's boss (the desk, `/opx.jobs.promote`) or an operator
+(`/opx.job`) promotes anybody.
 
 A promotion goes through the **character contract**, in one function, so a rank gained at
 a desk is the same rank `/opx.job` grants: it arrives on the same client event, pays and

@@ -103,17 +103,18 @@ the MaxTac crew door, the clinic chair, the uniforms).
 ### Seniority (time served)
 
 On duty, a holder banks **1 point per minute** (`SENIORITY`: `TICK_MS` 60000,
-`POINTS_PER_TICK` 1). The ladder numbers above are the bank a rank needs to be HELD:
+`POINTS_PER_TICK` 1). The ladder numbers above are the time each rank is expected to take:
 
-- `AUTO_PROMOTE = true` — reach the bank, get the rank, announced on the spot by name
-  ("Your time served has earned you Officer in NCPD."), and still on the clock.
-- MaxTac (`APPROVAL`) banks its time like every job — its row reads
-  `250 / 240, Squad Lead at the desk` — but the rank is only ever granted at the desk.
+- **No rank is ever granted by the clock.** Promotions are made only by the job's boss
+  (at the desk, or `/opx.jobs.promote`) or by an operator (`/opx.job`); the owner
+  removed the automatic promotion. A full bank is shown to the member and on the boss's
+  roster — every row reads like `250 / 240 to Squad Lead`.
 - Points persist to the database and survive restarts.
-- The bank caps at 1,000,000 — the top defined rank simply holds after that.
+- The bank caps at 1,000,000.
 
-A worked example: an NCPD Cadet on duty 90 minutes becomes Officer automatically; 6 more
-hours on duty makes Detective (360 total); Captain (1080 = 18 h on duty) is a career.
+A worked example: an NCPD Cadet on duty 90 minutes has served the time for Officer, and
+the Captain decides at the desk; 6 more hours on duty is the time for Detective (360
+total); Captain (1080 = 18 h on duty) is a career.
 
 ### What the work feeds: the skill tree
 
@@ -328,9 +329,9 @@ a marker drawn for nobody but its capturer; that is expected.
 ```
 
 **Walk-ins only for street jobs, ranks for the divisions** — the shipped defaults: open
-sign-up with auto-promotion (merc/fixer/netrunner/ripperdoc/trauma/ncpd/corp/nomad), approval ranks
-(maxtac). Every knob lives in `config/jobs.lua` (`JOBS`, `LADDER`, `SENIORITY`,
-`AUTO_PROMOTE`) and is read at boot — edit and restart.
+sign-up (merc/fixer/netrunner/ripperdoc/trauma/ncpd/corp/nomad), by invitation (maxtac); every
+rank in every job is granted at the desk. Every knob lives in `config/jobs.lua` (`JOBS`,
+`LADDER`, `SENIORITY`) and is read at boot — edit and restart.
 
 **Rate limits** (all boards and desk actions): 8 requests / 10 s per connection, 2 s
 floor between two actions of the same kind. A stuck key is what they bound, not fairness.

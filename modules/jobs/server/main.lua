@@ -79,10 +79,6 @@ local EMPTY = 'no-character'
 local costed = {}
 local OVER = 'over'
 
---- When each character was last promoted, so one tick cannot walk somebody up
---- two ranks because a ladder's levels sit close together.
-local promotedAt = {}
-
 --- Phase flag, so the loops stop when the module is asked to.
 local running = false
 
@@ -1290,8 +1286,7 @@ end
 
 -- ── the seniority tick ──────────────────────────────────────────────────────
 
---- Pays every on-duty holder of a job that has a ladder, and moves the rank of
---- anybody whose bank has reached the next one.
+--- Pays every on-duty holder of a job that has a ladder. It moves NO rank.
 --
 -- WHO TICKS: a character whose PRIMARY job is this one and who is on duty. Duty
 -- is the character module's own field and not a second one -- a job with
@@ -1299,22 +1294,19 @@ end
 -- and a police officer banks while they are clocked in. A membership that is not
 -- the job they are working banks nothing, because there is no shift to work.
 --
--- WHO MOVES A RANK: with `AUTO_PROMOTE` on, the bank's own level does it, and
--- the promotion goes through the same `applyGrade` every other promotion does.
--- A job with `APPROVAL = true` never moves on a clock -- its ranks are granted
--- at a desk -- so its holders keep banking and the rank waits for a person.
--- Yields: the promotion writes rows.
+-- WHO MOVES A RANK: never this. The owner decided promotions are made only by
+-- the job's boss -- the desk, or the promote command, both `bossAct` -- or by
+-- an operator through the character contract. The bank is what a boss reads
+-- on the roster; it buys nothing by itself. Does not yield: the pay is memory
+-- and the write-back is the save loop's.
 local function tick()
 	local settings = type(M.Settings.SENIORITY) == 'table' and M.Settings.SENIORITY or {}
 	if settings.enabled == false then return end
 
 	local perTick = Seniority.Finite(settings.POINTS_PER_TICK)
 	if perTick == nil or perTick <= 0.0 then return end
-	local auto = settings.AUTO_PROMOTE ~= false
-	local cooldown = Seniority.Finite(settings.PROMOTION_COOLDOWN_MS) or 5000
-	local now = OPX.Now()
 
-	eachPlayer(function(source, who)
+	eachPlayer(function(_, who)
 		local job = who.job
 		if type(job) ~= 'table' or job.onDuty ~= true then return end
 		local name = job.name
@@ -1322,39 +1314,7 @@ local function tick()
 
 		local terms = Access.Terms(name)
 		if terms == nil or terms.top <= 0 then return end
-
-		-- The bank is paid BEFORE the rank is considered, and every holder of the
-		-- job is paid whether or not their rank can move: a job whose ranks are
-		-- granted at a desk still banks the time that buys them. (An APPROVAL job
-		-- used to be skipped here, before the bank: MaxTac's board read "0 / 240"
-		-- for ever and its skill trunk was never fed.)
-		local points = pay(who.citizenId, name, perTick)
-		if not auto or terms.approval == true then return end
-
-		local earned = Seniority.GradeFor(terms.ladder, points)
-		local held = tonumber(job.grade and job.grade.level) or 0
-		-- Clamped to what the catalogue defines and never to what the ladder
-		-- names: a build holding a level nobody wrote must not promote anybody
-		-- into it, because the write would come back `job.gradeNotFound`.
-		local ceiling = gradesOf(name)
-		local highest = #ceiling > 0 and ceiling[#ceiling] or held
-		local wanted = math.min(earned, highest)
-		if wanted <= held then return end
-		if promotedAt[who.citizenId] ~= nil and now - promotedAt[who.citizenId] < cooldown then return end
-
-		local moved = applyGrade(who.citizenId, name, wanted, name)
-		if not moved.ok then return end
-		promotedAt[who.citizenId] = now
-
-		OPX.NotifyLocale(source, 'jobs.promotedAuto',
-			{ job = labelOf(name), grade = gradeLabel(name, wanted) })
-		OPX.Audit.Player(who.player, 'jobs.promote',
-			('%s to grade %d by seniority'):format(safe(name), wanted))
-		Open77.log.info(('[jobs] %s promoted to %s grade %d on seniority (%.1f point(s))')
-			:format(safe(who.citizenId), safe(name), wanted, points))
-		-- The board a player is standing on says which rank they hold; a
-		-- promotion under their feet would otherwise leave the menu lying.
-		sync(source)
+		pay(who.citizenId, name, perTick)
 	end)
 end
 
@@ -1540,8 +1500,9 @@ local function reportRank(source, name, who)
 	lines[#lines + 1] = ('  ladder: %d level(s); %s'):format(terms.top,
 		terms.open and 'open to sign-up' or 'not offered at a board')
 	if terms.approval then
-		lines[#lines + 1] = '  ranks are granted at a desk, not by a clock'
+		lines[#lines + 1] = '  taken on at a desk only (by invitation)'
 	end
+	lines[#lines + 1] = '  ranks are granted by the boss at the desk, never by a clock'
 	if terms.requires ~= nil then
 		if terms.requires.job ~= nil then
 			lines[#lines + 1] = ('  requires %s at grade %d'):format(terms.requires.job,
@@ -1564,7 +1525,7 @@ local function reportRank(source, name, who)
 		else
 			local points = bankOf(citizenId, name)
 			local progress = Seniority.Progress(terms.ladder, held, points)
-			-- An invitation job banks past its next rank and waits for the desk:
+			-- A bank runs past its next rank and waits for the desk:
 			-- "-60 to go" is a sentence nobody can read.
 			local remainder = ''
 			if progress ~= nil then
@@ -1877,7 +1838,7 @@ function M.Init()
 	captured = {}
 	rebuild()
 	banks, dirty = {}, {}
-	pending, windows, promotedAt = {}, {}, {}
+	pending, windows = {}, {}
 	running = false
 
 	OPX.Schema.Add(M.Storage.SCHEMA)

@@ -370,10 +370,9 @@ local function statusOf(state)
 		if state.next == nil then
 			parts[#parts + 1] = locale('jobs.status.top')
 		elseif type(state.points) == 'number' and type(state.required) == 'number' then
-			-- An invitation job banks the time and never moves on it: the rank
-			-- is a Squad Lead's to grant at the desk, so the row says where.
-			parts[#parts + 1] = locale(state.approval == true and 'jobs.status.progressDesk'
-				or 'jobs.status.progress', {
+			-- The time is banked and never moves a rank on its own: every rank
+			-- is the boss's to grant at the desk, so the row says where.
+			parts[#parts + 1] = locale('jobs.status.progress', {
 				points = ('%.0f'):format(state.points),
 				required = ('%.0f'):format(state.required),
 				next = state.nextGrade or ('grade ' .. tostring(state.next)),

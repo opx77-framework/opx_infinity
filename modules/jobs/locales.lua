@@ -44,10 +44,10 @@ local EN = {
 	['jobs.status.you'] = 'You',
 	['jobs.status.boss'] = 'Boss',
 	['jobs.status.top'] = 'Top rank',
-	['jobs.status.progress'] = '{points} / {required} to {next}',
-	-- An invitation job: the time is banked and the rank is granted at the desk.
+	-- The time banked towards the next rank. It never moves the rank: the boss
+	-- does, at the desk.
 	-- A row's value is cut at 48 characters, grade name and all: keep it short.
-	['jobs.status.progressDesk'] = '{points} / {required}, {next} at the desk',
+	['jobs.status.progress'] = '{points} / {required} to {next}',
 	-- Held beside the worked job: it banks no time and opens nothing.
 	['jobs.status.idle'] = 'Held, not worked',
 	['jobs.status.roster'] = '{count} member(s)  |  ladder {top} level(s)',
@@ -68,7 +68,6 @@ local EN = {
 	-- {job} is the catalogue's own name for the job and {grade} the rank's.
 	['jobs.promoted'] = 'You have been promoted to {grade} in {job}.',
 	['jobs.demoted'] = 'You have been demoted to {grade} in {job}.',
-	['jobs.promotedAuto'] = 'Your time served has earned you {grade} in {job}.',
 	['jobs.deskDone'] = '{action} done.',
 	['jobs.refused'] = 'That could not be done.',
 
@@ -158,7 +157,6 @@ local FR = {
 	['jobs.status.boss'] = 'Chef',
 	['jobs.status.top'] = 'Échelon le plus élevé',
 	['jobs.status.progress'] = '{points} / {required} pour {next}',
-	['jobs.status.progressDesk'] = '{points} / {required}, {next} au bureau',
 	-- Court : la colonne est coupée à 48 caractères, grade compris.
 	['jobs.status.idle'] = 'Non exercé',
 	['jobs.status.roster'] = '{count} membre(s)  |  échelle {top} niveau(x)',
@@ -177,7 +175,6 @@ local FR = {
 	['jobs.fired'] = 'Vous avez été licencié de {job}.',
 	['jobs.promoted'] = 'Vous avez été promu au grade {grade} dans {job}.',
 	['jobs.demoted'] = 'Vous avez été rétrogradé au grade {grade} dans {job}.',
-	['jobs.promotedAuto'] = 'Votre ancienneté vous vaut le grade {grade} dans {job}.',
 	['jobs.deskDone'] = '{action} effectué.',
 	['jobs.refused'] = 'Cela n’a pas pu être fait.',
 

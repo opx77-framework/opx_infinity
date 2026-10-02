@@ -26668,7 +26668,6 @@ do
 		-- once, so one pump is one pass and the rate is moved to make the level a
 		-- single pass away. That is a rate under test and not a clock.
 		local shippedTick = settings.SENIORITY.POINTS_PER_TICK
-		local shippedAuto = settings.SENIORITY.AUTO_PROMOTE
 		local worker = 57
 		local workerCitizen = 'citizen-jobs-g'
 		local before1 = OPX.Now()
@@ -26679,37 +26678,41 @@ do
 		local banked = contract.Bank(workerCitizen, 'merc')
 		check('an on-duty holder banks worked time', banked > 0.0, tostring(banked))
 
+		-- THE OWNER REMOVED AUTO-PROMOTION: a bank past every level of the
+		-- ladder is shown, and moves nothing. Only the boss (or an operator)
+		-- promotes.
+		check('the config carries no AUTO_PROMOTE switch any more',
+			settings.SENIORITY.AUTO_PROMOTE == nil, tostring(settings.SENIORITY.AUTO_PROMOTE))
 		settings.SENIORITY.POINTS_PER_TICK = 1000.0
 		control.Pump(4)
-		check('a bank past the ladder\'s level moves the rank',
-			characters.Players[worker].PlayerData.jobs.merc == 3,
+		check('a bank past the ladder\'s top level moves NO rank',
+			characters.Players[worker].PlayerData.jobs.merc == 0
+				and characters.Players[worker].PlayerData.job.grade.level == 0,
 			tostring(characters.Players[worker].PlayerData.jobs.merc))
-		check('and the move is the catalogue\'s own grade, not a number from the ladder',
-			characters.Players[worker].PlayerData.job.grade.name == 'Legend',
-			tostring(characters.Players[worker].PlayerData.job.grade.name))
-		check('and it stops at the top grade the catalogue defines',
-			characters.Players[worker].PlayerData.jobs.merc == 3)
-		check('and the bank keeps filling after it',
-			contract.Bank(workerCitizen, 'merc') > 0.0)
+		check('and the bank keeps filling all the same',
+			contract.Bank(workerCitizen, 'merc') >= 3000.0, tostring(contract.Bank(workerCitizen, 'merc')))
+		check('and no sentence for a clock promotion is left to say',
+			not OPX.Locale.Exists('jobs.promotedAuto'))
 
-		-- A JOB WHOSE RANKS ARE GRANTED AT A DESK NEVER MOVES ON A CLOCK.
+		-- An invitation job is no different: it banks, and the rank waits.
 		local invited = 58
 		local invitedCitizen = 'citizen-jobs-h'
 		load(invited, invitedCitizen, 'maxtac', 0, true)
 		state.groups[invitedCitizen] = { grade = 0, type = 'job', name = 'maxtac' }
 		control.Pump(6)
-		check('an invitation job never promotes on worked time',
+		check('an invitation job never promotes on worked time either',
 			characters.Players[invited].PlayerData.jobs.maxtac == 0,
 			tostring(characters.Players[invited].PlayerData.jobs.maxtac))
 
-		settings.SENIORITY.AUTO_PROMOTE = false
-		local quiet = 59
-		load(quiet, 'citizen-jobs-i', 'merc', 0, true)
-		control.Pump(6)
-		check('and with AUTO_PROMOTE off no rank moves at all',
-			characters.Players[quiet].PlayerData.jobs.merc == 0,
-			tostring(characters.Players[quiet].PlayerData.jobs.merc))
-		settings.SENIORITY.AUTO_PROMOTE = shippedAuto
+		-- THE BOSS IS THE ONE WHO MOVES IT. The worker's full bank changes
+		-- nothing until the desk's promote does.
+		local mercBoss = 59
+		load(mercBoss, 'citizen-jobs-i', 'merc', 3, true)
+		state.groups['citizen-jobs-i'] = { grade = 3, type = 'job', name = 'merc' }
+		local promoted = jobs.BossByJob(mercBoss, 'merc', 'promote', workerCitizen)
+		check('the boss promotes the worker one rank, by hand',
+			promoted.ok == true and characters.Players[worker].PlayerData.jobs.merc == 1,
+			tostring(promoted.error) .. ' ' .. tostring(characters.Players[worker].PlayerData.jobs.merc))
 		settings.SENIORITY.POINTS_PER_TICK = shippedTick
 
 		-- OFF DUTY IS NOT WORKED: a job with a shift banks only while clocked in.
@@ -27662,34 +27665,43 @@ do
 					tostring((after[spec.trunk] or 0) - (before[spec.trunk] or 0)), others))
 
 			-- ── every rank ────────────────────────────────────────────────
+			-- THE OWNER REMOVED AUTO-PROMOTION, so every rank below is granted
+			-- by the job's boss -- one seated at the top grade for the walk and
+			-- taken out of the session after it -- and the bank alone is shown
+			-- to move nothing.
 			spec.atGrade(id, 0)
 			local levels = {}
 			for level in pairs(terms.ladder) do levels[#levels + 1] = level end
 			table.sort(levels)
+			local bossId, bossCitizen = id + 400, citizenId .. '-boss'
+			arrive(bossId, bossCitizen)
+			character.SetJob(bossCitizen, job, levels[#levels])
 			for _, level in ipairs(levels) do
 				local need = terms.ladder[level]
-				-- Just short of the rank: no promotion.
-				contract.Award(citizenId, job, math.max(0, need - 0.5 - contract.Bank(citizenId, job)))
-				tickOnce(0.1)
-				local short = data.job.grade.level
 				contract.Award(citizenId, job, math.max(0, need - contract.Bank(citizenId, job)))
-				mark = #control.notices
 				tickOnce(0.1)
 				local rank = definition.grades[level]
-				check(('%s: %.0f minutes on the clock make them %s'):format(label, need, rank.name),
-					short == level - 1 and data.job.grade.level == level and data.jobs[job] == level,
-					('short of it %s, at it %s'):format(tostring(short), tostring(data.job.grade.level)))
+				check(('%s: %.0f minutes on the clock do NOT make them %s by themselves'):format(label, need,
+					rank.name),
+					data.job.grade.level == level - 1 and data.jobs[job] == level - 1,
+					('at %s'):format(tostring(data.job.grade.level)))
+				mark = #control.notices
+				local promoted = jobs.BossByJob(bossId, job, 'promote', citizenId)
+				check(('%s: the boss makes them %s'):format(label, rank.name),
+					promoted.ok == true and data.job.grade.level == level and data.jobs[job] == level,
+					('%s at %s'):format(tostring(promoted.error), tostring(data.job.grade.level)))
 				check(('%s: told "%s" by name, and still on the clock'):format(label, rank.name),
-					said(id, mark, ('earned you %s in %s'):format(rank.name, label)) and data.job.onDuty == true,
+					said(id, mark, ('promoted to %s in %s'):format(rank.name, label)) and data.job.onDuty == true,
 					table.concat(heard(id, mark), ' | '))
 				local wage = payday()
 				check(('%s: %s is paid %d'):format(label, rank.name, rank.payment),
 					wage[id] ~= nil and wage[id].amount == rank.payment,
 					wage[id] and tostring(wage[id].amount) or 'not paid')
 				spec.atGrade(id, level)
-				-- The floor between two promotions of one character.
-				skew = skew + (tonumber(seniority.PROMOTION_COOLDOWN_MS) or 5000) + 1000
 			end
+			character.RemovePlayerFromJob(bossCitizen, job)
+			characters.Players[bossId] = nil
+			characters.Registry.byCitizenId[bossCitizen] = nil
 
 			local top = offerOf(id, job)
 			local boss = definition.grades[levels[#levels]].isBoss == true
@@ -27831,13 +27843,15 @@ do
 		check('MaxTac: and the sentence the board draws for it reads "Needs NCPD Detective or above"',
 			sentence == 'Needs NCPD Detective or above', sentence)
 		clockOn(trooperId)
+		-- The time served, and then the NCPD Captain's two promotions: a clock
+		-- moves no rank (the owner removed auto-promotion).
 		for _, level in ipairs({ 1, 2 }) do
 			contract.Award(trooperCitizen, 'ncpd', math.max(0, JobsAccess.Terms('ncpd').ladder[level]
 				- contract.Bank(trooperCitizen, 'ncpd')))
 			tickOnce(0.1)
-			skew = skew + 6000
+			jobs.BossByJob(301, 'ncpd', 'promote', trooperCitizen)
 		end
-		check('MaxTac: the candidate made Detective on the clock', trooper.job.name == 'ncpd'
+		check('MaxTac: the candidate made Detective by the NCPD Captain', trooper.job.name == 'ncpd'
 			and trooper.job.grade.level == 2, tostring(trooper.job.grade.level))
 		local asDetective = offerOf(trooperId, 'maxtac')
 		check('MaxTac, to a Detective: the office says it is by invitation, and nothing else is missing',
@@ -28375,8 +28389,8 @@ do
 		contract.Close()
 		check('the office opens once more', contract.Open('test').ok == true)
 		rows = drawn()
-		check('an invitation job\'s banked time says the rank is granted at the desk',
-			rows.MaxTac == 'Operator  |  250 / 240, Squad Lead at the desk', tostring(rows.MaxTac))
+		check('an invitation job\'s banked time reads against the rank the desk grants',
+			rows.MaxTac == 'Operator  |  250 / 240 to Squad Lead', tostring(rows.MaxTac))
 		check('and the badge held beside it reads "Held, not worked"',
 			rows.NCPD == 'Detective  |  Held, not worked', tostring(rows.NCPD))
 		contract.Close()
@@ -28410,12 +28424,12 @@ do
 			en = {
 				['Longest progress'] = 'Team Lead  |  1199 / 1200 to Regional Director',
 				['Longest held'] = 'Regional Director  |  Boss  |  Held, not worked',
-				['Longest desk'] = 'Operator  |  9999 / 240, Squad Lead at the desk',
+				['Longest desk'] = 'Operator  |  9999 / 240 to Squad Lead',
 			},
 			fr = {
 				['Longest progress'] = 'Team Lead  |  1199 / 1200 pour Regional Director',
 				['Longest held'] = 'Regional Director  |  Chef  |  Non exercé',
-				['Longest desk'] = 'Operator  |  9999 / 240, Squad Lead au bureau',
+				['Longest desk'] = 'Operator  |  9999 / 240 pour Squad Lead',
 			},
 		}
 		for _, lang in ipairs({ 'en', 'fr' }) do
