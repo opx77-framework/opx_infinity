@@ -110,9 +110,48 @@ end
 -- @return Result
 local offlineChange
 
+--- Runs a change against a Player in the roster, and keeps it if they left
+--- while it ran.
+--
+-- A CHANGE TO A LIVE PLAYER YIELDS -- its hooks may, and the membership row is
+-- written before the memory moves -- and a logout in that window has already
+-- unregistered the Player and saved it as it stood: the old job or gang
+-- column, under a membership row this change already wrote or deleted. Nobody
+-- saves that Player again, so a firing would come back at the next login as
+-- the very job it removed, with no membership row behind it. So a Player who
+-- is no longer the one registered under its connection once the change is done
+-- has its column written here, under the offline ledger, after the logout's
+-- own save has landed -- and a character who is already back is changed in
+-- memory again, as `offlineChange` does.
+local function onLive(player, column, apply)
+	local outcome = apply(player, false)
+	if player.Offline or column == nil then return outcome end
+	if type(outcome) ~= 'table' or outcome.ok ~= true then return outcome end
+	local data = player.PlayerData
+	if data.source ~= nil and M.Players[data.source] == player then return outcome end
+
+	local citizenId = data.citizenId
+	if not M.Ledger.Settle(citizenId) then
+		return Result.Err('error.unavailable', 'the character row is being written')
+	end
+	local back = M.ResolvePlayer(citizenId)
+	if back and back ~= player then
+		Open77.log.debug(('[groups] %s left and came back mid-change; re-applying against the ' ..
+			'live player'):format(citizenId))
+		return apply(back, false)
+	end
+
+	M.Ledger.Enter(citizenId)
+	local ran, saved = pcall(M.Storage.SavePrimary, citizenId, column, data[column])
+	M.Ledger.Leave(citizenId)
+	if not ran then error(saved, 0) end
+	if not saved.ok then return saved end
+	return outcome
+end
+
 local function withCharacter(identifier, column, apply)
 	local player = M.ResolvePlayer(identifier)
-	if player then return apply(player, false) end
+	if player then return onLive(player, column, apply) end
 
 	if type(identifier) ~= 'string' then
 		return Result.Err('error.notLoggedIn', tostring(identifier))
@@ -125,7 +164,7 @@ local function withCharacter(identifier, column, apply)
 		return Result.Err('error.unavailable', 'the character row is being written')
 	end
 	player = M.ResolvePlayer(identifier)
-	if player then return apply(player, false) end
+	if player then return onLive(player, column, apply) end
 
 	-- Left on every path, a raise included: a hold nobody gives back refuses
 	-- that character's logins until the stale guard notices.

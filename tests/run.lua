@@ -27465,5 +27465,84 @@ do
 	end
 end
 
+section('groups: a live job change that a logout overtakes is still kept')
+do
+	local state = {}
+	local env, control, why = boot('server', groupsBridge(state))
+	check('the server boots for the logout race', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+
+		--- A real Player in the roster, so a Logout runs its own save.
+		local function stand(source)
+			local citizenId = OPX.CitizenId.Generate()
+			control.Admit(source, 'account-' .. source)
+			local player = character.CreatePlayer({
+				citizenId = citizenId, userId = 'account-' .. source, source = source,
+				charInfo = { firstName = 'Vik', lastName = 'Vektor' },
+				job = { name = 'ripperdoc', onDuty = true, grade = { level = 1 } },
+			}, false)
+			player.PlayerData.jobs = { ripperdoc = 1 }
+			player.PlayerData.gangs = {}
+			character.RegisterPlayer(player)
+			return player, citizenId
+		end
+
+		--- The job column the LAST statement that wrote it left, for one citizen.
+		local function lastJob(citizenId)
+			local job
+			for _, write in ipairs(state.writes) do
+				local params = write.params or {}
+				if params.citizen == citizenId then
+					if write.sql:find('SET job = @value', 1, true) then job = params.value
+					elseif write.sql:find('job = @job', 1, true) then job = params.job end
+				end
+			end
+			return job
+		end
+
+		local db = control.database
+		local function raceLogout(source, verb, ...)
+			db.park = function(method, sql)
+				return sql:find('opx77_character_groups', 1, true) ~= nil
+			end
+			local answer
+			local args = table.pack(...)
+			env.CreateThread(function()
+				answer = OPX.Api.Get('character')[verb](source, table.unpack(args, 1, args.n))
+			end)
+			control.Pump(10)
+			-- The membership statement is in flight: the player quits now, and
+			-- the logout saves the Player as it stands, before the change lands.
+			character.Logout(source)
+			control.Pump(10)
+			db.park = nil
+			db.Resume()
+			settle(control, function() return answer ~= nil end)
+			return answer
+		end
+
+		local FIRED, firedId = stand(741)
+		local fired = raceLogout(741, 'RemovePlayerFromJob', 'ripperdoc')
+		local stored = lastJob(firedId)
+		check('a firing overtaken by a logout answers ok',
+			fired ~= nil and fired.ok == true, fired and tostring(fired.error))
+		check('and the row is left on the fallback job, not the job that was removed',
+			stored ~= nil and stored:find('"ripperdoc"', 1, true) == nil
+				and stored:find('"unemployed"', 1, true) ~= nil, tostring(stored))
+		check('and the row is given back', not character.Ledger.Busy(firedId))
+		check('the departed Player is the one that moved', FIRED.PlayerData.job.name == 'unemployed')
+
+		local _, hiredId = stand(742)
+		local hired = raceLogout(742, 'SetJob', 'fixer', 1)
+		local hiredRow = lastJob(hiredId)
+		check('a hire overtaken by a logout is written to the row too',
+			hired ~= nil and hired.ok == true and hiredRow ~= nil
+				and hiredRow:find('"fixer"', 1, true) ~= nil, tostring(hiredRow))
+	end
+end
+
 print(('\n%d checks, %d failed'):format(checks, failures))
 os.exit(failures == 0 and 0 or 1)
