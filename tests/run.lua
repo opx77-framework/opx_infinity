@@ -301,6 +301,31 @@ do
 		check('every pile model is a props alias, never a depot path',
 			#paths == 0, table.concat(paths, ', '))
 
+		-- AND AN ALIAS THE PLATFORM HOSTS. A typo is an `unknown_alias` on the
+		-- server and a crate on the ground, logged once and then never again, so
+		-- it is caught here against the deployed build's own list
+		-- (`tools/generate-prop-aliases.mjs`). Every droppable item names one:
+		-- an item with no MODEL is a crate by omission, which is the thing the
+		-- owner asked to be rid of.
+		local known = {}
+		for _, alias in ipairs(dofile('tests/prop-aliases.lua')) do known[alias] = true end
+		local unknown, bare = {}, {}
+		if inventory and inventory.Catalog then
+			for _, name in ipairs(inventory.Catalog.Names()) do
+				local entry = inventory.Catalog.Get(name)
+				if entry.model ~= nil and not known[entry.model] then
+					unknown[#unknown + 1] = ('%s -> %s'):format(name, entry.model)
+				elseif entry.model == nil and entry.droppable then
+					bare[#bare + 1] = name
+				end
+			end
+		end
+		check('every pile model is an alias the platform hosts',
+			#unknown == 0, table.concat(unknown, ', '))
+		check('every droppable item names a pile model', #bare == 0, table.concat(bare, ', '))
+		check('the fallback pile model is an alias the platform hosts',
+			known[env.OPX.Config.MODULES.inventory.DROPS.MODEL] == true)
+
 		-- A tunable read at registration is frozen for the life of the resource.
 		-- The tag sweep passes the read itself, so its line reports what the
 		-- tunable says now.
