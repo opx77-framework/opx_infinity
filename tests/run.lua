@@ -18425,6 +18425,21 @@ do
 			used == true and env.Open77.vehicles.isLocked(CAR) == true, tostring(used))
 		check('and the key is still in the bag afterwards', #keysIn(holderBag) == 1)
 
+		-- THE CONTRACT TAKES A SOURCE, and the host's position read throws past
+		-- every pcall on an id below 1 -- which would stop the resource. A caller
+		-- handing in the console is refused as out of reach, before the host.
+		local players, asked = env.Open77.players, false
+		local realPosition = players.position
+		players.position = function(id)
+			if math.type(id) ~= 'integer' or id < 1 then asked = true end
+			return realPosition(id)
+		end
+		local console = keys.Toggle(0, CAR)
+		players.position = realPosition
+		check('the console is never in reach, and the host is not asked',
+			console ~= nil and console.ok == false and console.error == 'vehiclekeys.tooFar' and not asked,
+			console and tostring(console.error))
+
 		-- ── staff: a restricted command, a row, and a key to a precise car ───
 		local command = control.commands['opx.admin.vehicle.key']
 		check('the staff key command is registered', command ~= nil)

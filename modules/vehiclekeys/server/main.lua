@@ -249,6 +249,13 @@ end
 -- Both positions are the host's. A seat counts wherever the car is: a driver
 -- locking the doors from inside is the commonest use of a key there is.
 local function reaches(source, vehicleId, snapshot)
+	-- A PLAYER ID FROM 1 UP, checked before the host is asked. `Toggle` is a
+	-- published contract, and `Open77.players.position(0)` does not answer nil:
+	-- it throws past every `pcall` and stops the whole resource (devkit card
+	-- `server:Open77.players.position`). The console, a citizen id, a stale
+	-- source -- none of them stands beside a car.
+	source = math.tointeger(tonumber(source))
+	if source == nil or source < 1 then return false end
 	local host = Open77.vehicles
 	if type(host) == 'table' and type(host.getPlayerSeat) == 'function' then
 		local read, seat = pcall(host.getPlayerSeat, source)
