@@ -288,17 +288,29 @@ function C.Start()
 	-- other ending is it NOT happening and must reach the server as an abort, or
 	-- the patient is told a medic is working on them for as long as the pass
 	-- takes to notice.
-	AddEventHandler(OPX.Modules.Get('progress').Event.ON_DONE, function(outcome)
-		if type(outcome) ~= 'table' or outcome.owner ~= OWNER then return end
-		if running == nil then return end
-		running = nil
-		if outcome.finished then
-			TriggerServerEvent(Event.DONE)
-		else
-			TriggerServerEvent(Event.ABORT, tostring(outcome.ending))
-		end
-		syncRow()
-	end)
+	--
+	-- GUARDED: `progress` is a module the operator can turn off or that can fail
+	-- to load, and indexing its `Event` unguarded raised here and took the whole
+	-- Trauma Team half down with it. Without it there is no bar to finish
+	-- (`Start` above refuses to run one), so there is nothing to listen for.
+	local progressModule = OPX.Modules.Get('progress')
+	local doneEvent = type(progressModule) == 'table' and type(progressModule.Event) == 'table'
+		and progressModule.Event.ON_DONE or nil
+	if doneEvent ~= nil then
+		AddEventHandler(doneEvent, function(outcome)
+			if type(outcome) ~= 'table' or outcome.owner ~= OWNER then return end
+			if running == nil then return end
+			running = nil
+			if outcome.finished then
+				TriggerServerEvent(Event.DONE)
+			else
+				TriggerServerEvent(Event.ABORT, tostring(outcome.ending))
+			end
+			syncRow()
+		end)
+	else
+		Open77.log.warn('[downed] trauma: the progress module is not loaded; treatment bars cannot run')
+	end
 
 	job = OPX.Scheduler.Every('downed:trauma', 1000, tick)
 end
