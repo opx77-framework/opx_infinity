@@ -23,6 +23,8 @@ OPX.Locale.Register('en', {
 	['vehicle.badRecord'] = 'That vehicle record cannot be used.',
 	['vehicle.plateExhausted'] = 'No free plate could be drawn. Try again.',
 	['vehicle.notLoggedIn'] = 'You have no character loaded.',
+	['vehicle.impounded'] = 'That vehicle is impounded.',
+	['vehicle.badState'] = 'That is not a state a vehicle can be put in.',
 })
 
 OPX.Locale.Register('fr', {
@@ -39,4 +41,6 @@ OPX.Locale.Register('fr', {
 	['vehicle.badRecord'] = 'Ce modèle de véhicule ne peut pas être utilisé.',
 	['vehicle.plateExhausted'] = "Aucune plaque libre n'a pu être tirée. Réessayez.",
 	['vehicle.notLoggedIn'] = "Vous n'avez aucun personnage chargé.",
+	['vehicle.impounded'] = 'Ce véhicule est à la fourrière.',
+	['vehicle.badState'] = "Ce n'est pas un état possible pour un véhicule.",
 })

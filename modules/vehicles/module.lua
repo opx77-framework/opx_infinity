@@ -32,6 +32,12 @@ M.Event = {
 	-- not, and both handlers re-derive the character and the ownership from it.
 	SPAWN = OPX.Event(NET, 'vehicles', 'spawn'),
 	STORE = OPX.Event(NET, 'vehicles', 'store'),
+
+	-- The public server bus, for OTHER resources: a vehicle came out of storage
+	-- or went back into it. `(source|nil, { citizenId, plate, ... })`; see
+	-- `core/server/publish.lua` and README.md "For creators".
+	ON_SPAWNED = OPX.Event(OPX.Channel.LOCAL, 'vehicles', 'spawned'),
+	ON_STORED = OPX.Event(OPX.Channel.LOCAL, 'vehicles', 'stored'),
 }
 
 --- Which request a refusal answers.

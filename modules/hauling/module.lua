@@ -92,6 +92,11 @@ M.Event = {
 	-- The client's own bus. `decision` carries every verdict, local refusals
 	-- included. Public: a bare AddEventHandler reaches it.
 	ON_DECISION = OPX.Event(LOCAL, 'hauling', 'decision'),
+
+	-- The public SERVER bus, for other resources: a delivery was sold and paid.
+	-- Raised by the server only, `(player, { ... })`; see
+	-- `core/server/publish.lua` and README.md "For creators".
+	ON_SOLD = OPX.Event(LOCAL, 'hauling', 'sold'),
 }
 
 --- The three things a player can be part-way through, and the one thing they can

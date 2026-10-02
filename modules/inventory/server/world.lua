@@ -432,6 +432,9 @@ function World.Stash(name, size, anchor, title)
 	if not container then return nil, reason end
 	if anchor then container.anchor = anchor end
 	if title then container.title = title end
+	-- Opened in front of a player, so it is no longer only a name another
+	-- resource reached: the idle sweep of `Containers.SweepExternal` lets go.
+	container.external = nil
 
 	-- SAID HERE RATHER THAN INFERRED IN `WithinReach`. A stash with no anchor is
 	-- in reach from anywhere, for as long as the server runs, for anybody who is

@@ -76,6 +76,11 @@ M.Event = {
 	-- The client's own bus. `decision` carries every verdict, local refusals
 	-- included. Public: a bare AddEventHandler reaches it.
 	ON_DECISION = OPX.Event(LOCAL, 'dealership', 'decision'),
+
+	-- The public SERVER bus, for other resources: a vehicle was sold, at the
+	-- counter or face to face. Raised by the server only, `(buyer, { ... })`;
+	-- see `core/server/publish.lua` and README.md "For creators".
+	ON_SOLD = OPX.Event(LOCAL, 'dealership', 'sold'),
 }
 
 --- Which request a refusal answers.
