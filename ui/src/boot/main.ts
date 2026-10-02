@@ -5,6 +5,7 @@ import DownedView from '@/modules/downed/DownedView.vue'
 import FormView from '@/modules/form/FormView.vue'
 import HudRoot from '@/modules/hud/HudRoot.vue'
 import InventoryView from '@/modules/inventory/InventoryView.vue'
+import LoadingCover from '@/modules/loading/LoadingCover.vue'
 import MenuView from '@/modules/menu/MenuView.vue'
 import NotifyRoot from '@/modules/notify/NotifyRoot.vue'
 import PanelView from '@/modules/panel/PanelView.vue'
@@ -35,40 +36,53 @@ import SurfaceRoot from './SurfaceRoot.vue'
  * on. A HUD module calling `acquireFocus` would take the player's controls away, and
  * nothing in the code stops it -- which is the one guarantee this merge gave up.
  */
-registerModule({ id: 'hud', surface: 'overlay', component: HudRoot })
-registerModule({ id: 'notify', surface: 'overlay', component: NotifyRoot })
-registerModule({ id: 'prompts', surface: 'overlay', component: PromptsRoot })
-registerModule({ id: 'progress', surface: 'overlay', component: ProgressRoot })
+// `hideWhileLoading` IS EVERYTHING DRAWN OVER LIVE PLAY. The game's own loading screen
+// is up for a teleport, a lift ride and a respawn, and every one of these went on
+// drawing over it as if the player were still in the street they had just left: the
+// gauges, the key strip that had said "take the lift", the toasts, the tags. While
+// `modules/loading` says a load is up they are taken off screen and kept mounted, and
+// each comes back exactly as its own module last left it.
+registerModule({ id: 'hud', surface: 'overlay', component: HudRoot, hideWhileLoading: true })
+registerModule({ id: 'notify', surface: 'overlay', component: NotifyRoot, hideWhileLoading: true })
+registerModule({ id: 'prompts', surface: 'overlay', component: PromptsRoot, hideWhileLoading: true })
+registerModule({ id: 'progress', surface: 'overlay', component: ProgressRoot, hideWhileLoading: true })
 
 // THE INVENTORY IS TWO REGISTRATIONS for the same reason the chat is: two
 // concerns on two layers. `InventoryView` below is the bag the player drives and
 // takes focus; this is the few-second peek at the hotbar row, which is drawn
 // over whatever the player is aiming at and must never take a pointer.
-registerModule({ id: 'inventory-slotbar', surface: 'overlay', component: SlotbarRoot })
+registerModule({
+  id: 'inventory-slotbar',
+  surface: 'overlay',
+  component: SlotbarRoot,
+  hideWhileLoading: true
+})
 
 // Name tags draw over bodies in the world, so they are on the overlay and must
 // never take focus: one that captured the keyboard would stop the player moving.
-registerModule({ id: 'tags', surface: 'overlay', component: TagsRoot })
+registerModule({ id: 'tags', surface: 'overlay', component: TagsRoot, hideWhileLoading: true })
 
 // THE HOLOCALL IS ONE SCREEN. The card and the live chip that used to sit on the
 // left are gone on the owner's word; the sphere below says who is calling, who
 // you are talking to and which key answers or hangs up. It takes focus only when
 // the player opens it on its key.
-registerModule({ id: 'calls-holo', surface: 'modal', component: CallHolo })
+registerModule({ id: 'calls-holo', surface: 'modal', component: CallHolo, hideWhileLoading: true })
 
 // The chat is ONE Lua module drawn as TWO registrations, because it is two
 // concerns on two layers: the log is always drawn and never focused, the input
 // line takes the keyboard. Lua already treats them as two views -- every payload
 // it publishes names the layer it belongs to -- so this is the split it expects,
 // not one imposed here.
-registerModule({ id: 'chat-log', surface: 'overlay', component: ChatLog })
+registerModule({ id: 'chat-log', surface: 'overlay', component: ChatLog, hideWhileLoading: true })
 registerModule({ id: 'chat-input', surface: 'modal', component: ChatInput })
 
 registerModule({ id: 'inventory', surface: 'modal', component: InventoryView })
 registerModule({ id: 'menu', surface: 'modal', component: MenuView })
 registerModule({ id: 'form', surface: 'modal', component: FormView })
 registerModule({ id: 'panel', surface: 'modal', component: PanelView })
-registerModule({ id: 'target', surface: 'modal', component: TargetView })
+// The eye is on `modal` for its pointer, and HUD-like for the loading hide: its rows are
+// about the body or the door it landed on, and neither is there over a loading screen.
+registerModule({ id: 'target', surface: 'modal', component: TargetView, hideWhileLoading: true })
 
 // The one screen a player is given rather than offered: a brand new character has no
 // position, so where it starts is a question the server must have an answer to. It is
@@ -81,6 +95,11 @@ registerModule({ id: 'spawn', surface: 'modal', component: SpawnView })
 // overlay layer is `pointer-events: none` for its whole height -- a death screen
 // registered there would draw perfectly and refuse every press.
 registerModule({ id: 'downed', surface: 'modal', component: DownedView })
+
+// THE LOADING COVER, on a layer of its own above the other two: it is drawn over the
+// game's own loading screen during a load in play, and over everything this page has.
+// Never a pointer -- a load is nothing the player drives.
+registerModule({ id: 'loading', surface: 'cover', component: LoadingCover })
 
 createSurface({
   name: 'ui',

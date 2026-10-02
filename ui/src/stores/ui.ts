@@ -21,8 +21,12 @@ import type { Payload } from '@/bridge/types'
  * The distinction still earns its keep: `overlay` never takes a pointer or the
  * keyboard, `modal` does. A module declaring the wrong one either cannot be clicked or
  * goes inert as soon as nothing holds focus.
+ *
+ * `cover` is the third, and it holds one thing: the loading cover, drawn OVER both of the
+ * others while the game's own loading screen is up. It never takes a pointer either --
+ * a load is not something the player drives.
  */
-export type LayerName = 'overlay' | 'modal'
+export type LayerName = 'overlay' | 'modal' | 'cover'
 
 interface UiState {
   /**
