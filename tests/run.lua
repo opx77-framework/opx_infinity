@@ -23896,6 +23896,8 @@ do
 			check('and stops the ring on the key press, before the reply',
 				count('ui_phone_incoming_call_stop') == stops + 1)
 			deliver({ call = { id = 'k1', participants = {} } })
+			check('and the reply taking the invite away does not stop it a second time',
+				count('ui_phone_incoming_call_stop') == stops + 1)
 
 			deliver({})
 			deliver({ outgoing = { id = 'o1', kind = 'call', to = 2, toName = 'Panam' } })
@@ -23909,6 +23911,9 @@ do
 			check('the refuse key withdraws a call still ringing out',
 				module.DeclineOrHangUp() == true)
 			check('and stops the dial tone at once',
+				count('ui_phone_initiation_call_stop') == 2)
+			deliver({})
+			check('and the reply taking it away does not stop it a second time',
 				count('ui_phone_initiation_call_stop') == 2)
 
 			deliver({ call = { id = 'k3', participants = {} } })
