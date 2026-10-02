@@ -24,12 +24,13 @@ local EN = {
 	['avdrive.waypointUnavailable'] = 'The map could not be read, so there is nowhere to fly.',
 	['avdrive.tooFar'] = 'That waypoint is too far. Fly closer and try again.',
 	['avdrive.busy'] = 'That aircraft is already under autopilot.',
+	['avdrive.notPilot'] = 'Only the pilot’s seat has the autopilot.',
 	['avdrive.rateLimited'] = 'Slow down and try again in a moment.',
 	['avdrive.unavailable'] = 'The autopilot is unavailable on this server.',
 }
 
 local FR = {
-	['avdrive.key.toggle'] = 'Activer ou couler le pilote automatique de l’AV',
+	['avdrive.key.toggle'] = 'Activer ou couper le pilote automatique de l’AV',
 
 	['avdrive.engaged'] = 'Pilote automatique : cap sur votre point de repère. Appuyez encore pour reprendre les commandes.',
 	['avdrive.cancelled'] = 'Pilote automatique désactivé. Les commandes sont à vous.',
@@ -44,6 +45,7 @@ local FR = {
 	['avdrive.waypointUnavailable'] = 'La carte n’a pas pu être lue : nulle part où voler.',
 	['avdrive.tooFar'] = 'Ce point de repère est trop loin. Approchez et réessayez.',
 	['avdrive.busy'] = 'Cet aéronef est déjà sous pilote automatique.',
+	['avdrive.notPilot'] = 'Seul le siège du pilote commande le pilote automatique.',
 	['avdrive.rateLimited'] = 'Ralentissez et réessayez dans un instant.',
 	['avdrive.unavailable'] = 'Le pilote automatique est indisponible sur ce serveur.',
 }

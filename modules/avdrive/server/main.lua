@@ -286,6 +286,13 @@ local function engage(src, payload)
 			return OPX.NotifyLocale(src, 'avdrive.busy', nil, 'error')
 		end
 	end
+	-- THE CONTROLS ARE ONE SEAT. Being aboard is not flying: a passenger the
+	-- crew door seated in the back is in the same hull, and without this read
+	-- could freeze the pilot's aircraft and fly it to a pin of their own.
+	if seated.seat ~= 'seat_front_left' then
+		OPX.Refuse(src, 'avdrive.notPilot', M.Operation.ENGAGE)
+		return OPX.NotifyLocale(src, 'avdrive.notPilot', nil, 'error')
+	end
 
 	-- THE DESTINATION IS THE ONLY THING THE PAYLOAD MAY SAY. A waypoint the
 	-- map could not be read for is a refusal that names the map, because "no
