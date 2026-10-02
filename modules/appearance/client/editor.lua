@@ -506,7 +506,12 @@ function M.Editor.Wire()
 			-- has been waiting on.
 			if State.bootstrapToken == State.restoreToken and State.bootstrapQueued then
 				State.appearanceConfirmed = true
-				Runtime.Announce()
+				-- The announcement is what releases the mutation, and when the
+				-- platform's armed reset made it go out AHEAD of the face it has
+				-- already gone: the release is then this confirmation's to do.
+				if not Runtime.Announce() and State.gameplayAnnounced then
+					Runtime.FinishMutation()
+				end
 			else
 				Runtime.FinishMutation()
 			end

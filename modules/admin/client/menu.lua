@@ -215,11 +215,31 @@ end
 -- Rows a list must hold before it offers to be searched.
 local SEARCH_FROM = 12
 
+-- ROWS BETWEEN TWO YIELDS while a screen is built. A builder walks a whole
+-- catalogue -- every item, all 271 vehicles, every ped family -- and the
+-- client gives one resume a fixed instruction budget. Even on the redraw's own
+-- thread a filtered walk ran past it (`menu.lua: ... budget exceeded` in
+-- `drawNow`, in the owner's log after the redraw moved off the callers), and
+-- the coroutine died with the menu half-drawn. So the walk yields every
+-- `BREATHE_EVERY` rows -- but only on the redraw's own thread, which `draw`
+-- marks: a builder called anywhere else runs straight, and nothing else here
+-- may be paused halfway.
+local BREATHE_EVERY = 25
+local breaths = 0
+local onDrawThread = false
+
+local function breathe()
+	breaths = breaths + 1
+	if breaths % BREATHE_EVERY ~= 0 then return end
+	if onDrawThread and type(Wait) == 'function' then Wait(0) end
+end
+
 -- Whether a row's words match the query. Case-insensitive, plain substring, and
 -- EVERY word of the query has to appear somewhere: `mil tech` finds the
 -- Militech rows without the operator having to remember which field the word is
 -- in. Plain `find`, never a pattern -- a typed `(` is a character, not syntax.
 local function matches(query, ...)
+	breathe()
 	if query == nil then return true end
 	local hay = ''
 	for index = 1, select('#', ...) do
@@ -1016,6 +1036,7 @@ SCREENS.vehicleList = function(arg)
 	local all = found and found.members or {}
 	local matching = {}
 	for _, entry in ipairs(all) do
+		breathe()
 		if matches(query, entry.label, entry.name) then matching[#matching + 1] = entry end
 	end
 	local title, listed = paged(matching, 'vehicleList',
@@ -1061,6 +1082,7 @@ SCREENS.pedList = function(arg)
 	local all = found and found.members or {}
 	local matching = {}
 	for _, entry in ipairs(all) do
+		breathe()
 		if matches(query, entry.label, entry.name) then matching[#matching + 1] = entry end
 	end
 	local title, listed = paged(matching, 'pedList',
@@ -1082,6 +1104,7 @@ SCREENS.weaponList = function(arg)
 	local query = filtering()
 	local weapons, matching = {}, {}
 	for _, entry in ipairs(catalog.rows) do
+		breathe()
 		if entry.weapon then
 			weapons[#weapons + 1] = entry
 			if matches(query, entry.label, entry.name) then matching[#matching + 1] = entry end
@@ -1106,6 +1129,7 @@ SCREENS.ammoList = function(target)
 	local query = filtering()
 	local kinds, rows = 0, {}
 	for _, entry in ipairs(catalog.rows) do
+		breathe()
 		if entry.ammo then
 			kinds = kinds + 1
 			if matches(query, entry.label, entry.name) and #rows < MAX_LISTED then
@@ -1130,6 +1154,7 @@ SCREENS.itemCategories = function(arg)
 	local query = filtering()
 	local counts, names = {}, {}
 	for _, entry in ipairs(catalog.rows) do
+		breathe()
 		if counts[entry.category] == nil then names[#names + 1] = entry.category end
 		counts[entry.category] = (counts[entry.category] or 0) + 1
 	end
@@ -1155,6 +1180,7 @@ SCREENS.itemList = function(arg)
 	local query = filtering()
 	local all, matching = {}, {}
 	for _, entry in ipairs(catalog.rows) do
+		breathe()
 		if entry.category == arg.c then
 			all[#all + 1] = entry
 			if matches(query, entry.label, entry.name) then matching[#matching + 1] = entry end
@@ -1595,15 +1621,37 @@ end
 -- one frame -- a status line, a refresh, a filter -- become one redraw. It is
 -- in place only if every ask was.
 local drawQueued, drawQueuedInPlace = false, true
+-- When the drawing thread started, nil while none runs. A thread the budget
+-- killer unwound never clears it, so one older than `DRAW_STALE_MS` is
+-- presumed dead and a new one takes over rather than the menu never drawing
+-- again.
+local drawingSince = nil
+local DRAW_STALE_MS = 2000
+
 local function draw(inPlace)
 	if type(CreateThread) ~= 'function' then return drawNow(inPlace) end
 	drawQueuedInPlace = drawQueuedInPlace and inPlace == true
-	if drawQueued then return end
 	drawQueued = true
+	local now = Client.NowMs()
+	if drawingSince ~= nil and now - drawingSince < DRAW_STALE_MS then return end
+	drawingSince = now
+	-- ONE THREAD AT A TIME, looping while asks keep arriving: a builder yields
+	-- between rows now, and two of them interleaved would share `onDrawThread`
+	-- and race each other to the contract.
 	CreateThread(function()
-		local place = drawQueuedInPlace
-		drawQueued, drawQueuedInPlace = false, true
-		drawNow(place)
+		while drawQueued do
+			local place = drawQueuedInPlace
+			drawQueued, drawQueuedInPlace = false, true
+			drawingSince = Client.NowMs()
+			onDrawThread = true
+			local ran, failure = pcall(drawNow, place)
+			onDrawThread = false
+			if not ran then
+				drawingSince = nil
+				error(failure, 0)
+			end
+		end
+		drawingSince = nil
 	end)
 end
 

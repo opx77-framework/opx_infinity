@@ -68,14 +68,18 @@ function Keys.Effective(id)
 	return OPX.Lib.Input.KeyFor(id) or known
 end
 
---- Toggles the screen: a glovebox first from a seat, a pile first beside one.
+--- Toggles the screen: a glovebox first from a seat, the bag everywhere else.
+--
+-- NEVER A PILE. Beside a pile this key used to TAKE it -- the whole pile, into
+-- the bag, with the screen left closed -- and the owner's report was exactly
+-- that: drop something, open the inventory again to look at it, and the drop
+-- is back in the bag. Opening the inventory is a look, never a take. A pile is
+-- picked up by its own row on the key strip or on the eye, which say so.
 local function pressOpen()
 	local Screen = M.Screen
 	if Screen.IsOpen() then return Screen.Close() end
 	if Screen.IsDown() then return end
 	if M.World.Seated() then return Screen.Open('openGlovebox') end
-	local pile = M.World.NearestDrop()
-	if pile then return Screen.Open('takeDrop', { id = pile.id }) end
 	Screen.Open()
 end
 
