@@ -62,6 +62,11 @@ local notAliveSinceMs = 0
 -- this world entry with no face on it.
 local DEAD_WAIT_MS = 5000
 
+-- How long a restore in the gameplay world waits, once gameplay-ready is out, for
+-- the platform's pristine reset of an attached body before it settles this entry
+-- with no face. DEAD_WAIT_MS only starts counting once that reset has run.
+local RESET_WAIT_MS = 60000
+
 -- Apply refusals that mean 'not yet', retried after a short wait.
 local RETRYABLE = {
 	options_unavailable = true,
@@ -620,6 +625,7 @@ local function awaitWorld(token, label)
 	Runtime.ResolveBootstrap(State.family or Runtime.BodyFamily() or Runtime.DefaultFamily())
 	local waitedFrom, said = nowMs(), false
 	local notAliveFrom = 0
+	local resetWaitFrom = 0
 	while not faceable() do
 		if not State.Current(token) then return false end
 
@@ -648,9 +654,35 @@ local function awaitWorld(token, label)
 		-- up on for this world entry: the entry is marked settled so the
 		-- announcement can go out, and the face goes on at the next one, on a body
 		-- that is alive.
+		--
+		-- THE ANNOUNCEMENT IS NOT THE RESET. Once gameplay-ready is out the host
+		-- still finishes its own loading screen before it resets the body: on
+		-- 2026-10-02 16:02 the announcement went out at 34.354, the handoff
+		-- (`loading_bar_full`) came at 42.805 and `reset_complete` at 43.201 --
+		-- nine seconds in which this clock, started at the announcement, gave the
+		-- face up at 39.697. So in the gameplay world the not-alive clock does not
+		-- run at all until this entry's `open77:playerReset:complete` has arrived;
+		-- before that only RESET_WAIT_MS bounds the wait, for a reset that never
+		-- comes.
 		if platformHolds then
 			notAliveFrom = 0
+			resetWaitFrom = 0
+		elseif Runtime.Attached() and State.worldEligible and not State.playerResetDone then
+			notAliveFrom = 0
+			if resetWaitFrom == 0 then
+				resetWaitFrom = nowMs()
+			elseif nowMs() - resetWaitFrom >= RESET_WAIT_MS then
+				Open77.log.warn(('[appearance] %s token=%d: the platform has not reset the body ' ..
+					'%d ms after gameplay-ready, so this entry settles with no face')
+					:format(label, token, nowMs() - resetWaitFrom))
+				Runtime.Note(('the platform reset never came %d ms after gameplay-ready; this ' ..
+					'entry settles with no face'):format(nowMs() - resetWaitFrom))
+				State.restoreSettledToken = token
+				Runtime.Announce()
+				return false
+			end
 		elseif Runtime.Attached() then
+			resetWaitFrom = 0
 			if notAliveFrom == 0 then
 				notAliveFrom = nowMs()
 			elseif nowMs() - notAliveFrom >= DEAD_WAIT_MS then
@@ -1275,6 +1307,10 @@ local function registerEvents()
 	RegisterNetEvent(M.Event.SHOW, onShow)
 
 	AddEventHandler(HostEvent.RESET_COMPLETE, function()
+		-- Logged: whether this event reached Lua, and when, is exactly what a
+		-- face dropped at join has to be diagnosed from.
+		Open77.log.info(('[appearance] the platform reset the body (restore token=%d, ' ..
+			'announced=%s)'):format(State.restoreToken, tostring(State.gameplayAnnounced)))
 		Runtime.FinishReload('playerReset')
 		State.playerResetDone = true
 		Runtime.Announce()

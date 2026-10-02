@@ -2540,7 +2540,19 @@ do
 		check('the restore is still waiting, owning its token',
 			settled.ok and settled.value.waiting == 'restore', tostring(settled.ok and settled.value.waiting))
 
-		-- 15:17:32.950 reset_complete; 15:17:33.261 life placement settled. The
+		-- THE NINE SECONDS OF 2026-10-02 16:02. Gameplay-ready went out at 34.354,
+		-- the host finished its loading bar at 42.805 and reset the body at 43.201;
+		-- the not-alive clock, started at the announcement, gave the face up at
+		-- 39.697 in between. Nothing may count the body as dead before its reset.
+		control.Pump(90)
+		check('NINE SECONDS BETWEEN THE ANNOUNCEMENT AND THE RESET DO NOT DROP THE FACE',
+			not platform.warned('settles with no face') and not platform.warned('not alive'),
+			table.concat(control.log.warn, ' | '))
+		settled = appearance.Contract.IsSettled()
+		check('the restore is still waiting for the reset, nine seconds on',
+			settled.ok and settled.value.waiting == 'restore', tostring(settled.ok and settled.value.waiting))
+
+		-- 15:17:32.950 / 16:02:43.201 reset_complete, then life placement. The
 		-- host does this ONLY once gameplay-ready is in, which is the deadlock.
 		if platform.announced() > 0 then
 			platform.alive = true
@@ -2582,6 +2594,25 @@ do
 			table.concat(control.log.warn, ' | '))
 		local settled = appearance.Contract.IsSettled()
 		check('and the entry is settled, so nothing downstream waits for ever',
+			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
+	end
+
+	-- AND A RESET THAT NEVER COMES IS STILL BOUNDED, by RESET_WAIT_MS rather than
+	-- by a not-alive clock that cannot tell a dead body from an unreset one.
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		check('announced on the armed body', platform.announced() == 1,
+			tostring(platform.announced()))
+		control.Pump(400)
+		check('forty seconds without a reset are still waited out',
+			not platform.warned('settles with no face'), table.concat(control.log.warn, ' | '))
+		control.Pump(250)
+		check('sixty seconds without a reset settle the entry with no face',
+			platform.warned('has not reset the body') and #platform.applied == 0,
+			table.concat(control.log.warn, ' | '))
+		local settled = appearance.Contract.IsSettled()
+		check('so the clothing gate and the published look are not held for ever',
 			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
 	end
 
