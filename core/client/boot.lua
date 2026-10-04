@@ -39,6 +39,13 @@ AddEventHandler(OPX.Host.CLIENT_RESOURCE_START, function(name)
 			OPX.Note('boot', ('the client surface raised during boot: %s'):format(tostring(why)))
 		end
 
+		-- The modules on a fresh resume: the surface build is ~2,300 VM
+		-- instructions, and it shared the boot thread's first resume with the
+		-- module order and the first `Init` -- the meter's 10,800, against a
+		-- budget that unwinds this thread, and the whole client half with it,
+		-- without a word.
+		Wait(0)
+
 		local started, fatal = OPX.Modules.Run()
 		if not started then
 			Open77.log.error(('client module failed: %s'):format(tostring(fatal)))

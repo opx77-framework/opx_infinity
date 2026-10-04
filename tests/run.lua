@@ -31895,6 +31895,35 @@ do
 	end
 end
 
+-- ── the client boot, a resume at a time ─────────────────────────────────────
+-- THE ONE THREAD THE WHOLE CLIENT HALF HANGS ON. Its first resume built the
+-- surface, worked out the module order and ran the first `Init` -- ~8,000 VM
+-- instructions (10,800 on the budget meter) against a budget of ~10,000 whose
+-- overrun unwinds the thread without a word: no module started, no scheduler,
+-- nothing logged. Every resume of the boot, and of every thread a module starts
+-- during it, is counted here.
+section('the client boot stays inside one resume\'s budget')
+do
+	local env, control = Host.Environment('client')
+	local loaded = true
+	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+		local chunk = loadfile(file, 't', env)
+		if chunk == nil or not pcall(chunk) then loaded = false end
+	end
+	check('every client script loads', loaded)
+	local worst, resumes = resumeCost(env, control, function()
+		control.Fire('onClientResourceStart', 'opx_infinity')
+	end, 240)
+	local report = env.OPX.Modules.Report()
+	local started = 0
+	for _, line in ipairs(report) do
+		if line:find(' started ', 1, true) then started = started + 1 end
+	end
+	check('the modules start', started > 0, ('%d of %d started'):format(started, #report))
+	check('and no resume of the boot cost more than 6,000 instructions',
+		worst < 6000, ('%d instructions, dearest of %d resumes'):format(worst, resumes))
+end
+
 -- ── the inventory catalogue drains a part a resume ─────────────────────────
 -- THE CATALOGUE WENT TO THE PAGE A PART PER PASS of the `inventory.screen`
 -- job, and that job runs inside the scheduler's one pass beside up to three
