@@ -116,6 +116,10 @@ M.HostEvent = {
 	CANCELLED = 'open77:appearance:cancelled',
 	RESTORE_FAILED = 'open77:appearance:restore_failed',
 	RESET_COMPLETE = 'open77:playerReset:complete',
+	-- The same reset, given up on by the host. A resource-client event on the
+	-- devkit's list beside `complete`; nothing here listened to it, so a reset
+	-- that failed was waited on for the whole of RESET_WAIT_MS.
+	RESET_FAILED = 'open77:playerReset:failed',
 	SHELL_HIDE = 'open77:shell:hide',
 	BUCKET_CHANGE = 'onPlayerBucketChange',
 }
