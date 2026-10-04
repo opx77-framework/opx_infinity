@@ -314,6 +314,51 @@ local function payCitizen(source, citizenId, amount, reason)
 	return paid.ok == true, paid.error or paid.detail
 end
 
+-- How far a parked car must be from a hand-over spot for the spot to be free,
+-- and how far apart the fallback spots beside the marker stand. A car's width.
+local HAND_OVER_CLEARANCE = 3.0
+local HAND_OVER_STEP = 4.5
+
+--- Where a bought car can be handed over: the dealer's marker when nothing is
+--- parked on it, otherwise one or two car-widths to either side, or nil.
+-- Only cars in the dealer's own bucket count. A host that cannot list vehicles
+-- answers the marker, which is what every hand-over did before this check.
+-- @param dealer table
+-- @return number|nil x
+-- @return number|nil y
+local function handOverSpot(dealer)
+	local parked = {}
+	local api = Open77.vehicles
+	if type(api) == 'table' and type(api.all) == 'function' then
+		local read, listed = pcall(api.all, dealer.bucket)
+		if read and type(listed) == 'table' then
+			for index = 1, #listed do
+				local car = listed[index]
+				local at = type(car) == 'table' and (type(car.position) == 'table' and car.position
+					or car) or nil
+				local x, y = at and coordinate(at.x), at and coordinate(at.y)
+				if x ~= nil and y ~= nil then parked[#parked + 1] = { x = x, y = y } end
+			end
+		end
+	end
+	-- Sideways is across the dealer's own heading, so the fallbacks line up
+	-- beside the marker rather than in front of it.
+	local radians = math.rad(tonumber(dealer.heading) or 0)
+	local sideX, sideY = math.cos(radians), math.sin(radians)
+	local clearSq = HAND_OVER_CLEARANCE * HAND_OVER_CLEARANCE
+	for _, step in ipairs({ 0, 1, -1, 2, -2 }) do
+		local x = dealer.x + sideX * step * HAND_OVER_STEP
+		local y = dealer.y + sideY * step * HAND_OVER_STEP
+		local free = true
+		for index = 1, #parked do
+			local dx, dy = parked[index].x - x, parked[index].y - y
+			if dx * dx + dy * dy <= clearSq then free = false break end
+		end
+		if free then return x, y end
+	end
+	return nil, nil
+end
+
 --- Charges the buyer, registers the vehicle and hands it over.
 -- @author XEROX710
 --
@@ -433,14 +478,26 @@ local function purchaseOnce(source, data, dealer, entry, dest)
 		-- An AV is lifted clear of the ground it is sold on.
 		local z = dealer.z
 		if entry.av then z = z + Access.AvLift() end
-		-- Guarded like the key above, and for the same reason.
-		local called, handed = pcall(vehicles.Spawn, source, plate, {
-			x = dealer.x, y = dealer.y, z = z,
-			yaw = dealer.heading,
-			bucket = dealer.bucket,
-		})
-		if not called or type(handed) ~= 'table' then
-			handed = { ok = false, error = called and 'no answer' or ('threw: ' .. tostring(handed)) }
+		-- ON A FREE SPOT. The marker first, then a car's width either side of
+		-- it; a hand-over created inside the car the last buyer has not driven
+		-- off yet is two cars welded together.
+		local spotX, spotY = handOverSpot(dealer)
+		local handed
+		if spotX == nil then
+			handed = { ok = false, error = 'every spot beside the dealer is taken' }
+			OPX.NotifyLocale(source, 'dealership.handOverBlocked',
+				{ garage = dest ~= nil and dest.label or locale('dealership.defaultGarage') }, 'info')
+		else
+			-- Guarded like the key above, and for the same reason.
+			local called
+			called, handed = pcall(vehicles.Spawn, source, plate, {
+				x = spotX, y = spotY, z = z,
+				yaw = dealer.heading,
+				bucket = dealer.bucket,
+			})
+			if not called or type(handed) ~= 'table' then
+				handed = { ok = false, error = called and 'no answer' or ('threw: ' .. tostring(handed)) }
+			end
 		end
 		spawned = handed.ok == true
 		if not spawned then
@@ -779,9 +836,13 @@ function M.Offer(seller, buyer, entryKey)
 			local live = offers[buyer]
 			if live == nil or live.token ~= token then return end
 			offers[buyer] = nil
+			-- The seller's SETTLED handler raises the one toast; a second one
+			-- from here doubled it. And the BUYER is told too, so the screen
+			-- asking them to buy a car nobody is selling any more comes down.
 			TriggerClientEvent(M.Event.SETTLED, live.seller, { ok = false,
 				error = 'dealership.offerExpired', entry = live.entry })
-			OPX.NotifyLocale(live.seller, 'dealership.offerExpired', nil, 'error')
+			TriggerClientEvent(M.Event.WITHDRAWN, buyer, { token = live.token,
+				error = 'dealership.offerExpired' })
 		end)
 	end
 
@@ -851,6 +912,13 @@ function M.Accept(buyer, token, yes, destKey)
 		return refused('dealership.noCharacter', sellerHere and 'dealership.buyerNotInZone')
 	end
 	if not sellerHere then return refused('dealership.sellerGone', false) end
+	-- THE SELLER STILL SELLS FOR THE COMPANY THE OFFER BANKS TO. It was read once,
+	-- when the offer was made; a seller fired or moved to another job before the
+	-- buyer answered still earned the commission and paid the old company.
+	local kind, group = companyOf(offer.seller)
+	if kind ~= offer.kind or group ~= offer.group then
+		return refused('dealership.sellerNoCompany', 'dealership.noCompany')
+	end
 
 	local dealer = Access.Spot(spots, offer.dealer)
 	local buyerAt = pointOf(buyer)
@@ -1506,8 +1574,11 @@ function M.Start()
 			for buyer, live in pairs(offers) do
 				if live.seller == player then
 					offers[buyer] = nil
-					TriggerClientEvent(M.Event.SETTLED, buyer,
-						{ ok = false, error = 'dealership.sellerGone', entry = live.entry })
+					-- WITHDRAWN, which the buyer's client acts on: it closes the
+					-- offer screen. SETTLED is the seller's channel, and the
+					-- buyer's client published it and left the screen up.
+					TriggerClientEvent(M.Event.WITHDRAWN, buyer,
+						{ token = live.token, error = 'dealership.sellerGone' })
 				end
 			end
 		end

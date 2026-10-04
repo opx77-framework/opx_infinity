@@ -189,6 +189,9 @@ server_script "core/server/publish.lua"
 
 client_script "lib/client/lib.lua"
 client_script "lib/client/surface.lua"
+-- The client half of a placed spot: markers and the key, shared by every spot
+-- module. After `lib/shared/spots.lua`, which it extends.
+client_script "lib/client/spots.lua"
 -- Before anything a module can reach, so `OPX.Note` is already there for a module
 -- that fails while it is still coming up.
 client_script "core/client/note.lua"

@@ -42,13 +42,8 @@ local function keySettings()
 	return declared or { ID = 'opx.elevators.use', NAME = 'elevators.key.use', DEFAULT = 'E' }
 end
 
--- Whether another surface holds the keyboard.
-local function captured()
-	local input = Open77.input
-	if type(input) ~= 'table' or type(input.isCaptured) ~= 'function' then return false end
-	local read, answer = pcall(input.isCaptured)
-	return read and answer == true
-end
+-- Whether another surface holds the keyboard; see `lib/client/spots.lua`.
+local captured = OPX.Spots.Captured
 
 -- Brings the strip in line with the lift the player is standing at.
 local function syncPrompt()
@@ -123,9 +118,8 @@ end
 -- @author dop42
 -- @return table
 function Door.Report()
-	local declared = keySettings()
 	return {
-		key = keyRegistered and (OPX.Lib.Input.KeyFor(declared.ID) or declared.DEFAULT) or nil,
+		key = OPX.Spots.Key.Label(keyRegistered, keySettings()),
 		shown = shown,
 	}
 end
@@ -139,28 +133,14 @@ end
 --- Declares the key and starts the row's sync.
 -- @author dop42
 function Door.Start()
-	local declared = keySettings()
-	if declared.DEFAULT ~= false then
-		local called, ok, answer = pcall(RegisterKeyMapping, declared.ID, locale(declared.NAME),
-			declared.DEFAULT, function()
-				if captured() then return end
-				local ran, failure = pcall(Door.Open, 'key')
-				if not ran then
-					Open77.log.error(('[elevators] key %s: %s'):format(declared.ID, tostring(failure)))
-				end
-			end)
-		-- The card documents `true, key`; an effective key alone is accepted as
-		-- well, as the other place modules do.
-		local effective = called and (
-			(type(ok) == 'string' and ok ~= '' and ok) or
-			(ok == true and type(answer) == 'string' and answer ~= '' and answer)) or nil
-		if not called or (ok ~= true and not effective) then
-			Open77.log.warn(('[elevators] key mapping %s (%s) not registered: %s')
-				:format(declared.ID, tostring(declared.DEFAULT), tostring(called and answer or ok)))
-		else
-			keyRegistered = true
-		end
-	end
+	-- The key, and the silent press, the way every spot module declares it: see
+	-- `OPX.Spots.Key.Register`. What a press away from a lift says is
+	-- `Door.Open`'s own rule (nothing).
+	keyRegistered = OPX.Spots.Key.Register({
+		tag = 'elevators',
+		declared = keySettings(),
+		onPress = Door.Open,
+	})
 
 	-- The row follows the scan's own sightings, so it runs at the scan's pace.
 	local every = M.Access.SCAN_MS > 0 and M.Access.SCAN_MS or 2000

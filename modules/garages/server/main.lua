@@ -494,6 +494,22 @@ function M.Bring(source, key, wanted)
 	})
 end
 
+--- Whether anybody but `source` sits in a vehicle, read from the host's own
+--- snapshot. A vehicle that cannot be read has nobody aboard we know of.
+local function othersAboard(vehicleId, source)
+	local api = Open77.vehicles
+	if vehicleId == nil or type(api) ~= 'table' or type(api.get) ~= 'function' then return false end
+	local read, snapshot = pcall(api.get, vehicleId)
+	if not read or type(snapshot) ~= 'table' or type(snapshot.occupants) ~= 'table' then
+		return false
+	end
+	for _, occupant in ipairs(snapshot.occupants) do
+		local id = type(occupant) == 'table' and (occupant.playerId or occupant.player) or occupant
+		if tonumber(id) ~= tonumber(source) then return true end
+	end
+	return false
+end
+
 --- The marker's one door: PUT AWAY when the connection is sitting in its own
 --- vehicle, and BRING OUT otherwise.
 -- ONE DECISION, MADE HERE. The player presses one key on one marker, and which
@@ -526,6 +542,13 @@ function M.Use(source, key, wanted)
 		if point == nil then return refusal end
 		local built = garages[point.garage]
 		if built == nil then return Result.Err('garages.noSuchSpot') end
+		-- NOBODY ELSE IS IN IT. Putting a car away removes it from the world, and
+		-- the removal ejects whoever is riding along -- a passenger dropped on
+		-- the tarmac because the driver pressed a key. `vehicles.Spawn` and
+		-- `SetState` already refuse an occupied car for the same reason.
+		if othersAboard(seated.value.id, source) then
+			return Result.Err('garages.passengers', built.label)
+		end
 		local put = vehicles.Store(seated.value.plate, built.key)
 		if not put.ok then return put end
 		return Result.Ok({

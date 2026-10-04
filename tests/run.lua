@@ -6741,6 +6741,20 @@ do
 			live.ok and tostring(live.value.id) or tostring(live.detail))
 		control.Seat(src, { vehicleId = live.value.id, seat = 'driver' })
 
+		-- SOMEBODY ELSE IS RIDING ALONG. Putting the car away removes it, and the
+		-- removal would drop the passenger on the tarmac; it is refused instead,
+		-- with words the driver can act on.
+		control.vehicles.snapshot = { occupants = { { playerId = src }, { playerId = 99 } } }
+		local removalsBefore = #control.vehicleRemoves
+		local carrying = contract.Use(src, 'garage_dock')
+		control.vehicles.snapshot = nil
+		check('a car with a passenger in it is not put away',
+			carrying.ok == false and carrying.error == 'garages.passengers'
+				and #control.vehicleRemoves == removalsBefore,
+			tostring(carrying.error))
+		check('and the refusal has a sentence in both languages',
+			OPX.Locale.Exists('garages.passengers'))
+
 		created = #control.vehicleCreates
 		removals = #control.vehicleRemoves
 		local wroteVehicles = #vehicleWrites
@@ -7138,6 +7152,81 @@ end
 -- arrives over `SYNC`. What is asserted is what the ENGINE was asked for: the
 -- shape, the style, the radius and the distance, read back out of the host's
 -- marker stub, which validates them the way `Markers.cpp` does.
+section('spots, client side: one marker set and one key for every spot module')
+do
+	-- garages, dealership, clothing and teleports drew markers through four
+	-- copies of the same set, and those four plus the elevator door declared
+	-- their key through five copies of the same mapping. One of each now, in
+	-- `lib/client/spots.lua`; this is what it promises.
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots for the shared spot helpers', cwhy == nil, cwhy)
+	if cwhy == nil then
+		local Spots = cenv.OPX.Spots
+		local allowed = {}
+		local set = Spots.Markers.New({
+			tag = 'test',
+			look = function() return { shape = 'cylinder', style = 'spawn', radius = 2.0, lift = 0.1 } end,
+			maxDistance = function() return 50.0 end,
+			variant = function(spot) return allowed[spot.key] == true end,
+		})
+		local list = {}
+		for index = 1, 12 do
+			local key = ('s%d'):format(index)
+			list[key] = { key = key, x = index * 1.0, y = 0.0, z = 0.0 }
+		end
+		list.far = { key = 'far', x = 500.0, y = 0.0, z = 0.0 }
+
+		set.Reconcile(list, 0.0, 0.0)
+		check('one pass creates at most eight markers, the per-resume budget',
+			set.Count() == Spots.MARKER_CREATES_PER_PASS, set.Count())
+		set.Reconcile(list, 0.0, 0.0)
+		check('and the next pass creates the rest of what is in range, and nothing beyond it',
+			set.Count() == 12 and not set.Has('far'), set.Count())
+
+		local before = #cenv.Open77.markers.list()
+		allowed.s1 = true
+		set.Reconcile(list, 0.0, 0.0)
+		check('a spot whose variant changed is drawn again, not left in the old style',
+			set.Has('s1') and #cenv.Open77.markers.list() == before)
+
+		list.s2 = nil
+		set.Reconcile(list, 0.0, 0.0)
+		check('a spot the list no longer names loses its marker', not set.Has('s2')
+			and set.Count() == 11, set.Count())
+		set.Reconcile(list, nil, nil)
+		check('and a position that cannot be read draws nothing', set.Count() == 0, set.Count())
+		set.Reconcile(list, 0.0, 0.0)
+		set.Reconcile(list, 0.0, 0.0)
+		set.Clear()
+		check('Clear takes every marker down', set.Count() == 0
+			and #cenv.Open77.markers.list() == 0, #cenv.Open77.markers.list())
+
+		-- THE KEY, AND THE SILENT PRESS: a press while another surface holds the
+		-- keyboard does nothing at all, and the handler is handed 'key'.
+		local presses = {}
+		local registered = Spots.Key.Register({
+			tag = 'test',
+			declared = { ID = 'opx.test.use', NAME = 'garages.key.use', DEFAULT = 'E' },
+			onPress = function(origin) presses[#presses + 1] = origin end,
+		})
+		local mapping = cctl.keyMappings.byId['opx.test.use']
+		check('the key is declared to the host and answers registered',
+			registered == true and mapping ~= nil and mapping.key == 'E')
+		check('and its label is the key it is bound to',
+			Spots.Key.Label(registered, { ID = 'opx.test.use', DEFAULT = 'E' }) ~= nil)
+		mapping.pressed()
+		check('a press reaches the handler, named as the key', #presses == 1 and presses[1] == 'key')
+		cctl.input.captured = true
+		mapping.pressed()
+		cctl.input.captured = false
+		check('and a press while another surface holds the keyboard does nothing', #presses == 1)
+		check('a key declared as DEFAULT = false is not registered at all',
+			Spots.Key.Register({ tag = 'test', declared = { ID = 'opx.test.off', NAME = 'x',
+				DEFAULT = false }, onPress = function() end }) == false
+				and cctl.keyMappings.byId['opx.test.off'] == nil)
+	end
+end
+
 section('garages, client side')
 do
 	local cenv, cctl, cwhy = boot('client')
@@ -7918,6 +8007,48 @@ do
 		check('facing the heading the dealer carries',
 			handOver ~= nil and handOver.yaw == 90.0, handOver and tostring(handOver.yaw))
 
+		-- ── a spot that is taken ───────────────────────────────────────────
+		-- The car just handed over is still standing on the marker. The next one
+		-- is created beside it, a car's width along the dealer's side, and not
+		-- inside it.
+		-- The two extra rows this costs are taken back afterwards: the ceiling is
+		-- a count, and the sales further down are sized against it.
+		local rowsBefore = #rows
+		character.Players[src].PlayerData.money.EDDIES = 2000000
+		local beside = contract.Buy(src, 'yard', 'hella', nil)
+		local second = control.vehicleCreates[#control.vehicleCreates]
+		local gap = second and math.sqrt((second.position.x - 1.0) ^ 2 + (second.position.y - 1.0) ^ 2)
+		check('a second hand-over while the first car stands on the marker goes beside it',
+			beside.ok == true and second ~= handOver and gap ~= nil and gap >= 3.0,
+			gap and ('%.2f m away'):format(gap) or tostring(beside.error))
+
+		-- Every spot taken: the sale stands, the car waits in its garage, and the
+		-- buyer is told where.
+		local blockers = {}
+		for _, step in ipairs({ 0, 1, -1, 2, -2 }) do
+			blockers[#blockers + 1] = env.Open77.vehicles.create({
+				record = 'Vehicle.v_standard2_archer_hella_player',
+				position = { x = 1.0, y = 1.0 + step * 4.5, z = 5.0 }, yaw = 0.0, bucket = 0 })
+		end
+		local createdBefore = #control.vehicleCreates
+		local noticesBefore = #control.notices
+		character.Players[src].PlayerData.money.EDDIES = 2000000
+		local waiting = contract.Buy(src, 'yard', 'hella', nil)
+		local toldWhere = false
+		for index = noticesBefore + 1, #control.notices do
+			local notice = control.notices[index]
+			if notice.playerId == src and tostring(notice.message):find('waiting', 1, true) then
+				toldWhere = true
+			end
+		end
+		check('with every spot taken the sale still stands, and no car is created inside another',
+			waiting.ok == true and waiting.value.spawned == false
+				and #control.vehicleCreates == createdBefore,
+			tostring(waiting.error))
+		check('and the buyer is told the car is waiting in its garage', toldWhere)
+		for _, id in ipairs(blockers) do env.Open77.vehicles.remove(id) end
+		while #rows > rowsBefore do table.remove(rows) end
+
 		-- ── the destination the buyer chose ────────────────────────────────
 		-- Read from the GARAGES contract, which is the only owner of where a
 		-- garage is: nothing here keeps a copy.
@@ -8205,6 +8336,62 @@ do
 			toldSeller ~= nil and toldSeller[1].ok == false
 				and toldSeller[1].error == 'dealership.buyerNotInZone',
 			toldSeller and tostring(toldSeller[1].error) or 'nothing sent')
+
+		-- The last event of one name sent to one player after a mark.
+		local function sentAfter(mark, name, to)
+			local found
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == name and sent.source == to then found = sent end
+			end
+			return found
+		end
+
+		-- ── the seller's company is proved again at the answer ─────────────
+		-- It was read once, when the offer was made: a seller who lost the job
+		-- before the buyer said yes still earned the commission for it.
+		contract.Offer(seller, buyer, 'hella')
+		local firedAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local heldJob, heldGang = sellerData.PlayerData.job, sellerData.PlayerData.gang
+		sellerData.PlayerData.job, sellerData.PlayerData.gang = nil, nil
+		local moneyBefore = character.Players[buyer].PlayerData.money.EDDIES
+		local firedMark = #control.clientEvents
+		local fired = contract.Accept(buyer, firedAt, true)
+		sellerData.PlayerData.job, sellerData.PlayerData.gang = heldJob, heldGang
+		local firedTold = sentAfter(firedMark, dealership.Event.SETTLED, seller)
+		check('a seller who no longer sells for the company cannot close the sale',
+			fired.ok == false and fired.error == 'dealership.sellerNoCompany'
+				and character.Players[buyer].PlayerData.money.EDDIES == moneyBefore,
+			tostring(fired.error))
+		check('and is told why', firedTold ~= nil and firedTold[1].error == 'dealership.noCompany',
+			firedTold and tostring(firedTold[1].error))
+
+		-- ── the buyer is told when an offer ends without them ──────────────
+		-- The seller leaves: the buyer's screen gets a WITHDRAWN naming the offer.
+		local passer = 79
+		local passerData = load(passer, 'citizen-passer', 0)
+		passerData.PlayerData.job = { name = 'fixer', grade = { level = 2 } }
+		control.Stand(passer, 0.0, 0.0, 0.0)
+		contract.Offer(passer, buyer, 'hella')
+		local leftAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local leftMark = #control.clientEvents
+		control.Fire(env.OPX.Host.PLAYER_DISCONNECTED, passer, 'quit')
+		local withdrawn = sentAfter(leftMark, dealership.Event.WITHDRAWN, buyer)
+		check('a seller who leaves withdraws the offer from the buyer\'s screen',
+			withdrawn ~= nil and withdrawn[1].token == leftAt
+				and withdrawn[1].error == 'dealership.sellerGone',
+			withdrawn and tostring(withdrawn[1].error) or 'nothing sent')
+
+		-- And the offer runs out: the buyer is told as well as the seller.
+		contract.Offer(seller, buyer, 'hella')
+		local lapsedAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local lapsedMark = #control.clientEvents
+		control.Pump(math.ceil(Access.OFFER_TIMEOUT_MS / 100) + 10)
+		local lapsed = sentAfter(lapsedMark, dealership.Event.WITHDRAWN, buyer)
+		check('an offer that runs out is withdrawn from the buyer\'s screen too',
+			lapsed ~= nil and lapsed[1].token == lapsedAt
+				and lapsed[1].error == 'dealership.offerExpired',
+			lapsed and tostring(lapsed[1].error) or 'nothing sent')
 
 		-- ── and yes ────────────────────────────────────────────────────────
 		local settled
@@ -9230,6 +9417,41 @@ do
 			Runtime.Report().open == false and Runtime.Report().offered == nil)
 		check('and there is nothing left to answer',
 			Runtime.Decide(true).ok == false)
+
+		-- ── an offer does not take the player's own list away ─────────────
+		-- It used to take down whatever dealership menu was open and replace it,
+		-- so a press meant for the player's own row could land on "Buy it".
+		local own = Runtime.Open('test')
+		cctl.Pump(2)
+		check('the player has their own list open', own.ok == true
+			and Runtime.Report().screen == 'root', tostring(Runtime.Report().screen))
+		cctl.netEvents[dealership.Event.OFFERED]({
+			token = 4242, entry = 'hella', model = 'Archer Hella', price = 29000,
+			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+		})
+		cctl.Pump(2)
+		check('an offer arriving over it waits rather than replacing it',
+			Runtime.Report().screen == 'root' and Runtime.Report().offered == 'hella',
+			tostring(Runtime.Report().screen))
+		Runtime.Close()
+		cctl.Pump(2)
+		check('and opens once the player closes their own list',
+			Runtime.Report().open == true and Runtime.Report().screen == 'offer',
+			tostring(Runtime.Report().screen))
+
+		-- ── an offer that ended without an answer closes its screen ───────
+		-- The offer ran out, or the seller left: the screen asking the player to
+		-- buy a car nobody is selling any more comes down. A withdrawal naming an
+		-- offer already replaced closes nothing.
+		cctl.netEvents[dealership.Event.WITHDRAWN]({ token = 1, error = 'dealership.offerExpired' })
+		cctl.Pump(2)
+		check('a withdrawal of another offer leaves this one up',
+			Runtime.Report().screen == 'offer' and Runtime.Report().offered == 'hella')
+		cctl.netEvents[dealership.Event.WITHDRAWN]({ token = 4242, error = 'dealership.sellerGone' })
+		cctl.Pump(2)
+		check('a withdrawal of this one takes the screen down and forgets it',
+			Runtime.Report().open == false and Runtime.Report().offered == nil,
+			tostring(Runtime.Report().screen))
 
 		-- ── yes, and where to file it ─────────────────────────────────────
 		-- A salesperson's sale filed the car under the default garage whatever
@@ -14876,6 +15098,42 @@ do
 	end
 end
 
+section('elevators: a lift still adopted from before a restart is bound again')
+do
+	-- After a restart the host may still hold this module's adoption, locked,
+	-- while this module's own table is empty. The client now reports such a
+	-- managed lift; the server must re-claim it -- bind it, keep it locked, and
+	-- adopt nothing new.
+	local WHERE = { x = -1521.40, y = 892.75, z = 42.10 }
+	local LIFT = '0x00000000000000ab'
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.players.position = function()
+			return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = 0 }
+		end
+	end)
+	check('the server boots for the re-claim', why == nil, why)
+	if why == nil then
+		local M = env.OPX.Modules.Get('elevators')
+		local lifts = control.lifts
+		lifts.next = lifts.next + 1
+		local held = lifts.next
+		lifts.byId[held] = { id = held, engineEntity = LIFT, bucket = 0, floorCount = 12,
+			activeFloor = 0, phase = 'idle', x = WHERE.x, y = WHERE.y, z = WHERE.z, flags = 1 }
+		env.source = 4
+		control.netEvents[M.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+		env.source = nil
+		local bound
+		for _, sent in ipairs(control.clientEvents) do
+			if sent.name == M.Event.BOUND then bound = sent end
+		end
+		check('the lift the host still holds is bound again, not adopted a second time',
+			bound ~= nil and bound[2] == held and #lifts.adopts == 0,
+			bound and tostring(bound[2]) or ('%d adopts'):format(#lifts.adopts))
+		check('and it is locked again, so the vanilla button stays refused',
+			(lifts.byId[held].flags & 2) ~= 0, tostring(lifts.byId[held].flags))
+	end
+end
+
 section('elevators: a player can reach the floor list')
 do
 	-- THE PANEL HAD NO DOOR. Every adopted cabin is locked, which refuses the
@@ -14904,6 +15162,15 @@ do
 		end
 		check('standing at a configured lift posts the row naming the key',
 			settle(cctl, rowUp, 80))
+		-- A lift the host calls MANAGED that this client was never bound to -- the
+		-- state a restart leaves this module's own adoptions in -- is reported to
+		-- the server, so its re-claim branch can bind it again. It used to be
+		-- skipped, and the shaft stayed locked with nothing able to drive it.
+		local reported = false
+		for _, sent in ipairs(cctl.serverEvents) do
+			if sent.name == M.Event.SIGHTED and sent[1] == '0x00000000000000ab' then reported = true end
+		end
+		check('a managed lift this client is not bound to is reported for re-claim', reported)
 
 		local menu = OPX.Api.Get('menu')
 		local realOpen = menu.Open
@@ -18537,9 +18804,18 @@ do
 			end,
 		}
 		local wallet = nil
+		-- The key ring: which player holds a key to which vehicle. A trunk at a
+		-- drop-off is sold out of only by its owner or a key holder.
+		local keyring = { [2] = { ['veh-1'] = true } }
+		local keysStub = {
+			Holds = function(player, vehicle)
+				return keyring[player] ~= nil and keyring[player][vehicle] == true
+			end,
+		}
 		local realGet = OPX.Api.Get
 		OPX.Api.Get = function(name)
 			if name == 'inventory' then return inventory end
+			if name == 'vehiclekeys' then return keysStub end
 			if name == 'character' and wallet ~= nil then return wallet end
 			return realGet(name)
 		end
@@ -18684,6 +18960,20 @@ do
 
 		-- ── at the seller, with the truck parked at the drop-off ─────────────
 		vehicles['veh-1'].position = { x = -1502.0, y = 201.0, z = 18.0 }
+
+		-- SOMEBODY ELSE REACHES THE BUYER FIRST. The truck is not theirs and they
+		-- hold no key to it, so its crates are not theirs to sell: the inventory
+		-- would open an unowned trunk for anybody, and the hauler who drove it
+		-- here would watch a stranger get paid for the load.
+		positions[7] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
+		fire(7, M.Event.HELLO)
+		at = at + 10000
+		fire(7, M.Event.BEGIN, Step.DELIVER, SELLER)
+		check('a stranger at the seller cannot sell the crates in somebody else\'s truck',
+			lastAnswer()[1] == false and lastAnswer()[2] == 'no_crates'
+				and trunks['veh-1'].docks == 2,
+			tostring(lastAnswer()[2]))
+
 		positions[2] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
 		at = at + 10000
 		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
@@ -19589,18 +19879,30 @@ do
 	end
 	check('no file claims `reconcile` is the only writer of its marker set',
 		#sole == 0, table.concat(sole, ', '))
-	-- And the claim really would be false, so this is not agreeing with itself.
-	local emptiers = 0
-	for _, file in ipairs({ 'modules/clothing/client/main.lua',
-		'modules/garages/client/main.lua' }) do
+	-- And the claim really would be false, so this is not agreeing with itself:
+	-- the one marker set every spot module uses now has a second writer, `Clear`.
+	local shared = loaded['lib/client/spots.lua'] or ''
+	check('because the shared set really does have a second writer beside Reconcile',
+		shared:find('function set.Reconcile', 1, true) ~= nil
+			and shared:find('function set.Clear', 1, true) ~= nil)
+
+	-- ── one marker set and one key mapping, not five copies ───────────────
+	-- garages, dealership, clothing and teleports each carried the marker set,
+	-- and those four plus the elevator door each carried the key mapping. They
+	-- drifted -- the per-pass marker cap had reached three of the four.
+	local copies = {}
+	for _, file in ipairs({ 'modules/garages/client/main.lua',
+		'modules/dealership/client/main.lua', 'modules/clothing/client/main.lua',
+		'modules/teleports/client/main.lua', 'modules/elevators/client/door.lua' }) do
 		local source = loaded[file] or ''
-		if source:find('local function clearMarkers', 1, true)
-			and source:find('markers%[key%] = nil') then
-			emptiers = emptiers + 1
+		if source:find('pcall(RegisterKeyMapping', 1, true)
+			or source:find('local function reconcile', 1, true)
+			or source:find('api.create, {', 1, true) then
+			copies[#copies + 1] = file
 		end
 	end
-	check('because a second function really does empty it, in both', emptiers == 2,
-		emptiers)
+	check('no spot module keeps its own marker set or key mapping any more',
+		#copies == 0, table.concat(copies, ', '))
 
 	-- ── the job gate is not narrating copies that still exist ─────────────
 	-- The claim is "a JOBS block means one thing", and the thing it means is the
@@ -20670,6 +20972,80 @@ do
 	end
 end
 
+section('vehicles: a stop writes back what is out, without awaiting anything')
+do
+	-- `M.Stop` runs on the stop handler's own stack, which is not a coroutine.
+	-- It used to call `StoreAll`, whose `FetchOne` can only fail there, so every
+	-- car out at a stop lost its condition since the last save pass and kept a
+	-- row saying OUT. The condition is now sent with the bridge's callback form.
+	local updates = {}
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		update = function(sql, params)
+			if sql:find('UPDATE opx77_vehicles', 1, true) then
+				updates[#updates + 1] = { sql = sql, params = params }
+			end
+			return 1
+		end,
+		query = function() return {} end,
+		single = function() return nil end,
+		insert = function() return 0 end,
+		transaction = function() return true end,
+	}))
+	check('the server boots for the stop save', why == nil, why)
+	local OPX = why == nil and env.OPX or nil
+	local vehicles = OPX and OPX.Modules.Get('vehicles') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	if type(vehicles) == 'table' and type(character) == 'table' then
+		local DRIVER, PLATE, CITIZEN = 73, 'STOP001', 'citizen-stopper'
+		character.Players[DRIVER] = { PlayerData = {
+			citizenId = CITIZEN, source = DRIVER, userId = 'account-73' } }
+		character.Registry.byCitizenId[CITIZEN] = DRIVER
+		character.Registry.byUserId['account-73'] = DRIVER
+		env.Open77.players.position = function()
+			return { x = 5.0, y = 6.0, z = 7.0, bucket = 0 }
+		end
+		local realFetch = vehicles.Storage.FetchOne
+		vehicles.Storage.FetchOne = function()
+			return OPX.Result.Ok({ plate = PLATE, citizenId = CITIZEN,
+				record = 'Vehicle.v_standard2_villefort_cortes_player', garage = 'impound',
+				state = vehicles.Storage.STATE.STORED, health = 1.0, metadata = {} })
+		end
+		local out
+		env.CreateThread(function() out = vehicles.Spawn(DRIVER, PLATE) end)
+		check('the car is out before the stop',
+			settle(control, function() return out ~= nil end, 60) and out.ok == true,
+			out and tostring(out.error))
+		vehicles.Storage.FetchOne = realFetch
+
+		local before = #updates
+		local removalsBefore = #control.vehicleRemoves
+		-- Off any coroutine, as the stop handler calls it.
+		vehicles.Stop()
+		local written
+		for index = before + 1, #updates do
+			if type(updates[index].params) == 'table' and updates[index].params.plate == PLATE then
+				written = updates[index]
+			end
+		end
+		local form
+		for _, call in ipairs(control.database.calls) do
+			if call.method == 'update' and type(call.params) == 'table'
+				and call.params.plate == PLATE then form = call.form end
+		end
+		check('the stop writes the car back as STORED with its condition',
+			written ~= nil and tonumber(written.params.state) == vehicles.Storage.STATE.STORED
+				and written.params.health ~= nil,
+			written and tostring(written.params.state) or 'nothing written')
+		check('through the callback form, which needs no coroutine', form == 'callback',
+			tostring(form))
+		check('and the car is taken out of the world',
+			#control.vehicleRemoves == removalsBefore + 1)
+		check('and nothing is left out afterwards', vehicles.LiveId(PLATE) == nil)
+		character.Players[DRIVER] = nil
+	end
+end
+
 -- ── vehicle keys ─────────────────────────────────────────────────────────────
 -- THE OWNER: "faire les clé de voiture en item, quand même les véhicules admin,
 -- avant le menu ou alt on peut se donner la clé du véhicule précis". A key is an
@@ -20778,6 +21154,14 @@ do
 			cut and tostring(cut.error))
 		local metadata = held[1] and held[1].entry.metadata or {}
 		check('and its metadata names the plate', metadata.plate == minted, tostring(metadata.plate))
+		-- `Holds` answers whether a bag carries a key to a live vehicle, by its
+		-- id, without minting one -- the question `hauling` asks of a truck at a
+		-- drop-off before it sells out of the trunk.
+		check('Holds answers yes for the holder of the key to that vehicle',
+			run(function() return keys.Holds(HOLDER, CAR) end) == true)
+		check('and no for somebody without one, or for a vehicle nobody keyed',
+			run(function() return keys.Holds(STRANGER, CAR) end) == false
+				and run(function() return keys.Holds(HOLDER, 999999) end) == false)
 		check('and a label a player can read, with the model and the plate',
 			type(metadata.label) == 'string' and metadata.label:find('Villefort Cortes', 1, true) ~= nil
 				and metadata.label:find(minted, 1, true) ~= nil, tostring(metadata.label))
@@ -27423,6 +27807,14 @@ do
 		-- Connected players with characters, which is what `judge` demands
 		-- before anybody may place or take a call at all.
 		local A, B, C, D = 601, 602, 603, 604
+		-- EVERYBODY HERE IS IN EVERYBODY'S CONTACTS. A call goes to a contact and
+		-- to nobody else (the owner's decision), and this section is about the
+		-- refusals a call between two people who MAY call each other can still
+		-- meet -- so they all may. The stranger's refusal has a section of its own.
+		local everybody = {}
+		for _, tag in ipairs({ 'a', 'b', 'c', 'd', 'e', 'f', 'e2', 'f2' }) do
+			everybody[#everybody + 1] = { citizenId = 'citizen-' .. tag, name = 'Caller ' .. tag }
+		end
 		local function incarnate(id, tag)
 			control.Admit(id, 'account-' .. tag)
 			OPX.EnsureSession(id)
@@ -27431,7 +27823,10 @@ do
 					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
 					charInfo = { firstName = 'Caller', lastName = tag } },
 				Functions = { UpdatePlayerData = function() end,
-					GetMetaData = function() return nil end,
+					GetMetaData = function(key)
+						if key == 'callContacts' then return everybody end
+						return nil
+					end,
 					SetMetaData = function() end },
 			}
 			character.Registry.byCitizenId['citizen-' .. tag] = id
@@ -27628,8 +28023,11 @@ do
 		control.Life(EMPTY, 'alive')
 		mark = ask(A, module.Event.INVITE, EMPTY)
 		refused = refusalFor(mark)
-		check('a call to a slot with no character is refused as the TARGET not being ready',
-			refused ~= nil and refused.code == 'calls.error.targetNotReady',
+		-- A slot with no character is nobody's contact, so the refusal is the one
+		-- every stranger gets -- it does not say whether the seat is empty, busy
+		-- or down. It used to answer `targetNotReady`, which said exactly that.
+		check('a call to a slot with no character is refused as not a contact, saying nothing more',
+			refused ~= nil and refused.code == 'calls.error.notContact',
 			refused and tostring(refused.code))
 
 		-- ── the ordinary call ────────────────────────────────────────────────
@@ -27948,6 +28346,99 @@ do
 			return answer.ok and answer.value.contacts or {}
 		end
 
+		-- ── a stranger cannot be called ──────────────────────────────────────
+		-- THE OWNER'S DECISION: a call goes to a contact and to nobody else. These
+		-- two have not shared contacts yet, so A cannot ring B, and the refusal is
+		-- the same whatever B is doing: it does not name B, and it does not say
+		-- whether B is online, busy or down -- that was the leak a modified client
+		-- walking ids 1..N used to read every character's name and state with.
+		local mark = ask(A, module.Event.INVITE, B)
+		local refused = refusalFor(mark)
+		check('a call to somebody who is not a contact is refused',
+			refused ~= nil and refused.code == 'calls.error.notContact',
+			refused and tostring(refused.code))
+		check('and nothing rings on their side', inviteOn(B) == nil)
+		local placedText = OPX.Locale.Text('calls.placed', { name = 'Fixer cb' })
+		local leaked = false
+		for _, notice in ipairs(control.notices) do
+			if notice.playerId == A and tostring(notice.message):find('cb', 1, true) then leaked = true end
+		end
+		check('and the caller is not told who is behind the id', not leaked, placedText)
+		control.Life(B, 'dead')
+		mark = ask(A, module.Event.INVITE, B)
+		refused = refusalFor(mark)
+		check('and a stranger who is down answers exactly the same, so nothing about them is read',
+			refused ~= nil and refused.code == 'calls.error.notContact',
+			refused and tostring(refused.code))
+		control.Life(B, 'alive')
+
+		-- ── a contact from across the street ─────────────────────────────────
+		-- CONTACT_RANGE is 6 metres. These two are 40 apart.
+		control.Stand(A, 0.0, 0.0, 0.0)
+		control.Stand(B, 40.0, 0.0, 0.0)
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a contact offered from across the street is refused',
+			refused ~= nil and refused.code == 'calls.error.tooFar',
+			refused and tostring(refused.code))
+		check('and nothing was written to either character',
+			#contactsOf(A) == 0 and #contactsOf(B) == 0)
+
+		-- ── and a CALL from the same distance ─────────────────────────────────
+		-- Refused too, but NOT for the distance: they are not contacts yet. Once
+		-- they are, a call from across the city goes through (checked below).
+		mark = ask(A, module.Event.INVITE, B)
+		refused = refusalFor(mark)
+		check('a CALL to a stranger across the street is refused as not a contact, not as too far',
+			refused ~= nil and refused.code == 'calls.error.notContact',
+			refused and tostring(refused.code))
+
+		-- ── two people in the same place but not the same world ──────────────
+		-- Same coordinates, different routing buckets: an instance is exactly
+		-- the case where two bodies share a point and cannot see each other.
+		control.Stand(B, 1.0, 0.0, 0.0)
+		control.Bucket(B, 7)
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a contact offered into another routing bucket is refused, however close',
+			refused ~= nil and refused.code == 'calls.error.tooFar',
+			refused and tostring(refused.code))
+		control.Bucket(B, 0)
+
+		-- ── the hand-over ────────────────────────────────────────────────────
+		ask(A, module.Event.INVITE, B, 'contact')
+		local offered = inviteOn(B)
+		check('a contact offered face to face reaches the other party', offered ~= nil)
+		check('and nothing is written until they agree -- it needs a consent',
+			#contactsOf(A) == 0 and #contactsOf(B) == 0)
+
+		ask(B, module.Event.ACCEPT, offered)
+		local mine, theirs = contactsOf(A), contactsOf(B)
+		check('accepting writes the contact BOTH ways, which is what sharing means',
+			#mine == 1 and #theirs == 1, ('%d/%d'):format(#mine, #theirs))
+		check('each side holding the other\'s citizen id, not their own',
+			mine[1] ~= nil and mine[1].citizenId == 'citizen-cb'
+				and theirs[1] ~= nil and theirs[1].citizenId == 'citizen-ca',
+			(mine[1] and mine[1].citizenId or '?') .. '/'
+				.. (theirs[1] and theirs[1].citizenId or '?'))
+		check('and the CHARACTER\'s name rather than the account gamertag',
+			mine[1] ~= nil and mine[1].name == 'Fixer cb', mine[1] and mine[1].name)
+		check('while putting nobody on a call: a contact is not a conversation',
+			calls.IsOnCall(A).value.onCall == false
+				and calls.IsOnCall(B).value.onCall == false)
+		check('and lighting nobody\'s eyes either',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+		-- ── a contact can be called from anywhere ───────────────────────────
+		-- The range rule belongs to the contact hand-over and to nothing else.
+		-- A module that applied it to calls would have built a walkie-talkie.
+		control.Stand(B, 40.0, 0.0, 0.0)
+		ask(A, module.Event.INVITE, B)
+		check('a CALL to a contact forty metres away goes through: a holocall is not a radio',
+			inviteOn(B) ~= nil)
+		ask(B, module.Event.DECLINE, inviteOn(B))
+		control.Stand(B, 1.0, 0.0, 0.0)
+
 		-- ── declining ────────────────────────────────────────────────────────
 		-- A refusal has to reach the CALLER, not merely stop ringing for the
 		-- person who refused: a call that simply goes quiet is a caller staring
@@ -27955,7 +28446,7 @@ do
 		ask(A, module.Event.INVITE, B)
 		local ringing = inviteOn(B)
 		check('a call is ringing to be refused', ringing ~= nil)
-		local mark = #control.clientEvents
+		mark = #control.clientEvents
 		ask(B, module.Event.DECLINE, ringing)
 		check('declining puts nobody on a call',
 			calls.IsOnCall(A).value.onCall == false
@@ -28019,62 +28510,6 @@ do
 			inviteOn(B) ~= nil and inviteOn(B) ~= ringing)
 		ask(B, module.Event.DECLINE, inviteOn(B))
 
-		-- ── a contact from across the street ─────────────────────────────────
-		-- CONTACT_RANGE is 6 metres. These two are 40 apart.
-		control.Stand(A, 0.0, 0.0, 0.0)
-		control.Stand(B, 40.0, 0.0, 0.0)
-		mark = ask(A, module.Event.INVITE, B, 'contact')
-		local refused = refusalFor(mark)
-		check('a contact offered from across the street is refused',
-			refused ~= nil and refused.code == 'calls.error.tooFar',
-			refused and tostring(refused.code))
-		check('and nothing was written to either character',
-			#contactsOf(A) == 0 and #contactsOf(B) == 0)
-
-		-- ── and a CALL from the same distance, which must NOT be ─────────────
-		-- The range rule belongs to the contact hand-over and to nothing else.
-		-- A module that applied it to calls would have built a walkie-talkie.
-		ask(A, module.Event.INVITE, B)
-		check('while a CALL from the same distance goes through: a holocall is not a radio',
-			inviteOn(B) ~= nil)
-		ask(B, module.Event.DECLINE, inviteOn(B))
-
-		-- ── two people in the same place but not the same world ──────────────
-		-- Same coordinates, different routing buckets: an instance is exactly
-		-- the case where two bodies share a point and cannot see each other.
-		control.Stand(B, 1.0, 0.0, 0.0)
-		control.Bucket(B, 7)
-		mark = ask(A, module.Event.INVITE, B, 'contact')
-		refused = refusalFor(mark)
-		check('a contact offered into another routing bucket is refused, however close',
-			refused ~= nil and refused.code == 'calls.error.tooFar',
-			refused and tostring(refused.code))
-		control.Bucket(B, 0)
-
-		-- ── the hand-over ────────────────────────────────────────────────────
-		ask(A, module.Event.INVITE, B, 'contact')
-		local offered = inviteOn(B)
-		check('a contact offered face to face reaches the other party', offered ~= nil)
-		check('and nothing is written until they agree -- it needs a consent',
-			#contactsOf(A) == 0 and #contactsOf(B) == 0)
-
-		ask(B, module.Event.ACCEPT, offered)
-		local mine, theirs = contactsOf(A), contactsOf(B)
-		check('accepting writes the contact BOTH ways, which is what sharing means',
-			#mine == 1 and #theirs == 1, ('%d/%d'):format(#mine, #theirs))
-		check('each side holding the other\'s citizen id, not their own',
-			mine[1] ~= nil and mine[1].citizenId == 'citizen-cb'
-				and theirs[1] ~= nil and theirs[1].citizenId == 'citizen-ca',
-			(mine[1] and mine[1].citizenId or '?') .. '/'
-				.. (theirs[1] and theirs[1].citizenId or '?'))
-		check('and the CHARACTER\'s name rather than the account gamertag',
-			mine[1] ~= nil and mine[1].name == 'Fixer cb', mine[1] and mine[1].name)
-		check('while putting nobody on a call: a contact is not a conversation',
-			calls.IsOnCall(A).value.onCall == false
-				and calls.IsOnCall(B).value.onCall == false)
-		check('and lighting nobody\'s eyes either',
-			control.Eyes(A) == false and control.Eyes(B) == false)
-
 		-- ── the same contact twice ───────────────────────────────────────────
 		-- Replaced, not appended. The list is written into the character's
 		-- metadata blob and read back on every load, so a duplicate row is a
@@ -28084,6 +28519,18 @@ do
 		-- block disconnects the contact to prove an absent one is not listed,
 		-- and a hand-over to a slot nobody is sitting in is refused for a
 		-- perfectly good reason that has nothing to do with duplicates.
+		--
+		-- AND NOT AGAIN AT ONCE. A stranger may still offer a contact -- it is the
+		-- only door to a call now -- but offering the same person again and again
+		-- is a doorbell, so a second offer to the same player inside the floor is
+		-- refused with words of its own.
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a second contact offer to the same person straight away is refused',
+			refused ~= nil and refused.code == 'calls.error.contactTooSoon',
+			refused and tostring(refused.code))
+		check('and nothing new rings on their side for it', inviteOn(B) == nil or inviteOn(B) == offered)
+		control.Pump(320)
 		ask(A, module.Event.INVITE, B, 'contact')
 		ask(B, module.Event.ACCEPT, inviteOn(B))
 		check('handing over the same contact again replaces the row rather than adding a second',
@@ -28135,6 +28582,11 @@ do
 		local C = 803
 		incarnate(C, 'cc')
 		control.Pump(5)
+		-- B and C have each other's contact, written the way a hand-over writes
+		-- it: a call goes to a contact and to nobody else.
+		meta[B].callContacts = meta[B].callContacts or {}
+		table.insert(meta[B].callContacts, { citizenId = 'citizen-cc', name = 'Fixer cc' })
+		meta[C].callContacts = { { citizenId = 'citizen-cb', name = 'Fixer cb' } }
 		ask(B, module.Event.INVITE, C)
 		ask(C, module.Event.ACCEPT, inviteOn(C))
 		check('the contact is now on a call of their own',
@@ -28209,7 +28661,12 @@ do
 					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
 					charInfo = { firstName = 'Glow', lastName = tag } },
 				Functions = { UpdatePlayerData = function() end,
-					GetMetaData = function() return nil end,
+					-- Everybody here is in everybody's contacts: a call goes to a contact
+					-- and to nobody else, and this section is not about strangers.
+					GetMetaData = function(key)
+						if key == 'callContacts' then return { { citizenId = 'citizen-ea' }, { citizenId = 'citizen-eb' } } end
+						return nil
+					end,
 					SetMetaData = function() end },
 			}
 			character.Registry.byCitizenId['citizen-' .. tag] = id
@@ -28723,7 +29180,12 @@ do
 					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
 					charInfo = { firstName = 'Caller', lastName = tag } },
 				Functions = { UpdatePlayerData = function() end,
-					GetMetaData = function() return nil end,
+					-- Everybody here is in everybody's contacts: a call goes to a contact
+					-- and to nobody else, and this section is not about strangers.
+					GetMetaData = function(key)
+						if key == 'callContacts' then return { { citizenId = 'citizen-wa' }, { citizenId = 'citizen-wb' }, { citizenId = 'citizen-wc' } } end
+						return nil
+					end,
 					SetMetaData = function() end },
 			}
 			character.Registry.byCitizenId['citizen-' .. tag] = id
