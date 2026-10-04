@@ -14661,7 +14661,44 @@ do
 	end
 end
 
+section('elevators: an adoption the sweep drops is given back to the host')
+do
+	-- `sweepOnce` drops an adoption nobody rode for ten minutes, so a lift
+	-- adopted from a hash that came off the wire unverified heals. It cleared
+	-- this module's record and NOT the host's: the lift stayed adopted and
+	-- locked, the client never re-reports a lift the host calls managed, and
+	-- every request answered `not_adopted` -- the shaft was dead until restart.
+	local WHERE = { x = -1521.40, y = 892.75, z = 42.10 }
+	local LIFT = '0x00000000000000ab'
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.players.position = function()
+			return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = 0 }
+		end
+	end)
+	check('the server boots for the elevator sweep', why == nil, why)
+	if why == nil then
+		local M = env.OPX.Modules.Get('elevators')
+		local lifts = control.lifts
+		env.source = 4
+		control.netEvents[M.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+		env.source = nil
+		local adoptedId = lifts.next
+		check('the lift is adopted', #lifts.adopts == 1 and lifts.byId[adoptedId] ~= nil)
+		-- Ten minutes and a sweep, at 100 ms a round.
+		control.Pump(6200)
+		local given = false
+		for _, id in ipairs(lifts.removes) do if id == adoptedId then given = true end end
+		check('an adoption never used is given back to the host, not only forgotten', given,
+			#lifts.removes)
+		env.source = 4
+		control.netEvents[M.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+		env.source = nil
+		check('and the next sighting adopts the lift again', #lifts.adopts == 2, #lifts.adopts)
+	end
+end
+
 section('elevators: a player can reach the floor list')
+
 do
 	-- THE PANEL HAD NO DOOR. Every adopted cabin is locked, which refuses the
 	-- vanilla in-cabin button by design, and the floor list that replaces that

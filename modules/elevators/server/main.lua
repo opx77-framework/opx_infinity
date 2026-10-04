@@ -489,7 +489,16 @@ local function sweepOnce()
 	local at = OPX.Now()
 	for key, record in pairs(owned) do
 		if record.usedAtMs == nil and at - (record.atMs or at) > UNUSED_MS then
+			-- GIVEN BACK TO THE HOST, not only forgotten here. `release` clears this
+			-- module's record and nothing else, so the lift stayed adopted and
+			-- locked on the host; the client never re-reports a lift the host
+			-- calls managed, so nothing re-bound it, and every request answered
+			-- `not_adopted` -- a shaft dead until the resource restarted, which is
+			-- the opposite of the healing this sweep is for. Unmanaged again, the
+			-- lift is re-sighted and re-adopted, locked, by the next passer-by.
+			releaseAdoption(record.id, 'ten minutes unused')
 			release(key)
+
 			Open77.log.warn(('[elevators] %s released: adopted %d minutes ago and never used')
 				:format(key, math.floor(UNUSED_MS / 60000)))
 		end
