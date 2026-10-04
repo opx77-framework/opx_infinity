@@ -74,8 +74,9 @@ export interface ScreenConfig {
 export interface NearbyPlayer {
   id: number
   distance: number
-  /** The character's name, so the give list is people rather than `#12`. */
-  name: string
+  /** Which side of the giver they stand on: ahead, behind, left, right, or ''.
+      Never a name: the server does not send one (the owner's decision). */
+  side: string
 }
 
 export function readStack(value: unknown): Stack | null {
@@ -153,6 +154,6 @@ export function readTabs(value: unknown): TabSpec[] {
 
 export function readNearby(value: unknown): NearbyPlayer[] {
   return records(value)
-    .map((row) => ({ id: num(row.id, 0), distance: num(row.distance, 0), name: text(row.name) }))
+    .map((row) => ({ id: num(row.id, 0), distance: num(row.distance, 0), side: text(row.side) }))
     .filter((row) => row.id > 0)
 }
