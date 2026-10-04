@@ -602,6 +602,9 @@ end
 -- Runs a listed row's onSelect once its target and its predicate still hold. On
 -- its own one-shot thread: every step here may yield on a promise.
 local function commit(row, at)
+	-- The thread starts a frame after the click, and the eye can close in that
+	-- frame: `selection` is then nil, and indexing it raised on this bare thread.
+	if not stillHeld(at) or selection == nil then return end
 	local current = contextAt(selection.screen.x, selection.screen.y)
 	if not sameTarget(selection, current) or not Registry.Matches(row, current) then
 		return close('target_changed')
