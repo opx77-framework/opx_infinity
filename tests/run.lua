@@ -20726,6 +20726,80 @@ do
 	end
 end
 
+section('vehicles: a stop writes back what is out, without awaiting anything')
+do
+	-- `M.Stop` runs on the stop handler's own stack, which is not a coroutine.
+	-- It used to call `StoreAll`, whose `FetchOne` can only fail there, so every
+	-- car out at a stop lost its condition since the last save pass and kept a
+	-- row saying OUT. The condition is now sent with the bridge's callback form.
+	local updates = {}
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		update = function(sql, params)
+			if sql:find('UPDATE opx77_vehicles', 1, true) then
+				updates[#updates + 1] = { sql = sql, params = params }
+			end
+			return 1
+		end,
+		query = function() return {} end,
+		single = function() return nil end,
+		insert = function() return 0 end,
+		transaction = function() return true end,
+	}))
+	check('the server boots for the stop save', why == nil, why)
+	local OPX = why == nil and env.OPX or nil
+	local vehicles = OPX and OPX.Modules.Get('vehicles') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	if type(vehicles) == 'table' and type(character) == 'table' then
+		local DRIVER, PLATE, CITIZEN = 73, 'STOP001', 'citizen-stopper'
+		character.Players[DRIVER] = { PlayerData = {
+			citizenId = CITIZEN, source = DRIVER, userId = 'account-73' } }
+		character.Registry.byCitizenId[CITIZEN] = DRIVER
+		character.Registry.byUserId['account-73'] = DRIVER
+		env.Open77.players.position = function()
+			return { x = 5.0, y = 6.0, z = 7.0, bucket = 0 }
+		end
+		local realFetch = vehicles.Storage.FetchOne
+		vehicles.Storage.FetchOne = function()
+			return OPX.Result.Ok({ plate = PLATE, citizenId = CITIZEN,
+				record = 'Vehicle.v_standard2_villefort_cortes_player', garage = 'impound',
+				state = vehicles.Storage.STATE.STORED, health = 1.0, metadata = {} })
+		end
+		local out
+		env.CreateThread(function() out = vehicles.Spawn(DRIVER, PLATE) end)
+		check('the car is out before the stop',
+			settle(control, function() return out ~= nil end, 60) and out.ok == true,
+			out and tostring(out.error))
+		vehicles.Storage.FetchOne = realFetch
+
+		local before = #updates
+		local removalsBefore = #control.vehicleRemoves
+		-- Off any coroutine, as the stop handler calls it.
+		vehicles.Stop()
+		local written
+		for index = before + 1, #updates do
+			if type(updates[index].params) == 'table' and updates[index].params.plate == PLATE then
+				written = updates[index]
+			end
+		end
+		local form
+		for _, call in ipairs(control.database.calls) do
+			if call.method == 'update' and type(call.params) == 'table'
+				and call.params.plate == PLATE then form = call.form end
+		end
+		check('the stop writes the car back as STORED with its condition',
+			written ~= nil and tonumber(written.params.state) == vehicles.Storage.STATE.STORED
+				and written.params.health ~= nil,
+			written and tostring(written.params.state) or 'nothing written')
+		check('through the callback form, which needs no coroutine', form == 'callback',
+			tostring(form))
+		check('and the car is taken out of the world',
+			#control.vehicleRemoves == removalsBefore + 1)
+		check('and nothing is left out afterwards', vehicles.LiveId(PLATE) == nil)
+		character.Players[DRIVER] = nil
+	end
+end
+
 -- ── vehicle keys ─────────────────────────────────────────────────────────────
 -- THE OWNER: "faire les clé de voiture en item, quand même les véhicules admin,
 -- avant le menu ou alt on peut se donner la clé du véhicule précis". A key is an
