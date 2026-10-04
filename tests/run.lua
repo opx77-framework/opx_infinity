@@ -2675,6 +2675,32 @@ do
 			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
 	end
 
+	-- AND THE FACE GIVEN UP ON IS OWED, NOT LOST. Settling with no face is what
+	-- keeps a dead body from holding the gate; it was also the face gone for the
+	-- session, because "the next world entry" never comes for a player who is
+	-- revived where they lie.
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		control.Fire(appearance.HostEvent.RESET_COMPLETE)
+		control.Pump(70)
+		check('the dead body settles the entry with no face first',
+			platform.warned('settles with no face') and #platform.applied == 0,
+			table.concat(control.log.warn, ' | '))
+		platform.alive = true
+		control.Pump(10)
+		check('A BODY ALIVE AGAIN GETS THE FACE THE ENTRY GAVE UP ON',
+			#platform.applied == 1, ('%d apply call(s)'):format(#platform.applied))
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		control.Pump(3)
+		local settled = appearance.Contract.IsSettled()
+		check('and the entry is settled on it, still announced once',
+			settled.ok and settled.value.settled == true and platform.announced() == 1,
+			tostring(settled.ok and settled.value.waiting))
+		control.Pump(20)
+		check('once, not on every pass', #platform.applied == 1, tostring(#platform.applied))
+	end
+
 	-- AND A RESET THAT NEVER COMES IS STILL BOUNDED, by RESET_WAIT_MS rather than
 	-- by a not-alive clock that cannot tell a dead body from an unreset one.
 	do

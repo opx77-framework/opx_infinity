@@ -690,6 +690,12 @@ local function awaitWorld(token, label)
 					'alive for %d ms, so this entry settles with no face rather than waiting ' ..
 					'for one nothing can deliver'):format(label, token, nowMs() - notAliveFrom))
 				State.restoreSettledToken = token
+				-- Given up for now, not for the session: see `ResumeOwedFace`. Only
+				-- once the platform's reset has run, because a late face on a body
+				-- it has not reset is the watchdog `Faceable` exists to avoid.
+				if label == 'restore' and State.playerResetDone then
+					State.faceOwed = State.citizenId
+				end
 				Runtime.Announce()
 				return false
 			end
@@ -753,6 +759,32 @@ function M.Runtime.BeginRestore(snapshot, origin)
 		Runtime.Notify('error', 'appearance.restoreFailed', { reason = tostring(reason) })
 		Runtime.Announce()
 	end)
+end
+
+--- Puts on the face a dead body made this world entry give up, once it is alive.
+-- @author dop42
+--
+-- "THE FACE GOES ON AT THE NEXT ONE" WAS THE NEXT WORLD ENTRY, and a revive is
+-- not one. A body that is reset and then dead -- the 2026-09-17 character stored
+-- in the ground, a death in the seconds of a join -- settles its entry with no
+-- face after DEAD_WAIT_MS so the gate and the clothes are not held, and that was
+-- the end of it: revived by a medic or by giving up, the player spent the rest of
+-- the session on the default face, and so did the look every other player was
+-- sent. Run from the watch pass; a no-op unless such an entry is owed a face.
+function M.Runtime.ResumeOwedFace()
+	local owed = State.faceOwed
+	if owed == nil then return end
+	if owed ~= State.citizenId or type(State.canonical) ~= 'table' then
+		State.faceOwed = nil
+		return
+	end
+	if State.restoreToken ~= State.restoreSettledToken or State.editing or State.creating or
+		State.bodyReloading or down or not faceable() then
+		return
+	end
+	State.faceOwed = nil
+	Runtime.Note('the body is alive again: the face given up at this world entry goes on now')
+	Runtime.BeginRestore(State.canonical, 'revived')
 end
 
 --- Settles a world entry on the default face of the character's own body.
@@ -1788,6 +1820,8 @@ function M.Start()
 		if not ok then Open77.log.error('[appearance] watch: ' .. tostring(failure)) end
 		local watched, reason = pcall(Runtime.WatchReload)
 		if not watched then Open77.log.error('[appearance] reload watch: ' .. tostring(reason)) end
+		local resumed, why = pcall(Runtime.ResumeOwedFace)
+		if not resumed then Open77.log.error('[appearance] owed face: ' .. tostring(why)) end
 		local announced, problem = pcall(Runtime.Announce)
 		if not announced then Open77.log.error('[appearance] announce: ' .. tostring(problem)) end
 	end)

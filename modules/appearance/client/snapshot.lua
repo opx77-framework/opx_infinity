@@ -119,6 +119,10 @@ function M.Face.Reset()
 	State.playerResetDone = false
 	State.restoreAttempts = 0
 
+	-- The character whose stored face a dead body made this world entry give up,
+	-- nil when none is owed. See `Runtime.ResumeOwedFace`.
+	State.faceOwed = nil
+
 	-- This world is the gameplay one and not the pre-game menu, the announcement
 	-- went out for it, and this world entry's face has been decided.
 	State.worldEligible = false
@@ -261,6 +265,8 @@ function M.Face.EnterWorld()
 	State.playerResetDone = false
 	State.platformWaitToken = nil
 	State.restoreAttempts = 0
+	-- A new world entry restores the face on its own.
+	State.faceOwed = nil
 end
 
 --- Forgets the character, its face and any restore still under way.
