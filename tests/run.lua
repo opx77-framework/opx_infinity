@@ -18020,6 +18020,15 @@ do
 		local told = sentTo(M.Event.GONE)
 		check('the clients are told the old id went',
 			#told >= 1 and told[#told][1] == CRATE)
+		-- AND THE CARRIER IS TOLD THEY HOLD NOTHING. The client's `carrying` moves
+		-- only on an answer, so a carry the platform ended without one left the
+		-- client blocking weapons and refusing every other crate as "already
+		-- carrying" until some unrelated request happened to be answered.
+		local ended = lastAnswer()
+		check('and the carrier is told the carry ended, holding nothing',
+			ended.source == 3 and ended[1] == false and ended[2] == 'carry_ended'
+				and ended[3] == false,
+			('%s %s %s'):format(tostring(ended.source), tostring(ended[2]), tostring(ended[3])))
 		CRATE = fresh or CRATE
 
 		-- ── the same, on a disconnect ────────────────────────────────────────
@@ -18103,6 +18112,22 @@ do
 		fire(6, M.Event.BEGIN, Step.PICKUP, CRATE)
 		check('and one standing on it in another instance is too',
 			lastAnswer()[2] == 'wrong_bucket', tostring(lastAnswer()[2]))
+
+		-- AND AT THE END OF THE BAR, not only at its start: a player moved to
+		-- another instance while kneeling is not beside this crate any more.
+		at = at + 10000
+		positions[6] = { x = home.x, y = home.y, z = home.z, bucket = 0 }
+		fire(6, M.Event.BEGIN, Step.PICKUP, CRATE)
+		check('a pickup begun in the crate\'s bucket starts', lastAnswer()[1] == true,
+			tostring(lastAnswer()[2]))
+		positions[6] = { x = home.x, y = home.y, z = home.z, bucket = 4 }
+		at = at + Access.PICKUP_MS + 1
+		fire(6, M.Event.FINISH)
+		check('and is refused at the finish once the player is in another instance',
+			lastAnswer()[1] == false and lastAnswer()[2] == 'wrong_bucket',
+			tostring(lastAnswer()[2]))
+		check('and the crate is not carried',
+			OPX.Api.Get('hauling').State().value.sites.docks.carried == 0)
 	end
 end
 
