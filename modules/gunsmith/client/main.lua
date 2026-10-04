@@ -77,6 +77,14 @@ local function placeRows()
 
 	if #chests == 0 then return end
 
+	-- THE CHESTS ON A FRESH RESUME. The eye checks every sphere and the row it
+	-- carries field by field, ~2,000 VM instructions a registration, and this
+	-- runs inside `Start` on the client boot thread: the two together were the
+	-- dearest resume of the boot (6,500 on the budget meter) against a budget
+	-- of ~10,000 that unwinds the thread, and every module after this one with
+	-- it. `Start` may yield; under pcall for a caller that is not on a thread.
+	pcall(Wait, 0)
+
 	rows = target.RegisterSpheres(OWNER, chests, {
 		id = CHEST_ROW,
 		label = locale('gunsmith.chest'),

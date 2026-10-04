@@ -31900,28 +31900,49 @@ end
 -- surface, worked out the module order and ran the first `Init` -- ~8,000 VM
 -- instructions (10,800 on the budget meter) against a budget of ~10,000 whose
 -- overrun unwinds the thread without a word: no module started, no scheduler,
--- nothing logged. Every resume of the boot, and of every thread a module starts
--- during it, is counted here.
+-- nothing logged. And a page that mounts before the modules have started hands
+-- its latched readies to the `Start` that wires them, which put the inventory's
+-- at ~5,100 (6,500 on the meter). Every resume of the boot, and of every thread
+-- a module starts during it, is counted here, both ways round, and held well
+-- inside the budget rather than at it: the meter reads a resume ~1.3x dearer.
 section('the client boot stays inside one resume\'s budget')
 do
-	local env, control = Host.Environment('client')
-	local loaded = true
-	for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
-		local chunk = loadfile(file, 't', env)
-		if chunk == nil or not pcall(chunk) then loaded = false end
+	--- Boots a fresh client, the page mounting early when asked, and answers the
+	--- dearest resume, how many there were and how many modules started.
+	local function bootCost(early)
+		local env, control = Host.Environment('client')
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			local chunk = loadfile(file, 't', env)
+			if chunk == nil or not pcall(chunk) then return nil end
+		end
+		local worst, resumes = resumeCost(env, control, function()
+			control.Fire('onClientResourceStart', 'opx_infinity')
+			if early then
+				-- The rude order: the surface exists, no module has started, and
+				-- the page reports ready with every view's own ready behind it.
+				control.Pump(1)
+				local page = control.pages[#control.pages]
+				control.PageEmit(page, 'opx:ready', { surface = 'ui' })
+				control.PageEmit(page, 'opx:hud:ready', {})
+				control.PageEmit(page, 'opx:inventory:ready', {})
+			end
+		end, 240)
+		local started = 0
+		for _, line in ipairs(env.OPX.Modules.Report()) do
+			if line:find(' started ', 1, true) then started = started + 1 end
+		end
+		return worst, resumes, started
 	end
-	check('every client script loads', loaded)
-	local worst, resumes = resumeCost(env, control, function()
-		control.Fire('onClientResourceStart', 'opx_infinity')
-	end, 240)
-	local report = env.OPX.Modules.Report()
-	local started = 0
-	for _, line in ipairs(report) do
-		if line:find(' started ', 1, true) then started = started + 1 end
+
+	for _, early in ipairs({ false, true }) do
+		local how = early and 'with the page mounted first' or 'with the page mounted after'
+		local worst, resumes, started = bootCost(early)
+		check(('every client script loads and the modules start, %s'):format(how),
+			worst ~= nil and started > 0, started)
+		check(('and no resume of the boot cost more than 4,500 instructions, %s'):format(how),
+			worst ~= nil and worst < 4500,
+			worst and ('%d instructions, dearest of %d resumes'):format(worst, resumes))
 	end
-	check('the modules start', started > 0, ('%d of %d started'):format(started, #report))
-	check('and no resume of the boot cost more than 6,000 instructions',
-		worst < 6000, ('%d instructions, dearest of %d resumes'):format(worst, resumes))
 end
 
 -- ── the inventory catalogue drains a part a resume ─────────────────────────

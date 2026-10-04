@@ -796,6 +796,15 @@ function M.Start()
 		Open77.log.error('[inventory] there is no surface: the screen can never be drawn')
 	end
 
+	-- A FRESH RESUME BEFORE THE KEYS, AND ANOTHER BEFORE THE WORLD ROWS. This runs
+	-- on the client boot thread, and a page that mounted before the modules hands
+	-- its latched `inventory:ready` to the handler wired just above -- config and
+	-- all, right here. With the keys and the world rows (the eye checks every row
+	-- it is given) that came to ~5,100 VM instructions in one resume, 6,500 on the
+	-- budget meter: the dearest of the boot, where an overrun unwinds the thread
+	-- and every module after this one. `Start` may yield; under pcall for a caller
+	-- that is not on a thread.
+	pcall(Wait, 0)
 	-- THE KEYS BEFORE THE WORLD ROWS, and the order is load-bearing rather than
 	-- tidy. `Wire` registers rows with the target module, and a raise anywhere in
 	-- there aborts this function -- so with the two the other way round, one bad
@@ -805,6 +814,7 @@ function M.Start()
 	-- Nothing in `Register` needs a world row, so it goes first and survives.
 	M.Keys.Register()
 	M.Slotbar.Wire()
+	pcall(Wait, 0)
 	M.World.Wire()
 
 	OPX.Scheduler.Every('inventory.screen', 500, pass)
