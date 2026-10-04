@@ -498,8 +498,37 @@ local function tell(resource, name, ...)
 	end)
 end
 
+-- Most runtime items one catalogue event may carry: what the server sends
+-- (`RUNTIME_CHUNK`), and what fits one resume with every item at the
+-- validator's bounds. A longer list is refused whole rather than validated past
+-- the resume budget.
+local MAX_RUNTIME_PART = 4
+
+--- Takes in items another resource registered at runtime, a few at a time, and
+--- rewrites the page's catalogue once they are in.
+-- Each one is validated again by `Catalog.Register`, the function the server
+-- ran, so a row the server took is a row this half takes too.
+local function receiveCatalog(part)
+	if type(part) ~= 'table' or #part > MAX_RUNTIME_PART then return end
+	local taken = 0
+	for index = 1, #part do
+		local row = part[index]
+		if type(row) == 'table' then
+			local registered, why = Catalog.Register(row.name, row.definition, row.owner)
+			if registered then
+				taken = taken + 1
+			else
+				Open77.log.warn(('[inventory] runtime item %s refused: %s')
+					:format(tostring(row.name), tostring(why)))
+			end
+		end
+	end
+	if taken > 0 and pageReady then queueCatalog() end
+end
+
 --- Registers the handlers the server pushes to.
 local function registerEvents()
+	RegisterNetEvent(M.Event.CATALOG, receiveCatalog)
 	RegisterNetEvent(M.Event.ANSWER, function(requestId, ok, code, data)
 		local entry = waiting[requestId]
 		if not entry then return end

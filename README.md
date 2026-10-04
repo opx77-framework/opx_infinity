@@ -743,8 +743,15 @@ local data = exports.opx_infinity:GetPlayerData(playerId)
 | `GetDoor(id)`, `GetDoorFromName(name)`, `GetAllDoors()` (ox_doorlock's) | read |
 | `SetDoorState(id, state)`, `SetDoorLocked(id, locked)`, `CreateDoor(data)`, `EditDoor(id, data)`, `RemoveDoor(id)` (ox_doorlock's) | write |
 | `SetJob` / `SetGang(target, name, grade?)`, `RemoveJob` / `RemoveGang(target, name)`, `SetDuty(src, onDuty)` | write |
-| `GetMetadata(src, key?)`, `IsDown(src)` | read |
-| `SetMetadata(src, key, value)`, `Revive(src, reason?)` | write |
+| `GetMetadata(target, key?)`, `IsDown(src)` | read |
+| `SetMetadata(target, key, value)`, `Revive(src, reason?)` | write |
+| `GetPlayers(filter?)`, `GetJobs()`, `GetGangs()` | read |
+| `GetItem(name)`, `GetItems()`, `GetInventory(target)`, `CanCarryItem(target, item, count?, meta?)` | read |
+| `RegisterItem(name, def)`, `RegisterUsableItem(name, export)`, `UnregisterUsableItem(name)`, `OpenStash(src, name, options?)` | write |
+| `GetVehicle(plate)`, `GetOwnedVehicles(target)`, `HasKeys(target, plate)` | read |
+| `AddVehicle(target, record, { garage? })`, `GiveKeys(target, plate, model?)` | write |
+| `Notify(src, msg, kind?, ms?)`, `StartProgress(src, spec)`, `StopProgress(src, id?)` | write |
+| `RegisterCraftingBench(key, def)`, `UnregisterCraftingBench(key)` | write |
 
 `target` is a connected player id or a citizen id (an offline bag). **Who may call
 is the operator's**: `SERVER.EXPORTS.READ` (`'*'` out of the box) and
@@ -768,10 +775,55 @@ is stored as `ext.my_shop.rep` and can never reach opx's keys or another
 resource's. A key is one segment (`[A-Za-z0-9_-]`, ≤ 48); a value is plain data
 (booleans, finite numbers, text, tables of those; `nil` deletes) or
 `export.badValue`, and `SERVER.EXPORTS.METADATA` bounds it (4 KB a value, 32 keys,
-16 KB a resource per character, else `export.tooLarge`). Loaded characters only;
-persisted with the character, and visible to that player's own client like the rest
-of PlayerData, so it is not a place for secrets. `GetMetadata(src)` with no key
-answers all of the caller's keys.
+16 KB a resource per character, else `export.tooLarge`). Persisted with the
+character, and visible to that player's own client like the rest of PlayerData, so
+it is not a place for secrets. `GetMetadata(src)` with no key answers all of the
+caller's keys. A **citizen id** reaches a character nobody is playing: one key of
+the row is written (`JSON_SET` / `JSON_REMOVE` on a quoted path) under the offline
+ledger the money and group writes hold, the bounds checked against the row as it
+stands at the write; it reads the database, so await it.
+
+**The roster and the catalogue**: `GetPlayers({ job?, gang?, onDuty? })` answers
+roster rows (`source`, `citizenId`, names, `job`, `gang` -- no money, no metadata);
+`GetJobs()` / `GetGangs()` answer the configured groups with their grades as a list
+(`{ level, name, payment, isBoss }`). `GetItem` / `GetItems` answer catalogue
+entries as a screen reads them, `GetInventory(target)` a whole bag.
+
+**Runtime items**: `RegisterItem('my_burger', { label, description?, weight?,
+stack?, drop?, category?, image?, model?, use? = { consume?, close?, status? (at
+most 8 needs), animation? } })` adds an item to the catalogue on both halves while the server runs
+(`modules/inventory/shared/catalog.lua`, `Catalog.Register`, the one validator both
+halves run; clients that join later get the list on their hello). Never a weapon or
+ammo, never a name config or another resource holds (`item_taken`), at most
+`SERVER.EXPORTS.ITEMS.MAX_PER_CALLER` per caller (`item_cap`), refused whole on the
+first bad field (`bad_definition:<field>`). Its owner may register it again, which
+replaces it. It is not persisted and not removed when its owner stops (stacks of it
+are in bags). `RegisterUsableItem(name, 'UseBurger')` makes the caller's export the
+item's use: the inventory holds the slot and calls `UseBurger(source, { name, slot,
+count, metadata, label, citizenId })`, which answers `{ ok = true, consume? }` or
+`{ ok = false, error }` inside the handler deadline. An item another owner handles
+is `export.usableTaken`; the handler goes when the caller stops.
+
+**Stashes, vehicles and keys**: `OpenStash(src, name, options?)` opens a stash
+beside the player's bag (ox's `forceOpenInventory`), only a configured stash or one
+in the caller's `<resource>.` namespace (`stash_namespace`, `stash_cap`).
+`GetVehicle(plate)` and `GetOwnedVehicles(target)` answer `{ plate, citizenId,
+record, garage, state = 'stored'|'out'|'impounded', health, spawned }`;
+`AddVehicle(target, record, { garage? })` makes a vehicle row through the module
+(`PER_CHARACTER` holds); `HasKeys` / `GiveKeys` read and cut a key.
+
+**A bar the server judges**: `StartProgress(src, { label, durationMs, cancelable?,
+animation? })` answers the bar's `id`; the client draws it and reports how it ended,
+and the server decides by its own clock (`modules/progress/server/main.lua`): a
+`finished` sooner than the duration is `rejected` and goes to the security journal,
+no report by the duration plus 5 s is `no_answer`, a player leaving is `left`. The
+verdict is `opx:on:progress:finished` (`{ id, owner, ending, completed, elapsedMs }`).
+
+**Crafting benches**: `RegisterCraftingBench('counter', { label, position?, reach?,
+queue?, recipes, jobs? = { ncpd = 0 }, onDuty? })` registers a bench under
+`<caller>:counter` on the crafting module's own rules; the gate is a job list,
+because a function cannot cross. A player opens it with the client export
+`OpenCraftingBench('counter')`. It goes when the caller stops.
 
 **Downed**: `IsDown(src)` answers `{ down, waiting, downForMs? }`; `Revive(src,
 reason?)` goes through the module's own revive (its `REVIVERS` switch, its gate,
@@ -783,13 +835,22 @@ its audit line naming caller and reason) and answers its codes: `not_down`,
 `unloaded`, `money`, `job`, `gang`; `opx:on:inventory:changed`, `used`;
 `opx:on:downed:changed`; `opx:on:vehicles:spawned`, `stored`;
 `opx:on:dealership:sold`; `opx:on:hauling:sold`; `opx:on:doorlock:changed` (`{ id,
-name, state, locked, by, item }`). Payloads are closed copies built
+name, state, locked, by, item }`); `opx:on:character:created` / `deleted`;
+`opx:on:inventory:items` (`{ citizenId, changes = { { name, delta, count } } }`,
+what a bag gained and lost by item name); `opx:on:vehicles:registered` / `state`
+(an impound); `opx:on:crafting:ordered` / `collected`; `opx:on:progress:finished`.
+Payloads are closed copies built
 for the bus, never live records — PlayerData's free-form `metadata` is not on it.
 
 **Client exports** draw on the local player's screen: `OpenMenu(spec)`,
 `UpdateMenu(handle, spec)`, `CloseMenu(handle)`, `OpenForm(spec)`, `CloseForm(handle)`,
 `ShowToast(def)`, `DismissToast(id)`, `StartProgress(spec)`, `StopProgress()`,
-`PlayAnimation(name, options?, reply?)`, `StopAnimation()`. A function cannot cross a
+`PlayAnimation(name, options?, reply?)`, `StopAnimation()`, `OpenPanel(spec)`,
+`UpdatePanel` / `AppendPanel` / `ClosePanel(handle, ...)`, `AddTarget(kind, rows,
+where?)`, `UpdateTarget(token, patch)`, `RemoveTarget(tokens)`, `ClearTargets()`,
+`ShowPrompt(id, spec)`, `UpdatePrompt` / `HidePrompt(id)`, `HideAllPrompts()`,
+`OpenCraftingBench(key)`, and the reads `GetPlayerData()`, `GetItemCount(name)`,
+`HasItem(name, count?)`, `GetItem(name)`, `IsDown()`, `GetNeeds()`. A function cannot cross a
 resource and the client `TriggerEvent` stays in its own VM, so **answers come back
 through an export the caller publishes** — one line turns them into events on its
 own bus:
@@ -799,8 +860,13 @@ exports('OnOpxEvent', function(event, payload) TriggerEvent(event, payload) end)
 AddEventHandler('opx:on:menu:action', function(p) if p.itemId == 'buy' then ... end end)
 ```
 
-The events are `opx:on:menu:action`, `opx:on:form:answer`, `opx:on:progress:done` and
-`opx:on:animations:result`; a call names another export with `reply`. A caller only
+The events are `opx:on:menu:action`, `opx:on:form:answer`, `opx:on:panel:action`,
+`opx:on:progress:done` and `opx:on:animations:result`; a call names another export
+with `reply`. **Eye rows** are owned under the caller's resource name, and every
+callback (`onSelect`, `canInteract`, `checked`) is an export NAME of the caller's --
+a `{ resource, export }` naming anybody else is refused; the eye asks them in slices
+over export calls, never inside one resume. A caller named like a module of this
+runtime is refused the eye and the strip (`export.ownerTaken`). A caller only
 closes what it opened, never takes over another owner's screen, and its screens go
 down when it stops. `CLIENT.EXPORTS.CALLERS` in `config/client.lua` narrows who may
 draw (`'*'` by default).
@@ -820,11 +886,12 @@ exports.opx_infinity:Subscribe('opx:on:character:money')
 AddEventHandler('opx:on:character:money', function(p) print(p.balance) end)
 ```
 
-**Not on the surface yet**: a server-started progress bar with an outcome (the
-module can start one on a client through `opx:net:progress:start`, but the result
-never comes back to the server, and a client-reported result would be the
-client's word); metadata of a character nobody is playing (it would need its own
-offline row write under the ledger).
+**Not on the surface yet**: hooks from another resource (a veto has to answer
+inside the action, synchronously, and a cross-resource call cannot be bounded
+there); an impound or garage screen opened for a player; a job gate on a garage;
+an item shop (the `shops` module is the clothing shop) or a gunsmith of a
+creator's own beyond a crafting bench. A request/answer helper between a client
+and the server is `Lib.Callback` in `opx_lib` over `Open77.net`, not an export.
 
 Inside the resource the same work gained hooks a module can veto through:
 `job:beforeSet` and `gang:beforeSet` (answer `job.vetoed` / `gang.vetoed`) and

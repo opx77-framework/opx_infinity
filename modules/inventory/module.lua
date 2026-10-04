@@ -60,6 +60,9 @@ M.Event = {
 	-- and it filters the pile list by it.
 	BUCKET = OPX.Event(NET, 'inventory', 'bucket'),
 	ANSWER = OPX.Event(NET, 'inventory', 'answer'),
+	-- Items another resource registered while the server runs, a few at a time:
+	-- `{ { name, owner, definition }, ... }`. See `Catalog.Register`.
+	CATALOG = OPX.Event(NET, 'inventory', 'catalog'),
 
 	-- Client to server. Every payload is attacker-controlled; only `source` is not.
 	REQUEST = OPX.Event(NET, 'inventory', 'request'),
@@ -68,6 +71,9 @@ M.Event = {
 	-- The client's own bus, raised after the mirror is updated so a handler
 	-- reading it sees the change. Public: a bare AddEventHandler.
 	ON_CHANGED = OPX.Event(LOCAL, 'inventory', 'changed'),
+	-- Server only, public: what a bag gained and lost, by item name,
+	-- `(source, { citizenId, changes = { { name, delta, count } } })`.
+	ON_ITEMS = OPX.Event(LOCAL, 'inventory', 'items'),
 	ON_USED = OPX.Event(LOCAL, 'inventory', 'used'),
 	ON_ARMED = OPX.Event(LOCAL, 'inventory', 'armed'),
 	ON_OPENED = OPX.Event(LOCAL, 'inventory', 'opened'),

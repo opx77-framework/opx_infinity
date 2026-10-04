@@ -62,6 +62,10 @@ M.Event = {
 	ON_MONEY = OPX.Event(LOCAL, 'character', 'money'),
 	ON_JOB = OPX.Event(LOCAL, 'character', 'job'),
 	ON_GANG = OPX.Event(LOCAL, 'character', 'gang'),
+	-- Server only, public. A character row made, and one deleted (soft): the
+	-- creator surface's announcement of both, `(source, { citizenId, userId, ... })`.
+	ON_CREATED = OPX.Event(LOCAL, 'character', 'created'),
+	ON_DELETED = OPX.Event(LOCAL, 'character', 'deleted'),
 
 	-- Between modules inside one VM. Never crosses the wire.
 	IN_LOADED = OPX.Event(INTERNAL, 'character', 'loaded'),

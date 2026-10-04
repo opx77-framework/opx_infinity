@@ -782,6 +782,79 @@ function M.GetMetadata(identifier, key)
 	return player.Functions.GetMetaData(key)
 end
 
+--- A character's whole metadata, online or not. Coroutine only for an offline
+--- one: the row is read.
+-- @author dop42
+-- @param citizenId CitizenId
+-- @return Result { metadata, offline } -- the metadata a COPY
+function M.ReadMetadata(citizenId)
+	local parsed = OPX.CitizenId.Parse(citizenId)
+	if not parsed.ok then return Result.Err('character.notFound', tostring(citizenId)) end
+	citizenId = parsed.value
+	local online = M.GetPlayerByCitizenId(citizenId)
+	if online ~= nil then
+		return Result.Ok({ metadata = OPX.Table.DeepCopy(online.PlayerData.metadata or {}),
+			offline = false })
+	end
+	local fetched = M.Storage.FetchOne(citizenId)
+	if not fetched.ok then return fetched end
+	return Result.Ok({ metadata = fetched.value.metadata or {}, offline = true })
+end
+
+--- Writes one metadata key of a character, online or not, held in the offline
+--- ledger like `AddMoneyOffline`. Coroutine only.
+-- `check(metadata)` is asked with the metadata as it stands at the moment of the
+-- write -- read under the ledger for an offline row -- and a string answer
+-- refuses the write with that code; it is how a caller bounds what it keeps
+-- against what is really there rather than against a read made before a wait.
+-- A character online is written in memory, through `SetMetadata`.
+-- @author dop42
+-- @param citizenId CitizenId
+-- @param key string `[%w_%-%.]`, at most 128 bytes
+-- @param value any plain data, or nil to remove the key
+-- @param check fun(metadata: table): string|nil|nil
+-- @return Result { offline }
+function M.WriteMetadata(citizenId, key, value, check)
+	local parsed = OPX.CitizenId.Parse(citizenId)
+	if not parsed.ok then return Result.Err('character.notFound', tostring(citizenId)) end
+	citizenId = parsed.value
+	if type(key) ~= 'string' or #key < 1 or #key > 128 or not key:match('^[%w_%-%.]+$') then
+		return Result.Err('error.badRequest', 'key')
+	end
+	if OPX.BootError then return Result.Err('error.unavailable', OPX.BootError) end
+
+	local function online()
+		local player = M.GetPlayerByCitizenId(citizenId)
+		if player == nil then return nil end
+		local refused = check and check(player.PlayerData.metadata or {}) or nil
+		if refused ~= nil then return Result.Err(refused) end
+		M.SetMetadata(player, key, OPX.Table.DeepCopy(value))
+		return Result.Ok({ offline = false })
+	end
+
+	if not M.Ledger.Settle(citizenId) then
+		return Result.Err('error.unavailable', 'the row is being written')
+	end
+	local live = online()
+	if live ~= nil then return live end
+
+	M.Ledger.Enter(citizenId)
+	local fetched = M.Storage.FetchOne(citizenId)
+	if not fetched.ok then
+		M.Ledger.Leave(citizenId)
+		return fetched
+	end
+	local refused = check and check(fetched.value.metadata or {}) or nil
+	if refused ~= nil then
+		M.Ledger.Leave(citizenId)
+		return Result.Err(refused)
+	end
+	local written = M.Storage.SetMetadataKey(citizenId, key, value)
+	M.Ledger.Leave(citizenId)
+	if not written.ok then return written end
+	return Result.Ok({ offline = true })
+end
+
 --- Writes the two halves of a character's name, once. Coroutine only.
 -- @author dop42
 --

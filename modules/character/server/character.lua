@@ -204,6 +204,11 @@ function M.CreateCharacter(source)
 	})
 	Open77.log.info(('[character] %s created %s, slot %d, with no name and no body yet')
 		:format(session.displayName, entity.citizenId, entity.cid))
+	OPX.Publish(M.Event.ON_CREATED, source, {
+		citizenId = entity.citizenId,
+		userId = session.userId,
+		slot = entity.cid,
+	})
 
 	return Result.Ok(toSummary(entity))
 end
@@ -408,6 +413,15 @@ local function removeCharacter(citizenId, owner, source)
 		Open77.log.error(('[character] a handler raised while %s was being deleted: %s')
 			:format(citizenId, tostring(failure)))
 	end
+	-- And to every other resource, which keeps its own rows keyed on the
+	-- citizen id and has no other way to learn they belong to nobody now.
+	OPX.Publish(M.Event.ON_DELETED, online and online.PlayerData.source or nil, {
+		citizenId = citizenId,
+		userId = owner,
+		-- The connection that asked: the player themself, staff, or nil for the
+		-- console.
+		by = tonumber(source),
+	})
 
 	-- Deleting a character somebody is PLAYING leaves them in the world as nobody,
 	-- and there is no screen left to choose another one on. Their session ends,
