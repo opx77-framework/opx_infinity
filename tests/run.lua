@@ -13076,6 +13076,62 @@ do
 	end
 end
 
+-- ── a refusal carries its sentence's params ─────────────────────────────────
+-- `OPX.Refuse` could not carry params, so a module whose sentence names a thing
+-- followed it with `OPX.NotifyLocale`, and the player read the sentence twice --
+-- once with `{garage}` still in it. The refusal carries them now, bounded to
+-- plain strings and numbers so it still carries no internals.
+section('OPX.Refuse carries params, and only plain ones')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		control.Admit(61, 'account-refuse')
+		local before = #control.clientEvents
+		OPX.Refuse(61, 'shops.tooMany', 'test', nil,
+			{ max = 5, name = 'Vee', nested = { 'x' }, ['bad key'] = 'y', long = string.rep('z', 400) })
+		local sent = control.clientEvents[#control.clientEvents]
+		local payload = sent and sent[1] or nil
+		check('the refusal went out', #control.clientEvents == before + 1)
+		check('carrying the plain params',
+			type(payload) == 'table' and type(payload.params) == 'table'
+				and payload.params.max == 5 and payload.params.name == 'Vee')
+		check('and dropping a table, a key that is not a name, and bounding a long string',
+			type(payload) == 'table' and type(payload.params) == 'table'
+				and payload.params.nested == nil and payload.params['bad key'] == nil
+				and #payload.params.long <= 64)
+		OPX.Refuse(61, 'error.tooFast', 'test')
+		sent = control.clientEvents[#control.clientEvents]
+		check('and a refusal with no params sends none',
+			sent ~= nil and type(sent[1]) == 'table' and sent[1].params == nil)
+	end
+end
+
+section('a refusal with params reads as a sentence on the client')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local shown
+		local real = env.OPX.Toast.Show
+		env.OPX.Toast.Show = function(definition) shown = definition; return real(definition) end
+		local handler = control.netEvents['opx:notify'] or nil
+		for name, fn in pairs(control.netEvents) do
+			if handler == nil and tostring(name):match('notify$') then handler = fn end
+		end
+		check('the refusal handler is wired', type(handler) == 'function')
+		if type(handler) == 'function' then
+			handler({ kind = 'error', code = 'shops.tooMany', params = { max = 5 } })
+		end
+		check('and the sentence has its number in it, not the placeholder',
+			shown ~= nil and type(shown.message) == 'string'
+				and shown.message:find('5', 1, true) ~= nil and shown.message:find('{max}', 1, true) == nil,
+			shown and shown.message)
+		env.OPX.Toast.Show = real
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a

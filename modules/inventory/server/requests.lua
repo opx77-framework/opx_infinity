@@ -59,8 +59,8 @@ end
 --- Toasts a refusal and tells the client which request it belongs to.
 local function refuse(source, code, operation)
 	local key = Common.ErrorKey(code, 'inventory.error.')
+	-- The refusal IS the toast; a second through `NotifyLocale` doubled it.
 	OPX.Refuse(source, key, operation)
-	OPX.NotifyLocale(source, key, nil, 'error')
 end
 
 local function slotOf(value)

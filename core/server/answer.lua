@@ -160,6 +160,27 @@ end
 -- @author dop42
 -- @param code any
 -- @return string
+--- The params a refusal may carry: plain strings and numbers under plain keys,
+--- bounded, so a refusal still carries no internals by accident -- a table, a
+--- function or a 4 KB exception string is dropped rather than shown.
+-- @author dop42
+-- @param params any
+-- @return table|nil
+local function refusalParams(params)
+	if type(params) ~= 'table' then return nil end
+	local out, kept = {}, 0
+	for key, value in pairs(params) do
+		if type(key) == 'string' and key:match('^[%w_]+$') and kept < 8 then
+			if type(value) == 'number' and value == value then
+				out[key], kept = value, kept + 1
+			elseif type(value) == 'string' then
+				out[key], kept = OPX.Text.Bytes(value, 64), kept + 1
+			end
+		end
+	end
+	return kept > 0 and out or nil
+end
+
 function OPX.RefusalKey(code)
 	if type(code) == 'string' and OPX.Locale.Exists(code) then return code end
 	Open77.log.warn(('[answer] %q has no catalogue entry; answering error.unavailable')
@@ -340,12 +361,18 @@ end
 -- @param code string a locale key
 -- @param operation string|nil
 -- @param icon string|nil a glyph name from `OPX.Toast.ICONS`
-function OPX.Refuse(source, code, operation, icon)
+-- @param params table|nil the sentence's `{placeholders}`: strings and numbers only
+function OPX.Refuse(source, code, operation, icon, params)
 	source = tonumber(source)
 	if not source or source <= 0 then return end
 	TriggerClientEvent(NOTIFY, source, {
 		kind = 'error',
 		code = OPX.RefusalKey(code),
+		-- PARAMS, SO ONE DOOR IS ENOUGH. A refusal could not carry them, so a
+		-- module whose sentence names something (`Every exit at {garage} is
+		-- blocked`) followed this with `OPX.NotifyLocale` -- and the player read
+		-- the sentence twice, once with the placeholder left in it.
+		params = refusalParams(params),
 		operation = type(operation) == 'string' and operation or 'unknown',
 		-- A refusal is the one toast a player MUST read, so the glyph is the part
 		-- of it that is allowed to go missing: the client validates the name
