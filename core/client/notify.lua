@@ -378,8 +378,7 @@ function OPX.Toast.Attach()
 		local code = payload.code
 		if type(code) ~= 'string' then return end
 		-- The params are the server's (`refusalParams`, core/server/answer.lua),
-		-- re-checked here:
-		-- only strings and numbers reach the sentence.
+		-- re-checked here: only strings and numbers reach the sentence.
 		local params = nil
 		if type(payload.params) == 'table' then
 			params = {}
