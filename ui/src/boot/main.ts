@@ -1,6 +1,7 @@
 import CallHolo from '@/modules/calls/HoloRoot.vue'
 import ChatInput from '@/modules/chat/ChatInput.vue'
 import ChatLog from '@/modules/chat/ChatLog.vue'
+import DoorlockView from '@/modules/doorlock/DoorlockView.vue'
 import DownedView from '@/modules/downed/DownedView.vue'
 import FormView from '@/modules/form/FormView.vue'
 import HudRoot from '@/modules/hud/HudRoot.vue'
@@ -80,6 +81,11 @@ registerModule({ id: 'inventory', surface: 'modal', component: InventoryView })
 registerModule({ id: 'menu', surface: 'modal', component: MenuView })
 registerModule({ id: 'form', surface: 'modal', component: FormView })
 registerModule({ id: 'panel', surface: 'modal', component: PanelView })
+// ox_doorlock's staff panel, a view of its own rather than a menu or a panel spec: a
+// table with search and pages and a tabbed settings form are more than either contract
+// draws. On `modal` for the cursor; it hides itself (and gives the focus back) while the
+// staff member aims at a door for "Pick in world". See `modules/doorlock/client/panel.lua`.
+registerModule({ id: 'doorlock', surface: 'modal', component: DoorlockView })
 // The eye is on `modal` for its pointer, and HUD-like for the loading hide: its rows are
 // about the body or the door it landed on, and neither is there over a loading screen.
 registerModule({ id: 'target', surface: 'modal', component: TargetView, hideWhileLoading: true })

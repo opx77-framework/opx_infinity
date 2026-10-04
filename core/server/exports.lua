@@ -716,22 +716,88 @@ publish('SetVehicleState', 'write', function(_, plate, state, garage)
 end, true)
 
 -- ── doors ────────────────────────────────────────────────────────────────────
+-- ox_doorlock's server exports under their ox meaning (`modules/doorlock`). A
+-- door is ox's integer id; a door seeded from config or carried over from the
+-- first version also answers to its old key. No answer ever carries a code.
 
-publish('GetDoor', 'read', function(_, key)
+--- A door reference: ox's id, or a seeded door's key.
+local function doorRef(value)
+	if type(value) == 'number' then return math.tointeger(value) end
+	return nameOf(value)
+end
+
+local function doorlockApi(method)
 	local doorlock = OPX.Api.Get('doorlock')
-	if doorlock == nil or doorlock.Get == nil then return refuse('error.unavailable') end
-	if type(key) ~= 'string' then return refuse('export.badArgument') end
-	return answered(doorlock.Get(key))
+	if doorlock == nil or doorlock[method] == nil then return nil end
+	return doorlock
+end
+
+-- ox's `getDoor(id)`.
+publish('GetDoor', 'read', function(_, ref)
+	local doorlock = doorlockApi('Get')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if doorRef(ref) == nil then return refuse('export.badArgument') end
+	return answered(doorlock.Get(doorRef(ref)))
 end)
 
--- A write that names no player: the caller decided who may, and the door's own
--- rules are not consulted. On the networked backend it reaches `open77_doors`
--- and yields, so it is awaited like every other write.
-publish('SetDoorLocked', 'write', function(caller, key, locked)
-	local doorlock = OPX.Api.Get('doorlock')
-	if doorlock == nil or doorlock.SetLocked == nil then return refuse('error.unavailable') end
-	if type(key) ~= 'string' or type(locked) ~= 'boolean' then return refuse('export.badArgument') end
-	return answered(doorlock.SetLocked(key, locked, 'ext:' .. caller))
+-- ox's `getDoorFromName(name)`.
+publish('GetDoorFromName', 'read', function(_, name)
+	local doorlock = doorlockApi('GetFromName')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if type(name) ~= 'string' or #name < 1 or #name > 64 then return refuse('export.badArgument') end
+	return answered(doorlock.GetFromName(name))
+end)
+
+-- ox's `getAllDoors()`.
+publish('GetAllDoors', 'read', function()
+	local doorlock = doorlockApi('All')
+	if doorlock == nil then return refuse('error.unavailable') end
+	return answered(doorlock.All())
+end)
+
+-- ox's `setDoorState(id, state)` called by a resource: the caller decided who
+-- may, and the door's own rules are not consulted. On the networked backend it
+-- reaches `open77_doors` and yields, so it is awaited like every other write.
+publish('SetDoorState', 'write', function(caller, ref, state)
+	local doorlock = doorlockApi('SetState')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if doorRef(ref) == nil or (state ~= 0 and state ~= 1 and type(state) ~= 'boolean') then
+		return refuse('export.badArgument')
+	end
+	return answered(doorlock.SetState(doorRef(ref), state, 'ext:' .. caller))
+end, true)
+
+-- The first version's boolean spelling of the same, kept for its callers.
+publish('SetDoorLocked', 'write', function(caller, ref, locked)
+	local doorlock = doorlockApi('SetLocked')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if doorRef(ref) == nil or type(locked) ~= 'boolean' then return refuse('export.badArgument') end
+	return answered(doorlock.SetLocked(doorRef(ref), locked, 'ext:' .. caller))
+end, true)
+
+-- ox's `createDoor(data)`, answering the new id. The door is validated exactly
+-- as a staff save is, minus the staff member's position.
+publish('CreateDoor', 'write', function(caller, data)
+	local doorlock = doorlockApi('Create')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if type(data) ~= 'table' then return refuse('export.badArgument') end
+	return answered(doorlock.Create(data, 'ext:' .. caller))
+end, true)
+
+-- ox's `editDoor(id, data)`: the fields given replace the door's.
+publish('EditDoor', 'write', function(caller, ref, data)
+	local doorlock = doorlockApi('Edit')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if doorRef(ref) == nil or type(data) ~= 'table' then return refuse('export.badArgument') end
+	return answered(doorlock.Edit(doorRef(ref), data, 'ext:' .. caller))
+end, true)
+
+-- ox's `removeDoor(id)`.
+publish('RemoveDoor', 'write', function(caller, ref)
+	local doorlock = doorlockApi('Remove')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if doorRef(ref) == nil then return refuse('export.badArgument') end
+	return answered(doorlock.Remove(doorRef(ref), 'ext:' .. caller))
 end, true)
 
 if not hasExports() then
