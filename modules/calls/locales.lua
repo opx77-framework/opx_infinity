@@ -123,6 +123,8 @@ local EN = {
 	['calls.error.noSuchInvite'] = 'There is no call waiting for you.',
 	['calls.error.expired'] = 'That call already rang out.',
 	['calls.error.tooFar'] = 'Stand closer to hand over a contact.',
+	['calls.error.notContact'] = 'You can only call people in your contacts.',
+	['calls.error.contactTooSoon'] = 'You already offered them your contact. Give them a moment.',
 	['calls.error.unreadable'] = 'The server could not place that call. Try again.',
 }
 
@@ -212,6 +214,8 @@ local FR = {
 	['calls.error.noSuchInvite'] = "Aucun appel ne vous attend.",
 	['calls.error.expired'] = 'Cet appel a déjà sonné dans le vide.',
 	['calls.error.tooFar'] = 'Rapprochez-vous pour transmettre un contact.',
+	['calls.error.notContact'] = "Vous ne pouvez appeler que vos contacts.",
+	['calls.error.contactTooSoon'] = 'Vous lui avez déjà proposé votre contact. Laissez-lui un instant.',
 	['calls.error.unreadable'] = "Le serveur n'a pas pu placer cet appel. Réessayez.",
 }
 

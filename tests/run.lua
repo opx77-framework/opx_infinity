@@ -27720,6 +27720,14 @@ do
 		-- Connected players with characters, which is what `judge` demands
 		-- before anybody may place or take a call at all.
 		local A, B, C, D = 601, 602, 603, 604
+		-- EVERYBODY HERE IS IN EVERYBODY'S CONTACTS. A call goes to a contact and
+		-- to nobody else (the owner's decision), and this section is about the
+		-- refusals a call between two people who MAY call each other can still
+		-- meet -- so they all may. The stranger's refusal has a section of its own.
+		local everybody = {}
+		for _, tag in ipairs({ 'a', 'b', 'c', 'd', 'e', 'f', 'e2', 'f2' }) do
+			everybody[#everybody + 1] = { citizenId = 'citizen-' .. tag, name = 'Caller ' .. tag }
+		end
 		local function incarnate(id, tag)
 			control.Admit(id, 'account-' .. tag)
 			OPX.EnsureSession(id)
@@ -27728,7 +27736,10 @@ do
 					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
 					charInfo = { firstName = 'Caller', lastName = tag } },
 				Functions = { UpdatePlayerData = function() end,
-					GetMetaData = function() return nil end,
+					GetMetaData = function(key)
+						if key == 'callContacts' then return everybody end
+						return nil
+					end,
 					SetMetaData = function() end },
 			}
 			character.Registry.byCitizenId['citizen-' .. tag] = id
@@ -27925,8 +27936,11 @@ do
 		control.Life(EMPTY, 'alive')
 		mark = ask(A, module.Event.INVITE, EMPTY)
 		refused = refusalFor(mark)
-		check('a call to a slot with no character is refused as the TARGET not being ready',
-			refused ~= nil and refused.code == 'calls.error.targetNotReady',
+		-- A slot with no character is nobody's contact, so the refusal is the one
+		-- every stranger gets -- it does not say whether the seat is empty, busy
+		-- or down. It used to answer `targetNotReady`, which said exactly that.
+		check('a call to a slot with no character is refused as not a contact, saying nothing more',
+			refused ~= nil and refused.code == 'calls.error.notContact',
 			refused and tostring(refused.code))
 
 		-- ── the ordinary call ────────────────────────────────────────────────
@@ -28245,6 +28259,99 @@ do
 			return answer.ok and answer.value.contacts or {}
 		end
 
+		-- ── a stranger cannot be called ──────────────────────────────────────
+		-- THE OWNER'S DECISION: a call goes to a contact and to nobody else. These
+		-- two have not shared contacts yet, so A cannot ring B, and the refusal is
+		-- the same whatever B is doing: it does not name B, and it does not say
+		-- whether B is online, busy or down -- that was the leak a modified client
+		-- walking ids 1..N used to read every character's name and state with.
+		local mark = ask(A, module.Event.INVITE, B)
+		local refused = refusalFor(mark)
+		check('a call to somebody who is not a contact is refused',
+			refused ~= nil and refused.code == 'calls.error.notContact',
+			refused and tostring(refused.code))
+		check('and nothing rings on their side', inviteOn(B) == nil)
+		local placedText = OPX.Locale.Text('calls.placed', { name = 'Fixer cb' })
+		local leaked = false
+		for _, notice in ipairs(control.notices) do
+			if notice.playerId == A and tostring(notice.message):find('cb', 1, true) then leaked = true end
+		end
+		check('and the caller is not told who is behind the id', not leaked, placedText)
+		control.Life(B, 'dead')
+		mark = ask(A, module.Event.INVITE, B)
+		refused = refusalFor(mark)
+		check('and a stranger who is down answers exactly the same, so nothing about them is read',
+			refused ~= nil and refused.code == 'calls.error.notContact',
+			refused and tostring(refused.code))
+		control.Life(B, 'alive')
+
+		-- ── a contact from across the street ─────────────────────────────────
+		-- CONTACT_RANGE is 6 metres. These two are 40 apart.
+		control.Stand(A, 0.0, 0.0, 0.0)
+		control.Stand(B, 40.0, 0.0, 0.0)
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a contact offered from across the street is refused',
+			refused ~= nil and refused.code == 'calls.error.tooFar',
+			refused and tostring(refused.code))
+		check('and nothing was written to either character',
+			#contactsOf(A) == 0 and #contactsOf(B) == 0)
+
+		-- ── and a CALL from the same distance ─────────────────────────────────
+		-- Refused too, but NOT for the distance: they are not contacts yet. Once
+		-- they are, a call from across the city goes through (checked below).
+		mark = ask(A, module.Event.INVITE, B)
+		refused = refusalFor(mark)
+		check('a CALL to a stranger across the street is refused as not a contact, not as too far',
+			refused ~= nil and refused.code == 'calls.error.notContact',
+			refused and tostring(refused.code))
+
+		-- ── two people in the same place but not the same world ──────────────
+		-- Same coordinates, different routing buckets: an instance is exactly
+		-- the case where two bodies share a point and cannot see each other.
+		control.Stand(B, 1.0, 0.0, 0.0)
+		control.Bucket(B, 7)
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a contact offered into another routing bucket is refused, however close',
+			refused ~= nil and refused.code == 'calls.error.tooFar',
+			refused and tostring(refused.code))
+		control.Bucket(B, 0)
+
+		-- ── the hand-over ────────────────────────────────────────────────────
+		ask(A, module.Event.INVITE, B, 'contact')
+		local offered = inviteOn(B)
+		check('a contact offered face to face reaches the other party', offered ~= nil)
+		check('and nothing is written until they agree -- it needs a consent',
+			#contactsOf(A) == 0 and #contactsOf(B) == 0)
+
+		ask(B, module.Event.ACCEPT, offered)
+		local mine, theirs = contactsOf(A), contactsOf(B)
+		check('accepting writes the contact BOTH ways, which is what sharing means',
+			#mine == 1 and #theirs == 1, ('%d/%d'):format(#mine, #theirs))
+		check('each side holding the other\'s citizen id, not their own',
+			mine[1] ~= nil and mine[1].citizenId == 'citizen-cb'
+				and theirs[1] ~= nil and theirs[1].citizenId == 'citizen-ca',
+			(mine[1] and mine[1].citizenId or '?') .. '/'
+				.. (theirs[1] and theirs[1].citizenId or '?'))
+		check('and the CHARACTER\'s name rather than the account gamertag',
+			mine[1] ~= nil and mine[1].name == 'Fixer cb', mine[1] and mine[1].name)
+		check('while putting nobody on a call: a contact is not a conversation',
+			calls.IsOnCall(A).value.onCall == false
+				and calls.IsOnCall(B).value.onCall == false)
+		check('and lighting nobody\'s eyes either',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+		-- ── a contact can be called from anywhere ───────────────────────────
+		-- The range rule belongs to the contact hand-over and to nothing else.
+		-- A module that applied it to calls would have built a walkie-talkie.
+		control.Stand(B, 40.0, 0.0, 0.0)
+		ask(A, module.Event.INVITE, B)
+		check('a CALL to a contact forty metres away goes through: a holocall is not a radio',
+			inviteOn(B) ~= nil)
+		ask(B, module.Event.DECLINE, inviteOn(B))
+		control.Stand(B, 1.0, 0.0, 0.0)
+
 		-- ── declining ────────────────────────────────────────────────────────
 		-- A refusal has to reach the CALLER, not merely stop ringing for the
 		-- person who refused: a call that simply goes quiet is a caller staring
@@ -28252,7 +28359,7 @@ do
 		ask(A, module.Event.INVITE, B)
 		local ringing = inviteOn(B)
 		check('a call is ringing to be refused', ringing ~= nil)
-		local mark = #control.clientEvents
+		mark = #control.clientEvents
 		ask(B, module.Event.DECLINE, ringing)
 		check('declining puts nobody on a call',
 			calls.IsOnCall(A).value.onCall == false
@@ -28316,62 +28423,6 @@ do
 			inviteOn(B) ~= nil and inviteOn(B) ~= ringing)
 		ask(B, module.Event.DECLINE, inviteOn(B))
 
-		-- ── a contact from across the street ─────────────────────────────────
-		-- CONTACT_RANGE is 6 metres. These two are 40 apart.
-		control.Stand(A, 0.0, 0.0, 0.0)
-		control.Stand(B, 40.0, 0.0, 0.0)
-		mark = ask(A, module.Event.INVITE, B, 'contact')
-		local refused = refusalFor(mark)
-		check('a contact offered from across the street is refused',
-			refused ~= nil and refused.code == 'calls.error.tooFar',
-			refused and tostring(refused.code))
-		check('and nothing was written to either character',
-			#contactsOf(A) == 0 and #contactsOf(B) == 0)
-
-		-- ── and a CALL from the same distance, which must NOT be ─────────────
-		-- The range rule belongs to the contact hand-over and to nothing else.
-		-- A module that applied it to calls would have built a walkie-talkie.
-		ask(A, module.Event.INVITE, B)
-		check('while a CALL from the same distance goes through: a holocall is not a radio',
-			inviteOn(B) ~= nil)
-		ask(B, module.Event.DECLINE, inviteOn(B))
-
-		-- ── two people in the same place but not the same world ──────────────
-		-- Same coordinates, different routing buckets: an instance is exactly
-		-- the case where two bodies share a point and cannot see each other.
-		control.Stand(B, 1.0, 0.0, 0.0)
-		control.Bucket(B, 7)
-		mark = ask(A, module.Event.INVITE, B, 'contact')
-		refused = refusalFor(mark)
-		check('a contact offered into another routing bucket is refused, however close',
-			refused ~= nil and refused.code == 'calls.error.tooFar',
-			refused and tostring(refused.code))
-		control.Bucket(B, 0)
-
-		-- ── the hand-over ────────────────────────────────────────────────────
-		ask(A, module.Event.INVITE, B, 'contact')
-		local offered = inviteOn(B)
-		check('a contact offered face to face reaches the other party', offered ~= nil)
-		check('and nothing is written until they agree -- it needs a consent',
-			#contactsOf(A) == 0 and #contactsOf(B) == 0)
-
-		ask(B, module.Event.ACCEPT, offered)
-		local mine, theirs = contactsOf(A), contactsOf(B)
-		check('accepting writes the contact BOTH ways, which is what sharing means',
-			#mine == 1 and #theirs == 1, ('%d/%d'):format(#mine, #theirs))
-		check('each side holding the other\'s citizen id, not their own',
-			mine[1] ~= nil and mine[1].citizenId == 'citizen-cb'
-				and theirs[1] ~= nil and theirs[1].citizenId == 'citizen-ca',
-			(mine[1] and mine[1].citizenId or '?') .. '/'
-				.. (theirs[1] and theirs[1].citizenId or '?'))
-		check('and the CHARACTER\'s name rather than the account gamertag',
-			mine[1] ~= nil and mine[1].name == 'Fixer cb', mine[1] and mine[1].name)
-		check('while putting nobody on a call: a contact is not a conversation',
-			calls.IsOnCall(A).value.onCall == false
-				and calls.IsOnCall(B).value.onCall == false)
-		check('and lighting nobody\'s eyes either',
-			control.Eyes(A) == false and control.Eyes(B) == false)
-
 		-- ── the same contact twice ───────────────────────────────────────────
 		-- Replaced, not appended. The list is written into the character's
 		-- metadata blob and read back on every load, so a duplicate row is a
@@ -28381,6 +28432,18 @@ do
 		-- block disconnects the contact to prove an absent one is not listed,
 		-- and a hand-over to a slot nobody is sitting in is refused for a
 		-- perfectly good reason that has nothing to do with duplicates.
+		--
+		-- AND NOT AGAIN AT ONCE. A stranger may still offer a contact -- it is the
+		-- only door to a call now -- but offering the same person again and again
+		-- is a doorbell, so a second offer to the same player inside the floor is
+		-- refused with words of its own.
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a second contact offer to the same person straight away is refused',
+			refused ~= nil and refused.code == 'calls.error.contactTooSoon',
+			refused and tostring(refused.code))
+		check('and nothing new rings on their side for it', inviteOn(B) == nil or inviteOn(B) == offered)
+		control.Pump(320)
 		ask(A, module.Event.INVITE, B, 'contact')
 		ask(B, module.Event.ACCEPT, inviteOn(B))
 		check('handing over the same contact again replaces the row rather than adding a second',
@@ -28432,6 +28495,11 @@ do
 		local C = 803
 		incarnate(C, 'cc')
 		control.Pump(5)
+		-- B and C have each other's contact, written the way a hand-over writes
+		-- it: a call goes to a contact and to nobody else.
+		meta[B].callContacts = meta[B].callContacts or {}
+		table.insert(meta[B].callContacts, { citizenId = 'citizen-cc', name = 'Fixer cc' })
+		meta[C].callContacts = { { citizenId = 'citizen-cb', name = 'Fixer cb' } }
 		ask(B, module.Event.INVITE, C)
 		ask(C, module.Event.ACCEPT, inviteOn(C))
 		check('the contact is now on a call of their own',
@@ -28506,7 +28574,12 @@ do
 					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
 					charInfo = { firstName = 'Glow', lastName = tag } },
 				Functions = { UpdatePlayerData = function() end,
-					GetMetaData = function() return nil end,
+					-- Everybody here is in everybody's contacts: a call goes to a contact
+					-- and to nobody else, and this section is not about strangers.
+					GetMetaData = function(key)
+						if key == 'callContacts' then return { { citizenId = 'citizen-ea' }, { citizenId = 'citizen-eb' } } end
+						return nil
+					end,
 					SetMetaData = function() end },
 			}
 			character.Registry.byCitizenId['citizen-' .. tag] = id
@@ -29020,7 +29093,12 @@ do
 					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
 					charInfo = { firstName = 'Caller', lastName = tag } },
 				Functions = { UpdatePlayerData = function() end,
-					GetMetaData = function() return nil end,
+					-- Everybody here is in everybody's contacts: a call goes to a contact
+					-- and to nobody else, and this section is not about strangers.
+					GetMetaData = function(key)
+						if key == 'callContacts' then return { { citizenId = 'citizen-wa' }, { citizenId = 'citizen-wb' }, { citizenId = 'citizen-wc' } } end
+						return nil
+					end,
 					SetMetaData = function() end },
 			}
 			character.Registry.byCitizenId['citizen-' .. tag] = id

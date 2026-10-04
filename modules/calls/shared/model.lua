@@ -114,8 +114,10 @@ Model.REASONS = {
 	noSuchInvite = true,
 	expired = true,
 
-	-- sharing a contact
+	-- sharing a contact, and calling only who you have shared with
 	tooFar = true,
+	contactTooSoon = true,
+	notContact = true,
 
 	-- a host read this module needs and did not get
 	unreadable = true,
