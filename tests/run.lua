@@ -82,6 +82,86 @@ local function boot(side, database, prelude, loaded)
 	return env, control
 end
 
+-- ── what one client resume costs ────────────────────────────────────────────
+-- THE CLIENT KILLS A RESUME THAT OVERRUNS ITS INSTRUCTION BUDGET (~10,000 VM
+-- instructions), silently and mid-operation, and desktop Lua has no such
+-- budget -- so no check on a RESULT can see the defect, only a count of the
+-- work. These two count the way `OPX_BUDGET_METER` in `tests/host.lua` does,
+-- with the stub's own work left out (its page send walks and encodes a payload
+-- in Lua, where the platform does both natively), so a check can hold a call
+-- site to a figure on every run rather than only when somebody reads the meter.
+local HOST_SOURCE = 'tests/host.lua'
+local COST_STEP = 1
+
+--- A count hook charging `COST_STEP` to `into.spent` for every tick that did not
+--- land in the stub.
+local function costHook(into)
+	return function()
+		local info = debug.getinfo(2, 'S')
+		if info ~= nil and info.short_src == HOST_SOURCE then return end
+		into.spent = into.spent + COST_STEP
+	end
+end
+
+--- What one synchronous call costs, in VM instructions.
+-- @param fn function
+-- @return integer
+local function callCost(fn, ...)
+	local counter = { spent = 0 }
+	debug.sethook(costHook(counter), '', COST_STEP)
+	fn(...)
+	debug.sethook()
+	return counter.spent
+end
+
+--- The dearest single resume of every client thread made while `start` runs and
+--- `rounds` frames are pumped after it. Each `Wait` closes one resume and opens
+--- the next, which is exactly where the platform's budget starts over.
+-- @param env table
+-- @param control table
+-- @param start function
+-- @param rounds integer|nil
+-- @return integer the dearest resume, in VM instructions
+-- @return integer how many resumes were counted
+local function resumeCost(env, control, start, rounds)
+	local worst, resumes = 0, 0
+	local realCreate, realWait = env.CreateThread, env.Wait
+	local counters = setmetatable({}, { __mode = 'k' })
+	-- A thread still alive when this returns keeps the wrappers below; it stops
+	-- being counted rather than charging its later resumes to a closed count.
+	local live = true
+	local function settleResume()
+		local counter = counters[coroutine.running()]
+		if counter == nil then return end
+		debug.sethook()
+		resumes = resumes + 1
+		if counter.spent > worst then worst = counter.spent end
+		counter.spent = 0
+	end
+	local function openResume()
+		local counter = counters[coroutine.running()]
+		if counter ~= nil and live then debug.sethook(costHook(counter), '', COST_STEP) end
+	end
+	env.CreateThread = function(fn)
+		return realCreate(function()
+			counters[coroutine.running()] = { spent = 0 }
+			openResume()
+			fn()
+			settleResume()
+		end)
+	end
+	env.Wait = function(...)
+		settleResume()
+		realWait(...)
+		openResume()
+	end
+	start()
+	control.Pump(rounds or 40)
+	live = false
+	env.CreateThread, env.Wait = realCreate, realWait
+	return worst, resumes
+end
+
 -- Everything the runtime itself is allowed to publish on `OPX`. A module that
 -- adds a key here has made its internals reachable by every other module, which
 -- is the one thing the module boundary exists to prevent -- so this list is the
@@ -27092,6 +27172,49 @@ do
 		if creates - previous > longest then longest = creates - previous end
 		check('and no more than BATCH of them were created between two yields',
 			longest <= BATCH, ('longest un-yielded run was %d, BATCH is %d'):format(longest, BATCH))
+	end
+end
+
+-- ── the reconcile's budget, the derive included ─────────────────────────────
+-- THE CREATES YIELDED AND THE REST DID NOT. Reading 200 garage spots, sorting
+-- them with a Lua comparator and signing the 128 that fit ran in the first
+-- resume of the pass, and a pass that changed nothing walked the whole set in
+-- one: the meter put both at ~36,000 instructions against a client budget of
+-- ~10,000 that unwinds the thread silently -- leaving `syncing` true and the
+-- map never reconciled again. Counted per resume, the way the platform does.
+section('blips: two hundred spots reconcile inside one resume\'s budget')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the reconcile budget', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		OPX.Config.MODULES.blips.MAX = 400
+		-- Whatever the boot's own pass was doing finishes first, so the Sync
+		-- below starts a thread of its own, and creates every pin it counts.
+		control.Pump(200)
+		local many = {}
+		for index = 1, 200 do
+			many['g' .. index] = { key = 'g' .. index, label = 'G' .. index,
+				x = 100.0 + index, y = 200.0, z = 30.0 }
+		end
+		OPX.Modules.Get('garages').Runtime.Spots = function() return many end
+
+		local first, resumes = resumeCost(env, control, function() blips.Runtime.Sync() end, 300)
+		local report = blips.Runtime.Report()
+		check('the reconcile still pins the 128 the platform allows',
+			report.live == 128, report.live)
+		check('and no resume of it cost more than 6,000 instructions',
+			resumes > 1 and first < 6000,
+			('%d instructions, dearest of %d resumes'):format(first, resumes))
+
+		local again, resumesAgain = resumeCost(env, control, function() blips.Runtime.Sync() end, 300)
+		check('a pass that changes nothing stays inside the budget too',
+			resumesAgain > 1 and again < 6000,
+			('%d instructions, dearest of %d resumes'):format(again, resumesAgain))
+		check('and leaves the same 128 pins up', blips.Runtime.Report().live == 128,
+			blips.Runtime.Report().live)
 	end
 end
 
