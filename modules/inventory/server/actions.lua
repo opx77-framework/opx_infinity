@@ -419,26 +419,41 @@ function Actions.OpenVehicle(source, kind, vehicleId)
 	return container, nil
 end
 
--- The name of the character a player is playing, or nil. The give list used to
--- read `#12`, which teaches players to know each other by a server slot.
-local function characterName(source)
-	local character = M.Contracts.character
-	if character == nil or type(character.GetPlayer) ~= 'function' then return nil end
-	local read, player = pcall(character.GetPlayer, source)
-	local data = read and type(player) == 'table' and player.PlayerData or nil
-	local info = type(data) == 'table' and data.charInfo or nil
-	if type(info) ~= 'table' or type(info.firstName) ~= 'string' then return nil end
-	local name = OPX.String.Trim(('%s %s'):format(info.firstName, tostring(info.lastName or '')))
-	return name ~= '' and OPX.Text.Bytes(name, 48) or nil
+-- The giver's facing in degrees, or nil on a host that cannot say. Read off the
+-- rich player snapshot, the way the staff position capture reads it.
+local function headingOf(source)
+	local api = Open77.players
+	if type(api) ~= 'table' or type(api.get) ~= 'function' then return nil end
+	local read, snapshot = pcall(api.get, source)
+	if not read or type(snapshot) ~= 'table' then return nil end
+	local yaw = tonumber(snapshot.heading) or tonumber(snapshot.yaw)
+	if not OPX.Math.IsFinite(yaw) then return nil end
+	return yaw
 end
 
---- The players in reach, nearest first, with their character's name.
--- THE NAME IS NOW SAID, on the owner's decision. It used to be "never a name"
--- -- who stands near somebody was not this module's to tell -- and the list read
--- `#12`, which taught players to know each other by a server slot. Only
--- players already within arm's reach are listed, and only to the person about
--- to hand them something.
+-- Which side of the giver another player stands on: 'ahead', 'behind', 'left' or
+-- 'right', or nil without a facing. A yaw of 0 faces +Y and turns towards -X (see
+-- `World.Ahead`), so forward is (-sin, cos) and right is (cos, sin).
+local function sideOf(here, there, yaw)
+	if yaw == nil then return nil end
+	local radians = math.rad(yaw)
+	local dx, dy = there.x - here.x, there.y - here.y
+	local along = -math.sin(radians) * dx + math.cos(radians) * dy
+	local across = math.cos(radians) * dx + math.sin(radians) * dy
+	if math.abs(along) >= math.abs(across) then return along >= 0 and 'ahead' or 'behind' end
+	return across >= 0 and 'right' or 'left'
+end
+
+--- The players in reach, nearest first: id, rounded distance and which side of
+--- the giver they stand on. NEVER A NAME.
 -- @author dop42
+--
+-- THE OWNER'S DECISION, and it reverses a change that shipped for one release:
+-- in roleplay a character's name is something you learn by meeting them, and a
+-- give list that printed it told every stranger within arm's reach who they
+-- were. So the server does not put a name in this answer at all -- not hidden
+-- on the page, absent from the wire. What tells two people apart instead is
+-- where they stand ("To your left · 1.2 m"), with the short id beside it.
 -- @param source Source
 -- @return table[]
 function Actions.Nearby(source)
@@ -446,6 +461,7 @@ function Actions.Nearby(source)
 	if Options.NEARBY_MAX <= 0 then return out end
 	local here = World.Position(source)
 	if not here then return out end
+	local yaw = headingOf(source)
 
 	local players = Players.List()
 	for index = 1, #players do
@@ -456,7 +472,7 @@ function Actions.Nearby(source)
 				local gap = World.Distance(here, there)
 				if gap <= Options.REACH then
 					out[#out + 1] = { id = other, distance = math.floor(gap * 10 + 0.5) / 10,
-						name = characterName(other) }
+						side = sideOf(here, there, yaw) }
 				end
 			end
 		end

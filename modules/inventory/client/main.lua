@@ -101,6 +101,8 @@ local function labels()
 		'character', 'cancel',
 		-- The count dialog's give and drop questions, and its give button.
 		'give', 'giveHowMany', 'dropHowMany',
+		-- Where a person in the give list stands, never who they are.
+		'sideAhead', 'sideBehind', 'sideLeft', 'sideRight', 'decimal',
 		-- The two the page needs for its own status line. Every refusal the SERVER
 		-- makes is toasted from there, so the page only ever has to say that a
 		-- round trip failed or never came back.

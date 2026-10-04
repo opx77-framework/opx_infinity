@@ -16862,12 +16862,35 @@ do
 		check('both bags are held for their characters',
 			Players.Bag(ALICE) == aliceBag and Players.Bag(BOB) == bobBag)
 
-		-- THE GIVE LIST NAMES PEOPLE. It read `#12`; it says the character's name.
+		-- NEVER A NAME, THE OWNER'S DECISION. In roleplay a name is learnt by
+		-- meeting somebody, so the give list says where a person stands and not who
+		-- they are -- and the name must not leave the server at all, not merely go
+		-- undrawn. Both characters carry one here, so a leak would have one to leak.
+		local players = env.Open77.players
+		local realGet = players.get
+		local facing = 0.0
+		players.get = function() return { heading = facing } end
 		local near = Actions.Nearby(ALICE)
-		check('the player in reach is listed for a give, by their character\'s name',
-			near[1] ~= nil and near[1].id == BOB and type(near[1].name) == 'string'
-				and near[1].name == 'Vee ' .. tostring(BOB),
-			near[1] and tostring(near[1].name))
+		check('the player in reach is listed for a give', near[1] ~= nil and near[1].id == BOB)
+		local leaked = {}
+		for field, value in pairs(near[1] or {}) do
+			if field == 'name' or tostring(value):find('Vee', 1, true) then
+				leaked[#leaked + 1] = field
+			end
+		end
+		check('and no name leaves the server in that answer, in any field',
+			#leaked == 0, table.concat(leaked, ' '))
+		check('but which side they stand on: facing north, a player to the east is on the right',
+			near[1] ~= nil and near[1].side == 'right', near[1] and tostring(near[1].side))
+		facing = 90.0
+		near = Actions.Nearby(ALICE)
+		check('and facing west, the same player is behind',
+			near[1] ~= nil and near[1].side == 'behind', near[1] and tostring(near[1].side))
+		players.get = function() return nil end
+		near = Actions.Nearby(ALICE)
+		check('and with no facing to read, no side is guessed',
+			near[1] ~= nil and near[1].side == nil and near[1].distance ~= nil)
+		players.get = realGet
 
 		--- What one player is worth: the balance plus every note they carry.
 		local function worth(source, bag)

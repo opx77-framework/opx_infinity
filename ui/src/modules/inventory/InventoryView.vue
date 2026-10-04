@@ -564,6 +564,21 @@ function doUse(): void {
   void ask('use', { slot })
 }
 
+/** Where a nearby player stands, as the give list says it: `To your left · 1.2 m`,
+    with the language's decimal mark. Never a name -- the server sends none. */
+function whereIs(person: { side: string; distance: number }): string {
+  const metres = person.distance.toFixed(1).replace('.', label('decimal', '.'))
+  const distance = `${metres} ${label('m', 'm')}`
+  const keys: Record<string, string> = {
+    ahead: 'sideAhead',
+    behind: 'sideBehind',
+    left: 'sideLeft',
+    right: 'sideRight'
+  }
+  const side = keys[person.side] ? label(keys[person.side]) : ''
+  return side ? `${side} · ${distance}` : distance
+}
+
 /** Opens the count dialog to give or drop part of a stack, or acts at once on a
     single item, where there is nothing to choose. */
 function askCount(mode: 'give' | 'drop', target: number): boolean {
@@ -1089,8 +1104,8 @@ try {
               :disabled="busy"
               @click="doGive(person.id)"
             >
-              <span class="row-label op-truncate">{{ person.name || `#${person.id}` }}</span>
-              <span class="row-value op-value">{{ person.distance }}{{ label('m', 'm') }}</span>
+              <span class="row-label op-truncate">{{ whereIs(person) }}</span>
+              <span class="row-value op-value">#{{ person.id }}</span>
             </button>
             <div v-if="!nearby.length" class="sep op-eyebrow">{{ label('nobody') }}</div>
           </template>
