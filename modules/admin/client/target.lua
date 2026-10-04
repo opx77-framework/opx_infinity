@@ -313,7 +313,7 @@ end
 -- @author dop42
 -- @param context table
 -- @return string
-function M.Inspect(context)
+function Target.Inspect(context)
 	local lines = {}
 	fieldsOf(context, '', lines)
 	-- The thing that was hit, prefixed so a field name that appears on both --
@@ -326,7 +326,7 @@ end
 --- The last inspection this client made, or nil.
 -- @author dop42
 -- @return string|nil
-function M.LastInspection()
+function Target.LastInspection()
 	return lastInspection
 end
 
@@ -343,7 +343,7 @@ end
 
 -- What the inspector row does, wherever it is drawn.
 local function inspect(context)
-	local report = M.Inspect(context)
+	local report = Target.Inspect(context)
 	lastInspection = report
 	local copied = copyBlock(report)
 

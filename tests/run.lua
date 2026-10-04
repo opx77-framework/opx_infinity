@@ -10361,7 +10361,7 @@ do
 		-- wrong the day the platform adds a field, silently, because the operator
 		-- sees four lines and cannot know a fifth existed. So the check feeds it a
 		-- field nothing in this resource has ever heard of and requires it back.
-		local report = admin.Inspect({
+		local report = admin.Target.Inspect({
 			kind = 'prop',
 			position = { x = 12.5, y = -30.25, z = 7.0 },
 			material = 'concrete',
@@ -10385,7 +10385,7 @@ do
 			report:find('somethingNobodyHasHeardOf=keep me', 1, true) ~= nil, report)
 
 		-- Nothing is invented for a pick that answered nothing.
-		local empty = admin.Inspect(nil)
+		local empty = admin.Target.Inspect(nil)
 		check('while a pick with nothing in it says so rather than printing blanks',
 			type(empty) == 'string' and empty:find('nothing', 1, true) ~= nil, empty)
 		-- not have, and an operator who pressed a stale keybind must not lose the
@@ -10872,17 +10872,19 @@ do
 		cctl.Pump(10)
 		check('the staff menu is open on the root', admin.Menu.Screen() == 'root')
 
-		-- ONE PUMP BETWEEN PRESSES, which is 100ms of host clock: this is somebody
+		-- TWO PUMPS BETWEEN PRESSES, which is 200ms of host clock: this is somebody
 		-- walking into a player's health screen at a normal pace, well inside the
-		-- 750ms floor. A test that pumped ten rounds between presses would be
-		-- asserting nothing -- it would have waited the floor out.
+		-- 750ms floor. Two, because a redraw takes two resumes now -- one to build
+		-- the screen, one to hand it to the menu contract -- and a row cannot be
+		-- pressed before its screen is up. A test that pumped ten rounds between
+		-- presses would be asserting nothing -- it would have waited the floor out.
 		asked = {}
 		local walked = act('players')
-		cctl.Pump(1)
+		cctl.Pump(2)
 		walked = walked and act('player_3')
-		cctl.Pump(1)
+		cctl.Pump(2)
 		walked = walked and act('health')
-		cctl.Pump(1)
+		cctl.Pump(2)
 		check('the operator walks root -> Players -> a player -> Health', walked
 			and admin.Menu.Screen() == 'playerHealth', tostring(admin.Menu.Screen()))
 		check('and the three screens ask for the roster ONCE between them',
@@ -28930,6 +28932,138 @@ do
 		check('the walk over 600 rows yields on its way', fromBuilder >= 10, fromBuilder)
 		check('and the screen still lands', admin.Menu.IsOpen() and admin.Menu.Screen() == 'weaponList',
 			admin.Menu.Screen())
+	end
+end
+
+
+-- ── every resume of a staff redraw stays small, and long lists are paged ────
+-- The roster, a bag, the saved places, an account's characters and the ammo
+-- kinds drew up to 190 rows on one screen, and the menu contract checks every
+-- row of a spec inside the resume that hands it over -- several hundred
+-- instructions a row. A full roster was one resume of tens of thousands, past
+-- the client's per-resume budget. Each list is paged now, the contract gets a
+-- resume of its own, and this counts the dearest resume the redraw's thread
+-- makes over a 150-player roster and a 120-slot bag.
+section('every resume of a staff redraw stays small, and long lists are paged')
+do
+	local env, control, why = boot('client')
+	check('client boots for the redraw budget', why == nil, why)
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(h, spec) specs[#specs + 1] = spec; return realMenu.Update(h, spec) end,
+		}, { __index = realMenu })
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		local rows = {}
+		for index = 1, 150 do
+			rows[index] = { id = index, name = 'Runner ' .. index, state = 'up', bucket = 0,
+				user = 'user' .. index, citizenId = 'CID' .. index }
+		end
+		control.netEvents[admin.Event.ROSTER]({ rows = rows, offset = 0, total = 150, done = true })
+		control.Pump(10)
+
+		-- Counts the dearest resume of every thread started while `fn` runs.
+		local function dearest(fn)
+			local worst, spent = 0, 0
+			local realCreate, realWait = env.CreateThread, env.Wait
+			env.Wait = function(ms)
+				if spent > worst then worst = spent end
+				spent = 0
+				return realWait(ms)
+			end
+			env.CreateThread = function(body)
+				return realCreate(function(...)
+					spent = 0
+					debug.sethook(function() spent = spent + 1 end, '', 1)
+					body(...)
+					debug.sethook()
+					if spent > worst then worst = spent end
+				end)
+			end
+			fn()
+			env.CreateThread = realCreate
+			control.Pump(40)
+			env.Wait = realWait
+			return worst
+		end
+		local function listed(prefix)
+			local count, more = 0, nil
+			for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+				if tostring(item.id):sub(1, #prefix) == prefix then count = count + 1 end
+				if item.id == 'more' then more = item end
+			end
+			return count, more
+		end
+
+		local worst = dearest(function() admin.Menu.OpenAt('players') end)
+		local count, more = listed('player_')
+		check('a 150-player roster draws one page of it', admin.Menu.Screen() == 'players'
+			and count == 20 and more ~= nil, ('%d rows'):format(count))
+		check('and no resume of that redraw is dear', worst < 15000, ('%d instructions'):format(worst))
+
+		-- The next page is the same screen, one deeper, and Back is a page back.
+		-- An update carries no callback; the open before it does.
+		local on
+		for index = #specs, 1, -1 do
+			if specs[index].on then on = specs[index].on break end
+		end
+		if on and more then on({ action = 'select', itemId = 'more', handle = 1, data = more.data }) end
+		control.Pump(10)
+		local second = 0
+		for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+			if item.id == 'player_21' then second = second + 1 end
+		end
+		check('the next-page row turns to the second page', second == 1
+			and tostring(specs[#specs].title):find('2/8', 1, true) ~= nil, tostring(specs[#specs].title))
+
+		-- A bare-id screen pages too: the bag takes the player's id as its argument.
+		admin.Menu.OpenAt('bag', 3)
+		control.Pump(4)
+		local slots = {}
+		for index = 1, 120 do
+			slots[index] = { slot = index, count = 1, name = 'item' .. index, label = 'Item ' .. index }
+		end
+		worst = dearest(function()
+			control.netEvents[admin.Event.BAG]({ target = '3', rows = slots, offset = 0, total = 120, done = true })
+		end)
+		count = listed('slot_')
+		check('a 120-slot bag draws one page of it', admin.Menu.Screen() == 'bag' and count == 20,
+			('%d rows'):format(count))
+		check('and no resume of that redraw is dear either', worst < 15000, ('%d instructions'):format(worst))
+
+		-- A category whose name has a space no longer refuses the whole screen.
+		control.netEvents[admin.Event.ITEMS]({ rows = {
+			{ name = 'vest', label = 'Vest', category = 'body armor' },
+			{ name = 'water', label = 'Water', category = 'food' },
+		}, offset = 0, total = 2, done = true })
+		admin.Menu.OpenAt('itemCategories', { t = 'me' })
+		control.Pump(10)
+		local named = false
+		for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+			if item.label == 'body armor' then named = true end
+		end
+		check('a category named with a space is drawn, not refused',
+			admin.Menu.IsOpen() and admin.Menu.Screen() == 'itemCategories' and named)
+
+		-- `OpenAt` is public, and a catalogue screen with no argument is drawn.
+		local errors = #control.log.error
+		admin.Menu.OpenAt('itemList')
+		control.Pump(10)
+		check('a catalogue screen opened with no argument does not raise',
+			#control.log.error == errors and admin.Menu.Screen() == 'itemList',
+			control.log.error[#control.log.error])
+
+		-- A build overtaken by a close never reopens a menu over an empty stack.
+		admin.Menu.OpenAt('players')
+		control.Pump(1)
+		admin.Menu.Close()
+		control.Pump(20)
+		check('a redraw overtaken by a close does not reopen the menu', not admin.Menu.IsOpen())
 	end
 end
 
