@@ -4075,6 +4075,28 @@ do
 	end
 end
 
+-- TEXT IS CUT BEFORE IT IS SCANNED. Same answer as before, without walking a
+-- megabyte to keep a handful of characters.
+section('cleaning display text')
+do
+	local env = { OPX = {}, type = type, tostring = tostring, tonumber = tonumber,
+		math = math, string = string, table = table }
+	local chunk, why = loadfile('lib/shared/text.lua', 't', env)
+	check('the text helpers load alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		local Text = env.OPX.Text
+		local cleaned = Text.Clean(('a\n'):rep(500000), 8, '...')
+		check('a long text is still cut to its bound, control characters replaced',
+			cleaned == 'a a a a ...', cleaned)
+		check('a short text is untouched apart from its control characters',
+			Text.Clean('a\tb', 8) == 'a b')
+		check('a multi-byte character is never split',
+			Text.Clean(('\xC3\xA9'):rep(20), 3, '') == ('\xC3\xA9'):rep(3))
+		check('a text exactly at its bound is not cut', Text.Clean('abcd', 4, '...') == 'abcd')
+	end
+end
+
 -- ── the ACL read that raised outside the pcall written to catch it ───────────
 -- `permitted` decides whether a restricted command is SUGGESTED, and its comment
 -- says a read that raises counts as a refusal -- suggested to nobody rather than
