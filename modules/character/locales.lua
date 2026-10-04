@@ -12,7 +12,7 @@ OPX.Locale.Register('en', {
 	['character.limit'] = 'You already have {max} characters.',
 	['character.rowLimit'] = 'This account has created as many characters as it may.',
 	['character.notFound'] = 'No character carries that citizen ID.',
-	['character.badName'] = 'That name cannot be used.',
+	['character.badName'] = 'Use letters only (spaces, hyphens and apostrophes allowed).',
 	['character.searchShort'] = 'Search for at least three characters.',
 	['character.badBody'] = 'That is not a body this game has.',
 	['character.bodySet'] = 'This character is already built on a body.',
@@ -32,13 +32,13 @@ OPX.Locale.Register('en', {
 	['session.newCharacter'] = 'Building a new character. Reconnect to make them.',
 	['session.characterDeleted'] = 'That character is gone. Reconnect to play another.',
 
-	['money.insufficient'] = 'You do not have enough {type}.',
+	['money.insufficient'] = 'You do not have enough money.',
 	['money.badType'] = 'That is not a currency on this server.',
 	['money.badAmount'] = 'That amount is not valid.',
 	['money.negative'] = 'That balance cannot go negative.',
 	['money.vetoed'] = 'That transaction was blocked.',
 	['money.offline'] = 'That character is not in the world.',
-	['money.paycheck'] = 'You received {amount} {type} for {job}.',
+	['money.paycheck'] = 'Paycheck from {job}: {amount}.',
 
 	['job.notFound'] = 'No such job.',
 	['job.gradeNotFound'] = 'That job has no such grade.',
@@ -101,9 +101,9 @@ OPX.Locale.Register('en', {
 
 OPX.Locale.Register('fr', {
 	['character.limit'] = 'Vous avez déjà {max} personnages.',
-	['character.rowLimit'] = "Ce compte a créé autant de personnages qu'il le peut.",
+	['character.rowLimit'] = 'Ce compte a atteint le nombre maximal de personnages.',
 	['character.notFound'] = 'Aucun personnage ne porte cet identifiant citoyen.',
-	['character.badName'] = 'Ce nom ne peut pas être utilisé.',
+	['character.badName'] = 'Utilisez uniquement des lettres (espaces, tirets et apostrophes acceptés).',
 	['character.searchShort'] = 'Cherchez avec au moins trois caractères.',
 	['character.badBody'] = "Ce corps n'existe pas dans ce jeu.",
 	['character.bodySet'] = 'Ce personnage est déjà construit sur un corps.',
@@ -122,13 +122,13 @@ OPX.Locale.Register('fr', {
 	['session.newCharacter'] = 'Nouveau personnage. Reconnectez-vous pour le construire.',
 	['session.characterDeleted'] = 'Ce personnage est supprimé. Reconnectez-vous.',
 
-	['money.insufficient'] = "Vous n'avez pas assez de {type}.",
+	['money.insufficient'] = "Vous n'avez pas assez d'argent.",
 	['money.badType'] = "Ce n'est pas une devise sur ce serveur.",
 	['money.badAmount'] = "Ce montant n'est pas valide.",
 	['money.negative'] = 'Ce solde ne peut pas devenir négatif.',
 	['money.vetoed'] = 'Cette transaction a été bloquée.',
 	['money.offline'] = "Ce personnage n'est pas en jeu.",
-	['money.paycheck'] = 'Vous avez reçu {amount} {type} pour {job}.',
+	['money.paycheck'] = 'Salaire de {job} : {amount}.',
 
 	['job.notFound'] = "Ce métier n'existe pas.",
 	['job.gradeNotFound'] = "Ce métier n'a pas ce grade.",

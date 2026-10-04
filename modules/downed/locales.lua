@@ -19,7 +19,7 @@ local EN = {
 	['medic.screen.signalOff'] = 'NOT SENT',
 	['medic.screen.signalOn'] = 'BROADCASTING',
 
-	['medic.wait.label'] = 'WAIT FOR HELP',
+	['medic.wait.label'] = 'CALL FOR HELP',
 	['medic.wait.hint'] = 'Broadcast a distress signal and hold on.',
 	['medic.wait.active'] = 'SIGNAL SENT',
 	['medic.wait.activeHint'] = 'Help has been called. Stay with us.',
@@ -49,7 +49,7 @@ local FR = {
 	['medic.screen.signalOff'] = 'NON ÉMIS',
 	['medic.screen.signalOn'] = 'EN ÉMISSION',
 
-	['medic.wait.label'] = 'ATTENDRE LES SECOURS',
+	['medic.wait.label'] = 'APPELER LES SECOURS',
 	['medic.wait.hint'] = 'Émettre un signal de détresse et tenir bon.',
 	['medic.wait.active'] = 'SIGNAL ÉMIS',
 	['medic.wait.activeHint'] = 'Les secours sont appelés. Restez avec nous.',

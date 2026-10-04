@@ -5,7 +5,7 @@
 -- the status line itself. Every other string a form draws is the caller's own.
 
 OPX.Locale.Register('en', {
-	['form.key.field'] = 'Field',
+	['form.key.field'] = 'Switch field',
 	['form.key.edit'] = 'Type to edit',
 	['form.key.change'] = 'Change',
 	['form.key.confirm'] = 'Confirm',
@@ -18,8 +18,8 @@ OPX.Locale.Register('en', {
 })
 
 OPX.Locale.Register('fr', {
-	['form.key.field'] = 'Champ',
-	['form.key.edit'] = 'Saisie',
+	['form.key.field'] = 'Changer de champ',
+	['form.key.edit'] = 'Saisir',
 	['form.key.change'] = 'Changer',
 	['form.key.confirm'] = 'Valider',
 	['form.key.cancel'] = 'Annuler',

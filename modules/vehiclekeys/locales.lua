@@ -18,7 +18,7 @@ OPX.Locale.Register('en', {
 	['vehiclekeys.lockRefused'] = 'The lock did not answer. Try again.',
 	['vehiclekeys.noRoom'] = 'No room in your bag for the key to {label}.',
 	['vehiclekeys.unavailable'] = 'Keys are not available on this server right now.',
-	['vehiclekeys.tooFast'] = 'Easy.',
+	['vehiclekeys.tooFast'] = 'Slow down.',
 })
 
 OPX.Locale.Register('fr', {
