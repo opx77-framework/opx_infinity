@@ -72,6 +72,10 @@ M.Event = {
 	-- What became of an offer, sent to the SELLER: the buyer said no, the buyer
 	-- said nothing, or the sale went through and this is the commission.
 	SETTLED = OPX.Event(NET, 'dealership', 'settled'),
+	-- What became of an offer, sent to the BUYER when it ended without their
+	-- answer: it ran out, or the seller left. Carries the offer's token, so a
+	-- withdrawal of an offer already replaced closes nothing.
+	WITHDRAWN = OPX.Event(NET, 'dealership', 'withdrawn'),
 
 	-- The client's own bus. `decision` carries every verdict, local refusals
 	-- included. Public: a bare AddEventHandler reaches it.
