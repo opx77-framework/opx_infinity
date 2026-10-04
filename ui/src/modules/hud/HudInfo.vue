@@ -64,7 +64,10 @@ useBridge('opx:hud:info', (payload: Payload) => {
     .filter((row) => text(row.id) !== '')
     .map((row) => ({
       id: text(row.id),
-      label: t(text(row.label)),
+// The KEY, translated where it is drawn: Lua sends each payload once (deduped by
+      // signature), so one that beat the locale catalogue would otherwise keep the raw
+      // key on screen until the value next changed. `t()` in the template is reactive.
+      label: text(row.label),
       // Already formatted by Lua: separators, currency symbols and rounding are all
       // decisions, and a page that formatted a number would be making one.
       value: text(row.value),
@@ -83,7 +86,7 @@ useBridge('opx:hud:info', (payload: Payload) => {
         :class="line.tone"
         :style="`--op-slot: ${at}`"
       >
-        <span class="label">{{ line.label }}</span>
+        <span class="label">{{ t(line.label) }}</span>
         <span v-if="line.value" class="value">{{ line.value }}</span>
       </div>
     </div>

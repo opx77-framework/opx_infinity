@@ -100,7 +100,10 @@ useBridge('opx:hud:status', (payload: Payload) => {
     next.push({
       id,
       icon: text(row.icon).slice(0, 4),
-      label: t(text(row.label)),
+// The KEY, translated where it is drawn: Lua sends each payload once (deduped by
+      // signature), so one that beat the locale catalogue would otherwise keep the raw
+      // key on screen until the value next changed. `t()` in the template is reactive.
+      label: text(row.label),
       tone: own(TONES, text(row.tone, 'neutral')) ?? 'neutral',
       endsAt: timed ? atMs + remainingMs : 0,
       totalMs: timed ? totalMs : 0,
@@ -160,7 +163,7 @@ onUnmounted(stop)
       :style="`--op-slot: ${at}`"
     >
       <span v-if="chip.icon" class="icon">{{ chip.icon }}</span>
-      <span class="label">{{ chip.label }}</span>
+      <span class="label">{{ t(chip.label) }}</span>
       <!-- The remainder. A filled bar, and legitimate for the same reason a gauge's is:
            it is the quantity itself, not a backdrop for one. -->
       <span
