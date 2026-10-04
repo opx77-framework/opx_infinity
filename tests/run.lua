@@ -57,6 +57,8 @@ local function boot(side, database, prelude, loaded)
 		-- After each file, before any module starts: where a test swaps a
 		-- shipped config for its fixture.
 		if loaded then loaded(env, file) end
+		-- The budget meter, when asked for, counts each scheduler job by name.
+		if file == 'core/client/scheduler.lua' then Host.MeterJobs(env.OPX.Scheduler) end
 	end
 
 	-- The host always raises this for a starting resource, and the client half
@@ -78,6 +80,86 @@ local function boot(side, database, prelude, loaded)
 	-- that skipped this would be testing the window before the UI exists.
 	control.ReadyPages()
 	return env, control
+end
+
+-- ── what one client resume costs ────────────────────────────────────────────
+-- THE CLIENT KILLS A RESUME THAT OVERRUNS ITS INSTRUCTION BUDGET (~10,000 VM
+-- instructions), silently and mid-operation, and desktop Lua has no such
+-- budget -- so no check on a RESULT can see the defect, only a count of the
+-- work. These two count the way `OPX_BUDGET_METER` in `tests/host.lua` does,
+-- with the stub's own work left out (its page send walks and encodes a payload
+-- in Lua, where the platform does both natively), so a check can hold a call
+-- site to a figure on every run rather than only when somebody reads the meter.
+local HOST_SOURCE = 'tests/host.lua'
+local COST_STEP = 1
+
+--- A count hook charging `COST_STEP` to `into.spent` for every tick that did not
+--- land in the stub.
+local function costHook(into)
+	return function()
+		local info = debug.getinfo(2, 'S')
+		if info ~= nil and info.short_src == HOST_SOURCE then return end
+		into.spent = into.spent + COST_STEP
+	end
+end
+
+--- What one synchronous call costs, in VM instructions.
+-- @param fn function
+-- @return integer
+local function callCost(fn, ...)
+	local counter = { spent = 0 }
+	debug.sethook(costHook(counter), '', COST_STEP)
+	fn(...)
+	debug.sethook()
+	return counter.spent
+end
+
+--- The dearest single resume of every client thread made while `start` runs and
+--- `rounds` frames are pumped after it. Each `Wait` closes one resume and opens
+--- the next, which is exactly where the platform's budget starts over.
+-- @param env table
+-- @param control table
+-- @param start function
+-- @param rounds integer|nil
+-- @return integer the dearest resume, in VM instructions
+-- @return integer how many resumes were counted
+local function resumeCost(env, control, start, rounds)
+	local worst, resumes = 0, 0
+	local realCreate, realWait = env.CreateThread, env.Wait
+	local counters = setmetatable({}, { __mode = 'k' })
+	-- A thread still alive when this returns keeps the wrappers below; it stops
+	-- being counted rather than charging its later resumes to a closed count.
+	local live = true
+	local function settleResume()
+		local counter = counters[coroutine.running()]
+		if counter == nil then return end
+		debug.sethook()
+		resumes = resumes + 1
+		if counter.spent > worst then worst = counter.spent end
+		counter.spent = 0
+	end
+	local function openResume()
+		local counter = counters[coroutine.running()]
+		if counter ~= nil and live then debug.sethook(costHook(counter), '', COST_STEP) end
+	end
+	env.CreateThread = function(fn)
+		return realCreate(function()
+			counters[coroutine.running()] = { spent = 0 }
+			openResume()
+			fn()
+			settleResume()
+		end)
+	end
+	env.Wait = function(...)
+		settleResume()
+		realWait(...)
+		openResume()
+	end
+	start()
+	control.Pump(rounds or 40)
+	live = false
+	env.CreateThread, env.Wait = realCreate, realWait
+	return worst, resumes
 end
 
 -- Everything the runtime itself is allowed to publish on `OPX`. A module that
@@ -141,6 +223,11 @@ local CORE_NAMESPACE = {
 	-- because every module that announces something calls it, and a copy per
 	-- module would be a copy per idea of what "refused" means.
 	Publish = true,
+	-- The creator surfaces' one caller gate and answer shape, in
+	-- `core/shared/exports.lua`. On `OPX` because BOTH halves stand on it: two
+	-- copies of a gate are two gates, and the day one is tightened alone the
+	-- client and the server disagree about who may call.
+	Export = true,
 }
 
 -- States a module may legitimately rest in. `absent` means it runs on the other
@@ -1268,6 +1355,59 @@ do
 		OPX.Config.MODULES.spawn.HOLD_MAX_SECONDS = savedHold
 		-- Put back what the config ships, so nothing after this section is
 		-- testing a policy this one set.
+		OPX.Config.MODULES.spawn.OFFER_POLICY = heldPolicy
+		spawn.Init()
+	end
+end
+
+-- ── a choice belongs to a character, not to a slot ──────────────────────────
+-- A switch in the world unloads one character and places the next on the spot,
+-- asking this module nothing. The choice still open for the first stayed open:
+-- its menu up and holding the keyboard until the hold ran out, and a second
+-- offer on the slot refused behind it.
+section('spawn: a choice left by a character that left the slot')
+do
+	local env, control, why = boot('server')
+	check('server boots for the abandoned choice', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local spawn = OPX.Modules.Get('spawn')
+		local heldPolicy = OPX.Config.MODULES.spawn.OFFER_POLICY
+		OPX.Config.MODULES.spawn.OFFER_POLICY = 'always'
+		spawn.Init()
+		local src = 9
+		control.Admit(src, 'account-switch')
+
+		local function closedWith(mark, reason)
+			for index = mark + 1, #control.clientEvents do
+				local one = control.clientEvents[index]
+				if one.name == spawn.Event.CLOSE and type(one[1]) == 'table' and
+					one[1].reason == reason then return true end
+			end
+			return false
+		end
+
+		check('the first character is offered a choice', spawn.Offer(src, 'citizen-a') == true)
+		local mark = #control.clientEvents
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'unloaded'), src,
+			{ citizenId = 'citizen-a' })
+		check('UNLOADING THE CHARACTER DROPS ITS CHOICE', spawn.IsPending(src) == false)
+		check('and takes its menu down', closedWith(mark, 'abandoned'))
+
+		check('the next character on the slot is offered its own',
+			spawn.Offer(src, 'citizen-b') == true)
+		env.TriggerEvent(OPX.Event(OPX.Channel.INTERNAL, 'character', 'unloaded'), src,
+			{ citizenId = 'citizen-other' })
+		check('an unload naming somebody else leaves it standing', spawn.IsPending(src) == true)
+
+		-- A choice nobody unloaded (an unload the module missed) is still nobody's
+		-- once another character is offered on the slot.
+		mark = #control.clientEvents
+		check('an offer for a different character replaces the stale one',
+			spawn.Offer(src, 'citizen-c') == true and closedWith(mark, 'abandoned'))
+		check('while a second offer for the same one is still refused',
+			spawn.Offer(src, 'citizen-c') == false)
+
 		OPX.Config.MODULES.spawn.OFFER_POLICY = heldPolicy
 		spawn.Init()
 	end
@@ -2622,6 +2762,32 @@ do
 			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
 	end
 
+	-- AND THE FACE GIVEN UP ON IS OWED, NOT LOST. Settling with no face is what
+	-- keeps a dead body from holding the gate; it was also the face gone for the
+	-- session, because "the next world entry" never comes for a player who is
+	-- revived where they lie.
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		control.Fire(appearance.HostEvent.RESET_COMPLETE)
+		control.Pump(70)
+		check('the dead body settles the entry with no face first',
+			platform.warned('settles with no face') and #platform.applied == 0,
+			table.concat(control.log.warn, ' | '))
+		platform.alive = true
+		control.Pump(10)
+		check('A BODY ALIVE AGAIN GETS THE FACE THE ENTRY GAVE UP ON',
+			#platform.applied == 1, ('%d apply call(s)'):format(#platform.applied))
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		control.Pump(3)
+		local settled = appearance.Contract.IsSettled()
+		check('and the entry is settled on it, still announced once',
+			settled.ok and settled.value.settled == true and platform.announced() == 1,
+			tostring(settled.ok and settled.value.waiting))
+		control.Pump(20)
+		check('once, not on every pass', #platform.applied == 1, tostring(#platform.applied))
+	end
+
 	-- AND A RESET THAT NEVER COMES IS STILL BOUNDED, by RESET_WAIT_MS rather than
 	-- by a not-alive clock that cannot tell a dead body from an unreset one.
 	do
@@ -2639,6 +2805,219 @@ do
 		local settled = appearance.Contract.IsSettled()
 		check('so the clothing gate and the published look are not held for ever',
 			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
+	end
+
+	-- A SWITCH IN THE WORLD IS NOT A WORLD ENTRY. `CHARACTERS.SWITCH = 'relog'`
+	-- unloads one character and loads the next on the same puppet: no world-ready
+	-- and no platform reset. The unload used to clear the reset and the
+	-- announcement with the character, so the next one's entry waited for ever on
+	-- a reset that was never coming -- its clothes never put on, nothing saved,
+	-- and its look never published again, invisible to everybody else.
+	do
+		local env, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		platform.alive = true
+		control.Fire(appearance.HostEvent.RESET_COMPLETE)
+		control.Pump(5)
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		local settled = appearance.Contract.IsSettled()
+		check('the first character is settled before the switch',
+			settled.ok and settled.value.settled == true)
+
+		local other = { gameBuild = '2.31', gender = 'female', options = { eyes = 5 } }
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'unloaded'))
+		control.Pump(3)
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-OTHER', charInfo = { gender = 'female' }, appearance = other })
+		control.Pump(10)
+		check('the next character\'s face goes on the same puppet',
+			#platform.applied == 2 and platform.applied[2].options.eyes == 5,
+			('%d apply call(s)'):format(#platform.applied))
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		control.Pump(5)
+		settled = appearance.Contract.IsSettled()
+		check('AND ITS ENTRY SETTLES WITHOUT A RESET NOBODY WILL RUN',
+			settled.ok and settled.value.settled == true,
+			tostring(settled.ok and settled.value.waiting))
+		check('still counted as announced, so its clothes and its look go out',
+			settled.ok and settled.value.announced == true)
+		check('without sending gameplay-ready a second time', platform.announced() == 1,
+			tostring(platform.announced()))
+
+		-- A real world entry still starts over.
+		control.Fire(env.OPX.Host.WORLD_READY)
+		settled = appearance.Contract.IsSettled()
+		check('while a world entry clears the announcement it is owed',
+			settled.ok and settled.value.announced == false)
+	end
+
+	-- A RESTART MID-SESSION IS NOT A JOIN EITHER. The resource comes back on a
+	-- puppet the platform reset long ago, and no `playerReset:complete` will be
+	-- raised for it again -- so a restore that waited for one never settled:
+	-- nothing announced, no clothes put back, no look published.
+	--- A client VM started on a world already reset, with `reset` projected.
+	local function restartedClient(reset)
+		local own, ctl = Host.Environment('client')
+		local platform = { applied = {} }
+		own.Open77.appearance = {
+			captureBody = function() return { family = 'female' } end,
+			takeBodyFamilyTransition = function() return nil end,
+			finishCommit = function() return true end,
+			isOpen = function() return false end,
+			apply = function(snapshot)
+				platform.applied[#platform.applied + 1] = snapshot
+				return true
+			end,
+		}
+		own.Open77.session = {
+			characterBootstrap = function()
+				return { phase = 'ready', bodyFamily = 'female', playerReset = reset }
+			end,
+			resolveCharacterBootstrap = function() return false, 'spent' end,
+			failCharacterBootstrap = function() return true end,
+		}
+		own.Open77.character.state = function()
+			return { attached = true, alive = true, health = 250 }
+		end
+		own.Open77.players.getLifeState = function() return { phase = 'alive' } end
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			assert(loadfile(file, 't', own), file)()
+		end
+		ctl.Fire('onClientResourceStart', 'opx_infinity')
+		ctl.Pump(240)
+		ctl.ReadyPages()
+		platform.announced = function()
+			local count = 0
+			for _, sent in ipairs(ctl.serverEvents) do
+				if sent.name == own.OPX.Host.GAMEPLAY_READY then count = count + 1 end
+			end
+			return count
+		end
+		return own, ctl, own.OPX.Modules.Get('appearance'), platform
+	end
+	for _, reset in ipairs({ 'complete', false }) do
+		local env, control, appearance, platform = restartedClient(reset or nil)
+		local said = reset and 'projected complete' or 'not projected'
+		-- The character module's answer to its own announce after the restart.
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-BACK', charInfo = { gender = 'female' },
+				appearance = { gameBuild = '2.31', gender = 'female', options = { eyes = 7 } } })
+		control.Pump(10)
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		control.Pump(10)
+		check(('after a restart (reset %s) the face goes back on'):format(said),
+			#platform.applied >= 1, ('%d apply call(s)'):format(#platform.applied))
+		local settled = appearance.Contract.IsSettled()
+		check(('AND THE ENTRY SETTLES AND ANNOUNCES WITHOUT A RESET (%s)'):format(said),
+			settled.ok and settled.value.settled == true and settled.value.announced == true,
+			tostring(settled.ok and settled.value.waiting))
+	end
+	-- But a restart that lands on a body whose reset is still under way waits
+	-- for it, exactly as a join does.
+	do
+		local _, _, appearance = restartedClient('clearing')
+		check('a restart on a reset still running does not count it as done',
+			appearance.Face.playerResetDone == false)
+	end
+
+	-- A SAVE THE SHOP COULD NOT CHARGE PUTS THE STORED LOOK BACK, end to end. The
+	-- server refuses a priced room's save with `clothing.unpaid`; this client has
+	-- to take the unpaid jacket back off the puppet, not keep wearing (and
+	-- publishing) it, and not keep offering the same save.
+	do
+		local env, control, appearance = restartedClient('complete')
+		local STORED = { schemaVersion = 1, wardrobe = { outfits = {} }, equipment = {
+			Head = false, Face = false, InnerChest = 'Items.Shirt_01', OuterChest = 'Items.Jacket_01',
+			Legs = 'Items.Pants_01', Feet = 'Items.Shoes_01', Outfit = false,
+			UnderwearTop = false, UnderwearBottom = 'Items.Underwear_Basic_01_Bottom' } }
+
+		-- A puppet that wears whatever it is told and reads back what it wears.
+		local worn, applied = {}, {}
+		for slot, item in pairs(STORED.equipment) do worn[slot] = false end
+		env.Open77.equipment = {
+			registry = function()
+				local copy = {}
+				for slot, item in pairs(worn) do copy[slot] = item end
+				return copy
+			end,
+			apply = function(slots)
+				for slot, item in pairs(slots) do worn[slot] = item end
+				applied[#applied + 1] = slots.OuterChest
+				return true
+			end,
+			info = function() return nil end,
+			records = function() return {} end,
+		}
+		local outfit = { registry = function() return {} end, apply = function() return true end }
+		env.Open77.wardrobe = {
+			active = function() return false end,
+			activate = function() return true end,
+			outfit = function() return outfit end,
+		}
+
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-PAYS', charInfo = { gender = 'female' }, clothing = STORED,
+				appearance = { gameBuild = '2.31', gender = 'female', options = { eyes = 2 } } })
+		control.Pump(10)
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		local dressed = settle(control, function() return appearance.Clothing.Report() == 'worn' end, 120)
+		check('the stored clothes are on before the room', dressed and worn.OuterChest == 'Items.Jacket_01',
+			('%s, %s'):format(appearance.Clothing.Report(), tostring(worn.OuterChest)))
+
+		-- The room kept a jacket: the clothing half sees it hold and saves it.
+		local SAVE = appearance.Event.SAVE_CLOTHING
+		local function saves()
+			local count, last = 0, nil
+			for _, sent in ipairs(control.serverEvents) do
+				if sent.name == SAVE then count, last = count + 1, sent[1] end
+			end
+			return count, last
+		end
+		worn.OuterChest = 'Items.Jacket_Bought'
+		local sent = settle(control, function() return saves() >= 1 end, 120)
+		local count, payload = saves()
+		check('the kept jacket goes to the server as a save', sent and type(payload) == 'table' and
+			payload.clothing.equipment.OuterChest == 'Items.Jacket_Bought', tostring(count))
+
+		-- The shop could not take the money.
+		local refuse = control.netEvents[appearance.Event.REFUSED]
+		refuse('clothing.unpaid', appearance.Operation.SAVE_CLOTHING)
+		local back = settle(control, function() return worn.OuterChest == 'Items.Jacket_01' end, 120)
+		check('AN UNPAID SAVE PUTS THE STORED JACKET BACK ON THE PUPPET', back,
+			('wearing %s, last put-on %s'):format(tostring(worn.OuterChest), tostring(applied[#applied])))
+		control.Pump(60)
+		local after = saves()
+		check('and the unpaid look is not offered to the server again', after == count,
+			('%d save(s) before, %d after'):format(count, after))
+		check('the clothing half is back to worn and still saving',
+			appearance.Clothing.Report() == 'worn', appearance.Clothing.Report())
+	end
+
+	-- A RESET THE HOST GIVES UP ON IS OVER TOO. `open77:playerReset:failed` went
+	-- unheard, so a failed reset was waited on for the whole of RESET_WAIT_MS: a
+	-- minute in the world on no face, with the clothing gate held behind it.
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		check('announced on the armed body before the failed reset',
+			platform.announced() == 1, tostring(platform.announced()))
+		control.Fire(appearance.HostEvent.RESET_FAILED, 'reset_timeout')
+		control.Pump(70)
+		check('A FAILED RESET SETTLES THE ENTRY ON THE NOT-ALIVE CLOCK, NOT AFTER A MINUTE',
+			platform.warned('settles with no face') and not platform.warned('has not reset the body'),
+			table.concat(control.log.warn, ' | '))
+		local settled = appearance.Contract.IsSettled()
+		check('so nothing downstream waits on it',
+			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
+	end
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		platform.alive = true
+		control.Fire(appearance.HostEvent.RESET_FAILED, 'reset_timeout')
+		control.Pump(5)
+		check('and a body alive after a failed reset still gets its face',
+			#platform.applied == 1, ('%d apply call(s)'):format(#platform.applied))
 	end
 
 	-- ── the catalogue, read per slot, standing behind seven sliders ──────────
@@ -3040,10 +3419,17 @@ do
 		-- A BOX IS A SLIDE. Nothing new decides anything: the page reports the
 		-- index the box carries and the room turns it into a record against its own
 		-- list, which is the one path a thumb has always taken.
-		control.PageEmit(page, 'opx:panel:slide',
+		local sliding = callCost(control.PageEmit, page, 'opx:panel:slide',
 			{ handle = handle, id = 'OuterChest', index = 5, commit = true })
 		check('a box clicked in the grid dresses the puppet like a thumb does',
 			worn.OuterChest == 'Items.OuterChest_05', tostring(worn.OuterChest))
+		-- EVERY ROOM STATE THE PANEL WAS HANDED WAS WALKED NODE BY NODE, ~3,600
+		-- instructions of a ~5,600 republish, though every field of a patch is
+		-- already bounded by the panel's parsers. A slide is one; so is every
+		-- look list and every code that lands while the room is open, which the
+		-- meter put at ~10,000 a time. Held well inside the budget, not at it.
+		check('and the click is answered inside a small budget',
+			sliding < 4000, ('%d instructions'):format(sliding))
 
 		-- ── the category strip, and what gates each row ──────────────────────
 		-- WIRED, NOT BUILT. Saved outfits, share codes and the job gate all
@@ -3089,10 +3475,12 @@ do
 		-- Even once a look list arrives: without a shop being served there is
 		-- still nothing this player could be sold.
 		local shopsModule = env.OPX.Modules.Get('shops')
-		control.netEvents[shopsModule.Event.LOOKS]({ shop = 'jinguji',
+		local listing = callCost(control.netEvents[shopsModule.Event.LOOKS], { shop = 'jinguji',
 			looks = { { id = 'corpo', label = 'Corpo suit', cost = 0 } } })
 		check('and a look list alone does not conjure the category',
 			not hasGroup('looks'))
+		check('and the list lands inside a small budget',
+			listing < 4000, ('%d instructions'):format(listing))
 
 		-- ── a shared code, all the way onto the sliders ──────────────────────
 		-- THE ROUND TRIP THAT WAS BROKEN. A redeemed code comes back as `PUT_ON`,
@@ -3103,7 +3491,7 @@ do
 		-- the room's draft now, which means the SLIDER MOVES -- and the slider
 		-- moving is the only thing the player can actually see.
 		local wasFeet = slider('Feet')
-		control.netEvents[shopsModule.Event.PUT_ON]({ look = 'shared',
+		local dressing = callCost(control.netEvents[shopsModule.Event.PUT_ON], { look = 'shared',
 			wear = { Feet = 'Items.Feet_03' } })
 		local nowFeet = slider('Feet')
 		check('a code redeemed inside the room moves the room\'s own slider',
@@ -3113,6 +3501,8 @@ do
 			wasFeet ~= nil and nowFeet ~= nil and wasFeet.index ~= nowFeet.index)
 		check('and the puppet is actually wearing it',
 			worn.Feet == 'Items.Feet_03', tostring(worn.Feet))
+		check('and the code lands inside a small budget',
+			dressing < 4000, ('%d instructions'):format(dressing))
 
 		-- A GARMENT THIS BODY HAS NO RECORD FOR IS SKIPPED, NOT OBEYED. A code is
 		-- read out by another player whose character may be a different build, so
@@ -3151,12 +3541,13 @@ do
 		local env, control = joinClient('never', 400)
 		local appearance = env.OPX.Modules.Get('appearance')
 
+		-- BUILT ONCE, OUT HERE. The native answers from C; a stub that built two
+		-- thousand records in Lua inside the room's thread charged ~21,000
+		-- instructions of test fixture to the room's resume on the budget meter.
+		local coats = {}
+		for index = 1, 2000 do coats[index] = { record = ('Items.Coat_%04d'):format(index) } end
 		env.Open77.equipment.records = function(options)
-			local out = {}
-			if options.slot == 'OuterChest' then
-				for index = 1, 2000 do out[index] = { record = ('Items.Coat_%04d'):format(index) } end
-			end
-			return out
+			return options.slot == 'OuterChest' and coats or {}
 		end
 		env.Open77.equipment.apply = function() return true end
 		env.Open77.character.state = function()
@@ -3246,17 +3637,44 @@ do
 		appearance.Clothing.BeginPreview = function() return { equipment = {} } end
 		appearance.Clothing.EndPreview = function() return true end
 
-		appearance.Wardrobe.Open('appearance')
-		control.Pump(60)
+		-- THE OPEN AND EVERY SCROLL ARE COUNTED, a resume at a time. The room
+		-- used to do its borrow, its dressing, the panel's open with sixty boxes
+		-- in it and the shop's category strip in the resume of its last catalogue
+		-- breath -- ~19,000 instructions (29,000 on the budget meter) against a
+		-- client budget of ~10,000 that unwinds the thread silently, with the
+		-- puppet out on loan -- and a scroll published its sixty boxes in one
+		-- resume, ~16,000.
+		local opening, openResumes = resumeCost(env, control,
+			function() appearance.Wardrobe.Open('appearance') end, 60)
 		check('the room opened on the one category with anything in it',
 			appearance.Wardrobe.IsOpen())
+		check('and no resume of the opening cost more than 6,000 instructions',
+			opening < 6000, ('%d instructions, dearest of %d resumes'):format(opening, openResumes))
 
-		--- Every grid window the page has been sent, in order.
-		local windows = {}
-		for index = 1, #page.sent do
-			local given = page.sent[index].payload.tiles
-			if type(given) == 'table' then windows[#windows + 1] = given end
+		--- Every grid publication the page has been sent from `first` on, in order.
+		local function windowsFrom(first)
+			local found = {}
+			for index = first, #page.sent do
+				local given = page.sent[index].payload.tiles
+				if type(given) == 'table' then found[#found + 1] = given end
+			end
+			return found
 		end
+
+		--- The slices of one window joined back up, or nil when they leave a hole.
+		local function joined(slices)
+			if #slices == 0 then return nil end
+			local whole = { slot = slices[1].slot, from = slices[1].from, entries = {} }
+			for index = 1, #slices do
+				if slices[index].from ~= whole.from + #whole.entries then return nil end
+				for at = 1, #slices[index].entries do
+					whole.entries[#whole.entries + 1] = slices[index].entries[at]
+				end
+			end
+			return whole
+		end
+
+		local windows = windowsFrom(1)
 		local handle = nil
 		for index = 1, #page.sent do
 			if page.sent[index].channel == 'opx:panel:open' then
@@ -3275,26 +3693,27 @@ do
 		check('the room opens on the first category with anything in it',
 			openedOn == 'OuterChest', tostring(openedOn))
 
-		check('the first frame carries one window and not the category',
-			#windows == 1 and windows[1].from == 1 and #windows[1].entries == 60,
-			#windows == 1 and ('%d entries'):format(#windows[1].entries)
-				or ('%d window(s)'):format(#windows))
+		-- ONE WINDOW AND NOT THE CATEGORY, pushed behind the first frame in slices
+		-- the page appends: the same sixty boxes the frame used to carry, with no
+		-- request in between.
+		local first = joined(windows)
+		check('the first window follows the first frame, sixty boxes and not the category',
+			first ~= nil and first.from == 1 and #first.entries == 60,
+			first ~= nil and ('%d entries over %d slice(s)'):format(#first.entries, #windows)
+				or ('%d slice(s) that do not join up'):format(#windows))
 
-		--- Asks for the window after everything sent so far, and answers the new one.
+		--- Asks for the window after everything sent so far, and answers the new
+		--- one joined up, with the dearest resume it cost.
 		local function scrollOn(from)
 			local before = #page.sent
-			control.PageEmit(page, 'opx:panel:tiles',
-				{ handle = handle, slot = 'OuterChest', from = from })
-			-- Built on frames of its own; see `warmTiles`.
-			control.Pump(10)
-			for index = before + 1, #page.sent do
-				local given = page.sent[index].payload.tiles
-				if type(given) == 'table' then return given end
-			end
-			return nil
+			local spent = resumeCost(env, control, function()
+				control.PageEmit(page, 'opx:panel:tiles',
+					{ handle = handle, slot = 'OuterChest', from = from })
+			end, 20)
+			return joined(windowsFrom(before + 1)), spent
 		end
 
-		local second = scrollOn(61)
+		local second, scrolling = scrollOn(61)
 		check('scrolling to the bottom asks for the next window and gets it',
 			type(second) == 'table' and second.from == 61 and #second.entries == 60,
 			type(second) == 'table' and ('from %s, %d'):format(tostring(second.from),
@@ -3302,6 +3721,8 @@ do
 		check('and it starts exactly where the last one ended, so the grid has no hole',
 			type(second) == 'table' and second.entries[1] == 'Items.Coat_061',
 			type(second) == 'table' and tostring(second.entries[1]) or 'nothing came back')
+		check('and no resume of answering it cost more than 6,000 instructions',
+			scrolling < 6000, ('%d instructions'):format(scrolling))
 
 		-- The tail is short, and short is correct: the window is a slice and not a
 		-- fixed-size page, so the last one carries whatever is left.
@@ -3322,7 +3743,9 @@ do
 			scrollOn(TOTAL + 1) == nil)
 
 		-- ONE PAYLOAD NEVER CARRIES THE CATEGORY. This is the check that would go
-		-- red if somebody answered a scroll with the rest of the list.
+		-- red if somebody answered a scroll with the rest of the list -- and it
+		-- holds a publication to a slice now, because the page's check of every
+		-- box it is handed is what made a sixty-box payload a budget overrun.
 		local biggest = 0
 		for index = 1, #page.sent do
 			local given = page.sent[index].payload.tiles
@@ -3330,8 +3753,8 @@ do
 				biggest = #given.entries
 			end
 		end
-		check('and no single window ever carried more than the wire bound',
-			biggest == 60, tostring(biggest))
+		check('and no single publication ever carried more than a slice of ten boxes',
+			biggest == 10, tostring(biggest))
 
 		appearance.Wardrobe.Close('caller')
 	end
@@ -3803,6 +4226,430 @@ do
 			select(1, pcall(Scheduler.Every, 'zero', 0, noop)) == true)
 
 		Scheduler.Stop()
+	end
+end
+
+-- ── core and lib: the audit of 2026-10 ───────────────────────────────────────
+-- Most of these load ONE file against a host this section owns, the way the
+-- scheduler section above does, because every defect below hid behind a host
+-- that was more forgiving than the platform.
+
+--- A logger that keeps every line, for an isolated load.
+local function keptLog()
+	local lines = { info = {}, warn = {}, error = {}, debug = {} }
+	local log = {}
+	for level, list in pairs(lines) do
+		log[level] = function(text) list[#list + 1] = text end
+	end
+	return log, lines
+end
+
+-- A HANDLER THAT REMOVES ITSELF MUST NOT COST THE NEXT ONE ITS PAYLOAD. The
+-- dispatch walked the live listener list under a comment saying it walked a
+-- snapshot, so the remover `On` answers shifted the tail down: the listener after
+-- the one that removed itself never ran, and the last index held nil.
+section('a page handler that removes itself')
+do
+	local log, lines = keptLog()
+	local listeners = {}
+	local page = {
+		on = function(_, name, fn) listeners[name] = fn return true end,
+		send = function() return true end,
+	}
+	local env = {
+		Open77 = { log = log }, OPX = { Note = function() end },
+		WebUI = { create = function() return page end },
+		pcall = pcall, type = type, tostring = tostring, ipairs = ipairs, pairs = pairs,
+		table = table, string = string,
+	}
+	local chunk, why = loadfile('lib/client/surface.lua', 't', env)
+	check('the surface loads alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		local surface = env.OPX.Surface.Create({ id = 'opx', entry = 'web/index.html' })
+		local heard = {}
+		local removeFirst
+		removeFirst = env.OPX.Surface.On(surface, 'focus:set', function()
+			heard[#heard + 1] = 'first'
+			removeFirst()
+		end)
+		env.OPX.Surface.On(surface, 'focus:set', function() heard[#heard + 1] = 'second' end)
+		env.OPX.Surface.On(surface, 'focus:set', function() heard[#heard + 1] = 'third' end)
+
+		listeners['opx:focus:set']({ focus = false })
+		check('every listener hears the payload the first one removed itself on',
+			table.concat(heard, ',') == 'first,second,third', table.concat(heard, ','))
+		check('and nothing is reported as a nil handler raising', #lines.error == 0,
+			table.concat(lines.error, ' | '))
+
+		heard = {}
+		listeners['opx:focus:set']({ focus = false })
+		check('the removed one is gone on the next payload',
+			table.concat(heard, ',') == 'second,third', table.concat(heard, ','))
+	end
+end
+
+-- A REFUSED TOAST UPDATE PUTS BACK A FALSE, IT DOES NOT DELETE IT. The rollback
+-- was `was ~= ABSENT and was or nil`, the and/or trap the `ABSENT` sentinel was
+-- written to avoid.
+section('a refused toast update restores what it changed')
+do
+	local refuse = false
+	local lastToast
+	local env = {
+		Open77 = { log = keptLog() },
+		OPX = {
+			Event = function(channel, module, verb)
+				return ('opx:%s:%s:%s'):format(channel, module, verb)
+			end,
+			Channel = { NET = 'net', LOCAL = 'on', INTERNAL = 'in' },
+			Glyphs = {},
+			UI = { Send = function(_, _, payload)
+				lastToast = payload
+				return true, refuse
+			end },
+			Note = function() end,
+		},
+		locale = function(key) return key end,
+		pcall = pcall, type = type, tostring = tostring, tonumber = tonumber, pairs = pairs,
+		ipairs = ipairs, string = string, table = table,
+	}
+	local chunk, why = loadfile('core/client/notify.lua', 't', env)
+	check('the toasts load alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		local id = env.OPX.Toast.Show({ message = 'hello', title = false })
+		local toast = lastToast
+		check('a toast with a false title goes up',
+			id ~= nil and toast ~= nil and toast.title == false)
+
+		refuse = true
+		local updated, reason = env.OPX.Toast.Update(id, { title = 'changed', extra = 1 })
+		check('the host refusing the patch is reported',
+			updated == false and reason == 'payload_refused', tostring(reason))
+		check('the false it overwrote is put back, not deleted', toast.title == false,
+			tostring(toast.title))
+		check('and a key the patch added is taken off again', toast.extra == nil)
+
+		-- A refused REPLACEMENT must leave the toast still on screen addressable.
+		refuse = false
+		env.OPX.Toast.Show({ id = 'kept', message = 'first' })
+		refuse = true
+		local replaced = env.OPX.Toast.Show({ id = 'kept', message = 'second' })
+		refuse = false
+		check('a refused replacement is reported', replaced == nil)
+		check('and the toast it would have replaced can still be updated',
+			env.OPX.Toast.Update('kept', { message = 'third' }) == true)
+	end
+end
+
+-- A WATCH WHOSE RELEASE IS REFUSED TRIES AGAIN. It answered "done" whatever the
+-- release said, so a refused release left a hold that belonged to nobody --
+-- while `Release` keeps the session marked held for exactly that retry.
+section('the gate watch retries a refused release')
+do
+	local clock = 0
+	local threads = {}
+	local releases, statuses, giveUps = {}, 0, 0
+	local answers = { false, true }
+	local env = {
+		Open77 = {
+			log = keptLog(),
+			ready = {
+				participate = function() return true end,
+				release = function(_, token)
+					releases[#releases + 1] = tostring(token)
+					local answer = table.remove(answers, 1)
+					if answer == false then return false, 'session_mismatch' end
+					return true
+				end,
+				status = function()
+					statuses = statuses + 1
+					return { session = 'fresh' }
+				end,
+			},
+		},
+		OPX = {
+			Config = { SERVER = { ENTRY = { GATE_MS = 300000, WATCH_MS = 2000 } } },
+			Event = function(channel, module, verb)
+				return ('opx:%s:%s:%s'):format(channel, module, verb)
+			end,
+			Channel = { NET = 'net', LOCAL = 'on', INTERNAL = 'in' },
+			Host = { PLAYER_READY = 'onPlayerReady', GAMEPLAY_READY = 'gameplayReady' },
+			Math = {
+				IsFinite = function(v)
+					return type(v) == 'number' and v == v and v ~= math.huge and v ~= -math.huge
+				end,
+				Clamp = function(v, low, high) return math.max(low, math.min(high, v)) end,
+			},
+			Modules = { Record = function() return true end },
+			Sessions = {},
+			Now = function() return clock end,
+		},
+		CreateThread = function(fn) threads[#threads + 1] = coroutine.create(fn) end,
+		Wait = function() coroutine.yield() end,
+		AddEventHandler = function() end,
+		TriggerEvent = function() end,
+		GetResourceState = function() return 'missing' end,
+		GetCurrentResourceName = function() return 'opx_infinity' end,
+		pcall = pcall, type = type, tostring = tostring, tonumber = tonumber, ipairs = ipairs,
+		math = math, string = string, table = table,
+	}
+	local chunk, why = loadfile('core/server/gate.lua', 't', env)
+	check('the gate loads alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		env.OPX.Sessions[5] = { source = 5, userId = 'u5', gateSession = 'stale' }
+		env.OPX.Gate.Watch(5, 2000, function() giveUps = giveUps + 1 return true end)
+		local thread = threads[#threads]
+		local function tick() coroutine.resume(thread) end
+
+		tick()
+		clock = 5000
+		tick()
+		check('the first release at the deadline is refused',
+			#releases == 1 and releases[1] == 'stale', table.concat(releases, ','))
+		check('and the watch is still running', coroutine.status(thread) == 'suspended')
+		check('the session is still held', env.OPX.Sessions[5].released ~= true)
+
+		tick()
+		check('the retry does not resend the stale token: it asks the host for the current one',
+			#releases == 2 and releases[2] == 'fresh' and statuses == 1, table.concat(releases, ','))
+		check('the retry lands and the watch ends', env.OPX.Sessions[5].released == true
+			and coroutine.status(thread) == 'dead')
+		check('onGiveUp is asked once, not once per attempt', giveUps == 1, tostring(giveUps))
+	end
+end
+
+-- `open77_notifications` spells its positions with an underscore and refuses a
+-- field past its byte bound; the shipped `top-right` was neither. And the two
+-- doors that reach our own page check what they carry on the sending side.
+section('server toasts and command answers')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local sent = {}
+		local notifications = env.Open77.notifications
+		env.Open77.notifications = { send = function(_, definition)
+			sent[#sent + 1] = definition
+			return 1
+		end }
+		env.OPX.Notify(3, ('x'):rep(1000), 'info')
+		local first = sent[1]
+		check('a server toast names a position the package has',
+			first ~= nil and first.position == 'top_right', first and tostring(first.position))
+		check('and its message fits the 384 bytes the package accepts',
+			first ~= nil and #first.message == 384, first and #first.message)
+
+		env.Open77.notifications = nil
+		local ran, delivered, reason = pcall(env.OPX.Notify, 4, 'hello', 'info')
+		check('a host without notifications answers a refusal instead of raising',
+			ran and delivered == false and reason == 'no_notifications', tostring(reason))
+		env.Open77.notifications = notifications
+
+		env.OPX.Refuse(4, 'error.tooFast', 'test', 'not-a-glyph')
+		local refusal = control.clientEvents[#control.clientEvents]
+		check('a refusal naming a glyph outside the set sends none',
+			refusal ~= nil and refusal[1] ~= nil and refusal[1].icon == nil)
+
+		env.OPX.CommandResult(4, true, ('a\xC3\xA9'):rep(3000))
+		local dump = control.clientEvents[#control.clientEvents]
+		local text = dump and dump[1] and dump[1].text or ''
+		check('a long command answer is cut before the character it would split',
+			#text == 8194 and text:sub(-4) == 'a...', #text)
+	end
+end
+
+-- THE CREATOR WRITE LEDGER IS NOT COLLAPSED. An export write carries no player
+-- source, so every one shared the `-` window: ten writes in ten seconds were one
+-- line and `[+9 suppressed]`, and one resource's denials hid every other's.
+section('the creator ledger')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local function count(pattern)
+			local n = 0
+			for _, level in ipairs({ 'info', 'warn' }) do
+				for _, line in ipairs(control.log[level]) do
+					if line:find(pattern, 1, true) then n = n + 1 end
+				end
+			end
+			return n
+		end
+		local before = count('event=export.AddItem')
+		for player = 1, 3 do
+			env.OPX.Audit.Log({ event = 'export.AddItem', message = 'shop', owner = 'ext:shop',
+				data = { player = player } })
+		end
+		check('three writes by another resource are three audit lines',
+			count('event=export.AddItem') == before + 3, count('event=export.AddItem') - before)
+
+		local denied = count('event=export.denied')
+		env.OPX.Audit.Log({ event = 'export.denied', severity = 'warn', message = 'a', owner = 'ext:a' })
+		env.OPX.Audit.Log({ event = 'export.denied', severity = 'warn', message = 'b', owner = 'ext:b' })
+		env.OPX.Audit.Log({ event = 'export.denied', severity = 'warn', message = 'a', owner = 'ext:a' })
+		check('a denial is collapsed per caller, never across callers',
+			count('event=export.denied') == denied + 2, count('event=export.denied') - denied)
+
+		check('a safe line still cuts on a character boundary',
+			env.OPX.Audit.Safe(('\xC3\xA9'):rep(10), 3) == ('\xC3\xA9'):rep(3) .. '...')
+	end
+end
+
+-- TEXT IS CUT BEFORE IT IS SCANNED. Same answer as before, without walking a
+-- megabyte to keep a handful of characters.
+section('cleaning display text')
+do
+	local env = { OPX = {}, type = type, tostring = tostring, tonumber = tonumber,
+		math = math, string = string, table = table }
+	local chunk, why = loadfile('lib/shared/text.lua', 't', env)
+	check('the text helpers load alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		local Text = env.OPX.Text
+		local cleaned = Text.Clean(('a\n'):rep(500000), 8, '...')
+		check('a long text is still cut to its bound, control characters replaced',
+			cleaned == 'a a a a ...', cleaned)
+		check('a short text is untouched apart from its control characters',
+			Text.Clean('a\tb', 8) == 'a b')
+		check('a multi-byte character is never split',
+			Text.Clean(('\xC3\xA9'):rep(20), 3, '') == ('\xC3\xA9'):rep(3))
+		check('a text exactly at its bound is not cut', Text.Clean('abcd', 4, '...') == 'abcd')
+	end
+end
+
+-- THE SERVER BUS IS QUEUED, so a `session:forgotten` handler runs a tick after
+-- the session is gone -- on the eviction path, after the NEXT account's session
+-- is already on the slot. The departed account travels with the event.
+section('a forgotten session names its account')
+do
+	local raised = {}
+	local env = {
+		OPX = {
+			Event = function(channel, module, verb)
+				return ('opx:%s:%s:%s'):format(channel, module, verb)
+			end,
+			Channel = { NET = 'net', LOCAL = 'on', INTERNAL = 'in' },
+			Host = { PLAYER_DISCONNECTED = 'onPlayerDisconnected' },
+		},
+		TriggerEvent = function(...) raised[#raised + 1] = table.pack(...) end,
+		AddEventHandler = function() end,
+		type = type, tonumber = tonumber, tostring = tostring, table = table,
+	}
+	local chunk, why = loadfile('core/server/sessions.lua', 't', env)
+	check('the sessions load alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		env.OPX.Sessions[7] = { source = 7, userId = 'acct-7' }
+		env.OPX.ForgetSession(7)
+		local event = raised[#raised]
+		check('the announcement carries the account the session belonged to',
+			event ~= nil and event[2] == 7 and event[3] == 'acct-7')
+		check('and the slot is empty by the time anyone could read it',
+			env.OPX.Sessions[7] == nil)
+	end
+end
+
+-- The server bus is queued, so the character module's `session:forgotten`
+-- handler runs a tick after the session went -- and a recycled slot may hold
+-- the next account by then. It logged that slot out and isolated it whoever
+-- was on it: the newcomer was moved into a selection bucket, shown the UNLOADED
+-- screen, had its session's character cleared, and -- if it had already loaded
+-- a character -- was logged out in place of the account that left.
+section('a forgotten session logs out the account that left, not the one that arrived')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end, query = function() return {} end,
+		single = function() return nil end, insert = function() return 1 end,
+		update = function() return 1 end, transaction = function() return true end,
+	}))
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local FORGOTTEN = OPX.Event(OPX.Channel.INTERNAL, 'session', 'forgotten')
+		local SLOT = 871
+
+		--- Holds `session:forgotten` the way the host's queue does, and lets it go.
+		local held = {}
+		local realTrigger = env.TriggerEvent
+		env.TriggerEvent = function(name, ...)
+			if name == FORGOTTEN then held[#held + 1] = table.pack(...) return end
+			return realTrigger(name, ...)
+		end
+		local function drain()
+			env.TriggerEvent = realTrigger
+			for _, args in ipairs(held) do realTrigger(FORGOTTEN, table.unpack(args, 1, args.n)) end
+			held = {}
+		end
+
+		local function stand(account, name)
+			control.Admit(SLOT, account)
+			OPX.EnsureSession(SLOT)
+			local player = character.CreatePlayer({
+				citizenId = OPX.CitizenId.Generate(), userId = account,
+				source = SLOT, charInfo = { firstName = name, lastName = 'Test' },
+			}, false)
+			player.PlayerData.jobs, player.PlayerData.gangs = {}, {}
+			return player
+		end
+
+		local isolated, unloadedSent = {}, 0
+		local realIsolate = OPX.Buckets.Isolate
+		OPX.Buckets.Isolate = function(source, reason, expected)
+			isolated[#isolated + 1] = { source = source, reason = reason, expected = expected }
+			return realIsolate(source, reason, expected)
+		end
+		local realClient = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, target, ...)
+			if name == character.Event.UNLOADED and target == SLOT then
+				unloadedSent = unloadedSent + 1
+			end
+			return realClient(name, target, ...)
+		end
+
+		-- ── the newcomer has no character yet ────────────────────────────────
+		local departed = stand('account-A', 'Leaving')
+		character.RegisterPlayer(departed)
+		OPX.ForgetSession(SLOT)
+		-- The slot changes hands before the queued handler runs.
+		control.Admit(SLOT, 'account-B')
+		local arrived = OPX.EnsureSession(SLOT)
+		arrived.citizenId = 'MARKER'
+		drain()
+		control.Pump(10)
+		check('the departed character leaves the roster', character.GetPlayer(SLOT) == nil)
+		check('the newcomer\'s session keeps what it holds', arrived.citizenId == 'MARKER',
+			tostring(arrived.citizenId))
+		check('and the newcomer is not shown the UNLOADED screen', unloadedSent == 0, unloadedSent)
+		local wrongly = false
+		for _, row in ipairs(isolated) do
+			if row.source == SLOT and row.reason == 'unloaded'
+				and row.expected ~= departed.PlayerData.userId then wrongly = true end
+		end
+		check('the isolate names the departed account, so it cannot move the newcomer',
+			#isolated > 0 and not wrongly)
+
+		-- ── the newcomer has already loaded a character ──────────────────────
+		local first = stand('account-C', 'Gone')
+		character.RegisterPlayer(first)
+		env.TriggerEvent = function(name, ...)
+			if name == FORGOTTEN then held[#held + 1] = table.pack(...) return end
+			return realTrigger(name, ...)
+		end
+		OPX.ForgetSession(SLOT)
+		local second = stand('account-D', 'Arrived')
+		character.RegisterPlayer(second)
+		drain()
+		control.Pump(10)
+		check('a character the newcomer already loaded is not logged out for the departure',
+			character.GetPlayer(SLOT) == second)
+
+		OPX.Buckets.Isolate = realIsolate
+		env.TriggerClientEvent = realClient
 	end
 end
 
@@ -6018,6 +6865,20 @@ do
 			live.ok and tostring(live.value.id) or tostring(live.detail))
 		control.Seat(src, { vehicleId = live.value.id, seat = 'driver' })
 
+		-- SOMEBODY ELSE IS RIDING ALONG. Putting the car away removes it, and the
+		-- removal would drop the passenger on the tarmac; it is refused instead,
+		-- with words the driver can act on.
+		control.vehicles.snapshot = { occupants = { { playerId = src }, { playerId = 99 } } }
+		local removalsBefore = #control.vehicleRemoves
+		local carrying = contract.Use(src, 'garage_dock')
+		control.vehicles.snapshot = nil
+		check('a car with a passenger in it is not put away',
+			carrying.ok == false and carrying.error == 'garages.passengers'
+				and #control.vehicleRemoves == removalsBefore,
+			tostring(carrying.error))
+		check('and the refusal has a sentence in both languages',
+			OPX.Locale.Exists('garages.passengers'))
+
 		created = #control.vehicleCreates
 		removals = #control.vehicleRemoves
 		local wroteVehicles = #vehicleWrites
@@ -6112,6 +6973,30 @@ do
 		check('a marker in another routing bucket is refused',
 			lastEvent(garages.Event.ANSWER) ~= nil
 				and lastEvent(garages.Event.ANSWER)[3] == 'garages.wrongBucket')
+
+		-- THE NEAREST POINT IS THE NEAREST ONE IN THE PLAYER'S BUCKET. An
+		-- instanced copy of a garage standing on the same spot in another bucket
+		-- -- and sorting first by key -- used to win the nearest-point search and
+		-- then be refused as `wrongBucket`, to a player standing on a garage that
+		-- is in their own.
+		local shadow = place('a_shadow', {
+			KIND = 'garage', LABEL = 'SHADOW',
+			LOCATIONS = { { BUCKET = 7,
+				MENU = { X = 0.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } },
+		})
+		control.Stand(src, 0.0, 0.0, 0.0)
+		local nearest = contract.List(src, nil)
+		check('the nearest point is looked for in the player\'s own bucket',
+			shadow ~= nil and nearest.ok == true and nearest.value.garage == 'garage_dock',
+			nearest.ok and tostring(nearest.value.garage) or tostring(nearest.error))
+		local named = contract.List(src, 'garage_dock')
+		check('and so is the nearest point of a garage named by its key',
+			named.ok == true and named.value.garage == 'garage_dock',
+			named.ok and tostring(named.value.garage) or tostring(named.error))
+		heldGarages['a_shadow'] = nil
+		for _, point in ipairs(Access.PointsOf(shadow)) do held[point.key] = nil end
 
 		control.netEvents[garages.Event.REQUEST]('no_such_marker')
 		control.Pump(8)
@@ -6391,6 +7276,81 @@ end
 -- arrives over `SYNC`. What is asserted is what the ENGINE was asked for: the
 -- shape, the style, the radius and the distance, read back out of the host's
 -- marker stub, which validates them the way `Markers.cpp` does.
+section('spots, client side: one marker set and one key for every spot module')
+do
+	-- garages, dealership, clothing and teleports drew markers through four
+	-- copies of the same set, and those four plus the elevator door declared
+	-- their key through five copies of the same mapping. One of each now, in
+	-- `lib/client/spots.lua`; this is what it promises.
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots for the shared spot helpers', cwhy == nil, cwhy)
+	if cwhy == nil then
+		local Spots = cenv.OPX.Spots
+		local allowed = {}
+		local set = Spots.Markers.New({
+			tag = 'test',
+			look = function() return { shape = 'cylinder', style = 'spawn', radius = 2.0, lift = 0.1 } end,
+			maxDistance = function() return 50.0 end,
+			variant = function(spot) return allowed[spot.key] == true end,
+		})
+		local list = {}
+		for index = 1, 12 do
+			local key = ('s%d'):format(index)
+			list[key] = { key = key, x = index * 1.0, y = 0.0, z = 0.0 }
+		end
+		list.far = { key = 'far', x = 500.0, y = 0.0, z = 0.0 }
+
+		set.Reconcile(list, 0.0, 0.0)
+		check('one pass creates at most eight markers, the per-resume budget',
+			set.Count() == Spots.MARKER_CREATES_PER_PASS, set.Count())
+		set.Reconcile(list, 0.0, 0.0)
+		check('and the next pass creates the rest of what is in range, and nothing beyond it',
+			set.Count() == 12 and not set.Has('far'), set.Count())
+
+		local before = #cenv.Open77.markers.list()
+		allowed.s1 = true
+		set.Reconcile(list, 0.0, 0.0)
+		check('a spot whose variant changed is drawn again, not left in the old style',
+			set.Has('s1') and #cenv.Open77.markers.list() == before)
+
+		list.s2 = nil
+		set.Reconcile(list, 0.0, 0.0)
+		check('a spot the list no longer names loses its marker', not set.Has('s2')
+			and set.Count() == 11, set.Count())
+		set.Reconcile(list, nil, nil)
+		check('and a position that cannot be read draws nothing', set.Count() == 0, set.Count())
+		set.Reconcile(list, 0.0, 0.0)
+		set.Reconcile(list, 0.0, 0.0)
+		set.Clear()
+		check('Clear takes every marker down', set.Count() == 0
+			and #cenv.Open77.markers.list() == 0, #cenv.Open77.markers.list())
+
+		-- THE KEY, AND THE SILENT PRESS: a press while another surface holds the
+		-- keyboard does nothing at all, and the handler is handed 'key'.
+		local presses = {}
+		local registered = Spots.Key.Register({
+			tag = 'test',
+			declared = { ID = 'opx.test.use', NAME = 'garages.key.use', DEFAULT = 'E' },
+			onPress = function(origin) presses[#presses + 1] = origin end,
+		})
+		local mapping = cctl.keyMappings.byId['opx.test.use']
+		check('the key is declared to the host and answers registered',
+			registered == true and mapping ~= nil and mapping.key == 'E')
+		check('and its label is the key it is bound to',
+			Spots.Key.Label(registered, { ID = 'opx.test.use', DEFAULT = 'E' }) ~= nil)
+		mapping.pressed()
+		check('a press reaches the handler, named as the key', #presses == 1 and presses[1] == 'key')
+		cctl.input.captured = true
+		mapping.pressed()
+		cctl.input.captured = false
+		check('and a press while another surface holds the keyboard does nothing', #presses == 1)
+		check('a key declared as DEFAULT = false is not registered at all',
+			Spots.Key.Register({ tag = 'test', declared = { ID = 'opx.test.off', NAME = 'x',
+				DEFAULT = false }, onPress = function() end }) == false
+				and cctl.keyMappings.byId['opx.test.off'] == nil)
+	end
+end
+
 section('garages, client side')
 do
 	local cenv, cctl, cwhy = boot('client')
@@ -6629,6 +7589,50 @@ do
 		check('and nothing is sent', #cctl.serverEvents == mark)
 		check('and the verdict is published on the local bus',
 			#decisions == 1 and decisions[1].error == 'garages.noSuchSpot')
+
+		-- ── a crowded lot is drawn over several passes, not one resume ────
+		-- A pass runs in one resume and a marker is an engine call. The first
+		-- list created every marker in range at once; on a lot dense enough that
+		-- is the shape the per-resume instruction budget ends silently.
+		local crowd = {}
+		for index = 1, 20 do
+			crowd[index] = { key = ('lot#%d'):format(index), label = 'LOT', kind = 'garage',
+				garage = 'lot', role = 'menu', location = index,
+				x = index * 0.5, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 }
+		end
+		-- The list is read on a thread of its own now (see the next section), so
+		-- the resume that applies it is that thread's last: counted there.
+		local realCreate, realWait = cenv.CreateThread, cenv.Wait
+		local mostInOneResume, readerOpen, atOpen = 0, false, 0
+		local function drawn() return #cenv.Open77.markers.list() end
+		local function close()
+			if not readerOpen then return end
+			readerOpen = false
+			if drawn() - atOpen > mostInOneResume then mostInOneResume = drawn() - atOpen end
+		end
+		cenv.CreateThread = function(fn)
+			return realCreate(function()
+				readerOpen, atOpen = true, drawn()
+				local reader = coroutine.running()
+				cenv.Wait = function(...)
+					if coroutine.running() ~= reader then return realWait(...) end
+					close()
+					realWait(...)
+					readerOpen, atOpen = true, drawn()
+				end
+				fn()
+				close()
+			end)
+		end
+		cctl.netEvents[garages.Event.SYNC]({ spots = crowd })
+		cenv.CreateThread = realCreate
+		cctl.Pump(4)
+		cenv.Wait = realWait
+		check('the list that arrives creates a bounded number of markers in the resume that applies it',
+			mostInOneResume > 0 and mostInOneResume <= 8, mostInOneResume)
+		cctl.Pump(30)
+		check('and the rest follow on the next passes', #cenv.Open77.markers.list() == 20,
+			#cenv.Open77.markers.list())
 	end
 end
 
@@ -7051,6 +8055,20 @@ do
 		control.netEvents[dealership.Event.ASK]()
 		control.Pump(4)
 		local synced = lastEvent(dealership.Event.SYNC)
+		-- AND A SECOND ASK INSIDE A SECOND IS NOT ANSWERED. Each one is a bucket
+		-- filter, a sort and a payload; a client polls every fifteen seconds.
+		local function syncs()
+			local count = 0
+			for index = 1, #control.clientEvents do
+				if control.clientEvents[index].name == dealership.Event.SYNC then count = count + 1 end
+			end
+			return count
+		end
+		local syncsBefore = syncs()
+		control.netEvents[dealership.Event.ASK]()
+		control.Pump(4)
+		check('a list asked for again within a second is not sent again',
+			syncs() == syncsBefore, syncs() - syncsBefore)
 		local found, inBucket = {}, true
 		for index = 1, type(synced) == 'table' and #synced[1].spots or 0 do
 			found[synced[1].spots[index].key] = true
@@ -7138,6 +8156,48 @@ do
 				handOver.position.z))
 		check('facing the heading the dealer carries',
 			handOver ~= nil and handOver.yaw == 90.0, handOver and tostring(handOver.yaw))
+
+		-- ── a spot that is taken ───────────────────────────────────────────
+		-- The car just handed over is still standing on the marker. The next one
+		-- is created beside it, a car's width along the dealer's side, and not
+		-- inside it.
+		-- The two extra rows this costs are taken back afterwards: the ceiling is
+		-- a count, and the sales further down are sized against it.
+		local rowsBefore = #rows
+		character.Players[src].PlayerData.money.EDDIES = 2000000
+		local beside = contract.Buy(src, 'yard', 'hella', nil)
+		local second = control.vehicleCreates[#control.vehicleCreates]
+		local gap = second and math.sqrt((second.position.x - 1.0) ^ 2 + (second.position.y - 1.0) ^ 2)
+		check('a second hand-over while the first car stands on the marker goes beside it',
+			beside.ok == true and second ~= handOver and gap ~= nil and gap >= 3.0,
+			gap and ('%.2f m away'):format(gap) or tostring(beside.error))
+
+		-- Every spot taken: the sale stands, the car waits in its garage, and the
+		-- buyer is told where.
+		local blockers = {}
+		for _, step in ipairs({ 0, 1, -1, 2, -2 }) do
+			blockers[#blockers + 1] = env.Open77.vehicles.create({
+				record = 'Vehicle.v_standard2_archer_hella_player',
+				position = { x = 1.0, y = 1.0 + step * 4.5, z = 5.0 }, yaw = 0.0, bucket = 0 })
+		end
+		local createdBefore = #control.vehicleCreates
+		local noticesBefore = #control.notices
+		character.Players[src].PlayerData.money.EDDIES = 2000000
+		local waiting = contract.Buy(src, 'yard', 'hella', nil)
+		local toldWhere = false
+		for index = noticesBefore + 1, #control.notices do
+			local notice = control.notices[index]
+			if notice.playerId == src and tostring(notice.message):find('waiting', 1, true) then
+				toldWhere = true
+			end
+		end
+		check('with every spot taken the sale still stands, and no car is created inside another',
+			waiting.ok == true and waiting.value.spawned == false
+				and #control.vehicleCreates == createdBefore,
+			tostring(waiting.error))
+		check('and the buyer is told the car is waiting in its garage', toldWhere)
+		for _, id in ipairs(blockers) do env.Open77.vehicles.remove(id) end
+		while #rows > rowsBefore do table.remove(rows) end
 
 		-- ── the destination the buyer chose ────────────────────────────────
 		-- Read from the GARAGES contract, which is the only owner of where a
@@ -7244,7 +8304,55 @@ do
 			table.concat(control.log.error, ' | '):sub(-200))
 		if vehiclesApi ~= nil then vehiclesApi.Register = realRegister end
 
+		-- ── a refund goes to who PAID, not to whoever holds the connection ──
+		-- `Register` yields. A buyer who went back to the selection screen and
+		-- loaded another character inside that window had the refund paid to the
+		-- character on the connection NOW -- money that character never spent.
+		if vehiclesApi ~= nil then
+			local otherCitizen = 'citizen-dealer-alt'
+			vehiclesApi.Register = function()
+				-- The swap, done inside the yield the real Register makes.
+				local alt = load(src, otherCitizen, 0)
+				alt.PlayerData.money.EDDIES = 0
+				return env.OPX.Result.Err('vehicle.limit', '1')
+			end
+			character.Players[src].PlayerData.money.EDDIES = 500000
+			local swapped = contract.Buy(src, 'yard', 'hella', nil)
+			check('a purchase refused after the buyer swapped character is refused',
+				swapped.ok == false, swapped and tostring(swapped.error))
+			check('and the refund does NOT land on the character who never paid',
+				character.Players[src].PlayerData.money.EDDIES == 0,
+				tostring(character.Players[src].PlayerData.money.EDDIES))
+			vehiclesApi.Register = realRegister
+			character.Registry.byCitizenId[otherCitizen] = nil
+			load(src, 'citizen-dealer', 2000000)
+		end
+
+		-- ── one purchase per character at a time ───────────────────────────
+		-- The ceiling is a count, a yield and an insert; two doors in one tick
+		-- both passed the count. The second is refused while the first is in
+		-- flight, whichever door it came through.
+		if vehiclesApi ~= nil then
+			local inner, outer
+			vehiclesApi.Register = function(...)
+				if inner == nil then inner = contract.Buy(src, 'yard', 'hella', nil) end
+				return realRegister(...)
+			end
+			character.Players[src].PlayerData.money.EDDIES = 2000000
+			outer = contract.Buy(src, 'yard', 'hella', nil)
+			vehiclesApi.Register = realRegister
+			check('a purchase started while the same character\'s is in flight is refused',
+				inner ~= nil and inner.ok == false and inner.error == 'error.tooFast',
+				inner and tostring(inner.error))
+			check('and the one in flight still completes', outer ~= nil and outer.ok == true,
+				outer and tostring(outer.error))
+			local again = contract.Buy(src, 'yard', 'hella', nil)
+			check('and the claim is given back afterwards', again.ok == true,
+				again and tostring(again.error))
+		end
+
 		-- ── the wire ───────────────────────────────────────────────────────
+
 		local wireBalance = character.Players[src].PlayerData.money.EDDIES
 		mark = #control.clientEvents
 		control.netEvents[dealership.Event.BUY]('yard', 'hella', nil)
@@ -7355,6 +8463,85 @@ do
 		-- The live one is still live: a stale answer must not settle it either.
 		check('while the offer they were actually made is still open',
 			contract.Accept(buyer, secondAt, false).error == 'dealership.offerDeclined')
+
+		-- ── a yes refused after the offer is gone tells the seller ─────────
+		-- `Accept` takes the offer off the table before it proves anything, so
+		-- the expiry that would otherwise report it finds nothing: a buyer who
+		-- said yes from outside the room left the seller waiting on a sale that
+		-- no longer existed.
+		contract.Offer(seller, buyer, 'hella')
+		local strayAt = lastEvent(dealership.Event.OFFERED)[1].token
+		control.Stand(buyer, 500.0, 0.0, 0.0)
+		local strayMark = #control.clientEvents
+		local stray = contract.Accept(buyer, strayAt, true)
+		control.Stand(buyer, 0.0, 0.0, 0.0)
+		local toldSeller
+		for index = strayMark + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.name == dealership.Event.SETTLED and sent.source == seller then toldSeller = sent end
+		end
+		check('a yes from outside the room is refused to the buyer',
+			stray.ok == false and stray.error == 'dealership.notInZone', tostring(stray.error))
+		check('and the seller is told, in words about the buyer',
+			toldSeller ~= nil and toldSeller[1].ok == false
+				and toldSeller[1].error == 'dealership.buyerNotInZone',
+			toldSeller and tostring(toldSeller[1].error) or 'nothing sent')
+
+		-- The last event of one name sent to one player after a mark.
+		local function sentAfter(mark, name, to)
+			local found
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == name and sent.source == to then found = sent end
+			end
+			return found
+		end
+
+		-- ── the seller's company is proved again at the answer ─────────────
+		-- It was read once, when the offer was made: a seller who lost the job
+		-- before the buyer said yes still earned the commission for it.
+		contract.Offer(seller, buyer, 'hella')
+		local firedAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local heldJob, heldGang = sellerData.PlayerData.job, sellerData.PlayerData.gang
+		sellerData.PlayerData.job, sellerData.PlayerData.gang = nil, nil
+		local moneyBefore = character.Players[buyer].PlayerData.money.EDDIES
+		local firedMark = #control.clientEvents
+		local fired = contract.Accept(buyer, firedAt, true)
+		sellerData.PlayerData.job, sellerData.PlayerData.gang = heldJob, heldGang
+		local firedTold = sentAfter(firedMark, dealership.Event.SETTLED, seller)
+		check('a seller who no longer sells for the company cannot close the sale',
+			fired.ok == false and fired.error == 'dealership.sellerNoCompany'
+				and character.Players[buyer].PlayerData.money.EDDIES == moneyBefore,
+			tostring(fired.error))
+		check('and is told why', firedTold ~= nil and firedTold[1].error == 'dealership.noCompany',
+			firedTold and tostring(firedTold[1].error))
+
+		-- ── the buyer is told when an offer ends without them ──────────────
+		-- The seller leaves: the buyer's screen gets a WITHDRAWN naming the offer.
+		local passer = 79
+		local passerData = load(passer, 'citizen-passer', 0)
+		passerData.PlayerData.job = { name = 'fixer', grade = { level = 2 } }
+		control.Stand(passer, 0.0, 0.0, 0.0)
+		contract.Offer(passer, buyer, 'hella')
+		local leftAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local leftMark = #control.clientEvents
+		control.Fire(env.OPX.Host.PLAYER_DISCONNECTED, passer, 'quit')
+		local withdrawn = sentAfter(leftMark, dealership.Event.WITHDRAWN, buyer)
+		check('a seller who leaves withdraws the offer from the buyer\'s screen',
+			withdrawn ~= nil and withdrawn[1].token == leftAt
+				and withdrawn[1].error == 'dealership.sellerGone',
+			withdrawn and tostring(withdrawn[1].error) or 'nothing sent')
+
+		-- And the offer runs out: the buyer is told as well as the seller.
+		contract.Offer(seller, buyer, 'hella')
+		local lapsedAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local lapsedMark = #control.clientEvents
+		control.Pump(math.ceil(Access.OFFER_TIMEOUT_MS / 100) + 10)
+		local lapsed = sentAfter(lapsedMark, dealership.Event.WITHDRAWN, buyer)
+		check('an offer that runs out is withdrawn from the buyer\'s screen too',
+			lapsed ~= nil and lapsed[1].token == lapsedAt
+				and lapsed[1].error == 'dealership.offerExpired',
+			lapsed and tostring(lapsed[1].error) or 'nothing sent')
 
 		-- ── and yes ────────────────────────────────────────────────────────
 		local settled
@@ -8381,6 +9568,41 @@ do
 		check('and there is nothing left to answer',
 			Runtime.Decide(true).ok == false)
 
+		-- ── an offer does not take the player's own list away ─────────────
+		-- It used to take down whatever dealership menu was open and replace it,
+		-- so a press meant for the player's own row could land on "Buy it".
+		local own = Runtime.Open('test')
+		cctl.Pump(2)
+		check('the player has their own list open', own.ok == true
+			and Runtime.Report().screen == 'root', tostring(Runtime.Report().screen))
+		cctl.netEvents[dealership.Event.OFFERED]({
+			token = 4242, entry = 'hella', model = 'Archer Hella', price = 29000,
+			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+		})
+		cctl.Pump(2)
+		check('an offer arriving over it waits rather than replacing it',
+			Runtime.Report().screen == 'root' and Runtime.Report().offered == 'hella',
+			tostring(Runtime.Report().screen))
+		Runtime.Close()
+		cctl.Pump(2)
+		check('and opens once the player closes their own list',
+			Runtime.Report().open == true and Runtime.Report().screen == 'offer',
+			tostring(Runtime.Report().screen))
+
+		-- ── an offer that ended without an answer closes its screen ───────
+		-- The offer ran out, or the seller left: the screen asking the player to
+		-- buy a car nobody is selling any more comes down. A withdrawal naming an
+		-- offer already replaced closes nothing.
+		cctl.netEvents[dealership.Event.WITHDRAWN]({ token = 1, error = 'dealership.offerExpired' })
+		cctl.Pump(2)
+		check('a withdrawal of another offer leaves this one up',
+			Runtime.Report().screen == 'offer' and Runtime.Report().offered == 'hella')
+		cctl.netEvents[dealership.Event.WITHDRAWN]({ token = 4242, error = 'dealership.sellerGone' })
+		cctl.Pump(2)
+		check('a withdrawal of this one takes the screen down and forgets it',
+			Runtime.Report().open == false and Runtime.Report().offered == nil,
+			tostring(Runtime.Report().screen))
+
 		-- ── yes, and where to file it ─────────────────────────────────────
 		-- A salesperson's sale filed the car under the default garage whatever
 		-- the buyer would have chosen. Yes now leads to the same garage screen a
@@ -9382,8 +10604,15 @@ do
 		check('and it is NOT sent to the entity-bound call, which would resolve it as a CName',
 			#cctl.effects.entityPlays == 0, #cctl.effects.entityPlays)
 		check('and the noclip native was really switched on', cctl.travels.noclip == true)
+		-- Counted by NAME, not by length: every module's own periodic ask (the
+		-- teleports list, the door list) rides the same recorder, and which of
+		-- them lands inside these four pumps is a scheduler rotation, not noclip.
+		local reported = 0
+		for index = mark + 1, #cctl.serverEvents do
+			if cctl.serverEvents[index].name == admin.Event.NOCLIP_BODY then reported = reported + 1 end
+		end
 		check('and the body is NOT reported on the way up -- the server already knew',
-			#cctl.serverEvents == mark)
+			reported == 0, reported)
 
 		-- ── and it RIDES the operator ─────────────────────────────────────
 		-- A world effect is placed once and then stays where it was put. An
@@ -10352,7 +11581,7 @@ do
 		-- wrong the day the platform adds a field, silently, because the operator
 		-- sees four lines and cannot know a fifth existed. So the check feeds it a
 		-- field nothing in this resource has ever heard of and requires it back.
-		local report = admin.Inspect({
+		local report = admin.Target.Inspect({
 			kind = 'prop',
 			position = { x = 12.5, y = -30.25, z = 7.0 },
 			material = 'concrete',
@@ -10376,7 +11605,7 @@ do
 			report:find('somethingNobodyHasHeardOf=keep me', 1, true) ~= nil, report)
 
 		-- Nothing is invented for a pick that answered nothing.
-		local empty = admin.Inspect(nil)
+		local empty = admin.Target.Inspect(nil)
 		check('while a pick with nothing in it says so rather than printing blanks',
 			type(empty) == 'string' and empty:find('nothing', 1, true) ~= nil, empty)
 		-- not have, and an operator who pressed a stale keybind must not lose the
@@ -10863,17 +12092,19 @@ do
 		cctl.Pump(10)
 		check('the staff menu is open on the root', admin.Menu.Screen() == 'root')
 
-		-- ONE PUMP BETWEEN PRESSES, which is 100ms of host clock: this is somebody
+		-- TWO PUMPS BETWEEN PRESSES, which is 200ms of host clock: this is somebody
 		-- walking into a player's health screen at a normal pace, well inside the
-		-- 750ms floor. A test that pumped ten rounds between presses would be
-		-- asserting nothing -- it would have waited the floor out.
+		-- 750ms floor. Two, because a redraw takes two resumes now -- one to build
+		-- the screen, one to hand it to the menu contract -- and a row cannot be
+		-- pressed before its screen is up. A test that pumped ten rounds between
+		-- presses would be asserting nothing -- it would have waited the floor out.
 		asked = {}
 		local walked = act('players')
-		cctl.Pump(1)
+		cctl.Pump(2)
 		walked = walked and act('player_3')
-		cctl.Pump(1)
+		cctl.Pump(2)
 		walked = walked and act('health')
-		cctl.Pump(1)
+		cctl.Pump(2)
 		check('the operator walks root -> Players -> a player -> Health', walked
 			and admin.Menu.Screen() == 'playerHealth', tostring(admin.Menu.Screen()))
 		check('and the three screens ask for the roster ONCE between them',
@@ -10974,12 +12205,28 @@ do
 		check('bodies with no name list are counted as a naming fault, not a native one',
 			said('no name 1') ~= nil, table.concat(notes, ' | '))
 
+		-- The view hears its rows on a resume of its own: the pass is a scheduler
+		-- job, and the view anchoring every tag inside it spent the shared budget.
+		local rowsHeard, underScheduler = 0, false
+		env.AddEventHandler(admin.Event.ON_TAGS, function(payload)
+			if type(payload) ~= 'table' or payload.kind ~= 'rows' then return end
+			rowsHeard = rowsHeard + 1
+			for level = 2, 40 do
+				local info = debug.getinfo(level, 'S')
+				if info == nil then break end
+				if tostring(info.source):find('core/client/scheduler.lua', 1, true) then
+					underScheduler = true
+				end
+			end
+		end)
 		notes = {}
 		control.netEvents[admin.Event.TAG_ROWS]({
 			rows = { { id = 2, name = 'vee' } }, offset = 0, done = true })
 		control.Pump(20)
 		check('and once the names arrive the pass reports a row drawn',
 			said('1 drawn') ~= nil, table.concat(notes, ' | '))
+		check('and the view is handed its rows outside the scheduler resume',
+			rowsHeard > 0 and not underScheduler, ('%d heard'):format(rowsHeard))
 
 		-- A REFUSAL FROM THE NATIVE reads as an empty list at the call site, so the
 		-- reason has to be carried out or it is indistinguishable from "nobody near".
@@ -12474,6 +13721,110 @@ do
 	end
 end
 
+-- ── the focus goes back before anything else stops ───────────────────────────
+-- It went back only inside `Teardown`, AFTER every module's `Stop`, all of them
+-- in one resume on one instruction budget. An overrun anywhere in that run
+-- unwound the handler before `Teardown` was reached, and the player was left
+-- holding keyboard and cursor with nothing drawn. The overrun is played here by
+-- a `Modules.Stop` that raises outright, which is what it looks like from the
+-- stop handler.
+section('the focus goes back before the modules stop')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page = control.pages[1]
+		OPX.UI.AcquireFocus('test', { keyboard = true, cursor = true })
+		check('a view holds keyboard and cursor', page.focus.keyboard == true
+			and page.focus.cursor == true)
+
+		local real = OPX.Modules.Stop
+		local focusWhenStopping
+		OPX.Modules.Stop = function()
+			focusWhenStopping = { keyboard = page.focus.keyboard, cursor = page.focus.cursor }
+			error('Open77 script execution budget exceeded')
+		end
+		pcall(control.Fire, 'onClientResourceStop', 'opx_infinity')
+		OPX.Modules.Stop = real
+
+		check('the focus was already released when the modules began to stop',
+			focusWhenStopping ~= nil and focusWhenStopping.keyboard == false
+				and focusWhenStopping.cursor == false)
+		check('so a stop that dies part-way leaves the player their controls',
+			page.focus.keyboard == false and page.focus.cursor == false)
+		check('and no owner is left on the stack', OPX.UI.FocusOwner() == nil)
+	end
+end
+
+-- ── each module's Stop gets a budget of its own ──────────────────────────────
+-- The same argument `runPhase` makes for `Start`: thirty `Stop`s in one resume
+-- is one budget between them, and the module holding the parcel when it runs
+-- out is cut off along with everything after it.
+section('the module stops yield between modules')
+do
+	local env, _, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local stoppable = 0
+		for _, record in ipairs(OPX.Modules.Resolve()) do
+			if (record.State == 'started' or record.State == 'failed')
+				and type(record.Module.Stop) == 'function' then
+				stoppable = stoppable + 1
+			end
+		end
+
+		local thread = coroutine.create(function() OPX.Modules.Stop(true) end)
+		local resumes = 0
+		while coroutine.status(thread) ~= 'dead' and resumes < 500 do
+			coroutine.resume(thread)
+			resumes = resumes + 1
+		end
+		check('there are modules with a Stop to run', stoppable > 1, stoppable)
+		check('one resume per module Stop, not one for all of them',
+			resumes == stoppable + 1, ('%d resumes for %d stops'):format(resumes, stoppable))
+
+		local again = 0
+		for _, record in ipairs(OPX.Modules.Resolve()) do
+			if record.State == 'started' then again = again + 1 end
+		end
+		check('every module ends stopped', again == 0, again)
+		check('and the server-shaped call, off any thread, still stops in one go',
+			(pcall(OPX.Modules.Stop)))
+	end
+end
+
+-- ── one caller gate for both creator surfaces ────────────────────────────────
+-- The gate was written out twice, once per half. Read from the source because
+-- what is being held is that neither half carries its own copy any more.
+section('the creator surfaces share one gate')
+do
+	for _, file in ipairs({ 'core/server/exports.lua', 'core/client/exports.lua' }) do
+		local source = io.open(file):read('a')
+		check(file .. ' asks the shared gate who is calling',
+			source:find('Export.Caller()', 1, true) ~= nil
+				and source:find('GetInvokingResource()', 1, true) == nil)
+	end
+	local env = { type = type, ipairs = ipairs, OPX = {} }
+	local chunk = loadfile('core/shared/exports.lua', 't', env)
+	chunk()
+	local Export = env.OPX.Export
+	env.GetInvokingResource = function() return 'my_shop' end
+	check('a well-formed caller is named', Export.Caller() == 'my_shop')
+	env.GetInvokingResource = function() return 'bad name!' end
+	check('a name outside the manifest grammar is nobody', Export.Caller() == nil)
+	env.GetInvokingResource = function() return ('a'):rep(65) end
+	check('and so is one past 64 characters', Export.Caller() == nil)
+	check('an array allowlist admits by name', Export.Admits({ 'a', 'b' }, 'b')
+		and not Export.Admits({ 'a' }, 'b') and Export.Admits('*', 'x'))
+	check('a Result that is not one answers unavailable',
+		Export.Answered(nil).error == 'error.unavailable'
+			and Export.Answered({ ok = true, value = 3 }).value == 3)
+end
+
 -- ── the hotbar peek ─────────────────────────────────────────────────────────
 -- The hotbar keys work with the bag SHUT, which is the point of them and also
 -- the problem: nothing on screen says what they are bound to until you open the
@@ -13219,6 +14570,161 @@ do
 			contract.IsDown(PLAYER).value.down == false)
 	end
 end
+-- ── a stored down row and the join's own placement ──────────────────────────
+-- A JOIN IS A KILL AND A RESPAWN, and the scan used to read both as real. A
+-- character that disconnected down was put back down by a kill the character
+-- module's placement then respawned: the record closed as `alive` and the
+-- stored row was cleared, so quitting while down was a free revive. A death read
+-- on the join body before placement wrote the stored row back as zero seconds
+-- down. Nothing about being down is decided until the body has been placed.
+section('a stored down row waits for the join placement')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the down restore', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local PLAYER = 1
+		local downed = OPX.Modules.Get('downed')
+		control.Admit(PLAYER, 'user-restore')
+		-- The stored rows are stubbed below, so the table is as good as there:
+		-- with no database the module reads and writes nothing at all.
+		OPX.BootError = nil
+
+		local phase = 'alive'
+		env.Open77.ready.isReady = function() return true end
+		env.Open77.players.getLifeState = function()
+			return { phase = phase, position = { x = 0, y = 0, z = 0, bucket = 0 } }
+		end
+		env.Open77.players.isDead = function() return phase == 'dead' end
+		local kills = 0
+		env.Open77.players.kill = function()
+			kills = kills + 1
+			phase = 'dead'
+			return true
+		end
+
+		local body = { MaySample = false, PlayerData = { citizenId = 'CIT-REST-1' } }
+		local character = OPX.Api.Get('character')
+		local getPlayer = character and character.GetPlayer
+		if character ~= nil then character.GetPlayer = function() return body end end
+
+		local reads, writes, clears = 0, {}, 0
+		local storage = downed.Storage
+		local read, write, clear = storage.Read, storage.Write, storage.Clear
+		storage.Read = function()
+			reads = reads + 1
+			return { downForMs = 50000, waiting = true }
+		end
+		storage.Write = function(citizenId, downForMs, waiting)
+			writes[#writes + 1] = { citizenId = citizenId, downForMs = downForMs, waiting = waiting }
+		end
+		storage.Clear = function() clears = clears + 1 end
+
+		local contract = OPX.Api.Get('downed')
+
+		-- The join body, alive and not placed yet: nothing is put back on it.
+		control.Pump(60)
+		check('A STORED DOWN ROW IS NOT PUT BACK ON A BODY THE JOIN HAS NOT PLACED',
+			kills == 0 and reads == 0, ('%d kill(s), %d read(s)'):format(kills, reads))
+
+		-- The placement's own kill, read between the kill and the respawn: not a
+		-- death, and nothing is written over the stored row.
+		phase = 'dead'
+		control.Fire('onPlayerLifeStateChanged', PLAYER)
+		control.Pump(20)
+		check('a death read on the unplaced body opens no record',
+			contract.IsDown(PLAYER).value.down == false)
+		check('and writes nothing over the stored row', #writes == 0 and clears == 0,
+			('%d write(s), %d clear(s)'):format(#writes, clears))
+
+		-- The placement lands: the body is alive, where the row says.
+		phase = 'alive'
+		body.MaySample = true
+		check('once the body is placed the stored row is put back on it',
+			settle(control, function() return kills == 1 end, 80), ('%d kill(s)'):format(kills))
+		control.Fire('onPlayerLifeStateChanged', PLAYER)
+		check('and the record resumes it, still asking for help',
+			settle(control, function()
+				local answer = contract.IsDown(PLAYER)
+				return answer.ok and answer.value.down == true and answer.value.waiting == true
+					and answer.value.downForMs >= 50000
+			end, 40))
+		check('with the row never cleared on the way', clears == 0, tostring(clears))
+
+		-- A placement that never lands is bounded: a death on a body that stayed
+		-- unplaced is counted after the grace, or nothing would ever revive it.
+		local env2, control2, why2 = boot('server')
+		if why2 == nil then
+			local OPX2 = env2.OPX
+			control2.Admit(PLAYER, 'user-unplaced')
+			OPX2.BootError = nil
+			env2.Open77.ready.isReady = function() return true end
+			env2.Open77.players.getLifeState = function()
+				return { phase = 'dead', position = { x = 0, y = 0, z = 0, bucket = 0 } }
+			end
+			env2.Open77.players.isDead = function() return true end
+			local stuck = { MaySample = false, PlayerData = { citizenId = 'CIT-REST-2' } }
+			local character2 = OPX2.Api.Get('character')
+			if character2 ~= nil then character2.GetPlayer = function() return stuck end end
+			local storage2 = OPX2.Modules.Get('downed').Storage
+			storage2.Read = function() return nil end
+			storage2.Write = function() end
+			storage2.Clear = function() end
+			local contract2 = OPX2.Api.Get('downed')
+			control2.Pump(100)
+			check('a dead body whose placement never landed is not counted at once',
+				contract2.IsDown(PLAYER).value.down == false)
+			control2.Pump(250)
+			check('but it is counted once the grace has run out',
+				contract2.IsDown(PLAYER).value.down == true)
+		end
+
+		storage.Read, storage.Write, storage.Clear = read, write, clear
+		if character ~= nil then character.GetPlayer = getPlayer end
+	end
+end
+-- ── the last needs push of a disconnect ────────────────────────────────────
+-- `needs not pushed: session_not_active` was written to the client log on EVERY
+-- disconnect: the unload and `Stop` push one last time over a session that is
+-- already closed. Harmless -- the server writes the last push it holds when the
+-- player departs -- so it is not a warning. Any other refusal still is.
+section('the last needs push of a disconnect')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the needs push', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local VALUES = OPX.Event(OPX.Channel.NET, 'needs', 'values')
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'loaded'), { citizenId = 'CIT-NEED-1' })
+		local onValues = control.netEvents[VALUES]
+		if onValues then onValues('CIT-NEED-1', { hunger = 40, thirst = 40 }) end
+		local needs = OPX.Api.Get('needs')
+		check('the needs are loaded', needs ~= nil and needs.GetNeeds().ok == true)
+
+		local function warnedPush()
+			for _, line in ipairs(control.log.warn) do
+				if tostring(line):find('needs not pushed', 1, true) then return true end
+			end
+			return false
+		end
+		local send = env.TriggerServerEvent
+		env.TriggerServerEvent = function() return false, 'session_not_active' end
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'unloaded'))
+		check('A PUSH OVER A CLOSED SESSION IS NOT A WARNING', not warnedPush(),
+			table.concat(control.log.warn, ' | '))
+
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'loaded'), { citizenId = 'CIT-NEED-2' })
+		env.TriggerServerEvent = send
+		onValues = control.netEvents[VALUES]
+		if onValues then onValues('CIT-NEED-2', { hunger = 40, thirst = 40 }) end
+		env.TriggerServerEvent = function() return false, 'network_payload_too_large' end
+		needs.AddNeeds({ hunger = 30 })
+		check('but any other refusal still is', warnedPush(), table.concat(control.log.warn, ' | '))
+		env.TriggerServerEvent = send
+	end
+end
+
 -- ── one staff action, one message ───────────────────────────────────────────
 -- THREE NOTIFICATIONS FOR ONE GIVE, reported by the owner: giving themselves an
 -- item as staff put the same sentence on screen twice -- once titled STAFF and
@@ -13376,6 +14882,75 @@ do
 			('%d notices'):format(select(2, countFor(1))))
 		check('while a real target is told', admin.Server.Inform(1, 2, 'admin.toast.healed') == true)
 		check('and nobody at all is not', admin.Server.Inform(1, nil, 'admin.toast.healed') == false)
+
+		-- ── the grants a bag command does not imply ──────────────────────────
+		-- Rounds are a weapon item: a bag give of them also needs the weapon
+		-- command that gives rounds, and immunity shields a bag from a clear.
+		local function lastAudit(event)
+			local recent = admin.Server.Recent(20)
+			for index = #recent, 1, -1 do
+				if recent[index].event == event then return recent[index] end
+			end
+			return nil
+		end
+		local function giveAmmo()
+			pcall(give.run, 1, { '2', 'ammo_handgun', '5' }, 'opx.admin.inventory.give 2 ammo_handgun 5')
+			control.Pump(30)
+			return lastAudit('admin.inventory.give')
+		end
+		local refusedGive = giveAmmo()
+		check('a bag give of rounds without the weapon grant is refused, and audited',
+			refusedGive ~= nil and refusedGive.ok == false
+				and tostring(refusedGive.detail):find('weapon.giveammo', 1, true) ~= nil,
+			refusedGive and refusedGive.detail)
+		control.Allow(1, 'command.' .. admin.Command.WEAPON_GIVEAMMO)
+		local grantedGive = giveAmmo()
+		check('and goes through once the weapon grant is held', grantedGive ~= nil and grantedGive.ok == true,
+			grantedGive and grantedGive.detail)
+
+		local clear = control.commands['opx.admin.inventory.clear']
+		control.Allow(2, admin.IMMUNE)
+		pcall(clear.run, 1, { '2' }, 'opx.admin.inventory.clear 2')
+		control.Pump(30)
+		local shielded = lastAudit('admin.inventory.clear')
+		check('a protected player\'s bag is not cleared',
+			shielded ~= nil and shielded.ok == false and shielded.detail == 'target protected',
+			shielded and shielded.detail)
+		check('while the console is not stopped by it', admin.Server.Protected(0, 2) == false)
+		check('nor is a protected player acting on themselves', admin.Server.Protected(2, 2) == false)
+		control.Allow(1, admin.OVERRIDE)
+		check('and an operator holding the override is not stopped either',
+			admin.Server.Protected(1, 2) == false)
+
+		-- ── one heavy request in flight per operator ─────────────────────────
+		local answers = {}
+		env.TriggerClientEvent = function(name, source, ...)
+			if name == admin.Event.ANSWER then answers[#answers + 1] = { source = source, ... } end
+			return realTrigger(name, source, ...)
+		end
+		pcall(give.run, 1, { '2', 'bandage', '1' }, 'opx.admin.inventory.give 2 bandage 1')
+		local view = control.commands['opx.admin.inventory.view']
+		control.Allow(1, 'command.' .. admin.Command.INVENTORY_VIEW)
+		pcall(view.run, 1, { '2' }, 'opx.admin.inventory.view 2')
+		local busy = OPX.Locale.Text('admin.error.busy')
+		local sawBusy = false
+		for _, answer in ipairs(answers) do
+			for index = 1, 4 do
+				if answer[index] == busy then sawBusy = true end
+			end
+		end
+		check('a second heavy command while the first runs is refused as busy', sawBusy)
+		control.Pump(30)
+		answers = {}
+		pcall(give.run, 1, { '2', 'bandage', '1' }, 'opx.admin.inventory.give 2 bandage 1')
+		control.Pump(30)
+		local later = false
+		for _, answer in ipairs(answers) do
+			for index = 1, 4 do
+				if answer[index] == busy then later = true end
+			end
+		end
+		check('and one after it has finished is not', #answers > 0 and not later, #answers)
 
 		env.TriggerClientEvent = realTrigger
 		OPX.Notify = realNotify
@@ -13674,6 +15249,110 @@ do
 	end
 end
 
+section('elevators: an adoption the sweep drops is given back to the host')
+do
+	-- `sweepOnce` drops an adoption nobody rode for ten minutes, so a lift
+	-- adopted from a hash that came off the wire unverified heals. It cleared
+	-- this module's record and NOT the host's: the lift stayed adopted and
+	-- locked, the client never re-reports a lift the host calls managed, and
+	-- every request answered `not_adopted` -- the shaft was dead until restart.
+	local WHERE = { x = -1521.40, y = 892.75, z = 42.10 }
+	local LIFT = '0x00000000000000ab'
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.players.position = function()
+			return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = 0 }
+		end
+	end)
+	check('the server boots for the elevator sweep', why == nil, why)
+	if why == nil then
+		local M = env.OPX.Modules.Get('elevators')
+		local lifts = control.lifts
+		env.source = 4
+		control.netEvents[M.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+		env.source = nil
+		local adoptedId = lifts.next
+		check('the lift is adopted', #lifts.adopts == 1 and lifts.byId[adoptedId] ~= nil)
+
+		-- A DOWNED PLAYER CALLS NO CABIN. Only the client's panel consulted the
+		-- down screen; a client sending REQUEST itself rode while bleeding out.
+		local downed = env.OPX.Api.Get('downed')
+		local realIsDown = downed and downed.IsDown
+		if downed ~= nil then
+			downed.IsDown = function() return { ok = true, value = { down = true } } end
+		end
+		env.source = 4
+		control.netEvents[M.Event.REQUEST]('arasaka_tower', 0)
+		env.source = nil
+		if downed ~= nil then downed.IsDown = realIsDown end
+		local refusedDown
+		for _, sent in ipairs(control.clientEvents) do
+			if sent.name == M.Event.ANSWER then refusedDown = sent end
+		end
+		check('a downed player\'s floor request is refused on the server',
+			refusedDown ~= nil and refusedDown[3] == false and refusedDown[4] == 'downed'
+				and #lifts.trips == 0,
+			refusedDown and tostring(refusedDown[4]))
+		-- Ten minutes and a sweep, at 100 ms a round.
+		control.Pump(6200)
+		local given = false
+		for _, id in ipairs(lifts.removes) do if id == adoptedId then given = true end end
+		check('an adoption never used is given back to the host, not only forgotten', given,
+			#lifts.removes)
+		env.source = 4
+		control.netEvents[M.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+		env.source = nil
+		check('and the next sighting adopts the lift again', #lifts.adopts == 2, #lifts.adopts)
+
+		-- `Open77.elevators.nearby` takes 1..300 metres; a wider scan found no lift
+		-- at all and nothing said why.
+		local settings = env.OPX.Config.MODULES.elevators
+		local shipped = settings.SCAN_RADIUS
+		settings.SCAN_RADIUS = 500
+		local said = table.concat(M.Access.Problems(), '\n')
+		settings.SCAN_RADIUS = shipped
+		check('a SCAN_RADIUS wider than the host takes is reported',
+			said:find('SCAN_RADIUS must be between 1 and 300', 1, true) ~= nil, said)
+		check('and the shipped one is not', #M.Access.Problems() == 0,
+			table.concat(M.Access.Problems(), ' | '))
+	end
+end
+
+section('elevators: a lift still adopted from before a restart is bound again')
+do
+	-- After a restart the host may still hold this module's adoption, locked,
+	-- while this module's own table is empty. The client now reports such a
+	-- managed lift; the server must re-claim it -- bind it, keep it locked, and
+	-- adopt nothing new.
+	local WHERE = { x = -1521.40, y = 892.75, z = 42.10 }
+	local LIFT = '0x00000000000000ab'
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.players.position = function()
+			return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = 0 }
+		end
+	end)
+	check('the server boots for the re-claim', why == nil, why)
+	if why == nil then
+		local M = env.OPX.Modules.Get('elevators')
+		local lifts = control.lifts
+		lifts.next = lifts.next + 1
+		local held = lifts.next
+		lifts.byId[held] = { id = held, engineEntity = LIFT, bucket = 0, floorCount = 12,
+			activeFloor = 0, phase = 'idle', x = WHERE.x, y = WHERE.y, z = WHERE.z, flags = 1 }
+		env.source = 4
+		control.netEvents[M.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+		env.source = nil
+		local bound
+		for _, sent in ipairs(control.clientEvents) do
+			if sent.name == M.Event.BOUND then bound = sent end
+		end
+		check('the lift the host still holds is bound again, not adopted a second time',
+			bound ~= nil and bound[2] == held and #lifts.adopts == 0,
+			bound and tostring(bound[2]) or ('%d adopts'):format(#lifts.adopts))
+		check('and it is locked again, so the vanilla button stays refused',
+			(lifts.byId[held].flags & 2) ~= 0, tostring(lifts.byId[held].flags))
+	end
+end
+
 section('elevators: a player can reach the floor list')
 do
 	-- THE PANEL HAD NO DOOR. Every adopted cabin is locked, which refuses the
@@ -13702,6 +15381,15 @@ do
 		end
 		check('standing at a configured lift posts the row naming the key',
 			settle(cctl, rowUp, 80))
+		-- A lift the host calls MANAGED that this client was never bound to -- the
+		-- state a restart leaves this module's own adoptions in -- is reported to
+		-- the server, so its re-claim branch can bind it again. It used to be
+		-- skipped, and the shaft stayed locked with nothing able to drive it.
+		local reported = false
+		for _, sent in ipairs(cctl.serverEvents) do
+			if sent.name == M.Event.SIGHTED and sent[1] == '0x00000000000000ab' then reported = true end
+		end
+		check('a managed lift this client is not bound to is reported for re-claim', reported)
 
 		local menu = OPX.Api.Get('menu')
 		local realOpen = menu.Open
@@ -14242,6 +15930,40 @@ do
 			contract ~= nil and type(contract.IsAllowed) == 'function'
 				and type(contract.Entrances) == 'function'
 				and type(contract.State) == 'function')
+		-- THE CONSOLE'S SOURCE NEVER REACHES THE HOST. `players.position(0)` throws
+		-- past `pcall` and stops the resource on the real platform, and
+		-- `Entrances` is a published contract any caller can hand a 0 to.
+		local realPosition = env.Open77.players.position
+		local askedFor = {}
+		env.Open77.players.position = function(player)
+			askedFor[#askedFor + 1] = player
+			return realPosition(player)
+		end
+		local console = contract.Entrances(0)
+		local negative = contract.Entrances(-3)
+		env.Open77.players.position = realPosition
+		check('the entrances of the console\'s source are refused without asking the host',
+			console.ok == false and negative.ok == false and #askedFor == 0,
+			('%s / %d asked'):format(tostring(console.error), #askedFor))
+
+		-- A TRIP THAT RAISES IS STILL ANSWERED. The client's latch opens only on
+		-- an answer, so a raise used to shut it until the player rejoined.
+		local realLookup = Access.Lookup
+		Access.Lookup = function() error('lookup blew up') end
+		local raiseMark = #control.clientEvents
+		env.source = 5
+		control.netEvents[M.Event.USE]('roof', 'out')
+		env.source = nil
+		control.Pump(4)
+		Access.Lookup = realLookup
+		local raisedAnswer
+		for index = raiseMark + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.name == M.Event.ANSWER and sent.source == 5 then raisedAnswer = sent end
+		end
+		check('a trip that raised is answered as a refusal, so the client is not left waiting',
+			raisedAnswer ~= nil and raisedAnswer[3] == false and raisedAnswer[4] == 'failed',
+			raisedAnswer and tostring(raisedAnswer[4]) or 'no answer')
 		check('the shipped config reports no problems', #Access.Problems() == 0,
 			table.concat(Access.Problems(), ' | '))
 		check('and ships no teleport switched on, because every coordinate in it ' ..
@@ -14983,6 +16705,10 @@ do
 		-- many rows the ACL granted -- which is exactly the thing this section
 		-- varies. A fixed pump reads a registration that is still running.
 		settle(ccontrol, function() return has('admin_skyNoclip') end, 80)
+		-- The closing line goes out on the resume after the last batch.
+		settle(ccontrol, function()
+			return tostring(reports[#reports] or ''):find('staff rows on the eye', 1, true) ~= nil
+		end, 20)
 
 		-- THE REPORT, verbatim. `#sky` is what the operator sees; what is NOT in
 		-- it is what they wrote in about.
@@ -15060,7 +16786,9 @@ do
 		admin.Target.Access({ access = {}, aclKnown = true, inventory = false })
 		ccontrol.Pump(20)
 		admin.Target.Access({ access = full, aclKnown = true, inventory = false })
-		ccontrol.Pump(20)
+		-- Settled: two rows a resume, so how many frames this takes is the number
+		-- of rows the map grants.
+		settle(ccontrol, function() return reached['admin_devInspect_world'] == true end, 120)
 		check('the inspector is offered on a prop', reached['admin_devInspect_prop'] == true)
 		check('on an NPC', reached['admin_devInspect_npc'] == true)
 		check('and on a plain world surface, which is most of the city',
@@ -15123,7 +16851,11 @@ do
 		-- Settled, not counted: one resume per registration CALL means a kind that
 		-- needs two batches takes two frames, and a fixed pump reads a
 		-- registration that is still running.
-		settle(ccontrol, function() return has('admin_skyTime') end, 80)
+		settle(ccontrol, function() return has('admin_skyTime') end, 120)
+		-- The closing line goes out on the resume after the last batch.
+		settle(ccontrol, function()
+			return tostring(reports[#reports] or ''):find('staff rows on the eye', 1, true) ~= nil
+		end, 20)
 
 		-- THE ASSERTION, and it is about the LAST kind on purpose. Registering in
 		-- one resume gets through `self` and stops; `sky` is the last of eight.
@@ -15762,6 +17494,71 @@ do
 	end
 end
 
+-- The queue cap was read in one round trip and filed in another, so two orders
+-- placed together both read the same count and both landed. The insert carries
+-- the cap now; an order it turns away gives back what it took.
+section('crafting: an order the full shelf turns away gives everything back')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local crafting = OPX.Modules.Get('crafting')
+		local contract = OPX.Api.Get('crafting')
+		local registered = contract.RegisterBench('tests:race', { owner = 'tests', queue = 1,
+			recipes = { { KEY = 'rounds', OUTPUT = 'ammo_handgun', SECONDS = 60, PRICE = 25,
+				MONEY = 'EDDIES', INPUTS = { scrap_metal = 2 } } } })
+		check('the bench registers', registered.ok == true, tostring(registered.error))
+
+		local bag, purse = { scrap_metal = 2 }, 100
+		local realInventory, realCharacter = crafting.Contracts.inventory,
+			crafting.Contracts.character
+		crafting.Contracts.inventory = setmetatable({
+			GetItemCount = function(_, name) return OPX.Result.Ok(bag[name] or 0) end,
+			RemoveItem = function(_, name, count)
+				if (bag[name] or 0) < count then return OPX.Result.Err('not_enough') end
+				bag[name] = bag[name] - count
+				return OPX.Result.Ok(true)
+			end,
+			AddItem = function(_, name, count)
+				bag[name] = (bag[name] or 0) + count
+				return OPX.Result.Ok(true)
+			end,
+		}, { __index = realInventory })
+		crafting.Contracts.character = setmetatable({
+			GetPlayer = function() return { PlayerData = { citizenId = 'ABC12345' } } end,
+			GetMoney = function() return { EDDIES = purse } end,
+			RemoveMoney = function(_, _, amount) purse = purse - amount return true end,
+			AddMoney = function(_, _, amount) purse = purse + amount return true end,
+		}, { __index = realCharacter })
+
+		-- The shelf read says there is room; by the time the row is filed,
+		-- another order has taken it.
+		local realShelf, realPlace = crafting.Storage.Shelf, crafting.Storage.Place
+		crafting.Storage.Shelf = function() return OPX.Result.Ok({ cooking = 0, tail = 0 }) end
+		local queued
+		crafting.Storage.Place = function(_, _, _, _, queue)
+			queued = queue
+			return OPX.Result.Ok(nil)
+		end
+
+		local answer
+		env.CreateThread(function() answer = contract.Order(1, 'tests:race', 'rounds') end)
+		settle(control, function() return answer ~= nil end, 20)
+		check('the order is refused as a full shelf',
+			answer ~= nil and answer.ok == false and answer.error == crafting.Refusal.QUEUE_FULL,
+			answer and tostring(answer.error))
+		check('the bench\'s cap travels with the insert', queued == 1, tostring(queued))
+		check('the materials come back', bag.scrap_metal == 2, bag.scrap_metal)
+		check('and so does the fee', purse == 100, purse)
+
+		crafting.Storage.Shelf, crafting.Storage.Place = realShelf, realPlace
+		crafting.Contracts.inventory, crafting.Contracts.character = realInventory, realCharacter
+		contract.UnregisterBenches('tests')
+	end
+end
+
 -- ── crafting: the statements, and the one that makes a collection exactly-once
 -- THE DELETE IS THE CLAIM. Everything about handing an order over hangs off
 -- whether it affected a row, so the bridge is stubbed rather than the storage:
@@ -15770,6 +17567,7 @@ section('crafting: the shelf is the database\'s, and so is the clock')
 do
 	local seen = {}
 	local affected = 1
+	local mintedId = 4242
 	local db = Host.Database({
 		scalar = function() return 1 end,
 		update = function(sql, params)
@@ -15787,7 +17585,7 @@ do
 		end,
 		insert = function(sql, params)
 			seen[#seen + 1] = { sql = sql, params = params }
-			return 4242
+			return mintedId
 		end,
 	})
 
@@ -15845,7 +17643,7 @@ do
 			orders.ok and #orders.value or orders.error)
 
 		-- ── placing one ──────────────────────────────────────────────────
-		local placed = Storage.Place('ABC12345', 'tests:bench', 'rounds', 150)
+		local placed = Storage.Place('ABC12345', 'tests:bench', 'rounds', 150, 3)
 		check('placing an order answers the id the database minted',
 			placed.ok and placed.value == 4242, placed.ok and placed.value or placed.error)
 		local insert = seen[#seen]
@@ -15853,6 +17651,18 @@ do
 			insert.sql:find('DATE_ADD(UTC_TIMESTAMP(), INTERVAL @seconds SECOND)', 1, true) ~= nil)
 		check('with the seconds bound by name, never spliced into the text',
 			insert.params['@seconds'] == 150, tostring(insert.params['@seconds']))
+		-- THE CAP IS IN THE SAME STATEMENT as the row. Read in one round trip and
+		-- filed in another, two orders placed together both read the same count
+		-- and a queue of three held four.
+		check('AND THE QUEUE CAP IS TESTED BY THE INSERT ITSELF, not by an earlier read',
+			insert.sql:find('SELECT COUNT(*) FROM opx77_crafting_orders', 1, true) ~= nil
+				and insert.sql:find('< @queue', 1, true) ~= nil
+				and insert.params['@queue'] == 3, tostring(insert.params['@queue']))
+		mintedId = 0
+		local full = Storage.Place('ABC12345', 'tests:bench', 'rounds', 150, 3)
+		check('an insert the cap turned away answers no id, and is not a failure',
+			full.ok and full.value == nil, full.ok and tostring(full.value) or full.error)
+		mintedId = 4242
 
 		-- ── the claim ────────────────────────────────────────────────────
 		affected = 1
@@ -15888,6 +17698,65 @@ do
 	end
 end
 
+
+-- A chest refusal was passed to the client as it came, and the client toasts
+-- `gunsmith.<code>`: a container load's `storage` or `load_timeout` reached the
+-- player as the raw key. And the door had no window at all.
+section('the gunsmith chest: every refusal has words, and the door is cooled')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local gunsmith = OPX.Modules.Get('gunsmith')
+		local character = OPX.Modules.Get('character')
+		local inventory = OPX.Api.Get('inventory')
+		local SMITH = 914
+		control.Admit(SMITH, 'account-914')
+		local player = character.CreatePlayer({
+			citizenId = OPX.CitizenId.Generate(), userId = 'account-914', source = SMITH,
+			charInfo = { firstName = 'Wakako', lastName = 'Okada' },
+			job = { name = 'arasaka', onDuty = true, grade = { level = 0 } },
+		}, false)
+		player.PlayerData.job = { name = 'arasaka', onDuty = true, grade = { level = 0 } }
+		player.PlayerData.jobs, player.PlayerData.gangs = { arasaka = 0 }, {}
+		character.RegisterPlayer(player)
+
+		local opens = 0
+		local realOpen = inventory.OpenStash
+		inventory.OpenStash = function()
+			opens = opens + 1
+			return OPX.Result.Err('storage')
+		end
+
+		local refused = {}
+		local realTrigger = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, target, ...)
+			if name == gunsmith.Event.REFUSED and target == SMITH then
+				refused[#refused + 1] = select(2, ...)
+			end
+			return realTrigger(name, target, ...)
+		end
+
+		local door = control.netEvents[gunsmith.Event.CHEST]
+		check('the chest door is wired', type(door) == 'function')
+		if type(door) == 'function' then
+			for _ = 1, 5 do
+				env.source = SMITH
+				door('arasaka_armoury')
+				env.source = nil
+			end
+			control.Pump(10)
+			check('five presses in one breath reach the chest once', opens == 1, opens)
+			check('and a refusal with no sentence is answered as unavailable',
+				refused[#refused] == 'unavailable', tostring(refused[#refused]))
+		end
+
+		env.TriggerClientEvent = realTrigger
+		inventory.OpenStash = realOpen
+	end
+end
 -- ── the gunsmith: the first consumer, and the gate crafting does not have ────
 section('the gunsmith: three armouries, one gate')
 do
@@ -16861,6 +18730,15 @@ do
 		local told = sentTo(M.Event.GONE)
 		check('the clients are told the old id went',
 			#told >= 1 and told[#told][1] == CRATE)
+		-- AND THE CARRIER IS TOLD THEY HOLD NOTHING. The client's `carrying` moves
+		-- only on an answer, so a carry the platform ended without one left the
+		-- client blocking weapons and refusing every other crate as "already
+		-- carrying" until some unrelated request happened to be answered.
+		local ended = lastAnswer()
+		check('and the carrier is told the carry ended, holding nothing',
+			ended.source == 3 and ended[1] == false and ended[2] == 'carry_ended'
+				and ended[3] == false,
+			('%s %s %s'):format(tostring(ended.source), tostring(ended[2]), tostring(ended[3])))
 		CRATE = fresh or CRATE
 
 		-- ── the same, on a disconnect ────────────────────────────────────────
@@ -16944,6 +18822,22 @@ do
 		fire(6, M.Event.BEGIN, Step.PICKUP, CRATE)
 		check('and one standing on it in another instance is too',
 			lastAnswer()[2] == 'wrong_bucket', tostring(lastAnswer()[2]))
+
+		-- AND AT THE END OF THE BAR, not only at its start: a player moved to
+		-- another instance while kneeling is not beside this crate any more.
+		at = at + 10000
+		positions[6] = { x = home.x, y = home.y, z = home.z, bucket = 0 }
+		fire(6, M.Event.BEGIN, Step.PICKUP, CRATE)
+		check('a pickup begun in the crate\'s bucket starts', lastAnswer()[1] == true,
+			tostring(lastAnswer()[2]))
+		positions[6] = { x = home.x, y = home.y, z = home.z, bucket = 4 }
+		at = at + Access.PICKUP_MS + 1
+		fire(6, M.Event.FINISH)
+		check('and is refused at the finish once the player is in another instance',
+			lastAnswer()[1] == false and lastAnswer()[2] == 'wrong_bucket',
+			tostring(lastAnswer()[2]))
+		check('and the crate is not carried',
+			OPX.Api.Get('hauling').State().value.sites.docks.carried == 0)
 	end
 end
 
@@ -17139,9 +19033,18 @@ do
 			end,
 		}
 		local wallet = nil
+		-- The key ring: which player holds a key to which vehicle. A trunk at a
+		-- drop-off is sold out of only by its owner or a key holder.
+		local keyring = { [2] = { ['veh-1'] = true } }
+		local keysStub = {
+			Holds = function(player, vehicle)
+				return keyring[player] ~= nil and keyring[player][vehicle] == true
+			end,
+		}
 		local realGet = OPX.Api.Get
 		OPX.Api.Get = function(name)
 			if name == 'inventory' then return inventory end
+			if name == 'vehiclekeys' then return keysStub end
 			if name == 'character' and wallet ~= nil then return wallet end
 			return realGet(name)
 		end
@@ -17286,6 +19189,20 @@ do
 
 		-- ── at the seller, with the truck parked at the drop-off ─────────────
 		vehicles['veh-1'].position = { x = -1502.0, y = 201.0, z = 18.0 }
+
+		-- SOMEBODY ELSE REACHES THE BUYER FIRST. The truck is not theirs and they
+		-- hold no key to it, so its crates are not theirs to sell: the inventory
+		-- would open an unowned trunk for anybody, and the hauler who drove it
+		-- here would watch a stranger get paid for the load.
+		positions[7] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
+		fire(7, M.Event.HELLO)
+		at = at + 10000
+		fire(7, M.Event.BEGIN, Step.DELIVER, SELLER)
+		check('a stranger at the seller cannot sell the crates in somebody else\'s truck',
+			lastAnswer()[1] == false and lastAnswer()[2] == 'no_crates'
+				and trunks['veh-1'].docks == 2,
+			tostring(lastAnswer()[2]))
+
 		positions[2] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
 		at = at + 10000
 		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
@@ -18191,18 +20108,30 @@ do
 	end
 	check('no file claims `reconcile` is the only writer of its marker set',
 		#sole == 0, table.concat(sole, ', '))
-	-- And the claim really would be false, so this is not agreeing with itself.
-	local emptiers = 0
-	for _, file in ipairs({ 'modules/clothing/client/main.lua',
-		'modules/garages/client/main.lua' }) do
+	-- And the claim really would be false, so this is not agreeing with itself:
+	-- the one marker set every spot module uses now has a second writer, `Clear`.
+	local shared = loaded['lib/client/spots.lua'] or ''
+	check('because the shared set really does have a second writer beside Reconcile',
+		shared:find('function set.Reconcile', 1, true) ~= nil
+			and shared:find('function set.Clear', 1, true) ~= nil)
+
+	-- ── one marker set and one key mapping, not five copies ───────────────
+	-- garages, dealership, clothing and teleports each carried the marker set,
+	-- and those four plus the elevator door each carried the key mapping. They
+	-- drifted -- the per-pass marker cap had reached three of the four.
+	local copies = {}
+	for _, file in ipairs({ 'modules/garages/client/main.lua',
+		'modules/dealership/client/main.lua', 'modules/clothing/client/main.lua',
+		'modules/teleports/client/main.lua', 'modules/elevators/client/door.lua' }) do
 		local source = loaded[file] or ''
-		if source:find('local function clearMarkers', 1, true)
-			and source:find('markers%[key%] = nil') then
-			emptiers = emptiers + 1
+		if source:find('pcall(RegisterKeyMapping', 1, true)
+			or source:find('local function reconcile', 1, true)
+			or source:find('api.create, {', 1, true) then
+			copies[#copies + 1] = file
 		end
 	end
-	check('because a second function really does empty it, in both', emptiers == 2,
-		emptiers)
+	check('no spot module keeps its own marker set or key mapping any more',
+		#copies == 0, table.concat(copies, ', '))
 
 	-- ── the job gate is not narrating copies that still exist ─────────────
 	-- The claim is "a JOBS block means one thing", and the thing it means is the
@@ -18819,7 +20748,17 @@ do
 	check('the client boots', why == nil, why)
 
 	if why == nil then
-		control.Pump(20)
+		-- SETTLED, NOT COUNTED. One part goes out per frame and the key list is
+		-- built a slice per frame before that, so how many frames the catalogue
+		-- takes grows with every module's locale file; twenty stopped being
+		-- enough the day a module added a panel's worth of strings.
+		settle(control, function()
+			local page = control.pages[1]
+			for _, sent in ipairs(page and page.sent or {}) do
+				if sent.channel == 'opx:locale:set' and sent.payload.done == true then return true end
+			end
+			return false
+		end, 200)
 		local page = control.pages[1]
 		check('a page was created', page ~= nil)
 
@@ -19134,6 +21073,208 @@ do
 	end
 end
 
+section('vehicles: two stores of one plate leave it STORED, once, and a stale save cannot undo it')
+do
+	-- A save pass that finds the owner gone and the departure sweep both put the
+	-- same car away; a STORE request can land inside a recall. Both stores read
+	-- the snapshot and yield on the row, and the loser's `remove` answers false
+	-- for a car the winner already took away -- so it wrote OUT over STORED and
+	-- told the player the store was refused. And a save pass whose read was in
+	-- flight wrote the whole row back as it had read it: OUT, under the old garage.
+	--
+	-- The save pass is a local of the module, so it is caught where it is handed
+	-- to the scheduler and driven by hand, beside a store.
+	local savePass
+	local env, control, why = boot('server', nil, nil, function(env, file)
+		if file:find('core/server/scheduler.lua', 1, true) then
+			local every = env.OPX.Scheduler.Every
+			env.OPX.Scheduler.Every = function(name, ms, step)
+				if name == 'vehicles:save' then savePass = step end
+				return every(name, ms, step)
+			end
+		end
+	end)
+	check('the server boots for the store race', why == nil, why)
+	local OPX = why == nil and env.OPX or nil
+	local vehicles = OPX and OPX.Modules.Get('vehicles') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	check('and the save pass was caught', type(savePass) == 'function')
+
+	if type(vehicles) == 'table' and type(character) == 'table' and type(savePass) == 'function' then
+		local DRIVER, PLATE, CITIZEN = 72, 'STORE01', 'citizen-storer'
+		character.Players[DRIVER] = { PlayerData = {
+			citizenId = CITIZEN, source = DRIVER, userId = 'account-72' } }
+		character.Registry.byCitizenId[CITIZEN] = DRIVER
+		character.Registry.byUserId['account-72'] = DRIVER
+		env.Open77.players.position = function()
+			return { x = 5.0, y = 6.0, z = 7.0, bucket = 0 }
+		end
+
+		-- THE ROW, kept here so the last write is what the next read sees. Every
+		-- read and every full save yields once, as the real bridge does.
+		local STATE = vehicles.Storage.STATE
+		local row = { plate = PLATE, citizenId = CITIZEN,
+			record = 'Vehicle.v_standard2_villefort_cortes_player', garage = 'impound',
+			state = STATE.STORED, health = 1.0, metadata = {} }
+		local real = {
+			FetchOne = vehicles.Storage.FetchOne, Save = vehicles.Storage.Save,
+			SetState = vehicles.Storage.SetState,
+		}
+		vehicles.Storage.FetchOne = function(plate)
+			if plate ~= PLATE then return OPX.Result.Err('vehicle.notFound', plate) end
+			local read = {}
+			for key, value in pairs(row) do read[key] = value end
+			env.Wait(0)
+			return OPX.Result.Ok(read)
+		end
+		-- Written BEFORE the yield: a statement lands in the order it was sent,
+		-- and awaiting its answer is what suspends.
+		vehicles.Storage.Save = function(entity)
+			row.state, row.garage = entity.state, entity.garage
+			env.Wait(0)
+			return OPX.Result.Ok(true)
+		end
+		vehicles.Storage.SetState = function(_, state, garage)
+			row.state = state
+			if garage ~= nil then row.garage = garage end
+			return OPX.Result.Ok(true)
+		end
+		-- The engine's answer for a vehicle that no longer exists.
+		local realRemove = env.Open77.vehicles.remove
+		local gone = {}
+		env.Open77.vehicles.remove = function(id)
+			if gone[id] then return false end
+			gone[id] = true
+			return realRemove(id)
+		end
+		local announced = 0
+		local realPublish = OPX.Publish
+		OPX.Publish = function(name, ...)
+			if name == vehicles.Event.ON_STORED then announced = announced + 1 end
+			return realPublish(name, ...)
+		end
+
+		local function bringOut()
+			local out
+			env.CreateThread(function() out = vehicles.Spawn(DRIVER, PLATE) end)
+			return settle(control, function() return out ~= nil end, 60) and out.ok == true, out
+		end
+
+		local brought, out = bringOut()
+		check('the car is out to begin with', brought, out and tostring(out.error))
+
+		local a, b
+		env.CreateThread(function() a = vehicles.Store(PLATE, 'garage_a') end)
+		env.CreateThread(function() b = vehicles.Store(PLATE, 'garage_a') end)
+		check('both stores settle',
+			settle(control, function() return a ~= nil and b ~= nil end, 60))
+		local won = (a and a.ok and 1 or 0) + (b and b.ok and 1 or 0)
+		check('exactly one store puts it away, and the other is told it is busy',
+			won == 1 and ((a.ok and b.error == 'vehicle.busy') or (b.ok and a.error == 'vehicle.busy')),
+			('%s / %s'):format(tostring(a and (a.error or 'ok')), tostring(b and (b.error or 'ok'))))
+		check('and the row is STORED under the garage asked for, not written back to OUT',
+			row.state == STATE.STORED and row.garage == 'garage_a',
+			('state=%s garage=%s'):format(tostring(row.state), tostring(row.garage)))
+		check('and the put-away is announced once', announced == 1, announced)
+
+		-- A SAVE PASS IN FLIGHT WHEN THE STORE LANDS. Both read the row while it
+		-- says OUT; the store's answer comes back first and it sends STORED under
+		-- the new garage, and then the pass's answer comes back and it sent the
+		-- row as it had read it -- OUT, under the old garage -- after it.
+		brought = bringOut()
+		check('the car is out again', brought)
+		local passed, stored = false, nil
+		env.CreateThread(function() stored = vehicles.Store(PLATE, 'garage_b') end)
+		env.CreateThread(function() savePass(); passed = true end)
+		check('the pass and the store both settle',
+			settle(control, function() return passed and stored ~= nil end, 60)
+				and stored.ok == true, stored and tostring(stored.error))
+		check('and the stale pass did not write the row back to OUT under the old garage',
+			row.state == STATE.STORED and row.garage == 'garage_b',
+			('state=%s garage=%s'):format(tostring(row.state), tostring(row.garage)))
+
+		OPX.Publish = realPublish
+		env.Open77.vehicles.remove = realRemove
+		vehicles.Storage.FetchOne, vehicles.Storage.Save, vehicles.Storage.SetState =
+			real.FetchOne, real.Save, real.SetState
+		character.Players[DRIVER] = nil
+	end
+end
+
+section('vehicles: a stop writes back what is out, without awaiting anything')
+do
+	-- `M.Stop` runs on the stop handler's own stack, which is not a coroutine.
+	-- It used to call `StoreAll`, whose `FetchOne` can only fail there, so every
+	-- car out at a stop lost its condition since the last save pass and kept a
+	-- row saying OUT. The condition is now sent with the bridge's callback form.
+	local updates = {}
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end,
+		update = function(sql, params)
+			if sql:find('UPDATE opx77_vehicles', 1, true) then
+				updates[#updates + 1] = { sql = sql, params = params }
+			end
+			return 1
+		end,
+		query = function() return {} end,
+		single = function() return nil end,
+		insert = function() return 0 end,
+		transaction = function() return true end,
+	}))
+	check('the server boots for the stop save', why == nil, why)
+	local OPX = why == nil and env.OPX or nil
+	local vehicles = OPX and OPX.Modules.Get('vehicles') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	if type(vehicles) == 'table' and type(character) == 'table' then
+		local DRIVER, PLATE, CITIZEN = 73, 'STOP001', 'citizen-stopper'
+		character.Players[DRIVER] = { PlayerData = {
+			citizenId = CITIZEN, source = DRIVER, userId = 'account-73' } }
+		character.Registry.byCitizenId[CITIZEN] = DRIVER
+		character.Registry.byUserId['account-73'] = DRIVER
+		env.Open77.players.position = function()
+			return { x = 5.0, y = 6.0, z = 7.0, bucket = 0 }
+		end
+		local realFetch = vehicles.Storage.FetchOne
+		vehicles.Storage.FetchOne = function()
+			return OPX.Result.Ok({ plate = PLATE, citizenId = CITIZEN,
+				record = 'Vehicle.v_standard2_villefort_cortes_player', garage = 'impound',
+				state = vehicles.Storage.STATE.STORED, health = 1.0, metadata = {} })
+		end
+		local out
+		env.CreateThread(function() out = vehicles.Spawn(DRIVER, PLATE) end)
+		check('the car is out before the stop',
+			settle(control, function() return out ~= nil end, 60) and out.ok == true,
+			out and tostring(out.error))
+		vehicles.Storage.FetchOne = realFetch
+
+		local before = #updates
+		local removalsBefore = #control.vehicleRemoves
+		-- Off any coroutine, as the stop handler calls it.
+		vehicles.Stop()
+		local written
+		for index = before + 1, #updates do
+			if type(updates[index].params) == 'table' and updates[index].params.plate == PLATE then
+				written = updates[index]
+			end
+		end
+		local form
+		for _, call in ipairs(control.database.calls) do
+			if call.method == 'update' and type(call.params) == 'table'
+				and call.params.plate == PLATE then form = call.form end
+		end
+		check('the stop writes the car back as STORED with its condition',
+			written ~= nil and tonumber(written.params.state) == vehicles.Storage.STATE.STORED
+				and written.params.health ~= nil,
+			written and tostring(written.params.state) or 'nothing written')
+		check('through the callback form, which needs no coroutine', form == 'callback',
+			tostring(form))
+		check('and the car is taken out of the world',
+			#control.vehicleRemoves == removalsBefore + 1)
+		check('and nothing is left out afterwards', vehicles.LiveId(PLATE) == nil)
+		character.Players[DRIVER] = nil
+	end
+end
+
 -- ── vehicle keys ─────────────────────────────────────────────────────────────
 -- THE OWNER: "faire les clé de voiture en item, quand même les véhicules admin,
 -- avant le menu ou alt on peut se donner la clé du véhicule précis". A key is an
@@ -19242,6 +21383,14 @@ do
 			cut and tostring(cut.error))
 		local metadata = held[1] and held[1].entry.metadata or {}
 		check('and its metadata names the plate', metadata.plate == minted, tostring(metadata.plate))
+		-- `Holds` answers whether a bag carries a key to a live vehicle, by its
+		-- id, without minting one -- the question `hauling` asks of a truck at a
+		-- drop-off before it sells out of the trunk.
+		check('Holds answers yes for the holder of the key to that vehicle',
+			run(function() return keys.Holds(HOLDER, CAR) end) == true)
+		check('and no for somebody without one, or for a vehicle nobody keyed',
+			run(function() return keys.Holds(STRANGER, CAR) end) == false
+				and run(function() return keys.Holds(HOLDER, 999999) end) == false)
 		check('and a label a player can read, with the model and the plate',
 			type(metadata.label) == 'string' and metadata.label:find('Villefort Cortes', 1, true) ~= nil
 				and metadata.label:find(minted, 1, true) ~= nil, tostring(metadata.label))
@@ -19421,6 +21570,8 @@ do
 		check('and is restricted, so the host resolves its ACL grant first',
 			command ~= nil and command.restricted == true)
 		if command ~= nil then
+			-- A precise car anywhere on the server: the raw `anywhere` right.
+			control.Allow(STAFF, 'opx.admin.vehicle.anywhere')
 			command.run(STAFF, { tostring(OTHER) }, 'opx.admin.vehicle.key ' .. OTHER)
 			settle(control, function() return #keysIn(staffBag) > 0 end, 20)
 			local staffKey = keysIn(staffBag)[1]
@@ -19685,6 +21836,249 @@ do
 	end
 end
 
+
+-- ── a shop's fitting room is charged where its clothes are written ──────────
+-- THE EXPLOIT THIS PINS, raised by the economy audit. The shop was told which
+-- slots changed by the client, on `shops:bill`, after the clothing save had
+-- already landed -- so a client that never sent the bill kept the clothes and
+-- paid nothing. The room a shop opens is a PRICED grant now: `appearance` diffs
+-- the save against the stored record itself, hands the slots to the shop's
+-- charge, and writes nothing the charge refused. And the doors that put a look
+-- on hand out ONE save of that look rather than ten free minutes of catalogue.
+section('a shop fitting room is charged on the server, before the save')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the priced room', why == nil, why)
+
+	local OPX = why == nil and env.OPX or nil
+	local appearance = OPX and OPX.Modules.Get('appearance') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	local shops = OPX and OPX.Modules.Get('shops') or nil
+
+	if type(appearance) == 'table' and type(character) == 'table' and type(shops) == 'table' then
+		local SAVE = appearance.Event.SAVE_CLOTHING
+		local REFUSED = appearance.Event.REFUSED
+		local OPERATION = appearance.Operation.SAVE_CLOTHING
+		local PLAYER, CITIZEN = 93, 'citizen-shopper'
+		local STORED = { schemaVersion = 1, wardrobe = { outfits = {} }, equipment = {
+			Head = false, Face = false, InnerChest = 'Items.Shirt_01', OuterChest = 'Items.Jacket_01',
+			Legs = 'Items.Pants_01', Feet = 'Items.Shoes_01', Outfit = false,
+			UnderwearTop = false, UnderwearBottom = false } }
+
+		local writes = 0
+		appearance.Storage.SaveClothing = function() writes = writes + 1; return { ok = true } end
+
+		local function load()
+			character.Players[PLAYER] = { PlayerData = {
+				citizenId = CITIZEN, source = PLAYER, clothing = STORED } }
+		end
+
+		--- A record that is the stored one with `change` laid over its equipment.
+		local function wearing(change, outfits)
+			local equipment = {}
+			for slot, item in pairs(STORED.equipment) do equipment[slot] = item end
+			for slot, item in pairs(change or {}) do equipment[slot] = item end
+			return { schemaVersion = 1, equipment = equipment, wardrobe = { outfits = outfits or {} } }
+		end
+
+		--- Fires the save door and answers the refusal code, or nil.
+		local function save(record)
+			OPX.ForgetCooldowns(PLAYER)
+			local mark = #control.clientEvents
+			env.source = PLAYER
+			control.netEvents[SAVE]({ citizenId = CITIZEN, clothing = record })
+			env.source = nil
+			control.Pump(4)
+			for index = #control.clientEvents, mark + 1, -1 do
+				local sent = control.clientEvents[index]
+				if sent.name == REFUSED and sent.source == PLAYER and sent[2] == OPERATION then
+					return tostring(sent[1])
+				end
+			end
+			return nil
+		end
+
+		-- ── the priced room ──────────────────────────────────────────────────
+		load()
+		local billed, answer = {}, { true }
+		local undone = 0
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function(_, slots)
+			billed[#billed + 1] = table.concat(slots, ',')
+			return answer[1], answer[2], function() undone = undone + 1 end
+		end })
+
+		local refused = save(wearing({ OuterChest = 'Items.Jacket_02', Head = 'Items.Hat_01' }))
+		check('A SAVE FROM A PRICED ROOM IS CHARGED FOR THE SLOTS THE SERVER SAW MOVE',
+			refused == nil and billed[1] == 'Head,OuterChest', ('%s / %s'):format(tostring(refused),
+				tostring(billed[1])))
+		check('and written once the charge went through', writes == 1, tostring(writes))
+
+		load()
+		answer = { false, 'clothing.unpaid' }
+		writes = 0
+		refused = save(wearing({ Legs = 'Items.Pants_02' }))
+		check('A CHARGE THAT FAILS IS A SAVE REFUSED, and nothing is written',
+			refused == 'clothing.unpaid' and writes == 0, ('%s, %d write(s)'):format(tostring(refused), writes))
+
+		load()
+		answer = { true }
+		refused = save(wearing(nil, { ['0'] = { OuterChest = 'Items.Jacket_Gold' } }))
+		check('a garment written into an outfit override is billed as worn',
+			refused == nil and billed[#billed] == 'OuterChest', tostring(billed[#billed]))
+
+		load()
+		local count = #billed
+		refused = save(wearing())
+		check('a save that moves nothing charges nothing', #billed == count, tostring(refused))
+
+		load()
+		appearance.Storage.SaveClothing = function() return { ok = false, error = 'error.unavailable' } end
+		refused = save(wearing({ Feet = 'Items.Shoes_02' }))
+		check('charged and then not written: the charge is undone', undone == 1 and
+			refused == 'error.unavailable', ('%d undo, %s'):format(undone, tostring(refused)))
+		appearance.Storage.SaveClothing = function() writes = writes + 1; return { ok = true } end
+
+		-- ── one look, once ───────────────────────────────────────────────────
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, PLAYER)
+		load()
+		appearance.AllowClothingSave(PLAYER, 'test-uniform', { wear = { OuterChest = 'Items.Uniform_01' } })
+		check('a look grant does not admit anything else riding on it',
+			save(wearing({ OuterChest = 'Items.Uniform_01', Head = 'Items.Crown' })) == 'clothing.noFittingRoom')
+		writes = 0
+		check('it admits exactly the look it was handed for, free',
+			save(wearing({ OuterChest = 'Items.Uniform_01' })) == nil and writes == 1, tostring(writes))
+		load()
+		check('and only once', save(wearing({ OuterChest = 'Items.Uniform_01', Legs = 'Items.Pants_09' }))
+			== 'clothing.noFittingRoom')
+
+		-- A uniform bought inside the priced room is not billed a second time by it.
+		load()
+		billed = {}
+		appearance.OpenWardrobe(PLAYER, { owner = 'test-shop', charge = function(_, slots)
+			billed[#billed + 1] = table.concat(slots, ',')
+			return true
+		end })
+		appearance.AllowClothingSave(PLAYER, 'test-uniform', { wear = { OuterChest = 'Items.Uniform_01' } })
+		refused = save(wearing({ OuterChest = 'Items.Uniform_01', Feet = 'Items.Shoes_03' }))
+		check('a look already paid for inside the room is not charged again by it',
+			refused == nil and billed[1] == 'Feet', tostring(billed[1]))
+
+		-- ── the shop's own door hands out a priced room ──────────────────────
+		local contract = OPX.Api.Get('appearance')
+		local seen
+		local realOpen = contract.OpenWardrobe
+		contract.OpenWardrobe = function(_, options) seen = options; return true end
+		control.Admit(PLAYER, 'account-shopper')
+		control.Stand(PLAYER, -1180.0, 1550.0, 25.0)
+		env.source = PLAYER
+		control.netEvents[shops.Event.OPEN]('thrift_watson')
+		env.source = nil
+		control.Pump(5)
+		contract.OpenWardrobe = realOpen
+		check('THE SHOP OPENS A PRICED ROOM, with its own charge',
+			type(seen) == 'table' and type(seen.charge) == 'function', type(seen))
+		check('and no bill door is left for a client to skip',
+			shops.Event.BILL == nil and control.netEvents[OPX.Event(OPX.Channel.NET, 'shops', 'bill')] == nil)
+
+		if type(seen) == 'table' and type(seen.charge) == 'function' then
+			local taken = {}
+			local money = OPX.Api.Get('character')
+			local realRemove = money.RemoveMoney
+			money.RemoveMoney = function(_, _, amount) taken[#taken + 1] = amount; return true end
+			local ok, _, undo = seen.charge(PLAYER, { 'OuterChest' })
+			money.RemoveMoney = realRemove
+			check('the shop charges the slots it is handed at its own prices',
+				ok == true and (taken[1] or 0) > 0 and type(undo) == 'function', tostring(taken[1]))
+		end
+
+		character.Players[PLAYER] = nil
+	end
+end
+
+-- ── a published look: two seconds apart, and never sent twice ───────────────
+-- One accepted look is re-sent to every connected player and may weigh 48 KiB.
+-- The floor was 500 ms, so a modified client publishing a new body on every
+-- floor pushed about 96 KiB a second to each of N players, and an identical
+-- re-publication -- every missed acknowledgement -- was fanned out again in full.
+section('a published look is floored at two seconds and not re-sent unchanged')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the look fan-out', why == nil, why)
+	local OPX = why == nil and env.OPX or nil
+	local appearance = OPX and OPX.Modules.Get('appearance') or nil
+
+	if type(appearance) == 'table' then
+		local PRESENT = appearance.Event.PRESENT
+		local LOOK, ACK = appearance.Event.LOOK, appearance.Event.PRESENT_ACK
+		local REPLAY, REPLAYED = appearance.Event.REPLAY, appearance.Event.REPLAYED
+		local ABSENT = appearance.Event.ABSENT
+		local ME = 41
+		env.Open77.players.all = function() return { 41, 42, 43 } end
+
+		local function body(seed)
+			return { family = 'female', groups = { {
+				part = 'head', name = '0x00000000000000a1',
+				keys = { { '0x00000000000000b1', ('0x%016x'):format(seed) } },
+			} } }
+		end
+		local EQUIPMENT = { OuterChest = 'Items.Jacket_01' }
+
+		--- Fires one of the player's doors; answers the LOOKs fanned out, the
+		--- acknowledgements and the replay answers that followed.
+		local function fire(name, ...)
+			local mark = #control.clientEvents
+			env.source = ME
+			control.netEvents[name](...)
+			env.source = nil
+			local looks, acks, replayed = 0, 0, 0
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == LOOK then looks = looks + 1 end
+				if sent.name == ACK then acks = acks + 1 end
+				if sent.name == REPLAYED then replayed = replayed + 1 end
+			end
+			return looks, acks, replayed
+		end
+
+		local looks, acks = fire(PRESENT, body(1), EQUIPMENT, {}, 1)
+		check('a first look goes to every other player and is acknowledged',
+			looks == 2 and acks == 1, ('%d look(s), %d ack(s)'):format(looks, acks))
+
+		control.Pump(10)
+		looks, acks = fire(PRESENT, body(2), EQUIPMENT, {}, 2)
+		check('A NEW BODY ONE SECOND LATER IS INSIDE THE FLOOR: not sent, not acknowledged',
+			looks == 0 and acks == 0, ('%d look(s), %d ack(s)'):format(looks, acks))
+
+		control.Pump(25)
+		looks, acks = fire(PRESENT, body(1), EQUIPMENT, {}, 3)
+		check('AN UNCHANGED LOOK IS ACKNOWLEDGED AND NOT FANNED OUT AGAIN',
+			looks == 0 and acks == 1, ('%d look(s), %d ack(s)'):format(looks, acks))
+
+		control.Pump(25)
+		looks = fire(PRESENT, body(1), { OuterChest = 'Items.Jacket_02' }, {}, 4)
+		check('a changed jacket is a changed look, and goes out', looks == 2, tostring(looks))
+
+		check('the fingerprint does not follow the order a table was built in',
+			appearance.LookFingerprint({ body = body(5), equipment = { Head = false, Legs = 'Items.A' },
+				wardrobe = { outfits = {} } }) ==
+			appearance.LookFingerprint({ body = body(5), equipment = { Legs = 'Items.A', Head = false },
+				wardrobe = { outfits = {} } }))
+
+		-- A look coming back after a withdrawal is news to everybody, unchanged or not.
+		fire(ABSENT)
+		control.Pump(25)
+		looks = fire(PRESENT, body(1), { OuterChest = 'Items.Jacket_02' }, {}, 5)
+		check('an unchanged look coming back after a withdrawal is sent again', looks == 2,
+			tostring(looks))
+
+		-- The replay goes to the asker alone and keeps its short floor.
+		local _, _, first = fire(REPLAY, 1)
+		control.Pump(6)
+		local _, _, second = fire(REPLAY, 2)
+		check('a replay keeps the short floor', first == 1 and second == 1,
+			('%d then %d'):format(first, second))
+	end
+end
 
 -- ── the latch the whole join sits behind ────────────────────────────────────
 -- `BeginBootstrap` takes `bootstrapPicking` BEFORE its thread and drops it only
@@ -21223,6 +23617,368 @@ do
 	end
 end
 
+-- A drawn weapon moved out of the bag was holstered WITHOUT a reading, so every
+-- round fired since the last sync came back with the item. It now leaves only
+-- once its rounds have been read back.
+section('inventory: a drawn weapon leaves the bag with the rounds it really has')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers, Weapons, Players, Catalog = inventory.Containers, inventory.Weapons,
+			inventory.Players, inventory.Catalog
+		local SLOT = inventory.Options.WEAPON_SLOT
+		local SHOOTER, CITIZEN = 961, 'GUN00001'
+
+		local weaponName
+		for _, name in ipairs(Catalog.Names()) do
+			local entry = Catalog.Get(name)
+			if entry.weapon and entry.weapon.ammo and entry.weapon.magazine then
+				weaponName = name
+				break
+			end
+		end
+		check('the catalogue carries a weapon that loads rounds', weaponName ~= nil)
+
+		local requests, sequence = {}, 0
+		local function ask(kind)
+			sequence = sequence + 1
+			requests[#requests + 1] = { id = sequence, kind = kind }
+			return sequence
+		end
+		local realWeapons = env.Open77.weapons
+		env.Open77.weapons = {
+			assign = function() return ask('assign') end,
+			remove = function() return ask('remove') end,
+			setAmmo = function() return ask('setAmmo') end,
+			requestSnapshot = function() return ask('snapshot') end,
+			get = function() return { fresh = true, drawn = true } end,
+		}
+		local function complete(id, result)
+			env.TriggerEvent('open77:weapons:completed', tostring(SHOOTER), id, 'op', true, nil,
+				result)
+		end
+
+		local realSourceOf, realCitizen = Players.SourceOf, Players.Citizen
+		Players.SourceOf = function(citizenId) return citizenId == CITIZEN and SHOOTER or nil end
+		Players.Citizen = function(source) return source == SHOOTER and CITIZEN or nil end
+
+		local bag = Containers.Transient('character', CITIZEN, 10, 100000)
+		local stash = Containers.Transient('stash', 'ammo_test_stash', 10, 100000)
+
+		if weaponName then
+			local magazine = Catalog.Get(weaponName).weapon.magazine
+			bag.items[1] = { name = weaponName, count = 1,
+				metadata = { serial = 'TS00000001', ammo = magazine } }
+
+			local used = Weapons.Use(SHOOTER, bag, 1, Catalog.Get(weaponName))
+			check('the weapon is drawn', used == true)
+			complete(requests[#requests].id, { tweakDbId = 'tweak-1',
+				ammo = { capacity = magazine, magazine = 0 } })
+			complete(requests[#requests].id, nil)
+			check('and armed', Weapons.Held(SHOOTER) ~= nil)
+
+			-- Fired down to three; no sync has run since.
+			local moved, refusal = Containers.Move(bag, 1, stash, nil, nil)
+			check('the first attempt to put it away holsters it and is refused',
+				not moved and refusal == 'holstering', tostring(refusal))
+			local read = requests[#requests]
+			check('with a reading of its rounds asked for', read ~= nil and read.kind == 'snapshot')
+			local again, againWhy = Containers.Move(bag, 1, stash, nil, nil)
+			check('and it cannot leave while that reading is in flight',
+				not again and againWhy == 'holstering', tostring(againWhy))
+
+			complete(read.id, { { slot = SLOT, tweakDbId = 'tweak-1', equipped = true,
+				ammo = { total = 3 } } })
+			local gone = Containers.Move(bag, 1, stash, nil, nil)
+			local landed = stash.items[1]
+			check('once the reading lands it leaves', gone == true and landed ~= nil)
+			check('carrying the rounds it really has, not the last sync',
+				landed ~= nil and landed.metadata.ammo == 3,
+				landed and tostring(landed.metadata.ammo))
+		end
+
+		env.Open77.weapons = realWeapons
+		Players.SourceOf, Players.Citizen = realSourceOf, realCitizen
+		Containers.Discard(bag.id)
+		Containers.Discard(stash.id)
+	end
+end
+
+-- A use handler yields, and the consume comes after it. While it ran, the stack
+-- could be dragged away, handed over, dropped, split or used again: the effect
+-- was applied and the consume found nothing. The slot is held for the handler.
+section('inventory: a stack being used cannot move until the use is settled')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers, Actions, Players = inventory.Containers, inventory.Actions,
+			inventory.Players
+		local bag = Containers.Transient('stash', 'use_lock_bag', 10, 100000)
+		local other = Containers.Transient('stash', 'use_lock_other', 10, 100000)
+		bag.items[1] = { name = 'bandage', count = 1 }
+
+		local realBag, realMayAct = Players.Bag, Players.MayAct
+		Players.Bag = function() return bag end
+		Players.MayAct = function() return true end
+
+		local effects = 0
+		Actions.RegisterUsable('bandage', function()
+			env.Wait(300)
+			effects = effects + 1
+			return { ok = true, consume = 1 }
+		end, 'tests')
+
+		local first
+		env.CreateThread(function() first = { Actions.Use(951, 1) } end)
+		control.Pump(1)
+
+		local moved, movedWhy = Containers.Move(bag, 1, other, nil, nil)
+		check('the stack cannot be moved out while it is being used',
+			not moved and movedWhy == 'in_use', tostring(movedWhy))
+		bag.items[2] = { name = 'scrap_metal', count = 1 }
+		local swapped, swapWhy = Containers.Move(bag, 2, bag, 1, nil)
+		check('nor anything swapped into its slot', not swapped and swapWhy == 'in_use',
+			tostring(swapWhy))
+		bag.items[2] = nil
+		local sorted, sortWhy = Containers.Sort(bag, 'name')
+		check('nor the container sorted', not sorted and sortWhy == 'in_use', tostring(sortWhy))
+		local removed, removeWhy = Containers.Remove(bag, 'bandage', 1)
+		check('nor its units taken by name from elsewhere', not removed
+			and removeWhy == 'not_enough', tostring(removeWhy))
+		local again
+		env.CreateThread(function() again = { Actions.Use(952, 1) } end)
+		control.Pump(2)
+		check('and a second use of the same slot is refused while the first runs',
+			again ~= nil and again[1] == false and again[2] == 'in_use',
+			again and tostring(again[2]))
+
+		settle(control, function() return first ~= nil end, 40)
+		check('the use goes through', first ~= nil and first[1] == true,
+			first and tostring(first[2]))
+		check('its effect applied once and the unit consumed',
+			effects == 1 and bag.items[1] == nil, ('%d %s'):format(effects, tostring(bag.items[1])))
+		check('and the slot is free again', not Containers.IsHeld(bag, 1))
+
+		Actions.UnregisterUsable('bandage', 'tests')
+		Players.Bag, Players.MayAct = realBag, realMayAct
+		Containers.Discard(bag.id)
+		Containers.Discard(other.id)
+	end
+end
+
+-- `ResizeContainer` loaded a container it did not hold and never put it away:
+-- an offline bag or an unopened stash stayed in memory for the life of the
+-- resource. And a kind that was not a string raised on `:upper()`.
+section('inventory: a resize puts away what it loaded, and refuses a bad kind')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers = inventory.Containers
+		local realRead, realResize = inventory.Storage.Read, inventory.Storage.Resize
+		inventory.Storage.Read = function(kind, owner, slots, maxWeight)
+			return { id = 91001, kind = kind, owner = owner, slots = slots,
+				maxWeight = maxWeight, items = {} }, nil
+		end
+		local resized
+		inventory.Storage.Resize = function(id, slots)
+			resized = { id = id, slots = slots }
+			return env.OPX.Result.Ok(1)
+		end
+
+		local answer
+		env.CreateThread(function()
+			answer = inventory.ResizeContainer('stash', 'resize_me', 80, 200000)
+		end)
+		settle(control, function() return answer ~= nil end, 20)
+		check('the resize is written', answer ~= nil and answer.ok == true
+			and resized ~= nil and resized.slots == 80, answer and tostring(answer.error))
+		check('and the stash it loaded to do it is not left in memory',
+			Containers.Find('stash', 'resize_me') == nil)
+
+		local raised, refused = pcall(inventory.ResizeContainer, 42, 'x', 10, 10)
+		check('a kind that is not a string is refused, not raised',
+			raised and type(refused) == 'table' and refused.error == 'bad_argument',
+			tostring(refused))
+		raised, refused = pcall(inventory.DeleteContainer, nil, 'x')
+		check('and the same for a delete', raised and type(refused) == 'table'
+			and refused.error == 'bad_argument', tostring(refused))
+
+		inventory.Storage.Read, inventory.Storage.Resize = realRead, realResize
+	end
+end
+
+-- A caller waiting on another's load polls every 50 ms. In that time the loader
+-- could finish, settle a borrowed bag and `Discard` it, and the waiter was then
+-- handed the discarded table: whatever it changed was marked against an id the
+-- sweep no longer knew, and dropped.
+section('inventory: a load waited on is never handed back after it was discarded')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers = inventory.Containers
+		local realRead = inventory.Storage.Read
+		local reads = 0
+		inventory.Storage.Read = function(kind, owner, slots, maxWeight)
+			reads = reads + 1
+			env.Wait(10)
+			return { id = 90000 + reads, kind = kind, owner = owner, slots = slots,
+				maxWeight = maxWeight, items = {} }, nil
+		end
+
+		local first, second
+		env.CreateThread(function()
+			first = Containers.Load('stash', 'race_stash', 10, 1000)
+			-- The loader's whole life, inside one poll of the waiter: settled and
+			-- forgotten before the waiter looks again.
+			if first then Containers.Discard(first.id, true) end
+		end)
+		env.CreateThread(function()
+			second = Containers.Load('stash', 'race_stash', 10, 1000)
+		end)
+		settle(control, function() return second ~= nil end, 40)
+
+		check('the waiter is answered', second ~= nil)
+		check('with a container that is still registered',
+			second ~= nil and Containers.Get(second.id) == second,
+			second and tostring(second.id))
+		check('read again rather than adopted from the discarded load', reads == 2, reads)
+
+		inventory.Storage.Read = realRead
+		if second then Containers.Discard(second.id, true) end
+	end
+end
+
+-- The bridge binds at most 64 parameters a statement and 64 statements a
+-- transaction (the `Open77.database.update` / `.transaction` cards), and the
+-- harness bridge now refuses past either the way the real one does. A save
+-- wrote 50 rows -- 250 parameters -- per INSERT, so every container holding
+-- more than twelve stacks was refused whole, stayed dirty and was retried for
+-- ever, and the sweep stopped at that batch every pass.
+section('the inventory save fits the bridge: 64 parameters, 64 statements')
+do
+	local transactions = {}
+	local poisoned = {}
+	local db = Host.Database({
+		scalar = function() return 1 end,
+		query = function() return {} end,
+		single = function() return nil end,
+		update = function() return 1 end,
+		transaction = function(list)
+			local ids = {}
+			for index = 1, #list do
+				local entry = list[index]
+				if entry.query:find('DELETE FROM opx77_inventory_items', 1, true) then
+					ids[#ids + 1] = entry.values[1]
+					if poisoned[entry.values[1]] then return false, 'refused' end
+				end
+			end
+			transactions[#transactions + 1] = { list = list, ids = ids }
+			return true
+		end,
+	})
+
+	local env, control, why = boot('server', db)
+	check('the server boots with a limit-checking bridge', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Store = inventory.Storage
+
+		local function rows(count)
+			local out = {}
+			for slot = 1, count do
+				out[slot] = { slot = slot, name = 'bandage', count = 1,
+					metadata = { label = 'x' .. slot } }
+			end
+			return out
+		end
+
+		-- ── one container of forty stacks ────────────────────────────────────
+		transactions = {}
+		local answer
+		env.CreateThread(function()
+			answer = Store.Save({ { id = 501, rows = rows(40) } })
+		end)
+		control.Pump(20)
+		check('a forty-stack container is written', answer ~= nil and answer.ok == true,
+			answer and tostring(answer.detail or answer.error))
+		local bound, widest = 0, 0
+		if transactions[1] then
+			for _, entry in ipairs(transactions[1].list) do
+				if entry.query:find('INSERT INTO opx77_inventory_items', 1, true) then
+					bound = bound + #entry.values // 5
+				end
+				if #entry.values > widest then widest = #entry.values end
+			end
+		end
+		check('in one transaction', #transactions == 1, #transactions)
+		check('with every stack bound', bound == 40, bound)
+		check('and no statement past 64 parameters', widest > 0 and widest <= 64, widest)
+
+		-- ── sixteen containers of thirty stacks: 16 x 5 statements ───────────
+		transactions = {}
+		local list = {}
+		for index = 1, 16 do list[index] = { id = 600 + index, rows = rows(30) } end
+		answer = nil
+		env.CreateThread(function() answer = Store.Save(list) end)
+		control.Pump(40)
+		check('a batch past 64 statements is still written', answer ~= nil and answer.ok == true,
+			answer and tostring(answer.detail or answer.error))
+		local largest, seen, split = 0, {}, true
+		for _, sent in ipairs(transactions) do
+			if #sent.list > largest then largest = #sent.list end
+			for _, id in ipairs(sent.ids) do
+				if seen[id] then split = false end
+				seen[id] = true
+			end
+		end
+		check('as several transactions', #transactions >= 2, #transactions)
+		check('none of them past 64 statements', largest > 0 and largest <= 64, largest)
+		local written = 0
+		for _ in pairs(seen) do written = written + 1 end
+		check('with every container in exactly one of them', split and written == 16, written)
+
+		-- ── one container the database refuses holds nobody else hostage ─────
+		local fakes = {}
+		for index = 1, 3 do
+			fakes[700 + index] = { id = 700 + index, kind = 'stash', owner = 'f' .. index,
+				slots = 10, maxWeight = 1000, items = { [1] = { name = 'bandage', count = 1 } } }
+		end
+		local realGet = inventory.Containers.Get
+		inventory.Containers.Get = function(id)
+			if fakes[id] then return fakes[id] end
+			return realGet(id)
+		end
+		poisoned[702] = true
+		transactions = {}
+		for id in pairs(fakes) do Store.MarkDirty(id) end
+		control.Pump(40)
+		local wrote = {}
+		for _, sent in ipairs(transactions) do
+			for _, id in ipairs(sent.ids) do wrote[id] = true end
+		end
+		check('a refused container does not keep the rest of its batch unwritten',
+			wrote[701] == true and wrote[703] == true,
+			('701=%s 703=%s'):format(tostring(wrote[701]), tostring(wrote[703])))
+		check('and the refused one is still marked to be written',
+			wrote[702] == nil and Store.Pending() >= 1, Store.Pending())
+		inventory.Containers.Get = realGet
+		for id in pairs(fakes) do Store.Forget(id) end
+	end
+end
+
 -- ── the readiness gate ───────────────────────────────────────────────────────
 -- All eight guards in `core/server/gate.lua` survived mutation, because
 -- `Open77.ready` was five constants: `isReady` answered false for everybody,
@@ -22183,6 +24939,52 @@ end
 -- `shopAt` refuses a shop in another bucket and a shop out of reach, and both
 -- mutants survived: with every player at the origin in bucket 0 the two
 -- comparisons were constants.
+
+-- The saved-look doors had no window at all: every press was a thread and a
+-- database round trip, and REDEEM let a script walk the share-code space --
+-- every hit somebody's saved look, worn for free.
+section('shops: the saved-look doors are cooled, and guessing codes is slow')
+do
+	local lookups = 0
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 0 end,
+		query = function() return {} end,
+		single = function(sql)
+			if sql:find('share_code', 1, true) then lookups = lookups + 1 end
+			return nil
+		end,
+		insert = function() return 1 end,
+		update = function() return 1 end,
+		transaction = function() return true end,
+	}))
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local shops = env.OPX.Modules.Get('shops')
+		local GUESSER = 913
+		control.Admit(GUESSER, 'account-913')
+		local redeem = control.netEvents[shops.Event.REDEEM]
+		check('the redeem door is wired', type(redeem) == 'function')
+		if type(redeem) == 'function' then
+			local before = lookups
+			for attempt = 1, 20 do
+				env.source = GUESSER
+				redeem({ code = 'ABCDEFG' .. ('23456789ABCDEFGHJKLM'):sub(attempt, attempt) })
+				env.source = nil
+			end
+			control.Pump(10)
+			check('twenty codes typed in one breath cost one lookup, not twenty',
+				lookups - before == 1, lookups - before)
+			control.Pump(25)
+			env.source = GUESSER
+			redeem({ code = 'ABCD9999' })
+			env.source = nil
+			control.Pump(10)
+			check('and the door opens again once the window has passed',
+				lookups - before == 2, lookups - before)
+		end
+	end
+end
 section('shops: a counter on the other side of the city is not a counter you are at')
 do
 	local env, control, why = boot('server')
@@ -22295,6 +25097,9 @@ do
 
 			local STAFF = 941
 			control.Admit(STAFF, 'account-941')
+			-- The snapshot carries no position: this operator acts on it by id
+			-- from anywhere, which is what the raw `anywhere` right is for.
+			control.Allow(STAFF, 'opx.admin.vehicle.anywhere')
 			-- A live vehicle with every bit clear, so the mask the runtime
 			-- resolves is exactly the mask that comes back in the write.
 			control.vehicles.snapshot = { id = 1, flags = 0, occupants = {} }
@@ -22878,6 +25683,21 @@ do
 			end
 		end
 		check('and nothing goes out on the old private notice event', private == 0, private)
+
+		-- THE CONTRACT CHECKS WHAT IT IS GIVEN. `SetTime` trusted its argument as
+		-- validated by the command; a contract caller's string or NaN went into
+		-- the clock, every snapshot built from it raised, and the bad value was
+		-- carried into the next start.
+		local weather = OPX.Api.Get('weather')
+		local bad = weather.SetTime('noon', 'test')
+		local nan = weather.SetTime(0 / 0, 'test')
+		check('the published SetTime refuses a time that is not a number',
+			type(bad) == 'table' and bad.ok == false and bad.error == 'invalid_time'
+				and type(nan) == 'table' and nan.ok == false,
+			type(bad) == 'table' and tostring(bad.error) or type(bad))
+		local fine = weather.SetTime(90000, 'test')
+		check('and folds one past midnight into the day',
+			type(fine) == 'table' and fine.ok == true and weather.Status().ok ~= false)
 	end
 end
 
@@ -24649,6 +27469,8 @@ do
 			{ key = 'blip_dock#1.in', label = 'BLIP DOCK', kind = 'garage', garage = 'blip_dock',
 				role = 'entry', location = 1, x = 46.0, y = 40.0, z = 1.0, heading = 0.0, bucket = 0 },
 		} })
+		-- The garages read a list on a thread of their own; give it its frames.
+		control.Pump(5)
 		blips.Runtime.Sync()
 		control.Pump(20)
 		local garagePins = {}
@@ -24893,6 +27715,49 @@ do
 	end
 end
 
+-- ── the reconcile's budget, the derive included ─────────────────────────────
+-- THE CREATES YIELDED AND THE REST DID NOT. Reading 200 garage spots, sorting
+-- them with a Lua comparator and signing the 128 that fit ran in the first
+-- resume of the pass, and a pass that changed nothing walked the whole set in
+-- one: the meter put both at ~36,000 instructions against a client budget of
+-- ~10,000 that unwinds the thread silently -- leaving `syncing` true and the
+-- map never reconciled again. Counted per resume, the way the platform does.
+section('blips: two hundred spots reconcile inside one resume\'s budget')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the reconcile budget', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		OPX.Config.MODULES.blips.MAX = 400
+		-- Whatever the boot's own pass was doing finishes first, so the Sync
+		-- below starts a thread of its own, and creates every pin it counts.
+		control.Pump(200)
+		local many = {}
+		for index = 1, 200 do
+			many['g' .. index] = { key = 'g' .. index, label = 'G' .. index,
+				x = 100.0 + index, y = 200.0, z = 30.0 }
+		end
+		OPX.Modules.Get('garages').Runtime.Spots = function() return many end
+
+		local first, resumes = resumeCost(env, control, function() blips.Runtime.Sync() end, 300)
+		local report = blips.Runtime.Report()
+		check('the reconcile still pins the 128 the platform allows',
+			report.live == 128, report.live)
+		check('and no resume of it cost more than 6,000 instructions',
+			resumes > 1 and first < 6000,
+			('%d instructions, dearest of %d resumes'):format(first, resumes))
+
+		local again, resumesAgain = resumeCost(env, control, function() blips.Runtime.Sync() end, 300)
+		check('a pass that changes nothing stays inside the budget too',
+			resumesAgain > 1 and again < 6000,
+			('%d instructions, dearest of %d resumes'):format(again, resumesAgain))
+		check('and leaves the same 128 pins up', blips.Runtime.Report().live == 128,
+			blips.Runtime.Report().live)
+	end
+end
+
 -- ── the settings the engine refuses by name ─────────────────────────────────
 --
 -- `Open77.blips` refuses `color`/`colour` with their own reason token. It is
@@ -24995,6 +27860,26 @@ do
 		end
 
 		check('both garages are pinned', pinned('First') ~= nil and pinned('Second') ~= nil)
+
+		-- ONE BAD HAULING ROW DOES NOT EMPTY THE MAP. `site.JOBS` was read off a
+		-- site before anything checked it was a table, so a row written as a
+		-- boolean or a number raised inside the pass, every pass, and no change
+		-- to any category was ever drawn again.
+		local sites = OPX.Config.MODULES.hauling and OPX.Config.MODULES.hauling.SITES
+		if type(sites) == 'table' then
+			sites.zz_broken = true
+			list.three = { key = 'three', label = 'Third', x = 70.0, y = 80.0, z = 90.0 }
+			blips.Runtime.Sync()
+			control.Pump(20)
+			control.Pump(30)
+			sites.zz_broken = nil
+			list.three = nil
+			check('a hauling site that is not a table does not stop a new garage being pinned',
+				pinned('Third') ~= nil and pinned('First') ~= nil)
+			blips.Runtime.Sync()
+			control.Pump(20)
+			control.Pump(30)
+		end
 
 		-- THE SPOT GOES AWAY. The server stopped naming it -- deleted, or a bucket
 		-- this player is no longer in.
@@ -25201,6 +28086,14 @@ do
 		-- Connected players with characters, which is what `judge` demands
 		-- before anybody may place or take a call at all.
 		local A, B, C, D = 601, 602, 603, 604
+		-- EVERYBODY HERE IS IN EVERYBODY'S CONTACTS. A call goes to a contact and
+		-- to nobody else (the owner's decision), and this section is about the
+		-- refusals a call between two people who MAY call each other can still
+		-- meet -- so they all may. The stranger's refusal has a section of its own.
+		local everybody = {}
+		for _, tag in ipairs({ 'a', 'b', 'c', 'd', 'e', 'f', 'e2', 'f2' }) do
+			everybody[#everybody + 1] = { citizenId = 'citizen-' .. tag, name = 'Caller ' .. tag }
+		end
 		local function incarnate(id, tag)
 			control.Admit(id, 'account-' .. tag)
 			OPX.EnsureSession(id)
@@ -25209,7 +28102,10 @@ do
 					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
 					charInfo = { firstName = 'Caller', lastName = tag } },
 				Functions = { UpdatePlayerData = function() end,
-					GetMetaData = function() return nil end,
+					GetMetaData = function(key)
+						if key == 'callContacts' then return everybody end
+						return nil
+					end,
 					SetMetaData = function() end },
 			}
 			character.Registry.byCitizenId['citizen-' .. tag] = id
@@ -25352,6 +28248,40 @@ do
 		ask(A, module.Event.HANG_UP)
 		check('the call ending takes the channel with it', channels() == 0, channels())
 
+		-- ── ONE OF THREE DISCONNECTS ─────────────────────────────────────────
+		-- A disconnect is a hang-up nobody pressed, and in a call of three the
+		-- other two carry on. They were told "the call ended" anyway.
+		-- What a player was toasted after a mark, read off the host's own
+		-- notification log: `tell` goes through `OPX.Notify`, not a net event.
+		local function saidTo(playerId, mark, text)
+			for index = mark + 1, #control.notices do
+				local notice = control.notices[index]
+				if notice.playerId == playerId and type(notice.message) == 'string'
+					and notice.message:find(text, 1, true) ~= nil then
+					return true
+				end
+			end
+			return false
+		end
+		ask(A, module.Event.INVITE, B)
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		ask(A, module.Event.INVITE, D)
+		ask(D, module.Event.ACCEPT, inviteOn(D))
+		check('three are on the call before one of them leaves',
+			onCallCount(A) == 3, onCallCount(A))
+		local leftMark = #control.notices
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, D, 'quit')
+		check('the two left are still talking', onCallCount(A) == 2, onCallCount(A))
+		local hungUp = OPX.Locale.Text('calls.left', { name = '' })
+		local endedText = OPX.Locale.Text('calls.ended')
+		check('and are told that one hung up, not that the call ended',
+			saidTo(A, leftMark, hungUp) and saidTo(B, leftMark, hungUp)
+				and not saidTo(A, leftMark, endedText),
+			hungUp)
+		ask(A, module.Event.HANG_UP)
+		incarnate(D, 'd')
+		control.Pump(5)
+
 		-- ── calling yourself ─────────────────────────────────────────────────
 		local mark = ask(A, module.Event.INVITE, A)
 		local refused = refusalFor(mark)
@@ -25372,8 +28302,11 @@ do
 		control.Life(EMPTY, 'alive')
 		mark = ask(A, module.Event.INVITE, EMPTY)
 		refused = refusalFor(mark)
-		check('a call to a slot with no character is refused as the TARGET not being ready',
-			refused ~= nil and refused.code == 'calls.error.targetNotReady',
+		-- A slot with no character is nobody's contact, so the refusal is the one
+		-- every stranger gets -- it does not say whether the seat is empty, busy
+		-- or down. It used to answer `targetNotReady`, which said exactly that.
+		check('a call to a slot with no character is refused as not a contact, saying nothing more',
+			refused ~= nil and refused.code == 'calls.error.notContact',
 			refused and tostring(refused.code))
 
 		-- ── the ordinary call ────────────────────────────────────────────────
@@ -25692,6 +28625,99 @@ do
 			return answer.ok and answer.value.contacts or {}
 		end
 
+		-- ── a stranger cannot be called ──────────────────────────────────────
+		-- THE OWNER'S DECISION: a call goes to a contact and to nobody else. These
+		-- two have not shared contacts yet, so A cannot ring B, and the refusal is
+		-- the same whatever B is doing: it does not name B, and it does not say
+		-- whether B is online, busy or down -- that was the leak a modified client
+		-- walking ids 1..N used to read every character's name and state with.
+		local mark = ask(A, module.Event.INVITE, B)
+		local refused = refusalFor(mark)
+		check('a call to somebody who is not a contact is refused',
+			refused ~= nil and refused.code == 'calls.error.notContact',
+			refused and tostring(refused.code))
+		check('and nothing rings on their side', inviteOn(B) == nil)
+		local placedText = OPX.Locale.Text('calls.placed', { name = 'Fixer cb' })
+		local leaked = false
+		for _, notice in ipairs(control.notices) do
+			if notice.playerId == A and tostring(notice.message):find('cb', 1, true) then leaked = true end
+		end
+		check('and the caller is not told who is behind the id', not leaked, placedText)
+		control.Life(B, 'dead')
+		mark = ask(A, module.Event.INVITE, B)
+		refused = refusalFor(mark)
+		check('and a stranger who is down answers exactly the same, so nothing about them is read',
+			refused ~= nil and refused.code == 'calls.error.notContact',
+			refused and tostring(refused.code))
+		control.Life(B, 'alive')
+
+		-- ── a contact from across the street ─────────────────────────────────
+		-- CONTACT_RANGE is 6 metres. These two are 40 apart.
+		control.Stand(A, 0.0, 0.0, 0.0)
+		control.Stand(B, 40.0, 0.0, 0.0)
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a contact offered from across the street is refused',
+			refused ~= nil and refused.code == 'calls.error.tooFar',
+			refused and tostring(refused.code))
+		check('and nothing was written to either character',
+			#contactsOf(A) == 0 and #contactsOf(B) == 0)
+
+		-- ── and a CALL from the same distance ─────────────────────────────────
+		-- Refused too, but NOT for the distance: they are not contacts yet. Once
+		-- they are, a call from across the city goes through (checked below).
+		mark = ask(A, module.Event.INVITE, B)
+		refused = refusalFor(mark)
+		check('a CALL to a stranger across the street is refused as not a contact, not as too far',
+			refused ~= nil and refused.code == 'calls.error.notContact',
+			refused and tostring(refused.code))
+
+		-- ── two people in the same place but not the same world ──────────────
+		-- Same coordinates, different routing buckets: an instance is exactly
+		-- the case where two bodies share a point and cannot see each other.
+		control.Stand(B, 1.0, 0.0, 0.0)
+		control.Bucket(B, 7)
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a contact offered into another routing bucket is refused, however close',
+			refused ~= nil and refused.code == 'calls.error.tooFar',
+			refused and tostring(refused.code))
+		control.Bucket(B, 0)
+
+		-- ── the hand-over ────────────────────────────────────────────────────
+		ask(A, module.Event.INVITE, B, 'contact')
+		local offered = inviteOn(B)
+		check('a contact offered face to face reaches the other party', offered ~= nil)
+		check('and nothing is written until they agree -- it needs a consent',
+			#contactsOf(A) == 0 and #contactsOf(B) == 0)
+
+		ask(B, module.Event.ACCEPT, offered)
+		local mine, theirs = contactsOf(A), contactsOf(B)
+		check('accepting writes the contact BOTH ways, which is what sharing means',
+			#mine == 1 and #theirs == 1, ('%d/%d'):format(#mine, #theirs))
+		check('each side holding the other\'s citizen id, not their own',
+			mine[1] ~= nil and mine[1].citizenId == 'citizen-cb'
+				and theirs[1] ~= nil and theirs[1].citizenId == 'citizen-ca',
+			(mine[1] and mine[1].citizenId or '?') .. '/'
+				.. (theirs[1] and theirs[1].citizenId or '?'))
+		check('and the CHARACTER\'s name rather than the account gamertag',
+			mine[1] ~= nil and mine[1].name == 'Fixer cb', mine[1] and mine[1].name)
+		check('while putting nobody on a call: a contact is not a conversation',
+			calls.IsOnCall(A).value.onCall == false
+				and calls.IsOnCall(B).value.onCall == false)
+		check('and lighting nobody\'s eyes either',
+			control.Eyes(A) == false and control.Eyes(B) == false)
+
+		-- ── a contact can be called from anywhere ───────────────────────────
+		-- The range rule belongs to the contact hand-over and to nothing else.
+		-- A module that applied it to calls would have built a walkie-talkie.
+		control.Stand(B, 40.0, 0.0, 0.0)
+		ask(A, module.Event.INVITE, B)
+		check('a CALL to a contact forty metres away goes through: a holocall is not a radio',
+			inviteOn(B) ~= nil)
+		ask(B, module.Event.DECLINE, inviteOn(B))
+		control.Stand(B, 1.0, 0.0, 0.0)
+
 		-- ── declining ────────────────────────────────────────────────────────
 		-- A refusal has to reach the CALLER, not merely stop ringing for the
 		-- person who refused: a call that simply goes quiet is a caller staring
@@ -25699,7 +28725,7 @@ do
 		ask(A, module.Event.INVITE, B)
 		local ringing = inviteOn(B)
 		check('a call is ringing to be refused', ringing ~= nil)
-		local mark = #control.clientEvents
+		mark = #control.clientEvents
 		ask(B, module.Event.DECLINE, ringing)
 		check('declining puts nobody on a call',
 			calls.IsOnCall(A).value.onCall == false
@@ -25763,62 +28789,6 @@ do
 			inviteOn(B) ~= nil and inviteOn(B) ~= ringing)
 		ask(B, module.Event.DECLINE, inviteOn(B))
 
-		-- ── a contact from across the street ─────────────────────────────────
-		-- CONTACT_RANGE is 6 metres. These two are 40 apart.
-		control.Stand(A, 0.0, 0.0, 0.0)
-		control.Stand(B, 40.0, 0.0, 0.0)
-		mark = ask(A, module.Event.INVITE, B, 'contact')
-		local refused = refusalFor(mark)
-		check('a contact offered from across the street is refused',
-			refused ~= nil and refused.code == 'calls.error.tooFar',
-			refused and tostring(refused.code))
-		check('and nothing was written to either character',
-			#contactsOf(A) == 0 and #contactsOf(B) == 0)
-
-		-- ── and a CALL from the same distance, which must NOT be ─────────────
-		-- The range rule belongs to the contact hand-over and to nothing else.
-		-- A module that applied it to calls would have built a walkie-talkie.
-		ask(A, module.Event.INVITE, B)
-		check('while a CALL from the same distance goes through: a holocall is not a radio',
-			inviteOn(B) ~= nil)
-		ask(B, module.Event.DECLINE, inviteOn(B))
-
-		-- ── two people in the same place but not the same world ──────────────
-		-- Same coordinates, different routing buckets: an instance is exactly
-		-- the case where two bodies share a point and cannot see each other.
-		control.Stand(B, 1.0, 0.0, 0.0)
-		control.Bucket(B, 7)
-		mark = ask(A, module.Event.INVITE, B, 'contact')
-		refused = refusalFor(mark)
-		check('a contact offered into another routing bucket is refused, however close',
-			refused ~= nil and refused.code == 'calls.error.tooFar',
-			refused and tostring(refused.code))
-		control.Bucket(B, 0)
-
-		-- ── the hand-over ────────────────────────────────────────────────────
-		ask(A, module.Event.INVITE, B, 'contact')
-		local offered = inviteOn(B)
-		check('a contact offered face to face reaches the other party', offered ~= nil)
-		check('and nothing is written until they agree -- it needs a consent',
-			#contactsOf(A) == 0 and #contactsOf(B) == 0)
-
-		ask(B, module.Event.ACCEPT, offered)
-		local mine, theirs = contactsOf(A), contactsOf(B)
-		check('accepting writes the contact BOTH ways, which is what sharing means',
-			#mine == 1 and #theirs == 1, ('%d/%d'):format(#mine, #theirs))
-		check('each side holding the other\'s citizen id, not their own',
-			mine[1] ~= nil and mine[1].citizenId == 'citizen-cb'
-				and theirs[1] ~= nil and theirs[1].citizenId == 'citizen-ca',
-			(mine[1] and mine[1].citizenId or '?') .. '/'
-				.. (theirs[1] and theirs[1].citizenId or '?'))
-		check('and the CHARACTER\'s name rather than the account gamertag',
-			mine[1] ~= nil and mine[1].name == 'Fixer cb', mine[1] and mine[1].name)
-		check('while putting nobody on a call: a contact is not a conversation',
-			calls.IsOnCall(A).value.onCall == false
-				and calls.IsOnCall(B).value.onCall == false)
-		check('and lighting nobody\'s eyes either',
-			control.Eyes(A) == false and control.Eyes(B) == false)
-
 		-- ── the same contact twice ───────────────────────────────────────────
 		-- Replaced, not appended. The list is written into the character's
 		-- metadata blob and read back on every load, so a duplicate row is a
@@ -25828,6 +28798,18 @@ do
 		-- block disconnects the contact to prove an absent one is not listed,
 		-- and a hand-over to a slot nobody is sitting in is refused for a
 		-- perfectly good reason that has nothing to do with duplicates.
+		--
+		-- AND NOT AGAIN AT ONCE. A stranger may still offer a contact -- it is the
+		-- only door to a call now -- but offering the same person again and again
+		-- is a doorbell, so a second offer to the same player inside the floor is
+		-- refused with words of its own.
+		mark = ask(A, module.Event.INVITE, B, 'contact')
+		refused = refusalFor(mark)
+		check('a second contact offer to the same person straight away is refused',
+			refused ~= nil and refused.code == 'calls.error.contactTooSoon',
+			refused and tostring(refused.code))
+		check('and nothing new rings on their side for it', inviteOn(B) == nil or inviteOn(B) == offered)
+		control.Pump(320)
 		ask(A, module.Event.INVITE, B, 'contact')
 		ask(B, module.Event.ACCEPT, inviteOn(B))
 		check('handing over the same contact again replaces the row rather than adding a second',
@@ -25879,6 +28861,11 @@ do
 		local C = 803
 		incarnate(C, 'cc')
 		control.Pump(5)
+		-- B and C have each other's contact, written the way a hand-over writes
+		-- it: a call goes to a contact and to nobody else.
+		meta[B].callContacts = meta[B].callContacts or {}
+		table.insert(meta[B].callContacts, { citizenId = 'citizen-cc', name = 'Fixer cc' })
+		meta[C].callContacts = { { citizenId = 'citizen-cb', name = 'Fixer cb' } }
 		ask(B, module.Event.INVITE, C)
 		ask(C, module.Event.ACCEPT, inviteOn(C))
 		check('the contact is now on a call of their own',
@@ -25953,7 +28940,12 @@ do
 					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
 					charInfo = { firstName = 'Glow', lastName = tag } },
 				Functions = { UpdatePlayerData = function() end,
-					GetMetaData = function() return nil end,
+					-- Everybody here is in everybody's contacts: a call goes to a contact
+					-- and to nobody else, and this section is not about strangers.
+					GetMetaData = function(key)
+						if key == 'callContacts' then return { { citizenId = 'citizen-ea' }, { citizenId = 'citizen-eb' } } end
+						return nil
+					end,
 					SetMetaData = function() end },
 			}
 			character.Registry.byCitizenId['citizen-' .. tag] = id
@@ -26061,6 +29053,17 @@ do
 		ask(B, module.Event.ACCEPT, inviteOn(B))
 		check('a fresh call lights both again',
 			control.Eyes(A) == true and control.Eyes(B) == true)
+
+		-- ── a host read that fails is not a reason to hang up ────────────────
+		-- `judge` answers `unreadable` when the host could not be asked, and its
+		-- own comment calls that "a feature that is merely having a bad second".
+		-- The sweep treated it as unreachable and hung up every live call.
+		local realLife = env.Open77.players.getLifeState
+		env.Open77.players.getLifeState = function() error('host hiccup') end
+		control.Pump(40)
+		env.Open77.players.getLifeState = realLife
+		check('a life-state read that raises does not end a live call',
+			calls.IsOnCall(A).value.onCall == true and calls.IsOnCall(B).value.onCall == true)
 
 		-- The platform clears a lease on death by itself. Without the sweep
 		-- taking the body off the call, the call would carry on with a corpse
@@ -26456,7 +29459,12 @@ do
 					userId = 'account-' .. tag, money = { EDDIES = 0, BANK = 0 },
 					charInfo = { firstName = 'Caller', lastName = tag } },
 				Functions = { UpdatePlayerData = function() end,
-					GetMetaData = function() return nil end,
+					-- Everybody here is in everybody's contacts: a call goes to a contact
+					-- and to nobody else, and this section is not about strangers.
+					GetMetaData = function(key)
+						if key == 'callContacts' then return { { citizenId = 'citizen-wa' }, { citizenId = 'citizen-wb' }, { citizenId = 'citizen-wc' } } end
+						return nil
+					end,
 					SetMetaData = function() end },
 			}
 			character.Registry.byCitizenId['citizen-' .. tag] = id
@@ -26955,7 +29963,8 @@ do
 			'AddMoney', 'RemoveMoney', 'AddMoneyOffline', 'HasJob', 'HasGang', 'GetJob',
 			'GetGang', 'HasItem', 'CountItem', 'AddItem', 'RemoveItem', 'CountInStash',
 			'AddToStash', 'RemoveFromStash', 'SendChat', 'BroadcastChat', 'RevokeKeys',
-			'RevokeAllKeys', 'SetVehicleState',
+			'RevokeAllKeys', 'SetVehicleState', 'GetDoor', 'SetDoorLocked', 'GetDoorFromName',
+			'GetAllDoors', 'SetDoorState', 'CreateDoor', 'EditDoor', 'RemoveDoor',
 		}
 		local missing = {}
 		for _, name in ipairs(SERVER_EXPORTS) do
@@ -28506,6 +31515,74 @@ do
 	end
 end
 
+
+-- `OPX.Hooks.Trigger` may yield, and `RemoveMoney` read the balance BEFORE its
+-- hook and subtracted after it. Two purchases in flight across a yielding
+-- `money:beforeRemove` hook both passed the balance test, and 100 paid for two
+-- 100 items. A Player that logged out during the hook was also still mutated,
+-- on a table its logout had already saved.
+section('money: a yielding hook cannot let one balance pay twice')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end, query = function() return {} end,
+		single = function() return nil end, insert = function() return 1 end,
+		update = function() return 1 end, transaction = function() return true end,
+	}))
+	check('the server boots for the hook race', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local source = 861
+		control.Admit(source, 'account-' .. source)
+		local player = character.CreatePlayer({
+			citizenId = OPX.CitizenId.Generate(), userId = 'account-' .. source,
+			source = source, charInfo = { firstName = 'Jackie', lastName = 'Welles' },
+			money = { EDDIES = 100 },
+		}, false)
+		player.PlayerData.jobs, player.PlayerData.gangs = {}, {}
+		character.RegisterPlayer(player)
+
+		local hook = OPX.Hooks.Register('money:beforeRemove', function()
+			env.Wait(200)
+			return true
+		end)
+
+		local answers = {}
+		for index = 1, 2 do
+			env.CreateThread(function()
+				answers[index] = { character.RemoveMoney(source, 'EDDIES', 100, 'test') }
+			end)
+		end
+		settle(control, function() return answers[1] ~= nil and answers[2] ~= nil end, 40)
+
+		local paid = 0
+		for index = 1, 2 do
+			if answers[index] and answers[index][1] == true then paid = paid + 1 end
+		end
+		check('only one of two purchases in flight is paid for', paid == 1, paid)
+		check('and the balance never goes below zero', player.PlayerData.money.EDDIES == 0,
+			player.PlayerData.money.EDDIES)
+
+		-- A logout during the hook: the Player has left the roster and been saved.
+		player.PlayerData.money.EDDIES = 100
+		local late
+		OPX.Hooks.Remove(hook)
+		hook = OPX.Hooks.Register('money:beforeAdd', function()
+			env.Wait(200)
+			return true
+		end)
+		env.CreateThread(function()
+			late = { character.AddMoney(player, 'EDDIES', 50, 'test') }
+		end)
+		control.Pump(1)
+		character.UnregisterPlayer(player)
+		settle(control, function() return late ~= nil end, 40)
+		check('a payment to somebody who left during the hook is refused',
+			late ~= nil and late[1] == false, late and tostring(late[2]))
+		OPX.Hooks.Remove(hook)
+	end
+end
 section('groups: a live job change that a logout overtakes is still kept')
 do
 	local state = {}
@@ -28846,11 +31923,223 @@ do
 	end
 end
 
+-- ── the client boot, a resume at a time ─────────────────────────────────────
+-- THE ONE THREAD THE WHOLE CLIENT HALF HANGS ON. Its first resume built the
+-- surface, worked out the module order and ran the first `Init` -- ~8,000 VM
+-- instructions (10,800 on the budget meter) against a budget of ~10,000 whose
+-- overrun unwinds the thread without a word: no module started, no scheduler,
+-- nothing logged. And a page that mounts before the modules have started hands
+-- its latched readies to the `Start` that wires them, which put the inventory's
+-- at ~5,100 (6,500 on the meter). Every resume of the boot, and of every thread
+-- a module starts during it, is counted here, both ways round, and held well
+-- inside the budget rather than at it: the meter reads a resume ~1.3x dearer.
+section('the client boot stays inside one resume\'s budget')
+do
+	--- Boots a fresh client, the page mounting early when asked, and answers the
+	--- dearest resume, how many there were and how many modules started.
+	local function bootCost(early)
+		local env, control = Host.Environment('client')
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			local chunk = loadfile(file, 't', env)
+			if chunk == nil or not pcall(chunk) then return nil end
+		end
+		local worst, resumes = resumeCost(env, control, function()
+			control.Fire('onClientResourceStart', 'opx_infinity')
+			if early then
+				-- The rude order: the surface exists, no module has started, and
+				-- the page reports ready with every view's own ready behind it.
+				control.Pump(1)
+				local page = control.pages[#control.pages]
+				control.PageEmit(page, 'opx:ready', { surface = 'ui' })
+				control.PageEmit(page, 'opx:hud:ready', {})
+				control.PageEmit(page, 'opx:inventory:ready', {})
+			end
+		end, 240)
+		local started = 0
+		for _, line in ipairs(env.OPX.Modules.Report()) do
+			if line:find(' started ', 1, true) then started = started + 1 end
+		end
+		return worst, resumes, started
+	end
+
+	for _, early in ipairs({ false, true }) do
+		local how = early and 'with the page mounted first' or 'with the page mounted after'
+		local worst, resumes, started = bootCost(early)
+		check(('every client script loads and the modules start, %s'):format(how),
+			worst ~= nil and started > 0, started)
+		check(('and no resume of the boot cost more than 4,500 instructions, %s'):format(how),
+			worst ~= nil and worst < 4500,
+			worst and ('%d instructions, dearest of %d resumes'):format(worst, resumes))
+	end
+end
+
+-- ── the inventory catalogue drains a part a resume ─────────────────────────
+-- THE CATALOGUE WENT TO THE PAGE A PART PER PASS of the `inventory.screen`
+-- job, and that job runs inside the scheduler's one pass beside up to three
+-- others -- one resume and one budget between them. Forty entries a part, each
+-- shaped through two catalogue-key lookups, was the meter's ~8,000 for the job
+-- alone, most of a ~10,000 budget whose overrun unwinds the whole pass in
+-- silence. It is written from a thread of its own now, a small part a resume.
+section('the inventory catalogue drains a small part a resume')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:inventory:ready'] then page = candidate end
+		end
+		check('and the inventory page is found', page ~= nil)
+		if page ~= nil then
+			local before = #page.sent
+			local worst, resumes = resumeCost(env, control, function()
+				control.PageEmit(page, 'opx:inventory:ready', {})
+			end, 40)
+			local parts, entries, first, done = 0, 0, 0, 0
+			for index = before + 1, #page.sent do
+				local sent = page.sent[index]
+				if sent.channel == 'opx:inventory:catalog' then
+					parts = parts + 1
+					for _ in pairs(sent.payload.entries) do entries = entries + 1 end
+					if sent.payload.first == true then first = first + 1 end
+					if sent.payload.done == true then done = done + 1 end
+				end
+			end
+			local total = #env.OPX.Modules.Get('inventory').Catalog.Names()
+			check('the whole catalogue still reaches the page, cleared once and ended once',
+				entries == total and first == 1 and done == 1,
+				('%d of %d in %d part(s), first %d, done %d'):format(entries, total, parts, first, done))
+			check('and no resume of writing it cost more than 4,000 instructions',
+				resumes > 0 and worst < 4000,
+				('%d instructions, dearest of %d resumes'):format(worst, resumes))
+		end
+	end
+end
+
 -- ── the inventory key opens the bag, and never takes a pile ─────────────────
 -- THE OWNER: "quand je drop l'item puis je suis a coter je ouvre le inventaire
 -- une autre fois cela prend le drop a cote automatiquement retire cela". The
 -- open key used to TAKE the nearest pile, screen closed, whenever one was in
 -- reach -- so looking in the bag beside something just dropped put it back.
+-- The pile scan measured the distance to every known pile -- DROPS.MAX goes to
+-- 2,048, every bucket's -- and sorted them, inside one scheduler resume shared
+-- with three other jobs. The client budget is per resume and an overrun kills
+-- the loop silently. It now walks a slice per resume and draws only the
+-- player's own bucket. Counted in VM instructions with a debug hook: off the
+-- platform that is the one honest measure of what a resume costs.
+section('the client pile scan stays inside one resume\'s budget, and in its bucket')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local World, Screen = inventory.World, inventory.Screen
+		local realOwn = Screen.Own
+		Screen.Own = function() return {} end
+		local realCharacter = env.Open77.character
+		env.Open77.character = setmetatable({ position = function() return 0, 0, 0 end },
+			{ __index = realCharacter })
+
+		-- 2,048 piles in 32 parts: half in bucket 0, half in bucket 5, and the
+		-- eight nearest of each right beside the player.
+		local TOTAL = 2048
+		for part = 0, TOTAL // 64 - 1 do
+			local drops = {}
+			for index = 1, 64 do
+				local n = part * 64 + index
+				local near = n <= 16
+				drops[index] = { id = -n, x = near and (n * 0.05) or (100 + n), y = 0, z = 0,
+					bucket = (n % 2 == 0) and 5 or 0 }
+			end
+			control.netEvents[inventory.Event.DROPS]({ first = part == 0,
+				done = part == TOTAL // 64 - 1, drops = drops, bucket = part == 0 and 5 or nil })
+		end
+		local known, bucket = World.Known()
+		check('every pile arrives, and the bucket with them', known == TOTAL and bucket == 5,
+			('%s in %s'):format(tostring(known), tostring(bucket)))
+
+		local function cost(fn)
+			local counted = 0
+			debug.sethook(function() counted = counted + 1 end, '', 100)
+			fn()
+			debug.sethook()
+			return counted * 100
+		end
+
+		local worst, passes = 0, 0
+		local target = inventory.Contracts.target
+		local spheres
+		local realRegister = target and target.RegisterSpheres
+		if target then
+			target.RegisterSpheres = function(owner, list, definition)
+				spheres = list
+				return realRegister(owner, list, definition)
+			end
+		end
+		repeat
+			passes = passes + 1
+			local spent = cost(World.Pass)
+			if spent > worst then worst = spent end
+		until spheres ~= nil or passes > 64
+		-- A slice of 128 costs about 8,000 here; the whole list in one pass cost
+		-- about 58,000, and ran beside three other jobs on the same resume.
+		check('no single pass spends more than 25,000 instructions on 2,048 piles',
+			worst <= 25000, worst)
+		check('the sweep is spread over several passes', passes >= TOTAL // 128, passes)
+		local wrongBucket = 0
+		for _, sphere in ipairs(spheres or {}) do
+			-- Even ids are bucket 5; the near ones sit at x = n * 0.05.
+			local n = math.floor(sphere.x / 0.05 + 0.5)
+			if n % 2 ~= 0 then wrongBucket = wrongBucket + 1 end
+		end
+		check('and the row points only at piles of the player\'s own bucket',
+			spheres ~= nil and #spheres == 8 and wrongBucket == 0,
+			spheres and ('%d rows, %d wrong'):format(#spheres, wrongBucket))
+
+		control.netEvents[inventory.Event.BUCKET](0)
+		local _, moved = World.Known()
+		check('a bucket move the server reports is taken', moved == 0, tostring(moved))
+
+		if target then target.RegisterSpheres = realRegister end
+		Screen.Own = realOwn
+		env.Open77.character = realCharacter
+	end
+end
+
+-- The client has no read of its own bucket, so the server says it: in the first
+-- part of the pile list, and on every move the host reports.
+section('the server tells a client which bucket its piles are in')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local MOVER = 962
+		control.Admit(MOVER, 'account-962')
+		control.Stand(MOVER, 10, 20, 30)
+		control.Bucket(MOVER, 7)
+		local told = {}
+		local realTrigger = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, target, payload, ...)
+			if target == MOVER then told[#told + 1] = { name = name, payload = payload } end
+			return realTrigger(name, target, payload, ...)
+		end
+		inventory.World.SendDrops(MOVER)
+		local first = told[1]
+		check('the first part of the pile list carries the bucket',
+			first ~= nil and first.name == inventory.Event.DROPS and first.payload.bucket == 7,
+			first and tostring(first.payload.bucket))
+		told = {}
+		control.Bucket(MOVER, 9)
+		env.TriggerEvent('onPlayerBucketChange', tostring(MOVER), '9', '7')
+		local said = told[#told]
+		check('and a move the host reports is said again',
+			said ~= nil and said.name == inventory.Event.BUCKET and said.payload == 9,
+			said and tostring(said.payload))
+		env.TriggerClientEvent = realTrigger
+	end
+end
+
 section('the inventory key opens the bag and never takes a pile')
 do
 	local env, control, why = boot('client')
@@ -28912,6 +32201,2124 @@ do
 		check('and the screen still lands', admin.Menu.IsOpen() and admin.Menu.Screen() == 'weaponList',
 			admin.Menu.Screen())
 	end
+end
+
+
+-- ── every resume of a staff redraw stays small, and long lists are paged ────
+-- The roster, a bag, the saved places, an account's characters and the ammo
+-- kinds drew up to 190 rows on one screen, and the menu contract checks every
+-- row of a spec inside the resume that hands it over -- several hundred
+-- instructions a row. A full roster was one resume of tens of thousands, past
+-- the client's per-resume budget. Each list is paged now, the contract gets a
+-- resume of its own, and this counts the dearest resume the redraw's thread
+-- makes over a 150-player roster and a 120-slot bag.
+section('every resume of a staff redraw stays small, and long lists are paged')
+do
+	local env, control, why = boot('client')
+	check('client boots for the redraw budget', why == nil, why)
+	if why == nil then
+		local admin = env.OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		local specs = {}
+		local realMenu = admin.Contracts.menu
+		admin.Contracts.menu = setmetatable({
+			Open = function(spec) specs[#specs + 1] = spec; return realMenu.Open(spec) end,
+			Update = function(h, spec) specs[#specs + 1] = spec; return realMenu.Update(h, spec) end,
+		}, { __index = realMenu })
+		control.netEvents[admin.Event.OPEN]({ access = {}, aclKnown = false, inventory = true })
+		control.Pump(10)
+		local rows = {}
+		for index = 1, 150 do
+			rows[index] = { id = index, name = 'Runner ' .. index, state = 'up', bucket = 0,
+				user = 'user' .. index, citizenId = 'CID' .. index }
+		end
+		control.netEvents[admin.Event.ROSTER]({ rows = rows, offset = 0, total = 150, done = true })
+		control.Pump(10)
+
+		-- Counts the dearest resume of every thread started while `fn` runs.
+		local function dearest(fn)
+			local worst, spent = 0, 0
+			local realCreate, realWait = env.CreateThread, env.Wait
+			env.Wait = function(ms)
+				if spent > worst then worst = spent end
+				spent = 0
+				return realWait(ms)
+			end
+			env.CreateThread = function(body)
+				return realCreate(function(...)
+					spent = 0
+					debug.sethook(function() spent = spent + 1 end, '', 1)
+					body(...)
+					debug.sethook()
+					if spent > worst then worst = spent end
+				end)
+			end
+			fn()
+			env.CreateThread = realCreate
+			control.Pump(40)
+			env.Wait = realWait
+			return worst
+		end
+		local function listed(prefix)
+			local count, more = 0, nil
+			for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+				if tostring(item.id):sub(1, #prefix) == prefix then count = count + 1 end
+				if item.id == 'more' then more = item end
+			end
+			return count, more
+		end
+
+		local worst = dearest(function() admin.Menu.OpenAt('players') end)
+		local count, more = listed('player_')
+		check('a 150-player roster draws one page of it', admin.Menu.Screen() == 'players'
+			and count == 20 and more ~= nil, ('%d rows'):format(count))
+		check('and no resume of that redraw is dear', worst < 5000, ('%d instructions'):format(worst))
+
+		-- The next page is the same screen, one deeper, and Back is a page back.
+		-- An update carries no callback; the open before it does.
+		local on
+		for index = #specs, 1, -1 do
+			if specs[index].on then on = specs[index].on break end
+		end
+		if on and more then on({ action = 'select', itemId = 'more', handle = 1, data = more.data }) end
+		control.Pump(10)
+		local second = 0
+		for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+			if item.id == 'player_21' then second = second + 1 end
+		end
+		check('the next-page row turns to the second page', second == 1
+			and tostring(specs[#specs].title):find('2/8', 1, true) ~= nil, tostring(specs[#specs].title))
+
+		-- A bare-id screen pages too: the bag takes the player's id as its argument.
+		admin.Menu.OpenAt('bag', 3)
+		control.Pump(4)
+		local slots = {}
+		for index = 1, 120 do
+			slots[index] = { slot = index, count = 1, name = 'item' .. index, label = 'Item ' .. index }
+		end
+		worst = dearest(function()
+			control.netEvents[admin.Event.BAG]({ target = '3', rows = slots, offset = 0, total = 120, done = true })
+		end)
+		count = listed('slot_')
+		check('a 120-slot bag draws one page of it', admin.Menu.Screen() == 'bag' and count == 20,
+			('%d rows'):format(count))
+		check('and no resume of that redraw is dear either', worst < 5000, ('%d instructions'):format(worst))
+
+		-- A category whose name has a space no longer refuses the whole screen.
+		control.netEvents[admin.Event.ITEMS]({ rows = {
+			{ name = 'vest', label = 'Vest', category = 'body armor' },
+			{ name = 'water', label = 'Water', category = 'food' },
+		}, offset = 0, total = 2, done = true })
+		admin.Menu.OpenAt('itemCategories', { t = 'me' })
+		control.Pump(10)
+		local named = false
+		for _, item in ipairs(specs[#specs] and specs[#specs].items or {}) do
+			if item.label == 'body armor' then named = true end
+		end
+		check('a category named with a space is drawn, not refused',
+			admin.Menu.IsOpen() and admin.Menu.Screen() == 'itemCategories' and named)
+
+		-- `OpenAt` is public, and a catalogue screen with no argument is drawn.
+		local errors = #control.log.error
+		admin.Menu.OpenAt('itemList')
+		control.Pump(10)
+		check('a catalogue screen opened with no argument does not raise',
+			#control.log.error == errors and admin.Menu.Screen() == 'itemList',
+			control.log.error[#control.log.error])
+
+		-- A build overtaken by a close never reopens a menu over an empty stack.
+		admin.Menu.OpenAt('players')
+		control.Pump(1)
+		admin.Menu.Close()
+		control.Pump(20)
+		check('a redraw overtaken by a close does not reopen the menu', not admin.Menu.IsOpen())
+	end
+end
+
+
+-- ── a polled menu key is played outside the scheduler's resume ──────────────
+-- The key poll is a scheduler job, and the scheduler runs up to four jobs in one
+-- resume of the client's only loop -- an overrun there retires the loop for the
+-- session. Enter used to run the owner's row callback inline, and an owner's
+-- callback routinely builds its next screen. The poll now only notices the edge;
+-- the callback must run with no scheduler frame under it.
+section('a polled menu key is played outside the scheduler resume')
+do
+	local env, control, why = boot('client')
+	check('client boots for the polled key', why == nil, why)
+	if why == nil then
+		local menu = env.OPX.Api.Get('menu')
+		local heard, underScheduler = {}, nil
+		local opened = menu.Open({
+			owner = 'probe', id = 'probe.keys', title = 'Probe',
+			items = { { id = 'first', label = 'First' }, { id = 'second', label = 'Second' } },
+			on = function(payload)
+				heard[#heard + 1] = payload.action
+				if payload.action ~= 'select' then return end
+				underScheduler = false
+				for level = 2, 40 do
+					local info = debug.getinfo(level, 'S')
+					if info == nil then break end
+					if tostring(info.source):find('core/client/scheduler.lua', 1, true) then
+						underScheduler = true
+					end
+				end
+			end,
+		})
+		check('a menu the page does not hold the keyboard for opens', opened.ok, opened.error)
+		-- Past the reopen grace, which is counted in POLLS, and the scheduler
+		-- rotates through every job four at a time.
+		control.Pump(200)
+		control.input.down.ENTER = true
+		settle(control, function() return underScheduler ~= nil end, 200)
+		control.input.down.ENTER = nil
+		control.Pump(2)
+		check('Enter selects the row', underScheduler ~= nil, table.concat(heard, ','))
+		check('and the owner hears it with no scheduler frame under it', underScheduler == false)
+		local state = menu.State()
+		if state.ok and state.value.open then menu.Close(state.value.handle) end
+
+		-- The row data count is walked without a call per scalar now; the limits
+		-- are the ones it always had. 64 nodes: the table, then a key and a value
+		-- for each entry.
+		local function withData(data)
+			return menu.Open({ owner = 'probe', id = 'probe.data', title = 'Probe',
+				items = { { id = 'only', label = 'Only', data = data } }, on = function() end })
+		end
+		local fits, over = {}, {}
+		for index = 1, 31 do fits['k' .. index] = index end
+		for index = 1, 32 do over['k' .. index] = index end
+		check('row data of 63 nodes is taken', withData(fits).ok)
+		check('and of 65 is refused as too large', withData(over).error == 'item_data_too_large',
+			withData(over).error)
+		check('and nested past four levels is refused too',
+			withData({ a = { b = { c = { d = { e = 1 } } } } }).error == 'item_data_too_large')
+		check('while four levels are taken', withData({ a = { b = { c = { d = 1 } } } }).ok)
+		state = menu.State()
+		if state.ok and state.value.open then menu.Close(state.value.handle) end
+
+		-- A close callback that opens another menu does not leave it orphaned
+		-- under the open that caused the close.
+		local nestedClosed = nil
+		local function spec(id, on)
+			return { owner = 'probe', id = id, title = id, items = { { id = 'x', label = 'X' } }, on = on }
+		end
+		menu.Open(spec('probe.first', function(payload)
+			if payload.action == 'close' and payload.reason == 'reopened' then
+				menu.Open(spec('probe.nested', function(inner)
+					if inner.action == 'close' then nestedClosed = inner.reason end
+				end))
+			end
+		end))
+		menu.Open(spec('probe.third', function() end))
+		state = menu.State()
+		check('the open that replaced a menu is the one standing',
+			state.ok and state.value.menu == 'probe.third', state.value and state.value.menu)
+		check('and the menu its close callback opened was closed, not orphaned',
+			nestedClosed == 'superseded', tostring(nestedClosed))
+		if state.ok and state.value.open then menu.Close(state.value.handle) end
+	end
+end
+
+
+-- ── interaction surfaces: what the audit found besides the budget ───────────
+-- One case per defect: a prompt addressed to "player -1" went up on every
+-- client; a progress bar counted a refused input block as held; the pause key
+-- closed a panel that asked to be consulted; a chat command and a form
+-- keystroke were measured a byte at a time in Lua inside a page callback.
+section('interaction surfaces: the smaller defects')
+do
+	local env, control, why = boot('server')
+	check('server boots for the prompt address', why == nil, why)
+	if why == nil then
+		local prompts = env.OPX.Api.Get('prompts')
+		local spec = { title = 'T', rows = { { id = 'a', label = 'A' } } }
+		local before = #control.clientEvents
+		local everyone = prompts.Show(-1, 'test', 'x', spec)
+		check('a prompt for player -1 is refused, not broadcast',
+			not everyone.ok and everyone.error == 'prompts.invalidPlayer'
+				and #control.clientEvents == before, tostring(everyone.error))
+		check('and so is one for a slot nobody holds', not prompts.Show(7, 'test', 'x', spec).ok)
+		check('and one for a fraction', not prompts.HideAll(3.5, 'test').ok)
+		control.Admit(3, 'user-3')
+		local one = prompts.Show(3, 'test', 'x', spec)
+		local sent = control.clientEvents[#control.clientEvents]
+		check('while one for a connected player reaches that player alone',
+			one.ok and sent ~= nil and sent.source == 3, tostring(one.error))
+
+		-- The animation offer is built lazily because the API can arrive late; a
+		-- build asked for before it did must not latch an empty offer.
+		local Service = env.OPX.Modules.Get('animations').Service
+		local early = #Service.Wire()
+		env.Open77.animations = { play = function() return true end, stop = function() return true end }
+		local late = #Service.Wire()
+		check('an offer asked for before the animation API exists is built once it does',
+			early == 0 and late > 0, ('%d then %d'):format(early, late))
+		env.Open77.animations = nil
+	end
+end
+do
+	local refusedBlocks = 0
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.input = env.Open77.input or {}
+		env.Open77.input.setActionBlocked = function()
+			refusedBlocks = refusedBlocks + 1
+			return false, 'action_not_blockable'
+		end
+	end)
+	check('client boots for the smaller defects', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+
+		-- A progress bar whose input block was refused says so, once.
+		local progress = OPX.Api.Get('progress')
+		local warned = #control.log.warn
+		local started = progress.Start('test', { label = 'Working', durationMs = 2000 })
+		check('a bar starts even though its input block is refused', started.ok, started.error)
+		local said = 0
+		for index = warned + 1, #control.log.warn do
+			if control.log.warn[index]:find('could not be blocked', 1, true) then said = said + 1 end
+		end
+		check('and the refusal is reported, not recorded as held',
+			refusedBlocks > 0 and said > 0, ('%d asked, %d said'):format(refusedBlocks, said))
+		if started.ok then progress.Stop('test') end
+
+		-- The pause key consults a panel that asked to be consulted.
+		local heard = {}
+		local panel = OPX.Api.Get('panel')
+		local opened = panel.Open({
+			owner = 'test', id = 'test.ask', title = 'ASK', dismiss = 'ask',
+			actions = { { id = 'a', label = 'A' } },
+			on = function(payload) heard[#heard + 1] = payload.action end,
+		})
+		check('a panel that asks before it is dismissed opens', opened.ok, opened.error)
+		control.Fire('open77:pauseKey')
+		local state = panel.State()
+		check('the pause key asks it rather than closing it',
+			state.ok and state.value.open == true and heard[#heard] == 'dismiss',
+			table.concat(heard, ','))
+		if state.ok and state.value.open then panel.Close(state.value.handle) end
+
+		-- A command line the page did not bound is cut before it is tokenised.
+		local chatPage
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:chat:submit'] then chatPage = candidate end
+		end
+		check('the chat input is wired', chatPage ~= nil)
+		if chatPage ~= nil then
+			env.TriggerServerEvent = function() return true end
+			local long = '/me ' .. ('a'):rep(20000)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			control.PageEmit(chatPage, 'opx:chat:submit', { text = long })
+			debug.sethook()
+			check('a 20,000-character command costs a bounded walk', spent < 20000,
+				('%d instructions'):format(spent))
+			-- AND A LINE THE PAGE DID BOUND IS CHEAP TOO. The tokeniser walked a
+			-- byte per iteration, ~19 instructions a byte, inside the page
+			-- callback's one resume: a full-length command was ~4,700 and the
+			-- cut-and-walk above ~6,900 -- the meter's 9,000 for the submit. It
+			-- skips each run of ordinary bytes natively now.
+			local said
+			env.TriggerServerEvent = function(_, ...) said = { ... } return true end
+			local typed = '/give "Jackie Welles" ' .. ('item_' .. ('x'):rep(13) .. ' '):rep(11)
+			local typing = callCost(control.PageEmit, chatPage, 'opx:chat:submit', { text = typed })
+			check('a full-length typed command is tokenised as before',
+				said ~= nil and #said == 13 and said[1] == 'give' and said[2] == 'Jackie Welles'
+					and said[13] == 'item_' .. ('x'):rep(13),
+				said and table.concat(said, '|') or 'nothing sent')
+			check('and inside a small budget', typing < 2500, ('%d instructions'):format(typing))
+			local cutting = callCost(control.PageEmit, chatPage, 'opx:chat:submit', { text = long })
+			check('and the unbounded one, cut and all, under 4,000', cutting < 4000,
+				('%d instructions'):format(cutting))
+		end
+
+		-- A long accented buffer is measured natively, not a byte at a time.
+		local forms = OPX.Api.Get('form')
+		local submitted
+		local form = forms.Open({
+			owner = 'test', id = 'test.long', title = 'LONG',
+			fields = { { id = 'body', label = 'Body', maxLength = 512 } },
+			on = function(payload) if payload.action == 'submit' then submitted = payload.values end end,
+		})
+		check('a form with a long field opens', form.ok, form.error)
+		local formPage
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:form:edit'] then formPage = candidate end
+		end
+		if form.ok and formPage ~= nil then
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			control.PageEmit(formPage, 'opx:form:edit',
+				{ handle = form.value.handle, id = 'body', seq = 1, text = ('é'):rep(500) })
+			debug.sethook()
+			check('a 500-character accented keystroke is cheap to measure', spent < 4000,
+				('%d instructions'):format(spent))
+			control.PageEmit(formPage, 'opx:form:edit',
+				{ handle = form.value.handle, id = 'body', seq = 2, text = ('é'):rep(513) })
+			control.PageEmit(formPage, 'opx:form:key', { handle = form.value.handle, key = 'enter' })
+			local body = submitted and submitted.body
+			check('and one past the limit is still refused: the buffer kept is the last good one',
+				type(body) == 'string' and utf8.len(body) == 500, body and utf8.len(body))
+			if not submitted then forms.Close(form.value.handle) end
+		end
+	end
+end
+
+
+-- ── staff commands: a kill by another name, a flood of announcements, a veil ─
+-- `player.health 0` killed on the health grant alone; announcements had no
+-- floor but the 400ms action floor; `NOCLIP.HIDE_BODY = false` was never read
+-- on the server, so the body was hidden anyway; and a staff bag opened through
+-- the menu left no audit line where the typed command leaves one.
+section('staff commands: health zero, the announcement floor, the noclip veil, read audits')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the staff command checks', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local src, target = 12, 13
+		control.Admit(src, 'account-staff')
+		control.Admit(target, 'account-target')
+		OPX.EnsureSession(src)
+		OPX.EnsureSession(target)
+		control.Allow(src, 'command.' .. admin.Command.PLAYER_HEALTH)
+		control.Allow(src, 'command.' .. admin.Command.WORLD_ANNOUNCE)
+		control.Allow(src, 'command.' .. admin.Command.SELF_NOCLIP)
+
+		local function lastAudit(event)
+			local recent = admin.Server.Recent(20)
+			for index = #recent, 1, -1 do
+				if recent[index].event == event then return recent[index] end
+			end
+			return nil
+		end
+
+		control.commands[admin.Command.PLAYER_HEALTH].run(src, { tostring(target), '0' })
+		control.Pump(4)
+		local refused = lastAudit('admin.player.health')
+		check('health 0 without the kill grant is refused, and audited',
+			refused ~= nil and refused.ok == false, refused and refused.detail)
+
+		-- A second operator, so the first one's action floor is not what answers.
+		local killer = 14
+		control.Admit(killer, 'account-killer')
+		OPX.EnsureSession(killer)
+		control.Allow(killer, 'command.' .. admin.Command.PLAYER_HEALTH)
+		control.Allow(killer, 'command.' .. admin.Command.PLAYER_KILL)
+		local function zeroRefusals()
+			local seen = 0
+			for _, entry in ipairs(admin.Server.Recent(20)) do
+				if entry.detail == 'zero without the kill grant' then seen = seen + 1 end
+			end
+			return seen
+		end
+		local before = zeroRefusals()
+		control.commands[admin.Command.PLAYER_HEALTH].run(killer, { tostring(target), '0' })
+		control.Pump(4)
+		check('while an operator granted the kill is not stopped by that check',
+			before == 1 and zeroRefusals() == 1, ('%d then %d'):format(before, zeroRefusals()))
+
+		local function announcements()
+			local seen = 0
+			for _, event in ipairs(control.clientEvents) do
+				if event.name == admin.Event.ANNOUNCE then seen = seen + 1 end
+			end
+			return seen
+		end
+		control.commands[admin.Command.WORLD_ANNOUNCE].run(src, { 'first' })
+		control.Pump(10)
+		local first = announcements()
+		control.commands[admin.Command.WORLD_ANNOUNCE].run(src, { 'second' })
+		control.Pump(10)
+		check('a second announcement inside the floor is refused',
+			first > 0 and announcements() == first, ('%d then %d'):format(first, announcements()))
+		control.commands[admin.Command.WORLD_ANNOUNCE].run(0, { 'console' })
+		control.Pump(4)
+		check('while the console is not held to it', announcements() > first)
+
+		admin.Settings.NOCLIP = admin.Settings.NOCLIP or {}
+		local hide = admin.Settings.NOCLIP.HIDE_BODY
+		admin.Settings.NOCLIP.HIDE_BODY = false
+		control.commands[admin.Command.SELF_NOCLIP].run(src, { 'on' })
+		control.Pump(4)
+		check('with HIDE_BODY off, noclip leaves the body visible',
+			admin.Players.IsNoclip(src) == true and control.bodies.visible[src] ~= false,
+			tostring(control.bodies.visible[src]))
+		control.commands[admin.Command.SELF_NOCLIP].run(src, { 'off' })
+		control.Pump(4)
+		admin.Settings.NOCLIP.HIDE_BODY = hide
+
+		-- A bag opened through the menu is a read, and audited once.
+		control.Allow(src, 'command.' .. admin.OPENER)
+		control.Allow(src, 'command.' .. admin.Command.INVENTORY_VIEW)
+		control.Pump(10)
+		env.source = src
+		control.netEvents[admin.Event.REFRESH]('bag', tostring(target))
+		control.Pump(10)
+		local read = lastAudit('admin.inventory.view')
+		check('a bag opened through the menu leaves an audit line',
+			read ~= nil and tostring(read.detail):find('menu', 1, true) ~= nil, read and read.detail)
+	end
+end
+
+
+-- ── an unchanged prompt strip costs its pass almost nothing ─────────────────
+-- `prompts.pass` runs every 150ms inside the scheduler's shared resume, whose
+-- overrun retires the client's only loop. It rebuilt the whole frame on every
+-- pass -- sorted every group, concatenated a signature for every row -- to
+-- compare it with the one it already had. Thirty-two groups is the cap.
+section('an unchanged prompt strip costs its pass almost nothing')
+do
+	local steps = {}
+	local env, control, why = boot('client', nil, nil, function(env, file)
+		if file ~= 'core/client/scheduler.lua' then return end
+		local every = env.OPX.Scheduler.Every
+		env.OPX.Scheduler.Every = function(name, interval, step)
+			steps[name] = step
+			return every(name, interval, step)
+		end
+	end)
+	check('client boots for the strip pass', why == nil, why)
+	if why == nil then
+		local prompts = env.OPX.Api.Get('prompts')
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:prompts:ready'] then page = candidate end
+		end
+		check('the pass is registered and the strip page is there',
+			steps['prompts.pass'] ~= nil and page ~= nil)
+		if steps['prompts.pass'] ~= nil and page ~= nil then
+			control.PageEmit(page, 'opx:prompts:ready', {})
+			for index = 1, 32 do
+				prompts.Show('test', 'g' .. index, { title = 'G' .. index, priority = index % 3, rows = {
+					{ id = 'a', label = 'Row A ' .. index, keys = 'E' },
+					{ id = 'b', label = 'Row B ' .. index, keys = 'F', value = tostring(index) },
+				} })
+			end
+			control.Pump(4)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			steps['prompts.pass']()
+			debug.sethook()
+			check('a pass over 32 unchanged groups is cheap', spent < 800,
+				('%d instructions'):format(spent))
+			prompts.Show('test', 'g1', { title = 'CHANGED', priority = 9, rows = { { id = 'a', label = 'New', keys = 'E' } } })
+			control.Pump(2)
+			local drew
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == 'opx:prompts:frame' then drew = page.sent[index] break end
+			end
+			local changed = false
+			for _, group in ipairs(drew and drew.payload.groups or {}) do
+				if group.title == 'CHANGED' then changed = true end
+			end
+			check('and a change still reaches the strip', changed)
+		end
+	end
+end
+
+
+-- ── the HUD's effect strip is bounded before it reaches the page ────────────
+-- The strip arrives on the client's local bus, which every resource on the host
+-- shares. A chip needed only a string id and was then forwarded as given, so one
+-- oversized or malformed strip was a HUD payload the host refuses whole.
+section('the HUD effect strip is bounded before it reaches the page')
+do
+	local env, control, why = boot('client')
+	check('client boots for the effect strip', why == nil, why)
+	if why == nil then
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] then page = candidate end
+		end
+		check('the HUD page is there', page ~= nil)
+		if page ~= nil then
+			control.PageEmit(page, 'opx:hud:ready', {})
+			control.Pump(2)
+			local offered = {}
+			for index = 1, 40 do
+				offered[index] = { id = 'test:' .. index, label = index == 1 and { 'not', 'text' } or ('Effect ' .. index),
+					icon = 'heal', tone = 'good', progress = 7, extra = { deep = { deeper = true } } }
+			end
+			env.TriggerEvent(env.OPX.Event(env.OPX.Channel.LOCAL, 'needs', 'effects'),
+				{ chips = offered, hidden = 2 })
+			control.Pump(2)
+			local status
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == 'opx:hud:status' then status = page.sent[index].payload break end
+			end
+			local chips = status and status.chips or {}
+			check('at most twelve chips cross', status ~= nil and #chips == 12, #chips)
+			check('and the rest are counted as hidden', status ~= nil and status.hidden == 2 + 28,
+				status and status.hidden)
+			check('and a chip crosses with only the fields the page reads, bounded',
+				chips[1] ~= nil and chips[1].label == nil and chips[1].extra == nil
+					and chips[1].progress == 1 and chips[2].label == 'Effect 2')
+		end
+	end
+end
+
+
+-- ── observe without noclip of one's own, and vehicles out of reach ──────────
+-- `player.observe` lifts the operator with noclip and a hidden body; without
+-- `self.noclip` that now ends after PLACEMENT.OBSERVE_MS. A vehicle command on a
+-- typed id needs the vehicle in the operator's instance and reach unless they
+-- hold `opx.admin.vehicle.anywhere`.
+section('observe is bounded without the noclip grant, and typed vehicles need reach')
+do
+	local env, control, why = boot('server')
+	check('the server boots for observe and reach', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local src, target = 12, 13
+		for _, id in ipairs({ src, target }) do
+			control.Admit(id, 'account-' .. id)
+			OPX.EnsureSession(id)
+			control.lives[id] = 'alive'
+		end
+		control.Stand(src, 0.0, 0.0, 0.0)
+		control.Stand(target, 10.0, 0.0, 0.0)
+		control.Allow(src, 'command.' .. admin.Command.PLAYER_OBSERVE)
+		admin.Settings.PLACEMENT = admin.Settings.PLACEMENT or {}
+		local kept = admin.Settings.PLACEMENT.OBSERVE_MS
+		admin.Settings.PLACEMENT.OBSERVE_MS = 5000
+
+		control.commands[admin.Command.PLAYER_OBSERVE].run(src, { tostring(target) })
+		control.Pump(4)
+		check('observing lifts the operator with noclip', admin.Players.IsNoclip(src) == true)
+		settle(control, function() return not admin.Players.IsNoclip(src) end, 200)
+		check('and without the noclip grant the flight ends on its own',
+			admin.Players.IsNoclip(src) == false)
+
+		control.Allow(src, 'command.' .. admin.Command.SELF_NOCLIP)
+		control.commands[admin.Command.PLAYER_OBSERVE].run(src, { tostring(target) })
+		control.Pump(120)
+		check('while an operator granted noclip keeps it', admin.Players.IsNoclip(src) == true)
+		admin.Settings.PLACEMENT.OBSERVE_MS = kept
+
+		-- A typed vehicle id 500 metres away.
+		local function lastAudit(event)
+			local recent = admin.Server.Recent(20)
+			for index = #recent, 1, -1 do
+				if recent[index].event == event then return recent[index] end
+			end
+			return nil
+		end
+		-- A protected target is not killed, kicked or frozen by a typed command.
+		control.Allow(target, admin.IMMUNE)
+		for _, spec in ipairs({ { 'PLAYER_KILL', 'admin.player.kill' }, { 'MODERATE_KICK', 'admin.moderate.kick' },
+			{ 'PLAYER_FREEZE', 'admin.player.freeze' } }) do
+			control.Allow(src, 'command.' .. admin.Command[spec[1]])
+			control.commands[admin.Command[spec[1]]].run(src, { tostring(target), 'on' })
+			control.Pump(4)
+			local entry = lastAudit(spec[2])
+			check(('%s on a protected player is refused as protected'):format(spec[2]),
+				entry ~= nil and entry.ok == false and entry.detail == 'target protected',
+				entry and entry.detail)
+		end
+
+		control.vehicles.snapshot = { id = 1, flags = 0, occupants = {}, x = 500.0, y = 0.0, z = 0.0, bucket = 0 }
+		control.Allow(src, 'command.' .. admin.Command.VEHICLE_FLAG)
+		control.commands[admin.Command.VEHICLE_FLAG].run(src, { '1', 'locked', 'on' })
+		control.Pump(10)
+		local far = lastAudit('admin.vehicle.reach')
+		check('a typed vehicle out of reach is refused, and audited', far ~= nil and far.ok == false)
+		local updates = #control.vehicles.updates
+		control.Allow(src, admin.VEHICLE_ANYWHERE)
+		control.Pump(10)
+		control.commands[admin.Command.VEHICLE_FLAG].run(src, { '1', 'locked', 'on' })
+		control.Pump(10)
+		check('while the anywhere right reaches it', #control.vehicles.updates > updates,
+			#control.vehicles.updates - updates)
+	end
+end
+
+
+-- ── client handlers that hand their heavy half to a resume of its own ───────
+-- The animations snapshot (64 states a page, each checked field by field), the
+-- chat suggestion list (one page send per chunk) and the HUD's full redraw used
+-- to run whole inside the handler that received them. Each handler now costs
+-- little, and the work still lands, a frame or a few later.
+section('client handlers hand their heavy half to a resume of its own')
+do
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.animations = env.Open77.animations or {}
+		env.Open77.animations._context = function() return { bucket = 0, playerId = 1, players = {} } end
+		env.Open77.animations._playProfile = function() return true end
+		env.Open77.animations.stop = function() return true end
+	end)
+	check('client boots with the presentation natives', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local animations = OPX.Modules.Get('animations')
+		local function cost(fn, ...)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			fn(...)
+			debug.sethook()
+			return spent
+		end
+
+		local snapshot = control.netEvents['open77:animations:snapshot']
+		check('the presenter listens for snapshots', snapshot ~= nil)
+		if snapshot ~= nil then
+			local states = {}
+			for index = 1, 64 do
+				states[index] = { epoch = 'e1', playbackId = 'p' .. index, revision = 1, playerId = index + 1,
+					active = true, bucket = 0, step = 0, cycle = 0,
+					steps = { { profile = 'x', clip = 'y', durationMs = 1000 } } }
+			end
+			local spent = cost(snapshot, { epoch = 'e1', revision = 5, bucket = 0, states = states })
+			check('a 64-state snapshot page costs its handler almost nothing', spent < 600,
+				('%d instructions'):format(spent))
+			settle(control, function() return animations.Presenter.State(40).active == true end, 40)
+			check('and the page is still committed, on the worker',
+				animations.Presenter.State(40).active == true and animations.Presenter.State(65).active == true)
+		end
+
+		-- The chat completion list: one chunk a frame, not ten in the handler.
+		local chat = OPX.Modules.Get('chat')
+		local list = {}
+		for index = 1, 160 do
+			list[index] = { name = '/cmd' .. index, help = 'Help for command ' .. index,
+				params = { { name = 'a', help = 'first' } } }
+		end
+		env.TriggerServerEvent = function() return true end
+		chat.FromView('ready', { surface = 'interactive' })
+		control.Pump(2)
+		local chunks, entries = 0, 0
+		env.AddEventHandler(chat.Event.VIEW, function(payload)
+			if type(payload) == 'table' and payload.kind == 'suggestions' then
+				chunks = chunks + 1
+				entries = entries + #(payload.suggestions or {})
+			end
+		end)
+		local spentChat = cost(control.netEvents[chat.Event.SUGGESTIONS], { suggestions = list })
+		check('a 160-entry completion list costs its handler one chunk at most', spentChat < 1000,
+			('%d instructions'):format(spentChat))
+		control.Pump(40)
+		check('and every entry still reaches the input line, a chunk a frame',
+			entries == 160 and chunks > 1, ('%d entries in %d chunks'):format(entries, chunks))
+
+		-- The HUD: the switch goes out in the handler, the blocks after it.
+		local hudPage
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] then hudPage = candidate end
+		end
+		if hudPage ~= nil then
+			local before = #hudPage.sent
+			local spent = cost(control.PageEmit, hudPage, 'opx:hud:ready', {})
+			local shownNow = false
+			for index = before + 1, #hudPage.sent do
+				if hudPage.sent[index].channel == 'opx:hud:show' then shownNow = true end
+			end
+			check('the HUD ready handler pushes the switch at once', shownNow)
+			check('and leaves the block re-sends to a thread', spent < 1000, ('%d instructions'):format(spent))
+			local afterHandler = #hudPage.sent
+			control.Pump(10)
+			local blocks = {}
+			for index = afterHandler + 1, #hudPage.sent do blocks[#blocks + 1] = hudPage.sent[index].channel end
+			check('which still sends them', #blocks > 0, table.concat(blocks, ','))
+		end
+	end
+end
+
+
+-- ── the two near-limit resumes: a paced menu spec, and the eye's staff rows ──
+-- A menu spec is checked about 240 instructions a row in the resume that hands
+-- it over; a caller on a thread may ask (`yield = true`) for the rows to be
+-- checked a few at a time. The eye's staff rows were registered four a resume,
+-- 4,600 to 6,400 instructions each with every grant held. Both are counted here
+-- by the dearest resume of the threads they run on.
+section('a paced menu spec and the eye staff rows stay well inside a resume')
+do
+	local env, control, why = boot('client')
+	check('client boots for the paced checks', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local menu = OPX.Api.Get('menu')
+
+		-- The dearest resume of every thread started while `fn` runs.
+		local function dearest(fn, rounds)
+			local worst, spent = 0, 0
+			local realCreate, realWait = env.CreateThread, env.Wait
+			env.Wait = function(ms)
+				if spent > worst then worst = spent end
+				spent = 0
+				return realWait(ms)
+			end
+			env.CreateThread = function(body)
+				return realCreate(function(...)
+					spent = 0
+					debug.sethook(function() spent = spent + 1 end, '', 1)
+					body(...)
+					debug.sethook()
+					if spent > worst then worst = spent end
+				end)
+			end
+			fn()
+			env.CreateThread = realCreate
+			control.Pump(rounds or 40)
+			env.Wait = realWait
+			return worst
+		end
+
+		local function rows(count, bad)
+			local items = {}
+			for index = 1, count do
+				items[index] = { id = 'row_' .. index, label = 'Row number ' .. index,
+					description = 'A description for row ' .. index, icon = 'person',
+					data = { go = 'player', arg = index, page = 1 } }
+			end
+			if bad then items[count].icon = 'not_an_icon' end
+			return items
+		end
+
+		-- Paced, from a thread.
+		local answer
+		local worst = dearest(function()
+			env.CreateThread(function()
+				answer = menu.Open({ owner = 'probe', id = 'probe.paced', title = 'Paced', items = rows(30),
+					on = function() end, yield = true })
+			end)
+		end)
+		check('a paced 30-row open lands', answer ~= nil and answer.ok, answer and answer.error)
+		check('and no resume of it is dear', worst < 4000, ('%d instructions'):format(worst))
+
+		-- The same refusal as the unpaced path, for the same fault.
+		local refused
+		dearest(function()
+			env.CreateThread(function()
+				refused = menu.Update(answer.value.handle, { items = rows(30, true), yield = true })
+			end)
+		end)
+		local unpaced = menu.Update(answer.value.handle, { items = rows(30, true) })
+		check('a paced update refuses a bad row exactly as an unpaced one does',
+			refused ~= nil and not refused.ok and refused.error == unpaced.error, refused and refused.error)
+
+		-- A menu closed while the rows were being checked is answered as gone.
+		local late
+		env.CreateThread(function()
+			late = menu.Update(answer.value.handle, { items = rows(30), yield = true })
+		end)
+		control.Pump(1)
+		menu.Close(answer.value.handle)
+		control.Pump(20)
+		check('an update whose menu closed in the meantime is refused, not applied',
+			late ~= nil and not late.ok and late.error == 'no_menu_open', late and late.error)
+
+		-- From somewhere it cannot yield, `yield` changes nothing.
+		local direct = menu.Open({ owner = 'probe', id = 'probe.direct', title = 'Direct', items = rows(10),
+			on = function() end, yield = true })
+		check('a spec asking to yield where it cannot is checked in one go, as before', direct.ok)
+		if direct.ok then menu.Close(direct.value.handle) end
+
+		-- The eye: every staff row granted.
+		local admin = OPX.Modules.Get('admin')
+		env.TriggerServerEvent = function() end
+		local eyeWorst = dearest(function()
+			admin.Target.Access({ access = setmetatable({}, { __index = function() return true end }),
+				aclKnown = true })
+		end, 120)
+		check('registering every staff row on the eye stays well inside a resume', eyeWorst < 5000,
+			('%d instructions'):format(eyeWorst))
+		check('and every row still lands', #(OPX.Modules.Get('target').Registry.List('admin') or {}) > 30,
+			#(OPX.Modules.Get('target').Registry.List('admin') or {}))
+
+		-- A batch refused part way puts back exactly what it replaced, and takes
+		-- out what it added: the census and the undo log replaced a copy of the
+		-- whole registry, so the rollback is checked on its own.
+		local Model = OPX.Modules.Get('target').Model
+		local registry = Model.New(function() return true end)
+		local function def(id, label, icon)
+			return { id = id, label = label, icon = icon, onSelect = function() return true end }
+		end
+		registry.RegisterMany('probe', 1, { def('a', 'First A'), def('b', 'First B') })
+		local refusedBatch = registry.RegisterMany('probe', 1,
+			{ def('a', 'Second A'), def('c', 'New C'), def('d', 'Bad D', 'not_an_icon') })
+		local listed = {}
+		for _, row in ipairs(registry.List('probe')) do listed[row.id] = row.label end
+		check('a refused batch is refused', refusedBatch == nil)
+		check('and leaves the registry exactly as it was',
+			listed.a == 'First A' and listed.b == 'First B' and listed.c == nil and listed.d == nil,
+			('a=%s b=%s c=%s'):format(tostring(listed.a), tostring(listed.b), tostring(listed.c)))
+		local accepted = registry.RegisterMany('probe', 1, { def('a', 'Second A'), def('c', 'New C') })
+		listed = {}
+		for _, row in ipairs(registry.List('probe')) do listed[row.id] = row.label end
+		check('while an accepted one replaces by id and adds the rest',
+			accepted ~= nil and listed.a == 'Second A' and listed.b == 'First B' and listed.c == 'New C'
+				and #registry.List('probe') == 3)
+	end
+end
+
+
+-- ── doorlock ─────────────────────────────────────────────────────────────────
+-- ox_doorlock's port. The server is booted against a bridge that keeps an
+-- in-memory `opx77_doorlocks` (and, when asked, a first-version
+-- `opx77_doorlock`) across boots, with config doors patched in after
+-- `config/doorlock.lua` loads, and the character and inventory contracts swapped
+-- for fakes that answer what each case needs: a job or gang at a grade, an item
+-- of a metadata type in the bag, a lockpick.
+
+local DOORLOCK_IDS = {
+	front = '0x00000000000000AA', gateA = '0x00000000000000B1', gateB = '0x00000000000000B2',
+	vault = '0x00000000000000C1', den = '0x00000000000000D1', back = '0x00000000000000E1',
+	hall = '0x00000000000000F1',
+}
+
+local function doorlockBridge(state)
+	state.rows = state.rows or {}
+	state.nextId = state.nextId or 1
+	state.writes = state.writes or {}
+	return Host.Database({
+		scalar = function(sql)
+			if sql:find('information_schema', 1, true) then return state.legacy and 1 or 0 end
+			return 1
+		end,
+		insert = function(sql, params)
+			if not sql:find('INTO opx77_doorlocks', 1, true) then return 1 end
+			if sql:find('INSERT IGNORE', 1, true) then
+				for _, row in pairs(state.rows) do
+					if row.origin == params.origin then return 0 end
+				end
+			end
+			local id = state.nextId
+			state.nextId = id + 1
+			state.rows[id] = { id = id, name = params.name, data = params.data, origin = params.origin, removed = 0 }
+			state.writes[#state.writes + 1] = { kind = 'insert', id = id, params = params }
+			return id
+		end,
+		update = function(sql, params)
+			if sql:find('UPDATE opx77_doorlocks SET removed', 1, true) then
+				state.rows[params.id].removed = 1
+				state.writes[#state.writes + 1] = { kind = 'tombstone', id = params.id }
+			elseif sql:find('UPDATE opx77_doorlocks SET name', 1, true) then
+				state.rows[params.id].name, state.rows[params.id].data = params.name, params.data
+				state.writes[#state.writes + 1] = { kind = 'update', id = params.id, params = params }
+			elseif sql:find('DELETE FROM opx77_doorlocks', 1, true) then
+				state.rows[params.id] = nil
+				state.writes[#state.writes + 1] = { kind = 'delete', id = params.id }
+			end
+			return 1
+		end,
+		query = function(sql)
+			if sql:find('FROM opx77_doorlocks', 1, true) then
+				local live = {}
+				for _, row in pairs(state.rows) do
+					if row.removed == 0 then live[#live + 1] = row end
+				end
+				table.sort(live, function(a, b) return a.id < b.id end)
+				return live
+			end
+			if sql:find('FROM opx77_doorlock', 1, true) then return state.legacy or {} end
+			return {}
+		end,
+		single = function() return nil end,
+		transaction = function() return true end,
+	})
+end
+
+-- The config doors every server test boots with: ox's fields, upper-cased.
+local function doorlockConfig(env, file)
+	if file ~= 'config/doorlock.lua' then return end
+	env.OPX.Config.MODULES.doorlock.DOORS = {
+		front = { NAME = 'Front', DOORS = { '0xAA' }, COORDS = { x = 0.0, y = 0.0, z = 0.0 }, STATE = 1,
+			GROUPS = { ncpd = 2 }, AUTOLOCK = 2, LOCKPICK = true, LOCKPICK_DIFFICULTY = { 'easy', 'hard' } },
+		gate = { NAME = 'Gate', DOORS = { '0xB1', '0xb2' }, STATE = 1, AUTO = true,
+			COORDS = { x = 50.0, y = 0.0, z = 0.0 },
+			ITEMS = { { NAME = 'door_key', METADATA = 'gate_key' }, { NAME = 'keycard', REMOVE = true } } },
+		vault = { NAME = 'Vault', DOORS = { '0xC1' }, COORDS = { x = 100.0, y = 0.0, z = 0.0 }, STATE = 1,
+			PASSCODE = '1234' },
+		den = { NAME = 'Den', DOORS = { '0xD1' }, COORDS = { x = 150.0, y = 0.0, z = 0.0 }, STATE = 1,
+			GROUPS = { maelstrom = 1 }, PASSCODE = '77', CHARACTERS = { 'BOSS01' }, HOLD_OPEN = true },
+		broken = { NAME = 'Broken', DOORS = { 'nope' }, COORDS = { x = 0.0, y = 0.0, z = 0.0 } },
+	}
+end
+
+-- Swaps two contracts for fakes, in place, and answers the knobs.
+local function doorlockFakes(OPX)
+	local fakes = {
+		players = {}, counts = {}, typed = {}, removed = {}, added = {}, asked = {},
+		known = { door_key = true, keycard = true, lockpick = true },
+	}
+	local realGet = OPX.Api.Get
+	local character = {
+		GetPlayer = function(source)
+			local data = fakes.players[source]
+			return data and { PlayerData = data } or nil
+		end,
+	}
+	local inventory = {
+		GetItemCount = function(source, name)
+			return { ok = true, value = (fakes.counts[source] or {})[name] or 0 }
+		end,
+		-- `typed[source][name]` is the metadata a held item carries: { type = .. } or { door = .. }.
+		CountWhere = function(source, name, match)
+			fakes.asked[#fakes.asked + 1] = { source = source, name = name, match = match }
+			local held = (fakes.typed[source] or {})[name]
+			if held == nil then return { ok = true, value = 0 } end
+			for field, value in pairs(match) do
+				if held[field] ~= value then return { ok = true, value = 0 } end
+			end
+			return { ok = true, value = 1 }
+		end,
+		RemoveWhere = function(source, name, match)
+			fakes.removed[#fakes.removed + 1] = { source = source, name = name, match = match }
+			return { ok = true }
+		end,
+		RemoveItem = function(source, name, count)
+			fakes.removed[#fakes.removed + 1] = { source = source, name = name, count = count }
+			local bag = fakes.counts[source] or {}
+			bag[name] = math.max(0, (bag[name] or 0) - (count or 1))
+			return { ok = true }
+		end,
+		AddItem = function(source, name, count, metadata)
+			fakes.added[#fakes.added + 1] = { source = source, name = name, count = count, metadata = metadata }
+			return { ok = true }
+		end,
+		GetItem = function(name) return fakes.known[name] and { name = name } or nil end,
+	}
+	OPX.Api.Get = function(name, minimum)
+		if name == 'character' then return character end
+		if name == 'inventory' then return inventory end
+		return realGet(name, minimum)
+	end
+	return fakes
+end
+
+local function doorlockLast(control, name, source)
+	for index = #control.clientEvents, 1, -1 do
+		local event = control.clientEvents[index]
+		if event.name == name and (source == nil or event.source == source) then return event[1] end
+	end
+	return nil
+end
+
+section('doorlock: ox\'s door, and ox\'s isAuthorised')
+do
+	local env, control, why = boot('server', doorlockBridge({}), nil, doorlockConfig)
+	check('the server boots with the doorlock module', why == nil, why)
+	if why == nil then
+		control.Pump(20)
+		local OPX = env.OPX
+		local dl = OPX.Modules.Get('doorlock')
+		local Access = dl.Access
+		check('the module is running', OPX.Modules.IsRunning('doorlock'), OPX.Modules.Record('doorlock').Reason)
+
+		check('a short door id is padded to the platform spelling',
+			Access.DoorId('0xfc85') == '0x000000000000FC85', Access.DoorId('0xfc85'))
+		check('a zero id and a non-hex id are no door',
+			Access.DoorId('0x0') == nil and Access.DoorId('0xZZ') == nil and Access.DoorId(12) == nil)
+		check('three leaves are not a door', Access.Normalize(nil, { doors = { '0x1', '0x2', '0x3' },
+			coords = { x = 0, y = 0, z = 0 } }) == nil)
+		local _, dup = Access.Normalize(nil, { doors = { '0x1', '0x01' }, coords = { x = 0, y = 0, z = 0 } })
+		check('a double door of one leaf twice is refused', dup == 'duplicate_door_id', dup)
+		local double = Access.Normalize(nil, { doors = {
+			{ native = '0x1', coords = { x = 0, y = 0, z = 0 } }, { native = '0x2', coords = { x = 2, y = 4, z = 0 } } } })
+		check('a double door\'s coords default to the middle of its leaves, as in ox',
+			double ~= nil and double.coords.x == 1 and double.coords.y == 2 and double.doors ~= nil
+				and double.native == nil, double and double.coords.x)
+		check('and a nameless door is named after its coords',
+			double ~= nil and double.name == '1.0, 2.0, 0.0', double and double.name)
+		local shaped = Access.Normalize(nil, { native = '0x9', coords = { x = 0, y = 0, z = 0 },
+			groups = { { name = 'ncpd', grade = 3 }, { name = 'ncpd', grade = 1 }, { name = '', grade = 0 } },
+			items = { { name = 'door_key', metadata = 'cell', remove = false }, { name = '' } },
+			lockpickDifficulty = { 'easy', { areaSize = 40, speedMultiplier = 2 }, '' } })
+		check('the panel\'s rows become ox\'s groups map, the lower grade kept, a blank row dropped',
+			shaped ~= nil and shaped.groups.ncpd == 1 and shaped.groupCount == 1)
+		check('an item keeps its metadata, a blank item row is dropped',
+			shaped ~= nil and #shaped.items == 1 and shaped.items[1].metadata == 'cell')
+		check('a lockpick sequence keeps named and custom steps',
+			shaped ~= nil and #shaped.lockpickDifficulty == 2 and shaped.lockpickDifficulty[2].areaSize == 40)
+		local cost = Access.StepCost({ areaSize = 40, speedMultiplier = 2 })
+		check('a custom step is a shorter bar and a smaller chance', cost.durationMs == 1250
+			and math.abs(cost.chance - 40 / 60 / 2) < 1e-9, cost.durationMs)
+		check('a step that is neither is refused',
+			select(2, Access.Normalize(nil, { native = '0x9', coords = { x = 0, y = 0, z = 0 },
+				lockpickDifficulty = { 'impossible' } })) == 'bad_difficulty')
+
+		local refused = false
+		for _, line in ipairs(control.log.warn) do
+			if line:find('DOORS.broken refused', 1, true) then refused = true end
+		end
+		check('a config door with a bad id is named in the journal, not seeded', refused)
+		local contract = OPX.Api.Get('doorlock')
+		check('the good ones are, and answer to their config key',
+			contract.Get('front').ok and contract.Get('gate').ok and not contract.Get('broken').ok)
+		local gate = contract.Get('gate').value
+		check('a door is filed under ox\'s integer id', math.type(gate.id) == 'integer'
+			and contract.Get(gate.id).ok and contract.GetFromName('Gate').value.id == gate.id)
+		check('and ox\'s getDoor never carries a code', contract.Get('vault').value.passcode == nil)
+
+		-- ── the decision, pure ──────────────────────────────────────────────
+		local now = 1000
+		local function snap(fields)
+			fields.atMs = now
+			return fields
+		end
+		local door = Access.Normalize(nil, { native = '0x9', coords = { x = 0, y = 0, z = 0 },
+			groups = { ncpd = 2, maelstrom = 1 }, items = { { name = 'keycard' } }, characters = { 'CIT001' } })
+		local function decide(subject) return Access.Evaluate(door, subject, now) end
+		check('a job at the grade turns it', decide({ snapshot = snap({ job = { name = 'ncpd', grade = { level = 2 } } }) }) == true)
+		local ok, reason = decide({ snapshot = snap({ job = { name = 'ncpd', grade = { level = 1 } } }) })
+		check('one grade below is refused, and says so', ok == false and reason == 'grade_too_low', reason)
+		check('a gang membership at the grade turns it',
+			decide({ snapshot = snap({ job = { name = 'x' }, gangs = { maelstrom = 3 } }) }) == true)
+		check('a listed character turns it', decide({ snapshot = snap({ job = { name = 'x' }, citizenId = 'CIT001' }) }) == true)
+		local passed, how, item = decide({ items = function(entry) return entry.name == 'keycard' and 1 or 0 end })
+		check('when no group lets them in, an item does, and names itself', passed and how == 'item' and item.name == 'keycard')
+		check('staff turn it', decide({ staff = true }) == true)
+		check('so does the ACL entry doorlock.<id> (ox\'s ace doorlock.<name>)', decide({ acl = true }) == true)
+		local bare = Access.Normalize(nil, { native = '0x9', coords = { x = 0, y = 0, z = 0 } })
+		ok, reason = Access.Evaluate(bare, { snapshot = snap({ job = { name = 'ncpd' } }) }, now)
+		check('a door with no rule opens for staff only, as in ox', ok == false and reason == 'not_allowed', reason)
+		check('a stale snapshot closes a gated door',
+			decide({ snapshot = { job = { name = 'ncpd', grade = { level = 5 } }, atMs = now - 120000 } }) == false)
+
+		-- ox's code rules: the code is asked after the groups and items, never of a character.
+		local coded = Access.Normalize(nil, { native = '0x9', coords = { x = 0, y = 0, z = 0 },
+			groups = { ncpd = 0 }, characters = { 'BOSS01' }, passcode = '42' })
+		local _, _, _, code = Access.Evaluate(coded, { snapshot = snap({ job = { name = 'ncpd', grade = { level = 0 } } }) }, now)
+		check('a group member still types the code', code == true)
+		ok, _, _, code = Access.Evaluate(coded, { snapshot = snap({ job = { name = 'x' }, citizenId = 'BOSS01' }) }, now)
+		check('a listed character does not', ok == true and code == false)
+		ok, _, _, code = Access.Evaluate(coded, { snapshot = snap({ job = { name = 'fixer', grade = { level = 3 } } }) }, now)
+		check('and an outsider is refused before any code is asked', ok == false and code == false)
+		local codeOnly = Access.Normalize(nil, { native = '0x9', coords = { x = 0, y = 0, z = 0 }, passcode = '1' })
+		ok, how, _, code = Access.Evaluate(codeOnly, {}, now)
+		check('a door with only a code opens for whoever knows it', ok == true and how == 'passcode' and code == true)
+	end
+end
+
+section('doorlock: config seeds once, and the first version\'s doors are carried over')
+do
+	local legacyData = {
+		name = 'Back Room', doors = { '0x00000000000000E1' }, x = 1.5, y = 1.0, z = 0.0, bucket = 0, locked = true,
+		groups = { { kind = 'job', name = 'ncpd', grade = 0 }, { kind = 'gang', name = 'maelstrom', grade = 2 } },
+		items = { { name = 'door_key', bound = true } }, characters = {}, passcode = '99', autolock = 30,
+		lockpick = true, difficulty = 'hard', maxDistance = 2.5, onDuty = true,
+	}
+	local state = { legacy = {
+		{ door_key = 'back_room', name = 'Back Room', bucket = 0, data = Host.json.encode(legacyData) },
+		-- A row the first version already ignored: a config door used its key.
+		{ door_key = 'front', name = 'Shadowed', bucket = 0, data = Host.json.encode(legacyData) },
+		{ door_key = 'mangled', name = 'Mangled', bucket = 0, data = '{"doors":["nope"]}' },
+	} }
+	local env, control, why = boot('server', doorlockBridge(state), nil, doorlockConfig)
+	check('the server boots over a first-version table', why == nil, why)
+	if why == nil then
+		control.Pump(20)
+		local OPX = env.OPX
+		local contract = OPX.Api.Get('doorlock')
+		local origins = {}
+		for _, row in pairs(state.rows) do origins[row.origin or '?'] = row end
+		check('every good config door is seeded once, under config:<key>',
+			origins['config:front'] ~= nil and origins['config:gate'] ~= nil and origins['config:broken'] == nil)
+		check('a first-version row lands under legacy:<key>', origins['legacy:back_room'] ~= nil)
+		check('a row a config door shadowed is not carried over', origins['legacy:front'] == nil)
+		check('a mangled row is named and left behind', origins['legacy:mangled'] == nil)
+		local moved = contract.Get('back_room')
+		check('the carried door answers to its old key', moved.ok, moved.error)
+		local stored = env.json.decode(origins['legacy:back_room'].data)
+		check('its groups become ox\'s map, its state ox\'s 1',
+			stored.groups.ncpd == 0 and stored.groups.maelstrom == 2 and stored.state == 1)
+		check('its bound key becomes a metadata match on the old key',
+			stored.items[1].name == 'door_key' and stored.items[1].metadata == 'back_room')
+		check('its code, autolock, reach, duty rule and difficulty survive',
+			stored.passcode == '99' and stored.autolock == 30 and stored.maxDistance == 2.5 and stored.onDuty == true
+				and stored.lockpickDifficulty[1] == 'hard')
+
+		-- A key the first version cut still turns the carried door.
+		local dl = OPX.Modules.Get('doorlock')
+		local fakes = doorlockFakes(OPX)
+		control.Admit(81, 'acct-81')
+		control.Stand(81, 1.5, 1.0, 0.0)
+		fakes.players[81] = { job = { name = 'unemployed', grade = { level = 0 } } }
+		fakes.typed[81] = { door_key = { door = 'back_room' } }
+		env.source = 81
+		control.netEvents[dl.Event.SET_STATE]({ id = moved.value.id, state = 0, code = '99' })
+		control.Pump(8)
+		local reply = doorlockLast(control, dl.Event.ANSWER, 81)
+		check('a key cut by the first version (door = <old key>) still opens its door',
+			reply ~= nil and reply.ok and reply.code == 'unlocked', reply and tostring(reply.code))
+
+		-- A second boot inserts nothing more, and a deleted seed stays deleted.
+		local writes = #state.writes
+		local env2, control2, why2 = boot('server', doorlockBridge(state), nil, doorlockConfig)
+		check('a second boot over the same table', why2 == nil, why2)
+		if why2 == nil then
+			control2.Pump(20)
+			local inserts = 0
+			for index = writes + 1, #state.writes do
+				if state.writes[index].kind == 'insert' then inserts = inserts + 1 end
+			end
+			check('inserts nothing: seeds and migration are once each', inserts == 0, inserts)
+			local front = env2.OPX.Api.Get('doorlock').Get('front').value
+			check('and the ids are the same doors', front ~= nil and front.id == origins['config:front'].id)
+			local removed = env2.OPX.Api.Get('doorlock').Remove(front.id, 'test')
+			control2.Pump(4)
+			check('deleting a seeded door tombstones its row', removed.ok
+				and state.rows[front.id] ~= nil and state.rows[front.id].removed == 1)
+			local env3, control3, why3 = boot('server', doorlockBridge(state), nil, doorlockConfig)
+			if why3 == nil then
+				control3.Pump(20)
+				check('so the next boot does not seed it again', not env3.OPX.Api.Get('doorlock').Get('front').ok)
+			end
+		end
+	end
+end
+
+section('doorlock: a player at a door, measured and decided by the server')
+do
+	local env, control, why = boot('server', doorlockBridge({}), nil, doorlockConfig)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		control.Pump(20)
+		local OPX = env.OPX
+		local dl = OPX.Modules.Get('doorlock')
+		local contract = OPX.Api.Get('doorlock')
+		local fakes = doorlockFakes(OPX)
+		local function id(key) return contract.Get(key).value.id end
+		local function state(key) return contract.Get(key).value.state end
+		local function ask(source, payload, rounds)
+			env.source = source
+			control.netEvents[dl.Event.SET_STATE](payload)
+			control.Pump(rounds or 8)
+			return doorlockLast(control, dl.Event.ANSWER, source)
+		end
+
+		check('the backend is local while open77_doors is not running', contract.Mode() == 'local')
+
+		control.Admit(51, 'acct-51')
+		fakes.players[51] = { job = { name = 'ncpd', grade = { level = 2 }, onDuty = true },
+			jobs = { ncpd = 2 }, citizenId = 'CIT051' }
+		local answer = ask(51, { id = id('front'), state = 0 })
+		check('an officer at the grade unlocks the front door',
+			answer ~= nil and answer.ok == true and answer.code == 'unlocked' and state('front') == 0,
+			answer and tostring(answer.code))
+		local pushed = doorlockLast(control, dl.Event.STATE, 51)
+		check('and everyone in the bucket is told ox\'s state', pushed ~= nil and pushed.id == id('front') and pushed.state == 0)
+		local relocked = settle(control, function() return state('front') == 1 end, 60)
+		check('the autolock locks it again on the server\'s clock', relocked)
+
+		control.Admit(52, 'acct-52')
+		fakes.players[52] = { job = { name = 'ncpd', grade = { level = 1 } }, jobs = { ncpd = 1 } }
+		answer = ask(52, { id = id('front'), state = 0 })
+		check('an officer one grade short is refused with the grade',
+			answer ~= nil and answer.ok == false and answer.code == 'grade_too_low' and state('front') == 1,
+			answer and tostring(answer.code))
+
+		control.Pump(8)
+		control.Stand(51, 10.0, 0.0, 0.0)
+		answer = ask(51, { id = id('front'), state = 0 })
+		check('ten metres away is too far, whatever the client thinks',
+			answer ~= nil and answer.code == 'too_far' and state('front') == 1, answer and tostring(answer.code))
+		control.Stand(51, 0.5, 0.0, 0.0)
+		control.world.buckets[51] = 4
+		control.Pump(8)
+		answer = ask(51, { id = id('front'), state = 0 })
+		check('and another routing bucket is not this door',
+			answer ~= nil and answer.code == 'wrong_bucket', answer and tostring(answer.code))
+		control.world.buckets[51] = 0
+
+		-- Items: a metadata match, and a spent keycard. The gate is a double door.
+		control.Admit(55, 'acct-55')
+		control.Stand(55, 50.0, 0.0, 0.0)
+		fakes.players[55] = { job = { name = 'unemployed', grade = { level = 0 } } }
+		fakes.typed[55] = { door_key = { type = 'gate_key' } }
+		answer = ask(55, { id = id('gate'), state = 0 })
+		check('a key of the gate\'s metadata type opens it', answer ~= nil and answer.ok and state('gate') == 0,
+			answer and tostring(answer.code))
+		local asked = fakes.asked[#fakes.asked]
+		check('and the bag was asked for that type, ox_inventory\'s metadata match',
+			asked ~= nil and asked.name == 'door_key' and asked.match.type == 'gate_key')
+		check('an item without remove is never spent', #fakes.removed == 0)
+
+		contract.SetState(id('gate'), 1)
+		control.Pump(4)
+		control.Admit(56, 'acct-56')
+		control.Stand(56, 50.0, 0.0, 0.0)
+		fakes.players[56] = { job = { name = 'unemployed', grade = { level = 0 } } }
+		fakes.counts[56] = { keycard = 2 }
+		answer = ask(56, { id = id('gate'), state = 0 })
+		check('a keycard opens it', answer ~= nil and answer.ok and state('gate') == 0)
+		check('and one keycard is spent (remove)',
+			#fakes.removed == 1 and fakes.removed[1].name == 'keycard' and fakes.counts[56].keycard == 1)
+
+		control.Admit(57, 'acct-57')
+		control.Stand(57, 50.0, 0.0, 0.0)
+		fakes.players[57] = { job = { name = 'unemployed', grade = { level = 0 } } }
+		answer = ask(57, { id = id('gate'), state = 1 })
+		check('nobody else turns it', answer ~= nil and answer.code == 'no_key' and state('gate') == 0,
+			answer and tostring(answer.code))
+
+		-- Staff, and the code.
+		control.Admit(58, 'acct-58')
+		control.Stand(58, 100.0, 0.0, 0.0)
+		control.Allow(58, 'command.opx.doorlock.bypass')
+		answer = ask(58, { id = id('vault'), state = 0 })
+		check('staff with the bypass grant open the vault without its code',
+			answer ~= nil and answer.ok and state('vault') == 0, answer and tostring(answer.code))
+		contract.SetState(id('vault'), 1)
+
+		control.Admit(59, 'acct-59')
+		control.Stand(59, 100.0, 0.0, 0.0)
+		fakes.players[59] = { job = { name = 'unemployed', grade = { level = 0 } } }
+		answer = ask(59, { id = id('vault'), state = 0 })
+		check('a code-only door asks everybody for its code', answer ~= nil and answer.code == 'passcode_required'
+			and answer.state == 0, answer and tostring(answer.code))
+		control.Pump(8)
+		answer = ask(59, { id = id('vault'), state = 0, code = '0000' })
+		check('a wrong code is refused', answer ~= nil and answer.code == 'wrong_passcode' and state('vault') == 1)
+		control.Pump(8)
+		answer = ask(59, { id = id('vault'), state = 0, code = '1234' })
+		check('and a guess inside three seconds is not even tried',
+			answer ~= nil and answer.code == 'too_fast' and state('vault') == 1, answer and tostring(answer.code))
+		control.Pump(35)
+		answer = ask(59, { id = id('vault'), state = 0, code = '1234' })
+		check('the right code opens it', answer ~= nil and answer.ok and state('vault') == 0,
+			answer and tostring(answer.code))
+
+		-- The den: a gang with a code, and a boss who needs neither.
+		control.Admit(53, 'acct-53')
+		control.Stand(53, 150.0, 0.0, 0.0)
+		fakes.players[53] = { job = { name = 'unemployed', grade = { level = 0 } },
+			gang = { name = 'maelstrom', grade = { level = 1 } }, gangs = { maelstrom = 1 } }
+		answer = ask(53, { id = id('den'), state = 0 })
+		check('a Maelstrom enforcer is asked the den\'s code', answer ~= nil and answer.code == 'passcode_required',
+			answer and tostring(answer.code))
+		control.Pump(35)
+		answer = ask(53, { id = id('den'), state = 0, code = '77' })
+		check('and opens it with the code', answer ~= nil and answer.ok and state('den') == 0, answer and tostring(answer.code))
+		contract.SetState(id('den'), 1)
+		control.Admit(54, 'acct-54')
+		control.Stand(54, 150.0, 0.0, 0.0)
+		fakes.players[54] = { job = { name = 'unemployed', grade = { level = 0 } }, citizenId = 'BOSS01' }
+		answer = ask(54, { id = id('den'), state = 0 })
+		check('a listed character opens it without the code', answer ~= nil and answer.ok and state('den') == 0,
+			answer and tostring(answer.code))
+
+		-- The veto hook (ox's doorAuthorization) and the bus.
+		local hook = OPX.Hooks.Register(dl.HOOK, function(payload) if payload.id == id('den') then return false end end)
+		control.Pump(8)
+		answer = ask(54, { id = id('den'), state = 1 })
+		check('a hook on doorlock:authorise can refuse a door', answer ~= nil and answer.code == 'not_allowed'
+			and state('den') == 0, answer and tostring(answer.code))
+		OPX.Hooks.Remove(hook)
+		local published = nil
+		env.AddEventHandler(dl.Event.ON_CHANGED, function(_, payload) published = payload end)
+		contract.SetState(id('vault'), 1)
+		control.Pump(2)
+		check('a change is published on opx:on:doorlock:changed, ox\'s stateChanged',
+			published ~= nil and published.id == id('vault') and published.state == 1 and published.locked == true)
+	end
+end
+
+section('doorlock: a lockpick is a sequence the server times and rolls')
+do
+	local env, control, why = boot('server', doorlockBridge({}), nil, doorlockConfig)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		control.Pump(20)
+		local OPX = env.OPX
+		local dl = OPX.Modules.Get('doorlock')
+		local contract = OPX.Api.Get('doorlock')
+		local fakes = doorlockFakes(OPX)
+		local front = contract.Get('front').value.id
+		local function state() return contract.Get(front).value.state end
+		control.Admit(60, 'acct-60')
+		fakes.players[60] = { job = { name = 'unemployed', grade = { level = 0 } } }
+		local function pick(rounds)
+			env.source = 60
+			control.netEvents[dl.Event.PICK]({ id = front })
+			control.Pump(rounds or 6)
+		end
+		local function done()
+			env.source = 60
+			control.netEvents[dl.Event.PICKED]({ id = front, finished = true })
+			control.Pump(4)
+			return doorlockLast(control, dl.Event.ANSWER, 60)
+		end
+
+		pick()
+		local answer = doorlockLast(control, dl.Event.ANSWER, 60)
+		check('no lockpick in the bag, no attempt', answer ~= nil and answer.code == 'no_lockpick',
+			answer and tostring(answer.code))
+
+		fakes.counts[60] = { lockpick = 3 }
+		control.Pump(8)
+		pick()
+		local go = doorlockLast(control, dl.Event.PICK_GO, 60)
+		check('with one, the server sends the door\'s own steps: easy then hard',
+			go ~= nil and #go.steps == 2 and go.steps[1] == 2000 and go.steps[2] == 3000,
+			go and table.concat(go.steps, ','))
+		local before = #control.log.warn
+		dl.Roll = function() return 0.5 end
+		answer = done()
+		check('a "done" that arrives before the steps could have run picks nothing',
+			answer ~= nil and answer.code == 'pick_failed' and state() == 1)
+		local audited = false
+		for index = before + 1, #control.log.warn do
+			if control.log.warn[index]:find('doorlock.pickEarly', 1, true) then audited = true end
+		end
+		check('and is written down as what it is', audited)
+
+		-- Every step rolls under its chance; the break roll is the last one.
+		local rolls = { 0.1, 0.1, 0.99 }
+		dl.Roll = function() return table.remove(rolls, 1) or 0.99 end
+		control.Pump(8)
+		pick(60)
+		answer = done()
+		check('every step landing opens the lock', answer ~= nil and answer.code == 'picked' and state() == 0,
+			answer and tostring(answer.code))
+
+		contract.SetState(front, 1)
+		rolls = { 0.1, 0.5, 0.0 }
+		control.Pump(8)
+		pick(60)
+		answer = done()
+		check('one step missing holds the lock, and the 1 in 5 break takes a pick',
+			answer ~= nil and answer.code == 'pick_broke' and state() == 1 and fakes.counts[60].lockpick == 2,
+			answer and tostring(answer.code))
+
+		-- The pick handed away mid-sequence.
+		dl.Roll = function() return 0 end
+		control.Pump(8)
+		pick(60)
+		fakes.counts[60] = { lockpick = 0 }
+		answer = done()
+		check('a pick that left the bag during the steps turns nothing',
+			answer ~= nil and answer.code == 'no_lockpick' and state() == 1, answer and tostring(answer.code))
+		dl.Roll = math.random
+	end
+end
+
+section('doorlock: on open77_doors, double doors and holdOpen are the platform\'s')
+do
+	local calls = {}
+	local function prelude(env)
+		env.GetResourceState = function(name) return name == 'open77_doors' and 'running' or 'stopped' end
+		env.Open77.exports.call = function(resource, method, ...)
+			local args = { ... }
+			calls[#calls + 1] = { resource = resource, method = method, args = args }
+			local first = true
+			if method == 'get' then first = nil end
+			if method == 'register' then first = { id = args[1].id } end
+			return { await = function() return first end, status = function() return 'resolved' end }
+		end
+	end
+	local env, control, why = boot('server', doorlockBridge({}), prelude, doorlockConfig)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		control.Pump(20)
+		local OPX = env.OPX
+		local dl = OPX.Modules.Get('doorlock')
+		local contract = OPX.Api.Get('doorlock')
+		local fakes = doorlockFakes(OPX)
+		check('the backend is the platform\'s', contract.Mode() == 'networked')
+		local registered, configured = {}, {}
+		for _, call in ipairs(calls) do
+			if call.method == 'register' then registered[call.args[1].id] = call.args[1] end
+			if call.method == 'configure' then configured[call.args[1]] = call.args[3] end
+		end
+		check('every leaf of every door is registered with it',
+			registered[DOORLOCK_IDS.front] ~= nil and registered[DOORLOCK_IDS.gateA] ~= nil
+				and registered[DOORLOCK_IDS.gateB] ~= nil)
+		check('an automatic door (ox\'s auto) is registered as one', registered[DOORLOCK_IDS.gateA].automatic == true)
+		check('and locked as the door says', configured[DOORLOCK_IDS.gateA].locked == true
+			and configured[DOORLOCK_IDS.gateB].locked == true)
+
+		control.Admit(61, 'acct-61')
+		control.Stand(61, 50.0, 0.0, 0.0)
+		fakes.players[61] = { job = { name = 'unemployed', grade = { level = 0 } } }
+		fakes.counts[61] = { keycard = 1 }
+		local mark = #calls
+		env.source = 61
+		control.netEvents[dl.Event.SET_STATE]({ id = contract.Get('gate').value.id, state = 0 })
+		control.Pump(10)
+		local unlocked = {}
+		for index = mark + 1, #calls do
+			local call = calls[index]
+			if call.method == 'configure' and call.args[3].locked == false then unlocked[call.args[1]] = true end
+		end
+		check('a double door unlocks both leaves on the platform',
+			unlocked[DOORLOCK_IDS.gateA] and unlocked[DOORLOCK_IDS.gateB])
+
+		mark = #calls
+		contract.SetState('den', 0)
+		control.Pump(4)
+		local patch = nil
+		for index = mark + 1, #calls do
+			if calls[index].method == 'configure' and calls[index].args[1] == DOORLOCK_IDS.den then patch = calls[index].args[3] end
+		end
+		check('an unlocked holdOpen door is opened and kept from closing itself (ox\'s DoorSystemSetHoldOpen)',
+			patch ~= nil and patch.locked == false and patch.open == true and patch.autoClose == false)
+		mark = #calls
+		contract.SetState('den', 1)
+		control.Pump(4)
+		for index = mark + 1, #calls do
+			if calls[index].method == 'configure' and calls[index].args[1] == DOORLOCK_IDS.den then patch = calls[index].args[3] end
+		end
+		check('and locking it closes it and gives its self-closing back',
+			patch.locked == true and patch.autoClose == true and patch.open == nil)
+	end
+end
+
+section('doorlock: staff write through the ACL, and every write is a row')
+do
+	local state = {}
+	local env, control, why = boot('server', doorlockBridge(state), nil, doorlockConfig)
+	check('the server boots', why == nil, why)
+	if why == nil then
+		control.Pump(20)
+		local OPX = env.OPX
+		local dl = OPX.Modules.Get('doorlock')
+		local contract = OPX.Api.Get('doorlock')
+		local fakes = doorlockFakes(OPX)
+		for _, name in ipairs({ 'opx.doorlock', 'opx.doorlock.list', 'opx.doorlock.remove',
+			'opx.doorlock.lock', 'opx.doorlock.key' }) do
+			check(('%s is registered and restricted'):format(name),
+				control.commands[name] ~= nil and control.commands[name].restricted == true)
+		end
+
+		local staff = 70
+		control.Admit(staff, 'acct-70')
+		control.Stand(staff, 1.0, 1.0, 0.0)
+		local function send(event, payload, rounds)
+			env.source = staff
+			control.netEvents[event](payload)
+			control.Pump(rounds or 10)
+			return doorlockLast(control, dl.Event.STAFF_DONE, staff)
+		end
+		-- The panel's save, exactly as the page sends it.
+		local door = { name = 'Back Room', doors = { { native = DOORLOCK_IDS.back, coords = { x = 1.5, y = 1.0, z = 0.0 } } },
+			coords = { x = 1.5, y = 1.0, z = 0.0 }, state = true, groups = { { name = 'ncpd', grade = 0 } },
+			items = { { name = 'door_key', metadata = 'back', remove = false } }, characters = { '' }, passcode = '99',
+			autolock = 30, lockpick = true, lockpickDifficulty = { 'hard' }, maxDistance = 2.5, holdOpen = true }
+
+		local writes = #state.writes
+		local answer = send(dl.Event.STAFF_SAVE, { door = door })
+		check('a save without the grant is refused, and writes nothing', answer ~= nil and answer.ok == false
+			and answer.code == 'not_permitted' and #state.writes == writes, answer and tostring(answer.code))
+		check('and is written down as a refusal', (function()
+			for _, line in ipairs(control.log.warn) do if line:find('doorlock.staffDenied', 1, true) then return true end end
+			return false
+		end)())
+		answer = send(dl.Event.STAFF_REMOVE, { id = contract.Get('front').value.id })
+		check('so is a delete without its own grant', answer ~= nil and answer.code == 'not_permitted'
+			and contract.Get('front').ok)
+
+		control.Allow(staff, 'command.opx.doorlock.save')
+		control.Pump(12)
+		answer = send(dl.Event.STAFF_SAVE, { door = door })
+		check('with it, the door is created under ox\'s next id',
+			answer ~= nil and answer.ok == true and answer.created == true and math.type(answer.id) == 'integer',
+			answer and tostring(answer.code))
+		local created = answer and answer.id
+		local row = created and state.rows[created]
+		local stored = row and env.json.decode(row.data) or {}
+		check('one row, carrying every field in ox\'s shape, the code included',
+			row ~= nil and row.origin == nil and stored.passcode == '99' and stored.groups.ncpd == 0
+				and stored.items[1].metadata == 'back' and stored.lockpickDifficulty[1] == 'hard'
+				and stored.autolock == 30 and stored.native == DOORLOCK_IDS.back and stored.holdOpen == true
+				and stored.state == 1)
+		check('and the door is live at once', contract.Get(created).ok)
+
+		control.Pump(12)
+		local bad = {}
+		for field, value in pairs(door) do bad[field] = value end
+		bad.groups = { { name = 'nosuchjob', grade = 0 } }
+		bad.doors = { { native = '0xE9' } }
+		answer = send(dl.Event.STAFF_SAVE, { door = bad })
+		check('a group nobody defined is refused', answer ~= nil and answer.code == 'unknown_group',
+			answer and tostring(answer.code))
+		control.Pump(12)
+		bad.groups, bad.doors = {}, { { native = '0xAA' } }
+		answer = send(dl.Event.STAFF_SAVE, { door = bad })
+		check('a native door another door manages is refused (ox\'s entityIsNotDoor)',
+			answer ~= nil and answer.code == 'door_taken', answer and tostring(answer.code))
+		control.Pump(12)
+		control.Stand(staff, 500.0, 0.0, 0.0)
+		bad.doors = { { native = '0xE8' } }
+		answer = send(dl.Event.STAFF_SAVE, { door = bad })
+		check('a capture far from where staff stand is refused', answer ~= nil and answer.code == 'too_far',
+			answer and tostring(answer.code))
+		control.Stand(staff, 1.0, 1.0, 0.0)
+
+		-- An edit that does not name the code keeps it: it is never sent to a panel.
+		control.Pump(12)
+		local edit = {}
+		for field, value in pairs(door) do edit[field] = value end
+		edit.passcode, edit.name = nil, 'Back Room B'
+		answer = send(dl.Event.STAFF_SAVE, { id = created, door = edit })
+		stored = env.json.decode(state.rows[created].data)
+		check('an edit keeps the code it was not shown', answer ~= nil and answer.ok and stored.passcode == '99'
+			and stored.name == 'Back Room B' and state.rows[created].name == 'Back Room B')
+		control.Pump(12)
+		edit.passcode = ''
+		send(dl.Event.STAFF_SAVE, { id = created, door = edit })
+		check('and an empty code clears it', env.json.decode(state.rows[created].data).passcode == nil)
+
+		-- The list and the detail.
+		local listed = #control.clientEvents
+		env.source = staff
+		control.netEvents[dl.Event.STAFF_ASK]({})
+		check('the list is not sent without the opener grant', doorlockLast(control, dl.Event.STAFF_LIST, staff) == nil
+			and #control.clientEvents == listed)
+		control.Allow(staff, 'command.opx.doorlock')
+		control.Pump(4)
+		control.netEvents[dl.Event.STAFF_ASK]({})
+		local rows = doorlockLast(control, dl.Event.STAFF_LIST, staff)
+		check('with it, the rows come with id, name and state',
+			rows ~= nil and rows.done and rows.total >= 5 and rows.rows[1].id ~= nil and rows.rows[1].state ~= nil)
+		control.Pump(4)
+		edit.passcode = '55'
+		control.Pump(12)
+		send(dl.Event.STAFF_SAVE, { id = created, door = edit })
+		env.source = staff
+		control.netEvents[dl.Event.STAFF_ASK]({ id = created })
+		local detail = doorlockLast(control, dl.Event.STAFF_LIST, staff)
+		check('a door\'s detail goes to staff, and its code does not',
+			detail ~= nil and type(detail.detail) == 'table' and detail.detail.passcode == nil
+				and detail.detail.hasPasscode == true and detail.detail.id == created)
+
+		-- State, key, remove: each its own grant.
+		control.Allow(staff, 'command.opx.doorlock.lock')
+		control.Allow(staff, 'command.opx.doorlock.key')
+		control.Allow(staff, 'command.opx.doorlock.remove')
+		control.Pump(8)
+		answer = send(dl.Event.STAFF_STATE, { id = created, state = 0 })
+		check('staff turn a door from anywhere', answer ~= nil and answer.ok and contract.Get(created).value.state == 0)
+		answer = send(dl.Event.STAFF_KEY, { id = created })
+		local cut = fakes.added[#fakes.added]
+		check('a key is cut of the door\'s metadata type',
+			answer ~= nil and answer.ok and cut ~= nil and cut.name == 'door_key' and cut.metadata.type == 'back')
+		answer = send(dl.Event.STAFF_REMOVE, { id = created })
+		check('a door staff made is deleted outright', answer ~= nil and answer.ok and state.rows[created] == nil
+			and not contract.Get(created).ok)
+		control.Pump(8)
+		local front = contract.Get('front').value.id
+		send(dl.Event.STAFF_REMOVE, { id = front })
+		check('a seeded one is tombstoned', state.rows[front] ~= nil and state.rows[front].removed == 1)
+
+		-- ox's exports, through the contract.
+		local made = contract.Create({ name = 'Hall', native = DOORLOCK_IDS.hall, coords = { x = 9, y = 9, z = 0 },
+			state = 0 }, 'ext:test')
+		control.Pump(4)
+		check('createDoor answers a new id', made.ok and contract.Get(made.value).ok)
+		local edited = made.ok and contract.Edit(made.value, { name = 'Great Hall', autolock = 5 }, 'ext:test')
+		check('editDoor replaces the fields given', edited and edited.ok
+			and contract.GetFromName('Great Hall').ok and contract.Get(made.value).value.name == 'Great Hall')
+		local wrong = made.ok and contract.Edit(made.value, { autolock = 'soon' }, 'ext:test')
+		check('and refuses a field of the wrong type, as ox does', wrong and wrong.ok == false)
+		check('getAllDoors lists them by id', contract.All().ok and #contract.All().value >= 4)
+	end
+end
+
+section('doorlock, client side: E is silent away from a door, and a lock is a lock')
+do
+	local native = { calls = {}, list = {} }
+	local function prelude(env)
+		env.Open77.doors = {
+			near = function() return native.list end,
+			setLocked = function(id, locked)
+				native.calls[#native.calls + 1] = { 'setLocked', id, locked }
+				return true
+			end,
+			setInteractionAllowed = function(id, allowed)
+				native.calls[#native.calls + 1] = { 'allow', id, allowed }
+				return true
+			end,
+			setAutomaticClose = function(id, enabled)
+				native.calls[#native.calls + 1] = { 'autoClose', id, enabled }
+				return true
+			end,
+			setOpen = function(id, open)
+				native.calls[#native.calls + 1] = { 'open', id, open }
+				return true
+			end,
+			reset = function(id) native.calls[#native.calls + 1] = { 'reset', id } return true end,
+			state = function(id) return native.byEntity and native.byEntity[id] or nil end,
+			aimed = function() return native.aimed end,
+		}
+	end
+	local env, control, why = boot('client', nil, prelude)
+	check('the client boots with the doorlock module', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local dl = OPX.Modules.Get('doorlock')
+		local Runtime = dl.Runtime
+		check('the client half is running', OPX.Modules.IsRunning('doorlock'), OPX.Modules.Record('doorlock').Reason)
+		local mapping = control.keyMappings.byId['opx.doorlock.use']
+		check('the key is declared, E by default', mapping ~= nil and mapping.key == 'E')
+
+		local toasts = 0
+		local realToast = OPX.Toast.Show
+		OPX.Toast.Show = function(definition)
+			toasts = toasts + 1
+			return realToast(definition)
+		end
+		local function asks()
+			local count = 0
+			for _, event in ipairs(control.serverEvents) do
+				if event.name == dl.Event.SET_STATE then count = count + 1 end
+			end
+			return count
+		end
+
+		mapping.pressed()
+		control.Pump(4)
+		check('E with no door anywhere sends nothing and says nothing', asks() == 0 and toasts == 0,
+			('%d/%d'):format(asks(), toasts))
+
+		control.netEvents[dl.Event.SYNC]({ bucket = 0, mode = 'local', offset = 0, done = true, doors = {
+			{ id = 1, name = 'Front', ids = { DOORLOCK_IDS.front }, x = 0.0, y = 0.0, z = 0.0, state = 1, reach = 2.0 },
+			{ id = 2, name = 'Gate', ids = { DOORLOCK_IDS.gateA, DOORLOCK_IDS.gateB },
+				x = 50.0, y = 0.0, z = 0.0, state = 1, reach = 2.0, holdOpen = true },
+		} })
+		check('standing at a door finds it', settle(control, function() return Runtime.Report().nearest == 1 end),
+			Runtime.Report().nearest)
+		local prompts = OPX.Api.Get('prompts')
+		local listed = nil
+		settle(control, function()
+			listed = prompts and prompts.List('doorlock') or nil
+			return listed ~= nil and listed.ok and listed.value.count == 1
+		end)
+		check('and posts its row on the prompts strip', listed ~= nil and listed.ok and listed.value.count == 1)
+
+		mapping.pressed()
+		control.Pump(2)
+		local sent = control.serverEvents[#control.serverEvents]
+		check('E at a locked door asks to unlock it, naming the door and nothing else',
+			sent ~= nil and sent.name == dl.Event.SET_STATE and sent[1].id == 1 and sent[1].state == 0
+				and sent[1].x == nil)
+
+		control.placement.x = 30.0
+		check('walking away loses it', settle(control, function() return Runtime.Report().nearest == nil end))
+		local before, toastsBefore = asks(), toasts
+		mapping.pressed()
+		control.Pump(4)
+		check('and E between two doors is silent again', asks() == before and toasts == toastsBefore)
+
+		-- The local lock.
+		native.list = {
+			{ id = DOORLOCK_IDS.gateA, locked = false, lift = false },
+			{ id = DOORLOCK_IDS.gateB, locked = false, lift = false },
+			{ id = '0x00000000000000FF', locked = false, lift = false },
+		}
+		local function lastFor(id, kind)
+			for index = #native.calls, 1, -1 do
+				local call = native.calls[index]
+				if call[1] == kind and call[2] == id then return call[3] end
+			end
+			return nil
+		end
+		settle(control, function() return lastFor(DOORLOCK_IDS.gateB, 'setLocked') ~= nil end)
+		check('both leaves of a streamed double door are locked',
+			lastFor(DOORLOCK_IDS.gateA, 'setLocked') == true and lastFor(DOORLOCK_IDS.gateB, 'setLocked') == true)
+		check('and the game\'s own interaction is refused on them',
+			lastFor(DOORLOCK_IDS.gateA, 'allow') == false and lastFor(DOORLOCK_IDS.gateB, 'allow') == false)
+		check('an unmanaged door is not touched', lastFor('0x00000000000000FF', 'setLocked') == nil)
+
+		control.netEvents[dl.Event.STATE]({ id = 2, state = 0 })
+		check('an unlock from the server lands on both leaves at once',
+			lastFor(DOORLOCK_IDS.gateA, 'setLocked') == false and lastFor(DOORLOCK_IDS.gateB, 'setLocked') == false
+				and lastFor(DOORLOCK_IDS.gateA, 'allow') == true)
+		check('and a holdOpen door is opened and kept from closing itself',
+			lastFor(DOORLOCK_IDS.gateA, 'open') == true and lastFor(DOORLOCK_IDS.gateA, 'autoClose') == false)
+
+		local mark = #native.calls
+		control.netEvents[dl.Event.SYNC]({ bucket = 0, mode = 'networked', offset = 0, done = true, doors = {
+			{ id = 2, name = 'Gate', ids = { DOORLOCK_IDS.gateA, DOORLOCK_IDS.gateB },
+				x = 50.0, y = 0.0, z = 0.0, state = 1, reach = 2.0 } } })
+		control.Pump(10)
+		local touched = false
+		for index = mark + 1, #native.calls do
+			if native.calls[index][1] == 'setLocked' then touched = true end
+		end
+		check('on the networked backend the client leaves the lock to the platform', not touched)
+
+		-- A coded door asks for its code on this client (ox's inputPassCode).
+		local forms = OPX.Api.Get('form')
+		control.netEvents[dl.Event.ANSWER]({ ok = false, code = 'passcode_required', id = 2, name = 'Gate' })
+		control.Pump(4)
+		local open = forms and forms.State() or nil
+		check('a coded door opens a form for its code',
+			open ~= nil and open.ok and open.value.open == true and open.value.form == 'doorlock.passcode',
+			open and open.value and tostring(open.value.form))
+		if open and open.value.open then forms.Close(open.value.handle) end
+
+		-- A pick: one progress bar per step the server sent.
+		local progress = OPX.Api.Get('progress')
+		control.placement.x = 50.0
+		control.netEvents[dl.Event.PICK_GO]({ id = 2, name = 'Gate', steps = { 600, 700 } })
+		check('a pick starts the first of its bars', Runtime.Report().picking == 2
+			and progress ~= nil and progress.State().value.open == true)
+		local picked = nil
+		settle(control, function()
+			for index = #control.serverEvents, 1, -1 do
+				local event = control.serverEvents[index]
+				if event.name == dl.Event.PICKED then picked = event[1] return true end
+			end
+			return false
+		end, 80)
+		check('and says "done" only after the last one has run', picked ~= nil and picked.id == 2 and picked.finished == true,
+			picked and tostring(picked.finished))
+
+		check('a player who is not staff has no panel', Runtime.Staff() == nil
+			and OPX.Api.Get('doorlock').OpenStaff().ok == false)
+		OPX.Toast.Show = realToast
+	end
+end
+
+section('doorlock: the staff panel\'s channel contract, Lua to page and back')
+do
+	local native = { aimed = nil }
+	local function prelude(env)
+		env.Open77.doors = {
+			near = function() return {} end,
+			setLocked = function() return true end,
+			state = function() return nil end,
+			aimed = function() return native.aimed end,
+		}
+	end
+	local env, control, why = boot('client', nil, prelude)
+	check('the client boots for the panel', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local dl = OPX.Modules.Get('doorlock')
+		local function sentTo(channel)
+			for _, page in ipairs(control.pages) do
+				for index = #page.sent, 1, -1 do
+					if page.sent[index].channel == channel then return page.sent[index].payload, page end
+				end
+			end
+			return nil
+		end
+		local function lastServer(name)
+			for index = #control.serverEvents, 1, -1 do
+				if control.serverEvents[index].name == name then return control.serverEvents[index][1] end
+			end
+			return nil
+		end
+
+		control.netEvents[dl.Event.SYNC]({ bucket = 0, mode = 'local', offset = 0, done = true, doors = {},
+			staff = { save = true, remove = true, lock = true, key = true, teleport = true } })
+		control.netEvents[dl.Event.STAFF_OPEN]({ access = { save = true, remove = true, lock = true, key = true,
+			teleport = true }, mode = 'local' })
+		control.Pump(4)
+		local opened, page = sentTo('opx:doorlock:open')
+		check('/opx.doorlock opens the page with a handle, the grants and the settings it needs',
+			opened ~= nil and opened.handle ~= nil and opened.access.save == true and opened.view == 'list'
+				and type(opened.difficulties) == 'table' and opened.defaults.maxDistance == 2.0
+				and type(opened.defaults.steps) == 'table')
+		check('and asks the server for the list', lastServer(dl.Event.STAFF_ASK) ~= nil)
+		check('the focus goes to the panel', OPX.UI.FocusOwner() == 'doorlock')
+
+		-- 300 doors, in the server's chunks of twenty.
+		local total = 300
+		for offset = 0, total - 1, 20 do
+			local rows = {}
+			for index = offset + 1, math.min(offset + 20, total) do
+				rows[#rows + 1] = { id = index, name = 'Door ' .. index, state = index % 2, bucket = 0,
+					x = index * 1.0, y = 0.0, z = 0.0 }
+			end
+			control.netEvents[dl.Event.STAFF_LIST]({ rows = rows, offset = offset, total = total,
+				done = offset + 20 >= total })
+		end
+		settle(control, function()
+			local last = sentTo('opx:doorlock:rows')
+			return last ~= nil and last.done == true
+		end, 60)
+		local parts, rowsSeen, first = 0, 0, nil
+		for _, entry in ipairs(page.sent) do
+			if entry.channel == 'opx:doorlock:rows' then
+				parts = parts + 1
+				rowsSeen = rowsSeen + #entry.payload.rows
+				first = first or entry.payload.rows[1]
+			end
+		end
+		check('the page is given every row, in parts the host takes',
+			rowsSeen == total and parts == math.ceil(total / dl.Panel.ROWS_PER_SEND), ('%d rows in %d parts'):format(rowsSeen, parts))
+		check('each row: id, name, state and the distance from the player',
+			first ~= nil and first.id == 1 and first.name == 'Door 1' and first.state == 1 and first.distance == 1.0)
+
+		-- The page's intents.
+		local handle = opened.handle
+		control.PageEmit(page, 'opx:doorlock:save', { handle = handle, door = { name = 'X', native = '0xF1',
+			coords = { x = 1, y = 2, z = 3 } } })
+		local saved = lastServer(dl.Event.STAFF_SAVE)
+		check('a save leaves as the staff net event, the door as the page sent it',
+			saved ~= nil and saved.door.name == 'X' and saved.id == nil)
+		local count = #control.serverEvents
+		control.PageEmit(page, 'opx:doorlock:save', { handle = handle + 99, door = { name = 'Y' } })
+		check('a payload for another handle is dropped', #control.serverEvents == count)
+		control.PageEmit(page, 'opx:doorlock:delete', { handle = handle, id = 7 })
+		check('a delete names the id', lastServer(dl.Event.STAFF_REMOVE) ~= nil and lastServer(dl.Event.STAFF_REMOVE).id == 7)
+		control.PageEmit(page, 'opx:doorlock:state', { handle = handle, id = 7, state = 0 })
+		check('lock now names the id and the state', lastServer(dl.Event.STAFF_STATE).state == 0)
+		control.PageEmit(page, 'opx:doorlock:detail', { handle = handle, id = 7 })
+		check('settings asks for that door', lastServer(dl.Event.STAFF_ASK).id == 7)
+
+		control.netEvents[dl.Event.STAFF_DONE]({ verb = 'save', ok = false, code = 'unknown_group', detail = 'x' })
+		local result = sentTo('opx:doorlock:result')
+		check('the server\'s answer reaches the page', result ~= nil and result.verb == 'save'
+			and result.ok == false and result.code == 'unknown_group')
+
+		-- Pick in world: the page hides, E takes the door under the crosshair.
+		control.PageEmit(page, 'opx:doorlock:pick', { handle = handle, double = true })
+		local hidden = sentTo('opx:doorlock:visible')
+		check('pick in world hides the page and hands the controls back',
+			hidden ~= nil and hidden.visible == false and dl.Panel.Report().picking and OPX.UI.FocusOwner() ~= 'doorlock')
+		local mapping = control.keyMappings.byId['opx.doorlock.use']
+		mapping.pressed()
+		check('E with nothing aimed takes nothing', dl.Panel.Report().taken == 0)
+		native.aimed = { id = '0xB1', position = { x = 4.0, y = 0.0, z = 0.0 } }
+		mapping.pressed()
+		native.aimed = { id = '0xB1', position = { x = 4.0, y = 0.0, z = 0.0 } }
+		mapping.pressed()
+		check('the same leaf twice is refused', dl.Panel.Report().taken == 1)
+		native.aimed = { id = '0xB2', position = { x = 6.0, y = 0.0, z = 0.0 } }
+		mapping.pressed()
+		local picked = sentTo('opx:doorlock:picked')
+		check('the second leaf ends the pick, both leaves and their middle sent to the page',
+			picked ~= nil and #picked.doors == 2 and picked.doors[2].native == DOORLOCK_IDS.gateB
+				and picked.coords.x == 5.0 and not dl.Panel.Report().picking)
+		check('and the page is back, with the focus', sentTo('opx:doorlock:visible').visible == true
+			and OPX.UI.FocusOwner() == 'doorlock')
+		control.PageEmit(page, 'opx:doorlock:pick', { handle = handle, double = false })
+		control.Fire('open77:pauseKey')
+		check('Escape gives a pick up', sentTo('opx:doorlock:picked').cancelled == true and not dl.Panel.Report().picking)
+
+		control.PageEmit(page, 'opx:doorlock:dismiss', { handle = handle })
+		check('dismiss closes the panel and the focus goes', not dl.Panel.Report().open
+			and sentTo('opx:doorlock:close') ~= nil and OPX.UI.FocusOwner() ~= 'doorlock')
+	end
+end
+
+section('doorlock: the list and the scan stay inside the client budget')
+do
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.doors = { near = function() return {} end, state = function() return nil end }
+	end)
+	check('the client boots for the budget', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local dl = OPX.Modules.Get('doorlock')
+		-- 512 doors, the ceiling, in one bucket.
+		for offset = 0, 511, 12 do
+			local doors = {}
+			for index = offset + 1, math.min(offset + 12, 512) do
+				doors[#doors + 1] = { id = index, name = 'Door ' .. index, ids = { ('0x%X'):format(0x1000 + index) },
+					x = index * 3.0, y = 0.0, z = 0.0, state = 1, reach = 2.0 }
+			end
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			control.netEvents[dl.Event.SYNC]({ bucket = 0, mode = 'local', offset = offset, done = offset + 12 >= 512,
+				doors = doors, staff = { save = true } })
+			debug.sethook()
+			if offset == 504 or offset == 0 then
+				check(('a sync chunk is handled inside a small budget (offset %d)'):format(offset), spent < 5000,
+					('%d instructions'):format(spent))
+			end
+		end
+		check('every door is held', dl.Runtime.Report().doors == 512)
+		local worst = 0
+		for _ = 1, 15 do
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			dl.Runtime.Scan()
+			debug.sethook()
+			if spent > worst then worst = spent end
+		end
+		check('a scan over 512 doors measures a slice, not the bucket', worst < 5000, ('%d instructions'):format(worst))
+
+		dl.Panel.Open({ save = true })
+		control.Pump(4)
+		local rows = {}
+		for index = 1, 20 do rows[index] = { id = index, name = 'Door ' .. index, state = 1, bucket = 0, x = 1, y = 2, z = 3 } end
+		local spent = 0
+		debug.sethook(function() spent = spent + 1 end, '', 1)
+		control.netEvents[dl.Event.STAFF_LIST]({ rows = rows, offset = 0, total = 600, done = false })
+		debug.sethook()
+		check('a staff list chunk is read inside a small budget', spent < 5000, ('%d instructions'):format(spent))
+		for offset = 20, 599, 20 do
+			for index = 1, 20 do rows[index] = { id = offset + index, name = 'Door', state = 1, bucket = 0, x = 1, y = 2, z = 3 } end
+			control.netEvents[dl.Event.STAFF_LIST]({ rows = rows, offset = offset, total = 600, done = offset + 20 >= 600 })
+		end
+		-- Every resume of the build thread, counted between its own yields.
+		local count, worstResume, fromPanel = 0, 0, 0
+		local realWait = env.Wait
+		env.Wait = function(ms)
+			local caller = debug.getinfo(2, 'S')
+			if caller and tostring(caller.source):find('doorlock/client/panel.lua', 1, true) then
+				fromPanel = fromPanel + 1
+				if count > worstResume then worstResume = count end
+			end
+			count = 0
+			return realWait(ms)
+		end
+		debug.sethook(function() count = count + 1 end, '', 1)
+		control.Pump(60)
+		debug.sethook()
+		env.Wait = realWait
+		check('building 600 rows for the page yields on its way', fromPanel >= 10, fromPanel)
+		check('and no resume of it comes near the budget', worstResume < 8000, ('%d instructions'):format(worstResume))
+	end
+end
+
+-- ── the built page carries the panel ─────────────────────────────────────────
+section('doorlock: the Vue panel is registered, coerces what it reads, and is in the bundle')
+do
+	local function slurp(path)
+		local handle = io.open(path, 'r')
+		if not handle then return '' end
+		local body = handle:read('a')
+		handle:close()
+		return body
+	end
+	local boot = slurp('ui/src/boot/main.ts')
+	check('the panel is a module view of its own, on the modal layer',
+		boot:find("registerModule({ id: 'doorlock', surface: 'modal', component: DoorlockView", 1, true) ~= nil)
+	local view = slurp('ui/src/modules/doorlock/DoorlockView.vue') .. slurp('ui/src/modules/doorlock/model.ts')
+	check('it reads lists through records() and lookups through own()',
+		view:find('records(', 1, true) ~= nil and view:find('own(', 1, true) ~= nil)
+	check('it holds the focus under the Lua owner id', view:find("acquireFocus({", 1, true) ~= nil
+		and view:find("id: 'doorlock'", 1, true) ~= nil)
+	check('it carries ox\'s tabs', view:find("'characters'", 1, true) ~= nil and view:find("'groups'", 1, true) ~= nil
+		and view:find("'items'", 1, true) ~= nil and view:find("'lockpick'", 1, true) ~= nil
+		and view:find("'sound'", 1, true) ~= nil)
+	local built = slurp('web/index.html')
+	for _, channel in ipairs({ 'opx:doorlock:open', 'opx:doorlock:rows', 'opx:doorlock:save', 'opx:doorlock:pick',
+		'opx:doorlock:picked', 'opx:doorlock:dismiss' }) do
+		check(('the built page speaks %s'):format(channel), built:find(channel, 1, true) ~= nil)
+	end
+	check('the first version\'s staff screens are gone from the admin menu',
+		slurp('modules/admin/client/menu.lua'):find('doorlock.staff', 1, true) == nil
+			and slurp('modules/doorlock/client/staff.lua') == '')
+end
+
+-- ── the WebUI audit: what the page must keep ─────────────────────────────────
+-- Source and bundle together, because each of these was a fault in the shipped page
+-- that no Lua test could see: a focus the page never held, a payload that threw in
+-- render, a filter re-rasterised on a timer, and 600 CSS rules nothing could match.
+section('webui: focus, payload coercion, repaint cost and bundle weight')
+do
+	local function slurp(path)
+		local handle = io.open(path, 'r')
+		if not handle then return '' end
+		local body = handle:read('a')
+		handle:close()
+		return body
+	end
+	local built = slurp('web/index.html')
+	check('augmented-ui keeps the three mixins the templates use',
+		built:find('[data-augmented-ui~=tr-clip]', 1, true) ~= nil
+			and built:find('[data-augmented-ui~=bl-clip]', 1, true) ~= nil
+			and built:find('[data-augmented-ui~=border]', 1, true) ~= nil)
+	check('and none of the ~700 it does not (pruned at build time)',
+		built:find('tl-2-scoop-xy', 1, true) == nil and built:find('r-rect-y', 1, true) == nil)
+
+	local types = slurp('ui/src/bridge/types.ts')
+	check('lists of records are coerced per element, lookups read own keys only',
+		types:find('export function records', 1, true) ~= nil
+			and types:find('export function own', 1, true) ~= nil)
+
+	local holo = slurp('ui/src/modules/calls/HoloRoot.vue')
+	check("the hologram holds the page focus under Lua's own owner id",
+		holo:find("acquireFocus({ id: 'calls'", 1, true) ~= nil)
+
+	local menu = slurp('ui/src/modules/menu/MenuView.vue')
+	check('an unclosable menu answers Escape with a no-op, never an absent handler',
+		menu:find(': () => {}', 1, true) ~= nil)
+	check('and the menu reads keys only while it owns the focus',
+		menu:find("focusOwner() !== 'menu'", 1, true) ~= nil)
+
+	local downed = slurp('ui/src/modules/downed/DownedView.vue')
+	check('a give-up hold ends on a cancelled pointer or a lost window',
+		downed:find("addEventListener('pointercancel'", 1, true) ~= nil
+			and downed:find("addEventListener('blur'", 1, true) ~= nil)
+
+	local toast = slurp('ui/src/modules/notify/NotifyToast.vue')
+	check('the toast bar scales rather than resizes under its filter',
+		toast:find('scaleX(', 1, true) ~= nil and toast:find('width: barWidth', 1, true) == nil)
+end
+
+-- ── the garages list and scan, a resume at a time ───────────────────────────
+-- THE LIST WAS READ AND SCANNED IN THE NET EVENT'S ONE RESUME, every point
+-- checked field by field, and every scan re-coerced the player's position once
+-- per point in both the nearest-point search and the marker reconcile -- the
+-- budget meter's 18,500 for `garages:sync` and 9,200 for `garages:scan` on the
+-- twenty-point lot above, and the scan runs inside the scheduler's shared pass.
+-- Neither is a fixture's size: the list is every point captured in the
+-- player's bucket, and the cost grows with it. Sixty here, all in draw range.
+-- The marker set and the nearest search are `lib/client/spots.lua` and
+-- `lib/shared/spots.lua`, so dealership, clothing and teleports scan the same way.
+section('garages: a big list and its scans stay inside one resume\'s budget')
+do
+	local scanStep
+	local env, control, why = boot('client', nil, nil, function(env, file)
+		if file ~= 'core/client/scheduler.lua' then return end
+		local every = env.OPX.Scheduler.Every
+		env.OPX.Scheduler.Every = function(name, intervalMs, fn)
+			if name == 'garages:scan' then scanStep = fn end
+			return every(name, intervalMs, fn)
+		end
+	end)
+	check('the client boots with the garages scan', why == nil and scanStep ~= nil, why)
+	if why == nil and scanStep ~= nil then
+		local garages = env.OPX.Modules.Get('garages')
+		local realCharacter = env.Open77.character
+		env.Open77.character = setmetatable({ position = function() return 0.0, 0.0, 0.0 end },
+			{ __index = realCharacter })
+		local TOTAL = 60
+		local lot = {}
+		for index = 1, TOTAL do
+			lot[index] = { key = ('big#%d'):format(index), label = 'BIG', kind = 'garage',
+				garage = 'big', role = index % 2 == 0 and 'entry' or 'menu', location = index,
+				x = index * 0.5, y = 1.0, z = 0.0, heading = 0.0, bucket = 0 }
+		end
+
+		local reading, resumes = resumeCost(env, control, function()
+			control.netEvents[garages.Event.SYNC]({ spots = lot })
+		end, 12)
+		check('every point of the list is taken', garages.Runtime.Report().spots == TOTAL,
+			garages.Runtime.Report().spots)
+		check('and no resume of reading it cost more than 4,000 instructions',
+			resumes > 1 and reading < 4000,
+			('%d instructions, dearest of %d resumes'):format(reading, resumes))
+
+		local drawing = 0
+		for _ = 1, 12 do
+			local spent = callCost(scanStep)
+			if spent > drawing then drawing = spent end
+		end
+		check('the scans draw every marker', garages.Runtime.Report().markers == TOTAL,
+			garages.Runtime.Report().markers)
+		check('and no scan creating them cost more than 4,000 instructions', drawing < 4000,
+			('%d instructions'):format(drawing))
+		local steady = callCost(scanStep)
+		check('a scan with nothing to create stays well inside the budget', steady < 2500,
+			('%d instructions'):format(steady))
+		env.Open77.character = realCharacter
+	end
+end
+
+-- The budget meter's report, when `OPX_BUDGET_METER` asked for one: every
+-- client call site whose worst single resume cost more than the figure, the
+-- dearest first. Read it, do not gate on it -- a site here is a resume the
+-- platform may kill.
+if Host.Meter.limit ~= nil then
+	local over = {}
+	for site, spent in pairs(Host.Meter.worst) do
+		if spent > Host.Meter.limit then over[#over + 1] = { site = site, spent = spent } end
+	end
+	table.sort(over, function(a, b) return a.spent > b.spent end)
+	print(('\nbudget meter: %d client call sites past %d instructions in one resume'):format(#over, Host.Meter.limit))
+	for _, row in ipairs(over) do print(('  %8d  %s'):format(row.spent, row.site)) end
 end
 
 print(('\n%d checks, %d failed'):format(checks, failures))

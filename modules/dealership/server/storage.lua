@@ -145,17 +145,6 @@ end
 -- its own capture commands went, and for the same reason: a writer with no
 -- caller is one the next reader wires a new command to.
 
---- Every company account, for the readout.
--- @author XEROX710
--- @return Result carrying an array of rows
-function M.Storage.FetchAccounts()
-	return Storage.Query([[
-SELECT kind, group_key, balance
-  FROM opx77_company_accounts
- ORDER BY kind, group_key
-  ]])
-end
-
 --- Adds to one company's balance, creating the account when there is none.
 -- @author XEROX710
 --

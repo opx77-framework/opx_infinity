@@ -83,6 +83,10 @@ end
 -- being held and far better than no bar at all. The names come from `M.LOCKED`,
 -- which is the platform's own five-word vocabulary -- anything else answers
 -- `unknown_action`.
+-- Actions already reported as refused, so a refusal is said once a session and
+-- not once per bar.
+local refusedOnce = {}
+
 local function hold(on)
 	local input = Open77.input
 	if type(input) ~= 'table' or type(input.setActionBlocked) ~= 'function' then return end
@@ -91,12 +95,19 @@ local function hold(on)
 		locked = {}
 		for index = 1, #M.LOCKED do
 			local action = M.LOCKED[index]
-			local ok, reason = pcall(input.setActionBlocked, action, true)
-			if ok then
+			-- THE ANSWER IS READ, not only whether the call raised. The native
+			-- answers `false, reason` for a refusal -- `unknown_action`,
+			-- `action_not_blockable`, a missing `input.actions` -- and the pcall
+			-- status alone recorded every one of those as held, so nothing was
+			-- reported and the player could walk out of a bar the log said was
+			-- locked. The HUD's vanilla toggles read it the same way.
+			local called, ok, reason = pcall(input.setActionBlocked, action, true)
+			if called and ok == true then
 				locked[#locked + 1] = action
-			else
+			elseif not refusedOnce[action] then
+				refusedOnce[action] = true
 				Open77.log.warn(('[progress] %s could not be blocked: %s')
-					:format(action, tostring(reason)))
+					:format(action, tostring(called and reason or ok)))
 			end
 		end
 		return

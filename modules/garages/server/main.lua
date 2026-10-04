@@ -303,14 +303,24 @@ local function resolve(source, key)
 
 	local point = nil
 	if key == nil or key == '' then
-		point = Access.Nearest(spots, at.x, at.y)
+		-- IN THE CONNECTION'S OWN BUCKET. Over every bucket, an instanced copy of
+		-- a garage standing on the same spot that sorted first by key won the
+		-- search and was then refused as `wrongBucket`, to a player standing on a
+		-- garage in their own.
+		point = Access.Nearest(Access.InBucket(spots, at.bucket), at.x, at.y)
 	else
 		point = Access.Spot(spots, key)
 		if point == nil and garages[key] ~= nil then
-			local mine = {}
+			-- The garage's points in this bucket when it has any there, and all
+			-- of them otherwise -- so a garage that is only elsewhere still
+			-- answers `wrongBucket` below rather than `noSuchSpot`.
+			local mine, here = {}, {}
 			for _, candidate in ipairs(Access.PointsOf(garages[key])) do
 				mine[candidate.key] = candidate
+				if candidate.bucket == at.bucket then here[candidate.key] = candidate end
 			end
+			if next(here) ~= nil then mine = here end
+
 			-- UNBOUNDED, and that is the difference between two refusals an
 			-- operator reads. Asking for the nearest point WITHIN REACH answers
 			-- nil for somebody standing across the street from the garage they
@@ -484,6 +494,22 @@ function M.Bring(source, key, wanted)
 	})
 end
 
+--- Whether anybody but `source` sits in a vehicle, read from the host's own
+--- snapshot. A vehicle that cannot be read has nobody aboard we know of.
+local function othersAboard(vehicleId, source)
+	local api = Open77.vehicles
+	if vehicleId == nil or type(api) ~= 'table' or type(api.get) ~= 'function' then return false end
+	local read, snapshot = pcall(api.get, vehicleId)
+	if not read or type(snapshot) ~= 'table' or type(snapshot.occupants) ~= 'table' then
+		return false
+	end
+	for _, occupant in ipairs(snapshot.occupants) do
+		local id = type(occupant) == 'table' and (occupant.playerId or occupant.player) or occupant
+		if tonumber(id) ~= tonumber(source) then return true end
+	end
+	return false
+end
+
 --- The marker's one door: PUT AWAY when the connection is sitting in its own
 --- vehicle, and BRING OUT otherwise.
 -- ONE DECISION, MADE HERE. The player presses one key on one marker, and which
@@ -516,6 +542,13 @@ function M.Use(source, key, wanted)
 		if point == nil then return refusal end
 		local built = garages[point.garage]
 		if built == nil then return Result.Err('garages.noSuchSpot') end
+		-- NOBODY ELSE IS IN IT. Putting a car away removes it from the world, and
+		-- the removal ejects whoever is riding along -- a passenger dropped on
+		-- the tarmac because the driver pressed a key. `vehicles.Spawn` and
+		-- `SetState` already refuse an occupied car for the same reason.
+		if othersAboard(seated.value.id, source) then
+			return Result.Err('garages.passengers', built.label)
+		end
 		local put = vehicles.Store(seated.value.plate, built.key)
 		if not put.ok then return put end
 		return Result.Ok({
@@ -805,7 +838,11 @@ function M.Start()
 
 	RegisterNetEvent(M.Event.ASK, function()
 		local player = tonumber(source)
-		if player == nil then return end
+		if player == nil or player <= 0 then return end
+		-- A FLOOR, as every other door here has one: each ask is a character
+		-- read, a bucket filter, a sort and a payload, and a client polls every
+		-- POLL_MS (15 s). Faster than once a second is not a client polling.
+		if OPX.Cooling(player, 'garages.ask', 1000) then return end
 		sync(player)
 	end)
 

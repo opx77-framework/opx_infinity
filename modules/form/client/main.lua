@@ -513,8 +513,19 @@ local function edit(entry, text)
 	if entry.kind ~= 'text' then return 'form.refuse.character' end
 	if type(text) ~= 'string' then return 'form.refuse.character' end
 	local clean = text:gsub('%c', '')
-	if Text.Span(clean, entry.maxLength) < #clean then
-		return 'form.refuse.tooLong', { max = entry.maxLength }
+	-- MEASURED NATIVELY WHERE IT CAN BE. This runs on every keystroke, inside
+	-- the page callback's resume, and `Text.Span` walks the buffer a byte at a
+	-- time in Lua -- up to four bytes a character of the limit, about 18,000
+	-- instructions at a 512-character field of accented text. A buffer no longer
+	-- in bytes than the limit is within it in characters, and `utf8.len` counts
+	-- the rest in C; only a buffer that is not valid UTF-8 falls back to the walk.
+	if #clean > entry.maxLength then
+		local count = utf8 and utf8.len(clean) or nil
+		if count ~= nil then
+			if count > entry.maxLength then return 'form.refuse.tooLong', { max = entry.maxLength } end
+		elseif Text.Span(clean, entry.maxLength) < #clean then
+			return 'form.refuse.tooLong', { max = entry.maxLength }
+		end
 	end
 	if not withinCharset(entry, clean) then return 'form.refuse.character' end
 	entry.text = clean
@@ -752,7 +763,15 @@ local function Open(spec)
 	local built, reason = build(owner, spec)
 	if built == nil then return Result.Err(reason) end
 
-	if record ~= nil then finish('cancel', 'reopened') end
+	if record ~= nil then
+		finish('cancel', 'reopened')
+	-- THE CLOSE CALLBACK MAY OPEN ANOTHER. The old owner hears its close
+	-- synchronously, and an owner that answers a close by opening its next view
+	-- installed it here -- then this open overwrote it: a live handle nobody
+	-- could close, its close never raised, its polling and focus left behind.
+	-- What the callback opened is closed in turn; this open is the newer ask.
+		if record ~= nil then finish('cancel', 'superseded') end
+	end
 
 	nextHandle = nextHandle + 1
 	built.handle = nextHandle

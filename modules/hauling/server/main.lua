@@ -803,6 +803,8 @@ local function beginLoad(player, vehicleId)
 	local crate = Claim.HeldBy(crates, player)
 	if crate == nil then return false, 'not_carrying' end
 	if crate.where ~= Where.CARRIED then return false, 'not_carrying' end
+	-- Not while the last load is still being written; see `crate.loading`.
+	if crate.loading then return false, 'busy' end
 
 	vehicleId = vehicleSubject(vehicleId)
 	local vehicle = vehicleAt(vehicleId)
@@ -837,7 +839,7 @@ local function dropCrate(player, yaw, groundZ)
 	if crate == nil or crate.where ~= Where.CARRIED then return false, 'not_carrying' end
 	-- NOT WHILE A BAR RUNS. The owner: "pendant qu'on load dans la voiture le
 	-- joueur peux plus faire x". The client stops offering it; this is the rule.
-	if crate.step ~= nil then return false, 'busy' end
+	if crate.step ~= nil or crate.loading then return false, 'busy' end
 	local here = standing(player)
 	if here == nil then return false, 'no_position' end
 
@@ -931,6 +933,46 @@ local function vehiclesAt(dropoff, bucket)
 	return out
 end
 
+--- The citizen id behind a connection, for an audit line or an
+--- ownership check, or nil.
+local function citizenOf(player)
+	local api = OPX.Api.Get('character')
+	if api == nil or type(api.GetPlayer) ~= 'function' then return nil end
+	local read, loaded = pcall(api.GetPlayer, player)
+	if not read or type(loaded) ~= 'table' or type(loaded.PlayerData) ~= 'table' then return nil end
+	return loaded.PlayerData.citizenId
+end
+
+--- Whether a parked vehicle's trunk is this player's to sell out of: they own the
+--- vehicle (the `vehicles` contract's row) or carry its key (`vehiclekeys`).
+-- MAY YIELD: counting a key reads the bag. With neither contract on this server
+-- nothing can prove either, and the inventory's own TRUNK_OWNER_ONLY rule is the
+-- only gate, as it was before; that is said once in the journal.
+local warnedNoProof = false
+local function mayTakeFrom(player, vehicleId)
+	local vehicles = OPX.Api.Get('vehicles')
+	local keys = OPX.Api.Get('vehiclekeys')
+	local canOwn = vehicles ~= nil and type(vehicles.PlateOf) == 'function'
+	local canKey = keys ~= nil and type(keys.Holds) == 'function'
+	if not canOwn and not canKey then
+		if not warnedNoProof then
+			warnedNoProof = true
+			Open77.log.warn('[hauling] neither the vehicles nor the vehiclekeys contract is here: a ' ..
+				'sale counts any trunk at the drop-off the inventory lets the player open')
+		end
+		return true
+	end
+	if canOwn then
+		local read, plate, owner = pcall(vehicles.PlateOf, vehicleId)
+		if read and plate ~= nil and owner ~= nil and owner == citizenOf(player) then return true end
+	end
+	if canKey then
+		local read, holds = pcall(keys.Holds, player, vehicleId)
+		if read and holds == true then return true end
+	end
+	return false
+end
+
 --- Where this site's crates are for a sale: the player's bag, then every trunk
 --- parked inside the drop-off that the player may open. YIELDS.
 -- @return table[] `{ vehicle = id|nil, count = n }`, only the non-empty ones
@@ -948,11 +990,17 @@ local function stockFor(player, site, dropoff, bucket)
 	end
 	-- A trunk the player may not open (TRUNK_OWNER_ONLY) answers `not_yours` and is
 	-- skipped: selling out of a stranger's boot is the theft the screen refuses.
+	-- And a trunk the inventory WOULD open -- an unowned truck has no owner to
+	-- refuse anyone -- is counted only when the vehicle is the player's or they
+	-- hold its key (`mayTakeFrom`), so a hauler who parks at the drop-off is not
+	-- paid out by whoever reaches the buyer first.
 	for _, vehicleId in ipairs(vehiclesAt(dropoff, bucket)) do
-		local held = inventory.CountInTrunk(vehicleId, Access.ITEM, tag, player)
-		if type(held) == 'table' and held.ok and (held.value or 0) > 0 then
-			out[#out + 1] = { vehicle = vehicleId, count = held.value }
-			total = total + held.value
+		if mayTakeFrom(player, vehicleId) then
+			local held = inventory.CountInTrunk(vehicleId, Access.ITEM, tag, player)
+			if type(held) == 'table' and held.ok and (held.value or 0) > 0 then
+				out[#out + 1] = { vehicle = vehicleId, count = held.value }
+				total = total + held.value
+			end
 		end
 	end
 	return out, total
@@ -968,15 +1016,6 @@ local function stored(fn, ...)
 	if not called then return false, 'raised: ' .. tostring(result) end
 	if type(result) == 'table' and result.ok then return true, nil end
 	return false, type(result) == 'table' and tostring(result.error) or 'refused'
-end
-
---- The citizen id behind a connection, for an audit line, or nil.
-local function citizenOf(player)
-	local api = OPX.Api.Get('character')
-	if api == nil or type(api.GetPlayer) ~= 'function' then return nil end
-	local read, loaded = pcall(api.GetPlayer, player)
-	if not read or type(loaded) ~= 'table' or type(loaded.PlayerData) ~= 'table' then return nil end
-	return loaded.PlayerData.citizenId
 end
 
 --- Puts back what a sale took when the pay refused, and answers how many crates
@@ -1203,6 +1242,10 @@ local function complete(player)
 		-- this refuses is finishing a pickup from across the yard.
 		local here = standing(player)
 		if here == nil then return false, 'no_position' end
+		-- And the bucket, which BEGIN checks: a player moved to another instance
+		-- during the bar is not standing beside this crate, however close the
+		-- coordinates are.
+		if here.bucket ~= crate.bucket then return false, 'wrong_bucket' end
 		local gap = Access.GapSquared(here, crate)
 		if gap == nil or gap > Access.REACH_SQ then return false, 'too_far' end
 
@@ -1268,11 +1311,20 @@ local function complete(player)
 		-- plate and yields; a second FINISH arriving meanwhile must answer
 		-- `nothing_running` rather than add a second item. The crate stays CARRIED
 		-- and theirs, so a refusal leaves it in their hands where it was.
+		--
+		-- AND `loading` STAYS ON ACROSS IT. With the step off, a second BEGIN
+		-- LOAD could re-stamp the same crate during a slow write, and its FINISH
+		-- -- a bar later -- ran `AddToTrunk` again: one crate, two trunk items.
 		crate.step = nil
 		crate.claimedAtMs = nil
 		crate.pendingVehicle = nil
-		local added = inventory.AddToTrunk(vehicleId, Access.ITEM, 1, { site = crate.site },
-			player)
+		crate.loading = true
+		-- Under pcall, so a raise cannot leave `loading` on and the crate stuck in
+		-- the carrier's hands for good; it reads as the refusal `raised`.
+		local called, added = pcall(inventory.AddToTrunk, vehicleId, Access.ITEM, 1,
+			{ site = crate.site }, player)
+		crate.loading = nil
+		if not called then added = nil end
 		if type(added) ~= 'table' or not added.ok then
 			local code = type(added) == 'table' and added.error or 'raised'
 			Open77.log.info(('[hauling] crate %s refused by the trunk of %s: %s')
@@ -1306,6 +1358,8 @@ local function abort(player, reason)
 		announce(crate)
 		return
 	end
+	-- Nothing running is nothing to tell anybody about.
+	if crate.step == nil and crate.pendingVehicle == nil then return end
 	crate.step = nil
 	crate.claimedAtMs = nil
 	crate.pendingVehicle = nil
@@ -1518,6 +1572,11 @@ function M.Start()
 	RegisterNetEvent(M.Event.ABORT, function(reason)
 		local player = tonumber(source) or 0
 		if player <= 0 then return end
+		-- Counted like every other door: each abort that ends a bar announces the
+		-- crate to every client, so an unmetered one was a broadcast on demand.
+		if not within(requestWindows, player, REQUESTS_PER_WINDOW, REQUEST_WINDOW_MS) then
+			return answer(player, false, 'rate_limited')
+		end
 		abort(player, tostring(reason))
 		answer(player, true, 'aborted')
 	end)
@@ -1533,7 +1592,14 @@ function M.Start()
 		if fresh ~= nil then crate.revision = fresh end
 		if current ~= nil then return end
 		if crate.where ~= Where.CARRIED then return end
+		-- THE CARRIER IS TOLD, as the seat handler below tells them. `carrying`
+		-- on the client moves only on an ANSWER, so a carry the platform ended --
+		-- a death, a bucket change -- left the client sure it still held the
+		-- crate: weapons blocked, every other crate refused as "already
+		-- carrying", until some unrelated request happened to be answered.
+		local owner = crate.owner
 		putBack(crate, ('the attachment ended (%s)'):format(safe(reason)))
+		if owner ~= nil then answer(owner, false, 'carry_ended') end
 	end)
 
 	AddEventHandler(M.PROP_REMOVED, function(id, reason)
@@ -1541,7 +1607,10 @@ function M.Start()
 		if crate == nil then return end
 		-- The host dropped a crate this module still thought it had. Forget it and
 		-- let the point cool, rather than leaving a record nothing can ever satisfy.
+		-- Whoever held or was lifting it is told, for the reason given above.
+		local owner = crate.owner
 		retire(crate, ('the host removed it (%s)'):format(safe(reason)))
+		if owner ~= nil then answer(owner, false, 'carry_ended') end
 	end)
 
 	-- GETTING INTO A CAR IS NOT A WAY TO LOAD A CRATE. The platform detaches on

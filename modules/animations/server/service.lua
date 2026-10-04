@@ -84,11 +84,17 @@ end
 -- Lazy on purpose: at file load the host may not have finished installing the
 -- animation API, so the first slice or the first request is what triggers it.
 -- @author dop42
+--
+-- LATCHED ONLY ONCE IT HAS SOMETHING TO RESOLVE AGAINST. The latch used to be
+-- set before the API check, so a first call that came too early -- the reason
+-- this is lazy at all -- built an empty offer and kept it for the life of the
+-- resource: every play answered `unknown_animation`, not even
+-- `service_unavailable`, until a restart.
 function Service.Build()
 	if built then return end
-	built = true
 	local native = api()
 	if not Service.Available() then return end
+	built = true
 
 	local unchecked = 0
 	local entries = Catalogue.Entries()
@@ -397,6 +403,15 @@ end
 function Service.Play(player, name, variant, options)
 	if not Service.Available() then return { ok = false, error = 'service_unavailable' } end
 
+	-- THE WINDOW FIRST, then the questions. A refusal for an unknown name, a bad
+	-- variant or malformed options was answered before the rate check, so a
+	-- client sending nothing but bad requests got an unthrottled answer to each.
+	local allowed, first = within('play', player, 1)
+	if not allowed then
+		return { ok = false, error = 'rate_limited', quiet = not first,
+			animation = type(name) == 'string' and name:sub(1, 64) or nil }
+	end
+
 	local entry, variants = Service.Offered(name)
 	if entry == nil then return { ok = false, error = 'unknown_animation' } end
 
@@ -415,11 +430,6 @@ function Service.Play(player, name, variant, options)
 
 	local resolved, malformed = resolveOptions(options, entry, variant)
 	if resolved == nil then return { ok = false, error = malformed, animation = entry.name } end
-
-	local allowed, first = within('play', player, 1)
-	if not allowed then
-		return { ok = false, error = 'rate_limited', quiet = not first, animation = entry.name }
-	end
 
 	if not resolved.override and locked(player) then
 		return { ok = false, error = 'animation_locked', animation = entry.name }

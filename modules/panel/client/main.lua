@@ -563,12 +563,23 @@ end
 -- do anything about: the host refuses an oversized payload whole and
 -- `OPX.Surface.Send` still answers that it sent it. Everything this module puts
 -- on the wire goes through here, so this is the one place that can be sure.
+--
+-- A PATCH IS NOT COUNTED, on the argument `Open` makes for the spec: every
+-- field of a patch comes out of a parser in `PARSERS` that bounds it, so the
+-- largest patch is the largest spec, under five hundred nodes -- a check that
+-- cannot fire. It was not free: the walk is ~17 VM instructions a node, 3,600
+-- of the 5,600 a fitting-room state cost and ~6,500 of a sixty-box window, in
+-- the caller's resume, against a client budget of ~10,000 a resume that
+-- unwinds the coroutine silently. `panel:items` is the one payload its parser
+-- does not bound, and it is still counted.
+-- @param bounded boolean|nil true for a payload built only by `PARSERS`
 -- @return boolean
 -- @return string|nil the refusal
-local function push(channel, payload)
+local function push(channel, payload, bounded)
 	if record == nil then return false, 'no_panel_open' end
 
-	local within, nodes = fits(payload)
+	local within, nodes = true, 0
+	if not bounded then within, nodes = fits(payload) end
 	if not within then
 		Open77.log.error(('[panel] %s: %s came to %d+ value nodes against a host bound of %d; ' ..
 			'not sent'):format(record.owner, channel, nodes, MAX_PAYLOAD_NODES))
@@ -583,8 +594,13 @@ local function push(channel, payload)
 		-- way anybody would find out -- the symptom on the page is a surface that
 		-- simply never changes.
 		if refused then
-			Open77.log.error(('[panel] %s: the host refused %s although it counted %d nodes; ' ..
-				'MAX_PAYLOAD_NODES is wrong'):format(record.owner, channel, nodes))
+			if bounded then
+				Open77.log.error(('[panel] %s: the host refused %s, a patch every parser ' ..
+					'bounds; MAX_PAYLOAD_NODES is wrong'):format(record.owner, channel))
+			else
+				Open77.log.error(('[panel] %s: the host refused %s although it counted %d nodes; ' ..
+					'MAX_PAYLOAD_NODES is wrong'):format(record.owner, channel, nodes))
+			end
 			return false, 'payload_refused'
 		end
 		if not sent then return false, 'page_not_ready' end
@@ -705,6 +721,12 @@ local function Open(spec)
 
 	if record ~= nil then
 		closeNow(record.handle, record.owner == owner and 'reopened' or 'superseded')
+	-- THE CLOSE CALLBACK MAY OPEN ANOTHER. The old owner hears its close
+	-- synchronously, and an owner that answers a close by opening its next view
+	-- installed it here -- then this open overwrote it: a live handle nobody
+	-- could close, its close never raised, its polling and focus left behind.
+	-- What the callback opened is closed in turn; this open is the newer ask.
+		if record ~= nil then closeNow(record.handle, 'superseded') end
 	end
 
 	nextHandle = nextHandle + 1
@@ -775,7 +797,7 @@ local function Update(handle, patch)
 	end
 
 	parsed.handle = panel.handle
-	local sent, refused = push('panel:update', parsed)
+	local sent, refused = push('panel:update', parsed, true)
 	if not sent then return Result.Err(refused or 'page_not_ready') end
 	return Result.Ok(true)
 end
@@ -1146,8 +1168,19 @@ function M.Start()
 
 	-- Escape is swallowed by the plugin before any surface sees it; when it
 	-- arrives here rather than on `panel:dismiss`, the reason is the pause menu.
+	--
+	-- AND IT ASKS WHERE ESCAPE WOULD HAVE ASKED. This closed every panel outright,
+	-- including one whose owner declared `dismiss = 'ask'` -- the editor with
+	-- unsaved changes -- so the same key that is consulted on the page was not
+	-- consulted here, and the menu already honours its own `closable` on this
+	-- path. A dialog up owns Escape, as it does on `panel:dismiss`.
 	AddEventHandler(M.Host.PAUSE_KEY, function()
-		if record ~= nil then closeNow(record.handle, 'pause') end
+		if record == nil or record.dialog ~= nil then return end
+		if record.view.dismiss == 'ask' then
+			raise(record, 'dismiss')
+			return
+		end
+		closeNow(record.handle, 'pause')
 	end)
 
 	OPX.Scheduler.Every('panel:sweep', SWEEP_MS, function()

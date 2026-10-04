@@ -414,21 +414,47 @@ end
 --- Adopts the strip the needs module published, bounded before it reaches the
 --- page. The client's local bus is shared with every resource on the host, so
 --- anything at all may raise this name.
+-- The most chips the strip draws, and the most entries a payload is read for.
+local MAX_CHIPS = 12
+local MAX_OFFERED = 64
+
 local function onEffects(payload)
 	if type(payload) ~= 'table' then return end
 
-	local kept = {}
+	-- BOUNDED, AND REBUILT FIELD BY FIELD. The header above says why and the code
+	-- did half of it: a chip needed only a string id, and was then forwarded as
+	-- given -- any count, any field, tables where text belongs. One oversized or
+	-- malformed strip is a HUD payload the host refuses WHOLE, vitals and all,
+	-- and every redraw concatenated a signature over all of it. At most
+	-- MAX_CHIPS are kept, the rest are counted into the hidden tally the page
+	-- already draws, and only the fields the page reads cross.
+	local kept, overflow = {}, 0
 	local offered = type(payload.chips) == 'table' and payload.chips or {}
-	for index = 1, #offered do
+	for index = 1, math.min(#offered, MAX_OFFERED) do
 		local chip = offered[index]
-		if type(chip) == 'table' and type(chip.id) == 'string' and chip.id ~= '' then
-			kept[#kept + 1] = chip
+		if type(chip) == 'table' and type(chip.id) == 'string' and chip.id ~= '' and #chip.id <= 96 then
+			if #kept >= MAX_CHIPS then
+				overflow = overflow + 1
+			else
+				local progress, remaining, total = tonumber(chip.progress),
+					tonumber(chip.remainingMs), tonumber(chip.totalMs)
+				kept[#kept + 1] = {
+					id = chip.id,
+					label = OPX.Text.Clean(chip.label, 48),
+					icon = type(chip.icon) == 'string' and #chip.icon <= 32 and chip.icon or nil,
+					tone = type(chip.tone) == 'string' and #chip.tone <= 16 and chip.tone or nil,
+					progress = finite(progress) and OPX.Math.Clamp(progress, 0, 1) or nil,
+					remainingMs = finite(remaining) and remaining >= 0 and math.floor(remaining) or nil,
+					totalMs = finite(total) and total >= 0 and math.floor(total) or nil,
+				}
+			end
 		end
 	end
 	chips = kept
 
 	local hidden = tonumber(payload.hidden)
 	hiddenChips = finite(hidden) and math.floor(OPX.Math.Clamp(hidden, 0, 999)) or 0
+	hiddenChips = math.min(999, hiddenChips + overflow)
 
 	local anchor = type(payload.anchor) == 'string' and #payload.anchor <= 32
 		and payload.anchor or nil
@@ -898,15 +924,33 @@ end
 -- any block's signature, so an otherwise identical frame would be skipped and
 -- the page would come back holding the picture it had before the player went
 -- down.
+--
+-- THE SWITCH AT ONCE, THE BLOCKS ONE A RESUME. Re-sending every block -- the
+-- gauges, the money (sorted and grouped), the effect strip and the widgets with
+-- their host reads and catalogue lines -- ran inside whichever handler asked:
+-- the page reporting ready, the player going down or coming back, a surface
+-- covering the HUD. The switch is still pushed in that resume, so the HUD shows
+-- or hides on the frame it was asked to; the four re-sends follow on a thread of
+-- their own, one a frame, and a newer redraw abandons an older one.
+local showGeneration = 0
+
 local function drawShow(force)
 	local shown = visible and not down and not covered
 	push(CHANNEL_SHOW, { visible = shown }, shown and '1' or '0', force)
-	if shown then
-		drawVitals(true)
-		drawInfo(true)
-		drawStatus(true)
+	local blocks = shown and { drawVitals, drawInfo, drawStatus, drawWidgets } or { drawWidgets }
+	showGeneration = showGeneration + 1
+	if type(CreateThread) ~= 'function' then
+		for index = 1, #blocks do blocks[index](true) end
+		return
 	end
-	drawWidgets(true)
+	local mine = showGeneration
+	CreateThread(function()
+		for index = 1, #blocks do
+			if index > 1 then Wait(0) end
+			if showGeneration ~= mine then return end
+			blocks[index](true)
+		end
+	end)
 end
 
 --- Shows or hides the HUD. Any value but `false` shows, which is the contract
@@ -1043,11 +1087,12 @@ function M.Start()
 
 	AddEventHandler(EVENT_CHARACTER_LOADED, function()
 		sampleVitals()
-		-- The game brings its own HUD back at incarnation, which happens after
-		-- this module started.
-		applyVanilla()
 		drawVitals()
 		drawInfo()
+		-- The game brings its own HUD back at incarnation, which happens after
+		-- this module started. Up to thirteen components, two host calls each and
+		-- a note per refusal: on a resume of its own, not the event's.
+		if type(CreateThread) == 'function' then CreateThread(applyVanilla) else applyVanilla() end
 	end)
 	AddEventHandler(EVENT_CHARACTER_UNLOADED, function()
 		live = {}

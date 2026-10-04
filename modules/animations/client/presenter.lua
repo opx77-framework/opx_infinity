@@ -210,9 +210,17 @@ local function commit(snapshotEpoch, revision, states)
 	end
 end
 
+-- States validated between two yields on the snapshot worker.
+local VALIDATE_EVERY = 16
+
+-- Yields on the snapshot worker, and nowhere else.
+local function breathe()
+	if type(Wait) == 'function' and coroutine.isyieldable() then Wait(0) end
+end
+
 -- Takes one snapshot page, committing once every page has arrived. One assembly
 -- at a time: the service sends its pages in order on a single channel.
-local function onSnapshot(page)
+local function takePage(page)
 	if type(page) ~= 'table' or not text(page.epoch, 64) then return end
 	local revision = integer(page.revision, 0, MAX_ID)
 	local bucket = integer(page.bucket, 0, MAX_BUCKET)
@@ -224,6 +232,7 @@ local function onSnapshot(page)
 	if type(states) ~= 'table' or #states > 64 then return end
 	local slice = {}
 	for index = 1, #states do
+		if index % VALIDATE_EVERY == 0 then breathe() end
 		local s = states[index]
 		if not validState(s) or s.epoch ~= page.epoch or s.bucket ~= bucket or not s.active or
 			s.revision > revision or slice[s.playerId] ~= nil then
@@ -253,6 +262,8 @@ local function onSnapshot(page)
 	batch.parts[part] = slice
 	if batch.arrived < total then return end
 
+	-- The merge and the commit get a resume of their own.
+	breathe()
 	local merged = {}
 	for index = 1, total do
 		for playerId, s in pairs(batch.parts[index]) do
@@ -265,6 +276,38 @@ local function onSnapshot(page)
 	end
 	batch = nil
 	commit(page.epoch, revision, merged)
+end
+
+-- THE SNAPSHOT IS VALIDATED AND COMMITTED OFF THE NET HANDLER. A page carries
+-- up to 64 states, each checked field by field with up to 16 steps, and the last
+-- page merged every page and committed the whole bucket -- all inside the net
+-- event's one resume: thousands of instructions a page, and a budget kill there
+-- left `batch` half-built until the ten-second abandon. The handler now only
+-- queues the page; one worker thread takes the pages in order, yielding every
+-- few states and before the commit.
+local pages, working, workingSince = {}, false, 0
+local MAX_PAGES = 128
+local WORKER_STALE_MS = 5000
+
+local function onSnapshot(page)
+	if type(page) ~= 'table' then return end
+	if type(CreateThread) ~= 'function' then return takePage(page) end
+	if #pages >= MAX_PAGES then return end
+	pages[#pages + 1] = page
+	-- A worker the budget killed never clears `working`; one silent this long is
+	-- presumed dead and replaced.
+	if working and OPX.Now() - workingSince < WORKER_STALE_MS then return end
+	working, workingSince = true, OPX.Now()
+	CreateThread(function()
+		while #pages > 0 do
+			workingSince = OPX.Now()
+			local ran, failure = pcall(takePage, table.remove(pages, 1))
+			if not ran then
+				Open77.log.warn(('[animations] a snapshot page raised: %s'):format(tostring(failure)))
+			end
+		end
+		working = false
+	end)
 end
 
 -- Answers a player's body entity on this client, or nil. The local player is

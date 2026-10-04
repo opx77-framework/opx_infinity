@@ -1055,6 +1055,17 @@ local TILE_CHUNK = 60
 -- Cold garment lookups one frame may make. See `warmTiles`.
 local TILE_LOOKUPS = 20
 
+-- Boxes one PUBLICATION carries, each on a resume of its own. A window is still
+-- `TILE_CHUNK` boxes -- what is warmed, and what one scroll is answered with --
+-- but it goes to the page in slices, because the page's contract checks every
+-- box it is handed: `panel` cleans each name, caption and picture, and a
+-- sixty-box window cost ~16,000 VM instructions in the one resume that
+-- published it (the meter's 22,900 for `sendTiles`) against a budget of
+-- ~10,000 that unwinds the thread without a word. A slice of ten is ~2,300.
+-- The page appends a slice that starts where its grid ends, so the grid it
+-- draws is the same sixty boxes.
+local TILE_SLICE = 10
+
 --- Works out the caption and picture of one window's boxes, TILE_LOOKUPS a frame,
 --- so `tileWindow` finds them all warm. Answers false when `breathe` says the
 --- window is no longer wanted.
@@ -1104,7 +1115,8 @@ local tilesBuild = 0
 -- frames of its own: `readCatalogue` warms each category's first window while
 -- the room is opening, and `sendTiles` warms the next one before it sends it.
 -- @param from integer the 1-based index the window starts at
-local function tileWindow(from)
+-- @param count integer how many boxes, `TILE_SLICE` at most; see there
+local function tileWindow(from, count)
 	if category == nil then return false end
 	local names = pieces[category]
 	if type(names) ~= 'table' or #names == 0 then return false end
@@ -1112,7 +1124,7 @@ local function tileWindow(from)
 	if from > #names then return false end
 
 	local entries, labels, images = {}, {}, {}
-	local last = math.min(from + TILE_CHUNK - 1, #names)
+	local last = math.min(from + count - 1, #names)
 	for index = from, last do
 		local record = names[index]
 		local at = #entries + 1
@@ -1190,10 +1202,12 @@ end
 -- page asks for the next one, and the page appends what it is sent; nothing else
 -- touches the grid.
 --
--- ON A THREAD OF ITS OWN, because `warmTiles` yields between lookups. Every
--- window started bumps `tilesBuild`, so one still being built for a category
--- the player has already left -- or a room that has closed -- stops instead of
--- arriving late and being filed under the wrong tab.
+-- ON A THREAD OF ITS OWN, because `warmTiles` yields between lookups and every
+-- slice goes out on a resume of its own (see `TILE_SLICE`). Every window
+-- started bumps `tilesBuild`, so one still being built for a category the
+-- player has already left -- or a room that has closed, or a scroll that asked
+-- again -- stops instead of arriving late and being filed under the wrong tab.
+-- @param from integer where the window starts
 local function sendTiles(from)
 	if phase ~= 'open' or category == nil then return end
 	tilesBuild = tilesBuild + 1
@@ -1205,9 +1219,15 @@ local function sendTiles(from)
 	CreateThread(function()
 		local names = pieces[slot]
 		if type(names) ~= 'table' or not warmTiles(names, from, breathe) then return end
-		local window = tileWindow(from)
-		if window == false then return end
-		publish('roomTiles', { tiles = window })
+		local last = math.min(from + TILE_CHUNK - 1, #names)
+		local at = from
+		while at <= last do
+			if not breathe() then return end
+			local window = tileWindow(at, math.min(TILE_SLICE, last - at + 1))
+			if window == false then return end
+			publish('roomTiles', { tiles = window })
+			at = at + TILE_SLICE
+		end
 	end)
 end
 
@@ -1341,11 +1361,14 @@ local function roomSpec()
 		{ id = 'save', label = locale(creating and 'wardrobe.ui.saveCreation' or 'wardrobe.ui.save'),
 			primary = true },
 	}
-	-- THE GRID'S FIRST WINDOW RIDES ON THE FIRST FRAME. A room that opened with an
-	-- empty grid and filled it a tick later would show the player an empty shop
-	-- for exactly as long as one round trip takes, for no reason: the catalogue is
-	-- already read by the time this is built.
-	opened.tiles = tileWindow(1)
+	-- THE GRID'S FIRST WINDOW FOLLOWS THE FIRST FRAME, PUSHED AND NOT ASKED FOR.
+	-- It used to ride on the frame itself, so the room never showed an empty
+	-- grid for a round trip; it is still never a round trip -- `begin` starts
+	-- `sendTiles` the moment the frame is out, already warm, a slice a frame --
+	-- but the boxes no longer share the frame's resume. The panel checks every
+	-- box it is handed, and the open with its first boxes in it was the dearest
+	-- resume left in the room (the meter's 7,000).
+	opened.tiles = false
 	if canTurn() then
 		-- THE TURN BUTTONS CARRY GLYPHS, AND THAT IS THE FIX. They were four text
 		-- buttons in a row, two of which -- `left` and `right` -- were not even
@@ -1424,6 +1447,12 @@ local function begin(owner, creation, expected)
 	openingStage = 'borrowing the puppet'
 	local answer, reason = Clothing.BeginPreview(owner)
 	if answer == nil then return give(reason) end
+	-- THE BORROW, THE DRESSING AND THE FIRST FRAME EACH GET A RESUME OF THEIR
+	-- OWN. They all ran in the resume of the last catalogue breath -- the meter's
+	-- 29,200 for this thread, against a budget of ~10,000 that unwinds it
+	-- silently with the puppet out on loan and the room never drawn. The
+	-- re-check below covers this frame too.
+	Wait(0)
 
 	-- Everything is re-checked after the borrow: the read above took frames and
 	-- the borrow can take more.
@@ -1461,16 +1490,42 @@ local function begin(owner, creation, expected)
 		if #pieces[SLOTS[index]] > 0 then category = SLOTS[index] break end
 	end
 
+	-- BUILT HERE AND HANDED OVER ON THE NEXT FRAME: the spec is ours to build,
+	-- the panel's check of it costs as much again, and the two together were
+	-- the dearest resume left in the room.
+	local first = roomSpec()
+	Wait(0)
+	if mine ~= generation or phase ~= 'opening' or not playable() then
+		local superseded = mine ~= generation or phase ~= 'opening'
+		Clothing.EndPreview(owner, false)
+		baseline, draft, citizen, creating, roomOwner = nil, nil, nil, false, nil
+		category, tileTo = nil, 0
+		return give(superseded and 'superseded' or 'player_unavailable')
+	end
+
 	phase = 'open'
 	openingUntilMs = 0
 	openingStage = nil
+	local opener = family
+	publish('room', first)
+	sendTiles(1)
+	-- THE CAMERA, THE NOTE AND THE ANNOUNCEMENT FOLLOW ON FRESH RESUMES. The
+	-- camera is a handful of natives, a note is a net event, and the
+	-- announcement's listeners draw: `shops` answers it by offering its category
+	-- strip, which republishes the room's state into the panel. Behind the first
+	-- frame's open, in one resume, that was ~12,000.
+	Wait(0)
+	if mine == generation and phase == 'open' then holdCamera() end
 	-- One line per room, and it is the whole of the evidence now: a room that
 	-- opened on nothing and a room that never opened are different failures, and
-	-- there is no stream left to tell them apart afterwards.
+	-- there is no stream left to tell them apart afterwards. Said once the room
+	-- is drawn, whatever happens to it next.
 	Runtime.Note(('the fitting room opened for %s on %d record(s) over %d slot(s)')
-		:format(tostring(family), total, #SLOTS))
-	publish('room', roomSpec())
-	holdCamera()
+		:format(tostring(opener), total, #SLOTS))
+	Wait(0)
+	-- A room taken down in these two frames has already said `wardrobeClosed`,
+	-- and announcing it open after that would cover the HUD for a room gone.
+	if mine ~= generation or phase ~= 'open' then return true end
 	Runtime.Publish({ ok = true, event = 'wardrobeOpened', creation = creating,
 		citizenId = citizen })
 	return true

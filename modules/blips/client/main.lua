@@ -69,6 +69,40 @@ local function api()
 	return native
 end
 
+-- ── the pace ────────────────────────────────────────────────────────────────
+
+-- How much work a reconcile does between two yields, in the rough units the
+-- `pace` calls below charge: one per point read, signed or diffed, more for a
+-- job gate. 24 units keeps the dearest resume of a pass near 2,500 VM
+-- instructions, the pass's own setup included.
+--
+-- WHY THE DERIVE IS PACED AND NOT ONLY THE CREATES. The meter in
+-- `tests/host.lua` put a reconcile of 200 garage spots at ~36,000 instructions
+-- in ONE resume -- the read, the sort and 128 signatures before the first
+-- create, and the whole set again on a pass that changed nothing. The client
+-- budget is ~10,000 a resume and an overrun unwinds the thread in silence,
+-- which here leaves `syncing` true and the map never reconciled again.
+local PACE = 24
+
+--- A fresh pacer for one pass on the reconcile thread. `pace(cost)` adds the
+--- cost to the work done since the last yield and gives the frame back once it
+--- reaches `PACE`.
+-- @return function
+local function pacer()
+	local spent = 0
+	return function(cost)
+		spent = spent + (cost or 1)
+		if spent >= PACE then
+			spent = 0
+			Wait(0)
+		end
+	end
+end
+
+--- The pace of a caller that must not yield: `Runtime.Wanted()` answers a test
+--- or a diagnostic synchronously, never from a thread of its own.
+local function unpaced() end
+
 -- ── the config ──────────────────────────────────────────────────────────────
 
 --- A whole number of milliseconds above zero, or the fallback.
@@ -283,12 +317,14 @@ end
 
 --- Every point of one category, and how many blanks were skipped building it.
 -- @param name string one of `M.ORDER`
+-- @param pace function charged per point read, see `pacer`
 -- @return table list of points
 -- @return integer skipped
-local function pointsOf(name)
+local function pointsOf(name, pace)
 	local out, skipped = {}, 0
 
 	local function add(key, label, x, y, z)
+		pace(1)
 		if not point(out, key, label, x, y, z) then skipped = skipped + 1 end
 	end
 
@@ -357,6 +393,7 @@ local function pointsOf(name)
 				-- The armoury's own JOBS block, read straight off the config the
 				-- gunsmith module gates the bench with. An ungated armoury is
 				-- public and stays pinned.
+				pace(4)
 				if type(bench) == 'table'
 					and passesJob({ jobs = raw.JOBS, onDuty = raw.ON_DUTY }, membership) then
 					add('bench\1' .. tostring(key), raw.LABEL, bench.X, bench.Y, bench.Z)
@@ -383,8 +420,14 @@ local function pointsOf(name)
 				-- block at all, deliberately -- the owner asked for a job-free job
 				-- -- so both stay pinned for everybody and this changes nothing
 				-- until somebody writes one.
-				local allowed = passesJob({ jobs = site.JOBS, onDuty = site.ON_DUTY },
-					membership)
+				--
+				-- A SITE THAT IS NOT A TABLE IS NOT PINNED, and is not indexed:
+				-- `site.JOBS` on one raised inside the pass and lost every pin of
+				-- all five categories, every four seconds, for one bad config row.
+				pace(4)
+				local allowed = type(site) == 'table'
+					and passesJob({ jobs = site.JOBS, onDuty = site.ON_DUTY }, membership)
+					or false
 
 				-- ── AND THE YARD ITSELF, WHICH WAS THE HALF NOBODY COULD FIND ──
 				-- THE OWNER: "pour la hauling tu peux mettre des blips aussi car
@@ -426,6 +469,7 @@ local function pointsOf(name)
 					-- making the key per-point produces two. The break is the cheap
 					-- early exit it looks like and no more.
 					for _, spot in ipairs(site.POINTS) do
+						pace(1)
 						if type(spot) == 'table' and point(out, 'site\1' .. tostring(siteKey),
 							site.LABEL, spot.X, spot.Y, spot.Z) then
 							break
@@ -465,12 +509,13 @@ local function signatureOf(entry, block)
 		tostring(block.sprite), tostring(block.range), tostring(block.walls))
 end
 
---- Every blip this config wants right now, keyed by a stable id.
--- @author dop42
+--- Every blip this config wants right now, keyed by a stable id, charging the
+--- work to `pace` so the reconcile thread can spread it over several resumes.
+-- @param pace function see `pacer`
 -- @return table id -> { entry, block, signature }
 -- @return integer how many blank points were skipped
 -- @return integer how many were dropped over `MAX`
-function Runtime.Wanted()
+local function derive(pace)
 	local blocks = Runtime.Categories()
 	local limit = math.tointeger(settings().MAX) or M.QUOTA
 	-- Clamped to the platform's own per-resource quota rather than trusted: a
@@ -483,19 +528,32 @@ function Runtime.Wanted()
 	for _, name in ipairs(M.ORDER) do
 		local block = blocks[name]
 		if block ~= nil then
-			local list, blanks = pointsOf(name)
+			local list, blanks = pointsOf(name, pace)
 			skipped = skipped + blanks
 			-- Sorted so the set that survives the cap is the SAME set every pass.
 			-- `pairs` order is not stable between runs, and without this a server
 			-- over the quota would draw a different arbitrary 128 on every
 			-- reconcile -- pins flickering in and out with nothing changing.
-			table.sort(list, function(a, b) return a.key < b.key end)
+			--
+			-- THE KEYS ARE SORTED, NOT THE POINTS, because a comparator is a Lua
+			-- call per comparison -- ~1,500 of them for 200 spots, ~12,000
+			-- instructions in one resume that cannot be split -- and strings with
+			-- no comparator are ordered by the runtime itself.
+			local keys, byKey = {}, {}
 			for index = 1, #list do
+				local entry = list[index]
+				keys[index] = entry.key
+				byKey[entry.key] = entry
+				if index % 16 == 0 then pace(2) end
+			end
+			table.sort(keys)
+			for index = 1, #keys do
 				if count >= limit then
-					capped = capped + (#list - index + 1)
+					capped = capped + (#keys - index + 1)
 					break
 				end
-				local entry = list[index]
+				pace(1)
+				local entry = byKey[keys[index]]
 				count = count + 1
 				out[name .. '\1' .. entry.key] =
 					{ entry = entry, block = block, signature = signatureOf(entry, block) }
@@ -503,6 +561,15 @@ function Runtime.Wanted()
 		end
 	end
 	return out, skipped, capped
+end
+
+--- Every blip this config wants right now, keyed by a stable id. Never yields.
+-- @author dop42
+-- @return table id -> { entry, block, signature }
+-- @return integer how many blank points were skipped
+-- @return integer how many were dropped over `MAX`
+function Runtime.Wanted()
+	return derive(unpaced)
 end
 
 -- ── the engine ──────────────────────────────────────────────────────────────
@@ -571,7 +638,11 @@ end
 -- whole thing runs on a `CreateThread` that `sync()` starts -- because a thread
 -- the host started may always yield, and the scheduler step that calls this one
 -- makes no such promise.
-local function apply(wanted)
+-- @param wanted table see `derive`
+-- @param pace function charged per id walked, see `pacer`: a pass where
+-- nothing changed walks every id three times and creates nothing, so the
+-- `BATCH` yields alone never come round
+local function apply(wanted, pace)
 	local size = math.tointeger(settings().BATCH) or 8
 	if size < 1 then size = 1 end
 
@@ -581,6 +652,7 @@ local function apply(wanted)
 	-- GONE FIRST, so a server that is at the quota can replace a spot it removed
 	-- in the same pass rather than refusing the new one and freeing the old.
 	for id, handle in pairs(created) do
+		pace(1)
 		if wanted[id] == nil then
 			remove(handle)
 			created[id], drawn[id] = nil, nil
@@ -596,6 +668,7 @@ local function apply(wanted)
 	-- down here and rebuilt below, so it cannot survive as a pin to where it
 	-- used to be.
 	for id, want in pairs(wanted) do
+		pace(1)
 		if created[id] ~= nil and drawn[id] ~= want.signature then
 			remove(created[id])
 			created[id], drawn[id] = nil, nil
@@ -608,6 +681,7 @@ local function apply(wanted)
 	end
 
 	for id, want in pairs(wanted) do
+		pace(1)
 		if created[id] == nil then
 			local handle, why = create(want.entry, want.block)
 			if handle == nil then
@@ -652,11 +726,12 @@ end
 
 --- One reconcile: derive, diff, apply, and say so once.
 local function pass()
-	local wanted, skipped, capped = Runtime.Wanted()
+	local pace = pacer()
+	local wanted, skipped, capped = derive(pace)
 	local count = 0
 	for _ in pairs(wanted) do count = count + 1 end
 
-	local live, refused = apply(wanted)
+	local live, refused = apply(wanted, pace)
 	tally = { wanted = count, live = live, refused = refused, skipped = skipped, capped = capped }
 
 	-- THE BOOT NOTE, and it is the one thing in this module the OWNER will
@@ -710,6 +785,9 @@ local function sync()
 				-- silence, so it becomes a line rather than an absence.
 				Open77.log.error(('[%s] reconcile: %s'):format(TAG, tostring(failure)))
 			end
+			-- A pass asked for during this one starts on a fresh resume rather
+			-- than in the tail of the one that just finished.
+			if dirty then Wait(0) end
 		until not dirty
 		syncing = false
 	end)

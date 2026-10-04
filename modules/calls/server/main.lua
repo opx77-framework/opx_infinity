@@ -74,6 +74,15 @@ local eyesRenewedAt = {}
 -- The metadata key a character's contact list is filed under.
 local CONTACTS_KEY = 'callContacts'
 
+-- When each player last offered their contact to each other player, by target
+-- id: `contactOffers[from][to] = atMs`. See `onInvite`.
+local contactOffers = {}
+
+-- The floor between two contact offers from one player to the SAME player. A
+-- stranger may still ask to be added -- that is the only door to a call now --
+-- but asking the same person again and again is a doorbell, not a request.
+local CONTACT_REPEAT_MS = 30000
+
 -- Whether the holocall natives exist on this host, resolved on first use. The
 -- pair arrived in 2.31.13+op77.63 and this resource ships against op77.75, so
 -- they are expected -- but the same promise was made about `players.teleport`
@@ -564,6 +573,18 @@ local function callEnded(outcome)
 	pushAll(outcome.were)
 end
 
+--- Whether the character on `target` is in the contacts of the one on `playerId`.
+-- By citizen id, which is what a contact row holds: a server id is a seat, and
+-- whoever sits in it next is not the person who agreed to be reachable.
+local function isContact(playerId, target)
+	local wanted = citizenOf(target)
+	if wanted == nil then return false end
+	for _, row in ipairs(contactsOf(playerId)) do
+		if row.citizenId == wanted then return true end
+	end
+	return false
+end
+
 local function onInvite(rawTarget, rawKind)
 	local playerId = tonumber(source) or 0
 	if playerId <= 0 then return end
@@ -580,9 +601,35 @@ local function onInvite(rawTarget, rawKind)
 	local kind = rawKind == 'contact' and 'contact' or nil
 	if target == nil then return refuse(playerId, 'badRequest', M.Operation.INVITE) end
 
+	-- A CALL GOES TO A CONTACT, AND TO NOBODY ELSE. The owner's decision: any
+	-- server id used to be ringable, and the answer said who was behind it
+	-- (`calls.placed {name}`) and what they were doing (in a call, down, not
+	-- loaded) -- a modified client walking ids 1..N read every character's name
+	-- and state, and alternating invite and withdraw rang a stranger's phone
+	-- every second and a half. A stranger now goes through the contact hand-over
+	-- first. The refusal is the same whoever the id names -- online or not, busy
+	-- or not -- so it says nothing about them. Checked before the model judges
+	-- anything, because the model's refusals are exactly what would leak.
+	if kind ~= 'contact' and target ~= playerId and not isContact(playerId, target) then
+		return refuse(playerId, 'notContact', M.Operation.INVITE)
+	end
+
+	-- A contact offer to the same person, again, inside the floor.
+	if kind == 'contact' then
+		local mine = contactOffers[playerId]
+		local last = mine ~= nil and mine[target] or nil
+		if last ~= nil and OPX.Now() - last < CONTACT_REPEAT_MS then
+			return refuse(playerId, 'contactTooSoon', M.Operation.INVITE)
+		end
+	end
+
 	local invite, reason = registry.Invite(playerId, target, kind)
 	if invite == nil then return refuse(playerId, reason, M.Operation.INVITE) end
 
+	if invite.kind == 'contact' then
+		contactOffers[playerId] = contactOffers[playerId] or {}
+		contactOffers[playerId][target] = OPX.Now()
+	end
 	audit('calls.invite', playerId, true, ('%s -> %d (%s)'):format(invite.id, target, invite.kind))
 	push(playerId)
 	push(target)
@@ -822,6 +869,10 @@ local function departed(rawPlayerId)
 	local playerId = Model.PlayerId(rawPlayerId)
 	if playerId == nil then return end
 	local left, dropped = registry.Forget(playerId)
+	-- Both directions: what this player offered, and what was offered to the
+	-- slot, which the next holder of the id must not inherit.
+	contactOffers[playerId] = nil
+	for _, offered in pairs(contactOffers) do offered[playerId] = nil end
 	-- The platform clears a lease on disconnect by itself; the local record is
 	-- cleared so a recycled slot does not inherit a lease nobody holds.
 	eyesHeld[playerId] = nil
@@ -836,8 +887,14 @@ local function departed(rawPlayerId)
 	end
 	if left ~= nil then
 		callEnded(left)
+		-- What `onHangUp` says, because a disconnect is a hang-up nobody pressed:
+		-- in a call of three the other two are still talking, and telling them
+		-- "the call ended" was wrong.
+		local name = nameOf(playerId) or '?'
 		for index = 1, #left.were do
-			if left.were[index] ~= playerId then tell(left.were[index], 'calls.ended') end
+			if left.were[index] ~= playerId then
+				tell(left.were[index], left.ended and 'calls.ended' or 'calls.left', { name = name })
+			end
 		end
 	end
 end
@@ -865,10 +922,16 @@ local function scan()
 	-- that matters: the platform drops the eye-glow lease on death by itself,
 	-- so without this the call would carry on with a corpse on it whose eyes
 	-- had gone dark -- a state no screen could explain.
+	--
+	-- `unreadable` IS NOT ONE OF THOSE. It means the host could not be asked --
+	-- a raise from `getLifeState` or the readiness gate -- and `judge` keeps it
+	-- apart from a refusal naming the player for exactly this: one bad second of
+	-- the host used to hang up every live call on the server.
 	local ending = {}
 	for _, callId in ipairs(registry.CallIds()) do
 		for _, id in ipairs(registry.Participants(callId)) do
-			if not judge(id) then ending[#ending + 1] = id end
+			local reachable, why = judge(id)
+			if not reachable and why ~= 'unreadable' then ending[#ending + 1] = id end
 		end
 	end
 	for index = 1, #ending do
@@ -1024,6 +1087,7 @@ end
 --- Builds the registry and settles every bound out of the config.
 -- @author dop42
 function M.Init()
+	contactOffers = {}
 	local settings = M.Settings
 	local clamp = OPX.Math.Clamp
 	-- Named for what it RETURNS, and the suite holds every file to it. The header

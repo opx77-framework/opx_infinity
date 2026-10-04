@@ -167,6 +167,8 @@ function stopPress(report: boolean): void {
   if (raise !== undefined) clearTimeout(raise)
   raise = undefined
   window.removeEventListener('pointerup', onPointerUp)
+  window.removeEventListener('pointercancel', onPointerUp)
+  window.removeEventListener('blur', onPointerUp)
   const was = pressing.value
   pressing.value = false
   filled.value = false
@@ -198,6 +200,12 @@ function startPress(): void {
   // there -- which on this control would read as a hold that had already finished.
   raise = setTimeout(() => { filled.value = true }, FRAME_MS)
   window.addEventListener('pointerup', onPointerUp)
+  // A release this page never sees -- the window lost focus mid-hold, the engine
+  // cancelled the pointer -- must end the hold too. Otherwise the beat kept saying
+  // `holding: true` with no finger on anything, and Lua would carry out a give-up
+  // the player had already let go of.
+  window.addEventListener('pointercancel', onPointerUp)
+  window.addEventListener('blur', onPointerUp)
 }
 
 function askWait(): void {

@@ -56,6 +56,9 @@ M.Event = {
 	ARMED = OPX.Event(NET, 'inventory', 'armed'),
 	DROPS = OPX.Event(NET, 'inventory', 'drops'),
 	DROP = OPX.Event(NET, 'inventory', 'drop'),
+	-- The routing bucket the player is in: the client has no read of its own,
+	-- and it filters the pile list by it.
+	BUCKET = OPX.Event(NET, 'inventory', 'bucket'),
 	ANSWER = OPX.Event(NET, 'inventory', 'answer'),
 
 	-- Client to server. Every payload is attacker-controlled; only `source` is not.

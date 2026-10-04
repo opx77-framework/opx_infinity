@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
-import { list, num, table, text } from '@/bridge/types'
+import { list, num, table, text, records } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { GLYPHS } from '@/modules/target/glyphs'
@@ -327,7 +327,7 @@ function label(key: string, vars?: Record<string, number | string>): string {
 }
 
 function readButtons(value: unknown): Button[] {
-  return list<Payload>(value).map((entry) => {
+  return records(value).map((entry) => {
     const icon = text(entry.icon)
     return {
       id: text(entry.id),
@@ -371,7 +371,7 @@ function apply(payload: Payload): void {
   if (given('subtitle')) view.subtitle = text(payload.subtitle)
   if (given('intro')) view.intro = text(payload.intro)
   if (given('tabs')) {
-    view.tabs = list<Payload>(payload.tabs).map((tab) => ({
+    view.tabs = records(payload.tabs).map((tab) => ({
       id: text(tab.id),
       label: text(tab.label),
       marked: tab.marked === true,
@@ -380,7 +380,7 @@ function apply(payload: Payload): void {
   }
   if (given('tab')) view.tab = text(payload.tab)
   if (given('sliders')) {
-    const incoming = list<Payload>(payload.sliders).map((entry) => ({
+    const incoming = records(payload.sliders).map((entry) => ({
       id: text(entry.id),
       label: text(entry.label),
       count: Math.max(0, num(entry.count)),
@@ -432,7 +432,22 @@ function apply(payload: Payload): void {
  * fill, and every box after the hole would carry an index that is off by the size of
  * it -- which is a player clicking a jacket and being dressed in a different one.
  */
+/** A window applied, then -- if it added boxes -- the grid topped up while it does not
+    yet overflow. `askForTiles` was only ever reached from a scroll event, and a first
+    window that fits without scrolling (a tall screen, a short window from the caller)
+    never fires one: the "loading" line stayed up forever over a grid that would not
+    grow. Only after a window that GREW, so a caller answering with nothing cannot turn
+    this into a request loop. */
 function applyTiles(value: unknown): void {
+  if (readTiles(value)) void nextTick(topUpTiles)
+}
+
+function topUpTiles(): void {
+  const el = tilesEl.value
+  if (el && el.scrollTop + el.clientHeight >= el.scrollHeight - TILE_LOOKAHEAD) askForTiles()
+}
+
+function readTiles(value: unknown): boolean {
   if (tilesTimer !== undefined) clearTimeout(tilesTimer)
   tilesTimer = undefined
   fetching.value = false
@@ -441,7 +456,7 @@ function applyTiles(value: unknown): void {
   if (slot === '') {
     tiles.slot = ''
     tiles.entries = []
-    return
+    return false
   }
   const labels = list<unknown>(source.labels)
   const images = list<unknown>(source.images)
@@ -453,10 +468,11 @@ function applyTiles(value: unknown): void {
   if (slot !== tiles.slot || from === 1) {
     tiles.slot = slot
     tiles.entries = entries
-    return
+    return entries.length > 0
   }
-  if (from !== tiles.entries.length + 1) return
+  if (from !== tiles.entries.length + 1) return false
   tiles.entries = tiles.entries.concat(entries)
+  return entries.length > 0
 }
 
 /** The tab actually drawn: the one Lua named if it still exists, else the first. */
@@ -647,7 +663,7 @@ useBridge('opx:panel:items', (payload: Payload) => {
   guard('panel:items', () => {
     if (!mine(payload)) return
     const batch: Item[] = []
-    for (const entry of list<Payload>(payload.items)) {
+    for (const entry of records(payload.items)) {
       const id = text(entry.id)
       if (!id) continue
       const itemLabel = text(entry.label)
@@ -873,10 +889,13 @@ function scrubSlot(slider: Slider, raw: string): void {
 
 /** Let go, or an arrow key pressed: that is the choice, and it does not wait. */
 function settleSlot(slider: Slider): void {
-  if (view.busy || slider.disabled) return
+  // The drag ends whether or not the commit may go out. Returning on `busy` before
+  // this left `dragging` naming the slot, so the caller's own index was ignored for
+  // it from then on and the thumb sat on an uncommitted preview.
   if (slideTimer !== undefined) clearTimeout(slideTimer)
   slideTimer = undefined
   dragging = null
+  if (view.busy || slider.disabled) return
   if (handle.value === null) return
   emit('opx:panel:slide',
     { handle: handle.value, id: slider.id, index: standing(slider), commit: true })

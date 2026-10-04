@@ -77,6 +77,8 @@ OPX.Locale.Register('en', {
 	['inventory.error.storage'] = 'The inventory is unavailable right now.',
 	['inventory.error.not_found'] = 'That is no longer there.',
 	['inventory.error.empty_slot'] = 'That slot is empty.',
+	['inventory.error.in_use'] = 'That is being used right now.',
+	['inventory.error.holstering'] = 'Putting the weapon away first. Try again.',
 	['inventory.error.bad_count'] = 'That count is not valid.',
 	['inventory.error.not_enough'] = 'You do not have that many.',
 	['inventory.error.no_room'] = 'There is no room for that.',
@@ -160,6 +162,9 @@ OPX.Locale.Register('en', {
 	['inventory.item.vehicle_key'] = 'Vehicle key',
 	['inventory.item.vehicle_key.description'] =
 		'Opens one vehicle, the one named on it. Use it beside that vehicle to lock or unlock it.',
+	['inventory.item.door_key'] = 'Door key',
+	['inventory.item.door_key.description'] =
+		'Opens one door, the one named on it.',
 	['inventory.item.shard'] = 'Data shard',
 	['inventory.item.eddies'] = 'Eddies',
 	['inventory.item.eddies.description'] =
@@ -434,6 +439,8 @@ OPX.Locale.Register('fr', {
 	['inventory.error.storage'] = "L'inventaire est indisponible pour le moment.",
 	['inventory.error.not_found'] = "Ce n'est plus là.",
 	['inventory.error.empty_slot'] = 'Cet emplacement est vide.',
+	['inventory.error.in_use'] = "Cet objet est en cours d'utilisation.",
+	['inventory.error.holstering'] = "L'arme est d'abord rangée. Réessayez.",
 	['inventory.error.bad_count'] = "Cette quantité n'est pas valide.",
 	['inventory.error.not_enough'] = "Vous n'en avez pas autant.",
 	['inventory.error.no_room'] = "Il n'y a pas de place pour ça.",
@@ -517,6 +524,9 @@ OPX.Locale.Register('fr', {
 	['inventory.item.vehicle_key'] = 'Clé de véhicule',
 	['inventory.item.vehicle_key.description'] =
 		'Ouvre un seul véhicule, celui dont le nom est dessus. Utilisez-la à côté pour le verrouiller ou le déverrouiller.',
+	['inventory.item.door_key'] = 'Clé de porte',
+	['inventory.item.door_key.description'] =
+		'Ouvre une seule porte, celle dont le nom est dessus.',
 	['inventory.item.shard'] = 'Éclat de données',
 	['inventory.item.eddies'] = 'Eddies',
 	['inventory.item.eddies.description'] =

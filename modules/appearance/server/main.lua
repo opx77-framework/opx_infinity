@@ -503,8 +503,16 @@ end
 -- What is checked below is the SHAPE and not the truth: a client can only ever
 -- describe its own player, which is the trust the platform's own package extends.
 
--- Least milliseconds between two publications or replays from one player.
-local FLOOR_MS = 500
+-- Least milliseconds between two requests of one kind from one player.
+--
+-- A PUBLICATION IS FANNED OUT, a replay is not. One accepted look is re-sent to
+-- every connected player, and a body may weigh 48 KiB, so a client publishing
+-- a different body every 500 ms -- which a modified one can -- pushed some
+-- 96 KiB a second to EACH of N players. A real client publishes on a change
+-- and retries an unanswered one after three seconds, so two seconds costs it
+-- nothing: a change inside the floor is simply not acknowledged, and its retry
+-- lands. A replay goes to the asker alone and keeps the short floor.
+local FLOOR_MS = { present = 2000, replay = 500 }
 
 -- Most bytes one encoded body, and one encoded equipment plus wardrobe, may weigh.
 local MAX_BODY_BYTES = 49152
@@ -514,6 +522,10 @@ local MAX_CLOTHING_BYTES = 4096
 -- reload, when each player last got through the floor, and whose unreadable body
 -- was already logged.
 local looks, absent, lastAt, warned = {}, {}, {}, {}
+
+-- The fingerprint of the last look each player was fanned out with. See
+-- `M.LookFingerprint`.
+local printed = {}
 
 -- Whether the "this half drops every look" warning has been said.
 local saidPresentingOff = false
@@ -526,9 +538,57 @@ end
 --- Whether a player's request of this kind falls inside the floor.
 local function cooled(kind, player)
 	local key, atMs = kind .. ':' .. player, OPX.Now()
-	if lastAt[key] and atMs - lastAt[key] < FLOOR_MS then return true end
+	local floor = FLOOR_MS[kind] or FLOOR_MS.replay
+	if lastAt[key] and atMs - lastAt[key] < floor then return true end
 	lastAt[key] = atMs
 	return false
+end
+
+--- A 32-bit FNV-1a hash of a string, as eight hex digits.
+local function fnv(text)
+	local hash = 2166136261
+	for index = 1, #text do
+		hash = ((hash ~ text:byte(index)) * 16777619) & 0xFFFFFFFF
+	end
+	return ('%08x'):format(hash)
+end
+
+--- A fingerprint of a look: its length and a hash of a canonical rendering.
+--
+-- CANONICAL AND NOT `json.encode`, whose key order follows `pairs` and is not
+-- promised to repeat for two equal tables. The body is walked in its own array
+-- order, the nine slots in theirs, the outfits by index and their slots sorted,
+-- so the same look always renders the same text. The length rides with the hash
+-- so a collision would have to match both.
+-- @param look table { body, equipment, wardrobe } as stored in `looks`
+-- @return string
+function M.LookFingerprint(look)
+	local parts = { tostring(look.body.family) }
+	local groups = look.body.groups
+	for index = 1, #groups do
+		local group = groups[index]
+		parts[#parts + 1] = group.part .. ':' .. group.name
+		for keyIndex = 1, #group.keys do
+			local key = group.keys[keyIndex]
+			parts[#parts + 1] = key[1] .. '=' .. key[2]
+		end
+	end
+	for index = 1, #SLOTS do parts[#parts + 1] = tostring(look.equipment[SLOTS[index]]) end
+	parts[#parts + 1] = 'active=' .. tostring(look.wardrobe.active)
+	local outfitSlots = {}
+	for slot in pairs(IS_OUTFIT_SLOT) do outfitSlots[#outfitSlots + 1] = slot end
+	table.sort(outfitSlots)
+	for index = 0, OUTFITS - 1 do
+		local overrides = look.wardrobe.outfits[tostring(index)]
+		if overrides ~= nil then
+			parts[#parts + 1] = 'outfit' .. index
+			for slotIndex = 1, #outfitSlots do
+				parts[#parts + 1] = tostring(overrides[outfitSlots[slotIndex]])
+			end
+		end
+	end
+	local text = table.concat(parts, '|')
+	return #text .. ':' .. fnv(text)
 end
 
 --- Whether a value is a non-zero sixteen-digit engine hash.
@@ -681,15 +741,14 @@ end
 -- net event was left open, and the net event is the bigger door of the two: it
 -- needs no room at all.
 --
--- A GRANT IS NOT A BILL, and must never be read as one. It says only that a
--- door THIS SERVER KNOWS ABOUT put a fitting room up for this player -- a shop
--- they were standing in, a clothing store, a staff member, a purchase, or the
--- character's own creation. Whether the change was PAID for is still decided by
--- `modules/shops`, on its own client-initiated `bill` event, which a client may
--- still simply not send. Closing that is a separate change and a bigger one:
--- the server would have to diff the stored record against the incoming one and
--- charge for the slots that moved, instead of believing a list the client
--- volunteers.
+-- AN OPEN GRANT IS NOT A BILL. It says only that a door THIS SERVER KNOWS ABOUT
+-- put a fitting room up for this player -- a clothing store, a staff member, or
+-- the character's own creation -- and those rooms are free. A SHOP's room is a
+-- PRICED grant: the save that leaves it is diffed here against the stored
+-- record, the moved slots are charged through the shop's own function, and the
+-- record is written only once that charge went through (`admitSave`). The shop
+-- used to be told the slots by the client, after the save, on an event a client
+-- could simply not send.
 
 -- How long one grant lets a client save for, in milliseconds.
 --
@@ -702,28 +761,187 @@ end
 -- door, which is the whole of the difference from what was here before.
 local DRESSING_MS = 600000
 
--- source -> the millisecond a fitting-room grant runs out at.
+-- source -> the grants this connection holds, three kinds:
+--   open    { untilMs, owner }          any save, free: the join's own room, a
+--                                       staff member, a clothing store
+--   priced  { untilMs, owner, charge }  any save, and the slots it moves are
+--                                       charged through `charge` BEFORE it is
+--                                       written: a shop's fitting room
+--   looks   { { untilMs, owner, wear } } one save, free, of exactly the look the
+--                                       server put on: a bought uniform, a saved
+--                                       outfit, a share code
 local dressing = {}
+
+-- How many look grants one connection may hold at once. Each is spent by the
+-- one save it was handed for; the bound only stops a loop of doors piling them.
+local MAX_LOOK_GRANTS = 8
 
 -- The `WARDROBE.OFFER_POLICY` this half resolved at Init, so the join's own room
 -- -- which the client offers, and which this half is never told about -- can be
 -- granted by the same setting that decides whether it appears.
 local wardrobeOffer = M.WARDROBE_POLICY_DEFAULT
 
+--- The grants a connection still holds, the expired ones dropped; nil for none.
+local function grantsOf(source)
+	local held = dressing[source]
+	if held == nil then return nil end
+	local now = OPX.Now()
+	if held.open ~= nil and now >= held.open.untilMs then held.open = nil end
+	if held.priced ~= nil and now >= held.priced.untilMs then held.priced = nil end
+	local kept = {}
+	for index = 1, #held.looks do
+		if now < held.looks[index].untilMs then kept[#kept + 1] = held.looks[index] end
+	end
+	held.looks = kept
+	if held.open == nil and held.priced == nil and #kept == 0 then
+		dressing[source] = nil
+		return nil
+	end
+	return held
+end
+
 --- Whether this player may have an authoritative clothing write right now.
 local function dressed(source)
-	local untilMs = dressing[source]
-	if untilMs == nil then return false end
-	if OPX.Now() >= untilMs then
-		dressing[source] = nil
-		return false
+	return grantsOf(source) ~= nil
+end
+
+--- The record a stored slot holds, false for an empty or unreadable one.
+local function storedSlot(stored, slot)
+	local equipment = type(stored) == 'table' and stored.equipment or nil
+	local worn = type(equipment) == 'table' and equipment[slot] or false
+	if worn == nil then worn = false end
+	return worn
+end
+
+--- The outfit overrides of a stored record, an empty table for none.
+local function storedOutfits(stored)
+	local wardrobe = type(stored) == 'table' and stored.wardrobe or nil
+	return type(wardrobe) == 'table' and type(wardrobe.outfits) == 'table' and wardrobe.outfits or {}
+end
+
+--- The slots a save moves against what is stored, in canonical order.
+-- @author dop42
+--
+-- THE EQUIPMENT AND THE OUTFIT OVERRIDES BOTH COUNT. The seven wardrobe outfits
+-- override the visible slots when one is active, so a garment written into an
+-- override is a garment worn: billing the equipment alone would make every
+-- purchase free to a client that saved it one level down. Which outfit is
+-- ACTIVE is not a purchase -- flipping between sets you own buys nothing.
+-- @param stored table|false the canonical record held, false for none
+-- @param after table the canonical record arriving
+-- @return table an array of slot names
+function M.Clothing.Moved(stored, after)
+	local seen = {}
+	for index = 1, #SLOTS do
+		local slot = SLOTS[index]
+		if storedSlot(stored, slot) ~= after.equipment[slot] then seen[slot] = true end
+	end
+	local before = storedOutfits(stored)
+	for index = 0, OUTFITS - 1 do
+		local a = after.wardrobe.outfits[tostring(index)] or {}
+		local b = before[tostring(index)] or {}
+		for slot in pairs(IS_OUTFIT_SLOT) do
+			if a[slot] ~= b[slot] then seen[slot] = true end
+		end
+	end
+	local moved = {}
+	for index = 1, #SLOTS do
+		if seen[SLOTS[index]] then moved[#moved + 1] = SLOTS[index] end
+	end
+	return moved
+end
+
+--- Whether a save is exactly the look a look grant was handed for.
+-- The slots the look names hold its record -- or nothing, which is what a body
+-- that cannot wear a piece is dressed in -- and every other slot, and every
+-- outfit override, is what is stored. Nothing else rides along for free.
+local function fitsLook(wear, stored, after)
+	for index = 1, #SLOTS do
+		local slot = SLOTS[index]
+		local now = after.equipment[slot]
+		local wanted = wear[slot]
+		if wanted ~= nil then
+			if now ~= wanted and now ~= false then return false end
+		elseif now ~= storedSlot(stored, slot) then
+			return false
+		end
+	end
+	local before = storedOutfits(stored)
+	for index = 0, OUTFITS - 1 do
+		local a = after.wardrobe.outfits[tostring(index)] or {}
+		local b = before[tostring(index)] or {}
+		for slot in pairs(IS_OUTFIT_SLOT) do
+			if a[slot] ~= b[slot] then return false end
+		end
 	end
 	return true
+end
+
+--- Decides whether a save may be written, charging for it where a shop asks.
+-- Coroutine only: a charge moves money, which may write.
+--
+-- THE SERVER COMPUTES THE BILL. The shop used to be told which slots changed by
+-- the client, after the fact, on its own event -- so a client that never sent
+-- that event kept the clothes and paid nothing. The slots are now read off the
+-- stored record and the one arriving, and the money is taken before the record
+-- is written; a charge that fails is a save refused, and the client puts the
+-- stored look back.
+-- @return table|nil `{ undo = function|nil }` when it may be written
+-- @return string|nil the refusal code
+local function admitSave(source, player, canonical)
+	local held = grantsOf(source)
+	if held == nil then return nil, 'clothing.noFittingRoom' end
+	local stored = player.PlayerData.clothing
+	-- nil is "the stored record could not be read", which `SaveClothing` refuses.
+	if stored == nil then return {} end
+
+	for index = 1, #held.looks do
+		if fitsLook(held.looks[index].wear, stored, canonical) then
+			table.remove(held.looks, index)
+			return {}
+		end
+	end
+	if held.open ~= nil then return {} end
+
+	local priced = held.priced
+	if priced == nil then return nil, 'clothing.noFittingRoom' end
+	-- A LOOK ALREADY PAID FOR IS NOT BILLED AGAIN. A uniform bought inside the
+	-- room is charged by the shop and laid on the room's draft, so the save that
+	-- leaves the room carries it beside whatever else moved: its slots are the
+	-- look grant's, spent here, and only the rest is the room's to charge.
+	local prepaid = {}
+	for index = #held.looks, 1, -1 do
+		local wear, covered, worn = held.looks[index].wear, true, false
+		for slot, wanted in pairs(wear) do
+			local now = canonical.equipment[slot]
+			if now == wanted and wanted ~= false then worn = true end
+			if now ~= wanted and now ~= false then covered = false break end
+		end
+		if covered and worn then
+			for slot in pairs(wear) do prepaid[slot] = true end
+			table.remove(held.looks, index)
+		end
+	end
+	local slots = {}
+	local moved = M.Clothing.Moved(stored, canonical)
+	for index = 1, #moved do
+		if not prepaid[moved[index]] then slots[#slots + 1] = moved[index] end
+	end
+	if #slots == 0 then return {} end
+	local ran, paid, code, undo = pcall(priced.charge, source, slots)
+	if not ran then
+		Open77.log.error(('[appearance] the %s charge for player %d raised: %s')
+			:format(priced.owner, source, tostring(paid)))
+		return nil, 'clothing.unpaid'
+	end
+	if paid ~= true then return nil, type(code) == 'string' and code or 'clothing.unpaid' end
+	return { undo = type(undo) == 'function' and undo or nil }
 end
 
 --- Forgets a departed player's look, absence, warning, floors and grant.
 local function forget(player)
 	looks[player], absent[player], warned[player] = nil, nil, nil
+	printed[player] = nil
 	dressing[player] = nil
 	local prefix = ':' .. player
 	for key in pairs(lastAt) do
@@ -800,8 +1018,22 @@ local function registerEvents()
 		end
 
 		CreateThread(function()
-			local saved = M.SaveClothing(player, payload.clothing)
+			local canonical, invalid = Clothing.Canonical(payload.clothing)
+			if not canonical then
+				Open77.log.warn(('[appearance] %d: clothing not saved: clothing.invalid (%s)')
+					:format(src, tostring(invalid)))
+				return M.RefuseSave(src, 'clothing.invalid', operation)
+			end
+			local admitted, refusal = admitSave(src, player, canonical)
+			if admitted == nil then
+				OPX.Audit.Player(player, 'clothing.refused', nil, { reason = refusal })
+				return M.RefuseSave(src, refusal, operation)
+			end
+			local saved = M.SaveClothing(player, canonical)
 			if not saved.ok then
+				-- Charged and not written: the money goes back, or the player paid
+				-- for clothes that do not survive the session.
+				if admitted.undo ~= nil then pcall(admitted.undo) end
 				Open77.log.warn(('[appearance] %d: clothing not saved: %s (%s)')
 					:format(src, tostring(saved.error), tostring(saved.detail)))
 				M.RefuseSave(src, saved.error, operation)
@@ -839,6 +1071,21 @@ local function registerEvents()
 		end
 
 		warned[player] = nil
+		-- THE SAME LOOK IS NOT SENT TO EVERYBODY TWICE. A client re-publishes an
+		-- identical look whenever an acknowledgement went missing, and a modified
+		-- one can re-publish it on every floor: every peer already holds it, a
+		-- newcomer is handed it by the replay and by a bucket change, so only a
+		-- look that changed -- or one coming back after a withdrawal -- goes out.
+		-- It is still acknowledged, or the client would keep retrying.
+		local fingerprint = M.LookFingerprint(look)
+		if printed[player] == fingerprint and not absent[player] and looks[player] ~= nil then
+			looks[player] = look
+			Open77.log.debug(('[appearance] player %d published the look it already has; ' ..
+				'nothing re-sent'):format(player))
+			TriggerClientEvent(M.Event.PRESENT_ACK, player, sequence, true)
+			return
+		end
+		printed[player] = fingerprint
 		looks[player] = look
 		absent[player] = nil
 		local handed = broadcast(player)
@@ -929,6 +1176,7 @@ end
 --- Builds state and contributes this module's table. Never yields.
 function M.Init()
 	looks, absent, lastAt, warned = {}, {}, {}, {}
+	printed = {}
 	dressing = {}
 
 	-- Resolved once, on this half too, for the reason the client resolves it
@@ -963,16 +1211,51 @@ function M.Api()
 	-- saved outfit, a shared code -- where the client's own save is the only
 	-- thing that follows and would otherwise be refused as roomless.
 	-- @author dop42
+	--
+	-- THREE KINDS, and the caller picks by what it passes. Nothing: an OPEN grant,
+	-- any save for ten minutes, free -- the join's room, staff, a clothing store.
+	-- `{ charge = fn }`: a PRICED one -- any save, and the slots it moves against
+	-- the stored record are passed to `fn(source, slots)` before anything is
+	-- written; `fn` answers `true[, nil, undo]` or `false, code`, and a refusal
+	-- is the save refused. `{ wear = { slot = record|false } }`: a LOOK grant --
+	-- ONE free save of exactly that look on top of what is stored, which is what
+	-- a door that puts clothes on (a bought uniform, a saved outfit, a code)
+	-- needs, and all it gets: an open grant there was ten minutes of the whole
+	-- catalogue for free, from anywhere, behind a shop that charges.
 	-- @param playerId integer
 	-- @param owner string the caller's own name, for the journal
+	-- @param options table|nil `charge` or `wear`, see above
 	-- @return boolean
 	-- @return string|nil the refusal
-	function M.AllowClothingSave(playerId, owner)
+	function M.AllowClothingSave(playerId, owner, options)
 		local id = tonumber(playerId)
 		if id == nil or id <= 0 then return false, 'invalid_player' end
-		dressing[id] = OPX.Now() + DRESSING_MS
-		Open77.log.debug(('[appearance] %s may save clothing for player %d')
-			:format(tostring(owner or '?'), id))
+		options = type(options) == 'table' and options or {}
+		local grant = { untilMs = OPX.Now() + DRESSING_MS, owner = tostring(owner or '?') }
+		local wear
+		if type(options.charge) ~= 'function' and type(options.wear) == 'table' then
+			wear = {}
+			for slot, record in pairs(options.wear) do
+				if not IS_SLOT[slot] then return false, 'invalid_slot' end
+				local clean = recordOf(record)
+				if clean == nil then return false, 'invalid_item' end
+				wear[slot] = clean
+			end
+		end
+		local held = grantsOf(id) or { looks = {} }
+		local kind
+		if type(options.charge) == 'function' then
+			grant.charge, held.priced, kind = options.charge, grant, 'priced'
+		elseif wear ~= nil then
+			grant.wear, kind = wear, 'one look'
+			held.looks[#held.looks + 1] = grant
+			while #held.looks > MAX_LOOK_GRANTS do table.remove(held.looks, 1) end
+		else
+			held.open, kind = grant, 'open'
+		end
+		dressing[id] = held
+		Open77.log.debug(('[appearance] %s may save clothing for player %d (%s)')
+			:format(grant.owner, id, kind))
 		return true
 	end
 
@@ -989,9 +1272,11 @@ function M.Api()
 	-- nothing else may hold the keyboard -- so a true here is not a room.
 	-- @author dop42
 	-- @param playerId integer
+	-- @param options table|nil `{ owner, charge }`: a shop's room is priced, see
+	--        `AllowClothingSave`; no options is a free room
 	-- @return boolean
 	-- @return string|nil the refusal
-	function M.OpenWardrobe(playerId)
+	function M.OpenWardrobe(playerId, options)
 		local id = tonumber(playerId)
 		if id == nil or id <= 0 then return false, 'invalid_player' end
 		-- NO CONNECTION CHECK HERE, deliberately. There is no `players.exists` on
@@ -1005,7 +1290,10 @@ function M.Api()
 		-- holds a grant they cannot use: they still have to change clothes
 		-- somehow for it to matter, and every way of doing that is a door that
 		-- would have granted it anyway.
-		M.AllowClothingSave(id, 'wardrobe')
+		options = type(options) == 'table' and options or {}
+		local granted, refused = M.AllowClothingSave(id, options.owner or 'wardrobe',
+			type(options.charge) == 'function' and { charge = options.charge } or nil)
+		if not granted then return false, refused end
 		TriggerClientEvent(M.Event.OPEN_WARDROBE, id)
 		return true
 	end
@@ -1157,6 +1445,7 @@ end
 --- to write: the next publication rebuilds all of it.
 function M.Stop()
 	looks, absent, lastAt, warned = {}, {}, {}, {}
+	printed = {}
 	-- The grants go too. A restart is every fitting room in the city closing at
 	-- once, and a grant that outlived one would be a door left open by a room
 	-- that no longer exists.

@@ -17,7 +17,9 @@ export function useLocale() {
 
   function t(key: string, vars?: Record<string, string | number>): string {
     const template = strings.value[key]
-    if (template === undefined) return key
+    // `typeof`, not `=== undefined`: the catalogue is a plain object, and a key like
+    // `constructor` would otherwise return the inherited function and `.replace` throw.
+    if (typeof template !== 'string') return key
     if (!vars) return template
     return template.replace(/\{(\w+)\}/g, (whole, name: string) => {
       const value = vars[name]
@@ -27,7 +29,7 @@ export function useLocale() {
 
   /** True when the key exists. Use to decide whether to render a row at all. */
   function has(key: string): boolean {
-    return strings.value[key] !== undefined
+    return typeof strings.value[key] === 'string'
   }
 
   return { t, has }

@@ -20,6 +20,9 @@ local EN = {
 	['dealership.deliverHere'] = 'Deliver here',
 
 	['dealership.bought'] = 'You bought {model}. Plate {plate}.',
+	['dealership.handOverBlocked'] =
+		'Every spot beside the dealer is taken, so your car is waiting for you in {garage}.',
+	['dealership.defaultGarage'] = 'your garage',
 
 	['dealership.noSuchSpot'] = 'There is no dealership here.',
 	['dealership.noSuchEntry'] = 'That is not something this dealership sells.',
@@ -38,18 +41,6 @@ local EN = {
 	['dealership.registerFailed'] = 'That vehicle could not be stored, so it was not sold.',
 	['dealership.noVehicles'] = 'Vehicles are unavailable on this server.',
 
-	-- The showroom floor. It is written in `PREVIEW.POINTS` in
-	-- `config/dealership.lua`; the staff menu's Dev screen placed it until the
-	-- owner deleted that screen on 2026-09-21. These sentences are still reached
-	-- by the contract's `Place`/`Unplace`, which nothing in this resource calls
-	-- any more -- a caller outside it would still be answered properly.
-	['dealership.previewPlaced'] = 'A {model} is standing here now.',
-	['dealership.previewRemoved'] = 'That showroom car is gone.',
-	['dealership.previewLimit'] = 'This showroom is already full ({key} cars).',
-	['dealership.noSuchPreview'] = 'There is no showroom car by that name.',
-	['dealership.previewIsConfig'] =
-		'{key} is written in config/dealership.lua and is moved by editing it.',
-
 	-- Selling face to face, and the two ends of it: the salesperson who offers
 	-- and the buyer who answers.
 	['dealership.target.sell'] = 'Sell a vehicle',
@@ -58,6 +49,8 @@ local EN = {
 	['dealership.offerDecline'] = 'No thanks',
 	['dealership.offerDeclined'] = 'They turned the offer down.',
 	['dealership.offerExpired'] = 'The offer was not answered in time.',
+	['dealership.offerWaiting'] = '{seller} is offering you a {model}. It opens when you close this list.',
+	['dealership.sellerNoCompany'] = 'The seller can no longer sell for that company.',
 	['dealership.noOffer'] = 'There is no offer waiting for you.',
 	['dealership.noCompany'] =
 		'You have no job or gang to sell for, so there is nowhere to pay the money in.',
@@ -98,6 +91,9 @@ local FR = {
 	['dealership.deliverHere'] = 'Livrer ici',
 
 	['dealership.bought'] = 'Vous avez acheté : {model}. Plaque {plate}.',
+	['dealership.handOverBlocked'] =
+		'Toutes les places près du vendeur sont prises : votre véhicule vous attend dans {garage}.',
+	['dealership.defaultGarage'] = 'votre garage',
 
 	['dealership.noSuchSpot'] = "Il n'y a pas de concession ici.",
 	['dealership.noSuchEntry'] = "Cette concession ne vend pas cela.",
@@ -116,19 +112,14 @@ local FR = {
 	['dealership.registerFailed'] = "Ce véhicule n'a pas pu être enregistré, il ne vous a donc pas été vendu.",
 	['dealership.noVehicles'] = 'Les véhicules sont indisponibles sur ce serveur.',
 
-	['dealership.previewPlaced'] = 'Une {model} est exposée ici.',
-	['dealership.previewRemoved'] = "Ce véhicule d'exposition a été retiré.",
-	['dealership.previewLimit'] = 'Ce hall est déjà plein ({key} véhicules).',
-	['dealership.noSuchPreview'] = "Aucun véhicule d'exposition ne porte ce nom.",
-	['dealership.previewIsConfig'] =
-		'{key} est écrit dans config/dealership.lua et se déplace en modifiant ce fichier.',
-
 	['dealership.target.sell'] = 'Vendre un véhicule',
 	['dealership.offerSent'] = "Offre envoyée. La personne doit l'accepter elle-même.",
 	['dealership.offerAccept'] = 'Acheter',
 	['dealership.offerDecline'] = 'Non merci',
 	['dealership.offerDeclined'] = "L'offre a été refusée.",
 	['dealership.offerExpired'] = "L'offre n'a pas eu de réponse à temps.",
+	['dealership.offerWaiting'] = "{seller} vous propose : {model}. L'offre s'ouvrira quand vous fermerez cette liste.",
+	['dealership.sellerNoCompany'] = 'Le vendeur ne vend plus pour cette entreprise.',
 	['dealership.noOffer'] = "Aucune offre ne vous attend.",
 	['dealership.noCompany'] =
 		"Vous n'avez ni emploi ni gang pour vendre : l'argent n'aurait nulle part où aller.",

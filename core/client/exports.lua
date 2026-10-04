@@ -32,7 +32,8 @@
 -- itself, and never takes over a screen another owner holds. When a caller
 -- resource stops, whatever it left open here is taken down with it.
 
-local CALLER_PATTERN = '^[%w_%-%.]+$'
+-- What a toast id a caller names may be: the resource-name alphabet.
+local ID_PATTERN = '^[%w_%-%.]+$'
 
 -- An export name a caller may ask its answers to be delivered to.
 local REPLY_PATTERN = '^[%w_]+$'
@@ -46,28 +47,15 @@ local gestures = {}
 -- Reply failures already said, by `caller \1 reason`.
 local said = {}
 
-local function refuse(code) return { ok = false, error = code } end
-local function ok(value) return { ok = true, value = value } end
-
-local function answered(result)
-	if type(result) ~= 'table' then return refuse('error.unavailable') end
-	if result.ok == true then return ok(result.value) end
-	return refuse(type(result.error) == 'string' and result.error or 'error.unavailable')
-end
+-- The answer shapes, the caller gate and the allowlist test are shared with the
+-- server surface: `core/shared/exports.lua`.
+local Export = OPX.Export
+local refuse, ok, answered = Export.Refuse, Export.Ok, Export.Answered
+local admits, hasExports = Export.Admits, Export.Available
 
 local function settings()
 	local client = OPX.Config.CLIENT or {}
 	return type(client.EXPORTS) == 'table' and client.EXPORTS or {}
-end
-
-local function admits(list, caller)
-	if list == '*' then return true end
-	if type(list) ~= 'table' then return false end
-	if list[caller] == true then return true end
-	for _, name in ipairs(list) do
-		if name == caller then return true end
-	end
-	return false
 end
 
 --- The owner string a caller's screens are kept under.
@@ -123,25 +111,12 @@ local function forCaller(payload, caller)
 	return copy
 end
 
---- Whether this host offers `exports`.
--- On op77 `exports` is a CALLABLE TABLE, not a function: it is called to
--- publish and indexed for `exports.other:name()`, so `type` answers 'table'.
--- Testing for 'function' alone read every real host as having none, and the
--- whole creator surface went unpublished without an error.
-local function hasExports()
-	local kind = type(exports)
-	return kind == 'function' or kind == 'table' or kind == 'userdata'
-end
-
 --- Publishes one export behind the caller gate.
 local function publish(name, body)
 	if not hasExports() then return end
 	exports(name, function(...)
-		local caller = GetInvokingResource ~= nil and GetInvokingResource() or nil
-		if type(caller) ~= 'string' or #caller < 1 or #caller > 64
-			or not caller:match(CALLER_PATTERN) then
-			return refuse('export.callerDenied')
-		end
+		local caller = Export.Caller()
+		if caller == nil then return refuse('export.callerDenied') end
 		if not admits(settings().CALLERS, caller) then return refuse('export.callerDenied') end
 
 		local args = table.pack(...)
@@ -229,7 +204,7 @@ end)
 --- A toast id a caller may name, kept inside its own prefix.
 local function toastId(caller, id)
 	if id == nil then return nil end
-	if type(id) ~= 'string' or #id < 1 or #id > 48 or not id:match(CALLER_PATTERN) then
+	if type(id) ~= 'string' or #id < 1 or #id > 48 or not id:match(ID_PATTERN) then
 		return false
 	end
 	return ownerOf(caller) .. ':' .. id

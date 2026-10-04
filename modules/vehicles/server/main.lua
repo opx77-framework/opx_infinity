@@ -21,6 +21,16 @@ local live
 -- out again.
 local claiming
 
+-- Plates an `M.Store` is part-way through. NOT `claiming`: a recall holds the
+-- claim and then calls `M.Store` itself, so the two have to be separate sets.
+-- Without it two stores of one plate -- a save pass finding the owner gone while
+-- the departure sweep puts the same car away, or a STORE request landing inside
+-- a recall -- both read the snapshot and both yield on the row, and the one that
+-- lost the removal saw `remove` answer false for a car that was already gone: it
+-- wrote OUT over the STORED the winner had just written, logged "could not be
+-- removed", and told the player the store was refused. Rebuilt with `live`.
+local storing
+
 -- The last citizen id each connection had a vehicle out for. The character
 -- module logs a player out on its own disconnect handler, which runs before
 -- this module's -- this module requires it, so it starts after it and registers
@@ -445,6 +455,14 @@ end
 function M.Store(plateId, garage)
 	local record = live[plateId]
 	if record == nil then return Result.Err('vehicle.notSpawned', tostring(plateId)) end
+	-- One store per plate at a time; see `storing`. Tested and set with nothing
+	-- in between that yields, and every exit below goes through `done`.
+	if storing[plateId] then return Result.Err('vehicle.busy', plateId) end
+	storing[plateId] = true
+	local function done(result)
+		storing[plateId] = nil
+		return result
+	end
 
 	-- The snapshot is read BEFORE the removal: it disappears with the vehicle.
 	local snapshot = Open77.vehicles.get(record.id)
@@ -477,10 +495,11 @@ function M.Store(plateId, garage)
 		Open77.log.error(('[vehicles] %s could not be removed from the world; leaving it ' ..
 			'spawned rather than recording it as stored'):format(plateId))
 		Store.SetState(plateId, STATE.OUT, garage)
-		return Result.Err('vehicle.storeRefused', plateId)
+		return done(Result.Err('vehicle.storeRefused', plateId))
 	end
 
 	live[plateId] = nil
+	done(nil)
 	-- The owner's connection, when they are still here: the plate's owner is a
 	-- citizen id, and a store from a sweep after they left has nobody to name.
 	local owner = character ~= nil and character.GetPlayerByCitizenId(record.citizenId) or nil
@@ -599,6 +618,12 @@ local function savePlate(plateId)
 	if snapshot == nil then return end
 	local fetched = Store.FetchOne(plateId)
 	if not fetched.ok then return end
+	-- READ AGAIN AFTER THE YIELD. `Save` writes the whole row, state and garage
+	-- included, as this read found them -- OUT, under the old garage. A store
+	-- that ran while the read was awaited had already written STORED under the
+	-- garage the player chose, and this write put it back: the car was in the
+	-- garage and the row said it was in the street, filed where it used to be.
+	if live[plateId] ~= record or storing[plateId] then return end
 	local vehicle = fetched.value
 	applyCondition(vehicle, record, snapshot)
 	Store.Save(vehicle)
@@ -647,6 +672,10 @@ end
 local function removed(id, reason)
 	id = tonumber(id)
 	for plateId, record in pairs(live) do
+		-- A STORE IN FLIGHT OWNS THIS PLATE: it is what is removing the car, and
+		-- it writes the row and publishes the store itself. Handling the removal
+		-- here as well announced one put-away twice.
+		if record.id == id and storing[plateId] then return end
 		if record.id == id then
 			-- Forgotten immediately, and the state written on a thread: the
 			-- platform lets an event handler yield, but this one returns at once
@@ -736,6 +765,7 @@ end
 function M.Init()
 	live = {}
 	claiming = {}
+	storing = {}
 	owners = {}
 	OPX.Schema.Add(M.Storage.SCHEMA)
 end
@@ -794,12 +824,62 @@ end
 --- Writes back everything that is out before the resource goes.
 -- @author dop42
 --
--- On the stop handler's own stack and NOT on a thread: a stop does not resume
--- one. The save loop is what guarantees the condition survives; this is the last
--- chance to write the rest.
+-- ON THE STOP HANDLER'S OWN STACK, which is not a coroutine, so nothing here may
+-- await. This used to call `StoreAll`, whose every `Store` begins with a
+-- `FetchOne` -- and a database read off a coroutine does not wait, it fails. So
+-- every vehicle out at a stop logged "its condition is not written" and went
+-- with its row still saying OUT: the damage since the last save pass was lost,
+-- and the garage list showed cars in the street that were not there.
+--
+-- Now the condition is read from the engine on this stack, while it still
+-- answers, and written with the bridge's callback form, which sends the
+-- statement before it returns (`Storage.SaveConditionNow`). Best effort: the
+-- save loop is still what guarantees damage survives a crash.
+--
+-- BOUNDED: at most STOP_SAVE_MAX vehicles are written, two engine reads and one
+-- statement each, inside the one resume a stop handler gets; the rest keep the
+-- last save pass.
+local STOP_SAVE_MAX = 64
+
 function M.Stop()
-	local stored = M.StoreAll(nil)
-	if stored > 0 then
-		Open77.log.info(('[vehicles] stored %d vehicle(s) on stop'):format(stored))
+	local plates = {}
+	for plateId in pairs(live) do plates[#plates + 1] = plateId end
+	table.sort(plates)
+
+	local dispatched = 0
+	for index = 1, #plates do
+		local record = live[plates[index]]
+		if index <= STOP_SAVE_MAX then
+			local read, snapshot = pcall(Open77.vehicles.get, record.id)
+			if read and type(snapshot) == 'table' then
+				local gotDamage, damage = pcall(Open77.vehicles.getDamage, record.id)
+				local entity = {
+					plate = plates[index],
+					state = STATE.STORED,
+					health = finiteNumber(snapshot.health) or 1.0,
+					damage = gotDamage and type(damage) == 'table' and damage or nil,
+					flags = finiteNumber(snapshot.flags),
+				}
+				local sent, why = Store.SaveConditionNow(entity, function(ok, reason)
+					if not ok then
+						Open77.log.warn(('[vehicles] %s: the condition taken at stop was not written (%s)')
+							:format(entity.plate, tostring(reason)))
+					end
+				end)
+				if sent then
+					dispatched = dispatched + 1
+				else
+					Open77.log.warn(('[vehicles] %s: the condition taken at stop could not be sent (%s)')
+						:format(entity.plate, tostring(why)))
+				end
+			end
+		end
+		pcall(Open77.vehicles.remove, record.id)
+	end
+	live, claiming, storing = {}, {}, {}
+
+	if #plates > 0 then
+		Open77.log.info(('[vehicles] stopping: %d vehicle(s) out, %d condition save(s) sent, ' ..
+			'best effort'):format(#plates, dispatched))
 	end
 end

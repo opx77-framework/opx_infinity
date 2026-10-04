@@ -55,9 +55,6 @@ local Result = OPX.Result
 -- arguments or answer; a name is never reused for something else.
 local SURFACE = 1
 
--- A resource name as the manifest grammar allows one, bounded.
-local CALLER_PATTERN = '^[%w_%-%.]+$'
-
 -- A money reason a caller may give, in characters.
 local MAX_REASON = 64
 
@@ -68,36 +65,17 @@ local NAME_PATTERN = '^[%w_%-%.]+$'
 -- resource retrying in a loop writes one hint and not one per tick.
 local hinted = {}
 
-local function refuse(code)
-	return { ok = false, error = code }
-end
-
-local function ok(value)
-	return { ok = true, value = value }
-end
-
---- A contract Result as the plain answer the surface promises.
-local function answered(result)
-	if type(result) ~= 'table' then return refuse('error.unavailable') end
-	if result.ok == true then return ok(result.value) end
-	return refuse(type(result.error) == 'string' and result.error or 'error.unavailable')
-end
+-- The answer shapes, the caller gate and the allowlist test are shared with the
+-- client surface: `core/shared/exports.lua`.
+local Export = OPX.Export
+local refuse, ok, answered = Export.Refuse, Export.Ok, Export.Answered
 
 local function settings()
 	local server = OPX.Config.SERVER or {}
 	return type(server.EXPORTS) == 'table' and server.EXPORTS or {}
 end
 
---- Whether an allowlist admits a caller: '*', a set, or an array of names.
-local function admits(list, caller)
-	if list == '*' then return true end
-	if type(list) ~= 'table' then return false end
-	if list[caller] == true then return true end
-	for _, name in ipairs(list) do
-		if name == caller then return true end
-	end
-	return false
-end
+local admits = Export.Admits
 
 -- ── the arguments ────────────────────────────────────────────────────────────
 
@@ -204,15 +182,7 @@ local function detached(body, caller, args)
 	return box.ran, box.answer
 end
 
---- Whether this host offers `exports`.
--- On op77 `exports` is a CALLABLE TABLE, not a function: it is called to
--- publish and indexed for `exports.other:name()`, so `type` answers 'table'.
--- Testing for 'function' alone read every real host as having none, and the
--- whole creator surface went unpublished without an error.
-local function hasExports()
-	local kind = type(exports)
-	return kind == 'function' or kind == 'table' or kind == 'userdata'
-end
+local hasExports = Export.Available
 
 --- Publishes one export behind the three gates.
 -- @param name string the export name
@@ -224,17 +194,22 @@ end
 local function publish(name, scope, body, yields)
 	if not hasExports() then return end
 	exports(name, function(...)
-		local caller = GetInvokingResource ~= nil and GetInvokingResource() or nil
-		if type(caller) ~= 'string' or #caller < 1 or #caller > 64
-			or not caller:match(CALLER_PATTERN) then
-			return refuse('export.callerDenied')
-		end
+		local caller = Export.Caller()
+		if caller == nil then return refuse('export.callerDenied') end
 
 		local config = settings()
 		local list = scope == 'write' and config.WRITERS or config.READ
 		if not admits(list, caller) then
-			OPX.Audit.Security('export.denied', ('%s called %s'):format(caller, name),
-				{ caller = caller, export = name, scope = scope })
+			-- Its own dedupe window per CALLER. Through `Audit.Security` with no
+			-- source, every denial on the host shared one window, so a resource
+			-- retrying in a loop hid every other resource's denial from the log.
+			OPX.Audit.Log({
+				event = 'export.denied',
+				severity = 'warn',
+				message = ('%s called %s'):format(caller, name),
+				data = { caller = caller, export = name, scope = scope },
+				owner = 'ext:' .. caller,
+			})
 			local key = caller .. '\1' .. name
 			if not hinted[key] then
 				hinted[key] = true
@@ -269,6 +244,9 @@ local function publish(name, scope, body, yields)
 				severity = answer.ok and 'info' or 'warn',
 				message = caller,
 				data = { caller = caller, args = args, error = answer.error },
+				-- A refused write is collapsed per caller; one that landed is a
+				-- ledger line (`export.` in `lib/server/audit.lua`) and never is.
+				owner = 'ext:' .. caller,
 			})
 		end
 		return answer
@@ -735,6 +713,91 @@ publish('SetVehicleState', 'write', function(_, plate, state, garage)
 	end
 	if garage ~= nil and nameOf(garage) == nil then return refuse('export.badArgument') end
 	return answered(vehicles.SetState(plate, state, garage))
+end, true)
+
+-- ── doors ────────────────────────────────────────────────────────────────────
+-- ox_doorlock's server exports under their ox meaning (`modules/doorlock`). A
+-- door is ox's integer id; a door seeded from config or carried over from the
+-- first version also answers to its old key. No answer ever carries a code.
+
+--- A door reference: ox's id, or a seeded door's key.
+local function doorRef(value)
+	if type(value) == 'number' then return math.tointeger(value) end
+	return nameOf(value)
+end
+
+local function doorlockApi(method)
+	local doorlock = OPX.Api.Get('doorlock')
+	if doorlock == nil or doorlock[method] == nil then return nil end
+	return doorlock
+end
+
+-- ox's `getDoor(id)`.
+publish('GetDoor', 'read', function(_, ref)
+	local doorlock = doorlockApi('Get')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if doorRef(ref) == nil then return refuse('export.badArgument') end
+	return answered(doorlock.Get(doorRef(ref)))
+end)
+
+-- ox's `getDoorFromName(name)`.
+publish('GetDoorFromName', 'read', function(_, name)
+	local doorlock = doorlockApi('GetFromName')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if type(name) ~= 'string' or #name < 1 or #name > 64 then return refuse('export.badArgument') end
+	return answered(doorlock.GetFromName(name))
+end)
+
+-- ox's `getAllDoors()`.
+publish('GetAllDoors', 'read', function()
+	local doorlock = doorlockApi('All')
+	if doorlock == nil then return refuse('error.unavailable') end
+	return answered(doorlock.All())
+end)
+
+-- ox's `setDoorState(id, state)` called by a resource: the caller decided who
+-- may, and the door's own rules are not consulted. On the networked backend it
+-- reaches `open77_doors` and yields, so it is awaited like every other write.
+publish('SetDoorState', 'write', function(caller, ref, state)
+	local doorlock = doorlockApi('SetState')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if doorRef(ref) == nil or (state ~= 0 and state ~= 1 and type(state) ~= 'boolean') then
+		return refuse('export.badArgument')
+	end
+	return answered(doorlock.SetState(doorRef(ref), state, 'ext:' .. caller))
+end, true)
+
+-- The first version's boolean spelling of the same, kept for its callers.
+publish('SetDoorLocked', 'write', function(caller, ref, locked)
+	local doorlock = doorlockApi('SetLocked')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if doorRef(ref) == nil or type(locked) ~= 'boolean' then return refuse('export.badArgument') end
+	return answered(doorlock.SetLocked(doorRef(ref), locked, 'ext:' .. caller))
+end, true)
+
+-- ox's `createDoor(data)`, answering the new id. The door is validated exactly
+-- as a staff save is, minus the staff member's position.
+publish('CreateDoor', 'write', function(caller, data)
+	local doorlock = doorlockApi('Create')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if type(data) ~= 'table' then return refuse('export.badArgument') end
+	return answered(doorlock.Create(data, 'ext:' .. caller))
+end, true)
+
+-- ox's `editDoor(id, data)`: the fields given replace the door's.
+publish('EditDoor', 'write', function(caller, ref, data)
+	local doorlock = doorlockApi('Edit')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if doorRef(ref) == nil or type(data) ~= 'table' then return refuse('export.badArgument') end
+	return answered(doorlock.Edit(doorRef(ref), data, 'ext:' .. caller))
+end, true)
+
+-- ox's `removeDoor(id)`.
+publish('RemoveDoor', 'write', function(caller, ref)
+	local doorlock = doorlockApi('Remove')
+	if doorlock == nil then return refuse('error.unavailable') end
+	if doorRef(ref) == nil then return refuse('export.badArgument') end
+	return answered(doorlock.Remove(doorRef(ref), 'ext:' .. caller))
 end, true)
 
 if not hasExports() then

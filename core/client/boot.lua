@@ -39,6 +39,13 @@ AddEventHandler(OPX.Host.CLIENT_RESOURCE_START, function(name)
 			OPX.Note('boot', ('the client surface raised during boot: %s'):format(tostring(why)))
 		end
 
+		-- The modules on a fresh resume: the surface build is ~2,300 VM
+		-- instructions, and it shared the boot thread's first resume with the
+		-- module order and the first `Init` -- the meter's 10,800, against a
+		-- budget that unwinds this thread, and the whole client half with it,
+		-- without a word.
+		Wait(0)
+
 		local started, fatal = OPX.Modules.Run()
 		if not started then
 			Open77.log.error(('client module failed: %s'):format(tostring(fatal)))
@@ -62,8 +69,15 @@ end)
 AddEventHandler(OPX.Host.CLIENT_RESOURCE_STOP, function(name)
 	if name ~= RESOURCE then return end
 	stopping = true
+	-- THE FOCUS GOES BACK FIRST. It used to go back only inside `Teardown`, at
+	-- the end, so a budget overrun anywhere in the module stops below left the
+	-- player holding a cursor and no controls, with no way out short of dying.
+	-- Under pcall: nothing here may stop the rest of the stop path running.
+	pcall(OPX.UI.ReleaseAllFocus)
 	OPX.Scheduler.Stop()
-	OPX.Modules.Stop()
+	-- `true`: each module's `Stop` gets a fresh budget where the stack can yield.
+	-- See `OPX.Modules.Stop`.
+	OPX.Modules.Stop(true)
 	-- AFTER the modules, and it was missing entirely. `OPX.UI.Teardown` says in
 	-- its own docstring that this is the stop path, and nothing called it: the
 	-- CEF page outlived the resource that built it. After `Modules.Stop` because

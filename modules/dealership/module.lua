@@ -72,6 +72,10 @@ M.Event = {
 	-- What became of an offer, sent to the SELLER: the buyer said no, the buyer
 	-- said nothing, or the sale went through and this is the commission.
 	SETTLED = OPX.Event(NET, 'dealership', 'settled'),
+	-- What became of an offer, sent to the BUYER when it ended without their
+	-- answer: it ran out, or the seller left. Carries the offer's token, so a
+	-- withdrawal of an offer already replaced closes nothing.
+	WITHDRAWN = OPX.Event(NET, 'dealership', 'withdrawn'),
 
 	-- The client's own bus. `decision` carries every verdict, local refusals
 	-- included. Public: a bare AddEventHandler reaches it.
@@ -88,10 +92,6 @@ M.Event = {
 -- cannot tell which `error.tooFast` is its own.
 M.Operation = {
 	BUY = 'dealershipBuy',
-	-- Placing or removing a preview point. NOT the old `CAPTURE`, which named
-	-- the command that placed a DEALER: that command is gone, and an operation
-	-- name nothing raises is a name the next reader wires a refusal up to.
-	PLACE = 'dealershipPlace',
 	-- Offering a vehicle to another player, and that player's answer.
 	OFFER = 'dealershipOffer',
 	DECIDE = 'dealershipDecide',
