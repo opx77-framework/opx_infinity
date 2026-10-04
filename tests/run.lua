@@ -141,6 +141,11 @@ local CORE_NAMESPACE = {
 	-- because every module that announces something calls it, and a copy per
 	-- module would be a copy per idea of what "refused" means.
 	Publish = true,
+	-- The creator surfaces' one caller gate and answer shape, in
+	-- `core/shared/exports.lua`. On `OPX` because BOTH halves stand on it: two
+	-- copies of a gate are two gates, and the day one is tightened alone the
+	-- client and the server disagree about who may call.
+	Export = true,
 }
 
 -- States a module may legitimately rest in. `absent` means it runs on the other
@@ -12878,6 +12883,34 @@ do
 		check('and the server-shaped call, off any thread, still stops in one go',
 			(pcall(OPX.Modules.Stop)))
 	end
+end
+
+-- ── one caller gate for both creator surfaces ────────────────────────────────
+-- The gate was written out twice, once per half. Read from the source because
+-- what is being held is that neither half carries its own copy any more.
+section('the creator surfaces share one gate')
+do
+	for _, file in ipairs({ 'core/server/exports.lua', 'core/client/exports.lua' }) do
+		local source = io.open(file):read('a')
+		check(file .. ' asks the shared gate who is calling',
+			source:find('Export.Caller()', 1, true) ~= nil
+				and source:find('GetInvokingResource()', 1, true) == nil)
+	end
+	local env = { type = type, ipairs = ipairs, OPX = {} }
+	local chunk = loadfile('core/shared/exports.lua', 't', env)
+	chunk()
+	local Export = env.OPX.Export
+	env.GetInvokingResource = function() return 'my_shop' end
+	check('a well-formed caller is named', Export.Caller() == 'my_shop')
+	env.GetInvokingResource = function() return 'bad name!' end
+	check('a name outside the manifest grammar is nobody', Export.Caller() == nil)
+	env.GetInvokingResource = function() return ('a'):rep(65) end
+	check('and so is one past 64 characters', Export.Caller() == nil)
+	check('an array allowlist admits by name', Export.Admits({ 'a', 'b' }, 'b')
+		and not Export.Admits({ 'a' }, 'b') and Export.Admits('*', 'x'))
+	check('a Result that is not one answers unavailable',
+		Export.Answered(nil).error == 'error.unavailable'
+			and Export.Answered({ ok = true, value = 3 }).value == 3)
 end
 
 -- ── the hotbar peek ─────────────────────────────────────────────────────────
