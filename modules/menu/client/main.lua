@@ -1344,8 +1344,21 @@ end
 
 --- Escape. The page keeps focus until this answers with a close: the close
 --- reason belongs to Lua and the page never decides it.
+---
+--- INSIDE A SUBMENU, ESCAPE IS BACK. It used to close the whole menu from any
+--- depth, while Backspace and Left went up one level: so a player three levels
+--- into a shop who pressed the key every other screen uses to back out lost
+--- the shop. One rule now -- Escape goes back, and closes at the top -- which is
+--- what the BACK key already did.
 local function onDismiss(payload)
 	if fromPage(payload) == nil then return end
+	if #record.stack > 1 then
+		local handle = record.handle
+		record.stack[#record.stack] = nil
+		dispatch(record, nil, 'back')
+		if record ~= nil and record.handle == handle then draw() end
+		return
+	end
 	closeNow(record.handle, 'dismissed')
 end
 

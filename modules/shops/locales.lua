@@ -8,31 +8,32 @@
 local M = OPX.Modules.Get('shops')
 
 local EN = {
-	['shops.row'] = 'Try clothes on',
+	['shops.row'] = 'Open fitting room',
 
 	-- Refusals. `no_such_shop`, `too_far`, `position_unknown` and `not_for_you`
 	-- are the four `shopAt` can answer and are prefixed with `shops.` by the
 	-- caller, so their keys read oddly on purpose -- they are machine names.
 	['shops.no_such_shop'] = 'There is no shop here.',
 	['shops.too_far'] = 'You are not close enough to the counter.',
-	['shops.position_unknown'] = 'The server cannot tell where you are standing.',
+	['shops.position_unknown'] = 'Your position could not be read.',
 	['shops.not_for_you'] = 'This shop does not serve you.',
 
 	['shops.unavailable'] = 'The fitting room is not available right now.',
 	['shops.cannotDress'] = 'Those clothes would not go on.',
 	['shops.cannotPay'] = 'You cannot afford that: {total} needed.',
-	['shops.paid'] = '{total} at {shop}.',
+	['shops.paid'] = 'Paid {total} at {shop}.',
 
 	['shops.noSuchLook'] = 'That look is not on offer.',
 	['shops.notForYou'] = 'Your job does not entitle you to that.',
 	['shops.notHere'] = 'That look is not carried here.',
 
-	['shops.noCharacter'] = 'No character is loaded.',
+	['shops.noCharacter'] = 'Your character is not loaded yet. Try again in a moment.',
 	['shops.nameNeeded'] = 'Give the outfit a name.',
 	['shops.tooMany'] = 'You already keep {max} outfits. Delete one first.',
-	['shops.nothingWorn'] = 'There is nothing saved to write down yet.',
+	['shops.nothingWorn'] = 'You are not wearing anything that can be saved yet.',
 	['shops.saved'] = 'Saved as {name}.',
-	['shops.saveFailed'] = 'That could not be written down.',
+	['shops.saveFailed'] = 'The outfit could not be saved.',
+	['shops.deleteFailed'] = 'That outfit could not be deleted.',
 	['shops.listFailed'] = 'Your outfits could not be read.',
 	['shops.noSuchOutfit'] = 'That outfit is not yours.',
 	['shops.outfitUnreadable'] = 'That outfit cannot be read back.',
@@ -54,9 +55,11 @@ local EN = {
 	['shops.looks.empty'] = 'This counter has nothing ready to wear.',
 	['shops.outfits.title'] = 'Your saved outfits',
 	['shops.outfits.empty'] = 'You have not saved an outfit yet.',
-	['shops.outfits.wear'] = 'Put it on',
+	['shops.outfits.wear'] = 'Wear outfit',
 	['shops.outfits.share'] = 'Get a share code',
-	['shops.outfits.delete'] = 'Forget it',
+	['shops.outfits.delete'] = 'Delete outfit',
+	['shops.outfits.deleteConfirm'] = 'Yes, delete {name}',
+	['shops.outfits.keep'] = 'Keep it',
 	['shops.outfits.code'] = 'Code {code}',
 	['shops.outfits.shared'] = 'Share code: {code}',
 
@@ -72,32 +75,33 @@ local EN = {
 	['shops.code.hint'] = '{length} characters, read out by another player.',
 
 	['shops.noSurface'] = 'That screen is not available right now.',
-	['shops.dressFailed'] = 'That outfit would not go on: {reason}.',
+	['shops.dressFailed'] = 'That outfit would not go on.',
 }
 
 local FR = {
-	['shops.row'] = 'Essayer des vêtements',
+	['shops.row'] = "Ouvrir la cabine d'essayage",
 
 	['shops.no_such_shop'] = "Il n'y a pas de boutique ici.",
 	['shops.too_far'] = 'Vous êtes trop loin du comptoir.',
-	['shops.position_unknown'] = 'Le serveur ne sait pas où vous vous tenez.',
-	['shops.not_for_you'] = 'Cette boutique ne vous sert pas.',
+	['shops.position_unknown'] = "Votre position n'a pas pu être lue.",
+	['shops.not_for_you'] = 'Cette boutique ne vous est pas ouverte.',
 
-	['shops.unavailable'] = "La cabine d'essayage n'est pas disponible.",
-	['shops.cannotDress'] = 'Ces vêtements ne se sont pas mis.',
+	['shops.unavailable'] = "La cabine d'essayage n'est pas disponible pour le moment.",
+	['shops.cannotDress'] = "Impossible d'enfiler ces vêtements.",
 	['shops.cannotPay'] = 'Vous ne pouvez pas payer : {total} nécessaires.',
-	['shops.paid'] = '{total} chez {shop}.',
+	['shops.paid'] = 'Vous avez payé {total} chez {shop}.',
 
 	['shops.noSuchLook'] = "Cette tenue n'est pas proposée.",
 	['shops.notForYou'] = 'Votre métier ne vous y donne pas droit.',
 	['shops.notHere'] = "Cette tenue n'est pas vendue ici.",
 
-	['shops.noCharacter'] = "Aucun personnage n'est chargé.",
+	['shops.noCharacter'] = "Votre personnage n'est pas encore chargé. Réessayez dans un instant.",
 	['shops.nameNeeded'] = 'Donnez un nom à la tenue.',
 	['shops.tooMany'] = 'Vous gardez déjà {max} tenues. Supprimez-en une.',
-	['shops.nothingWorn'] = "Il n'y a rien d'enregistré à noter pour l'instant.",
+	['shops.nothingWorn'] = 'Vous ne portez encore rien qui puisse être enregistré.',
 	['shops.saved'] = 'Enregistrée sous {name}.',
-	['shops.saveFailed'] = "Cela n'a pas pu être enregistré.",
+	['shops.saveFailed'] = "La tenue n'a pas pu être enregistrée.",
+	['shops.deleteFailed'] = "Cette tenue n'a pas pu être supprimée.",
 	['shops.listFailed'] = "Vos tenues n'ont pas pu être lues.",
 	['shops.noSuchOutfit'] = "Cette tenue n'est pas la vôtre.",
 	['shops.outfitUnreadable'] = 'Cette tenue est illisible.',
@@ -110,15 +114,17 @@ local FR = {
 	['shops.group.looks'] = 'Uniformes',
 	['shops.group.outfits'] = 'Mes tenues',
 	['shops.group.save'] = 'Enregistrer',
-	['shops.group.code'] = 'Code tenue',
+	['shops.group.code'] = 'Code de tenue',
 
 	['shops.looks.title'] = 'Tenues prêtes à porter',
 	['shops.looks.empty'] = "Ce comptoir n'a rien de prêt à porter.",
 	['shops.outfits.title'] = 'Vos tenues enregistrées',
 	['shops.outfits.empty'] = "Vous n'avez encore enregistré aucune tenue.",
-	['shops.outfits.wear'] = 'La mettre',
+	['shops.outfits.wear'] = 'Porter la tenue',
 	['shops.outfits.share'] = 'Obtenir un code de partage',
-	['shops.outfits.delete'] = "L'oublier",
+	['shops.outfits.delete'] = 'Supprimer la tenue',
+	['shops.outfits.deleteConfirm'] = 'Oui, supprimer {name}',
+	['shops.outfits.keep'] = 'La garder',
 	['shops.outfits.code'] = 'Code {code}',
 	['shops.outfits.shared'] = 'Code de partage : {code}',
 
@@ -131,7 +137,7 @@ local FR = {
 	['shops.code.hint'] = "{length} caractères, dictés par un autre joueur.",
 
 	['shops.noSurface'] = "Cet écran n'est pas disponible pour le moment.",
-	['shops.dressFailed'] = "Cette tenue ne s'est pas mise : {reason}.",
+	['shops.dressFailed'] = "Impossible d'enfiler cette tenue.",
 }
 
 M.Catalogs = { en = EN, fr = FR }

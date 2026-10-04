@@ -10,7 +10,8 @@ local M = OPX.Modules.Get('spawn')
 
 local EN = {
 	['spawn.title'] = 'CHOOSE A SPAWN',
-	['spawn.about'] = 'Pick where you start, or pick nothing to keep your last position.',
+	['spawn.eyebrow'] = 'SPAWN',
+	['spawn.about'] = 'Pick where you start.',
 	['spawn.hint'] = 'Click a location to spawn there.',
 	['spawn.placed'] = 'Spawned at {place}.',
 	['spawn.timeout'] = 'No choice was made: the server placed you.',
@@ -19,11 +20,12 @@ local EN = {
 }
 
 local FR = {
-	['spawn.title'] = 'CHOISIR UN POINT D APPARTION',
-	['spawn.about'] = 'Choisissez ou vous commencez, ou ne choisissez rien pour garder votre position.',
-	['spawn.hint'] = 'Cliquez sur un lieu pour y apparaitre.',
-	['spawn.placed'] = 'Apparition a {place}.',
-	['spawn.timeout'] = 'Aucun choix : le serveur vous a place.',
+	['spawn.title'] = 'CHOISISSEZ OÙ APPARAÎTRE',
+	['spawn.eyebrow'] = 'APPARITION',
+	['spawn.about'] = 'Choisissez où vous commencez.',
+	['spawn.hint'] = 'Cliquez sur un lieu pour y apparaître.',
+	['spawn.placed'] = 'Apparition à {place}.',
+	['spawn.timeout'] = 'Aucun choix : le serveur vous a placé.',
 
 	['spawn.noChoice'] = "Ce choix d'apparition n'est plus ouvert.",
 }

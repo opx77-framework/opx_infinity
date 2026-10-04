@@ -10,7 +10,7 @@ local M = OPX.Modules.Get('target')
 local EN = {
 	-- The eye's own row: who is this. Two identifiers, named, because they are
 	-- different things with different lifetimes.
-	['target.identify.row'] = 'Identifiers',
+	['target.identify.row'] = 'Show ID',
 	['target.identify.title'] = 'IDENTIFIERS',
 	['target.identify.copied'] = 'Server {server} / Character {citizen} — copied',
 	['target.identify.shown'] = 'Server {server} / Character {citizen}',
@@ -22,10 +22,10 @@ local EN = {
 }
 
 local FR = {
-	['target.identify.row'] = 'Identifiants',
+	['target.identify.row'] = 'Voir les identifiants',
 	['target.identify.title'] = 'IDENTIFIANTS',
-	['target.identify.copied'] = 'Serveur {server} / Perso {citizen} — copié',
-	['target.identify.shown'] = 'Serveur {server} / Perso {citizen}',
+	['target.identify.copied'] = 'Serveur {server} / Personnage {citizen} — copié',
+	['target.identify.shown'] = 'Serveur {server} / Personnage {citizen}',
 	['target.key'] = 'Cibler (maintenir)',
 	['target.hint'] = 'Clic droit sur une cible',
 	['target.looking'] = 'Recherche…',

@@ -412,7 +412,12 @@ end
 function M.Refusal(code)
 	local key = type(code) == 'string' and code or 'error.unavailable'
 	if OPX.Locale.Exists(key) then return locale(key) end
-	return locale('entry.refusal.unknown', { code = key })
+	-- THE CODE GOES TO THE LOG AND NOT ON SCREEN. This sentence used to end in
+	-- `({code})`, which put `name_taken_v2` or whatever the server invented in
+	-- front of a player who can do nothing with it; the operator who can is the
+	-- one reading the client log.
+	Open77.log.warn(('[entry] a refusal with no wording reached the player: %s'):format(key))
+	return locale('entry.refusal.unknown')
 end
 
 --- Builds the held state.

@@ -70,9 +70,9 @@ local reportedStrip = false
 local scanJob, askJob = nil, nil
 
 -- Every refusal code the server can send, mapped to the sentence a player reads.
--- A code with no entry falls through to the generic line with the code in it,
--- which is deliberately ugly: an unmapped refusal should look like a bug,
--- because it is one.
+-- A code with no entry falls through to the generic line, and the code goes to
+-- the log: an unmapped refusal is a bug, but the player is not the one who can
+-- fix it, and the line used to print the code itself at them.
 local SENTENCES = {
 	rate_limited = 'error.tooFast',
 	in_flight = 'teleports.inFlight',
@@ -95,6 +95,11 @@ local SENTENCES = {
 	invalid_position = 'teleports.badDestination',
 	settle_timeout = 'teleports.neverArrived',
 	no_promise = 'teleports.unavailable',
+	-- The server's own two catch-alls (`refused` for a gate it will not explain,
+	-- `failed` for a move that did not happen), which used to reach the
+	-- generic line as "That trip was refused: failed".
+	refused = 'teleports.locked',
+	failed = 'teleports.unavailable',
 }
 
 -- Reads the key declaration, with the shipped value as the fallback so a config
@@ -235,7 +240,8 @@ local function refusalText(code, reason)
 	end
 	local key = SENTENCES[code]
 	if key ~= nil then return locale(key) end
-	return locale('teleports.refused', { reason = tostring(code) })
+	Open77.log.warn(('[teleports] a refusal with no sentence: %s'):format(tostring(code)))
+	return locale('teleports.refused')
 end
 
 -- ── the door ────────────────────────────────────────────────────────────────
