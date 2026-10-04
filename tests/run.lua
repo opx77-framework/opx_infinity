@@ -8108,6 +8108,29 @@ do
 		check('while the offer they were actually made is still open',
 			contract.Accept(buyer, secondAt, false).error == 'dealership.offerDeclined')
 
+		-- ── a yes refused after the offer is gone tells the seller ─────────
+		-- `Accept` takes the offer off the table before it proves anything, so
+		-- the expiry that would otherwise report it finds nothing: a buyer who
+		-- said yes from outside the room left the seller waiting on a sale that
+		-- no longer existed.
+		contract.Offer(seller, buyer, 'hella')
+		local strayAt = lastEvent(dealership.Event.OFFERED)[1].token
+		control.Stand(buyer, 500.0, 0.0, 0.0)
+		local strayMark = #control.clientEvents
+		local stray = contract.Accept(buyer, strayAt, true)
+		control.Stand(buyer, 0.0, 0.0, 0.0)
+		local toldSeller
+		for index = strayMark + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.name == dealership.Event.SETTLED and sent.source == seller then toldSeller = sent end
+		end
+		check('a yes from outside the room is refused to the buyer',
+			stray.ok == false and stray.error == 'dealership.notInZone', tostring(stray.error))
+		check('and the seller is told, in words about the buyer',
+			toldSeller ~= nil and toldSeller[1].ok == false
+				and toldSeller[1].error == 'dealership.buyerNotInZone',
+			toldSeller and tostring(toldSeller[1].error) or 'nothing sent')
+
 		-- ── and yes ────────────────────────────────────────────────────────
 		local settled
 		offered = contract.Offer(seller, buyer, 'hella')

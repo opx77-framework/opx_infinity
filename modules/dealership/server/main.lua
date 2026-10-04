@@ -823,35 +823,51 @@ function M.Accept(buyer, token, yes, destKey)
 		return Result.Err('dealership.offerDeclined')
 	end
 
-	if vehicles == nil then return Result.Err('dealership.noVehicles') end
-	if currency == nil then return Result.Err('dealership.noCurrency') end
+	-- THE SELLER IS TOLD HOW IT ENDED, on every refusal from here down. The
+	-- offer is already gone from the table, so the timeout that would otherwise
+	-- report it finds nothing and says nothing: a seller whose buyer said yes
+	-- and was then refused for the zone or the catalogue was left waiting on a
+	-- sale that no longer existed. `told` is the seller's own sentence where
+	-- the buyer's would read wrong to them, and false when the seller is the
+	-- one who left -- the connection may belong to somebody else by now.
+	local function refused(code, told)
+		if told ~= false then
+			TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
+				error = told or code, entry = offer.entry })
+		end
+		return Result.Err(code)
+	end
+
+	if vehicles == nil then return refused('dealership.noVehicles') end
+	if currency == nil then return refused('dealership.noCurrency') end
 
 	-- EVERYTHING IS PROVED AGAIN. The buyer may have walked out of the room,
 	-- spent the money, changed character or logged off since the offer, and the
 	-- seller may have done the same.
+	local sellerData = characterOf(offer.seller)
+	local sellerHere = sellerData ~= nil and sellerData.citizenId == offer.sellerCitizen
 	local buyerData = characterOf(buyer)
 	if buyerData == nil or buyerData.citizenId ~= offer.buyerCitizen then
-		return Result.Err('dealership.noCharacter')
+		return refused('dealership.noCharacter', sellerHere and 'dealership.buyerNotInZone')
 	end
-	local sellerData = characterOf(offer.seller)
-	if sellerData == nil or sellerData.citizenId ~= offer.sellerCitizen then
-		return Result.Err('dealership.sellerGone')
-	end
+	if not sellerHere then return refused('dealership.sellerGone', false) end
 
 	local dealer = Access.Spot(spots, offer.dealer)
 	local buyerAt = pointOf(buyer)
 	local sellerAt = pointOf(offer.seller)
 	if dealer == nil or not inZone(buyerAt, dealer) then
-		return Result.Err('dealership.notInZone')
+		return refused('dealership.notInZone', 'dealership.buyerNotInZone')
 	end
-	if not inZone(sellerAt, dealer) then return Result.Err('dealership.sellerGone') end
+	if not inZone(sellerAt, dealer) then
+		return refused('dealership.sellerGone', 'dealership.notInZone')
+	end
 
 	local entry = Access.Entry(offer.entry)
 	if entry == nil or entry.price ~= offer.price then
 		-- The catalogue was edited and reloaded under an open offer. Refused
 		-- rather than honoured at either price: one of them is not what the
 		-- buyer agreed to and the other is not what the shop sells for.
-		return Result.Err('dealership.noSuchEntry')
+		return refused('dealership.noSuchEntry')
 	end
 
 	-- THE BUYER'S GARAGE, and it was ignored. A sale at the counter has always
