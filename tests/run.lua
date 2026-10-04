@@ -3419,10 +3419,17 @@ do
 		-- A BOX IS A SLIDE. Nothing new decides anything: the page reports the
 		-- index the box carries and the room turns it into a record against its own
 		-- list, which is the one path a thumb has always taken.
-		control.PageEmit(page, 'opx:panel:slide',
+		local sliding = callCost(control.PageEmit, page, 'opx:panel:slide',
 			{ handle = handle, id = 'OuterChest', index = 5, commit = true })
 		check('a box clicked in the grid dresses the puppet like a thumb does',
 			worn.OuterChest == 'Items.OuterChest_05', tostring(worn.OuterChest))
+		-- EVERY ROOM STATE THE PANEL WAS HANDED WAS WALKED NODE BY NODE, ~3,600
+		-- instructions of a ~5,600 republish, though every field of a patch is
+		-- already bounded by the panel's parsers. A slide is one; so is every
+		-- look list and every code that lands while the room is open, which the
+		-- meter put at ~10,000 a time. Held well inside the budget, not at it.
+		check('and the click is answered inside a small budget',
+			sliding < 4000, ('%d instructions'):format(sliding))
 
 		-- ── the category strip, and what gates each row ──────────────────────
 		-- WIRED, NOT BUILT. Saved outfits, share codes and the job gate all
@@ -3468,10 +3475,12 @@ do
 		-- Even once a look list arrives: without a shop being served there is
 		-- still nothing this player could be sold.
 		local shopsModule = env.OPX.Modules.Get('shops')
-		control.netEvents[shopsModule.Event.LOOKS]({ shop = 'jinguji',
+		local listing = callCost(control.netEvents[shopsModule.Event.LOOKS], { shop = 'jinguji',
 			looks = { { id = 'corpo', label = 'Corpo suit', cost = 0 } } })
 		check('and a look list alone does not conjure the category',
 			not hasGroup('looks'))
+		check('and the list lands inside a small budget',
+			listing < 4000, ('%d instructions'):format(listing))
 
 		-- ── a shared code, all the way onto the sliders ──────────────────────
 		-- THE ROUND TRIP THAT WAS BROKEN. A redeemed code comes back as `PUT_ON`,
@@ -3482,7 +3491,7 @@ do
 		-- the room's draft now, which means the SLIDER MOVES -- and the slider
 		-- moving is the only thing the player can actually see.
 		local wasFeet = slider('Feet')
-		control.netEvents[shopsModule.Event.PUT_ON]({ look = 'shared',
+		local dressing = callCost(control.netEvents[shopsModule.Event.PUT_ON], { look = 'shared',
 			wear = { Feet = 'Items.Feet_03' } })
 		local nowFeet = slider('Feet')
 		check('a code redeemed inside the room moves the room\'s own slider',
@@ -3492,6 +3501,8 @@ do
 			wasFeet ~= nil and nowFeet ~= nil and wasFeet.index ~= nowFeet.index)
 		check('and the puppet is actually wearing it',
 			worn.Feet == 'Items.Feet_03', tostring(worn.Feet))
+		check('and the code lands inside a small budget',
+			dressing < 4000, ('%d instructions'):format(dressing))
 
 		-- A GARMENT THIS BODY HAS NO RECORD FOR IS SKIPPED, NOT OBEYED. A code is
 		-- read out by another player whose character may be a different build, so
