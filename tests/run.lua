@@ -14683,6 +14683,26 @@ do
 		env.source = nil
 		local adoptedId = lifts.next
 		check('the lift is adopted', #lifts.adopts == 1 and lifts.byId[adoptedId] ~= nil)
+
+		-- A DOWNED PLAYER CALLS NO CABIN. Only the client's panel consulted the
+		-- down screen; a client sending REQUEST itself rode while bleeding out.
+		local downed = env.OPX.Api.Get('downed')
+		local realIsDown = downed and downed.IsDown
+		if downed ~= nil then
+			downed.IsDown = function() return { ok = true, value = { down = true } } end
+		end
+		env.source = 4
+		control.netEvents[M.Event.REQUEST]('arasaka_tower', 0)
+		env.source = nil
+		if downed ~= nil then downed.IsDown = realIsDown end
+		local refusedDown
+		for _, sent in ipairs(control.clientEvents) do
+			if sent.name == M.Event.ANSWER then refusedDown = sent end
+		end
+		check('a downed player\'s floor request is refused on the server',
+			refusedDown ~= nil and refusedDown[3] == false and refusedDown[4] == 'downed'
+				and #lifts.trips == 0,
+			refusedDown and tostring(refusedDown[4]))
 		-- Ten minutes and a sweep, at 100 ms a round.
 		control.Pump(6200)
 		local given = false
@@ -14693,6 +14713,18 @@ do
 		control.netEvents[M.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
 		env.source = nil
 		check('and the next sighting adopts the lift again', #lifts.adopts == 2, #lifts.adopts)
+
+		-- `Open77.elevators.nearby` takes 1..300 metres; a wider scan found no lift
+		-- at all and nothing said why.
+		local settings = env.OPX.Config.MODULES.elevators
+		local shipped = settings.SCAN_RADIUS
+		settings.SCAN_RADIUS = 500
+		local said = table.concat(M.Access.Problems(), '\n')
+		settings.SCAN_RADIUS = shipped
+		check('a SCAN_RADIUS wider than the host takes is reported',
+			said:find('SCAN_RADIUS must be between 1 and 300', 1, true) ~= nil, said)
+		check('and the shipped one is not', #M.Access.Problems() == 0,
+			table.concat(M.Access.Problems(), ' | '))
 	end
 end
 
