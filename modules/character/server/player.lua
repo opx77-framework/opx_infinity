@@ -485,6 +485,17 @@ local function amountOf(value)
 	return n
 end
 
+--- Whether a Player is still the one in the roster under its connection.
+-- THE MONEY HOOKS MAY YIELD (`OPX.Hooks.Trigger` runs whatever a module hung on
+-- them, and `character:loading` already reads the database from one), so the
+-- world can move between the checks a mutator makes and the write it then does.
+-- A Player that logged out during the hook has already been saved by its logout:
+-- a balance changed on it afterwards is changed on a table nobody writes again,
+-- and the shop that was told "paid" handed its goods over for nothing.
+local function stillLoaded(player)
+	return not player.Offline and M.Players[player.PlayerData.source] == player
+end
+
 --- Announces a balance change to its four audiences: the owning client, the
 --- other modules, the audit log and PlayerData itself.
 local function announceMoney(player, moneyType, amount, action, reason)
@@ -550,6 +561,7 @@ function M.AddMoney(identifier, moneyType, amount, reason)
 	}) then
 		return false, 'money.vetoed'
 	end
+	if not stillLoaded(player) then return false, 'error.notLoggedIn' end
 
 	local money = player.PlayerData.money
 	money[moneyType] = money[moneyType] + value
@@ -596,6 +608,16 @@ function M.RemoveMoney(identifier, moneyType, amount, reason)
 		return false, 'money.vetoed'
 	end
 
+	-- ASKED AGAIN AFTER THE HOOK, which may yield (see `stillLoaded`). Two
+	-- purchases in flight both passed the balance test above before either had
+	-- subtracted; without this second look both subtract, and a balance of 100
+	-- pays for two 100 items and ends at -100.
+	if not stillLoaded(player) then return false, 'error.notLoggedIn' end
+	if money[moneyType] - value < 0
+		and not OPX.Config.SHARED.MONEY.ALLOW_NEGATIVE[moneyType] then
+		return false, 'money.insufficient'
+	end
+
 	money[moneyType] = money[moneyType] - value
 	announceMoney(player, moneyType, value, 'remove', reason)
 	return true
@@ -627,6 +649,7 @@ function M.SetMoney(identifier, moneyType, amount, reason)
 	}) then
 		return false, 'money.vetoed'
 	end
+	if not stillLoaded(player) then return false, 'error.notLoggedIn' end
 
 	player.PlayerData.money[moneyType] = n
 	announceMoney(player, moneyType, n, 'set', reason)
