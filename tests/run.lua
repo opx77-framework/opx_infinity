@@ -34219,6 +34219,62 @@ do
 		toast:find('scaleX(', 1, true) ~= nil and toast:find('width: barWidth', 1, true) == nil)
 end
 
+-- ── the garages list and scan, a resume at a time ───────────────────────────
+-- THE LIST WAS READ AND SCANNED IN THE NET EVENT'S ONE RESUME, every point
+-- checked field by field, and every scan re-coerced the player's position once
+-- per point in both the nearest-point search and the marker reconcile -- the
+-- budget meter's 18,500 for `garages:sync` and 9,200 for `garages:scan` on the
+-- twenty-point lot above, and the scan runs inside the scheduler's shared pass.
+-- Neither is a fixture's size: the list is every point captured in the
+-- player's bucket, and the cost grows with it. Sixty here, all in draw range.
+-- The marker set and the nearest search are `lib/client/spots.lua` and
+-- `lib/shared/spots.lua`, so dealership, clothing and teleports scan the same way.
+section('garages: a big list and its scans stay inside one resume\'s budget')
+do
+	local scanStep
+	local env, control, why = boot('client', nil, nil, function(env, file)
+		if file ~= 'core/client/scheduler.lua' then return end
+		local every = env.OPX.Scheduler.Every
+		env.OPX.Scheduler.Every = function(name, intervalMs, fn)
+			if name == 'garages:scan' then scanStep = fn end
+			return every(name, intervalMs, fn)
+		end
+	end)
+	check('the client boots with the garages scan', why == nil and scanStep ~= nil, why)
+	if why == nil and scanStep ~= nil then
+		local garages = env.OPX.Modules.Get('garages')
+		local realCharacter = env.Open77.character
+		env.Open77.character = setmetatable({ position = function() return 0.0, 0.0, 0.0 end },
+			{ __index = realCharacter })
+		local TOTAL = 60
+		local lot = {}
+		for index = 1, TOTAL do
+			lot[index] = { key = ('big#%d'):format(index), label = 'BIG', kind = 'garage',
+				garage = 'big', role = index % 2 == 0 and 'entry' or 'menu', location = index,
+				x = index * 0.5, y = 1.0, z = 0.0, heading = 0.0, bucket = 0 }
+		end
+
+		control.netEvents[garages.Event.SYNC]({ spots = lot })
+		control.Pump(12)
+		check('every point of the list is taken', garages.Runtime.Report().spots == TOTAL,
+			garages.Runtime.Report().spots)
+
+		local drawing = 0
+		for _ = 1, 12 do
+			local spent = callCost(scanStep)
+			if spent > drawing then drawing = spent end
+		end
+		check('the scans draw every marker', garages.Runtime.Report().markers == TOTAL,
+			garages.Runtime.Report().markers)
+		check('and no scan creating them cost more than 4,000 instructions', drawing < 4000,
+			('%d instructions'):format(drawing))
+		local steady = callCost(scanStep)
+		check('a scan with nothing to create stays well inside the budget', steady < 2500,
+			('%d instructions'):format(steady))
+		env.Open77.character = realCharacter
+	end
+end
+
 -- The budget meter's report, when `OPX_BUDGET_METER` asked for one: every
 -- client call site whose worst single resume cost more than the figure, the
 -- dearest first. Read it, do not gate on it -- a site here is a resume the

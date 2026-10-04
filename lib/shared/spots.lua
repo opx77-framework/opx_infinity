@@ -77,9 +77,16 @@ local DEFAULT_GROUND_OFFSET = 0.06
 -- @param value any
 -- @return number|nil
 function OPX.Spots.Coordinate(value)
-	local parsed = finiteNumber(value)
-	if parsed == nil or parsed > BOUND or parsed < -BOUND then return nil end
-	return parsed
+	-- INLINE AND NOT THROUGH `finiteNumber`: the bound already refuses both
+	-- infinities, so a number only has to be checked for NaN. This runs several
+	-- times for every spot on every list a server sends, and the two calls it
+	-- saved were most of what one cost.
+	if type(value) ~= 'number' then
+		value = tonumber(value)
+		if value == nil then return nil end
+	end
+	if value ~= value or value > BOUND or value < -BOUND then return nil end
+	return value
 end
 local coordinate = OPX.Spots.Coordinate
 
@@ -399,11 +406,19 @@ end
 --   is a number the module owns and not one this file may choose
 -- @return table|nil
 -- @return number|nil squared distance
+--
+-- THE POINT IS COERCED ONCE, NOT ONCE PER SPOT. This runs every scan of every
+-- spot module over the whole list, and `FlatDistanceSquared` re-coerced the
+-- player's position for each spot: ~85 VM instructions a spot, in a scheduler
+-- pass that shares one resume's budget (~10,000) with other jobs.
 function OPX.Spots.Nearest(spots, x, y, radiusSq)
+	x, y = coordinate(x), coordinate(y)
+	if x == nil or y == nil then return nil, nil end
 	local best, bestDistance
 	for _, spot in pairs(spots) do
-		local flat = OPX.Spots.FlatDistanceSquared(spot, x, y)
-		if flat ~= nil and flat <= radiusSq and
+		local dx, dy = x - spot.x, y - spot.y
+		local flat = dx * dx + dy * dy
+		if flat <= radiusSq and
 			(bestDistance == nil or flat < bestDistance or
 				(flat == bestDistance and spot.key < best.key)) then
 			best, bestDistance = spot, flat

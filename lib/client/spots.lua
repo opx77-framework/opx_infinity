@@ -74,8 +74,10 @@ function OPX.Spots.Markers.New(options)
 	local reported = false
 	local set = {}
 
-	-- Creates one marker, or answers why it could not be. Never raises.
-	local function create(spot)
+	-- Creates one marker, or answers why it could not be. Never raises. The draw
+	-- distance is the pass's, read once: resolving it again per marker was
+	-- another config clamp inside the scan's one resume.
+	local function create(spot, limit)
 		local api = Open77.markers
 		if type(api) ~= 'table' or type(api.create) ~= 'function' then
 			return nil, 'world.markers is unavailable'
@@ -88,7 +90,7 @@ function OPX.Spots.Markers.New(options)
 			shape = shape.shape,
 			style = shape.style,
 			radius = shape.radius,
-			maxDistance = maxDistance(),
+			maxDistance = limit,
 		})
 		if not read then return nil, tostring(id) end
 		if id == nil then return nil, tostring(reason or 'refused') end
@@ -116,30 +118,44 @@ function OPX.Spots.Markers.New(options)
 	-- @param list table key -> spot
 	-- @param x number|nil
 	-- @param y number|nil
+	--
+	-- THE POSITION IS COERCED ONCE A PASS, and the distance worked out inline:
+	-- `FlatDistanceSquared` re-coerced it for every spot on the list, in a scan
+	-- that runs inside the scheduler's shared resume -- most of the meter's
+	-- 9,200 for `garages:scan` on a twenty-point lot.
 	function set.Reconcile(list, x, y)
 		local limit = maxDistance()
 		local reach = limit * limit
 		local creates = 0
+		if x ~= nil then x, y = OPX.Spots.Coordinate(x), OPX.Spots.Coordinate(y) end
+		local located = x ~= nil and y ~= nil
+		local cap = OPX.Spots.MARKER_CREATES_PER_PASS
 		for key, spot in pairs(list) do
-			local flat = nil
-			if x ~= nil then flat = OPX.Spots.FlatDistanceSquared(spot, x, y) end
-			local wanted = flat ~= nil and flat <= reach
-			if wanted and markers[key] ~= nil and variant ~= nil and drawn[key] ~= variant(spot) then
-				forget(key)
+			local wanted = false
+			if located then
+				local dx, dy = x - spot.x, y - spot.y
+				wanted = dx * dx + dy * dy <= reach
 			end
-			if wanted and markers[key] == nil and creates < OPX.Spots.MARKER_CREATES_PER_PASS then
-				creates = creates + 1
-				local id, failure = create(spot)
-				if id == nil then
-					if not reported then
-						reported = true
-						Open77.log.warn(('[%s] no marker is drawn: %s'):format(tag, tostring(failure)))
-					end
-				else
-					markers[key] = id
-					if variant ~= nil then drawn[key] = variant(spot) end
+			local have = markers[key]
+			if wanted then
+				if have ~= nil and variant ~= nil and drawn[key] ~= variant(spot) then
+					forget(key)
+					have = nil
 				end
-			elseif not wanted and markers[key] ~= nil then
+				if have == nil and creates < cap then
+					creates = creates + 1
+					local id, failure = create(spot, limit)
+					if id == nil then
+						if not reported then
+							reported = true
+							Open77.log.warn(('[%s] no marker is drawn: %s'):format(tag, tostring(failure)))
+						end
+					else
+						markers[key] = id
+						if variant ~= nil then drawn[key] = variant(spot) end
+					end
+				end
+			elseif have ~= nil then
 				forget(key)
 			end
 		end
