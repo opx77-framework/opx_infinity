@@ -836,8 +836,14 @@ local function departed(rawPlayerId)
 	end
 	if left ~= nil then
 		callEnded(left)
+		-- What `onHangUp` says, because a disconnect is a hang-up nobody pressed:
+		-- in a call of three the other two are still talking, and telling them
+		-- "the call ended" was wrong.
+		local name = nameOf(playerId) or '?'
 		for index = 1, #left.were do
-			if left.were[index] ~= playerId then tell(left.were[index], 'calls.ended') end
+			if left.were[index] ~= playerId then
+				tell(left.were[index], left.ended and 'calls.ended' or 'calls.left', { name = name })
+			end
 		end
 	end
 end
@@ -865,10 +871,16 @@ local function scan()
 	-- that matters: the platform drops the eye-glow lease on death by itself,
 	-- so without this the call would carry on with a corpse on it whose eyes
 	-- had gone dark -- a state no screen could explain.
+	--
+	-- `unreadable` IS NOT ONE OF THOSE. It means the host could not be asked --
+	-- a raise from `getLifeState` or the readiness gate -- and `judge` keeps it
+	-- apart from a refusal naming the player for exactly this: one bad second of
+	-- the host used to hang up every live call on the server.
 	local ending = {}
 	for _, callId in ipairs(registry.CallIds()) do
 		for _, id in ipairs(registry.Participants(callId)) do
-			if not judge(id) then ending[#ending + 1] = id end
+			local reachable, why = judge(id)
+			if not reachable and why ~= 'unreadable' then ending[#ending + 1] = id end
 		end
 	end
 	for index = 1, #ending do

@@ -161,6 +161,12 @@ local function removeMarker(id)
 	pcall(api.remove, id)
 end
 
+-- Markers created in one pass, at most. See `modules/garages/client/main.lua`:
+-- a pass runs in one resume and a marker is an engine call, so the first list
+-- no longer creates every marker in range at once. The rest come on the next
+-- passes, SCAN_MS apart; a removal is never deferred.
+local MARKER_CREATES_PER_PASS = 8
+
 -- Brings the drawn set in line with what is in range: a dealer within
 -- MAX_DISTANCE has a marker, one beyond it does not.
 --
@@ -175,12 +181,14 @@ end
 local function reconcile(x, y)
 	local limit = Access.MaxDistance()
 	local reach = limit * limit
+	local creates = 0
 
 	for key, spot in pairs(spots) do
 		local flat = nil
 		if x ~= nil then flat = Access.FlatDistanceSquared(spot, x, y) end
 		local wanted = flat ~= nil and flat <= reach
-		if wanted and markers[key] == nil then
+		if wanted and markers[key] == nil and creates < MARKER_CREATES_PER_PASS then
+			creates = creates + 1
 			local id, failure = createMarker(spot)
 			if id == nil then
 				if not reportedMarkers then
@@ -1091,10 +1099,10 @@ function Runtime.Start()
 			verdict.garage = value.garage
 			verdict.price = value.price
 		end
+		-- NO TOAST FROM HERE. Every refusal that reaches this handler was
+		-- already toasted by the server (`OPX.NotifyLocale` beside the ANSWER),
+		-- so a second one from here showed each refusal twice.
 		publish(verdict)
-		if not verdict.ok then
-			say('error', locale(verdict.error))
-		end
 	end)
 
 	-- THE OFFER A SALESPERSON MADE, and the one screen in this module that the

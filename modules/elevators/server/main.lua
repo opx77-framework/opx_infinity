@@ -355,6 +355,16 @@ local function onSighted(player, entity, x, y, z, floorCount, activeFloor)
 	TriggerClientEvent(M.Event.BOUND, player, key, record.id, record.floorCount)
 end
 
+-- Whether a player is down right now, read from the contract at the moment of
+-- use. Without the contract nobody is down.
+local function isDown(player)
+	local api = OPX.Api.Get('downed')
+	if api == nil or type(api.IsDown) ~= 'function' then return false end
+	local read, answer = pcall(api.IsDown, player)
+	if not read or type(answer) ~= 'table' or answer.ok ~= true then return false end
+	return type(answer.value) == 'table' and answer.value.down == true
+end
+
 -- Drops an adoption and tells every player handed its id.
 local function release(key)
 	owned[key] = nil
@@ -384,6 +394,11 @@ local function request(player, key, index)
 	-- own check only decides what its panel draws.
 	local allowed, refusal = Access.Evaluate(floor, jobSnapshot(player), OPX.Now())
 	if not allowed then return { ok = false, error = refusal } end
+
+	-- AND THE DOWN SCREEN, which only the client's panel consulted: a client
+	-- sending REQUEST itself called and rode a cabin while bleeding out on the
+	-- floor. `teleports` refuses the same case on its server half.
+	if isDown(player) then return { ok = false, error = 'downed' } end
 
 	local record = owned[key]
 	if record == nil then return { ok = false, error = 'not_adopted' } end
@@ -489,7 +504,16 @@ local function sweepOnce()
 	local at = OPX.Now()
 	for key, record in pairs(owned) do
 		if record.usedAtMs == nil and at - (record.atMs or at) > UNUSED_MS then
+			-- GIVEN BACK TO THE HOST, not only forgotten here. `release` clears this
+			-- module's record and nothing else, so the lift stayed adopted and
+			-- locked on the host; the client never re-reports a lift the host
+			-- calls managed, so nothing re-bound it, and every request answered
+			-- `not_adopted` -- a shaft dead until the resource restarted, which is
+			-- the opposite of the healing this sweep is for. Unmanaged again, the
+			-- lift is re-sighted and re-adopted, locked, by the next passer-by.
+			releaseAdoption(record.id, 'ten minutes unused')
 			release(key)
+
 			Open77.log.warn(('[elevators] %s released: adopted %d minutes ago and never used')
 				:format(key, math.floor(UNUSED_MS / 60000)))
 		end

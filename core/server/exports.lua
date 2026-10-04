@@ -55,9 +55,6 @@ local Result = OPX.Result
 -- arguments or answer; a name is never reused for something else.
 local SURFACE = 1
 
--- A resource name as the manifest grammar allows one, bounded.
-local CALLER_PATTERN = '^[%w_%-%.]+$'
-
 -- A money reason a caller may give, in characters.
 local MAX_REASON = 64
 
@@ -68,36 +65,17 @@ local NAME_PATTERN = '^[%w_%-%.]+$'
 -- resource retrying in a loop writes one hint and not one per tick.
 local hinted = {}
 
-local function refuse(code)
-	return { ok = false, error = code }
-end
-
-local function ok(value)
-	return { ok = true, value = value }
-end
-
---- A contract Result as the plain answer the surface promises.
-local function answered(result)
-	if type(result) ~= 'table' then return refuse('error.unavailable') end
-	if result.ok == true then return ok(result.value) end
-	return refuse(type(result.error) == 'string' and result.error or 'error.unavailable')
-end
+-- The answer shapes, the caller gate and the allowlist test are shared with the
+-- client surface: `core/shared/exports.lua`.
+local Export = OPX.Export
+local refuse, ok, answered = Export.Refuse, Export.Ok, Export.Answered
 
 local function settings()
 	local server = OPX.Config.SERVER or {}
 	return type(server.EXPORTS) == 'table' and server.EXPORTS or {}
 end
 
---- Whether an allowlist admits a caller: '*', a set, or an array of names.
-local function admits(list, caller)
-	if list == '*' then return true end
-	if type(list) ~= 'table' then return false end
-	if list[caller] == true then return true end
-	for _, name in ipairs(list) do
-		if name == caller then return true end
-	end
-	return false
-end
+local admits = Export.Admits
 
 -- ── the arguments ────────────────────────────────────────────────────────────
 
@@ -204,15 +182,7 @@ local function detached(body, caller, args)
 	return box.ran, box.answer
 end
 
---- Whether this host offers `exports`.
--- On op77 `exports` is a CALLABLE TABLE, not a function: it is called to
--- publish and indexed for `exports.other:name()`, so `type` answers 'table'.
--- Testing for 'function' alone read every real host as having none, and the
--- whole creator surface went unpublished without an error.
-local function hasExports()
-	local kind = type(exports)
-	return kind == 'function' or kind == 'table' or kind == 'userdata'
-end
+local hasExports = Export.Available
 
 --- Publishes one export behind the three gates.
 -- @param name string the export name
@@ -224,17 +194,22 @@ end
 local function publish(name, scope, body, yields)
 	if not hasExports() then return end
 	exports(name, function(...)
-		local caller = GetInvokingResource ~= nil and GetInvokingResource() or nil
-		if type(caller) ~= 'string' or #caller < 1 or #caller > 64
-			or not caller:match(CALLER_PATTERN) then
-			return refuse('export.callerDenied')
-		end
+		local caller = Export.Caller()
+		if caller == nil then return refuse('export.callerDenied') end
 
 		local config = settings()
 		local list = scope == 'write' and config.WRITERS or config.READ
 		if not admits(list, caller) then
-			OPX.Audit.Security('export.denied', ('%s called %s'):format(caller, name),
-				{ caller = caller, export = name, scope = scope })
+			-- Its own dedupe window per CALLER. Through `Audit.Security` with no
+			-- source, every denial on the host shared one window, so a resource
+			-- retrying in a loop hid every other resource's denial from the log.
+			OPX.Audit.Log({
+				event = 'export.denied',
+				severity = 'warn',
+				message = ('%s called %s'):format(caller, name),
+				data = { caller = caller, export = name, scope = scope },
+				owner = 'ext:' .. caller,
+			})
 			local key = caller .. '\1' .. name
 			if not hinted[key] then
 				hinted[key] = true
@@ -269,6 +244,9 @@ local function publish(name, scope, body, yields)
 				severity = answer.ok and 'info' or 'warn',
 				message = caller,
 				data = { caller = caller, args = args, error = answer.error },
+				-- A refused write is collapsed per caller; one that landed is a
+				-- ledger line (`export.` in `lib/server/audit.lua`) and never is.
+				owner = 'ext:' .. caller,
 			})
 		end
 		return answer

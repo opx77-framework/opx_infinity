@@ -233,10 +233,49 @@ function Host.Database(answers)
 		return answer(sql, params)
 	end
 
+	-- THE LIMITS OF ONE REQUEST, as the cards state them (`Open77.database.update`
+	-- and `.transaction`, since op77.45): 64 KiB of SQL and 64 parameters per
+	-- statement, and 1 to 64 statements per transaction. The real bridge checks
+	-- them before the request leaves and `.await` RAISES the reason. The stub
+	-- did not check them at all, so a multi-row INSERT binding 250 values passed
+	-- every test here and was refused whole on a real server.
+	local MAX_SQL, MAX_PARAMS, MAX_STATEMENTS = 65536, 64, 64
+
+	local function countParams(params)
+		if type(params) ~= 'table' then return 0 end
+		local count = 0
+		for _ in pairs(params) do count = count + 1 end
+		return count
+	end
+
+	local function statementRefusal(sql, params)
+		if type(sql) == 'string' and #sql > MAX_SQL then return 'sql_too_large' end
+		if countParams(params) > MAX_PARAMS then return 'too_many_parameters' end
+		return nil
+	end
+
+	local function refusal(method, sql, params)
+		if method ~= 'transaction' then return statementRefusal(sql, params) end
+		local list = sql
+		if type(list) ~= 'table' or #list < 1 or #list > MAX_STATEMENTS then
+			return 'invalid_transaction'
+		end
+		for index = 1, #list do
+			local entry = list[index]
+			local why = type(entry) == 'table'
+				and statementRefusal(entry.query, entry.values or entry.parameters)
+			if why then return why end
+		end
+		return nil
+	end
+
 	for _, method in ipairs({ 'query', 'single', 'scalar', 'insert', 'update', 'transaction' }) do
 		local function await(sql, params)
 			steering.calls[#steering.calls + 1] =
 				{ method = method, sql = sql, params = params, form = 'await' }
+
+			local refused = refusal(method, sql, params)
+			if refused ~= nil then error(refused, 0) end
 
 			if coroutine.isyieldable() then
 				-- PARKED CALLS COME BACK IN THE ORDER THEY ARE RELEASED, not in

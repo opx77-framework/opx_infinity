@@ -22,6 +22,9 @@ local Requests = M.Requests
 
 local MAX_REQUEST_ID = 2147483647
 
+-- The host's own bucket-move event; see `Requests.Wire`.
+local HOST_BUCKET_CHANGE = 'onPlayerBucketChange'
+
 -- Rate limit window per player -- when it started, how many arrived, how many
 -- refusals have been answered -- and when each player's last hello was answered.
 local windows = {}
@@ -299,5 +302,15 @@ function Requests.Wire()
 		local player = tonumber(playerId) or 0
 		windows[player] = nil
 		lastHello[player] = nil
+	end)
+
+	-- A move between routing buckets, which the host raises under a name
+	-- `OPX.Host` does not list (the appearance module reads the same one). Its
+	-- payload is not documented, so only the player id is taken from it and the
+	-- bucket is read from the server's own position.
+	AddEventHandler(HOST_BUCKET_CHANGE, function(playerId)
+		local player = tonumber(playerId) or 0
+		if player <= 0 or not Options.DROPS then return end
+		World.SendBucket(player)
 	end)
 end

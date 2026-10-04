@@ -230,15 +230,32 @@ end
 -- @param source Source
 function World.SendDrops(source)
 	local list = Options.DROPS and World.DropList() or {}
+	local at = World.Position(source)
 	local first = 1
 	repeat
 		local last = math.min(#list, first + DROPS_PART - 1)
 		local part = {}
 		for index = first, last do part[#part + 1] = list[index] end
+		-- The first part also says which bucket the player is in, so the
+		-- client can draw only that bucket's piles (see `World.SendBucket`).
 		TriggerClientEvent(M.Event.DROPS, source,
-			{ first = first == 1, done = last >= #list, drops = part })
+			{ first = first == 1, done = last >= #list, drops = part,
+				bucket = first == 1 and at and at.bucket or nil })
 		first = last + 1
 	until first > #list
+end
+
+--- Tells one player which routing bucket they are in now.
+-- THE CLIENT HAS NO READ OF ITS OWN BUCKET, which is why every bucket's piles
+-- are sent to everybody and why filtering at send time is wrong: a player
+-- changes bucket with no hello. So the bucket is said instead, from the server's
+-- own position read, whenever the host reports a move, and the client filters.
+-- @author dop42
+-- @param source Source
+function World.SendBucket(source)
+	local at = World.Position(source)
+	if at == nil then return end
+	TriggerClientEvent(M.Event.BUCKET, source, at.bucket)
 end
 
 --- The pile record of a container id, or nil.

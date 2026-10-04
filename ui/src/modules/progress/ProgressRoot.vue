@@ -65,7 +65,8 @@ function clearRaise(): void {
 
 useBridge('opx:progress:show', (payload: Payload) => {
   clearRaise()
-  label.value = t(text(payload.label))
+  // The key; translated where it is drawn, so a catalogue landing late still applies.
+  label.value = text(payload.label)
   cancelKey.value = text(payload.cancelKey)
   cancelable.value = bool(payload.cancelable) && cancelKey.value !== ''
   span.value = Math.max(0, num(payload.durationMs))
@@ -89,7 +90,7 @@ onUnmounted(clearRaise)
 <template>
   <div v-if="open" class="progress">
     <section class="plate op-plane op-ink">
-      <p class="label op-eyebrow op-truncate">{{ label }}</p>
+      <p class="label op-eyebrow op-truncate">{{ t(label) }}</p>
 
       <span class="track op-frame" data-augmented-ui="tr-clip border">
         <span

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
-import { list, num, table, text } from '@/bridge/types'
+import { acquireFocus } from '@/bridge/focus'
+import { num, table, text, records, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { useLocale } from '@/composables/useLocale'
@@ -93,7 +94,7 @@ const calleeName = computed(() =>
 
 /** Who is on the call, as names, for the header. */
 const participants = computed(() => {
-  const held = call.value === null ? [] : list<Payload>(call.value.participants)
+  const held = call.value === null ? [] : records(call.value.participants)
   return held.map((row) => text(row.name, '?')).filter((name) => name !== '')
 })
 
@@ -107,7 +108,7 @@ const inviteIsContact = computed(
 )
 
 function rowsOf(value: unknown): Row[] {
-  return list<Payload>(value)
+  return records(value)
     .map((row) => ({
       id: num(row.id),
       name: text(row.name, '?'),
@@ -128,7 +129,7 @@ useBridge('opx:calls:holo', (payload: Payload) => {
   guard('calls:holo', () => {
     open.value = payload.open === true
     contacts.value = rowsOf(payload.rows)
-    recent.value = list<Payload>(payload.recent).map((row) => ({
+    recent.value = records(payload.recent).map((row) => ({
       outcome: text(row.outcome, 'missed'),
       name: text(row.name, '?')
     }))
@@ -151,6 +152,31 @@ useBridge('opx:calls:holo', (payload: Payload) => {
 function close(): void {
   emit('opx:calls:close', {})
 }
+
+/* THE PAGE HOLDS 'calls' WHILE THE SCREEN IS OPEN, mirroring Lua's own
+   `AcquireFocus('calls')` in modules/calls/client/view.lua. It did not, and Lua's
+   `focus:set` reconcile (core/client/ui.lua) treats the page's announced stack as
+   the truth: the next time any OTHER view released focus -- chat, a menu, the
+   downed screen -- the page announced "nothing focused" and Lua wiped the calls
+   entry with it. The hologram stayed drawn with no cursor and the keys back in the
+   game. Same id as Lua's owner, so the reconcile keeps it; Escape asks Lua to close,
+   and the release follows Lua's `open = false`, never the page's own guess. */
+let release: (() => void) | undefined
+
+watch(open, (isOpen) => {
+  if (isOpen && release === undefined) {
+    release = acquireFocus({ id: 'calls', onEscape: close })
+  } else if (!isOpen && release !== undefined) {
+    release()
+    release = undefined
+  }
+})
+
+onUnmounted(() => {
+  // A focus held across an unmount leaves the player unable to move.
+  release?.()
+  release = undefined
+})
 
 function callRow(row: Row): void {
   if (row.refusal !== null) return
@@ -420,7 +446,7 @@ const shown = computed<Row[]>(() => contacts.value)
             <span class="dot" aria-hidden="true"></span>
             <span class="who op-copy op-truncate">{{ row.name }}</span>
             <span class="why op-eyebrow">
-              {{ t(OUTCOME_KEY[row.outcome] ?? 'calls.holo.outcome.missed') }}
+              {{ t(own(OUTCOME_KEY, row.outcome) ?? 'calls.holo.outcome.missed') }}
             </span>
           </li>
           <li v-if="recent.length === 0" class="empty op-copy">

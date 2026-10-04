@@ -3,7 +3,7 @@ import { computed, nextTick, onUnmounted, ref } from 'vue'
 import { emit } from '@/bridge/channel'
 import { guard } from '@/bridge/diag'
 import { acquireFocus } from '@/bridge/focus'
-import { bool, list, num, table, text } from '@/bridge/types'
+import { bool, num, table, text, records } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
 import { glyphPaths } from './glyphs'
@@ -494,6 +494,8 @@ function shut(): void {
   handle.value = null
   keyboard.value = false
   consumedAt = -1
+  pressed = false
+  pressPoint = null
   release?.()
   release = undefined
 }
@@ -857,6 +859,11 @@ function onResize(): void {
 }
 
 function onBlur(): void {
+  // A release that lands outside the window never reaches `onMouseUp`, and a
+  // `pressed` left true makes `arm` drop every hover intent until the next click:
+  // folders stop opening on hover for no visible reason.
+  pressed = false
+  pressPoint = null
   if (open.value) send('opx:target:cancel')
 }
 
@@ -870,7 +877,7 @@ function onMouseUp(): void {
 }
 
 function readRows(value: unknown): Row[] {
-  return list<Payload>(value).map((entry) => ({
+  return records(value).map((entry) => ({
     token: text(entry.token),
     label: text(entry.label),
     description: text(entry.description),
@@ -993,6 +1000,8 @@ onUnmounted(() => {
   window.removeEventListener('mousedown', onMouseDown, true)
   window.removeEventListener('mouseup', onMouseUp, true)
   clearTimers()
+  if (frame !== 0) cancelAnimationFrame(frame)
+  frame = 0
   release?.()
 })
 </script>

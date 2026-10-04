@@ -383,8 +383,13 @@ local function pointsOf(name)
 				-- block at all, deliberately -- the owner asked for a job-free job
 				-- -- so both stay pinned for everybody and this changes nothing
 				-- until somebody writes one.
-				local allowed = passesJob({ jobs = site.JOBS, onDuty = site.ON_DUTY },
-					membership)
+				--
+				-- A SITE THAT IS NOT A TABLE IS NOT PINNED, and is not indexed:
+				-- `site.JOBS` on one raised inside the pass and lost every pin of
+				-- all five categories, every four seconds, for one bad config row.
+				local allowed = type(site) == 'table'
+					and passesJob({ jobs = site.JOBS, onDuty = site.ON_DUTY }, membership)
+					or false
 
 				-- ── AND THE YARD ITSELF, WHICH WAS THE HALF NOBODY COULD FIND ──
 				-- THE OWNER: "pour la hauling tu peux mettre des blips aussi car

@@ -4,17 +4,17 @@
 -- WHAT IS DECIDED HERE AND NOWHERE ELSE: whether a player is standing at the
 -- shop they name, what a change costs, whether they can pay for it, whether
 -- their job lets them take a uniform, and what they are allowed to do with a
--- saved look. The client is believed about exactly one thing -- WHICH SLOTS
--- CHANGED -- because it is the only half that can see them.
+-- saved look. The client is believed about NOTHING, including which slots
+-- changed.
 --
--- THE ORDER, AND ITS WINDOW. The room closes on the client, the clothing half
--- of `appearance` starts its own debounced save, and this module is told what
--- changed. It then takes the money, and a bill that CANNOT be taken is answered
--- by pushing the old look back. That is compensation and not a transaction:
--- money is on the character row and clothing is in its own table, written
--- through a debounce this module does not own, and nothing spans the two. The
--- window is the couple of seconds of that debounce. It is named rather than
--- hidden, and the compensation path is tested.
+-- THE BILL IS TAKEN WHERE THE CLOTHES ARE WRITTEN. The room this module opens
+-- is a PRICED one (`appearance.OpenWardrobe` with a `charge`): when the client's
+-- clothing save arrives, `appearance` diffs it against the stored record itself,
+-- hands the moved slots to `chargeFor`, and writes the record only once the
+-- money is taken -- a charge that fails is a save refused, and the client puts
+-- the stored look back. It used to be the other way round: the client reported
+-- the slots on `shops:bill` after its save had landed, so a client that never
+-- sent the bill kept the clothes for free.
 
 local M = OPX.Modules.Get('shops')
 
@@ -35,6 +35,12 @@ local looks = {}
 
 -- The settings that are read on every request, resolved once.
 local tuning = {}
+
+-- Least time between two presses of the saved-look doors by one player, and
+-- between two share codes typed in. A fairness window and a brake on guessing,
+-- not an authority: every request is still checked in full.
+local OUTFIT_COOLDOWN_MS = 750
+local REDEEM_COOLDOWN_MS = 2000
 
 --- One boot line naming a config row that was dropped, and why.
 -- Never fatal: a mistyped shop is one shop missing, not a server that will not
@@ -233,6 +239,39 @@ local function looksFor(source, shop)
 	return out
 end
 
+--- The stored clothing record of a player, or nil.
+-- `GetClothing` answers a Result like every contract read; reading it as the
+-- record itself made `onSave` refuse every look as `nothingWorn`.
+local function storedClothing(source)
+	if appearance == nil or type(appearance.GetClothing) ~= 'function' then return nil end
+	local read = appearance.GetClothing(source)
+	if type(read) ~= 'table' or not read.ok or type(read.value) ~= 'table' then return nil end
+	return read.value
+end
+
+--- The charge a shop's fitting room puts on the save that leaves it.
+--
+-- Called by `appearance` with the slots IT computed, before the record is
+-- written. Answers true -- with the undo that refunds it, should the write then
+-- fail -- or false and `clothing.unpaid`, which refuses the save.
+local function chargeFor(shop)
+	return function(source, slots)
+		if not tuning.charge then return true end
+		local total = M.Bill(shop.prices, slots)
+		if total <= 0 then return true end
+		local reason = ('clothing at %s'):format(shop.label)
+		local paid, refused = character.RemoveMoney(source, tuning.currency, total, reason)
+		if not paid then
+			refuse(source, refused or 'shops.cannotPay', { total = total })
+			return false, 'clothing.unpaid'
+		end
+		OPX.NotifyLocale(source, 'shops.paid', { total = total, shop = shop.label }, 'success')
+		return true, nil, function()
+			character.AddMoney(source, tuning.currency, total, 'refund: ' .. reason)
+		end
+	end
+end
+
 --- Dresses one player in a look, having told `appearance` the write is expected.
 --
 -- THE GRANT IS THE WHOLE REASON THIS IS A FUNCTION. `appearance` refuses a
@@ -246,12 +285,19 @@ end
 --
 -- The check is made before the clothes are sent and not after: a look put on a
 -- player whose save will be refused is worse than one that never went on.
+--
+-- A LOOK GRANT, NOT A ROOM. What is granted is one save of exactly `wear` on top
+-- of what is stored: an open grant here was ten minutes of the whole catalogue,
+-- free, from anywhere a saved outfit could be loaded -- which is everywhere.
 local function dressIn(source, look, wear)
 	if appearance == nil or type(appearance.AllowClothingSave) ~= 'function' then
 		refuse(source, 'shops.unavailable')
 		return false
 	end
-	appearance.AllowClothingSave(source, 'shops')
+	if not appearance.AllowClothingSave(source, 'shops', { wear = wear }) then
+		refuse(source, 'shops.unavailable')
+		return false
+	end
 	TriggerClientEvent(M.Event.PUT_ON, source, { look = look, wear = wear })
 	return true
 end
@@ -266,7 +312,7 @@ local function onOpen(source, key)
 
 	TriggerClientEvent(M.Event.LOOKS, source, { shop = shop.key, looks = looksFor(source, shop) })
 
-	local ok, reason = appearance.OpenWardrobe(source)
+	local ok, reason = appearance.OpenWardrobe(source, { owner = 'shops', charge = chargeFor(shop) })
 	if not ok then
 		-- THE REASON GOES TO THE JOURNAL AND NOT ACROSS THE WIRE. `invalid_player`
 		-- and whatever the `appearance` contract answers next are that module's
@@ -277,53 +323,6 @@ local function onOpen(source, key)
 		Open77.log.warn(('[shops] the fitting room at %s was refused for player %d: %s')
 			:format(shop.key, source, tostring(reason)))
 		refuse(source, 'shops.unavailable')
-	end
-end
-
---- "I closed the room having changed these slots."
---
--- THE SLOT LIST IS THE ONLY THING BELIEVED, and it is still validated: every
--- entry must be one of the nine, duplicates are collapsed, and the list is
--- bounded by the number of slots that exist. A client naming `Legs` forty times
--- pays for legs once.
-local function onBill(source, payload)
-	if type(payload) ~= 'table' then return end
-	if not tuning.charge then return end
-
-	local shop, why = shopAt(source, payload.shop)
-	if shop == nil then return refuse(source, 'shops.' .. why) end
-
-	local seen, slots = {}, {}
-	local given = type(payload.slots) == 'table' and payload.slots or {}
-	for index = 1, math.min(#given, #M.SLOTS) do
-		local slot = given[index]
-		if M.IsSlot(slot) and not seen[slot] then
-			seen[slot] = true
-			slots[#slots + 1] = slot
-		end
-	end
-	if #slots == 0 then return end
-
-	local total = M.Bill(shop.prices, slots)
-	if total <= 0 then return end
-
-	local paid, reason = character.RemoveMoney(source, tuning.currency, total,
-		('clothing at %s'):format(shop.label))
-	if paid then
-		return OPX.NotifyLocale(source, 'shops.paid',
-			{ total = total, shop = shop.label }, 'success')
-	end
-
-	-- COULD NOT PAY, SO THE CLOTHES GO BACK. The stored look is the one the
-	-- character walked in wearing -- the room's own save is debounced and has
-	-- most likely not landed -- so it is both the right thing to restore and the
-	-- thing that is still true in the database.
-	refuse(source, reason or 'shops.cannotPay', { total = total })
-	if appearance ~= nil and type(appearance.GetClothing) == 'function' then
-		local stored = appearance.GetClothing(source)
-		if type(stored) == 'table' then
-			TriggerClientEvent(M.Event.RESTORE, source, stored)
-		end
 	end
 end
 
@@ -435,7 +434,7 @@ local function onSave(source, payload)
 	-- THE STORED RECORD AND NOT THE CLIENT'S. What a player is wearing is already
 	-- authoritative on the server; taking the client's word for it would let
 	-- anybody save a look they never wore.
-	local worn = equipmentOf(appearance.GetClothing(source))
+	local worn = equipmentOf(storedClothing(source))
 	if worn == nil then return refuse(source, 'shops.nothingWorn') end
 
 	local saved = M.Storage.Save(citizen, name, json.encode({ equipment = worn }))
@@ -561,10 +560,6 @@ function M.Start()
 		local src = tonumber(source)
 		if src then onOpen(src, key) end
 	end)
-	RegisterNetEvent(M.Event.BILL, function(payload)
-		local src = tonumber(source)
-		if src then onBill(src, payload) end
-	end)
 	RegisterNetEvent(M.Event.WEAR, function(payload)
 		local src = tonumber(source)
 		if src then onWear(src, payload) end
@@ -572,33 +567,31 @@ function M.Start()
 
 	-- EVERY ONE OF THESE READS THE DATABASE, and `OPX.Storage` yields, so each
 	-- runs on its own thread. A net handler that yields holds the event pump.
-	RegisterNetEvent(M.Event.SAVE, function(payload)
-		local src = tonumber(source)
-		if src then CreateThread(function() onSave(src, payload) end) end
+	--
+	-- AND EVERY ONE IS COOLED, because none of them was. Each press was a thread
+	-- and one to three statements, so a client looping on any of these doors
+	-- turned the shop into a database load generator -- and REDEEM, unthrottled,
+	-- was an oracle a script could walk the code space with: every hit is
+	-- somebody's saved look, put on for free. One window for the five doors that
+	-- manage a player's own list, a longer one for guessing at somebody else's.
+	local function door(event, key, everyMs, handler)
+		RegisterNetEvent(event, function(payload)
+			local src = tonumber(source)
+			if not src then return end
+			if OPX.Cooling(src, key, everyMs) then return refuse(src, 'error.tooFast') end
+			CreateThread(function() handler(src, payload) end)
+		end)
+	end
+
+	door(M.Event.SAVE, 'shops.outfits', OUTFIT_COOLDOWN_MS, onSave)
+	door(M.Event.LIST, 'shops.list', OUTFIT_COOLDOWN_MS, function(src)
+		local citizen = citizenOf(src)
+		if citizen ~= nil then pushList(src, citizen) end
 	end)
-	RegisterNetEvent(M.Event.LIST, function()
-		local src = tonumber(source)
-		if src then CreateThread(function()
-			local citizen = citizenOf(src)
-			if citizen ~= nil then pushList(src, citizen) end
-		end) end
-	end)
-	RegisterNetEvent(M.Event.LOAD, function(payload)
-		local src = tonumber(source)
-		if src then CreateThread(function() onLoad(src, payload) end) end
-	end)
-	RegisterNetEvent(M.Event.DELETE, function(payload)
-		local src = tonumber(source)
-		if src then CreateThread(function() onDelete(src, payload) end) end
-	end)
-	RegisterNetEvent(M.Event.SHARE, function(payload)
-		local src = tonumber(source)
-		if src then CreateThread(function() onShare(src, payload) end) end
-	end)
-	RegisterNetEvent(M.Event.REDEEM, function(payload)
-		local src = tonumber(source)
-		if src then CreateThread(function() onRedeem(src, payload) end) end
-	end)
+	door(M.Event.LOAD, 'shops.outfits', OUTFIT_COOLDOWN_MS, onLoad)
+	door(M.Event.DELETE, 'shops.outfits', OUTFIT_COOLDOWN_MS, onDelete)
+	door(M.Event.SHARE, 'shops.outfits', OUTFIT_COOLDOWN_MS, onShare)
+	door(M.Event.REDEEM, 'shops.redeem', REDEEM_COOLDOWN_MS, onRedeem)
 
 	-- A DELETED CHARACTER TAKES ITS SAVED LOOKS WITH IT. The foreign key above
 	-- cascades, but a character delete here is soft, so the cascade never fires
