@@ -266,6 +266,19 @@ end
 --- Forgets the character, its face and any restore still under way.
 -- The new generation is taken AND marked settled: a token left behind would make
 -- `AppearanceSettled` false for ever, which is the gate shut for ever.
+--
+-- THE WORLD ENTRY OUTLIVES THE CHARACTER. Two facts here belong to the puppet in
+-- this world and not to whoever is wearing it: the platform has run its pristine
+-- reset (`playerResetDone`), and gameplay-ready went out (`gameplayAnnounced`).
+-- Both used to be cleared with the character, and `CHARACTERS.SWITCH = 'relog'`
+-- swaps characters in the world, on the same puppet, with no world entry and no
+-- reset to set them again. So the next character's face went on and its entry
+-- never settled -- `AppearanceSettled` waits on a reset that was never coming --
+-- and with it never announced: its clothes were never put on (`not_announced`),
+-- nothing was saved, and the look was withdrawn at the unload and never
+-- published again, so every other player stopped seeing them until they
+-- reconnected. A real world entry (`WORLD_READY`, a body reload, a restart) goes
+-- through `EnterWorld` and clears both, which is where they are owed.
 -- @author dop42
 function M.Face.Unload()
 	State.restoreSettledToken = State.NextRestore()
@@ -282,7 +295,9 @@ function M.Face.Unload()
 	State.familyAttempts = 0
 	State.buildWarned = false
 	State.Undress()
+	local resetDone, announced = State.playerResetDone, State.gameplayAnnounced
 	State.EnterWorld()
+	State.playerResetDone, State.gameplayAnnounced = resetDone, announced
 end
 
 --- The diagnostic fields the `State` contract function answers.

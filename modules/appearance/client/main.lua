@@ -1512,6 +1512,12 @@ function M.Contract.IsSettled()
 		waiting = 'body'
 	elseif State.restoreToken ~= State.restoreSettledToken then
 		waiting = 'restore'
+	elseif State.bootstrapToken == State.restoreToken and State.bootstrapQueued and
+		not (State.appearanceConfirmed and State.playerResetDone) then
+		-- The face is on and the entry still unsettled: the mirror has not
+		-- confirmed it, or the platform has not reset the body. Named, because
+		-- `nil` here read as "waiting on nothing" on an entry that was stuck.
+		waiting = State.appearanceConfirmed and 'reset' or 'mirror'
 	end
 	return Result.Ok({
 		settled = State.AppearanceSettled(),

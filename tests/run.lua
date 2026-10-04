@@ -2694,6 +2694,50 @@ do
 			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
 	end
 
+	-- A SWITCH IN THE WORLD IS NOT A WORLD ENTRY. `CHARACTERS.SWITCH = 'relog'`
+	-- unloads one character and loads the next on the same puppet: no world-ready
+	-- and no platform reset. The unload used to clear the reset and the
+	-- announcement with the character, so the next one's entry waited for ever on
+	-- a reset that was never coming -- its clothes never put on, nothing saved,
+	-- and its look never published again, invisible to everybody else.
+	do
+		local env, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		platform.alive = true
+		control.Fire(appearance.HostEvent.RESET_COMPLETE)
+		control.Pump(5)
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		local settled = appearance.Contract.IsSettled()
+		check('the first character is settled before the switch',
+			settled.ok and settled.value.settled == true)
+
+		local other = { gameBuild = '2.31', gender = 'female', options = { eyes = 5 } }
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'unloaded'))
+		control.Pump(3)
+		control.Fire(env.OPX.Event(env.OPX.Channel.LOCAL, 'character', 'loaded'),
+			{ citizenId = 'CJX-OTHER', charInfo = { gender = 'female' }, appearance = other })
+		control.Pump(10)
+		check('the next character\'s face goes on the same puppet',
+			#platform.applied == 2 and platform.applied[2].options.eyes == 5,
+			('%d apply call(s)'):format(#platform.applied))
+		control.Fire(appearance.HostEvent.CONFIRMED)
+		control.Pump(5)
+		settled = appearance.Contract.IsSettled()
+		check('AND ITS ENTRY SETTLES WITHOUT A RESET NOBODY WILL RUN',
+			settled.ok and settled.value.settled == true,
+			tostring(settled.ok and settled.value.waiting))
+		check('still counted as announced, so its clothes and its look go out',
+			settled.ok and settled.value.announced == true)
+		check('without sending gameplay-ready a second time', platform.announced() == 1,
+			tostring(platform.announced()))
+
+		-- A real world entry still starts over.
+		control.Fire(env.OPX.Host.WORLD_READY)
+		settled = appearance.Contract.IsSettled()
+		check('while a world entry clears the announcement it is owed',
+			settled.ok and settled.value.announced == false)
+	end
+
 	-- A RESET THE HOST GIVES UP ON IS OVER TOO. `open77:playerReset:failed` went
 	-- unheard, so a failed reset was waited on for the whole of RESET_WAIT_MS: a
 	-- minute in the world on no face, with the clothing gate held behind it.
