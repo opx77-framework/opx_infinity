@@ -68,6 +68,12 @@ local reportedStrip, reportedMenu = false, false
 -- Scheduler handles, so Stop can cancel them.
 local scanJob, askJob = nil, nil
 
+-- Points one resume reads off a `SYNC`, and the list being read: a newer list,
+-- or a reset, stops an older reader before its next slice. See the `SYNC`
+-- handler.
+local SYNC_SLICE = 10
+local syncGeneration = 0
+
 -- Declared ahead of the functions that reference each other.
 local syncPrompt, onRow
 
@@ -415,6 +421,7 @@ end
 -- @author XEROX710
 function Runtime.Init()
 	spots = {}
+	syncGeneration = syncGeneration + 1
 	markers.Reset()
 	nearest, shown, shownLabel, keyRegistered = nil, false, nil, false
 	handle, listing = nil, nil
@@ -441,23 +448,41 @@ function Runtime.Start()
 		syncPrompt()
 	end)
 
+	-- READ ON A THREAD, A SLICE A RESUME. Every point is checked field by field
+	-- off the wire, ~150 VM instructions each, and the list is every point in the
+	-- player's bucket -- however many an operator has captured -- followed by a
+	-- full scan, all in the net event's one resume: the budget meter's 18,500
+	-- for twenty points, against a client budget of ~10,000 that drops the list
+	-- without a word. The list in use is swapped whole once it has been read, so
+	-- a scan never sees half of one.
 	RegisterNetEvent(M.Event.SYNC, function(payload)
 		local listed = type(payload) == 'table' and payload.spots or nil
 		if type(listed) ~= 'table' then return end
-		local accepted = {}
-		for index = 1, #listed do
-			local spot, why = Access.FromWire(listed[index])
-			if spot == nil then
-				Open77.log.warn('[garages] a point was refused: ' .. tostring(why))
-			else
-				accepted[spot.key] = spot
+		syncGeneration = syncGeneration + 1
+		local mine = syncGeneration
+		CreateThread(function()
+			local accepted = {}
+			for index = 1, #listed do
+				if index > 1 and (index - 1) % SYNC_SLICE == 0 then
+					Wait(0)
+					if mine ~= syncGeneration then return end
+				end
+				local spot, why = Access.FromWire(listed[index])
+				if spot == nil then
+					Open77.log.warn('[garages] a point was refused: ' .. tostring(why))
+				else
+					accepted[spot.key] = spot
+				end
 			end
-		end
-		spots = accepted
-		-- A full pass, not just the markers: a list that arrives while the player
-		-- is standing on a point must put its row up now rather than wait for the
-		-- next scan.
-		scan()
+			-- The swap and the scan on a fresh resume of their own.
+			Wait(0)
+			if mine ~= syncGeneration then return end
+			spots = accepted
+			-- A full pass, not just the markers: a list that arrives while the
+			-- player is standing on a point must put its row up now rather than
+			-- wait for the next scan.
+			scan()
+		end)
 	end)
 
 	RegisterNetEvent(M.Event.VEHICLES, function(payload)

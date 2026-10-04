@@ -7600,10 +7600,36 @@ do
 				garage = 'lot', role = 'menu', location = index,
 				x = index * 0.5, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 }
 		end
+		-- The list is read on a thread of its own now (see the next section), so
+		-- the resume that applies it is that thread's last: counted there.
+		local realCreate, realWait = cenv.CreateThread, cenv.Wait
+		local mostInOneResume, readerOpen, atOpen = 0, false, 0
+		local function drawn() return #cenv.Open77.markers.list() end
+		local function close()
+			if not readerOpen then return end
+			readerOpen = false
+			if drawn() - atOpen > mostInOneResume then mostInOneResume = drawn() - atOpen end
+		end
+		cenv.CreateThread = function(fn)
+			return realCreate(function()
+				readerOpen, atOpen = true, drawn()
+				local reader = coroutine.running()
+				cenv.Wait = function(...)
+					if coroutine.running() ~= reader then return realWait(...) end
+					close()
+					realWait(...)
+					readerOpen, atOpen = true, drawn()
+				end
+				fn()
+				close()
+			end)
+		end
 		cctl.netEvents[garages.Event.SYNC]({ spots = crowd })
-		local firstPass = #cenv.Open77.markers.list()
-		check('the list that arrives creates a bounded number of markers in its own resume',
-			firstPass > 0 and firstPass <= 8, firstPass)
+		cenv.CreateThread = realCreate
+		cctl.Pump(4)
+		cenv.Wait = realWait
+		check('the list that arrives creates a bounded number of markers in the resume that applies it',
+			mostInOneResume > 0 and mostInOneResume <= 8, mostInOneResume)
 		cctl.Pump(30)
 		check('and the rest follow on the next passes', #cenv.Open77.markers.list() == 20,
 			#cenv.Open77.markers.list())
@@ -27443,6 +27469,8 @@ do
 			{ key = 'blip_dock#1.in', label = 'BLIP DOCK', kind = 'garage', garage = 'blip_dock',
 				role = 'entry', location = 1, x = 46.0, y = 40.0, z = 1.0, heading = 0.0, bucket = 0 },
 		} })
+		-- The garages read a list on a thread of their own; give it its frames.
+		control.Pump(5)
 		blips.Runtime.Sync()
 		control.Pump(20)
 		local garagePins = {}
@@ -34217,6 +34245,66 @@ do
 	local toast = slurp('ui/src/modules/notify/NotifyToast.vue')
 	check('the toast bar scales rather than resizes under its filter',
 		toast:find('scaleX(', 1, true) ~= nil and toast:find('width: barWidth', 1, true) == nil)
+end
+
+-- ── the garages list and scan, a resume at a time ───────────────────────────
+-- THE LIST WAS READ AND SCANNED IN THE NET EVENT'S ONE RESUME, every point
+-- checked field by field, and every scan re-coerced the player's position once
+-- per point in both the nearest-point search and the marker reconcile -- the
+-- budget meter's 18,500 for `garages:sync` and 9,200 for `garages:scan` on the
+-- twenty-point lot above, and the scan runs inside the scheduler's shared pass.
+-- Neither is a fixture's size: the list is every point captured in the
+-- player's bucket, and the cost grows with it. Sixty here, all in draw range.
+-- The marker set and the nearest search are `lib/client/spots.lua` and
+-- `lib/shared/spots.lua`, so dealership, clothing and teleports scan the same way.
+section('garages: a big list and its scans stay inside one resume\'s budget')
+do
+	local scanStep
+	local env, control, why = boot('client', nil, nil, function(env, file)
+		if file ~= 'core/client/scheduler.lua' then return end
+		local every = env.OPX.Scheduler.Every
+		env.OPX.Scheduler.Every = function(name, intervalMs, fn)
+			if name == 'garages:scan' then scanStep = fn end
+			return every(name, intervalMs, fn)
+		end
+	end)
+	check('the client boots with the garages scan', why == nil and scanStep ~= nil, why)
+	if why == nil and scanStep ~= nil then
+		local garages = env.OPX.Modules.Get('garages')
+		local realCharacter = env.Open77.character
+		env.Open77.character = setmetatable({ position = function() return 0.0, 0.0, 0.0 end },
+			{ __index = realCharacter })
+		local TOTAL = 60
+		local lot = {}
+		for index = 1, TOTAL do
+			lot[index] = { key = ('big#%d'):format(index), label = 'BIG', kind = 'garage',
+				garage = 'big', role = index % 2 == 0 and 'entry' or 'menu', location = index,
+				x = index * 0.5, y = 1.0, z = 0.0, heading = 0.0, bucket = 0 }
+		end
+
+		local reading, resumes = resumeCost(env, control, function()
+			control.netEvents[garages.Event.SYNC]({ spots = lot })
+		end, 12)
+		check('every point of the list is taken', garages.Runtime.Report().spots == TOTAL,
+			garages.Runtime.Report().spots)
+		check('and no resume of reading it cost more than 4,000 instructions',
+			resumes > 1 and reading < 4000,
+			('%d instructions, dearest of %d resumes'):format(reading, resumes))
+
+		local drawing = 0
+		for _ = 1, 12 do
+			local spent = callCost(scanStep)
+			if spent > drawing then drawing = spent end
+		end
+		check('the scans draw every marker', garages.Runtime.Report().markers == TOTAL,
+			garages.Runtime.Report().markers)
+		check('and no scan creating them cost more than 4,000 instructions', drawing < 4000,
+			('%d instructions'):format(drawing))
+		local steady = callCost(scanStep)
+		check('a scan with nothing to create stays well inside the budget', steady < 2500,
+			('%d instructions'):format(steady))
+		env.Open77.character = realCharacter
+	end
 end
 
 -- The budget meter's report, when `OPX_BUDGET_METER` asked for one: every
