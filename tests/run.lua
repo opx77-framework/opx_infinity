@@ -6741,6 +6741,20 @@ do
 			live.ok and tostring(live.value.id) or tostring(live.detail))
 		control.Seat(src, { vehicleId = live.value.id, seat = 'driver' })
 
+		-- SOMEBODY ELSE IS RIDING ALONG. Putting the car away removes it, and the
+		-- removal would drop the passenger on the tarmac; it is refused instead,
+		-- with words the driver can act on.
+		control.vehicles.snapshot = { occupants = { { playerId = src }, { playerId = 99 } } }
+		local removalsBefore = #control.vehicleRemoves
+		local carrying = contract.Use(src, 'garage_dock')
+		control.vehicles.snapshot = nil
+		check('a car with a passenger in it is not put away',
+			carrying.ok == false and carrying.error == 'garages.passengers'
+				and #control.vehicleRemoves == removalsBefore,
+			tostring(carrying.error))
+		check('and the refusal has a sentence in both languages',
+			OPX.Locale.Exists('garages.passengers'))
+
 		created = #control.vehicleCreates
 		removals = #control.vehicleRemoves
 		local wroteVehicles = #vehicleWrites
