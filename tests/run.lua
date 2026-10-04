@@ -15023,6 +15023,42 @@ do
 	end
 end
 
+section('elevators: a lift still adopted from before a restart is bound again')
+do
+	-- After a restart the host may still hold this module's adoption, locked,
+	-- while this module's own table is empty. The client now reports such a
+	-- managed lift; the server must re-claim it -- bind it, keep it locked, and
+	-- adopt nothing new.
+	local WHERE = { x = -1521.40, y = 892.75, z = 42.10 }
+	local LIFT = '0x00000000000000ab'
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.players.position = function()
+			return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = 0 }
+		end
+	end)
+	check('the server boots for the re-claim', why == nil, why)
+	if why == nil then
+		local M = env.OPX.Modules.Get('elevators')
+		local lifts = control.lifts
+		lifts.next = lifts.next + 1
+		local held = lifts.next
+		lifts.byId[held] = { id = held, engineEntity = LIFT, bucket = 0, floorCount = 12,
+			activeFloor = 0, phase = 'idle', x = WHERE.x, y = WHERE.y, z = WHERE.z, flags = 1 }
+		env.source = 4
+		control.netEvents[M.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+		env.source = nil
+		local bound
+		for _, sent in ipairs(control.clientEvents) do
+			if sent.name == M.Event.BOUND then bound = sent end
+		end
+		check('the lift the host still holds is bound again, not adopted a second time',
+			bound ~= nil and bound[2] == held and #lifts.adopts == 0,
+			bound and tostring(bound[2]) or ('%d adopts'):format(#lifts.adopts))
+		check('and it is locked again, so the vanilla button stays refused',
+			(lifts.byId[held].flags & 2) ~= 0, tostring(lifts.byId[held].flags))
+	end
+end
+
 section('elevators: a player can reach the floor list')
 do
 	-- THE PANEL HAD NO DOOR. Every adopted cabin is locked, which refuses the
@@ -15051,6 +15087,15 @@ do
 		end
 		check('standing at a configured lift posts the row naming the key',
 			settle(cctl, rowUp, 80))
+		-- A lift the host calls MANAGED that this client was never bound to -- the
+		-- state a restart leaves this module's own adoptions in -- is reported to
+		-- the server, so its re-claim branch can bind it again. It used to be
+		-- skipped, and the shaft stayed locked with nothing able to drive it.
+		local reported = false
+		for _, sent in ipairs(cctl.serverEvents) do
+			if sent.name == M.Event.SIGHTED and sent[1] == '0x00000000000000ab' then reported = true end
+		end
+		check('a managed lift this client is not bound to is reported for re-claim', reported)
 
 		local menu = OPX.Api.Get('menu')
 		local realOpen = menu.Open
