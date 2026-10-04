@@ -3920,6 +3920,84 @@ do
 	end
 end
 
+-- A WATCH WHOSE RELEASE IS REFUSED TRIES AGAIN. It answered "done" whatever the
+-- release said, so a refused release left a hold that belonged to nobody --
+-- while `Release` keeps the session marked held for exactly that retry.
+section('the gate watch retries a refused release')
+do
+	local clock = 0
+	local threads = {}
+	local releases, statuses, giveUps = {}, 0, 0
+	local answers = { false, true }
+	local env = {
+		Open77 = {
+			log = keptLog(),
+			ready = {
+				participate = function() return true end,
+				release = function(_, token)
+					releases[#releases + 1] = tostring(token)
+					local answer = table.remove(answers, 1)
+					if answer == false then return false, 'session_mismatch' end
+					return true
+				end,
+				status = function()
+					statuses = statuses + 1
+					return { session = 'fresh' }
+				end,
+			},
+		},
+		OPX = {
+			Config = { SERVER = { ENTRY = { GATE_MS = 300000, WATCH_MS = 2000 } } },
+			Event = function(channel, module, verb)
+				return ('opx:%s:%s:%s'):format(channel, module, verb)
+			end,
+			Channel = { NET = 'net', LOCAL = 'on', INTERNAL = 'in' },
+			Host = { PLAYER_READY = 'onPlayerReady', GAMEPLAY_READY = 'gameplayReady' },
+			Math = {
+				IsFinite = function(v)
+					return type(v) == 'number' and v == v and v ~= math.huge and v ~= -math.huge
+				end,
+				Clamp = function(v, low, high) return math.max(low, math.min(high, v)) end,
+			},
+			Modules = { Record = function() return true end },
+			Sessions = {},
+			Now = function() return clock end,
+		},
+		CreateThread = function(fn) threads[#threads + 1] = coroutine.create(fn) end,
+		Wait = function() coroutine.yield() end,
+		AddEventHandler = function() end,
+		TriggerEvent = function() end,
+		GetResourceState = function() return 'missing' end,
+		GetCurrentResourceName = function() return 'opx_infinity' end,
+		pcall = pcall, type = type, tostring = tostring, tonumber = tonumber, ipairs = ipairs,
+		math = math, string = string, table = table,
+	}
+	local chunk, why = loadfile('core/server/gate.lua', 't', env)
+	check('the gate loads alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		env.OPX.Sessions[5] = { source = 5, userId = 'u5', gateSession = 'stale' }
+		env.OPX.Gate.Watch(5, 2000, function() giveUps = giveUps + 1 return true end)
+		local thread = threads[#threads]
+		local function tick() coroutine.resume(thread) end
+
+		tick()
+		clock = 5000
+		tick()
+		check('the first release at the deadline is refused',
+			#releases == 1 and releases[1] == 'stale', table.concat(releases, ','))
+		check('and the watch is still running', coroutine.status(thread) == 'suspended')
+		check('the session is still held', env.OPX.Sessions[5].released ~= true)
+
+		tick()
+		check('the retry does not resend the stale token: it asks the host for the current one',
+			#releases == 2 and releases[2] == 'fresh' and statuses == 1, table.concat(releases, ','))
+		check('the retry lands and the watch ends', env.OPX.Sessions[5].released == true
+			and coroutine.status(thread) == 'dead')
+		check('onGiveUp is asked once, not once per attempt', giveUps == 1, tostring(giveUps))
+	end
+end
+
 -- ── the ACL read that raised outside the pcall written to catch it ───────────
 -- `permitted` decides whether a restricted command is SUGGESTED, and its comment
 -- says a read that raises counts as a refusal -- suggested to nobody rather than
