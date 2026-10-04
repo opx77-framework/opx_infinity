@@ -10985,12 +10985,28 @@ do
 		check('bodies with no name list are counted as a naming fault, not a native one',
 			said('no name 1') ~= nil, table.concat(notes, ' | '))
 
+		-- The view hears its rows on a resume of its own: the pass is a scheduler
+		-- job, and the view anchoring every tag inside it spent the shared budget.
+		local rowsHeard, underScheduler = 0, false
+		env.AddEventHandler(admin.Event.ON_TAGS, function(payload)
+			if type(payload) ~= 'table' or payload.kind ~= 'rows' then return end
+			rowsHeard = rowsHeard + 1
+			for level = 2, 40 do
+				local info = debug.getinfo(level, 'S')
+				if info == nil then break end
+				if tostring(info.source):find('core/client/scheduler.lua', 1, true) then
+					underScheduler = true
+				end
+			end
+		end)
 		notes = {}
 		control.netEvents[admin.Event.TAG_ROWS]({
 			rows = { { id = 2, name = 'vee' } }, offset = 0, done = true })
 		control.Pump(20)
 		check('and once the names arrive the pass reports a row drawn',
 			said('1 drawn') ~= nil, table.concat(notes, ' | '))
+		check('and the view is handed its rows outside the scheduler resume',
+			rowsHeard > 0 and not underScheduler, ('%d heard'):format(rowsHeard))
 
 		-- A REFUSAL FROM THE NATIVE reads as an empty list at the call site, so the
 		-- reason has to be carried out or it is indistinguishable from "nobody near".
@@ -29375,6 +29391,62 @@ do
 		local read = lastAudit('admin.inventory.view')
 		check('a bag opened through the menu leaves an audit line',
 			read ~= nil and tostring(read.detail):find('menu', 1, true) ~= nil, read and read.detail)
+	end
+end
+
+
+-- ── an unchanged prompt strip costs its pass almost nothing ─────────────────
+-- `prompts.pass` runs every 150ms inside the scheduler's shared resume, whose
+-- overrun retires the client's only loop. It rebuilt the whole frame on every
+-- pass -- sorted every group, concatenated a signature for every row -- to
+-- compare it with the one it already had. Thirty-two groups is the cap.
+section('an unchanged prompt strip costs its pass almost nothing')
+do
+	local steps = {}
+	local env, control, why = boot('client', nil, nil, function(env, file)
+		if file ~= 'core/client/scheduler.lua' then return end
+		local every = env.OPX.Scheduler.Every
+		env.OPX.Scheduler.Every = function(name, interval, step)
+			steps[name] = step
+			return every(name, interval, step)
+		end
+	end)
+	check('client boots for the strip pass', why == nil, why)
+	if why == nil then
+		local prompts = env.OPX.Api.Get('prompts')
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:prompts:ready'] then page = candidate end
+		end
+		check('the pass is registered and the strip page is there',
+			steps['prompts.pass'] ~= nil and page ~= nil)
+		if steps['prompts.pass'] ~= nil and page ~= nil then
+			control.PageEmit(page, 'opx:prompts:ready', {})
+			for index = 1, 32 do
+				prompts.Show('test', 'g' .. index, { title = 'G' .. index, priority = index % 3, rows = {
+					{ id = 'a', label = 'Row A ' .. index, keys = 'E' },
+					{ id = 'b', label = 'Row B ' .. index, keys = 'F', value = tostring(index) },
+				} })
+			end
+			control.Pump(4)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			steps['prompts.pass']()
+			debug.sethook()
+			check('a pass over 32 unchanged groups is cheap', spent < 800,
+				('%d instructions'):format(spent))
+			prompts.Show('test', 'g1', { title = 'CHANGED', priority = 9, rows = { { id = 'a', label = 'New', keys = 'E' } } })
+			control.Pump(2)
+			local drew
+			for index = #page.sent, 1, -1 do
+				if page.sent[index].channel == 'opx:prompts:frame' then drew = page.sent[index] break end
+			end
+			local changed = false
+			for _, group in ipairs(drew and drew.payload.groups or {}) do
+				if group.title == 'CHANGED' then changed = true end
+			end
+			check('and a change still reaches the strip', changed)
+		end
 	end
 end
 
