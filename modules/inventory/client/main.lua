@@ -35,7 +35,13 @@ local REQUEST_TIMEOUT_MS = 15000
 -- nodes with its name, and the host REFUSES a page write past 1,024 value nodes
 -- WHOLE rather than truncating it -- `lib/client/surface.lua` hands that refusal
 -- back as `Send`'s second answer, and this file reads it on the open path.
-local CATALOG_PART = 40
+--
+-- AND A PART IS ONE RESUME. Shaping an entry costs ~130 VM instructions (two
+-- catalogue-key lookups), so the forty a part used to carry were ~5,400 -- in
+-- the scheduler's shared pass, beside up to three other jobs, where the meter
+-- put the job alone at ~8,000 of a ~10,000 budget whose overrun unwinds the
+-- whole pass in silence. Twenty is ~2,700, on a thread of its own.
+local CATALOG_PART = 20
 
 -- Whether the surface has been built and its channels wired, whether the page has
 -- reported itself mounted, the one write that is waiting for it to, and when that
@@ -62,10 +68,8 @@ local held = nil
 local waiting = {}
 local nextRequest = 0
 
--- Catalogue names still to be written to the page, and the generation the writer
--- belongs to: a newer send stops an older writer at its next part.
-local catalogQueue = nil
-local catalogAt = 1
+-- The generation the catalogue writer belongs to: a newer send stops an older
+-- writer at its next part.
 local catalogWrites = 0
 
 local release = nil
@@ -137,33 +141,31 @@ function Screen.SendConfig()
 	send('config', configPayload())
 end
 
---- Queues the whole catalogue to be written to the page in parts.
--- The scheduler drains it one part per pass: an entry costs about sixty VM
--- instructions to shape, a client handler that passes 10,000 is stopped by the
--- host, and a page write past 1,024 value nodes is dropped without a word.
+--- Writes the whole catalogue to the page in parts, one part a frame.
+-- ON A THREAD OF ITS OWN, a part a resume: a client resume that passes ~10,000
+-- instructions is stopped by the host, and a page write past 1,024 value nodes
+-- is dropped without a word -- see `CATALOG_PART`. It used to be drained a part
+-- per pass of the 500 ms screen job, inside the scheduler's shared resume; a
+-- frame apiece is both cheaper per resume and sooner. A newer write (the page
+-- reporting ready again) stops an older one before its next part.
 local function queueCatalog()
 	catalogWrites = catalogWrites + 1
-	catalogQueue = Catalog.Names()
-	catalogAt = 1
-end
-
---- Writes the next catalogue part, if one is waiting.
-local function drainCatalog()
-	if catalogQueue == nil then return end
-	local names = catalogQueue
 	local mark = catalogWrites
-	local first = catalogAt
-	local last = math.min(#names, first + CATALOG_PART - 1)
-
-	local entries = {}
-	for index = first, last do entries[names[index]] = Catalog.ViewOf(names[index]) end
-	send('catalog', { entries = entries, first = first == 1, done = last >= #names })
-
-	-- A newer send replaced the queue while this part was being shaped; that
-	-- writer owns it now.
-	if mark ~= catalogWrites then return end
-	catalogAt = last + 1
-	if catalogAt > #names then catalogQueue = nil end
+	local names = Catalog.Names()
+	CreateThread(function()
+		local first = 1
+		-- One part even for an empty catalogue: `first` and `done` together are
+		-- how the page is told it holds nothing.
+		repeat
+			if mark ~= catalogWrites or not pageReady then return end
+			local last = math.min(#names, first + CATALOG_PART - 1)
+			local entries = {}
+			for index = first, last do entries[names[index]] = Catalog.ViewOf(names[index]) end
+			send('catalog', { entries = entries, first = first == 1, done = last >= #names })
+			first = last + 1
+			if first <= #names then Wait(0) end
+		until first > #names
+	end)
 end
 
 -- ── requests ─────────────────────────────────────────────────────────────────
@@ -717,8 +719,8 @@ function ensureSurface()
 	return true
 end
 
---- One pass: expires unanswered requests, drains the catalogue, closes a screen
---- the player may no longer have up.
+--- One pass: expires unanswered requests and closes a screen the player may no
+--- longer have up.
 local function pass()
 	local now = OPX.Now()
 	for requestId, entry in pairs(waiting) do
@@ -727,7 +729,6 @@ local function pass()
 			settle(entry, false, 'timeout', {})
 		end
 	end
-	drainCatalog()
 
 	-- A SCREEN MARKED UP THAT WAS NEVER DRAWN, and a recovery that does not need
 	-- the player to die. `usable()` below goes false only when they are down or
@@ -795,6 +796,15 @@ function M.Start()
 		Open77.log.error('[inventory] there is no surface: the screen can never be drawn')
 	end
 
+	-- A FRESH RESUME BEFORE THE KEYS, AND ANOTHER BEFORE THE WORLD ROWS. This runs
+	-- on the client boot thread, and a page that mounted before the modules hands
+	-- its latched `inventory:ready` to the handler wired just above -- config and
+	-- all, right here. With the keys and the world rows (the eye checks every row
+	-- it is given) that came to ~5,100 VM instructions in one resume, 6,500 on the
+	-- budget meter: the dearest of the boot, where an overrun unwinds the thread
+	-- and every module after this one. `Start` may yield; under pcall for a caller
+	-- that is not on a thread.
+	pcall(Wait, 0)
 	-- THE KEYS BEFORE THE WORLD ROWS, and the order is load-bearing rather than
 	-- tidy. `Wire` registers rows with the target module, and a raise anywhere in
 	-- there aborts this function -- so with the two the other way round, one bad
@@ -804,6 +814,7 @@ function M.Start()
 	-- Nothing in `Register` needs a world row, so it goes first and survives.
 	M.Keys.Register()
 	M.Slotbar.Wire()
+	pcall(Wait, 0)
 	M.World.Wire()
 
 	OPX.Scheduler.Every('inventory.screen', 500, pass)

@@ -98,6 +98,18 @@ function OPX.Modules.Resolve()
 		visit(module, seen, out, trail)
 	end
 
+	-- A FRESH RESUME FOR THE REST, when the stack may yield. The walk above and
+	-- the rebind, the `enabled` pass and the settle below come to ~5,700 VM
+	-- instructions over sixty-odd modules, and on the client they ran in the
+	-- boot thread's first resume behind the surface build -- the budget meter's
+	-- 10,800 against ~10,000, the one resume the whole client half hangs on.
+	-- Under pcall for the reason `runPhase` gives; and a caller that finished the
+	-- order while this one was parked has already answered it.
+	if type(Wait) == 'function' then
+		pcall(Wait, 0)
+		if resolved then return resolved end
+	end
+
 	-- Every script has run and no phase has, which is the one moment a module may be
 	-- told what its config says -- `config/vehicles.lua` and its two siblings are
 	-- `server_script`s and had not run when their modules declared themselves. See

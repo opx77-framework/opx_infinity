@@ -82,6 +82,86 @@ local function boot(side, database, prelude, loaded)
 	return env, control
 end
 
+-- ── what one client resume costs ────────────────────────────────────────────
+-- THE CLIENT KILLS A RESUME THAT OVERRUNS ITS INSTRUCTION BUDGET (~10,000 VM
+-- instructions), silently and mid-operation, and desktop Lua has no such
+-- budget -- so no check on a RESULT can see the defect, only a count of the
+-- work. These two count the way `OPX_BUDGET_METER` in `tests/host.lua` does,
+-- with the stub's own work left out (its page send walks and encodes a payload
+-- in Lua, where the platform does both natively), so a check can hold a call
+-- site to a figure on every run rather than only when somebody reads the meter.
+local HOST_SOURCE = 'tests/host.lua'
+local COST_STEP = 1
+
+--- A count hook charging `COST_STEP` to `into.spent` for every tick that did not
+--- land in the stub.
+local function costHook(into)
+	return function()
+		local info = debug.getinfo(2, 'S')
+		if info ~= nil and info.short_src == HOST_SOURCE then return end
+		into.spent = into.spent + COST_STEP
+	end
+end
+
+--- What one synchronous call costs, in VM instructions.
+-- @param fn function
+-- @return integer
+local function callCost(fn, ...)
+	local counter = { spent = 0 }
+	debug.sethook(costHook(counter), '', COST_STEP)
+	fn(...)
+	debug.sethook()
+	return counter.spent
+end
+
+--- The dearest single resume of every client thread made while `start` runs and
+--- `rounds` frames are pumped after it. Each `Wait` closes one resume and opens
+--- the next, which is exactly where the platform's budget starts over.
+-- @param env table
+-- @param control table
+-- @param start function
+-- @param rounds integer|nil
+-- @return integer the dearest resume, in VM instructions
+-- @return integer how many resumes were counted
+local function resumeCost(env, control, start, rounds)
+	local worst, resumes = 0, 0
+	local realCreate, realWait = env.CreateThread, env.Wait
+	local counters = setmetatable({}, { __mode = 'k' })
+	-- A thread still alive when this returns keeps the wrappers below; it stops
+	-- being counted rather than charging its later resumes to a closed count.
+	local live = true
+	local function settleResume()
+		local counter = counters[coroutine.running()]
+		if counter == nil then return end
+		debug.sethook()
+		resumes = resumes + 1
+		if counter.spent > worst then worst = counter.spent end
+		counter.spent = 0
+	end
+	local function openResume()
+		local counter = counters[coroutine.running()]
+		if counter ~= nil and live then debug.sethook(costHook(counter), '', COST_STEP) end
+	end
+	env.CreateThread = function(fn)
+		return realCreate(function()
+			counters[coroutine.running()] = { spent = 0 }
+			openResume()
+			fn()
+			settleResume()
+		end)
+	end
+	env.Wait = function(...)
+		settleResume()
+		realWait(...)
+		openResume()
+	end
+	start()
+	control.Pump(rounds or 40)
+	live = false
+	env.CreateThread, env.Wait = realCreate, realWait
+	return worst, resumes
+end
+
 -- Everything the runtime itself is allowed to publish on `OPX`. A module that
 -- adds a key here has made its internals reachable by every other module, which
 -- is the one thing the module boundary exists to prevent -- so this list is the
@@ -3339,10 +3419,17 @@ do
 		-- A BOX IS A SLIDE. Nothing new decides anything: the page reports the
 		-- index the box carries and the room turns it into a record against its own
 		-- list, which is the one path a thumb has always taken.
-		control.PageEmit(page, 'opx:panel:slide',
+		local sliding = callCost(control.PageEmit, page, 'opx:panel:slide',
 			{ handle = handle, id = 'OuterChest', index = 5, commit = true })
 		check('a box clicked in the grid dresses the puppet like a thumb does',
 			worn.OuterChest == 'Items.OuterChest_05', tostring(worn.OuterChest))
+		-- EVERY ROOM STATE THE PANEL WAS HANDED WAS WALKED NODE BY NODE, ~3,600
+		-- instructions of a ~5,600 republish, though every field of a patch is
+		-- already bounded by the panel's parsers. A slide is one; so is every
+		-- look list and every code that lands while the room is open, which the
+		-- meter put at ~10,000 a time. Held well inside the budget, not at it.
+		check('and the click is answered inside a small budget',
+			sliding < 4000, ('%d instructions'):format(sliding))
 
 		-- ── the category strip, and what gates each row ──────────────────────
 		-- WIRED, NOT BUILT. Saved outfits, share codes and the job gate all
@@ -3388,10 +3475,12 @@ do
 		-- Even once a look list arrives: without a shop being served there is
 		-- still nothing this player could be sold.
 		local shopsModule = env.OPX.Modules.Get('shops')
-		control.netEvents[shopsModule.Event.LOOKS]({ shop = 'jinguji',
+		local listing = callCost(control.netEvents[shopsModule.Event.LOOKS], { shop = 'jinguji',
 			looks = { { id = 'corpo', label = 'Corpo suit', cost = 0 } } })
 		check('and a look list alone does not conjure the category',
 			not hasGroup('looks'))
+		check('and the list lands inside a small budget',
+			listing < 4000, ('%d instructions'):format(listing))
 
 		-- ── a shared code, all the way onto the sliders ──────────────────────
 		-- THE ROUND TRIP THAT WAS BROKEN. A redeemed code comes back as `PUT_ON`,
@@ -3402,7 +3491,7 @@ do
 		-- the room's draft now, which means the SLIDER MOVES -- and the slider
 		-- moving is the only thing the player can actually see.
 		local wasFeet = slider('Feet')
-		control.netEvents[shopsModule.Event.PUT_ON]({ look = 'shared',
+		local dressing = callCost(control.netEvents[shopsModule.Event.PUT_ON], { look = 'shared',
 			wear = { Feet = 'Items.Feet_03' } })
 		local nowFeet = slider('Feet')
 		check('a code redeemed inside the room moves the room\'s own slider',
@@ -3412,6 +3501,8 @@ do
 			wasFeet ~= nil and nowFeet ~= nil and wasFeet.index ~= nowFeet.index)
 		check('and the puppet is actually wearing it',
 			worn.Feet == 'Items.Feet_03', tostring(worn.Feet))
+		check('and the code lands inside a small budget',
+			dressing < 4000, ('%d instructions'):format(dressing))
 
 		-- A GARMENT THIS BODY HAS NO RECORD FOR IS SKIPPED, NOT OBEYED. A code is
 		-- read out by another player whose character may be a different build, so
@@ -3450,12 +3541,13 @@ do
 		local env, control = joinClient('never', 400)
 		local appearance = env.OPX.Modules.Get('appearance')
 
+		-- BUILT ONCE, OUT HERE. The native answers from C; a stub that built two
+		-- thousand records in Lua inside the room's thread charged ~21,000
+		-- instructions of test fixture to the room's resume on the budget meter.
+		local coats = {}
+		for index = 1, 2000 do coats[index] = { record = ('Items.Coat_%04d'):format(index) } end
 		env.Open77.equipment.records = function(options)
-			local out = {}
-			if options.slot == 'OuterChest' then
-				for index = 1, 2000 do out[index] = { record = ('Items.Coat_%04d'):format(index) } end
-			end
-			return out
+			return options.slot == 'OuterChest' and coats or {}
 		end
 		env.Open77.equipment.apply = function() return true end
 		env.Open77.character.state = function()
@@ -3545,17 +3637,44 @@ do
 		appearance.Clothing.BeginPreview = function() return { equipment = {} } end
 		appearance.Clothing.EndPreview = function() return true end
 
-		appearance.Wardrobe.Open('appearance')
-		control.Pump(60)
+		-- THE OPEN AND EVERY SCROLL ARE COUNTED, a resume at a time. The room
+		-- used to do its borrow, its dressing, the panel's open with sixty boxes
+		-- in it and the shop's category strip in the resume of its last catalogue
+		-- breath -- ~19,000 instructions (29,000 on the budget meter) against a
+		-- client budget of ~10,000 that unwinds the thread silently, with the
+		-- puppet out on loan -- and a scroll published its sixty boxes in one
+		-- resume, ~16,000.
+		local opening, openResumes = resumeCost(env, control,
+			function() appearance.Wardrobe.Open('appearance') end, 60)
 		check('the room opened on the one category with anything in it',
 			appearance.Wardrobe.IsOpen())
+		check('and no resume of the opening cost more than 6,000 instructions',
+			opening < 6000, ('%d instructions, dearest of %d resumes'):format(opening, openResumes))
 
-		--- Every grid window the page has been sent, in order.
-		local windows = {}
-		for index = 1, #page.sent do
-			local given = page.sent[index].payload.tiles
-			if type(given) == 'table' then windows[#windows + 1] = given end
+		--- Every grid publication the page has been sent from `first` on, in order.
+		local function windowsFrom(first)
+			local found = {}
+			for index = first, #page.sent do
+				local given = page.sent[index].payload.tiles
+				if type(given) == 'table' then found[#found + 1] = given end
+			end
+			return found
 		end
+
+		--- The slices of one window joined back up, or nil when they leave a hole.
+		local function joined(slices)
+			if #slices == 0 then return nil end
+			local whole = { slot = slices[1].slot, from = slices[1].from, entries = {} }
+			for index = 1, #slices do
+				if slices[index].from ~= whole.from + #whole.entries then return nil end
+				for at = 1, #slices[index].entries do
+					whole.entries[#whole.entries + 1] = slices[index].entries[at]
+				end
+			end
+			return whole
+		end
+
+		local windows = windowsFrom(1)
 		local handle = nil
 		for index = 1, #page.sent do
 			if page.sent[index].channel == 'opx:panel:open' then
@@ -3574,26 +3693,27 @@ do
 		check('the room opens on the first category with anything in it',
 			openedOn == 'OuterChest', tostring(openedOn))
 
-		check('the first frame carries one window and not the category',
-			#windows == 1 and windows[1].from == 1 and #windows[1].entries == 60,
-			#windows == 1 and ('%d entries'):format(#windows[1].entries)
-				or ('%d window(s)'):format(#windows))
+		-- ONE WINDOW AND NOT THE CATEGORY, pushed behind the first frame in slices
+		-- the page appends: the same sixty boxes the frame used to carry, with no
+		-- request in between.
+		local first = joined(windows)
+		check('the first window follows the first frame, sixty boxes and not the category',
+			first ~= nil and first.from == 1 and #first.entries == 60,
+			first ~= nil and ('%d entries over %d slice(s)'):format(#first.entries, #windows)
+				or ('%d slice(s) that do not join up'):format(#windows))
 
-		--- Asks for the window after everything sent so far, and answers the new one.
+		--- Asks for the window after everything sent so far, and answers the new
+		--- one joined up, with the dearest resume it cost.
 		local function scrollOn(from)
 			local before = #page.sent
-			control.PageEmit(page, 'opx:panel:tiles',
-				{ handle = handle, slot = 'OuterChest', from = from })
-			-- Built on frames of its own; see `warmTiles`.
-			control.Pump(10)
-			for index = before + 1, #page.sent do
-				local given = page.sent[index].payload.tiles
-				if type(given) == 'table' then return given end
-			end
-			return nil
+			local spent = resumeCost(env, control, function()
+				control.PageEmit(page, 'opx:panel:tiles',
+					{ handle = handle, slot = 'OuterChest', from = from })
+			end, 20)
+			return joined(windowsFrom(before + 1)), spent
 		end
 
-		local second = scrollOn(61)
+		local second, scrolling = scrollOn(61)
 		check('scrolling to the bottom asks for the next window and gets it',
 			type(second) == 'table' and second.from == 61 and #second.entries == 60,
 			type(second) == 'table' and ('from %s, %d'):format(tostring(second.from),
@@ -3601,6 +3721,8 @@ do
 		check('and it starts exactly where the last one ended, so the grid has no hole',
 			type(second) == 'table' and second.entries[1] == 'Items.Coat_061',
 			type(second) == 'table' and tostring(second.entries[1]) or 'nothing came back')
+		check('and no resume of answering it cost more than 6,000 instructions',
+			scrolling < 6000, ('%d instructions'):format(scrolling))
 
 		-- The tail is short, and short is correct: the window is a slice and not a
 		-- fixed-size page, so the last one carries whatever is left.
@@ -3621,7 +3743,9 @@ do
 			scrollOn(TOTAL + 1) == nil)
 
 		-- ONE PAYLOAD NEVER CARRIES THE CATEGORY. This is the check that would go
-		-- red if somebody answered a scroll with the rest of the list.
+		-- red if somebody answered a scroll with the rest of the list -- and it
+		-- holds a publication to a slice now, because the page's check of every
+		-- box it is handed is what made a sixty-box payload a budget overrun.
 		local biggest = 0
 		for index = 1, #page.sent do
 			local given = page.sent[index].payload.tiles
@@ -3629,8 +3753,8 @@ do
 				biggest = #given.entries
 			end
 		end
-		check('and no single window ever carried more than the wire bound',
-			biggest == 60, tostring(biggest))
+		check('and no single publication ever carried more than a slice of ten boxes',
+			biggest == 10, tostring(biggest))
 
 		appearance.Wardrobe.Close('caller')
 	end
@@ -27563,6 +27687,49 @@ do
 	end
 end
 
+-- ── the reconcile's budget, the derive included ─────────────────────────────
+-- THE CREATES YIELDED AND THE REST DID NOT. Reading 200 garage spots, sorting
+-- them with a Lua comparator and signing the 128 that fit ran in the first
+-- resume of the pass, and a pass that changed nothing walked the whole set in
+-- one: the meter put both at ~36,000 instructions against a client budget of
+-- ~10,000 that unwinds the thread silently -- leaving `syncing` true and the
+-- map never reconciled again. Counted per resume, the way the platform does.
+section('blips: two hundred spots reconcile inside one resume\'s budget')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the reconcile budget', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local blips = OPX.Modules.Get('blips')
+		OPX.Config.MODULES.blips.MAX = 400
+		-- Whatever the boot's own pass was doing finishes first, so the Sync
+		-- below starts a thread of its own, and creates every pin it counts.
+		control.Pump(200)
+		local many = {}
+		for index = 1, 200 do
+			many['g' .. index] = { key = 'g' .. index, label = 'G' .. index,
+				x = 100.0 + index, y = 200.0, z = 30.0 }
+		end
+		OPX.Modules.Get('garages').Runtime.Spots = function() return many end
+
+		local first, resumes = resumeCost(env, control, function() blips.Runtime.Sync() end, 300)
+		local report = blips.Runtime.Report()
+		check('the reconcile still pins the 128 the platform allows',
+			report.live == 128, report.live)
+		check('and no resume of it cost more than 6,000 instructions',
+			resumes > 1 and first < 6000,
+			('%d instructions, dearest of %d resumes'):format(first, resumes))
+
+		local again, resumesAgain = resumeCost(env, control, function() blips.Runtime.Sync() end, 300)
+		check('a pass that changes nothing stays inside the budget too',
+			resumesAgain > 1 and again < 6000,
+			('%d instructions, dearest of %d resumes'):format(again, resumesAgain))
+		check('and leaves the same 128 pins up', blips.Runtime.Report().live == 128,
+			blips.Runtime.Report().live)
+	end
+end
+
 -- ── the settings the engine refuses by name ─────────────────────────────────
 --
 -- `Open77.blips` refuses `color`/`colour` with their own reason token. It is
@@ -31728,6 +31895,99 @@ do
 	end
 end
 
+-- ── the client boot, a resume at a time ─────────────────────────────────────
+-- THE ONE THREAD THE WHOLE CLIENT HALF HANGS ON. Its first resume built the
+-- surface, worked out the module order and ran the first `Init` -- ~8,000 VM
+-- instructions (10,800 on the budget meter) against a budget of ~10,000 whose
+-- overrun unwinds the thread without a word: no module started, no scheduler,
+-- nothing logged. And a page that mounts before the modules have started hands
+-- its latched readies to the `Start` that wires them, which put the inventory's
+-- at ~5,100 (6,500 on the meter). Every resume of the boot, and of every thread
+-- a module starts during it, is counted here, both ways round, and held well
+-- inside the budget rather than at it: the meter reads a resume ~1.3x dearer.
+section('the client boot stays inside one resume\'s budget')
+do
+	--- Boots a fresh client, the page mounting early when asked, and answers the
+	--- dearest resume, how many there were and how many modules started.
+	local function bootCost(early)
+		local env, control = Host.Environment('client')
+		for _, file in ipairs(Host.LoadOrder('open77.lua', 'client')) do
+			local chunk = loadfile(file, 't', env)
+			if chunk == nil or not pcall(chunk) then return nil end
+		end
+		local worst, resumes = resumeCost(env, control, function()
+			control.Fire('onClientResourceStart', 'opx_infinity')
+			if early then
+				-- The rude order: the surface exists, no module has started, and
+				-- the page reports ready with every view's own ready behind it.
+				control.Pump(1)
+				local page = control.pages[#control.pages]
+				control.PageEmit(page, 'opx:ready', { surface = 'ui' })
+				control.PageEmit(page, 'opx:hud:ready', {})
+				control.PageEmit(page, 'opx:inventory:ready', {})
+			end
+		end, 240)
+		local started = 0
+		for _, line in ipairs(env.OPX.Modules.Report()) do
+			if line:find(' started ', 1, true) then started = started + 1 end
+		end
+		return worst, resumes, started
+	end
+
+	for _, early in ipairs({ false, true }) do
+		local how = early and 'with the page mounted first' or 'with the page mounted after'
+		local worst, resumes, started = bootCost(early)
+		check(('every client script loads and the modules start, %s'):format(how),
+			worst ~= nil and started > 0, started)
+		check(('and no resume of the boot cost more than 4,500 instructions, %s'):format(how),
+			worst ~= nil and worst < 4500,
+			worst and ('%d instructions, dearest of %d resumes'):format(worst, resumes))
+	end
+end
+
+-- ── the inventory catalogue drains a part a resume ─────────────────────────
+-- THE CATALOGUE WENT TO THE PAGE A PART PER PASS of the `inventory.screen`
+-- job, and that job runs inside the scheduler's one pass beside up to three
+-- others -- one resume and one budget between them. Forty entries a part, each
+-- shaped through two catalogue-key lookups, was the meter's ~8,000 for the job
+-- alone, most of a ~10,000 budget whose overrun unwinds the whole pass in
+-- silence. It is written from a thread of its own now, a small part a resume.
+section('the inventory catalogue drains a small part a resume')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:inventory:ready'] then page = candidate end
+		end
+		check('and the inventory page is found', page ~= nil)
+		if page ~= nil then
+			local before = #page.sent
+			local worst, resumes = resumeCost(env, control, function()
+				control.PageEmit(page, 'opx:inventory:ready', {})
+			end, 40)
+			local parts, entries, first, done = 0, 0, 0, 0
+			for index = before + 1, #page.sent do
+				local sent = page.sent[index]
+				if sent.channel == 'opx:inventory:catalog' then
+					parts = parts + 1
+					for _ in pairs(sent.payload.entries) do entries = entries + 1 end
+					if sent.payload.first == true then first = first + 1 end
+					if sent.payload.done == true then done = done + 1 end
+				end
+			end
+			local total = #env.OPX.Modules.Get('inventory').Catalog.Names()
+			check('the whole catalogue still reaches the page, cleared once and ended once',
+				entries == total and first == 1 and done == 1,
+				('%d of %d in %d part(s), first %d, done %d'):format(entries, total, parts, first, done))
+			check('and no resume of writing it cost more than 4,000 instructions',
+				resumes > 0 and worst < 4000,
+				('%d instructions, dearest of %d resumes'):format(worst, resumes))
+		end
+	end
+end
+
 -- ── the inventory key opens the bag, and never takes a pile ─────────────────
 -- THE OWNER: "quand je drop l'item puis je suis a coter je ouvre le inventaire
 -- une autre fois cela prend le drop a cote automatiquement retire cela". The
@@ -32226,6 +32486,23 @@ do
 			debug.sethook()
 			check('a 20,000-character command costs a bounded walk', spent < 20000,
 				('%d instructions'):format(spent))
+			-- AND A LINE THE PAGE DID BOUND IS CHEAP TOO. The tokeniser walked a
+			-- byte per iteration, ~19 instructions a byte, inside the page
+			-- callback's one resume: a full-length command was ~4,700 and the
+			-- cut-and-walk above ~6,900 -- the meter's 9,000 for the submit. It
+			-- skips each run of ordinary bytes natively now.
+			local said
+			env.TriggerServerEvent = function(_, ...) said = { ... } return true end
+			local typed = '/give "Jackie Welles" ' .. ('item_' .. ('x'):rep(13) .. ' '):rep(11)
+			local typing = callCost(control.PageEmit, chatPage, 'opx:chat:submit', { text = typed })
+			check('a full-length typed command is tokenised as before',
+				said ~= nil and #said == 13 and said[1] == 'give' and said[2] == 'Jackie Welles'
+					and said[13] == 'item_' .. ('x'):rep(13),
+				said and table.concat(said, '|') or 'nothing sent')
+			check('and inside a small budget', typing < 2500, ('%d instructions'):format(typing))
+			local cutting = callCost(control.PageEmit, chatPage, 'opx:chat:submit', { text = long })
+			check('and the unbounded one, cut and all, under 4,000', cutting < 4000,
+				('%d instructions'):format(cutting))
 		end
 
 		-- A long accented buffer is measured natively, not a byte at a time.
