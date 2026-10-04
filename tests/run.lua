@@ -31895,6 +31895,49 @@ do
 	end
 end
 
+-- ── the inventory catalogue drains a part a resume ─────────────────────────
+-- THE CATALOGUE WENT TO THE PAGE A PART PER PASS of the `inventory.screen`
+-- job, and that job runs inside the scheduler's one pass beside up to three
+-- others -- one resume and one budget between them. Forty entries a part, each
+-- shaped through two catalogue-key lookups, was the meter's ~8,000 for the job
+-- alone, most of a ~10,000 budget whose overrun unwinds the whole pass in
+-- silence. It is written from a thread of its own now, a small part a resume.
+section('the inventory catalogue drains a small part a resume')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+	if why == nil then
+		local page
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:inventory:ready'] then page = candidate end
+		end
+		check('and the inventory page is found', page ~= nil)
+		if page ~= nil then
+			local before = #page.sent
+			local worst, resumes = resumeCost(env, control, function()
+				control.PageEmit(page, 'opx:inventory:ready', {})
+			end, 40)
+			local parts, entries, first, done = 0, 0, 0, 0
+			for index = before + 1, #page.sent do
+				local sent = page.sent[index]
+				if sent.channel == 'opx:inventory:catalog' then
+					parts = parts + 1
+					for _ in pairs(sent.payload.entries) do entries = entries + 1 end
+					if sent.payload.first == true then first = first + 1 end
+					if sent.payload.done == true then done = done + 1 end
+				end
+			end
+			local total = #env.OPX.Modules.Get('inventory').Catalog.Names()
+			check('the whole catalogue still reaches the page, cleared once and ended once',
+				entries == total and first == 1 and done == 1,
+				('%d of %d in %d part(s), first %d, done %d'):format(entries, total, parts, first, done))
+			check('and no resume of writing it cost more than 4,000 instructions',
+				resumes > 0 and worst < 4000,
+				('%d instructions, dearest of %d resumes'):format(worst, resumes))
+		end
+	end
+end
+
 -- ── the inventory key opens the bag, and never takes a pile ─────────────────
 -- THE OWNER: "quand je drop l'item puis je suis a coter je ouvre le inventaire
 -- une autre fois cela prend le drop a cote automatiquement retire cela". The
