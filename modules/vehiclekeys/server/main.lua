@@ -196,6 +196,24 @@ function M.Count(target, plate)
 	return tonumber(counted.value) or 0
 end
 
+--- Whether a bag holds a key to one live vehicle, by the host's id.
+-- @author dop42
+--
+-- LOOKED UP, NEVER MINTED, the rule `Toggle` follows: a vehicle nobody ever cut
+-- a key for has no plate, and minting one to ask the question would only prove
+-- that nobody holds it. For a caller deciding whether a vehicle is this
+-- player's to use -- `hauling` selling out of a trunk -- without turning a lock.
+-- @param target Source|CitizenId
+-- @param vehicleId any the host's id
+-- @return boolean
+function M.Holds(target, vehicleId)
+	local snapshot = snapshotOf(vehicleId)
+	if snapshot == nil then return false end
+	local identity = lookup(vehicleId, snapshot)
+	if identity == nil then return false end
+	return M.Count(target, identity.plate) > 0
+end
+
 --- Cuts one key to a plate into a bag. Always one more: the caller decided.
 -- @author dop42
 -- @param target Source|CitizenId
@@ -459,6 +477,7 @@ function M.Api()
 	OPX.Api.Provide('vehiclekeys', 1, {
 		Identity = M.Identity,
 		Count = M.Count,
+		Holds = M.Holds,
 		Give = M.Give,
 		GiveFor = M.GiveFor,
 		Ensure = M.Ensure,

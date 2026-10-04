@@ -933,6 +933,46 @@ local function vehiclesAt(dropoff, bucket)
 	return out
 end
 
+--- The citizen id behind a connection, for an audit line or an
+--- ownership check, or nil.
+local function citizenOf(player)
+	local api = OPX.Api.Get('character')
+	if api == nil or type(api.GetPlayer) ~= 'function' then return nil end
+	local read, loaded = pcall(api.GetPlayer, player)
+	if not read or type(loaded) ~= 'table' or type(loaded.PlayerData) ~= 'table' then return nil end
+	return loaded.PlayerData.citizenId
+end
+
+--- Whether a parked vehicle's trunk is this player's to sell out of: they own the
+--- vehicle (the `vehicles` contract's row) or carry its key (`vehiclekeys`).
+-- MAY YIELD: counting a key reads the bag. With neither contract on this server
+-- nothing can prove either, and the inventory's own TRUNK_OWNER_ONLY rule is the
+-- only gate, as it was before; that is said once in the journal.
+local warnedNoProof = false
+local function mayTakeFrom(player, vehicleId)
+	local vehicles = OPX.Api.Get('vehicles')
+	local keys = OPX.Api.Get('vehiclekeys')
+	local canOwn = vehicles ~= nil and type(vehicles.PlateOf) == 'function'
+	local canKey = keys ~= nil and type(keys.Holds) == 'function'
+	if not canOwn and not canKey then
+		if not warnedNoProof then
+			warnedNoProof = true
+			Open77.log.warn('[hauling] neither the vehicles nor the vehiclekeys contract is here: a ' ..
+				'sale counts any trunk at the drop-off the inventory lets the player open')
+		end
+		return true
+	end
+	if canOwn then
+		local read, plate, owner = pcall(vehicles.PlateOf, vehicleId)
+		if read and plate ~= nil and owner ~= nil and owner == citizenOf(player) then return true end
+	end
+	if canKey then
+		local read, holds = pcall(keys.Holds, player, vehicleId)
+		if read and holds == true then return true end
+	end
+	return false
+end
+
 --- Where this site's crates are for a sale: the player's bag, then every trunk
 --- parked inside the drop-off that the player may open. YIELDS.
 -- @return table[] `{ vehicle = id|nil, count = n }`, only the non-empty ones
@@ -950,11 +990,17 @@ local function stockFor(player, site, dropoff, bucket)
 	end
 	-- A trunk the player may not open (TRUNK_OWNER_ONLY) answers `not_yours` and is
 	-- skipped: selling out of a stranger's boot is the theft the screen refuses.
+	-- And a trunk the inventory WOULD open -- an unowned truck has no owner to
+	-- refuse anyone -- is counted only when the vehicle is the player's or they
+	-- hold its key (`mayTakeFrom`), so a hauler who parks at the drop-off is not
+	-- paid out by whoever reaches the buyer first.
 	for _, vehicleId in ipairs(vehiclesAt(dropoff, bucket)) do
-		local held = inventory.CountInTrunk(vehicleId, Access.ITEM, tag, player)
-		if type(held) == 'table' and held.ok and (held.value or 0) > 0 then
-			out[#out + 1] = { vehicle = vehicleId, count = held.value }
-			total = total + held.value
+		if mayTakeFrom(player, vehicleId) then
+			local held = inventory.CountInTrunk(vehicleId, Access.ITEM, tag, player)
+			if type(held) == 'table' and held.ok and (held.value or 0) > 0 then
+				out[#out + 1] = { vehicle = vehicleId, count = held.value }
+				total = total + held.value
+			end
 		end
 	end
 	return out, total
@@ -970,15 +1016,6 @@ local function stored(fn, ...)
 	if not called then return false, 'raised: ' .. tostring(result) end
 	if type(result) == 'table' and result.ok then return true, nil end
 	return false, type(result) == 'table' and tostring(result.error) or 'refused'
-end
-
---- The citizen id behind a connection, for an audit line, or nil.
-local function citizenOf(player)
-	local api = OPX.Api.Get('character')
-	if api == nil or type(api.GetPlayer) ~= 'function' then return nil end
-	local read, loaded = pcall(api.GetPlayer, player)
-	if not read or type(loaded) ~= 'table' or type(loaded.PlayerData) ~= 'table' then return nil end
-	return loaded.PlayerData.citizenId
 end
 
 --- Puts back what a sale took when the pay refused, and answers how many crates

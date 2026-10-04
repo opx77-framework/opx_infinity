@@ -18593,9 +18593,18 @@ do
 			end,
 		}
 		local wallet = nil
+		-- The key ring: which player holds a key to which vehicle. A trunk at a
+		-- drop-off is sold out of only by its owner or a key holder.
+		local keyring = { [2] = { ['veh-1'] = true } }
+		local keysStub = {
+			Holds = function(player, vehicle)
+				return keyring[player] ~= nil and keyring[player][vehicle] == true
+			end,
+		}
 		local realGet = OPX.Api.Get
 		OPX.Api.Get = function(name)
 			if name == 'inventory' then return inventory end
+			if name == 'vehiclekeys' then return keysStub end
 			if name == 'character' and wallet ~= nil then return wallet end
 			return realGet(name)
 		end
@@ -18740,6 +18749,20 @@ do
 
 		-- ── at the seller, with the truck parked at the drop-off ─────────────
 		vehicles['veh-1'].position = { x = -1502.0, y = 201.0, z = 18.0 }
+
+		-- SOMEBODY ELSE REACHES THE BUYER FIRST. The truck is not theirs and they
+		-- hold no key to it, so its crates are not theirs to sell: the inventory
+		-- would open an unowned trunk for anybody, and the hauler who drove it
+		-- here would watch a stranger get paid for the load.
+		positions[7] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
+		fire(7, M.Event.HELLO)
+		at = at + 10000
+		fire(7, M.Event.BEGIN, Step.DELIVER, SELLER)
+		check('a stranger at the seller cannot sell the crates in somebody else\'s truck',
+			lastAnswer()[1] == false and lastAnswer()[2] == 'no_crates'
+				and trunks['veh-1'].docks == 2,
+			tostring(lastAnswer()[2]))
+
 		positions[2] = { x = -1500.0, y = 200.0, z = 18.0, bucket = 0 }
 		at = at + 10000
 		fire(2, M.Event.BEGIN, Step.DELIVER, SELLER)
@@ -20908,6 +20931,14 @@ do
 			cut and tostring(cut.error))
 		local metadata = held[1] and held[1].entry.metadata or {}
 		check('and its metadata names the plate', metadata.plate == minted, tostring(metadata.plate))
+		-- `Holds` answers whether a bag carries a key to a live vehicle, by its
+		-- id, without minting one -- the question `hauling` asks of a truck at a
+		-- drop-off before it sells out of the trunk.
+		check('Holds answers yes for the holder of the key to that vehicle',
+			run(function() return keys.Holds(HOLDER, CAR) end) == true)
+		check('and no for somebody without one, or for a vehicle nobody keyed',
+			run(function() return keys.Holds(STRANGER, CAR) end) == false
+				and run(function() return keys.Holds(HOLDER, 999999) end) == false)
 		check('and a label a player can read, with the model and the plate',
 			type(metadata.label) == 'string' and metadata.label:find('Villefort Cortes', 1, true) ~= nil
 				and metadata.label:find(minted, 1, true) ~= nil, tostring(metadata.label))
