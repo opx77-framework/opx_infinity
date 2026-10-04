@@ -89,8 +89,17 @@ function Containers.Load(kind, owner, slots, maxWeight)
 		if OPX.Now() >= deadline then return nil, 'load_timeout' end
 		Wait(50)
 		if pending.done then
-			if pending.container then return pending.container, nil end
-			return nil, pending.error or 'load_timeout'
+			local shared = pending.container
+			if shared == nil then return nil, pending.error or 'load_timeout' end
+			-- STILL REGISTERED, OR IT IS NOT THE CONTAINER ANY MORE. This caller
+			-- polls every 50 ms, and in that time the loader can finish, change
+			-- it, settle a borrowed bag and `Discard` it -- one write is a single
+			-- trip. Handing back the discarded table gave the waiter a container
+			-- nothing would ever write again: its change was marked dirty against
+			-- an id the sweep no longer knew, and dropped. A staff give to an
+			-- offline bag racing a contract call was the way in. The loop goes
+			-- round instead, and the next read finds it or loads it afresh.
+			if loaded[shared.id] == shared then return shared, nil end
 		end
 	end
 	id = byIdentity[identity]
