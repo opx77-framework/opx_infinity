@@ -20827,6 +20827,91 @@ do
 	end
 end
 
+-- ── a published look: two seconds apart, and never sent twice ───────────────
+-- One accepted look is re-sent to every connected player and may weigh 48 KiB.
+-- The floor was 500 ms, so a modified client publishing a new body on every
+-- floor pushed about 96 KiB a second to each of N players, and an identical
+-- re-publication -- every missed acknowledgement -- was fanned out again in full.
+section('a published look is floored at two seconds and not re-sent unchanged')
+do
+	local env, control, why = boot('server')
+	check('the server boots for the look fan-out', why == nil, why)
+	local OPX = why == nil and env.OPX or nil
+	local appearance = OPX and OPX.Modules.Get('appearance') or nil
+
+	if type(appearance) == 'table' then
+		local PRESENT = appearance.Event.PRESENT
+		local LOOK, ACK = appearance.Event.LOOK, appearance.Event.PRESENT_ACK
+		local REPLAY, REPLAYED = appearance.Event.REPLAY, appearance.Event.REPLAYED
+		local ABSENT = appearance.Event.ABSENT
+		local ME = 41
+		env.Open77.players.all = function() return { 41, 42, 43 } end
+
+		local function body(seed)
+			return { family = 'female', groups = { {
+				part = 'head', name = '0x00000000000000a1',
+				keys = { { '0x00000000000000b1', ('0x%016x'):format(seed) } },
+			} } }
+		end
+		local EQUIPMENT = { OuterChest = 'Items.Jacket_01' }
+
+		--- Fires one of the player's doors; answers the LOOKs fanned out, the
+		--- acknowledgements and the replay answers that followed.
+		local function fire(name, ...)
+			local mark = #control.clientEvents
+			env.source = ME
+			control.netEvents[name](...)
+			env.source = nil
+			local looks, acks, replayed = 0, 0, 0
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == LOOK then looks = looks + 1 end
+				if sent.name == ACK then acks = acks + 1 end
+				if sent.name == REPLAYED then replayed = replayed + 1 end
+			end
+			return looks, acks, replayed
+		end
+
+		local looks, acks = fire(PRESENT, body(1), EQUIPMENT, {}, 1)
+		check('a first look goes to every other player and is acknowledged',
+			looks == 2 and acks == 1, ('%d look(s), %d ack(s)'):format(looks, acks))
+
+		control.Pump(10)
+		looks, acks = fire(PRESENT, body(2), EQUIPMENT, {}, 2)
+		check('A NEW BODY ONE SECOND LATER IS INSIDE THE FLOOR: not sent, not acknowledged',
+			looks == 0 and acks == 0, ('%d look(s), %d ack(s)'):format(looks, acks))
+
+		control.Pump(25)
+		looks, acks = fire(PRESENT, body(1), EQUIPMENT, {}, 3)
+		check('AN UNCHANGED LOOK IS ACKNOWLEDGED AND NOT FANNED OUT AGAIN',
+			looks == 0 and acks == 1, ('%d look(s), %d ack(s)'):format(looks, acks))
+
+		control.Pump(25)
+		looks = fire(PRESENT, body(1), { OuterChest = 'Items.Jacket_02' }, {}, 4)
+		check('a changed jacket is a changed look, and goes out', looks == 2, tostring(looks))
+
+		check('the fingerprint does not follow the order a table was built in',
+			appearance.LookFingerprint({ body = body(5), equipment = { Head = false, Legs = 'Items.A' },
+				wardrobe = { outfits = {} } }) ==
+			appearance.LookFingerprint({ body = body(5), equipment = { Legs = 'Items.A', Head = false },
+				wardrobe = { outfits = {} } }))
+
+		-- A look coming back after a withdrawal is news to everybody, unchanged or not.
+		fire(ABSENT)
+		control.Pump(25)
+		looks = fire(PRESENT, body(1), { OuterChest = 'Items.Jacket_02' }, {}, 5)
+		check('an unchanged look coming back after a withdrawal is sent again', looks == 2,
+			tostring(looks))
+
+		-- The replay goes to the asker alone and keeps its short floor.
+		local _, _, first = fire(REPLAY, 1)
+		control.Pump(6)
+		local _, _, second = fire(REPLAY, 2)
+		check('a replay keeps the short floor', first == 1 and second == 1,
+			('%d then %d'):format(first, second))
+	end
+end
+
 -- ── the latch the whole join sits behind ────────────────────────────────────
 -- `BeginBootstrap` takes `bootstrapPicking` BEFORE its thread and drops it only
 -- from inside a raw `while true` body with no pcall. The per-resume instruction

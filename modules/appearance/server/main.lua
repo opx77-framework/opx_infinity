@@ -503,8 +503,16 @@ end
 -- What is checked below is the SHAPE and not the truth: a client can only ever
 -- describe its own player, which is the trust the platform's own package extends.
 
--- Least milliseconds between two publications or replays from one player.
-local FLOOR_MS = 500
+-- Least milliseconds between two requests of one kind from one player.
+--
+-- A PUBLICATION IS FANNED OUT, a replay is not. One accepted look is re-sent to
+-- every connected player, and a body may weigh 48 KiB, so a client publishing
+-- a different body every 500 ms -- which a modified one can -- pushed some
+-- 96 KiB a second to EACH of N players. A real client publishes on a change
+-- and retries an unanswered one after three seconds, so two seconds costs it
+-- nothing: a change inside the floor is simply not acknowledged, and its retry
+-- lands. A replay goes to the asker alone and keeps the short floor.
+local FLOOR_MS = { present = 2000, replay = 500 }
 
 -- Most bytes one encoded body, and one encoded equipment plus wardrobe, may weigh.
 local MAX_BODY_BYTES = 49152
@@ -514,6 +522,10 @@ local MAX_CLOTHING_BYTES = 4096
 -- reload, when each player last got through the floor, and whose unreadable body
 -- was already logged.
 local looks, absent, lastAt, warned = {}, {}, {}, {}
+
+-- The fingerprint of the last look each player was fanned out with. See
+-- `M.LookFingerprint`.
+local printed = {}
 
 -- Whether the "this half drops every look" warning has been said.
 local saidPresentingOff = false
@@ -526,9 +538,57 @@ end
 --- Whether a player's request of this kind falls inside the floor.
 local function cooled(kind, player)
 	local key, atMs = kind .. ':' .. player, OPX.Now()
-	if lastAt[key] and atMs - lastAt[key] < FLOOR_MS then return true end
+	local floor = FLOOR_MS[kind] or FLOOR_MS.replay
+	if lastAt[key] and atMs - lastAt[key] < floor then return true end
 	lastAt[key] = atMs
 	return false
+end
+
+--- A 32-bit FNV-1a hash of a string, as eight hex digits.
+local function fnv(text)
+	local hash = 2166136261
+	for index = 1, #text do
+		hash = ((hash ~ text:byte(index)) * 16777619) & 0xFFFFFFFF
+	end
+	return ('%08x'):format(hash)
+end
+
+--- A fingerprint of a look: its length and a hash of a canonical rendering.
+--
+-- CANONICAL AND NOT `json.encode`, whose key order follows `pairs` and is not
+-- promised to repeat for two equal tables. The body is walked in its own array
+-- order, the nine slots in theirs, the outfits by index and their slots sorted,
+-- so the same look always renders the same text. The length rides with the hash
+-- so a collision would have to match both.
+-- @param look table { body, equipment, wardrobe } as stored in `looks`
+-- @return string
+function M.LookFingerprint(look)
+	local parts = { tostring(look.body.family) }
+	local groups = look.body.groups
+	for index = 1, #groups do
+		local group = groups[index]
+		parts[#parts + 1] = group.part .. ':' .. group.name
+		for keyIndex = 1, #group.keys do
+			local key = group.keys[keyIndex]
+			parts[#parts + 1] = key[1] .. '=' .. key[2]
+		end
+	end
+	for index = 1, #SLOTS do parts[#parts + 1] = tostring(look.equipment[SLOTS[index]]) end
+	parts[#parts + 1] = 'active=' .. tostring(look.wardrobe.active)
+	local outfitSlots = {}
+	for slot in pairs(IS_OUTFIT_SLOT) do outfitSlots[#outfitSlots + 1] = slot end
+	table.sort(outfitSlots)
+	for index = 0, OUTFITS - 1 do
+		local overrides = look.wardrobe.outfits[tostring(index)]
+		if overrides ~= nil then
+			parts[#parts + 1] = 'outfit' .. index
+			for slotIndex = 1, #outfitSlots do
+				parts[#parts + 1] = tostring(overrides[outfitSlots[slotIndex]])
+			end
+		end
+	end
+	local text = table.concat(parts, '|')
+	return #text .. ':' .. fnv(text)
 end
 
 --- Whether a value is a non-zero sixteen-digit engine hash.
@@ -881,6 +941,7 @@ end
 --- Forgets a departed player's look, absence, warning, floors and grant.
 local function forget(player)
 	looks[player], absent[player], warned[player] = nil, nil, nil
+	printed[player] = nil
 	dressing[player] = nil
 	local prefix = ':' .. player
 	for key in pairs(lastAt) do
@@ -1010,6 +1071,21 @@ local function registerEvents()
 		end
 
 		warned[player] = nil
+		-- THE SAME LOOK IS NOT SENT TO EVERYBODY TWICE. A client re-publishes an
+		-- identical look whenever an acknowledgement went missing, and a modified
+		-- one can re-publish it on every floor: every peer already holds it, a
+		-- newcomer is handed it by the replay and by a bucket change, so only a
+		-- look that changed -- or one coming back after a withdrawal -- goes out.
+		-- It is still acknowledged, or the client would keep retrying.
+		local fingerprint = M.LookFingerprint(look)
+		if printed[player] == fingerprint and not absent[player] and looks[player] ~= nil then
+			looks[player] = look
+			Open77.log.debug(('[appearance] player %d published the look it already has; ' ..
+				'nothing re-sent'):format(player))
+			TriggerClientEvent(M.Event.PRESENT_ACK, player, sequence, true)
+			return
+		end
+		printed[player] = fingerprint
 		looks[player] = look
 		absent[player] = nil
 		local handed = broadcast(player)
@@ -1100,6 +1176,7 @@ end
 --- Builds state and contributes this module's table. Never yields.
 function M.Init()
 	looks, absent, lastAt, warned = {}, {}, {}, {}
+	printed = {}
 	dressing = {}
 
 	-- Resolved once, on this half too, for the reason the client resolves it
@@ -1368,6 +1445,7 @@ end
 --- to write: the next publication rebuilds all of it.
 function M.Stop()
 	looks, absent, lastAt, warned = {}, {}, {}, {}
+	printed = {}
 	-- The grants go too. A restart is every fitting room in the city closing at
 	-- once, and a grant that outlived one would be a door left open by a room
 	-- that no longer exists.
