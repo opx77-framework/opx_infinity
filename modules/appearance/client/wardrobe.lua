@@ -68,13 +68,13 @@ end
 
 -- Every string a view draws, read from the active catalogue when it reports ready.
 local TEXT_KEYS = {
-	'appearance.panel.title', 'appearance.panel.looks', 'appearance.panel.body',
-	'appearance.panel.outfits', 'appearance.panel.soon', 'appearance.panel.bodyType',
+	'appearance.panel.title', 'appearance.panel.looks', 'appearance.panel.openRoom',
+	'appearance.panel.bodyType',
 	'appearance.panel.savedLook', 'appearance.panel.worn', 'appearance.panel.stored',
 	'appearance.panel.none', 'appearance.panel.otherBuild', 'appearance.panel.noLook',
 	'appearance.panel.oneLook', 'appearance.panel.wear', 'appearance.panel.editFace',
 	'appearance.panel.editHair', 'appearance.panel.editNote', 'appearance.panel.bodyNote',
-	'appearance.panel.outfitsNote', 'appearance.panel.wearing', 'appearance.panel.wornNow',
+	'appearance.panel.wearing', 'appearance.panel.wornNow',
 	'appearance.panel.alreadyWorn', 'appearance.panel.busy',
 	'wardrobe.title', 'wardrobe.ui.heading', 'wardrobe.ui.eyebrow',
 	'wardrobe.ui.eyebrowCreation', 'wardrobe.ui.intro', 'wardrobe.ui.introCreation',
@@ -171,19 +171,15 @@ local function panelSpec()
 		items = {
 			{ id = 'looks', label = locale('appearance.panel.looks'), value = storedText(),
 				items = looksItems() },
-			{ id = 'body', label = locale('appearance.panel.body'), value = familyText(),
-				items = {
-					-- Stated and not offered: the body family belongs to the character.
-					{ separator = true, label = locale('appearance.panel.bodyNote') },
-					{ id = 'family', label = locale('appearance.panel.bodyType'), value = familyText(),
-						disabled = true },
-				} },
-			{ id = 'outfits', label = locale('appearance.panel.outfits'),
-				items = {
-					{ id = 'wardrobe', label = locale('appearance.panel.outfitsNote'),
-						value = roomBusy and locale('appearance.panel.busy') or nil,
-						disabled = roomBusy },
-				} },
+			-- ONE ROW EACH, NOT A LEVEL EACH. `Body` opened a level holding one
+			-- disabled row, and `Outfits` a level holding one row whose label was a
+			-- sentence: two presses to read a fact and two to open a room.
+			-- Stated and not offered: the body family belongs to the character.
+			{ id = 'family', label = locale('appearance.panel.bodyType'), value = familyText(),
+				description = locale('appearance.panel.bodyNote'), disabled = true },
+			{ id = 'wardrobe', label = locale('appearance.panel.openRoom'),
+				value = roomBusy and locale('appearance.panel.busy') or nil,
+				disabled = roomBusy },
 		},
 	}
 end

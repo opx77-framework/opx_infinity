@@ -13217,6 +13217,54 @@ do
 	end
 end
 
+-- ── the appearance panel: no level for one row ──────────────────────────────
+-- `Body` opened a level holding one disabled row and `Outfits` a level holding
+-- one row: two presses to read a fact and two to open the fitting room. Both are
+-- top-level rows now, and no level of the panel holds a single row.
+section('appearance panel: no submenu exists to hold a single row')
+do
+	local env, _, why = boot('client')
+	check('the client boots with the appearance module', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local appearance = OPX.Modules.Get('appearance')
+		local spec
+		env.AddEventHandler(appearance.Event.ON_VIEW, function(payload)
+			if type(payload) == 'table' and payload.kind == 'panel' then spec = payload end
+		end)
+		if type(appearance.Face) == 'table' then appearance.Face.citizenId = 'CIT-PANEL' end
+		-- No native mirror on screen: this host has no appearance namespace.
+		env.Open77.appearance = env.Open77.appearance or { isOpen = function() return false end }
+		local opened, refusal = appearance.Panel.Open('test')
+		check('the panel opens for a loaded character', opened == true, tostring(refusal))
+
+		local lonely, ids = {}, {}
+		local function walk(items, path)
+			for _, item in ipairs(items or {}) do
+				if not item.separator then
+					if path == '' then ids[item.id] = item end
+					if type(item.items) == 'table' then
+						local rows = 0
+						for _, child in ipairs(item.items) do
+							if not child.separator then rows = rows + 1 end
+						end
+						if rows <= 1 then lonely[#lonely + 1] = path .. tostring(item.id) end
+						walk(item.items, path .. tostring(item.id) .. '/')
+					end
+				end
+			end
+		end
+		walk(spec and spec.items, '')
+		check('the panel was drawn', spec ~= nil)
+		check('and no level of it holds a single row', #lonely == 0, table.concat(lonely, ' '))
+		check('the fitting room is one press from the top, worded as the action',
+			ids.wardrobe ~= nil and ids.wardrobe.items == nil
+				and ids.wardrobe.label == 'Open fitting room', ids.wardrobe and ids.wardrobe.label)
+		check('and the body type is a fact on the top level, not a level of its own',
+			ids.family ~= nil and ids.family.disabled == true and ids.family.items == nil)
+	end
+end
+
 -- ── clothing shops: the half that is pure ───────────────────────────────────
 -- THE PRICE MODEL IS TESTED AND THE WORLD IS NOT, which is the split this
 -- module was written for. Whether a player is standing at a counter needs a
