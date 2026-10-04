@@ -20,6 +20,9 @@ local EN = {
 	['dealership.deliverHere'] = 'Deliver here',
 
 	['dealership.bought'] = 'You bought {model}. Plate {plate}.',
+	['dealership.handOverBlocked'] =
+		'Every spot beside the dealer is taken, so your car is waiting for you in {garage}.',
+	['dealership.defaultGarage'] = 'your garage',
 
 	['dealership.noSuchSpot'] = 'There is no dealership here.',
 	['dealership.noSuchEntry'] = 'That is not something this dealership sells.',
@@ -86,6 +89,9 @@ local FR = {
 	['dealership.deliverHere'] = 'Livrer ici',
 
 	['dealership.bought'] = 'Vous avez acheté : {model}. Plaque {plate}.',
+	['dealership.handOverBlocked'] =
+		'Toutes les places près du vendeur sont prises : votre véhicule vous attend dans {garage}.',
+	['dealership.defaultGarage'] = 'votre garage',
 
 	['dealership.noSuchSpot'] = "Il n'y a pas de concession ici.",
 	['dealership.noSuchEntry'] = "Cette concession ne vend pas cela.",

@@ -7932,6 +7932,48 @@ do
 		check('facing the heading the dealer carries',
 			handOver ~= nil and handOver.yaw == 90.0, handOver and tostring(handOver.yaw))
 
+		-- ── a spot that is taken ───────────────────────────────────────────
+		-- The car just handed over is still standing on the marker. The next one
+		-- is created beside it, a car's width along the dealer's side, and not
+		-- inside it.
+		-- The two extra rows this costs are taken back afterwards: the ceiling is
+		-- a count, and the sales further down are sized against it.
+		local rowsBefore = #rows
+		character.Players[src].PlayerData.money.EDDIES = 2000000
+		local beside = contract.Buy(src, 'yard', 'hella', nil)
+		local second = control.vehicleCreates[#control.vehicleCreates]
+		local gap = second and math.sqrt((second.position.x - 1.0) ^ 2 + (second.position.y - 1.0) ^ 2)
+		check('a second hand-over while the first car stands on the marker goes beside it',
+			beside.ok == true and second ~= handOver and gap ~= nil and gap >= 3.0,
+			gap and ('%.2f m away'):format(gap) or tostring(beside.error))
+
+		-- Every spot taken: the sale stands, the car waits in its garage, and the
+		-- buyer is told where.
+		local blockers = {}
+		for _, step in ipairs({ 0, 1, -1, 2, -2 }) do
+			blockers[#blockers + 1] = env.Open77.vehicles.create({
+				record = 'Vehicle.v_standard2_archer_hella_player',
+				position = { x = 1.0, y = 1.0 + step * 4.5, z = 5.0 }, yaw = 0.0, bucket = 0 })
+		end
+		local createdBefore = #control.vehicleCreates
+		local noticesBefore = #control.notices
+		character.Players[src].PlayerData.money.EDDIES = 2000000
+		local waiting = contract.Buy(src, 'yard', 'hella', nil)
+		local toldWhere = false
+		for index = noticesBefore + 1, #control.notices do
+			local notice = control.notices[index]
+			if notice.playerId == src and tostring(notice.message):find('waiting', 1, true) then
+				toldWhere = true
+			end
+		end
+		check('with every spot taken the sale still stands, and no car is created inside another',
+			waiting.ok == true and waiting.value.spawned == false
+				and #control.vehicleCreates == createdBefore,
+			tostring(waiting.error))
+		check('and the buyer is told the car is waiting in its garage', toldWhere)
+		for _, id in ipairs(blockers) do env.Open77.vehicles.remove(id) end
+		while #rows > rowsBefore do table.remove(rows) end
+
 		-- ── the destination the buyer chose ────────────────────────────────
 		-- Read from the GARAGES contract, which is the only owner of where a
 		-- garage is: nothing here keeps a copy.
