@@ -57,6 +57,8 @@ local function boot(side, database, prelude, loaded)
 		-- After each file, before any module starts: where a test swaps a
 		-- shipped config for its fixture.
 		if loaded then loaded(env, file) end
+		-- The budget meter, when asked for, counts each scheduler job by name.
+		if file == 'core/client/scheduler.lua' then Host.MeterJobs(env.OPX.Scheduler) end
 	end
 
 	-- The host always raises this for a starting resource, and the client half
@@ -29648,6 +29650,20 @@ do
 		dl.Staff.Close()
 		OPX.Toast.Show = realToast
 	end
+end
+
+-- The budget meter's report, when `OPX_BUDGET_METER` asked for one: every
+-- client call site whose worst single resume cost more than the figure, the
+-- dearest first. Read it, do not gate on it -- a site here is a resume the
+-- platform may kill.
+if Host.Meter.limit ~= nil then
+	local over = {}
+	for site, spent in pairs(Host.Meter.worst) do
+		if spent > Host.Meter.limit then over[#over + 1] = { site = site, spent = spent } end
+	end
+	table.sort(over, function(a, b) return a.spent > b.spent end)
+	print(('\nbudget meter: %d client call sites past %d instructions in one resume'):format(#over, Host.Meter.limit))
+	for _, row in ipairs(over) do print(('  %8d  %s'):format(row.spent, row.site)) end
 end
 
 print(('\n%d checks, %d failed'):format(checks, failures))

@@ -302,6 +302,109 @@ end
 -- @return table|nil
 function Host.Steering(bridge) return bridge ~= nil and Host.steering[bridge] or nil end
 
+
+-- ── the per-resume budget meter (opt-in) ─────────────────────────────────────
+-- THE CLIENT KILLS A RESUME THAT OVERRUNS ITS INSTRUCTION BUDGET, silently and
+-- mid-operation, and the stub below runs every handler for free. Set
+-- `OPX_BUDGET_METER=<instructions>` and the client half counts what each
+-- resume costs -- every thread resumed by `Pump`, every net event, page
+-- handler, event handler and key mapping the suite plays, and every scheduler
+-- job inside the pass that ran it -- and `Host.Meter` keeps the worst cost per
+-- call site. `tests/run.lua` prints the sites past the figure when the suite
+-- ends. Off by default: the count hook makes the suite slower, and the tests
+-- that count instructions themselves would read the meter's hook instead of
+-- their own.
+local METER_LIMIT = tonumber(os.getenv and os.getenv('OPX_BUDGET_METER') or nil)
+local METER_STEP = 100
+Host.Meter = { limit = METER_LIMIT, worst = {} }
+
+-- THE STUB'S OWN WORK IS NOT THE RUNTIME'S. A page send here walks the payload
+-- to count its nodes and the stub `json` encodes in Lua, where the platform
+-- does both natively. So each tick of the hook is charged to whatever was
+-- running when it fired, and a tick that landed in this file is not charged.
+local HOST_SOURCE = debug.getinfo(1, 'S').short_src
+
+-- The open counters per thread. Nested sites -- a job inside the pass, a
+-- handler a handler called -- each keep their own count and all of them are
+-- charged, so the pass still reads as the one resume it is on the platform.
+local counters = setmetatable({}, { __mode = 'k' })
+
+local function meterSite(fn)
+	local info = debug.getinfo(fn, 'S')
+	return info and ('%s:%d'):format(info.short_src, info.linedefined) or '?'
+end
+
+local function meterOpen(thread)
+	local open = counters[thread]
+	if open == nil then
+		open = {}
+		counters[thread] = open
+	end
+	local counter = { spent = 0 }
+	open[#open + 1] = counter
+	if #open == 1 then
+		debug.sethook(thread, function()
+			local info = debug.getinfo(2, 'S')
+			if info ~= nil and info.short_src == HOST_SOURCE then return end
+			for index = 1, #open do open[index].spent = open[index].spent + METER_STEP end
+		end, '', METER_STEP)
+	end
+	return counter
+end
+
+local function meterClose(thread, counter, site)
+	local open = counters[thread]
+	for index = #open, 1, -1 do
+		if open[index] == counter then table.remove(open, index) break end
+	end
+	if #open == 0 then debug.sethook(thread) end
+	local worst = Host.Meter.worst
+	if counter.spent > (worst[site] or 0) then worst[site] = counter.spent end
+end
+
+-- Runs `fn` counted under `label` and the place it was defined.
+local function metered(label, fn, ...)
+	local thread = coroutine.running()
+	local counter = meterOpen(thread)
+	local results = table.pack(pcall(fn, ...))
+	meterClose(thread, counter, label .. ' ' .. meterSite(fn))
+	if not results[1] then error(results[2], 0) end
+	return table.unpack(results, 2, results.n)
+end
+
+-- Wraps a function the runtime hands over so every call to it is counted.
+local function meterWrap(label, fn)
+	if METER_LIMIT == nil or type(fn) ~= 'function' then return fn end
+	return function(...) return metered(label, fn, ...) end
+end
+
+-- Resumes one client thread, counted, under where it was made, where it
+-- resumed and where it yielded next.
+local function meterResume(thread, origin)
+	if METER_LIMIT == nil or origin == nil then return coroutine.resume(thread) end
+	local function at()
+		local info = coroutine.status(thread) == 'suspended' and debug.getinfo(thread, 2, 'Sl') or nil
+		return info and ('%s:%d'):format(info.short_src, info.currentline) or nil
+	end
+	local from = at() or 'start'
+	local counter = meterOpen(thread)
+	local results = table.pack(coroutine.resume(thread))
+	meterClose(thread, counter, ('thread %s: %s -> %s'):format(origin, from, at() or 'end'))
+	return table.unpack(results, 1, results.n)
+end
+
+--- Counts every job the client scheduler is given, by name, when the meter is
+--- on. Called by the test boot once `core/client/scheduler.lua` has loaded.
+-- @author dop42
+-- @param scheduler table OPX.Scheduler
+function Host.MeterJobs(scheduler)
+	if METER_LIMIT == nil or type(scheduler) ~= 'table' or type(scheduler.Every) ~= 'function' then return end
+	local every = scheduler.Every
+	scheduler.Every = function(name, intervalMs, step)
+		return every(name, intervalMs, meterWrap('job ' .. tostring(name), step))
+	end
+end
+
 --- Builds a fresh environment carrying the globals the platform installs.
 -- @author dop42
 -- @param side string 'server' or 'client'
@@ -311,6 +414,8 @@ function Host.Steering(bridge) return bridge ~= nil and Host.steering[bridge] or
 function Host.Environment(side, database)
 	local log = { debug = {}, info = {}, warn = {}, error = {} }
 	local threads = {}
+	-- Where each client thread was made, for the budget meter.
+	local threadOrigins = setmetatable({}, { __mode = 'k' })
 	local handlers = {}
 	local commands = {}
 	local netEvents = {}
@@ -1953,7 +2058,11 @@ function Host.Environment(side, database)
 		json = json,
 		MySQL = database,
 
-		CreateThread = function(fn) threads[#threads + 1] = coroutine.create(fn) end,
+		CreateThread = function(fn)
+			local thread = coroutine.create(fn)
+			threads[#threads + 1] = thread
+			if side == 'client' and METER_LIMIT ~= nil then threadOrigins[thread] = meterSite(fn) end
+		end,
 		Wait = function() coroutine.yield() end,
 		GetGameTimer = function() return clock end,
 		GetCurrentResourceName = function() return 'opx_infinity' end,
@@ -1968,12 +2077,14 @@ function Host.Environment(side, database)
 
 		AddEventHandler = function(name, fn)
 			handlers[name] = handlers[name] or {}
-			table.insert(handlers[name], fn)
+			table.insert(handlers[name], side == 'client' and meterWrap('event ' .. name, fn) or fn)
 		end,
 		TriggerEvent = function(name, ...)
 			for _, fn in ipairs(handlers[name] or {}) do fn(...) end
 		end,
-		RegisterNetEvent = function(name, fn) netEvents[name] = fn end,
+		RegisterNetEvent = function(name, fn)
+			netEvents[name] = side == 'client' and meterWrap('net ' .. name, fn) or fn
+		end,
 
 		-- A CEF page. `emit` is how a test plays the page: it invokes whatever
 		-- the runtime wired to that channel, exactly as the real bridge would.
@@ -2009,7 +2120,9 @@ function Host.Environment(side, database)
 					page.sent[#page.sent + 1] = { channel = channel, payload = payload }
 					return true
 				end
-				page.on = function(_, channel, handler) page.handlers[channel] = handler end
+				page.on = function(_, channel, handler)
+					page.handlers[channel] = side == 'client' and meterWrap('page ' .. channel, handler) or handler
+				end
 				page.setFocus = function(_, keyboard, cursor)
 					page.focus = { keyboard = keyboard, cursor = cursor }
 					return true
@@ -2077,7 +2190,7 @@ function Host.Environment(side, database)
 			if key == false then return false, 'no_key' end
 			local effective = type(key) == 'string' and key ~= '' and key or 'E'
 			input.keys[id] = effective
-			keyMappings.byId[id] = { name = name, key = effective, pressed = onPressed }
+			keyMappings.byId[id] = { name = name, key = effective, pressed = meterWrap('key ' .. id, onPressed) }
 			if keyMappings.secondShape then return true, effective end
 			return effective
 		end,
@@ -2232,7 +2345,7 @@ function Host.Environment(side, database)
 				for _, thread in ipairs(threads) do
 					if coroutine.status(thread) == 'suspended' then
 						alive = true
-						local ok, failure = coroutine.resume(thread)
+						local ok, failure = meterResume(thread, threadOrigins[thread])
 						if not ok then
 							log.error[#log.error + 1] = 'thread died: ' .. tostring(failure)
 						end
