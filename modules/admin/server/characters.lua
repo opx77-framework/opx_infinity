@@ -61,13 +61,6 @@ local CITIZEN = { name = 'citizenId', help = 'admin.help.citizenId' }
 local FIRST = { name = 'firstName', help = 'admin.help.firstName' }
 local LAST = { name = 'lastName', help = 'admin.help.lastName' }
 
---- Whether the character contract answered at start.
--- @author dop42
--- @return boolean
-function Characters.Running()
-	return Server.Contract('character') ~= nil
-end
-
 --- This module's word for a contract refusal.
 local function codeOf(error)
 	return CODES[tostring(error)] or 'refused'

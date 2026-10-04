@@ -424,7 +424,6 @@ local function submit(text)
 		return
 	end
 
-	TriggerEvent(M.Event.SUBMITTED, { text = text, tokens = tokens })
 	local sent, why = TriggerServerEvent(M.Host.COMMAND_EXECUTE, table.unpack(tokens))
 	if not sent then
 		Open77.log.warn('[chat] command not sent: ' .. tostring(why))

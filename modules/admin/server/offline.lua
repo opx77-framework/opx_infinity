@@ -57,13 +57,6 @@ local CODES = {
 -- player id: there is no player to name -- that is the whole reason to be here.
 local TERM = { name = 'name|citizenId', help = 'admin.help.findTerm' }
 
---- Whether the character contract answered at start.
--- @author dop42
--- @return boolean
-function Offline.Running()
-	return Server.Contract('character') ~= nil
-end
-
 --- This module's word for a contract refusal.
 local function codeOf(error)
 	return CODES[tostring(error)] or 'refused'

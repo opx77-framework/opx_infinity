@@ -899,7 +899,7 @@ local setPolling
 -- replaced rather than a pile of them.
 local function writeStatus(owned, text, bad)
 	local clean = text ~= nil and Text.Clean(text, MAX_STATUS) or nil
-	if clean == nil or clean == '' then return false end
+	if clean == nil or clean == '' then return end
 	-- THE ANSWER IS CHECKED, because it can be refused. `OPX.Toast.Show` answers
 	-- nil for a surface that is not up, and this used to discard that: the notice
 	-- went nowhere and said so to nobody. Six other modules already fall back to
@@ -911,7 +911,6 @@ local function writeStatus(owned, text, bad)
 		message = clean,
 	})
 	if raised == nil then Open77.log.info('[menu] ' .. clean) end
-	return false
 end
 
 --- Closes the open menu and tells its owner why.
@@ -1039,17 +1038,18 @@ local function Update(handle, spec)
 	return Result.Ok(true)
 end
 
---- Writes the transient line under the list, or clears it with a nil text.
+--- Raises the caller's line as a toast (see `writeStatus`); a nil or empty text says nothing.
 -- @author dop42
 -- @param handle integer
 -- @param text string|number|nil
--- @param bad boolean|nil True draws the line as a failure.
+-- @param bad boolean|nil True raises it as a failure.
 -- @return Result
 local function SetStatus(handle, text, bad)
 	if record == nil then return Result.Err('no_menu_open') end
 	if handle ~= nil and handle ~= record.handle then return Result.Err('stale_handle') end
 	if not validStatus(text) then return Result.Err('invalid_status') end
-	if writeStatus(record, text, bad) then draw() end
+	-- A toast, not a line in the frame: there is nothing to redraw.
+	writeStatus(record, text, bad)
 	return Result.Ok(true)
 end
 
