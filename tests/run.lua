@@ -13367,6 +13367,47 @@ do
 		if character ~= nil then character.GetPlayer = getPlayer end
 	end
 end
+-- ── the last needs push of a disconnect ────────────────────────────────────
+-- `needs not pushed: session_not_active` was written to the client log on EVERY
+-- disconnect: the unload and `Stop` push one last time over a session that is
+-- already closed. Harmless -- the server writes the last push it holds when the
+-- player departs -- so it is not a warning. Any other refusal still is.
+section('the last needs push of a disconnect')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the needs push', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local VALUES = OPX.Event(OPX.Channel.NET, 'needs', 'values')
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'loaded'), { citizenId = 'CIT-NEED-1' })
+		local onValues = control.netEvents[VALUES]
+		if onValues then onValues('CIT-NEED-1', { hunger = 40, thirst = 40 }) end
+		local needs = OPX.Api.Get('needs')
+		check('the needs are loaded', needs ~= nil and needs.GetNeeds().ok == true)
+
+		local function warnedPush()
+			for _, line in ipairs(control.log.warn) do
+				if tostring(line):find('needs not pushed', 1, true) then return true end
+			end
+			return false
+		end
+		local send = env.TriggerServerEvent
+		env.TriggerServerEvent = function() return false, 'session_not_active' end
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'unloaded'))
+		check('A PUSH OVER A CLOSED SESSION IS NOT A WARNING', not warnedPush(),
+			table.concat(control.log.warn, ' | '))
+
+		control.Fire(OPX.Event(OPX.Channel.LOCAL, 'character', 'loaded'), { citizenId = 'CIT-NEED-2' })
+		env.TriggerServerEvent = send
+		onValues = control.netEvents[VALUES]
+		if onValues then onValues('CIT-NEED-2', { hunger = 40, thirst = 40 }) end
+		env.TriggerServerEvent = function() return false, 'network_payload_too_large' end
+		needs.AddNeeds({ hunger = 30 })
+		check('but any other refusal still is', warnedPush(), table.concat(control.log.warn, ' | '))
+		env.TriggerServerEvent = send
+	end
+end
+
 -- ── one staff action, one message ───────────────────────────────────────────
 -- THREE NOTIFICATIONS FOR ONE GIVE, reported by the owner: giving themselves an
 -- item as staff put the same sentence on screen twice -- once titled STAFF and
