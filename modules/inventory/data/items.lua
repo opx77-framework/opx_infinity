@@ -84,11 +84,13 @@ M.Data.ITEMS = {
 	},
 
 	-- THE KEY TO ONE PRECISE DOOR, the same idea as `vehicle_key`: what it opens
-	-- is its metadata, `{ door = '<door key>', label = '<door name>' }`, written
-	-- by `modules/doorlock` (`/opx.doorlock.key`) and nothing else. A door that
-	-- lists `{ NAME = 'door_key', BOUND = true }` opens for a key carrying its
-	-- own key and for no other. No USE: a key turns a door from the eye or the
-	-- interaction key at the door, and the bag has nothing to add to that.
+	-- is its metadata TYPE, `{ type = '<tag>', label = '<door name>' }`, cut by
+	-- `/opx.doorlock.key` (`modules/doorlock`). A door whose items list
+	-- `{ name = 'door_key', metadata = '<tag>' }` opens for a key of that type and
+	-- for no other -- ox_doorlock's metadata match. Keys cut by the first version
+	-- carry `door = '<old key>'` and keep opening the door carried over from it.
+	-- No USE: a key turns a door from the eye or the interaction key at the door,
+	-- and the bag has nothing to add to that.
 	door_key = { WEIGHT = 20, CATEGORY = 'tool', STACK = false, MODEL = 'crate.valuable' },
 
 	-- MONEY YOU CAN HAND OVER. One unit is one eddie, and the stack is a BEARER
