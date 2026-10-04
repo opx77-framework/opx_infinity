@@ -452,8 +452,14 @@ local function showOutfits()
 			rows[#rows + 1] = { id = 'share', label = locale('shops.outfits.share'),
 				data = { verb = 'share', id = outfit.id } }
 		end
-		rows[#rows + 1] = { id = 'delete', label = locale('shops.outfits.delete'),
-			data = { verb = 'delete', id = outfit.id } }
+		-- CONFIRMED, because a deleted outfit is gone for good and this row sat one
+		-- arrow key under Wear. The confirmation is a submenu whose FIRST row keeps
+		-- the outfit, so Enter pressed without looking does nothing.
+		rows[#rows + 1] = { id = 'delete', label = locale('shops.outfits.delete'), items = {
+			{ id = 'delete.keep', label = locale('shops.outfits.keep'), back = true },
+			{ id = 'delete.yes', label = locale('shops.outfits.deleteConfirm',
+				{ name = tostring(outfit.name) }), data = { verb = 'delete', id = outfit.id } },
+		} }
 
 		items[index] = {
 			id = 'outfit.' .. tostring(outfit.id),

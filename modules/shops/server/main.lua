@@ -471,7 +471,7 @@ local function onDelete(source, payload)
 	if outfitId == nil then return refuse(source, 'shops.noSuchOutfit') end
 
 	local removed = M.Storage.Delete(citizen, math.floor(outfitId))
-	if not removed.ok then return refuse(source, 'shops.saveFailed') end
+	if not removed.ok then return refuse(source, 'shops.deleteFailed') end
 	pushList(source, citizen)
 end
 
