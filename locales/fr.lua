@@ -21,6 +21,9 @@ OPX.Locale.Register('fr', {
 	['export.badValue'] = "Cette valeur n'est pas une donnée simple : booléens, nombres, texte et tables de ceux-ci.",
 	['export.tooLarge'] = "Cette valeur dépasse la taille que ce serveur accorde à une ressource.",
 	['export.notSubscribable'] = "Cet événement n'est pas de ceux auxquels une autre ressource peut s'abonner.",
+	['export.ownerTaken'] = "Cette ressource porte le nom d'un module de ce serveur, dont elle partagerait les lignes.",
+	['export.duplicate'] = "Ce message exact vient d'être montré à ce joueur.",
+	['export.usableTaken'] = "Un autre propriétaire gère déjà l'utilisation de cet objet.",
 })
 
 -- Weather: the status line a player reads, the command usage lines and every

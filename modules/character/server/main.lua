@@ -861,6 +861,8 @@ function M.Api()
 
 		GetMetadata = M.GetMetadata,
 		SetMetadata = M.SetMetadata,
+		ReadMetadata = M.ReadMetadata,
+		WriteMetadata = M.WriteMetadata,
 		SetBodyFamily = M.SetBodyFamily,
 		SetName = M.SetName,
 
@@ -880,6 +882,7 @@ function M.Api()
 		GetPlayersByJob = M.Groups.GetPlayersByJob,
 		GetPlayersByGang = M.Groups.GetPlayersByGang,
 		GetGroupMembers = M.Groups.GetGroupMembers,
+		ListGroups = M.Groups.List,
 
 		ListCharacters = M.ListCharacters,
 		EnterSession = M.EnterSession,

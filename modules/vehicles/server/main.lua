@@ -127,6 +127,13 @@ function M.Register(citizenId, record, options)
 		if inserted.ok then
 			Open77.log.info(('[vehicles] %s given %s (%s)')
 				:format(citizenId, entity.plate, record))
+			local owner = character ~= nil and character.GetPlayerByCitizenId(citizenId) or nil
+			OPX.Publish(M.Event.ON_REGISTERED, owner and owner.PlayerData.source or nil, {
+				citizenId = citizenId,
+				plate = entity.plate,
+				record = record,
+				garage = entity.garage,
+			})
 			return Result.Ok(entity)
 		end
 		-- A duplicate plate is the only insertion failure worth another draw;
@@ -596,6 +603,13 @@ function M.SetState(plateId, state, garage)
 		message = ('%s -> %s'):format(plateId, state:lower()),
 		citizenId = fetched.value.citizenId,
 		data = { plate = plateId, state = state:lower(), garage = garage },
+	})
+	local owner = character ~= nil and character.GetPlayerByCitizenId(fetched.value.citizenId) or nil
+	OPX.Publish(M.Event.ON_STATE, owner and owner.PlayerData.source or nil, {
+		citizenId = fetched.value.citizenId,
+		plate = plateId,
+		state = state:lower(),
+		garage = garage or fetched.value.garage,
 	})
 	return Result.Ok({ plate = plateId, state = state:lower(),
 		garage = garage or fetched.value.garage })

@@ -427,6 +427,8 @@ client_script "modules/animations/client/exports.lua"
 shared_script "modules/progress/module.lua"
 shared_script "modules/progress/locales.lua"
 client_script "modules/progress/client/main.lua"
+-- The server's door onto a player's bar, which times the client's answer itself.
+server_script "modules/progress/server/main.lua"
 
 shared_script "modules/elevators/module.lua"
 shared_script "modules/elevators/locales.lua"

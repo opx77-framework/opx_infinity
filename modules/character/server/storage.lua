@@ -388,6 +388,38 @@ SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(money, @path)) AS SIGNED)
 	return Result.Ok(math.tointeger(tonumber(read.value)) or 0)
 end
 
+--- Sets, or with a nil value removes, one top-level key of an offline
+--- character's metadata, leaving every other key as the row holds it.
+-- The path is a bound parameter built from a key the caller has already held to
+-- `[%w_%-%.]`, quoted so a dot in it is part of the key and not a step.
+-- @author dop42
+-- @param citizenId CitizenId
+-- @param key string
+-- @param value any plain data, or nil to remove the key
+-- @return Result
+function M.Storage.SetMetadataKey(citizenId, key, value)
+	local path = '$."' .. key .. '"'
+	local written
+	if value == nil then
+		written = Storage.Execute([[
+UPDATE opx77_characters
+   SET metadata = JSON_REMOVE(metadata, @path)
+ WHERE citizen_id = @citizen AND deleted_at IS NULL
+  ]], { citizen = citizenId, path = path })
+	else
+		written = Storage.Execute([[
+UPDATE opx77_characters
+   SET metadata = JSON_SET(metadata, @path, CAST(@value AS JSON))
+ WHERE citizen_id = @citizen AND deleted_at IS NULL
+  ]], { citizen = citizenId, path = path, value = json.encode(value) })
+	end
+	if not written.ok then return written end
+	local affected = written.value
+	if type(affected) == 'table' then affected = affected.affectedRows end
+	if tonumber(affected) == 0 then return Result.Err('character.notFound', citizenId) end
+	return Result.Ok(true)
+end
+
 -- The one-column statement an offline group change writes, per column. Two whole
 -- statements rather than one with the column name interpolated into it.
 local SAVE_PRIMARY = {

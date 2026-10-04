@@ -45,8 +45,20 @@ local function identityOf(kind, owner)
 	return kind .. '\0' .. owner
 end
 
+--- Units of each item a container holds, by name.
+local function tallyOf(container)
+	local counts = {}
+	for _, entry in pairs(container.items or {}) do
+		counts[entry.name] = (counts[entry.name] or 0) + (entry.count or 0)
+	end
+	return counts
+end
+
 --- Records a container as loaded under its id and its identity.
+-- A bag is tallied as it arrives, so the first change to it can be announced as
+-- what moved rather than as everything it holds.
 local function register(container)
+	if container.kind == KIND.CHARACTER then container.tally = tallyOf(container) end
 	loaded[container.id] = container
 	byIdentity[identityOf(container.kind, container.owner)] = container.id
 	return container
@@ -494,11 +506,35 @@ local function announce(container)
 		return
 	end
 	local isBag = container.kind == KIND.CHARACTER
-	OPX.Publish(M.Event.ON_CHANGED, isBag and M.Players.SourceOf(container.owner) or nil, {
+	local source = isBag and M.Players.SourceOf(container.owner) or nil
+	OPX.Publish(M.Event.ON_CHANGED, source, {
 		kind = container.kind,
 		owner = container.owner,
 		container = container.id,
 		citizenId = isBag and container.owner or nil,
+	})
+	if not isBag then return end
+
+	-- WHAT A BAG GAINED AND LOST, BY ITEM NAME, which is what a creator listening
+	-- for "the player now has a lockpick" needs and `ON_CHANGED` never says. The
+	-- bag is tallied against the tally of its last change, so a drag inside it is
+	-- nothing and a give, a pickup, a craft, a use or an export call is one entry
+	-- per item that moved. A walk over the bag's slots, on the server, per commit.
+	local before, after = container.tally or {}, tallyOf(container)
+	container.tally = after
+	local changes = {}
+	for name, count in pairs(after) do
+		local delta = count - (before[name] or 0)
+		if delta ~= 0 then changes[#changes + 1] = { name = name, delta = delta, count = count } end
+	end
+	for name, count in pairs(before) do
+		if after[name] == nil then changes[#changes + 1] = { name = name, delta = -count, count = 0 } end
+	end
+	if #changes == 0 then return end
+	table.sort(changes, function(a, b) return a.name < b.name end)
+	OPX.Publish(M.Event.ON_ITEMS, source, {
+		citizenId = container.owner,
+		changes = changes,
 	})
 end
 

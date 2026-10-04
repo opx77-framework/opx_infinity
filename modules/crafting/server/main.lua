@@ -223,6 +223,19 @@ local function unregisterBenches(owner)
 	return Result.Ok(gone)
 end
 
+--- Drops one bench, when the owner named is the one that registered it.
+-- @author dop42
+-- @param key string
+-- @param owner string
+-- @return Result boolean whether a bench went
+local function unregisterBench(key, owner)
+	local bench = benches[Recipes.Key(key) or '']
+	if bench == nil then return Result.Ok(false) end
+	if bench.owner ~= owner then return Result.Err('not_owner') end
+	benches[bench.key] = nil
+	return Result.Ok(true)
+end
+
 --- Every registered bench, for a diagnostic.
 -- @author dop42
 -- @return Result
@@ -381,6 +394,9 @@ local function order(player, benchKey, recipeKey)
 		bench.key), citizenId = citizenId, source = player,
 		data = { bench = bench.key, recipe = recipe.key, seconds = seconds,
 			price = recipe.price } })
+	OPX.Publish(M.Event.ON_ORDERED, player, { citizenId = citizenId, bench = bench.key,
+		recipe = recipe.key, item = recipe.output, count = recipe.count, seconds = seconds,
+		price = recipe.price, money = recipe.money, order = placed.value })
 
 	return Result.Ok({ id = placed.value, seconds = seconds })
 end
@@ -457,6 +473,9 @@ local function collect(player, orderId)
 		:format(recipe.count, recipe.output, bench.key), citizenId = citizenId,
 		source = player, data = { bench = bench.key, recipe = recipe.key, order = id } })
 
+	OPX.Publish(M.Event.ON_COLLECTED, player, { citizenId = citizenId, bench = bench.key,
+		recipe = recipe.key, item = recipe.output, count = recipe.count, order = id })
+
 	return Result.Ok({ bench = bench.key, item = recipe.output, count = recipe.count })
 end
 
@@ -501,6 +520,7 @@ function M.Api()
 	OPX.Api.Provide('crafting', 1, {
 		RegisterBench = registerBench,
 		UnregisterBenches = unregisterBenches,
+		UnregisterBench = unregisterBench,
 		Benches = benchList,
 
 		View = view,
