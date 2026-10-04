@@ -479,6 +479,32 @@ rows for** in the line it already writes to the server journal per registration 
 grant: opx.inventory.open opx.weather.set opx.weather.next opx.time` — and each name in
 it is a `command.<name>` to add here.
 
+### What a grant does not imply
+
+Three raw ACL rights sit beside the `command.` ones. They are not commands, so
+`command.*` (the server's `admin` role) grants none of them and `*` (`owner`) grants all:
+
+| ACL right | what it does |
+|---|---|
+| `opx.admin.immune` | shields the player from every harmful staff action — kick, ban, kill, health, armour, freeze, model, bring, send, teleport, observe, wardrobe, holster, stripping their bag or weapons, renaming or deleting the character they play. The operator is answered *protected* (`target_protected`) and the attempt is audited. The console is never stopped, and nobody is stopped acting on themselves. |
+| `opx.admin.override` | acts on an immune player anyway |
+| `opx.admin.vehicle.anywhere` | the vehicle commands that take a typed id act on any live vehicle; without it the vehicle must carry the operator or sit in their instance within `VEHICLES.REACH` (100 m) — `vehicle_out_of_reach` otherwise |
+
+And three command grants no longer reach past their name:
+
+- **A bag command on a weapon item also needs the weapon command.** `inventory.give` of a
+  weapon needs `weapon.give`, of rounds `weapon.giveammo`; `inventory.remove` of a weapon
+  needs `weapon.remove`, of rounds `weapon.ammo`; `inventory.clear` checks every weapon and
+  round in the bag the same way and clears nothing if one is refused
+  (`weapon_not_granted`).
+- **`player.observe` is spectating, not flight.** It still lifts the operator over the
+  target with noclip and a hidden body, but without `self.noclip` that ends after
+  `PLACEMENT.OBSERVE_MS` (two minutes) and the operator is told so.
+- **One heavy request in flight per operator.** Every bag, weapon and character command,
+  and every list the menu reads, runs on that operator's single worker: a typed command
+  that arrives while one runs is answered *busy*, and a menu list waits its turn — the
+  server's 1,024-task quota is no longer one operator's to spend.
+
 ### The staff panel's spawn list
 
 The staff menu's spawn screen is one folder per class, and **Air is the first of them**:

@@ -156,7 +156,7 @@ function Offline.Register()
 			local term = M.Trimmed(args[1], 64)
 			if term == nil then return refuse(source, raw, 'search_short') end
 
-			CreateThread(function()
+			Server.Heavy(source, raw, function()
 				local rows, code, page = Offline.Page({ mode = 'search', term = term })
 				if rows == nil then return refuse(source, raw, code) end
 

@@ -167,7 +167,7 @@ function World.Register()
 			{ name = 'location', help = 'admin.help.locationName' } },
 		handler = function(source, args, raw)
 			if count(args) ~= 2 then return answer(source, raw, false, 'admin.usage.send') end
-			local playerId = Server.Target(source, raw, args[1])
+			local playerId = Server.Target(source, raw, args[1], 'admin.player.send')
 			if playerId == nil then return end
 			local location = locations[tostring(args[2]):lower()]
 			if location == nil then return refuse(source, raw, 'unknown_location') end
