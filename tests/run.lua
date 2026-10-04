@@ -3806,6 +3806,66 @@ do
 	end
 end
 
+-- ── core and lib: the audit of 2026-10 ───────────────────────────────────────
+-- Most of these load ONE file against a host this section owns, the way the
+-- scheduler section above does, because every defect below hid behind a host
+-- that was more forgiving than the platform.
+
+--- A logger that keeps every line, for an isolated load.
+local function keptLog()
+	local lines = { info = {}, warn = {}, error = {}, debug = {} }
+	local log = {}
+	for level, list in pairs(lines) do
+		log[level] = function(text) list[#list + 1] = text end
+	end
+	return log, lines
+end
+
+-- A HANDLER THAT REMOVES ITSELF MUST NOT COST THE NEXT ONE ITS PAYLOAD. The
+-- dispatch walked the live listener list under a comment saying it walked a
+-- snapshot, so the remover `On` answers shifted the tail down: the listener after
+-- the one that removed itself never ran, and the last index held nil.
+section('a page handler that removes itself')
+do
+	local log, lines = keptLog()
+	local listeners = {}
+	local page = {
+		on = function(_, name, fn) listeners[name] = fn return true end,
+		send = function() return true end,
+	}
+	local env = {
+		Open77 = { log = log }, OPX = { Note = function() end },
+		WebUI = { create = function() return page end },
+		pcall = pcall, type = type, tostring = tostring, ipairs = ipairs, pairs = pairs,
+		table = table, string = string,
+	}
+	local chunk, why = loadfile('lib/client/surface.lua', 't', env)
+	check('the surface loads alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		local surface = env.OPX.Surface.Create({ id = 'opx', entry = 'web/index.html' })
+		local heard = {}
+		local removeFirst
+		removeFirst = env.OPX.Surface.On(surface, 'focus:set', function()
+			heard[#heard + 1] = 'first'
+			removeFirst()
+		end)
+		env.OPX.Surface.On(surface, 'focus:set', function() heard[#heard + 1] = 'second' end)
+		env.OPX.Surface.On(surface, 'focus:set', function() heard[#heard + 1] = 'third' end)
+
+		listeners['opx:focus:set']({ focus = false })
+		check('every listener hears the payload the first one removed itself on',
+			table.concat(heard, ',') == 'first,second,third', table.concat(heard, ','))
+		check('and nothing is reported as a nil handler raising', #lines.error == 0,
+			table.concat(lines.error, ' | '))
+
+		heard = {}
+		listeners['opx:focus:set']({ focus = false })
+		check('the removed one is gone on the next payload',
+			table.concat(heard, ',') == 'second,third', table.concat(heard, ','))
+	end
+end
+
 -- ── the ACL read that raised outside the pcall written to catch it ───────────
 -- `permitted` decides whether a restricted command is SUGGESTED, and its comment
 -- says a read that raises counts as a refusal -- suggested to nobody rather than
