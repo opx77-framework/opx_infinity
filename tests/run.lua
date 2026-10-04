@@ -2641,6 +2641,33 @@ do
 			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
 	end
 
+	-- A RESET THE HOST GIVES UP ON IS OVER TOO. `open77:playerReset:failed` went
+	-- unheard, so a failed reset was waited on for the whole of RESET_WAIT_MS: a
+	-- minute in the world on no face, with the clothing gate held behind it.
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		check('announced on the armed body before the failed reset',
+			platform.announced() == 1, tostring(platform.announced()))
+		control.Fire(appearance.HostEvent.RESET_FAILED, 'reset_timeout')
+		control.Pump(70)
+		check('A FAILED RESET SETTLES THE ENTRY ON THE NOT-ALIVE CLOCK, NOT AFTER A MINUTE',
+			platform.warned('settles with no face') and not platform.warned('has not reset the body'),
+			table.concat(control.log.warn, ' | '))
+		local settled = appearance.Contract.IsSettled()
+		check('so nothing downstream waits on it',
+			settled.ok and settled.value.settled == true, tostring(settled.ok and settled.value.waiting))
+	end
+	do
+		local _, control, appearance, platform = armedJoin()
+		control.Pump(5)
+		platform.alive = true
+		control.Fire(appearance.HostEvent.RESET_FAILED, 'reset_timeout')
+		control.Pump(5)
+		check('and a body alive after a failed reset still gets its face',
+			#platform.applied == 1, ('%d apply call(s)'):format(#platform.applied))
+	end
+
 	-- ── the catalogue, read per slot, standing behind seven sliders ──────────
 	-- A REAL ROOM, OPENED. The blocks above drive the seam by hand, which proves
 	-- the bridge and proves nothing about the read: the defect that cost this room

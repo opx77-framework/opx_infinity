@@ -1316,6 +1316,24 @@ local function registerEvents()
 		Runtime.Announce()
 	end)
 
+	-- THE RESET THAT FAILED IS STILL A RESET THAT IS OVER. Unheard, it left the
+	-- restore waiting on RESET_WAIT_MS -- a minute with the player in the world
+	-- on no face and the clothing gate and the published look held behind it --
+	-- and a body reload under its cover until BODY_RELOAD_TIMEOUT_MS, which only
+	-- ends on a live body. The platform is no longer the one holding the body, so
+	-- it is treated as the end of the hold: the reload's cover comes down, and the
+	-- restore falls to the not-alive clock (DEAD_WAIT_MS), which puts the face on
+	-- a body that is alive and settles the entry on one that is not.
+	AddEventHandler(HostEvent.RESET_FAILED, function(reason)
+		Open77.log.warn(('[appearance] the platform could not reset the body (%s; restore ' ..
+			'token=%d, announced=%s)'):format(tostring(reason), State.restoreToken,
+				tostring(State.gameplayAnnounced)))
+		Runtime.Note(('the platform reset of the body failed (%s)'):format(tostring(reason)))
+		Runtime.FinishReload('playerResetFailed')
+		State.playerResetDone = true
+		Runtime.Announce()
+	end)
+
 	-- The mirror aborted a restore before confirming it.
 	AddEventHandler(HostEvent.RESTORE_FAILED, function()
 		Runtime.FinishMutation()
