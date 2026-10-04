@@ -366,9 +366,16 @@ local function registerEvents()
 	-- Core dropping a session is the safety net for a departure nobody signalled,
 	-- and for a slot that changed hands: the character still attached is logged
 	-- out and saved.
-	AddEventHandler(SESSION_FORGOTTEN, function(playerId)
+	--
+	-- THE EVENT IS QUEUED (`core/server/sessions.lua`), so this runs a tick after
+	-- the session is gone -- and on an eviction, after the NEXT account's session
+	-- is already on the slot. The departed account travels with the event and is
+	-- the one this acts for: a Player of any other account on the slot is somebody
+	-- who has just arrived, and logging THEM out would be the bug.
+	AddEventHandler(SESSION_FORGOTTEN, function(playerId, departedUserId)
 		local player = M.Players[tonumber(playerId) or -1]
 		if not player then return end
+		if departedUserId ~= nil and player.PlayerData.userId ~= departedUserId then return end
 		-- The slot may already belong to somebody else, whose position must never
 		-- be written into this row: the save of an eviction does not sample.
 		player.MaySample = false

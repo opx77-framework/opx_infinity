@@ -36,6 +36,12 @@ local looks = {}
 -- The settings that are read on every request, resolved once.
 local tuning = {}
 
+-- Least time between two presses of the saved-look doors by one player, and
+-- between two share codes typed in. A fairness window and a brake on guessing,
+-- not an authority: every request is still checked in full.
+local OUTFIT_COOLDOWN_MS = 750
+local REDEEM_COOLDOWN_MS = 2000
+
 --- One boot line naming a config row that was dropped, and why.
 -- Never fatal: a mistyped shop is one shop missing, not a server that will not
 -- start, and an operator who cannot see WHICH one is an operator who cannot fix
@@ -572,33 +578,31 @@ function M.Start()
 
 	-- EVERY ONE OF THESE READS THE DATABASE, and `OPX.Storage` yields, so each
 	-- runs on its own thread. A net handler that yields holds the event pump.
-	RegisterNetEvent(M.Event.SAVE, function(payload)
-		local src = tonumber(source)
-		if src then CreateThread(function() onSave(src, payload) end) end
+	--
+	-- AND EVERY ONE IS COOLED, because none of them was. Each press was a thread
+	-- and one to three statements, so a client looping on any of these doors
+	-- turned the shop into a database load generator -- and REDEEM, unthrottled,
+	-- was an oracle a script could walk the code space with: every hit is
+	-- somebody's saved look, put on for free. One window for the five doors that
+	-- manage a player's own list, a longer one for guessing at somebody else's.
+	local function door(event, key, everyMs, handler)
+		RegisterNetEvent(event, function(payload)
+			local src = tonumber(source)
+			if not src then return end
+			if OPX.Cooling(src, key, everyMs) then return refuse(src, 'error.tooFast') end
+			CreateThread(function() handler(src, payload) end)
+		end)
+	end
+
+	door(M.Event.SAVE, 'shops.outfits', OUTFIT_COOLDOWN_MS, onSave)
+	door(M.Event.LIST, 'shops.list', OUTFIT_COOLDOWN_MS, function(src)
+		local citizen = citizenOf(src)
+		if citizen ~= nil then pushList(src, citizen) end
 	end)
-	RegisterNetEvent(M.Event.LIST, function()
-		local src = tonumber(source)
-		if src then CreateThread(function()
-			local citizen = citizenOf(src)
-			if citizen ~= nil then pushList(src, citizen) end
-		end) end
-	end)
-	RegisterNetEvent(M.Event.LOAD, function(payload)
-		local src = tonumber(source)
-		if src then CreateThread(function() onLoad(src, payload) end) end
-	end)
-	RegisterNetEvent(M.Event.DELETE, function(payload)
-		local src = tonumber(source)
-		if src then CreateThread(function() onDelete(src, payload) end) end
-	end)
-	RegisterNetEvent(M.Event.SHARE, function(payload)
-		local src = tonumber(source)
-		if src then CreateThread(function() onShare(src, payload) end) end
-	end)
-	RegisterNetEvent(M.Event.REDEEM, function(payload)
-		local src = tonumber(source)
-		if src then CreateThread(function() onRedeem(src, payload) end) end
-	end)
+	door(M.Event.LOAD, 'shops.outfits', OUTFIT_COOLDOWN_MS, onLoad)
+	door(M.Event.DELETE, 'shops.outfits', OUTFIT_COOLDOWN_MS, onDelete)
+	door(M.Event.SHARE, 'shops.outfits', OUTFIT_COOLDOWN_MS, onShare)
+	door(M.Event.REDEEM, 'shops.redeem', REDEEM_COOLDOWN_MS, onRedeem)
 
 	-- A DELETED CHARACTER TAKES ITS SAVED LOOKS WITH IT. The foreign key above
 	-- cascades, but a character delete here is soft, so the cascade never fires

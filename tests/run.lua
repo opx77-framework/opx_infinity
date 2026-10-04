@@ -4134,6 +4134,107 @@ do
 	end
 end
 
+-- The server bus is queued, so the character module's `session:forgotten`
+-- handler runs a tick after the session went -- and a recycled slot may hold
+-- the next account by then. It logged that slot out and isolated it whoever
+-- was on it: the newcomer was moved into a selection bucket, shown the UNLOADED
+-- screen, had its session's character cleared, and -- if it had already loaded
+-- a character -- was logged out in place of the account that left.
+section('a forgotten session logs out the account that left, not the one that arrived')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end, query = function() return {} end,
+		single = function() return nil end, insert = function() return 1 end,
+		update = function() return 1 end, transaction = function() return true end,
+	}))
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local FORGOTTEN = OPX.Event(OPX.Channel.INTERNAL, 'session', 'forgotten')
+		local SLOT = 871
+
+		--- Holds `session:forgotten` the way the host's queue does, and lets it go.
+		local held = {}
+		local realTrigger = env.TriggerEvent
+		env.TriggerEvent = function(name, ...)
+			if name == FORGOTTEN then held[#held + 1] = table.pack(...) return end
+			return realTrigger(name, ...)
+		end
+		local function drain()
+			env.TriggerEvent = realTrigger
+			for _, args in ipairs(held) do realTrigger(FORGOTTEN, table.unpack(args, 1, args.n)) end
+			held = {}
+		end
+
+		local function stand(account, name)
+			control.Admit(SLOT, account)
+			OPX.EnsureSession(SLOT)
+			local player = character.CreatePlayer({
+				citizenId = OPX.CitizenId.Generate(), userId = account,
+				source = SLOT, charInfo = { firstName = name, lastName = 'Test' },
+			}, false)
+			player.PlayerData.jobs, player.PlayerData.gangs = {}, {}
+			return player
+		end
+
+		local isolated, unloadedSent = {}, 0
+		local realIsolate = OPX.Buckets.Isolate
+		OPX.Buckets.Isolate = function(source, reason, expected)
+			isolated[#isolated + 1] = { source = source, reason = reason, expected = expected }
+			return realIsolate(source, reason, expected)
+		end
+		local realClient = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, target, ...)
+			if name == character.Event.UNLOADED and target == SLOT then
+				unloadedSent = unloadedSent + 1
+			end
+			return realClient(name, target, ...)
+		end
+
+		-- ── the newcomer has no character yet ────────────────────────────────
+		local departed = stand('account-A', 'Leaving')
+		character.RegisterPlayer(departed)
+		OPX.ForgetSession(SLOT)
+		-- The slot changes hands before the queued handler runs.
+		control.Admit(SLOT, 'account-B')
+		local arrived = OPX.EnsureSession(SLOT)
+		arrived.citizenId = 'MARKER'
+		drain()
+		control.Pump(10)
+		check('the departed character leaves the roster', character.GetPlayer(SLOT) == nil)
+		check('the newcomer\'s session keeps what it holds', arrived.citizenId == 'MARKER',
+			tostring(arrived.citizenId))
+		check('and the newcomer is not shown the UNLOADED screen', unloadedSent == 0, unloadedSent)
+		local wrongly = false
+		for _, row in ipairs(isolated) do
+			if row.source == SLOT and row.reason == 'unloaded'
+				and row.expected ~= departed.PlayerData.userId then wrongly = true end
+		end
+		check('the isolate names the departed account, so it cannot move the newcomer',
+			#isolated > 0 and not wrongly)
+
+		-- ── the newcomer has already loaded a character ──────────────────────
+		local first = stand('account-C', 'Gone')
+		character.RegisterPlayer(first)
+		env.TriggerEvent = function(name, ...)
+			if name == FORGOTTEN then held[#held + 1] = table.pack(...) return end
+			return realTrigger(name, ...)
+		end
+		OPX.ForgetSession(SLOT)
+		local second = stand('account-D', 'Arrived')
+		character.RegisterPlayer(second)
+		drain()
+		control.Pump(10)
+		check('a character the newcomer already loaded is not logged out for the departure',
+			character.GetPlayer(SLOT) == second)
+
+		OPX.Buckets.Isolate = realIsolate
+		env.TriggerClientEvent = realClient
+	end
+end
+
 -- ── the ACL read that raised outside the pcall written to catch it ───────────
 -- `permitted` decides whether a restricted command is SUGGESTED, and its comment
 -- says a read that raises counts as a refusal -- suggested to nobody rather than
@@ -16327,6 +16428,65 @@ do
 	end
 end
 
+
+-- A chest refusal was passed to the client as it came, and the client toasts
+-- `gunsmith.<code>`: a container load's `storage` or `load_timeout` reached the
+-- player as the raw key. And the door had no window at all.
+section('the gunsmith chest: every refusal has words, and the door is cooled')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local gunsmith = OPX.Modules.Get('gunsmith')
+		local character = OPX.Modules.Get('character')
+		local inventory = OPX.Api.Get('inventory')
+		local SMITH = 914
+		control.Admit(SMITH, 'account-914')
+		local player = character.CreatePlayer({
+			citizenId = OPX.CitizenId.Generate(), userId = 'account-914', source = SMITH,
+			charInfo = { firstName = 'Wakako', lastName = 'Okada' },
+			job = { name = 'arasaka', onDuty = true, grade = { level = 0 } },
+		}, false)
+		player.PlayerData.job = { name = 'arasaka', onDuty = true, grade = { level = 0 } }
+		player.PlayerData.jobs, player.PlayerData.gangs = { arasaka = 0 }, {}
+		character.RegisterPlayer(player)
+
+		local opens = 0
+		local realOpen = inventory.OpenStash
+		inventory.OpenStash = function()
+			opens = opens + 1
+			return OPX.Result.Err('storage')
+		end
+
+		local refused = {}
+		local realTrigger = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, target, ...)
+			if name == gunsmith.Event.REFUSED and target == SMITH then
+				refused[#refused + 1] = select(2, ...)
+			end
+			return realTrigger(name, target, ...)
+		end
+
+		local door = control.netEvents[gunsmith.Event.CHEST]
+		check('the chest door is wired', type(door) == 'function')
+		if type(door) == 'function' then
+			for _ = 1, 5 do
+				env.source = SMITH
+				door('arasaka_armoury')
+				env.source = nil
+			end
+			control.Pump(10)
+			check('five presses in one breath reach the chest once', opens == 1, opens)
+			check('and a refusal with no sentence is answered as unavailable',
+				refused[#refused] == 'unavailable', tostring(refused[#refused]))
+		end
+
+		env.TriggerClientEvent = realTrigger
+		inventory.OpenStash = realOpen
+	end
+end
 -- ── the gunsmith: the first consumer, and the gate crafting does not have ────
 section('the gunsmith: three armouries, one gate')
 do
@@ -21672,6 +21832,213 @@ do
 	end
 end
 
+-- `ResizeContainer` loaded a container it did not hold and never put it away:
+-- an offline bag or an unopened stash stayed in memory for the life of the
+-- resource. And a kind that was not a string raised on `:upper()`.
+section('inventory: a resize puts away what it loaded, and refuses a bad kind')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers = inventory.Containers
+		local realRead, realResize = inventory.Storage.Read, inventory.Storage.Resize
+		inventory.Storage.Read = function(kind, owner, slots, maxWeight)
+			return { id = 91001, kind = kind, owner = owner, slots = slots,
+				maxWeight = maxWeight, items = {} }, nil
+		end
+		local resized
+		inventory.Storage.Resize = function(id, slots)
+			resized = { id = id, slots = slots }
+			return env.OPX.Result.Ok(1)
+		end
+
+		local answer
+		env.CreateThread(function()
+			answer = inventory.ResizeContainer('stash', 'resize_me', 80, 200000)
+		end)
+		settle(control, function() return answer ~= nil end, 20)
+		check('the resize is written', answer ~= nil and answer.ok == true
+			and resized ~= nil and resized.slots == 80, answer and tostring(answer.error))
+		check('and the stash it loaded to do it is not left in memory',
+			Containers.Find('stash', 'resize_me') == nil)
+
+		local raised, refused = pcall(inventory.ResizeContainer, 42, 'x', 10, 10)
+		check('a kind that is not a string is refused, not raised',
+			raised and type(refused) == 'table' and refused.error == 'bad_argument',
+			tostring(refused))
+		raised, refused = pcall(inventory.DeleteContainer, nil, 'x')
+		check('and the same for a delete', raised and type(refused) == 'table'
+			and refused.error == 'bad_argument', tostring(refused))
+
+		inventory.Storage.Read, inventory.Storage.Resize = realRead, realResize
+	end
+end
+
+-- A caller waiting on another's load polls every 50 ms. In that time the loader
+-- could finish, settle a borrowed bag and `Discard` it, and the waiter was then
+-- handed the discarded table: whatever it changed was marked against an id the
+-- sweep no longer knew, and dropped.
+section('inventory: a load waited on is never handed back after it was discarded')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers = inventory.Containers
+		local realRead = inventory.Storage.Read
+		local reads = 0
+		inventory.Storage.Read = function(kind, owner, slots, maxWeight)
+			reads = reads + 1
+			env.Wait(10)
+			return { id = 90000 + reads, kind = kind, owner = owner, slots = slots,
+				maxWeight = maxWeight, items = {} }, nil
+		end
+
+		local first, second
+		env.CreateThread(function()
+			first = Containers.Load('stash', 'race_stash', 10, 1000)
+			-- The loader's whole life, inside one poll of the waiter: settled and
+			-- forgotten before the waiter looks again.
+			if first then Containers.Discard(first.id, true) end
+		end)
+		env.CreateThread(function()
+			second = Containers.Load('stash', 'race_stash', 10, 1000)
+		end)
+		settle(control, function() return second ~= nil end, 40)
+
+		check('the waiter is answered', second ~= nil)
+		check('with a container that is still registered',
+			second ~= nil and Containers.Get(second.id) == second,
+			second and tostring(second.id))
+		check('read again rather than adopted from the discarded load', reads == 2, reads)
+
+		inventory.Storage.Read = realRead
+		if second then Containers.Discard(second.id, true) end
+	end
+end
+
+-- The bridge binds at most 64 parameters a statement and 64 statements a
+-- transaction (the `Open77.database.update` / `.transaction` cards), and the
+-- harness bridge now refuses past either the way the real one does. A save
+-- wrote 50 rows -- 250 parameters -- per INSERT, so every container holding
+-- more than twelve stacks was refused whole, stayed dirty and was retried for
+-- ever, and the sweep stopped at that batch every pass.
+section('the inventory save fits the bridge: 64 parameters, 64 statements')
+do
+	local transactions = {}
+	local poisoned = {}
+	local db = Host.Database({
+		scalar = function() return 1 end,
+		query = function() return {} end,
+		single = function() return nil end,
+		update = function() return 1 end,
+		transaction = function(list)
+			local ids = {}
+			for index = 1, #list do
+				local entry = list[index]
+				if entry.query:find('DELETE FROM opx77_inventory_items', 1, true) then
+					ids[#ids + 1] = entry.values[1]
+					if poisoned[entry.values[1]] then return false, 'refused' end
+				end
+			end
+			transactions[#transactions + 1] = { list = list, ids = ids }
+			return true
+		end,
+	})
+
+	local env, control, why = boot('server', db)
+	check('the server boots with a limit-checking bridge', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Store = inventory.Storage
+
+		local function rows(count)
+			local out = {}
+			for slot = 1, count do
+				out[slot] = { slot = slot, name = 'bandage', count = 1,
+					metadata = { label = 'x' .. slot } }
+			end
+			return out
+		end
+
+		-- ── one container of forty stacks ────────────────────────────────────
+		transactions = {}
+		local answer
+		env.CreateThread(function()
+			answer = Store.Save({ { id = 501, rows = rows(40) } })
+		end)
+		control.Pump(20)
+		check('a forty-stack container is written', answer ~= nil and answer.ok == true,
+			answer and tostring(answer.detail or answer.error))
+		local bound, widest = 0, 0
+		if transactions[1] then
+			for _, entry in ipairs(transactions[1].list) do
+				if entry.query:find('INSERT INTO opx77_inventory_items', 1, true) then
+					bound = bound + #entry.values // 5
+				end
+				if #entry.values > widest then widest = #entry.values end
+			end
+		end
+		check('in one transaction', #transactions == 1, #transactions)
+		check('with every stack bound', bound == 40, bound)
+		check('and no statement past 64 parameters', widest > 0 and widest <= 64, widest)
+
+		-- ── sixteen containers of thirty stacks: 16 x 5 statements ───────────
+		transactions = {}
+		local list = {}
+		for index = 1, 16 do list[index] = { id = 600 + index, rows = rows(30) } end
+		answer = nil
+		env.CreateThread(function() answer = Store.Save(list) end)
+		control.Pump(40)
+		check('a batch past 64 statements is still written', answer ~= nil and answer.ok == true,
+			answer and tostring(answer.detail or answer.error))
+		local largest, seen, split = 0, {}, true
+		for _, sent in ipairs(transactions) do
+			if #sent.list > largest then largest = #sent.list end
+			for _, id in ipairs(sent.ids) do
+				if seen[id] then split = false end
+				seen[id] = true
+			end
+		end
+		check('as several transactions', #transactions >= 2, #transactions)
+		check('none of them past 64 statements', largest > 0 and largest <= 64, largest)
+		local written = 0
+		for _ in pairs(seen) do written = written + 1 end
+		check('with every container in exactly one of them', split and written == 16, written)
+
+		-- ── one container the database refuses holds nobody else hostage ─────
+		local fakes = {}
+		for index = 1, 3 do
+			fakes[700 + index] = { id = 700 + index, kind = 'stash', owner = 'f' .. index,
+				slots = 10, maxWeight = 1000, items = { [1] = { name = 'bandage', count = 1 } } }
+		end
+		local realGet = inventory.Containers.Get
+		inventory.Containers.Get = function(id)
+			if fakes[id] then return fakes[id] end
+			return realGet(id)
+		end
+		poisoned[702] = true
+		transactions = {}
+		for id in pairs(fakes) do Store.MarkDirty(id) end
+		control.Pump(40)
+		local wrote = {}
+		for _, sent in ipairs(transactions) do
+			for _, id in ipairs(sent.ids) do wrote[id] = true end
+		end
+		check('a refused container does not keep the rest of its batch unwritten',
+			wrote[701] == true and wrote[703] == true,
+			('701=%s 703=%s'):format(tostring(wrote[701]), tostring(wrote[703])))
+		check('and the refused one is still marked to be written',
+			wrote[702] == nil and Store.Pending() >= 1, Store.Pending())
+		inventory.Containers.Get = realGet
+		for id in pairs(fakes) do Store.Forget(id) end
+	end
+end
+
 -- ── the readiness gate ───────────────────────────────────────────────────────
 -- All eight guards in `core/server/gate.lua` survived mutation, because
 -- `Open77.ready` was five constants: `isReady` answered false for everybody,
@@ -22632,6 +22999,52 @@ end
 -- `shopAt` refuses a shop in another bucket and a shop out of reach, and both
 -- mutants survived: with every player at the origin in bucket 0 the two
 -- comparisons were constants.
+
+-- The saved-look doors had no window at all: every press was a thread and a
+-- database round trip, and REDEEM let a script walk the share-code space --
+-- every hit somebody's saved look, worn for free.
+section('shops: the saved-look doors are cooled, and guessing codes is slow')
+do
+	local lookups = 0
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 0 end,
+		query = function() return {} end,
+		single = function(sql)
+			if sql:find('share_code', 1, true) then lookups = lookups + 1 end
+			return nil
+		end,
+		insert = function() return 1 end,
+		update = function() return 1 end,
+		transaction = function() return true end,
+	}))
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local shops = env.OPX.Modules.Get('shops')
+		local GUESSER = 913
+		control.Admit(GUESSER, 'account-913')
+		local redeem = control.netEvents[shops.Event.REDEEM]
+		check('the redeem door is wired', type(redeem) == 'function')
+		if type(redeem) == 'function' then
+			local before = lookups
+			for attempt = 1, 20 do
+				env.source = GUESSER
+				redeem({ code = 'ABCDEFG' .. ('23456789ABCDEFGHJKLM'):sub(attempt, attempt) })
+				env.source = nil
+			end
+			control.Pump(10)
+			check('twenty codes typed in one breath cost one lookup, not twenty',
+				lookups - before == 1, lookups - before)
+			control.Pump(25)
+			env.source = GUESSER
+			redeem({ code = 'ABCD9999' })
+			env.source = nil
+			control.Pump(10)
+			check('and the door opens again once the window has passed',
+				lookups - before == 2, lookups - before)
+		end
+	end
+end
 section('shops: a counter on the other side of the city is not a counter you are at')
 do
 	local env, control, why = boot('server')
@@ -28955,6 +29368,74 @@ do
 	end
 end
 
+
+-- `OPX.Hooks.Trigger` may yield, and `RemoveMoney` read the balance BEFORE its
+-- hook and subtracted after it. Two purchases in flight across a yielding
+-- `money:beforeRemove` hook both passed the balance test, and 100 paid for two
+-- 100 items. A Player that logged out during the hook was also still mutated,
+-- on a table its logout had already saved.
+section('money: a yielding hook cannot let one balance pay twice')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end, query = function() return {} end,
+		single = function() return nil end, insert = function() return 1 end,
+		update = function() return 1 end, transaction = function() return true end,
+	}))
+	check('the server boots for the hook race', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local source = 861
+		control.Admit(source, 'account-' .. source)
+		local player = character.CreatePlayer({
+			citizenId = OPX.CitizenId.Generate(), userId = 'account-' .. source,
+			source = source, charInfo = { firstName = 'Jackie', lastName = 'Welles' },
+			money = { EDDIES = 100 },
+		}, false)
+		player.PlayerData.jobs, player.PlayerData.gangs = {}, {}
+		character.RegisterPlayer(player)
+
+		local hook = OPX.Hooks.Register('money:beforeRemove', function()
+			env.Wait(200)
+			return true
+		end)
+
+		local answers = {}
+		for index = 1, 2 do
+			env.CreateThread(function()
+				answers[index] = { character.RemoveMoney(source, 'EDDIES', 100, 'test') }
+			end)
+		end
+		settle(control, function() return answers[1] ~= nil and answers[2] ~= nil end, 40)
+
+		local paid = 0
+		for index = 1, 2 do
+			if answers[index] and answers[index][1] == true then paid = paid + 1 end
+		end
+		check('only one of two purchases in flight is paid for', paid == 1, paid)
+		check('and the balance never goes below zero', player.PlayerData.money.EDDIES == 0,
+			player.PlayerData.money.EDDIES)
+
+		-- A logout during the hook: the Player has left the roster and been saved.
+		player.PlayerData.money.EDDIES = 100
+		local late
+		OPX.Hooks.Remove(hook)
+		hook = OPX.Hooks.Register('money:beforeAdd', function()
+			env.Wait(200)
+			return true
+		end)
+		env.CreateThread(function()
+			late = { character.AddMoney(player, 'EDDIES', 50, 'test') }
+		end)
+		control.Pump(1)
+		character.UnregisterPlayer(player)
+		settle(control, function() return late ~= nil end, 40)
+		check('a payment to somebody who left during the hook is refused',
+			late ~= nil and late[1] == false, late and tostring(late[2]))
+		OPX.Hooks.Remove(hook)
+	end
+end
 section('groups: a live job change that a logout overtakes is still kept')
 do
 	local state = {}
@@ -29739,6 +30220,22 @@ do
 		check('a bad roll holds, and the break roll takes the pick',
 			answer ~= nil and answer.code == 'pick_broke' and locked('front')
 				and fakes.counts[60].lockpick == 1, answer and tostring(answer.code))
+
+		-- The pick handed away mid-bar: one lockpick passed bag to bag let a
+		-- crew start bars on it, and a break found nothing to take.
+		dl.Roll = function() return 0 end
+		control.Pump(8)
+		env.source = 60
+		control.netEvents[dl.Event.PICK]({ key = 'front' })
+		control.Pump(45)
+		fakes.counts[60] = { lockpick = 0 }
+		env.source = 60
+		control.netEvents[dl.Event.PICKED]({ key = 'front', finished = true })
+		control.Pump(4)
+		answer = doorlockLast(control, dl.Event.ANSWER, 60)
+		check('a pick that left the bag during the bar turns nothing',
+			answer ~= nil and answer.code == 'no_lockpick' and locked('front'),
+			answer and tostring(answer.code))
 		dl.Roll = math.random
 	end
 end
