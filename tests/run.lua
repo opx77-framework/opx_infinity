@@ -6714,6 +6714,13 @@ do
 			roster and #roster.vehicles)
 		check('and says of each whether it is parked here or somewhere else',
 			roster ~= nil and roster.vehicles[1].here == false)
+		-- A list of bare plates is a list nobody finds their car in.
+		check('and names each by its model, as its key does',
+			roster ~= nil and type(roster.vehicles[1].name) == 'string'
+				and roster.vehicles[1].name ~= '' and roster.vehicles[1].name:find('Vehicle.', 1, true) == nil,
+			roster and tostring(roster.vehicles[1].name))
+		check('the readable name drops the engine\'s filing',
+			env.OPX.Vehicle.DisplayName('Vehicle.v_standard2_villefort_cortes_player') == 'Villefort Cortes')
 
 		-- THE OTHER LOCATION ANSWERS THE SAME LIST. Two menu points, sixty metres
 		-- apart, one garage: a list that differed between them would be two
