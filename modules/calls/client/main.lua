@@ -230,6 +230,11 @@ local function onState(payload)
 		routeVoice()
 	elseif hadCall ~= nil and nowCall == nil then
 		play(sounds.HANG_UP)
+		-- AND THE ROUTE GOES BACK. Nothing set it back when the call ended, so
+		-- the intent stayed `all` for the rest of the session -- and a player
+		-- another resource puts on a voice channel (a radio) spoke into it from
+		-- their first holocall on, without pressing anything.
+		routeVoice('proximity')
 	end
 
 	-- THE PROJECTION KNOWS ABOUT THE CALL TOO. It is not only the screen the
@@ -262,7 +267,7 @@ end
 -- Re-asserted on the sweep as well as on the state change, because `open-voice`
 -- owns the push-to-talk key and drives the same native; if it re-states the
 -- intent, this takes it back within half a second rather than for good.
-function routeVoice()
+function routeVoice(intent)
 	local api = Open77.voice
 	if type(api) ~= 'table' or type(api.setTransmitting) ~= 'function' then return end
 	if type(api.status) ~= 'function' then return end
@@ -277,7 +282,7 @@ function routeVoice()
 	if type(talking) ~= 'boolean' then talking = status.pushToTalk end
 	if type(talking) ~= 'boolean' then return end
 
-	pcall(api.setTransmitting, talking, 'all')
+	pcall(api.setTransmitting, talking, intent or 'all')
 end
 
 -- Re-arms the ring while an invite is waiting, and re-asserts the voice route
@@ -770,6 +775,9 @@ function M.Stop()
 	-- VM no longer answers for. Emptied here; the server's next push after a
 	-- restart draws it back.
 	holoOpen = false
+	-- A call live when the module stops leaves the route where `onState` would
+	-- have put it back on the hang-up.
+	if state.call ~= nil then routeVoice('proximity') end
 	state = { call = nil, invite = nil, outgoing = nil }
 	drawHolo()
 end

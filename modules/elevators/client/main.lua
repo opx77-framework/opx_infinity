@@ -74,7 +74,10 @@ end
 local function scan()
 	if type(Open77.elevators) ~= 'table' then return end
 	local at = OPX.Now()
-	local nearby = Open77.elevators.nearby(M.Settings.SCAN_RADIUS)
+	-- Clamped to the 1..300 metres the native takes; `Problems` names a value
+	-- outside it, and this keeps the scan working while it is fixed.
+	local radius = math.max(1, math.min(300, tonumber(M.Settings.SCAN_RADIUS) or 40))
+	local nearby = Open77.elevators.nearby(radius)
 	if type(nearby) ~= 'table' then return end
 	local playerX, playerY = playerXY()
 	for index = 1, #nearby do

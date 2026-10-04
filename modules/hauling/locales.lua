@@ -34,6 +34,7 @@ local EN = {
 	['hauling.refused.stale_revision'] = 'That crate moved. Try it again.',
 	['hauling.refused.claim_expired'] = 'You took too long, so the crate went back.',
 	['hauling.refused.carry_dropped'] = 'You cannot get in with that. Load it into the trunk.',
+	['hauling.refused.carry_ended'] = 'You are no longer carrying the crate.',
 	['hauling.refused.too_soon'] = 'That was too quick to be real.',
 	['hauling.refused.too_far'] = 'You are too far away.',
 	['hauling.refused.wrong_bucket'] = 'That is not really in front of you.',
@@ -92,6 +93,8 @@ local FR = {
 	['hauling.refused.stale_revision'] = 'Cette caisse a bougé. Réessayez.',
 	['hauling.refused.claim_expired'] = 'Vous avez trop attendu : la caisse est repartie.',
 	['hauling.refused.carry_dropped'] = 'Impossible de monter avec. Chargez-la dans le coffre.',
+	['hauling.refused.carry_ended'] = 'Vous ne portez plus la caisse.',
+
 	['hauling.refused.too_soon'] = "C'était trop rapide pour être vrai.",
 	['hauling.refused.too_far'] = 'Vous êtes trop loin.',
 	['hauling.refused.wrong_bucket'] = "Ce n'est pas vraiment devant vous.",

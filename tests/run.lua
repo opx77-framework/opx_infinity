@@ -6834,6 +6834,30 @@ do
 			lastEvent(garages.Event.ANSWER) ~= nil
 				and lastEvent(garages.Event.ANSWER)[3] == 'garages.wrongBucket')
 
+		-- THE NEAREST POINT IS THE NEAREST ONE IN THE PLAYER'S BUCKET. An
+		-- instanced copy of a garage standing on the same spot in another bucket
+		-- -- and sorting first by key -- used to win the nearest-point search and
+		-- then be refused as `wrongBucket`, to a player standing on a garage that
+		-- is in their own.
+		local shadow = place('a_shadow', {
+			KIND = 'garage', LABEL = 'SHADOW',
+			LOCATIONS = { { BUCKET = 7,
+				MENU = { X = 0.0, Y = 0.0, Z = 0.0 },
+				ENTRY = { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0 },
+				EXITS = { { X = 0.0, Y = 0.0, Z = 0.0, HEADING = 0.0 } } } },
+		})
+		control.Stand(src, 0.0, 0.0, 0.0)
+		local nearest = contract.List(src, nil)
+		check('the nearest point is looked for in the player\'s own bucket',
+			shadow ~= nil and nearest.ok == true and nearest.value.garage == 'garage_dock',
+			nearest.ok and tostring(nearest.value.garage) or tostring(nearest.error))
+		local named = contract.List(src, 'garage_dock')
+		check('and so is the nearest point of a garage named by its key',
+			named.ok == true and named.value.garage == 'garage_dock',
+			named.ok and tostring(named.value.garage) or tostring(named.error))
+		heldGarages['a_shadow'] = nil
+		for _, point in ipairs(Access.PointsOf(shadow)) do held[point.key] = nil end
+
 		control.netEvents[garages.Event.REQUEST]('no_such_marker')
 		control.Pump(8)
 		check('a marker that does not exist is refused',
@@ -7350,6 +7374,24 @@ do
 		check('and nothing is sent', #cctl.serverEvents == mark)
 		check('and the verdict is published on the local bus',
 			#decisions == 1 and decisions[1].error == 'garages.noSuchSpot')
+
+		-- ── a crowded lot is drawn over several passes, not one resume ────
+		-- A pass runs in one resume and a marker is an engine call. The first
+		-- list created every marker in range at once; on a lot dense enough that
+		-- is the shape the per-resume instruction budget ends silently.
+		local crowd = {}
+		for index = 1, 20 do
+			crowd[index] = { key = ('lot#%d'):format(index), label = 'LOT', kind = 'garage',
+				garage = 'lot', role = 'menu', location = index,
+				x = index * 0.5, y = 0.0, z = 0.0, heading = 0.0, bucket = 0 }
+		end
+		cctl.netEvents[garages.Event.SYNC]({ spots = crowd })
+		local firstPass = #cenv.Open77.markers.list()
+		check('the list that arrives creates a bounded number of markers in its own resume',
+			firstPass > 0 and firstPass <= 8, firstPass)
+		cctl.Pump(30)
+		check('and the rest follow on the next passes', #cenv.Open77.markers.list() == 20,
+			#cenv.Open77.markers.list())
 	end
 end
 
@@ -7772,6 +7814,20 @@ do
 		control.netEvents[dealership.Event.ASK]()
 		control.Pump(4)
 		local synced = lastEvent(dealership.Event.SYNC)
+		-- AND A SECOND ASK INSIDE A SECOND IS NOT ANSWERED. Each one is a bucket
+		-- filter, a sort and a payload; a client polls every fifteen seconds.
+		local function syncs()
+			local count = 0
+			for index = 1, #control.clientEvents do
+				if control.clientEvents[index].name == dealership.Event.SYNC then count = count + 1 end
+			end
+			return count
+		end
+		local syncsBefore = syncs()
+		control.netEvents[dealership.Event.ASK]()
+		control.Pump(4)
+		check('a list asked for again within a second is not sent again',
+			syncs() == syncsBefore, syncs() - syncsBefore)
 		local found, inBucket = {}, true
 		for index = 1, type(synced) == 'table' and #synced[1].spots or 0 do
 			found[synced[1].spots[index].key] = true
@@ -7965,7 +8021,55 @@ do
 			table.concat(control.log.error, ' | '):sub(-200))
 		if vehiclesApi ~= nil then vehiclesApi.Register = realRegister end
 
+		-- ── a refund goes to who PAID, not to whoever holds the connection ──
+		-- `Register` yields. A buyer who went back to the selection screen and
+		-- loaded another character inside that window had the refund paid to the
+		-- character on the connection NOW -- money that character never spent.
+		if vehiclesApi ~= nil then
+			local otherCitizen = 'citizen-dealer-alt'
+			vehiclesApi.Register = function()
+				-- The swap, done inside the yield the real Register makes.
+				local alt = load(src, otherCitizen, 0)
+				alt.PlayerData.money.EDDIES = 0
+				return env.OPX.Result.Err('vehicle.limit', '1')
+			end
+			character.Players[src].PlayerData.money.EDDIES = 500000
+			local swapped = contract.Buy(src, 'yard', 'hella', nil)
+			check('a purchase refused after the buyer swapped character is refused',
+				swapped.ok == false, swapped and tostring(swapped.error))
+			check('and the refund does NOT land on the character who never paid',
+				character.Players[src].PlayerData.money.EDDIES == 0,
+				tostring(character.Players[src].PlayerData.money.EDDIES))
+			vehiclesApi.Register = realRegister
+			character.Registry.byCitizenId[otherCitizen] = nil
+			load(src, 'citizen-dealer', 2000000)
+		end
+
+		-- ── one purchase per character at a time ───────────────────────────
+		-- The ceiling is a count, a yield and an insert; two doors in one tick
+		-- both passed the count. The second is refused while the first is in
+		-- flight, whichever door it came through.
+		if vehiclesApi ~= nil then
+			local inner, outer
+			vehiclesApi.Register = function(...)
+				if inner == nil then inner = contract.Buy(src, 'yard', 'hella', nil) end
+				return realRegister(...)
+			end
+			character.Players[src].PlayerData.money.EDDIES = 2000000
+			outer = contract.Buy(src, 'yard', 'hella', nil)
+			vehiclesApi.Register = realRegister
+			check('a purchase started while the same character\'s is in flight is refused',
+				inner ~= nil and inner.ok == false and inner.error == 'error.tooFast',
+				inner and tostring(inner.error))
+			check('and the one in flight still completes', outer ~= nil and outer.ok == true,
+				outer and tostring(outer.error))
+			local again = contract.Buy(src, 'yard', 'hella', nil)
+			check('and the claim is given back afterwards', again.ok == true,
+				again and tostring(again.error))
+		end
+
 		-- ── the wire ───────────────────────────────────────────────────────
+
 		local wireBalance = character.Players[src].PlayerData.money.EDDIES
 		mark = #control.clientEvents
 		control.netEvents[dealership.Event.BUY]('yard', 'hella', nil)
@@ -8076,6 +8180,29 @@ do
 		-- The live one is still live: a stale answer must not settle it either.
 		check('while the offer they were actually made is still open',
 			contract.Accept(buyer, secondAt, false).error == 'dealership.offerDeclined')
+
+		-- ── a yes refused after the offer is gone tells the seller ─────────
+		-- `Accept` takes the offer off the table before it proves anything, so
+		-- the expiry that would otherwise report it finds nothing: a buyer who
+		-- said yes from outside the room left the seller waiting on a sale that
+		-- no longer existed.
+		contract.Offer(seller, buyer, 'hella')
+		local strayAt = lastEvent(dealership.Event.OFFERED)[1].token
+		control.Stand(buyer, 500.0, 0.0, 0.0)
+		local strayMark = #control.clientEvents
+		local stray = contract.Accept(buyer, strayAt, true)
+		control.Stand(buyer, 0.0, 0.0, 0.0)
+		local toldSeller
+		for index = strayMark + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.name == dealership.Event.SETTLED and sent.source == seller then toldSeller = sent end
+		end
+		check('a yes from outside the room is refused to the buyer',
+			stray.ok == false and stray.error == 'dealership.notInZone', tostring(stray.error))
+		check('and the seller is told, in words about the buyer',
+			toldSeller ~= nil and toldSeller[1].ok == false
+				and toldSeller[1].error == 'dealership.buyerNotInZone',
+			toldSeller and tostring(toldSeller[1].error) or 'nothing sent')
 
 		-- ── and yes ────────────────────────────────────────────────────────
 		local settled
@@ -14661,6 +14788,74 @@ do
 	end
 end
 
+section('elevators: an adoption the sweep drops is given back to the host')
+do
+	-- `sweepOnce` drops an adoption nobody rode for ten minutes, so a lift
+	-- adopted from a hash that came off the wire unverified heals. It cleared
+	-- this module's record and NOT the host's: the lift stayed adopted and
+	-- locked, the client never re-reports a lift the host calls managed, and
+	-- every request answered `not_adopted` -- the shaft was dead until restart.
+	local WHERE = { x = -1521.40, y = 892.75, z = 42.10 }
+	local LIFT = '0x00000000000000ab'
+	local env, control, why = boot('server', nil, function(sandbox)
+		sandbox.Open77.players.position = function()
+			return { x = WHERE.x, y = WHERE.y, z = WHERE.z, bucket = 0 }
+		end
+	end)
+	check('the server boots for the elevator sweep', why == nil, why)
+	if why == nil then
+		local M = env.OPX.Modules.Get('elevators')
+		local lifts = control.lifts
+		env.source = 4
+		control.netEvents[M.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+		env.source = nil
+		local adoptedId = lifts.next
+		check('the lift is adopted', #lifts.adopts == 1 and lifts.byId[adoptedId] ~= nil)
+
+		-- A DOWNED PLAYER CALLS NO CABIN. Only the client's panel consulted the
+		-- down screen; a client sending REQUEST itself rode while bleeding out.
+		local downed = env.OPX.Api.Get('downed')
+		local realIsDown = downed and downed.IsDown
+		if downed ~= nil then
+			downed.IsDown = function() return { ok = true, value = { down = true } } end
+		end
+		env.source = 4
+		control.netEvents[M.Event.REQUEST]('arasaka_tower', 0)
+		env.source = nil
+		if downed ~= nil then downed.IsDown = realIsDown end
+		local refusedDown
+		for _, sent in ipairs(control.clientEvents) do
+			if sent.name == M.Event.ANSWER then refusedDown = sent end
+		end
+		check('a downed player\'s floor request is refused on the server',
+			refusedDown ~= nil and refusedDown[3] == false and refusedDown[4] == 'downed'
+				and #lifts.trips == 0,
+			refusedDown and tostring(refusedDown[4]))
+		-- Ten minutes and a sweep, at 100 ms a round.
+		control.Pump(6200)
+		local given = false
+		for _, id in ipairs(lifts.removes) do if id == adoptedId then given = true end end
+		check('an adoption never used is given back to the host, not only forgotten', given,
+			#lifts.removes)
+		env.source = 4
+		control.netEvents[M.Event.SIGHTED](LIFT, WHERE.x, WHERE.y, WHERE.z, 12, 0)
+		env.source = nil
+		check('and the next sighting adopts the lift again', #lifts.adopts == 2, #lifts.adopts)
+
+		-- `Open77.elevators.nearby` takes 1..300 metres; a wider scan found no lift
+		-- at all and nothing said why.
+		local settings = env.OPX.Config.MODULES.elevators
+		local shipped = settings.SCAN_RADIUS
+		settings.SCAN_RADIUS = 500
+		local said = table.concat(M.Access.Problems(), '\n')
+		settings.SCAN_RADIUS = shipped
+		check('a SCAN_RADIUS wider than the host takes is reported',
+			said:find('SCAN_RADIUS must be between 1 and 300', 1, true) ~= nil, said)
+		check('and the shipped one is not', #M.Access.Problems() == 0,
+			table.concat(M.Access.Problems(), ' | '))
+	end
+end
+
 section('elevators: a player can reach the floor list')
 do
 	-- THE PANEL HAD NO DOOR. Every adopted cabin is locked, which refuses the
@@ -15229,6 +15424,40 @@ do
 			contract ~= nil and type(contract.IsAllowed) == 'function'
 				and type(contract.Entrances) == 'function'
 				and type(contract.State) == 'function')
+		-- THE CONSOLE'S SOURCE NEVER REACHES THE HOST. `players.position(0)` throws
+		-- past `pcall` and stops the resource on the real platform, and
+		-- `Entrances` is a published contract any caller can hand a 0 to.
+		local realPosition = env.Open77.players.position
+		local askedFor = {}
+		env.Open77.players.position = function(player)
+			askedFor[#askedFor + 1] = player
+			return realPosition(player)
+		end
+		local console = contract.Entrances(0)
+		local negative = contract.Entrances(-3)
+		env.Open77.players.position = realPosition
+		check('the entrances of the console\'s source are refused without asking the host',
+			console.ok == false and negative.ok == false and #askedFor == 0,
+			('%s / %d asked'):format(tostring(console.error), #askedFor))
+
+		-- A TRIP THAT RAISES IS STILL ANSWERED. The client's latch opens only on
+		-- an answer, so a raise used to shut it until the player rejoined.
+		local realLookup = Access.Lookup
+		Access.Lookup = function() error('lookup blew up') end
+		local raiseMark = #control.clientEvents
+		env.source = 5
+		control.netEvents[M.Event.USE]('roof', 'out')
+		env.source = nil
+		control.Pump(4)
+		Access.Lookup = realLookup
+		local raisedAnswer
+		for index = raiseMark + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.name == M.Event.ANSWER and sent.source == 5 then raisedAnswer = sent end
+		end
+		check('a trip that raised is answered as a refusal, so the client is not left waiting',
+			raisedAnswer ~= nil and raisedAnswer[3] == false and raisedAnswer[4] == 'failed',
+			raisedAnswer and tostring(raisedAnswer[4]) or 'no answer')
 		check('the shipped config reports no problems', #Access.Problems() == 0,
 			table.concat(Access.Problems(), ' | '))
 		check('and ships no teleport switched on, because every coordinate in it ' ..
@@ -17985,6 +18214,15 @@ do
 		local told = sentTo(M.Event.GONE)
 		check('the clients are told the old id went',
 			#told >= 1 and told[#told][1] == CRATE)
+		-- AND THE CARRIER IS TOLD THEY HOLD NOTHING. The client's `carrying` moves
+		-- only on an answer, so a carry the platform ended without one left the
+		-- client blocking weapons and refusing every other crate as "already
+		-- carrying" until some unrelated request happened to be answered.
+		local ended = lastAnswer()
+		check('and the carrier is told the carry ended, holding nothing',
+			ended.source == 3 and ended[1] == false and ended[2] == 'carry_ended'
+				and ended[3] == false,
+			('%s %s %s'):format(tostring(ended.source), tostring(ended[2]), tostring(ended[3])))
 		CRATE = fresh or CRATE
 
 		-- ── the same, on a disconnect ────────────────────────────────────────
@@ -18068,6 +18306,22 @@ do
 		fire(6, M.Event.BEGIN, Step.PICKUP, CRATE)
 		check('and one standing on it in another instance is too',
 			lastAnswer()[2] == 'wrong_bucket', tostring(lastAnswer()[2]))
+
+		-- AND AT THE END OF THE BAR, not only at its start: a player moved to
+		-- another instance while kneeling is not beside this crate any more.
+		at = at + 10000
+		positions[6] = { x = home.x, y = home.y, z = home.z, bucket = 0 }
+		fire(6, M.Event.BEGIN, Step.PICKUP, CRATE)
+		check('a pickup begun in the crate\'s bucket starts', lastAnswer()[1] == true,
+			tostring(lastAnswer()[2]))
+		positions[6] = { x = home.x, y = home.y, z = home.z, bucket = 4 }
+		at = at + Access.PICKUP_MS + 1
+		fire(6, M.Event.FINISH)
+		check('and is refused at the finish once the player is in another instance',
+			lastAnswer()[1] == false and lastAnswer()[2] == 'wrong_bucket',
+			tostring(lastAnswer()[2]))
+		check('and the crate is not carried',
+			OPX.Api.Get('hauling').State().value.sites.docks.carried == 0)
 	end
 end
 
@@ -20264,6 +20518,134 @@ do
 			after ~= nil and after.ok == true, after and tostring(after.error))
 
 		vehicles.Storage.FetchOne, vehicles.Storage.SetState = realFetch, realState
+		character.Players[DRIVER] = nil
+	end
+end
+
+section('vehicles: two stores of one plate leave it STORED, once, and a stale save cannot undo it')
+do
+	-- A save pass that finds the owner gone and the departure sweep both put the
+	-- same car away; a STORE request can land inside a recall. Both stores read
+	-- the snapshot and yield on the row, and the loser's `remove` answers false
+	-- for a car the winner already took away -- so it wrote OUT over STORED and
+	-- told the player the store was refused. And a save pass whose read was in
+	-- flight wrote the whole row back as it had read it: OUT, under the old garage.
+	--
+	-- The save pass is a local of the module, so it is caught where it is handed
+	-- to the scheduler and driven by hand, beside a store.
+	local savePass
+	local env, control, why = boot('server', nil, nil, function(env, file)
+		if file:find('core/server/scheduler.lua', 1, true) then
+			local every = env.OPX.Scheduler.Every
+			env.OPX.Scheduler.Every = function(name, ms, step)
+				if name == 'vehicles:save' then savePass = step end
+				return every(name, ms, step)
+			end
+		end
+	end)
+	check('the server boots for the store race', why == nil, why)
+	local OPX = why == nil and env.OPX or nil
+	local vehicles = OPX and OPX.Modules.Get('vehicles') or nil
+	local character = OPX and OPX.Modules.Get('character') or nil
+	check('and the save pass was caught', type(savePass) == 'function')
+
+	if type(vehicles) == 'table' and type(character) == 'table' and type(savePass) == 'function' then
+		local DRIVER, PLATE, CITIZEN = 72, 'STORE01', 'citizen-storer'
+		character.Players[DRIVER] = { PlayerData = {
+			citizenId = CITIZEN, source = DRIVER, userId = 'account-72' } }
+		character.Registry.byCitizenId[CITIZEN] = DRIVER
+		character.Registry.byUserId['account-72'] = DRIVER
+		env.Open77.players.position = function()
+			return { x = 5.0, y = 6.0, z = 7.0, bucket = 0 }
+		end
+
+		-- THE ROW, kept here so the last write is what the next read sees. Every
+		-- read and every full save yields once, as the real bridge does.
+		local STATE = vehicles.Storage.STATE
+		local row = { plate = PLATE, citizenId = CITIZEN,
+			record = 'Vehicle.v_standard2_villefort_cortes_player', garage = 'impound',
+			state = STATE.STORED, health = 1.0, metadata = {} }
+		local real = {
+			FetchOne = vehicles.Storage.FetchOne, Save = vehicles.Storage.Save,
+			SetState = vehicles.Storage.SetState,
+		}
+		vehicles.Storage.FetchOne = function(plate)
+			if plate ~= PLATE then return OPX.Result.Err('vehicle.notFound', plate) end
+			local read = {}
+			for key, value in pairs(row) do read[key] = value end
+			env.Wait(0)
+			return OPX.Result.Ok(read)
+		end
+		-- Written BEFORE the yield: a statement lands in the order it was sent,
+		-- and awaiting its answer is what suspends.
+		vehicles.Storage.Save = function(entity)
+			row.state, row.garage = entity.state, entity.garage
+			env.Wait(0)
+			return OPX.Result.Ok(true)
+		end
+		vehicles.Storage.SetState = function(_, state, garage)
+			row.state = state
+			if garage ~= nil then row.garage = garage end
+			return OPX.Result.Ok(true)
+		end
+		-- The engine's answer for a vehicle that no longer exists.
+		local realRemove = env.Open77.vehicles.remove
+		local gone = {}
+		env.Open77.vehicles.remove = function(id)
+			if gone[id] then return false end
+			gone[id] = true
+			return realRemove(id)
+		end
+		local announced = 0
+		local realPublish = OPX.Publish
+		OPX.Publish = function(name, ...)
+			if name == vehicles.Event.ON_STORED then announced = announced + 1 end
+			return realPublish(name, ...)
+		end
+
+		local function bringOut()
+			local out
+			env.CreateThread(function() out = vehicles.Spawn(DRIVER, PLATE) end)
+			return settle(control, function() return out ~= nil end, 60) and out.ok == true, out
+		end
+
+		local brought, out = bringOut()
+		check('the car is out to begin with', brought, out and tostring(out.error))
+
+		local a, b
+		env.CreateThread(function() a = vehicles.Store(PLATE, 'garage_a') end)
+		env.CreateThread(function() b = vehicles.Store(PLATE, 'garage_a') end)
+		check('both stores settle',
+			settle(control, function() return a ~= nil and b ~= nil end, 60))
+		local won = (a and a.ok and 1 or 0) + (b and b.ok and 1 or 0)
+		check('exactly one store puts it away, and the other is told it is busy',
+			won == 1 and ((a.ok and b.error == 'vehicle.busy') or (b.ok and a.error == 'vehicle.busy')),
+			('%s / %s'):format(tostring(a and (a.error or 'ok')), tostring(b and (b.error or 'ok'))))
+		check('and the row is STORED under the garage asked for, not written back to OUT',
+			row.state == STATE.STORED and row.garage == 'garage_a',
+			('state=%s garage=%s'):format(tostring(row.state), tostring(row.garage)))
+		check('and the put-away is announced once', announced == 1, announced)
+
+		-- A SAVE PASS IN FLIGHT WHEN THE STORE LANDS. Both read the row while it
+		-- says OUT; the store's answer comes back first and it sends STORED under
+		-- the new garage, and then the pass's answer comes back and it sent the
+		-- row as it had read it -- OUT, under the old garage -- after it.
+		brought = bringOut()
+		check('the car is out again', brought)
+		local passed, stored = false, nil
+		env.CreateThread(function() stored = vehicles.Store(PLATE, 'garage_b') end)
+		env.CreateThread(function() savePass(); passed = true end)
+		check('the pass and the store both settle',
+			settle(control, function() return passed and stored ~= nil end, 60)
+				and stored.ok == true, stored and tostring(stored.error))
+		check('and the stale pass did not write the row back to OUT under the old garage',
+			row.state == STATE.STORED and row.garage == 'garage_b',
+			('state=%s garage=%s'):format(tostring(row.state), tostring(row.garage)))
+
+		OPX.Publish = realPublish
+		env.Open77.vehicles.remove = realRemove
+		vehicles.Storage.FetchOne, vehicles.Storage.Save, vehicles.Storage.SetState =
+			real.FetchOne, real.Save, real.SetState
 		character.Players[DRIVER] = nil
 	end
 end
@@ -24663,6 +25045,21 @@ do
 			end
 		end
 		check('and nothing goes out on the old private notice event', private == 0, private)
+
+		-- THE CONTRACT CHECKS WHAT IT IS GIVEN. `SetTime` trusted its argument as
+		-- validated by the command; a contract caller's string or NaN went into
+		-- the clock, every snapshot built from it raised, and the bad value was
+		-- carried into the next start.
+		local weather = OPX.Api.Get('weather')
+		local bad = weather.SetTime('noon', 'test')
+		local nan = weather.SetTime(0 / 0, 'test')
+		check('the published SetTime refuses a time that is not a number',
+			type(bad) == 'table' and bad.ok == false and bad.error == 'invalid_time'
+				and type(nan) == 'table' and nan.ok == false,
+			type(bad) == 'table' and tostring(bad.error) or type(bad))
+		local fine = weather.SetTime(90000, 'test')
+		check('and folds one past midnight into the day',
+			type(fine) == 'table' and fine.ok == true and weather.Status().ok ~= false)
 	end
 end
 
@@ -26781,6 +27178,26 @@ do
 
 		check('both garages are pinned', pinned('First') ~= nil and pinned('Second') ~= nil)
 
+		-- ONE BAD HAULING ROW DOES NOT EMPTY THE MAP. `site.JOBS` was read off a
+		-- site before anything checked it was a table, so a row written as a
+		-- boolean or a number raised inside the pass, every pass, and no change
+		-- to any category was ever drawn again.
+		local sites = OPX.Config.MODULES.hauling and OPX.Config.MODULES.hauling.SITES
+		if type(sites) == 'table' then
+			sites.zz_broken = true
+			list.three = { key = 'three', label = 'Third', x = 70.0, y = 80.0, z = 90.0 }
+			blips.Runtime.Sync()
+			control.Pump(20)
+			control.Pump(30)
+			sites.zz_broken = nil
+			list.three = nil
+			check('a hauling site that is not a table does not stop a new garage being pinned',
+				pinned('Third') ~= nil and pinned('First') ~= nil)
+			blips.Runtime.Sync()
+			control.Pump(20)
+			control.Pump(30)
+		end
+
 		-- THE SPOT GOES AWAY. The server stopped naming it -- deleted, or a bucket
 		-- this player is no longer in.
 		list.two = nil
@@ -27136,6 +27553,40 @@ do
 		-- each other, which is exactly what the consent was for.
 		ask(A, module.Event.HANG_UP)
 		check('the call ending takes the channel with it', channels() == 0, channels())
+
+		-- ── ONE OF THREE DISCONNECTS ─────────────────────────────────────────
+		-- A disconnect is a hang-up nobody pressed, and in a call of three the
+		-- other two carry on. They were told "the call ended" anyway.
+		-- What a player was toasted after a mark, read off the host's own
+		-- notification log: `tell` goes through `OPX.Notify`, not a net event.
+		local function saidTo(playerId, mark, text)
+			for index = mark + 1, #control.notices do
+				local notice = control.notices[index]
+				if notice.playerId == playerId and type(notice.message) == 'string'
+					and notice.message:find(text, 1, true) ~= nil then
+					return true
+				end
+			end
+			return false
+		end
+		ask(A, module.Event.INVITE, B)
+		ask(B, module.Event.ACCEPT, inviteOn(B))
+		ask(A, module.Event.INVITE, D)
+		ask(D, module.Event.ACCEPT, inviteOn(D))
+		check('three are on the call before one of them leaves',
+			onCallCount(A) == 3, onCallCount(A))
+		local leftMark = #control.notices
+		control.Fire(OPX.Host.PLAYER_DISCONNECTED, D, 'quit')
+		check('the two left are still talking', onCallCount(A) == 2, onCallCount(A))
+		local hungUp = OPX.Locale.Text('calls.left', { name = '' })
+		local endedText = OPX.Locale.Text('calls.ended')
+		check('and are told that one hung up, not that the call ended',
+			saidTo(A, leftMark, hungUp) and saidTo(B, leftMark, hungUp)
+				and not saidTo(A, leftMark, endedText),
+			hungUp)
+		ask(A, module.Event.HANG_UP)
+		incarnate(D, 'd')
+		control.Pump(5)
 
 		-- ── calling yourself ─────────────────────────────────────────────────
 		local mark = ask(A, module.Event.INVITE, A)
@@ -27846,6 +28297,17 @@ do
 		ask(B, module.Event.ACCEPT, inviteOn(B))
 		check('a fresh call lights both again',
 			control.Eyes(A) == true and control.Eyes(B) == true)
+
+		-- ── a host read that fails is not a reason to hang up ────────────────
+		-- `judge` answers `unreadable` when the host could not be asked, and its
+		-- own comment calls that "a feature that is merely having a bad second".
+		-- The sweep treated it as unreachable and hung up every live call.
+		local realLife = env.Open77.players.getLifeState
+		env.Open77.players.getLifeState = function() error('host hiccup') end
+		control.Pump(40)
+		env.Open77.players.getLifeState = realLife
+		check('a life-state read that raises does not end a live call',
+			calls.IsOnCall(A).value.onCall == true and calls.IsOnCall(B).value.onCall == true)
 
 		-- The platform clears a lease on death by itself. Without the sweep
 		-- taking the body off the call, the call would carry on with a corpse

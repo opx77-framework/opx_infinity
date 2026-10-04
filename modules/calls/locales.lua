@@ -159,7 +159,7 @@ local FR = {
 	['calls.holo.close'] = 'FERMER',
 	['calls.holo.ringing'] = '{name} vous appelle.',
 	['calls.holo.sharing'] = '{name} veut vous donner son contact.',
-	['calls.holo.calling'] = 'Appel de {name}...',
+	['calls.holo.calling'] = 'Appel vers {name}...',
 	['calls.holo.dialing'] = 'Appel sortant...',
 	['calls.holo.live'] = 'En appel avec {names}.',
 	['calls.holo.answer'] = 'REPONDRE',
@@ -183,7 +183,7 @@ local FR = {
 	['calls.holo.outcome.declined'] = 'Il a refuse',
 	['calls.holo.outcome.refused'] = 'Vous avez refuse',
 
-	['calls.placed'] = 'Appel de {name}...',
+	['calls.placed'] = 'Appel vers {name}...',
 	['calls.ringing'] = '{name} vous appelle.',
 	['calls.answered'] = '{name} a répondu.',
 	['calls.declined'] = "{name} a refusé l'appel.",

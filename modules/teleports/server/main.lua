@@ -413,6 +413,12 @@ end
 -- @param player Source
 -- @return Result
 local function entrances(player)
+	-- A PLAYER ID FROM 1 UP, checked before the host is asked: this is a
+	-- published contract, and `Open77.players.position(0)` -- the console's
+	-- source -- does not answer nil, it throws past `pcall` and stops the
+	-- resource (devkit card `server:Open77.players.position`).
+	player = math.tointeger(tonumber(player))
+	if player == nil or player < 1 then return Result.Err('no_position') end
 	local at = pointOf(player)
 	if at == nil then return Result.Err('no_position') end
 	return Result.Ok({ bucket = at.bucket, entrances = payloadFor(player, at.bucket) })
@@ -593,6 +599,10 @@ function M.Start()
 	RegisterNetEvent(M.Event.ASK, function()
 		local player = tonumber(source) or 0
 		if player <= 0 then return end
+		-- A FLOOR, as every other door here has one: each ask is a character
+		-- read, a bucket filter, a sort and a payload, and a client polls every
+		-- POLL_MS (15 s). Faster than once a second is not a client polling.
+		if OPX.Cooling(player, 'teleports.ask', 1000) then return end
 		sync(player)
 	end)
 
@@ -608,6 +618,10 @@ function M.Start()
 			if not served then
 				inFlight[player] = nil
 				Open77.log.error('[teleports] a trip raised: ' .. tostring(failure))
+				-- ANSWERED, because the client's latch opens only on an answer: a
+				-- raise used to leave it shut, and every later press said "you are
+				-- already on your way" until the player rejoined.
+				TriggerClientEvent(M.Event.ANSWER, player, safe(key), safe(leg), false, 'failed', nil)
 			end
 		end)
 	end)

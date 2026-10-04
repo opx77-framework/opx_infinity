@@ -94,6 +94,15 @@ local offers = {}
 -- the same one; a counter never repeats.
 local nextOffer = 0
 
+-- Citizen ids a purchase is part-way through, from the charge to the answer.
+-- THE VEHICLE CEILING IS A COUNT, THEN A YIELD, THEN AN INSERT
+-- (`vehicles.Register`), and the three doors into `purchase` -- the net BUY, the
+-- `buy` command and an accepted offer -- held separate floors, or none: two of
+-- them in one tick both passed the count and the character ended up over
+-- `PER_CHARACTER`. What must not run twice at once is one character's purchase,
+-- so that is what is claimed.
+local buying = {}
+
 -- The contracts, resolved in `Start`. `keys` is the vehicle keys contract, the
 -- only one of the four whose absence costs nothing but the key.
 local character, vehicles, garages, keys
@@ -253,7 +262,10 @@ end
 local function dealerAt(at, dealerKey)
 	local dealer
 	if dealerKey == nil or dealerKey == '' then
-		dealer = Access.Nearest(spots, at.x, at.y)
+		-- IN THE CONNECTION'S OWN BUCKET. Over every bucket, an instanced copy of
+		-- a dealer on the same spot that sorted first won the search and was then
+		-- refused as `wrongBucket` to somebody standing on a dealer in theirs.
+		dealer = Access.Nearest(Access.InBucket(spots, at.bucket), at.x, at.y)
 	else
 		dealer = Access.Spot(spots, dealerKey)
 	end
@@ -283,6 +295,25 @@ end
 
 -- ── the purchase itself ─────────────────────────────────────────────────────
 
+--- Pays one CITIZEN, through the connection while it still holds them.
+-- A payment made after a yield cannot trust that `source` is still the
+-- character it was: the player may have left, or loaded another character. The
+-- connection is used when it still holds that citizen -- with nothing between
+-- the check and the payment that yields -- and otherwise `AddMoneyOffline`,
+-- which pays the loaded balance wherever they are now, or the row.
+-- @return boolean paid
+-- @return any why not
+local function payCitizen(source, citizenId, amount, reason)
+	local data = source ~= nil and characterOf(source) or nil
+	if data ~= nil and data.citizenId == citizenId then
+		return character.AddMoney(source, currency, amount, reason)
+	end
+	if type(character.AddMoneyOffline) ~= 'function' then return false, 'money.offline' end
+	local paid = character.AddMoneyOffline(citizenId, currency, amount, reason)
+	if type(paid) ~= 'table' then return false, 'no answer' end
+	return paid.ok == true, paid.error or paid.detail
+end
+
 --- Charges the buyer, registers the vehicle and hands it over.
 -- @author XEROX710
 --
@@ -297,7 +328,7 @@ end
 -- @param entry table the stock row
 -- @param dest table|nil the destination garage
 -- @return Result
-local function purchase(source, data, dealer, entry, dest)
+local function purchaseOnce(source, data, dealer, entry, dest)
 	local paid, refusal = character.RemoveMoney(source, currency, entry.price,
 		'dealership:' .. entry.key)
 	if not paid then
@@ -337,7 +368,14 @@ local function purchase(source, data, dealer, entry, dest)
 		-- back; a refund that itself fails is the one outcome that costs a
 		-- player money, and it is said in the log with everything needed to
 		-- settle it by hand.
-		local back, why = character.AddMoney(source, currency, entry.price,
+		-- TO THE CITIZEN WHO PAID, NOT TO THE CONNECTION. `Register` yielded,
+		-- and in that window the buyer can have logged off -- `AddMoney(source)`
+		-- then answered `notLoggedIn` and the money was simply gone -- or gone
+		-- back to the selection screen and loaded ANOTHER character, which was
+		-- then refunded money it never paid. `AddMoneyOffline` pays the loaded
+		-- balance when the character is online and the row when it is not;
+		-- `payCitizen` asks it only when the connection no longer holds them.
+		local back, why = payCitizen(source, data.citizenId, entry.price,
 			'dealership:refund:' .. entry.key)
 		if not back then
 			Open77.log.error(
@@ -365,7 +403,16 @@ local function purchase(source, data, dealer, entry, dest)
 	-- it was their bag that was full, which is the one cause they can act on.
 	local keyed = false
 	if plate ~= nil and keys ~= nil then
-		local cut = keys.Ensure(source, plate, entry.label or entry.record)
+		-- GUARDED, for the reason `Register` is: the money is gone and the row
+		-- exists, and a throw here unwound past the answer, the audit line, the
+		-- sale event and -- on an accepted offer -- the company's share and the
+		-- commission. A throw is one more key that was not cut.
+		local called, cut = pcall(keys.Ensure, source, plate, entry.label or entry.record)
+		if not called then
+			Open77.log.error(('[dealership] keys.Ensure threw for %s: %s')
+				:format(tostring(plate), tostring(cut)))
+			cut = nil
+		end
 		keyed = type(cut) == 'table' and cut.ok == true
 		if not keyed then
 			local code = type(cut) == 'table' and cut.error or 'vehiclekeys.unavailable'
@@ -386,11 +433,15 @@ local function purchase(source, data, dealer, entry, dest)
 		-- An AV is lifted clear of the ground it is sold on.
 		local z = dealer.z
 		if entry.av then z = z + Access.AvLift() end
-		local handed = vehicles.Spawn(source, plate, {
+		-- Guarded like the key above, and for the same reason.
+		local called, handed = pcall(vehicles.Spawn, source, plate, {
 			x = dealer.x, y = dealer.y, z = z,
 			yaw = dealer.heading,
 			bucket = dealer.bucket,
 		})
+		if not called or type(handed) ~= 'table' then
+			handed = { ok = false, error = called and 'no answer' or ('threw: ' .. tostring(handed)) }
+		end
 		spawned = handed.ok == true
 		if not spawned then
 			-- NOT A FAILED SALE. The vehicle is owned and it is filed under the
@@ -414,6 +465,25 @@ local function purchase(source, data, dealer, entry, dest)
 		spawned = spawned,
 		keyed = keyed,
 	})
+end
+
+--- `purchaseOnce`, one at a time per character. See `buying`.
+-- Every door goes through this and never through `purchaseOnce` directly. The
+-- claim is taken and given back with nothing in between that can skip the
+-- release: a throw is caught, logged, and answered like a failed payment --
+-- by the guards inside it, a throw can only come from before the charge.
+local function purchase(source, data, dealer, entry, dest)
+	local who = data.citizenId
+	if buying[who] then return Result.Err('error.tooFast') end
+	buying[who] = true
+	local ran, result = pcall(purchaseOnce, source, data, dealer, entry, dest)
+	buying[who] = nil
+	if not ran then
+		Open77.log.error(('[dealership] the purchase of %s by %s threw: %s')
+			:format(safe(entry.key), tostring(who), tostring(result)))
+		return Result.Err('dealership.paymentFailed')
+	end
+	return result
 end
 
 --- Buys one model from the dealer the connection is standing on.
@@ -562,9 +632,18 @@ function M.SettlePending()
 	local settled = 0
 	local ran, failure = pcall(function()
 		-- What could not even be written to the ledger goes there first.
-		for token, owed in pairs(unsaved) do
-			local pended = Store.Pend(token, owed.kind, owed.group, owed.amount, owed.plate)
-			if pended ~= nil and pended.ok then unsaved[token] = nil end
+		-- The tokens are collected BEFORE anything yields: `Store.Pend` does, and
+		-- a `bank` that fails meanwhile inserts into `unsaved`, which `next`
+		-- leaves undefined for a table being walked.
+		local tokens = {}
+		for token in pairs(unsaved) do tokens[#tokens + 1] = token end
+		for index = 1, #tokens do
+			local token = tokens[index]
+			local owed = unsaved[token]
+			if owed ~= nil then
+				local pended = Store.Pend(token, owed.kind, owed.group, owed.amount, owed.plate)
+				if pended ~= nil and pended.ok then unsaved[token] = nil end
+			end
 		end
 
 		local rows = Store.FetchPending(PENDING_PAGE)
@@ -632,7 +711,10 @@ function M.Offer(seller, buyer, entryKey)
 	-- of them have to be standing in it: a salesperson who can sell to somebody
 	-- across the city is a salesperson who can sell to somebody who has never
 	-- seen a dealership.
-	local dealer = Access.Nearest(spots, sellerAt.x, sellerAt.y, Access.ZONE_RADIUS_SQ)
+	-- In the seller's own bucket, for the reason `dealerAt` gives.
+	local dealer = Access.Nearest(Access.InBucket(spots, sellerAt.bucket), sellerAt.x, sellerAt.y,
+		Access.ZONE_RADIUS_SQ)
+
 	if dealer == nil or not inZone(sellerAt, dealer) then
 		return Result.Err('dealership.notInZone')
 	end
@@ -733,42 +815,59 @@ function M.Accept(buyer, token, yes, destKey)
 	if Access.FiniteNumber(token) ~= offer.token then return Result.Err('dealership.noOffer') end
 	offers[buyer] = nil
 
+	-- The seller is told by SETTLED, whose handler raises the one toast; a
+	-- second one from here doubled it.
 	if yes ~= true then
 		TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
 			error = 'dealership.offerDeclined', entry = offer.entry })
-		OPX.NotifyLocale(offer.seller, 'dealership.offerDeclined', nil, 'error')
 		return Result.Err('dealership.offerDeclined')
 	end
 
-	if vehicles == nil then return Result.Err('dealership.noVehicles') end
-	if currency == nil then return Result.Err('dealership.noCurrency') end
+	-- THE SELLER IS TOLD HOW IT ENDED, on every refusal from here down. The
+	-- offer is already gone from the table, so the timeout that would otherwise
+	-- report it finds nothing and says nothing: a seller whose buyer said yes
+	-- and was then refused for the zone or the catalogue was left waiting on a
+	-- sale that no longer existed. `told` is the seller's own sentence where
+	-- the buyer's would read wrong to them, and false when the seller is the
+	-- one who left -- the connection may belong to somebody else by now.
+	local function refused(code, told)
+		if told ~= false then
+			TriggerClientEvent(M.Event.SETTLED, offer.seller, { ok = false,
+				error = told or code, entry = offer.entry })
+		end
+		return Result.Err(code)
+	end
+
+	if vehicles == nil then return refused('dealership.noVehicles') end
+	if currency == nil then return refused('dealership.noCurrency') end
 
 	-- EVERYTHING IS PROVED AGAIN. The buyer may have walked out of the room,
 	-- spent the money, changed character or logged off since the offer, and the
 	-- seller may have done the same.
+	local sellerData = characterOf(offer.seller)
+	local sellerHere = sellerData ~= nil and sellerData.citizenId == offer.sellerCitizen
 	local buyerData = characterOf(buyer)
 	if buyerData == nil or buyerData.citizenId ~= offer.buyerCitizen then
-		return Result.Err('dealership.noCharacter')
+		return refused('dealership.noCharacter', sellerHere and 'dealership.buyerNotInZone')
 	end
-	local sellerData = characterOf(offer.seller)
-	if sellerData == nil or sellerData.citizenId ~= offer.sellerCitizen then
-		return Result.Err('dealership.sellerGone')
-	end
+	if not sellerHere then return refused('dealership.sellerGone', false) end
 
 	local dealer = Access.Spot(spots, offer.dealer)
 	local buyerAt = pointOf(buyer)
 	local sellerAt = pointOf(offer.seller)
 	if dealer == nil or not inZone(buyerAt, dealer) then
-		return Result.Err('dealership.notInZone')
+		return refused('dealership.notInZone', 'dealership.buyerNotInZone')
 	end
-	if not inZone(sellerAt, dealer) then return Result.Err('dealership.sellerGone') end
+	if not inZone(sellerAt, dealer) then
+		return refused('dealership.sellerGone', 'dealership.notInZone')
+	end
 
 	local entry = Access.Entry(offer.entry)
 	if entry == nil or entry.price ~= offer.price then
 		-- The catalogue was edited and reloaded under an open offer. Refused
 		-- rather than honoured at either price: one of them is not what the
 		-- buyer agreed to and the other is not what the shop sells for.
-		return Result.Err('dealership.noSuchEntry')
+		return refused('dealership.noSuchEntry')
 	end
 
 	-- THE BUYER'S GARAGE, and it was ignored. A sale at the counter has always
@@ -798,7 +897,10 @@ function M.Accept(buyer, token, yes, destKey)
 	local cut, company = Access.Split(entry.price)
 	local paid = true
 	if cut > 0 then
-		local given, why = character.AddMoney(offer.seller, currency, cut,
+		-- TO THE SELLER'S CITIZEN, for the reason the refund is: `purchase`
+		-- yielded, and a seller who swapped character meanwhile had the
+		-- commission paid to whichever character the connection held now.
+		local given, why = payCitizen(offer.seller, offer.sellerCitizen, cut,
 			'dealership:commission:' .. entry.key)
 		if not given then
 			paid = false
@@ -1002,15 +1104,6 @@ local function raiseFloor()
 	end
 end
 
---- How many previews one dealer's floor already holds.
-local function floorCount(dealerKey, except)
-	local total = 0
-	for key, spot in pairs(previews) do
-		if spot.dealer == dealerKey and key ~= except then total = total + 1 end
-	end
-	return total
-end
-
 -- THE TWO WRITERS ARE GONE. `M.PlacePreview` and `M.RemovePreview` stood here,
 -- and the whole of what they wrote is now `PREVIEW.POINTS` in
 -- `config/dealership.lua`. The reader below is untouched: rows an operator
@@ -1096,8 +1189,9 @@ local function onOffered(buyer, entryKey)
 	CreateThread(function()
 		local offered = M.Offer(src, buyer, entryKey)
 		if not offered.ok then
+			-- No toast from here: the SETTLED handler on the seller's client
+			-- raises one, and this one doubled it.
 			OPX.Refuse(src, offered.error, M.Operation.OFFER)
-			OPX.NotifyLocale(src, offered.error, nil, 'error')
 			TriggerClientEvent(M.Event.SETTLED, src,
 				{ ok = false, error = offered.error, entry = entryKey })
 			return
@@ -1117,6 +1211,14 @@ local function onDecided(token, yes, destKey)
 	CreateThread(function()
 		local settled = M.Accept(src, token, yes == true,
 			type(destKey) == 'string' and destKey or nil)
+		-- A DECLINE IS THE BUYER'S OWN ANSWER. `Accept` answers it as
+		-- `offerDeclined`, which is the SELLER's sentence -- "They turned the
+		-- offer down." -- and the buyer who said no was shown it as an error,
+		-- twice (this toast and the client's). They know; nothing is said.
+		if yes ~= true and not settled.ok and settled.error == 'dealership.offerDeclined' then
+			return
+		end
+
 		if not settled.ok then
 			OPX.Refuse(src, settled.error, M.Operation.DECIDE)
 			OPX.NotifyLocale(src, settled.error, nil, 'error')
@@ -1207,6 +1309,9 @@ local function registerCommands()
 			{ name = 'garage', optional = true, help = locale('dealership.help.buyGarage') },
 		},
 		cooldownMs = Access.COOLDOWN_MS,
+		-- THE NET DOOR'S WINDOW, not one of its own: the command and the menu
+		-- are one purchase, and two floors let a player use one, then the other.
+		key = 'dealership.buy',
 	}, function(source, args)
 		local entryKey = type(args[1]) == 'string' and args[1] or ''
 		if #entryKey == 0 then
@@ -1245,6 +1350,7 @@ function M.Init()
 	rebuildPreviews()
 	windows = {}
 	offers = {}
+	buying = {}
 	nextOffer = 0
 	unsaved, nextPending, sweeping = {}, 0, false
 	running = false
@@ -1355,7 +1461,11 @@ function M.Start()
 
 	RegisterNetEvent(M.Event.ASK, function()
 		local player = tonumber(source)
-		if player == nil then return end
+		if player == nil or player <= 0 then return end
+		-- A FLOOR, as every other door here has one: each ask is a character
+		-- read, a bucket filter, a sort and a payload, and a client polls every
+		-- POLL_MS (15 s). Faster than once a second is not a client polling.
+		if OPX.Cooling(player, 'dealership.ask', 1000) then return end
 		sync(player)
 	end)
 

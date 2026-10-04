@@ -88,10 +88,6 @@ M.Event = {
 -- cannot tell which `error.tooFast` is its own.
 M.Operation = {
 	BUY = 'dealershipBuy',
-	-- Placing or removing a preview point. NOT the old `CAPTURE`, which named
-	-- the command that placed a DEALER: that command is gone, and an operation
-	-- name nothing raises is a name the next reader wires a refusal up to.
-	PLACE = 'dealershipPlace',
 	-- Offering a vehicle to another player, and that player's answer.
 	OFFER = 'dealershipOffer',
 	DECIDE = 'dealershipDecide',
