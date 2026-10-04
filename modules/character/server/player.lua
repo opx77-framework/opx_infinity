@@ -1043,10 +1043,18 @@ local function unload(source)
 	-- it. Both callers below leave the ledger once they have saved.
 	M.Ledger.Enter(player.PlayerData.citizenId)
 
+	-- THE SLOT MAY NOT BE THIS PLAYER'S ANY MORE. Core's `session:forgotten`
+	-- reaches the logout a tick after the session went, by which time a recycled
+	-- slot can hold another account's fresh session: its `citizenId` is not this
+	-- character's to clear, and the UNLOADED screen is not theirs to be shown.
+	-- Everything addressed to the SLOT below waits on the account still being
+	-- the one this Player was loaded for; the roster, the ledger and the
+	-- in-VM announcements are about the character and always go.
 	local session = OPX.Sessions[source]
-	if session then session.citizenId = nil end
+	local holds = session ~= nil and session.userId == player.PlayerData.userId
+	if holds then session.citizenId = nil end
 
-	TriggerClientEvent(M.Event.UNLOADED, source)
+	if holds then TriggerClientEvent(M.Event.UNLOADED, source) end
 	TriggerEvent(M.Event.IN_UNLOADED, source, player.PlayerData)
 	OPX.Publish(M.Event.ON_UNLOADED, source, {
 		citizenId = player.PlayerData.citizenId,
@@ -1073,7 +1081,9 @@ function M.Logout(source)
 	local settled, failure = pcall(function()
 		M.SamplePosition(player)
 		player.MaySample = false
-		OPX.Buckets.Isolate(source, 'unloaded')
+		-- The account it was loaded for, so a recycled slot's new holder is
+		-- never moved into a selection bucket for somebody else's logout.
+		OPX.Buckets.Isolate(source, 'unloaded', player.PlayerData.userId)
 	end)
 	if not settled then
 		Open77.log.error(('[character] logout of %s raised before its save: %s')
