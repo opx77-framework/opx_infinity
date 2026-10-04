@@ -7152,6 +7152,81 @@ end
 -- arrives over `SYNC`. What is asserted is what the ENGINE was asked for: the
 -- shape, the style, the radius and the distance, read back out of the host's
 -- marker stub, which validates them the way `Markers.cpp` does.
+section('spots, client side: one marker set and one key for every spot module')
+do
+	-- garages, dealership, clothing and teleports drew markers through four
+	-- copies of the same set, and those four plus the elevator door declared
+	-- their key through five copies of the same mapping. One of each now, in
+	-- `lib/client/spots.lua`; this is what it promises.
+	local cenv, cctl, cwhy = boot('client')
+	check('the client boots for the shared spot helpers', cwhy == nil, cwhy)
+	if cwhy == nil then
+		local Spots = cenv.OPX.Spots
+		local allowed = {}
+		local set = Spots.Markers.New({
+			tag = 'test',
+			look = function() return { shape = 'cylinder', style = 'spawn', radius = 2.0, lift = 0.1 } end,
+			maxDistance = function() return 50.0 end,
+			variant = function(spot) return allowed[spot.key] == true end,
+		})
+		local list = {}
+		for index = 1, 12 do
+			local key = ('s%d'):format(index)
+			list[key] = { key = key, x = index * 1.0, y = 0.0, z = 0.0 }
+		end
+		list.far = { key = 'far', x = 500.0, y = 0.0, z = 0.0 }
+
+		set.Reconcile(list, 0.0, 0.0)
+		check('one pass creates at most eight markers, the per-resume budget',
+			set.Count() == Spots.MARKER_CREATES_PER_PASS, set.Count())
+		set.Reconcile(list, 0.0, 0.0)
+		check('and the next pass creates the rest of what is in range, and nothing beyond it',
+			set.Count() == 12 and not set.Has('far'), set.Count())
+
+		local before = #cenv.Open77.markers.list()
+		allowed.s1 = true
+		set.Reconcile(list, 0.0, 0.0)
+		check('a spot whose variant changed is drawn again, not left in the old style',
+			set.Has('s1') and #cenv.Open77.markers.list() == before)
+
+		list.s2 = nil
+		set.Reconcile(list, 0.0, 0.0)
+		check('a spot the list no longer names loses its marker', not set.Has('s2')
+			and set.Count() == 11, set.Count())
+		set.Reconcile(list, nil, nil)
+		check('and a position that cannot be read draws nothing', set.Count() == 0, set.Count())
+		set.Reconcile(list, 0.0, 0.0)
+		set.Reconcile(list, 0.0, 0.0)
+		set.Clear()
+		check('Clear takes every marker down', set.Count() == 0
+			and #cenv.Open77.markers.list() == 0, #cenv.Open77.markers.list())
+
+		-- THE KEY, AND THE SILENT PRESS: a press while another surface holds the
+		-- keyboard does nothing at all, and the handler is handed 'key'.
+		local presses = {}
+		local registered = Spots.Key.Register({
+			tag = 'test',
+			declared = { ID = 'opx.test.use', NAME = 'garages.key.use', DEFAULT = 'E' },
+			onPress = function(origin) presses[#presses + 1] = origin end,
+		})
+		local mapping = cctl.keyMappings.byId['opx.test.use']
+		check('the key is declared to the host and answers registered',
+			registered == true and mapping ~= nil and mapping.key == 'E')
+		check('and its label is the key it is bound to',
+			Spots.Key.Label(registered, { ID = 'opx.test.use', DEFAULT = 'E' }) ~= nil)
+		mapping.pressed()
+		check('a press reaches the handler, named as the key', #presses == 1 and presses[1] == 'key')
+		cctl.input.captured = true
+		mapping.pressed()
+		cctl.input.captured = false
+		check('and a press while another surface holds the keyboard does nothing', #presses == 1)
+		check('a key declared as DEFAULT = false is not registered at all',
+			Spots.Key.Register({ tag = 'test', declared = { ID = 'opx.test.off', NAME = 'x',
+				DEFAULT = false }, onPress = function() end }) == false
+				and cctl.keyMappings.byId['opx.test.off'] == nil)
+	end
+end
+
 section('garages, client side')
 do
 	local cenv, cctl, cwhy = boot('client')
@@ -19804,18 +19879,30 @@ do
 	end
 	check('no file claims `reconcile` is the only writer of its marker set',
 		#sole == 0, table.concat(sole, ', '))
-	-- And the claim really would be false, so this is not agreeing with itself.
-	local emptiers = 0
-	for _, file in ipairs({ 'modules/clothing/client/main.lua',
-		'modules/garages/client/main.lua' }) do
+	-- And the claim really would be false, so this is not agreeing with itself:
+	-- the one marker set every spot module uses now has a second writer, `Clear`.
+	local shared = loaded['lib/client/spots.lua'] or ''
+	check('because the shared set really does have a second writer beside Reconcile',
+		shared:find('function set.Reconcile', 1, true) ~= nil
+			and shared:find('function set.Clear', 1, true) ~= nil)
+
+	-- ── one marker set and one key mapping, not five copies ───────────────
+	-- garages, dealership, clothing and teleports each carried the marker set,
+	-- and those four plus the elevator door each carried the key mapping. They
+	-- drifted -- the per-pass marker cap had reached three of the four.
+	local copies = {}
+	for _, file in ipairs({ 'modules/garages/client/main.lua',
+		'modules/dealership/client/main.lua', 'modules/clothing/client/main.lua',
+		'modules/teleports/client/main.lua', 'modules/elevators/client/door.lua' }) do
 		local source = loaded[file] or ''
-		if source:find('local function clearMarkers', 1, true)
-			and source:find('markers%[key%] = nil') then
-			emptiers = emptiers + 1
+		if source:find('pcall(RegisterKeyMapping', 1, true)
+			or source:find('local function reconcile', 1, true)
+			or source:find('api.create, {', 1, true) then
+			copies[#copies + 1] = file
 		end
 	end
-	check('because a second function really does empty it, in both', emptiers == 2,
-		emptiers)
+	check('no spot module keeps its own marker set or key mapping any more',
+		#copies == 0, table.concat(copies, ', '))
 
 	-- ── the job gate is not narrating copies that still exist ─────────────
 	-- The claim is "a JOBS block means one thing", and the thing it means is the

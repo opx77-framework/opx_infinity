@@ -43,7 +43,11 @@ local SPEC_ID = 'dealership'
 
 -- The dealer list as the server last sent it, and the markers drawn for it.
 local spots = {}
-local markers = {}
+local markers = OPX.Spots.Markers.New({
+	tag = 'dealership',
+	look = function(spot) return Access.Marker(spot.kind) end,
+	maxDistance = function() return Access.MaxDistance() end,
+})
 
 -- What each kind of dealer sells, as the server sent it: `{ garage = {},
 -- avpad = {} }` of `{ key, label, class, price, text }`.
@@ -89,7 +93,7 @@ local reportedTarget = false
 -- Whether each failure was already logged. A marker that cannot be drawn and a
 -- row that cannot be posted are different problems and a player reading the log
 -- wants to know which one they have.
-local reportedMarkers, reportedStrip, reportedMenu = false, false, false
+local reportedStrip, reportedMenu = false, false
 
 -- Scheduler handles, so Stop can cancel them.
 local scanJob, askJob = nil, nil
@@ -111,131 +115,16 @@ local function menuSettings()
 	return declared or { ANCHOR = 'center', WIDTH = 708, HEIGHT = 708, MAX_HEIGHT_VH = 88, VISIBLE_ROWS = 15 }
 end
 
--- The player's own ground position, or nil before there is a world to read.
-local function playerXY()
-	local character = Open77.character
-	if type(character) ~= 'table' or type(character.position) ~= 'function' then
-		return nil, nil
-	end
-	local read, x, y = pcall(character.position)
-	if not read or type(x) ~= 'number' or type(y) ~= 'number' or x ~= x or y ~= y then
-		return nil, nil
-	end
-	return x, y
-end
-
--- `playerYaw` stood here. It read the operator's own facing for a capture, and
--- went with the capture: `/opx.admin.self.pos` reads a facing server-side now.
-
--- Whether another surface holds the keyboard: the chat box, a form, the pause
--- menu. Kept module-local rather than folded into `OPX.Lib.Input.IsCaptured`,
--- which answers captured when the read itself raises where this answers free.
-local function captured()
-	local input = Open77.input
-	if type(input) ~= 'table' or type(input.isCaptured) ~= 'function' then return false end
-	local read, answer = pcall(input.isCaptured)
-	return read and answer == true
-end
-
--- ── the markers ─────────────────────────────────────────────────────────────
-
--- Creates one marker, or answers why it could not be. Never raises.
-local function createMarker(spot)
-	local api = Open77.markers
-	if type(api) ~= 'table' or type(api.create) ~= 'function' then
-		return nil, 'world.markers is unavailable'
-	end
-	local look = Access.Marker(spot.kind)
-	local read, id, reason = pcall(api.create, {
-		-- The spot's declared height plus the look's own lift: a ring left at
-		-- floor height is co-planar with the floor and draws nothing at all.
-		position = { x = spot.x, y = spot.y, z = spot.z + look.lift },
-		shape = look.shape,
-		style = look.style,
-		radius = look.radius,
-		maxDistance = Access.MaxDistance(),
-	})
-	if not read then return nil, tostring(id) end
-	if id == nil then return nil, tostring(reason or 'refused') end
-	return id, nil
-end
-
--- Removes one marker without raising.
-local function removeMarker(id)
-	local api = Open77.markers
-	if type(api) ~= 'table' or type(api.remove) ~= 'function' then return end
-	pcall(api.remove, id)
-end
-
--- Markers created in one pass, at most. See `modules/garages/client/main.lua`:
--- a pass runs in one resume and a marker is an engine call, so the first list
--- no longer creates every marker in range at once. The rest come on the next
--- passes, SCAN_MS apart; a removal is never deferred.
-local MARKER_CREATES_PER_PASS = 8
-
--- Brings the drawn set in line with what is in range: a dealer within
--- MAX_DISTANCE has a marker, one beyond it does not.
---
--- THE POSITION IS THREADED THROUGH, NOT READ AGAIN. `scan()` -- the only caller
--- -- has just read it for `Access.Nearest`, and reading it a second time here
--- made this module cost TWO host position reads per pass at SCAN_MS. Across
--- `clothing`, `dealership` and `garages` that was twelve host reads a second for
--- six distinct answers. `modules/teleports/client/main.lua` already threads it
--- (`reconcile(at)`); these three were never updated with it.
--- @param x number|nil the player's position, or nil where it could not be read
--- @param y number|nil
-local function reconcile(x, y)
-	local limit = Access.MaxDistance()
-	local reach = limit * limit
-	local creates = 0
-
-	for key, spot in pairs(spots) do
-		local flat = nil
-		if x ~= nil then flat = Access.FlatDistanceSquared(spot, x, y) end
-		local wanted = flat ~= nil and flat <= reach
-		if wanted and markers[key] == nil and creates < MARKER_CREATES_PER_PASS then
-			creates = creates + 1
-			local id, failure = createMarker(spot)
-			if id == nil then
-				if not reportedMarkers then
-					reportedMarkers = true
-					Open77.log.warn(('[dealership] no marker is drawn: %s'):format(tostring(failure)))
-				end
-			else
-				markers[key] = id
-			end
-		elseif not wanted and markers[key] ~= nil then
-			removeMarker(markers[key])
-			markers[key] = nil
-		end
-	end
-
-	-- A dealer the server no longer names loses its marker here rather than
-	-- being left behind: it may have been removed while it was in range.
-	for key, id in pairs(markers) do
-		if spots[key] == nil then
-			removeMarker(id)
-			markers[key] = nil
-		end
-	end
-end
-
--- Drops every marker this module drew.
-local function clearMarkers()
-	for key, id in pairs(markers) do
-		removeMarker(id)
-		markers[key] = nil
-	end
-end
+-- The player's ground position, and whether another surface holds the
+-- keyboard: the readings every spot module makes, in `lib/client/spots.lua`.
+local playerXY, captured = OPX.Spots.PlayerXY, OPX.Spots.Captured
 
 -- ── the strip ───────────────────────────────────────────────────────────────
 
 -- Names the key the row is bound to, or nil when it is off or was refused -- a
 -- row with no key to name says nothing.
 local function keyLabel()
-	if not keyRegistered then return nil end
-	local declared = keySettings()
-	return OPX.Lib.Input.KeyFor(declared.ID) or declared.DEFAULT
+	return OPX.Spots.Key.Label(keyRegistered, keySettings())
 end
 
 -- What the key is about to open, as a locale key: a car dealer and an AV pad are
@@ -888,7 +777,7 @@ end
 -- @return table
 function Runtime.Report()
 	local count = OPX.Table.Count(spots)
-	local drawn = OPX.Table.Count(markers)
+	local drawn = markers.Count()
 	local current = stack[#stack]
 	return {
 		spots = count,
@@ -1013,7 +902,7 @@ local function scan()
 	if (inside ~= nil and inside.key or nil) ~= wasIn then syncTarget() end
 
 	syncPrompt()
-	reconcile(x, y)
+	markers.Reconcile(spots, x, y)
 end
 
 -- ── the placement round-trip ────────────────────────────────────────────────
@@ -1029,46 +918,25 @@ end
 --- Clears everything this half holds. Never yields.
 -- @author XEROX710
 function Runtime.Init()
-	spots, markers = {}, {}
+	spots = {}
+	markers.Reset()
 	stock = { [M.KIND.GARAGE] = {}, [M.KIND.AVPAD] = {} }
 	nearest, shown, shownLabel, keyRegistered = nil, false, nil, false
 	handle, stack = nil, {}
-	offer, zone, zoneRows = nil, nil, false
-	reportedMarkers, reportedStrip, reportedMenu, reportedTarget = false, false, false, false
+	offer, offerWaiting, zone, zoneRows = nil, false, nil, false
+	reportedStrip, reportedMenu, reportedTarget = false, false, false
 	scanJob, askJob = nil, nil
 end
 
 --- Declares the key and wires the four server events.
 -- @author XEROX710
 function Runtime.Start()
-	-- The mapping's name is translated at registration and its id is stable,
-	-- because a player's rebind is stored under the id.
-	local declared = keySettings()
-	if declared.DEFAULT ~= false then
-		local called, ok, answer = pcall(RegisterKeyMapping, declared.ID, locale(declared.NAME),
-			declared.DEFAULT, function()
-				if captured() then return end
-				local ran, failure = pcall(Runtime.Open, 'key')
-				if not ran then
-					Open77.log.error(('[dealership] key %s: %s'):format(declared.ID, tostring(failure)))
-				end
-			end)
-		-- Two answer shapes are documented for the host call: the effective key,
-		-- or `true, key`. Reading only the second logged a working mapping as
-		-- refused.
-		local effective = nil
-		if called then
-			effective = type(ok) == 'string' and ok ~= '' and ok
-				or (ok == true and type(answer) == 'string' and answer ~= '' and answer) or nil
-		end
-		if not called or (ok ~= true and effective == nil) then
-			Open77.log.warn(('[dealership] key mapping %s (%s) not registered: %s')
-				:format(declared.ID, tostring(declared.DEFAULT),
-					tostring(called and answer or ok)))
-		else
-			keyRegistered = true
-		end
-	end
+	-- The key, and the silent press: see `OPX.Spots.Key.Register`.
+	keyRegistered = OPX.Spots.Key.Register({
+		tag = 'dealership',
+		declared = keySettings(),
+		onPress = Runtime.Open,
+	})
 
 	-- The strip redraws a rebound key itself; this only re-reads whether the row
 	-- should be up at all.
@@ -1227,7 +1095,7 @@ function Runtime.Shutdown()
 		askJob = nil
 	end
 	takeDown()
-	clearMarkers()
+	markers.Clear()
 	-- The eye's row goes with everything else. A row left behind by a stopped
 	-- owner is a row that opens a list nothing is listening for.
 	local eye = OPX.Api.Get('target')
