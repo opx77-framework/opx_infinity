@@ -63,6 +63,11 @@ OPX.Config.MODULES.admin = {
 		GRACE_MS = 5000,
 		BESIDE = { X = 1.5, Y = 0.0, Z = 0.0 },
 		OBSERVE_HEIGHT = 2.0,
+
+		-- How long an observe keeps its noclip -- and the hidden body that comes
+		-- with it -- for an operator NOT granted `opx.admin.self.noclip`. One who
+		-- is granted it keeps flying until they turn it off.
+		OBSERVE_MS = 120000,
 	},
 
 	-- Noclip speed and its on-screen controls. Client-side: the tunables panel is
@@ -233,6 +238,12 @@ OPX.Config.MODULES.admin = {
 
 		PER_OWNER = 8,
 		NEAR_RADIUS = 30.0,
+
+		-- Metres a TYPED vehicle id may be from the operator, in their own
+		-- instance, for an operator not holding the raw ACL right
+		-- `opx.admin.vehicle.anywhere`. A vehicle carrying the operator always
+		-- qualifies.
+		REACH = 100.0,
 		OCCUPIED_REPAIRS = { glass = true, body = true, lights = true, tires = true, visual = true },
 		FLAGS = { 'locked', 'engineOn', 'lightsOn', 'invulnerable' },
 	},

@@ -14733,6 +14733,75 @@ do
 		check('while a real target is told', admin.Server.Inform(1, 2, 'admin.toast.healed') == true)
 		check('and nobody at all is not', admin.Server.Inform(1, nil, 'admin.toast.healed') == false)
 
+		-- ── the grants a bag command does not imply ──────────────────────────
+		-- Rounds are a weapon item: a bag give of them also needs the weapon
+		-- command that gives rounds, and immunity shields a bag from a clear.
+		local function lastAudit(event)
+			local recent = admin.Server.Recent(20)
+			for index = #recent, 1, -1 do
+				if recent[index].event == event then return recent[index] end
+			end
+			return nil
+		end
+		local function giveAmmo()
+			pcall(give.run, 1, { '2', 'ammo_handgun', '5' }, 'opx.admin.inventory.give 2 ammo_handgun 5')
+			control.Pump(30)
+			return lastAudit('admin.inventory.give')
+		end
+		local refusedGive = giveAmmo()
+		check('a bag give of rounds without the weapon grant is refused, and audited',
+			refusedGive ~= nil and refusedGive.ok == false
+				and tostring(refusedGive.detail):find('weapon.giveammo', 1, true) ~= nil,
+			refusedGive and refusedGive.detail)
+		control.Allow(1, 'command.' .. admin.Command.WEAPON_GIVEAMMO)
+		local grantedGive = giveAmmo()
+		check('and goes through once the weapon grant is held', grantedGive ~= nil and grantedGive.ok == true,
+			grantedGive and grantedGive.detail)
+
+		local clear = control.commands['opx.admin.inventory.clear']
+		control.Allow(2, admin.IMMUNE)
+		pcall(clear.run, 1, { '2' }, 'opx.admin.inventory.clear 2')
+		control.Pump(30)
+		local shielded = lastAudit('admin.inventory.clear')
+		check('a protected player\'s bag is not cleared',
+			shielded ~= nil and shielded.ok == false and shielded.detail == 'target protected',
+			shielded and shielded.detail)
+		check('while the console is not stopped by it', admin.Server.Protected(0, 2) == false)
+		check('nor is a protected player acting on themselves', admin.Server.Protected(2, 2) == false)
+		control.Allow(1, admin.OVERRIDE)
+		check('and an operator holding the override is not stopped either',
+			admin.Server.Protected(1, 2) == false)
+
+		-- ── one heavy request in flight per operator ─────────────────────────
+		local answers = {}
+		env.TriggerClientEvent = function(name, source, ...)
+			if name == admin.Event.ANSWER then answers[#answers + 1] = { source = source, ... } end
+			return realTrigger(name, source, ...)
+		end
+		pcall(give.run, 1, { '2', 'bandage', '1' }, 'opx.admin.inventory.give 2 bandage 1')
+		local view = control.commands['opx.admin.inventory.view']
+		control.Allow(1, 'command.' .. admin.Command.INVENTORY_VIEW)
+		pcall(view.run, 1, { '2' }, 'opx.admin.inventory.view 2')
+		local busy = OPX.Locale.Text('admin.error.busy')
+		local sawBusy = false
+		for _, answer in ipairs(answers) do
+			for index = 1, 4 do
+				if answer[index] == busy then sawBusy = true end
+			end
+		end
+		check('a second heavy command while the first runs is refused as busy', sawBusy)
+		control.Pump(30)
+		answers = {}
+		pcall(give.run, 1, { '2', 'bandage', '1' }, 'opx.admin.inventory.give 2 bandage 1')
+		control.Pump(30)
+		local later = false
+		for _, answer in ipairs(answers) do
+			for index = 1, 4 do
+				if answer[index] == busy then later = true end
+			end
+		end
+		check('and one after it has finished is not', #answers > 0 and not later, #answers)
+
 		env.TriggerClientEvent = realTrigger
 		OPX.Notify = realNotify
 	end
@@ -16486,6 +16555,10 @@ do
 		-- many rows the ACL granted -- which is exactly the thing this section
 		-- varies. A fixed pump reads a registration that is still running.
 		settle(ccontrol, function() return has('admin_skyNoclip') end, 80)
+		-- The closing line goes out on the resume after the last batch.
+		settle(ccontrol, function()
+			return tostring(reports[#reports] or ''):find('staff rows on the eye', 1, true) ~= nil
+		end, 20)
 
 		-- THE REPORT, verbatim. `#sky` is what the operator sees; what is NOT in
 		-- it is what they wrote in about.
@@ -21341,6 +21414,8 @@ do
 		check('and is restricted, so the host resolves its ACL grant first',
 			command ~= nil and command.restricted == true)
 		if command ~= nil then
+			-- A precise car anywhere on the server: the raw `anywhere` right.
+			control.Allow(STAFF, 'opx.admin.vehicle.anywhere')
 			command.run(STAFF, { tostring(OTHER) }, 'opx.admin.vehicle.key ' .. OTHER)
 			settle(control, function() return #keysIn(staffBag) > 0 end, 20)
 			local staffKey = keysIn(staffBag)[1]
@@ -24866,6 +24941,9 @@ do
 
 			local STAFF = 941
 			control.Admit(STAFF, 'account-941')
+			-- The snapshot carries no position: this operator acts on it by id
+			-- from anywhere, which is what the raw `anywhere` right is for.
+			control.Allow(STAFF, 'opx.admin.vehicle.anywhere')
 			-- A live vehicle with every bit clear, so the mask the runtime
 			-- resolves is exactly the mask that comes back in the write.
 			control.vehicles.snapshot = { id = 1, flags = 0, occupants = {} }
@@ -32367,6 +32445,172 @@ do
 			check('and a chip crosses with only the fields the page reads, bounded',
 				chips[1] ~= nil and chips[1].label == nil and chips[1].extra == nil
 					and chips[1].progress == 1 and chips[2].label == 'Effect 2')
+		end
+	end
+end
+
+
+-- ── observe without noclip of one's own, and vehicles out of reach ──────────
+-- `player.observe` lifts the operator with noclip and a hidden body; without
+-- `self.noclip` that now ends after PLACEMENT.OBSERVE_MS. A vehicle command on a
+-- typed id needs the vehicle in the operator's instance and reach unless they
+-- hold `opx.admin.vehicle.anywhere`.
+section('observe is bounded without the noclip grant, and typed vehicles need reach')
+do
+	local env, control, why = boot('server')
+	check('the server boots for observe and reach', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local admin = OPX.Modules.Get('admin')
+		local src, target = 12, 13
+		for _, id in ipairs({ src, target }) do
+			control.Admit(id, 'account-' .. id)
+			OPX.EnsureSession(id)
+			control.lives[id] = 'alive'
+		end
+		control.Stand(src, 0.0, 0.0, 0.0)
+		control.Stand(target, 10.0, 0.0, 0.0)
+		control.Allow(src, 'command.' .. admin.Command.PLAYER_OBSERVE)
+		admin.Settings.PLACEMENT = admin.Settings.PLACEMENT or {}
+		local kept = admin.Settings.PLACEMENT.OBSERVE_MS
+		admin.Settings.PLACEMENT.OBSERVE_MS = 5000
+
+		control.commands[admin.Command.PLAYER_OBSERVE].run(src, { tostring(target) })
+		control.Pump(4)
+		check('observing lifts the operator with noclip', admin.Players.IsNoclip(src) == true)
+		settle(control, function() return not admin.Players.IsNoclip(src) end, 200)
+		check('and without the noclip grant the flight ends on its own',
+			admin.Players.IsNoclip(src) == false)
+
+		control.Allow(src, 'command.' .. admin.Command.SELF_NOCLIP)
+		control.commands[admin.Command.PLAYER_OBSERVE].run(src, { tostring(target) })
+		control.Pump(120)
+		check('while an operator granted noclip keeps it', admin.Players.IsNoclip(src) == true)
+		admin.Settings.PLACEMENT.OBSERVE_MS = kept
+
+		-- A typed vehicle id 500 metres away.
+		local function lastAudit(event)
+			local recent = admin.Server.Recent(20)
+			for index = #recent, 1, -1 do
+				if recent[index].event == event then return recent[index] end
+			end
+			return nil
+		end
+		-- A protected target is not killed, kicked or frozen by a typed command.
+		control.Allow(target, admin.IMMUNE)
+		for _, spec in ipairs({ { 'PLAYER_KILL', 'admin.player.kill' }, { 'MODERATE_KICK', 'admin.moderate.kick' },
+			{ 'PLAYER_FREEZE', 'admin.player.freeze' } }) do
+			control.Allow(src, 'command.' .. admin.Command[spec[1]])
+			control.commands[admin.Command[spec[1]]].run(src, { tostring(target), 'on' })
+			control.Pump(4)
+			local entry = lastAudit(spec[2])
+			check(('%s on a protected player is refused as protected'):format(spec[2]),
+				entry ~= nil and entry.ok == false and entry.detail == 'target protected',
+				entry and entry.detail)
+		end
+
+		control.vehicles.snapshot = { id = 1, flags = 0, occupants = {}, x = 500.0, y = 0.0, z = 0.0, bucket = 0 }
+		control.Allow(src, 'command.' .. admin.Command.VEHICLE_FLAG)
+		control.commands[admin.Command.VEHICLE_FLAG].run(src, { '1', 'locked', 'on' })
+		control.Pump(10)
+		local far = lastAudit('admin.vehicle.reach')
+		check('a typed vehicle out of reach is refused, and audited', far ~= nil and far.ok == false)
+		local updates = #control.vehicles.updates
+		control.Allow(src, admin.VEHICLE_ANYWHERE)
+		control.Pump(10)
+		control.commands[admin.Command.VEHICLE_FLAG].run(src, { '1', 'locked', 'on' })
+		control.Pump(10)
+		check('while the anywhere right reaches it', #control.vehicles.updates > updates,
+			#control.vehicles.updates - updates)
+	end
+end
+
+
+-- ── client handlers that hand their heavy half to a resume of its own ───────
+-- The animations snapshot (64 states a page, each checked field by field), the
+-- chat suggestion list (one page send per chunk) and the HUD's full redraw used
+-- to run whole inside the handler that received them. Each handler now costs
+-- little, and the work still lands, a frame or a few later.
+section('client handlers hand their heavy half to a resume of its own')
+do
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.animations = env.Open77.animations or {}
+		env.Open77.animations._context = function() return { bucket = 0, playerId = 1, players = {} } end
+		env.Open77.animations._playProfile = function() return true end
+		env.Open77.animations.stop = function() return true end
+	end)
+	check('client boots with the presentation natives', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local animations = OPX.Modules.Get('animations')
+		local function cost(fn, ...)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			fn(...)
+			debug.sethook()
+			return spent
+		end
+
+		local snapshot = control.netEvents['open77:animations:snapshot']
+		check('the presenter listens for snapshots', snapshot ~= nil)
+		if snapshot ~= nil then
+			local states = {}
+			for index = 1, 64 do
+				states[index] = { epoch = 'e1', playbackId = 'p' .. index, revision = 1, playerId = index + 1,
+					active = true, bucket = 0, step = 0, cycle = 0,
+					steps = { { profile = 'x', clip = 'y', durationMs = 1000 } } }
+			end
+			local spent = cost(snapshot, { epoch = 'e1', revision = 5, bucket = 0, states = states })
+			check('a 64-state snapshot page costs its handler almost nothing', spent < 600,
+				('%d instructions'):format(spent))
+			settle(control, function() return animations.Presenter.State(40).active == true end, 40)
+			check('and the page is still committed, on the worker',
+				animations.Presenter.State(40).active == true and animations.Presenter.State(65).active == true)
+		end
+
+		-- The chat completion list: one chunk a frame, not ten in the handler.
+		local chat = OPX.Modules.Get('chat')
+		local list = {}
+		for index = 1, 160 do
+			list[index] = { name = '/cmd' .. index, help = 'Help for command ' .. index,
+				params = { { name = 'a', help = 'first' } } }
+		end
+		env.TriggerServerEvent = function() return true end
+		chat.FromView('ready', { surface = 'interactive' })
+		control.Pump(2)
+		local chunks, entries = 0, 0
+		env.AddEventHandler(chat.Event.VIEW, function(payload)
+			if type(payload) == 'table' and payload.kind == 'suggestions' then
+				chunks = chunks + 1
+				entries = entries + #(payload.suggestions or {})
+			end
+		end)
+		local spentChat = cost(control.netEvents[chat.Event.SUGGESTIONS], { suggestions = list })
+		check('a 160-entry completion list costs its handler one chunk at most', spentChat < 1000,
+			('%d instructions'):format(spentChat))
+		control.Pump(40)
+		check('and every entry still reaches the input line, a chunk a frame',
+			entries == 160 and chunks > 1, ('%d entries in %d chunks'):format(entries, chunks))
+
+		-- The HUD: the switch goes out in the handler, the blocks after it.
+		local hudPage
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] then hudPage = candidate end
+		end
+		if hudPage ~= nil then
+			local before = #hudPage.sent
+			local spent = cost(control.PageEmit, hudPage, 'opx:hud:ready', {})
+			local shownNow = false
+			for index = before + 1, #hudPage.sent do
+				if hudPage.sent[index].channel == 'opx:hud:show' then shownNow = true end
+			end
+			check('the HUD ready handler pushes the switch at once', shownNow)
+			check('and leaves the block re-sends to a thread', spent < 1000, ('%d instructions'):format(spent))
+			local afterHandler = #hudPage.sent
+			control.Pump(10)
+			local blocks = {}
+			for index = afterHandler + 1, #hudPage.sent do blocks[#blocks + 1] = hudPage.sent[index].channel end
+			check('which still sends them', #blocks > 0, table.concat(blocks, ','))
 		end
 	end
 end

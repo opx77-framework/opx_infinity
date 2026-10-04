@@ -133,6 +133,20 @@ M.NETWORKED_DOORS = 'open77_doors'
 --- The opener command, whose grant is what makes a player staff.
 M.OPENER = 'opx.admin'
 
+-- STAFF IMMUNITY, two raw ACL rights (not commands, so `command.*` grants
+-- neither). A player holding IMMUNE is shielded from every harmful staff action
+-- -- kick, ban, kill, health, armour, freeze, model, bring, send, teleport,
+-- observe, wardrobe, holster, stripping their bag or weapons, renaming or
+-- deleting their character -- unless the operator holds OVERRIDE. The console
+-- is exempt. See `Server.Protected`.
+M.IMMUNE = 'opx.admin.immune'
+M.OVERRIDE = 'opx.admin.override'
+
+-- A raw ACL right: the vehicle commands that take a typed id act on any live
+-- vehicle, in any instance and at any distance. Without it the vehicle must be
+-- in the operator's instance and within VEHICLES.REACH (or carry them).
+M.VEHICLE_ANYWHERE = 'opx.admin.vehicle.anywhere'
+
 --- Every command name, in one place, so a rename is followed here and nowhere
 --- else. The VALUE is what the operator writes in `acl.jsonc` as `command.<name>`.
 M.Command = {

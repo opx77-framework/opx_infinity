@@ -61,13 +61,6 @@ local CITIZEN = { name = 'citizenId', help = 'admin.help.citizenId' }
 local FIRST = { name = 'firstName', help = 'admin.help.firstName' }
 local LAST = { name = 'lastName', help = 'admin.help.lastName' }
 
---- Whether the character contract answered at start.
--- @author dop42
--- @return boolean
-function Characters.Running()
-	return Server.Contract('character') ~= nil
-end
-
 --- This module's word for a contract refusal.
 local function codeOf(error)
 	return CODES[tostring(error)] or 'refused'
@@ -137,7 +130,7 @@ function Characters.Register()
 		handler = function(source, args, raw)
 			local playerId = Server.Target(source, raw, args[1])
 			if playerId == nil then return end
-			CreateThread(function()
+			Server.Heavy(source, raw, function()
 				local rows, code = Characters.Rows(playerId)
 				if rows == nil then return refuse(source, raw, code) end
 
@@ -178,7 +171,15 @@ function Characters.Register()
 			local contract = Server.Contract('character')
 			if contract == nil then return refuse(source, raw, 'characters_unavailable') end
 
-			CreateThread(function()
+			-- A character being played by a protected player is theirs to keep.
+			for _, id in ipairs(Server.PlayerIds()) do
+				if Server.CitizenOf(id) == citizenId then
+					if Server.Shielded(source, raw, id, 'admin.character.rename') then return end
+					break
+				end
+			end
+
+			Server.Heavy(source, raw, function()
 				local renamed, result = pcall(contract.RenameCharacter, citizenId,
 					args[2], args[3], source)
 				if not renamed or type(result) ~= 'table' then
@@ -216,13 +217,16 @@ function Characters.Register()
 			local contract = Server.Contract('character')
 			if contract == nil then return refuse(source, raw, 'characters_unavailable') end
 
-			CreateThread(function()
+			Server.Heavy(source, raw, function()
 				-- Read BEFORE the delete, and only for the message: afterwards the
 				-- player holding it has been logged out and there is nobody left to
 				-- tell. A read that fails costs the toast and not the delete.
 				local holder = nil
 				for _, id in ipairs(Server.PlayerIds()) do
 					if Server.CitizenOf(id) == citizenId then holder = id break end
+				end
+				if holder ~= nil and Server.Shielded(source, raw, holder, 'admin.character.delete') then
+					return
 				end
 
 				local removed, result = pcall(contract.RemoveCharacter, citizenId, source)

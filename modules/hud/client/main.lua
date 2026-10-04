@@ -924,15 +924,33 @@ end
 -- any block's signature, so an otherwise identical frame would be skipped and
 -- the page would come back holding the picture it had before the player went
 -- down.
+--
+-- THE SWITCH AT ONCE, THE BLOCKS ONE A RESUME. Re-sending every block -- the
+-- gauges, the money (sorted and grouped), the effect strip and the widgets with
+-- their host reads and catalogue lines -- ran inside whichever handler asked:
+-- the page reporting ready, the player going down or coming back, a surface
+-- covering the HUD. The switch is still pushed in that resume, so the HUD shows
+-- or hides on the frame it was asked to; the four re-sends follow on a thread of
+-- their own, one a frame, and a newer redraw abandons an older one.
+local showGeneration = 0
+
 local function drawShow(force)
 	local shown = visible and not down and not covered
 	push(CHANNEL_SHOW, { visible = shown }, shown and '1' or '0', force)
-	if shown then
-		drawVitals(true)
-		drawInfo(true)
-		drawStatus(true)
+	local blocks = shown and { drawVitals, drawInfo, drawStatus, drawWidgets } or { drawWidgets }
+	showGeneration = showGeneration + 1
+	if type(CreateThread) ~= 'function' then
+		for index = 1, #blocks do blocks[index](true) end
+		return
 	end
-	drawWidgets(true)
+	local mine = showGeneration
+	CreateThread(function()
+		for index = 1, #blocks do
+			if index > 1 then Wait(0) end
+			if showGeneration ~= mine then return end
+			blocks[index](true)
+		end
+	end)
 end
 
 --- Shows or hides the HUD. Any value but `false` shows, which is the contract
@@ -1069,11 +1087,12 @@ function M.Start()
 
 	AddEventHandler(EVENT_CHARACTER_LOADED, function()
 		sampleVitals()
-		-- The game brings its own HUD back at incarnation, which happens after
-		-- this module started.
-		applyVanilla()
 		drawVitals()
 		drawInfo()
+		-- The game brings its own HUD back at incarnation, which happens after
+		-- this module started. Up to thirteen components, two host calls each and
+		-- a note per refusal: on a resume of its own, not the event's.
+		if type(CreateThread) == 'function' then CreateThread(applyVanilla) else applyVanilla() end
 	end)
 	AddEventHandler(EVENT_CHARACTER_UNLOADED, function()
 		live = {}

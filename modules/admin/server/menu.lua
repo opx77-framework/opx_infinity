@@ -199,7 +199,7 @@ function Menu.Register()
 			M.Players.PushBodies(source)
 			pushRoster(source)
 			pushLocations(source)
-			if Inventory.Running() then CreateThread(function() pushItems(source) end) end
+			if Inventory.Running() then Server.Heavy(source, nil, function() pushItems(source) end, 'items') end
 		end,
 	})
 
@@ -268,7 +268,7 @@ function Menu.Register()
 		elseif topic == 'locations' then
 			pushLocations(player)
 		elseif topic == 'items' then
-			CreateThread(function() pushItems(player) end)
+			Server.Heavy(player, nil, function() pushItems(player) end, 'items')
 		elseif topic == 'bag' then
 			-- The bag pickers end in one of these two commands; without either
 			-- grant there is no reason for this operator to read a bag at all.
@@ -277,7 +277,7 @@ function Menu.Register()
 				return
 			end
 			auditRead(player, 'admin.inventory.view', arg)
-			CreateThread(function() pushBag(player, arg) end)
+			Server.Heavy(player, nil, function() pushBag(player, arg) end, 'bag')
 		elseif topic == 'characters' then
 			-- The same idiom the bag uses one branch up: a list is served only to an
 			-- operator who is granted something it feeds. Without the read grant
@@ -286,7 +286,7 @@ function Menu.Register()
 			-- delete.
 			if Server.Permitted(player, Command.CHARACTER_LIST) ~= true then return end
 			auditRead(player, 'admin.character.list', arg)
-			CreateThread(function() pushCharacters(player, arg) end)
+			Server.Heavy(player, nil, function() pushCharacters(player, arg) end, 'characters')
 		elseif topic == 'found' then
 			-- The find is its own grant and is checked as its own grant: an operator
 			-- who may read the characters of the person in front of them has not
@@ -294,7 +294,7 @@ function Menu.Register()
 			if Server.Permitted(player, Command.CHARACTER_FIND) ~= true then return end
 			auditRead(player, 'admin.character.find',
 				type(request) == 'table' and (request.term or request.mode) or request)
-			CreateThread(function() pushFound(player, request) end)
+			Server.Heavy(player, nil, function() pushFound(player, request) end, 'found')
 		else
 			local access, known = accessOf(player)
 			TriggerClientEvent(M.Event.ACCESS, player,

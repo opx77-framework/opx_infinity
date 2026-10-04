@@ -128,6 +128,28 @@ local function vehicleOf(source, raw, token)
 		refuse(source, raw, 'no_vehicle')
 		return nil
 	end
+	-- A TYPED ID IS ANY LIVE VEHICLE ON THE SERVER, and was taken as one: an
+	-- operator could repair, flag, enter or cut a key to a player's car three
+	-- districts away in another instance, which `near` never allowed. Without
+	-- `M.VEHICLE_ANYWHERE` a typed vehicle must carry the operator, or sit in
+	-- their instance within VEHICLES.REACH. The console is the server and holds it.
+	if Server.Holds(source, M.VEHICLE_ANYWHERE) ~= true then
+		local snapshot = snapshotOf(vehicleId) or {}
+		for _, occupant in ipairs(occupantsOf(snapshot)) do
+			if occupant == source then return vehicleId end
+		end
+		local origin = Server.PositionOf(source)
+		local x, y, z = Text.Finite(snapshot.x), Text.Finite(snapshot.y), Text.Finite(snapshot.z)
+		local reach = M.Bounded('VEHICLES.REACH', M.Section('VEHICLES').REACH, 1, 10000, 100)
+		local within = origin ~= nil and x ~= nil and y ~= nil and z ~= nil
+			and (Text.Integer(snapshot.bucket) or 0) == origin.bucket
+			and OPX.Math.DistanceSquared({ x = x, y = y, z = z }, origin) <= reach * reach
+		if not within then
+			refuse(source, raw, 'vehicle_out_of_reach')
+			Server.Audit(source, 'admin.vehicle.reach', false, nil, tostring(vehicleId))
+			return nil
+		end
+	end
 	return vehicleId
 end
 
@@ -415,7 +437,7 @@ function Vehicles.Register()
 			local vehicleId = vehicleOf(source, raw, args[1] or 'near')
 			if vehicleId == nil then return end
 			-- On a thread, for the reason `spawnFor` gives: the bag write yields.
-			CreateThread(function()
+			Server.Heavy(source, raw, function()
 				local cut = keys.GiveFor(source, vehicleId)
 				local ok = type(cut) == 'table' and cut.ok == true
 				-- The value is read defensively: on this bare thread a raise is no
