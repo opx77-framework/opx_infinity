@@ -45,6 +45,12 @@ local entrances, markers, drawn = {}, {}, {}
 -- trip this client asked for is still unanswered.
 local nearest, shown, asking = nil, false, false
 
+-- When `asking` was set, and how long it may stay set without an answer: the
+-- server's own `FLIGHT_MAX_MS`. A latch only an answer could open was a latch a
+-- lost event or a restarted server module shut for the rest of the session.
+local askedAtMs = 0
+local ASK_LATCH_MS = 45000
+
 -- Whether the key mapping answered.
 local keyRegistered = false
 
@@ -348,7 +354,7 @@ function Runtime.Use(origin)
 			publish(result)
 			return result
 		end
-	elseif asking then
+	elseif asking and OPX.Now() - askedAtMs < ASK_LATCH_MS then
 		-- The client's own half of the one-trip-at-a-time rule. The server keeps
 		-- the real lock; this only stops a key held down from filling the request
 		-- window with duplicates of a trip already under way.
@@ -360,6 +366,7 @@ function Runtime.Use(origin)
 			result.ok, result.error, result.reason = false, 'teleports.refused', tostring(reason)
 		else
 			asking = true
+			askedAtMs = OPX.Now()
 			result.ok = true
 			publish(result)
 			return result

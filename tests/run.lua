@@ -15264,6 +15264,40 @@ do
 			contract ~= nil and type(contract.IsAllowed) == 'function'
 				and type(contract.Entrances) == 'function'
 				and type(contract.State) == 'function')
+		-- THE CONSOLE'S SOURCE NEVER REACHES THE HOST. `players.position(0)` throws
+		-- past `pcall` and stops the resource on the real platform, and
+		-- `Entrances` is a published contract any caller can hand a 0 to.
+		local realPosition = env.Open77.players.position
+		local askedFor = {}
+		env.Open77.players.position = function(player)
+			askedFor[#askedFor + 1] = player
+			return realPosition(player)
+		end
+		local console = contract.Entrances(0)
+		local negative = contract.Entrances(-3)
+		env.Open77.players.position = realPosition
+		check('the entrances of the console\'s source are refused without asking the host',
+			console.ok == false and negative.ok == false and #askedFor == 0,
+			('%s / %d asked'):format(tostring(console.error), #askedFor))
+
+		-- A TRIP THAT RAISES IS STILL ANSWERED. The client's latch opens only on
+		-- an answer, so a raise used to shut it until the player rejoined.
+		local realLookup = Access.Lookup
+		Access.Lookup = function() error('lookup blew up') end
+		local raiseMark = #control.clientEvents
+		env.source = 5
+		control.netEvents[M.Event.USE]('roof', 'out')
+		env.source = nil
+		control.Pump(4)
+		Access.Lookup = realLookup
+		local raisedAnswer
+		for index = raiseMark + 1, #control.clientEvents do
+			local sent = control.clientEvents[index]
+			if sent.name == M.Event.ANSWER and sent.source == 5 then raisedAnswer = sent end
+		end
+		check('a trip that raised is answered as a refusal, so the client is not left waiting',
+			raisedAnswer ~= nil and raisedAnswer[3] == false and raisedAnswer[4] == 'failed',
+			raisedAnswer and tostring(raisedAnswer[4]) or 'no answer')
 		check('the shipped config reports no problems', #Access.Problems() == 0,
 			table.concat(Access.Problems(), ' | '))
 		check('and ships no teleport switched on, because every coordinate in it ' ..
