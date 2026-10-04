@@ -32465,6 +32465,23 @@ do
 			debug.sethook()
 			check('a 20,000-character command costs a bounded walk', spent < 20000,
 				('%d instructions'):format(spent))
+			-- AND A LINE THE PAGE DID BOUND IS CHEAP TOO. The tokeniser walked a
+			-- byte per iteration, ~19 instructions a byte, inside the page
+			-- callback's one resume: a full-length command was ~4,700 and the
+			-- cut-and-walk above ~6,900 -- the meter's 9,000 for the submit. It
+			-- skips each run of ordinary bytes natively now.
+			local said
+			env.TriggerServerEvent = function(_, ...) said = { ... } return true end
+			local typed = '/give "Jackie Welles" ' .. ('item_' .. ('x'):rep(13) .. ' '):rep(11)
+			local typing = callCost(control.PageEmit, chatPage, 'opx:chat:submit', { text = typed })
+			check('a full-length typed command is tokenised as before',
+				said ~= nil and #said == 13 and said[1] == 'give' and said[2] == 'Jackie Welles'
+					and said[13] == 'item_' .. ('x'):rep(13),
+				said and table.concat(said, '|') or 'nothing sent')
+			check('and inside a small budget', typing < 2500, ('%d instructions'):format(typing))
+			local cutting = callCost(control.PageEmit, chatPage, 'opx:chat:submit', { text = long })
+			check('and the unbounded one, cut and all, under 4,000', cutting < 4000,
+				('%d instructions'):format(cutting))
 		end
 
 		-- A long accented buffer is measured natively, not a byte at a time.

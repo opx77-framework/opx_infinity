@@ -167,33 +167,53 @@ local function refusalText(name, message)
 	return message, 'error'
 end
 
+-- The bytes that mean something to the tokeniser, by what it is inside: out of
+-- quotes a backslash, either quote and any space; inside one, a backslash and
+-- the quote that closes it. Every other byte is copied as it stands.
+local SPECIAL = { [''] = '[\\"\'%s]', ['"'] = '[\\"]', ["'"] = "[\\']" }
+
 --- Splits a typed command into dispatcher tokens, honouring quotes and escapes.
 -- Each token is accumulated in a table and joined once: appending to a string a
 -- character at a time is quadratic.
+--
+-- A RUN AT A TIME, NOT A CHARACTER AT A TIME. This runs inside the page
+-- callback's one resume, and walking the line a byte per iteration cost ~19 VM
+-- instructions a byte: a full 240-character command was ~4,700, and the cut of
+-- an unbounded line plus its walk ~6,900 -- the budget meter's 9,000 for the
+-- submit, against a budget of ~10,000 whose overrun makes the command vanish
+-- with no answer. `find` skips each run of ordinary bytes natively, so the Lua
+-- work is per special byte; the tokens are the same.
 local function commandTokens(text)
 	local line = text:sub(2)
 	local tokens, buffer, quote, escaped, started = {}, {}, nil, false, false
-	for index = 1, #line do
-		local character = line:sub(index, index)
+	local index, size = 1, #line
+	while index <= size do
 		if escaped then
-			buffer[#buffer + 1], escaped, started = character, false, true
-		elseif character == '\\' then
-			escaped, started = true, true
-		elseif quote ~= nil then
-			if character == quote then quote = nil else buffer[#buffer + 1] = character end
-			started = true
-		elseif character == '"' or character == "'" then
-			quote, started = character, true
-		elseif character:match('%s') then
-			if started then
-				tokens[#tokens + 1] = table.concat(buffer)
-				buffer, started = {}, false
-				if #tokens > MAX_ARGUMENTS then
-					return nil, locale('chat.tooManyArgs', { max = MAX_ARGUMENTS })
+			buffer[#buffer + 1], escaped, started = line:sub(index, index), false, true
+			index = index + 1
+		else
+			local stop = line:find(SPECIAL[quote or ''], index) or size + 1
+			if stop > index then
+				buffer[#buffer + 1], started = line:sub(index, stop - 1), true
+				index = stop
+			else
+				local character = line:sub(index, index)
+				index = index + 1
+				if character == '\\' then
+					escaped, started = true, true
+				elseif quote ~= nil then
+					-- Inside a quote only its own closing quote stops the run.
+					quote, started = nil, true
+				elseif character == '"' or character == "'" then
+					quote, started = character, true
+				elseif started then
+					tokens[#tokens + 1] = table.concat(buffer)
+					buffer, started = {}, false
+					if #tokens > MAX_ARGUMENTS then
+						return nil, locale('chat.tooManyArgs', { max = MAX_ARGUMENTS })
+					end
 				end
 			end
-		else
-			buffer[#buffer + 1], started = character, true
 		end
 	end
 	if escaped then return nil, locale('chat.escapeAtEnd') end
