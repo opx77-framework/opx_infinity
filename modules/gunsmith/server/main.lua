@@ -30,6 +30,9 @@ local crafting, inventory, character = nil, nil, nil
 -- Bench keys this module registered, so `Stop` takes back exactly what it gave.
 local registered = {}
 
+-- Least time between two chest presses by one player.
+local CHEST_COOLDOWN_MS = 750
+
 --- The job fields of a loaded character, stamped now, or nil.
 local function jobSnapshot(player)
 	if character == nil or type(character.GetPlayer) ~= 'function' then return nil end
@@ -103,8 +106,20 @@ local function openChest(player, key)
 		-- `OpenStash` answers `too_far`, `not_ready`, `not_loaded` and its
 		-- siblings; they are passed through as they came so the player is told the
 		-- real reason rather than a rounded-off one.
-		TriggerClientEvent(M.Event.REFUSED, player, key,
-			type(opened) == 'table' and tostring(opened.error) or 'unavailable')
+		--
+		-- BUT ONLY THE ONES THAT HAVE WORDS. The client toasts `gunsmith.<code>`
+		-- as it stands, and `OpenStash` also passes up what a container load
+		-- answers -- `storage`, `load_timeout` -- for which this module has no
+		-- sentence: the player was shown the raw key `gunsmith.storage`. Anything
+		-- without a catalogue entry is the armoury being unreachable, which is
+		-- what it is from where the player stands; the real code goes to the log.
+		local code = type(opened) == 'table' and tostring(opened.error) or 'unavailable'
+		if not OPX.Locale.Exists('gunsmith.' .. code) then
+			Open77.log.warn(('[gunsmith] the chest of %s was refused for player %d: %s')
+				:format(key, player, code))
+			code = 'unavailable'
+		end
+		TriggerClientEvent(M.Event.REFUSED, player, key, code)
 		return
 	end
 
@@ -165,6 +180,9 @@ function M.Start()
 		local player = tonumber(source) or 0
 		if player <= 0 then return end
 		if type(key) ~= 'string' then return end
+		-- Cooled: every press is a thread, and the first one per chest a database
+		-- load. A fairness window, not an authority -- the gate is asked in full.
+		if OPX.Cooling(player, 'gunsmith.chest', CHEST_COOLDOWN_MS) then return end
 		-- A stash read yields, and a net handler that yields holds the event pump.
 		CreateThread(function() openChest(player, key) end)
 	end)

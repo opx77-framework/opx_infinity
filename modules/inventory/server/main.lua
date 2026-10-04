@@ -699,6 +699,20 @@ function M.HolsterWeapon(playerId)
 	return Result.Ok({ name = held.name, serial = held.serial })
 end
 
+--- Whether a kind names one of the container kinds. A non-string used to
+--- raise on `:upper()` inside the caller instead of being refused.
+local function knownKind(kind)
+	return type(kind) == 'string' and M.KIND[kind:upper()] ~= nil
+end
+
+--- Unloads a container a contract call loaded itself, unless somebody now has
+--- it open or its owner is playing. Yields: an unload writes first.
+local function putBack(container)
+	if Containers.IsViewed(container.id) then return end
+	if container.kind == M.KIND.CHARACTER and Players.SourceOf(container.owner) then return end
+	Containers.Unload(container.id)
+end
+
 --- Changes a stored container's slot count and weight limit.
 -- `Ensure` only writes a size for the row that creates it, so a container keeps
 -- the size it was made with for ever; this is the one way that changes. The copy
@@ -710,7 +724,7 @@ end
 -- @param maxWeight integer
 -- @return Result
 function M.ResizeContainer(kind, owner, slots, maxWeight)
-	if M.KIND[kind:upper()] == nil then return Result.Err('bad_argument', 'kind') end
+	if not knownKind(kind) then return Result.Err('bad_argument', 'kind') end
 	owner = Common.Word(owner, 64, '^[%w_%-%.:]+$')
 	slots = Common.Integer(slots, 1, 200)
 	maxWeight = Common.Integer(maxWeight, 0, 4000000000)
@@ -720,20 +734,29 @@ function M.ResizeContainer(kind, owner, slots, maxWeight)
 
 	local held = Containers.Find(kind, owner)
 	local id = held and not held.transient and held.id or nil
+	local borrowed = false
 	if id == nil then
 		local loaded, reason = Containers.Load(kind, owner, slots, maxWeight)
 		if not loaded then return Result.Err(reason or 'not_found', owner) end
 		if loaded.transient then return Result.Err('not_found', owner) end
-		held, id = loaded, loaded.id
+		held, id, borrowed = loaded, loaded.id, true
 	end
 
 	local written = M.Storage.Resize(id, slots, maxWeight)
-	if not written.ok then return written end
+	if not written.ok then
+		if borrowed then putBack(held) end
+		return written
+	end
 	held.slots = slots
 	held.maxWeight = maxWeight
 	-- Stacks beyond the new slot count are kept, counted and removable; they are
 	-- simply not drawn and nothing new is put there.
 	Containers.Publish(held)
+	-- A CONTAINER THIS CALL LOADED IS PUT AWAY AGAIN. Resizing an offline bag or
+	-- a stash nobody had open used to leave it loaded for the life of the
+	-- resource: nothing else ever unloads a bag whose owner is not here, and a
+	-- stash loaded here was not marked for the idle sweep either.
+	if borrowed then putBack(held) end
 	OPX.Audit.Log({ event = 'inventory.resize', message = ('%s %s'):format(kind, owner),
 		data = { kind = kind, owner = owner, slots = slots, maxWeight = maxWeight } })
 	return Result.Ok(id)
@@ -748,7 +771,7 @@ end
 -- @param owner string
 -- @return Result
 function M.DeleteContainer(kind, owner)
-	if M.KIND[kind:upper()] == nil then return Result.Err('bad_argument', 'kind') end
+	if not knownKind(kind) then return Result.Err('bad_argument', 'kind') end
 	owner = Common.Word(owner, 64, '^[%w_%-%.:]+$')
 	if not owner then return Result.Err('bad_argument', 'owner') end
 

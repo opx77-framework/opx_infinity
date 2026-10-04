@@ -485,6 +485,17 @@ local function amountOf(value)
 	return n
 end
 
+--- Whether a Player is still the one in the roster under its connection.
+-- THE MONEY HOOKS MAY YIELD (`OPX.Hooks.Trigger` runs whatever a module hung on
+-- them, and `character:loading` already reads the database from one), so the
+-- world can move between the checks a mutator makes and the write it then does.
+-- A Player that logged out during the hook has already been saved by its logout:
+-- a balance changed on it afterwards is changed on a table nobody writes again,
+-- and the shop that was told "paid" handed its goods over for nothing.
+local function stillLoaded(player)
+	return not player.Offline and M.Players[player.PlayerData.source] == player
+end
+
 --- Announces a balance change to its four audiences: the owning client, the
 --- other modules, the audit log and PlayerData itself.
 local function announceMoney(player, moneyType, amount, action, reason)
@@ -550,6 +561,7 @@ function M.AddMoney(identifier, moneyType, amount, reason)
 	}) then
 		return false, 'money.vetoed'
 	end
+	if not stillLoaded(player) then return false, 'error.notLoggedIn' end
 
 	local money = player.PlayerData.money
 	money[moneyType] = money[moneyType] + value
@@ -596,6 +608,16 @@ function M.RemoveMoney(identifier, moneyType, amount, reason)
 		return false, 'money.vetoed'
 	end
 
+	-- ASKED AGAIN AFTER THE HOOK, which may yield (see `stillLoaded`). Two
+	-- purchases in flight both passed the balance test above before either had
+	-- subtracted; without this second look both subtract, and a balance of 100
+	-- pays for two 100 items and ends at -100.
+	if not stillLoaded(player) then return false, 'error.notLoggedIn' end
+	if money[moneyType] - value < 0
+		and not OPX.Config.SHARED.MONEY.ALLOW_NEGATIVE[moneyType] then
+		return false, 'money.insufficient'
+	end
+
 	money[moneyType] = money[moneyType] - value
 	announceMoney(player, moneyType, value, 'remove', reason)
 	return true
@@ -627,6 +649,7 @@ function M.SetMoney(identifier, moneyType, amount, reason)
 	}) then
 		return false, 'money.vetoed'
 	end
+	if not stillLoaded(player) then return false, 'error.notLoggedIn' end
 
 	player.PlayerData.money[moneyType] = n
 	announceMoney(player, moneyType, n, 'set', reason)
@@ -1020,10 +1043,18 @@ local function unload(source)
 	-- it. Both callers below leave the ledger once they have saved.
 	M.Ledger.Enter(player.PlayerData.citizenId)
 
+	-- THE SLOT MAY NOT BE THIS PLAYER'S ANY MORE. Core's `session:forgotten`
+	-- reaches the logout a tick after the session went, by which time a recycled
+	-- slot can hold another account's fresh session: its `citizenId` is not this
+	-- character's to clear, and the UNLOADED screen is not theirs to be shown.
+	-- Everything addressed to the SLOT below waits on the account still being
+	-- the one this Player was loaded for; the roster, the ledger and the
+	-- in-VM announcements are about the character and always go.
 	local session = OPX.Sessions[source]
-	if session then session.citizenId = nil end
+	local holds = session ~= nil and session.userId == player.PlayerData.userId
+	if holds then session.citizenId = nil end
 
-	TriggerClientEvent(M.Event.UNLOADED, source)
+	if holds then TriggerClientEvent(M.Event.UNLOADED, source) end
 	TriggerEvent(M.Event.IN_UNLOADED, source, player.PlayerData)
 	OPX.Publish(M.Event.ON_UNLOADED, source, {
 		citizenId = player.PlayerData.citizenId,
@@ -1050,7 +1081,9 @@ function M.Logout(source)
 	local settled, failure = pcall(function()
 		M.SamplePosition(player)
 		player.MaySample = false
-		OPX.Buckets.Isolate(source, 'unloaded')
+		-- The account it was loaded for, so a recycled slot's new holder is
+		-- never moved into a selection bucket for somebody else's logout.
+		OPX.Buckets.Isolate(source, 'unloaded', player.PlayerData.userId)
 	end)
 	if not settled then
 		Open77.log.error(('[character] logout of %s raised before its save: %s')

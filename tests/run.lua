@@ -141,6 +141,11 @@ local CORE_NAMESPACE = {
 	-- because every module that announces something calls it, and a copy per
 	-- module would be a copy per idea of what "refused" means.
 	Publish = true,
+	-- The creator surfaces' one caller gate and answer shape, in
+	-- `core/shared/exports.lua`. On `OPX` because BOTH halves stand on it: two
+	-- copies of a gate are two gates, and the day one is tightened alone the
+	-- client and the server disagree about who may call.
+	Export = true,
 }
 
 -- States a module may legitimately rest in. `absent` means it runs on the other
@@ -4022,6 +4027,430 @@ do
 			select(1, pcall(Scheduler.Every, 'zero', 0, noop)) == true)
 
 		Scheduler.Stop()
+	end
+end
+
+-- ── core and lib: the audit of 2026-10 ───────────────────────────────────────
+-- Most of these load ONE file against a host this section owns, the way the
+-- scheduler section above does, because every defect below hid behind a host
+-- that was more forgiving than the platform.
+
+--- A logger that keeps every line, for an isolated load.
+local function keptLog()
+	local lines = { info = {}, warn = {}, error = {}, debug = {} }
+	local log = {}
+	for level, list in pairs(lines) do
+		log[level] = function(text) list[#list + 1] = text end
+	end
+	return log, lines
+end
+
+-- A HANDLER THAT REMOVES ITSELF MUST NOT COST THE NEXT ONE ITS PAYLOAD. The
+-- dispatch walked the live listener list under a comment saying it walked a
+-- snapshot, so the remover `On` answers shifted the tail down: the listener after
+-- the one that removed itself never ran, and the last index held nil.
+section('a page handler that removes itself')
+do
+	local log, lines = keptLog()
+	local listeners = {}
+	local page = {
+		on = function(_, name, fn) listeners[name] = fn return true end,
+		send = function() return true end,
+	}
+	local env = {
+		Open77 = { log = log }, OPX = { Note = function() end },
+		WebUI = { create = function() return page end },
+		pcall = pcall, type = type, tostring = tostring, ipairs = ipairs, pairs = pairs,
+		table = table, string = string,
+	}
+	local chunk, why = loadfile('lib/client/surface.lua', 't', env)
+	check('the surface loads alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		local surface = env.OPX.Surface.Create({ id = 'opx', entry = 'web/index.html' })
+		local heard = {}
+		local removeFirst
+		removeFirst = env.OPX.Surface.On(surface, 'focus:set', function()
+			heard[#heard + 1] = 'first'
+			removeFirst()
+		end)
+		env.OPX.Surface.On(surface, 'focus:set', function() heard[#heard + 1] = 'second' end)
+		env.OPX.Surface.On(surface, 'focus:set', function() heard[#heard + 1] = 'third' end)
+
+		listeners['opx:focus:set']({ focus = false })
+		check('every listener hears the payload the first one removed itself on',
+			table.concat(heard, ',') == 'first,second,third', table.concat(heard, ','))
+		check('and nothing is reported as a nil handler raising', #lines.error == 0,
+			table.concat(lines.error, ' | '))
+
+		heard = {}
+		listeners['opx:focus:set']({ focus = false })
+		check('the removed one is gone on the next payload',
+			table.concat(heard, ',') == 'second,third', table.concat(heard, ','))
+	end
+end
+
+-- A REFUSED TOAST UPDATE PUTS BACK A FALSE, IT DOES NOT DELETE IT. The rollback
+-- was `was ~= ABSENT and was or nil`, the and/or trap the `ABSENT` sentinel was
+-- written to avoid.
+section('a refused toast update restores what it changed')
+do
+	local refuse = false
+	local lastToast
+	local env = {
+		Open77 = { log = keptLog() },
+		OPX = {
+			Event = function(channel, module, verb)
+				return ('opx:%s:%s:%s'):format(channel, module, verb)
+			end,
+			Channel = { NET = 'net', LOCAL = 'on', INTERNAL = 'in' },
+			Glyphs = {},
+			UI = { Send = function(_, _, payload)
+				lastToast = payload
+				return true, refuse
+			end },
+			Note = function() end,
+		},
+		locale = function(key) return key end,
+		pcall = pcall, type = type, tostring = tostring, tonumber = tonumber, pairs = pairs,
+		ipairs = ipairs, string = string, table = table,
+	}
+	local chunk, why = loadfile('core/client/notify.lua', 't', env)
+	check('the toasts load alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		local id = env.OPX.Toast.Show({ message = 'hello', title = false })
+		local toast = lastToast
+		check('a toast with a false title goes up',
+			id ~= nil and toast ~= nil and toast.title == false)
+
+		refuse = true
+		local updated, reason = env.OPX.Toast.Update(id, { title = 'changed', extra = 1 })
+		check('the host refusing the patch is reported',
+			updated == false and reason == 'payload_refused', tostring(reason))
+		check('the false it overwrote is put back, not deleted', toast.title == false,
+			tostring(toast.title))
+		check('and a key the patch added is taken off again', toast.extra == nil)
+
+		-- A refused REPLACEMENT must leave the toast still on screen addressable.
+		refuse = false
+		env.OPX.Toast.Show({ id = 'kept', message = 'first' })
+		refuse = true
+		local replaced = env.OPX.Toast.Show({ id = 'kept', message = 'second' })
+		refuse = false
+		check('a refused replacement is reported', replaced == nil)
+		check('and the toast it would have replaced can still be updated',
+			env.OPX.Toast.Update('kept', { message = 'third' }) == true)
+	end
+end
+
+-- A WATCH WHOSE RELEASE IS REFUSED TRIES AGAIN. It answered "done" whatever the
+-- release said, so a refused release left a hold that belonged to nobody --
+-- while `Release` keeps the session marked held for exactly that retry.
+section('the gate watch retries a refused release')
+do
+	local clock = 0
+	local threads = {}
+	local releases, statuses, giveUps = {}, 0, 0
+	local answers = { false, true }
+	local env = {
+		Open77 = {
+			log = keptLog(),
+			ready = {
+				participate = function() return true end,
+				release = function(_, token)
+					releases[#releases + 1] = tostring(token)
+					local answer = table.remove(answers, 1)
+					if answer == false then return false, 'session_mismatch' end
+					return true
+				end,
+				status = function()
+					statuses = statuses + 1
+					return { session = 'fresh' }
+				end,
+			},
+		},
+		OPX = {
+			Config = { SERVER = { ENTRY = { GATE_MS = 300000, WATCH_MS = 2000 } } },
+			Event = function(channel, module, verb)
+				return ('opx:%s:%s:%s'):format(channel, module, verb)
+			end,
+			Channel = { NET = 'net', LOCAL = 'on', INTERNAL = 'in' },
+			Host = { PLAYER_READY = 'onPlayerReady', GAMEPLAY_READY = 'gameplayReady' },
+			Math = {
+				IsFinite = function(v)
+					return type(v) == 'number' and v == v and v ~= math.huge and v ~= -math.huge
+				end,
+				Clamp = function(v, low, high) return math.max(low, math.min(high, v)) end,
+			},
+			Modules = { Record = function() return true end },
+			Sessions = {},
+			Now = function() return clock end,
+		},
+		CreateThread = function(fn) threads[#threads + 1] = coroutine.create(fn) end,
+		Wait = function() coroutine.yield() end,
+		AddEventHandler = function() end,
+		TriggerEvent = function() end,
+		GetResourceState = function() return 'missing' end,
+		GetCurrentResourceName = function() return 'opx_infinity' end,
+		pcall = pcall, type = type, tostring = tostring, tonumber = tonumber, ipairs = ipairs,
+		math = math, string = string, table = table,
+	}
+	local chunk, why = loadfile('core/server/gate.lua', 't', env)
+	check('the gate loads alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		env.OPX.Sessions[5] = { source = 5, userId = 'u5', gateSession = 'stale' }
+		env.OPX.Gate.Watch(5, 2000, function() giveUps = giveUps + 1 return true end)
+		local thread = threads[#threads]
+		local function tick() coroutine.resume(thread) end
+
+		tick()
+		clock = 5000
+		tick()
+		check('the first release at the deadline is refused',
+			#releases == 1 and releases[1] == 'stale', table.concat(releases, ','))
+		check('and the watch is still running', coroutine.status(thread) == 'suspended')
+		check('the session is still held', env.OPX.Sessions[5].released ~= true)
+
+		tick()
+		check('the retry does not resend the stale token: it asks the host for the current one',
+			#releases == 2 and releases[2] == 'fresh' and statuses == 1, table.concat(releases, ','))
+		check('the retry lands and the watch ends', env.OPX.Sessions[5].released == true
+			and coroutine.status(thread) == 'dead')
+		check('onGiveUp is asked once, not once per attempt', giveUps == 1, tostring(giveUps))
+	end
+end
+
+-- `open77_notifications` spells its positions with an underscore and refuses a
+-- field past its byte bound; the shipped `top-right` was neither. And the two
+-- doors that reach our own page check what they carry on the sending side.
+section('server toasts and command answers')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local sent = {}
+		local notifications = env.Open77.notifications
+		env.Open77.notifications = { send = function(_, definition)
+			sent[#sent + 1] = definition
+			return 1
+		end }
+		env.OPX.Notify(3, ('x'):rep(1000), 'info')
+		local first = sent[1]
+		check('a server toast names a position the package has',
+			first ~= nil and first.position == 'top_right', first and tostring(first.position))
+		check('and its message fits the 384 bytes the package accepts',
+			first ~= nil and #first.message == 384, first and #first.message)
+
+		env.Open77.notifications = nil
+		local ran, delivered, reason = pcall(env.OPX.Notify, 4, 'hello', 'info')
+		check('a host without notifications answers a refusal instead of raising',
+			ran and delivered == false and reason == 'no_notifications', tostring(reason))
+		env.Open77.notifications = notifications
+
+		env.OPX.Refuse(4, 'error.tooFast', 'test', 'not-a-glyph')
+		local refusal = control.clientEvents[#control.clientEvents]
+		check('a refusal naming a glyph outside the set sends none',
+			refusal ~= nil and refusal[1] ~= nil and refusal[1].icon == nil)
+
+		env.OPX.CommandResult(4, true, ('a\xC3\xA9'):rep(3000))
+		local dump = control.clientEvents[#control.clientEvents]
+		local text = dump and dump[1] and dump[1].text or ''
+		check('a long command answer is cut before the character it would split',
+			#text == 8194 and text:sub(-4) == 'a...', #text)
+	end
+end
+
+-- THE CREATOR WRITE LEDGER IS NOT COLLAPSED. An export write carries no player
+-- source, so every one shared the `-` window: ten writes in ten seconds were one
+-- line and `[+9 suppressed]`, and one resource's denials hid every other's.
+section('the creator ledger')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+	if why == nil then
+		local function count(pattern)
+			local n = 0
+			for _, level in ipairs({ 'info', 'warn' }) do
+				for _, line in ipairs(control.log[level]) do
+					if line:find(pattern, 1, true) then n = n + 1 end
+				end
+			end
+			return n
+		end
+		local before = count('event=export.AddItem')
+		for player = 1, 3 do
+			env.OPX.Audit.Log({ event = 'export.AddItem', message = 'shop', owner = 'ext:shop',
+				data = { player = player } })
+		end
+		check('three writes by another resource are three audit lines',
+			count('event=export.AddItem') == before + 3, count('event=export.AddItem') - before)
+
+		local denied = count('event=export.denied')
+		env.OPX.Audit.Log({ event = 'export.denied', severity = 'warn', message = 'a', owner = 'ext:a' })
+		env.OPX.Audit.Log({ event = 'export.denied', severity = 'warn', message = 'b', owner = 'ext:b' })
+		env.OPX.Audit.Log({ event = 'export.denied', severity = 'warn', message = 'a', owner = 'ext:a' })
+		check('a denial is collapsed per caller, never across callers',
+			count('event=export.denied') == denied + 2, count('event=export.denied') - denied)
+
+		check('a safe line still cuts on a character boundary',
+			env.OPX.Audit.Safe(('\xC3\xA9'):rep(10), 3) == ('\xC3\xA9'):rep(3) .. '...')
+	end
+end
+
+-- TEXT IS CUT BEFORE IT IS SCANNED. Same answer as before, without walking a
+-- megabyte to keep a handful of characters.
+section('cleaning display text')
+do
+	local env = { OPX = {}, type = type, tostring = tostring, tonumber = tonumber,
+		math = math, string = string, table = table }
+	local chunk, why = loadfile('lib/shared/text.lua', 't', env)
+	check('the text helpers load alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		local Text = env.OPX.Text
+		local cleaned = Text.Clean(('a\n'):rep(500000), 8, '...')
+		check('a long text is still cut to its bound, control characters replaced',
+			cleaned == 'a a a a ...', cleaned)
+		check('a short text is untouched apart from its control characters',
+			Text.Clean('a\tb', 8) == 'a b')
+		check('a multi-byte character is never split',
+			Text.Clean(('\xC3\xA9'):rep(20), 3, '') == ('\xC3\xA9'):rep(3))
+		check('a text exactly at its bound is not cut', Text.Clean('abcd', 4, '...') == 'abcd')
+	end
+end
+
+-- THE SERVER BUS IS QUEUED, so a `session:forgotten` handler runs a tick after
+-- the session is gone -- on the eviction path, after the NEXT account's session
+-- is already on the slot. The departed account travels with the event.
+section('a forgotten session names its account')
+do
+	local raised = {}
+	local env = {
+		OPX = {
+			Event = function(channel, module, verb)
+				return ('opx:%s:%s:%s'):format(channel, module, verb)
+			end,
+			Channel = { NET = 'net', LOCAL = 'on', INTERNAL = 'in' },
+			Host = { PLAYER_DISCONNECTED = 'onPlayerDisconnected' },
+		},
+		TriggerEvent = function(...) raised[#raised + 1] = table.pack(...) end,
+		AddEventHandler = function() end,
+		type = type, tonumber = tonumber, tostring = tostring, table = table,
+	}
+	local chunk, why = loadfile('core/server/sessions.lua', 't', env)
+	check('the sessions load alone', chunk ~= nil, why)
+	if chunk then
+		chunk()
+		env.OPX.Sessions[7] = { source = 7, userId = 'acct-7' }
+		env.OPX.ForgetSession(7)
+		local event = raised[#raised]
+		check('the announcement carries the account the session belonged to',
+			event ~= nil and event[2] == 7 and event[3] == 'acct-7')
+		check('and the slot is empty by the time anyone could read it',
+			env.OPX.Sessions[7] == nil)
+	end
+end
+
+-- The server bus is queued, so the character module's `session:forgotten`
+-- handler runs a tick after the session went -- and a recycled slot may hold
+-- the next account by then. It logged that slot out and isolated it whoever
+-- was on it: the newcomer was moved into a selection bucket, shown the UNLOADED
+-- screen, had its session's character cleared, and -- if it had already loaded
+-- a character -- was logged out in place of the account that left.
+section('a forgotten session logs out the account that left, not the one that arrived')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end, query = function() return {} end,
+		single = function() return nil end, insert = function() return 1 end,
+		update = function() return 1 end, transaction = function() return true end,
+	}))
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local FORGOTTEN = OPX.Event(OPX.Channel.INTERNAL, 'session', 'forgotten')
+		local SLOT = 871
+
+		--- Holds `session:forgotten` the way the host's queue does, and lets it go.
+		local held = {}
+		local realTrigger = env.TriggerEvent
+		env.TriggerEvent = function(name, ...)
+			if name == FORGOTTEN then held[#held + 1] = table.pack(...) return end
+			return realTrigger(name, ...)
+		end
+		local function drain()
+			env.TriggerEvent = realTrigger
+			for _, args in ipairs(held) do realTrigger(FORGOTTEN, table.unpack(args, 1, args.n)) end
+			held = {}
+		end
+
+		local function stand(account, name)
+			control.Admit(SLOT, account)
+			OPX.EnsureSession(SLOT)
+			local player = character.CreatePlayer({
+				citizenId = OPX.CitizenId.Generate(), userId = account,
+				source = SLOT, charInfo = { firstName = name, lastName = 'Test' },
+			}, false)
+			player.PlayerData.jobs, player.PlayerData.gangs = {}, {}
+			return player
+		end
+
+		local isolated, unloadedSent = {}, 0
+		local realIsolate = OPX.Buckets.Isolate
+		OPX.Buckets.Isolate = function(source, reason, expected)
+			isolated[#isolated + 1] = { source = source, reason = reason, expected = expected }
+			return realIsolate(source, reason, expected)
+		end
+		local realClient = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, target, ...)
+			if name == character.Event.UNLOADED and target == SLOT then
+				unloadedSent = unloadedSent + 1
+			end
+			return realClient(name, target, ...)
+		end
+
+		-- ── the newcomer has no character yet ────────────────────────────────
+		local departed = stand('account-A', 'Leaving')
+		character.RegisterPlayer(departed)
+		OPX.ForgetSession(SLOT)
+		-- The slot changes hands before the queued handler runs.
+		control.Admit(SLOT, 'account-B')
+		local arrived = OPX.EnsureSession(SLOT)
+		arrived.citizenId = 'MARKER'
+		drain()
+		control.Pump(10)
+		check('the departed character leaves the roster', character.GetPlayer(SLOT) == nil)
+		check('the newcomer\'s session keeps what it holds', arrived.citizenId == 'MARKER',
+			tostring(arrived.citizenId))
+		check('and the newcomer is not shown the UNLOADED screen', unloadedSent == 0, unloadedSent)
+		local wrongly = false
+		for _, row in ipairs(isolated) do
+			if row.source == SLOT and row.reason == 'unloaded'
+				and row.expected ~= departed.PlayerData.userId then wrongly = true end
+		end
+		check('the isolate names the departed account, so it cannot move the newcomer',
+			#isolated > 0 and not wrongly)
+
+		-- ── the newcomer has already loaded a character ──────────────────────
+		local first = stand('account-C', 'Gone')
+		character.RegisterPlayer(first)
+		env.TriggerEvent = function(name, ...)
+			if name == FORGOTTEN then held[#held + 1] = table.pack(...) return end
+			return realTrigger(name, ...)
+		end
+		OPX.ForgetSession(SLOT)
+		local second = stand('account-D', 'Arrived')
+		character.RegisterPlayer(second)
+		drain()
+		control.Pump(10)
+		check('a character the newcomer already loaded is not logged out for the departure',
+			character.GetPlayer(SLOT) == second)
+
+		OPX.Buckets.Isolate = realIsolate
+		env.TriggerClientEvent = realClient
 	end
 end
 
@@ -12700,6 +13129,110 @@ do
 	end
 end
 
+-- ── the focus goes back before anything else stops ───────────────────────────
+-- It went back only inside `Teardown`, AFTER every module's `Stop`, all of them
+-- in one resume on one instruction budget. An overrun anywhere in that run
+-- unwound the handler before `Teardown` was reached, and the player was left
+-- holding keyboard and cursor with nothing drawn. The overrun is played here by
+-- a `Modules.Stop` that raises outright, which is what it looks like from the
+-- stop handler.
+section('the focus goes back before the modules stop')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page = control.pages[1]
+		OPX.UI.AcquireFocus('test', { keyboard = true, cursor = true })
+		check('a view holds keyboard and cursor', page.focus.keyboard == true
+			and page.focus.cursor == true)
+
+		local real = OPX.Modules.Stop
+		local focusWhenStopping
+		OPX.Modules.Stop = function()
+			focusWhenStopping = { keyboard = page.focus.keyboard, cursor = page.focus.cursor }
+			error('Open77 script execution budget exceeded')
+		end
+		pcall(control.Fire, 'onClientResourceStop', 'opx_infinity')
+		OPX.Modules.Stop = real
+
+		check('the focus was already released when the modules began to stop',
+			focusWhenStopping ~= nil and focusWhenStopping.keyboard == false
+				and focusWhenStopping.cursor == false)
+		check('so a stop that dies part-way leaves the player their controls',
+			page.focus.keyboard == false and page.focus.cursor == false)
+		check('and no owner is left on the stack', OPX.UI.FocusOwner() == nil)
+	end
+end
+
+-- ── each module's Stop gets a budget of its own ──────────────────────────────
+-- The same argument `runPhase` makes for `Start`: thirty `Stop`s in one resume
+-- is one budget between them, and the module holding the parcel when it runs
+-- out is cut off along with everything after it.
+section('the module stops yield between modules')
+do
+	local env, _, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local stoppable = 0
+		for _, record in ipairs(OPX.Modules.Resolve()) do
+			if (record.State == 'started' or record.State == 'failed')
+				and type(record.Module.Stop) == 'function' then
+				stoppable = stoppable + 1
+			end
+		end
+
+		local thread = coroutine.create(function() OPX.Modules.Stop(true) end)
+		local resumes = 0
+		while coroutine.status(thread) ~= 'dead' and resumes < 500 do
+			coroutine.resume(thread)
+			resumes = resumes + 1
+		end
+		check('there are modules with a Stop to run', stoppable > 1, stoppable)
+		check('one resume per module Stop, not one for all of them',
+			resumes == stoppable + 1, ('%d resumes for %d stops'):format(resumes, stoppable))
+
+		local again = 0
+		for _, record in ipairs(OPX.Modules.Resolve()) do
+			if record.State == 'started' then again = again + 1 end
+		end
+		check('every module ends stopped', again == 0, again)
+		check('and the server-shaped call, off any thread, still stops in one go',
+			(pcall(OPX.Modules.Stop)))
+	end
+end
+
+-- ── one caller gate for both creator surfaces ────────────────────────────────
+-- The gate was written out twice, once per half. Read from the source because
+-- what is being held is that neither half carries its own copy any more.
+section('the creator surfaces share one gate')
+do
+	for _, file in ipairs({ 'core/server/exports.lua', 'core/client/exports.lua' }) do
+		local source = io.open(file):read('a')
+		check(file .. ' asks the shared gate who is calling',
+			source:find('Export.Caller()', 1, true) ~= nil
+				and source:find('GetInvokingResource()', 1, true) == nil)
+	end
+	local env = { type = type, ipairs = ipairs, OPX = {} }
+	local chunk = loadfile('core/shared/exports.lua', 't', env)
+	chunk()
+	local Export = env.OPX.Export
+	env.GetInvokingResource = function() return 'my_shop' end
+	check('a well-formed caller is named', Export.Caller() == 'my_shop')
+	env.GetInvokingResource = function() return 'bad name!' end
+	check('a name outside the manifest grammar is nobody', Export.Caller() == nil)
+	env.GetInvokingResource = function() return ('a'):rep(65) end
+	check('and so is one past 64 characters', Export.Caller() == nil)
+	check('an array allowlist admits by name', Export.Admits({ 'a', 'b' }, 'b')
+		and not Export.Admits({ 'a' }, 'b') and Export.Admits('*', 'x'))
+	check('a Result that is not one answers unavailable',
+		Export.Answered(nil).error == 'error.unavailable'
+			and Export.Answered({ ok = true, value = 3 }).value == 3)
+end
+
 -- ── the hotbar peek ─────────────────────────────────────────────────────────
 -- The hotbar keys work with the bag SHUT, which is the point of them and also
 -- the problem: nothing on screen says what they are bound to until you open the
@@ -16269,6 +16802,65 @@ do
 	end
 end
 
+
+-- A chest refusal was passed to the client as it came, and the client toasts
+-- `gunsmith.<code>`: a container load's `storage` or `load_timeout` reached the
+-- player as the raw key. And the door had no window at all.
+section('the gunsmith chest: every refusal has words, and the door is cooled')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local gunsmith = OPX.Modules.Get('gunsmith')
+		local character = OPX.Modules.Get('character')
+		local inventory = OPX.Api.Get('inventory')
+		local SMITH = 914
+		control.Admit(SMITH, 'account-914')
+		local player = character.CreatePlayer({
+			citizenId = OPX.CitizenId.Generate(), userId = 'account-914', source = SMITH,
+			charInfo = { firstName = 'Wakako', lastName = 'Okada' },
+			job = { name = 'arasaka', onDuty = true, grade = { level = 0 } },
+		}, false)
+		player.PlayerData.job = { name = 'arasaka', onDuty = true, grade = { level = 0 } }
+		player.PlayerData.jobs, player.PlayerData.gangs = { arasaka = 0 }, {}
+		character.RegisterPlayer(player)
+
+		local opens = 0
+		local realOpen = inventory.OpenStash
+		inventory.OpenStash = function()
+			opens = opens + 1
+			return OPX.Result.Err('storage')
+		end
+
+		local refused = {}
+		local realTrigger = env.TriggerClientEvent
+		env.TriggerClientEvent = function(name, target, ...)
+			if name == gunsmith.Event.REFUSED and target == SMITH then
+				refused[#refused + 1] = select(2, ...)
+			end
+			return realTrigger(name, target, ...)
+		end
+
+		local door = control.netEvents[gunsmith.Event.CHEST]
+		check('the chest door is wired', type(door) == 'function')
+		if type(door) == 'function' then
+			for _ = 1, 5 do
+				env.source = SMITH
+				door('arasaka_armoury')
+				env.source = nil
+			end
+			control.Pump(10)
+			check('five presses in one breath reach the chest once', opens == 1, opens)
+			check('and a refusal with no sentence is answered as unavailable',
+				refused[#refused] == 'unavailable', tostring(refused[#refused]))
+		end
+
+		env.TriggerClientEvent = realTrigger
+		inventory.OpenStash = realOpen
+	end
+end
 -- ── the gunsmith: the first consumer, and the gate crafting does not have ────
 section('the gunsmith: three armouries, one gate')
 do
@@ -21614,6 +22206,213 @@ do
 	end
 end
 
+-- `ResizeContainer` loaded a container it did not hold and never put it away:
+-- an offline bag or an unopened stash stayed in memory for the life of the
+-- resource. And a kind that was not a string raised on `:upper()`.
+section('inventory: a resize puts away what it loaded, and refuses a bad kind')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers = inventory.Containers
+		local realRead, realResize = inventory.Storage.Read, inventory.Storage.Resize
+		inventory.Storage.Read = function(kind, owner, slots, maxWeight)
+			return { id = 91001, kind = kind, owner = owner, slots = slots,
+				maxWeight = maxWeight, items = {} }, nil
+		end
+		local resized
+		inventory.Storage.Resize = function(id, slots)
+			resized = { id = id, slots = slots }
+			return env.OPX.Result.Ok(1)
+		end
+
+		local answer
+		env.CreateThread(function()
+			answer = inventory.ResizeContainer('stash', 'resize_me', 80, 200000)
+		end)
+		settle(control, function() return answer ~= nil end, 20)
+		check('the resize is written', answer ~= nil and answer.ok == true
+			and resized ~= nil and resized.slots == 80, answer and tostring(answer.error))
+		check('and the stash it loaded to do it is not left in memory',
+			Containers.Find('stash', 'resize_me') == nil)
+
+		local raised, refused = pcall(inventory.ResizeContainer, 42, 'x', 10, 10)
+		check('a kind that is not a string is refused, not raised',
+			raised and type(refused) == 'table' and refused.error == 'bad_argument',
+			tostring(refused))
+		raised, refused = pcall(inventory.DeleteContainer, nil, 'x')
+		check('and the same for a delete', raised and type(refused) == 'table'
+			and refused.error == 'bad_argument', tostring(refused))
+
+		inventory.Storage.Read, inventory.Storage.Resize = realRead, realResize
+	end
+end
+
+-- A caller waiting on another's load polls every 50 ms. In that time the loader
+-- could finish, settle a borrowed bag and `Discard` it, and the waiter was then
+-- handed the discarded table: whatever it changed was marked against an id the
+-- sweep no longer knew, and dropped.
+section('inventory: a load waited on is never handed back after it was discarded')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers = inventory.Containers
+		local realRead = inventory.Storage.Read
+		local reads = 0
+		inventory.Storage.Read = function(kind, owner, slots, maxWeight)
+			reads = reads + 1
+			env.Wait(10)
+			return { id = 90000 + reads, kind = kind, owner = owner, slots = slots,
+				maxWeight = maxWeight, items = {} }, nil
+		end
+
+		local first, second
+		env.CreateThread(function()
+			first = Containers.Load('stash', 'race_stash', 10, 1000)
+			-- The loader's whole life, inside one poll of the waiter: settled and
+			-- forgotten before the waiter looks again.
+			if first then Containers.Discard(first.id, true) end
+		end)
+		env.CreateThread(function()
+			second = Containers.Load('stash', 'race_stash', 10, 1000)
+		end)
+		settle(control, function() return second ~= nil end, 40)
+
+		check('the waiter is answered', second ~= nil)
+		check('with a container that is still registered',
+			second ~= nil and Containers.Get(second.id) == second,
+			second and tostring(second.id))
+		check('read again rather than adopted from the discarded load', reads == 2, reads)
+
+		inventory.Storage.Read = realRead
+		if second then Containers.Discard(second.id, true) end
+	end
+end
+
+-- The bridge binds at most 64 parameters a statement and 64 statements a
+-- transaction (the `Open77.database.update` / `.transaction` cards), and the
+-- harness bridge now refuses past either the way the real one does. A save
+-- wrote 50 rows -- 250 parameters -- per INSERT, so every container holding
+-- more than twelve stacks was refused whole, stayed dirty and was retried for
+-- ever, and the sweep stopped at that batch every pass.
+section('the inventory save fits the bridge: 64 parameters, 64 statements')
+do
+	local transactions = {}
+	local poisoned = {}
+	local db = Host.Database({
+		scalar = function() return 1 end,
+		query = function() return {} end,
+		single = function() return nil end,
+		update = function() return 1 end,
+		transaction = function(list)
+			local ids = {}
+			for index = 1, #list do
+				local entry = list[index]
+				if entry.query:find('DELETE FROM opx77_inventory_items', 1, true) then
+					ids[#ids + 1] = entry.values[1]
+					if poisoned[entry.values[1]] then return false, 'refused' end
+				end
+			end
+			transactions[#transactions + 1] = { list = list, ids = ids }
+			return true
+		end,
+	})
+
+	local env, control, why = boot('server', db)
+	check('the server boots with a limit-checking bridge', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Store = inventory.Storage
+
+		local function rows(count)
+			local out = {}
+			for slot = 1, count do
+				out[slot] = { slot = slot, name = 'bandage', count = 1,
+					metadata = { label = 'x' .. slot } }
+			end
+			return out
+		end
+
+		-- ── one container of forty stacks ────────────────────────────────────
+		transactions = {}
+		local answer
+		env.CreateThread(function()
+			answer = Store.Save({ { id = 501, rows = rows(40) } })
+		end)
+		control.Pump(20)
+		check('a forty-stack container is written', answer ~= nil and answer.ok == true,
+			answer and tostring(answer.detail or answer.error))
+		local bound, widest = 0, 0
+		if transactions[1] then
+			for _, entry in ipairs(transactions[1].list) do
+				if entry.query:find('INSERT INTO opx77_inventory_items', 1, true) then
+					bound = bound + #entry.values // 5
+				end
+				if #entry.values > widest then widest = #entry.values end
+			end
+		end
+		check('in one transaction', #transactions == 1, #transactions)
+		check('with every stack bound', bound == 40, bound)
+		check('and no statement past 64 parameters', widest > 0 and widest <= 64, widest)
+
+		-- ── sixteen containers of thirty stacks: 16 x 5 statements ───────────
+		transactions = {}
+		local list = {}
+		for index = 1, 16 do list[index] = { id = 600 + index, rows = rows(30) } end
+		answer = nil
+		env.CreateThread(function() answer = Store.Save(list) end)
+		control.Pump(40)
+		check('a batch past 64 statements is still written', answer ~= nil and answer.ok == true,
+			answer and tostring(answer.detail or answer.error))
+		local largest, seen, split = 0, {}, true
+		for _, sent in ipairs(transactions) do
+			if #sent.list > largest then largest = #sent.list end
+			for _, id in ipairs(sent.ids) do
+				if seen[id] then split = false end
+				seen[id] = true
+			end
+		end
+		check('as several transactions', #transactions >= 2, #transactions)
+		check('none of them past 64 statements', largest > 0 and largest <= 64, largest)
+		local written = 0
+		for _ in pairs(seen) do written = written + 1 end
+		check('with every container in exactly one of them', split and written == 16, written)
+
+		-- ── one container the database refuses holds nobody else hostage ─────
+		local fakes = {}
+		for index = 1, 3 do
+			fakes[700 + index] = { id = 700 + index, kind = 'stash', owner = 'f' .. index,
+				slots = 10, maxWeight = 1000, items = { [1] = { name = 'bandage', count = 1 } } }
+		end
+		local realGet = inventory.Containers.Get
+		inventory.Containers.Get = function(id)
+			if fakes[id] then return fakes[id] end
+			return realGet(id)
+		end
+		poisoned[702] = true
+		transactions = {}
+		for id in pairs(fakes) do Store.MarkDirty(id) end
+		control.Pump(40)
+		local wrote = {}
+		for _, sent in ipairs(transactions) do
+			for _, id in ipairs(sent.ids) do wrote[id] = true end
+		end
+		check('a refused container does not keep the rest of its batch unwritten',
+			wrote[701] == true and wrote[703] == true,
+			('701=%s 703=%s'):format(tostring(wrote[701]), tostring(wrote[703])))
+		check('and the refused one is still marked to be written',
+			wrote[702] == nil and Store.Pending() >= 1, Store.Pending())
+		inventory.Containers.Get = realGet
+		for id in pairs(fakes) do Store.Forget(id) end
+	end
+end
+
 -- ── the readiness gate ───────────────────────────────────────────────────────
 -- All eight guards in `core/server/gate.lua` survived mutation, because
 -- `Open77.ready` was five constants: `isReady` answered false for everybody,
@@ -22574,6 +23373,52 @@ end
 -- `shopAt` refuses a shop in another bucket and a shop out of reach, and both
 -- mutants survived: with every player at the origin in bucket 0 the two
 -- comparisons were constants.
+
+-- The saved-look doors had no window at all: every press was a thread and a
+-- database round trip, and REDEEM let a script walk the share-code space --
+-- every hit somebody's saved look, worn for free.
+section('shops: the saved-look doors are cooled, and guessing codes is slow')
+do
+	local lookups = 0
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 0 end,
+		query = function() return {} end,
+		single = function(sql)
+			if sql:find('share_code', 1, true) then lookups = lookups + 1 end
+			return nil
+		end,
+		insert = function() return 1 end,
+		update = function() return 1 end,
+		transaction = function() return true end,
+	}))
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local shops = env.OPX.Modules.Get('shops')
+		local GUESSER = 913
+		control.Admit(GUESSER, 'account-913')
+		local redeem = control.netEvents[shops.Event.REDEEM]
+		check('the redeem door is wired', type(redeem) == 'function')
+		if type(redeem) == 'function' then
+			local before = lookups
+			for attempt = 1, 20 do
+				env.source = GUESSER
+				redeem({ code = 'ABCDEFG' .. ('23456789ABCDEFGHJKLM'):sub(attempt, attempt) })
+				env.source = nil
+			end
+			control.Pump(10)
+			check('twenty codes typed in one breath cost one lookup, not twenty',
+				lookups - before == 1, lookups - before)
+			control.Pump(25)
+			env.source = GUESSER
+			redeem({ code = 'ABCD9999' })
+			env.source = nil
+			control.Pump(10)
+			check('and the door opens again once the window has passed',
+				lookups - before == 2, lookups - before)
+		end
+	end
+end
 section('shops: a counter on the other side of the city is not a counter you are at')
 do
 	local env, control, why = boot('server')
@@ -28897,6 +29742,74 @@ do
 	end
 end
 
+
+-- `OPX.Hooks.Trigger` may yield, and `RemoveMoney` read the balance BEFORE its
+-- hook and subtracted after it. Two purchases in flight across a yielding
+-- `money:beforeRemove` hook both passed the balance test, and 100 paid for two
+-- 100 items. A Player that logged out during the hook was also still mutated,
+-- on a table its logout had already saved.
+section('money: a yielding hook cannot let one balance pay twice')
+do
+	local env, control, why = boot('server', Host.Database({
+		scalar = function() return 1 end, query = function() return {} end,
+		single = function() return nil end, insert = function() return 1 end,
+		update = function() return 1 end, transaction = function() return true end,
+	}))
+	check('the server boots for the hook race', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local character = OPX.Modules.Get('character')
+		local source = 861
+		control.Admit(source, 'account-' .. source)
+		local player = character.CreatePlayer({
+			citizenId = OPX.CitizenId.Generate(), userId = 'account-' .. source,
+			source = source, charInfo = { firstName = 'Jackie', lastName = 'Welles' },
+			money = { EDDIES = 100 },
+		}, false)
+		player.PlayerData.jobs, player.PlayerData.gangs = {}, {}
+		character.RegisterPlayer(player)
+
+		local hook = OPX.Hooks.Register('money:beforeRemove', function()
+			env.Wait(200)
+			return true
+		end)
+
+		local answers = {}
+		for index = 1, 2 do
+			env.CreateThread(function()
+				answers[index] = { character.RemoveMoney(source, 'EDDIES', 100, 'test') }
+			end)
+		end
+		settle(control, function() return answers[1] ~= nil and answers[2] ~= nil end, 40)
+
+		local paid = 0
+		for index = 1, 2 do
+			if answers[index] and answers[index][1] == true then paid = paid + 1 end
+		end
+		check('only one of two purchases in flight is paid for', paid == 1, paid)
+		check('and the balance never goes below zero', player.PlayerData.money.EDDIES == 0,
+			player.PlayerData.money.EDDIES)
+
+		-- A logout during the hook: the Player has left the roster and been saved.
+		player.PlayerData.money.EDDIES = 100
+		local late
+		OPX.Hooks.Remove(hook)
+		hook = OPX.Hooks.Register('money:beforeAdd', function()
+			env.Wait(200)
+			return true
+		end)
+		env.CreateThread(function()
+			late = { character.AddMoney(player, 'EDDIES', 50, 'test') }
+		end)
+		control.Pump(1)
+		character.UnregisterPlayer(player)
+		settle(control, function() return late ~= nil end, 40)
+		check('a payment to somebody who left during the hook is refused',
+			late ~= nil and late[1] == false, late and tostring(late[2]))
+		OPX.Hooks.Remove(hook)
+	end
+end
 section('groups: a live job change that a logout overtakes is still kept')
 do
 	local state = {}
@@ -29681,6 +30594,22 @@ do
 		check('a bad roll holds, and the break roll takes the pick',
 			answer ~= nil and answer.code == 'pick_broke' and locked('front')
 				and fakes.counts[60].lockpick == 1, answer and tostring(answer.code))
+
+		-- The pick handed away mid-bar: one lockpick passed bag to bag let a
+		-- crew start bars on it, and a break found nothing to take.
+		dl.Roll = function() return 0 end
+		control.Pump(8)
+		env.source = 60
+		control.netEvents[dl.Event.PICK]({ key = 'front' })
+		control.Pump(45)
+		fakes.counts[60] = { lockpick = 0 }
+		env.source = 60
+		control.netEvents[dl.Event.PICKED]({ key = 'front', finished = true })
+		control.Pump(4)
+		answer = doorlockLast(control, dl.Event.ANSWER, 60)
+		check('a pick that left the bag during the bar turns nothing',
+			answer ~= nil and answer.code == 'no_lockpick' and locked('front'),
+			answer and tostring(answer.code))
 		dl.Roll = math.random
 	end
 end
@@ -30022,6 +30951,52 @@ do
 		dl.Staff.Close()
 		OPX.Toast.Show = realToast
 	end
+end
+
+-- ── the WebUI audit: what the page must keep ─────────────────────────────────
+-- Source and bundle together, because each of these was a fault in the shipped page
+-- that no Lua test could see: a focus the page never held, a payload that threw in
+-- render, a filter re-rasterised on a timer, and 600 CSS rules nothing could match.
+section('webui: focus, payload coercion, repaint cost and bundle weight')
+do
+	local function slurp(path)
+		local handle = io.open(path, 'r')
+		if not handle then return '' end
+		local body = handle:read('a')
+		handle:close()
+		return body
+	end
+	local built = slurp('web/index.html')
+	check('augmented-ui keeps the three mixins the templates use',
+		built:find('[data-augmented-ui~=tr-clip]', 1, true) ~= nil
+			and built:find('[data-augmented-ui~=bl-clip]', 1, true) ~= nil
+			and built:find('[data-augmented-ui~=border]', 1, true) ~= nil)
+	check('and none of the ~700 it does not (pruned at build time)',
+		built:find('tl-2-scoop-xy', 1, true) == nil and built:find('r-rect-y', 1, true) == nil)
+
+	local types = slurp('ui/src/bridge/types.ts')
+	check('lists of records are coerced per element, lookups read own keys only',
+		types:find('export function records', 1, true) ~= nil
+			and types:find('export function own', 1, true) ~= nil)
+
+	local holo = slurp('ui/src/modules/calls/HoloRoot.vue')
+	check("the hologram holds the page focus under Lua's own owner id",
+		holo:find("acquireFocus({ id: 'calls'", 1, true) ~= nil)
+
+	local menu = slurp('ui/src/modules/menu/MenuView.vue')
+	check('an unclosable menu answers Escape with a no-op, never an absent handler',
+		menu:find(': () => {}', 1, true) ~= nil)
+	check('and the menu reads keys only while it owns the focus',
+		menu:find("focusOwner() !== 'menu'", 1, true) ~= nil)
+
+	local downed = slurp('ui/src/modules/downed/DownedView.vue')
+	check('a give-up hold ends on a cancelled pointer or a lost window',
+		downed:find("addEventListener('pointercancel'", 1, true) ~= nil
+			and downed:find("addEventListener('blur'", 1, true) ~= nil)
+
+	local toast = slurp('ui/src/modules/notify/NotifyToast.vue')
+	check('the toast bar scales rather than resizes under its filter',
+		toast:find('scaleX(', 1, true) ~= nil and toast:find('width: barWidth', 1, true) == nil)
 end
 
 print(('\n%d checks, %d failed'):format(checks, failures))

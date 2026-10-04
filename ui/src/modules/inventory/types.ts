@@ -1,5 +1,4 @@
-import { bool, list, num, table, text } from '@/bridge/types'
-import type { Payload } from '@/bridge/types'
+import { bool, list, num, table, text, records } from '@/bridge/types'
 
 /**
  * The shapes Lua sends, parsed on arrival.
@@ -142,7 +141,7 @@ export function readConfig(value: unknown): ScreenConfig {
 
 export function readTabs(value: unknown): TabSpec[] {
   const incoming = table(value)
-  return list<Payload>(incoming.tabs).map((tab) => ({
+  return records(incoming.tabs).map((tab) => ({
     key: text(tab.key),
     label: text(tab.label),
     categories: list(tab.categories).map((name) => text(name)),
@@ -151,7 +150,7 @@ export function readTabs(value: unknown): TabSpec[] {
 }
 
 export function readNearby(value: unknown): NearbyPlayer[] {
-  return list<Payload>(value)
+  return records(value)
     .map((row) => ({ id: num(row.id, 0), distance: num(row.distance, 0) }))
     .filter((row) => row.id > 0)
 }

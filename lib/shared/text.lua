@@ -43,6 +43,14 @@ function OPX.Text.Clean(value, maximum, ellipsis)
 	if value == nil then return nil end
 	if type(value) == 'number' then value = tostring(value) end
 	if type(value) ~= 'string' then return nil end
+	-- CUT BEFORE THE SCAN, the correction `OPX.Audit.Safe` already carries: the
+	-- strip walked the WHOLE string and the cut came second, so a 64-character
+	-- toast title another resource handed the client exports as a megabyte cost
+	-- a megabyte. `Span` never looks past four bytes a character, and a control
+	-- character is one byte replaced by one byte, so nothing past that head can
+	-- change the answer.
+	local head = maximum * 4 + 4
+	if #value > head then value = value:sub(1, head) end
 	value = value:gsub('[%c]', ' ')
 	if #value <= maximum then return value end
 	local cut = Text.Span(value, maximum)
