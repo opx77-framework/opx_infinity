@@ -395,9 +395,25 @@ function Actions.OpenVehicle(source, kind, vehicleId)
 	return container, nil
 end
 
---- The players in reach, nearest first, by id and rounded distance only.
--- Never a name: the list is drawn beside a bag, and who is standing near somebody
--- is not this module's to tell.
+-- The name of the character a player is playing, or nil. The give list used to
+-- read `#12`, which teaches players to know each other by a server slot.
+local function characterName(source)
+	local character = M.Contracts.character
+	if character == nil or type(character.GetPlayer) ~= 'function' then return nil end
+	local read, player = pcall(character.GetPlayer, source)
+	local data = read and type(player) == 'table' and player.PlayerData or nil
+	local info = type(data) == 'table' and data.charInfo or nil
+	if type(info) ~= 'table' or type(info.firstName) ~= 'string' then return nil end
+	local name = OPX.String.Trim(('%s %s'):format(info.firstName, tostring(info.lastName or '')))
+	return name ~= '' and OPX.Text.Bytes(name, 48) or nil
+end
+
+--- The players in reach, nearest first, with their character's name.
+-- THE NAME IS NOW SAID, on the owner's decision. It used to be "never a name"
+-- -- who stands near somebody was not this module's to tell -- and the list read
+-- `#12`, which taught players to know each other by a server slot. Only
+-- players already within arm's reach are listed, and only to the person about
+-- to hand them something.
 -- @author dop42
 -- @param source Source
 -- @return table[]
@@ -415,7 +431,8 @@ function Actions.Nearby(source)
 			if there and there.bucket == here.bucket then
 				local gap = World.Distance(here, there)
 				if gap <= Options.REACH then
-					out[#out + 1] = { id = other, distance = math.floor(gap * 10 + 0.5) / 10 }
+					out[#out + 1] = { id = other, distance = math.floor(gap * 10 + 0.5) / 10,
+						name = characterName(other) }
 				end
 			end
 		end

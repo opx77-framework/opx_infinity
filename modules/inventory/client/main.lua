@@ -99,6 +99,8 @@ local function labels()
 		-- `character` is the eyebrow over a searched bag, which drew the raw kind;
 		-- `cancel` is the split dialog's way out, which said `Close`.
 		'character', 'cancel',
+		-- The count dialog's give and drop questions, and its give button.
+		'give', 'giveHowMany', 'dropHowMany',
 		-- The two the page needs for its own status line. Every refusal the SERVER
 		-- makes is toasted from there, so the page only ever has to say that a
 		-- round trip failed or never came back.

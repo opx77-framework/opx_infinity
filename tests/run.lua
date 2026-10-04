@@ -16755,6 +16755,7 @@ do
 			local userId = 'account-' .. tostring(id)
 			character.Players[id] = {
 				PlayerData = { citizenId = citizenId, source = id, userId = userId,
+					charInfo = { firstName = 'Vee', lastName = tostring(id) },
 					money = { EDDIES = balance, BANK = 0 } },
 				Functions = { UpdatePlayerData = function() end },
 			}
@@ -16783,6 +16784,13 @@ do
 		local bobBag = load(BOB, 'citizen-eddies-b', 0)
 		check('both bags are held for their characters',
 			Players.Bag(ALICE) == aliceBag and Players.Bag(BOB) == bobBag)
+
+		-- THE GIVE LIST NAMES PEOPLE. It read `#12`; it says the character's name.
+		local near = Actions.Nearby(ALICE)
+		check('the player in reach is listed for a give, by their character\'s name',
+			near[1] ~= nil and near[1].id == BOB and type(near[1].name) == 'string'
+				and near[1].name == 'Vee ' .. tostring(BOB),
+			near[1] and tostring(near[1].name))
 
 		--- What one player is worth: the balance plus every note they carry.
 		local function worth(source, bag)

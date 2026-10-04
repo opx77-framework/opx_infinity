@@ -42,6 +42,9 @@ OPX.Locale.Register('en', {
 	['inventory.ui.g'] = 'g',
 	['inventory.ui.m'] = 'm',
 	['inventory.ui.groundHint'] = 'Hand over or drop',
+	['inventory.ui.give'] = 'Give',
+	['inventory.ui.giveHowMany'] = 'Give how many?',
+	['inventory.ui.dropHowMany'] = 'Drop how many?',
 	['inventory.ui.character'] = 'Bag',
 	['inventory.ui.cancel'] = 'Cancel',
 
@@ -404,6 +407,9 @@ OPX.Locale.Register('fr', {
 	['inventory.ui.g'] = 'g',
 	['inventory.ui.m'] = 'm',
 	['inventory.ui.groundHint'] = 'Donner ou poser',
+	['inventory.ui.give'] = 'Donner',
+	['inventory.ui.giveHowMany'] = 'Donner combien ?',
+	['inventory.ui.dropHowMany'] = 'Poser combien ?',
 	['inventory.ui.character'] = 'Sac',
 	['inventory.ui.cancel'] = 'Annuler',
 
