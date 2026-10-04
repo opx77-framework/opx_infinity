@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef } from 'vue'
+import { computed, onUnmounted, ref, shallowRef } from 'vue'
 import { list, num, table, text } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
 import { useBridge } from '@/composables/useBridge'
@@ -88,6 +88,8 @@ useBridge('opx:inventory:slotbar', (payload: Payload) => {
   open.value = true
   fall = setTimeout(() => { open.value = false }, holdMs)
 })
+
+onUnmounted(clearFall)
 
 function onBroken(name: string): void {
   broken.value = { ...broken.value, [name]: true }

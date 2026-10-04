@@ -226,6 +226,9 @@ function startSizing(): void {
     if (element === null) return
     measure()
     if (typeof ResizeObserver === 'undefined') return
+    // A second `open` while the box is up would otherwise orphan the first observer,
+    // still firing `measure` for the rest of the session.
+    if (sizer !== null) sizer.disconnect()
     sizer = new ResizeObserver(measure)
     sizer.observe(element)
   })

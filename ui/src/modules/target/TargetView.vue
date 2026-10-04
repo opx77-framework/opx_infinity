@@ -494,6 +494,8 @@ function shut(): void {
   handle.value = null
   keyboard.value = false
   consumedAt = -1
+  pressed = false
+  pressPoint = null
   release?.()
   release = undefined
 }
@@ -857,6 +859,11 @@ function onResize(): void {
 }
 
 function onBlur(): void {
+  // A release that lands outside the window never reaches `onMouseUp`, and a
+  // `pressed` left true makes `arm` drop every hover intent until the next click:
+  // folders stop opening on hover for no visible reason.
+  pressed = false
+  pressPoint = null
   if (open.value) send('opx:target:cancel')
 }
 
@@ -993,6 +1000,8 @@ onUnmounted(() => {
   window.removeEventListener('mousedown', onMouseDown, true)
   window.removeEventListener('mouseup', onMouseUp, true)
   clearTimers()
+  if (frame !== 0) cancelAnimationFrame(frame)
+  frame = 0
   release?.()
 })
 </script>

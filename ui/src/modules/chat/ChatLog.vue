@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { emit } from '@/bridge/channel'
 import { bool, num, table, text, own } from '@/bridge/types'
 import type { Payload } from '@/bridge/types'
@@ -104,10 +104,17 @@ const shown = computed(() => lines.value.filter(alive))
  * and the overlay is the one surface that is always drawn.
  */
 function syncTicker(): void {
-  const wanted = fadeMs.value > 0 && !inputOpen.value && lines.value.length > 0
+  // Only while the NEWEST line is still young. `lines.length > 0` kept the interval
+  // alive for the whole session once anything had been said -- the history outlives
+  // the fade -- re-rendering the log twice a second with nothing left to hide. Each
+  // tick re-checks, so the clock stops itself on the tick that hides the last line.
+  const newest = lines.value[lines.value.length - 1]
+  const wanted = fadeMs.value > 0 && !inputOpen.value && newest !== undefined
+    && Date.now() - newest.at < fadeMs.value
   if (wanted && ticker === null) {
     ticker = setInterval(() => {
       now.value = Date.now()
+      syncTicker()
     }, 500)
   } else if (!wanted && ticker !== null) {
     clearInterval(ticker)
@@ -163,6 +170,15 @@ useBridge('opx:chat:view', (payload: Payload) => {
       visible.value = bool(payload.visible, true)
       break
   }
+})
+
+/* Closing the box restarts the clock. The ticker is off while the box is open, so
+   `now` froze at the open; lines said while it was open (the first chat of a
+   session, or after a clear, started no clock at all) then never faded until the
+   next line arrived. */
+watch(inputOpen, () => {
+  now.value = Date.now()
+  syncTicker()
 })
 
 onMounted(() => {
