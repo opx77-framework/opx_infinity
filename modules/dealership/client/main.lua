@@ -67,6 +67,12 @@ local handle, stack = nil, {}
 -- the player navigated to and this is what arrived.
 local offer = nil
 
+-- Whether that offer is WAITING behind a list of the player's own. An offer
+-- used to take down whatever dealership menu was open and replace it, so a key
+-- press meant for the player's own row could land on "Buy it" instead. It now
+-- waits, said in a toast, and opens when that list closes.
+local offerWaiting = false
+
 -- Whether this player is standing inside a dealer's ZONE, and the dealer it is.
 -- Being in one is what grows the "sell a vehicle" row on every other player.
 local zone = nil
@@ -483,23 +489,54 @@ local function screenFor(current)
 	return nil
 end
 
--- Takes the menu down for a reason of this file's own.
-local function takeDown()
+-- Closes the open menu, if any, without anything else.
+local function closeMenu()
 	local closing = handle
 	handle, stack = nil, {}
 	local api = OPX.Api.Get('menu')
 	if closing ~= nil and api ~= nil and type(api.Close) == 'function' then
 		pcall(api.Close, closing, 'dealership')
 	end
-	syncPrompt()
 	return closing ~= nil
+end
+
+-- Whether the screen up is the offer itself, or the garage step under it.
+local function offerOnScreen()
+	local top = stack[#stack]
+	return handle ~= nil and top ~= nil and (top.screen == 'offer' or top.screen == 'offerDeliver')
+end
+
+local draw
+
+-- Puts the offer this player was made on the screen.
+local function showOffer()
+	offerWaiting = false
+	closeMenu()
+	stack = { { screen = 'offer' } }
+	if not draw() then
+		offer = nil
+		say('error', locale('dealership.noList'))
+	end
+	syncPrompt()
+end
+
+-- Takes the menu down for a reason of this file's own. An offer that was waiting
+-- behind it comes up now.
+local function takeDown()
+	local closed = closeMenu()
+	if offerWaiting and type(offer) == 'table' then
+		showOffer()
+		return closed
+	end
+	syncPrompt()
+	return closed
 end
 
 -- Draws the screen on top of the stack, or updates the one already up.
 -- `inPlace` is the navigation redraw: the destination screen is added under the
 -- model the player picked, and reopening would throw them back to the top of the
 -- list if the menu were reopened rather than updated.
-local function draw(inPlace)
+draw = function(inPlace)
 	local current = stack[#stack]
 	if current == nil then return false end
 
@@ -647,6 +684,8 @@ onRow = function(payload)
 		-- Back on a one-level screen would close it; step up instead.
 		if payload.reason == 'back' and #stack > 1 then return pop() end
 		stack = {}
+		-- The offer that waited behind the player's own list opens now.
+		if offerWaiting and type(offer) == 'table' then return showOffer() end
 		return syncPrompt()
 	end
 	if payload.action ~= 'select' or captured() then return end
@@ -1112,13 +1151,27 @@ function Runtime.Start()
 	RegisterNetEvent(M.Event.OFFERED, function(payload)
 		if type(payload) ~= 'table' or type(payload.entry) ~= 'string' then return end
 		offer = payload
-		takeDown()
-		stack = { { screen = 'offer' } }
-		if not draw() then
-			offer = nil
-			return say('error', locale('dealership.noList'))
+		-- NOT OVER THE PLAYER'S OWN LIST. A replacement offer may replace the
+		-- offer screen; anything else the player opened is theirs, and the offer
+		-- waits behind it rather than taking its place under their finger.
+		if handle ~= nil and not offerOnScreen() then
+			offerWaiting = true
+			return say('info', locale('dealership.offerWaiting',
+				{ seller = tostring(payload.seller or '?'), model = tostring(payload.model or '?') }))
 		end
-		syncPrompt()
+		showOffer()
+	end)
+
+	-- An offer that ended without this player's answer: it ran out, or the seller
+	-- left. The screen asking them to buy comes down -- pressing it only ever
+	-- answered `noOffer` -- unless the offer named is one already replaced.
+	RegisterNetEvent(M.Event.WITHDRAWN, function(payload)
+		if type(payload) ~= 'table' or type(offer) ~= 'table' then return end
+		if payload.token ~= offer.token then return end
+		offer, offerWaiting = nil, false
+		if offerOnScreen() then takeDown() end
+		say('error', locale(type(payload.error) == 'string' and payload.error or 'dealership.noOffer'))
+		publish({ ok = false, error = payload.error, source = 'offer', withdrawn = true })
 	end)
 
 	-- What became of an offer, told to the SELLER. The buyer already knows: they

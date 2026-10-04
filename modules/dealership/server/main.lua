@@ -836,9 +836,13 @@ function M.Offer(seller, buyer, entryKey)
 			local live = offers[buyer]
 			if live == nil or live.token ~= token then return end
 			offers[buyer] = nil
+			-- The seller's SETTLED handler raises the one toast; a second one
+			-- from here doubled it. And the BUYER is told too, so the screen
+			-- asking them to buy a car nobody is selling any more comes down.
 			TriggerClientEvent(M.Event.SETTLED, live.seller, { ok = false,
 				error = 'dealership.offerExpired', entry = live.entry })
-			OPX.NotifyLocale(live.seller, 'dealership.offerExpired', nil, 'error')
+			TriggerClientEvent(M.Event.WITHDRAWN, buyer, { token = live.token,
+				error = 'dealership.offerExpired' })
 		end)
 	end
 
@@ -908,6 +912,13 @@ function M.Accept(buyer, token, yes, destKey)
 		return refused('dealership.noCharacter', sellerHere and 'dealership.buyerNotInZone')
 	end
 	if not sellerHere then return refused('dealership.sellerGone', false) end
+	-- THE SELLER STILL SELLS FOR THE COMPANY THE OFFER BANKS TO. It was read once,
+	-- when the offer was made; a seller fired or moved to another job before the
+	-- buyer answered still earned the commission and paid the old company.
+	local kind, group = companyOf(offer.seller)
+	if kind ~= offer.kind or group ~= offer.group then
+		return refused('dealership.sellerNoCompany', 'dealership.noCompany')
+	end
 
 	local dealer = Access.Spot(spots, offer.dealer)
 	local buyerAt = pointOf(buyer)
@@ -1563,8 +1574,11 @@ function M.Start()
 			for buyer, live in pairs(offers) do
 				if live.seller == player then
 					offers[buyer] = nil
-					TriggerClientEvent(M.Event.SETTLED, buyer,
-						{ ok = false, error = 'dealership.sellerGone', entry = live.entry })
+					-- WITHDRAWN, which the buyer's client acts on: it closes the
+					-- offer screen. SETTLED is the seller's channel, and the
+					-- buyer's client published it and left the screen up.
+					TriggerClientEvent(M.Event.WITHDRAWN, buyer,
+						{ token = live.token, error = 'dealership.sellerGone' })
 				end
 			end
 		end

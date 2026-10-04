@@ -49,6 +49,8 @@ local EN = {
 	['dealership.offerDecline'] = 'No thanks',
 	['dealership.offerDeclined'] = 'They turned the offer down.',
 	['dealership.offerExpired'] = 'The offer was not answered in time.',
+	['dealership.offerWaiting'] = '{seller} is offering you a {model}. It opens when you close this list.',
+	['dealership.sellerNoCompany'] = 'The seller can no longer sell for that company.',
 	['dealership.noOffer'] = 'There is no offer waiting for you.',
 	['dealership.noCompany'] =
 		'You have no job or gang to sell for, so there is nowhere to pay the money in.',
@@ -116,6 +118,8 @@ local FR = {
 	['dealership.offerDecline'] = 'Non merci',
 	['dealership.offerDeclined'] = "L'offre a été refusée.",
 	['dealership.offerExpired'] = "L'offre n'a pas eu de réponse à temps.",
+	['dealership.offerWaiting'] = "{seller} vous propose : {model}. L'offre s'ouvrira quand vous fermerez cette liste.",
+	['dealership.sellerNoCompany'] = 'Le vendeur ne vend plus pour cette entreprise.',
 	['dealership.noOffer'] = "Aucune offre ne vous attend.",
 	['dealership.noCompany'] =
 		"Vous n'avez ni emploi ni gang pour vendre : l'argent n'aurait nulle part où aller.",

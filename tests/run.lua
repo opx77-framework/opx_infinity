@@ -8262,6 +8262,62 @@ do
 				and toldSeller[1].error == 'dealership.buyerNotInZone',
 			toldSeller and tostring(toldSeller[1].error) or 'nothing sent')
 
+		-- The last event of one name sent to one player after a mark.
+		local function sentAfter(mark, name, to)
+			local found
+			for index = mark + 1, #control.clientEvents do
+				local sent = control.clientEvents[index]
+				if sent.name == name and sent.source == to then found = sent end
+			end
+			return found
+		end
+
+		-- ── the seller's company is proved again at the answer ─────────────
+		-- It was read once, when the offer was made: a seller who lost the job
+		-- before the buyer said yes still earned the commission for it.
+		contract.Offer(seller, buyer, 'hella')
+		local firedAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local heldJob, heldGang = sellerData.PlayerData.job, sellerData.PlayerData.gang
+		sellerData.PlayerData.job, sellerData.PlayerData.gang = nil, nil
+		local moneyBefore = character.Players[buyer].PlayerData.money.EDDIES
+		local firedMark = #control.clientEvents
+		local fired = contract.Accept(buyer, firedAt, true)
+		sellerData.PlayerData.job, sellerData.PlayerData.gang = heldJob, heldGang
+		local firedTold = sentAfter(firedMark, dealership.Event.SETTLED, seller)
+		check('a seller who no longer sells for the company cannot close the sale',
+			fired.ok == false and fired.error == 'dealership.sellerNoCompany'
+				and character.Players[buyer].PlayerData.money.EDDIES == moneyBefore,
+			tostring(fired.error))
+		check('and is told why', firedTold ~= nil and firedTold[1].error == 'dealership.noCompany',
+			firedTold and tostring(firedTold[1].error))
+
+		-- ── the buyer is told when an offer ends without them ──────────────
+		-- The seller leaves: the buyer's screen gets a WITHDRAWN naming the offer.
+		local passer = 79
+		local passerData = load(passer, 'citizen-passer', 0)
+		passerData.PlayerData.job = { name = 'fixer', grade = { level = 2 } }
+		control.Stand(passer, 0.0, 0.0, 0.0)
+		contract.Offer(passer, buyer, 'hella')
+		local leftAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local leftMark = #control.clientEvents
+		control.Fire(env.OPX.Host.PLAYER_DISCONNECTED, passer, 'quit')
+		local withdrawn = sentAfter(leftMark, dealership.Event.WITHDRAWN, buyer)
+		check('a seller who leaves withdraws the offer from the buyer\'s screen',
+			withdrawn ~= nil and withdrawn[1].token == leftAt
+				and withdrawn[1].error == 'dealership.sellerGone',
+			withdrawn and tostring(withdrawn[1].error) or 'nothing sent')
+
+		-- And the offer runs out: the buyer is told as well as the seller.
+		contract.Offer(seller, buyer, 'hella')
+		local lapsedAt = lastEvent(dealership.Event.OFFERED)[1].token
+		local lapsedMark = #control.clientEvents
+		control.Pump(math.ceil(Access.OFFER_TIMEOUT_MS / 100) + 10)
+		local lapsed = sentAfter(lapsedMark, dealership.Event.WITHDRAWN, buyer)
+		check('an offer that runs out is withdrawn from the buyer\'s screen too',
+			lapsed ~= nil and lapsed[1].token == lapsedAt
+				and lapsed[1].error == 'dealership.offerExpired',
+			lapsed and tostring(lapsed[1].error) or 'nothing sent')
+
 		-- ── and yes ────────────────────────────────────────────────────────
 		local settled
 		offered = contract.Offer(seller, buyer, 'hella')
@@ -9286,6 +9342,41 @@ do
 			Runtime.Report().open == false and Runtime.Report().offered == nil)
 		check('and there is nothing left to answer',
 			Runtime.Decide(true).ok == false)
+
+		-- ── an offer does not take the player's own list away ─────────────
+		-- It used to take down whatever dealership menu was open and replace it,
+		-- so a press meant for the player's own row could land on "Buy it".
+		local own = Runtime.Open('test')
+		cctl.Pump(2)
+		check('the player has their own list open', own.ok == true
+			and Runtime.Report().screen == 'root', tostring(Runtime.Report().screen))
+		cctl.netEvents[dealership.Event.OFFERED]({
+			token = 4242, entry = 'hella', model = 'Archer Hella', price = 29000,
+			text = '29,000 $', seller = 'somebody', dealer = 'yard', label = 'UPTOWN YARD',
+		})
+		cctl.Pump(2)
+		check('an offer arriving over it waits rather than replacing it',
+			Runtime.Report().screen == 'root' and Runtime.Report().offered == 'hella',
+			tostring(Runtime.Report().screen))
+		Runtime.Close()
+		cctl.Pump(2)
+		check('and opens once the player closes their own list',
+			Runtime.Report().open == true and Runtime.Report().screen == 'offer',
+			tostring(Runtime.Report().screen))
+
+		-- ── an offer that ended without an answer closes its screen ───────
+		-- The offer ran out, or the seller left: the screen asking the player to
+		-- buy a car nobody is selling any more comes down. A withdrawal naming an
+		-- offer already replaced closes nothing.
+		cctl.netEvents[dealership.Event.WITHDRAWN]({ token = 1, error = 'dealership.offerExpired' })
+		cctl.Pump(2)
+		check('a withdrawal of another offer leaves this one up',
+			Runtime.Report().screen == 'offer' and Runtime.Report().offered == 'hella')
+		cctl.netEvents[dealership.Event.WITHDRAWN]({ token = 4242, error = 'dealership.sellerGone' })
+		cctl.Pump(2)
+		check('a withdrawal of this one takes the screen down and forgets it',
+			Runtime.Report().open == false and Runtime.Report().offered == nil,
+			tostring(Runtime.Report().screen))
 
 		-- ── yes, and where to file it ─────────────────────────────────────
 		-- A salesperson's sale filed the car under the default garage whatever
