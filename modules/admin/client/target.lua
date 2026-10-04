@@ -614,6 +614,9 @@ local function wanted()
 	-- Once, not once per row: the same word heads every folder.
 	local heading = locale('admin.target.group')
 	for index, row in ipairs(ROWS) do
+		-- Built on the registration thread, a few rows a resume: the first
+		-- registration builds every granted row, about 8,000 instructions in one go.
+		if index % 8 == 0 and coroutine.isyieldable() then Wait(0) end
 		if granted(row.grant) then
 			byKind[row.kind] = byKind[row.kind] or {}
 			local group = heading
@@ -719,6 +722,9 @@ local function register(contract, byKind, signature)
 		end
 	end
 	registered = signature
+	-- The closing line walks every row again for the grants it dropped; it does
+	-- not need to share a resume with the last batch.
+	if coroutine.isyieldable() then Wait(0) end
 	local total = 0
 	for _, rows in pairs(byKind) do total = total + #rows end
 	-- THE ROWS THAT ARE NOT THERE ARE THE HALF WORTH READING. A count alone said

@@ -117,6 +117,21 @@ local downHeard = 0
 -- for the same answer and the only thing it can ever do is drift.
 local finite = OPX.Math.IsFinite
 
+local find = string.find
+
+--- `Text.Clean` with the common case answered in place.
+-- Every row of a spec is cleaned field by field inside the caller's resume --
+-- label, description, value, the toggle words -- and most of those fields are
+-- absent or are short plain text already. Those come back as they are without
+-- a copy through `gsub`: no control character and no more bytes than the limit
+-- in characters means nothing to replace and nothing to cut. Anything else goes
+-- through `Text.Clean` exactly as before.
+local function clean(value, maximum)
+	if value == nil then return nil end
+	if type(value) == 'string' and #value <= maximum and not find(value, '%c') then return value end
+	return Text.Clean(value, maximum)
+end
+
 --- Whether a value is a bounded identifier: word characters, `_`, `:`, `-`, `.`.
 local function validName(value, maximum)
 	return type(value) == 'string' and #value > 0 and #value <= maximum
@@ -201,7 +216,7 @@ local function normalizeSlider(slider)
 	if value < low then value = low end
 	if value > high then value = high end
 	return { min = low, max = high, step = step, value = value,
-		suffix = Text.Clean(slider.suffix, MAX_SUFFIX) or '' }
+		suffix = clean(slider.suffix, MAX_SUFFIX) or '' }
 end
 
 --- Validates a choice list and settles which entry starts current.
@@ -209,7 +224,7 @@ local function normalizeChoices(item)
 	if type(item.choices) ~= 'table' then return nil, 'invalid_choices' end
 	local labels = {}
 	for index = 1, #item.choices do
-		local label = Text.Clean(item.choices[index], MAX_VALUE)
+		local label = clean(item.choices[index], MAX_VALUE)
 		if label == nil then return nil, 'invalid_choice' end
 		labels[index] = label
 	end
@@ -243,14 +258,14 @@ local function normalizeItem(item, index, depth, budget)
 	-- A separator returns before anything else is read: a description, a data
 	-- table or a disabled flag on one is dropped rather than refused.
 	if item.separator == true then
-		return { id = id, kind = 'separator', label = Text.Clean(item.label, MAX_LABEL) or '' }
+		return { id = id, kind = 'separator', label = clean(item.label, MAX_LABEL) or '' }
 	end
 
-	local label = Text.Clean(item.label or item.text, MAX_LABEL)
+	local label = clean(item.label or item.text, MAX_LABEL)
 	if label == nil or label == '' then return nil, 'invalid_item_label' end
 
 	-- Cleaned once and kept: the row below used to clean it a second time.
-	local description = Text.Clean(item.description, MAX_DESCRIPTION)
+	local description = clean(item.description, MAX_DESCRIPTION)
 	if item.description ~= nil and description == nil then
 		return nil, 'invalid_item_description'
 	end
@@ -301,8 +316,8 @@ local function normalizeItem(item, index, depth, budget)
 		if children == nil then return nil, reason end
 		entry.kind = 'submenu'
 		entry.items = children
-		entry.title = Text.Clean(item.title, MAX_LABEL) or label
-		entry.value = Text.Clean(item.value, MAX_VALUE)
+		entry.title = clean(item.title, MAX_LABEL) or label
+		entry.value = clean(item.value, MAX_VALUE)
 		entry.cursor = item.cursor
 		return entry
 	end
@@ -313,8 +328,8 @@ local function normalizeItem(item, index, depth, budget)
 		entry.kind = 'toggle'
 		entry.on = item.toggle
 		entry.labels = {
-			on = Text.Clean(item.onLabel, MAX_VALUE),
-			off = Text.Clean(item.offLabel, MAX_VALUE),
+			on = clean(item.onLabel, MAX_VALUE),
+			off = clean(item.offLabel, MAX_VALUE),
 		}
 		return entry
 	end
@@ -349,7 +364,7 @@ local function normalizeItem(item, index, depth, budget)
 	end
 
 	entry.kind = 'action'
-	entry.value = Text.Clean(item.value, MAX_VALUE)
+	entry.value = clean(item.value, MAX_VALUE)
 	return entry
 end
 

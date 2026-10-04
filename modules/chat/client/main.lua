@@ -331,14 +331,23 @@ end
 -- every one after it is appended. A page that receives the first and misses the
 -- rest is short a few completions -- it is never left holding half of one list
 -- and half of another.
-local function sendSuggestions(list)
-	local total = #list
-	if total == 0 then
-		return publish('interactive', 'suggestions', { suggestions = {}, reset = true })
-	end
+--
+-- ONE PAYLOAD PER RESUME. Every chunk is a local event and a page send, and the
+-- list is every command the player may see -- seventy-odd today, ten chunks,
+-- growing with every module -- which went out in one go from whichever handler
+-- asked: the box opening (a key), the page reporting ready, the server's answer.
+-- The chunks now go out on a thread of their own, one a frame, and a newer send
+-- abandons an older one: its first chunk resets the page anyway.
+local sendGeneration = 0
 
+local function sendChunks(list, mine, paced)
+	local total = #list
 	local at, first = 1, true
 	while at <= total do
+		if not first and paced then
+			Wait(0)
+			if sendGeneration ~= mine then return false end
+		end
 		local chunk = {}
 		for index = at, math.min(at + SUGGESTIONS_PER_PAYLOAD - 1, total) do
 			chunk[#chunk + 1] = list[index]
@@ -349,6 +358,17 @@ local function sendSuggestions(list)
 		first = false
 		at = at + SUGGESTIONS_PER_PAYLOAD
 	end
+	return true
+end
+
+local function sendSuggestions(list)
+	sendGeneration = sendGeneration + 1
+	local mine = sendGeneration
+	if #list == 0 then
+		return publish('interactive', 'suggestions', { suggestions = {}, reset = true })
+	end
+	if type(CreateThread) ~= 'function' then return sendChunks(list, mine, false) end
+	CreateThread(function() sendChunks(list, mine, true) end)
 	return true
 end
 

@@ -16288,6 +16288,10 @@ do
 		-- many rows the ACL granted -- which is exactly the thing this section
 		-- varies. A fixed pump reads a registration that is still running.
 		settle(ccontrol, function() return has('admin_skyNoclip') end, 80)
+		-- The closing line goes out on the resume after the last batch.
+		settle(ccontrol, function()
+			return tostring(reports[#reports] or ''):find('staff rows on the eye', 1, true) ~= nil
+		end, 20)
 
 		-- THE REPORT, verbatim. `#sky` is what the operator sees; what is NOT in
 		-- it is what they wrote in about.
@@ -32055,6 +32059,96 @@ do
 		control.Pump(10)
 		check('while the anywhere right reaches it', #control.vehicles.updates > updates,
 			#control.vehicles.updates - updates)
+	end
+end
+
+
+-- ── client handlers that hand their heavy half to a resume of its own ───────
+-- The animations snapshot (64 states a page, each checked field by field), the
+-- chat suggestion list (one page send per chunk) and the HUD's full redraw used
+-- to run whole inside the handler that received them. Each handler now costs
+-- little, and the work still lands, a frame or a few later.
+section('client handlers hand their heavy half to a resume of its own')
+do
+	local env, control, why = boot('client', nil, function(env)
+		env.Open77.animations = env.Open77.animations or {}
+		env.Open77.animations._context = function() return { bucket = 0, playerId = 1, players = {} } end
+		env.Open77.animations._playProfile = function() return true end
+		env.Open77.animations.stop = function() return true end
+	end)
+	check('client boots with the presentation natives', why == nil, why)
+	if why == nil then
+		local OPX = env.OPX
+		local animations = OPX.Modules.Get('animations')
+		local function cost(fn, ...)
+			local spent = 0
+			debug.sethook(function() spent = spent + 1 end, '', 1)
+			fn(...)
+			debug.sethook()
+			return spent
+		end
+
+		local snapshot = control.netEvents['open77:animations:snapshot']
+		check('the presenter listens for snapshots', snapshot ~= nil)
+		if snapshot ~= nil then
+			local states = {}
+			for index = 1, 64 do
+				states[index] = { epoch = 'e1', playbackId = 'p' .. index, revision = 1, playerId = index + 1,
+					active = true, bucket = 0, step = 0, cycle = 0,
+					steps = { { profile = 'x', clip = 'y', durationMs = 1000 } } }
+			end
+			local spent = cost(snapshot, { epoch = 'e1', revision = 5, bucket = 0, states = states })
+			check('a 64-state snapshot page costs its handler almost nothing', spent < 600,
+				('%d instructions'):format(spent))
+			settle(control, function() return animations.Presenter.State(40).active == true end, 40)
+			check('and the page is still committed, on the worker',
+				animations.Presenter.State(40).active == true and animations.Presenter.State(65).active == true)
+		end
+
+		-- The chat completion list: one chunk a frame, not ten in the handler.
+		local chat = OPX.Modules.Get('chat')
+		local list = {}
+		for index = 1, 160 do
+			list[index] = { name = '/cmd' .. index, help = 'Help for command ' .. index,
+				params = { { name = 'a', help = 'first' } } }
+		end
+		env.TriggerServerEvent = function() return true end
+		chat.FromView('ready', { surface = 'interactive' })
+		control.Pump(2)
+		local chunks, entries = 0, 0
+		env.AddEventHandler(chat.Event.VIEW, function(payload)
+			if type(payload) == 'table' and payload.kind == 'suggestions' then
+				chunks = chunks + 1
+				entries = entries + #(payload.suggestions or {})
+			end
+		end)
+		local spentChat = cost(control.netEvents[chat.Event.SUGGESTIONS], { suggestions = list })
+		check('a 160-entry completion list costs its handler one chunk at most', spentChat < 1000,
+			('%d instructions'):format(spentChat))
+		control.Pump(40)
+		check('and every entry still reaches the input line, a chunk a frame',
+			entries == 160 and chunks > 1, ('%d entries in %d chunks'):format(entries, chunks))
+
+		-- The HUD: the switch goes out in the handler, the blocks after it.
+		local hudPage
+		for _, candidate in ipairs(control.pages) do
+			if candidate.handlers['opx:hud:ready'] then hudPage = candidate end
+		end
+		if hudPage ~= nil then
+			local before = #hudPage.sent
+			local spent = cost(control.PageEmit, hudPage, 'opx:hud:ready', {})
+			local shownNow = false
+			for index = before + 1, #hudPage.sent do
+				if hudPage.sent[index].channel == 'opx:hud:show' then shownNow = true end
+			end
+			check('the HUD ready handler pushes the switch at once', shownNow)
+			check('and leaves the block re-sends to a thread', spent < 1000, ('%d instructions'):format(spent))
+			local afterHandler = #hudPage.sent
+			control.Pump(10)
+			local blocks = {}
+			for index = afterHandler + 1, #hudPage.sent do blocks[#blocks + 1] = hudPage.sent[index].channel end
+			check('which still sends them', #blocks > 0, table.concat(blocks, ','))
+		end
 	end
 end
 
