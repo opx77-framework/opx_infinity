@@ -63,6 +63,10 @@ shared_script "core/shared/glyphs.lua"
 shared_script "core/shared/channels.lua"
 shared_script "core/shared/registry.lua"
 shared_script "core/shared/lifecycle.lua"
+-- The creator surfaces' shared gate and answer shapes, read by
+-- `core/server/exports.lua` and `core/client/exports.lua` at the foot of this
+-- file. Nothing in it runs at load beyond defining functions.
+shared_script "core/shared/exports.lua"
 
 shared_script "config/shared.lua"
 server_script "config/server.lua"

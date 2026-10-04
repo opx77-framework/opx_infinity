@@ -141,6 +141,11 @@ local CORE_NAMESPACE = {
 	-- because every module that announces something calls it, and a copy per
 	-- module would be a copy per idea of what "refused" means.
 	Publish = true,
+	-- The creator surfaces' one caller gate and answer shape, in
+	-- `core/shared/exports.lua`. On `OPX` because BOTH halves stand on it: two
+	-- copies of a gate are two gates, and the day one is tightened alone the
+	-- client and the server disagree about who may call.
+	Export = true,
 }
 
 -- States a module may legitimately rest in. `absent` means it runs on the other
@@ -12802,6 +12807,110 @@ do
 		end
 		check('and none is left alive after the resource stops', after == 0, after)
 	end
+end
+
+-- ── the focus goes back before anything else stops ───────────────────────────
+-- It went back only inside `Teardown`, AFTER every module's `Stop`, all of them
+-- in one resume on one instruction budget. An overrun anywhere in that run
+-- unwound the handler before `Teardown` was reached, and the player was left
+-- holding keyboard and cursor with nothing drawn. The overrun is played here by
+-- a `Modules.Stop` that raises outright, which is what it looks like from the
+-- stop handler.
+section('the focus goes back before the modules stop')
+do
+	local env, control, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local page = control.pages[1]
+		OPX.UI.AcquireFocus('test', { keyboard = true, cursor = true })
+		check('a view holds keyboard and cursor', page.focus.keyboard == true
+			and page.focus.cursor == true)
+
+		local real = OPX.Modules.Stop
+		local focusWhenStopping
+		OPX.Modules.Stop = function()
+			focusWhenStopping = { keyboard = page.focus.keyboard, cursor = page.focus.cursor }
+			error('Open77 script execution budget exceeded')
+		end
+		pcall(control.Fire, 'onClientResourceStop', 'opx_infinity')
+		OPX.Modules.Stop = real
+
+		check('the focus was already released when the modules began to stop',
+			focusWhenStopping ~= nil and focusWhenStopping.keyboard == false
+				and focusWhenStopping.cursor == false)
+		check('so a stop that dies part-way leaves the player their controls',
+			page.focus.keyboard == false and page.focus.cursor == false)
+		check('and no owner is left on the stack', OPX.UI.FocusOwner() == nil)
+	end
+end
+
+-- ── each module's Stop gets a budget of its own ──────────────────────────────
+-- The same argument `runPhase` makes for `Start`: thirty `Stop`s in one resume
+-- is one budget between them, and the module holding the parcel when it runs
+-- out is cut off along with everything after it.
+section('the module stops yield between modules')
+do
+	local env, _, why = boot('client')
+	check('the client boots', why == nil, why)
+
+	if why == nil then
+		local OPX = env.OPX
+		local stoppable = 0
+		for _, record in ipairs(OPX.Modules.Resolve()) do
+			if (record.State == 'started' or record.State == 'failed')
+				and type(record.Module.Stop) == 'function' then
+				stoppable = stoppable + 1
+			end
+		end
+
+		local thread = coroutine.create(function() OPX.Modules.Stop(true) end)
+		local resumes = 0
+		while coroutine.status(thread) ~= 'dead' and resumes < 500 do
+			coroutine.resume(thread)
+			resumes = resumes + 1
+		end
+		check('there are modules with a Stop to run', stoppable > 1, stoppable)
+		check('one resume per module Stop, not one for all of them',
+			resumes == stoppable + 1, ('%d resumes for %d stops'):format(resumes, stoppable))
+
+		local again = 0
+		for _, record in ipairs(OPX.Modules.Resolve()) do
+			if record.State == 'started' then again = again + 1 end
+		end
+		check('every module ends stopped', again == 0, again)
+		check('and the server-shaped call, off any thread, still stops in one go',
+			(pcall(OPX.Modules.Stop)))
+	end
+end
+
+-- ── one caller gate for both creator surfaces ────────────────────────────────
+-- The gate was written out twice, once per half. Read from the source because
+-- what is being held is that neither half carries its own copy any more.
+section('the creator surfaces share one gate')
+do
+	for _, file in ipairs({ 'core/server/exports.lua', 'core/client/exports.lua' }) do
+		local source = io.open(file):read('a')
+		check(file .. ' asks the shared gate who is calling',
+			source:find('Export.Caller()', 1, true) ~= nil
+				and source:find('GetInvokingResource()', 1, true) == nil)
+	end
+	local env = { type = type, ipairs = ipairs, OPX = {} }
+	local chunk = loadfile('core/shared/exports.lua', 't', env)
+	chunk()
+	local Export = env.OPX.Export
+	env.GetInvokingResource = function() return 'my_shop' end
+	check('a well-formed caller is named', Export.Caller() == 'my_shop')
+	env.GetInvokingResource = function() return 'bad name!' end
+	check('a name outside the manifest grammar is nobody', Export.Caller() == nil)
+	env.GetInvokingResource = function() return ('a'):rep(65) end
+	check('and so is one past 64 characters', Export.Caller() == nil)
+	check('an array allowlist admits by name', Export.Admits({ 'a', 'b' }, 'b')
+		and not Export.Admits({ 'a' }, 'b') and Export.Admits('*', 'x'))
+	check('a Result that is not one answers unavailable',
+		Export.Answered(nil).error == 'error.unavailable'
+			and Export.Answered({ ok = true, value = 3 }).value == 3)
 end
 
 -- ── the hotbar peek ─────────────────────────────────────────────────────────

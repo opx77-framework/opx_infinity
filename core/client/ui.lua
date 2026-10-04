@@ -370,6 +370,20 @@ function OPX.UI.ReleaseFocus(owner)
 	applyFocus()
 end
 
+--- Gives every owner's focus back at once, and tells the page.
+---
+--- The stop path's first step, BEFORE any module stops. Leaving it to
+--- `Teardown`, after `Modules.Stop`, made the one thing a player cannot recover
+--- from -- keyboard and cursor held with nothing drawn -- depend on thirty
+--- module `Stop`s all finishing inside the instruction budget first. It costs
+--- nothing to do it early: a module releasing its own owner afterwards finds an
+--- empty stack, and the page is still there for it to talk to.
+-- @author dop42
+function OPX.UI.ReleaseAllFocus()
+	focusStack = {}
+	if page then pcall(OPX.Surface.Focus, page, false, false) end
+end
+
 --- Who currently holds focus, or nil.
 -- @author dop42
 -- @return string|nil
