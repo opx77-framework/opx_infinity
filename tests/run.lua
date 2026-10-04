@@ -21910,6 +21910,96 @@ do
 	end
 end
 
+-- A drawn weapon moved out of the bag was holstered WITHOUT a reading, so every
+-- round fired since the last sync came back with the item. It now leaves only
+-- once its rounds have been read back.
+section('inventory: a drawn weapon leaves the bag with the rounds it really has')
+do
+	local env, control, why = boot('server')
+	check('the server boots', why == nil, why)
+
+	if why == nil then
+		local inventory = env.OPX.Modules.Get('inventory')
+		local Containers, Weapons, Players, Catalog = inventory.Containers, inventory.Weapons,
+			inventory.Players, inventory.Catalog
+		local SLOT = inventory.Options.WEAPON_SLOT
+		local SHOOTER, CITIZEN = 961, 'GUN00001'
+
+		local weaponName
+		for _, name in ipairs(Catalog.Names()) do
+			local entry = Catalog.Get(name)
+			if entry.weapon and entry.weapon.ammo and entry.weapon.magazine then
+				weaponName = name
+				break
+			end
+		end
+		check('the catalogue carries a weapon that loads rounds', weaponName ~= nil)
+
+		local requests, sequence = {}, 0
+		local function ask(kind)
+			sequence = sequence + 1
+			requests[#requests + 1] = { id = sequence, kind = kind }
+			return sequence
+		end
+		local realWeapons = env.Open77.weapons
+		env.Open77.weapons = {
+			assign = function() return ask('assign') end,
+			remove = function() return ask('remove') end,
+			setAmmo = function() return ask('setAmmo') end,
+			requestSnapshot = function() return ask('snapshot') end,
+			get = function() return { fresh = true, drawn = true } end,
+		}
+		local function complete(id, result)
+			env.TriggerEvent('open77:weapons:completed', tostring(SHOOTER), id, 'op', true, nil,
+				result)
+		end
+
+		local realSourceOf, realCitizen = Players.SourceOf, Players.Citizen
+		Players.SourceOf = function(citizenId) return citizenId == CITIZEN and SHOOTER or nil end
+		Players.Citizen = function(source) return source == SHOOTER and CITIZEN or nil end
+
+		local bag = Containers.Transient('character', CITIZEN, 10, 100000)
+		local stash = Containers.Transient('stash', 'ammo_test_stash', 10, 100000)
+
+		if weaponName then
+			local magazine = Catalog.Get(weaponName).weapon.magazine
+			bag.items[1] = { name = weaponName, count = 1,
+				metadata = { serial = 'TS00000001', ammo = magazine } }
+
+			local used = Weapons.Use(SHOOTER, bag, 1, Catalog.Get(weaponName))
+			check('the weapon is drawn', used == true)
+			complete(requests[#requests].id, { tweakDbId = 'tweak-1',
+				ammo = { capacity = magazine, magazine = 0 } })
+			complete(requests[#requests].id, nil)
+			check('and armed', Weapons.Held(SHOOTER) ~= nil)
+
+			-- Fired down to three; no sync has run since.
+			local moved, refusal = Containers.Move(bag, 1, stash, nil, nil)
+			check('the first attempt to put it away holsters it and is refused',
+				not moved and refusal == 'holstering', tostring(refusal))
+			local read = requests[#requests]
+			check('with a reading of its rounds asked for', read ~= nil and read.kind == 'snapshot')
+			local again, againWhy = Containers.Move(bag, 1, stash, nil, nil)
+			check('and it cannot leave while that reading is in flight',
+				not again and againWhy == 'holstering', tostring(againWhy))
+
+			complete(read.id, { { slot = SLOT, tweakDbId = 'tweak-1', equipped = true,
+				ammo = { total = 3 } } })
+			local gone = Containers.Move(bag, 1, stash, nil, nil)
+			local landed = stash.items[1]
+			check('once the reading lands it leaves', gone == true and landed ~= nil)
+			check('carrying the rounds it really has, not the last sync',
+				landed ~= nil and landed.metadata.ammo == 3,
+				landed and tostring(landed.metadata.ammo))
+		end
+
+		env.Open77.weapons = realWeapons
+		Players.SourceOf, Players.Citizen = realSourceOf, realCitizen
+		Containers.Discard(bag.id)
+		Containers.Discard(stash.id)
+	end
+end
+
 -- A use handler yields, and the consume comes after it. While it ran, the stack
 -- could be dragged away, handed over, dropped, split or used again: the effect
 -- was applied and the consume found nothing. The slot is held for the handler.

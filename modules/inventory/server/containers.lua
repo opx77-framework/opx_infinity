@@ -724,6 +724,12 @@ function Containers.Move(from, fromSlot, to, toSlot, count)
 	if toSlot ~= nil and isHeld(to, Common.Integer(toSlot, 1, to.slots)) then
 		return false, 'in_use'
 	end
+	-- A drawn weapon leaves the bag only once its rounds have been read back
+	-- (see `Weapons.BeforeLeave`).
+	if to.id ~= from.id then
+		local refusal = M.Weapons.BeforeLeave(from, source)
+		if refusal then return false, refusal end
+	end
 
 	-- WHAT MAY NOT BE LEFT ON THE FLOOR MAY NOT BE LEFT ANYWHERE THAT IS NEVER
 	-- WRITTEN, and until this line the rule only covered the floor. `DROP = false`
