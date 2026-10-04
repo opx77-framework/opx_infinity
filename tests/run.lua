@@ -13001,6 +13001,566 @@ do
 			safe and Walk.Held() == nil)
 	end
 end
+-- ── animations: the whole platform catalogue, and emotes with somebody ──────
+-- A STAND-IN FOR `RpAnimationCatalog`, shaped as op77.123 ships it: the fifteen
+-- profiles written in shared/catalogue.lua (their clips read back from it, so
+-- the two cannot drift), ninety-six more across every platform family plus one
+-- this module has never heard of, one-shot and looping layers with measured
+-- clips, one 37-clip profile like `chair`, one the platform marks failed and
+-- one malformed row. A hundred-odd rows is the size that breaks a naive client.
+local ANIM_WRITTEN = { 'handsup', 'clap', 'dance', 'phone', 'cry', 'think', 'sit', 'meditate',
+	'stretch', 'smoke', 'cigar', 'drink', 'give', 'examine', 'wounded' }
+local ANIM_FAMILIES = { 'gestures', 'onthemove', 'social', 'emotions', 'postures', 'seated',
+	'relaxation', 'dance', 'music', 'consumables', 'work', 'interactions', 'stunts' }
+local ANIM_STUBS = 96
+
+local function animStubProfiles(Catalogue)
+	local profiles = {}
+	for _, name in ipairs(ANIM_WRITTEN) do
+		local entry = Catalogue and Catalogue.Entry(name) or nil
+		local clips = entry and table.move(entry.clips, 1, #entry.clips, 1, {}) or { name .. '__01' }
+		profiles[#profiles + 1] = { id = name, label = name, category = 'gestures',
+			kind = 'workspot', placement = 'standing', clips = clips, clipNames = clips,
+			clipDurationsMs = {}, validation = 'asset_verified_runtime_pending' }
+	end
+	for index = 1, ANIM_STUBS do
+		local layer = index % 4 == 0
+		local clips, measured = {}, {}
+		for clip = 1, index == 7 and 37 or index % 6 + 1 do
+			clips[clip] = ('stub_%02d__pose__%02d'):format(index, clip)
+			measured[clips[clip]] = 1200 + index * 10
+		end
+		profiles[#profiles + 1] = {
+			id = ('stub_%02d'):format(index),
+			label = ('Stub pose %d'):format(index),
+			category = ANIM_FAMILIES[index % #ANIM_FAMILIES + 1],
+			kind = layer and 'layer' or 'workspot',
+			mode = layer and (index % 8 == 0 and 'once' or 'loop') or nil,
+			placement = 'standing',
+			clips = clips, clipNames = clips, clipDurationsMs = measured,
+			validation = layer and 'graph_verified_runtime_pending' or 'asset_verified_runtime_pending',
+		}
+	end
+	profiles[#profiles + 1] = { id = 'stub_broken', label = 'Broken', category = 'gestures',
+		kind = 'workspot', clips = { 'broken__01' }, validation = 'runtime_failed' }
+	profiles[#profiles + 1] = { id = 'Not An Id', kind = 'workspot', clips = { 'x' } }
+	return profiles
+end
+
+-- The platform's two natives, recording. The written rows are read from the
+-- module at call time: the stand-in is installed before the module loads.
+local function animPlatform(env)
+	local platform = { plays = {}, stops = {}, requests = {}, cancels = {}, serial = 0 }
+	local function profiles()
+		local animations = env.OPX and env.OPX.Modules.Get('animations')
+		return animStubProfiles(animations and animations.Catalogue)
+	end
+	env.Open77.animations = {
+		list = function() return profiles() end,
+		get = function(name)
+			for _, row in ipairs(profiles()) do if row.id == name then return row end end
+			return nil
+		end,
+		play = function(player, name, options)
+			platform.plays[#platform.plays + 1] = { player = player, name = name, options = options }
+			return { playbackId = 'pb' .. #platform.plays }
+		end,
+		stop = function(player)
+			platform.stops[#platform.stops + 1] = player
+			return true
+		end,
+	}
+	env.Open77.playerInteractions = {
+		request = function(actor, target, kind, options)
+			platform.serial = platform.serial + 1
+			local id = ('%032x'):format(platform.serial)
+			platform.requests[#platform.requests + 1] = { actor = actor, target = target, kind = kind,
+				options = options, id = id }
+			return { id = id, kind = kind, phase = 'preparing' }
+		end,
+		cancel = function(id, reason)
+			platform.cancels[#platform.cancels + 1] = { id = id, reason = reason }
+			return { id = id, phase = 'cancelled' }
+		end,
+	}
+	return platform
+end
+
+-- Values one decoded event carries, the way the client's decoder counts them:
+-- every table is one more.
+local function animValues(value)
+	if type(value) ~= 'table' then return 1 end
+	local count = 1
+	for _, inner in pairs(value) do count = count + animValues(inner) end
+	return count
+end
+
+section('animations: every profile of the platform catalogue is offered, on the server')
+do
+	local platform
+	local env, control, why = boot('server', nil, function(fresh) platform = animPlatform(fresh) end,
+		function(booted, file)
+			if file ~= 'config/animations.lua' then return end
+			local config = booted.OPX.Config.MODULES.animations
+			config.DISABLED = { 'stub_03', 'escort', 'no_such_profile' }
+		end)
+	check('the server boots with the animations module', why == nil, why)
+	local animations = why == nil and env.OPX.Modules.Get('animations') or nil
+	if animations ~= nil then
+		control.Pump(20)
+		local Catalogue, Service, Duo = animations.Catalogue, animations.Service, animations.Duo
+
+		-- ── all of it, less DISABLED and what the platform says does not work ──
+		check('every usable platform profile not written here is adopted, less DISABLED',
+			Catalogue.AdoptedCount() == ANIM_STUBS - 1, tostring(Catalogue.AdoptedCount()))
+		local wrong = {}
+		for _, row in ipairs(animStubProfiles(Catalogue)) do
+			local expected = row.validation ~= 'runtime_failed' and row.id ~= 'stub_03'
+				and row.id:match('^[%l%d_]+$') ~= nil
+			if (Service.Offered(row.id) ~= nil) ~= expected then wrong[#wrong + 1] = row.id end
+		end
+		check('and every one of them is offered, the fifteen written rows too', #wrong == 0,
+			table.concat(wrong, ','))
+		check('a DISABLED platform profile is not offered', Service.Offered('stub_03') == nil)
+		check('nor one the platform marks failed, nor a malformed row',
+			Service.Offered('stub_broken') == nil and Service.Offered('Not An Id') == nil)
+		local warned, misreported = false, false
+		for _, line in ipairs(control.log.warn or {}) do
+			if tostring(line):find('no_such_profile', 1, true) then warned = true end
+			if tostring(line):find('"escort"', 1, true) then misreported = true end
+		end
+		check('a DISABLED name matching nothing is a boot-log line', warned)
+		check('a paired kind\'s id in DISABLED is not reported as unknown', not misreported)
+
+		-- ── the families ──
+		local function categoryOf(name) return (Catalogue.Entry(name) or {}).category end
+		check('the platform\'s `seated` family is `sitting` here', categoryOf('stub_05') == 'sitting',
+			tostring(categoryOf('stub_05')))
+		check('`dance` and `music` are both `music`',
+			categoryOf('stub_07') == 'music' and categoryOf('stub_08') == 'music')
+		check('a family this module has never heard of lands in `other`, not nowhere',
+			categoryOf('stub_12') == 'other', tostring(categoryOf('stub_12')))
+		local homeless = {}
+		for _, entry in ipairs(Catalogue.Entries()) do
+			if not Catalogue.IsCategory(entry.category) then homeless[#homeless + 1] = entry.name end
+		end
+		check('every entry sits in a family the picker draws', #homeless == 0,
+			table.concat(homeless, ','))
+
+		-- ── the offer, in parts a client can decode ──
+		control.Admit(1, 'account-1')
+		env.source = 1
+		control.netEvents[animations.Event.HELLO]()
+		local parts, rows, worst = 0, 0, 0
+		for _, event in ipairs(control.clientEvents) do
+			if event.name == animations.Event.OFFER and event.source == 1 then
+				parts = parts + 1
+				rows = rows + #event[4]
+				local values = 0
+				for index = 1, 5 do values = values + animValues(event[index]) end
+				if values > worst then worst = values end
+			end
+		end
+		check('the offer goes out in several parts', parts > 1, tostring(parts))
+		check('carrying every offered row', rows == #Service.Wire(), ('%d of %d'):format(rows,
+			#Service.Wire()))
+		check('and no part is past the client\'s 1,024-value decoder', worst < 1024, tostring(worst))
+
+		-- ── playing: the right native, the right clip ──
+		control.Admit(2, 'account-2')
+		local result = Service.Play(2, 'stub_05', 2, nil)
+		local last = platform.plays[#platform.plays]
+		check('a platform profile plays through Open77.animations.play', result.ok == true
+			and last ~= nil and last.player == 2 and last.name == 'stub_05'
+			and last.options.clip == 'stub_05__pose__02', result.error)
+		result = Service.Play(2, 'stub_08', nil, nil)
+		last = platform.plays[#platform.plays]
+		check('a one-shot gesture plays once, for its measured clip', result.ok == true
+			and last.options.loop == false and last.options.durationMs == 1280,
+			last and tostring(last.options.durationMs))
+		result = Service.Play(2, 'stub_03', nil, nil)
+		check('a DISABLED profile is refused by name', result.error == 'unknown_animation')
+
+		-- ── the rate ──
+		control.Admit(3, 'account-3')
+		local refused
+		for _ = 1, 7 do refused = Service.Play(3, 'dance', nil, nil) end
+		check('the seventh play in a window is refused', refused.error == 'rate_limited')
+		local invited = Duo.Request(3, { actor = 'dance', target = 'dance' })
+		check('and an invitation spends from the same window', invited.error == 'rate_limited'
+			and invited.quiet == true)
+	end
+end
+
+section('animations: emotes with a nearby player, everything the coordinator plays')
+do
+	local platform
+	local env, control, why = boot('server', nil, function(fresh) platform = animPlatform(fresh) end,
+		function(booted, file)
+			if file ~= 'config/animations.lua' then return end
+			local config = booted.OPX.Config.MODULES.animations
+			config.DISABLED = { 'stub_03', 'escort' }
+			config.RATE_LIMIT = { WINDOW_MS = 10000, REQUESTS = 1000 }
+			config.SHARED.PAIRS = {
+				{ ID = 'talk', ACTOR = 'stub_05', TARGET = 'dance', DURATION_MS = 20000 },
+				{ ID = 'withheld', ACTOR = 'stub_03', TARGET = 'dance', DURATION_MS = 9000 },
+			}
+		end)
+	check('the server boots for the duo checks', why == nil, why)
+	local animations = why == nil and env.OPX.Modules.Get('animations') or nil
+	if animations ~= nil then
+		control.Pump(20)
+		local Duo, Event = animations.Duo, animations.Event
+		for id = 4, 7 do control.Admit(id, 'account-' .. id) end
+		control.Stand(4, 0.0, 0.0, 0.0)
+		control.Stand(5, 1.5, 0.0, 0.0)
+		control.Stand(6, 2.5, 0.0, 0.0)
+		control.Stand(7, 80.0, 0.0, 0.0)
+
+		local function lastTo(name, player)
+			for index = #control.clientEvents, 1, -1 do
+				local event = control.clientEvents[index]
+				if event.name == name and event.source == player then return event end
+			end
+			return {}
+		end
+		local function release()
+			local last = platform.requests[#platform.requests]
+			if last then
+				control.Fire('onPlayerInteractionCompleted', { id = last.id, phase = 'completed' })
+			end
+		end
+
+		-- ── what is offered ──
+		local offered = Duo.Offered()
+		local kinds = table.concat(offered.kinds, ',')
+		check('every paired kind is offered from both sides, less a DISABLED one',
+			kinds == 'carry,carried,escorted,give,heal,healed', kinds)
+		check('any two profiles may be asked for', offered.any == true)
+		check('a shortcut naming a DISABLED profile is not offered',
+			#offered.pairs == 1 and offered.pairs[1].id == 'talk')
+		local profiles = 15 + ANIM_STUBS - 1
+		check('the ways counted are the kinds, the shortcut and every ordered pair of profiles',
+			Duo.Count() == #offered.kinds + 1 + profiles * profiles, tostring(Duo.Count()))
+
+		-- ── any two: the asker's profile, then the other's ──
+		local asked = Duo.Request(4, { actor = 'dance', target = 'stub_05' })
+		local invite = lastTo(Event.INVITE, 5)
+		check('the NEAREST player is invited, and told what they would play', asked.ok == true
+			and type(invite[2]) == 'table' and invite[2].actor == 'dance'
+			and invite[2].target == 'stub_05', asked.error)
+		check('nothing plays before the answer', #platform.requests == 0)
+		Duo.Reply(5, invite[1], true)
+		local request = platform.requests[1] or { options = {} }
+		check('a yes asks the coordinator for `custom` with both profiles and no second consent',
+			request.kind == 'custom' and request.actor == 4 and request.target == 5
+			and request.options.actorAnimation == 'dance'
+			and request.options.targetAnimation == 'stub_05'
+			and request.options.consent == false and request.options.durationMs == 30000)
+		check('within the configured range', request.options.startDistance == 3)
+		check('a player in a running pair is busy', Duo.Request(4, { kind = 'give' }).error == 'duo_busy')
+		release()
+
+		-- ── two one-shot gestures last as long as their clips ──
+		Duo.Request(4, { actor = 'stub_08', target = 'stub_16' })
+		Duo.Reply(5, lastTo(Event.INVITE, 5)[1], true)
+		request = platform.requests[2] or { options = {} }
+		check('two one-shot gestures play for the longer measured clip',
+			request.options.durationMs == 1360, tostring(request.options.durationMs))
+		release()
+
+		-- ── a shortcut ──
+		Duo.Request(4, { pair = 'talk' })
+		Duo.Reply(5, lastTo(Event.INVITE, 5)[1], true)
+		request = platform.requests[3] or { options = {} }
+		check('a shortcut plays its two profiles for its own length',
+			request.options.actorAnimation == 'stub_05' and request.options.durationMs == 20000)
+		release()
+
+		-- ── the platform's own kinds ──
+		Duo.Request(4, { kind = 'carried' })
+		invite = lastTo(Event.INVITE, 5)
+		check('the invited player is told the kind they are asked into',
+			type(invite[2]) == 'table' and invite[2].kind == 'carried')
+		Duo.Reply(5, invite[1], true)
+		request = platform.requests[4] or { options = {} }
+		check('"be carried" is a carry the INVITED player performs', request.kind == 'carry'
+			and request.actor == 5 and request.target == 4)
+		check('and a carry names no profile, which the coordinator would refuse',
+			request.options.actorAnimation == nil and request.options.targetAnimation == nil
+			and request.options.durationMs == 60000)
+		release()
+		Duo.Request(4, { kind = 'heal' })
+		Duo.Reply(5, lastTo(Event.INVITE, 5)[1], true)
+		request = platform.requests[5] or {}
+		check('a heal goes to the coordinator as `heal`, the asker examining',
+			request.kind == 'heal' and request.actor == 4)
+		release()
+
+		-- ── refused before anybody is asked ──
+		check('a DISABLED profile cannot be paired',
+			Duo.Request(4, { actor = 'stub_03', target = 'dance' }).error == 'unknown_animation')
+		check('nor a DISABLED kind', Duo.Request(4, { kind = 'escort' }).error == 'unknown_animation')
+		check('nor a name nobody offers',
+			Duo.Request(4, { actor = 'nope', target = 'dance' }).error == 'unknown_animation')
+		check('nor a malformed request', Duo.Request(4, 'dance').error == 'unknown_animation')
+		check('a player with nobody in range is told so',
+			Duo.Request(7, { actor = 'dance', target = 'dance' }).error == 'no_player_nearby')
+
+		-- ── declined ──
+		local before = #platform.requests
+		Duo.Request(4, { actor = 'dance', target = 'dance' })
+		invite = lastTo(Event.INVITE, 5)
+		Duo.Reply(6, invite[1], true)
+		check('somebody else cannot answer another\'s invitation', #platform.requests == before)
+		Duo.Reply(5, invite[1], false)
+		check('a no tells the asker and starts nothing', #platform.requests == before
+			and lastTo(Event.NOTICE, 4)[2] == 'declined')
+
+		-- ── expired ──
+		Duo.Request(4, { actor = 'dance', target = 'dance' })
+		invite = lastTo(Event.INVITE, 5)
+		control.Pump(170)
+		check('an unanswered invitation is withdrawn from the invited screen',
+			lastTo(Event.UNINVITE, 5)[1] == invite[1])
+		check('and the asker hears it expired', lastTo(Event.NOTICE, 4)[2] == 'expired')
+		Duo.Reply(5, invite[1], true)
+		check('a late yes starts nothing', #platform.requests == before)
+
+		-- ── the distance, measured again at the yes ──
+		Duo.Request(4, { actor = 'dance', target = 'dance' })
+		invite = lastTo(Event.INVITE, 5)
+		control.Stand(5, 40.0, 0.0, 0.0)
+		Duo.Reply(5, invite[1], true)
+		check('a player who walked off before saying yes is not pulled into a pose',
+			#platform.requests == before and lastTo(Event.NOTICE, 5)[2] == 'too_far')
+		control.Stand(5, 1.5, 0.0, 0.0)
+
+		-- ── typed ──
+		local e = control.commands['e']
+		e.run(4, { 'with', 'carry', n = 2 }, '/e with carry')
+		invite = lastTo(Event.INVITE, 5)
+		check('/e with carry is the paired kind, not the box profile',
+			type(invite[2]) == 'table' and invite[2].kind == 'carry')
+		e.run(5, { 'decline', n = 1 }, '/e decline')
+		e.run(4, { 'with', 'dance', 'stub_05', n = 3 }, '/e with dance stub_05')
+		invite = lastTo(Event.INVITE, 5)
+		check('/e with dance stub_05 is the one on the asker and the other on the invited',
+			type(invite[2]) == 'table' and invite[2].actor == 'dance' and invite[2].target == 'stub_05')
+		e.run(5, { 'accept', n = 1 }, '/e accept')
+		check('/e accept answers it', (platform.requests[#platform.requests] or {}).kind == 'custom'
+			and #platform.requests == before + 1)
+		release()
+
+		-- ── stop ends it for both ──
+		Duo.Request(4, { actor = 'dance', target = 'dance' })
+		Duo.Reply(5, lastTo(Event.INVITE, 5)[1], true)
+		animations.Service.Stop(5, false)
+		local cancelled = platform.cancels[#platform.cancels] or {}
+		check('the stop key cancels the pair on the coordinator',
+			cancelled.id == (platform.requests[#platform.requests] or {}).id)
+	end
+end
+
+section('animations: the client takes the whole catalogue in, inside the budget')
+do
+	local env, control, why = boot('client')
+	check('the client boots for the catalogue checks', why == nil, why)
+	local animations = why == nil and env.OPX.Modules.Get('animations') or nil
+	if animations ~= nil then
+		local Catalogue, Runtime, Event = animations.Catalogue, animations.Runtime, animations.Event
+
+		-- The rows the server would send, built with the server's own functions.
+		local rows, definitions = {}, {}
+		for _, profile in ipairs(animStubProfiles(Catalogue)) do
+			local entry = Catalogue.Entry(profile.id)
+			if entry ~= nil and entry.written then
+				local numbers = {}
+				for index = 1, #entry.clips do numbers[index] = index end
+				rows[#rows + 1] = { name = entry.name, variants = numbers }
+			else
+				local definition = Catalogue.Definition(profile)
+				if definition ~= nil then
+					definitions[#definitions + 1] = definition
+					local wire = {}
+					for key, value in pairs(definition) do wire[key] = value end
+					wire.durations = nil
+					rows[#rows + 1] = wire
+				end
+			end
+		end
+		local parts = {}
+		for index = 1, #rows, 24 do
+			parts[#parts + 1] = table.move(rows, index, math.min(#rows, index + 23), 1, {})
+		end
+		local duo = { kinds = { 'carry', 'carried', 'give' }, pairs = { { id = 'talk',
+			actor = 'stub_05', target = 'dance' } }, any = true }
+
+		-- THE NAIVE WAY, measured: adopting every definition in one go. This is
+		-- what the commit thread spreads over frames, and the reason it must.
+		local naive = callCost(function()
+			for _, definition in ipairs(definitions) do Catalogue.Adopt(definition) end
+		end)
+		Catalogue.Forget()
+		check('adopting the catalogue in one resume would overrun the budget', naive > 4000,
+			('%d instructions'):format(naive))
+
+		local dearestPart = 0
+		local worst, resumes = resumeCost(env, control, function()
+			for index = 1, #parts do
+				local spent = callCost(control.netEvents[Event.OFFER], 7, index, #parts, parts[index],
+					index == #parts and duo or false)
+				if spent > dearestPart then dearestPart = spent end
+			end
+		end, 80)
+		check('the offer is taken in on a thread, over several resumes', resumes > 2, tostring(resumes))
+		check('and no resume of it costs more than 4,000 instructions', worst < 4000,
+			('%d instructions'):format(worst))
+		check('nor does any part arriving', dearestPart < 4000, ('%d instructions'):format(dearestPart))
+		check('every row the server sent is offered', #Runtime.Entries(nil) == #rows,
+			('%d of %d'):format(#Runtime.Entries(nil), #rows))
+		check('with what may be played with somebody', Runtime.Duos().any == true
+			and #Runtime.Duos().kinds == 3 and Runtime.Duos().pairs[1].id == 'talk')
+		check('a profile with no locale row reads the platform\'s label; a written one its own',
+			Catalogue.Label(Catalogue.Entry('stub_05')) == 'Stub pose 5'
+			and Catalogue.Label(Catalogue.Entry('dance')) == 'Dance')
+
+		-- ── the picker ──
+		local OPX = env.OPX
+		local specs, lastHandle = {}, nil
+		local realGet = OPX.Api.Get
+		OPX.Api.Get = function(name)
+			local api = realGet(name)
+			if name ~= 'menu' or api == nil then return api end
+			return setmetatable({
+				Open = function(spec)
+					specs[#specs + 1] = spec
+					local answer = api.Open(spec)
+					if type(answer) == 'table' and type(answer.value) == 'table' then
+						lastHandle = answer.value.handle
+					end
+					return answer
+				end,
+				Update = function(handle, spec)
+					specs[#specs + 1] = spec
+					return api.Update(handle, spec)
+				end,
+			}, { __index = api })
+		end
+		local function rowOf(id)
+			for _, item in ipairs((specs[#specs] or {}).items or {}) do
+				if item.id == id then return item end
+			end
+			return nil
+		end
+		local function onOf()
+			for index = #specs, 1, -1 do if specs[index].on then return specs[index].on end end
+			return nil
+		end
+		local function choose(id, menu)
+			local item, on = rowOf(id), onOf()
+			if item == nil or on == nil then return false end
+			on({ owner = 'animations', menu = menu or 'animations.picker', action = 'select',
+				itemId = id, handle = lastHandle, data = item.data })
+			return true
+		end
+		local function emotesListed()
+			local count = 0
+			for _, item in ipairs((specs[#specs] or {}).items or {}) do
+				if Catalogue.Entry(item.id) ~= nil then count = count + 1 end
+			end
+			return count
+		end
+
+		local openCost = resumeCost(env, control, function() animations.Picker.Open(nil) end, 40)
+		check('the picker opens', #specs > 0 and rowOf('all') ~= nil)
+		check('and opening it costs no resume more than 4,000 instructions', openCost < 4000,
+			('%d instructions'):format(openCost))
+		check('the paced row check is asked for on the draw thread', specs[#specs].yield == true)
+		local families = 0
+		for _, category in ipairs(Catalogue.CATEGORIES) do
+			if rowOf(category) ~= nil then families = families + 1 end
+		end
+		check('every family with something in it has its row', families == #Catalogue.CATEGORIES,
+			('%d of %d'):format(families, #Catalogue.CATEGORIES))
+		check('and the row to play with somebody is drawn', rowOf('duo') ~= nil)
+
+		local allCost = resumeCost(env, control, function() choose('all') end, 40)
+		check('every emote is paged, sixteen to a page', emotesListed() == 16 and rowOf('more') ~= nil,
+			tostring(emotesListed()))
+		check('and the page costs no resume more than 4,000 instructions', allCost < 4000,
+			('%d instructions'):format(allCost))
+		local pages, seen, dearestPage = 1, emotesListed(), allCost
+		while rowOf('more') ~= nil and pages < 12 do
+			local pageCost = resumeCost(env, control, function() choose('more') end, 40)
+			if pageCost > dearestPage then dearestPage = pageCost end
+			pages = pages + 1
+			seen = seen + emotesListed()
+		end
+		check('walking every page lists every offered emote', seen == #rows,
+			('%d over %d pages'):format(seen, pages))
+		check('and no page costs a resume more than 4,000 instructions', dearestPage < 4000,
+			('%d instructions'):format(dearestPage))
+
+		-- A row plays through the server, by name.
+		local before = #control.serverEvents
+		local played = nil
+		for _, item in ipairs(specs[#specs].items) do
+			if type(item.data) == 'table' and item.data.name ~= nil then played = item break end
+		end
+		if played ~= nil then choose(played.id) end
+		local sent = control.serverEvents[#control.serverEvents] or {}
+		check('choosing an emote asks the server to play it', played ~= nil
+			and #control.serverEvents > before and sent.name == Event.PLAY)
+
+		-- ── with somebody: any two, through the same families ──
+		-- Every step through it, measured: the second pick's screen is the dearest.
+		local dearestDuo = 0
+		local function duoStep(fn)
+			local spent = resumeCost(env, control, fn, 40)
+			if spent > dearestDuo then dearestDuo = spent end
+		end
+		duoStep(function() animations.Picker.Open(nil) end)
+		control.Pump(10)
+		duoStep(function() choose('duo') end)
+		control.Pump(10)
+		check('the duo screen lists the paired kinds, the shortcuts and "any two"',
+			rowOf('kind_carry') ~= nil and rowOf('kind_carried') ~= nil and rowOf('pair_talk') ~= nil
+			and rowOf('any') ~= nil)
+		duoStep(function() choose('any') end)
+		control.Pump(10)
+		duoStep(function() choose('all') end)
+		control.Pump(10)
+		local mine = nil
+		for _, item in ipairs((specs[#specs] or {}).items or {}) do
+			if Catalogue.Entry(item.id) ~= nil then mine = item.id break end
+		end
+		duoStep(function() if mine then choose(mine) end end)
+		control.Pump(10)
+		check('picking yours leads to theirs, "the same" first', rowOf('same') ~= nil)
+		check('and no step of the way costs a resume more than 4,000 instructions',
+			dearestDuo < 4000, ('%d instructions'):format(dearestDuo))
+		before = #control.serverEvents
+		choose('same')
+		sent = control.serverEvents[#control.serverEvents] or {}
+		check('and "the same" invites with that profile on both bodies',
+			#control.serverEvents > before and sent.name == Event.DUO and type(sent[1]) == 'table'
+			and sent[1].actor == mine and sent[1].target == mine)
+
+		-- ── the invitation on the invited screen ──
+		specs = {}
+		control.netEvents[Event.INVITE](9, { kind = 'carry' }, 'Vic', 15000)
+		local what = specs[#specs] and specs[#specs].items[1] or nil
+		check('an invitation from a carrier reads as being carried', what ~= nil
+			and what.label == 'Be carried', what and what.label)
+		before = #control.serverEvents
+		choose('accept', 'animations.invite')
+		sent = control.serverEvents[#control.serverEvents] or {}
+		check('accepting answers the server', #control.serverEvents > before
+			and sent.name == Event.REPLY and sent[1] == 9 and sent[2] == true)
+	end
+end
+
 -- ── the staff spawn menu: Air, the AV lift, and a descend ───────────────────
 -- THREE THINGS, ALL OF THEM OBSERVED RATHER THAN READ. The class the spawn menu
 -- did not have; that a record's category comes from the record and an AV is

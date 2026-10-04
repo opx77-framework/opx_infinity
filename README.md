@@ -462,6 +462,58 @@ meaning; see "For creators". None of them ever carries a code.
 district name a script can read) and the platform's force / pay / hack door actions
 (not declared: a locked managed door refuses them).
 
+### Emotes
+
+`animations` offers **every animation the platform has** (**"toutes les animations,
+même les shared etc., toutes sans exception"**): **F3** opens the picker, **X** stops,
+`/e <name> [variant]` plays, `/e list` lists them, `/e <family>` opens the picker there.
+
+**Alone: the whole RP catalogue, read, not copied.** The server reads
+`Open77.animations.list()` once the API is up (104 profiles in twelve families on
+op77.123) and offers every profile beside the fifteen rows written in
+`shared/catalogue.lua`; a written row wins over the platform's profile of the same id
+(it carries a walking pace and a curated variant list). A profile a later build adds is
+offered at the next start, labelled with the platform's English until it is given a row
+in `locales.lua`. Every one plays through `Open77.animations.play` with the clip of the
+variant chosen; a one-shot gesture (`wave`, `shrug`…) plays once, for its measured clip.
+The platform's families map onto the picker's — `seated` is **Sitting**, `dance` and
+`music` are **Dance and music** (`/e dance` is the emote, not the family), a family this
+build has never heard of is **More**. Skipped, and counted in one boot line: a profile in
+`DISABLED`, one whose `validation` says it failed, a malformed row.
+
+**With a nearby player: everything the coordinator plays.** Through
+`Open77.playerInteractions` (open77_player_interactions, `players.interactions.control`):
+
+| what | how it is asked for | the coordinator |
+|---|---|---|
+| carry them / be carried | **With a nearby player** › paired moves, `/e with carry`, `/e with carried` | kind `carry`, fixed paired presentation; the carrier walks |
+| escort them / be escorted | `/e with escort`, `/e with escorted` | kind `escort`, side by side, walking |
+| hand something over | `/e with give` | kind `give` |
+| look after them / be looked after | `/e with heal`, `/e with healed` | kind `heal` (examine / wounded) |
+| any two profiles | **Any two animations** › yours › theirs (“the same” on top), `/e with <yours> [theirs]` | kind `custom`, `actorAnimation` / `targetAnimation` |
+| a named shortcut | `SHARED.PAIRS` rows | kind `custom` |
+
+So every ordered pair of offered profiles is reachable — 104 × 104 on op77.123 — two
+screens and a page away, not ten thousand rows. The **nearest** player within
+`SHARED.RANGE` (3 m) is invited — the server picks, from positions it observes, and
+measures again at the yes — and nothing plays until they accept, from a two-row menu or
+`/e accept` / `/e decline`; an unanswered invitation is withdrawn after `INVITE_MS`. The
+coordinator is then called with `consent = false`, the case its guide names for consent
+already taken. An invitation spends from the same rate window as a play, and the stop key
+ends a pair for both.
+
+**What the platform cannot do.** A `custom` pair is stationary: either body walking off
+ends it, including a walking layer (`smoke_walk`…) — only `carry` and `escort` move, and
+those two take no profile override (`paired_animation_fixed`). The coordinator plays a
+profile, not a clip, so a pair has no variant. There is no third body: two players, one
+interaction each.
+
+**The budget.** A hundred-odd definitions are taken in on a client thread that yields
+by clip count, the offer reaches the client in parts under the 1,024-value decoder, and
+the picker builds each screen on its own thread, sixteen emotes to a page, handing it to
+the menu with `yield = true`. `tests/run.lua` holds each to 4,000 instructions a resume
+and shows the same work done in one go overruns it.
+
 ### Getting dressed
 
 `clothing` is a **place**, like a garage spot and a dealer: stand on the marker, press
